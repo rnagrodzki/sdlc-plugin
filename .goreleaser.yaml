@@ -1,0 +1,27 @@
+version: 2
+
+project_name: sdlc
+
+builds:
+  - id: sdlc
+    main: ./cmd/sdlc
+    binary: sdlc
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    env:
+      - CGO_ENABLED=0
+
+archives:
+  - id: sdlc
+    formats: [binary]
+    name_template: "sdlc-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  disable: true

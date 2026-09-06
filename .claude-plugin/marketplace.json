@@ -1,0 +1,14 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "sdlc-plugin",
+  "description": "Marketplace for the sdlc plugin: MCP server and hook automation for software development lifecycle workflows.",
+  "owner": {
+    "name": "rnagrodzki"
+  },
+  "plugins": [
+    {
+      "name": "sdlc",
+      "source": "."
+    }
+  ]
+}

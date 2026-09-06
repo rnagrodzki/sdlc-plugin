@@ -1,0 +1,8 @@
+{
+  "name": "sdlc",
+  "description": "SDLC automation: MCP server and Claude Code hooks for software development lifecycle workflows.",
+  "version": "1.0.0",
+  "author": {
+    "name": "rnagrodzki"
+  }
+}

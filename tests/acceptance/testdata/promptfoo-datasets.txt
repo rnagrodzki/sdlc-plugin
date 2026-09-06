@@ -1,0 +1,67 @@
+# Frozen manifest of every *-exec.yaml dataset in sdlc-marketplace's
+# promptfoo deterministic-execution tier, generated 2026-09-06 via
+# `ls .../sdlc-marketplace/tests/promptfoo/datasets/ | grep -- '-exec\.yaml$' | sort`
+# against /Users/rafal/repositories/sdlc-marketplace/tests/promptfoo/datasets/
+# (Task 49, Open Question 3). Committed here so matrix_audit_test.go never
+# depends on sdlc-marketplace as a runtime path — re-run the command above
+# and diff against this file to refresh it if the upstream set changes.
+await-remote-review-exec.yaml
+branch-guard-exec.yaml
+branch-name-exec.yaml
+commit-prepare-exec.yaml
+compact-recovery-sweep-exec.yaml
+compact-recovery-write-exec.yaml
+config-load-exec.yaml
+config-resolve-sdlc-root-exec.yaml
+context-advisory-exec.yaml
+cwd-drift-exec.yaml
+derive-workspace-exec.yaml
+dimension-to-instructions-exec.yaml
+error-report-prepare-exec.yaml
+execute-plan-sdlc-context-producer-exec.yaml
+execute-plan-sdlc-dispatch-resilience-exec.yaml
+execute-plan-sdlc-liveness-exec.yaml
+execute-plan-sdlc-overflow-exec.yaml
+git-lib-exec.yaml
+guardrails-prepare-exec.yaml
+harden-prepare-exec.yaml
+harvest-learnings-exec.yaml
+hook-stop-plan-integrity-exec.yaml
+jira-sdlc-exec.yaml
+jira-sdlc-guardrail-exec.yaml
+lib-worktree-exec.yaml
+links-lib-exec.yaml
+markdown-to-adf-exec.yaml
+migrate-config-exec.yaml
+migrate-jira-templates-exec.yaml
+openspec-enrich-exec.yaml
+openspec-lib-exec.yaml
+plan-format-exec.yaml
+plan-prepare-exec.yaml
+plan-state-cleanup-exec.yaml
+pr-prepare-exec.yaml
+pr-recover-gh-account-exec.yaml
+received-review-prepare-exec.yaml
+review-prepare-exec.yaml
+script-runner-stub-bin-exec.yaml
+sdlc-dimensions-exec.yaml
+sdlc-plugin-discovery-exec.yaml
+sdlc-pr-template-exec.yaml
+sdlc-script-resolution-exec.yaml
+session-start-exec.yaml
+setup-init-exec.yaml
+setup-migrate-dispatch-exec.yaml
+setup-prepare-exec.yaml
+setup-script-versions-exec.yaml
+ship-hooks-exec.yaml
+ship-prepare-exec.yaml
+ship-sdlc-exec.yaml
+ship-todos-exec.yaml
+state-gc-migrate-exec.yaml
+validate-cost-tiers-exec.yaml
+verify-pipeline-exec.yaml
+verify-tag-ancestry-exec.yaml
+version-lib-exec.yaml
+version-prepare-exec.yaml
+version-prerelease-exec.yaml
+version-retag-exec.yaml

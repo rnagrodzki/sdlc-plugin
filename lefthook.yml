@@ -1,0 +1,10 @@
+# Pre-push hook: runs the identical commands as .github/workflows/test.yml
+# (go vet, then go test -tags integration) so local and CI never diverge on
+# what green means. Install with `lefthook install`.
+pre-push:
+  parallel: false
+  commands:
+    vet:
+      run: go vet ./...
+    test:
+      run: go test -tags integration ./...

@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/rnagrodzki/sdlc-marketplace/main/schemas/review-dimension.schema.json",
+  "title": "Review Dimension",
+  "description": "Validates YAML frontmatter of .claude/review-dimensions/*.md",
+  "type": "object",
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]+$",
+      "maxLength": 64
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "triggers": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "skip-when": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["critical", "high", "medium", "low", "info"],
+      "default": "medium"
+    },
+    "max-files": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "requires-full-diff": {
+      "type": "boolean"
+    },
+    "model": {
+      "type": "string",
+      "enum": ["haiku", "sonnet", "opus"]
+    }
+  },
+  "required": ["name", "description", "triggers"],
+  "additionalProperties": false
+}

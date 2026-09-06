@@ -1,0 +1,17 @@
+# check-changelog-version: 2
+name: Validate Changelog Entry
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  check-changelog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check changelog entry for current version
+        run: node .github/scripts/check-changelog.cjs

@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/rnagrodzki/sdlc-marketplace/main/schemas/ship-state.schema.json",
+  "title": "Ship State",
+  "description": "Validates .sdlc/execution/ship-*.json",
+  "type": "object",
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "startedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "branch": {
+      "type": "string"
+    },
+    "flags": {
+      "type": "object",
+      "properties": {
+        "auto": {
+          "type": "boolean"
+        },
+        "skip": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["execute", "commit", "review", "received-review", "commit-fixes", "version", "pr", "verify-pipeline", "await-remote-review"]
+          }
+        },
+        "preset": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": ["A", "B", "C"]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "bump": {
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": ["major", "minor", "patch"]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "draft": {
+          "type": "boolean"
+        }
+      }
+    },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": ["execute", "commit", "review", "received-review", "commit-fixes", "version", "pr", "verify-pipeline", "await-remote-review"]
+          },
+          "status": {
+            "type": "string",
+            "enum": ["pending", "in_progress", "completed", "skipped", "failed"]
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "completedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "result": {
+            "type": "string"
+          },
+          "condition": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": ["name", "status"]
+      }
+    },
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "step": {
+            "type": "string"
+          },
+          "decision": {
+            "type": "string"
+          }
+        },
+        "required": ["step", "decision"]
+      }
+    },
+    "deferredFindings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": ["critical", "high", "medium", "low"]
+          },
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "oneOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": ["severity", "file", "title"]
+      }
+    }
+  },
+  "required": ["version", "startedAt", "branch", "flags", "steps"],
+  "additionalProperties": false
+}
