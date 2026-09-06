@@ -25,7 +25,7 @@ Read the manifest JSON from `MANIFEST_FILE`. The manifest contains:
 | Field | Description |
 | --- | --- |
 | `failure.text` | Full failure text (verbatim from the caller) |
-| `failure.skill` | Caller skill name (e.g., `plan-sdlc`, `execute-plan-sdlc`) |
+| `failure.skill` | Caller skill name (e.g., `plan`, `execute-plan`) |
 | `failure.step` / `failure.operation` / `failure.exitCode` / `failure.errorType` | Optional context |
 | `failure.userIntent` / `failure.argsString` | Optional context |
 | `classification_hint` | Pre-computed hint or `null` (advisory only — do not blindly trust) |
@@ -33,7 +33,7 @@ Read the manifest JSON from `MANIFEST_FILE`. The manifest contains:
 | `surfaces.executeGuardrails[]` | `{id, severity, description}` — sdlc.json execute.guardrails |
 | `surfaces.reviewDimensions[]` | `{name, severity, description, triggers, model, path}` |
 | `surfaces.copilotInstructions[]` | `{applyTo, name, path}` |
-| `surfaces.errorReportSkillPath` | Resolved REFERENCE.md path for `error-report-sdlc` |
+| `surfaces.errorReportSkillPath` | Resolved REFERENCE.md path for `error-report` |
 | `pipeline.shipState` / `pipeline.executeState` | Optional paused-pipeline state, or `null` |
 | `repository.root` | MAIN worktree — config/`.sdlc/` root; use to build the `.sdlc/config.json` targetFile for guardrail proposals |
 | `repository.contentRoot` | ACTIVE worktree — root of `reviewDimensions[].path` / `copilotInstructions[].path`; equals `PROJECT_ROOT` |

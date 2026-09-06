@@ -7,7 +7,7 @@
   "$defs": {
     "versionSection": {
       "type": "object",
-      "description": "Controls the version-sdlc skill behaviour.",
+      "description": "Controls the version skill behaviour.",
       "properties": {
         "mode": {
           "type": "string",
@@ -59,7 +59,7 @@
         },
         "projects": {
           "type": "array",
-          "description": "Allowed Jira project keys when the repo maps to multiple projects. When set, jira-sdlc validates --project arguments and presents a closed-list prompt on fallback.",
+          "description": "Allowed Jira project keys when the repo maps to multiple projects. When set, jira validates --project arguments and presents a closed-list prompt on fallback.",
           "items": { "type": "string", "pattern": "^[A-Z]{2,10}$" },
           "minItems": 2,
           "uniqueItems": true
@@ -112,7 +112,7 @@
     },
     "prLabelsSection": {
       "type": "object",
-      "description": "Configures how /pr-sdlc chooses labels (issue #197). Mode `off` (default) adds no labels except those forced via --label. Mode `rules` evaluates user-defined deterministic rules. Mode `llm` lets the LLM pick labels via fuzzy matching against repo labels (legacy behavior, opt-in only).",
+      "description": "Configures how /pr chooses labels (issue #197). Mode `off` (default) adds no labels except those forced via --label. Mode `rules` evaluates user-defined deterministic rules. Mode `llm` lets the LLM pick labels via fuzzy matching against repo labels (legacy behavior, opt-in only).",
       "properties": {
         "mode": {
           "type": "string",
@@ -267,11 +267,11 @@
     },
     "planSection": {
       "type": "object",
-      "description": "Controls plan-sdlc behavior and custom guardrails.",
+      "description": "Controls plan behavior and custom guardrails.",
       "properties": {
         "guardrails": {
           "type": "array",
-          "description": "Custom guardrails evaluated during plan-sdlc critique phases.",
+          "description": "Custom guardrails evaluated during plan critique phases.",
           "minItems": 1,
           "items": { "$ref": "#/$defs/guardrailItem" }
         }
@@ -280,11 +280,11 @@
     },
     "executeSection": {
       "type": "object",
-      "description": "Controls execute-plan-sdlc behavior and runtime guardrails.",
+      "description": "Controls execute-plan behavior and runtime guardrails.",
       "properties": {
         "guardrails": {
           "type": "array",
-          "description": "Custom guardrails evaluated during execute-plan-sdlc runtime (pre-wave and post-wave checks).",
+          "description": "Custom guardrails evaluated during execute-plan runtime (pre-wave and post-wave checks).",
           "minItems": 1,
           "items": { "$ref": "#/$defs/guardrailItem" }
         }

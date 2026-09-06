@@ -9,7 +9,7 @@
       "const": 1
     },
     "skill": {
-      "const": "execute-plan-sdlc"
+      "const": "execute-plan"
     },
     "startedAt": {
       "type": "string",

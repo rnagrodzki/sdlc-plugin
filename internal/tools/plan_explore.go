@@ -21,7 +21,7 @@ import (
 // plan_explore_prepare
 //
 // Ports scripts/skill/plan-explore.js: a manifest-producing discovery pass
-// for plan-sdlc's dynamic-dimension orchestrator. The original is a
+// for plan's dynamic-dimension orchestrator. The original is a
 // standalone script invoked via subprocess that writes a manifest.json into
 // a fresh tempdir and prints {manifestPath, ...} to stdout.
 //
@@ -448,7 +448,7 @@ func sampleRecentPlans(mainRoot string) []string {
 // plan_prepare and plan_mark are registered by RegisterPlanTools in plan.go.
 func RegisterPlanExploreTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "plan_explore_prepare",
-		"Run dynamic-dimension discovery (git scope, OpenSpec paths, keyword grep, web-research signal, skill registry, recent plans) and write a manifest.json into a fresh tempdir for plan-sdlc's explore orchestrator.",
+		"Run dynamic-dimension discovery (git scope, OpenSpec paths, keyword grep, web-research signal, skill registry, recent plans) and write a manifest.json into a fresh tempdir for plan's explore orchestrator.",
 		func(_ mcpserver.Ctx, in PlanExploreIn) (PlanExploreOut, error) {
 			mainRoot, err := worktree.MainRoot()
 			if err != nil {

@@ -33,7 +33,7 @@ func TestErrorReportPrepare_MissingRequiredFields(t *testing.T) {
 func TestErrorReportPrepare_PartialFieldsStillReportsRemainingMissing(t *testing.T) {
 	root := t.TempDir()
 	_, err := errorReportPrepare(root, ErrorReportPrepareIn{
-		Skill: "ship-sdlc",
+		Skill: "ship",
 		Step:  "step-1",
 	})
 	if err == nil {
@@ -59,7 +59,7 @@ func TestErrorReportPrepare_ManifestFieldFidelity(t *testing.T) {
 	root := t.TempDir()
 
 	out, err := errorReportPrepare(root, ErrorReportPrepareIn{
-		Skill:                  "  ship-sdlc  ",
+		Skill:                  "  ship  ",
 		Step:                   "  step-1  ",
 		Operation:              "  do-thing  ",
 		Error:                  "  boom happened  ",
@@ -78,7 +78,7 @@ func TestErrorReportPrepare_ManifestFieldFidelity(t *testing.T) {
 
 	manifest := readErrorReportManifest(t, out.ManifestPath)
 
-	if manifest["skill"] != "ship-sdlc" {
+	if manifest["skill"] != "ship" {
 		t.Errorf("skill = %q, want trimmed", manifest["skill"])
 	}
 	if manifest["step"] != "step-1" {
@@ -111,10 +111,10 @@ func TestErrorReportPrepare_ManifestFieldFidelity(t *testing.T) {
 
 	labels, ok := manifest["labels"].([]any)
 	if !ok || len(labels) != 2 {
-		t.Fatalf("labels = %+v, want [tooling-error, ship-sdlc]", manifest["labels"])
+		t.Fatalf("labels = %+v, want [tooling-error, ship]", manifest["labels"])
 	}
-	if labels[0] != "tooling-error" || labels[1] != "ship-sdlc" {
-		t.Errorf("labels = %+v, want [tooling-error, ship-sdlc] (trimmed skill)", labels)
+	if labels[0] != "tooling-error" || labels[1] != "ship" {
+		t.Errorf("labels = %+v, want [tooling-error, ship] (trimmed skill)", labels)
 	}
 
 	if _, ok := manifest["timestamp"].(string); !ok || manifest["timestamp"] == "" {
@@ -125,7 +125,7 @@ func TestErrorReportPrepare_ManifestFieldFidelity(t *testing.T) {
 func TestErrorReportPrepare_OptionalFieldsDefaultToEmptyString(t *testing.T) {
 	root := t.TempDir()
 	out, err := errorReportPrepare(root, ErrorReportPrepareIn{
-		Skill:     "ship-sdlc",
+		Skill:     "ship",
 		Step:      "step-1",
 		Operation: "do-thing",
 		Error:     "boom",

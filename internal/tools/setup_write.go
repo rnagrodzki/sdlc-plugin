@@ -10,7 +10,7 @@
 // behavior ("SetupInitIn{Sections []string} -> created-files report"); it is
 // silent on how collected field values reach config.json/local.json.
 //
-// This is a small additive tool for setup-sdlc's (Task 44) Step 3 "Writing
+// This is a small additive tool for setup's (Task 44) Step 3 "Writing
 // config files" sub-flow, which needs to persist the field values collected
 // via AskUserQuestion into the correct section. It does not modify
 // setup_init or config.WriteSection — it is a second, narrower caller of the
@@ -49,7 +49,7 @@ type SetupWriteSectionsOut struct {
 // RegisterSetupWriteTools registers setup_write_sections on the server.
 func RegisterSetupWriteTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "setup_write_sections",
-		"Writes real field-value data into one or more .sdlc config sections (config.json for project sections, local.json for local sections), routing and validating via the same config.WriteSection primitive setup_init uses. Unlike setup_init (which only seeds empty {} sections), this accepts the actual assembled values collected during setup-sdlc's per-section field loop.",
+		"Writes real field-value data into one or more .sdlc config sections (config.json for project sections, local.json for local sections), routing and validating via the same config.WriteSection primitive setup_init uses. Unlike setup_init (which only seeds empty {} sections), this accepts the actual assembled values collected during setup's per-section field loop.",
 		func(ctx mcpserver.Ctx, in SetupWriteSectionsIn) (SetupWriteSectionsOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

@@ -41,7 +41,7 @@ func List() []Surface {
 		{
 			ID:          "error-report-skill",
 			Label:       "Error report skill",
-			Description: "Sibling error-report-sdlc skill REFERENCE.md template",
+			Description: "Sibling error-report skill REFERENCE.md template",
 		},
 	}
 }

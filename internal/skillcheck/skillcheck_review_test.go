@@ -1,13 +1,13 @@
 // Package skillcheck cross-checks the MCP tool names referenced by the
-// ported review-family skill files (review-sdlc, received-review-sdlc,
-// jira-sdlc -- Task 43) against the tool names actually registered on the
+// ported review-family skill files (review, received-review,
+// jira -- Task 43) against the tool names actually registered on the
 // Go MCP server, so skill prose cannot silently drift from the real tool
 // surface.
 //
 // This file intentionally contains no production logic — per this task's
 // ruling, no shared skillcheck.go production file exists. A sibling test
-// file (skillcheck_test.go, from a parallel task covering commit-sdlc,
-// version-sdlc, and pr-sdlc) already lands in this same package and
+// file (skillcheck_test.go, from a parallel task covering commit,
+// version, and pr) already lands in this same package and
 // anticipates this one arriving alongside it. Every unexported identifier
 // below is prefixed reviewSkills, and every declared Test function is
 // prefixed TestReviewSkills, to avoid name collisions with that file.
@@ -39,9 +39,9 @@ import (
 // reviewSkillsFiles lists the Task 43 deliverable skill files, relative to
 // the repository root, that this test cross-checks against the registry.
 var reviewSkillsFiles = []string{
-	"skills/review-sdlc/SKILL.md",
-	"skills/received-review-sdlc/SKILL.md",
-	"skills/jira-sdlc/SKILL.md",
+	"skills/review/SKILL.md",
+	"skills/received-review/SKILL.md",
+	"skills/jira/SKILL.md",
 }
 
 // reviewSkillsCallRe matches this repo's documented tool-call pseudocode
@@ -163,8 +163,8 @@ func reviewSkillsToolRefs(content string) []string {
 }
 
 // TestReviewSkillsToolReferencesAreRegistered asserts that every MCP tool
-// name called out in the three Task 43 skill files (review-sdlc,
-// received-review-sdlc, jira-sdlc) is actually registered on the Go MCP
+// name called out in the three Task 43 skill files (review,
+// received-review, jira) is actually registered on the Go MCP
 // server — guarding against skill prose drifting from the real tool
 // surface (e.g. a tool renamed in internal/tools without the skill being
 // updated to match).
@@ -238,18 +238,18 @@ func TestReviewSkillsNoOrchestratorReferences(t *testing.T) {
 	}
 }
 
-// TestReviewSkillsNoWriteGuardReferences is the jira-sdlc acceptance
+// TestReviewSkillsNoWriteGuardReferences is the jira acceptance
 // criterion (Ruling Set 3): the retired pre-tool-jira-write-guard.js hook
 // must not be referenced — AskUserQuestion (Step 2.6) is the sole
 // enforcement boundary for write dispatch in this port.
 func TestReviewSkillsNoWriteGuardReferences(t *testing.T) {
 	repoRoot := reviewSkillsRepoRoot(t)
-	path := filepath.Join(repoRoot, "skills/jira-sdlc/SKILL.md")
+	path := filepath.Join(repoRoot, "skills/jira/SKILL.md")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	if strings.Contains(string(data), "pre-tool-jira-write-guard") {
-		t.Error("skills/jira-sdlc/SKILL.md: still references pre-tool-jira-write-guard")
+		t.Error("skills/jira/SKILL.md: still references pre-tool-jira-write-guard")
 	}
 }

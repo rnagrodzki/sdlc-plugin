@@ -65,7 +65,7 @@ function readVersionConfig(repoRoot) {
   // Fallback: legacy .claude/sdlc.json
   const legacyUnifiedPath = path.join(repoRoot, '.claude', 'sdlc.json');
   if (fs.existsSync(legacyUnifiedPath)) {
-    process.stderr.write(`Deprecation: .claude/sdlc.json is the legacy project-config path. Run /setup-sdlc --migrate to relocate.\n`);
+    process.stderr.write(`Deprecation: .claude/sdlc.json is the legacy project-config path. Run /setup --migrate to relocate.\n`);
     try {
       const config = JSON.parse(fs.readFileSync(legacyUnifiedPath, 'utf8'));
       return config.version || null;
@@ -175,7 +175,7 @@ function main() {
   if (!fs.existsSync(changelogPath)) {
     console.log(
       `FAIL: changelog: true in config but ${changelogFile} does not exist. ` +
-      `Run /version-sdlc --changelog to create it.`
+      `Run /version --changelog to create it.`
     );
     process.exit(1);
   }
@@ -191,7 +191,7 @@ function main() {
     process.exit(0);
   } else {
     console.log(`FAIL: no changelog entry for v${version} in ${changelogFile}`);
-    console.log(`::error file=${changelogFile}::No changelog entry found for v${version}. Run /version-sdlc --changelog on the main branch to add the missing entry.`);
+    console.log(`::error file=${changelogFile}::No changelog entry found for v${version}. Run /version --changelog on the main branch to add the missing entry.`);
     process.exit(1);
   }
 }

@@ -28,14 +28,14 @@ var enrichEndRe = regexp.MustCompile(`(?m)^# END MANAGED BY sdlc-utilities \(v\d
 var enrichBlockTemplate = fmt.Sprintf(`# BEGIN MANAGED BY sdlc-utilities (v%d)
 context: |
   SDLC workflow managed by sdlc-utilities. Do not edit this block manually.
-  To update: /setup-sdlc --openspec-enrich. To remove: /setup-sdlc --remove-openspec.
+  To update: /setup --openspec-enrich. To remove: /setup --remove-openspec.
 
   Contributor workflow:
-    1. /plan-sdlc --from-openspec <change-name>  — create an implementation plan from the change
-    2. /execute-plan-sdlc                         — execute the plan in waves
-    3. /ship-sdlc                                 — commit, review, version, and open a PR
+    1. /plan --from-openspec <change-name>  — create an implementation plan from the change
+    2. /execute-plan                         — execute the plan in waves
+    3. /ship                                 — commit, review, version, and open a PR
 
-  Do not invoke `+"`"+`openspec archive`+"`"+` directly — /ship-sdlc handles archival
+  Do not invoke `+"`"+`openspec archive`+"`"+` directly — /ship handles archival
   as a conditional pipeline step after validation passes.
 # END MANAGED BY sdlc-utilities (v%d)`, enrichVersion, enrichVersion)
 

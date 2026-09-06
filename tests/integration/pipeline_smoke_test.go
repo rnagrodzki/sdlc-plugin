@@ -299,7 +299,7 @@ func TestPipelineSmoke_FullShipPipeline(t *testing.T) {
 	// member of shipmeta.ValidSteps, so including it in ship.steps[] would
 	// only ever produce a config-sourced warning, never select a real
 	// pipeline stage; the "plan" stage referenced by the plan's Notes text
-	// is a separate, upstream `plan-sdlc` skill concern, not a ship.steps[]
+	// is a separate, upstream `plan` skill concern, not a ship.steps[]
 	// value). This only affects ship_prepare's VALIDATION output (Sources,
 	// Warnings) — the actual step-tracking scaffold this test drives is
 	// state.Data["steps"], which is fixed regardless of this config (see

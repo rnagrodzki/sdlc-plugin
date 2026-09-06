@@ -543,12 +543,12 @@ func TestSeverity_WarningChecks(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestExtractSkillRefs(t *testing.T) {
-	content := "First Invoke the `plan-sdlc` skill and then Invoke the `review-sdlc` skill."
+	content := "First Invoke the `plan` skill and then Invoke the `review` skill."
 	refs := extractSkillRefs(content)
 	if len(refs) != 2 {
 		t.Fatalf("expected 2 skill refs, got %d: %v", len(refs), refs)
 	}
-	if refs[0] != "plan-sdlc" || refs[1] != "review-sdlc" {
+	if refs[0] != "plan" || refs[1] != "review" {
 		t.Errorf("unexpected skill refs: %v", refs)
 	}
 }

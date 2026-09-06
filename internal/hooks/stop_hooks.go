@@ -33,7 +33,7 @@ var requiredPlanMarkers = []string{"skillInvoked", "planFile", "guardrailsEvalua
 
 // planMarkerDescriptions is MARKER_DESCRIPTIONS from stop-plan-integrity.js.
 var planMarkerDescriptions = map[string]string{
-	"skillInvoked":        "plan-sdlc Step 0 (prepare) did not run",
+	"skillInvoked":        "plan Step 0 (prepare) did not run",
 	"planFile":            "plan file was not written or is empty",
 	"guardrailsEvaluated": "Step 3 guardrail-compliance gate did not run",
 	"critiqueRan":         "Step 3 self-critique did not run",
@@ -46,7 +46,7 @@ const transcriptTailLimit = 64 * 1024
 // stopPlanIntegrity is the "stop-plan-integrity" hook handler (Stop event),
 // ported from hooks/stop-plan-integrity.js. It never blocks — every path
 // returns Output{ExitCode: 0}; its only effect is an advisory stderr
-// warning when plan-sdlc's checkpoints look incomplete or absent.
+// warning when plan's checkpoints look incomplete or absent.
 //
 // Branch resolution follows the same convention as the other three hooks
 // and session_start.go (gitx.CurrentBranch(resolveActiveWorktreeSafe())): a
@@ -139,7 +139,7 @@ func planIntegrityFromState(st *state.State) Output {
 // include the actual (non-empty, unwritten-or-empty) path when known.
 func planIntegrityWarningText(missing []string, planFilePath string) string {
 	var b strings.Builder
-	b.WriteString("[plan-integrity] WARNING: Plan presented with incomplete plan-sdlc execution.\n")
+	b.WriteString("[plan-integrity] WARNING: Plan presented with incomplete plan execution.\n")
 	b.WriteString("  Missing checkpoints: " + strings.Join(missing, ", ") + "\n")
 	for _, marker := range missing {
 		desc := planMarkerDescriptions[marker]
@@ -165,7 +165,7 @@ func containsString(list []string, s string) bool {
 // no-state-file fallback: it reads up to the last transcriptTailLimit bytes
 // of the transcript file named by event.Raw["transcript_path"] and, if that
 // text contains "Plan mode is active", warns to stderr that a plan was
-// presented without any plan-sdlc integrity state for branch. Any missing
+// presented without any plan integrity state for branch. Any missing
 // transcript_path, or any I/O error opening/reading it, is a silent no-op.
 func planIntegrityFromTranscript(event Event, branch string) Output {
 	silent := Output{ExitCode: 0}
@@ -181,7 +181,7 @@ func planIntegrityFromTranscript(event Event, branch string) Output {
 	}
 
 	if strings.Contains(string(tail), "Plan mode is active") {
-		fmt.Fprintf(os.Stderr, "[plan-integrity] WARNING: Plan presented but plan-sdlc was not invoked (no plan integrity state for branch %s). Quality gates may have been bypassed.\n", branch)
+		fmt.Fprintf(os.Stderr, "[plan-integrity] WARNING: Plan presented but plan was not invoked (no plan integrity state for branch %s). Quality gates may have been bypassed.\n", branch)
 	}
 	return silent
 }

@@ -5,7 +5,7 @@ import "fmt"
 // pipelineContinue is the "pipeline-continue" hook handler (PostToolUse,
 // matcher Bash|TodoWrite), ported from hooks/pipeline-continue.js. Unlike
 // block-askuserquestion-auto's binary deny gate, this is a 3-way branch: it
-// nudges Claude to keep working an active ship-sdlc pipeline via
+// nudges Claude to keep working an active ship pipeline via
 // additionalContext, or stays silent.
 //
 // Shares the same root/branch resolution and PipelineAdvancing/

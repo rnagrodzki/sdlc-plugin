@@ -313,7 +313,7 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 	// since "execute" is not openspec-gated.
 	executeWillRun := in.HasPlan && sliceContainsStr(stepsList, "execute")
 	if in.PlanFile == "" && executeWillRun {
-		errors = append(errors, "ship-sdlc cannot run the \"execute\" step without a plan document. "+
+		errors = append(errors, "ship cannot run the \"execute\" step without a plan document. "+
 			"Fix: re-run with --plan <path-to-plan.md>. Why: plan autodiscovery was removed (#505). "+
 			"It picked the most recently modified *.md in ~/.claude/plans/, which is shared across "+
 			"repositories — it could hand this repo a plan written for a different one and implement "+
@@ -334,7 +334,7 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 
 	// --quick with no configured profile.
 	if in.Quick && sources["steps"] == "quick" && len(stepsList) == 0 {
-		errors = append(errors, "No quick profile defined. Run `ship-sdlc --init-config` to set one.")
+		errors = append(errors, "No quick profile defined. Run `ship --init-config` to set one.")
 	}
 
 	// execute.commitWaves configured with a non-boolean value.

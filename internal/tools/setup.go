@@ -438,7 +438,7 @@ func appendIfNew(slice []string, s string) []string {
 // RegisterSetupTools registers setup_prepare and setup_init on the server.
 func RegisterSetupTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "setup_prepare",
-		"Returns the canonical section descriptors for setup-sdlc, with per-section field metadata and runtime-detected defaults (defaultBranch, remoteOwner). Optionally checks config migration state.",
+		"Returns the canonical section descriptors for setup, with per-section field metadata and runtime-detected defaults (defaultBranch, remoteOwner). Optionally checks config migration state.",
 		func(ctx mcpserver.Ctx, in SetupPrepareIn) (SetupPrepareOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

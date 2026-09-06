@@ -185,7 +185,7 @@ func Record(root string, f Failure) error {
 	}
 
 	// Heading uses the em dash (U+2014) matching JS source.
-	heading := fmt.Sprintf("## %s — jira-sdlc mcp-failure[%s]: %s", today, cls, tool)
+	heading := fmt.Sprintf("## %s — jira mcp-failure[%s]: %s", today, cls, tool)
 
 	// Idempotency: skip if heading line already present.
 	existing, _ := os.ReadFile(logPath)

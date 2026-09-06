@@ -29,7 +29,7 @@ func classifyGHError(err error) string {
 // await_remote_review
 //
 // Ports scripts/skill/await-remote-review.js (R50-R56 of
-// docs/specs/ship-sdlc.md). The JS source blocks synchronously for up to
+// docs/specs/ship.md). The JS source blocks synchronously for up to
 // `timeout` seconds, polling `gh api repos/{owner}/{repo}/pulls/{pr}/reviews`
 // (REST, structured JSON) on an internal Atomics.wait loop and emitting one
 // final JSON line.
@@ -368,7 +368,7 @@ func pendingEnvelope(stateFile string, st stepper.PollState, ext map[string]any)
 // ---------------------------------------------------------------------------
 // verify_pipeline_classify
 //
-// Ports scripts/skill/verify-pipeline-sdlc-classify.js's classifyLogs. This
+// Ports scripts/skill/verify-pipeline-classify.js's classifyLogs. This
 // tool returns a plain classification payload, not a stepper envelope — the
 // Contract in the task fact sheet specifies "-> classification payload" for
 // this tool specifically (unlike the two polling tools above).
@@ -469,7 +469,7 @@ var infraPatterns = []classifyPattern{
 	{regexp.MustCompile(`\bExitCode:\s+143\b`), `\bExitCode:\s+143\b`},
 }
 
-// ClassifyLogs is the direct port of classifyLogs (verify-pipeline-sdlc-classify.js).
+// ClassifyLogs is the direct port of classifyLogs (verify-pipeline-classify.js).
 // It collects every matching signal across all six pattern groups
 // unconditionally (not just the winning category's group — matching the JS
 // source, whose `signals` array reflects every pattern that matched

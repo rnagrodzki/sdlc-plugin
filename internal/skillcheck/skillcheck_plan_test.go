@@ -1,6 +1,6 @@
 // Package skillcheck cross-checks the MCP tool names and call-site
-// parameters referenced by the ported plan-family skill files (plan-sdlc,
-// execute-plan-sdlc -- Task 45) against the tool names and input schemas
+// parameters referenced by the ported plan-family skill files (plan,
+// execute-plan -- Task 45) against the tool names and input schemas
 // actually registered on the Go MCP server, so skill prose cannot silently
 // drift from the real tool surface.
 //
@@ -33,8 +33,8 @@ import (
 // planSkillsFiles lists the Task 45 deliverable skill files, relative to the
 // repository root, that this test cross-checks against the registry.
 var planSkillsFiles = []string{
-	"skills/plan-sdlc/SKILL.md",
-	"skills/execute-plan-sdlc/SKILL.md",
+	"skills/plan/SKILL.md",
+	"skills/execute-plan/SKILL.md",
 }
 
 // planSkillsCallRe matches this repo's documented tool-call pseudocode
@@ -307,7 +307,7 @@ func planSkillsToolNames(sites []planSkillsCallSite) []string {
 }
 
 // TestPlanSkillsToolReferencesAreRegistered asserts that every MCP tool name
-// called out in the two Task 45 skill files (plan-sdlc, execute-plan-sdlc)
+// called out in the two Task 45 skill files (plan, execute-plan)
 // is actually registered on the Go MCP server — guarding against skill
 // prose drifting from the real tool surface.
 func TestPlanSkillsToolReferencesAreRegistered(t *testing.T) {
@@ -443,19 +443,19 @@ func TestPlanSkillsNoOrchestratorReferences(t *testing.T) {
 // point. A deliberate future change to any of these files (e.g. a real
 // content fix) must update its pinned hash here in the same commit.
 var planSkillsReferenceFileHashes = map[string]string{
-	"skills/plan-sdlc/g17-dimension-coverage-prompt.md":    "5ba4e465929856b523d71b61b434fece4b933523349abbe0aaea5617ac1263bb",
-	"skills/plan-sdlc/intake-verify-prompt.md":             "f1e7ad1ba6f1ab917312e316a676e878a0c1b7ec6bf4bf3c8ae6c76820bb74c6",
-	"skills/plan-sdlc/lane-content-coverage-prompt.md":     "034edd3883d6e7f9937b220a3d19314c2ac981324c6ca5a5a357ebc5d96eb226",
-	"skills/plan-sdlc/lane-file-existence-prompt.md":       "ee76f039f92f757a3fc8a85122e3e217f73a4a63c41f2164ca688acf4ba68f35",
-	"skills/plan-sdlc/lane-guardrail-compliance-prompt.md": "34baba6c0432003966f780084d1f7a2d5654cc8cfd859602dc23ac2f1699f1db",
-	"skills/plan-sdlc/lane-static-structural-prompt.md":    "8216ae0f03d064ef9ddb2b37d5a6a4b2943f36d7b0cd54775d3fcf33f4a64920",
-	"skills/plan-sdlc/lens-architecture-prompt.md":         "0dc7e10fda43b576d7ddb223f5d46c0a37f0b03b14e8950c9207a147aed03508",
-	"skills/plan-sdlc/lens-requirements-prompt.md":         "f11079debb98beea1810ee281873f3c8a6024dd15006c5b63ed3933f900e582c",
-	"skills/plan-sdlc/lens-risk-prompt.md":                 "c07da38779172712157f8e06dfd8a3f59812a5eb2f4c0c370846b2aefc72c2e2",
-	"skills/plan-sdlc/plan-reviewer-prompt.md":             "c202176d21412fb2419170d16d9844f7b0ad2e301d4f4003423dc71399ff8712",
-	"skills/plan-sdlc/plan-format-reference.md":            "7f3b05de1fbfb39315e83466053bc96510ac69ea47b907eedcd495aeda9bbeb2",
-	"skills/plan-sdlc/plan-template-default.md":            "00c40565772e252ba0b93fab1fdc5a9b7ba901bf809f29a5f31d810b59b308aa",
-	"skills/execute-plan-sdlc/spec-compliance-reviewer.md": "ff6b385e1fade868e4c06fa4c2c5990a1e087e4894b1d4395f46c50c2342023b",
+	"skills/plan/g17-dimension-coverage-prompt.md":    "f35a90fbc594eb27a02e1f9d7985a8ade0397f550a18f9698c68ed5a87a1a62c",
+	"skills/plan/intake-verify-prompt.md":             "7b3c89f79be57cdd7ae237f2524356afe7567d1faa22f79fe0bcdf62bb4229c7",
+	"skills/plan/lane-content-coverage-prompt.md":     "034edd3883d6e7f9937b220a3d19314c2ac981324c6ca5a5a357ebc5d96eb226",
+	"skills/plan/lane-file-existence-prompt.md":       "ee76f039f92f757a3fc8a85122e3e217f73a4a63c41f2164ca688acf4ba68f35",
+	"skills/plan/lane-guardrail-compliance-prompt.md": "34baba6c0432003966f780084d1f7a2d5654cc8cfd859602dc23ac2f1699f1db",
+	"skills/plan/lane-static-structural-prompt.md":    "8216ae0f03d064ef9ddb2b37d5a6a4b2943f36d7b0cd54775d3fcf33f4a64920",
+	"skills/plan/lens-architecture-prompt.md":         "0dc7e10fda43b576d7ddb223f5d46c0a37f0b03b14e8950c9207a147aed03508",
+	"skills/plan/lens-requirements-prompt.md":         "f11079debb98beea1810ee281873f3c8a6024dd15006c5b63ed3933f900e582c",
+	"skills/plan/lens-risk-prompt.md":                 "c07da38779172712157f8e06dfd8a3f59812a5eb2f4c0c370846b2aefc72c2e2",
+	"skills/plan/plan-reviewer-prompt.md":             "e7014efa213cd0f80f008b589532b2a959deb749959eb733df228afdcf161f73",
+	"skills/plan/plan-format-reference.md":            "03970fe6be145ca89f4b34b5552d817a511f1b7b38122b1f435a3b7050c79910",
+	"skills/plan/plan-template-default.md":            "1fd3de86545ece6eb08e8736ef7dcc2c57ee534f8753a3c13ea2c60398be863b",
+	"skills/execute-plan/spec-compliance-reviewer.md": "ff6b385e1fade868e4c06fa4c2c5990a1e087e4894b1d4395f46c50c2342023b",
 }
 
 // TestPlanSkillsReferenceFilesAreUnmodified is the AC4 acceptance criterion:

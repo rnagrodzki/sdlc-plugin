@@ -82,8 +82,8 @@ func TestExecState_Init(t *testing.T) {
 	if data["quality"] != "standard" {
 		t.Errorf("quality = %v, want standard", data["quality"])
 	}
-	if data["skill"] != "execute-plan-sdlc" {
-		t.Errorf("skill = %v, want execute-plan-sdlc", data["skill"])
+	if data["skill"] != "execute-plan" {
+		t.Errorf("skill = %v, want execute-plan", data["skill"])
 	}
 	if data["planPath"] != "plan.md" {
 		t.Errorf("planPath = %v, want plan.md", data["planPath"])

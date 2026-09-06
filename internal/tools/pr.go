@@ -1,4 +1,4 @@
-// pr.go implements the pr-sdlc skill's MCP tools: pr_prepare (gh-auth +
+// pr.go implements the pr skill's MCP tools: pr_prepare (gh-auth +
 // config-check + branch-guard + JIRA-detection + template-load preflight),
 // pr_validate_body (PR body vs. template section-presence check), and
 // pr_apply (KD14 executor: gh pr create/edit for the current branch).
@@ -352,7 +352,7 @@ type PRValidateBodyOut struct {
 }
 
 // prValidateBodyCore resolves the project's PR template and checks Body
-// against it via prtemplate.ValidateBody — the pr-sdlc SKILL.md's
+// against it via prtemplate.ValidateBody — the pr SKILL.md's
 // section-presence contract, NOT pr.js's real --validate-body link
 // validation (that lives in internal/links and is explicitly out of scope
 // for this tool per the task's ruling).
@@ -420,7 +420,7 @@ func prApplyCore(workDir string, in PRApplyIn) (PRApplyOut, error) {
 // 40's responsibility.
 func RegisterPRTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "pr_prepare",
-		"Preflight checks for pr-sdlc: config-version gate, gh-auth + active-account probe (with recovery-shaped diagnostics on failure), branch-guard hard gate, protected-branch rejection, JIRA ticket detection from the branch name, and PR template resolution.",
+		"Preflight checks for pr: config-version gate, gh-auth + active-account probe (with recovery-shaped diagnostics on failure), branch-guard hard gate, protected-branch rejection, JIRA ticket detection from the branch name, and PR template resolution.",
 		func(ctx mcpserver.Ctx, in PRPrepareIn) (PRPrepareOut, error) {
 			mainRoot, err := worktree.MainRoot()
 			if err != nil {
@@ -438,7 +438,7 @@ func RegisterPRTools(s *mcpserver.Server) {
 	)
 
 	mcpserver.Register(s, "pr_validate_body",
-		"Validates a PR body against the resolved PR template's section headings (section-presence check per the pr-sdlc SKILL.md contract — not pr.js's link-validation --validate-body mode).",
+		"Validates a PR body against the resolved PR template's section headings (section-presence check per the pr SKILL.md contract — not pr.js's link-validation --validate-body mode).",
 		func(ctx mcpserver.Ctx, in PRValidateBodyIn) (PRValidateBodyOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

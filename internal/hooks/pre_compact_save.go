@@ -169,7 +169,7 @@ func buildShipRecovery(data map[string]any, branch string) map[string]any {
 	}
 
 	return map[string]any{
-		"pipeline":         "ship-sdlc",
+		"pipeline":         "ship",
 		"branch":           stringOrFallback(data["branch"], branch),
 		"currentStep":      currentStep,
 		"reviewVerdict":    reviewVerdict,
@@ -205,7 +205,7 @@ func buildExecuteRecovery(data map[string]any, branch string) map[string]any {
 	}
 
 	return map[string]any{
-		"pipeline":       "execute-plan-sdlc",
+		"pipeline":       "execute-plan",
 		"branch":         stringOrFallback(data["branch"], branch),
 		"completedWaves": completedWaves,
 		"totalWaves":     totalWaves,

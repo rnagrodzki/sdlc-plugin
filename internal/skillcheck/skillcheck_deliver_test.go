@@ -1,5 +1,5 @@
 // Package skillcheck cross-checks the MCP tool names and execute_state
-// action names referenced by skills/deliver-sdlc/SKILL.md (Task 51) against
+// action names referenced by skills/deliver/SKILL.md (Task 51) against
 // the tool names actually registered on the Go MCP server, and guards
 // against the skill's config-sourcing prose drifting from the config v5
 // `automation` field names it must read directly (Finding 5, AC2).
@@ -30,7 +30,7 @@ import (
 // deliverSkillsFiles lists the Task 51 deliverable skill file, relative to
 // the repository root, that this test cross-checks against the registry.
 var deliverSkillsFiles = []string{
-	"skills/deliver-sdlc/SKILL.md",
+	"skills/deliver/SKILL.md",
 }
 
 // deliverSkillsCallRe matches this repo's documented tool-call pseudocode
@@ -74,7 +74,7 @@ func deliverSkillsReadFile(t *testing.T, repoRoot, rel string) string {
 
 // deliverSkillsBuildRegistry constructs a fresh mcpserver.Server, registers
 // every tool family currently in internal/tools (every Register*Tools
-// function, not just the one deliver-sdlc happens to call directly), starts
+// function, not just the one deliver happens to call directly), starts
 // an in-process MCP client against it, and returns the set of registered
 // tool names as reported by a real ListTools() call.
 //
@@ -172,13 +172,13 @@ func deliverSkillsToolRefs(content string) []string {
 }
 
 // TestDeliverSkillsToolReferencesAreRegistered asserts that every MCP tool
-// name called out in skills/deliver-sdlc/SKILL.md is actually registered on
+// name called out in skills/deliver/SKILL.md is actually registered on
 // the Go MCP server — guarding against skill prose drifting from the real
-// tool surface. deliver-sdlc is deliberately thin here: per its own design
+// tool surface. deliver is deliberately thin here: per its own design
 // (Findings 1 and 6), it never calls a dispatched sub-skill's own MCP tools
 // directly, so the only tool it references at all is execute_state (its one
 // legitimate direct call, action "verify-completeness", mirroring
-// ship-sdlc's own post-execute sanity check).
+// ship's own post-execute sanity check).
 func TestDeliverSkillsToolReferencesAreRegistered(t *testing.T) {
 	repoRoot := deliverSkillsRepoRoot(t)
 	registered := deliverSkillsBuildRegistry(t)
@@ -205,7 +205,7 @@ func TestDeliverSkillsToolReferencesAreRegistered(t *testing.T) {
 }
 
 // TestDeliverSkillsRegistryContainsExpectedTools pins the specific tool
-// name deliver-sdlc is documented to call directly, by exact name, so a
+// name deliver is documented to call directly, by exact name, so a
 // future rename in internal/tools fails loudly here with a precise message
 // instead of only in the broader scan above.
 func TestDeliverSkillsRegistryContainsExpectedTools(t *testing.T) {
@@ -222,9 +222,9 @@ func TestDeliverSkillsRegistryContainsExpectedTools(t *testing.T) {
 	}
 }
 
-// deliverSkillsStepHeaders maps each of deliver-sdlc's six canonical phase
+// deliverSkillsStepHeaders maps each of deliver's six canonical phase
 // names to the exact "### ..." section heading that documents that phase in
-// skills/deliver-sdlc/SKILL.md. Used by TestDeliverSkillsStepActionCrossCheck
+// skills/deliver/SKILL.md. Used by TestDeliverSkillsStepActionCrossCheck
 // to isolate each phase's own prose block before checking which dispatch
 // call, config field, or execute_state action it references.
 var deliverSkillsStepHeaders = map[string]string{
@@ -242,16 +242,16 @@ var deliverSkillsStepHeaders = map[string]string{
 // either the black-box dispatch call for the sub-skill that phase invokes
 // (Finding 1), the execute_state action it legitimately calls (Finding 3),
 // or the config v5 automation field names it sources directly (Finding 5).
-// deliver-sdlc never calls ship_state/execute_state's step-shaped actions
-// (none exist on execute_state; ship_state's are ship-sdlc-internal), so
+// deliver never calls ship_state/execute_state's step-shaped actions
+// (none exist on execute_state; ship_state's are ship-internal), so
 // unlike shipSkillsStepExpectedActions this map is not action-name-only.
 var deliverSkillsStepExpectedRefs = map[string][]string{
 	"plan":            {"planPath"},
-	"execute":         {"execute-plan-sdlc", "verify-completeness"},
-	"review":          {"review-sdlc", "saved-review"},
+	"execute":         {"execute-plan", "verify-completeness"},
+	"review":          {"review", "saved-review"},
 	"fix-loop":        {"reviewFixIterations", "reviewFixSeverityThreshold"},
-	"verify-pipeline": {"ship-sdlc"},
-	"ship":            {"ship-sdlc", "manual-gate-pending"},
+	"verify-pipeline": {"ship"},
+	"ship":            {"ship", "manual-gate-pending"},
 	"terminal":        {"delivered", "failed("},
 }
 
@@ -285,15 +285,15 @@ func deliverSkillsSection(content, heading string) (string, bool) {
 
 // TestDeliverSkillsStepActionCrossCheck is the step/heading cross-check
 // (AC1-equivalent, mirroring TestShipSkillsStepActionCrossCheck's shape):
-// every one of deliver-sdlc's six canonical phase names must have its own
-// documented section in skills/deliver-sdlc/SKILL.md, and that section must
+// every one of deliver's six canonical phase names must have its own
+// documented section in skills/deliver/SKILL.md, and that section must
 // reference at least one of the dispatch calls, execute_state actions, or
 // automation config field names that phase's own prose depends on --
 // guarding against a phase's documentation silently drifting away from what
 // it actually does.
 func TestDeliverSkillsStepActionCrossCheck(t *testing.T) {
 	repoRoot := deliverSkillsRepoRoot(t)
-	content := deliverSkillsReadFile(t, repoRoot, "skills/deliver-sdlc/SKILL.md")
+	content := deliverSkillsReadFile(t, repoRoot, "skills/deliver/SKILL.md")
 
 	if len(deliverSkillsStepHeaders) != 7 {
 		t.Fatalf("deliverSkillsStepHeaders has %d entries, want 7 (plan/execute/review/fix-loop/verify-pipeline/ship/terminal)", len(deliverSkillsStepHeaders))
@@ -307,7 +307,7 @@ func TestDeliverSkillsStepActionCrossCheck(t *testing.T) {
 		t.Run(step, func(t *testing.T) {
 			section, ok := deliverSkillsSection(content, heading)
 			if !ok {
-				t.Fatalf("skills/deliver-sdlc/SKILL.md: expected heading %q for step %q not found", heading, step)
+				t.Fatalf("skills/deliver/SKILL.md: expected heading %q for step %q not found", heading, step)
 			}
 
 			expected, known := deliverSkillsStepExpectedRefs[step]
@@ -323,7 +323,7 @@ func TestDeliverSkillsStepActionCrossCheck(t *testing.T) {
 				}
 			}
 			if !foundAny {
-				t.Errorf("skills/deliver-sdlc/SKILL.md: step %q's section (heading %q) references none of the expected substring(s) %v",
+				t.Errorf("skills/deliver/SKILL.md: step %q's section (heading %q) references none of the expected substring(s) %v",
 					step, heading, expected)
 			}
 		})
@@ -331,9 +331,9 @@ func TestDeliverSkillsStepActionCrossCheck(t *testing.T) {
 }
 
 // TestDeliverSkillsFixLoopConfigFieldsPresent is Task 51's AC2 grep test:
-// skills/deliver-sdlc/SKILL.md must source its fix-loop bounds from config
+// skills/deliver/SKILL.md must source its fix-loop bounds from config
 // v5's `automation` section field names by name, in its own body text, not
-// via ship-sdlc-internal StepMode (Finding 5). This is the first grep-based
+// via ship-internal StepMode (Finding 5). This is the first grep-based
 // guard test of this kind in the skillcheck package -- prior sibling guard
 // tests (TestReviewSkillsNoOrchestratorReferences,
 // TestReviewSkillsNoWriteGuardReferences) assert the *absence* of a retired
@@ -341,11 +341,11 @@ func TestDeliverSkillsStepActionCrossCheck(t *testing.T) {
 // names, using the same plain strings.Contains mechanics.
 func TestDeliverSkillsFixLoopConfigFieldsPresent(t *testing.T) {
 	repoRoot := deliverSkillsRepoRoot(t)
-	content := deliverSkillsReadFile(t, repoRoot, "skills/deliver-sdlc/SKILL.md")
+	content := deliverSkillsReadFile(t, repoRoot, "skills/deliver/SKILL.md")
 
 	for _, field := range []string{"reviewFixIterations", "reviewFixSeverityThreshold"} {
 		if !strings.Contains(content, field) {
-			t.Errorf("skills/deliver-sdlc/SKILL.md: missing required config v5 automation field name %q", field)
+			t.Errorf("skills/deliver/SKILL.md: missing required config v5 automation field name %q", field)
 		}
 	}
 }

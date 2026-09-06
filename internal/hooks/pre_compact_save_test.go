@@ -112,8 +112,8 @@ func TestPreCompactSave_ShipStateTakesPriorityOverExecute(t *testing.T) {
 	if !ok {
 		t.Fatalf("recovery = %v (%T), want map[string]any", data, data)
 	}
-	if recovery["pipeline"] != "ship-sdlc" {
-		t.Errorf("pipeline = %v, want ship-sdlc (ship state must win over execute)", recovery["pipeline"])
+	if recovery["pipeline"] != "ship" {
+		t.Errorf("pipeline = %v, want ship (ship state must win over execute)", recovery["pipeline"])
 	}
 }
 

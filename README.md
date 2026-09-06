@@ -10,6 +10,10 @@ This repository is both the plugin and its own marketplace: plugin name
 `sdlc`, marketplace name `sdlc-plugin` (`.claude-plugin/plugin.json`,
 `.claude-plugin/marketplace.json`).
 
+New to this plugin? See [`docs/getting-started.md`](docs/getting-started.md)
+for install, project setup, and the day-to-day skill workflow. This README
+covers how the plugin works internally.
+
 ## Install
 
 ```

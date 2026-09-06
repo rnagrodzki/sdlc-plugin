@@ -20,7 +20,7 @@
 // ValidateBody has no direct Node.js counterpart. The Node.js validate-body
 // mode (pr.js --validate-body) validates embedded URLs/links, not template
 // placeholders. ValidateBody here implements the placeholder/section-presence
-// check implied by the pr-sdlc SKILL.md contract: "All sections defined in
+// check implied by the pr SKILL.md contract: "All sections defined in
 // the custom template must appear in the output." It checks that every
 // ## Heading from the template is present in the PR body.
 package prtemplate

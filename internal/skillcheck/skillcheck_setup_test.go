@@ -1,5 +1,5 @@
 // Package skillcheck cross-checks the MCP tool names and call-site
-// parameters referenced by the ported setup-sdlc skill (main SKILL.md plus
+// parameters referenced by the ported setup skill (main SKILL.md plus
 // its nine companion sub-flow files -- Task 44) against the tool names and
 // input schemas actually registered on the Go MCP server, so skill prose
 // cannot silently drift from the real tool surface.
@@ -29,20 +29,20 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
 )
 
-// setupSkillsCallFiles lists the Task 44 setup-sdlc files, relative to the
+// setupSkillsCallFiles lists the Task 44 setup files, relative to the
 // repository root, that actually contain "name({ ... })" MCP tool-call
 // pseudocode and are therefore cross-checked against the registry. Three of
 // the nine companion files (setupSkillsReferenceOnlyFiles below) are pure
 // reference/copy sub-flows with no tool calls at all and are checked
 // separately for mere existence.
 var setupSkillsCallFiles = []string{
-	"skills/setup-sdlc/SKILL.md",
-	"skills/setup-sdlc/setup-dimensions.md",
-	"skills/setup-sdlc/setup-pr-template.md",
-	"skills/setup-sdlc/setup-pr-labels.md",
-	"skills/setup-sdlc/setup-guardrails.md",
-	"skills/setup-sdlc/setup-execution-guardrails.md",
-	"skills/setup-sdlc/setup-openspec.md",
+	"skills/setup/SKILL.md",
+	"skills/setup/setup-dimensions.md",
+	"skills/setup/setup-pr-template.md",
+	"skills/setup/setup-pr-labels.md",
+	"skills/setup/setup-guardrails.md",
+	"skills/setup/setup-execution-guardrails.md",
+	"skills/setup/setup-openspec.md",
 }
 
 // setupSkillsReferenceOnlyFiles are companion files that legitimately
@@ -52,9 +52,9 @@ var setupSkillsCallFiles = []string{
 // command rather than any MCP tool. They are asserted to exist and be
 // non-empty, not scanned for tool calls.
 var setupSkillsReferenceOnlyFiles = []string{
-	"skills/setup-sdlc/dimension-catalog.md",
-	"skills/setup-sdlc/scan-patterns.md",
-	"skills/setup-sdlc/setup-plan-template.md",
+	"skills/setup/dimension-catalog.md",
+	"skills/setup/scan-patterns.md",
+	"skills/setup/setup-plan-template.md",
 }
 
 // setupSkillsCallRe matches this repo's documented tool-call pseudocode
@@ -67,7 +67,7 @@ var setupSkillsCallRe = regexp.MustCompile(`\b([A-Za-z_][A-Za-z0-9_]*)\(\{`)
 // must be excluded from the cross-check:
 //   - Claude Code's own built-in tools (skill prose calls these in
 //     pseudocode too, e.g. "Read({ ... })")
-//   - "stringify": setup-sdlc's ported files use the literal expression
+//   - "stringify": setup's ported files use the literal expression
 //     "JSON.stringify({ ... })" when building a `sectionsJson` argument for
 //     setup_write_sections. The call-detection regex has no notion of the
 //     "JSON." qualifier, so it matches "stringify({" as if it were its own
@@ -339,7 +339,7 @@ func setupSkillsToolNames(sites []setupSkillsCallSite) []string {
 }
 
 // TestSetupSkillsToolReferencesAreRegistered asserts that every MCP tool
-// name called out in the Task 44 setup-sdlc files is actually registered on
+// name called out in the Task 44 setup files is actually registered on
 // the Go MCP server — guarding against skill prose drifting from the real
 // tool surface.
 func TestSetupSkillsToolReferencesAreRegistered(t *testing.T) {
@@ -373,7 +373,7 @@ func TestSetupSkillsToolReferencesAreRegistered(t *testing.T) {
 }
 
 // TestSetupSkillsRegistryContainsExpectedTools pins the specific tool names
-// the setup-sdlc skill and its companions are documented to call, by exact
+// the setup skill and its companions are documented to call, by exact
 // name, so a future rename in internal/tools fails loudly here with a
 // precise message instead of only in the broader scan above.
 func TestSetupSkillsRegistryContainsExpectedTools(t *testing.T) {
@@ -473,7 +473,7 @@ func TestSetupSkillsReferenceOnlyFilesExist(t *testing.T) {
 // explanatory text.
 func TestSetupSkillsNoWorkspaceHooksDispatchRows(t *testing.T) {
 	repoRoot := setupSkillsRepoRoot(t)
-	path := filepath.Join(repoRoot, "skills/setup-sdlc/SKILL.md")
+	path := filepath.Join(repoRoot, "skills/setup/SKILL.md")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
@@ -485,7 +485,7 @@ func TestSetupSkillsNoWorkspaceHooksDispatchRows(t *testing.T) {
 		}
 		for _, badRowStart := range []string{"| 3g |", "| 3h |"} {
 			if strings.HasPrefix(trimmed, badRowStart) {
-				t.Errorf("skills/setup-sdlc/SKILL.md: Legacy section reference table still has "+
+				t.Errorf("skills/setup/SKILL.md: Legacy section reference table still has "+
 					"a live row %q (Ruling Q1 drops the workspace/hooks rows, keeping only 3a-3f)",
 					badRowStart)
 			}
@@ -504,7 +504,7 @@ func TestSetupSkillsNoWorkspaceHooksDispatchRows(t *testing.T) {
 // legitimately name "workspace"/"hooks" to explain why they were dropped.
 func TestSetupSkillsOnlySkipIdsMatchManifest(t *testing.T) {
 	repoRoot := setupSkillsRepoRoot(t)
-	path := filepath.Join(repoRoot, "skills/setup-sdlc/SKILL.md")
+	path := filepath.Join(repoRoot, "skills/setup/SKILL.md")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
@@ -530,14 +530,14 @@ func TestSetupSkillsOnlySkipIdsMatchManifest(t *testing.T) {
 	}
 	for _, id := range canonicalIDs {
 		if !strings.Contains(joined, "`"+id+"`") {
-			t.Errorf("skills/setup-sdlc/SKILL.md: canonical section id %q is not listed in the "+
+			t.Errorf("skills/setup/SKILL.md: canonical section id %q is not listed in the "+
 				"--skip/--only Arguments-table rows", id)
 		}
 	}
 
 	for _, dropped := range []string{"`workspace`", "`hooks`"} {
 		if strings.Contains(joined, dropped) {
-			t.Errorf("skills/setup-sdlc/SKILL.md: --skip/--only Arguments-table rows still list "+
+			t.Errorf("skills/setup/SKILL.md: --skip/--only Arguments-table rows still list "+
 				"dropped id %s as a valid value (Ruling Q1)", dropped)
 		}
 	}

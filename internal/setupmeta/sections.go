@@ -33,7 +33,7 @@ type Field struct {
 	WhenStepInActiveSteps string
 }
 
-// Section describes one setup-sdlc configuration section.
+// Section describes one setup configuration section.
 // Order and IDs match the source SETUP_SECTIONS array exactly.
 type Section struct {
 	ID              string   // canonical section id (used by --only flag)
@@ -62,7 +62,7 @@ var versionFields = []Field{
 		Type:        "enum",
 		Options:     []string{"file", "tag"},
 		Default:     "file",
-		Description: "Tells /version-sdlc and /ship-sdlc whether the canonical version lives in a file (`file`) or only in git tags (`tag`). The default `file` mode requires a versionFile path; pick `tag` for projects that derive every release from `git describe`.",
+		Description: "Tells /version and /ship whether the canonical version lives in a file (`file`) or only in git tags (`tag`). The default `file` mode requires a versionFile path; pick `tag` for projects that derive every release from `git describe`.",
 	},
 	{
 		Name:        "versionFile",
@@ -70,7 +70,7 @@ var versionFields = []Field{
 		Type:        "string",
 		Options:     nil,
 		Default:     "package.json",
-		Description: "Path to the file that holds the canonical version string. /version-sdlc reads and rewrites this file on each bump; setup auto-detects common paths (package.json, Cargo.toml, pyproject.toml, plugin.json) but you can override here. Ignored when mode is `tag`.",
+		Description: "Path to the file that holds the canonical version string. /version reads and rewrites this file on each bump; setup auto-detects common paths (package.json, Cargo.toml, pyproject.toml, plugin.json) but you can override here. Ignored when mode is `tag`.",
 	},
 	{
 		Name:        "fileType",
@@ -78,7 +78,7 @@ var versionFields = []Field{
 		Type:        "enum",
 		Options:     []string{"package.json", "cargo.toml", "pyproject.toml", "pubspec.yaml", "plugin.json", "version-file"},
 		Default:     "package.json",
-		Description: "Format used by /version-sdlc to parse and rewrite the version file. The default `package.json` reads the top-level `version` key; `version-file` is a plain-text file containing only the version string. Ignored when mode is `tag`.",
+		Description: "Format used by /version to parse and rewrite the version file. The default `package.json` reads the top-level `version` key; `version-file` is a plain-text file containing only the version string. Ignored when mode is `tag`.",
 	},
 	{
 		Name:        "tagPrefix",
@@ -86,7 +86,7 @@ var versionFields = []Field{
 		Type:        "string",
 		Options:     nil,
 		Default:     "v",
-		Description: "Prefix prepended to the version when /version-sdlc creates a release tag (e.g., prefix `v` produces `v1.2.3`). Empty string is allowed for projects that tag with bare semver. Detected from existing tags when possible.",
+		Description: "Prefix prepended to the version when /version creates a release tag (e.g., prefix `v` produces `v1.2.3`). Empty string is allowed for projects that tag with bare semver. Detected from existing tags when possible.",
 	},
 	{
 		Name:        "changelog",
@@ -94,7 +94,7 @@ var versionFields = []Field{
 		Type:        "boolean",
 		Options:     []string{"yes", "no"},
 		Default:     false,
-		Description: "When true, /version-sdlc and /ship-sdlc append a release entry to changelogFile (default `CHANGELOG.md`) on every bump. Default `no` keeps the workflow lean — enable if your project publishes release notes.",
+		Description: "When true, /version and /ship append a release entry to changelogFile (default `CHANGELOG.md`) on every bump. Default `no` keeps the workflow lean — enable if your project publishes release notes.",
 	},
 	{
 		Name:        "changelogFile",
@@ -102,7 +102,7 @@ var versionFields = []Field{
 		Type:        "string",
 		Options:     nil,
 		Default:     "CHANGELOG.md",
-		Description: "Path to the changelog file appended by /version-sdlc when changelog is enabled. Default `CHANGELOG.md` matches the conventional location at repo root. Ignored when changelog is disabled.",
+		Description: "Path to the changelog file appended by /version when changelog is enabled. Default `CHANGELOG.md` matches the conventional location at repo root. Ignored when changelog is disabled.",
 	},
 	{
 		Name:        "preRelease",
@@ -110,7 +110,7 @@ var versionFields = []Field{
 		Type:        "string",
 		Options:     nil,
 		Default:     "",
-		Description: "When set (e.g., `rc`, `beta`, `alpha`), /version-sdlc and /ship-sdlc default to a pre-release bump (e.g., `1.2.4-rc.1`) on every default invocation until an explicit `major|minor|patch` graduates the release. Must match `^[a-z][a-z0-9]*$`; empty string omits the field and preserves stable-release behavior.",
+		Description: "When set (e.g., `rc`, `beta`, `alpha`), /version and /ship default to a pre-release bump (e.g., `1.2.4-rc.1`) on every default invocation until an explicit `major|minor|patch` graduates the release. Must match `^[a-z][a-z0-9]*$`; empty string omits the field and preserves stable-release behavior.",
 	},
 }
 
@@ -121,7 +121,7 @@ var jiraFields = []Field{
 		Type:        "string",
 		Options:     nil,
 		Default:     "",
-		Description: "Project key (2–10 uppercase letters, e.g., `PROJ`) used by /jira-sdlc when no explicit project is supplied. /commit-sdlc and /pr-sdlc also use it when extracting ticket IDs from branch names. Empty string disables Jira integration for the project.",
+		Description: "Project key (2–10 uppercase letters, e.g., `PROJ`) used by /jira when no explicit project is supplied. /commit and /pr also use it when extracting ticket IDs from branch names. Empty string disables Jira integration for the project.",
 	},
 }
 
@@ -132,7 +132,7 @@ var reviewFields = []Field{
 		Type:        "enum",
 		Options:     []string{"all", "committed", "staged", "working", "worktree"},
 		Default:     "committed",
-		Description: "Default scope for /review-sdlc when no `--committed`/`--staged`/`--working`/`--worktree` flag is passed. `committed` (default) reviews commits on the current branch vs the default branch; `working` reviews staged + unstaged; `all` includes untracked.",
+		Description: "Default scope for /review when no `--committed`/`--staged`/`--working`/`--worktree` flag is passed. `committed` (default) reviews commits on the current branch vs the default branch; `working` reviews staged + unstaged; `all` includes untracked.",
 	},
 }
 
@@ -143,7 +143,7 @@ var receivedReviewFields = []Field{
 		Type:        "multi-enum",
 		Options:     []string{"low", "medium", "high", "critical"},
 		Default:     []string{},
-		Description: "Severities whose \"agree, will fix\" findings bypass the per-finding consent gate in /received-review-sdlc (Step 10 / Step 12). Stored in .sdlc/local.json under receivedReview.alwaysFixSeverities — per-developer, never project-wide. Default `[]` preserves the original consent-on-every-finding behavior; e.g. `[\"critical\",\"high\"]` auto-applies high-impact fixes without prompting.",
+		Description: "Severities whose \"agree, will fix\" findings bypass the per-finding consent gate in /received-review (Step 10 / Step 12). Stored in .sdlc/local.json under receivedReview.alwaysFixSeverities — per-developer, never project-wide. Default `[]` preserves the original consent-on-every-finding behavior; e.g. `[\"critical\",\"high\"]` auto-applies high-impact fixes without prompting.",
 	},
 }
 
@@ -177,7 +177,7 @@ var ShipFields = []Field{
 		Type:        "multi-select",
 		Options:     append([]string{}, CanonicalSteps...),
 		Default:     nil,
-		Description: "Optional shortened step list used when ship-sdlc is invoked with --quick. Same enum as steps. Leave unset to disable the --quick flag for this project.",
+		Description: "Optional shortened step list used when ship is invoked with --quick. Same enum as steps. Leave unset to disable the --quick flag for this project.",
 	},
 	{
 		Name:        "bump",
@@ -185,7 +185,7 @@ var ShipFields = []Field{
 		Type:        "enum",
 		Options:     []string{"patch", "minor", "major"},
 		Default:     "patch",
-		Description: "Applied by /version-sdlc when no explicit bump argument is passed. The runtime value space is wider than this questionnaire presents: ship.bump in .sdlc/local.json may also be a pre-release label matching `^[a-z][a-z0-9]*$` (e.g., `rc`, `beta`); enter such values via `ship-init.js --bump <label>` or by editing the config file. Schema (schemas/sdlc-local.schema.json) validates the union pattern.",
+		Description: "Applied by /version when no explicit bump argument is passed. The runtime value space is wider than this questionnaire presents: ship.bump in .sdlc/local.json may also be a pre-release label matching `^[a-z][a-z0-9]*$` (e.g., `rc`, `beta`); enter such values via `ship-init.js --bump <label>` or by editing the config file. Schema (schemas/sdlc-local.schema.json) validates the union pattern.",
 	},
 	{
 		Name:        "draft",
@@ -193,7 +193,7 @@ var ShipFields = []Field{
 		Type:        "boolean",
 		Options:     []string{"yes", "no"},
 		Default:     false,
-		Description: "Default value for the --draft flag on /pr-sdlc",
+		Description: "Default value for the --draft flag on /pr",
 	},
 	{
 		Name:        "auto",
@@ -313,7 +313,7 @@ var prFields = []Field{
 		Type:        "string",
 		Options:     nil,
 		Default:     "",
-		Description: "Branch PRs are merged into. Auto-detected from the remote default branch; override for repos using develop, release/*, etc. When set, /pr-sdlc uses this value before falling back to runtime git detection (issue #339).",
+		Description: "Branch PRs are merged into. Auto-detected from the remote default branch; override for repos using develop, release/*, etc. When set, /pr uses this value before falling back to runtime git detection (issue #339).",
 	},
 	{
 		Name:        "expectedAccount",
@@ -321,11 +321,11 @@ var prFields = []Field{
 		Type:        "string",
 		Options:     nil,
 		Default:     "",
-		Description: "GitHub login expected to be active when /pr-sdlc creates a PR. /pr-sdlc halts hard if the active gh account differs from this value, preventing wrong-account PRs in multi-account setups. Default is the origin remote owner; leave blank to skip the active-account check (fall through to email-mapping or origin-owner cascade).",
+		Description: "GitHub login expected to be active when /pr creates a PR. /pr halts hard if the active gh account differs from this value, preventing wrong-account PRs in multi-account setups. Default is the origin remote owner; leave blank to skip the active-account check (fall through to email-mapping or origin-owner cascade).",
 	},
 }
 
-// Sections returns the ordered list of setup-sdlc section descriptors.
+// Sections returns the ordered list of setup section descriptors.
 // The order and IDs are frozen and must match the Node.js source
 // (scripts/lib/setup-sections.js SETUP_SECTIONS) exactly.
 func Sections() []Section {
@@ -333,10 +333,10 @@ func Sections() []Section {
 		{
 			ID:              "version",
 			Label:           "version",
-			Purpose:         "Tells /version-sdlc and /ship-sdlc where the canonical version string lives (a file, or only git tags) and how releases are tagged. Without this section, version bumps and release tagging fall back to defaults that may not match your project layout.",
+			Purpose:         "Tells /version and /ship where the canonical version string lives (a file, or only git tags) and how releases are tagged. Without this section, version bumps and release tagging fall back to defaults that may not match your project layout.",
 			ConfigFile:      ".sdlc/config.json",
 			ConfigPath:      "version",
-			ConsumedBy:      []string{"version-sdlc", "ship-sdlc"},
+			ConsumedBy:      []string{"version", "ship"},
 			FilesModified:   []string{".sdlc/config.json"},
 			Optional:        false,
 			DelegatedTo:     "",
@@ -346,10 +346,10 @@ func Sections() []Section {
 		{
 			ID:              "ship",
 			Label:           "ship",
-			Purpose:         "Developer-local pipeline preferences for /ship-sdlc: which steps run by default, default version bump, draft-PR mode, auto-approve, workspace isolation, rebase policy, and review-failure threshold. Stored in .sdlc/local.json (gitignored) so each developer can tune the pipeline without affecting teammates.",
+			Purpose:         "Developer-local pipeline preferences for /ship: which steps run by default, default version bump, draft-PR mode, auto-approve, workspace isolation, rebase policy, and review-failure threshold. Stored in .sdlc/local.json (gitignored) so each developer can tune the pipeline without affecting teammates.",
 			ConfigFile:      ".sdlc/local.json",
 			ConfigPath:      "ship",
-			ConsumedBy:      []string{"ship-sdlc"},
+			ConsumedBy:      []string{"ship"},
 			FilesModified:   []string{".sdlc/local.json"},
 			Optional:        false,
 			DelegatedTo:     "",
@@ -359,10 +359,10 @@ func Sections() []Section {
 		{
 			ID:              "jira",
 			Label:           "jira",
-			Purpose:         "Default Jira project key used by /jira-sdlc, /commit-sdlc, and /pr-sdlc when extracting or assigning ticket IDs. Without it, Jira-aware skills require an explicit project on every invocation; with it, branch names like `feat/PROJ-123-foo` resolve automatically.",
+			Purpose:         "Default Jira project key used by /jira, /commit, and /pr when extracting or assigning ticket IDs. Without it, Jira-aware skills require an explicit project on every invocation; with it, branch names like `feat/PROJ-123-foo` resolve automatically.",
 			ConfigFile:      ".sdlc/config.json",
 			ConfigPath:      "jira",
-			ConsumedBy:      []string{"jira-sdlc", "commit-sdlc", "pr-sdlc"},
+			ConsumedBy:      []string{"jira", "commit", "pr"},
 			FilesModified:   []string{".sdlc/config.json"},
 			Optional:        true,
 			DelegatedTo:     "",
@@ -372,10 +372,10 @@ func Sections() []Section {
 		{
 			ID:              "review",
 			Label:           "review",
-			Purpose:         "Default scope for /review-sdlc (committed/staged/working/worktree/all). Each developer typically prefers a different default — committed for PR-style review, working for in-progress feedback. Stored in .sdlc/local.json.",
+			Purpose:         "Default scope for /review (committed/staged/working/worktree/all). Each developer typically prefers a different default — committed for PR-style review, working for in-progress feedback. Stored in .sdlc/local.json.",
 			ConfigFile:      ".sdlc/local.json",
 			ConfigPath:      "review",
-			ConsumedBy:      []string{"review-sdlc"},
+			ConsumedBy:      []string{"review"},
 			FilesModified:   []string{".sdlc/local.json"},
 			Optional:        true,
 			DelegatedTo:     "",
@@ -385,10 +385,10 @@ func Sections() []Section {
 		{
 			ID:              "received-review",
 			Label:           "received-review",
-			Purpose:         "Per-user severity allowlist for /received-review-sdlc auto-apply (issue #233). When set, \"agree, will fix\" findings whose severity is in the list bypass the per-finding consent gate in Step 10/12 and are auto-applied with a one-line `fixed: ...` log. Stored in .sdlc/local.json under receivedReview.alwaysFixSeverities — never in project config. Default `[]` preserves the original consent-on-every-finding behavior.",
+			Purpose:         "Per-user severity allowlist for /received-review auto-apply (issue #233). When set, \"agree, will fix\" findings whose severity is in the list bypass the per-finding consent gate in Step 10/12 and are auto-applied with a one-line `fixed: ...` log. Stored in .sdlc/local.json under receivedReview.alwaysFixSeverities — never in project config. Default `[]` preserves the original consent-on-every-finding behavior.",
 			ConfigFile:      ".sdlc/local.json",
 			ConfigPath:      "receivedReview",
-			ConsumedBy:      []string{"received-review-sdlc"},
+			ConsumedBy:      []string{"received-review"},
 			FilesModified:   []string{".sdlc/local.json"},
 			Optional:        true,
 			DelegatedTo:     "",
@@ -398,10 +398,10 @@ func Sections() []Section {
 		{
 			ID:              "commit",
 			Label:           "commit",
-			Purpose:         "Commit message validation rules used by /commit-sdlc: subject regex, allowed Conventional-Commits types/scopes, types that require a body, required trailer headers. The skill enforces these patterns when generating and validating commit messages.",
+			Purpose:         "Commit message validation rules used by /commit: subject regex, allowed Conventional-Commits types/scopes, types that require a body, required trailer headers. The skill enforces these patterns when generating and validating commit messages.",
 			ConfigFile:      ".sdlc/config.json",
 			ConfigPath:      "commit",
-			ConsumedBy:      []string{"commit-sdlc"},
+			ConsumedBy:      []string{"commit"},
 			FilesModified:   []string{".sdlc/config.json"},
 			Optional:        true,
 			DelegatedTo:     "inline-commit-builder",
@@ -411,10 +411,10 @@ func Sections() []Section {
 		{
 			ID:              "pr",
 			Label:           "pr",
-			Purpose:         "PR title validation rules used by /pr-sdlc: title regex, allowed Conventional-Commits types/scopes, required trailers, plus expected GitHub account for active-account preflight. Mirrors commit patterns; can copy the commit config or use a different style.",
+			Purpose:         "PR title validation rules used by /pr: title regex, allowed Conventional-Commits types/scopes, required trailers, plus expected GitHub account for active-account preflight. Mirrors commit patterns; can copy the commit config or use a different style.",
 			ConfigFile:      ".sdlc/config.json",
 			ConfigPath:      "pr",
-			ConsumedBy:      []string{"pr-sdlc"},
+			ConsumedBy:      []string{"pr"},
 			FilesModified:   []string{".sdlc/config.json"},
 			Optional:        true,
 			DelegatedTo:     "inline-pr-builder",
@@ -424,10 +424,10 @@ func Sections() []Section {
 		{
 			ID:              "pr-labels",
 			Label:           "pr-labels",
-			Purpose:         "PR label assignment policy used by /pr-sdlc. Mode \"off\" (default) adds no labels except those forced via --label. Mode \"rules\" evaluates user-defined rules — each rule maps one signal (branch prefix, commit type, changed-path glob, JIRA issue type, or diff size) to one repo label. Mode \"llm\" lets the LLM suggest labels using fuzzy matching against repo labels (legacy behavior, opt-in only).",
+			Purpose:         "PR label assignment policy used by /pr. Mode \"off\" (default) adds no labels except those forced via --label. Mode \"rules\" evaluates user-defined rules — each rule maps one signal (branch prefix, commit type, changed-path glob, JIRA issue type, or diff size) to one repo label. Mode \"llm\" lets the LLM suggest labels using fuzzy matching against repo labels (legacy behavior, opt-in only).",
 			ConfigFile:      ".sdlc/config.json",
 			ConfigPath:      "pr.labels",
-			ConsumedBy:      []string{"pr-sdlc"},
+			ConsumedBy:      []string{"pr"},
 			FilesModified:   []string{".sdlc/config.json"},
 			Optional:        true,
 			DelegatedTo:     "setup-pr-labels",
@@ -437,10 +437,10 @@ func Sections() []Section {
 		{
 			ID:              "review-dimensions",
 			Label:           "review-dimensions",
-			Purpose:         "Review dimensions installed under .sdlc/review-dimensions/*.yaml. Each dimension is a focused check set (security, performance, type safety, etc.) that /review-sdlc applies as a pass over the diff. Without dimensions installed, /review-sdlc has nothing to evaluate.",
+			Purpose:         "Review dimensions installed under .sdlc/review-dimensions/*.yaml. Each dimension is a focused check set (security, performance, type safety, etc.) that /review applies as a pass over the diff. Without dimensions installed, /review has nothing to evaluate.",
 			ConfigFile:      "<delegated>",
 			ConfigPath:      "",
-			ConsumedBy:      []string{"review-sdlc"},
+			ConsumedBy:      []string{"review"},
 			FilesModified:   []string{".sdlc/review-dimensions/*.yaml"},
 			Optional:        true,
 			DelegatedTo:     "setup-dimensions",
@@ -450,10 +450,10 @@ func Sections() []Section {
 		{
 			ID:              "pr-template",
 			Label:           "pr-template",
-			Purpose:         "PR description template at .sdlc/pr-template.md, used by /pr-sdlc when drafting PRs. The sub-flow scans existing GitHub PR templates, recent PRs, and Jira evidence to propose a tailored template; without it, /pr-sdlc uses a built-in fallback.",
+			Purpose:         "PR description template at .sdlc/pr-template.md, used by /pr when drafting PRs. The sub-flow scans existing GitHub PR templates, recent PRs, and Jira evidence to propose a tailored template; without it, /pr uses a built-in fallback.",
 			ConfigFile:      "<delegated>",
 			ConfigPath:      "",
-			ConsumedBy:      []string{"pr-sdlc"},
+			ConsumedBy:      []string{"pr"},
 			FilesModified:   []string{".sdlc/pr-template.md"},
 			Optional:        true,
 			DelegatedTo:     "setup-pr-template",
@@ -463,10 +463,10 @@ func Sections() []Section {
 		{
 			ID:              "plan-template",
 			Label:           "plan-template",
-			Purpose:         "Project-owned plan template at .sdlc/plan-template.md, used by /plan-sdlc to build the plan skeleton (Required Sections, Discovery Questions, Verification Patterns) and by validate-plan-format.js PF10 to check required-section presence. Without it, /plan-sdlc falls back to the shipped default template.",
+			Purpose:         "Project-owned plan template at .sdlc/plan-template.md, used by /plan to build the plan skeleton (Required Sections, Discovery Questions, Verification Patterns) and by validate-plan-format.js PF10 to check required-section presence. Without it, /plan falls back to the shipped default template.",
 			ConfigFile:      "<delegated>",
 			ConfigPath:      "",
-			ConsumedBy:      []string{"plan-sdlc"},
+			ConsumedBy:      []string{"plan"},
 			FilesModified:   []string{".sdlc/plan-template.md"},
 			Optional:        true,
 			DelegatedTo:     "setup-plan-template",
@@ -476,10 +476,10 @@ func Sections() []Section {
 		{
 			ID:              "plan-guardrails",
 			Label:           "plan-guardrails",
-			Purpose:         "Custom rules at .sdlc/config.json#plan.guardrails evaluated by /plan-sdlc during its critique phases. Each guardrail is a natural-language constraint (e.g., \"no direct DB access from controllers\") that flags drift in plans before execution.",
+			Purpose:         "Custom rules at .sdlc/config.json#plan.guardrails evaluated by /plan during its critique phases. Each guardrail is a natural-language constraint (e.g., \"no direct DB access from controllers\") that flags drift in plans before execution.",
 			ConfigFile:      ".sdlc/config.json",
 			ConfigPath:      "plan.guardrails",
-			ConsumedBy:      []string{"plan-sdlc"},
+			ConsumedBy:      []string{"plan"},
 			FilesModified:   []string{".sdlc/config.json"},
 			Optional:        true,
 			DelegatedTo:     "setup-guardrails",
@@ -489,10 +489,10 @@ func Sections() []Section {
 		{
 			ID:              "execution-guardrails",
 			Label:           "execution-guardrails",
-			Purpose:         "Runtime guardrails at .sdlc/config.json#execute.guardrails evaluated by /execute-plan-sdlc and /ship-sdlc before and after each wave. Error-severity violations halt execution; warning-severity violations are reported but non-blocking.",
+			Purpose:         "Runtime guardrails at .sdlc/config.json#execute.guardrails evaluated by /execute-plan and /ship before and after each wave. Error-severity violations halt execution; warning-severity violations are reported but non-blocking.",
 			ConfigFile:      ".sdlc/config.json",
 			ConfigPath:      "execute.guardrails",
-			ConsumedBy:      []string{"execute-plan-sdlc", "ship-sdlc"},
+			ConsumedBy:      []string{"execute-plan", "ship"},
 			FilesModified:   []string{".sdlc/config.json"},
 			Optional:        true,
 			DelegatedTo:     "setup-execution-guardrails",
@@ -502,10 +502,10 @@ func Sections() []Section {
 		{
 			ID:              "openspec-block",
 			Label:           "openspec-block",
-			Purpose:         "Managed block injected into openspec/config.yaml that supplies sdlc-utilities workflow guidance to OpenSpec-aware skills (/plan-sdlc, /execute-plan-sdlc, /ship-sdlc). Idempotent: re-running at the same plugin version is a no-op; version bumps update the block in place.",
+			Purpose:         "Managed block injected into openspec/config.yaml that supplies sdlc-utilities workflow guidance to OpenSpec-aware skills (/plan, /execute-plan, /ship). Idempotent: re-running at the same plugin version is a no-op; version bumps update the block in place.",
 			ConfigFile:      "openspec/config.yaml",
 			ConfigPath:      "<managed-block>",
-			ConsumedBy:      []string{"plan-sdlc", "execute-plan-sdlc", "ship-sdlc"},
+			ConsumedBy:      []string{"plan", "execute-plan", "ship"},
 			FilesModified:   []string{"openspec/config.yaml"},
 			Optional:        true,
 			DelegatedTo:     "setup-openspec",

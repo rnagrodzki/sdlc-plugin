@@ -39,7 +39,7 @@ func sessionStart(_ HookCtx, event Event) (Output, error) {
 		header = append(header, fmt.Sprintf("sdlc: v%s (%d skills loaded)", PluginVersion, count))
 	}
 
-	header = append(header, "Plan mode routing: always invoke plan-sdlc via the Skill tool when plan mode is active.")
+	header = append(header, "Plan mode routing: always invoke plan via the Skill tool when plan mode is active.")
 
 	// Judgment call (Task 37, Ruling B leaves this open): the ruling only
 	// says to skip "the skill-count line" when resolvePluginRoot fails.
@@ -350,8 +350,8 @@ func shipResumeLines(root, branch string) []string {
 	}
 
 	return []string{
-		fmt.Sprintf("Active pipeline: ship-sdlc on %s (%s)", branch, label),
-		"  Resume with: /ship-sdlc --resume",
+		fmt.Sprintf("Active pipeline: ship on %s (%s)", branch, label),
+		"  Resume with: /ship --resume",
 	}
 }
 
@@ -382,11 +382,11 @@ func executeResumeLines(root, branch, source string) []string {
 
 	var line string
 	if source == "compact" {
-		line = fmt.Sprintf("Active execution (post-compact): execute-plan-sdlc on %s (wave %d of %d complete)", branch, completed, total)
+		line = fmt.Sprintf("Active execution (post-compact): execute-plan on %s (wave %d of %d complete)", branch, completed, total)
 	} else {
-		line = fmt.Sprintf("Active execution: execute-plan-sdlc on %s (wave %d of %d complete)", branch, completed, total)
+		line = fmt.Sprintf("Active execution: execute-plan on %s (wave %d of %d complete)", branch, completed, total)
 	}
-	return []string{line, "  Resume with: /execute-plan-sdlc --resume"}
+	return []string{line, "  Resume with: /execute-plan --resume"}
 }
 
 // ---------------------------------------------------------------------------
@@ -445,9 +445,9 @@ func recoveryPipelineLines(rm map[string]any) []string {
 	branch, _ := rm["branch"].(string)
 
 	switch pipeline {
-	case "ship-sdlc":
+	case "ship":
 		var lines []string
-		lines = append(lines, fmt.Sprintf("  Pipeline: ship-sdlc on %s", branch))
+		lines = append(lines, fmt.Sprintf("  Pipeline: ship on %s", branch))
 		if step, ok := rm["currentStep"].(string); ok && step != "" {
 			lines = append(lines, fmt.Sprintf("  Current step: %s", step))
 		}
@@ -459,11 +459,11 @@ func recoveryPipelineLines(rm map[string]any) []string {
 			lines = append(lines, fmt.Sprintf("  Review verdict: %s%s", verdict, findings))
 		}
 		return lines
-	case "execute-plan-sdlc":
+	case "execute-plan":
 		completed, _ := rm["completedWaves"].(float64)
 		total, _ := rm["totalWaves"].(float64)
 		return []string{
-			fmt.Sprintf("  Pipeline: execute-plan-sdlc on %s", branch),
+			fmt.Sprintf("  Pipeline: execute-plan on %s", branch),
 			fmt.Sprintf("  Progress: wave %s of %s complete", formatNumber(completed), formatNumber(total)),
 		}
 	default:
@@ -564,12 +564,12 @@ func openSpecPhase() []string {
 		case "spec-in-progress":
 			// No suggestion — matches the JS source's empty case.
 		case "ready-for-plan":
-			lines = append(lines, fmt.Sprintf("  Plan with: /plan-sdlc --from-openspec %s", change.Name))
-			lines = append(lines, "  Or full pipeline: /ship-sdlc (after planning)")
+			lines = append(lines, fmt.Sprintf("  Plan with: /plan --from-openspec %s", change.Name))
+			lines = append(lines, "  Or full pipeline: /ship (after planning)")
 		case "implementation-in-progress":
-			lines = append(lines, "  Or commit progress: /commit-sdlc")
+			lines = append(lines, "  Or commit progress: /commit")
 		case "tasks-complete":
-			lines = append(lines, "  Ship: /ship-sdlc (commit -> review -> PR)")
+			lines = append(lines, "  Ship: /ship (commit -> review -> PR)")
 			lines = append(lines, fmt.Sprintf("  Verify first: openspec validate --strict %s", change.Name))
 		}
 		return lines
@@ -746,7 +746,7 @@ func jiraCacheLine(site, siteDir, fileName string) (string, bool) {
 	case maxAgeHours == 0:
 		return fmt.Sprintf("Jira cache: %s (last updated %s, permanent)", label, ageDisplay), true
 	case ageHours > maxAgeHours:
-		return fmt.Sprintf("Jira cache: %s (stale — %s, TTL %sh) — refresh with /jira-sdlc --force-refresh", label, ageDisplay, formatNumber(maxAgeHours)), true
+		return fmt.Sprintf("Jira cache: %s (stale — %s, TTL %sh) — refresh with /jira --force-refresh", label, ageDisplay, formatNumber(maxAgeHours)), true
 	default:
 		return fmt.Sprintf("Jira cache: %s (last updated %s, TTL %sh)", label, ageDisplay, formatNumber(maxAgeHours)), true
 	}

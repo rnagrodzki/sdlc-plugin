@@ -12,7 +12,7 @@ import (
 // blockAskUserQuestionAuto is the "block-askuserquestion-auto" hook handler
 // (PreToolUse, matcher AskUserQuestion), ported from
 // hooks/block-askuserquestion-auto.js. It denies the AskUserQuestion tool
-// call only when a ship-sdlc pipeline is actively advancing in --auto mode
+// call only when a ship pipeline is actively advancing in --auto mode
 // for the current session; every other case is a silent no-op (exit 0, no
 // stdout) so this hook never interferes with an interactive session (C18).
 //
@@ -43,7 +43,7 @@ func blockAskUserQuestionAuto(ctx HookCtx, event Event) (Output, error) {
 		"hookSpecificOutput": map[string]any{
 			"hookEventName":            "PreToolUse",
 			"permissionDecision":       "deny",
-			"permissionDecisionReason": "Auto-mode ship pipeline is advancing (flags.auto=true). Do NOT pause for input — proceed on the documented default (auto-dispatch the fix path). See ship-sdlc R71/#477.",
+			"permissionDecisionReason": "Auto-mode ship pipeline is advancing (flags.auto=true). Do NOT pause for input — proceed on the documented default (auto-dispatch the fix path). See ship R71/#477.",
 		},
 	}, ExitCode: 0}, nil
 }

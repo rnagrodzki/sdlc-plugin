@@ -31,7 +31,7 @@ import (
 //
 // Ports scripts/skill/plan.js: OpenSpec detection, guardrail loading,
 // explore-pack discovery, and G17/lane/lens dispatch metadata for
-// plan-sdlc (plan_prepare), plus the --mark checkpoint-marker CLI mode
+// plan (plan_prepare), plus the --mark checkpoint-marker CLI mode
 // (plan_mark). scripts/skill/plan-handoff-advisory.js is out of scope (a
 // permanent no-op wrapper around a dead sidecar).
 //
@@ -520,7 +520,7 @@ func buildGithubHosting(projectRoot string) GithubHosting {
 // Skill template resolution (P15/P16/P17/P20)
 //
 // plan.js's resolveSkillTemplate/buildG17Dispatch try a workspace-relative
-// path (__dirname-sibling skills/plan-sdlc/<name>) before falling back to a
+// path (__dirname-sibling skills/plan/<name>) before falling back to a
 // find cascade over ~/.claude/plugins. The Go binary has no skills/ sibling
 // directory (no such convention exists in this repo), so only the find
 // cascade is implemented; a miss degrades to nil, matching plan.js's own
@@ -535,7 +535,7 @@ var pluginVersionRe = regexp.MustCompile(`/(\d+)\.(\d+)\.(\d+)/skills`)
 // ~/.claude/plugins walk below. Installed plugins can vendor full package
 // checkouts (observed in practice: a marketplace clone containing a
 // devtools-frontend checkout with a multi-hundred-thousand-file
-// node_modules tree), and a plan-sdlc skill template markdown file can
+// node_modules tree), and a plan skill template markdown file can
 // never live inside any of these — pruning them is a pure performance
 // safeguard with no effect on which file is found.
 var skillWalkSkipDirs = map[string]bool{
@@ -561,7 +561,7 @@ var (
 )
 
 // buildSkillTemplateIndex walks ~/.claude/plugins once, recording for every
-// filename found under a "/plan-sdlc/" path segment the highest-semver match
+// filename found under a "/plan/" path segment the highest-semver match
 // (mirroring plan.js's per-template find + version-sort cascade, but
 // computed for all template names in a single pass).
 func buildSkillTemplateIndex() map[string]string {
@@ -582,7 +582,7 @@ func buildSkillTemplateIndex() map[string]string {
 			}
 			return nil
 		}
-		if !strings.Contains(filepath.ToSlash(p), "/plan-sdlc/") {
+		if !strings.Contains(filepath.ToSlash(p), "/plan/") {
 			return nil
 		}
 		name := d.Name()
@@ -596,9 +596,9 @@ func buildSkillTemplateIndex() map[string]string {
 	return index
 }
 
-// resolveSkillTemplate finds a plan-sdlc skill template file under
+// resolveSkillTemplate finds a plan skill template file under
 // ~/.claude/plugins/*/skills/.../<templateName>, mirroring plan.js's find
-// cascade (`find ~/.claude/plugins -name <templateName> -path '*/plan-sdlc/*'`)
+// cascade (`find ~/.claude/plugins -name <templateName> -path '*/plan/*'`)
 // with the highest-semver match winning. Returns nil when not found. The
 // underlying plugins-tree walk runs at most once per process (see
 // skillTemplateIndexOnce).
@@ -1013,7 +1013,7 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 // later task.
 func RegisterPlanTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "plan_prepare",
-		"Prepare OpenSpec detection, guardrails, explore-pack discovery, and G17/lane/lens dispatch metadata for plan-sdlc.",
+		"Prepare OpenSpec detection, guardrails, explore-pack discovery, and G17/lane/lens dispatch metadata for plan.",
 		func(_ mcpserver.Ctx, in PlanPrepareIn) (PlanPrepareOut, error) {
 			mainRoot, err := worktree.MainRoot()
 			if err != nil {

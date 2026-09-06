@@ -3,7 +3,7 @@ package tools
 // Package-level: jira tool.
 //
 // This is a Go port of scripts/skill/jira.js (cache and template management
-// for the jira-sdlc skill). jira.js is pure local cache/template management —
+// for the jira skill). jira.js is pure local cache/template management —
 // it has no HTTP/auth code of its own; the only network-touching surface is
 // validate-body's URL reachability check, which is delegated entirely to
 // internal/links (Task 12).
@@ -131,7 +131,7 @@ type JiraIn struct {
 	// inert.
 	Site string `json:"site,omitempty"`
 
-	// TemplatesDir overrides plugin-tree discovery of the shipped jira-sdlc
+	// TemplatesDir overrides plugin-tree discovery of the shipped jira
 	// templates/ directory (jira.js's --templates-dir). See deviation #3.
 	TemplatesDir string `json:"templatesDir,omitempty"`
 
@@ -360,7 +360,7 @@ var (
 
 // jiraFindPluginTemplateInstalls walks ~/.claude/plugins looking for a
 // directory literally named "templates" whose parent directory is named
-// "jira-sdlc" (jira.js's findPluginInstalls). Cached for the process
+// "jira" (jira.js's findPluginInstalls). Cached for the process
 // lifetime via sync.Once, mirroring the staleness caveat already documented
 // for plan.go's analogous skill-template-index cache: a plugin
 // install/update mid-process will not be picked up until restart.
@@ -386,7 +386,7 @@ func jiraFindPluginTemplateInstalls() []string {
 					continue
 				}
 				full := filepath.Join(dir, e.Name())
-				if e.Name() == "templates" && filepath.Base(dir) == "jira-sdlc" {
+				if e.Name() == "templates" && filepath.Base(dir) == "jira" {
 					results = append(results, full)
 				} else {
 					walk(full, depth+1)
@@ -410,7 +410,7 @@ func jiraResolveTemplatesDir(override string) string {
 	if err != nil {
 		cwd = "."
 	}
-	return filepath.Join(cwd, "plugins", "sdlc-utilities", "skills", "jira-sdlc", "templates")
+	return filepath.Join(cwd, "plugins", "sdlc-utilities", "skills", "jira", "templates")
 }
 
 // ---------------------------------------------------------------------------
@@ -1169,7 +1169,7 @@ func jiraCore(mainRoot string, in JiraIn, offline bool) (any, error) {
 // into runMCP's dispatch is Task 40's responsibility.
 func RegisterJiraTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "jira",
-		"Manage jira-sdlc cache and templates: check, load, save, save-field, templates, init-templates, clear, copy-template, validate-body",
+		"Manage jira cache and templates: check, load, save, save-field, templates, init-templates, clear, copy-template, validate-body",
 		func(_ mcpserver.Ctx, in JiraIn) (any, error) {
 			mainRoot, err := worktree.MainRoot()
 			if err != nil {

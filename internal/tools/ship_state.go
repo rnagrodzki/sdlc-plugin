@@ -911,7 +911,7 @@ func shipStateTodos(root, workDir string, in ShipStateIn) (any, error) {
 // wiring into runMCP's dispatch is Task 40's responsibility.
 func RegisterShipStateTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "ship_state",
-		"Manage ship-sdlc execution state: init, start, complete, begin-step, complete-step, skip, fail, decide, defer, read, cleanup, cleanup-pipeline, gc, migrate, next, todos",
+		"Manage ship execution state: init, start, complete, begin-step, complete-step, skip, fail, decide, defer, read, cleanup, cleanup-pipeline, gc, migrate, next, todos",
 		func(ctx mcpserver.Ctx, in ShipStateIn) (any, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

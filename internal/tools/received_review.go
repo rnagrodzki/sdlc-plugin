@@ -105,7 +105,7 @@ func receivedReviewPrepare(projectRoot, activeRoot string, in ReceivedReviewIn) 
 // RegisterReceivedReviewTools registers received_review_prepare on the server.
 func RegisterReceivedReviewTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "received_review_prepare",
-		"Fetch PR view and checks for the received-review-sdlc skill. Returns an inline payload with PR metadata.",
+		"Fetch PR view and checks for the received-review skill. Returns an inline payload with PR metadata.",
 		func(ctx mcpserver.Ctx, in ReceivedReviewIn) (ReceivedReviewOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

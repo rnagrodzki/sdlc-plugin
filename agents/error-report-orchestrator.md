@@ -24,7 +24,7 @@ Read the manifest JSON from `MANIFEST_FILE`. The manifest contains:
 
 | Field | Description |
 | --- | --- |
-| `skill` | Calling skill name (e.g., `commit-sdlc`, `pr-sdlc`) |
+| `skill` | Calling skill name (e.g., `commit`, `pr`) |
 | `step` | Step number and name where the error occurred |
 | `operation` | What the skill was attempting |
 | `errorText` | Full error message or output |
@@ -41,7 +41,7 @@ Read the manifest JSON from `MANIFEST_FILE`. The manifest contains:
 
 ## Step 1 — Load Template
 
-Read `skills/error-report-sdlc/templates/ToolingError.md` from `PROJECT_ROOT`. The template uses `{placeholder}` markers — see REFERENCE.md section 4 for the full placeholder-to-source mapping.
+Read `skills/error-report/templates/ToolingError.md` from `PROJECT_ROOT`. The template uses `{placeholder}` markers — see REFERENCE.md section 4 for the full placeholder-to-source mapping.
 
 ## Step 2 — Fill the Template
 
@@ -50,7 +50,7 @@ Replace every `{placeholder}` strictly with the matching manifest field:
 | Placeholder | Manifest field |
 | --- | --- |
 | `{what failed — one line}` | One-sentence summary of `errorText` |
-| `{skill name, e.g., pr-sdlc}` | `skill` |
+| `{skill name, e.g., pr}` | `skill` |
 | `{step number and name where the error occurred}` | `step` |
 | `{what the skill was trying to do, e.g., "Create PR via gh CLI"}` | `operation` |
 | `{ISO timestamp}` | `timestamp` |

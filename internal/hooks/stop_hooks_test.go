@@ -87,8 +87,8 @@ func TestStopStateSave_ShipState_DerivesRecoveryFields(t *testing.T) {
 	if !ok {
 		t.Fatalf("recovery = %v (%T), want map[string]any", data, data)
 	}
-	if recovery["pipeline"] != "ship-sdlc" {
-		t.Errorf("pipeline = %v, want ship-sdlc", recovery["pipeline"])
+	if recovery["pipeline"] != "ship" {
+		t.Errorf("pipeline = %v, want ship", recovery["pipeline"])
 	}
 	if recovery["currentStep"] != "pr" {
 		t.Errorf("currentStep = %v, want pr (in_progress step wins over the last completed step)", recovery["currentStep"])
@@ -173,8 +173,8 @@ func TestStopStateSave_ExecuteFallback_DerivesWaveFields(t *testing.T) {
 	if !ok {
 		t.Fatalf("recovery = %v (%T), want map[string]any", data, data)
 	}
-	if recovery["pipeline"] != "execute-plan-sdlc" {
-		t.Errorf("pipeline = %v, want execute-plan-sdlc", recovery["pipeline"])
+	if recovery["pipeline"] != "execute-plan" {
+		t.Errorf("pipeline = %v, want execute-plan", recovery["pipeline"])
 	}
 	// The sidecar round-trips through JSON, so Go ints decode back as float64.
 	if recovery["totalWaves"] != float64(2) {

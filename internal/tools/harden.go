@@ -283,7 +283,7 @@ func findPluginRootFrom(start string) (string, bool) {
 // resolveErrorReportSkill is the Go port of harden-surfaces.js's
 // resolveErrorReportSkill(projectRoot, errors). Source's own implementation
 // ignores its projectRoot parameter entirely — it resolves the sibling
-// skills/error-report-sdlc/REFERENCE.md path via __dirname (the plugin's
+// skills/error-report/REFERENCE.md path via __dirname (the plugin's
 // own lib/ directory), not via the caller-supplied project root. There is
 // no __dirname in a compiled Go binary, so this walks up from the running
 // executable's directory (falling back to the working directory) looking
@@ -291,7 +291,7 @@ func findPluginRootFrom(start string) (string, bool) {
 // "resolve sibling of the plugin's own installation" intent as closely as
 // a compiled binary allows.
 func resolveErrorReportSkill(errs *[]surfaceLoadError) string {
-	const relPath = "skills/error-report-sdlc/REFERENCE.md"
+	const relPath = "skills/error-report/REFERENCE.md"
 
 	start := ""
 	if exe, err := os.Executable(); err == nil {
@@ -316,7 +316,7 @@ func resolveErrorReportSkill(errs *[]surfaceLoadError) string {
 		return ""
 	}
 
-	resolved := filepath.Join(root, "skills", "error-report-sdlc", "REFERENCE.md")
+	resolved := filepath.Join(root, "skills", "error-report", "REFERENCE.md")
 	if _, err := os.Stat(resolved); err != nil {
 		*errs = append(*errs, surfaceLoadError{
 			Surface: "error-report-skill",

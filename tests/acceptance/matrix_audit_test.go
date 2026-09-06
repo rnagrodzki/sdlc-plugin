@@ -167,15 +167,15 @@ type datasetRow struct {
 //   - version-retag-exec.yaml: no `--retag` equivalent exists anywhere in
 //     internal/version or the commit/pr tools (verified: zero "retag" hits
 //     outside an unrelated CI payload template name) — but this is NOT a
-//     new finding: skills/version-sdlc/SKILL.md's own Port Notes already
+//     new finding: skills/version/SKILL.md's own Port Notes already
 //     self-document `--retag` as a known no-op. The gap is real; "found by
 //     this audit" was wrong.
 //   - received-review-prepare-exec.yaml: the tool is ported and registered
 //     (RegisterReceivedReviewTools, internal/tools/received_review.go) but
 //     has no dedicated unit test anywhere in the suite.
-//   - execute-plan-sdlc-dispatch-resilience-exec.yaml: the sentinel string
+//   - execute-plan-dispatch-resilience-exec.yaml: the sentinel string
 //     this dataset checks for IS present verbatim at
-//     skills/execute-plan-sdlc/SKILL.md:313 ("Nested Agent dispatch is
+//     skills/execute-plan/SKILL.md:313 ("Nested Agent dispatch is
 //     supported...") — the original cutReason's "absent... anywhere" claim
 //     was false. The real, narrower gap: the dataset's second required
 //     file, wave-runner-template.md, does not exist in this port because
@@ -205,13 +205,13 @@ var datasetRows = []datasetRow{
 		dataset:   "error-report-prepare-exec.yaml",
 		cutReason: "orphan in the source repo itself (Finding 5): referenced by zero promptfoo exec config despite matching the -exec.yaml naming convention — a pre-existing source defect, not something the Go port could address.",
 	},
-	{dataset: "execute-plan-sdlc-context-producer-exec.yaml", testRef: "TestExecState_SummarizePriorWaveContext"},
+	{dataset: "execute-plan-context-producer-exec.yaml", testRef: "TestExecState_SummarizePriorWaveContext"},
 	{
-		dataset:   "execute-plan-sdlc-dispatch-resilience-exec.yaml",
-		cutReason: "the dataset's sentinel string (\"Nested Agent dispatch is supported...\") IS present verbatim at skills/execute-plan-sdlc/SKILL.md:313 — no gap there. The narrower real gap: the dataset's second required file, wave-runner-template.md, does not exist in this port, because the wave-runner middle-agent this port's KD15 collapsed into flat dispatch. No Go test encodes that collapsed-dispatch behavior as a standalone assertion. Flagged in the task-49 report as follow-up-worthy, not fixed here (out of this task's scope).",
+		dataset:   "execute-plan-dispatch-resilience-exec.yaml",
+		cutReason: "the dataset's sentinel string (\"Nested Agent dispatch is supported...\") IS present verbatim at skills/execute-plan/SKILL.md:313 — no gap there. The narrower real gap: the dataset's second required file, wave-runner-template.md, does not exist in this port, because the wave-runner middle-agent this port's KD15 collapsed into flat dispatch. No Go test encodes that collapsed-dispatch behavior as a standalone assertion. Flagged in the task-49 report as follow-up-worthy, not fixed here (out of this task's scope).",
 	},
-	{dataset: "execute-plan-sdlc-liveness-exec.yaml", testRef: "TestExecState_ResumeReset"},
-	{dataset: "execute-plan-sdlc-overflow-exec.yaml", testRef: "TestSplit_RefusesBeyondMaxDepth"},
+	{dataset: "execute-plan-liveness-exec.yaml", testRef: "TestExecState_ResumeReset"},
+	{dataset: "execute-plan-overflow-exec.yaml", testRef: "TestSplit_RefusesBeyondMaxDepth"},
 	{dataset: "git-lib-exec.yaml", testRef: "TestStatus_DirtyTree"},
 	{
 		dataset:   "guardrails-prepare-exec.yaml",
@@ -223,11 +223,11 @@ var datasetRows = []datasetRow{
 		cutReason: "repo-maintenance script (harvest-learnings.js) with zero references anywhere in this plugin's runtime tool/hook surface — it operates on the marketplace repo's own contributor workflow, not shipped plugin behavior.",
 	},
 	{dataset: "hook-stop-plan-integrity-exec.yaml", testRef: "TestStopPlanIntegrity_AllMarkersPresent_ConsumesDeletesSilently"},
-	{dataset: "jira-sdlc-exec.yaml", testRef: "TestJiraSaveThenLoadRoundTrip"},
+	{dataset: "jira-exec.yaml", testRef: "TestJiraSaveThenLoadRoundTrip"},
 	{
-		dataset: "jira-sdlc-guardrail-exec.yaml",
+		dataset: "jira-guardrail-exec.yaml",
 		testRef: "TestRun_RegistryContainsExactlyKnownHooks",
-		// Contradiction #2: jira-sdlc/SKILL.md self-contradicts on whether a
+		// Contradiction #2: jira/SKILL.md self-contradicts on whether a
 		// pre-tool-jira-write-guard hook is live; ground truth (hooks.json,
 		// and this Go registry) is that it never was. The guard's helper
 		// libs (payload-hash.js etc.) were confirmed dead code in the
@@ -271,7 +271,7 @@ var datasetRows = []datasetRow{
 	},
 	{dataset: "ship-hooks-exec.yaml", testRef: "TestStopPipelineContinue_BlockCountCapThenMarksFailedOnce"},
 	{dataset: "ship-prepare-exec.yaml", testRef: "TestShipPrepare_StateInit"},
-	{dataset: "ship-sdlc-exec.yaml", testRef: "TestShipState_StartComplete"},
+	{dataset: "ship-exec.yaml", testRef: "TestShipState_StartComplete"},
 	{dataset: "ship-todos-exec.yaml", testRef: "TestShipState_Todos"},
 	{dataset: "state-gc-migrate-exec.yaml", testRef: "TestMigrateBranchSlug"},
 	{dataset: "validate-cost-tiers-exec.yaml", testRef: "TestValidateCostTiersAllKinds"},
@@ -282,7 +282,7 @@ var datasetRows = []datasetRow{
 	{dataset: "version-prerelease-exec.yaml", testRef: "TestBump"},
 	{
 		dataset:   "version-retag-exec.yaml",
-		cutReason: "no --retag equivalent exists anywhere in internal/version or the commit/pr tools (verified: zero \"retag\" hits outside an unrelated CI payload template literally named retag-release.cjs). Not a new finding: skills/version-sdlc/SKILL.md's own Port Notes already self-document --retag as a known no-op. Flagged in the task-49 report as an already-documented migration gap, not fixed here (out of this task's scope).",
+		cutReason: "no --retag equivalent exists anywhere in internal/version or the commit/pr tools (verified: zero \"retag\" hits outside an unrelated CI payload template literally named retag-release.cjs). Not a new finding: skills/version/SKILL.md's own Port Notes already self-document --retag as a known no-op. Flagged in the task-49 report as an already-documented migration gap, not fixed here (out of this task's scope).",
 	},
 }
 
@@ -469,7 +469,7 @@ var kdRows = []kdRow{
 	{
 		id:      "Contradiction-2",
 		testRef: "TestRun_RegistryContainsExactlyKnownHooks",
-		// jira-sdlc/SKILL.md self-contradicts on a pre-tool-jira-write-guard
+		// jira/SKILL.md self-contradicts on a pre-tool-jira-write-guard
 		// hook; ground truth is it was never wired. This registry's closed
 		// 8-name list has no such entry.
 	},

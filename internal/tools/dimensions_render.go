@@ -2,7 +2,7 @@
 //
 // Ports the CLI entrypoint of scripts/lib/dimension-to-instructions.js
 // (`node dimension-to-instructions.js --file <path> [--common-file <path>]`)
-// to a Go MCP tool for setup-sdlc's setup-dimensions.md sub-flow, which
+// to a Go MCP tool for setup's setup-dimensions.md sub-flow, which
 // needs to regenerate a single review dimension's Copilot
 // instructions-mirror file after the dimension is installed or edited.
 //
@@ -44,7 +44,7 @@ type DimensionsRenderInstructionsIn struct {
 	// output path is written under (and that File/CommonFile resolve
 	// against when relative). Defaults to worktree.MainRoot() when empty —
 	// correct for setup-dimensions.md's use case (installing into the main
-	// worktree). harden-sdlc's Copilot-mirror step (R-copilot-mirror, #474)
+	// worktree). harden's Copilot-mirror step (R-copilot-mirror, #474)
 	// needs the mirror written under the ACTIVE worktree instead
 	// (repository.contentRoot from harden_prepare's manifest, which may
 	// differ from the main worktree), so it passes this explicitly.

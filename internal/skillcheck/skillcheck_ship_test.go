@@ -1,6 +1,6 @@
 // Package skillcheck cross-checks the MCP tool names and ship_state action
-// names referenced by the ported ship-family skill files (ship-sdlc,
-// verify-pipeline-sdlc -- Task 46) against the tool names actually
+// names referenced by the ported ship-family skill files (ship,
+// verify-pipeline -- Task 46) against the tool names actually
 // registered on the Go MCP server, and guards against the pipeline
 // documenting direct git/gh mutations in place of its executor tools.
 //
@@ -30,8 +30,8 @@ import (
 // shipSkillsFiles lists the Task 46 deliverable skill files, relative to the
 // repository root, that this test cross-checks against the registry.
 var shipSkillsFiles = []string{
-	"skills/ship-sdlc/SKILL.md",
-	"skills/verify-pipeline-sdlc/SKILL.md",
+	"skills/ship/SKILL.md",
+	"skills/verify-pipeline/SKILL.md",
 }
 
 // shipSkillsCallRe matches this repo's documented tool-call pseudocode
@@ -165,8 +165,8 @@ func shipSkillsToolRefs(content string) []string {
 }
 
 // TestShipSkillsToolReferencesAreRegistered asserts that every MCP tool
-// name called out in the two Task 46 skill files (ship-sdlc,
-// verify-pipeline-sdlc) is actually registered on the Go MCP server —
+// name called out in the two Task 46 skill files (ship,
+// verify-pipeline) is actually registered on the Go MCP server —
 // guarding against skill prose drifting from the real tool surface (e.g. a
 // tool renamed in internal/tools without the skill being updated to
 // match).
@@ -226,7 +226,7 @@ func TestShipSkillsRegistryContainsExpectedTools(t *testing.T) {
 
 // shipSkillsStepHeaders maps each of shipmeta's 13 canonical/lifecycle ship
 // pipeline step names to the exact "### ..." (or "## ...") section heading
-// that documents that step's execution in skills/ship-sdlc/SKILL.md. Used
+// that documents that step's execution in skills/ship/SKILL.md. Used
 // by TestShipSkillsStepActionCrossCheck (AC1) to isolate each step's own
 // prose block before checking which ship_state action it references.
 var shipSkillsStepHeaders = map[string]string{
@@ -301,7 +301,7 @@ func shipSkillsSection(content, heading string) (string, bool) {
 
 // TestShipSkillsStepActionCrossCheck is the Files-note / Acceptance
 // Criterion 1 check: every one of shipmeta's 13 canonical ship pipeline
-// step names must have its own documented section in ship-sdlc/SKILL.md,
+// step names must have its own documented section in ship/SKILL.md,
 // and that section must reference the ship_state action(s) that step's
 // lifecycle actually uses (begin-step/complete-step for the seven
 // scaffolded steps, decide for the five non-scaffolded inline steps, and
@@ -309,7 +309,7 @@ func shipSkillsSection(content, heading string) (string, bool) {
 // step's prose silently drifting onto the wrong generic action.
 func TestShipSkillsStepActionCrossCheck(t *testing.T) {
 	repoRoot := shipSkillsRepoRoot(t)
-	content := shipSkillsReadFile(t, repoRoot, "skills/ship-sdlc/SKILL.md")
+	content := shipSkillsReadFile(t, repoRoot, "skills/ship/SKILL.md")
 
 	if len(shipSkillsStepHeaders) != 13 {
 		t.Fatalf("shipSkillsStepHeaders has %d entries, want 13 (shipmeta's canonical step count)", len(shipSkillsStepHeaders))
@@ -323,7 +323,7 @@ func TestShipSkillsStepActionCrossCheck(t *testing.T) {
 		t.Run(step, func(t *testing.T) {
 			section, ok := shipSkillsSection(content, heading)
 			if !ok {
-				t.Fatalf("skills/ship-sdlc/SKILL.md: expected heading %q for step %q not found", heading, step)
+				t.Fatalf("skills/ship/SKILL.md: expected heading %q for step %q not found", heading, step)
 			}
 
 			expected, known := shipSkillsStepExpectedActions[step]
@@ -339,7 +339,7 @@ func TestShipSkillsStepActionCrossCheck(t *testing.T) {
 				}
 			}
 			if !foundAny {
-				t.Errorf("skills/ship-sdlc/SKILL.md: step %q's section (heading %q) references none of the expected ship_state action(s) %v",
+				t.Errorf("skills/ship/SKILL.md: step %q's section (heading %q) references none of the expected ship_state action(s) %v",
 					step, heading, expected)
 			}
 		})
@@ -349,7 +349,7 @@ func TestShipSkillsStepActionCrossCheck(t *testing.T) {
 // shipSkillsBashBlockRe extracts the content of every ```bash ... ``` fenced
 // code block, which is this repo's documented convention for a command the
 // LLM executes directly via the Bash tool (as opposed to a plain, untagged
-// ``` ... ``` fence, used throughout ship-sdlc/SKILL.md for human-facing
+// ``` ... ``` fence, used throughout ship/SKILL.md for human-facing
 // AskUserQuestion message text, such as the manual tag-and-push
 // instructions -- which must NOT be flagged as an LLM-executed mutation).
 var shipSkillsBashBlockRe = regexp.MustCompile("(?s)```bash\\n(.*?)```")
@@ -375,7 +375,7 @@ var shipSkillsForbiddenMutations = []*regexp.Regexp{
 
 // TestShipSkillsNoDirectMutation is the Acceptance Criterion 2 check
 // (analogous in spirit to TestReviewSkillsNoWriteGuardReferences): neither
-// ship-sdlc/SKILL.md nor verify-pipeline-sdlc/SKILL.md may instruct the LLM
+// ship/SKILL.md nor verify-pipeline/SKILL.md may instruct the LLM
 // to run a git/gh mutation, or hand-edit a version/changelog file, directly
 // via an executable ```bash block -- every such mutation must instead
 // route through an executor tool (commit_apply, pr_apply, version_apply,
@@ -384,10 +384,10 @@ var shipSkillsForbiddenMutations = []*regexp.Regexp{
 // AskUserQuestion pause rather than a Bash-tool-executed command.
 //
 // Scoped to ```bash-tagged fences only, so it does not false-positive on:
-//   - ship-sdlc's own plain-fenced AskUserQuestion message text that tells
+//   - ship's own plain-fenced AskUserQuestion message text that tells
 //     the *human* to run `git tag`/`git push` by hand (Q1's documented
 //     exception);
-//   - verify-pipeline-sdlc's legitimate CI-fix Edit-tool instructions,
+//   - verify-pipeline's legitimate CI-fix Edit-tool instructions,
 //     which edit source files but never commit or push (its own C1
 //     prohibition already bans exactly that).
 func TestShipSkillsNoDirectMutation(t *testing.T) {

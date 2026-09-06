@@ -29,7 +29,7 @@ func TestHardenPrepare_KD5Gate(t *testing.T) {
 
 	_, err := hardenPrepare(root, root, HardenPrepareIn{
 		FailureText:     "boom",
-		Skill:           "ship-sdlc",
+		Skill:           "ship",
 		SkipConfigCheck: false,
 	})
 	if err == nil {
@@ -53,7 +53,7 @@ func TestHardenPrepare_SkipConfigCheckBypassesGate(t *testing.T) {
 
 	_, err := hardenPrepare(root, root, HardenPrepareIn{
 		FailureText:     "boom",
-		Skill:           "ship-sdlc",
+		Skill:           "ship",
 		SkipConfigCheck: true,
 	})
 	// A schemaVersion-stamped config.json also unconditionally trips
@@ -83,7 +83,7 @@ func TestHardenPrepare_MutualExclusion(t *testing.T) {
 	_, err := hardenPrepare(root, root, HardenPrepareIn{
 		FailureText:     "boom",
 		FromIssue:       "42",
-		Skill:           "ship-sdlc",
+		Skill:           "ship",
 		SkipConfigCheck: true,
 	})
 	if err == nil {
@@ -99,7 +99,7 @@ func TestHardenPrepare_FromIssueInvalidNumber(t *testing.T) {
 	root := t.TempDir()
 	_, err := hardenPrepare(root, root, HardenPrepareIn{
 		FromIssue:       "not-a-number",
-		Skill:           "ship-sdlc",
+		Skill:           "ship",
 		SkipConfigCheck: true,
 	})
 	if err == nil {
@@ -144,7 +144,7 @@ func TestHardenPrepare_PreflightGuardrailFailureAbortsNoManifest(t *testing.T) {
 
 	out, err := hardenPrepare(root, root, HardenPrepareIn{
 		FailureText:     "boom",
-		Skill:           "ship-sdlc",
+		Skill:           "ship",
 		SkipConfigCheck: true,
 	})
 	if err == nil {
@@ -168,7 +168,7 @@ func TestHardenPrepare_PreflightDimensionFailureAbortsNoManifest(t *testing.T) {
 
 	_, err := hardenPrepare(root, root, HardenPrepareIn{
 		FailureText:     "boom",
-		Skill:           "ship-sdlc",
+		Skill:           "ship",
 		SkipConfigCheck: true,
 	})
 	if err == nil {
@@ -192,7 +192,7 @@ func TestHardenPrepare_ManifestFieldFidelity(t *testing.T) {
 
 	out, err := hardenPrepare(root, root, HardenPrepareIn{
 		FailureText:     "  boom happened  ",
-		Skill:           "  ship-sdlc  ",
+		Skill:           "  ship  ",
 		Step:            "  step-1  ",
 		Operation:       "  do-thing  ",
 		ExitCode:        " ", // raw non-empty (a single space) — must NOT collapse to null
@@ -211,7 +211,7 @@ func TestHardenPrepare_ManifestFieldFidelity(t *testing.T) {
 	if failure["text"] != "  boom happened  " {
 		t.Errorf("failure.text = %q, want raw (untrimmed) value", failure["text"])
 	}
-	if failure["skill"] != "ship-sdlc" {
+	if failure["skill"] != "ship" {
 		t.Errorf("failure.skill = %q, want trimmed", failure["skill"])
 	}
 	if failure["step"] != "step-1" {
@@ -269,7 +269,7 @@ func TestHardenPrepare_ExitCodeEmptyIsNull(t *testing.T) {
 	root := t.TempDir()
 	out, err := hardenPrepare(root, root, HardenPrepareIn{
 		FailureText:     "boom",
-		Skill:           "ship-sdlc",
+		Skill:           "ship",
 		SkipConfigCheck: true,
 	})
 	if err != nil {
@@ -301,7 +301,7 @@ func TestHardenPrepare_LoadsGuardrailSurfaces(t *testing.T) {
 
 	out, err := hardenPrepare(root, root, HardenPrepareIn{
 		FailureText:     "boom",
-		Skill:           "ship-sdlc",
+		Skill:           "ship",
 		SkipConfigCheck: true,
 	})
 	if err != nil {
@@ -344,7 +344,7 @@ func TestHardenPrepare_LoadsReviewDimensionsMetadataOnly(t *testing.T) {
 
 	out, err := hardenPrepare(root, root, HardenPrepareIn{
 		FailureText:     "boom",
-		Skill:           "ship-sdlc",
+		Skill:           "ship",
 		SkipConfigCheck: true,
 	})
 	if err != nil {
@@ -383,7 +383,7 @@ func TestHardenPrepare_LoadsCopilotInstructions(t *testing.T) {
 
 	out, err := hardenPrepare(root, root, HardenPrepareIn{
 		FailureText:     "boom",
-		Skill:           "ship-sdlc",
+		Skill:           "ship",
 		SkipConfigCheck: true,
 	})
 	if err != nil {
@@ -407,7 +407,7 @@ func TestHardenPrepare_CopilotInstructionsToleratesMissingFrontmatter(t *testing
 
 	out, err := hardenPrepare(root, root, HardenPrepareIn{
 		FailureText:     "boom",
-		Skill:           "ship-sdlc",
+		Skill:           "ship",
 		SkipConfigCheck: true,
 	})
 	if err != nil {
@@ -464,7 +464,7 @@ func TestHardenPrepare_PipelineStateIsBranchAgnostic(t *testing.T) {
 
 	out, err := hardenPrepare(root, root, HardenPrepareIn{
 		FailureText:     "boom",
-		Skill:           "ship-sdlc",
+		Skill:           "ship",
 		SkipConfigCheck: true,
 	})
 	if err != nil {
@@ -497,7 +497,7 @@ func TestHardenPrepare_PipelineStateAbsentIsNull(t *testing.T) {
 	root := t.TempDir()
 	out, err := hardenPrepare(root, root, HardenPrepareIn{
 		FailureText:     "boom",
-		Skill:           "ship-sdlc",
+		Skill:           "ship",
 		SkipConfigCheck: true,
 	})
 	if err != nil {

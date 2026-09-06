@@ -107,7 +107,7 @@ var execAccountedStatuses = map[string]bool{
 // RegisterExecuteStateTools registers the execute_state tool.
 func RegisterExecuteStateTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "execute_state",
-		"Manage execute-plan-sdlc execution state (19 actions: init, wave-start, wave-done, wave-fail, wave-committed, task-done, task-fail, context, read, cleanup, gc, summarize-prior-wave-context, wave-split, verify-completeness, wave-progress, resume-reset, ledger_checkin, ledger_checkout, ledger_status)",
+		"Manage execute-plan execution state (19 actions: init, wave-start, wave-done, wave-fail, wave-committed, task-done, task-fail, context, read, cleanup, gc, summarize-prior-wave-context, wave-split, verify-completeness, wave-progress, resume-reset, ledger_checkin, ledger_checkout, ledger_status)",
 		func(ctx mcpserver.Ctx, in ExecuteStateIn) (any, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {
@@ -500,7 +500,7 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 	}
 
 	st.Data["version"] = 1
-	st.Data["skill"] = "execute-plan-sdlc"
+	st.Data["skill"] = "execute-plan"
 	st.Data["startedAt"] = now().UTC().Format(time.RFC3339)
 	st.Data["branch"] = in.Branch
 	st.Data["worktree"] = workDir

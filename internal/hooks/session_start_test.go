@@ -217,7 +217,7 @@ func TestRun_SessionStart_MalformedStdin(t *testing.T) {
 // four documented source values. event.Source only affects
 // pipelineResumePhase's output (compact gets a "(post-compact)" banner
 // variant; startup/clear/resume all share the plain banner), so an
-// in-progress execute-plan-sdlc fixture is used to make that difference
+// in-progress execute-plan fixture is used to make that difference
 // observable in real stdout bytes produced from real JSON stdin.
 func TestRun_SessionStart_GoldenSources(t *testing.T) {
 	branch := "feat/golden-sources"
@@ -247,8 +247,8 @@ func TestRun_SessionStart_GoldenSources(t *testing.T) {
 		return out.String()
 	}
 
-	wantPlain := "Active execution: execute-plan-sdlc on " + branch + " (wave 1 of 2 complete)"
-	wantPostCompact := "Active execution (post-compact): execute-plan-sdlc on " + branch + " (wave 1 of 2 complete)"
+	wantPlain := "Active execution: execute-plan on " + branch + " (wave 1 of 2 complete)"
+	wantPostCompact := "Active execution (post-compact): execute-plan on " + branch + " (wave 1 of 2 complete)"
 
 	for _, source := range []string{"startup", "clear", "resume"} {
 		out := runWithSource(source)
@@ -398,31 +398,31 @@ func TestStageLabel(t *testing.T) {
 }
 
 func TestRecoveryPipelineLines(t *testing.T) {
-	t.Run("ship-sdlc full", func(t *testing.T) {
+	t.Run("ship full", func(t *testing.T) {
 		rm := map[string]any{
-			"pipeline": "ship-sdlc", "branch": "feat/x",
+			"pipeline": "ship", "branch": "feat/x",
 			"currentStep": "review", "reviewVerdict": "changes-requested",
 			"deferredFindings": float64(2),
 		}
 		assertLines(t, recoveryPipelineLines(rm), []string{
-			"  Pipeline: ship-sdlc on feat/x",
+			"  Pipeline: ship on feat/x",
 			"  Current step: review",
 			"  Review verdict: changes-requested (2 deferred)",
 		})
 	})
 
-	t.Run("ship-sdlc minimal", func(t *testing.T) {
-		rm := map[string]any{"pipeline": "ship-sdlc", "branch": "feat/x"}
-		assertLines(t, recoveryPipelineLines(rm), []string{"  Pipeline: ship-sdlc on feat/x"})
+	t.Run("ship minimal", func(t *testing.T) {
+		rm := map[string]any{"pipeline": "ship", "branch": "feat/x"}
+		assertLines(t, recoveryPipelineLines(rm), []string{"  Pipeline: ship on feat/x"})
 	})
 
-	t.Run("execute-plan-sdlc", func(t *testing.T) {
+	t.Run("execute-plan", func(t *testing.T) {
 		rm := map[string]any{
-			"pipeline": "execute-plan-sdlc", "branch": "feat/x",
+			"pipeline": "execute-plan", "branch": "feat/x",
 			"completedWaves": float64(3), "totalWaves": float64(5),
 		}
 		assertLines(t, recoveryPipelineLines(rm), []string{
-			"  Pipeline: execute-plan-sdlc on feat/x",
+			"  Pipeline: execute-plan on feat/x",
 			"  Progress: wave 3 of 5 complete",
 		})
 	})
@@ -533,7 +533,7 @@ func TestCountUserInvocableSkills(t *testing.T) {
 		mustMkdirAll(t, dir)
 		mustWriteFile(t, filepath.Join(dir, "SKILL.md"), frontmatter)
 	}
-	writeSkill("plan-sdlc", "---\nname: plan-sdlc\nuser-invocable: true\n---\nbody\n")
+	writeSkill("plan", "---\nname: plan\nuser-invocable: true\n---\nbody\n")
 	writeSkill("internal-only", "---\nname: internal-only\nuser-invocable: false\n---\nbody\n")
 	writeSkill("no-flag", "---\nname: no-flag\n---\nbody\n")
 
@@ -572,8 +572,8 @@ func TestSessionStart_HeaderLines_PluginRootResolved(t *testing.T) {
 
 	mustMkdirAll(t, filepath.Join(dir, ".claude-plugin"))
 	mustWriteFile(t, filepath.Join(dir, ".claude-plugin", "plugin.json"), `{"name":"sdlc"}`)
-	mustMkdirAll(t, filepath.Join(dir, "skills", "plan-sdlc"))
-	mustWriteFile(t, filepath.Join(dir, "skills", "plan-sdlc", "SKILL.md"), "---\nuser-invocable: true\n---\nbody\n")
+	mustMkdirAll(t, filepath.Join(dir, "skills", "plan"))
+	mustWriteFile(t, filepath.Join(dir, "skills", "plan", "SKILL.md"), "---\nuser-invocable: true\n---\nbody\n")
 
 	orig := PluginVersion
 	PluginVersion = "9.9.9"
@@ -613,8 +613,8 @@ func TestPipelineResumePhase_ShipInProgress(t *testing.T) {
 	}
 
 	assertLines(t, pipelineResumePhase("startup"), []string{
-		"Active pipeline: ship-sdlc on " + branch + " (paused at step 2: review)",
-		"  Resume with: /ship-sdlc --resume",
+		"Active pipeline: ship on " + branch + " (paused at step 2: review)",
+		"  Resume with: /ship --resume",
 	})
 }
 
@@ -636,8 +636,8 @@ func TestPipelineResumePhase_ShipLastCompleted(t *testing.T) {
 	}
 
 	assertLines(t, pipelineResumePhase("startup"), []string{
-		"Active pipeline: ship-sdlc on " + branch + " (last completed step 2: review)",
-		"  Resume with: /ship-sdlc --resume",
+		"Active pipeline: ship on " + branch + " (last completed step 2: review)",
+		"  Resume with: /ship --resume",
 	})
 }
 
@@ -660,15 +660,15 @@ func TestPipelineResumePhase_ExecuteSourceVariants(t *testing.T) {
 
 	t.Run("startup", func(t *testing.T) {
 		assertLines(t, pipelineResumePhase("startup"), []string{
-			"Active execution: execute-plan-sdlc on " + branch + " (wave 2 of 3 complete)",
-			"  Resume with: /execute-plan-sdlc --resume",
+			"Active execution: execute-plan on " + branch + " (wave 2 of 3 complete)",
+			"  Resume with: /execute-plan --resume",
 		})
 	})
 
 	t.Run("compact", func(t *testing.T) {
 		assertLines(t, pipelineResumePhase("compact"), []string{
-			"Active execution (post-compact): execute-plan-sdlc on " + branch + " (wave 2 of 3 complete)",
-			"  Resume with: /execute-plan-sdlc --resume",
+			"Active execution (post-compact): execute-plan on " + branch + " (wave 2 of 3 complete)",
+			"  Resume with: /execute-plan --resume",
 		})
 	})
 }
@@ -707,7 +707,7 @@ func TestCompactRecoveryPhase_ConsumeSidecar(t *testing.T) {
 	slug := state.SlugifyBranch(branch)
 
 	data := map[string]any{
-		"pipeline":    "ship-sdlc",
+		"pipeline":    "ship",
 		"branch":      branch,
 		"currentStep": "review",
 	}
@@ -717,7 +717,7 @@ func TestCompactRecoveryPhase_ConsumeSidecar(t *testing.T) {
 
 	assertLines(t, compactRecoveryPhase(), []string{
 		"Pipeline state recovered after compaction:",
-		"  Pipeline: ship-sdlc on " + branch,
+		"  Pipeline: ship on " + branch,
 		"  Current step: review",
 	})
 
@@ -820,8 +820,8 @@ func TestOpenSpecPhase_OneChange_ReadyForPlan(t *testing.T) {
 
 	assertLines(t, openSpecPhase(), []string{
 		`OpenSpec: INITIALIZED (openspec/config.yaml, 0 specs) · active: change "add-widget" (ready for implementation (2 tasks), 0 delta specs)`,
-		"  Plan with: /plan-sdlc --from-openspec add-widget",
-		"  Or full pipeline: /ship-sdlc (after planning)",
+		"  Plan with: /plan --from-openspec add-widget",
+		"  Or full pipeline: /ship (after planning)",
 	})
 }
 
@@ -873,7 +873,7 @@ func TestJiraCachePhase(t *testing.T) {
 	joined := strings.Join(jiraCachePhase(), "\n")
 	for _, want := range []string{
 		"Jira cache: INT@cleeng_atlassian_net (last updated 2h ago, TTL 24h)",
-		"Jira cache: OPS@cleeng_atlassian_net (stale — 2 days ago, TTL 24h) — refresh with /jira-sdlc --force-refresh",
+		"Jira cache: OPS@cleeng_atlassian_net (stale — 2 days ago, TTL 24h) — refresh with /jira --force-refresh",
 		"Jira cache: PERM@cleeng_atlassian_net (last updated 10 days ago, permanent)",
 	} {
 		if !strings.Contains(joined, want) {

@@ -7,7 +7,7 @@
   "$defs": {
     "reviewSection": {
       "type": "object",
-      "description": "User-local defaults for the review-sdlc skill.",
+      "description": "User-local defaults for the review skill.",
       "properties": {
         "scope": {
           "type": "string",
@@ -19,7 +19,7 @@
     },
     "receivedReviewSection": {
       "type": "object",
-      "description": "User-local defaults for the received-review-sdlc skill.",
+      "description": "User-local defaults for the received-review skill.",
       "properties": {
         "alwaysFixSeverities": {
           "type": "array",
@@ -36,7 +36,7 @@
     },
     "shipSection": {
       "type": "object",
-      "description": "Controls the ship-sdlc skill behaviour.",
+      "description": "Controls the ship skill behaviour.",
       "properties": {
         "steps": {
           "type": "array",
@@ -54,12 +54,12 @@
             "enum": ["execute", "commit", "review", "version", "verify-openspec", "archive-openspec", "pr", "verify-pipeline", "await-remote-review", "learnings-commit"]
           },
           "uniqueItems": true,
-          "description": "Optional shortened step list activated by --quick. When set, /ship-sdlc --quick uses this list instead of steps[]. Unset means --quick is not available for this project. See R-quick-1."
+          "description": "Optional shortened step list activated by --quick. When set, /ship --quick uses this list instead of steps[]. Unset means --quick is not available for this project. See R-quick-1."
         },
         "bump": {
           "type": "string",
           "pattern": "^(major|minor|patch|[a-z][a-z0-9]*)$",
-          "description": "Version bump level. Accepts `major|minor|patch` or any pre-release label matching `^[a-z][a-z0-9]*$` (e.g., `rc`, `beta`, `alpha`). Label values are forwarded verbatim to version-sdlc, where they are interpreted as `--bump patch --pre <label>`."
+          "description": "Version bump level. Accepts `major|minor|patch` or any pre-release label matching `^[a-z][a-z0-9]*$` (e.g., `rc`, `beta`, `alpha`). Label values are forwarded verbatim to version, where they are interpreted as `--bump patch --pre <label>`."
         },
         "draft": {
           "type": "boolean",
@@ -131,13 +131,13 @@
           "minimum": 60,
           "maximum": 3600,
           "default": 1800,
-          "description": "Maximum seconds a single execute wave may run before stalled tasks are terminated. Forwarded to execute-plan-sdlc as `--wave-timeout`. The maximum restates MAX_WAVE_TIMEOUT_SECONDS in plugins/sdlc-utilities/scripts/lib/ship-fields.js, which is the single enforcement point (Monitor.timeout_ms caps at 3600000 ms). (R57, R-WAVE-DEADLINE)"
+          "description": "Maximum seconds a single execute wave may run before stalled tasks are terminated. Forwarded to execute-plan as `--wave-timeout`. The maximum restates MAX_WAVE_TIMEOUT_SECONDS in plugins/sdlc-utilities/scripts/lib/ship-fields.js, which is the single enforcement point (Monitor.timeout_ms caps at 3600000 ms). (R57, R-WAVE-DEADLINE)"
         },
         "executeWaveInterval": {
           "type": "integer",
           "minimum": 10,
           "default": 60,
-          "description": "Seconds between execute wave liveness poll attempts. Forwarded to execute-plan-sdlc as `--wave-interval`. (R57, R-WAVE-LIVENESS)"
+          "description": "Seconds between execute wave liveness poll attempts. Forwarded to execute-plan as `--wave-interval`. (R57, R-WAVE-LIVENESS)"
         }
       },
       "additionalProperties": false
@@ -148,7 +148,7 @@
       "properties": {
         "branch": {
           "type": "object",
-          "description": "Branch-name derivation knobs consumed by lib/branch-name.js. Mirrors workspace.worktree shape. Drives config-driven branch naming in both ship-sdlc pre-execute block and execute-plan-sdlc standalone Step 1 (fixes #378, #379).",
+          "description": "Branch-name derivation knobs consumed by lib/branch-name.js. Mirrors workspace.worktree shape. Drives config-driven branch naming in both ship pre-execute block and execute-plan standalone Step 1 (fixes #378, #379).",
           "additionalProperties": false,
           "properties": {
             "template": {

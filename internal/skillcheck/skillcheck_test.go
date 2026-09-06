@@ -1,5 +1,5 @@
 // Package skillcheck is a documentation/tool-surface consistency check for
-// Task 42's rewritten SKILL.md files (commit-sdlc, version-sdlc, pr-sdlc).
+// Task 42's rewritten SKILL.md files (commit, version, pr).
 // It builds a real MCP tool registry by calling every Register*Tools
 // function in internal/tools against a fresh mcpserver.Server, then
 // verifies every MCP tool name referenced by the rewritten skill docs is
@@ -8,7 +8,7 @@
 // This file intentionally contains no production logic — per this task's
 // ruling, no shared skillcheck.go production file exists. A second,
 // independently developed test file (skillcheck_review_test.go, from a
-// parallel task covering review-sdlc) may land in this same package. Every
+// parallel task covering review) may land in this same package. Every
 // unexported identifier below is prefixed commitSkills, and every declared
 // Test function is prefixed TestCommitSkills, specifically to avoid name
 // collisions with that parallel file.
@@ -31,9 +31,9 @@ import (
 // Go-backed MCP tools instead of shelling out to node scripts. Paths are
 // relative to this package directory (internal/skillcheck).
 var commitSkillsFiles = []string{
-	"../../skills/commit-sdlc/SKILL.md",
-	"../../skills/version-sdlc/SKILL.md",
-	"../../skills/pr-sdlc/SKILL.md",
+	"../../skills/commit/SKILL.md",
+	"../../skills/version/SKILL.md",
+	"../../skills/pr/SKILL.md",
 }
 
 // commitSkillsToolCallPattern matches this repo's documented tool-call
@@ -148,7 +148,7 @@ func TestCommitSkillsToolReferencesExistInRegistry(t *testing.T) {
 // TestCommitSkillsRegistryContainsExpectedTools is a narrower sanity check:
 // every tool this task's rewritten skills are documented to call must be
 // present in the registry, by exact name. This pins the specific tool names
-// used across commit-sdlc, version-sdlc, and pr-sdlc so a future rename in
+// used across commit, version, and pr so a future rename in
 // internal/tools fails loudly here instead of only in the broader scan
 // above (which would also catch it, but this gives a more precise failure).
 func TestCommitSkillsRegistryContainsExpectedTools(t *testing.T) {
