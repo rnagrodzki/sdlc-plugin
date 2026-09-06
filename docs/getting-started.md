@@ -24,6 +24,9 @@ install, see [`smoke-test.md`](smoke-test.md).
 /reload-plugins
 ```
 
+Installing from a local clone instead (dev/offline)? See
+[`local-install.md`](local-install.md).
+
 `/reload-plugins` is what makes Claude Code read `.mcp.json` and
 `hooks/hooks.json`. Run it again after any future plugin update.
 
