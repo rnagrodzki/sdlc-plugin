@@ -1,10 +1,11 @@
 // schema.go holds the v5 config schema validation logic.
 //
 // Instead of embedding the full JSON schema (which lives at
-// schemas/sdlc-config.schema.json and cannot be reached via go:embed from
-// this package directory), we extract the top-level property whitelist and
-// validate structurally. TestSchemaSync in config_test.go verifies the
-// whitelist stays byte-synchronised with the schema file.
+// plugins/sdlc/schemas/sdlc-config.schema.json, a directory a go:embed
+// directive cannot reach from this package directory), we extract the
+// top-level property whitelist and validate structurally. TestSchemaSync in
+// config_test.go verifies the whitelist stays byte-synchronised with the
+// schema file.
 package config
 
 import (
@@ -13,7 +14,7 @@ import (
 )
 
 // allowedProjectKeys is the set of top-level property names permitted in
-// .sdlc/config.json, extracted from schemas/sdlc-config.schema.json.
+// .sdlc/config.json, extracted from plugins/sdlc/schemas/sdlc-config.schema.json.
 // TestSchemaSync verifies this list stays in sync with the schema file.
 var allowedProjectKeys = map[string]bool{
 	"$schema": true,

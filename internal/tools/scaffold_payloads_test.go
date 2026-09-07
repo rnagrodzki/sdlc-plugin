@@ -52,7 +52,7 @@ func TestPayloads_SchemaChecksums(t *testing.T) {
 	}
 
 	for name, wantHex := range expected {
-		path := "../../schemas/" + name
+		path := "../../plugins/sdlc/schemas/" + name
 		data, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("os.ReadFile(%s): %v", path, err)

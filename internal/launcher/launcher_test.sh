@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# launcher_test.sh — shell test harness for bin/sdlc-launcher.sh.
+# launcher_test.sh — shell test harness for plugins/sdlc/bin/sdlc-launcher.sh.
 #
 # Exercises the download/cache/exec pipeline entirely against a PATH-stubbed
 # `curl` (never a real network call, never a local HTTP fixture server, no
@@ -15,8 +15,8 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." >/dev/null 2>&1 && pwd)"
-LAUNCHER="$REPO_ROOT/bin/sdlc-launcher.sh"
-PLUGIN_JSON="$REPO_ROOT/.claude-plugin/plugin.json"
+LAUNCHER="$REPO_ROOT/plugins/sdlc/bin/sdlc-launcher.sh"
+PLUGIN_JSON="$REPO_ROOT/plugins/sdlc/.claude-plugin/plugin.json"
 
 PASS_COUNT=0
 FAIL_COUNT=0

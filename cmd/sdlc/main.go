@@ -13,7 +13,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
 )
 
-// pluginVersion mirrors the "version" field in .claude-plugin/plugin.json.
+// pluginVersion mirrors the "version" field in plugins/sdlc/.claude-plugin/plugin.json.
 const pluginVersion = "1.0.0"
 
 func main() {

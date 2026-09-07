@@ -61,7 +61,7 @@ func planSkillsRepoRoot(t *testing.T) string {
 	if !ok {
 		t.Fatal("planSkillsRepoRoot: runtime.Caller failed")
 	}
-	return filepath.Dir(filepath.Dir(filepath.Dir(file)))
+	return filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(file))), "plugins", "sdlc")
 }
 
 // planSkillsListTools constructs a fresh mcpserver.Server, registers every

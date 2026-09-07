@@ -31,9 +31,9 @@ import (
 // Go-backed MCP tools instead of shelling out to node scripts. Paths are
 // relative to this package directory (internal/skillcheck).
 var commitSkillsFiles = []string{
-	"../../skills/commit/SKILL.md",
-	"../../skills/version/SKILL.md",
-	"../../skills/pr/SKILL.md",
+	"../../plugins/sdlc/skills/commit/SKILL.md",
+	"../../plugins/sdlc/skills/version/SKILL.md",
+	"../../plugins/sdlc/skills/pr/SKILL.md",
 }
 
 // commitSkillsToolCallPattern matches this repo's documented tool-call

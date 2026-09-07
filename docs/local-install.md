@@ -24,8 +24,8 @@ and use its path instead.
 ## 2. Add it as a local marketplace
 
 The repo is its own marketplace — `.claude-plugin/marketplace.json` lists the
-`sdlc` plugin with `"source": "."`. Point Claude Code at the directory
-instead of the GitHub shorthand:
+`sdlc` plugin with `"source": "./plugins/sdlc"`. Point Claude Code at the
+repo directory instead of the GitHub shorthand:
 
 ```
 /plugin marketplace add /absolute/path/to/sdlc-plugin
@@ -41,11 +41,13 @@ the repo, `/plugin marketplace add .` also works.
 A local marketplace add does not re-copy files on every session — it points
 Claude Code at the path you gave it. To pick up edits:
 
-- Changes to `hooks/hooks.json` or `.mcp.json`: run `/reload-plugins`.
+- Changes to `plugins/sdlc/hooks/hooks.json` or `plugins/sdlc/.mcp.json`: run
+  `/reload-plugins`.
 - Changes to skills, agents, or templates: run `/reload-plugins`, or start a
   new session.
-- Changes to the Go binary source (`cmd/`, `internal/`): `bin/sdlc-launcher.sh`
-  execs a compiled binary from `~/.sdlc-cache/bin/`, not your source tree —
+- Changes to the Go binary source (`cmd/`, `internal/`):
+  `plugins/sdlc/bin/sdlc-launcher.sh` execs a compiled binary from
+  `~/.sdlc-cache/bin/`, not your source tree —
   `task build` alone only produces `./sdlc` locally and the launcher never
   sees it. Run `task deploy` (build + copy into the launcher's cache), then
   `/reload-plugins`. Full detail on how the launcher resolves and caches the

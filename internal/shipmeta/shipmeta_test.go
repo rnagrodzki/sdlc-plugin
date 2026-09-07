@@ -12,11 +12,11 @@ import (
 
 // TestMaxWaveTimeoutSecondsMatchesSchema proves the single enforcement point
 // (Acceptance Criterion 1): MaxWaveTimeoutSeconds must equal the `maximum`
-// on ship.executeWaveTimeout in schemas/sdlc-local.schema.json. The schema
+// on ship.executeWaveTimeout in plugins/sdlc/schemas/sdlc-local.schema.json. The schema
 // cross-reference is enforced here, by test, not by code generation (see
 // Task 19 fact sheet decisions).
 func TestMaxWaveTimeoutSecondsMatchesSchema(t *testing.T) {
-	schemaPath := filepath.Join("..", "..", "schemas", "sdlc-local.schema.json")
+	schemaPath := filepath.Join("..", "..", "plugins", "sdlc", "schemas", "sdlc-local.schema.json")
 	raw, err := os.ReadFile(schemaPath)
 	if err != nil {
 		t.Fatalf("reading %s: %v", schemaPath, err)

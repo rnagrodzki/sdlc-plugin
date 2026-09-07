@@ -519,10 +519,10 @@ func TestWriteSection_RejectsUnknownProjectKeys(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestSchemaSync verifies that allowedProjectKeys matches the top-level
-// properties declared in schemas/sdlc-config.schema.json. This is the
-// mechanical sync check the task fact sheet requires.
+// properties declared in plugins/sdlc/schemas/sdlc-config.schema.json. This
+// is the mechanical sync check the task fact sheet requires.
 func TestSchemaSync(t *testing.T) {
-	schemaPath := filepath.Join("..", "..", "schemas", "sdlc-config.schema.json")
+	schemaPath := filepath.Join("..", "..", "plugins", "sdlc", "schemas", "sdlc-config.schema.json")
 	data, err := os.ReadFile(schemaPath)
 	if err != nil {
 		t.Fatalf("could not read schema file: %v", err)

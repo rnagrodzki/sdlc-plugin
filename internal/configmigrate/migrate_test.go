@@ -674,7 +674,7 @@ func TestMigrate_AlreadyV5(t *testing.T) {
 
 func TestV5Fixtures_SchemaValidation(t *testing.T) {
 	// Load the schema.
-	schemaPath, err := filepath.Abs(filepath.Join("..", "..", "schemas", "sdlc-config.schema.json"))
+	schemaPath, err := filepath.Abs(filepath.Join("..", "..", "plugins", "sdlc", "schemas", "sdlc-config.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

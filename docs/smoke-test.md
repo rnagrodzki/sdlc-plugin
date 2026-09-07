@@ -7,7 +7,7 @@ step 3 is what completes the cold-cache binary download, and steps 4-5
 depend on it having finished.
 
 Prerequisite: a real GitHub Release tagged `v<version>` (matching
-`.claude-plugin/plugin.json`) must exist at
+`plugins/sdlc/.claude-plugin/plugin.json`) must exist at
 `https://github.com/rnagrodzki/sdlc-plugin/releases`, with assets
 `sdlc-<version>-<os>-<arch>` and `checksums.txt` — the launcher cannot
 download a binary that was never released. Check this first if any step

@@ -92,6 +92,6 @@
     "fileType": "plugin.json",
     "mode": "file",
     "tagPrefix": "v",
-    "versionFile": ".claude-plugin/plugin.json"
+    "versionFile": "plugins/sdlc/.claude-plugin/plugin.json"
   }
 }

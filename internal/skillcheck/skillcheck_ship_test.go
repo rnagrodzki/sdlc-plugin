@@ -58,7 +58,7 @@ func shipSkillsRepoRoot(t *testing.T) string {
 	if !ok {
 		t.Fatal("shipSkillsRepoRoot: runtime.Caller failed")
 	}
-	return filepath.Dir(filepath.Dir(filepath.Dir(file)))
+	return filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(file))), "plugins", "sdlc")
 }
 
 // shipSkillsReadFile reads a skill file relative to the repo root, failing

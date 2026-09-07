@@ -2,7 +2,7 @@ version: '3'
 
 vars:
   VERSION:
-    sh: grep -m1 '"version"' .claude-plugin/plugin.json | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/'
+    sh: grep -m1 '"version"' plugins/sdlc/.claude-plugin/plugin.json | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/'
   CACHE_DIR:
     sh: echo "${SDLC_CACHE_DIR:-$HOME/.sdlc-cache}"
   ASSET: 'sdlc-{{.VERSION}}-{{OS}}-{{ARCH}}'

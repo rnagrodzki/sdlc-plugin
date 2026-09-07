@@ -6,9 +6,9 @@ a set of session/tool-use hooks. The plugin itself is a small shell launcher;
 the actual logic is a single compiled Go binary (`sdlc`) fetched on first use
 and cached locally.
 
-This repository is both the plugin and its own marketplace: plugin name
-`sdlc`, marketplace name `sdlc-plugin` (`.claude-plugin/plugin.json`,
-`.claude-plugin/marketplace.json`).
+This repository is both the plugin and its own marketplace: marketplace name
+`sdlc-plugin` (`.claude-plugin/marketplace.json`, repo root) lists one plugin,
+`sdlc`, whose source lives at `plugins/sdlc/` (`plugins/sdlc/.claude-plugin/plugin.json`).
 
 New to this plugin? See [`docs/getting-started.md`](docs/getting-started.md)
 for install, project setup, and the day-to-day skill workflow. This README
@@ -21,7 +21,8 @@ covers how the plugin works internally.
 /plugin install sdlc@sdlc-plugin
 ```
 
-Then reload plugins so Claude Code picks up `.mcp.json` and `hooks/hooks.json`:
+Then reload plugins so Claude Code picks up `plugins/sdlc/.mcp.json` and
+`plugins/sdlc/hooks/hooks.json`:
 
 ```
 /reload-plugins
@@ -33,11 +34,12 @@ picked up mid-session without one.
 
 ### First-run binary fetch
 
-`.mcp.json` and every entry in `hooks/hooks.json` invoke the same script,
-`bin/sdlc-launcher.sh` (the only file under `bin/` checked into git — see
-`.gitignore`). On each invocation the launcher:
+`plugins/sdlc/.mcp.json` and every entry in `plugins/sdlc/hooks/hooks.json`
+invoke the same script, `plugins/sdlc/bin/sdlc-launcher.sh` (the only file
+under `plugins/sdlc/bin/` checked into git — see `.gitignore`). On each
+invocation the launcher:
 
-1. Reads the plugin version from `.claude-plugin/plugin.json`.
+1. Reads the plugin version from `plugins/sdlc/.claude-plugin/plugin.json`.
 2. Looks for a cached binary at
    `${SDLC_CACHE_DIR:-$HOME/.sdlc-cache}/bin/sdlc-<version>-<os>-<arch>`.
 3. If missing, takes an `mkdir`-based lock, downloads that asset plus
@@ -54,7 +56,7 @@ can't help.
 
 Timeout budgets differ by mode: hook invocations (`hook <name>`) get ~1s
 connect/max-time budgets, since a hook runs inside Claude Code's own hook
-timeout (3-10s, see `hooks/hooks.json`) and must fail open fast rather than
+timeout (3-10s, see `plugins/sdlc/hooks/hooks.json`) and must fail open fast rather than
 attempt a real download. The MCP connect path (`mcp`) gets a 60s max-time /
 65s lock timeout and is the path that actually completes a cold download.
 **Practical effect:** on a cold cache, hooks (including the SessionStart
@@ -79,7 +81,7 @@ rm ~/.sdlc-cache/bin/sdlc-<version>-<os>-<arch>
 rm -rf ~/.sdlc-cache
 ```
 
-`<version>` is the `version` field in `.claude-plugin/plugin.json`; `<os>` is
+`<version>` is the `version` field in `plugins/sdlc/.claude-plugin/plugin.json`; `<os>` is
 `darwin`/`linux`; `<arch>` is `amd64`/`arm64`.
 
 ## Usage
@@ -107,7 +109,7 @@ The MCP server (`sdlc mcp`) registers 32 tools across 15 groups (grepped from
 | OpenSpec | `openspec_enrich` |
 | Dimensions rendering | `dimensions_render_instructions` |
 
-These are consumed by the plugin's skills (under `skills/`), not typically
+These are consumed by the plugin's skills (under `plugins/sdlc/skills/`), not typically
 called by name directly.
 
 ### Migrating a Node-era (pre-v5) project
@@ -173,7 +175,7 @@ appearing.** The launcher failed open. Check the preceding
 `sdlc-launcher: ...` diagnostic line on stderr:
 
 - `download failed: <url>` — offline, or no GitHub Release exists yet for
-  the version in `.claude-plugin/plugin.json`. Confirm a release tagged
+  the version in `plugins/sdlc/.claude-plugin/plugin.json`. Confirm a release tagged
   `v<version>` exists at `https://github.com/rnagrodzki/sdlc-plugin/releases`
   and that its assets include `sdlc-<version>-<os>-<arch>` and
   `checksums.txt`.
@@ -184,20 +186,20 @@ appearing.** The launcher failed open. Check the preceding
 - `timed out waiting for fetch lock ...` — a previous launcher invocation
   was killed mid-download and left its lock directory behind (the
   `mkdir`-based lock has no liveness check, by design — see the comment in
-  `bin/sdlc-launcher.sh`). Remove it manually:
+  `plugins/sdlc/bin/sdlc-launcher.sh`). Remove it manually:
   `rmdir ~/.sdlc-cache/bin/.fetch-<version>.lock`.
 - `cached binary missing or not executable: <path>` or `unsupported OS/arch`
   — see "Forcing a re-fetch" above, or file an issue if your platform isn't
   `darwin`/`linux` × `amd64`/`arm64`.
 
 **Tools don't show up / MCP server doesn't respond.** Run `/reload-plugins`.
-`.mcp.json` and `hooks/hooks.json` are only read on plugin load or explicit
-reload, not on every message.
+`plugins/sdlc/.mcp.json` and `plugins/sdlc/hooks/hooks.json` are only read on
+plugin load or explicit reload, not on every message.
 
 **No SessionStart banner on a brand-new install.** Expected on a cold cache
 — see "First-run binary fetch" above. Trigger a fresh SessionStart with
-`/clear` (matcher is `startup|clear|compact`, `hooks/hooks.json`) once the
-first MCP connection has completed the download.
+`/clear` (matcher is `startup|clear|compact`, `plugins/sdlc/hooks/hooks.json`)
+once the first MCP connection has completed the download.
 
 **Legacy config error naming `migrate`.** See "Migrating a Node-era
 project" above.

@@ -35,7 +35,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          VERSION_FILE=".claude-plugin/plugin.json"
+          VERSION_FILE="plugins/sdlc/.claude-plugin/plugin.json"
           BASE_VERSION="$(git show "${BASE_SHA}:${VERSION_FILE}" 2>/dev/null | jq -r '.version // empty' || true)"
           HEAD_VERSION="$(jq -r '.version // empty' "$VERSION_FILE")"
 

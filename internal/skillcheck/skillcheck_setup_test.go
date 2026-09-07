@@ -91,7 +91,7 @@ func setupSkillsRepoRoot(t *testing.T) string {
 	if !ok {
 		t.Fatal("setupSkillsRepoRoot: runtime.Caller failed")
 	}
-	return filepath.Dir(filepath.Dir(filepath.Dir(file)))
+	return filepath.Join(filepath.Dir(filepath.Dir(filepath.Dir(file))), "plugins", "sdlc")
 }
 
 // setupSkillsListTools constructs a fresh mcpserver.Server, registers every

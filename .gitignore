@@ -9,9 +9,10 @@
 *.dylib
 
 # sdlc build output (but not bin/sdlc-launcher.sh, a checked-in source file
-# the plugin ships and execs at runtime — see .mcp.json / hooks/hooks.json)
-/bin/*
-!/bin/sdlc-launcher.sh
+# the plugin ships and execs at runtime — see plugins/sdlc/.mcp.json /
+# plugins/sdlc/hooks/hooks.json)
+/plugins/sdlc/bin/*
+!/plugins/sdlc/bin/sdlc-launcher.sh
 /sdlc
 
 # Local sdlc cache lives under $HOME/.sdlc-cache; never in-repo
