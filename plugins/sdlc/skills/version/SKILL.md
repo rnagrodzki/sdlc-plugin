@@ -327,12 +327,10 @@ treating it as final.
 
 ## Learning Capture
 
-After completing a release or encountering unexpected behavior, append to
-`.sdlc-v2/learnings/log.md`:
+After completing a release or encountering unexpected behavior, call:
 
 ```
-## YYYY-MM-DD — version: <brief summary>
-<what happened, what was learned>
+learnings_log({action: "append", entry: "## YYYY-MM-DD — version: <brief summary>\n<what happened, what was learned>"})
 ```
 
 ## What's Next

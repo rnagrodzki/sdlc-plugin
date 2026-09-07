@@ -555,11 +555,11 @@ When invoking `error-report`, provide:
 
 ## Learning Capture
 
-After processing review feedback, append discoveries to `.sdlc-v2/learnings/log.md`. Record
-entries for: reviewer patterns worth knowing (e.g., they always flag X style), pushback
-outcomes (accepted or rejected — to calibrate future responses), unclear feedback patterns
-that revealed communication gaps, YAGNI findings that removed unnecessary work, or codebase
-facts uncovered during verification.
+After processing review feedback, call `learnings_log({action: "append", entry: "## YYYY-MM-DD — received-review: <brief summary>\n<details>"})` to record discoveries: reviewer
+patterns worth knowing (e.g., they always flag X style), pushback outcomes (accepted or
+rejected — to calibrate future responses), unclear feedback patterns that revealed
+communication gaps, YAGNI findings that removed unnecessary work, or codebase facts
+uncovered during verification.
 
 ---
 

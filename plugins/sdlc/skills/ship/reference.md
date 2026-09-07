@@ -85,15 +85,13 @@ Each sub-skill has its own error recovery. ship does not duplicate their recover
 
 ## Learning Capture (R-progressive-disclosure)
 
-After completing the pipeline, append to `.sdlc/learnings/log.md`:
+After completing the pipeline, call `learnings_log({action: "append", entry: "## YYYY-MM-DD — ship: <brief summary>\n<what was learned>"})`, covering:
 
 - Review verdicts that surprised (threshold too aggressive or too lenient)
 - Sub-skills that failed in unexpected ways during chaining
 - Config combinations that produced unintended pipeline shapes
 - Cases where the manual tag-and-push pause (see the version step) was confusing or where the ancestry gate caught a real mistake
 
-Format:
-```
-## YYYY-MM-DD — ship: <brief summary>
-<what was learned>
-```
+The tool resolves the MAIN git worktree's log regardless of which worktree this pipeline is
+isolating `execute` in, and `.sdlc-v2/learnings/` is gitignored — this entry is never
+committed (see the `learnings-commit` step in [`SKILL.md`](SKILL.md)).

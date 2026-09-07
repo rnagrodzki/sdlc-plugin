@@ -46,6 +46,7 @@ descriptions instead of the plan descriptions:
 | `yagni` | scope | warning | Do not add functionality until it is actually needed. No speculative abstractions, premature generalization, or unused parameters. |
 | `dry` | quality | warning | Do not duplicate logic. If the same behavior exists elsewhere, reuse it or extract a shared function. |
 | `kiss` | quality | warning | Prefer the simplest implementation that satisfies the requirements. Avoid unnecessary abstractions and over-engineered solutions. |
+| `prefer-mcp-over-cli` | process | warning | Do not shell out via CLI for a step this project's MCP tools already cover (setup, version, ship, review, commit, PR, jira). Call the MCP tool instead, and batch multiple checks into as few calls as possible — every extra CLI round trip between harness and model slows execution and fragments feedback. |
 
 ## Workflow
 

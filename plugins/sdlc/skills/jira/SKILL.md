@@ -782,11 +782,12 @@ is always incorrect.
 
 ## Learning Capture
 
-When executing Jira operations, capture discoveries by appending to `.sdlc-v2/learnings/log.md`.
-Record entries for: field formats that differ from the defaults documented here, workflow
-quirks discovered in specific projects, issue type names that aren't standard (e.g., custom
-subtask type names), user lookup disambiguation patterns, and transition required fields not
-captured by the workflow sampling.
+When executing Jira operations, capture discoveries by calling `learnings_log({action:
+"append", entry: "## YYYY-MM-DD — jira: <brief summary>\n<details>"})`. Record entries for:
+field formats that differ from the defaults documented here, workflow quirks discovered in
+specific projects, issue type names that aren't standard (e.g., custom subtask type names),
+user lookup disambiguation patterns, and transition required fields not captured by the
+workflow sampling.
 
 **MCP failures use the structured R27 form** (written by `mcp_failure_record`). It writes a
 block under a `## YYYY-MM-DD — jira mcp-failure[<class>]: <tool>` heading. Non-MCP

@@ -343,15 +343,20 @@ both `.sdlc-v2/config.json` and `.sdlc-v2/local.json` schema versions and ingest
 legacy per-section files found in Step 0 — there is no separate project/local/`--unset-only`
 branch to run.
 
-Then, if the `.claude/jira-templates/` directory was found in Step 0, run:
+Then always run (the tool itself no-ops per-file/dir when a legacy source is absent, so this
+is safe even when no legacy `.sdlc/` content exists):
 
 ```
 migrate({ action: "import", dryRun: false }) → { ok, result, changed[] }
 ```
 
-This non-destructively copies config, templates, jira-templates, learnings, and
-review-dimensions from the old data directory into `.sdlc-v2/`, skipping anything that
-already exists. `result` is either `"up-to-date: nothing to import"` or
+This non-destructively copies config.json, local.json, templates, jira-templates, learnings,
+and review-dimensions from the old data directory into `.sdlc-v2/`. `config.json` and
+`local.json` merge per top-level key — a key the new file already holds is never overwritten,
+but a key present only in the legacy file is added even when the new file already exists
+(e.g. setup's own empty-`{}` scaffold). Everything else (`pr-template.md`, `plan-template.md`,
+`jira-templates/`, `learnings/`, `review-dimensions/`) is skipped whole-file/whole-dir when
+the destination already exists. `result` is either `"up-to-date: nothing to import"` or
 `"imported: [<path> <path> ...]"` (or `"would-import: [...]"` when `dryRun` is true).
 
 Report both results to the user verbatim.
@@ -828,12 +833,10 @@ because that field does not exist yet.
 
 ## Learning Capture
 
-After completing setup or encountering unexpected behavior, append to
-`.sdlc-v2/learnings/log.md`:
+After completing setup or encountering unexpected behavior, call:
 
 ```
-## YYYY-MM-DD — setup: <brief summary>
-<what happened, what was learned>
+learnings_log({action: "append", entry: "## YYYY-MM-DD — setup: <brief summary>\n<what happened, what was learned>"})
 ```
 
 Record entries for: projects with unusual version file locations, migration edge cases,

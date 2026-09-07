@@ -341,10 +341,11 @@ When invoking `error-report`, provide:
 
 ## Learning Capture
 
-When creating pull requests, capture discoveries by appending to `.sdlc-v2/learnings/log.md`.
-Record entries for: repository PR conventions not covered by this skill, branch naming
-patterns, CI requirements that affect PR descriptions, team-specific template preferences,
-JIRA project key patterns, or review process quirks encountered while generating PR content.
+When creating pull requests, capture discoveries by calling `learnings_log({action: "append",
+entry: "## YYYY-MM-DD — pr: <brief summary>\n<details>"})`. Record entries for: repository PR
+conventions not covered by this skill, branch naming patterns, CI requirements that affect PR
+descriptions, team-specific template preferences, JIRA project key patterns, or review
+process quirks encountered while generating PR content.
 
 ## What's Next
 

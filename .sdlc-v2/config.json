@@ -1,4 +1,13 @@
 {
+  "execute": {
+    "guardrails": [
+      {
+        "description": "Do not shell out via CLI for a step this project's MCP tools already cover (setup, version, ship, review, commit, PR, jira). Call the MCP tool instead, and batch multiple checks into as few calls as possible — every extra CLI round trip between harness and model slows execution and fragments feedback.",
+        "id": "prefer-mcp-over-cli",
+        "severity": "warning"
+      }
+    ]
+  },
   "plan": {
     "guardrails": [
       {
@@ -85,6 +94,31 @@
         "description": "MCP tools must internally chain the shell/file reads and writes needed to reach the LLM's goal in one call rather than forcing the LLM to chain many round trips, and must return output descriptive enough to act on without extra lookups.",
         "id": "tool-orchestrates-fast-descriptive-output",
         "severity": "error"
+      },
+      {
+        "description": "Plans must route SDLC-process steps (setup, version, ship, review, commit, PR, jira) through this project's MCP tools rather than raw CLI invocations. Where an MCP tool covers the step, do not add a task that shells out for the same result. Batch what the MCP surface returns in one call rather than planning multiple round trips between harness and model.",
+        "id": "prefer-mcp-over-cli",
+        "severity": "warning"
+      },
+      {
+        "id": "mcp-tool-count-discipline",
+        "severity": "warning",
+        "description": "Before adding a new MCP tool, verify the operation cannot be absorbed into an existing tool via action dispatch or input extension. Each tool adds schema bytes to every LLM invocation context. Prefer extending over creating."
+      },
+      {
+        "id": "mcp-output-llm-contract",
+        "severity": "error",
+        "description": "MCP tool outputs are consumed by an LLM, not a programmatic API client. Return contextually rich responses: include field names that read as natural language, add summary sentences alongside raw data, include relevant context the LLM needs to reason about the result. A tool returning {status: 'failed', code: 3} is useless; returning {status: 'failed', reason: 'Template file not found at .sdlc-v2/plan-template.md', context: 'Project has no custom template -- shipped default will be used'} lets the LLM act."
+      },
+      {
+        "id": "mcp-output-action-hints",
+        "severity": "warning",
+        "description": "When an MCP tool output implies a natural next step, include an 'actions' or 'next' field with plain-language instructions the LLM can follow. Example: a merge_results output with coverage gaps should include: next: 'Re-dispatch lanes for missing gates: G14, G17. If re-dispatch also fails, escalate to user via AskUserQuestion.' Do not force the LLM to re-derive next steps from raw data."
+      },
+      {
+        "id": "mcp-error-actionable",
+        "severity": "error",
+        "description": "MCP tool errors must tell the LLM what went wrong AND what to do about it. Not a stack trace -- a diagnosis + recovery instruction. Example: instead of 'ENOENT: .sdlc-v2/config.json', return 'Config file .sdlc-v2/config.json not found. Run setup_init to create it, or pass skipConfigCheck: true to proceed without config.' The LLM cannot debug infrastructure errors -- it needs actionable alternatives."
       }
     ]
   },

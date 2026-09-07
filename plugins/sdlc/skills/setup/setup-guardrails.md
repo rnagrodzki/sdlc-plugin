@@ -52,6 +52,7 @@ guardrail when its evidence condition is actually observed.
 | `yagni` | scope | warning | Tasks must not add functionality beyond stated requirements — no speculative abstractions, premature generalization, or unused parameters. |
 | `dry` | quality | warning | Tasks must not duplicate logic that exists elsewhere — reuse existing functions or extract shared utilities. |
 | `kiss` | quality | warning | Tasks must prefer the simplest design that satisfies requirements — avoid unnecessary abstractions and over-engineering. |
+| `prefer-mcp-over-cli` | process | warning | Plans must route SDLC-process steps (setup, version, ship, review, commit, PR, jira) through this project's MCP tools rather than raw CLI invocations. Where an MCP tool covers the step, do not add a task that shells out for the same result. Batch what the MCP surface returns in one call rather than planning multiple round trips between harness and model. |
 
 **Planning-discipline (this sub-flow only — plan-target; never proposed by setup-execution-guardrails.md):**
 

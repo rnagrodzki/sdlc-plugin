@@ -329,11 +329,10 @@ When invoking `error-report`, provide:
 ## Learning Capture
 
 After completing a commit, if the project's detected commit style was non-conventional or
-unusual, append to `.sdlc-v2/learnings/log.md`:
+unusual, call:
 
 ```
-## YYYY-MM-DD — commit: <brief summary>
-<what was learned about this project's commit style or any edge case encountered>
+learnings_log({action: "append", entry: "## YYYY-MM-DD — commit: <brief summary>\n<what was learned about this project's commit style or any edge case encountered>"})
 ```
 
 ## What's Next

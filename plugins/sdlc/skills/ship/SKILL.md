@@ -444,16 +444,16 @@ If `await-remote-review` is not in `flags.steps`, skip this section entirely.
 
 ### learnings-commit (inline)
 
-Runs the ship-level Learning Capture (see [`reference.md`](reference.md)'s Learning Capture section for the exact prompts/format), appending to `.sdlc-v2/learnings/log.md`, then commits it directly — deliberately not via a commit Agent dispatch, since this is a single-file, non-narrative append with a fixed message:
+Runs the ship-level Learning Capture (see [`reference.md`](reference.md)'s Learning Capture
+section for the exact prompts/format) by calling `learnings_log({action: "append", entry:
+"..."})`. `.sdlc-v2/learnings/` is gitignored and intentionally never committed — the log is
+durable local knowledge at the MAIN git worktree, not pipeline output, so this step never
+calls `commit_apply` or touches git. The step id is kept as `learnings-commit` for config/state
+compatibility even though it no longer commits anything.
 
-```
-commit_apply({message: "chore(ship): capture pipeline learnings", skipConfigCheck: false, sessionID: ""}) → { sha }
-```
+Record the result: `ship_state({action:"decide", step:"learnings-commit", detail:{text:"appended"}})`.
 
-- **On a `DataError` reading "nothing to commit after staging"** (i.e. the log file had no new content, or the working tree was already clean): report "learnings-commit: no-op (no new learnings)" and continue — this is the expected no-op path, not a failure. Record it: `ship_state({action:"decide", step:"learnings-commit", detail:{text:"no-op: nothing to commit"}})`. Do not treat it as an error.
-- **On success:** a real commit landed after the PR was created. Record it: `ship_state({action:"decide", step:"learnings-commit", detail:{text:"committed <sha>"}})`. No tool pushes it — use `AskUserQuestion` to tell the user to run `git push` before ending the session, mirroring the same manual-push gap disclosed above.
-
-If `learnings-commit` is not in `flags.steps`: `ship_state({action:"decide", step:"learnings-commit", detail:{text:"skipped: not in configured steps"}})` and do nothing (`execute`'s own Learning Capture, recorded in the feature commit, still applies regardless of this step's status).
+If `learnings-commit` is not in `flags.steps`: `ship_state({action:"decide", step:"learnings-commit", detail:{text:"skipped: not in configured steps"}})` and do nothing (`execute`'s own Learning Capture still runs regardless of this step's status).
 
 ### Terminal cleanup
 

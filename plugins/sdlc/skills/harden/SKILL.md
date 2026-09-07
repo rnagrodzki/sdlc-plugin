@@ -346,15 +346,10 @@ When `RESULT.classification == "plugin-defect"`:
 
 ## Step 7 — Learning Capture
 
-Append a single line to `.sdlc-v2/learnings/log.md` summarizing the hardening
-action:
+Call `learnings_log` to append an entry summarizing the hardening action:
 
 ```
-## YYYY-MM-DD — harden: <classification> for <failure.skill> at <failure.step>
-Applied: <count> proposal(s) across <surface-list> | Skipped: <count> | Routed: <yes|no>
-AmbiguousOffer: <not-applicable|offered-dispatched|offered-skipped>
-Trigger: <first 80 chars of failure.text>
-Dimensions: <comma-separated dimension names that were created or modified>
+learnings_log({action: "append", entry: "## YYYY-MM-DD — harden: <classification> for <failure.skill> at <failure.step>\nApplied: <count> proposal(s) across <surface-list> | Skipped: <count> | Routed: <yes|no>\nAmbiguousOffer: <not-applicable|offered-dispatched|offered-skipped>\nTrigger: <first 80 chars of failure.text>\nDimensions: <comma-separated dimension names that were created or modified>"})
 ```
 
 The `Dimensions:` line MUST be included **only when `<surface-list>` includes
@@ -365,9 +360,9 @@ with an empty value.
 
 This line exists so that plan's dimension-coverage gate can
 deterministically suppress duplicate dimension proposals on subsequent runs
-within the same PR commit window, by grepping the last 100 lines of
-`.sdlc-v2/learnings/log.md` for recent `harden` entries whose `Dimensions:`
-line names the candidate dimension.
+within the same PR commit window, by reading the last 100 lines via
+`learnings_log({action: "read", tailLines: 100})` for recent `harden` entries
+whose `Dimensions:` line names the candidate dimension.
 
 The `AmbiguousOffer` line records the Step 5c outcome:
 
