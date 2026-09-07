@@ -43,7 +43,9 @@ go.work.sum
 
 /tmp
 # >>> sdlc-utilities managed v3 (do not edit) — transient skill artifacts
+# <<< sdlc-utilities managed
+# >>> sdlc-v2 managed v3 (do not edit) — transient skill artifacts
 *-context-*.json
 *-manifest-*.json
 *-prepare-*.json
-# <<< sdlc-utilities managed
+# <<< sdlc-v2 managed

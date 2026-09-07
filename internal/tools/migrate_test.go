@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -35,8 +36,16 @@ func TestMigrateImportCopiesFreshFiles(t *testing.T) {
 	}
 
 	newConfig := filepath.Join(root, paths.DataDir, "config.json")
-	if data, err := os.ReadFile(newConfig); err != nil || string(data) != `{"a":1}` {
-		t.Fatalf("expected config.json copied, got err=%v data=%q", err, data)
+	data, err := os.ReadFile(newConfig)
+	if err != nil {
+		t.Fatalf("expected config.json copied, got err=%v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("expected valid JSON, got err=%v data=%q", err, data)
+	}
+	if got["a"] != float64(1) {
+		t.Fatalf("expected config.json to contain merged key a=1, got %v", got)
 	}
 	newTemplate := filepath.Join(root, paths.DataDir, "jira-templates", "template.md")
 	if data, err := os.ReadFile(newTemplate); err != nil || string(data) != "template" {
@@ -57,14 +66,14 @@ func TestMigrateImportCopiesFreshFiles(t *testing.T) {
 	}
 }
 
-func TestMigrateImportSkipsExistingDestination(t *testing.T) {
+func TestMigrateImportSkipsExistingNonJSONDestination(t *testing.T) {
 	root := t.TempDir()
 
 	oldDir := filepath.Join(root, paths.LegacyDataDir)
 	if err := os.MkdirAll(oldDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(oldDir, "config.json"), []byte(`{"old":true}`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(oldDir, "pr-template.md"), []byte("legacy template"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -72,7 +81,7 @@ func TestMigrateImportSkipsExistingDestination(t *testing.T) {
 	if err := os.MkdirAll(newDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(newDir, "config.json"), []byte(`{"new":true}`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(newDir, "pr-template.md"), []byte("current template"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -84,9 +93,103 @@ func TestMigrateImportSkipsExistingDestination(t *testing.T) {
 		t.Fatalf("expected no files copied when destination exists, got %v", out.Changed)
 	}
 
+	data, err := os.ReadFile(filepath.Join(newDir, "pr-template.md"))
+	if err != nil || string(data) != "current template" {
+		t.Fatalf("expected destination pr-template.md untouched, got err=%v data=%q", err, data)
+	}
+}
+
+// TestMigrateImportMergesIntoScaffoldedEmptyJSON covers the bug this fix
+// addresses: setup_init always seeds config.json/local.json as an empty {}
+// before migrate ever runs, so a naive "file already exists" check made
+// JSON import permanently unreachable. Key-level merge must still import
+// legacy sections into that empty scaffold.
+func TestMigrateImportMergesIntoScaffoldedEmptyJSON(t *testing.T) {
+	root := t.TempDir()
+
+	oldDir := filepath.Join(root, paths.LegacyDataDir)
+	if err := os.MkdirAll(oldDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oldDir, "local.json"), []byte(`{"ship":{"bump":"patch"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	newDir := filepath.Join(root, paths.DataDir)
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(newDir, "local.json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := migrate(root, MigrateIn{Action: "import"})
+	if err != nil {
+		t.Fatalf("migrate import: %v", err)
+	}
+	if len(out.Changed) != 1 || out.Changed[0] != paths.DataDir+"/local.json" {
+		t.Fatalf("expected local.json reported changed, got %v", out.Changed)
+	}
+
+	data, err := os.ReadFile(filepath.Join(newDir, "local.json"))
+	if err != nil {
+		t.Fatalf("read merged local.json: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("expected valid JSON, got err=%v data=%q", err, data)
+	}
+	ship, ok := got["ship"].(map[string]any)
+	if !ok || ship["bump"] != "patch" {
+		t.Fatalf("expected ship.bump=patch merged in, got %v", got)
+	}
+}
+
+// TestMigrateImportNeverOverwritesExistingJSONKey ensures merge is
+// additive-only: a key the destination already carries a real value for is
+// left untouched, even though the same key exists in the legacy source.
+func TestMigrateImportNeverOverwritesExistingJSONKey(t *testing.T) {
+	root := t.TempDir()
+
+	oldDir := filepath.Join(root, paths.LegacyDataDir)
+	if err := os.MkdirAll(oldDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oldDir, "config.json"), []byte(`{"version":{"tagPrefix":"legacy"},"jira":{"defaultProject":"OLD"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	newDir := filepath.Join(root, paths.DataDir)
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(newDir, "config.json"), []byte(`{"version":{"tagPrefix":"current"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := migrate(root, MigrateIn{Action: "import"})
+	if err != nil {
+		t.Fatalf("migrate import: %v", err)
+	}
+	if len(out.Changed) != 1 || out.Changed[0] != paths.DataDir+"/config.json" {
+		t.Fatalf("expected config.json reported changed, got %v", out.Changed)
+	}
+
 	data, err := os.ReadFile(filepath.Join(newDir, "config.json"))
-	if err != nil || string(data) != `{"new":true}` {
-		t.Fatalf("expected destination config.json untouched, got err=%v data=%q", err, data)
+	if err != nil {
+		t.Fatalf("read merged config.json: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("expected valid JSON, got err=%v data=%q", err, data)
+	}
+	version, ok := got["version"].(map[string]any)
+	if !ok || version["tagPrefix"] != "current" {
+		t.Fatalf("expected existing version.tagPrefix=current preserved, got %v", got)
+	}
+	jira, ok := got["jira"].(map[string]any)
+	if !ok || jira["defaultProject"] != "OLD" {
+		t.Fatalf("expected jira key merged in from legacy source, got %v", got)
 	}
 }
 
@@ -97,7 +200,7 @@ func TestMigrateImportDryRunWritesNothing(t *testing.T) {
 	if err := os.MkdirAll(oldDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(oldDir, "local.json"), []byte(`{}`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(oldDir, "local.json"), []byte(`{"ship":{"bump":"patch"}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

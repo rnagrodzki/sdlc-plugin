@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/configmigrate"
+	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
@@ -106,9 +108,21 @@ func migrateConfig(root string, dryRun bool) (MigrateOut, error) {
 	}, nil
 }
 
-// legacyImportFiles are top-level files copied verbatim from
-// paths.LegacyDataDir into paths.DataDir by the "import" action.
-var legacyImportFiles = []string{"config.json", "local.json", "pr-template.md", "plan-template.md"}
+// legacyImportJSONFiles are JSON-object files imported from
+// paths.LegacyDataDir into paths.DataDir by the "import" action using a
+// top-level key merge rather than a whole-file skip. setup's own scaffolding
+// (setup_init) always creates an empty {} config.json and local.json before
+// migrate ever runs, so a whole-file "skip if destination exists" check made
+// these two entries permanently unreachable in practice. Merging per key
+// lets each already-scaffolded file still receive the legacy sections
+// (ship, version, plan.guardrails, ...), while never overwriting a key the
+// new config already holds a real value for.
+var legacyImportJSONFiles = []string{"config.json", "local.json"}
+
+// legacyImportFiles are non-JSON files copied verbatim from
+// paths.LegacyDataDir into paths.DataDir by the "import" action, skipped
+// whole-file when the destination already exists.
+var legacyImportFiles = []string{"pr-template.md", "plan-template.md"}
 
 // legacyImportDirs are directories copied recursively from
 // paths.LegacyDataDir into paths.DataDir by the "import" action.
@@ -117,9 +131,20 @@ var legacyImportDirs = []string{"jira-templates", "learnings", "review-dimension
 // importFromOld non-destructively copies plugin data from the old plugin's
 // data directory (paths.LegacyDataDir, ".sdlc") into the new plugin's data
 // directory (paths.DataDir, ".sdlc-v2"). It never deletes or modifies the
-// source, and skips any destination path that already exists.
+// source, and never overwrites a destination key/path that already carries
+// real content.
 func importFromOld(root string, dryRun bool) (MigrateOut, error) {
 	var changed []string
+
+	for _, name := range legacyImportJSONFiles {
+		rel, didChange, err := importJSONFileMerge(root, name, dryRun)
+		if err != nil {
+			return MigrateOut{}, err
+		}
+		if didChange {
+			changed = append(changed, rel)
+		}
+	}
 
 	for _, name := range legacyImportFiles {
 		src := filepath.Join(root, paths.LegacyDataDir, name)
@@ -183,6 +208,71 @@ func importFromOld(root string, dryRun bool) (MigrateOut, error) {
 		Result:  result,
 		Changed: changed,
 	}, nil
+}
+
+// importJSONFileMerge imports one JSON-object file (config.json or
+// local.json) from paths.LegacyDataDir into paths.DataDir by merging
+// top-level keys: any key present in the legacy source but absent from the
+// destination is added; any key already present in the destination (even in
+// an otherwise-empty-looking file) is left untouched. Returns the changed
+// relative path and whether anything changed. A missing source, or a source
+// with no keys the destination lacks, is a no-op.
+func importJSONFileMerge(root, name string, dryRun bool) (string, bool, error) {
+	src := filepath.Join(root, paths.LegacyDataDir, name)
+	if !migrateFileExists(src) {
+		return "", false, nil
+	}
+
+	var srcMap map[string]any
+	if err := fsx.ReadJSON(src, &srcMap); err != nil {
+		return "", false, &mcpserver.InfraError{
+			Msg:   fmt.Sprintf("read legacy %s: %s", name, err.Error()),
+			Cause: err,
+		}
+	}
+
+	dst := filepath.Join(root, paths.DataDir, name)
+	var dstMap map[string]any
+	if err := fsx.ReadJSON(dst, &dstMap); err != nil && !errors.Is(err, fsx.ErrNotFound) {
+		return "", false, &mcpserver.InfraError{
+			Msg:   fmt.Sprintf("read %s: %s", name, err.Error()),
+			Cause: err,
+		}
+	}
+	if dstMap == nil {
+		dstMap = make(map[string]any)
+	}
+
+	added := false
+	for k, v := range srcMap {
+		if _, exists := dstMap[k]; exists {
+			continue
+		}
+		dstMap[k] = v
+		added = true
+	}
+	if !added {
+		return "", false, nil
+	}
+
+	rel := paths.DataDir + "/" + name
+	if dryRun {
+		return rel, true, nil
+	}
+
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return "", false, &mcpserver.InfraError{
+			Msg:   fmt.Sprintf("create %s directory: %s", paths.DataDir, err.Error()),
+			Cause: err,
+		}
+	}
+	if err := fsx.AtomicWriteJSON(dst, dstMap); err != nil {
+		return "", false, &mcpserver.InfraError{
+			Msg:   fmt.Sprintf("merge %s: %s", name, err.Error()),
+			Cause: err,
+		}
+	}
+	return rel, true, nil
 }
 
 // copyDir recursively copies the src directory tree to dst, creating dst
@@ -255,7 +345,7 @@ func copyFile(src, dst string) error {
 // RegisterMigrateTools registers the migrate tool on the server.
 func RegisterMigrateTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "migrate",
-		"Runs a legacy migration. Actions: config (schema migration via configmigrate engine), import (non-destructively copies config, templates, jira-templates, learnings, and review-dimensions from the old plugin's "+paths.LegacyDataDir+"/ directory into "+paths.DataDir+"/, skipping anything that already exists).",
+		"Runs a legacy migration. Actions: config (schema migration via configmigrate engine), import (non-destructively imports config, templates, jira-templates, learnings, and review-dimensions from the old plugin's "+paths.LegacyDataDir+"/ directory into "+paths.DataDir+"/ — config.json and local.json merge per top-level key so already-scaffolded empty files still receive legacy sections, everything else is skipped whole-file when the destination already exists).",
 		func(ctx mcpserver.Ctx, in MigrateIn) (MigrateOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {
