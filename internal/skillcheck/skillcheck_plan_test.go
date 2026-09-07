@@ -94,6 +94,7 @@ func planSkillsListTools(t *testing.T) []mcp.Tool {
 	tools.RegisterShipTools(srv)
 	tools.RegisterVersionTools(srv)
 	tools.RegisterValidateTools(srv)
+	tools.RegisterPlanSupportTools(srv)
 
 	mcpSrv := srv.MCPServer()
 
@@ -444,7 +445,7 @@ func TestPlanSkillsNoOrchestratorReferences(t *testing.T) {
 var planSkillsReferenceFileHashes = map[string]string{
 	"skills/plan/g17-dimension-coverage-prompt.md":    "f35a90fbc594eb27a02e1f9d7985a8ade0397f550a18f9698c68ed5a87a1a62c",
 	"skills/plan/intake-verify-prompt.md":             "7b3c89f79be57cdd7ae237f2524356afe7567d1faa22f79fe0bcdf62bb4229c7",
-	"skills/plan/lane-content-coverage-prompt.md":     "034edd3883d6e7f9937b220a3d19314c2ac981324c6ca5a5a357ebc5d96eb226",
+	"skills/plan/lane-content-coverage-prompt.md":     "4b518a9f13a448bb481cbc87b427401aadf89999cd7ee04f0fdf3ed9b707e205",
 	"skills/plan/lane-file-existence-prompt.md":       "ee76f039f92f757a3fc8a85122e3e217f73a4a63c41f2164ca688acf4ba68f35",
 	"skills/plan/lane-guardrail-compliance-prompt.md": "34baba6c0432003966f780084d1f7a2d5654cc8cfd859602dc23ac2f1699f1db",
 	"skills/plan/lane-static-structural-prompt.md":    "8216ae0f03d064ef9ddb2b37d5a6a4b2943f36d7b0cd54775d3fcf33f4a64920",
@@ -452,7 +453,7 @@ var planSkillsReferenceFileHashes = map[string]string{
 	"skills/plan/lens-requirements-prompt.md":         "f11079debb98beea1810ee281873f3c8a6024dd15006c5b63ed3933f900e582c",
 	"skills/plan/lens-risk-prompt.md":                 "c07da38779172712157f8e06dfd8a3f59812a5eb2f4c0c370846b2aefc72c2e2",
 	"skills/plan/plan-reviewer-prompt.md":             "b9e888dcf06960d9d9dc2c6039b01828d8c8e4ad5530cbf4d2d4872404d79e75",
-	"skills/plan/plan-format-reference.md":            "588e0f03abb3be80517c98e2ac8bb8eb2d1962fe5aa81cc4a9eda991c6b45afd",
+	"skills/plan/plan-format-reference.md":            "591f76154a424f54604561aea12657b2926855f3c020b5d72439c3e9b4b65e36",
 	"skills/plan/plan-template-default.md":            "1fd3de86545ece6eb08e8736ef7dcc2c57ee534f8753a3c13ea2c60398be863b",
 	"skills/execute/spec-compliance-reviewer.md":      "ff6b385e1fade868e4c06fa4c2c5990a1e087e4894b1d4395f46c50c2342023b",
 }

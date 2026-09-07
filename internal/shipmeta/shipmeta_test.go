@@ -60,7 +60,10 @@ func TestMaxWaveTimeoutSecondsMatchesSchema(t *testing.T) {
 // TestSubstepMapMatchesSource proves Acceptance Criterion 2: SubstepMap
 // renders the same todo lists as scripts/lib/ship-todos.js SUBSTEP_MAP, for
 // every pipeline step fixture. Values below are copied verbatim from the
-// source SUBSTEP_MAP (F-shared-lib-cross-cutting-behavior-77/78).
+// source SUBSTEP_MAP (F-shared-lib-cross-cutting-behavior-77/78), except
+// "learnings-commit": the source's "commit log" substep was dropped when the
+// step was redefined as append-only (learnings/log.md is gitignored and
+// never committed — see internal/tools/learnings.go).
 func TestSubstepMapMatchesSource(t *testing.T) {
 	tests := []struct {
 		step string
@@ -77,7 +80,7 @@ func TestSubstepMapMatchesSource(t *testing.T) {
 		{"pr", []string{"push branch", "draft body", "gh pr create", "apply labels"}},
 		{"verify-pipeline", []string{"poll checks", "fetch logs on failure", "analyze", "commit fix if any"}},
 		{"await-remote-review", []string{"poll reviews", "dispatch received-review if actionable", "commit fix if any"}},
-		{"learnings-commit", []string{"append log", "commit log"}},
+		{"learnings-commit", []string{"append log"}},
 		{"cleanup", []string{"cleanup pipeline state"}},
 	}
 

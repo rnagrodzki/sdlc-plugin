@@ -200,6 +200,25 @@ re-deriving (or stalling BLOCKED on) a design decision planning already closed. 
 gate flags any artifact-touching task whose Contract is absent or merely restates "update X to do Y".
 Deterministically enforced by PF7 (validate-plan-format.js, default check set) — every artifact-touching task must carry this block.
 
+**Visual artifact required — prose-only contracts fail G18.** Every Contract block MUST include at
+least one visual artifact:
+- Go/TS/Python struct/type definition (fenced code block)
+- Field-diff table (`+`add/`−`remove) for modifications
+- Before/after code for workflow changes
+- JSON/YAML schema snippet for config changes
+
+Prose-only contracts (no code blocks, no tables, no diffs) fail G18, even when the prose itself
+describes a concrete shape — the visual artifact is what lets a reviewer verify the decided shape
+without reconstructing it from a description.
+
+This requirement is distinct from `## Concrete Artifacts (render don't narrate)` below, and from its
+`### Surface-Conditional Trigger Table`: the Contract's visual renders the deliverable's
+**decided shape** — what execution implements verbatim, pinned at plan time. Concrete Artifacts
+render **observable** payloads, field deltas, and end-states — what a reviewer verifies once the
+task is built. A task's Contract visual and its Concrete Artifacts render may reuse the same snippet
+when the decided shape and the observable artifact coincide (e.g. an API payload contract), but the
+two are judged independently — satisfying one does not exempt a task from the other.
+
 Keys: `shape`, `names`, `mirror`, `decisions`, `sync` (required), `example` (optional).
 
 `example` is the only optional key. Add it only when `shape`'s prose leaves a genuinely ambiguous
@@ -222,44 +241,58 @@ artifact's column — the one its primary deliverable touches.
 
 ### Worked example — code
 
-```markdown
+````markdown
 **Contract:**
-- shape (code): `signToken(payload: object, expiresIn: string): string` and
-  `verifyToken(token: string): object`; throws `JwtExpiredError` | `JwtInvalidError` on failure;
-  import `jsonwebtoken`; secret from `process.env.JWT_SECRET`.
+- shape (code):
+  ```ts
+  function signToken(payload: object, expiresIn: string): string
+  function verifyToken(token: string): object
+  ```
+  Throws `JwtExpiredError` | `JwtInvalidError` on failure; imports `jsonwebtoken`; secret from
+  `process.env.JWT_SECRET`.
 - names: `signToken`, `verifyToken`, `JwtExpiredError`, `JwtInvalidError`.
 - mirror: existing util module style at `src/utils/hash.ts:1-40`.
 - decisions: typed errors over boolean returns (callers branch on error class).
 - sync: `src/middleware/auth.ts` imports `verifyToken` — signature must match.
 - example: `signToken({ id: 'u_1' }, '1h')` → `"eyJhbGciOi..."`.
-```
+````
 
 ### Worked example — docs
 
-```markdown
+````markdown
 **Contract:**
 - shape (docs): MODIFY `docs/skills/auth.md`. Add a `## Token Lifecycle` section (audience: end
-  users) after `## Usage`; bullet list of the 3 token states; cross-link to `/version`.
+  users) after `## Usage`; cross-link to `/version`:
+  ```markdown
+  ## Token Lifecycle
+  - `pending` — issued, not yet activated
+  - `active` — valid, accepted by `verifyToken`
+  - `expired` — past `expiresIn`, rejected with `JwtExpiredError`
+  ```
 - names: section heading `## Token Lifecycle`.
 - mirror: the `## Usage` / `## Flags` section style at `docs/skills/auth.md:10-40`.
 - decisions: user-facing prose only — no internal API references.
 - sync: must match the field names introduced in the format reference (`Contract:` keys).
 - example: `## Token Lifecycle` appears in the doc's TOC between `## Usage` and `## Flags`.
-```
+````
 
 ### Worked example — openspec / spec
 
-```markdown
+````markdown
 **Contract:**
 - shape (openspec): ADD requirement `R7` to `docs/specs/auth.md` under `## Core Requirements`;
-  MODIFY `R3`'s acceptance clause to cite the new token-state enum; delta text pinned in this
-  Contract `shape`; numbering continues from `R6`.
+  MODIFY `R3`'s acceptance clause to cite the new token-state enum; numbering continues from `R6`.
+  Delta text pinned in this `shape`:
+  ```markdown
+  ### Requirement: Token state enum
+  The system SHALL expose a `tokenState` enum: `pending | active | expired`.
+  ```
 - names: `R7` (new), `R3` (modified).
 - mirror: requirement-block style at `docs/specs/auth.md:21-22` (R5/R6).
 - decisions: numeric `R7` (not a named ID) — matches the file's existing numbering convention.
 - sync: SKILL.md Step 2 authors it; execute consumes it via the fact sheet.
 - example: `R7` reads "The system SHALL expose a `tokenState` enum: `pending | active | expired`."
-```
+````
 
 A plan's own `## Contract Examples` section (R60) reuses these same three worked examples verbatim
 in shape — one entry per column type the plan's tasks actually use — substituting the plan's real
@@ -554,7 +587,7 @@ The system SHALL sign every outbound webhook payload with HMAC-SHA256.
 | Complexity | `Trivial` \| `Standard` \| `Complex` | Used by execute for model assignment and wave building |
 | Risk | `Low` \| `Medium` \| `High` | High-risk tasks trigger a user confirmation gate before execution |
 | Depends on | `Task N, Task M` or `none` | Must reference tasks by their exact number; no forward references |
-| Verify | `tests` \| `build` \| `lint` \| `manual` | Multiple allowed: `tests, build` |
+| Verify | `tests` \| `build` \| `lint` \| `manual` | Multiple allowed: `tests, build`. `tests` accepts an optional scope hint in parentheses — see `## Verify Field — Scoped Hints` below |
 | Contract | Indented `- key: value` list with keys `shape`, `names`, `mirror`, `decisions`, `sync` (required), `example` (optional) | Required for every artifact-touching task; `shape` is type-aware (code/docs/openspec column derived from `Files:` paths); judged by G18 |
 | Files → Create | Relative path from project root | Must be exact — agents use this to know what to create |
 | Files → Modify | Relative path + one-line description of change | Required if an existing file is modified |
@@ -563,6 +596,49 @@ The system SHALL sign every outbound webhook payload with HMAC-SHA256.
 | openspec-task → ref | kebab-slug + 6-char sha256 suffix | Computed from task title at plan time |
 | openspec-task → line | Integer ≥ 1 | 1-indexed line in tasks.md at plan time |
 | openspec-task → title | String | Verbatim task title at plan time |
+
+---
+
+## Verify Field — Scoped Hints
+
+`Verify: tests` accepts an optional scope hint in parentheses, naming the exact command an executing
+agent should run for that task instead of the full suite:
+
+```markdown
+**Verify:** tests (go test ./internal/tools/ -run TestFoo)
+```
+
+| Value | Agent runs | Post-wave gate |
+|---|---|---|
+| `tests` | full test suite | full test suite |
+| `tests (go test ./pkg/foo/)` | scoped command only | full test suite |
+| `build` | build only | build |
+| `manual` | nothing automated | nothing |
+
+When a scope hint is present, `execute` runs the scoped command instead of the full suite for that
+task. The scope hint narrows what an individual agent runs mid-wave — it never changes what gates the
+wave: the full suite still runs once at each wave boundary regardless of which tasks in that wave
+carried a hint. See `## Isolation` below for the wave-level rule this hint exists to support.
+
+Use a scope hint when:
+- Multiple tasks in the same wave touch the same codebase or package.
+- The full suite takes more than ~30s and the task only affects one package.
+- Parallel agents would contend on shared test resources (a local DB, a fixed port, a temp-file path).
+
+## Isolation
+
+When multiple tasks in the same wave touch the same package, agents running those tasks in parallel
+should not each run the full test suite — that wastes time re-verifying code none of them touched,
+and risks contention when tests share a resource (a local DB, a fixed port, a temp-file path).
+Instead:
+
+- Each task's agent runs its own scope-hinted command (`Verify: tests (scope)`) when the task carries
+  one, exercising only the package or test the task actually touches.
+- The full suite runs once, after the wave completes, as the verification gate — not once per task
+  inside the wave.
+
+This keeps parallel execution fast without weakening verification: scoped, partial signal during the
+wave; one authoritative full-suite run gates the wave before it is accepted.
 
 ---
 

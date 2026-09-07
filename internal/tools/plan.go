@@ -51,8 +51,13 @@ import (
 // report — keyword-scope and web-research-signal detection are inert here;
 // only plan_explore_prepare's separate UserPrompt field can exercise them).
 type PlanPrepareIn struct {
-	SkipConfigCheck bool   `json:"skipConfigCheck"`
-	FromOpenspec    string `json:"fromOpenspec"`
+	SkipConfigCheck        bool   `json:"skipConfigCheck"`
+	FromOpenspec           string `json:"fromOpenspec"`
+	ResolveTemplate        bool   `json:"resolveTemplate"`
+	FromOpenspecDirect     bool   `json:"fromOpenspecDirect"`
+	OpenspecInlineGenerate bool   `json:"openspecInlineGenerate"`
+	Lightweight            bool   `json:"lightweight"`
+	FileCount              int    `json:"fileCount"`
 }
 
 // OpenspecChangeInfo, OpenspecAuthoritative, and OpenspecInfo used to be
@@ -154,6 +159,31 @@ type LensReviewer struct {
 	FocusCategories    []string `json:"focusCategories"`
 }
 
+// TemplateResolution is the result of resolving the active plan template,
+// parsing its sections/questions/patterns, building a plan skeleton, and
+// computing complexity routing. Populated only when PlanPrepareIn.ResolveTemplate
+// is true; nil otherwise.
+type TemplateResolution struct {
+	ActiveTemplatePath   string            `json:"activeTemplatePath"`
+	Sections             []TemplateSection `json:"sections"`
+	DiscoveryQuestions   []string          `json:"discoveryQuestions"`
+	VerificationPatterns []string          `json:"verificationPatterns"`
+	SkeletonMarkdown     string            `json:"skeletonMarkdown"`
+	HeaderMarkdown       string            `json:"headerMarkdown"`
+	PipelineMode         string            `json:"pipelineMode"`
+	Routing              ComplexityRouting `json:"routing"`
+	Summary              string            `json:"summary"`
+	Next                 string            `json:"next"`
+	Warnings             []string          `json:"warnings"`
+}
+
+// ComplexityRouting determines the pipeline mode from the file count.
+type ComplexityRouting struct {
+	FileCount    int    `json:"fileCount"`
+	PipelineMode string `json:"pipelineMode"`
+	Reason       string `json:"reason"`
+}
+
 // PlanPrepareOut is the output for the plan_prepare tool, mirroring
 // plan.js's main() output object field-for-field (see line ~630).
 type PlanPrepareOut struct {
@@ -161,6 +191,8 @@ type PlanPrepareOut struct {
 	FromOpenspec        *FromOpenspecResult `json:"fromOpenspec"`
 	OpenspecContext     OpenspecContext     `json:"openspecContext"`
 	Guardrails          []map[string]any    `json:"guardrails"`
+	Style               PlanStyle           `json:"style"`
+	Tasks               PlanTasks           `json:"tasks"`
 	ExplorePack         ExplorePack         `json:"explorePack"`
 	PlanTemplate        PlanTemplate        `json:"planTemplate"`
 	GithubHosting       GithubHosting       `json:"githubHosting"`
@@ -168,6 +200,7 @@ type PlanPrepareOut struct {
 	IntakeAuditDispatch Dispatch            `json:"intakeAuditDispatch"`
 	Lanes               []Lane              `json:"lanes"`
 	LensReviewers       []LensReviewer      `json:"lensReviewers"`
+	Template            *TemplateResolution `json:"template,omitempty"`
 	Errors              []string            `json:"errors"`
 }
 
@@ -473,6 +506,106 @@ func loadGuardrails(mainRoot string) ([]map[string]any, string) {
 }
 
 // ---------------------------------------------------------------------------
+// PlanStyle / PlanTasks loading (sections "planStyle" and "plan" -> "tasks")
+// ---------------------------------------------------------------------------
+
+// PlanStyle configures personal plan narrative preferences: verbosity,
+// audience, and custom narrative rules. Loaded from the "planStyle" config
+// section, which is not a config.ProjectSections member and therefore
+// routes to .sdlc-v2/local.json (per-developer, gitignored).
+type PlanStyle struct {
+	Verbosity      string   `json:"verbosity"`
+	Audience       string   `json:"audience"`
+	NarrativeRules []string `json:"narrativeRules"`
+}
+
+// PlanTasks is the team contract for plan task deliverables: which fields
+// are required on every task, and the overall contract shape. Loaded from
+// the "plan" config section's "tasks" sub-key; "plan" is a
+// config.ProjectSections member, so it routes to .sdlc-v2/config.json
+// (team-shared, committed).
+type PlanTasks struct {
+	RequiredFields []string `json:"requiredFields"`
+	ContractShape  string   `json:"contractShape"`
+}
+
+// loadPlanStyle reads the "planStyle" config section, mirroring
+// loadGuardrails' readSection + benign-absence handling: any error from
+// config.ReadSection (missing file, missing section, or malformed JSON)
+// falls back to defaults rather than surfacing an error, since PlanStyle
+// has no error-string return channel. Defaults are "standard" verbosity,
+// "technical" audience, and a nil NarrativeRules.
+func loadPlanStyle(mainRoot string) PlanStyle {
+	style := PlanStyle{Verbosity: "standard", Audience: "technical"}
+
+	section, err := config.ReadSection(mainRoot, "planStyle")
+	if err != nil {
+		return style
+	}
+
+	if v, ok := section["verbosity"].(string); ok && v != "" {
+		style.Verbosity = v
+	}
+	if v, ok := section["audience"].(string); ok && v != "" {
+		style.Audience = v
+	}
+	if raw, ok := section["narrativeRules"].([]any); ok {
+		rules := make([]string, 0, len(raw))
+		for _, el := range raw {
+			if s, ok := el.(string); ok {
+				rules = append(rules, s)
+			}
+		}
+		style.NarrativeRules = rules
+	}
+
+	return style
+}
+
+// loadPlanTasks reads the "plan" config section's "tasks" sub-key,
+// mirroring loadGuardrails' readSection + benign-absence handling: any
+// error from config.ReadSection or an absent/malformed "tasks" sub-key
+// falls back to defaults. Applies the "full" default for ContractShape
+// when absent, and silently drops any requiredFields entry that duplicates
+// one of the five fields already guaranteed by the task contract's fixed
+// shape (Complexity, Risk, Files, Verify, Depends on) -- KD5, additive-only
+// enforced in Go.
+func loadPlanTasks(mainRoot string) PlanTasks {
+	tasks := PlanTasks{ContractShape: "full"}
+
+	planConfig, err := config.ReadSection(mainRoot, "plan")
+	if err != nil {
+		return tasks
+	}
+
+	raw, ok := planConfig["tasks"].(map[string]any)
+	if !ok {
+		return tasks
+	}
+
+	if v, ok := raw["contractShape"].(string); ok && v != "" {
+		tasks.ContractShape = v
+	}
+	if arr, ok := raw["requiredFields"].([]any); ok {
+		coreFields := map[string]bool{
+			"Complexity": true, "Risk": true, "Files": true,
+			"Verify": true, "Depends on": true,
+		}
+		fields := make([]string, 0, len(arr))
+		for _, el := range arr {
+			s, ok := el.(string)
+			if !ok || coreFields[s] {
+				continue
+			}
+			fields = append(fields, s)
+		}
+		tasks.RequiredFields = fields
+	}
+
+	return tasks
+}
+
+// ---------------------------------------------------------------------------
 // GitHub hosting signal (P14, R32)
 // ---------------------------------------------------------------------------
 
@@ -727,6 +860,235 @@ func buildLensReviewers() []LensReviewer {
 }
 
 // ---------------------------------------------------------------------------
+// Template resolution (plan_prepare resolveTemplate=true path)
+//
+// Resolves the active plan template (project override -> shipped default
+// fallback), parses sections/discovery-questions/verification-patterns,
+// builds the plan skeleton + header markdown, and computes complexity
+// routing from the file count.
+// ---------------------------------------------------------------------------
+
+// step5OwnedSections lists sections whose content is produced exclusively
+// by Step 5 (the multi-lens review). When lightweight routing skips Step 5,
+// these get "Not applicable — lightweight plan" instead of "[TBD]".
+var step5OwnedSections = map[string]bool{
+	"Verification Scorecard": true,
+}
+
+// openspecConditionPrefix is the prefix that identifies an OpenSpec-conditional
+// section. Both the legacy condition ("source matches openspec/changes/") and
+// the current form ("source matches openspec/changes/ or openspecInlineGenerate")
+// start with this prefix, so a HasPrefix check covers both.
+const openspecConditionPrefix = "source matches openspec/changes/"
+
+// computeComplexityRouting maps a file count to a pipeline mode.
+func computeComplexityRouting(fileCount int, lightweight bool) ComplexityRouting {
+	var mode, reason string
+	switch {
+	case fileCount <= 0:
+		mode = "full"
+		reason = "file count unknown — defaulting to full pipeline"
+	case fileCount == 1:
+		if lightweight {
+			mode = "lightweight"
+			reason = fmt.Sprintf("%d file detected — lightweight pipeline", fileCount)
+		} else {
+			mode = "skip"
+			reason = fmt.Sprintf("%d file detected — skip pipeline", fileCount)
+		}
+	case fileCount <= 3:
+		mode = "lightweight"
+		reason = fmt.Sprintf("%d files detected — lightweight pipeline", fileCount)
+	default:
+		mode = "full"
+		reason = fmt.Sprintf("%d files detected — full pipeline", fileCount)
+	}
+	return ComplexityRouting{
+		FileCount:    fileCount,
+		PipelineMode: mode,
+		Reason:       reason,
+	}
+}
+
+// extractTemplateBullets extracts a bullet list (lines starting with "- ")
+// from the block under a given ## heading in a markdown template. Returns
+// nil when the heading is absent.
+func extractTemplateBullets(content, heading string) []string {
+	locs := reqHeadingRe.FindAllStringSubmatchIndex(content, -1)
+	blockStart := -1
+	blockEnd := len(content)
+	for _, loc := range locs {
+		headingText := strings.TrimSpace(content[loc[2]:loc[3]])
+		if blockStart == -1 {
+			if headingText == heading {
+				blockStart = loc[1]
+			}
+			continue
+		}
+		blockEnd = loc[0]
+		break
+	}
+	if blockStart == -1 {
+		return nil
+	}
+	block := content[blockStart:blockEnd]
+	var items []string
+	for _, m := range reqListItemRe.FindAllStringSubmatch(block, -1) {
+		if text := strings.TrimSpace(m[1]); text != "" {
+			items = append(items, text)
+		}
+	}
+	return items
+}
+
+// buildSkeletonMarkdown builds the plan skeleton from the parsed template
+// sections, evaluating conditions and applying lightweight adjustments.
+func buildSkeletonMarkdown(sections []TemplateSection, openspecActive, lightweight bool) string {
+	var b strings.Builder
+	for _, sec := range sections {
+		b.WriteString("## ")
+		b.WriteString(sec.Name)
+		b.WriteString("\n\n")
+
+		body := "[TBD]"
+
+		// Conditional section evaluation.
+		if sec.Condition != nil {
+			cond := *sec.Condition
+			if strings.HasPrefix(cond, openspecConditionPrefix) {
+				if !openspecActive {
+					body = "Not applicable — no OpenSpec change"
+				}
+			} else {
+				body = fmt.Sprintf("Not applicable — condition %q not recognized", cond)
+			}
+		}
+
+		// Deviations table placeholder.
+		if body == "[TBD]" && sec.Name == "Deviations & assumptions" {
+			body = "| Item | asked | does | why |\n|---|---|---|---|\n| [TBD] | [TBD] | [TBD] | [TBD] |"
+		}
+
+		// Lightweight adjustment: step-5-owned sections.
+		if body == "[TBD]" && lightweight && step5OwnedSections[sec.Name] {
+			body = "Not applicable — lightweight plan"
+		}
+
+		b.WriteString(body)
+		b.WriteString("\n\n")
+	}
+	return strings.TrimRight(b.String(), "\n") + "\n"
+}
+
+// buildHeaderMarkdown builds the plan document header with placeholder fields.
+func buildHeaderMarkdown() string {
+	return `# [Feature Name] Implementation Plan
+
+**Goal:** [TBD]
+**Architecture:** [TBD]
+**Source:** [TBD]
+**Verification:** [TBD]
+
+---
+`
+}
+
+// buildTemplateResolution resolves the active plan template and builds
+// the full TemplateResolution struct. It is called from planPrepareCore
+// only when in.ResolveTemplate is true.
+func buildTemplateResolution(mainRoot string, in PlanPrepareIn, planTemplatePath *string) (*TemplateResolution, []string) {
+	warnings := []string{}
+
+	openspecActive := in.FromOpenspecDirect || in.OpenspecInlineGenerate
+	routing := computeComplexityRouting(in.FileCount, in.Lightweight)
+
+	// Resolve the active template path: project override -> shipped default.
+	activePath := ""
+	if planTemplatePath != nil {
+		activePath = *planTemplatePath
+	}
+
+	// Try to parse the active template (project override).
+	var sections []TemplateSection
+	var templateContent string
+	if activePath != "" {
+		content, err := os.ReadFile(activePath)
+		if err == nil {
+			templateContent = string(content)
+			parsed, parseErr := parseTemplateRequiredSectionsFull(activePath)
+			if parseErr != nil || len(parsed) == 0 {
+				// Malformed project override — fall back to shipped default.
+				warnings = append(warnings, "Project template unreadable — fell back to shipped default")
+				activePath = ""
+			} else {
+				sections = parsed
+			}
+		} else {
+			warnings = append(warnings, "Project template unreadable — fell back to shipped default")
+			activePath = ""
+		}
+	}
+
+	// Fallback to shipped default template.
+	if activePath == "" {
+		defaultPath := resolveSkillTemplate("plan-template-default.md")
+		if defaultPath == nil {
+			// Both project override and shipped default unavailable.
+			return nil, []string{"Active plan template and shipped default both unresolvable — run error-report"}
+		}
+		activePath = *defaultPath
+		content, err := os.ReadFile(activePath)
+		if err != nil {
+			return nil, []string{fmt.Sprintf("Shipped default template unreadable: %s — run error-report", err.Error())}
+		}
+		templateContent = string(content)
+		parsed, parseErr := parseTemplateRequiredSectionsFull(activePath)
+		if parseErr != nil || len(parsed) == 0 {
+			return nil, []string{"Shipped default template malformed (no Required Sections) — run error-report"}
+		}
+		sections = parsed
+	}
+
+	// Extract discovery questions and verification patterns from template content.
+	discoveryQuestions := extractTemplateBullets(templateContent, "Discovery Questions")
+	if discoveryQuestions == nil {
+		discoveryQuestions = []string{}
+	}
+	verificationPatterns := extractTemplateBullets(templateContent, "Verification Patterns")
+	if verificationPatterns == nil {
+		verificationPatterns = []string{}
+	}
+
+	// Build skeleton and header markdown. The lightweight adjustment fires
+	// when Step 5 (the multi-lens review) will be skipped — either explicitly
+	// requested or inferred from routing (any mode other than "full" skips it).
+	lightweightAdjust := in.Lightweight || routing.PipelineMode != "full"
+	skeletonMarkdown := buildSkeletonMarkdown(sections, openspecActive, lightweightAdjust)
+	headerMarkdown := buildHeaderMarkdown()
+
+	// Populate summary and next hint.
+	summary := fmt.Sprintf(
+		"Resolved plan template at %s with %d sections, %d discovery questions. Routing: %s (%s).",
+		activePath, len(sections), len(discoveryQuestions), routing.PipelineMode, routing.Reason,
+	)
+	next := "Write headerMarkdown + skeletonMarkdown to plan file. Use routing.pipelineMode to select full or lightweight path."
+
+	return &TemplateResolution{
+		ActiveTemplatePath:   activePath,
+		Sections:             sections,
+		DiscoveryQuestions:   discoveryQuestions,
+		VerificationPatterns: verificationPatterns,
+		SkeletonMarkdown:     skeletonMarkdown,
+		HeaderMarkdown:       headerMarkdown,
+		PipelineMode:         routing.PipelineMode,
+		Routing:              routing,
+		Summary:              summary,
+		Next:                 next,
+		Warnings:             warnings,
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
 // skillInvoked marker (R20) — written eagerly at the start of plan_prepare
 // ---------------------------------------------------------------------------
 
@@ -869,6 +1231,10 @@ func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepar
 		errs = append(errs, guardErr)
 	}
 
+	// 3b. Plan style (personal preference) and plan tasks (team contract).
+	planStyle := loadPlanStyle(mainRoot)
+	planTasks := loadPlanTasks(mainRoot)
+
 	// 4. plan-explore discovery pack (KD4: in-process call, not subprocess).
 	explorePack := buildExplorePack(mainRoot, contentRoot, in.FromOpenspec, "")
 
@@ -883,11 +1249,23 @@ func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepar
 	// 7a. Intake audit dispatch.
 	intakeAuditDispatch := buildIntakeAuditDispatch()
 
+	// 8. Template resolution (only when resolveTemplate=true).
+	var templateResolution *TemplateResolution
+	if in.ResolveTemplate {
+		tmpl, tmplErrs := buildTemplateResolution(mainRoot, in, planTemplate.Path)
+		if tmplErrs != nil {
+			errs = append(errs, tmplErrs...)
+		}
+		templateResolution = tmpl
+	}
+
 	return PlanPrepareOut{
 		Openspec:            openspecInfo,
 		FromOpenspec:        fromOpenspecResult,
 		OpenspecContext:     openspecContext,
 		Guardrails:          guardrails,
+		Style:               planStyle,
+		Tasks:               planTasks,
 		ExplorePack:         explorePack,
 		PlanTemplate:        planTemplate,
 		GithubHosting:       githubHosting,
@@ -895,6 +1273,7 @@ func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepar
 		IntakeAuditDispatch: intakeAuditDispatch,
 		Lanes:               lanes,
 		LensReviewers:       lensReviewers,
+		Template:            templateResolution,
 		Errors:              errs,
 	}, nil
 }

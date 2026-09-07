@@ -43,7 +43,12 @@ const goodPlan = `**Goal:** Do the thing
 **Verify:** tests
 
 - Create: foo.go
-**Contract:** does X
+**Contract:**
+- shape: does X
+- names: Foo
+- mirror: existing pattern in bar.go
+- decisions: none
+- sync: none
 
 **Acceptance criteria:**
 - [ ] it works
@@ -220,7 +225,7 @@ func TestValidatePlanFormatPF6MissingDeviations(t *testing.T) {
 
 func TestValidatePlanFormatPF7MissingContract(t *testing.T) {
 	root := t.TempDir()
-	plan := strings.Replace(goodPlan, "**Contract:** does X\n", "", 1)
+	plan := strings.Replace(goodPlan, "**Contract:**\n- shape: does X\n- names: Foo\n- mirror: existing pattern in bar.go\n- decisions: none\n- sync: none\n", "", 1)
 	writeFile(t, filepath.Join(root, "plan.md"), plan)
 
 	findingsOut, err := validate(root, ValidateIn{Action: "plan_format", File: "plan.md"})
@@ -868,4 +873,171 @@ func TestMcpFailureRecordRequiresTool(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when tool is empty")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// parseTemplateRequiredSectionsFull (Task 3) & PF11/PF12 (Task 7)
+// ---------------------------------------------------------------------------
+
+func TestParseTemplateRequiredSectionsFull(t *testing.T) {
+	t.Run("ParseFull_Narrative", func(t *testing.T) {
+		root := t.TempDir()
+		path := filepath.Join(root, "template.md")
+		writeFile(t, path, "# Plan Template\n\n## Required Sections\n\n- Context <!-- narrative: true -->\n")
+
+		sections, err := parseTemplateRequiredSectionsFull(path)
+		if err != nil {
+			t.Fatalf("parseTemplateRequiredSectionsFull: %v", err)
+		}
+		if len(sections) != 1 {
+			t.Fatalf("expected 1 section, got %d: %+v", len(sections), sections)
+		}
+		if sections[0].Name != "Context" {
+			t.Errorf("Name = %q, want Context", sections[0].Name)
+		}
+		if !sections[0].Narrative {
+			t.Errorf("Narrative = false, want true")
+		}
+		if sections[0].Condition != nil {
+			t.Errorf("Condition = %v, want nil", sections[0].Condition)
+		}
+	})
+
+	t.Run("ParseFull_Conditional", func(t *testing.T) {
+		root := t.TempDir()
+		path := filepath.Join(root, "template.md")
+		writeFile(t, path, "# Plan Template\n\n## Required Sections\n\n- OpenSpec <!-- conditional: X -->\n")
+
+		sections, err := parseTemplateRequiredSectionsFull(path)
+		if err != nil {
+			t.Fatalf("parseTemplateRequiredSectionsFull: %v", err)
+		}
+		if len(sections) != 1 {
+			t.Fatalf("expected 1 section, got %d: %+v", len(sections), sections)
+		}
+		if sections[0].Name != "OpenSpec" {
+			t.Errorf("Name = %q, want OpenSpec", sections[0].Name)
+		}
+		if sections[0].Narrative {
+			t.Errorf("Narrative = true, want false")
+		}
+		if sections[0].Condition == nil || *sections[0].Condition != "X" {
+			t.Errorf("Condition = %v, want X", sections[0].Condition)
+		}
+	})
+
+	t.Run("ParseFull_Both", func(t *testing.T) {
+		root := t.TempDir()
+		path := filepath.Join(root, "template.md")
+		writeFile(t, path, "# Plan Template\n\n## Required Sections\n\n- Foo <!-- narrative: true --> <!-- conditional: Y -->\n")
+
+		sections, err := parseTemplateRequiredSectionsFull(path)
+		if err != nil {
+			t.Fatalf("parseTemplateRequiredSectionsFull: %v", err)
+		}
+		if len(sections) != 1 {
+			t.Fatalf("expected 1 section, got %d: %+v", len(sections), sections)
+		}
+		if sections[0].Name != "Foo" {
+			t.Errorf("Name = %q, want Foo", sections[0].Name)
+		}
+		if !sections[0].Narrative {
+			t.Errorf("Narrative = false, want true")
+		}
+		if sections[0].Condition == nil || *sections[0].Condition != "Y" {
+			t.Errorf("Condition = %v, want Y", sections[0].Condition)
+		}
+	})
+
+	t.Run("ParseFull_Plain", func(t *testing.T) {
+		root := t.TempDir()
+		path := filepath.Join(root, "template.md")
+		writeFile(t, path, "# Plan Template\n\n## Required Sections\n\n- Research Findings\n")
+
+		sections, err := parseTemplateRequiredSectionsFull(path)
+		if err != nil {
+			t.Fatalf("parseTemplateRequiredSectionsFull: %v", err)
+		}
+		if len(sections) != 1 {
+			t.Fatalf("expected 1 section, got %d: %+v", len(sections), sections)
+		}
+		if sections[0].Name != "Research Findings" {
+			t.Errorf("Name = %q, want Research Findings", sections[0].Name)
+		}
+		if sections[0].Narrative {
+			t.Errorf("Narrative = true, want false")
+		}
+		if sections[0].Condition != nil {
+			t.Errorf("Condition = %v, want nil", sections[0].Condition)
+		}
+	})
+
+	t.Run("ParseFull_NoHeading", func(t *testing.T) {
+		root := t.TempDir()
+		path := filepath.Join(root, "template.md")
+		writeFile(t, path, "# Plan Template\n\nJust some prose, no Required Sections heading.\n")
+
+		sections, err := parseTemplateRequiredSectionsFull(path)
+		if err != nil {
+			t.Fatalf("parseTemplateRequiredSectionsFull: %v", err)
+		}
+		if sections != nil {
+			t.Errorf("expected nil sections, got %+v", sections)
+		}
+	})
+}
+
+func TestValidatePlanFormat_PF11(t *testing.T) {
+	t.Run("PF11_Present", func(t *testing.T) {
+		tasks := []planTask{{Number: 1, Title: "First", Body: "**Owner:** Alice\n"}}
+		result := checkPF11(tasks, []string{"Owner"})
+		if result.status != "pass" {
+			t.Errorf("status = %q, want pass: %s", result.status, result.message)
+		}
+	})
+
+	t.Run("PF11_Missing", func(t *testing.T) {
+		tasks := []planTask{{Number: 1, Title: "First", Body: "no owner field here\n"}}
+		result := checkPF11(tasks, []string{"Owner"})
+		if result.status != "fail" {
+			t.Fatalf("status = %q, want fail", result.status)
+		}
+		if !strings.Contains(result.message, "Task 1") {
+			t.Errorf("message = %q, want mention of Task 1", result.message)
+		}
+	})
+}
+
+func TestValidatePlanFormat_PF12(t *testing.T) {
+	t.Run("PF12_None", func(t *testing.T) {
+		// pf7BulletRe-gated task with no Contract block at all; "none" must
+		// skip the check entirely, regardless of what's missing.
+		tasks := []planTask{{Number: 1, Title: "First", Body: "- Create: foo.go\n"}}
+		result := checkPF12(tasks, "none")
+		if result.status != "pass" {
+			t.Errorf("status = %q, want pass: %s", result.status, result.message)
+		}
+	})
+
+	t.Run("PF12_Minimal", func(t *testing.T) {
+		// Shallow one-line Contract: presence-only check for "minimal" must pass.
+		tasks := []planTask{{Number: 1, Title: "First", Body: "- Create: foo.go\n**Contract:** does X\n"}}
+		result := checkPF12(tasks, "minimal")
+		if result.status != "pass" {
+			t.Errorf("status = %q, want pass: %s", result.status, result.message)
+		}
+	})
+
+	t.Run("PF12_Full_Shallow", func(t *testing.T) {
+		// Same shallow one-line Contract, but "full" requires the five keyed
+		// bullets (shape/names/mirror/decisions/sync) and must fail.
+		tasks := []planTask{{Number: 1, Title: "First", Body: "- Create: foo.go\n**Contract:** does X\n"}}
+		result := checkPF12(tasks, "full")
+		if result.status != "fail" {
+			t.Fatalf("status = %q, want fail", result.status)
+		}
+		if !strings.Contains(result.message, "Task 1") {
+			t.Errorf("message = %q, want mention of Task 1", result.message)
+		}
+	})
 }

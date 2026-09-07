@@ -12,11 +12,31 @@ Write an implementation plan from requirements, a spec, or a user description. P
 
 **Announce at start:** "I'm using plan (sdlc v{sdlc_version})." — extract the version from the `sdlc:` line in the session-start system-reminder. If no version is in context, omit the parenthetical.
 
+<!-- Decision-framing rule (applies to every AskUserQuestion in this skill) -->
+**Decision-framing rule:** Before calling AskUserQuestion, frame the decision so the user never needs the full project context in memory to answer:
+1. **What:** one sentence on what is being decided
+2. **Why it matters:** one sentence on what this choice affects downstream
+3. **Options:** each option carries a concrete consequence, not just a label
+
+Scale framing to `style.audience` (extracted from the `plan_prepare` output — see Step 0's "Template resolution" call; one of `"technical"`, `"executive"`, `"mixed"`):
+- `"technical"` — reference files, functions, config fields
+- `"executive"` — reference features, user impact, timeline
+- `"mixed"` — lead with impact, follow with implementation detail
+
+`style.audience` is not resolved yet during Step 0's OpenSpec-integration questions (they run before the `plan_prepare` call) — use plain, audience-neutral language there instead.
+
+Example — OpenSpec gate check:
+> This project uses OpenSpec for tracking requirements as structured specs.
+> Your change looks like a new feature. How should we handle requirements?
+> 1. **Start OpenSpec flow** — creates a formal spec document first, then plans from it. Best for features that need stakeholder review.
+> 2. **Generate specs inline** — plan generates requirement artifacts as part of the plan itself. Faster, good for well-understood changes.
+> 3. **Use existing spec** — a spec already exists for this work.
+
 ## Step 0: Mode Detection, Routing, and Setup
 
 **Mode detection:** Check whether a system-reminder contains "Plan mode is active". If yes, extract the designated plan file path from "You should create your plan at `<path>`". That path is the only writable file.
 
-**Gather requirements:** If no spec or requirements document is in context, use AskUserQuestion:
+**Gather requirements:** If no spec or requirements document is in context, use AskUserQuestion. Context: this description is the plan's only input — task scope, decomposition, and verification all derive from it, so a vague answer here produces a vague plan.
 > What do you want to implement? (describe in free form, bullet points, or provide a file path)
 
 **OpenSpec integration (opt-in — requires `--spec` flag or explicit spec path):**
@@ -29,13 +49,13 @@ Write an implementation plan from requirements, a spec, or a user description. P
    b. **Non-functional changes:** Print:
       > OpenSpec detected — pass `--spec` to include spec context in planning.
       Then skip the rest of this block. `openspecContext` remains empty.
-   c. **Functional changes:** Check whether an active OpenSpec change already covers this work — Glob `openspec/changes/*/proposal.md` (exclude `archive/`), and if any exist, try matching against the current git branch name. If a match is found, treat it as if the user passed `--spec` and continue to step 3. If no match, use AskUserQuestion:
-      > This looks like a functional change. This project uses OpenSpec for spec-driven development.
+   c. **Functional changes:** Check whether an active OpenSpec change already covers this work — Glob `openspec/changes/*/proposal.md` (exclude `archive/`), and if any exist, try matching against the current git branch name. If a match is found, treat it as if the user passed `--spec` and continue to step 3. If no match, use AskUserQuestion. Frame per the decision-framing rule in the preamble — `style.audience` is not resolved yet this early in Step 0, so keep the language plain and audience-neutral:
+      > This project uses OpenSpec — spec-driven development where a change gets a written proposal, delta specs (the requirements), and a task list before implementation starts. Your request looks like a new feature, and no `--spec` flag or existing change path was given.
       >
       > Options:
-      > 1. **Start OpenSpec flow** — use the openspec CLI to author a change first (for non-trivial features requiring full spec workflow)
-      > 2. **Generate OpenSpec artifacts as plan appendix** — plan generates proposal, spec deltas, and tasks as inline appendix content (recommended default)
-      > 3. **Use existing spec** — pass `--spec` if you already have an OpenSpec change for this
+      > 1. **Start OpenSpec flow** — use the openspec CLI to author a change first (proposal + delta specs written before this plan proceeds). Best for non-trivial features that need stakeholder review before implementation starts.
+      > 2. **Generate OpenSpec artifacts as plan appendix** — plan generates proposal, spec deltas, and tasks as inline appendix content (recommended default). Faster — no separate CLI round trip; the artifacts ship inside this plan for a later `openspec create`/`openspec validate`.
+      > 3. **Use existing spec** — pass `--spec` if you already have an OpenSpec change for this. Skips this gate and loads that change's proposal/specs/tasks directly.
       >
       > Select (1/2/3):
 
@@ -43,9 +63,9 @@ Write an implementation plan from requirements, a spec, or a user description. P
       - On **2** (recommended default — implements R63): Do NOT prompt the user further at this gate (R22 single-touchpoint). Set `openspecInlineGenerate = true`. `openspecContext` stays empty, so OpenSpec enrichment, Gate A, and openspec-task annotations do not activate — artifact authoring is deferred to Step 4 (OpenSpec Appendix generation), where exploration and decomposition data are available. Skip the rest of the OpenSpec block (steps 3–6 — there is no on-disk change to load). Continue with standard planning.
       - On **3**: Re-run the OpenSpec loading logic (steps 3–6) to resolve and load the active change.
 3. If the user provided a spec file path pointing into `openspec/changes/<name>/`, extract `<name>` as the active change.
-4. Otherwise, Glob `openspec/changes/*/proposal.md` (exclude `archive/`). If exactly one non-archived change exists, use it. If multiple, try matching change directory names against the current git branch name. If still ambiguous, use AskUserQuestion:
+4. Otherwise, Glob `openspec/changes/*/proposal.md` (exclude `archive/`). If exactly one non-archived change exists, use it. If multiple, try matching change directory names against the current git branch name. If still ambiguous, use AskUserQuestion. Context: this plan needs to attach to exactly one OpenSpec change's proposal/specs/tasks — picking the wrong one plans against the wrong requirements.
    > Multiple active OpenSpec changes found. Which one are you working on?
-   List the change names as options.
+   List each change as an option labeled with its directory name plus a one-sentence description drawn from that change's `proposal.md` (its title or opening summary line) — not the bare name alone, so the user can tell them apart without opening each file.
 5. Once the active change is identified, Read in parallel:
    - `openspec/changes/<name>/proposal.md` — intent and scope
    - `openspec/changes/<name>/design.md` — technical approach (may not exist yet; skip if absent)
@@ -66,19 +86,6 @@ Write an implementation plan from requirements, a spec, or a user description. P
 
 **Session recovery (full pipeline only):** When the designated plan file already has content, restart and overwrite — do NOT prompt (implements R23 single-touchpoint default for Step 0). Clear the file in-place and begin fresh. If the user wants to preserve the prior draft, they can `cp` the file before invoking the skill.
 
-**Initialize plan file:** Write the document header immediately (before calling `plan_prepare` — header fields are fixed metadata, not template sections):
-
-```markdown
-# [Feature Name] Implementation Plan
-
-**Goal:** [TBD]
-**Architecture:** [TBD]
-**Source:** [Spec file path or "conversation context"]
-**Verification:** [TBD]
-
----
-```
-
 **Context detection and guardrail loading:**
 
 Call `plan_prepare({ skipConfigCheck: <bool>, fromOpenspec: <name or omit> })`. Pass `fromOpenspec` only when `--from-openspec <name>` was passed to plan. The tool call returns the prepare payload directly — there is no output file to read and no cleanup trap to install for this step (that differs from the `explorePack` tempdir, handled separately in Step 1). The tool has already written the `skillInvoked` planIntegrity marker as a side effect; do not call `plan_mark({marker:"skillInvoked"})` — that would be a redundant fourth explicit call, since the marker enum's fourth value is written for free inside `plan_prepare`.
@@ -94,29 +101,9 @@ Context detection (from plan_prepare):
 
 Extract `guardrails` from the output → store as `activeGuardrails`. If the array is non-empty, print: "Loaded N plan guardrails." If empty: "No plan guardrails configured."
 
-**Template resolution (implements R61):** After parsing the `plan_prepare` output, resolve the active plan template:
+**Template resolution and plan initialization (implements R61):** After the context-detection `plan_prepare` call, the gate check, `--from-openspec` handling, and complexity routing (which determine `fromOpenspecDirect`, `lightweight`, and `fileCount`), call `plan_prepare({..., resolveTemplate: true, fromOpenspecDirect, openspecInlineGenerate, lightweight, fileCount})` — pass the same `skipConfigCheck` / `fromOpenspec` fields as the context-detection call. The tool resolves the active template (project override or shipped default), parses sections/conditions, builds the skeleton with conditional and lightweight-adjusted placeholders, and computes complexity routing — all server-side. On error the tool falls back to the shipped default or returns an error; handle errors the same way as the context-detection call.
 
-1. Read `planTemplate.path` from the `plan_prepare` output (P21).
-2. If `planTemplate.path` is non-null, that file is the project template — use it as the active template.
-3. If `planTemplate.path` is null, fall back to the shipped default: `<PLUGIN_ROOT>/skills/plan/plan-template-default.md` (a sibling file of this SKILL.md).
-4. Read the active template file. **If the file is unreadable** (deleted between prepare-script detection and this read, permissions error, etc.): when the active template was the project override, fall back to the shipped default (step 3) and print one line: `Project plan template unreadable — falling back to shipped default.`; when even the shipped default is unreadable, stop and invoke `error-report` (Skill: plan, Step: Step 0 template resolution, Operation: read active template, Error: the read failure).
-5. Parse `## Required Sections` — extract each bullet as a section entry with:
-   - **name** — the bullet text (before any HTML comment)
-   - **narrative** — `true` when the bullet carries `<!-- narrative: true -->`
-   - **condition** — the condition string when the bullet carries `<!-- conditional: ... -->`, or null
-   **If the template has no `## Required Sections` heading** (malformed project override — the shipped default always has one): treat it the same as an unreadable file — fall back to the shipped default with the same one-line notice, or stop and invoke `error-report` if the shipped default itself is malformed.
-6. Extract `## Discovery Questions` — the bullet list of questions the Step 1 exploration phase answers. Absent in a project override is not an error — Step 1 falls back to its built-in scope/integration/success questions (see Step 1).
-7. Extract `## Verification Patterns` — the bullet list of verification approaches for task `**Verify:**` fields. Absent in a project override is not an error — task authoring falls back to generic verification judgment.
-8. Store the resolved absolute template path as `activeTemplatePath` for use in Step 3 lane dispatch.
-
-**Build the plan skeleton from the template.** For each entry in the parsed `## Required Sections` list, in the order defined by `./plan-format-reference.md`'s `## Section Order`:
-
-- **Unconditional sections** — write the `## <name>` heading with a placeholder body. For `Deviations & assumptions`, use the table format (Item | asked | does | why) with a placeholder row. For other sections, use `[TBD]`.
-- **Conditional sections** — evaluate the condition against the prepare output's signals, not against plan header placeholders which are still `[TBD]` at skeleton-build time. For OpenSpec conditions specifically, evaluate `fromOpenspecDirect || openspecInlineGenerate` — `fromOpenspecDirect` is set in the `--from-openspec` handling below; `openspecInlineGenerate` is set in the gate check Option 2 handling (implements R63). These are the same flags that gate OpenSpec Appendix generation in Step 4, so the skeleton decision and the fill decision never diverge. Recognize both the legacy condition string (`source matches openspec/changes/`) and the current condition string (`source matches openspec/changes/ or openspecInlineGenerate`), mapping both to the union check `fromOpenspecDirect || openspecInlineGenerate`. A plan with `openspecContext` populated via the interactive `--spec` flow but without `--from-openspec` or `openspecInlineGenerate` does NOT satisfy OpenSpec-conditional sections (no Step 4 branch renders content for that path). When the condition holds, write the heading with `[TBD]`. When it does not, write the heading with `Not applicable — <reason>` (e.g., `Not applicable — no OpenSpec change`). **Unknown condition strings** — a project-override template MAY declare a `<!-- conditional: ... -->` string this SKILL.md doesn't recognize (only the OpenSpec condition is currently defined). Default to treating the condition as NOT satisfied — write the heading with `Not applicable — condition "<condition string>" not recognized`. This fails toward a visible, grep-able placeholder rather than either silently dropping the heading (which PF10 would then flag as a genuine failure) or guessing the condition true and leaving a `[TBD]` nobody fills in. Since PF10 checks heading presence unconditionally (R59), the heading itself is written either way — only the body differs.
-
-**Lightweight plan adjustment:** When Step 0 routing selects the lightweight branch (Step 5 skipped), sections whose content is produced exclusively by a skipped step (e.g., `Verification Scorecard` is produced by Step 5) get body `Not applicable — lightweight plan` instead of `[TBD]`. This prevents dead placeholders in the final plan. This is a best-effort readability improvement, not a correctness requirement: it names known step-owned sections by their default-template name, so a project override that renames or adds a step-5-owned section simply falls back to the generic `[TBD]` body for that section rather than breaking — the section still appears (per the "do not hardcode which sections appear" rule below), only the friendlier substitute body is skipped.
-
-Do NOT hardcode which sections appear in the skeleton, or their order. The template's `## Required Sections` list (and `./plan-format-reference.md`'s `## Section Order`) is the single source of truth for section presence and ordering — never an explicit roster coded into this SKILL.md. Section-specific BODY FORMATTING for a small, named set of sections (the Deviations table above, the lightweight-adjustment substitution above) is a distinct, narrower exception: it improves the placeholder body for sections this doc already knows by name, and degrades gracefully to the generic `[TBD]` body for any section it doesn't recognize — it never controls whether a section is written.
+From the output, write `template.headerMarkdown` + `template.skeletonMarkdown` to the plan file (document header + full section skeleton). Read `template.routing.pipelineMode` to select the pipeline branch (`full` / `lightweight` / `skip`) — the routing table above still applies for the "Stop — no plan needed" and "Decompose" LLM decisions the tool does not make. Store `template.activeTemplatePath` as `activeTemplatePath` for Step 3 lane dispatch (`{PLAN_TEMPLATE_PATH}`) and Step 6.6 format validation (`TEMPLATE_PATH`). Store `template.discoveryQuestions` for Step 1 structured discovery (falls back to built-in scope/integration/success questions when empty) and `template.verificationPatterns` for Step 2 task authoring (falls back to generic verification judgment when empty). Extract `style` (with `narrativeRules`) and `tasks` (with `requiredFields`, `contractShape`) from the output — these are top-level fields populated regardless of `resolveTemplate`, used in Steps 2, 4, and 5.
 
 **Contradictory-signal override (implements R16):** After reading the prepare output, IF `openspec.authoritative.path` is set AND the current session-start `<system-reminder>` contains a line matching `/openspec.*not initialized|not initialized.*openspec/i`, print exactly one line:
 `Ignoring contradictory 'not initialized' signal in session context — openspec/config.yaml exists (authoritative source: SDLC's own check via plan_prepare output).`
@@ -127,7 +114,7 @@ Then continue the flow. If the contradictory phrase is absent, emit nothing.
 If `fromOpenspec.valid` is true in the prepare output:
 1. Read in parallel: `openspec/changes/<name>/proposal.md`, `openspec/changes/<name>/design.md` (optional), all `openspec/changes/<name>/specs/*.md`, `openspec/changes/<name>/tasks.md` (optional)
 2. Store as `openspecContext`. Set `fromOpenspecDirect = true`
-3. Skip to Step 1 — bypass the gate check entirely
+3. Skip the gate check and complexity routing; still perform the template-resolution `plan_prepare` call above (passing `fromOpenspecDirect: true`) before proceeding to Step 1
 
 If `fromOpenspec` is present but `valid` is false and errors exist: display errors and stop.
 
@@ -365,10 +352,10 @@ After the `fromOpenspecDirect` enrichment block, determine which exploration pat
   - Use inline exploration below. Plan still produced. (implements R28)
   - Issue all Glob/Grep/Read calls for inline exploration in a SINGLE message (parallel dispatch). (implements R37, Fixes #418)
 
-**Structured discovery:** When requirements are vague (a single sentence or ambiguous goal), OR when multiple materially different approaches exist for a non-trivial aspect, use AskUserQuestion with targeted questions. Concrete triggers for the latter: (a) exploration surfaces two or more viable architecture patterns for the same aspect; (b) an ambiguous scope boundary exists where including vs. excluding a component would materially change the plan; (c) the codebase sends conflicting signals — two existing patterns either of which could reasonably be followed. When the active template provides `## Discovery Questions`, use those questions verbatim. When the template has no `## Discovery Questions` section (project override omitted it), fall back to:
-1. **Scope** — what's in, what's explicitly out?
-2. **Integration** — what existing code does this touch?
-3. **Success** — how will we know it works?
+**Structured discovery:** When requirements are vague (a single sentence or ambiguous goal), OR when multiple materially different approaches exist for a non-trivial aspect, use AskUserQuestion with targeted questions. Concrete triggers for the latter: (a) exploration surfaces two or more viable architecture patterns for the same aspect; (b) an ambiguous scope boundary exists where including vs. excluding a component would materially change the plan; (c) the codebase sends conflicting signals — two existing patterns either of which could reasonably be followed. Frame each question per the decision-framing rule, scaled to `style.audience` (resolved by the `plan_prepare` call in Step 0): lead each question with one sentence of context on what it decides and why it matters before asking it. When `template.discoveryQuestions` from the `plan_prepare` output is non-empty, use those questions verbatim — the question text itself is not modified — but still lead each with the one-sentence context per the decision-framing rule. When the list is empty (project override omitted discovery questions), fall back to:
+1. **Scope** — what's in, what's explicitly out? Context: unresolved scope boundaries turn into missing or over-built tasks in Step 2.
+2. **Integration** — what existing code does this touch? Context: decides which files land in task `Files:` blocks and which existing patterns the tasks follow.
+3. **Success** — how will we know it works? Context: becomes each task's `Verify:` field, so a vague answer here produces untestable tasks.
 
 Wait for answers before continuing.
 
@@ -466,6 +453,19 @@ Plan tasks NOT derived from any OpenSpec task MUST omit the field. N:1 mapping (
 - Order: foundations → features → integration → polish
 - Dependencies explicit (task B names task A if it needs A's output)
 
+**Wave-Optimization Discipline:** `execute` runs tasks in dependency-ordered waves — every task with
+no unresolved dependency in a wave runs in parallel. Each unnecessary `Depends on` edge pushes a task
+into a later wave for no real reason, so maximize parallelism by minimizing false dependencies:
+- Default to `Depends on: none`. Only declare `Depends on: Task X` when task B truly cannot start
+  until task A finishes — it reads a file A produces, or extends a struct/interface A defines. Name
+  the concrete artifact the dependency is on; if you can't name one, there is no dependency.
+- "Related to" is not "depends on." Two tasks that modify the same package but touch different
+  files, or that approach the same feature from different angles, can still run in the same wave.
+- When a task blocks many downstream tasks, check whether all of them need the *whole* task or just
+  part of it. If task X blocks 5 downstream tasks but only 2 of them actually need the struct or
+  interface X defines, split X into a struct/interface-only task (fast, unblocks all 5 immediately)
+  and a full-implementation task (slower, only the 2 that need the real logic depend on it).
+
 **OpenSpec-aware decomposition (when `openspecContext` is available):**
 - Map each ADDED and MODIFIED requirement from the delta specs to at least one task
 - In the Key Decisions section, note which OpenSpec `design.md` decisions were adopted and which (if any) were overridden with rationale
@@ -507,6 +507,8 @@ Files + Contract + Acceptance criteria — do not restate it here.]
 
 **Contract block (required — implements R45):** Every artifact-touching task MUST include a `**Contract:**` block per `./plan-format-reference.md`, carrying the type-appropriate decided shape (code: signatures/types/flags/error-cases/import-paths; docs: template+sections+audience+cross-links; openspec/spec: requirement IDs ADD/MODIFY/REMOVE + delta text + numbering). The plan type is derived from the task's `Files:` paths; a mixed-artifact task uses its dominant artifact's column. A task whose Contract is absent or merely restates "update X to do Y" is flagged by G18 in Step 3.
 
+**Contract requires a visual artifact — prose-only fails G18:** The Contract's `shape` MUST render at least one visual artifact, not describe it in prose alone: a fenced code block for a struct/type definition, a field-diff table (`+`add/`−`remove) for a modification, a before/after render for a workflow change, or a JSON/YAML schema snippet for a config change. A `shape` with no fenced block, table, or diff is insufficient even when the prose is concrete. This is distinct from `## Concrete Artifacts (render don't narrate)` in `./plan-format-reference.md`: the Contract's visual renders the deliverable's **decided shape** (what execution implements verbatim); Concrete Artifacts render **observable** payloads/state/outcomes (what a reviewer verifies once built) — the two can reuse the same snippet when they coincide, but are judged separately.
+
 **G18 — Settlement / contract concreteness (error-severity):** Flags any artifact-touching task whose `Contract:` is absent or merely restates "update X to do Y" without a concrete type-appropriate shape. Owned by the content-coverage lane. Blocks plan approval until the Contract pins the decided shape. Backed by deterministic presence floor PF7 (`validate({action:"plan_format"})`, default check set); LLM G18 judges concreteness above the floor.
 
 **Render don't narrate (surface-conditional — implements R46):** When a task touches a concrete-artifact surface (payload, struct/schema field change, status enum, flow, config/flag delta, error mode, data-writing end-state), RENDER the artifact (fenced block / table / before→after diff) — do not describe it in prose. Use the catalog + conventions in ./plan-format-reference.md. Cap: one elided (…) example per distinct contract shape (a distinct contract shape is one unique combination of method + path for REST, or flag + type for CLI — two endpoints with the same method but different paths are distinct shapes). Trivial docs/rename tasks render nothing. (Mermaid fenced blocks allowed for flow/call-order/state surfaces; no MDX.) A task whose concrete-artifact surface is described in prose rather than rendered is flagged by G19 in Step 3.
@@ -522,6 +524,14 @@ Files + Contract + Acceptance criteria — do not restate it here.]
 - Config/infrastructure → build verification
 - Documentation → manual review
 - Integration → integration test or E2E
+
+**Test Isolation for Parallel Execution:** When authoring `Verify:` for a task likely to share a wave
+with other tasks touching the same package, add a scope hint in parentheses naming the exact command
+to run instead of the full suite — e.g. `Verify: tests (go test ./internal/tools/ -run TestFoo)`. This
+stops N parallel agents in the same wave from each re-running the full suite; the full suite still
+runs once at the wave boundary as the gate check regardless of any per-task scope hints. See
+`./plan-format-reference.md`'s `## Verify Field — Scoped Hints` and `## Isolation` sections for the
+full syntax and when to use it.
 
 **Write to plan file — template-required sections and tasks:** Write ALL sections declared in the active template's `## Required Sections` list, in the order defined by `./plan-format-reference.md`'s `## Section Order`. Do NOT hardcode section names — the template is the single source of truth. For each template-required section:
 
@@ -584,12 +594,7 @@ Each lane returns a JSON object with schema:
 Lane 3 (guardrail-compliance) additionally returns `guardrailCompliancePayload` in the JSON object — store this for Step 4's `## Guardrail Compliance` section.
 Lane 4 (dimension-coverage/G17) returns the G17 findings JSON — parse the `findings` object and persist as `g17Findings` for Step 4.
 
-**Merge algorithm:**
-1. `allIssues` = union of `issues[]` from all lanes
-2. `allPasses` = union of `passes[]` from all lanes
-3. `coverageCheck`: the union of all `gateIds[]` arrays returned by lanes MUST equal {G1..G21} exactly. Any missing gate ID → add a blocking issue: `{ gateId: "<missing>", severity: "error", message: "Gate <missing> not evaluated by any lane", blocking: true }`
-4. Lane returning `laneStatus !== "ok"`: append to `allIssues` as blocking error `{ gateId: "lane-failure", severity: "error", message: "Lane <name> failed: <reason> — gate IDs <list> not evaluated", blocking: true }` — **exception: G17 lane (lanes[4]) failure is advisory, not blocking** (per R31 dispatch-failure fallback)
-5. Dedup `allIssues` by `(gateId, taskRef, message-normalized-prefix)` — keep first occurrence
+**Merge algorithm:** Collect each lane's result (including synthetic `laneStatus: "failed"` entries for null-`promptTemplatePath` lanes) into a `laneResults` array. Call `plan_support({action: "merge_results", laneResults: [...], expectedGates: ["G1".."G21"]})`. Process the returned `allIssues`, `coverageGaps`, and `laneFailures` — the tool handles issue/pass union, gate-coverage checks, lane-failure injection (G17 advisory per R31), and deduplication.
 
 Note every issue from `allIssues`. Do NOT write to the plan file in this step.
 
@@ -602,6 +607,8 @@ Note every issue from `allIssues`. Do NOT write to the plan file in this step.
 ## Step 4 (IMPROVE): Revise Plan and Present for Approval
 
 Fix all issues from Step 3. Rewrite the plan file with fixes applied (edit the existing file, don't append). If any revision changes the scope or approach from what was originally recorded, update the `## Deviations & assumptions` table accordingly.
+
+**Task block authoring config:** When revising or adding task blocks, honour `tasks.requiredFields` and `tasks.contractShape` from the `plan_prepare` output. `tasks.requiredFields` lists the metadata fields every task block must carry (enforced by PF11). `tasks.contractShape` describes the expected contract format (enforced by PF12). These are project-configurable — do not hardcode defaults when the config provides values.
 
 **G16 (OpenSpec tasks.md coverage) failure resolution:** When G16 reports uncovered OpenSpec task entries, resolve each one by EITHER (a) adding a plan task with the missing `openspec-task` block carrying the corresponding `ref`, OR (b) appending the uncovered title under the `## Out-of-scope OpenSpec tasks` section with a one-line rationale. Both paths are valid; choose based on whether the implementation actually covers the work.
 
@@ -626,12 +633,13 @@ When `g17Findings.findings` is empty (or `g17Findings` is the empty-fallback fro
 
 **OpenSpec Appendix generation (implements R59, R63):** Three-way conditional:
 
-**(a)** When `fromOpenspecDirect` is true (full-pipeline OpenSpec path), populate the `## OpenSpec Appendix` section with:
+**(a)** When `fromOpenspecDirect` is true (full-pipeline OpenSpec path), call:
 
-1. **Requirement inventory table** — one row per entry from `openspecContext.requirements[]` with columns: reqId, capability, type, covering task(s).
-2. **Delta-spec fragments** — reproduce each delta-spec file's content so a reviewer does not need to open OpenSpec files separately.
+```
+plan_support({ action: "openspec_appendix", changeName: <name>, proposalPath, designPath, specPaths, planTasks })
+```
 
-**Nested-fence safety (N+1 backticks):** Delta-spec fragments are themselves markdown containing fenced code blocks. Before fencing a fragment, count the longest consecutive backtick run (N) appearing anywhere inside the fragment's content. Wrap the fragment in a fence of max(N+1, 4) backticks — CommonMark closes a fence only on a run at least as long as the opening run, so the longer outer fence passes shorter inner runs through untouched. Each fragment is fenced independently (different fragments may need different outer fence lengths).
+Write the returned `appendixMarkdown` into the `## OpenSpec Appendix` section. The tool builds the requirement inventory table and delta-spec fragments (with nested-fence safety) server-side.
 
 **(b)** When `openspecInlineGenerate` is true (inline generate path from gate check Option 2, implements R63), populate the `## OpenSpec Appendix` section with an **OpenSpec Artifacts (Draft)** label and author fresh artifacts from exploration and decomposition data:
 
@@ -639,7 +647,7 @@ When `g17Findings.findings` is empty (or `g17Findings` is the empty-fallback fro
 2. **`### Delta Specs`** — author spec deltas with ADDED/MODIFIED/REMOVED sections derived from exploration and decomposition. Wrap with `<!-- openspec-target: specs/<feature-name>.md -->`.
 3. **`### Tasks List`** — author a tasks checklist derived from the plan's task decomposition. Wrap with `<!-- openspec-target: tasks.md -->`.
 
-Each fragment MUST be wrapped with `<!-- openspec-target: <path> -->` annotations as shown above. The appendix MUST be complete enough that `openspec create`/`openspec validate` can run directly off it after handoff, with no further interactive authoring step. Apply the same nested-fence safety (N+1 backticks) rule to any fenced content within the authored artifacts.
+Each fragment MUST be wrapped with `<!-- openspec-target: <path> -->` annotations as shown above. The appendix MUST be complete enough that `openspec create`/`openspec validate` can run directly off it after handoff, with no further interactive authoring step. **Nested-fence safety (N+1 backticks):** Before fencing a fragment, count the longest consecutive backtick run (N) inside its content and wrap in max(N+1, 4) backticks — CommonMark closes a fence only on a run at least as long as the opening. Each fragment is fenced independently.
 
 **(c)** When `fromOpenspecDirect` is false AND `openspecInlineGenerate` is false, the skeleton placeholder from Step 0 already reads `Not applicable — no OpenSpec change` — leave it as-is.
 
@@ -655,7 +663,7 @@ When `materialChangeDetected` is true (set by the Step 6 IMPROVE pass — see be
 
 - **Dispatch contents:** all five `lanes[]` (P16) + all `lensReviewers[]` (P17, or the single reviewer for <5-task plans). Each agent uses the same dispatch parameters, template variables, and model rules defined in Step 3 (lanes) and Step 5 (lenses) respectively.
 - **Await barrier:** do not consolidate or advance until exactly N = (5 lanes + M lenses) results are collected. Never consolidate on partial or zero returns.
-- **Merge:** lane results are processed by the Step 3 merge algorithm verbatim (coverageCheck {G1..G21}, null-template handling, lane-failure handling). Lens results are processed by the Step 5 merge below. The unified blocking-issue set is the union of both — lane issues deduped by `(gateId, taskRef, message-normalized-prefix)`, lens issues deduped by `(taskRef, message-normalized-prefix)`, cross-source union deduped by `(taskRef, message-normalized-prefix)` (keep first occurrence).
+- **Merge:** use the combined `plan_support({action: "merge_results", laneResults, lensResults, expectedGates, isRedispatch: true})` call described in the Step 5 merge section below. The tool handles lane/lens merging, gate coverage, G17 advisory demotion, and cross-source deduplication in one call.
 - **G17 on re-dispatch (advisory only):** lanes[4]/G17 findings from the re-dispatch merge as advisory only. Step 4 has already run, so there is no `## Suggested Review Dimensions` consumer — do not re-splice G17 findings into the plan file. Persist updated `g17Findings` in memory for scorecard reference only.
 - **Guardrail-block gate preservation (R19):** lanes[3] (guardrail-compliance) findings from the re-dispatch are scanned the same way Step 4 scans them. If any error-severity guardrail violation is present in the re-dispatch merge, do NOT route it silently into Step 6's blocking-issue set — surface the same guardrail-block harden offer described in Step 4 (offer **harden** alongside the user-revision options; dispatch `Skill(harden)` with `--failure-text "Plan blocked by error-severity guardrail <id>: <description> — <rationale>"`, `--skill plan`, `--step "Step 5 — merged re-dispatch"`, `--operation "error-severity guardrail block"` only if the user selects harden, suppressed when `--auto` is set) before proceeding with Step 6 fixes. This preserves R19 across the merged re-dispatch path.
 - **`guardrailsEvaluated` / `critiqueRan`:** NOT re-written (once-per-run checkpoints — see Step 3).
@@ -681,25 +689,21 @@ For each `lensReviewers[i]` entry (i = 0..2):
   - `{OPENSPEC_TASKS}` — serialized JSON from `openspecContext.tasks[]`, or `"none — plan not from OpenSpec"`
   - `{GUARDRAILS}` — one guardrail per line (`- [id] (severity): description`), or `"none configured"`
   - `{REQUIREMENTS_JSON}` — `JSON.stringify(openspecContext.requirements)` when present, or `"null"` (null-safe; lens prompts render `"null"` as `"none — inventory unavailable, use checklist"`)
+  - `{NARRATIVE_RULES}` — `style.narrativeRules` from the `plan_prepare` output, joined as a newline-separated list, or `"none configured"` when the array is empty. Threads the project's narrative writing rules into lens reviewer evaluation.
 
 When `lensReviewers[i].promptTemplatePath` is null, skip that lens and log to `.sdlc-v2/learnings/log.md`: `## YYYY-MM-DD — plan: lens "<name>" skipped — promptTemplatePath null (template not found at prepare time)`. Continue with remaining lenses.
 
 **No `isolation: "worktree"` on any lens reviewer dispatch** (forbidden per issues #370/#372).
 
-**Merge lens reviewer results (per iteration):**
-1. **Status**: `Approved` iff ALL lens reviewers returned `Approved`; otherwise `Issues Found`
-2. **Issues**: union of blocking issues across all lenses — dedup by `(taskRef, message-normalized-prefix)` (keep first occurrence)
-3. **Recommendations**: collect all recommendations, dedup by string prefix (first 60 chars)
-4. **Iteration counter**: increment by 1 only after the await barrier above is satisfied (exactly N lens results collected, N = lenses dispatched); never increment on partial or zero returns (R-orchestrator-await, R-c1, #487)
+**Merge lens reviewer results (per iteration):** Collect each lens reviewer's result into a `lensResults` array. Call `plan_support({action: "merge_results", lensResults: [...]})`. Process the returned `mergedStatus` (`Approved` / `Issues Found`), `allIssues`, and `recommendations` — the tool handles status derivation, issue dedup by `(taskRef, message-normalized-prefix)`, and recommendation dedup by string prefix. For the merged re-dispatch path (when `materialChangeDetected` is true), combine both in one call: `plan_support({action: "merge_results", laneResults: [...], lensResults: [...], expectedGates: ["G1".."G21"], isRedispatch: true})` — `isRedispatch` makes G17 findings advisory-only and applies cross-source deduplication.
+
+**Iteration counter**: increment by 1 only after the await barrier above is satisfied (exactly N lens results collected, N = lenses dispatched); never increment on partial or zero returns (R-orchestrator-await, R-c1, #487).
 
 **For plans with <5 tasks — Single reviewer (status quo):** Dispatch one reviewer with `{LENS}=all` using `./plan-reviewer-prompt.md` directly (same model acceptable). Status quo behavior preserved.
 
 **Gate B — Verification Scorecard (implements R40, R42, R44 — Fixes #445):**
 
 After the merge step, assemble the `## Verification Scorecard` section in the plan file. This is purely additive — it MUST NOT remove or alter any existing gate evaluation, `buildLanes`, or the `{G1..G21}` union assertion. G1–G18 unchanged; G19 severity promoted (R46 mod); G20 additive (R48); G21 additive (R51). The scorecard is regenerated (replaced, not appended) on each Step 5 iteration (R44).
-
-**Pass `{REQUIREMENTS_JSON}` to lens reviewers as a new template variable** (in addition to the existing variables above):
-- `{REQUIREMENTS_JSON}` — `JSON.stringify(openspecContext.requirements)` when the inventory is present; `"null"` when `openspecContext.requirements` is null (CLI absent or non-OpenSpec plan). This is null-safe: lens prompts render it as `"none — inventory unavailable, use checklist"` when null.
 
 **Scorecard assembly (in main context after lens merge, per iteration):**
 
@@ -719,7 +723,7 @@ After the merge step, assemble the `## Verification Scorecard` section in the pl
 **Review loop:**
 - Approved → Step 6 is a no-op, proceed to Step 7
 - Issues found → go to Step 6
-- Max 3 iterations → use AskUserQuestion to surface unresolved issues to user. Offer **harden** (run `/harden` to analyze why this failed and propose stronger guardrails / dimensions / instructions that would catch it earlier next time — opt-in, no surface is edited without your approval) alongside the existing escalation options. When the user selects **harden** (interactive mode only — suppressed when `--auto` is set), dispatch `Skill(harden)` with `--failure-text "Plan reviewer loop did not converge after 3 iterations. Outstanding issues: <union-of-blocking-issues-across-all-lenses>"`, `--skill plan`, `--step "Step 5 — review loop"`, `--operation "reviewer-loop max iterations"`. Implements R19.
+- Max 3 iterations → use AskUserQuestion to surface unresolved issues to user. Context: the review loop ran 3 fix/re-review passes and still has open blocking issues — before asking, summarize what failed (the union of blocking findings across all lenses), scaled to `style.audience`, so the user isn't choosing blind. Offer **harden** (run `/harden` to analyze why this failed and propose stronger guardrails / dimensions / instructions that would catch it earlier next time — opt-in, no surface is edited without your approval; consequence: proposes preventive changes only, nothing is edited without a separate approval) alongside the existing escalation options. When the user selects **harden** (interactive mode only — suppressed when `--auto` is set), dispatch `Skill(harden)` with `--failure-text "Plan reviewer loop did not converge after 3 iterations. Outstanding issues: <union-of-blocking-issues-across-all-lenses>"`, `--skill plan`, `--step "Step 5 — review loop"`, `--operation "reviewer-loop max iterations"`. Implements R19.
 
 ## Step 6 (IMPROVE): Apply Review Fixes
 
@@ -733,30 +737,7 @@ Fix each blocking issue identified by the reviewer. Rewrite the plan file with f
 
 **Material change detection (implements R64):**
 
-Before rewriting the plan file, snapshot these values from the current plan content:
-1. `taskCountBefore` — number of `### Task N:` headings
-2. `deviationsRowsBefore` — set of row keys (first cell) in the `## Deviations & assumptions` table
-3. `filesSetBefore` — map of `{ taskRef: <set of paths in that task's **Files:** block> }` for every task
-4. `contractsBefore` — map of `{ taskRef: <verbatim Contract: block text> }` for every task carrying a `**Contract:**` block
-5. `dependsOnBefore` — map of `{ taskRef: <verbatim Depends on: value> }` for every task
-6. `keyDecisionsBefore` — set of row/entry keys in the `## Key Decisions` section
-7. `openspecTaskMappingBefore` — map of `{ taskRef: <openspec-task.ref, or null if absent> }` for every task (R29/R30)
-
-After the plan file is rewritten with Step 6 fixes applied, compute the same values from the updated plan content and compare:
-
-| Trigger | Condition | Material? | R64 source |
-|---|---|---|---|
-| Task count delta | `taskCountAfter !== taskCountBefore` (task added or removed) | Yes | task added/removed |
-| Task re-scoped — Files | Any task's `filesSetAfter[taskRef]` differs from `filesSetBefore[taskRef]` (paths added or removed) | Yes | task re-scoped (Files) |
-| Task re-scoped — Contract | Any task's `contractsAfter[taskRef]` differs from `contractsBefore[taskRef]` | Yes | task re-scoped (Contract) |
-| Task re-scoped — Depends on | Any task's `dependsOnAfter[taskRef]` differs from `dependsOnBefore[taskRef]` | Yes | task re-scoped (Depends on) |
-| Key Decision changed | `keyDecisionsAfter` differs from `keyDecisionsBefore` (an entry reversed, or a new entry introduced) | Yes | Key Decision reversed/introduced |
-| OpenSpec task mapping changed | Any task's `openspecTaskMappingAfter[taskRef]` differs from `openspecTaskMappingBefore[taskRef]` | Yes | OpenSpec task mapping (R29/R30) changed |
-| Deviations table modified | Any new or changed row key in the Deviations table compared to `deviationsRowsBefore` | Yes (R64's conservative superset — a deviations-table edit usually co-occurs with a scope/approach change worth re-validating) | R64 conservative superset clause |
-
-If **any** trigger fires, set `materialChangeDetected = true`. Otherwise leave it `false` (or unset).
-
-Wording-only, formatting-only, and metadata-only fixes that leave all seven snapshotted values unchanged are NOT material and do not trigger re-validation (R64).
+Before rewriting the plan file with fixes, call `plan_support({action: "material_snapshot", filePath: planPath})` and store the returned `snapshot`. After the rewrite, call `plan_support({action: "material_compare", filePath: planPath, snapshot: <snapshot>})`. The tool compares all seven structural dimensions (task count, deviations rows, files-set, contracts, depends-on, key decisions, openspec-task mapping) and returns `material` (boolean) and `triggers` (list of fired trigger descriptions). If `material` is true, set `materialChangeDetected = true`. Wording-only and formatting-only fixes are NOT material (R64).
 
 Re-dispatch the reviewer (back to Step 5 loop). When `materialChangeDetected` is true, the Step 5 merged dispatch path activates — see "Material change detection and merged re-dispatch" in Step 5.
 
@@ -904,3 +885,4 @@ On selection, invoke the chosen skill using the Skill tool. On "done", end witho
 - `./plan-reviewer-prompt.md` — plan review subagent template
 - `./plan-format-reference.md` — plan document format specification
 - [`/execute`](../execute/SKILL.md) — skill that executes the plans this skill produces
+- [`docs/plan-architecture.md`](../../../../docs/plan-architecture.md) — plan skill architecture reference

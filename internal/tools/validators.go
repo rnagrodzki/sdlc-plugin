@@ -197,6 +197,9 @@ func validatePlanFormat(root string, in ValidateIn) ([]discovery.Finding, error)
 		checkPF7(tasks),
 	}
 
+	planTasks := loadPlanTasks(root)
+	checks = append(checks, checkPF11(tasks, planTasks.RequiredFields), checkPF12(tasks, planTasks.ContractShape))
+
 	if in.Final {
 		checks = append(checks, checkPF9(content))
 		if in.Template != "" {
@@ -555,6 +558,107 @@ func checkPF7(tasks []planTask) pfCheck {
 	return pfCheck{"PF7", "pass", "All artifact-touching tasks have a Contract block"}
 }
 
+// checkPF11 enforces the team-configured "plan.tasks.requiredFields" contract
+// (loaded via loadPlanTasks in plan.go): every task must carry all
+// configured custom fields, additive to the core 5 (Complexity, Risk, Files,
+// Verify, Depends on) checked by PF3/PF4. loadPlanTasks already drops any
+// entry duplicating a core field, so requiredFields here only ever contains
+// genuinely custom fields. An empty requiredFields (absent config) degrades
+// gracefully to a pass with no per-task looping.
+func checkPF11(tasks []planTask, requiredFields []string) pfCheck {
+	if len(requiredFields) == 0 {
+		return pfCheck{"PF11", "pass", "No custom required fields configured"}
+	}
+	var issues []string
+	for _, t := range tasks {
+		for _, field := range requiredFields {
+			if v, ok := extractField(t.Body, field); !ok || v == "" {
+				issues = append(issues, fmt.Sprintf("Task %d: missing required field '%s'", t.Number, field))
+			}
+		}
+	}
+	if len(issues) > 0 {
+		return pfCheck{"PF11", "fail", strings.Join(issues, "; ")}
+	}
+	return pfCheck{"PF11", "pass", "All tasks have required custom fields"}
+}
+
+// pf12ContractStartRe locates the content of a **Contract:** block (the
+// indented "- key: value" list following the marker line), mirroring
+// acStartRe/notesStartRe's extractDelimitedBlock usage in checkPF5.
+var pf12ContractStartRe = regexp.MustCompile(`\*\*Contract:\*\*\s*\n`)
+
+// pf12RequiredKeyRes are the five required Contract-block keys per
+// plan-format-reference.md's "The `Contract:` block" section (shape, names,
+// mirror, decisions, sync -- "example" is optional and not checked here).
+var pf12RequiredKeyRes = []struct {
+	name string
+	re   *regexp.Regexp
+}{
+	{"shape", regexp.MustCompile(`(?m)^\s*-\s+shape\b`)},
+	{"names", regexp.MustCompile(`(?m)^\s*-\s+names\b`)},
+	{"mirror", regexp.MustCompile(`(?m)^\s*-\s+mirror\b`)},
+	{"decisions", regexp.MustCompile(`(?m)^\s*-\s+decisions\b`)},
+	{"sync", regexp.MustCompile(`(?m)^\s*-\s+sync\b`)},
+}
+
+// contractMissingKeys reports which of the five required Contract-block keys
+// are absent from block (the block text following the **Contract:** marker).
+func contractMissingKeys(block string) []string {
+	var missing []string
+	for _, k := range pf12RequiredKeyRes {
+		if !k.re.MatchString(block) {
+			missing = append(missing, k.name)
+		}
+	}
+	return missing
+}
+
+// checkPF12 enforces the team-configured "plan.tasks.contractShape" contract
+// (loaded via loadPlanTasks in plan.go) against artifact-touching tasks
+// (same gating as PF7's pf7BulletRe):
+//
+//   - "none"    -- skip entirely (Contract block checks not enforced).
+//   - "minimal" -- **Contract:** block must be present; depth not checked.
+//   - "full"    -- (default) block must be present AND carry all five
+//     required keys (shape, names, mirror, decisions, sync).
+//
+// An absent Contract block always fails for "full"/"minimal" (never for
+// "none"). Core PF7 presence-only behavior is unaffected by this check.
+func checkPF12(tasks []planTask, contractShape string) pfCheck {
+	if contractShape == "" {
+		contractShape = "full"
+	}
+	if contractShape == "none" {
+		return pfCheck{"PF12", "pass", "Contract shape check skipped (contractShape: none)"}
+	}
+
+	var issues []string
+	for _, t := range tasks {
+		if !pf7BulletRe.MatchString(t.Body) {
+			continue
+		}
+		prefix := fmt.Sprintf("Task %d", t.Number)
+
+		if !pf7ContractRe.MatchString(t.Body) {
+			issues = append(issues, prefix+": missing **Contract:** block")
+			continue
+		}
+		if contractShape == "minimal" {
+			continue
+		}
+
+		block, _ := extractDelimitedBlock(t.Body, pf12ContractStartRe, []string{"\n**", "\n### ", "\n---", "\n## "})
+		if missing := contractMissingKeys(block); len(missing) > 0 {
+			issues = append(issues, fmt.Sprintf("%s: Contract block missing required key(s): %s", prefix, strings.Join(missing, ", ")))
+		}
+	}
+	if len(issues) > 0 {
+		return pfCheck{"PF12", "fail", strings.Join(issues, "; ")}
+	}
+	return pfCheck{"PF12", "pass", "All Contract blocks match required shape"}
+}
+
 var pf9Re = regexp.MustCompile(`(?im)^##\s+Verification\s+Scorecard`)
 
 func checkPF9(content string) pfCheck {
@@ -601,11 +705,20 @@ var (
 	conditionalStripRe2 = regexp.MustCompile(`(?is)<!--\s*conditional:.*?-->`)
 )
 
-// parseTemplateRequiredSections ports JS parseTemplate's scan of the
-// "## Required Sections" heading block, returning just the section names
-// (Narrative/Condition annotations are stripped but not needed by PF10,
-// which checks every declared section's heading unconditionally).
-func parseTemplateRequiredSections(templatePath string) ([]string, error) {
+// TemplateSection is a single "## Required Sections" bullet item, carrying
+// its Narrative/Condition annotations alongside the section name.
+type TemplateSection struct {
+	Name      string  `json:"name"`
+	Narrative bool    `json:"narrative"`
+	Condition *string `json:"condition"`
+}
+
+// parseTemplateRequiredSectionsFull ports JS parseTemplate's scan of the
+// "## Required Sections" heading block, returning each declared section's
+// name plus its Narrative (<!-- narrative: true -->) and Condition
+// (<!-- conditional: ... -->) annotations. This is the shared utility behind
+// both template resolution and PF10 checking.
+func parseTemplateRequiredSectionsFull(templatePath string) ([]TemplateSection, error) {
 	content, err := os.ReadFile(templatePath)
 	if err != nil {
 		return nil, err
@@ -631,16 +744,43 @@ func parseTemplateRequiredSections(templatePath string) ([]string, error) {
 	}
 	block := text[blockStart:blockEnd]
 
-	var sections []string
+	var sections []TemplateSection
 	for _, m := range reqListItemRe.FindAllStringSubmatch(block, -1) {
 		line := strings.TrimSpace(m[1])
+
+		narrative := narrativeTagRe.MatchString(line)
 		line = strings.TrimSpace(narrativeTagRe.ReplaceAllString(line, ""))
-		if conditionalTagRe.MatchString(line) {
+
+		var condition *string
+		if cm := conditionalTagRe.FindStringSubmatch(line); cm != nil {
+			cond := strings.TrimSpace(cm[1])
+			condition = &cond
 			line = strings.TrimSpace(conditionalStripRe2.ReplaceAllString(line, ""))
 		}
+
 		if name := strings.TrimSpace(line); name != "" {
-			sections = append(sections, name)
+			sections = append(sections, TemplateSection{
+				Name:      name,
+				Narrative: narrative,
+				Condition: condition,
+			})
 		}
+	}
+	return sections, nil
+}
+
+// parseTemplateRequiredSections returns just the section names from
+// parseTemplateRequiredSectionsFull (Narrative/Condition annotations are
+// stripped but not needed by PF10, which checks every declared section's
+// heading unconditionally).
+func parseTemplateRequiredSections(templatePath string) ([]string, error) {
+	full, err := parseTemplateRequiredSectionsFull(templatePath)
+	if err != nil {
+		return nil, err
+	}
+	var sections []string
+	for _, s := range full {
+		sections = append(sections, s.Name)
 	}
 	return sections, nil
 }

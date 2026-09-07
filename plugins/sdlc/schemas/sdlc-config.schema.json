@@ -274,6 +274,23 @@
           "description": "Custom guardrails evaluated during plan critique phases.",
           "minItems": 1,
           "items": { "$ref": "#/$defs/guardrailItem" }
+        },
+        "tasks": {
+          "type": "object",
+          "description": "Team contract for plan tasks and deliverables.",
+          "properties": {
+            "requiredFields": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Required fields for each task in a plan."
+            },
+            "contractShape": {
+              "type": "string",
+              "enum": ["full", "minimal", "none"],
+              "description": "Shape of the task contract: full (complete), minimal (essential), or none (flexible)."
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
@@ -287,6 +304,28 @@
           "description": "Custom guardrails evaluated during execute-plan runtime (pre-wave and post-wave checks).",
           "minItems": 1,
           "items": { "$ref": "#/$defs/guardrailItem" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "planStyleSection": {
+      "type": "object",
+      "description": "Configures personal plan style preferences (verbosity, audience, narrative rules).",
+      "properties": {
+        "verbosity": {
+          "type": "string",
+          "enum": ["terse", "standard", "detailed"],
+          "description": "Plan verbosity level: terse (minimal), standard (balanced), or detailed (comprehensive)."
+        },
+        "audience": {
+          "type": "string",
+          "enum": ["technical", "mixed", "executive"],
+          "description": "Target audience for the plan narrative."
+        },
+        "narrativeRules": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Custom narrative rules to apply when generating plans."
         }
       },
       "additionalProperties": false
@@ -311,6 +350,9 @@
     },
     "plan": {
       "$ref": "#/$defs/planSection"
+    },
+    "planStyle": {
+      "$ref": "#/$defs/planStyleSection"
     },
     "execute": {
       "$ref": "#/$defs/executeSection"

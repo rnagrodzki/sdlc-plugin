@@ -33,7 +33,7 @@ var SubstepMap = map[string][]string{
 	"pr":                  {"push branch", "draft body", "gh pr create", "apply labels"},
 	"verify-pipeline":     {"poll checks", "fetch logs on failure", "analyze", "commit fix if any"},
 	"await-remote-review": {"poll reviews", "dispatch received-review if actionable", "commit fix if any"},
-	"learnings-commit":    {"append log", "commit log"},
+	"learnings-commit":    {"append log"},
 	"cleanup":             {"cleanup pipeline state"},
 }
 

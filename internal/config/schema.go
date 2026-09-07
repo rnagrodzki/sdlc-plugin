@@ -26,6 +26,16 @@ var allowedProjectKeys = map[string]bool{
 	"execute": true,
 }
 
+// allowedLocalOnlyKeys is the set of top-level schema properties that are
+// personal preference, not team contract: they route to .sdlc/local.json
+// (see ProjectSections in config.go) and must never appear in
+// .sdlc/config.json, so they are deliberately excluded from
+// allowedProjectKeys. TestSchemaSync checks schema top-level properties
+// against the union of allowedProjectKeys and this map.
+var allowedLocalOnlyKeys = map[string]bool{
+	"planStyle": true,
+}
+
 // validateProjectKeys checks that every top-level key in raw belongs to
 // allowedProjectKeys. Returns an error listing any unknown keys.
 func validateProjectKeys(raw map[string]any) error {

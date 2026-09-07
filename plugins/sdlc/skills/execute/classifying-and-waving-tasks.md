@@ -114,6 +114,28 @@ The `model:` parameter is REQUIRED on every Agent tool dispatch — no exception
 
 8. **Identify in-wave trivial batches:** Within each wave, if 2 or more tasks are classified Trivial, dispatch them together as a single haiku batch agent rather than executing each inline. A single trivial task in a wave is still executed inline. Same-file ordering rules apply within the batch (see Batched Trivial Tasks Prompt Template below).
 
+### Scoped Verification
+
+A task's `Verify:` field may carry a scope hint in parentheses — `Verify: tests (go test
+./internal/tools/ -run TestFoo)` — as defined in `plan-format-reference.md`'s `## Verify Field —
+Scoped Hints`. It changes what the *task's own agent* runs; it never changes what gates the wave:
+
+- **Scope hint present:** the task's dispatched Agent runs the scoped command instead of the full
+  suite as part of its own verification. This is what lets multiple tasks in the same wave that
+  touch the same package run in parallel without every agent re-running — and contending over — the
+  full suite.
+- **Scope hint absent:** the task's Agent falls back to running the full suite, same as today.
+- **Post-wave gate always runs the full suite regardless:** Step 5c's "Verification suite" check in
+  `execute/SKILL.md` runs the plan's verification command(s) once, after every task in the wave
+  reports done. It always runs the full suite — never a scoped command — no matter which (if any)
+  tasks in the wave used a scope hint mid-wave. A scope hint narrows an individual agent's own
+  verification; it never narrows the wave's gate.
+
+`verificationHint` (step 6b above) is a separate, narrower signal — it is only set when every task in
+the wave shares the identical `Verify:` value (scope hint included) — and exists to describe the
+wave for reporting/tooling. It does not change the post-wave gate's behavior of always running the
+full suite.
+
 ## Adaptive Wave Size Cap
 
 Complex tasks count as 2 toward the cap (they consume more context and are more likely to conflict).

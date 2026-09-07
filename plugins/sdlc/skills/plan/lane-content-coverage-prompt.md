@@ -58,7 +58,7 @@ Evaluate each gate. For each gate, return a pass or one or more issues.
 
 **G16 — OpenSpec tasks.md coverage:** When the plan was created with `--from-openspec` (fromOpenspecDirect is true), every entry in the OpenSpec `tasks.md` is either (a) referenced by at least one plan task's `openspec-task.ref`, or (b) listed in `## Out-of-scope OpenSpec tasks`. This is a blocking error when violated.
 
-**G18 — Settlement / contract concreteness:** Every artifact-touching task MUST carry a `Contract:` block whose decided shape is concrete for the task's plan type. **Flag** (error-severity, blocking) any artifact-touching task whose Contract is **absent**, OR whose `shape` merely restates "update X to do Y" without a concrete type-appropriate shape.
+**G18 — Settlement / contract concreteness:** Every artifact-touching task MUST carry a `Contract:` block whose decided shape is concrete for the task's plan type AND includes at least one visual artifact — a fenced struct/type code block, a field-diff table for modifications, a before/after render for workflow changes, or a JSON/YAML schema snippet for config changes. **Flag** (error-severity, blocking) any artifact-touching task whose Contract is **absent**, whose `shape` merely restates "update X to do Y" without a concrete type-appropriate shape, OR whose `shape` is **prose-only** — no fenced code block, table, or diff — even when the prose describes a concrete-sounding shape.
 
 Derive the task's plan type from its `Files:` paths:
 - `docs/specs/**` and `openspec/**` → **openspec / spec column** (shape pins requirement IDs ADD/MODIFY/REMOVE + delta text + numbering + downstream obligations)

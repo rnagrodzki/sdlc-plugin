@@ -536,13 +536,18 @@ func TestSchemaSync(t *testing.T) {
 	}
 
 	for key := range schema.Properties {
-		if !allowedProjectKeys[key] {
-			t.Errorf("schema property %q missing from allowedProjectKeys", key)
+		if !allowedProjectKeys[key] && !allowedLocalOnlyKeys[key] {
+			t.Errorf("schema property %q missing from allowedProjectKeys or allowedLocalOnlyKeys", key)
 		}
 	}
 	for key := range allowedProjectKeys {
 		if _, ok := schema.Properties[key]; !ok {
 			t.Errorf("allowedProjectKey %q missing from schema properties", key)
+		}
+	}
+	for key := range allowedLocalOnlyKeys {
+		if _, ok := schema.Properties[key]; !ok {
+			t.Errorf("allowedLocalOnlyKey %q missing from schema properties", key)
 		}
 	}
 }

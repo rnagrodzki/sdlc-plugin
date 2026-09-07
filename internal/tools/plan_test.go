@@ -2,8 +2,10 @@ package tools
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -39,6 +41,7 @@ func TestPlanPrepare_KeySetAndDefaults(t *testing.T) {
 
 	expectedTopKeys := []string{
 		"openspec", "fromOpenspec", "openspecContext", "guardrails",
+		"style", "tasks",
 		"explorePack", "planTemplate", "githubHosting", "g17Dispatch",
 		"intakeAuditDispatch", "lanes", "lensReviewers", "errors",
 	}
@@ -181,6 +184,184 @@ func TestPlanPrepare_Guardrails(t *testing.T) {
 	}
 	if out.Guardrails[1]["description"] != "Cover new branches" {
 		t.Errorf("Guardrails[1][description] = %v, want %q", out.Guardrails[1]["description"], "Cover new branches")
+	}
+}
+
+// TestPlanPrepare_StyleAndTasksDefaults verifies loadPlanStyle and
+// loadPlanTasks's zero-config defaults surface through PlanPrepareOut:
+// standard verbosity, technical audience, no narrative rules, no required
+// fields, and the "full" contract shape.
+func TestPlanPrepare_StyleAndTasksDefaults(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("planPrepareCore: %v", err)
+	}
+	if out.Style.Verbosity != "standard" {
+		t.Errorf("Style.Verbosity = %q, want standard", out.Style.Verbosity)
+	}
+	if out.Style.Audience != "technical" {
+		t.Errorf("Style.Audience = %q, want technical", out.Style.Audience)
+	}
+	if len(out.Style.NarrativeRules) != 0 {
+		t.Errorf("Style.NarrativeRules = %v, want empty", out.Style.NarrativeRules)
+	}
+	if len(out.Tasks.RequiredFields) != 0 {
+		t.Errorf("Tasks.RequiredFields = %v, want empty", out.Tasks.RequiredFields)
+	}
+	if out.Tasks.ContractShape != "full" {
+		t.Errorf("Tasks.ContractShape = %q, want full", out.Tasks.ContractShape)
+	}
+}
+
+// TestPlanPrepare_StyleAndTasksPopulated verifies planStyle (from
+// .sdlc/local.json) and plan.tasks (from .sdlc/config.json) values
+// round-trip into PlanPrepareOut.Style and PlanPrepareOut.Tasks unchanged.
+func TestPlanPrepare_StyleAndTasksPopulated(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	sdlcDir := filepath.Join(dir, paths.DataDir)
+	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	localCfg := map[string]any{
+		"planStyle": map[string]any{
+			"verbosity":      "detailed",
+			"audience":       "business",
+			"narrativeRules": []any{"Lead with impact", "Avoid jargon"},
+		},
+	}
+	localData, err := json.Marshal(localCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sdlcDir, "local.json"), localData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	projectCfg := map[string]any{
+		"plan": map[string]any{
+			"tasks": map[string]any{
+				"requiredFields": []any{"Owner", "Rollback"},
+				"contractShape":  "minimal",
+			},
+		},
+	}
+	projectData, err := json.Marshal(projectCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sdlcDir, "config.json"), projectData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("planPrepareCore: %v", err)
+	}
+	if out.Style.Verbosity != "detailed" {
+		t.Errorf("Style.Verbosity = %q, want detailed", out.Style.Verbosity)
+	}
+	if out.Style.Audience != "business" {
+		t.Errorf("Style.Audience = %q, want business", out.Style.Audience)
+	}
+	wantRules := []string{"Lead with impact", "Avoid jargon"}
+	if !reflect.DeepEqual(out.Style.NarrativeRules, wantRules) {
+		t.Errorf("Style.NarrativeRules = %v, want %v", out.Style.NarrativeRules, wantRules)
+	}
+	wantFields := []string{"Owner", "Rollback"}
+	if !reflect.DeepEqual(out.Tasks.RequiredFields, wantFields) {
+		t.Errorf("Tasks.RequiredFields = %v, want %v", out.Tasks.RequiredFields, wantFields)
+	}
+	if out.Tasks.ContractShape != "minimal" {
+		t.Errorf("Tasks.ContractShape = %q, want minimal", out.Tasks.ContractShape)
+	}
+}
+
+// TestPlanPrepare_TasksRequiredFieldsDedup verifies requiredFields entries
+// that duplicate one of the five fields already guaranteed by the task
+// contract's fixed shape (Complexity, Risk, Files, Verify, Depends on) are
+// silently dropped, while non-overlapping custom fields are retained.
+func TestPlanPrepare_TasksRequiredFieldsDedup(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	sdlcDir := filepath.Join(dir, paths.DataDir)
+	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := map[string]any{
+		"plan": map[string]any{
+			"tasks": map[string]any{
+				"requiredFields": []any{
+					"Complexity", "Risk", "Files", "Verify", "Depends on",
+					"Owner", "Rollback",
+				},
+			},
+		},
+	}
+	cfgData, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sdlcDir, "config.json"), cfgData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("planPrepareCore: %v", err)
+	}
+	want := []string{"Owner", "Rollback"}
+	if !reflect.DeepEqual(out.Tasks.RequiredFields, want) {
+		t.Errorf("Tasks.RequiredFields = %v, want %v (core 5 fields deduped)", out.Tasks.RequiredFields, want)
+	}
+}
+
+// TestPlanPrepare_TasksContractShapeEnum verifies every documented
+// contractShape enum value (full, minimal, none) is accepted and
+// round-trips through PlanPrepareOut.Tasks.ContractShape unchanged.
+func TestPlanPrepare_TasksContractShapeEnum(t *testing.T) {
+	for _, shape := range []string{"full", "minimal", "none"} {
+		t.Run(shape, func(t *testing.T) {
+			dir := t.TempDir()
+			initGitFixture(t, dir)
+			gitCommit(t, dir, "initial")
+
+			sdlcDir := filepath.Join(dir, paths.DataDir)
+			if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			cfg := map[string]any{
+				"plan": map[string]any{
+					"tasks": map[string]any{
+						"contractShape": shape,
+					},
+				},
+			}
+			cfgData, err := json.Marshal(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(sdlcDir, "config.json"), cfgData, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+			if err != nil {
+				t.Fatalf("planPrepareCore: %v", err)
+			}
+			if out.Tasks.ContractShape != shape {
+				t.Errorf("Tasks.ContractShape = %q, want %q", out.Tasks.ContractShape, shape)
+			}
+		})
 	}
 }
 
@@ -551,6 +732,266 @@ func TestPlanExplorePrepare_Handler(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// plan template resolution tests
+// ---------------------------------------------------------------------------
+
+// planTemplateResolveFixture is a project-override plan template exercising
+// every buildSkeletonMarkdown body-selection branch: a plain section, an
+// OpenSpec-conditional section, a section with an unrecognized condition,
+// and the one step-5-owned section ("Verification Scorecard"). It also
+// carries a Discovery Questions and a Verification Patterns block for the
+// bullet-extraction assertions.
+const planTemplateResolveFixture = `# Plan Template
+
+## Required Sections
+
+- Summary
+- OpenSpec Sync <!-- conditional: source matches openspec/changes/ -->
+- Weird Condition <!-- conditional: bogus-condition -->
+- Verification Scorecard
+
+## Discovery Questions
+
+- What is the goal?
+- What are the risks?
+
+## Verification Patterns
+
+- Run go test ./...
+- Run go vet ./...
+`
+
+// TestPlanTemplateResolve_ProjectOverride verifies that a project-override
+// template at .sdlc/plan-template.md becomes the active template (instead
+// of the shipped default), that its discovery questions and verification
+// patterns are extracted verbatim, and that the skeleton markdown emits one
+// "## <name>" heading per declared section in declaration order.
+func TestPlanTemplateResolve_ProjectOverride(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	templatePath := writeProjectPlanTemplate(t, dir, planTemplateResolveFixture)
+
+	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
+	if err != nil {
+		t.Fatalf("planPrepareCore: %v", err)
+	}
+	if out.Template == nil {
+		t.Fatal("Template = nil, want populated (project override present)")
+	}
+	if out.Template.ActiveTemplatePath != templatePath {
+		t.Errorf("ActiveTemplatePath = %q, want %q", out.Template.ActiveTemplatePath, templatePath)
+	}
+
+	wantQuestions := []string{"What is the goal?", "What are the risks?"}
+	if !reflect.DeepEqual(out.Template.DiscoveryQuestions, wantQuestions) {
+		t.Errorf("DiscoveryQuestions = %v, want %v", out.Template.DiscoveryQuestions, wantQuestions)
+	}
+	wantPatterns := []string{"Run go test ./...", "Run go vet ./..."}
+	if !reflect.DeepEqual(out.Template.VerificationPatterns, wantPatterns) {
+		t.Errorf("VerificationPatterns = %v, want %v", out.Template.VerificationPatterns, wantPatterns)
+	}
+
+	// Skeleton heading order must match the template's declared section order.
+	md := out.Template.SkeletonMarkdown
+	names := []string{"Summary", "OpenSpec Sync", "Weird Condition", "Verification Scorecard"}
+	prevIdx := -1
+	for _, name := range names {
+		idx := strings.Index(md, "## "+name)
+		if idx == -1 {
+			t.Fatalf("skeleton markdown missing heading %q: %s", name, md)
+		}
+		if idx <= prevIdx {
+			t.Errorf("heading %q out of order in skeleton markdown", name)
+		}
+		prevIdx = idx
+	}
+}
+
+// TestPlanTemplateResolve_ConditionOpenspec verifies OpenSpec-conditional
+// section bodies in both directions: with fromOpenspecDirect=true the
+// section is left as "[TBD]" (still to be written); otherwise it is marked
+// not applicable.
+func TestPlanTemplateResolve_ConditionOpenspec(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	writeProjectPlanTemplate(t, dir, planTemplateResolveFixture)
+
+	outActive, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true, FromOpenspecDirect: true})
+	if err != nil {
+		t.Fatalf("planPrepareCore (openspec active): %v", err)
+	}
+	if body := sectionBody(t, outActive.Template.SkeletonMarkdown, "OpenSpec Sync"); body != "[TBD]" {
+		t.Errorf("OpenSpec Sync body (fromOpenspecDirect=true) = %q, want [TBD]", body)
+	}
+
+	outInactive, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
+	if err != nil {
+		t.Fatalf("planPrepareCore (openspec inactive): %v", err)
+	}
+	want := "Not applicable — no OpenSpec change"
+	if body := sectionBody(t, outInactive.Template.SkeletonMarkdown, "OpenSpec Sync"); body != want {
+		t.Errorf("OpenSpec Sync body (no openspec flags) = %q, want %q", body, want)
+	}
+}
+
+// TestPlanTemplateResolve_ConditionUnknown verifies a section whose
+// condition does not start with the OpenSpec prefix gets the
+// not-recognized message, quoting the condition string verbatim.
+func TestPlanTemplateResolve_ConditionUnknown(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	writeProjectPlanTemplate(t, dir, planTemplateResolveFixture)
+
+	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
+	if err != nil {
+		t.Fatalf("planPrepareCore: %v", err)
+	}
+	want := fmt.Sprintf("Not applicable — condition %q not recognized", "bogus-condition")
+	if body := sectionBody(t, out.Template.SkeletonMarkdown, "Weird Condition"); body != want {
+		t.Errorf("Weird Condition body = %q, want %q", body, want)
+	}
+}
+
+// TestPlanTemplateResolve_Lightweight verifies that Lightweight=true alone
+// (independent of routing) marks step-5-owned sections ("Verification
+// Scorecard") not applicable.
+func TestPlanTemplateResolve_Lightweight(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	writeProjectPlanTemplate(t, dir, planTemplateResolveFixture)
+
+	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true, Lightweight: true})
+	if err != nil {
+		t.Fatalf("planPrepareCore: %v", err)
+	}
+	want := "Not applicable — lightweight plan"
+	if body := sectionBody(t, out.Template.SkeletonMarkdown, "Verification Scorecard"); body != want {
+		t.Errorf("Verification Scorecard body = %q, want %q", body, want)
+	}
+}
+
+// TestPlanTemplateResolve_Routing1File verifies computeComplexityRouting's
+// single-file boundary: a lone file routes to "skip" unless lightweight is
+// explicitly requested, in which case it routes to "lightweight".
+func TestPlanTemplateResolve_Routing1File(t *testing.T) {
+	cases := []struct {
+		name        string
+		lightweight bool
+		wantMode    string
+	}{
+		{"not lightweight", false, "skip"},
+		{"lightweight", true, "lightweight"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			routing := computeComplexityRouting(1, tc.lightweight)
+			if routing.FileCount != 1 {
+				t.Errorf("FileCount = %d, want 1", routing.FileCount)
+			}
+			if routing.PipelineMode != tc.wantMode {
+				t.Errorf("PipelineMode = %q, want %q", routing.PipelineMode, tc.wantMode)
+			}
+		})
+	}
+}
+
+// TestPlanTemplateResolve_Routing4Files verifies computeComplexityRouting's
+// upper bands: 2-3 files route to "lightweight", 4+ files route to "full".
+func TestPlanTemplateResolve_Routing4Files(t *testing.T) {
+	cases := []struct {
+		name      string
+		fileCount int
+		wantMode  string
+	}{
+		{"3 files (lightweight band)", 3, "lightweight"},
+		{"4 files (full)", 4, "full"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			routing := computeComplexityRouting(tc.fileCount, false)
+			if routing.PipelineMode != tc.wantMode {
+				t.Errorf("PipelineMode = %q, want %q", routing.PipelineMode, tc.wantMode)
+			}
+		})
+	}
+}
+
+// TestPlanTemplateResolve_DefaultFallback verifies that with no project
+// override present, the active template resolves to the shipped default
+// found under ~/.claude/plugins. resolveSkillTemplate walks the real home
+// directory and is cached process-wide (sync.Once), so it cannot be faked
+// hermetically here; when the shipped default is not discoverable in the
+// current environment (e.g. a CI runner with no plugins installed), the
+// test skips rather than asserting a false result.
+func TestPlanTemplateResolve_DefaultFallback(t *testing.T) {
+	want := resolveSkillTemplate("plan-template-default.md")
+	if want == nil {
+		t.Skip("shipped default plan template not discoverable under ~/.claude/plugins in this environment")
+	}
+
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
+	if err != nil {
+		t.Fatalf("planPrepareCore: %v", err)
+	}
+	if out.Template == nil {
+		t.Fatal("Template = nil, want populated (shipped default resolvable)")
+	}
+	if out.Template.ActiveTemplatePath != *want {
+		t.Errorf("ActiveTemplatePath = %q, want shipped default %q", out.Template.ActiveTemplatePath, *want)
+	}
+}
+
+// TestPlanTemplateResolve_UnreadableFallback verifies that a project
+// template which fails to parse (no "## Required Sections" heading, so
+// parseTemplateRequiredSectionsFull yields zero sections) falls back to the
+// shipped default exactly like a read error does, and records the
+// fallback warning. Skip-gated for the same reason as DefaultFallback: the
+// shipped default must be discoverable under ~/.claude/plugins.
+func TestPlanTemplateResolve_UnreadableFallback(t *testing.T) {
+	want := resolveSkillTemplate("plan-template-default.md")
+	if want == nil {
+		t.Skip("shipped default plan template not discoverable under ~/.claude/plugins in this environment")
+	}
+
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	writeProjectPlanTemplate(t, dir, "# Plan Template\n\nNo required sections heading here.\n")
+
+	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
+	if err != nil {
+		t.Fatalf("planPrepareCore: %v", err)
+	}
+	if out.Template == nil {
+		t.Fatal("Template = nil, want populated (shipped default resolvable)")
+	}
+	if out.Template.ActiveTemplatePath != *want {
+		t.Errorf("ActiveTemplatePath = %q, want shipped default %q", out.Template.ActiveTemplatePath, *want)
+	}
+	wantWarning := "Project template unreadable — fell back to shipped default"
+	found := false
+	for _, w := range out.Template.Warnings {
+		if w == wantWarning {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("Warnings = %v, want to contain %q", out.Template.Warnings, wantWarning)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
 
@@ -571,6 +1012,40 @@ func writeOpenspecFixtureChange(t *testing.T, changeDir, tasksContent string) {
 	if err := os.WriteFile(filepath.Join(changeDir, "tasks.md"), []byte(tasksContent), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// writeProjectPlanTemplate writes content as the project-override plan
+// template at the fixed path (<dir>/paths.DataDir/plan-template.md) that
+// planPrepareCore and buildTemplateResolution both read, returning the
+// full path.
+func writeProjectPlanTemplate(t *testing.T, dir, content string) string {
+	t.Helper()
+	sdlcDir := filepath.Join(dir, paths.DataDir)
+	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	templatePath := filepath.Join(sdlcDir, "plan-template.md")
+	if err := os.WriteFile(templatePath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return templatePath
+}
+
+// sectionBody extracts the body text of a "## <name>" section from
+// buildSkeletonMarkdown's output: the text between that section's heading
+// and the next "## " heading, or end of string for the last section.
+func sectionBody(t *testing.T, markdown, name string) string {
+	t.Helper()
+	marker := "## " + name + "\n\n"
+	idx := strings.Index(markdown, marker)
+	if idx == -1 {
+		t.Fatalf("section %q not found in skeleton markdown: %s", name, markdown)
+	}
+	rest := markdown[idx+len(marker):]
+	if end := strings.Index(rest, "\n\n##"); end != -1 {
+		return rest[:end]
+	}
+	return strings.TrimRight(rest, "\n")
 }
 
 // listStateFiles lists the basenames of files under <root>/.sdlc/execution/.
