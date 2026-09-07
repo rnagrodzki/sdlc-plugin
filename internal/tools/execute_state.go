@@ -112,7 +112,7 @@ func RegisterExecuteStateTools(s *mcpserver.Server) {
 
 Pass "action" to select an operation. Each action uses a subset of the input fields (unlisted fields are ignored):
 
-- init: Create execution state. Requires branch, quality, totalTasks, plannedTaskIds. Optional: planPath, planHash.
+- init: Create execution state. Requires branch, quality. Optional: totalTasks, plannedTaskIds, planPath, planHash.
 - wave-start: Begin a wave. Requires wave. Optional: branch, tasksJson, runId (for fact sheets).
 - wave-done: Complete a wave. Requires wave. Optional: branch, decisions, status.
 - wave-fail: Fail a wave. Requires wave. Optional: branch, timedOut, status.
@@ -124,7 +124,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - cleanup: Delete execution state for a branch. Optional: branch.
 - gc: Garbage-collect stale state files. Optional: ttlDays, dryRun, branch.
 - summarize-prior-wave-context: Summarize context from prior waves. Optional: branch, maxFiles, maxDecisions, maxInterfaces, maxTaskIds.
-- wave-split: Split remaining tasks into a new wave. Requires wave, dispatched, missingIds. Optional: branch, splitDepth, maxSplitDepth.
+- wave-split: Split remaining tasks into a new wave. Requires dispatched. Optional: wave, missingIds, branch, splitDepth, maxSplitDepth.
 - verify-completeness: Verify all planned tasks are accounted for. Optional: branch.
 - wave-progress: Read/write per-task progress. Requires runId. For reads: readProgress=true. For writes: taskId, phase.
 - resume-reset: Reset in-progress waves for session resume. Optional: branch, stateFile.
