@@ -31,7 +31,7 @@ field that does not exist. Deviations, one line each:
 
 - **Q1 (binding ruling):** the `workspace` and `hooks` menu sections (source's 3.workspace
   / 3.hooks, issues #351/#370/#372) are dropped entirely. Go's `internal/setupmeta.Sections()`
-  is a frozen 14-id manifest with no `workspace`/`hooks` id — there is nothing to dispatch to.
+  is a frozen 16-id manifest with no `workspace`/`hooks` id — there is nothing to dispatch to.
   `--skip`/`--only` no longer accept those ids.
 - **State/summary/locked (Gap A):** Step 0/1 below compute `state` and `summary` per row by
   reading `.sdlc-v2/config.json` / `.sdlc-v2/local.json` directly and Globbing the content
@@ -72,8 +72,9 @@ field that does not exist. Deviations, one line each:
   re-reads the current `pr` object immediately before writing `pr` and preserves any
   `labels` key already present.
 - **`--only`/`--skip` id list corrected.** Source's own SKILL.md listed 13 ids for `--only`
-  (missing `received-review`). The table below lists the true 14 canonical ids from
-  `internal/setupmeta.Sections()`.
+  (missing `received-review`). The table below lists the true 16 canonical ids from
+  `internal/setupmeta.Sections()` (includes `plan-style` and `plan-tasks`, added after the
+  original port to expose `/plan`'s narrative-style and task-contract config).
 - **Delete-legacy-files prompt retained.** `migrate({ action: "config" })`'s `Result` string
   names every ingested legacy path inline (e.g. `"...legacy ingested: [.claude/sdlc.json
   .claude/version.json]"`) — `MigrateOut` has no dedicated array field for them, so Step 2
@@ -92,9 +93,9 @@ field that does not exist. Deviations, one line each:
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--migrate` | Force migration of legacy config files even if no legacy files are auto-detected | off |
-| `--skip <section>` | Skip a config section during setup. Valid values: any of the 14 canonical ids — `version`, `ship`, `jira`, `review`, `received-review`, `commit`, `pr`, `pr-labels`, `review-dimensions`, `pr-template`, `plan-template`, `plan-guardrails`, `execution-guardrails`, `openspec-block` | none |
+| `--skip <section>` | Skip a config section during setup. Valid values: any of the 16 canonical ids — `version`, `ship`, `jira`, `review`, `received-review`, `commit`, `pr`, `pr-labels`, `review-dimensions`, `pr-template`, `plan-template`, `plan-style`, `plan-tasks`, `plan-guardrails`, `execution-guardrails`, `openspec-block` | none |
 | `--force` | Pre-check every menu row (reconfigure everything) instead of selecting only `not-set` rows | off |
-| `--only <ids>` | Comma-separated section ids to configure non-interactively (skips the menu). Same 14 ids as `--skip` above | none |
+| `--only <ids>` | Comma-separated section ids to configure non-interactively (skips the menu). Same 16 ids as `--skip` above | none |
 | `--dimensions` | Jump directly to review dimensions sub-flow (alias for `--only review-dimensions`) | off |
 | `--pr-template` | Jump directly to PR template sub-flow (skip config builder) | off |
 | `--guardrails` | Jump directly to plan guardrails sub-flow (skip config builder) | off |
@@ -126,12 +127,12 @@ If the system context contains "Plan mode is active":
    setup_prepare({ skipConfigCheck: false }) → { ok, needsMigration, sections[], defaultBranch, remoteOwner }
    ```
 
-   `sections[]` is the static 14-row descriptor list, always in canonical
+   `sections[]` is the static 16-row descriptor list, always in canonical
    `internal/setupmeta.Sections()` order: `version`, `ship`, `jira`, `review`,
    `received-review`, `commit`, `pr`, `pr-labels`, `review-dimensions`, `pr-template`,
-   `plan-template`, `plan-guardrails`, `execution-guardrails`, `openspec-block`. Each row
-   carries `{ id, label, purpose, configFile, configPath, consumedBy, filesModified,
-   optional, delegatedTo, confirmDetected, fields[] }`.
+   `plan-template`, `plan-style`, `plan-tasks`, `plan-guardrails`, `execution-guardrails`,
+   `openspec-block`. Each row carries `{ id, label, purpose, configFile, configPath,
+   consumedBy, filesModified, optional, delegatedTo, confirmDetected, fields[] }`.
 
 2. Call `setup_init({ sections: [] })` once, unconditionally, to scaffold `.sdlc-v2/` (see Port
    Notes — this never carries real ids):
@@ -210,9 +211,9 @@ branches — see Port Notes):
    `section.configPath` as a dot-path into `projectConfig` (e.g. `plan.guardrails`,
    `pr.labels`). If the resolved value is an array, `set` requires `length > 0`; any other
    non-null resolved value is `set`. Unresolved (any segment missing) → `not-set`.
-3. **`.sdlc-v2/local.json` sections** (`ship`, `review`, `received-review`): `set` when
-   `localConfig[section.configPath]` (e.g. `localConfig.receivedReview`) is non-null, else
-   `not-set`.
+3. **`.sdlc-v2/local.json` sections** (`ship`, `review`, `received-review`, `plan-style`): `set`
+   when `localConfig[section.configPath]` (e.g. `localConfig.receivedReview`,
+   `localConfig.planStyle`) is non-null, else `not-set`.
 
 If `needsMigration` is `true`, print one banner line above the status block (no per-row
 `[legacy]` badge — Go's `needsMigration` carries no per-section attribution):
@@ -239,6 +240,8 @@ otherwise):
 | `review-dimensions` | `<count> installed` or empty. |
 | `pr-template` | `installed` or empty. |
 | `plan-template` | `installed` or empty. |
+| `plan-style` | Join non-empty (two spaces) of `verbosity: <verbosity>`, `audience: <audience>`, `rules: <narrativeRules.length>` (only when > 0). |
+| `plan-tasks` | Join non-empty (two spaces) of `contract: <contractShape>` and `required: <requiredFields.length>` (only when > 0). |
 | `plan-guardrails` | `<N> configured` (array length) or empty. |
 | `execution-guardrails` | `<N> configured` (array length) or empty. |
 | `openspec-block` | `managed-block v<N>` when a block was found, else empty. |
@@ -263,7 +266,7 @@ Detected configuration:
 ```
 
 **Phase 2 — Print the numbered menu directly to chat.** One line per row in the canonical
-14-id order, format:
+16-id order, format:
 
 ```
 <N>. [<state>] <section.label> — <first sentence of section.purpose>
@@ -301,7 +304,7 @@ default is always `all`.)
 
 **Phase 4 — Parse the reply**:
 - Empty reply → `all`.
-- `all` → every id from the 14-id canonical list.
+- `all` → every id from the 16-id canonical list.
 - `not-set` → ids whose computed `state === 'not-set'`.
 - `none` or `cancel` → empty list → print `No sections selected — no changes made.` and jump
   to Step 4.
@@ -414,7 +417,7 @@ For each id in `selectedIds`, in canonical `internal/setupmeta.Sections()` order
 
    | `delegatedTo` value | Dispatcher |
    |---|---|
-   | (empty) | Generic field-loop (3.G below) — dispatch one AskUserQuestion per `section.fields[]` entry, optionally gated by `section.confirmDetected`. Applies to `version`, `ship`, `jira`, `review`, `received-review`. |
+   | (empty) | Generic field-loop (3.G below) — dispatch one AskUserQuestion per `section.fields[]` entry, optionally gated by `section.confirmDetected`. Applies to `version`, `ship`, `jira`, `review`, `received-review`, `plan-style`, `plan-tasks`. |
    | `'inline-commit-builder'` | Inline commit-pattern builder (3.commit below). |
    | `'inline-pr-builder'` | Inline PR-pattern builder (3.pr below). |
    | `'setup-dimensions'` | Run scan phase (3.S below), then read and follow `@setup-dimensions.md`, passing scan results as "Scan Input". Pass through `--add` and `--no-copilot` if present. |
@@ -430,7 +433,8 @@ config files" sub-section at the end of Step 3.
 
 #### 3.G. Generic field loop (`delegatedTo` empty)
 
-For sections with no `delegatedTo` (`version`, `ship`, `jira`, `review`, `received-review`):
+For sections with no `delegatedTo` (`version`, `ship`, `jira`, `review`, `received-review`,
+`plan-style`, `plan-tasks`):
 
 If `section.confirmDetected === true` (currently only `version`), dispatch a meta-prompt
 FIRST using AskUserQuestion:
@@ -498,7 +502,11 @@ After all `version` section fields are collected and BEFORE storing the section 
 - `number` fields → coerce to an integer; validate against `field.min`/`field.max` when
   present; re-prompt on invalid input, citing the violated bound
 - `list` fields → accept comma-separated input; split on `,` and trim each element to
-  produce a string array
+  produce a string array (exception: `narrativeRules` — see below)
+- `narrativeRules` (a `list` field on `plan-style`) → individual rules may themselves contain
+  commas (e.g. "avoid idioms, jargon, and complex sentence structures"), so comma-splitting is
+  unsafe. Prompt for free text with one rule per line; split on newline instead, trim each
+  line, and drop empty lines.
 
 You MUST issue exactly one AskUserQuestion per `section.fields[]` entry that survives the
 gating above. Do not batch, reorder, or hand-enumerate fields — the manifest owns the list.
@@ -693,7 +701,8 @@ After collecting all answers AND confirming the diff preview above:
    compute its `setup_write_sections` key as the segment of `section.configPath` before its
    first `.` (see Port Notes): `version`→`version`, `ship`→`ship`, `jira`→`jira`,
    `review`→`review`, `received-review`→`receivedReview`, `commit`→`commit`, `pr`→`pr`,
-   `pr-labels`→`pr` (nested `labels`), `plan-guardrails`→`plan` (nested `guardrails`),
+   `pr-labels`→`pr` (nested `labels`), `plan-style`→`planStyle`, `plan-tasks`→`plan` (nested
+   `tasks`), `plan-guardrails`→`plan` (nested `guardrails`),
    `execution-guardrails`→`execute` (nested `guardrails`).
 
    Note: `pr-labels`, `plan-guardrails`, and `execution-guardrails` are configured by their
@@ -714,14 +723,31 @@ After collecting all answers AND confirming the diff preview above:
    }) → { ok, written, errors }
    ```
 
-3. **Everything else** writes directly, one key per assembled section, in a single batched
+3. **`plan` merge-preserve.** If `plan-tasks` was configured in the generic field loop (3.G)
+   this run, immediately before writing, Read the current `.sdlc-v2/config.json` and check for
+   an existing `plan.guardrails` key (it may have been written earlier in this same run by
+   `setup-guardrails.md`, which writes immediately rather than deferring to this step, or by a
+   prior run). If present, include it unchanged in the object being written:
+
+   ```
+   setup_write_sections({
+     sectionsJson: JSON.stringify({
+       plan: { tasks: <assembledPlanTasksFromStep3>, guardrails: <existing plan.guardrails if present> }
+     })
+   }) → { ok, written, errors }
+   ```
+
+   Omit the `guardrails` key entirely when no existing value is present — do not write
+   `guardrails: []`.
+
+4. **Everything else** writes directly, one key per assembled section, in a single batched
    call where possible:
 
    ```
    setup_write_sections({
      sectionsJson: JSON.stringify({
        version: { ... }, ship: { ... }, jira: { ... }, review: { ... },
-       receivedReview: { ... }, commit: { ... }
+       receivedReview: { ... }, commit: { ... }, planStyle: { ... }
      })
    }) → { ok, written, errors }
    ```
@@ -773,9 +799,10 @@ skipped or unchanged.
 
 This skill is safe to re-run. Already-configured sections show `[set]` in Step 1 and are
 skipped by the `not-set` menu token unless `--force` is passed. `setup_write_sections` /
-`config.WriteSection` replace a section wholesale — see "Writing config files" for the one
-case (`pr`) where this port must explicitly re-read and merge before writing, since Go has
-no read-merge-write primitive equivalent to source's `writeProjectConfig`/`writeLocalConfig`.
+`config.WriteSection` replace a section wholesale — see "Writing config files" for the two
+cases (`pr`, `plan`) where this port must explicitly re-read and merge before writing, since
+Go has no read-merge-write primitive equivalent to source's
+`writeProjectConfig`/`writeLocalConfig`.
 
 ---
 
@@ -796,6 +823,8 @@ no read-merge-write primitive equivalent to source's `writeProjectConfig`/`write
 - Assume `mode` for the `version` section — it is a required field, always ask or detect.
 - Write the `pr` config key without first checking for and preserving an existing
   `pr.labels` sibling (see "Writing config files").
+- Write the `plan` config key without first checking for and preserving whichever sibling
+  (`plan.guardrails` or `plan.tasks`) wasn't just configured (see "Writing config files").
 
 ---
 
@@ -815,10 +844,11 @@ not in `.sdlc-v2/config.json`. Each developer has their own ship preferences.
 **`setup_write_sections` is wholesale, not merge, per key.** Unlike source's
 `writeProjectConfig`/`writeLocalConfig`, there is no automatic read-merge-write across an
 entire config file — each call replaces exactly the top-level keys it names. The `pr` /
-`pr.labels` interaction (see "Writing config files") is the one place in this file where
-that distinction has an observable correctness consequence; the `setup-pr-labels.md`,
-`setup-guardrails.md`, and `setup-execution-guardrails.md` companion sub-flows each handle
-their own equivalent read-preserve-write internally.
+`pr.labels` and `plan.tasks` / `plan.guardrails` interactions (see "Writing config files")
+are the places in this file where that distinction has an observable correctness
+consequence; the `setup-pr-labels.md`, `setup-guardrails.md`, and
+`setup-execution-guardrails.md` companion sub-flows each handle their own equivalent
+read-preserve-write internally.
 
 **Legacy review config has two possible locations.** `.sdlc-v2/review.json` and
 `.claude/review.json` are both legacy paths; `internal/configmigrate` prefers

@@ -302,6 +302,52 @@ var ShipFields = []Field{
 	},
 }
 
+var planStyleFields = []Field{
+	{
+		Name:        "verbosity",
+		Label:       "Plan narrative verbosity",
+		Type:        "enum",
+		Options:     []string{"terse", "standard", "verbose"},
+		Default:     "standard",
+		Description: "Controls how much prose /plan writes in narrative sections (Context, Research Findings, Key Decisions, Final Shape). `terse` favors bullet-dense sections; `verbose` favors fuller prose.",
+	},
+	{
+		Name:        "audience",
+		Label:       "Plan narrative audience",
+		Type:        "enum",
+		Options:     []string{"technical", "general"},
+		Default:     "technical",
+		Description: "Assumed reader background for plan narrative sections. `technical` assumes deep codebase context; `general` writes so a reader without prior context can still judge the proposed change.",
+	},
+	{
+		Name:        "narrativeRules",
+		Label:       "Custom narrative rules",
+		Type:        "list",
+		Options:     nil,
+		Default:     nil,
+		Description: "Free-form writing rules /plan enforces on narrative sections (e.g., plain-English phrasing for non-native readers, always state assumptions). One rule per line — rules may contain commas, so this field splits on newline, not comma.",
+	},
+}
+
+var planTasksFields = []Field{
+	{
+		Name:        "contractShape",
+		Label:       "Task contract shape",
+		Type:        "enum",
+		Options:     []string{"full", "minimal", "none"},
+		Default:     "full",
+		Description: "Shape of the required task contract /plan enforces on every task: `full` (Complexity, Risk, Files, Verify, Depends on), `minimal` (essential fields only), `none` (flexible, no fixed shape).",
+	},
+	{
+		Name:        "requiredFields",
+		Label:       "Additional required task fields",
+		Type:        "list",
+		Options:     nil,
+		Default:     nil,
+		Description: "Extra fields required on every plan task, beyond the five core fields /plan always guarantees (Complexity, Risk, Files, Verify, Depends on). Comma-separated; duplicates of the five core fields are dropped automatically.",
+	},
+}
+
 // prFields holds the two flat fields on the 'pr' section. In the Node.js
 // source these have runtime-computed defaults (detectBaseBranchSafe,
 // parseRemoteOwner). Here the defaults are zero-valued; the consuming tool
@@ -472,6 +518,32 @@ func Sections() []Section {
 			DelegatedTo:     "setup-plan-template",
 			ConfirmDetected: false,
 			Fields:          nil,
+		},
+		{
+			ID:              "plan-style",
+			Label:           "plan-style",
+			Purpose:         "Personal narrative preferences for /plan: verbosity, assumed reader audience, and custom writing rules enforced on narrative sections (Context, Research Findings, Key Decisions, Final Shape). Stored in .sdlc/local.json (gitignored) so each developer can tune plan prose without affecting teammates.",
+			ConfigFile:      ".sdlc/local.json",
+			ConfigPath:      "planStyle",
+			ConsumedBy:      []string{"plan"},
+			FilesModified:   []string{".sdlc/local.json"},
+			Optional:        true,
+			DelegatedTo:     "",
+			ConfirmDetected: false,
+			Fields:          planStyleFields,
+		},
+		{
+			ID:              "plan-tasks",
+			Label:           "plan-tasks",
+			Purpose:         "Team contract for plan task deliverables at .sdlc/config.json#plan.tasks: which fields every task must carry beyond the five guaranteed core fields, and the overall contract shape /plan enforces. Shares the plan.guardrails top-level key — writes here and in plan-guardrails each read-preserve the other's sibling.",
+			ConfigFile:      ".sdlc/config.json",
+			ConfigPath:      "plan.tasks",
+			ConsumedBy:      []string{"plan"},
+			FilesModified:   []string{".sdlc/config.json"},
+			Optional:        true,
+			DelegatedTo:     "",
+			ConfirmDetected: false,
+			Fields:          planTasksFields,
 		},
 		{
 			ID:              "plan-guardrails",

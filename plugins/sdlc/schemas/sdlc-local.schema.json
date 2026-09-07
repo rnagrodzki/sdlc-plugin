@@ -17,6 +17,30 @@
       },
       "additionalProperties": false
     },
+    "planStyleSection": {
+      "type": "object",
+      "description": "User-local narrative preferences for the plan skill.",
+      "properties": {
+        "verbosity": {
+          "type": "string",
+          "enum": ["terse", "standard", "verbose"],
+          "description": "How much prose /plan writes in narrative sections."
+        },
+        "audience": {
+          "type": "string",
+          "enum": ["technical", "general"],
+          "description": "Assumed reader background for plan narrative sections."
+        },
+        "narrativeRules": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Free-form writing rules /plan enforces on narrative sections."
+        }
+      },
+      "additionalProperties": false
+    },
     "receivedReviewSection": {
       "type": "object",
       "description": "User-local defaults for the received-review skill.",
@@ -187,6 +211,9 @@
     },
     "review": {
       "$ref": "#/$defs/reviewSection"
+    },
+    "planStyle": {
+      "$ref": "#/$defs/planStyleSection"
     },
     "ship": {
       "$ref": "#/$defs/shipSection"

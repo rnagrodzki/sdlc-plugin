@@ -44,7 +44,7 @@ func TestPayloads_CJSReadOrder(t *testing.T) {
 func TestPayloads_SchemaChecksums(t *testing.T) {
 	// Expected SHA-256 hex digests computed from the source schemas.
 	expected := map[string]string{
-		"sdlc-local.schema.json":       "13b5b7f819363106fd29c06a8bf689a7757c87143589fda90f782e554e8e0df5",
+		"sdlc-local.schema.json":       "da2a24b27632a4009c64765ba3da5f843a574301b275589d98ca050662663cfc",
 		"execute-state.schema.json":    "64de91768692b2af1e0f94314b68727c92b932c13ad776a196ed42890902f938",
 		"ship-state.schema.json":       "f68360b93ac659492836470f1cac7b54b8ebfaad3dff92960fd44cb7276b1b7a",
 		"review-dimension.schema.json": "feb7be29fd8142fe340274a4ecfa55787373b4ca492102085243d81888fa7f0d",

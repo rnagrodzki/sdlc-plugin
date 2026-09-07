@@ -12,10 +12,12 @@ select. Writes guardrails to `.sdlc/config.json` via `setup_write_sections`.
 > setup-dimensions.md already use for dimension proposals. `validate-guardrails.js`
 > → `validate({ action: "guardrails", section: "plan" })`. Config writes go
 > through `setup_write_sections` instead of an inline `node -e` call to
-> `lib/config.js::writeSection`. The `plan` config section's schema has a
-> single `guardrails` array property (no sibling fields), so writing
-> `{"plan": {"guardrails": [...]}}` wholesale is safe — no read-merge needed
-> (unlike `pr.labels`, see setup-pr-labels.md).
+> `lib/config.js::writeSection`. The `plan` config section now has a sibling
+> `tasks` sub-key (the `plan-tasks` setup section) alongside `guardrails`.
+> `setup_write_sections` replaces the `plan` top-level key wholesale, so
+> Step 0 below reads and Step 3 re-writes the existing `plan.tasks` value
+> unchanged — same read-preserve-write hazard as `pr`/`pr.labels`, see
+> setup-pr-labels.md.
 
 ## Arguments
 
@@ -74,7 +76,7 @@ guardrail when its evidence condition is actually observed.
 
 ### Step 0 — Prepare
 
-1. Read `.sdlc/config.json`. Extract the existing `plan.guardrails` array (empty if absent) as `existing`.
+1. Read `.sdlc/config.json`. Extract the existing `plan.guardrails` array (empty if absent) as `existing`. Also extract the existing `plan.tasks` object (absent if not configured) as `existingTasks` — it must be written back unchanged in Step 3 (see "plan merge-preserve" note there).
 2. If not in `--add` mode and `existing` is non-empty: use AskUserQuestion: "`{existing.length}` guardrails already configured. Replace all, or use --add to expand?" Options: replace / cancel. On cancel, stop.
 3. Run the scan (Glob + Read, per Detection Helpers above) and build the evidence set.
 4. Optionally extract candidate rules from `CLAUDE.md`/`AGENTS.md`: lines containing "must", "never", "always", "require(s/d)", "forbidden", or "prohibited" (first 20 matches, deduplicated). Use these only as extra evidence for Step 1, not as guardrails to propose verbatim.
@@ -138,17 +140,23 @@ standard selections from Stage A.
 
 ### Step 3 (WRITE) — Write Config
 
+**`plan` merge-preserve.** `setup_write_sections` replaces the `plan` top-level
+key wholesale. If `existingTasks` (from Step 0) is non-empty, it MUST be
+included unchanged in this call, or a `plan-tasks` configuration written
+earlier (this run or a prior run) is silently wiped:
+
 ```
 setup_write_sections({
   sectionsJson: JSON.stringify({
-    plan: { guardrails: <FULL_GUARDRAILS_ARRAY> }
+    plan: { guardrails: <FULL_GUARDRAILS_ARRAY>, tasks: <existingTasks, if present> }
   })
 }) → { ok, written, errors }
 ```
 
-`<FULL_GUARDRAILS_ARRAY>` is the selected guardrails from Step 2. In `--add`
-mode: prepend `existing` (from Step 0) to the array before writing — the
-write is wholesale replacement, not a merge.
+Omit the `tasks` key entirely when `existingTasks` is absent — do not write
+`tasks: {}`. `<FULL_GUARDRAILS_ARRAY>` is the selected guardrails from Step 2.
+In `--add` mode: prepend `existing` (from Step 0) to the array before
+writing — the write is wholesale replacement, not a merge.
 
 ### Step 4 (VALIDATE)
 
@@ -169,7 +177,7 @@ show the findings and offer to fix them.
 ## Gotchas
 
 - **The Guardrail Catalog above is the source of truth for scanning.** Do not invent guardrails outside it except through the Stage B custom-guardrail path.
-- **Config write is wholesale, not merge.** `setup_write_sections` replaces the `plan` section entirely. In `--add` mode, the skill must read existing guardrails (Step 0) and prepend them to the selection before writing.
+- **Config write is wholesale, not merge.** `setup_write_sections` replaces the `plan` section entirely. In `--add` mode, the skill must read existing guardrails (Step 0) and prepend them to the selection before writing. It must also re-include `existingTasks` (Step 0) unchanged, since `plan-tasks` shares the same `plan` top-level key.
 - **Stage B runs after any non-cancel Stage A outcome.** If the user selects all/select in Stage A with no custom entries expected, Stage B still runs — it is always-on. Only a Stage A cancel skips Stage B.
 - **Custom guardrails need ID validation.** The kebab-case pattern `^[a-z][a-z0-9]*(-[a-z0-9]+)*$` must be enforced in Stage B before writing.
 
