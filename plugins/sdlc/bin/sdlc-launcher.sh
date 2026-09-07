@@ -190,7 +190,25 @@ if [ ! -x "$BIN_PATH" ]; then
   trap - EXIT INT TERM
 fi
 
-# --- 4. exec -------------------------------------------------------------------
+# --- 4. macOS Gatekeeper self-heal ------------------------------------------
+# A binary fetched via curl carries com.apple.provenance/quarantine metadata
+# that makes Gatekeeper SIGKILL it on exec on arm64/Sequoia+ even though the
+# Go toolchain already gave it a valid ad-hoc signature — there is no GUI in
+# a headless MCP/hook context to click through the "cannot verify developer"
+# prompt. Re-signing ad-hoc locally clears the provenance association and
+# lets it run. Idempotent via a sentinel file next to the binary (skips the
+# cost on every later invocation); best-effort — codesign being absent or
+# failing (e.g. on Linux, or a non-Mach-O test fixture) never blocks exec,
+# matching this script's fail-open contract.
+if [ "$OS" = "darwin" ] && [ ! -f "$BIN_PATH.signed" ] && command -v codesign >/dev/null 2>&1; then
+  xattr -d com.apple.quarantine "$BIN_PATH" >/dev/null 2>&1 || true
+  xattr -d com.apple.provenance "$BIN_PATH" >/dev/null 2>&1 || true
+  if codesign --force --deep --sign - "$BIN_PATH" >/dev/null 2>&1; then
+    touch "$BIN_PATH.signed" 2>/dev/null || true
+  fi
+fi
+
+# --- 5. exec -------------------------------------------------------------------
 if [ ! -x "$BIN_PATH" ]; then
   fail_open "cached binary missing or not executable: $BIN_PATH"
 fi

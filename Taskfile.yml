@@ -26,6 +26,17 @@ tasks:
       - mkdir -p '{{.CACHE_DIR}}/bin'
       - cp ./sdlc '{{.BIN_PATH}}'
       - chmod +x '{{.BIN_PATH}}'
+      # Same Gatekeeper self-heal as sdlc-launcher.sh's exec step: clears
+      # provenance/quarantine metadata and re-signs ad-hoc so the deployed
+      # binary isn't SIGKILLed on first launch. rm the sentinel so the
+      # launcher doesn't skip re-signing this freshly-copied binary.
+      - 'rm -f "{{.BIN_PATH}}.signed"'
+      - |
+        {{if eq OS "darwin"}}
+        xattr -d com.apple.quarantine '{{.BIN_PATH}}' 2>/dev/null || true
+        xattr -d com.apple.provenance '{{.BIN_PATH}}' 2>/dev/null || true
+        codesign --force --deep --sign - '{{.BIN_PATH}}' 2>/dev/null && touch '{{.BIN_PATH}}.signed' || true
+        {{end}}
       - 'echo "installed {{.BIN_PATH}} — reload the Claude Code session (or /reload-plugins) to pick it up"'
 
   dev:
