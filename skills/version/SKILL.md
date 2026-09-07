@@ -27,7 +27,7 @@ longer applies in full:
 - There is no "tag mode." `version_prepare` requires one of a fixed set of version files
   (`package.json`, `plugin.json`, `Cargo.toml`, `pyproject.toml`, `pubspec.yaml`, or a
   `VERSION` file) — if none exists, the tool call fails outright.
-- No `config` object and no `.sdlc/config.json` `version` section are read by this port: no
+- No `config` object and no `.sdlc-v2/config.json` `version` section are read by this port: no
   `ticketPrefix`, no configured default pre-release label, no configured changelog default,
   no hotfix/no-push flags at the tool level. All of these become your own read of the skill's
   invocation arguments, described inline below.
@@ -328,7 +328,7 @@ treating it as final.
 ## Learning Capture
 
 After completing a release or encountering unexpected behavior, append to
-`.sdlc/learnings/log.md`:
+`.sdlc-v2/learnings/log.md`:
 
 ```
 ## YYYY-MM-DD — version: <brief summary>

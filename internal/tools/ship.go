@@ -14,6 +14,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/shipmeta"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
@@ -648,7 +649,7 @@ var shipStateFileRe = regexp.MustCompile(`^ship-(.+)-\d{8}T\d{6}Z\.json$`)
 // that state.Write is about to prune. Must be called before state.Init
 // creates the new file, so its own path is never included.
 func existingShipStateFiles(root, branchSlug string) ([]string, error) {
-	dir := filepath.Join(root, ".sdlc", "execution")
+	dir := filepath.Join(root, paths.DataDir, "execution")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {

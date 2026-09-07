@@ -10,6 +10,7 @@ import (
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 )
 
@@ -82,8 +83,8 @@ func TestExecState_Init(t *testing.T) {
 	if data["quality"] != "standard" {
 		t.Errorf("quality = %v, want standard", data["quality"])
 	}
-	if data["skill"] != "execute-plan" {
-		t.Errorf("skill = %v, want execute-plan", data["skill"])
+	if data["skill"] != "execute" {
+		t.Errorf("skill = %v, want execute", data["skill"])
 	}
 	if data["planPath"] != "plan.md" {
 		t.Errorf("planPath = %v, want plan.md", data["planPath"])
@@ -218,7 +219,7 @@ func TestExecState_WaveStart_WithTasks(t *testing.T) {
 func TestExecState_WaveStart_MissingState(t *testing.T) {
 	root := t.TempDir()
 	// Create the state dir but no state file.
-	os.MkdirAll(filepath.Join(root, ".sdlc", "execution"), 0o755)
+	os.MkdirAll(filepath.Join(root, paths.DataDir, "execution"), 0o755)
 
 	_, err := executeState(root, root, ExecuteStateIn{
 		Action: "wave-start",
@@ -666,7 +667,7 @@ func TestExecState_Read(t *testing.T) {
 
 func TestExecState_Read_Missing(t *testing.T) {
 	root := t.TempDir()
-	os.MkdirAll(filepath.Join(root, ".sdlc", "execution"), 0o755)
+	os.MkdirAll(filepath.Join(root, paths.DataDir, "execution"), 0o755)
 
 	_, err := executeState(root, root, ExecuteStateIn{
 		Action: "read",
@@ -709,7 +710,7 @@ func TestExecState_Cleanup(t *testing.T) {
 
 func TestExecState_Cleanup_Missing(t *testing.T) {
 	root := t.TempDir()
-	os.MkdirAll(filepath.Join(root, ".sdlc", "execution"), 0o755)
+	os.MkdirAll(filepath.Join(root, paths.DataDir, "execution"), 0o755)
 
 	_, err := executeState(root, root, ExecuteStateIn{
 		Action: "cleanup",
@@ -879,7 +880,7 @@ func TestExecState_WaveProgress_Write(t *testing.T) {
 	root := t.TempDir()
 
 	// Create execution dir for progress files.
-	os.MkdirAll(filepath.Join(root, ".sdlc", "execution"), 0o755)
+	os.MkdirAll(filepath.Join(root, paths.DataDir, "execution"), 0o755)
 
 	_, err := executeState(root, root, ExecuteStateIn{
 		Action: "wave-progress",
@@ -894,7 +895,7 @@ func TestExecState_WaveProgress_Write(t *testing.T) {
 
 func TestExecState_WaveProgress_Read(t *testing.T) {
 	root := t.TempDir()
-	os.MkdirAll(filepath.Join(root, ".sdlc", "execution"), 0o755)
+	os.MkdirAll(filepath.Join(root, paths.DataDir, "execution"), 0o755)
 
 	// Write then read.
 	_, _ = executeState(root, root, ExecuteStateIn{
@@ -985,7 +986,7 @@ func TestExecState_ResumeReset(t *testing.T) {
 
 func TestExecState_ResumeReset_MissingState(t *testing.T) {
 	root := t.TempDir()
-	os.MkdirAll(filepath.Join(root, ".sdlc", "execution"), 0o755)
+	os.MkdirAll(filepath.Join(root, paths.DataDir, "execution"), 0o755)
 
 	result, err := executeState(root, root, ExecuteStateIn{
 		Action: "resume-reset",
@@ -1346,7 +1347,7 @@ func TestExecNormalizeTaskID(t *testing.T) {
 
 func TestExecState_GC_TTLDaysZeroPassthrough(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, ".sdlc", "execution")
+	stateDir := filepath.Join(root, paths.DataDir, "execution")
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

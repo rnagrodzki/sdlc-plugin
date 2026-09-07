@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
 // ---------------------------------------------------------------------------
@@ -14,7 +16,7 @@ import (
 
 func TestGC_DeletesTTLExpired(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, ".sdlc", "execution")
+	dir := filepath.Join(root, paths.DataDir, "execution")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -55,7 +57,7 @@ func TestGC_DeletesTTLExpired(t *testing.T) {
 
 func TestGC_KeepsNewestForLiveBranch(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, ".sdlc", "execution")
+	dir := filepath.Join(root, paths.DataDir, "execution")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -93,7 +95,7 @@ func TestGC_KeepsNewestForLiveBranch(t *testing.T) {
 
 func TestGC_DeletesAllForDeletedBranch(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, ".sdlc", "execution")
+	dir := filepath.Join(root, paths.DataDir, "execution")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -136,7 +138,7 @@ func TestGC_DeletesAllForDeletedBranch(t *testing.T) {
 
 func TestGC_SkipsSidecarFiles(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, ".sdlc", "execution")
+	dir := filepath.Join(root, paths.DataDir, "execution")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -185,7 +187,7 @@ func TestGC_MissingDir(t *testing.T) {
 
 func TestGC_BucketCounts(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, ".sdlc", "execution")
+	dir := filepath.Join(root, paths.DataDir, "execution")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -371,7 +373,7 @@ func mustMkdir(t *testing.T, path string) {
 
 func TestMigrateBranchSlug(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, ".sdlc", "execution")
+	dir := filepath.Join(root, paths.DataDir, "execution")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -473,7 +475,7 @@ func TestRecoverySidecar_WriteAndConsume(t *testing.T) {
 
 func TestRecoverySidecar_Expired(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, ".sdlc", "execution")
+	dir := filepath.Join(root, paths.DataDir, "execution")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -609,7 +611,7 @@ func TestStepBlockCount_ResetsOnStepNameChange(t *testing.T) {
 
 func TestStepBlockCount_CorruptSidecarTreatedAsAbsent(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, ".sdlc", "execution")
+	dir := filepath.Join(root, paths.DataDir, "execution")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -672,7 +674,7 @@ func TestClaimSession(t *testing.T) {
 
 func TestClaimSession_NilData(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, ".sdlc", "execution")
+	dir := filepath.Join(root, paths.DataDir, "execution")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}

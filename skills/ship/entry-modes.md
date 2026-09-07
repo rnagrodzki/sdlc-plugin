@@ -54,7 +54,7 @@ Ship Pipeline (dry run)
 ────────────────────────────────────────────────────────────────
 Step  Skill                 Status       Args              Pause?
 ────────────────────────────────────────────────────────────────
-1     execute-plan     will run     (none)             no
+1     execute          will run     (none)             no
 2     commit           will run     --auto            no
 3     review           will run     (none)             no
 4     received-review  conditional  (if crit/high)    YES

@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
 // ---------------------------------------------------------------------------
@@ -115,7 +117,7 @@ func TestPlanPrepare_PlanTemplate(t *testing.T) {
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
-	sdlcDir := filepath.Join(dir, ".sdlc")
+	sdlcDir := filepath.Join(dir, paths.DataDir)
 	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +146,7 @@ func TestPlanPrepare_Guardrails(t *testing.T) {
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
-	sdlcDir := filepath.Join(dir, ".sdlc")
+	sdlcDir := filepath.Join(dir, paths.DataDir)
 	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +336,7 @@ func TestPlanPrepare_KD5Gate(t *testing.T) {
 	// A stale schemaVersion (below configmigrate.CurrentSchemaVersion) is a
 	// genuine migration-needed condition; a merely-absent config.json is NOT
 	// (configmigrate.Verify treats "no config yet" as a fresh v5 project).
-	sdlcDir := filepath.Join(dir, ".sdlc")
+	sdlcDir := filepath.Join(dir, paths.DataDir)
 	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -452,7 +454,7 @@ func TestPlanMark_WriteAndUpdate(t *testing.T) {
 		t.Fatalf("state files after marks = %v, want exactly 1 (prune-on-write)", stateFilesAfter)
 	}
 
-	raw, err := os.ReadFile(filepath.Join(dir, ".sdlc", "execution", stateFilesAfter[0]))
+	raw, err := os.ReadFile(filepath.Join(dir, paths.DataDir, "execution", stateFilesAfter[0]))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -574,7 +576,7 @@ func writeOpenspecFixtureChange(t *testing.T, changeDir, tasksContent string) {
 // listStateFiles lists the basenames of files under <root>/.sdlc/execution/.
 func listStateFiles(t *testing.T, root string) []string {
 	t.Helper()
-	dir := filepath.Join(root, ".sdlc", "execution")
+	dir := filepath.Join(root, paths.DataDir, "execution")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("readdir %s: %v", dir, err)

@@ -2,7 +2,7 @@
 
 Use this template in plan Step 5 (CRITIQUE) when dispatching the plan review subagent.
 
-**Purpose:** Verify the plan is complete, accurate, and ready for execution by execute-plan.
+**Purpose:** Verify the plan is complete, accurate, and ready for execution by execute.
 
 **Model selection:** Use a different model than the one that wrote the plan for plans with 5+ tasks (cross-model review catches blind spots). For plans under 5 tasks, same model is acceptable.
 
@@ -30,7 +30,7 @@ Task tool (general-purpose):
   mode: bypassPermissions
   prompt: |
     You are reviewing a plan document for completeness, accuracy, and executability.
-    The plan will be executed by an automated plan orchestrator (execute-plan).
+    The plan will be executed by an automated plan orchestrator (execute).
 
     **Plan to review:** {PLAN_FILE_PATH}
     **Source requirements:** {SOURCE_REQUIREMENTS — file path or inline text, or "not provided"}

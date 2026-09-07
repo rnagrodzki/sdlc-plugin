@@ -4,7 +4,7 @@ import "fmt"
 
 // ValidStatuses is the closed set of task statuses accepted in a wave
 // summary. Mirrors wave-summary.js's VALID_STATUSES exactly; these enum
-// values are frozen — the execute-plan skill text references them directly,
+// values are frozen — the execute skill text references them directly,
 // so they must not drift.
 var ValidStatuses = map[string]bool{
 	"DONE":               true,

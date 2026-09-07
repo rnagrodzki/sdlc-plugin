@@ -12,6 +12,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/shipmeta"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
@@ -739,7 +740,7 @@ func shipStateGC(root, workDir string, in ShipStateIn, now func() time.Time) (an
 	ttlDays := resolveGCTTLDays(root, detailIntPtr(in.Detail, "ttlDays"))
 
 	if detailBool(in.Detail, "dryRun") {
-		return shipGCDryRun(filepath.Join(root, ".sdlc", "execution"), ttlDays, gcBranchExistsFunc(workDir), now)
+		return shipGCDryRun(filepath.Join(root, paths.DataDir, "execution"), ttlDays, gcBranchExistsFunc(workDir), now)
 	}
 
 	rpt, err := state.GC(root, state.GCOptions{

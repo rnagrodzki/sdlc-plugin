@@ -1,0 +1,97 @@
+{
+  "plan": {
+    "guardrails": [
+      {
+        "description": "Every task that creates or modifies source code must include corresponding test cases.",
+        "id": "test-coverage-required",
+        "severity": "error"
+      },
+      {
+        "description": "Plans must not include steps that skip or disable CI checks.",
+        "id": "no-ci-bypass",
+        "severity": "error"
+      },
+      {
+        "description": "Tasks must only address stated requirements; no gold-plating.",
+        "id": "no-scope-creep",
+        "severity": "warning"
+      },
+      {
+        "description": "Each task must have exactly one clear deliverable.",
+        "id": "single-responsibility-tasks",
+        "severity": "warning"
+      },
+      {
+        "description": "Tasks must not add functionality beyond stated requirements — no speculative abstractions, premature generalization, or unused parameters.",
+        "id": "yagni",
+        "severity": "warning"
+      },
+      {
+        "description": "Tasks must not duplicate logic that exists elsewhere — reuse existing functions or extract shared utilities.",
+        "id": "dry",
+        "severity": "warning"
+      },
+      {
+        "description": "Tasks must prefer the simplest design that satisfies requirements — avoid unnecessary abstractions and over-engineering.",
+        "id": "kiss",
+        "severity": "warning"
+      },
+      {
+        "description": "Plan must state the underlying problem in one sentence — in Goal, Architecture, or Key Decisions. Reject plans that transcribe requirements without naming the root problem.",
+        "id": "state-premise",
+        "severity": "error"
+      },
+      {
+        "description": "Plan must identify the smallest version of the work that still delivers value. If the plan covers more than the minimum, each extra task must be justified in Key Decisions.",
+        "id": "smallest-viable-cut",
+        "severity": "warning"
+      },
+      {
+        "description": "Plan must name who or what fails if this implementation ships incorrectly (user, system, team, downstream service). Surfaces the blast radius before decomposition.",
+        "id": "failure-audience",
+        "severity": "warning"
+      },
+      {
+        "description": "Plan must list what is intentionally NOT being built. Surface adjacent improvements that were considered and excluded so reviewers and executors do not silently re-expand scope.",
+        "id": "explicit-non-goals",
+        "severity": "warning"
+      },
+      {
+        "description": "When two or more codebase patterns are viable for the same requirement with materially different downstream implications, the plan must EITHER record the choice in Key Decisions with rationale, OR the skill must AskUserQuestion before committing. Silent selection between viable patterns is a critique failure.",
+        "id": "ambiguity-stops-and-asks",
+        "severity": "error"
+      },
+      {
+        "description": "Plans touching an MCP tool definition must state precisely what the tool does, its inputs/outputs, and when to call it. A vague or generic tool description is a blocking issue.",
+        "id": "mcp-tool-description-precise",
+        "severity": "error"
+      },
+      {
+        "description": "Every skill step that an MCP tool could perform must name the explicit tool call — plans must not leave tool-vs-skill wiring to ad hoc LLM judgment.",
+        "id": "skill-mcp-connectivity",
+        "severity": "warning"
+      },
+      {
+        "description": "Deterministic, mechanical work (file I/O, shell orchestration, config reads/writes, validation) belongs in MCP tools. Skills own only non-deterministic judgment (interpretation, drafting, user dialogue). Plans must not push deterministic logic into skill markdown.",
+        "id": "mcp-deterministic-work-split",
+        "severity": "error"
+      },
+      {
+        "description": "Plans that change tool request/response payloads must assess round-trip count and field clarity for LLM consumption. No ambiguous or redundant payload shapes.",
+        "id": "payload-clarity-for-llms",
+        "severity": "warning"
+      },
+      {
+        "description": "MCP tools must internally chain the shell/file reads and writes needed to reach the LLM's goal in one call rather than forcing the LLM to chain many round trips, and must return output descriptive enough to act on without extra lookups.",
+        "id": "tool-orchestrates-fast-descriptive-output",
+        "severity": "error"
+      }
+    ]
+  },
+  "version": {
+    "fileType": "plugin.json",
+    "mode": "file",
+    "tagPrefix": "v",
+    "versionFile": ".claude-plugin/plugin.json"
+  }
+}

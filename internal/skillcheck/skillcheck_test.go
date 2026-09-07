@@ -56,9 +56,8 @@ func commitSkillsBuildRegistry(t *testing.T) map[string]bool {
 
 	tools.RegisterCommitTools(srv)
 	tools.RegisterExecuteStateTools(srv)
-	tools.RegisterErrorReportTools(srv)
 	tools.RegisterJiraTools(srv)
-	tools.RegisterHardenTools(srv)
+	tools.RegisterPrepareOrchestratorTools(srv)
 	tools.RegisterMigrateTools(srv)
 	tools.RegisterOpenspecTools(srv)
 	tools.RegisterLinksTools(srv)

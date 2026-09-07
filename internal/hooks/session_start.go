@@ -15,6 +15,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/frontmatter"
 	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/openspec"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
@@ -382,11 +383,11 @@ func executeResumeLines(root, branch, source string) []string {
 
 	var line string
 	if source == "compact" {
-		line = fmt.Sprintf("Active execution (post-compact): execute-plan on %s (wave %d of %d complete)", branch, completed, total)
+		line = fmt.Sprintf("Active execution (post-compact): execute on %s (wave %d of %d complete)", branch, completed, total)
 	} else {
-		line = fmt.Sprintf("Active execution: execute-plan on %s (wave %d of %d complete)", branch, completed, total)
+		line = fmt.Sprintf("Active execution: execute on %s (wave %d of %d complete)", branch, completed, total)
 	}
-	return []string{line, "  Resume with: /execute-plan --resume"}
+	return []string{line, "  Resume with: /execute --resume"}
 }
 
 // ---------------------------------------------------------------------------
@@ -413,7 +414,7 @@ func compactRecoveryPhase() []string {
 		fmt.Fprintf(os.Stderr, "[sdlc/session-start] compact-recovery consumption failed: %v\n", err)
 		return nil
 	}
-	dir := filepath.Join(root, ".sdlc", "execution")
+	dir := filepath.Join(root, paths.DataDir, "execution")
 
 	var lines []string
 	if branch, err := gitx.CurrentBranch(resolveActiveWorktreeSafe()); err == nil && branch != "" && branch != "HEAD" {
@@ -459,11 +460,11 @@ func recoveryPipelineLines(rm map[string]any) []string {
 			lines = append(lines, fmt.Sprintf("  Review verdict: %s%s", verdict, findings))
 		}
 		return lines
-	case "execute-plan":
+	case "execute":
 		completed, _ := rm["completedWaves"].(float64)
 		total, _ := rm["totalWaves"].(float64)
 		return []string{
-			fmt.Sprintf("  Pipeline: execute-plan on %s", branch),
+			fmt.Sprintf("  Pipeline: execute on %s", branch),
 			fmt.Sprintf("  Progress: wave %s of %s complete", formatNumber(completed), formatNumber(total)),
 		}
 	default:

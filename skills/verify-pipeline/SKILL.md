@@ -20,7 +20,7 @@ Parse `--pr <N>`, `--logs <path-or-string>`, `--auto` from `$ARGUMENTS`.
 
 If both `--pr` and `--logs` are missing, emit `{"status":"abort","reason":"--pr or --logs required"}` and stop (E1).
 
-If `--logs` is provided: when the value is a filesystem path, read its contents; otherwise treat the value as the log text inline. This is how ship dispatches this skill under `automation.mode: auto` — it passes the `checks_raw` text from its own `verify_pipeline_await` poll (the tab-separated check-name/state list, not full CI log output; see Gotchas below).
+If `--logs` is provided: when the value is a filesystem path, read its contents; otherwise treat the value as the log text inline. This is how ship dispatches this skill under `automation.mode: auto` — it passes the `checks_raw` text from its own `poll_await({target: "pipeline"})` poll (the tab-separated check-name/state list, not full CI log output; see Gotchas below).
 
 If `--logs` is omitted but `--pr` is present (R6), resolve logs directly with `gh` (this port has no `fetchFailedCheckLogs` equivalent — see Gotchas):
 
@@ -46,7 +46,7 @@ Call the classification tool with the resolved log text:
 verify_pipeline_classify({logs: LOGS[, check_name: NAME, conclusion: CONCLUSION]})
 ```
 
-`check_name`/`conclusion` are optional passthrough context — pass them when known (e.g. from a `verify_pipeline_await` `failed_checks` entry's `name`/`state`) so the tool echoes them back for correlation; they do not affect classification.
+`check_name`/`conclusion` are optional passthrough context — pass them when known (e.g. from a `poll_await({target: "pipeline"})` `failed_checks` entry's `name`/`state`) so the tool echoes them back for correlation; they do not affect classification.
 
 Read the JSON result: `{"check_name": "...", "conclusion": "...", "category": "<one of seven>", "signals": [...]}`.
 
@@ -81,7 +81,7 @@ The single JSON line is the contract with the parent dispatcher (ship) — anyth
 
 ## What's Next
 
-When `fix-applied`: ship's verify-pipeline step dispatches `commit` to commit the fix. Pushing is a manual pause in ship — no tool in this port pushes — then polling resumes via `verify_pipeline_await` (R7 — this skill MUST NOT commit itself).
+When `fix-applied`: ship's verify-pipeline step dispatches `commit` to commit the fix. Pushing is a manual pause in ship — no tool in this port pushes — then polling resumes via `poll_await({target: "pipeline"})` (R7 — this skill MUST NOT commit itself).
 
 When `proposal`: the user (interactive) or ship (logging) reads the proposal and decides whether to apply.
 
@@ -90,7 +90,7 @@ When `abort`: ship treats this as a skip-with-warning and proceeds to `await-rem
 ## Gotchas
 
 - **No `fetchFailedCheckLogs` port.** The source's `lib/git.js::fetchFailedCheckLogs` helper (structured GitHub Actions log fetch with line-count truncation) has no Go equivalent — there is no tool for it, and it is intentionally out of this port's scope. The standalone `--pr` path above compensates with a direct `gh run view --log-failed` shell-out. The ship-dispatched `--auto` path compensates differently: it receives `checks_raw` (the raw `gh pr checks` text ship's own poll already captured), which lists failing check *names*, not their log *content*. Classification against `checks_raw` alone is coarser than classification against real log output — expect more `unknown` verdicts on that path than the source skill produced.
-- **`verify_pipeline_classify` is not a stepper tool.** Unlike `verify_pipeline_await`, it returns a plain `{category, signals}` payload on every call — there is no `pending` status to loop on here.
+- **`verify_pipeline_classify` is not a stepper tool.** Unlike `poll_await`, it returns a plain `{category, signals}` payload on every call — there is no `pending` status to loop on here.
 
 ## See Also
 

@@ -1,7 +1,9 @@
 // pr.go implements the pr skill's MCP tools: pr_prepare (gh-auth +
-// config-check + branch-guard + JIRA-detection + template-load preflight),
-// pr_validate_body (PR body vs. template section-presence check), and
-// pr_apply (KD14 executor: gh pr create/edit for the current branch).
+// config-check + branch-guard + JIRA-detection + template-load preflight)
+// and pr_apply (KD14 executor: gh pr create/edit for the current branch).
+// It also keeps prValidateBodyCore (PR body vs. template section-presence
+// check), which used to back a standalone pr_validate_body tool here and
+// is now reused by validate's "pr_body" action (internal/tools/validators.go).
 //
 // Scope fence (task 25): pr_prepare mirrors only scripts/skill/pr.js's
 // gh-auth-preflight + config-check + branch-guard + JIRA-detection +
@@ -337,15 +339,16 @@ func prPrepareCore(mainRoot, workDir string, in PRPrepareIn) (PRPrepareOut, erro
 }
 
 // ---------------------------------------------------------------------------
-// pr_validate_body
+// pr_body core (reused by validate's "pr_body" action; no longer a
+// standalone MCP tool of its own — see internal/tools/validators.go)
 // ---------------------------------------------------------------------------
 
-// PRValidateBodyIn is the input for pr_validate_body.
+// PRValidateBodyIn is the input for prValidateBodyCore.
 type PRValidateBodyIn struct {
 	Body string `json:"body"`
 }
 
-// PRValidateBodyOut is the output for pr_validate_body.
+// PRValidateBodyOut is the output of prValidateBodyCore.
 type PRValidateBodyOut struct {
 	OK     bool     `json:"ok"`
 	Errors []string `json:"errors,omitempty"`
@@ -355,7 +358,9 @@ type PRValidateBodyOut struct {
 // against it via prtemplate.ValidateBody — the pr SKILL.md's
 // section-presence contract, NOT pr.js's real --validate-body link
 // validation (that lives in internal/links and is explicitly out of scope
-// for this tool per the task's ruling).
+// for this tool per the task's ruling). Called directly by validate's
+// "pr_body" action (internal/tools/validators.go); no longer wired to its
+// own MCP tool registration.
 func prValidateBodyCore(root string, in PRValidateBodyIn) (PRValidateBodyOut, error) {
 	tmpl, err := prtemplate.Resolve(root)
 	if err != nil {
@@ -415,9 +420,11 @@ func prApplyCore(workDir string, in PRApplyIn) (PRApplyOut, error) {
 // Registration
 // ---------------------------------------------------------------------------
 
-// RegisterPRTools registers pr_prepare, pr_validate_body, and pr_apply on
-// the server. Registration only — wiring into runMCP's dispatch is Task
-// 40's responsibility.
+// RegisterPRTools registers pr_prepare and pr_apply on the server.
+// pr_validate_body's logic lives on in prValidateBodyCore below, reused by
+// validate's "pr_body" action instead of its own tool registration.
+// Registration only — wiring into runMCP's dispatch is Task 40's
+// responsibility.
 func RegisterPRTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "pr_prepare",
 		"Preflight checks for pr: config-version gate, gh-auth + active-account probe (with recovery-shaped diagnostics on failure), branch-guard hard gate, protected-branch rejection, JIRA ticket detection from the branch name, and PR template resolution.",
@@ -434,20 +441,6 @@ func RegisterPRTools(s *mcpserver.Server) {
 				workDir = mainRoot
 			}
 			return prPrepareCore(mainRoot, workDir, in)
-		},
-	)
-
-	mcpserver.Register(s, "pr_validate_body",
-		"Validates a PR body against the resolved PR template's section headings (section-presence check per the pr SKILL.md contract — not pr.js's link-validation --validate-body mode).",
-		func(ctx mcpserver.Ctx, in PRValidateBodyIn) (PRValidateBodyOut, error) {
-			root, err := worktree.MainRoot()
-			if err != nil {
-				root, err = os.Getwd()
-				if err != nil {
-					return PRValidateBodyOut{}, &mcpserver.InfraError{Msg: fmt.Sprintf("resolve project root: %s", err.Error()), Cause: err}
-				}
-			}
-			return prValidateBodyCore(root, in)
 		},
 	)
 

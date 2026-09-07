@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
 // ---------------------------------------------------------------------------
@@ -152,7 +154,7 @@ func TestInit_EmptySessionIDStoresNil(t *testing.T) {
 
 func TestFind_DelimiterAwareAndMtimeNewest(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, ".sdlc", "execution")
+	dir := filepath.Join(root, paths.DataDir, "execution")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -231,7 +233,7 @@ func TestFind_NoMatch_ReturnsNilNil(t *testing.T) {
 
 func TestWrite_PrunesOldFiles(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, ".sdlc", "execution")
+	dir := filepath.Join(root, paths.DataDir, "execution")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -544,7 +546,7 @@ func TestHookEnforcementAllowed(t *testing.T) {
 // through SDLC_STATE_DIR_OVERRIDE + node findStateFile.
 func TestFind_PrefixMatchIncludesSlugSuperstrings(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, ".sdlc", "execution")
+	dir := filepath.Join(root, paths.DataDir, "execution")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -587,7 +589,7 @@ func TestFind_PrefixMatchIncludesSlugSuperstrings(t *testing.T) {
 
 func TestFind_MixedFixtureDir(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, ".sdlc", "execution")
+	dir := filepath.Join(root, paths.DataDir, "execution")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -658,7 +660,7 @@ func TestFind_MixedFixtureDir(t *testing.T) {
 
 func TestInit_DoesNotPrune(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, ".sdlc", "execution")
+	dir := filepath.Join(root, paths.DataDir, "execution")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -697,7 +699,7 @@ func TestFindAny_NoMatch_ReturnsNilNil(t *testing.T) {
 	}
 
 	// State dir exists but has no matching files.
-	dir := filepath.Join(root, ".sdlc", "execution")
+	dir := filepath.Join(root, paths.DataDir, "execution")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -712,7 +714,7 @@ func TestFindAny_NoMatch_ReturnsNilNil(t *testing.T) {
 
 func TestFindAny_SingleMatch(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, ".sdlc", "execution")
+	dir := filepath.Join(root, paths.DataDir, "execution")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -746,7 +748,7 @@ func TestFindAny_SingleMatch(t *testing.T) {
 
 func TestFindAny_MultipleMatches_PicksMostRecentByMtime(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, ".sdlc", "execution")
+	dir := filepath.Join(root, paths.DataDir, "execution")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -783,7 +785,7 @@ func TestFindAny_MultipleMatches_PicksMostRecentByMtime(t *testing.T) {
 
 func TestFindAny_MixedPrefixesDoesNotCrossMatch(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, ".sdlc", "execution")
+	dir := filepath.Join(root, paths.DataDir, "execution")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}

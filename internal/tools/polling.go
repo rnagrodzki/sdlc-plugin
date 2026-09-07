@@ -2,6 +2,7 @@ package tools
 
 import (
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -309,6 +310,65 @@ func verifyPipelineAwait(activeRoot string, in VerifyPipelineAwaitIn) (stepper.E
 }
 
 // ---------------------------------------------------------------------------
+// poll_await
+//
+// Unifies await_remote_review and verify_pipeline_await behind one tool with
+// a Target discriminator, since both are KD8 bounded-polling probes that
+// return a stepper.Envelope and differ only in what they poll and their
+// input/default shape.
+// ---------------------------------------------------------------------------
+
+// PollAwaitIn is the input for the unified poll_await tool. Target selects
+// which underlying probe runs: "remote_review" (await_remote_review) or
+// "pipeline" (verify_pipeline_await). Reviewers is meaningful only for
+// "remote_review" and is ignored for "pipeline".
+//
+// TimeoutSeconds/IntervalSeconds/Reviewers/StateFile are forwarded verbatim
+// into the target's own input struct (AwaitRemoteReviewIn or
+// VerifyPipelineAwaitIn) rather than defaulted here. This is deliberate:
+// the two targets have DIFFERENT zero-value timeout defaults (600s for
+// remote_review, 1200s for pipeline), and each one's own core function
+// already applies its own default when TimeoutSeconds is zero. Branching
+// on Target to pick which core function runs *is* the per-target default
+// branch the fact sheet requires — duplicating that fallback logic here
+// would risk the two defaults drifting apart.
+type PollAwaitIn struct {
+	Target          string   `json:"target"`
+	PR              int      `json:"pr"`
+	TimeoutSeconds  int      `json:"timeout_seconds,omitempty"`
+	IntervalSeconds int      `json:"interval_seconds,omitempty"`
+	Reviewers       []string `json:"reviewers,omitempty"`
+	StateFile       string   `json:"state_file,omitempty"`
+}
+
+// pollAwait dispatches a poll_await call to the target's existing core
+// probe function, unchanged. Extracted as a standalone function (rather
+// than inlined in the Register closure) so it is directly unit-testable.
+func pollAwait(activeRoot string, in PollAwaitIn) (stepper.Envelope, error) {
+	switch in.Target {
+	case "remote_review":
+		return awaitRemoteReview(activeRoot, AwaitRemoteReviewIn{
+			PR:              in.PR,
+			TimeoutSeconds:  in.TimeoutSeconds,
+			IntervalSeconds: in.IntervalSeconds,
+			Reviewers:       in.Reviewers,
+			StateFile:       in.StateFile,
+		})
+	case "pipeline":
+		return verifyPipelineAwait(activeRoot, VerifyPipelineAwaitIn{
+			PR:              in.PR,
+			TimeoutSeconds:  in.TimeoutSeconds,
+			IntervalSeconds: in.IntervalSeconds,
+			StateFile:       in.StateFile,
+		})
+	default:
+		return stepper.Envelope{}, &mcpserver.DomainError{
+			Msg: fmt.Sprintf(`target must be "remote_review" or "pipeline", got %q`, in.Target),
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Shared KD8 bounded-poll state helpers
 // ---------------------------------------------------------------------------
 
@@ -528,14 +588,14 @@ func ClassifyLogs(text string) VerifyPipelineClassifyOut {
 // Registration
 // ---------------------------------------------------------------------------
 
-// RegisterPollingTools registers await_remote_review, verify_pipeline_await,
-// and verify_pipeline_classify on the server. Registration-only: wiring
-// these into runMCP's live server is Task 40's job, matching the pattern
-// already established for every tool registered so far.
+// RegisterPollingTools registers poll_await and verify_pipeline_classify on
+// the server. Registration-only: wiring these into runMCP's live server is
+// Task 40's job, matching the pattern already established for every tool
+// registered so far.
 func RegisterPollingTools(s *mcpserver.Server) {
-	mcpserver.Register(s, "await_remote_review",
-		"Poll gh for a remote reviewer's verdict on a PR. KD8 bounded polling: one non-blocking probe per call. Returns a stepper envelope (status pending + state_file to resume, or status done/error with the verdict in ext).",
-		func(ctx mcpserver.Ctx, in AwaitRemoteReviewIn) (stepper.Envelope, error) {
+	mcpserver.Register(s, "poll_await",
+		`INTERNAL — called by sdlc skills only. Run one bounded KD8 probe for a polling target: target: "remote_review" polls gh for a remote reviewer's verdict on a PR; target: "pipeline" polls gh PR checks for green/failed/pending. One non-blocking probe per call. Returns a stepper envelope (status pending + state_file to resume, or status done/error with the verdict in ext).`,
+		func(ctx mcpserver.Ctx, in PollAwaitIn) (stepper.Envelope, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {
 				return stepper.Envelope{}, &mcpserver.InfraError{Msg: "resolve project root: " + err.Error(), Cause: err}
@@ -544,27 +604,12 @@ func RegisterPollingTools(s *mcpserver.Server) {
 			if err != nil {
 				activeRoot = root
 			}
-			return awaitRemoteReview(activeRoot, in)
-		},
-	)
-
-	mcpserver.Register(s, "verify_pipeline_await",
-		"Poll gh PR checks for green/failed/pending. KD8 bounded polling: one non-blocking probe per call. Returns a stepper envelope (status pending + state_file to resume, or status done/error with the verdict in ext).",
-		func(ctx mcpserver.Ctx, in VerifyPipelineAwaitIn) (stepper.Envelope, error) {
-			root, err := worktree.MainRoot()
-			if err != nil {
-				return stepper.Envelope{}, &mcpserver.InfraError{Msg: "resolve project root: " + err.Error(), Cause: err}
-			}
-			activeRoot, err := worktree.ActiveRoot()
-			if err != nil {
-				activeRoot = root
-			}
-			return verifyPipelineAwait(activeRoot, in)
+			return pollAwait(activeRoot, in)
 		},
 	)
 
 	mcpserver.Register(s, "verify_pipeline_classify",
-		"Classify failed-check log text into lint|test-failure|type-error|build-error|dependency|infra|unknown.",
+		"INTERNAL — called by sdlc skills only. Classify failed-check log text into lint|test-failure|type-error|build-error|dependency|infra|unknown.",
 		func(ctx mcpserver.Ctx, in VerifyPipelineClassifyIn) (VerifyPipelineClassifyOut, error) {
 			out := ClassifyLogs(in.Logs)
 			out.CheckName = in.CheckName

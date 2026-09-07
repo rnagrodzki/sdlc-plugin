@@ -359,7 +359,7 @@ func TestEnrichConfig_AppendNewBlock(t *testing.T) {
 
 	data, _ := os.ReadFile(configPath)
 	content := string(data)
-	if !strings.Contains(content, "BEGIN MANAGED BY sdlc-utilities") {
+	if !strings.Contains(content, "BEGIN MANAGED BY sdlc-v2") {
 		t.Error("written file does not contain managed block")
 	}
 }
@@ -451,7 +451,7 @@ func TestEnrichConfig_Remove(t *testing.T) {
 	}
 
 	data, _ := os.ReadFile(configPath)
-	if strings.Contains(string(data), "BEGIN MANAGED BY sdlc-utilities") {
+	if strings.Contains(string(data), "BEGIN MANAGED BY sdlc-v2") {
 		t.Error("managed block should have been removed")
 	}
 }

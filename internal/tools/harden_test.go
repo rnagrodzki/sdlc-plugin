@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 )
 
@@ -17,7 +18,7 @@ import (
 
 func TestHardenPrepare_KD5Gate(t *testing.T) {
 	root := t.TempDir()
-	sdlcDir := filepath.Join(root, ".sdlc")
+	sdlcDir := filepath.Join(root, paths.DataDir)
 	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +44,7 @@ func TestHardenPrepare_KD5Gate(t *testing.T) {
 
 func TestHardenPrepare_SkipConfigCheckBypassesGate(t *testing.T) {
 	root := t.TempDir()
-	sdlcDir := filepath.Join(root, ".sdlc")
+	sdlcDir := filepath.Join(root, paths.DataDir)
 	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +165,7 @@ func TestHardenPrepare_PreflightGuardrailFailureAbortsNoManifest(t *testing.T) {
 
 func TestHardenPrepare_PreflightDimensionFailureAbortsNoManifest(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, ".sdlc", "review-dimensions", "bad.md"), "no frontmatter here\n")
+	writeFile(t, filepath.Join(root, paths.DataDir, "review-dimensions", "bad.md"), "no frontmatter here\n")
 
 	_, err := hardenPrepare(root, root, HardenPrepareIn{
 		FailureText:     "boom",
@@ -290,7 +291,7 @@ func TestHardenPrepare_LoadsGuardrailSurfaces(t *testing.T) {
 	root := t.TempDir()
 	// writeConfigSection replaces the whole config.json per call, so both
 	// sections must be written together in one file, not via two calls.
-	writeFile(t, filepath.Join(root, ".sdlc", "config.json"), `{
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{
 		"plan": {"guardrails": [
 			{"id": "no-console-log", "severity": "warning", "description": "Avoid console.log in production code."}
 		]},
@@ -331,7 +332,7 @@ func TestHardenPrepare_LoadsGuardrailSurfaces(t *testing.T) {
 
 func TestHardenPrepare_LoadsReviewDimensionsMetadataOnly(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, ".sdlc", "review-dimensions", "security.md"),
+	writeFile(t, filepath.Join(root, paths.DataDir, "review-dimensions", "security.md"),
 		"---\n"+
 			"name: security-review\n"+
 			"severity: high\n"+

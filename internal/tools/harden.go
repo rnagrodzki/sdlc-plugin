@@ -17,6 +17,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
@@ -164,7 +165,7 @@ type hardenManifest struct {
 // reported per file and that file is skipped (source: try/catch per
 // iteration, loop continues).
 func loadReviewDimensions(contentRoot string, errs *[]surfaceLoadError) []reviewDimensionMeta {
-	dir := filepath.Join(contentRoot, ".sdlc", "review-dimensions")
+	dir := filepath.Join(contentRoot, paths.DataDir, "review-dimensions")
 	dims, err := dimensions.Load(dir)
 	if err != nil {
 		*errs = append(*errs, surfaceLoadError{
@@ -362,7 +363,7 @@ func anySliceToStrings(v any) []string {
 // convention already mirrors source's `if (fs.existsSync(dimDir))` guard,
 // so a missing directory yields no errors here, matching source.
 func dimensionsPreflight(contentRoot string) []string {
-	dir := filepath.Join(contentRoot, ".sdlc", "review-dimensions")
+	dir := filepath.Join(contentRoot, paths.DataDir, "review-dimensions")
 	dims, err := dimensions.Load(dir)
 	if err != nil {
 		return []string{fmt.Sprintf("review-dimensions: readdir failed: %s", err.Error())}
@@ -625,29 +626,4 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 	}
 
 	return HardenPrepareOut{ManifestPath: manifestPath}, nil
-}
-
-// ---------------------------------------------------------------------------
-// Registration
-// ---------------------------------------------------------------------------
-
-// RegisterHardenTools registers harden_prepare.
-func RegisterHardenTools(s *mcpserver.Server) {
-	mcpserver.Register(s, "harden_prepare",
-		"Pre-compute the harden-orchestrator manifest after an SDLC pipeline failure: failure details, guardrail/dimension/copilot surfaces, pipeline state, and repository context. Writes the manifest to a temp file and returns its path.",
-		func(ctx mcpserver.Ctx, in HardenPrepareIn) (HardenPrepareOut, error) {
-			root, err := worktree.MainRoot()
-			if err != nil {
-				return HardenPrepareOut{}, &mcpserver.InfraError{
-					Msg:   fmt.Sprintf("resolve project root: %s", err.Error()),
-					Cause: err,
-				}
-			}
-			contentRoot := activeWorktreeRootSafe()
-			if contentRoot == "" {
-				contentRoot = root
-			}
-			return hardenPrepare(root, contentRoot, in)
-		},
-	)
 }

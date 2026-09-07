@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/discovery"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
 // ---------------------------------------------------------------------------
@@ -313,7 +314,7 @@ func TestValidateDiscoveryDelegatesToDiscoveryPackage(t *testing.T) {
 func TestValidatePRTemplateAllChecksPass(t *testing.T) {
 	root := t.TempDir()
 	tmpl := "## Description\n\nThis section has more than twenty characters in it.\n\n## Testing\n\nAlso has enough characters here to pass.\n"
-	writeFile(t, filepath.Join(root, ".sdlc", "pr-template.md"), tmpl)
+	writeFile(t, filepath.Join(root, paths.DataDir, "pr-template.md"), tmpl)
 
 	findingsOut, err := validate(root, ValidateIn{Action: "pr_template"})
 	if err != nil {
@@ -340,7 +341,7 @@ func TestValidatePRTemplateV1FileNotFound(t *testing.T) {
 
 func TestValidatePRTemplateV2Empty(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, ".sdlc", "pr-template.md"), "   \n\n  ")
+	writeFile(t, filepath.Join(root, paths.DataDir, "pr-template.md"), "   \n\n  ")
 	findingsOut, err := validate(root, ValidateIn{Action: "pr_template"})
 	if err != nil {
 		t.Fatalf("validate: %v", err)
@@ -353,7 +354,7 @@ func TestValidatePRTemplateV2Empty(t *testing.T) {
 
 func TestValidatePRTemplateV3NoHeadings(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, ".sdlc", "pr-template.md"), "just some text, no headings at all")
+	writeFile(t, filepath.Join(root, paths.DataDir, "pr-template.md"), "just some text, no headings at all")
 	findingsOut, err := validate(root, ValidateIn{Action: "pr_template"})
 	if err != nil {
 		t.Fatalf("validate: %v", err)
@@ -367,7 +368,7 @@ func TestValidatePRTemplateV3NoHeadings(t *testing.T) {
 func TestValidatePRTemplateV4DuplicateHeadings(t *testing.T) {
 	root := t.TempDir()
 	tmpl := "## Description\n\nThis section has more than twenty characters.\n\n## description\n\nAnother section long enough too.\n"
-	writeFile(t, filepath.Join(root, ".sdlc", "pr-template.md"), tmpl)
+	writeFile(t, filepath.Join(root, paths.DataDir, "pr-template.md"), tmpl)
 	findingsOut, err := validate(root, ValidateIn{Action: "pr_template"})
 	if err != nil {
 		t.Fatalf("validate: %v", err)
@@ -386,7 +387,7 @@ func TestValidatePRTemplateV4DuplicateHeadings(t *testing.T) {
 func TestValidatePRTemplateV5ShortSection(t *testing.T) {
 	root := t.TempDir()
 	tmpl := "## Description\n\nshort\n"
-	writeFile(t, filepath.Join(root, ".sdlc", "pr-template.md"), tmpl)
+	writeFile(t, filepath.Join(root, paths.DataDir, "pr-template.md"), tmpl)
 	findingsOut, err := validate(root, ValidateIn{Action: "pr_template"})
 	if err != nil {
 		t.Fatalf("validate: %v", err)
@@ -394,6 +395,56 @@ func TestValidatePRTemplateV5ShortSection(t *testing.T) {
 	findings := findingsOut.Findings
 	if len(findingsByID(findings, "V5")) != 1 {
 		t.Fatalf("expected 1 V5 finding, got %+v", findings)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// pr_body
+// ---------------------------------------------------------------------------
+
+func TestValidatePRBodyNoTemplateAlwaysPasses(t *testing.T) {
+	root := t.TempDir()
+	findingsOut, err := validate(root, ValidateIn{Action: "pr_body", Body: "anything at all"})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if len(findingsOut.Findings) != 0 {
+		t.Fatalf("expected 0 findings when no template exists, got %+v", findingsOut.Findings)
+	}
+}
+
+func TestValidatePRBodyMissingSectionsProducesFindings(t *testing.T) {
+	root := t.TempDir()
+	tmpl := "## Summary\n<!-- what changed -->\n\n## Testing\n<!-- how verified -->\n"
+	writeFile(t, filepath.Join(root, paths.DataDir, "pr-template.md"), tmpl)
+
+	findingsOut, err := validate(root, ValidateIn{Action: "pr_body", Body: "## Summary\nDid the thing.\n"})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	findings := findingsOut.Findings
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding for one missing section, got %d: %+v", len(findings), findings)
+	}
+	if findings[0].ID != "PR_BODY" || findings[0].Severity != "error" {
+		t.Errorf("finding = %+v, want ID=PR_BODY Severity=error", findings[0])
+	}
+}
+
+func TestValidatePRBodyAllSectionsPresentPasses(t *testing.T) {
+	root := t.TempDir()
+	tmpl := "## Summary\n<!-- what changed -->\n\n## Testing\n<!-- how verified -->\n"
+	writeFile(t, filepath.Join(root, paths.DataDir, "pr-template.md"), tmpl)
+
+	findingsOut, err := validate(root, ValidateIn{
+		Action: "pr_body",
+		Body:   "## Summary\nDid the thing.\n\n## Testing\nRan tests.\n",
+	})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if len(findingsOut.Findings) != 0 {
+		t.Fatalf("expected 0 findings, got %+v", findingsOut.Findings)
 	}
 }
 
@@ -513,7 +564,7 @@ func writeConfigSection(t *testing.T, root, section string, data any) {
 	if err != nil {
 		t.Fatalf("marshal config: %v", err)
 	}
-	writeFile(t, filepath.Join(root, ".sdlc", "config.json"), string(b))
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), string(b))
 }
 
 func TestValidateGuardrailsAllChecks(t *testing.T) {
@@ -613,7 +664,7 @@ func TestValidateGuardrailsCustomSection(t *testing.T) {
 
 func TestValidateDimensionsValidFileHasNoFindings(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, ".sdlc", "review-dimensions", "a-dim.md"), "---\n"+
+	writeFile(t, filepath.Join(root, paths.DataDir, "review-dimensions", "a-dim.md"), "---\n"+
 		"name: security-review\n"+
 		"description: Check for security issues in the diff.\n"+
 		"triggers:\n"+
@@ -633,7 +684,7 @@ func TestValidateDimensionsValidFileHasNoFindings(t *testing.T) {
 
 func TestValidateDimensionsMissingFieldAndUnknownField(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, ".sdlc", "review-dimensions", "bad-dim.md"), "---\n"+
+	writeFile(t, filepath.Join(root, paths.DataDir, "review-dimensions", "bad-dim.md"), "---\n"+
 		"name: bad-dim\n"+
 		"triggers:\n"+
 		"  - \"**/*.js\"\n"+
@@ -676,8 +727,8 @@ func TestValidateDimensionsD10DuplicateName(t *testing.T) {
 		"  - \"**/*.go\"\n" +
 		"---\n" +
 		"This dimension reviews code for security vulnerabilities and unsafe patterns.\n"
-	writeFile(t, filepath.Join(root, ".sdlc", "review-dimensions", "a-dim.md"), dim)
-	writeFile(t, filepath.Join(root, ".sdlc", "review-dimensions", "b-dim.md"), dim)
+	writeFile(t, filepath.Join(root, paths.DataDir, "review-dimensions", "a-dim.md"), dim)
+	writeFile(t, filepath.Join(root, paths.DataDir, "review-dimensions", "b-dim.md"), dim)
 
 	findingsOut, err := validate(root, ValidateIn{Action: "dimensions"})
 	if err != nil {
@@ -783,7 +834,7 @@ func TestMcpFailureRecordClassifiesAndRecords(t *testing.T) {
 		t.Errorf("SessionID should not be empty")
 	}
 
-	logPath := filepath.Join(root, ".sdlc", "learnings", "log.md")
+	logPath := filepath.Join(root, paths.DataDir, "learnings", "log.md")
 	data, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatalf("read log.md: %v", err)

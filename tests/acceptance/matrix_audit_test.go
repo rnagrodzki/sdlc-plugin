@@ -175,7 +175,7 @@ type datasetRow struct {
 //     has no dedicated unit test anywhere in the suite.
 //   - execute-plan-dispatch-resilience-exec.yaml: the sentinel string
 //     this dataset checks for IS present verbatim at
-//     skills/execute-plan/SKILL.md:313 ("Nested Agent dispatch is
+//     skills/execute/SKILL.md:313 ("Nested Agent dispatch is
 //     supported...") — the original cutReason's "absent... anywhere" claim
 //     was false. The real, narrower gap: the dataset's second required
 //     file, wave-runner-template.md, does not exist in this port because
@@ -208,7 +208,7 @@ var datasetRows = []datasetRow{
 	{dataset: "execute-plan-context-producer-exec.yaml", testRef: "TestExecState_SummarizePriorWaveContext"},
 	{
 		dataset:   "execute-plan-dispatch-resilience-exec.yaml",
-		cutReason: "the dataset's sentinel string (\"Nested Agent dispatch is supported...\") IS present verbatim at skills/execute-plan/SKILL.md:313 — no gap there. The narrower real gap: the dataset's second required file, wave-runner-template.md, does not exist in this port, because the wave-runner middle-agent this port's KD15 collapsed into flat dispatch. No Go test encodes that collapsed-dispatch behavior as a standalone assertion. Flagged in the task-49 report as follow-up-worthy, not fixed here (out of this task's scope).",
+		cutReason: "the dataset's sentinel string (\"Nested Agent dispatch is supported...\") IS present verbatim at skills/execute/SKILL.md:313 — no gap there. The narrower real gap: the dataset's second required file, wave-runner-template.md, does not exist in this port, because the wave-runner middle-agent this port's KD15 collapsed into flat dispatch. No Go test encodes that collapsed-dispatch behavior as a standalone assertion. Flagged in the task-49 report as follow-up-worthy, not fixed here (out of this task's scope).",
 	},
 	{dataset: "execute-plan-liveness-exec.yaml", testRef: "TestExecState_ResumeReset"},
 	{dataset: "execute-plan-overflow-exec.yaml", testRef: "TestSplit_RefusesBeyondMaxDepth"},
@@ -237,7 +237,7 @@ var datasetRows = []datasetRow{
 	{dataset: "links-lib-exec.yaml", testRef: "TestValidate_MultipleURLs"},
 	{dataset: "markdown-to-adf-exec.yaml", testRef: "TestConvert_GoldenCorpus"},
 	{dataset: "migrate-config-exec.yaml", testRef: "TestMigrate_ConfigAction_V4ToV5"},
-	{dataset: "migrate-jira-templates-exec.yaml", testRef: "TestMigrate_JiraTemplates_Move"},
+	{dataset: "migrate-jira-templates-exec.yaml", testRef: "TestMigrateImportCopiesFreshFiles"},
 	{dataset: "openspec-enrich-exec.yaml", testRef: "TestEnrichConfig_AppendNewBlock"},
 	{dataset: "openspec-lib-exec.yaml", testRef: "TestDetect_ChangeList"},
 	{dataset: "plan-format-exec.yaml", testRef: "TestValidatePlanFormatAllChecksPass"},

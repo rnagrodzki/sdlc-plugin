@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/openspec"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 )
 
@@ -217,7 +218,7 @@ func TestRun_SessionStart_MalformedStdin(t *testing.T) {
 // four documented source values. event.Source only affects
 // pipelineResumePhase's output (compact gets a "(post-compact)" banner
 // variant; startup/clear/resume all share the plain banner), so an
-// in-progress execute-plan fixture is used to make that difference
+// in-progress execute fixture is used to make that difference
 // observable in real stdout bytes produced from real JSON stdin.
 func TestRun_SessionStart_GoldenSources(t *testing.T) {
 	branch := "feat/golden-sources"
@@ -247,8 +248,8 @@ func TestRun_SessionStart_GoldenSources(t *testing.T) {
 		return out.String()
 	}
 
-	wantPlain := "Active execution: execute-plan on " + branch + " (wave 1 of 2 complete)"
-	wantPostCompact := "Active execution (post-compact): execute-plan on " + branch + " (wave 1 of 2 complete)"
+	wantPlain := "Active execution: execute on " + branch + " (wave 1 of 2 complete)"
+	wantPostCompact := "Active execution (post-compact): execute on " + branch + " (wave 1 of 2 complete)"
 
 	for _, source := range []string{"startup", "clear", "resume"} {
 		out := runWithSource(source)
@@ -416,13 +417,13 @@ func TestRecoveryPipelineLines(t *testing.T) {
 		assertLines(t, recoveryPipelineLines(rm), []string{"  Pipeline: ship on feat/x"})
 	})
 
-	t.Run("execute-plan", func(t *testing.T) {
+	t.Run("execute", func(t *testing.T) {
 		rm := map[string]any{
-			"pipeline": "execute-plan", "branch": "feat/x",
+			"pipeline": "execute", "branch": "feat/x",
 			"completedWaves": float64(3), "totalWaves": float64(5),
 		}
 		assertLines(t, recoveryPipelineLines(rm), []string{
-			"  Pipeline: execute-plan on feat/x",
+			"  Pipeline: execute on feat/x",
 			"  Progress: wave 3 of 5 complete",
 		})
 	})
@@ -660,15 +661,15 @@ func TestPipelineResumePhase_ExecuteSourceVariants(t *testing.T) {
 
 	t.Run("startup", func(t *testing.T) {
 		assertLines(t, pipelineResumePhase("startup"), []string{
-			"Active execution: execute-plan on " + branch + " (wave 2 of 3 complete)",
-			"  Resume with: /execute-plan --resume",
+			"Active execution: execute on " + branch + " (wave 2 of 3 complete)",
+			"  Resume with: /execute --resume",
 		})
 	})
 
 	t.Run("compact", func(t *testing.T) {
 		assertLines(t, pipelineResumePhase("compact"), []string{
-			"Active execution (post-compact): execute-plan on " + branch + " (wave 2 of 3 complete)",
-			"  Resume with: /execute-plan --resume",
+			"Active execution (post-compact): execute on " + branch + " (wave 2 of 3 complete)",
+			"  Resume with: /execute --resume",
 		})
 	})
 }
@@ -721,7 +722,7 @@ func TestCompactRecoveryPhase_ConsumeSidecar(t *testing.T) {
 		"  Current step: review",
 	})
 
-	sidecarPath := filepath.Join(root, ".sdlc", "execution", ".compact-recovery-"+slug+".json")
+	sidecarPath := filepath.Join(root, paths.DataDir, "execution", ".compact-recovery-"+slug+".json")
 	if _, err := os.Stat(sidecarPath); !os.IsNotExist(err) {
 		t.Errorf("sidecar still exists after single-use consume: stat err=%v", err)
 	}
@@ -730,7 +731,7 @@ func TestCompactRecoveryPhase_ConsumeSidecar(t *testing.T) {
 func TestCompactRecoveryPhase_StaleSweep(t *testing.T) {
 	branch := "feat/recovery-sweep"
 	root := gitFixture(t, branch)
-	execDir := filepath.Join(root, ".sdlc", "execution")
+	execDir := filepath.Join(root, paths.DataDir, "execution")
 	mustMkdirAll(t, execDir)
 
 	staleFiles := []string{".compact-recovery-otherslug.json", ".stop-block-count-otherslug.json"}
@@ -762,7 +763,7 @@ func TestCompactRecoveryPhase_StaleSweep(t *testing.T) {
 func TestCompactRecoveryPhase_LegacyCleanup(t *testing.T) {
 	branch := "feat/recovery-legacy"
 	root := gitFixture(t, branch)
-	execDir := filepath.Join(root, ".sdlc", "execution")
+	execDir := filepath.Join(root, paths.DataDir, "execution")
 	mustMkdirAll(t, execDir)
 	legacyPath := filepath.Join(execDir, ".compact-recovery.json")
 	mustWriteFile(t, legacyPath, "{}")
@@ -782,7 +783,7 @@ func TestCompactRecoveryPhase_LegacyCleanup(t *testing.T) {
 func TestCompactRecoveryPhase_LegacyCleanup_KeepsFresh(t *testing.T) {
 	branch := "feat/recovery-legacy-fresh"
 	root := gitFixture(t, branch)
-	execDir := filepath.Join(root, ".sdlc", "execution")
+	execDir := filepath.Join(root, paths.DataDir, "execution")
 	mustMkdirAll(t, execDir)
 	legacyPath := filepath.Join(execDir, ".compact-recovery.json")
 	mustWriteFile(t, legacyPath, "{}") // fresh mtime, well within TTL
@@ -890,7 +891,7 @@ func TestShipConfigPhase(t *testing.T) {
 	branch := "feat/ship-config"
 	root := gitFixture(t, branch)
 
-	localPath := filepath.Join(root, ".sdlc", "local.json")
+	localPath := filepath.Join(root, paths.DataDir, "local.json")
 	mustMkdirAll(t, filepath.Dir(localPath))
 	raw := `{"ship": {"steps": ["review", "commit"], "preset": "A", "skip": ["docs"], "bump": "minor", "reviewThreshold": 80}}`
 	mustWriteFile(t, localPath, raw)
@@ -915,7 +916,7 @@ func TestSessionStart_PhaseIsolation(t *testing.T) {
 	// the state filename grammar, but containing invalid JSON, so
 	// state.Find returns a parse error and pipelineResumePhase must
 	// degrade to no lines rather than propagate the failure.
-	execDir := filepath.Join(root, ".sdlc", "execution")
+	execDir := filepath.Join(root, paths.DataDir, "execution")
 	mustMkdirAll(t, execDir)
 	mustWriteFile(t, filepath.Join(execDir, "ship-"+slug+"-20260101T000000Z.json"), "{not valid json")
 

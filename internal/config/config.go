@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
 // ErrNotFound is returned when no config file exists at the expected path.
@@ -71,9 +72,9 @@ func traceRead(absPath string, status string) {
 var legacyMarkers = []string{
 	filepath.Join(".claude", "sdlc.json"),
 	filepath.Join(".claude", "version.json"),
-	filepath.Join(".sdlc", "jira-config.json"),
-	filepath.Join(".sdlc", "ship-config.json"),
-	filepath.Join(".sdlc", "review.json"),
+	filepath.Join(paths.LegacyDataDir, "jira-config.json"),
+	filepath.Join(paths.LegacyDataDir, "ship-config.json"),
+	filepath.Join(paths.LegacyDataDir, "review.json"),
 	filepath.Join(".claude", "review.json"),
 }
 
@@ -210,7 +211,7 @@ func applyAutomationDefaults(a *AutomationSection) {
 // ErrNotFound. When config.json exists with a schemaVersion field (the v4
 // marker), returns a legacy-refusal error.
 func readProjectRaw(mainRoot string) (map[string]any, error) {
-	projectPath := filepath.Join(mainRoot, ".sdlc", "config.json")
+	projectPath := filepath.Join(mainRoot, paths.DataDir, "config.json")
 	var raw map[string]any
 	err := fsx.ReadJSON(projectPath, &raw)
 	if err != nil {
@@ -239,7 +240,7 @@ func readProjectRaw(mainRoot string) (map[string]any, error) {
 // map. Returns (nil, nil) when the file does not exist — missing local
 // config is not an error.
 func readLocalRaw(mainRoot string) (map[string]any, error) {
-	localPath := filepath.Join(mainRoot, ".sdlc", "local.json")
+	localPath := filepath.Join(mainRoot, paths.DataDir, "local.json")
 	var raw map[string]any
 	err := fsx.ReadJSON(localPath, &raw)
 	if err != nil {
@@ -327,7 +328,7 @@ func ReadSection(mainRoot, name string) (map[string]any, error) {
 	}
 
 	// Local section.
-	localPath := filepath.Join(mainRoot, ".sdlc", "local.json")
+	localPath := filepath.Join(mainRoot, paths.DataDir, "local.json")
 	var localRaw map[string]any
 	if err := fsx.ReadJSON(localPath, &localRaw); err != nil {
 		if errors.Is(err, fsx.ErrNotFound) {
@@ -351,7 +352,7 @@ func ReadSection(mainRoot, name string) (map[string]any, error) {
 // For project sections, validates the merged result against the v5 schema
 // before writing. Writes use fsx.AtomicWriteJSON for crash safety.
 func WriteSection(mainRoot, name string, v map[string]any) error {
-	sdlcDir := filepath.Join(mainRoot, ".sdlc")
+	sdlcDir := filepath.Join(mainRoot, paths.DataDir)
 	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
 		return fmt.Errorf("config: create .sdlc dir: %w", err)
 	}

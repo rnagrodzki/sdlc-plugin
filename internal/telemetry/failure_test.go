@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
 // ---------------------------------------------------------------------------
@@ -90,7 +92,7 @@ func TestRecord_CreatesParentDirs(t *testing.T) {
 	if err := Record(root, f); err != nil {
 		t.Fatal(err)
 	}
-	logPath := filepath.Join(root, ".sdlc", "learnings", "log.md")
+	logPath := filepath.Join(root, paths.DataDir, "learnings", "log.md")
 	data, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatalf("log file not created: %v", err)
@@ -112,7 +114,7 @@ func TestRecord_Idempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	logPath := filepath.Join(root, ".sdlc", "learnings", "log.md")
+	logPath := filepath.Join(root, paths.DataDir, "learnings", "log.md")
 	data, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatal(err)
@@ -135,7 +137,7 @@ func TestRecord_NoPrefixFalsePositive(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	logPath := filepath.Join(root, ".sdlc", "learnings", "log.md")
+	logPath := filepath.Join(root, paths.DataDir, "learnings", "log.md")
 	data, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatal(err)
@@ -155,7 +157,7 @@ func TestRecord_DefaultsClassAndRecovered(t *testing.T) {
 	if err := Record(root, f); err != nil {
 		t.Fatal(err)
 	}
-	logPath := filepath.Join(root, ".sdlc", "learnings", "log.md")
+	logPath := filepath.Join(root, paths.DataDir, "learnings", "log.md")
 	data, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatal(err)
@@ -175,7 +177,7 @@ func TestRecord_RedactsEmail(t *testing.T) {
 	if err := Record(root, f); err != nil {
 		t.Fatal(err)
 	}
-	logPath := filepath.Join(root, ".sdlc", "learnings", "log.md")
+	logPath := filepath.Join(root, paths.DataDir, "learnings", "log.md")
 	data, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatal(err)
@@ -196,7 +198,7 @@ func TestRecord_TruncatesLongError(t *testing.T) {
 	if err := Record(root, f); err != nil {
 		t.Fatal(err)
 	}
-	logPath := filepath.Join(root, ".sdlc", "learnings", "log.md")
+	logPath := filepath.Join(root, paths.DataDir, "learnings", "log.md")
 	data, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatal(err)
@@ -225,7 +227,7 @@ func TestResolveSessionID_ParamFirst(t *testing.T) {
 
 func TestResolveSessionID_FileSecond(t *testing.T) {
 	root := t.TempDir()
-	markerDir := filepath.Join(root, ".sdlc", "state")
+	markerDir := filepath.Join(root, paths.DataDir, "state")
 	if err := os.MkdirAll(markerDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

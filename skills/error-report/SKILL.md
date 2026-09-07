@@ -51,7 +51,7 @@ for all others — return to the calling skill's normal error handling immediate
 | CLI tool failure | `gh pr create` / `gh pr edit` fails with non-auth error; `git tag` or `git push` fails |
 | Persistent API error | HTTP 400/5xx on the same external API operation 2+ times in a row |
 | Persistent conflict | HTTP 409 that persists after one retry |
-| Escalated task failure | Task in `execute-plan` fails after 2 retries |
+| Escalated task failure | Task in `execute` fails after 2 retries |
 | Build failure blocking execution | Build fails and blocks wave progression |
 
 **NOT issue-worthy** (skip proposal, continue normal error handling):
@@ -90,7 +90,7 @@ If `REPO_URL` is empty or the command fails → skip proposal.
 
 The target repository for every tooling error report is the fixed value
 `rnagrodzki/sdlc-marketplace` — not `REPO_URL` above (that check only confirms a
-remote exists; `error_report_prepare` reports the actual target repo separately).
+remote exists; `prepare_orchestrator` (mode `"error_report"`) reports the actual target repo separately).
 
 ## Step 3 — Consent Gate 1: Offer (main context)
 
@@ -108,10 +108,11 @@ This error may be worth tracking as a GitHub issue. Create one? (yes / no)
 
 **On `yes`:** Continue to Step 4.
 
-## Step 4 — Call `error_report_prepare` (main context)
+## Step 4 — Call `prepare_orchestrator` (mode: `"error_report"`) (main context)
 
 ```
-error_report_prepare({
+prepare_orchestrator({
+  mode: "error_report",
   skill: "<calling skill name>",
   step: "<step/operation that failed>",
   operation: "<what was being attempted>",

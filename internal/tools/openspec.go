@@ -17,27 +17,27 @@ const enrichVersion = 2
 
 // enrichBeginRe matches the opening sentinel of the managed block with its
 // version capture group.
-var enrichBeginRe = regexp.MustCompile(`(?m)^# BEGIN MANAGED BY sdlc-utilities \(v(\d+)\)$`)
+var enrichBeginRe = regexp.MustCompile(`(?m)^# BEGIN MANAGED BY sdlc-v2 \(v(\d+)\)$`)
 
 // enrichEndRe matches the closing sentinel.
-var enrichEndRe = regexp.MustCompile(`(?m)^# END MANAGED BY sdlc-utilities \(v\d+\)$`)
+var enrichEndRe = regexp.MustCompile(`(?m)^# END MANAGED BY sdlc-v2 \(v\d+\)$`)
 
 // enrichBlockTemplate is the full managed block injected into
 // openspec/config.yaml. It mirrors the BLOCK_TEMPLATE constant in the JS
 // source (openspec-enrich.js).
-var enrichBlockTemplate = fmt.Sprintf(`# BEGIN MANAGED BY sdlc-utilities (v%d)
+var enrichBlockTemplate = fmt.Sprintf(`# BEGIN MANAGED BY sdlc-v2 (v%d)
 context: |
-  SDLC workflow managed by sdlc-utilities. Do not edit this block manually.
+  SDLC workflow managed by sdlc-v2. Do not edit this block manually.
   To update: /setup --openspec-enrich. To remove: /setup --remove-openspec.
 
   Contributor workflow:
     1. /plan --from-openspec <change-name>  — create an implementation plan from the change
-    2. /execute-plan                         — execute the plan in waves
+    2. /execute                              — execute the plan in waves
     3. /ship                                 — commit, review, version, and open a PR
 
   Do not invoke `+"`"+`openspec archive`+"`"+` directly — /ship handles archival
   as a conditional pipeline step after validation passes.
-# END MANAGED BY sdlc-utilities (v%d)`, enrichVersion, enrichVersion)
+# END MANAGED BY sdlc-v2 (v%d)`, enrichVersion, enrichVersion)
 
 // --- Input / Output types ---
 
@@ -69,7 +69,7 @@ type OpenspecEnrichOut struct {
 // RegisterOpenspecTools registers openspec-related tools on the server.
 func RegisterOpenspecTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "openspec_enrich",
-		"Idempotent enrichment of openspec/config.yaml with a managed block pointing contributors to sdlc-utilities skills.",
+		"INTERNAL — called by sdlc skills only. Idempotent enrichment of openspec/config.yaml with a managed block pointing contributors to sdlc-utilities skills.",
 		func(ctx mcpserver.Ctx, in OpenspecEnrichIn) (OpenspecEnrichOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

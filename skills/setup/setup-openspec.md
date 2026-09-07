@@ -1,7 +1,7 @@
 # OpenSpec Enrichment Sub-Flow
 
 Enriches `openspec/config.yaml` with a managed block pointing contributors to
-`/plan`, `/execute-plan`, and `/ship`. Idempotent: re-running
+`/plan`, `/execute`, and `/ship`. Idempotent: re-running
 at the current plugin version is a no-op.
 
 > **Permission context:** This sub-flow inherits the parent skill's permission mode.

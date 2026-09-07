@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
 // ---------------------------------------------------------------------------
@@ -327,7 +329,7 @@ func TestReviewPrepareFixture(t *testing.T) {
 	mustRun(t, root, "git", "commit", "-m", "add go files")
 
 	// Create dimension.
-	dimDir := filepath.Join(root, ".sdlc", "review-dimensions")
+	dimDir := filepath.Join(root, paths.DataDir, "review-dimensions")
 	writeFile(t, filepath.Join(dimDir, "code-quality.md"), `---
 name: code-quality
 description: General code quality review
@@ -340,7 +342,7 @@ and adherence to best practices. Check for potential bugs and edge cases.
 `)
 
 	// Create config files needed by configmigrate.Verify.
-	sdlcDir := filepath.Join(root, ".sdlc")
+	sdlcDir := filepath.Join(root, paths.DataDir)
 	writeFile(t, filepath.Join(sdlcDir, "config.json"), `{"schemaVersion": 5}`)
 
 	// Run reviewPrepare.

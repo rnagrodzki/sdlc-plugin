@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
 // ---------------------------------------------------------------------------
@@ -201,7 +202,7 @@ func TestJiraCheckStale(t *testing.T) {
 
 func TestJiraCheckProjectMembershipViolation(t *testing.T) {
 	root := jiraTestRoot(t)
-	writeJSONFile(t, filepath.Join(root, ".sdlc", "config.json"), map[string]any{
+	writeJSONFile(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
 		"jira": map[string]any{"projects": []string{"FOO", "BAR"}},
 	})
 
@@ -368,10 +369,10 @@ func TestJiraTemplatesResolution(t *testing.T) {
 	}
 
 	// Pre-seed a custom template for Epic to exercise the "custom" branch.
-	if err := os.MkdirAll(filepath.Join(root, ".sdlc", "jira-templates"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, paths.DataDir, "jira-templates"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, ".sdlc", "jira-templates", "Epic.md"), []byte("custom"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, paths.DataDir, "jira-templates", "Epic.md"), []byte("custom"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -423,7 +424,7 @@ func TestJiraInitTemplates(t *testing.T) {
 		t.Fatalf("expected unavailable=[Epic], got %#v", unavailable)
 	}
 
-	dst := filepath.Join(root, ".sdlc", "jira-templates", "Task.md")
+	dst := filepath.Join(root, paths.DataDir, "jira-templates", "Task.md")
 	if !fileExists(dst) {
 		t.Fatalf("expected copied template at %s", dst)
 	}
@@ -459,7 +460,7 @@ func TestJiraCopyTemplate(t *testing.T) {
 		t.Fatalf("expected copied=true, got %#v", m)
 	}
 
-	dst := filepath.Join(root, ".sdlc", "jira-templates", "Sub-bug.md")
+	dst := filepath.Join(root, paths.DataDir, "jira-templates", "Sub-bug.md")
 	if !fileExists(dst) {
 		t.Fatalf("expected copied file at %s", dst)
 	}

@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
 // ErrBadRunID is wrapped into the error returned by WriteFactsheet,
@@ -35,7 +37,7 @@ func validateRunID(runID string) error {
 
 // executionDir returns the per-run directory path under root.
 func executionDir(root, runID string) string {
-	return filepath.Join(root, ".sdlc", "execution", runID)
+	return filepath.Join(root, paths.DataDir, "execution", runID)
 }
 
 // normalizeTaskID strips a single leading 'T' or 't' when followed by a

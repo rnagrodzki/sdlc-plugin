@@ -1,6 +1,6 @@
 # Recovering From Failures
 
-Reference for the `execute-plan` skill — Step 6 (RECOVER).
+Reference for the `execute` skill — Step 6 (RECOVER).
 
 Maximum retries per task: **2**. After 2 failures on the same task, escalate to the user.
 
@@ -246,7 +246,7 @@ After escalating, also offer to track the failure as a GitHub issue. Locate the 
 Glob for `**/error-report/REFERENCE.md` under `~/.claude/plugins`, then retry with cwd.
 If found, follow the procedure with:
 
-- **Skill**: execute-plan
+- **Skill**: execute
 - **Step**: Step 6 — RECOVER (Escalation)
 - **Operation**: Task execution (task name and wave from escalation output above)
 - **Error**: Persistent failure after 2 retries (details from escalation output above)

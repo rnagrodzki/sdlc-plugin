@@ -1,6 +1,6 @@
 # Plan Document Format Reference
 
-Canonical format for implementation plans produced by `plan` and consumed by `execute-plan`. Both skills reference this document.
+Canonical format for implementation plans produced by `plan` and consumed by `execute`. Both skills reference this document.
 
 ---
 
@@ -19,7 +19,7 @@ Every plan document must begin with this header:
 ---
 ```
 
-All four fields are required. `execute-plan` uses `Verification` as the default test command.
+All four fields are required. `execute` uses `Verification` as the default test command.
 
 ## Section Order
 
@@ -130,14 +130,14 @@ Capture architecture and design decisions made during planning that executing ag
 - Obvious decisions where only one reasonable option existed
 - Stylistic preferences with no execution impact
 
-Recommended for plans with 5+ tasks. Omit for simple plans. The Key Decisions section is free-text — `execute-plan` does not parse it, but agents receive it as context alongside task descriptions.
+Recommended for plans with 5+ tasks. Omit for simple plans. The Key Decisions section is free-text — `execute` does not parse it, but agents receive it as context alongside task descriptions.
 
 ---
 
 ## Guardrail Compliance (optional)
 
 Present when `plan.guardrails` are configured in `.sdlc/config.json`. Produced by plan Step 4.
-`execute-plan` does not parse this section — it documents constraint evaluation for reviewers.
+`execute` does not parse this section — it documents constraint evaluation for reviewers.
 
 ```markdown
 ## Guardrail Compliance
@@ -257,7 +257,7 @@ artifact's column — the one its primary deliverable touches.
 - names: `R7` (new), `R3` (modified).
 - mirror: requirement-block style at `docs/specs/auth.md:21-22` (R5/R6).
 - decisions: numeric `R7` (not a named ID) — matches the file's existing numbering convention.
-- sync: SKILL.md Step 2 authors it; execute-plan consumes it via the fact sheet.
+- sync: SKILL.md Step 2 authors it; execute consumes it via the fact sheet.
 - example: `R7` reads "The system SHALL expose a `tokenState` enum: `pending | active | expired`."
 ```
 
@@ -551,7 +551,7 @@ The system SHALL sign every outbound webhook payload with HMAC-SHA256.
 
 | Field | Allowed Values | Notes |
 |---|---|---|
-| Complexity | `Trivial` \| `Standard` \| `Complex` | Used by execute-plan for model assignment and wave building |
+| Complexity | `Trivial` \| `Standard` \| `Complex` | Used by execute for model assignment and wave building |
 | Risk | `Low` \| `Medium` \| `High` | High-risk tasks trigger a user confirmation gate before execution |
 | Depends on | `Task N, Task M` or `none` | Must reference tasks by their exact number; no forward references |
 | Verify | `tests` \| `build` \| `lint` \| `manual` | Multiple allowed: `tests, build` |

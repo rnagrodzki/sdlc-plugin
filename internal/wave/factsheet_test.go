@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
 // ---------------------------------------------------------------------------
@@ -107,7 +109,7 @@ func TestWriteFactsheet_RoundTrip(t *testing.T) {
 	}
 
 	// File should exist at the expected path.
-	wantPath := filepath.Join(root, ".sdlc", "execution", runID, "task-14.md")
+	wantPath := filepath.Join(root, paths.DataDir, "execution", runID, "task-14.md")
 	if path != wantPath {
 		t.Fatalf("WriteFactsheet: path = %q, want %q", path, wantPath)
 	}
@@ -208,7 +210,7 @@ func TestWriteFactsheet_NoLeftoverTmpFiles(t *testing.T) {
 		t.Fatalf("WriteFactsheet: %v", err)
 	}
 
-	dir := filepath.Join(root, ".sdlc", "execution", "run1")
+	dir := filepath.Join(root, paths.DataDir, "execution", "run1")
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
 		if strings.HasSuffix(e.Name(), ".tmp") {
@@ -234,7 +236,7 @@ func TestReadProgress_MissingFile(t *testing.T) {
 
 func TestReadProgress_CorruptFile(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, ".sdlc", "execution", "run1")
+	dir := filepath.Join(root, paths.DataDir, "execution", "run1")
 	os.MkdirAll(dir, 0o755)
 	os.WriteFile(filepath.Join(dir, "progress.json"), []byte("not json{"), 0o644)
 
@@ -249,7 +251,7 @@ func TestReadProgress_CorruptFile(t *testing.T) {
 
 func TestReadProgress_NullTasksField(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, ".sdlc", "execution", "run1")
+	dir := filepath.Join(root, paths.DataDir, "execution", "run1")
 	os.MkdirAll(dir, 0o755)
 	os.WriteFile(filepath.Join(dir, "progress.json"), []byte(`{"tasks":null}`), 0o644)
 
@@ -367,7 +369,7 @@ func TestUpdateProgress_NoLeftoverTmpFiles(t *testing.T) {
 		t.Fatalf("UpdateProgress: %v", err)
 	}
 
-	dir := filepath.Join(root, ".sdlc", "execution", "run1")
+	dir := filepath.Join(root, paths.DataDir, "execution", "run1")
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
 		if strings.HasSuffix(e.Name(), ".tmp") || strings.Contains(e.Name(), ".tmp-") {
@@ -382,7 +384,7 @@ func TestUpdateProgress_ByteShapeCompatible(t *testing.T) {
 		t.Fatalf("UpdateProgress: %v", err)
 	}
 
-	fp := filepath.Join(root, ".sdlc", "execution", "run1", "progress.json")
+	fp := filepath.Join(root, paths.DataDir, "execution", "run1", "progress.json")
 	data, err := os.ReadFile(fp)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)

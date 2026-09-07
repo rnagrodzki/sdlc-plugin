@@ -14,6 +14,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 	"github.com/rnagrodzki/sdlc-plugin/internal/wave"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
@@ -107,7 +108,7 @@ var execAccountedStatuses = map[string]bool{
 // RegisterExecuteStateTools registers the execute_state tool.
 func RegisterExecuteStateTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "execute_state",
-		"Manage execute-plan execution state (19 actions: init, wave-start, wave-done, wave-fail, wave-committed, task-done, task-fail, context, read, cleanup, gc, summarize-prior-wave-context, wave-split, verify-completeness, wave-progress, resume-reset, ledger_checkin, ledger_checkout, ledger_status)",
+		"Manage execute execution state (19 actions: init, wave-start, wave-done, wave-fail, wave-committed, task-done, task-fail, context, read, cleanup, gc, summarize-prior-wave-context, wave-split, verify-completeness, wave-progress, resume-reset, ledger_checkin, ledger_checkout, ledger_status)",
 		func(ctx mcpserver.Ctx, in ExecuteStateIn) (any, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {
@@ -474,7 +475,7 @@ func execSummarizePriorWaveCtx(data map[string]any, root string, maxFiles, maxDe
 
 // ledgerDir returns the ledger directory for a run.
 func ledgerDir(root, runID string) string {
-	return filepath.Join(root, ".sdlc", "execution", "ledger", runID)
+	return filepath.Join(root, paths.DataDir, "execution", "ledger", runID)
 }
 
 // ledgerFilePath returns the per-worker ledger file path.
@@ -500,7 +501,7 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 	}
 
 	st.Data["version"] = 1
-	st.Data["skill"] = "execute-plan"
+	st.Data["skill"] = "execute"
 	st.Data["startedAt"] = now().UTC().Format(time.RFC3339)
 	st.Data["branch"] = in.Branch
 	st.Data["worktree"] = workDir
@@ -1135,7 +1136,7 @@ func execActionGC(root, workDir string, in ExecuteStateIn, now func() time.Time)
 	}
 
 	branchExists := gcBranchExistsFunc(workDir)
-	stateDir := filepath.Join(root, ".sdlc", "execution")
+	stateDir := filepath.Join(root, paths.DataDir, "execution")
 
 	if in.DryRun {
 		return execGCDryRun(stateDir, ttlDays, branchExists, now)

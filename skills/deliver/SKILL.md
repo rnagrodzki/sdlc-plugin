@@ -1,6 +1,6 @@
 ---
 name: deliver
-description: "Use this skill to drive the full delivery pipeline unattended for hours: execute a plan, review the result, fix findings in a loop, and ship — without stopping between phases. Orchestrates execute-plan, review, and ship as Agent-dispatched sub-skills (ship's own verify-pipeline step handles post-PR CI verification inline; deliver never dispatches verify-pipeline itself). Manages its own resumable phase/iteration state file directly via Read/Write — zero new MCP tools. Arguments: <plan-file-path> [--resume] [--quality full|balanced|minimal] [--rebase auto|skip] [--bump patch|minor|major|<label>] [--draft] [--dry-run]. Triggers on: deliver this, run the full pipeline unattended, ship end to end without stopping, deliver."
+description: "Use this skill to drive the full delivery pipeline unattended for hours: execute a plan, review the result, fix findings in a loop, and ship — without stopping between phases. Orchestrates execute, review, and ship as Agent-dispatched sub-skills (ship's own verify-pipeline step handles post-PR CI verification inline; deliver never dispatches verify-pipeline itself). Manages its own resumable phase/iteration state file directly via Read/Write — zero new MCP tools. Arguments: <plan-file-path> [--resume] [--quality full|balanced|minimal] [--rebase auto|skip] [--bump patch|minor|major|<label>] [--draft] [--dry-run]. Triggers on: deliver this, run the full pipeline unattended, ship end to end without stopping, deliver."
 user-invocable: true
 argument-hint: "<plan-file-path> [--resume] [--quality full|balanced|minimal] [--rebase auto|skip] [--bump patch|minor|major] [--draft] [--dry-run]"
 model: sonnet
@@ -8,7 +8,7 @@ model: sonnet
 
 # Deliver (SDLC)
 
-Drive plan execution, review, a fix loop, and shipping end to end, unattended, by composing three already-ported skills as black-box Agent dispatches: execute-plan, review, and ship. This skill introduces **zero new MCP tools** — it composes the existing surface and manages its own plain-JSON phase/iteration state file directly via the Read/Write built-in tools.
+Drive plan execution, review, a fix loop, and shipping end to end, unattended, by composing three already-ported skills as black-box Agent dispatches: execute, review, and ship. This skill introduces **zero new MCP tools** — it composes the existing surface and manages its own plain-JSON phase/iteration state file directly via the Read/Write built-in tools.
 
 **Announce at start:** "I'm using deliver (sdlc v{sdlc_version})." — extract the version from the `sdlc:` line in the session-start system-reminder. If no version is in context, omit the parenthetical.
 
@@ -38,7 +38,7 @@ Resolve the current branch: `git branch --show-current`. Slugify it exactly like
 
 Do not guess a plan path from conversation context, even one just discussed in this session.
 
-**`--dry-run`:** read `.sdlc/local.json` (Step "fix-loop" below explains exactly which fields), print the six-phase sequence (Plan / Execute / Review / Fix-loop / Verify-pipeline / Ship) and the resolved `reviewFixIterations` / `reviewFixSeverityThreshold` / ship `--steps` list this run would use, and stop. Do not create a state file, do not dispatch anything.
+**`--dry-run`:** read `.sdlc-v2/local.json` (Step "fix-loop" below explains exactly which fields), print the six-phase sequence (Plan / Execute / Review / Fix-loop / Verify-pipeline / Ship) and the resolved `reviewFixIterations` / `reviewFixSeverityThreshold` / ship `--steps` list this run would use, and stop. Do not create a state file, do not dispatch anything.
 
 ---
 
@@ -46,11 +46,11 @@ Do not guess a plan path from conversation context, even one just discussed in t
 
 deliver's state lives entirely outside `ship_state`/`execute_state` — neither tool exposes a "kind" for a pipeline-of-pipelines, and the plan's Contract line forbids a new MCP tool for it. This step manages a plain JSON file directly with Read/Write, mirroring (but never touching) `internal/state`'s `<prefix>-<branchSlug>-<timestamp>.json` naming convention.
 
-**Path grammar:** `.sdlc/execution/deliver-<branch-slug>-<timestamp>.json`, where `<timestamp>` is `time.Now().UTC()` formatted `20060102T150405Z` (e.g. `20260906T091500Z`) — the exact format `internal/state/state.go`'s `Init` uses. The `deliver` prefix is intentionally invisible to `internal/state`'s own filename parser (which only accepts `ship|execute|plan|commit`) and to that package's GC — this file's entire lifecycle is owned by this skill's own prose, never by `state.Init`/`state.Find`/`state.Write`/`state.GC`.
+**Path grammar:** `.sdlc-v2/execution/deliver-<branch-slug>-<timestamp>.json`, where `<timestamp>` is `time.Now().UTC()` formatted `20060102T150405Z` (e.g. `20260906T091500Z`) — the exact format `internal/state/state.go`'s `Init` uses. The `deliver` prefix is intentionally invisible to `internal/state`'s own filename parser (which only accepts `ship|execute|plan|commit`) and to that package's GC — this file's entire lifecycle is owned by this skill's own prose, never by `state.Init`/`state.Find`/`state.Write`/`state.GC`.
 
 **Fresh run (no `--resume`):**
 
-1. Glob `.sdlc/execution/deliver-<branch-slug>-*.json`. Delete any matches (best-effort) — mirrors `state.Write`'s prune-on-write behavior; a leftover file here can only be a stale artifact of an earlier, already-terminal run on the same branch.
+1. Glob `.sdlc-v2/execution/deliver-<branch-slug>-*.json`. Delete any matches (best-effort) — mirrors `state.Write`'s prune-on-write behavior; a leftover file here can only be a stale artifact of an earlier, already-terminal run on the same branch.
 2. Create the new file at a freshly timestamped path with:
    ```json
    {
@@ -69,7 +69,7 @@ deliver's state lives entirely outside `ship_state`/`execute_state` — neither 
 
 **Resume (`--resume`):**
 
-1. Glob `.sdlc/execution/deliver-<branch-slug>-*.json`. If none found, stop:
+1. Glob `.sdlc-v2/execution/deliver-<branch-slug>-*.json`. If none found, stop:
    > No deliver run found for branch "<branch>". Fix: start a fresh run with `/deliver <path-to-plan.md>`.
 2. Read the most recently modified match. Its `phase` field says which of the six phases below to re-enter; its `planPath` field is used instead of requiring a fresh positional argument.
 3. If `terminal` is already `"delivered"`, report that the run already completed successfully and stop — do not re-dispatch anything.
@@ -81,7 +81,7 @@ deliver's state lives entirely outside `ship_state`/`execute_state` — neither 
 
 ### Dispatch protocol
 
-Every Agent-dispatched sub-skill (execute-plan, review, ship) uses this exact prompt shape, verbatim from ship's own idiom, and never `isolation: "worktree"`:
+Every Agent-dispatched sub-skill (execute, review, ship) uses this exact prompt shape, verbatim from ship's own idiom, and never `isolation: "worktree"`:
 
 ```
 You are executing the <skill-name> skill. Invoke `/<skill-name> <args>` using the Skill tool — this loads the SKILL.md automatically. Return a structured result:
@@ -101,23 +101,23 @@ Update state: `phase: "execute"`, append `"plan"` to `phaseHistory`, `updatedAt:
 
 ### execute
 
-Dispatch execute-plan:
+Dispatch execute:
 
 ```
-/execute-plan <planPath> [--quality <quality>] [--rebase <rebase>]
+/execute <planPath> [--quality <quality>] [--rebase <rebase>]
 ```
 
-execute-plan always runs its own internal auto mode for wave dispatch; do not forward a `--auto` flag (its meaning there is unrelated to deliver's own unattended posture — see ship's own execute step for the same caution). execute-plan's Step 9 (REPORT) result is **free text** (a fixed-width summary block), not JSON — translate it into the 4-part structured result yourself in this dispatch's own returned message; do not expect a JSON payload back.
+execute always runs its own internal auto mode for wave dispatch; do not forward a `--auto` flag (its meaning there is unrelated to deliver's own unattended posture — see ship's own execute step for the same caution). execute's Step 9 (REPORT) result is **free text** (a fixed-width summary block), not JSON — translate it into the 4-part structured result yourself in this dispatch's own returned message; do not expect a JSON payload back.
 
-After the dispatch returns, run `execute_state({action:"verify-completeness"})` exactly as ship does after its own execute step — this is a legitimate direct call (a read-only wave/task-shaped sanity check on execute-plan's own state, not a step-shaped action on deliver's behalf). On `{ok:true, ...}`, continue. On a `DataError` reporting missing task IDs, treat it as a hard failure.
+After the dispatch returns, run `execute_state({action:"verify-completeness"})` exactly as ship does after its own execute step — this is a legitimate direct call (a read-only wave/task-shaped sanity check on execute's own state, not a step-shaped action on deliver's behalf). On `{ok:true, ...}`, continue. On a `DataError` reporting missing task IDs, treat it as a hard failure.
 
-Stage the working tree for the commit ship's own `commit` step will make later — execute-plan creates and modifies files but never stages them:
+Stage the working tree for the commit ship's own `commit` step will make later — execute creates and modifies files but never stages them:
 
 ```bash
-git add -A -- ':!.sdlc/'
+git add -A -- ':!.sdlc-v2/'
 ```
 
-**Failure:** dispatch failure, or a `verify-completeness` mismatch → `terminal: "failed(execute:dispatch-failure)"` or `"failed(execute:incomplete)"`. Write state, stop. Resume re-dispatches execute-plan with `--resume --plan <planPath>` — its own resume path reads its execute-state file and continues from the recorded wave.
+**Failure:** dispatch failure, or a `verify-completeness` mismatch → `terminal: "failed(execute:dispatch-failure)"` or `"failed(execute:incomplete)"`. Write state, stop. Resume re-dispatches execute with `--resume --plan <planPath>` — its own resume path reads its execute-state file and continues from the recorded wave.
 
 **Success:** `phase: "review"`, append `"execute"` to `phaseHistory`. Write state.
 
@@ -139,9 +139,9 @@ In addition, for this deliver dispatch:
     saved-review: <path written by Step 7's save option>
 ```
 
-**Port note (resolves a tension the plan text did not anticipate):** review's own Step 9 (Cleanup) unconditionally deletes its ledger directory and `diff_dir` on every terminal path, including normal completion — and it does this *before* this Agent dispatch returns control here. The `.sdlc/execution/ledger/{runId}/{workerId}.findings.json` files a naive reading might expect to re-read "after dispatching review" no longer exist by then. The `saved-review` path from Step 7's "save" option is the only durable artifact review leaves behind (`.sdlc/reviews/<branch>-<date>.md`, untouched by Step 9) — so this dispatch is instructed to always choose "save" and to report that path back in artifacts. This still satisfies the substance of "no file-scoped re-review, only full re-dispatch": every fix-loop iteration below re-dispatches review fully, exactly as required; only the mechanism for reading its output changed from a since-deleted ledger file to a durable saved-review file.
+**Port note (resolves a tension the plan text did not anticipate):** review's own Step 9 (Cleanup) unconditionally deletes its ledger directory and `diff_dir` on every terminal path, including normal completion — and it does this *before* this Agent dispatch returns control here. The `.sdlc-v2/execution/ledger/{runId}/{workerId}.findings.json` files a naive reading might expect to re-read "after dispatching review" no longer exist by then. The `saved-review` path from Step 7's "save" option is the only durable artifact review leaves behind (`.sdlc-v2/reviews/<branch>-<date>.md`, untouched by Step 9) — so this dispatch is instructed to always choose "save" and to report that path back in artifacts. This still satisfies the substance of "no file-scoped re-review, only full re-dispatch": every fix-loop iteration below re-dispatches review fully, exactly as required; only the mechanism for reading its output changed from a since-deleted ledger file to a durable saved-review file.
 
-Parse `verdict`, `severity-counts`, and `saved-review` from the returned artifacts by line prefix (not JSON — this is deliver's own translation of a sub-skill's free-form artifacts text, same idiom as the execute-plan dispatch above). **Fail closed** on an unparseable or incomplete result — do not default a missing verdict to APPROVED WITH NOTES the way ship's own lenient text-detection does; an unattended driver silently skipping the fix loop on a parse failure is worse than stopping.
+Parse `verdict`, `severity-counts`, and `saved-review` from the returned artifacts by line prefix (not JSON — this is deliver's own translation of a sub-skill's free-form artifacts text, same idiom as the execute dispatch above). **Fail closed** on an unparseable or incomplete result — do not default a missing verdict to APPROVED WITH NOTES the way ship's own lenient text-detection does; an unattended driver silently skipping the fix loop on a parse failure is worse than stopping.
 
 **Failure:** dispatch failure, or any of the three lines missing/unparseable → `terminal: "failed(review:unparseable-result)"`. Write state, stop. Resume re-dispatches review fresh — review has no `--resume` of its own and Finding 4 rules out any file-scoped re-review, so "resuming" this phase always means a full fresh dispatch.
 
@@ -149,7 +149,7 @@ Parse `verdict`, `severity-counts`, and `saved-review` from the returned artifac
 
 ### fix-loop
 
-Read `.sdlc/local.json` directly with the Read tool (Finding 5 — `StepMode` is ship-internal and does not accept caller-supplied step names). Under the top-level `automation` key:
+Read `.sdlc-v2/local.json` directly with the Read tool (Finding 5 — `StepMode` is ship-internal and does not accept caller-supplied step names). Under the top-level `automation` key:
 
 - `reviewFixIterations` (default `3` when the file, the `automation` section, or the field is absent)
 - `reviewFixSeverityThreshold` (default `"high"` under the same absence rule)
@@ -176,7 +176,7 @@ Loop, starting from the `review` phase's iteration-0 result already in `fixLoop.
    (4) any warnings or issues encountered (e.g. a finding that could not be safely fixed)
    ```
    A single sequential worker per iteration, reading the consolidated findings and applying all fixes itself in one dispatch — no fan-out, no ledger, no coordination machinery beyond this one Agent call (Q3). If the worker itself reports failure, `terminal: "failed(fix-loop:worker-failure)"`, stop.
-4. Re-stage: `git add -A -- ':!.sdlc/'`.
+4. Re-stage: `git add -A -- ':!.sdlc-v2/'`.
 5. Re-dispatch review **fully**, using the exact same augmented dispatch shape as the `review` phase above (save at Step 7, decline at Step 8, pinned three-line artifacts) — no file-scoped re-review, per Finding 4.
 6. Increment `fixLoop.iteration`, append the new iteration's `{iteration, verdict, severityCounts, savedReviewPath}` to `fixLoop.history`. Write state. Go to step 1 with this new result as "the current result."
 
@@ -192,7 +192,7 @@ Dispatch ship with `execute` and `review` excluded from its step list — delive
 /ship --steps commit,version,archive-openspec,pr,verify-pipeline,learnings-commit [--bump <bump>] [--draft] [--resume if this phase was already entered once before]
 ```
 
-If the project's `.sdlc/local.json` configures `ship.steps` explicitly, use that list with `execute` and `review` removed instead of the fixed list above, so project-level customization (e.g. adding `verify-openspec` or `await-remote-review`) still applies.
+If the project's `.sdlc-v2/local.json` configures `ship.steps` explicitly, use that list with `execute` and `review` removed instead of the fixed list above, so project-level customization (e.g. adding `verify-openspec` or `await-remote-review`) still applies.
 
 **Scaffold guard (required — prevents a hard crash):** `ship_state`'s init always scaffolds the fixed 7-step list (`execute, commit, review, received-review, commit-fixes, version, pr`) regardless of `--steps` — `plan`/`archive-openspec`/`verify-pipeline`/`learnings-commit` are separate inline steps outside this scaffold, not part of it. The `execute`/`review` scaffold entries carry no `condition` key — so left `pending` they permanently block every later step's `begin-step` call (`received-review`/`commit-fixes` already carry a `condition` key and don't need skipping). ship's own Step 5 has no "skip if absent from `flags.steps`" guard for `execute`/`review` (unlike `version`/`verify-pipeline`/`await-remote-review`/`learnings-commit`, which do have one). Add this instruction to the ship dispatch, beyond the base template, so the dispatched Agent neutralizes the scaffold itself instead of hitting the crash:
 
@@ -245,7 +245,7 @@ Print a final summary naming the terminal value, the state file path, and — on
 | Step | Dispatch / tool call | Success transition | Failure policy |
 |------|----------------------|---------------------|-----------------|
 | plan | (intake only — no dispatch) | → execute | `failed(plan:no-plan-file)` if no plan path is resolvable at Step 0. Not resumable in place — re-run with a valid path. |
-| execute | Agent dispatch `execute-plan`; `execute_state({action:"verify-completeness"})` | → review | `failed(execute:dispatch-failure)` / `failed(execute:incomplete)`. Resume: re-dispatch execute-plan `--resume`. |
+| execute | Agent dispatch `execute`; `execute_state({action:"verify-completeness"})` | → review | `failed(execute:dispatch-failure)` / `failed(execute:incomplete)`. Resume: re-dispatch execute `--resume`. |
 | review | Agent dispatch `review` | → fix-loop | `failed(review:unparseable-result)`. Resume: re-dispatch review fresh (no file-scoped resume). |
 | fix-loop | Agent fix-implementer (per iteration) + Agent dispatch `review` (re-check) | → verify-pipeline (once below `reviewFixSeverityThreshold`) | `failed(fix-loop:threshold-exceeded)` after `reviewFixIterations` exhausted; `failed(fix-loop:worker-failure)` if a fix-implementer dispatch fails. Resume: re-enters the loop at the recorded `fixLoop.iteration`. |
 | verify-pipeline | (pass-through — delegated into the ship dispatch's own `--steps`) | → ship | n/a — this phase cannot itself fail; a CI failure surfaces inside the `ship` phase's own dispatch. |
@@ -259,8 +259,8 @@ Print a final summary naming the terminal value, the state file path, and — on
 - Do NOT call any dispatched sub-skill's own MCP tools directly (`ship_state`, `execute_state`'s step-shaped actions — which do not exist —, `review_prepare`, `ship_prepare`, `version_apply`, `pr_apply`, `commit_apply`, etc.). Every sub-skill is a black box; only the dispatched Agent calls those.
 - Do NOT reference `execute_state`'s `begin-step`/`complete-step` — that vocabulary belongs only to `ship_state`. `execute_state`'s 19 actions are all wave/task/ledger-shaped nouns (`verify-completeness` is the one legitimate direct call this skill makes).
 - Do NOT invent a third terminal-state bucket (no `paused(...)`). The contract is strictly `delivered` or `failed(<step>)`.
-- Do NOT expect JSON back from execute-plan's Step 9 report — it is free text; translate it yourself.
-- Do NOT re-read `.sdlc/execution/ledger/{runId}/{workerId}.findings.json` after a review dispatch returns — review's own Step 9 has already deleted it. Use the `saved-review` path reported in artifacts instead.
+- Do NOT expect JSON back from execute's Step 9 report — it is free text; translate it yourself.
+- Do NOT re-read `.sdlc-v2/execution/ledger/{runId}/{workerId}.findings.json` after a review dispatch returns — review's own Step 9 has already deleted it. Use the `saved-review` path reported in artifacts instead.
 - Do NOT fan out multiple fix-implementer Agents per iteration, and do NOT build a findings ledger for the fix loop — one sequential Agent per iteration, reading the saved review and applying every fix itself (Q3).
 - Do NOT dispatch verify-pipeline standalone — it requires an existing PR and is already dispatched by ship's own `verify-pipeline` step.
 - Do NOT run `git commit`, `git push`, or `git tag` directly from deliver's own prose (only `git add` for staging, mirroring ship's own inline staging step) — every commit/tag/push routes through a dispatched sub-skill's executor tools or its own human-facing pause.
@@ -270,6 +270,6 @@ Print a final summary naming the terminal value, the state file path, and — on
 
 ## See Also
 
-- [`/execute-plan`](../execute-plan/SKILL.md) — dispatched for the `execute` phase.
+- [`/execute`](../execute/SKILL.md) — dispatched for the `execute` phase.
 - [`/review`](../review/SKILL.md) — dispatched for the `review` phase and every `fix-loop` re-check.
 - [`/ship`](../ship/SKILL.md) — dispatched for the `ship` phase; owns `version`, `pr`, `verify-pipeline`, and `learnings-commit`, and the two manual gates documented above.

@@ -38,7 +38,7 @@ Each sub-skill has its own error recovery. ship does not duplicate their recover
 - Skip pipeline steps that were marked "will run" in the pipeline plan. The pipeline plan is a contract with the user. If a step was planned to run and the user confirmed the pipeline, it MUST run. The LLM does not have authority to skip planned steps based on its own assessment of change complexity or risk. Only `ship_prepare`'s resolved `steps`/`sources` and the auto-skip rules documented in the main skill control which steps run.
 - Add `--steps`/`steps` composition not present in the user's original invocation or `.sdlc/local.json`. Pipeline composition derives from `ship_prepare`'s `steps`/`sources` output — CLI `--steps` > `--quick` > config `ship.steps[]` > built-in defaults. Legacy `--preset` and `--skip` are hard-removed; `ship_prepare` has no fields for them.
 - Dispatch a scaffolded pipeline-step Agent without `model:` fixed in the Step 2 table. Omitting it defaults the Agent to opus.
-- Pass `isolation: "worktree"` (or any other `isolation` value) to any Agent dispatch from this skill (R-agent-isolation-script-driven). ship never creates an Agent SDK worktree — workspace isolation for the `execute` step is a plain `git checkout -b` run by this skill's own prose before dispatch (see "Pre-execute workspace auto-detection"). Adding `isolation: "worktree"` creates a `.claude/worktrees/agent-<id>` path that conflicts with `.sdlc/` anchoring and breaks state-file resolution. (Mirrors the same constraint already documented in `execute-plan/SKILL.md`.)
+- Pass `isolation: "worktree"` (or any other `isolation` value) to any Agent dispatch from this skill (R-agent-isolation-script-driven). ship never creates an Agent SDK worktree — workspace isolation for the `execute` step is a plain `git checkout -b` run by this skill's own prose before dispatch (see "Pre-execute workspace auto-detection"). Adding `isolation: "worktree"` creates a `.claude/worktrees/agent-<id>` path that conflicts with `.sdlc/` anchoring and breaks state-file resolution. (Mirrors the same constraint already documented in `execute/SKILL.md`.)
 - Ignore a cleanup contract violation. If `ship_state{action:"cleanup-pipeline"}` reports `currentRun.valid === false`, the pipeline contract was violated (a scaffolded step is `in_progress`, or `pending` without a `condition`). Surface the violation and leave the state file in place — do not force-delete it.
 - Skip the post-version ancestry HARD GATE. `verify_tag_ancestry({tag: NEW_TAG})` is the only safeguard against a tag landing on an orphaned commit. The gate is a no-op when `NEW_TAG` was never captured (version step skipped or not yet run) — do not pre-empt it by skipping it when you believe the version step succeeded on the right branch.
 - Treat `automation.mode: unattended`/`--auto` as license to skip the version step's manual tag-and-push pause. `version_apply` does not create or push a git tag (see `version/SKILL.md`'s own Gotchas) — there is no tool in this port that does. Even in full auto mode, this pipeline must pause after the version step completes and ask the user to create and push the release tag before it can call `ship_verify_side_effect({step:"version", expected:"tag"})`. Do not fabricate a passing side-effect check, and do not silently skip the check and proceed to `pr`.
@@ -49,7 +49,7 @@ Each sub-skill has its own error recovery. ship does not duplicate their recover
 
 ## Gotchas (R-progressive-disclosure)
 
-**Staging gap after execute.** `execute-plan` creates and modifies files but does not stage them. ship must run `git add -A -- ':!.sdlc/'` between execute and commit. Missing this produces an empty commit.
+**Staging gap after execute.** `execute` creates and modifies files but does not stage them. ship must run `git add -A -- ':!.sdlc/'` between execute and commit. Missing this produces an empty commit.
 
 **Verdict detection is text-based.** Parse the conversation for a line matching `Verdict: <VERDICT>`. The review orchestrator always emits this. If the conversation is compacted between review and verdict parsing, the verdict may be lost — treat a missing verdict as APPROVED WITH NOTES and warn the user.
 
@@ -69,7 +69,7 @@ Each sub-skill has its own error recovery. ship does not duplicate their recover
 
 **State files are tool-managed.** Use `ship_state` (and `execute_state` for the execute sub-pipeline) for every state read/write. Never hand-write JSON to `.sdlc/execution/`. See `state-format.md` for the exact schema and the `steps[]` scaffolding gap (only 7 of the 13 known step names get a tracked entry).
 
-**No Agent SDK worktrees.** ship isolates the `execute` step with a plain `git checkout -b <branch>` run by this skill itself, then dispatches `execute-plan` without `--branch` so its own Step 1 sees a non-default current branch and yields `continue`. There is no `EnterWorktree`/`ExitWorktree` tool use anywhere in this pipeline, and no `isolation: "worktree"` on any Agent dispatch.
+**No Agent SDK worktrees.** ship isolates the `execute` step with a plain `git checkout -b <branch>` run by this skill itself, then dispatches `execute` without `--branch` so its own Step 1 sees a non-default current branch and yields `continue`. There is no `EnterWorktree`/`ExitWorktree` tool use anywhere in this pipeline, and no `isolation: "worktree"` on any Agent dispatch.
 
 **Rebase happens after all commits, before version.** This ensures the release tag lands on a commit that can merge cleanly. If rebase conflicts, the pipeline pauses — the user resolves in place and resumes.
 
@@ -77,11 +77,11 @@ Each sub-skill has its own error recovery. ship does not duplicate their recover
 
 **Auto mode does not auto-resume without `--resume`.** When `auto` is set but `resume` is not, the pipeline starts fresh even if a state file exists for the current branch. This prevents accidental continuation from stale state. The state file is preserved (not deleted) so the user can explicitly `--resume` later.
 
-**Sub-skill dispatch is context-isolated.** Every sub-skill step (including `execute-plan`) is Agent-dispatched so it loads its own SKILL.md in its own context and returns only a structured result. ship's own context receives that structured data, not the sub-skill's definition. `execute-plan` bounds its own context impact by dispatching one Agent per wave-task/task-cluster rather than per task; its Step-9 structured result is what this pipeline consumes to continue.
+**Sub-skill dispatch is context-isolated.** Every sub-skill step (including `execute`) is Agent-dispatched so it loads its own SKILL.md in its own context and returns only a structured result. ship's own context receives that structured data, not the sub-skill's definition. `execute` bounds its own context impact by dispatching one Agent per wave-task/task-cluster rather than per task; its Step-9 structured result is what this pipeline consumes to continue.
 
 **`sources` tracks provenance.** `ship_prepare`'s `sources` map records, per resolved flag, which tier supplied the value: `"cli"`, `"quick"`, `"config"`, or `"default"` (see `config-format.md`'s Merge Precedence). Use it to explain to the user why a step is running or skipped, instead of re-deriving the reason yourself.
 
-**No `workspace` config field, no worktree mode.** Unlike the source skill, this port's `ship_prepare` reads no `ship.workspace` config field and has no worktree-isolation path — every ship run isolates `execute` with a feature branch. If you need `execute-plan`'s own worktree mode, invoke `/execute-plan --workspace worktree` standalone, outside this pipeline.
+**No `workspace` config field, no worktree mode.** Unlike the source skill, this port's `ship_prepare` reads no `ship.workspace` config field and has no worktree-isolation path — every ship run isolates `execute` with a feature branch. If you need `execute`'s own worktree mode, invoke `/execute --workspace worktree` standalone, outside this pipeline.
 
 ## Learning Capture (R-progressive-disclosure)
 

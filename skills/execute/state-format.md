@@ -1,6 +1,6 @@
 # Execute-Plan State File Format
 
-The `execute-plan` skill writes a JSON state file to `.sdlc/execution/` at execution start and updates it after each wave and task. This file enables crash recovery via `--resume` and provides a transparent record of every wave and task executed during the run.
+The `execute` skill writes a JSON state file to `.sdlc/execution/` at execution start and updates it after each wave and task. This file enables crash recovery via `--resume` and provides a transparent record of every wave and task executed during the run.
 
 JSON Schemas are available at `schemas/execute-state.schema.json` and `schemas/ship-state.schema.json` for validation and IDE autocompletion.
 
@@ -22,7 +22,7 @@ Example: `.sdlc/execution/execute-feat-my-feature-20260328T143000Z.json`
 
 ## Worktree Safety
 
-State files are always written to the **main working tree's** `.sdlc/execution/`, not the current working directory. This ensures state survives worktree cleanup — if `execute-plan` runs inside a linked worktree, the state file is still accessible after that worktree is removed.
+State files are always written to the **main working tree's** `.sdlc/execution/`, not the current working directory. This ensures state survives worktree cleanup — if `execute` runs inside a linked worktree, the state file is still accessible after that worktree is removed.
 
 **Main working tree resolution:**
 
@@ -55,7 +55,7 @@ If there is only one worktree entry (no linked worktrees), the main working tree
 ```json
 {
   "version": 1,
-  "skill": "execute-plan",
+  "skill": "execute",
   "startedAt": "2026-03-28T14:30:00Z",
   "branch": "feat/my-feature",
   "planPath": "/Users/dev/myrepo/tasks/plan.md",
@@ -70,7 +70,7 @@ If there is only one worktree entry (no linked worktrees), the main working tree
 | Field        | Type          | Description                                                                          |
 |--------------|---------------|--------------------------------------------------------------------------------------|
 | `version`    | number        | Schema version. Always `1` for the current format.                                   |
-| `skill`      | string        | Always `"execute-plan"`. Disambiguates from `ship` state files in the same directory. |
+| `skill`      | string        | Always `"execute"`. Disambiguates from `ship` state files in the same directory. |
 | `startedAt`  | string        | ISO 8601 UTC timestamp when execution was invoked.                                   |
 | `branch`     | string        | Git branch name at execution start.                                                  |
 | `planPath`   | string \| null | Absolute path to the plan file, resolved once in Step 1 (LOAD) from `--plan <path>` or the positional plan-file-path argument (implements R40). Populated on every run — the standalone plan-argument gate (R41) and ship's own plan-file validation both require an explicit plan file before execution starts, so this field is no longer left unconditionally `null`. `null` only appears in state files written before #505. |
@@ -250,7 +250,7 @@ If execution fails or is interrupted, the state file is retained so the run can 
 
 ### Resume
 
-Passing `--resume` to `execute-plan` causes it to locate the most recent state file for the current branch (matched by branch name in the filename). The skill then:
+Passing `--resume` to `execute` causes it to locate the most recent state file for the current branch (matched by branch name in the filename). The skill then:
 
 1. Skips any wave with status `completed`.
 2. Retries any wave with status `in_progress` from its beginning (individual task results within that wave are not trusted — `execute_state({action:"resume-reset"})` clears those rows at resume time, before the resume pointer is computed).
@@ -269,7 +269,7 @@ Mid-execution state: wave 0 completed, wave 1 in progress, wave 2 pending.
 ```json
 {
   "version": 1,
-  "skill": "execute-plan",
+  "skill": "execute",
   "startedAt": "2026-03-28T14:30:00Z",
   "branch": "feat/my-feature",
   "planPath": "tasks/plan.md",

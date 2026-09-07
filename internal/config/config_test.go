@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
 
@@ -35,12 +36,12 @@ func writeJSON(t *testing.T, path string, v any) {
 
 func setupProjectConfig(t *testing.T, root string, cfg map[string]any) {
 	t.Helper()
-	writeJSON(t, filepath.Join(root, ".sdlc", "config.json"), cfg)
+	writeJSON(t, filepath.Join(root, paths.DataDir, "config.json"), cfg)
 }
 
 func setupLocalConfig(t *testing.T, root string, cfg map[string]any) {
 	t.Helper()
-	writeJSON(t, filepath.Join(root, ".sdlc", "local.json"), cfg)
+	writeJSON(t, filepath.Join(root, paths.DataDir, "local.json"), cfg)
 }
 
 func runGit(t *testing.T, dir string, args ...string) string {
@@ -160,9 +161,9 @@ func TestLegacyRefusal_MarkerFiles(t *testing.T) {
 	markers := []string{
 		filepath.Join(".claude", "sdlc.json"),
 		filepath.Join(".claude", "version.json"),
-		filepath.Join(".sdlc", "jira-config.json"),
-		filepath.Join(".sdlc", "ship-config.json"),
-		filepath.Join(".sdlc", "review.json"),
+		filepath.Join(paths.LegacyDataDir, "jira-config.json"),
+		filepath.Join(paths.LegacyDataDir, "ship-config.json"),
+		filepath.Join(paths.LegacyDataDir, "review.json"),
 		filepath.Join(".claude", "review.json"),
 	}
 
@@ -612,7 +613,7 @@ func TestReadAnchorsAtMainWorktreeRoot(t *testing.T) {
 	runGit(t, mainDir, "worktree", "add", "-q", linkedDir, "-b", "test-branch")
 
 	// Linked worktree should not have .sdlc/config.json.
-	if _, err := os.Stat(filepath.Join(linkedDir, ".sdlc", "config.json")); err == nil {
+	if _, err := os.Stat(filepath.Join(linkedDir, paths.DataDir, "config.json")); err == nil {
 		t.Fatal(".sdlc/config.json should not exist in linked worktree")
 	}
 

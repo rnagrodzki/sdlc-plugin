@@ -27,7 +27,7 @@ Parse `$ARGUMENTS`:
 
 **Scope note:** `review_prepare`'s only inputs are `target` and `skipConfigCheck` — scope
 (`all` / `committed` / `staged` / `working` / `worktree`) is read by the tool from
-`.sdlc/config.json`'s `review.scope` (default `all`), not from a CLI flag. This port does
+`.sdlc-v2/config.json`'s `review.scope` (default `all`), not from a CLI flag. This port does
 not expose `--committed` / `--staged` / `--working` / `--worktree` / `--set-default` /
 `--dimensions` flags; change scope by editing project config (`/setup`) instead.
 
@@ -153,7 +153,7 @@ For each dimension entry with `status: "ACTIVE"` or `status: "TRUNCATED"`:
       BEFORE reading your slice/diff files.
    2. Review per the instructions above. Cap at 20 findings (prioritize by severity).
    3. Write your findings to the file
-      ".sdlc/execution/ledger/{runId}/{workerId}.findings.json" as a raw JSON array of
+      ".sdlc-v2/execution/ledger/{runId}/{workerId}.findings.json" as a raw JSON array of
       objects shaped {severity, file, line, rationale} — write `[]` if you have zero
       findings. Do this BEFORE the next step.
    4. Call execute_state({ action: "ledger_checkout", runId: "{runId}", workerId: "{workerId}" })
@@ -209,7 +209,7 @@ tool parameter) until every `workerId` dispatched in Step 2 shows `status: "done
 
 Once every dispatched worker is `done` (or was force-progressed past a stall per Step 3),
 read each worker's findings file at
-`.sdlc/execution/ledger/<runId>/<workerId>.findings.json`. This is the same dedupe/
+`.sdlc-v2/execution/ledger/<runId>/<workerId>.findings.json`. This is the same dedupe/
 contradiction/severity-recalibration pass previously run by a separate orchestration step,
 now inline in this session:
 
@@ -331,7 +331,7 @@ Prompt in the main context:
 ```text
 Post this review comment to PR #{manifest.pr.number}? (yes / save / cancel)
   yes    — post the comment to the PR
-  save   — save review to .sdlc/reviews/<branch>-<YYYY-MM-DD>.md instead
+  save   — save review to .sdlc-v2/reviews/<branch>-<YYYY-MM-DD>.md instead
   cancel — keep in terminal only (already shown above)
 ```
 
@@ -359,12 +359,12 @@ Wait for the user's reply.
   Pass `offline: true` to `links_validate` (replacing the old `SDLC_LINKS_OFFLINE=1` env
   var) to skip network reachability while keeping context-aware checks — use in sandboxed CI.
 
-- `save` → (implements `R-reviews-path` — canonical save target is `.sdlc/reviews/`)
+- `save` → (implements `R-reviews-path` — canonical save target is `.sdlc-v2/reviews/`)
 
   ```bash
   BRANCH_SAFE="${branch//[^a-zA-Z0-9_-]/-}"
-  mkdir -p .sdlc/reviews
-  cp "{manifest.diff_dir}/review-comment.md" ".sdlc/reviews/${BRANCH_SAFE}-$(date +%Y-%m-%d).md"
+  mkdir -p .sdlc-v2/reviews
+  cp "{manifest.diff_dir}/review-comment.md" ".sdlc-v2/reviews/${BRANCH_SAFE}-$(date +%Y-%m-%d).md"
   ```
 
 - `cancel` → no action. The comment is already visible in the terminal from Step 6.
@@ -376,7 +376,7 @@ Prompt:
 ```text
 No PR found. Options:
   1. Create a draft PR and attach this review as a comment
-  2. Save review to .sdlc/reviews/<branch>-<YYYY-MM-DD>.md
+  2. Save review to .sdlc-v2/reviews/<branch>-<YYYY-MM-DD>.md
   3. Keep in terminal only
 ```
 
@@ -392,7 +392,7 @@ Prompt:
 
 ```text
 Reviewing local changes — no PR to post to. Options:
-  1. Save review to .sdlc/reviews/<branch>-<YYYY-MM-DD>.md
+  1. Save review to .sdlc-v2/reviews/<branch>-<YYYY-MM-DD>.md
   2. Keep in terminal only
 ```
 
@@ -431,7 +431,7 @@ normal completion):
 ```bash
 rm -f "<manifestPath>"
 rm -rf "{manifest.diff_dir}"
-rm -rf ".sdlc/execution/ledger/<runId>"
+rm -rf ".sdlc-v2/execution/ledger/<runId>"
 ```
 
 ---

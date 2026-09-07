@@ -448,7 +448,7 @@ func sampleRecentPlans(mainRoot string) []string {
 // plan_prepare and plan_mark are registered by RegisterPlanTools in plan.go.
 func RegisterPlanExploreTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "plan_explore_prepare",
-		"Run dynamic-dimension discovery (git scope, OpenSpec paths, keyword grep, web-research signal, skill registry, recent plans) and write a manifest.json into a fresh tempdir for plan's explore orchestrator.",
+		"INTERNAL — called by sdlc skills only. Run dynamic-dimension discovery (git scope, OpenSpec paths, keyword grep, web-research signal, skill registry, recent plans) and write a manifest.json into a fresh tempdir for plan's explore orchestrator.",
 		func(_ mcpserver.Ctx, in PlanExploreIn) (PlanExploreOut, error) {
 			mainRoot, err := worktree.MainRoot()
 			if err != nil {

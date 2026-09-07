@@ -83,9 +83,8 @@ func shipSkillsBuildRegistry(t *testing.T) map[string]bool {
 
 	srv := mcpserver.New("skillcheck-ship-test", "0.0.0-test")
 
-	tools.RegisterErrorReportTools(srv)
 	tools.RegisterCommitTools(srv)
-	tools.RegisterHardenTools(srv)
+	tools.RegisterPrepareOrchestratorTools(srv)
 	tools.RegisterLinksTools(srv)
 	tools.RegisterMCPFailureTools(srv)
 	tools.RegisterExecuteStateTools(srv)
@@ -207,8 +206,7 @@ func TestShipSkillsRegistryContainsExpectedTools(t *testing.T) {
 		"ship_state",
 		"ship_verify_side_effect",
 		"verify_tag_ancestry",
-		"await_remote_review",
-		"verify_pipeline_await",
+		"poll_await",
 		"verify_pipeline_classify",
 		"execute_state",
 		"version_apply",

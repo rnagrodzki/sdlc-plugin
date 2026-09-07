@@ -1,6 +1,6 @@
 // Package skillcheck cross-checks the MCP tool names and call-site
 // parameters referenced by the ported plan-family skill files (plan,
-// execute-plan -- Task 45) against the tool names and input schemas
+// execute -- Task 45) against the tool names and input schemas
 // actually registered on the Go MCP server, so skill prose cannot silently
 // drift from the real tool surface.
 //
@@ -34,7 +34,7 @@ import (
 // repository root, that this test cross-checks against the registry.
 var planSkillsFiles = []string{
 	"skills/plan/SKILL.md",
-	"skills/execute-plan/SKILL.md",
+	"skills/execute/SKILL.md",
 }
 
 // planSkillsCallRe matches this repo's documented tool-call pseudocode
@@ -74,9 +74,8 @@ func planSkillsListTools(t *testing.T) []mcp.Tool {
 
 	srv := mcpserver.New("skillcheck-plan-test", "0.0.0-test")
 
-	tools.RegisterErrorReportTools(srv)
 	tools.RegisterCommitTools(srv)
-	tools.RegisterHardenTools(srv)
+	tools.RegisterPrepareOrchestratorTools(srv)
 	tools.RegisterLinksTools(srv)
 	tools.RegisterMCPFailureTools(srv)
 	tools.RegisterExecuteStateTools(srv)
@@ -307,7 +306,7 @@ func planSkillsToolNames(sites []planSkillsCallSite) []string {
 }
 
 // TestPlanSkillsToolReferencesAreRegistered asserts that every MCP tool name
-// called out in the two Task 45 skill files (plan, execute-plan)
+// called out in the two Task 45 skill files (plan, execute)
 // is actually registered on the Go MCP server — guarding against skill
 // prose drifting from the real tool surface.
 func TestPlanSkillsToolReferencesAreRegistered(t *testing.T) {
@@ -452,10 +451,10 @@ var planSkillsReferenceFileHashes = map[string]string{
 	"skills/plan/lens-architecture-prompt.md":         "0dc7e10fda43b576d7ddb223f5d46c0a37f0b03b14e8950c9207a147aed03508",
 	"skills/plan/lens-requirements-prompt.md":         "f11079debb98beea1810ee281873f3c8a6024dd15006c5b63ed3933f900e582c",
 	"skills/plan/lens-risk-prompt.md":                 "c07da38779172712157f8e06dfd8a3f59812a5eb2f4c0c370846b2aefc72c2e2",
-	"skills/plan/plan-reviewer-prompt.md":             "e7014efa213cd0f80f008b589532b2a959deb749959eb733df228afdcf161f73",
-	"skills/plan/plan-format-reference.md":            "03970fe6be145ca89f4b34b5552d817a511f1b7b38122b1f435a3b7050c79910",
+	"skills/plan/plan-reviewer-prompt.md":             "b9e888dcf06960d9d9dc2c6039b01828d8c8e4ad5530cbf4d2d4872404d79e75",
+	"skills/plan/plan-format-reference.md":            "588e0f03abb3be80517c98e2ac8bb8eb2d1962fe5aa81cc4a9eda991c6b45afd",
 	"skills/plan/plan-template-default.md":            "1fd3de86545ece6eb08e8736ef7dcc2c57ee534f8753a3c13ea2c60398be863b",
-	"skills/execute-plan/spec-compliance-reviewer.md": "ff6b385e1fade868e4c06fa4c2c5990a1e087e4894b1d4395f46c50c2342023b",
+	"skills/execute/spec-compliance-reviewer.md":      "ff6b385e1fade868e4c06fa4c2c5990a1e087e4894b1d4395f46c50c2342023b",
 }
 
 // TestPlanSkillsReferenceFilesAreUnmodified is the AC4 acceptance criterion:

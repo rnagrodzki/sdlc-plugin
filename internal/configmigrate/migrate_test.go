@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
@@ -62,7 +63,7 @@ func stepsSlice(m map[string]any, key string) []string {
 
 func TestVerify_V5_NoSchemaVersion(t *testing.T) {
 	root := t.TempDir()
-	writeJSON(t, filepath.Join(root, ".sdlc", "config.json"), map[string]any{
+	writeJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
 		"version": map[string]any{"mode": "file"},
 	})
 	if err := Verify(root); err != nil {
@@ -79,7 +80,7 @@ func TestVerify_FreshProject(t *testing.T) {
 
 func TestVerify_VersionStale(t *testing.T) {
 	root := t.TempDir()
-	writeJSON(t, filepath.Join(root, ".sdlc", "config.json"), map[string]any{
+	writeJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
 		"schemaVersion": float64(3),
 	})
 	err := Verify(root)
@@ -93,7 +94,7 @@ func TestVerify_VersionStale(t *testing.T) {
 
 func TestVerify_VersionTooNew(t *testing.T) {
 	root := t.TempDir()
-	writeJSON(t, filepath.Join(root, ".sdlc", "config.json"), map[string]any{
+	writeJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
 		"schemaVersion": float64(99),
 	})
 	err := Verify(root)
@@ -121,7 +122,7 @@ func TestMigrate_ProjectV4ToV5(t *testing.T) {
 	root := t.TempDir()
 
 	// v4 config.json: has schemaVersion, project sections.
-	writeJSON(t, filepath.Join(root, ".sdlc", "config.json"), map[string]any{
+	writeJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
 		"schemaVersion": float64(4),
 		"version":       map[string]any{"mode": "file", "versionFile": "package.json"},
 		"jira":          map[string]any{"defaultProject": "PROJ"},
@@ -135,7 +136,7 @@ func TestMigrate_ProjectV4ToV5(t *testing.T) {
 		t.Fatal("expected Migrated=true")
 	}
 
-	config := readJSON(t, filepath.Join(root, ".sdlc", "config.json"))
+	config := readJSON(t, filepath.Join(root, paths.DataDir, "config.json"))
 
 	// Golden: no schemaVersion, sections preserved.
 	if _, has := config["schemaVersion"]; has {
@@ -172,7 +173,7 @@ func TestMigrate_ProjectV0ToV5(t *testing.T) {
 		t.Fatal("expected Migrated=true")
 	}
 
-	config := readJSON(t, filepath.Join(root, ".sdlc", "config.json"))
+	config := readJSON(t, filepath.Join(root, paths.DataDir, "config.json"))
 
 	// Golden: relocated, $schema stripped, no schemaVersion.
 	if _, has := config["schemaVersion"]; has {
@@ -207,7 +208,7 @@ func TestMigrate_ProjectV0ToV5_ShipStrippedFromConfig(t *testing.T) {
 	}
 
 	// config.json must NOT contain ship (schema additionalProperties: false).
-	config := readJSON(t, filepath.Join(root, ".sdlc", "config.json"))
+	config := readJSON(t, filepath.Join(root, paths.DataDir, "config.json"))
 	if _, has := config["ship"]; has {
 		t.Error("config.json must not contain ship section after v4→v5")
 	}
@@ -216,7 +217,7 @@ func TestMigrate_ProjectV0ToV5_ShipStrippedFromConfig(t *testing.T) {
 	}
 
 	// ship should be in local.json with preset migrated to steps.
-	local := readJSON(t, filepath.Join(root, ".sdlc", "local.json"))
+	local := readJSON(t, filepath.Join(root, paths.DataDir, "local.json"))
 	ship := local["ship"].(map[string]any)
 	if _, has := ship["preset"]; has {
 		t.Error("ship.preset should be removed (migrated to steps)")
@@ -239,7 +240,7 @@ func TestMigrate_ProjectV0ToV5_ShipAndReviewStripped_LocalPreserved(t *testing.T
 	})
 
 	// Pre-existing local.json with its own ship section — should be kept.
-	writeJSON(t, filepath.Join(root, ".sdlc", "local.json"), map[string]any{
+	writeJSON(t, filepath.Join(root, paths.DataDir, "local.json"), map[string]any{
 		"version": float64(1),
 		"ship": map[string]any{
 			"preset": "balanced",
@@ -254,7 +255,7 @@ func TestMigrate_ProjectV0ToV5_ShipAndReviewStripped_LocalPreserved(t *testing.T
 		t.Fatal("expected Migrated=true")
 	}
 
-	config := readJSON(t, filepath.Join(root, ".sdlc", "config.json"))
+	config := readJSON(t, filepath.Join(root, paths.DataDir, "config.json"))
 	if _, has := config["ship"]; has {
 		t.Error("config.json must not contain ship")
 	}
@@ -262,7 +263,7 @@ func TestMigrate_ProjectV0ToV5_ShipAndReviewStripped_LocalPreserved(t *testing.T
 		t.Error("config.json must not contain review")
 	}
 
-	local := readJSON(t, filepath.Join(root, ".sdlc", "local.json"))
+	local := readJSON(t, filepath.Join(root, paths.DataDir, "local.json"))
 
 	// Local's ship was from v1 preset "balanced" and went through local
 	// migration chain — verify it was preserved (not overwritten by config's).
@@ -287,12 +288,12 @@ func TestMigrate_LocalV1ToV5_ShipPresetSkip(t *testing.T) {
 	root := t.TempDir()
 
 	// Provide a v5 config.json so project migration is skipped.
-	writeJSON(t, filepath.Join(root, ".sdlc", "config.json"), map[string]any{
+	writeJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
 		"version": map[string]any{"mode": "file"},
 	})
 
 	// v1 local.json: ship with preset + skip.
-	writeJSON(t, filepath.Join(root, ".sdlc", "local.json"), map[string]any{
+	writeJSON(t, filepath.Join(root, paths.DataDir, "local.json"), map[string]any{
 		"version": float64(1),
 		"ship": map[string]any{
 			"preset": "full",
@@ -308,7 +309,7 @@ func TestMigrate_LocalV1ToV5_ShipPresetSkip(t *testing.T) {
 		t.Fatal("expected Migrated=true")
 	}
 
-	local := readJSON(t, filepath.Join(root, ".sdlc", "local.json"))
+	local := readJSON(t, filepath.Join(root, paths.DataDir, "local.json"))
 
 	// Golden: no schemaVersion, no version integer, ship.steps expanded.
 	if _, has := local["schemaVersion"]; has {
@@ -336,12 +337,12 @@ func TestMigrate_LocalV1ToV5_ShipPresetSkip(t *testing.T) {
 func TestMigrate_LocalV3ToV5_AwaitReviewBooleans(t *testing.T) {
 	root := t.TempDir()
 
-	writeJSON(t, filepath.Join(root, ".sdlc", "config.json"), map[string]any{
+	writeJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
 		"version": map[string]any{"mode": "file"},
 	})
 
 	// v3 local.json: ship with awaitReview booleans and tunables.
-	writeJSON(t, filepath.Join(root, ".sdlc", "local.json"), map[string]any{
+	writeJSON(t, filepath.Join(root, paths.DataDir, "local.json"), map[string]any{
 		"schemaVersion": float64(3),
 		"ship": map[string]any{
 			"steps":               []any{"execute", "commit", "pr"},
@@ -361,7 +362,7 @@ func TestMigrate_LocalV3ToV5_AwaitReviewBooleans(t *testing.T) {
 		t.Fatal("expected Migrated=true")
 	}
 
-	local := readJSON(t, filepath.Join(root, ".sdlc", "local.json"))
+	local := readJSON(t, filepath.Join(root, paths.DataDir, "local.json"))
 
 	if _, has := local["schemaVersion"]; has {
 		t.Error("v5 local.json must not have schemaVersion")
@@ -402,12 +403,12 @@ func TestMigrate_LocalV3ToV5_AwaitReviewBooleans(t *testing.T) {
 func TestMigrate_LocalV2ToV5_RenameVersion(t *testing.T) {
 	root := t.TempDir()
 
-	writeJSON(t, filepath.Join(root, ".sdlc", "config.json"), map[string]any{
+	writeJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
 		"version": map[string]any{"mode": "file"},
 	})
 
 	// v2 local.json: has "version": 2 integer (not yet renamed to schemaVersion).
-	writeJSON(t, filepath.Join(root, ".sdlc", "local.json"), map[string]any{
+	writeJSON(t, filepath.Join(root, paths.DataDir, "local.json"), map[string]any{
 		"version": float64(2),
 		"ship": map[string]any{
 			"steps": []any{"execute", "commit", "pr"},
@@ -422,7 +423,7 @@ func TestMigrate_LocalV2ToV5_RenameVersion(t *testing.T) {
 		t.Fatal("expected Migrated=true")
 	}
 
-	local := readJSON(t, filepath.Join(root, ".sdlc", "local.json"))
+	local := readJSON(t, filepath.Join(root, paths.DataDir, "local.json"))
 
 	// Neither version integer nor schemaVersion should remain in v5.
 	if _, has := local["schemaVersion"]; has {
@@ -455,7 +456,7 @@ func TestMigrate_LegacyIngestion_VersionAndJira(t *testing.T) {
 		"versionFile": "package.json",
 		"fileType":    "package.json",
 	})
-	writeJSON(t, filepath.Join(root, ".sdlc", "jira-config.json"), map[string]any{
+	writeJSON(t, filepath.Join(root, paths.LegacyDataDir, "jira-config.json"), map[string]any{
 		"$schema":        "https://example.com/old",
 		"defaultProject": "MYPROJ",
 	})
@@ -471,7 +472,7 @@ func TestMigrate_LegacyIngestion_VersionAndJira(t *testing.T) {
 		t.Fatal("expected LegacyIngested to be non-empty")
 	}
 
-	config := readJSON(t, filepath.Join(root, ".sdlc", "config.json"))
+	config := readJSON(t, filepath.Join(root, paths.DataDir, "config.json"))
 
 	if _, has := config["schemaVersion"]; has {
 		t.Error("v5 config.json must not have schemaVersion")
@@ -498,14 +499,14 @@ func TestMigrate_LegacyIngestion_ShipAndReview(t *testing.T) {
 	root := t.TempDir()
 
 	// Ship config with preset (needs migration to steps).
-	writeJSON(t, filepath.Join(root, ".sdlc", "ship-config.json"), map[string]any{
+	writeJSON(t, filepath.Join(root, paths.LegacyDataDir, "ship-config.json"), map[string]any{
 		"$schema": "https://example.com/old",
 		"version": float64(1),
 		"preset":  "minimal",
 	})
 
 	// Review config with defaults wrapper.
-	writeJSON(t, filepath.Join(root, ".sdlc", "review.json"), map[string]any{
+	writeJSON(t, filepath.Join(root, paths.LegacyDataDir, "review.json"), map[string]any{
 		"$schema": "https://example.com/old",
 		"defaults": map[string]any{
 			"effort": "high",
@@ -520,7 +521,7 @@ func TestMigrate_LegacyIngestion_ShipAndReview(t *testing.T) {
 		t.Fatal("expected Migrated=true")
 	}
 
-	local := readJSON(t, filepath.Join(root, ".sdlc", "local.json"))
+	local := readJSON(t, filepath.Join(root, paths.DataDir, "local.json"))
 
 	ship := local["ship"].(map[string]any)
 	if _, has := ship["$schema"]; has {
@@ -561,7 +562,7 @@ func TestMigrate_LegacyIngestion_ClaudeReviewFallback(t *testing.T) {
 		t.Fatal("expected Migrated=true")
 	}
 
-	local := readJSON(t, filepath.Join(root, ".sdlc", "local.json"))
+	local := readJSON(t, filepath.Join(root, paths.DataDir, "local.json"))
 	review := local["review"].(map[string]any)
 	if review["effort"] != "medium" {
 		t.Error("review.effort should be 'medium'")
@@ -574,7 +575,7 @@ func TestMigrate_LegacyIngestion_ClaudeReviewFallback(t *testing.T) {
 
 func TestMigrate_VersionTooNew(t *testing.T) {
 	root := t.TempDir()
-	writeJSON(t, filepath.Join(root, ".sdlc", "config.json"), map[string]any{
+	writeJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
 		"schemaVersion": float64(99),
 	})
 
@@ -592,13 +593,13 @@ func TestMigrate_ConcurrentLock(t *testing.T) {
 	root := t.TempDir()
 
 	// Create a config that needs migration.
-	writeJSON(t, filepath.Join(root, ".sdlc", "config.json"), map[string]any{
+	writeJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
 		"schemaVersion": float64(4),
 		"version":       map[string]any{"mode": "file"},
 	})
 
 	// Pre-create the lock file to simulate a concurrent migration.
-	lockPath := filepath.Join(root, ".sdlc", ".migration.lock")
+	lockPath := filepath.Join(root, paths.DataDir, ".migration.lock")
 	if err := os.WriteFile(lockPath, []byte("99999"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -615,7 +616,7 @@ func TestMigrate_ConcurrentLock(t *testing.T) {
 func TestMigrate_LockCleanedUp(t *testing.T) {
 	root := t.TempDir()
 
-	writeJSON(t, filepath.Join(root, ".sdlc", "config.json"), map[string]any{
+	writeJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
 		"schemaVersion": float64(4),
 		"version":       map[string]any{"mode": "file"},
 	})
@@ -625,7 +626,7 @@ func TestMigrate_LockCleanedUp(t *testing.T) {
 		t.Fatalf("Migrate: %v", err)
 	}
 
-	lockPath := filepath.Join(root, ".sdlc", ".migration.lock")
+	lockPath := filepath.Join(root, paths.DataDir, ".migration.lock")
 	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
 		t.Error("lock file should be cleaned up after migration")
 	}
@@ -654,7 +655,7 @@ func TestMigrate_FreshProject(t *testing.T) {
 func TestMigrate_AlreadyV5(t *testing.T) {
 	root := t.TempDir()
 
-	writeJSON(t, filepath.Join(root, ".sdlc", "config.json"), map[string]any{
+	writeJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
 		"version": map[string]any{"mode": "file"},
 	})
 
@@ -693,7 +694,7 @@ func TestV5Fixtures_SchemaValidation(t *testing.T) {
 		{
 			name: "v4-to-v5",
 			setup: func(t *testing.T, root string) {
-				writeJSON(t, filepath.Join(root, ".sdlc", "config.json"), map[string]any{
+				writeJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
 					"schemaVersion": float64(4),
 					"version":       map[string]any{"mode": "file"},
 				})
@@ -702,7 +703,7 @@ func TestV5Fixtures_SchemaValidation(t *testing.T) {
 		{
 			name: "v4-to-v5-full-sections",
 			setup: func(t *testing.T, root string) {
-				writeJSON(t, filepath.Join(root, ".sdlc", "config.json"), map[string]any{
+				writeJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
 					"schemaVersion": float64(4),
 					"version":       map[string]any{"mode": "tag", "tagPrefix": "v", "changelog": true},
 					"jira":          map[string]any{"defaultProject": "PROJ"},
@@ -761,7 +762,7 @@ func TestV5Fixtures_SchemaValidation(t *testing.T) {
 				t.Fatalf("Migrate: %v", err)
 			}
 
-			configPath := filepath.Join(root, ".sdlc", "config.json")
+			configPath := filepath.Join(root, paths.DataDir, "config.json")
 			f, err := os.Open(configPath)
 			if err != nil {
 				t.Fatalf("open config.json: %v", err)
@@ -788,14 +789,14 @@ func TestMigrate_FullChain_ProjectAndLocal(t *testing.T) {
 	root := t.TempDir()
 
 	// Project config at v4.
-	writeJSON(t, filepath.Join(root, ".sdlc", "config.json"), map[string]any{
+	writeJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
 		"schemaVersion": float64(4),
 		"version":       map[string]any{"mode": "file"},
 		"jira":          map[string]any{"defaultProject": "PROJ"},
 	})
 
 	// Local config at v1 with both preset and awaitReview.
-	writeJSON(t, filepath.Join(root, ".sdlc", "local.json"), map[string]any{
+	writeJSON(t, filepath.Join(root, paths.DataDir, "local.json"), map[string]any{
 		"version": float64(1),
 		"ship": map[string]any{
 			"preset":             "balanced",
@@ -814,13 +815,13 @@ func TestMigrate_FullChain_ProjectAndLocal(t *testing.T) {
 	}
 
 	// Verify project config.
-	config := readJSON(t, filepath.Join(root, ".sdlc", "config.json"))
+	config := readJSON(t, filepath.Join(root, paths.DataDir, "config.json"))
 	if _, has := config["schemaVersion"]; has {
 		t.Error("v5 config.json must not have schemaVersion")
 	}
 
 	// Verify local config — full migration chain applied.
-	local := readJSON(t, filepath.Join(root, ".sdlc", "local.json"))
+	local := readJSON(t, filepath.Join(root, paths.DataDir, "local.json"))
 	if _, has := local["schemaVersion"]; has {
 		t.Error("v5 local.json must not have schemaVersion")
 	}

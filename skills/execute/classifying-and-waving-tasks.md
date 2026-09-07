@@ -1,6 +1,6 @@
 # Classifying Tasks and Building Waves
 
-Reference for the `execute-plan` skill — Step 2 (CLASSIFY).
+Reference for the `execute` skill — Step 2 (CLASSIFY).
 
 ## Complexity Classification Heuristics
 
@@ -133,7 +133,7 @@ On resource-constrained systems or when tasks share mutable state (databases, ca
 
 ## Agent Prompt Template
 
-This template's content is inlined directly into `execute-plan/SKILL.md`'s own flat-dispatch step (the wave-runner middle-agent is retired under KD15 — the main session dispatches every per-task Agent directly, the same way `review/SKILL.md` keeps its per-dimension prompt template inline rather than in a sibling file).
+This template's content is inlined directly into `execute/SKILL.md`'s own flat-dispatch step (the wave-runner middle-agent is retired under KD15 — the main session dispatches every per-task Agent directly, the same way `review/SKILL.md` keeps its per-dimension prompt template inline rather than in a sibling file).
 
 Use this template for every per-task agent dispatch from the main session. Fill all placeholders, including `{WAVE}` and `{RUN_ID}` — the main session fills these at dispatch. The task body is loaded from the fact-sheet file — do NOT inline the full task text or reference the plan file directly.
 
@@ -141,7 +141,7 @@ Use this template for every per-task agent dispatch from the main session. Fill 
 You are implementing a single task from a larger plan. Focus only on your assigned task.
 
 <!--
-Cache-stability note (Fixes #392 / R33): Within a single execute-plan invocation,
+Cache-stability note (Fixes #392 / R33): Within a single execute invocation,
 `activeGuardrails` is loaded once in Step 1 LOAD and treated as immutable. The rendered
 "## Project Guardrails" block below is therefore byte-identical across every per-task and
 sibling Agent prompt in the run — keep this section above any task-variable content to
@@ -295,7 +295,7 @@ If you find issues during self-review, fix them before reporting.
 
 ## Batched Trivial Tasks Prompt Template
 
-This template's content is inlined directly into `execute-plan/SKILL.md`'s own flat-dispatch step (the wave-runner middle-agent is retired under KD15 — the main session dispatches this batch Agent directly, the same way `review/SKILL.md` keeps its per-dimension prompt template inline rather than in a sibling file).
+This template's content is inlined directly into `execute/SKILL.md`'s own flat-dispatch step (the wave-runner middle-agent is retired under KD15 — the main session dispatches this batch Agent directly, the same way `review/SKILL.md` keeps its per-dimension prompt template inline rather than in a sibling file).
 
 Use this template when dispatching 2+ trivial tasks as a single batch agent from the main session. Fill all placeholders, including `{WAVE}` and `{RUN_ID}` — the main session fills these at dispatch. Tasks are listed sequentially; the agent completes them in order. Each task body is loaded from its fact-sheet file — do NOT inline the full task text or reference the plan file directly.
 

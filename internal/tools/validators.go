@@ -12,6 +12,12 @@
 //     cross-file duplicate-name check (dimensions.Validate only checks one
 //     Dimension at a time and cannot see other files).
 //
+// A seventh action, pr_body, was folded in later: it delegates to pr.go's
+// prValidateBodyCore (PR body vs. template section-presence check), which
+// used to be its own standalone pr_validate_body MCP tool. Its {OK,
+// Errors []string} output is adapted into []discovery.Finding by
+// validatePRBody below to match this dispatcher's uniform shape.
+//
 // discovery.Finding{ID, Severity, Message, Path} is reused as the single
 // output shape across all six actions, per the fact sheet's Refinement
 // note. Findings represent FAILED checks only -- an empty Findings slice
@@ -55,6 +61,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/discovery"
 	"github.com/rnagrodzki/sdlc-plugin/internal/frontmatter"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/prtemplate"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
@@ -66,7 +73,7 @@ import (
 // ValidateIn is the input for the "validate" tool.
 type ValidateIn struct {
 	// Action selects the validator: plan_format | discovery | pr_template |
-	// cost_tiers | guardrails | dimensions.
+	// cost_tiers | guardrails | dimensions | pr_body.
 	Action string `json:"action"`
 	// File is the target file for plan_format and links... (plan_format only
 	// here; links_validate lives in links.go).
@@ -82,6 +89,9 @@ type ValidateIn struct {
 	// Section is the config section guardrails reads its guardrails list
 	// from. Defaults to "plan" when empty, matching the JS default.
 	Section string `json:"section,omitempty"`
+	// Body is the PR body text to validate for the pr_body action, matching
+	// the former standalone pr_validate_body tool's input.
+	Body string `json:"body,omitempty"`
 }
 
 // ValidateOut is the output for the "validate" tool.
@@ -92,7 +102,7 @@ type ValidateOut struct {
 // RegisterValidateTools registers the "validate" MCP tool.
 func RegisterValidateTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "validate",
-		"Run a deterministic validator against the project: plan_format, discovery, pr_template, cost_tiers, guardrails, or dimensions. Returns structured findings (id, severity, message, path) for failed checks only.",
+		"Run a deterministic validator against the project: plan_format, discovery, pr_template, cost_tiers, guardrails, dimensions, or pr_body. Returns structured findings (id, severity, message, path) for failed checks only.",
 		func(ctx mcpserver.Ctx, in ValidateIn) (any, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {
@@ -121,6 +131,8 @@ func validate(root string, in ValidateIn) (ValidateOut, error) {
 		findings, err = validateGuardrailsAction(root, in)
 	case "dimensions":
 		findings, err = validateDimensionsAction(root)
+	case "pr_body":
+		findings, err = validatePRBody(root, in)
 	default:
 		return ValidateOut{}, &mcpserver.DomainError{Msg: fmt.Sprintf("unknown validate action %q", in.Action)}
 	}
@@ -696,7 +708,7 @@ func validatePRTemplate(root string) ([]discovery.Finding, error) {
 	if tmpl != nil {
 		templatePath = tmpl.Path
 	} else {
-		templatePath = filepath.Join(root, ".sdlc", "pr-template.md")
+		templatePath = filepath.Join(root, paths.DataDir, "pr-template.md")
 	}
 	relPath, relErr := filepath.Rel(root, templatePath)
 	if relErr != nil || relPath == "" {
@@ -758,6 +770,30 @@ func validatePRTemplate(root string) ([]discovery.Finding, error) {
 		add("V5", strings.Join(shortMsgs, "; "))
 	}
 
+	return findings, nil
+}
+
+// ---------------------------------------------------------------------------
+// pr_body -- delegates to pr.go's prValidateBodyCore, the former standalone
+// pr_validate_body tool's logic (PR body vs. resolved template's section
+// headings, per the pr SKILL.md's section-presence contract).
+// ---------------------------------------------------------------------------
+
+// validatePRBody adapts prValidateBodyCore's {OK bool, Errors []string}
+// output into []discovery.Finding to match this dispatcher's uniform
+// output shape. Each error string becomes one Finding; OK is not carried
+// separately since it is redundant with len(Findings) == 0, matching this
+// dispatcher's own "empty Findings means every check passed" convention
+// (see package doc).
+func validatePRBody(root string, in ValidateIn) ([]discovery.Finding, error) {
+	out, err := prValidateBodyCore(root, PRValidateBodyIn{Body: in.Body})
+	if err != nil {
+		return nil, err
+	}
+	var findings []discovery.Finding
+	for _, e := range out.Errors {
+		findings = append(findings, discovery.Finding{ID: "PR_BODY", Severity: "error", Message: e})
+	}
 	return findings, nil
 }
 
@@ -1233,7 +1269,7 @@ func ValidateDimensionsAction(root string) ([]discovery.Finding, error) {
 }
 
 func validateDimensionsAction(root string) ([]discovery.Finding, error) {
-	dir := filepath.Join(root, ".sdlc", "review-dimensions")
+	dir := filepath.Join(root, paths.DataDir, "review-dimensions")
 	dims, err := dimensions.Load(dir)
 	if err != nil {
 		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("load review dimensions: %s", err.Error()), Cause: err}

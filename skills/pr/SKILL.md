@@ -37,8 +37,8 @@ this port's tool surface (`pr_prepare`, `pr_apply`) actually supports:
   has no `prConfig`/title-pattern fields) — this port skips the title-pattern gate entirely.
   There is also no config-backed label-inference mode.
 - Link verification (Step 6) routes through the `links_validate` tool, **not**
-  `pr_validate_body` — that tool only checks whether a template's section headings are
-  present in the body, it does not check links at all.
+  `validate`'s `pr_body` action — that action only checks whether a template's section
+  headings are present in the body, it does not check links at all.
 
 ## When to Use This Skill
 
@@ -54,7 +54,7 @@ this port's tool surface (`pr_prepare`, `pr_apply`) actually supports:
 > text under each heading. Apply the same fill rules: real content, "N/A", or "Not detected" —
 > never fabricate. All sections named in `headings` must appear in the output. If
 > `PR_CONTEXT.template.legacy` is true, mention once that the template was found at the
-> deprecated `.claude/pr-template.md` location and suggest moving it to `.sdlc/pr-template.md`.
+> deprecated `.claude/pr-template.md` location and suggest moving it to `.sdlc-v2/pr-template.md`.
 
 When `PR_CONTEXT.template` is null, every PR uses this 8-section flat structure. **All sections in the active template are always present.**
 
@@ -341,7 +341,7 @@ When invoking `error-report`, provide:
 
 ## Learning Capture
 
-When creating pull requests, capture discoveries by appending to `.sdlc/learnings/log.md`.
+When creating pull requests, capture discoveries by appending to `.sdlc-v2/learnings/log.md`.
 Record entries for: repository PR conventions not covered by this skill, branch naming
 patterns, CI requirements that affect PR descriptions, team-specific template preferences,
 JIRA project key patterns, or review process quirks encountered while generating PR content.

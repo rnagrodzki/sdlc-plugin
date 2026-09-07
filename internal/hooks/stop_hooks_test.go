@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 )
 
@@ -173,8 +174,8 @@ func TestStopStateSave_ExecuteFallback_DerivesWaveFields(t *testing.T) {
 	if !ok {
 		t.Fatalf("recovery = %v (%T), want map[string]any", data, data)
 	}
-	if recovery["pipeline"] != "execute-plan" {
-		t.Errorf("pipeline = %v, want execute-plan", recovery["pipeline"])
+	if recovery["pipeline"] != "execute" {
+		t.Errorf("pipeline = %v, want execute", recovery["pipeline"])
 	}
 	// The sidecar round-trips through JSON, so Go ints decode back as float64.
 	if recovery["totalWaves"] != float64(2) {
@@ -399,7 +400,7 @@ type blockCounterFixture struct {
 // mutates the counter.
 func readBlockCounter(t *testing.T, root, branch string) (blockCounterFixture, bool) {
 	t.Helper()
-	path := filepath.Join(root, ".sdlc", "execution", ".stop-block-count-"+state.SlugifyBranch(branch)+".json")
+	path := filepath.Join(root, paths.DataDir, "execution", ".stop-block-count-"+state.SlugifyBranch(branch)+".json")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {

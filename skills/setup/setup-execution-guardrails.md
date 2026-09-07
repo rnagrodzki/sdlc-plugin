@@ -124,6 +124,6 @@ show the findings and offer to fix them.
 
 ## See Also
 
-- [`/execute-plan`](../execute-plan/SKILL.md) — consumes execution guardrails during plan execution
+- [`/execute`](../execute/SKILL.md) — consumes execution guardrails during plan execution
 - [`/setup --execution-guardrails`](../setup/SKILL.md) — parent skill that delegates execution guardrail setup to this sub-flow
 - [`setup-guardrails.md`](./setup-guardrails.md) — plan guardrails analog; holds the shared Guardrail Catalog

@@ -34,14 +34,14 @@ field that does not exist. Deviations, one line each:
   is a frozen 14-id manifest with no `workspace`/`hooks` id — there is nothing to dispatch to.
   `--skip`/`--only` no longer accept those ids.
 - **State/summary/locked (Gap A):** Step 0/1 below compute `state` and `summary` per row by
-  reading `.sdlc/config.json` / `.sdlc/local.json` directly and Globbing the content
+  reading `.sdlc-v2/config.json` / `.sdlc-v2/local.json` directly and Globbing the content
   markers, reproducing `scripts/lib/setup-sections.js`'s `computeState`/`summarize*`
   functions verbatim (see Step 1). The `[legacy]` per-row badge and the "locked,
   always-included" menu rule are dropped — Go's `needsMigration` has no per-section
   attribution to key a per-row legacy state off of. Step 1 prints one migration banner
   instead, and Step 2 still runs before the menu answers are acted on.
 - **Misplaced-section detection:** source additionally flagged a section `legacy` when a key
-  was nested at the wrong config-file top level (e.g. `ship` under `.sdlc/config.json`). No
+  was nested at the wrong config-file top level (e.g. `ship` under `.sdlc-v2/config.json`). No
   Go equivalent exists; dropped. The legacy-file markers checked in Step 0 still catch every
   concrete legacy layout `internal/configmigrate` knows how to migrate.
 - **`preReleaseCompat` (Gap B):** inlined as a static 6-row table in 3.G below, copied
@@ -55,7 +55,7 @@ field that does not exist. Deviations, one line each:
 - **`setup_init` vs `setup_write_sections`:** `setup_init` (existing Go tool) only ever seeds
   *empty* `{}` objects for the ids it is given — it cannot accept assembled field values the
   way source's `util/setup-init.js --project-config ... --local-config ...` did. This port
-  calls `setup_init({ sections: [] })` once, near Step 0, purely to scaffold `.sdlc/`, both
+  calls `setup_init({ sections: [] })` once, near Step 0, purely to scaffold `.sdlc-v2/`, both
   managed `.gitignore` blocks, and empty `config.json`/`local.json` — never with real ids
   (passing real ids would seed spurious empty top-level keys that then need to be
   overwritten). All real field values collected in Step 3 are written via the additive
@@ -133,31 +133,31 @@ If the system context contains "Plan mode is active":
    carries `{ id, label, purpose, configFile, configPath, consumedBy, filesModified,
    optional, delegatedTo, confirmDetected, fields[] }`.
 
-2. Call `setup_init({ sections: [] })` once, unconditionally, to scaffold `.sdlc/` (see Port
+2. Call `setup_init({ sections: [] })` once, unconditionally, to scaffold `.sdlc-v2/` (see Port
    Notes — this never carries real ids):
 
    ```
    setup_init({ sections: [] }) → { ok, created[], changed[] }
    ```
 
-   This ensures `.sdlc/.gitignore`, the root `.gitignore` managed block, and empty
-   `.sdlc/config.json` / `.sdlc/local.json` all exist before any read below.
+   This ensures `.sdlc-v2/.gitignore`, the root `.gitignore` managed block, and empty
+   `.sdlc-v2/config.json` / `.sdlc-v2/local.json` all exist before any read below.
 
 3. **Snapshot current config** (cache for the rest of this run — do not re-read mid-run
    unless Step 2 migration or a write changes the files):
-   - Read `.sdlc/config.json` → `projectConfig` (absent file = `{}`, not an error).
-   - Read `.sdlc/local.json` → `localConfig` (absent file = `{}`).
-   - Glob `.sdlc/review-dimensions/*.yaml` → dimension count.
-   - Glob `.sdlc/pr-template.md` and `.sdlc/plan-template.md` → existence booleans.
+   - Read `.sdlc-v2/config.json` → `projectConfig` (absent file = `{}`, not an error).
+   - Read `.sdlc-v2/local.json` → `localConfig` (absent file = `{}`).
+   - Glob `.sdlc-v2/review-dimensions/*.yaml` → dimension count.
+   - Glob `.sdlc-v2/pr-template.md` and `.sdlc-v2/plan-template.md` → existence booleans.
    - If `openspec/config.yaml` exists, Read it and search for a line matching
      `# BEGIN MANAGED BY sdlc-utilities (v<N>)`; capture `<N>` as the managed-block version
      (no match, or file absent → no managed block).
 
 4. **Legacy-file detection** (mirrors `internal/configmigrate`'s `legacyMarkers` exactly —
    Glob each path relative to the project root): `.claude/sdlc.json`, `.claude/version.json`,
-   `.sdlc/jira-config.json`, `.sdlc/ship-config.json`, `.sdlc/review.json`,
+   `.sdlc-v2/jira-config.json`, `.sdlc-v2/ship-config.json`, `.sdlc-v2/review.json`,
    `.claude/review.json`. Also Glob `.claude/jira-templates/` separately — it drives
-   `migrate({ action: "jira_templates" })` in Step 2 but is not one of the six markers
+   `migrate({ action: "import" })` in Step 2 but is not one of the six markers
    `needsMigration` is based on.
 
 5. **Version detection** (source's `detected.versionFile`/`fileType`/`tagPrefix` — no Go
@@ -206,11 +206,11 @@ branches — see Port Notes):
 1. **Content/delegated sections** (`review-dimensions`, `pr-template`, `plan-template`,
    `openspec-block`): `set` when the Step 0 existence check found content (dimension count >
    0 / file exists / managed block found), else `not-set`.
-2. **`.sdlc/config.json` sections** (`configFile === '.sdlc/config.json'`): walk
+2. **`.sdlc-v2/config.json` sections** (`configFile === '.sdlc-v2/config.json'`): walk
    `section.configPath` as a dot-path into `projectConfig` (e.g. `plan.guardrails`,
    `pr.labels`). If the resolved value is an array, `set` requires `length > 0`; any other
    non-null resolved value is `set`. Unresolved (any segment missing) → `not-set`.
-3. **`.sdlc/local.json` sections** (`ship`, `review`, `received-review`): `set` when
+3. **`.sdlc-v2/local.json` sections** (`ship`, `review`, `received-review`): `set` when
    `localConfig[section.configPath]` (e.g. `localConfig.receivedReview`) is non-null, else
    `not-set`.
 
@@ -278,8 +278,8 @@ Example rendering:
 ```
 1. [set] Version — Tells /version and /ship where the canonical version string lives.
 2. [not-set] Ship — Developer-local pipeline preferences for /ship.
-3. [not-set] Review dimensions — Review dimensions installed under .sdlc/review-dimensions/*.yaml.
-4. [not-set] Plan template — Project-owned plan template at .sdlc/plan-template.md.
+3. [not-set] Review dimensions — Review dimensions installed under .sdlc-v2/review-dimensions/*.yaml.
+4. [not-set] Plan template — Project-owned plan template at .sdlc-v2/plan-template.md.
 ```
 
 **Phase 3 — Ask via plain chat (NOT `AskUserQuestion`).** Print the following prompt as a
@@ -339,18 +339,20 @@ migrate({ action: "config", dryRun: false }) → { ok, result, changed[] }
 
 `result` is one of: `"up-to-date"` (nothing to do), or
 `"migrated (steps: [...], legacy ingested: [<path> <path> ...])"`. This single call migrates
-both `.sdlc/config.json` and `.sdlc/local.json` schema versions and ingests any of the six
+both `.sdlc-v2/config.json` and `.sdlc-v2/local.json` schema versions and ingests any of the six
 legacy per-section files found in Step 0 — there is no separate project/local/`--unset-only`
 branch to run.
 
 Then, if the `.claude/jira-templates/` directory was found in Step 0, run:
 
 ```
-migrate({ action: "jira_templates", dryRun: false }) → { ok, result, changed[] }
+migrate({ action: "import", dryRun: false }) → { ok, result, changed[] }
 ```
 
-`result` is one of `"noop: ..."`, `"already-migrated: ..."`, `"skip: ... manual resolution
-needed"`, or `"moved: .claude/jira-templates/ -> .sdlc/jira-templates/"`.
+This non-destructively copies config, templates, jira-templates, learnings, and
+review-dimensions from the old data directory into `.sdlc-v2/`, skipping anything that
+already exists. `result` is either `"up-to-date: nothing to import"` or
+`"imported: [<path> <path> ...]"` (or `"would-import: [...]"` when `dryRun` is true).
 
 Report both results to the user verbatim.
 
@@ -370,7 +372,7 @@ On **no** (top-level choice: configure from scratch): proceed directly to Step 3
 migrating.
 
 After migration (or after the delete-legacy prompt resolves), re-run Step 0's snapshot
-(re-call `setup_prepare` and re-Read `.sdlc/config.json` / `.sdlc/local.json`) so Step 3's
+(re-call `setup_prepare` and re-Read `.sdlc-v2/config.json` / `.sdlc-v2/local.json`) so Step 3's
 "Current value" lines and Step 1's already-computed `state`/`summary` reflect the migrated
 config.
 
@@ -621,16 +623,16 @@ Before invoking `setup-dimensions` or `setup-pr-template`, run the project signa
   `**/sequelize*`, `**/typeorm*`, `**/sqlalchemy*`.
 - **Test structure:** Glob for `test/`, `tests/`, `spec/`, `__tests__/`, `cypress/`,
   `**/playwright.config.*`.
-- **Existing review dimensions:** Glob for `.sdlc/review-dimensions/*` (count and names;
+- **Existing review dimensions:** Glob for `.sdlc-v2/review-dimensions/*` (count and names;
   reuse the Step 0 snapshot when this is the first delegated section in the loop).
-- **Existing guardrails:** Read `.sdlc/config.json` → `plan.guardrails` array if present.
+- **Existing guardrails:** Read `.sdlc-v2/config.json` → `plan.guardrails` array if present.
 - **GitHub hosting detection:** Bash for `git remote -v` and `gh repo view` (safe). Glob for
   `.github/`.
 - **CLAUDE.md / AGENTS.md:** Read `CLAUDE.md`, `AGENTS.md`, `.claude/CLAUDE.md` if present.
 - **PR template:** Glob for `.github/PULL_REQUEST_TEMPLATE.md`,
   `.github/pull_request_template.md`.
 - **Recent PRs:** Bash for `gh pr list --limit 5 --json title,body` (safe).
-- **Existing PR template:** Glob for `.sdlc/pr-template.md` (reuse Step 0 snapshot).
+- **Existing PR template:** Glob for `.sdlc-v2/pr-template.md` (reuse Step 0 snapshot).
 - **JIRA evidence:** Bash for `git log --oneline -20` and `git rev-parse --abbrev-ref HEAD`
   (safe).
 
@@ -695,7 +697,7 @@ After collecting all answers AND confirming the diff preview above:
    using their own read-merge-write sequencing — do not re-write those keys here.
 
 2. **`pr` merge-preserve.** If `pr` was configured in 3.pr this run, immediately before
-   writing, Read the current `.sdlc/config.json` and check for an existing `pr.labels` key
+   writing, Read the current `.sdlc-v2/config.json` and check for an existing `pr.labels` key
    (it may have been written by `setup-pr-labels.md` in an earlier or the same run). If
    present, include it unchanged in the object being written:
 
@@ -726,8 +728,8 @@ After collecting all answers AND confirming the diff preview above:
 
 ### Step 3b — Validate Written Config
 
-Re-run Step 0's snapshot (re-call `setup_prepare`, re-Read `.sdlc/config.json` and
-`.sdlc/local.json`) and recompute `state` for every id that was just written.
+Re-run Step 0's snapshot (re-call `setup_prepare`, re-Read `.sdlc-v2/config.json` and
+`.sdlc-v2/local.json`) and recompute `state` for every id that was just written.
 
 Confirm every id written in "Writing config files" now shows `state === 'set'`. If any
 written id still shows `not-set` (write silently no-opped or the value resolved as empty),
@@ -744,8 +746,8 @@ Show what was created or updated:
 Setup complete
 ---------------------------------------------------
 Created/updated:
-  .sdlc/config.json      — project config (version, jira, ...)
-  .sdlc/local.json       — local config (review, ship, ...)
+  .sdlc-v2/config.json      — project config (version, jira, ...)
+  .sdlc-v2/local.json       — local config (review, ship, ...)
 
 Content:
   Review dimensions       — [installed via dimensions sub-flow | skipped]
@@ -753,7 +755,7 @@ Content:
   Plan guardrails         — [N configured via guardrails sub-flow | skipped]
 
 Migrated:
-  .claude/version.json    — merged into .sdlc/config.json [deleted | kept]
+  .claude/version.json    — merged into .sdlc-v2/config.json [deleted | kept]
   ...
 ```
 
@@ -802,8 +804,8 @@ detection may return unexpected results.
 detected in Step 0, default to `mode: "file"`. When none was found, default to
 `mode: "tag"`. Always include `mode` in the written config.
 
-**Ship config is developer-local.** Ship preferences live in `.sdlc/local.json` (gitignored),
-not in `.sdlc/config.json`. Each developer has their own ship preferences.
+**Ship config is developer-local.** Ship preferences live in `.sdlc-v2/local.json` (gitignored),
+not in `.sdlc-v2/config.json`. Each developer has their own ship preferences.
 
 **`setup_write_sections` is wholesale, not merge, per key.** Unlike source's
 `writeProjectConfig`/`writeLocalConfig`, there is no automatic read-merge-write across an
@@ -813,9 +815,9 @@ that distinction has an observable correctness consequence; the `setup-pr-labels
 `setup-guardrails.md`, and `setup-execution-guardrails.md` companion sub-flows each handle
 their own equivalent read-preserve-write internally.
 
-**Legacy review config has two possible locations.** `.sdlc/review.json` and
+**Legacy review config has two possible locations.** `.sdlc-v2/review.json` and
 `.claude/review.json` are both legacy paths; `internal/configmigrate` prefers
-`.sdlc/review.json` when both exist.
+`.sdlc-v2/review.json` when both exist.
 
 **`state`/`summary` are computed by this skill, not returned by any tool.** If a future Go
 tool version adds these fields to `setup_prepare`'s output, prefer the tool's values and
@@ -827,7 +829,7 @@ because that field does not exist yet.
 ## Learning Capture
 
 After completing setup or encountering unexpected behavior, append to
-`.sdlc/learnings/log.md`:
+`.sdlc-v2/learnings/log.md`:
 
 ```
 ## YYYY-MM-DD — setup: <brief summary>

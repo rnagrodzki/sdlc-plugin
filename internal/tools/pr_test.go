@@ -10,6 +10,7 @@ import (
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
 // stubGHDispatch installs a fake "gh" script on PATH that dispatches on its
@@ -151,7 +152,7 @@ func TestPrValidateBody_TemplateFixtureMatrix(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
-			sdlcDir := filepath.Join(root, ".sdlc")
+			sdlcDir := filepath.Join(root, paths.DataDir)
 			if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
 				t.Fatal(err)
 			}
@@ -180,7 +181,7 @@ func TestPrValidateBody_TemplateFixtureMatrix(t *testing.T) {
 
 func TestPrPrepare_ConfigNeedsMigration_ShortCircuits(t *testing.T) {
 	root := t.TempDir()
-	sdlcDir := filepath.Join(root, ".sdlc")
+	sdlcDir := filepath.Join(root, paths.DataDir)
 	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +311,7 @@ func TestPrPrepare_HappyPath_JiraAndTemplate(t *testing.T) {
 	workDir := t.TempDir()
 	initGitRepoWithBranch(t, workDir, "feat/PROJ-123-add-thing")
 
-	sdlcDir := filepath.Join(workDir, ".sdlc")
+	sdlcDir := filepath.Join(workDir, paths.DataDir)
 	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

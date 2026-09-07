@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/configmigrate"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
 // ---------------------------------------------------------------------------
@@ -74,7 +75,7 @@ func TestSetupPrepare_NeedsMigrationOnLegacy(t *testing.T) {
 	root := t.TempDir()
 
 	// Create a legacy config marker.
-	writeTestJSON(t, filepath.Join(root, ".sdlc", "config.json"), map[string]any{
+	writeTestJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
 		"schemaVersion": float64(3),
 	})
 
@@ -92,7 +93,7 @@ func TestSetupPrepare_SkipConfigCheck(t *testing.T) {
 	root := t.TempDir()
 
 	// Create a legacy config marker.
-	writeTestJSON(t, filepath.Join(root, ".sdlc", "config.json"), map[string]any{
+	writeTestJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
 		"schemaVersion": float64(3),
 	})
 
@@ -183,17 +184,17 @@ func TestSetupInit_EmptyFixture_CreatesScaffold(t *testing.T) {
 	}
 
 	// .sdlc/ directory should exist.
-	if _, err := os.Stat(filepath.Join(root, ".sdlc")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, paths.DataDir)); err != nil {
 		t.Error(".sdlc/ directory should exist")
 	}
 
 	// .sdlc/.gitignore should exist with managed block.
-	sdlcGitignore, err := os.ReadFile(filepath.Join(root, ".sdlc", ".gitignore"))
+	sdlcGitignore, err := os.ReadFile(filepath.Join(root, paths.DataDir, ".gitignore"))
 	if err != nil {
 		t.Fatal(".sdlc/.gitignore should exist")
 	}
 	content := string(sdlcGitignore)
-	if !strings.Contains(content, "sdlc-utilities managed") {
+	if !strings.Contains(content, "sdlc-v2 managed") {
 		t.Error(".sdlc/.gitignore should contain managed block marker")
 	}
 	if !strings.Contains(content, "!config.json") {
@@ -211,11 +212,11 @@ func TestSetupInit_EmptyFixture_CreatesScaffold(t *testing.T) {
 	}
 
 	// config.json and local.json should exist with empty objects.
-	configData := readTestJSON(t, filepath.Join(root, ".sdlc", "config.json"))
+	configData := readTestJSON(t, filepath.Join(root, paths.DataDir, "config.json"))
 	if len(configData) != 0 {
 		t.Errorf("config.json should be empty object, got %v", configData)
 	}
-	localData := readTestJSON(t, filepath.Join(root, ".sdlc", "local.json"))
+	localData := readTestJSON(t, filepath.Join(root, paths.DataDir, "local.json"))
 	if len(localData) != 0 {
 		t.Errorf("local.json should be empty object, got %v", localData)
 	}
@@ -235,7 +236,7 @@ func TestSetupInit_V5SchemaCompliant(t *testing.T) {
 	}
 
 	// config.json must not have schemaVersion field.
-	configData := readTestJSON(t, filepath.Join(root, ".sdlc", "config.json"))
+	configData := readTestJSON(t, filepath.Join(root, paths.DataDir, "config.json"))
 	if _, has := configData["schemaVersion"]; has {
 		t.Error("config.json must not have schemaVersion field")
 	}
@@ -254,7 +255,7 @@ func TestSetupInit_WithProjectSections(t *testing.T) {
 	}
 
 	// config.json should have the seeded sections.
-	configData := readTestJSON(t, filepath.Join(root, ".sdlc", "config.json"))
+	configData := readTestJSON(t, filepath.Join(root, paths.DataDir, "config.json"))
 	if _, has := configData["version"]; !has {
 		t.Error("config.json should have 'version' section")
 	}
@@ -276,7 +277,7 @@ func TestSetupInit_WithLocalSections(t *testing.T) {
 	}
 
 	// local.json should have the seeded sections.
-	localData := readTestJSON(t, filepath.Join(root, ".sdlc", "local.json"))
+	localData := readTestJSON(t, filepath.Join(root, paths.DataDir, "local.json"))
 	if _, has := localData["ship"]; !has {
 		t.Error("local.json should have 'ship' section")
 	}
@@ -304,17 +305,17 @@ func TestSetupInit_Idempotent(t *testing.T) {
 
 	// Second run should not report config files as created.
 	for _, c := range out.Created {
-		if c == ".sdlc/config.json" || c == ".sdlc/local.json" {
+		if c == paths.DataDir+"/config.json" || c == paths.DataDir+"/local.json" {
 			t.Errorf("second run should not report %q as created", c)
 		}
 	}
 
 	// .sdlc/.gitignore should not have duplicate managed blocks.
-	content, err := os.ReadFile(filepath.Join(root, ".sdlc", ".gitignore"))
+	content, err := os.ReadFile(filepath.Join(root, paths.DataDir, ".gitignore"))
 	if err != nil {
 		t.Fatal("read .sdlc/.gitignore")
 	}
-	count := strings.Count(string(content), "sdlc-utilities managed (do not edit)")
+	count := strings.Count(string(content), "sdlc-v2 managed (do not edit)")
 	if count != 1 {
 		t.Errorf("expected 1 managed block begin marker, got %d", count)
 	}
@@ -325,9 +326,9 @@ func TestSetupInit_RootGitignoreLegacyUpgrade(t *testing.T) {
 
 	// Write a v1-style managed block in root .gitignore.
 	v1Content := "# existing user pattern\nnode_modules/\n" +
-		"# >>> sdlc-utilities managed (do not edit) — transient skill artifacts\n" +
+		"# >>> sdlc-v2 managed (do not edit) — transient skill artifacts\n" +
 		"*-context-*.json\n" +
-		"# <<< sdlc-utilities managed\n"
+		"# <<< sdlc-v2 managed\n"
 	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte(v1Content), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -352,7 +353,7 @@ func TestSetupInit_RootGitignoreLegacyUpgrade(t *testing.T) {
 		t.Error("root .gitignore should preserve user content")
 	}
 	// Should not have legacy v1 begin marker.
-	if strings.Contains(s, "# >>> sdlc-utilities managed (do not edit) — transient skill artifacts\n*-context") {
+	if strings.Contains(s, "# >>> sdlc-v2 managed (do not edit) — transient skill artifacts\n*-context") {
 		t.Error("root .gitignore should not contain legacy v1 block")
 	}
 }
@@ -365,7 +366,7 @@ func TestMigrate_ConfigAction_V4ToV5(t *testing.T) {
 	root := t.TempDir()
 
 	// v4 config.
-	writeTestJSON(t, filepath.Join(root, ".sdlc", "config.json"), map[string]any{
+	writeTestJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
 		"schemaVersion": float64(4),
 		"version":       map[string]any{"mode": "file", "versionFile": "package.json"},
 		"jira":          map[string]any{"defaultProject": "PROJ"},
@@ -387,7 +388,7 @@ func TestMigrate_ConfigAction_V4ToV5(t *testing.T) {
 	}
 
 	// Verify v5 result.
-	configData := readTestJSON(t, filepath.Join(root, ".sdlc", "config.json"))
+	configData := readTestJSON(t, filepath.Join(root, paths.DataDir, "config.json"))
 	if _, has := configData["schemaVersion"]; has {
 		t.Error("config.json should not have schemaVersion after migration")
 	}
@@ -416,7 +417,7 @@ func TestMigrate_ConfigAction_LegacyToV5(t *testing.T) {
 	}
 
 	// Verify v5 result.
-	configData := readTestJSON(t, filepath.Join(root, ".sdlc", "config.json"))
+	configData := readTestJSON(t, filepath.Join(root, paths.DataDir, "config.json"))
 	if _, has := configData["schemaVersion"]; has {
 		t.Error("v5 config.json should not have schemaVersion")
 	}
@@ -429,7 +430,7 @@ func TestMigrate_ConfigAction_LegacyToV5(t *testing.T) {
 func TestMigrate_ConfigAction_DryRun(t *testing.T) {
 	root := t.TempDir()
 
-	writeTestJSON(t, filepath.Join(root, ".sdlc", "config.json"), map[string]any{
+	writeTestJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
 		"schemaVersion": float64(4),
 		"version":       map[string]any{"mode": "file"},
 	})
@@ -450,7 +451,7 @@ func TestMigrate_ConfigAction_DryRun(t *testing.T) {
 	}
 
 	// Config should not be changed.
-	configData := readTestJSON(t, filepath.Join(root, ".sdlc", "config.json"))
+	configData := readTestJSON(t, filepath.Join(root, paths.DataDir, "config.json"))
 	if _, has := configData["schemaVersion"]; !has {
 		t.Error("config should not be changed during dry run")
 	}
@@ -459,7 +460,7 @@ func TestMigrate_ConfigAction_DryRun(t *testing.T) {
 func TestMigrate_ConfigAction_AlreadyV5(t *testing.T) {
 	root := t.TempDir()
 
-	writeTestJSON(t, filepath.Join(root, ".sdlc", "config.json"), map[string]any{
+	writeTestJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
 		"version": map[string]any{"mode": "file"},
 	})
 
@@ -470,237 +471,6 @@ func TestMigrate_ConfigAction_AlreadyV5(t *testing.T) {
 
 	if out.Result != "up-to-date" {
 		t.Errorf("expected 'up-to-date', got %q", out.Result)
-	}
-}
-
-func TestMigrate_JiraTemplates_Move(t *testing.T) {
-	root := t.TempDir()
-
-	// Create legacy jira-templates directory with a file.
-	srcDir := filepath.Join(root, ".claude", "jira-templates")
-	if err := os.MkdirAll(srcDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(srcDir, "bug.md"), []byte("# Bug\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	out, err := migrate(root, MigrateIn{Action: "jira_templates", DryRun: false})
-	if err != nil {
-		t.Fatalf("migrate jira_templates: %v", err)
-	}
-
-	if !out.OK {
-		t.Error("expected OK=true")
-	}
-	if !strings.Contains(out.Result, "moved") {
-		t.Errorf("expected 'moved' in result, got %q", out.Result)
-	}
-
-	// Source should be gone, destination should have the file.
-	if migrateDirExists(srcDir) {
-		t.Error("source directory should be removed")
-	}
-	dstFile := filepath.Join(root, ".sdlc", "jira-templates", "bug.md")
-	if !migrateFileExists(dstFile) {
-		t.Error("destination file should exist")
-	}
-}
-
-func TestMigrate_JiraTemplates_Noop(t *testing.T) {
-	root := t.TempDir()
-
-	out, err := migrate(root, MigrateIn{Action: "jira_templates", DryRun: false})
-	if err != nil {
-		t.Fatalf("migrate jira_templates: %v", err)
-	}
-
-	if !strings.Contains(out.Result, "noop") {
-		t.Errorf("expected 'noop' in result, got %q", out.Result)
-	}
-}
-
-func TestMigrate_JiraTemplates_AlreadyMigrated(t *testing.T) {
-	root := t.TempDir()
-
-	// Only destination exists.
-	dstDir := filepath.Join(root, ".sdlc", "jira-templates")
-	if err := os.MkdirAll(dstDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	out, err := migrate(root, MigrateIn{Action: "jira_templates", DryRun: false})
-	if err != nil {
-		t.Fatalf("migrate jira_templates: %v", err)
-	}
-
-	if !strings.Contains(out.Result, "already-migrated") {
-		t.Errorf("expected 'already-migrated' in result, got %q", out.Result)
-	}
-}
-
-func TestMigrate_JiraTemplates_BothExist(t *testing.T) {
-	root := t.TempDir()
-
-	// Both source and destination exist.
-	if err := os.MkdirAll(filepath.Join(root, ".claude", "jira-templates"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(root, ".sdlc", "jira-templates"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	out, err := migrate(root, MigrateIn{Action: "jira_templates", DryRun: false})
-	if err != nil {
-		t.Fatalf("migrate jira_templates: %v", err)
-	}
-
-	if !strings.Contains(out.Result, "skip") {
-		t.Errorf("expected 'skip' in result, got %q", out.Result)
-	}
-}
-
-func TestMigrate_JiraTemplates_DryRun(t *testing.T) {
-	root := t.TempDir()
-
-	srcDir := filepath.Join(root, ".claude", "jira-templates")
-	if err := os.MkdirAll(srcDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	out, err := migrate(root, MigrateIn{Action: "jira_templates", DryRun: true})
-	if err != nil {
-		t.Fatalf("migrate jira_templates dry-run: %v", err)
-	}
-
-	if !strings.Contains(out.Result, "would-move") {
-		t.Errorf("expected 'would-move' in result, got %q", out.Result)
-	}
-	// Source should still exist.
-	if !migrateDirExists(srcDir) {
-		t.Error("source should still exist during dry run")
-	}
-}
-
-func TestMigrate_LearningsLog_Move(t *testing.T) {
-	root := t.TempDir()
-
-	// Create legacy learnings log.
-	srcDir := filepath.Join(root, ".claude", "learnings")
-	if err := os.MkdirAll(srcDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(srcDir, "log.md"), []byte("# Learnings\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	out, err := migrate(root, MigrateIn{Action: "learnings_log", DryRun: false})
-	if err != nil {
-		t.Fatalf("migrate learnings_log: %v", err)
-	}
-
-	if !out.OK {
-		t.Error("expected OK=true")
-	}
-	if !strings.Contains(out.Result, "moved") {
-		t.Errorf("expected 'moved' in result, got %q", out.Result)
-	}
-
-	// Source should be gone, destination should have the file.
-	srcFile := filepath.Join(srcDir, "log.md")
-	if migrateFileExists(srcFile) {
-		t.Error("source file should be removed")
-	}
-	dstFile := filepath.Join(root, ".sdlc", "learnings", "log.md")
-	if !migrateFileExists(dstFile) {
-		t.Error("destination file should exist")
-	}
-	content, _ := os.ReadFile(dstFile)
-	if string(content) != "# Learnings\n" {
-		t.Errorf("destination content mismatch: %q", string(content))
-	}
-}
-
-func TestMigrate_LearningsLog_Noop(t *testing.T) {
-	root := t.TempDir()
-
-	out, err := migrate(root, MigrateIn{Action: "learnings_log", DryRun: false})
-	if err != nil {
-		t.Fatalf("migrate learnings_log: %v", err)
-	}
-
-	if !strings.Contains(out.Result, "noop") {
-		t.Errorf("expected 'noop' in result, got %q", out.Result)
-	}
-}
-
-func TestMigrate_LearningsLog_DryRun(t *testing.T) {
-	root := t.TempDir()
-
-	srcDir := filepath.Join(root, ".claude", "learnings")
-	if err := os.MkdirAll(srcDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(srcDir, "log.md"), []byte("data"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	out, err := migrate(root, MigrateIn{Action: "learnings_log", DryRun: true})
-	if err != nil {
-		t.Fatalf("migrate learnings_log dry-run: %v", err)
-	}
-
-	if !strings.Contains(out.Result, "would-move") {
-		t.Errorf("expected 'would-move' in result, got %q", out.Result)
-	}
-	// Source should still exist.
-	if !migrateFileExists(filepath.Join(srcDir, "log.md")) {
-		t.Error("source should still exist during dry run")
-	}
-}
-
-func TestMigrate_LearningsLog_AlreadyMigrated(t *testing.T) {
-	root := t.TempDir()
-
-	// Only destination exists.
-	dstDir := filepath.Join(root, ".sdlc", "learnings")
-	if err := os.MkdirAll(dstDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dstDir, "log.md"), []byte("# log"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	out, err := migrate(root, MigrateIn{Action: "learnings_log"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(out.Result, "already-migrated") {
-		t.Errorf("expected already-migrated result, got %q", out.Result)
-	}
-}
-
-func TestMigrate_LearningsLog_BothExist(t *testing.T) {
-	root := t.TempDir()
-
-	// Both source and destination exist.
-	srcDir := filepath.Join(root, ".claude", "learnings")
-	dstDir := filepath.Join(root, ".sdlc", "learnings")
-	for _, d := range []string{srcDir, dstDir} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(d, "log.md"), []byte("# log"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	out, err := migrate(root, MigrateIn{Action: "learnings_log"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(out.Result, "skip") {
-		t.Errorf("expected skip result, got %q", out.Result)
 	}
 }
 
@@ -739,7 +509,7 @@ func TestSetupInit_ThenVerify_Passes(t *testing.T) {
 func TestMigrate_V4_ConvergesToV5(t *testing.T) {
 	root := t.TempDir()
 
-	writeTestJSON(t, filepath.Join(root, ".sdlc", "config.json"), map[string]any{
+	writeTestJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
 		"schemaVersion": float64(4),
 		"version":       map[string]any{"mode": "file"},
 		"jira":          map[string]any{"defaultProject": "X"},

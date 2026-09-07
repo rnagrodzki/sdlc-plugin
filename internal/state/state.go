@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
 // ---------------------------------------------------------------------------
@@ -89,7 +90,7 @@ type State struct {
 
 // stateDir returns the canonical execution state directory for a root.
 func stateDir(root string) string {
-	return filepath.Join(root, ".sdlc", "execution")
+	return filepath.Join(root, paths.DataDir, "execution")
 }
 
 // ---------------------------------------------------------------------------

@@ -271,7 +271,7 @@ func verifyTagAncestry(root, tag string) (VerifyTagAncestryOut, error) {
 // server.
 func RegisterScaffoldTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "scaffold_ci",
-		"Deterministically copies CI scripts and workflow files into a user project from embedded payloads.",
+		"INTERNAL — called by sdlc skills only. Deterministically copies CI scripts and workflow files into a user project from embedded payloads.",
 		func(ctx mcpserver.Ctx, in ScaffoldCIIn) (ScaffoldCIOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {
@@ -285,7 +285,7 @@ func RegisterScaffoldTools(s *mcpserver.Server) {
 	)
 
 	mcpserver.Register(s, "verify_tag_ancestry",
-		"Verify a git tag is an ancestor of HEAD.",
+		"INTERNAL — called by sdlc skills only. Verify a git tag is an ancestor of HEAD.",
 		func(ctx mcpserver.Ctx, in VerifyTagAncestryIn) (VerifyTagAncestryOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

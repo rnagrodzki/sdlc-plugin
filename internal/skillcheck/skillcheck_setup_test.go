@@ -104,9 +104,8 @@ func setupSkillsListTools(t *testing.T) []mcp.Tool {
 
 	srv := mcpserver.New("skillcheck-setup-test", "0.0.0-test")
 
-	tools.RegisterErrorReportTools(srv)
 	tools.RegisterCommitTools(srv)
-	tools.RegisterHardenTools(srv)
+	tools.RegisterPrepareOrchestratorTools(srv)
 	tools.RegisterLinksTools(srv)
 	tools.RegisterMCPFailureTools(srv)
 	tools.RegisterExecuteStateTools(srv)

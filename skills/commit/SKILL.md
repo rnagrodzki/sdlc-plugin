@@ -32,7 +32,7 @@ suggests. Concretely:
 
 - Committing staged changes with an auto-generated message
 - Generating a commit message that matches the project's existing style
-- Detecting (not auto-squashing — see Step 1c) WIP commits made by execute-plan
+- Detecting (not auto-squashing — see Step 1c) WIP commits made by execute
 
 ## Workflow
 
@@ -100,7 +100,7 @@ Read `wipSquash` from `COMMIT_CONTEXT`:
 with `wip(` or `wip:` (case-insensitive).
 
 **This port does not auto-squash WIP commits.** If `wipSquash.commits` is non-empty, tell the
-user: "Detected N WIP commit(s) from execute-plan. This port does not squash them
+user: "Detected N WIP commit(s) from execute. This port does not squash them
 automatically — they will remain as separate commits in history; the new commit you are
 about to make is additional, not a replacement. Squash them yourself beforehand if you want
 a single commit for this change." Then proceed to Step 2 regardless.
@@ -329,7 +329,7 @@ When invoking `error-report`, provide:
 ## Learning Capture
 
 After completing a commit, if the project's detected commit style was non-conventional or
-unusual, append to `.sdlc/learnings/log.md`:
+unusual, append to `.sdlc-v2/learnings/log.md`:
 
 ```
 ## YYYY-MM-DD — commit: <brief summary>

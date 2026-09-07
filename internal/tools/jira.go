@@ -87,6 +87,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/links"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
 
@@ -453,7 +454,7 @@ func jiraResolveTemplateStatus(mainRoot, cachePath, templatesDir string) map[str
 		}
 	}
 
-	customDir := filepath.Join(mainRoot, ".sdlc", "jira-templates")
+	customDir := filepath.Join(mainRoot, paths.DataDir, "jira-templates")
 
 	defaultTemplateNames := []string{}
 	if entries, err := os.ReadDir(templatesDir); err == nil {
@@ -919,7 +920,7 @@ func jiraInitTemplates(mainRoot string, in JiraIn) (any, error) {
 	}
 
 	templatesDir := jiraResolveTemplatesDir(in.TemplatesDir)
-	customDir := filepath.Join(mainRoot, ".sdlc", "jira-templates")
+	customDir := filepath.Join(mainRoot, paths.DataDir, "jira-templates")
 	if err := os.MkdirAll(customDir, 0o755); err != nil {
 		return nil, &mcpserver.InfraError{Msg: "create custom templates dir: " + err.Error(), Cause: err}
 	}
@@ -995,7 +996,7 @@ func jiraCopyTemplate(mainRoot string, in JiraIn) (any, error) {
 		return nil, &mcpserver.DataError{Msg: fmt.Sprintf("template source not found: %s", src)}
 	}
 
-	dst := filepath.Join(mainRoot, ".sdlc", "jira-templates", in.TemplateType+".md")
+	dst := filepath.Join(mainRoot, paths.DataDir, "jira-templates", in.TemplateType+".md")
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return nil, &mcpserver.InfraError{Msg: "create custom templates dir: " + err.Error(), Cause: err}
 	}

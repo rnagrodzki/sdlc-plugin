@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 )
 
@@ -437,7 +438,7 @@ func TestPostToolValidate_Dimensions_ZeroFindings_Silent(t *testing.T) {
 
 	// No .sdlc/review-dimensions directory at all: dimensions.Load yields
 	// zero dimensions, so validateDimensionsAction produces zero findings.
-	out, err := postToolValidate(HookCtx{}, triggerEvent(filepath.Join(dir, ".sdlc", "review-dimensions", "security.yaml")))
+	out, err := postToolValidate(HookCtx{}, triggerEvent(filepath.Join(dir, paths.DataDir, "review-dimensions", "security.yaml")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,7 +449,7 @@ func TestPostToolValidate_Dimensions_Findings_Blocks(t *testing.T) {
 	dir := realPath(t, t.TempDir())
 	chdir(t, dir)
 
-	dimDir := filepath.Join(dir, ".sdlc", "review-dimensions")
+	dimDir := filepath.Join(dir, paths.DataDir, "review-dimensions")
 	mustMkdirAll(t, dimDir)
 	mustWriteFile(t, filepath.Join(dimDir, "bad.md"), "no frontmatter delimiters in this file\n")
 
@@ -465,7 +466,7 @@ func TestPostToolValidate_PRTemplate_MissingFile_Blocks(t *testing.T) {
 
 	// No pr-template.md at either canonical or legacy location:
 	// validatePRTemplate produces a V1 "File not found" finding.
-	out, err := postToolValidate(HookCtx{}, triggerEvent(filepath.Join(dir, ".sdlc", "pr-template.md")))
+	out, err := postToolValidate(HookCtx{}, triggerEvent(filepath.Join(dir, paths.DataDir, "pr-template.md")))
 	mustBlock(t, out, err, "V1")
 }
 
@@ -482,8 +483,8 @@ func TestPostToolValidate_PRTemplate_ZeroFindings_Silent(t *testing.T) {
 	dir := realPath(t, t.TempDir())
 	chdir(t, dir)
 
-	mustMkdirAll(t, filepath.Join(dir, ".sdlc"))
-	mustWriteFile(t, filepath.Join(dir, ".sdlc", "pr-template.md"), validPRTemplateFixture)
+	mustMkdirAll(t, filepath.Join(dir, paths.DataDir))
+	mustWriteFile(t, filepath.Join(dir, paths.DataDir, "pr-template.md"), validPRTemplateFixture)
 
 	// Trigger via the legacy .claude/ alternation even though the canonical
 	// .sdlc/pr-template.md is what actually gets resolved and validated

@@ -72,9 +72,9 @@ This port's config reader (`internal/config`) has no schema-version concept. A `
 | `awaitRemoteReviewTimeout` | `integer` (≥30) | `600` | Maximum seconds `await-remote-review` polls for a reviewer response. |
 | `awaitRemoteReviewInterval` | `integer` (≥10) | `60` | Seconds between `await-remote-review` poll probes. |
 | `awaitRemoteReviewers` | `string[]` (minItems 1) | `["copilot"]` | Reviewer logins (case-insensitive) whose review satisfies the `await-remote-review` gate. |
-| `executeWaveTimeout` | `integer` (60–3600) | `1800` | Maximum seconds a single execute wave may run. Forwarded to `execute-plan`. The `3600` ceiling is `shipmeta.MaxWaveTimeoutSeconds`. |
-| `executeWaveInterval` | `integer` (≥10) | `60` | Seconds between execute wave liveness poll attempts. Forwarded to `execute-plan`. |
-| `execute.commitWaves` | `boolean` (nested under `execute`) | `false` | Forwarded to `execute-plan` as its per-wave commit behavior. A non-boolean value here does not error — `ship_prepare` records `commitWavesInvalidType: true` in its output instead; treat that as a warning to surface, not a hard failure. |
+| `executeWaveTimeout` | `integer` (60–3600) | `1800` | Maximum seconds a single execute wave may run. Forwarded to `execute`. The `3600` ceiling is `shipmeta.MaxWaveTimeoutSeconds`. |
+| `executeWaveInterval` | `integer` (≥10) | `60` | Seconds between execute wave liveness poll attempts. Forwarded to `execute`. |
+| `execute.commitWaves` | `boolean` (nested under `execute`) | `false` | Forwarded to `execute` as its per-wave commit behavior. A non-boolean value here does not error — `ship_prepare` records `commitWavesInvalidType: true` in its output instead; treat that as a warning to surface, not a hard failure. |
 
 There is no `workspace` field in this port. `ship_prepare` reads no such config key, and this pipeline never creates a git worktree — `execute` is always isolated with a feature branch (see `reference.md`'s "No `workspace` config field, no worktree mode"). If a project's `.sdlc/local.json` still carries `ship.workspace` from the source skill, it is silently ignored — do not treat its presence as an error, and do not attempt to honor a `"worktree"` value.
 

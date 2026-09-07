@@ -41,7 +41,6 @@ go.work.sum
 # .vscode/
 
 /tmp
-
 # >>> sdlc-utilities managed v3 (do not edit) — transient skill artifacts
 *-context-*.json
 *-manifest-*.json

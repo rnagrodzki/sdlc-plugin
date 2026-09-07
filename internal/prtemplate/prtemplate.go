@@ -30,6 +30,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
 // Template holds a resolved PR template's path and content.
@@ -55,7 +57,7 @@ type Template struct {
 //  1. <root>/.sdlc/pr-template.md   (canonical)
 //  2. <root>/.claude/pr-template.md  (deprecated)
 func Resolve(root string) (*Template, error) {
-	canonical := filepath.Join(root, ".sdlc", "pr-template.md")
+	canonical := filepath.Join(root, paths.DataDir, "pr-template.md")
 	legacy := filepath.Join(root, ".claude", "pr-template.md")
 
 	// Try canonical first. An empty file still counts as found

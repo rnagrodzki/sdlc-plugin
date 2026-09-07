@@ -205,7 +205,7 @@ func buildExecuteRecovery(data map[string]any, branch string) map[string]any {
 	}
 
 	return map[string]any{
-		"pipeline":       "execute-plan",
+		"pipeline":       "execute",
 		"branch":         stringOrFallback(data["branch"], branch),
 		"completedWaves": completedWaves,
 		"totalWaves":     totalWaves,

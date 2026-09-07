@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 )
 
@@ -64,7 +65,7 @@ func TestShipPrepare_StateInit(t *testing.T) {
 		t.Errorf("PrunedOrphans = %v, want empty (no pre-existing state files)", out.PrunedOrphans)
 	}
 
-	wantStateDir := filepath.Join(dir, ".sdlc", "execution")
+	wantStateDir := filepath.Join(dir, paths.DataDir, "execution")
 	if filepath.Dir(out.StateFile) != wantStateDir {
 		t.Errorf("StateFile dir = %q, want %q", filepath.Dir(out.StateFile), wantStateDir)
 	}
@@ -150,7 +151,7 @@ func TestShipPrepare_StepsFromConfig(t *testing.T) {
 	gitCommit(t, dir, "initial")
 	checkoutBranch(t, dir, "feat/config-steps")
 
-	writeFile(t, filepath.Join(dir, ".sdlc", "local.json"), `{"ship": {"steps": ["commit", "review"]}}`)
+	writeFile(t, filepath.Join(dir, paths.DataDir, "local.json"), `{"ship": {"steps": ["commit", "review"]}}`)
 
 	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true})
 	if err != nil {
@@ -183,7 +184,7 @@ func TestShipPrepare_RebaseConfigMalformedValuePassesThrough(t *testing.T) {
 	gitCommit(t, dir, "initial")
 	checkoutBranch(t, dir, "feat/config-rebase")
 
-	writeFile(t, filepath.Join(dir, ".sdlc", "local.json"), `{"ship": {"rebase": 42}}`)
+	writeFile(t, filepath.Join(dir, paths.DataDir, "local.json"), `{"ship": {"rebase": 42}}`)
 
 	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true})
 	if err != nil {
@@ -211,7 +212,7 @@ func TestShipPrepare_PrunedOrphans(t *testing.T) {
 	gitCommit(t, dir, "initial")
 	checkoutBranch(t, dir, "feat/orphans")
 
-	execDir := filepath.Join(dir, ".sdlc", "execution")
+	execDir := filepath.Join(dir, paths.DataDir, "execution")
 	orphan := filepath.Join(execDir, "ship-feat-orphans-20200101T000000Z.json")
 	writeFile(t, orphan, `{"sessionId": null}`)
 	// Decoy: a different (longer) slug that merely starts with the same
@@ -270,7 +271,7 @@ func TestShipPrepare_KD5Gate(t *testing.T) {
 	gitCommit(t, dir, "initial")
 	checkoutBranch(t, dir, "feat/kd5")
 
-	writeFile(t, filepath.Join(dir, ".sdlc", "config.json"), `{"schemaVersion": 1}`)
+	writeFile(t, filepath.Join(dir, paths.DataDir, "config.json"), `{"schemaVersion": 1}`)
 
 	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: false})
 	if err != nil {
@@ -283,7 +284,7 @@ func TestShipPrepare_KD5Gate(t *testing.T) {
 		t.Errorf("StateFile = %q, want empty (KD5 gate must not init state)", out.StateFile)
 	}
 
-	entries, _ := os.ReadDir(filepath.Join(dir, ".sdlc", "execution"))
+	entries, _ := os.ReadDir(filepath.Join(dir, paths.DataDir, "execution"))
 	if len(entries) != 0 {
 		t.Errorf("execution dir has %d entries, want 0 (no state file written)", len(entries))
 	}
@@ -361,7 +362,7 @@ func TestShipGC_DefaultTTL(t *testing.T) {
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
-	execDir := filepath.Join(dir, ".sdlc", "execution")
+	execDir := filepath.Join(dir, paths.DataDir, "execution")
 	stale := filepath.Join(execDir, "ship-dead-branch-20200101T000000Z.json")
 	writeFile(t, stale, `{"sessionId": null}`)
 	setStateFileMtime(t, stale, 30*24*time.Hour)
@@ -404,9 +405,9 @@ func TestShipGC_CLITTLDaysOverridesConfig(t *testing.T) {
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
-	writeFile(t, filepath.Join(dir, ".sdlc", "local.json"), `{"state": {"gc": {"ttlDays": 30}}}`)
+	writeFile(t, filepath.Join(dir, paths.DataDir, "local.json"), `{"state": {"gc": {"ttlDays": 30}}}`)
 
-	execDir := filepath.Join(dir, ".sdlc", "execution")
+	execDir := filepath.Join(dir, paths.DataDir, "execution")
 	f := filepath.Join(execDir, "ship-dead-branch-20200101T000000Z.json")
 	writeFile(t, f, `{"sessionId": null}`)
 	setStateFileMtime(t, f, 2*24*time.Hour) // 2 days old: stale under ttl=1, fresh under ttl=30
@@ -439,7 +440,7 @@ func TestShipGC_CLITTLDaysZeroMeansImmediate(t *testing.T) {
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
-	execDir := filepath.Join(dir, ".sdlc", "execution")
+	execDir := filepath.Join(dir, paths.DataDir, "execution")
 	deadBranch := filepath.Join(execDir, "ship-dead-branch-20200101T000000Z.json")
 	writeFile(t, deadBranch, `{"sessionId": null}`)
 	setStateFileMtime(t, deadBranch, 1*time.Second) // 1 second old: fresh under any real TTL, stale only under ttl=0
@@ -479,7 +480,7 @@ func TestShipGC_CLITTLDaysZeroLiveBranchCutoffMath(t *testing.T) {
 	// Stay on the default branch ("main"): it is live per `git branch --list`.
 	liveSlug := state.SlugifyBranch("main")
 
-	execDir := filepath.Join(dir, ".sdlc", "execution")
+	execDir := filepath.Join(dir, paths.DataDir, "execution")
 	newest := filepath.Join(execDir, fmt.Sprintf("ship-%s-20200101T000000Z.json", liveSlug))
 	writeFile(t, newest, `{"sessionId": null}`)
 	setStateFileMtime(t, newest, 1*time.Second)
@@ -513,9 +514,9 @@ func TestShipGC_ConfigTTLDaysUsedWhenNoCLI(t *testing.T) {
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
-	writeFile(t, filepath.Join(dir, ".sdlc", "local.json"), `{"state": {"gc": {"ttlDays": 1}}}`)
+	writeFile(t, filepath.Join(dir, paths.DataDir, "local.json"), `{"state": {"gc": {"ttlDays": 1}}}`)
 
-	execDir := filepath.Join(dir, ".sdlc", "execution")
+	execDir := filepath.Join(dir, paths.DataDir, "execution")
 	f := filepath.Join(execDir, "ship-dead-branch-20200101T000000Z.json")
 	writeFile(t, f, `{"sessionId": null}`)
 	setStateFileMtime(t, f, 2*24*time.Hour)
@@ -552,7 +553,7 @@ func TestShipGC_KnownBranchesFromGit(t *testing.T) {
 	}
 	// Still on "main" — feat/other-branch exists locally but is not checked out.
 
-	execDir := filepath.Join(dir, ".sdlc", "execution")
+	execDir := filepath.Join(dir, paths.DataDir, "execution")
 	liveSlug := state.SlugifyBranch("feat/other-branch")
 	liveFile := filepath.Join(execDir, fmt.Sprintf("ship-%s-20200101T000000Z.json", liveSlug))
 	writeFile(t, liveFile, `{"sessionId": null}`)
@@ -584,7 +585,7 @@ func TestShipGC_BucketsByPrefix(t *testing.T) {
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
-	execDir := filepath.Join(dir, ".sdlc", "execution")
+	execDir := filepath.Join(dir, paths.DataDir, "execution")
 	files := map[string]string{
 		"ship":    filepath.Join(execDir, "ship-gone-20200101T000000Z.json"),
 		"execute": filepath.Join(execDir, "execute-gone-20200101T000000Z.json"),
@@ -726,7 +727,7 @@ func TestShipGC_RespectsKD5Gate(t *testing.T) {
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
-	writeFile(t, filepath.Join(dir, ".sdlc", "config.json"), `{"schemaVersion": 1}`)
+	writeFile(t, filepath.Join(dir, paths.DataDir, "config.json"), `{"schemaVersion": 1}`)
 
 	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: false, Gc: true})
 	if err != nil {

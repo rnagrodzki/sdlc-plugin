@@ -13,6 +13,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/setupmeta"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
@@ -147,8 +148,8 @@ type SetupInitOut struct {
 
 // Managed-block markers for .sdlc/.gitignore.
 const (
-	sdlcGitignoreBegin = "# >>> sdlc-utilities managed (do not edit) — selective ignores"
-	sdlcGitignoreEnd   = "# <<< sdlc-utilities managed"
+	sdlcGitignoreBegin = "# >>> sdlc-v2 managed (do not edit) — selective ignores"
+	sdlcGitignoreEnd   = "# <<< sdlc-v2 managed"
 )
 
 // sdlcGitignorePatterns are the deny-all + allowlist patterns inside
@@ -163,10 +164,10 @@ var sdlcGitignorePatterns = []string{
 
 // Managed-block markers for root .gitignore (v3).
 const (
-	rootGitignoreBegin   = "# >>> sdlc-utilities managed v3 (do not edit) — transient skill artifacts"
-	rootGitignoreEnd     = "# <<< sdlc-utilities managed"
-	rootGitignoreBeginV2 = "# >>> sdlc-utilities managed v2 (do not edit) — transient skill artifacts and .sdlc/ runtime"
-	rootGitignoreBeginV1 = "# >>> sdlc-utilities managed (do not edit) — transient skill artifacts"
+	rootGitignoreBegin   = "# >>> sdlc-v2 managed v3 (do not edit) — transient skill artifacts"
+	rootGitignoreEnd     = "# <<< sdlc-v2 managed"
+	rootGitignoreBeginV2 = "# >>> sdlc-v2 managed v2 (do not edit) — transient skill artifacts and .sdlc/ runtime"
+	rootGitignoreBeginV1 = "# >>> sdlc-v2 managed (do not edit) — transient skill artifacts"
 )
 
 // rootGitignorePatterns are the transient-artifact glob families managed
@@ -311,12 +312,12 @@ func setupInit(root string, in SetupInitIn) (SetupInitOut, error) {
 	var changed []string
 	var errs []string
 
-	sdlcDir := filepath.Join(root, ".sdlc")
+	sdlcDir := filepath.Join(root, paths.DataDir)
 
 	// 1. Create .sdlc/ directory.
 	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
 		return SetupInitOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("create .sdlc directory: %s", err.Error()),
+			Msg:   fmt.Sprintf("create %s directory: %s", paths.DataDir, err.Error()),
 			Cause: err,
 		}
 	}
@@ -331,13 +332,13 @@ func setupInit(root string, in SetupInitIn) (SetupInitOut, error) {
 		nil,
 	)
 	if err != nil {
-		errs = append(errs, fmt.Sprintf(".sdlc/.gitignore: %s", err.Error()))
+		errs = append(errs, fmt.Sprintf("%s/.gitignore: %s", paths.DataDir, err.Error()))
 	} else {
 		switch action {
 		case "created":
-			created = append(created, ".sdlc/.gitignore")
+			created = append(created, paths.DataDir+"/.gitignore")
 		case "updated":
-			changed = append(changed, ".sdlc/.gitignore")
+			changed = append(changed, paths.DataDir+"/.gitignore")
 		}
 	}
 
@@ -382,14 +383,14 @@ func setupInit(root string, in SetupInitIn) (SetupInitOut, error) {
 		if wasCreated, err := ensureJSONFile(configPath); err != nil {
 			errs = append(errs, fmt.Sprintf("config.json: %s", err.Error()))
 		} else if wasCreated {
-			created = appendIfNew(created, ".sdlc/config.json")
+			created = appendIfNew(created, paths.DataDir+"/config.json")
 		}
 	}
 	if localNeeded || len(in.Sections) == 0 {
 		if wasCreated, err := ensureJSONFile(localPath); err != nil {
 			errs = append(errs, fmt.Sprintf("local.json: %s", err.Error()))
 		} else if wasCreated {
-			created = appendIfNew(created, ".sdlc/local.json")
+			created = appendIfNew(created, paths.DataDir+"/local.json")
 		}
 	}
 

@@ -1,6 +1,6 @@
 ---
 name: plan
-description: "Use when writing an implementation plan from requirements, a spec, a design doc, or a user description. ALWAYS use when plan mode is active — this is the designated plan-mode skill. Analyzes scope, maps file structure, decomposes into classified tasks with dependencies, and produces a plan ready for execute-plan. Triggers on: write plan, create plan, plan this, break this into tasks, implementation plan, plan mode."
+description: "Use when writing an implementation plan from requirements, a spec, a design doc, or a user description. ALWAYS use when plan mode is active — this is the designated plan-mode skill. Analyzes scope, maps file structure, decomposes into classified tasks with dependencies, and produces a plan ready for execute. Triggers on: write plan, create plan, plan this, break this into tasks, implementation plan, plan mode."
 user-invocable: true
 argument-hint: "[--spec] [--from-openspec <change-name>] [spec-file-path]"
 model: opus
@@ -8,7 +8,7 @@ model: opus
 
 # Plan (SDLC)
 
-Write an implementation plan from requirements, a spec, or a user description. Produces a plan in the format consumed by execute-plan — with per-task complexity/risk/dependency metadata embedded.
+Write an implementation plan from requirements, a spec, or a user description. Produces a plan in the format consumed by execute — with per-task complexity/risk/dependency metadata embedded.
 
 **Announce at start:** "I'm using plan (sdlc v{sdlc_version})." — extract the version from the `sdlc:` line in the session-start system-reminder. If no version is in context, omit the parenthetical.
 
@@ -149,7 +149,7 @@ Naming convention: `YYYY-MM-DD-<feature-name>.md`. Create the directory if neede
 **State-file lifecycle (R20 Lifecycle, fixes #334):** The plan state file follows three rules that callers do NOT need to implement directly — they are enforced inside `plan_prepare`/`plan_mark` (backed by the `internal/state` package) and `hooks/stop-plan-integrity.js`:
 - **Prune-on-write** — `plan_prepare` prunes pre-existing `plan-<branchSlug>-*.json` files for the current branch before writing the new state file, so at most one marker per branch exists between plan invocations. `plan_mark` does NOT prune (it would unlink its own target).
 - **Consume-then-delete** — the Stop hook reads `planIntegrity` markers, evaluates the gates, then unlinks the marker regardless of outcome (single-shot semantics). Subsequent Stop events on the same branch fall through to the transcript-fallback path — this is correct R21 behavior.
-- **GC orphan sweep** — `ship --gc` and `execute-plan --gc` sweep stale `plan-*` markers (TTL-expired or branch-deleted) alongside `ship-*` and `execute-*` files; the JSON output includes a `plan` bucket alongside `ship` and `execute`.
+- **GC orphan sweep** — `ship --gc` and `execute --gc` sweep stale `plan-*` markers (TTL-expired or branch-deleted) alongside `ship-*` and `execute-*` files; the JSON output includes a `plan` bucket alongside `ship` and `execute`.
 
 Call `plan_mark({ marker: "plan-file", path: <resolved-plan-path> })` — writes the `planIntegrity` marker consumed by the `stop-plan-integrity` Stop hook (issue #285).
 
@@ -280,7 +280,7 @@ After the `fromOpenspecDirect` enrichment block, determine which exploration pat
      ```
      1. Call execute_state({ action: "ledger_checkin", runId: "{runId}", workerId: "{workerId}" }) BEFORE starting exploration.
      2. Explore per the instructions above.
-     3. Write your findings to the file ".sdlc/execution/ledger/{runId}/{workerId}.findings.md" as the raw F-{dimension.name}-n text block above, or the literal text ZERO_FINDINGS. Do this BEFORE the next step.
+     3. Write your findings to the file ".sdlc-v2/execution/ledger/{runId}/{workerId}.findings.md" as the raw F-{dimension.name}-n text block above, or the literal text ZERO_FINDINGS. Do this BEFORE the next step.
      4. Call execute_state({ action: "ledger_checkout", runId: "{runId}", workerId: "{workerId}" }) LAST, even when your findings file says ZERO_FINDINGS.
      ```
 
@@ -292,7 +292,7 @@ After the `fromOpenspecDirect` enrichment block, determine which exploration pat
 
      **Stall handling (fail-partial-open, disclosed):** a `workerId` appearing in `stalledWorkers` is not yet failed — wait one more poll cycle. If it is **still** stalled on the next poll, stop waiting on it: proceed to CRITIQUE with the results collected so far, and explicitly name the skipped dimension(s) in `discovery-brief.md`'s `## Zero-Finding Dimensions` section with the note "skipped — worker stalled twice; no findings collected" — a disclosed degraded mode, not a silent drop.
 
-  5. **CRITIQUE.** Once every dispatched worker is `done` (or force-progressed past a stall above), read each worker's findings file at `.sdlc/execution/ledger/{runId}/{workerId}.findings.md`:
+  5. **CRITIQUE.** Once every dispatched worker is `done` (or force-progressed past a stall above), read each worker's findings file at `.sdlc-v2/execution/ledger/{runId}/{workerId}.findings.md`:
      - **Deduplicate** — same file:line or same URL; keep the most specific observation.
      - **Severity consolidation** — same issue at different severities; keep the highest.
      - **Zero-finding dimensions** — list honestly; never fabricate findings for these.
@@ -348,9 +348,9 @@ After the `fromOpenspecDirect` enrichment block, determine which exploration pat
 
   7. **Read the brief** (`{outDir}/discovery-brief.md`) into context. It is the source of truth for Step 2 task provenance.
 
-  8. **Brief validation:** grep the brief's content for the pattern `F-[A-Z0-9_-]+-[0-9]+`. If zero matches are found, treat discovery as if it had failed: append one line to `.sdlc/learnings/log.md`: `## <YYYY-MM-DD> — plan discovery returned brief without F-DIM-N findings; using fallback inline exploration`, delete the tempdir and ledger directory (`rm -rf "<outDir>"`, `rm -rf ".sdlc/execution/ledger/<runId>"`), then proceed via the **Error fallback** path below. Rationale: a brief with no findings cannot satisfy G15 (Brief citation coverage) and would force every task into "out-of-scope addition" — better to fall back cleanly.
+  8. **Brief validation:** grep the brief's content for the pattern `F-[A-Z0-9_-]+-[0-9]+`. If zero matches are found, treat discovery as if it had failed: append one line to `.sdlc-v2/learnings/log.md`: `## <YYYY-MM-DD> — plan discovery returned brief without F-DIM-N findings; using fallback inline exploration`, delete the tempdir and ledger directory (`rm -rf "<outDir>"`, `rm -rf ".sdlc-v2/execution/ledger/<runId>"`), then proceed via the **Error fallback** path below. Rationale: a brief with no findings cannot satisfy G15 (Brief citation coverage) and would force every task into "out-of-scope addition" — better to fall back cleanly.
 
-  9. **Cleanup.** On successful brief validation, `rm -rf "<outDir>"` and `rm -rf ".sdlc/execution/ledger/<runId>"` — the brief content is already loaded into context (step 7); nothing further reads the tempdir or the ledger directory.
+  9. **Cleanup.** On successful brief validation, `rm -rf "<outDir>"` and `rm -rf ".sdlc-v2/execution/ledger/<runId>"` — the brief content is already loaded into context (step 7); nothing further reads the tempdir or the ledger directory.
 
   **Brief consumption (when brief is present AND validation passed):**
   - Step 2 tasks MUST cite at least one `F-<DIM>-<n>` finding ID from the brief OR be explicitly marked "out-of-scope addition" with rationale (implements R27)
@@ -361,7 +361,7 @@ After the `fromOpenspecDirect` enrichment block, determine which exploration pat
   - Issue all Glob/Grep/Read calls for inline exploration in a SINGLE message (parallel dispatch). (implements R37, Fixes #418)
 
 - **Error fallback** (`explorePack.error` is non-null, or brief validation found zero `F-<DIM>-<n>` IDs):
-  - Append one line to `.sdlc/learnings/log.md`: `## <YYYY-MM-DD> — plan discovery skipped: <explorePack.error or "brief without F-DIM-N findings">`
+  - Append one line to `.sdlc-v2/learnings/log.md`: `## <YYYY-MM-DD> — plan discovery skipped: <explorePack.error or "brief without F-DIM-N findings">`
   - Use inline exploration below. Plan still produced. (implements R28)
   - Issue all Glob/Grep/Read calls for inline exploration in a SINGLE message (parallel dispatch). (implements R37, Fixes #418)
 
@@ -473,7 +473,7 @@ Plan tasks NOT derived from any OpenSpec task MUST omit the field. N:1 mapping (
 
 **Key decisions:** Note every decision where you chose between valid approaches. Focus on choices where a reasonable implementer might differ without the rationale. Skip obvious decisions.
 
-**Per-task metadata (required, consumed by execute-plan):** Read `./plan-format-reference.md` first and match its worked examples:
+**Per-task metadata (required, consumed by execute):** Read `./plan-format-reference.md` first and match its worked examples:
 
 ```markdown
 ### Task N: [Component Name]
@@ -562,13 +562,13 @@ For each `lanes[i]` entry (i = 0..4):
   - All lanes: `{PLAN_FILE_PATH}` (absolute path to plan file), `{PROJECT_ROOT}` (cwd)
   - Lanes 0–3 non-G17: `{REQUIREMENTS_SUMMARY}` (the numbered requirements list from Step 1 CONSUME — same content as `{REQUIREMENTS_CHECKLIST}` in Step 5; retained in memory from Step 1), `{ACTIVE_GUARDRAILS}` (from `guardrails[]` P7), `{OPENSPEC_TASKS}` (from `openspecContext.tasks` P13, null when not OpenSpec-sourced), `{BRIEF_FINDING_IDS}` (from `explorePack.manifestPath` context, null when no brief)
   - Lane 1 (content-coverage) additionally: `{FORMAT_REFERENCE_PATH}` — absolute path to plan-format-reference.md (sibling of lane-content-coverage-prompt.md in the same skill directory; resolve as `dirname(lanes[1].promptTemplatePath)/plan-format-reference.md`), `{PLAN_TEMPLATE_PATH}` — `activeTemplatePath` resolved in Step 0 (the absolute path to the active plan template — project override or shipped default)
-  - Lane 4 (G17/dimension-coverage): `{DIMENSIONS_DIR}` (`.sdlc/review-dimensions/`), `{COPILOT_DIR}` (`.github/instructions/`), `{GITHUB_HOSTING_DETECTED}` (`githubHosting.detected` from P14), `{LEARNINGS_LOG_PATH}` (`.sdlc/learnings/log.md`), `{PR_COMMIT_WINDOW}` (best-effort "last 14 days" if unknown)
+  - Lane 4 (G17/dimension-coverage): `{DIMENSIONS_DIR}` (`.sdlc-v2/review-dimensions/`), `{COPILOT_DIR}` (`.github/instructions/`), `{GITHUB_HOSTING_DETECTED}` (`githubHosting.detected` from P14), `{LEARNINGS_LOG_PATH}` (`.sdlc-v2/learnings/log.md`), `{PR_COMMIT_WINDOW}` (best-effort "last 14 days" if unknown)
 
 **Null `promptTemplatePath` handling:** When `lanes[i].promptTemplatePath` is null (prepare script reported it could not find the template), skip that lane's dispatch and immediately add a synthetic blocking issue:
 ```
 { laneStatus: "failed", gateIds: lanes[i].gateIds, issues: [{ gateId: lanes[i].gateIds[0], severity: "error", message: "Lane <name> skipped — promptTemplatePath null (template not found at prepare time)", blocking: true }], passes: [] }
 ```
-Exception: lane 4 (G17/dimension-coverage) — when `lanes[4].promptTemplatePath` is null, treat as empty findings (advisory per R31 dispatch-failure fallback) and continue. Log to `.sdlc/learnings/log.md`:
+Exception: lane 4 (G17/dimension-coverage) — when `lanes[4].promptTemplatePath` is null, treat as empty findings (advisory per R31 dispatch-failure fallback) and continue. Log to `.sdlc-v2/learnings/log.md`:
 ```
 ## YYYY-MM-DD — plan: G17 skipped — promptTemplatePath null (template not found at prepare time)
 ```
@@ -682,7 +682,7 @@ For each `lensReviewers[i]` entry (i = 0..2):
   - `{GUARDRAILS}` — one guardrail per line (`- [id] (severity): description`), or `"none configured"`
   - `{REQUIREMENTS_JSON}` — `JSON.stringify(openspecContext.requirements)` when present, or `"null"` (null-safe; lens prompts render `"null"` as `"none — inventory unavailable, use checklist"`)
 
-When `lensReviewers[i].promptTemplatePath` is null, skip that lens and log to `.sdlc/learnings/log.md`: `## YYYY-MM-DD — plan: lens "<name>" skipped — promptTemplatePath null (template not found at prepare time)`. Continue with remaining lenses.
+When `lensReviewers[i].promptTemplatePath` is null, skip that lens and log to `.sdlc-v2/learnings/log.md`: `## YYYY-MM-DD — plan: lens "<name>" skipped — promptTemplatePath null (template not found at prepare time)`. Continue with remaining lenses.
 
 **No `isolation: "worktree"` on any lens reviewer dispatch** (forbidden per issues #370/#372).
 
@@ -819,9 +819,9 @@ Where `<verdict line>` is the verbatim verdict label from the scorecard: *"All c
 
 > Plan written to `<path>`. On approval:
 >   ship    — run the full pipeline: execute → commit → review → version → PR (/ship)
->   execute — execute the plan only (/execute-plan)
+>   execute — execute the plan only (/execute)
 
-Then call ExitPlanMode. Do NOT invoke execute-plan or ship in this turn — they run after the user accepts in the next turn.
+Then call ExitPlanMode. Do NOT invoke execute or ship in this turn — they run after the user accepts in the next turn.
 
 **Normal mode:** Announce the plan path, then present the Workflow Continuation menu (see below). Prepend any advisory output from the wrapper above the menu's `ship` / `execute` / `done` lines.
 
@@ -841,7 +841,7 @@ Do NOT report the plan as "validated" on format-floor PASS alone. Format floor =
 
 - Write implementation code in the plan (code snippets for patterns are fine; full implementations are not)
 - Mandate TDD for every task — match verification to task type
-- Invoke execute-plan within the same turn as plan (execution happens in the next turn after user acceptance)
+- Invoke execute within the same turn as plan (execution happens in the next turn after user acceptance)
 - Create plans with fewer than 2 tasks (just do the work directly)
 - Skip the plan review loop (unless lightweight routing applies)
 - Use absolute file paths that only work on one machine
@@ -864,13 +864,13 @@ Do NOT report the plan as "validated" on format-floor PASS alone. Format floor =
 
 **Under-decomposition.** A task that creates 8 files or implements 3 independent behaviors will fail in execution. If a task touches > 5 files, split it.
 
-**Plan-execution format mismatch.** The plan MUST include Complexity, Risk, Depends on, and Verify fields per task — execute-plan consumes these for wave building. Missing metadata forces inference, which is slower and less accurate.
+**Plan-execution format mismatch.** The plan MUST include Complexity, Risk, Depends on, and Verify fields per task — execute consumes these for wave building. Missing metadata forces inference, which is slower and less accurate.
 
 **Plan file is the single source of truth.** All working state lives in the plan file. Do not create temporary files, scratchpads, or side documents. Exploration findings belong in the `## Research Findings` section (template-required, persists in the final plan). The `## Requirements` section is temporary scaffolding removed in Step 2 post-write cleanup.
 
 ## Learning Capture
 
-After writing the plan, append to `.sdlc/learnings/log.md`:
+After writing the plan, append to `.sdlc-v2/learnings/log.md`:
 
 - Requirements that needed significant clarification before decomposition
 - Scope decisions (what was included/excluded and why)
@@ -890,7 +890,7 @@ After writing the plan (normal mode only), present the user with available next 
 ```
 What would you like to do next?
   ship     — execute, commit, review, version, and PR (/ship)
-  execute  — execute the plan only (/execute-plan)
+  execute  — execute the plan only (/execute)
   done     — stop here
 
 Select:
@@ -903,4 +903,4 @@ On selection, invoke the chosen skill using the Skill tool. On "done", end witho
 - `./plan-template-default.md` — shipped default plan template (section list, discovery questions, verification patterns)
 - `./plan-reviewer-prompt.md` — plan review subagent template
 - `./plan-format-reference.md` — plan document format specification
-- [`/execute-plan`](../execute-plan/SKILL.md) — skill that executes the plans this skill produces
+- [`/execute`](../execute/SKILL.md) — skill that executes the plans this skill produces

@@ -1,6 +1,6 @@
 ---
 name: ship
-description: "Use this skill to run the full ship pipeline: execute a plan, commit, review, version, open a PR, and optionally verify CI and await an automated reviewer. Orchestrates execute-plan, commit, review, received-review, version, pr, and verify-pipeline as Agent-dispatched sub-skills, and runs a handful of steps (rebase, OpenSpec validate/archive, CI-poll, remote-review-poll, learnings commit) inline. Arguments: [--auto] [--steps <csv>] [--quick] [--quality full|balanced|minimal] [--bump patch|minor|major|<label>] [--draft] [--dry-run] [--resume] [--plan <path>] [--openspec-change <name>] [--gc] [--ttl-days <N>] [--init-config]. Triggers on: ship it, ship this, run the ship pipeline, full release pipeline, execute plan then release, ship."
+description: "Use this skill to run the full ship pipeline: execute a plan, commit, review, version, open a PR, and optionally verify CI and await an automated reviewer. Orchestrates execute, commit, review, received-review, version, pr, and verify-pipeline as Agent-dispatched sub-skills, and runs a handful of steps (rebase, OpenSpec validate/archive, CI-poll, remote-review-poll, learnings commit) inline. Arguments: [--auto] [--steps <csv>] [--quick] [--quality full|balanced|minimal] [--bump patch|minor|major|<label>] [--draft] [--dry-run] [--resume] [--plan <path>] [--openspec-change <name>] [--gc] [--ttl-days <N>] [--init-config]. Triggers on: ship it, ship this, run the ship pipeline, full release pipeline, execute plan then release, ship."
 user-invocable: true
 argument-hint: "[--auto] [--steps <csv>] [--quick] [--quality full|balanced|minimal] [--bump patch|minor|major] [--draft] [--dry-run] [--resume] [--plan <path>] [--gc] [--init-config]"
 model: sonnet
@@ -21,7 +21,7 @@ This is a Go/MCP port. Read this section before running the pipeline — several
 - **`ship_prepare` already initializes pipeline state on success — never call it twice.** `shipPrepare`'s own doc comment states plainly that state is initialized internally whenever validation produces zero errors; it is not a pure validate-only call. A second call on an existing run silently re-seeds a fresh 7-step scaffold, discarding all prior progress. **Never call `ship_prepare` on `--resume`** — read existing state directly with `ship_state({action:"read"})` instead (see Step 1).
 - **`--dry-run` is not side-effect-free in this port.** `ShipPrepareIn.DryRun` is recorded into the output's `Flags.dryRun` and nothing else — a valid (zero-error) dry-run call still creates a real state file exactly like a normal run. Step 1's dry-run handling below force-deletes that throwaway state immediately after rendering the table (`ship_state({action:"cleanup-pipeline", detail:{force:true}})`). This is a disclosed gap in the tool contract, not a design choice.
 - **`ShipPrepareOut.Errors`/`.Warnings` are plain strings**, not `{id, message}` objects. Print each string verbatim; never invent an `id` field.
-- **review has no `--committed`/`--staged`/`--working`/`--worktree` flags.** Dispatch it with no arguments (or `--base <branch>` when relevant) — scope comes from `.sdlc/config.json`'s `review.scope` (default `all`), per `review/SKILL.md`'s own Port Notes. Do not pass `--committed`.
+- **review has no `--committed`/`--staged`/`--working`/`--worktree` flags.** Dispatch it with no arguments (or `--base <branch>` when relevant) — scope comes from `.sdlc-v2/config.json`'s `review.scope` (default `all`), per `review/SKILL.md`'s own Port Notes. Do not pass `--committed`.
 - **received-review is dispatched at `model: opus`**, not source's `sonnet` — matching that skill's own already-ported frontmatter.
 - **Version and tag creation are split; tag creation and push are entirely manual.** `version_apply` bumps the version file and changelog only. No tool in this port creates or pushes a git tag (`internal/gitx` has no tag-mutation function). After the release commit lands, this pipeline must pause and ask the user to create and push the tag by hand before it can call `ship_verify_side_effect`. **This is a deliberate, documented exception to the general rule against `AskUserQuestion` in `--auto`/`automation.mode: unattended` mode** — no tool in this port can complete the version step's tag side effect unattended, in any automation mode. See "After version" in Step 5.
 - **No tool pushes a branch to its remote, at any point, except implicitly.** There is no push-capable MCP tool anywhere in this codebase. The only push that happens automatically is `gh pr create`'s own implicit first push of the branch when `pr_apply` creates the PR. Any commit landing **after** the PR already exists (the verify-pipeline auto-fix commit, `learnings-commit`) is **not** pushed by any tool — `commit_apply` only runs `git add -A` + `git commit`, never `git push`. The pipeline must pause and ask the user to push before continuing to poll or before ending the run, for the same reason as the tag gap above (no executor tool exists to do it). See "verify-pipeline" and "learnings-commit" in Step 5.
@@ -30,7 +30,7 @@ This is a Go/MCP port. Read this section before running the pipeline — several
 - **Inline steps' automation mode has no per-step override in this port.** `ship_state({action:"next"})` resolves `automation.steps[...]` overrides only for the seven *scaffolded* steps (see Step 5's step list) — it cannot see the five inline step names at all. An `automation.steps` entry configured for an inline step name (e.g. `config-format.md`'s own example, `"verify-pipeline": "auto"`) has **no effect** in this port. Inline steps fall back to the pipeline-wide `flags.auto` boolean only.
 - **`ship_prepare` has no `context`/`contextAdvisory` object.** All context this pipeline needs beyond `ship_prepare`'s own output (branch state, `gh` auth, PR existence) comes from direct `Bash`/`gh` calls in this skill's own prose, not from a precomputed advisory payload.
 
-Companion files, loaded on demand (never preemptively): [`config-format.md`](config-format.md) (the `.sdlc/local.json` `ship`/`automation` sections), [`entry-modes.md`](entry-modes.md) (`--init-config`, `--gc`, `--dry-run` handlers), [`reference.md`](reference.md) (error recovery, DO NOT, Gotchas, Learning Capture), [`state-format.md`](state-format.md) (the `ship_state` on-disk schema and its scaffolding gap).
+Companion files, loaded on demand (never preemptively): [`config-format.md`](config-format.md) (the `.sdlc-v2/local.json` `ship`/`automation` sections), [`entry-modes.md`](entry-modes.md) (`--init-config`, `--gc`, `--dry-run` handlers), [`reference.md`](reference.md) (error recovery, DO NOT, Gotchas, Learning Capture), [`state-format.md`](state-format.md) (the `ship_state` on-disk schema and its scaffolding gap).
 
 ---
 
@@ -112,7 +112,7 @@ Otherwise, treat `flags`/`sources`/`stateFile` as the effective prepare output a
 
 ## Step 2 (PLAN): Pipeline composition
 
-Compose the pipeline table from `flags.steps` (resolved by `ship_prepare` per `config-format.md`'s Merge Precedence: explicit `steps` > `quick` > `.sdlc/local.json ship.steps[]` > built-in defaults) plus the two conditional sub-steps (`received-review`, `commit-fixes`) and the terminal `cleanup` action, none of which are members of `flags.steps` themselves.
+Compose the pipeline table from `flags.steps` (resolved by `ship_prepare` per `config-format.md`'s Merge Precedence: explicit `steps` > `quick` > `.sdlc-v2/local.json ship.steps[]` > built-in defaults) plus the two conditional sub-steps (`received-review`, `commit-fixes`) and the terminal `cleanup` action, none of which are members of `flags.steps` themselves.
 
 Fixed execution order (matches `config-format.md`'s own canonical ordering):
 
@@ -122,7 +122,7 @@ For every name present in `flags.steps`, mark it "will run"; for every canonical
 
 | Step | Dispatch | Model | Args (forwarded) | Pauses? |
 |---|---|---|---|---|
-| execute | Agent → execute-plan | sonnet | `--quality`, `--rebase`, `--wave-timeout`, `--wave-interval`, `<plan-file-path>` — never `--branch`, never ship's own `--auto` (different meaning there) | Only if plan-mode-blocked |
+| execute | Agent → execute | sonnet | `--quality`, `--rebase`, `--wave-timeout`, `--wave-interval`, `<plan-file-path>` — never `--branch`, never ship's own `--auto` (different meaning there) | Only if plan-mode-blocked |
 | commit | Agent → commit | haiku | `--auto` (ship's `flags.auto`) | no |
 | review | Agent → review | sonnet | none (or `--base <branch>`) — never `--committed` | no |
 | received-review | Agent → received-review | **opus** | `[--pr <N>] [--auto]` | YES, unless `flags.auto` |
@@ -132,8 +132,8 @@ For every name present in `flags.steps`, mark it "will run"; for every canonical
 | verify-openspec | inline `openspec` CLI (Bash) | — | `--strict` | YES on validation failure |
 | archive-openspec | inline Bash/grep/sed + `openspec` CLI | — | — | YES consent gate, unless `flags.auto` |
 | pr | Agent → pr | sonnet | `[--draft] [--base <branch>]` | no |
-| verify-pipeline | inline poll (`verify_pipeline_await`) + conditional Agent → verify-pipeline | sonnet | `--pr <N> --auto` (dispatch only) | YES manual-push pause after any auto-fix commit |
-| await-remote-review | inline poll (`await_remote_review`) + conditional Agent → received-review | opus | `--pr <N> [--auto]` (dispatch only) | YES, unless `flags.auto`, on `actionable` verdict |
+| verify-pipeline | inline poll (`poll_await({target: "pipeline"})`) + conditional Agent → verify-pipeline | sonnet | `--pr <N> --auto` (dispatch only) | YES manual-push pause after any auto-fix commit |
+| await-remote-review | inline poll (`poll_await({target: "remote_review"})`) + conditional Agent → received-review | opus | `--pr <N> [--auto]` (dispatch only) | YES, unless `flags.auto`, on `actionable` verdict |
 | learnings-commit | inline `commit_apply` call | — | — | YES manual-push pause if a commit landed |
 | cleanup | `ship_state({action:"cleanup-pipeline"})` | — | — | YES on contract violation |
 
@@ -193,9 +193,9 @@ Already performed in Step 1d, before `ship_prepare` was called. Do not repeat it
 ship_state({action:"begin-step", step:"execute"}) → { todos }
 ```
 
-`TodoWrite(todos)`. Dispatch execute-plan per the Step 2 table, forwarding only `--quality`, `--rebase`, `--wave-timeout`, `--wave-interval`, and the plan file path — never `--branch` (the branch was already set up in Step 1d) and never ship's own `--auto` (execute-plan's `--auto` flag has a different meaning and must not be conflated with the pipeline-wide flag).
+`TodoWrite(todos)`. Dispatch execute per the Step 2 table, forwarding only `--quality`, `--rebase`, `--wave-timeout`, `--wave-interval`, and the plan file path — never `--branch` (the branch was already set up in Step 1d) and never ship's own `--auto` (execute's `--auto` flag has a different meaning and must not be conflated with the pipeline-wide flag).
 
-After execute-plan's structured result comes back, run `execute_state({action:"verify-completeness"})` (the Go-native replacement for source's `execute.js verify-completeness`, exit 65). On `{ok:true, ...}`, continue. On a `DataError` reporting missing IDs, stop and surface it — the invariant that every planned task landed somewhere in a wave was violated.
+After execute's structured result comes back, run `execute_state({action:"verify-completeness"})` (the Go-native replacement for source's `execute.js verify-completeness`, exit 65). On `{ok:true, ...}`, continue. On a `DataError` reporting missing IDs, stop and surface it — the invariant that every planned task landed somewhere in a wave was violated.
 
 ```
 ship_state({action:"complete-step", step:"execute", detail:{outcome:"success", result:"<2-3 line summary>"}}) → { todos }
@@ -205,10 +205,10 @@ ship_state({action:"complete-step", step:"execute", detail:{outcome:"success", r
 
 ### Between execute and commit — staging
 
-execute-plan creates and modifies files but does not stage them:
+execute creates and modifies files but does not stage them:
 
 ```bash
-git add -A -- ':!.sdlc/'
+git add -A -- ':!.sdlc-v2/'
 ```
 
 Missing this step produces an empty commit.
@@ -409,7 +409,7 @@ Extract and remember the PR number from the returned URL — every inline step f
 Only runs if `verify-pipeline` is in `flags.steps`.
 
 ```
-verify_pipeline_await({pr: PR_NUMBER}) → Envelope
+poll_await({target: "pipeline", pr: PR_NUMBER}) → Envelope
 ```
 
 Loop:
@@ -420,7 +420,7 @@ Loop:
   - `"skipped"` (`reason:"exhausted"`) or `"timeout"` — record `ship_state({action:"decide", step:"verify-pipeline", detail:{text:"<verdict>: <detail>"}})` and proceed to `await-remote-review`.
   - `"green"` — record the decision and proceed.
   - `"failed"` — dispatch verify-pipeline (model sonnet) with `--pr PR_NUMBER --logs "<ext.checks_raw>" --auto` (forwarding the raw check-name/state text; there is no full CI log fetch in this port — see `verify-pipeline/SKILL.md`'s own Gotchas on `checks_raw` coarseness). Read its single JSON verdict line:
-    - `fix-applied` — dispatch commit `--auto` to commit the fix. **Manual-push pause**: since no tool in this port pushes, use `AskUserQuestion` to tell the user to `git push` the fix commit now, then re-poll with `verify_pipeline_await({pr: PR_NUMBER})` (fresh call, no `state_file` — a new CI run needs a new poll window). Repeat up to `flags.verifyPipelineMaxIterations` times; on exhaustion, stop and report.
+    - `fix-applied` — dispatch commit `--auto` to commit the fix. **Manual-push pause**: since no tool in this port pushes, use `AskUserQuestion` to tell the user to `git push` the fix commit now, then re-poll with `poll_await({target: "pipeline", pr: PR_NUMBER})` (fresh call, no `state_file` — a new CI run needs a new poll window). Repeat up to `flags.verifyPipelineMaxIterations` times; on exhaustion, stop and report.
     - `proposal` — show the proposal, stop the auto-fix loop, and treat this like a manual-intervention pause.
     - `abort` — record the reason as a skip-with-warning and proceed to `await-remote-review`.
 
@@ -431,7 +431,7 @@ If `verify-pipeline` is not in `flags.steps`, skip this section entirely (record
 Only runs if `await-remote-review` is in `flags.steps`.
 
 ```
-await_remote_review({pr: PR_NUMBER}) → Envelope
+poll_await({target: "remote_review", pr: PR_NUMBER}) → Envelope
 ```
 
 Same `pending`/`error`/`done` loop shape as above (defaults: 600s timeout, 60s interval, reviewers `["copilot"]`). On `status:"done"`, branch on `ext.verdict`:
@@ -444,7 +444,7 @@ If `await-remote-review` is not in `flags.steps`, skip this section entirely.
 
 ### learnings-commit (inline)
 
-Runs the ship-level Learning Capture (see [`reference.md`](reference.md)'s Learning Capture section for the exact prompts/format), appending to `.sdlc/learnings/log.md`, then commits it directly — deliberately not via a commit Agent dispatch, since this is a single-file, non-narrative append with a fixed message:
+Runs the ship-level Learning Capture (see [`reference.md`](reference.md)'s Learning Capture section for the exact prompts/format), appending to `.sdlc-v2/learnings/log.md`, then commits it directly — deliberately not via a commit Agent dispatch, since this is a single-file, non-narrative append with a fixed message:
 
 ```
 commit_apply({message: "chore(ship): capture pipeline learnings", skipConfigCheck: false, sessionID: ""}) → { sha }
@@ -453,7 +453,7 @@ commit_apply({message: "chore(ship): capture pipeline learnings", skipConfigChec
 - **On a `DataError` reading "nothing to commit after staging"** (i.e. the log file had no new content, or the working tree was already clean): report "learnings-commit: no-op (no new learnings)" and continue — this is the expected no-op path, not a failure. Record it: `ship_state({action:"decide", step:"learnings-commit", detail:{text:"no-op: nothing to commit"}})`. Do not treat it as an error.
 - **On success:** a real commit landed after the PR was created. Record it: `ship_state({action:"decide", step:"learnings-commit", detail:{text:"committed <sha>"}})`. No tool pushes it — use `AskUserQuestion` to tell the user to run `git push` before ending the session, mirroring the same manual-push gap disclosed above.
 
-If `learnings-commit` is not in `flags.steps`: `ship_state({action:"decide", step:"learnings-commit", detail:{text:"skipped: not in configured steps"}})` and do nothing (`execute-plan`'s own Learning Capture, recorded in the feature commit, still applies regardless of this step's status).
+If `learnings-commit` is not in `flags.steps`: `ship_state({action:"decide", step:"learnings-commit", detail:{text:"skipped: not in configured steps"}})` and do nothing (`execute`'s own Learning Capture, recorded in the feature commit, still applies regardless of this step's status).
 
 ### Terminal cleanup
 
@@ -506,14 +506,14 @@ See [`reference.md`](reference.md)'s Error Recovery table for the full failure/r
 
 ## Gotchas
 
-See [`reference.md`](reference.md)'s Gotchas section for the full list (staging gap after execute, text-based verdict detection, double-commit intentionality, config-optionality, step-set validation, `.sdlc/` gitignore requirement, binding pipeline plan, tool-managed state files, no-worktree isolation, rebase-before-version ordering, auto-mode-does-not-auto-resume, context-isolated sub-skill dispatch, `sources` provenance, no-workspace-config). Two additions specific to this file, not in that document:
+See [`reference.md`](reference.md)'s Gotchas section for the full list (staging gap after execute, text-based verdict detection, double-commit intentionality, config-optionality, step-set validation, `.sdlc-v2/` gitignore requirement, binding pipeline plan, tool-managed state files, no-worktree isolation, rebase-before-version ordering, auto-mode-does-not-auto-resume, context-isolated sub-skill dispatch, `sources` provenance, no-workspace-config). Two additions specific to this file, not in that document:
 
 - **`ship_prepare`'s `DryRun` has no real effect on its own** — a valid dry-run call creates real state; this skill's own dry-run handling (Step 1e) force-cleans it up immediately after rendering the table.
 - **Inline steps ignore per-step `automation.steps[...]` overrides** — only the pipeline-wide `flags.auto` boolean reaches `verify-openspec`, `archive-openspec`, `verify-pipeline`, `await-remote-review`, and `learnings-commit`.
 
 ## Learning Capture
 
-See [`reference.md`](reference.md)'s Learning Capture section for the exact prompts and `.sdlc/learnings/log.md` format used by the `learnings-commit` step above.
+See [`reference.md`](reference.md)'s Learning Capture section for the exact prompts and `.sdlc-v2/learnings/log.md` format used by the `learnings-commit` step above.
 
 ## What's Next
 
@@ -521,7 +521,7 @@ After a clean run: the PR is open, CI is green (if `verify-pipeline` ran), and a
 
 ## See Also
 
-- [`/execute-plan`](../execute-plan/SKILL.md) — dispatched by the `execute` step
+- [`/execute`](../execute/SKILL.md) — dispatched by the `execute` step
 - [`/commit`](../commit/SKILL.md) — dispatched by `commit`, `commit-fixes`, and the verify-pipeline auto-fix path
 - [`/review`](../review/SKILL.md) — dispatched by the `review` step
 - [`/received-review`](../received-review/SKILL.md) — dispatched by `received-review` and `await-remote-review`'s actionable path

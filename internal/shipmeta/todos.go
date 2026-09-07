@@ -19,7 +19,7 @@ type Todo struct {
 // SubstepMap is the static substep list for each ship pipeline step —
 // single source of truth; do not duplicate elsewhere (mirrors SUBSTEP_MAP in
 // scripts/lib/ship-todos.js). The "execute" entry is overridden by
-// execute-plan task mirroring at the call site in the source implementation
+// execute task mirroring at the call site in the source implementation
 // (ship-todos.js parseSubsteps) when plan tasks are available.
 var SubstepMap = map[string][]string{
 	"execute":             {"execute plan"},

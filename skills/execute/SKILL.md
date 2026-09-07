@@ -1,5 +1,5 @@
 ---
-name: execute-plan
+name: execute
 description: "Use when the user wants to execute an implementation plan with adaptive intelligence — classifies tasks by complexity and risk, builds optimized dependency waves, critiques wave structure before dispatch, verifies results after each wave, and recovers from failures without stopping. Self-contained: no external sub-skills required. Triggers on: execute plan, run plan, implement plan, autonomous execution, execute this plan. Requires an explicit plan file — a positional path or `--plan <path>` — at invocation (or a resumable state file, see `--resume`); it is never inferred from conversation context, even when a plan was just discussed or accepted in this session (R41)."
 user-invocable: true
 argument-hint: "<plan-file-path> [--quality full|balanced|minimal] [--resume] [--rebase auto|skip|prompt] [--auto] [--branch <name>] [--commit-waves] [--plan <path>] [--wave-timeout <seconds>] [--wave-interval <seconds>]"
@@ -10,13 +10,13 @@ model: sonnet
 
 Orchestrate plan execution with adaptive task classification, wave-based parallel dispatch, PCIDCI critique loops, and automatic error recovery. No external sub-skills required.
 
-**Announce at start:** "I'm using execute-plan (sdlc v{sdlc_version})." — extract the version from the `sdlc:` line in the session-start system-reminder. If no version is in context, omit the parenthetical.
+**Announce at start:** "I'm using execute (sdlc v{sdlc_version})." — extract the version from the `sdlc:` line in the session-start system-reminder. If no version is in context, omit the parenthetical.
 
 ## Plan Mode Check
 
 If the system context contains "Plan mode is active":
 
-1. Announce: "This skill requires write operations (file edits, shell commands). Exit plan mode first, then re-invoke `/execute-plan`."
+1. Announce: "This skill requires write operations (file edits, shell commands). Exit plan mode first, then re-invoke `/execute`."
 2. Stop. Do not proceed to subsequent steps.
 
 ---
@@ -29,12 +29,12 @@ If the system context contains "Plan mode is active":
 
 **Plan-argument gate (implements R41, #505):** If neither a positional plan-file-path argument nor `--plan <path>` was supplied, this gate applies — UNLESS a resume is in effect (`--resume` was passed on the CLI, or `implicitResume` was set — see "Post-compact recovery", R36, below). When a resume is in effect, the plan path is sourced from the persisted state file's `planPath` field (R40) instead of a fresh CLI argument. If no state file is found for the current branch, or the state file found has a null/absent `planPath` (a legacy file predating R40), the gate applies exactly as if no resume were in effect — resume never falls back to conversation context either.
 
-**Gate-time existence check (resolves the resume carve-out's dependency on Step 1):** The check above does not require Step 1 (LOAD) to have already run. At gate-evaluation time (still Step 0), when a resume is in effect, perform Resume detection steps 1–3 (below, under Step 1) right now — `git worktree list --porcelain` to resolve `<main-worktree>`, glob `<main-worktree>/.sdlc/execution/execute-<branch>-*.json` for the most recent state file, and `execute_state({action:"read"})` to load `planPath` — to determine gate applicability. This is the exact same idempotent read Resume detection performs; running it once here, before Step 1 begins, and then again when Step 1's Resume detection section is reached, is safe (the state file is not mutated by a plain `read`) and avoids introducing a separate state-passing contract between Step 0 and Step 1.
+**Gate-time existence check (resolves the resume carve-out's dependency on Step 1):** The check above does not require Step 1 (LOAD) to have already run. At gate-evaluation time (still Step 0), when a resume is in effect, perform Resume detection steps 1–3 (below, under Step 1) right now — `git worktree list --porcelain` to resolve `<main-worktree>`, glob `<main-worktree>/.sdlc-v2/execution/execute-<branch>-*.json` for the most recent state file, and `execute_state({action:"read"})` to load `planPath` — to determine gate applicability. This is the exact same idempotent read Resume detection performs; running it once here, before Step 1 begins, and then again when Step 1's Resume detection section is reached, is safe (the state file is not mutated by a plain `read`) and avoids introducing a separate state-passing contract between Step 0 and Step 1.
 
 If the gate applies:
 
-> execute-plan cannot run without an explicit plan document.
-> Fix: re-run with a positional plan path (`/execute-plan <path-to-plan.md>`) or `--plan <path-to-plan.md>`. If resuming, add `--plan <path-to-plan.md> --resume` — the persisted state file has no usable plan reference.
+> execute cannot run without an explicit plan document.
+> Fix: re-run with a positional plan path (`/execute <path-to-plan.md>`) or `--plan <path-to-plan.md>`. If resuming, add `--plan <path-to-plan.md> --resume` — the persisted state file has no usable plan reference.
 > Why: plan-file resolution is explicit-only (R41, #505). This skill MUST NOT guess which plan to execute by scanning conversation context or by prompting interactively for a path — a silently-assumed or misremembered plan could execute the wrong work against this repository.
 
 STOP here. Do NOT proceed to Step 1 (LOAD). Do NOT use AskUserQuestion to request a path interactively. Do NOT fall back to plan content that may already be present in conversation context, even if the user discussed or pasted a plan earlier in this session — an explicit `--plan`/positional path (or a resume-sourced `planPath`, per the exemption above) is required regardless of what is already in context.
@@ -67,16 +67,16 @@ Blocking issues → stop and ask. Warnings only → show them and proceed.
 
 **Guardrail loading:** Load execution guardrails from project config:
 
-Resolve `<main-worktree>` (see Resume detection below — `git worktree list --porcelain`, first `worktree <path>` line) and Read `<main-worktree>/.sdlc/config.json`. Extract the `execute.guardrails` array. If the file does not exist, or the `execute` key or its `guardrails` field is absent, treat the array as empty — this is a plain committed JSON file, not a section requiring a tool call.
+Resolve `<main-worktree>` (see Resume detection below — `git worktree list --porcelain`, first `worktree <path>` line) and Read `<main-worktree>/.sdlc-v2/config.json`. Extract the `execute.guardrails` array. If the file does not exist, or the `execute` key or its `guardrails` field is absent, treat the array as empty — this is a plain committed JSON file, not a section requiring a tool call.
 
 Store the array as `activeGuardrails` and print: "Loaded N execution guardrails." If empty or the config file is absent: "No execution guardrails configured." This is backward compatible — no guardrails means no change in behavior.
 
-Note: this reads `execute.guardrails` (runtime enforcement), not `plan.guardrails` (planning-time critique). They are independent sets configured separately in `.sdlc/config.json`.
+Note: this reads `execute.guardrails` (runtime enforcement), not `plan.guardrails` (planning-time critique). They are independent sets configured separately in `.sdlc-v2/config.json`.
 
-**Resume detection:** Before reading the plan content, resolve the main working tree path: run `git worktree list --porcelain` and extract the path from the first `worktree <path>` line. All state file operations use `<main-worktree>/.sdlc/execution/`. Then check if `--resume` was passed or if a state file exists at `<main-worktree>/.sdlc/execution/execute-<branch>-*.json` (where `<branch>` is the current branch name with `/` replaced by `-`).
+**Resume detection:** Before reading the plan content, resolve the main working tree path: run `git worktree list --porcelain` and extract the path from the first `worktree <path>` line. All state file operations use `<main-worktree>/.sdlc-v2/execution/`. Then check if `--resume` was passed or if a state file exists at `<main-worktree>/.sdlc-v2/execution/execute-<branch>-*.json` (where `<branch>` is the current branch name with `/` replaced by `-`).
 
 - If `--resume` was passed (or `implicitResume` was set, R36):
-  1. Find the most recent state file for the current branch in `<main-worktree>/.sdlc/execution/`. If none found, warn: "No state file found for branch `<branch>`. Starting fresh." and proceed to plan loading below — using `EXPLICIT_PLAN_FILE` if set; otherwise the plan-argument gate's halt applies (there is no state file to source a plan path from, and conversation context is never a fallback).
+  1. Find the most recent state file for the current branch in `<main-worktree>/.sdlc-v2/execution/`. If none found, warn: "No state file found for branch `<branch>`. Starting fresh." and proceed to plan loading below — using `EXPLICIT_PLAN_FILE` if set; otherwise the plan-argument gate's halt applies (there is no state file to source a plan path from, and conversation context is never a fallback).
   2. Read `./state-format.md` for the schema reference.
   3. Read the state file via `execute_state({action:"read"})` (the `execute_state` MCP tool — see the State persistence section below). Load `planPath`. If `planPath` is null or absent (a legacy state file predating R40, or no plan file was ever recorded), do NOT prompt — the plan-argument gate's halt applies: print the same what/fix/why remediation text and stop before reading any plan content. Otherwise set `PLAN_FILE` to `planPath` and read the plan file from it.
   4. If `planHash` is null or absent (a legacy state file predating R40's hash recording), skip the comparison — print "hash not recorded — comparison skipped" and continue to step 5. Otherwise compute `shasum -a 256 "$PLAN_FILE" | cut -d' ' -f1` (the identical command used at state-init; see "State persistence" below) and compare against `planHash`:
@@ -128,7 +128,7 @@ In addition to the explicit `--resume` flag, Step 0 MUST scan the SessionStart `
 2. **`Active execution (post-compact):` present AND `Active pipeline: ship` ALSO present**:
    - Do NOT self-resume. Print a single line:
      > ship owns recovery for this session; deferring.
-   - Stop. The discriminator preserves ship's ownership of pipeline-level recovery — ship's own implicit-resume logic re-dispatches execute-plan with `--resume` as the next pipeline step (R-implicit-resume). Running both recoveries concurrently would double-dispatch the same wave.
+   - Stop. The discriminator preserves ship's ownership of pipeline-level recovery — ship's own implicit-resume logic re-dispatches execute with `--resume` as the next pipeline step (R-implicit-resume). Running both recoveries concurrently would double-dispatch the same wave.
 
 3. **Neither signal present AND no `--resume` on CLI**: Step 0 routing is unchanged from prior behavior.
 
@@ -144,7 +144,7 @@ The hook is layer-agnostic (it surfaces facts); this discriminator is the consum
 |---|---|---|
 | `--commit-waves` | Commit each completed wave as `wip(execute): wave N — <titles>` after G9 + G11 pass. Skipped for small-plan path (R5). | false |
 
-**Parse `--wave-timeout <seconds>` / `--wave-interval <seconds>` (R-WAVE-DEADLINE, #506):** If passed, store as `WAVE_TIMEOUT` / `WAVE_INTERVAL` (integers). These are **internal flags forwarded by ship**, which resolves `ship.executeWaveTimeout` / `ship.executeWaveInterval` from `.sdlc/local.json` and forwards them on the command line (same wiring pattern as `--branch`, R30) — this skill never reads `.sdlc/local.json` itself. Standalone invocations without either flag fall back to the built-in defaults (`internal/shipmeta.ShipBuiltInDefaults` — `executeWaveTimeout` 1800, `executeWaveInterval` 60). Both values are recorded at wave dispatch (Step 5b below) as `waveTimeout` / `waveInterval` for the main session's own wave-level deadline enforcement and polling cadence over this wave's directly-dispatched per-task/batch Agents (no wave-runner middle agent — see Step 5b/5c).
+**Parse `--wave-timeout <seconds>` / `--wave-interval <seconds>` (R-WAVE-DEADLINE, #506):** If passed, store as `WAVE_TIMEOUT` / `WAVE_INTERVAL` (integers). These are **internal flags forwarded by ship**, which resolves `ship.executeWaveTimeout` / `ship.executeWaveInterval` from `.sdlc-v2/local.json` and forwards them on the command line (same wiring pattern as `--branch`, R30) — this skill never reads `.sdlc-v2/local.json` itself. Standalone invocations without either flag fall back to the built-in defaults (`internal/shipmeta.ShipBuiltInDefaults` — `executeWaveTimeout` 1800, `executeWaveInterval` 60). Both values are recorded at wave dispatch (Step 5b below) as `waveTimeout` / `waveInterval` for the main session's own wave-level deadline enforcement and polling cadence over this wave's directly-dispatched per-task/batch Agents (no wave-runner middle agent — see Step 5b/5c).
 
 | Flag | Description | Default |
 |---|---|---|
@@ -153,7 +153,7 @@ The hook is layer-agnostic (it surfaces facts); this discriminator is the consum
 
 **Parse `--branch`:** If `--branch <name>` was passed as an argument, capture it as `EXECUTE_NEW_BRANCH` immediately. This is an **INTERNAL flag set by ship in pipeline mode**. When present, skip the entire Workspace isolation check below — the caller's branch/cwd are trusted as authoritative. Users do not pass this directly. Implements R30 (fixes #378, #379).
 
-When ship invokes execute-plan inside the ship pipeline, `--branch` is **not** passed. ship establishes the feature branch by running `git checkout -b <name>` before dispatching execute, so execute's own workspace derivation encounters a non-default branch and yields `continue` (run in place) — Step 1's isolation logic does not fire. The `--branch` flag is reserved for explicit caller override only. Standalone `/execute-plan` invocations have no `--branch` flag and always use the standalone derivation path below. (Implements R30, spec updated per auto-detection model.)
+When ship invokes execute inside the ship pipeline, `--branch` is **not** passed. ship establishes the feature branch by running `git checkout -b <name>` before dispatching execute, so execute's own workspace derivation encounters a non-default branch and yields `continue` (run in place) — Step 1's isolation logic does not fire. The `--branch` flag is reserved for explicit caller override only. Standalone `/execute` invocations have no `--branch` flag and always use the standalone derivation path below. (Implements R30, spec updated per auto-detection model.)
 
 **Workspace auto-detection (R16, R30 — no flag, no prompt):** After plan validation, derive the workspace from cwd + current branch. Workspace is **not** user-selectable — there is no `--workspace` flag (it is a removed flag).
 
@@ -171,7 +171,7 @@ When ship invokes execute-plan inside the ship pipeline, `--branch` is **not** p
 
      Derive the branch name directly — no script call:
 
-     1. Read `<main-worktree>/.sdlc/local.json` (absent file, or absent `workspace.branch` key, means every override below falls back to its default). Extract `workspace.branch.template` (default `"{type}/{slug}"`), `workspace.branch.slugMaxLength` (default `50`), and `workspace.branch.typeMap` (default `{feature:'feat', bugfix:'fix', chore:'chore', docs:'docs', refactor:'refactor'}`).
+     1. Read `<main-worktree>/.sdlc-v2/local.json` (absent file, or absent `workspace.branch` key, means every override below falls back to its default). Extract `workspace.branch.template` (default `"{type}/{slug}"`), `workspace.branch.slugMaxLength` (default `50`), and `workspace.branch.typeMap` (default `{feature:'feat', bugfix:'fix', chore:'chore', docs:'docs', refactor:'refactor'}`).
      2. Infer the logical type (`feature`/`bugfix`/`chore`/`docs`/`refactor`) from the plan title and task content, then map it through `typeMap` to get the branch prefix (e.g. `feature` → `feat`).
      3. Derive the slug from the plan title: lowercase it, replace every run of characters outside `[a-z0-9]` with a single `-`, strip leading/trailing `-`, then truncate to `slugMaxLength` characters (cutting mid-word is fine — do not add an ellipsis).
      4. Substitute `{type}` and `{slug}` into `template` to get `EXECUTE_NEW_BRANCH`.
@@ -182,7 +182,7 @@ When ship invokes execute-plan inside the ship pipeline, `--branch` is **not** p
 
      Print the branch name. Implements R30.
 
-There is no `WORKTREE_PATH` — execute-plan never creates a worktree. (In ship pipeline mode, ship establishes the feature branch before dispatching execute, so the derive yields `continue` anyway; `--branch` makes that short-circuit explicit.)
+There is no `WORKTREE_PATH` — execute never creates a worktree. (In ship pipeline mode, ship establishes the feature branch before dispatching execute, so the derive yields `continue` anyway; `--branch` makes that short-circuit explicit.)
 
 **Pre-execution rebase:** If `--rebase auto` was passed, rebase onto the default branch before executing the plan. This ensures tasks run against the latest code.
 
@@ -263,7 +263,7 @@ Note every issue found.
 
 Fix each issue from the critique. Then present the final wave structure showing per-task model assignments:
 
-**Quality auto-selection:** If the user invoked the skill with `--quality <full|balanced|minimal>` (e.g., `/execute-plan --quality balanced`), apply the specified quality tier (preset) without presenting the selection prompt. Show the wave structure with the applied tier and proceed directly to Step 5. (When invoked from ship, `--quality` is forwarded only when the user explicitly passed `--quality` to ship.)
+**Quality auto-selection:** If the user invoked the skill with `--quality <full|balanced|minimal>` (e.g., `/execute --quality balanced`), apply the specified quality tier (preset) without presenting the selection prompt. Show the wave structure with the applied tier and proceed directly to Step 5. (When invoked from ship, `--quality` is forwarded only when the user explicitly passed `--quality` to ship.)
 
 Valid values: `full` (Speed), `balanced` (Balanced), `minimal` (Quality). Legacy `A`/`B`/`C` are accepted and normalized. Invalid values → fall back to interactive selection.
 
@@ -310,13 +310,13 @@ This dispatch is NOT a wave-runner Agent — it is a direct batch-haiku dispatch
 
 **First-wave bootstrap (runs once, before wave 1's 5a-pre):** `wave-start` (called in 5b below, for every wave including wave 1) requires an existing state file — `state/execute.js` exits 1 with "no state file found" without one. Before entering this per-wave loop for wave 1, run the `init` call and the one-time `context --data` call, both documented in the State persistence section under 5d below (do NOT wait until 5d of wave 1 to run them — by then 5b's wave-start call has already needed the state file to exist).
 
-> **Nested-dispatch disambiguation (R-nested-dispatch-resilient — Fixes #463):** "Main context" here = execute-plan's own top-level orchestration context — the one you are running in now. When ship dispatches you as a subagent, you ARE that context. Nested Agent dispatch is supported — being dispatched as a subagent does not remove your Agent tool. Never emit "no agent-dispatch tool available" or otherwise self-block; dispatch every per-task/batch Agent for this wave directly, in a single flat fan-out (5b below) — there is no wave-runner middle agent to relay through.
+> **Nested-dispatch disambiguation (R-nested-dispatch-resilient — Fixes #463):** "Main context" here = execute's own top-level orchestration context — the one you are running in now. When ship dispatches you as a subagent, you ARE that context. Nested Agent dispatch is supported — being dispatched as a subagent does not remove your Agent tool. Never emit "no agent-dispatch tool available" or otherwise self-block; dispatch every per-task/batch Agent for this wave directly, in a single flat fan-out (5b below) — there is no wave-runner middle agent to relay through.
 
 **Progress signal — wave start (mandatory, always first).** Before any gate or dispatch, update TodoWrite:
 - Mark tasks from the previous wave as `completed` (skip on wave 1).
 - Add one todo per task in this wave with `status: "in_progress"` and `activeForm: "Wave N — <task name>"`.
 
-This runs unconditionally — even if the wave is skipped or blocked. This TodoWrite is for the Agent's OWN context bookkeeping. It is NOT visible to the parent when execute-plan runs inside ship's Agent dispatch — sub-agent TodoWrite calls do not propagate up. The parent's task tray is populated by ship's main-thread TodoWrite orchestration (see ship/SKILL.md and `R-todowrite-visibility`, issue #427).
+This runs unconditionally — even if the wave is skipped or blocked. This TodoWrite is for the Agent's OWN context bookkeeping. It is NOT visible to the parent when execute runs inside ship's Agent dispatch — sub-agent TodoWrite calls do not propagate up. The parent's task tray is populated by ship's main-thread TodoWrite orchestration (see ship/SKILL.md and `R-todowrite-visibility`, issue #427).
 
 **5a-pre. Pre-wave guardrail check (error-severity only)** — Skip if `activeGuardrails` is empty.
 
@@ -334,7 +334,7 @@ Before dispatching any agents in this wave, evaluate each error-severity guardra
   >
   > Options: **override** (proceed anyway) | **harden** (run `/harden` to analyze why this failed and propose stronger guardrails / dimensions / instructions that would catch it earlier next time — opt-in, no surface is edited without your approval) | **cancel** (stop execution)
 
-  When the user selects **harden** (interactive mode only — suppressed when `--auto` is set), dispatch `Skill(harden)` with `--failure-text "Wave <N> guardrail <id> violated: <description>"`, `--skill execute-plan`, `--step "5a-pre"`, `--operation "pre-wave guardrail evaluation"`. After harden completes, re-evaluate the guardrail before continuing. Implements R28.
+  When the user selects **harden** (interactive mode only — suppressed when `--auto` is set), dispatch `Skill(harden)` with `--failure-text "Wave <N> guardrail <id> violated: <description>"`, `--skill execute`, `--step "5a-pre"`, `--operation "pre-wave guardrail evaluation"`. After harden completes, re-evaluate the guardrail before continuing. Implements R28.
 
   If `--auto` is set, treat error-severity violations as blocking — do NOT auto-override. Print the violation and stop execution. Guardrails exist to prevent drift; auto-mode should not silently bypass them.
 
@@ -383,7 +383,7 @@ Build each task's (or cluster's) Agent prompt from:
    - `verificationHint?: string` — optional; populated only when every task in the wave shares the same `Verify:` value verbatim.
 
    **Wave-level bookkeeping (R-WAVE-DEADLINE, #506) — kept by main context; only `runId` is threaded into dispatched prompts:**
-   - `waveTimeout: <integer>` seconds — from `WAVE_TIMEOUT` (this skill's own parsed `--wave-timeout` flag, above; ship forwards it on the command line, having resolved it from its own `ship.executeWaveTimeout` config key — this skill does not read `.sdlc/local.json` itself). Standalone invocation without the flag falls back to `BUILT_IN_DEFAULTS.executeWaveTimeout` (1800). Consumed by main context's own wall-clock deadline enforcement, Step 5c below.
+   - `waveTimeout: <integer>` seconds — from `WAVE_TIMEOUT` (this skill's own parsed `--wave-timeout` flag, above; ship forwards it on the command line, having resolved it from its own `ship.executeWaveTimeout` config key — this skill does not read `.sdlc-v2/local.json` itself). Standalone invocation without the flag falls back to `BUILT_IN_DEFAULTS.executeWaveTimeout` (1800). Consumed by main context's own wall-clock deadline enforcement, Step 5c below.
    - `waveInterval: <integer>` seconds — from `WAVE_INTERVAL` the same way (`ship.executeWaveInterval`); same standalone fallback pattern. Main context's own polling cadence while waiting, Step 5c below.
    - `runId: <string>` — the `runId` value read from the `wave-start` result above. Fills the `{RUN_ID}` placeholder in every prompt dispatched this wave.
 
@@ -399,7 +399,7 @@ Build each task's (or cluster's) Agent prompt from:
      "waveInterval": 30,
      "runId": "run-id",
      "tasks": [
-       { "id": "3", "complexity": "Standard", "risk": "Low", "factSheetPath": "/abs/path/.sdlc/execution/run-id/task-3.md", "assignedModel": "sonnet", "verifyToken": "dispatchMode in ship.js", "description": "optional rationale text from **Notes:** field; omit or pass empty string when absent" }
+       { "id": "3", "complexity": "Standard", "risk": "Low", "factSheetPath": "/abs/path/.sdlc-v2/execution/run-id/task-3.md", "assignedModel": "sonnet", "verifyToken": "dispatchMode in ship.js", "description": "optional rationale text from **Notes:** field; omit or pass empty string when absent" }
      ],
      "guardrails": [
        { "id": "no-direct-db-access", "description": "Do not import db client outside repo layer", "severity": "error" }
@@ -420,7 +420,7 @@ Dispatch every task's Agent (and every batch's Agent) for this wave **directly f
 - `mode: bypassPermissions`
 - `run_in_background: true` — **required.** Fan out every task/batch of this wave as N background dispatches in one message; main context does not block on any single one. Liveness is tracked by the wall-clock deadline plus `wave-progress` polling (Step 5c below), not an await barrier. (Supersedes R-WAVE-BACKGROUND-DISPATCH's prior `run_in_background: false` mandate — that mandate protected the wave-runner's single bounded return, which no longer exists under KD15.)
 - **`model:` is REQUIRED — no exceptions.** Omitting it causes the Agent to inherit the parent model (opus), defeating the quality-tier system.
-- **DO NOT pass `isolation: "worktree"` (or any other `isolation` value) to the Agent tool.** execute-plan never creates a git worktree (workspace is auto-detected `branch`/`continue`). The Agent SDK `isolation: "worktree"` parameter creates ephemeral `.claude/worktrees/agent-<id>` paths that break `.sdlc/` anchoring and cause commits to land in the wrong location. Implements R-no-agent-sdk-isolation from spec. See issues #370 #372. (Mirrors the R-agent-isolation-script-driven constraint in ship/SKILL.md.)
+- **DO NOT pass `isolation: "worktree"` (or any other `isolation` value) to the Agent tool.** execute never creates a git worktree (workspace is auto-detected `branch`/`continue`). The Agent SDK `isolation: "worktree"` parameter creates ephemeral `.claude/worktrees/agent-<id>` paths that break `.sdlc-v2/` anchoring and cause commits to land in the wrong location. Implements R-no-agent-sdk-isolation from spec. See issues #370 #372. (Mirrors the R-agent-isolation-script-driven constraint in ship/SKILL.md.)
 
 Record `waveDispatchedAt` (wall-clock, e.g. `date +%s`) the moment this fan-out message is sent — it anchors the deadline check in Step 5c. Per-task retries (haiku→sonnet→opus, budget 2) are main context's own responsibility (Step 6) — there is no wave-runner to own retries internally.
 
@@ -508,7 +508,7 @@ For each guardrail in `activeGuardrails`:
 
   On "fix": attempt to fix the violation inline (no agent dispatch). After fixing, re-evaluate the specific guardrail. If still failing after one fix attempt, escalate to user with override/cancel options.
 
-  On "harden" (interactive mode only — suppressed when `--auto` is set): dispatch `Skill(harden)` with `--failure-text "Wave <N> output violates <id>: <description> — <rationale>"`, `--skill execute-plan`, `--step "5c-ter"`, `--operation "post-wave guardrail evaluation"`. After harden completes, return to this menu. Implements R28.
+  On "harden" (interactive mode only — suppressed when `--auto` is set): dispatch `Skill(harden)` with `--failure-text "Wave <N> output violates <id>: <description> — <rationale>"`, `--skill execute`, `--step "5c-ter"`, `--operation "post-wave guardrail evaluation"`. After harden completes, return to this menu. Implements R28.
 
   If `--auto` is set: print the violation and stop execution (same as pre-wave — do not auto-override).
 
@@ -550,7 +550,7 @@ When `commitWaves === true`:
      ```
    - For the soft-success path above, omit `sha` (or pass `sha: ""`): the action persists `committedSha: null`.
 
-5. Workspace compatibility: state writes route through `resolveStateDir()` (already the case in `state/execute.js`); the `git commit` runs in the active checkout (current cwd). When invoked from a manual git worktree (derived `continue`), both the diff and the commit land in that worktree, while `.sdlc/` state stays anchored to the main worktree via `resolveStateDir()`.
+5. Workspace compatibility: state writes route through `resolveStateDir()` (already the case in `state/execute.js`); the `git commit` runs in the active checkout (current cwd). When invoked from a manual git worktree (derived `continue`), both the diff and the commit land in that worktree, while `.sdlc-v2/` state stays anchored to the main worktree via `resolveStateDir()`.
 
 **5d. Progress report** — After each wave:
 ```
@@ -605,7 +605,7 @@ The action rejects unknown keys, non-objects, and empty objects with a domain er
 
 On successful completion: `execute_state({ action: "cleanup" })`
 
-**5d-bis — OpenSpec task flip (implements R37, R39, I13, E14 — Fixes #414).** After `task-done` state writes for this wave, before the `wave-done` state write, flip OpenSpec checkboxes for refs whose plan-task siblings have all reached DONE / DONE_WITH_CONCERNS. This step runs in execute-plan main context ONLY — never from inside any dispatched per-task/batch Agent (cite R37). When `refToTaskIds` is empty (plan has no `openspec-task` blocks), skip this step entirely (zero new behavior).
+**5d-bis — OpenSpec task flip (implements R37, R39, I13, E14 — Fixes #414).** After `task-done` state writes for this wave, before the `wave-done` state write, flip OpenSpec checkboxes for refs whose plan-task siblings have all reached DONE / DONE_WITH_CONCERNS. This step runs in execute main context ONLY — never from inside any dispatched per-task/batch Agent (cite R37). When `refToTaskIds` is empty (plan has no `openspec-task` blocks), skip this step entirely (zero new behavior).
 
 Algorithm:
 
@@ -622,7 +622,7 @@ Algorithm:
    - Interpret the outcome:
      - `changed` — no further action.
      - `already-done` — no further action; OpenSpec already showed it as done (e.g., resumed run, user manual edit).
-     - `not-found` or `io-error` — append to `.sdlc/learnings/log.md` (one line: `## <YYYY-MM-DD> — execute-plan markTaskDone failed: change=<change> ref=<ref> reason=<reason>`) and add `{ change, ref, reason }` to an in-memory `openspecSyncWarnings` array surfaced by Step 9 REPORT. Pipeline continues — this is non-blocking per R39/E14.
+     - `not-found` or `io-error` — append to `.sdlc-v2/learnings/log.md` (one line: `## <YYYY-MM-DD> — execute markTaskDone failed: change=<change> ref=<ref> reason=<reason>`) and add `{ change, ref, reason }` to an in-memory `openspecSyncWarnings` array surfaced by Step 9 REPORT. Pipeline continues — this is non-blocking per R39/E14.
 
 Wave abort on a failed task-flip (`not-found`/`io-error`) is FORBIDDEN.
 
@@ -655,7 +655,7 @@ On success, the result is `{ "ok": true, "totalPlanned": N, "totalAccounted": N 
 
 On failure, the tool returns a data error whose `error` message has the exact form `"incomplete: <k> of <n> planned tasks unaccounted (missingIds: <comma-separated-ids>)"`. Extract `missingIds` directly from that message (split on `missingIds: `, then split the remainder on `, `) — do NOT recompute it independently; the message is the authoritative source, deterministic, and generated from the same state the tool just checked. This is a hard gate:
 ```
-ERROR: execute-plan completed all waves but planned tasks are unaccounted: <missingIds>
+ERROR: execute completed all waves but planned tasks are unaccounted: <missingIds>
 ```
 Halt here — do NOT advance to commit/review/version/pr.
 
@@ -678,7 +678,7 @@ Gate phrasing invariant (no-opposite-logical-vectors): the "wave complete" condi
 | Build failure | Stop immediately; fix before next wave |
 | Lint failure | Fix inline; never block a wave on lint-only failures |
 | Phantom success (agent reports done, files unchanged) | Re-dispatch with model escalation and Edit-tool-only constraint; see `./recovering-from-failures.md` (read on failure only) |
-| Persistent failure (2+ retries) | Escalate to user with full context. Offer **harden** (run `/harden` to analyze why this failed and propose stronger guardrails / dimensions / instructions that would catch it earlier next time — opt-in, no surface is edited without your approval) alongside other escalation options. When the user selects **harden** (interactive mode only — suppressed when `--auto` is set), dispatch `Skill(harden)` with `--failure-text <full failure context>`, `--skill execute-plan`, `--step "Step 6 — RECOVER"`, `--operation "persistent task-failure escalation"`. Implements R28. |
+| Persistent failure (2+ retries) | Escalate to user with full context. Offer **harden** (run `/harden` to analyze why this failed and propose stronger guardrails / dimensions / instructions that would catch it earlier next time — opt-in, no surface is edited without your approval) alongside other escalation options. When the user selects **harden** (interactive mode only — suppressed when `--auto` is set), dispatch `Skill(harden)` with `--failure-text <full failure context>`, `--skill execute`, `--step "Step 6 — RECOVER"`, `--operation "persistent task-failure escalation"`. Implements R28. |
 | Agent status: NEEDS_CONTEXT | Provide missing context, re-dispatch (counts as retry) |
 | Agent status: BLOCKED | Assess blocker: provide context + re-dispatch, escalate model, break task, or escalate to user |
 | Malformed or missing completion checklist | Re-dispatch once with checklist format reminder; do not escalate purely for missing checklist |
@@ -725,7 +725,7 @@ The reviewer's focus in this final check is **cross-wave coverage**:
 
 **8-ter. Learning Capture (runs before Step 9 returns control):**
 
-Append to `.sdlc/learnings/log.md`:
+Append to `.sdlc-v2/learnings/log.md`:
 
 - Tasks classified trivial that needed agent dispatch (or vice versa)
 - Wave structures that caused unexpected file conflicts
@@ -737,11 +737,11 @@ Append to `.sdlc/learnings/log.md`:
 
 Format:
 ```
-## YYYY-MM-DD — execute-plan: <brief summary>
+## YYYY-MM-DD — execute: <brief summary>
 <what happened, what was learned>
 ```
 
-This sub-step must run **before** Step 9 emits its summary so the log.md write is part of the working tree when execute-plan returns control. ship's staging window runs between execute and commit; if Learning Capture happened after Step 9, the log write would land outside that window and the file would stay dirty post-pipeline.
+This sub-step must run **before** Step 9 emits its summary so the log.md write is part of the working tree when execute returns control. ship's staging window runs between execute and commit; if Learning Capture happened after Step 9, the log write would land outside that window and the file would stay dirty post-pipeline.
 
 ## Step 9 (REPORT): Summary
 
@@ -779,13 +779,13 @@ When the array is empty (the happy path), omit the section entirely.
 ```
 Branch:   <EXECUTE_NEW_BRANCH>
 ```
-There is no `Worktree:` line — execute-plan never creates a worktree. When `EXECUTE_NEW_BRANCH` is unset (the derive yielded `continue` — a linked worktree or an existing feature branch), emit nothing.
+There is no `Worktree:` line — execute never creates a worktree. When `EXECUTE_NEW_BRANCH` is unset (the derive yielded `continue` — a linked worktree or an existing feature branch), emit nothing.
 
 **State file cleanup:** On successful completion (all tasks completed), delete the execution state file. Print:
 `State file cleaned up.`
 
 On failure or interruption (not all tasks completed), preserve the state file. Print:
-`Execution state preserved at <main-worktree>/.sdlc/execution/execute-<branch>-<timestamp>.json — use --resume to continue.`
+`Execution state preserved at <main-worktree>/.sdlc-v2/execution/execute-<branch>-<timestamp>.json — use --resume to continue.`
 
 ## Quality Gates
 
@@ -864,23 +864,23 @@ On failure or interruption (not all tasks completed), preserve the state file. P
 
 **Workspace detection can use a stale branch.** The conversation-level `gitStatus` snapshot is frozen at session start. If the user switches branches mid-session, `gitStatus` still reports the original branch. The workspace derivation in Step 1 must run `git branch --show-current` via Bash — never read the branch from `gitStatus` or any other cached context.
 
-**No worktree lifecycle.** execute-plan never creates a git worktree — workspace is auto-detected (`branch`/`continue`). Running inside a user's manual worktree is a `continue` outcome (run in place); `.sdlc/` stays anchored to the main worktree via `resolveStateDir()`. There is nothing to create and nothing to clean up.
+**No worktree lifecycle.** execute never creates a git worktree — workspace is auto-detected (`branch`/`continue`). Running inside a user's manual worktree is a `continue` outcome (run in place); `.sdlc-v2/` stays anchored to the main worktree via `resolveStateDir()`. There is nothing to create and nothing to clean up.
 
-**State files are tool-managed.** Use the `execute_state` tool for all state operations. Don't hand-write JSON to `.sdlc/execution/`.
+**State files are tool-managed.** Use the `execute_state` tool for all state operations. Don't hand-write JSON to `.sdlc-v2/execution/`.
 
 **State file timestamp is set once at execution start.** The `<timestamp>` in the filename is established when execution begins and does not change across waves. The same file is overwritten after each wave. This keeps the filename stable for resume detection and ship integration.
 
 **Resume context object enables fresh-session resume.** The `context` object in the state file exists for cross-session resume where the new session has no conversation history. It must contain enough information (plan summary, completed task IDs, file manifests, interface names, key decisions) for the orchestrator to construct meaningful agent prompts for remaining waves. Omitting context fields degrades agent output quality on resume.
 
-**State file and ship coexistence.** Both `execute-plan` and `ship` write state files to `.sdlc/execution/`. They are distinguished by filename prefix (`execute-` vs `ship-`). Each skill manages its own state file lifecycle — execute-plan never reads or writes ship state files, and vice versa.
+**State file and ship coexistence.** Both `execute` and `ship` write state files to `.sdlc-v2/execution/`. They are distinguished by filename prefix (`execute-` vs `ship-`). Each skill manages its own state file lifecycle — execute never reads or writes ship state files, and vice versa.
 
 **Guardrail evaluation is LLM-based, not programmatic.** Guardrails are natural-language descriptions evaluated by the orchestrator against task descriptions (pre-wave) and `git diff` output (post-wave). They catch semantic drift (e.g., "no direct DB access" when a task adds raw SQL), not syntactic violations. False positives are possible — the override option exists for this reason.
 
 **Guardrails complement spec compliance review.** Step 5c-bis checks spec compliance; Step 5c-ter checks guardrail compliance. They are complementary: spec review ensures tasks match their descriptions, guardrails ensure tasks match project-wide constraints. Do not merge them — they evaluate different things.
 
-**Empty guardrails are the happy path for existing projects.** If `activeGuardrails` is empty (no guardrails configured in `.sdlc/config.json` under `execute`), all guardrail steps are skipped. This is backward compatible — no existing behavior changes. Execution guardrails (`execute.guardrails`) and plan guardrails (`plan.guardrails`) are independent — configuring one does not affect the other.
+**Empty guardrails are the happy path for existing projects.** If `activeGuardrails` is empty (no guardrails configured in `.sdlc-v2/config.json` under `execute`), all guardrail steps are skipped. This is backward compatible — no existing behavior changes. Execution guardrails (`execute.guardrails`) and plan guardrails (`plan.guardrails`) are independent — configuring one does not affect the other.
 
-**Learning Capture runs before the final report.** See Step 8-ter. The append to `.sdlc/learnings/log.md` must happen before Step 9 returns control so ship's staging window (`git add -A -- ':!.sdlc/'`) picks up the change and the log entry lands inside the feature commit. A standalone `## Learning Capture` section after Step 9 would leave the working tree dirty post-pipeline.
+**Learning Capture runs before the final report.** See Step 8-ter. The append to `.sdlc-v2/learnings/log.md` must happen before Step 9 returns control so ship's staging window (`git add -A -- ':!.sdlc-v2/'`) picks up the change and the log entry lands inside the feature commit. A standalone `## Learning Capture` section after Step 9 would leave the working tree dirty post-pipeline.
 
 ## What's Next
 
@@ -936,7 +936,7 @@ If `openspecSpecs` was loaded in Step 1 (the plan was OpenSpec-sourced), also su
 
 The archive suggestion is **never auto-executed** — this skill is the "execute only" entry point. Archival is deferred to `/ship` or manual invocation.
 
-There is no worktree cleanup — execute-plan never creates a worktree (workspace is auto-detected). If you ran inside a manual worktree (`continue`), it remains exactly as you left it.
+There is no worktree cleanup — execute never creates a worktree (workspace is auto-detected). If you ran inside a manual worktree (`continue`), it remains exactly as you left it.
 
 ## See Also
 

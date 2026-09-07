@@ -92,10 +92,9 @@ func deliverSkillsBuildRegistry(t *testing.T) map[string]bool {
 
 	tools.RegisterCommitTools(srv)
 	tools.RegisterDimensionsRenderTools(srv)
-	tools.RegisterErrorReportTools(srv)
 	tools.RegisterExecuteStateTools(srv)
-	tools.RegisterHardenTools(srv)
 	tools.RegisterJiraTools(srv)
+	tools.RegisterPrepareOrchestratorTools(srv)
 	tools.RegisterLinksTools(srv)
 	tools.RegisterMCPFailureTools(srv)
 	tools.RegisterMigrateTools(srv)
@@ -247,7 +246,7 @@ var deliverSkillsStepHeaders = map[string]string{
 // unlike shipSkillsStepExpectedActions this map is not action-name-only.
 var deliverSkillsStepExpectedRefs = map[string][]string{
 	"plan":            {"planPath"},
-	"execute":         {"execute-plan", "verify-completeness"},
+	"execute":         {"/execute", "verify-completeness"},
 	"review":          {"review", "saved-review"},
 	"fix-loop":        {"reviewFixIterations", "reviewFixSeverityThreshold"},
 	"verify-pipeline": {"ship"},

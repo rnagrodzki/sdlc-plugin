@@ -120,12 +120,13 @@ tool that needs config fails with an error naming the `migrate` tool
 (`internal/config/config.go`, `detectLegacy`).
 
 Ask Claude to run the `migrate` tool to move a project from the legacy
-(Node-plugin era) layout to the current one. It takes one of three actions,
+(Node-plugin era) layout to the current one. It takes one of two actions,
 each independently, with an optional `dryRun`:
 
 - `config` — schema-migrates the legacy config file(s) into `.sdlc/config.json`.
-- `jira_templates` — moves `.claude/jira-templates/` to `.sdlc/`.
-- `learnings_log` — moves `.claude/learnings/log.md` to `.sdlc/`.
+- `import` — non-destructively copies config, templates, jira-templates,
+  learnings, and review-dimensions from the old plugin's data directory into
+  the current one, skipping anything that already exists.
 
 For a project that has never had any sdlc config (not a migration, a fresh
 install), use `setup_init` instead — it scaffolds `.sdlc/config.json` and

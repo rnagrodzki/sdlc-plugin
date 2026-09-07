@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
 // CurrentSchemaVersion is the current schema version. v5 uses a
@@ -31,9 +32,9 @@ const (
 var legacyMarkers = []string{
 	filepath.Join(".claude", "sdlc.json"),
 	filepath.Join(".claude", "version.json"),
-	filepath.Join(".sdlc", "jira-config.json"),
-	filepath.Join(".sdlc", "ship-config.json"),
-	filepath.Join(".sdlc", "review.json"),
+	filepath.Join(paths.LegacyDataDir, "jira-config.json"),
+	filepath.Join(paths.LegacyDataDir, "ship-config.json"),
+	filepath.Join(paths.LegacyDataDir, "review.json"),
 	filepath.Join(".claude", "review.json"),
 }
 
@@ -72,7 +73,7 @@ type Report struct {
 // ErrVersionStale if older (with message naming "migrate" tool),
 // ErrVersionTooNew if newer than CurrentSchemaVersion.
 func Verify(mainRoot string) error {
-	configPath := filepath.Join(mainRoot, ".sdlc", "config.json")
+	configPath := filepath.Join(mainRoot, paths.DataDir, "config.json")
 	var raw map[string]any
 	err := fsx.ReadJSON(configPath, &raw)
 	if err != nil {
@@ -124,8 +125,8 @@ func Migrate(mainRoot string, opt Options) (*Report, error) {
 	report := &Report{}
 	ctx := &migrationContext{
 		mainRoot:   mainRoot,
-		configPath: filepath.Join(mainRoot, ".sdlc", "config.json"),
-		localPath:  filepath.Join(mainRoot, ".sdlc", "local.json"),
+		configPath: filepath.Join(mainRoot, paths.DataDir, "config.json"),
+		localPath:  filepath.Join(mainRoot, paths.DataDir, "local.json"),
 		legacyPath: filepath.Join(mainRoot, ".claude", "sdlc.json"),
 	}
 
@@ -197,9 +198,9 @@ func Migrate(mainRoot string, opt Options) (*Report, error) {
 // acquireLock creates .sdlc/.migration.lock with O_EXCL. Retries on EEXIST
 // up to retries times with retryDelay between attempts.
 func acquireLock(mainRoot string, opt *Options) (string, error) {
-	sdlcDir := filepath.Join(mainRoot, ".sdlc")
+	sdlcDir := filepath.Join(mainRoot, paths.DataDir)
 	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
-		return "", fmt.Errorf("%w: create .sdlc directory: %v", ErrMigrationFailed, err)
+		return "", fmt.Errorf("%w: create %s directory: %v", ErrMigrationFailed, paths.DataDir, err)
 	}
 
 	lockPath := filepath.Join(sdlcDir, ".migration.lock")
@@ -260,7 +261,7 @@ func extractSchemaVersion(raw map[string]any) (int, bool) {
 // detectProjectVersion determines the schema version of the project config.
 // Returns (version, true) if a config or legacy unified config exists.
 func detectProjectVersion(mainRoot string) (int, bool) {
-	configPath := filepath.Join(mainRoot, ".sdlc", "config.json")
+	configPath := filepath.Join(mainRoot, paths.DataDir, "config.json")
 	var raw map[string]any
 	if err := fsx.ReadJSON(configPath, &raw); err == nil {
 		if v, ok := extractSchemaVersion(raw); ok {
@@ -278,7 +279,7 @@ func detectProjectVersion(mainRoot string) (int, bool) {
 
 // detectLocalVersion determines the schema version of the local config.
 func detectLocalVersion(mainRoot string) (int, bool) {
-	localPath := filepath.Join(mainRoot, ".sdlc", "local.json")
+	localPath := filepath.Join(mainRoot, paths.DataDir, "local.json")
 	var raw map[string]any
 	if err := fsx.ReadJSON(localPath, &raw); err != nil {
 		return 0, false
@@ -352,8 +353,8 @@ func runSteps(ctx *migrationContext, steps []migrationStep, role string) ([]stri
 // output (no schemaVersion). Project sections go to config.json; local
 // sections (ship, review) go to local.json.
 func ingestLegacy(mainRoot string) ([]string, error) {
-	if err := os.MkdirAll(filepath.Join(mainRoot, ".sdlc"), 0o755); err != nil {
-		return nil, fmt.Errorf("%w: create .sdlc dir: %v", ErrMigrationFailed, err)
+	if err := os.MkdirAll(filepath.Join(mainRoot, paths.DataDir), 0o755); err != nil {
+		return nil, fmt.Errorf("%w: create %s dir: %v", ErrMigrationFailed, paths.DataDir, err)
 	}
 
 	var ingested []string
@@ -394,7 +395,7 @@ func ingestLegacy(mainRoot string) ([]string, error) {
 	}
 
 	// .sdlc/jira-config.json — old jira config.
-	jiraPath := filepath.Join(mainRoot, ".sdlc", "jira-config.json")
+	jiraPath := filepath.Join(mainRoot, paths.LegacyDataDir, "jira-config.json")
 	var jiraData map[string]any
 	if err := fsx.ReadJSON(jiraPath, &jiraData); err == nil {
 		ingested = append(ingested, ".sdlc/jira-config.json")
@@ -405,7 +406,7 @@ func ingestLegacy(mainRoot string) ([]string, error) {
 	}
 
 	// .sdlc/ship-config.json → local.json ship section.
-	shipPath := filepath.Join(mainRoot, ".sdlc", "ship-config.json")
+	shipPath := filepath.Join(mainRoot, paths.LegacyDataDir, "ship-config.json")
 	var shipData map[string]any
 	if err := fsx.ReadJSON(shipPath, &shipData); err == nil {
 		ingested = append(ingested, ".sdlc/ship-config.json")
@@ -419,7 +420,7 @@ func ingestLegacy(mainRoot string) ([]string, error) {
 	}
 
 	// .sdlc/review.json or .claude/review.json → local.json review section.
-	reviewPath := filepath.Join(mainRoot, ".sdlc", "review.json")
+	reviewPath := filepath.Join(mainRoot, paths.LegacyDataDir, "review.json")
 	var reviewData map[string]any
 	if err := fsx.ReadJSON(reviewPath, &reviewData); err == nil {
 		ingested = append(ingested, ".sdlc/review.json")
@@ -438,7 +439,7 @@ func ingestLegacy(mainRoot string) ([]string, error) {
 	}
 
 	// Write v5 config.json (project sections, no schemaVersion).
-	configPath := filepath.Join(mainRoot, ".sdlc", "config.json")
+	configPath := filepath.Join(mainRoot, paths.DataDir, "config.json")
 	if len(projectCfg) > 0 {
 		if err := fsx.AtomicWriteJSON(configPath, projectCfg); err != nil {
 			return ingested, fmt.Errorf("%w: write config.json: %v", ErrMigrationFailed, err)
@@ -446,7 +447,7 @@ func ingestLegacy(mainRoot string) ([]string, error) {
 	}
 
 	// Write v5 local.json (local sections, no schemaVersion).
-	localPath := filepath.Join(mainRoot, ".sdlc", "local.json")
+	localPath := filepath.Join(mainRoot, paths.DataDir, "local.json")
 	if len(localCfg) > 0 {
 		if err := fsx.AtomicWriteJSON(localPath, localCfg); err != nil {
 			return ingested, fmt.Errorf("%w: write local.json: %v", ErrMigrationFailed, err)

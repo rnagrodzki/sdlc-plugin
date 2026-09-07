@@ -81,9 +81,8 @@ func reviewSkillsBuildRegistry(t *testing.T) map[string]bool {
 
 	srv := mcpserver.New("skillcheck-review-test", "0.0.0-test")
 
-	tools.RegisterErrorReportTools(srv)
 	tools.RegisterCommitTools(srv)
-	tools.RegisterHardenTools(srv)
+	tools.RegisterPrepareOrchestratorTools(srv)
 	tools.RegisterLinksTools(srv)
 	tools.RegisterMCPFailureTools(srv)
 	tools.RegisterExecuteStateTools(srv)

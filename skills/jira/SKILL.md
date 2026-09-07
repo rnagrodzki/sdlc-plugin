@@ -37,12 +37,12 @@ tenants. The cache is permanent by default — it does not expire on a timer. Af
 initialization, every subsequent operation reads exclusively from the cache. The cache is
 rebuilt only when `--force-refresh` is passed or when operations fail due to stale data
 (invalid transition IDs, changed field schemas). **This port does not auto-migrate
-pre-v5 caches** — if a legacy `.sdlc/jira-cache/<KEY>.json` or `.claude/jira-cache/<KEY>.json`
+pre-v5 caches** — if a legacy `.sdlc-v2/jira-cache/<KEY>.json` or `.claude/jira-cache/<KEY>.json`
 file exists from an earlier install, it is not read or moved; either copy it to the home
 layout above manually or run cache initialization fresh.
 
 Each issue type has a description template (shipped in the skill's `templates/` directory
-and customizable per project at `.sdlc/jira-templates/<Type>.md`). Templates are filled
+and customizable per project at `.sdlc-v2/jira-templates/<Type>.md`). Templates are filled
 from user context before the MCP call, producing well-structured descriptions on the first
 attempt. All `{placeholder}` markers must be replaced with real content or the section
 removed entirely — the API call is never made with raw placeholder text.
@@ -57,7 +57,7 @@ removed entirely — the API call is never made with raw placeholder text.
 |----------|-------------|---------|
 | `--project <KEY>` | Jira project key (e.g., PROJ). When `jira.projects` is set, values outside the list are rejected. | Auto-detected |
 | `--force-refresh` | Rebuild cache even if fresh | false |
-| `--init-templates` | Copy default templates to `.sdlc/jira-templates/` | false |
+| `--init-templates` | Copy default templates to `.sdlc-v2/jira-templates/` | false |
 | `--site <host>` | Sanitized site host (e.g., `acme_atlassian_net`). Disambiguates `check`/`load` when the same project key is cached under multiple sites. | Unset |
 | `--skip-workflow-discovery` | Bypass Phase 5; cache `workflows[type] = { unsampled: true }` per non-subtask type. Transitions fall back to live `getTransitionsForJiraIssue` per issue. Use in CI. | false |
 
@@ -65,7 +65,7 @@ removed entirely — the API call is never made with raw placeholder text.
 
 1. `--project <KEY>` argument. When `jira.projects` is set (≥2 entries), a project key outside the list is rejected (the `jira` tool's `check` action returns an error).
 2. Parse current git branch for `[A-Z]{2,10}-\d+` pattern (e.g., `feat/PROJ-123-fix` → `PROJ`). When `jira.projects` is set, accept only keys in the list; otherwise fall through.
-3. Read `.sdlc/config.json` → `jira.defaultProject`.
+3. Read `.sdlc-v2/config.json` → `jira.defaultProject`.
 4. When `jira.projects` has ≥2 entries, use AskUserQuestion with a closed list matching `jira.projects` ("Which Jira project key should I use?").
 5. Use AskUserQuestion to ask: "Which Jira project key should I use? (e.g., PROJ, TEAM)".
 
@@ -340,9 +340,9 @@ Skip this step for read operations (`search`, `view`). For every write operation
      → { issueTypes, customTemplates, defaultTemplates, resolved, fallbacks: [{type, fallbackTo}], noneTypes }
      ```
      For each entry in `fallbacks`, print a one-line notice before building the payload:
-     `Using <fallbackTo> template for <type> — override at .sdlc/jira-templates/<type>.md`
+     `Using <fallbackTo> template for <type> — override at .sdlc-v2/jira-templates/<type>.md`
      For each entry in `noneTypes`, print a one-line warning and stop the operation:
-     `No template for <type>. Run /jira --init-templates or create .sdlc/jira-templates/<type>.md`
+     `No template for <type>. Run /jira --init-templates or create .sdlc-v2/jira-templates/<type>.md`
      Sub-bug, Sub-task, and Subtask types resolve via a fixed fallback map inside the `jira` tool (Sub-bug → Bug, Sub-task → Task, Subtask → Task) — the skill never re-derives this mapping.
 2. Run the critique checklist:
    - **Template completeness** (create / description-touching edit) — every `## ` heading in the payload description belongs to the resolved template; no invented sections.
@@ -353,7 +353,7 @@ Skip this step for read operations (`search`, `view`). For every write operation
 3. Compute the canonical content hash and write the critique artifact:
    - Canonicalize the payload (stable key order, `trimEnd` on every string value — R21.1). Callers do not need to strip trailing whitespace from file-sourced payloads (e.g., markdown bodies that end in `\n`).
    - Compute the hash via Bash: `printf '%s' "$canonical_json" | sha256sum | cut -c1-12` (or `shasum -a 256` where `sha256sum` is unavailable) — the same shell-level, tool-neutral hash for every write operation.
-   - Write the critique artifact with the `Write` tool to `.sdlc/state/artifacts/critique-<hash>.json`: `{ initial: '<one-line summary of initial draft>', findings: [...], final: '<one-line summary of final payload>' }`.
+   - Write the critique artifact with the `Write` tool to `.sdlc-v2/state/artifacts/critique-<hash>.json`: `{ initial: '<one-line summary of initial draft>', findings: [...], final: '<one-line summary of final payload>' }`.
 4. Surface the critique to the user as an `Initial:` / `Critique:` / `Final:` block — do not apply deltas silently.
 
 ## Step 2.6 — Approval (write-ops only, R17)
@@ -365,7 +365,7 @@ Skip for read operations. Implements R17.
    - **approve** — proceed to Step 3 dispatch
    - **change <what>** — describe the desired change; loop back to Step 2.5 with the revised draft (new hash, fresh artifacts; the previous artifacts are stale and can be deleted)
    - **cancel** — abort the operation, do not dispatch
-3. On `approve` only, write the approval token with the `Write` tool to `.sdlc/state/artifacts/approval-<hash>.token` (its content is not read back — its existence, next to the critique artifact from Step 2.5, is the record that this exact payload was approved this turn).
+3. On `approve` only, write the approval token with the `Write` tool to `.sdlc-v2/state/artifacts/approval-<hash>.token` (its content is not read back — its existence, next to the critique artifact from Step 2.5, is the record that this exact payload was approved this turn).
 4. Proceed to Step 3.
 
 ## Step 2.7 — Link verification (write-ops only, R22, issue #198) — HARD GATE
@@ -711,7 +711,7 @@ is always incorrect.
 | User disambiguation | `lookupJiraAccountId` results always disambiguated if multiple matches |
 | No fabricated values | All field values derived from cache `allowedValues` or user input |
 | Approval gate (G9) | No write MCP call dispatched without an `approve` from the R17 prompt in this turn |
-| Template enforced (G10) | No `description` field built without a resolved template — `.sdlc/jira-templates/<Type>.md` (override) or shipped `templates/<Type>.md` (R18) |
+| Template enforced (G10) | No `description` field built without a resolved template — `.sdlc-v2/jira-templates/<Type>.md` (override) or shipped `templates/<Type>.md` (R18) |
 | Placeholders resolved (G11) | No `low`-confidence `{name}` or `[prose]` marker dispatched without explicit user resolution (R19) |
 | Critique surfaced (G12) | No proposal presented to the user without a preceding `Initial:` / `Critique:` / `Final:` block (R20) |
 | Cooperative approval (G13) | Write dispatch relies on the Step 2.6 `AskUserQuestion` answer alone — this port has no automated hook that re-verifies the payload hash before dispatch. Treat the approval step as a hard behavioral rule, not a technically enforced one |
@@ -742,7 +742,7 @@ is always incorrect.
 - Use values not in cache `allowedValues` — never fabricate enum values
 - Retry a failed operation more than once without diagnosing the cause first
 - Leave raw `{placeholder}` syntax in issue descriptions
-- Ignore custom templates at `.sdlc/jira-templates/<Type>.md` when they exist
+- Ignore custom templates at `.sdlc-v2/jira-templates/<Type>.md` when they exist
 - Generate unstructured descriptions when a template is available
 - Dispatch a write MCP without an `approve` answer to the R17 prompt in this turn (R17)
 - Use a free-form description on `createJiraIssue` or `editJiraIssue` (R18)
@@ -782,7 +782,7 @@ is always incorrect.
 
 ## Learning Capture
 
-When executing Jira operations, capture discoveries by appending to `.sdlc/learnings/log.md`.
+When executing Jira operations, capture discoveries by appending to `.sdlc-v2/learnings/log.md`.
 Record entries for: field formats that differ from the defaults documented here, workflow
 quirks discovered in specific projects, issue type names that aren't standard (e.g., custom
 subtask type names), user lookup disambiguation patterns, and transition required fields not
@@ -796,9 +796,9 @@ discoveries continue to use the free-form prose style above.
 
 After completing a Jira operation, common follow-ups include:
 - `/plan` — write an implementation plan for a ticket
-- `/execute-plan` — execute an existing plan
+- `/execute` — execute an existing plan
 
 ## See Also
 
 - [`/plan`](../plan/SKILL.md) — write an implementation plan from a Jira ticket
-- [`/execute-plan`](../execute-plan/SKILL.md) — execute an existing plan
+- [`/execute`](../execute/SKILL.md) — execute an existing plan

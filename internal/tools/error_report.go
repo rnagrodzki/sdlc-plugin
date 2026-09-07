@@ -11,7 +11,6 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
-	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
 
 // errorReportTargetRepo is error-report-prepare.js's TARGET_REPO literal.
@@ -85,9 +84,9 @@ type errorReportManifest struct {
 // Source's detectRepository/detectCurrentBranch (safeExec with no explicit
 // cwd) inherit whatever directory the script process was launched from.
 // There is no equivalent "launch directory" for an MCP server process, so
-// root (resolved by RegisterErrorReportTools via worktree.MainRoot, the
-// same anchor every other tool in this package uses) scopes both git
-// commands here instead.
+// root (resolved by the prepare_orchestrator registration's error_report
+// branch via worktree.MainRoot, the same anchor every other tool in this
+// package uses) scopes both git commands here instead.
 func errorReportPrepare(root string, in ErrorReportPrepareIn) (ErrorReportPrepareOut, error) {
 	var missing []string
 	if strings.TrimSpace(in.Skill) == "" {
@@ -142,25 +141,4 @@ func errorReportPrepare(root string, in ErrorReportPrepareIn) (ErrorReportPrepar
 	}
 
 	return ErrorReportPrepareOut{ManifestPath: manifestPath}, nil
-}
-
-// ---------------------------------------------------------------------------
-// Registration
-// ---------------------------------------------------------------------------
-
-// RegisterErrorReportTools registers error_report_prepare.
-func RegisterErrorReportTools(s *mcpserver.Server) {
-	mcpserver.Register(s, "error_report_prepare",
-		"Pre-compute the error-report-orchestrator manifest: calling-skill error context plus repository/branch environment fields. Writes the manifest to a temp file and returns its path.",
-		func(ctx mcpserver.Ctx, in ErrorReportPrepareIn) (ErrorReportPrepareOut, error) {
-			root, err := worktree.MainRoot()
-			if err != nil {
-				return ErrorReportPrepareOut{}, &mcpserver.InfraError{
-					Msg:   fmt.Sprintf("resolve project root: %s", err.Error()),
-					Cause: err,
-				}
-			}
-			return errorReportPrepare(root, in)
-		},
-	)
 }

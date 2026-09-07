@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 )
 
@@ -91,7 +92,7 @@ func TestShipState_Init(t *testing.T) {
 
 	path := shipStateInitFixture(t, dir, "feat/state-init")
 
-	wantDir := filepath.Join(dir, ".sdlc", "execution")
+	wantDir := filepath.Join(dir, paths.DataDir, "execution")
 	if filepath.Dir(path) != wantDir {
 		t.Errorf("state file dir = %q, want %q", filepath.Dir(path), wantDir)
 	}
@@ -121,7 +122,7 @@ func TestShipState_Init_PrunesOrphans(t *testing.T) {
 	checkoutBranch(t, dir, "feat/prune-me")
 
 	slug := state.SlugifyBranch("feat/prune-me")
-	orphan := filepath.Join(dir, ".sdlc", "execution", fmt.Sprintf("ship-%s-20200101T000000Z.json", slug))
+	orphan := filepath.Join(dir, paths.DataDir, "execution", fmt.Sprintf("ship-%s-20200101T000000Z.json", slug))
 	writeFile(t, orphan, `{"sessionId": null}`)
 
 	out, err := shipState(dir, dir, ShipStateIn{
@@ -698,7 +699,7 @@ func TestShipState_GC_DryRun_ClassifiesAndDropsCommit(t *testing.T) {
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
-	execDir := filepath.Join(dir, ".sdlc", "execution")
+	execDir := filepath.Join(dir, paths.DataDir, "execution")
 	staleShip := filepath.Join(execDir, "ship-dead-branch-20200101T000000Z.json")
 	writeFile(t, staleShip, `{}`)
 	setStateFileMtime(t, staleShip, 30*24*time.Hour)
@@ -746,7 +747,7 @@ func TestShipState_GC_RealRunIncludesCommitBucket(t *testing.T) {
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
-	execDir := filepath.Join(dir, ".sdlc", "execution")
+	execDir := filepath.Join(dir, paths.DataDir, "execution")
 	staleCommit := filepath.Join(execDir, "commit-dead-branch-20200101T000000Z.json")
 	writeFile(t, staleCommit, `{}`)
 	setStateFileMtime(t, staleCommit, 30*24*time.Hour)
@@ -777,7 +778,7 @@ func TestShipState_GC_TTLDaysZeroIsLiteral(t *testing.T) {
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
-	execDir := filepath.Join(dir, ".sdlc", "execution")
+	execDir := filepath.Join(dir, paths.DataDir, "execution")
 	f := filepath.Join(execDir, "ship-dead-branch-20200101T000000Z.json")
 	writeFile(t, f, `{}`)
 	setStateFileMtime(t, f, 1*time.Second)
@@ -808,7 +809,7 @@ func TestShipState_Migrate(t *testing.T) {
 	gitCommit(t, dir, "initial")
 
 	oldSlug := state.SlugifyBranch("feat/old-name")
-	execDir := filepath.Join(dir, ".sdlc", "execution")
+	execDir := filepath.Join(dir, paths.DataDir, "execution")
 	oldPath := filepath.Join(execDir, fmt.Sprintf("ship-%s-20200101T000000Z.json", oldSlug))
 	writeFile(t, oldPath, `{"branch": "feat/old-name"}`)
 
@@ -917,7 +918,7 @@ func TestShipState_Next_MatchesBeginStepAcceptance(t *testing.T) {
 	path := shipStateInitFixture(t, dir, "feat/next-matches-beginstep")
 	setStepStatus(t, path, "execute", "completed", map[string]any{"completedAt": "2026-01-01T00:00:00Z"})
 
-	writeFile(t, filepath.Join(dir, ".sdlc", "config.json"), `{"version": 5, "automation": {"mode": "confirm"}}`)
+	writeFile(t, filepath.Join(dir, paths.DataDir, "config.json"), `{"version": 5, "automation": {"mode": "confirm"}}`)
 
 	nextOut, err := shipState(dir, dir, ShipStateIn{
 		Action: "next",
@@ -951,8 +952,8 @@ func TestShipState_Next_HonorsAutomationConfig(t *testing.T) {
 	checkoutBranch(t, dir, "feat/next-automation")
 	shipStateInitFixture(t, dir, "feat/next-automation")
 
-	writeFile(t, filepath.Join(dir, ".sdlc", "config.json"), `{}`)
-	writeFile(t, filepath.Join(dir, ".sdlc", "local.json"), `{"automation": {"mode": "unattended"}}`)
+	writeFile(t, filepath.Join(dir, paths.DataDir, "config.json"), `{}`)
+	writeFile(t, filepath.Join(dir, paths.DataDir, "local.json"), `{"automation": {"mode": "unattended"}}`)
 
 	out, err := shipState(dir, dir, ShipStateIn{
 		Action: "next",

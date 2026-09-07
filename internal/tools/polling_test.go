@@ -1,12 +1,14 @@
 package tools
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/stepper"
 )
 
@@ -218,6 +220,74 @@ func TestVerifyPipelineAwait_InvalidPR(t *testing.T) {
 	_, err := verifyPipelineAwait(".", VerifyPipelineAwaitIn{PR: -1})
 	if err == nil {
 		t.Fatal("expected error for pr <= 0")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// poll_await dispatch
+// ---------------------------------------------------------------------------
+
+// TestPollAwait_RemoteReviewDefaultTimeout asserts that a zero
+// TimeoutSeconds on target "remote_review" resolves to 600s (not the
+// pipeline target's 1200s default), observable via the pending envelope's
+// progress.timeout_seconds — pendingEnvelope writes the resolved
+// st.TimeoutSeconds there.
+func TestPollAwait_RemoteReviewDefaultTimeout(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\necho \"reviewers: copilot\"\n")
+	defer cleanup()
+
+	env, err := pollAwait(".", PollAwaitIn{Target: "remote_review", PR: 42})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if env.Status != "pending" {
+		t.Fatalf("got status %q, want pending", env.Status)
+	}
+	defer os.Remove(*env.StateFile)
+
+	progress, ok := env.Progress.(map[string]any)
+	if !ok {
+		t.Fatalf("expected env.Progress to be map[string]any, got %T", env.Progress)
+	}
+	if got := progress["timeout_seconds"]; got != 600 {
+		t.Fatalf("timeout_seconds = %v, want 600 (remote_review default)", got)
+	}
+}
+
+// TestPollAwait_PipelineDefaultTimeout is the pipeline-target counterpart:
+// a zero TimeoutSeconds must resolve to 1200s, not 600s. This is the
+// critical branch the fact sheet calls out — the two targets' defaults
+// must never collapse into one shared value.
+func TestPollAwait_PipelineDefaultTimeout(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\nprintf 'build\\tpending\\t1m\\thttps://x\\n'\n")
+	defer cleanup()
+
+	env, err := pollAwait(".", PollAwaitIn{Target: "pipeline", PR: 5})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if env.Status != "pending" {
+		t.Fatalf("got status %q, want pending", env.Status)
+	}
+	defer os.Remove(*env.StateFile)
+
+	progress, ok := env.Progress.(map[string]any)
+	if !ok {
+		t.Fatalf("expected env.Progress to be map[string]any, got %T", env.Progress)
+	}
+	if got := progress["timeout_seconds"]; got != 1200 {
+		t.Fatalf("timeout_seconds = %v, want 1200 (pipeline default)", got)
+	}
+}
+
+func TestPollAwait_UnknownTarget(t *testing.T) {
+	_, err := pollAwait(".", PollAwaitIn{Target: "bogus", PR: 1})
+	if err == nil {
+		t.Fatal("expected error for unknown target")
+	}
+	var domainErr *mcpserver.DomainError
+	if !errors.As(err, &domainErr) {
+		t.Fatalf("expected *mcpserver.DomainError, got %T: %v", err, err)
 	}
 }
 

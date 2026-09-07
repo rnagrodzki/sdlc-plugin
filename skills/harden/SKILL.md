@@ -24,7 +24,7 @@ rather than left implicit:
 - **Validate-before-write becomes write-then-validate-and-revert.** The
   `validate` MCP tool (`action: "guardrails"` / `"dimensions"`) checks whatever
   is currently on disk — it has no "validate this in-memory prospective JSON"
-  mode. Step 1's pre-flight (inside `harden_prepare`) already guarantees the
+  mode. Step 1's pre-flight (inside `prepare_orchestrator`, mode `"harden"`) already guarantees the
   on-disk guardrails/dimensions are valid *before* this skill starts, so any
   `validate` finding observed immediately after a proposal's write is
   attributable to that write. Step 5a/5b apply the edit first, validate second,
@@ -33,7 +33,7 @@ rather than left implicit:
   `error-report` the same way every other ported skill does — "invoke
   error-report, provide: Skill/Step/Operation/Error/Suggested
   investigation" — rather than resolving and following a `REFERENCE.md` path.
-  `harden_prepare`'s manifest still carries an `errorReportSkillPath` field (and
+  `prepare_orchestrator`'s (mode `"harden"`) manifest still carries an `errorReportSkillPath` field (and
   will typically log a load error for it, since `error-report/REFERENCE.md`
   is not shipped in this port); this skill does not read either.
 - Copilot-mirror generation uses the `dimensions_render_instructions` MCP tool.
@@ -51,7 +51,7 @@ rather than left implicit:
 
 If both `--failure-text` and `--from-issue` are provided simultaneously, stop
 immediately with a clear mutual-exclusion error message. Do not call
-`harden_prepare`.
+`prepare_orchestrator`.
 
 If neither `--failure-text` nor `--from-issue` is present, stop with an error
 message.
@@ -59,17 +59,18 @@ message.
 Required flag (always): `--skill`. Optional: `--step`, `--operation`,
 `--exit-code`, `--error-type`, `--user-intent`, `--args-string`.
 
-**When `--from-issue <num>` is used:** `harden_prepare` fetches the GitHub issue
+**When `--from-issue <num>` is used:** `prepare_orchestrator` (mode `"harden"`) fetches the GitHub issue
 body automatically (via `gh issue view`). When the issue carries the
 `mcp-failure` label, the tool pre-sets `classification_hint: "plugin-defect"`
 in the manifest. In that case, skip Step 3 — proceed directly to Step 4, which
 will route to Step 6 (PLUGIN-DEFECT ROUTE) without dispatching the orchestrator.
 Pass `fromIssue: "<num>"` to the Step 1 tool call.
 
-## Step 1 — CONSUME: Call `harden_prepare` (R4, R13)
+## Step 1 — CONSUME: Call `prepare_orchestrator` (mode: `"harden"`) (R4, R13)
 
 ```
-harden_prepare({
+prepare_orchestrator({
+  mode: "harden",
   failureText: "<failure text, empty if --from-issue is used>",
   fromIssue: "<issue number, empty if --failure-text is used>",
   skill: "<calling/failing skill name>",
@@ -86,7 +87,7 @@ harden_prepare({
 Empty values for optional fields are tolerated.
 
 **On tool error:** show the error message to the user and stop. Do **not**
-recursively dispatch this skill on its own crash — a `harden_prepare` crash (as
+recursively dispatch this skill on its own crash — a `prepare_orchestrator` crash (as
 opposed to a validation error) is a plugin defect and belongs in
 `error-report`, not another harden run. A validation error (missing
 required field, `--failure-text`/`--from-issue` mutual exclusion, or R16
@@ -116,7 +117,7 @@ harden: failure context loaded
   Classification hint:  {classification_hint or "(none — orchestrator will classify)"}
 ```
 
-When `classification_hint == "plugin-defect"` (set by `harden_prepare` when
+When `classification_hint == "plugin-defect"` (set by `prepare_orchestrator` when
 `fromIssue` fetches an issue with the `mcp-failure` label), skip Step 3 —
 proceed directly to Step 4, which will route to Step 6 (PLUGIN-DEFECT ROUTE)
 without dispatching the orchestrator. The manifest already carries the pre-set
@@ -131,7 +132,7 @@ Read `repository.contentRoot` and `repository.root` from the manifest JSON at
 `manifestPath` (a plain Read + JSON parse — no shell one-liner needed):
 
 - `CONTENT_ROOT` = `repository.contentRoot` (active worktree — dimensions/copilot paths rooted here).
-- `MAIN_ROOT` = `repository.root` (main worktree — `.sdlc/config.json` rooted here).
+- `MAIN_ROOT` = `repository.root` (main worktree — `.sdlc-v2/config.json` rooted here).
 
 Do NOT recompute either via `git`. Store both; they are needed in Step 5.
 
@@ -221,7 +222,7 @@ When the user selects **apply**:
 1. Apply the change to `targetFile` with Edit (preferred) or Write.
 2. Validate immediately:
    - For `surface == "plan-guardrails"` or `"execute-guardrails"`: `targetFile`
-     is `<MAIN_ROOT>/.sdlc/config.json` (already an absolute path rooted at
+     is `<MAIN_ROOT>/.sdlc-v2/config.json` (already an absolute path rooted at
      `repository.root` in the proposal — guardrail config is shared/main-rooted
      even when this skill runs from a linked worktree). Call
      `validate({ action: "guardrails", section: "plan" | "execute" })`
@@ -251,7 +252,7 @@ Applied {action} on {surface} → {targetFile}
 Immediately after (still this iteration, before advancing to the next
 proposal), gate on BOTH: (a) `proposal.surface === "review-dimensions"` AND
 `proposal.targetFile` (an absolute path rooted at `repository.contentRoot`)
-contains `.sdlc/review-dimensions/`, AND (b) `proposal.action === "add"` (a NEW
+contains `.sdlc-v2/review-dimensions/`, AND (b) `proposal.action === "add"` (a NEW
 dimension — existing dimensions are NOT retroactively mirrored per R8/C9;
 `strengthen`/`consolidate` actions on an already-mirrored dimension do not
 re-run this). When the gate does not hold, skip this block entirely.
@@ -264,7 +265,7 @@ When it holds:
    ```
    dimensions_render_instructions({
      file: "<proposal.targetFile>",
-     commonFile: "<CONTENT_ROOT>/.sdlc/review-dimensions/_common.md",
+     commonFile: "<CONTENT_ROOT>/.sdlc-v2/review-dimensions/_common.md",
      projectRoot: "<CONTENT_ROOT>",
    }) → { ok, path }
    ```
@@ -296,7 +297,7 @@ already chose the correct vocabulary in its proposal — never substitute one fo
 the other.
 
 **When `proposal.action === "consolidate"` (R15):** the proposal targets an
-existing guardrail by id. Read the current `.sdlc/config.json` from disk,
+existing guardrail by id. Read the current `.sdlc-v2/config.json` from disk,
 locate the guardrail in `<section>.guardrails[]` by the id specified in the
 proposal's `patch`, and replace its fields with the proposal's merged values
 (description, severity). Do NOT remove fields; do NOT lower severity
@@ -345,7 +346,7 @@ When `RESULT.classification == "plugin-defect"`:
 
 ## Step 7 — Learning Capture
 
-Append a single line to `.sdlc/learnings/log.md` summarizing the hardening
+Append a single line to `.sdlc-v2/learnings/log.md` summarizing the hardening
 action:
 
 ```
@@ -365,7 +366,7 @@ with an empty value.
 This line exists so that plan's dimension-coverage gate can
 deterministically suppress duplicate dimension proposals on subsequent runs
 within the same PR commit window, by grepping the last 100 lines of
-`.sdlc/learnings/log.md` for recent `harden` entries whose `Dimensions:`
+`.sdlc-v2/learnings/log.md` for recent `harden` entries whose `Dimensions:`
 line names the candidate dimension.
 
 The `AmbiguousOffer` line records the Step 5c outcome:
@@ -377,8 +378,8 @@ The `AmbiguousOffer` line records the Step 5c outcome:
 - `offered-skipped` — Step 5c offered the upstream-report and the user chose
   `skip`.
 
-Mirror the append pattern used by `commit` and `execute-plan`. Create
-the `.sdlc/learnings/` directory and `log.md` file if they don't exist.
+Mirror the append pattern used by `commit` and `execute`. Create
+the `.sdlc-v2/learnings/` directory and `log.md` file if they don't exist.
 
 `rm -f "<manifestPath>"` here if it has not already been removed by an earlier
 step (it should have been — this is a defensive final check, not a new
@@ -401,7 +402,7 @@ cleanup path).
   `failure.*` and `classification_hint`; the orchestrator owns the rest.
 - Auto-dispatch this skill from a caller skill without explicit user selection
   in the caller's failure-handling menu.
-- Recursively dispatch this skill on its own `harden_prepare` or orchestrator
+- Recursively dispatch this skill on its own `prepare_orchestrator` or orchestrator
   crash — log the failure and stop.
 - Override severity vocabulary chosen by the orchestrator (R10/R17) — each
   surface has its own canonical vocabulary; never substitute one for the other.

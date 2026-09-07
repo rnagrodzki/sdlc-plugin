@@ -14,8 +14,8 @@ import (
 // (including the legacy .claude/ alternation alongside the canonical
 // .sdlc/ location for dimensions and pr-template).
 var (
-	postToolValidateDimensionRe  = regexp.MustCompile(`[/\\]\.(?:claude|sdlc)[/\\]review-dimensions[/\\][^/\\]+\.ya?ml$`)
-	postToolValidatePRTemplateRe = regexp.MustCompile(`[/\\]\.(?:claude|sdlc)[/\\]pr-template\.md$`)
+	postToolValidateDimensionRe  = regexp.MustCompile(`[/\\]\.(?:claude|sdlc-v2|sdlc)[/\\]review-dimensions[/\\][^/\\]+\.ya?ml$`)
+	postToolValidatePRTemplateRe = regexp.MustCompile(`[/\\]\.(?:claude|sdlc-v2|sdlc)[/\\]pr-template\.md$`)
 	postToolValidatePlanRe       = regexp.MustCompile(`[/\\]plans[/\\][^/\\]+\.md$`)
 )
 

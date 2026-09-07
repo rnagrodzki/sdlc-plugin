@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
 // ---------------------------------------------------------------------------
@@ -407,7 +409,7 @@ func TestCommitPrepare_ConfigCheckFailsWithoutSkip(t *testing.T) {
 	gitCommit(t, dir, "initial")
 
 	// Write a v4 config to trigger stale error.
-	sdlcDir := filepath.Join(dir, ".sdlc")
+	sdlcDir := filepath.Join(dir, paths.DataDir)
 	if err := os.MkdirAll(sdlcDir, 0755); err != nil {
 		t.Fatal(err)
 	}

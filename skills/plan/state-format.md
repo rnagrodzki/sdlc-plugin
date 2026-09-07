@@ -88,7 +88,7 @@ The `deleteState` call is wrapped in a try/catch; a failed unlink cannot break t
 
 ### GC Orphan Sweep
 
-Stale plan markers (abandoned sessions, branch-deleted, TTL-expired) are removed by `ship --gc` and `execute-plan --gc` via `gcStateFiles({ prefix: 'plan', ttlDays, knownBranches })`. The sweep reports plan-prefix files in a `plan` bucket alongside the existing `ship` and `execute` buckets in the JSON output.
+Stale plan markers (abandoned sessions, branch-deleted, TTL-expired) are removed by `ship --gc` and `execute --gc` via `gcStateFiles({ prefix: 'plan', ttlDays, knownBranches })`. The sweep reports plan-prefix files in a `plan` bucket alongside the existing `ship` and `execute` buckets in the JSON output.
 
 ### Atomic Write
 

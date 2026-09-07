@@ -40,7 +40,7 @@ available here and are not simulated:
   GitHub UI after confirming the reply addresses the feedback, or ask the user to.
 
 There is likewise no per-user configuration surface for auto-fix-by-severity or
-auto-harden-by-default in this port (no tool resolves `.sdlc/local.json` for this skill).
+auto-harden-by-default in this port (no tool resolves `.sdlc-v2/local.json` for this skill).
 `--auto`, described in Steps 10–12 below, is parsed directly from this invocation's own
 `$ARGUMENTS` and has one meaning throughout: skip the confirmation prompt for "agree, will
 fix" items. There is no severity-based partial-auto mode.
@@ -397,11 +397,11 @@ path) and note the rest as suppressed in the summary below.
 Before any `gh api` reply is posted, validate every URL embedded in every drafted reply body.
 
 1. Concatenate all reply bodies (one per line) and write them with the `Write` tool to
-   `.sdlc/state/artifacts/received-review-reply-bodies.md` (overwrite each run — this is a
+   `.sdlc-v2/state/artifacts/received-review-reply-bodies.md` (overwrite each run — this is a
    scratch working file, not a durable record).
 2. Validate:
    ```
-   links_validate({ file: ".sdlc/state/artifacts/received-review-reply-bodies.md", offline: false })
+   links_validate({ file: ".sdlc-v2/state/artifacts/received-review-reply-bodies.md", offline: false })
    → { results: [{ url, line, status, reason, detail }] }
    ```
 3. If any `results[]` entry has `status !== "ok"`:
@@ -555,7 +555,7 @@ When invoking `error-report`, provide:
 
 ## Learning Capture
 
-After processing review feedback, append discoveries to `.sdlc/learnings/log.md`. Record
+After processing review feedback, append discoveries to `.sdlc-v2/learnings/log.md`. Record
 entries for: reviewer patterns worth knowing (e.g., they always flag X style), pushback
 outcomes (accepted or rejected — to calibrate future responses), unclear feedback patterns
 that revealed communication gaps, YAGNI findings that removed unnecessary work, or codebase

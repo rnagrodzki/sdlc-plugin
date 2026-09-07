@@ -3,11 +3,13 @@ package tools
 import (
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/configmigrate"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
 
@@ -17,8 +19,7 @@ import (
 
 // MigrateIn is the input for the migrate tool.
 type MigrateIn struct {
-	// Action selects the migration to run: "config", "jira_templates", or
-	// "learnings_log".
+	// Action selects the migration to run: "config" or "import".
 	Action string `json:"action"`
 	// DryRun, when true, reports what would change without writing.
 	DryRun bool `json:"dryRun"`
@@ -39,13 +40,11 @@ func migrate(root string, in MigrateIn) (MigrateOut, error) {
 	switch in.Action {
 	case "config":
 		return migrateConfig(root, in.DryRun)
-	case "jira_templates":
-		return migrateJiraTemplates(root, in.DryRun)
-	case "learnings_log":
-		return migrateLearningsLog(root, in.DryRun)
+	case "import":
+		return importFromOld(root, in.DryRun)
 	default:
 		return MigrateOut{}, &mcpserver.DomainError{
-			Msg: fmt.Sprintf("unknown migrate action %q; must be one of: config, jira_templates, learnings_log", in.Action),
+			Msg: fmt.Sprintf("unknown migrate action %q; must be one of: config, import", in.Action),
 		}
 	}
 }
@@ -84,11 +83,11 @@ func migrateConfig(root string, dryRun bool) (MigrateOut, error) {
 
 	var changed []string
 	if report.Migrated {
-		changed = append(changed, ".sdlc/config.json")
+		changed = append(changed, paths.DataDir+"/config.json")
 		// local.json may also have been written.
-		localPath := filepath.Join(root, ".sdlc", "local.json")
+		localPath := filepath.Join(root, paths.DataDir, "local.json")
 		if _, err := os.Stat(localPath); err == nil {
-			changed = append(changed, ".sdlc/local.json")
+			changed = append(changed, paths.DataDir+"/local.json")
 		}
 	}
 
@@ -107,156 +106,106 @@ func migrateConfig(root string, dryRun bool) (MigrateOut, error) {
 	}, nil
 }
 
-// migrateJiraTemplates moves .claude/jira-templates/ to .sdlc/jira-templates/.
-func migrateJiraTemplates(root string, dryRun bool) (MigrateOut, error) {
-	srcDir := filepath.Join(root, ".claude", "jira-templates")
-	dstDir := filepath.Join(root, ".sdlc", "jira-templates")
+// legacyImportFiles are top-level files copied verbatim from
+// paths.LegacyDataDir into paths.DataDir by the "import" action.
+var legacyImportFiles = []string{"config.json", "local.json", "pr-template.md", "plan-template.md"}
 
-	srcExists := migrateDirExists(srcDir)
-	dstExists := migrateDirExists(dstDir)
+// legacyImportDirs are directories copied recursively from
+// paths.LegacyDataDir into paths.DataDir by the "import" action.
+var legacyImportDirs = []string{"jira-templates", "learnings", "review-dimensions"}
 
-	// Determine outcome.
-	switch {
-	case !srcExists && !dstExists:
-		return MigrateOut{
-			OK:      true,
-			Action:  "jira_templates",
-			DryRun:  dryRun,
-			Result:  "noop: no legacy jira-templates directory found",
-			Changed: []string{},
-		}, nil
+// importFromOld non-destructively copies plugin data from the old plugin's
+// data directory (paths.LegacyDataDir, ".sdlc") into the new plugin's data
+// directory (paths.DataDir, ".sdlc-v2"). It never deletes or modifies the
+// source, and skips any destination path that already exists.
+func importFromOld(root string, dryRun bool) (MigrateOut, error) {
+	var changed []string
 
-	case !srcExists && dstExists:
-		return MigrateOut{
-			OK:      true,
-			Action:  "jira_templates",
-			DryRun:  dryRun,
-			Result:  "already-migrated: .sdlc/jira-templates/ exists, no legacy source",
-			Changed: []string{},
-		}, nil
-
-	case srcExists && dstExists:
-		return MigrateOut{
-			OK:      true,
-			Action:  "jira_templates",
-			DryRun:  dryRun,
-			Result:  "skip: both .claude/jira-templates/ and .sdlc/jira-templates/ exist; manual resolution needed",
-			Changed: []string{},
-		}, nil
-
-	default:
-		// srcExists && !dstExists — migrate.
+	for _, name := range legacyImportFiles {
+		src := filepath.Join(root, paths.LegacyDataDir, name)
+		dst := filepath.Join(root, paths.DataDir, name)
+		if !migrateFileExists(src) || migrateFileExists(dst) {
+			continue
+		}
+		rel := paths.DataDir + "/" + name
 		if dryRun {
-			return MigrateOut{
-				OK:      true,
-				Action:  "jira_templates",
-				DryRun:  true,
-				Result:  "would-move: .claude/jira-templates/ -> .sdlc/jira-templates/",
-				Changed: []string{},
-			}, nil
+			changed = append(changed, rel)
+			continue
 		}
-
-		if err := os.MkdirAll(filepath.Dir(dstDir), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return MigrateOut{}, &mcpserver.InfraError{
-				Msg:   fmt.Sprintf("create .sdlc directory: %s", err.Error()),
+				Msg:   fmt.Sprintf("create %s directory: %s", paths.DataDir, err.Error()),
 				Cause: err,
 			}
 		}
-		if err := os.Rename(srcDir, dstDir); err != nil {
+		if err := copyFile(src, dst); err != nil {
 			return MigrateOut{}, &mcpserver.InfraError{
-				Msg:   fmt.Sprintf("move jira-templates: %s", err.Error()),
+				Msg:   fmt.Sprintf("copy %s: %s", name, err.Error()),
 				Cause: err,
 			}
 		}
-		return MigrateOut{
-			OK:      true,
-			Action:  "jira_templates",
-			DryRun:  false,
-			Result:  "moved: .claude/jira-templates/ -> .sdlc/jira-templates/",
-			Changed: []string{".sdlc/jira-templates/"},
-		}, nil
+		changed = append(changed, rel)
 	}
+
+	for _, name := range legacyImportDirs {
+		src := filepath.Join(root, paths.LegacyDataDir, name)
+		dst := filepath.Join(root, paths.DataDir, name)
+		if !migrateDirExists(src) || migrateDirExists(dst) {
+			continue
+		}
+		rel := paths.DataDir + "/" + name + "/"
+		if dryRun {
+			changed = append(changed, rel)
+			continue
+		}
+		if err := copyDir(src, dst); err != nil {
+			return MigrateOut{}, &mcpserver.InfraError{
+				Msg:   fmt.Sprintf("copy %s: %s", name, err.Error()),
+				Cause: err,
+			}
+		}
+		changed = append(changed, rel)
+	}
+
+	result := "up-to-date: nothing to import"
+	if len(changed) > 0 {
+		verb := "imported"
+		if dryRun {
+			verb = "would-import"
+		}
+		result = fmt.Sprintf("%s: %v", verb, changed)
+	}
+
+	return MigrateOut{
+		OK:      true,
+		Action:  "import",
+		DryRun:  dryRun,
+		Result:  result,
+		Changed: changed,
+	}, nil
 }
 
-// migrateLearningsLog moves .claude/learnings/log.md to .sdlc/learnings/log.md.
-func migrateLearningsLog(root string, dryRun bool) (MigrateOut, error) {
-	srcFile := filepath.Join(root, ".claude", "learnings", "log.md")
-	dstFile := filepath.Join(root, ".sdlc", "learnings", "log.md")
-
-	srcExists := migrateFileExists(srcFile)
-	dstExists := migrateFileExists(dstFile)
-
-	switch {
-	case !srcExists && !dstExists:
-		return MigrateOut{
-			OK:      true,
-			Action:  "learnings_log",
-			DryRun:  dryRun,
-			Result:  "noop: no legacy learnings log found",
-			Changed: []string{},
-		}, nil
-
-	case !srcExists && dstExists:
-		return MigrateOut{
-			OK:      true,
-			Action:  "learnings_log",
-			DryRun:  dryRun,
-			Result:  "already-migrated: .sdlc/learnings/log.md exists, no legacy source",
-			Changed: []string{},
-		}, nil
-
-	case srcExists && dstExists:
-		return MigrateOut{
-			OK:      true,
-			Action:  "learnings_log",
-			DryRun:  dryRun,
-			Result:  "skip: both .claude/learnings/log.md and .sdlc/learnings/log.md exist; manual resolution needed",
-			Changed: []string{},
-		}, nil
-
-	default:
-		// srcExists && !dstExists — migrate.
-		if dryRun {
-			return MigrateOut{
-				OK:      true,
-				Action:  "learnings_log",
-				DryRun:  true,
-				Result:  "would-move: .claude/learnings/log.md -> .sdlc/learnings/log.md",
-				Changed: []string{},
-			}, nil
+// copyDir recursively copies the src directory tree to dst, creating dst
+// and any needed subdirectories. Used by importFromOld for directory-shaped
+// legacy data (jira-templates/, learnings/, review-dimensions/).
+func copyDir(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
-
-		dstDir := filepath.Dir(dstFile)
-		if err := os.MkdirAll(dstDir, 0o755); err != nil {
-			return MigrateOut{}, &mcpserver.InfraError{
-				Msg:   fmt.Sprintf("create .sdlc/learnings directory: %s", err.Error()),
-				Cause: err,
-			}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
 		}
-		if err := copyFile(srcFile, dstFile); err != nil {
-			return MigrateOut{}, &mcpserver.InfraError{
-				Msg:   fmt.Sprintf("copy learnings log: %s", err.Error()),
-				Cause: err,
-			}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
 		}
-		if err := os.Remove(srcFile); err != nil {
-			// Non-fatal: file was copied successfully.
-			return MigrateOut{
-				OK:      true,
-				Action:  "learnings_log",
-				DryRun:  false,
-				Result:  "moved: .claude/learnings/log.md -> .sdlc/learnings/log.md (warning: could not remove source)",
-				Changed: []string{".sdlc/learnings/log.md"},
-			}, nil
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
 		}
-		return MigrateOut{
-			OK:      true,
-			Action:  "learnings_log",
-			DryRun:  false,
-			Result:  "moved: .claude/learnings/log.md -> .sdlc/learnings/log.md",
-			Changed: []string{".sdlc/learnings/log.md"},
-		}, nil
-	}
+		return copyFile(path, target)
+	})
 }
 
 // migrateDirExists returns true if path exists and is a directory.
@@ -306,7 +255,7 @@ func copyFile(src, dst string) error {
 // RegisterMigrateTools registers the migrate tool on the server.
 func RegisterMigrateTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "migrate",
-		"Runs a legacy-to-v5 migration. Actions: config (schema migration via configmigrate engine), jira_templates (move .claude/jira-templates/ to .sdlc/), learnings_log (move .claude/learnings/log.md to .sdlc/).",
+		"Runs a legacy migration. Actions: config (schema migration via configmigrate engine), import (non-destructively copies config, templates, jira-templates, learnings, and review-dimensions from the old plugin's "+paths.LegacyDataDir+"/ directory into "+paths.DataDir+"/, skipping anything that already exists).",
 		func(ctx mcpserver.Ctx, in MigrateIn) (MigrateOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

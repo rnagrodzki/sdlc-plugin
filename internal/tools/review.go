@@ -18,6 +18,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
 
@@ -557,7 +558,7 @@ func fetchDiff(base, dir, scope string) string {
 // ---------------------------------------------------------------------------
 
 func loadAndMatchDimensions(projectRoot string, changedFiles []string) []reviewDimWork {
-	dimDir := filepath.Join(projectRoot, ".sdlc", "review-dimensions")
+	dimDir := filepath.Join(projectRoot, paths.DataDir, "review-dimensions")
 	loaded, err := dimensions.Load(dimDir)
 	if err != nil || len(loaded) == 0 {
 		return nil
@@ -679,7 +680,7 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 	dims := loadAndMatchDimensions(projectRoot, changedFiles)
 	if len(dims) == 0 {
 		return ReviewPrepareOut{}, &mcpserver.DomainError{
-			Msg: "No review dimensions found in .sdlc/review-dimensions/",
+			Msg: "No review dimensions found in " + paths.DataDir + "/review-dimensions/",
 		}
 	}
 

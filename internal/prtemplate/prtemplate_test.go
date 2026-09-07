@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/setupmeta"
 )
 
@@ -114,7 +115,7 @@ func TestSectionCount(t *testing.T) {
 
 func TestResolve_Canonical(t *testing.T) {
 	root := t.TempDir()
-	sdlcDir := filepath.Join(root, ".sdlc")
+	sdlcDir := filepath.Join(root, paths.DataDir)
 	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +173,7 @@ func TestResolve_LegacyFallback(t *testing.T) {
 
 func TestResolve_CanonicalTakesPrecedence(t *testing.T) {
 	root := t.TempDir()
-	sdlcDir := filepath.Join(root, ".sdlc")
+	sdlcDir := filepath.Join(root, paths.DataDir)
 	claudeDir := filepath.Join(root, ".claude")
 	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -206,7 +207,7 @@ func TestResolve_CanonicalTakesPrecedence(t *testing.T) {
 
 func TestResolve_EmptyCanonicalTakesPrecedence(t *testing.T) {
 	root := t.TempDir()
-	sdlcDir := filepath.Join(root, ".sdlc")
+	sdlcDir := filepath.Join(root, paths.DataDir)
 	claudeDir := filepath.Join(root, ".claude")
 	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
 		t.Fatal(err)

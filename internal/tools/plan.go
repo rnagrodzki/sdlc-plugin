@@ -22,6 +22,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/openspec"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
@@ -788,7 +789,7 @@ func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepar
 
 	// 1a. Plan template detection.
 	planTemplate := PlanTemplate{}
-	planTemplatePath := filepath.Join(mainRoot, ".sdlc", "plan-template.md")
+	planTemplatePath := filepath.Join(mainRoot, paths.DataDir, "plan-template.md")
 	if fileExists(planTemplatePath) {
 		p := planTemplatePath
 		planTemplate.Path = &p
@@ -1034,7 +1035,7 @@ func RegisterPlanTools(s *mcpserver.Server) {
 	)
 
 	mcpserver.Register(s, "plan_mark",
-		"Write a plan-integrity checkpoint marker (plan-file, skillInvoked, guardrailsEvaluated, critiqueRan) into the current branch's plan state file.",
+		"INTERNAL — called by sdlc skills only. Write a plan-integrity checkpoint marker (plan-file, skillInvoked, guardrailsEvaluated, critiqueRan) into the current branch's plan state file.",
 		func(_ mcpserver.Ctx, in PlanMarkIn) (PlanMarkOut, error) {
 			mainRoot, err := worktree.MainRoot()
 			if err != nil {
