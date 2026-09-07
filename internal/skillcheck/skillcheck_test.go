@@ -74,6 +74,7 @@ func commitSkillsBuildRegistry(t *testing.T) map[string]bool {
 	tools.RegisterShipStateTools(srv)
 	tools.RegisterVersionTools(srv)
 	tools.RegisterValidateTools(srv)
+	tools.RegisterLearningsTools(srv)
 
 	mcpSrv := srv.MCPServer()
 

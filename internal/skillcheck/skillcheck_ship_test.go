@@ -105,6 +105,7 @@ func shipSkillsBuildRegistry(t *testing.T) map[string]bool {
 	tools.RegisterValidateTools(srv)
 	tools.RegisterDimensionsRenderTools(srv)
 	tools.RegisterSetupWriteTools(srv)
+	tools.RegisterLearningsTools(srv)
 
 	mcpSrv := srv.MCPServer()
 

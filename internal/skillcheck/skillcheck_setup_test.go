@@ -126,6 +126,7 @@ func setupSkillsListTools(t *testing.T) []mcp.Tool {
 	tools.RegisterVersionTools(srv)
 	tools.RegisterValidateTools(srv)
 	tools.RegisterDimensionsRenderTools(srv)
+	tools.RegisterLearningsTools(srv)
 
 	mcpSrv := srv.MCPServer()
 
