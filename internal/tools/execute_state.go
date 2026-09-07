@@ -28,47 +28,47 @@ import (
 // actions. Each field is consumed by one or more actions (noted in comments).
 type ExecuteStateIn struct {
 	Action         string         `json:"action"`
-	Branch         string         `json:"branch"`
-	Quality        string         `json:"quality"`
-	TotalTasks     int            `json:"totalTasks"`
-	PlannedTaskIds []string       `json:"plannedTaskIds"`
-	PlanPath       string         `json:"planPath"`
-	PlanHash       string         `json:"planHash"`
-	Wave           int            `json:"wave"`
-	TasksJSON      string         `json:"tasksJson"`
-	RunID          string         `json:"runId"`
-	WorkerID       string         `json:"workerId"`
-	Decisions      string         `json:"decisions"`
-	Status         string         `json:"status"`
-	TimedOut       bool           `json:"timedOut"`
-	SHA            string         `json:"sha"`
-	TaskID         string         `json:"taskId"`
-	TaskName       string         `json:"taskName"`
-	Complexity     string         `json:"complexity"`
-	Risk           string         `json:"risk"`
-	FilesChanged   string         `json:"filesChanged"`
-	FilesAdded     string         `json:"filesAdded"`
-	VerifyToken    string         `json:"verifyToken"`
-	SkippedDep     bool           `json:"skippedDependency"`
-	ErrorText      string         `json:"error"`
-	Data           string         `json:"data"`
-	TTLDays        *int           `json:"ttlDays"`
-	DryRun         bool           `json:"dryRun"`
-	MaxFiles       int            `json:"maxFiles"`
-	MaxDecisions   int            `json:"maxDecisions"`
-	MaxInterfaces  int            `json:"maxInterfaces"`
-	MaxTaskIds     int            `json:"maxTaskIds"`
-	Dispatched     string         `json:"dispatched"`
-	MissingIds     string         `json:"missingIds"`
-	SplitDepth     int            `json:"splitDepth"`
-	MaxSplitDepth  int            `json:"maxSplitDepth"`
-	StateFile      string         `json:"stateFile"`
-	Phase          string         `json:"phase"`
-	ReadProgress   bool           `json:"readProgress"`
-	SessionID      string         `json:"sessionId"`
-	TimeoutSeconds int            `json:"timeoutSeconds"`
-	Payload        map[string]any `json:"payload"`
-	StepID         string         `json:"stepId"`
+	Branch         string         `json:"branch,omitempty"`
+	Quality        string         `json:"quality,omitempty"`
+	TotalTasks     int            `json:"totalTasks,omitempty"`
+	PlannedTaskIds []string       `json:"plannedTaskIds,omitempty"`
+	PlanPath       string         `json:"planPath,omitempty"`
+	PlanHash       string         `json:"planHash,omitempty"`
+	Wave           int            `json:"wave,omitempty"`
+	TasksJSON      string         `json:"tasksJson,omitempty"`
+	RunID          string         `json:"runId,omitempty"`
+	WorkerID       string         `json:"workerId,omitempty"`
+	Decisions      string         `json:"decisions,omitempty"`
+	Status         string         `json:"status,omitempty"`
+	TimedOut       bool           `json:"timedOut,omitempty"`
+	SHA            string         `json:"sha,omitempty"`
+	TaskID         string         `json:"taskId,omitempty"`
+	TaskName       string         `json:"taskName,omitempty"`
+	Complexity     string         `json:"complexity,omitempty"`
+	Risk           string         `json:"risk,omitempty"`
+	FilesChanged   string         `json:"filesChanged,omitempty"`
+	FilesAdded     string         `json:"filesAdded,omitempty"`
+	VerifyToken    string         `json:"verifyToken,omitempty"`
+	SkippedDep     bool           `json:"skippedDependency,omitempty"`
+	ErrorText      string         `json:"error,omitempty"`
+	Data           string         `json:"data,omitempty"`
+	TTLDays        *int           `json:"ttlDays,omitempty"`
+	DryRun         bool           `json:"dryRun,omitempty"`
+	MaxFiles       int            `json:"maxFiles,omitempty"`
+	MaxDecisions   int            `json:"maxDecisions,omitempty"`
+	MaxInterfaces  int            `json:"maxInterfaces,omitempty"`
+	MaxTaskIds     int            `json:"maxTaskIds,omitempty"`
+	Dispatched     string         `json:"dispatched,omitempty"`
+	MissingIds     string         `json:"missingIds,omitempty"`
+	SplitDepth     int            `json:"splitDepth,omitempty"`
+	MaxSplitDepth  int            `json:"maxSplitDepth,omitempty"`
+	StateFile      string         `json:"stateFile,omitempty"`
+	Phase          string         `json:"phase,omitempty"`
+	ReadProgress   bool           `json:"readProgress,omitempty"`
+	SessionID      string         `json:"sessionId,omitempty"`
+	TimeoutSeconds int            `json:"timeoutSeconds,omitempty"`
+	Payload        map[string]any `json:"payload,omitempty"`
+	StepID         string         `json:"stepId,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -108,7 +108,31 @@ var execAccountedStatuses = map[string]bool{
 // RegisterExecuteStateTools registers the execute_state tool.
 func RegisterExecuteStateTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "execute_state",
-		"Manage execute execution state (19 actions: init, wave-start, wave-done, wave-fail, wave-committed, task-done, task-fail, context, read, cleanup, gc, summarize-prior-wave-context, wave-split, verify-completeness, wave-progress, resume-reset, ledger_checkin, ledger_checkout, ledger_status)",
+		`Manage execution state for the wave-based task runner.
+
+Pass "action" to select an operation. Each action uses a subset of the input fields (unlisted fields are ignored):
+
+- init: Create execution state. Requires branch, quality, totalTasks, plannedTaskIds. Optional: planPath, planHash.
+- wave-start: Begin a wave. Requires wave. Optional: branch, tasksJson, runId (for fact sheets).
+- wave-done: Complete a wave. Requires wave. Optional: branch, decisions, status.
+- wave-fail: Fail a wave. Requires wave. Optional: branch, timedOut, status.
+- wave-committed: Record a commit SHA for a completed wave. Requires wave. Optional: branch, sha.
+- task-done: Record task completion. Requires wave, taskId. Optional: branch, taskName, complexity, risk, filesChanged, filesAdded, verifyToken.
+- task-fail: Record task failure. Requires wave, taskId. Optional: branch, error, skippedDependency.
+- context: Read/write shared context keys. Requires data (JSON object with allowed keys: planSummary, completedTaskIds, filesAdded, filesModified, interfacesCreated, decisionsFromPriorWaves). Optional: branch, maxFiles, maxDecisions, maxInterfaces, maxTaskIds.
+- read: Return the full execution state blob. Optional: branch.
+- cleanup: Delete execution state for a branch. Optional: branch.
+- gc: Garbage-collect stale state files. Optional: ttlDays, dryRun, branch.
+- summarize-prior-wave-context: Summarize context from prior waves. Optional: branch, maxFiles, maxDecisions, maxInterfaces, maxTaskIds.
+- wave-split: Split remaining tasks into a new wave. Requires wave, dispatched, missingIds. Optional: branch, splitDepth, maxSplitDepth.
+- verify-completeness: Verify all planned tasks are accounted for. Optional: branch.
+- wave-progress: Read/write per-task progress. Requires runId. For reads: readProgress=true. For writes: taskId, phase.
+- resume-reset: Reset in-progress waves for session resume. Optional: branch, stateFile.
+- ledger_checkin: Register a worker as active. Requires runId, workerId. Optional: stepId.
+- ledger_checkout: Mark a worker as done. Requires runId, workerId.
+- ledger_status: List worker statuses for a run. Requires runId. Optional: timeoutSeconds.
+
+Returns a JSON envelope: {"ok":true, "data":{...}} on success, {"ok":false, "code":"...", "error":"..."} on failure.`,
 		func(ctx mcpserver.Ctx, in ExecuteStateIn) (any, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {
@@ -580,6 +604,7 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 		summary := execSummarizePriorWaveCtx(st.Data, root, 0, 0, 0, 0)
 
 		writtenPaths := []string{}
+		var factSheetErrors []string
 		for _, t := range tasks {
 			tm, ok := t.(map[string]any)
 			if !ok {
@@ -623,16 +648,21 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 
 			p, err := wave.WriteFactsheet(root, runID, fs)
 			if err != nil {
-				// Warn and continue, matching JS's non-fatal contract.
+				// Non-fatal: accumulate errors so the caller sees them.
+				factSheetErrors = append(factSheetErrors, fmt.Sprintf("task %s: %s", id, err.Error()))
 				continue
 			}
 			writtenPaths = append(writtenPaths, p)
 		}
 
-		return map[string]any{
+		result := map[string]any{
 			"runId":      runID,
 			"factSheets": writtenPaths,
-		}, nil
+		}
+		if len(factSheetErrors) > 0 {
+			result["factSheetErrors"] = factSheetErrors
+		}
+		return result, nil
 	}
 
 	return map[string]any{}, nil
@@ -777,7 +807,7 @@ func execActionWaveCommitted(root, workDir string, in ExecuteStateIn) (any, erro
 	// Idempotency / conflict.
 	if existing, hasSha := w["committedSha"]; hasSha {
 		if existing == newSha {
-			return map[string]any{}, nil // no-op
+			return map[string]any{"committedSha": newSha, "idempotent": true}, nil
 		}
 		return nil, &mcpserver.DomainError{
 			Msg: fmt.Sprintf("wave %d already has committedSha %q — refusing to overwrite with %v", in.Wave, existing, newSha),
@@ -788,7 +818,7 @@ func execActionWaveCommitted(root, workDir string, in ExecuteStateIn) (any, erro
 	if err := state.Write(st); err != nil {
 		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
 	}
-	return map[string]any{}, nil
+	return map[string]any{"committedSha": newSha, "idempotent": false}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -800,7 +830,7 @@ func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time
 		return nil, &mcpserver.DomainError{Msg: "--wave is required"}
 	}
 	if in.TaskID == "" {
-		return nil, &mcpserver.DomainError{Msg: "--task is required"}
+		return nil, &mcpserver.DomainError{Msg: "taskId is required"}
 	}
 
 	// Parse filesChanged.
@@ -949,7 +979,7 @@ func execActionTaskFail(root, workDir string, in ExecuteStateIn, now func() time
 		return nil, &mcpserver.DomainError{Msg: "--wave is required"}
 	}
 	if in.TaskID == "" {
-		return nil, &mcpserver.DomainError{Msg: "--task is required"}
+		return nil, &mcpserver.DomainError{Msg: "taskId is required"}
 	}
 
 	branch, err := execResolveBranch(in.Branch, workDir)
@@ -1082,6 +1112,11 @@ func execActionContext(root, workDir string, in ExecuteStateIn) (any, error) {
 // Action: read
 // ---------------------------------------------------------------------------
 
+// execReadMaxBytes is the maximum serialized size the read action will return.
+// Mirrors the execx.ErrOutputCap precedent: overflow is a distinct error, never
+// a silent truncation.
+const execReadMaxBytes = 1 << 20 // 1 MiB
+
 func execActionRead(root, workDir string, in ExecuteStateIn) (any, error) {
 	branch, err := execResolveBranch(in.Branch, workDir)
 	if err != nil {
@@ -1091,6 +1126,18 @@ func execActionRead(root, workDir string, in ExecuteStateIn) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// Enforce output cap — never return a silently truncated blob.
+	raw, marshalErr := json.Marshal(st.Data)
+	if marshalErr != nil {
+		return nil, &mcpserver.InfraError{Msg: "marshal state: " + marshalErr.Error(), Cause: marshalErr}
+	}
+	if len(raw) > execReadMaxBytes {
+		return nil, &mcpserver.DomainError{
+			Msg: fmt.Sprintf("state blob is %d bytes, exceeds read cap of %d bytes", len(raw), execReadMaxBytes),
+		}
+	}
+
 	return st.Data, nil
 }
 
@@ -1198,8 +1245,8 @@ func execGCDryRun(stateDir string, ttlDays int, branchExists func(string) bool, 
 		"ttlDays": ttlDays,
 	}
 
-	executeResult := map[string]any{"wouldDelete": []any{}, "wouldKeep": []any{}}
-	planResult := map[string]any{"wouldDelete": []any{}, "wouldKeep": []any{}}
+	executeResult := map[string]any{"deleted": []any{}, "kept": []any{}}
+	planResult := map[string]any{"deleted": []any{}, "kept": []any{}}
 
 	entries, err := os.ReadDir(stateDir)
 	if err != nil && !os.IsNotExist(err) {
@@ -1243,13 +1290,13 @@ func execGCDryRun(stateDir string, ttlDays int, branchExists func(string) bool, 
 		entry := map[string]any{"file": name, "branch": slug}
 		if fresh {
 			entry["reason"] = "ttl-fresh"
-			bucket["wouldKeep"] = append(bucket["wouldKeep"].([]any), entry)
+			bucket["kept"] = append(bucket["kept"].([]any), entry)
 		} else if branchLive {
 			entry["reason"] = "branch-exists"
-			bucket["wouldKeep"] = append(bucket["wouldKeep"].([]any), entry)
+			bucket["kept"] = append(bucket["kept"].([]any), entry)
 		} else {
 			entry["reason"] = "stale+branch-gone"
-			bucket["wouldDelete"] = append(bucket["wouldDelete"].([]any), entry)
+			bucket["deleted"] = append(bucket["deleted"].([]any), entry)
 		}
 	}
 
@@ -1261,13 +1308,11 @@ func execGCDryRun(stateDir string, ttlDays int, branchExists func(string) bool, 
 }
 
 // execReapRunDirectories sweeps stale per-run directories.
+// Both live and dry-run modes use "deleted"/"kept" keys; the top-level
+// "dryRun" field distinguishes the two modes.
 func execReapRunDirectories(stateDir string, ttlDays int, dryRun bool, now func() time.Time) map[string]any {
 	deleteBucketKey := "deleted"
 	keepBucketKey := "kept"
-	if dryRun {
-		deleteBucketKey = "wouldDelete"
-		keepBucketKey = "wouldKeep"
-	}
 
 	result := map[string]any{deleteBucketKey: []any{}, keepBucketKey: []any{}}
 
@@ -1597,7 +1642,7 @@ func execActionVerifyCompleteness(root, workDir string, in ExecuteStateIn) (any,
 
 func execActionWaveProgress(root string, in ExecuteStateIn) (any, error) {
 	if in.RunID == "" {
-		return nil, &mcpserver.DomainError{Msg: "--run-id is required"}
+		return nil, &mcpserver.DomainError{Msg: "runId is required"}
 	}
 
 	if in.ReadProgress {
@@ -1609,7 +1654,7 @@ func execActionWaveProgress(root string, in ExecuteStateIn) (any, error) {
 	}
 
 	if in.TaskID == "" {
-		return nil, &mcpserver.DomainError{Msg: "--task is required (write mode)"}
+		return nil, &mcpserver.DomainError{Msg: "taskId is required (write mode)"}
 	}
 
 	if err := wave.UpdateProgress(root, in.RunID, in.TaskID, in.Phase); err != nil {
@@ -1719,7 +1764,16 @@ func execActionLedgerCheckin(root string, in ExecuteStateIn, now func() time.Tim
 	if err := fsx.AtomicWriteJSON(fp, data); err != nil {
 		return nil, &mcpserver.InfraError{Msg: "write ledger: " + err.Error(), Cause: err}
 	}
-	return map[string]any{}, nil
+	confirmation := map[string]any{
+		"runId":     in.RunID,
+		"workerId":  in.WorkerID,
+		"status":    "active",
+		"checkinAt": data["checkinAt"],
+	}
+	if in.StepID != "" {
+		confirmation["stepId"] = in.StepID
+	}
+	return confirmation, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1757,7 +1811,12 @@ func execActionLedgerCheckout(root string, in ExecuteStateIn, now func() time.Ti
 	if err := fsx.AtomicWriteJSON(fp, existing); err != nil {
 		return nil, &mcpserver.InfraError{Msg: "write ledger: " + err.Error(), Cause: err}
 	}
-	return map[string]any{}, nil
+	return map[string]any{
+		"runId":      in.RunID,
+		"workerId":   in.WorkerID,
+		"status":     "done",
+		"checkoutAt": existing["checkoutAt"],
+	}, nil
 }
 
 // ---------------------------------------------------------------------------

@@ -66,6 +66,16 @@ func Status(dir string) (string, error) {
 	return out, nil
 }
 
+// validateRef rejects refs that start with "-" to prevent argument injection.
+// A ref like "-Rmalicious...HEAD" would be parsed as a git flag if passed as
+// an argv token without validation.
+func validateRef(ref, context string) error {
+	if strings.HasPrefix(ref, "-") {
+		return fmt.Errorf("gitx: %s: ref %q looks like a flag (starts with '-')", context, ref)
+	}
+	return nil
+}
+
 // DiffOpts configures the Diff function.
 type DiffOpts struct {
 	// Base is the base ref for a three-dot range (base...HEAD).
@@ -102,6 +112,9 @@ func Diff(dir string, opts DiffOpts) (string, error) {
 	if opts.Cached {
 		args = append(args, "--cached")
 	} else if opts.Base != "" {
+		if err := validateRef(opts.Base, "diff"); err != nil {
+			return "", err
+		}
 		args = append(args, opts.Base+"...HEAD")
 	} else {
 		args = append(args, "HEAD")
@@ -135,6 +148,9 @@ func DeriveWorkspace(inLinkedWorktree bool, currentBranch, defaultBranch string)
 
 // CommitLog returns the one-line commit log between base and HEAD.
 func CommitLog(dir, base string) (string, error) {
+	if err := validateRef(base, "commit log"); err != nil {
+		return "", err
+	}
 	out, err := execx.Run("git", []string{"log", "--oneline", base + "..HEAD"}, execx.Options{Dir: dir})
 	if err != nil {
 		return "", fmt.Errorf("gitx: commit log: %w", err)
@@ -144,6 +160,9 @@ func CommitLog(dir, base string) (string, error) {
 
 // CommitCount returns the number of commits between base and HEAD.
 func CommitCount(dir, base string) (int, error) {
+	if err := validateRef(base, "commit count"); err != nil {
+		return 0, err
+	}
 	out, err := execx.Run("git", []string{"rev-list", "--count", base + "..HEAD"}, execx.Options{Dir: dir})
 	if err != nil {
 		return 0, fmt.Errorf("gitx: commit count: %w", err)
