@@ -64,7 +64,7 @@
 'use strict';
 
 /** @version 2 — promote-release script version. Bump when behavior changes. */
-const PROMOTE_RELEASE_SCRIPT_VERSION = 2;
+const PROMOTE_RELEASE_SCRIPT_VERSION = 3;
 
 const fs   = require('node:fs');
 const path = require('node:path');

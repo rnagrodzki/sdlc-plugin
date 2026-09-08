@@ -25,7 +25,7 @@
 'use strict';
 
 /** @version 2 — release-on-main script version. Bump when behavior changes. */
-const RELEASE_ON_MAIN_SCRIPT_VERSION = 2;
+const RELEASE_ON_MAIN_SCRIPT_VERSION = 3;
 
 const fs   = require('node:fs');
 const path = require('node:path');
