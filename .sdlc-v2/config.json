@@ -131,6 +131,8 @@
     "fileType": "plugin.json",
     "mode": "file",
     "tagPrefix": "v",
-    "versionFile": "plugins/sdlc/.claude-plugin/plugin.json"
+    "versionFile": "plugins/sdlc/.claude-plugin/plugin.json",
+    "changelog": true,
+    "changelogFile": "CHANGELOG.md"
   }
 }

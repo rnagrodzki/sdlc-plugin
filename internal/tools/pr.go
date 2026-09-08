@@ -180,7 +180,7 @@ func detectJiraTicket(branchName string, commitSubjects []string) string {
 }
 
 // prPrepareCore is pr_prepare's core logic, separated from the MCP handler
-// for testability: mainRoot anchors config/.sdlc state (worktree.MainRoot),
+// for testability: mainRoot anchors config/sdlc-v2 state (worktree.MainRoot),
 // workDir anchors git/gh operations (worktree.ActiveRoot).
 func prPrepareCore(mainRoot, workDir string, in PRPrepareIn) (PRPrepareOut, error) {
 	var errs, warnings []string

@@ -4,7 +4,7 @@
 //
 // Resolution precedence (matching the Node.js source exactly):
 //
-//  1. Canonical:  <root>/.sdlc/pr-template.md
+//  1. Canonical:  <root>/.sdlc-v2/pr-template.md
 //  2. Deprecated: <root>/.claude/pr-template.md
 //
 // The Node.js source also emits a one-time stderr deprecation warning when
@@ -42,7 +42,7 @@ type Template struct {
 	Content string
 	// Legacy is true when the template was found at the deprecated
 	// .claude/pr-template.md location rather than the canonical
-	// .sdlc/pr-template.md.
+	// .sdlc-v2/pr-template.md.
 	Legacy bool
 	// Headings lists the ## headings extracted from the template,
 	// in document order, without the leading "## ".
@@ -54,7 +54,7 @@ type Template struct {
 // Returns a non-nil error only on I/O failures (file exists but unreadable).
 //
 // Resolution order matches scripts/lib/pr-template.js:
-//  1. <root>/.sdlc/pr-template.md   (canonical)
+//  1. <root>/.sdlc-v2/pr-template.md   (canonical)
 //  2. <root>/.claude/pr-template.md  (deprecated)
 func Resolve(root string) (*Template, error) {
 	canonical := filepath.Join(root, paths.DataDir, "pr-template.md")

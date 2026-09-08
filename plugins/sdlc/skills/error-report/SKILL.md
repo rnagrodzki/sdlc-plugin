@@ -24,7 +24,7 @@ creates a tracking issue in `rnagrodzki/sdlc-marketplace` using the gh CLI.
 The skill body runs in the main parent-model context. The heavy work — assembling
 the issue title and body from the error context and the `templates/ToolingError.md`
 template — is dispatched to the dedicated `error-report-orchestrator` agent so the
-main conversation transcript is never inherited (issue #202). Both consent gates
+main conversation transcript is never inherited. Both consent gates
 and the `gh issue create` call stay in the main context.
 
 ## When This Skill Is Invoked
@@ -254,7 +254,7 @@ replaces the calling skill's own error output or stop behavior.
 
 - Invoke this skill directly in response to user requests — it is internal only.
 - Pin `model:` in this skill's frontmatter — the harness will route the skill into a
-  subagent that inherits the full conversation transcript (issue #202). The
+  subagent that inherits the full conversation transcript. The
   orchestrator agent (Step 5) is the correct place to pin `model: haiku`.
 - Run consent gates inside the orchestrator agent. Both gates (Step 3 and Step 6)
   MUST execute in the main context.

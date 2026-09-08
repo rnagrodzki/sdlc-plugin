@@ -70,7 +70,7 @@ type UpstreamSurfaces struct {
 
 // Factsheet is the data backing a single task's fact-sheet file.  The file
 // is compact markdown written to
-// <root>/.sdlc/execution/<runID>/task-<normalizedID>.md — a file-handoff
+// <root>/.sdlc-v2/execution/<runID>/task-<normalizedID>.md — a file-handoff
 // artifact consumed by dispatched per-task agents (KD4).
 type Factsheet struct {
 	ID                 string
@@ -163,7 +163,7 @@ func renderFactSheet(fs Factsheet) string {
 }
 
 // WriteFactsheet writes a per-task fact sheet as compact markdown to
-// <root>/.sdlc/execution/<runID>/task-<normalizedID>.md. The write is
+// <root>/.sdlc-v2/execution/<runID>/task-<normalizedID>.md. The write is
 // idempotent: if the file already exists with identical content, no write is
 // performed. Otherwise the file is atomically rewritten (tmp + rename).
 //
@@ -210,7 +210,7 @@ func WriteFactsheet(root, runID string, fs Factsheet) (string, error) {
 
 // ReadFactsheet reads back the fact-sheet markdown file previously written
 // by WriteFactsheet for taskID under
-// <root>/.sdlc/execution/<runID>/task-<normalizedID>.md. Exposed so callers
+// <root>/.sdlc-v2/execution/<runID>/task-<normalizedID>.md. Exposed so callers
 // outside this package (execute_state.go's task-context action) can load a
 // fact sheet without duplicating the path-join/normalization logic here.
 //
@@ -237,7 +237,7 @@ func ReadFactsheet(root, runID, taskID string) (path, content string, err error)
 }
 
 // ListFactsheetIDs returns the normalized task IDs with a fact-sheet file
-// under <root>/.sdlc/execution/<runID>/, sorted for deterministic output.
+// under <root>/.sdlc-v2/execution/<runID>/, sorted for deterministic output.
 // Intended for building actionable "unknown taskId" errors (ReadFactsheet
 // itself only reports the one ID it was asked for). Returns an empty,
 // non-nil slice — not an error — when the run directory does not exist yet.

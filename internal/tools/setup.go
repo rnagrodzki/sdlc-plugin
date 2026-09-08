@@ -146,14 +146,14 @@ type SetupInitOut struct {
 	Errors  []string `json:"errors,omitempty"`
 }
 
-// Managed-block markers for .sdlc/.gitignore.
+// Managed-block markers for .sdlc-v2/.gitignore.
 const (
 	sdlcGitignoreBegin = "# >>> sdlc-v2 managed (do not edit) — selective ignores"
 	sdlcGitignoreEnd   = "# <<< sdlc-v2 managed"
 )
 
 // sdlcGitignorePatterns are the deny-all + allowlist patterns inside
-// .sdlc/.gitignore, mirroring SDLC_GITIGNORE_PATTERNS from the JS source.
+// .sdlc-v2/.gitignore, mirroring SDLC_GITIGNORE_PATTERNS from the JS source.
 var sdlcGitignorePatterns = []string{
 	"*",
 	"!.gitignore",
@@ -314,7 +314,7 @@ func setupInit(root string, in SetupInitIn) (SetupInitOut, error) {
 
 	sdlcDir := filepath.Join(root, paths.DataDir)
 
-	// 1. Create .sdlc/ directory.
+	// 1. Create .sdlc-v2/ directory.
 	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
 		return SetupInitOut{}, &mcpserver.InfraError{
 			Msg:   fmt.Sprintf("create %s directory: %s", paths.DataDir, err.Error()),
@@ -322,7 +322,7 @@ func setupInit(root string, in SetupInitIn) (SetupInitOut, error) {
 		}
 	}
 
-	// 2. Ensure .sdlc/.gitignore with managed block.
+	// 2. Ensure .sdlc-v2/.gitignore with managed block.
 	sdlcGitignorePath := filepath.Join(sdlcDir, ".gitignore")
 	action, err := ensureManagedBlock(
 		sdlcGitignorePath,
@@ -457,7 +457,7 @@ func RegisterSetupTools(s *mcpserver.Server) {
 	)
 
 	mcpserver.Register(s, "setup_init",
-		"Creates the .sdlc/ directory scaffold for a v5 config: .sdlc/.gitignore, root .gitignore managed block, config.json, and local.json. Seeds empty objects for selected sections.",
+		"Creates the .sdlc-v2/ directory scaffold for a v5 config: .sdlc-v2/.gitignore, root .gitignore managed block, config.json, and local.json. Seeds empty objects for selected sections.",
 		func(ctx mcpserver.Ctx, in SetupInitIn) (SetupInitOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

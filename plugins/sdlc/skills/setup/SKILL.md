@@ -669,7 +669,7 @@ The historical step labels map onto the dispatcher above for anyone updating tes
 (Source's `3g`/`3h` rows — `workspace`/`hooks` — are dropped per Q1; there is no manifest id
 for them in this port.)
 
-#### Diff preview (issue #235 — Gap C)
+#### Diff preview (Gap C)
 
 Before writing, render an end-of-run diff preview comparing the Step 0 snapshot
 (`projectConfig`/`localConfig`) against the values assembled in Step 3. There is no Go

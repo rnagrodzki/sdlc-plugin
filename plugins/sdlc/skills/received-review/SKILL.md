@@ -392,7 +392,7 @@ path) and note the rest as suppressed in the summary below.
 
 ---
 
-## Step 11.7 — LINK VERIFICATION (issue #198) — HARD GATE
+## Step 11.7 — LINK VERIFICATION — HARD GATE
 
 Before any `gh api` reply is posted, validate every URL embedded in every drafted reply body.
 

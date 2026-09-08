@@ -21,17 +21,17 @@ func List() []Surface {
 		{
 			ID:          "plan-guardrails",
 			Label:       "Plan guardrails",
-			Description: "Guardrail rules from the plan section of .sdlc/config.json",
+			Description: "Guardrail rules from the plan section of .sdlc-v2/config.json",
 		},
 		{
 			ID:          "execute-guardrails",
 			Label:       "Execute guardrails",
-			Description: "Guardrail rules from the execute section of .sdlc/config.json",
+			Description: "Guardrail rules from the execute section of .sdlc-v2/config.json",
 		},
 		{
 			ID:          "review-dimensions",
 			Label:       "Review dimensions",
-			Description: "Custom review dimension definitions from .sdlc/review-dimensions/*.md",
+			Description: "Custom review dimension definitions from .sdlc-v2/review-dimensions/*.md",
 		},
 		{
 			ID:          "copilot-instructions",

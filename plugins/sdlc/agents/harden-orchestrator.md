@@ -38,7 +38,7 @@ Read the manifest JSON from `MANIFEST_FILE`. The manifest contains:
 | `repository.root` | MAIN worktree — config/`.sdlc-v2/` root; use to build the `.sdlc-v2/config.json` targetFile for guardrail proposals |
 | `repository.contentRoot` | ACTIVE worktree — root of `reviewDimensions[].path` / `copilotInstructions[].path`; equals `PROJECT_ROOT` |
 | `repository.branch` / `repository.recentDiffSummary` | Active-checkout metadata |
-| `pluginRepoUrl` | Constant URL of the plugin's GitHub repository (issue #288) — read directly from `MANIFEST_FILE` by SKILL.md (Steps 5c and 6) to construct the user-facing prompt; NOT included in orchestrator output JSON |
+| `pluginRepoUrl` | Constant URL of the plugin's GitHub repository — read directly from `MANIFEST_FILE` by SKILL.md (Steps 5c and 6) to construct the user-facing prompt; NOT included in orchestrator output JSON |
 
 If you need the full body of a specific dimension or copilot instruction file to
 draft a proposal, you MAY Read the file via the `path` field in the manifest
@@ -65,7 +65,7 @@ Decide exactly one of:
 Produce a one-sentence rationale tied to a verbatim phrase from `failure.text`
 or to a specific manifest field (an `id`, `name`, `severity`, etc.).
 
-### Ambiguous + plugin evidence (issue #288)
+### Ambiguous + plugin evidence
 
 When `classification == "ambiguous"`, `errorReportPayload` MAY be non-null **only
 if** the rationale cites plugin evidence: a script crash inside
@@ -195,8 +195,8 @@ When `classification == "plugin-defect"`:
 }
 ```
 
-When `classification == "ambiguous"` AND the rationale cites plugin evidence
-(issue #288), `errorReportPayload` is populated and `proposals` MAY also be
+When `classification == "ambiguous"` AND the rationale cites plugin evidence,
+`errorReportPayload` is populated and `proposals` MAY also be
 non-empty (user-side hardening still applies). `routeToErrorReport` stays
 `false` — the skill body decides whether to dispatch based on the payload's
 presence and the user's answer:

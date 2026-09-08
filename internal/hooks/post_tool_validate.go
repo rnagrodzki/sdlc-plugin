@@ -12,7 +12,7 @@ import (
 
 // Path-trigger regexes, ported verbatim from post-tool-validate.js
 // (including the legacy .claude/ alternation alongside the canonical
-// .sdlc/ location for dimensions and pr-template).
+// .sdlc-v2/ location for dimensions and pr-template).
 var (
 	postToolValidateDimensionRe  = regexp.MustCompile(`[/\\]\.(?:claude|sdlc-v2|sdlc)[/\\]review-dimensions[/\\][^/\\]+\.ya?ml$`)
 	postToolValidatePRTemplateRe = regexp.MustCompile(`[/\\]\.(?:claude|sdlc-v2|sdlc)[/\\]pr-template\.md$`)
@@ -53,7 +53,7 @@ func postToolValidate(ctx HookCtx, event Event) (Output, error) {
 	)
 	switch {
 	case postToolValidateDimensionRe.MatchString(filePath):
-		// No file arg: the dimensions validator scans .sdlc/review-dimensions
+		// No file arg: the dimensions validator scans .sdlc-v2/review-dimensions
 		// itself rather than validating one file.
 		findings, verr = tools.ValidateDimensionsAction(root)
 	case postToolValidatePRTemplateRe.MatchString(filePath):

@@ -348,7 +348,7 @@ Returns a JSON envelope: {"ok":true, "data":{...}} on success, {"ok":false, "cod
 // ---------------------------------------------------------------------------
 
 // executeState dispatches to the correct action handler. root anchors
-// .sdlc/execution/ lookups; workDir anchors git-branch detection.
+// .sdlc-v2/execution/ lookups; workDir anchors git-branch detection.
 // now is injected for testability (ledger stall detection, timestamps).
 func executeState(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	switch in.Action {

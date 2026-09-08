@@ -1,6 +1,6 @@
 # PR Labels Sub-Flow
 
-Configure how `/pr` chooses labels for a project (issue #197). Writes the
+Configure how `/pr` chooses labels for a project. Writes the
 `pr.labels` block in `.sdlc-v2/config.json`. Three modes are supported:
 
 - `off` (default) — no automatic labels; only forced labels via `--label` apply

@@ -365,7 +365,7 @@ func anySliceToStrings(v any) []string {
 // ---------------------------------------------------------------------------
 
 // dimensionsPreflight validates every review-dimension file under
-// <contentRoot>/.sdlc/review-dimensions using dimensions.Load/Validate
+// <contentRoot>/.sdlc-v2/review-dimensions using dimensions.Load/Validate
 // (Task 11), formatting each finding as "existing-review-dimension
 // <file>: <msg>" to match source's preflightErrors.push(...) format
 // exactly. dimensions.Load's own (nil, nil)-on-missing-directory

@@ -33,7 +33,7 @@ next              string  // the step to resume from
 
 If `read` succeeds but the response carries **no** `resumeBriefing`, there is no run to resume — one of three cases: no state file exists; the only one found is already stamped terminal; or a state file exists but no step in it ever actually started (nothing was in flight to resume). All three are safe to treat identically. Fall through to the normal fresh-start path (SKILL.md's Step loop, items 3-4) — `ship_prepare`'s own orphan-pruning and `state.Write`'s prune-on-write already remove the stale file as a side effect of writing the new one.
 
-## --gc handler (R39, issue #223)
+## --gc handler (R39)
 
 If `--gc` (with optional `--ttl-days <N>`) was passed, call the `ship_prepare` tool with the GC short-circuit and stop — no pipeline composition:
 

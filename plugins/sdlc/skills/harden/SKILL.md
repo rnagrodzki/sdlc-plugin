@@ -190,7 +190,7 @@ failure signal does not point at any of the loaded surfaces.`, `rm -f
 
 ## Step 5 — PRESENT and APPLY (R7, R8, R10, R12, C9, C10, R-iteration-write)
 
-**Per-iteration contract (R-iteration-write, issue #387) — applies to every pass through the proposal loop:**
+**Per-iteration contract (R-iteration-write) — applies to every pass through the proposal loop:**
 1. **Re-read before acting:** At the start of each iteration, re-read `targetFile` from disk. Never rely on an in-memory copy from a previous write.
 2. **Write before advancing:** Persist the approved change to disk (via Edit/Write) before presenting the next proposal. Do not accumulate approved changes across proposals and write them together.
 3. **No cross-proposal accumulation:** Hold only the current proposal's patch in memory. Clear per-proposal state after each write.
@@ -248,7 +248,7 @@ When the user selects **apply**:
 4. **If `findings` is empty** (or validation was skipped for
    `copilot-instructions`): continue to 5b.
 
-### 5b. Copilot Mirror for New Review Dimensions (R-copilot-mirror, issue #456)
+### 5b. Copilot Mirror for New Review Dimensions (R-copilot-mirror)
 
 Display a one-line confirmation for 5a's successful write:
 
@@ -312,7 +312,7 @@ proposal's `patch`, and replace its fields with the proposal's merged values
 in the current file, treat the proposal as malformed and surface to the user.
 `consolidate` goes through the same write-then-validate-then-revert flow as 5a.
 
-### 5c. Ambiguous upstream-report offer (R-ambig-offer, issue #288)
+### 5c. Ambiguous upstream-report offer (R-ambig-offer)
 
 When `RESULT.classification === "ambiguous"` AND
 `RESULT.errorReportPayload != null`, the orchestrator concluded the failure
@@ -393,7 +393,7 @@ cleanup path).
   specific proposal — the no-silent-write invariant is non-negotiable.
 - Accumulate approved changes across multiple proposals and write them together
   — each approved proposal MUST be written to disk immediately before advancing
-  to the next proposal (R-iteration-write, issue #387).
+  to the next proposal (R-iteration-write).
 - Propose relaxing or removing existing rules — v1 is strengthen-only.
 - Run full-suite or wide-subset eval automatically — a single targeted check
   scoped to the change is allowed; tight-loop retries are not.

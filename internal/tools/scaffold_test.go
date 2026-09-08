@@ -39,9 +39,11 @@ func TestScaffoldCI_CreatesAllFiles(t *testing.T) {
 	}
 }
 
-// TestScaffoldCI_WrittenCJS_ConfigOrder verifies that written .cjs files
-// have .sdlc/config.json before .claude/sdlc.json (AC 1).
-func TestScaffoldCI_WrittenCJS_ConfigOrder(t *testing.T) {
+// TestScaffoldCI_WrittenCJS_ReadsV2ConfigOnly verifies that written .cjs
+// files read .sdlc-v2/config.json exclusively — no legacy .sdlc/config.json
+// or .claude/sdlc.json fallback. Legacy config layouts are migration-only
+// territory (the "migrate" tool), never a read path for CI scripts.
+func TestScaffoldCI_WrittenCJS_ReadsV2ConfigOnly(t *testing.T) {
 	root := t.TempDir()
 
 	_, err := scaffoldCI(root, false)
@@ -49,32 +51,30 @@ func TestScaffoldCI_WrittenCJS_ConfigOrder(t *testing.T) {
 		t.Fatalf("scaffoldCI: %v", err)
 	}
 
-	cjsPaths := []string{
-		filepath.Join(root, ".github", "scripts", "check-changelog.cjs"),
-		filepath.Join(root, ".github", "scripts", "retag-release.cjs"),
+	cjsNames := []string{
+		"check-changelog.cjs",
+		"retag-release.cjs",
+		"release-on-main.cjs",
+		"promote-release.cjs",
+		"verify-release-intent.cjs",
 	}
 
-	for _, p := range cjsPaths {
+	for _, name := range cjsNames {
+		p := filepath.Join(root, ".github", "scripts", name)
 		data, err := os.ReadFile(p)
 		if err != nil {
 			t.Fatalf("read %s: %v", p, err)
 		}
 		content := string(data)
 
-		sdlcIdx := strings.Index(content, ".sdlc/config.json")
-		claudeIdx := strings.Index(content, ".claude/sdlc.json")
-
-		if sdlcIdx < 0 {
-			t.Errorf("%s: does not contain .sdlc/config.json", p)
-			continue
+		if !strings.Contains(content, ".sdlc-v2/config.json") {
+			t.Errorf("%s: does not contain .sdlc-v2/config.json", p)
 		}
-		if claudeIdx < 0 {
-			t.Errorf("%s: does not contain .claude/sdlc.json", p)
-			continue
+		if strings.Contains(content, ".sdlc/config.json") {
+			t.Errorf("%s: contains stale legacy fallback reference .sdlc/config.json", p)
 		}
-		if sdlcIdx >= claudeIdx {
-			t.Errorf("%s: .sdlc/config.json (index %d) must appear before .claude/sdlc.json (index %d)",
-				p, sdlcIdx, claudeIdx)
+		if strings.Contains(content, ".claude/sdlc.json") {
+			t.Errorf("%s: contains stale legacy fallback reference .claude/sdlc.json", p)
 		}
 	}
 }

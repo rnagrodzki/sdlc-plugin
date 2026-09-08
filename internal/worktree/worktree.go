@@ -68,7 +68,7 @@ func mainRootIn(dir string) (string, error) {
 // from a subdirectory or a linked worktree.
 //
 // Unlike MainRoot (which always walks back to the primary worktree, used for
-// .sdlc/ config/state anchoring), ActiveRoot resolves the tree on the active
+// .sdlc-v2/ config/state anchoring), ActiveRoot resolves the tree on the active
 // branch — correct for content scans that live on the active branch in a
 // linked worktree.
 //

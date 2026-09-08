@@ -31,11 +31,11 @@ import (
 // dimensions_render_instructions tool.
 type DimensionsRenderInstructionsIn struct {
 	// File is the review-dimension Markdown file to render (e.g.
-	// ".sdlc/review-dimensions/security.md"), relative to the project root
+	// ".sdlc-v2/review-dimensions/security.md"), relative to the project root
 	// unless absolute. Required.
 	File string `json:"file"`
 	// CommonFile optionally names a shared common-prompt Markdown file
-	// (normally ".sdlc/review-dimensions/_common.md") whose trimmed content
+	// (normally ".sdlc-v2/review-dimensions/_common.md") whose trimmed content
 	// is injected as the rendered file's "## Common Review Instructions"
 	// section, mirroring the JS CLI's optional --common-file flag. Empty
 	// omits that section. Relative to the project root unless absolute.

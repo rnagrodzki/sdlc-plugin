@@ -1,5 +1,5 @@
 // Package config reads and writes the sdlc plugin's two configuration files
-// — .sdlc/config.json (project-level, committed) and .sdlc/local.json
+// — .sdlc-v2/config.json (project-level, committed) and .sdlc-v2/local.json
 // (user-local, gitignored) — anchored at the main worktree root.
 //
 // This is a clean v5-only implementation: pre-v5 config layouts (individual
@@ -28,8 +28,8 @@ import (
 var ErrNotFound = errors.New("config: not found")
 
 // ProjectSections is the set of section names that live in the project
-// config (.sdlc/config.json). All other sections live in the local config
-// (.sdlc/local.json).
+// config (.sdlc-v2/config.json). All other sections live in the local config
+// (.sdlc-v2/local.json).
 var ProjectSections = map[string]bool{
 	"version": true,
 	"jira":    true,
@@ -210,10 +210,10 @@ func applyVersionDefaults(v *VersionSection) {
 	}
 }
 
-// Config is the merged view of .sdlc/config.json (project-level sections)
-// and .sdlc/local.json (user-local sections).
+// Config is the merged view of .sdlc-v2/config.json (project-level sections)
+// and .sdlc-v2/local.json (user-local sections).
 type Config struct {
-	// Project-level sections (from .sdlc/config.json).
+	// Project-level sections (from .sdlc-v2/config.json).
 	Version *VersionSection
 	Jira    map[string]any
 	Commit  map[string]any
@@ -221,7 +221,7 @@ type Config struct {
 	Plan    map[string]any
 	Execute map[string]any
 
-	// Local sections (from .sdlc/local.json).
+	// Local sections (from .sdlc-v2/local.json).
 	Ship           map[string]any
 	Review         map[string]any
 	ReceivedReview map[string]any
@@ -285,7 +285,7 @@ func applyAutomationDefaults(a *AutomationSection) {
 	}
 }
 
-// readProjectRaw reads .sdlc/config.json and returns its contents as a
+// readProjectRaw reads .sdlc-v2/config.json and returns its contents as a
 // raw map. When config.json is missing, checks for legacy layout markers
 // and returns either a legacy-refusal error (naming "migrate") or
 // ErrNotFound. When config.json exists with a schemaVersion field (the v4
@@ -316,7 +316,7 @@ func readProjectRaw(mainRoot string) (map[string]any, error) {
 	return raw, nil
 }
 
-// readLocalRaw reads .sdlc/local.json and returns its contents as a raw
+// readLocalRaw reads .sdlc-v2/local.json and returns its contents as a raw
 // map. Returns (nil, nil) when the file does not exist — missing local
 // config is not an error.
 func readLocalRaw(mainRoot string) (map[string]any, error) {
@@ -334,14 +334,14 @@ func readLocalRaw(mainRoot string) (map[string]any, error) {
 	return raw, nil
 }
 
-// Read loads the full merged configuration from .sdlc/config.json (project
-// sections) and .sdlc/local.json (local sections) anchored at mainRoot.
+// Read loads the full merged configuration from .sdlc-v2/config.json (project
+// sections) and .sdlc-v2/local.json (local sections) anchored at mainRoot.
 //
 // The mainRoot parameter should be the main worktree root, typically
 // obtained via worktree.MainRoot(). This ensures that config reads anchor
 // at the main worktree even when called from a linked worktree.
 //
-// Returns ErrNotFound when .sdlc/config.json does not exist and no legacy
+// Returns ErrNotFound when .sdlc-v2/config.json does not exist and no legacy
 // layout is detected. Returns an error naming the "migrate" tool when a
 // pre-v5 config layout is detected. Validates the project config's
 // top-level keys against the v5 schema.
@@ -389,7 +389,7 @@ func Read(mainRoot string) (*Config, error) {
 // appropriate file based on ProjectSections membership.
 //
 // For project sections (version, jira, commit, pr, plan, execute), reads
-// .sdlc/config.json. For all other sections, reads .sdlc/local.json.
+// .sdlc-v2/config.json. For all other sections, reads .sdlc-v2/local.json.
 //
 // Returns ErrNotFound when the file or section does not exist. Returns a
 // legacy refusal error (naming "migrate") when the project config layout
@@ -427,14 +427,14 @@ func ReadSection(mainRoot, name string) (map[string]any, error) {
 
 // WriteSection writes a single config section, routing to the appropriate
 // file based on ProjectSections membership. Uses read-merge-write to avoid
-// clobbering other sections. Creates the .sdlc directory if needed.
+// clobbering other sections. Creates the .sdlc-v2 directory if needed.
 //
 // For project sections, validates the merged result against the v5 schema
 // before writing. Writes use fsx.AtomicWriteJSON for crash safety.
 func WriteSection(mainRoot, name string, v map[string]any) error {
 	sdlcDir := filepath.Join(mainRoot, paths.DataDir)
 	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
-		return fmt.Errorf("config: create .sdlc dir: %w", err)
+		return fmt.Errorf("config: create .sdlc-v2 dir: %w", err)
 	}
 
 	if ProjectSections[name] {

@@ -194,7 +194,7 @@ func mcpFailureRecord(root string, in MCPFailureRecordIn) (MCPFailureRecordOut, 
 // RegisterMCPFailureTools registers the "mcp_failure_record" MCP tool.
 func RegisterMCPFailureTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "mcp_failure_record",
-		"INTERNAL — called by sdlc skills only. Classify an MCP tool-call failure and record it to .sdlc/learnings/log.md for later analysis.",
+		"INTERNAL — called by sdlc skills only. Classify an MCP tool-call failure and record it to .sdlc-v2/learnings/log.md for later analysis.",
 		func(ctx mcpserver.Ctx, in MCPFailureRecordIn) (MCPFailureRecordOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

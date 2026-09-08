@@ -3,13 +3,13 @@
  * check-changelog.cjs
  * CI script: validates that CHANGELOG.md contains an entry for the current version.
  *
- * Only runs when `changelog: true` is set in `.claude/version.json`.
+ * Only runs when `changelog: true` is set in `.sdlc-v2/config.json`.
  * Designed to be copied into user projects under `.github/scripts/`.
  *
  * Usage (GitHub Actions — runs on push to main or in a PR check):
  *   node .github/scripts/check-changelog.cjs
  *
- * Reads: .claude/version.json  (sdlc versioning config)
+ * Reads: .sdlc-v2/config.json  (sdlc versioning config)
  * Modes:
  *   "file" — version read from a version file (package.json, plugin.json, etc.)
  *   "tag"  — version derived from the latest git tag (no version file)
@@ -21,8 +21,8 @@
 
 'use strict';
 
-/** @version 4 — check-changelog script version. Bump when behavior changes (e.g. .cjs rename for ESM compat). */
-const CHECK_CHANGELOG_SCRIPT_VERSION = 4;
+/** @version 5 — check-changelog script version. Bump when behavior changes. */
+const CHECK_CHANGELOG_SCRIPT_VERSION = 5;
 
 const fs   = require('node:fs');
 const path = require('node:path');
@@ -45,46 +45,20 @@ function exec(cmd, opts = {}) {
 // ---------------------------------------------------------------------------
 
 /**
- * Read the version section from .sdlc/config.json, falling back to legacy
- * .claude/sdlc.json (with stderr deprecation warning), and finally to legacy
- * .claude/version.json. CI script runs in read-only context — never calls
- * verifyAndMigrate (issue #232).
+ * Read the version section from .sdlc-v2/config.json. CI script runs in
+ * read-only context — never calls verifyAndMigrate. A repo still on a
+ * legacy config layout must run `migrate` first; this script does not
+ * fall back to any legacy path.
  */
 function readVersionConfig(repoRoot) {
-  // Primary: .sdlc/config.json (issue #231)
-  const newPath = path.join(repoRoot, '.sdlc', 'config.json');
-  if (fs.existsSync(newPath)) {
-    try {
-      const config = JSON.parse(fs.readFileSync(newPath, 'utf8'));
-      return config.version || null;
-    } catch (_) {
-      return null;
-    }
+  const currentPath = path.join(repoRoot, '.sdlc-v2', 'config.json');
+  if (!fs.existsSync(currentPath)) return null;
+  try {
+    const config = JSON.parse(fs.readFileSync(currentPath, 'utf8'));
+    return config.version || null;
+  } catch (_) {
+    return null;
   }
-
-  // Fallback: legacy .claude/sdlc.json
-  const legacyUnifiedPath = path.join(repoRoot, '.claude', 'sdlc.json');
-  if (fs.existsSync(legacyUnifiedPath)) {
-    process.stderr.write(`Deprecation: .claude/sdlc.json is the legacy project-config path. Run /setup --migrate to relocate.\n`);
-    try {
-      const config = JSON.parse(fs.readFileSync(legacyUnifiedPath, 'utf8'));
-      return config.version || null;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  // Legacy fallback: .claude/version.json
-  const legacyPath = path.join(repoRoot, '.claude', 'version.json');
-  if (fs.existsSync(legacyPath)) {
-    try {
-      return JSON.parse(fs.readFileSync(legacyPath, 'utf8'));
-    } catch (_) {
-      return null;
-    }
-  }
-
-  return null;
 }
 
 // ---------------------------------------------------------------------------

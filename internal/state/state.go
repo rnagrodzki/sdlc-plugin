@@ -3,7 +3,7 @@
 // (delimiter-aware mtime-newest), init/write with prune-on-write, and session
 // stamping.
 //
-// The canonical state directory lives at <root>/.sdlc/execution/. Root is
+// The canonical state directory lives at <root>/.sdlc-v2/execution/. Root is
 // injected by callers so that no environment or git lookup is needed here.
 //
 // Filename format: <prefix>-<branchSlug>-<YYYYMMDDTHHmmssZ>.json
@@ -75,7 +75,7 @@ type State struct {
 	// Path is the absolute filesystem path to the state file.
 	Path string
 
-	// Root is the project root directory (parent of .sdlc/).
+	// Root is the project root directory (parent of .sdlc-v2/).
 	Root string
 
 	// Prefix is "ship", "execute", "plan", or "commit".
@@ -97,7 +97,7 @@ func stateDir(root string) string {
 // Init
 // ---------------------------------------------------------------------------
 
-// Init creates a new state file in <root>/.sdlc/execution/ with the filename
+// Init creates a new state file in <root>/.sdlc-v2/execution/ with the filename
 // <prefix>-<branchSlug>-<timestamp>.json and the provided initial data.
 // The creating session's ID is stamped into Data["sessionId"]; an empty
 // sessionID is stored as nil (matching the JS behaviour of null).

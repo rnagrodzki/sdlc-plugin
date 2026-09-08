@@ -131,14 +131,14 @@ Naming convention: `YYYY-MM-DD-<feature-name>.md`. Create the directory if neede
 
 **Plan mode:** Write to the designated plan file path. Skip path resolution.
 
-**planFile marker (implements R20, issue #285; consumed by `internal/hooks/stop_hooks.go` per R21):** After path resolution, record the resolved plan path in the plan integrity state. Run in both plan-mode and normal-mode branches. Errors are swallowed — marker writes must not block plan creation.
+**planFile marker (implements R20; consumed by `internal/hooks/stop_hooks.go` per R21):** After path resolution, record the resolved plan path in the plan integrity state. Run in both plan-mode and normal-mode branches. Errors are swallowed — marker writes must not block plan creation.
 
 **State-file lifecycle (R20 Lifecycle, fixes #334):** The plan state file follows three rules that callers do NOT need to implement directly — they are enforced inside `plan_prepare`/`plan_mark` (backed by the `internal/state` package) and `internal/hooks/stop_hooks.go` (dispatched via `sdlc-launcher.sh hook stop-plan-integrity`):
 - **Prune-on-write** — `plan_prepare` prunes pre-existing `plan-<branchSlug>-*.json` files for the current branch before writing the new state file, so at most one marker per branch exists between plan invocations. `plan_mark` does NOT prune (it would unlink its own target).
 - **Consume-then-delete** — the Stop hook reads `planIntegrity` markers, evaluates the gates, then unlinks the marker regardless of outcome (single-shot semantics). Subsequent Stop events on the same branch fall through to the transcript-fallback path — this is correct R21 behavior.
 - **GC orphan sweep** — `ship --gc` and `execute --gc` sweep stale `plan-*` markers (TTL-expired or branch-deleted) alongside `ship-*` and `execute-*` files; the JSON output includes a `plan` bucket alongside `ship` and `execute`.
 
-Call `plan_mark({ marker: "plan-file", path: <resolved-plan-path> })` — writes the `planIntegrity` marker consumed by the `stop-plan-integrity` Stop hook (issue #285).
+Call `plan_mark({ marker: "plan-file", path: <resolved-plan-path> })` — writes the `planIntegrity` marker consumed by the `stop-plan-integrity` Stop hook.
 
 Replace `<resolved-plan-path>` with the actual absolute path: in plan mode it is the designated plan file path extracted at the top of Step 0; in normal mode it is the path resolved above (from `plansDirectory` or the default fallback). Errors from this call are swallowed — marker writes must not block plan creation.
 
@@ -598,9 +598,9 @@ Lane 4 (dimension-coverage/G17) returns the G17 findings JSON — parse the `fin
 
 Note every issue from `allIssues`. Do NOT write to the plan file in this step.
 
-**JOIN barrier — `guardrailsEvaluated` (implements R20, R35, issue #285):** After the guardrail-compliance lane (lanes[3]) result is incorporated into the merged issue list, record the checkpoint by calling `plan_mark({ marker: "guardrailsEvaluated" })` — writes the `planIntegrity` marker consumed by the `stop-plan-integrity` Stop hook. **Do NOT call this before lanes[3] returns.**
+**JOIN barrier — `guardrailsEvaluated` (implements R20, R35):** After the guardrail-compliance lane (lanes[3]) result is incorporated into the merged issue list, record the checkpoint by calling `plan_mark({ marker: "guardrailsEvaluated" })` — writes the `planIntegrity` marker consumed by the `stop-plan-integrity` Stop hook. **Do NOT call this before lanes[3] returns.**
 
-**JOIN barrier — `critiqueRan` (implements R20, R35, issue #285):** After ALL five lanes have returned and the merged issue list is complete (including G17/lanes[4] findings parsed into `g17Findings`), record the checkpoint by calling `plan_mark({ marker: "critiqueRan" })`. **Do NOT call this until all five lanes have returned.** This extends the existing G17 join semantics to every lane.
+**JOIN barrier — `critiqueRan` (implements R20, R35):** After ALL five lanes have returned and the merged issue list is complete (including G17/lanes[4] findings parsed into `g17Findings`), record the checkpoint by calling `plan_mark({ marker: "critiqueRan" })`. **Do NOT call this until all five lanes have returned.** This extends the existing G17 join semantics to every lane.
 
 **Once-per-run checkpoints:** `guardrailsEvaluated` and `critiqueRan` are written exactly once — during the initial Step 3 pass. When Step 3 lanes are re-dispatched via the merged dispatch in Step 5 (see "Material change detection and merged re-dispatch" below), these markers are NOT re-written. The Stop hook already holds the integrity proof from the first pass; re-marking would reset the timestamp without adding information.
 
@@ -743,7 +743,7 @@ Re-dispatch the reviewer (back to Step 5 loop). When `materialChangeDetected` is
 
 If this is the 3rd iteration, use AskUserQuestion to surface remaining issues instead of looping.
 
-## Step 6.5 (LINK VERIFICATION): Validate URLs in plan content (R18, issue #198) — HARD GATE
+## Step 6.5 (LINK VERIFICATION): Validate URLs in plan content (R18) — HARD GATE
 
 After the reviewer loop converges (or the user resolves remaining issues), validate every URL embedded in the finalized plan file:
 

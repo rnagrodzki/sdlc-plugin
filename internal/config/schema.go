@@ -14,7 +14,7 @@ import (
 )
 
 // allowedProjectKeys is the set of top-level property names permitted in
-// .sdlc/config.json, extracted from plugins/sdlc/schemas/sdlc-config.schema.json.
+// .sdlc-v2/config.json, extracted from plugins/sdlc/schemas/sdlc-config.schema.json.
 // TestSchemaSync verifies this list stays in sync with the schema file.
 var allowedProjectKeys = map[string]bool{
 	"$schema": true,
@@ -27,9 +27,9 @@ var allowedProjectKeys = map[string]bool{
 }
 
 // allowedLocalOnlyKeys is the set of top-level schema properties that are
-// personal preference, not team contract: they route to .sdlc/local.json
+// personal preference, not team contract: they route to .sdlc-v2/local.json
 // (see ProjectSections in config.go) and must never appear in
-// .sdlc/config.json, so they are deliberately excluded from
+// .sdlc-v2/config.json, so they are deliberately excluded from
 // allowedProjectKeys. TestSchemaSync checks schema top-level properties
 // against the union of allowedProjectKeys and this map.
 var allowedLocalOnlyKeys = map[string]bool{
@@ -49,5 +49,5 @@ func validateProjectKeys(raw map[string]any) error {
 		return nil
 	}
 	sort.Strings(unknown)
-	return fmt.Errorf("config: unknown top-level keys in .sdlc/config.json: %v", unknown)
+	return fmt.Errorf("config: unknown top-level keys in .sdlc-v2/config.json: %v", unknown)
 }

@@ -337,7 +337,7 @@ Post this review comment to PR #{manifest.pr.number}? (yes / save / cancel)
 
 Wait for the user's reply.
 
-- `yes` → **link verification (R14, issue #198) — HARD GATE.** Before posting, validate
+- `yes` → **link verification (R14) — HARD GATE.** Before posting, validate
   every URL embedded in the consolidated review comment body:
 
   ```

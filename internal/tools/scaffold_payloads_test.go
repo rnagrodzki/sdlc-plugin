@@ -8,12 +8,20 @@ import (
 	"testing"
 )
 
-// TestPayloads_CJSReadOrder verifies that each embedded .cjs payload reads
-// .sdlc/config.json before .claude/sdlc.json (the v5 config-first order).
-func TestPayloads_CJSReadOrder(t *testing.T) {
+// TestPayloads_CJSReadsV2ConfigOnly verifies that each embedded .cjs payload
+// reads .sdlc-v2/config.json exclusively — no legacy .sdlc/config.json or
+// .claude/sdlc.json fallback. Legacy config layouts are migration-only
+// territory (the "migrate" tool), never a read path for CI scripts.
+func TestPayloads_CJSReadsV2ConfigOnly(t *testing.T) {
 	payloads := Payloads()
 
-	cjsFiles := []string{"check-changelog.cjs", "retag-release.cjs"}
+	cjsFiles := []string{
+		"check-changelog.cjs",
+		"retag-release.cjs",
+		"release-on-main.cjs",
+		"promote-release.cjs",
+		"verify-release-intent.cjs",
+	}
 	for _, name := range cjsFiles {
 		data, ok := payloads[name]
 		if !ok {
@@ -21,20 +29,14 @@ func TestPayloads_CJSReadOrder(t *testing.T) {
 		}
 		content := string(data)
 
-		sdlcIdx := strings.Index(content, ".sdlc/config.json")
-		claudeIdx := strings.Index(content, ".claude/sdlc.json")
-
-		if sdlcIdx < 0 {
-			t.Errorf("%s: does not contain .sdlc/config.json", name)
-			continue
+		if !strings.Contains(content, ".sdlc-v2/config.json") {
+			t.Errorf("%s: does not contain .sdlc-v2/config.json", name)
 		}
-		if claudeIdx < 0 {
-			t.Errorf("%s: does not contain .claude/sdlc.json", name)
-			continue
+		if strings.Contains(content, ".sdlc/config.json") {
+			t.Errorf("%s: contains stale legacy fallback reference .sdlc/config.json", name)
 		}
-		if sdlcIdx >= claudeIdx {
-			t.Errorf("%s: .sdlc/config.json (index %d) must appear before .claude/sdlc.json (index %d)",
-				name, sdlcIdx, claudeIdx)
+		if strings.Contains(content, ".claude/sdlc.json") {
+			t.Errorf("%s: contains stale legacy fallback reference .claude/sdlc.json", name)
 		}
 	}
 }

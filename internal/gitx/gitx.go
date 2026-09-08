@@ -81,7 +81,7 @@ type DiffOpts struct {
 	// Base is the base ref for a three-dot range (base...HEAD).
 	// When set, the diff shows what the current branch contributed
 	// relative to the merge-base — the correct semantics for
-	// branch-contribution diffs (git.js issue #239).
+	// branch-contribution diffs.
 	Base string
 
 	// Cached shows staged changes only (--cached).

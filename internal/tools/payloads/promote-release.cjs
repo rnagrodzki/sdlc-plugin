@@ -9,7 +9,7 @@
  * Usage (GitHub Actions — workflow_dispatch):
  *   node .github/scripts/promote-release.cjs v1.3.0
  *
- * Reads: .sdlc/config.json  (sdlc versioning config)
+ * Reads: .sdlc-v2/config.json  (sdlc versioning config)
  *
  * Flow:
  *   1. Resolve target tag from CLI arg (e.g. "v1.3.0").
@@ -63,8 +63,8 @@
 
 'use strict';
 
-/** @version 1 — promote-release script version. Bump when behavior changes. */
-const PROMOTE_RELEASE_SCRIPT_VERSION = 1;
+/** @version 2 — promote-release script version. Bump when behavior changes. */
+const PROMOTE_RELEASE_SCRIPT_VERSION = 2;
 
 const fs   = require('node:fs');
 const path = require('node:path');
@@ -111,46 +111,20 @@ function fail(msg) {
 // ---------------------------------------------------------------------------
 
 /**
- * Read the version section from .sdlc/config.json, falling back to legacy
- * .claude/sdlc.json (with stderr deprecation warning), and finally to legacy
- * .claude/version.json. CI script runs in read-only context — never calls
- * verifyAndMigrate (issue #232).
+ * Read the version section from .sdlc-v2/config.json. CI script runs in
+ * read-only context — never calls verifyAndMigrate. A repo still on a
+ * legacy config layout must run `migrate` first; this script does not
+ * fall back to any legacy path.
  */
 function readVersionConfig(repoRoot) {
-  // Primary: .sdlc/config.json → .version (issue #231)
-  const newPath = path.join(repoRoot, '.sdlc', 'config.json');
-  if (fs.existsSync(newPath)) {
-    try {
-      const config = JSON.parse(fs.readFileSync(newPath, 'utf8'));
-      return config.version || null;
-    } catch (err) {
-      fail(`Error parsing .sdlc/config.json: ${err.message}`);
-    }
+  const currentPath = path.join(repoRoot, '.sdlc-v2', 'config.json');
+  if (!fs.existsSync(currentPath)) return null;
+  try {
+    const config = JSON.parse(fs.readFileSync(currentPath, 'utf8'));
+    return config.version || null;
+  } catch (err) {
+    fail(`Error parsing .sdlc-v2/config.json: ${err.message}`);
   }
-
-  // Fallback: legacy .claude/sdlc.json
-  const legacyUnifiedPath = path.join(repoRoot, '.claude', 'sdlc.json');
-  if (fs.existsSync(legacyUnifiedPath)) {
-    process.stderr.write(`Deprecation: .claude/sdlc.json is the legacy project-config path. Run /setup --migrate to relocate.\n`);
-    try {
-      const config = JSON.parse(fs.readFileSync(legacyUnifiedPath, 'utf8'));
-      return config.version || null;
-    } catch (err) {
-      fail(`Error parsing .claude/sdlc.json: ${err.message}`);
-    }
-  }
-
-  // Legacy fallback: .claude/version.json
-  const legacyPath = path.join(repoRoot, '.claude', 'version.json');
-  if (fs.existsSync(legacyPath)) {
-    try {
-      return JSON.parse(fs.readFileSync(legacyPath, 'utf8'));
-    } catch (err) {
-      fail(`Error parsing .claude/version.json: ${err.message}`);
-    }
-  }
-
-  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -321,7 +295,7 @@ function main() {
 
   const config = readVersionConfig(repoRoot);
   if (!config) {
-    fail('No version config found (.sdlc/config.json). Cannot promote release without versionFile/tagPrefix.');
+    fail('No version config found (.sdlc-v2/config.json). Cannot promote release without versionFile/tagPrefix.');
   }
 
   const tagPrefix = config.tagPrefix || '';

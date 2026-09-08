@@ -294,12 +294,12 @@ Not an issue in the current flow. `release-on-main.cjs` runs on push to main (af
 
 ### verify-release-intent fails with "No version config found"
 
-The scaffolded CI scripts (`release-on-main.cjs`, `retag-release.cjs`, `verify-release-intent.cjs`, `promote-release.cjs`) currently read version config from `.sdlc/config.json` only, falling back to the legacy `.claude/sdlc.json` / `.claude/version.json` locations. They do **not** read `.sdlc-v2/config.json`, even though the Go-side tools `version_prepare` and `version_apply` read and write `.sdlc-v2/config.json` exclusively.
+The scaffolded CI scripts (`release-on-main.cjs`, `retag-release.cjs`, `verify-release-intent.cjs`, `promote-release.cjs`, `check-changelog.cjs`) read version config exclusively from `.sdlc-v2/config.json`, matching the Go-side tools `version_prepare` and `version_apply`. There is no legacy fallback — a project still on the old `.sdlc/config.json` (or `.claude/sdlc.json` / `.claude/version.json`) layout must run the `migrate` tool first.
 
-On a project set up by the current `/setup` (which writes `.sdlc-v2/config.json`), the CI scripts find no config and release automation fails with:
+If `.sdlc-v2/config.json` is missing or has no `.version` section, release automation fails with:
 
 ```
-No version config found (.sdlc/config.json ".version" section, or legacy .claude/sdlc.json / .claude/version.json)
+No version config found (.sdlc-v2/config.json ".version" section). A release:* label requires a version config to compute the release target.
 ```
 
-**Workaround:** until the CI scripts are updated to read `.sdlc-v2/config.json`, also mirror your version config at `.sdlc/config.json`, or track this as a known plugin limitation when reviewing CI failures.
+**Fix:** run `/setup` (or the `migrate` tool, if this project still has a legacy config) to create `.sdlc-v2/config.json` with a `version` section.

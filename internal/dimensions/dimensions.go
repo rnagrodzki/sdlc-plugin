@@ -1,5 +1,5 @@
 // Package dimensions reads and validates review-dimension Markdown files
-// (`.sdlc/review-dimensions/<name>.md`). It is a Go port of
+// (`.sdlc-v2/review-dimensions/<name>.md`). It is a Go port of
 // scripts/lib/dimensions.js in the sdlc-utilities plugin: KNOWN_FIELDS,
 // VALID_SEVERITIES, GUARDRAIL_SEVERITIES, the `_common.md` shared-prompt
 // convention, and the D1-D13 field/severity validation checks
@@ -41,13 +41,13 @@ var ValidSeverities = []string{"critical", "high", "medium", "low", "info"}
 // GuardrailSeverities is the canonical severity vocabulary for plan/execute
 // guardrails (R17) — ported from the source's GUARDRAIL_SEVERITIES. It is
 // unrelated to review-dimension frontmatter (guardrails are stored as JSON
-// entries in .sdlc/config.json, not as Markdown files with YAML
+// entries in .sdlc-v2/config.json, not as Markdown files with YAML
 // frontmatter), so it is not exercised by Validate; it is exported for
 // downstream consumers that need the vocabulary constant.
 var GuardrailSeverities = []string{"error", "warning"}
 
-// commonPromptFile is the shared common-prompt filename (R-common-prompt,
-// issue #519). It carries no YAML frontmatter and is excluded from Load's
+// commonPromptFile is the shared common-prompt filename (R-common-prompt).
+// It carries no YAML frontmatter and is excluded from Load's
 // dimension listing.
 const commonPromptFile = "_common.md"
 

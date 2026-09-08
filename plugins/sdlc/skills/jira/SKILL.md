@@ -368,7 +368,7 @@ Skip for read operations. Implements R17.
 3. On `approve` only, write the approval token with the `Write` tool to `.sdlc-v2/state/artifacts/approval-<hash>.token` (its content is not read back — its existence, next to the critique artifact from Step 2.5, is the record that this exact payload was approved this turn).
 4. Proceed to Step 3.
 
-## Step 2.7 — Link verification (write-ops only, R22, issue #198) — HARD GATE
+## Step 2.7 — Link verification (write-ops only, R22) — HARD GATE
 
 Skip for read operations. After approval (Step 2.6) and before MCP dispatch, validate every URL embedded in the description payload (for `createJiraIssue`/`editJiraIssue`) and the comment body (for `addCommentToJiraIssue`):
 

@@ -1128,8 +1128,8 @@ func writeSkillInvokedMarker(mainRoot, contentRoot string) {
 // ---------------------------------------------------------------------------
 
 // planPrepareCore is the core logic, separated from the handler for
-// testability. mainRoot anchors config/.sdlc/execution/ lookups; contentRoot
-// anchors OpenSpec content and git-branch detection (issue #457: OpenSpec
+// testability. mainRoot anchors config/.sdlc-v2/execution/ lookups;
+// contentRoot anchors OpenSpec content and git-branch detection (OpenSpec
 // scans live on the active branch in the active worktree).
 func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepareOut, error) {
 	errs := []string{}
@@ -1327,7 +1327,7 @@ type PlanMarkOut struct {
 }
 
 // planMark is the core logic, separated from the handler for testability.
-// mainRoot anchors the .sdlc/execution/ state directory (state files are
+// mainRoot anchors the .sdlc-v2/execution/ state directory (state files are
 // always resolved relative to the main worktree, matching lib/state.js's
 // resolveStateDir); contentRoot anchors current-branch detection (the
 // branch actually being worked on, which may differ from main's branch in

@@ -16,17 +16,16 @@ package tools
 // port; see the task-28 fact sheet for the rulings that constrain them):
 //
 //  1. Legacy cache auto-migration (findLegacyCache/migrateLegacyCache for
-//     .sdlc/jira-cache and .claude/jira-cache) is DROPPED. This follows the
+//     jira.js's old cache locations) is DROPPED. This follows the
 //     KD2 clean-break precedent already established for config (Task 7) and
 //     other legacy-migration surfaces (Task 21): pre-v5 on-disk layouts are
 //     not auto-migrated by the Go port. resolveEffectiveCachePath simply
 //     returns no match instead of probing/migrating legacy locations.
-//  2. runAutoMigration()'s templates-dir migration (.claude/jira-templates/
-//     -> .sdlc/jira-templates/, delegated in JS to an unported
-//     migrate-jira-templates.js) is likewise DROPPED for the same reason —
-//     it depends on a script outside this task's file scope, and templates
-//     written under the legacy .claude/ location are simply not seen; a
-//     fresh .sdlc/jira-templates/ tree is used from a clean slate.
+//  2. runAutoMigration()'s templates-dir migration (delegated in JS to an
+//     unported migrate-jira-templates.js) is likewise DROPPED for the same
+//     reason — it depends on a script outside this task's file scope, and
+//     templates written under jira.js's old location are simply not seen; a
+//     fresh .sdlc-v2/jira-templates/ tree is used from a clean slate.
 //  3. Two additive JiraIn fields not in the literal task-28 contract list:
 //     - Data map[string]any: save/save-field read arbitrary JSON from
 //       stdin in jira.js; an MCP tool has no stdin, so the payload must
@@ -307,10 +306,9 @@ func jiraResolveEffectiveCachePath(key, cacheDir, site string) (jiraCacheResolut
 		return res, nil
 	}
 
-	// No home matches. jira.js falls back to probing/migrating
-	// .sdlc/jira-cache and .claude/jira-cache here; that legacy-migration
-	// path is dropped in this port (deviation #1) — a fresh miss is
-	// reported instead.
+	// No home matches. jira.js falls back to probing/migrating its old
+	// cache locations here; that legacy-migration path is dropped in this
+	// port (deviation #1) — a fresh miss is reported instead.
 	return res, nil
 }
 
@@ -436,7 +434,7 @@ type jiraTemplateFallback struct {
 }
 
 // jiraResolveTemplateStatus ports resolveTemplateStatus. mainRoot anchors
-// the custom-templates directory at .sdlc/jira-templates (jira.js's
+// the custom-templates directory at .sdlc-v2/jira-templates (jira.js's
 // resolveSdlcRoot()-rooted customDir, R-projectroot #360). The legacy
 // .claude/jira-templates/ migration (runAutoMigration) is dropped — see
 // file-level deviation #2.

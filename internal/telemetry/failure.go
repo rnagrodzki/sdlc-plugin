@@ -4,7 +4,7 @@
 // Key decisions:
 //
 //   - KD5 (resolution order): ResolveSessionID tries param first, then the
-//     on-disk marker at .sdlc/state/mcp-session.id, then the SDLC_SESSION_ID
+//     on-disk marker at .sdlc-v2/state/mcp-session.id, then the SDLC_SESSION_ID
 //     env var.  This is a deliberate reshuffle from the JS source (which
 //     checks env first) for the MCP-server context where the param carries
 //     the caller's session.  The function is read-only; it never generates
@@ -20,7 +20,7 @@
 //     parity and Task 30's mcp_failure_record tool will consume them.
 //
 //   - Legacy .claude/learnings/ fallback is dropped; the contract pins the
-//     canonical path .sdlc/learnings/log.md.
+//     canonical path .sdlc-v2/learnings/log.md.
 package telemetry
 
 import (
@@ -153,7 +153,7 @@ func redact(s string) string {
 	return r
 }
 
-// Record appends a structured failure block to .sdlc/learnings/log.md under
+// Record appends a structured failure block to .sdlc-v2/learnings/log.md under
 // root.  It creates parent directories as needed.
 //
 // Idempotency (KD6): if a heading line with the same date, class, and tool
@@ -225,7 +225,7 @@ func Record(root string, f Failure) error {
 // resolution chain:
 //
 //  1. param — explicit caller-supplied value (highest priority).
-//  2. .sdlc/state/mcp-session.id — on-disk marker file (trimmed).
+//  2. .sdlc-v2/state/mcp-session.id — on-disk marker file (trimmed).
 //  3. SDLC_SESSION_ID env var.
 //  4. Fallback to the parent process ID (best-effort, mirrors JS ppid).
 //

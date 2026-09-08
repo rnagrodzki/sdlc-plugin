@@ -46,9 +46,9 @@ type TaskProgress struct {
 }
 
 // Progress is the aggregated view of a run's progress markers, assembled by
-// ReadProgress from every file under <root>/.sdlc/execution/<runID>/progress/
+// ReadProgress from every file under <root>/.sdlc-v2/execution/<runID>/progress/
 // plus (at lower priority) the legacy single-file marker,
-// <root>/.sdlc/execution/<runID>/progress.json. The exported shape is
+// <root>/.sdlc-v2/execution/<runID>/progress.json. The exported shape is
 // unchanged from the single-file era so MCP callers (execute_state's
 // wave-progress action) see no difference.
 type Progress struct {
@@ -78,7 +78,7 @@ func taskProgressPath(root, runID, taskID string) string {
 }
 
 // ReadProgress aggregates every per-task file under
-// <root>/.sdlc/execution/<runID>/progress/ into a single Progress, merging
+// <root>/.sdlc-v2/execution/<runID>/progress/ into a single Progress, merging
 // in the legacy single-file marker (if any) at lower priority — a taskID
 // present in both is resolved in favor of the per-task file. Missing or
 // unreadable files (legacy marker absent, progress/ directory absent, a
