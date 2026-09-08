@@ -13,6 +13,13 @@ the `pr` skill to carry through `pr_apply`. This skill is diagnose-and-plan only
 `version_apply` or `commit_apply`, never creates a tag, and never writes the version file or a
 changelog.
 
+**Versioning modes:** Projects define their versioning strategy in `.sdlc-v2/config.json` via a `version` section:
+- **File mode** (`mode: "file"` or omitted): Current version is read from a version file (e.g., `package.json`,
+  `VERSION`, or `Cargo.toml`). This is the default and covers most projects. `versionSource.type` is `"file"`.
+- **Tag mode** (`mode: "tag"`): Current version is derived from the highest semver git tag instead of a file.
+  Useful for tag-only projects that don't maintain a version file. `versionSource.type` is `"tag"` and `path` is
+  empty. If no semver tags exist, defaults to `"0.0.0"` with a warning.
+
 **Announce at start:** "I'm using version (sdlc v{sdlc_version})." — extract the version from the
 `sdlc:` line in the session-start system-reminder. If no version is in context, omit the
 parenthetical.
@@ -25,6 +32,12 @@ parenthetical.
 version_prepare({ skipConfigCheck: false, sessionID: "" }) → data
 ```
 
+**Version source detection:** `data.versionSource` describes how the current version was determined:
+- `type: "file"` (file mode): `path` is the detected or configured version file (e.g., `package.json`),
+  `version` is the parsed version string.
+- `type: "tag"` (tag mode): `path` is empty, `version` is derived from the highest semver git tag.
+
+**Continue with diagnostics:**
 - `data.errors` non-empty → show each message, stop.
 - `data.warnings` non-empty → show them, continue.
 - `!data.configPresent && data.proposedConfig` → show the proposed `version` config section and
@@ -38,8 +51,22 @@ version_prepare({ skipConfigCheck: false, sessionID: "" }) → data
 - `data.versionDivergence` → show `versionDivergence.message` and suggest `git fetch && git rebase
   origin/<defaultBranch>` before planning further — the bump is computed off the higher of
   file/tag version, not the file alone.
-- Do not call `scaffold_ci` here. If the user asks about CI release automation, point them at
-  running `scaffold_ci` themselves.
+- **CI release scaffolding:**
+  - **File mode:** do not call `scaffold_ci` here. If the user asks about CI release automation,
+    point them at running `scaffold_ci` themselves.
+  - **Tag mode** (`data.versionConfig.mode == "tag"`): Glob `.github/workflows/release-on-main.yml`
+    and `.github/workflows/retag-release.yml`. If **neither** exists, offer via AskUserQuestion:
+
+    > Project uses tag-only versioning — no version file to bump locally.
+    > CI release workflows handle tag creation and version bumping post-merge.
+    > Scaffold release CI now?
+    > 1. **Yes** — run `scaffold_ci` to add release-on-main + retag-release workflows
+    > 2. **Skip** — continue without CI scaffolding
+
+    On **yes**: call `scaffold_ci({ force: false })` — `scaffold_ci`'s only input is `force`
+    (`false` creates missing files without touching any unrelated manifest entry that already
+    exists) — then continue to Step 1. On **skip**, continue to Step 1. If either workflow already
+    exists, skip the offer entirely and continue to Step 1.
 
 ## Step 1 (PLAN): Determine Bump Level and Draft Release Notes
 

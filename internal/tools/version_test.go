@@ -254,39 +254,138 @@ func TestVersionPrepare_ConfigMissing_ProposedConfig(t *testing.T) {
 	}
 }
 
-// TestVersionPrepare_ModeTag_Error verifies that mode:"tag" returns an
-// actionable error without crashing.
-func TestVersionPrepare_ModeTag_Error(t *testing.T) {
+// TestVersionPrepare_ModeTag_VersionFromTag verifies that mode:"tag" derives
+// the current version from the highest semver git tag and computes bump
+// options from it.
+func TestVersionPrepare_ModeTag_VersionFromTag(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 	writePackageJSON(t, dir, "1.0.0")
 	gitCommit(t, dir, "init-pkg")
 
-	writeVersionConfig(t, dir, `{"mode":"tag"}`)
+	gitTag(t, dir, "v1.2.0")
+	gitCommit(t, dir, "post-tag")
+
+	writeVersionConfig(t, dir, `{"mode":"tag","tagPrefix":"v"}`)
 
 	config.Quiet = true
 	defer func() { config.Quiet = false }()
 
 	out, err := versionPrepare(dir, dir, VersionPrepareIn{SkipConfigCheck: true})
 	if err != nil {
-		t.Fatalf("versionPrepare returned error: %v", err)
+		t.Fatalf("versionPrepare: %v", err)
+	}
+	if len(out.Errors) != 0 {
+		t.Errorf("expected no errors; got %v", out.Errors)
 	}
 
-	// Should have an error about mode "tag" not supported.
-	hasTagError := false
-	for _, e := range out.Errors {
-		if strings.Contains(e, "tag") && strings.Contains(e, "not yet supported") {
-			hasTagError = true
+	if out.VersionSource == nil {
+		t.Fatal("expected VersionSource to be set")
+	}
+	if out.VersionSource.Type != "tag" {
+		t.Errorf("versionSource.Type=%s, want tag", out.VersionSource.Type)
+	}
+	if out.VersionSource.Version != "1.2.0" {
+		t.Errorf("versionSource.Version=%s, want 1.2.0", out.VersionSource.Version)
+	}
+
+	var patchOpt *VersionBumpOption
+	for i := range out.BumpOptions {
+		if out.BumpOptions[i].Level == "patch" {
+			patchOpt = &out.BumpOptions[i]
 			break
 		}
 	}
-	if !hasTagError {
-		t.Errorf("expected error about mode tag; got errors=%v", out.Errors)
+	if patchOpt == nil {
+		t.Fatal("no patch bump option found")
+	}
+	if patchOpt.Result != "1.2.1" {
+		t.Errorf("patch result=%s, want 1.2.1", patchOpt.Result)
 	}
 
-	// Should return early -- no version source detected.
-	if out.VersionSource != nil {
-		t.Error("expected VersionSource=nil for mode:tag early return")
+	if out.ProposedConfig != nil {
+		t.Errorf("expected ProposedConfig=nil in tag mode; got %v", out.ProposedConfig)
+	}
+}
+
+// TestVersionPrepare_ModeTag_NoTags verifies that mode:"tag" defaults to
+// 0.0.0 with a warning when no semver tags exist.
+func TestVersionPrepare_ModeTag_NoTags(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	writePackageJSON(t, dir, "1.0.0")
+	gitCommit(t, dir, "init-pkg")
+
+	writeVersionConfig(t, dir, `{"mode":"tag","tagPrefix":"v"}`)
+
+	config.Quiet = true
+	defer func() { config.Quiet = false }()
+
+	out, err := versionPrepare(dir, dir, VersionPrepareIn{SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("versionPrepare: %v", err)
+	}
+
+	if out.VersionSource == nil {
+		t.Fatal("expected VersionSource to be set")
+	}
+	if out.VersionSource.Version != "0.0.0" {
+		t.Errorf("versionSource.Version=%s, want 0.0.0", out.VersionSource.Version)
+	}
+
+	var patchOpt *VersionBumpOption
+	for i := range out.BumpOptions {
+		if out.BumpOptions[i].Level == "patch" {
+			patchOpt = &out.BumpOptions[i]
+			break
+		}
+	}
+	if patchOpt == nil {
+		t.Fatal("no patch bump option found")
+	}
+	if patchOpt.Result != "0.0.1" {
+		t.Errorf("patch result=%s, want 0.0.1", patchOpt.Result)
+	}
+
+	hasWarning := false
+	for _, w := range out.Warnings {
+		if strings.Contains(w, "defaulting to 0.0.0") {
+			hasWarning = true
+			break
+		}
+	}
+	if !hasWarning {
+		t.Errorf("expected warning about defaulting to 0.0.0; got %v", out.Warnings)
+	}
+}
+
+// TestVersionPrepare_ModeTag_IgnoresVersionFile verifies that mode:"tag"
+// derives the version from git tags even when a version file with a
+// different version is present.
+func TestVersionPrepare_ModeTag_IgnoresVersionFile(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	writePackageJSON(t, dir, "9.9.9")
+	gitCommit(t, dir, "init-pkg")
+
+	gitTag(t, dir, "v1.0.0")
+	gitCommit(t, dir, "post-tag")
+
+	writeVersionConfig(t, dir, `{"mode":"tag","tagPrefix":"v"}`)
+
+	config.Quiet = true
+	defer func() { config.Quiet = false }()
+
+	out, err := versionPrepare(dir, dir, VersionPrepareIn{SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("versionPrepare: %v", err)
+	}
+
+	if out.VersionSource == nil {
+		t.Fatal("expected VersionSource to be set")
+	}
+	if out.VersionSource.Version != "1.0.0" {
+		t.Errorf("versionSource.Version=%s, want 1.0.0 (from tag, not package.json)", out.VersionSource.Version)
 	}
 }
 
