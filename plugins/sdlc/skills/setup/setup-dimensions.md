@@ -74,7 +74,7 @@ following scan results in its Step 3.S "Scan phase":
 - **CI/CD config** — .github/workflows, .circleci, Jenkinsfile presence
 - **Database signals** — migrations/ dir, *.sql files, Prisma/Alembic/Flyway presence
 - **Test structure** — *.test.*, *.spec.* files, test runner configs
-- **Existing review dimensions** — what is already installed in .sdlc/review-dimensions/
+- **Existing review dimensions** — what is already installed in .sdlc-v2/review-dimensions/
 - **GitHub hosting detection** — output of the multi-signal cascade (git remote, gh CLI, .github/ dir)
 
 ---
@@ -83,7 +83,7 @@ following scan results in its Step 3.S "Scan phase":
 
 ### Step 2 — Discover Existing Dimensions
 
-Check `.sdlc/review-dimensions/` (Glob `.sdlc/review-dimensions/*.md`) for
+Check `.sdlc-v2/review-dimensions/` (Glob `.sdlc-v2/review-dimensions/*.md`) for
 already-installed dimension files.
 
 In `--add` (expansion) mode:
@@ -168,7 +168,7 @@ Use AskUserQuestion to ask: "Install which dimensions?" Options: **all** /
 
 For each selected dimension:
 
-1. Ensure `.sdlc/review-dimensions/` exists (create if needed).
+1. Ensure `.sdlc-v2/review-dimensions/` exists (create if needed).
 2. Write the full dimension file (frontmatter + tailored body) per the
    Dimension Frontmatter Spec, customized with project-specific evidence.
 3. Confirm each file written with its path.
@@ -201,7 +201,7 @@ hosting detection).
 
 **Check existing state:** Glob `.github/instructions/*.instructions.md`. If
 files exist with the same names as selected dimensions, confirm overwrite. In
-`--add` mode: when `.sdlc/review-dimensions/_common.md` exists and contains
+`--add` mode: when `.sdlc-v2/review-dimensions/_common.md` exists and contains
 new or changed content, regenerate ALL existing mirrors (not just newly added
 ones) to incorporate the common instructions; otherwise, only generate for
 newly added dimensions.
@@ -228,8 +228,8 @@ Tighten broad `applyTo` patterns.
 
 ```
 dimensions_render_instructions({
-  file: ".sdlc/review-dimensions/<name>.md",
-  commonFile: ".sdlc/review-dimensions/_common.md",
+  file: ".sdlc-v2/review-dimensions/<name>.md",
+  commonFile: ".sdlc-v2/review-dimensions/_common.md",
 }) → { ok, path }
 ```
 

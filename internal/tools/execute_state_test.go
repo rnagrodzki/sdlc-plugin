@@ -2874,6 +2874,9 @@ func TestExecState_Ledger_PathTraversalDefense(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for path traversal in workerId")
 	}
+	if _, ok := err.(*mcpserver.DomainError); !ok {
+		t.Errorf("expected DomainError for workerId traversal, got %T", err)
+	}
 }
 
 // ---------------------------------------------------------------------------

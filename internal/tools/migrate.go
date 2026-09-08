@@ -83,7 +83,7 @@ func migrateConfig(root string, dryRun bool) (MigrateOut, error) {
 		}
 	}
 
-	var changed []string
+	changed := []string{}
 	if report.Migrated {
 		changed = append(changed, paths.DataDir+"/config.json")
 		// local.json may also have been written.

@@ -529,14 +529,14 @@ func mergeShipFlags(cfgRoot string, in ShipPrepareIn, cfg map[string]any) (map[s
 		sources["steps"] = "cli"
 	case in.Quick:
 		if quickArr, ok := cfg["quick"].([]any); ok {
-			merged["steps"] = toStringSlice(quickArr)
+			merged["steps"] = anyToStringSlice(quickArr)
 		} else {
 			merged["steps"] = []string{}
 		}
 		sources["steps"] = "quick"
 	default:
 		if cfgArr, ok := cfg["steps"].([]any); ok {
-			merged["steps"] = toStringSlice(cfgArr)
+			merged["steps"] = anyToStringSlice(cfgArr)
 			sources["steps"] = "config"
 		} else {
 			merged["steps"] = append([]string{}, shipmeta.ShipBuiltInDefaults.Steps...)
@@ -627,7 +627,7 @@ func mergeShipFlags(cfgRoot string, in ShipPrepareIn, cfg map[string]any) (map[s
 
 	// awaitRemoteReviewers: config non-empty array > default.
 	if arr, ok := cfg["awaitRemoteReviewers"].([]any); ok && len(arr) > 0 {
-		merged["awaitRemoteReviewers"] = toStringSlice(arr)
+		merged["awaitRemoteReviewers"] = anyToStringSlice(arr)
 		sources["awaitRemoteReviewers"] = "config"
 	} else {
 		merged["awaitRemoteReviewers"] = append([]string{}, shipmeta.ShipBuiltInDefaults.AwaitRemoteReviewers...)
@@ -707,18 +707,6 @@ func cfgInt(cfg map[string]any, key string) (int, bool) {
 	default:
 		return 0, false
 	}
-}
-
-// toStringSlice converts a []any of strings (as decoded from JSON) to
-// []string, skipping any non-string elements.
-func toStringSlice(arr []any) []string {
-	out := make([]string, 0, len(arr))
-	for _, v := range arr {
-		if s, ok := v.(string); ok {
-			out = append(out, s)
-		}
-	}
-	return out
 }
 
 // sliceContainsStr reports whether ss contains s.

@@ -1125,7 +1125,7 @@ func execActionWaveDone(root, workDir string, in ExecuteStateIn, now func() time
 		if d, ok := pipeline.Duration(startedAt, completedAt); ok && d > 0 {
 			waveDur = d
 			waveDurOK = true
-			_ = ts.Record(bucket, d)
+			_ = ts.Record(bucket, d) // best-effort metric; failure does not affect state
 		}
 	}
 
@@ -3185,7 +3185,7 @@ func execActionLedgerStatus(root string, in ExecuteStateIn, now func() time.Time
 		fp := filepath.Join(dir, name)
 		var data map[string]any
 		if err := fsx.ReadJSON(fp, &data); err != nil {
-			continue
+			continue // skip corrupt/unreadable ledger entries gracefully
 		}
 
 		status, _ := data["status"].(string)

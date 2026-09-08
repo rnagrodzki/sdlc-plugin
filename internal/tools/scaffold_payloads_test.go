@@ -44,11 +44,11 @@ func TestPayloads_CJSReadOrder(t *testing.T) {
 func TestPayloads_SchemaChecksums(t *testing.T) {
 	// Expected SHA-256 hex digests computed from the source schemas.
 	expected := map[string]string{
-		"sdlc-local.schema.json":       "4f96adb1de97618e5b1f53e8a50e1e63250e34c0bd97f0b571fc935ac92941d9",
-		"execute-state.schema.json":    "c3e4b805917fd4258616eb447ea9817808e43e1169acae9a15f77c7461111abf",
-		"ship-state.schema.json":       "e83223558c937bcf8e04cc4e5d01b361f51e639fbe72cf1f7076e17469dc5ed9",
-		"review-dimension.schema.json": "feb7be29fd8142fe340274a4ecfa55787373b4ca492102085243d81888fa7f0d",
-		"plugin.schema.json":           "41cf8d6ff6bd976cab3f841301b138a51d29f2ff2358eaff598d76455a188561",
+		"sdlc-local.schema.json":       "e9b58dd50dadc8ccde4b88eba43d5a822380e24b9e838ccf5e75b10fedf35aa2",
+		"execute-state.schema.json":    "4e86a84ace4ed6814f1621f2795a7f13730373072efd7513fa90abdd6f407d17",
+		"ship-state.schema.json":       "3d24e349d3e26c92ee85100ce20aad89632f6dd2418e36249bc07ff27e8b908f",
+		"review-dimension.schema.json": "107a3d573e0e1b45edf7e31b547c5f0b8f5c7ccca193923255ace6f93f8a559d",
+		"plugin.schema.json":           "c774282b3c8c54fc7418b767c5043353e11f65138b0be010cef8d57a6270fa67",
 	}
 
 	for name, wantHex := range expected {

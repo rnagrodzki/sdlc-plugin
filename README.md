@@ -94,7 +94,7 @@ The MCP server (`sdlc mcp`) registers 32 tools across 16 groups (grepped from
 | Group | Tools |
 |---|---|
 | Commit | `commit_prepare`, `commit_apply` |
-| Version | `version_prepare`, `version_apply` |
+| Version | `version_prepare`, `version_apply` (deprecated no-op) |
 | Pull request | `pr_prepare`, `pr_apply` |
 | Plan | `plan_prepare`, `plan_mark`, `plan_explore_prepare`, `plan_support` |
 | Review | `review_prepare`, `received_review_prepare` |
@@ -156,6 +156,8 @@ at each step; `supervised` is the safer default for interactive use.
 - Go module at the repository root; entry point `cmd/sdlc/main.go` with
   subcommands `mcp`, `hook <name>`, `version`.
 - `go build ./...` and `go vet ./...` must pass before committing.
+- `Taskfile.yml` defines dev tasks; `task deploy` builds and installs the
+  binary so `sdlc-launcher.sh` picks up a local build.
 - `go test -tags integration ./...` runs the integration-tagged suite (see
   `.github/workflows/test.yml`, which runs on every PR).
 - The launcher itself has no Go test — it's exercised by

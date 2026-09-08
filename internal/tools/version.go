@@ -373,7 +373,7 @@ func versionPrepare(cfgRoot, gitRoot string, in VersionPrepareIn) (VersionPrepar
 // recommendation from the prepare output state.
 func versionPrepareSummary(out VersionPrepareOut) (string, []string, string) {
 	var parts []string
-	var actions []string
+	actions := []string{}
 
 	if out.VersionSource != nil {
 		parts = append(parts, fmt.Sprintf("version %s from %s", out.VersionSource.Version, out.VersionSource.Type))

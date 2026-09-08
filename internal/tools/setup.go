@@ -308,8 +308,8 @@ func normalizeBlankLines(lines []string) []string {
 
 // setupInit is the core logic, separated from the handler for testability.
 func setupInit(root string, in SetupInitIn) (SetupInitOut, error) {
-	var created []string
-	var changed []string
+	created := []string{}
+	changed := []string{}
 	var errs []string
 
 	sdlcDir := filepath.Join(root, paths.DataDir)

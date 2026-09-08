@@ -318,7 +318,10 @@ func RepoAccessProbe(dir, owner, repo, host string) RepoAccessResult {
 		return RepoAccessResult{ErrorMessage: err.Error()}
 	}
 
-	accounts, _ := GetAccounts(dir, host)
+	accounts, acctErr := GetAccounts(dir, host)
+	if acctErr != nil {
+		return RepoAccessResult{ErrorMessage: fmt.Sprintf("GetAccounts: %s", acctErr.Error())}
+	}
 	logins := make([]string, 0, len(accounts))
 	for _, a := range accounts {
 		logins = append(logins, a.Login)

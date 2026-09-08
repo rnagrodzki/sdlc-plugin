@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/rnagrodzki/sdlc-marketplace/main/schemas/execute-state.schema.json",
+  "$id": "https://raw.githubusercontent.com/rnagrodzki/sdlc-plugin/main/plugins/sdlc/schemas/execute-state.schema.json",
   "title": "Execute State",
   "description": "Validates .sdlc-v2/execution/execute-*.json",
   "type": "object",

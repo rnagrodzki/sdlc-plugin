@@ -82,6 +82,11 @@ type envelopeErr struct {
 }
 
 // wrapOK marshals data into a KD3 success envelope: {"ok":true,"data":...}.
+//
+// TODO: nil slices/maps in the input struct serialize as JSON null instead of
+// []/{}. Callers should initialize slice fields to empty (e.g. []string{})
+// rather than leaving them nil. A central normalization pass here would be
+// the definitive fix but requires reflection; see review finding #12.
 func wrapOK(data any) ([]byte, error) {
 	raw, err := json.Marshal(data)
 	if err != nil {

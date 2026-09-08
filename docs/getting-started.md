@@ -85,7 +85,7 @@ Each stage of a change maps to one skill. Run them in order, or let
 | Commit | `/commit` | Generate a commit message from the staged diff and commit history, then commit. |
 | Review | `/review` | Multi-dimension code review (security, performance, docs, etc.) of the current diff. |
 | Respond to review | `/received-review` | Work through reviewer or CI feedback on an open PR. |
-| Version | `/version <major\|minor\|patch>` | Bump the version, update the changelog, tag a release. |
+| Version | `/version` | Diagnose version state: source, divergence, and recommended next bump. |
 | Open a PR | `/pr` | Generate a PR description from commits/diff and open it via `gh`. |
 | Verify CI | `/verify-pipeline --pr <N>` | Diagnose and optionally fix a failing CI run on a PR. |
 | Jira | `/jira` | Create, read, or update Jira issues linked to the work. |

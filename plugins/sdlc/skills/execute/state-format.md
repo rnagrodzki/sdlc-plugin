@@ -60,7 +60,7 @@ If there is only one worktree entry (no linked worktrees), the main working tree
   "branch": "feat/my-feature",
   "planPath": "/Users/dev/myrepo/tasks/plan.md",
   "planHash": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
-  "preset": "balanced",
+  "quality": "balanced",
   "totalTasks": 8,
   "plannedTaskIds": ["1", "2", "3", "4", "5", "6", "7", "8"],
   "waves": [ ... ],
@@ -77,7 +77,7 @@ If there is only one worktree entry (no linked worktrees), the main working tree
 | `branch`     | string        | Git branch name at execution start.                                                  |
 | `planPath`   | string \| null | Absolute path to the plan file, resolved once in Step 1 (LOAD) from `--plan <path>` or the positional plan-file-path argument (implements R40). Populated on every run — the standalone plan-argument gate (R41) and ship's own plan-file validation both require an explicit plan file before execution starts, so this field is no longer left unconditionally `null`. `null` only appears in state files written before #505. |
 | `planHash`   | string        | SHA-256 hash of the plan file's bytes at execution start, computed by the skill via `shasum -a 256` (implements R40) and passed straight through to the `execute_state({action:"init"})` tool call — the Go tool does not compute or validate it. Populated whenever `planPath` is populated, per the schema (`schemas/execute-state.schema.json`), which types this field as a required non-null string. |
-| `preset`     | string \| null | Execution preset (`"full"`, `"balanced"`, or `"minimal"`), or `null` if none was applied. Legacy `"A"`/`"B"`/`"C"` values may appear in older state files. |
+| `quality`    | string \| null | Execution quality level (`"full"`, `"balanced"`, or `"minimal"`), or `null` if none was applied. Legacy `"A"`/`"B"`/`"C"` values may appear in older state files. |
 | `totalTasks` | number        | Total number of tasks across all waves.                                              |
 | `plannedTaskIds` | string[] \| absent | Every task ID the plan declares, passed as an optional `plannedTaskIds` array on `init`. Absent on state files from a run that didn't supply it (including all pre-this-field state files). Two consumers depend on it: `execRunInFlight` (an ID here with no matching entry in `context.completedTaskIds` means the run is still in flight, triggering `resumeBriefing` on `read`) and `verify-completeness` (cross-checks this list against what actually got recorded; without it, `verify-completeness` fails outright with `"verify-completeness cannot find plannedTaskIds in state — invariant check cannot run"` rather than silently skipping the check). |
 | `waves`      | array         | Ordered list of wave records (see below).                                            |
@@ -449,7 +449,7 @@ Mid-execution state: wave 0 completed, wave 1 in progress, wave 2 pending.
   "branch": "feat/my-feature",
   "planPath": "tasks/plan.md",
   "planHash": "sha256:3f2a1b9c7e4d8a5f6b0c2d9e1a4f7b3c8d2e5f0a1b6c9d4e7f2a5b8c3d6e9f0",
-  "preset": "balanced",
+  "quality": "balanced",
   "totalTasks": 8,
   "waves": [
     {

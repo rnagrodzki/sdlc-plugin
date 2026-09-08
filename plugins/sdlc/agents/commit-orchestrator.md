@@ -1,6 +1,6 @@
 ---
 name: commit-orchestrator
-description: Drafts a commit message from a prepared payload (no conversation context inherited). Reads the manifest written by commit-prepare.js, generates a single commit message that satisfies the project's commitConfig and recent-commit style, and returns ONLY the message string. Does not call git, does not write files, does not invoke gh.
+description: Drafts a commit message from a prepared payload (no conversation context inherited). Reads the manifest written by commit_prepare, generates a single commit message that satisfies the project's commitConfig and recent-commit style, and returns ONLY the message string. Does not call git, does not write files, does not invoke gh.
 tools: Read
 model: haiku
 ---
@@ -13,7 +13,7 @@ You inherit no conversation context — everything you need is in the manifest.
 
 ## Inputs (provided in your prompt)
 
-- **MANIFEST_FILE**: Absolute path to the JSON manifest written by `commit.js --output-file`
+- **MANIFEST_FILE**: Absolute path to the JSON manifest written by `commit_prepare`
 - **PROJECT_ROOT**: The project's working directory
 
 ## Step 0 — Load Manifest
@@ -32,7 +32,7 @@ Read the manifest JSON from `MANIFEST_FILE`. The manifest contains:
 | `staged.truncatedFiles` | File paths whose full diffs were omitted (diffstat still available) |
 | `recentCommits` | Last 15 commits (oneline format) for style detection |
 | `lastCommitMessage` | Previous commit message (only when `flags.amend` is true) |
-| `commitConfig` | Commit message validation config from `.sdlc/config.json` (null when absent) |
+| `commitConfig` | Commit message validation config from `.sdlc-v2/config.json` (null when absent) |
 
 If the manifest's `errors` array is non-empty, return an empty string and stop. The skill body will surface the errors itself.
 

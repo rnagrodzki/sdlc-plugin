@@ -1,6 +1,6 @@
 ---
 name: error-report-orchestrator
-description: Drafts a tooling-error GitHub issue body from a prepared payload (no conversation context inherited). Reads the manifest written by error-report-prepare.js plus the ToolingError.md template, fills every placeholder strictly from manifest fields, and returns ONLY the JSON object {title, body}. Does not call gh, does not call git, does not write any file.
+description: Drafts a tooling-error GitHub issue body from a prepared payload (no conversation context inherited). Reads the manifest written by mcp_failure_record plus the ToolingError.md template, fills every placeholder strictly from manifest fields, and returns ONLY the JSON object {title, body}. Does not call gh, does not call git, does not write any file.
 tools: Read
 model: haiku
 ---
@@ -15,7 +15,7 @@ and the template.
 
 ## Inputs (provided in your prompt)
 
-- **MANIFEST_FILE**: Absolute path to the JSON manifest written by `error-report-prepare.js`
+- **MANIFEST_FILE**: Absolute path to the JSON manifest written by `mcp_failure_record`
 - **PROJECT_ROOT**: The project's working directory
 
 ## Step 0 — Load Manifest

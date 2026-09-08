@@ -1,20 +1,20 @@
 # Plan-SDLC State File Format
 
-The `plan` skill writes a JSON marker file to `.sdlc/execution/` at the start of each planning invocation. This file records integrity checkpoints so the `stop-plan-integrity.js` Stop hook can verify that all quality gates were reached before the plan was presented.
+The `plan` skill writes a JSON marker file to `.sdlc-v2/execution/` at the start of each planning invocation. This file records integrity checkpoints so the stop hook can verify that all quality gates were reached before the plan was presented.
 
 ---
 
 ## File Location
 
 ```
-<main-worktree>/.sdlc/execution/plan-<branch>-<timestamp>.json
+<main-worktree>/.sdlc-v2/execution/plan-<branch>-<timestamp>.json
 ```
 
 - `<main-worktree>` — absolute path to the main git working tree (see [Worktree Safety](#worktree-safety) below)
 - `<branch>` — current git branch name with `/` replaced by `-`
 - `<timestamp>` — ISO 8601 UTC timestamp at prepare time, compacted to `YYYYMMDDTHHmmssZ`
 
-Example: `.sdlc/execution/plan-fix-my-bug-20260509T140000Z.json`
+Example: `.sdlc-v2/execution/plan-fix-my-bug-20260509T140000Z.json`
 
 The filename pattern is recognized by the `internal/state` package's filename parser:
 
@@ -26,7 +26,7 @@ The filename pattern is recognized by the `internal/state` package's filename pa
 
 ## Worktree Safety
 
-State files are always written to the **main working tree's** `.sdlc/execution/`, not the current working directory. This ensures the marker is accessible regardless of whether plan runs inside a linked worktree.
+State files are always written to the **main working tree's** `.sdlc-v2/execution/`, not the current working directory. This ensures the marker is accessible regardless of whether plan runs inside a linked worktree.
 
 **Main working tree resolution:** the `internal/state` package's worktree resolver runs `git worktree list --porcelain` and extracts the path from the first `worktree <path>` line.
 
@@ -76,7 +76,7 @@ Each field inside `planIntegrity` is an ISO 8601 timestamp string. Absence of a 
 
 ### Consume-then-Delete
 
-`hooks/stop-plan-integrity.js` runs at session end (Stop hook):
+The stop hook runs at session end:
 
 1. Calls `findStateFile('plan', branchSlug)` and captures the returned path.
 2. Reads the marker via `readState`.
