@@ -18,6 +18,15 @@
     "worktree": {
       "type": "string"
     },
+    "pipelineStatus": {
+      "type": "string",
+      "description": "Set by the cleanup/cleanup-pipeline actions to stamp the pipeline terminal (instead of deleting the state file), so state survives for later reads until GC's TTL prunes it."
+    },
+    "pipelineCompletedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp paired with pipelineStatus, set by the cleanup/cleanup-pipeline actions."
+    },
     "flags": {
       "type": "object",
       "properties": {
@@ -65,11 +74,16 @@
         "properties": {
           "name": {
             "type": "string",
-            "enum": ["execute", "commit", "review", "received-review", "commit-fixes", "version", "pr", "verify-pipeline", "await-remote-review"]
+            "enum": ["execute", "commit", "review", "received-review", "commit-fixes", "version", "verify-openspec", "archive-openspec", "pr", "verify-pipeline", "await-remote-review", "learnings-commit"]
           },
           "status": {
             "type": "string",
             "enum": ["pending", "in_progress", "completed", "skipped", "failed"]
+          },
+          "kind": {
+            "type": "string",
+            "description": "\"tracked\" (has a begin-step/complete-step lifecycle) or \"inline\" (recorded via the generic \"decide\" action). Absent on state files written before this scaffold existed — such entries still validate.",
+            "enum": ["tracked", "inline"]
           },
           "startedAt": {
             "type": "string",
@@ -137,6 +151,74 @@
           }
         },
         "required": ["severity", "file", "title"]
+      }
+    },
+    "lastFailedStep": {
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Name of the most recent failed step. Set by fail (R-TASK-17)."
+    },
+    "issues": {
+      "type": "array",
+      "description": "Structured issue accumulator appended by fail (R-TASK-17). Mirrors deferredFindings above and execute-state.schema.json's issues[].",
+      "items": {
+        "type": "object",
+        "properties": {
+          "wave": {
+            "type": "integer"
+          },
+          "step": {
+            "type": "string"
+          },
+          "taskId": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": ["severity", "category", "summary", "timestamp"],
+        "additionalProperties": false
+      }
+    },
+    "sideEffects": {
+      "type": "object",
+      "description": "Idempotency journal keyed by step name, recording each step's verified git/PR side effect so a resumed pipeline can skip re-doing work that already landed. Written by ship_verify_side_effect; consulted by begin-step's alreadyDone flag.",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["tag", "pr", "sha"]
+          },
+          "ref": {
+            "type": "string"
+          },
+          "verifiedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": ["kind", "ref", "verifiedAt"],
+        "additionalProperties": false
       }
     }
   },

@@ -850,3 +850,199 @@ func TestMigrate_FullChain_ProjectAndLocal(t *testing.T) {
 		t.Error("awaitReviewTimeout should be renamed")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// MigrateWithBackup
+// ---------------------------------------------------------------------------
+
+func TestMigrateWithBackup_MissingConfig(t *testing.T) {
+	root := t.TempDir()
+
+	changes, backupPath, err := MigrateWithBackup(root)
+	if !errors.Is(err, ErrConfigMissing) {
+		t.Fatalf("err = %v, want ErrConfigMissing", err)
+	}
+	if !strings.Contains(err.Error(), "/setup") {
+		t.Errorf("error message = %q, want it to mention /setup", err.Error())
+	}
+	if changes != nil {
+		t.Errorf("changes = %v, want nil", changes)
+	}
+	if backupPath != "" {
+		t.Errorf("backupPath = %q, want empty", backupPath)
+	}
+}
+
+func TestMigrateWithBackup_CurrentConfig_NoOp(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, paths.DataDir, "config.json")
+	writeJSON(t, configPath, map[string]any{"version": map[string]any{"mode": "file"}})
+
+	before, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatalf("stat config.json: %v", err)
+	}
+
+	changes, backupPath, err := MigrateWithBackup(root)
+	if err != nil {
+		t.Fatalf("MigrateWithBackup: %v", err)
+	}
+	if changes != nil {
+		t.Errorf("changes = %v, want nil for an already-current config", changes)
+	}
+	if backupPath != "" {
+		t.Errorf("backupPath = %q, want empty for an already-current config", backupPath)
+	}
+	if _, statErr := os.Stat(configPath + ".bak"); statErr == nil {
+		t.Error("config.json.bak written for an already-current config; want zero extra I/O")
+	}
+
+	after, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatalf("stat config.json: %v", err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Errorf("config.json mtime changed (%v -> %v), want untouched", before.ModTime(), after.ModTime())
+	}
+}
+
+func TestMigrateWithBackup_StaleConfig_MigratesAndBacksUp(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, paths.DataDir, "config.json")
+	writeJSON(t, configPath, map[string]any{
+		"schemaVersion": float64(4),
+		"version":       map[string]any{"mode": "file"},
+	})
+	original, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config.json: %v", err)
+	}
+
+	changes, backupPath, err := MigrateWithBackup(root)
+	if err != nil {
+		t.Fatalf("MigrateWithBackup: %v", err)
+	}
+	if len(changes) == 0 {
+		t.Error("changes is empty, want at least one applied step label")
+	}
+	if backupPath != configPath+".bak" {
+		t.Errorf("backupPath = %q, want %q", backupPath, configPath+".bak")
+	}
+
+	backupContent, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatalf("read backup: %v", err)
+	}
+	if !reflect.DeepEqual(backupContent, original) {
+		t.Errorf("backup content does not match pre-migration config.json:\n  backup: %s\n  original: %s", backupContent, original)
+	}
+
+	migrated := readJSON(t, configPath)
+	if _, has := migrated["schemaVersion"]; has {
+		t.Error("migrated config.json must not have schemaVersion")
+	}
+}
+
+func TestMigrateWithBackup_VersionTooNew_PassesThroughUnchanged(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, paths.DataDir, "config.json")
+	writeJSON(t, configPath, map[string]any{"schemaVersion": float64(99)})
+
+	changes, backupPath, err := MigrateWithBackup(root)
+	if !errors.Is(err, ErrVersionTooNew) {
+		t.Fatalf("err = %v, want ErrVersionTooNew", err)
+	}
+	if changes != nil {
+		t.Errorf("changes = %v, want nil", changes)
+	}
+	if backupPath != "" {
+		t.Errorf("backupPath = %q, want empty (too-new config is never backed up)", backupPath)
+	}
+	if _, statErr := os.Stat(configPath + ".bak"); statErr == nil {
+		t.Error("config.json.bak written for a too-new config; want no backup attempt")
+	}
+}
+
+func TestMigrateWithBackup_LegacyOnly_IngestsWithoutBackup(t *testing.T) {
+	root := t.TempDir()
+	writeJSON(t, filepath.Join(root, ".claude", "sdlc.json"), map[string]any{
+		"version": map[string]any{"mode": "file"},
+	})
+
+	changes, backupPath, err := MigrateWithBackup(root)
+	if err != nil {
+		t.Fatalf("MigrateWithBackup: %v", err)
+	}
+	if len(changes) == 0 {
+		t.Error("changes is empty, want at least one legacy-ingested label")
+	}
+	// No pre-existing config.json to back up — ingestLegacy only writes a
+	// fresh one, it never rewrites the legacy source in place.
+	if backupPath != "" {
+		t.Errorf("backupPath = %q, want empty (nothing to back up for a purely-legacy project)", backupPath)
+	}
+
+	configPath := filepath.Join(root, paths.DataDir, "config.json")
+	if _, statErr := os.Stat(configPath); statErr != nil {
+		t.Errorf("config.json not created by legacy ingestion: %v", statErr)
+	}
+}
+
+// TestMigrateWithBackup_ReviewThresholdLow_SurvivesMigration is a regression
+// test: reviewThreshold "low" is a known-good enum value in
+// sdlc-local.schema.json (critical|high|medium|low). No migration step
+// touches ship.reviewThreshold, but MigrateWithBackup's read-modify-write
+// pass over local.json (via Migrate) must still carry it through unchanged
+// and produce output that validates cleanly against the schema.
+func TestMigrateWithBackup_ReviewThresholdLow_SurvivesMigration(t *testing.T) {
+	root := t.TempDir()
+	writeJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
+		"schemaVersion": float64(4),
+		"version":       map[string]any{"mode": "file"},
+	})
+	writeJSON(t, filepath.Join(root, paths.DataDir, "local.json"), map[string]any{
+		"version": float64(1),
+		"ship": map[string]any{
+			"preset":          "balanced",
+			"reviewThreshold": "low",
+		},
+	})
+
+	_, _, err := MigrateWithBackup(root)
+	if err != nil {
+		t.Fatalf("MigrateWithBackup: %v", err)
+	}
+
+	local := readJSON(t, filepath.Join(root, paths.DataDir, "local.json"))
+	ship, ok := local["ship"].(map[string]any)
+	if !ok {
+		t.Fatalf("local.json ship section = %v, want a map", local["ship"])
+	}
+	if ship["reviewThreshold"] != "low" {
+		t.Errorf("ship.reviewThreshold = %v, want %q to survive migration unchanged", ship["reviewThreshold"], "low")
+	}
+
+	schemaPath, err := filepath.Abs(filepath.Join("..", "..", "plugins", "sdlc", "schemas", "sdlc-local.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := jsonschema.NewCompiler()
+	sch, err := c.Compile(schemaPath)
+	if err != nil {
+		t.Fatalf("compile schema: %v", err)
+	}
+
+	f, err := os.Open(filepath.Join(root, paths.DataDir, "local.json"))
+	if err != nil {
+		t.Fatalf("open local.json: %v", err)
+	}
+	defer f.Close()
+
+	inst, err := jsonschema.UnmarshalJSON(f)
+	if err != nil {
+		t.Fatalf("unmarshal local.json for schema validation: %v", err)
+	}
+	if err := sch.Validate(inst); err != nil {
+		t.Errorf("local.json failed schema validation:\n%v", err)
+	}
+}

@@ -304,6 +304,11 @@
           "description": "Custom guardrails evaluated during execute-plan runtime (pre-wave and post-wave checks).",
           "minItems": 1,
           "items": { "$ref": "#/$defs/guardrailItem" }
+        },
+        "commitWaves": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether execute_state's wave-commit action stages and commits each completed wave's changes itself (git add -A + git commit). When false, wave-commit does not touch git and instead returns an instruction to commit the wave manually and record the sha via wave-committed."
         }
       },
       "additionalProperties": false

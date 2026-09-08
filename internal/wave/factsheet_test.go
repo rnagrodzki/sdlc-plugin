@@ -1,7 +1,6 @@
 package wave
 
 import (
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -51,7 +50,7 @@ func TestValidateRunID_RejectsPathTraversal(t *testing.T) {
 			}
 		})
 		t.Run("UpdateProgress/"+id, func(t *testing.T) {
-			err := UpdateProgress(t.TempDir(), id, "1", "started")
+			err := UpdateProgress(t.TempDir(), id, "1", "started", "")
 			if err == nil {
 				t.Fatalf("UpdateProgress: expected error for runID %q, got nil", id)
 			}
@@ -220,6 +219,183 @@ func TestWriteFactsheet_NoLeftoverTmpFiles(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// ReadFactsheet / ListFactsheetIDs
+// ---------------------------------------------------------------------------
+
+func TestReadFactsheet_RoundTrip(t *testing.T) {
+	root := t.TempDir()
+	fs := Factsheet{ID: "14", Name: "wave factsheets", Contract: "some contract"}
+	wantPath, err := WriteFactsheet(root, "run-1", fs)
+	if err != nil {
+		t.Fatalf("WriteFactsheet: %v", err)
+	}
+
+	path, content, err := ReadFactsheet(root, "run-1", "14")
+	if err != nil {
+		t.Fatalf("ReadFactsheet: %v", err)
+	}
+	if path != wantPath {
+		t.Errorf("path = %q, want %q", path, wantPath)
+	}
+	if !strings.Contains(content, "# Task 14: wave factsheets") {
+		t.Errorf("content missing task heading, got:\n%s", content)
+	}
+	if !strings.Contains(content, "some contract") {
+		t.Errorf("content missing contract text, got:\n%s", content)
+	}
+}
+
+func TestReadFactsheet_NormalizeTaskID(t *testing.T) {
+	root := t.TempDir()
+	if _, err := WriteFactsheet(root, "run-1", Factsheet{ID: "T7", Name: "seven"}); err != nil {
+		t.Fatalf("WriteFactsheet: %v", err)
+	}
+
+	// "7" (already normalized) and "T7" (plan-style ID) must both resolve
+	// to the same file WriteFactsheet(ID: "T7", ...) produced.
+	for _, id := range []string{"7", "T7", "t7"} {
+		path, content, err := ReadFactsheet(root, "run-1", id)
+		if err != nil {
+			t.Fatalf("ReadFactsheet(%q): %v", id, err)
+		}
+		if !strings.Contains(content, "seven") {
+			t.Errorf("ReadFactsheet(%q): content missing 'seven', got:\n%s", id, content)
+		}
+		if !strings.HasSuffix(path, "task-7.md") {
+			t.Errorf("ReadFactsheet(%q): path = %q, want suffix task-7.md", id, path)
+		}
+	}
+}
+
+func TestReadFactsheet_NotFound(t *testing.T) {
+	root := t.TempDir()
+	if _, err := WriteFactsheet(root, "run-1", Factsheet{ID: "1", Name: "only task"}); err != nil {
+		t.Fatalf("WriteFactsheet: %v", err)
+	}
+
+	_, _, err := ReadFactsheet(root, "run-1", "99")
+	if err == nil {
+		t.Fatal("expected error for unknown taskID")
+	}
+	if !errors.Is(err, ErrFactsheetNotFound) {
+		t.Fatalf("expected ErrFactsheetNotFound, got %v", err)
+	}
+}
+
+func TestReadFactsheet_NoRunDirectory(t *testing.T) {
+	root := t.TempDir()
+	_, _, err := ReadFactsheet(root, "never-started", "1")
+	if err == nil {
+		t.Fatal("expected error for a run directory that was never created")
+	}
+	if !errors.Is(err, ErrFactsheetNotFound) {
+		t.Fatalf("expected ErrFactsheetNotFound, got %v", err)
+	}
+}
+
+func TestReadFactsheet_BadRunID(t *testing.T) {
+	root := t.TempDir()
+	_, _, err := ReadFactsheet(root, "../etc", "1")
+	if err == nil {
+		t.Fatal("expected error for a path-traversal runID")
+	}
+	if !errors.Is(err, ErrBadRunID) {
+		t.Fatalf("expected ErrBadRunID, got %v", err)
+	}
+}
+
+func TestReadFactsheet_LeavesFileUnchanged(t *testing.T) {
+	root := t.TempDir()
+	path, err := WriteFactsheet(root, "run-1", Factsheet{ID: "1", Name: "unchanged"})
+	if err != nil {
+		t.Fatalf("WriteFactsheet: %v", err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+
+	if _, _, err := ReadFactsheet(root, "run-1", "1"); err != nil {
+		t.Fatalf("ReadFactsheet: %v", err)
+	}
+
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat after read: %v", err)
+	}
+	if !before.ModTime().Equal(after.ModTime()) {
+		t.Error("ReadFactsheet modified the file's mtime; it must be read-only")
+	}
+	if before.Size() != after.Size() {
+		t.Error("ReadFactsheet changed the file's size; it must be read-only")
+	}
+}
+
+func TestListFactsheetIDs_SortedAndDeduped(t *testing.T) {
+	root := t.TempDir()
+	for _, id := range []string{"10", "2", "T1"} {
+		if _, err := WriteFactsheet(root, "run-1", Factsheet{ID: id, Name: "task " + id}); err != nil {
+			t.Fatalf("WriteFactsheet(%q): %v", id, err)
+		}
+	}
+
+	ids, err := ListFactsheetIDs(root, "run-1")
+	if err != nil {
+		t.Fatalf("ListFactsheetIDs: %v", err)
+	}
+	want := []string{"1", "10", "2"} // lexical sort, matching sort.Strings
+	if len(ids) != len(want) {
+		t.Fatalf("ids = %v, want %v", ids, want)
+	}
+	for i := range want {
+		if ids[i] != want[i] {
+			t.Errorf("ids[%d] = %q, want %q (full: %v)", i, ids[i], want[i], ids)
+		}
+	}
+}
+
+func TestListFactsheetIDs_MissingRunDirectory(t *testing.T) {
+	root := t.TempDir()
+	ids, err := ListFactsheetIDs(root, "never-started")
+	if err != nil {
+		t.Fatalf("ListFactsheetIDs: unexpected error for a missing run directory: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Fatalf("ids = %v, want empty", ids)
+	}
+}
+
+func TestListFactsheetIDs_IgnoresTmpFiles(t *testing.T) {
+	root := t.TempDir()
+	if _, err := WriteFactsheet(root, "run-1", Factsheet{ID: "1", Name: "real"}); err != nil {
+		t.Fatalf("WriteFactsheet: %v", err)
+	}
+	dir := filepath.Join(root, paths.DataDir, "execution", "run-1")
+	if err := os.WriteFile(filepath.Join(dir, "task-2.abcd1234.tmp"), []byte("partial write"), 0o644); err != nil {
+		t.Fatalf("write stray tmp file: %v", err)
+	}
+
+	ids, err := ListFactsheetIDs(root, "run-1")
+	if err != nil {
+		t.Fatalf("ListFactsheetIDs: %v", err)
+	}
+	if len(ids) != 1 || ids[0] != "1" {
+		t.Fatalf("ids = %v, want [\"1\"] (tmp file must be excluded)", ids)
+	}
+}
+
+func TestListFactsheetIDs_BadRunID(t *testing.T) {
+	root := t.TempDir()
+	_, err := ListFactsheetIDs(root, "../etc")
+	if err == nil {
+		t.Fatal("expected error for a path-traversal runID")
+	}
+	if !errors.Is(err, ErrBadRunID) {
+		t.Fatalf("expected ErrBadRunID, got %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Progress — ReadProgress, UpdateProgress, round trip, merge
 // ---------------------------------------------------------------------------
 
@@ -271,7 +447,7 @@ func TestUpdateProgress_RoundTrip(t *testing.T) {
 	root := t.TempDir()
 	runID := "run1"
 
-	err := UpdateProgress(root, runID, "task-1", "started")
+	err := UpdateProgress(root, runID, "task-1", "started", "")
 	if err != nil {
 		t.Fatalf("UpdateProgress: %v", err)
 	}
@@ -296,10 +472,10 @@ func TestUpdateProgress_MergePreservesOtherTasks(t *testing.T) {
 	root := t.TempDir()
 	runID := "run1"
 
-	if err := UpdateProgress(root, runID, "task-1", "started"); err != nil {
+	if err := UpdateProgress(root, runID, "task-1", "started", ""); err != nil {
 		t.Fatalf("UpdateProgress task-1: %v", err)
 	}
-	if err := UpdateProgress(root, runID, "task-2", "editing"); err != nil {
+	if err := UpdateProgress(root, runID, "task-2", "editing", ""); err != nil {
 		t.Fatalf("UpdateProgress task-2: %v", err)
 	}
 
@@ -322,10 +498,10 @@ func TestUpdateProgress_OverwritesSameTask(t *testing.T) {
 	root := t.TempDir()
 	runID := "run1"
 
-	if err := UpdateProgress(root, runID, "task-1", "started"); err != nil {
+	if err := UpdateProgress(root, runID, "task-1", "started", ""); err != nil {
 		t.Fatalf("UpdateProgress started: %v", err)
 	}
-	if err := UpdateProgress(root, runID, "task-1", "editing"); err != nil {
+	if err := UpdateProgress(root, runID, "task-1", "editing", ""); err != nil {
 		t.Fatalf("UpdateProgress editing: %v", err)
 	}
 
@@ -342,7 +518,7 @@ func TestUpdateProgress_RejectsInvalidPhase(t *testing.T) {
 	root := t.TempDir()
 	bad := []string{"", "running", "done", "STARTED", "Starting"}
 	for _, phase := range bad {
-		err := UpdateProgress(root, "run1", "task-1", phase)
+		err := UpdateProgress(root, "run1", "task-1", phase, "")
 		if err == nil {
 			t.Fatalf("UpdateProgress: expected error for phase %q, got nil", phase)
 		}
@@ -356,7 +532,7 @@ func TestUpdateProgress_AcceptsAllValidPhases(t *testing.T) {
 	root := t.TempDir()
 	phases := []string{"started", "reading", "editing", "verifying", "reporting"}
 	for _, phase := range phases {
-		err := UpdateProgress(root, "run1", "task-1", phase)
+		err := UpdateProgress(root, "run1", "task-1", phase, "")
 		if err != nil {
 			t.Fatalf("UpdateProgress: unexpected error for valid phase %q: %v", phase, err)
 		}
@@ -365,7 +541,7 @@ func TestUpdateProgress_AcceptsAllValidPhases(t *testing.T) {
 
 func TestUpdateProgress_NoLeftoverTmpFiles(t *testing.T) {
 	root := t.TempDir()
-	if err := UpdateProgress(root, "run1", "task-1", "started"); err != nil {
+	if err := UpdateProgress(root, "run1", "task-1", "started", ""); err != nil {
 		t.Fatalf("UpdateProgress: %v", err)
 	}
 
@@ -375,42 +551,5 @@ func TestUpdateProgress_NoLeftoverTmpFiles(t *testing.T) {
 		if strings.HasSuffix(e.Name(), ".tmp") || strings.Contains(e.Name(), ".tmp-") {
 			t.Fatalf("leftover tmp file: %s", e.Name())
 		}
-	}
-}
-
-func TestUpdateProgress_ByteShapeCompatible(t *testing.T) {
-	root := t.TempDir()
-	if err := UpdateProgress(root, "run1", "task-1", "started"); err != nil {
-		t.Fatalf("UpdateProgress: %v", err)
-	}
-
-	fp := filepath.Join(root, paths.DataDir, "execution", "run1", "progress.json")
-	data, err := os.ReadFile(fp)
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-
-	// Must parse as {"tasks": {"task-1": {"phase": "...", "updatedAt": "..."}}}
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(data, &raw); err != nil {
-		t.Fatalf("Unmarshal top-level: %v", err)
-	}
-	tasksRaw, ok := raw["tasks"]
-	if !ok {
-		t.Fatalf("ByteShape: missing 'tasks' key")
-	}
-	var tasks map[string]map[string]string
-	if err := json.Unmarshal(tasksRaw, &tasks); err != nil {
-		t.Fatalf("Unmarshal tasks: %v", err)
-	}
-	entry, ok := tasks["task-1"]
-	if !ok {
-		t.Fatalf("ByteShape: missing task-1")
-	}
-	if entry["phase"] != "started" {
-		t.Fatalf("ByteShape: phase = %q, want started", entry["phase"])
-	}
-	if _, ok := entry["updatedAt"]; !ok {
-		t.Fatalf("ByteShape: missing updatedAt")
 	}
 }

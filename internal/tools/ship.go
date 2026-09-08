@@ -12,9 +12,11 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/configmigrate"
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
+	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
+	"github.com/rnagrodzki/sdlc-plugin/internal/pipeline"
 	"github.com/rnagrodzki/sdlc-plugin/internal/shipmeta"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
@@ -33,9 +35,17 @@ var validQuality = []string{"full", "balanced", "minimal"}
 var preReleaseLabelRe = regexp.MustCompile(`^[a-z][a-z0-9]*$`)
 
 // shipStepSideEffects mirrors STEP_SIDE_EFFECTS in scripts/skill/ship.js: the
-// map of pipeline step name to the git side effect that proves it landed.
+// map of pipeline step name to the side-effect kind that proves it landed.
+// Extended beyond the original single "version"->"tag" entry to cover "pr"
+// (an open PR for the branch) and "commit" (HEAD has advanced to a known
+// sha) — the universal side-effect journal (sideEffects in ship state)
+// covers all three kinds uniformly; see shipVerifySideEffect below. Kind
+// values here must stay in sync with ship-state.schema.json's
+// sideEffects.*.kind enum.
 var shipStepSideEffects = map[string]string{
 	"version": "tag",
+	"pr":      "pr",
+	"commit":  "sha",
 }
 
 // ---------------------------------------------------------------------------
@@ -134,6 +144,29 @@ type ShipPrepareOut struct {
 	// as a side effect of initializing the new one, mirroring cmdInit's
 	// prunedOrphans in scripts/state/ship.js.
 	PrunedOrphans []string `json:"prunedOrphans"`
+
+	// PipelineDisplay is a pipeline.PipelineTable render of the seeded step
+	// scaffold (state.Data["steps"], in configured order) — populated only
+	// once state init actually happens (empty on the --gc or errors path).
+	PipelineDisplay string `json:"pipelineDisplay,omitempty"`
+
+	// Migration is populated when the KD5 gate found the config outdated
+	// and auto-migrated it in place (configmigrate.MigrateWithBackup). Nil
+	// when the config was already current — no backup was written and no
+	// migration ran.
+	Migration *MigrationReport `json:"migration,omitempty"`
+}
+
+// MigrationReport describes an inline config auto-migration performed by
+// the KD5 gate (configmigrate.MigrateWithBackup) before ship_prepare's or
+// execute_state's "init" normal work runs.
+type MigrationReport struct {
+	// Changes lists the migration step labels applied, combining
+	// configmigrate.Report's StepsApplied and LegacyIngested.
+	Changes []string `json:"changes"`
+	// BackupPath is the .bak file written before migrating config.json in
+	// place.
+	BackupPath string `json:"backupPath"`
 }
 
 // ShipVerifySideEffectIn is the input for the ship_verify_side_effect tool.
@@ -237,12 +270,18 @@ func (o ShipVerifySideEffectOut) MarshalJSON() ([]byte, error) {
 //     not a contract break, just a previously-undisclosed extra pair of keys
 //     any strict-shape consumer should tolerate.
 func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, error) {
-	// KD5 gate: config version check. Soft style (matches plan.go's
+	// KD5 gate: config version check. An outdated config is auto-migrated
+	// in place (configmigrate.MigrateWithBackup writes a .bak backup before
+	// rewriting config.json) rather than hard-failing. Only a genuinely
+	// missing config (project never ran /setup) or a too-new schema still
+	// short-circuits, using the same soft style as before (matches plan.go's
 	// early-return convention specifically, not commit.go's continue-past-
 	// append one — see the deviations note above): nil Go error, minimal
 	// errors-only payload, no further processing.
+	var migrationReport *MigrationReport
 	if !in.SkipConfigCheck {
-		if err := configmigrate.Verify(cfgRoot); err != nil {
+		changes, backupPath, err := configmigrate.MigrateWithBackup(cfgRoot)
+		if err != nil {
 			return ShipPrepareOut{
 				Errors:        []string{fmt.Sprintf("config-version: %s", err.Error())},
 				Warnings:      []string{},
@@ -251,6 +290,9 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 				PrunedOrphans: []string{},
 			}, nil
 		}
+		if backupPath != "" {
+			migrationReport = &MigrationReport{Changes: changes, BackupPath: backupPath}
+		}
 	}
 
 	// --gc short-circuit (R39): matches ship.js's main(), which checks
@@ -258,7 +300,7 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 	// NOT bypass config-staleness gating. Skips all normal flag-merge/
 	// step-validation/state-init below.
 	if in.Gc {
-		return shipGC(cfgRoot, activeRoot, in), nil
+		return shipGC(cfgRoot, activeRoot, in, migrationReport), nil
 	}
 
 	shipCfg, _ := config.ReadSection(cfgRoot, "ship")
@@ -363,6 +405,7 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 		Branch:        currentBranch,
 		Worktree:      activeRoot,
 		PrunedOrphans: []string{},
+		Migration:     migrationReport,
 	}
 
 	if len(errors) > 0 {
@@ -390,7 +433,8 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 	st.Data["branch"] = currentBranch
 	st.Data["worktree"] = activeRoot
 	st.Data["flags"] = merged
-	st.Data["steps"] = shipmeta.InitialShipSteps()
+	scaffold := shipmeta.InitialShipStepsFromConfig(stepsList)
+	st.Data["steps"] = scaffold
 	st.Data["decisions"] = []any{}
 	st.Data["deferredFindings"] = []any{}
 
@@ -403,7 +447,44 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 
 	out.StateFile = st.Path
 	out.PrunedOrphans = pruned
+	out.PipelineDisplay = pipeline.PipelineTable(configStepsFromScaffold(scaffold))
 	return out, nil
+}
+
+// shipStepDescriptions gives each known ship pipeline step name a one-line
+// description for ShipPrepareOut.PipelineDisplay. A config-sourced name
+// outside this map (config validity is a warning, not an error — see
+// shipPrepare's step-name validation above) falls back to its bare name.
+var shipStepDescriptions = map[string]string{
+	"execute":             "Run the plan's execution waves",
+	"commit":              "Commit the executed changes",
+	"review":              "Run automated code review",
+	"received-review":     "Apply fixes for critical/high review findings",
+	"commit-fixes":        "Commit review-fix changes",
+	"version":             "Bump the version and tag the release",
+	"verify-openspec":     "Verify OpenSpec change docs are in sync",
+	"archive-openspec":    "Archive completed OpenSpec change docs",
+	"pr":                  "Open the pull request",
+	"verify-pipeline":     "Wait for CI/pipeline checks to pass",
+	"await-remote-review": "Wait for remote reviewer approval",
+	"learnings-commit":    "Commit captured learnings",
+}
+
+// configStepsFromScaffold converts a seeded step scaffold into the
+// []pipeline.ConfigStep shape PipelineTable renders. Steps are never
+// model-driven (Model is always "—" via PipelineTable's own fallback) and
+// never individually optional post-#505 (--skip was hard-removed — a step
+// either is or isn't in the configured list).
+func configStepsFromScaffold(scaffold []shipmeta.ShipStateStep) []pipeline.ConfigStep {
+	out := make([]pipeline.ConfigStep, 0, len(scaffold))
+	for _, s := range scaffold {
+		desc := shipStepDescriptions[s.Name]
+		if desc == "" {
+			desc = s.Name
+		}
+		out = append(out, pipeline.ConfigStep{Name: s.Name, Description: desc})
+	}
+	return out
 }
 
 // stepsFieldLabel renders the source-appropriate name of the steps field for
@@ -686,7 +767,10 @@ func existingShipStateFiles(root, branchSlug string) ([]string, error) {
 // corresponding input fields at all (consistent with this file's existing
 // hard-removed-flags convention). So there is nothing for this branch to
 // guard against; it is intentionally not ported, not a gap.
-func shipGC(cfgRoot, activeRoot string, in ShipPrepareIn) ShipPrepareOut {
+// migrationReport, when non-nil, is threaded through from the KD5 gate that
+// ran (successfully) just before this short-circuit, so a gc-mode response
+// still surfaces an auto-migration the same way the normal path does.
+func shipGC(cfgRoot, activeRoot string, in ShipPrepareIn, migrationReport *MigrationReport) ShipPrepareOut {
 	ttlDays := resolveGCTTLDays(cfgRoot, in.TtlDays)
 
 	branchExists := gcBranchExistsFunc(activeRoot)
@@ -698,9 +782,10 @@ func shipGC(cfgRoot, activeRoot string, in ShipPrepareIn) ShipPrepareOut {
 	})
 	if err != nil {
 		return ShipPrepareOut{
-			Action:   "gc",
-			Errors:   []string{fmt.Sprintf("gc failed: %s", err.Error())},
-			Warnings: []string{},
+			Action:    "gc",
+			Errors:    []string{fmt.Sprintf("gc failed: %s", err.Error())},
+			Warnings:  []string{},
+			Migration: migrationReport,
 		}
 	}
 
@@ -714,10 +799,11 @@ func shipGC(cfgRoot, activeRoot string, in ShipPrepareIn) ShipPrepareOut {
 	}
 
 	return ShipPrepareOut{
-		Action:   "gc",
-		Report:   report,
-		Errors:   []string{},
-		Warnings: []string{},
+		Action:    "gc",
+		Report:    report,
+		Errors:    []string{},
+		Warnings:  []string{},
+		Migration: migrationReport,
 	}
 }
 
@@ -805,12 +891,117 @@ func nonNilStrings(s []string) []string {
 // ship_verify_side_effect
 // ---------------------------------------------------------------------------
 
-// shipVerifySideEffect ports verifySideEffect from scripts/skill/ship.js. It
-// deliberately performs no KD5 config-version check, matching source (the
-// verify-side-effect subcommand short-circuits main() before any config/gh
-// setup).
-func shipVerifySideEffect(activeRoot string, in ShipVerifySideEffectIn) (ShipVerifySideEffectOut, error) {
-	sideEffect, hasSideEffect := shipStepSideEffects[in.Step]
+// shipPRForBranch is a seam over ghx.PRForBranch so tests can stub PR
+// lookups without a real gh binary or a live PR.
+var shipPRForBranch = ghx.PRForBranch
+
+// shipHeadSHA returns the current HEAD commit sha, matching the `git
+// rev-parse HEAD` pattern already used by commit.go's commitApply. gitx has
+// no equivalent helper (and is out of this task's edit scope), so this
+// shells out directly via execx, the same chokepoint gitx itself uses.
+func shipHeadSHA(dir string) (string, error) {
+	out, err := execx.Run("git", []string{"rev-parse", "HEAD"}, execx.Options{Dir: dir})
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// shipSideEffectEntry returns the sideEffects journal entry for step, if
+// data["sideEffects"] holds one.
+func shipSideEffectEntry(data map[string]any, step string) (map[string]any, bool) {
+	journal, _ := data["sideEffects"].(map[string]any)
+	if journal == nil {
+		return nil, false
+	}
+	entry, ok := journal[step].(map[string]any)
+	return entry, ok
+}
+
+// shipSideEffectRef returns the ref recorded in step's journal entry, if
+// any.
+func shipSideEffectRef(data map[string]any, step string) (string, bool) {
+	entry, ok := shipSideEffectEntry(data, step)
+	if !ok {
+		return "", false
+	}
+	ref, _ := entry["ref"].(string)
+	return ref, ref != ""
+}
+
+// shipRecordSideEffect writes a {kind, ref, verifiedAt} entry into
+// data["sideEffects"][step], creating the journal map on first use. Callers
+// must only call this when the side effect is confirmed landed: an entry's
+// mere presence is the "verified" signal shipStateBeginStep's alreadyDone
+// check (ship_state.go) relies on — recording an unverified observation
+// here would make that check lie.
+func shipRecordSideEffect(data map[string]any, step, kind, ref string, verifiedAt time.Time) {
+	journal, _ := data["sideEffects"].(map[string]any)
+	if journal == nil {
+		journal = map[string]any{}
+	}
+	journal[step] = map[string]any{
+		"kind":       kind,
+		"ref":        ref,
+		"verifiedAt": verifiedAt.UTC().Format(time.RFC3339),
+	}
+	data["sideEffects"] = journal
+}
+
+// shipSoftFindState resolves the ship state for activeRoot's current branch,
+// for sideEffects journal read/write. Unlike shipFindState (ship_state.go),
+// an unresolvable branch or a missing state file is not an error here: it
+// returns nil, and the caller treats that as "nothing to persist against."
+// ship_verify_side_effect must stay usable standalone (e.g. right after
+// commit_apply/pr_apply, before any ship_state init has run for this
+// branch) — the 4 pre-existing tests for the "tag" kind rely on exactly
+// this soft-fail behavior, since none of them set up a ship state fixture.
+func shipSoftFindState(root, activeRoot string) *state.State {
+	branch, err := gitx.CurrentBranch(activeRoot)
+	if err != nil || branch == "" {
+		return nil
+	}
+	st, err := state.Find(root, "ship", branch)
+	if err != nil || st == nil {
+		return nil
+	}
+	return st
+}
+
+// shipVerifySideEffect ports and generalizes verifySideEffect from
+// scripts/skill/ship.js. It deliberately performs no KD5 config-version
+// check, matching source (the verify-side-effect subcommand short-circuits
+// main() before any config/gh setup).
+//
+// Beyond the original "version"->tag check, this now also verifies "pr"
+// (does an open PR exist for the branch) and "commit" (has HEAD advanced to
+// a known sha), and persists every landed observation into the ship
+// state's sideEffects journal (root/activeRoot both resolve via
+// RegisterShipTools, mirroring ship_prepare's dual-root pattern) so a
+// resumed pipeline can tell, via ship_state's begin-step alreadyDone flag,
+// that a step's side effect already landed before a crash/restart.
+//
+// "commit" (kind "sha") has no natural caller-supplied comparison value the
+// way "version" (kind "tag") does — ship.js's tag check always takes an
+// explicit --expected tag computed by the version step itself. Two modes
+// are supported, chosen by whether Expected is supplied:
+//   - Expected given: landed = (HEAD sha == Expected) — the write path,
+//     called right after a commit with the sha the caller just produced,
+//     mirroring the tag kind exactly.
+//   - Expected omitted: landed = (HEAD sha == the previously journaled
+//     ref for this step), the literal "checks HEAD sha vs the previously
+//     recorded sha" resume-path check. With no journal entry either,
+//     there is nothing to confirm against, so landed is false — recording
+//     an ambient HEAD sha as "verified" on a bare bootstrap call would let
+//     a resumed pipeline believe a commit step landed when it may never
+//     have run at all.
+//
+// A journal entry is written (or refreshed) only when landed is true, for
+// all three kinds: an entry's presence is meant to mean "verified", and
+// only writing on success keeps that invariant, and keeps repeated
+// resume-time checks stable once a step is confirmed (no flip-flopping).
+func shipVerifySideEffect(root, activeRoot string, in ShipVerifySideEffectIn, now func() time.Time) (ShipVerifySideEffectOut, error) {
+	kind, hasSideEffect := shipStepSideEffects[in.Step]
 	if !hasSideEffect {
 		return ShipVerifySideEffectOut{
 			Step:   in.Step,
@@ -819,15 +1010,62 @@ func shipVerifySideEffect(activeRoot string, in ShipVerifySideEffectIn) (ShipVer
 		}, nil
 	}
 
-	tags, err := gitx.TagList(activeRoot)
-	if err != nil {
-		return ShipVerifySideEffectOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("list tags: %s", err.Error()),
-			Cause: err,
+	st := shipSoftFindState(root, activeRoot)
+
+	var landed bool
+	var ref string
+
+	switch kind {
+	case "tag":
+		tags, err := gitx.TagList(activeRoot)
+		if err != nil {
+			return ShipVerifySideEffectOut{}, &mcpserver.InfraError{
+				Msg:   fmt.Sprintf("list tags: %s", err.Error()),
+				Cause: err,
+			}
+		}
+		if in.Expected != "" && sliceContainsStr(tags, in.Expected) {
+			landed = true
+			ref = in.Expected
+		}
+
+	case "pr":
+		meta := shipPRForBranch(activeRoot)
+		if meta.Exists {
+			landed = true
+			ref = fmt.Sprintf("#%d", meta.Number)
+		}
+
+	case "sha":
+		headSHA, err := shipHeadSHA(activeRoot)
+		if err != nil {
+			return ShipVerifySideEffectOut{}, &mcpserver.InfraError{
+				Msg:   fmt.Sprintf("git rev-parse HEAD: %s", err.Error()),
+				Cause: err,
+			}
+		}
+		switch {
+		case in.Expected != "":
+			landed = headSHA == in.Expected
+		case st != nil:
+			if prevRef, ok := shipSideEffectRef(st.Data, in.Step); ok {
+				landed = headSHA == prevRef
+			}
+		}
+		if landed {
+			ref = headSHA
 		}
 	}
 
-	landed := in.Expected != "" && sliceContainsStr(tags, in.Expected)
+	if landed && st != nil {
+		shipRecordSideEffect(st.Data, in.Step, kind, ref, now())
+		if err := state.Write(st); err != nil {
+			return ShipVerifySideEffectOut{}, &mcpserver.InfraError{
+				Msg:   fmt.Sprintf("write ship state: %s", err.Error()),
+				Cause: err,
+			}
+		}
+	}
 
 	var expected *string
 	if in.Expected != "" {
@@ -836,7 +1074,7 @@ func shipVerifySideEffect(activeRoot string, in ShipVerifySideEffectIn) (ShipVer
 
 	return ShipVerifySideEffectOut{
 		Step:       in.Step,
-		SideEffect: sideEffect,
+		SideEffect: kind,
 		Landed:     landed,
 		Expected:   expected,
 	}, nil
@@ -868,20 +1106,20 @@ func RegisterShipTools(s *mcpserver.Server) {
 	)
 
 	mcpserver.Register(s, "ship_verify_side_effect",
-		"Verify that a ship pipeline step's expected git side effect (e.g. the version step's tag) actually landed.",
+		"Verify that a ship pipeline step's expected side effect (git tag, PR, or commit sha) actually landed, and record it in the ship state's sideEffects journal for idempotent resume.",
 		func(ctx mcpserver.Ctx, in ShipVerifySideEffectIn) (ShipVerifySideEffectOut, error) {
+			root, err := worktree.MainRoot()
+			if err != nil {
+				return ShipVerifySideEffectOut{}, &mcpserver.InfraError{
+					Msg:   fmt.Sprintf("resolve project root: %s", err.Error()),
+					Cause: err,
+				}
+			}
 			activeRoot, err := worktree.ActiveRoot()
 			if err != nil {
-				root, rerr := worktree.MainRoot()
-				if rerr != nil {
-					return ShipVerifySideEffectOut{}, &mcpserver.InfraError{
-						Msg:   fmt.Sprintf("resolve worktree root: %s", err.Error()),
-						Cause: err,
-					}
-				}
 				activeRoot = root
 			}
-			return shipVerifySideEffect(activeRoot, in)
+			return shipVerifySideEffect(root, activeRoot, in, time.Now)
 		},
 	)
 }

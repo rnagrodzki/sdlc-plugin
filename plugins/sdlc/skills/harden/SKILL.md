@@ -136,6 +136,13 @@ Read `repository.contentRoot` and `repository.root` from the manifest JSON at
 
 Do NOT recompute either via `git`. Store both; they are needed in Step 5.
 
+The manifest's `pipeline.issues` (present when the latest ship/execute state
+carries any, omitted otherwise) is structured, pre-parsed failure context —
+wave/task/step, severity, category, summary — for the orchestrator to read
+alongside `pipeline.shipState`/`pipeline.executeState`. Do not load it into
+the main context here; like the surface arrays, it is for the orchestrator
+below to read directly from `manifestPath`.
+
 Use the `Agent` tool with:
 
 - `subagent_type`: `sdlc:harden-orchestrator`

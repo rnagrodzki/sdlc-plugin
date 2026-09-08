@@ -40,8 +40,8 @@ var staticCapTable = []struct {
 	{16, math.MaxInt, 6},
 }
 
-// staticCap returns the max concurrent tasks for a given total remaining count.
-func staticCap(totalRemainingTasks int) int {
+// StaticCap returns the max concurrent tasks for a given total remaining count.
+func StaticCap(totalRemainingTasks int) int {
 	for _, row := range staticCapTable {
 		if totalRemainingTasks >= row.Min && totalRemainingTasks <= row.Max {
 			return row.Cap
@@ -76,7 +76,7 @@ func Allocate(items []Item, cfg Budget) ([]Item, error) {
 		totalRemaining = len(items)
 	}
 
-	capVal := staticCap(totalRemaining)
+	capVal := StaticCap(totalRemaining)
 	effectiveCap := capVal
 	if effectiveCap > len(items) {
 		effectiveCap = len(items)

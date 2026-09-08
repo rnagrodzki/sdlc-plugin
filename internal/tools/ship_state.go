@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
+	"github.com/rnagrodzki/sdlc-plugin/internal/pipeline"
 	"github.com/rnagrodzki/sdlc-plugin/internal/shipmeta"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
@@ -41,14 +43,36 @@ type ShipStateIn struct {
 	SessionID string         `json:"sessionId,omitempty"`
 }
 
-// ShipTodosOut is the shared output shape for begin-step, complete-step, and
-// the Go-native todos action — all three render the same TodoWrite-shaped
-// list via shipmeta.TodosForStep. JS's begin-step/complete-step also return a
-// "marker" summary string (stepTransition/markCompleted/renderTodos); that is
-// dropped here, matching the divergence already disclosed in
-// shipmeta.TodosForStep's own doc comment (contract is []Todo only).
+// ShipTodosOut is the output shape for the Go-native todos action. Mutating
+// actions (begin-step, complete-step, skip, fail, decide, defer) now return
+// ShipStepNarrationOut instead.
 type ShipTodosOut struct {
 	Todos []shipmeta.Todo `json:"todos"`
+	// IssueCount and IssueHighlights are populated (complete-step only) when
+	// state.Data["issues"] is nonempty. Response-only — never persisted.
+	IssueCount      int      `json:"issueCount,omitempty"`
+	IssueHighlights []string `json:"issueHighlights,omitempty"`
+}
+
+// ShipStepNarrationOut is the narrated output for mutating ship_state actions
+// (begin-step, complete-step, skip, fail, decide, defer, and the legacy
+// start/complete pair). It embeds pipeline.Narration at the top level (JSON
+// fields: summary, display, timing, next) alongside the Todos/IssueCount/
+// IssueHighlights fields carried by begin-step and complete-step, so existing
+// consumers that read those fields see no change.
+type ShipStepNarrationOut struct {
+	pipeline.Narration
+	Todos           []shipmeta.Todo `json:"todos,omitempty"`
+	IssueCount      int             `json:"issueCount,omitempty"`
+	IssueHighlights []string        `json:"issueHighlights,omitempty"`
+	// AlreadyDone is true when begin-step found a verified sideEffects
+	// journal entry for this step already (see ship.go's
+	// shipVerifySideEffect/shipRecordSideEffect) — signaling a resumed
+	// pipeline that the step's side effect landed before a crash/restart,
+	// so its work need not be redone. omitempty: the common case (no prior
+	// verification) should not clutter every begin-step response with
+	// alreadyDone:false.
+	AlreadyDone bool `json:"alreadyDone,omitempty"`
 }
 
 // ShipNextOut is the output of the Go-native next action: the first step
@@ -142,6 +166,15 @@ func shipFindStepEntry(data map[string]any, name string) map[string]any {
 	return nil
 }
 
+// shipStepAlreadyDone reports whether data["sideEffects"] already holds a
+// verified journal entry for step (written by ship.go's
+// shipVerifySideEffect/shipRecordSideEffect). Used by begin-step to signal a
+// resumed pipeline that this step's side effect already landed.
+func shipStepAlreadyDone(data map[string]any, step string) bool {
+	_, ok := shipSideEffectEntry(data, step)
+	return ok
+}
+
 // shipStepBlocksProceed implements the R-b1 proceed-gate predicate from
 // ship.js (cmdBeginStep): a step blocks progress past it unless it is
 // terminal-OK. `skipped` is terminal-OK. A `pending` step blocks UNLESS it
@@ -156,6 +189,149 @@ func shipStepBlocksProceed(step map[string]any) bool {
 		return !hasCondition
 	}
 	return status == "in_progress" || status == "failed"
+}
+
+// ---------------------------------------------------------------------------
+// Narration helpers
+// ---------------------------------------------------------------------------
+
+// shipBuildStepRows converts the state's steps[] array into pipeline.StepRow
+// slices for rendering by StepProgressBlock.
+func shipBuildStepRows(data map[string]any) []pipeline.StepRow {
+	steps := shipStepsSlice(data)
+	rows := make([]pipeline.StepRow, 0, len(steps))
+	for _, s := range steps {
+		sm, ok := s.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := sm["name"].(string)
+		status, _ := sm["status"].(string)
+		startedAt, _ := sm["startedAt"].(string)
+		completedAt, _ := sm["completedAt"].(string)
+		rows = append(rows, pipeline.StepRow{
+			Name:        name,
+			Status:      status,
+			StartedAt:   startedAt,
+			CompletedAt: completedAt,
+		})
+	}
+	return rows
+}
+
+// shipStepPosition returns the 1-based index and total count of steps for
+// the named step. Returns (0, total) if the step is not found.
+func shipStepPosition(data map[string]any, stepName string) (pos, total int) {
+	steps := shipStepsSlice(data)
+	total = len(steps)
+	for i, s := range steps {
+		sm, ok := s.(map[string]any)
+		if ok && sm["name"] == stepName {
+			return i + 1, total
+		}
+	}
+	return 0, total
+}
+
+// shipFirstBlockingStep returns the name of the first step in the pipeline
+// that blocks progress (same predicate as the R-b1 proceed-gate in
+// shipStateNext). Returns "" when no blocking step remains.
+func shipFirstBlockingStep(data map[string]any) string {
+	for _, s := range shipStepsSlice(data) {
+		sm, ok := s.(map[string]any)
+		if !ok {
+			continue
+		}
+		if shipStepBlocksProceed(sm) {
+			name, _ := sm["name"].(string)
+			return name
+		}
+	}
+	return ""
+}
+
+// shipPrevCompletedAt returns the completedAt timestamp of the last step
+// before the named step that has one, or "" if none.
+func shipPrevCompletedAt(data map[string]any, stepName string) string {
+	var prev string
+	for _, s := range shipStepsSlice(data) {
+		sm, ok := s.(map[string]any)
+		if !ok {
+			continue
+		}
+		if name, _ := sm["name"].(string); name == stepName {
+			return prev
+		}
+		if ca, _ := sm["completedAt"].(string); ca != "" {
+			prev = ca
+		}
+	}
+	return ""
+}
+
+// shipDetailLevel returns the detail level from the input's Detail map.
+// Must only be called after the dispatcher's detail-value validation.
+func shipDetailLevel(in ShipStateIn) string {
+	if detailStr(in.Detail, "detail") == "concise" {
+		return "concise"
+	}
+	return "full"
+}
+
+// shipStepInstruction returns the dispatch instruction for a step.
+func shipStepInstruction(step string) string {
+	return fmt.Sprintf("Dispatch the %s sub-skill.", step)
+}
+
+// shipCompletionTiming computes timing info for a completed step, records
+// the step duration to TimingsStore (except for HumanWaitSteps), and
+// returns both the timing and the store for reuse in ETA lookups.
+func shipCompletionTiming(root string, data map[string]any, stepName, startedAt, completedAt string, now time.Time) (*pipeline.TimingInfo, *pipeline.TimingsStore) {
+	ts := pipeline.NewTimingsStore(root)
+	stepDur, ok := pipeline.Duration(startedAt, completedAt)
+	if !ok {
+		return nil, ts
+	}
+	timing := &pipeline.TimingInfo{
+		StepSeconds: int(stepDur.Round(time.Second).Seconds()),
+	}
+	if !pipeline.HumanWaitSteps[stepName] {
+		_ = ts.Record("ship:"+stepName, stepDur)
+	}
+	if pipelineStartedAt, _ := data["startedAt"].(string); pipelineStartedAt != "" {
+		if pStart, parseErr := time.Parse(time.RFC3339, pipelineStartedAt); parseErr == nil {
+			timing.PipelineSeconds = int(now.Sub(pStart).Round(time.Second).Seconds())
+		}
+	}
+	prevCA := shipPrevCompletedAt(data, stepName)
+	if idle, idleOK := pipeline.IdleGap(prevCA, startedAt); idleOK {
+		timing.IdleSeconds = int(idle.Round(time.Second).Seconds())
+	}
+	timing.Human = "step " + pipeline.Humanize(time.Duration(timing.StepSeconds)*time.Second)
+	if timing.PipelineSeconds > 0 {
+		timing.Human += ", pipeline " + pipeline.Humanize(time.Duration(timing.PipelineSeconds)*time.Second)
+	}
+	return timing, ts
+}
+
+// shipBuildNextAction builds a NextAction for the first blocking step in
+// the pipeline, or nil when no blocking step remains.
+func shipBuildNextAction(data map[string]any, ts *pipeline.TimingsStore) *pipeline.NextAction {
+	nextName := shipFirstBlockingStep(data)
+	if nextName == "" {
+		return nil
+	}
+	next := &pipeline.NextAction{
+		ID:          nextName,
+		Instruction: shipStepInstruction(nextName),
+	}
+	if ts != nil {
+		if est, ok := ts.Estimate("ship:" + nextName); ok {
+			next.EtaSeconds = est.Seconds
+			next.EtaBasis = est.Basis
+		}
+	}
+	return next
 }
 
 // ---------------------------------------------------------------------------
@@ -298,6 +474,16 @@ func shipFormatViolations(violations []shipContractViolation) string {
 // ---------------------------------------------------------------------------
 
 func shipState(root, workDir string, in ShipStateIn, now func() time.Time) (any, error) {
+	// Validate detail level for mutating actions.
+	switch in.Action {
+	case "begin-step", "complete-step", "start", "complete", "skip", "fail", "decide", "defer":
+		if v := detailStr(in.Detail, "detail"); v != "" && v != "full" && v != "concise" {
+			return nil, &mcpserver.DomainError{
+				Msg: fmt.Sprintf(`detail must be "concise" or "full", got %q; pass detail.detail="concise" or omit for default "full"`, v),
+			}
+		}
+	}
+
 	switch in.Action {
 	case "init":
 		return shipStateInit(root, workDir, in, now)
@@ -312,17 +498,17 @@ func shipState(root, workDir string, in ShipStateIn, now func() time.Time) (any,
 	case "skip":
 		return shipStateSkip(root, workDir, in, now)
 	case "fail":
-		return shipStateFail(root, workDir, in)
+		return shipStateFail(root, workDir, in, now)
 	case "decide":
 		return shipStateDecide(root, workDir, in)
 	case "defer":
 		return shipStateDefer(root, workDir, in)
 	case "read":
-		return shipStateRead(root, workDir, in)
+		return shipStateRead(root, workDir, in, now)
 	case "cleanup":
-		return shipStateCleanup(root, workDir, in)
+		return shipStateCleanup(root, workDir, in, now)
 	case "cleanup-pipeline":
-		return shipStateCleanupPipeline(root, workDir, in)
+		return shipStateCleanupPipeline(root, workDir, in, now)
 	case "gc":
 		return shipStateGC(root, workDir, in, now)
 	case "migrate":
@@ -408,7 +594,24 @@ func shipStateStart(root, workDir string, in ShipStateIn, now func() time.Time) 
 	if err := state.Write(st); err != nil {
 		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
 	}
-	return map[string]any{}, nil
+
+	ts := pipeline.NewTimingsStore(root)
+	pos, total := shipStepPosition(st.Data, in.Step)
+	out := ShipStepNarrationOut{
+		Narration: pipeline.Narration{
+			Summary: fmt.Sprintf("Step '%s' started (%d of %d).", in.Step, pos, total),
+			Display: pipeline.StepProgressBlock(shipBuildStepRows(st.Data), ts),
+			Next: &pipeline.NextAction{
+				ID:          in.Step,
+				Instruction: shipStepInstruction(in.Step),
+			},
+		},
+	}
+	if est, ok := ts.Estimate("ship:" + in.Step); ok {
+		out.Next.EtaSeconds = est.Seconds
+		out.Next.EtaBasis = est.Basis
+	}
+	return out, nil
 }
 
 func shipStateComplete(root, workDir string, in ShipStateIn, now func() time.Time) (any, error) {
@@ -419,6 +622,13 @@ func shipStateComplete(root, workDir string, in ShipStateIn, now func() time.Tim
 	if err != nil {
 		return nil, err
 	}
+
+	stepEntry := shipFindStepEntry(st.Data, in.Step)
+	var startedAtBefore string
+	if stepEntry != nil {
+		startedAtBefore, _ = stepEntry["startedAt"].(string)
+	}
+
 	resultVal, hasResult := in.Detail["result"]
 	if err := shipCompleteStepCore(st.Data, in.Step, hasResult, resultVal, "success", now); err != nil {
 		return nil, err
@@ -426,7 +636,30 @@ func shipStateComplete(root, workDir string, in ShipStateIn, now func() time.Tim
 	if err := state.Write(st); err != nil {
 		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
 	}
-	return map[string]any{}, nil
+
+	var completedAtAfter string
+	if stepEntry != nil {
+		completedAtAfter, _ = stepEntry["completedAt"].(string)
+	}
+	timing, ts := shipCompletionTiming(root, st.Data, in.Step, startedAtBefore, completedAtAfter, now())
+	rows := shipBuildStepRows(st.Data)
+	pos, total := shipStepPosition(st.Data, in.Step)
+
+	summary := fmt.Sprintf("Step '%s' completed (%d of %d).", in.Step, pos, total)
+	if timing != nil {
+		summary = fmt.Sprintf("Step '%s' completed in %s (%d of %d).",
+			in.Step, pipeline.Humanize(time.Duration(timing.StepSeconds)*time.Second), pos, total)
+	}
+
+	out := ShipStepNarrationOut{
+		Narration: pipeline.Narration{
+			Summary: summary,
+			Display: pipeline.StepProgressBlock(rows, ts),
+			Timing:  timing,
+			Next:    shipBuildNextAction(st.Data, ts),
+		},
+	}
+	return out, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -473,7 +706,7 @@ func shipStateBeginStep(root, workDir string, in ShipStateIn, now func() time.Ti
 			// override; the rest of the proceed-gate call sites (cleanup,
 			// cleanup-pipeline) keep DataError.
 			return nil, &mcpserver.DomainError{
-				Msg: fmt.Sprintf("cannot begin step %q — prior step(s) not terminal-OK: %s", in.Step, strings.Join(blocking, ", ")),
+				Msg: fmt.Sprintf("cannot begin step %q — prior step(s) not terminal-OK: %s; complete or skip the blocking step(s) first", in.Step, strings.Join(blocking, ", ")),
 			}
 		}
 	}
@@ -485,7 +718,25 @@ func shipStateBeginStep(root, workDir string, in ShipStateIn, now func() time.Ti
 		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
 	}
 
-	return ShipTodosOut{Todos: shipmeta.TodosForStep(in.Step, st)}, nil
+	ts := pipeline.NewTimingsStore(root)
+	pos, total := shipStepPosition(st.Data, in.Step)
+	out := ShipStepNarrationOut{
+		Narration: pipeline.Narration{
+			Summary: fmt.Sprintf("Step '%s' started (%d of %d).", in.Step, pos, total),
+			Display: pipeline.StepProgressBlock(shipBuildStepRows(st.Data), ts),
+			Next: &pipeline.NextAction{
+				ID:          in.Step,
+				Instruction: shipStepInstruction(in.Step),
+			},
+		},
+		Todos:       shipmeta.TodosForStep(in.Step, st),
+		AlreadyDone: shipStepAlreadyDone(st.Data, in.Step),
+	}
+	if est, ok := ts.Estimate("ship:" + in.Step); ok {
+		out.Next.EtaSeconds = est.Seconds
+		out.Next.EtaBasis = est.Basis
+	}
+	return out, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -515,6 +766,13 @@ func shipStateCompleteStep(root, workDir string, in ShipStateIn, now func() time
 		return nil, err
 	}
 
+	// Capture startedAt before mutation for timing calculations.
+	stepEntry := shipFindStepEntry(st.Data, in.Step)
+	var startedAtBefore string
+	if stepEntry != nil {
+		startedAtBefore, _ = stepEntry["startedAt"].(string)
+	}
+
 	resultVal, hasResult := in.Detail["result"]
 	if err := shipCompleteStepCore(st.Data, in.Step, hasResult, resultVal, outcome, now); err != nil {
 		return nil, err
@@ -523,7 +781,40 @@ func shipStateCompleteStep(root, workDir string, in ShipStateIn, now func() time
 		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
 	}
 
-	return ShipTodosOut{Todos: shipmeta.TodosForStep(in.Step, st)}, nil
+	var completedAtAfter string
+	if stepEntry != nil {
+		completedAtAfter, _ = stepEntry["completedAt"].(string)
+	}
+	timing, ts := shipCompletionTiming(root, st.Data, in.Step, startedAtBefore, completedAtAfter, now())
+	rows := shipBuildStepRows(st.Data)
+	pos, total := shipStepPosition(st.Data, in.Step)
+
+	verb := "completed"
+	if outcome == "failure" {
+		verb = "failed"
+	}
+	var summary string
+	if timing != nil {
+		summary = fmt.Sprintf("Step '%s' %s in %s (%d of %d).",
+			in.Step, verb, pipeline.Humanize(time.Duration(timing.StepSeconds)*time.Second), pos, total)
+	} else {
+		summary = fmt.Sprintf("Step '%s' %s (%d of %d).", in.Step, verb, pos, total)
+	}
+
+	out := ShipStepNarrationOut{
+		Narration: pipeline.Narration{
+			Summary: summary,
+			Display: pipeline.StepProgressBlock(rows, ts),
+			Timing:  timing,
+			Next:    shipBuildNextAction(st.Data, ts),
+		},
+		Todos: shipmeta.TodosForStep(in.Step, st),
+	}
+	if count, highlights := execIssueSummary(st.Data, 5); count > 0 {
+		out.IssueCount = count
+		out.IssueHighlights = highlights
+	}
+	return out, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -550,10 +841,21 @@ func shipStateSkip(root, workDir string, in ShipStateIn, now func() time.Time) (
 	if err := state.Write(st); err != nil {
 		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
 	}
-	return map[string]any{}, nil
+
+	pos, total := shipStepPosition(st.Data, in.Step)
+	out := ShipStepNarrationOut{
+		Narration: pipeline.Narration{
+			Summary: fmt.Sprintf("Step '%s' skipped (%d of %d).", in.Step, pos, total),
+		},
+	}
+	if shipDetailLevel(in) == "full" {
+		ts := pipeline.NewTimingsStore(root)
+		out.Display = pipeline.StepProgressBlock(shipBuildStepRows(st.Data), ts)
+	}
+	return out, nil
 }
 
-func shipStateFail(root, workDir string, in ShipStateIn) (any, error) {
+func shipStateFail(root, workDir string, in ShipStateIn, now func() time.Time) (any, error) {
 	if in.Step == "" {
 		return nil, &mcpserver.DomainError{Msg: "step is required"}
 	}
@@ -566,13 +868,41 @@ func shipStateFail(root, workDir string, in ShipStateIn) (any, error) {
 		return nil, &mcpserver.DataError{Msg: fmt.Sprintf("step %q not found in state", in.Step)}
 	}
 	step["status"] = "failed"
+	var detail string
 	if v, ok := in.Detail["error"]; ok {
 		step["error"] = v
+		if s, isStr := v.(string); isStr {
+			detail = s
+		} else {
+			detail = fmt.Sprint(v)
+		}
 	}
+
+	st.Data["lastFailedStep"] = in.Step
+	execAppendIssue(st.Data, StateIssue{
+		Step:      in.Step,
+		Severity:  "error",
+		Category:  "ship-fail",
+		Summary:   fmt.Sprintf("Step %s failed", in.Step),
+		Detail:    detail,
+		Timestamp: now().UTC().Format(time.RFC3339),
+	})
+
 	if err := state.Write(st); err != nil {
 		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
 	}
-	return map[string]any{}, nil
+
+	pos, total := shipStepPosition(st.Data, in.Step)
+	out := ShipStepNarrationOut{
+		Narration: pipeline.Narration{
+			Summary: fmt.Sprintf("Step '%s' failed (%d of %d).", in.Step, pos, total),
+		},
+	}
+	if shipDetailLevel(in) == "full" {
+		ts := pipeline.NewTimingsStore(root)
+		out.Display = pipeline.StepProgressBlock(shipBuildStepRows(st.Data), ts)
+	}
+	return out, nil
 }
 
 func shipStateDecide(root, workDir string, in ShipStateIn) (any, error) {
@@ -592,7 +922,17 @@ func shipStateDecide(root, workDir string, in ShipStateIn) (any, error) {
 	if err := state.Write(st); err != nil {
 		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
 	}
-	return map[string]any{}, nil
+
+	out := ShipStepNarrationOut{
+		Narration: pipeline.Narration{
+			Summary: fmt.Sprintf("Decision recorded for step '%s'.", in.Step),
+		},
+	}
+	if shipDetailLevel(in) == "full" {
+		ts := pipeline.NewTimingsStore(root)
+		out.Display = pipeline.StepProgressBlock(shipBuildStepRows(st.Data), ts)
+	}
+	return out, nil
 }
 
 func shipStateDefer(root, workDir string, in ShipStateIn) (any, error) {
@@ -617,22 +957,238 @@ func shipStateDefer(root, workDir string, in ShipStateIn) (any, error) {
 	if err := state.Write(st); err != nil {
 		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
 	}
-	return map[string]any{}, nil
+
+	out := ShipStepNarrationOut{
+		Narration: pipeline.Narration{
+			Summary: fmt.Sprintf("Deferred finding recorded: %s.", title),
+		},
+	}
+	if shipDetailLevel(in) == "full" {
+		ts := pipeline.NewTimingsStore(root)
+		out.Display = pipeline.StepProgressBlock(shipBuildStepRows(st.Data), ts)
+	}
+	return out, nil
 }
 
-func shipStateRead(root, workDir string, in ShipStateIn) (any, error) {
+// ---------------------------------------------------------------------------
+// Resume bearings briefing (read)
+// ---------------------------------------------------------------------------
+
+// ShipResumeBriefing is attached under the "resumeBriefing" key on a
+// ship_state read response when shipRunInFlight reports a pipeline that has
+// started but not finished. A step left "failed" is still reported here as
+// Resumable: true — a crashed or interrupted run is presented as
+// resumable, never surfaced as a failure.
+type ShipResumeBriefing struct {
+	pipeline.Narration
+	Resumable      bool     `json:"resumable"`
+	LastStep       string   `json:"lastStep,omitempty"`
+	LastStepStatus string   `json:"lastStepStatus,omitempty"`
+	SideEffects    []string `json:"sideEffects"`
+}
+
+// shipRunInFlight reports whether a ship pipeline has been started but not
+// finished: some step still blocks proceed (shipFirstBlockingStep is
+// non-empty) AND at least one step has actually been touched (has a
+// startedAt). The second condition distinguishes a freshly init'd pipeline
+// — nothing has run yet, so there is nothing to resume or report an
+// interruption for — from a genuinely interrupted one.
+func shipRunInFlight(data map[string]any) bool {
+	if shipFirstBlockingStep(data) == "" {
+		return false
+	}
+	return shipLastActiveStep(data) != nil
+}
+
+// shipLastActiveStep returns the step most recently touched: the
+// in_progress step if one exists (R-b1 leaves a crashed run's step sitting
+// at in_progress, so this also covers the crash case), else the last step
+// (by position, scanning forward — last match wins) that has a startedAt.
+// Mirrors buildShipRecovery's (hooks/pre_compact_save.go) precedent for
+// deriving "current step" from step statuses. Returns nil if no step has
+// ever been started.
+func shipLastActiveStep(data map[string]any) map[string]any {
+	var last map[string]any
+	for _, s := range shipStepsSlice(data) {
+		sm, ok := s.(map[string]any)
+		if !ok {
+			continue
+		}
+		if status, _ := sm["status"].(string); status == "in_progress" {
+			return sm
+		}
+		if startedAt, _ := sm["startedAt"].(string); startedAt != "" {
+			last = sm
+		}
+	}
+	return last
+}
+
+// shipLastActivityAt returns the timestamp of a step's most recent recorded
+// activity: its completedAt if it finished, else its startedAt. Both
+// shipStateFail and shipCompleteStepCore's outcome=="failure" path leave
+// completedAt unset on a failed step, so this falls back to startedAt —
+// exactly the "how long since anything happened" signal a resume briefing
+// needs.
+func shipLastActivityAt(step map[string]any) string {
+	if completedAt, _ := step["completedAt"].(string); completedAt != "" {
+		return completedAt
+	}
+	startedAt, _ := step["startedAt"].(string)
+	return startedAt
+}
+
+// shipStepDuration returns how long step has been running (if it has no
+// completedAt yet — in_progress or failed) or how long it took (if
+// completed/skipped).
+func shipStepDuration(step map[string]any, now time.Time) (time.Duration, bool) {
+	startedAt, _ := step["startedAt"].(string)
+	if startedAt == "" {
+		return 0, false
+	}
+	if completedAt, _ := step["completedAt"].(string); completedAt != "" {
+		return pipeline.Duration(startedAt, completedAt)
+	}
+	start, err := time.Parse(time.RFC3339, startedAt)
+	if err != nil {
+		return 0, false
+	}
+	if d := now.Sub(start); d > 0 {
+		return d, true
+	}
+	return 0, true
+}
+
+// shipSideEffectSummary renders data["sideEffects"] (the verified-effect
+// journal, step -> {kind, ref, verifiedAt} — see shipRecordSideEffect in
+// ship.go) as a sorted list of "step (kind): ref" strings. Always returns a
+// non-nil slice (empty when the journal is empty or absent) so the field
+// serializes as JSON "[]", never "null".
+func shipSideEffectSummary(data map[string]any) []string {
+	journal, _ := data["sideEffects"].(map[string]any)
+	out := []string{}
+	if journal == nil {
+		return out
+	}
+	steps := make([]string, 0, len(journal))
+	for step := range journal {
+		steps = append(steps, step)
+	}
+	sort.Strings(steps)
+	for _, step := range steps {
+		entry, _ := journal[step].(map[string]any)
+		if entry == nil {
+			continue
+		}
+		kind, _ := entry["kind"].(string)
+		ref, _ := entry["ref"].(string)
+		if kind == "sha" {
+			ref = shortSHA(ref)
+		}
+		out = append(out, fmt.Sprintf("%s (%s): %s", step, kind, ref))
+	}
+	return out
+}
+
+// shipBuildResumeBriefing composes the ResumeBriefing attached to read's
+// response when shipRunInFlight reports an in-flight pipeline. Timing
+// carries the three figures the resume-bearings AC asks for: StepSeconds
+// (the last step's own duration/elapsed-so-far), PipelineSeconds (elapsed
+// time since the pipeline started), and IdleSeconds (time since the last
+// recorded activity — the "interrupted N ago" signal). next reuses
+// shipBuildNextAction, the same helper complete-step/skip already use, so
+// the briefing's next step matches what the rest of the tool would compute.
+func shipBuildResumeBriefing(root string, data map[string]any, now time.Time) *ShipResumeBriefing {
+	step := shipLastActiveStep(data)
+	name, _ := step["name"].(string)
+	status, _ := step["status"].(string)
+
+	timing := &pipeline.TimingInfo{}
+	stepDur, stepDurOK := shipStepDuration(step, now)
+	if stepDurOK {
+		timing.StepSeconds = int(stepDur.Round(time.Second).Seconds())
+	}
+	if pipelineStartedAt, _ := data["startedAt"].(string); pipelineStartedAt != "" {
+		if pStart, parseErr := time.Parse(time.RFC3339, pipelineStartedAt); parseErr == nil {
+			timing.PipelineSeconds = int(now.Sub(pStart).Round(time.Second).Seconds())
+		}
+	}
+	var idleDur time.Duration
+	var idleOK bool
+	if lastActivity := shipLastActivityAt(step); lastActivity != "" {
+		if lastAt, parseErr := time.Parse(time.RFC3339, lastActivity); parseErr == nil {
+			idleDur = now.Sub(lastAt)
+			if idleDur < 0 {
+				idleDur = 0
+			}
+			idleOK = true
+			timing.IdleSeconds = int(idleDur.Round(time.Second).Seconds())
+		}
+	}
+
+	var humanParts []string
+	if stepDurOK {
+		humanParts = append(humanParts, "step "+pipeline.Humanize(stepDur))
+	}
+	if timing.PipelineSeconds > 0 {
+		humanParts = append(humanParts, "pipeline "+pipeline.Humanize(time.Duration(timing.PipelineSeconds)*time.Second))
+	}
+	if idleOK {
+		humanParts = append(humanParts, "idle "+pipeline.Humanize(idleDur))
+	}
+	timing.Human = strings.Join(humanParts, ", ")
+
+	sideEffects := shipSideEffectSummary(data)
+
+	idleText := "an unknown time"
+	if idleOK {
+		idleText = pipeline.Humanize(idleDur) + " ago"
+	}
+
+	b := &ShipResumeBriefing{
+		Resumable:      true,
+		LastStep:       name,
+		LastStepStatus: status,
+		SideEffects:    sideEffects,
+	}
+	b.Summary = fmt.Sprintf("Run resumable: last step %q (%s), interrupted %s.", name, status, idleText)
+
+	lines := []string{fmt.Sprintf("Last step: %s (%s)", name, status)}
+	if timing.Human != "" {
+		lines = append(lines, "Timing: "+timing.Human)
+	}
+	if len(sideEffects) > 0 {
+		lines = append(lines, "Side effects: "+strings.Join(sideEffects, "; "))
+	}
+	b.Display = "**Resume briefing**\n- " + strings.Join(lines, "\n- ")
+	b.Timing = timing
+	b.Next = shipBuildNextAction(data, pipeline.NewTimingsStore(root))
+	return b
+}
+
+func shipStateRead(root, workDir string, in ShipStateIn, now func() time.Time) (any, error) {
 	st, err := shipResolveAndFind(detailStr(in.Detail, "branch"), workDir, root)
 	if err != nil {
 		return nil, err
 	}
-	return st.Data, nil
+
+	if !shipRunInFlight(st.Data) {
+		return st.Data, nil
+	}
+
+	out := make(map[string]any, len(st.Data)+1)
+	for k, v := range st.Data {
+		out[k] = v
+	}
+	out["resumeBriefing"] = shipBuildResumeBriefing(root, st.Data, now())
+	return out, nil
 }
 
 // ---------------------------------------------------------------------------
 // Action: cleanup (single branch)
 // ---------------------------------------------------------------------------
 
-func shipStateCleanup(root, workDir string, in ShipStateIn) (any, error) {
+func shipStateCleanup(root, workDir string, in ShipStateIn, now func() time.Time) (any, error) {
 	branch, err := execResolveBranch(detailStr(in.Detail, "branch"), workDir)
 	if err != nil {
 		return nil, err
@@ -642,7 +1198,7 @@ func shipStateCleanup(root, workDir string, in ShipStateIn) (any, error) {
 		return nil, &mcpserver.InfraError{Msg: "find state: " + findErr.Error(), Cause: findErr}
 	}
 	if st == nil {
-		// Nothing to delete — cmdCleanup exits 0 silently in this case.
+		// Nothing to clean up — cmdCleanup exits 0 silently in this case.
 		return map[string]any{}, nil
 	}
 
@@ -653,10 +1209,18 @@ func shipStateCleanup(root, workDir string, in ShipStateIn) (any, error) {
 			len(violations), shipFormatViolations(violations))}
 	}
 
-	if err := os.Remove(st.Path); err != nil && !os.IsNotExist(err) {
-		return nil, &mcpserver.InfraError{Msg: "delete state file: " + err.Error(), Cause: err}
+	completedAt := now().UTC().Format(time.RFC3339)
+	st.Data["pipelineStatus"] = "completed"
+	st.Data["pipelineCompletedAt"] = completedAt
+	if err := state.Write(st); err != nil {
+		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
 	}
-	return map[string]any{"valid": true, "cleaned": true}, nil
+	return map[string]any{
+		"valid":               true,
+		"cleaned":             true,
+		"pipelineStatus":      "completed",
+		"pipelineCompletedAt": completedAt,
+	}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -672,7 +1236,7 @@ func shipStateCleanup(root, workDir string, in ShipStateIn) (any, error) {
 // object with only {ship,execute,plan} but always executes a further section
 // after the branch that adds a 4th "commit" bucket on every non-violation
 // path.
-func shipStateCleanupPipeline(root, workDir string, in ShipStateIn) (any, error) {
+func shipStateCleanupPipeline(root, workDir string, in ShipStateIn, now func() time.Time) (any, error) {
 	branch, err := execResolveBranch(detailStr(in.Detail, "branch"), workDir)
 	if err != nil {
 		return nil, err
@@ -686,6 +1250,7 @@ func shipStateCleanupPipeline(root, workDir string, in ShipStateIn) (any, error)
 	ttlDays := resolveGCTTLDays(root, detailIntPtr(in.Detail, "ttlDays"))
 
 	var currentRun map[string]any
+	var issueSummary *IssueSummary
 	switch {
 	case force:
 		currentRun = map[string]any{"cleaned": false, "preservedReason": "force"}
@@ -698,10 +1263,19 @@ func shipStateCleanupPipeline(root, workDir string, in ShipStateIn) (any, error)
 				"pipeline contract violation: %d step(s) not in terminal state (%s) — state file preserved",
 				len(violations), shipFormatViolations(violations))}
 		}
-		if err := os.Remove(st.Path); err != nil && !os.IsNotExist(err) {
-			return nil, &mcpserver.InfraError{Msg: "delete state file: " + err.Error(), Cause: err}
+		completedAt := now().UTC().Format(time.RFC3339)
+		st.Data["pipelineStatus"] = "completed"
+		st.Data["pipelineCompletedAt"] = completedAt
+		if err := state.Write(st); err != nil {
+			return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
 		}
-		currentRun = map[string]any{"valid": true, "cleaned": true}
+		currentRun = map[string]any{
+			"valid":               true,
+			"cleaned":             true,
+			"pipelineStatus":      "completed",
+			"pipelineCompletedAt": completedAt,
+		}
+		issueSummary = execIssueSummaryFull(st.Data)
 	}
 
 	rpt, err := state.GC(root, state.GCOptions{
@@ -713,7 +1287,10 @@ func shipStateCleanupPipeline(root, workDir string, in ShipStateIn) (any, error)
 		return nil, &mcpserver.InfraError{Msg: "gc sweep: " + err.Error(), Cause: err}
 	}
 
-	return map[string]any{
+	stateDir := filepath.Join(root, paths.DataDir, "execution")
+	reapResult := execReapRunDirectories(stateDir, ttlDays, false, now)
+
+	out := map[string]any{
 		"currentRun": currentRun,
 		"gc": map[string]any{
 			"ship":    bucketGCByPrefix(rpt, "ship"),
@@ -721,9 +1298,14 @@ func shipStateCleanupPipeline(root, workDir string, in ShipStateIn) (any, error)
 			"plan":    bucketGCByPrefix(rpt, "plan"),
 			"commit":  bucketGCByPrefix(rpt, "commit"),
 		},
-		"force":   force,
-		"ttlDays": ttlDays,
-	}, nil
+		"directories": reapResult,
+		"force":       force,
+		"ttlDays":     ttlDays,
+	}
+	if issueSummary != nil {
+		out["issueSummary"] = issueSummary
+	}
+	return out, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -914,20 +1496,22 @@ func RegisterShipStateTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "ship_state",
 		`Manage ship execution state.
 
-Pass "action" to select an operation. Each action uses a subset of the input fields (unlisted fields are ignored):
+Pass "action" to select an operation. Each action uses a subset of the input fields (unlisted fields are ignored).
+
+Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide, defer) return a narrated response: summary (short text), display (markdown progress block), timing (step/pipeline/idle durations when computable), next (the following pipeline step when one exists), and for begin-step/complete-step: todos, issueCount, issueHighlights. Pass detail.detail="concise" to omit the progress block on non-boundary actions (skip, fail, decide, defer); "full" (the default) always includes it. Step durations are recorded under key "ship:<step>" in the timings store; human-wait steps (await-remote-review) are never recorded.
 
 - init: Create ship state. Optional: detail.branch, detail.flags, sessionId.
-- start: Begin a ship step. Requires step. Optional: detail.branch.
-- complete: Complete a ship step. Requires step. Optional: detail.branch, detail.result.
-- begin-step: Begin execution of a step. Requires step. Optional: detail.branch, detail.stateFile.
-- complete-step: Complete execution of a step. Requires step. Optional: detail.outcome, detail.result, detail.branch, detail.stateFile.
-- skip: Skip a step. Requires step. Optional: detail.branch, detail.reason.
-- fail: Fail a step. Requires step. Optional: detail.branch, detail.error.
-- decide: Record a decision for a step. Requires step. Optional: detail.branch, detail.text.
-- defer: Record a deferred finding. Requires detail.severity, detail.file, detail.title. Optional: detail.branch, detail.line.
-- read: Return the full ship state. Optional: detail.branch.
-- cleanup: Delete ship state for a branch. Optional: detail.branch.
-- cleanup-pipeline: Clean up pipeline state. Optional: detail.branch, detail.force, detail.ttlDays.
+- begin-step: Begin execution of a step (preferred over start). Requires step. Returns narration with progress, ETA, dispatch instruction, todos, and alreadyDone (true when ship_verify_side_effect already recorded this step's side effect in the sideEffects journal — a resumed pipeline can skip redoing it). Optional: detail.branch, detail.stateFile, detail.detail.
+- complete-step: Complete execution of a step (preferred over complete). Requires step. Returns narration with timing, next step, todos, and issue summary. Optional: detail.outcome ("success"|"failure"), detail.result, detail.branch, detail.stateFile, detail.detail.
+- start: (Legacy) Begin a step. Requires step. Returns narration. Optional: detail.branch, detail.detail.
+- complete: (Legacy) Complete a step. Requires step. Returns narration with timing. Optional: detail.branch, detail.result, detail.detail.
+- skip: Skip a step. Requires step. Returns narration. Optional: detail.branch, detail.reason, detail.detail.
+- fail: Fail a step. Requires step. Returns narration. Optional: detail.branch, detail.error (recorded as issue), detail.detail.
+- decide: Record a decision. Requires step. Returns narration. Optional: detail.branch, detail.text, detail.detail.
+- defer: Record a deferred finding. Returns narration. Requires detail.severity, detail.file, detail.title. Optional: detail.branch, detail.line, detail.detail.
+- read: Return the full ship state. Optional: detail.branch. When the pipeline is in flight (some step still blocks proceed and at least one step has been started), the state also carries a "resumeBriefing" (resumable, lastStep, lastStepStatus, sideEffects, summary, display, timing{stepSeconds,pipelineSeconds,idleSeconds,human}, next). A step left "failed" is still reported resumable:true, never as an error.
+- cleanup: Stamp a branch's ship state terminal (pipelineStatus:"completed", pipelineCompletedAt) instead of deleting it, after validating every step is in a terminal state — the state survives for later reads until GC's TTL prunes it. Optional: detail.branch.
+- cleanup-pipeline: Same stamp-instead-of-delete for the current branch's ship state (force/no-state-file skip the contract check), followed by an unconditional GC + per-run-directory sweep. Optional: detail.branch, detail.force, detail.ttlDays.
 - gc: Garbage-collect stale state files. Optional: detail.ttlDays, detail.dryRun.
 - migrate: Migrate state between branches. Requires detail.from, detail.to.
 - next: Return the next pending step. Optional: detail.branch, detail.stateFile.

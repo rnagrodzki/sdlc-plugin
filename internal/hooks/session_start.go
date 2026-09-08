@@ -298,8 +298,26 @@ func shipResumeLines(root, branch string) []string {
 	if err != nil || st == nil {
 		return nil
 	}
+	// Primary check: shipStateCleanup/shipStateCleanupPipeline (Task 22,
+	// internal/tools/ship_state.go) stamp pipelineStatus:"completed" on a
+	// terminal run instead of deleting the state file, so a completed run's
+	// state now survives for later reads (e.g. /harden) without also
+	// resurrecting this resume banner.
+	if status, _ := st.Data["pipelineStatus"].(string); status == "completed" {
+		return nil
+	}
 	steps, ok := st.Data["steps"].([]any)
 	if !ok {
+		return nil
+	}
+	// Backward compat: state files written before Task 22 never carry
+	// pipelineStatus. Fall back to the same terminal-state predicate as
+	// shipValidatePipelineContract (internal/tools/ship_state.go): every step
+	// must be out of in_progress, and out of pending unless it carries a
+	// condition key (received-review/commit-fixes rest at pending forever
+	// when their trigger never fires — that is their normal resting state,
+	// not a stall).
+	if _, hasPipelineStatus := st.Data["pipelineStatus"]; !hasPipelineStatus && shipStepsAllTerminal(steps) {
 		return nil
 	}
 
@@ -356,9 +374,40 @@ func shipResumeLines(root, branch string) []string {
 	}
 }
 
+// shipStepsAllTerminal mirrors shipValidatePipelineContract's terminal-state
+// predicate (internal/tools/ship_state.go) for pre-Task-22 state files: a
+// step is non-terminal (and so blocks treating the run as done) when it is
+// in_progress, or pending without a condition key. A pending step that does
+// carry a condition key (a conditional-by-design step whose trigger never
+// fired) counts as terminal, same as completed/skipped/failed.
+func shipStepsAllTerminal(steps []any) bool {
+	if len(steps) == 0 {
+		return false
+	}
+	for _, s := range steps {
+		sm, ok := s.(map[string]any)
+		if !ok {
+			continue
+		}
+		status, _ := sm["status"].(string)
+		_, hasCondition := sm["condition"]
+		if status == "in_progress" || (status == "pending" && !hasCondition) {
+			return false
+		}
+	}
+	return true
+}
+
 func executeResumeLines(root, branch, source string) []string {
 	st, err := state.Find(root, "execute", branch)
 	if err != nil || st == nil {
+		return nil
+	}
+	// Primary check: execute_state.go's cleanup action (Task 22) stamps
+	// runStatus:"completed" on a terminal run instead of deleting the state
+	// file, so a completed run's state now survives for later reads without
+	// also resurrecting this resume banner.
+	if status, _ := st.Data["runStatus"].(string); status == "completed" {
 		return nil
 	}
 	waves, ok := st.Data["waves"].([]any)
@@ -380,6 +429,13 @@ func executeResumeLines(root, branch, source string) []string {
 		}
 	}
 	total := len(waves)
+
+	// Backward compat: state files written before Task 22 never carry
+	// runStatus. Fall back to inferring completion from the waves array
+	// itself: every recorded wave completed, and at least one wave exists.
+	if _, hasRunStatus := st.Data["runStatus"]; !hasRunStatus && total > 0 && completed == total {
+		return nil
+	}
 
 	var line string
 	if source == "compact" {

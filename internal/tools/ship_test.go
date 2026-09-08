@@ -10,7 +10,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/santhosh-tekuri/jsonschema/v6"
+
+	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
+	"github.com/rnagrodzki/sdlc-plugin/internal/pipeline"
+	"github.com/rnagrodzki/sdlc-plugin/internal/shipmeta"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 )
 
@@ -32,8 +37,9 @@ func checkoutBranch(t *testing.T, dir, name string) {
 }
 
 // TestShipPrepare_StateInit verifies the happy-path shape: zero errors, a
-// merged flags/sources map, and a state file written with the fixed 7-entry
-// step scaffold plus the fields cmdInit/initState stamp (version, startedAt,
+// merged flags/sources map, and a state file written with the config-driven
+// step scaffold (one entry per configured step — here the built-in default
+// steps) plus the fields cmdInit/initState stamp (version, startedAt,
 // branch, worktree, flags, steps, decisions, deferredFindings, sessionId).
 func TestShipPrepare_StateInit(t *testing.T) {
 	dir := t.TempDir()
@@ -103,13 +109,109 @@ func TestShipPrepare_StateInit(t *testing.T) {
 	if data["branch"] != "feat/my-feature" {
 		t.Errorf("branch = %v, want %q", data["branch"], "feat/my-feature")
 	}
+	// Default steps come from shipmeta.ShipBuiltInDefaults.Steps (6 entries),
+	// not the old fixed 7-step scaffold — the scaffold is now config-driven
+	// (InitialShipStepsFromConfig), one entry per configured step.
 	steps, ok := data["steps"].([]any)
-	if !ok || len(steps) != 7 {
-		t.Fatalf("steps = %v, want a 7-entry array", data["steps"])
+	if !ok || len(steps) != 6 {
+		t.Fatalf("steps = %v, want a 6-entry array", data["steps"])
 	}
 	first, _ := steps[0].(map[string]any)
-	if first["name"] != "execute" || first["status"] != "pending" {
-		t.Errorf("steps[0] = %v, want {name: execute, status: pending}", first)
+	if first["name"] != "execute" || first["status"] != "pending" || first["kind"] != "tracked" {
+		t.Errorf("steps[0] = %v, want {name: execute, status: pending, kind: tracked}", first)
+	}
+
+	if out.PipelineDisplay == "" {
+		t.Error("PipelineDisplay is empty, want a rendered pipeline table")
+	}
+	if !strings.Contains(out.PipelineDisplay, "| execute |") {
+		t.Errorf("PipelineDisplay = %q, want it to contain a row for %q", out.PipelineDisplay, "execute")
+	}
+}
+
+// TestShipPrepare_StepScaffold_AllCanonicalSteps verifies that ship_prepare
+// seeds one step entry per configured step, in configured order, correctly
+// classified tracked/inline, and renders a matching PipelineDisplay table —
+// exercising all 10 shipmeta.CanonicalSteps names at once (5 tracked, 5
+// inline; "received-review"/"commit-fixes" are conditional-only and never
+// appear in ship.steps[]/CanonicalSteps, so they cannot be exercised via
+// config here).
+func TestShipPrepare_StepScaffold_AllCanonicalSteps(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, "feat/all-canonical-steps")
+
+	stepsJSON, err := json.Marshal(shipmeta.CanonicalSteps)
+	if err != nil {
+		t.Fatalf("marshal CanonicalSteps: %v", err)
+	}
+	writeFile(t, filepath.Join(dir, ".sdlc-v2", "local.json"),
+		fmt.Sprintf(`{"ship": {"steps": %s}}`, stepsJSON))
+
+	out, err := shipPrepare(dir, dir, ShipPrepareIn{
+		SkipConfigCheck: true,
+		SessionID:       "sess-all-steps",
+	})
+	if err != nil {
+		t.Fatalf("shipPrepare: %v", err)
+	}
+	if len(out.Errors) != 0 {
+		t.Fatalf("Errors = %v, want empty", out.Errors)
+	}
+
+	raw, err := os.ReadFile(out.StateFile)
+	if err != nil {
+		t.Fatalf("read state file: %v", err)
+	}
+	var data map[string]any
+	if err := json.Unmarshal(raw, &data); err != nil {
+		t.Fatalf("unmarshal state file: %v", err)
+	}
+
+	steps, ok := data["steps"].([]any)
+	if !ok || len(steps) != len(shipmeta.CanonicalSteps) {
+		t.Fatalf("steps = %v, want a %d-entry array", data["steps"], len(shipmeta.CanonicalSteps))
+	}
+
+	trackedCount, inlineCount := 0, 0
+	for i, raw := range steps {
+		sm, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("steps[%d] not an object: %v", i, raw)
+		}
+		if sm["name"] != shipmeta.CanonicalSteps[i] {
+			t.Errorf("steps[%d].name = %v, want %q (config order preserved)", i, sm["name"], shipmeta.CanonicalSteps[i])
+		}
+		if sm["status"] != "pending" {
+			t.Errorf("steps[%d].status = %v, want %q", i, sm["status"], "pending")
+		}
+		wantKind := "inline"
+		if shipmeta.IsTrackedShipStep(shipmeta.CanonicalSteps[i]) {
+			wantKind = "tracked"
+		}
+		if sm["kind"] != wantKind {
+			t.Errorf("steps[%d].kind = %v, want %q", i, sm["kind"], wantKind)
+		}
+		switch sm["kind"] {
+		case "tracked":
+			trackedCount++
+		case "inline":
+			inlineCount++
+		}
+	}
+	if trackedCount != 5 || inlineCount != 5 {
+		t.Errorf("tracked/inline split = %d/%d, want 5/5", trackedCount, inlineCount)
+	}
+
+	wantTable := pipeline.PipelineTable(configStepsFromScaffold(shipmeta.InitialShipStepsFromConfig(shipmeta.CanonicalSteps)))
+	if out.PipelineDisplay != wantTable {
+		t.Errorf("PipelineDisplay = %q, want %q", out.PipelineDisplay, wantTable)
+	}
+	for _, name := range shipmeta.CanonicalSteps {
+		if !strings.Contains(out.PipelineDisplay, "| "+name+" |") {
+			t.Errorf("PipelineDisplay missing row for %q:\n%s", name, out.PipelineDisplay)
+		}
 	}
 }
 
@@ -262,9 +364,14 @@ func TestShipPrepare_OnDefaultBranchWarning(t *testing.T) {
 	}
 }
 
-// TestShipPrepare_KD5Gate verifies the config-version gate uses the soft
-// style (matching plan.go/commit.go): nil Go error, a minimal errors-only
-// payload, and no state file written.
+// TestShipPrepare_KD5Gate verifies the config-version gate's still-blocking
+// case: schemaVersion 1 has no registered migration path to v5
+// (projectMigrations only covers from 0/3/4), so configmigrate.
+// MigrateWithBackup cannot auto-migrate it and the gate still short-circuits
+// using the soft style (matching plan.go/commit.go): nil Go error, a
+// minimal errors-only payload, and no state file written. This is distinct
+// from TestShipPrepare_AutoMigratesStaleConfig, which covers a migratable
+// stale config succeeding instead of failing.
 func TestShipPrepare_KD5Gate(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
@@ -283,10 +390,126 @@ func TestShipPrepare_KD5Gate(t *testing.T) {
 	if out.StateFile != "" {
 		t.Errorf("StateFile = %q, want empty (KD5 gate must not init state)", out.StateFile)
 	}
+	if out.Migration != nil {
+		t.Errorf("Migration = %v, want nil on a failed migration attempt", out.Migration)
+	}
 
 	entries, _ := os.ReadDir(filepath.Join(dir, paths.DataDir, "execution"))
 	if len(entries) != 0 {
 		t.Errorf("execution dir has %d entries, want 0 (no state file written)", len(entries))
+	}
+}
+
+// TestShipPrepare_AutoMigratesStaleConfig verifies the KD5 gate's new
+// auto-migrate behavior: a stale-but-migratable config (schemaVersion 4, one
+// step short of current) is migrated in place, a config.json.bak backup is
+// written, and ship_prepare proceeds to initialize state normally instead of
+// hard-failing — the acceptance-criteria case this task exists to add.
+func TestShipPrepare_AutoMigratesStaleConfig(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, "feat/kd5-automigrate")
+
+	writeFile(t, filepath.Join(dir, paths.DataDir, "config.json"), `{"schemaVersion": 4}`)
+
+	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: false, SessionID: "sess-automigrate"})
+	if err != nil {
+		t.Fatalf("shipPrepare: %v", err)
+	}
+	if len(out.Errors) != 0 {
+		t.Fatalf("Errors = %v, want empty on successful auto-migration", out.Errors)
+	}
+	if out.StateFile == "" {
+		t.Error("StateFile is empty, want state initialized despite the auto-migration")
+	}
+	if out.Migration == nil {
+		t.Fatal("Migration is nil, want a populated MigrationReport")
+	}
+	if out.Migration.BackupPath == "" {
+		t.Error("Migration.BackupPath is empty, want the .bak path")
+	}
+	if _, statErr := os.Stat(out.Migration.BackupPath); statErr != nil {
+		t.Errorf("backup file not found at %s: %v", out.Migration.BackupPath, statErr)
+	}
+	if filepath.Base(out.Migration.BackupPath) != "config.json.bak" {
+		t.Errorf("backup file = %q, want config.json.bak", filepath.Base(out.Migration.BackupPath))
+	}
+
+	backupRaw, err := os.ReadFile(out.Migration.BackupPath)
+	if err != nil {
+		t.Fatalf("read backup: %v", err)
+	}
+	if !strings.Contains(string(backupRaw), `"schemaVersion": 4`) {
+		t.Errorf("backup content = %q, want it to preserve the pre-migration schemaVersion 4 payload", backupRaw)
+	}
+
+	migratedRaw, err := os.ReadFile(filepath.Join(dir, paths.DataDir, "config.json"))
+	if err != nil {
+		t.Fatalf("read migrated config.json: %v", err)
+	}
+	if strings.Contains(string(migratedRaw), "schemaVersion") {
+		t.Errorf("migrated config.json = %q, want schemaVersion field removed", migratedRaw)
+	}
+}
+
+// TestShipPrepare_MissingConfig verifies the KD5 gate's missing-config case:
+// a project that never ran /setup gets an actionable error naming /setup in
+// the soft errors-only payload, rather than a generic or silent failure.
+func TestShipPrepare_MissingConfig(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, "feat/kd5-missing")
+
+	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: false})
+	if err != nil {
+		t.Fatalf("shipPrepare: %v (KD5 gate must return nil error with Errors populated)", err)
+	}
+	if len(out.Errors) != 1 || !strings.Contains(out.Errors[0], "/setup") {
+		t.Fatalf("Errors = %v, want a single error mentioning /setup", out.Errors)
+	}
+	if out.StateFile != "" {
+		t.Errorf("StateFile = %q, want empty", out.StateFile)
+	}
+}
+
+// TestShipPrepare_CurrentConfig_NoExtraIO verifies the KD5 gate's no-op
+// case: an already-current config is not touched at all — no .bak backup
+// and no Migration in the response.
+func TestShipPrepare_CurrentConfig_NoExtraIO(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, "feat/kd5-current")
+
+	configPath := filepath.Join(dir, paths.DataDir, "config.json")
+	writeFile(t, configPath, `{}`)
+	before, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatalf("stat config.json: %v", err)
+	}
+
+	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: false, SessionID: "sess-current"})
+	if err != nil {
+		t.Fatalf("shipPrepare: %v", err)
+	}
+	if len(out.Errors) != 0 {
+		t.Fatalf("Errors = %v, want empty", out.Errors)
+	}
+	if out.Migration != nil {
+		t.Errorf("Migration = %v, want nil for an already-current config", out.Migration)
+	}
+	if _, statErr := os.Stat(configPath + ".bak"); statErr == nil {
+		t.Error("config.json.bak written for an already-current config; want zero extra I/O")
+	}
+
+	after, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatalf("stat config.json: %v", err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Errorf("config.json mtime changed (%v -> %v), want untouched", before.ModTime(), after.ModTime())
 	}
 }
 
@@ -741,18 +964,50 @@ func TestShipGC_RespectsKD5Gate(t *testing.T) {
 	}
 }
 
+// TestShipGC_AutoMigratesStaleConfig verifies gc mode threads the migration
+// report through shipGC's dedicated return points: a stale-but-migratable
+// config auto-migrates before gc runs, and the resulting MigrationReport is
+// still present on the gc-shaped ShipPrepareOut (Action == "gc").
+func TestShipGC_AutoMigratesStaleConfig(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	writeFile(t, filepath.Join(dir, paths.DataDir, "config.json"), `{"schemaVersion": 4}`)
+
+	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: false, Gc: true})
+	if err != nil {
+		t.Fatalf("shipPrepare: %v", err)
+	}
+	if out.Action != "gc" {
+		t.Errorf("Action = %q, want %q", out.Action, "gc")
+	}
+	if len(out.Errors) != 0 {
+		t.Fatalf("Errors = %v, want empty on successful auto-migration", out.Errors)
+	}
+	if out.Migration == nil {
+		t.Fatal("Migration is nil, want a populated MigrationReport threaded through gc mode")
+	}
+	if out.Migration.BackupPath == "" {
+		t.Error("Migration.BackupPath is empty, want the .bak path")
+	}
+	if _, statErr := os.Stat(out.Migration.BackupPath); statErr != nil {
+		t.Errorf("backup file not found at %s: %v", out.Migration.BackupPath, statErr)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ship_verify_side_effect tests
 // ---------------------------------------------------------------------------
 
 // TestShipVerifySideEffect_NoSideEffectStep verifies steps with no configured
-// side effect (e.g. "commit") always report landed:true, reason:no-side-effect.
+// side effect (e.g. "review") always report landed:true, reason:no-side-effect.
 func TestShipVerifySideEffect_NoSideEffectStep(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
-	out, err := shipVerifySideEffect(dir, ShipVerifySideEffectIn{Step: "commit"})
+	out, err := shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "review"}, fixedNow(time.Now()))
 	if err != nil {
 		t.Fatalf("shipVerifySideEffect: %v", err)
 	}
@@ -775,7 +1030,7 @@ func TestShipVerifySideEffect_VersionTagPresent(t *testing.T) {
 	gitCommit(t, dir, "initial")
 	gitTag(t, dir, "v1.2.3")
 
-	out, err := shipVerifySideEffect(dir, ShipVerifySideEffectIn{Step: "version", Expected: "v1.2.3"})
+	out, err := shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "version", Expected: "v1.2.3"}, fixedNow(time.Now()))
 	if err != nil {
 		t.Fatalf("shipVerifySideEffect: %v", err)
 	}
@@ -820,7 +1075,7 @@ func TestShipVerifySideEffect_JSONShape(t *testing.T) {
 	}
 
 	t.Run("has-side-effect no --expected", func(t *testing.T) {
-		out, err := shipVerifySideEffect(dir, ShipVerifySideEffectIn{Step: "version"})
+		out, err := shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "version"}, fixedNow(time.Now()))
 		if err != nil {
 			t.Fatalf("shipVerifySideEffect: %v", err)
 		}
@@ -835,7 +1090,7 @@ func TestShipVerifySideEffect_JSONShape(t *testing.T) {
 	})
 
 	t.Run("has-side-effect with --expected", func(t *testing.T) {
-		out, err := shipVerifySideEffect(dir, ShipVerifySideEffectIn{Step: "version", Expected: "v1.2.3"})
+		out, err := shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "version", Expected: "v1.2.3"}, fixedNow(time.Now()))
 		if err != nil {
 			t.Fatalf("shipVerifySideEffect: %v", err)
 		}
@@ -846,7 +1101,7 @@ func TestShipVerifySideEffect_JSONShape(t *testing.T) {
 	})
 
 	t.Run("no-side-effect", func(t *testing.T) {
-		out, err := shipVerifySideEffect(dir, ShipVerifySideEffectIn{Step: "commit"})
+		out, err := shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "review"}, fixedNow(time.Now()))
 		if err != nil {
 			t.Fatalf("shipVerifySideEffect: %v", err)
 		}
@@ -868,7 +1123,7 @@ func TestShipVerifySideEffect_VersionTagMissing(t *testing.T) {
 	gitCommit(t, dir, "initial")
 	gitTag(t, dir, "v1.2.3")
 
-	out, err := shipVerifySideEffect(dir, ShipVerifySideEffectIn{Step: "version", Expected: "v9.9.9"})
+	out, err := shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "version", Expected: "v9.9.9"}, fixedNow(time.Now()))
 	if err != nil {
 		t.Fatalf("shipVerifySideEffect: %v", err)
 	}
@@ -878,4 +1133,298 @@ func TestShipVerifySideEffect_VersionTagMissing(t *testing.T) {
 	if out.Expected == nil || *out.Expected != "v9.9.9" {
 		t.Errorf("Expected = %v, want v9.9.9", out.Expected)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// ship_verify_side_effect: "pr" and "commit" kinds + sideEffects journal
+// ---------------------------------------------------------------------------
+
+// stubPRForBranch replaces the shipPRForBranch seam for the duration of the
+// test, restoring the original (ghx.PRForBranch) on cleanup.
+func stubPRForBranch(t *testing.T, meta ghx.PRMetadata) {
+	t.Helper()
+	orig := shipPRForBranch
+	shipPRForBranch = func(string) ghx.PRMetadata { return meta }
+	t.Cleanup(func() { shipPRForBranch = orig })
+}
+
+// TestShipVerifySideEffect_PRLanded verifies the "pr" step reports
+// landed:true with sideEffect "pr" when a PR exists for the branch, and
+// records {kind:"pr", ref:"#<number>"} in the ship state's sideEffects
+// journal.
+func TestShipVerifySideEffect_PRLanded(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, "feat/pr-landed")
+	statePath := shipStateInitFixture(t, dir, "feat/pr-landed")
+	stubPRForBranch(t, ghx.PRMetadata{Exists: true, Number: 141})
+
+	fixedAt := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	out, err := shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "pr"}, fixedNow(fixedAt))
+	if err != nil {
+		t.Fatalf("shipVerifySideEffect: %v", err)
+	}
+	if !out.Landed {
+		t.Error("Landed = false, want true")
+	}
+	if out.SideEffect != "pr" {
+		t.Errorf("SideEffect = %q, want %q", out.SideEffect, "pr")
+	}
+
+	data := readStateData(t, statePath)
+	journal, ok := data["sideEffects"].(map[string]any)
+	if !ok {
+		t.Fatalf("sideEffects missing or wrong type: %#v", data["sideEffects"])
+	}
+	entry, ok := journal["pr"].(map[string]any)
+	if !ok {
+		t.Fatalf(`sideEffects["pr"] missing or wrong type: %#v`, journal["pr"])
+	}
+	if entry["kind"] != "pr" {
+		t.Errorf(`kind = %v, want "pr"`, entry["kind"])
+	}
+	if entry["ref"] != "#141" {
+		t.Errorf(`ref = %v, want "#141"`, entry["ref"])
+	}
+	if entry["verifiedAt"] != fixedAt.UTC().Format(time.RFC3339) {
+		t.Errorf("verifiedAt = %v, want %v", entry["verifiedAt"], fixedAt.UTC().Format(time.RFC3339))
+	}
+}
+
+// TestShipVerifySideEffect_PRNotFound verifies the "pr" step reports
+// landed:false and writes no journal entry when no PR exists for the
+// branch.
+func TestShipVerifySideEffect_PRNotFound(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, "feat/pr-missing")
+	statePath := shipStateInitFixture(t, dir, "feat/pr-missing")
+	stubPRForBranch(t, ghx.PRMetadata{Exists: false})
+
+	out, err := shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "pr"}, fixedNow(time.Now()))
+	if err != nil {
+		t.Fatalf("shipVerifySideEffect: %v", err)
+	}
+	if out.Landed {
+		t.Error("Landed = true, want false")
+	}
+
+	data := readStateData(t, statePath)
+	if journal, ok := data["sideEffects"].(map[string]any); ok {
+		if _, ok := journal["pr"]; ok {
+			t.Errorf(`sideEffects["pr"] present, want no entry: %#v`, journal["pr"])
+		}
+	}
+}
+
+// TestShipVerifySideEffect_CommitSha_ExpectedMatch verifies the "commit"
+// step reports landed:true and journals {kind:"sha", ref:<HEAD>} when
+// Expected matches the current HEAD sha (the write-path: a caller who just
+// produced a commit passes its own sha as Expected, mirroring the "tag"
+// kind's caller-supplied-expected convention).
+func TestShipVerifySideEffect_CommitSha_ExpectedMatch(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, "feat/sha-match")
+	statePath := shipStateInitFixture(t, dir, "feat/sha-match")
+
+	headSHA, err := shipHeadSHA(dir)
+	if err != nil {
+		t.Fatalf("shipHeadSHA: %v", err)
+	}
+
+	out, err := shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "commit", Expected: headSHA}, fixedNow(time.Now()))
+	if err != nil {
+		t.Fatalf("shipVerifySideEffect: %v", err)
+	}
+	if !out.Landed {
+		t.Error("Landed = false, want true")
+	}
+	if out.SideEffect != "sha" {
+		t.Errorf("SideEffect = %q, want %q", out.SideEffect, "sha")
+	}
+
+	data := readStateData(t, statePath)
+	journal := data["sideEffects"].(map[string]any)
+	entry := journal["commit"].(map[string]any)
+	if entry["kind"] != "sha" {
+		t.Errorf(`kind = %v, want "sha"`, entry["kind"])
+	}
+	if entry["ref"] != headSHA {
+		t.Errorf("ref = %v, want %v", entry["ref"], headSHA)
+	}
+}
+
+// TestShipVerifySideEffect_CommitSha_ExpectedMismatch verifies landed:false
+// (and no journal write) when Expected does not match HEAD.
+func TestShipVerifySideEffect_CommitSha_ExpectedMismatch(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, "feat/sha-mismatch")
+	statePath := shipStateInitFixture(t, dir, "feat/sha-mismatch")
+
+	out, err := shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "commit", Expected: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}, fixedNow(time.Now()))
+	if err != nil {
+		t.Fatalf("shipVerifySideEffect: %v", err)
+	}
+	if out.Landed {
+		t.Error("Landed = true, want false")
+	}
+
+	data := readStateData(t, statePath)
+	if journal, ok := data["sideEffects"].(map[string]any); ok {
+		if _, ok := journal["commit"]; ok {
+			t.Errorf(`sideEffects["commit"] present, want no entry: %#v`, journal["commit"])
+		}
+	}
+}
+
+// TestShipVerifySideEffect_CommitSha_NoBaseline verifies that a bare call
+// (no Expected, no prior journal entry) reports landed:false rather than
+// treating the ambient HEAD sha as verified — recording an unverified
+// observation as "landed" would make begin-step's alreadyDone lie for a
+// step that may never have actually run.
+func TestShipVerifySideEffect_CommitSha_NoBaseline(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, "feat/sha-no-baseline")
+	statePath := shipStateInitFixture(t, dir, "feat/sha-no-baseline")
+
+	out, err := shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "commit"}, fixedNow(time.Now()))
+	if err != nil {
+		t.Fatalf("shipVerifySideEffect: %v", err)
+	}
+	if out.Landed {
+		t.Error("Landed = true, want false (no baseline to compare HEAD against)")
+	}
+
+	data := readStateData(t, statePath)
+	if journal, ok := data["sideEffects"].(map[string]any); ok {
+		if _, ok := journal["commit"]; ok {
+			t.Errorf(`sideEffects["commit"] present, want no entry: %#v`, journal["commit"])
+		}
+	}
+}
+
+// TestShipVerifySideEffect_CommitSha_ResumeConfirmsJournal verifies the
+// literal "checks HEAD sha vs the previously recorded sha" resume path: once
+// a journal entry exists for "commit", a later bare call (no Expected)
+// reports landed:true when HEAD still matches it, and landed:false once HEAD
+// has moved on.
+func TestShipVerifySideEffect_CommitSha_ResumeConfirmsJournal(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, "feat/sha-resume")
+	statePath := shipStateInitFixture(t, dir, "feat/sha-resume")
+
+	headSHA, err := shipHeadSHA(dir)
+	if err != nil {
+		t.Fatalf("shipHeadSHA: %v", err)
+	}
+	// Establish the baseline via the write path (Expected supplied).
+	if _, err := shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "commit", Expected: headSHA}, fixedNow(time.Now())); err != nil {
+		t.Fatalf("shipVerifySideEffect (establish): %v", err)
+	}
+
+	// Resume check, same HEAD: confirmed.
+	out, err := shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "commit"}, fixedNow(time.Now()))
+	if err != nil {
+		t.Fatalf("shipVerifySideEffect (resume, same HEAD): %v", err)
+	}
+	if !out.Landed {
+		t.Error("Landed = false, want true (HEAD matches journaled sha)")
+	}
+
+	// A new commit lands; resume check against the stale journal entry.
+	gitCommit(t, dir, "second")
+	out, err = shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "commit"}, fixedNow(time.Now()))
+	if err != nil {
+		t.Fatalf("shipVerifySideEffect (resume, moved HEAD): %v", err)
+	}
+	if out.Landed {
+		t.Error("Landed = true, want false (HEAD has moved past the journaled sha)")
+	}
+
+	data := readStateData(t, statePath)
+	journal := data["sideEffects"].(map[string]any)
+	entry := journal["commit"].(map[string]any)
+	if entry["ref"] != headSHA {
+		t.Errorf("ref = %v, want unchanged %v (only landed:true calls refresh the journal)", entry["ref"], headSHA)
+	}
+}
+
+// TestShipStateSchema_SideEffectsKindEnum proves AC4's schema-level
+// enforcement: ship-state.schema.json must accept a sideEffects entry with a
+// valid kind ("tag"/"pr"/"sha") and reject one with an unrecognized kind,
+// via the enum restriction — not merely something application code happens
+// to filter out.
+func TestShipStateSchema_SideEffectsKindEnum(t *testing.T) {
+	schemaPath, err := filepath.Abs(filepath.Join("..", "..", "plugins", "sdlc", "schemas", "ship-state.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c := jsonschema.NewCompiler()
+	sch, err := c.Compile(schemaPath)
+	if err != nil {
+		t.Fatalf("compile schema: %v", err)
+	}
+
+	baseState := func(sideEffects map[string]any) map[string]any {
+		return map[string]any{
+			"version":   float64(1),
+			"startedAt": "2026-03-01T12:00:00Z",
+			"branch":    "feat/schema-test",
+			"flags":     map[string]any{},
+			"steps": []any{
+				map[string]any{"name": "execute", "status": "completed"},
+			},
+			"sideEffects": sideEffects,
+		}
+	}
+
+	validate := func(t *testing.T, doc map[string]any) error {
+		t.Helper()
+		raw, err := json.Marshal(doc)
+		if err != nil {
+			t.Fatalf("marshal doc: %v", err)
+		}
+		inst, err := jsonschema.UnmarshalJSON(strings.NewReader(string(raw)))
+		if err != nil {
+			t.Fatalf("unmarshal doc for schema validation: %v", err)
+		}
+		return sch.Validate(inst)
+	}
+
+	t.Run("valid kind accepted", func(t *testing.T) {
+		doc := baseState(map[string]any{
+			"version": map[string]any{
+				"kind":       "tag",
+				"ref":        "v0.22.0",
+				"verifiedAt": "2026-03-01T12:00:00Z",
+			},
+		})
+		if err := validate(t, doc); err != nil {
+			t.Errorf("expected valid sideEffects entry to pass schema validation, got: %v", err)
+		}
+	})
+
+	t.Run("unknown kind rejected", func(t *testing.T) {
+		doc := baseState(map[string]any{
+			"version": map[string]any{
+				"kind":       "bogus",
+				"ref":        "v0.22.0",
+				"verifiedAt": "2026-03-01T12:00:00Z",
+			},
+		})
+		if err := validate(t, doc); err == nil {
+			t.Error("expected schema validation to reject unknown sideEffects kind, got nil error")
+		}
+	})
 }

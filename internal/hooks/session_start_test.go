@@ -699,6 +699,203 @@ func TestPipelineResumePhase_WorktreeMismatchSuppressesBanner(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Resume banner suppression for completed runs (Task 23)
+// ---------------------------------------------------------------------------
+
+func TestPipelineResumePhase_ExecuteRunStatusCompleted_SuppressesBanner(t *testing.T) {
+	branch := "feat/exec-run-status-completed"
+	root := gitFixture(t, branch)
+
+	st, err := state.Init(root, "execute", branch, "sess-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Data["waves"] = []any{
+		map[string]any{"number": float64(1), "status": "completed"},
+		map[string]any{"number": float64(2), "status": "completed"},
+	}
+	st.Data["runStatus"] = "completed"
+	if err := state.Write(st); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := pipelineResumePhase("startup"); got != nil {
+		t.Errorf("pipelineResumePhase with runStatus=completed = %v, want nil", got)
+	}
+}
+
+func TestPipelineResumePhase_ShipPipelineStatusCompleted_SuppressesBanner(t *testing.T) {
+	branch := "feat/ship-pipeline-status-completed"
+	root := gitFixture(t, branch)
+
+	st, err := state.Init(root, "ship", branch, "sess-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Data["steps"] = []any{
+		map[string]any{"name": "commit", "status": "completed"},
+		map[string]any{"name": "review", "status": "completed"},
+		map[string]any{"name": "pr", "status": "completed"},
+	}
+	st.Data["pipelineStatus"] = "completed"
+	if err := state.Write(st); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := pipelineResumePhase("startup"); got != nil {
+		t.Errorf("pipelineResumePhase with pipelineStatus=completed = %v, want nil", got)
+	}
+}
+
+func TestPipelineResumePhase_ExecuteBackwardCompat_AllWavesCompleted_SuppressesBanner(t *testing.T) {
+	branch := "feat/exec-backcompat-all-completed"
+	root := gitFixture(t, branch)
+
+	st, err := state.Init(root, "execute", branch, "sess-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No runStatus key at all -- mirrors a state file written before Task 22.
+	st.Data["waves"] = []any{
+		map[string]any{"number": float64(1), "status": "completed"},
+		map[string]any{"number": float64(2), "status": "completed"},
+	}
+	if err := state.Write(st); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := pipelineResumePhase("startup"); got != nil {
+		t.Errorf("pipelineResumePhase with no runStatus but all waves completed = %v, want nil", got)
+	}
+}
+
+func TestPipelineResumePhase_ShipBackwardCompat_AllStepsTerminal_SuppressesBanner(t *testing.T) {
+	branch := "feat/ship-backcompat-all-terminal"
+	root := gitFixture(t, branch)
+
+	st, err := state.Init(root, "ship", branch, "sess-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No pipelineStatus key at all -- mirrors a state file written before
+	// Task 22.
+	st.Data["steps"] = []any{
+		map[string]any{"name": "commit", "status": "completed"},
+		map[string]any{"name": "review", "status": "completed"},
+		map[string]any{"name": "pr", "status": "skipped"},
+	}
+	if err := state.Write(st); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := pipelineResumePhase("startup"); got != nil {
+		t.Errorf("pipelineResumePhase with no pipelineStatus but all steps terminal = %v, want nil", got)
+	}
+}
+
+func TestPipelineResumePhase_ShipBackwardCompat_ConditionalPendingStepTreatedAsTerminal(t *testing.T) {
+	branch := "feat/ship-backcompat-conditional-pending"
+	root := gitFixture(t, branch)
+
+	st, err := state.Init(root, "ship", branch, "sess-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// received-review/commit-fixes rest at pending forever when their
+	// trigger condition never fires -- that carries a condition key and
+	// must not block the all-terminal check, mirroring
+	// shipValidatePipelineContract's own treatment of the same steps.
+	st.Data["steps"] = []any{
+		map[string]any{"name": "commit", "status": "completed"},
+		map[string]any{"name": "review", "status": "completed"},
+		map[string]any{"name": "received-review", "status": "pending", "condition": "review.verdict == changes-requested"},
+		map[string]any{"name": "pr", "status": "completed"},
+	}
+	if err := state.Write(st); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := pipelineResumePhase("startup"); got != nil {
+		t.Errorf("pipelineResumePhase with conditional pending step = %v, want nil", got)
+	}
+}
+
+func TestPipelineResumePhase_ExecuteBackwardCompat_PartialWaves_BannerStillShown(t *testing.T) {
+	branch := "feat/exec-backcompat-partial"
+	root := gitFixture(t, branch)
+
+	st, err := state.Init(root, "execute", branch, "sess-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No runStatus key, and not every wave is completed -- must not be
+	// suppressed by the backward-compat fallback.
+	st.Data["waves"] = []any{
+		map[string]any{"number": float64(1), "status": "completed"},
+		map[string]any{"number": float64(2), "status": "failed"},
+	}
+	if err := state.Write(st); err != nil {
+		t.Fatal(err)
+	}
+
+	assertLines(t, pipelineResumePhase("startup"), []string{
+		"Active execution: execute on " + branch + " (wave 1 of 2 complete)",
+		"  Resume with: /execute --resume",
+	})
+}
+
+func TestPipelineResumePhase_ShipBackwardCompat_PendingWithoutConditionBlocksSuppression(t *testing.T) {
+	branch := "feat/ship-backcompat-pending-no-condition"
+	root := gitFixture(t, branch)
+
+	st, err := state.Init(root, "ship", branch, "sess-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No pipelineStatus key, and "pr" is pending with no condition key -- a
+	// genuine stalled step, not a conditional resting state, so the banner
+	// must still show.
+	st.Data["steps"] = []any{
+		map[string]any{"name": "commit", "status": "completed"},
+		map[string]any{"name": "review", "status": "completed"},
+		map[string]any{"name": "pr", "status": "pending"},
+	}
+	if err := state.Write(st); err != nil {
+		t.Fatal(err)
+	}
+
+	assertLines(t, pipelineResumePhase("startup"), []string{
+		"Active pipeline: ship on " + branch + " (last completed step 2: review)",
+		"  Resume with: /ship --resume",
+	})
+}
+
+func TestPipelineResumePhase_ShipBackwardCompat_FailedStepTreatedAsTerminal(t *testing.T) {
+	branch := "feat/ship-backcompat-failed"
+	root := gitFixture(t, branch)
+
+	st, err := state.Init(root, "ship", branch, "sess-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No pipelineStatus key. "review" is failed -- shipValidatePipelineContract
+	// never flags failed steps as violations (cleanup only blocks on steps that
+	// never reached ANY terminal state), so failed counts as terminal here too
+	// and the banner must be suppressed, matching the mirrored contract.
+	st.Data["steps"] = []any{
+		map[string]any{"name": "commit", "status": "completed"},
+		map[string]any{"name": "review", "status": "failed"},
+	}
+	if err := state.Write(st); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := pipelineResumePhase("startup"); got != nil {
+		t.Fatalf("pipelineResumePhase() = %v, want nil", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Compact recovery phase
 // ---------------------------------------------------------------------------
 

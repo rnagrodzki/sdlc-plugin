@@ -4,6 +4,48 @@ Reference for the `execute` skill — Step 6 (RECOVER).
 
 Maximum retries per task: **2**. After 2 failures on the same task, escalate to the user.
 
+## Resuming After an Interruption
+
+Do not reconstruct "what happened last time" by hand-walking `waves[]`/`context` prose. When a
+run is in flight, `execute_state({action:"read"})` (and `resume-reset`) attach a `resumeBriefing`
+— narrated `summary`/`display` plus `resumable`, `wavesDone`, `wavesRemaining`, `gitCrossCheck`,
+`gitMismatches`, `willRedo`, `willSkip`. SKILL.md's `## Resume` section reads this first; treat
+its `display` text as the bearings for the session, not a starting point to re-derive. Note
+`wavesRemaining` counts recorded-but-incomplete waves only — it is not the total wave count from
+the plan (state doesn't carry that, and re-parsing the plan risks a stale-path error). A
+`committedSha` that is no longer a git ancestor of HEAD surfaces via `gitCrossCheck`/
+`gitMismatches` — never as a hard read failure — and belongs in the recovery conversation with
+the user (branch was reset/force-pushed since that wave committed), not treated as corrupt state.
+
+## Stalled vs Timeout
+
+Two distinct signals exist today for a worker or wave gone quiet. They are surfaced through
+different mechanisms and are **not** unified behind one classifier — read this section literally,
+not as a description of a nicer system that doesn't exist yet:
+
+- **Wave-level timeout.** The wave's wall-clock deadline (`waveTimeout`, SKILL.md `## Wave loop`)
+  elapsed before every dispatched task in the wave reported completion. The main session marks
+  each still-incomplete task with `task-fail` (`error: "TIMEOUT"`), then calls `wave-done` with
+  `status: "partial", timedOut: true`. If the wave is later marked failed outright, `wave-fail`'s
+  narration reports `cause: "timeout"` vs `cause: "failure"` — this is driven entirely by the
+  caller-supplied `timedOut` flag on the call, not by the tool inspecting the worker's actual
+  heartbeat history.
+- **Per-worker stall (ledger).** `execute_state({action:"ledger_status", runId, timeoutSeconds})`
+  returns a `stalled` boolean per worker: `true` only when that worker's ledger status is
+  `"active"` and its last `checkinAt` is older than `timeoutSeconds`. This is a plain
+  checkin-staleness heuristic, independent of the wave-level timeout above — a worker can be
+  individually reported `stalled` well before its wave's own `waveTimeout` elapses.
+
+**What does not exist:** `internal/wave/progress.go` defines a `ClassifyStall`/`StallCause`
+classifier (`StallCauseStalled` vs `StallCauseTimeout`) that would derive a real stalled-vs-timed-out
+verdict from a task's heartbeat history (`wave-progress` phase timestamps) against both a
+heartbeat-staleness threshold and a total-runtime threshold. It is implemented and unit-tested,
+but has **zero production callers** — no `execute_state` action invokes it. The two signals above
+are the entire distinction available today; do not describe or rely on a richer classifier-derived
+verdict. This is a known, previously-flagged plan gap, not something in scope for this doc to
+close — closing it means wiring `ClassifyStall` into `wave-fail`'s cause derivation and/or
+`ledger_status`'s per-worker read, which is unassigned production-code work.
+
 ## Failure Classification
 
 | Failure Category | How to Detect | Severity |
@@ -115,7 +157,7 @@ When a batch agent reports mixed results (some tasks SUCCESS, some tasks FAILED)
 1. Accept the succeeded tasks as final — do not re-run them
 2. Extract each failed task from the batch into its own individual retry
 3. Re-dispatch each failed task as a standalone agent with:
-   - The single-task Agent Prompt Template (not the batch template)
+   - The single-task Worker dispatch prompt (see `classifying-and-waving-tasks.md`'s `## Worker dispatch prompt`) — not a batch dispatch
    - Model escalated one step: haiku → sonnet
    - `mode: "bypassPermissions"` passed explicitly to the Agent tool
    - Failure context from the batch report added at the top of the prompt

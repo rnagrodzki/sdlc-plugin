@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
@@ -19,6 +20,12 @@ import (
 // construction to prevent path-traversal attacks
 // (F-shared-lib-cross-cutting-behavior-79/80).
 var ErrBadRunID = errors.New("wave: invalid runID")
+
+// ErrFactsheetNotFound is wrapped into the error returned by ReadFactsheet
+// when no fact-sheet file exists for the given runID/taskID pair. Callers
+// (e.g. execute_state.go's task-context action) use errors.Is against this
+// sentinel to distinguish "unknown task" from a genuine I/O failure.
+var ErrFactsheetNotFound = errors.New("wave: fact sheet not found")
 
 // safeRunIDRE matches a non-empty string consisting only of ASCII letters,
 // digits, hyphens, and underscores — the same pattern as
@@ -199,6 +206,68 @@ func WriteFactsheet(root, runID string, fs Factsheet) (string, error) {
 	}
 
 	return target, nil
+}
+
+// ReadFactsheet reads back the fact-sheet markdown file previously written
+// by WriteFactsheet for taskID under
+// <root>/.sdlc/execution/<runID>/task-<normalizedID>.md. Exposed so callers
+// outside this package (execute_state.go's task-context action) can load a
+// fact sheet without duplicating the path-join/normalization logic here.
+//
+// Returns the absolute file path and its raw content. A wrapped ErrBadRunID
+// is returned if runID fails validation; a wrapped ErrFactsheetNotFound is
+// returned if no fact sheet exists for taskID under that run.
+func ReadFactsheet(root, runID, taskID string) (path, content string, err error) {
+	if err := validateRunID(runID); err != nil {
+		return "", "", err
+	}
+
+	dir := executionDir(root, runID)
+	name := fmt.Sprintf("task-%s.md", normalizeTaskID(taskID))
+	target := filepath.Join(dir, name)
+
+	data, readErr := os.ReadFile(target)
+	if readErr != nil {
+		if os.IsNotExist(readErr) {
+			return target, "", fmt.Errorf("no fact sheet for task %q under run %q: %w", taskID, runID, ErrFactsheetNotFound)
+		}
+		return target, "", fmt.Errorf("wave: read fact sheet %s: %w", target, readErr)
+	}
+	return target, string(data), nil
+}
+
+// ListFactsheetIDs returns the normalized task IDs with a fact-sheet file
+// under <root>/.sdlc/execution/<runID>/, sorted for deterministic output.
+// Intended for building actionable "unknown taskId" errors (ReadFactsheet
+// itself only reports the one ID it was asked for). Returns an empty,
+// non-nil slice — not an error — when the run directory does not exist yet.
+func ListFactsheetIDs(root, runID string) ([]string, error) {
+	if err := validateRunID(runID); err != nil {
+		return nil, err
+	}
+
+	dir := executionDir(root, runID)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []string{}, nil
+		}
+		return nil, fmt.Errorf("wave: list fact sheets in %s: %w", dir, err)
+	}
+
+	ids := []string{}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasPrefix(name, "task-") || !strings.HasSuffix(name, ".md") {
+			continue // skips *.tmp partial writes and unrelated files
+		}
+		ids = append(ids, strings.TrimSuffix(strings.TrimPrefix(name, "task-"), ".md"))
+	}
+	sort.Strings(ids)
+	return ids, nil
 }
 
 // randomHex returns n random bytes encoded as a 2n-character hex string.

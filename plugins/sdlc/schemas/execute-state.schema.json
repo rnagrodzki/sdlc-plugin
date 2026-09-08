@@ -41,6 +41,15 @@
     "quality": {
       "type": "string"
     },
+    "runStatus": {
+      "type": "string",
+      "description": "Set by the cleanup action to stamp the run terminal (instead of deleting the state file), so state — including issues[] — survives for later reads (e.g. /harden) until GC's TTL prunes it."
+    },
+    "runCompletedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp paired with runStatus, set by the cleanup action."
+    },
     "worktree": {
       "type": "string"
     },
@@ -162,6 +171,63 @@
             "type": "string"
           }
         }
+      }
+    },
+    "failedTask": {
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "ID of the most recent non-skipped task-fail. Set by task-fail (R-TASK-17); cleared only by a fresh init."
+    },
+    "failedWave": {
+      "oneOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Number of the most recent wave-fail. Set by wave-fail (R-TASK-17)."
+    },
+    "issues": {
+      "type": "array",
+      "description": "Structured issue accumulator appended by task-fail, wave-fail, and DONE_WITH_CONCERNS task-done calls (R-TASK-17). Mirrors deferredFindings in ship-state.schema.json.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "wave": {
+            "type": "integer"
+          },
+          "step": {
+            "type": "string"
+          },
+          "taskId": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": ["severity", "category", "summary", "timestamp"],
+        "additionalProperties": false
       }
     }
   },

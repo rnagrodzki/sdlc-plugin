@@ -107,25 +107,34 @@ type hardenSurfaces struct {
 }
 
 // hardenShipState / hardenExecuteState mirror readPipelineState()'s field
-// selection exactly (source lines 100-131). CurrentStep/LastFailedStep/
-// FailedTask/FailedWave are `any` because source does `data.X || null`,
-// which passes the original JSON value through unchanged (string, number,
-// or object) rather than coercing to a fixed type — only falsy values
-// collapse to null.
+// selection exactly (source lines 100-131). CurrentStep is `any` because
+// source does `data.X || null`, which passes the original JSON value
+// through unchanged (string, number, or object) rather than coercing to a
+// fixed type — only falsy values collapse to null. LastFailedStep/
+// FailedTask/FailedWave are typed fields (Task 19): each has exactly one
+// dedicated writer (ship_state.go / execute_state.go), so their Go type is
+// known and asserted directly instead of passed through as `any`.
 type hardenShipState struct {
-	Paused         bool `json:"paused"`
-	CurrentStep    any  `json:"currentStep"`
-	LastFailedStep any  `json:"lastFailedStep"`
+	Paused         bool   `json:"paused"`
+	CurrentStep    any    `json:"currentStep"`
+	LastFailedStep string `json:"lastFailedStep,omitempty"`
 }
 
 type hardenExecuteState struct {
-	FailedTask any `json:"failedTask"`
-	FailedWave any `json:"failedWave"`
+	FailedTask string `json:"failedTask,omitempty"`
+	FailedWave int    `json:"failedWave,omitempty"`
 }
 
+// hardenPipeline.Issues merges the issues[] accumulator (StateIssue, defined
+// in execute_state.go) from both the ship-state and execute-state files
+// found by readHardenPipelineState, ship first then execute, in the order
+// each was appended on disk. Nil/omitted when neither state carries any
+// issues, so older state files without issues[] round-trip unchanged
+// (backward compatible — Task 19 AC).
 type hardenPipeline struct {
 	ShipState    *hardenShipState    `json:"shipState"`
 	ExecuteState *hardenExecuteState `json:"executeState"`
+	Issues       []StateIssue        `json:"issues,omitempty"`
 }
 
 type hardenRepository struct {
@@ -393,6 +402,45 @@ func orNil(v any) any {
 	return v
 }
 
+// stringField type-asserts data[key] to string, returning "" for anything
+// else (missing key, nil, or a non-string JSON value).
+func stringField(data map[string]any, key string) string {
+	s, _ := data[key].(string)
+	return s
+}
+
+// intField type-asserts data[key] to int. JSON numbers always decode to
+// float64 (state.FindAny re-parses from disk on every call), so that is the
+// only numeric case handled; anything else returns 0.
+func intField(data map[string]any, key string) int {
+	if f, ok := data[key].(float64); ok {
+		return int(f)
+	}
+	return 0
+}
+
+// extractStateIssues type-asserts data["issues"] into []StateIssue via a
+// JSON marshal/unmarshal round-trip — the inverse of execAppendIssue's own
+// round-trip, and the same idiom since state.FindAny always hands back
+// issues[] entries as []any of map[string]any. Missing key, wrong shape, or
+// any marshal/unmarshal error all yield nil (no issues), never an error:
+// mirrors readHardenPipelineState's existing fail-open behavior for state.
+func extractStateIssues(data map[string]any) []StateIssue {
+	raw, ok := data["issues"]
+	if !ok || raw == nil {
+		return nil
+	}
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return nil
+	}
+	var issues []StateIssue
+	if err := json.Unmarshal(b, &issues); err != nil {
+		return nil
+	}
+	return issues
+}
+
 // readHardenPipelineState is the Go port of harden-prepare.js's
 // readPipelineState(): looks up the most recent ship/execute state file
 // project-wide (state.FindAny — no branch filter, matching source's
@@ -400,26 +448,31 @@ func orNil(v any) any {
 // only the fields the manifest needs. A missing file or a read/parse
 // failure both leave the corresponding state nil — source only logs the
 // latter to stderr, it does not surface it as a manifest or surface-load
-// error, so neither case is recorded in errs here.
-func readHardenPipelineState(root string) (*hardenShipState, *hardenExecuteState) {
+// error, so neither case is recorded in errs here. The issues[] accumulator
+// (Task 19) is merged from both state files, ship first then execute.
+func readHardenPipelineState(root string) (*hardenShipState, *hardenExecuteState, []StateIssue) {
+	var issues []StateIssue
+
 	var shipState *hardenShipState
 	if st, err := state.FindAny(root, "ship"); err == nil && st != nil {
 		shipState = &hardenShipState{
 			Paused:         !jsFalsyLocal(st.Data["paused"]),
 			CurrentStep:    orNil(st.Data["currentStep"]),
-			LastFailedStep: orNil(st.Data["lastFailedStep"]),
+			LastFailedStep: stringField(st.Data, "lastFailedStep"),
 		}
+		issues = append(issues, extractStateIssues(st.Data)...)
 	}
 
 	var executeState *hardenExecuteState
 	if st, err := state.FindAny(root, "execute"); err == nil && st != nil {
 		executeState = &hardenExecuteState{
-			FailedTask: orNil(st.Data["failedTask"]),
-			FailedWave: orNil(st.Data["failedWave"]),
+			FailedTask: stringField(st.Data, "failedTask"),
+			FailedWave: intField(st.Data, "failedWave"),
 		}
+		issues = append(issues, extractStateIssues(st.Data)...)
 	}
 
-	return shipState, executeState
+	return shipState, executeState, issues
 }
 
 // ---------------------------------------------------------------------------
@@ -571,7 +624,7 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 	copilotInstructions := loadCopilotInstructions(contentRoot, &loadErrs)
 	errorReportSkillPath := resolveErrorReportSkill(&loadErrs)
 
-	shipState, executeState := readHardenPipelineState(root)
+	shipState, executeState, pipelineIssues := readHardenPipelineState(root)
 
 	branch, _ := gitx.CurrentBranch(contentRoot)
 	recentDiffSummary, _ := execx.Run("git", []string{"diff", "--shortstat", "HEAD~1..HEAD"}, execx.Options{Dir: contentRoot})
@@ -604,6 +657,7 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 		Pipeline: hardenPipeline{
 			ShipState:    shipState,
 			ExecuteState: executeState,
+			Issues:       pipelineIssues,
 		},
 		Repository: hardenRepository{
 			Root:              root,

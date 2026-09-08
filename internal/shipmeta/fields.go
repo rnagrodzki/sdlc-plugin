@@ -75,18 +75,48 @@ var ShipBuiltInDefaults = shipBuiltInDefaultsT{
 	ExecuteWaveInterval:         60,
 }
 
-// ShipStateStep is one entry of the fixed ship-state step scaffold,
-// mirroring cmdInit's steps[] in scripts/state/ship.js.
+// ShipStateStep is one entry of the ship-state step scaffold, mirroring
+// cmdInit's steps[] in scripts/state/ship.js.
 type ShipStateStep struct {
 	Name      string `json:"name"`
 	Status    string `json:"status"`
 	Condition string `json:"condition,omitempty"`
+	// Kind classifies the step as "tracked" (has its own begin-step/
+	// complete-step lifecycle via ship_state — see TrackedShipSteps) or
+	// "inline" (recorded via the generic "decide" action, no dedicated
+	// lifecycle). Only set by InitialShipStepsFromConfig — InitialShipSteps'
+	// fixed 7-entry scaffold leaves this empty (omitempty) to keep its output
+	// byte-identical for existing callers/tests.
+	Kind string `json:"kind,omitempty"`
+}
+
+// TrackedShipSteps is the step-name set that gets a begin-step/complete-step
+// tracked lifecycle entry — exactly the 7 names InitialShipSteps seeds.
+// Every other known step name (see shipmeta_test.go's SubstepMap) is
+// "inline": recorded via the generic "decide" action instead. Mirrors
+// reference.md's "only 7 of the 13 known step names get a tracked entry".
+var TrackedShipSteps = []string{
+	"execute", "commit", "review", "received-review", "commit-fixes", "version", "pr",
+}
+
+// IsTrackedShipStep reports whether name is one of TrackedShipSteps.
+func IsTrackedShipStep(name string) bool {
+	for _, s := range TrackedShipSteps {
+		if s == name {
+			return true
+		}
+	}
+	return false
 }
 
 // InitialShipSteps returns the fixed 7-entry step scaffold used to
 // initialize ship state, in source order. Every entry starts at status
 // "pending". Independent of ship.steps[]/flags.steps (the pipeline
 // configuration) — this scaffold is always the same regardless of config.
+//
+// Kept behaviorally and byte-shape identical to its pre-existing callers
+// (internal/tools/ship_state.go's "init" action): InitialShipStepsFromConfig
+// is the config-driven scaffold new callers (ship_prepare) should use.
 func InitialShipSteps() []ShipStateStep {
 	return []ShipStateStep{
 		{Name: "execute", Status: "pending"},
@@ -97,4 +127,24 @@ func InitialShipSteps() []ShipStateStep {
 		{Name: "version", Status: "pending"},
 		{Name: "pr", Status: "pending"},
 	}
+}
+
+// InitialShipStepsFromConfig returns one ShipStateStep per entry in steps,
+// in the given order, each starting at status "pending" and classified via
+// Kind ("tracked" for TrackedShipSteps members, "inline" otherwise —
+// including any config-sourced name outside ValidSteps, which reaches here
+// only as a warning, not an error; see ship_prepare's step-name validation).
+// Unlike InitialShipSteps, this scaffold tracks exactly the configured
+// steps — nothing more, nothing less — so a pipeline with N configured
+// steps seeds N entries.
+func InitialShipStepsFromConfig(steps []string) []ShipStateStep {
+	out := make([]ShipStateStep, 0, len(steps))
+	for _, name := range steps {
+		kind := "inline"
+		if IsTrackedShipStep(name) {
+			kind = "tracked"
+		}
+		out = append(out, ShipStateStep{Name: name, Status: "pending", Kind: kind})
+	}
+	return out
 }

@@ -21,6 +21,13 @@ var (
 	ErrVersionStale    = errors.New("configmigrate: version stale")
 	ErrMigrationFailed = errors.New("configmigrate: migration failed")
 	ErrMigrationLocked = errors.New("configmigrate: migration locked")
+
+	// ErrConfigMissing indicates the project has no SDLC config at all —
+	// neither a v5 config.json nor any pre-v5 legacy marker. Returned only
+	// by MigrateWithBackup, which distinguishes "never set up" from "stale"
+	// so callers can point the user at /setup instead of silently
+	// proceeding on bare defaults.
+	ErrConfigMissing = errors.New("configmigrate: config missing")
 )
 
 const (
@@ -189,6 +196,74 @@ func Migrate(mainRoot string, opt Options) (*Report, error) {
 	}
 
 	return report, nil
+}
+
+// ---------------------------------------------------------------------------
+// MigrateWithBackup — auto-migrate gate for ship_prepare / execute's init
+// ---------------------------------------------------------------------------
+
+// MigrateWithBackup is the auto-migrate gate used by ship_prepare and
+// execute_state's "init" action in place of a hard Verify failure. It
+// three-way classifies projectRoot's config:
+//
+//   - No config.json and no legacy marker at all: the project was never set
+//     up. Returns ErrConfigMissing (wrapped with an actionable message
+//     naming /setup) rather than fabricating a config from nothing.
+//   - Current (Verify returns nil): a no-op. Returns (nil, "", nil) without
+//     any filesystem write — callers must not report a migration or touch
+//     the file when nothing changed.
+//   - Stale (legacy layout, or an old schemaVersion): backs up the existing
+//     config.json to config.json.bak, then delegates to Migrate to bring it
+//     (and local.json, if also stale) up to CurrentSchemaVersion. Returns
+//     the combined StepsApplied+LegacyIngested labels as changes, plus the
+//     backup file path.
+//
+// ErrVersionTooNew is returned unchanged: a config written by a newer
+// plugin version cannot be auto-migrated backward, so this still hard-stops
+// the caller.
+func MigrateWithBackup(projectRoot string) (changes []string, backupPath string, err error) {
+	configPath := filepath.Join(projectRoot, paths.DataDir, "config.json")
+	_, statErr := os.Stat(configPath)
+	configExists := statErr == nil
+
+	if !configExists && !hasLegacy(projectRoot) {
+		return nil, "", fmt.Errorf(
+			"%w: no SDLC config found at %s; run /setup to initialize this project",
+			ErrConfigMissing, filepath.Join(paths.DataDir, "config.json"),
+		)
+	}
+
+	verifyErr := Verify(projectRoot)
+	if verifyErr == nil {
+		return nil, "", nil
+	}
+	if errors.Is(verifyErr, ErrVersionTooNew) {
+		return nil, "", verifyErr
+	}
+
+	// Back up the existing config.json before Migrate rewrites it in place.
+	// A purely-legacy project (config.json not yet created) has nothing to
+	// back up here — ingestLegacy only ever writes a fresh config.json/
+	// local.json, it never modifies the legacy source files it reads from.
+	if configExists {
+		data, readErr := os.ReadFile(configPath)
+		if readErr != nil {
+			return nil, "", fmt.Errorf("%w: read config.json for backup: %v", ErrMigrationFailed, readErr)
+		}
+		backupPath = configPath + ".bak"
+		if writeErr := os.WriteFile(backupPath, data, 0o644); writeErr != nil {
+			return nil, "", fmt.Errorf("%w: write config.json.bak: %v", ErrMigrationFailed, writeErr)
+		}
+	}
+
+	report, migErr := Migrate(projectRoot, Options{})
+	if migErr != nil {
+		return nil, backupPath, migErr
+	}
+
+	changes = append(changes, report.StepsApplied...)
+	changes = append(changes, report.LegacyIngested...)
+	return changes, backupPath, nil
 }
 
 // ---------------------------------------------------------------------------

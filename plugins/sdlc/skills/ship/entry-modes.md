@@ -10,6 +10,29 @@ If `--init-config` was passed:
 
 There is no walkthrough fallback in this port. The source skill's `ship-init.js` interactive-walkthrough script (steps multi-select, bump type, auto, threshold, workspace isolation, optional `--quick` profile) has no Go equivalent — `/setup` is the only supported path to `.sdlc-v2/local.json` configuration. Do not attempt to reconstruct the walkthrough inline even if the user insists on `--init-config`; redirect every time.
 
+## --resume handler
+
+If `--resume` was passed (or the pipeline auto-detects an in-flight run — see SKILL.md's Step loop, item 2), do **not** call `ship_prepare`. Call:
+
+```
+ship_state({action:"read"})
+```
+
+If the response carries a `resumeBriefing` block, the pipeline is genuinely in flight. Render `resumeBriefing.display` **verbatim** (it is a pre-formatted markdown progress block — do not paraphrase or reformat it), then continue the pipeline from `resumeBriefing.next` using the `flags`/`steps`/`decisions` already in the state object. `resumeBriefing` fields:
+
+```
+resumable        bool
+lastStep         string
+lastStepStatus   string   // a "failed" step still reports resumable:true, never an error
+sideEffects      object   // idempotency journal — see state-format.md
+summary          string
+display           string  // markdown — render verbatim
+timing            {stepSeconds, pipelineSeconds, idleSeconds, human}
+next              string  // the step to resume from
+```
+
+If `read` succeeds but the response carries **no** `resumeBriefing`, there is no run to resume — one of three cases: no state file exists; the only one found is already stamped terminal; or a state file exists but no step in it ever actually started (nothing was in flight to resume). All three are safe to treat identically. Fall through to the normal fresh-start path (SKILL.md's Step loop, items 3-4) — `ship_prepare`'s own orphan-pruning and `state.Write`'s prune-on-write already remove the stale file as a side effect of writing the new one.
+
 ## --gc handler (R39, issue #223)
 
 If `--gc` (with optional `--ttl-days <N>`) was passed, call the `ship_prepare` tool with the GC short-circuit and stop — no pipeline composition:

@@ -156,6 +156,14 @@ func gitFixture(t *testing.T, branch string) string {
 	runGit(t, dir, "init", "-q")
 	runGit(t, dir, "checkout", "-q", "-b", branch)
 	runGit(t, dir, "-c", "user.email=integration-test@example.com", "-c", "user.name=integration-test", "commit", "--allow-empty", "-q", "-m", "init")
+	// Seed a minimal, already-current (schemaVersion-less) .sdlc-v2/config.json
+	// so ship_prepare's KD5 gate (configmigrate.MigrateWithBackup) treats this
+	// as a project that already ran /setup, rather than hard-failing with
+	// ErrConfigMissing. A genuinely config-less scratch repo is a real,
+	// intentional failure mode of that gate (see configmigrate.MigrateWithBackup's
+	// doc comment) — this fixture simulates the realistic ship-pipeline
+	// precondition of "/setup already ran", not the setup flow itself.
+	mustWriteFile(t, filepath.Join(dir, ".sdlc-v2", "config.json"), `{}`)
 	chdir(t, dir)
 	return dir
 }

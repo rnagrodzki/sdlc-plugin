@@ -512,6 +512,139 @@ func TestHardenPrepare_PipelineStateAbsentIsNull(t *testing.T) {
 	if pipeline["executeState"] != nil {
 		t.Errorf("executeState = %v, want nil with no state files", pipeline["executeState"])
 	}
+	if _, ok := pipeline["issues"]; ok {
+		t.Errorf("pipeline.issues present with no state files, want key omitted entirely")
+	}
+}
+
+func TestHardenPrepare_PipelineIssuesMergedFromBothStates(t *testing.T) {
+	root := t.TempDir()
+
+	st, err := state.Init(root, "ship", "some-branch", "")
+	if err != nil {
+		t.Fatalf("state.Init: %v", err)
+	}
+	execAppendIssue(st.Data, StateIssue{
+		Step:     "commit",
+		Severity: "warning",
+		Category: "step-fail",
+		Summary:  "Commit message needed manual review",
+	})
+	if err := state.Write(st); err != nil {
+		t.Fatalf("state.Write: %v", err)
+	}
+
+	execSt, err := state.Init(root, "execute", "some-branch", "")
+	if err != nil {
+		t.Fatalf("state.Init: %v", err)
+	}
+	execAppendIssue(execSt.Data, StateIssue{
+		Wave:     2,
+		TaskID:   "T4",
+		Severity: "error",
+		Category: "task-fail",
+		Summary:  "Build failed: missing import",
+	})
+	if err := state.Write(execSt); err != nil {
+		t.Fatalf("state.Write: %v", err)
+	}
+
+	out, err := hardenPrepare(root, root, HardenPrepareIn{
+		FailureText:     "boom",
+		Skill:           "ship",
+		SkipConfigCheck: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	manifest := readHardenManifest(t, out.ManifestPath)
+	pipeline := manifest["pipeline"].(map[string]any)
+
+	issuesRaw, ok := pipeline["issues"]
+	if !ok {
+		t.Fatalf("pipeline.issues missing, want merged issues from ship + execute state")
+	}
+	issues := issuesRaw.([]any)
+	if len(issues) != 2 {
+		t.Fatalf("len(pipeline.issues) = %d, want 2", len(issues))
+	}
+
+	// Merge order: ship-state issues first, then execute-state issues,
+	// matching readHardenPipelineState's read order.
+	shipIssue := issues[0].(map[string]any)
+	if shipIssue["step"] != "commit" || shipIssue["severity"] != "warning" {
+		t.Errorf("issues[0] = %+v, want ship-state issue (step=commit, severity=warning)", shipIssue)
+	}
+
+	execIssue := issues[1].(map[string]any)
+	if execIssue["wave"] != float64(2) {
+		t.Errorf("issues[1].wave = %v, want 2", execIssue["wave"])
+	}
+	if execIssue["taskId"] != "T4" {
+		t.Errorf("issues[1].taskId = %v, want T4", execIssue["taskId"])
+	}
+	if execIssue["severity"] != "error" || execIssue["category"] != "task-fail" {
+		t.Errorf("issues[1] = %+v, want severity=error category=task-fail", execIssue)
+	}
+	if execIssue["summary"] != "Build failed: missing import" {
+		t.Errorf("issues[1].summary = %v, want %q", execIssue["summary"], "Build failed: missing import")
+	}
+
+	// Typed failedTask/failedWave read alongside issues[] in the same state
+	// file, unaffected by the merge.
+	executeState := pipeline["executeState"].(map[string]any)
+	if executeState["failedTask"] != nil {
+		t.Errorf("executeState.failedTask = %v, want omitted (not set in this fixture)", executeState["failedTask"])
+	}
+}
+
+func TestHardenPrepare_PipelineIssuesOmittedWhenNoIssuesKey(t *testing.T) {
+	root := t.TempDir()
+
+	// Ship/execute state exist (backward-compat AC) but neither ever called
+	// execAppendIssue, so data["issues"] is absent entirely — the state
+	// shape predating Task 17's issues[] accumulator.
+	st, err := state.Init(root, "ship", "some-branch", "")
+	if err != nil {
+		t.Fatalf("state.Init: %v", err)
+	}
+	st.Data["paused"] = true
+	if err := state.Write(st); err != nil {
+		t.Fatalf("state.Write: %v", err)
+	}
+
+	execSt, err := state.Init(root, "execute", "some-branch", "")
+	if err != nil {
+		t.Fatalf("state.Init: %v", err)
+	}
+	execSt.Data["failedTask"] = "task-9"
+	execSt.Data["failedWave"] = float64(3)
+	if err := state.Write(execSt); err != nil {
+		t.Fatalf("state.Write: %v", err)
+	}
+
+	out, err := hardenPrepare(root, root, HardenPrepareIn{
+		FailureText:     "boom",
+		Skill:           "ship",
+		SkipConfigCheck: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	manifest := readHardenManifest(t, out.ManifestPath)
+	pipeline := manifest["pipeline"].(map[string]any)
+
+	if _, ok := pipeline["issues"]; ok {
+		t.Errorf("pipeline.issues present with no issues[] in either state, want key omitted")
+	}
+
+	executeState := pipeline["executeState"].(map[string]any)
+	if executeState["failedTask"] != "task-9" {
+		t.Errorf("executeState.failedTask = %v, want task-9", executeState["failedTask"])
+	}
+	if executeState["failedWave"] != float64(3) {
+		t.Errorf("executeState.failedWave = %v, want 3", executeState["failedWave"])
+	}
 }
 
 // ---------------------------------------------------------------------------

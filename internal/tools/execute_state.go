@@ -5,16 +5,21 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
+	"github.com/rnagrodzki/sdlc-plugin/internal/configmigrate"
+	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
+	"github.com/rnagrodzki/sdlc-plugin/internal/pipeline"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 	"github.com/rnagrodzki/sdlc-plugin/internal/wave"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
@@ -24,51 +29,235 @@ import (
 // Input type
 // ---------------------------------------------------------------------------
 
-// ExecuteStateIn carries the merged input for the execute_state tool's 19
+// ExecuteStateIn carries the merged input for the execute_state tool's
 // actions. Each field is consumed by one or more actions (noted in comments).
 type ExecuteStateIn struct {
-	Action         string         `json:"action"`
-	Branch         string         `json:"branch,omitempty"`
-	Quality        string         `json:"quality,omitempty"`
-	TotalTasks     int            `json:"totalTasks,omitempty"`
-	PlannedTaskIds []string       `json:"plannedTaskIds,omitempty"`
-	PlanPath       string         `json:"planPath,omitempty"`
-	PlanHash       string         `json:"planHash,omitempty"`
-	Wave           int            `json:"wave,omitempty"`
-	TasksJSON      string         `json:"tasksJson,omitempty"`
-	RunID          string         `json:"runId,omitempty"`
-	WorkerID       string         `json:"workerId,omitempty"`
-	Decisions      string         `json:"decisions,omitempty"`
-	Status         string         `json:"status,omitempty"`
-	TimedOut       bool           `json:"timedOut,omitempty"`
-	SHA            string         `json:"sha,omitempty"`
-	TaskID         string         `json:"taskId,omitempty"`
-	TaskName       string         `json:"taskName,omitempty"`
-	Complexity     string         `json:"complexity,omitempty"`
-	Risk           string         `json:"risk,omitempty"`
-	FilesChanged   string         `json:"filesChanged,omitempty"`
-	FilesAdded     string         `json:"filesAdded,omitempty"`
-	VerifyToken    string         `json:"verifyToken,omitempty"`
-	SkippedDep     bool           `json:"skippedDependency,omitempty"`
-	ErrorText      string         `json:"error,omitempty"`
-	Data           string         `json:"data,omitempty"`
-	TTLDays        *int           `json:"ttlDays,omitempty"`
-	DryRun         bool           `json:"dryRun,omitempty"`
-	MaxFiles       int            `json:"maxFiles,omitempty"`
-	MaxDecisions   int            `json:"maxDecisions,omitempty"`
-	MaxInterfaces  int            `json:"maxInterfaces,omitempty"`
-	MaxTaskIds     int            `json:"maxTaskIds,omitempty"`
-	Dispatched     string         `json:"dispatched,omitempty"`
-	MissingIds     string         `json:"missingIds,omitempty"`
-	SplitDepth     int            `json:"splitDepth,omitempty"`
-	MaxSplitDepth  int            `json:"maxSplitDepth,omitempty"`
-	StateFile      string         `json:"stateFile,omitempty"`
-	Phase          string         `json:"phase,omitempty"`
-	ReadProgress   bool           `json:"readProgress,omitempty"`
-	SessionID      string         `json:"sessionId,omitempty"`
-	TimeoutSeconds int            `json:"timeoutSeconds,omitempty"`
-	Payload        map[string]any `json:"payload,omitempty"`
-	StepID         string         `json:"stepId,omitempty"`
+	Action            string         `json:"action"`
+	Branch            string         `json:"branch,omitempty"`
+	Quality           string         `json:"quality,omitempty"`
+	TotalTasks        int            `json:"totalTasks,omitempty"`
+	PlannedTaskIds    []string       `json:"plannedTaskIds,omitempty"`
+	PlanPath          string         `json:"planPath,omitempty"`
+	PlanHash          string         `json:"planHash,omitempty"`
+	ExtraDepsJSON     string         `json:"extraDepsJson,omitempty"`
+	Wave              int            `json:"wave,omitempty"`
+	TasksJSON         string         `json:"tasksJson,omitempty"`
+	RunID             string         `json:"runId,omitempty"`
+	WorkerID          string         `json:"workerId,omitempty"`
+	Decisions         string         `json:"decisions,omitempty"`
+	Status            string         `json:"status,omitempty"`
+	TimedOut          bool           `json:"timedOut,omitempty"`
+	SHA               string         `json:"sha,omitempty"`
+	TaskID            string         `json:"taskId,omitempty"`
+	TaskName          string         `json:"taskName,omitempty"`
+	Complexity        string         `json:"complexity,omitempty"`
+	Risk              string         `json:"risk,omitempty"`
+	FilesChanged      string         `json:"filesChanged,omitempty"`
+	FilesAdded        string         `json:"filesAdded,omitempty"`
+	VerifyToken       string         `json:"verifyToken,omitempty"`
+	SkippedDep        bool           `json:"skippedDependency,omitempty"`
+	ErrorText         string         `json:"error,omitempty"`
+	Data              string         `json:"data,omitempty"`
+	TTLDays           *int           `json:"ttlDays,omitempty"`
+	DryRun            bool           `json:"dryRun,omitempty"`
+	MaxFiles          int            `json:"maxFiles,omitempty"`
+	MaxDecisions      int            `json:"maxDecisions,omitempty"`
+	MaxInterfaces     int            `json:"maxInterfaces,omitempty"`
+	MaxTaskIds        int            `json:"maxTaskIds,omitempty"`
+	Dispatched        string         `json:"dispatched,omitempty"`
+	MissingIds        string         `json:"missingIds,omitempty"`
+	SplitDepth        int            `json:"splitDepth,omitempty"`
+	MaxSplitDepth     int            `json:"maxSplitDepth,omitempty"`
+	StateFile         string         `json:"stateFile,omitempty"`
+	Phase             string         `json:"phase,omitempty"`
+	ReadProgress      bool           `json:"readProgress,omitempty"`
+	SessionID         string         `json:"sessionId,omitempty"`
+	TimeoutSeconds    int            `json:"timeoutSeconds,omitempty"`
+	Payload           map[string]any `json:"payload,omitempty"`
+	StepID            string         `json:"stepId,omitempty"`
+	Detail            string         `json:"detail,omitempty"`
+	LastCompletedTask string         `json:"lastCompletedTask,omitempty"`
+	Message           string         `json:"message,omitempty"`
+}
+
+// ---------------------------------------------------------------------------
+// Narration output types
+// ---------------------------------------------------------------------------
+
+// ExecWaveNarrationOut is the narrated output for wave-level execute_state
+// actions (wave-start, wave-done, wave-fail). It embeds pipeline.Narration
+// at the top level (JSON: summary, display, timing, next) alongside the
+// action-specific fields carried by wave-start and wave-done.
+type ExecWaveNarrationOut struct {
+	pipeline.Narration
+	RunID           string   `json:"runId,omitempty"`
+	FactSheets      []string `json:"factSheets,omitempty"`
+	FactSheetErrors []string `json:"factSheetErrors,omitempty"`
+	IssueCount      int      `json:"issueCount,omitempty"`
+	IssueHighlights []string `json:"issueHighlights,omitempty"`
+}
+
+// ExecTaskNarrationOut is the narrated output for task-level execute_state
+// actions (task-done, task-fail).
+type ExecTaskNarrationOut struct {
+	pipeline.Narration
+}
+
+// ExecWaveCommitOut is the narrated output for the wave-commit action.
+// Committed reports whether a commit now exists for the wave (true both
+// for a freshly-made commit and for an idempotent resume that found one
+// already recorded). SHA and Idempotent are only meaningful when Committed
+// is true; Reason explains a soft "no-op" (empty diff, or commits disabled
+// via config).
+type ExecWaveCommitOut struct {
+	pipeline.Narration
+	Committed  bool   `json:"committed"`
+	SHA        string `json:"sha,omitempty"`
+	Idempotent bool   `json:"idempotent,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+}
+
+// TaskContextOut is the returned payload for the task-context action: a
+// single-call consolidation of what a dispatched per-task worker needs —
+// its fact sheet (which already embeds the plan-task's Contract/Acceptance
+// Criteria/Files block, see wave.Factsheet), a live prior-wave summary,
+// verify guidance, and report-back instructions. Task 12 wires this into a
+// two-line worker dispatch form in place of today's fully-inlined prompts.
+type TaskContextOut struct {
+	TaskID     string `json:"taskId"`
+	FactSheet  string `json:"factSheet"`
+	PriorWaves string `json:"priorWaves"`
+	Verify     string `json:"verify"`
+	ReportBack string `json:"reportBack"`
+	Truncated  bool   `json:"truncated,omitempty"`
+}
+
+// ---------------------------------------------------------------------------
+// Narration helpers
+// ---------------------------------------------------------------------------
+
+// execDetailLevel returns "concise" or "full" from the input's Detail field.
+func execDetailLevel(in ExecuteStateIn) string {
+	if in.Detail == "concise" {
+		return "concise"
+	}
+	return "full"
+}
+
+// execValidateDetail returns a DomainError if the detail value is invalid.
+func execValidateDetail(in ExecuteStateIn) error {
+	if in.Detail != "" && in.Detail != "concise" && in.Detail != "full" {
+		return &mcpserver.DomainError{Msg: fmt.Sprintf("detail must be \"concise\" or \"full\", got %q", in.Detail)}
+	}
+	return nil
+}
+
+// waveComplexityBucket returns a TimingsStore key for wave duration based
+// on the maximum task complexity in the wave. Complexity values follow the
+// plan's bounded enum: Trivial, Standard, Complex. Unknown or empty values
+// map to "wave:unknown".
+func waveComplexityBucket(maxComplexity string) string {
+	switch maxComplexity {
+	case "Trivial", "Standard", "Complex":
+		return "wave:" + strings.ToLower(maxComplexity)
+	default:
+		return "wave:unknown"
+	}
+}
+
+// execMaxComplexityFromTasks extracts the highest complexity from a parsed
+// tasksJson slice. Ordering: Complex > Standard > Trivial.
+func execMaxComplexityFromTasks(tasks []any) string {
+	rank := map[string]int{"Trivial": 1, "Standard": 2, "Complex": 3}
+	best := ""
+	bestRank := 0
+	for _, t := range tasks {
+		tm, ok := t.(map[string]any)
+		if !ok {
+			continue
+		}
+		c, _ := tm["complexity"].(string)
+		if r, ok := rank[c]; ok && r > bestRank {
+			best = c
+			bestRank = r
+		}
+	}
+	return best
+}
+
+// execMaxComplexityFromWave extracts the highest complexity from the wave
+// map's tasks[] array (populated by task-done/task-fail).
+func execMaxComplexityFromWave(w map[string]any) string {
+	tasks, _ := w["tasks"].([]any)
+	return execMaxComplexityFromTasks(tasks)
+}
+
+// staticWaveETA maps complexity buckets to fallback ETA seconds when
+// TimingsStore has no recorded history.
+var staticWaveETA = map[string]int{
+	"wave:trivial":  120, // 2 minutes
+	"wave:standard": 300, // 5 minutes
+	"wave:complex":  480, // 8 minutes
+	"wave:unknown":  300, // 5 minutes (conservative default)
+}
+
+// execWaveETA returns an ETA in seconds and the basis string for a wave.
+// Prefers TimingsStore history; falls back to the static table.
+func execWaveETA(ts *pipeline.TimingsStore, bucket string) (int, string) {
+	if ts != nil {
+		if est, ok := ts.Estimate(bucket); ok {
+			return est.Seconds, est.Basis
+		}
+	}
+	if sec, ok := staticWaveETA[bucket]; ok {
+		return sec, "static estimate"
+	}
+	return 300, "static estimate"
+}
+
+// execCountWaveOutcomes counts completed, failed, and total reported tasks
+// from a wave map's tasks[] array.
+func execCountWaveOutcomes(w map[string]any) (completed, failed, total int) {
+	tasks, _ := w["tasks"].([]any)
+	total = len(tasks)
+	for _, t := range tasks {
+		tm, ok := t.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch tm["status"] {
+		case "completed":
+			completed++
+		case "failed", "skipped-dependency":
+			failed++
+		}
+	}
+	return
+}
+
+// execBuildWaveTasks converts a wave map's tasks[] to pipeline.WaveTask
+// for use with WaveStartBlock/WaveEndBlock rendering. Model is filled from
+// the task's complexity since model tier is unavailable in execute_state.
+func execBuildWaveTasks(tasks []any) []pipeline.WaveTask {
+	var out []pipeline.WaveTask
+	for _, t := range tasks {
+		tm, ok := t.(map[string]any)
+		if !ok {
+			continue
+		}
+		idStr, _ := tm["id"].(string)
+		id := 0
+		if idStr != "" {
+			fmt.Sscanf(idStr, "%d", &id)
+		}
+		name, _ := tm["name"].(string)
+		model, _ := tm["complexity"].(string) // complexity stands in for model
+		if model == "" {
+			model = "?"
+		}
+		out = append(out, pipeline.WaveTask{ID: id, Name: name, Model: model})
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------------
@@ -112,22 +301,25 @@ func RegisterExecuteStateTools(s *mcpserver.Server) {
 
 Pass "action" to select an operation. Each action uses a subset of the input fields (unlisted fields are ignored):
 
-- init: Create execution state. Requires branch, quality. Optional: totalTasks, plannedTaskIds, planPath, planHash.
-- wave-start: Begin a wave. Requires wave. Optional: branch, tasksJson, runId (for fact sheets).
-- wave-done: Complete a wave. Requires wave. Optional: branch, decisions, status.
-- wave-fail: Fail a wave. Requires wave. Optional: branch, timedOut, status.
+- wave-compute: Stateless — parses the plan file at planPath and computes the wave schedule (no state file read/write). Requires planPath. Optional: extraDepsJson (JSON array of {task, dependsOn, reason} merged with each task's explicit "Depends on" field). Returns {route, preWave, waves[{number, tasks[], expectedFiles[], verificationHint}]}.
+- init: Create execution state. Runs the same config auto-migration gate as ship_prepare first (migrates and backs up an outdated config, or fails with a /setup pointer if none exists); result may include a "migration" report. Requires branch, quality. Optional: totalTasks, plannedTaskIds, planPath, planHash.
+- wave-start: Begin a wave. Returns narration (summary, display with task list + ETA, next). Requires wave. Optional: branch, tasksJson, runId (for fact sheets), detail ("concise"|"full").
+- wave-done: Complete a wave. Returns narration (summary, display with outcomes, timing, next wave preview + ETA). Records wave duration to TimingsStore. Requires wave. Optional: branch, decisions, status, detail ("concise"|"full").
+- wave-fail: Fail a wave. Returns narration (summary, display with failure cause). Requires wave. Optional: branch, timedOut, error (failure cause, recorded as an issue and in failedWave), status, detail ("concise"|"full").
 - wave-committed: Record a commit SHA for a completed wave. Requires wave. Optional: branch, sha.
-- task-done: Record task completion. Requires wave, taskId. Optional: branch, taskName, complexity, risk, filesChanged, filesAdded, verifyToken.
-- task-fail: Record task failure. Requires wave, taskId. Optional: branch, error, skippedDependency.
+- wave-commit: Stage and commit a completed wave's changes (git add -A + git commit -m message) and record the resulting sha on the wave, mirroring wave-committed's SHA-recording. Requires wave, message. Optional: branch, detail ("concise"|"full"). The wave must already be "completed" (call wave-done first). Empty diff: succeeds without committing ({committed:false, reason:"nothing to commit"}). When config execute.commitWaves is false, does not commit and instead returns an instruction to commit manually and call wave-committed. Idempotent on resume: an already-recorded committedSha that is still an ancestor of HEAD is reported ({idempotent:true}) rather than committed again.
+- task-done: Record task completion. Returns narration (summary with running tally). Requires wave, taskId. Optional: branch, taskName, complexity, risk, filesChanged, filesAdded, verifyToken, status ("DONE_WITH_CONCERNS" records a warning issue), error (concern detail for DONE_WITH_CONCERNS).
+- task-fail: Record task failure. Returns narration (summary with running tally). Requires wave, taskId. Optional: branch, error, skippedDependency (records an issue; only a non-skipped failure updates failedTask).
+- task-context: Return everything a dispatched per-task worker needs in one call — fact-sheet content (embeds the plan-task's Contract/Acceptance Criteria/Files), a live prior-wave summary, verify guidance, and report-back instructions. Requires taskId. Optional: branch, runId (falls back the same way wave-start does, via startedAt/wave). The serialized payload is capped at 1 MiB; oversize content (fact sheet first, then prior-wave summary if still over cap) is truncated with truncated:true rather than erroring. Unknown taskId fails with an actionable error listing the valid IDs for that run.
 - context: Read/write shared context keys. Requires data (JSON object with allowed keys: planSummary, completedTaskIds, filesAdded, filesModified, interfacesCreated, decisionsFromPriorWaves). Optional: branch, maxFiles, maxDecisions, maxInterfaces, maxTaskIds.
-- read: Return the full execution state blob. Optional: branch.
-- cleanup: Delete execution state for a branch. Optional: branch.
+- read: Return the full execution state blob. Optional: branch. When the run is in flight (some recorded wave isn't "completed", or plannedTaskIds has IDs not yet in context.completedTaskIds), the blob also carries a "resumeBriefing" (resumable, wavesDone, wavesRemaining, gitCrossCheck, gitMismatches, willRedo, willSkip, summary, display, next) — a dry-run preview of what resume-reset would do. A committedSha that no longer checks out as a git ancestor is reported via gitCrossCheck/gitMismatches, never as a read failure.
+- cleanup: Stamp a branch's execution state terminal (runStatus:"completed", runCompletedAt) instead of deleting it — the state file (and its issues[]) survives for later reads (e.g. /harden) until GC's TTL prunes it. Also removes the per-run working directory and ledger directory (working artifacts only, safe to delete) when the state carries a startedAt to derive the runID from; if startedAt is absent, directories are left untouched. Optional: branch.
 - gc: Garbage-collect stale state files. Optional: ttlDays, dryRun, branch.
 - summarize-prior-wave-context: Summarize context from prior waves. Optional: branch, maxFiles, maxDecisions, maxInterfaces, maxTaskIds.
 - wave-split: Split remaining tasks into a new wave. Requires dispatched. Optional: wave, missingIds, branch, splitDepth, maxSplitDepth, stateFile.
 - verify-completeness: Verify all planned tasks are accounted for. Optional: branch, stateFile.
-- wave-progress: Read/write per-task progress. Requires runId. For reads: readProgress=true. For writes: taskId, phase.
-- resume-reset: Reset in-progress waves for session resume. Optional: branch, stateFile.
+- wave-progress: Read/write per-task progress. Requires runId. For reads: readProgress=true. For writes: taskId, phase. Optional: lastCompletedTask (recorded in the heartbeat entry).
+- resume-reset: Reset in-progress waves for session resume. Optional: branch, stateFile. Returns {resetWaves, clearedTaskIds} as before; when the run is still in flight after the reset, the response also carries a "resumeBriefing" (same shape as read's) reflecting the sets it just cleared — resume-reset's willRedo always matches the task IDs in clearedTaskIds.
 - ledger_checkin: Register a worker as active. Requires runId, workerId. Optional: stepId.
 - ledger_checkout: Mark a worker as done. Requires runId, workerId.
 - ledger_status: List worker statuses for a run. Requires runId. Optional: timeoutSeconds.
@@ -160,6 +352,8 @@ Returns a JSON envelope: {"ok":true, "data":{...}} on success, {"ok":false, "cod
 // now is injected for testability (ledger stall detection, timestamps).
 func executeState(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	switch in.Action {
+	case "wave-compute":
+		return execActionWaveCompute(in)
 	case "init":
 		return execActionInit(root, workDir, in, now)
 	case "wave-start":
@@ -170,16 +364,20 @@ func executeState(root, workDir string, in ExecuteStateIn, now func() time.Time)
 		return execActionWaveFail(root, workDir, in, now)
 	case "wave-committed":
 		return execActionWaveCommitted(root, workDir, in)
+	case "wave-commit":
+		return execActionWaveCommit(root, workDir, in)
 	case "task-done":
 		return execActionTaskDone(root, workDir, in, now)
 	case "task-fail":
 		return execActionTaskFail(root, workDir, in, now)
+	case "task-context":
+		return execActionTaskContext(root, workDir, in)
 	case "context":
 		return execActionContext(root, workDir, in)
 	case "read":
 		return execActionRead(root, workDir, in)
 	case "cleanup":
-		return execActionCleanup(root, workDir, in)
+		return execActionCleanup(root, workDir, in, now)
 	case "gc":
 		return execActionGC(root, workDir, in, now)
 	case "summarize-prior-wave-context":
@@ -392,6 +590,131 @@ func execTailStrings(arr []string, n int) []string {
 	return arr[len(arr)-n:]
 }
 
+// ---------------------------------------------------------------------------
+// Issue accumulator (StateIssue)
+// ---------------------------------------------------------------------------
+
+// StateIssue is a structured entry in a state file's issues[] accumulator,
+// recording task/wave/step failures and concerns for end-of-run summaries
+// and harden analysis. Shared by execute-state and ship-state. Aliased to
+// pipeline.StateIssue (rather than duplicated) so tools code can hand issue
+// slices straight to pipeline.IssueSummaryBlock with no conversion step —
+// internal/pipeline cannot import internal/tools (tools imports pipeline for
+// Narration embedding), so pipeline holds the canonical definition and tools
+// aliases it.
+type StateIssue = pipeline.StateIssue
+
+// execAppendIssue appends a StateIssue to data["issues"], round-tripping it
+// through JSON so the stored representation is always a map[string]any —
+// matching every other entry in data, whether freshly appended or loaded
+// back from disk.
+func execAppendIssue(data map[string]any, issue StateIssue) {
+	raw, ok := data["issues"].([]any)
+	if !ok {
+		raw = []any{}
+	}
+	b, err := json.Marshal(issue)
+	if err != nil {
+		return
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		return
+	}
+	data["issues"] = append(raw, m)
+}
+
+// execIssueSummary returns the total issue count and up to maxHighlights
+// "[severity] summary" strings for the most recent issues in data["issues"],
+// for inclusion in wave-done/complete-step responses. issueCount and
+// issueHighlights are response-only — never persisted to the state file.
+// Returns (0, nil) when there are no issues.
+func execIssueSummary(data map[string]any, maxHighlights int) (int, []string) {
+	raw, ok := data["issues"].([]any)
+	if !ok || len(raw) == 0 {
+		return 0, nil
+	}
+	start := 0
+	if len(raw) > maxHighlights {
+		start = len(raw) - maxHighlights
+	}
+	highlights := make([]string, 0, len(raw)-start)
+	for _, v := range raw[start:] {
+		m, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		sev, _ := m["severity"].(string)
+		summary, _ := m["summary"].(string)
+		highlights = append(highlights, fmt.Sprintf("[%s] %s", sev, summary))
+	}
+	return len(raw), highlights
+}
+
+// IssueSummary is the end-of-run grouped issue report returned by the
+// completion actions (execute's cleanup, ship's cleanup-pipeline) once
+// data["issues"] is non-empty. Response-only — never persisted to the state
+// file. Display is pipeline.IssueSummaryBlock(items) rendered server-side so
+// the calling SKILL.md can print it verbatim, matching this codebase's
+// "render display fields verbatim" convention. HardenSuggestion is set only
+// when at least one error-severity issue is present; it is advisory prose
+// for the executing agent, not an automatic /harden invocation.
+type IssueSummary struct {
+	Total            int            `json:"total"`
+	ByCategory       map[string]int `json:"byCategory"`
+	Items            []StateIssue   `json:"items"`
+	Display          string         `json:"display"`
+	HardenSuggestion string         `json:"hardenSuggestion,omitempty"`
+}
+
+// execIssueSummaryFull builds the full end-of-run IssueSummary from
+// data["issues"]. Returns nil when there are no issues — callers must omit
+// the issueSummary key entirely in that case (no "0 issues" noise).
+func execIssueSummaryFull(data map[string]any) *IssueSummary {
+	raw, ok := data["issues"].([]any)
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+
+	items := make([]StateIssue, 0, len(raw))
+	byCategory := map[string]int{}
+	var errSummaries []string
+	for _, v := range raw {
+		b, err := json.Marshal(v)
+		if err != nil {
+			continue
+		}
+		var iss StateIssue
+		if err := json.Unmarshal(b, &iss); err != nil {
+			continue
+		}
+		items = append(items, iss)
+		if iss.Category != "" {
+			byCategory[iss.Category]++
+		}
+		if iss.Severity == "error" {
+			errSummaries = append(errSummaries, iss.Summary)
+		}
+	}
+	if len(items) == 0 {
+		return nil
+	}
+
+	summary := &IssueSummary{
+		Total:      len(items),
+		ByCategory: byCategory,
+		Items:      items,
+		Display:    pipeline.IssueSummaryBlock(items),
+	}
+	if len(errSummaries) > 0 {
+		if len(errSummaries) > 3 {
+			errSummaries = errSummaries[:3]
+		}
+		summary.HardenSuggestion = fmt.Sprintf("Run /harden --failure-text '%s' to strengthen guardrails.", strings.Join(errSummaries, "; "))
+	}
+	return summary
+}
+
 // execDeepMerge implements the JS deepMerge: arrays concatenate, objects
 // merge recursively, scalars overwrite.
 func execDeepMerge(target, source any) any {
@@ -519,6 +842,22 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 		return nil, &mcpserver.DomainError{Msg: "--quality is required for init"}
 	}
 
+	// KD5 gate: same auto-migrate-with-backup gate as ship_prepare
+	// (configmigrate.MigrateWithBackup). Unlike ship_prepare's soft
+	// errors-only style, execute_state has no equivalent partial-payload
+	// convention for this action — a genuinely missing config (never ran
+	// /setup) or a too-new schema is reported the same way as any other
+	// execActionInit validation failure: a Go error mapped to the tool's
+	// {"ok":false,...} envelope.
+	changes, backupPath, err := configmigrate.MigrateWithBackup(root)
+	if err != nil {
+		return nil, &mcpserver.DataError{Msg: fmt.Sprintf("config-version: %s", err.Error()), Cause: err}
+	}
+	var migrationReport *MigrationReport
+	if backupPath != "" {
+		migrationReport = &MigrationReport{Changes: changes, BackupPath: backupPath}
+	}
+
 	st, err := state.Init(root, "execute", in.Branch, in.SessionID)
 	if err != nil {
 		return nil, &mcpserver.InfraError{Msg: "init state: " + err.Error(), Cause: err}
@@ -545,7 +884,11 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
 	}
 
-	return map[string]any{"filePath": st.Path}, nil
+	result := map[string]any{"filePath": st.Path}
+	if migrationReport != nil {
+		result["migration"] = migrationReport
+	}
+	return result, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -555,6 +898,9 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	if in.Wave < 1 {
 		return nil, &mcpserver.DomainError{Msg: "--wave is required"}
+	}
+	if err := execValidateDetail(in); err != nil {
+		return nil, err
 	}
 
 	branch, err := execResolveBranch(in.Branch, workDir)
@@ -590,9 +936,11 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 	}
 
 	// Write per-task fact sheets when tasksJson is provided.
+	var parsedTasks []any
+	result := ExecWaveNarrationOut{}
+
 	if in.TasksJSON != "" {
-		var tasks []any
-		if err := json.Unmarshal([]byte(in.TasksJSON), &tasks); err != nil {
+		if err := json.Unmarshal([]byte(in.TasksJSON), &parsedTasks); err != nil {
 			return nil, &mcpserver.DomainError{Msg: "tasksJson is not valid JSON: " + err.Error(), Cause: err}
 		}
 
@@ -605,7 +953,7 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 
 		writtenPaths := []string{}
 		var factSheetErrors []string
-		for _, t := range tasks {
+		for _, t := range parsedTasks {
 			tm, ok := t.(map[string]any)
 			if !ok {
 				continue
@@ -648,24 +996,46 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 
 			p, err := wave.WriteFactsheet(root, runID, fs)
 			if err != nil {
-				// Non-fatal: accumulate errors so the caller sees them.
 				factSheetErrors = append(factSheetErrors, fmt.Sprintf("task %s: %s", id, err.Error()))
 				continue
 			}
 			writtenPaths = append(writtenPaths, p)
 		}
 
-		result := map[string]any{
-			"runId":      runID,
-			"factSheets": writtenPaths,
-		}
+		result.RunID = runID
+		result.FactSheets = writtenPaths
 		if len(factSheetErrors) > 0 {
-			result["factSheetErrors"] = factSheetErrors
+			result.FactSheetErrors = factSheetErrors
 		}
-		return result, nil
 	}
 
-	return map[string]any{}, nil
+	// Build narration.
+	taskCount := len(parsedTasks)
+	result.Summary = fmt.Sprintf("Wave %d started with %d tasks.", in.Wave, taskCount)
+
+	if execDetailLevel(in) == "full" {
+		waveTasks := execBuildWaveTasks(parsedTasks)
+		wi := pipeline.WaveInfo{
+			Number: in.Wave,
+			Tasks:  waveTasks,
+		}
+		// Pass nil for TimingsStore — ETA lives in Next, not in the block.
+		result.Display = pipeline.WaveStartBlock(wi, nil)
+	}
+
+	// Build Next with ETA.
+	maxC := execMaxComplexityFromTasks(parsedTasks)
+	bucket := waveComplexityBucket(maxC)
+	ts := pipeline.NewTimingsStore(root)
+	etaSec, etaBasis := execWaveETA(ts, bucket)
+	result.Next = &pipeline.NextAction{
+		ID:          fmt.Sprintf("wave-%d", in.Wave),
+		Instruction: fmt.Sprintf("Execute the %d tasks in wave %d, then call task-done/task-fail for each.", taskCount, in.Wave),
+		EtaSeconds:  etaSec,
+		EtaBasis:    etaBasis,
+	}
+
+	return result, nil
 }
 
 // stringOrEmpty extracts a string from any, defaulting to empty.
@@ -683,6 +1053,9 @@ func stringOrEmpty(v any) string {
 func execActionWaveDone(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	if in.Wave < 1 {
 		return nil, &mcpserver.DomainError{Msg: "--wave is required"}
+	}
+	if err := execValidateDetail(in); err != nil {
+		return nil, err
 	}
 
 	// Parse decisions BEFORE state lookup (arg error wins over missing state,
@@ -718,7 +1091,8 @@ func execActionWaveDone(root, workDir string, in ExecuteStateIn, now func() time
 	if in.TimedOut {
 		w["timedOut"] = true
 	}
-	w["completedAt"] = now().UTC().Format(time.RFC3339)
+	completedAt := now().UTC().Format(time.RFC3339)
+	w["completedAt"] = completedAt
 
 	// Append decisions to context (unique).
 	ctx := execEnsureContext(st.Data)
@@ -733,7 +1107,82 @@ func execActionWaveDone(root, workDir string, in ExecuteStateIn, now func() time
 	if err := state.Write(st); err != nil {
 		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
 	}
-	return map[string]any{}, nil
+
+	// Build narration.
+	completed, failed, total := execCountWaveOutcomes(w)
+	startedAt, _ := w["startedAt"].(string)
+
+	ts := pipeline.NewTimingsStore(root)
+
+	// Record wave duration (only when wave pre-existed with a real startedAt
+	// and duration > 0 — avoid polluting the store with 0s durations from
+	// waves that were never properly started).
+	maxC := execMaxComplexityFromWave(w)
+	bucket := waveComplexityBucket(maxC)
+	var waveDur time.Duration
+	var waveDurOK bool
+	if startedAt != "" {
+		if d, ok := pipeline.Duration(startedAt, completedAt); ok && d > 0 {
+			waveDur = d
+			waveDurOK = true
+			_ = ts.Record(bucket, d)
+		}
+	}
+
+	result := ExecWaveNarrationOut{}
+	if count, highlights := execIssueSummary(st.Data, 5); count > 0 {
+		result.IssueCount = count
+		result.IssueHighlights = highlights
+	}
+
+	durStr := ""
+	if waveDurOK {
+		durStr = " in " + pipeline.Humanize(waveDur)
+	}
+	result.Summary = fmt.Sprintf("Wave %d done%s: %d/%d tasks succeeded, %d failed.",
+		in.Wave, durStr, completed, total, failed)
+
+	if execDetailLevel(in) == "full" {
+		waveTasks := execBuildWaveTasks(func() []any {
+			t, _ := w["tasks"].([]any)
+			return t
+		}())
+		wi := pipeline.WaveInfo{
+			Number:      in.Wave,
+			Tasks:       waveTasks,
+			StartedAt:   startedAt,
+			CompletedAt: completedAt,
+		}
+		// Pass nil for TimingsStore — ETA lives in Next, not in the block.
+		result.Display = pipeline.WaveEndBlock(wi, nil)
+	}
+
+	// Timing info.
+	if waveDurOK {
+		timing := &pipeline.TimingInfo{
+			StepSeconds: int(waveDur.Round(time.Second).Seconds()),
+			Human:       "wave " + pipeline.Humanize(waveDur),
+		}
+		if pipelineStartedAt, _ := st.Data["startedAt"].(string); pipelineStartedAt != "" {
+			if pStart, parseErr := time.Parse(time.RFC3339, pipelineStartedAt); parseErr == nil {
+				timing.PipelineSeconds = int(now().Sub(pStart).Round(time.Second).Seconds())
+				timing.Human += ", pipeline " + pipeline.Humanize(time.Duration(timing.PipelineSeconds)*time.Second)
+			}
+		}
+		result.Timing = timing
+	}
+
+	// Next action: suggest wave-commit then next wave.
+	nextWave := in.Wave + 1
+	etaSec, etaBasis := execWaveETA(ts, bucket)
+	result.Next = &pipeline.NextAction{
+		ID:          fmt.Sprintf("wave-%d", nextWave),
+		Instruction: fmt.Sprintf("Call wave-commit, then wave-start for wave %d.", nextWave),
+		EtaSeconds:  etaSec,
+		EtaBasis:    etaBasis,
+	}
+
+	return result, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -743,6 +1192,9 @@ func execActionWaveDone(root, workDir string, in ExecuteStateIn, now func() time
 func execActionWaveFail(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	if in.Wave < 1 {
 		return nil, &mcpserver.DomainError{Msg: "--wave is required"}
+	}
+	if err := execValidateDetail(in); err != nil {
+		return nil, err
 	}
 
 	branch, err := execResolveBranch(in.Branch, workDir)
@@ -759,10 +1211,42 @@ func execActionWaveFail(root, workDir string, in ExecuteStateIn, now func() time
 	w["status"] = "failed"
 	w["completedAt"] = now().UTC().Format(time.RFC3339)
 
+	st.Data["failedWave"] = in.Wave
+	detail := in.ErrorText
+	if detail == "" && in.TimedOut {
+		detail = "timed out"
+	}
+	execAppendIssue(st.Data, StateIssue{
+		Wave:      in.Wave,
+		Severity:  "error",
+		Category:  "wave-fail",
+		Summary:   fmt.Sprintf("Wave %d failed", in.Wave),
+		Detail:    detail,
+		Timestamp: now().UTC().Format(time.RFC3339),
+	})
+
 	if err := state.Write(st); err != nil {
 		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
 	}
-	return map[string]any{}, nil
+
+	// Narration.
+	completed, failed, total := execCountWaveOutcomes(w)
+	cause := "failure"
+	if in.TimedOut {
+		cause = "timeout"
+	}
+	summaryText := fmt.Sprintf("Wave %d failed (%s): %d/%d succeeded, %d failed.",
+		in.Wave, cause, completed, total, failed)
+	if detail != "" {
+		summaryText += " " + detail
+	}
+
+	result := ExecWaveNarrationOut{}
+	result.Summary = summaryText
+	if execDetailLevel(in) == "full" {
+		result.Display = fmt.Sprintf("**Wave %d failed** (%s)\n\n%s", in.Wave, cause, detail)
+	}
+	return result, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -819,6 +1303,185 @@ func execActionWaveCommitted(root, workDir string, in ExecuteStateIn) (any, erro
 		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
 	}
 	return map[string]any{"committedSha": newSha, "idempotent": false}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Action: wave-commit
+// ---------------------------------------------------------------------------
+
+// execCommitWavesEnabled reads config.execute.commitWaves. It defaults to
+// true (tool-side commits are opt-out, not opt-in) when the key is absent,
+// the execute section itself is absent, or the config cannot be read —
+// mirroring execSummarizePriorWaveCtx's tolerant config.ReadSection usage
+// elsewhere in this file.
+func execCommitWavesEnabled(root string) bool {
+	execSection, err := config.ReadSection(root, "execute")
+	if err != nil || execSection == nil {
+		return true
+	}
+	if v, ok := execSection["commitWaves"].(bool); ok {
+		return v
+	}
+	return true
+}
+
+// execIsAncestor reports whether sha is an ancestor of (or equal to) HEAD
+// in the git repo at dir, via `git merge-base --is-ancestor`. It returns
+// (false, nil) — not an error — when the check cleanly determines sha is
+// NOT an ancestor (git exit code 1), distinguishing that clean "no" from a
+// real git failure (bad sha, not a repo, etc.), which is returned as a
+// non-nil error. Mirrors verifyTagAncestry's exit-code handling in
+// scaffold.go.
+func execIsAncestor(dir, sha string) (bool, error) {
+	_, err := execx.Run("git", []string{"merge-base", "--is-ancestor", sha, "HEAD"}, execx.Options{Dir: dir})
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, err
+}
+
+// shortSHA truncates a git commit sha to 7 characters for human-facing
+// narration text. The full sha is still what gets stored in state and
+// returned in the "sha" response field.
+func shortSHA(sha string) string {
+	if len(sha) > 7 {
+		return sha[:7]
+	}
+	return sha
+}
+
+// execActionWaveCommit stages and commits a completed wave's changes
+// (git add -A + git commit) and records the resulting sha on the wave,
+// reusing wave-committed's completed-status and SHA-recording checks
+// rather than diverging from them.
+func execActionWaveCommit(root, workDir string, in ExecuteStateIn) (any, error) {
+	if in.Wave < 1 {
+		return nil, &mcpserver.DomainError{Msg: "--wave is required"}
+	}
+	if err := execValidateDetail(in); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(in.Message) == "" {
+		return nil, &mcpserver.DomainError{Msg: "message is required for wave-commit"}
+	}
+
+	branch, err := execResolveBranch(in.Branch, workDir)
+	if err != nil {
+		return nil, err
+	}
+
+	st, err := execFindState(root, branch)
+	if err != nil {
+		return nil, err
+	}
+
+	w := execFindWave(st.Data, in.Wave)
+	if w == nil {
+		return nil, &mcpserver.DomainError{
+			Msg: fmt.Sprintf("wave %d not found in state", in.Wave),
+		}
+	}
+
+	waveStatus, _ := w["status"].(string)
+	if waveStatus != "completed" {
+		return nil, &mcpserver.DomainError{
+			Msg: fmt.Sprintf("wave %d status is %q, expected \"completed\"", in.Wave, waveStatus),
+		}
+	}
+
+	nextWave := in.Wave + 1
+	nextInstruction := fmt.Sprintf("Call wave-start for wave %d.", nextWave)
+	full := execDetailLevel(in) == "full"
+
+	// Idempotency: a committedSha already recorded (e.g. this action ran
+	// to completion once but the caller's session ended before it learned
+	// the result, and is now resuming) is not re-committed as long as it
+	// is still an ancestor of HEAD. A recorded sha that HEAD has diverged
+	// from is a conflict this action refuses to paper over automatically.
+	if existing, hasSha := w["committedSha"]; hasSha {
+		if existingSha, ok := existing.(string); ok && existingSha != "" {
+			isAncestor, ancErr := execIsAncestor(workDir, existingSha)
+			if ancErr != nil {
+				return nil, &mcpserver.InfraError{
+					Msg:   fmt.Sprintf("git merge-base --is-ancestor %s HEAD: %s", existingSha, ancErr.Error()),
+					Cause: ancErr,
+				}
+			}
+			if !isAncestor {
+				return nil, &mcpserver.DomainError{
+					Msg: fmt.Sprintf("wave %d already has committedSha %q which is not an ancestor of HEAD — refusing to commit again automatically", in.Wave, existingSha),
+				}
+			}
+
+			result := ExecWaveCommitOut{Committed: true, SHA: existingSha, Idempotent: true}
+			result.Summary = fmt.Sprintf("Wave %d already committed as %s.", in.Wave, shortSHA(existingSha))
+			if full {
+				result.Display = fmt.Sprintf("✔ wave %d → commit %s (already committed)", in.Wave, shortSHA(existingSha))
+			}
+			result.Next = &pipeline.NextAction{ID: fmt.Sprintf("wave-%d", nextWave), Instruction: nextInstruction}
+			return result, nil
+		}
+	}
+
+	if !execCommitWavesEnabled(root) {
+		result := ExecWaveCommitOut{Committed: false, Reason: "execute.commitWaves is false"}
+		result.Summary = fmt.Sprintf("Wave %d not committed (execute.commitWaves is false).", in.Wave)
+		if full {
+			result.Display = fmt.Sprintf("○ wave %d → commit manually (execute.commitWaves is false)", in.Wave)
+		}
+		result.Next = &pipeline.NextAction{
+			ID:          fmt.Sprintf("wave-%d-manual-commit", in.Wave),
+			Instruction: fmt.Sprintf("execute.commitWaves is false: commit wave %d manually (git add -A && git commit -m \"...\"), then call wave-committed with the resulting sha before wave-start for wave %d.", in.Wave, nextWave),
+		}
+		return result, nil
+	}
+
+	if _, err := execx.Run("git", []string{"add", "-A"}, execx.Options{Dir: workDir}); err != nil {
+		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("git add: %s", err.Error()), Cause: err}
+	}
+
+	staged, err := execx.Run("git", []string{"diff", "--cached", "--name-only"}, execx.Options{Dir: workDir})
+	if err != nil {
+		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("git diff --cached: %s", err.Error()), Cause: err}
+	}
+	staged = strings.TrimSpace(staged)
+	if staged == "" {
+		result := ExecWaveCommitOut{Committed: false, Reason: "nothing to commit"}
+		result.Summary = fmt.Sprintf("Wave %d: nothing to commit.", in.Wave)
+		if full {
+			result.Display = fmt.Sprintf("○ wave %d → nothing to commit", in.Wave)
+		}
+		result.Next = &pipeline.NextAction{ID: fmt.Sprintf("wave-%d", nextWave), Instruction: nextInstruction}
+		return result, nil
+	}
+	fileCount := len(strings.Split(staged, "\n"))
+
+	// Commit message lands verbatim: no tool-added prefix.
+	if _, err := execx.Run("git", []string{"commit", "-m", in.Message}, execx.Options{Dir: workDir}); err != nil {
+		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("git commit: %s", err.Error()), Cause: err}
+	}
+
+	sha, err := shipHeadSHA(workDir)
+	if err != nil {
+		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("git rev-parse HEAD: %s", err.Error()), Cause: err}
+	}
+
+	w["committedSha"] = sha
+	if err := state.Write(st); err != nil {
+		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+	}
+
+	result := ExecWaveCommitOut{Committed: true, SHA: sha, Idempotent: false}
+	result.Summary = fmt.Sprintf("Wave %d committed as %s (%d files).", in.Wave, shortSHA(sha), fileCount)
+	if full {
+		result.Display = fmt.Sprintf("✔ wave %d → commit %s", in.Wave, shortSHA(sha))
+	}
+	result.Next = &pipeline.NextAction{ID: fmt.Sprintf("wave-%d", nextWave), Instruction: nextInstruction}
+	return result, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -925,6 +1588,18 @@ func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time
 	}
 	w["tasks"] = tasks
 
+	if in.Status == "DONE_WITH_CONCERNS" {
+		execAppendIssue(st.Data, StateIssue{
+			Wave:      in.Wave,
+			TaskID:    in.TaskID,
+			Severity:  "warning",
+			Category:  "done-with-concerns",
+			Summary:   fmt.Sprintf("Task %s completed with concerns", in.TaskID),
+			Detail:    in.ErrorText,
+			Timestamp: now().UTC().Format(time.RFC3339),
+		})
+	}
+
 	// Update context with filesAdded/filesModified/interfacesCreated/completedTaskIds.
 	ctx := execEnsureContext(st.Data)
 	for _, key := range []string{"filesAdded", "filesModified", "interfacesCreated", "completedTaskIds"} {
@@ -967,7 +1642,12 @@ func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time
 	if err := state.Write(st); err != nil {
 		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
 	}
-	return map[string]any{}, nil
+
+	// Narration: running tally.
+	completed, _, total := execCountWaveOutcomes(w)
+	result := ExecTaskNarrationOut{}
+	result.Summary = fmt.Sprintf("Task %s done (%d/%d reported).", in.TaskID, completed, total)
+	return result, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1029,10 +1709,233 @@ func execActionTaskFail(root, workDir string, in ExecuteStateIn, now func() time
 	}
 	w["tasks"] = tasks
 
+	// failedTask records the root failure, not a dependent skipped as a
+	// consequence of it — a skipped-dependency task-fail must not overwrite
+	// an earlier real failure.
+	if !in.SkippedDep {
+		st.Data["failedTask"] = in.TaskID
+	}
+
+	summary := fmt.Sprintf("Task %s failed", in.TaskID)
+	if in.SkippedDep {
+		summary = fmt.Sprintf("Task %s skipped (dependency failed)", in.TaskID)
+	}
+	execAppendIssue(st.Data, StateIssue{
+		Wave:      in.Wave,
+		TaskID:    in.TaskID,
+		Severity:  "error",
+		Category:  "task-fail",
+		Summary:   summary,
+		Detail:    in.ErrorText,
+		Timestamp: now().UTC().Format(time.RFC3339),
+	})
+
 	if err := state.Write(st); err != nil {
 		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
 	}
-	return map[string]any{}, nil
+
+	// Narration: running tally.
+	completed, failed, total := execCountWaveOutcomes(w)
+	result := ExecTaskNarrationOut{}
+	if in.SkippedDep {
+		result.Summary = fmt.Sprintf("Task %s skipped (%d/%d reported, %d failed).", in.TaskID, completed+failed, total, failed)
+	} else {
+		result.Summary = fmt.Sprintf("Task %s failed (%d/%d reported, %d failed).", in.TaskID, completed+failed, total, failed)
+	}
+	return result, nil
+}
+
+// ---------------------------------------------------------------------------
+// Action: task-context
+// ---------------------------------------------------------------------------
+
+// execTaskContextMaxBytes caps the serialized TaskContextOut payload, not
+// just the FactSheet field: FactSheet is the field most likely to be large
+// in practice, but PriorWaves carries execSummarizePriorWaveCtx's
+// planSummary verbatim (see execRenderPriorWaveSummary), which is itself
+// unbounded — a pathological planSummary could otherwise push the payload
+// over cap while FactSheet alone stayed within limits. Same 1 MiB magnitude
+// as execReadMaxBytes, but this action truncates rather than hard-failing:
+// task-context serves a live worker dispatch, where a usable truncated
+// payload beats an outright error over a task the worker still has to
+// attempt.
+const execTaskContextMaxBytes = 1 << 20 // 1 MiB
+
+const execTaskContextTruncationNote = "\n\n... [truncated to fit the 1 MiB task-context cap]"
+
+// execTaskContextCapPayload enforces execTaskContextMaxBytes on the
+// serialized result, truncating whichever of FactSheet/PriorWaves is
+// currently larger (i.e. actually driving the overage) and re-measuring, so
+// a single oversize field is fixed in one pass and two simultaneously
+// oversize fields are both brought within cap.
+func execTaskContextCapPayload(result *TaskContextOut) {
+	trim := func(overage int) {
+		if len(result.FactSheet) >= len(result.PriorWaves) {
+			cut := len(result.FactSheet) - overage
+			if cut < 0 {
+				cut = 0
+			}
+			result.FactSheet = strings.ToValidUTF8(result.FactSheet[:cut], "") + execTaskContextTruncationNote
+		} else {
+			cut := len(result.PriorWaves) - overage
+			if cut < 0 {
+				cut = 0
+			}
+			result.PriorWaves = strings.ToValidUTF8(result.PriorWaves[:cut], "") + execTaskContextTruncationNote
+		}
+		result.Truncated = true
+	}
+
+	raw, err := json.Marshal(result)
+	if err != nil || len(raw) <= execTaskContextMaxBytes {
+		return
+	}
+	trim(len(raw) - execTaskContextMaxBytes)
+
+	// Re-measure: a single trim pass can undershoot if both fields were
+	// individually huge (a pathological planSummary alongside an oversize
+	// fact sheet).
+	raw, err = json.Marshal(result)
+	if err == nil && len(raw) > execTaskContextMaxBytes {
+		trim(len(raw) - execTaskContextMaxBytes)
+	}
+}
+
+// execTaskContextVerify returns static verify guidance for a dispatched
+// worker, naming taskID so the git-diff scope check and VERIFY: canary line
+// it asks for are unambiguous when a worker is handling more than one task.
+func execTaskContextVerify(taskID string) string {
+	return fmt.Sprintf(
+		"Run task %s's own build/tests as scoped by the Acceptance Criteria and Files list in "+
+			"the fact sheet above. Confirm via `git diff` that only files from that Files list "+
+			"changed. Your completion report MUST include a `VERIFY: <symbol> in <file>` canary "+
+			"line naming a real symbol you added or changed for this task — it is the only proof "+
+			"the main session has that the change is real, not phantom.",
+		taskID,
+	)
+}
+
+// execTaskContextReportBack returns static report-back instructions for a
+// dispatched worker, mirroring the heartbeat/completion-block conventions
+// documented in plugins/sdlc/skills/execute/SKILL.md and
+// classifying-and-waving-tasks.md (wave-progress phases, task-done/task-fail
+// recorded by the main session, not the worker itself).
+func execTaskContextReportBack(taskID string) string {
+	return fmt.Sprintf(
+		"Emit a heartbeat as you enter each phase: execute_state({ action: \"wave-progress\", "+
+			"runId: \"<RUN_ID>\", taskId: %q, phase: <phase> }) for phase in started, reading, "+
+			"editing, verifying, reporting (each once). When finished, report status "+
+			"SUCCESS | DONE_WITH_CONCERNS | FAILED with the COMPLETE:/VERIFY:/INTERFACES:/"+
+			"DECISIONS:/STATUS: block — the main session records it via execute_state({ action: "+
+			"\"task-done\" | \"task-fail\", taskId: %q, ... }). Do not call task-done/task-fail "+
+			"yourself.",
+		taskID, taskID,
+	)
+}
+
+// execRenderPriorWaveSummary renders the bounded prior-wave context map
+// returned by execSummarizePriorWaveCtx as compact text. This is a live
+// on-demand render of the same context that renderFactSheet baked into the
+// task's fact sheet as of wave-start, so task-context can reflect updates
+// (e.g. sibling tasks in the same wave that have since completed) rather
+// than only the wave-start-time snapshot on disk.
+func execRenderPriorWaveSummary(summary map[string]any) string {
+	var b strings.Builder
+	if ps, _ := summary["planSummary"].(string); ps != "" {
+		b.WriteString("Plan summary: ")
+		b.WriteString(ps)
+		b.WriteString("\n\n")
+	}
+
+	rows := []struct {
+		label string
+		key   string
+	}{
+		{"Completed task IDs", "completedTaskIds"},
+		{"Files added", "filesAdded"},
+		{"Files modified", "filesModified"},
+		{"Interfaces", "interfacesCreated"},
+		{"Decisions", "decisionsFromPriorWaves"},
+	}
+	for _, r := range rows {
+		vals := anyToStringSlice(summary[r.key])
+		if len(vals) == 0 {
+			continue
+		}
+		b.WriteString(r.label)
+		b.WriteString(":\n")
+		for _, v := range vals {
+			b.WriteString("- ")
+			b.WriteString(v)
+			b.WriteByte('\n')
+		}
+		b.WriteByte('\n')
+	}
+
+	if b.Len() == 0 {
+		return "No prior-wave context recorded yet."
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func execActionTaskContext(root, workDir string, in ExecuteStateIn) (any, error) {
+	taskID := strings.TrimSpace(in.TaskID)
+	if taskID == "" {
+		return nil, &mcpserver.DomainError{Msg: "taskId is required for task-context"}
+	}
+
+	branch, err := execResolveBranch(in.Branch, workDir)
+	if err != nil {
+		return nil, err
+	}
+	st, err := execFindState(root, branch)
+	if err != nil {
+		return nil, err
+	}
+
+	runID := in.RunID
+	if runID == "" {
+		runID = execDeriveRunID(st.Data, in.Wave)
+	}
+
+	_, content, err := wave.ReadFactsheet(root, runID, taskID)
+	if err != nil {
+		if errors.Is(err, wave.ErrFactsheetNotFound) {
+			ids, listErr := wave.ListFactsheetIDs(root, runID)
+			if listErr != nil {
+				return nil, &mcpserver.InfraError{Msg: "list fact sheets: " + listErr.Error(), Cause: listErr}
+			}
+			msg := fmt.Sprintf("no fact sheet for task %q under run %q", taskID, runID)
+			if len(ids) > 0 {
+				msg += "; valid task IDs: " + strings.Join(ids, ", ")
+			} else {
+				msg += "; run has no fact sheets yet (call wave-start first)"
+			}
+			return nil, &mcpserver.DomainError{Msg: msg, Cause: err}
+		}
+		if errors.Is(err, wave.ErrBadRunID) {
+			return nil, &mcpserver.DomainError{Msg: err.Error(), Cause: err}
+		}
+		return nil, &mcpserver.InfraError{Msg: "read fact sheet: " + err.Error(), Cause: err}
+	}
+
+	summary := execSummarizePriorWaveCtx(st.Data, root, 0, 0, 0, 0)
+
+	result := TaskContextOut{
+		TaskID:     taskID,
+		FactSheet:  content,
+		PriorWaves: execRenderPriorWaveSummary(summary),
+		Verify:     execTaskContextVerify(taskID),
+		ReportBack: execTaskContextReportBack(taskID),
+	}
+
+	// Enforce the payload cap — never silently return a blob larger than
+	// the cap without flagging it (mirrors the "never a silent truncation"
+	// posture of execReadMaxBytes, but truncates instead of erroring; see
+	// the const doc comment above for why).
+	execTaskContextCapPayload(&result)
+
+	return result, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1138,14 +2041,39 @@ func execActionRead(root, workDir string, in ExecuteStateIn) (any, error) {
 		}
 	}
 
-	return st.Data, nil
+	if !execRunInFlight(st.Data) {
+		return st.Data, nil
+	}
+
+	// In-flight run: attach a resume bearings briefing on a shallow copy so
+	// the original st.Data map is untouched (read never mutates state).
+	_, redoTaskIDs := execResumeResetCandidates(st.Data)
+	out := make(map[string]any, len(st.Data)+1)
+	for k, v := range st.Data {
+		out[k] = v
+	}
+	out["resumeBriefing"] = execBuildResumeBriefing(workDir, st.Data, redoTaskIDs, true)
+	return out, nil
 }
 
 // ---------------------------------------------------------------------------
 // Action: cleanup
 // ---------------------------------------------------------------------------
 
-func execActionCleanup(root, workDir string, in ExecuteStateIn) (any, error) {
+// execActionCleanup stamps the branch's execution state terminal instead of
+// deleting it (state.Write, never os.Remove on the state file) so the state
+// — including issues[] — survives for later reads (e.g. /harden) until GC's
+// TTL prunes it via prune-on-write / GC, and separately reaps the per-run
+// working directory and ledger directory, which hold only working artifacts
+// and are safe to delete.
+//
+// CRITICAL SAFETY: directory removal only happens when the state carries a
+// non-empty startedAt, from which the runID is derived (same derivation as
+// execReapRunDirectories' live-run detection). An empty/undeterminable runID
+// must never reach os.RemoveAll: filepath.Join(root, DataDir, "execution", "")
+// resolves to the execution directory ITSELF (a trailing empty Join segment
+// is a no-op), and RemoveAll-ing that would wipe every run's data at once.
+func execActionCleanup(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	branch, err := execResolveBranch(in.Branch, workDir)
 	if err != nil {
 		return nil, err
@@ -1156,14 +2084,49 @@ func execActionCleanup(root, workDir string, in ExecuteStateIn) (any, error) {
 		return nil, &mcpserver.InfraError{Msg: "find state: " + findErr.Error(), Cause: findErr}
 	}
 	if st == nil {
-		// Nothing to delete — success.
+		// Nothing to clean up — success.
 		return map[string]any{}, nil
 	}
 
-	if err := os.Remove(st.Path); err != nil && !os.IsNotExist(err) {
-		return nil, &mcpserver.InfraError{Msg: "delete state: " + err.Error(), Cause: err}
+	completedAt := now().UTC().Format(time.RFC3339)
+	st.Data["runStatus"] = "completed"
+	st.Data["runCompletedAt"] = completedAt
+
+	out := map[string]any{
+		"runStatus":        "completed",
+		"runCompletedAt":   completedAt,
+		"runDirCleaned":    false,
+		"ledgerDirCleaned": false,
 	}
-	return map[string]any{}, nil
+
+	if startedAt, _ := st.Data["startedAt"].(string); startedAt != "" {
+		runID := execNonDigitTRE.ReplaceAllString(startedAt, "")
+		if runID != "" {
+			runDir := filepath.Join(root, paths.DataDir, "execution", runID)
+			if rmErr := os.RemoveAll(runDir); rmErr != nil {
+				out["runDirError"] = rmErr.Error()
+			} else {
+				out["runDirCleaned"] = true
+			}
+
+			ldgDir := ledgerDir(root, runID)
+			if rmErr := os.RemoveAll(ldgDir); rmErr != nil {
+				out["ledgerDirError"] = rmErr.Error()
+			} else {
+				out["ledgerDirCleaned"] = true
+			}
+		}
+	}
+
+	if err := state.Write(st); err != nil {
+		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+	}
+
+	if summary := execIssueSummaryFull(st.Data); summary != nil {
+		out["issueSummary"] = summary
+	}
+
+	return out, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1314,7 +2277,11 @@ func execReapRunDirectories(stateDir string, ttlDays int, dryRun bool, now func(
 	deleteBucketKey := "deleted"
 	keepBucketKey := "kept"
 
-	result := map[string]any{deleteBucketKey: []any{}, keepBucketKey: []any{}}
+	result := map[string]any{
+		deleteBucketKey: []any{},
+		keepBucketKey:   []any{},
+		"ledger":        map[string]any{deleteBucketKey: []any{}, keepBucketKey: []any{}},
+	}
 
 	entries, err := os.ReadDir(stateDir)
 	if err != nil {
@@ -1347,6 +2314,13 @@ func execReapRunDirectories(stateDir string, ttlDays int, dryRun bool, now func(
 			continue
 		}
 		dirName := e.Name()
+		if dirName == "ledger" {
+			// ledger/ is not a single per-run directory — it holds one
+			// subdirectory per run. Never RemoveAll it as a unit here;
+			// its children are swept individually in the dedicated loop
+			// below so a stale ledger/ mtime can't wipe live runs' data.
+			continue
+		}
 		dirPath := filepath.Join(stateDir, dirName)
 		info, infoErr := e.Info()
 		if infoErr != nil {
@@ -1380,6 +2354,55 @@ func execReapRunDirectories(stateDir string, ttlDays int, dryRun bool, now func(
 			}
 		}
 	}
+
+	// Second loop: sweep ledger/'s children individually. Each child is a
+	// per-run directory named like the top-level run directories, so the
+	// same TTL and liveRunIDs checks apply — but deletion is scoped to one
+	// run's ledger subdirectory at a time, never the whole ledger/ tree.
+	ledgerResult := map[string]any{deleteBucketKey: []any{}, keepBucketKey: []any{}}
+	ledgerPath := filepath.Join(stateDir, "ledger")
+	ledgerEntries, ledgerErr := os.ReadDir(ledgerPath)
+	if ledgerErr == nil {
+		for _, e := range ledgerEntries {
+			if !e.IsDir() {
+				continue
+			}
+			dirName := e.Name()
+			dirPath := filepath.Join(ledgerPath, dirName)
+			info, infoErr := e.Info()
+			if infoErr != nil {
+				continue
+			}
+
+			age := nowTime.Sub(info.ModTime())
+
+			if age < ttlDur {
+				ledgerResult[keepBucketKey] = append(ledgerResult[keepBucketKey].([]any),
+					map[string]any{"dir": dirName, "reason": "ttl-fresh"})
+				continue
+			}
+
+			if liveRunIDs[dirName] {
+				ledgerResult[keepBucketKey] = append(ledgerResult[keepBucketKey].([]any),
+					map[string]any{"dir": dirName, "reason": "state-file-exists"})
+				continue
+			}
+
+			if dryRun {
+				ledgerResult[deleteBucketKey] = append(ledgerResult[deleteBucketKey].([]any),
+					map[string]any{"dir": dirName, "reason": "stale+state-file-gone"})
+			} else {
+				if err := os.RemoveAll(dirPath); err != nil {
+					ledgerResult[keepBucketKey] = append(ledgerResult[keepBucketKey].([]any),
+						map[string]any{"dir": dirName, "reason": "rm-failed"})
+				} else {
+					ledgerResult[deleteBucketKey] = append(ledgerResult[deleteBucketKey].([]any),
+						map[string]any{"dir": dirName, "reason": "stale+state-file-gone"})
+				}
+			}
+		}
+	}
+	result["ledger"] = ledgerResult
 
 	return result
 }
@@ -1660,13 +2683,322 @@ func execActionWaveProgress(root string, in ExecuteStateIn) (any, error) {
 		return nil, &mcpserver.DomainError{Msg: "taskId is required (write mode)"}
 	}
 
-	if err := wave.UpdateProgress(root, in.RunID, in.TaskID, in.Phase); err != nil {
+	if err := wave.UpdateProgress(root, in.RunID, in.TaskID, in.Phase, in.LastCompletedTask); err != nil {
 		if errors.Is(err, wave.ErrBadRunID) || errors.Is(err, wave.ErrBadPhase) {
 			return nil, &mcpserver.DomainError{Msg: err.Error(), Cause: err}
 		}
 		return nil, &mcpserver.InfraError{Msg: "update progress: " + err.Error(), Cause: err}
 	}
 	return map[string]any{}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Resume bearings briefing (shared by read and resume-reset)
+// ---------------------------------------------------------------------------
+
+// ExecResumeBriefing is attached under the "resumeBriefing" key on an
+// execute_state read/resume-reset response when execRunInFlight reports a
+// run that has started but not finished. It never causes read or
+// resume-reset to fail: even a git cross-check mismatch is reported here as
+// data (GitCrossCheck/GitMismatches), never as an error — see
+// execGitCrossCheckWaves. A crashed or interrupted run is always described
+// as Resumable: true, never surfaced as a failure.
+type ExecResumeBriefing struct {
+	pipeline.Narration
+	Resumable      bool     `json:"resumable"`
+	WavesDone      int      `json:"wavesDone"`
+	WavesRemaining int      `json:"wavesRemaining"`
+	GitCrossCheck  string   `json:"gitCrossCheck,omitempty"`
+	GitMismatches  []string `json:"gitMismatches,omitempty"`
+	WillRedo       []string `json:"willRedo"`
+	WillSkip       []string `json:"willSkip"`
+}
+
+// execRunInFlight reports whether an execute state represents a run that
+// has started work but not finished. It reads only fields already
+// persisted by init/wave-start/wave-done/task-done — it never re-parses
+// the plan file or re-derives the "true" total wave count, so it cannot
+// hard-fail on a stale or moved plan path. True when either:
+//   - some recorded wave has a status other than "completed" (in_progress,
+//     partial, or failed), or
+//   - every recorded wave is "completed" but plannedTaskIds is known and
+//     not every planned task ID appears in context.completedTaskIds.
+func execRunInFlight(data map[string]any) bool {
+	waves, _ := data["waves"].([]any)
+	if len(waves) == 0 {
+		return false
+	}
+
+	for _, w := range waves {
+		wm, ok := w.(map[string]any)
+		if !ok {
+			continue
+		}
+		if status, _ := wm["status"].(string); status != "completed" {
+			return true
+		}
+	}
+
+	planned := anyToStringSlice(data["plannedTaskIds"])
+	if len(planned) == 0 {
+		return false
+	}
+	completedSet := map[string]bool{}
+	if ctx, ok := data["context"].(map[string]any); ok {
+		for _, id := range anyToStringSlice(ctx["completedTaskIds"]) {
+			completedSet[execNormalizeTaskID(id)] = true
+		}
+	}
+	for _, id := range planned {
+		if !completedSet[execNormalizeTaskID(id)] {
+			return true
+		}
+	}
+	return false
+}
+
+// execResumeResetCandidates identifies which in-progress waves resume-reset
+// would clear and which task IDs they would clear, without mutating state.
+// execActionResumeReset calls this for its actual mutation so read's
+// dry-run willRedo preview and resume-reset's real effect always agree.
+func execResumeResetCandidates(data map[string]any) (waveNumbers []int, taskIDs []string) {
+	waves, _ := data["waves"].([]any)
+	for _, w := range waves {
+		wm, ok := w.(map[string]any)
+		if !ok {
+			continue
+		}
+		status, _ := wm["status"].(string)
+		if status != "in_progress" {
+			continue
+		}
+
+		tasks, _ := wm["tasks"].([]any)
+		_, hasCompletedAt := wm["completedAt"]
+		if len(tasks) == 0 && !hasCompletedAt {
+			continue // nothing to reset
+		}
+
+		for _, t := range tasks {
+			tm, ok := t.(map[string]any)
+			if ok {
+				if id, ok := tm["id"].(string); ok {
+					taskIDs = append(taskIDs, id)
+				}
+			}
+		}
+		waveNumbers = append(waveNumbers, execToInt(wm["number"]))
+	}
+	return waveNumbers, taskIDs
+}
+
+// execComputeResumeSets splits a resume into willRedo (task IDs a resumed
+// run will re-execute — the ones execResumeResetCandidates identified) and
+// willSkip (task IDs already recorded in context.completedTaskIds that are
+// not part of a reset wave, so a resumed run will not touch them again).
+// A task recorded as completed inside a wave that is about to be reset is
+// classified as willRedo, not willSkip: resume-reset clears a whole
+// in-progress wave's task list, so that task will run again. Both return
+// values are non-nil (possibly empty) so they serialize as JSON "[]", not
+// "null".
+func execComputeResumeSets(data map[string]any, redoTaskIDs []string) (willRedo, willSkip []string) {
+	willRedo = append([]string{}, redoTaskIDs...)
+	redoSet := map[string]bool{}
+	for _, id := range willRedo {
+		redoSet[execNormalizeTaskID(id)] = true
+	}
+
+	willSkip = []string{}
+	if ctx, ok := data["context"].(map[string]any); ok {
+		for _, id := range anyToStringSlice(ctx["completedTaskIds"]) {
+			if !redoSet[execNormalizeTaskID(id)] {
+				willSkip = append(willSkip, id)
+			}
+		}
+	}
+
+	sort.Strings(willRedo)
+	sort.Strings(willSkip)
+	return willRedo, willSkip
+}
+
+// execGitCrossCheckResult is the outcome of comparing every wave's recorded
+// committedSha against actual git history. Status is one of "none" (no
+// wave has a committedSha yet), "confirmed" (every recorded sha is an
+// ancestor of HEAD), or "mismatch" (at least one is not, or could not be
+// verified — both are collected in Mismatches). This never carries a Go
+// error: a mismatch is data for the caller to act on, not a tool failure.
+type execGitCrossCheckResult struct {
+	Status     string
+	Mismatches []string
+}
+
+// execGitCrossCheckWaves reuses execIsAncestor (the existing
+// `git merge-base --is-ancestor` helper) rather than adding new gitx
+// surface or shelling out again. A git-level failure to verify a sha (bad
+// sha, not a repo, etc.) is recorded as a mismatch entry, same as a
+// confirmed non-ancestor — either way this function returns a result, never
+// an error, so a git cross-check problem can never hard-fail read or
+// resume-reset.
+func execGitCrossCheckWaves(workDir string, data map[string]any) execGitCrossCheckResult {
+	waves, _ := data["waves"].([]any)
+	var mismatches []string
+	checked := 0
+
+	for _, w := range waves {
+		wm, ok := w.(map[string]any)
+		if !ok {
+			continue
+		}
+		sha, _ := wm["committedSha"].(string)
+		if sha == "" {
+			continue
+		}
+		num := execToInt(wm["number"])
+
+		isAncestor, err := execIsAncestor(workDir, sha)
+		if err != nil {
+			mismatches = append(mismatches, fmt.Sprintf("wave %d: could not verify commit %s against git history (%s)", num, shortSHA(sha), err.Error()))
+			continue
+		}
+		checked++
+		if !isAncestor {
+			mismatches = append(mismatches, fmt.Sprintf("wave %d: recorded commit %s not found in current git history", num, shortSHA(sha)))
+		}
+	}
+
+	if len(mismatches) > 0 {
+		return execGitCrossCheckResult{Status: "mismatch", Mismatches: mismatches}
+	}
+	if checked > 0 {
+		return execGitCrossCheckResult{Status: "confirmed"}
+	}
+	return execGitCrossCheckResult{Status: "none"}
+}
+
+// execLastRecordedWave returns the highest-numbered wave entry in
+// data["waves"], or nil if there are none. Mirrors buildExecuteRecovery's
+// (hooks/pre_compact_save.go) "last touched wave" precedent.
+func execLastRecordedWave(data map[string]any) map[string]any {
+	waves, _ := data["waves"].([]any)
+	var last map[string]any
+	lastNum := -1
+	for _, w := range waves {
+		wm, ok := w.(map[string]any)
+		if !ok {
+			continue
+		}
+		if n := execToInt(wm["number"]); n >= lastNum {
+			lastNum = n
+			last = wm
+		}
+	}
+	return last
+}
+
+// execResumeNextAction computes the ResumeBriefing's Next field from the
+// last recorded wave's status. forRead distinguishes the read action
+// (nothing mutated yet, so a reset must be instructed first when there is
+// something to reset) from resume-reset (the reset already happened, so
+// wave-start is the direct next step).
+func execResumeNextAction(data map[string]any, forRead bool) *pipeline.NextAction {
+	last := execLastRecordedWave(data)
+	if last == nil {
+		return nil
+	}
+	num := execToInt(last["number"])
+	status, _ := last["status"].(string)
+
+	switch status {
+	case "in_progress":
+		tasks, _ := last["tasks"].([]any)
+		_, hasCompletedAt := last["completedAt"]
+		hasCandidate := len(tasks) > 0 || hasCompletedAt
+		if hasCandidate && forRead {
+			return &pipeline.NextAction{
+				ID:          "resume-reset",
+				Instruction: fmt.Sprintf("Call resume-reset, then wave-start for wave %d.", num),
+			}
+		}
+		return &pipeline.NextAction{
+			ID:          fmt.Sprintf("wave-%d", num),
+			Instruction: fmt.Sprintf("Call wave-start for wave %d.", num),
+		}
+	case "failed":
+		return &pipeline.NextAction{
+			ID:          fmt.Sprintf("wave-%d", num),
+			Instruction: fmt.Sprintf("Wave %d failed — investigate the recorded issue, then call resume-reset and wave-start for wave %d to retry.", num, num),
+		}
+	case "partial":
+		return &pipeline.NextAction{
+			ID:          fmt.Sprintf("wave-%d", num+1),
+			Instruction: fmt.Sprintf("Wave %d completed with partial failures — review issues, then call wave-commit and wave-start for wave %d.", num, num+1),
+		}
+	default: // "completed"
+		return &pipeline.NextAction{
+			ID:          fmt.Sprintf("wave-%d", num+1),
+			Instruction: fmt.Sprintf("Call wave-commit, then wave-start for wave %d.", num+1),
+		}
+	}
+}
+
+// execBuildResumeBriefing composes the ResumeBriefing shared by read and
+// resume-reset. redoTaskIDs is supplied by the caller: read passes a
+// dry-run result from execResumeResetCandidates (nothing mutated yet),
+// resume-reset passes the task IDs it actually just cleared — guaranteeing
+// both actions describe identical resume semantics (the "mirror"
+// requirement: resume-reset's real effect and read's preview must agree).
+func execBuildResumeBriefing(workDir string, data map[string]any, redoTaskIDs []string, forRead bool) *ExecResumeBriefing {
+	waves, _ := data["waves"].([]any)
+	wavesDone, wavesRemaining := 0, 0
+	for _, w := range waves {
+		wm, ok := w.(map[string]any)
+		if !ok {
+			continue
+		}
+		if status, _ := wm["status"].(string); status == "completed" {
+			wavesDone++
+		} else {
+			wavesRemaining++
+		}
+	}
+
+	willRedo, willSkip := execComputeResumeSets(data, redoTaskIDs)
+	git := execGitCrossCheckWaves(workDir, data)
+	next := execResumeNextAction(data, forRead)
+
+	b := &ExecResumeBriefing{
+		Resumable:      true,
+		WavesDone:      wavesDone,
+		WavesRemaining: wavesRemaining,
+		WillRedo:       willRedo,
+		WillSkip:       willSkip,
+	}
+	if git.Status != "none" {
+		b.GitCrossCheck = git.Status
+	}
+	if len(git.Mismatches) > 0 {
+		b.GitMismatches = git.Mismatches
+	}
+
+	lines := []string{fmt.Sprintf("Run resumable: %d wave(s) done, %d recorded wave(s) still need attention.", wavesDone, wavesRemaining)}
+	switch git.Status {
+	case "confirmed":
+		lines = append(lines, "Git: all recorded commits confirmed in history.")
+	case "mismatch":
+		lines = append(lines, fmt.Sprintf("Git: %d commit mismatch(es) found — see gitMismatches.", len(git.Mismatches)))
+	}
+	if len(willRedo) > 0 {
+		lines = append(lines, "Will redo: "+strings.Join(willRedo, ", "))
+	}
+	if len(willSkip) > 0 {
+		lines = append(lines, "Will skip (already completed): "+strings.Join(willSkip, ", "))
+	}
+
+	b.Summary = lines[0]
+	b.Display = "**Resume briefing**\n- " + strings.Join(lines, "\n- ")
+	b.Next = next
+	return b
 }
 
 // ---------------------------------------------------------------------------
@@ -1688,50 +3020,40 @@ func execActionResumeReset(root, workDir string, in ExecuteStateIn) (any, error)
 	clearedTaskIds := []string{}
 
 	if st != nil {
-		waves, _ := st.Data["waves"].([]any)
-		changed := false
+		resetWaves, clearedTaskIds = execResumeResetCandidates(st.Data)
 
-		for _, w := range waves {
-			wm, ok := w.(map[string]any)
-			if !ok {
-				continue
+		if len(resetWaves) > 0 {
+			waveSet := map[int]bool{}
+			for _, n := range resetWaves {
+				waveSet[n] = true
 			}
-			status, _ := wm["status"].(string)
-			if status != "in_progress" {
-				continue
-			}
-
-			tasks, _ := wm["tasks"].([]any)
-			_, hasCompletedAt := wm["completedAt"]
-			if len(tasks) == 0 && !hasCompletedAt {
-				continue // nothing to reset
-			}
-
-			for _, t := range tasks {
-				tm, ok := t.(map[string]any)
-				if ok {
-					if id, ok := tm["id"].(string); ok {
-						clearedTaskIds = append(clearedTaskIds, id)
-					}
+			waves, _ := st.Data["waves"].([]any)
+			for _, w := range waves {
+				wm, ok := w.(map[string]any)
+				if !ok {
+					continue
+				}
+				if waveSet[execToInt(wm["number"])] {
+					wm["tasks"] = []any{}
+					delete(wm, "completedAt")
 				}
 			}
-			wm["tasks"] = []any{}
-			delete(wm, "completedAt")
-			resetWaves = append(resetWaves, execToInt(wm["number"]))
-			changed = true
-		}
-
-		if changed {
 			if err := state.Write(st); err != nil {
 				return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
 			}
 		}
 	}
 
-	return map[string]any{
+	out := map[string]any{
 		"resetWaves":     resetWaves,
 		"clearedTaskIds": clearedTaskIds,
-	}, nil
+	}
+
+	if st != nil && execRunInFlight(st.Data) {
+		out["resumeBriefing"] = execBuildResumeBriefing(workDir, st.Data, clearedTaskIds, false)
+	}
+
+	return out, nil
 }
 
 // ---------------------------------------------------------------------------
