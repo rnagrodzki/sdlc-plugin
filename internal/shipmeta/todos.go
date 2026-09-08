@@ -27,7 +27,7 @@ var SubstepMap = map[string][]string{
 	"review":              {"dispatch review dimensions", "collect verdicts"},
 	"received-review":     {"fetch comments", "classify findings", "apply auto-fixes", "surface remaining"},
 	"commit-fixes":        {"re-stage", "commit fixes"},
-	"version":             {"bump version", "update CHANGELOG", "tag"},
+	"version":             {"diagnose version", "draft release notes"},
 	"verify-openspec":     {"openspec validate --strict", "check result"},
 	"archive-openspec":    {"validate", "run archive", "stage", "commit"},
 	"pr":                  {"push branch", "draft body", "gh pr create", "apply labels"},

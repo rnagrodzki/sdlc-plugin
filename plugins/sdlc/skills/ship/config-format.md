@@ -139,7 +139,7 @@ This port has **two independent knobs**, both of which end up controlling how mu
 
 These do not automatically agree. `ship.auto: true` with no `automation` section still leaves every step resolving to `"confirm"` from `ship_state{action:"next"}`'s point of view (its default is `"supervised"`, independent of `ship.auto`). Treat `ship.auto`/an explicit `auto` tool input as the pipeline-wide prompt-suppression switch, and the `automation` section as the finer-grained per-step signal the KD14 executor loop reads — document both to a user configuring `.sdlc-v2/local.json`, and do not assume setting one sets the other.
 
-**Neither mechanism can make the version step's tag-and-push fully unattended.** `automation.mode: unattended` (or `ship.auto: true`) still requires a human (or an out-of-band script) to create and push the release tag before `ship_verify_side_effect` can report `landed: true` — see `reference.md`.
+The version step itself never creates or pushes a tag — it only diagnoses release readiness (`version_prepare`) and drafts a bump level and release notes, fully covered by `automation.mode: unattended` (or `ship.auto: true`) like any other step. The real version bump/tag/CHANGELOG write happens post-merge via CI (`release-on-main.yml`/`verify-release-intent.yml`/`promote-release.yml`), outside this pipeline's automation surface entirely — see `reference.md`.
 
 ---
 

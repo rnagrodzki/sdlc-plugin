@@ -207,7 +207,7 @@
         "properties": {
           "kind": {
             "type": "string",
-            "enum": ["tag", "pr", "sha"]
+            "enum": ["release-intent", "pr", "sha"]
           },
           "ref": {
             "type": "string"

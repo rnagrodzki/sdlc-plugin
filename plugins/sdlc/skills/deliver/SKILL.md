@@ -91,7 +91,7 @@ You are executing the <skill-name> skill. Invoke `/<skill-name> <args>` using th
 (4) any warnings or issues encountered
 ```
 
-Each dispatched skill is a black box — never call a dispatched skill's own MCP tools directly (never call `ship_state`/`execute_state`'s step-shaped actions, `review_prepare`, `ship_prepare`, etc. from deliver itself; only the dispatched Agent calls those). Per-dispatch additions to this base template (below, for review and ship) follow the same precedent ship itself sets when it instructs the version dispatch to report its computed `NEW_TAG` in artifacts — augmenting the template with skill-specific reporting instructions is in-idiom, not a deviation from it.
+Each dispatched skill is a black box — never call a dispatched skill's own MCP tools directly (never call `ship_state`/`execute_state`'s step-shaped actions, `review_prepare`, `ship_prepare`, etc. from deliver itself; only the dispatched Agent calls those). Per-dispatch additions to this base template (below, for review and ship) follow the same precedent ship itself sets when it instructs the version dispatch to report its computed `level`/`notes`/`preRelease` in artifacts (forwarded to the pr step's `pr_apply` call as `releaseLevel`/`releaseNotes`/`releasePreRelease`) — augmenting the template with skill-specific reporting instructions is in-idiom, not a deviation from it.
 
 ### plan
 
@@ -204,16 +204,15 @@ Do this once per fresh run (not on --resume, where these steps are already
 skipped from the prior attempt). Skipping is idempotent and safe to call again if unsure.
 ```
 
-**Manual-gate handling (Q2 — the least source-precedented part of this skill):** ship has two hardcoded manual `AskUserQuestion` gates that survive even `automation.mode: unattended` — the release tag creation/push pause (after its `version` step) and the post-PR-commit push pause (after its `verify-pipeline` auto-fix commit or its `learnings-commit`). No tool in the 34-tool registry can create or push a git tag, or push a branch, so these gates are permanent, not a bug. Add this instruction to the ship dispatch, beyond the base template:
+**Manual-gate handling (Q2 — the least source-precedented part of this skill):** ship has one hardcoded manual `AskUserQuestion` gate that survives even `automation.mode: unattended` — the post-PR-commit push pause (after its `verify-pipeline` auto-fix commit or its `learnings-commit`). No tool in the tool registry can push a branch, so this gate is permanent, not a bug. (The version step's own former tag-creation/push gate no longer exists — the version step only diagnoses release readiness and drafts a bump level/notes; it never creates or pushes a tag at ship time, so it has nothing to pause for.) Add this instruction to the ship dispatch, beyond the base template:
 
 ```
-If you reach either of your two manual AskUserQuestion gates (tag creation/push after `version`; a
-push pause after `verify-pipeline` or `learnings-commit`) and no interactive human is available to
-answer it, do not wait indefinitely. Stop immediately after surfacing the gate and return:
+If you reach your manual AskUserQuestion gate (a push pause after `verify-pipeline` or
+`learnings-commit`) and no interactive human is available to answer it, do not wait indefinitely.
+Stop immediately after surfacing the gate and return:
 (1) status: "blocked"
 (2) result summary naming exactly which gate was reached
-(3) artifacts containing the exact pending action (e.g. NEW_TAG and the `git tag`/`git push` commands,
-    or the branch to push)
+(3) artifacts containing the exact pending action (the branch to push)
 (4) no warnings beyond the above
 ```
 

@@ -60,10 +60,15 @@ func TestMaxWaveTimeoutSecondsMatchesSchema(t *testing.T) {
 // TestSubstepMapMatchesSource proves Acceptance Criterion 2: SubstepMap
 // renders the same todo lists as scripts/lib/ship-todos.js SUBSTEP_MAP, for
 // every pipeline step fixture. Values below are copied verbatim from the
-// source SUBSTEP_MAP (F-shared-lib-cross-cutting-behavior-77/78), except
-// "learnings-commit": the source's "commit log" substep was dropped when the
-// step was redefined as append-only (learnings/log.md is gitignored and
-// never committed — see internal/tools/learnings.go).
+// source SUBSTEP_MAP (F-shared-lib-cross-cutting-behavior-77/78), except:
+//   - "learnings-commit": the source's "commit log" substep was dropped when
+//     the step was redefined as append-only (learnings/log.md is gitignored
+//     and never committed — see internal/tools/learnings.go).
+//   - "version": the source's {"bump version", "update CHANGELOG", "tag"}
+//     described the old manual-tag flow. Task 12 redefined the ship version
+//     step as diagnose-and-plan only (version_prepare + drafted release
+//     notes, no version_apply/tag/CHANGELOG write) — the actual bump/tag/
+//     CHANGELOG write now happens post-merge via release-on-main CI.
 func TestSubstepMapMatchesSource(t *testing.T) {
 	tests := []struct {
 		step string
@@ -74,7 +79,7 @@ func TestSubstepMapMatchesSource(t *testing.T) {
 		{"review", []string{"dispatch review dimensions", "collect verdicts"}},
 		{"received-review", []string{"fetch comments", "classify findings", "apply auto-fixes", "surface remaining"}},
 		{"commit-fixes", []string{"re-stage", "commit fixes"}},
-		{"version", []string{"bump version", "update CHANGELOG", "tag"}},
+		{"version", []string{"diagnose version", "draft release notes"}},
 		{"verify-openspec", []string{"openspec validate --strict", "check result"}},
 		{"archive-openspec", []string{"validate", "run archive", "stage", "commit"}},
 		{"pr", []string{"push branch", "draft body", "gh pr create", "apply labels"}},
@@ -103,8 +108,13 @@ func TestSubstepMapMatchesSource(t *testing.T) {
 
 // TestTodosForStepMatchesSource proves TodosForStep matches
 // stepTransition(state, "version").todos from scripts/lib/ship-todos.js for a
-// fixture with mixed completed/skipped/failed/pending/current step statuses.
-// The want slice below was produced by running the actual JS reference:
+// fixture with mixed completed/skipped/failed/pending/current step statuses,
+// except for the "version" step's own substeps: Task 12 redefined the ship
+// version step as diagnose-and-plan only (see SubstepMap's "version" entry
+// above and its comment), so those two entries below diverge intentionally
+// from the JS reference rather than being copied verbatim from it. The want
+// slice below was originally produced by running the actual JS reference,
+// then hand-edited for that one divergence:
 //
 //	node -e '
 //	  const { stepTransition } = require("scripts/lib/ship-todos.js");
@@ -144,9 +154,8 @@ func TestTodosForStepMatchesSource(t *testing.T) {
 		{Content: "Commit: restore stash (skipped)", ActiveForm: "Restore stash", Status: "completed"},
 		{Content: "Review: dispatch review dimensions (failed)", ActiveForm: "Dispatch review dimensions", Status: "completed"},
 		{Content: "Review: collect verdicts (failed)", ActiveForm: "Collect verdicts", Status: "completed"},
-		{Content: "Version: bump version", ActiveForm: "Bump version", Status: "in_progress"},
-		{Content: "Version: update CHANGELOG", ActiveForm: "Update CHANGELOG", Status: "pending"},
-		{Content: "Version: tag", ActiveForm: "Tag", Status: "pending"},
+		{Content: "Version: diagnose version", ActiveForm: "Diagnose version", Status: "in_progress"},
+		{Content: "Version: draft release notes", ActiveForm: "Draft release notes", Status: "pending"},
 		{Content: "Pr: push branch", ActiveForm: "Push branch", Status: "pending"},
 		{Content: "Pr: draft body", ActiveForm: "Draft body", Status: "pending"},
 		{Content: "Pr: gh pr create", ActiveForm: "Gh pr create", Status: "pending"},

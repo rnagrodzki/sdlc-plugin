@@ -207,7 +207,7 @@ Idempotency journal keyed by step name, recording each step's verified git/PR si
 }
 ```
 
-`kind` is one of `"tag"`, `"pr"`, or `"sha"`. Written by `ship_verify_side_effect`; consulted by `begin-step`'s `alreadyDone` flag (surfaced in `ShipStepNarrationOut.AlreadyDone`) so a resumed pipeline doesn't, say, re-push a tag that already landed.
+`kind` is one of `"release-intent"`, `"pr"`, or `"sha"`. Written by `ship_verify_side_effect`; consulted by `begin-step`'s `alreadyDone` flag (surfaced in `ShipStepNarrationOut.AlreadyDone`) so a resumed pipeline doesn't, say, re-run the version step once a valid release intent (bump level) is already journaled. The version step's `sideEffects` entry no longer records a git tag — no tag is created at ship time; `ref` holds the resolved bump level (`"major"`/`"minor"`/`"patch"`) instead.
 
 ---
 

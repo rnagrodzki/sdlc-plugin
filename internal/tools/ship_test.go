@@ -1022,26 +1022,28 @@ func TestShipVerifySideEffect_NoSideEffectStep(t *testing.T) {
 	}
 }
 
-// TestShipVerifySideEffect_VersionTagPresent verifies the "version" step
-// reports landed:true when the expected tag exists.
-func TestShipVerifySideEffect_VersionTagPresent(t *testing.T) {
+// TestShipVerifySideEffect_VersionReleaseIntentValid verifies the "version"
+// step reports landed:true when Expected is a valid resolved bump level
+// (major/minor/patch), as version/SKILL.md's Step 1 (PLAN) can produce. The
+// version step no longer creates a tag at ship time (Task 12) — there is no
+// git side effect to check, only that a valid release intent was captured.
+func TestShipVerifySideEffect_VersionReleaseIntentValid(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
-	gitTag(t, dir, "v1.2.3")
 
-	out, err := shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "version", Expected: "v1.2.3"}, fixedNow(time.Now()))
+	out, err := shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "version", Expected: "minor"}, fixedNow(time.Now()))
 	if err != nil {
 		t.Fatalf("shipVerifySideEffect: %v", err)
 	}
 	if !out.Landed {
 		t.Error("Landed = false, want true")
 	}
-	if out.SideEffect != "tag" {
-		t.Errorf("SideEffect = %q, want %q", out.SideEffect, "tag")
+	if out.SideEffect != "release-intent" {
+		t.Errorf("SideEffect = %q, want %q", out.SideEffect, "release-intent")
 	}
-	if out.Expected == nil || *out.Expected != "v1.2.3" {
-		t.Errorf("Expected = %v, want v1.2.3", out.Expected)
+	if out.Expected == nil || *out.Expected != "minor" {
+		t.Errorf("Expected = %v, want minor", out.Expected)
 	}
 }
 
@@ -1059,7 +1061,6 @@ func TestShipVerifySideEffect_JSONShape(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
-	gitTag(t, dir, "v1.2.3")
 
 	decode := func(t *testing.T, out ShipVerifySideEffectOut) map[string]any {
 		t.Helper()
@@ -1090,13 +1091,13 @@ func TestShipVerifySideEffect_JSONShape(t *testing.T) {
 	})
 
 	t.Run("has-side-effect with --expected", func(t *testing.T) {
-		out, err := shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "version", Expected: "v1.2.3"}, fixedNow(time.Now()))
+		out, err := shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "version", Expected: "minor"}, fixedNow(time.Now()))
 		if err != nil {
 			t.Fatalf("shipVerifySideEffect: %v", err)
 		}
 		m := decode(t, out)
-		if v, ok := m["expected"]; !ok || v != "v1.2.3" {
-			t.Errorf(`"expected" = %v (present=%v), want "v1.2.3"`, v, ok)
+		if v, ok := m["expected"]; !ok || v != "minor" {
+			t.Errorf(`"expected" = %v (present=%v), want "minor"`, v, ok)
 		}
 	})
 
@@ -1115,13 +1116,14 @@ func TestShipVerifySideEffect_JSONShape(t *testing.T) {
 	})
 }
 
-// TestShipVerifySideEffect_VersionTagMissing verifies the "version" step
-// reports landed:false when the expected tag does not exist.
-func TestShipVerifySideEffect_VersionTagMissing(t *testing.T) {
+// TestShipVerifySideEffect_VersionReleaseIntentInvalid verifies the
+// "version" step reports landed:false when Expected is not one of
+// major/minor/patch — e.g. empty (version_prepare/the version skill never
+// ran or never resolved a level) or a garbage value.
+func TestShipVerifySideEffect_VersionReleaseIntentInvalid(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
-	gitTag(t, dir, "v1.2.3")
 
 	out, err := shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "version", Expected: "v9.9.9"}, fixedNow(time.Now()))
 	if err != nil {
@@ -1222,8 +1224,8 @@ func TestShipVerifySideEffect_PRNotFound(t *testing.T) {
 // TestShipVerifySideEffect_CommitSha_ExpectedMatch verifies the "commit"
 // step reports landed:true and journals {kind:"sha", ref:<HEAD>} when
 // Expected matches the current HEAD sha (the write-path: a caller who just
-// produced a commit passes its own sha as Expected, mirroring the "tag"
-// kind's caller-supplied-expected convention).
+// produced a commit passes its own sha as Expected, mirroring the
+// "release-intent" kind's caller-supplied-expected convention).
 func TestShipVerifySideEffect_CommitSha_ExpectedMatch(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
@@ -1361,9 +1363,9 @@ func TestShipVerifySideEffect_CommitSha_ResumeConfirmsJournal(t *testing.T) {
 
 // TestShipStateSchema_SideEffectsKindEnum proves AC4's schema-level
 // enforcement: ship-state.schema.json must accept a sideEffects entry with a
-// valid kind ("tag"/"pr"/"sha") and reject one with an unrecognized kind,
-// via the enum restriction — not merely something application code happens
-// to filter out.
+// valid kind ("release-intent"/"pr"/"sha") and reject one with an
+// unrecognized kind, via the enum restriction — not merely something
+// application code happens to filter out.
 func TestShipStateSchema_SideEffectsKindEnum(t *testing.T) {
 	schemaPath, err := filepath.Abs(filepath.Join("..", "..", "plugins", "sdlc", "schemas", "ship-state.schema.json"))
 	if err != nil {
@@ -1405,8 +1407,8 @@ func TestShipStateSchema_SideEffectsKindEnum(t *testing.T) {
 	t.Run("valid kind accepted", func(t *testing.T) {
 		doc := baseState(map[string]any{
 			"version": map[string]any{
-				"kind":       "tag",
-				"ref":        "v0.22.0",
+				"kind":       "release-intent",
+				"ref":        "minor",
 				"verifiedAt": "2026-03-01T12:00:00Z",
 			},
 		})
