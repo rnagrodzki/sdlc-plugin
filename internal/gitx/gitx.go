@@ -224,3 +224,72 @@ func filterTags(out string, re *regexp.Regexp) []string {
 	}
 	return tags
 }
+
+// isRepo reports whether dir is inside a git repository. It underlies
+// TagExists's non-repo detection: "git rev-parse --verify refs/tags/<name>"
+// exits with the same status (128) both when the ref is simply missing and
+// when dir is not a repository at all, and execx.Run does not surface
+// stderr text — so the two cases cannot be told apart from that command's
+// result alone. A cheap "git rev-parse --git-dir" first resolves the
+// ambiguity.
+func isRepo(dir string) bool {
+	_, err := execx.Run("git", []string{"rev-parse", "--git-dir"}, execx.Options{Dir: dir})
+	return err == nil
+}
+
+// TagExists reports whether an exact-match tag named name exists in dir,
+// via "git rev-parse --verify refs/tags/<name>". Returns (false, nil) when
+// the tag simply does not exist. Returns a non-nil error for an empty name,
+// a name that looks like a flag, or when dir is not a git repository.
+func TagExists(dir, name string) (bool, error) {
+	if name == "" {
+		return false, fmt.Errorf("gitx: tag exists: tag name is empty")
+	}
+	if err := validateRef(name, "tag exists"); err != nil {
+		return false, err
+	}
+	if !isRepo(dir) {
+		return false, fmt.Errorf("gitx: tag exists: %q is not a git repository", dir)
+	}
+	_, err := execx.Run("git", []string{"rev-parse", "--verify", "refs/tags/" + name}, execx.Options{Dir: dir})
+	return err == nil, nil
+}
+
+// CreateTag creates an annotated tag (git tag -a) named name at HEAD with
+// message as its annotation. Returns an actionable error when name is
+// empty, name already exists (collision — checked before attempting
+// creation so the error names the conflicting tag rather than surfacing
+// git's own exit status), or dir is not a git repository.
+func CreateTag(dir, name, message string) error {
+	if name == "" {
+		return fmt.Errorf("gitx: create tag: tag name is empty")
+	}
+	if err := validateRef(name, "create tag"); err != nil {
+		return err
+	}
+
+	exists, err := TagExists(dir, name)
+	if err != nil {
+		return fmt.Errorf("gitx: create tag: %w", err)
+	}
+	if exists {
+		return fmt.Errorf("gitx: create tag: tag %q already exists", name)
+	}
+
+	if _, err := execx.Run("git", []string{"tag", "-a", name, "-m", message}, execx.Options{Dir: dir}); err != nil {
+		return fmt.Errorf("gitx: create tag %q: %w", name, err)
+	}
+	return nil
+}
+
+// FetchTags fetches all tags from the configured remote(s), overwriting any
+// local tag ref that has moved (git fetch --tags --force). Call this before
+// enumerating tags (TagList, TagsAtHead, AllSemverTags, TagExists) whenever
+// staleness in a multi-developer team would matter — none of those
+// functions fetch on their own.
+func FetchTags(dir string) error {
+	if _, err := execx.Run("git", []string{"fetch", "--tags", "--force"}, execx.Options{Dir: dir}); err != nil {
+		return fmt.Errorf("gitx: fetch tags: %w", err)
+	}
+	return nil
+}

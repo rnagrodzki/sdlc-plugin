@@ -296,6 +296,231 @@ func TestWriteRoundTrip_VersionFile(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// writeJSONVersion — format preservation
+// ---------------------------------------------------------------------------
+
+func TestWriteJSONVersion_PreservesKeyOrder(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "package.json")
+	original := `{
+  "name": "test",
+  "version": "1.0.0",
+  "description": "a package",
+  "main": "index.js"
+}
+`
+	writeFile(t, dir, "package.json", original)
+
+	err := writeJSONVersion(path, "2.0.0")
+	assertNoErr(t, err)
+
+	data, err := os.ReadFile(path)
+	assertNoErr(t, err)
+	got := string(data)
+
+	// Key order must be unchanged: name, version, description, main.
+	wantOrder := []string{`"name"`, `"version"`, `"description"`, `"main"`}
+	lastIdx := -1
+	for _, key := range wantOrder {
+		idx := strings.Index(got, key)
+		if idx < 0 {
+			t.Fatalf("key %s missing from output:\n%s", key, got)
+		}
+		if idx <= lastIdx {
+			t.Fatalf("key %s out of order in output:\n%s", key, got)
+		}
+		lastIdx = idx
+	}
+	if !strings.Contains(got, `"version": "2.0.0"`) {
+		t.Fatalf("version not updated in output:\n%s", got)
+	}
+	if strings.Contains(got, "1.0.0") {
+		t.Fatalf("old version still present in output:\n%s", got)
+	}
+}
+
+func TestWriteJSONVersion_NestedVersionKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "package.json")
+	original := `{
+  "name": "test",
+  "version": "1.0.0",
+  "engines": {
+    "version": "9.9.9"
+  }
+}
+`
+	writeFile(t, dir, "package.json", original)
+
+	err := writeJSONVersion(path, "2.0.0")
+	assertNoErr(t, err)
+
+	data, err := os.ReadFile(path)
+	assertNoErr(t, err)
+	got := string(data)
+
+	if !strings.Contains(got, `"version": "2.0.0"`) {
+		t.Fatalf("top-level version not updated:\n%s", got)
+	}
+	if !strings.Contains(got, `"version": "9.9.9"`) {
+		t.Fatalf("nested version was modified, expected untouched:\n%s", got)
+	}
+}
+
+func TestWriteJSONVersion_PreservesIndentation(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "package.json")
+	// Top-level "version" is 2-space indented (matches the write regex);
+	// the nested object uses tab indentation. The write must not reformat
+	// or otherwise touch the tab-indented content.
+	original := "{\n  \"name\": \"test\",\n  \"version\": \"1.0.0\",\n  \"nested\": {\n\t\"foo\": \"bar\"\n  }\n}\n"
+	writeFile(t, dir, "package.json", original)
+
+	err := writeJSONVersion(path, "1.1.0")
+	assertNoErr(t, err)
+
+	data, err := os.ReadFile(path)
+	assertNoErr(t, err)
+	got := string(data)
+
+	want := "{\n  \"name\": \"test\",\n  \"version\": \"1.1.0\",\n  \"nested\": {\n\t\"foo\": \"bar\"\n  }\n}\n"
+	if got != want {
+		t.Fatalf("indentation not preserved:\ngot:  %q\nwant: %q", got, want)
+	}
+}
+
+func TestWriteJSONVersion_TabIndentedNested(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "package.json")
+	// Nested "version" key is tab-indented — must never be matched by the
+	// top-level (0-2 space) regex, regardless of indentation style used
+	// deeper in the document.
+	original := "{\n  \"name\": \"test\",\n  \"version\": \"1.0.0\",\n  \"sub\": {\n\t\"version\": \"3.3.3\"\n  }\n}\n"
+	writeFile(t, dir, "package.json", original)
+
+	err := writeJSONVersion(path, "1.2.0")
+	assertNoErr(t, err)
+
+	data, err := os.ReadFile(path)
+	assertNoErr(t, err)
+	got := string(data)
+
+	if !strings.Contains(got, `"version": "1.2.0"`) {
+		t.Fatalf("top-level version not updated:\n%s", got)
+	}
+	if !strings.Contains(got, "\t\"version\": \"3.3.3\"") {
+		t.Fatalf("tab-indented nested version was modified:\n%s", got)
+	}
+}
+
+func TestWriteJSONVersion_CompactSingleLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "package.json")
+	writeFile(t, dir, "package.json", `{"name":"test","version":"1.0.0","private":true}`)
+
+	err := writeJSONVersion(path, "1.0.1")
+	assertNoErr(t, err)
+
+	data, err := os.ReadFile(path)
+	assertNoErr(t, err)
+	got := string(data)
+	want := `{"name":"test","version":"1.0.1","private":true}`
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestWriteJSONVersion_NestedVersionKeyBeforeTopLevel(t *testing.T) {
+	// The nested "version" key appears earlier in the source (lexically)
+	// than the top-level one — this defeats a naive "first match" text
+	// search, so it specifically exercises the depth-tracking JSON walk.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "package.json")
+	writeFile(t, dir, "package.json", `{"engines":{"version":"9.9.9"},"version":"1.0.0"}`)
+
+	err := writeJSONVersion(path, "2.0.0")
+	assertNoErr(t, err)
+
+	data, err := os.ReadFile(path)
+	assertNoErr(t, err)
+	got := string(data)
+	want := `{"engines":{"version":"9.9.9"},"version":"2.0.0"}`
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestWriteJSONVersion_NoVersionField(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "package.json")
+	writeFile(t, dir, "package.json", `{"name":"test"}`)
+
+	err := writeJSONVersion(path, "1.0.0")
+	if err == nil {
+		t.Fatal("expected error when no top-level version field exists")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DetectAt
+// ---------------------------------------------------------------------------
+
+func TestDetectAt_ExplicitPath(t *testing.T) {
+	dir := t.TempDir()
+	nestedDir := filepath.Join(dir, "sub", "dir")
+	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nestedDir, "plugin.json"), []byte(`{"version":"7.8.9"}`), 0o644); err != nil {
+		t.Fatalf("write nested file: %v", err)
+	}
+
+	vf, err := DetectAt(dir, "sub/dir/plugin.json", "plugin.json")
+	assertNoErr(t, err)
+	assertEqual(t, vf.Type, "plugin.json")
+	assertEqual(t, vf.Version, "7.8.9")
+	assertEqual(t, vf.Path, filepath.Join(nestedDir, "plugin.json"))
+}
+
+func TestDetectAt_ExplicitPath_InfersFileType(t *testing.T) {
+	dir := t.TempDir()
+	nestedDir := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nestedDir, "plugin.json"), []byte(`{"version":"1.2.3"}`), 0o644); err != nil {
+		t.Fatalf("write nested file: %v", err)
+	}
+
+	vf, err := DetectAt(dir, "sub/plugin.json", "")
+	assertNoErr(t, err)
+	assertEqual(t, vf.Type, "plugin.json")
+	assertEqual(t, vf.Version, "1.2.3")
+}
+
+func TestDetectAt_FallbackToProbe(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "package.json", `{"version":"4.5.6"}`)
+
+	vf, err := DetectAt(dir, "", "")
+	assertNoErr(t, err)
+	assertEqual(t, vf.Type, "package.json")
+	assertEqual(t, vf.Version, "4.5.6")
+}
+
+func TestDetectAt_NothingFound_HintMessage(t *testing.T) {
+	dir := t.TempDir()
+
+	_, err := DetectAt(dir, "", "")
+	if err == nil {
+		t.Fatal("expected error when no version file exists and no path configured")
+	}
+	if !strings.Contains(err.Error(), "versionFile") {
+		t.Fatalf("expected error to hint at setting versionFile, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Apply — basic and idempotency
 // ---------------------------------------------------------------------------
 

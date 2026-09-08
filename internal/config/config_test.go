@@ -239,8 +239,8 @@ func TestLegacyRefusal_IgnoredWhenV5Exists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Read: expected success when v5 config exists alongside legacy, got: %v", err)
 	}
-	if cfg.Version["mode"] != "file" {
-		t.Errorf("version.mode = %q, want %q", cfg.Version["mode"], "file")
+	if cfg.Version.Mode != "file" {
+		t.Errorf("version.mode = %q, want %q", cfg.Version.Mode, "file")
 	}
 }
 
@@ -369,6 +369,84 @@ func TestAutomation_StepModeInheritance(t *testing.T) {
 				t.Errorf("StepMode(%q) = %q, want %q", tt.step, got, tt.wantMode)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Version section (typed VersionSection)
+// ---------------------------------------------------------------------------
+
+func TestParseVersionSection_Full(t *testing.T) {
+	raw := map[string]any{
+		"mode":          "file",
+		"versionFile":   "package.json",
+		"fileType":      "package.json",
+		"tagPrefix":     "v",
+		"changelog":     true,
+		"changelogFile": "HISTORY.md",
+		"ticketPrefix":  "PROJ",
+		"preRelease":    "beta",
+	}
+
+	v := parseVersionSection(raw)
+	if v == nil {
+		t.Fatal("parseVersionSection: expected non-nil result")
+	}
+	if v.Mode != "file" {
+		t.Errorf("Mode = %q, want %q", v.Mode, "file")
+	}
+	if v.VersionFile != "package.json" {
+		t.Errorf("VersionFile = %q, want %q", v.VersionFile, "package.json")
+	}
+	if v.FileType != "package.json" {
+		t.Errorf("FileType = %q, want %q", v.FileType, "package.json")
+	}
+	if v.TagPrefix != "v" {
+		t.Errorf("TagPrefix = %q, want %q", v.TagPrefix, "v")
+	}
+	if !v.Changelog {
+		t.Errorf("Changelog = %v, want true", v.Changelog)
+	}
+	if v.ChangelogFile != "HISTORY.md" {
+		t.Errorf("ChangelogFile = %q, want explicit value %q preserved (not overridden by default)", v.ChangelogFile, "HISTORY.md")
+	}
+	if v.TicketPrefix != "PROJ" {
+		t.Errorf("TicketPrefix = %q, want %q", v.TicketPrefix, "PROJ")
+	}
+	if v.PreRelease != "beta" {
+		t.Errorf("PreRelease = %q, want %q", v.PreRelease, "beta")
+	}
+}
+
+func TestParseVersionSection_Defaults(t *testing.T) {
+	v := parseVersionSection(map[string]any{})
+	if v == nil {
+		t.Fatal("parseVersionSection: expected non-nil result")
+	}
+	if v.Mode != "file" {
+		t.Errorf("Mode = %q, want default %q", v.Mode, "file")
+	}
+	if v.ChangelogFile != "" {
+		t.Errorf("ChangelogFile = %q, want empty when changelog is false", v.ChangelogFile)
+	}
+
+	v2 := parseVersionSection(map[string]any{"changelog": true})
+	if v2 == nil {
+		t.Fatal("parseVersionSection: expected non-nil result")
+	}
+	if v2.ChangelogFile != "CHANGELOG.md" {
+		t.Errorf("ChangelogFile = %q, want default %q when changelog=true", v2.ChangelogFile, "CHANGELOG.md")
+	}
+
+	v3 := parseVersionSection(map[string]any{"mode": "tag"})
+	if v3.Mode != "tag" {
+		t.Errorf("Mode = %q, want explicit value %q preserved", v3.Mode, "tag")
+	}
+}
+
+func TestParseVersionSection_Nil(t *testing.T) {
+	if v := parseVersionSection(nil); v != nil {
+		t.Errorf("parseVersionSection(nil) = %v, want nil", v)
 	}
 }
 
@@ -635,7 +713,7 @@ func TestReadAnchorsAtMainWorktreeRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Read(MainRoot): %v", err)
 	}
-	if cfg.Version == nil || cfg.Version["mode"] != "file" {
+	if cfg.Version == nil || cfg.Version.Mode != "file" {
 		t.Errorf("expected version.mode=file from main worktree, got %v", cfg.Version)
 	}
 
@@ -675,7 +753,7 @@ func TestRead_MergesProjectAndLocal(t *testing.T) {
 	}
 
 	// Project sections.
-	if cfg.Version == nil || cfg.Version["mode"] != "tag" {
+	if cfg.Version == nil || cfg.Version.Mode != "tag" {
 		t.Errorf("Version = %v, want mode=tag", cfg.Version)
 	}
 	if cfg.Jira == nil || cfg.Jira["defaultProject"] != "PROJ" {

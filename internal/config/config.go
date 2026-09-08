@@ -130,11 +130,91 @@ func (a *AutomationSection) StepMode(step string) string {
 	return "confirm"
 }
 
+// VersionSection controls the version skill's behaviour: where the version
+// number lives, how it's read, and whether a changelog is maintained.
+//
+// Mode determines whether the version is tracked in a file ("file",
+// default) or via git tags ("tag").
+//
+// VersionFile is the path (relative to the main worktree root) to the file
+// that stores the version number. FileType names its format
+// (package.json, cargo.toml, pyproject.toml, pubspec.yaml, plugin.json,
+// version-file).
+//
+// TagPrefix is prepended to git version tags (e.g. "v").
+//
+// Changelog toggles changelog maintenance on release. When true and
+// ChangelogFile is unset, ChangelogFile defaults to "CHANGELOG.md".
+//
+// TicketPrefix filters commit messages for the changelog by Jira ticket
+// prefix (e.g. "PROJ"). PreRelease is the default pre-release label applied
+// when no explicit base bump or --pre is given.
+type VersionSection struct {
+	Mode          string `json:"mode"`
+	VersionFile   string `json:"versionFile"`
+	FileType      string `json:"fileType"`
+	TagPrefix     string `json:"tagPrefix"`
+	Changelog     bool   `json:"changelog"`
+	ChangelogFile string `json:"changelogFile"`
+	TicketPrefix  string `json:"ticketPrefix"`
+	PreRelease    string `json:"preRelease"`
+}
+
+// parseVersionSection converts a raw JSON map into a VersionSection,
+// applying documented defaults. Returns nil when raw is nil (section
+// absent from config.json), mirroring extractSection's absent-section
+// semantics so callers can distinguish "no version section configured"
+// from "version section configured with defaults".
+func parseVersionSection(raw map[string]any) *VersionSection {
+	if raw == nil {
+		return nil
+	}
+	v := &VersionSection{}
+	if s, ok := raw["mode"].(string); ok {
+		v.Mode = s
+	}
+	if s, ok := raw["versionFile"].(string); ok {
+		v.VersionFile = s
+	}
+	if s, ok := raw["fileType"].(string); ok {
+		v.FileType = s
+	}
+	if s, ok := raw["tagPrefix"].(string); ok {
+		v.TagPrefix = s
+	}
+	if b, ok := raw["changelog"].(bool); ok {
+		v.Changelog = b
+	}
+	if s, ok := raw["changelogFile"].(string); ok {
+		v.ChangelogFile = s
+	}
+	if s, ok := raw["ticketPrefix"].(string); ok {
+		v.TicketPrefix = s
+	}
+	if s, ok := raw["preRelease"].(string); ok {
+		v.PreRelease = s
+	}
+	applyVersionDefaults(v)
+	return v
+}
+
+// applyVersionDefaults fills in zero-value fields with documented
+// defaults: mode "file", and changelogFile "CHANGELOG.md" when changelog
+// is enabled but no explicit path was given.
+func applyVersionDefaults(v *VersionSection) {
+	if v.Mode == "" {
+		v.Mode = "file"
+	}
+	if v.Changelog && v.ChangelogFile == "" {
+		v.ChangelogFile = "CHANGELOG.md"
+	}
+}
+
 // Config is the merged view of .sdlc/config.json (project-level sections)
 // and .sdlc/local.json (user-local sections).
 type Config struct {
 	// Project-level sections (from .sdlc/config.json).
-	Version map[string]any
+	Version *VersionSection
 	Jira    map[string]any
 	Commit  map[string]any
 	PR      map[string]any
@@ -281,7 +361,7 @@ func Read(mainRoot string) (*Config, error) {
 	}
 
 	cfg := &Config{
-		Version: extractSection(projectRaw, "version"),
+		Version: parseVersionSection(extractSection(projectRaw, "version")),
 		Jira:    extractSection(projectRaw, "jira"),
 		Commit:  extractSection(projectRaw, "commit"),
 		PR:      extractSection(projectRaw, "pr"),
