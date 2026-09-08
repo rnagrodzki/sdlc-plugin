@@ -130,19 +130,26 @@ var pluginWalkSkipDirs = map[string]bool{
 // subdirectory). Unlike the JS hook, which derives this trivially from
 // __dirname, a compiled Go binary has no notion of "the directory containing
 // this script" that also doubles as the plugin root — so this is a genuine
-// port gap (Task 37, Ruling B), resolved via two strategies:
+// port gap (Task 37, Ruling B), resolved via three strategies:
 //
 //  1. Walk up from the running binary's own directory, and separately from
 //     the current working directory, looking for .claude-plugin/plugin.json.
 //     This covers the common case where the compiled binary lives inside (or
 //     is invoked from within) the plugin's own repo, which doubles as the
 //     installed plugin root when marketplace.json declares source: ".".
-//  2. Fall back to walking ~/.claude/plugins for a directory whose own
+//  2. Walk up from the current working directory looking for
+//     .claude-plugin/marketplace.json instead, and resolve its declared
+//     "sdlc" plugin source path relative to that directory. This covers this
+//     very repo's own layout: the repo root's .claude-plugin/ holds only
+//     marketplace.json (source: "./plugins/sdlc"), so the actual
+//     plugin.json lives one level down and strategy 1 never finds it from
+//     the repo root.
+//  3. Fall back to walking ~/.claude/plugins for a directory whose own
 //     .claude-plugin/plugin.json declares name "sdlc" (this binary's own
 //     plugin name), mirroring plan.go's resolveSkillTemplate convention for
 //     locating installed plugin content.
 //
-// Returns ("", false) if neither resolves — callers must fail open (skip the
+// Returns ("", false) if none resolve — callers must fail open (skip the
 // output that depends on it) rather than print a fake or empty root.
 func resolvePluginRoot() (string, bool) {
 	if exe, err := os.Executable(); err == nil {
@@ -154,8 +161,58 @@ func resolvePluginRoot() (string, bool) {
 		if root, ok := walkUpForPluginManifest(cwd); ok {
 			return root, true
 		}
+		if root, ok := walkUpForMarketplacePluginRoot(cwd, "sdlc"); ok {
+			return root, true
+		}
 	}
 	return findPluginByNameUnderHome("sdlc")
+}
+
+// walkUpForMarketplacePluginRoot walks upward from start looking for a
+// .claude-plugin/marketplace.json that declares a plugin named pluginName,
+// and resolves that plugin's relative "source" path to a directory
+// containing its own .claude-plugin/plugin.json.
+func walkUpForMarketplacePluginRoot(start, pluginName string) (string, bool) {
+	dir := start
+	for {
+		if root, ok := marketplacePluginSource(dir, pluginName); ok {
+			return root, true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+	}
+}
+
+// marketplacePluginSource reads dir/.claude-plugin/marketplace.json (if any)
+// and returns the resolved, existing plugin root for pluginName's declared
+// source path.
+func marketplacePluginSource(dir, pluginName string) (string, bool) {
+	raw, err := os.ReadFile(filepath.Join(dir, ".claude-plugin", "marketplace.json"))
+	if err != nil {
+		return "", false
+	}
+	var manifest struct {
+		Plugins []struct {
+			Name   string `json:"name"`
+			Source string `json:"source"`
+		} `json:"plugins"`
+	}
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		return "", false
+	}
+	for _, p := range manifest.Plugins {
+		if p.Name != pluginName {
+			continue
+		}
+		candidate := filepath.Join(dir, filepath.FromSlash(p.Source))
+		if fi, err := os.Stat(filepath.Join(candidate, ".claude-plugin", "plugin.json")); err == nil && !fi.IsDir() {
+			return candidate, true
+		}
+	}
+	return "", false
 }
 
 // walkUpForPluginManifest walks upward from start looking for a directory

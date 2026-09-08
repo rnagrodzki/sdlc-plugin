@@ -496,6 +496,67 @@ func TestWalkUpForPluginManifest_NotFound(t *testing.T) {
 	}
 }
 
+func TestWalkUpForMarketplacePluginRoot(t *testing.T) {
+	root := realPath(t, t.TempDir())
+	manifestDir := filepath.Join(root, ".claude-plugin")
+	mustMkdirAll(t, manifestDir)
+	mustWriteFile(t, filepath.Join(manifestDir, "marketplace.json"), `{"plugins":[{"name":"sdlc","source":"./plugins/sdlc"}]}`)
+
+	pluginRoot := filepath.Join(root, "plugins", "sdlc")
+	pluginManifestDir := filepath.Join(pluginRoot, ".claude-plugin")
+	mustMkdirAll(t, pluginManifestDir)
+	mustWriteFile(t, filepath.Join(pluginManifestDir, "plugin.json"), `{"name":"sdlc"}`)
+
+	nested := filepath.Join(root, "internal", "hooks")
+	mustMkdirAll(t, nested)
+
+	got, ok := walkUpForMarketplacePluginRoot(nested, "sdlc")
+	if !ok {
+		t.Fatal("walkUpForMarketplacePluginRoot: not found, want found")
+	}
+	if got != pluginRoot {
+		t.Errorf("walkUpForMarketplacePluginRoot = %q, want %q", got, pluginRoot)
+	}
+}
+
+func TestWalkUpForMarketplacePluginRoot_NameMismatch(t *testing.T) {
+	root := realPath(t, t.TempDir())
+	manifestDir := filepath.Join(root, ".claude-plugin")
+	mustMkdirAll(t, manifestDir)
+	mustWriteFile(t, filepath.Join(manifestDir, "marketplace.json"), `{"plugins":[{"name":"other-plugin","source":"./plugins/other"}]}`)
+
+	if _, ok := walkUpForMarketplacePluginRoot(root, "sdlc"); ok {
+		t.Error("walkUpForMarketplacePluginRoot matched a differently-named plugin; want not found")
+	}
+}
+
+func TestResolvePluginRoot_MarketplaceSourceLayout(t *testing.T) {
+	// Reproduces this repo's own layout: the repo root's .claude-plugin/
+	// holds only marketplace.json (source: "./plugins/sdlc"); the real
+	// plugin.json lives one level down, so strategy 1 (walkUpForPluginManifest
+	// from cwd) never finds it and strategy 2 must.
+	root := realPath(t, t.TempDir())
+	manifestDir := filepath.Join(root, ".claude-plugin")
+	mustMkdirAll(t, manifestDir)
+	mustWriteFile(t, filepath.Join(manifestDir, "marketplace.json"), `{"plugins":[{"name":"sdlc","source":"./plugins/sdlc"}]}`)
+
+	pluginRoot := filepath.Join(root, "plugins", "sdlc")
+	pluginManifestDir := filepath.Join(pluginRoot, ".claude-plugin")
+	mustMkdirAll(t, pluginManifestDir)
+	mustWriteFile(t, filepath.Join(pluginManifestDir, "plugin.json"), `{"name":"sdlc"}`)
+
+	chdir(t, root)
+	t.Setenv("HOME", realPath(t, t.TempDir()))
+
+	got, ok := resolvePluginRoot()
+	if !ok {
+		t.Fatal("resolvePluginRoot: not found, want found via marketplace.json source resolution")
+	}
+	if got != pluginRoot {
+		t.Errorf("resolvePluginRoot = %q, want %q", got, pluginRoot)
+	}
+}
+
 func TestResolvePluginRoot_FallbackUnderHome(t *testing.T) {
 	// Isolate cwd so strategies 1 (executable dir) and 2 (cwd) both miss,
 	// forcing the ~/.claude/plugins fallback (strategy 3).

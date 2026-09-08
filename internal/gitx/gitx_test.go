@@ -34,6 +34,17 @@ func gitRun(t *testing.T, dir string, args ...string) string {
 func initGitRepo(t *testing.T, dir string) {
 	t.Helper()
 	gitRun(t, dir, "-c", "init.defaultBranch=main", "init")
+	// Persist a repo-local identity: gitRun's GIT_AUTHOR_*/GIT_COMMITTER_*
+	// env vars only cover the one process they're passed to (the "commit"
+	// call below), not later calls made by production code under test (e.g.
+	// CreateTag's plain execx.Run, which sets no such env vars and depends
+	// on ambient git config). Without this, CreateTag's "git tag -a" fails
+	// with exit 128 on any machine/CI runner where git can't auto-detect a
+	// usable identity from the OS user (e.g. a blank GECOS field on a CI
+	// runner account) — this was observed failing in CI while passing
+	// locally on machines with a real full-name OS account.
+	gitRun(t, dir, "config", "user.email", "test@test.com")
+	gitRun(t, dir, "config", "user.name", "Test")
 	if err := os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init\n"), 0644); err != nil {
 		t.Fatalf("write init.txt: %v", err)
 	}

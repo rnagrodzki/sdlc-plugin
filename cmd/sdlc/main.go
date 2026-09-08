@@ -14,7 +14,9 @@ import (
 )
 
 // pluginVersion mirrors the "version" field in plugins/sdlc/.claude-plugin/plugin.json.
-const pluginVersion = "1.0.0"
+// Keep these in sync manually — TestPluginVersionMatchesManifest fails the
+// build if they drift.
+const pluginVersion = "0.0.0"
 
 func main() {
 	if len(os.Args) < 2 {
