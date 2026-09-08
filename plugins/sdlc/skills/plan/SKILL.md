@@ -2,7 +2,7 @@
 name: plan
 description: "Use when writing an implementation plan from requirements, a spec, a design doc, or a user description. ALWAYS use when plan mode is active — this is the designated plan-mode skill. Analyzes scope, maps file structure, decomposes into classified tasks with dependencies, and produces a plan ready for execute. Triggers on: write plan, create plan, plan this, break this into tasks, implementation plan, plan mode."
 user-invocable: true
-argument-hint: "[--spec] [--from-openspec <change-name>] [spec-file-path]"
+argument-hint: "[--auto] [--spec] [--from-openspec <change-name>] [spec-file-path]"
 model: opus
 ---
 
@@ -131,9 +131,9 @@ Naming convention: `YYYY-MM-DD-<feature-name>.md`. Create the directory if neede
 
 **Plan mode:** Write to the designated plan file path. Skip path resolution.
 
-**planFile marker (implements R20, issue #285; consumed by `hooks/stop-plan-integrity.js` per R21):** After path resolution, record the resolved plan path in the plan integrity state. Run in both plan-mode and normal-mode branches. Errors are swallowed — marker writes must not block plan creation.
+**planFile marker (implements R20, issue #285; consumed by `internal/hooks/stop_hooks.go` per R21):** After path resolution, record the resolved plan path in the plan integrity state. Run in both plan-mode and normal-mode branches. Errors are swallowed — marker writes must not block plan creation.
 
-**State-file lifecycle (R20 Lifecycle, fixes #334):** The plan state file follows three rules that callers do NOT need to implement directly — they are enforced inside `plan_prepare`/`plan_mark` (backed by the `internal/state` package) and `hooks/stop-plan-integrity.js`:
+**State-file lifecycle (R20 Lifecycle, fixes #334):** The plan state file follows three rules that callers do NOT need to implement directly — they are enforced inside `plan_prepare`/`plan_mark` (backed by the `internal/state` package) and `internal/hooks/stop_hooks.go` (dispatched via `sdlc-launcher.sh hook stop-plan-integrity`):
 - **Prune-on-write** — `plan_prepare` prunes pre-existing `plan-<branchSlug>-*.json` files for the current branch before writing the new state file, so at most one marker per branch exists between plan invocations. `plan_mark` does NOT prune (it would unlink its own target).
 - **Consume-then-delete** — the Stop hook reads `planIntegrity` markers, evaluates the gates, then unlinks the marker regardless of outcome (single-shot semantics). Subsequent Stop events on the same branch fall through to the transcript-fallback path — this is correct R21 behavior.
 - **GC orphan sweep** — `ship --gc` and `execute --gc` sweep stale `plan-*` markers (TTL-expired or branch-deleted) alongside `ship-*` and `execute-*` files; the JSON output includes a `plan` bucket alongside `ship` and `execute`.

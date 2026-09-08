@@ -27,6 +27,7 @@ func Register[TIn, TOut any](s *Server, name, desc string, h func(ctx Ctx, in TI
 	tool := mcp.NewTool(name,
 		mcp.WithDescription(desc),
 		mcp.WithInputSchema[TIn](),
+		mcp.WithOutputSchema[OKEnvelope[TOut]](),
 	)
 
 	handler := func(goCtx context.Context, req mcp.CallToolRequest) (result *mcp.CallToolResult, _ error) {
@@ -110,7 +111,8 @@ func Register[TIn, TOut any](s *Server, name, desc string, h func(ctx Ctx, in TI
 			Content: []mcp.Content{
 				mcp.TextContent{Type: "text", Text: string(env)},
 			},
-			IsError: false,
+			StructuredContent: OKEnvelope[TOut]{OK: true, Data: out},
+			IsError:           false,
 		}, nil
 	}
 

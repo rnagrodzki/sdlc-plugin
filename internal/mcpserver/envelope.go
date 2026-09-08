@@ -62,6 +62,14 @@ func mapError(err error) (code string, msg string) {
 
 // --- KD3 envelope ---
 
+// OKEnvelope is the success envelope shape published via WithOutputSchema.
+// It mirrors the runtime envelope that wrapOK produces, giving callers a
+// machine-readable output schema: {"ok":true,"data":<TOut>}.
+type OKEnvelope[T any] struct {
+	OK   bool `json:"ok"`
+	Data T    `json:"data"`
+}
+
 type envelopeOK struct {
 	OK   bool            `json:"ok"`
 	Data json.RawMessage `json:"data"`

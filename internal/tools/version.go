@@ -293,7 +293,8 @@ func versionApply(cfgRoot string, in VersionApplyIn) (VersionApplyOut, error) {
 	if !in.SkipConfigCheck {
 		if err := configmigrate.Verify(cfgRoot); err != nil {
 			return VersionApplyOut{}, &mcpserver.DataError{
-				Msg: fmt.Sprintf("config check failed: %s", err.Error()),
+				Msg:   fmt.Sprintf("config check failed: %s", err.Error()),
+				Cause: err,
 			}
 		}
 	}
@@ -301,7 +302,8 @@ func versionApply(cfgRoot string, in VersionApplyIn) (VersionApplyOut, error) {
 	report, err := version.Apply(cfgRoot, in.Level, in.Notes)
 	if err != nil {
 		return VersionApplyOut{}, &mcpserver.DataError{
-			Msg: fmt.Sprintf("version apply: %s", err.Error()),
+			Msg:   fmt.Sprintf("version apply: %s", err.Error()),
+			Cause: err,
 		}
 	}
 

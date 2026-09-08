@@ -125,10 +125,10 @@ func linksValidate(root string, in LinksValidateIn) (LinksValidateOut, error) {
 func RegisterLinksTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "links_validate",
 		"Extract URLs from a file and validate each: GitHub issue/PR identity+existence, Atlassian Jira host match, generic HTTP(S) reachability.",
-		func(ctx mcpserver.Ctx, in LinksValidateIn) (any, error) {
+		func(ctx mcpserver.Ctx, in LinksValidateIn) (LinksValidateOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {
-				return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("resolve project root: %s", err.Error()), Cause: err}
+				return LinksValidateOut{}, &mcpserver.InfraError{Msg: fmt.Sprintf("resolve project root: %s", err.Error()), Cause: err}
 			}
 			return linksValidate(root, in)
 		},
@@ -195,10 +195,10 @@ func mcpFailureRecord(root string, in MCPFailureRecordIn) (MCPFailureRecordOut, 
 func RegisterMCPFailureTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "mcp_failure_record",
 		"INTERNAL — called by sdlc skills only. Classify an MCP tool-call failure and record it to .sdlc/learnings/log.md for later analysis.",
-		func(ctx mcpserver.Ctx, in MCPFailureRecordIn) (any, error) {
+		func(ctx mcpserver.Ctx, in MCPFailureRecordIn) (MCPFailureRecordOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {
-				return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("resolve project root: %s", err.Error()), Cause: err}
+				return MCPFailureRecordOut{}, &mcpserver.InfraError{Msg: fmt.Sprintf("resolve project root: %s", err.Error()), Cause: err}
 			}
 			if in.SessionID == "" {
 				in.SessionID = ctx.SessionID

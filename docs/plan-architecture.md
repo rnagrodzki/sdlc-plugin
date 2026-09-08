@@ -13,7 +13,7 @@
 
 ### MCP Tools
 
-Eight MCP tools are called directly by the plan skill pipeline.
+Seven MCP tools are called directly by the plan skill pipeline.
 
 | Tool | Registration | Purpose |
 |------|-------------|---------|
@@ -65,7 +65,7 @@ Fourteen files in `plugins/sdlc/skills/plan/`:
 `plan.go` with benign-absence fallback.
 
 `PlanTasks` fields: `requiredFields` (default `[]`), `contractShape` (default
-`""`). Loaded from `plan` config section's `tasks` sub-key.
+`"full"`). Loaded from `plan` config section's `tasks` sub-key.
 
 ### State System
 
@@ -106,8 +106,9 @@ Hook definitions are registered in `plugins/sdlc/hooks/hooks.json`.
 flowchart TD
     S0["Step 0 - Mode Detection and Setup"]
     S0 --> route{Complexity Routing}
-    route -->|"skip (1 file)"| STOP["No plan needed"]
-    route -->|"lightweight (2-3 files)"| S2
+    route -->|"full (0 or unknown files)"| S1
+    route -->|"skip (1 file, normal mode)"| STOP["No plan needed"]
+    route -->|"lightweight (1 file plan-mode, 2-3 files)"| S2
     route -->|"full (4+ files)"| S1
 
     S1["Step 1 - Discovery and Exploration"]
@@ -157,7 +158,8 @@ style, tasks config, explore pack, template resolution, lanes, lens reviewers,
 and dispatches. The `ComplexityRouting` object decides the pipeline mode:
 
 ```
-fileCount 0-1  -> skip      (no plan)
+fileCount ≤ 0  -> full       (file count unknown — defaulting to full pipeline)
+fileCount 1    -> skip       (no plan; lightweight override → lightweight)
 fileCount 2-3  -> lightweight (skip Step 1, skip Step 5)
 fileCount 4+   -> full       (all steps)
 ```
@@ -410,9 +412,9 @@ Lens definitions from `buildLensReviewers()` in `plan.go`:
 
 | Lens | Model | Focus Categories |
 |------|-------|-----------------|
-| `architecture` | sonnet | Structural design, component boundaries, dependency direction |
-| `requirements` | sonnet | Requirement coverage, acceptance criteria completeness |
-| `risk` | sonnet | Risk identification, mitigation strategies, failure modes |
+| `architecture` | sonnet | Buildability, Task descriptions, Decision documentation, Dependency accuracy |
+| `requirements` | sonnet | Requirements coverage, Metadata completeness, Plan completeness, OpenSpec G16, Exploration provenance, Best-practice traceability |
+| `risk` | sonnet | File paths, Verification strategy, Scope discipline, Guardrail compliance |
 
 ### Merged Re-Dispatch Path
 

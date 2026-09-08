@@ -364,7 +364,8 @@ func commitApply(cfgRoot, gitRoot string, in CommitApplyIn) (CommitApplyOut, err
 	if !in.SkipConfigCheck {
 		if err := configmigrate.Verify(cfgRoot); err != nil {
 			return CommitApplyOut{}, &mcpserver.DataError{
-				Msg: fmt.Sprintf("config check failed: %s", err.Error()),
+				Msg:   fmt.Sprintf("config check failed: %s", err.Error()),
+				Cause: err,
 			}
 		}
 	}

@@ -126,6 +126,10 @@
                 "completedAt": {
                   "type": "string",
                   "description": "ISO-8601. Written by task-done/task-fail (R-WAVE-LIVENESS, #506). Task rows deliberately carry no startedAt."
+                },
+                "committedSha": {
+                  "type": "string",
+                  "description": "The SHA of the commit created for this wave, if committed."
                 }
               },
               "required": ["id", "name", "complexity", "risk", "status", "filesChanged"]

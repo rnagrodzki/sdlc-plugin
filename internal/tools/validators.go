@@ -103,10 +103,10 @@ type ValidateOut struct {
 func RegisterValidateTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "validate",
 		"Run a deterministic validator against the project: plan_format, discovery, pr_template, cost_tiers, guardrails, dimensions, or pr_body. Returns structured findings (id, severity, message, path) for failed checks only.",
-		func(ctx mcpserver.Ctx, in ValidateIn) (any, error) {
+		func(ctx mcpserver.Ctx, in ValidateIn) (ValidateOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {
-				return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("resolve project root: %s", err.Error()), Cause: err}
+				return ValidateOut{}, &mcpserver.InfraError{Msg: fmt.Sprintf("resolve project root: %s", err.Error()), Cause: err}
 			}
 			return validate(root, in)
 		},
@@ -138,6 +138,11 @@ func validate(root string, in ValidateIn) (ValidateOut, error) {
 	}
 	if err != nil {
 		return ValidateOut{}, err
+	}
+	// Normalize nil → empty slice so JSON serializes as [] not null,
+	// per the project's "no ambiguous nulls" guardrail.
+	if findings == nil {
+		findings = []discovery.Finding{}
 	}
 	return ValidateOut{Findings: findings}, nil
 }

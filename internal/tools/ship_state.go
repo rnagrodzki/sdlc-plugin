@@ -376,7 +376,7 @@ func shipLoadState(root, workDir string, in ShipStateIn) (*state.State, error) {
 			return nil, &mcpserver.DataError{Msg: fmt.Sprintf("state file not found: %s", stateFile)}
 		}
 		if errors.Is(err, fsx.ErrParse) {
-			return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("failed to parse state file %s: %s", stateFile, err.Error())}
+			return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("failed to parse state file %s: %s", stateFile, err.Error()), Cause: err}
 		}
 		return nil, &mcpserver.InfraError{Msg: "read state file: " + err.Error(), Cause: err}
 	}

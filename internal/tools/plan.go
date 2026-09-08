@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -357,7 +358,13 @@ type requirementInventory struct {
 // found on PATH (mirrors internal/ghx's private isBinaryNotFound idiom;
 // duplicated locally since that helper is unexported in another package).
 func isBinaryNotFound(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "executable file not found")
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, exec.ErrNotFound) {
+		return true
+	}
+	return strings.Contains(err.Error(), "executable file not found")
 }
 
 // getRequirementInventory shells `openspec show <name> --json --deltas-only`

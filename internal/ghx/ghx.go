@@ -1,6 +1,8 @@
 // Package ghx wraps the GitHub CLI (gh) for the operations the SDLC plugin
-// needs. All commands go through execx.Run so output capping and retry
-// semantics are inherited from the single process-execution chokepoint.
+// needs. All commands go through execx.Run so output capping is inherited
+// from the single process-execution chokepoint. Retry is available via
+// execx.Retry but is not used by any function in this package; each gh
+// invocation is single-shot.
 package ghx
 
 import (
@@ -186,7 +188,13 @@ type Account struct {
 // error.
 func GetAccounts(dir, host string) ([]Account, error) {
 	raw, err := run(dir, "auth", "status", "--json", "hosts")
-	if err != nil || raw == "" {
+	if err != nil {
+		if errors.Is(err, execx.ErrOutputCap) {
+			return nil, fmt.Errorf("ghx: GetAccounts: %w", err)
+		}
+		return nil, nil
+	}
+	if raw == "" {
 		return nil, nil
 	}
 
@@ -261,7 +269,17 @@ func AuthProbe(dir, host string) AuthProbeResult {
 		host = "github.com"
 	}
 	login, err := run(dir, "api", "user", "--jq", ".login", "--hostname", host)
-	if err != nil || login == "" {
+	if err != nil {
+		if errors.Is(err, execx.ErrOutputCap) {
+			return AuthProbeResult{
+				ErrorMessage: fmt.Sprintf("gh api user output exceeded cap: %s", err.Error()),
+			}
+		}
+		return AuthProbeResult{
+			ErrorMessage: fmt.Sprintf("Not logged in to %s. Run: gh auth login --hostname %s", host, host),
+		}
+	}
+	if login == "" {
 		return AuthProbeResult{
 			ErrorMessage: fmt.Sprintf("Not logged in to %s. Run: gh auth login --hostname %s", host, host),
 		}
@@ -293,6 +311,12 @@ func RepoAccessProbe(dir, owner, repo, host string) RepoAccessResult {
 	if host == "" {
 		host = "github.com"
 	}
+	if err := validatePositionalArg(owner, "RepoAccessProbe owner"); err != nil {
+		return RepoAccessResult{ErrorMessage: err.Error()}
+	}
+	if err := validatePositionalArg(repo, "RepoAccessProbe repo"); err != nil {
+		return RepoAccessResult{ErrorMessage: err.Error()}
+	}
 
 	accounts, _ := GetAccounts(dir, host)
 	logins := make([]string, 0, len(accounts))
@@ -301,7 +325,19 @@ func RepoAccessProbe(dir, owner, repo, host string) RepoAccessResult {
 	}
 
 	raw, err := run(dir, "api", fmt.Sprintf("repos/%s/%s", owner, repo), "--hostname", host, "-i", "--silent")
-	if err != nil || raw == "" {
+	if err != nil {
+		if errors.Is(err, execx.ErrOutputCap) {
+			return RepoAccessResult{
+				ErrorMessage:      fmt.Sprintf("gh api output exceeded cap: %s", err.Error()),
+				SuggestedAccounts: logins,
+			}
+		}
+		return RepoAccessResult{
+			ErrorMessage:      "gh api returned no output",
+			SuggestedAccounts: logins,
+		}
+	}
+	if raw == "" {
 		return RepoAccessResult{
 			ErrorMessage:      "gh api returned no output",
 			SuggestedAccounts: logins,
@@ -351,12 +387,13 @@ func FormatAccessDenied(activeAccount, owner, repo string, suggestedAccounts []s
 
 // PRMetadata describes the pull request (if any) for the current branch.
 type PRMetadata struct {
-	Exists bool
-	Number int
-	Title  string
-	URL    string
-	State  string
-	Labels []string
+	Exists       bool
+	Number       int
+	Title        string
+	URL          string
+	State        string
+	Labels       []string
+	ErrorMessage string // Non-empty when the probe failed for a reason other than "no PR exists".
 }
 
 // PRForBranch reports the PR for the current branch (no PR number needed),
@@ -367,7 +404,13 @@ type PRMetadata struct {
 // behavior verbatim.
 func PRForBranch(dir string) PRMetadata {
 	raw, err := run(dir, "pr", "view", "--json", "number,title,url,state,labels")
-	if err != nil || raw == "" {
+	if err != nil {
+		if errors.Is(err, execx.ErrOutputCap) {
+			return PRMetadata{Exists: false, ErrorMessage: fmt.Sprintf("gh pr view output exceeded cap: %s", err.Error())}
+		}
+		return PRMetadata{Exists: false}
+	}
+	if raw == "" {
 		return PRMetadata{Exists: false}
 	}
 
