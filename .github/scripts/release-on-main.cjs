@@ -484,8 +484,33 @@ function main() {
       process.exit(1);
     }
 
-    // RC: do NOT bump version file or CHANGELOG.
-    // Create RC tag.
+    // RC: do NOT bump version file. DO prepend CHANGELOG.
+    const filesToAdd = [];
+    if (config.changelog === true) {
+      const changelogFile = config.changelogFile || 'CHANGELOG.md';
+      prependChangelog(repoRoot, changelogFile, rcVersion, notes);
+      filesToAdd.push(changelogFile);
+      console.log(`Changelog updated: ${changelogFile} (RC entry ${rcVersion})`);
+    }
+
+    // Commit + push CHANGELOG if changed.
+    if (filesToAdd.length > 0) {
+      for (const f of filesToAdd) {
+        execOrThrow(`git add "${f}"`, { cwd: repoRoot });
+      }
+      const hasStagedChanges = exec('git diff --cached --quiet', { cwd: repoRoot }) === null;
+      if (hasStagedChanges) {
+        const commitMsg = `chore(release): changelog for ${rcTag}`;
+        withTmpFile(commitMsg, (tmpPath) => {
+          execOrThrow(`git commit -F "${tmpPath}"`, { cwd: repoRoot });
+        });
+        const branch = process.env.GITHUB_REF_NAME || 'main';
+        execOrThrow(`git push origin HEAD:${branch}`, { cwd: repoRoot });
+        console.log(`Committed and pushed changelog update to ${branch}.`);
+      }
+    }
+
+    // Create RC tag (at HEAD, which now includes the changelog commit).
     const tagMessage = notes || `Release ${rcTag}`;
     withTmpFile(tagMessage, (tmpPath) => {
       execOrThrow(`git tag -a "${rcTag}" -F "${tmpPath}" HEAD`, { cwd: repoRoot });
@@ -571,11 +596,19 @@ function main() {
   }
 }
 
-try {
-  main();
-} catch (err) {
-  process.stderr.write(`Unexpected error in release-on-main.cjs: ${err.message}\n${err.stack}\n`);
-  process.exit(1);
+// Only run when executed directly (`node release-on-main.cjs`) — requiring
+// this file as a module (e.g. from tests) must not trigger a live CI run.
+if (require.main === module) {
+  try {
+    main();
+  } catch (err) {
+    process.stderr.write(`Unexpected error in release-on-main.cjs: ${err.message}\n${err.stack}\n`);
+    process.exit(1);
+  }
 }
 
-module.exports = { RELEASE_ON_MAIN_SCRIPT_VERSION };
+module.exports = {
+  RELEASE_ON_MAIN_SCRIPT_VERSION,
+  prependChangelog,
+  checkTagState,
+};
