@@ -8,6 +8,16 @@
 *.so
 *.dylib
 
+# sdlc build output (but not bin/sdlc-launcher.sh, a checked-in source file
+# the plugin ships and execs at runtime — see plugins/sdlc/.mcp.json /
+# plugins/sdlc/hooks/hooks.json)
+/plugins/sdlc/bin/*
+!/plugins/sdlc/bin/sdlc-launcher.sh
+/sdlc
+
+# Local sdlc cache lives under $HOME/.sdlc-cache; never in-repo
+.sdlc-cache/
+
 # Test binary, built with `go test -c`
 *.test
 
@@ -30,3 +40,12 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+/tmp
+# >>> sdlc-utilities managed v3 (do not edit) — transient skill artifacts
+# <<< sdlc-utilities managed
+# >>> sdlc-v2 managed v3 (do not edit) — transient skill artifacts
+*-context-*.json
+*-manifest-*.json
+*-prepare-*.json
+# <<< sdlc-v2 managed

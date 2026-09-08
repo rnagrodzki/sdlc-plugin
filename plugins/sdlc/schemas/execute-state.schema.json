@@ -1,0 +1,240 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/rnagrodzki/sdlc-plugin/main/plugins/sdlc/schemas/execute-state.schema.json",
+  "title": "Execute State",
+  "description": "Validates .sdlc-v2/execution/execute-*.json",
+  "type": "object",
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "skill": {
+      "const": "execute"
+    },
+    "startedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "branch": {
+      "type": "string"
+    },
+    "planPath": {
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "planHash": {
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "quality": {
+      "type": "string"
+    },
+    "runStatus": {
+      "type": "string",
+      "description": "Set by the cleanup action to stamp the run terminal (instead of deleting the state file), so state — including issues[] — survives for later reads (e.g. /harden) until GC's TTL prunes it."
+    },
+    "runCompletedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Timestamp paired with runStatus, set by the cleanup action."
+    },
+    "worktree": {
+      "type": "string"
+    },
+    "plannedTaskIds": {
+      "oneOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "totalTasks": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "waves": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "number": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "status": {
+            "type": "string",
+            "enum": ["pending", "in_progress", "completed", "failed", "partial"]
+          },
+          "startedAt": {
+            "type": "string"
+          },
+          "completedAt": {
+            "type": "string"
+          },
+          "timedOut": {
+            "type": "boolean",
+            "description": "Set by `wave-done --timed-out` (R-WAVE-DEADLINE, #506). Read on resume to skip re-waiting."
+          },
+          "tasks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "complexity": {
+                  "type": "string"
+                },
+                "risk": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": ["completed", "failed", "skipped-dependency"]
+                },
+                "error": {
+                  "type": "string"
+                },
+                "filesChanged": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "completedAt": {
+                  "type": "string",
+                  "description": "ISO-8601. Written by task-done/task-fail (R-WAVE-LIVENESS, #506). Task rows deliberately carry no startedAt."
+                },
+                "committedSha": {
+                  "type": "string",
+                  "description": "The SHA of the commit created for this wave, if committed."
+                }
+              },
+              "required": ["id", "name", "complexity", "risk", "status", "filesChanged"]
+            }
+          }
+        },
+        "required": ["number", "status", "tasks"]
+      }
+    },
+    "context": {
+      "type": "object",
+      "properties": {
+        "planSummary": {
+          "type": "string"
+        },
+        "completedTaskIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "filesAdded": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "filesModified": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "interfacesCreated": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "decisionsFromPriorWaves": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "failedTask": {
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "ID of the most recent non-skipped task-fail. Set by task-fail (R-TASK-17); cleared only by a fresh init."
+    },
+    "failedWave": {
+      "oneOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Number of the most recent wave-fail. Set by wave-fail (R-TASK-17)."
+    },
+    "issues": {
+      "type": "array",
+      "description": "Structured issue accumulator appended by task-fail, wave-fail, and DONE_WITH_CONCERNS task-done calls (R-TASK-17). Mirrors deferredFindings in ship-state.schema.json.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "wave": {
+            "type": "integer"
+          },
+          "step": {
+            "type": "string"
+          },
+          "taskId": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string"
+          }
+        },
+        "required": ["severity", "category", "summary", "timestamp"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["version", "skill", "startedAt", "branch", "planHash", "totalTasks", "waves", "context"],
+  "additionalProperties": false
+}

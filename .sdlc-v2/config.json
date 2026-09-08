@@ -1,0 +1,138 @@
+{
+  "execute": {
+    "guardrails": [
+      {
+        "description": "Do not shell out via CLI for a step this project's MCP tools already cover (setup, version, ship, review, commit, PR, jira). Call the MCP tool instead, and batch multiple checks into as few calls as possible — every extra CLI round trip between harness and model slows execution and fragments feedback.",
+        "id": "prefer-mcp-over-cli",
+        "severity": "warning"
+      }
+    ]
+  },
+  "plan": {
+    "guardrails": [
+      {
+        "description": "Every task that creates or modifies source code must include corresponding test cases.",
+        "id": "test-coverage-required",
+        "severity": "error"
+      },
+      {
+        "description": "Plans must not include steps that skip or disable CI checks.",
+        "id": "no-ci-bypass",
+        "severity": "error"
+      },
+      {
+        "description": "Tasks must only address stated requirements; no gold-plating.",
+        "id": "no-scope-creep",
+        "severity": "warning"
+      },
+      {
+        "description": "Each task must have exactly one clear deliverable.",
+        "id": "single-responsibility-tasks",
+        "severity": "warning"
+      },
+      {
+        "description": "Tasks must not add functionality beyond stated requirements — no speculative abstractions, premature generalization, or unused parameters.",
+        "id": "yagni",
+        "severity": "warning"
+      },
+      {
+        "description": "Tasks must not duplicate logic that exists elsewhere — reuse existing functions or extract shared utilities.",
+        "id": "dry",
+        "severity": "warning"
+      },
+      {
+        "description": "Tasks must prefer the simplest design that satisfies requirements — avoid unnecessary abstractions and over-engineering.",
+        "id": "kiss",
+        "severity": "warning"
+      },
+      {
+        "description": "Plan must state the underlying problem in one sentence — in Goal, Architecture, or Key Decisions. Reject plans that transcribe requirements without naming the root problem.",
+        "id": "state-premise",
+        "severity": "error"
+      },
+      {
+        "description": "Plan must identify the smallest version of the work that still delivers value. If the plan covers more than the minimum, each extra task must be justified in Key Decisions.",
+        "id": "smallest-viable-cut",
+        "severity": "warning"
+      },
+      {
+        "description": "Plan must name who or what fails if this implementation ships incorrectly (user, system, team, downstream service). Surfaces the blast radius before decomposition.",
+        "id": "failure-audience",
+        "severity": "warning"
+      },
+      {
+        "description": "Plan must list what is intentionally NOT being built. Surface adjacent improvements that were considered and excluded so reviewers and executors do not silently re-expand scope.",
+        "id": "explicit-non-goals",
+        "severity": "warning"
+      },
+      {
+        "description": "When two or more codebase patterns are viable for the same requirement with materially different downstream implications, the plan must EITHER record the choice in Key Decisions with rationale, OR the skill must AskUserQuestion before committing. Silent selection between viable patterns is a critique failure.",
+        "id": "ambiguity-stops-and-asks",
+        "severity": "error"
+      },
+      {
+        "description": "Plans touching an MCP tool definition must state precisely what the tool does, its inputs/outputs, and when to call it. A vague or generic tool description is a blocking issue.",
+        "id": "mcp-tool-description-precise",
+        "severity": "error"
+      },
+      {
+        "description": "Every skill step that an MCP tool could perform must name the explicit tool call — plans must not leave tool-vs-skill wiring to ad hoc LLM judgment.",
+        "id": "skill-mcp-connectivity",
+        "severity": "warning"
+      },
+      {
+        "description": "Deterministic, mechanical work (file I/O, shell orchestration, config reads/writes, validation) belongs in MCP tools. Skills own only non-deterministic judgment (interpretation, drafting, user dialogue). Plans must not push deterministic logic into skill markdown.",
+        "id": "mcp-deterministic-work-split",
+        "severity": "error"
+      },
+      {
+        "description": "Plans that change tool request/response payloads must assess round-trip count and field clarity for LLM consumption. No ambiguous or redundant payload shapes.",
+        "id": "payload-clarity-for-llms",
+        "severity": "warning"
+      },
+      {
+        "description": "MCP tools must internally chain the shell/file reads and writes needed to reach the LLM's goal in one call rather than forcing the LLM to chain many round trips, and must return output descriptive enough to act on without extra lookups.",
+        "id": "tool-orchestrates-fast-descriptive-output",
+        "severity": "error"
+      },
+      {
+        "description": "Plans must route SDLC-process steps (setup, version, ship, review, commit, PR, jira) through this project's MCP tools rather than raw CLI invocations. Where an MCP tool covers the step, do not add a task that shells out for the same result. Batch what the MCP surface returns in one call rather than planning multiple round trips between harness and model.",
+        "id": "prefer-mcp-over-cli",
+        "severity": "warning"
+      },
+      {
+        "id": "mcp-tool-count-discipline",
+        "severity": "warning",
+        "description": "Before adding a new MCP tool, verify the operation cannot be absorbed into an existing tool via action dispatch or input extension. Each tool adds schema bytes to every LLM invocation context. Prefer extending over creating."
+      },
+      {
+        "id": "mcp-output-llm-contract",
+        "severity": "error",
+        "description": "MCP tool outputs are consumed by an LLM, not a programmatic API client. Return contextually rich responses: include field names that read as natural language, add summary sentences alongside raw data, include relevant context the LLM needs to reason about the result. A tool returning {status: 'failed', code: 3} is useless; returning {status: 'failed', reason: 'Template file not found at .sdlc-v2/plan-template.md', context: 'Project has no custom template -- shipped default will be used'} lets the LLM act."
+      },
+      {
+        "id": "mcp-output-action-hints",
+        "severity": "warning",
+        "description": "When an MCP tool output implies a natural next step, include an 'actions' or 'next' field with plain-language instructions the LLM can follow. Example: a merge_results output with coverage gaps should include: next: 'Re-dispatch lanes for missing gates: G14, G17. If re-dispatch also fails, escalate to user via AskUserQuestion.' Do not force the LLM to re-derive next steps from raw data."
+      },
+      {
+        "id": "mcp-error-actionable",
+        "severity": "error",
+        "description": "MCP tool errors must tell the LLM what went wrong AND what to do about it. Not a stack trace -- a diagnosis + recovery instruction. Example: instead of 'ENOENT: .sdlc-v2/config.json', return 'Config file .sdlc-v2/config.json not found. Run setup_init to create it, or pass skipConfigCheck: true to proceed without config.' The LLM cannot debug infrastructure errors -- it needs actionable alternatives."
+      },
+      {
+        "id": "handler-data-contracts",
+        "severity": "error",
+        "description": "Plans that create or modify tool handlers or data-transformation pipelines must explicitly document nil/empty-collection edge cases and how they are normalized. Handlers must normalize nil to empty array/object at the dispatcher level before returning output; this normalization must happen within the handler, not left to downstream serialization or LLM interpretation."
+      }
+    ]
+  },
+  "version": {
+    "fileType": "plugin.json",
+    "mode": "file",
+    "tagPrefix": "v",
+    "versionFile": "plugins/sdlc/.claude-plugin/plugin.json",
+    "changelog": true,
+    "changelogFile": "CHANGELOG.md"
+  }
+}

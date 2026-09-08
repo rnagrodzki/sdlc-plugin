@@ -1,0 +1,367 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/rnagrodzki/sdlc-plugin/main/plugins/sdlc/schemas/sdlc-config.schema.json",
+  "title": "SDLC Config",
+  "description": "Validates .sdlc-v2/config.json — unified project-level configuration for sdlc-plugin skills.",
+  "type": "object",
+  "$defs": {
+    "versionSection": {
+      "type": "object",
+      "description": "Controls the version skill behaviour.",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["file", "tag"],
+          "description": "Whether the version is tracked in a file or via git tags."
+        },
+        "versionFile": {
+          "type": "string",
+          "description": "Path to the file that stores the version number."
+        },
+        "fileType": {
+          "type": "string",
+          "enum": ["package.json", "cargo.toml", "pyproject.toml", "pubspec.yaml", "plugin.json", "version-file"],
+          "description": "Format of the version file."
+        },
+        "tagPrefix": {
+          "type": "string",
+          "description": "Prefix prepended to git version tags (e.g. \"v\")."
+        },
+        "changelog": {
+          "type": "boolean",
+          "description": "Whether to generate or update a changelog on release."
+        },
+        "changelogFile": {
+          "type": "string",
+          "description": "Path to the changelog file."
+        },
+        "ticketPrefix": {
+          "type": "string",
+          "description": "Jira ticket prefix used to filter commit messages for the changelog (e.g. \"PROJ\")."
+        },
+        "preRelease": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]*$",
+          "description": "Default pre-release label applied when no explicit base bump or --pre is given."
+        }
+      },
+      "required": ["mode"],
+      "additionalProperties": false
+    },
+    "jiraSection": {
+      "type": "object",
+      "description": "Controls Jira integration behaviour.",
+      "properties": {
+        "defaultProject": {
+          "type": "string",
+          "pattern": "^[A-Z]{2,10}$",
+          "description": "Default Jira project key (2–10 uppercase letters)."
+        },
+        "projects": {
+          "type": "array",
+          "description": "Allowed Jira project keys when the repo maps to multiple projects. When set, jira validates --project arguments and presents a closed-list prompt on fallback.",
+          "items": { "type": "string", "pattern": "^[A-Z]{2,10}$" },
+          "minItems": 2,
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "commitSection": {
+      "type": "object",
+      "description": "Controls commit message validation.",
+      "properties": {
+        "subjectPattern": {
+          "type": "string",
+          "description": "Regex pattern the commit subject line must match."
+        },
+        "subjectPatternError": {
+          "type": "string",
+          "description": "Human-readable error message when subject pattern fails."
+        },
+        "allowedTypes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Allowed conventional commit types."
+        },
+        "allowedScopes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Allowed commit scopes."
+        },
+        "requireBodyFor": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Commit types that require a body message."
+        },
+        "requiredTrailers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Required trailer keys in commit message."
+        }
+      },
+      "additionalProperties": false
+    },
+    "prLabelsSection": {
+      "type": "object",
+      "description": "Configures how /pr chooses labels (issue #197). Mode `off` (default) adds no labels except those forced via --label. Mode `rules` evaluates user-defined deterministic rules. Mode `llm` lets the LLM pick labels via fuzzy matching against repo labels (legacy behavior, opt-in only).",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["off", "rules", "llm"],
+          "default": "off",
+          "description": "Label selection mode. `off` = no automatic labels (forced labels still apply). `rules` = evaluate user-defined rules deterministically. `llm` = legacy LLM fuzzy match."
+        },
+        "rules": {
+          "type": "array",
+          "description": "Label rules evaluated when mode = `rules`. Each rule names exactly one target label and one signal type in `when`. Multiple rules may target the same label (OR semantics).",
+          "items": {
+            "type": "object",
+            "required": ["label", "when"],
+            "properties": {
+              "label": {
+                "type": "string",
+                "description": "Repo label to apply when this rule matches. Must exist in the repository's label list."
+              },
+              "when": {
+                "description": "Signal that triggers this rule. Exactly one signal type per rule.",
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "required": ["branchPrefix"],
+                    "additionalProperties": false,
+                    "properties": {
+                      "branchPrefix": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "minItems": 1,
+                        "description": "Match if currentBranch starts with any listed prefix (e.g. \"fix/\", \"feat/\")."
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": ["commitType"],
+                    "additionalProperties": false,
+                    "properties": {
+                      "commitType": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "minItems": 1,
+                        "description": "Match if any commit subject begins with `<type>:` or `<type>(scope):` (e.g. \"feat\", \"fix\")."
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": ["pathGlob"],
+                    "additionalProperties": false,
+                    "properties": {
+                      "pathGlob": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "minItems": 1,
+                        "description": "Match if every changed file matches one of the listed globs (e.g. \"**/*.md\")."
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": ["jiraType"],
+                    "additionalProperties": false,
+                    "properties": {
+                      "jiraType": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "minItems": 1,
+                        "description": "Match if jiraTicket.type is in the list (e.g. \"Bug\", \"Story\")."
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": ["diffSizeUnder"],
+                    "additionalProperties": false,
+                    "properties": {
+                      "diffSizeUnder": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Match if diffStat.totalLinesChanged is strictly less than this value."
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "prSection": {
+      "type": "object",
+      "description": "Controls pull request title validation and label assignment.",
+      "properties": {
+        "titlePattern": {
+          "type": "string",
+          "description": "Regex pattern the PR title must match."
+        },
+        "titlePatternError": {
+          "type": "string",
+          "description": "Human-readable error message when title pattern fails."
+        },
+        "allowedTypes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Allowed PR title type prefixes."
+        },
+        "allowedScopes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Allowed PR title scopes."
+        },
+        "labels": {
+          "$ref": "#/$defs/prLabelsSection"
+        },
+        "expectedAccount": {
+          "type": "string",
+          "description": "Expected gh account login for PR creation. Cascades to git remote origin owner if unset."
+        }
+      },
+      "additionalProperties": false
+    },
+    "guardrailItem": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$",
+          "description": "Unique kebab-case identifier."
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 1024,
+          "description": "Natural-language rule."
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["error", "warning"],
+          "description": "error = blocking; warning = advisory. Defaults to error when omitted."
+        }
+      },
+      "required": ["id", "description"],
+      "additionalProperties": false
+    },
+    "planSection": {
+      "type": "object",
+      "description": "Controls plan behavior and custom guardrails.",
+      "properties": {
+        "guardrails": {
+          "type": "array",
+          "description": "Custom guardrails evaluated during plan critique phases.",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/guardrailItem" }
+        },
+        "tasks": {
+          "type": "object",
+          "description": "Team contract for plan tasks and deliverables.",
+          "properties": {
+            "requiredFields": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Required fields for each task in a plan."
+            },
+            "contractShape": {
+              "type": "string",
+              "enum": ["full", "minimal", "none"],
+              "description": "Shape of the task contract: full (complete), minimal (essential), or none (flexible)."
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "executeSection": {
+      "type": "object",
+      "description": "Controls execute-plan behavior and runtime guardrails.",
+      "properties": {
+        "guardrails": {
+          "type": "array",
+          "description": "Custom guardrails evaluated during execute-plan runtime (pre-wave and post-wave checks).",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/guardrailItem" }
+        },
+        "commitWaves": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether execute_state's wave-commit action stages and commits each completed wave's changes itself (git add -A + git commit). When false, wave-commit does not touch git and instead returns an instruction to commit the wave manually and record the sha via wave-committed."
+        }
+      },
+      "additionalProperties": false
+    },
+    "planStyleSection": {
+      "type": "object",
+      "description": "Configures personal plan style preferences (verbosity, audience, narrative rules).",
+      "properties": {
+        "verbosity": {
+          "type": "string",
+          "enum": ["terse", "standard", "detailed"],
+          "description": "Plan verbosity level: terse (minimal), standard (balanced), or detailed (comprehensive)."
+        },
+        "audience": {
+          "type": "string",
+          "enum": ["technical", "mixed", "executive"],
+          "description": "Target audience for the plan narrative."
+        },
+        "narrativeRules": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Custom narrative rules to apply when generating plans."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "URL pointing to this schema."
+    },
+    "version": {
+      "$ref": "#/$defs/versionSection"
+    },
+    "jira": {
+      "$ref": "#/$defs/jiraSection"
+    },
+    "commit": {
+      "$ref": "#/$defs/commitSection"
+    },
+    "pr": {
+      "$ref": "#/$defs/prSection"
+    },
+    "plan": {
+      "$ref": "#/$defs/planSection"
+    },
+    "planStyle": {
+      "$ref": "#/$defs/planStyleSection"
+    },
+    "execute": {
+      "$ref": "#/$defs/executeSection"
+    }
+  },
+  "additionalProperties": false
+}

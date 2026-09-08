@@ -1,0 +1,7 @@
+# >>> sdlc-v2 managed (do not edit) — selective ignores
+*
+!.gitignore
+!config.json
+!review-dimensions/
+!review-dimensions/**
+# <<< sdlc-v2 managed

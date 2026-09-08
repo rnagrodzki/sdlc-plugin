@@ -1,0 +1,77 @@
+version: '3'
+
+vars:
+  VERSION:
+    sh: grep -m1 '"version"' plugins/sdlc/.claude-plugin/plugin.json | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/'
+  CACHE_DIR:
+    sh: echo "${SDLC_CACHE_DIR:-$HOME/.sdlc-cache}"
+  ASSET: 'sdlc-{{.VERSION}}-{{OS}}-{{ARCH}}'
+  BIN_PATH: '{{.CACHE_DIR}}/bin/{{.ASSET}}'
+
+tasks:
+  default:
+    cmds:
+      - task --list
+    silent: true
+
+  build:
+    desc: Compile the sdlc binary to ./sdlc
+    cmds:
+      - go build -o sdlc ./cmd/sdlc
+
+  deploy:
+    desc: Build and install into the launcher's cache so sdlc-launcher.sh execs it without downloading
+    deps: [build]
+    cmds:
+      - mkdir -p '{{.CACHE_DIR}}/bin'
+      - cp ./sdlc '{{.BIN_PATH}}'
+      - chmod +x '{{.BIN_PATH}}'
+      # Same Gatekeeper self-heal as sdlc-launcher.sh's exec step: clears
+      # provenance/quarantine metadata and re-signs ad-hoc so the deployed
+      # binary isn't SIGKILLed on first launch. rm the sentinel so the
+      # launcher doesn't skip re-signing this freshly-copied binary.
+      - 'rm -f "{{.BIN_PATH}}.signed"'
+      - |
+        {{if eq OS "darwin"}}
+        xattr -d com.apple.quarantine '{{.BIN_PATH}}' 2>/dev/null || true
+        xattr -d com.apple.provenance '{{.BIN_PATH}}' 2>/dev/null || true
+        codesign --force --deep --sign - '{{.BIN_PATH}}' 2>/dev/null && touch '{{.BIN_PATH}}.signed' || true
+        {{end}}
+      - 'echo "installed {{.BIN_PATH}} — reload the Claude Code session (or /reload-plugins) to pick it up"'
+
+  dev:
+    desc: Alias for deploy — build local binary and install it for the launcher to pick up
+    cmds:
+      - task: deploy
+
+  clean:
+    desc: Remove the local build artifact and the cached dev binary
+    cmds:
+      - rm -f ./sdlc
+      - rm -f '{{.BIN_PATH}}'
+
+  vet:
+    desc: Run go vet
+    cmds:
+      - go vet ./...
+
+  test:
+    desc: Run integration tests
+    cmds:
+      - go test -tags integration ./...
+
+  check:
+    desc: Run vet then test
+    cmds:
+      - task: vet
+      - task: test
+
+  version:
+    desc: Print resolved version/os/arch and the launcher cache path used by deploy
+    cmds:
+      - 'echo "VERSION=  {{.VERSION}}"'
+      - 'echo "OS=       {{OS}}"'
+      - 'echo "ARCH=     {{ARCH}}"'
+      - 'echo "ASSET=    {{.ASSET}}"'
+      - 'echo "BIN_PATH= {{.BIN_PATH}}"'
+    silent: true

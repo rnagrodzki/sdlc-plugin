@@ -1,0 +1,6 @@
+{
+  "sdlc": {
+    "command": "${CLAUDE_PLUGIN_ROOT}/bin/sdlc-launcher.sh",
+    "args": ["mcp"]
+  }
+}

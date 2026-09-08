@@ -1,0 +1,229 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/rnagrodzki/sdlc-plugin/main/plugins/sdlc/schemas/sdlc-local.schema.json",
+  "title": "SDLC Local Config",
+  "description": "Validates .sdlc-v2/local.json — user-local (gitignored) configuration for sdlc skills.",
+  "type": "object",
+  "$defs": {
+    "reviewSection": {
+      "type": "object",
+      "description": "User-local defaults for the review skill.",
+      "properties": {
+        "scope": {
+          "type": "string",
+          "enum": ["all", "committed", "staged", "working", "worktree"],
+          "description": "Which changes to include in the review."
+        }
+      },
+      "additionalProperties": false
+    },
+    "planStyleSection": {
+      "type": "object",
+      "description": "User-local narrative preferences for the plan skill.",
+      "properties": {
+        "verbosity": {
+          "type": "string",
+          "enum": ["terse", "standard", "detailed"],
+          "description": "How much prose /plan writes in narrative sections."
+        },
+        "audience": {
+          "type": "string",
+          "enum": ["technical", "mixed", "executive"],
+          "description": "Assumed reader background for plan narrative sections."
+        },
+        "narrativeRules": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Free-form writing rules /plan enforces on narrative sections."
+        }
+      },
+      "additionalProperties": false
+    },
+    "receivedReviewSection": {
+      "type": "object",
+      "description": "User-local defaults for the received-review skill.",
+      "properties": {
+        "alwaysFixSeverities": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["low", "medium", "high", "critical"]
+          },
+          "uniqueItems": true,
+          "default": [],
+          "description": "Severities whose 'will fix' findings bypass the per-finding consent gate. Local-only — must NEVER be set in .sdlc-v2/config.json."
+        }
+      },
+      "additionalProperties": false
+    },
+    "shipSection": {
+      "type": "object",
+      "description": "Controls the ship skill behaviour.",
+      "properties": {
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["execute", "commit", "review", "version", "verify-openspec", "archive-openspec", "pr", "verify-pipeline", "await-remote-review", "learnings-commit"]
+          },
+          "uniqueItems": true,
+          "description": "Pipeline steps to run. Replaces legacy preset/skip fields."
+        },
+        "quick": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["execute", "commit", "review", "version", "verify-openspec", "archive-openspec", "pr", "verify-pipeline", "await-remote-review", "learnings-commit"]
+          },
+          "uniqueItems": true,
+          "description": "Optional shortened step list activated by --quick. When set, /ship --quick uses this list instead of steps[]. Unset means --quick is not available for this project. See R-quick-1."
+        },
+        "bump": {
+          "type": "string",
+          "pattern": "^(major|minor|patch|[a-z][a-z0-9]*)$",
+          "description": "Version bump level. Accepts `major|minor|patch` or any pre-release label matching `^[a-z][a-z0-9]*$` (e.g., `rc`, `beta`, `alpha`). Label values are forwarded verbatim to version, where they are interpreted as `--bump patch --pre <label>`."
+        },
+        "draft": {
+          "type": "boolean",
+          "description": "Open the pull request as a draft."
+        },
+        "auto": {
+          "type": "boolean",
+          "description": "Run the pipeline non-interactively."
+        },
+        "reviewThreshold": {
+          "type": "string",
+          "enum": ["critical", "high", "medium", "low"],
+          "description": "Minimum severity level that blocks the pipeline."
+        },
+        "rebase": {
+          "description": "Whether to rebase before shipping, or prompt the user.",
+          "oneOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "string",
+              "const": "prompt"
+            }
+          ]
+        },
+        "verifyPipelineTimeout": {
+          "type": "integer",
+          "minimum": 30,
+          "default": 1200,
+          "description": "Maximum seconds verify-pipeline polls before giving up with a warning. (R57)"
+        },
+        "verifyPipelineInterval": {
+          "type": "integer",
+          "minimum": 10,
+          "default": 60,
+          "description": "Seconds between verify-pipeline poll attempts. (R57)"
+        },
+        "verifyPipelineMaxIterations": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 3,
+          "description": "Maximum analyze-fix-recheck iterations before verify-pipeline emits a warning and proceeds. (R47, R57)"
+        },
+        "awaitRemoteReviewTimeout": {
+          "type": "integer",
+          "minimum": 30,
+          "default": 600,
+          "description": "Maximum seconds await-remote-review polls before giving up with a warning. (R57)"
+        },
+        "awaitRemoteReviewInterval": {
+          "type": "integer",
+          "minimum": 10,
+          "default": 60,
+          "description": "Seconds between await-remote-review poll attempts. (R57)"
+        },
+        "awaitRemoteReviewers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "default": ["copilot"],
+          "description": "Logins (case-insensitive) whose reviews satisfy await-remote-review. When the login is `copilot`, the reviewer must also be a Bot. (R56, R57)"
+        },
+        "executeWaveTimeout": {
+          "type": "integer",
+          "minimum": 60,
+          "maximum": 3600,
+          "default": 1800,
+          "description": "Maximum seconds a single execute wave may run before stalled tasks are terminated. Forwarded to execute-plan as `--wave-timeout`. The maximum restates MaxWaveTimeoutSeconds in internal/shipmeta/fields.go, which is the single enforcement point (Monitor.timeout_ms caps at 3600000 ms). (R57, R-WAVE-DEADLINE)"
+        },
+        "executeWaveInterval": {
+          "type": "integer",
+          "minimum": 10,
+          "default": 60,
+          "description": "Seconds between execute wave liveness poll attempts. Forwarded to execute-plan as `--wave-interval`. (R57, R-WAVE-LIVENESS)"
+        }
+      },
+      "additionalProperties": false
+    },
+    "workspaceSection": {
+      "type": "object",
+      "description": "User-local workspace preferences. Workspace itself is auto-detected (branch/continue) — this section only carries branch-name derivation knobs consumed by lib/branch-name.js. The former worktree-placement and mode keys are removed (workspace is no longer user-selectable; fixes #378, #379).",
+      "properties": {
+        "branch": {
+          "type": "object",
+          "description": "Branch-name derivation knobs consumed by lib/branch-name.js. Mirrors workspace.worktree shape. Drives config-driven branch naming in both ship pre-execute block and execute-plan standalone Step 1 (fixes #378, #379).",
+          "additionalProperties": false,
+          "properties": {
+            "template": {
+              "type": "string",
+              "default": "{type}/{slug}",
+              "description": "Branch name template. Supported placeholders: {type} (mapped via typeMap), {slug} (truncated to slugMaxLength), {issue} (optional ticket key, empty string when not provided), {date} (YYYYMMDD in local tz). Unknown placeholders throw."
+            },
+            "slugMaxLength": {
+              "type": "integer",
+              "minimum": 8,
+              "maximum": 100,
+              "default": 50,
+              "description": "Maximum length of the slug segment before substitution into the template."
+            },
+            "typeMap": {
+              "type": "object",
+              "description": "Maps logical plan type to branch prefix. Merged with defaults: {feature:'feat', bugfix:'fix', chore:'chore', docs:'docs', refactor:'refactor'}. Override specific keys to customise prefixes.",
+              "default": { "feature": "feat", "bugfix": "fix", "chore": "chore", "docs": "docs", "refactor": "refactor" },
+              "additionalProperties": { "type": "string" }
+            }
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "URL pointing to this schema."
+    },
+    "version": {
+      "type": "integer",
+      "const": 2,
+      "description": "Schema version of this local config file. Current version is 2; v1 files (no version field, with ship.preset/ship.skip) are auto-migrated on read."
+    },
+    "review": {
+      "$ref": "#/$defs/reviewSection"
+    },
+    "planStyle": {
+      "$ref": "#/$defs/planStyleSection"
+    },
+    "ship": {
+      "$ref": "#/$defs/shipSection"
+    },
+    "receivedReview": {
+      "$ref": "#/$defs/receivedReviewSection"
+    },
+    "workspace": {
+      "$ref": "#/$defs/workspaceSection"
+    }
+  },
+  "additionalProperties": false
+}
