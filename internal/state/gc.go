@@ -124,15 +124,17 @@ func GC(root string, opt GCOptions) (*GCReport, error) {
 		for i, f := range files {
 			switch {
 			case branchDeleted:
-				_ = os.Remove(f.path)
-				report.Deleted = append(report.Deleted, f.path)
+				if err := os.Remove(f.path); err == nil {
+					report.Deleted = append(report.Deleted, f.path)
+				}
 			case i == 0:
 				// Always keep the newest file for a live branch.
 				report.Kept = append(report.Kept, f.path)
 				report.Buckets[prefix]++
 			case f.mtime.Before(cutoff):
-				_ = os.Remove(f.path)
-				report.Deleted = append(report.Deleted, f.path)
+				if err := os.Remove(f.path); err == nil {
+					report.Deleted = append(report.Deleted, f.path)
+				}
 			default:
 				report.Kept = append(report.Kept, f.path)
 				report.Buckets[prefix]++
@@ -204,8 +206,9 @@ func gcTempdirs(dir string, ttl time.Duration, branchExists func(string) bool) (
 			continue
 		}
 
-		_ = os.RemoveAll(full)
-		deleted = append(deleted, full)
+		if err := os.RemoveAll(full); err == nil {
+			deleted = append(deleted, full)
+		}
 	}
 
 	return deleted, kept

@@ -3,7 +3,7 @@
 Sub-flow of `/setup --execution-guardrails`. Scans the project and
 generates execution-focused guardrail proposals for the `execute` section,
 then lets the user review and select. Writes guardrails to
-`.sdlc/config.json` via `setup_write_sections`.
+`.sdlc-v2/config.json` via `setup_write_sections`.
 
 > **Port Notes** (Task 44 KD9 rewrite): same as `setup-guardrails.md` — no Go
 > tool equivalent exists for `skill/guardrails.js`'s scanning, so Step 0 below
@@ -52,7 +52,7 @@ descriptions instead of the plan descriptions:
 
 ### Step 0 — Prepare
 
-1. Read `.sdlc/config.json`. Extract the existing `execute.guardrails` array (empty if absent) as `existing`.
+1. Read `.sdlc-v2/config.json`. Extract the existing `execute.guardrails` array (empty if absent) as `existing`.
 2. If not in `--add` mode and `existing` is non-empty: use AskUserQuestion: "`{existing.length}` execution guardrails already configured. Replace all, or use --add to expand?" Options: replace / cancel. On cancel, stop.
 3. Run the scan per `setup-guardrails.md`'s Detection Helpers.
 

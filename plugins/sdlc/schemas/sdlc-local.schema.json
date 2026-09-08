@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/rnagrodzki/sdlc-marketplace/main/schemas/sdlc-local.schema.json",
   "title": "SDLC Local Config",
-  "description": "Validates .sdlc/local.json — user-local (gitignored) configuration for sdlc-utilities skills.",
+  "description": "Validates .sdlc-v2/local.json — user-local (gitignored) configuration for sdlc skills.",
   "type": "object",
   "$defs": {
     "reviewSection": {
@@ -53,7 +53,7 @@
           },
           "uniqueItems": true,
           "default": [],
-          "description": "Severities whose 'will fix' findings bypass the per-finding consent gate. Local-only — must NEVER be set in .sdlc/config.json."
+          "description": "Severities whose 'will fix' findings bypass the per-finding consent gate. Local-only — must NEVER be set in .sdlc-v2/config.json."
         }
       },
       "additionalProperties": false
@@ -155,7 +155,7 @@
           "minimum": 60,
           "maximum": 3600,
           "default": 1800,
-          "description": "Maximum seconds a single execute wave may run before stalled tasks are terminated. Forwarded to execute-plan as `--wave-timeout`. The maximum restates MAX_WAVE_TIMEOUT_SECONDS in plugins/sdlc-utilities/scripts/lib/ship-fields.js, which is the single enforcement point (Monitor.timeout_ms caps at 3600000 ms). (R57, R-WAVE-DEADLINE)"
+          "description": "Maximum seconds a single execute wave may run before stalled tasks are terminated. Forwarded to execute-plan as `--wave-timeout`. The maximum restates MaxWaveTimeoutSeconds in internal/shipmeta/fields.go, which is the single enforcement point (Monitor.timeout_ms caps at 3600000 ms). (R57, R-WAVE-DEADLINE)"
         },
         "executeWaveInterval": {
           "type": "integer",

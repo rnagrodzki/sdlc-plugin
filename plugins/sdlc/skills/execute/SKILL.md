@@ -116,7 +116,7 @@ Note: this reads `execute.guardrails` (runtime enforcement), not `plan.guardrail
 
 ### Post-compact recovery (Fixes #392 / R36)
 
-In addition to the explicit `--resume` flag, Step 0 MUST scan the SessionStart `<system-reminder>` context for the literal string `Active execution (post-compact):` (emitted by `hooks/session-start.js` when the matcher source is `compact` and execute state exists for the current branch):
+In addition to the explicit `--resume` flag, Step 0 MUST scan the SessionStart `<system-reminder>` context for the literal string `Active execution (post-compact):` (emitted by `internal/hooks/session_start.go` when the matcher source is `compact` and execute state exists for the current branch):
 
 1. **`Active execution (post-compact):` present AND `Active pipeline: ship` ABSENT** in the same system-reminder block:
    - Set `implicitResume = true`. This is functionally equivalent to `--resume` being passed on the CLI — the rest of Step 0 takes the resume codepath above (resume detection step 1: locate the most recent state file for the current branch, then steps 2–9 including the `committedSha` idempotency check).
@@ -132,11 +132,11 @@ In addition to the explicit `--resume` flag, Step 0 MUST scan the SessionStart `
 
 3. **Neither signal present AND no `--resume` on CLI**: Step 0 routing is unchanged from prior behavior.
 
-The hook is layer-agnostic (it surfaces facts); this discriminator is the consumer-side decision. Implementation: see `hooks/session-start.js` for the source-aware emission.
+The hook is layer-agnostic (it surfaces facts); this discriminator is the consumer-side decision. Implementation: see `internal/hooks/session_start.go` for the source-aware emission.
 
 **Parse `--auto`:** If `--auto` was passed, store the flag. Auto mode suppresses interactive prompts: resume detection auto-resumes if state exists, high-risk gates auto-approve, and quality-tier selection uses the value from `--quality` (required when `--auto` is set).
 
-**Parse `--plan <path>` (R-PLANFILE):** If `--plan <path>` (or the positional plan-file-path argument) was passed, store it as `EXPLICIT_PLAN_FILE`. When set, Step 1 (LOAD) uses this path directly as the plan source. This flag is forwarded by ship's `skill/ship.js` from `context.planFile` so plan discovery is stable across compaction. Users may also pass it directly for non-interactive invocations. The plan-argument gate (R41, above) already halts before this point if neither form was supplied and no resume is in effect — so this parse step never has to fall back to anything.
+**Parse `--plan <path>` (R-PLANFILE):** If `--plan <path>` (or the positional plan-file-path argument) was passed, store it as `EXPLICIT_PLAN_FILE`. When set, Step 1 (LOAD) uses this path directly as the plan source. This flag is forwarded by ship's `internal/tools/ship.go` from `context.planFile` so plan discovery is stable across compaction. Users may also pass it directly for non-interactive invocations. The plan-argument gate (R41, above) already halts before this point if neither form was supplied and no resume is in effect — so this parse step never has to fall back to anything.
 
 **Parse `--commit-waves` (Fixes #392 / R35):** If `--commit-waves` was passed, store `commitWaves = true`. Default `false`. When set, Step 5d gates a per-wave WIP commit after G9+G11 pass (see "5d (per-wave commit)" below). The small-plan direct-execution path (R5, Step 2b) NEVER triggers per-wave commits regardless of this flag. Inline help summary:
 
@@ -165,7 +165,7 @@ When ship invokes execute inside the ship pipeline, `--branch` is **not** passed
 2. Detect the current branch (`git branch --show-current`) and the default branch (`git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||'`, fallback `main`).
 
    **Do NOT use the `gitStatus` snapshot from conversation context** — it is captured once at conversation start and is not updated during the session. Always run `git branch --show-current` via Bash at execution time.
-3. **Derive (`lib/git.js::deriveWorkspace` logic, inline 2-branch decision):**
+3. **Derive (`internal/gitx/gitx.go::DeriveWorkspace` logic, inline 2-branch decision):**
    - **`continue`** — cwd is a linked worktree, OR the current branch is NOT the default branch. Run in place: do nothing, leave `EXECUTE_NEW_BRANCH` unset, proceed to rebase. There is **no worktree creation**.
    - **`branch`** — cwd is the main worktree AND the current branch IS the default branch. Derive a feature-branch name and run `git checkout -b`:
 
@@ -308,7 +308,7 @@ This dispatch is NOT a wave-runner Agent — it is a direct batch-haiku dispatch
 
 **For each wave:**
 
-**First-wave bootstrap (runs once, before wave 1's 5a-pre):** `wave-start` (called in 5b below, for every wave including wave 1) requires an existing state file — `state/execute.js` exits 1 with "no state file found" without one. Before entering this per-wave loop for wave 1, run the `init` call and the one-time `context --data` call, both documented in the State persistence section under 5d below (do NOT wait until 5d of wave 1 to run them — by then 5b's wave-start call has already needed the state file to exist).
+**First-wave bootstrap (runs once, before wave 1's 5a-pre):** `wave-start` (called in 5b below, for every wave including wave 1) requires an existing state file — the `execute_state` tool returns a DataError with "no state file found" without one. Before entering this per-wave loop for wave 1, run the `init` call and the one-time `context --data` call, both documented in the State persistence section under 5d below (do NOT wait until 5d of wave 1 to run them — by then 5b's wave-start call has already needed the state file to exist).
 
 > **Nested-dispatch disambiguation (R-nested-dispatch-resilient — Fixes #463):** "Main context" here = execute's own top-level orchestration context — the one you are running in now. When ship dispatches you as a subagent, you ARE that context. Nested Agent dispatch is supported — being dispatched as a subagent does not remove your Agent tool. Never emit "no agent-dispatch tool available" or otherwise self-block; dispatch every per-task/batch Agent for this wave directly, in a single flat fan-out (5b below) — there is no wave-runner middle agent to relay through.
 
@@ -399,7 +399,7 @@ Build each task's (or cluster's) Agent prompt from:
      "waveInterval": 30,
      "runId": "run-id",
      "tasks": [
-       { "id": "3", "complexity": "Standard", "risk": "Low", "factSheetPath": "/abs/path/.sdlc-v2/execution/run-id/task-3.md", "assignedModel": "sonnet", "verifyToken": "dispatchMode in ship.js", "description": "optional rationale text from **Notes:** field; omit or pass empty string when absent" }
+       { "id": "3", "complexity": "Standard", "risk": "Low", "factSheetPath": "/abs/path/.sdlc-v2/execution/run-id/task-3.md", "assignedModel": "sonnet", "verifyToken": "dispatchMode in ship.go", "description": "optional rationale text from **Notes:** field; omit or pass empty string when absent" }
      ],
      "guardrails": [
        { "id": "no-direct-db-access", "description": "Do not import db client outside repo layer", "severity": "error" }
@@ -550,7 +550,7 @@ When `commitWaves === true`:
      ```
    - For the soft-success path above, omit `sha` (or pass `sha: ""`): the action persists `committedSha: null`.
 
-5. Workspace compatibility: state writes route through `resolveStateDir()` (already the case in `state/execute.js`); the `git commit` runs in the active checkout (current cwd). When invoked from a manual git worktree (derived `continue`), both the diff and the commit land in that worktree, while `.sdlc-v2/` state stays anchored to the main worktree via `resolveStateDir()`.
+5. Workspace compatibility: state writes route through `resolveStateDir()` (in `internal/state/state.go`); the `git commit` runs in the active checkout (current cwd). When invoked from a manual git worktree (derived `continue`), both the diff and the commit land in that worktree, while `.sdlc-v2/` state stays anchored to the main worktree via `resolveStateDir()`.
 
 **5d. Progress report** — After each wave:
 ```
@@ -926,7 +926,7 @@ If `openspecSpecs` was loaded in Step 1 (the plan was OpenSpec-sourced), also su
        ...
      Fix the underlying plan-task failures or add these titles to `## Out-of-scope OpenSpec tasks` and re-run.
      ```
-     When a title's `ref` is not in `refToTaskIds` at all, render `(no plan task carries this ref)` in place of the plan-task ID list. This skill MUST NOT call `lib/openspec.js::runArchive` — archival is deferred (preserves R23 "execute only" boundary).
+     When a title's `ref` is not in `refToTaskIds` at all, render `(no plan task carries this ref)` in place of the plan-task ID list. This skill MUST NOT invoke OpenSpec archival (`internal/openspec/openspec.go`) — archival is deferred (preserves R23 "execute only" boundary).
 5. **If `ok` (as computed above) is false:** emit the validation errors and suppress the archive suggestion:
    ```
    OpenSpec validation failed for change "<name>":

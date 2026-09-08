@@ -8,7 +8,7 @@ If `--init-config` was passed:
 
 **Redirect only.** Tell the user: "Run `/setup` instead — it covers ship configuration as part of unified project setup." Then stop. No pipeline execution.
 
-There is no walkthrough fallback in this port. The source skill's `ship-init.js` interactive-walkthrough script (steps multi-select, bump type, auto, threshold, workspace isolation, optional `--quick` profile) has no Go equivalent — `/setup` is the only supported path to `.sdlc/local.json` configuration. Do not attempt to reconstruct the walkthrough inline even if the user insists on `--init-config`; redirect every time.
+There is no walkthrough fallback in this port. The source skill's `ship-init.js` interactive-walkthrough script (steps multi-select, bump type, auto, threshold, workspace isolation, optional `--quick` profile) has no Go equivalent — `/setup` is the only supported path to `.sdlc-v2/local.json` configuration. Do not attempt to reconstruct the walkthrough inline even if the user insists on `--init-config`; redirect every time.
 
 ## --gc handler (R39, issue #223)
 

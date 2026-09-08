@@ -54,8 +54,8 @@ Run once per repository, before using any other `sdlc` skill in it:
 /setup
 ```
 
-This scaffolds `.sdlc/config.json` (project config, committed) and
-`.sdlc/local.json` (user-local, gitignored) and walks you through a
+This scaffolds `.sdlc-v2/config.json` (project config, committed) and
+`.sdlc-v2/local.json` (user-local, gitignored) and walks you through a
 selective-section menu — review dimensions, PR template, guardrails, and
 more. Every section explains what it changes and which skills consume it
 before it prompts you for anything.
@@ -81,7 +81,7 @@ Each stage of a change maps to one skill. Run them in order, or let
 | Stage | Skill | When to use it |
 |---|---|---|
 | Plan | `/plan` | Turn a requirement, spec, or description into a task-decomposed implementation plan. |
-| Execute | `/execute-plan <plan-file>` | Implement a plan file wave by wave, with per-wave verification. |
+| Execute | `/execute <plan-file>` | Implement a plan file wave by wave, with per-wave verification. |
 | Commit | `/commit` | Generate a commit message from the staged diff and commit history, then commit. |
 | Review | `/review` | Multi-dimension code review (security, performance, docs, etc.) of the current diff. |
 | Respond to review | `/received-review` | Work through reviewer or CI feedback on an open PR. |
@@ -110,7 +110,7 @@ interrupted.
 
 ## 4. Supervised vs. unattended
 
-By default (`automation.mode: supervised` in `.sdlc/local.json`), every
+By default (`automation.mode: supervised` in `.sdlc-v2/local.json`), every
 pipeline step stops for your confirmation. Set `mode: unattended`, optionally
 with per-step overrides in `automation.steps`, to let `ship` /
 `deliver` run end-to-end without stopping. Field reference: `README.md`

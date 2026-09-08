@@ -2,14 +2,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/rnagrodzki/sdlc-marketplace/main/schemas/execute-state.schema.json",
   "title": "Execute State",
-  "description": "Validates .sdlc/execution/execute-*.json",
+  "description": "Validates .sdlc-v2/execution/execute-*.json",
   "type": "object",
   "properties": {
     "version": {
       "const": 1
     },
     "skill": {
-      "const": "execute-plan"
+      "const": "execute"
     },
     "startedAt": {
       "type": "string",
@@ -29,13 +29,28 @@
       ]
     },
     "planHash": {
-      "type": "string"
-    },
-    "preset": {
       "oneOf": [
         {
-          "type": "string",
-          "enum": ["A", "B", "C"]
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "quality": {
+      "type": "string"
+    },
+    "worktree": {
+      "type": "string"
+    },
+    "plannedTaskIds": {
+      "oneOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
         },
         {
           "type": "null"
@@ -75,22 +90,23 @@
               "type": "object",
               "properties": {
                 "id": {
-                  "type": "integer"
+                  "type": "string"
                 },
                 "name": {
                   "type": "string"
                 },
                 "complexity": {
-                  "type": "string",
-                  "enum": ["Trivial", "Standard", "Complex"]
+                  "type": "string"
                 },
                 "risk": {
-                  "type": "string",
-                  "enum": ["Low", "Medium", "High"]
+                  "type": "string"
                 },
                 "status": {
                   "type": "string",
-                  "enum": ["completed", "failed", "skipped", "pending", "in_progress"]
+                  "enum": ["completed", "failed", "skipped-dependency"]
+                },
+                "error": {
+                  "type": "string"
                 },
                 "filesChanged": {
                   "type": "array",
@@ -119,7 +135,7 @@
         "completedTaskIds": {
           "type": "array",
           "items": {
-            "type": "integer"
+            "type": "string"
           }
         },
         "filesAdded": {

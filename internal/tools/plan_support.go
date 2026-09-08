@@ -148,7 +148,14 @@ var psBulletEntryRe = regexp.MustCompile(`(?m)^[-*]\s+\*?\*?(.+?)(?:\*?\*?\s*[�
 // RegisterPlanSupportTools registers the plan_support tool.
 func RegisterPlanSupportTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "plan_support",
-		"INTERNAL — called by sdlc skills only. Plan support utilities: merge lane/lens results, snapshot/compare plan material changes, generate openspec appendix.",
+		`INTERNAL — called by sdlc skills only. Plan support utilities.
+
+Pass "action" to select an operation. Each action uses a subset of the input fields (unlisted fields are ignored):
+
+- merge_results: Merge lane/lens review results. Requires at least one of laneResults or lensResults. Optional: expectedGates, isRedispatch.
+- material_snapshot: Snapshot plan material for change detection. Requires filePath.
+- material_compare: Compare current plan material against a snapshot. Requires filePath, snapshot.
+- openspec_appendix: Generate an openspec appendix. Requires changeName. Optional: proposalPath, designPath, specPaths, planTasks.`,
 		func(ctx mcpserver.Ctx, in PlanSupportIn) (PlanSupportOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

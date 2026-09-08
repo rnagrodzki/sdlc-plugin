@@ -88,33 +88,34 @@ rm -rf ~/.sdlc-cache
 
 ### Tool surface
 
-The MCP server (`sdlc mcp`) registers 32 tools across 15 groups (grepped from
+The MCP server (`sdlc mcp`) registers 32 tools across 16 groups (grepped from
 `internal/tools/*.go`, wired in `cmd/sdlc/main.go`):
 
 | Group | Tools |
 |---|---|
 | Commit | `commit_prepare`, `commit_apply` |
 | Version | `version_prepare`, `version_apply` |
-| Pull request | `pr_prepare`, `pr_validate_body`, `pr_apply` |
-| Plan | `plan_prepare`, `plan_mark`, `plan_explore_prepare` |
+| Pull request | `pr_prepare`, `pr_apply` |
+| Plan | `plan_prepare`, `plan_mark`, `plan_explore_prepare`, `plan_support` |
 | Review | `review_prepare`, `received_review_prepare` |
 | Ship | `ship_prepare`, `ship_verify_side_effect`, `ship_state` |
 | Execute state | `execute_state` |
 | Jira | `jira` |
-| Setup & migrate | `setup_prepare`, `setup_init`, `migrate` |
-| Remote/CI polling | `await_remote_review`, `verify_pipeline_await`, `verify_pipeline_classify` |
+| Setup & migrate | `setup_prepare`, `setup_init`, `setup_write_sections`, `migrate` |
+| Polling | `poll_await`, `verify_pipeline_classify` |
 | Validation & links | `validate`, `links_validate`, `mcp_failure_record` |
 | CI scaffolding | `scaffold_ci`, `verify_tag_ancestry` |
-| Hardening & error reports | `harden_prepare`, `error_report_prepare` |
+| Orchestrator | `prepare_orchestrator` |
 | OpenSpec | `openspec_enrich` |
 | Dimensions rendering | `dimensions_render_instructions` |
+| Learnings | `learnings_log` |
 
 These are consumed by the plugin's skills (under `plugins/sdlc/skills/`), not typically
 called by name directly.
 
 ### Migrating a Node-era (pre-v5) project
 
-Config is read from `.sdlc/config.json` (project) and `.sdlc/local.json`
+Config is read from `.sdlc-v2/config.json` (project) and `.sdlc-v2/local.json`
 (user-local, gitignored). If any legacy pre-v5 marker file is found —
 `.claude/sdlc.json`, `.claude/version.json`, `.sdlc/jira-config.json`,
 `.sdlc/ship-config.json`, `.sdlc/review.json`, `.claude/review.json` — any
@@ -125,18 +126,18 @@ Ask Claude to run the `migrate` tool to move a project from the legacy
 (Node-plugin era) layout to the current one. It takes one of two actions,
 each independently, with an optional `dryRun`:
 
-- `config` — schema-migrates the legacy config file(s) into `.sdlc/config.json`.
+- `config` — schema-migrates the legacy config file(s) into `.sdlc-v2/config.json`.
 - `import` — non-destructively copies config, templates, jira-templates,
   learnings, and review-dimensions from the old plugin's data directory into
   the current one, skipping anything that already exists.
 
 For a project that has never had any sdlc config (not a migration, a fresh
-install), use `setup_init` instead — it scaffolds `.sdlc/config.json` and
-`.sdlc/local.json` from scratch.
+install), use `setup_init` instead — it scaffolds `.sdlc-v2/config.json` and
+`.sdlc-v2/local.json` from scratch.
 
 ### Automation config
 
-`.sdlc/local.json`'s `automation` section controls how much confirmation
+`.sdlc-v2/local.json`'s `automation` section controls how much confirmation
 pipeline steps require (`internal/config/config.go`):
 
 - `mode` — `supervised` (default) or `unattended`.

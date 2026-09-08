@@ -1111,7 +1111,9 @@ func writeSkillInvokedMarker(mainRoot, contentRoot string) {
 	st.Data["planIntegrity"] = map[string]any{
 		"skillInvoked": time.Now().UTC().Format(time.RFC3339),
 	}
-	_ = state.Write(st)
+	if err := state.Write(st); err != nil {
+		fmt.Fprintf(os.Stderr, "[plan] writeSkillInvokedMarker: state write failed: %v\n", err)
+	}
 }
 
 // ---------------------------------------------------------------------------

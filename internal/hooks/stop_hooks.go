@@ -341,7 +341,9 @@ func markStepFailedOnce(root, branch, stepName string) {
 		}
 		s["status"] = "failed"
 		s["failedReason"] = "block-cap-exhausted"
-		_ = state.Write(st)
+		if err := state.Write(st); err != nil {
+			fmt.Fprintf(os.Stderr, "stop-pipeline-continue: failed to write state after marking step %q failed: %v\n", stepName, err)
+		}
 		return
 	}
 }

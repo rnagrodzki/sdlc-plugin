@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/rnagrodzki/sdlc-plugin/main/schemas/sdlc-config.schema.json",
   "title": "SDLC Config",
-  "description": "Validates .sdlc/config.json — unified project-level configuration for sdlc-plugin skills.",
+  "description": "Validates .sdlc-v2/config.json — unified project-level configuration for sdlc-plugin skills.",
   "type": "object",
   "$defs": {
     "versionSection": {

@@ -1,7 +1,7 @@
 # PR Labels Sub-Flow
 
 Configure how `/pr` chooses labels for a project (issue #197). Writes the
-`pr.labels` block in `.sdlc/config.json`. Three modes are supported:
+`pr.labels` block in `.sdlc-v2/config.json`. Three modes are supported:
 
 - `off` (default) — no automatic labels; only forced labels via `--label` apply
 - `rules` — deterministic evaluation of user-defined `{ label, when }` rules
@@ -11,7 +11,7 @@ This sub-flow is invoked by `setup` via the `delegatedTo: 'setup-pr-labels'`
 section descriptor (`pr-labels` row, `internal/setupmeta/sections.go`).
 
 > **Port Notes** (Task 44 KD9 rewrite): config reads use the Read tool
-> directly against `.sdlc/config.json` (no `readSection` MCP tool is
+> directly against `.sdlc-v2/config.json` (no `readSection` MCP tool is
 > exposed); writes use `setup_write_sections`, which replaces a top-level
 > config key wholesale — since `pr.labels` is a nested sub-key sharing the
 > `pr` object with `titlePattern`/`allowedTypes`/etc., Step 5 below always
@@ -27,7 +27,7 @@ section descriptor (`pr-labels` row, `internal/setupmeta/sections.go`).
 
 This sub-flow loads everything it needs at runtime — no scan input from the
 parent is required. It calls `gh label list` itself and reads the existing
-`pr.labels` block (if any) from `.sdlc/config.json`.
+`pr.labels` block (if any) from `.sdlc-v2/config.json`.
 
 ---
 
@@ -54,7 +54,7 @@ gh label list --json name,description --limit 100
   > and a GitHub remote. Run `gh auth login` (or `gh auth status` to check) and
   > re-run `setup --only pr-labels`. No changes were written.
 
-  Exit cleanly without writing anything to `.sdlc/config.json`.
+  Exit cleanly without writing anything to `.sdlc-v2/config.json`.
 
 If `repoLabels` is empty (repo has no custom labels yet), warn the user and
 continue — `off` is still a valid choice; `rules` will require creating labels
@@ -62,7 +62,7 @@ in GitHub first; `llm` will produce no suggestions.
 
 ### Step 2 — Idempotency check
 
-Read `.sdlc/config.json` (Read tool). If the `pr.labels` key exists, present
+Read `.sdlc-v2/config.json` (Read tool). If the `pr.labels` key exists, present
 the current state and ask:
 
 ```
@@ -166,7 +166,7 @@ Build the final block:
 - `llm` → `{ mode: 'llm' }`
 - `rules` → `{ mode: 'rules', rules: [...] }`
 
-Read `.sdlc/config.json` (Read tool) to get the current `pr` section (empty
+Read `.sdlc-v2/config.json` (Read tool) to get the current `pr` section (empty
 object if absent). Merge the labels block in **without clobbering**
 `titlePattern`, `allowedTypes`, or any other sibling key, then write the full
 `pr` section back:
@@ -188,7 +188,7 @@ have changed since Step 1.
 Print a one-line summary:
 
 ```
-Wrote pr.labels: mode=<mode>[, rules=<N>] to .sdlc/config.json
+Wrote pr.labels: mode=<mode>[, rules=<N>] to .sdlc-v2/config.json
 This block is consumed by /pr Step 2b (Infer Labels).
 ```
 
@@ -203,7 +203,7 @@ Before marking complete, verify:
   least one value
 - Every rule's `label` exists in the scanned `repoLabels`
 - No partial writes occurred when the user cancelled or `gh` failed
-- No sibling `pr.*` key was lost (spot-check by reading `.sdlc/config.json`
+- No sibling `pr.*` key was lost (spot-check by reading `.sdlc-v2/config.json`
   after the write and confirming `titlePattern`/`allowedTypes`/etc. survived,
   if they were present before)
 
@@ -225,7 +225,7 @@ When invoking `error-report`, provide:
 - **Step**: Step 5 — Write
 - **Operation**: `setup_write_sections({ sectionsJson: JSON.stringify({ pr: ... }) })`
 - **Error**: full tool error message
-- **Suggested investigation**: file permissions on `.sdlc/config.json`; plugin install integrity
+- **Suggested investigation**: file permissions on `.sdlc-v2/config.json`; plugin install integrity
 
 ---
 
@@ -277,7 +277,7 @@ When invoking `error-report`, provide:
 
 ## DO NOT
 
-- Do NOT write `.sdlc/config.json` on any prompt where the user picks `cancel`.
+- Do NOT write `.sdlc-v2/config.json` on any prompt where the user picks `cancel`.
 - Do NOT replace the entire `pr` section without first reading and spreading it — only set/replace the `labels` key.
 - Do NOT accept a free-text label that isn't in `repoLabels` — the rule will be
   stripped by `/pr`'s label evaluator later, leaving the user with a silent dead rule.

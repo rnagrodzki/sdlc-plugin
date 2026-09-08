@@ -1170,7 +1170,19 @@ func jiraCore(mainRoot string, in JiraIn, offline bool) (any, error) {
 // into runMCP's dispatch is Task 40's responsibility.
 func RegisterJiraTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "jira",
-		"Manage jira cache and templates: check, load, save, save-field, templates, init-templates, clear, copy-template, validate-body",
+		`Manage Jira cache and templates.
+
+Pass "action" to select an operation. Each action uses a subset of the input fields (unlisted fields are ignored):
+
+- check: Check Jira issue cache and templates. Requires key. Optional: cacheDir, site, templatesDir, skipConfigCheck.
+- load: Load cached Jira issue data. Requires key. Optional: cacheDir, site, skipConfigCheck.
+- save: Save Jira issue data to cache. Requires key, data (must contain version, cloudId, project, siteUrl). Optional: cacheDir, site, skipConfigCheck.
+- save-field: Save a single field to cached issue data. Requires key, fieldName, data. Optional: cacheDir, site, skipConfigCheck.
+- templates: List available templates for an issue type. Requires key. Optional: cacheDir, site, templatesDir, skipConfigCheck.
+- init-templates: Initialize default templates. Requires key. Optional: cacheDir, site, templatesDir, skipConfigCheck.
+- clear: Clear cached data for an issue. Requires key. Optional: cacheDir, site, skipConfigCheck.
+- copy-template: Copy a template between types. Requires key, templateType, templateFrom. Optional: templatesDir, skipConfigCheck.
+- validate-body: Validate markdown body for Jira compatibility. Optional: markdownBody, cacheDir, skipConfigCheck.`,
 		func(_ mcpserver.Ctx, in JiraIn) (any, error) {
 			mainRoot, err := worktree.MainRoot()
 			if err != nil {

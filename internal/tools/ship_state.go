@@ -912,7 +912,26 @@ func shipStateTodos(root, workDir string, in ShipStateIn) (any, error) {
 // wiring into runMCP's dispatch is Task 40's responsibility.
 func RegisterShipStateTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "ship_state",
-		"Manage ship execution state: init, start, complete, begin-step, complete-step, skip, fail, decide, defer, read, cleanup, cleanup-pipeline, gc, migrate, next, todos",
+		`Manage ship execution state.
+
+Pass "action" to select an operation. Each action uses a subset of the input fields (unlisted fields are ignored):
+
+- init: Create ship state. Optional: detail.branch, detail.flags, sessionId.
+- start: Begin a ship step. Requires step. Optional: detail.branch.
+- complete: Complete a ship step. Requires step. Optional: detail.branch, detail.result.
+- begin-step: Begin execution of a step. Requires step. Optional: detail.branch, detail.stateFile.
+- complete-step: Complete execution of a step. Requires step. Optional: detail.outcome, detail.result, detail.branch, detail.stateFile.
+- skip: Skip a step. Requires step. Optional: detail.branch, detail.reason.
+- fail: Fail a step. Requires step. Optional: detail.branch, detail.error.
+- decide: Record a decision for a step. Requires step. Optional: detail.branch, detail.text.
+- defer: Record a deferred finding. Requires detail.severity, detail.file, detail.title. Optional: detail.branch, detail.line.
+- read: Return the full ship state. Optional: detail.branch.
+- cleanup: Delete ship state for a branch. Optional: detail.branch.
+- cleanup-pipeline: Clean up pipeline state. Optional: detail.branch, detail.force, detail.ttlDays.
+- gc: Garbage-collect stale state files. Optional: detail.ttlDays, detail.dryRun.
+- migrate: Migrate state between branches. Requires detail.from, detail.to.
+- next: Return the next pending step. Optional: detail.branch, detail.stateFile.
+- todos: List remaining todos for a step. Optional: step, detail.branch, detail.stateFile.`,
 		func(ctx mcpserver.Ctx, in ShipStateIn) (any, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

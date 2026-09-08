@@ -76,7 +76,7 @@ retry this step with `/clear`.
 Seed a fixture deliver state file for the current branch, then resume:
 
 ```bash
-cat > ".sdlc/execution/deliver-$(git branch --show-current | tr -c 'a-zA-Z0-9-' '-')-20260101T000000Z.json" <<'EOF'
+cat > ".sdlc-v2/execution/deliver-$(git branch --show-current | tr -c 'a-zA-Z0-9-' '-')-20260101T000000Z.json" <<'EOF'
 {
   "branch": "<current-branch>",
   "planPath": "plans/example.md",

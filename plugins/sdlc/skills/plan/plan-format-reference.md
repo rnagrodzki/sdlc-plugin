@@ -136,7 +136,7 @@ Recommended for plans with 5+ tasks. Omit for simple plans. The Key Decisions se
 
 ## Guardrail Compliance (optional)
 
-Present when `plan.guardrails` are configured in `.sdlc/config.json`. Produced by plan Step 4.
+Present when `plan.guardrails` are configured in `.sdlc-v2/config.json`. Produced by plan Step 4.
 `execute` does not parse this section — it documents constraint evaluation for reviewers.
 
 ```markdown

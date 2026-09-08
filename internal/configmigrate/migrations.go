@@ -6,6 +6,8 @@ package configmigrate
 
 import (
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -108,7 +110,9 @@ func cleanupRelocation(ctx *migrationContext) error {
 	if _, err := os.Stat(ctx.configPath); err != nil {
 		return nil
 	}
-	os.Remove(ctx.configPath)
+	if err := os.Remove(ctx.configPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("rollback: remove %s: %w", ctx.configPath, err)
+	}
 	return nil
 }
 

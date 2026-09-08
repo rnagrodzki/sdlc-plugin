@@ -56,18 +56,36 @@ func isBinaryNotFound(err error) bool {
 	return strings.Contains(err.Error(), "executable file not found")
 }
 
+// validatePositionalArg rejects positional arguments that start with "-" to
+// prevent them being interpreted as flags by the gh CLI.
+func validatePositionalArg(arg, context string) error {
+	if strings.HasPrefix(arg, "-") {
+		return fmt.Errorf("ghx: %s: argument %q looks like a flag (starts with '-')", context, arg)
+	}
+	return nil
+}
+
 // PRView returns the output of `gh pr view <n>` run inside dir.
 func PRView(dir string, n int) (string, error) {
+	if n <= 0 {
+		return "", fmt.Errorf("ghx: PRView: invalid PR number %d", n)
+	}
 	return run(dir, "pr", "view", fmt.Sprint(n))
 }
 
 // PRChecks returns the output of `gh pr checks <n>` run inside dir.
 func PRChecks(dir string, n int) (string, error) {
+	if n <= 0 {
+		return "", fmt.Errorf("ghx: PRChecks: invalid PR number %d", n)
+	}
 	return run(dir, "pr", "checks", fmt.Sprint(n))
 }
 
 // IssueView returns the output of `gh issue view <key>` run inside dir.
 func IssueView(dir string, key string) (string, error) {
+	if err := validatePositionalArg(key, "IssueView"); err != nil {
+		return "", err
+	}
 	return run(dir, "issue", "view", key)
 }
 
@@ -389,5 +407,8 @@ func PRCreate(dir, title, body string) (string, error) {
 // PREdit runs `gh pr edit <number> --title <title> --body <body>` and
 // returns gh's stdout (the PR URL) on success.
 func PREdit(dir string, number int, title, body string) (string, error) {
+	if number <= 0 {
+		return "", fmt.Errorf("ghx: PREdit: invalid PR number %d", number)
+	}
 	return run(dir, "pr", "edit", fmt.Sprint(number), "--title", title, "--body", body)
 }

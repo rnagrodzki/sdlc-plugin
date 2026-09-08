@@ -124,8 +124,8 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - cleanup: Delete execution state for a branch. Optional: branch.
 - gc: Garbage-collect stale state files. Optional: ttlDays, dryRun, branch.
 - summarize-prior-wave-context: Summarize context from prior waves. Optional: branch, maxFiles, maxDecisions, maxInterfaces, maxTaskIds.
-- wave-split: Split remaining tasks into a new wave. Requires dispatched. Optional: wave, missingIds, branch, splitDepth, maxSplitDepth.
-- verify-completeness: Verify all planned tasks are accounted for. Optional: branch.
+- wave-split: Split remaining tasks into a new wave. Requires dispatched. Optional: wave, missingIds, branch, splitDepth, maxSplitDepth, stateFile.
+- verify-completeness: Verify all planned tasks are accounted for. Optional: branch, stateFile.
 - wave-progress: Read/write per-task progress. Requires runId. For reads: readProgress=true. For writes: taskId, phase.
 - resume-reset: Reset in-progress waves for session resume. Optional: branch, stateFile.
 - ledger_checkin: Register a worker as active. Requires runId, workerId. Optional: stepId.
@@ -215,7 +215,7 @@ func execResolveBranch(branch, workDir string) (string, error) {
 	}
 	b, err := gitx.CurrentBranch(workDir)
 	if err != nil {
-		return "", &mcpserver.DomainError{Msg: "could not determine branch: " + err.Error()}
+		return "", &mcpserver.DomainError{Msg: "could not determine branch: " + err.Error(), Cause: err}
 	}
 	return b, nil
 }
@@ -593,7 +593,7 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 	if in.TasksJSON != "" {
 		var tasks []any
 		if err := json.Unmarshal([]byte(in.TasksJSON), &tasks); err != nil {
-			return nil, &mcpserver.DomainError{Msg: "tasksJson is not valid JSON: " + err.Error()}
+			return nil, &mcpserver.DomainError{Msg: "tasksJson is not valid JSON: " + err.Error(), Cause: err}
 		}
 
 		runID := in.RunID
@@ -690,7 +690,7 @@ func execActionWaveDone(root, workDir string, in ExecuteStateIn, now func() time
 	var decisions []any
 	if in.Decisions != "" {
 		if err := json.Unmarshal([]byte(in.Decisions), &decisions); err != nil {
-			return nil, &mcpserver.DomainError{Msg: "decisions is not valid JSON: " + err.Error()}
+			return nil, &mcpserver.DomainError{Msg: "decisions is not valid JSON: " + err.Error(), Cause: err}
 		}
 	}
 
@@ -837,7 +837,7 @@ func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time
 	var filesChanged []any
 	if in.FilesChanged != "" {
 		if err := json.Unmarshal([]byte(in.FilesChanged), &filesChanged); err != nil {
-			return nil, &mcpserver.DomainError{Msg: "filesChanged is not valid JSON: " + err.Error()}
+			return nil, &mcpserver.DomainError{Msg: "filesChanged is not valid JSON: " + err.Error(), Cause: err}
 		}
 	}
 
@@ -845,7 +845,7 @@ func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time
 	var filesAdded []any
 	if in.FilesAdded != "" {
 		if err := json.Unmarshal([]byte(in.FilesAdded), &filesAdded); err != nil {
-			return nil, &mcpserver.DomainError{Msg: "filesAdded is not valid JSON: " + err.Error()}
+			return nil, &mcpserver.DomainError{Msg: "filesAdded is not valid JSON: " + err.Error(), Cause: err}
 		}
 	}
 
@@ -854,7 +854,7 @@ func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time
 	if in.VerifyToken != "" {
 		var raw any
 		if err := json.Unmarshal([]byte(in.VerifyToken), &raw); err != nil {
-			return nil, &mcpserver.DomainError{Msg: "verifyToken is not valid JSON: " + err.Error()}
+			return nil, &mcpserver.DomainError{Msg: "verifyToken is not valid JSON: " + err.Error(), Cause: err}
 		}
 		switch v := raw.(type) {
 		case string:
@@ -1046,7 +1046,7 @@ func execActionContext(root, workDir string, in ExecuteStateIn) (any, error) {
 
 	var incoming any
 	if err := json.Unmarshal([]byte(in.Data), &incoming); err != nil {
-		return nil, &mcpserver.DomainError{Msg: "data is not valid JSON: " + err.Error()}
+		return nil, &mcpserver.DomainError{Msg: "data is not valid JSON: " + err.Error(), Cause: err}
 	}
 
 	branch, err := execResolveBranch(in.Branch, workDir)
@@ -1412,13 +1412,13 @@ func execActionWaveSplit(root, workDir string, in ExecuteStateIn, now func() tim
 
 	var dispatched []any
 	if err := json.Unmarshal([]byte(in.Dispatched), &dispatched); err != nil {
-		return nil, &mcpserver.DomainError{Msg: "dispatched is not valid JSON: " + err.Error()}
+		return nil, &mcpserver.DomainError{Msg: "dispatched is not valid JSON: " + err.Error(), Cause: err}
 	}
 
 	var missingIds []any
 	if in.MissingIds != "" {
 		if err := json.Unmarshal([]byte(in.MissingIds), &missingIds); err != nil {
-			return nil, &mcpserver.DomainError{Msg: "missingIds is not valid JSON: " + err.Error()}
+			return nil, &mcpserver.DomainError{Msg: "missingIds is not valid JSON: " + err.Error(), Cause: err}
 		}
 	}
 
@@ -1458,7 +1458,7 @@ func execActionWaveSplit(root, workDir string, in ExecuteStateIn, now func() tim
 	if err != nil {
 		var maxErr *wave.MaxSplitDepthExceededError
 		if errors.As(err, &maxErr) {
-			return nil, &mcpserver.DomainError{Msg: err.Error()}
+			return nil, &mcpserver.DomainError{Msg: err.Error(), Cause: err}
 		}
 		return nil, &mcpserver.InfraError{Msg: "wave split: " + err.Error(), Cause: err}
 	}
@@ -1528,7 +1528,9 @@ func execActionWaveSplit(root, workDir string, in ExecuteStateIn, now func() tim
 				"halves":        halvesOut,
 				"computedAt":    now().UTC().Format(time.RFC3339),
 			}
-			_ = state.Write(st)
+			if err := state.Write(st); err != nil {
+				result["writeWarning"] = "state persistence failed: " + err.Error()
+			}
 		}
 	}()
 
@@ -1545,7 +1547,8 @@ func execActionVerifyCompleteness(root, workDir string, in ExecuteStateIn) (any,
 	if in.StateFile != "" {
 		if err := fsx.ReadJSON(in.StateFile, &data); err != nil {
 			return nil, &mcpserver.DomainError{
-				Msg: fmt.Sprintf("cannot read state file %q: %s", in.StateFile, err.Error()),
+				Msg:   fmt.Sprintf("cannot read state file %q: %s", in.StateFile, err.Error()),
+				Cause: err,
 			}
 		}
 	} else {
@@ -1648,7 +1651,7 @@ func execActionWaveProgress(root string, in ExecuteStateIn) (any, error) {
 	if in.ReadProgress {
 		p, err := wave.ReadProgress(root, in.RunID)
 		if err != nil {
-			return nil, &mcpserver.DomainError{Msg: "read progress: " + err.Error()}
+			return nil, &mcpserver.DomainError{Msg: "read progress: " + err.Error(), Cause: err}
 		}
 		return p, nil
 	}
@@ -1659,7 +1662,7 @@ func execActionWaveProgress(root string, in ExecuteStateIn) (any, error) {
 
 	if err := wave.UpdateProgress(root, in.RunID, in.TaskID, in.Phase); err != nil {
 		if errors.Is(err, wave.ErrBadRunID) || errors.Is(err, wave.ErrBadPhase) {
-			return nil, &mcpserver.DomainError{Msg: err.Error()}
+			return nil, &mcpserver.DomainError{Msg: err.Error(), Cause: err}
 		}
 		return nil, &mcpserver.InfraError{Msg: "update progress: " + err.Error(), Cause: err}
 	}
@@ -1719,7 +1722,9 @@ func execActionResumeReset(root, workDir string, in ExecuteStateIn) (any, error)
 		}
 
 		if changed {
-			_ = state.Write(st)
+			if err := state.Write(st); err != nil {
+				return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+			}
 		}
 	}
 
