@@ -77,6 +77,9 @@ func TestPayloads_ContainsExpectedFiles(t *testing.T) {
 		"release-on-main.cjs",
 		"promote-release.cjs",
 		"verify-release-intent.cjs",
+		"release-on-main.yml",
+		"promote-release.yml",
+		"verify-release-intent.yml",
 	}
 
 	for _, name := range expectedFiles {

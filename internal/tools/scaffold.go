@@ -26,7 +26,7 @@ type scaffoldManifestEntry struct {
 	LegacyDest string
 	// VersionRegex extracts the version constant from installed file content.
 	VersionRegex *regexp.Regexp
-	// Group categorizes the entry (retag or changelog).
+	// Group categorizes the entry (retag, changelog, or release).
 	Group string
 }
 
@@ -57,6 +57,42 @@ var scaffoldManifest = []scaffoldManifestEntry{
 		Dest:         filepath.Join(".github", "workflows", "check-changelog.yml"),
 		VersionRegex: regexp.MustCompile(`(?m)^#\s*check-changelog-version:\s*(\d+)`),
 		Group:        "changelog",
+	},
+	{
+		PayloadKey:   "release-on-main.cjs",
+		Dest:         filepath.Join(".github", "scripts", "release-on-main.cjs"),
+		VersionRegex: regexp.MustCompile(`const\s+RELEASE_ON_MAIN_SCRIPT_VERSION\s*=\s*(\d+)`),
+		Group:        "release",
+	},
+	{
+		PayloadKey:   "release-on-main.yml",
+		Dest:         filepath.Join(".github", "workflows", "release-on-main.yml"),
+		VersionRegex: regexp.MustCompile(`(?m)^#\s*release-on-main-version:\s*(\d+)`),
+		Group:        "release",
+	},
+	{
+		PayloadKey:   "verify-release-intent.cjs",
+		Dest:         filepath.Join(".github", "scripts", "verify-release-intent.cjs"),
+		VersionRegex: regexp.MustCompile(`const\s+VERIFY_RELEASE_INTENT_SCRIPT_VERSION\s*=\s*(\d+)`),
+		Group:        "release",
+	},
+	{
+		PayloadKey:   "verify-release-intent.yml",
+		Dest:         filepath.Join(".github", "workflows", "verify-release-intent.yml"),
+		VersionRegex: regexp.MustCompile(`(?m)^#\s*verify-release-intent-version:\s*(\d+)`),
+		Group:        "release",
+	},
+	{
+		PayloadKey:   "promote-release.cjs",
+		Dest:         filepath.Join(".github", "scripts", "promote-release.cjs"),
+		VersionRegex: regexp.MustCompile(`const\s+PROMOTE_RELEASE_SCRIPT_VERSION\s*=\s*(\d+)`),
+		Group:        "release",
+	},
+	{
+		PayloadKey:   "promote-release.yml",
+		Dest:         filepath.Join(".github", "workflows", "promote-release.yml"),
+		VersionRegex: regexp.MustCompile(`(?m)^#\s*promote-release-version:\s*(\d+)`),
+		Group:        "release",
 	},
 }
 

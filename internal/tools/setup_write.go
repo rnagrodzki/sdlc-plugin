@@ -41,9 +41,11 @@ type SetupWriteSectionsIn struct {
 
 // SetupWriteSectionsOut is the output for the setup_write_sections tool.
 type SetupWriteSectionsOut struct {
-	OK      bool     `json:"ok"`
-	Written []string `json:"written"`
-	Errors  []string `json:"errors,omitempty"`
+	OK       bool                 `json:"ok"`
+	Written  []string             `json:"written"`
+	Errors   []string             `json:"errors,omitempty"`
+	Scaffold []ScaffoldFileReport `json:"scaffold,omitempty"`
+	Warnings []string             `json:"warnings,omitempty"`
 }
 
 // RegisterSetupWriteTools registers setup_write_sections on the server.
@@ -109,5 +111,22 @@ func setupWriteSections(root string, in SetupWriteSectionsIn) (SetupWriteSection
 	if len(errs) > 0 {
 		out.Errors = errs
 	}
+
+	// Auto-trigger scaffold_ci after the version section is written. This is
+	// best-effort: config write is the critical path, so scaffold errors are
+	// surfaced as warnings, never as failures.
+	for _, id := range written {
+		if id == "version" {
+			scaffoldOut, err := scaffoldCI(root, false)
+			if err != nil {
+				out.Warnings = append(out.Warnings, fmt.Sprintf("scaffold_ci: %s", err.Error()))
+			} else {
+				out.Scaffold = scaffoldOut.Files
+				out.Warnings = append(out.Warnings, scaffoldOut.Warnings...)
+			}
+			break
+		}
+	}
+
 	return out, nil
 }

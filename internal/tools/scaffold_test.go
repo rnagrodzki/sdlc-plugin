@@ -10,7 +10,7 @@ import (
 
 // --- scaffold_ci tests ---
 
-// TestScaffoldCI_CreatesAllFiles verifies scaffold_ci writes all four
+// TestScaffoldCI_CreatesAllFiles verifies scaffold_ci writes all ten
 // destination files into an empty project root.
 func TestScaffoldCI_CreatesAllFiles(t *testing.T) {
 	root := t.TempDir()
@@ -20,8 +20,8 @@ func TestScaffoldCI_CreatesAllFiles(t *testing.T) {
 		t.Fatalf("scaffoldCI: %v", err)
 	}
 
-	if len(out.Files) != 4 {
-		t.Fatalf("expected 4 file reports, got %d", len(out.Files))
+	if len(out.Files) != 10 {
+		t.Fatalf("expected 10 file reports, got %d", len(out.Files))
 	}
 
 	for _, f := range out.Files {

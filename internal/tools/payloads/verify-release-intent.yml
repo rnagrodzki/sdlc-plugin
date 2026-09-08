@@ -1,0 +1,28 @@
+# verify-release-intent-version: 1
+name: Verify Release Intent
+
+on:
+  pull_request:
+    types: [opened, synchronize, labeled, unlabeled, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  verify:
+    if: contains(join(github.event.pull_request.labels.*.name, ','), 'release:')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Verify release intent
+        run: node .github/scripts/verify-release-intent.cjs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
