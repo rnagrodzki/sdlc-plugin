@@ -33,3 +33,9 @@ Several `internal/tools/*.go` files already follow this with their own
   `internal/gitx`) distinguish transient failures (network, rate limit —
   worth retrying) from permanent ones (bad credentials, 404 — not worth
   retrying) rather than treating every error identically.
+- Call sites that map an error to a benign zero-value result (probes returning
+  false, lookups returning empty) must first check terminal sentinels via
+  `errors.Is` (e.g., `execx.ErrOutputCap`) and propagate them — never
+  downgrade a terminal error into "not found / no access."
+- Package documentation must accurately reflect the error-handling semantics
+  that callers actually implement, not speculative retry behavior.

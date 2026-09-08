@@ -28,3 +28,8 @@ new changes to that same bar:
   pattern.
 - No test is skipped or `t.Skip()`-guarded without a linked follow-up
   explaining why.
+- Data-structure edge cases are tested, especially in output
+  serialization: nil vs empty collections, zero counts, boundary
+  conditions, and all possible output states from tool handlers (clean
+  pass, empty results, error cases). Tests must verify that null never
+  appears where an empty array/object is expected.

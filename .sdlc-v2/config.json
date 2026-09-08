@@ -119,6 +119,11 @@
         "id": "mcp-error-actionable",
         "severity": "error",
         "description": "MCP tool errors must tell the LLM what went wrong AND what to do about it. Not a stack trace -- a diagnosis + recovery instruction. Example: instead of 'ENOENT: .sdlc-v2/config.json', return 'Config file .sdlc-v2/config.json not found. Run setup_init to create it, or pass skipConfigCheck: true to proceed without config.' The LLM cannot debug infrastructure errors -- it needs actionable alternatives."
+      },
+      {
+        "id": "handler-data-contracts",
+        "severity": "error",
+        "description": "Plans that create or modify tool handlers or data-transformation pipelines must explicitly document nil/empty-collection edge cases and how they are normalized. Handlers must normalize nil to empty array/object at the dispatcher level before returning output; this normalization must happen within the handler, not left to downstream serialization or LLM interpretation."
       }
     ]
   },

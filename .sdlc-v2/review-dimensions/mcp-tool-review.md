@@ -34,3 +34,8 @@ those same guardrails:
 - New tools follow the existing naming convention (`<noun>_<verb>` or
   `<verb>_<noun>`, matching siblings already registered in
   `internal/mcpserver`) rather than introducing an inconsistent scheme.
+- Collection fields (arrays, slices) must normalize nil to empty
+  array/object at the dispatcher level before returning tool output.
+  Handlers must never serialize null for fields that logically should
+  contain zero or more items — this ambiguity breaks LLM reasoning and
+  violates the 'no ambiguous nulls' contract.
