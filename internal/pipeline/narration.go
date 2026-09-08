@@ -44,7 +44,7 @@ type Narration struct {
 // duplicate — tools code can construct/consume issues via its own
 // StateIssue name with zero conversion.
 type StateIssue struct {
-	Wave      int    `json:"wave,omitempty"`
+	Wave      int    `json:"wave"`
 	Step      string `json:"step,omitempty"`
 	TaskID    string `json:"taskId,omitempty"`
 	Severity  string `json:"severity"`

@@ -40,7 +40,7 @@ type ExecuteStateIn struct {
 	PlanPath          string         `json:"planPath,omitempty"`
 	PlanHash          string         `json:"planHash,omitempty"`
 	ExtraDepsJSON     string         `json:"extraDepsJson,omitempty"`
-	Wave              int            `json:"wave,omitempty"`
+	Wave              *int           `json:"wave,omitempty"`
 	TasksJSON         string         `json:"tasksJson,omitempty"`
 	RunID             string         `json:"runId,omitempty"`
 	WorkerID          string         `json:"workerId,omitempty"`
@@ -896,7 +896,7 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 // ---------------------------------------------------------------------------
 
 func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
-	if in.Wave < 1 {
+	if in.Wave == nil {
 		return nil, &mcpserver.DomainError{Msg: "--wave is required"}
 	}
 	if err := execValidateDetail(in); err != nil {
@@ -914,7 +914,7 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 	}
 
 	// Find existing wave or create new one.
-	w := execFindWave(st.Data, in.Wave)
+	w := execFindWave(st.Data, *in.Wave)
 	if w != nil {
 		w["status"] = "in_progress"
 		if _, ok := w["startedAt"]; !ok {
@@ -923,7 +923,7 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 	} else {
 		waves := execEnsureWaves(st.Data)
 		w = map[string]any{
-			"number":    in.Wave,
+			"number":    *in.Wave,
 			"status":    "in_progress",
 			"startedAt": now().UTC().Format(time.RFC3339),
 			"tasks":     []any{},
@@ -946,7 +946,7 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 
 		runID := in.RunID
 		if runID == "" {
-			runID = execDeriveRunID(st.Data, in.Wave)
+			runID = execDeriveRunID(st.Data, *in.Wave)
 		}
 
 		summary := execSummarizePriorWaveCtx(st.Data, root, 0, 0, 0, 0)
@@ -1011,12 +1011,12 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 
 	// Build narration.
 	taskCount := len(parsedTasks)
-	result.Summary = fmt.Sprintf("Wave %d started with %d tasks.", in.Wave, taskCount)
+	result.Summary = fmt.Sprintf("Wave %d started with %d tasks.", *in.Wave, taskCount)
 
 	if execDetailLevel(in) == "full" {
 		waveTasks := execBuildWaveTasks(parsedTasks)
 		wi := pipeline.WaveInfo{
-			Number: in.Wave,
+			Number: *in.Wave,
 			Tasks:  waveTasks,
 		}
 		// Pass nil for TimingsStore — ETA lives in Next, not in the block.
@@ -1029,8 +1029,8 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 	ts := pipeline.NewTimingsStore(root)
 	etaSec, etaBasis := execWaveETA(ts, bucket)
 	result.Next = &pipeline.NextAction{
-		ID:          fmt.Sprintf("wave-%d", in.Wave),
-		Instruction: fmt.Sprintf("Execute the %d tasks in wave %d, then call task-done/task-fail for each.", taskCount, in.Wave),
+		ID:          fmt.Sprintf("wave-%d", *in.Wave),
+		Instruction: fmt.Sprintf("Execute the %d tasks in wave %d, then call task-done/task-fail for each.", taskCount, *in.Wave),
 		EtaSeconds:  etaSec,
 		EtaBasis:    etaBasis,
 	}
@@ -1051,7 +1051,7 @@ func stringOrEmpty(v any) string {
 // ---------------------------------------------------------------------------
 
 func execActionWaveDone(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
-	if in.Wave < 1 {
+	if in.Wave == nil {
 		return nil, &mcpserver.DomainError{Msg: "--wave is required"}
 	}
 	if err := execValidateDetail(in); err != nil {
@@ -1077,7 +1077,7 @@ func execActionWaveDone(root, workDir string, in ExecuteStateIn, now func() time
 		return nil, err
 	}
 
-	w := execFindOrCreateWave(st.Data, in.Wave, now)
+	w := execFindOrCreateWave(st.Data, *in.Wave, now)
 
 	// Validate status.
 	status := in.Status
@@ -1140,7 +1140,7 @@ func execActionWaveDone(root, workDir string, in ExecuteStateIn, now func() time
 		durStr = " in " + pipeline.Humanize(waveDur)
 	}
 	result.Summary = fmt.Sprintf("Wave %d done%s: %d/%d tasks succeeded, %d failed.",
-		in.Wave, durStr, completed, total, failed)
+		*in.Wave, durStr, completed, total, failed)
 
 	if execDetailLevel(in) == "full" {
 		waveTasks := execBuildWaveTasks(func() []any {
@@ -1148,7 +1148,7 @@ func execActionWaveDone(root, workDir string, in ExecuteStateIn, now func() time
 			return t
 		}())
 		wi := pipeline.WaveInfo{
-			Number:      in.Wave,
+			Number:      *in.Wave,
 			Tasks:       waveTasks,
 			StartedAt:   startedAt,
 			CompletedAt: completedAt,
@@ -1173,7 +1173,7 @@ func execActionWaveDone(root, workDir string, in ExecuteStateIn, now func() time
 	}
 
 	// Next action: suggest wave-commit then next wave.
-	nextWave := in.Wave + 1
+	nextWave := *in.Wave + 1
 	etaSec, etaBasis := execWaveETA(ts, bucket)
 	result.Next = &pipeline.NextAction{
 		ID:          fmt.Sprintf("wave-%d", nextWave),
@@ -1190,7 +1190,7 @@ func execActionWaveDone(root, workDir string, in ExecuteStateIn, now func() time
 // ---------------------------------------------------------------------------
 
 func execActionWaveFail(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
-	if in.Wave < 1 {
+	if in.Wave == nil {
 		return nil, &mcpserver.DomainError{Msg: "--wave is required"}
 	}
 	if err := execValidateDetail(in); err != nil {
@@ -1207,20 +1207,20 @@ func execActionWaveFail(root, workDir string, in ExecuteStateIn, now func() time
 		return nil, err
 	}
 
-	w := execFindOrCreateWave(st.Data, in.Wave, now)
+	w := execFindOrCreateWave(st.Data, *in.Wave, now)
 	w["status"] = "failed"
 	w["completedAt"] = now().UTC().Format(time.RFC3339)
 
-	st.Data["failedWave"] = in.Wave
+	st.Data["failedWave"] = *in.Wave
 	detail := in.ErrorText
 	if detail == "" && in.TimedOut {
 		detail = "timed out"
 	}
 	execAppendIssue(st.Data, StateIssue{
-		Wave:      in.Wave,
+		Wave:      *in.Wave,
 		Severity:  "error",
 		Category:  "wave-fail",
-		Summary:   fmt.Sprintf("Wave %d failed", in.Wave),
+		Summary:   fmt.Sprintf("Wave %d failed", *in.Wave),
 		Detail:    detail,
 		Timestamp: now().UTC().Format(time.RFC3339),
 	})
@@ -1236,7 +1236,7 @@ func execActionWaveFail(root, workDir string, in ExecuteStateIn, now func() time
 		cause = "timeout"
 	}
 	summaryText := fmt.Sprintf("Wave %d failed (%s): %d/%d succeeded, %d failed.",
-		in.Wave, cause, completed, total, failed)
+		*in.Wave, cause, completed, total, failed)
 	if detail != "" {
 		summaryText += " " + detail
 	}
@@ -1244,7 +1244,7 @@ func execActionWaveFail(root, workDir string, in ExecuteStateIn, now func() time
 	result := ExecWaveNarrationOut{}
 	result.Summary = summaryText
 	if execDetailLevel(in) == "full" {
-		result.Display = fmt.Sprintf("**Wave %d failed** (%s)\n\n%s", in.Wave, cause, detail)
+		result.Display = fmt.Sprintf("**Wave %d failed** (%s)\n\n%s", *in.Wave, cause, detail)
 	}
 	return result, nil
 }
@@ -1254,7 +1254,7 @@ func execActionWaveFail(root, workDir string, in ExecuteStateIn, now func() time
 // ---------------------------------------------------------------------------
 
 func execActionWaveCommitted(root, workDir string, in ExecuteStateIn) (any, error) {
-	if in.Wave < 1 {
+	if in.Wave == nil {
 		return nil, &mcpserver.DomainError{Msg: "--wave is required"}
 	}
 
@@ -1268,17 +1268,17 @@ func execActionWaveCommitted(root, workDir string, in ExecuteStateIn) (any, erro
 		return nil, err
 	}
 
-	w := execFindWave(st.Data, in.Wave)
+	w := execFindWave(st.Data, *in.Wave)
 	if w == nil {
 		return nil, &mcpserver.DomainError{
-			Msg: fmt.Sprintf("wave %d not found in state", in.Wave),
+			Msg: fmt.Sprintf("wave %d not found in state", *in.Wave),
 		}
 	}
 
 	waveStatus, _ := w["status"].(string)
 	if waveStatus != "completed" {
 		return nil, &mcpserver.DomainError{
-			Msg: fmt.Sprintf("wave %d status is %q, expected \"completed\"", in.Wave, waveStatus),
+			Msg: fmt.Sprintf("wave %d status is %q, expected \"completed\"", *in.Wave, waveStatus),
 		}
 	}
 
@@ -1294,7 +1294,7 @@ func execActionWaveCommitted(root, workDir string, in ExecuteStateIn) (any, erro
 			return map[string]any{"committedSha": newSha, "idempotent": true}, nil
 		}
 		return nil, &mcpserver.DomainError{
-			Msg: fmt.Sprintf("wave %d already has committedSha %q — refusing to overwrite with %v", in.Wave, existing, newSha),
+			Msg: fmt.Sprintf("wave %d already has committedSha %q — refusing to overwrite with %v", *in.Wave, existing, newSha),
 		}
 	}
 
@@ -1359,7 +1359,7 @@ func shortSHA(sha string) string {
 // reusing wave-committed's completed-status and SHA-recording checks
 // rather than diverging from them.
 func execActionWaveCommit(root, workDir string, in ExecuteStateIn) (any, error) {
-	if in.Wave < 1 {
+	if in.Wave == nil {
 		return nil, &mcpserver.DomainError{Msg: "--wave is required"}
 	}
 	if err := execValidateDetail(in); err != nil {
@@ -1379,21 +1379,21 @@ func execActionWaveCommit(root, workDir string, in ExecuteStateIn) (any, error) 
 		return nil, err
 	}
 
-	w := execFindWave(st.Data, in.Wave)
+	w := execFindWave(st.Data, *in.Wave)
 	if w == nil {
 		return nil, &mcpserver.DomainError{
-			Msg: fmt.Sprintf("wave %d not found in state", in.Wave),
+			Msg: fmt.Sprintf("wave %d not found in state", *in.Wave),
 		}
 	}
 
 	waveStatus, _ := w["status"].(string)
 	if waveStatus != "completed" {
 		return nil, &mcpserver.DomainError{
-			Msg: fmt.Sprintf("wave %d status is %q, expected \"completed\"", in.Wave, waveStatus),
+			Msg: fmt.Sprintf("wave %d status is %q, expected \"completed\"", *in.Wave, waveStatus),
 		}
 	}
 
-	nextWave := in.Wave + 1
+	nextWave := *in.Wave + 1
 	nextInstruction := fmt.Sprintf("Call wave-start for wave %d.", nextWave)
 	full := execDetailLevel(in) == "full"
 
@@ -1413,14 +1413,14 @@ func execActionWaveCommit(root, workDir string, in ExecuteStateIn) (any, error) 
 			}
 			if !isAncestor {
 				return nil, &mcpserver.DomainError{
-					Msg: fmt.Sprintf("wave %d already has committedSha %q which is not an ancestor of HEAD — refusing to commit again automatically", in.Wave, existingSha),
+					Msg: fmt.Sprintf("wave %d already has committedSha %q which is not an ancestor of HEAD — refusing to commit again automatically", *in.Wave, existingSha),
 				}
 			}
 
 			result := ExecWaveCommitOut{Committed: true, SHA: existingSha, Idempotent: true}
-			result.Summary = fmt.Sprintf("Wave %d already committed as %s.", in.Wave, shortSHA(existingSha))
+			result.Summary = fmt.Sprintf("Wave %d already committed as %s.", *in.Wave, shortSHA(existingSha))
 			if full {
-				result.Display = fmt.Sprintf("✔ wave %d → commit %s (already committed)", in.Wave, shortSHA(existingSha))
+				result.Display = fmt.Sprintf("✔ wave %d → commit %s (already committed)", *in.Wave, shortSHA(existingSha))
 			}
 			result.Next = &pipeline.NextAction{ID: fmt.Sprintf("wave-%d", nextWave), Instruction: nextInstruction}
 			return result, nil
@@ -1429,13 +1429,13 @@ func execActionWaveCommit(root, workDir string, in ExecuteStateIn) (any, error) 
 
 	if !execCommitWavesEnabled(root) {
 		result := ExecWaveCommitOut{Committed: false, Reason: "execute.commitWaves is false"}
-		result.Summary = fmt.Sprintf("Wave %d not committed (execute.commitWaves is false).", in.Wave)
+		result.Summary = fmt.Sprintf("Wave %d not committed (execute.commitWaves is false).", *in.Wave)
 		if full {
-			result.Display = fmt.Sprintf("○ wave %d → commit manually (execute.commitWaves is false)", in.Wave)
+			result.Display = fmt.Sprintf("○ wave %d → commit manually (execute.commitWaves is false)", *in.Wave)
 		}
 		result.Next = &pipeline.NextAction{
-			ID:          fmt.Sprintf("wave-%d-manual-commit", in.Wave),
-			Instruction: fmt.Sprintf("execute.commitWaves is false: commit wave %d manually (git add -A && git commit -m \"...\"), then call wave-committed with the resulting sha before wave-start for wave %d.", in.Wave, nextWave),
+			ID:          fmt.Sprintf("wave-%d-manual-commit", *in.Wave),
+			Instruction: fmt.Sprintf("execute.commitWaves is false: commit wave %d manually (git add -A && git commit -m \"...\"), then call wave-committed with the resulting sha before wave-start for wave %d.", *in.Wave, nextWave),
 		}
 		return result, nil
 	}
@@ -1451,9 +1451,9 @@ func execActionWaveCommit(root, workDir string, in ExecuteStateIn) (any, error) 
 	staged = strings.TrimSpace(staged)
 	if staged == "" {
 		result := ExecWaveCommitOut{Committed: false, Reason: "nothing to commit"}
-		result.Summary = fmt.Sprintf("Wave %d: nothing to commit.", in.Wave)
+		result.Summary = fmt.Sprintf("Wave %d: nothing to commit.", *in.Wave)
 		if full {
-			result.Display = fmt.Sprintf("○ wave %d → nothing to commit", in.Wave)
+			result.Display = fmt.Sprintf("○ wave %d → nothing to commit", *in.Wave)
 		}
 		result.Next = &pipeline.NextAction{ID: fmt.Sprintf("wave-%d", nextWave), Instruction: nextInstruction}
 		return result, nil
@@ -1476,9 +1476,9 @@ func execActionWaveCommit(root, workDir string, in ExecuteStateIn) (any, error) 
 	}
 
 	result := ExecWaveCommitOut{Committed: true, SHA: sha, Idempotent: false}
-	result.Summary = fmt.Sprintf("Wave %d committed as %s (%d files).", in.Wave, shortSHA(sha), fileCount)
+	result.Summary = fmt.Sprintf("Wave %d committed as %s (%d files).", *in.Wave, shortSHA(sha), fileCount)
 	if full {
-		result.Display = fmt.Sprintf("✔ wave %d → commit %s", in.Wave, shortSHA(sha))
+		result.Display = fmt.Sprintf("✔ wave %d → commit %s", *in.Wave, shortSHA(sha))
 	}
 	result.Next = &pipeline.NextAction{ID: fmt.Sprintf("wave-%d", nextWave), Instruction: nextInstruction}
 	return result, nil
@@ -1489,7 +1489,7 @@ func execActionWaveCommit(root, workDir string, in ExecuteStateIn) (any, error) 
 // ---------------------------------------------------------------------------
 
 func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
-	if in.Wave < 1 {
+	if in.Wave == nil {
 		return nil, &mcpserver.DomainError{Msg: "--wave is required"}
 	}
 	if in.TaskID == "" {
@@ -1555,7 +1555,7 @@ func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time
 		return nil, err
 	}
 
-	w := execFindOrCreateWave(st.Data, in.Wave, now)
+	w := execFindOrCreateWave(st.Data, *in.Wave, now)
 	tasks, _ := w["tasks"].([]any)
 	if tasks == nil {
 		tasks = []any{}
@@ -1590,7 +1590,7 @@ func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time
 
 	if in.Status == "DONE_WITH_CONCERNS" {
 		execAppendIssue(st.Data, StateIssue{
-			Wave:      in.Wave,
+			Wave:      *in.Wave,
 			TaskID:    in.TaskID,
 			Severity:  "warning",
 			Category:  "done-with-concerns",
@@ -1655,7 +1655,7 @@ func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time
 // ---------------------------------------------------------------------------
 
 func execActionTaskFail(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
-	if in.Wave < 1 {
+	if in.Wave == nil {
 		return nil, &mcpserver.DomainError{Msg: "--wave is required"}
 	}
 	if in.TaskID == "" {
@@ -1671,7 +1671,7 @@ func execActionTaskFail(root, workDir string, in ExecuteStateIn, now func() time
 		return nil, err
 	}
 
-	w := execFindOrCreateWave(st.Data, in.Wave, now)
+	w := execFindOrCreateWave(st.Data, *in.Wave, now)
 	tasks, _ := w["tasks"].([]any)
 	if tasks == nil {
 		tasks = []any{}
@@ -1721,7 +1721,7 @@ func execActionTaskFail(root, workDir string, in ExecuteStateIn, now func() time
 		summary = fmt.Sprintf("Task %s skipped (dependency failed)", in.TaskID)
 	}
 	execAppendIssue(st.Data, StateIssue{
-		Wave:      in.Wave,
+		Wave:      *in.Wave,
 		TaskID:    in.TaskID,
 		Severity:  "error",
 		Category:  "task-fail",
@@ -1895,7 +1895,11 @@ func execActionTaskContext(root, workDir string, in ExecuteStateIn) (any, error)
 
 	runID := in.RunID
 	if runID == "" {
-		runID = execDeriveRunID(st.Data, in.Wave)
+		waveNum := 0
+		if in.Wave != nil {
+			waveNum = *in.Wave
+		}
+		runID = execDeriveRunID(st.Data, waveNum)
 	}
 
 	_, content, err := wave.ReadFactsheet(root, runID, taskID)
@@ -2525,7 +2529,11 @@ func execActionWaveSplit(root, workDir string, in ExecuteStateIn, now func() tim
 		}
 
 		if st != nil {
-			w := execFindOrCreateWave(st.Data, in.Wave, now)
+			waveNum := 0
+			if in.Wave != nil {
+				waveNum = *in.Wave
+			}
+			w := execFindOrCreateWave(st.Data, waveNum, now)
 
 			// Idempotency: skip write if same splitDepth already recorded.
 			if existingTree, ok := w["splitTree"].(map[string]any); ok {

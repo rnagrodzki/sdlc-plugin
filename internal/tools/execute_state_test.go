@@ -200,10 +200,11 @@ func TestExecState_Init_MissingQuality(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// wave < 1 guard (parity with JS --wave required)
+// wave nil guard (parity with JS --wave required); wave 0 is a valid
+// pre-wave number and must be accepted, not rejected.
 // ---------------------------------------------------------------------------
 
-func TestExecState_WaveZeroRejected(t *testing.T) {
+func TestExecState_WaveNilRejected(t *testing.T) {
 	root := t.TempDir()
 	createExecState(t, root, "main", map[string]any{})
 
@@ -213,11 +214,10 @@ func TestExecState_WaveZeroRejected(t *testing.T) {
 			_, err := executeState(root, root, ExecuteStateIn{
 				Action: action,
 				Branch: "main",
-				Wave:   0,
 				TaskID: "T1", // needed for task-done/task-fail
 			}, fixedClock(testNow))
 			if err == nil {
-				t.Fatal("expected error for wave=0")
+				t.Fatal("expected error for wave=nil")
 			}
 			de, ok := err.(*mcpserver.DomainError)
 			if !ok {
@@ -227,6 +227,60 @@ func TestExecState_WaveZeroRejected(t *testing.T) {
 				t.Errorf("msg = %q, want %q", de.Msg, "--wave is required")
 			}
 		})
+	}
+}
+
+// TestExecState_WaveZeroAccepted confirms wave:0 (the documented pre-wave)
+// is accepted by wave-start and wave-done, creating/completing a wave
+// entry with number: 0 rather than being rejected as "not provided".
+func TestExecState_WaveZeroAccepted(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	createExecState(t, root, "feat/test", map[string]any{
+		"waves":   []any{},
+		"context": map[string]any{},
+	})
+
+	_, err := executeState(root, root, ExecuteStateIn{
+		Action: "wave-start",
+		Branch: "feat/test",
+		Wave:   intPtr(0),
+	}, clock)
+	if err != nil {
+		t.Fatalf("wave-start wave=0: %v", err)
+	}
+
+	data := readExecState(t, root, "feat/test")
+	waves, _ := data["waves"].([]any)
+	if len(waves) != 1 {
+		t.Fatalf("expected 1 wave, got %d", len(waves))
+	}
+	w := waves[0].(map[string]any)
+	if w["number"] != float64(0) {
+		t.Errorf("wave number = %v, want 0", w["number"])
+	}
+	if w["status"] != "in_progress" {
+		t.Errorf("wave status = %v, want in_progress", w["status"])
+	}
+
+	_, err = executeState(root, root, ExecuteStateIn{
+		Action: "wave-done",
+		Branch: "feat/test",
+		Wave:   intPtr(0),
+		Status: "completed",
+	}, clock)
+	if err != nil {
+		t.Fatalf("wave-done wave=0: %v", err)
+	}
+
+	data = readExecState(t, root, "feat/test")
+	w = data["waves"].([]any)[0].(map[string]any)
+	if w["number"] != float64(0) {
+		t.Errorf("wave number = %v, want 0", w["number"])
+	}
+	if w["status"] != "completed" {
+		t.Errorf("wave status = %v, want completed", w["status"])
 	}
 }
 
@@ -246,7 +300,7 @@ func TestExecState_WaveStart(t *testing.T) {
 	_, err := executeState(root, root, ExecuteStateIn{
 		Action: "wave-start",
 		Branch: "feat/test",
-		Wave:   1,
+		Wave:   intPtr(1),
 	}, clock)
 	if err != nil {
 		t.Fatalf("wave-start: %v", err)
@@ -278,7 +332,7 @@ func TestExecState_WaveStart_WithTasks(t *testing.T) {
 	result, err := executeState(root, root, ExecuteStateIn{
 		Action:    "wave-start",
 		Branch:    "feat/test",
-		Wave:      1,
+		Wave:      intPtr(1),
 		TasksJSON: tasksJSON,
 		RunID:     "test-run-1",
 	}, clock)
@@ -312,7 +366,7 @@ func TestExecState_WaveStart_MissingState(t *testing.T) {
 	_, err := executeState(root, root, ExecuteStateIn{
 		Action: "wave-start",
 		Branch: "feat/test",
-		Wave:   1,
+		Wave:   intPtr(1),
 	}, fixedClock(testNow))
 	if err == nil {
 		t.Fatal("expected error for missing state")
@@ -342,7 +396,7 @@ func TestExecState_WaveDone(t *testing.T) {
 	_, err := executeState(root, root, ExecuteStateIn{
 		Action:    "wave-done",
 		Branch:    "feat/test",
-		Wave:      1,
+		Wave:      intPtr(1),
 		Status:    "completed",
 		Decisions: decisions,
 	}, clock)
@@ -372,7 +426,7 @@ func TestExecState_WaveDone_InvalidDecisionsJSON(t *testing.T) {
 	_, err := executeState(root, root, ExecuteStateIn{
 		Action:    "wave-done",
 		Branch:    "feat/test",
-		Wave:      1,
+		Wave:      intPtr(1),
 		Decisions: "not json",
 	}, fixedClock(testNow))
 	if err == nil {
@@ -401,7 +455,7 @@ func TestExecState_WaveDone_IssueSummary(t *testing.T) {
 	result, err := executeState(root, root, ExecuteStateIn{
 		Action: "wave-done",
 		Branch: "feat/test",
-		Wave:   1,
+		Wave:   intPtr(1),
 	}, clock)
 	if err != nil {
 		t.Fatalf("wave-done: %v", err)
@@ -425,7 +479,7 @@ func TestExecState_WaveDone_IssueSummary(t *testing.T) {
 	if _, err := executeState(root, root, ExecuteStateIn{
 		Action:    "task-fail",
 		Branch:    "feat/test",
-		Wave:      1,
+		Wave:      intPtr(1),
 		TaskID:    "T1",
 		ErrorText: "boom",
 	}, clock); err != nil {
@@ -434,7 +488,7 @@ func TestExecState_WaveDone_IssueSummary(t *testing.T) {
 	result, err = executeState(root, root, ExecuteStateIn{
 		Action: "wave-done",
 		Branch: "feat/test",
-		Wave:   1,
+		Wave:   intPtr(1),
 		Status: "partial",
 	}, clock)
 	if err != nil {
@@ -475,7 +529,7 @@ func TestExecState_BackwardCompatNoIssuesArray(t *testing.T) {
 	if _, err := executeState(root, root, ExecuteStateIn{
 		Action: "task-fail",
 		Branch: "feat/test",
-		Wave:   1,
+		Wave:   intPtr(1),
 		TaskID: "T1",
 	}, clock); err != nil {
 		t.Fatalf("task-fail: %v", err)
@@ -506,7 +560,7 @@ func TestExecState_WaveFail(t *testing.T) {
 	_, err := executeState(root, root, ExecuteStateIn{
 		Action: "wave-fail",
 		Branch: "feat/test",
-		Wave:   1,
+		Wave:   intPtr(1),
 	}, clock)
 	if err != nil {
 		t.Fatalf("wave-fail: %v", err)
@@ -546,7 +600,7 @@ func TestExecState_WaveFail_TimedOutRecordsDetail(t *testing.T) {
 	_, err := executeState(root, root, ExecuteStateIn{
 		Action:   "wave-fail",
 		Branch:   "feat/test",
-		Wave:     1,
+		Wave:     intPtr(1),
 		TimedOut: true,
 	}, clock)
 	if err != nil {
@@ -578,7 +632,7 @@ func TestExecState_WaveCommitted(t *testing.T) {
 	_, err := executeState(root, root, ExecuteStateIn{
 		Action: "wave-committed",
 		Branch: "feat/test",
-		Wave:   1,
+		Wave:   intPtr(1),
 		SHA:    "abc123",
 	}, fixedClock(testNow))
 	if err != nil {
@@ -610,7 +664,7 @@ func TestExecState_WaveCommitted_Idempotent(t *testing.T) {
 	_, err := executeState(root, root, ExecuteStateIn{
 		Action: "wave-committed",
 		Branch: "feat/test",
-		Wave:   1,
+		Wave:   intPtr(1),
 		SHA:    "abc123",
 	}, fixedClock(testNow))
 	if err != nil {
@@ -636,7 +690,7 @@ func TestExecState_WaveCommitted_Conflict(t *testing.T) {
 	_, err := executeState(root, root, ExecuteStateIn{
 		Action: "wave-committed",
 		Branch: "feat/test",
-		Wave:   1,
+		Wave:   intPtr(1),
 		SHA:    "def456",
 	}, fixedClock(testNow))
 	if err == nil {
@@ -660,7 +714,7 @@ func TestExecState_WaveCommitted_NotCompleted(t *testing.T) {
 	_, err := executeState(root, root, ExecuteStateIn{
 		Action: "wave-committed",
 		Branch: "feat/test",
-		Wave:   1,
+		Wave:   intPtr(1),
 		SHA:    "abc123",
 	}, fixedClock(testNow))
 	if err == nil {
@@ -736,7 +790,7 @@ func TestExecState_WaveCommit_Success(t *testing.T) {
 	res, err := executeState(dir, dir, ExecuteStateIn{
 		Action:  "wave-commit",
 		Branch:  "feat/test",
-		Wave:    1,
+		Wave:    intPtr(1),
 		Message: "Add narration payloads",
 	}, fixedClock(testNow))
 	if err != nil {
@@ -824,7 +878,7 @@ func TestExecState_WaveCommit_EmptyDiff(t *testing.T) {
 	res, err := executeState(dir, dir, ExecuteStateIn{
 		Action:  "wave-commit",
 		Branch:  "feat/test",
-		Wave:    1,
+		Wave:    intPtr(1),
 		Message: "nothing changed",
 	}, fixedClock(testNow))
 	if err != nil {
@@ -852,7 +906,7 @@ func TestExecState_WaveCommit_MissingMessage(t *testing.T) {
 	_, err := executeState(root, root, ExecuteStateIn{
 		Action: "wave-commit",
 		Branch: "feat/test",
-		Wave:   1,
+		Wave:   intPtr(1),
 	}, fixedClock(testNow))
 	if err == nil {
 		t.Fatal("expected error for missing message")
@@ -872,7 +926,7 @@ func TestExecState_WaveCommit_BlankMessage(t *testing.T) {
 	_, err := executeState(root, root, ExecuteStateIn{
 		Action:  "wave-commit",
 		Branch:  "feat/test",
-		Wave:    1,
+		Wave:    intPtr(1),
 		Message: "   ",
 	}, fixedClock(testNow))
 	if err == nil {
@@ -894,7 +948,7 @@ func TestExecState_WaveCommit_WaveNotFound(t *testing.T) {
 	_, err := executeState(root, root, ExecuteStateIn{
 		Action:  "wave-commit",
 		Branch:  "feat/test",
-		Wave:    1,
+		Wave:    intPtr(1),
 		Message: "msg",
 	}, fixedClock(testNow))
 	if err == nil {
@@ -918,7 +972,7 @@ func TestExecState_WaveCommit_NotCompleted(t *testing.T) {
 	_, err := executeState(root, root, ExecuteStateIn{
 		Action:  "wave-commit",
 		Branch:  "feat/test",
-		Wave:    1,
+		Wave:    intPtr(1),
 		Message: "msg",
 	}, fixedClock(testNow))
 	if err == nil {
@@ -945,7 +999,7 @@ func TestExecState_WaveCommit_CommitWavesDisabled(t *testing.T) {
 	res, err := executeState(root, root, ExecuteStateIn{
 		Action:  "wave-commit",
 		Branch:  "feat/test",
-		Wave:    1,
+		Wave:    intPtr(1),
 		Message: "msg",
 	}, fixedClock(testNow))
 	if err != nil {
@@ -994,7 +1048,7 @@ func TestExecState_WaveCommit_IdempotentResume(t *testing.T) {
 	res, err := executeState(dir, dir, ExecuteStateIn{
 		Action:  "wave-commit",
 		Branch:  "feat/test",
-		Wave:    1,
+		Wave:    intPtr(1),
 		Message: "should not be used",
 	}, fixedClock(testNow))
 	if err != nil {
@@ -1042,7 +1096,7 @@ func TestExecState_WaveCommit_DivergedConflict(t *testing.T) {
 	_, err := executeState(dir, dir, ExecuteStateIn{
 		Action:  "wave-commit",
 		Branch:  "feat/test",
-		Wave:    1,
+		Wave:    intPtr(1),
 		Message: "msg",
 	}, fixedClock(testNow))
 	if err == nil {
@@ -1071,7 +1125,7 @@ func TestExecState_TaskDone(t *testing.T) {
 	_, err := executeState(root, root, ExecuteStateIn{
 		Action:       "task-done",
 		Branch:       "feat/test",
-		Wave:         1,
+		Wave:         intPtr(1),
 		TaskID:       "T1",
 		TaskName:     "Task One",
 		FilesChanged: `["src/a.go","src/b.go"]`,
@@ -1145,7 +1199,7 @@ func TestExecState_TaskDone_DoneWithConcerns(t *testing.T) {
 	_, err := executeState(root, root, ExecuteStateIn{
 		Action:    "task-done",
 		Branch:    "feat/test",
-		Wave:      1,
+		Wave:      intPtr(1),
 		TaskID:    "T1",
 		Status:    "DONE_WITH_CONCERNS",
 		ErrorText: "left a TODO for follow-up",
@@ -1192,7 +1246,7 @@ func TestExecState_TaskFail(t *testing.T) {
 	_, err := executeState(root, root, ExecuteStateIn{
 		Action:    "task-fail",
 		Branch:    "feat/test",
-		Wave:      1,
+		Wave:      intPtr(1),
 		TaskID:    "T1",
 		ErrorText: "compilation error",
 	}, clock)
@@ -1237,7 +1291,7 @@ func TestExecState_TaskFail_SkippedDependency(t *testing.T) {
 	_, err := executeState(root, root, ExecuteStateIn{
 		Action:     "task-fail",
 		Branch:     "feat/test",
-		Wave:       1,
+		Wave:       intPtr(1),
 		TaskID:     "T1",
 		SkippedDep: true,
 	}, clock)
@@ -1285,7 +1339,7 @@ func TestExecState_TaskFail_SkippedDependencyDoesNotOverwriteFailedTask(t *testi
 	if _, err := executeState(root, root, ExecuteStateIn{
 		Action:    "task-fail",
 		Branch:    "feat/test",
-		Wave:      1,
+		Wave:      intPtr(1),
 		TaskID:    "T4",
 		ErrorText: "root cause",
 	}, clock); err != nil {
@@ -1294,7 +1348,7 @@ func TestExecState_TaskFail_SkippedDependencyDoesNotOverwriteFailedTask(t *testi
 	if _, err := executeState(root, root, ExecuteStateIn{
 		Action:     "task-fail",
 		Branch:     "feat/test",
-		Wave:       1,
+		Wave:       intPtr(1),
 		TaskID:     "T5",
 		SkippedDep: true,
 	}, clock); err != nil {
@@ -1336,7 +1390,7 @@ func TestExecState_TaskContext_HappyPath(t *testing.T) {
 	if _, err := executeState(root, root, ExecuteStateIn{
 		Action:    "wave-start",
 		Branch:    "feat/test",
-		Wave:      1,
+		Wave:      intPtr(1),
 		TasksJSON: tasksJSON,
 		RunID:     "run-1",
 	}, clock); err != nil {
@@ -1400,7 +1454,7 @@ func TestExecState_TaskContext_NormalizesTaskID(t *testing.T) {
 	if _, err := executeState(root, root, ExecuteStateIn{
 		Action:    "wave-start",
 		Branch:    "feat/test",
-		Wave:      1,
+		Wave:      intPtr(1),
 		TasksJSON: tasksJSON,
 		RunID:     "run-1",
 	}, clock); err != nil {
@@ -1456,7 +1510,7 @@ func TestExecState_TaskContext_UnknownTaskID_ListsValidIDs(t *testing.T) {
 	if _, err := executeState(root, root, ExecuteStateIn{
 		Action:    "wave-start",
 		Branch:    "feat/test",
-		Wave:      1,
+		Wave:      intPtr(1),
 		TasksJSON: tasksJSON,
 		RunID:     "run-1",
 	}, clock); err != nil {
@@ -1541,7 +1595,7 @@ func TestExecState_TaskContext_Truncation(t *testing.T) {
 	if _, err := executeState(root, root, ExecuteStateIn{
 		Action:    "wave-start",
 		Branch:    "feat/test",
-		Wave:      1,
+		Wave:      intPtr(1),
 		TasksJSON: tasksJSON,
 		RunID:     "run-1",
 	}, clock); err != nil {
@@ -1591,7 +1645,7 @@ func TestExecState_TaskContext_TruncatesPriorWavesWhenItAloneOverflows(t *testin
 	if _, err := executeState(root, root, ExecuteStateIn{
 		Action:    "wave-start",
 		Branch:    "feat/test",
-		Wave:      1,
+		Wave:      intPtr(1),
 		TasksJSON: tasksJSON,
 		RunID:     "run-1",
 	}, clock); err != nil {
@@ -1647,7 +1701,7 @@ func TestExecState_TaskContext_RunIDFallsBackToDerivedID(t *testing.T) {
 	if _, err := executeState(root, root, ExecuteStateIn{
 		Action:    "wave-start",
 		Branch:    "feat/test",
-		Wave:      1,
+		Wave:      intPtr(1),
 		TasksJSON: tasksJSON,
 	}, clock); err != nil {
 		t.Fatalf("wave-start: %v", err)
@@ -1656,7 +1710,7 @@ func TestExecState_TaskContext_RunIDFallsBackToDerivedID(t *testing.T) {
 	result, err := executeState(root, root, ExecuteStateIn{
 		Action: "task-context",
 		Branch: "feat/test",
-		Wave:   1,
+		Wave:   intPtr(1),
 		TaskID: "1",
 	}, clock)
 	if err != nil {
@@ -3230,7 +3284,7 @@ func TestExecState_WaveStart_Narration(t *testing.T) {
 	result, err := executeState(root, root, ExecuteStateIn{
 		Action:    "wave-start",
 		Branch:    "feat/test",
-		Wave:      1,
+		Wave:      intPtr(1),
 		TasksJSON: tasksJSON,
 		RunID:     "run-1",
 	}, clock)
@@ -3275,7 +3329,7 @@ func TestExecState_WaveStart_Concise(t *testing.T) {
 	result, err := executeState(root, root, ExecuteStateIn{
 		Action:    "wave-start",
 		Branch:    "feat/test",
-		Wave:      1,
+		Wave:      intPtr(1),
 		TasksJSON: tasksJSON,
 		RunID:     "run-1",
 		Detail:    "concise",
@@ -3305,7 +3359,7 @@ func TestExecState_WaveStart_NoTasksJSON(t *testing.T) {
 	result, err := executeState(root, root, ExecuteStateIn{
 		Action: "wave-start",
 		Branch: "feat/test",
-		Wave:   1,
+		Wave:   intPtr(1),
 	}, clock)
 	if err != nil {
 		t.Fatalf("wave-start no tasks: %v", err)
@@ -3332,7 +3386,7 @@ func TestExecState_WaveStart_InvalidDetail(t *testing.T) {
 	_, err := executeState(root, root, ExecuteStateIn{
 		Action: "wave-start",
 		Branch: "feat/test",
-		Wave:   1,
+		Wave:   intPtr(1),
 		Detail: "verbose",
 	}, clock)
 	if err == nil {
@@ -3372,7 +3426,7 @@ func TestExecState_WaveDone_Narration(t *testing.T) {
 	result, err := executeState(root, root, ExecuteStateIn{
 		Action: "wave-done",
 		Branch: "feat/test",
-		Wave:   1,
+		Wave:   intPtr(1),
 	}, clock)
 	if err != nil {
 		t.Fatalf("wave-done: %v", err)
@@ -3431,7 +3485,7 @@ func TestExecState_WaveDone_RecordsTiming(t *testing.T) {
 	_, err := executeState(root, root, ExecuteStateIn{
 		Action: "wave-done",
 		Branch: "feat/test",
-		Wave:   1,
+		Wave:   intPtr(1),
 	}, clock)
 	if err != nil {
 		t.Fatalf("wave-done: %v", err)
@@ -3468,7 +3522,7 @@ func TestExecState_WaveDone_Concise(t *testing.T) {
 	result, err := executeState(root, root, ExecuteStateIn{
 		Action: "wave-done",
 		Branch: "feat/test",
-		Wave:   1,
+		Wave:   intPtr(1),
 		Detail: "concise",
 	}, clock)
 	if err != nil {
@@ -3502,7 +3556,7 @@ func TestExecState_WaveFail_Narration(t *testing.T) {
 	result, err := executeState(root, root, ExecuteStateIn{
 		Action:    "wave-fail",
 		Branch:    "feat/test",
-		Wave:      1,
+		Wave:      intPtr(1),
 		ErrorText: "agent crashed",
 	}, clock)
 	if err != nil {
@@ -3535,7 +3589,7 @@ func TestExecState_WaveFail_Timeout(t *testing.T) {
 	result, err := executeState(root, root, ExecuteStateIn{
 		Action:   "wave-fail",
 		Branch:   "feat/test",
-		Wave:     1,
+		Wave:     intPtr(1),
 		TimedOut: true,
 	}, clock)
 	if err != nil {
@@ -3572,7 +3626,7 @@ func TestExecState_TaskDone_Narration(t *testing.T) {
 	result, err := executeState(root, root, ExecuteStateIn{
 		Action:     "task-done",
 		Branch:     "feat/test",
-		Wave:       1,
+		Wave:       intPtr(1),
 		TaskID:     "T2",
 		TaskName:   "Second task",
 		Complexity: "Standard",
@@ -3618,7 +3672,7 @@ func TestExecState_TaskFail_Narration(t *testing.T) {
 	result, err := executeState(root, root, ExecuteStateIn{
 		Action:    "task-fail",
 		Branch:    "feat/test",
-		Wave:      1,
+		Wave:      intPtr(1),
 		TaskID:    "T2",
 		ErrorText: "compilation error",
 	}, clock)
@@ -3656,7 +3710,7 @@ func TestExecState_TaskFail_Skipped_Narration(t *testing.T) {
 	result, err := executeState(root, root, ExecuteStateIn{
 		Action:     "task-fail",
 		Branch:     "feat/test",
-		Wave:       1,
+		Wave:       intPtr(1),
 		TaskID:     "T3",
 		SkippedDep: true,
 	}, clock)

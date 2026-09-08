@@ -86,7 +86,7 @@ func TestPipelineStateIssueMarshalOmitsEmptyOptionalFields(t *testing.T) {
 		Summary:   "minor nit",
 		Timestamp: "2026-03-28T14:30:00Z",
 	}
-	want := `{"severity":"medium","category":"style","summary":"minor nit","timestamp":"2026-03-28T14:30:00Z"}`
+	want := `{"wave":0,"severity":"medium","category":"style","summary":"minor nit","timestamp":"2026-03-28T14:30:00Z"}`
 
 	raw, err := json.Marshal(iss)
 	if err != nil {
