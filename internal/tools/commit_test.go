@@ -308,15 +308,20 @@ func TestCommitApply_WorktreeUnchangedOnFailure(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // version_apply tests
+//
+// version_apply is deprecated (plan Task 6): it no longer bumps the version
+// file or writes CHANGELOG.md. TestVersionApply_BumpMinor and
+// TestVersionApply_Idempotent, which asserted the old bumping behavior, are
+// replaced by TestVersionApply_Deprecated below.
 // ---------------------------------------------------------------------------
 
-// TestVersionApply_BumpMinor verifies version_apply bumps a package.json
-// version and creates CHANGELOG.md.
-func TestVersionApply_BumpMinor(t *testing.T) {
+// TestVersionApply_Deprecated verifies version_apply is a pure no-op that
+// returns a deprecation warning and a migration hint pointing at pr_apply,
+// and performs no file writes.
+func TestVersionApply_Deprecated(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 
-	// Write package.json with version 1.0.0.
 	pkg := `{"name": "test", "version": "1.0.0"}`
 	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(pkg), 0644); err != nil {
 		t.Fatal(err)
@@ -332,68 +337,29 @@ func TestVersionApply_BumpMinor(t *testing.T) {
 		t.Fatalf("versionApply: %v", err)
 	}
 
-	if out.PreviousVersion != "1.0.0" {
-		t.Errorf("expected previous 1.0.0, got %s", out.PreviousVersion)
+	if out.Changed {
+		t.Error("expected Changed=false; version_apply must not perform the bump anymore")
 	}
-	if out.NewVersion != "1.1.0" {
-		t.Errorf("expected new 1.1.0, got %s", out.NewVersion)
+	if len(out.Warnings) == 0 {
+		t.Fatal("expected a deprecation warning")
 	}
-	if !out.Changed {
-		t.Error("expected Changed=true")
+	if !strings.Contains(out.Warnings[0], "deprecated") || !strings.Contains(out.Warnings[0], "pr_apply") {
+		t.Errorf("expected warning to mention deprecation and pr_apply, got %q", out.Warnings[0])
 	}
-	if out.VersionFile == "" {
-		t.Error("expected non-empty VersionFile")
-	}
-	if out.ChangelogFile == "" {
-		t.Error("expected non-empty ChangelogFile")
+	if !strings.Contains(out.Next, "pr_apply") {
+		t.Errorf("expected Next to point callers at pr_apply, got %q", out.Next)
 	}
 
-	// Verify CHANGELOG.md exists and contains the version.
-	cl, err := os.ReadFile(filepath.Join(dir, "CHANGELOG.md"))
+	// No side effects: package.json unchanged, no CHANGELOG.md written.
+	pkgAfter, err := os.ReadFile(filepath.Join(dir, "package.json"))
 	if err != nil {
-		t.Fatalf("read CHANGELOG.md: %v", err)
+		t.Fatalf("read package.json: %v", err)
 	}
-	if !strings.Contains(string(cl), "1.1.0") {
-		t.Error("CHANGELOG.md does not contain version 1.1.0")
+	if !strings.Contains(string(pkgAfter), "1.0.0") || strings.Contains(string(pkgAfter), "1.1.0") {
+		t.Errorf("package.json was modified; version_apply must have no side effects, got %s", pkgAfter)
 	}
-}
-
-// TestVersionApply_Idempotent verifies that a second Apply with the same
-// explicit version is a no-op.
-func TestVersionApply_Idempotent(t *testing.T) {
-	dir := t.TempDir()
-	initGitFixture(t, dir)
-
-	pkg := `{"name": "test", "version": "1.0.0"}`
-	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(pkg), 0644); err != nil {
-		t.Fatal(err)
-	}
-	gitCommit(t, dir, "initial")
-
-	// First apply.
-	out1, err := versionApply(dir, VersionApplyIn{
-		Level:           "minor",
-		Notes:           "release notes",
-		SkipConfigCheck: true,
-	})
-	if err != nil {
-		t.Fatalf("first versionApply: %v", err)
-	}
-	if !out1.Changed {
-		t.Fatal("first call should have Changed=true")
-	}
-
-	// Second apply with same explicit version.
-	out2, err := versionApply(dir, VersionApplyIn{
-		Level:           "1.1.0",
-		Notes:           "release notes",
-		SkipConfigCheck: true,
-	})
-	if err != nil {
-		t.Fatalf("second versionApply: %v", err)
-	}
-	if out2.Changed {
-		t.Error("second call should have Changed=false (idempotent)")
+	if _, err := os.Stat(filepath.Join(dir, "CHANGELOG.md")); !os.IsNotExist(err) {
+		t.Error("CHANGELOG.md should not be created by deprecated version_apply")
 	}
 }
 

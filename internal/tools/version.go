@@ -488,45 +488,30 @@ type VersionApplyIn struct {
 
 // VersionApplyOut is the output for the version_apply tool.
 type VersionApplyOut struct {
-	PreviousVersion string `json:"previousVersion"`
-	NewVersion      string `json:"newVersion"`
-	VersionFile     string `json:"versionFile"`
-	ChangelogFile   string `json:"changelogFile"`
-	Changed         bool   `json:"changed"`
+	PreviousVersion string   `json:"previousVersion,omitempty"`
+	NewVersion      string   `json:"newVersion,omitempty"`
+	VersionFile     string   `json:"versionFile,omitempty"`
+	ChangelogFile   string   `json:"changelogFile,omitempty"`
+	Changed         bool     `json:"changed"`
+	Warnings        []string `json:"warnings"`
+	Next            string   `json:"next"`
 }
 
-// versionApply is the core logic, separated for testability.
+// versionApply is deprecated: release intent now flows through pr_apply's
+// releaseLevel/releaseNotes/releasePreRelease fields, with the version bump
+// and CHANGELOG write happening in the post-merge release-on-main.cjs CI
+// payload instead of here. This handler is a pure no-op — it performs no
+// config check, no version file write, and no CHANGELOG write — and exists
+// only to point remaining callers at the new flow.
 func versionApply(cfgRoot string, in VersionApplyIn) (VersionApplyOut, error) {
-	if strings.TrimSpace(in.Level) == "" {
-		return VersionApplyOut{}, &mcpserver.DataError{
-			Msg: "level must not be empty (e.g. major, minor, patch, or an explicit semver string)",
-		}
-	}
-
-	// Config check.
-	if !in.SkipConfigCheck {
-		if err := configmigrate.Verify(cfgRoot); err != nil {
-			return VersionApplyOut{}, &mcpserver.DataError{
-				Msg:   fmt.Sprintf("config check failed: %s", err.Error()),
-				Cause: err,
-			}
-		}
-	}
-
-	report, err := version.Apply(cfgRoot, in.Level, in.Notes)
-	if err != nil {
-		return VersionApplyOut{}, &mcpserver.DataError{
-			Msg:   fmt.Sprintf("version apply: %s", err.Error()),
-			Cause: err,
-		}
-	}
-
+	_ = cfgRoot
+	_ = in
 	return VersionApplyOut{
-		PreviousVersion: report.PreviousVersion,
-		NewVersion:      report.NewVersion,
-		VersionFile:     report.VersionFile,
-		ChangelogFile:   report.ChangelogFile,
-		Changed:         report.Changed,
+		Changed: false,
+		Warnings: []string{
+			"version_apply is deprecated. Pass releaseLevel + releaseNotes to pr_apply instead.",
+		},
+		Next: "Call pr_apply with releaseLevel (major/minor/patch), releaseNotes, and optionally releasePreRelease (\"rc\") to record release intent on the PR. The version file and CHANGELOG are updated post-merge by CI, not by this tool.",
 	}, nil
 }
 
@@ -579,7 +564,7 @@ actions, next.`,
 	)
 
 	mcpserver.Register(s, "version_apply",
-		"Bump the version file and optionally prepend a changelog entry. Accepts a bump keyword (major/minor/patch/...) or an explicit semver string.",
+		"Deprecated: this tool no longer bumps the version file or writes a changelog entry. It is a no-op that returns a migration warning. Pass releaseLevel, releaseNotes, and optionally releasePreRelease to pr_apply instead — the version bump and CHANGELOG write now happen post-merge, driven by CI.",
 		func(ctx mcpserver.Ctx, in VersionApplyIn) (VersionApplyOut, error) {
 			cfgRoot, err := worktree.MainRoot()
 			if err != nil {
