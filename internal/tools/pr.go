@@ -17,6 +17,7 @@ package tools
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/branch"
@@ -28,6 +29,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/jirakeys"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/prtemplate"
+	"github.com/rnagrodzki/sdlc-plugin/internal/version"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
 
@@ -376,14 +378,29 @@ func prValidateBodyCore(root string, in PRValidateBodyIn) (PRValidateBodyOut, er
 
 // PRApplyIn is the input for pr_apply.
 type PRApplyIn struct {
-	Title string `json:"title"`
-	Body  string `json:"body"`
+	Title             string `json:"title"`
+	Body              string `json:"body"`
+	ReleaseLevel      string `json:"releaseLevel,omitempty"`
+	ReleasePreRelease string `json:"releasePreRelease,omitempty"`
+	ReleaseNotes      string `json:"releaseNotes,omitempty"`
 }
 
 // PRApplyOut is the output for pr_apply.
 type PRApplyOut struct {
-	URL     string `json:"url"`
-	Created bool   `json:"created"`
+	URL           string             `json:"url"`
+	Created       bool               `json:"created"`
+	ReleaseIntent *ReleaseIntentInfo `json:"releaseIntent,omitempty"`
+}
+
+// ReleaseIntentInfo carries version metadata computed when releaseLevel is set.
+type ReleaseIntentInfo struct {
+	Level           string `json:"level"`
+	PreRelease      string `json:"preRelease,omitempty"`
+	PreviousVersion string `json:"previousVersion"`
+	ComputedVersion string `json:"computedVersion"`
+	TagName         string `json:"tagName"`
+	LabelApplied    string `json:"labelApplied"`
+	NotesInBody     bool   `json:"notesInBody"`
 }
 
 // prApplyCore creates a PR for the current branch, or edits the existing
@@ -392,28 +409,304 @@ type PRApplyOut struct {
 // no analog here: PRApplyIn's contract carries only Title/Body, so the
 // force-update-without-an-existing-PR and always-create modes are not
 // reachable — a disclosed narrowing of detectPrMode's full mode matrix.
-func prApplyCore(workDir string, in PRApplyIn) (PRApplyOut, error) {
+//
+// When releaseLevel is set, version metadata is computed and:
+//   - release markers are injected into the PR body,
+//   - a "release:<level>[-rc]" label is applied via gh pr edit --add-label,
+//   - ReleaseIntent is populated on the output.
+//
+// DECISIONS:
+//   - FetchTags error is discarded (best-effort): tests have no remote, and
+//     stale local tags could yield a wrong version in multi-dev setups.
+//   - Label-add failure after PR exists returns InfraError (URL is lost).
+//     A missing release:* label would silently break downstream release, so
+//     failing loud is correct.
+//   - tagPrefix defaults to "v" when config absent or empty — no default
+//     exists in config.applyVersionDefaults, so this is our call.
+//   - RC suffix uses "-rc%d" (no dot), per fact sheet. Pre-existing "-rc.N"
+//     tags (dotted) are not counted.
+//   - TagList/AllSemverTags are prefix-blind: for custom tagPrefix, the
+//     "remote tag" half of max() silently degrades to file-version-only.
+//     Not fixable here (gitx.go out of scope).
+func prApplyCore(mainRoot, workDir string, in PRApplyIn) (PRApplyOut, error) {
 	if strings.TrimSpace(in.Title) == "" {
 		return PRApplyOut{}, &mcpserver.DomainError{Msg: "title is required"}
 	}
 
+	// Validate releaseLevel and releasePreRelease when set.
+	if in.ReleaseLevel != "" {
+		switch in.ReleaseLevel {
+		case "major", "minor", "patch":
+			// valid
+		default:
+			return PRApplyOut{}, &mcpserver.DomainError{Msg: fmt.Sprintf("releaseLevel must be major, minor, or patch, got %q", in.ReleaseLevel)}
+		}
+	}
+	if in.ReleasePreRelease != "" && in.ReleasePreRelease != "rc" {
+		return PRApplyOut{}, &mcpserver.DomainError{Msg: fmt.Sprintf("releasePreRelease must be \"rc\" or empty, got %q", in.ReleasePreRelease)}
+	}
+
+	// Compute release intent before creating/editing PR, so version errors
+	// surface before we touch the remote.
+	var intent *ReleaseIntentInfo
+	body := in.Body
+	if in.ReleaseLevel != "" {
+		var err error
+		intent, err = prReleaseComputeIntent(mainRoot, workDir, in.ReleaseLevel, in.ReleasePreRelease)
+		if err != nil {
+			return PRApplyOut{}, err // already wrapped as Domain/Infra
+		}
+		body = prReleaseInjectMarkers(body, intent.ComputedVersion, intent.Level, intent.PreRelease, in.ReleaseNotes)
+		intent.NotesInBody = in.ReleaseNotes != ""
+	}
+
 	meta := ghx.PRForBranch(workDir)
 	if meta.Exists {
-		url, err := ghx.PREdit(workDir, meta.Number, in.Title, in.Body)
+		url, err := ghx.PREdit(workDir, meta.Number, in.Title, body)
 		if err != nil {
 			return PRApplyOut{}, &mcpserver.InfraError{Msg: "gh pr edit: " + err.Error(), Cause: err}
 		}
 		if url == "" {
 			url = meta.URL
 		}
-		return PRApplyOut{URL: url, Created: false}, nil
+		if intent != nil {
+			if err := prReleaseAddLabel(workDir, intent.LabelApplied); err != nil {
+				return PRApplyOut{}, err
+			}
+		}
+		return PRApplyOut{URL: url, Created: false, ReleaseIntent: intent}, nil
 	}
 
-	url, err := ghx.PRCreate(workDir, in.Title, in.Body)
+	url, err := ghx.PRCreate(workDir, in.Title, body)
 	if err != nil {
 		return PRApplyOut{}, &mcpserver.InfraError{Msg: "gh pr create: " + err.Error(), Cause: err}
 	}
-	return PRApplyOut{URL: url, Created: true}, nil
+	if intent != nil {
+		if err := prReleaseAddLabel(workDir, intent.LabelApplied); err != nil {
+			return PRApplyOut{}, err
+		}
+	}
+	return PRApplyOut{URL: url, Created: true, ReleaseIntent: intent}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Release intent helpers
+// ---------------------------------------------------------------------------
+
+// prReleaseComputeIntent resolves version metadata from the project's
+// version file and git tags. Returns a fully populated ReleaseIntentInfo.
+func prReleaseComputeIntent(mainRoot, workDir, level, preRelease string) (*ReleaseIntentInfo, error) {
+	// Read config for version section.
+	cfg, _ := config.Read(mainRoot) // nil config is handled below.
+
+	var tagPrefix string
+	var versionFilePath string
+	var fileType string
+	if cfg != nil && cfg.Version != nil {
+		tagPrefix = cfg.Version.TagPrefix
+		versionFilePath = cfg.Version.VersionFile
+		fileType = cfg.Version.FileType
+	}
+	if tagPrefix == "" {
+		tagPrefix = "v"
+	}
+
+	// Detect version file.
+	vf, err := version.DetectAt(mainRoot, versionFilePath, fileType)
+	if err != nil {
+		return nil, &mcpserver.DomainError{Msg: "version detection: " + err.Error()}
+	}
+	fileVersion := vf.Version
+
+	// Best-effort fetch tags (no remote in tests, CI may time out).
+	_ = gitx.FetchTags(workDir)
+
+	// Find highest released tag to use as bump base.
+	tags, err := gitx.TagList(workDir)
+	if err != nil {
+		tags = nil // degrade gracefully
+	}
+	highestTag := prReleaseHighestTagVersion(tags, tagPrefix)
+
+	// Bump base = max(fileVersion, highestTag).
+	bumpBase := fileVersion
+	if highestTag != "" && prReleaseSemverGreater(highestTag, bumpBase) {
+		bumpBase = highestTag
+	}
+
+	// Compute bumped version.
+	syntheticVF := &version.VersionFile{Version: bumpBase}
+	bumped, err := version.Bump(syntheticVF, level)
+	if err != nil {
+		return nil, &mcpserver.DomainError{Msg: "version bump: " + err.Error()}
+	}
+
+	computedVersion := bumped
+	tagName := tagPrefix + bumped
+
+	// RC handling: scan existing RC tags, pick next number.
+	if preRelease == "rc" {
+		allTags, err := gitx.AllSemverTags(workDir)
+		if err != nil {
+			allTags = nil
+		}
+		rcNum := prReleaseFindNextRC(allTags, tagPrefix, bumped)
+		computedVersion = bumped + "-rc" + strconv.Itoa(rcNum)
+		tagName = tagPrefix + computedVersion
+	}
+
+	// Check tag collision.
+	exists, err := gitx.TagExists(workDir, tagName)
+	if err == nil && exists {
+		return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("tag %q already exists — version collision", tagName)}
+	}
+
+	// Build label.
+	label := "release:" + level
+	if preRelease == "rc" {
+		label += "-rc"
+	}
+
+	return &ReleaseIntentInfo{
+		Level:           level,
+		PreRelease:      preRelease,
+		PreviousVersion: fileVersion,
+		ComputedVersion: computedVersion,
+		TagName:         tagName,
+		LabelApplied:    label,
+	}, nil
+}
+
+// prReleaseHighestTagVersion extracts the highest semver core from a sorted
+// tag list (descending), stripping tagPrefix. Returns "" if no valid tag.
+func prReleaseHighestTagVersion(tags []string, tagPrefix string) string {
+	for _, t := range tags {
+		v := t
+		if tagPrefix != "" {
+			v = strings.TrimPrefix(v, tagPrefix)
+		}
+		// Also strip bare "v" if prefix is something else.
+		v = strings.TrimPrefix(v, "v")
+		if _, _, _, ok := prReleaseParseSemverNums(v); ok {
+			return v
+		}
+	}
+	return ""
+}
+
+// prReleaseSemverGreater returns true when a > b (semver core only).
+func prReleaseSemverGreater(a, b string) bool {
+	aMaj, aMin, aPat, aOK := prReleaseParseSemverNums(a)
+	bMaj, bMin, bPat, bOK := prReleaseParseSemverNums(b)
+	if !aOK || !bOK {
+		return false
+	}
+	if aMaj != bMaj {
+		return aMaj > bMaj
+	}
+	if aMin != bMin {
+		return aMin > bMin
+	}
+	return aPat > bPat
+}
+
+// prReleaseParseSemverNums parses "1.2.3" into (1,2,3,true). Leading "v"
+// is stripped. Pre-release suffixes are ignored (only core is compared).
+func prReleaseParseSemverNums(s string) (major, minor, patch int, ok bool) {
+	s = strings.TrimPrefix(s, "v")
+	// Strip pre-release suffix.
+	if idx := strings.IndexByte(s, '-'); idx >= 0 {
+		s = s[:idx]
+	}
+	parts := strings.SplitN(s, ".", 3)
+	if len(parts) != 3 {
+		return 0, 0, 0, false
+	}
+	var err error
+	major, err = strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	minor, err = strconv.Atoi(parts[1])
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	patch, err = strconv.Atoi(parts[2])
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	return major, minor, patch, true
+}
+
+// prReleaseFindNextRC scans existing tags for the highest RC number matching
+// the target base version, and returns the next number. Format: -rc<N> (no dot).
+func prReleaseFindNextRC(tags []string, tagPrefix, targetBase string) int {
+	maxRC := 0
+	needle := tagPrefix + targetBase + "-rc"
+	for _, t := range tags {
+		if !strings.HasPrefix(t, needle) {
+			continue
+		}
+		suffix := t[len(needle):]
+		n, err := strconv.Atoi(suffix)
+		if err != nil {
+			continue
+		}
+		if n > maxRC {
+			maxRC = n
+		}
+	}
+	return maxRC + 1
+}
+
+// prReleaseInjectMarkers injects release metadata markers into the PR body.
+// The markers use HTML comments so they survive rendering and can be parsed
+// by downstream CI tasks.
+func prReleaseInjectMarkers(body, computedVersion, level, preRelease, notes string) string {
+	// Strip any previous release markers.
+	body = prReleaseStripMarkers(body)
+
+	var sb strings.Builder
+	sb.WriteString(body)
+	if !strings.HasSuffix(body, "\n") && body != "" {
+		sb.WriteString("\n")
+	}
+	sb.WriteString("\n---\n")
+	sb.WriteString("<!-- release-level:" + level + " -->\n")
+	if preRelease != "" {
+		sb.WriteString("<!-- release-pre:" + preRelease + " -->\n")
+	}
+	sb.WriteString("<!-- release-notes-start -->\n")
+	if notes != "" {
+		sb.WriteString("## [" + computedVersion + "]\n\n")
+		sb.WriteString(notes + "\n")
+	}
+	sb.WriteString("<!-- release-notes-end -->\n")
+	return sb.String()
+}
+
+// prReleaseStripMarkers removes previous release markers from the body.
+func prReleaseStripMarkers(body string) string {
+	// Find the last "---" separator that precedes a release marker.
+	idx := strings.LastIndex(body, "\n---\n")
+	if idx < 0 {
+		return body
+	}
+	after := body[idx:]
+	if strings.Contains(after, "<!-- release-level:") || strings.Contains(after, "<!-- release-notes-start") {
+		return strings.TrimRight(body[:idx], "\n")
+	}
+	return body
+}
+
+// prReleaseAddLabel applies a label to the current branch's PR via
+// gh pr edit --add-label.
+func prReleaseAddLabel(workDir, label string) error {
+	_, err := execx.Run("gh", []string{"pr", "edit", "--add-label", label}, execx.Options{Dir: workDir})
+	if err != nil {
+		return &mcpserver.InfraError{Msg: "gh pr edit --add-label: " + err.Error(), Cause: err}
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -458,7 +751,7 @@ func RegisterPRTools(s *mcpserver.Server) {
 			if err != nil {
 				workDir = mainRoot
 			}
-			return prApplyCore(workDir, in)
+			return prApplyCore(mainRoot, workDir, in)
 		},
 	)
 }

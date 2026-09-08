@@ -30,7 +30,9 @@ type ghRule struct {
 	exit   int
 }
 
-func stubGHDispatch(t *testing.T, rules []ghRule) {
+// stubGHDispatch installs a fake "gh" script and returns the path to a
+// NUL-separated args log file that captures every invocation's arguments.
+func stubGHDispatch(t *testing.T, rules []ghRule) string {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -39,8 +41,15 @@ func stubGHDispatch(t *testing.T, rules []ghRule) {
 		name = "gh.bat"
 	}
 
+	logPath := filepath.Join(dir, "gh-calls.log")
+
 	var b strings.Builder
 	b.WriteString("#!/bin/sh\n")
+	// Capture all args NUL-separated for assertion in tests.
+	// Use ASCII record separator (0x1E) between invocations since
+	// body args can contain newlines.
+	b.WriteString("printf '%s\\0' \"$@\" >> " + quoteShellArg(logPath) + "\n")
+	b.WriteString("printf '\\036' >> " + quoteShellArg(logPath) + "\n")
 	for _, r := range rules {
 		cond := make([]string, len(r.prefix))
 		for i, p := range r.prefix {
@@ -67,6 +76,8 @@ func stubGHDispatch(t *testing.T, rules []ghRule) {
 	origPath := os.Getenv("PATH")
 	os.Setenv("PATH", dir+string(os.PathListSeparator)+origPath)
 	t.Cleanup(func() { os.Setenv("PATH", origPath) })
+
+	return logPath
 }
 
 func quoteShellArg(s string) string {
@@ -388,7 +399,7 @@ func TestPrApply_NoExistingPR_Creates(t *testing.T) {
 	})
 
 	workDir := t.TempDir()
-	out, err := prApplyCore(workDir, PRApplyIn{Title: "Add thing", Body: "Body text"})
+	out, err := prApplyCore(workDir, workDir, PRApplyIn{Title: "Add thing", Body: "Body text"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -407,7 +418,7 @@ func TestPrApply_ExistingPR_Updates(t *testing.T) {
 	})
 
 	workDir := t.TempDir()
-	out, err := prApplyCore(workDir, PRApplyIn{Title: "Updated title", Body: "Body text"})
+	out, err := prApplyCore(workDir, workDir, PRApplyIn{Title: "Updated title", Body: "Body text"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -421,7 +432,7 @@ func TestPrApply_ExistingPR_Updates(t *testing.T) {
 
 func TestPrApply_MissingTitle_DomainError(t *testing.T) {
 	workDir := t.TempDir()
-	_, err := prApplyCore(workDir, PRApplyIn{Title: "  ", Body: "x"})
+	_, err := prApplyCore(workDir, workDir, PRApplyIn{Title: "  ", Body: "x"})
 	if err == nil {
 		t.Fatal("expected an error for empty title")
 	}
@@ -434,4 +445,318 @@ func TestPrApply_MissingTitle_DomainError(t *testing.T) {
 func TestRegisterPRTools_DoesNotPanic(t *testing.T) {
 	s := mcpserver.New("test", "0.0.0")
 	RegisterPRTools(s)
+}
+
+// ---------------------------------------------------------------------------
+// pr_apply release intent tests
+// ---------------------------------------------------------------------------
+
+// ghCallsBody extracts the --body value from a gh-calls.log for the first
+// invocation whose args contain the given subcommand. The log format is:
+// each invocation is NUL-separated args terminated by ASCII record separator
+// (0x1E).
+func ghCallsBody(t *testing.T, logPath, subcommand string) string {
+	t.Helper()
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read gh-calls.log: %v", err)
+	}
+	for _, record := range strings.Split(string(data), "\x1e") {
+		record = strings.TrimSpace(record)
+		if record == "" {
+			continue
+		}
+		args := strings.Split(record, "\x00")
+		hasSubcmd := false
+		for _, a := range args {
+			if a == subcommand {
+				hasSubcmd = true
+				break
+			}
+		}
+		if !hasSubcmd {
+			continue
+		}
+		for i, a := range args {
+			if a == "--body" && i+1 < len(args) {
+				return args[i+1]
+			}
+		}
+	}
+	t.Fatalf("no --body found for %q in gh-calls.log", subcommand)
+	return ""
+}
+
+// seedVersionFile writes a minimal package.json with the given version into dir.
+func seedVersionFile(t *testing.T, dir, ver string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "package.json"),
+		[]byte(`{"version":"`+ver+`"}`), 0o644); err != nil {
+		t.Fatalf("seed package.json: %v", err)
+	}
+}
+
+func TestPRApply_WithRelease_LabelAdded(t *testing.T) {
+	// Create path: no existing PR. Expect --add-label release:minor called.
+	// The label rule uses a 4-element prefix so wrong label = no match = exit 1.
+	stubGHDispatch(t, []ghRule{
+		{prefix: []string{"pr", "view"}, exit: 1},
+		{prefix: []string{"pr", "create"}, stdout: "https://github.com/o/r/pull/10", exit: 0},
+		{prefix: []string{"pr", "edit", "--add-label", "release:minor"}, exit: 0},
+	})
+
+	workDir := t.TempDir()
+	initGitRepoWithBranch(t, workDir, "feat/release-label")
+	seedVersionFile(t, workDir, "1.2.0")
+
+	out, err := prApplyCore(workDir, workDir, PRApplyIn{
+		Title:        "Release label test",
+		Body:         "Some body",
+		ReleaseLevel: "minor",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.ReleaseIntent == nil {
+		t.Fatal("expected ReleaseIntent to be populated")
+	}
+	if out.ReleaseIntent.LabelApplied != "release:minor" {
+		t.Errorf("LabelApplied: got %q, want %q", out.ReleaseIntent.LabelApplied, "release:minor")
+	}
+}
+
+func TestPRApply_WithRelease_NotesInBody(t *testing.T) {
+	logPath := stubGHDispatch(t, []ghRule{
+		{prefix: []string{"pr", "view"}, exit: 1},
+		{prefix: []string{"pr", "create"}, stdout: "https://github.com/o/r/pull/11", exit: 0},
+		{prefix: []string{"pr", "edit", "--add-label", "release:patch"}, exit: 0},
+	})
+
+	workDir := t.TempDir()
+	initGitRepoWithBranch(t, workDir, "feat/notes-body")
+	seedVersionFile(t, workDir, "2.0.0")
+
+	out, err := prApplyCore(workDir, workDir, PRApplyIn{
+		Title:        "Notes test",
+		Body:         "Original body",
+		ReleaseLevel: "patch",
+		ReleaseNotes: "Fixed the bug in auth module.",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.ReleaseIntent == nil || !out.ReleaseIntent.NotesInBody {
+		t.Fatal("expected NotesInBody=true")
+	}
+	if out.ReleaseIntent.ComputedVersion != "2.0.1" {
+		t.Errorf("ComputedVersion: got %q, want %q", out.ReleaseIntent.ComputedVersion, "2.0.1")
+	}
+	// Verify release markers are present in body passed to gh pr create.
+	body := ghCallsBody(t, logPath, "create")
+	if !strings.Contains(body, "<!-- release-notes-start -->") {
+		t.Errorf("body missing release-notes-start marker")
+	}
+	if !strings.Contains(body, "<!-- release-level:patch -->") {
+		t.Errorf("body missing release-level marker")
+	}
+	if !strings.Contains(body, "Fixed the bug in auth module.") {
+		t.Errorf("body missing release notes text")
+	}
+	if !strings.Contains(body, "## [2.0.1]") {
+		t.Errorf("body missing version header, got: %s", body)
+	}
+}
+
+func TestPRApply_WithRelease_VersionComputed(t *testing.T) {
+	stubGHDispatch(t, []ghRule{
+		{prefix: []string{"pr", "view"}, exit: 1},
+		{prefix: []string{"pr", "create"}, stdout: "https://github.com/o/r/pull/12", exit: 0},
+		{prefix: []string{"pr", "edit", "--add-label", "release:major"}, exit: 0},
+	})
+
+	workDir := t.TempDir()
+	initGitRepoWithBranch(t, workDir, "feat/version-compute")
+	seedVersionFile(t, workDir, "1.5.3")
+	// Add a tag higher than file version — bump base should be the tag.
+	gitTag(t, workDir, "v1.6.0")
+
+	out, err := prApplyCore(workDir, workDir, PRApplyIn{
+		Title:        "Version compute test",
+		Body:         "body",
+		ReleaseLevel: "major",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.ReleaseIntent == nil {
+		t.Fatal("expected ReleaseIntent")
+	}
+	// max(file=1.5.3, tag=1.6.0) = 1.6.0, major bump = 2.0.0
+	if out.ReleaseIntent.ComputedVersion != "2.0.0" {
+		t.Errorf("ComputedVersion: got %q, want %q", out.ReleaseIntent.ComputedVersion, "2.0.0")
+	}
+	if out.ReleaseIntent.PreviousVersion != "1.5.3" {
+		t.Errorf("PreviousVersion: got %q, want %q", out.ReleaseIntent.PreviousVersion, "1.5.3")
+	}
+	if out.ReleaseIntent.TagName != "v2.0.0" {
+		t.Errorf("TagName: got %q, want %q", out.ReleaseIntent.TagName, "v2.0.0")
+	}
+}
+
+func TestPRApply_WithRelease_CollisionError(t *testing.T) {
+	// Use a custom tagPrefix ("rel-") so TagList returns nothing (it's
+	// prefix-blind), bumpBase = fileVersion, and we create a collision
+	// by planting the expected tag beforehand.
+	stubGHDispatch(t, []ghRule{
+		{prefix: []string{"pr", "view"}, exit: 1},
+	})
+
+	workDir := t.TempDir()
+	initGitRepoWithBranch(t, workDir, "feat/collision")
+	seedVersionFile(t, workDir, "1.2.0")
+
+	// Write config with tagPrefix "rel-".
+	if err := config.WriteSection(workDir, "version", map[string]any{
+		"tagPrefix": "rel-",
+	}); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+
+	// File version is 1.2.0, minor bump => 1.3.0, tag => rel-1.3.0.
+	// Plant that tag to cause collision.
+	gitTag(t, workDir, "rel-1.3.0")
+
+	_, err := prApplyCore(workDir, workDir, PRApplyIn{
+		Title:        "Collision test",
+		Body:         "body",
+		ReleaseLevel: "minor",
+	})
+	if err == nil {
+		t.Fatal("expected collision error")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("error should mention collision, got: %v", err)
+	}
+}
+
+func TestPRApply_WithoutRelease_Unchanged(t *testing.T) {
+	// No --add-label rule: if called, stub exits 1 and test fails.
+	stubGHDispatch(t, []ghRule{
+		{prefix: []string{"pr", "view"}, exit: 1},
+		{prefix: []string{"pr", "create"}, stdout: "https://github.com/o/r/pull/13", exit: 0},
+	})
+
+	workDir := t.TempDir()
+	out, err := prApplyCore(workDir, workDir, PRApplyIn{
+		Title: "No release",
+		Body:  "Just a normal PR",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.ReleaseIntent != nil {
+		t.Errorf("expected nil ReleaseIntent, got %+v", out.ReleaseIntent)
+	}
+}
+
+func TestPRApply_WithRC_NextRCComputed(t *testing.T) {
+	stubGHDispatch(t, []ghRule{
+		{prefix: []string{"pr", "view"}, exit: 1},
+		{prefix: []string{"pr", "create"}, stdout: "https://github.com/o/r/pull/14", exit: 0},
+		{prefix: []string{"pr", "edit", "--add-label", "release:minor-rc"}, exit: 0},
+	})
+
+	workDir := t.TempDir()
+	initGitRepoWithBranch(t, workDir, "feat/rc-next")
+	seedVersionFile(t, workDir, "3.0.0")
+	// Plant existing RC tags. minor bump of 3.0.0 = 3.1.0, so RCs are on 3.1.0.
+	gitTag(t, workDir, "v3.1.0-rc1")
+	gitTag(t, workDir, "v3.1.0-rc2")
+
+	out, err := prApplyCore(workDir, workDir, PRApplyIn{
+		Title:             "RC next test",
+		Body:              "body",
+		ReleaseLevel:      "minor",
+		ReleasePreRelease: "rc",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.ReleaseIntent == nil {
+		t.Fatal("expected ReleaseIntent")
+	}
+	// Next RC after rc1 and rc2 should be rc3.
+	if out.ReleaseIntent.ComputedVersion != "3.1.0-rc3" {
+		t.Errorf("ComputedVersion: got %q, want %q", out.ReleaseIntent.ComputedVersion, "3.1.0-rc3")
+	}
+	if out.ReleaseIntent.TagName != "v3.1.0-rc3" {
+		t.Errorf("TagName: got %q, want %q", out.ReleaseIntent.TagName, "v3.1.0-rc3")
+	}
+}
+
+func TestPRApply_WithRC_LabelFormat(t *testing.T) {
+	stubGHDispatch(t, []ghRule{
+		{prefix: []string{"pr", "view"}, exit: 1},
+		{prefix: []string{"pr", "create"}, stdout: "https://github.com/o/r/pull/15", exit: 0},
+		{prefix: []string{"pr", "edit", "--add-label", "release:patch-rc"}, exit: 0},
+	})
+
+	workDir := t.TempDir()
+	initGitRepoWithBranch(t, workDir, "feat/rc-label")
+	seedVersionFile(t, workDir, "1.0.0")
+
+	out, err := prApplyCore(workDir, workDir, PRApplyIn{
+		Title:             "RC label test",
+		Body:              "body",
+		ReleaseLevel:      "patch",
+		ReleasePreRelease: "rc",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.ReleaseIntent == nil {
+		t.Fatal("expected ReleaseIntent")
+	}
+	if out.ReleaseIntent.LabelApplied != "release:patch-rc" {
+		t.Errorf("LabelApplied: got %q, want %q", out.ReleaseIntent.LabelApplied, "release:patch-rc")
+	}
+}
+
+func TestPRApply_WithRC_PreReleaseMarker(t *testing.T) {
+	logPath := stubGHDispatch(t, []ghRule{
+		{prefix: []string{"pr", "view"}, exit: 1},
+		{prefix: []string{"pr", "create"}, stdout: "https://github.com/o/r/pull/16", exit: 0},
+		{prefix: []string{"pr", "edit", "--add-label", "release:minor-rc"}, exit: 0},
+	})
+
+	workDir := t.TempDir()
+	initGitRepoWithBranch(t, workDir, "feat/rc-marker")
+	seedVersionFile(t, workDir, "2.0.0")
+
+	out, err := prApplyCore(workDir, workDir, PRApplyIn{
+		Title:             "RC marker test",
+		Body:              "body",
+		ReleaseLevel:      "minor",
+		ReleasePreRelease: "rc",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.ReleaseIntent == nil {
+		t.Fatal("expected ReleaseIntent")
+	}
+	if out.ReleaseIntent.PreRelease != "rc" {
+		t.Errorf("PreRelease: got %q, want %q", out.ReleaseIntent.PreRelease, "rc")
+	}
+	if !strings.Contains(out.ReleaseIntent.ComputedVersion, "-rc") {
+		t.Errorf("ComputedVersion should contain -rc, got %q", out.ReleaseIntent.ComputedVersion)
+	}
+	// Verify release-pre marker is present in body passed to gh.
+	body := ghCallsBody(t, logPath, "create")
+	if !strings.Contains(body, "<!-- release-pre:rc -->") {
+		t.Errorf("body missing release-pre:rc marker")
+	}
+	if !strings.Contains(body, "<!-- release-level:minor -->") {
+		t.Errorf("body missing release-level:minor marker")
+	}
 }
