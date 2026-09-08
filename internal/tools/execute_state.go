@@ -1824,9 +1824,32 @@ func execTaskContextReportBack(taskID string) string {
 	return fmt.Sprintf(
 		"Emit a heartbeat as you enter each phase: execute_state({ action: \"wave-progress\", "+
 			"runId: \"<RUN_ID>\", taskId: %q, phase: <phase> }) for phase in started, reading, "+
-			"editing, verifying, reporting (each once). When finished, report status "+
-			"SUCCESS | DONE_WITH_CONCERNS | FAILED with the COMPLETE:/VERIFY:/INTERFACES:/"+
-			"DECISIONS:/STATUS: block — the main session records it via execute_state({ action: "+
+			"editing, verifying, reporting (each once).\n\n"+
+			"When finished, end your response with this completion block (blank line between each section):\n\n"+
+			"```\n"+
+			"Summary: <one line: what this task delivered, not how you worked>\n"+
+			"\n"+
+			"Files created: <comma-separated paths, or none>\n"+
+			"Files modified: <comma-separated paths, or none>\n"+
+			"Tests: added=<yes|no|n/a> pass=<yes|no|n/a>\n"+
+			"Build: pass=<yes|no|n/a>\n"+
+			"\n"+
+			"VERIFY: <symbol_name> in <file_path>\n"+
+			"\n"+
+			"Concerns:\n"+
+			"- <one bullet per concern, 3 max; omit section if none>\n"+
+			"\n"+
+			"Interfaces:\n"+
+			"- <exported symbol added or changed; omit section if none>\n"+
+			"\n"+
+			"Decisions:\n"+
+			"- <decision and why, one bullet each; omit section if none>\n"+
+			"\n"+
+			"STATUS: SUCCESS | DONE_WITH_CONCERNS | FAILED\n"+
+			"```\n\n"+
+			"Rules: Summary is 1 line max. Concerns/Interfaces/Decisions: omit entire section when empty. "+
+			"No process narrative — do not describe how you worked, investigated, or verified. "+
+			"The main session records completion via execute_state({ action: "+
 			"\"task-done\" | \"task-fail\", taskId: %q, ... }). Do not call task-done/task-fail "+
 			"yourself.",
 		taskID, taskID,

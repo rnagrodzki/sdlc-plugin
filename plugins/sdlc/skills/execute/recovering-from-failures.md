@@ -64,7 +64,7 @@ close — closing it means wiring `ClassifyStall` into `wave-fail`'s cause deriv
 | Permission prompt hang (bypass mode) | Agent times out or hangs despite `mode: "bypassPermissions"` being set | Medium |
 | Agent status: NEEDS_CONTEXT | Agent completion checklist reports STATUS: NEEDS_CONTEXT | Low |
 | Agent status: BLOCKED | Agent completion checklist reports STATUS: BLOCKED | Medium–High |
-| Malformed completion checklist | Agent output is missing the COMPLETE:/VERIFY:/STATUS: block, or it cannot be parsed | Low |
+| Malformed completion checklist | Agent output is missing the Summary:/VERIFY:/STATUS: block, or it cannot be parsed | Low |
 | CONTEXT_OVERFLOW | Fewer per-task completions were received than tasks were dispatched, OR one or more dispatched task IDs never reported completion — detected by the main session comparing the completion checklists it collected against the manifest-known dispatched set | High |
 
 ## Recovery Strategies
@@ -241,16 +241,32 @@ PREVIOUSLY BLOCKED: The previous agent could not complete this task because:
 
 ### Malformed or missing completion checklist
 
-The agent returned output but the structured completion checklist block is absent or unparseable (cannot extract COMPLETE:/VERIFY:/STATUS: lines).
+The agent returned output but the structured completion checklist block is absent or unparseable (cannot extract Summary:/VERIFY:/STATUS: lines).
 
 Treat as incomplete output. Re-dispatch once:
 ```
 RETRY: Your previous output did not include the required completion checklist. You must end your response with this exact block:
 
 ```
-COMPLETE: files_created=[list or none] files_modified=[list or none] tests_added=[yes|no|n/a] tests_pass=[yes|no|n/a] build_pass=[yes|no|n/a]
+Summary: <one line: what this task delivered>
+
+Files created: <comma-separated paths, or none>
+Files modified: <comma-separated paths, or none>
+Tests: added=<yes|no|n/a> pass=<yes|no|n/a>
+Build: pass=<yes|no|n/a>
+
 VERIFY: <symbol_name> in <file_path>
-STATUS: DONE | DONE_WITH_CONCERNS | NEEDS_CONTEXT | BLOCKED
+
+Concerns:
+- <one bullet per concern, 3 max; omit section if none>
+
+Interfaces:
+- <exported symbol added or changed; omit section if none>
+
+Decisions:
+- <decision and why; omit section if none>
+
+STATUS: DONE | DONE_WITH_CONCERNS | NEEDS_CONTEXT | BLOCKED | FAILED
 ```
 
 If your previous work is already complete, verify it persists in the filesystem and re-report with the checklist filled in.
