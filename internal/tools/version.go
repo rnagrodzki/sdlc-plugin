@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/configmigrate"
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
@@ -36,6 +38,7 @@ type VersionBumpOption struct {
 	Level   string `json:"level"`
 	Result  string `json:"result"`
 	Current string `json:"current"`
+	RCNext  string `json:"rcNext,omitempty"`
 }
 
 // VersionTagInfo holds tag-related information.
@@ -62,12 +65,35 @@ type VersionIdempotency struct {
 	TagAtHead     string `json:"tagAtHead,omitempty"`
 }
 
+// VersionConfigInfo describes the resolved version config section.
+type VersionConfigInfo struct {
+	Mode          string `json:"mode"`
+	VersionFile   string `json:"versionFile"`
+	FileType      string `json:"fileType"`
+	TagPrefix     string `json:"tagPrefix"`
+	Changelog     bool   `json:"changelog"`
+	ChangelogFile string `json:"changelogFile"`
+	TicketPrefix  string `json:"ticketPrefix,omitempty"`
+	PreRelease    string `json:"preRelease,omitempty"`
+}
+
+// DivergenceInfo describes a divergence between the file version and
+// the highest remote tag.
+type DivergenceInfo struct {
+	FileVersion string `json:"fileVersion"`
+	TagVersion  string `json:"tagVersion"`
+	Message     string `json:"message"`
+}
+
 // VersionPrepareOut is the output for the version_prepare tool.
 type VersionPrepareOut struct {
 	Errors              []string                    `json:"errors"`
 	Warnings            []string                    `json:"warnings"`
 	Flow                string                      `json:"flow"`
 	CurrentBranch       string                      `json:"currentBranch"`
+	ConfigPresent       bool                        `json:"configPresent"`
+	VersionConfig       *VersionConfigInfo          `json:"versionConfig,omitempty"`
+	ProposedConfig      map[string]any              `json:"proposedConfig,omitempty"`
 	VersionSource       *VersionSourceInfo          `json:"versionSource"`
 	BumpOptions         []VersionBumpOption         `json:"bumpOptions"`
 	Tags                VersionTagInfo              `json:"tags"`
@@ -75,6 +101,15 @@ type VersionPrepareOut struct {
 	ConventionalSummary *VersionConventionalSummary `json:"conventionalSummary"`
 	ChangelogExists     bool                        `json:"changelogExists"`
 	Idempotency         VersionIdempotency          `json:"idempotency"`
+	DirtyFiles          []string                    `json:"dirtyFiles"`
+	HasDirtyFiles       bool                        `json:"hasDirtyFiles"`
+	DefaultBranch       string                      `json:"defaultBranch"`
+	OnDefaultBranch     bool                        `json:"onDefaultBranch"`
+	VersionDivergence   *DivergenceInfo             `json:"versionDivergence,omitempty"`
+	ExistingRCs         map[string][]string         `json:"existingRCs,omitempty"`
+	Summary             string                      `json:"summary"`
+	Actions             []string                    `json:"actions"`
+	Next                string                      `json:"next"`
 }
 
 // versionPrepare is the core logic, separated for testability.
@@ -85,6 +120,8 @@ func versionPrepare(cfgRoot, gitRoot string, in VersionPrepareIn) (VersionPrepar
 		Flow:            "release",
 		BumpOptions:     []VersionBumpOption{},
 		CommitsSinceTag: []string{},
+		DirtyFiles:      []string{},
+		Actions:         []string{},
 		Tags: VersionTagInfo{
 			All:    []string{},
 			AtHead: []string{},
@@ -98,6 +135,38 @@ func versionPrepare(cfgRoot, gitRoot string, in VersionPrepareIn) (VersionPrepar
 		}
 	}
 
+	// Read config.
+	var versionFile string
+	var fileType string
+	var tagPrefixFromConfig string
+	var changelogFile string
+
+	cfg, cfgErr := config.Read(cfgRoot)
+	if cfgErr == nil && cfg != nil && cfg.Version != nil {
+		out.ConfigPresent = true
+		vs := cfg.Version
+		out.VersionConfig = &VersionConfigInfo{
+			Mode:          vs.Mode,
+			VersionFile:   vs.VersionFile,
+			FileType:      vs.FileType,
+			TagPrefix:     vs.TagPrefix,
+			Changelog:     vs.Changelog,
+			ChangelogFile: vs.ChangelogFile,
+			TicketPrefix:  vs.TicketPrefix,
+			PreRelease:    vs.PreRelease,
+		}
+		versionFile = vs.VersionFile
+		fileType = vs.FileType
+		tagPrefixFromConfig = vs.TagPrefix
+		changelogFile = vs.ChangelogFile
+
+		// Mode "tag" not supported yet.
+		if vs.Mode == "tag" {
+			out.Errors = append(out.Errors, "mode \"tag\" is not yet supported; use mode \"file\" or omit the mode field")
+			return out, nil
+		}
+	}
+
 	// Current branch.
 	currentBranch, err := gitx.CurrentBranch(gitRoot)
 	if err != nil {
@@ -105,8 +174,36 @@ func versionPrepare(cfgRoot, gitRoot string, in VersionPrepareIn) (VersionPrepar
 	}
 	out.CurrentBranch = currentBranch
 
-	// Version source.
-	vf, err := version.Detect(cfgRoot)
+	// Default branch.
+	defaultBranch, err := gitx.DefaultBranch(gitRoot)
+	if err != nil {
+		out.Warnings = append(out.Warnings, fmt.Sprintf("defaultBranch: %s", err.Error()))
+	}
+	out.DefaultBranch = defaultBranch
+	out.OnDefaultBranch = defaultBranch != "" && currentBranch == defaultBranch
+
+	// Dirty files.
+	statusOut, err := gitx.Status(gitRoot)
+	if err != nil {
+		out.Warnings = append(out.Warnings, fmt.Sprintf("status: %s", err.Error()))
+	} else if statusOut != "" {
+		for _, line := range strings.Split(statusOut, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			// Porcelain format: 2-char status + space + path.
+			if len(line) > 3 {
+				out.DirtyFiles = append(out.DirtyFiles, line[3:])
+			} else {
+				out.DirtyFiles = append(out.DirtyFiles, line)
+			}
+		}
+	}
+	out.HasDirtyFiles = len(out.DirtyFiles) > 0
+
+	// Version source (config-driven: DetectAt).
+	vf, err := version.DetectAt(cfgRoot, versionFile, fileType)
 	if err != nil {
 		out.Errors = append(out.Errors, fmt.Sprintf("version detection failed: %s", err.Error()))
 		return out, nil
@@ -117,37 +214,53 @@ func versionPrepare(cfgRoot, gitRoot string, in VersionPrepareIn) (VersionPrepar
 		Version: vf.Version,
 	}
 
-	// Bump options for standard levels.
-	for _, level := range []string{"major", "minor", "patch"} {
-		result, bErr := version.Bump(vf, level)
-		if bErr != nil {
-			out.Warnings = append(out.Warnings, fmt.Sprintf("bump %s: %s", level, bErr.Error()))
-			continue
+	// Proposed config when config missing.
+	if !out.ConfigPresent {
+		relPath, relErr := filepath.Rel(cfgRoot, vf.Path)
+		if relErr != nil {
+			relPath = vf.Path
 		}
-		out.BumpOptions = append(out.BumpOptions, VersionBumpOption{
-			Level:   level,
-			Result:  result,
-			Current: vf.Version,
-		})
+		out.ProposedConfig = map[string]any{
+			"mode":        "file",
+			"versionFile": relPath,
+			"fileType":    vf.Type,
+			"changelog":   fileExists(filepath.Join(cfgRoot, "CHANGELOG.md")),
+		}
 	}
 
-	// Tags.
-	allTags, err := gitx.AllSemverTags(gitRoot)
+	// Fetch tags from remote (best effort).
+	if fetchErr := gitx.FetchTags(gitRoot); fetchErr != nil {
+		out.Warnings = append(out.Warnings, fmt.Sprintf("fetchTags: %s", fetchErr.Error()))
+	}
+
+	// Tags (use TagList for release tags, AllSemverTags for RC scanning).
+	releaseTags, err := gitx.TagList(gitRoot)
 	if err != nil {
 		out.Warnings = append(out.Warnings, fmt.Sprintf("tags: %s", err.Error()))
-	} else {
-		out.Tags.All = allTags
-		if len(allTags) > 0 {
-			out.Tags.Latest = allTags[0]
-		}
-		// Detect tag prefix from existing tags.
-		out.Tags.TagPrefix = detectTagPrefix(allTags)
 	}
+
+	allTags, err := gitx.AllSemverTags(gitRoot)
+	if err != nil {
+		out.Warnings = append(out.Warnings, fmt.Sprintf("allTags: %s", err.Error()))
+	}
+	if allTags != nil {
+		out.Tags.All = allTags
+	}
+	if len(allTags) > 0 {
+		out.Tags.Latest = allTags[0]
+	}
+
+	// Tag prefix: config > detect from tags > "v" default.
+	tagPrefix := tagPrefixFromConfig
+	if tagPrefix == "" && len(allTags) > 0 {
+		tagPrefix = detectTagPrefix(allTags)
+	}
+	out.Tags.TagPrefix = tagPrefix
 
 	atHead, err := gitx.TagsAtHead(gitRoot)
 	if err != nil {
 		out.Warnings = append(out.Warnings, fmt.Sprintf("tagsAtHead: %s", err.Error()))
-	} else {
+	} else if atHead != nil {
 		out.Tags.AtHead = atHead
 	}
 	if out.Tags.All == nil {
@@ -163,10 +276,64 @@ func versionPrepare(cfgRoot, gitRoot string, in VersionPrepareIn) (VersionPrepar
 		out.Idempotency.TagAtHead = out.Tags.AtHead[0]
 	}
 
+	// Bump base: max(fileVersion, highestRemoteTag).
+	bumpBase := vf.Version
+	highestTag := prReleaseHighestTagVersion(releaseTags, tagPrefix)
+	if highestTag != "" && prReleaseSemverGreater(highestTag, bumpBase) {
+		out.VersionDivergence = &DivergenceInfo{
+			FileVersion: vf.Version,
+			TagVersion:  highestTag,
+			Message:     fmt.Sprintf("file version %s is behind remote tag %s; bump base uses tag version", vf.Version, highestTag),
+		}
+		out.Warnings = append(out.Warnings, out.VersionDivergence.Message)
+		bumpBase = highestTag
+	}
+
+	// Bump options for standard levels, computed from bumpBase.
+	bumpVF := &version.VersionFile{Version: bumpBase}
+	existingRCs := make(map[string][]string)
+	for _, level := range []string{"major", "minor", "patch"} {
+		result, bErr := version.Bump(bumpVF, level)
+		if bErr != nil {
+			out.Warnings = append(out.Warnings, fmt.Sprintf("bump %s: %s", level, bErr.Error()))
+			continue
+		}
+		// Compute RC next.
+		rcNum := prReleaseFindNextRC(allTags, tagPrefix, result)
+		rcNext := result + "-rc" + strconv.Itoa(rcNum)
+
+		opt := VersionBumpOption{
+			Level:   level,
+			Result:  result,
+			Current: bumpBase,
+			RCNext:  rcNext,
+		}
+		out.BumpOptions = append(out.BumpOptions, opt)
+
+		// Collect existing RCs for this target.
+		needle := tagPrefix + result + "-rc"
+		var rcs []string
+		for _, t := range allTags {
+			if strings.HasPrefix(t, needle) {
+				rcs = append(rcs, t)
+			}
+		}
+		if len(rcs) > 0 {
+			existingRCs[result] = rcs
+		}
+	}
+	if len(existingRCs) > 0 {
+		out.ExistingRCs = existingRCs
+	}
+
 	// Commits since last tag.
-	if out.Tags.Latest != "" {
+	latestForLog := ""
+	if len(releaseTags) > 0 {
+		latestForLog = releaseTags[0]
+	}
+	if latestForLog != "" {
 		logOut, logErr := execx.Run("git", []string{
-			"log", "--oneline", out.Tags.Latest + "..HEAD",
+			"log", "--oneline", latestForLog + "..HEAD",
 		}, execx.Options{Dir: gitRoot})
 		if logErr != nil {
 			out.Warnings = append(out.Warnings, fmt.Sprintf("commitsSinceTag: %s", logErr.Error()))
@@ -188,11 +355,58 @@ func versionPrepare(cfgRoot, gitRoot string, in VersionPrepareIn) (VersionPrepar
 	// Conventional commit summary.
 	out.ConventionalSummary = analyzeConventionalCommits(out.CommitsSinceTag)
 
-	// Changelog existence check.
-	changelogPath := filepath.Join(cfgRoot, "CHANGELOG.md")
+	// Changelog existence check (use config changelogFile when set).
+	clFile := "CHANGELOG.md"
+	if changelogFile != "" {
+		clFile = changelogFile
+	}
+	changelogPath := filepath.Join(cfgRoot, clFile)
 	out.ChangelogExists = fileExists(changelogPath)
 
+	// Summary, actions, next.
+	out.Summary, out.Actions, out.Next = versionPrepareSummary(out)
+
 	return out, nil
+}
+
+// versionPrepareSummary derives summary text, action list, and next-step
+// recommendation from the prepare output state.
+func versionPrepareSummary(out VersionPrepareOut) (string, []string, string) {
+	var parts []string
+	var actions []string
+
+	if out.VersionSource != nil {
+		parts = append(parts, fmt.Sprintf("version %s from %s", out.VersionSource.Version, out.VersionSource.Type))
+	}
+	if out.VersionDivergence != nil {
+		parts = append(parts, fmt.Sprintf("divergence: file=%s tag=%s", out.VersionDivergence.FileVersion, out.VersionDivergence.TagVersion))
+	}
+	if out.Idempotency.AlreadyBumped {
+		parts = append(parts, fmt.Sprintf("already tagged at HEAD: %s", out.Idempotency.TagAtHead))
+		return strings.Join(parts, "; "), actions, ""
+	}
+	if out.HasDirtyFiles {
+		actions = append(actions, "commit or stash dirty files before releasing")
+	}
+	if !out.ConfigPresent {
+		actions = append(actions, "add version config section to .sdlc-v2/config.json")
+	}
+
+	suggest := "patch"
+	if out.ConventionalSummary != nil {
+		suggest = out.ConventionalSummary.Suggest
+	}
+	parts = append(parts, fmt.Sprintf("conventional suggest: %s", suggest))
+
+	next := ""
+	if !out.Idempotency.AlreadyBumped && !out.HasDirtyFiles {
+		next = fmt.Sprintf("version_apply {\"level\":\"%s\"}", suggest)
+	}
+	if out.HasDirtyFiles {
+		next = "commit dirty files first"
+	}
+
+	return strings.Join(parts, "; "), actions, next
 }
 
 // analyzeConventionalCommits does a lightweight conventional-commit
@@ -324,7 +538,27 @@ func versionApply(cfgRoot string, in VersionApplyIn) (VersionApplyOut, error) {
 // server.
 func RegisterVersionTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "version_prepare",
-		"Gather version context: current version, bump options, tags, conventional commit analysis, and changelog status.",
+		`Gather comprehensive version context for the current project.
+
+Returns: current version from the detected version file (config-driven via
+version.DetectAt when a version config section exists, falling back to
+root-directory probing), bump options for major/minor/patch with RC-next
+candidates, all semver tags (fetched from remote first), conventional commit
+analysis since the last tag, changelog status, idempotency detection (tag at
+HEAD), dirty-file list, default-branch detection, version divergence between
+the file and the highest remote tag, and existing RC tags per bump target.
+
+When no version config section is found in .sdlc-v2/config.json, a
+proposedConfig map is returned so the caller can offer to write it.
+
+mode:"tag" in the config is rejected with an actionable error (not yet
+supported).
+
+Fields: errors, warnings, flow, currentBranch, configPresent, versionConfig,
+proposedConfig, versionSource, bumpOptions (with rcNext), tags, commitsSinceTag,
+conventionalSummary, changelogExists, idempotency, dirtyFiles, hasDirtyFiles,
+defaultBranch, onDefaultBranch, versionDivergence, existingRCs, summary,
+actions, next.`,
 		func(ctx mcpserver.Ctx, in VersionPrepareIn) (VersionPrepareOut, error) {
 			cfgRoot, err := worktree.MainRoot()
 			if err != nil {

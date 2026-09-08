@@ -22,8 +22,8 @@
 
 'use strict';
 
-/** @version 5 — retag script version. Bump when behavior changes (e.g. .cjs rename for ESM compat). */
-const RETAG_SCRIPT_VERSION = 5;
+/** @version 6 — retag script version. Bump when behavior changes (e.g. .cjs rename for ESM compat). */
+const RETAG_SCRIPT_VERSION = 6;
 
 const fs   = require('node:fs');
 const path = require('node:path');
@@ -222,6 +222,16 @@ function retagOnHead(tag, repoRoot) {
 // ---------------------------------------------------------------------------
 
 function main() {
+  // Deprecation: retag-release.cjs is superseded by release-on-main.cjs, which
+  // handles tagging as part of the full post-merge release flow (version bump +
+  // changelog + tag + GitHub Release). This script is kept for backward
+  // compatibility with existing CI pipelines. New projects should use
+  // release-on-main.cjs instead.
+  process.stderr.write(
+    'Deprecation: retag-release.cjs is superseded by release-on-main.cjs.\n' +
+    'Run /setup --ci to scaffold the replacement workflow.\n'
+  );
+
   // KEEP: CI script invoked at repo root — do not change to resolveSdlcRoot()
   const repoRoot = process.cwd();
 

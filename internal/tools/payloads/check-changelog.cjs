@@ -21,8 +21,8 @@
 
 'use strict';
 
-/** @version 3 — check-changelog script version. Bump when behavior changes (e.g. .cjs rename for ESM compat). */
-const CHECK_CHANGELOG_SCRIPT_VERSION = 3;
+/** @version 4 — check-changelog script version. Bump when behavior changes (e.g. .cjs rename for ESM compat). */
+const CHECK_CHANGELOG_SCRIPT_VERSION = 4;
 
 const fs   = require('node:fs');
 const path = require('node:path');
@@ -139,6 +139,25 @@ function resolveVersionFromTags(repoRoot) {
 function main() {
   // KEEP: CI script invoked at repo root — do not change to resolveSdlcRoot()
   const repoRoot = process.cwd();
+
+  // Step 0: Branch gate — only validate on the main branch.
+  // On feature branches and PRs, the changelog entry doesn't exist yet
+  // (release-on-main.cjs creates it at merge time), so validation would
+  // always fail. Skip silently.
+  const currentBranch = (
+    process.env.GITHUB_REF_NAME ||
+    exec('git rev-parse --abbrev-ref HEAD', { cwd: repoRoot })
+  );
+  if (currentBranch && currentBranch !== 'main' && currentBranch !== 'master') {
+    console.log(`Branch "${currentBranch}" is not main — skipping changelog check.`);
+    process.exit(0);
+  }
+  // Also skip on pull_request events (the check would fire against the PR
+  // branch, not main).
+  if (process.env.GITHUB_EVENT_NAME === 'pull_request') {
+    console.log('pull_request event — skipping changelog check (validated on main only).');
+    process.exit(0);
+  }
 
   // Step 1: Read config — exit 0 silently if not present or unparseable
   const config = readVersionConfig(repoRoot);

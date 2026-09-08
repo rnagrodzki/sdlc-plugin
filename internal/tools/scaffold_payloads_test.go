@@ -74,6 +74,7 @@ func TestPayloads_ContainsExpectedFiles(t *testing.T) {
 		"retag-release.cjs",
 		"check-changelog.yml",
 		"retag-release.yml",
+		"release-on-main.cjs",
 	}
 
 	for _, name := range expectedFiles {

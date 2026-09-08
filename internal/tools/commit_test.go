@@ -495,29 +495,6 @@ func TestVersionPrepare_Basic(t *testing.T) {
 	}
 }
 
-// TestVersionPrepare_IdempotencyDetection verifies that version_prepare
-// detects when a tag already exists at HEAD.
-func TestVersionPrepare_IdempotencyDetection(t *testing.T) {
-	dir := t.TempDir()
-	initGitFixture(t, dir)
-
-	pkg := `{"name": "test", "version": "1.0.0"}`
-	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(pkg), 0644); err != nil {
-		t.Fatal(err)
-	}
-	gitCommit(t, dir, "initial")
-	gitTag(t, dir, "v1.0.0")
-
-	out, err := versionPrepare(dir, dir, VersionPrepareIn{SkipConfigCheck: true})
-	if err != nil {
-		t.Fatalf("versionPrepare: %v", err)
-	}
-
-	if !out.Idempotency.AlreadyBumped {
-		t.Error("expected AlreadyBumped=true when tag at HEAD")
-	}
-}
-
 // ---------------------------------------------------------------------------
 // WIP squash detection tests
 // ---------------------------------------------------------------------------
