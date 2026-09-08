@@ -140,6 +140,7 @@ func versionPrepare(cfgRoot, gitRoot string, in VersionPrepareIn) (VersionPrepar
 	var fileType string
 	var tagPrefixFromConfig string
 	var changelogFile string
+	var isTagMode bool
 
 	cfg, cfgErr := config.Read(cfgRoot)
 	if cfgErr == nil && cfg != nil && cfg.Version != nil {
@@ -159,12 +160,7 @@ func versionPrepare(cfgRoot, gitRoot string, in VersionPrepareIn) (VersionPrepar
 		fileType = vs.FileType
 		tagPrefixFromConfig = vs.TagPrefix
 		changelogFile = vs.ChangelogFile
-
-		// Mode "tag" not supported yet.
-		if vs.Mode == "tag" {
-			out.Errors = append(out.Errors, "mode \"tag\" is not yet supported; use mode \"file\" or omit the mode field")
-			return out, nil
-		}
+		isTagMode = vs.Mode == "tag"
 	}
 
 	// Current branch.
@@ -202,29 +198,34 @@ func versionPrepare(cfgRoot, gitRoot string, in VersionPrepareIn) (VersionPrepar
 	}
 	out.HasDirtyFiles = len(out.DirtyFiles) > 0
 
-	// Version source (config-driven: DetectAt).
-	vf, err := version.DetectAt(cfgRoot, versionFile, fileType)
-	if err != nil {
-		out.Errors = append(out.Errors, fmt.Sprintf("version detection failed: %s", err.Error()))
-		return out, nil
-	}
-	out.VersionSource = &VersionSourceInfo{
-		Path:    vf.Path,
-		Type:    vf.Type,
-		Version: vf.Version,
-	}
-
-	// Proposed config when config missing.
-	if !out.ConfigPresent {
-		relPath, relErr := filepath.Rel(cfgRoot, vf.Path)
-		if relErr != nil {
-			relPath = vf.Path
+	// Version source (config-driven: DetectAt). Skipped entirely in tag
+	// mode — the version comes from git tags instead, populated below
+	// once tags are fetched and the tag prefix is resolved.
+	var vf *version.VersionFile
+	if !isTagMode {
+		vf, err = version.DetectAt(cfgRoot, versionFile, fileType)
+		if err != nil {
+			out.Errors = append(out.Errors, fmt.Sprintf("version detection failed: %s", err.Error()))
+			return out, nil
 		}
-		out.ProposedConfig = map[string]any{
-			"mode":        "file",
-			"versionFile": relPath,
-			"fileType":    vf.Type,
-			"changelog":   fileExists(filepath.Join(cfgRoot, "CHANGELOG.md")),
+		out.VersionSource = &VersionSourceInfo{
+			Path:    vf.Path,
+			Type:    vf.Type,
+			Version: vf.Version,
+		}
+
+		// Proposed config when config missing.
+		if !out.ConfigPresent {
+			relPath, relErr := filepath.Rel(cfgRoot, vf.Path)
+			if relErr != nil {
+				relPath = vf.Path
+			}
+			out.ProposedConfig = map[string]any{
+				"mode":        "file",
+				"versionFile": relPath,
+				"fileType":    vf.Type,
+				"changelog":   fileExists(filepath.Join(cfgRoot, "CHANGELOG.md")),
+			}
 		}
 	}
 
@@ -256,6 +257,23 @@ func versionPrepare(cfgRoot, gitRoot string, in VersionPrepareIn) (VersionPrepar
 		tagPrefix = detectTagPrefix(allTags)
 	}
 	out.Tags.TagPrefix = tagPrefix
+
+	// Tag-mode version source: derive the current version from the
+	// highest semver git tag now that tags and prefix are resolved.
+	if isTagMode {
+		cur := prReleaseHighestTagVersion(releaseTags, tagPrefix)
+		if cur == "" {
+			cur = "0.0.0"
+			out.Warnings = append(out.Warnings,
+				"no semver tags found; defaulting to 0.0.0 for initial release")
+		}
+		vf = &version.VersionFile{Version: cur}
+		out.VersionSource = &VersionSourceInfo{
+			Type:    "tag",
+			Path:    "",
+			Version: cur,
+		}
+	}
 
 	atHead, err := gitx.TagsAtHead(gitRoot)
 	if err != nil {
@@ -536,8 +554,10 @@ the file and the highest remote tag, and existing RC tags per bump target.
 When no version config section is found in .sdlc-v2/config.json, a
 proposedConfig map is returned so the caller can offer to write it.
 
-mode:"tag" in the config is rejected with an actionable error (not yet
-supported).
+mode:"tag" derives the current version from the highest semver git tag
+instead of a version file (versionSource.type is "tag", path is empty).
+File-based detection is skipped entirely in this mode. When no semver tags
+exist yet, the version defaults to 0.0.0 with a warning.
 
 Fields: errors, warnings, flow, currentBranch, configPresent, versionConfig,
 proposedConfig, versionSource, bumpOptions (with rcNext), tags, commitsSinceTag,
