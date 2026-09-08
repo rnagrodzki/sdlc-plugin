@@ -1,7 +1,7 @@
 # Plan Template
 
 The default plan structure shipped with `plan`. A project can replace this file entirely via
-`.sdlc-v2/plan-template.md`; when that file is absent, this shipped default is the active template (see
+`.sdlc/plan-template.md`; when that file is absent, this shipped default is the active template (see
 plan-format-reference.md's `## Plan Template` section). The active template is the single source PF10
 reads for section presence, and the source the Step 2 planner follows when writing plan sections.
 

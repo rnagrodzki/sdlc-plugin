@@ -54,7 +54,7 @@ reaching a single task:
 3. **What does success look like?**
 
 These three questions are the `## Discovery Questions` declared in the active plan template
-(`plan-template-default.md`, or a project's `.sdlc-v2/plan-template.md` override — see `## Plan
+(`plan-template-default.md`, or a project's `.sdlc/plan-template.md` override — see `## Plan
 Template` below). Step 1 exploration answers them; Step 2 writes the answers into this section.
 Presence is enforced deterministically by PF10 via the active template (R61).
 
@@ -648,7 +648,7 @@ wave; one authoritative full-suite run gates the wave before it is accepted.
 entry's HTML-comment metadata means (`narrative: true`, `conditional: ...`). Two sources, checked in
 this order:
 
-1. **Project override** — `.sdlc-v2/plan-template.md`. `plan.js` reports its absolute path as
+1. **Project override** — `.sdlc/plan-template.md`. `plan.js` reports its absolute path as
    `planTemplate.path` when the file exists.
 2. **Shipped default** — `plan-template-default.md`, a sibling of this file in the skill directory.
    Used when no project override exists (`planTemplate.path` is `null`, R61).
@@ -657,7 +657,7 @@ Whichever file is active is the single source of truth for both the PF10 determi
 the bullet list under the template's `## Required Sections` heading, and checks each one is present
 as a `## <heading>` in the plan) and the Step 2 planner (follows the same list, plus the template's
 `## Discovery Questions` and `## Verification Patterns`, when writing plan sections). A project that
-ships its own `.sdlc-v2/plan-template.md` can drop a section, add one, or change its `narrative:` /
+ships its own `.sdlc/plan-template.md` can drop a section, add one, or change its `narrative:` /
 `conditional:` annotations — PF10 follows whatever the active template declares, not this reference
 document.
 
