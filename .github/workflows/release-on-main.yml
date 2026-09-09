@@ -1,4 +1,4 @@
-# release-on-main-version: 1
+# release-on-main-version: 2
 name: Release on Main
 
 on:

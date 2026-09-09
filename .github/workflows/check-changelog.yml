@@ -1,4 +1,4 @@
-# check-changelog-version: 3
+# check-changelog-version: 4
 name: Validate Changelog Entry
 
 on:

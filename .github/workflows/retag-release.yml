@@ -1,4 +1,4 @@
-# retag-release-version: 4
+# retag-release-version: 5
 name: Re-tag Release on Main
 
 on:

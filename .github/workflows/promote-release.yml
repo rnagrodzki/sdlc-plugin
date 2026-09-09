@@ -1,4 +1,4 @@
-# promote-release-version: 1
+# promote-release-version: 2
 name: Promote Release
 
 on:

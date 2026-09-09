@@ -8,6 +8,42 @@ import (
 	"testing"
 )
 
+// TestPayloads_WorkflowsMatchCheckedIn verifies every embedded workflow
+// payload is byte-identical to this repo's own checked-in copy under
+// .github/workflows/. scaffold_ci's drift detection reads a version comment
+// (e.g. "# retag-release-version: N"), not a content hash — hardening a
+// checked-in workflow (SHA-pinning an action, adding a permissions block)
+// without also bumping its payload's version number desyncs the two
+// silently: already-scaffolded projects would see "skipped" instead of
+// "outdated" and never get the fix. This test catches that class of drift
+// directly, independent of the version-comment mechanism.
+func TestPayloads_WorkflowsMatchCheckedIn(t *testing.T) {
+	payloads := Payloads()
+
+	for _, entry := range scaffoldManifest {
+		if !strings.HasSuffix(entry.PayloadKey, ".yml") {
+			continue
+		}
+
+		payload, ok := payloads[entry.PayloadKey]
+		if !ok {
+			t.Fatalf("expected payload %q not found in Payloads()", entry.PayloadKey)
+		}
+
+		checkedInPath := "../../" + entry.Dest
+		checkedIn, err := os.ReadFile(checkedInPath)
+		if err != nil {
+			t.Fatalf("os.ReadFile(%s): %v", checkedInPath, err)
+		}
+
+		if string(checkedIn) != string(payload) {
+			t.Errorf("%s: checked-in file differs from embedded payload %q — "+
+				"sync internal/tools/payloads/%s with %s (and bump its version comment if the checked-in copy was hardened without updating the template)",
+				checkedInPath, entry.PayloadKey, entry.PayloadKey, checkedInPath)
+		}
+	}
+}
+
 // TestPayloads_CJSReadsV2ConfigOnly verifies that each embedded .cjs payload
 // reads .sdlc-v2/config.json exclusively — no legacy .sdlc/config.json or
 // .claude/sdlc.json fallback. Legacy config layouts are migration-only

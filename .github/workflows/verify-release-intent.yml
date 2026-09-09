@@ -1,4 +1,4 @@
-# verify-release-intent-version: 1
+# verify-release-intent-version: 2
 name: Verify Release Intent
 
 on:
