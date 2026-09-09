@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.0.1-rc3] - 2026-09-09
+
+Fixed error report target repository configuration
+
 ## [0.0.1-rc2] - 2026-09-09
 
 ### Added
