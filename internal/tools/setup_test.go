@@ -132,11 +132,11 @@ func TestSetupPrepare_SectionsHaveFields(t *testing.T) {
 
 	// Verify first field has expected shape.
 	first := versionSection.Fields[0]
-	if first.Name != "mode" {
-		t.Errorf("first version field should be 'mode', got %q", first.Name)
+	if first.Name != "tag.enabled" {
+		t.Errorf("first version field should be 'tag.enabled', got %q", first.Name)
 	}
-	if first.Type != "enum" {
-		t.Errorf("version.mode type should be 'enum', got %q", first.Type)
+	if first.Type != "boolean" {
+		t.Errorf("version.tag.enabled type should be 'boolean', got %q", first.Type)
 	}
 }
 

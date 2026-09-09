@@ -673,7 +673,16 @@ func TestPRApply_WithRelease_NotesInBody(t *testing.T) {
 
 func TestPRApply_WithRelease_VersionComputed(t *testing.T) {
 	rt := releaseTestRuntime("1.5.3")
-	// Tag higher than the file version — bump base should be the tag.
+	// Tag higher than the file version — bump base should be the tag, but
+	// only because tag.enabled is true; that's what makes max() consult it.
+	// versionFile.enabled must also be true, so PreviousVersion still comes
+	// from the file (not from the tag via isTagMode).
+	rt.configRead = func(root string) (*config.Config, error) {
+		return &config.Config{Version: &config.VersionSection{
+			Tag:         config.VersionTagConfig{Enabled: true},
+			VersionFile: config.VersionFileConfig{Enabled: true},
+		}}, nil
+	}
 	rt.gitTagList = func(dir string) ([]string, error) { return []string{"v1.6.0"}, nil }
 	rt.ghPRCreate = func(dir, title, body string) (string, error) {
 		return "https://github.com/o/r/pull/12", nil
@@ -710,7 +719,10 @@ func TestPRApply_WithRelease_CollisionError(t *testing.T) {
 	// exact tag the minor bump would produce.
 	rt := releaseTestRuntime("1.2.0")
 	rt.configRead = func(root string) (*config.Config, error) {
-		return &config.Config{Version: &config.VersionSection{TagPrefix: "rel-"}}, nil
+		return &config.Config{Version: &config.VersionSection{
+			Tag:         config.VersionTagConfig{Enabled: true, Prefix: "rel-"},
+			VersionFile: config.VersionFileConfig{Enabled: true},
+		}}, nil
 	}
 	rt.gitTagExists = func(dir, name string) (bool, error) { return name == "rel-1.3.0", nil }
 
@@ -732,7 +744,9 @@ func TestPRReleaseComputeIntent_TagMode(t *testing.T) {
 	t.Run("derives version from highest semver tag", func(t *testing.T) {
 		rt := releaseTestRuntime("")
 		rt.configRead = func(root string) (*config.Config, error) {
-			return &config.Config{Version: &config.VersionSection{Mode: "tag"}}, nil
+			return &config.Config{Version: &config.VersionSection{
+				Tag: config.VersionTagConfig{Enabled: true},
+			}}, nil
 		}
 		rt.versionDetect = func(root, path, fileType string) (*version.VersionFile, error) {
 			t.Fatal("versionDetect must not be called in tag mode")
@@ -758,7 +772,9 @@ func TestPRReleaseComputeIntent_TagMode(t *testing.T) {
 	t.Run("falls back to 0.0.0 when no semver tags exist", func(t *testing.T) {
 		rt := releaseTestRuntime("")
 		rt.configRead = func(root string) (*config.Config, error) {
-			return &config.Config{Version: &config.VersionSection{Mode: "tag"}}, nil
+			return &config.Config{Version: &config.VersionSection{
+				Tag: config.VersionTagConfig{Enabled: true},
+			}}, nil
 		}
 		rt.versionDetect = func(root, path, fileType string) (*version.VersionFile, error) {
 			t.Fatal("versionDetect must not be called in tag mode")
@@ -781,7 +797,9 @@ func TestPRReleaseComputeIntent_TagMode(t *testing.T) {
 	t.Run("file mode unchanged: version still derived from version file", func(t *testing.T) {
 		rt := releaseTestRuntime("2.3.1")
 		rt.configRead = func(root string) (*config.Config, error) {
-			return &config.Config{Version: &config.VersionSection{Mode: "file"}}, nil
+			return &config.Config{Version: &config.VersionSection{
+				VersionFile: config.VersionFileConfig{Enabled: true},
+			}}, nil
 		}
 		rt.gitTagList = func(dir string) ([]string, error) { return nil, nil }
 
@@ -794,6 +812,48 @@ func TestPRReleaseComputeIntent_TagMode(t *testing.T) {
 		}
 		if intent.ComputedVersion != "2.3.2" {
 			t.Errorf("ComputedVersion: got %q, want %q", intent.ComputedVersion, "2.3.2")
+		}
+	})
+
+	t.Run("tag.enabled=false: bump base ignores higher tag", func(t *testing.T) {
+		rt := releaseTestRuntime("1.5.3")
+		rt.configRead = func(root string) (*config.Config, error) {
+			return &config.Config{Version: &config.VersionSection{
+				VersionFile: config.VersionFileConfig{Enabled: true},
+				Tag:         config.VersionTagConfig{Enabled: false},
+			}}, nil
+		}
+		// Tag is higher than file version, but tag path disabled: max()
+		// must not consult it. Bump base stays the file version.
+		rt.gitTagList = func(dir string) ([]string, error) { return []string{"v1.6.0"}, nil }
+
+		intent, err := prReleaseComputeIntentWith(rt, "/mock/root", "/mock/work", "minor", "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if intent.ComputedVersion != "1.6.0" {
+			t.Errorf("ComputedVersion: got %q, want %q (bump base should be file version 1.5.3, not tag 1.6.0)", intent.ComputedVersion, "1.6.0")
+		}
+	})
+
+	t.Run("tag.enabled=true: bump base consults higher tag", func(t *testing.T) {
+		rt := releaseTestRuntime("1.5.3")
+		rt.configRead = func(root string) (*config.Config, error) {
+			return &config.Config{Version: &config.VersionSection{
+				VersionFile: config.VersionFileConfig{Enabled: true},
+				Tag:         config.VersionTagConfig{Enabled: true},
+			}}, nil
+		}
+		// Same inputs as above, tag path enabled this time: max() must
+		// pick the higher tag as the bump base.
+		rt.gitTagList = func(dir string) ([]string, error) { return []string{"v1.6.0"}, nil }
+
+		intent, err := prReleaseComputeIntentWith(rt, "/mock/root", "/mock/work", "minor", "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if intent.ComputedVersion != "1.7.0" {
+			t.Errorf("ComputedVersion: got %q, want %q (bump base should be tag 1.6.0, not file version 1.5.3)", intent.ComputedVersion, "1.7.0")
 		}
 	})
 }

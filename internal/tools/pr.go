@@ -629,11 +629,13 @@ func prReleaseComputeIntentWith(rt prRuntime, mainRoot, workDir, level, preRelea
 	var versionFilePath string
 	var fileType string
 	var isTagMode bool
+	var tagEnabled bool
 	if cfg != nil && cfg.Version != nil {
-		tagPrefix = cfg.Version.TagPrefix
-		versionFilePath = cfg.Version.VersionFile
-		fileType = cfg.Version.FileType
-		isTagMode = cfg.Version.Mode == "tag"
+		tagPrefix = cfg.Version.Tag.Prefix
+		versionFilePath = cfg.Version.VersionFile.Path
+		fileType = cfg.Version.VersionFile.FileType
+		isTagMode = !cfg.Version.VersionFile.Enabled
+		tagEnabled = cfg.Version.Tag.Enabled
 	}
 	if tagPrefix == "" {
 		tagPrefix = "v"
@@ -666,9 +668,11 @@ func prReleaseComputeIntentWith(rt prRuntime, mainRoot, workDir, level, preRelea
 		fileVersion = vf.Version
 	}
 
-	// Bump base = max(fileVersion, highestTag).
+	// Bump base = max(fileVersion, highestTag), but only when the tag path
+	// is enabled — a project not using tags shouldn't have its bump base
+	// skewed by stale/irrelevant tag history.
 	bumpBase := fileVersion
-	if highestTag != "" && prReleaseSemverGreater(highestTag, bumpBase) {
+	if tagEnabled && highestTag != "" && prReleaseSemverGreater(highestTag, bumpBase) {
 		bumpBase = highestTag
 	}
 

@@ -74,17 +74,17 @@ type VersionIdempotency struct {
 	TagAtHead     string `json:"tagAtHead,omitempty"`
 }
 
-// VersionConfigInfo describes the resolved version config section.
+// VersionConfigInfo describes the resolved version config section, mirroring
+// config.VersionSection's three independently toggleable release paths
+// (Tag, VersionFile, Changelog) plus the shared bump policy and delivery
+// Method.
 type VersionConfigInfo struct {
-	Mode             string `json:"mode"`
-	VersionFile      string `json:"versionFile"`
-	FileType         string `json:"fileType"`
-	TagPrefix        string `json:"tagPrefix"`
-	ChangelogMethod  string `json:"changelogMethod"`
-	ChangelogFile    string `json:"changelogFile"`
-	TicketPrefix     string `json:"ticketPrefix,omitempty"`
-	PreRelease       string `json:"preRelease,omitempty"`
-	PreReleasePolicy string `json:"preReleasePolicy"`
+	PreRelease       string                        `json:"preRelease,omitempty"`
+	PreReleasePolicy string                        `json:"preReleasePolicy"`
+	Method           string                        `json:"method"`
+	Tag              config.VersionTagConfig       `json:"tag"`
+	VersionFile      config.VersionFileConfig      `json:"versionFile"`
+	Changelog        config.VersionChangelogConfig `json:"changelog"`
 }
 
 // DivergenceInfo describes a divergence between the file version and
@@ -151,27 +151,26 @@ func versionPrepare(cfgRoot, gitRoot string, in VersionPrepareIn) (VersionPrepar
 	var tagPrefixFromConfig string
 	var changelogFile string
 	var isTagMode bool
+	var tagEnabled bool
 
 	cfg, cfgErr := config.Read(cfgRoot)
 	if cfgErr == nil && cfg != nil && cfg.Version != nil {
 		out.ConfigPresent = true
 		vs := cfg.Version
 		out.VersionConfig = &VersionConfigInfo{
-			Mode:             vs.Mode,
-			VersionFile:      vs.VersionFile,
-			FileType:         vs.FileType,
-			TagPrefix:        vs.TagPrefix,
-			ChangelogMethod:  vs.ChangelogMethod,
-			ChangelogFile:    vs.ChangelogFile,
-			TicketPrefix:     vs.TicketPrefix,
 			PreRelease:       vs.PreRelease,
 			PreReleasePolicy: vs.PreReleasePolicy,
+			Method:           vs.Method,
+			Tag:              vs.Tag,
+			VersionFile:      vs.VersionFile,
+			Changelog:        vs.Changelog,
 		}
-		versionFile = vs.VersionFile
-		fileType = vs.FileType
-		tagPrefixFromConfig = vs.TagPrefix
-		changelogFile = vs.ChangelogFile
-		isTagMode = vs.Mode == "tag"
+		versionFile = vs.VersionFile.Path
+		fileType = vs.VersionFile.FileType
+		tagPrefixFromConfig = vs.Tag.Prefix
+		changelogFile = vs.Changelog.File
+		isTagMode = !vs.VersionFile.Enabled
+		tagEnabled = vs.Tag.Enabled
 	}
 
 	// Current branch.
@@ -232,10 +231,17 @@ func versionPrepare(cfgRoot, gitRoot string, in VersionPrepareIn) (VersionPrepar
 				relPath = vf.Path
 			}
 			out.ProposedConfig = map[string]any{
-				"mode":        "file",
-				"versionFile": relPath,
-				"fileType":    vf.Type,
-				"changelog":   fileExists(filepath.Join(cfgRoot, "CHANGELOG.md")),
+				"versionFile": map[string]any{
+					"enabled":  true,
+					"path":     relPath,
+					"fileType": vf.Type,
+				},
+				"tag": map[string]any{
+					"enabled": true,
+				},
+				"changelog": map[string]any{
+					"enabled": fileExists(filepath.Join(cfgRoot, "CHANGELOG.md")),
+				},
 			}
 		}
 	}
@@ -308,7 +314,7 @@ func versionPrepare(cfgRoot, gitRoot string, in VersionPrepareIn) (VersionPrepar
 	// Bump base: max(fileVersion, highestRemoteTag).
 	bumpBase := vf.Version
 	highestTag := prReleaseHighestTagVersion(releaseTags, tagPrefix)
-	if highestTag != "" && prReleaseSemverGreater(highestTag, bumpBase) {
+	if tagEnabled && highestTag != "" && prReleaseSemverGreater(highestTag, bumpBase) {
 		out.VersionDivergence = &DivergenceInfo{
 			FileVersion: vf.Version,
 			TagVersion:  highestTag,
@@ -593,10 +599,11 @@ the file and the highest remote tag, and existing RC tags per bump target.
 When no version config section is found in .sdlc-v2/config.json, a
 proposedConfig map is returned so the caller can offer to write it.
 
-mode:"tag" derives the current version from the highest semver git tag
-instead of a version file (versionSource.type is "tag", path is empty).
-File-based detection is skipped entirely in this mode. When no semver tags
-exist yet, the version defaults to 0.0.0 with a warning.
+When the versionFile path is disabled (versionFile.enabled=false), the
+current version is derived from the highest semver git tag instead of a
+version file (versionSource.type is "tag", path is empty). File-based
+detection is skipped entirely in that case. When no semver tags exist yet,
+the version defaults to 0.0.0 with a warning.
 
 Fields: errors, warnings, flow, currentBranch, configPresent, versionConfig,
 proposedConfig, versionSource, bumpOptions (with rcNext), tags, commitsSinceTag,

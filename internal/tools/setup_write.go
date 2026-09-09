@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
@@ -68,6 +69,37 @@ func RegisterSetupWriteTools(s *mcpserver.Server) {
 	)
 }
 
+// expandDottedKeys converts a flat field-value map that may use dotted key
+// names (e.g. "tag.prefix") into the nested shape config.WriteSection
+// expects (e.g. {"tag": {"prefix": ...}}). setupmeta.Field descriptors use
+// dotted names so the setup skill can collect answers as a flat list; this
+// expands them back into the nested VersionSection shape (and any other
+// section that adopts dotted field names) before the write. Keys without a
+// "." pass through unchanged. When two dotted keys share a prefix (e.g.
+// "tag.enabled" and "tag.prefix"), their expansions merge into the same
+// nested object.
+func expandDottedKeys(flat map[string]any) map[string]any {
+	out := make(map[string]any, len(flat))
+	for key, val := range flat {
+		parts := strings.Split(key, ".")
+		if len(parts) == 1 {
+			out[key] = val
+			continue
+		}
+		cur := out
+		for _, part := range parts[:len(parts)-1] {
+			next, ok := cur[part].(map[string]any)
+			if !ok {
+				next = make(map[string]any)
+				cur[part] = next
+			}
+			cur = next
+		}
+		cur[parts[len(parts)-1]] = val
+	}
+	return out
+}
+
 // setupWriteSections is the core logic, separated from the handler for
 // testability.
 func setupWriteSections(root string, in SetupWriteSectionsIn) (SetupWriteSectionsOut, error) {
@@ -100,6 +132,7 @@ func setupWriteSections(root string, in SetupWriteSectionsIn) (SetupWriteSection
 		if value == nil {
 			value = map[string]any{}
 		}
+		value = expandDottedKeys(value)
 		if err := config.WriteSection(root, id, value); err != nil {
 			errs = append(errs, fmt.Sprintf("section %s: %s", id, err.Error()))
 			continue
