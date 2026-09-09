@@ -455,6 +455,21 @@ type PRApplyIn struct {
 	ReleaseLevel      string `json:"releaseLevel,omitempty"`
 	ReleasePreRelease string `json:"releasePreRelease,omitempty"`
 	ReleaseNotes      string `json:"releaseNotes,omitempty"`
+	// ReleaseSource records who decided ReleaseLevel: "user" (explicit
+	// interactive choice), "config" (a project/ship-config default), or
+	// "pipeline" (computed deterministically by /ship's version step, not
+	// chosen by anyone). Required whenever ReleaseLevel is set — see the
+	// releaseSource validation block in prApplyCoreWith.
+	ReleaseSource string `json:"releaseSource,omitempty"`
+	// AutoMode signals an unattended call (no human available to confirm
+	// anything right now — e.g. /ship or /pr run with --auto). Disclosed
+	// addition beyond the fact sheet's literal contract example: task 8
+	// mentions "detectable via ctx or a new AutoMode bool field" and,
+	// since mcpserver.Ctx carries no such signal (see register.go), this
+	// mirrors the existing `Auto bool` field convention on CommitFlags
+	// (commit.go) / ShipApplyIn (ship.go) rather than inventing a second
+	// competing mechanism.
+	AutoMode bool `json:"autoMode"`
 }
 
 // PRApplyOut is the output for pr_apply.
@@ -522,6 +537,31 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 	}
 	if in.ReleasePreRelease != "" && in.ReleasePreRelease != "rc" {
 		return PRApplyOut{}, &mcpserver.DomainError{Msg: fmt.Sprintf("releasePreRelease must be \"rc\" or empty, got %q", in.ReleasePreRelease)}
+	}
+
+	// releaseSource provenance gate (task 8). Deterministic, MCP-layer
+	// enforcement: the calling LLM must never be able to invent a release
+	// level and simply omit/misdeclare where it came from.
+	if in.ReleaseLevel != "" {
+		switch in.ReleaseSource {
+		case "user", "config", "pipeline":
+			// valid provenance
+		case "":
+			return PRApplyOut{}, &mcpserver.DomainError{Msg: "releaseSource is required when releaseLevel is set (must be \"user\", \"config\", or \"pipeline\")"}
+		default:
+			return PRApplyOut{}, &mcpserver.DomainError{Msg: fmt.Sprintf("releaseSource must be \"user\", \"config\", or \"pipeline\", got %q", in.ReleaseSource)}
+		}
+		// Auto mode: nothing here can verify whether "user" truly traces
+		// back to an explicit human decision made upstream (an
+		// AskUserQuestion answer, an explicit --releaseLevel CLI arg) or
+		// was simply asserted by the calling LLM to slip past this gate —
+		// so auto mode refuses "user" unconditionally. Only "config"
+		// (a project/ship-config default) and "pipeline" (computed by
+		// /ship's version step, not chosen by anyone) are deterministic
+		// enough to trust unattended.
+		if in.AutoMode && in.ReleaseSource == "user" {
+			return PRApplyOut{}, &mcpserver.DomainError{Msg: "releaseLevel in auto mode must come from config or pipeline, not LLM"}
+		}
 	}
 
 	// Compute release intent before creating/editing PR, so version errors
@@ -880,7 +920,10 @@ func RegisterPRTools(s *mcpserver.Server) {
 	)
 
 	mcpserver.Register(s, "pr_apply",
-		"Creates a PR for the current branch, or edits the existing one, via gh pr create/gh pr edit (KD14 executor tool).",
+		"Creates a PR for the current branch, or edits the existing one, via gh pr create/gh pr edit (KD14 executor tool). "+
+			"When releaseLevel is set, releaseSource is required: \"user\" (explicit interactive choice), \"config\" (project/ship-config default), "+
+			"or \"pipeline\" (computed by /ship's version step). In autoMode, releaseSource=\"user\" is always rejected — an unattended caller must "+
+			"resolve to \"config\" or \"pipeline\"; never invent a release level yourself and label it \"user\" to bypass this.",
 		func(ctx mcpserver.Ctx, in PRApplyIn) (PRApplyOut, error) {
 			mainRoot, err := worktree.MainRoot()
 			if err != nil {

@@ -10,8 +10,11 @@ import (
 	"testing"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
+	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
+	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
+	"github.com/rnagrodzki/sdlc-plugin/internal/version"
 )
 
 // stubGHDispatch installs a fake "gh" script on PATH that dispatches on its
@@ -440,6 +443,127 @@ func TestPrApply_MissingTitle_DomainError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// releaseSource provenance gate (task 8) — pure unit tests, no FS.
+//
+// The negative cases (missing/invalid/auto-rejected releaseSource) all
+// short-circuit inside prApplyCoreWith before any rt.* call is made, so
+// they're driven straight through prApplyCore with empty/unused
+// mainRoot/workDir — nothing ever touches disk or a real "gh"/"git" binary.
+// The positive (accepted) cases exercise the rest of prApplyCoreWith too, so
+// they inject a fully mocked prRuntime (fakeReleasePRRuntime below) instead
+// of using t.TempDir()/stubGHDispatch — same "mocks only" discipline as
+// TestEnsureReleaseLabels above.
+// ---------------------------------------------------------------------------
+
+// fakeReleasePRRuntime returns a prRuntime whose every function the release
+// path can call is a canned, allocation-only stub — no filesystem, no
+// subprocess. Used only by TestReleaseSourceValidation's accepted-source
+// subtests, which need prApplyCoreWith to run to completion.
+func fakeReleasePRRuntime() prRuntime {
+	return prRuntime{
+		configRead: func(root string) (*config.Config, error) { return nil, nil },
+		versionDetect: func(root, path, fileType string) (*version.VersionFile, error) {
+			return &version.VersionFile{Version: "1.0.0"}, nil
+		},
+		gitFetchTags:     func(dir string) error { return nil },
+		gitTagList:       func(dir string) ([]string, error) { return nil, nil },
+		gitAllSemverTags: func(dir string) ([]string, error) { return nil, nil },
+		gitTagExists:     func(dir, name string) (bool, error) { return false, nil },
+		ghLabelList:      func(dir string) ([]string, error) { return nil, nil },
+		ghLabelCreate:    func(dir, name, color, desc string) error { return nil },
+		ghPRForBranch:    func(dir string) ghx.PRMetadata { return ghx.PRMetadata{Exists: false} },
+		ghPRCreate:       func(dir, title, body string) (string, error) { return "https://example.com/pull/1", nil },
+		execRun:          func(name string, args []string, opts execx.Options) (string, error) { return "", nil },
+	}
+}
+
+func TestReleaseSourceValidation(t *testing.T) {
+	t.Run("missing releaseSource with releaseLevel set is rejected", func(t *testing.T) {
+		_, err := prApplyCore("", "", PRApplyIn{Title: "T", Body: "B", ReleaseLevel: "patch"})
+		if err == nil {
+			t.Fatal("expected an error for missing releaseSource")
+		}
+		if !strings.Contains(err.Error(), "releaseSource") {
+			t.Errorf("error should mention releaseSource, got: %v", err)
+		}
+	})
+
+	t.Run("invalid releaseSource value is rejected", func(t *testing.T) {
+		_, err := prApplyCore("", "", PRApplyIn{Title: "T", Body: "B", ReleaseLevel: "patch", ReleaseSource: "llm"})
+		if err == nil {
+			t.Fatal("expected an error for an invalid releaseSource value")
+		}
+		if !strings.Contains(err.Error(), "releaseSource") {
+			t.Errorf("error should mention releaseSource, got: %v", err)
+		}
+	})
+
+	t.Run("auto mode rejects releaseSource=user", func(t *testing.T) {
+		_, err := prApplyCore("", "", PRApplyIn{
+			Title: "T", Body: "B", ReleaseLevel: "patch", ReleaseSource: "user", AutoMode: true,
+		})
+		if err == nil {
+			t.Fatal("expected an error for a user-sourced releaseLevel under AutoMode")
+		}
+		if !strings.Contains(err.Error(), "auto mode") {
+			t.Errorf("error should mention auto mode, got: %v", err)
+		}
+	})
+
+	t.Run("no releaseLevel set skips the gate entirely", func(t *testing.T) {
+		// AutoMode with no releaseLevel and no releaseSource: nothing to
+		// validate — falls through to the ordinary no-release-intent path.
+		rt := fakeReleasePRRuntime()
+		out, err := prApplyCoreWith("", "", PRApplyIn{Title: "T", Body: "B", AutoMode: true}, rt)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if out.ReleaseIntent != nil {
+			t.Errorf("expected nil ReleaseIntent, got %+v", out.ReleaseIntent)
+		}
+	})
+
+	t.Run("non-auto mode accepts releaseSource=user", func(t *testing.T) {
+		rt := fakeReleasePRRuntime()
+		out, err := prApplyCoreWith("", "", PRApplyIn{
+			Title: "T", Body: "B", ReleaseLevel: "patch", ReleaseSource: "user",
+		}, rt)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if out.ReleaseIntent == nil {
+			t.Fatal("expected ReleaseIntent to be populated")
+		}
+	})
+
+	t.Run("auto mode accepts releaseSource=config (config passthrough)", func(t *testing.T) {
+		rt := fakeReleasePRRuntime()
+		out, err := prApplyCoreWith("", "", PRApplyIn{
+			Title: "T", Body: "B", ReleaseLevel: "minor", ReleaseSource: "config", AutoMode: true,
+		}, rt)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if out.ReleaseIntent == nil {
+			t.Fatal("expected ReleaseIntent to be populated")
+		}
+	})
+
+	t.Run("auto mode accepts releaseSource=pipeline", func(t *testing.T) {
+		rt := fakeReleasePRRuntime()
+		out, err := prApplyCoreWith("", "", PRApplyIn{
+			Title: "T", Body: "B", ReleaseLevel: "major", ReleaseSource: "pipeline", AutoMode: true,
+		}, rt)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if out.ReleaseIntent == nil {
+			t.Fatal("expected ReleaseIntent to be populated")
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
 // Registration smoke test
 // ---------------------------------------------------------------------------
 
@@ -511,9 +635,10 @@ func TestPRApply_WithRelease_LabelAdded(t *testing.T) {
 	seedVersionFile(t, workDir, "1.2.0")
 
 	out, err := prApplyCore(workDir, workDir, PRApplyIn{
-		Title:        "Release label test",
-		Body:         "Some body",
-		ReleaseLevel: "minor",
+		Title:         "Release label test",
+		Body:          "Some body",
+		ReleaseLevel:  "minor",
+		ReleaseSource: "user",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -538,10 +663,11 @@ func TestPRApply_WithRelease_NotesInBody(t *testing.T) {
 	seedVersionFile(t, workDir, "2.0.0")
 
 	out, err := prApplyCore(workDir, workDir, PRApplyIn{
-		Title:        "Notes test",
-		Body:         "Original body",
-		ReleaseLevel: "patch",
-		ReleaseNotes: "Fixed the bug in auth module.",
+		Title:         "Notes test",
+		Body:          "Original body",
+		ReleaseLevel:  "patch",
+		ReleaseNotes:  "Fixed the bug in auth module.",
+		ReleaseSource: "user",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -582,9 +708,10 @@ func TestPRApply_WithRelease_VersionComputed(t *testing.T) {
 	gitTag(t, workDir, "v1.6.0")
 
 	out, err := prApplyCore(workDir, workDir, PRApplyIn{
-		Title:        "Version compute test",
-		Body:         "body",
-		ReleaseLevel: "major",
+		Title:         "Version compute test",
+		Body:          "body",
+		ReleaseLevel:  "major",
+		ReleaseSource: "user",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -628,9 +755,10 @@ func TestPRApply_WithRelease_CollisionError(t *testing.T) {
 	gitTag(t, workDir, "rel-1.3.0")
 
 	_, err := prApplyCore(workDir, workDir, PRApplyIn{
-		Title:        "Collision test",
-		Body:         "body",
-		ReleaseLevel: "minor",
+		Title:         "Collision test",
+		Body:          "body",
+		ReleaseLevel:  "minor",
+		ReleaseSource: "user",
 	})
 	if err == nil {
 		t.Fatal("expected collision error")
@@ -679,6 +807,7 @@ func TestPRApply_WithRC_NextRCComputed(t *testing.T) {
 		Body:              "body",
 		ReleaseLevel:      "minor",
 		ReleasePreRelease: "rc",
+		ReleaseSource:     "user",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -711,6 +840,7 @@ func TestPRApply_WithRC_LabelFormat(t *testing.T) {
 		Body:              "body",
 		ReleaseLevel:      "patch",
 		ReleasePreRelease: "rc",
+		ReleaseSource:     "user",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -739,6 +869,7 @@ func TestPRApply_WithRC_PreReleaseMarker(t *testing.T) {
 		Body:              "body",
 		ReleaseLevel:      "minor",
 		ReleasePreRelease: "rc",
+		ReleaseSource:     "user",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

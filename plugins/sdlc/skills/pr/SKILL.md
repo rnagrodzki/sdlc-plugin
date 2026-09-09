@@ -159,9 +159,43 @@ of the PR). Do not ask for confirmation — the Step 5 approval gate is the cons
 | `template` | `{ path, legacy, headings, content }` or `null` — see PR Template above |
 
 **Release intent (invocation input, not part of `PR_CONTEXT`):** when this skill is dispatched
-with `releaseLevel` / `releaseNotes` / `releasePreRelease` (e.g. by `/ship` forwarding the
-version step's resolved plan), hold them for Step 6's `pr_apply` call and for the Step 5
-announcement below. Without a `releaseLevel`, this PR carries no release intent — skip both.
+with `releaseLevel` / `releaseNotes` / `releasePreRelease` / `releaseSource` (e.g. by `/ship`
+forwarding the version step's resolved plan, with `releaseSource` set to `"config"` or
+`"pipeline"` per `/ship`'s own upfront gate), hold all of them for Step 6's `pr_apply` call and
+for the Step 5 announcement below. `pr_apply` is a hard gate on this: it rejects any
+`releaseLevel` whose `releaseSource` is missing or invalid, and (in `autoMode`) rejects
+`releaseSource: "user"` outright — never call it with a `releaseLevel` and no matching
+`releaseSource`, and never invent either value yourself.
+
+**Without a `releaseLevel` at invocation** (this skill invoked standalone, not via `/ship`), do
+not silently proceed with no release intent — run the Release Intent Gate below before Step 2.
+
+### Step 1b (GATE): Release Intent
+
+Skip this gate entirely if `releaseLevel` was already supplied at invocation (the `/ship` case
+above) — nothing to ask, the source has already been decided upstream. This gate only fires on a
+standalone `/pr` invocation with no release intent given.
+
+**Auto mode, no `releaseLevel` supplied:** do not ask, and do not silently skip. Stop and report
+a clear error: standalone `/pr --auto` cannot decide release intent — there is no human to confirm
+it and `pr_apply` rejects `releaseSource: "user"` under `autoMode` unconditionally. Run `/ship`
+instead, which resolves release intent (source `"config"` or `"pipeline"`) before it ever reaches
+this skill. If standalone auto-mode PR creation with a release label is truly needed, the caller
+must pass both `releaseLevel` and a `releaseSource` of `"config"` or `"pipeline"` as explicit
+dispatch args to this skill — there is no `/pr` CLI flag for this, so a human cannot trigger it
+directly. Do not fabricate a level or relabel it `"user"` to get past this.
+
+**Interactive mode, no `releaseLevel` supplied:** use AskUserQuestion:
+
+> No release intent specified. A merged PR without a release label skips the release pipeline.
+>
+> Options:
+> 1. **Set release level** — specify patch/minor/major (optionally with an RC pre-release)
+> 2. **Skip release (acknowledged)** — create this PR without release intent
+
+On option 1: ask which level (and whether it's an RC), then hold `releaseLevel` and
+`releaseSource: "user"` for Step 6. On option 2: proceed with no release intent — this was an
+explicit, acknowledged choice, so do not ask again at Step 5 or Step 6.
 
 ### Step 2 (PLAN): Draft PR Description
 
@@ -254,7 +288,9 @@ one won't.
 prompt entirely. Still display the full title and description for visibility, then proceed
 directly to Step 6. Treat the response as an implicit `yes`. All critique gates (Steps 3–4)
 still run — only the interactive approval prompt is skipped. (This is your own reading of the
-invocation arguments — `pr_prepare`'s output carries no `isAuto` field in this port.)
+invocation arguments — `pr_prepare`'s output carries no `isAuto` field in this port.) Pass
+`autoMode: true` to `pr_apply` in Step 6 whenever `--auto` was passed here — this is what
+makes `pr_apply` enforce that `releaseLevel` (if any) came from config/pipeline, not the LLM.
 
 ```text
 PR Title: <title>
@@ -289,10 +325,20 @@ Any `results[]` entry whose `status` is `"violation"` is a hard-gate failure (`"
 violation list (`url`, `line`, `reason`, `detail`) to the user and stop. Do not retry. Do not
 edit URLs without user input. Do not bypass.
 
-On zero violations, publish:
+On zero violations, publish. Include `releaseLevel`/`releaseNotes`/`releasePreRelease`/
+`releaseSource` only when a `releaseLevel` was resolved (Step 1 / Step 1b); omit them entirely
+for a no-release PR. `autoMode` mirrors whether `--auto` was passed to this skill invocation:
 
 ```
-pr_apply({ title: <title>, body: <body> }) → { url, created }
+pr_apply({
+  title: <title>,
+  body: <body>,
+  releaseLevel: <if set — "major" | "minor" | "patch">,
+  releaseNotes: <if set>,
+  releasePreRelease: <if set>,
+  releaseSource: <if releaseLevel set — "user" | "config" | "pipeline">,
+  autoMode: <true | false — whether --auto was passed to this skill invocation>
+}) → { url, created }
 ```
 
 **On tool error:** show the error to the user and stop — this port does not retry or attempt
