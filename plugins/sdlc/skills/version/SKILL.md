@@ -13,12 +13,19 @@ the `pr` skill to carry through `pr_apply`. This skill is diagnose-and-plan only
 `version_apply` or `commit_apply`, never creates a tag, and never writes the version file or a
 changelog.
 
-**Versioning modes:** Projects define their versioning strategy in `.sdlc-v2/config.json` via a `version` section:
-- **File mode** (`mode: "file"` or omitted): Current version is read from a version file (e.g., `package.json`,
-  `VERSION`, or `Cargo.toml`). This is the default and covers most projects. `versionSource.type` is `"file"`.
-- **Tag mode** (`mode: "tag"`): Current version is derived from the highest semver git tag instead of a file.
-  Useful for tag-only projects that don't maintain a version file. `versionSource.type` is `"tag"` and `path` is
-  empty. If no semver tags exist, defaults to `"0.0.0"` with a warning.
+**Release paths:** Projects define their versioning strategy in `.sdlc-v2/config.json` via a `version`
+section with three independently toggleable paths — `tag`, `versionFile`, `changelog` — sharing only
+the bump policy (`preRelease`, `preReleasePolicy`) and a delivery `method` (`"push"`/`"pr"`). Which
+path determines the *current version* depends on `versionFile.enabled`, not `tag.enabled`:
+- **`versionFile.enabled: true`**: Current version is read from the configured version file (e.g.,
+  `package.json`, `VERSION`, or `Cargo.toml`). `versionSource.type` is `"file"`.
+- **`versionFile.enabled: false`**: Current version is derived from the highest semver git tag
+  instead of a file. Useful for tag-only projects that don't maintain a version file.
+  `versionSource.type` is `"tag"` and `path` is empty. If no semver tags exist, defaults to
+  `"0.0.0"` with a warning.
+
+This holds regardless of `tag.enabled` — a project can read its version from a file while never
+tagging, or derive its version from tags while never writing a file.
 
 **Announce at start:** "I'm using version (sdlc v{sdlc_version})." — extract the version from the
 `sdlc:` line in the session-start system-reminder. If no version is in context, omit the
@@ -33,9 +40,10 @@ version_prepare({ skipConfigCheck: false, sessionID: "" }) → data
 ```
 
 **Version source detection:** `data.versionSource` describes how the current version was determined:
-- `type: "file"` (file mode): `path` is the detected or configured version file (e.g., `package.json`),
-  `version` is the parsed version string.
-- `type: "tag"` (tag mode): `path` is empty, `version` is derived from the highest semver git tag.
+- `type: "file"` (`versionFile.enabled: true`): `path` is the detected or configured version file
+  (e.g., `package.json`), `version` is the parsed version string.
+- `type: "tag"` (`versionFile.enabled: false`): `path` is empty, `version` is derived from the
+  highest semver git tag.
 
 **Continue with diagnostics:**
 - `data.errors` non-empty → show each message, stop.
@@ -51,11 +59,13 @@ version_prepare({ skipConfigCheck: false, sessionID: "" }) → data
 - `data.versionDivergence` → show `versionDivergence.message` and suggest `git fetch && git rebase
   origin/<defaultBranch>` before planning further — the bump is computed off the higher of
   file/tag version, not the file alone.
-- **CI release scaffolding:**
-  - **File mode:** do not call `scaffold_ci` here. If the user asks about CI release automation,
-    point them at running `scaffold_ci` themselves.
-  - **Tag mode** (`data.versionConfig.mode == "tag"`): Glob `.github/workflows/release-on-main.yml`
-    and `.github/workflows/retag-release.yml`. If **neither** exists, offer via AskUserQuestion:
+- **CI release scaffolding:** gate on `data.versionSource.type` (always present, even with no
+  config — unlike `versionConfig`, which is omitted when `!data.configPresent`):
+  - **`versionSource.type == "file"`:** do not call `scaffold_ci` here. If the user asks about CI
+    release automation, point them at running `scaffold_ci` themselves.
+  - **`versionSource.type == "tag"`** (tag-only, current version comes from git tags): Glob
+    `.github/workflows/release-on-main.yml` and `.github/workflows/retag-release.yml`.
+    If **neither** exists, offer via AskUserQuestion:
 
     > Project uses tag-only versioning — no version file to bump locally.
     > CI release workflows handle tag creation and version bumping post-merge.
@@ -68,12 +78,13 @@ version_prepare({ skipConfigCheck: false, sessionID: "" }) → data
     exists). After it returns, render `data.protection` (`RulesetCheckResult`): if `hasRulesets`
     or `hasClassicProtection` is true, show a short informational note — "`<defaultBranch>` has
     branch protection (rulesets: <rulesetNames joined>). Tagging and GitHub Releases work normally.
-    If changelogMethod is "push", the direct push will be blocked — use "pr" (delivers via PR)
-    or "skip" (disable changelog delivery) instead." If neither is set, skip the note (nothing
-    protected, no reason to mention it). Always show `data.protection.notes` if non-empty (e.g.
-    "gh not authenticated" — the check degrades silently on failure, so surface why it couldn't
-    run). Then continue to Step 1. On **skip**, continue to Step 1. If either workflow already
-    exists, skip the offer entirely and continue to Step 1.
+    If `method` is "push", the direct push for the versionFile/changelog paths will be blocked —
+    switch `method` to "pr" (delivers via a `release/<tag>` PR) instead, or disable those paths
+    (`versionFile.enabled`/`changelog.enabled: false`) if you don't need them." If neither is set,
+    skip the note (nothing protected, no reason to mention it). Always show `data.protection.notes`
+    if non-empty (e.g. "gh not authenticated" — the check degrades silently on failure, so surface
+    why it couldn't run). Then continue to Step 1. On **skip**, continue to Step 1. If either
+    workflow already exists, skip the offer entirely and continue to Step 1.
 
 ## Step 1 (PLAN): Determine Bump Level and Draft Release Notes
 

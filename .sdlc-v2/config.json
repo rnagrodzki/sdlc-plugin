@@ -138,12 +138,20 @@
     ]
   },
   "version": {
-    "fileType": "plugin.json",
-    "mode": "file",
-    "tagPrefix": "v",
-    "versionFile": "plugins/sdlc/.claude-plugin/plugin.json",
-    "changelogMethod": "push",
-    "changelogFile": "CHANGELOG.md",
-    "preReleasePolicy": "always-rc"
+    "preReleasePolicy": "always-rc",
+    "method": "push",
+    "tag": {
+      "enabled": true,
+      "prefix": "v"
+    },
+    "versionFile": {
+      "enabled": true,
+      "path": "plugins/sdlc/.claude-plugin/plugin.json",
+      "fileType": "plugin.json"
+    },
+    "changelog": {
+      "enabled": true,
+      "file": "CHANGELOG.md"
+    }
   }
 }

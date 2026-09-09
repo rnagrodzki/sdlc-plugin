@@ -2,28 +2,69 @@
 
 This guide explains how the SDLC plugin manages project versions, automates releases through CI, and gives you control over version bumps through PRs.
 
-## Version Modes
+## Three Independent Release Paths
 
-The plugin supports two version tracking modes, configured in `.sdlc-v2/config.json` under the `version` key. This is the config location the Go-side tools `version_prepare` and `version_apply` read and write (`scaffold_ci` scaffolds CI workflow files and does not itself read or write this config).
+Versioning is configured in `.sdlc-v2/config.json` under the `version` key. This is the config location the Go-side tools `version_prepare` and `version_apply` read and write (`scaffold_ci` scaffolds CI workflow files and does not itself read or write this config).
 
-### File Mode (default)
+A release is made of three independently toggleable paths, each carrying its own `enabled` flag:
 
-The version lives in a file on disk. The plugin reads and (via CI) writes to this file.
+| Path | What it does | Config sub-object |
+|---|---|---|
+| **tag** | Creates a git tag (and GitHub Release) at the release commit. | `version.tag` |
+| **versionFile** | Bumps the version string inside a tracked file. | `version.versionFile` |
+| **changelog** | Prepends a release entry to a changelog file. | `version.changelog` |
+
+Each path is on or off independently — there is no single "mode" governing all three. A missing sub-object means that path is disabled; there is no ambiguous default. The three paths share only two things: the bump policy (`preRelease`, `preReleasePolicy`) and, for `versionFile`/`changelog`, a delivery `method` (`push` or `pr`) that controls how their writes land on the default branch. `tag` always pushes directly — it is never blocked by `method` or by the other two paths failing.
+
+**At least one of `tag.enabled` or `versionFile.enabled` must be `true`.** A version section where both are false (or absent) is rejected — `changelog` alone has nothing to determine a release version from.
+
+**Which path determines the "current version"?** `versionFile.enabled` — not `tag.enabled` — decides where the current version is read from:
+- `versionFile.enabled: true` — the current version comes from the configured file (`versionSource.type` is `"file"`).
+- `versionFile.enabled: false` — the current version is derived from the highest semver git tag instead (`versionSource.type` is `"tag"`, `path` is empty). When no matching tags exist yet, the version defaults to `0.0.0`.
+
+This holds regardless of whether `tag.enabled` is true — a project can read its version from a file while never creating tags, or derive its version from tags while never writing a file.
+
+### Example: file + tag + changelog, delivered via PR
 
 ```json
 {
   "version": {
-    "mode": "file",
-    "versionFile": "package.json",
-    "fileType": "package.json",
-    "tagPrefix": "v",
-    "changelogMethod": "pr",
-    "changelogFile": "CHANGELOG.md"
+    "preReleasePolicy": "continue-rc",
+    "method": "pr",
+    "tag": {
+      "enabled": true,
+      "prefix": "v"
+    },
+    "versionFile": {
+      "enabled": true,
+      "path": "package.json",
+      "fileType": "package.json"
+    },
+    "changelog": {
+      "enabled": true,
+      "file": "CHANGELOG.md"
+    }
   }
 }
 ```
 
-**Supported file types:**
+### Example: tag-only, no version file, no changelog
+
+```json
+{
+  "version": {
+    "method": "push",
+    "tag": {
+      "enabled": true,
+      "prefix": "v"
+    }
+  }
+}
+```
+
+`versionFile` and `changelog` are simply omitted — both default to `{enabled: false}`.
+
+**Supported `versionFile.fileType` values:**
 
 | File | `fileType` value | How version is stored |
 |---|---|---|
@@ -34,39 +75,20 @@ The version lives in a file on disk. The plugin reads and (via CI) writes to thi
 | `pubspec.yaml` | `"pubspec.yaml"` | `version: 1.2.3` top-level key |
 | `VERSION` | `"version-file"` | Plain text, first line |
 
-When `versionFile` is omitted, the plugin auto-detects by probing the project root in the order listed above.
-
-**When to use file mode:** Your project already has a version file (most npm, Rust, Python, Flutter, and Claude plugin projects). The version file is the source of truth. CI bumps it on release.
-
-### Tag Mode
-
-The version is derived from git tags. No version file needed.
-
-```json
-{
-  "version": {
-    "mode": "tag",
-    "tagPrefix": "v",
-    "changelogMethod": "pr",
-    "changelogFile": "CHANGELOG.md"
-  }
-}
-```
-
-The plugin reads the highest semver git tag matching the configured `tagPrefix` (e.g., `v1.2.3`) and uses that as the current version. When no tags exist, the version defaults to `0.0.0`.
-
-`versionFile` and `fileType` are not needed and are ignored in tag mode.
-
-**When to use tag mode:** Your project tracks versions purely through git tags — Go modules, shell scripts, infrastructure repos, or any project where a version file adds no value. CI creates tags on release; no file is bumped.
+When `versionFile.enabled` is true and `versionFile.path` is omitted, the plugin auto-detects by probing the project root in the order listed above.
 
 ### Setup
 
 Run `/setup` to auto-detect and configure versioning. The setup skill:
 - Probes for known version files (package.json, Cargo.toml, etc.)
-- If found: writes `mode: "file"` with the detected file path and type
-- If none found: writes `mode: "tag"` with `tagPrefix: "v"`
+- If found: proposes `versionFile.enabled: true` with the detected path and type, plus `tag.enabled: true`
+- If none found: proposes `tag.enabled: true` with `tag.prefix: "v"` and `versionFile` left disabled
 
-You can also write the config manually.
+You can also write the config manually, or run `/setup --only version` to reconfigure just this section (also the required path to migrate an old flat-shape `version` section — see "Breaking Config Change" below).
+
+## Breaking Config Change
+
+The pre-redesign flat shape (top-level `mode`, string `versionFile`, `changelogMethod`, boolean `changelog`, `rcAutoContinue`, `ticketPrefix`) is **rejected outright** by every reader (`version_prepare`, `pr_apply`, and every CI script) — there is no backward-compatible parsing and no automatic migration. A project still on the old shape gets a hard error naming `/setup --only version` as the fix. `ticketPrefix` in particular is dropped entirely — no CI script ever read it, and there is no replacement field.
 
 ## How Releases Work
 
@@ -82,13 +104,13 @@ Releases are **never created during the ship pipeline**. The version skill only 
 | Empty release notes | Label applied manually without writing notes |
 | Level mismatch | Label says `release:minor` but marker says `patch` |
 | Missing RC marker | RC label applied without `<!-- release-pre:rc -->` |
-| Version file unreadable | Corrupt or missing version file (file mode) |
+| Version file unreadable | Corrupt or missing version file (when `versionFile.enabled`) |
 | Target tag already exists | Version already released — prevents duplicate releases |
 | No version config | Label applied to a project without version config |
 
 If any check fails, the PR CI status blocks merge (when branch protection requires it). All failures are reported together — one CI run shows every problem, not one at a time.
 
-This check validates both `file` and `tag` modes. In tag mode, it reads the current version from git tags (same as `release-on-main.cjs` does post-merge) and computes the target tag to verify it does not already exist.
+This check validates any combination of enabled paths. When `versionFile.enabled` is false, it reads the current version from git tags instead (same as `release-on-main.cjs` does post-merge) and computes the target tag to verify it does not already exist.
 
 ### The Release Flow
 
@@ -103,21 +125,34 @@ This check validates both `file` and `tag` modes. In tag mode, it reads the curr
 5. CI runs verify-release-intent.cjs on PR (pre-merge check)
 6. PR is reviewed and merged
 7. CI runs release-on-main.cjs on push to main (post-merge)
-8. release-on-main.cjs:
-   a. Finds the merged PR and its release:* label
-   b. Reads release notes from PR body markers
-   c. Computes the new version (bumps from current)
-   d. File mode: bumps the version file, commits and pushes it to main
-   e. Tag mode: skips file bump (no version file)
-   f. Creates annotated git tag directly at HEAD on main + GitHub Release
-   g. Delivers a CHANGELOG entry per the configured `changelogMethod`
-      ("skip" by default — no delivery, "push" — direct commit to main,
-      "pr" — via a changelog/<tag> PR) — see "Changelog Delivery" and
-      "Branch Protection & Release Workflow" below. Best-effort: a
-      changelog failure is logged but never blocks or undoes the tag/
-      release already created in step f.
+8. release-on-main.cjs runs 4 phases, tag creation never blocked by the others:
+
+   PHASE 1 (read-only): find the merged PR, its release:* label, notes, and
+     compute the bumped version.
+
+   PHASE 2 (file writes — skipped entirely for RC releases):
+     method "push": write the enabled versionFile/changelog files, commit
+       "chore(release): <version>", push directly to main.
+     method "pr": write the same files and commit locally (nothing pushed
+       yet — phase 4 delivers it).
+     Idempotent: a file write that produces no diff is treated as already
+       up to date, not as a failure.
+
+   PHASE 3 (tag — never blocked by phase 2 failures): if tag.enabled, tag
+     the release commit from phase 2 (or, on re-run after a partial
+     failure, a chore(release) commit already on origin, or the merge
+     commit itself as last resort) and create a GitHub Release.
+
+   PHASE 4 (PR delivery — only when method is "pr" and phase 2 wrote at
+     least one file, skipped for RC): push the local commit from phase 2
+     to a release/<tag> branch, open a PR labeled no-release, and enable
+     auto-merge.
+
+   Exit: every enabled path is attempted regardless of the others'
+   outcome. Exit code is 0 only if every enabled path succeeded or was
+   idempotently skipped; 1 if any failed.
 9. retag-release.cjs also runs on push to main but is a no-op in this
-   flow: the tag from step 8f is already at HEAD, so there is nothing
+   flow: the tag from phase 3 is already at HEAD, so there is nothing
    to move. It is deprecated (superseded by release-on-main.cjs) and
    kept only for backward compatibility with older workflows.
 ```
@@ -128,29 +163,28 @@ Five CI scripts handle the release pipeline. All live under `.github/scripts/` a
 
 | Script | Trigger | Purpose |
 |---|---|---|
-| `release-on-main.cjs` | push to main | Creates release after PR merge; tags HEAD directly; delivers CHANGELOG per `changelogMethod` |
+| `release-on-main.cjs` | push to main | Runs the 4-phase release flow above: file writes, tag (never blocked), and PR delivery |
 | `retag-release.cjs` | push to main | **Deprecated.** Legacy safety net superseded by `release-on-main.cjs`; no-op in the current flow |
 | `verify-release-intent.cjs` | pull_request | Pre-merge check: validates release markers |
 | `promote-release.cjs` | workflow_dispatch | Promotes RC to final release |
-| `check-changelog.cjs` | push, pull_request | Push to main: fails if no changelog entry for current version. PR: warns (never fails) if `CHANGELOG.md` was hand-edited on a feature branch — skips the warning on the automated `changelog/<tag>` branch itself |
+| `check-changelog.cjs` | push, pull_request | Push to main: fails if `changelog.enabled` and no changelog entry exists for the current version. PR: warns (never fails) if the changelog file was hand-edited on a feature branch |
 
 Matching workflow files live under `.github/workflows/`.
 
-**To scaffold CI workflows:** Run `/setup` which offers CI scaffolding, or call `scaffold_ci` directly. The version skill also offers scaffolding for tag-mode projects when CI workflows are missing. Scaffolding also runs a read-only branch protection check against the repo's rulesets/classic protection and reports the result — see below.
+**To scaffold CI workflows:** Run `/setup` which offers CI scaffolding, or call `scaffold_ci` directly. The version skill also offers scaffolding when `versionFile.enabled` is false and CI workflows are missing. Scaffolding also runs a read-only branch protection check against the repo's rulesets/classic protection and reports the result — see below.
 
-### Changelog Delivery (`changelogMethod`)
+### Delivery Method (`method`)
 
-Controls how (or whether) the release workflow delivers changelog updates after tagging.
+Controls how the `versionFile` and `changelog` paths deliver their writes when either is enabled. Does not affect the `tag` path, which always pushes tags and creates GitHub Releases directly regardless of `method`.
 
-| Value    | Behavior |
-|----------|----------|
-| `"skip"` | No changelog delivery (default). Repo manages changelogs externally. |
-| `"push"` | Direct push to main. Simple but blocked by branch protection. |
-| `"pr"`   | Opens a `changelog/<tag>` PR with auto-merge. Works with branch protection. |
+| Value | Behavior |
+|---|---|
+| `"push"` (default) | Direct commit and push to main. Simple, but blocked by branch protection. |
+| `"pr"` | Writes land on a single `release/<tag>` branch carrying both file writes, opened as a PR with auto-merge enabled. Works with branch protection. |
 
-Backward compat: legacy `changelog: true` maps to `"push"`, `false` maps to `"skip"`.
+There is no `"skip"` value — to skip a path entirely, disable it (`versionFile.enabled: false` / `changelog.enabled: false`) rather than routing its delivery through a no-op method.
 
-Delivery runs after the tag and GitHub Release already exist (step 8f above) and is always best-effort: a delivery failure is logged but never blocks or undoes the release. See "Branch Protection & Release Workflow" below for how `"push"` and `"pr"` behave on a protected `main`.
+Delivery runs after the tag and GitHub Release already exist (phase 3 above, when `tag.enabled`) and is always best-effort for the file-writing paths: a delivery failure is logged and reported in the final exit status, but never undoes a tag or release already created. See "Branch Protection & Release Workflow" below for how `"push"` and `"pr"` behave on a protected `main`.
 
 ### Branch Protection & Release Workflow
 
@@ -159,73 +193,71 @@ the default branch, including from `github-actions[bot]`. Adding the bot to
 a bypass list is often not possible: GitHub rejects `github-actions[bot]` in
 a ruleset bypass actor list (HTTP 422), and the bot cannot be granted an
 admin-override bypass on classic protection either. This affects
-`changelogMethod: "push"` specifically: a workflow step that runs
-`git push origin HEAD:main` (the direct CHANGELOG commit) fails outright on
-a protected `main`. `"skip"` performs no changelog delivery and is
-unaffected by protection; `"pr"` delivers the same commit through a PR
+`method: "push"` specifically: a workflow step that runs
+`git push origin HEAD:main` (the versionFile/changelog commit) fails outright on
+a protected `main`. `"pr"` delivers the same commit through a PR
 instead, which is unaffected because it never pushes to the protected
 branch directly.
 
-**Why direct push fails:** the release tag and GitHub Release are created
-via the GitHub API (`gh release create`), which does not touch the
-protected branch and is unaffected regardless of `changelogMethod`. Only a
-`git push` of a commit directly to `main` — the `"push"` method — is
-blocked.
+**Why the tag path is unaffected:** the release tag and GitHub Release are created
+via the GitHub API (`gh release create`) and a tag ref push (`refs/tags/...`),
+neither of which touches the protected branch — `tag.enabled` releases land
+regardless of `method`. Only a `git push` of a commit directly to `main` — the
+`"push"` method's file-writing commit — is blocked.
 
-**The `"pr"` method:** instead of pushing the CHANGELOG update straight to
+**The `"pr"` method:** instead of pushing the versionFile/changelog update straight to
 `main`, after the tag and release are already created, it:
 
-1. Creates a branch `changelog/<tag>` off the tip of `main`.
-2. Commits the CHANGELOG update on that branch and pushes it.
-3. Opens a PR (`gh pr create --base main --head changelog/<tag>`) labeled
+1. Creates a branch `release/<tag>` off the tip of `main` and pushes the local commit made during phase 2.
+2. Opens a PR (`gh pr create --base main --head release/<tag>`) labeled
    `no-release`.
-4. Enables auto-merge on the PR (`gh pr merge --auto --squash --delete-branch`).
+3. Enables auto-merge on the PR (`gh pr merge --auto --squash --delete-branch`).
 
-The changelog PR does not trigger a duplicate release when it merges — see
+The release PR does not trigger a duplicate release when it merges — see
 "The `no-release` label" below for why.
 
-Changelog delivery — for both `"push"` and `"pr"` — is **best-effort and
-non-blocking**: the tag and GitHub Release from step f of the release flow
-above are created first and are never rolled back if delivery fails for any
+File delivery — for both `"push"` and `"pr"` — is **best-effort and
+non-blocking relative to the tag path**: the tag and GitHub Release from phase 3 of the release flow
+above are created first (when `tag.enabled`) and are never rolled back if delivery fails for any
 reason (missing `gh` auth, no push access, a protected `main` with
-`changelogMethod: "push"`, auto-merge not enabled on the repo, etc.). The
-failure is logged to the workflow output, not surfaced as a workflow
-failure.
+`method: "push"`, auto-merge not enabled on the repo, etc.) — though the overall
+script still exits 1 to surface the failure. The
+failure is logged to the workflow output.
 
 **Auto-merge setup (`"pr"` only):** the target repo must have "Allow
 auto-merge" enabled in Settings → General, and `main` must not require a
 status check that never runs (auto-merge waits indefinitely for required
 checks). If auto-merge cannot be enabled (e.g. required reviews with no
-eligible reviewer), the changelog PR is still created — merge it manually.
+eligible reviewer), the release PR is still created — merge it manually.
 
-**The `no-release` label:** applied to the automated changelog PR (`"pr"`
+**The `no-release` label:** applied to the automated release PR (`"pr"`
 method) as a human-facing signal (it is not read by any script).
 `verify-release-intent.cjs` independently skips any PR lacking a
-`release:<level>` label — the changelog PR has no such label, so it is a
-no-op there regardless. `check-changelog.cjs` recognizes the
-`changelog/<tag>` branch name pattern specifically (not the label) to skip
-its own "CHANGELOG.md hand-edited" warning on the automated PR.
+`release:<level>` label — the release PR has no such label, so it is a
+no-op there regardless.
 
 **Troubleshooting:**
 
-- **Changelog PR not created at all (`"pr"` method)** — check the
-  `release-on-main` workflow run logs for a caught error near "changelog
-  delivery failed"; the tag/release step above it succeeded regardless.
+- **Release PR not created at all (`"pr"` method)** — check the
+  `release-on-main` workflow run logs for a caught error near "Phase 4
+  (PR delivery) failed"; the tag/release step above it succeeded regardless
+  (if `tag.enabled`).
   Common causes: `gh` not authenticated in the workflow, or the workflow's
   `GITHUB_TOKEN` permissions don't include `contents: write` /
   `pull-requests: write`.
-- **Changelog commit rejected (`"push"` method)** — the branch is
-  protected. Switch `changelogMethod` to `"pr"` (works around protection)
-  or `"skip"` (drop changelog delivery), or remove the protection rule for
-  the automation actor.
-- **Changelog PR created but not merging (`"pr"` method)** — auto-merge is
+- **File-write commit rejected (`"push"` method)** — the branch is
+  protected. Switch `method` to `"pr"` (works around protection), or
+  remove the protection rule for the automation actor.
+- **Release PR created but not merging (`"pr"` method)** — auto-merge is
   likely disabled repo-wide, or a required check on `main` is not
   configured to run on this PR. Merge it manually; this does not affect the
   already-published release.
 - **`scaffold_ci` reports "branch protection detected"** — informational,
-  and only actionable if `changelogMethod` is `"push"`: that method's
-  direct push will be blocked, so switch to `"pr"` or `"skip"`. With
-  `"pr"` or `"skip"` configured, no bypass or rule change is required.
+  and only actionable if `method` is `"push"`: that method's
+  direct push will be blocked, so switch to `"pr"`. With
+  `"pr"` configured, no bypass or rule change is required. Disabling
+  `versionFile`/`changelog` entirely sidesteps this too, since only those
+  two paths use `method`.
 
 ## Controlling Version Bumps via PRs
 
@@ -271,7 +303,7 @@ The label is what CI reads to decide whether to create a release. No label = no 
 The `verify-release-intent.cjs` CI check validates that:
 - Markers exist when a `release:*` label is present
 - The marker level matches the label level
-- The version file exists and is parseable (file mode only)
+- The version file exists and is parseable (only when `versionFile.enabled`)
 - The target version is not already tagged
 
 ### Editing Release Notes
@@ -291,9 +323,9 @@ Use the `--rc` flag: `/version minor --rc` or `/ship --bump minor-rc`.
 This creates:
 - Label: `release:minor-rc`
 - Marker: `<!-- release-pre:rc -->`
-- On merge: CI creates tag `v1.3.0-rc1` (auto-incremented RC number) as a GitHub pre-release
+- On merge: CI creates tag `v1.3.0-rc1` (auto-incremented RC number) as a GitHub pre-release (when `tag.enabled`)
 
-RC releases do NOT bump the version file, but DO prepend a CHANGELOG entry (when `changelogMethod` is not `"skip"`) for the RC version. The version file stays at the pre-bump value until the final release.
+RC releases skip phase 2 (file writes) entirely — the `versionFile` and `changelog` paths are never touched for an RC, regardless of whether they're enabled. Only the `tag` path runs. The version file stays at the pre-bump value until the final release.
 
 ### Multiple RCs
 
@@ -313,7 +345,7 @@ When testing is complete, promote the latest RC to a final release:
 3. The workflow (`promote-release.cjs`) will:
    - Find the latest RC tag for that version (e.g., `v1.3.0-rc3`)
    - Create the final tag `v1.3.0` at the **same commit** as the RC (no rebuild)
-   - Bump the version file (file mode) and prepend CHANGELOG
+   - Bump the version file (when `versionFile.enabled`) and prepend the changelog entry (when `changelog.enabled`)
    - Create a non-pre-release GitHub Release
 
 The final release tags the exact commit that was tested as the RC.
@@ -325,36 +357,46 @@ Full `.sdlc-v2/config.json` `version` section:
 ```json
 {
   "version": {
-    "mode": "file | tag",
-    "versionFile": "path/to/version-file",
-    "fileType": "package.json | plugin.json | cargo.toml | pyproject.toml | pubspec.yaml | version-file",
-    "tagPrefix": "v",
-    "changelogMethod": "pr",
-    "changelogFile": "CHANGELOG.md",
-    "ticketPrefix": "PROJ-",
     "preRelease": "rc",
-    "preReleasePolicy": "continue-rc"
+    "preReleasePolicy": "continue-rc",
+    "method": "push",
+    "tag": {
+      "enabled": true,
+      "prefix": "v"
+    },
+    "versionFile": {
+      "enabled": true,
+      "path": "path/to/version-file",
+      "fileType": "package.json"
+    },
+    "changelog": {
+      "enabled": false,
+      "file": "CHANGELOG.md"
+    }
   }
 }
 ```
 
 | Field | Required | Default | Description |
 |---|---|---|---|
-| `mode` | No | `"file"` | `"file"` reads version from a file; `"tag"` reads from git tags |
-| `versionFile` | File mode | auto-detect | Relative path to version file |
-| `fileType` | File mode | inferred | Parser to use for the version file |
-| `tagPrefix` | No | auto-detected from existing tags; `/setup` writes `"v"` explicitly for new tag-mode projects | Prefix for git tags (e.g., `v` for `v1.2.3`) |
-| `changelogMethod` | No | `"skip"` | How the release workflow delivers changelog updates: `"skip"` (none), `"push"` (direct commit to the default branch), `"pr"` (via a `changelog/<tag>` PR — works with branch protection). Legacy boolean `changelog` is still accepted: `true` maps to `"push"`, `false` maps to `"skip"`. |
-| `changelogFile` | No | `"CHANGELOG.md"` (used only when `changelogMethod` is not `"skip"`) | Path to changelog file |
-| `ticketPrefix` | No | — | Jira ticket prefix for linking (e.g., `"PROJ-"`) |
-| `preRelease` | No | — | Default pre-release label (e.g., `"rc"`) |
-| `preReleasePolicy` | No | `"continue-rc"` | Whether `/version` suggests a release-candidate build: `"always-rc"` always suggests one, `"continue-rc"` only when the bump target already has existing RC tags (continue the RC train instead of a final release), `"never"` never suggests one. The legacy boolean `rcAutoContinue` (`true`/`false`) is still accepted and maps to `"continue-rc"`/`"never"` respectively. |
+| `preRelease` | No | — | Default pre-release label (e.g., `"rc"`) applied when no explicit base bump or `--pre` is given. |
+| `preReleasePolicy` | No | `"continue-rc"` | Whether `/version` suggests a release-candidate build: `"always-rc"` always suggests one, `"continue-rc"` only when the bump target already has existing RC tags (continue the RC train instead of a final release), `"never"` never suggests one. |
+| `method` | No | `"push"` | How the `versionFile` and `changelog` paths deliver their writes: `"push"` (direct commit to the default branch), `"pr"` (via a single `release/<tag>` PR — works with branch protection). Does not affect `tag`, which always pushes directly. |
+| `tag.enabled` | No | `false` | Whether the tag path is active: creates a git tag and GitHub Release on every bump. |
+| `tag.prefix` | No | auto-detected from existing tags; `/setup` writes `"v"` explicitly for new tag-only projects | Prefix for git tags (e.g., `v` for `v1.2.3`). |
+| `versionFile.enabled` | No | `false` | Whether the version-file path is active. Also determines whether the current version is read from this file (`true`) or derived from git tags (`false`), independent of `tag.enabled`. |
+| `versionFile.path` | Required if `versionFile.enabled` | auto-detected | Relative path to the version file. |
+| `versionFile.fileType` | Required if `versionFile.enabled` | inferred | Parser to use for the version file: `package.json`, `cargo.toml`, `pyproject.toml`, `pubspec.yaml`, `plugin.json`, or `version-file`. |
+| `changelog.enabled` | No | `false` | Whether the changelog path is active: prepends a release entry on every bump. |
+| `changelog.file` | No | `"CHANGELOG.md"` (used only when `changelog.enabled`) | Path to changelog file. |
+
+At least one of `tag.enabled` or `versionFile.enabled` must be `true` — a config with both false (or absent) is rejected by `version_prepare`, `pr_apply`, and every CI script.
 
 ## Troubleshooting
 
-### "mode 'tag' is not yet supported"
+### "config: version section uses the old flat shape"
 
-Older versions of the plugin did not support tag mode. Update the plugin to the latest version.
+The project's `.sdlc-v2/config.json` still has a `version` section in the pre-redesign flat shape (`mode`, string `versionFile`, `changelogMethod`, boolean `changelog`, or `rcAutoContinue`). Run `/setup --only version` to migrate to the new nested `tag`/`versionFile`/`changelog` shape — there is no automatic migration.
 
 ### No release created after PR merge
 
@@ -364,9 +406,9 @@ Check:
 3. Did `verify-release-intent.cjs` pass? Check the PR checks tab.
 4. Are the `<!-- release-notes-start/end -->` markers in the PR body?
 
-### Version file not bumped (tag mode)
+### Version file not bumped
 
-Expected behavior. Tag-mode projects do not have a version file. CI creates only a git tag and GitHub Release.
+Expected behavior when `versionFile.enabled` is false. CI derives the current version from git tags instead and — when `tag.enabled` — creates only a git tag and GitHub Release; no file is bumped.
 
 ### RC number unexpected
 
@@ -374,7 +416,7 @@ RC numbers are determined by scanning existing tags. If `v1.3.0-rc1` and `v1.3.0
 
 ### Tag prefix mismatch
 
-If your tags use a prefix other than `v` (or no prefix), set `tagPrefix` accordingly. The plugin detects the prefix from existing tags, but explicit config is more reliable. Tags that do not match the prefix pattern are ignored.
+If your tags use a prefix other than `v` (or no prefix), set `tag.prefix` accordingly. The plugin detects the prefix from existing tags, but explicit config is more reliable. Tags that do not match the prefix pattern are ignored.
 
 ### verify-release-intent not blocking merge
 
@@ -388,7 +430,7 @@ Without this, the check runs but a failing result does not prevent merge.
 
 ### Squash merge breaks tag reachability
 
-Not an issue in the current flow. `release-on-main.cjs` runs on push to main (after any merge, including squash merge) and creates the tag directly at HEAD, so there is no pre-merge tag for a squash merge to orphan. `retag-release.cjs` is kept as a deprecated legacy safety net for projects still migrating from an older pre-merge-tag flow; when run, it detects the tag is already reachable from HEAD and does nothing.
+Not an issue in the current flow. `release-on-main.cjs` runs on push to main (after any merge, including squash merge) and creates the tag directly at HEAD (phase 3), so there is no pre-merge tag for a squash merge to orphan. `retag-release.cjs` is kept as a deprecated legacy safety net for projects still migrating from an older pre-merge-tag flow; when run, it detects the tag is already reachable from HEAD and does nothing.
 
 ### verify-release-intent fails with "No version config found"
 
