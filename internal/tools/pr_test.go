@@ -728,6 +728,76 @@ func TestPRApply_WithRelease_CollisionError(t *testing.T) {
 	}
 }
 
+func TestPRReleaseComputeIntent_TagMode(t *testing.T) {
+	t.Run("derives version from highest semver tag", func(t *testing.T) {
+		rt := releaseTestRuntime("")
+		rt.configRead = func(root string) (*config.Config, error) {
+			return &config.Config{Version: &config.VersionSection{Mode: "tag"}}, nil
+		}
+		rt.versionDetect = func(root, path, fileType string) (*version.VersionFile, error) {
+			t.Fatal("versionDetect must not be called in tag mode")
+			return nil, nil
+		}
+		rt.gitTagList = func(dir string) ([]string, error) { return []string{"v1.4.0", "v1.2.0"}, nil }
+
+		intent, err := prReleaseComputeIntentWith(rt, "/mock/root", "/mock/work", "minor", "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if intent.PreviousVersion != "1.4.0" {
+			t.Errorf("PreviousVersion: got %q, want %q", intent.PreviousVersion, "1.4.0")
+		}
+		if intent.ComputedVersion != "1.5.0" {
+			t.Errorf("ComputedVersion: got %q, want %q", intent.ComputedVersion, "1.5.0")
+		}
+		if intent.TagName != "v1.5.0" {
+			t.Errorf("TagName: got %q, want %q", intent.TagName, "v1.5.0")
+		}
+	})
+
+	t.Run("falls back to 0.0.0 when no semver tags exist", func(t *testing.T) {
+		rt := releaseTestRuntime("")
+		rt.configRead = func(root string) (*config.Config, error) {
+			return &config.Config{Version: &config.VersionSection{Mode: "tag"}}, nil
+		}
+		rt.versionDetect = func(root, path, fileType string) (*version.VersionFile, error) {
+			t.Fatal("versionDetect must not be called in tag mode")
+			return nil, nil
+		}
+		rt.gitTagList = func(dir string) ([]string, error) { return nil, nil }
+
+		intent, err := prReleaseComputeIntentWith(rt, "/mock/root", "/mock/work", "patch", "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if intent.PreviousVersion != "0.0.0" {
+			t.Errorf("PreviousVersion: got %q, want %q", intent.PreviousVersion, "0.0.0")
+		}
+		if intent.ComputedVersion != "0.0.1" {
+			t.Errorf("ComputedVersion: got %q, want %q", intent.ComputedVersion, "0.0.1")
+		}
+	})
+
+	t.Run("file mode unchanged: version still derived from version file", func(t *testing.T) {
+		rt := releaseTestRuntime("2.3.1")
+		rt.configRead = func(root string) (*config.Config, error) {
+			return &config.Config{Version: &config.VersionSection{Mode: "file"}}, nil
+		}
+		rt.gitTagList = func(dir string) ([]string, error) { return nil, nil }
+
+		intent, err := prReleaseComputeIntentWith(rt, "/mock/root", "/mock/work", "patch", "")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if intent.PreviousVersion != "2.3.1" {
+			t.Errorf("PreviousVersion: got %q, want %q", intent.PreviousVersion, "2.3.1")
+		}
+		if intent.ComputedVersion != "2.3.2" {
+			t.Errorf("ComputedVersion: got %q, want %q", intent.ComputedVersion, "2.3.2")
+		}
+	})
+}
+
 func TestPRApply_WithoutRelease_Unchanged(t *testing.T) {
 	// No releaseLevel: intent stays nil, so prReleaseAddLabelWith (and thus
 	// execRun) must never be invoked — the mock fails the test if it is.

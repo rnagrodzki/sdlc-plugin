@@ -628,21 +628,16 @@ func prReleaseComputeIntentWith(rt prRuntime, mainRoot, workDir, level, preRelea
 	var tagPrefix string
 	var versionFilePath string
 	var fileType string
+	var isTagMode bool
 	if cfg != nil && cfg.Version != nil {
 		tagPrefix = cfg.Version.TagPrefix
 		versionFilePath = cfg.Version.VersionFile
 		fileType = cfg.Version.FileType
+		isTagMode = cfg.Version.Mode == "tag"
 	}
 	if tagPrefix == "" {
 		tagPrefix = "v"
 	}
-
-	// Detect version file.
-	vf, err := rt.versionDetect(mainRoot, versionFilePath, fileType)
-	if err != nil {
-		return nil, &mcpserver.DomainError{Msg: "version detection: " + err.Error()}
-	}
-	fileVersion := vf.Version
 
 	// Best-effort fetch tags (no remote in tests, CI may time out).
 	_ = rt.gitFetchTags(workDir)
@@ -653,6 +648,23 @@ func prReleaseComputeIntentWith(rt prRuntime, mainRoot, workDir, level, preRelea
 		tags = nil // degrade gracefully
 	}
 	highestTag := prReleaseHighestTagVersion(tags, tagPrefix)
+
+	// Version source: tag mode derives the current version from the
+	// highest semver git tag (no version file to detect), mirroring
+	// versionPrepareCore's isTagMode handling.
+	var fileVersion string
+	if isTagMode {
+		fileVersion = highestTag
+		if fileVersion == "" {
+			fileVersion = "0.0.0"
+		}
+	} else {
+		vf, err := rt.versionDetect(mainRoot, versionFilePath, fileType)
+		if err != nil {
+			return nil, &mcpserver.DomainError{Msg: "version detection: " + err.Error()}
+		}
+		fileVersion = vf.Version
+	}
 
 	// Bump base = max(fileVersion, highestTag).
 	bumpBase := fileVersion
