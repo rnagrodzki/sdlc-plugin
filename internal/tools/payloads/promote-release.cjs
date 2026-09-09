@@ -22,7 +22,8 @@
  *      ships. See DECISIONS below for why this departs from a literal
  *      reading of the step list.
  *   6. Bump the version file to the target version (format-preserving) and
- *      prepend CHANGELOG.md with notes pulled from the RC's GitHub Release.
+ *      prepend CHANGELOG.md with notes aggregated from ALL RC GitHub Releases
+ *      for the target version (deduplicated, labeled per-RC).
  *      This bump is committed to the CURRENT branch HEAD (which may have
  *      advanced past the RC) — it is bookkeeping, not part of the tagged
  *      release commit. The tagged commit's version file therefore still
@@ -63,7 +64,7 @@
 
 'use strict';
 
-/** @version 2 — promote-release script version. Bump when behavior changes. */
+/** @version 3 — promote-release script version. Bump when behavior changes. */
 const PROMOTE_RELEASE_SCRIPT_VERSION = 3;
 
 const fs   = require('node:fs');
@@ -284,7 +285,12 @@ function findLatestRCTag(repoRoot, tagPrefix, targetBase) {
  * Returns [] if no RC tag exists.
  */
 function findAllRCTags(repoRoot, tagPrefix, targetBase) {
-  const out = exec('git tag --list', { cwd: repoRoot });
+  let out;
+  try {
+    out = execSync('git tag --list', { encoding: 'utf8', cwd: repoRoot, stdio: 'pipe' }).trim();
+  } catch (err) {
+    fail(`git tag --list failed (exit ${err.status}): ${err.message}`);
+  }
   if (!out) return [];
 
   const needle = `${tagPrefix}${targetBase}-rc`;
@@ -319,6 +325,7 @@ function readRCNotes(rcTag, repoRoot) {
     notes = getTagMessage(rcTag, repoRoot);
   }
   if (!notes) {
+    console.log(`Warning: could not read release notes for ${rcTag} (gh release view and tag message both failed); using placeholder.`);
     return `Release ${rcTag}`;
   }
   return notes.replace(/^##\s*\[[^\]]+\]\s*\n*/, '').trim() || `Release ${rcTag}`;
@@ -401,6 +408,7 @@ function main() {
   // target — not just the latest RC — so multi-RC cycles don't lose notes.
   const allRCTags = findAllRCTags(repoRoot, tagPrefix, targetBase);
   const notes = readAllRCNotes(allRCTags, repoRoot);
+  console.log(`Aggregated notes from ${allRCTags.length} RC tag(s).`);
 
   // Step 7: Bump version file (format-preserving), on current branch HEAD.
   // Gate matches release-on-main.cjs: skip in tag-only mode (no version file
@@ -432,7 +440,17 @@ function main() {
       execOrThrow(`git add "${f}"`, { cwd: repoRoot });
     }
 
-    const hasStagedChanges = exec('git diff --cached --quiet', { cwd: repoRoot }) === null;
+    let hasStagedChanges;
+    try {
+      execSync('git diff --cached --quiet', { cwd: repoRoot, stdio: 'pipe' });
+      hasStagedChanges = false;
+    } catch (err) {
+      if (err.status === 1) {
+        hasStagedChanges = true;
+      } else {
+        fail(`git diff --cached --quiet failed (exit ${err.status}): ${err.message}`);
+      }
+    }
     if (hasStagedChanges) {
       const commitMsg = `chore(release): promote ${targetTag}`;
       withTmpFile(commitMsg, (tmpPath) => {

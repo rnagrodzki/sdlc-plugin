@@ -15,7 +15,7 @@
  *   Direct release — bumps version file, prepends CHANGELOG, creates final
  *     tag + GitHub Release.
  *   RC release     — creates RC tag (v1.3.0-rc1), GitHub pre-release. Does
- *     NOT bump version file or CHANGELOG.
+ *     NOT bump version file. DOES prepend CHANGELOG with the RC entry.
  *
  * Exit codes: 0 = success / no-op (no release label), 1 = error
  *
@@ -24,7 +24,7 @@
 
 'use strict';
 
-/** @version 2 — release-on-main script version. Bump when behavior changes. */
+/** @version 3 — release-on-main script version. Bump when behavior changes. */
 const RELEASE_ON_MAIN_SCRIPT_VERSION = 3;
 
 const fs   = require('node:fs');
@@ -498,7 +498,18 @@ function main() {
       for (const f of filesToAdd) {
         execOrThrow(`git add "${f}"`, { cwd: repoRoot });
       }
-      const hasStagedChanges = exec('git diff --cached --quiet', { cwd: repoRoot }) === null;
+      let hasStagedChanges;
+      try {
+        execSync('git diff --cached --quiet', { cwd: repoRoot, stdio: 'pipe' });
+        hasStagedChanges = false;
+      } catch (err) {
+        if (err.status === 1) {
+          hasStagedChanges = true;
+        } else {
+          process.stderr.write(`git diff --cached --quiet failed (exit ${err.status}): ${err.message}\n`);
+          process.exit(1);
+        }
+      }
       if (hasStagedChanges) {
         const commitMsg = `chore(release): changelog for ${rcTag}`;
         withTmpFile(commitMsg, (tmpPath) => {
@@ -507,6 +518,8 @@ function main() {
         const branch = process.env.GITHUB_REF_NAME || 'main';
         execOrThrow(`git push origin HEAD:${branch}`, { cwd: repoRoot });
         console.log(`Committed and pushed changelog update to ${branch}.`);
+      } else {
+        console.log('No staged changes after changelog write — files already at target.');
       }
     }
 
@@ -564,7 +577,18 @@ function main() {
       }
 
       // Guard: only commit if there are staged changes.
-      const hasStagedChanges = exec('git diff --cached --quiet', { cwd: repoRoot }) === null;
+      let hasStagedChanges;
+      try {
+        execSync('git diff --cached --quiet', { cwd: repoRoot, stdio: 'pipe' });
+        hasStagedChanges = false;
+      } catch (err) {
+        if (err.status === 1) {
+          hasStagedChanges = true;
+        } else {
+          process.stderr.write(`git diff --cached --quiet failed (exit ${err.status}): ${err.message}\n`);
+          process.exit(1);
+        }
+      }
       if (hasStagedChanges) {
         const commitMsg = `chore(release): ${newVersion}`;
         withTmpFile(commitMsg, (tmpPath) => {
