@@ -35,11 +35,13 @@ type VersionSourceInfo struct {
 
 // VersionBumpOption describes a single bump possibility.
 //
-// SuggestedPreRelease is "rc" when Result already has one or more existing
-// RC tags (see VersionPrepareOut.ExistingRCs) and the version config's
-// RCAutoContinue is true (the default) — i.e. this bump target is already
-// mid-RC-train, so the safer default is another RC rather than a final
-// release. Empty when there's no suggestion either way.
+// SuggestedPreRelease is "rc" when the version config's PreReleasePolicy
+// says to suggest one for this bump target: "always-rc" always suggests
+// one, "continue-rc" (the default) only when Result already has one or
+// more existing RC tags (see VersionPrepareOut.ExistingRCs) — i.e. this
+// bump target is already mid-RC-train, so the safer default is another RC
+// rather than a final release — and "never" never suggests one. Empty
+// when there's no suggestion either way.
 type VersionBumpOption struct {
 	Level               string `json:"level"`
 	Result              string `json:"result"`
@@ -74,15 +76,15 @@ type VersionIdempotency struct {
 
 // VersionConfigInfo describes the resolved version config section.
 type VersionConfigInfo struct {
-	Mode           string `json:"mode"`
-	VersionFile    string `json:"versionFile"`
-	FileType       string `json:"fileType"`
-	TagPrefix      string `json:"tagPrefix"`
-	Changelog      bool   `json:"changelog"`
-	ChangelogFile  string `json:"changelogFile"`
-	TicketPrefix   string `json:"ticketPrefix,omitempty"`
-	PreRelease     string `json:"preRelease,omitempty"`
-	RCAutoContinue bool   `json:"rcAutoContinue"`
+	Mode             string `json:"mode"`
+	VersionFile      string `json:"versionFile"`
+	FileType         string `json:"fileType"`
+	TagPrefix        string `json:"tagPrefix"`
+	Changelog        bool   `json:"changelog"`
+	ChangelogFile    string `json:"changelogFile"`
+	TicketPrefix     string `json:"ticketPrefix,omitempty"`
+	PreRelease       string `json:"preRelease,omitempty"`
+	PreReleasePolicy string `json:"preReleasePolicy"`
 }
 
 // DivergenceInfo describes a divergence between the file version and
@@ -155,15 +157,15 @@ func versionPrepare(cfgRoot, gitRoot string, in VersionPrepareIn) (VersionPrepar
 		out.ConfigPresent = true
 		vs := cfg.Version
 		out.VersionConfig = &VersionConfigInfo{
-			Mode:           vs.Mode,
-			VersionFile:    vs.VersionFile,
-			FileType:       vs.FileType,
-			TagPrefix:      vs.TagPrefix,
-			Changelog:      vs.Changelog,
-			ChangelogFile:  vs.ChangelogFile,
-			TicketPrefix:   vs.TicketPrefix,
-			PreRelease:     vs.PreRelease,
-			RCAutoContinue: vs.RCAutoContinue,
+			Mode:             vs.Mode,
+			VersionFile:      vs.VersionFile,
+			FileType:         vs.FileType,
+			TagPrefix:        vs.TagPrefix,
+			Changelog:        vs.Changelog,
+			ChangelogFile:    vs.ChangelogFile,
+			TicketPrefix:     vs.TicketPrefix,
+			PreRelease:       vs.PreRelease,
+			PreReleasePolicy: vs.PreReleasePolicy,
 		}
 		versionFile = vs.VersionFile
 		fileType = vs.FileType
@@ -317,9 +319,9 @@ func versionPrepare(cfgRoot, gitRoot string, in VersionPrepareIn) (VersionPrepar
 	}
 
 	// Bump options for standard levels, computed from bumpBase.
-	rcAutoContinue := true
-	if cfg != nil && cfg.Version != nil {
-		rcAutoContinue = cfg.Version.RCAutoContinue
+	preReleasePolicy := "continue-rc"
+	if cfg != nil && cfg.Version != nil && cfg.Version.PreReleasePolicy != "" {
+		preReleasePolicy = cfg.Version.PreReleasePolicy
 	}
 	bumpVF := &version.VersionFile{Version: bumpBase}
 	existingRCs := make(map[string][]string)
@@ -345,10 +347,7 @@ func versionPrepare(cfgRoot, gitRoot string, in VersionPrepareIn) (VersionPrepar
 			existingRCs[result] = rcs
 		}
 
-		var suggestedPreRelease string
-		if len(rcs) > 0 && rcAutoContinue {
-			suggestedPreRelease = "rc"
-		}
+		suggestedPreRelease := versionSuggestedPreRelease(preReleasePolicy, len(rcs) > 0)
 
 		opt := VersionBumpOption{
 			Level:               level,
@@ -404,6 +403,27 @@ func versionPrepare(cfgRoot, gitRoot string, in VersionPrepareIn) (VersionPrepar
 	out.Summary, out.Actions, out.Next = versionPrepareSummary(out)
 
 	return out, nil
+}
+
+// versionSuggestedPreRelease resolves the version config's PreReleasePolicy
+// enum ("always-rc" | "continue-rc" | "never") plus whether the bump target
+// already has one or more existing RC tags into a SuggestedPreRelease value
+// for a VersionBumpOption: "rc" to suggest a release candidate, "" to
+// suggest a final release. Pure and side-effect-free so it's unit-testable
+// without any filesystem or git fixtures. An unrecognized policy value
+// falls through with no suggestion, same as "never".
+func versionSuggestedPreRelease(policy string, hasExistingRCs bool) string {
+	switch policy {
+	case "always-rc":
+		return "rc"
+	case "continue-rc":
+		if hasExistingRCs {
+			return "rc"
+		}
+	case "never":
+		// never suggest RC
+	}
+	return ""
 }
 
 // versionPrepareSummary derives summary text, action list, and next-step

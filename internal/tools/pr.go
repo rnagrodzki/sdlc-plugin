@@ -132,8 +132,8 @@ type prRuntime struct {
 	ghPRForBranch       func(dir string) ghx.PRMetadata
 	ghPRCreate          func(dir, title, body string) (string, error)
 	ghPREdit            func(dir string, num int, title, body string) (string, error)
-	ghLabelList         func(dir string) ([]string, error)        // wired by Task 6
-	ghLabelCreate       func(dir, name, color, desc string) error // wired by Task 6
+	ghLabelList         func(dir string) ([]string, error)
+	ghLabelCreate       func(dir, name, color, desc string) error
 	ghAuthProbe         func(dir, host string) ghx.AuthProbeResult
 	ghRepoAccessProbe   func(dir, owner, repo, host string) ghx.RepoAccessResult
 	ghGetAccounts       func(dir, host string) ([]ghx.Account, error)
@@ -158,8 +158,8 @@ var defaultPRRuntime = prRuntime{
 	ghPRForBranch:       ghx.PRForBranch,
 	ghPRCreate:          ghx.PRCreate,
 	ghPREdit:            ghx.PREdit,
-	ghLabelList:         nil, // Task 6 wires ghx.LabelList
-	ghLabelCreate:       nil, // Task 6 wires ghx.LabelCreate
+	ghLabelList:         ghx.LabelList,
+	ghLabelCreate:       ghx.LabelCreate,
 	ghAuthProbe:         ghx.AuthProbe,
 	ghRepoAccessProbe:   ghx.RepoAccessProbe,
 	ghGetAccounts:       ghx.GetAccounts,
@@ -530,6 +530,12 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 		}
 		body = prReleaseInjectMarkers(body, intent.ComputedVersion, intent.Level, intent.PreRelease, in.ReleaseNotes)
 		intent.NotesInBody = in.ReleaseNotes != ""
+
+		// Best-effort: make sure every release:* label exists before
+		// prReleaseAddLabelWith below applies one via --add-label. Its
+		// return is intentionally discarded — see ensureReleaseLabels' doc
+		// comment for why label-creation failure must never block the PR.
+		_ = ensureReleaseLabels(rt, workDir)
 	}
 
 	meta := rt.ghPRForBranch(workDir)
@@ -770,6 +776,63 @@ func prReleaseStripMarkers(body string) string {
 		return strings.TrimRight(body[:idx], "\n")
 	}
 	return body
+}
+
+// releaseLabels enumerates every release:* label pr_apply may need to apply,
+// with GitHub label colors (6-hex digits, no leading '#') and descriptions.
+// ensureReleaseLabels creates all six up front — not just the one the
+// current call needs — for forward-compatibility (a later PR may need a
+// different level without re-probing gh). Names must keep matching
+// /^release:(major|minor|patch)(-rc)?$/, the regex
+// .github/scripts/verify-release-intent.cjs and release-on-main.cjs use to
+// recognize a release label.
+var releaseLabels = []struct {
+	Name  string
+	Color string
+	Desc  string
+}{
+	{"release:patch", "0E8A16", "Patch release"},
+	{"release:minor", "1D76DB", "Minor release"},
+	{"release:major", "D93F0B", "Major release"},
+	{"release:patch-rc", "BFD4F2", "Patch release candidate"},
+	{"release:minor-rc", "C5DEF5", "Minor release candidate"},
+	{"release:major-rc", "FCD8D4", "Major release candidate"},
+}
+
+// ensureReleaseLabels creates any releaseLabels entries missing from the
+// repo (idempotent — labels gh already lists are skipped, not recreated).
+//
+// It is best-effort end to end: a failure listing labels (no gh, no auth,
+// network) is swallowed and reported as nil, matching the shape of the
+// existing FetchTags-is-best-effort precedent in prReleaseComputeIntentWith
+// above. A failure creating an individual label does not stop the rest of
+// the loop from being attempted, but is returned to the caller for test
+// observability — production callers (prApplyCoreWith) discard it
+// unconditionally: a missing label here is not fatal because
+// prReleaseAddLabelWith's own --add-label call fails loud (InfraError) if
+// the label genuinely doesn't exist, which is the actual point where a
+// missing label must block the PR.
+func ensureReleaseLabels(rt prRuntime, workDir string) error {
+	existing, err := rt.ghLabelList(workDir)
+	if err != nil {
+		return nil
+	}
+
+	have := make(map[string]bool, len(existing))
+	for _, name := range existing {
+		have[name] = true
+	}
+
+	var firstErr error
+	for _, l := range releaseLabels {
+		if have[l.Name] {
+			continue
+		}
+		if createErr := rt.ghLabelCreate(workDir, l.Name, l.Color, l.Desc); createErr != nil && firstErr == nil {
+			firstErr = createErr
+		}
+	}
+	return firstErr
 }
 
 // prReleaseAddLabelWith applies a label to the current branch's PR via

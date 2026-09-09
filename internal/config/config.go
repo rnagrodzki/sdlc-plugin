@@ -150,22 +150,29 @@ func (a *AutomationSection) StepMode(step string) string {
 // prefix (e.g. "PROJ"). PreRelease is the default pre-release label applied
 // when no explicit base bump or --pre is given.
 //
-// RCAutoContinue controls whether version_prepare suggests continuing an
-// existing release-candidate train (another "-rc" for a version that
-// already has one or more RC tags) instead of a final release, when the
-// caller hasn't said otherwise (e.g. under --auto). Defaults to true:
-// once a version has an RC out, staying in RC mode is the safer default
-// until something explicitly asks for the final release.
+// PreReleasePolicy controls whether version_prepare suggests a
+// release-candidate build instead of a final release, when the caller
+// hasn't said otherwise (e.g. under --auto). One of:
+//   - "always-rc": always suggest an RC, regardless of whether the bump
+//     target already has RC tags.
+//   - "continue-rc" (default): suggest an RC only when the bump target
+//     already has one or more existing RC tags — i.e. once a version has
+//     an RC out, staying in RC mode is the safer default until something
+//     explicitly asks for the final release.
+//   - "never": never suggest an RC.
+//
+// For backward compatibility, config.json may still set the legacy boolean
+// "rcAutoContinue" instead of "preReleasePolicy" — see parseVersionSection.
 type VersionSection struct {
-	Mode           string `json:"mode"`
-	VersionFile    string `json:"versionFile"`
-	FileType       string `json:"fileType"`
-	TagPrefix      string `json:"tagPrefix"`
-	Changelog      bool   `json:"changelog"`
-	ChangelogFile  string `json:"changelogFile"`
-	TicketPrefix   string `json:"ticketPrefix"`
-	PreRelease     string `json:"preRelease"`
-	RCAutoContinue bool   `json:"rcAutoContinue"`
+	Mode             string `json:"mode"`
+	VersionFile      string `json:"versionFile"`
+	FileType         string `json:"fileType"`
+	TagPrefix        string `json:"tagPrefix"`
+	Changelog        bool   `json:"changelog"`
+	ChangelogFile    string `json:"changelogFile"`
+	TicketPrefix     string `json:"ticketPrefix"`
+	PreRelease       string `json:"preRelease"`
+	PreReleasePolicy string `json:"preReleasePolicy"`
 }
 
 // parseVersionSection converts a raw JSON map into a VersionSection,
@@ -202,10 +209,17 @@ func parseVersionSection(raw map[string]any) *VersionSection {
 	if s, ok := raw["preRelease"].(string); ok {
 		v.PreRelease = s
 	}
-	if b, ok := raw["rcAutoContinue"].(bool); ok {
-		v.RCAutoContinue = b
+	if s, ok := raw["preReleasePolicy"].(string); ok && s != "" {
+		v.PreReleasePolicy = s
+	} else if b, ok := raw["rcAutoContinue"].(bool); ok {
+		// Backward compat: old boolean rcAutoContinue maps onto the new enum.
+		if b {
+			v.PreReleasePolicy = "continue-rc"
+		} else {
+			v.PreReleasePolicy = "never"
+		}
 	} else {
-		v.RCAutoContinue = true
+		v.PreReleasePolicy = "continue-rc"
 	}
 	applyVersionDefaults(v)
 	return v

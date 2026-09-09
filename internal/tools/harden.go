@@ -12,11 +12,11 @@ import (
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/configmigrate"
 	"github.com/rnagrodzki/sdlc-plugin/internal/dimensions"
-	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/frontmatter"
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
+	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
@@ -150,8 +150,8 @@ type hardenRepository struct {
 // with evidence of recurring patterns (e.g. same guardrail hit across 3+
 // runs triggers severity escalation in proposals).
 type hardenHistory struct {
-	RecentRuns     []history.RunRecord      `json:"recentRuns,omitempty"`
-	OpenDeferred   []history.DeferredIssue  `json:"openDeferred,omitempty"`
+	RecentRuns   []history.RunRecord     `json:"recentRuns,omitempty"`
+	OpenDeferred []history.DeferredIssue `json:"openDeferred,omitempty"`
 }
 
 type hardenManifest struct {

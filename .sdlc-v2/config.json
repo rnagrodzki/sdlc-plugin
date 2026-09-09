@@ -144,6 +144,6 @@
     "versionFile": "plugins/sdlc/.claude-plugin/plugin.json",
     "changelog": true,
     "changelogFile": "CHANGELOG.md",
-    "rcAutoContinue": true
+    "preReleasePolicy": "always-rc"
   }
 }

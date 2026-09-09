@@ -419,8 +419,8 @@ func TestParseVersionSection_Full(t *testing.T) {
 
 	raw["rcAutoContinue"] = false
 	v4 := parseVersionSection(raw)
-	if v4.RCAutoContinue {
-		t.Errorf("RCAutoContinue = %v, want explicit false preserved", v4.RCAutoContinue)
+	if v4.PreReleasePolicy != "never" {
+		t.Errorf("PreReleasePolicy = %q, want %q (rcAutoContinue:false backward-compat)", v4.PreReleasePolicy, "never")
 	}
 }
 
@@ -449,14 +449,50 @@ func TestParseVersionSection_Defaults(t *testing.T) {
 		t.Errorf("Mode = %q, want explicit value %q preserved", v3.Mode, "tag")
 	}
 
-	if !v.RCAutoContinue {
-		t.Errorf("RCAutoContinue = %v, want default true when absent", v.RCAutoContinue)
+	if v.PreReleasePolicy != "continue-rc" {
+		t.Errorf("PreReleasePolicy = %q, want default %q when absent", v.PreReleasePolicy, "continue-rc")
 	}
 }
 
 func TestParseVersionSection_Nil(t *testing.T) {
 	if v := parseVersionSection(nil); v != nil {
 		t.Errorf("parseVersionSection(nil) = %v, want nil", v)
+	}
+}
+
+// TestParseVersionSection_PreReleasePolicy covers the full backward-compat
+// matrix documented on VersionSection: an explicit "preReleasePolicy" wins
+// outright, the legacy boolean "rcAutoContinue" maps true→"continue-rc" and
+// false→"never", and the default (neither key present) is "continue-rc" —
+// the same suggestion behavior the old rcAutoContinue=true default gave.
+func TestPreReleasePolicy_Parse(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  map[string]any
+		want string
+	}{
+		{"explicit always-rc", map[string]any{"preReleasePolicy": "always-rc"}, "always-rc"},
+		{"explicit continue-rc", map[string]any{"preReleasePolicy": "continue-rc"}, "continue-rc"},
+		{"explicit never", map[string]any{"preReleasePolicy": "never"}, "never"},
+		{"legacy rcAutoContinue true", map[string]any{"rcAutoContinue": true}, "continue-rc"},
+		{"legacy rcAutoContinue false", map[string]any{"rcAutoContinue": false}, "never"},
+		{"neither key present", map[string]any{}, "continue-rc"},
+		{
+			"explicit preReleasePolicy wins over legacy rcAutoContinue",
+			map[string]any{"preReleasePolicy": "always-rc", "rcAutoContinue": false},
+			"always-rc",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := parseVersionSection(tc.raw)
+			if v == nil {
+				t.Fatal("parseVersionSection: expected non-nil result")
+			}
+			if v.PreReleasePolicy != tc.want {
+				t.Errorf("PreReleasePolicy = %q, want %q", v.PreReleasePolicy, tc.want)
+			}
+		})
 	}
 }
 

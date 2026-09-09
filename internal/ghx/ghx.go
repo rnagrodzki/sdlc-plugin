@@ -466,6 +466,43 @@ func PRCreate(dir, title, body string) (string, error) {
 	return run(dir, "pr", "create", "--title", title, "--body", body)
 }
 
+// LabelList returns the names of every label defined on the repo, via
+// `gh label list --json name --limit 200`. Callers needing to know whether
+// a specific release:* label already exists (Task 6's ensureReleaseLabels)
+// use this to avoid recreating labels that are already present.
+func LabelList(dir string) ([]string, error) {
+	raw, err := run(dir, "label", "list", "--json", "name", "--limit", "200")
+	if err != nil {
+		return nil, err
+	}
+	if raw == "" {
+		return nil, nil
+	}
+
+	var parsed []struct {
+		Name string `json:"name"`
+	}
+	if jsonErr := json.Unmarshal([]byte(raw), &parsed); jsonErr != nil {
+		return nil, fmt.Errorf("ghx: could not parse gh label list output: %w", jsonErr)
+	}
+
+	names := make([]string, 0, len(parsed))
+	for _, p := range parsed {
+		names = append(names, p.Name)
+	}
+	return names, nil
+}
+
+// LabelCreate runs `gh label create <name> --color <color> --description
+// <description>` to create a new repo label.
+func LabelCreate(dir, name, color, description string) error {
+	if err := validatePositionalArg(name, "LabelCreate"); err != nil {
+		return err
+	}
+	_, err := run(dir, "label", "create", name, "--color", color, "--description", description)
+	return err
+}
+
 // PREdit runs `gh pr edit <number> --title <title> --body <body>` and
 // returns gh's stdout (the PR URL) on success.
 func PREdit(dir string, number int, title, body string) (string, error) {

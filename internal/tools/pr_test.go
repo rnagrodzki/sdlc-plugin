@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -759,4 +760,118 @@ func TestPRApply_WithRC_PreReleaseMarker(t *testing.T) {
 	if !strings.Contains(body, "<!-- release-level:minor -->") {
 		t.Errorf("body missing release-level:minor marker")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// ensureReleaseLabels — prRuntime mocks only, no FS/gh involved.
+// ---------------------------------------------------------------------------
+
+func TestEnsureReleaseLabels(t *testing.T) {
+	t.Run("no existing labels — creates all six", func(t *testing.T) {
+		var created []string
+		rt := prRuntime{
+			ghLabelList: func(dir string) ([]string, error) { return nil, nil },
+			ghLabelCreate: func(dir, name, color, desc string) error {
+				created = append(created, name)
+				return nil
+			},
+		}
+		if err := ensureReleaseLabels(rt, "/fake/dir"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(created) != len(releaseLabels) {
+			t.Fatalf("expected %d labels created, got %d: %v", len(releaseLabels), len(created), created)
+		}
+		for _, l := range releaseLabels {
+			found := false
+			for _, name := range created {
+				if name == l.Name {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("expected %q to be created, was not", l.Name)
+			}
+		}
+	})
+
+	t.Run("all labels already exist — idempotent, no creates", func(t *testing.T) {
+		existing := make([]string, 0, len(releaseLabels))
+		for _, l := range releaseLabels {
+			existing = append(existing, l.Name)
+		}
+		rt := prRuntime{
+			ghLabelList: func(dir string) ([]string, error) { return existing, nil },
+			ghLabelCreate: func(dir, name, color, desc string) error {
+				t.Fatalf("ghLabelCreate should not be called for already-existing label %q", name)
+				return nil
+			},
+		}
+		if err := ensureReleaseLabels(rt, "/fake/dir"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("some labels exist — only missing ones created", func(t *testing.T) {
+		var created []string
+		rt := prRuntime{
+			ghLabelList: func(dir string) ([]string, error) {
+				return []string{"release:patch", "release:minor"}, nil
+			},
+			ghLabelCreate: func(dir, name, color, desc string) error {
+				created = append(created, name)
+				return nil
+			},
+		}
+		if err := ensureReleaseLabels(rt, "/fake/dir"); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(created) != len(releaseLabels)-2 {
+			t.Fatalf("expected %d labels created, got %d: %v", len(releaseLabels)-2, len(created), created)
+		}
+		for _, name := range created {
+			if name == "release:patch" || name == "release:minor" {
+				t.Errorf("already-existing label %q should not have been created", name)
+			}
+		}
+	})
+
+	t.Run("ghLabelList failure — best-effort, no creates attempted, nil error", func(t *testing.T) {
+		called := false
+		rt := prRuntime{
+			ghLabelList: func(dir string) ([]string, error) { return nil, errors.New("gh not authenticated") },
+			ghLabelCreate: func(dir, name, color, desc string) error {
+				called = true
+				return nil
+			},
+		}
+		if err := ensureReleaseLabels(rt, "/fake/dir"); err != nil {
+			t.Fatalf("expected nil error when ghLabelList fails (best-effort), got %v", err)
+		}
+		if called {
+			t.Fatal("ghLabelCreate should not be called when ghLabelList fails")
+		}
+	})
+
+	t.Run("ghLabelCreate failure on one label — remaining labels still attempted", func(t *testing.T) {
+		var created []string
+		rt := prRuntime{
+			ghLabelList: func(dir string) ([]string, error) { return nil, nil },
+			ghLabelCreate: func(dir, name, color, desc string) error {
+				created = append(created, name)
+				if name == "release:patch" {
+					return errors.New("simulated create failure")
+				}
+				return nil
+			},
+		}
+		err := ensureReleaseLabels(rt, "/fake/dir")
+		if err == nil {
+			t.Fatal("expected non-nil error surfaced from the failed create")
+		}
+		if len(created) != len(releaseLabels) {
+			t.Fatalf("expected all %d labels attempted despite one failure, got %d: %v", len(releaseLabels), len(created), created)
+		}
+	})
 }

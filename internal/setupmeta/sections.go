@@ -112,6 +112,14 @@ var versionFields = []Field{
 		Default:     "",
 		Description: "When set (e.g., `rc`, `beta`, `alpha`), /version and /ship default to a pre-release bump (e.g., `1.2.4-rc.1`) on every default invocation until an explicit `major|minor|patch` graduates the release. Must match `^[a-z][a-z0-9]*$`; empty string omits the field and preserves stable-release behavior.",
 	},
+	{
+		Name:        "preReleasePolicy",
+		Label:       "Release-candidate continuation policy",
+		Type:        "enum",
+		Options:     []string{"always-rc", "continue-rc", "never"},
+		Default:     "continue-rc",
+		Description: "Controls whether /version suggests a release-candidate build instead of a final release. `always-rc` always suggests one; `continue-rc` (default) suggests one only when the bump target already has existing RC tags, continuing the RC train; `never` never suggests one.",
+	},
 }
 
 var jiraFields = []Field{

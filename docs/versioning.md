@@ -237,7 +237,7 @@ Full `.sdlc-v2/config.json` `version` section:
     "changelogFile": "CHANGELOG.md",
     "ticketPrefix": "PROJ-",
     "preRelease": "rc",
-    "rcAutoContinue": true
+    "preReleasePolicy": "continue-rc"
   }
 }
 ```
@@ -252,7 +252,7 @@ Full `.sdlc-v2/config.json` `version` section:
 | `changelogFile` | No | `"CHANGELOG.md"` (used only when `changelog` is `true`) | Path to changelog file |
 | `ticketPrefix` | No | — | Jira ticket prefix for linking (e.g., `"PROJ-"`) |
 | `preRelease` | No | — | Default pre-release label (e.g., `"rc"`) |
-| `rcAutoContinue` | No | `true` | When a bump target already has RC tags, suggest continuing the RC train (another `-rc`) instead of a final release |
+| `preReleasePolicy` | No | `"continue-rc"` | Whether `/version` suggests a release-candidate build: `"always-rc"` always suggests one, `"continue-rc"` only when the bump target already has existing RC tags (continue the RC train instead of a final release), `"never"` never suggests one. The legacy boolean `rcAutoContinue` (`true`/`false`) is still accepted and maps to `"continue-rc"`/`"never"` respectively. |
 
 ## Troubleshooting
 
