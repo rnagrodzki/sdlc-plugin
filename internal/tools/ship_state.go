@@ -529,6 +529,8 @@ func shipState(root, workDir string, in ShipStateIn, now func() time.Time) (any,
 		return shipStateDeferredList(root)
 	case "deferred_propose_followups":
 		return shipStateDeferredProposeFollowups(root)
+	case "deferred_resolve":
+		return shipStateDeferredResolve(root, in)
 
 	default:
 		return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("unknown ship_state action %q", in.Action)}
@@ -1581,6 +1583,29 @@ func shipStateDeferredAdd(root string, in ShipStateIn) (any, error) {
 }
 
 // ---------------------------------------------------------------------------
+// Action: deferred_resolve — mark a deferred issue as resolved by ID
+// ---------------------------------------------------------------------------
+
+func shipStateDeferredResolve(root string, in ShipStateIn) (any, error) {
+	d := in.Detail
+	if d == nil {
+		return nil, &mcpserver.DomainError{Msg: "deferred_resolve requires detail with id field"}
+	}
+	id := detailStr(d, "id")
+	if id == "" {
+		return nil, &mcpserver.DomainError{Msg: "deferred_resolve: detail.id is required"}
+	}
+	w := history.NewFileWriter(historyDir(root))
+	if err := w.ResolveDeferred(id); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("deferred_resolve: %s", err.Error())}
+		}
+		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("deferred_resolve: %s", err.Error()), Cause: err}
+	}
+	return map[string]any{"ok": true, "id": id}, nil
+}
+
+// ---------------------------------------------------------------------------
 // Action: deferred_list — list all deferred issues
 // ---------------------------------------------------------------------------
 
@@ -1698,7 +1723,8 @@ Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide
 - history_record: Append a pipeline run record to .sdlc-v2/history/runs.jsonl (persistent, survives state-file GC). Requires detail.skill, detail.outcome ("success"|"failure"|"partial"). Optional: detail.ts (ISO timestamp, defaults to now), detail.branch, detail.duration_ms, detail.steps, detail.guardrail_hits, detail.deferred_issues, detail.version.
 - deferred_add: Add a deferred issue to .sdlc-v2/history/deferred.json. Requires detail.id, detail.description. Optional: detail.created (defaults to now), detail.source, detail.priority ("high"|"medium"|"low", defaults to "medium").
 - deferred_list: List all deferred issues. Returns {issues, openCount}.
-- deferred_propose_followups: Return open deferred issues grouped by priority with a formatted display summary. Returns {openCount, groups, display}.`,
+- deferred_propose_followups: Return open deferred issues grouped by priority with a formatted display summary. Returns {openCount, groups, display}.
+- deferred_resolve: Mark a deferred issue as resolved by ID. Requires detail.id. Returns {ok, id}. Errors if the ID is not found.`,
 		func(ctx mcpserver.Ctx, in ShipStateIn) (any, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

@@ -11,6 +11,9 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 )
 
 // ---------------------------------------------------------------------------
@@ -107,7 +110,10 @@ func (w *FileWriter) AddDeferred(issue DeferredIssue) error {
 	if err := w.ensureDir(); err != nil {
 		return fmt.Errorf("history: create dir: %w", err)
 	}
-	issues, _ := w.readDeferred() // ignore read error — treat as empty
+	issues, err := w.readDeferred()
+	if err != nil {
+		return fmt.Errorf("history: read before add: %w", err)
+	}
 	issues = append(issues, issue)
 	return w.writeDeferred(issues)
 }
@@ -293,7 +299,7 @@ func FormatDeferredSummary(issues []DeferredIssue) string {
 			continue
 		}
 		sort.Slice(items, func(i, j int) bool { return items[i].Created < items[j].Created })
-		fmt.Fprintf(&sb, "**%s:**\n", strings.Title(prio))
+		fmt.Fprintf(&sb, "**%s:**\n", cases.Title(language.English).String(prio))
 		for _, item := range items {
 			fmt.Fprintf(&sb, "- [%s] %s (source: %s)\n", item.ID, item.Description, item.Source)
 		}

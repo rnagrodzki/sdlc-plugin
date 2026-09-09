@@ -1,6 +1,8 @@
 package history
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -199,4 +201,144 @@ func indexOf(s, substr string) int {
 		}
 	}
 	return -1
+}
+
+// ---------------------------------------------------------------------------
+// FileWriter tests — filesystem-backed, each test uses t.TempDir()
+// ---------------------------------------------------------------------------
+
+func TestFileWriter_AppendRun_ReadRecentRuns(t *testing.T) {
+	dir := t.TempDir()
+	w := NewFileWriter(dir)
+
+	runs := []RunRecord{
+		{Timestamp: "2026-01-01T00:00:00Z", Skill: "ship", Branch: "main", Outcome: "success", DurationMs: 100},
+		{Timestamp: "2026-01-02T00:00:00Z", Skill: "execute", Branch: "feat-a", Outcome: "failure", DurationMs: 200},
+		{Timestamp: "2026-01-03T00:00:00Z", Skill: "plan", Branch: "feat-b", Outcome: "success", DurationMs: 300},
+	}
+	for i, r := range runs {
+		if err := w.AppendRun(r); err != nil {
+			t.Fatalf("AppendRun #%d: %v", i, err)
+		}
+	}
+
+	// Read last 2 — should return only the two most recent records.
+	recent, err := w.ReadRecentRuns(2)
+	if err != nil {
+		t.Fatalf("ReadRecentRuns: %v", err)
+	}
+	if len(recent) != 2 {
+		t.Fatalf("expected 2 recent runs, got %d", len(recent))
+	}
+	if recent[0].Skill != "execute" {
+		t.Errorf("expected first recent run skill=execute, got %q", recent[0].Skill)
+	}
+	if recent[1].Skill != "plan" {
+		t.Errorf("expected second recent run skill=plan, got %q", recent[1].Skill)
+	}
+
+	// Read all 3.
+	all, err := w.ReadRecentRuns(10)
+	if err != nil {
+		t.Fatalf("ReadRecentRuns(10): %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("expected 3 runs total, got %d", len(all))
+	}
+}
+
+func TestFileWriter_ReadRecentRuns_MissingFile(t *testing.T) {
+	dir := t.TempDir()
+	w := NewFileWriter(filepath.Join(dir, "nonexistent"))
+
+	runs, err := w.ReadRecentRuns(5)
+	if err != nil {
+		t.Fatalf("expected nil error for missing file, got %v", err)
+	}
+	if runs != nil {
+		t.Fatalf("expected nil runs for missing file, got %v", runs)
+	}
+}
+
+func TestFileWriter_AddDeferred_ListDeferred(t *testing.T) {
+	dir := t.TempDir()
+	w := NewFileWriter(dir)
+
+	d1 := DeferredIssue{ID: "d1", Created: "2026-01-01", Source: "plan:pr", Priority: "high", Description: "Fix labels", Status: "open"}
+	d2 := DeferredIssue{ID: "d2", Created: "2026-01-02", Source: "ship:ci", Priority: "low", Description: "Pin actions", Status: "open"}
+
+	if err := w.AddDeferred(d1); err != nil {
+		t.Fatalf("AddDeferred d1: %v", err)
+	}
+	if err := w.AddDeferred(d2); err != nil {
+		t.Fatalf("AddDeferred d2: %v", err)
+	}
+
+	issues, err := w.ListDeferred()
+	if err != nil {
+		t.Fatalf("ListDeferred: %v", err)
+	}
+	if len(issues) != 2 {
+		t.Fatalf("expected 2 deferred issues, got %d", len(issues))
+	}
+	if issues[0].ID != "d1" {
+		t.Errorf("expected first issue id=d1, got %q", issues[0].ID)
+	}
+	if issues[1].ID != "d2" {
+		t.Errorf("expected second issue id=d2, got %q", issues[1].ID)
+	}
+}
+
+func TestFileWriter_ResolveDeferred(t *testing.T) {
+	dir := t.TempDir()
+	w := NewFileWriter(dir)
+
+	d1 := DeferredIssue{ID: "d1", Created: "2026-01-01", Source: "plan:pr", Priority: "high", Description: "Fix labels", Status: "open"}
+	d2 := DeferredIssue{ID: "d2", Created: "2026-01-02", Source: "ship:ci", Priority: "medium", Description: "Pin actions", Status: "open"}
+
+	_ = w.AddDeferred(d1)
+	_ = w.AddDeferred(d2)
+
+	if err := w.ResolveDeferred("d1"); err != nil {
+		t.Fatalf("ResolveDeferred d1: %v", err)
+	}
+
+	issues, err := w.ListDeferred()
+	if err != nil {
+		t.Fatalf("ListDeferred: %v", err)
+	}
+	if issues[0].Status != "resolved" {
+		t.Errorf("expected d1 status=resolved, got %q", issues[0].Status)
+	}
+	if issues[1].Status != "open" {
+		t.Errorf("expected d2 status=open, got %q", issues[1].Status)
+	}
+}
+
+func TestFileWriter_ResolveDeferred_NotFound(t *testing.T) {
+	dir := t.TempDir()
+	w := NewFileWriter(dir)
+
+	// Add one issue so the file exists, then try to resolve a non-existent ID.
+	_ = w.AddDeferred(DeferredIssue{ID: "d1", Status: "open"})
+
+	err := w.ResolveDeferred("nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent ID, got nil")
+	}
+}
+
+func TestFileWriter_AddDeferred_CorruptFile(t *testing.T) {
+	dir := t.TempDir()
+	w := NewFileWriter(dir)
+
+	// Write garbage to deferred.json before calling AddDeferred.
+	if err := os.WriteFile(filepath.Join(dir, "deferred.json"), []byte("not valid json!!!"), 0o644); err != nil {
+		t.Fatalf("setup: write corrupt file: %v", err)
+	}
+
+	err := w.AddDeferred(DeferredIssue{ID: "d1", Status: "open"})
+	if err == nil {
+		t.Fatal("expected error when deferred.json is corrupt, got nil")
+	}
 }
