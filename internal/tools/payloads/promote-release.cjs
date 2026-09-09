@@ -64,8 +64,8 @@
 
 'use strict';
 
-/** @version 3 — promote-release script version. Bump when behavior changes. */
-const PROMOTE_RELEASE_SCRIPT_VERSION = 3;
+/** @version 4 — promote-release script version. Bump when behavior changes. */
+const PROMOTE_RELEASE_SCRIPT_VERSION = 4;
 
 const fs   = require('node:fs');
 const path = require('node:path');
@@ -148,9 +148,10 @@ function parseStrictSemver(s) {
 // ---------------------------------------------------------------------------
 
 function writeVersionToFile(config, repoRoot, newVer) {
-  const versionFilePath = path.join(repoRoot, config.versionFile);
+  const vf = config.versionFile || {};
+  const versionFilePath = path.join(repoRoot, vf.path);
   const content = fs.readFileSync(versionFilePath, 'utf8');
-  const fileType = (config.fileType || '').toLowerCase();
+  const fileType = (vf.fileType || '').toLowerCase();
   let updated;
 
   if (fileType === 'package.json' || fileType === 'plugin.json') {
@@ -174,7 +175,7 @@ function writeVersionToFile(config, repoRoot, newVer) {
   }
 
   if (updated === content && !content.includes(newVer)) {
-    process.stderr.write(`Warning: version pattern not matched in ${config.versionFile}; file unchanged.\n`);
+    process.stderr.write(`Warning: version pattern not matched in ${vf.path}; file unchanged.\n`);
   }
   fs.writeFileSync(versionFilePath, updated, 'utf8');
 }
@@ -371,7 +372,7 @@ function main() {
     fail('No version config found (.sdlc-v2/config.json). Cannot promote release without versionFile/tagPrefix.');
   }
 
-  const tagPrefix = config.tagPrefix || '';
+  const tagPrefix = config.tag?.prefix || '';
   if (tagPrefix && !targetTag.startsWith(tagPrefix)) {
     fail(`Invalid version format: ${targetTag} (expected prefix "${tagPrefix}")`);
   }
@@ -414,17 +415,17 @@ function main() {
   // Gate matches release-on-main.cjs: skip in tag-only mode (no version file
   // to bump).
   const filesToAdd = [];
-  if (config.mode !== 'tag' && config.versionFile) {
+  if (config.versionFile?.enabled) {
     writeVersionToFile(config, repoRoot, targetBase);
-    filesToAdd.push(config.versionFile);
-    console.log(`Version file updated: ${config.versionFile} -> ${targetBase}`);
+    filesToAdd.push(config.versionFile.path);
+    console.log(`Version file updated: ${config.versionFile.path} -> ${targetBase}`);
   }
 
   // Step 9: Strip per-RC CHANGELOG entries for this target, then prepend the
   // single collapsed final entry with the aggregated notes.
-  // Gate matches release-on-main.cjs: only when config.changelog === true.
-  if (config.changelog === true) {
-    const changelogFile = config.changelogFile || 'CHANGELOG.md';
+  // Gate matches release-on-main.cjs: only when config.changelog.enabled is true.
+  if (config.changelog?.enabled) {
+    const changelogFile = config.changelog.file || 'CHANGELOG.md';
     stripRCEntries(repoRoot, changelogFile, tagPrefix, targetBase);
     if (prependChangelogIfMissing(repoRoot, changelogFile, targetBase, notes)) {
       filesToAdd.push(changelogFile);

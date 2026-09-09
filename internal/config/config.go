@@ -130,35 +130,20 @@ func (a *AutomationSection) StepMode(step string) string {
 	return "confirm"
 }
 
-// VersionSection controls the version skill's behaviour: where the version
-// number lives, how it's read, and whether a changelog is maintained.
+// VersionSection controls the version skill's behaviour via three
+// independently toggleable release paths — tag, versionFile, changelog —
+// that share only bump policy (PreRelease, PreReleasePolicy) and delivery
+// Method. Each path is enabled or disabled explicitly; a missing
+// sub-object means that path is disabled ({Enabled: false}), never an
+// ambiguous default.
 //
-// Mode determines whether the version is tracked in a file ("file",
-// default) or via git tags ("tag").
+// Method controls how the versionFile and changelog paths deliver their
+// writes when enabled. One of:
+//   - "push" (default): commit and push directly to main.
+//   - "pr": open a release PR instead of pushing directly to main.
 //
-// VersionFile is the path (relative to the main worktree root) to the file
-// that stores the version number. FileType names its format
-// (package.json, cargo.toml, pyproject.toml, pubspec.yaml, plugin.json,
-// version-file).
-//
-// TagPrefix is prepended to git version tags (e.g. "v").
-//
-// ChangelogMethod controls how the changelog entry is delivered on
-// release. One of:
-//   - "pr": open a changelog PR instead of pushing directly to main.
-//   - "push": push the changelog commit directly to main.
-//   - "skip" (default): do not maintain a changelog.
-//
-// When ChangelogMethod is not "skip" and ChangelogFile is unset,
-// ChangelogFile defaults to "CHANGELOG.md".
-//
-// For backward compatibility, config.json may still set the legacy
-// boolean "changelog" instead of "changelogMethod" — see
-// parseVersionSection.
-//
-// TicketPrefix filters commit messages for the changelog by Jira ticket
-// prefix (e.g. "PROJ"). PreRelease is the default pre-release label applied
-// when no explicit base bump or --pre is given.
+// PreRelease is the default pre-release label applied when no explicit
+// base bump or --pre is given.
 //
 // PreReleasePolicy controls whether version_prepare suggests a
 // release-candidate build instead of a final release, when the caller
@@ -171,88 +156,158 @@ func (a *AutomationSection) StepMode(step string) string {
 //     explicitly asks for the final release.
 //   - "never": never suggest an RC.
 //
-// For backward compatibility, config.json may still set the legacy boolean
-// "rcAutoContinue" instead of "preReleasePolicy" — see parseVersionSection.
+// This is a breaking config shape: the old flat shape (top-level "mode",
+// string "versionFile", "changelogMethod"/"changelog" boolean,
+// "rcAutoContinue" boolean) is rejected outright by parseVersionSection —
+// there is no backward-compat reader. Run /setup --only version to
+// migrate.
 type VersionSection struct {
-	Mode             string `json:"mode"`
-	VersionFile      string `json:"versionFile"`
-	FileType         string `json:"fileType"`
-	TagPrefix        string `json:"tagPrefix"`
-	ChangelogMethod  string `json:"changelogMethod"`
-	ChangelogFile    string `json:"changelogFile"`
-	TicketPrefix     string `json:"ticketPrefix"`
-	PreRelease       string `json:"preRelease"`
-	PreReleasePolicy string `json:"preReleasePolicy"`
+	PreRelease       string                 `json:"preRelease"`
+	PreReleasePolicy string                 `json:"preReleasePolicy"`
+	Method           string                 `json:"method"`
+	Tag              VersionTagConfig       `json:"tag"`
+	VersionFile      VersionFileConfig      `json:"versionFile"`
+	Changelog        VersionChangelogConfig `json:"changelog"`
+}
+
+// VersionTagConfig is the tag release path: creating a git tag (and GitHub
+// Release) on version bump. Prefix is prepended to the tag name (e.g. "v").
+type VersionTagConfig struct {
+	Enabled bool   `json:"enabled"`
+	Prefix  string `json:"prefix"`
+}
+
+// VersionFileConfig is the version-file release path: writing the bumped
+// version into a tracked file. Path is relative to the main worktree root.
+// FileType names its format (package.json, cargo.toml, pyproject.toml,
+// pubspec.yaml, plugin.json, version-file).
+type VersionFileConfig struct {
+	Enabled  bool   `json:"enabled"`
+	Path     string `json:"path"`
+	FileType string `json:"fileType"`
+}
+
+// VersionChangelogConfig is the changelog release path: prepending a
+// release entry to a changelog file. When Enabled is true and File is
+// unset, File defaults to "CHANGELOG.md".
+type VersionChangelogConfig struct {
+	Enabled bool   `json:"enabled"`
+	File    string `json:"file"`
+}
+
+// errOldVersionShape is returned by parseVersionSection when the raw
+// version section still uses the pre-redesign flat shape.
+var errOldVersionShape = errors.New(
+	"config: version section uses the old flat shape (mode/versionFile string/changelogMethod/changelog/rcAutoContinue); " +
+		"run /setup --only version to migrate to the new nested tag/versionFile/changelog shape",
+)
+
+// detectOldVersionShape reports whether raw carries any marker of the old
+// flat VersionSection shape. mode, changelogMethod, and rcAutoContinue no
+// longer exist in the new shape at all, so their mere presence is
+// conclusive. versionFile and changelog exist in both shapes but with
+// different value types — a string versionFile or boolean changelog is
+// the old shape's signature; the new shape always uses nested objects.
+func detectOldVersionShape(raw map[string]any) bool {
+	if _, ok := raw["mode"]; ok {
+		return true
+	}
+	if _, ok := raw["changelogMethod"]; ok {
+		return true
+	}
+	if _, ok := raw["rcAutoContinue"]; ok {
+		return true
+	}
+	if vf, ok := raw["versionFile"]; ok {
+		if _, isString := vf.(string); isString {
+			return true
+		}
+	}
+	if cl, ok := raw["changelog"]; ok {
+		if _, isBool := cl.(bool); isBool {
+			return true
+		}
+	}
+	return false
 }
 
 // parseVersionSection converts a raw JSON map into a VersionSection,
-// applying documented defaults. Returns nil when raw is nil (section
-// absent from config.json), mirroring extractSection's absent-section
-// semantics so callers can distinguish "no version section configured"
-// from "version section configured with defaults".
-func parseVersionSection(raw map[string]any) *VersionSection {
+// applying documented defaults. Returns (nil, nil) when raw is nil
+// (section absent from config.json), mirroring extractSection's
+// absent-section semantics so callers can distinguish "no version section
+// configured" from "version section configured with defaults". Returns an
+// error when raw still uses the old flat shape, or when neither the tag
+// nor versionFile path is enabled.
+func parseVersionSection(raw map[string]any) (*VersionSection, error) {
 	if raw == nil {
-		return nil
+		return nil, nil
 	}
+	if detectOldVersionShape(raw) {
+		return nil, errOldVersionShape
+	}
+
 	v := &VersionSection{}
-	if s, ok := raw["mode"].(string); ok {
-		v.Mode = s
-	}
-	if s, ok := raw["versionFile"].(string); ok {
-		v.VersionFile = s
-	}
-	if s, ok := raw["fileType"].(string); ok {
-		v.FileType = s
-	}
-	if s, ok := raw["tagPrefix"].(string); ok {
-		v.TagPrefix = s
-	}
-	if s, ok := raw["changelogMethod"].(string); ok && s != "" {
-		v.ChangelogMethod = s
-	} else if b, ok := raw["changelog"].(bool); ok {
-		// Backward compat: old boolean changelog maps onto the new enum.
-		if b {
-			v.ChangelogMethod = "push"
-		} else {
-			v.ChangelogMethod = "skip"
-		}
-	} else {
-		v.ChangelogMethod = "skip"
-	}
-	if s, ok := raw["changelogFile"].(string); ok {
-		v.ChangelogFile = s
-	}
-	if s, ok := raw["ticketPrefix"].(string); ok {
-		v.TicketPrefix = s
-	}
 	if s, ok := raw["preRelease"].(string); ok {
 		v.PreRelease = s
 	}
-	if s, ok := raw["preReleasePolicy"].(string); ok && s != "" {
+	if s, ok := raw["preReleasePolicy"].(string); ok {
 		v.PreReleasePolicy = s
-	} else if b, ok := raw["rcAutoContinue"].(bool); ok {
-		// Backward compat: old boolean rcAutoContinue maps onto the new enum.
-		if b {
-			v.PreReleasePolicy = "continue-rc"
-		} else {
-			v.PreReleasePolicy = "never"
-		}
-	} else {
-		v.PreReleasePolicy = "continue-rc"
 	}
+	if s, ok := raw["method"].(string); ok {
+		v.Method = s
+	}
+	if tagRaw, ok := raw["tag"].(map[string]any); ok {
+		if b, ok := tagRaw["enabled"].(bool); ok {
+			v.Tag.Enabled = b
+		}
+		if s, ok := tagRaw["prefix"].(string); ok {
+			v.Tag.Prefix = s
+		}
+	}
+	if vfRaw, ok := raw["versionFile"].(map[string]any); ok {
+		if b, ok := vfRaw["enabled"].(bool); ok {
+			v.VersionFile.Enabled = b
+		}
+		if s, ok := vfRaw["path"].(string); ok {
+			v.VersionFile.Path = s
+		}
+		if s, ok := vfRaw["fileType"].(string); ok {
+			v.VersionFile.FileType = s
+		}
+	}
+	if clRaw, ok := raw["changelog"].(map[string]any); ok {
+		if b, ok := clRaw["enabled"].(bool); ok {
+			v.Changelog.Enabled = b
+		}
+		if s, ok := clRaw["file"].(string); ok {
+			v.Changelog.File = s
+		}
+	}
+
 	applyVersionDefaults(v)
-	return v
+
+	if !v.Tag.Enabled && !v.VersionFile.Enabled {
+		return nil, fmt.Errorf(
+			"config: version section requires at least one of tag.enabled or versionFile.enabled to be true",
+		)
+	}
+
+	return v, nil
 }
 
 // applyVersionDefaults fills in zero-value fields with documented
-// defaults: mode "file", and changelogFile "CHANGELOG.md" when
-// changelogMethod is not "skip" but no explicit path was given.
+// defaults: preReleasePolicy "continue-rc", method "push", and
+// changelog.file "CHANGELOG.md" when changelog.enabled is true but no
+// explicit file was given.
 func applyVersionDefaults(v *VersionSection) {
-	if v.Mode == "" {
-		v.Mode = "file"
+	if v.PreReleasePolicy == "" {
+		v.PreReleasePolicy = "continue-rc"
 	}
-	if v.ChangelogMethod != "skip" && v.ChangelogFile == "" {
-		v.ChangelogFile = "CHANGELOG.md"
+	if v.Method == "" {
+		v.Method = "push"
+	}
+	if v.Changelog.Enabled && v.Changelog.File == "" {
+		v.Changelog.File = "CHANGELOG.md"
 	}
 }
 
@@ -406,8 +461,13 @@ func Read(mainRoot string) (*Config, error) {
 		return nil, err
 	}
 
+	versionSection, err := parseVersionSection(extractSection(projectRaw, "version"))
+	if err != nil {
+		return nil, err
+	}
+
 	cfg := &Config{
-		Version: parseVersionSection(extractSection(projectRaw, "version")),
+		Version: versionSection,
 		Jira:    extractSection(projectRaw, "jira"),
 		Commit:  extractSection(projectRaw, "commit"),
 		PR:      extractSection(projectRaw, "pr"),

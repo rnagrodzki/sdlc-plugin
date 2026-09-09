@@ -3,16 +3,18 @@
  * check-changelog.cjs
  * CI script: validates that CHANGELOG.md contains an entry for the current version.
  *
- * Only runs when `changelog: true` is set in `.sdlc-v2/config.json`.
+ * Only runs when `changelog.enabled: true` is set in `.sdlc-v2/config.json`.
  * Designed to be copied into user projects under `.github/scripts/`.
  *
  * Usage (GitHub Actions — runs on push to main or in a PR check):
  *   node .github/scripts/check-changelog.cjs
  *
  * Reads: .sdlc-v2/config.json  (sdlc versioning config)
- * Modes:
- *   "file" — version read from a version file (package.json, plugin.json, etc.)
- *   "tag"  — version derived from the latest git tag (no version file)
+ * Version source:
+ *   `versionFile.enabled: true`  — version read from the configured version
+ *     file (package.json, plugin.json, etc.)
+ *   `versionFile.enabled: false` (or unset) — version derived from the
+ *     latest git tag (no version file)
  *
  * Exit codes: 0 = pass / skipped, 1 = validation failure, 2 = script error
  *
@@ -66,20 +68,25 @@ function readVersionConfig(repoRoot) {
 // ---------------------------------------------------------------------------
 
 function resolveVersionFromFile(config, repoRoot) {
-  const versionFilePath = path.join(repoRoot, config.versionFile);
+  const vf = config.versionFile || {};
+  if (!vf.path) {
+    process.stderr.write('Warning: config.versionFile.path is not set.\n');
+    return null;
+  }
+  const versionFilePath = path.join(repoRoot, vf.path);
   if (!fs.existsSync(versionFilePath)) {
-    process.stderr.write(`Warning: version file not found: ${config.versionFile}\n`);
+    process.stderr.write(`Warning: version file not found: ${vf.path}\n`);
     return null;
   }
 
   const content = fs.readFileSync(versionFilePath, 'utf8');
-  const fileType = (config.fileType || '').toLowerCase();
+  const fileType = (vf.fileType || '').toLowerCase();
 
   if (fileType === 'package.json' || fileType === 'plugin.json') {
     try {
       return JSON.parse(content).version || null;
     } catch (_) {
-      process.stderr.write(`Warning: could not parse ${config.versionFile} as JSON\n`);
+      process.stderr.write(`Warning: could not parse ${vf.path} as JSON\n`);
       return null;
     }
   } else if (fileType === 'cargo.toml' || fileType === 'pyproject.toml') {
@@ -112,16 +119,10 @@ function resolveVersionFromTags(repoRoot) {
 
 /**
  * Determine if changelog validation should be enabled based on config.
- * Supports both new changelogMethod (pr/push/skip) and legacy changelog (true/false).
- * Defaults to 'skip' if neither is configured.
+ * Defaults to disabled if `changelog.enabled` isn't explicitly true.
  */
 function isChangelogValidationEnabled(config) {
-  // New config: changelogMethod with explicit options
-  if (config.changelogMethod) {
-    return config.changelogMethod === 'pr' || config.changelogMethod === 'push';
-  }
-  // Legacy config: changelog boolean (true = enabled, false = disabled)
-  return config.changelog === true;
+  return !!(config.changelog && config.changelog.enabled === true);
 }
 
 function main() {
@@ -143,7 +144,7 @@ function main() {
     const isAutomatedChangelogBranch = headRef.startsWith('changelog/');
     const prConfig = readVersionConfig(repoRoot);
     if (prConfig && isChangelogValidationEnabled(prConfig) && !isAutomatedChangelogBranch) {
-      const changelogFile = prConfig.changelogFile || 'CHANGELOG.md';
+      const changelogFile = prConfig.changelog?.file || 'CHANGELOG.md';
       const diff = exec('git diff --name-only origin/main...HEAD', { cwd: repoRoot });
       if (diff && diff.split('\n').some(f => f.trim() === changelogFile)) {
         console.log(`WARNING: ${changelogFile} modified in this pull request.`);
@@ -184,12 +185,9 @@ function main() {
   // Step 2: Determine current version
   let version = null;
 
-  if (config.mode === 'file') {
-    version = resolveVersionFromFile(config, repoRoot);
-  } else if (config.mode === 'tag') {
+  if (!config.versionFile?.enabled) {
     version = resolveVersionFromTags(repoRoot);
   } else {
-    // Treat unknown/missing mode the same as 'file' (graceful fallback)
     version = resolveVersionFromFile(config, repoRoot);
   }
 
@@ -199,12 +197,12 @@ function main() {
   }
 
   // Step 3: Read changelog file
-  const changelogFile = config.changelogFile || 'CHANGELOG.md';
+  const changelogFile = config.changelog?.file || 'CHANGELOG.md';
   const changelogPath = path.join(repoRoot, changelogFile);
 
   if (!fs.existsSync(changelogPath)) {
     console.log(
-      `FAIL: changelog: true in config but ${changelogFile} does not exist. ` +
+      `FAIL: changelog.enabled: true in config but ${changelogFile} does not exist. ` +
       `Run /version --changelog to create it.`
     );
     process.exit(1);

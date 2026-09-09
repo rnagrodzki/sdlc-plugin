@@ -231,7 +231,9 @@ func TestLegacyRefusal_IgnoredWhenV5Exists(t *testing.T) {
 
 	// Both v5 config and legacy marker.
 	setupProjectConfig(t, root, map[string]any{
-		"version": map[string]any{"mode": "file"},
+		"version": map[string]any{
+			"versionFile": map[string]any{"enabled": true, "path": "package.json"},
+		},
 	})
 	writeJSON(t, filepath.Join(root, ".claude", "version.json"), map[string]any{"legacy": true})
 
@@ -239,8 +241,8 @@ func TestLegacyRefusal_IgnoredWhenV5Exists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Read: expected success when v5 config exists alongside legacy, got: %v", err)
 	}
-	if cfg.Version.Mode != "file" {
-		t.Errorf("version.mode = %q, want %q", cfg.Version.Mode, "file")
+	if cfg.Version.VersionFile.Path != "package.json" {
+		t.Errorf("version.versionFile.path = %q, want %q", cfg.Version.VersionFile.Path, "package.json")
 	}
 }
 
@@ -378,154 +380,171 @@ func TestAutomation_StepModeInheritance(t *testing.T) {
 
 func TestParseVersionSection_Full(t *testing.T) {
 	raw := map[string]any{
-		"mode":          "file",
-		"versionFile":   "package.json",
-		"fileType":      "package.json",
-		"tagPrefix":     "v",
-		"changelog":     true,
-		"changelogFile": "HISTORY.md",
-		"ticketPrefix":  "PROJ",
-		"preRelease":    "beta",
+		"preRelease":       "beta",
+		"preReleasePolicy": "always-rc",
+		"method":           "pr",
+		"tag": map[string]any{
+			"enabled": true,
+			"prefix":  "v",
+		},
+		"versionFile": map[string]any{
+			"enabled":  true,
+			"path":     "package.json",
+			"fileType": "package.json",
+		},
+		"changelog": map[string]any{
+			"enabled": true,
+			"file":    "HISTORY.md",
+		},
 	}
 
-	v := parseVersionSection(raw)
+	v, err := parseVersionSection(raw)
+	if err != nil {
+		t.Fatalf("parseVersionSection: unexpected error: %v", err)
+	}
 	if v == nil {
 		t.Fatal("parseVersionSection: expected non-nil result")
-	}
-	if v.Mode != "file" {
-		t.Errorf("Mode = %q, want %q", v.Mode, "file")
-	}
-	if v.VersionFile != "package.json" {
-		t.Errorf("VersionFile = %q, want %q", v.VersionFile, "package.json")
-	}
-	if v.FileType != "package.json" {
-		t.Errorf("FileType = %q, want %q", v.FileType, "package.json")
-	}
-	if v.TagPrefix != "v" {
-		t.Errorf("TagPrefix = %q, want %q", v.TagPrefix, "v")
-	}
-	if v.ChangelogMethod != "push" {
-		t.Errorf("ChangelogMethod = %q, want %q (legacy changelog:true backward-compat)", v.ChangelogMethod, "push")
-	}
-	if v.ChangelogFile != "HISTORY.md" {
-		t.Errorf("ChangelogFile = %q, want explicit value %q preserved (not overridden by default)", v.ChangelogFile, "HISTORY.md")
-	}
-	if v.TicketPrefix != "PROJ" {
-		t.Errorf("TicketPrefix = %q, want %q", v.TicketPrefix, "PROJ")
 	}
 	if v.PreRelease != "beta" {
 		t.Errorf("PreRelease = %q, want %q", v.PreRelease, "beta")
 	}
-
-	raw["rcAutoContinue"] = false
-	v4 := parseVersionSection(raw)
-	if v4.PreReleasePolicy != "never" {
-		t.Errorf("PreReleasePolicy = %q, want %q (rcAutoContinue:false backward-compat)", v4.PreReleasePolicy, "never")
+	if v.PreReleasePolicy != "always-rc" {
+		t.Errorf("PreReleasePolicy = %q, want %q", v.PreReleasePolicy, "always-rc")
+	}
+	if v.Method != "pr" {
+		t.Errorf("Method = %q, want %q", v.Method, "pr")
+	}
+	if !v.Tag.Enabled || v.Tag.Prefix != "v" {
+		t.Errorf("Tag = %+v, want {Enabled:true Prefix:v}", v.Tag)
+	}
+	if !v.VersionFile.Enabled || v.VersionFile.Path != "package.json" || v.VersionFile.FileType != "package.json" {
+		t.Errorf("VersionFile = %+v, want {Enabled:true Path:package.json FileType:package.json}", v.VersionFile)
+	}
+	if !v.Changelog.Enabled || v.Changelog.File != "HISTORY.md" {
+		t.Errorf("Changelog = %+v, want {Enabled:true File:HISTORY.md} (explicit file preserved, not overridden by default)", v.Changelog)
 	}
 }
 
 func TestParseVersionSection_Defaults(t *testing.T) {
-	v := parseVersionSection(map[string]any{})
+	v, err := parseVersionSection(map[string]any{
+		"versionFile": map[string]any{"enabled": true, "path": "package.json"},
+	})
+	if err != nil {
+		t.Fatalf("parseVersionSection: unexpected error: %v", err)
+	}
 	if v == nil {
 		t.Fatal("parseVersionSection: expected non-nil result")
 	}
-	if v.Mode != "file" {
-		t.Errorf("Mode = %q, want default %q", v.Mode, "file")
+	if v.Method != "push" {
+		t.Errorf("Method = %q, want default %q", v.Method, "push")
 	}
-	if v.ChangelogFile != "" {
-		t.Errorf("ChangelogFile = %q, want empty when changelogMethod is skip", v.ChangelogFile)
-	}
-
-	v2 := parseVersionSection(map[string]any{"changelog": true})
-	if v2 == nil {
-		t.Fatal("parseVersionSection: expected non-nil result")
-	}
-	if v2.ChangelogFile != "CHANGELOG.md" {
-		t.Errorf("ChangelogFile = %q, want default %q when changelog=true", v2.ChangelogFile, "CHANGELOG.md")
-	}
-
-	v3 := parseVersionSection(map[string]any{"mode": "tag"})
-	if v3.Mode != "tag" {
-		t.Errorf("Mode = %q, want explicit value %q preserved", v3.Mode, "tag")
-	}
-
 	if v.PreReleasePolicy != "continue-rc" {
-		t.Errorf("PreReleasePolicy = %q, want default %q when absent", v.PreReleasePolicy, "continue-rc")
+		t.Errorf("PreReleasePolicy = %q, want default %q", v.PreReleasePolicy, "continue-rc")
+	}
+	if v.Changelog.File != "" {
+		t.Errorf("Changelog.File = %q, want empty when changelog.enabled is false", v.Changelog.File)
+	}
+
+	v2, err := parseVersionSection(map[string]any{
+		"versionFile": map[string]any{"enabled": true},
+		"changelog":   map[string]any{"enabled": true},
+	})
+	if err != nil {
+		t.Fatalf("parseVersionSection: unexpected error: %v", err)
+	}
+	if v2.Changelog.File != "CHANGELOG.md" {
+		t.Errorf("Changelog.File = %q, want default %q when changelog.enabled=true", v2.Changelog.File, "CHANGELOG.md")
+	}
+
+	v3, err := parseVersionSection(map[string]any{
+		"tag":              map[string]any{"enabled": true},
+		"preReleasePolicy": "never",
+	})
+	if err != nil {
+		t.Fatalf("parseVersionSection: unexpected error: %v", err)
+	}
+	if v3.PreReleasePolicy != "never" {
+		t.Errorf("PreReleasePolicy = %q, want explicit value %q preserved", v3.PreReleasePolicy, "never")
 	}
 }
 
 func TestParseVersionSection_Nil(t *testing.T) {
-	if v := parseVersionSection(nil); v != nil {
+	v, err := parseVersionSection(nil)
+	if err != nil {
+		t.Fatalf("parseVersionSection(nil): unexpected error: %v", err)
+	}
+	if v != nil {
 		t.Errorf("parseVersionSection(nil) = %v, want nil", v)
 	}
 }
 
-// TestParseVersionSection_PreReleasePolicy covers the full backward-compat
-// matrix documented on VersionSection: an explicit "preReleasePolicy" wins
-// outright, the legacy boolean "rcAutoContinue" maps true→"continue-rc" and
-// false→"never", and the default (neither key present) is "continue-rc" —
-// the same suggestion behavior the old rcAutoContinue=true default gave.
-func TestPreReleasePolicy_Parse(t *testing.T) {
-	cases := []struct {
-		name string
-		raw  map[string]any
-		want string
-	}{
-		{"explicit always-rc", map[string]any{"preReleasePolicy": "always-rc"}, "always-rc"},
-		{"explicit continue-rc", map[string]any{"preReleasePolicy": "continue-rc"}, "continue-rc"},
-		{"explicit never", map[string]any{"preReleasePolicy": "never"}, "never"},
-		{"legacy rcAutoContinue true", map[string]any{"rcAutoContinue": true}, "continue-rc"},
-		{"legacy rcAutoContinue false", map[string]any{"rcAutoContinue": false}, "never"},
-		{"neither key present", map[string]any{}, "continue-rc"},
-		{
-			"explicit preReleasePolicy wins over legacy rcAutoContinue",
-			map[string]any{"preReleasePolicy": "always-rc", "rcAutoContinue": false},
-			"always-rc",
-		},
+// TestParseVersionSection_MissingSubObject verifies that an absent
+// sub-object parses as a zero-value ({Enabled: false}), not an error or an
+// ambiguous default — one of the two release paths must still be enabled
+// for the section to parse successfully.
+func TestParseVersionSection_MissingSubObject(t *testing.T) {
+	v, err := parseVersionSection(map[string]any{
+		"tag": map[string]any{"enabled": true, "prefix": "v"},
+		// versionFile and changelog sub-objects absent entirely.
+	})
+	if err != nil {
+		t.Fatalf("parseVersionSection: unexpected error: %v", err)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			v := parseVersionSection(tc.raw)
-			if v == nil {
-				t.Fatal("parseVersionSection: expected non-nil result")
-			}
-			if v.PreReleasePolicy != tc.want {
-				t.Errorf("PreReleasePolicy = %q, want %q", v.PreReleasePolicy, tc.want)
-			}
-		})
+	if v.VersionFile.Enabled {
+		t.Errorf("VersionFile.Enabled = true, want false (zero value) when sub-object absent")
+	}
+	if v.VersionFile.Path != "" || v.VersionFile.FileType != "" {
+		t.Errorf("VersionFile = %+v, want zero value", v.VersionFile)
+	}
+	if v.Changelog.Enabled {
+		t.Errorf("Changelog.Enabled = true, want false (zero value) when sub-object absent")
 	}
 }
 
-// TestChangelogMethod_Parse covers the full backward-compat matrix
-// documented on VersionSection: an explicit "changelogMethod" wins
-// outright, the legacy boolean "changelog" maps true→"push" and
-// false→"skip", and the default (neither key present) is "skip".
-func TestChangelogMethod_Parse(t *testing.T) {
+// TestParseVersionSection_RequiresTagOrVersionFile verifies the
+// acceptance-criteria validation: at least one of tag.enabled or
+// versionFile.enabled must be true.
+func TestParseVersionSection_RequiresTagOrVersionFile(t *testing.T) {
+	_, err := parseVersionSection(map[string]any{
+		"changelog": map[string]any{"enabled": true},
+	})
+	if err == nil {
+		t.Fatal("parseVersionSection: expected error when neither tag nor versionFile is enabled")
+	}
+
+	_, err = parseVersionSection(map[string]any{
+		"tag": map[string]any{"enabled": false},
+	})
+	if err == nil {
+		t.Fatal("parseVersionSection: expected error when tag.enabled is explicitly false and versionFile absent")
+	}
+}
+
+// TestParseVersionSection_OldShapeRejection covers every documented
+// old-shape marker: top-level "mode", string "versionFile", top-level
+// "changelogMethod", boolean "changelog", and top-level "rcAutoContinue".
+// Each must hard-error naming "/setup --only version" — there is no
+// backward-compat reader for the pre-redesign flat shape.
+func TestParseVersionSection_OldShapeRejection(t *testing.T) {
 	cases := []struct {
 		name string
 		raw  map[string]any
-		want string
 	}{
-		{"explicit pr", map[string]any{"changelogMethod": "pr"}, "pr"},
-		{"explicit push", map[string]any{"changelogMethod": "push"}, "push"},
-		{"explicit skip", map[string]any{"changelogMethod": "skip"}, "skip"},
-		{"legacy changelog true", map[string]any{"changelog": true}, "push"},
-		{"legacy changelog false", map[string]any{"changelog": false}, "skip"},
-		{"neither key present", map[string]any{}, "skip"},
-		{
-			"explicit changelogMethod wins over legacy changelog",
-			map[string]any{"changelogMethod": "pr", "changelog": false},
-			"pr",
-		},
+		{"mode present", map[string]any{"mode": "file"}},
+		{"versionFile is string", map[string]any{"versionFile": "package.json"}},
+		{"changelogMethod present", map[string]any{"changelogMethod": "push"}},
+		{"changelog is bool true", map[string]any{"changelog": true}},
+		{"changelog is bool false", map[string]any{"changelog": false}},
+		{"rcAutoContinue present", map[string]any{"rcAutoContinue": true}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			v := parseVersionSection(tc.raw)
-			if v == nil {
-				t.Fatal("parseVersionSection: expected non-nil result")
+			v, err := parseVersionSection(tc.raw)
+			if err == nil {
+				t.Fatalf("parseVersionSection(%v): expected error, got nil (v=%v)", tc.raw, v)
 			}
-			if v.ChangelogMethod != tc.want {
-				t.Errorf("ChangelogMethod = %q, want %q", v.ChangelogMethod, tc.want)
+			if !strings.Contains(err.Error(), "/setup --only version") {
+				t.Errorf("error should name /setup --only version, got: %v", err)
 			}
 		})
 	}
@@ -770,7 +789,9 @@ func TestReadAnchorsAtMainWorktreeRoot(t *testing.T) {
 		"commit", "--allow-empty", "-q", "-m", "init")
 
 	setupProjectConfig(t, mainDir, map[string]any{
-		"version": map[string]any{"mode": "file"},
+		"version": map[string]any{
+			"versionFile": map[string]any{"enabled": true, "path": "package.json"},
+		},
 	})
 
 	linkedDir := filepath.Join(t.TempDir(), "linked")
@@ -794,8 +815,8 @@ func TestReadAnchorsAtMainWorktreeRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Read(MainRoot): %v", err)
 	}
-	if cfg.Version == nil || cfg.Version.Mode != "file" {
-		t.Errorf("expected version.mode=file from main worktree, got %v", cfg.Version)
+	if cfg.Version == nil || !cfg.Version.VersionFile.Enabled {
+		t.Errorf("expected version.versionFile.enabled=true from main worktree, got %v", cfg.Version)
 	}
 
 	// Read from linked worktree path should NOT find config.
@@ -820,8 +841,10 @@ func TestRead_MergesProjectAndLocal(t *testing.T) {
 	root := t.TempDir()
 
 	setupProjectConfig(t, root, map[string]any{
-		"version": map[string]any{"mode": "tag"},
-		"jira":    map[string]any{"defaultProject": "PROJ"},
+		"version": map[string]any{
+			"tag": map[string]any{"enabled": true, "prefix": "v"},
+		},
+		"jira": map[string]any{"defaultProject": "PROJ"},
 	})
 	setupLocalConfig(t, root, map[string]any{
 		"ship":   map[string]any{"draft": true},
@@ -834,8 +857,8 @@ func TestRead_MergesProjectAndLocal(t *testing.T) {
 	}
 
 	// Project sections.
-	if cfg.Version == nil || cfg.Version.Mode != "tag" {
-		t.Errorf("Version = %v, want mode=tag", cfg.Version)
+	if cfg.Version == nil || !cfg.Version.Tag.Enabled || cfg.Version.Tag.Prefix != "v" {
+		t.Errorf("Version = %v, want tag={enabled:true prefix:v}", cfg.Version)
 	}
 	if cfg.Jira == nil || cfg.Jira["defaultProject"] != "PROJ" {
 		t.Errorf("Jira = %v, want defaultProject=PROJ", cfg.Jira)

@@ -63,7 +63,7 @@ function runPRGuard(dir, extraFileToModify, headRef = 'feature') {
 describe('check-changelog.cjs pull_request CHANGELOG.md guard', () => {
   test('warns (exit 0) when CHANGELOG.md is modified and changelog automation is enabled', () => {
     const dir = mkTmpDir('check-changelog-pr-');
-    writeConfig(dir, { changelog: true, changelogFile: 'CHANGELOG.md' });
+    writeConfig(dir, { changelog: { enabled: true, file: 'CHANGELOG.md' } });
 
     const result = runPRGuard(dir, 'CHANGELOG.md');
 
@@ -74,7 +74,7 @@ describe('check-changelog.cjs pull_request CHANGELOG.md guard', () => {
 
   test('does not warn (exit 0) when CHANGELOG.md is untouched', () => {
     const dir = mkTmpDir('check-changelog-pr-');
-    writeConfig(dir, { changelog: true, changelogFile: 'CHANGELOG.md' });
+    writeConfig(dir, { changelog: { enabled: true, file: 'CHANGELOG.md' } });
     fs.writeFileSync(path.join(dir, 'README.md'), '# Readme\n', 'utf8');
 
     const result = runPRGuard(dir, 'README.md');
@@ -86,7 +86,7 @@ describe('check-changelog.cjs pull_request CHANGELOG.md guard', () => {
 
   test('does not warn when changelog automation is not enabled, even if CHANGELOG.md changed', () => {
     const dir = mkTmpDir('check-changelog-pr-');
-    writeConfig(dir, { changelog: false });
+    writeConfig(dir, { changelog: { enabled: false } });
 
     const result = runPRGuard(dir, 'CHANGELOG.md');
 
@@ -96,7 +96,7 @@ describe('check-changelog.cjs pull_request CHANGELOG.md guard', () => {
 
   test('does not warn on the automated changelog/<tag> branch itself', () => {
     const dir = mkTmpDir('check-changelog-pr-');
-    writeConfig(dir, { changelog: true, changelogFile: 'CHANGELOG.md' });
+    writeConfig(dir, { changelog: { enabled: true, file: 'CHANGELOG.md' } });
 
     const result = runPRGuard(dir, 'CHANGELOG.md', 'changelog/v1.2.3');
 
