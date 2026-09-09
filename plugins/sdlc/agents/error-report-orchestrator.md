@@ -36,7 +36,7 @@ Read the manifest JSON from `MANIFEST_FILE`. The manifest contains:
 | `repository` | `git remote get-url origin` output |
 | `currentBranch` | Active git branch at the time of failure |
 | `timestamp` | ISO 8601 timestamp captured by the prepare script |
-| `targetRepo` | `rnagrodzki/sdlc-marketplace` (fixed) |
+| `targetRepo` | `rnagrodzki/sdlc-plugin` (fixed) |
 | `labels` | `["tooling-error", "<skill-name>"]` |
 
 ## Step 1 — Load Template
