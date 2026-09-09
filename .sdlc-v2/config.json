@@ -142,7 +142,7 @@
     "mode": "file",
     "tagPrefix": "v",
     "versionFile": "plugins/sdlc/.claude-plugin/plugin.json",
-    "changelogMethod": "pr",
+    "changelogMethod": "push",
     "changelogFile": "CHANGELOG.md",
     "preReleasePolicy": "always-rc"
   }
