@@ -107,9 +107,14 @@ This check validates both `file` and `tag` modes. In tag mode, it reads the curr
    a. Finds the merged PR and its release:* label
    b. Reads release notes from PR body markers
    c. Computes the new version (bumps from current)
-   d. File mode: bumps the version file, prepends CHANGELOG
+   d. File mode: bumps the version file, commits and pushes it to main
    e. Tag mode: skips file bump (no version file)
    f. Creates annotated git tag directly at HEAD on main + GitHub Release
+   g. If changelog: true, prepends a CHANGELOG entry and delivers it via a
+      PR (branch changelog/<tag>) rather than pushing directly to main —
+      see "Branch Protection & Release Workflow" below. Best-effort: a
+      changelog failure is logged but never blocks or undoes the tag/
+      release already created in step f.
 9. retag-release.cjs also runs on push to main but is a no-op in this
    flow: the tag from step 8f is already at HEAD, so there is nothing
    to move. It is deprecated (superseded by release-on-main.cjs) and
@@ -118,18 +123,82 @@ This check validates both `file` and `tag` modes. In tag mode, it reads the curr
 
 ### CI Workflows
 
-Four CI scripts handle the release pipeline. All live under `.github/scripts/` and are scaffolded by running `scaffold_ci`:
+Five CI scripts handle the release pipeline. All live under `.github/scripts/` and are scaffolded by running `scaffold_ci`:
 
 | Script | Trigger | Purpose |
 |---|---|---|
-| `release-on-main.cjs` | push to main | Creates release after PR merge; tags HEAD directly |
+| `release-on-main.cjs` | push to main | Creates release after PR merge; tags HEAD directly; delivers CHANGELOG via PR |
 | `retag-release.cjs` | push to main | **Deprecated.** Legacy safety net superseded by `release-on-main.cjs`; no-op in the current flow |
 | `verify-release-intent.cjs` | pull_request | Pre-merge check: validates release markers |
 | `promote-release.cjs` | workflow_dispatch | Promotes RC to final release |
+| `check-changelog.cjs` | push, pull_request | Push to main: fails if no changelog entry for current version. PR: warns (never fails) if `CHANGELOG.md` was hand-edited on a feature branch — skips the warning on the automated `changelog/<tag>` branch itself |
 
 Matching workflow files live under `.github/workflows/`.
 
-**To scaffold CI workflows:** Run `/setup` which offers CI scaffolding, or call `scaffold_ci` directly. The version skill also offers scaffolding for tag-mode projects when CI workflows are missing.
+**To scaffold CI workflows:** Run `/setup` which offers CI scaffolding, or call `scaffold_ci` directly. The version skill also offers scaffolding for tag-mode projects when CI workflows are missing. Scaffolding also runs a read-only branch protection check against the repo's rulesets/classic protection and reports the result — see below.
+
+### Branch Protection & Release Workflow
+
+GitHub branch protection (classic) and rulesets can block direct pushes to
+the default branch, including from `github-actions[bot]`. Adding the bot to
+a bypass list is often not possible: GitHub rejects `github-actions[bot]` in
+a ruleset bypass actor list (HTTP 422), and the bot cannot be granted an
+admin-override bypass on classic protection either. If a project protects
+`main` this way, a workflow step that runs `git push origin HEAD:main`
+(such as a direct CHANGELOG commit) fails outright.
+
+**Why direct push fails:** the release tag and GitHub Release are created
+via the GitHub API (`gh release create`), which does not touch the
+protected branch and is unaffected. Only a `git push` of a commit directly
+to `main` is blocked.
+
+**The PR-based flow:** `release-on-main.cjs` no longer pushes the CHANGELOG
+update straight to `main`. Instead, after the tag and release are already
+created, it:
+
+1. Creates a branch `changelog/<tag>` off the tip of `main`.
+2. Commits the CHANGELOG update on that branch and pushes it.
+3. Opens a PR (`gh pr create --base main --head changelog/<tag>`) labeled
+   `no-release`.
+4. Enables auto-merge on the PR (`gh pr merge --auto --squash --delete-branch`).
+
+The changelog PR does not trigger a duplicate release when it merges — see
+"The `no-release` label" below for why.
+
+This delivery is **best-effort and non-blocking**: the tag and GitHub
+Release from step f of the release flow above are created first and are
+never rolled back if the changelog PR step fails for any reason (missing
+`gh` auth, no push access, auto-merge not enabled on the repo, etc.). The
+failure is logged to the workflow output, not surfaced as a workflow
+failure.
+
+**Auto-merge setup:** the target repo must have "Allow auto-merge" enabled
+in Settings → General, and `main` must not require a status check that
+never runs (auto-merge waits indefinitely for required checks). If
+auto-merge cannot be enabled (e.g. required reviews with no eligible
+reviewer), the changelog PR is still created — merge it manually.
+
+**The `no-release` label:** applied to the automated changelog PR as a
+human-facing signal (it is not read by any script). `verify-release-intent.cjs`
+independently skips any PR lacking a `release:<level>` label — the changelog
+PR has no such label, so it is a no-op there regardless. `check-changelog.cjs`
+recognizes the `changelog/<tag>` branch name pattern specifically (not the
+label) to skip its own "CHANGELOG.md hand-edited" warning on the automated PR.
+
+**Troubleshooting:**
+
+- **Changelog PR not created at all** — check the `release-on-main`
+  workflow run logs for a caught error near "changelog delivery failed";
+  the tag/release step above it succeeded regardless. Common causes:
+  `gh` not authenticated in the workflow, or the workflow's `GITHUB_TOKEN`
+  permissions don't include `contents: write` / `pull-requests: write`.
+- **Changelog PR created but not merging** — auto-merge is likely disabled
+  repo-wide, or a required check on `main` is not configured to run on
+  this PR. Merge it manually; this does not affect the already-published
+  release.
+- **`scaffold_ci` reports "branch protection detected"** — informational
+  only. Since the changelog is now delivered via PR, no bypass or rule
+  change is required; the message is a heads-up, not an error.
 
 ## Controlling Version Bumps via PRs
 

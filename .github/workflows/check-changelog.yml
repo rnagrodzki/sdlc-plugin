@@ -1,8 +1,10 @@
-# check-changelog-version: 2
+# check-changelog-version: 3
 name: Validate Changelog Entry
 
 on:
   push:
+    branches: [main]
+  pull_request:
     branches: [main]
 
 jobs:

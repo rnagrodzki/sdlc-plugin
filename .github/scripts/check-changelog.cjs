@@ -21,8 +21,8 @@
 
 'use strict';
 
-/** @version 5 — check-changelog script version. Bump when behavior changes. */
-const CHECK_CHANGELOG_SCRIPT_VERSION = 5;
+/** @version 7 — check-changelog script version. Bump when behavior changes. */
+const CHECK_CHANGELOG_SCRIPT_VERSION = 7;
 
 const fs   = require('node:fs');
 const path = require('node:path');
@@ -114,8 +114,37 @@ function main() {
   // KEEP: CI script invoked at repo root — do not change to resolveSdlcRoot()
   const repoRoot = process.cwd();
 
-  // Step 0: Branch gate — only validate on the main branch.
-  // On feature branches and PRs, the changelog entry doesn't exist yet
+  // Step 0a: Pull-request guard. The changelog-entry check below only makes
+  // sense on main (release-on-main.cjs writes the entry at merge time), so
+  // pull_request events always skip it. Before skipping, warn (never fail)
+  // when this PR itself modifies CHANGELOG.md — the file is auto-generated
+  // at merge time, so a manual edit on the feature branch can conflict with
+  // the generated entry once it merges.
+  if (process.env.GITHUB_EVENT_NAME === 'pull_request') {
+    // The release workflow's own changelog delivery PR (branch
+    // `changelog/<tag>`, opened by pushChangelogViaPR in release-on-main.cjs)
+    // legitimately modifies CHANGELOG.md on every release — skip the warning
+    // for that branch pattern so it doesn't self-flag on every run.
+    const headRef = process.env.GITHUB_HEAD_REF || '';
+    const isAutomatedChangelogBranch = headRef.startsWith('changelog/');
+    const prConfig = readVersionConfig(repoRoot);
+    if (prConfig && prConfig.changelog === true && !isAutomatedChangelogBranch) {
+      const changelogFile = prConfig.changelogFile || 'CHANGELOG.md';
+      const diff = exec('git diff --name-only origin/main...HEAD', { cwd: repoRoot });
+      if (diff && diff.split('\n').some(f => f.trim() === changelogFile)) {
+        console.log(`WARNING: ${changelogFile} modified in this pull request.`);
+        console.log('This repository uses automated changelog generation (release-on-main workflow).');
+        console.log('Manual edits may cause merge conflicts with auto-generated entries.');
+        console.log('If this is intentional, you can ignore this warning.');
+        console.log(`::warning file=${changelogFile}::Changelog is auto-managed by the release workflow — manual edits may conflict with auto-generated entries.`);
+      }
+    }
+    console.log('pull_request event — changelog-entry check skipped (validated on main only).');
+    process.exit(0);
+  }
+
+  // Step 0b: Branch gate — only validate on the main branch.
+  // On feature branches, the changelog entry doesn't exist yet
   // (release-on-main.cjs creates it at merge time), so validation would
   // always fail. Skip silently.
   const currentBranch = (
@@ -124,12 +153,6 @@ function main() {
   );
   if (currentBranch && currentBranch !== 'main' && currentBranch !== 'master') {
     console.log(`Branch "${currentBranch}" is not main — skipping changelog check.`);
-    process.exit(0);
-  }
-  // Also skip on pull_request events (the check would fire against the PR
-  // branch, not main).
-  if (process.env.GITHUB_EVENT_NAME === 'pull_request') {
-    console.log('pull_request event — skipping changelog check (validated on main only).');
     process.exit(0);
   }
 

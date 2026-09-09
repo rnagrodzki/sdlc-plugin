@@ -27,12 +27,37 @@ package prtemplate
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
+
+// conflictingPatterns lists release-marker substrings that a custom PR
+// template must not contain. These markers are injected automatically by
+// pr_apply's prReleaseInjectMarkers (internal/tools/pr.go) after the
+// template-driven body is drafted — a custom template that already defines
+// them would corrupt or duplicate the injected release metadata.
+var conflictingPatterns = []string{
+	"<!-- release-level:",
+	"<!-- release-pre:",
+	"<!-- release-notes-start",
+	"<!-- release-notes-end",
+}
+
+// ValidateReleaseCompat checks a PR template's content for release markers
+// that pr_apply injects automatically. Returns a non-nil error naming the
+// first conflicting marker found; nil when the template is compatible.
+func ValidateReleaseCompat(content string) error {
+	for _, pat := range conflictingPatterns {
+		if strings.Contains(content, pat) {
+			return fmt.Errorf("custom PR template contains conflicting release marker %q — remove it; release markers are injected automatically by pr_apply", pat)
+		}
+	}
+	return nil
+}
 
 // Template holds a resolved PR template's path and content.
 type Template struct {

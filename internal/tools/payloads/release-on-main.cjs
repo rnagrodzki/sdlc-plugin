@@ -26,8 +26,8 @@
 
 'use strict';
 
-/** @version 4 — release-on-main script version. Bump when behavior changes. */
-const RELEASE_ON_MAIN_SCRIPT_VERSION = 4;
+/** @version 5 — release-on-main script version. Bump when behavior changes. */
+const RELEASE_ON_MAIN_SCRIPT_VERSION = 5;
 
 const fs   = require('node:fs');
 const path = require('node:path');
@@ -359,6 +359,53 @@ function prependChangelog(repoRoot, changelogFile, version, notes) {
 }
 
 // ---------------------------------------------------------------------------
+// Changelog delivery (PR-based — a direct push to a protected default
+// branch is rejected by GitHub rulesets, which cannot grant
+// github-actions[bot] a bypass; see docs/versioning.md "Branch Protection &
+// Release Workflow")
+// ---------------------------------------------------------------------------
+
+/**
+ * Push the changelog commit on HEAD to a dedicated `changelog/<tagName>`
+ * branch and open a PR back into `branch`, instead of pushing directly.
+ * Rulesets/classic protection only guard the default branch, so pushing the
+ * changelog branch always succeeds; the PR then lands through the repo's
+ * normal merge path. Its merge does not re-trigger a new release: this
+ * script's own idempotency check (tagState === 'reachable', see above) skips
+ * the run because the tag it would create already exists and is reachable
+ * from the merged HEAD. Labeled "no-release" as a human-facing signal only
+ * (no script currently gates on this label — it just documents intent for
+ * anyone reviewing the PR list). Auto-merge is requested so the changelog
+ * lands without manual action once required checks pass; if auto-merge
+ * isn't enabled the PR is simply left open for manual merge (non-fatal —
+ * the caller already wraps this in a try/catch since the tag/release must
+ * never be blocked by changelog delivery).
+ */
+function pushChangelogViaPR(repoRoot, branch, tagName) {
+  const changelogBranch = `changelog/${tagName}`;
+  execOrThrow(`git push origin HEAD:${changelogBranch}`, { cwd: repoRoot });
+
+  const body = `Auto-generated changelog update for ${tagName}.\n\nThis PR was created by the release workflow.`;
+  withTmpFile(body, (tmpPath) => {
+    execOrThrow(
+      `gh pr create --base "${branch}" --head "${changelogBranch}" ` +
+      `--title "chore(release): changelog for ${tagName}" ` +
+      `--body-file "${tmpPath}" ` +
+      `--label "no-release"`,
+      { cwd: repoRoot }
+    );
+  });
+  console.log(`Changelog PR opened: ${changelogBranch} -> ${branch}`);
+
+  try {
+    execOrThrow(`gh pr merge "${changelogBranch}" --auto --squash --delete-branch`, { cwd: repoRoot });
+    console.log('Auto-merge enabled for changelog PR.');
+  } catch (_) {
+    console.log('Auto-merge not available — changelog PR exists, merge manually.');
+  }
+}
+
+// ---------------------------------------------------------------------------
 // RC helpers
 // ---------------------------------------------------------------------------
 
@@ -527,8 +574,7 @@ function main() {
             execOrThrow(`git commit -F "${tmpPath}"`, { cwd: repoRoot });
           });
           const branch = process.env.GITHUB_REF_NAME || 'main';
-          execOrThrow(`git push origin HEAD:${branch}`, { cwd: repoRoot });
-          console.log(`Committed and pushed changelog update to ${branch}.`);
+          pushChangelogViaPR(repoRoot, branch, rcTag);
         } else {
           console.log('No staged changes after changelog write — files already at target.');
         }
@@ -639,8 +685,7 @@ function main() {
             execOrThrow(`git commit -F "${tmpPath}"`, { cwd: repoRoot });
           });
           const branch = process.env.GITHUB_REF_NAME || 'main';
-          execOrThrow(`git push origin HEAD:${branch}`, { cwd: repoRoot });
-          console.log(`Committed and pushed changelog update to ${branch}.`);
+          pushChangelogViaPR(repoRoot, branch, newTag);
         } else {
           console.log('No staged changes after changelog write — files already at target.');
         }
@@ -666,4 +711,5 @@ module.exports = {
   RELEASE_ON_MAIN_SCRIPT_VERSION,
   prependChangelog,
   checkTagState,
+  pushChangelogViaPR,
 };

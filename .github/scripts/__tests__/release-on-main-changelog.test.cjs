@@ -13,7 +13,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execSync } = require('node:child_process');
 
-const { prependChangelog, checkTagState } = require('../release-on-main.cjs');
+const { prependChangelog, checkTagState, pushChangelogViaPR } = require('../release-on-main.cjs');
 
 function mkTmpDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -26,6 +26,35 @@ function initGitRepo(dir) {
   fs.writeFileSync(path.join(dir, 'file.txt'), 'x', 'utf8');
   execSync('git add file.txt', { cwd: dir });
   execSync('git commit -q -m "initial"', { cwd: dir });
+}
+
+/**
+ * Installs a fake `gh` CLI on PATH for the duration of `fn`. The fake logs
+ * every invocation's argv (space-joined) as one line to `logPath` and exits
+ * 0, unless `failOn` matches the first two args ("pr merge"), in which case
+ * it exits 1 — used to exercise pushChangelogViaPR's non-fatal fallback
+ * when auto-merge isn't available. Restores PATH afterward.
+ */
+function withFakeGh(logPath, failOn, fn) {
+  const binDir = mkTmpDir('fake-gh-bin-');
+  const ghPath = path.join(binDir, 'gh');
+  const failCheck = failOn
+    ? `if [ "$1 $2" = "${failOn}" ]; then exit 1; fi\n`
+    : '';
+  const script = `#!/bin/sh
+echo "$@" >> "${logPath}"
+${failCheck}exit 0
+`;
+  fs.writeFileSync(ghPath, script, 'utf8');
+  fs.chmodSync(ghPath, 0o755);
+
+  const originalPath = process.env.PATH;
+  process.env.PATH = `${binDir}${path.delimiter}${originalPath}`;
+  try {
+    return fn();
+  } finally {
+    process.env.PATH = originalPath;
+  }
 }
 
 describe('RC CHANGELOG behavior', () => {
@@ -79,5 +108,49 @@ describe('RC CHANGELOG behavior', () => {
     initGitRepo(dir);
 
     assert.equal(checkTagState('v9.9.9-rc1', dir), 'missing');
+  });
+});
+
+describe('pushChangelogViaPR (PR-based changelog delivery)', () => {
+  test('pushes the changelog branch and opens a PR with the no-release label', () => {
+    const dir = mkTmpDir('release-on-main-pr-');
+    initGitRepo(dir);
+    execSync('git remote add origin .', { cwd: dir }); // local-path "remote" is enough for a branch push
+
+    const logPath = path.join(mkTmpDir('release-on-main-pr-log-'), 'gh.log');
+    withFakeGh(logPath, null, () => {
+      pushChangelogViaPR(dir, 'main', 'v1.2.3');
+    });
+
+    // The changelog branch was actually created and pushed to the "remote"
+    // (here, the same repo — origin points at `.`).
+    const branches = execSync('git branch --list "changelog/v1.2.3"', { cwd: dir, encoding: 'utf8' });
+    assert.match(branches, /changelog\/v1\.2\.3/);
+
+    const log = fs.readFileSync(logPath, 'utf8');
+    assert.match(log, /pr create/);
+    assert.match(log, /--base main/);
+    assert.match(log, /--head changelog\/v1\.2\.3/);
+    assert.match(log, /--title chore\(release\): changelog for v1\.2\.3/);
+    assert.match(log, /--label no-release/);
+    assert.match(log, /pr merge changelog\/v1\.2\.3/);
+    assert.match(log, /--auto/);
+  });
+
+  test('does not throw when gh pr merge (auto-merge) is unavailable', () => {
+    const dir = mkTmpDir('release-on-main-pr-');
+    initGitRepo(dir);
+    execSync('git remote add origin .', { cwd: dir });
+
+    const logPath = path.join(mkTmpDir('release-on-main-pr-log-'), 'gh.log');
+    assert.doesNotThrow(() => {
+      withFakeGh(logPath, 'pr merge', () => {
+        pushChangelogViaPR(dir, 'main', 'v9.9.9');
+      });
+    });
+
+    const log = fs.readFileSync(logPath, 'utf8');
+    assert.match(log, /pr create/, 'PR creation must still happen even though merge will fail');
+    assert.match(log, /pr merge/, 'merge is attempted even though it fails');
   });
 });

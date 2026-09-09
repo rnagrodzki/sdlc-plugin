@@ -392,6 +392,12 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 	if tmpl, tmplErr := rt.templateResolve(mainRoot); tmplErr != nil {
 		warnings = append(warnings, fmt.Sprintf("PR template resolution failed: %s", tmplErr.Error()))
 	} else if tmpl != nil {
+		// Fail early, before any PR body is drafted, when the custom
+		// template conflicts with the release markers pr_apply injects
+		// automatically (prReleaseInjectMarkers below).
+		if compatErr := prtemplate.ValidateReleaseCompat(tmpl.Content); compatErr != nil {
+			return PRPrepareOut{}, &mcpserver.DomainError{Msg: compatErr.Error()}
+		}
 		out.Template = &PRTemplateOut{
 			Path:     tmpl.Path,
 			Legacy:   tmpl.Legacy,
