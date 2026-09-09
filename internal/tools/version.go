@@ -34,11 +34,18 @@ type VersionSourceInfo struct {
 }
 
 // VersionBumpOption describes a single bump possibility.
+//
+// SuggestedPreRelease is "rc" when Result already has one or more existing
+// RC tags (see VersionPrepareOut.ExistingRCs) and the version config's
+// RCAutoContinue is true (the default) — i.e. this bump target is already
+// mid-RC-train, so the safer default is another RC rather than a final
+// release. Empty when there's no suggestion either way.
 type VersionBumpOption struct {
-	Level   string `json:"level"`
-	Result  string `json:"result"`
-	Current string `json:"current"`
-	RCNext  string `json:"rcNext,omitempty"`
+	Level               string `json:"level"`
+	Result              string `json:"result"`
+	Current             string `json:"current"`
+	RCNext              string `json:"rcNext,omitempty"`
+	SuggestedPreRelease string `json:"suggestedPreRelease,omitempty"`
 }
 
 // VersionTagInfo holds tag-related information.
@@ -67,14 +74,15 @@ type VersionIdempotency struct {
 
 // VersionConfigInfo describes the resolved version config section.
 type VersionConfigInfo struct {
-	Mode          string `json:"mode"`
-	VersionFile   string `json:"versionFile"`
-	FileType      string `json:"fileType"`
-	TagPrefix     string `json:"tagPrefix"`
-	Changelog     bool   `json:"changelog"`
-	ChangelogFile string `json:"changelogFile"`
-	TicketPrefix  string `json:"ticketPrefix,omitempty"`
-	PreRelease    string `json:"preRelease,omitempty"`
+	Mode           string `json:"mode"`
+	VersionFile    string `json:"versionFile"`
+	FileType       string `json:"fileType"`
+	TagPrefix      string `json:"tagPrefix"`
+	Changelog      bool   `json:"changelog"`
+	ChangelogFile  string `json:"changelogFile"`
+	TicketPrefix   string `json:"ticketPrefix,omitempty"`
+	PreRelease     string `json:"preRelease,omitempty"`
+	RCAutoContinue bool   `json:"rcAutoContinue"`
 }
 
 // DivergenceInfo describes a divergence between the file version and
@@ -147,14 +155,15 @@ func versionPrepare(cfgRoot, gitRoot string, in VersionPrepareIn) (VersionPrepar
 		out.ConfigPresent = true
 		vs := cfg.Version
 		out.VersionConfig = &VersionConfigInfo{
-			Mode:          vs.Mode,
-			VersionFile:   vs.VersionFile,
-			FileType:      vs.FileType,
-			TagPrefix:     vs.TagPrefix,
-			Changelog:     vs.Changelog,
-			ChangelogFile: vs.ChangelogFile,
-			TicketPrefix:  vs.TicketPrefix,
-			PreRelease:    vs.PreRelease,
+			Mode:           vs.Mode,
+			VersionFile:    vs.VersionFile,
+			FileType:       vs.FileType,
+			TagPrefix:      vs.TagPrefix,
+			Changelog:      vs.Changelog,
+			ChangelogFile:  vs.ChangelogFile,
+			TicketPrefix:   vs.TicketPrefix,
+			PreRelease:     vs.PreRelease,
+			RCAutoContinue: vs.RCAutoContinue,
 		}
 		versionFile = vs.VersionFile
 		fileType = vs.FileType
@@ -308,6 +317,10 @@ func versionPrepare(cfgRoot, gitRoot string, in VersionPrepareIn) (VersionPrepar
 	}
 
 	// Bump options for standard levels, computed from bumpBase.
+	rcAutoContinue := true
+	if cfg != nil && cfg.Version != nil {
+		rcAutoContinue = cfg.Version.RCAutoContinue
+	}
 	bumpVF := &version.VersionFile{Version: bumpBase}
 	existingRCs := make(map[string][]string)
 	for _, level := range []string{"major", "minor", "patch"} {
@@ -320,14 +333,6 @@ func versionPrepare(cfgRoot, gitRoot string, in VersionPrepareIn) (VersionPrepar
 		rcNum := prReleaseFindNextRC(allTags, tagPrefix, result)
 		rcNext := result + "-rc" + strconv.Itoa(rcNum)
 
-		opt := VersionBumpOption{
-			Level:   level,
-			Result:  result,
-			Current: bumpBase,
-			RCNext:  rcNext,
-		}
-		out.BumpOptions = append(out.BumpOptions, opt)
-
 		// Collect existing RCs for this target.
 		needle := tagPrefix + result + "-rc"
 		var rcs []string
@@ -339,6 +344,20 @@ func versionPrepare(cfgRoot, gitRoot string, in VersionPrepareIn) (VersionPrepar
 		if len(rcs) > 0 {
 			existingRCs[result] = rcs
 		}
+
+		var suggestedPreRelease string
+		if len(rcs) > 0 && rcAutoContinue {
+			suggestedPreRelease = "rc"
+		}
+
+		opt := VersionBumpOption{
+			Level:               level,
+			Result:              result,
+			Current:             bumpBase,
+			RCNext:              rcNext,
+			SuggestedPreRelease: suggestedPreRelease,
+		}
+		out.BumpOptions = append(out.BumpOptions, opt)
 	}
 	if len(existingRCs) > 0 {
 		out.ExistingRCs = existingRCs

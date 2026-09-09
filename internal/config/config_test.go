@@ -416,6 +416,12 @@ func TestParseVersionSection_Full(t *testing.T) {
 	if v.PreRelease != "beta" {
 		t.Errorf("PreRelease = %q, want %q", v.PreRelease, "beta")
 	}
+
+	raw["rcAutoContinue"] = false
+	v4 := parseVersionSection(raw)
+	if v4.RCAutoContinue {
+		t.Errorf("RCAutoContinue = %v, want explicit false preserved", v4.RCAutoContinue)
+	}
 }
 
 func TestParseVersionSection_Defaults(t *testing.T) {
@@ -441,6 +447,10 @@ func TestParseVersionSection_Defaults(t *testing.T) {
 	v3 := parseVersionSection(map[string]any{"mode": "tag"})
 	if v3.Mode != "tag" {
 		t.Errorf("Mode = %q, want explicit value %q preserved", v3.Mode, "tag")
+	}
+
+	if !v.RCAutoContinue {
+		t.Errorf("RCAutoContinue = %v, want default true when absent", v.RCAutoContinue)
 	}
 }
 

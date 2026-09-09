@@ -197,7 +197,7 @@ This creates:
 - Marker: `<!-- release-pre:rc -->`
 - On merge: CI creates tag `v1.3.0-rc1` (auto-incremented RC number) as a GitHub pre-release
 
-RC releases do NOT bump the version file or update the CHANGELOG. The version file stays at the pre-bump value until the final release.
+RC releases do NOT bump the version file, but DO prepend a CHANGELOG entry (when `changelog: true`) for the RC version. The version file stays at the pre-bump value until the final release.
 
 ### Multiple RCs
 
@@ -236,7 +236,8 @@ Full `.sdlc-v2/config.json` `version` section:
     "changelog": true,
     "changelogFile": "CHANGELOG.md",
     "ticketPrefix": "PROJ-",
-    "preRelease": "rc"
+    "preRelease": "rc",
+    "rcAutoContinue": true
   }
 }
 ```
@@ -251,6 +252,7 @@ Full `.sdlc-v2/config.json` `version` section:
 | `changelogFile` | No | `"CHANGELOG.md"` (used only when `changelog` is `true`) | Path to changelog file |
 | `ticketPrefix` | No | — | Jira ticket prefix for linking (e.g., `"PROJ-"`) |
 | `preRelease` | No | — | Default pre-release label (e.g., `"rc"`) |
+| `rcAutoContinue` | No | `true` | When a bump target already has RC tags, suggest continuing the RC train (another `-rc`) instead of a final release |
 
 ## Troubleshooting
 

@@ -19,10 +19,14 @@ approval, then call `pr_apply` to create or update the PR.
 This is a Go/MCP port. The frontmatter's argument-hint describes a richer feature set than
 this port's tool surface (`pr_prepare`, `pr_apply`) actually supports:
 
-- **This port does not support draft PRs, label management, explicit base-branch override, or
-  automatic account-switch retry on gh failure; if gh reports an error, stop and report it.**
-  `pr_apply` accepts only `title` and `body` — there is no field for `--draft`, labels, or a
-  target base branch, and no recovery helper runs after a failure.
+- **This port does not support draft PRs, arbitrary label management, explicit base-branch
+  override, or automatic account-switch retry on gh failure; if gh reports an error, stop and
+  report it.** `pr_apply` accepts `title` and `body`, plus optional `releaseLevel` /
+  `releasePreRelease` / `releaseNotes` (forwarded from the version step — see "Release intent"
+  below): when `releaseLevel` is set, `pr_apply` injects release markers into the body and
+  auto-applies a `release:<level>[-rc]` label via `gh pr edit --add-label`. There is still no
+  field for `--draft`, an arbitrary `--label`, or a target base branch, and no recovery helper
+  runs after a failure.
 - `pr_prepare` does not supply a commit list, diff stat/content, remote state, changed files,
   repository labels, or a pre-detected create-vs-update mode. Draft the title and body using
   only context already available in this conversation (recent commits you made or observed,
@@ -152,6 +156,11 @@ of the PR). Do not ask for confirmation — the Step 5 approval gate is the cons
 | `jiraTicket` | Detected ticket reference from the branch name, or empty |
 | `template` | `{ path, legacy, headings, content }` or `null` — see PR Template above |
 
+**Release intent (invocation input, not part of `PR_CONTEXT`):** when this skill is dispatched
+with `releaseLevel` / `releaseNotes` / `releasePreRelease` (e.g. by `/ship` forwarding the
+version step's resolved plan), hold them for Step 6's `pr_apply` call and for the Step 5
+announcement below. Without a `releaseLevel`, this PR carries no release intent — skip both.
+
 ### Step 2 (PLAN): Draft PR Description
 
 > **If `PR_CONTEXT.template` is not null**: use its `headings` as the section list and its
@@ -227,6 +236,17 @@ Continue until all gates pass (max 2 iterations per gate).
 
 Show the complete title and description. **Do not call `pr_apply` before receiving explicit
 user approval via AskUserQuestion.**
+
+**Announce release intent first, when set.** If a `releaseLevel` was passed to this skill (see
+"Release intent" in Step 1), state it before the description, e.g.:
+
+```text
+Release: patch (pre-release: rc) — publishing will apply label "release:patch-rc"
+```
+
+Or, with no pre-release: `Release: minor — publishing will apply label "release:minor"`. Omit
+this line entirely when no `releaseLevel` was passed — do not imply a release will happen when
+one won't.
 
 **Auto mode:** if `--auto` was passed to this skill invocation, skip the AskUserQuestion
 prompt entirely. Still display the full title and description for visibility, then proceed

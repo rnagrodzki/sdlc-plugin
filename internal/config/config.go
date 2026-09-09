@@ -149,15 +149,23 @@ func (a *AutomationSection) StepMode(step string) string {
 // TicketPrefix filters commit messages for the changelog by Jira ticket
 // prefix (e.g. "PROJ"). PreRelease is the default pre-release label applied
 // when no explicit base bump or --pre is given.
+//
+// RCAutoContinue controls whether version_prepare suggests continuing an
+// existing release-candidate train (another "-rc" for a version that
+// already has one or more RC tags) instead of a final release, when the
+// caller hasn't said otherwise (e.g. under --auto). Defaults to true:
+// once a version has an RC out, staying in RC mode is the safer default
+// until something explicitly asks for the final release.
 type VersionSection struct {
-	Mode          string `json:"mode"`
-	VersionFile   string `json:"versionFile"`
-	FileType      string `json:"fileType"`
-	TagPrefix     string `json:"tagPrefix"`
-	Changelog     bool   `json:"changelog"`
-	ChangelogFile string `json:"changelogFile"`
-	TicketPrefix  string `json:"ticketPrefix"`
-	PreRelease    string `json:"preRelease"`
+	Mode           string `json:"mode"`
+	VersionFile    string `json:"versionFile"`
+	FileType       string `json:"fileType"`
+	TagPrefix      string `json:"tagPrefix"`
+	Changelog      bool   `json:"changelog"`
+	ChangelogFile  string `json:"changelogFile"`
+	TicketPrefix   string `json:"ticketPrefix"`
+	PreRelease     string `json:"preRelease"`
+	RCAutoContinue bool   `json:"rcAutoContinue"`
 }
 
 // parseVersionSection converts a raw JSON map into a VersionSection,
@@ -193,6 +201,11 @@ func parseVersionSection(raw map[string]any) *VersionSection {
 	}
 	if s, ok := raw["preRelease"].(string); ok {
 		v.PreRelease = s
+	}
+	if b, ok := raw["rcAutoContinue"].(bool); ok {
+		v.RCAutoContinue = b
+	} else {
+		v.RCAutoContinue = true
 	}
 	applyVersionDefaults(v)
 	return v
