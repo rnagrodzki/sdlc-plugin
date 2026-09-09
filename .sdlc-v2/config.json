@@ -133,6 +133,7 @@
     "tagPrefix": "v",
     "versionFile": "plugins/sdlc/.claude-plugin/plugin.json",
     "changelog": true,
-    "changelogFile": "CHANGELOG.md"
+    "changelogFile": "CHANGELOG.md",
+    "rcAutoContinue": true
   }
 }

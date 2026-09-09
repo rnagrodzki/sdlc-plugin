@@ -191,16 +191,20 @@ func awaitRemoteReview(activeRoot string, in AwaitRemoteReviewIn) (stepper.Envel
 // Ports scripts/skill/verify-pipeline.js (R41-R44, R47-R49). Same KD8
 // bounded-polling shape as await_remote_review above.
 //
-// RULING: ghx.PRChecks wraps plain `gh pr checks <n>` (tab-separated
-// name/state/elapsed/link columns), not `--json`. evaluateChecksText below
-// buckets on the tab-separated state column instead of the JS source's
-// structured `bucket` field. RULING: the JS source's fetchFailedCheckLogs
-// (`gh run view <runId> --log-failed`) is NOT ported — like received_review.go's
-// documented non-port of fetchPrReviewThreads, this is a gh capability ghx
-// does not expose, and this task's Files list does not include ghx.go.
-// Instead, on a "failed" verdict, this tool includes the raw PRChecks text
-// in ext.checks_raw for downstream (LLM) consumers to read the failing
-// check names from, without a fetched log excerpt.
+// RULING: ghx.PRChecksWithExitCode wraps plain `gh pr checks <n>`
+// (tab-separated name/state/elapsed/link columns), not `--json`.
+// evaluateChecksText below buckets on the tab-separated state column
+// instead of the JS source's structured `bucket` field. gh pr checks exits
+// 0/1/8 for pass/some-failed/some-pending respectively, so this tool uses
+// PRChecksWithExitCode (which preserves stdout across all three) rather than
+// PRChecks (which discards stdout on any non-zero exit, masking the
+// failed/pending cases behind a generic error). RULING: the JS source's
+// fetchFailedCheckLogs (`gh run view <runId> --log-failed`) is NOT ported —
+// like received_review.go's documented non-port of fetchPrReviewThreads,
+// this is a gh capability ghx does not expose beyond the raw checks text.
+// Instead, on a "failed" verdict, this tool includes the raw checks text in
+// ext.checks_raw for downstream (LLM) consumers to read the failing check
+// names from, without a fetched log excerpt.
 // ---------------------------------------------------------------------------
 
 // VerifyPipelineAwaitIn is the input for the verify_pipeline_await tool.
@@ -282,9 +286,12 @@ func verifyPipelineAwait(activeRoot string, in VerifyPipelineAwaitIn) (stepper.E
 		})
 	}
 
-	checksText, err := ghx.PRChecks(activeRoot, in.PR)
+	checksText, exitCode, err := ghx.PRChecksWithExitCode(activeRoot, in.PR)
 	if err != nil {
 		return stepper.NewError(stateFile, classifyGHError(err)), nil
+	}
+	if exitCode != 0 && exitCode != 1 && exitCode != 8 {
+		return stepper.NewError(stateFile, fmt.Sprintf("gh pr checks: unexpected exit code %d", exitCode)), nil
 	}
 
 	failed, pending := evaluateChecksText(checksText)

@@ -22,7 +22,8 @@
  *      ships. See DECISIONS below for why this departs from a literal
  *      reading of the step list.
  *   6. Bump the version file to the target version (format-preserving) and
- *      prepend CHANGELOG.md with notes pulled from the RC's GitHub Release.
+ *      prepend CHANGELOG.md with notes aggregated from ALL RC GitHub Releases
+ *      for the target version (deduplicated, labeled per-RC).
  *      This bump is committed to the CURRENT branch HEAD (which may have
  *      advanced past the RC) — it is bookkeeping, not part of the tagged
  *      release commit. The tagged commit's version file therefore still
@@ -63,8 +64,8 @@
 
 'use strict';
 
-/** @version 2 — promote-release script version. Bump when behavior changes. */
-const PROMOTE_RELEASE_SCRIPT_VERSION = 2;
+/** @version 3 — promote-release script version. Bump when behavior changes. */
+const PROMOTE_RELEASE_SCRIPT_VERSION = 3;
 
 const fs   = require('node:fs');
 const path = require('node:path');
@@ -226,6 +227,31 @@ function prependChangelogIfMissing(repoRoot, changelogFile, version, notes) {
   return true;
 }
 
+/**
+ * Remove all "## [<targetBase>-rcN] ..." sections (heading through to the
+ * next "## " heading or EOF) from the CHANGELOG, so the collapsed final
+ * entry doesn't duplicate content already recorded per-RC. No-op if the
+ * file doesn't exist or no matching RC entries are found.
+ */
+function stripRCEntries(repoRoot, changelogFile, tagPrefix, targetBase) {
+  const clPath = path.join(repoRoot, changelogFile);
+  if (!fs.existsSync(clPath)) return;
+
+  const content = fs.readFileSync(clPath, 'utf8');
+  const escapedBase = targetBase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const rcSectionRe = new RegExp(
+    `^##\\s+\\[${escapedBase}-rc\\d+\\][^\\n]*\\n(?:(?!^##\\s+\\[)[\\s\\S])*`,
+    'gm'
+  );
+
+  const stripped = content.replace(rcSectionRe, '');
+  if (stripped === content) return;
+
+  // Collapse any blank-line runs left behind by the removed sections.
+  const cleaned = stripped.replace(/\n{3,}/g, '\n\n');
+  fs.writeFileSync(clPath, cleaned, 'utf8');
+}
+
 // ---------------------------------------------------------------------------
 // RC lookup
 // ---------------------------------------------------------------------------
@@ -254,6 +280,31 @@ function findLatestRCTag(repoRoot, tagPrefix, targetBase) {
 }
 
 /**
+ * Find ALL RC tags for a target base version by scanning existing tags for
+ * <prefix><base>-rc<N>, sorted ascending by RC number.
+ * Returns [] if no RC tag exists.
+ */
+function findAllRCTags(repoRoot, tagPrefix, targetBase) {
+  let out;
+  try {
+    out = execSync('git tag --list', { encoding: 'utf8', cwd: repoRoot, stdio: 'pipe' }).trim();
+  } catch (err) {
+    fail(`git tag --list failed (exit ${err.status}): ${err.message}`);
+  }
+  if (!out) return [];
+
+  const needle = `${tagPrefix}${targetBase}-rc`;
+  const tags = [];
+  for (const t of out.split('\n')) {
+    if (!t.startsWith(needle)) continue;
+    const n = parseInt(t.slice(needle.length), 10);
+    if (!isNaN(n)) tags.push({ tag: t, num: n });
+  }
+  tags.sort((a, b) => a.num - b.num);
+  return tags.map((t) => t.tag);
+}
+
+/**
  * Read the message body of an existing annotated tag.
  * Returns null if the tag doesn't exist or has no message.
  */
@@ -274,9 +325,31 @@ function readRCNotes(rcTag, repoRoot) {
     notes = getTagMessage(rcTag, repoRoot);
   }
   if (!notes) {
+    console.log(`Warning: could not read release notes for ${rcTag} (gh release view and tag message both failed); using placeholder.`);
     return `Release ${rcTag}`;
   }
   return notes.replace(/^##\s*\[[^\]]+\]\s*\n*/, '').trim() || `Release ${rcTag}`;
+}
+
+/**
+ * Aggregate release notes from every RC tag for a target version.
+ * Deduplicates identical note blocks (exact string match after trim) so a
+ * re-merged PR (e.g. after revert+re-land) doesn't duplicate its notes
+ * across RCs. Each surviving block is labeled with its RC number.
+ * Returns '' when rcTags is empty.
+ */
+function readAllRCNotes(rcTags, repoRoot) {
+  const seen = new Set();
+  const blocks = [];
+  for (const tag of rcTags) {
+    const trimmed = (readRCNotes(tag, repoRoot) || '').trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    const rcNumMatch = tag.match(/-rc(\d+)$/);
+    const rcLabel = rcNumMatch ? `RC ${rcNumMatch[1]}` : tag;
+    blocks.push(`### ${rcLabel}\n\n${trimmed}`);
+  }
+  return blocks.join('\n\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -331,8 +404,11 @@ function main() {
   }
   console.log(`RC ${rcTag} -> ${rcSha}`);
 
-  // Step 7/8: Read release notes from the RC's GitHub Release.
-  const notes = readRCNotes(rcTag, repoRoot);
+  // Step 7/8: Aggregate release notes from ALL RC GitHub Releases for this
+  // target — not just the latest RC — so multi-RC cycles don't lose notes.
+  const allRCTags = findAllRCTags(repoRoot, tagPrefix, targetBase);
+  const notes = readAllRCNotes(allRCTags, repoRoot);
+  console.log(`Aggregated notes from ${allRCTags.length} RC tag(s).`);
 
   // Step 7: Bump version file (format-preserving), on current branch HEAD.
   // Gate matches release-on-main.cjs: skip in tag-only mode (no version file
@@ -344,13 +420,15 @@ function main() {
     console.log(`Version file updated: ${config.versionFile} -> ${targetBase}`);
   }
 
-  // Step 9: Prepend CHANGELOG.md with notes.
+  // Step 9: Strip per-RC CHANGELOG entries for this target, then prepend the
+  // single collapsed final entry with the aggregated notes.
   // Gate matches release-on-main.cjs: only when config.changelog === true.
   if (config.changelog === true) {
     const changelogFile = config.changelogFile || 'CHANGELOG.md';
+    stripRCEntries(repoRoot, changelogFile, tagPrefix, targetBase);
     if (prependChangelogIfMissing(repoRoot, changelogFile, targetBase, notes)) {
       filesToAdd.push(changelogFile);
-      console.log(`Changelog updated: ${changelogFile}`);
+      console.log(`Changelog updated: ${changelogFile} (RC entries collapsed)`);
     }
   }
 
@@ -362,7 +440,17 @@ function main() {
       execOrThrow(`git add "${f}"`, { cwd: repoRoot });
     }
 
-    const hasStagedChanges = exec('git diff --cached --quiet', { cwd: repoRoot }) === null;
+    let hasStagedChanges;
+    try {
+      execSync('git diff --cached --quiet', { cwd: repoRoot, stdio: 'pipe' });
+      hasStagedChanges = false;
+    } catch (err) {
+      if (err.status === 1) {
+        hasStagedChanges = true;
+      } else {
+        fail(`git diff --cached --quiet failed (exit ${err.status}): ${err.message}`);
+      }
+    }
     if (hasStagedChanges) {
       const commitMsg = `chore(release): promote ${targetTag}`;
       withTmpFile(commitMsg, (tmpPath) => {
@@ -392,11 +480,22 @@ function main() {
   console.log(`GitHub release created for ${targetTag}.`);
 }
 
-try {
-  main();
-} catch (err) {
-  process.stderr.write(`Unexpected error in promote-release.cjs: ${err.message}\n${err.stack}\n`);
-  process.exit(1);
+// Only run when executed directly (`node promote-release.cjs <version>`) —
+// requiring this file as a module (e.g. from tests) must not trigger a live
+// CI run (it would otherwise exit the process immediately on a missing arg).
+if (require.main === module) {
+  try {
+    main();
+  } catch (err) {
+    process.stderr.write(`Unexpected error in promote-release.cjs: ${err.message}\n${err.stack}\n`);
+    process.exit(1);
+  }
 }
 
-module.exports = { PROMOTE_RELEASE_SCRIPT_VERSION };
+module.exports = {
+  PROMOTE_RELEASE_SCRIPT_VERSION,
+  findAllRCTags,
+  readAllRCNotes,
+  stripRCEntries,
+  prependChangelogIfMissing,
+};

@@ -89,10 +89,50 @@ func Run(cmd string, args []string, opt Options) (string, error) {
 		return "", fmt.Errorf("execx: %s: %w", cmd, ErrOutputCap)
 	}
 	if runErr != nil {
+		if stderrText := strings.TrimSpace(stderr.String()); stderrText != "" {
+			return "", fmt.Errorf("execx: %s %s: %w: %s", cmd, strings.Join(args, " "), runErr, stderrText)
+		}
 		return "", fmt.Errorf("execx: %s %s: %w", cmd, strings.Join(args, " "), runErr)
 	}
 
 	return strings.TrimSpace(out.buf.String()), nil
+}
+
+// RunAllowExit behaves like Run but never discards stdout because of a
+// non-zero exit: it returns the exit code alongside the captured stdout,
+// and only returns a non-nil error for failures that aren't a plain
+// process exit (binary not found, etc). Use it for commands like
+// `gh pr checks` whose exit code is itself meaningful data, not just a
+// pass/fail signal — discarding their stdout on non-zero exit would throw
+// away the very information the caller needs to classify the failure.
+func RunAllowExit(cmd string, args []string, opt Options) (stdout string, exitCode int, err error) {
+	maxBytes := opt.MaxBytes
+	if maxBytes <= 0 {
+		maxBytes = defaultMaxBytes
+	}
+	c := exec.Command(cmd, args...)
+	c.Dir = opt.Dir
+	c.Stdin = opt.Stdin
+	out := &cappedBuffer{limit: maxBytes}
+	c.Stdout = out
+	var stderr bytes.Buffer
+	c.Stderr = &stderr
+
+	runErr := c.Run()
+	if out.exceeded {
+		return "", 0, fmt.Errorf("execx: %s: %w", cmd, ErrOutputCap)
+	}
+	if runErr != nil {
+		var exitErr *exec.ExitError
+		if errors.As(runErr, &exitErr) {
+			return strings.TrimSpace(out.buf.String()), exitErr.ExitCode(), nil
+		}
+		if stderrText := strings.TrimSpace(stderr.String()); stderrText != "" {
+			return "", 0, fmt.Errorf("execx: %s %s: %w: %s", cmd, strings.Join(args, " "), runErr, stderrText)
+		}
+		return "", 0, fmt.Errorf("execx: %s %s: %w", cmd, strings.Join(args, " "), runErr)
+	}
+	return strings.TrimSpace(out.buf.String()), 0, nil
 }
 
 // cappedBuffer accumulates writes up to limit bytes. Once the limit would be

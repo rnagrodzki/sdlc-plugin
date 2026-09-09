@@ -77,10 +77,14 @@ else `conventionalSummary.suggest`.
 `major`, warn and recommend `major` instead.
 
 **RC check:** look up `existingRCs[bumpOptions[level].result]`. If present, show the existing RC
-tags and ask whether this is another release candidate or the final release. Choose RC when `--rc`
-was passed, the existing-RCs answer says so, or the user asks for one — set `preRelease: "rc"` and
-show `bumpOptions[level].rcNext` as the preview version. `pr_apply` recomputes the exact version
-independently when the PR is opened, so the final tag may differ if the branch moved since.
+tags. Default answer is `bumpOptions[level].suggestedPreRelease` — `"rc"` when the version config's
+`rcAutoContinue` is true (the default: once a version has an RC out, stay in RC mode until told
+otherwise), empty when it's false. Under `--auto`, take this default without asking. Otherwise ask
+whether this is another release candidate or the final release, showing the default as the
+recommended choice. Choose RC when `--rc` was passed, the (possibly defaulted) answer says so, or
+the user asks for one — set `preRelease: "rc"` and show `bumpOptions[level].rcNext` as the preview
+version. `pr_apply` recomputes the exact version independently when the PR is opened, so the final
+tag may differ if the branch moved since.
 
 **Draft release notes** from `commitsSinceTag`:
 - Keep a Changelog-style bullets. Do **not** write a `## [version]` heading — `pr_apply` generates

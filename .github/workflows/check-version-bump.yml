@@ -14,8 +14,12 @@ jobs:
     steps:
       - name: Check for skip label
         id: skip-check
+        env:
+          LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
         run: |
-          if [[ "${{ contains(github.event.pull_request.labels.*.name, 'skip-version-check') }}" == "true" ]]; then
+          # RC releases (release:<level>-rc label) intentionally don't bump the
+          # version file — see docs/versioning.md's Release Candidates section.
+          if echo "$LABELS_JSON" | jq -e 'any(.[]; . == "skip-version-check" or test("^release:(major|minor|patch)-rc$"))' > /dev/null; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
