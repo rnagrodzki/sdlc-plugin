@@ -1,9 +1,14 @@
 package tools
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
 
@@ -73,6 +78,12 @@ type PrepareOrchestratorIn struct {
 	Error                  string `json:"errorText,omitempty"`
 	ExitOrHTTPCode         string `json:"exitOrHttpCode,omitempty"`
 	SuggestedInvestigation string `json:"suggestedInvestigation,omitempty"`
+
+	// --- harden mode optional: history context ---
+	// HistoryPath, when set, points to .sdlc-v2/history/. The manifest
+	// includes recent run records and open deferred issues as additional
+	// evidence for hardening proposals.
+	HistoryPath string `json:"historyPath,omitempty"`
 }
 
 // PrepareOrchestratorOut is prepare_orchestrator's output: the path to the
@@ -149,6 +160,19 @@ func prepareOrchestrator(in PrepareOrchestratorIn) (PrepareOrchestratorOut, erro
 		if err != nil {
 			return PrepareOrchestratorOut{}, err
 		}
+
+		// Inject history context into the manifest when historyPath is
+		// provided (or auto-resolved from root).
+		histPath := in.HistoryPath
+		if histPath == "" {
+			histPath = filepath.Join(root, paths.DataDir, "history")
+		}
+		if err := injectHardenHistory(out.ManifestPath, histPath); err != nil {
+			// Non-fatal — history is supplementary evidence; log as
+			// manifest error but don't block the harden run.
+			_ = err
+		}
+
 		return PrepareOrchestratorOut{ManifestPath: out.ManifestPath, Mode: in.Mode}, nil
 
 	case "error_report":
@@ -170,6 +194,50 @@ func prepareOrchestrator(in PrepareOrchestratorIn) (PrepareOrchestratorOut, erro
 			Msg: fmt.Sprintf("mode: invalid value %q — must be \"harden\" or \"error_report\"", in.Mode),
 		}
 	}
+}
+
+// ---------------------------------------------------------------------------
+// History injection for harden manifests
+// ---------------------------------------------------------------------------
+
+// injectHardenHistory reads the persistent history store at histPath and
+// patches the manifest JSON at manifestPath with a "history" section
+// containing recent run records and open deferred issues.
+func injectHardenHistory(manifestPath, histPath string) error {
+	w := history.NewFileWriter(histPath)
+
+	runs, _ := w.ReadRecentRuns(10)
+	deferred, _ := w.ListDeferred()
+	openDeferred := history.OpenDeferred(deferred)
+
+	if len(runs) == 0 && len(openDeferred) == 0 {
+		return nil // nothing to inject
+	}
+
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return err
+	}
+
+	var manifest map[string]any
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return err
+	}
+
+	histSection := map[string]any{}
+	if len(runs) > 0 {
+		histSection["recentRuns"] = runs
+	}
+	if len(openDeferred) > 0 {
+		histSection["openDeferred"] = openDeferred
+	}
+	manifest["history"] = histSection
+
+	out, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(manifestPath, out, 0o644)
 }
 
 // ---------------------------------------------------------------------------

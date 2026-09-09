@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
+	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/pipeline"
@@ -517,6 +519,17 @@ func shipState(root, workDir string, in ShipStateIn, now func() time.Time) (any,
 		return shipStateNext(root, workDir, in)
 	case "todos":
 		return shipStateTodos(root, workDir, in)
+
+	// History actions — persistent JSONL store that survives state-file GC.
+	case "history_record":
+		return shipStateHistoryRecord(root, in)
+	case "deferred_add":
+		return shipStateDeferredAdd(root, in)
+	case "deferred_list":
+		return shipStateDeferredList(root)
+	case "deferred_propose_followups":
+		return shipStateDeferredProposeFollowups(root)
+
 	default:
 		return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("unknown ship_state action %q", in.Action)}
 	}
@@ -1487,6 +1500,172 @@ func shipStateTodos(root, workDir string, in ShipStateIn) (any, error) {
 }
 
 // ---------------------------------------------------------------------------
+// Action: history_record — append a pipeline run record to .sdlc-v2/history/runs.jsonl
+// ---------------------------------------------------------------------------
+
+func historyDir(root string) string {
+	return filepath.Join(root, paths.DataDir, "history")
+}
+
+func shipStateHistoryRecord(root string, in ShipStateIn) (any, error) {
+	d := in.Detail
+	if d == nil {
+		return nil, &mcpserver.DomainError{Msg: "history_record requires detail with run record fields"}
+	}
+
+	rec := history.RunRecord{
+		Timestamp:  detailStr(d, "ts"),
+		Skill:      detailStr(d, "skill"),
+		Branch:     detailStr(d, "branch"),
+		Outcome:    detailStr(d, "outcome"),
+		DurationMs: detailInt64(d, "duration_ms"),
+		Version:    detailStr(d, "version"),
+	}
+	if rec.Timestamp == "" {
+		rec.Timestamp = time.Now().UTC().Format(time.RFC3339)
+	}
+	if rec.Skill == "" {
+		return nil, &mcpserver.DomainError{Msg: "history_record: detail.skill is required"}
+	}
+	if rec.Outcome == "" {
+		return nil, &mcpserver.DomainError{Msg: "history_record: detail.outcome is required"}
+	}
+
+	rec.Steps = detailStrSlice(d, "steps")
+	rec.GuardrailHits = detailStrSlice(d, "guardrail_hits")
+	rec.DeferredIssues = detailStrSlice(d, "deferred_issues")
+
+	w := history.NewFileWriter(historyDir(root))
+	if err := w.AppendRun(rec); err != nil {
+		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("history_record: %s", err.Error()), Cause: err}
+	}
+	return map[string]any{"ok": true, "ts": rec.Timestamp}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Action: deferred_add — add a deferred issue to .sdlc-v2/history/deferred.json
+// ---------------------------------------------------------------------------
+
+func shipStateDeferredAdd(root string, in ShipStateIn) (any, error) {
+	d := in.Detail
+	if d == nil {
+		return nil, &mcpserver.DomainError{Msg: "deferred_add requires detail with issue fields"}
+	}
+
+	issue := history.DeferredIssue{
+		ID:          detailStr(d, "id"),
+		Created:     detailStr(d, "created"),
+		Source:      detailStr(d, "source"),
+		Priority:    detailStr(d, "priority"),
+		Description: detailStr(d, "description"),
+		Status:      "open",
+	}
+	if issue.ID == "" {
+		return nil, &mcpserver.DomainError{Msg: "deferred_add: detail.id is required"}
+	}
+	if issue.Description == "" {
+		return nil, &mcpserver.DomainError{Msg: "deferred_add: detail.description is required"}
+	}
+	if issue.Created == "" {
+		issue.Created = time.Now().UTC().Format(time.RFC3339)
+	}
+	if issue.Priority == "" {
+		issue.Priority = "medium"
+	}
+
+	w := history.NewFileWriter(historyDir(root))
+	if err := w.AddDeferred(issue); err != nil {
+		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("deferred_add: %s", err.Error()), Cause: err}
+	}
+	return map[string]any{"ok": true, "id": issue.ID}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Action: deferred_list — list all deferred issues
+// ---------------------------------------------------------------------------
+
+func shipStateDeferredList(root string) (any, error) {
+	w := history.NewFileWriter(historyDir(root))
+	issues, err := w.ListDeferred()
+	if err != nil {
+		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("deferred_list: %s", err.Error()), Cause: err}
+	}
+	if issues == nil {
+		issues = []history.DeferredIssue{}
+	}
+	open := history.OpenDeferred(issues)
+	return map[string]any{
+		"issues":    issues,
+		"openCount": len(open),
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Action: deferred_propose_followups — return open issues grouped by priority
+// ---------------------------------------------------------------------------
+
+func shipStateDeferredProposeFollowups(root string) (any, error) {
+	w := history.NewFileWriter(historyDir(root))
+	issues, err := w.ListDeferred()
+	if err != nil {
+		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("deferred_propose_followups: %s", err.Error()), Cause: err}
+	}
+	if issues == nil {
+		issues = []history.DeferredIssue{}
+	}
+	open := history.OpenDeferred(issues)
+	groups := history.DeferredByPriority(issues)
+	summary := history.FormatDeferredSummary(issues)
+
+	return map[string]any{
+		"openCount": len(open),
+		"groups":    groups,
+		"display":   summary,
+	}, nil
+}
+
+// detailInt64 reads a numeric value from the detail map as int64.
+func detailInt64(d map[string]any, key string) int64 {
+	v, ok := d[key]
+	if !ok {
+		return 0
+	}
+	switch n := v.(type) {
+	case float64:
+		return int64(n)
+	case int64:
+		return n
+	case json.Number:
+		i, _ := n.Int64()
+		return i
+	default:
+		return 0
+	}
+}
+
+// detailStrSlice reads a []string from the detail map.
+func detailStrSlice(d map[string]any, key string) []string {
+	v, ok := d[key]
+	if !ok {
+		return nil
+	}
+	arr, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(arr))
+	for _, item := range arr {
+		if s, ok := item.(string); ok {
+			out = append(out, s)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
@@ -1515,7 +1694,11 @@ Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide
 - gc: Garbage-collect stale state files. Optional: detail.ttlDays, detail.dryRun.
 - migrate: Migrate state between branches. Requires detail.from, detail.to.
 - next: Return the next pending step. Optional: detail.branch, detail.stateFile.
-- todos: List remaining todos for a step. Optional: step, detail.branch, detail.stateFile.`,
+- todos: List remaining todos for a step. Optional: step, detail.branch, detail.stateFile.
+- history_record: Append a pipeline run record to .sdlc-v2/history/runs.jsonl (persistent, survives state-file GC). Requires detail.skill, detail.outcome ("success"|"failure"|"partial"). Optional: detail.ts (ISO timestamp, defaults to now), detail.branch, detail.duration_ms, detail.steps, detail.guardrail_hits, detail.deferred_issues, detail.version.
+- deferred_add: Add a deferred issue to .sdlc-v2/history/deferred.json. Requires detail.id, detail.description. Optional: detail.created (defaults to now), detail.source, detail.priority ("high"|"medium"|"low", defaults to "medium").
+- deferred_list: List all deferred issues. Returns {issues, openCount}.
+- deferred_propose_followups: Return open deferred issues grouped by priority with a formatted display summary. Returns {openCount, groups, display}.`,
 		func(ctx mcpserver.Ctx, in ShipStateIn) (any, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

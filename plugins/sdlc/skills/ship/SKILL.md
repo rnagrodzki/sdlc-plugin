@@ -51,6 +51,22 @@ Companion files, loaded on demand: [`config-format.md`](config-format.md) (`.sdl
 
 **10. Summary.** Print step/status/result, the `decisions` log and `deferredFindings` (from the final `read`), and the cleanup outcome. `issueSummary` is present on Step 9's response only when `issues[]` is non-empty (`total`, `byCategory`, `items`, `display`, `hardenSuggestion`): render `issueSummary.display` verbatim, then append `issueSummary.hardenSuggestion` when present. When `issueSummary` is absent, render nothing — no "0 issues" line.
 
+**10b. Deferred Follow-ups.** After rendering the summary, call `ship_state({action:"deferred_propose_followups"})`. If `openCount > 0`, render `display` verbatim, then:
+- In `--auto` mode: skip entirely (no interactive prompts).
+- Otherwise, AskUserQuestion:
+  > {openCount} deferred issue(s) from previous runs still open.
+  > Options:
+  > 1. **Create GitHub issues** — open issues for unresolved items
+  > 2. **Resolve selected** — mark items as resolved/wont-fix
+  > 3. **Skip** — review later
+- On option 1: for each selected deferred issue, `gh issue create` with label `deferred-followup`, body from the issue fields, then call `ship_state({action:"deferred_add", detail:{id:<id>, description:"Resolved — created GH issue", status:"resolved"}})`.
+- On option 2: AskUserQuestion for which to resolve and status.
+- On option 3: no action (items persist for next run).
+
+When `openCount` is 0, render nothing.
+
+**10c. Record run history.** `ship_state({action:"history_record", detail:{skill:"ship", branch:<branch>, outcome:<"success"|"failure"|"partial">, duration_ms:<elapsed>, steps:<step names>, version:<version if set>}})`. Non-fatal — if recording fails, log a warning and continue.
+
 ---
 
 ## Steps
