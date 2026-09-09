@@ -13,7 +13,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execSync } = require('node:child_process');
 
-const { prependChangelog, checkTagState, pushChangelogViaPR } = require('../release-on-main.cjs');
+const { prependChangelog, checkTagState, pushChangelogViaPR, resolveChangelogMethod } = require('../release-on-main.cjs');
 
 function mkTmpDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -56,6 +56,36 @@ ${failCheck}exit 0
     process.env.PATH = originalPath;
   }
 }
+
+describe('resolveChangelogMethod', () => {
+  test('explicit "pr" wins', () => {
+    assert.strictEqual(resolveChangelogMethod({ changelogMethod: 'pr' }), 'pr');
+  });
+
+  test('explicit "push" wins', () => {
+    assert.strictEqual(resolveChangelogMethod({ changelogMethod: 'push' }), 'push');
+  });
+
+  test('explicit "skip" wins', () => {
+    assert.strictEqual(resolveChangelogMethod({ changelogMethod: 'skip' }), 'skip');
+  });
+
+  test('legacy true maps to push', () => {
+    assert.strictEqual(resolveChangelogMethod({ changelog: true }), 'push');
+  });
+
+  test('legacy false maps to skip', () => {
+    assert.strictEqual(resolveChangelogMethod({ changelog: false }), 'skip');
+  });
+
+  test('neither key defaults to skip', () => {
+    assert.strictEqual(resolveChangelogMethod({}), 'skip');
+  });
+
+  test('explicit wins over legacy', () => {
+    assert.strictEqual(resolveChangelogMethod({ changelogMethod: 'pr', changelog: false }), 'pr');
+  });
+});
 
 describe('RC CHANGELOG behavior', () => {
   test('prepends RC entry when config.changelog is true', () => {

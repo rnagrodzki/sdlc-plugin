@@ -67,13 +67,13 @@ version_prepare({ skipConfigCheck: false, sessionID: "" }) → data
     (`false` creates missing files without touching any unrelated manifest entry that already
     exists). After it returns, render `data.protection` (`RulesetCheckResult`): if `hasRulesets`
     or `hasClassicProtection` is true, show a short informational note — "`<defaultBranch>` has
-    branch protection (rulesets: <rulesetNames joined>). This is fine: the changelog is delivered
-    via a PR (`changelogMethod: "pr"`), not a direct push, so no bypass is needed." If neither is
-    set, skip the note (nothing protected, no reason to mention it). Always show
-    `data.protection.notes` if non-empty (e.g. "gh not authenticated" — the check degrades
-    silently on failure, so surface why it couldn't run). Then continue to Step 1. On **skip**,
-    continue to Step 1. If either workflow already exists, skip the offer entirely and continue to
-    Step 1.
+    branch protection (rulesets: <rulesetNames joined>). Tagging and GitHub Releases work normally.
+    If changelogMethod is "push", the direct push will be blocked — use "pr" (delivers via PR)
+    or "skip" (disable changelog delivery) instead." If neither is set, skip the note (nothing
+    protected, no reason to mention it). Always show `data.protection.notes` if non-empty (e.g.
+    "gh not authenticated" — the check degrades silently on failure, so surface why it couldn't
+    run). Then continue to Step 1. On **skip**, continue to Step 1. If either workflow already
+    exists, skip the offer entirely and continue to Step 1.
 
 ## Step 1 (PLAN): Determine Bump Level and Draft Release Notes
 

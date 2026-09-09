@@ -89,12 +89,12 @@ var versionFields = []Field{
 		Description: "Prefix prepended to the version when /version creates a release tag (e.g., prefix `v` produces `v1.2.3`). Empty string is allowed for projects that tag with bare semver. Detected from existing tags when possible.",
 	},
 	{
-		Name:        "changelog",
-		Label:       "Generate CHANGELOG on release?",
-		Type:        "boolean",
-		Options:     []string{"yes", "no"},
-		Default:     false,
-		Description: "When true, /version and /ship append a release entry to changelogFile (default `CHANGELOG.md`) on every bump. Default `no` keeps the workflow lean — enable if your project publishes release notes.",
+		Name:        "changelogMethod",
+		Label:       "Changelog delivery method",
+		Type:        "enum",
+		Options:     []string{"skip", "push", "pr"},
+		Default:     "skip",
+		Description: "Controls how (or whether) the release workflow delivers changelog updates after tagging. `skip` (default) disables changelog delivery — repo manages changelogs externally. `push` commits directly to main (simple, but blocked by branch protection). `pr` opens a changelog PR with auto-merge (works with branch protection). Legacy `changelog: true` maps to `push`, `false` maps to `skip`.",
 	},
 	{
 		Name:        "changelogFile",
@@ -102,7 +102,7 @@ var versionFields = []Field{
 		Type:        "string",
 		Options:     nil,
 		Default:     "CHANGELOG.md",
-		Description: "Path to the changelog file appended by /version when changelog is enabled. Default `CHANGELOG.md` matches the conventional location at repo root. Ignored when changelog is disabled.",
+		Description: "Path to the changelog file appended by /version when changelogMethod is not `skip`. Default `CHANGELOG.md` matches the conventional location at repo root. Ignored when changelogMethod is `skip`.",
 	},
 	{
 		Name:        "preRelease",
