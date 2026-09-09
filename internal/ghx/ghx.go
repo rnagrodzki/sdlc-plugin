@@ -83,6 +83,22 @@ func PRChecks(dir string, n int) (string, error) {
 	return run(dir, "pr", "checks", fmt.Sprint(n))
 }
 
+// PRChecksWithExitCode behaves like PRChecks but preserves stdout and
+// reports the process exit code even on a non-zero exit, since gh pr
+// checks' exit code is itself meaningful (0 pass, 1 some failed, 8 some
+// pending) — see internal/tools/polling.go's verifyPipelineAwait for why
+// that data must not be discarded the way PRChecks discards it.
+func PRChecksWithExitCode(dir string, n int) (stdout string, exitCode int, err error) {
+	if n <= 0 {
+		return "", 0, fmt.Errorf("ghx: PRChecksWithExitCode: invalid PR number %d", n)
+	}
+	stdout, exitCode, err = execx.RunAllowExit(ghCmd, []string{"pr", "checks", fmt.Sprint(n)}, execx.Options{Dir: dir})
+	if err != nil && isBinaryNotFound(err) {
+		return "", 0, fmt.Errorf("%w: %w", ErrGHNotFound, err)
+	}
+	return stdout, exitCode, err
+}
+
 // IssueView returns the output of `gh issue view <key>` run inside dir.
 func IssueView(dir string, key string) (string, error) {
 	if err := validatePositionalArg(key, "IssueView"); err != nil {

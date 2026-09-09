@@ -158,6 +158,28 @@ func TestPRChecks(t *testing.T) {
 	}
 }
 
+// TestPRChecksWithExitCode_PreservesStdoutOnFailure checks the fix for the
+// bug where every failed/pending `gh pr checks` result (non-zero exit) was
+// misclassified as a generic infra error because PRChecks (via execx.Run)
+// discards stdout on any non-zero exit. PRChecksWithExitCode must return
+// the check output alongside the real exit code instead.
+func TestPRChecksWithExitCode_PreservesStdoutOnFailure(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\nprintf 'lint\\tfail\\t30s\\thttps://x\\n'\nexit 1\n")
+	defer cleanup()
+
+	out, exitCode, err := PRChecksWithExitCode(".", 7)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if exitCode != 1 {
+		t.Errorf("got exitCode %d, want 1", exitCode)
+	}
+	want := "lint\tfail\t30s\thttps://x"
+	if out != want {
+		t.Errorf("got %q, want %q", out, want)
+	}
+}
+
 func TestIssueView(t *testing.T) {
 	cleanup := stubGH(t, "#!/bin/sh\necho \"Issue PROJ-99 details\"\n")
 	defer cleanup()

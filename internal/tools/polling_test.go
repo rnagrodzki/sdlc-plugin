@@ -156,7 +156,7 @@ func TestAwaitRemoteReview_Timeout(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestVerifyPipelineAwait_PendingThenGreen(t *testing.T) {
-	cleanup := stubGH(t, "#!/bin/sh\nprintf 'build\\tpending\\t1m\\thttps://x\\n'\n")
+	cleanup := stubGH(t, "#!/bin/sh\nprintf 'build\\tpending\\t1m\\thttps://x\\n'\nexit 8\n")
 	defer cleanup()
 
 	env, err := verifyPipelineAwait(".", VerifyPipelineAwaitIn{PR: 5, TimeoutSeconds: 1200, IntervalSeconds: 60})
@@ -184,7 +184,7 @@ func TestVerifyPipelineAwait_PendingThenGreen(t *testing.T) {
 }
 
 func TestVerifyPipelineAwait_Failed(t *testing.T) {
-	cleanup := stubGH(t, "#!/bin/sh\nprintf 'lint\\tfail\\t30s\\thttps://x\\n'\n")
+	cleanup := stubGH(t, "#!/bin/sh\nprintf 'lint\\tfail\\t30s\\thttps://x\\n'\nexit 1\n")
 	defer cleanup()
 
 	env, err := verifyPipelineAwait(".", VerifyPipelineAwaitIn{PR: 9, TimeoutSeconds: 1200, IntervalSeconds: 60})

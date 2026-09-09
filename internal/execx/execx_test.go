@@ -74,6 +74,21 @@ func TestRun_CommandFailureIsSoftFail(t *testing.T) {
 	}
 }
 
+// TestRun_CommandFailureSurfacesStderr checks that when a command exits
+// non-zero after writing diagnostic text to stderr, that text is folded
+// into the returned error rather than being silently discarded — so
+// callers see the real reason (e.g. gh's GraphQL error text) instead of a
+// bare "exit status 1".
+func TestRun_CommandFailureSurfacesStderr(t *testing.T) {
+	_, err := Run("sh", []string{"-c", "echo boom >&2; exit 1"}, Options{})
+	if err == nil {
+		t.Fatalf("Run: expected error for non-zero exit, got nil")
+	}
+	if !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("Run: error %q does not contain stderr text %q", err.Error(), "boom")
+	}
+}
+
 // TestRun_OutputCapOverflow checks that output beyond MaxBytes returns the
 // distinct ErrOutputCap rather than a silently truncated result — and that
 // this holds even though the underlying command exits successfully,
@@ -196,6 +211,48 @@ func TestRetry_ExhaustsAllAttempts(t *testing.T) {
 	want := []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second}
 	if !durationsEqual(*delays, want) {
 		t.Fatalf("Retry: sleep called with %v, want %v", *delays, want)
+	}
+}
+
+// TestRunAllowExit_Success checks that a clean exit returns the trimmed
+// stdout, exit code 0, and a nil error.
+func TestRunAllowExit_Success(t *testing.T) {
+	got, exitCode, err := RunAllowExit("sh", []string{"-c", "printf hello"}, Options{})
+	if err != nil {
+		t.Fatalf("RunAllowExit: unexpected error: %v", err)
+	}
+	if exitCode != 0 {
+		t.Fatalf("RunAllowExit: got exitCode %d, want 0", exitCode)
+	}
+	if got != "hello" {
+		t.Fatalf("RunAllowExit: got %q, want %q", got, "hello")
+	}
+}
+
+// TestRunAllowExit_PreservesStdoutOnNonZeroExit checks the core behavioral
+// difference from Run: stdout produced before a non-zero exit must still
+// be returned, alongside the real exit code, with a nil error — the exit
+// code itself is the signal, not a failure to be masked.
+func TestRunAllowExit_PreservesStdoutOnNonZeroExit(t *testing.T) {
+	got, exitCode, err := RunAllowExit("sh", []string{"-c", "printf out; exit 1"}, Options{})
+	if err != nil {
+		t.Fatalf("RunAllowExit: unexpected error: %v", err)
+	}
+	if exitCode != 1 {
+		t.Fatalf("RunAllowExit: got exitCode %d, want 1", exitCode)
+	}
+	if got != "out" {
+		t.Fatalf("RunAllowExit: got %q, want %q", got, "out")
+	}
+}
+
+// TestRunAllowExit_MissingBinaryErrors checks that a genuine execution
+// failure (binary not found) still surfaces as a non-nil error, since that
+// is not a "process ran and exited" case the exit-code contract covers.
+func TestRunAllowExit_MissingBinaryErrors(t *testing.T) {
+	_, _, err := RunAllowExit("definitely-not-a-real-binary-xyz", nil, Options{})
+	if err == nil {
+		t.Fatalf("RunAllowExit: expected error for missing binary, got nil")
 	}
 }
 
