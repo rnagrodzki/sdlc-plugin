@@ -63,7 +63,7 @@ type PRAccountRow struct {
 // matched account, switch/login hints) — not a literal port, because
 // recoverGhAccountForRepo only runs post-failure against a live `gh pr
 // create` permission-error string, which hasn't happened yet at prepare
-// time. See buildAuthDiagnostics.
+// time. See buildAuthDiagnosticsWith.
 type PRAuthDiagnostics struct {
 	Owner          string         `json:"owner,omitempty"`
 	Candidates     []PRAccountRow `json:"candidates,omitempty"`
@@ -121,19 +121,79 @@ type PRPrepareOut struct {
 	Template   *PRTemplateOut `json:"template,omitempty"`
 }
 
-// buildAuthDiagnostics synthesizes the PRAuthDiagnostics block for a
+// ---------------------------------------------------------------------------
+// prRuntime — dependency-injection struct for prPrepareCore / prApplyCore
+// ---------------------------------------------------------------------------
+
+// prRuntime holds function fields wrapping every external dependency called by
+// prPrepareCore, prApplyCore, and their helpers. Tests inject mocks through
+// prRuntime; production code uses defaultPRRuntime.
+type prRuntime struct {
+	ghPRForBranch       func(dir string) ghx.PRMetadata
+	ghPRCreate          func(dir, title, body string) (string, error)
+	ghPREdit            func(dir string, num int, title, body string) (string, error)
+	ghLabelList         func(dir string) ([]string, error)        // wired by Task 6
+	ghLabelCreate       func(dir, name, color, desc string) error // wired by Task 6
+	ghAuthProbe         func(dir, host string) ghx.AuthProbeResult
+	ghRepoAccessProbe   func(dir, owner, repo, host string) ghx.RepoAccessResult
+	ghGetAccounts       func(dir, host string) ([]ghx.Account, error)
+	gitCurrentBranch    func(dir string) (string, error)
+	gitStatus           func(dir string) (string, error)
+	gitFetchTags        func(dir string) error
+	gitTagList          func(dir string) ([]string, error)
+	gitAllSemverTags    func(dir string) ([]string, error)
+	gitTagExists        func(dir, name string) (bool, error)
+	execRun             func(name string, args []string, opts execx.Options) (string, error)
+	configRead          func(root string) (*config.Config, error)
+	configReadSection   func(root, section string) (map[string]any, error)
+	versionDetect       func(root, path, fileType string) (*version.VersionFile, error)
+	configMigrateVerify func(root string) error
+	branchValidate      func(current, expected string) branch.BranchGuardResult
+	jiraExtract         func(branchName string) string
+	templateResolve     func(root string) (*prtemplate.Template, error)
+}
+
+// defaultPRRuntime wires prRuntime to the real package-level implementations.
+var defaultPRRuntime = prRuntime{
+	ghPRForBranch:       ghx.PRForBranch,
+	ghPRCreate:          ghx.PRCreate,
+	ghPREdit:            ghx.PREdit,
+	ghLabelList:         nil, // Task 6 wires ghx.LabelList
+	ghLabelCreate:       nil, // Task 6 wires ghx.LabelCreate
+	ghAuthProbe:         ghx.AuthProbe,
+	ghRepoAccessProbe:   ghx.RepoAccessProbe,
+	ghGetAccounts:       ghx.GetAccounts,
+	gitCurrentBranch:    gitx.CurrentBranch,
+	gitStatus:           gitx.Status,
+	gitFetchTags:        gitx.FetchTags,
+	gitTagList:          gitx.TagList,
+	gitAllSemverTags:    gitx.AllSemverTags,
+	gitTagExists:        gitx.TagExists,
+	execRun:             execx.Run,
+	configRead:          config.Read,
+	configReadSection:   config.ReadSection,
+	versionDetect:       version.DetectAt,
+	configMigrateVerify: configmigrate.Verify,
+	branchValidate:      branch.ValidateExpectedBranch,
+	jiraExtract: func(branchName string) string {
+		return detectJiraTicket(branchName, nil)
+	},
+	templateResolve: prtemplate.Resolve,
+}
+
+// buildAuthDiagnosticsWith synthesizes the PRAuthDiagnostics block for a
 // gh-auth failure. wantLogin, when non-empty, is the login we'd like an
 // already-authenticated local account to match (the configured
 // expectedAccount for a mismatch, nothing for an access-denial); owner is
 // the repo owner (access-denial case only); suggested is a fallback account
 // list already gathered by a probe (e.g. RepoAccessResult.SuggestedAccounts)
 // used only if GetAccounts itself comes back empty.
-func buildAuthDiagnostics(workDir, wantLogin, owner string, suggested []string) *PRAuthDiagnostics {
+func buildAuthDiagnosticsWith(rt prRuntime, workDir, wantLogin, owner string, suggested []string) *PRAuthDiagnostics {
 	// ghx.GetAccounts, unlike ghx.AuthProbe/ghx.RepoAccessProbe, does not
 	// default an empty host to "github.com" itself (it looks up the raw
 	// `gh auth status --json hosts` map by the exact key given) — default
 	// it here so this call is consistent with the other two probes.
-	accounts, _ := ghx.GetAccounts(workDir, "github.com")
+	accounts, _ := rt.ghGetAccounts(workDir, "github.com")
 	rows := make([]PRAccountRow, 0, len(accounts))
 	for _, a := range accounts {
 		rows = append(rows, PRAccountRow{Login: a.Login, Active: a.Active})
@@ -183,26 +243,32 @@ func detectJiraTicket(branchName string, commitSubjects []string) string {
 // for testability: mainRoot anchors config/sdlc-v2 state (worktree.MainRoot),
 // workDir anchors git/gh operations (worktree.ActiveRoot).
 func prPrepareCore(mainRoot, workDir string, in PRPrepareIn) (PRPrepareOut, error) {
+	return prPrepareCoreWith(mainRoot, workDir, in, defaultPRRuntime)
+}
+
+// prPrepareCoreWith is the parameterized form of prPrepareCore. All external
+// calls go through rt, enabling mock injection in tests.
+func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (PRPrepareOut, error) {
 	var errs, warnings []string
 
 	// KD5 gate: hard-abort with a minimal errors-only payload on config
 	// migration failure, mirroring pr.js's ensureConfigVersion short-circuit
 	// (and plan.go/setup.go's own KD5 gate).
 	if !in.SkipConfigCheck {
-		if err := configmigrate.Verify(mainRoot); err != nil {
+		if err := rt.configMigrateVerify(mainRoot); err != nil {
 			errs = append(errs, fmt.Sprintf("config-version: %s", err.Error()))
 			return PRPrepareOut{Errors: errs, NeedsMigration: true}, nil
 		}
 	}
 
 	// gh-auth + active-account preflight (pr.js issues #234/#380).
-	authProbe := ghx.AuthProbe(workDir, "")
+	authProbe := rt.ghAuthProbe(workDir, "")
 	out := PRPrepareOut{
 		GHAuthenticated: authProbe.Authenticated,
 		ActiveAccount:   authProbe.ActiveAccount,
 	}
 
-	prSection, _ := config.ReadSection(mainRoot, "pr")
+	prSection, _ := rt.configReadSection(mainRoot, "pr")
 	expectedAccount := ""
 	if v, ok := prSection["expectedAccount"].(string); ok {
 		if trimmed := strings.TrimSpace(v); trimmed != "" {
@@ -217,9 +283,9 @@ func prPrepareCore(mainRoot, workDir string, in PRPrepareIn) (PRPrepareOut, erro
 		// AC2 asks for the same account diagnostics the standalone recover
 		// script produced; build them here too (not just on mismatch) so an
 		// unauthenticated failure still surfaces any configured candidates.
-		// wantLogin=="" means buildAuthDiagnostics never finds a match, so it
-		// falls through to its own default LoginHint.
-		out.Diagnostics = buildAuthDiagnostics(workDir, "", "", nil)
+		// wantLogin=="" means buildAuthDiagnosticsWith never finds a match,
+		// so it falls through to its own default LoginHint.
+		out.Diagnostics = buildAuthDiagnosticsWith(rt, workDir, "", "", nil)
 		return out, nil
 	}
 
@@ -229,14 +295,14 @@ func prPrepareCore(mainRoot, workDir string, in PRPrepareIn) (PRPrepareOut, erro
 	if accountMismatch {
 		errs = append(errs, ghx.FormatAccountMismatch(expectedAccount, authProbe.ActiveAccount))
 		out.Errors = errs
-		out.Diagnostics = buildAuthDiagnostics(workDir, expectedAccount, "", nil)
+		out.Diagnostics = buildAuthDiagnosticsWith(rt, workDir, expectedAccount, "", nil)
 		return out, nil
 	}
 
 	// Remote owner/repo, best-effort — a missing origin remote is not an
 	// error, matching pr.js's parseRemoteOwner() returning null.
 	owner, repo, hasRemote := "", "", false
-	if originURL, err := execx.Run("git", []string{"remote", "get-url", "origin"}, execx.Options{Dir: workDir}); err == nil && originURL != "" {
+	if originURL, err := rt.execRun("git", []string{"remote", "get-url", "origin"}, execx.Options{Dir: workDir}); err == nil && originURL != "" {
 		if o, r, parseErr := ghx.ParseRemoteOwner(originURL); parseErr == nil {
 			owner, repo, hasRemote = o, r, true
 		}
@@ -244,14 +310,14 @@ func prPrepareCore(mainRoot, workDir string, in PRPrepareIn) (PRPrepareOut, erro
 
 	switch {
 	case expectedAccount == "" && hasRemote:
-		probe := ghx.RepoAccessProbe(workDir, owner, repo, "")
+		probe := rt.ghRepoAccessProbe(workDir, owner, repo, "")
 		out.RepoAccessProbed = true
 		out.RepoAccessible = probe.Accessible
 		out.RepoAccessStatus = probe.StatusCode
 		if probe.Accessible != nil && !*probe.Accessible {
 			errs = append(errs, ghx.FormatAccessDenied(authProbe.ActiveAccount, owner, repo, probe.SuggestedAccounts))
 			out.Errors = errs
-			out.Diagnostics = buildAuthDiagnostics(workDir, "", owner, probe.SuggestedAccounts)
+			out.Diagnostics = buildAuthDiagnosticsWith(rt, workDir, "", owner, probe.SuggestedAccounts)
 			return out, nil
 		}
 		if probe.Accessible == nil {
@@ -267,7 +333,7 @@ func prPrepareCore(mainRoot, workDir string, in PRPrepareIn) (PRPrepareOut, erro
 
 	// Git state: current branch + uncommitted-changes, mirroring
 	// checkGitState's currentBranch/uncommittedChanges/dirtyFiles.
-	currentBranch, err := gitx.CurrentBranch(workDir)
+	currentBranch, err := rt.gitCurrentBranch(workDir)
 	if err != nil {
 		errs = append(errs, err.Error())
 		out.Errors = errs
@@ -276,7 +342,7 @@ func prPrepareCore(mainRoot, workDir string, in PRPrepareIn) (PRPrepareOut, erro
 	}
 	out.CurrentBranch = currentBranch
 
-	if statusRaw, statusErr := gitx.Status(workDir); statusErr == nil {
+	if statusRaw, statusErr := rt.gitStatus(workDir); statusErr == nil {
 		var dirty []string
 		for _, line := range strings.Split(statusRaw, "\n") {
 			if line == "" {
@@ -296,7 +362,7 @@ func prPrepareCore(mainRoot, workDir string, in PRPrepareIn) (PRPrepareOut, erro
 	// is represented here as a normal (non-error) payload carrying the
 	// BranchGuard result — pr.js itself still emits a full JSON payload
 	// (not a bare error) at this point.
-	guard := branch.ValidateExpectedBranch(currentBranch, in.ExpectedBranch)
+	guard := rt.branchValidate(currentBranch, in.ExpectedBranch)
 	out.BranchGuard = &guard
 	if guard.Active && !guard.OK {
 		errs = append(errs, guard.Message)
@@ -318,12 +384,12 @@ func prPrepareCore(mainRoot, workDir string, in PRPrepareIn) (PRPrepareOut, erro
 
 	// JIRA ticket detection — branch-name-only in this port (see
 	// detectJiraTicket's doc comment).
-	out.JiraTicket = detectJiraTicket(currentBranch, nil)
+	out.JiraTicket = rt.jiraExtract(currentBranch)
 
 	// PR template resolution (shared with task 20's prtemplate package). A
 	// resolution failure is non-fatal — it becomes a warning, not an error,
 	// since it does not block the rest of the preflight's diagnostic value.
-	if tmpl, tmplErr := prtemplate.Resolve(mainRoot); tmplErr != nil {
+	if tmpl, tmplErr := rt.templateResolve(mainRoot); tmplErr != nil {
 		warnings = append(warnings, fmt.Sprintf("PR template resolution failed: %s", tmplErr.Error()))
 	} else if tmpl != nil {
 		out.Template = &PRTemplateOut{
@@ -429,6 +495,12 @@ type ReleaseIntentInfo struct {
 //     "remote tag" half of max() silently degrades to file-version-only.
 //     Not fixable here (gitx.go out of scope).
 func prApplyCore(mainRoot, workDir string, in PRApplyIn) (PRApplyOut, error) {
+	return prApplyCoreWith(mainRoot, workDir, in, defaultPRRuntime)
+}
+
+// prApplyCoreWith is the parameterized form of prApplyCore. All external
+// calls go through rt, enabling mock injection in tests.
+func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRApplyOut, error) {
 	if strings.TrimSpace(in.Title) == "" {
 		return PRApplyOut{}, &mcpserver.DomainError{Msg: "title is required"}
 	}
@@ -452,7 +524,7 @@ func prApplyCore(mainRoot, workDir string, in PRApplyIn) (PRApplyOut, error) {
 	body := in.Body
 	if in.ReleaseLevel != "" {
 		var err error
-		intent, err = prReleaseComputeIntent(mainRoot, workDir, in.ReleaseLevel, in.ReleasePreRelease)
+		intent, err = prReleaseComputeIntentWith(rt, mainRoot, workDir, in.ReleaseLevel, in.ReleasePreRelease)
 		if err != nil {
 			return PRApplyOut{}, err // already wrapped as Domain/Infra
 		}
@@ -460,9 +532,9 @@ func prApplyCore(mainRoot, workDir string, in PRApplyIn) (PRApplyOut, error) {
 		intent.NotesInBody = in.ReleaseNotes != ""
 	}
 
-	meta := ghx.PRForBranch(workDir)
+	meta := rt.ghPRForBranch(workDir)
 	if meta.Exists {
-		url, err := ghx.PREdit(workDir, meta.Number, in.Title, body)
+		url, err := rt.ghPREdit(workDir, meta.Number, in.Title, body)
 		if err != nil {
 			return PRApplyOut{}, &mcpserver.InfraError{Msg: "gh pr edit: " + err.Error(), Cause: err}
 		}
@@ -470,19 +542,19 @@ func prApplyCore(mainRoot, workDir string, in PRApplyIn) (PRApplyOut, error) {
 			url = meta.URL
 		}
 		if intent != nil {
-			if err := prReleaseAddLabel(workDir, intent.LabelApplied); err != nil {
+			if err := prReleaseAddLabelWith(rt, workDir, intent.LabelApplied); err != nil {
 				return PRApplyOut{}, err
 			}
 		}
 		return PRApplyOut{URL: url, Created: false, ReleaseIntent: intent}, nil
 	}
 
-	url, err := ghx.PRCreate(workDir, in.Title, body)
+	url, err := rt.ghPRCreate(workDir, in.Title, body)
 	if err != nil {
 		return PRApplyOut{}, &mcpserver.InfraError{Msg: "gh pr create: " + err.Error(), Cause: err}
 	}
 	if intent != nil {
-		if err := prReleaseAddLabel(workDir, intent.LabelApplied); err != nil {
+		if err := prReleaseAddLabelWith(rt, workDir, intent.LabelApplied); err != nil {
 			return PRApplyOut{}, err
 		}
 	}
@@ -493,11 +565,12 @@ func prApplyCore(mainRoot, workDir string, in PRApplyIn) (PRApplyOut, error) {
 // Release intent helpers
 // ---------------------------------------------------------------------------
 
-// prReleaseComputeIntent resolves version metadata from the project's
+// prReleaseComputeIntentWith resolves version metadata from the project's
 // version file and git tags. Returns a fully populated ReleaseIntentInfo.
-func prReleaseComputeIntent(mainRoot, workDir, level, preRelease string) (*ReleaseIntentInfo, error) {
+// All external calls go through rt.
+func prReleaseComputeIntentWith(rt prRuntime, mainRoot, workDir, level, preRelease string) (*ReleaseIntentInfo, error) {
 	// Read config for version section.
-	cfg, _ := config.Read(mainRoot) // nil config is handled below.
+	cfg, _ := rt.configRead(mainRoot) // nil config is handled below.
 
 	var tagPrefix string
 	var versionFilePath string
@@ -512,17 +585,17 @@ func prReleaseComputeIntent(mainRoot, workDir, level, preRelease string) (*Relea
 	}
 
 	// Detect version file.
-	vf, err := version.DetectAt(mainRoot, versionFilePath, fileType)
+	vf, err := rt.versionDetect(mainRoot, versionFilePath, fileType)
 	if err != nil {
 		return nil, &mcpserver.DomainError{Msg: "version detection: " + err.Error()}
 	}
 	fileVersion := vf.Version
 
 	// Best-effort fetch tags (no remote in tests, CI may time out).
-	_ = gitx.FetchTags(workDir)
+	_ = rt.gitFetchTags(workDir)
 
 	// Find highest released tag to use as bump base.
-	tags, err := gitx.TagList(workDir)
+	tags, err := rt.gitTagList(workDir)
 	if err != nil {
 		tags = nil // degrade gracefully
 	}
@@ -546,7 +619,7 @@ func prReleaseComputeIntent(mainRoot, workDir, level, preRelease string) (*Relea
 
 	// RC handling: scan existing RC tags, pick next number.
 	if preRelease == "rc" {
-		allTags, err := gitx.AllSemverTags(workDir)
+		allTags, err := rt.gitAllSemverTags(workDir)
 		if err != nil {
 			allTags = nil
 		}
@@ -556,7 +629,7 @@ func prReleaseComputeIntent(mainRoot, workDir, level, preRelease string) (*Relea
 	}
 
 	// Check tag collision.
-	exists, err := gitx.TagExists(workDir, tagName)
+	exists, err := rt.gitTagExists(workDir, tagName)
 	if err == nil && exists {
 		return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("tag %q already exists — version collision", tagName)}
 	}
@@ -699,10 +772,10 @@ func prReleaseStripMarkers(body string) string {
 	return body
 }
 
-// prReleaseAddLabel applies a label to the current branch's PR via
-// gh pr edit --add-label.
-func prReleaseAddLabel(workDir, label string) error {
-	_, err := execx.Run("gh", []string{"pr", "edit", "--add-label", label}, execx.Options{Dir: workDir})
+// prReleaseAddLabelWith applies a label to the current branch's PR via
+// gh pr edit --add-label. Uses rt.execRun for the gh CLI call.
+func prReleaseAddLabelWith(rt prRuntime, workDir, label string) error {
+	_, err := rt.execRun("gh", []string{"pr", "edit", "--add-label", label}, execx.Options{Dir: workDir})
 	if err != nil {
 		return &mcpserver.InfraError{Msg: "gh pr edit --add-label: " + err.Error(), Cause: err}
 	}

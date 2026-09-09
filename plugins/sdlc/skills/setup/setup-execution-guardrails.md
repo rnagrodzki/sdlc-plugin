@@ -34,6 +34,7 @@ descriptions instead of the plan descriptions:
 | `no-direct-db-access` | architecture | error | Code changes must not introduce direct database queries outside the repository layer. |
 | `api-backward-compatibility` | architecture | error | API changes must maintain backward compatibility — no breaking changes to existing endpoints or contracts without versioning. |
 | `test-coverage-required` | testing | error | Code changes must include corresponding test coverage — verify tests exist and pass after each wave. |
+| `no-real-fs-git-in-tests` | testing | error | Implementation must not use real filesystem operations (os.WriteFile, os.Create, os.MkdirTemp, t.TempDir) or execute real git/gh commands (exec.Command, execx.Run) in tests. Use dependency injection with mock/fake implementations. |
 | `database-migration-review` | architecture | warning | Database migration files must be reviewed — schema changes are flagged for manual verification. |
 | `no-ci-bypass` | security | error | Implemented code must not disable, skip, or weaken CI checks, linters, or pre-commit hooks. |
 | `monorepo-boundary-respect` | architecture | warning | Code changes must respect monorepo package boundaries — no cross-package imports outside declared dependencies. |

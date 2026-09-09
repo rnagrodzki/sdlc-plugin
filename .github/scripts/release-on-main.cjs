@@ -12,10 +12,12 @@
  * Reads: .sdlc-v2/config.json  (sdlc versioning config)
  *
  * Two flows:
- *   Direct release — bumps version file, prepends CHANGELOG, creates final
- *     tag + GitHub Release.
- *   RC release     — creates RC tag (v1.3.0-rc1), GitHub pre-release. Does
- *     NOT bump version file. DOES prepend CHANGELOG with the RC entry.
+ *   Direct release — bumps version file, creates final tag + GitHub Release,
+ *     then prepends CHANGELOG (best-effort — a changelog failure is logged
+ *     and does not undo or block the tag/release, which already landed).
+ *   RC release     — creates RC tag (v1.3.0-rc1) + GitHub pre-release, then
+ *     prepends CHANGELOG with the RC entry (same best-effort ordering). Does
+ *     NOT bump version file.
  *
  * Exit codes: 0 = success / no-op (no release label), 1 = error
  *
@@ -24,8 +26,8 @@
 
 'use strict';
 
-/** @version 3 — release-on-main script version. Bump when behavior changes. */
-const RELEASE_ON_MAIN_SCRIPT_VERSION = 3;
+/** @version 4 — release-on-main script version. Bump when behavior changes. */
+const RELEASE_ON_MAIN_SCRIPT_VERSION = 4;
 
 const fs   = require('node:fs');
 const path = require('node:path');
@@ -484,46 +486,8 @@ function main() {
       process.exit(1);
     }
 
-    // RC: do NOT bump version file. DO prepend CHANGELOG.
-    const filesToAdd = [];
-    if (config.changelog === true) {
-      const changelogFile = config.changelogFile || 'CHANGELOG.md';
-      prependChangelog(repoRoot, changelogFile, rcVersion, notes);
-      filesToAdd.push(changelogFile);
-      console.log(`Changelog updated: ${changelogFile} (RC entry ${rcVersion})`);
-    }
-
-    // Commit + push CHANGELOG if changed.
-    if (filesToAdd.length > 0) {
-      for (const f of filesToAdd) {
-        execOrThrow(`git add "${f}"`, { cwd: repoRoot });
-      }
-      let hasStagedChanges;
-      try {
-        execSync('git diff --cached --quiet', { cwd: repoRoot, stdio: 'pipe' });
-        hasStagedChanges = false;
-      } catch (err) {
-        if (err.status === 1) {
-          hasStagedChanges = true;
-        } else {
-          process.stderr.write(`git diff --cached --quiet failed (exit ${err.status}): ${err.message}\n`);
-          process.exit(1);
-        }
-      }
-      if (hasStagedChanges) {
-        const commitMsg = `chore(release): changelog for ${rcTag}`;
-        withTmpFile(commitMsg, (tmpPath) => {
-          execOrThrow(`git commit -F "${tmpPath}"`, { cwd: repoRoot });
-        });
-        const branch = process.env.GITHUB_REF_NAME || 'main';
-        execOrThrow(`git push origin HEAD:${branch}`, { cwd: repoRoot });
-        console.log(`Committed and pushed changelog update to ${branch}.`);
-      } else {
-        console.log('No staged changes after changelog write — files already at target.');
-      }
-    }
-
-    // Create RC tag (at HEAD, which now includes the changelog commit).
+    // RC: do NOT bump version file. Create the tag first — the tag is the
+    // release; CHANGELOG below is best-effort and must never block it.
     const tagMessage = notes || `Release ${rcTag}`;
     withTmpFile(tagMessage, (tmpPath) => {
       execOrThrow(`git tag -a "${rcTag}" -F "${tmpPath}" HEAD`, { cwd: repoRoot });
@@ -536,6 +500,42 @@ function main() {
       execOrThrow(`gh release create "${rcTag}" --title "${rcTag}" --notes-file "${tmpPath}" --prerelease`, { cwd: repoRoot });
     });
     console.log(`GitHub pre-release created for ${rcTag}.`);
+
+    // Prepend CHANGELOG if enabled — after the tag and pre-release already
+    // exist, so a changelog failure never costs the release.
+    if (config.changelog === true) {
+      try {
+        const changelogFile = config.changelogFile || 'CHANGELOG.md';
+        prependChangelog(repoRoot, changelogFile, rcVersion, notes);
+        console.log(`Changelog updated: ${changelogFile} (RC entry ${rcVersion})`);
+
+        execOrThrow(`git add "${changelogFile}"`, { cwd: repoRoot });
+        let hasStagedChanges;
+        try {
+          execSync('git diff --cached --quiet', { cwd: repoRoot, stdio: 'pipe' });
+          hasStagedChanges = false;
+        } catch (err) {
+          if (err.status === 1) {
+            hasStagedChanges = true;
+          } else {
+            throw new Error(`git diff --cached --quiet failed (exit ${err.status}): ${err.message}`);
+          }
+        }
+        if (hasStagedChanges) {
+          const commitMsg = `chore(release): changelog for ${rcTag}`;
+          withTmpFile(commitMsg, (tmpPath) => {
+            execOrThrow(`git commit -F "${tmpPath}"`, { cwd: repoRoot });
+          });
+          const branch = process.env.GITHUB_REF_NAME || 'main';
+          execOrThrow(`git push origin HEAD:${branch}`, { cwd: repoRoot });
+          console.log(`Committed and pushed changelog update to ${branch}.`);
+        } else {
+          console.log('No staged changes after changelog write — files already at target.');
+        }
+      } catch (err) {
+        process.stderr.write(`Changelog update failed, continuing (tag ${rcTag} already released): ${err.message}\n`);
+      }
+    }
   } else {
     // ----- Direct release flow -----
     const newVersion = bumped;
@@ -554,25 +554,18 @@ function main() {
       process.exit(1);
     }
 
-    // Step 7: Write version to file (skip in tag-only mode).
-    const filesToAdd = [];
+    // Step 7: Write version to file (skip in tag-only mode) and commit it —
+    // this must land before the tag so the tag matches the file's version.
+    const versionFilesToAdd = [];
     if (config.mode !== 'tag' && config.versionFile) {
       writeVersionToFile(config, repoRoot, newVersion);
-      filesToAdd.push(config.versionFile);
+      versionFilesToAdd.push(config.versionFile);
       console.log(`Version file updated: ${config.versionFile} → ${newVersion}`);
     }
 
-    // Step 8: Prepend CHANGELOG if enabled.
-    if (config.changelog === true) {
-      const changelogFile = config.changelogFile || 'CHANGELOG.md';
-      prependChangelog(repoRoot, changelogFile, newVersion, notes);
-      filesToAdd.push(changelogFile);
-      console.log(`Changelog updated: ${changelogFile}`);
-    }
-
-    // Step 9: Commit and push (only if files changed).
-    if (filesToAdd.length > 0) {
-      for (const f of filesToAdd) {
+    // Step 8: Commit and push the version file (only if it changed).
+    if (versionFilesToAdd.length > 0) {
+      for (const f of versionFilesToAdd) {
         execOrThrow(`git add "${f}"`, { cwd: repoRoot });
       }
 
@@ -604,7 +597,9 @@ function main() {
       }
     }
 
-    // Step 10: Create tag.
+    // Step 9: Create tag — the release itself. Must happen unconditionally
+    // once the version state above is settled; CHANGELOG (Step 11) is
+    // best-effort and must never block it.
     const tagMessage = notes || `Release ${newTag}`;
     withTmpFile(tagMessage, (tmpPath) => {
       execOrThrow(`git tag -a "${newTag}" -F "${tmpPath}" HEAD`, { cwd: repoRoot });
@@ -612,11 +607,47 @@ function main() {
     execOrThrow(`git push origin "refs/tags/${newTag}"`, { cwd: repoRoot });
     console.log(`Tag ${newTag} created and pushed.`);
 
-    // Step 11: Create GitHub release.
+    // Step 10: Create GitHub release.
     withTmpFile(notes || `Release ${newTag}`, (tmpPath) => {
       execOrThrow(`gh release create "${newTag}" --title "${newTag}" --notes-file "${tmpPath}"`, { cwd: repoRoot });
     });
     console.log(`GitHub release created for ${newTag}.`);
+
+    // Step 11: Prepend CHANGELOG if enabled — after the tag and release
+    // already exist, so a changelog failure never costs the release.
+    if (config.changelog === true) {
+      try {
+        const changelogFile = config.changelogFile || 'CHANGELOG.md';
+        prependChangelog(repoRoot, changelogFile, newVersion, notes);
+        console.log(`Changelog updated: ${changelogFile}`);
+
+        execOrThrow(`git add "${changelogFile}"`, { cwd: repoRoot });
+        let changelogStaged;
+        try {
+          execSync('git diff --cached --quiet', { cwd: repoRoot, stdio: 'pipe' });
+          changelogStaged = false;
+        } catch (err) {
+          if (err.status === 1) {
+            changelogStaged = true;
+          } else {
+            throw new Error(`git diff --cached --quiet failed (exit ${err.status}): ${err.message}`);
+          }
+        }
+        if (changelogStaged) {
+          const commitMsg = `chore(release): changelog for ${newTag}`;
+          withTmpFile(commitMsg, (tmpPath) => {
+            execOrThrow(`git commit -F "${tmpPath}"`, { cwd: repoRoot });
+          });
+          const branch = process.env.GITHUB_REF_NAME || 'main';
+          execOrThrow(`git push origin HEAD:${branch}`, { cwd: repoRoot });
+          console.log(`Committed and pushed changelog update to ${branch}.`);
+        } else {
+          console.log('No staged changes after changelog write — files already at target.');
+        }
+      } catch (err) {
+        process.stderr.write(`Changelog update failed, continuing (tag ${newTag} already released): ${err.message}\n`);
+      }
+    }
   }
 }
 

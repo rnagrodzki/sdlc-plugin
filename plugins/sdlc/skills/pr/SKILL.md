@@ -66,8 +66,9 @@ When `PR_CONTEXT.template` is null, every PR uses this 8-section flat structure.
 ## Summary
 [1-3 sentence plain-language overview accessible to anyone — no jargon]
 
+<!-- Only include this section when PR_CONTEXT.jiraTicket is non-empty -->
 ## JIRA Ticket
-[Auto-detected from branch name, e.g. PROJ-123. "Not detected" if no ticket reference found.]
+[Auto-detected from branch name, e.g. PROJ-123]
 
 ## Business Context
 [Why this change is needed from a business/product perspective.
@@ -104,9 +105,10 @@ If no tests added, explain why.]
 **Section fill rules:**
 
 - ALL sections in the active template MUST always be present — never omit one
+- **JIRA Ticket is an exception:** When `PR_CONTEXT.jiraTicket` is empty, omit this section entirely (don't include "Not detected")
 - Fill with real content when derivable from conversation context
 - Use **"N/A"** when a section genuinely doesn't apply (state why briefly)
-- Use **"Not detected"** when detection was attempted but yielded nothing
+- Use **"Not detected"** when detection was attempted but yielded nothing (except for JIRA Ticket — see above)
 - **Never fabricate** — if unsure, ask a clarifying question before filling
 - Ask clarifying questions (especially for Business Context and Business Benefits)
   when available context isn't sufficient to fill the section confidently
@@ -186,7 +188,7 @@ When OpenSpec context provides business rationale, use it directly instead of as
 For each section, apply the fill rules:
 
 - **Summary**: Plain-language, no jargon, 1-3 sentences
-- **JIRA Ticket**: Use `PR_CONTEXT.jiraTicket` or "Not detected"
+- **JIRA Ticket**: Include only when `PR_CONTEXT.jiraTicket` is non-empty; omit the section entirely if no ticket found
 - **Business Context / Benefits**: Infer from conversation context. If insufficient evidence, **use AskUserQuestion** to ask the user before writing. Don't guess. Acceptable question: *"What business problem does this PR solve? Who benefits and how?"*
 - **Technical Design**: Infer from the changes you already know about — architecture, patterns, key decisions
 - **Technical Impact**: Identify affected systems/APIs/services from what you already know
@@ -209,7 +211,7 @@ Before presenting to the user, review the draft against every quality gate:
 | No file paths | Changes Overview uses concepts only | Zero file paths in this section |
 | Title length | Title under 72 characters | `len(title) < 72` |
 | No fabrication | All claims traceable to conversation context | Nothing invented |
-| JIRA accuracy | JIRA value matches `jiraTicket` or is "Not detected" | No guessed ticket numbers |
+| JIRA accuracy | JIRA section omitted when no ticket; when present, value matches `jiraTicket` | No guessed ticket numbers, section absent if not detected |
 | Audience check | Readable by non-technical stakeholders | No unexplained jargon in Summary/Business sections |
 | Documentation sync | If the change adds new commands, changes structure, renames concepts, or adds new directories/scripts: ask the user to confirm docs are updated — this port has no commit-list data to check for a `docs:` commit automatically | PR does not silently ship structural changes without addressing docs |
 | Link verification | Every URL in the body will be validated by `links_validate` before publishing (see Step 6) | Deferred to Step 6's hard gate |
