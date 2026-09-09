@@ -2,133 +2,93 @@ package tools
 
 import (
 	"errors"
+	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/branch"
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
+	"github.com/rnagrodzki/sdlc-plugin/internal/prtemplate"
 	"github.com/rnagrodzki/sdlc-plugin/internal/version"
 )
 
-// stubGHDispatch installs a fake "gh" script on PATH that dispatches on its
-// first argument (and, for "api", its second) to canned output, so a single
-// test can drive multiple distinct gh invocations (auth probe, account
-// listing, PR lookup, create/edit) the way pr_prepare/pr_apply actually
-// call them. It mirrors internal/ghx's stubGH pattern (PATH-prepend +
-// restore) but is table-driven instead of single-script, since pr.go's
-// handlers issue more than one gh subcommand per call.
+// ---------------------------------------------------------------------------
+// prRuntime mock helpers
 //
-// rules is evaluated in order; the first rule whose args-prefix matches the
-// invocation wins. A rule's Exit non-zero makes the stub `exit <n>` after
-// printing Stdout (if any), matching a failing gh command.
-type ghRule struct {
-	prefix []string
-	stdout string
-	exit   int
+// Every test below drives prPrepareCoreWith/prApplyCoreWith directly through
+// a hand-built prRuntime — no real filesystem, no "gh"/"git" subprocess.
+// Only two exceptions remain, both because the function under test has no
+// prRuntime (or any other) dependency-injection seam to mock through — see
+// their doc comments for why real FS is unavoidable without a pr.go change,
+// which is out of scope for a pr_test.go-only task.
+// ---------------------------------------------------------------------------
+
+// mockAddLabelExec returns an execRun stub that succeeds only for the exact
+// `gh pr edit --add-label <wantLabel>` invocation prReleaseAddLabelWith
+// issues, and fails (surfacing as an InfraError) for anything else — the
+// mock-based equivalent of the old stubGHDispatch fixtures' narrow
+// prefix-matched rules ("wrong label = no match = exit 1").
+func mockAddLabelExec(wantLabel string) func(name string, args []string, opts execx.Options) (string, error) {
+	return func(name string, args []string, opts execx.Options) (string, error) {
+		if name == "gh" && len(args) == 4 && args[0] == "pr" && args[1] == "edit" && args[2] == "--add-label" && args[3] == wantLabel {
+			return "", nil
+		}
+		return "", fmt.Errorf("unexpected exec call: %s %v (want gh pr edit --add-label %s)", name, args, wantLabel)
+	}
 }
 
-// stubGHDispatch installs a fake "gh" script and returns the path to a
-// NUL-separated args log file that captures every invocation's arguments.
-func stubGHDispatch(t *testing.T, rules []ghRule) string {
-	t.Helper()
-
-	dir := t.TempDir()
-	name := "gh"
-	if runtime.GOOS == "windows" {
-		name = "gh.bat"
+// constVersionDetect returns a versionDetect stub that always reports ver as
+// the detected file version, regardless of the root/path/fileType args.
+func constVersionDetect(ver string) func(root, path, fileType string) (*version.VersionFile, error) {
+	return func(root, path, fileType string) (*version.VersionFile, error) {
+		return &version.VersionFile{Version: ver}, nil
 	}
-
-	logPath := filepath.Join(dir, "gh-calls.log")
-
-	var b strings.Builder
-	b.WriteString("#!/bin/sh\n")
-	// Capture all args NUL-separated for assertion in tests.
-	// Use ASCII record separator (0x1E) between invocations since
-	// body args can contain newlines.
-	b.WriteString("printf '%s\\0' \"$@\" >> " + quoteShellArg(logPath) + "\n")
-	b.WriteString("printf '\\036' >> " + quoteShellArg(logPath) + "\n")
-	for _, r := range rules {
-		cond := make([]string, len(r.prefix))
-		for i, p := range r.prefix {
-			cond[i] = quoteShellArg(p)
-		}
-		b.WriteString("if [ \"$#\" -ge " + itoa(len(r.prefix)) + " ]")
-		for i, c := range cond {
-			b.WriteString(" && [ \"$" + itoa(i+1) + "\" = " + c + " ]")
-		}
-		b.WriteString("; then\n")
-		if r.stdout != "" {
-			b.WriteString("  printf '%s\\n' " + quoteShellArg(r.stdout) + "\n")
-		}
-		b.WriteString("  exit " + itoa(r.exit) + "\n")
-		b.WriteString("fi\n")
-	}
-	b.WriteString("exit 1\n")
-
-	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(b.String()), 0o755); err != nil {
-		t.Fatalf("writing stub gh: %v", err)
-	}
-
-	origPath := os.Getenv("PATH")
-	os.Setenv("PATH", dir+string(os.PathListSeparator)+origPath)
-	t.Cleanup(func() { os.Setenv("PATH", origPath) })
-
-	return logPath
 }
 
-func quoteShellArg(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	digits := ""
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	for n > 0 {
-		digits = string(rune('0'+n%10)) + digits
-		n /= 10
-	}
-	if neg {
-		digits = "-" + digits
-	}
-	return digits
-}
-
-// initGitRepoWithBranch inits a git repo at dir with one commit, checked
-// out on branch name (default branch is "main" from initGitFixture, then
-// checked out to name when different).
-func initGitRepoWithBranch(t *testing.T, dir, name string) {
-	t.Helper()
-	initGitFixture(t, dir)
-	gitCommit(t, dir, "init")
-	if name != "" && name != "main" {
-		cmd := exec.Command("git", "checkout", "-b", name)
-		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git checkout -b %s: %s: %v", name, out, err)
-		}
+// releaseTestRuntime builds a prRuntime covering every field
+// prReleaseComputeIntentWith/ensureReleaseLabels/prApplyCoreWith's release
+// path can reach, with deterministic no-op defaults: no config overrides
+// (tagPrefix defaults to "v"), fileVersion as given, no existing tags, no
+// tag collision, all release labels already present, and no existing PR.
+// Callers override individual fields per scenario (tags, config, exec,
+// PR-create output).
+func releaseTestRuntime(fileVersion string) prRuntime {
+	return prRuntime{
+		configRead:       func(root string) (*config.Config, error) { return nil, nil },
+		versionDetect:    constVersionDetect(fileVersion),
+		gitFetchTags:     func(dir string) error { return nil },
+		gitTagList:       func(dir string) ([]string, error) { return nil, nil },
+		gitAllSemverTags: func(dir string) ([]string, error) { return nil, nil },
+		gitTagExists:     func(dir, name string) (bool, error) { return false, nil },
+		ghLabelList:      func(dir string) ([]string, error) { return nil, nil },
+		ghLabelCreate:    func(dir, name, color, desc string) error { return nil },
+		ghPRForBranch:    func(dir string) ghx.PRMetadata { return ghx.PRMetadata{Exists: false} },
+		ghPRCreate:       func(dir, title, body string) (string, error) { return "https://example.com/pull/0", nil },
 	}
 }
 
 // ---------------------------------------------------------------------------
 // pr_validate_body
+//
+// prValidateBodyCore (pr.go) has no prRuntime — it calls
+// prtemplate.Resolve(root) directly against the real filesystem, with no
+// injection seam. Adding one would be a pr.go change, which is out of scope
+// for this pr_test.go-only task (see task note on documenting cases that
+// cannot be fully converted).
 // ---------------------------------------------------------------------------
 
 func TestPrValidateBody_NoTemplate_AlwaysOK(t *testing.T) {
-	root := t.TempDir()
+	// No real directory is created: prtemplate.Resolve treats a path with
+	// no pr-template.md at either the canonical or legacy location as
+	// "no template" (found=false, no error) — a nonexistent root satisfies
+	// that exactly as well as an empty temp dir would, without t.TempDir().
+	root := filepath.Join(os.TempDir(), "pr-test-nonexistent-root", "does-not-exist")
 	out, err := prValidateBodyCore(root, PRValidateBodyIn{Body: "anything at all"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -138,6 +98,12 @@ func TestPrValidateBody_NoTemplate_AlwaysOK(t *testing.T) {
 	}
 }
 
+// TestPrValidateBody_TemplateFixtureMatrix is the one surviving real-FS test
+// in this file. prValidateBodyCore has no dependency-injection seam (see
+// package doc comment above) — prtemplate.Resolve(root) reads
+// <root>/.sdlc-v2/pr-template.md straight off disk with no way to swap in a
+// mock without editing pr.go, which is out of scope here. t.TempDir() /
+// os.MkdirAll / os.WriteFile are kept deliberately for this test only.
 func TestPrValidateBody_TemplateFixtureMatrix(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -191,23 +157,76 @@ func TestPrValidateBody_TemplateFixtureMatrix(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// stripAttribution
+//
+// Pure string function — no prRuntime involved, no FS.
+// ---------------------------------------------------------------------------
+
+func TestStripAttribution(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "body without attribution is unchanged",
+			in:   "## Summary\nDid the thing.\n",
+			want: "## Summary\nDid the thing.\n",
+		},
+		{
+			name: "trailing Claude Code footer stripped",
+			in:   "## Summary\nDid the thing.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n",
+			want: "## Summary\nDid the thing.\n",
+		},
+		{
+			name: "Co-Authored-By Claude line stripped",
+			in:   "## Summary\nDid the thing.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n",
+			want: "## Summary\nDid the thing.\n",
+		},
+		{
+			name: "attribution mid-content stripped, surrounding content kept",
+			in:   "## Summary\nGenerated by Claude for this change.\nDid the thing.\n",
+			want: "## Summary\n\nDid the thing.\n",
+		},
+		{
+			name: "multiple attribution lines all stripped",
+			in:   "## Summary\nCreated with Claude.\nDid the thing.\nPowered by Claude tooling.\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n",
+			want: "## Summary\n\nDid the thing.\n",
+		},
+		{
+			name: "does not corrupt release markers",
+			in:   "## Summary\nDid the thing.\n\n---\n<!-- release-level:patch -->\n<!-- release-notes-start -->\n<!-- release-notes-end -->\n",
+			want: "## Summary\nDid the thing.\n\n---\n<!-- release-level:patch -->\n<!-- release-notes-start -->\n<!-- release-notes-end -->\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := stripAttribution(tt.in)
+			if got != tt.want {
+				t.Errorf("stripAttribution(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
 // pr_prepare
+//
+// prPrepareCoreWith takes a prRuntime (pr.go), so every test below drives it
+// directly with hand-built mocks instead of a real git repo + stubbed gh
+// binary. branchValidate/jiraExtract are wired to the real, pure
+// (no I/O) branch.ValidateExpectedBranch / detectJiraTicket implementations
+// rather than re-mocked, since there is nothing to fake about them.
 // ---------------------------------------------------------------------------
 
 func TestPrPrepare_ConfigNeedsMigration_ShortCircuits(t *testing.T) {
-	root := t.TempDir()
-	sdlcDir := filepath.Join(root, paths.DataDir)
-	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	// schemaVersion below current triggers ErrVersionStale (top-level
-	// field — see configmigrate.extractSchemaVersion).
-	stale := `{"schemaVersion":1}`
-	if err := os.WriteFile(filepath.Join(sdlcDir, "config.json"), []byte(stale), 0o644); err != nil {
-		t.Fatal(err)
+	rt := prRuntime{
+		configMigrateVerify: func(root string) error {
+			return errors.New("config schemaVersion 1 is stale (needs migration)")
+		},
 	}
 
-	out, err := prPrepareCore(root, root, PRPrepareIn{})
+	out, err := prPrepareCoreWith("/mock/root", "/mock/root", PRPrepareIn{}, rt)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -224,14 +243,18 @@ func TestPrPrepare_ConfigNeedsMigration_ShortCircuits(t *testing.T) {
 
 func TestPrPrepare_BrokenAuth_EmbedsLoginDiagnostics(t *testing.T) {
 	// gh api user (the AuthProbe command) fails — simulates "not logged in".
-	stubGHDispatch(t, []ghRule{
-		{prefix: []string{"api", "user"}, exit: 1},
-	})
+	rt := prRuntime{
+		ghAuthProbe: func(dir, host string) ghx.AuthProbeResult {
+			return ghx.AuthProbeResult{
+				Authenticated: false,
+				ErrorMessage:  "Not logged in to github.com. Run: gh auth login --hostname github.com",
+			}
+		},
+		configReadSection: func(root, section string) (map[string]any, error) { return nil, nil },
+		ghGetAccounts:     func(dir, host string) ([]ghx.Account, error) { return nil, nil },
+	}
 
-	root := t.TempDir()
-	workDir := t.TempDir()
-
-	out, err := prPrepareCore(root, workDir, PRPrepareIn{SkipConfigCheck: true})
+	out, err := prPrepareCoreWith("/mock/root", "/mock/work", PRPrepareIn{SkipConfigCheck: true}, rt)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -254,21 +277,22 @@ func TestPrPrepare_AccountMismatch_EmbedsAccountDiagnostics(t *testing.T) {
 	// ("correctuser"), which is itself among the locally logged-in
 	// accounts — this is exactly the scenario
 	// pr-recover-gh-account.js's standalone diagnostics target.
-	stubGHDispatch(t, []ghRule{
-		{prefix: []string{"api", "user"}, stdout: "wronguser", exit: 0},
-		{prefix: []string{"auth", "status"}, stdout: authStatusJSON(t, map[string]bool{
-			"wronguser":   true,
-			"correctuser": false,
-		}), exit: 0},
-	})
-
-	root := t.TempDir()
-	if err := config.WriteSection(root, "pr", map[string]any{"expectedAccount": "correctuser"}); err != nil {
-		t.Fatalf("seed config: %v", err)
+	rt := prRuntime{
+		ghAuthProbe: func(dir, host string) ghx.AuthProbeResult {
+			return ghx.AuthProbeResult{Authenticated: true, ActiveAccount: "wronguser"}
+		},
+		configReadSection: func(root, section string) (map[string]any, error) {
+			return map[string]any{"expectedAccount": "correctuser"}, nil
+		},
+		ghGetAccounts: func(dir, host string) ([]ghx.Account, error) {
+			return []ghx.Account{
+				{Login: "wronguser", Active: true},
+				{Login: "correctuser", Active: false},
+			}, nil
+		},
 	}
-	workDir := t.TempDir()
 
-	out, err := prPrepareCore(root, workDir, PRPrepareIn{SkipConfigCheck: true})
+	out, err := prPrepareCoreWith("/mock/root", "/mock/work", PRPrepareIn{SkipConfigCheck: true}, rt)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -293,17 +317,23 @@ func TestPrPrepare_AccountMismatch_EmbedsAccountDiagnostics(t *testing.T) {
 }
 
 func TestPrPrepare_BranchGuardMismatch_HardGate(t *testing.T) {
-	stubGHDispatch(t, []ghRule{
-		{prefix: []string{"api", "user"}, stdout: "someone", exit: 0},
-	})
+	rt := prRuntime{
+		ghAuthProbe: func(dir, host string) ghx.AuthProbeResult {
+			return ghx.AuthProbeResult{Authenticated: true, ActiveAccount: "someone"}
+		},
+		configReadSection: func(root, section string) (map[string]any, error) { return nil, nil },
+		execRun: func(name string, args []string, opts execx.Options) (string, error) {
+			return "", errors.New("fatal: no such remote 'origin'")
+		},
+		gitCurrentBranch: func(dir string) (string, error) { return "feat/actual-branch", nil },
+		gitStatus:        func(dir string) (string, error) { return "", nil },
+		branchValidate:   branch.ValidateExpectedBranch,
+	}
 
-	workDir := t.TempDir()
-	initGitRepoWithBranch(t, workDir, "feat/actual-branch")
-
-	out, err := prPrepareCore(workDir, workDir, PRPrepareIn{
+	out, err := prPrepareCoreWith("/mock/root", "/mock/work", PRPrepareIn{
 		SkipConfigCheck: true,
 		ExpectedBranch:  "feat/expected-branch",
-	})
+	}, rt)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -319,23 +349,28 @@ func TestPrPrepare_BranchGuardMismatch_HardGate(t *testing.T) {
 }
 
 func TestPrPrepare_HappyPath_JiraAndTemplate(t *testing.T) {
-	stubGHDispatch(t, []ghRule{
-		{prefix: []string{"api", "user"}, stdout: "someone", exit: 0},
-	})
-
-	workDir := t.TempDir()
-	initGitRepoWithBranch(t, workDir, "feat/PROJ-123-add-thing")
-
-	sdlcDir := filepath.Join(workDir, paths.DataDir)
-	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
-		t.Fatal(err)
+	rt := prRuntime{
+		ghAuthProbe: func(dir, host string) ghx.AuthProbeResult {
+			return ghx.AuthProbeResult{Authenticated: true, ActiveAccount: "someone"}
+		},
+		configReadSection: func(root, section string) (map[string]any, error) { return nil, nil },
+		execRun: func(name string, args []string, opts execx.Options) (string, error) {
+			return "", errors.New("fatal: no such remote 'origin'")
+		},
+		gitCurrentBranch: func(dir string) (string, error) { return "feat/PROJ-123-add-thing", nil },
+		gitStatus:        func(dir string) (string, error) { return "", nil },
+		branchValidate:   branch.ValidateExpectedBranch,
+		jiraExtract:      func(branchName string) string { return detectJiraTicket(branchName, nil) },
+		templateResolve: func(root string) (*prtemplate.Template, error) {
+			return &prtemplate.Template{
+				Path:     filepath.Join(root, paths.DataDir, "pr-template.md"),
+				Content:  "## Summary\n\n## Testing\n",
+				Headings: []string{"Summary", "Testing"},
+			}, nil
+		},
 	}
-	tmpl := "## Summary\n\n## Testing\n"
-	if err := os.WriteFile(filepath.Join(sdlcDir, "pr-template.md"), []byte(tmpl), 0o644); err != nil {
-		t.Fatal(err)
-	}
 
-	out, err := prPrepareCore(workDir, workDir, PRPrepareIn{SkipConfigCheck: true})
+	out, err := prPrepareCoreWith("/mock/root", "/mock/work", PRPrepareIn{SkipConfigCheck: true}, rt)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -354,14 +389,20 @@ func TestPrPrepare_HappyPath_JiraAndTemplate(t *testing.T) {
 }
 
 func TestPrPrepare_ProtectedBranch_Rejected(t *testing.T) {
-	stubGHDispatch(t, []ghRule{
-		{prefix: []string{"api", "user"}, stdout: "someone", exit: 0},
-	})
+	rt := prRuntime{
+		ghAuthProbe: func(dir, host string) ghx.AuthProbeResult {
+			return ghx.AuthProbeResult{Authenticated: true, ActiveAccount: "someone"}
+		},
+		configReadSection: func(root, section string) (map[string]any, error) { return nil, nil },
+		execRun: func(name string, args []string, opts execx.Options) (string, error) {
+			return "", errors.New("fatal: no such remote 'origin'")
+		},
+		gitCurrentBranch: func(dir string) (string, error) { return "main", nil },
+		gitStatus:        func(dir string) (string, error) { return "", nil },
+		branchValidate:   branch.ValidateExpectedBranch,
+	}
 
-	workDir := t.TempDir()
-	initGitRepoWithBranch(t, workDir, "main")
-
-	out, err := prPrepareCore(workDir, workDir, PRPrepareIn{SkipConfigCheck: true})
+	out, err := prPrepareCoreWith("/mock/root", "/mock/work", PRPrepareIn{SkipConfigCheck: true}, rt)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -373,37 +414,19 @@ func TestPrPrepare_ProtectedBranch_Rejected(t *testing.T) {
 	}
 }
 
-// authStatusJSON builds a `gh auth status --json hosts` fixture for
-// github.com with the given login->active map, all reported as
-// State:"success".
-func authStatusJSON(t *testing.T, accounts map[string]bool) string {
-	t.Helper()
-	var entries []string
-	for login, active := range accounts {
-		entries = append(entries, `{"login":"`+login+`","active":`+boolStr(active)+`,"state":"success"}`)
-	}
-	return `{"hosts":{"github.com":[` + strings.Join(entries, ",") + `]}}`
-}
-
-func boolStr(b bool) string {
-	if b {
-		return "true"
-	}
-	return "false"
-}
-
 // ---------------------------------------------------------------------------
 // pr_apply
 // ---------------------------------------------------------------------------
 
 func TestPrApply_NoExistingPR_Creates(t *testing.T) {
-	stubGHDispatch(t, []ghRule{
-		{prefix: []string{"pr", "view"}, exit: 1},
-		{prefix: []string{"pr", "create"}, stdout: "https://github.com/o/r/pull/9", exit: 0},
-	})
+	rt := prRuntime{
+		ghPRForBranch: func(dir string) ghx.PRMetadata { return ghx.PRMetadata{Exists: false} },
+		ghPRCreate: func(dir, title, body string) (string, error) {
+			return "https://github.com/o/r/pull/9", nil
+		},
+	}
 
-	workDir := t.TempDir()
-	out, err := prApplyCore(workDir, workDir, PRApplyIn{Title: "Add thing", Body: "Body text"})
+	out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Add thing", Body: "Body text"}, rt)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -416,13 +439,16 @@ func TestPrApply_NoExistingPR_Creates(t *testing.T) {
 }
 
 func TestPrApply_ExistingPR_Updates(t *testing.T) {
-	stubGHDispatch(t, []ghRule{
-		{prefix: []string{"pr", "view"}, stdout: `{"number":9,"title":"old","url":"https://github.com/o/r/pull/9","state":"OPEN","labels":[]}`, exit: 0},
-		{prefix: []string{"pr", "edit"}, stdout: "https://github.com/o/r/pull/9", exit: 0},
-	})
+	rt := prRuntime{
+		ghPRForBranch: func(dir string) ghx.PRMetadata {
+			return ghx.PRMetadata{Number: 9, Title: "old", URL: "https://github.com/o/r/pull/9", State: "OPEN", Exists: true}
+		},
+		ghPREdit: func(dir string, num int, title, body string) (string, error) {
+			return "https://github.com/o/r/pull/9", nil
+		},
+	}
 
-	workDir := t.TempDir()
-	out, err := prApplyCore(workDir, workDir, PRApplyIn{Title: "Updated title", Body: "Body text"})
+	out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Updated title", Body: "Body text"}, rt)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -435,8 +461,10 @@ func TestPrApply_ExistingPR_Updates(t *testing.T) {
 }
 
 func TestPrApply_MissingTitle_DomainError(t *testing.T) {
-	workDir := t.TempDir()
-	_, err := prApplyCore(workDir, workDir, PRApplyIn{Title: "  ", Body: "x"})
+	// The empty-title check is the very first thing prApplyCoreWith does —
+	// no rt field is ever invoked, so defaultPRRuntime (via prApplyCore) is
+	// safe to use here with fake, never-touched root/work paths.
+	_, err := prApplyCore("/mock/root", "/mock/work", PRApplyIn{Title: "  ", Body: "x"})
 	if err == nil {
 		t.Fatal("expected an error for empty title")
 	}
@@ -573,73 +601,25 @@ func TestRegisterPRTools_DoesNotPanic(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// pr_apply release intent tests
+// pr_apply release intent tests — all prRuntime mocks, no FS/gh involved.
 // ---------------------------------------------------------------------------
 
-// ghCallsBody extracts the --body value from a gh-calls.log for the first
-// invocation whose args contain the given subcommand. The log format is:
-// each invocation is NUL-separated args terminated by ASCII record separator
-// (0x1E).
-func ghCallsBody(t *testing.T, logPath, subcommand string) string {
-	t.Helper()
-	data, err := os.ReadFile(logPath)
-	if err != nil {
-		t.Fatalf("read gh-calls.log: %v", err)
-	}
-	for _, record := range strings.Split(string(data), "\x1e") {
-		record = strings.TrimSpace(record)
-		if record == "" {
-			continue
-		}
-		args := strings.Split(record, "\x00")
-		hasSubcmd := false
-		for _, a := range args {
-			if a == subcommand {
-				hasSubcmd = true
-				break
-			}
-		}
-		if !hasSubcmd {
-			continue
-		}
-		for i, a := range args {
-			if a == "--body" && i+1 < len(args) {
-				return args[i+1]
-			}
-		}
-	}
-	t.Fatalf("no --body found for %q in gh-calls.log", subcommand)
-	return ""
-}
-
-// seedVersionFile writes a minimal package.json with the given version into dir.
-func seedVersionFile(t *testing.T, dir, ver string) {
-	t.Helper()
-	if err := os.WriteFile(filepath.Join(dir, "package.json"),
-		[]byte(`{"version":"`+ver+`"}`), 0o644); err != nil {
-		t.Fatalf("seed package.json: %v", err)
-	}
-}
-
 func TestPRApply_WithRelease_LabelAdded(t *testing.T) {
-	// Create path: no existing PR. Expect --add-label release:minor called.
-	// The label rule uses a 4-element prefix so wrong label = no match = exit 1.
-	stubGHDispatch(t, []ghRule{
-		{prefix: []string{"pr", "view"}, exit: 1},
-		{prefix: []string{"pr", "create"}, stdout: "https://github.com/o/r/pull/10", exit: 0},
-		{prefix: []string{"pr", "edit", "--add-label", "release:minor"}, exit: 0},
-	})
+	// Create path: no existing PR. Expect --add-label release:minor called;
+	// mockAddLabelExec fails the test (via a returned error surfacing as an
+	// InfraError) if any other label/args combination is issued.
+	rt := releaseTestRuntime("1.2.0")
+	rt.ghPRCreate = func(dir, title, body string) (string, error) {
+		return "https://github.com/o/r/pull/10", nil
+	}
+	rt.execRun = mockAddLabelExec("release:minor")
 
-	workDir := t.TempDir()
-	initGitRepoWithBranch(t, workDir, "feat/release-label")
-	seedVersionFile(t, workDir, "1.2.0")
-
-	out, err := prApplyCore(workDir, workDir, PRApplyIn{
+	out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
 		Title:         "Release label test",
 		Body:          "Some body",
 		ReleaseLevel:  "minor",
 		ReleaseSource: "user",
-	})
+	}, rt)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -652,23 +632,21 @@ func TestPRApply_WithRelease_LabelAdded(t *testing.T) {
 }
 
 func TestPRApply_WithRelease_NotesInBody(t *testing.T) {
-	logPath := stubGHDispatch(t, []ghRule{
-		{prefix: []string{"pr", "view"}, exit: 1},
-		{prefix: []string{"pr", "create"}, stdout: "https://github.com/o/r/pull/11", exit: 0},
-		{prefix: []string{"pr", "edit", "--add-label", "release:patch"}, exit: 0},
-	})
+	var capturedBody string
+	rt := releaseTestRuntime("2.0.0")
+	rt.ghPRCreate = func(dir, title, body string) (string, error) {
+		capturedBody = body
+		return "https://github.com/o/r/pull/11", nil
+	}
+	rt.execRun = mockAddLabelExec("release:patch")
 
-	workDir := t.TempDir()
-	initGitRepoWithBranch(t, workDir, "feat/notes-body")
-	seedVersionFile(t, workDir, "2.0.0")
-
-	out, err := prApplyCore(workDir, workDir, PRApplyIn{
+	out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
 		Title:         "Notes test",
 		Body:          "Original body",
 		ReleaseLevel:  "patch",
 		ReleaseNotes:  "Fixed the bug in auth module.",
 		ReleaseSource: "user",
-	})
+	}, rt)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -678,41 +656,36 @@ func TestPRApply_WithRelease_NotesInBody(t *testing.T) {
 	if out.ReleaseIntent.ComputedVersion != "2.0.1" {
 		t.Errorf("ComputedVersion: got %q, want %q", out.ReleaseIntent.ComputedVersion, "2.0.1")
 	}
-	// Verify release markers are present in body passed to gh pr create.
-	body := ghCallsBody(t, logPath, "create")
-	if !strings.Contains(body, "<!-- release-notes-start -->") {
+	// Verify release markers are present in the body passed to gh pr create.
+	if !strings.Contains(capturedBody, "<!-- release-notes-start -->") {
 		t.Errorf("body missing release-notes-start marker")
 	}
-	if !strings.Contains(body, "<!-- release-level:patch -->") {
+	if !strings.Contains(capturedBody, "<!-- release-level:patch -->") {
 		t.Errorf("body missing release-level marker")
 	}
-	if !strings.Contains(body, "Fixed the bug in auth module.") {
+	if !strings.Contains(capturedBody, "Fixed the bug in auth module.") {
 		t.Errorf("body missing release notes text")
 	}
-	if !strings.Contains(body, "## [2.0.1]") {
-		t.Errorf("body missing version header, got: %s", body)
+	if !strings.Contains(capturedBody, "## [2.0.1]") {
+		t.Errorf("body missing version header, got: %s", capturedBody)
 	}
 }
 
 func TestPRApply_WithRelease_VersionComputed(t *testing.T) {
-	stubGHDispatch(t, []ghRule{
-		{prefix: []string{"pr", "view"}, exit: 1},
-		{prefix: []string{"pr", "create"}, stdout: "https://github.com/o/r/pull/12", exit: 0},
-		{prefix: []string{"pr", "edit", "--add-label", "release:major"}, exit: 0},
-	})
+	rt := releaseTestRuntime("1.5.3")
+	// Tag higher than the file version — bump base should be the tag.
+	rt.gitTagList = func(dir string) ([]string, error) { return []string{"v1.6.0"}, nil }
+	rt.ghPRCreate = func(dir, title, body string) (string, error) {
+		return "https://github.com/o/r/pull/12", nil
+	}
+	rt.execRun = mockAddLabelExec("release:major")
 
-	workDir := t.TempDir()
-	initGitRepoWithBranch(t, workDir, "feat/version-compute")
-	seedVersionFile(t, workDir, "1.5.3")
-	// Add a tag higher than file version — bump base should be the tag.
-	gitTag(t, workDir, "v1.6.0")
-
-	out, err := prApplyCore(workDir, workDir, PRApplyIn{
+	out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
 		Title:         "Version compute test",
 		Body:          "body",
 		ReleaseLevel:  "major",
 		ReleaseSource: "user",
-	})
+	}, rt)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -732,34 +705,21 @@ func TestPRApply_WithRelease_VersionComputed(t *testing.T) {
 }
 
 func TestPRApply_WithRelease_CollisionError(t *testing.T) {
-	// Use a custom tagPrefix ("rel-") so TagList returns nothing (it's
-	// prefix-blind), bumpBase = fileVersion, and we create a collision
-	// by planting the expected tag beforehand.
-	stubGHDispatch(t, []ghRule{
-		{prefix: []string{"pr", "view"}, exit: 1},
-	})
-
-	workDir := t.TempDir()
-	initGitRepoWithBranch(t, workDir, "feat/collision")
-	seedVersionFile(t, workDir, "1.2.0")
-
-	// Write config with tagPrefix "rel-".
-	if err := config.WriteSection(workDir, "version", map[string]any{
-		"tagPrefix": "rel-",
-	}); err != nil {
-		t.Fatalf("seed config: %v", err)
+	// Custom tagPrefix ("rel-") — gitTagList (prefix-blind) returns nothing,
+	// so bumpBase = fileVersion, and gitTagExists reports a collision on the
+	// exact tag the minor bump would produce.
+	rt := releaseTestRuntime("1.2.0")
+	rt.configRead = func(root string) (*config.Config, error) {
+		return &config.Config{Version: &config.VersionSection{TagPrefix: "rel-"}}, nil
 	}
+	rt.gitTagExists = func(dir, name string) (bool, error) { return name == "rel-1.3.0", nil }
 
-	// File version is 1.2.0, minor bump => 1.3.0, tag => rel-1.3.0.
-	// Plant that tag to cause collision.
-	gitTag(t, workDir, "rel-1.3.0")
-
-	_, err := prApplyCore(workDir, workDir, PRApplyIn{
+	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
 		Title:         "Collision test",
 		Body:          "body",
 		ReleaseLevel:  "minor",
 		ReleaseSource: "user",
-	})
+	}, rt)
 	if err == nil {
 		t.Fatal("expected collision error")
 	}
@@ -769,17 +729,23 @@ func TestPRApply_WithRelease_CollisionError(t *testing.T) {
 }
 
 func TestPRApply_WithoutRelease_Unchanged(t *testing.T) {
-	// No --add-label rule: if called, stub exits 1 and test fails.
-	stubGHDispatch(t, []ghRule{
-		{prefix: []string{"pr", "view"}, exit: 1},
-		{prefix: []string{"pr", "create"}, stdout: "https://github.com/o/r/pull/13", exit: 0},
-	})
+	// No releaseLevel: intent stays nil, so prReleaseAddLabelWith (and thus
+	// execRun) must never be invoked — the mock fails the test if it is.
+	rt := prRuntime{
+		ghPRForBranch: func(dir string) ghx.PRMetadata { return ghx.PRMetadata{Exists: false} },
+		ghPRCreate: func(dir, title, body string) (string, error) {
+			return "https://github.com/o/r/pull/13", nil
+		},
+		execRun: func(name string, args []string, opts execx.Options) (string, error) {
+			t.Fatalf("execRun should not be called when releaseLevel is unset, got: %s %v", name, args)
+			return "", nil
+		},
+	}
 
-	workDir := t.TempDir()
-	out, err := prApplyCore(workDir, workDir, PRApplyIn{
+	out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
 		Title: "No release",
 		Body:  "Just a normal PR",
-	})
+	}, rt)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -789,26 +755,23 @@ func TestPRApply_WithoutRelease_Unchanged(t *testing.T) {
 }
 
 func TestPRApply_WithRC_NextRCComputed(t *testing.T) {
-	stubGHDispatch(t, []ghRule{
-		{prefix: []string{"pr", "view"}, exit: 1},
-		{prefix: []string{"pr", "create"}, stdout: "https://github.com/o/r/pull/14", exit: 0},
-		{prefix: []string{"pr", "edit", "--add-label", "release:minor-rc"}, exit: 0},
-	})
+	rt := releaseTestRuntime("3.0.0")
+	// Existing RC tags on the bumped base (minor bump of 3.0.0 = 3.1.0).
+	rt.gitAllSemverTags = func(dir string) ([]string, error) {
+		return []string{"v3.1.0-rc1", "v3.1.0-rc2"}, nil
+	}
+	rt.ghPRCreate = func(dir, title, body string) (string, error) {
+		return "https://github.com/o/r/pull/14", nil
+	}
+	rt.execRun = mockAddLabelExec("release:minor-rc")
 
-	workDir := t.TempDir()
-	initGitRepoWithBranch(t, workDir, "feat/rc-next")
-	seedVersionFile(t, workDir, "3.0.0")
-	// Plant existing RC tags. minor bump of 3.0.0 = 3.1.0, so RCs are on 3.1.0.
-	gitTag(t, workDir, "v3.1.0-rc1")
-	gitTag(t, workDir, "v3.1.0-rc2")
-
-	out, err := prApplyCore(workDir, workDir, PRApplyIn{
+	out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
 		Title:             "RC next test",
 		Body:              "body",
 		ReleaseLevel:      "minor",
 		ReleasePreRelease: "rc",
 		ReleaseSource:     "user",
-	})
+	}, rt)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -825,23 +788,19 @@ func TestPRApply_WithRC_NextRCComputed(t *testing.T) {
 }
 
 func TestPRApply_WithRC_LabelFormat(t *testing.T) {
-	stubGHDispatch(t, []ghRule{
-		{prefix: []string{"pr", "view"}, exit: 1},
-		{prefix: []string{"pr", "create"}, stdout: "https://github.com/o/r/pull/15", exit: 0},
-		{prefix: []string{"pr", "edit", "--add-label", "release:patch-rc"}, exit: 0},
-	})
+	rt := releaseTestRuntime("1.0.0")
+	rt.ghPRCreate = func(dir, title, body string) (string, error) {
+		return "https://github.com/o/r/pull/15", nil
+	}
+	rt.execRun = mockAddLabelExec("release:patch-rc")
 
-	workDir := t.TempDir()
-	initGitRepoWithBranch(t, workDir, "feat/rc-label")
-	seedVersionFile(t, workDir, "1.0.0")
-
-	out, err := prApplyCore(workDir, workDir, PRApplyIn{
+	out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
 		Title:             "RC label test",
 		Body:              "body",
 		ReleaseLevel:      "patch",
 		ReleasePreRelease: "rc",
 		ReleaseSource:     "user",
-	})
+	}, rt)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -854,23 +813,21 @@ func TestPRApply_WithRC_LabelFormat(t *testing.T) {
 }
 
 func TestPRApply_WithRC_PreReleaseMarker(t *testing.T) {
-	logPath := stubGHDispatch(t, []ghRule{
-		{prefix: []string{"pr", "view"}, exit: 1},
-		{prefix: []string{"pr", "create"}, stdout: "https://github.com/o/r/pull/16", exit: 0},
-		{prefix: []string{"pr", "edit", "--add-label", "release:minor-rc"}, exit: 0},
-	})
+	var capturedBody string
+	rt := releaseTestRuntime("2.0.0")
+	rt.ghPRCreate = func(dir, title, body string) (string, error) {
+		capturedBody = body
+		return "https://github.com/o/r/pull/16", nil
+	}
+	rt.execRun = mockAddLabelExec("release:minor-rc")
 
-	workDir := t.TempDir()
-	initGitRepoWithBranch(t, workDir, "feat/rc-marker")
-	seedVersionFile(t, workDir, "2.0.0")
-
-	out, err := prApplyCore(workDir, workDir, PRApplyIn{
+	out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
 		Title:             "RC marker test",
 		Body:              "body",
 		ReleaseLevel:      "minor",
 		ReleasePreRelease: "rc",
 		ReleaseSource:     "user",
-	})
+	}, rt)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -883,12 +840,11 @@ func TestPRApply_WithRC_PreReleaseMarker(t *testing.T) {
 	if !strings.Contains(out.ReleaseIntent.ComputedVersion, "-rc") {
 		t.Errorf("ComputedVersion should contain -rc, got %q", out.ReleaseIntent.ComputedVersion)
 	}
-	// Verify release-pre marker is present in body passed to gh.
-	body := ghCallsBody(t, logPath, "create")
-	if !strings.Contains(body, "<!-- release-pre:rc -->") {
+	// Verify release-pre marker is present in the body passed to gh.
+	if !strings.Contains(capturedBody, "<!-- release-pre:rc -->") {
 		t.Errorf("body missing release-pre:rc marker")
 	}
-	if !strings.Contains(body, "<!-- release-level:minor -->") {
+	if !strings.Contains(capturedBody, "<!-- release-level:minor -->") {
 		t.Errorf("body missing release-level:minor marker")
 	}
 }
