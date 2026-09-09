@@ -27,7 +27,7 @@ import (
 // constant — source keeps the two independent so each script has a single,
 // locally-visible source of truth (source comment, confirmed in fact
 // sheet); the Go port preserves that separation.
-const hardenPluginRepoURL = "https://github.com/rnagrodzki/sdlc-marketplace"
+const hardenPluginRepoURL = "https://github.com/rnagrodzki/sdlc-plugin"
 
 // hardenIssueNumberRe validates --from-issue as a bare positive integer,
 // mirroring source's defense-in-depth regex check (the argv-array gh call

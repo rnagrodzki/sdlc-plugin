@@ -17,7 +17,7 @@ import (
 // Deliberately NOT shared with harden.go's hardenPluginRepoURL constant —
 // source keeps the two independent (see harden.go's comment on
 // hardenPluginRepoURL); the Go port preserves that separation.
-const errorReportTargetRepo = "rnagrodzki/sdlc-marketplace"
+const errorReportTargetRepo = "rnagrodzki/sdlc-plugin"
 
 // ---------------------------------------------------------------------------
 // Input / Output

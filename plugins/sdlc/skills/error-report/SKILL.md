@@ -1,6 +1,6 @@
 ---
 name: error-report
-description: "Internal skill invoked by other SDLC skills when they encounter an actionable error (script crash, CLI failure, persistent API error, build failure after retries). Proposes creating a GitHub issue in rnagrodzki/sdlc-marketplace to track the error with full context capture, two-gate user consent, and pre-flight verification. NOT user-invocable — only dispatched from within another skill's error handling path."
+description: "Internal skill invoked by other SDLC skills when they encounter an actionable error (script crash, CLI failure, persistent API error, build failure after retries). Proposes creating a GitHub issue in rnagrodzki/sdlc-plugin to track the error with full context capture, two-gate user consent, and pre-flight verification. NOT user-invocable — only dispatched from within another skill's error handling path."
 user-invocable: false
 disable-model-invocation: true
 ---
@@ -19,7 +19,7 @@ disable-model-invocation: true
 
 Internal procedure invoked by SDLC skills when an actionable error occurs.
 Captures error context, verifies gh CLI availability, gets user consent, and
-creates a tracking issue in `rnagrodzki/sdlc-marketplace` using the gh CLI.
+creates a tracking issue in `rnagrodzki/sdlc-plugin` using the gh CLI.
 
 The skill body runs in the main parent-model context. The heavy work — assembling
 the issue title and body from the error context and the `templates/ToolingError.md`
@@ -89,7 +89,7 @@ REPO_URL=$(git remote get-url origin 2>/dev/null)
 If `REPO_URL` is empty or the command fails → skip proposal.
 
 The target repository for every tooling error report is the fixed value
-`rnagrodzki/sdlc-marketplace` — not `REPO_URL` above (that check only confirms a
+`rnagrodzki/sdlc-plugin` — not `REPO_URL` above (that check only confirms a
 remote exists; `prepare_orchestrator` (mode `"error_report"`) reports the actual target repo separately).
 
 ## Step 3 — Consent Gate 1: Offer (main context)
@@ -219,7 +219,7 @@ has no `Bash` tool and is forbidden from invoking `gh`.
 
 ```bash
 gh issue create \
-  --repo "rnagrodzki/sdlc-marketplace" \
+  --repo "rnagrodzki/sdlc-plugin" \
   --title "$PROPOSAL_TITLE" \
   --body "$PROPOSAL_BODY" \
   --label "tooling-error" \
@@ -230,8 +230,8 @@ If a label does not exist on the repository, `gh` will error. Attempt to create
 the missing label(s) first, then retry once:
 
 ```bash
-gh label create "tooling-error" --repo "rnagrodzki/sdlc-marketplace" --color "d93f0b" 2>/dev/null || true
-gh label create "$SKILL_NAME" --repo "rnagrodzki/sdlc-marketplace" --color "0075ca" 2>/dev/null || true
+gh label create "tooling-error" --repo "rnagrodzki/sdlc-plugin" --color "d93f0b" 2>/dev/null || true
+gh label create "$SKILL_NAME" --repo "rnagrodzki/sdlc-plugin" --color "0075ca" 2>/dev/null || true
 ```
 
 **On success:** report the created issue number and URL:
@@ -264,6 +264,6 @@ replaces the calling skill's own error output or stop behavior.
 - Retry a failed `gh issue create` call a second time.
 - Leave `{placeholder}` text in the issue description.
 - Block or replace the calling skill's normal error handling.
-- Create issues in a repository other than `rnagrodzki/sdlc-marketplace`.
+- Create issues in a repository other than `rnagrodzki/sdlc-plugin`.
 - Recursively dispatch this skill on its own prepare-tool or orchestrator crash —
   log the failure to stderr and stop.
