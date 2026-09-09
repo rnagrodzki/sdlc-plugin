@@ -13,11 +13,21 @@
  *
  * Two flows:
  *   Direct release — bumps version file, creates final tag + GitHub Release,
- *     then prepends CHANGELOG (best-effort — a changelog failure is logged
- *     and does not undo or block the tag/release, which already landed).
+ *     then delivers CHANGELOG per config.changelogMethod (best-effort — a
+ *     changelog failure is logged and does not undo or block the
+ *     tag/release, which already landed).
  *   RC release     — creates RC tag (v1.3.0-rc1) + GitHub pre-release, then
- *     prepends CHANGELOG with the RC entry (same best-effort ordering). Does
+ *     delivers CHANGELOG with the RC entry (same best-effort ordering). Does
  *     NOT bump version file.
+ *
+ * Changelog delivery (config.changelogMethod, default "skip"):
+ *   "skip" — no changelog delivery. Repo manages changelogs externally.
+ *   "push" — commits the changelog entry and pushes it directly to the
+ *     release branch. Simple, but blocked by branch protection.
+ *   "pr"   — commits the changelog entry on a `changelog/<tag>` branch and
+ *     opens a PR with auto-merge requested. Works with branch protection.
+ * Legacy `config.changelog` boolean still works: `true` maps to "push",
+ * `false`/absent maps to "skip". An explicit `changelogMethod` always wins.
  *
  * Exit codes: 0 = success / no-op (no release label), 1 = error
  *
@@ -26,8 +36,8 @@
 
 'use strict';
 
-/** @version 5 — release-on-main script version. Bump when behavior changes. */
-const RELEASE_ON_MAIN_SCRIPT_VERSION = 5;
+/** @version 6 — release-on-main script version. Bump when behavior changes. */
+const RELEASE_ON_MAIN_SCRIPT_VERSION = 6;
 
 const fs   = require('node:fs');
 const path = require('node:path');
@@ -84,6 +94,18 @@ function readVersionConfig(repoRoot) {
     process.stderr.write(`Error parsing .sdlc-v2/config.json: ${err.message}\n`);
     process.exit(1);
   }
+}
+
+/**
+ * Resolve the effective changelog delivery method from config.
+ * Explicit `changelogMethod` always wins. Falls back to the legacy
+ * `changelog` boolean for backward compat: `true` → "push" (original
+ * direct-push behavior), anything else → "skip" (opt-in default).
+ */
+function resolveChangelogMethod(config) {
+  if (config.changelogMethod) return config.changelogMethod;
+  if (config.changelog === true) return 'push';
+  return 'skip';
 }
 
 // ---------------------------------------------------------------------------
@@ -359,10 +381,13 @@ function prependChangelog(repoRoot, changelogFile, version, notes) {
 }
 
 // ---------------------------------------------------------------------------
-// Changelog delivery (PR-based — a direct push to a protected default
-// branch is rejected by GitHub rulesets, which cannot grant
-// github-actions[bot] a bypass; see docs/versioning.md "Branch Protection &
-// Release Workflow")
+// Changelog delivery — method depends on config.changelogMethod (see
+// resolveChangelogMethod above). "push" commits and pushes directly to the
+// release branch; on a repo with branch protection this is rejected by
+// GitHub rulesets, which cannot grant github-actions[bot] a bypass. "pr"
+// (below) works around that by routing the commit through a PR instead. See
+// docs/versioning.md "Branch Protection & Release Workflow" for the choice
+// between the two.
 // ---------------------------------------------------------------------------
 
 /**
@@ -402,6 +427,47 @@ function pushChangelogViaPR(repoRoot, branch, tagName) {
     console.log('Auto-merge enabled for changelog PR.');
   } catch (_) {
     console.log('Auto-merge not available — changelog PR exists, merge manually.');
+  }
+}
+
+/**
+ * Prepend the changelog entry and deliver it per `changelogMethod`
+ * ("pr" or "push" — callers must not invoke this for "skip"). Shared by
+ * both the RC and direct release flows. Throws on failure; callers wrap
+ * this in a try/catch since changelog delivery must never block a release
+ * that has already landed (tag/GitHub Release already exist by this point).
+ */
+function deliverChangelog(repoRoot, changelogMethod, changelogFile, version, tag, notes, branch) {
+  prependChangelog(repoRoot, changelogFile, version, notes);
+  console.log(`Changelog updated: ${changelogFile}`);
+
+  execOrThrow(`git add "${changelogFile}"`, { cwd: repoRoot });
+  let hasStagedChanges;
+  try {
+    execSync('git diff --cached --quiet', { cwd: repoRoot, stdio: 'pipe' });
+    hasStagedChanges = false;
+  } catch (err) {
+    if (err.status === 1) {
+      hasStagedChanges = true;
+    } else {
+      throw new Error(`git diff --cached --quiet failed (exit ${err.status}): ${err.message}`);
+    }
+  }
+  if (!hasStagedChanges) {
+    console.log('No staged changes after changelog write — files already at target.');
+    return;
+  }
+
+  const commitMsg = `chore(release): changelog for ${tag}`;
+  withTmpFile(commitMsg, (tmpPath) => {
+    execOrThrow(`git commit -F "${tmpPath}"`, { cwd: repoRoot });
+  });
+
+  if (changelogMethod === 'pr') {
+    pushChangelogViaPR(repoRoot, branch, tag);
+  } else {
+    execOrThrow(`git push origin HEAD:${branch}`, { cwd: repoRoot });
+    console.log(`Changelog committed and pushed to ${branch}.`);
   }
 }
 
@@ -548,38 +614,16 @@ function main() {
     });
     console.log(`GitHub pre-release created for ${rcTag}.`);
 
-    // Prepend CHANGELOG if enabled — after the tag and pre-release already
-    // exist, so a changelog failure never costs the release.
-    if (config.changelog === true) {
+    // Deliver CHANGELOG per changelogMethod — after the tag and pre-release
+    // already exist, so a changelog failure never costs the release.
+    const changelogMethod = resolveChangelogMethod(config);
+    if (changelogMethod !== 'skip') {
       try {
         const changelogFile = config.changelogFile || 'CHANGELOG.md';
-        prependChangelog(repoRoot, changelogFile, rcVersion, notes);
-        console.log(`Changelog updated: ${changelogFile} (RC entry ${rcVersion})`);
-
-        execOrThrow(`git add "${changelogFile}"`, { cwd: repoRoot });
-        let hasStagedChanges;
-        try {
-          execSync('git diff --cached --quiet', { cwd: repoRoot, stdio: 'pipe' });
-          hasStagedChanges = false;
-        } catch (err) {
-          if (err.status === 1) {
-            hasStagedChanges = true;
-          } else {
-            throw new Error(`git diff --cached --quiet failed (exit ${err.status}): ${err.message}`);
-          }
-        }
-        if (hasStagedChanges) {
-          const commitMsg = `chore(release): changelog for ${rcTag}`;
-          withTmpFile(commitMsg, (tmpPath) => {
-            execOrThrow(`git commit -F "${tmpPath}"`, { cwd: repoRoot });
-          });
-          const branch = process.env.GITHUB_REF_NAME || 'main';
-          pushChangelogViaPR(repoRoot, branch, rcTag);
-        } else {
-          console.log('No staged changes after changelog write — files already at target.');
-        }
+        const branch = process.env.GITHUB_REF_NAME || 'main';
+        deliverChangelog(repoRoot, changelogMethod, changelogFile, rcVersion, rcTag, notes, branch);
       } catch (err) {
-        process.stderr.write(`Changelog update failed, continuing (tag ${rcTag} already released): ${err.message}\n`);
+        process.stderr.write(`Changelog delivery failed (${changelogMethod}), continuing (tag ${rcTag} already released): ${err.message}\n`);
       }
     }
   } else {
@@ -659,38 +703,16 @@ function main() {
     });
     console.log(`GitHub release created for ${newTag}.`);
 
-    // Step 11: Prepend CHANGELOG if enabled — after the tag and release
-    // already exist, so a changelog failure never costs the release.
-    if (config.changelog === true) {
+    // Step 11: Deliver CHANGELOG per changelogMethod — after the tag and
+    // release already exist, so a changelog failure never costs the release.
+    const changelogMethod = resolveChangelogMethod(config);
+    if (changelogMethod !== 'skip') {
       try {
         const changelogFile = config.changelogFile || 'CHANGELOG.md';
-        prependChangelog(repoRoot, changelogFile, newVersion, notes);
-        console.log(`Changelog updated: ${changelogFile}`);
-
-        execOrThrow(`git add "${changelogFile}"`, { cwd: repoRoot });
-        let changelogStaged;
-        try {
-          execSync('git diff --cached --quiet', { cwd: repoRoot, stdio: 'pipe' });
-          changelogStaged = false;
-        } catch (err) {
-          if (err.status === 1) {
-            changelogStaged = true;
-          } else {
-            throw new Error(`git diff --cached --quiet failed (exit ${err.status}): ${err.message}`);
-          }
-        }
-        if (changelogStaged) {
-          const commitMsg = `chore(release): changelog for ${newTag}`;
-          withTmpFile(commitMsg, (tmpPath) => {
-            execOrThrow(`git commit -F "${tmpPath}"`, { cwd: repoRoot });
-          });
-          const branch = process.env.GITHUB_REF_NAME || 'main';
-          pushChangelogViaPR(repoRoot, branch, newTag);
-        } else {
-          console.log('No staged changes after changelog write — files already at target.');
-        }
+        const branch = process.env.GITHUB_REF_NAME || 'main';
+        deliverChangelog(repoRoot, changelogMethod, changelogFile, newVersion, newTag, notes, branch);
       } catch (err) {
-        process.stderr.write(`Changelog update failed, continuing (tag ${newTag} already released): ${err.message}\n`);
+        process.stderr.write(`Changelog delivery failed (${changelogMethod}), continuing (tag ${newTag} already released): ${err.message}\n`);
       }
     }
   }
@@ -709,7 +731,9 @@ if (require.main === module) {
 
 module.exports = {
   RELEASE_ON_MAIN_SCRIPT_VERSION,
+  resolveChangelogMethod,
   prependChangelog,
   checkTagState,
   pushChangelogViaPR,
+  deliverChangelog,
 };

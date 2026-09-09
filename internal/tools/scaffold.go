@@ -256,16 +256,16 @@ func scaffoldCI(root string, force bool) (ScaffoldCIOut, error) {
 type scaffoldExecFunc func(name string, args []string, opts execx.Options) (string, error)
 
 // RulesetCheckResult reports whatever branch protection exists on the
-// project's default branch. It is purely informational: release-on-main.cjs
-// delivers the changelog via a PR (pushChangelogViaPR) rather than a direct
-// push, so no bypass is required no matter what is configured here.
+// project's default branch. It is purely informational: whether protection
+// requires a bypass depends on the repo's configured changelogMethod
+// ("push" is blocked by protection; "pr" and "skip" are not), which this
+// check does not have access to.
 type RulesetCheckResult struct {
-	HasRulesets     bool     `json:"hasRulesets"`
-	HasClassicProt  bool     `json:"hasClassicProtection"`
-	DefaultBranch   string   `json:"defaultBranch"`
-	RulesetNames    []string `json:"rulesetNames"`
-	ChangelogMethod string   `json:"changelogMethod"`
-	Notes           []string `json:"notes"`
+	HasRulesets    bool     `json:"hasRulesets"`
+	HasClassicProt bool     `json:"hasClassicProtection"`
+	DefaultBranch  string   `json:"defaultBranch"`
+	RulesetNames   []string `json:"rulesetNames"`
+	Notes          []string `json:"notes"`
 }
 
 // checkBranchProtection queries GitHub (via `gh api`) for rulesets and
@@ -275,9 +275,8 @@ type RulesetCheckResult struct {
 // fail scaffold_ci itself.
 func checkBranchProtection(dir string, execRun scaffoldExecFunc) RulesetCheckResult {
 	result := RulesetCheckResult{
-		ChangelogMethod: "pr",
-		Notes:           []string{},
-		RulesetNames:    []string{},
+		Notes:        []string{},
+		RulesetNames: []string{},
 	}
 
 	originURL, err := execRun("git", []string{"remote", "get-url", "origin"}, execx.Options{Dir: dir})
@@ -320,7 +319,7 @@ func checkBranchProtection(dir string, execRun scaffoldExecFunc) RulesetCheckRes
 
 	if result.HasRulesets || result.HasClassicProt {
 		result.Notes = append(result.Notes, fmt.Sprintf(
-			"branch protection is active on %q — release-on-main.cjs delivers the changelog via a PR (branch changelog/<tag>), not a direct push, so this is compatible without any bypass",
+			"branch protection is active on %q — tagging and GitHub Releases work normally; if changelogMethod is \"push\", the direct push will be blocked — use \"pr\" or \"skip\" instead",
 			result.DefaultBranch))
 	} else {
 		result.Notes = append(result.Notes, fmt.Sprintf("no branch protection detected on %q", result.DefaultBranch))

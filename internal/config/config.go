@@ -143,8 +143,18 @@ func (a *AutomationSection) StepMode(step string) string {
 //
 // TagPrefix is prepended to git version tags (e.g. "v").
 //
-// Changelog toggles changelog maintenance on release. When true and
-// ChangelogFile is unset, ChangelogFile defaults to "CHANGELOG.md".
+// ChangelogMethod controls how the changelog entry is delivered on
+// release. One of:
+//   - "pr": open a changelog PR instead of pushing directly to main.
+//   - "push": push the changelog commit directly to main.
+//   - "skip" (default): do not maintain a changelog.
+//
+// When ChangelogMethod is not "skip" and ChangelogFile is unset,
+// ChangelogFile defaults to "CHANGELOG.md".
+//
+// For backward compatibility, config.json may still set the legacy
+// boolean "changelog" instead of "changelogMethod" — see
+// parseVersionSection.
 //
 // TicketPrefix filters commit messages for the changelog by Jira ticket
 // prefix (e.g. "PROJ"). PreRelease is the default pre-release label applied
@@ -168,7 +178,7 @@ type VersionSection struct {
 	VersionFile      string `json:"versionFile"`
 	FileType         string `json:"fileType"`
 	TagPrefix        string `json:"tagPrefix"`
-	Changelog        bool   `json:"changelog"`
+	ChangelogMethod  string `json:"changelogMethod"`
 	ChangelogFile    string `json:"changelogFile"`
 	TicketPrefix     string `json:"ticketPrefix"`
 	PreRelease       string `json:"preRelease"`
@@ -197,8 +207,17 @@ func parseVersionSection(raw map[string]any) *VersionSection {
 	if s, ok := raw["tagPrefix"].(string); ok {
 		v.TagPrefix = s
 	}
-	if b, ok := raw["changelog"].(bool); ok {
-		v.Changelog = b
+	if s, ok := raw["changelogMethod"].(string); ok && s != "" {
+		v.ChangelogMethod = s
+	} else if b, ok := raw["changelog"].(bool); ok {
+		// Backward compat: old boolean changelog maps onto the new enum.
+		if b {
+			v.ChangelogMethod = "push"
+		} else {
+			v.ChangelogMethod = "skip"
+		}
+	} else {
+		v.ChangelogMethod = "skip"
 	}
 	if s, ok := raw["changelogFile"].(string); ok {
 		v.ChangelogFile = s
@@ -226,13 +245,13 @@ func parseVersionSection(raw map[string]any) *VersionSection {
 }
 
 // applyVersionDefaults fills in zero-value fields with documented
-// defaults: mode "file", and changelogFile "CHANGELOG.md" when changelog
-// is enabled but no explicit path was given.
+// defaults: mode "file", and changelogFile "CHANGELOG.md" when
+// changelogMethod is not "skip" but no explicit path was given.
 func applyVersionDefaults(v *VersionSection) {
 	if v.Mode == "" {
 		v.Mode = "file"
 	}
-	if v.Changelog && v.ChangelogFile == "" {
+	if v.ChangelogMethod != "skip" && v.ChangelogFile == "" {
 		v.ChangelogFile = "CHANGELOG.md"
 	}
 }

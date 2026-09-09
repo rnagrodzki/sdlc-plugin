@@ -207,9 +207,6 @@ func TestRulesetCheck_NoRemote(t *testing.T) {
 
 	out := checkBranchProtection("/does/not/matter", fake)
 
-	if out.ChangelogMethod != "pr" {
-		t.Errorf("expected changelogMethod 'pr', got %q", out.ChangelogMethod)
-	}
 	if out.DefaultBranch != "" {
 		t.Errorf("expected empty default branch, got %q", out.DefaultBranch)
 	}
@@ -262,17 +259,14 @@ func TestRulesetCheck_DetectsRulesetsAndClassicProtection(t *testing.T) {
 	if !out.HasClassicProt {
 		t.Error("expected HasClassicProt=true")
 	}
-	if out.ChangelogMethod != "pr" {
-		t.Errorf("expected changelogMethod 'pr', got %q", out.ChangelogMethod)
-	}
 	foundCompatNote := false
 	for _, n := range out.Notes {
-		if strings.Contains(n, "compatible without any bypass") {
+		if strings.Contains(n, "changelogMethod") {
 			foundCompatNote = true
 		}
 	}
 	if !foundCompatNote {
-		t.Errorf("expected a note explaining PR-based changelog compatibility, got %v", out.Notes)
+		t.Errorf("expected a note explaining changelogMethod impact, got %v", out.Notes)
 	}
 }
 

@@ -110,6 +110,20 @@ function resolveVersionFromTags(repoRoot) {
 // Main
 // ---------------------------------------------------------------------------
 
+/**
+ * Determine if changelog validation should be enabled based on config.
+ * Supports both new changelogMethod (pr/push/skip) and legacy changelog (true/false).
+ * Defaults to 'skip' if neither is configured.
+ */
+function isChangelogValidationEnabled(config) {
+  // New config: changelogMethod with explicit options
+  if (config.changelogMethod) {
+    return config.changelogMethod === 'pr' || config.changelogMethod === 'push';
+  }
+  // Legacy config: changelog boolean (true = enabled, false = disabled)
+  return config.changelog === true;
+}
+
 function main() {
   // KEEP: CI script invoked at repo root — do not change to resolveSdlcRoot()
   const repoRoot = process.cwd();
@@ -128,7 +142,7 @@ function main() {
     const headRef = process.env.GITHUB_HEAD_REF || '';
     const isAutomatedChangelogBranch = headRef.startsWith('changelog/');
     const prConfig = readVersionConfig(repoRoot);
-    if (prConfig && prConfig.changelog === true && !isAutomatedChangelogBranch) {
+    if (prConfig && isChangelogValidationEnabled(prConfig) && !isAutomatedChangelogBranch) {
       const changelogFile = prConfig.changelogFile || 'CHANGELOG.md';
       const diff = exec('git diff --name-only origin/main...HEAD', { cwd: repoRoot });
       if (diff && diff.split('\n').some(f => f.trim() === changelogFile)) {
@@ -162,8 +176,8 @@ function main() {
     process.exit(0);
   }
 
-  // Step 1b: Only validate when changelog is explicitly enabled
-  if (config.changelog !== true) {
+  // Step 1b: Only validate when changelog validation is explicitly enabled
+  if (!isChangelogValidationEnabled(config)) {
     process.exit(0);
   }
 

@@ -404,8 +404,8 @@ func TestParseVersionSection_Full(t *testing.T) {
 	if v.TagPrefix != "v" {
 		t.Errorf("TagPrefix = %q, want %q", v.TagPrefix, "v")
 	}
-	if !v.Changelog {
-		t.Errorf("Changelog = %v, want true", v.Changelog)
+	if v.ChangelogMethod != "push" {
+		t.Errorf("ChangelogMethod = %q, want %q (legacy changelog:true backward-compat)", v.ChangelogMethod, "push")
 	}
 	if v.ChangelogFile != "HISTORY.md" {
 		t.Errorf("ChangelogFile = %q, want explicit value %q preserved (not overridden by default)", v.ChangelogFile, "HISTORY.md")
@@ -433,7 +433,7 @@ func TestParseVersionSection_Defaults(t *testing.T) {
 		t.Errorf("Mode = %q, want default %q", v.Mode, "file")
 	}
 	if v.ChangelogFile != "" {
-		t.Errorf("ChangelogFile = %q, want empty when changelog is false", v.ChangelogFile)
+		t.Errorf("ChangelogFile = %q, want empty when changelogMethod is skip", v.ChangelogFile)
 	}
 
 	v2 := parseVersionSection(map[string]any{"changelog": true})
@@ -491,6 +491,41 @@ func TestPreReleasePolicy_Parse(t *testing.T) {
 			}
 			if v.PreReleasePolicy != tc.want {
 				t.Errorf("PreReleasePolicy = %q, want %q", v.PreReleasePolicy, tc.want)
+			}
+		})
+	}
+}
+
+// TestChangelogMethod_Parse covers the full backward-compat matrix
+// documented on VersionSection: an explicit "changelogMethod" wins
+// outright, the legacy boolean "changelog" maps true→"push" and
+// false→"skip", and the default (neither key present) is "skip".
+func TestChangelogMethod_Parse(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  map[string]any
+		want string
+	}{
+		{"explicit pr", map[string]any{"changelogMethod": "pr"}, "pr"},
+		{"explicit push", map[string]any{"changelogMethod": "push"}, "push"},
+		{"explicit skip", map[string]any{"changelogMethod": "skip"}, "skip"},
+		{"legacy changelog true", map[string]any{"changelog": true}, "push"},
+		{"legacy changelog false", map[string]any{"changelog": false}, "skip"},
+		{"neither key present", map[string]any{}, "skip"},
+		{
+			"explicit changelogMethod wins over legacy changelog",
+			map[string]any{"changelogMethod": "pr", "changelog": false},
+			"pr",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := parseVersionSection(tc.raw)
+			if v == nil {
+				t.Fatal("parseVersionSection: expected non-nil result")
+			}
+			if v.ChangelogMethod != tc.want {
+				t.Errorf("ChangelogMethod = %q, want %q", v.ChangelogMethod, tc.want)
 			}
 		})
 	}

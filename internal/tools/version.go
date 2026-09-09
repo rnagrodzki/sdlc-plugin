@@ -80,7 +80,7 @@ type VersionConfigInfo struct {
 	VersionFile      string `json:"versionFile"`
 	FileType         string `json:"fileType"`
 	TagPrefix        string `json:"tagPrefix"`
-	Changelog        bool   `json:"changelog"`
+	ChangelogMethod  string `json:"changelogMethod"`
 	ChangelogFile    string `json:"changelogFile"`
 	TicketPrefix     string `json:"ticketPrefix,omitempty"`
 	PreRelease       string `json:"preRelease,omitempty"`
@@ -161,7 +161,7 @@ func versionPrepare(cfgRoot, gitRoot string, in VersionPrepareIn) (VersionPrepar
 			VersionFile:      vs.VersionFile,
 			FileType:         vs.FileType,
 			TagPrefix:        vs.TagPrefix,
-			Changelog:        vs.Changelog,
+			ChangelogMethod:  vs.ChangelogMethod,
 			ChangelogFile:    vs.ChangelogFile,
 			TicketPrefix:     vs.TicketPrefix,
 			PreRelease:       vs.PreRelease,
