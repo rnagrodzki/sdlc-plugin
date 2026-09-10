@@ -82,8 +82,7 @@ Step  Skill                 Status       Args              Pause?
 3     review           will run     (none)             no
 4     received-review  conditional  (if crit/high)    YES
 5     commit (fixes)   conditional  --auto            no
-6     version          skipped      —                 —
-7     pr               will run     --draft            no
+6     pr               will run     --draft            no
 ────────────────────────────────────────────────────────────────
 Review threshold: critical or high findings trigger fix loop
 Interactive pauses: received-review (if triggered)

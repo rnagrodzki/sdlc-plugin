@@ -73,15 +73,14 @@ There is no `nextPendingStep` field written into the file. The closest equivalen
   { "name": "execute",           "status": "pending", "kind": "tracked" },
   { "name": "commit",            "status": "pending", "kind": "tracked" },
   { "name": "review",            "status": "pending", "kind": "tracked" },
-  { "name": "version",           "status": "pending", "kind": "tracked" },
   { "name": "archive-openspec",  "status": "pending", "kind": "inline"  },
   { "name": "pr",                "status": "pending", "kind": "tracked" }
 ]
 ```
 
-(This example reflects `steps: ["execute","commit","review","version","archive-openspec","pr"]`; substitute the project's actual configured list.)
+(This example reflects `steps: ["execute","commit","review","archive-openspec","pr"]`; substitute the project's actual configured list.)
 
-Every entry carries a `kind`: `"tracked"` for the five step names with a purpose-built dispatch shape in this skill (`execute`, `commit`, `review`, `version`, `pr`), `"inline"` for everything else that can appear in `ship.steps[]` (`verify-openspec`, `archive-openspec`, `verify-pipeline`, `await-remote-review`, `learnings-commit`). **`kind` only signals which dispatch style the skill's own prose uses for that step — Agent-dispatched sub-skill for `tracked`, done in this skill's own prose for `inline` — it does NOT mean "no `steps[]` entry" or "no lifecycle."** Both kinds get a real entry and both require the same `begin-step` → `complete-step`/`skip`/`fail` lifecycle calls, or the entry sits at `pending` forever and blocks `next` and the cleanup contract check (see below).
+Every entry carries a `kind`: `"tracked"` for the four step names with a purpose-built dispatch shape in this skill (`execute`, `commit`, `review`, `pr`), `"inline"` for everything else that can appear in `ship.steps[]` (`verify-openspec`, `archive-openspec`, `verify-pipeline`, `await-remote-review`, `learnings-commit`). **`kind` only signals which dispatch style the skill's own prose uses for that step — Agent-dispatched sub-skill for `tracked`, done in this skill's own prose for `inline` — it does NOT mean "no `steps[]` entry" or "no lifecycle."** Both kinds get a real entry and both require the same `begin-step` → `complete-step`/`skip`/`fail` lifecycle calls, or the entry sits at `pending` forever and blocks `next` and the cleanup contract check (see below).
 
 > **Known divergence:** the schema's own doc comment for `kind` describes `"inline"` as "recorded via the generic decide action" — this reads as if `decide` replaces the lifecycle calls for inline steps. It does not. `decide` only appends a free-text note to `decisions[]`; it never looks up or mutates a `steps[]` entry (confirmed by reading `shipStateDecide`'s full body — it has no step-lookup at all). An inline step still needs `begin-step`/`complete-step` (or `skip`/`fail`) exactly like a tracked step. Treat the schema comment's phrasing as legacy/misleading, not as the operative contract; this document and `reference.md` describe the actual behavior.
 
@@ -91,7 +90,7 @@ Every entry carries a `kind`: `"tracked"` for the five step names with a purpose
 
 ### A legacy raw scaffold still exists, but this skill never uses it
 
-The raw `ship_state{action:"init"}` action (distinct from `ship_prepare`, which this skill always calls instead) still seeds the **old fixed 7-entry scaffold** (`shipmeta.InitialShipSteps()`) for backward byte-compatibility with pre-existing callers/tests:
+The raw `ship_state{action:"init"}` action (distinct from `ship_prepare`, which this skill always calls instead) still seeds the **old fixed 6-entry scaffold** (`shipmeta.InitialShipSteps()`) for backward byte-compatibility with pre-existing callers/tests:
 
 ```json
 [
@@ -100,7 +99,6 @@ The raw `ship_state{action:"init"}` action (distinct from `ship_prepare`, which 
   { "name": "review",           "status": "pending" },
   { "name": "received-review",  "status": "pending", "condition": "if critical/high findings" },
   { "name": "commit-fixes",     "status": "pending", "condition": "if received-review made changes" },
-  { "name": "version",          "status": "pending" },
   { "name": "pr",               "status": "pending" }
 ]
 ```
@@ -111,7 +109,7 @@ This scaffold's entries carry no `kind` field at all (omitted) and — uniquely 
 
 | Field | Type | Present when | Description |
 |---|---|---|---|
-| `name` | string | always | One of the 12 known step names. |
+| `name` | string | always | One of the 11 known step names. |
 | `status` | string | always | See Status Values below. |
 | `kind` | string | `ship_prepare`-driven runs only | `"tracked"` or `"inline"` — dispatch-style hint, not a lifecycle exemption (see above). |
 | `startedAt` | string | status is `in_progress` | Set by `begin-step`. |
@@ -203,11 +201,11 @@ Idempotency journal keyed by step name, recording each step's verified git/PR si
 
 ```json
 {
-  "pr": { "kind": "pr", "ref": "https://github.com/org/repo/pull/42", "verifiedAt": "2026-03-27T15:00:00Z" }
+  "pr": { "kind": "pr", "ref": "#42", "verifiedAt": "2026-03-27T15:00:00Z" }
 }
 ```
 
-`kind` is one of `"release-intent"`, `"pr"`, or `"sha"`. Written by `ship_verify_side_effect`; consulted by `begin-step`'s `alreadyDone` flag (surfaced in `ShipStepNarrationOut.AlreadyDone`) so a resumed pipeline doesn't, say, re-run the version step once a valid release intent (bump level) is already journaled. The version step's `sideEffects` entry no longer records a git tag — no tag is created at ship time; `ref` holds the resolved bump level (`"major"`/`"minor"`/`"patch"`) instead.
+`kind` is one of `"pr"` or `"sha"` — there is no `"release-intent"` kind. Written by `ship_verify_side_effect`; consulted by `begin-step`'s `alreadyDone` flag (surfaced in `ShipStepNarrationOut.AlreadyDone`) so a resumed pipeline doesn't, say, re-dispatch the pr step once its PR (`ref` = `"#<number>"`) is already journaled. Release-intent correctness (bump level, pre-release label, notes) has no journal entry of its own — it is enforced synchronously by `pr_apply` itself at call time, not tracked as a separate side effect here.
 
 ---
 

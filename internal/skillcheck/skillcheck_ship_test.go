@@ -217,7 +217,7 @@ func TestShipSkillsRegistryContainsExpectedTools(t *testing.T) {
 	}
 }
 
-// shipSkillsStepHeaders maps each of shipmeta's 13 canonical/lifecycle ship
+// shipSkillsStepHeaders maps each of shipmeta's 12 canonical/lifecycle ship
 // pipeline step names to the exact "### ..." (or "## ...") section heading
 // that documents that step's execution in skills/ship/SKILL.md. Used
 // by TestShipSkillsStepActionCrossCheck (AC1) to isolate each step's own
@@ -228,7 +228,6 @@ var shipSkillsStepHeaders = map[string]string{
 	"review":              "### review",
 	"received-review":     "### received-review (conditional)",
 	"commit-fixes":        "### commit-fixes (conditional)",
-	"version":             "### version",
 	"verify-openspec":     "### verify-openspec (inline, opt-in)",
 	"archive-openspec":    "### archive-openspec (inline)",
 	"pr":                  "### pr",
@@ -240,9 +239,9 @@ var shipSkillsStepHeaders = map[string]string{
 
 // shipSkillsStepExpectedActions maps each canonical step name to the
 // ship_state action name(s) at least one of which must appear within that
-// step's own section. The seven steps shipmeta.InitialShipSteps() scaffolds
+// step's own section. The six steps shipmeta.InitialShipSteps() scaffolds
 // up front (execute, commit, review, received-review, commit-fixes,
-// version, pr) route through the generic begin-step/complete-step pair; the
+// pr) route through the generic begin-step/complete-step pair; the
 // remaining steps have no steps[] scaffold entry (state-format.md's
 // scaffolding gap) and instead record their outcome via the generic
 // "decide" action, except the terminal "cleanup" step, which is a
@@ -254,7 +253,6 @@ var shipSkillsStepExpectedActions = map[string][]string{
 	"review":              {"begin-step", "complete-step"},
 	"received-review":     {"begin-step", "complete-step"},
 	"commit-fixes":        {"begin-step", "complete-step"},
-	"version":             {"begin-step", "complete-step"},
 	"verify-openspec":     {"decide"},
 	"archive-openspec":    {"decide"},
 	"pr":                  {"begin-step", "complete-step"},
@@ -293,10 +291,10 @@ func shipSkillsSection(content, heading string) (string, bool) {
 }
 
 // TestShipSkillsStepActionCrossCheck is the Files-note / Acceptance
-// Criterion 1 check: every one of shipmeta's 13 canonical ship pipeline
+// Criterion 1 check: every one of shipmeta's 12 canonical ship pipeline
 // step names must have its own documented section in ship/SKILL.md,
 // and that section must reference the ship_state action(s) that step's
-// lifecycle actually uses (begin-step/complete-step for the seven
+// lifecycle actually uses (begin-step/complete-step for the six
 // scaffolded steps, decide for the five non-scaffolded inline steps, and
 // cleanup-pipeline for the terminal cleanup step) -- guarding against a
 // step's prose silently drifting onto the wrong generic action.
@@ -304,11 +302,11 @@ func TestShipSkillsStepActionCrossCheck(t *testing.T) {
 	repoRoot := shipSkillsRepoRoot(t)
 	content := shipSkillsReadFile(t, repoRoot, "skills/ship/SKILL.md")
 
-	if len(shipSkillsStepHeaders) != 13 {
-		t.Fatalf("shipSkillsStepHeaders has %d entries, want 13 (shipmeta's canonical step count)", len(shipSkillsStepHeaders))
+	if len(shipSkillsStepHeaders) != 12 {
+		t.Fatalf("shipSkillsStepHeaders has %d entries, want 12 (shipmeta's canonical step count)", len(shipSkillsStepHeaders))
 	}
-	if len(shipSkillsStepExpectedActions) != 13 {
-		t.Fatalf("shipSkillsStepExpectedActions has %d entries, want 13", len(shipSkillsStepExpectedActions))
+	if len(shipSkillsStepExpectedActions) != 12 {
+		t.Fatalf("shipSkillsStepExpectedActions has %d entries, want 12", len(shipSkillsStepExpectedActions))
 	}
 
 	for step, heading := range shipSkillsStepHeaders {

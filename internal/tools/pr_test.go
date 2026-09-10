@@ -749,8 +749,8 @@ func TestPrApply_NoReleaseLevel_NoSkip_DomainError(t *testing.T) {
 	if !strings.Contains(de.Msg, "releaseLevel is empty") {
 		t.Errorf("Msg: got %q, want it to reference releaseLevel being empty", de.Msg)
 	}
-	if !strings.Contains(de.Suggestion, "/version") {
-		t.Errorf("Suggestion missing /version hint: %q", de.Suggestion)
+	if !strings.Contains(de.Suggestion, "releaseLevel") {
+		t.Errorf("Suggestion missing releaseLevel hint: %q", de.Suggestion)
 	}
 	if !strings.Contains(de.Suggestion, "skipReleaseCheck: true") {
 		t.Errorf("Suggestion missing skipReleaseCheck hint: %q", de.Suggestion)

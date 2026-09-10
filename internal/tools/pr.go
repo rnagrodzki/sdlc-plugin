@@ -843,7 +843,7 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 	if in.ReleaseLevel == "" && !in.SkipReleaseCheck {
 		return PRApplyOut{}, &mcpserver.DomainError{
 			Msg:        "releaseLevel is empty and skipReleaseCheck is false",
-			Suggestion: "Run /version to set release intent, or pass skipReleaseCheck: true to acknowledge no release.",
+			Suggestion: "Set releaseLevel (Step 1b of the pr skill, or --releaseLevel on this call) to declare release intent, or pass skipReleaseCheck: true to acknowledge no release.",
 		}
 	}
 
