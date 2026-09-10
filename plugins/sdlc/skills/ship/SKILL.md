@@ -79,7 +79,7 @@ On option 2: ask which level (`major`/`minor`/`patch`, optionally with an RC pre
   > 1. **Create GitHub issues** — open issues for unresolved items
   > 2. **Resolve selected** — mark items as resolved
   > 3. **Skip** — review later
-- On option 1: for each selected deferred issue, `gh issue create` with label `deferred-followup`, body from the issue fields, then call `ship_state({action:"deferred_resolve", detail:{id:<id>}})`.
+- On option 1: for each selected deferred issue, `gh issue create` with label `deferred-followup`, body from the issue fields, then call `ship_state({action:"deferred_resolve", detail:{id:<id>}})`. Never append an AI-tool attribution line ("Generated with Claude Code" or similar) to the issue body.
 - On option 2: AskUserQuestion for which to resolve, then call `ship_state({action:"deferred_resolve", detail:{id:<id>}})` for each selected item.
 - On option 3: no action (items persist for next run).
 

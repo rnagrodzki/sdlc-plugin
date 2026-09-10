@@ -11,8 +11,8 @@ install, see [`smoke-test.md`](smoke-test.md).
 - Claude Code with plugin marketplace support.
 - `git`.
 - [GitHub CLI](https://cli.github.com/) (`gh`), authenticated (`gh auth
-  status`). Required by `pr`, `ship`, `verify-pipeline`, and
-  link validation — these shell out to `gh` directly.
+  status`). Required by `pr`, `ship`, `received-review`, `verify-pipeline`,
+  and link validation — these shell out to `gh` directly.
 - A Jira/Atlassian MCP connection, only if you plan to use `jira`.
   Everything else works without it.
 
@@ -76,7 +76,7 @@ turns out to have legacy config, a skill will tell you so and name
 ## 3. The day-to-day workflow
 
 Each stage of a change maps to one skill. Run them in order, or let
-`ship` / `deliver` chain several of them for you.
+`ship` chain several of them for you.
 
 | Stage | Skill | When to use it |
 |---|---|---|
@@ -90,6 +90,9 @@ Each stage of a change maps to one skill. Run them in order, or let
 | Jira | `/jira` | Create, read, or update Jira issues linked to the work. |
 | After a failure | `/harden` | Propose guardrail changes so the same pipeline failure can't recur. |
 
+For detailed documentation on each skill (flags, examples, tips), see the
+[Skill Reference](skills/README.md).
+
 For the full end-to-end flow instead of running each stage by hand:
 
 ```
@@ -97,27 +100,23 @@ For the full end-to-end flow instead of running each stage by hand:
 ```
 
 runs execute → commit → review → PR → CI verification as one
-pipeline, stopping for confirmation between steps by default. For an
-unattended multi-hour run (execute → review-fix loop → ship, no stops):
+pipeline, stopping for confirmation between steps by default.
 
-```
-/deliver <plan-file>
-```
-
-Both accept `--resume` to pick back up from a saved state file if
+It accepts `--resume` to pick back up from a saved state file if
 interrupted.
 
 ## 4. Supervised vs. unattended
 
 By default (`automation.mode: supervised` in `.sdlc-v2/local.json`), every
 pipeline step stops for your confirmation. Set `mode: unattended`, optionally
-with per-step overrides in `automation.steps`, to let `ship` /
-`deliver` run end-to-end without stopping. Field reference: `README.md`
+with per-step overrides in `automation.steps`, to let `ship`
+run end-to-end without stopping. Field reference: `README.md`
 → "Automation config".
 
 ## Next steps
 
 - Run through [`smoke-test.md`](smoke-test.md) to confirm the install works
   end to end.
+- [Skill Reference](skills/README.md) — detailed docs for every slash command.
 - Hit an error? `README.md` → "Troubleshooting" covers launcher and
   MCP-registration failures.

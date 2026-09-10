@@ -27,10 +27,18 @@ this port's tool surface (`pr_prepare`, `pr_apply`) actually supports:
   the body and auto-applies a `release:<level>[-rc]` label via `gh pr edit --add-label`. There
   is still no field for `--draft`, an arbitrary `--label`, or a target base branch, and no recovery helper
   runs after a failure.
-- `pr_prepare` does not supply a commit list, diff stat/content, remote state, changed files,
-  repository labels, or a pre-detected create-vs-update mode. Draft the title and body using
-  only context already available in this conversation (recent commits you made or observed,
-  files you edited, what the user has told you) — do not run commands to gather this data.
+- `pr_prepare` supplies `commitsSinceBase` (this branch's own commit subjects, oldest first,
+  since it diverged from the default branch) but no diff stat/content, remote state, changed
+  files, repository labels, or a pre-detected create-vs-update mode. Draft the title and body
+  from `PR_CONTEXT.commitsSinceBase` plus context already available in this conversation
+  (files you edited, what the user has told you) — do not run commands to gather diffs. When
+  drafting fresh (no conversation memory of earlier commits on this branch — e.g. this skill
+  was Agent-dispatched by `/ship`), `commitsSinceBase` is the only reliable source for the
+  full set of changes; never describe only the most recent commit as if it were the whole
+  branch.
+- Never include an AI-tool attribution line ("Generated with Claude Code" or similar) in the
+  title or body — `pr_apply` strips one server-side if present, but don't rely on that; just
+  don't write it.
 - Branch-guard is real and enforced **inside** `pr_prepare` itself: if it fails, `pr_prepare`
   returns it as an error and the Step 0 check below already stops you. There is no separate
   branch-guard step to run.
@@ -157,6 +165,7 @@ of the PR). Do not ask for confirmation — the Step 5 approval gate is the cons
 | `uncommittedChanges` / `dirtyFiles` | Uncommitted files that will NOT be part of the PR |
 | `jiraTicket` | Detected ticket reference from the branch name, or empty |
 | `template` | `{ path, legacy, headings, content }` or `null` — see PR Template above |
+| `commitsSinceBase` | This branch's own commit subjects (oldest first), since it diverged from the default branch — always present when the branch has commits ahead of the default branch. Use this, not conversation memory alone, to cover every commit when drafting the body. |
 
 **Version diagnostics** (present only when the project has a version config section; every
 field below is `omitempty` and absent entirely otherwise — treat their absence as "this project
@@ -229,10 +238,13 @@ level or relabel it `"user"` to get past this.
   target-version preview. Hold `releaseLevel` and `releaseSource: "user"` for Step 6 as before.
 
 Once a level is chosen (either branch above), draft `releaseNotes`: a few bullet lines summarizing
-what this release contains, sourced from `PR_CONTEXT.commitsSinceTag` (when present) plus what
-you already know from the conversation — no git commands. Show the draft, let the user amend it,
-then hold the final text as `releaseNotes` for Step 6. `pr_apply` rejects a `releaseLevel` with
-empty `releaseNotes`, so this is not optional whenever a level is set.
+what this release contains, sourced from `PR_CONTEXT.commitsSinceTag` (when present — covers
+everything since the last tag, which may span more than this branch) or `PR_CONTEXT.commitsSinceBase`
+(always present, this branch's own commits) when `commitsSinceTag` is absent, plus what you
+already know from the conversation — no git commands. Cover every commit in whichever list you
+use; never leave `releaseNotes` empty or describe only the most recent commit. Show the draft,
+let the user amend it, then hold the final text as `releaseNotes` for Step 6. `pr_apply` rejects
+a `releaseLevel` with empty `releaseNotes`, so this is not optional whenever a level is set.
 
 **On option 2:** proceed with no release intent — this was an explicit, acknowledged choice, so
 do not ask again at Step 5 or Step 6. Hold `skipReleaseCheck: true` for Step 6's `pr_apply` call
@@ -244,10 +256,12 @@ do not ask again at Step 5 or Step 6. Hold `skipReleaseCheck: true` for Step 6's
 > `content` as fill guidance. Skip the default per-section instructions below and draft all
 > custom sections instead.
 
-Draft all sections of the active template using only context already available in this
-conversation — commits or diffs you have already seen, files you have already edited, or
-what the user has told you. Do not run commands to gather commit history or diffs for this
-purpose; if you don't have enough context to fill a section confidently, ask the user.
+Draft all sections of the active template from `PR_CONTEXT.commitsSinceBase` (the full,
+authoritative commit list for this branch) plus context already available in this
+conversation — files you have already edited, or what the user has told you. Cover every
+commit in `commitsSinceBase`, not just the most recent one. Do not run commands to gather
+diff content for this purpose; if you don't have enough context to fill a section
+confidently, ask the user.
 
 **OpenSpec enrichment (automatic when detected):**
 

@@ -395,6 +395,8 @@ path) and note the rest as suppressed in the summary below.
 ## Step 11.7 — LINK VERIFICATION — HARD GATE
 
 Before any `gh api` reply is posted, validate every URL embedded in every drafted reply body.
+Reply bodies must never include an AI-tool attribution line ("Generated with Claude Code" or
+similar).
 
 1. Concatenate all reply bodies (one per line) and write them with the `Write` tool to
    `.sdlc-v2/state/artifacts/received-review-reply-bodies.md` (overwrite each run — this is a
