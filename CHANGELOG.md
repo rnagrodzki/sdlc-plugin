@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.1] - 2026-09-10
+
+- Added a release-intent gate to `pr_apply`, requiring an explicit `releaseLevel` or an acknowledged `skipReleaseCheck`, keyed by `releaseSource` (`user`/`config`/`pipeline`) so unattended runs can't claim a human decided.
+- Standardized a `Next` field across pr and commit tool outputs.
+- Added `jsonschema_description` and `enum` tags across MCP tool structs for stricter, self-documenting contracts.
+- Added MCP contract review dimensions, guardrails, and developer helper agents for auditing tool contracts.
+
 ## [0.0.1-rc3] - 2026-09-09
 
 Fixed error report target repository configuration
