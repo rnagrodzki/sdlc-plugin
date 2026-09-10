@@ -1,0 +1,48 @@
+# Repo-local workaround, not part of the sdlc scaffold template (see
+# internal/tools/payloads/release-on-main.yml — this file is intentionally
+# absent from that directory). Other projects scaffolded from this plugin
+# don't build/publish binaries and don't need this step.
+#
+# release-on-main.yml runs release-on-main.cjs, which pushes the release
+# commit and tag using the default GITHUB_TOKEN. GitHub Actions does not
+# cascade-trigger other workflows (including release.yml's "push: tags: v*")
+# from GITHUB_TOKEN-authored pushes. This workflow closes that gap: once
+# "Release on Main" finishes, it checks whether main's current tip actually
+# got tagged (release-on-main.cjs no-ops — exit 0, no tag — on merges without
+# a release label, so conclusion alone can't tell success from no-op), and if
+# so, explicitly dispatches release.yml at that tag via workflow_dispatch,
+# which GITHUB_TOKEN-authored calls are allowed to trigger.
+name: Release Dispatch
+
+on:
+  workflow_run:
+    workflows: ["Release on Main"]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  dispatch:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Find tag on current main tip
+        id: tag
+        run: |
+          tag=$(git tag --points-at HEAD | head -n1)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch release build
+        if: steps.tag.outputs.tag != ''
+        run: gh workflow run release.yml --ref "${{ steps.tag.outputs.tag }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

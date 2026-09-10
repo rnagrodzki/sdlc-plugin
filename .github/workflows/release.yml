@@ -1,9 +1,18 @@
 name: Release
 
+# Triggered two ways:
+# - push: tags "v*" — fires for a tag pushed with real user credentials (e.g.
+#   a manual `git push --tags`).
+# - workflow_dispatch — fires from release-dispatch.yml. release-on-main.cjs
+#   (in release-on-main.yml) pushes its tag using the default GITHUB_TOKEN,
+#   and GitHub Actions does not cascade-trigger other workflows (including
+#   this one's tag-push trigger) from GITHUB_TOKEN-authored pushes. This is a
+#   repo-local workaround for that limitation — see release-dispatch.yml.
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch: {}
 
 permissions:
   contents: write
