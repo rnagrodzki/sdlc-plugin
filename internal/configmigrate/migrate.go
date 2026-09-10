@@ -13,7 +13,9 @@ import (
 
 // CurrentSchemaVersion is the current schema version. v5 uses a
 // section-based layout without a schemaVersion marker in the config files.
-const CurrentSchemaVersion = 5
+// v6 additionally strips the standalone "version" ship step, now that pr
+// absorbs version diagnostics.
+const CurrentSchemaVersion = 6
 
 // Sentinel errors.
 var (
@@ -209,14 +211,17 @@ func Migrate(mainRoot string, opt Options) (*Report, error) {
 //   - No config.json and no legacy marker at all: the project was never set
 //     up. Returns ErrConfigMissing (wrapped with an actionable message
 //     naming /setup) rather than fabricating a config from nothing.
-//   - Current (Verify returns nil): a no-op. Returns (nil, "", nil) without
-//     any filesystem write — callers must not report a migration or touch
-//     the file when nothing changed.
-//   - Stale (legacy layout, or an old schemaVersion): backs up the existing
-//     config.json to config.json.bak, then delegates to Migrate to bring it
-//     (and local.json, if also stale) up to CurrentSchemaVersion. Returns
-//     the combined StepsApplied+LegacyIngested labels as changes, plus the
-//     backup file path.
+//   - Current (Verify returns nil AND local.json's own detected version is
+//     not stale): a no-op. Returns (nil, "", nil) without any filesystem
+//     write — callers must not report a migration or touch the file when
+//     nothing changed.
+//   - Stale (legacy layout, an old config.json schemaVersion, or a stale
+//     local.json detected independently of config.json — see
+//     detectLocalVersion): backs up whichever of config.json/local.json is
+//     about to be rewritten to a sibling .bak file, then delegates to
+//     Migrate to bring both up to CurrentSchemaVersion. Returns the
+//     combined StepsApplied+LegacyIngested labels as changes, plus one
+//     backup file path (config.json's, if both were backed up).
 //
 // ErrVersionTooNew is returned unchanged: a config written by a newer
 // plugin version cannot be auto-migrated backward, so this still hard-stops
@@ -234,18 +239,30 @@ func MigrateWithBackup(projectRoot string) (changes []string, backupPath string,
 	}
 
 	verifyErr := Verify(projectRoot)
-	if verifyErr == nil {
-		return nil, "", nil
-	}
 	if errors.Is(verifyErr, ErrVersionTooNew) {
 		return nil, "", verifyErr
 	}
 
-	// Back up the existing config.json before Migrate rewrites it in place.
-	// A purely-legacy project (config.json not yet created) has nothing to
+	// Verify only ever inspects config.json. Past v4, config.json is
+	// structurally identical at every schema version (its JSON schema
+	// forbids a schemaVersion marker), so Verify()==nil correctly means
+	// "config.json is current" but says nothing about local.json — the
+	// only file the v5->v6 step (stripping the "version" ship step)
+	// touches. Consult local.json's own version independently so a stale
+	// local.json is never silently skipped just because config.json is
+	// current.
+	localVer, localExists := detectLocalVersion(projectRoot)
+	localStale := localExists && localVer < CurrentSchemaVersion
+
+	if verifyErr == nil && !localStale {
+		return nil, "", nil
+	}
+
+	// Back up whichever file(s) Migrate is about to rewrite in place. A
+	// purely-legacy project (config.json not yet created) has nothing to
 	// back up here — ingestLegacy only ever writes a fresh config.json/
 	// local.json, it never modifies the legacy source files it reads from.
-	if configExists {
+	if configExists && verifyErr != nil {
 		data, readErr := os.ReadFile(configPath)
 		if readErr != nil {
 			return nil, "", fmt.Errorf("%w: read config.json for backup: %v", ErrMigrationFailed, readErr)
@@ -253,6 +270,18 @@ func MigrateWithBackup(projectRoot string) (changes []string, backupPath string,
 		backupPath = configPath + ".bak"
 		if writeErr := os.WriteFile(backupPath, data, 0o644); writeErr != nil {
 			return nil, "", fmt.Errorf("%w: write config.json.bak: %v", ErrMigrationFailed, writeErr)
+		}
+	}
+	if localStale {
+		localPath := filepath.Join(projectRoot, paths.DataDir, "local.json")
+		if data, readErr := os.ReadFile(localPath); readErr == nil {
+			localBackupPath := localPath + ".bak"
+			if writeErr := os.WriteFile(localBackupPath, data, 0o644); writeErr != nil {
+				return nil, "", fmt.Errorf("%w: write local.json.bak: %v", ErrMigrationFailed, writeErr)
+			}
+			if backupPath == "" {
+				backupPath = localBackupPath
+			}
 		}
 	}
 
@@ -368,7 +397,27 @@ func detectLocalVersion(mainRoot string) (int, bool) {
 			return int(f), true
 		}
 	}
-	return 1, true // exists without version info → v1
+	// No marker at all. Real v1 local.json always carries the legacy
+	// "version" integer above, so reaching here means either v5 or v6:
+	// removeLocalSchemaVersion (v4->v5) strips the schemaVersion field and
+	// neither v5 nor v6 ever re-adds one. Sniff ship.steps for the
+	// standalone "version" entry (removed by the v5->v6 step) to tell them
+	// apart. Neither "ship" nor "ship.steps" is `required` by the local
+	// schema, so their absence is not evidence of staleness either —
+	// default to CurrentSchemaVersion (mirrors Verify()'s marker-less
+	// config.json == current) rather than falling back to v1, which would
+	// replan the full 1->6 chain and corrupt a valid v5/v6 file on every
+	// call.
+	if ship, ok := raw["ship"].(map[string]any); ok {
+		if steps, ok := ship["steps"].([]any); ok {
+			for _, s := range steps {
+				if s == "version" {
+					return 5, true
+				}
+			}
+		}
+	}
+	return CurrentSchemaVersion, true
 }
 
 // ---------------------------------------------------------------------------

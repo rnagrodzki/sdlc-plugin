@@ -36,33 +36,20 @@ var preReleaseLabelRe = regexp.MustCompile(`^[a-z][a-z0-9]*$`)
 
 // shipStepSideEffects mirrors STEP_SIDE_EFFECTS in scripts/skill/ship.js: the
 // map of pipeline step name to the side-effect kind that proves it landed.
-// Extended beyond the original single "version"->"tag" entry to cover "pr"
-// (an open PR for the branch) and "commit" (HEAD has advanced to a known
-// sha) — the universal side-effect journal (sideEffects in ship state)
-// covers all three kinds uniformly; see shipVerifySideEffect below. Kind
+// Covers "pr" (an open PR for the branch) and "commit" (HEAD has advanced to
+// a known sha) — the universal side-effect journal (sideEffects in ship
+// state) covers both kinds uniformly; see shipVerifySideEffect below. Kind
 // values here must stay in sync with ship-state.schema.json's
 // sideEffects.*.kind enum.
 //
-// "version" is "release-intent", not "tag": the version step no longer
-// creates or pushes a tag at ship time (Task 12) — it only diagnoses release
-// readiness (version_prepare) and drafts a bump level + release notes, which
-// are carried through the pr step's pr_apply call as releaseLevel/
-// releaseNotes/releasePreRelease. The actual version bump/tag/CHANGELOG
-// write happens post-merge via CI (release-on-main.yml). So the version
-// step's side effect is "did version_prepare/the version skill produce a
-// valid resolved bump level", not "does a tag exist" — see the
-// "release-intent" case in shipVerifySideEffect below.
+// A step with no entry here (e.g. "version": its release diagnostics now
+// run inside the pr step's pr_prepare call, not as a standalone step) has
+// no side effect to verify — shipVerifySideEffect reports it landed with
+// reason "no-side-effect".
 var shipStepSideEffects = map[string]string{
-	"version": "release-intent",
-	"pr":      "pr",
-	"commit":  "sha",
+	"pr":     "pr",
+	"commit": "sha",
 }
-
-// shipValidBumpLevels are the only values shipVerifySideEffect accepts as a
-// landed "release-intent" for the version step, matching the level values
-// version/SKILL.md's Step 1 (PLAN) can resolve to
-// (bumpOptions is keyed by major/minor/patch).
-var shipValidBumpLevels = []string{"major", "minor", "patch"}
 
 // ---------------------------------------------------------------------------
 // Input / Output types
@@ -188,7 +175,7 @@ type MigrationReport struct {
 // ShipVerifySideEffectIn is the input for the ship_verify_side_effect tool.
 type ShipVerifySideEffectIn struct {
 	Step     string `json:"step" jsonschema_description:"Pipeline step name to verify the side effect for."`
-	Expected string `json:"expected" jsonschema_description:"Expected side-effect value (release-intent bump level, PR number, or commit sha) to check landed, matching the step."`
+	Expected string `json:"expected" jsonschema_description:"Expected side-effect value (PR number or commit sha) to check landed, matching the step."`
 }
 
 // ShipVerifySideEffectOut is the output for the ship_verify_side_effect tool,
@@ -380,10 +367,10 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 			"--steps) and the pipeline will skip it.")
 	}
 
-	// --bump without a version step.
-	if bumpVal, _ := merged["bump"].(string); bumpVal != "" && sources["bump"] == "cli" && !sliceContainsStr(stepsList, "version") {
+	// --bump without a pr step (version diagnostics now run inside pr_prepare).
+	if bumpVal, _ := merged["bump"].(string); bumpVal != "" && sources["bump"] == "cli" && !sliceContainsStr(stepsList, "pr") {
 		errors = append(errors, fmt.Sprintf(
-			"--bump %q specified but version step is skipped — resolve by removing --bump or adding \"version\" to ship.steps[].", bumpVal))
+			"--bump %q specified but pr step is skipped — resolve by removing --bump or adding \"pr\" to ship.steps[].", bumpVal))
 	}
 
 	// --quick + --steps conflict.
@@ -477,7 +464,6 @@ var shipStepDescriptions = map[string]string{
 	"review":              "Run automated code review",
 	"received-review":     "Apply fixes for critical/high review findings",
 	"commit-fixes":        "Commit review-fix changes",
-	"version":             "Diagnose release readiness and draft release notes",
 	"verify-openspec":     "Verify OpenSpec change docs are in sync",
 	"archive-openspec":    "Archive completed OpenSpec change docs",
 	"pr":                  "Open the pull request",
@@ -977,20 +963,21 @@ func shipSoftFindState(root, activeRoot string) *state.State {
 // check, matching source (the verify-side-effect subcommand short-circuits
 // main() before any config/gh setup).
 //
-// Beyond the original "version"->tag check (now "version"->"release-intent",
-// since the version step no longer creates a tag at ship time — see
-// shipStepSideEffects above), this also verifies "pr" (does an open PR exist
-// for the branch) and "commit" (has HEAD advanced to a known sha), and
-// persists every landed observation into the ship state's sideEffects
-// journal (root/activeRoot both resolve via RegisterShipTools, mirroring
-// ship_prepare's dual-root pattern) so a resumed pipeline can tell, via
-// ship_state's begin-step alreadyDone flag, that a step's side effect
-// already landed before a crash/restart.
+// Beyond the original single "version"->tag check, this also verifies "pr"
+// (does an open PR exist for the branch) and "commit" (has HEAD advanced to
+// a known sha), and persists every landed observation into the ship state's
+// sideEffects journal (root/activeRoot both resolve via RegisterShipTools,
+// mirroring ship_prepare's dual-root pattern) so a resumed pipeline can
+// tell, via ship_state's begin-step alreadyDone flag, that a step's side
+// effect already landed before a crash/restart. A step with no entry in
+// shipStepSideEffects (e.g. "version", now folded into the pr step's
+// diagnostics) is reported as landed with reason "no-side-effect" via the
+// hasSideEffect check below.
 //
 // "commit" (kind "sha") has no natural caller-supplied comparison value the
-// way "version" (kind "tag") does — ship.js's tag check always takes an
-// explicit --expected tag computed by the version step itself. Two modes
-// are supported, chosen by whether Expected is supplied:
+// way "tag" does in ship.js — ship.js's tag check always takes an explicit
+// --expected tag computed by the version step itself. Two modes are
+// supported, chosen by whether Expected is supplied:
 //   - Expected given: landed = (HEAD sha == Expected) — the write path,
 //     called right after a commit with the sha the caller just produced,
 //     mirroring the tag kind exactly.
@@ -1003,9 +990,9 @@ func shipSoftFindState(root, activeRoot string) *state.State {
 //     have run at all.
 //
 // A journal entry is written (or refreshed) only when landed is true, for
-// all three kinds: an entry's presence is meant to mean "verified", and
-// only writing on success keeps that invariant, and keeps repeated
-// resume-time checks stable once a step is confirmed (no flip-flopping).
+// both kinds: an entry's presence is meant to mean "verified", and only
+// writing on success keeps that invariant, and keeps repeated resume-time
+// checks stable once a step is confirmed (no flip-flopping).
 func shipVerifySideEffect(root, activeRoot string, in ShipVerifySideEffectIn, now func() time.Time) (ShipVerifySideEffectOut, error) {
 	kind, hasSideEffect := shipStepSideEffects[in.Step]
 	if !hasSideEffect {
@@ -1022,18 +1009,6 @@ func shipVerifySideEffect(root, activeRoot string, in ShipVerifySideEffectIn, no
 	var ref string
 
 	switch kind {
-	case "release-intent":
-		// No filesystem/git side effect to check — the version step never
-		// creates a tag at ship time. "Landed" here means the version skill
-		// produced a valid resolved bump level (major/minor/patch), which is
-		// exactly what the caller passes as Expected: the level captured
-		// from the version dispatch's artifacts, forwarded here immediately
-		// after that step completes.
-		if sliceContainsStr(shipValidBumpLevels, in.Expected) {
-			landed = true
-			ref = in.Expected
-		}
-
 	case "pr":
 		meta := shipPRForBranch(activeRoot)
 		if meta.Exists {
@@ -1111,7 +1086,7 @@ func RegisterShipTools(s *mcpserver.Server) {
 	)
 
 	mcpserver.Register(s, "ship_verify_side_effect",
-		"Verify that a ship pipeline step's expected side effect (a valid release-intent bump level, PR, or commit sha) actually landed, and record it in the ship state's sideEffects journal for idempotent resume.",
+		"Verify that a ship pipeline step's expected side effect (a PR or commit sha) actually landed, and record it in the ship state's sideEffects journal for idempotent resume.",
 		func(ctx mcpserver.Ctx, in ShipVerifySideEffectIn) (ShipVerifySideEffectOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

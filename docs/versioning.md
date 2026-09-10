@@ -92,7 +92,7 @@ The pre-redesign flat shape (top-level `mode`, string `versionFile`, `changelogM
 
 ## How Releases Work
 
-Releases are **never created during the ship pipeline**. The version skill only diagnoses release readiness and drafts a bump level + release notes. Actual version bumps, tags, and changelog writes happen **post-merge via CI**.
+Releases are **never created during the ship pipeline**. Version diagnostics (release readiness, bump level, and notes) are computed during PR preparation and validation. Actual version bumps, tags, and changelog writes happen **post-merge via CI**.
 
 ### Pre-Merge Safety: verify-release-intent
 
@@ -115,9 +115,9 @@ This check validates any combination of enabled paths. When `versionFile.enabled
 ### The Release Flow
 
 ```
-1. Developer runs /ship (or /version + /pr separately)
-2. Version skill analyzes conventional commits since last tag
-3. Version skill suggests bump level (major/minor/patch)
+1. Developer runs /ship (or /pr)
+2. PR skill analyzes conventional commits since last tag
+3. PR skill suggests bump level (major/minor/patch)
 4. PR skill creates PR with:
    - release:<level> label (e.g., release:minor)
    - <!-- release-level:minor --> marker in PR body
@@ -171,7 +171,7 @@ Five CI scripts handle the release pipeline. All live under `.github/scripts/` a
 
 Matching workflow files live under `.github/workflows/`.
 
-**To scaffold CI workflows:** Run `/setup` which offers CI scaffolding, or call `scaffold_ci` directly. The version skill also offers scaffolding when `versionFile.enabled` is false and CI workflows are missing. Scaffolding also runs a read-only branch protection check against the repo's rulesets/classic protection and reports the result — see below.
+**To scaffold CI workflows:** Run `/setup` which offers CI scaffolding, or call `scaffold_ci` directly. Scaffolding also runs a read-only branch protection check against the repo's rulesets/classic protection and reports the result — see below.
 
 ### Delivery Method (`method`)
 
@@ -271,12 +271,12 @@ Version bumps follow semver. Given current version `1.2.3`:
 | `minor` | `1.3.0` | New features, backward-compatible |
 | `major` | `2.0.0` | Breaking changes |
 
-The version skill auto-suggests a level based on conventional commit prefixes:
+Version bumps are auto-suggested based on conventional commit prefixes:
 - `feat:` commits → suggests `minor`
 - `fix:` commits → suggests `patch`
 - `BREAKING CHANGE:` or `feat!:`/`fix!:` → suggests `major`
 
-You can override the suggestion by passing the level explicitly: `/version patch` or `/ship --bump minor`.
+You can override the suggestion by passing the level explicitly: `/pr --bump patch` or `/ship --bump minor`.
 
 ### PR Labels and Markers
 
@@ -318,7 +318,7 @@ RC releases let you publish a pre-release version for testing before committing 
 
 ### Creating an RC
 
-Use the `--rc` flag: `/version minor --rc` or `/ship --bump minor-rc`.
+Use the `--rc` flag: `/pr --bump minor-rc` or `/ship --bump minor-rc`.
 
 This creates:
 - Label: `release:minor-rc`

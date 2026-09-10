@@ -932,7 +932,7 @@ func fakeReleasePRRuntime() prRuntime {
 
 func TestReleaseSourceValidation(t *testing.T) {
 	t.Run("missing releaseSource with releaseLevel set is rejected", func(t *testing.T) {
-		_, err := prApplyCore("", "", PRApplyIn{Title: "T", Body: "B", ReleaseLevel: "patch"})
+		_, err := prApplyCore("", "", PRApplyIn{Title: "T", Body: "B", ReleaseLevel: "patch", ReleaseNotes: "notes"})
 		if err == nil {
 			t.Fatal("expected an error for missing releaseSource")
 		}
@@ -942,7 +942,7 @@ func TestReleaseSourceValidation(t *testing.T) {
 	})
 
 	t.Run("invalid releaseSource value is rejected", func(t *testing.T) {
-		_, err := prApplyCore("", "", PRApplyIn{Title: "T", Body: "B", ReleaseLevel: "patch", ReleaseSource: "llm"})
+		_, err := prApplyCore("", "", PRApplyIn{Title: "T", Body: "B", ReleaseLevel: "patch", ReleaseNotes: "notes", ReleaseSource: "llm"})
 		if err == nil {
 			t.Fatal("expected an error for an invalid releaseSource value")
 		}
@@ -953,7 +953,7 @@ func TestReleaseSourceValidation(t *testing.T) {
 
 	t.Run("auto mode rejects releaseSource=user", func(t *testing.T) {
 		_, err := prApplyCore("", "", PRApplyIn{
-			Title: "T", Body: "B", ReleaseLevel: "patch", ReleaseSource: "user", AutoMode: true,
+			Title: "T", Body: "B", ReleaseLevel: "patch", ReleaseNotes: "notes", ReleaseSource: "user", AutoMode: true,
 		})
 		if err == nil {
 			t.Fatal("expected an error for a user-sourced releaseLevel under AutoMode")
@@ -979,7 +979,7 @@ func TestReleaseSourceValidation(t *testing.T) {
 	t.Run("non-auto mode accepts releaseSource=user", func(t *testing.T) {
 		rt := fakeReleasePRRuntime()
 		out, err := prApplyCoreWith("", "", PRApplyIn{
-			Title: "T", Body: "B", ReleaseLevel: "patch", ReleaseSource: "user",
+			Title: "T", Body: "B", ReleaseLevel: "patch", ReleaseNotes: "notes", ReleaseSource: "user",
 		}, rt)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -992,7 +992,7 @@ func TestReleaseSourceValidation(t *testing.T) {
 	t.Run("auto mode accepts releaseSource=config (config passthrough)", func(t *testing.T) {
 		rt := fakeReleasePRRuntime()
 		out, err := prApplyCoreWith("", "", PRApplyIn{
-			Title: "T", Body: "B", ReleaseLevel: "minor", ReleaseSource: "config", AutoMode: true,
+			Title: "T", Body: "B", ReleaseLevel: "minor", ReleaseNotes: "notes", ReleaseSource: "config", AutoMode: true,
 		}, rt)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -1002,16 +1002,52 @@ func TestReleaseSourceValidation(t *testing.T) {
 		}
 	})
 
-	t.Run("auto mode accepts releaseSource=pipeline", func(t *testing.T) {
-		rt := fakeReleasePRRuntime()
-		out, err := prApplyCoreWith("", "", PRApplyIn{
-			Title: "T", Body: "B", ReleaseLevel: "major", ReleaseSource: "pipeline", AutoMode: true,
-		}, rt)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
+	t.Run("releaseSource=pipeline is rejected as an invalid enum value", func(t *testing.T) {
+		_, err := prApplyCore("", "", PRApplyIn{
+			Title: "T", Body: "B", ReleaseLevel: "major", ReleaseNotes: "notes", ReleaseSource: "pipeline", AutoMode: true,
+		})
+		if err == nil {
+			t.Fatal("expected an error for releaseSource=pipeline")
 		}
-		if out.ReleaseIntent == nil {
-			t.Fatal("expected ReleaseIntent to be populated")
+		if !strings.Contains(err.Error(), "releaseSource") {
+			t.Errorf("error should mention releaseSource, got: %v", err)
+		}
+	})
+}
+
+// TestPrApply_EmptyReleaseNotes_DomainError covers the release-notes gate:
+// releaseLevel set with empty (or whitespace-only) releaseNotes must be
+// rejected before any gh/git call is made, with a Suggestion guiding the
+// caller to draft notes rather than skip them by omission.
+func TestPrApply_EmptyReleaseNotes_DomainError(t *testing.T) {
+	t.Run("empty releaseNotes is rejected", func(t *testing.T) {
+		_, err := prApplyCore("", "", PRApplyIn{
+			Title: "T", Body: "B", ReleaseLevel: "patch", ReleaseNotes: "", ReleaseSource: "user",
+		})
+		if err == nil {
+			t.Fatal("expected an error for empty releaseNotes")
+		}
+		var domainErr *mcpserver.DomainError
+		if !errors.As(err, &domainErr) {
+			t.Fatalf("expected *mcpserver.DomainError, got %T: %v", err, err)
+		}
+		if domainErr.Msg != "releaseNotes is required when releaseLevel is set" {
+			t.Errorf("Msg: got %q", domainErr.Msg)
+		}
+		if domainErr.Suggestion == "" {
+			t.Error("expected a non-empty Suggestion")
+		}
+	})
+
+	t.Run("whitespace-only releaseNotes is rejected", func(t *testing.T) {
+		_, err := prApplyCore("", "", PRApplyIn{
+			Title: "T", Body: "B", ReleaseLevel: "patch", ReleaseNotes: "   \n\t", ReleaseSource: "user",
+		})
+		if err == nil {
+			t.Fatal("expected an error for whitespace-only releaseNotes")
+		}
+		if !strings.Contains(err.Error(), "releaseNotes") {
+			t.Errorf("error should mention releaseNotes, got: %v", err)
 		}
 	})
 }
@@ -1043,6 +1079,7 @@ func TestPRApply_WithRelease_LabelAdded(t *testing.T) {
 		Title:         "Release label test",
 		Body:          "Some body",
 		ReleaseLevel:  "minor",
+		ReleaseNotes:  "Release notes for the label test.",
 		ReleaseSource: "user",
 	}, rt)
 	if err != nil {
@@ -1118,6 +1155,7 @@ func TestPRApply_WithRelease_VersionComputed(t *testing.T) {
 		Title:         "Version compute test",
 		Body:          "body",
 		ReleaseLevel:  "major",
+		ReleaseNotes:  "Version compute release notes.",
 		ReleaseSource: "user",
 	}, rt)
 	if err != nil {
@@ -1155,6 +1193,7 @@ func TestPRApply_WithRelease_CollisionError(t *testing.T) {
 		Title:         "Collision test",
 		Body:          "body",
 		ReleaseLevel:  "minor",
+		ReleaseNotes:  "Collision test release notes.",
 		ReleaseSource: "user",
 	}, rt)
 	if err == nil {
@@ -1325,6 +1364,7 @@ func TestPRApply_WithRC_NextRCComputed(t *testing.T) {
 		Title:             "RC next test",
 		Body:              "body",
 		ReleaseLevel:      "minor",
+		ReleaseNotes:      "RC next test release notes.",
 		ReleasePreRelease: "rc",
 		ReleaseSource:     "user",
 	}, rt)
@@ -1354,6 +1394,7 @@ func TestPRApply_WithRC_LabelFormat(t *testing.T) {
 		Title:             "RC label test",
 		Body:              "body",
 		ReleaseLevel:      "patch",
+		ReleaseNotes:      "RC label test release notes.",
 		ReleasePreRelease: "rc",
 		ReleaseSource:     "user",
 	}, rt)
@@ -1381,6 +1422,7 @@ func TestPRApply_WithRC_PreReleaseMarker(t *testing.T) {
 		Title:             "RC marker test",
 		Body:              "body",
 		ReleaseLevel:      "minor",
+		ReleaseNotes:      "RC marker test release notes.",
 		ReleasePreRelease: "rc",
 		ReleaseSource:     "user",
 	}, rt)

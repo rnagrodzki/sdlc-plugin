@@ -755,15 +755,14 @@ func prValidateBodyCore(root string, in PRValidateBodyIn) (PRValidateBodyOut, er
 type PRApplyIn struct {
 	Title             string `json:"title" jsonschema_description:"PR title, used for gh pr create/edit."`
 	Body              string `json:"body" jsonschema_description:"PR body text, used for gh pr create/edit."`
-	ReleaseLevel      string `json:"releaseLevel,omitempty" jsonschema:"enum=major,enum=minor,enum=patch" jsonschema_description:"Release bump level for this PR (e.g. \"patch\"/\"minor\"/\"major\"). Required unless skipReleaseCheck is true — an empty value without skipReleaseCheck is rejected so release intent is never skipped by omission; run /version first, or pass skipReleaseCheck: true to explicitly acknowledge no release."`
+	ReleaseLevel      string `json:"releaseLevel,omitempty" jsonschema:"enum=major,enum=minor,enum=patch" jsonschema_description:"Release bump level for this PR (e.g. \"patch\"/\"minor\"/\"major\"). Required unless skipReleaseCheck is true — an empty value without skipReleaseCheck is rejected so release intent is never skipped by omission; pass skipReleaseCheck: true to explicitly acknowledge no release."`
 	ReleasePreRelease string `json:"releasePreRelease,omitempty" jsonschema_description:"Pre-release identifier to attach to the release, when releaseLevel is set and this is a pre-release."`
-	ReleaseNotes      string `json:"releaseNotes,omitempty" jsonschema_description:"Release notes text associated with releaseLevel, when set."`
+	ReleaseNotes      string `json:"releaseNotes,omitempty" jsonschema_description:"Release notes text associated with releaseLevel. Required (non-empty) whenever releaseLevel is set."`
 	// ReleaseSource records who decided ReleaseLevel: "user" (explicit
-	// interactive choice), "config" (a project/ship-config default), or
-	// "pipeline" (computed deterministically by /ship's version step, not
-	// chosen by anyone). Required whenever ReleaseLevel is set — see the
-	// releaseSource validation block in prApplyCoreWith.
-	ReleaseSource string `json:"releaseSource,omitempty" jsonschema:"enum=user,enum=config,enum=pipeline" jsonschema_description:"Who decided releaseLevel: \"user\" (explicit interactive choice), \"config\" (a project/ship-config default), or \"pipeline\" (computed deterministically by /ship's version step, not chosen by anyone). Required whenever releaseLevel is set. In autoMode, \"user\" is always rejected — resolve to \"config\" or \"pipeline\" instead of inventing a release level and labeling it \"user\" to bypass the gate."`
+	// interactive choice) or "config" (a project/ship-config default).
+	// Required whenever ReleaseLevel is set — see the releaseSource
+	// validation block in prApplyCoreWith.
+	ReleaseSource string `json:"releaseSource,omitempty" jsonschema:"enum=user,enum=config" jsonschema_description:"Who decided releaseLevel: \"user\" (explicit interactive choice) or \"config\" (a project/ship-config default). Required whenever releaseLevel is set. In autoMode, \"user\" is always rejected — resolve to \"config\" instead of inventing a release level and labeling it \"user\" to bypass the gate."`
 	// AutoMode signals an unattended call (no human available to confirm
 	// anything right now — e.g. /ship or /pr run with --auto). Disclosed
 	// addition beyond the fact sheet's literal contract example: task 8
@@ -856,6 +855,12 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 		default:
 			return PRApplyOut{}, &mcpserver.DomainError{Msg: fmt.Sprintf("releaseLevel must be major, minor, or patch, got %q", in.ReleaseLevel)}
 		}
+		if strings.TrimSpace(in.ReleaseNotes) == "" {
+			return PRApplyOut{}, &mcpserver.DomainError{
+				Msg:        "releaseNotes is required when releaseLevel is set",
+				Suggestion: "Draft release notes describing changes in this release.",
+			}
+		}
 	}
 	if in.ReleasePreRelease != "" && in.ReleasePreRelease != "rc" {
 		return PRApplyOut{}, &mcpserver.DomainError{Msg: fmt.Sprintf("releasePreRelease must be \"rc\" or empty, got %q", in.ReleasePreRelease)}
@@ -866,23 +871,22 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 	// level and simply omit/misdeclare where it came from.
 	if in.ReleaseLevel != "" {
 		switch in.ReleaseSource {
-		case "user", "config", "pipeline":
+		case "user", "config":
 			// valid provenance
 		case "":
-			return PRApplyOut{}, &mcpserver.DomainError{Msg: "releaseSource is required when releaseLevel is set (must be \"user\", \"config\", or \"pipeline\")"}
+			return PRApplyOut{}, &mcpserver.DomainError{Msg: "releaseSource is required when releaseLevel is set (must be \"user\" or \"config\")"}
 		default:
-			return PRApplyOut{}, &mcpserver.DomainError{Msg: fmt.Sprintf("releaseSource must be \"user\", \"config\", or \"pipeline\", got %q", in.ReleaseSource)}
+			return PRApplyOut{}, &mcpserver.DomainError{Msg: fmt.Sprintf("releaseSource must be \"user\" or \"config\", got %q", in.ReleaseSource)}
 		}
 		// Auto mode: nothing here can verify whether "user" truly traces
 		// back to an explicit human decision made upstream (an
 		// AskUserQuestion answer, an explicit --releaseLevel CLI arg) or
 		// was simply asserted by the calling LLM to slip past this gate —
-		// so auto mode refuses "user" unconditionally. Only "config"
-		// (a project/ship-config default) and "pipeline" (computed by
-		// /ship's version step, not chosen by anyone) are deterministic
-		// enough to trust unattended.
+		// so auto mode refuses "user" unconditionally. Only "config" (a
+		// project/ship-config default) is deterministic enough to trust
+		// unattended.
 		if in.AutoMode && in.ReleaseSource == "user" {
-			return PRApplyOut{}, &mcpserver.DomainError{Msg: "releaseLevel in auto mode must come from config or pipeline, not LLM"}
+			return PRApplyOut{}, &mcpserver.DomainError{Msg: "releaseLevel in auto mode must come from config, not LLM"}
 		}
 	}
 
@@ -1365,10 +1369,10 @@ func RegisterPRTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "pr_apply",
 		"Creates a PR for the current branch, or edits the existing one, via gh pr create/gh pr edit (KD14 executor tool). "+
 			"releaseLevel is required unless skipReleaseCheck is true — an empty releaseLevel without skipReleaseCheck is rejected so release "+
-			"intent is never skipped by omission; run /version first, or pass skipReleaseCheck: true to explicitly acknowledge no release. "+
-			"When releaseLevel is set, releaseSource is required: \"user\" (explicit interactive choice), \"config\" (project/ship-config default), "+
-			"or \"pipeline\" (computed by /ship's version step). In autoMode, releaseSource=\"user\" is always rejected — an unattended caller must "+
-			"resolve to \"config\" or \"pipeline\"; never invent a release level yourself and label it \"user\" to bypass this. "+
+			"intent is never skipped by omission; pass skipReleaseCheck: true to explicitly acknowledge no release. "+
+			"When releaseLevel is set, releaseNotes must be non-empty and releaseSource is required: \"user\" (explicit interactive choice) or "+
+			"\"config\" (project/ship-config default). In autoMode, releaseSource=\"user\" is always rejected — an unattended caller must resolve "+
+			"to \"config\"; never invent a release level yourself and label it \"user\" to bypass this. "+
 			"A gh CLI permission error (not a collaborator, 403, Resource not accessible) is enriched with account-switch guidance "+
 			"(active account, target owner/repo, candidate accounts to switch to) in the error's suggestion field.",
 		func(ctx mcpserver.Ctx, in PRApplyIn) (PRApplyOut, error) {

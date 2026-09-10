@@ -91,7 +91,7 @@ You are executing the <skill-name> skill. Invoke `/<skill-name> <args>` using th
 (4) any warnings or issues encountered
 ```
 
-Each dispatched skill is a black box — never call a dispatched skill's own MCP tools directly (never call `ship_state`/`execute_state`'s step-shaped actions, `review_prepare`, `ship_prepare`, etc. from deliver itself; only the dispatched Agent calls those). Per-dispatch additions to this base template (below, for review and ship) follow the same precedent ship itself sets when it instructs the version dispatch to report its computed `level`/`notes`/`preRelease` in artifacts (forwarded to the pr step's `pr_apply` call as `releaseLevel`/`releaseNotes`/`releasePreRelease`) — augmenting the template with skill-specific reporting instructions is in-idiom, not a deviation from it.
+Each dispatched skill is a black box — never call a dispatched skill's own MCP tools directly (never call `ship_state`/`execute_state`'s step-shaped actions, `review_prepare`, `ship_prepare`, etc. from deliver itself; only the dispatched Agent calls those). Per-dispatch additions to this base template (below, for review and ship) follow skill-specific reporting idioms — augmenting the template with such instructions is in-idiom, not a deviation from it.
 
 ### plan
 
@@ -189,7 +189,7 @@ No standalone dispatch of verify-pipeline here — that skill is a one-shot clas
 Dispatch ship with `execute` and `review` excluded from its step list — deliver already performed both directly, and letting ship re-run either would re-execute the plan or re-review the same diff a second time:
 
 ```
-/ship --steps commit,version,archive-openspec,pr,verify-pipeline,learnings-commit [--bump <bump>] [--draft] [--resume if this phase was already entered once before]
+/ship --steps commit,archive-openspec,pr,verify-pipeline,learnings-commit [--bump <bump>] [--draft] [--resume if this phase was already entered once before]
 ```
 
 If the project's `.sdlc-v2/local.json` configures `ship.steps` explicitly, use that list with `execute` and `review` removed instead of the fixed list above, so project-level customization (e.g. adding `verify-openspec` or `await-remote-review`) still applies.
@@ -204,7 +204,7 @@ Do this once per fresh run (not on --resume, where these steps are already
 skipped from the prior attempt). Skipping is idempotent and safe to call again if unsure.
 ```
 
-**Manual-gate handling (Q2 — the least source-precedented part of this skill):** ship has one hardcoded manual `AskUserQuestion` gate that survives even `automation.mode: unattended` — the post-PR-commit push pause (after its `verify-pipeline` auto-fix commit or its `learnings-commit`). No tool in the tool registry can push a branch, so this gate is permanent, not a bug. (The version step's own former tag-creation/push gate no longer exists — the version step only diagnoses release readiness and drafts a bump level/notes; it never creates or pushes a tag at ship time, so it has nothing to pause for.) Add this instruction to the ship dispatch, beyond the base template:
+**Manual-gate handling (Q2 — the least source-precedented part of this skill):** ship has one hardcoded manual `AskUserQuestion` gate that survives even `automation.mode: unattended` — the post-PR-commit push pause (after its `verify-pipeline` auto-fix commit or its `learnings-commit`). No tool in the tool registry can push a branch, so this gate is permanent, not a bug. Add this instruction to the ship dispatch, beyond the base template:
 
 ```
 If you reach your manual AskUserQuestion gate (a push pause after `verify-pipeline` or
@@ -248,14 +248,14 @@ Print a final summary naming the terminal value, the state file path, and — on
 | review | Agent dispatch `review` | → fix-loop | `failed(review:unparseable-result)`. Resume: re-dispatch review fresh (no file-scoped resume). |
 | fix-loop | Agent fix-implementer (per iteration) + Agent dispatch `review` (re-check) | → verify-pipeline (once below `reviewFixSeverityThreshold`) | `failed(fix-loop:threshold-exceeded)` after `reviewFixIterations` exhausted; `failed(fix-loop:worker-failure)` if a fix-implementer dispatch fails. Resume: re-enters the loop at the recorded `fixLoop.iteration`. |
 | verify-pipeline | (pass-through — delegated into the ship dispatch's own `--steps`) | → ship | n/a — this phase cannot itself fail; a CI failure surfaces inside the `ship` phase's own dispatch. |
-| ship | Agent dispatch `ship --steps commit,version,archive-openspec,pr,verify-pipeline,learnings-commit` | → terminal `delivered` | `failed(ship:manual-gate-pending)` — **not a hard error**, correctly waiting on a human; resume with `/deliver --resume`. `failed(ship:dispatch-failure)` — a genuine error; resume re-dispatches ship `--resume`. |
+| ship | Agent dispatch `ship --steps commit,archive-openspec,pr,verify-pipeline,learnings-commit` | → terminal `delivered` | `failed(ship:manual-gate-pending)` — **not a hard error**, correctly waiting on a human; resume with `/deliver --resume`. `failed(ship:dispatch-failure)` — a genuine error; resume re-dispatches ship `--resume`. |
 | terminal | Write state file's `terminal` field | (run ends) | n/a |
 
 ---
 
 ## DO NOT
 
-- Do NOT call any dispatched sub-skill's own MCP tools directly (`ship_state`, `execute_state`'s step-shaped actions — which do not exist —, `review_prepare`, `ship_prepare`, `version_apply`, `pr_apply`, `commit_apply`, etc.). Every sub-skill is a black box; only the dispatched Agent calls those.
+- Do NOT call any dispatched sub-skill's own MCP tools directly (`ship_state`, `execute_state`'s step-shaped actions — which do not exist —, `review_prepare`, `ship_prepare`, `pr_apply`, `commit_apply`, etc.). Every sub-skill is a black box; only the dispatched Agent calls those.
 - Do NOT reference `execute_state`'s `begin-step`/`complete-step` — that vocabulary belongs only to `ship_state`. `execute_state`'s 19 actions are all wave/task/ledger-shaped nouns (`verify-completeness` is the one legitimate direct call this skill makes).
 - Do NOT invent a third terminal-state bucket (no `paused(...)`). The contract is strictly `delivered` or `failed(<step>)`.
 - Do NOT expect JSON back from execute's Step 9 report — it is free text; translate it yourself.

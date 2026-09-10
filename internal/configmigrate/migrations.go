@@ -37,15 +37,15 @@ type migrationContext struct {
 // ---------------------------------------------------------------------------
 
 var presetToSteps = map[string][]string{
-	"full":     {"execute", "commit", "review", "version", "archive-openspec", "pr", "learnings-commit"},
+	"full":     {"execute", "commit", "review", "archive-openspec", "pr", "learnings-commit"},
 	"balanced": {"execute", "commit", "review", "archive-openspec", "pr", "learnings-commit"},
 	"minimal":  {"execute", "commit", "pr", "learnings-commit"},
-	"A":        {"execute", "commit", "review", "version", "archive-openspec", "pr", "learnings-commit"},
+	"A":        {"execute", "commit", "review", "archive-openspec", "pr", "learnings-commit"},
 	"B":        {"execute", "commit", "review", "archive-openspec", "pr", "learnings-commit"},
 	"C":        {"execute", "commit", "pr", "learnings-commit"},
 }
 
-var allSteps = []string{"execute", "commit", "review", "version", "archive-openspec", "pr", "learnings-commit"}
+var allSteps = []string{"execute", "commit", "review", "archive-openspec", "pr", "learnings-commit"}
 
 // ---------------------------------------------------------------------------
 // Project migration registry
@@ -55,6 +55,7 @@ var projectMigrations = []migrationStep{
 	{from: 0, to: 3, run: relocateProjectConfig, rollback: cleanupRelocation},
 	{from: 3, to: 4, run: noopProjectV3ToV4},
 	{from: 4, to: 5, run: removeProjectSchemaVersion},
+	{from: 5, to: 6, run: noopProjectV5ToV6},
 }
 
 // relocateProjectConfig (v0→v3): copies .claude/sdlc.json to .sdlc/config.json.
@@ -130,6 +131,17 @@ func noopProjectV3ToV4(ctx *migrationContext) error {
 	}
 	data["schemaVersion"] = float64(4)
 	return fsx.AtomicWriteJSON(ctx.configPath, data)
+}
+
+// noopProjectV5ToV6 (v5→v6): the "version" ship step removed at v6 lives in
+// local.json's ship.steps[] (see removeVersionStepFromShipSteps in the local
+// registry), not in config.json — so there is nothing for the project
+// registry to change. This step only exists so the version cursor advances;
+// unlike noopProjectV3ToV4, it must NOT stamp a schemaVersion marker, since
+// v5/v6 config.json carries none (sdlc-config.schema.json has no
+// schemaVersion property and additionalProperties: false at the top level).
+func noopProjectV5ToV6(ctx *migrationContext) error {
+	return nil
 }
 
 // removeProjectSchemaVersion (v4→v5): removes the schemaVersion field and
@@ -330,6 +342,7 @@ var localMigrations = []migrationStep{
 	{from: 2, to: 3, run: renameVersionToSchemaVersion},
 	{from: 3, to: 4, run: migrateAwaitReviewBooleansToSteps},
 	{from: 4, to: 5, run: removeLocalSchemaVersion},
+	{from: 5, to: 6, run: removeVersionStepFromShipSteps},
 }
 
 // shipPresetSkipToSteps (v1→v2): converts ship.preset + ship.skip into
@@ -538,6 +551,46 @@ func removeLocalSchemaVersion(ctx *migrationContext) error {
 		return err
 	}
 	delete(data, "schemaVersion")
+	return fsx.AtomicWriteJSON(ctx.localPath, data)
+}
+
+// removeVersionStepFromShipSteps (v5→v6): strips the standalone "version"
+// entry from ship.steps[]. The version step was folded into pr (pr now
+// reports version diagnostics itself), so presetToSteps/allSteps no longer
+// include it and any ship.steps[] carried over from an older config must be
+// stripped to match.
+func removeVersionStepFromShipSteps(ctx *migrationContext) error {
+	var data map[string]any
+	err := fsx.ReadJSON(ctx.localPath, &data)
+	if err != nil {
+		if errors.Is(err, fsx.ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+
+	shipRaw, ok := data["ship"]
+	if !ok {
+		return nil
+	}
+	ship, ok := shipRaw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	stepsRaw, ok := ship["steps"].([]any)
+	if !ok {
+		return nil
+	}
+
+	filtered := make([]any, 0, len(stepsRaw))
+	for _, s := range stepsRaw {
+		if str, ok := s.(string); ok && str == "version" {
+			continue
+		}
+		filtered = append(filtered, s)
+	}
+	ship["steps"] = filtered
+
 	return fsx.AtomicWriteJSON(ctx.localPath, data)
 }
 
