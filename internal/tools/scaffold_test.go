@@ -1,11 +1,14 @@
 package tools
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 )
 
 // --- scaffold_ci tests ---
@@ -187,6 +190,145 @@ func TestScaffoldCI_LegacyMigration(t *testing.T) {
 		if !scaffoldFileExists(dest) {
 			t.Errorf("new file %s should exist after migration", dest)
 		}
+	}
+}
+
+// --- checkBranchProtection (RulesetCheck) tests ---
+
+// TestRulesetCheck_NoRemote verifies that a missing git remote degrades
+// gracefully to an explanatory note instead of an error.
+func TestRulesetCheck_NoRemote(t *testing.T) {
+	fake := func(name string, args []string, opts execx.Options) (string, error) {
+		if name != "git" {
+			t.Fatalf("unexpected exec after git failure: %s %v", name, args)
+		}
+		return "", errors.New("fatal: No such remote 'origin'")
+	}
+
+	out := checkBranchProtection("/does/not/matter", fake)
+
+	if out.DefaultBranch != "" {
+		t.Errorf("expected empty default branch, got %q", out.DefaultBranch)
+	}
+	if out.HasRulesets || out.HasClassicProt {
+		t.Error("expected no protection reported when the remote can't be resolved")
+	}
+	if len(out.Notes) != 1 {
+		t.Fatalf("expected exactly one note, got %v", out.Notes)
+	}
+}
+
+// TestRulesetCheck_DetectsRulesetsAndClassicProtection verifies parsing of
+// mocked `gh api` responses for rulesets and classic branch protection.
+func TestRulesetCheck_DetectsRulesetsAndClassicProtection(t *testing.T) {
+	fake := func(name string, args []string, opts execx.Options) (string, error) {
+		switch name {
+		case "git":
+			return "https://github.com/acme/widgets.git", nil
+		case "gh":
+			if len(args) < 2 || args[0] != "api" {
+				t.Fatalf("unexpected gh args: %v", args)
+			}
+			apiPath := args[1]
+			switch {
+			case strings.HasSuffix(apiPath, "/rulesets"):
+				return `[{"name":"main-protection"},{"name":"release-guard"}]`, nil
+			case strings.Contains(apiPath, "/branches/") && strings.HasSuffix(apiPath, "/protection"):
+				return `{"required_status_checks":{}}`, nil
+			default:
+				// repos/{owner}/{repo} — default branch lookup.
+				return "main", nil
+			}
+		default:
+			t.Fatalf("unexpected exec: %s %v", name, args)
+			return "", nil
+		}
+	}
+
+	out := checkBranchProtection("/repo", fake)
+
+	if out.DefaultBranch != "main" {
+		t.Errorf("expected default branch 'main', got %q", out.DefaultBranch)
+	}
+	if !out.HasRulesets {
+		t.Error("expected HasRulesets=true")
+	}
+	if len(out.RulesetNames) != 2 || out.RulesetNames[0] != "main-protection" || out.RulesetNames[1] != "release-guard" {
+		t.Errorf("expected 2 ruleset names, got %v", out.RulesetNames)
+	}
+	if !out.HasClassicProt {
+		t.Error("expected HasClassicProt=true")
+	}
+	foundCompatNote := false
+	for _, n := range out.Notes {
+		if strings.Contains(n, "changelogMethod") {
+			foundCompatNote = true
+		}
+	}
+	if !foundCompatNote {
+		t.Errorf("expected a note explaining changelogMethod impact, got %v", out.Notes)
+	}
+}
+
+// TestRulesetCheck_NoProtectionConfigured verifies the "nothing configured"
+// path reports false/false with an explanatory note, not an error.
+func TestRulesetCheck_NoProtectionConfigured(t *testing.T) {
+	fake := func(name string, args []string, opts execx.Options) (string, error) {
+		switch name {
+		case "git":
+			return "git@github.com:acme/widgets.git", nil
+		case "gh":
+			apiPath := args[1]
+			switch {
+			case strings.HasSuffix(apiPath, "/rulesets"):
+				return `[]`, nil
+			case strings.HasSuffix(apiPath, "/protection"):
+				return "", errors.New("gh: HTTP 404: Branch not protected")
+			default:
+				return "main", nil
+			}
+		default:
+			t.Fatalf("unexpected exec: %s %v", name, args)
+			return "", nil
+		}
+	}
+
+	out := checkBranchProtection("/repo", fake)
+
+	if out.HasRulesets {
+		t.Error("expected HasRulesets=false")
+	}
+	if out.HasClassicProt {
+		t.Error("expected HasClassicProt=false")
+	}
+	if out.RulesetNames == nil || len(out.RulesetNames) != 0 {
+		t.Errorf("expected empty (non-nil) ruleset names, got %v", out.RulesetNames)
+	}
+}
+
+// TestRulesetCheck_GhUnavailable verifies that a failing `gh api` call for
+// the default branch degrades gracefully (gh missing/unauthenticated).
+func TestRulesetCheck_GhUnavailable(t *testing.T) {
+	fake := func(name string, args []string, opts execx.Options) (string, error) {
+		if name == "git" {
+			return "https://github.com/acme/widgets.git", nil
+		}
+		return "", errors.New("exec: \"gh\": executable file not found in $PATH")
+	}
+
+	out := checkBranchProtection("/repo", fake)
+
+	if out.DefaultBranch != "" {
+		t.Errorf("expected empty default branch, got %q", out.DefaultBranch)
+	}
+	found := false
+	for _, n := range out.Notes {
+		if strings.Contains(n, "gh") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a note mentioning gh, got %v", out.Notes)
 	}
 }
 

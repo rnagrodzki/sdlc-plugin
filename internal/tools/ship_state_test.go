@@ -1826,6 +1826,313 @@ func TestShipState_CompleteStep_NilNextAtPipelineEnd(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// history_record
+// ---------------------------------------------------------------------------
+
+func TestShipState_HistoryRecord_Success(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+
+	out, err := shipState(root, root, ShipStateIn{
+		Action: "history_record",
+		Detail: map[string]any{
+			"skill":   "ship",
+			"outcome": "success",
+			"ts":      "2026-06-15T12:00:00Z",
+			"branch":  "feat/test",
+		},
+	}, fixedNow(now))
+	if err != nil {
+		t.Fatalf("history_record: %v", err)
+	}
+	m, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("output = %#v, want map[string]any", out)
+	}
+	if m["ok"] != true {
+		t.Errorf("ok = %v, want true", m["ok"])
+	}
+	if m["ts"] != "2026-06-15T12:00:00Z" {
+		t.Errorf("ts = %v, want 2026-06-15T12:00:00Z", m["ts"])
+	}
+
+	// Verify runs.jsonl was written.
+	runsPath := filepath.Join(root, paths.DataDir, "history", "runs.jsonl")
+	if _, statErr := os.Stat(runsPath); statErr != nil {
+		t.Errorf("runs.jsonl should exist: %v", statErr)
+	}
+}
+
+func TestShipState_HistoryRecord_MissingDetail(t *testing.T) {
+	root := t.TempDir()
+	_, err := shipState(root, root, ShipStateIn{
+		Action: "history_record",
+	}, fixedNow(time.Now()))
+	if err == nil {
+		t.Fatal("history_record with nil detail: want error, got nil")
+	}
+	if !isDomainError(err) {
+		t.Errorf("error = %v (%T), want DomainError", err, err)
+	}
+}
+
+func TestShipState_HistoryRecord_MissingSkill(t *testing.T) {
+	root := t.TempDir()
+	_, err := shipState(root, root, ShipStateIn{
+		Action: "history_record",
+		Detail: map[string]any{
+			"outcome": "success",
+		},
+	}, fixedNow(time.Now()))
+	if err == nil {
+		t.Fatal("history_record without skill: want error, got nil")
+	}
+	if !isDomainError(err) {
+		t.Errorf("error = %v (%T), want DomainError", err, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// deferred_add
+// ---------------------------------------------------------------------------
+
+func TestShipState_DeferredAdd_Success(t *testing.T) {
+	root := t.TempDir()
+
+	out, err := shipState(root, root, ShipStateIn{
+		Action: "deferred_add",
+		Detail: map[string]any{
+			"id":          "issue-1",
+			"description": "Fix flaky test",
+		},
+	}, fixedNow(time.Now()))
+	if err != nil {
+		t.Fatalf("deferred_add: %v", err)
+	}
+	m, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("output = %#v, want map[string]any", out)
+	}
+	if m["ok"] != true {
+		t.Errorf("ok = %v, want true", m["ok"])
+	}
+	if m["id"] != "issue-1" {
+		t.Errorf("id = %v, want issue-1", m["id"])
+	}
+}
+
+func TestShipState_DeferredAdd_MissingID(t *testing.T) {
+	root := t.TempDir()
+	_, err := shipState(root, root, ShipStateIn{
+		Action: "deferred_add",
+		Detail: map[string]any{
+			"description": "Fix flaky test",
+		},
+	}, fixedNow(time.Now()))
+	if err == nil {
+		t.Fatal("deferred_add without id: want error, got nil")
+	}
+	if !isDomainError(err) {
+		t.Errorf("error = %v (%T), want DomainError", err, err)
+	}
+}
+
+func TestShipState_DeferredAdd_MissingDescription(t *testing.T) {
+	root := t.TempDir()
+	_, err := shipState(root, root, ShipStateIn{
+		Action: "deferred_add",
+		Detail: map[string]any{
+			"id": "issue-2",
+		},
+	}, fixedNow(time.Now()))
+	if err == nil {
+		t.Fatal("deferred_add without description: want error, got nil")
+	}
+	if !isDomainError(err) {
+		t.Errorf("error = %v (%T), want DomainError", err, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// deferred_list
+// ---------------------------------------------------------------------------
+
+func TestShipState_DeferredList_Empty(t *testing.T) {
+	root := t.TempDir()
+
+	out, err := shipState(root, root, ShipStateIn{
+		Action: "deferred_list",
+	}, fixedNow(time.Now()))
+	if err != nil {
+		t.Fatalf("deferred_list: %v", err)
+	}
+	m, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("output = %#v, want map[string]any", out)
+	}
+	openCount, _ := m["openCount"].(int)
+	if openCount != 0 {
+		t.Errorf("openCount = %d, want 0", openCount)
+	}
+}
+
+func TestShipState_DeferredList_AfterAdd(t *testing.T) {
+	root := t.TempDir()
+
+	for _, id := range []string{"issue-a", "issue-b"} {
+		if _, err := shipState(root, root, ShipStateIn{
+			Action: "deferred_add",
+			Detail: map[string]any{
+				"id":          id,
+				"description": "Issue " + id,
+			},
+		}, fixedNow(time.Now())); err != nil {
+			t.Fatalf("deferred_add %s: %v", id, err)
+		}
+	}
+
+	out, err := shipState(root, root, ShipStateIn{
+		Action: "deferred_list",
+	}, fixedNow(time.Now()))
+	if err != nil {
+		t.Fatalf("deferred_list: %v", err)
+	}
+	m := out.(map[string]any)
+	openCount, _ := m["openCount"].(int)
+	if openCount != 2 {
+		t.Errorf("openCount = %d, want 2", openCount)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// deferred_propose_followups
+// ---------------------------------------------------------------------------
+
+func TestShipState_DeferredProposeFollowups_Empty(t *testing.T) {
+	root := t.TempDir()
+
+	out, err := shipState(root, root, ShipStateIn{
+		Action: "deferred_propose_followups",
+	}, fixedNow(time.Now()))
+	if err != nil {
+		t.Fatalf("deferred_propose_followups: %v", err)
+	}
+	m, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("output = %#v, want map[string]any", out)
+	}
+	openCount, _ := m["openCount"].(int)
+	if openCount != 0 {
+		t.Errorf("openCount = %d, want 0", openCount)
+	}
+	if _, hasGroups := m["groups"]; !hasGroups {
+		t.Error("missing 'groups' key in output")
+	}
+	if _, hasDisplay := m["display"]; !hasDisplay {
+		t.Error("missing 'display' key in output")
+	}
+}
+
+func TestShipState_DeferredProposeFollowups_WithData(t *testing.T) {
+	root := t.TempDir()
+
+	issues := []map[string]any{
+		{"id": "high-1", "description": "Critical bug", "priority": "high"},
+		{"id": "med-1", "description": "Minor cleanup", "priority": "medium"},
+	}
+	for _, issue := range issues {
+		if _, err := shipState(root, root, ShipStateIn{
+			Action: "deferred_add",
+			Detail: issue,
+		}, fixedNow(time.Now())); err != nil {
+			t.Fatalf("deferred_add %v: %v", issue["id"], err)
+		}
+	}
+
+	out, err := shipState(root, root, ShipStateIn{
+		Action: "deferred_propose_followups",
+	}, fixedNow(time.Now()))
+	if err != nil {
+		t.Fatalf("deferred_propose_followups: %v", err)
+	}
+	m := out.(map[string]any)
+	openCount, _ := m["openCount"].(int)
+	if openCount != 2 {
+		t.Errorf("openCount = %d, want 2", openCount)
+	}
+	display, _ := m["display"].(string)
+	if display == "" {
+		t.Error("display is empty, want a formatted summary")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// deferred_resolve
+// ---------------------------------------------------------------------------
+
+func TestShipState_DeferredResolve_Success(t *testing.T) {
+	root := t.TempDir()
+
+	// Add an issue first.
+	if _, err := shipState(root, root, ShipStateIn{
+		Action: "deferred_add",
+		Detail: map[string]any{
+			"id":          "resolve-me",
+			"description": "Will be resolved",
+		},
+	}, fixedNow(time.Now())); err != nil {
+		t.Fatalf("deferred_add: %v", err)
+	}
+
+	// Resolve it.
+	out, err := shipState(root, root, ShipStateIn{
+		Action: "deferred_resolve",
+		Detail: map[string]any{"id": "resolve-me"},
+	}, fixedNow(time.Now()))
+	if err != nil {
+		t.Fatalf("deferred_resolve: %v", err)
+	}
+	m, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("output = %#v, want map[string]any", out)
+	}
+	if m["ok"] != true {
+		t.Errorf("ok = %v, want true", m["ok"])
+	}
+	if m["id"] != "resolve-me" {
+		t.Errorf("id = %v, want resolve-me", m["id"])
+	}
+
+	// Verify via list that the issue is no longer open.
+	listOut, err := shipState(root, root, ShipStateIn{
+		Action: "deferred_list",
+	}, fixedNow(time.Now()))
+	if err != nil {
+		t.Fatalf("deferred_list: %v", err)
+	}
+	lm := listOut.(map[string]any)
+	openCount, _ := lm["openCount"].(int)
+	if openCount != 0 {
+		t.Errorf("openCount after resolve = %d, want 0", openCount)
+	}
+}
+
+func TestShipState_DeferredResolve_NotFound(t *testing.T) {
+	root := t.TempDir()
+
+	_, err := shipState(root, root, ShipStateIn{
+		Action: "deferred_resolve",
+		Detail: map[string]any{"id": "nonexistent"},
+	}, fixedNow(time.Now()))
+	if err == nil {
+		t.Fatal("deferred_resolve nonexistent: want error, got nil")
+	}
+	if !isDomainError(err) {
+		t.Errorf("error = %v (%T), want DomainError", err, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // error classification helpers
 // ---------------------------------------------------------------------------
 

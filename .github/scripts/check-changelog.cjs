@@ -3,16 +3,18 @@
  * check-changelog.cjs
  * CI script: validates that CHANGELOG.md contains an entry for the current version.
  *
- * Only runs when `changelog: true` is set in `.sdlc-v2/config.json`.
+ * Only runs when `changelog.enabled: true` is set in `.sdlc-v2/config.json`.
  * Designed to be copied into user projects under `.github/scripts/`.
  *
  * Usage (GitHub Actions — runs on push to main or in a PR check):
  *   node .github/scripts/check-changelog.cjs
  *
  * Reads: .sdlc-v2/config.json  (sdlc versioning config)
- * Modes:
- *   "file" — version read from a version file (package.json, plugin.json, etc.)
- *   "tag"  — version derived from the latest git tag (no version file)
+ * Version source:
+ *   `versionFile.enabled: true`  — version read from the configured version
+ *     file (package.json, plugin.json, etc.)
+ *   `versionFile.enabled: false` (or unset) — version derived from the
+ *     latest git tag (no version file)
  *
  * Exit codes: 0 = pass / skipped, 1 = validation failure, 2 = script error
  *
@@ -21,8 +23,8 @@
 
 'use strict';
 
-/** @version 5 — check-changelog script version. Bump when behavior changes. */
-const CHECK_CHANGELOG_SCRIPT_VERSION = 5;
+/** @version 7 — check-changelog script version. Bump when behavior changes. */
+const CHECK_CHANGELOG_SCRIPT_VERSION = 7;
 
 const fs   = require('node:fs');
 const path = require('node:path');
@@ -66,20 +68,25 @@ function readVersionConfig(repoRoot) {
 // ---------------------------------------------------------------------------
 
 function resolveVersionFromFile(config, repoRoot) {
-  const versionFilePath = path.join(repoRoot, config.versionFile);
+  const vf = config.versionFile || {};
+  if (!vf.path) {
+    process.stderr.write('Warning: config.versionFile.path is not set.\n');
+    return null;
+  }
+  const versionFilePath = path.join(repoRoot, vf.path);
   if (!fs.existsSync(versionFilePath)) {
-    process.stderr.write(`Warning: version file not found: ${config.versionFile}\n`);
+    process.stderr.write(`Warning: version file not found: ${vf.path}\n`);
     return null;
   }
 
   const content = fs.readFileSync(versionFilePath, 'utf8');
-  const fileType = (config.fileType || '').toLowerCase();
+  const fileType = (vf.fileType || '').toLowerCase();
 
   if (fileType === 'package.json' || fileType === 'plugin.json') {
     try {
       return JSON.parse(content).version || null;
     } catch (_) {
-      process.stderr.write(`Warning: could not parse ${config.versionFile} as JSON\n`);
+      process.stderr.write(`Warning: could not parse ${vf.path} as JSON\n`);
       return null;
     }
   } else if (fileType === 'cargo.toml' || fileType === 'pyproject.toml') {
@@ -110,12 +117,49 @@ function resolveVersionFromTags(repoRoot) {
 // Main
 // ---------------------------------------------------------------------------
 
+/**
+ * Determine if changelog validation should be enabled based on config.
+ * Defaults to disabled if `changelog.enabled` isn't explicitly true.
+ */
+function isChangelogValidationEnabled(config) {
+  return !!(config.changelog && config.changelog.enabled === true);
+}
+
 function main() {
   // KEEP: CI script invoked at repo root — do not change to resolveSdlcRoot()
   const repoRoot = process.cwd();
 
-  // Step 0: Branch gate — only validate on the main branch.
-  // On feature branches and PRs, the changelog entry doesn't exist yet
+  // Step 0a: Pull-request guard. The changelog-entry check below only makes
+  // sense on main (release-on-main.cjs writes the entry at merge time), so
+  // pull_request events always skip it. Before skipping, warn (never fail)
+  // when this PR itself modifies CHANGELOG.md — the file is auto-generated
+  // at merge time, so a manual edit on the feature branch can conflict with
+  // the generated entry once it merges.
+  if (process.env.GITHUB_EVENT_NAME === 'pull_request') {
+    // The release workflow's own release delivery PR (branch
+    // `release/<tag>`, opened by pushFilesViaPR in release-on-main.cjs)
+    // legitimately modifies CHANGELOG.md on every release — skip the warning
+    // for that branch pattern so it doesn't self-flag on every run.
+    const headRef = process.env.GITHUB_HEAD_REF || '';
+    const isAutomatedChangelogBranch = headRef.startsWith('release/');
+    const prConfig = readVersionConfig(repoRoot);
+    if (prConfig && isChangelogValidationEnabled(prConfig) && !isAutomatedChangelogBranch) {
+      const changelogFile = prConfig.changelog?.file || 'CHANGELOG.md';
+      const diff = exec('git diff --name-only origin/main...HEAD', { cwd: repoRoot });
+      if (diff && diff.split('\n').some(f => f.trim() === changelogFile)) {
+        console.log(`WARNING: ${changelogFile} modified in this pull request.`);
+        console.log('This repository uses automated changelog generation (release-on-main workflow).');
+        console.log('Manual edits may cause merge conflicts with auto-generated entries.');
+        console.log('If this is intentional, you can ignore this warning.');
+        console.log(`::warning file=${changelogFile}::Changelog is auto-managed by the release workflow — manual edits may conflict with auto-generated entries.`);
+      }
+    }
+    console.log('pull_request event — changelog-entry check skipped (validated on main only).');
+    process.exit(0);
+  }
+
+  // Step 0b: Branch gate — only validate on the main branch.
+  // On feature branches, the changelog entry doesn't exist yet
   // (release-on-main.cjs creates it at merge time), so validation would
   // always fail. Skip silently.
   const currentBranch = (
@@ -126,12 +170,6 @@ function main() {
     console.log(`Branch "${currentBranch}" is not main — skipping changelog check.`);
     process.exit(0);
   }
-  // Also skip on pull_request events (the check would fire against the PR
-  // branch, not main).
-  if (process.env.GITHUB_EVENT_NAME === 'pull_request') {
-    console.log('pull_request event — skipping changelog check (validated on main only).');
-    process.exit(0);
-  }
 
   // Step 1: Read config — exit 0 silently if not present or unparseable
   const config = readVersionConfig(repoRoot);
@@ -139,20 +177,17 @@ function main() {
     process.exit(0);
   }
 
-  // Step 1b: Only validate when changelog is explicitly enabled
-  if (config.changelog !== true) {
+  // Step 1b: Only validate when changelog validation is explicitly enabled
+  if (!isChangelogValidationEnabled(config)) {
     process.exit(0);
   }
 
   // Step 2: Determine current version
   let version = null;
 
-  if (config.mode === 'file') {
-    version = resolveVersionFromFile(config, repoRoot);
-  } else if (config.mode === 'tag') {
+  if (!config.versionFile?.enabled) {
     version = resolveVersionFromTags(repoRoot);
   } else {
-    // Treat unknown/missing mode the same as 'file' (graceful fallback)
     version = resolveVersionFromFile(config, repoRoot);
   }
 
@@ -162,12 +197,12 @@ function main() {
   }
 
   // Step 3: Read changelog file
-  const changelogFile = config.changelogFile || 'CHANGELOG.md';
+  const changelogFile = config.changelog?.file || 'CHANGELOG.md';
   const changelogPath = path.join(repoRoot, changelogFile);
 
   if (!fs.existsSync(changelogPath)) {
     console.log(
-      `FAIL: changelog: true in config but ${changelogFile} does not exist. ` +
+      `FAIL: changelog.enabled: true in config but ${changelogFile} does not exist. ` +
       `Run /version --changelog to create it.`
     );
     process.exit(1);

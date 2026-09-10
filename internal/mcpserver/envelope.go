@@ -14,8 +14,9 @@ import (
 // DomainError represents a business-logic violation (e.g. invalid input from
 // the caller's perspective). Mapped to envelope code "domain".
 type DomainError struct {
-	Msg   string
-	Cause error
+	Msg        string
+	Suggestion string
+	Cause      error
 }
 
 func (e *DomainError) Error() string { return e.Msg }
@@ -24,8 +25,9 @@ func (e *DomainError) Unwrap() error { return e.Cause }
 // InfraError represents an infrastructure failure (network, filesystem, etc.).
 // Mapped to envelope code "infra".
 type InfraError struct {
-	Msg   string
-	Cause error
+	Msg        string
+	Suggestion string
+	Cause      error
 }
 
 func (e *InfraError) Error() string { return e.Msg }
@@ -34,30 +36,32 @@ func (e *InfraError) Unwrap() error { return e.Cause }
 // DataError represents a data-layer problem (schema mismatch, parse failure).
 // Mapped to envelope code "data".
 type DataError struct {
-	Msg   string
-	Cause error
+	Msg        string
+	Suggestion string
+	Cause      error
 }
 
 func (e *DataError) Error() string { return e.Msg }
 func (e *DataError) Unwrap() error { return e.Cause }
 
-// mapError classifies an error into a KD3 code and message.
-// Wrapped errors are matched via errors.As. Unknown errors default to "infra".
-func mapError(err error) (code string, msg string) {
+// mapError classifies an error into a KD3 code, message, and recovery
+// suggestion. Wrapped errors are matched via errors.As. Unknown errors
+// default to "infra" with no suggestion.
+func mapError(err error) (code string, msg string, suggestion string) {
 	var de *DomainError
 	if errors.As(err, &de) {
-		return "domain", err.Error()
+		return "domain", err.Error(), de.Suggestion
 	}
 	var ie *InfraError
 	if errors.As(err, &ie) {
-		return "infra", err.Error()
+		return "infra", err.Error(), ie.Suggestion
 	}
 	var dae *DataError
 	if errors.As(err, &dae) {
-		return "data", err.Error()
+		return "data", err.Error(), dae.Suggestion
 	}
 	// Unknown errors are infrastructure failures.
-	return "infra", err.Error()
+	return "infra", err.Error(), ""
 }
 
 // --- KD3 envelope ---
@@ -76,9 +80,10 @@ type envelopeOK struct {
 }
 
 type envelopeErr struct {
-	OK    bool   `json:"ok"`
-	Code  string `json:"code"`
-	Error string `json:"error"`
+	OK         bool   `json:"ok"`
+	Code       string `json:"code"`
+	Error      string `json:"error"`
+	Suggestion string `json:"suggestion,omitempty"`
 }
 
 // wrapOK marshals data into a KD3 success envelope: {"ok":true,"data":...}.
@@ -96,8 +101,9 @@ func wrapOK(data any) ([]byte, error) {
 }
 
 // wrapErr builds a KD3 error envelope: {"ok":false,"code":"...","error":"..."}.
-func wrapErr(code, msg string) ([]byte, error) {
-	return json.Marshal(envelopeErr{OK: false, Code: code, Error: msg})
+// suggestion is omitted from the JSON when empty.
+func wrapErr(code, msg, suggestion string) ([]byte, error) {
+	return json.Marshal(envelopeErr{OK: false, Code: code, Error: msg, Suggestion: suggestion})
 }
 
 // --- Dedup ---

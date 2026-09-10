@@ -94,6 +94,12 @@ required field, `--failure-text`/`--from-issue` mutual exclusion, or R16
 pre-flight failure on the *existing* guardrails/dimensions files) is a stop
 condition, not a crash — do not offer `error-report` for those.
 
+The manifest now includes a `history` section (when `.sdlc-v2/history/` exists)
+with `recentRuns` (last 10 pipeline run records from `runs.jsonl`) and
+`openDeferred` (unresolved deferred issues from `deferred.json`). The
+orchestrator uses this as additional evidence — e.g. if the same guardrail hit
+appears in 3+ recent runs, proposal severity should escalate.
+
 **Do NOT read the full manifest file contents into the main context yet.**
 Step 2 needs only the classification preview (a small subset), and Step 3 hands
 the full manifest path to the orchestrator agent.

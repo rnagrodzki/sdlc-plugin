@@ -37,6 +37,7 @@ guardrail when its evidence condition is actually observed.
 | `no-direct-db-access` | architecture | error | Database detected (see "Database detection" below) AND a `repositories/` or `src/repositories/` directory exists | Plans must route all database operations through the repository layer. No direct SQL or ORM calls in controllers/handlers. |
 | `api-backward-compatibility` | architecture | error | API detected (see "API detection" below) | Plans must version or deprecate changed APIs. Breaking changes must be documented in Key Decisions. |
 | `test-coverage-required` | testing | error | A `test/`, `tests/`, or `__tests__/` directory exists, OR `jest`/`vitest`/`mocha` in package.json deps, OR any `*_test.go` file exists | Every task that creates or modifies source code must include corresponding test cases. |
+| `no-real-fs-git-in-tests` | testing | error | Any `*_test.go` file exists | Tests must not perform real filesystem operations (os.WriteFile, os.Create, os.MkdirTemp, t.TempDir) or execute real git/gh commands (exec.Command, execx.Run). Use dependency injection with mock/fake implementations instead. |
 | `database-migration-review` | architecture | warning | Database detected | Tasks modifying database schema must be flagged as High risk. |
 | `no-ci-bypass` | security | error | `.github/workflows/*.yml`, `Jenkinsfile`, or `.gitlab-ci.yml` exists | Plans must not include steps that skip or disable CI checks. |
 | `monorepo-boundary-respect` | architecture | warning | `lerna.json`, `pnpm-workspace.yaml`, or `nx.json` exists | Tasks must not create cross-package dependencies without explicit justification. |
@@ -55,6 +56,9 @@ guardrail when its evidence condition is actually observed.
 | `dry` | quality | warning | Tasks must not duplicate logic that exists elsewhere — reuse existing functions or extract shared utilities. |
 | `kiss` | quality | warning | Tasks must prefer the simplest design that satisfies requirements — avoid unnecessary abstractions and over-engineering. |
 | `prefer-mcp-over-cli` | process | warning | Plans must route SDLC-process steps (setup, version, ship, review, commit, PR, jira) through this project's MCP tools rather than raw CLI invocations. Where an MCP tool covers the step, do not add a task that shells out for the same result. Batch what the MCP surface returns in one call rather than planning multiple round trips between harness and model. |
+| `mcp-error-has-suggestion` | mcp | error | Every new MCP error return path where recovery is possible must populate the Suggestion field on DomainError/InfraError/DataError. Raw error messages without structured recovery hints force the LLM to parse free-text. |
+| `mcp-output-drives-behavior` | mcp | warning | Tool output structs (*Out) should include a Next string field (json:"next") with an exact per-outcome hint guiding the LLM's next action. Outputs that return data without behavioral guidance leave the LLM to guess the next step. |
+| `mcp-parameter-documented` | mcp | error | Every exported field on an *In struct must have a jsonschema_description tag. Fields representing closed sets (validated by switch/const) must additionally have a jsonschema enum tag. Undocumented parameters create ambiguity for the LLM. |
 
 **Planning-discipline (this sub-flow only — plan-target; never proposed by setup-execution-guardrails.md):**
 

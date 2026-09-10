@@ -7,45 +7,74 @@
   "$defs": {
     "versionSection": {
       "type": "object",
-      "description": "Controls the version skill behaviour.",
+      "description": "Controls the version skill's behaviour via three independently toggleable release paths — tag, versionFile, changelog — that share only bump policy (preRelease, preReleasePolicy) and delivery method. Each path is enabled or disabled explicitly; a missing sub-object means that path is disabled. This is a breaking config shape: the old flat shape (top-level \"mode\", string \"versionFile\", \"changelogMethod\"/\"changelog\" boolean, \"rcAutoContinue\" boolean) is rejected outright. Run /setup --only version to migrate.",
       "properties": {
-        "mode": {
-          "type": "string",
-          "enum": ["file", "tag"],
-          "description": "Whether the version is tracked in a file or via git tags."
-        },
-        "versionFile": {
-          "type": "string",
-          "description": "Path to the file that stores the version number."
-        },
-        "fileType": {
-          "type": "string",
-          "enum": ["package.json", "cargo.toml", "pyproject.toml", "pubspec.yaml", "plugin.json", "version-file"],
-          "description": "Format of the version file."
-        },
-        "tagPrefix": {
-          "type": "string",
-          "description": "Prefix prepended to git version tags (e.g. \"v\")."
-        },
-        "changelog": {
-          "type": "boolean",
-          "description": "Whether to generate or update a changelog on release."
-        },
-        "changelogFile": {
-          "type": "string",
-          "description": "Path to the changelog file."
-        },
-        "ticketPrefix": {
-          "type": "string",
-          "description": "Jira ticket prefix used to filter commit messages for the changelog (e.g. \"PROJ\")."
-        },
         "preRelease": {
           "type": "string",
           "pattern": "^[a-z][a-z0-9]*$",
           "description": "Default pre-release label applied when no explicit base bump or --pre is given."
+        },
+        "preReleasePolicy": {
+          "type": "string",
+          "enum": ["always-rc", "continue-rc", "never"],
+          "description": "Whether version_prepare suggests a release-candidate build instead of a final release when the caller hasn't said otherwise. Defaults to \"continue-rc\"."
+        },
+        "method": {
+          "type": "string",
+          "enum": ["push", "pr"],
+          "description": "How the versionFile and changelog paths deliver their writes when enabled: \"push\" (default) commits and pushes directly to main; \"pr\" opens a release PR instead."
+        },
+        "tag": {
+          "type": "object",
+          "description": "The tag release path: creating a git tag (and GitHub Release) on version bump.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Whether the tag path is active."
+            },
+            "prefix": {
+              "type": "string",
+              "description": "Prefix prepended to the tag name (e.g. \"v\")."
+            }
+          },
+          "additionalProperties": false
+        },
+        "versionFile": {
+          "type": "object",
+          "description": "The version-file release path: writing the bumped version into a tracked file.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Whether the versionFile path is active."
+            },
+            "path": {
+              "type": "string",
+              "description": "Path to the file that stores the version number, relative to the main worktree root."
+            },
+            "fileType": {
+              "type": "string",
+              "enum": ["package.json", "cargo.toml", "pyproject.toml", "pubspec.yaml", "plugin.json", "version-file"],
+              "description": "Format of the version file."
+            }
+          },
+          "additionalProperties": false
+        },
+        "changelog": {
+          "type": "object",
+          "description": "The changelog release path: prepending a release entry to a changelog file.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Whether the changelog path is active."
+            },
+            "file": {
+              "type": "string",
+              "description": "Path to the changelog file. Defaults to \"CHANGELOG.md\" when enabled and unset."
+            }
+          },
+          "additionalProperties": false
         }
       },
-      "required": ["mode"],
       "additionalProperties": false
     },
     "jiraSection": {

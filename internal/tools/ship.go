@@ -74,22 +74,22 @@ var shipValidBumpLevels = []string{"major", "minor", "patch"}
 // --verify-pipeline, --await-review — these are rejected by the CLI parser
 // and have no corresponding data field to port).
 type ShipPrepareIn struct {
-	SkipConfigCheck bool `json:"skipConfigCheck"`
+	SkipConfigCheck bool `json:"skipConfigCheck" jsonschema_description:"Skips the config-version auto-migration gate normally run before preflight checks. Set only when the caller has already verified or migrated the config."`
 
-	HasPlan            bool     `json:"hasPlan"`
-	Auto               bool     `json:"auto"`
-	Steps              []string `json:"steps"`
-	Quick              bool     `json:"quick"`
-	Quality            string   `json:"quality"`
-	Bump               string   `json:"bump"`
-	Draft              bool     `json:"draft"`
-	DryRun             bool     `json:"dryRun"`
-	Resume             bool     `json:"resume"`
-	Rebase             string   `json:"rebase"`
-	OpenspecChange     string   `json:"openspecChange"`
-	HookActivePipeline bool     `json:"hookActivePipeline"`
-	PlanModeBlocked    bool     `json:"planModeBlocked"`
-	PlanFile           string   `json:"planFile"`
+	HasPlan            bool     `json:"hasPlan" jsonschema_description:"Whether a plan already exists for this pipeline run. When true and planFile is empty while the execute step will run, this is a validation error — a plan file must be supplied."`
+	Auto               bool     `json:"auto" jsonschema_description:"Run the pipeline unattended (no human available to confirm anything right now). Merged with the ship config's auto default when not explicitly set on the CLI."`
+	Steps              []string `json:"steps" jsonschema_description:"Explicit ordered list of pipeline step names to run, overriding the config/quick-derived step list. Takes precedence over quick when non-empty."`
+	Quick              bool     `json:"quick" jsonschema_description:"Use the abbreviated \"quick\" step list instead of the full pipeline, when steps is not explicitly supplied."`
+	Quality            string   `json:"quality" jsonschema:"enum=full,enum=balanced,enum=minimal" jsonschema_description:"Quality gate level to merge into the resolved pipeline config, overriding the config default when set."`
+	Bump               string   `json:"bump" jsonschema_description:"Version bump level (e.g. \"patch\"/\"minor\"/\"major\") to merge into the resolved pipeline config, overriding the config default when set."`
+	Draft              bool     `json:"draft" jsonschema_description:"Create the PR as a draft. Merged with the ship config's draft default when not explicitly set on the CLI."`
+	DryRun             bool     `json:"dryRun" jsonschema_description:"Validate and initialize state without performing any side-effecting pipeline actions."`
+	Resume             bool     `json:"resume" jsonschema_description:"Resume a previously initialized ship run from its persisted state instead of starting a new one."`
+	Rebase             string   `json:"rebase" jsonschema_description:"Rebase strategy/target branch to merge into the resolved pipeline config, when set."`
+	OpenspecChange     string   `json:"openspecChange" jsonschema_description:"Name of the openspec change this ship run is associated with, when applicable."`
+	HookActivePipeline bool     `json:"hookActivePipeline" jsonschema_description:"Whether a hook reported an already-active pipeline for this session, recorded into the initialized state."`
+	PlanModeBlocked    bool     `json:"planModeBlocked" jsonschema_description:"Whether plan mode was blocked for this session, recorded into the initialized state."`
+	PlanFile           string   `json:"planFile" jsonschema_description:"Path to the plan file for this run. Required whenever hasPlan is true and the execute step is part of the resolved pipeline."`
 
 	// Gc, when true, short-circuits shipPrepare into the --gc on-demand
 	// pruning branch (ship.js's R39 `if (cli.gc)` block): normal flag-merge/
@@ -97,12 +97,12 @@ type ShipPrepareIn struct {
 	// --ttl-days; nil means "not supplied on the CLI" (0 is a legal explicit
 	// value, so this cannot be a plain int with a zero-means-unset
 	// convention).
-	Gc      bool `json:"gc"`
-	TtlDays *int `json:"ttlDays,omitempty"`
+	Gc      bool `json:"gc" jsonschema_description:"Short-circuits into the --gc on-demand pruning branch: normal flag-merge/step-validation/state-init is skipped entirely and stale state files/tempdirs are pruned instead."`
+	TtlDays *int `json:"ttlDays,omitempty" jsonschema_description:"Time-to-live in days for gc pruning, mirroring --ttl-days. Omit to use the default TTL; 0 is a legal explicit value meaning no grace period."`
 
 	// SessionID is stamped into the initialized state's sessionId field
 	// (matching lib/state.js's initState CLAUDE_CODE_SESSION_ID stamp).
-	SessionID string `json:"sessionId"`
+	SessionID string `json:"sessionId" jsonschema_description:"Session identifier stamped into the initialized ship state's sessionId field, for correlating this run with the calling session."`
 }
 
 // ShipGCBucket holds the deleted/kept paths for one state-file prefix (or
@@ -187,8 +187,8 @@ type MigrationReport struct {
 
 // ShipVerifySideEffectIn is the input for the ship_verify_side_effect tool.
 type ShipVerifySideEffectIn struct {
-	Step     string `json:"step"`
-	Expected string `json:"expected"`
+	Step     string `json:"step" jsonschema_description:"Pipeline step name to verify the side effect for."`
+	Expected string `json:"expected" jsonschema_description:"Expected side-effect value (release-intent bump level, PR number, or commit sha) to check landed, matching the step."`
 }
 
 // ShipVerifySideEffectOut is the output for the ship_verify_side_effect tool,

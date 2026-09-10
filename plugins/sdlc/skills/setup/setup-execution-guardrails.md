@@ -34,6 +34,7 @@ descriptions instead of the plan descriptions:
 | `no-direct-db-access` | architecture | error | Code changes must not introduce direct database queries outside the repository layer. |
 | `api-backward-compatibility` | architecture | error | API changes must maintain backward compatibility — no breaking changes to existing endpoints or contracts without versioning. |
 | `test-coverage-required` | testing | error | Code changes must include corresponding test coverage — verify tests exist and pass after each wave. |
+| `no-real-fs-git-in-tests` | testing | error | Implementation must not use real filesystem operations (os.WriteFile, os.Create, os.MkdirTemp, t.TempDir) or execute real git/gh commands (exec.Command, execx.Run) in tests. Use dependency injection with mock/fake implementations. |
 | `database-migration-review` | architecture | warning | Database migration files must be reviewed — schema changes are flagged for manual verification. |
 | `no-ci-bypass` | security | error | Implemented code must not disable, skip, or weaken CI checks, linters, or pre-commit hooks. |
 | `monorepo-boundary-respect` | architecture | warning | Code changes must respect monorepo package boundaries — no cross-package imports outside declared dependencies. |
@@ -47,6 +48,8 @@ descriptions instead of the plan descriptions:
 | `dry` | quality | warning | Do not duplicate logic. If the same behavior exists elsewhere, reuse it or extract a shared function. |
 | `kiss` | quality | warning | Prefer the simplest implementation that satisfies the requirements. Avoid unnecessary abstractions and over-engineered solutions. |
 | `prefer-mcp-over-cli` | process | warning | Do not shell out via CLI for a step this project's MCP tools already cover (setup, version, ship, review, commit, PR, jira). Call the MCP tool instead, and batch multiple checks into as few calls as possible — every extra CLI round trip between harness and model slows execution and fragments feedback. |
+| `mcp-schema-tags-required` | mcp | error | New or modified *In structs must have jsonschema_description tags on all exported fields. Verify by checking that mcp.WithInputSchema[StructName]() produces non-empty description for every property in the generated schema. |
+| `skill-tool-param-sync` | mcp | warning | When a SKILL.md dispatches an MCP tool, every parameter name in the dispatch args must match a json tag on the tool's *In struct. Mismatched parameter names silently drop values and produce incorrect tool behavior. |
 
 ## Workflow
 

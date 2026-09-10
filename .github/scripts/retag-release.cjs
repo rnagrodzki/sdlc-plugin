@@ -11,9 +11,11 @@
  *   node .github/scripts/retag-release.cjs
  *
  * Reads: .sdlc-v2/config.json  (sdlc versioning config)
- * Modes:
- *   "file" — version read from a version file (package.json, plugin.json, etc.)
- *   "tag"  — version derived from the latest git tag (no version file)
+ * Version source:
+ *   `versionFile.enabled: true`  — version read from the configured version
+ *     file (package.json, plugin.json, etc.)
+ *   `versionFile.enabled: false` (or unset) — version derived from the
+ *     latest git tag (no version file)
  *
  * Exit codes: 0 = success / no-op, 1 = error
  *
@@ -73,26 +75,31 @@ function readVersionConfig(repoRoot) {
 // ---------------------------------------------------------------------------
 
 function resolveTagFromFile(config, repoRoot) {
-  const versionFilePath = path.join(repoRoot, config.versionFile);
+  const vf = config.versionFile || {};
+  if (!vf.path) {
+    process.stderr.write('config.versionFile.path is not set.\n');
+    process.exit(1);
+  }
+  const versionFilePath = path.join(repoRoot, vf.path);
   if (!fs.existsSync(versionFilePath)) {
-    process.stderr.write(`Version file not found: ${config.versionFile}\n`);
+    process.stderr.write(`Version file not found: ${vf.path}\n`);
     process.exit(1);
   }
 
   const content = fs.readFileSync(versionFilePath, 'utf8');
   let version = null;
 
-  if (config.fileType === 'package.json' || config.fileType === 'plugin.json') {
+  if (vf.fileType === 'package.json' || vf.fileType === 'plugin.json') {
     try {
       version = JSON.parse(content).version || null;
     } catch (err) {
-      process.stderr.write(`Error parsing ${config.versionFile}: ${err.message}\n`);
+      process.stderr.write(`Error parsing ${vf.path}: ${err.message}\n`);
       process.exit(1);
     }
-  } else if (config.fileType === 'cargo.toml' || config.fileType === 'pyproject.toml') {
+  } else if (vf.fileType === 'cargo.toml' || vf.fileType === 'pyproject.toml') {
     const match = content.match(/^\s*version\s*=\s*"([^"]+)"/m);
     version = match ? match[1] : null;
-  } else if (config.fileType === 'pubspec.yaml') {
+  } else if (vf.fileType === 'pubspec.yaml') {
     const match = content.match(/^\s*version\s*:\s*(\S+)/m);
     version = match ? match[1] : null;
   } else {
@@ -101,16 +108,16 @@ function resolveTagFromFile(config, repoRoot) {
   }
 
   if (!version) {
-    process.stderr.write(`Could not read version from ${config.versionFile}\n`);
+    process.stderr.write(`Could not read version from ${vf.path}\n`);
     process.exit(1);
   }
 
-  const prefix = config.tagPrefix || '';
+  const prefix = config.tag?.prefix || '';
   return `${prefix}${version}`;
 }
 
 function resolveTagFromTags(config, repoRoot) {
-  const prefix = config.tagPrefix || '';
+  const prefix = config.tag?.prefix || '';
   const out = exec('git tag --list --sort=-v:refname', { cwd: repoRoot });
   if (!out) return null;
 
@@ -214,14 +221,13 @@ function main() {
   }
 
   let tag;
-  if (config.mode === 'tag') {
+  if (!config.versionFile?.enabled) {
     tag = resolveTagFromTags(config, repoRoot);
     if (!tag) {
-      console.log('No existing tags found (tag mode). Skipping retag.');
+      console.log('No existing tags found (tag path). Skipping retag.');
       process.exit(0);
     }
   } else {
-    // "file" mode (default)
     tag = resolveTagFromFile(config, repoRoot);
   }
 
@@ -230,10 +236,10 @@ function main() {
 
   // Non-blocking changelog advisory — errors here must never fail the script
   try {
-    if (config.changelog === true) {
-      const changelogFile = config.changelogFile || 'CHANGELOG.md';
+    if (config.changelog?.enabled) {
+      const changelogFile = config.changelog.file || 'CHANGELOG.md';
       const changelogPath = path.resolve(repoRoot, changelogFile);
-      const prefix = config.tagPrefix || '';
+      const prefix = config.tag?.prefix || '';
       const version = prefix && tag.startsWith(prefix) ? tag.slice(prefix.length) : tag;
 
       if (fs.existsSync(changelogPath)) {
@@ -247,7 +253,7 @@ function main() {
         }
       } else {
         process.stdout.write(
-          `⚠  Changelog advisory: ${changelogFile} not found but changelog: true in config.\n` +
+          `⚠  Changelog advisory: ${changelogFile} not found but changelog.enabled: true in config.\n` +
           `   Run /version --changelog on the main branch to create it.\n`
         );
       }

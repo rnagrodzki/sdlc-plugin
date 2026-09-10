@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
@@ -36,7 +37,7 @@ type SetupWriteSectionsIn struct {
 	// Each section's value REPLACES the section wholesale (WriteSection
 	// semantics) — callers must pass the complete object for a section, not
 	// a partial patch.
-	SectionsJSON string `json:"sectionsJson"`
+	SectionsJSON string `json:"sectionsJson" jsonschema_description:"JSON-encoded object mapping section id (e.g. \"version\", \"commit\") to the full field-value object for that section, e.g. {\"version\":{\"mode\":\"file\",\"versionFile\":\"package.json\"}}. Each section's value REPLACES the section wholesale — pass the complete object for a section, not a partial patch."`
 }
 
 // SetupWriteSectionsOut is the output for the setup_write_sections tool.
@@ -66,6 +67,37 @@ func RegisterSetupWriteTools(s *mcpserver.Server) {
 			return setupWriteSections(root, in)
 		},
 	)
+}
+
+// expandDottedKeys converts a flat field-value map that may use dotted key
+// names (e.g. "tag.prefix") into the nested shape config.WriteSection
+// expects (e.g. {"tag": {"prefix": ...}}). setupmeta.Field descriptors use
+// dotted names so the setup skill can collect answers as a flat list; this
+// expands them back into the nested VersionSection shape (and any other
+// section that adopts dotted field names) before the write. Keys without a
+// "." pass through unchanged. When two dotted keys share a prefix (e.g.
+// "tag.enabled" and "tag.prefix"), their expansions merge into the same
+// nested object.
+func expandDottedKeys(flat map[string]any) map[string]any {
+	out := make(map[string]any, len(flat))
+	for key, val := range flat {
+		parts := strings.Split(key, ".")
+		if len(parts) == 1 {
+			out[key] = val
+			continue
+		}
+		cur := out
+		for _, part := range parts[:len(parts)-1] {
+			next, ok := cur[part].(map[string]any)
+			if !ok {
+				next = make(map[string]any)
+				cur[part] = next
+			}
+			cur = next
+		}
+		cur[parts[len(parts)-1]] = val
+	}
+	return out
 }
 
 // setupWriteSections is the core logic, separated from the handler for
@@ -100,6 +132,7 @@ func setupWriteSections(root string, in SetupWriteSectionsIn) (SetupWriteSection
 		if value == nil {
 			value = map[string]any{}
 		}
+		value = expandDottedKeys(value)
 		if err := config.WriteSection(root, id, value); err != nil {
 			errs = append(errs, fmt.Sprintf("section %s: %s", id, err.Error()))
 			continue

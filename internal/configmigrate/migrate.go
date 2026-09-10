@@ -443,6 +443,9 @@ func ingestLegacy(mainRoot string) ([]string, error) {
 		ingested = append(ingested, ".claude/sdlc.json")
 		for _, key := range []string{"version", "jira", "commit", "pr", "plan", "execute"} {
 			if v, ok := sdlcData[key]; ok {
+				if key == "version" {
+					v = migrateVersionShape(v)
+				}
 				projectCfg[key] = v
 			}
 		}
@@ -465,7 +468,7 @@ func ingestLegacy(mainRoot string) ([]string, error) {
 		ingested = append(ingested, ".claude/version.json")
 		if projectCfg["version"] == nil {
 			delete(versionData, "$schema")
-			projectCfg["version"] = versionData
+			projectCfg["version"] = migrateVersionShape(versionData)
 		}
 	}
 

@@ -16,6 +16,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/frontmatter"
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
+	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
@@ -144,6 +145,15 @@ type hardenRepository struct {
 	RecentDiffSummary string `json:"recentDiffSummary"`
 }
 
+// hardenHistory carries recent run records and open deferred issues from the
+// persistent history store (.sdlc-v2/history/), providing the orchestrator
+// with evidence of recurring patterns (e.g. same guardrail hit across 3+
+// runs triggers severity escalation in proposals).
+type hardenHistory struct {
+	RecentRuns   []history.RunRecord     `json:"recentRuns,omitempty"`
+	OpenDeferred []history.DeferredIssue `json:"openDeferred,omitempty"`
+}
+
 type hardenManifest struct {
 	Failure hardenFailure `json:"failure"`
 	// classification_hint is deliberately snake_case (matches source
@@ -152,6 +162,7 @@ type hardenManifest struct {
 	Surfaces           hardenSurfaces     `json:"surfaces"`
 	Pipeline           hardenPipeline     `json:"pipeline"`
 	Repository         hardenRepository   `json:"repository"`
+	History            *hardenHistory     `json:"history,omitempty"`
 	PluginRepoURL      string             `json:"pluginRepoUrl"`
 	Timestamp          string             `json:"timestamp"`
 	Errors             []surfaceLoadError `json:"errors"`

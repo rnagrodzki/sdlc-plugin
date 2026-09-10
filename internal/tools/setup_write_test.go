@@ -14,7 +14,7 @@ func TestSetupWriteSections_VersionTriggersScaffold(t *testing.T) {
 	root := t.TempDir()
 
 	out, err := setupWriteSections(root, SetupWriteSectionsIn{
-		SectionsJSON: `{"version":{"mode":"tag","tagPrefix":"v"}}`,
+		SectionsJSON: `{"version":{"tag.enabled":true,"tag.prefix":"v"}}`,
 	})
 	if err != nil {
 		t.Fatalf("setupWriteSections: %v", err)
@@ -72,13 +72,13 @@ func TestSetupWriteSections_VersionScaffoldIdempotent(t *testing.T) {
 	root := t.TempDir()
 
 	if _, err := setupWriteSections(root, SetupWriteSectionsIn{
-		SectionsJSON: `{"version":{"mode":"tag","tagPrefix":"v"}}`,
+		SectionsJSON: `{"version":{"tag.enabled":true,"tag.prefix":"v"}}`,
 	}); err != nil {
 		t.Fatalf("setupWriteSections (first): %v", err)
 	}
 
 	out, err := setupWriteSections(root, SetupWriteSectionsIn{
-		SectionsJSON: `{"version":{"mode":"tag","tagPrefix":"v"}}`,
+		SectionsJSON: `{"version":{"tag.enabled":true,"tag.prefix":"v"}}`,
 	})
 	if err != nil {
 		t.Fatalf("setupWriteSections (second): %v", err)

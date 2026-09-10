@@ -74,24 +74,24 @@ import (
 type ValidateIn struct {
 	// Action selects the validator: plan_format | discovery | pr_template |
 	// cost_tiers | guardrails | dimensions | pr_body.
-	Action string `json:"action"`
+	Action string `json:"action" jsonschema_description:"Which validator to run: plan_format, discovery, pr_template, cost_tiers, guardrails, dimensions, or pr_body."`
 	// File is the target file for plan_format and links... (plan_format only
 	// here; links_validate lives in links.go).
-	File string `json:"file,omitempty"`
+	File string `json:"file,omitempty" jsonschema_description:"Target file to validate. Used by the plan_format action."`
 	// Final requests the stricter plan_format checks (PF9/PF10), matching
 	// the JS --final flag.
-	Final bool `json:"final,omitempty"`
+	Final bool `json:"final,omitempty" jsonschema_description:"Requests the stricter plan_format checks (PF9/PF10). Used by the plan_format action."`
 	// Template is the plan template path for plan_format's PF10 check.
-	Template string `json:"template,omitempty"`
+	Template string `json:"template,omitempty" jsonschema_description:"Plan template path for plan_format's PF10 check."`
 	// Strict controls whether cost_tiers' INHERITED kind is severity
 	// "error" (true) or "warning" (false), matching the JS --strict flag.
-	Strict bool `json:"strict,omitempty"`
+	Strict bool `json:"strict,omitempty" jsonschema_description:"Controls whether the cost_tiers action's INHERITED finding kind is reported as severity \"error\" (true) or \"warning\" (false)."`
 	// Section is the config section guardrails reads its guardrails list
 	// from. Defaults to "plan" when empty, matching the JS default.
-	Section string `json:"section,omitempty"`
+	Section string `json:"section,omitempty" jsonschema_description:"Config section the guardrails action reads its guardrails list from. Defaults to \"plan\" when empty."`
 	// Body is the PR body text to validate for the pr_body action, matching
 	// the former standalone pr_validate_body tool's input.
-	Body string `json:"body,omitempty"`
+	Body string `json:"body,omitempty" jsonschema_description:"PR body text to validate. Used by the pr_body action."`
 }
 
 // ValidateOut is the output for the "validate" tool.

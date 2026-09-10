@@ -5,6 +5,21 @@
         "description": "Do not shell out via CLI for a step this project's MCP tools already cover (setup, version, ship, review, commit, PR, jira). Call the MCP tool instead, and batch multiple checks into as few calls as possible — every extra CLI round trip between harness and model slows execution and fragments feedback.",
         "id": "prefer-mcp-over-cli",
         "severity": "warning"
+      },
+      {
+        "id": "no-real-fs-git-in-tests",
+        "description": "Tests must not perform real filesystem operations (os.WriteFile, os.Create, os.MkdirTemp, t.TempDir) or execute real git/gh commands (exec.Command, execx.Run). Use dependency injection with mock/fake implementations instead. Existing test helpers like stubGHDispatch that write to temp directories violate this rule.",
+        "severity": "error"
+      },
+      {
+        "id": "mcp-schema-tags-required",
+        "severity": "error",
+        "description": "New or modified *In structs must have jsonschema_description tags on all exported fields. Verify by checking that mcp.WithInputSchema[StructName]() produces non-empty description for every property in the generated schema."
+      },
+      {
+        "id": "skill-tool-param-sync",
+        "severity": "warning",
+        "description": "When a SKILL.md dispatches an MCP tool, every parameter name in the dispatch args must match a json tag on the tool's *In struct. Mismatched parameter names silently drop values and produce incorrect tool behavior."
       }
     ]
   },
@@ -124,16 +139,44 @@
         "id": "handler-data-contracts",
         "severity": "error",
         "description": "Plans that create or modify tool handlers or data-transformation pipelines must explicitly document nil/empty-collection edge cases and how they are normalized. Handlers must normalize nil to empty array/object at the dispatcher level before returning output; this normalization must happen within the handler, not left to downstream serialization or LLM interpretation."
+      },
+      {
+        "id": "no-real-fs-git-in-tests",
+        "description": "Tests must not perform real filesystem operations (os.WriteFile, os.Create, os.MkdirTemp, t.TempDir) or execute real git/gh commands (exec.Command, execx.Run). Use dependency injection with mock/fake implementations instead. Existing test helpers like stubGHDispatch that write to temp directories violate this rule.",
+        "severity": "error"
+      },
+      {
+        "id": "mcp-error-has-suggestion",
+        "severity": "error",
+        "description": "Every new MCP error return path where recovery is possible must populate the Suggestion field on DomainError/InfraError/DataError. Raw error messages without structured recovery hints force the LLM to parse free-text."
+      },
+      {
+        "id": "mcp-output-drives-behavior",
+        "severity": "warning",
+        "description": "Tool output structs (*Out) should include a Next string field (json:\"next\") with an exact per-outcome hint guiding the LLM's next action. Outputs that return data without behavioral guidance leave the LLM to guess the next step."
+      },
+      {
+        "id": "mcp-parameter-documented",
+        "severity": "error",
+        "description": "Every exported field on an *In struct must have a jsonschema_description tag. Fields representing closed sets (validated by switch/const) must additionally have a jsonschema enum tag. Undocumented parameters create ambiguity for the LLM."
       }
     ]
   },
   "version": {
-    "fileType": "plugin.json",
-    "mode": "file",
-    "tagPrefix": "v",
-    "versionFile": "plugins/sdlc/.claude-plugin/plugin.json",
-    "changelog": true,
-    "changelogFile": "CHANGELOG.md",
-    "rcAutoContinue": true
+    "preReleasePolicy": "always-rc",
+    "method": "push",
+    "tag": {
+      "enabled": true,
+      "prefix": "v"
+    },
+    "versionFile": {
+      "enabled": true,
+      "path": "plugins/sdlc/.claude-plugin/plugin.json",
+      "fileType": "plugin.json"
+    },
+    "changelog": {
+      "enabled": true,
+      "file": "CHANGELOG.md"
+    }
   }
 }

@@ -149,6 +149,10 @@ func removeProjectSchemaVersion(ctx *migrationContext) error {
 	}
 	delete(data, "schemaVersion")
 
+	if v, ok := data["version"]; ok {
+		data["version"] = migrateVersionShape(v)
+	}
+
 	// Extract local-only sections from config.json.
 	var localSections map[string]any
 	for _, key := range []string{"ship", "review"} {
@@ -202,6 +206,119 @@ func removeProjectSchemaVersion(ctx *migrationContext) error {
 		return fsx.AtomicWriteJSON(ctx.localPath, localData)
 	}
 	return nil
+}
+
+// migrateVersionShape rewrites an old flat version section (top-level
+// mode/versionFile string/tagPrefix/changelogMethod/changelog bool/
+// changelogFile/rcAutoContinue/ticketPrefix) into the new nested
+// tag/versionFile/changelog shape that internal/config's parseVersionSection
+// requires. Old mode "tag" maps to tag-only, mode "file" (or unset,
+// old default) maps to versionFile-only — the single path the project
+// actually declared, not both, so migration never starts creating tags or
+// GitHub Releases for a project that never had them. ticketPrefix has no
+// new-shape equivalent and is dropped. Already-new-shape or unrecognized
+// input (not a map, or none of the old-shape markers present) is returned
+// unchanged.
+func migrateVersionShape(v any) any {
+	raw, ok := v.(map[string]any)
+	if !ok || !isOldVersionShape(raw) {
+		return v
+	}
+
+	out := map[string]any{}
+
+	mode, _ := raw["mode"].(string)
+	if mode == "tag" {
+		tag := map[string]any{"enabled": true}
+		if p, ok := raw["tagPrefix"].(string); ok {
+			tag["prefix"] = p
+		}
+		out["tag"] = tag
+	} else {
+		vf := map[string]any{"enabled": true}
+		if p, ok := raw["versionFile"].(string); ok {
+			vf["path"] = p
+		}
+		if ft, ok := raw["fileType"].(string); ok {
+			vf["fileType"] = ft
+		}
+		out["versionFile"] = vf
+	}
+
+	// changelogMethod ("pr"/"push"/"skip") takes precedence; legacy boolean
+	// changelog (true→push, false→skip) is the fallback, matching the old
+	// parseVersionSection's own backward-compat reading order.
+	changelogMethod, hasMethod := raw["changelogMethod"].(string)
+	if !hasMethod || changelogMethod == "" {
+		if b, ok := raw["changelog"].(bool); ok {
+			if b {
+				changelogMethod = "push"
+			} else {
+				changelogMethod = "skip"
+			}
+		} else {
+			changelogMethod = "skip"
+		}
+	}
+	if changelogMethod != "skip" {
+		cl := map[string]any{"enabled": true}
+		if f, ok := raw["changelogFile"].(string); ok {
+			cl["file"] = f
+		}
+		out["changelog"] = cl
+		// Old changelogMethod "pr" is the only signal the old shape ever
+		// carried for PR-style delivery. The new "method" field applies
+		// uniformly to versionFile and changelog, so this is the closest
+		// available mapping — a project that PR'd its changelog now also
+		// PRs its version-file write, which works strictly better under
+		// branch protection than the old always-push file write.
+		if changelogMethod == "pr" {
+			out["method"] = "pr"
+		}
+	}
+
+	if s, ok := raw["preRelease"].(string); ok {
+		out["preRelease"] = s
+	}
+	if s, ok := raw["preReleasePolicy"].(string); ok && s != "" {
+		out["preReleasePolicy"] = s
+	} else if b, ok := raw["rcAutoContinue"].(bool); ok {
+		if b {
+			out["preReleasePolicy"] = "continue-rc"
+		} else {
+			out["preReleasePolicy"] = "never"
+		}
+	}
+
+	return out
+}
+
+// isOldVersionShape mirrors internal/config's detectOldVersionShape: mode,
+// changelogMethod, and rcAutoContinue only ever existed in the old flat
+// shape, so their mere presence is conclusive; a string versionFile or
+// boolean changelog is that shape's signature too, since the new shape
+// always nests both as objects.
+func isOldVersionShape(raw map[string]any) bool {
+	if _, ok := raw["mode"]; ok {
+		return true
+	}
+	if _, ok := raw["changelogMethod"]; ok {
+		return true
+	}
+	if _, ok := raw["rcAutoContinue"]; ok {
+		return true
+	}
+	if vf, ok := raw["versionFile"]; ok {
+		if _, isString := vf.(string); isString {
+			return true
+		}
+	}
+	if cl, ok := raw["changelog"]; ok {
+		if _, isBool := cl.(bool); isBool {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------

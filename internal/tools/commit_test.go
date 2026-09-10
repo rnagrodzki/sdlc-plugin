@@ -48,7 +48,7 @@ func TestCommitPrepare_KeySet(t *testing.T) {
 		"errors", "warnings", "currentBranch", "defaultBranch",
 		"onDefaultBranch", "flags", "migration", "commitConfig",
 		"staged", "unstaged", "untracked", "recentCommits",
-		"lastCommitMessage", "wipSquash", "branchGuard",
+		"lastCommitMessage", "wipSquash", "branchGuard", "next",
 	}
 	for _, k := range expectedTopKeys {
 		if _, ok := m[k]; !ok {
@@ -119,6 +119,10 @@ func TestCommitPrepare_KeySet(t *testing.T) {
 	if _, ok := branchGuard["ok"]; !ok {
 		t.Error("missing branchGuard key: ok")
 	}
+
+	if out.Next != "Call commit_apply with the prepared payload." {
+		t.Errorf("Next: got %q", out.Next)
+	}
 }
 
 // TestCommitPrepare_NilSlicesSerializeAsArrays verifies that all slice
@@ -175,6 +179,9 @@ func TestCommitPrepare_NoStagedFiles(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected 'no files staged' in errors, got: %v", out.Errors)
+	}
+	if out.Next != "Fix the errors above, then call commit_prepare again." {
+		t.Errorf("Next: got %q", out.Next)
 	}
 }
 

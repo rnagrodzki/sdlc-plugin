@@ -66,8 +66,9 @@ When `PR_CONTEXT.template` is null, every PR uses this 8-section flat structure.
 ## Summary
 [1-3 sentence plain-language overview accessible to anyone — no jargon]
 
+<!-- Only include this section when PR_CONTEXT.jiraTicket is non-empty -->
 ## JIRA Ticket
-[Auto-detected from branch name, e.g. PROJ-123. "Not detected" if no ticket reference found.]
+[Auto-detected from branch name, e.g. PROJ-123]
 
 ## Business Context
 [Why this change is needed from a business/product perspective.
@@ -104,9 +105,10 @@ If no tests added, explain why.]
 **Section fill rules:**
 
 - ALL sections in the active template MUST always be present — never omit one
+- **JIRA Ticket is an exception:** When `PR_CONTEXT.jiraTicket` is empty, omit this section entirely (don't include "Not detected")
 - Fill with real content when derivable from conversation context
 - Use **"N/A"** when a section genuinely doesn't apply (state why briefly)
-- Use **"Not detected"** when detection was attempted but yielded nothing
+- Use **"Not detected"** when detection was attempted but yielded nothing (except for JIRA Ticket — see above)
 - **Never fabricate** — if unsure, ask a clarifying question before filling
 - Ask clarifying questions (especially for Business Context and Business Benefits)
   when available context isn't sufficient to fill the section confidently
@@ -157,9 +159,45 @@ of the PR). Do not ask for confirmation — the Step 5 approval gate is the cons
 | `template` | `{ path, legacy, headings, content }` or `null` — see PR Template above |
 
 **Release intent (invocation input, not part of `PR_CONTEXT`):** when this skill is dispatched
-with `releaseLevel` / `releaseNotes` / `releasePreRelease` (e.g. by `/ship` forwarding the
-version step's resolved plan), hold them for Step 6's `pr_apply` call and for the Step 5
-announcement below. Without a `releaseLevel`, this PR carries no release intent — skip both.
+with `releaseLevel` / `releaseNotes` / `releasePreRelease` / `releaseSource` (e.g. by `/ship`
+forwarding the version step's resolved plan, with `releaseSource` set to `"config"` or
+`"pipeline"` per `/ship`'s own upfront gate), hold all of them for Step 6's `pr_apply` call and
+for the Step 5 announcement below. `pr_apply` is a hard gate on this: it rejects any
+`releaseLevel` whose `releaseSource` is missing or invalid, and (in `autoMode`) rejects
+`releaseSource: "user"` outright — never call it with a `releaseLevel` and no matching
+`releaseSource`, and never invent either value yourself.
+
+**Without a `releaseLevel` at invocation** (this skill invoked standalone, not via `/ship`), do
+not silently proceed with no release intent — run the Release Intent Gate below before Step 2.
+
+### Step 1b (GATE): Release Intent
+
+Skip this gate entirely if `releaseLevel` was already supplied at invocation (the `/ship` case
+above) — nothing to ask, the source has already been decided upstream. This gate only fires on a
+standalone `/pr` invocation with no release intent given.
+
+**Auto mode, no `releaseLevel` supplied:** do not ask, and do not silently skip. Stop and report
+a clear error: standalone `/pr --auto` cannot decide release intent — there is no human to confirm
+it and `pr_apply` rejects `releaseSource: "user"` under `autoMode` unconditionally. Run `/ship`
+instead, which resolves release intent (source `"config"` or `"pipeline"`) before it ever reaches
+this skill. If standalone auto-mode PR creation with a release label is truly needed, the caller
+must pass both `releaseLevel` and a `releaseSource` of `"config"` or `"pipeline"` as explicit
+dispatch args to this skill — there is no `/pr` CLI flag for this, so a human cannot trigger it
+directly. Do not fabricate a level or relabel it `"user"` to get past this.
+
+**Interactive mode, no `releaseLevel` supplied:** use AskUserQuestion:
+
+> No release intent specified. A merged PR without a release label skips the release pipeline.
+>
+> Options:
+> 1. **Set release level** — specify patch/minor/major (optionally with an RC pre-release)
+> 2. **Skip release (acknowledged)** — create this PR without release intent
+
+On option 1: ask which level (and whether it's an RC), then hold `releaseLevel` and
+`releaseSource: "user"` for Step 6. On option 2: proceed with no release intent — this was an
+explicit, acknowledged choice, so do not ask again at Step 5 or Step 6. Hold
+`skipReleaseCheck: true` for Step 6's `pr_apply` call — without it, `pr_apply` rejects an empty
+`releaseLevel` as an unacknowledged omission.
 
 ### Step 2 (PLAN): Draft PR Description
 
@@ -186,7 +224,7 @@ When OpenSpec context provides business rationale, use it directly instead of as
 For each section, apply the fill rules:
 
 - **Summary**: Plain-language, no jargon, 1-3 sentences
-- **JIRA Ticket**: Use `PR_CONTEXT.jiraTicket` or "Not detected"
+- **JIRA Ticket**: Include only when `PR_CONTEXT.jiraTicket` is non-empty; omit the section entirely if no ticket found
 - **Business Context / Benefits**: Infer from conversation context. If insufficient evidence, **use AskUserQuestion** to ask the user before writing. Don't guess. Acceptable question: *"What business problem does this PR solve? Who benefits and how?"*
 - **Technical Design**: Infer from the changes you already know about — architecture, patterns, key decisions
 - **Technical Impact**: Identify affected systems/APIs/services from what you already know
@@ -209,7 +247,7 @@ Before presenting to the user, review the draft against every quality gate:
 | No file paths | Changes Overview uses concepts only | Zero file paths in this section |
 | Title length | Title under 72 characters | `len(title) < 72` |
 | No fabrication | All claims traceable to conversation context | Nothing invented |
-| JIRA accuracy | JIRA value matches `jiraTicket` or is "Not detected" | No guessed ticket numbers |
+| JIRA accuracy | JIRA section omitted when no ticket; when present, value matches `jiraTicket` | No guessed ticket numbers, section absent if not detected |
 | Audience check | Readable by non-technical stakeholders | No unexplained jargon in Summary/Business sections |
 | Documentation sync | If the change adds new commands, changes structure, renames concepts, or adds new directories/scripts: ask the user to confirm docs are updated — this port has no commit-list data to check for a `docs:` commit automatically | PR does not silently ship structural changes without addressing docs |
 | Link verification | Every URL in the body will be validated by `links_validate` before publishing (see Step 6) | Deferred to Step 6's hard gate |
@@ -252,7 +290,9 @@ one won't.
 prompt entirely. Still display the full title and description for visibility, then proceed
 directly to Step 6. Treat the response as an implicit `yes`. All critique gates (Steps 3–4)
 still run — only the interactive approval prompt is skipped. (This is your own reading of the
-invocation arguments — `pr_prepare`'s output carries no `isAuto` field in this port.)
+invocation arguments — `pr_prepare`'s output carries no `isAuto` field in this port.) Pass
+`autoMode: true` to `pr_apply` in Step 6 whenever `--auto` was passed here — this is what
+makes `pr_apply` enforce that `releaseLevel` (if any) came from config/pipeline, not the LLM.
 
 ```text
 PR Title: <title>
@@ -287,10 +327,23 @@ Any `results[]` entry whose `status` is `"violation"` is a hard-gate failure (`"
 violation list (`url`, `line`, `reason`, `detail`) to the user and stop. Do not retry. Do not
 edit URLs without user input. Do not bypass.
 
-On zero violations, publish:
+On zero violations, publish. Include `releaseLevel`/`releaseNotes`/`releasePreRelease`/
+`releaseSource` only when a `releaseLevel` was resolved (Step 1 / Step 1b); omit them entirely
+for a no-release PR — instead pass `skipReleaseCheck: true` when Step 1b's option 2 was chosen
+(no release intent, explicitly acknowledged). `autoMode` mirrors whether `--auto` was passed to
+this skill invocation:
 
 ```
-pr_apply({ title: <title>, body: <body> }) → { url, created }
+pr_apply({
+  title: <title>,
+  body: <body>,
+  releaseLevel: <if set — "major" | "minor" | "patch">,
+  releaseNotes: <if set>,
+  releasePreRelease: <if set>,
+  releaseSource: <if releaseLevel set — "user" | "config" | "pipeline">,
+  skipReleaseCheck: <true — only when no releaseLevel and Step 1b option 2 was chosen>,
+  autoMode: <true | false — whether --auto was passed to this skill invocation>
+}) → { url, created }
 ```
 
 **On tool error:** show the error to the user and stop — this port does not retry or attempt

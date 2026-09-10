@@ -22,8 +22,8 @@ import (
 
 // VersionPrepareIn is the input for the version_prepare tool.
 type VersionPrepareIn struct {
-	SkipConfigCheck bool   `json:"skipConfigCheck"`
-	SessionID       string `json:"sessionID"`
+	SkipConfigCheck bool   `json:"skipConfigCheck" jsonschema_description:"Skips the config-version auto-migration gate normally run before preflight checks. Set only when the caller has already verified or migrated the config."`
+	SessionID       string `json:"sessionID" jsonschema_description:"Reserved for future use; not currently read by version_prepare."`
 }
 
 // VersionSourceInfo describes the detected version source.
@@ -35,11 +35,13 @@ type VersionSourceInfo struct {
 
 // VersionBumpOption describes a single bump possibility.
 //
-// SuggestedPreRelease is "rc" when Result already has one or more existing
-// RC tags (see VersionPrepareOut.ExistingRCs) and the version config's
-// RCAutoContinue is true (the default) — i.e. this bump target is already
-// mid-RC-train, so the safer default is another RC rather than a final
-// release. Empty when there's no suggestion either way.
+// SuggestedPreRelease is "rc" when the version config's PreReleasePolicy
+// says to suggest one for this bump target: "always-rc" always suggests
+// one, "continue-rc" (the default) only when Result already has one or
+// more existing RC tags (see VersionPrepareOut.ExistingRCs) — i.e. this
+// bump target is already mid-RC-train, so the safer default is another RC
+// rather than a final release — and "never" never suggests one. Empty
+// when there's no suggestion either way.
 type VersionBumpOption struct {
 	Level               string `json:"level"`
 	Result              string `json:"result"`
@@ -72,17 +74,17 @@ type VersionIdempotency struct {
 	TagAtHead     string `json:"tagAtHead,omitempty"`
 }
 
-// VersionConfigInfo describes the resolved version config section.
+// VersionConfigInfo describes the resolved version config section, mirroring
+// config.VersionSection's three independently toggleable release paths
+// (Tag, VersionFile, Changelog) plus the shared bump policy and delivery
+// Method.
 type VersionConfigInfo struct {
-	Mode           string `json:"mode"`
-	VersionFile    string `json:"versionFile"`
-	FileType       string `json:"fileType"`
-	TagPrefix      string `json:"tagPrefix"`
-	Changelog      bool   `json:"changelog"`
-	ChangelogFile  string `json:"changelogFile"`
-	TicketPrefix   string `json:"ticketPrefix,omitempty"`
-	PreRelease     string `json:"preRelease,omitempty"`
-	RCAutoContinue bool   `json:"rcAutoContinue"`
+	PreRelease       string                        `json:"preRelease,omitempty"`
+	PreReleasePolicy string                        `json:"preReleasePolicy"`
+	Method           string                        `json:"method"`
+	Tag              config.VersionTagConfig       `json:"tag"`
+	VersionFile      config.VersionFileConfig      `json:"versionFile"`
+	Changelog        config.VersionChangelogConfig `json:"changelog"`
 }
 
 // DivergenceInfo describes a divergence between the file version and
@@ -149,27 +151,26 @@ func versionPrepare(cfgRoot, gitRoot string, in VersionPrepareIn) (VersionPrepar
 	var tagPrefixFromConfig string
 	var changelogFile string
 	var isTagMode bool
+	var tagEnabled bool
 
 	cfg, cfgErr := config.Read(cfgRoot)
 	if cfgErr == nil && cfg != nil && cfg.Version != nil {
 		out.ConfigPresent = true
 		vs := cfg.Version
 		out.VersionConfig = &VersionConfigInfo{
-			Mode:           vs.Mode,
-			VersionFile:    vs.VersionFile,
-			FileType:       vs.FileType,
-			TagPrefix:      vs.TagPrefix,
-			Changelog:      vs.Changelog,
-			ChangelogFile:  vs.ChangelogFile,
-			TicketPrefix:   vs.TicketPrefix,
-			PreRelease:     vs.PreRelease,
-			RCAutoContinue: vs.RCAutoContinue,
+			PreRelease:       vs.PreRelease,
+			PreReleasePolicy: vs.PreReleasePolicy,
+			Method:           vs.Method,
+			Tag:              vs.Tag,
+			VersionFile:      vs.VersionFile,
+			Changelog:        vs.Changelog,
 		}
-		versionFile = vs.VersionFile
-		fileType = vs.FileType
-		tagPrefixFromConfig = vs.TagPrefix
-		changelogFile = vs.ChangelogFile
-		isTagMode = vs.Mode == "tag"
+		versionFile = vs.VersionFile.Path
+		fileType = vs.VersionFile.FileType
+		tagPrefixFromConfig = vs.Tag.Prefix
+		changelogFile = vs.Changelog.File
+		isTagMode = !vs.VersionFile.Enabled
+		tagEnabled = vs.Tag.Enabled
 	}
 
 	// Current branch.
@@ -230,10 +231,17 @@ func versionPrepare(cfgRoot, gitRoot string, in VersionPrepareIn) (VersionPrepar
 				relPath = vf.Path
 			}
 			out.ProposedConfig = map[string]any{
-				"mode":        "file",
-				"versionFile": relPath,
-				"fileType":    vf.Type,
-				"changelog":   fileExists(filepath.Join(cfgRoot, "CHANGELOG.md")),
+				"versionFile": map[string]any{
+					"enabled":  true,
+					"path":     relPath,
+					"fileType": vf.Type,
+				},
+				"tag": map[string]any{
+					"enabled": true,
+				},
+				"changelog": map[string]any{
+					"enabled": fileExists(filepath.Join(cfgRoot, "CHANGELOG.md")),
+				},
 			}
 		}
 	}
@@ -306,7 +314,7 @@ func versionPrepare(cfgRoot, gitRoot string, in VersionPrepareIn) (VersionPrepar
 	// Bump base: max(fileVersion, highestRemoteTag).
 	bumpBase := vf.Version
 	highestTag := prReleaseHighestTagVersion(releaseTags, tagPrefix)
-	if highestTag != "" && prReleaseSemverGreater(highestTag, bumpBase) {
+	if tagEnabled && highestTag != "" && prReleaseSemverGreater(highestTag, bumpBase) {
 		out.VersionDivergence = &DivergenceInfo{
 			FileVersion: vf.Version,
 			TagVersion:  highestTag,
@@ -317,9 +325,9 @@ func versionPrepare(cfgRoot, gitRoot string, in VersionPrepareIn) (VersionPrepar
 	}
 
 	// Bump options for standard levels, computed from bumpBase.
-	rcAutoContinue := true
-	if cfg != nil && cfg.Version != nil {
-		rcAutoContinue = cfg.Version.RCAutoContinue
+	preReleasePolicy := "continue-rc"
+	if cfg != nil && cfg.Version != nil && cfg.Version.PreReleasePolicy != "" {
+		preReleasePolicy = cfg.Version.PreReleasePolicy
 	}
 	bumpVF := &version.VersionFile{Version: bumpBase}
 	existingRCs := make(map[string][]string)
@@ -345,10 +353,7 @@ func versionPrepare(cfgRoot, gitRoot string, in VersionPrepareIn) (VersionPrepar
 			existingRCs[result] = rcs
 		}
 
-		var suggestedPreRelease string
-		if len(rcs) > 0 && rcAutoContinue {
-			suggestedPreRelease = "rc"
-		}
+		suggestedPreRelease := versionSuggestedPreRelease(preReleasePolicy, len(rcs) > 0)
 
 		opt := VersionBumpOption{
 			Level:               level,
@@ -404,6 +409,27 @@ func versionPrepare(cfgRoot, gitRoot string, in VersionPrepareIn) (VersionPrepar
 	out.Summary, out.Actions, out.Next = versionPrepareSummary(out)
 
 	return out, nil
+}
+
+// versionSuggestedPreRelease resolves the version config's PreReleasePolicy
+// enum ("always-rc" | "continue-rc" | "never") plus whether the bump target
+// already has one or more existing RC tags into a SuggestedPreRelease value
+// for a VersionBumpOption: "rc" to suggest a release candidate, "" to
+// suggest a final release. Pure and side-effect-free so it's unit-testable
+// without any filesystem or git fixtures. An unrecognized policy value
+// falls through with no suggestion, same as "never".
+func versionSuggestedPreRelease(policy string, hasExistingRCs bool) string {
+	switch policy {
+	case "always-rc":
+		return "rc"
+	case "continue-rc":
+		if hasExistingRCs {
+			return "rc"
+		}
+	case "never":
+		// never suggest RC
+	}
+	return ""
 }
 
 // versionPrepareSummary derives summary text, action list, and next-step
@@ -517,10 +543,10 @@ func fileExists(path string) bool {
 
 // VersionApplyIn is the input for the version_apply tool.
 type VersionApplyIn struct {
-	Level           string `json:"level"`
-	Notes           string `json:"notes"`
-	SkipConfigCheck bool   `json:"skipConfigCheck"`
-	SessionID       string `json:"sessionID"`
+	Level           string `json:"level" jsonschema_description:"Deprecated, unused: version_apply is a no-op. Pass releaseLevel to pr_apply instead."`
+	Notes           string `json:"notes" jsonschema_description:"Deprecated, unused: version_apply is a no-op. Pass releaseNotes to pr_apply instead."`
+	SkipConfigCheck bool   `json:"skipConfigCheck" jsonschema_description:"Deprecated, unused: version_apply is a no-op."`
+	SessionID       string `json:"sessionID" jsonschema_description:"Deprecated, unused: version_apply is a no-op."`
 }
 
 // VersionApplyOut is the output for the version_apply tool.
@@ -573,10 +599,11 @@ the file and the highest remote tag, and existing RC tags per bump target.
 When no version config section is found in .sdlc-v2/config.json, a
 proposedConfig map is returned so the caller can offer to write it.
 
-mode:"tag" derives the current version from the highest semver git tag
-instead of a version file (versionSource.type is "tag", path is empty).
-File-based detection is skipped entirely in this mode. When no semver tags
-exist yet, the version defaults to 0.0.0 with a warning.
+When the versionFile path is disabled (versionFile.enabled=false), the
+current version is derived from the highest semver git tag instead of a
+version file (versionSource.type is "tag", path is empty). File-based
+detection is skipped entirely in that case. When no semver tags exist yet,
+the version defaults to 0.0.0 with a warning.
 
 Fields: errors, warnings, flow, currentBranch, configPresent, versionConfig,
 proposedConfig, versionSource, bumpOptions (with rcNext), tags, commitsSinceTag,

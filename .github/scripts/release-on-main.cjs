@@ -2,7 +2,8 @@
 /**
  * release-on-main.cjs
  * CI script: creates a release (tag + GitHub Release) when a PR with a
- * release:* label is merged to main.
+ * release:* label is merged to main. Three independently toggleable paths
+ * (tag, versionFile, changelog) share only the bump policy.
  *
  * Designed to be copied into user projects under `.github/scripts/`.
  *
@@ -11,21 +12,34 @@
  *
  * Reads: .sdlc-v2/config.json  (sdlc versioning config)
  *
- * Two flows:
- *   Direct release — bumps version file, prepends CHANGELOG, creates final
- *     tag + GitHub Release.
- *   RC release     — creates RC tag (v1.3.0-rc1), GitHub pre-release. Does
- *     NOT bump version file. DOES prepend CHANGELOG with the RC entry.
+ * Config shape (nested sub-objects under version):
+ *   version.tag       { enabled, prefix }
+ *   version.versionFile  { enabled, path, fileType }
+ *   version.changelog { enabled, file }
+ *   version.method    "push" | "pr" (governs file-writing paths)
  *
- * Exit codes: 0 = success / no-op (no release label), 1 = error
+ * 4-phase execution:
+ *   Phase 1: Read-only — config, PR, label, metadata, version resolution
+ *   Phase 2: File writes — versionFile + changelog share one commit (skip for RC)
+ *   Phase 3: Tag — create tag + GitHub Release (NEVER blocked by phase 2)
+ *   Phase 4: PR delivery — open PR when method=="pr" (skip for RC)
+ *   EXIT: per-path status, exit 1 if any failed
+ *
+ * Tag creation never depends on file-write success. Each path checks
+ * idempotency independently — no early return from the whole script.
+ *
+ * Decision: RC releases skip phase 2 entirely — no changelog or version
+ * file writes. This differs from v6 which delivered RC changelog entries.
+ *
+ * Exit codes: 0 = success / no-op (no release label), 1 = any path failed
  *
  * Uses only Node.js built-in modules + gh CLI. No npm install required.
  */
 
 'use strict';
 
-/** @version 3 — release-on-main script version. Bump when behavior changes. */
-const RELEASE_ON_MAIN_SCRIPT_VERSION = 3;
+/** @version 7 — release-on-main script version. Bump when behavior changes. */
+const RELEASE_ON_MAIN_SCRIPT_VERSION = 7;
 
 const fs   = require('node:fs');
 const path = require('node:path');
@@ -67,21 +81,67 @@ function withTmpFile(content, fn) {
 // ---------------------------------------------------------------------------
 
 /**
- * Read the version section from .sdlc-v2/config.json. CI script runs in
- * read-only context — never calls verifyAndMigrate. A repo still on a
- * legacy config layout must run `migrate` first; this script does not
- * fall back to any legacy path.
+ * Read the version section from .sdlc-v2/config.json and validate the
+ * nested config shape. Old flat config shape triggers a hard error.
+ *
+ * Returns the validated config object with normalized sub-objects, or null
+ * if no config file exists.
  */
 function readVersionConfig(repoRoot) {
   const currentPath = path.join(repoRoot, '.sdlc-v2', 'config.json');
   if (!fs.existsSync(currentPath)) return null;
+  let config;
   try {
-    const config = JSON.parse(fs.readFileSync(currentPath, 'utf8'));
-    return config.version || null;
+    const raw = JSON.parse(fs.readFileSync(currentPath, 'utf8'));
+    config = raw.version;
   } catch (err) {
     process.stderr.write(`Error parsing .sdlc-v2/config.json: ${err.message}\n`);
     process.exit(1);
   }
+  if (!config) return null;
+
+  // Reject old flat config shape — no backward compat, no migration.
+  if (typeof config.versionFile === 'string' ||
+      'mode' in config ||
+      'changelogMethod' in config ||
+      typeof config.changelog === 'boolean' ||
+      'rcAutoContinue' in config) {
+    process.stderr.write(
+      'Error: version config uses the old flat shape. ' +
+      'Run `/setup --only version` to migrate to the new nested format.\n'
+    );
+    process.exit(1);
+  }
+
+  // Normalize sub-objects — missing sub-object = {enabled: false}.
+  const tag = config.tag && typeof config.tag === 'object'
+    ? { enabled: !!config.tag.enabled, prefix: config.tag.prefix || '' }
+    : { enabled: false, prefix: '' };
+
+  const versionFile = config.versionFile && typeof config.versionFile === 'object'
+    ? { enabled: !!config.versionFile.enabled, path: config.versionFile.path || '', fileType: config.versionFile.fileType || '' }
+    : { enabled: false, path: '', fileType: '' };
+
+  const changelog = config.changelog && typeof config.changelog === 'object'
+    ? { enabled: !!config.changelog.enabled, file: config.changelog.file || 'CHANGELOG.md' }
+    : { enabled: false, file: 'CHANGELOG.md' };
+
+  // Validate: at least one of tag or versionFile must be enabled.
+  if (!tag.enabled && !versionFile.enabled) {
+    process.stderr.write('Error: at least one of version.tag.enabled or version.versionFile.enabled must be true.\n');
+    process.exit(1);
+  }
+
+  const method = config.method || 'push';
+
+  return {
+    preRelease: config.preRelease || '',
+    preReleasePolicy: config.preReleasePolicy || 'continue-rc',
+    method,
+    tag,
+    versionFile,
+    changelog,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -177,26 +237,27 @@ function hasPreReleaseMarker(body) {
 // ---------------------------------------------------------------------------
 
 function readVersionFromFile(config, repoRoot) {
-  if (!config.versionFile) {
-    process.stderr.write('config.versionFile is not set and mode is not "tag".\n');
+  const vf = config.versionFile || {};
+  if (!vf.path) {
+    process.stderr.write('config.versionFile.path is not set.\n');
     process.exit(1);
   }
 
-  const versionFilePath = path.join(repoRoot, config.versionFile);
+  const versionFilePath = path.join(repoRoot, vf.path);
   if (!fs.existsSync(versionFilePath)) {
-    process.stderr.write(`Version file not found: ${config.versionFile}\n`);
+    process.stderr.write(`Version file not found: ${vf.path}\n`);
     process.exit(1);
   }
 
   const content = fs.readFileSync(versionFilePath, 'utf8');
-  const fileType = (config.fileType || '').toLowerCase();
+  const fileType = (vf.fileType || '').toLowerCase();
   let version = null;
 
   if (fileType === 'package.json' || fileType === 'plugin.json') {
     try {
       version = JSON.parse(content).version || null;
     } catch (err) {
-      process.stderr.write(`Error parsing ${config.versionFile}: ${err.message}\n`);
+      process.stderr.write(`Error parsing ${vf.path}: ${err.message}\n`);
       process.exit(1);
     }
   } else if (fileType === 'cargo.toml' || fileType === 'pyproject.toml') {
@@ -211,7 +272,7 @@ function readVersionFromFile(config, repoRoot) {
   }
 
   if (!version) {
-    process.stderr.write(`Could not read version from ${config.versionFile}\n`);
+    process.stderr.write(`Could not read version from ${vf.path}\n`);
     process.exit(1);
   }
 
@@ -284,9 +345,10 @@ function bumpSemver(version, level) {
  * Only the first match of the version pattern is replaced.
  */
 function writeVersionToFile(config, repoRoot, newVer) {
-  const versionFilePath = path.join(repoRoot, config.versionFile);
+  const vf = config.versionFile || {};
+  const versionFilePath = path.join(repoRoot, vf.path);
   const content = fs.readFileSync(versionFilePath, 'utf8');
-  const fileType = (config.fileType || '').toLowerCase();
+  const fileType = (vf.fileType || '').toLowerCase();
   let updated;
 
   if (fileType === 'package.json' || fileType === 'plugin.json') {
@@ -311,7 +373,7 @@ function writeVersionToFile(config, repoRoot, newVer) {
   }
 
   if (updated === content && !content.includes(newVer)) {
-    process.stderr.write(`Warning: version pattern not matched in ${config.versionFile}; file unchanged.\n`);
+    process.stderr.write(`Warning: version pattern not matched in ${vf.path}; file unchanged.\n`);
   }
   fs.writeFileSync(versionFilePath, updated, 'utf8');
 }
@@ -354,6 +416,48 @@ function prependChangelog(repoRoot, changelogFile, version, notes) {
   }
   fs.writeFileSync(clPath, content, 'utf8');
   return clPath;
+}
+
+/**
+ * Check if a changelog heading for the given version already exists.
+ */
+function changelogHeadingExists(repoRoot, changelogFile, version) {
+  const clPath = path.join(repoRoot, changelogFile);
+  if (!fs.existsSync(clPath)) return false;
+  const content = fs.readFileSync(clPath, 'utf8');
+  return content.includes(`## [${version}]`);
+}
+
+// ---------------------------------------------------------------------------
+// PR-based file delivery — pushes staged commit on HEAD to a dedicated
+// branch and opens a PR back into the release branch.
+// ---------------------------------------------------------------------------
+
+/**
+ * Push HEAD to `prBranch` on origin and open a PR into `baseBranch` with
+ * the given title. Auto-merge is requested; non-fatal if unavailable.
+ */
+function pushFilesViaPR(repoRoot, baseBranch, prBranch, prTitle) {
+  execOrThrow(`git push origin HEAD:${prBranch}`, { cwd: repoRoot });
+
+  const body = `Auto-generated file updates for ${prTitle}.\n\nThis PR was created by the release workflow.`;
+  withTmpFile(body, (tmpPath) => {
+    execOrThrow(
+      `gh pr create --base "${baseBranch}" --head "${prBranch}" ` +
+      `--title "${prTitle}" ` +
+      `--body-file "${tmpPath}" ` +
+      `--label "no-release"`,
+      { cwd: repoRoot }
+    );
+  });
+  console.log(`Release PR opened: ${prBranch} -> ${baseBranch}`);
+
+  try {
+    execOrThrow(`gh pr merge "${prBranch}" --auto --squash --delete-branch`, { cwd: repoRoot });
+    console.log('Auto-merge enabled for release PR.');
+  } catch (_) {
+    console.log('Auto-merge not available — release PR exists, merge manually.');
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -409,28 +513,284 @@ function checkTagState(tag, repoRoot) {
 }
 
 // ---------------------------------------------------------------------------
-// Main
+// Tag target resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the SHA to tag. Priority:
+ *   1. bumpCommitSHA — SHA of the chore(release) commit pushed in phase 2
+ *   2. grep origin — find existing chore(release) commit on origin (re-run)
+ *   3. mergeSha — the merge commit that triggered this workflow
+ *
+ * Never uses git rev-parse HEAD at phase 3 time — that could be a local
+ * bump commit not yet on origin.
+ */
+function resolveTagTarget(bumpCommitSHA, branch, version, mergeSha, repoRoot) {
+  if (bumpCommitSHA) return bumpCommitSHA;
+
+  // Look for a chore(release) commit already on origin.
+  const grepSha = exec(
+    `git log "origin/${branch}" --grep="chore(release): ${version}" --format=%H -1`,
+    { cwd: repoRoot }
+  );
+  if (grepSha) return grepSha;
+
+  return mergeSha;
+}
+
+// ---------------------------------------------------------------------------
+// Phases 2–4: the release executor (extracted for testability)
+// ---------------------------------------------------------------------------
+
+/**
+ * Execute phases 2–4 of the release flow. Returns per-path status map.
+ * Nothing inside this function calls process.exit — errors are caught
+ * per-path and recorded as 'failed'.
+ *
+ * @param {Object} opts
+ * @param {string} opts.repoRoot
+ * @param {Object} opts.config - validated config from readVersionConfig
+ * @param {string} opts.newVersion - e.g. "1.0.1" or "1.0.1-rc2"
+ * @param {string} opts.newTag - e.g. "v1.0.1"
+ * @param {boolean} opts.isRCRelease
+ * @param {string} opts.notes - release notes text
+ * @param {string} opts.branch - target branch (e.g. "main")
+ * @param {string} opts.mergeSha - SHA of the merge commit (captured before phase 2)
+ * @returns {{ versionFile: string, changelog: string, tag: string }}
+ */
+function runRelease({ repoRoot, config, newVersion, newTag, isRCRelease, notes, branch, mergeSha }) {
+  // Per-path status: 'pending' for enabled paths, 'skipped' for disabled.
+  const pathStatus = {
+    versionFile: config.versionFile.enabled && !isRCRelease ? 'pending' : 'skipped',
+    changelog: config.changelog.enabled && !isRCRelease ? 'pending' : 'skipped',
+    tag: config.tag.enabled ? 'pending' : 'skipped',
+  };
+
+  // Check for existing release commit on origin — if found, phase 2 is a
+  // no-op and we use that SHA as tag target (handles re-run after partial
+  // failure where push succeeded but tag did not).
+  let releaseCommitSHA = null;
+  if (!isRCRelease) {
+    releaseCommitSHA = exec(
+      `git log "origin/${branch}" --grep="chore(release): ${newVersion}" --format=%H -1`,
+      { cwd: repoRoot }
+    );
+    if (releaseCommitSHA) {
+      console.log(`Found existing release commit on origin: ${releaseCommitSHA.slice(0, 8)}`);
+      // File writes already landed — skip phase 2.
+      if (pathStatus.versionFile === 'pending') pathStatus.versionFile = 'skipped';
+      if (pathStatus.changelog === 'pending') pathStatus.changelog = 'skipped';
+    }
+  }
+
+  // =========================================================================
+  // PHASE 2: File writes (skip for RC; skip if release commit already exists)
+  // =========================================================================
+
+  let bumpCommitSHA = null;
+
+  if (isRCRelease) {
+    console.log('RC release: skipping phase 2 (file writes).');
+  } else if (releaseCommitSHA) {
+    console.log('Release commit already on origin: skipping phase 2 (file writes).');
+  } else if (config.method === 'push') {
+    // --- Push method: write files, commit, push to main ---
+    try {
+      // Version file — write unconditionally; git detects no-op via staging.
+      if (pathStatus.versionFile === 'pending') {
+        writeVersionToFile(config, repoRoot, newVersion);
+        execOrThrow(`git add "${config.versionFile.path}"`, { cwd: repoRoot });
+        console.log(`Version file updated: ${config.versionFile.path} -> ${newVersion}`);
+        pathStatus.versionFile = 'ok';
+      }
+
+      // Changelog
+      if (pathStatus.changelog === 'pending') {
+        const changelogFile = config.changelog.file;
+        if (changelogHeadingExists(repoRoot, changelogFile, newVersion)) {
+          console.log(`Changelog heading for ${newVersion} already exists — skipping.`);
+          pathStatus.changelog = 'skipped';
+        } else {
+          prependChangelog(repoRoot, changelogFile, newVersion, notes);
+          execOrThrow(`git add "${changelogFile}"`, { cwd: repoRoot });
+          console.log(`Changelog updated: ${changelogFile}`);
+          pathStatus.changelog = 'ok';
+        }
+      }
+
+      // Commit and push if there are staged changes.
+      let hasStagedChanges;
+      try {
+        execSync('git diff --cached --quiet', { cwd: repoRoot, stdio: 'pipe' });
+        hasStagedChanges = false;
+      } catch (err) {
+        if (err.status === 1) {
+          hasStagedChanges = true;
+        } else {
+          throw new Error(`git diff --cached --quiet failed (exit ${err.status}): ${err.message}`);
+        }
+      }
+
+      if (hasStagedChanges) {
+        const commitMsg = `chore(release): ${newVersion}`;
+        withTmpFile(commitMsg, (tmpPath) => {
+          execOrThrow(`git commit -F "${tmpPath}"`, { cwd: repoRoot });
+        });
+        execOrThrow(`git push origin HEAD:${branch}`, { cwd: repoRoot });
+        bumpCommitSHA = exec('git rev-parse HEAD', { cwd: repoRoot });
+        console.log(`Committed and pushed release commit to ${branch}.`);
+      } else {
+        console.log('No staged changes after file writes — files already at target.');
+        // Writes produced no diff: mark as skipped (idempotent).
+        if (pathStatus.versionFile === 'ok') pathStatus.versionFile = 'skipped';
+        if (pathStatus.changelog === 'ok') pathStatus.changelog = 'skipped';
+      }
+    } catch (err) {
+      process.stderr.write(`Phase 2 (push) failed: ${err.message}\n`);
+      for (const p of ['versionFile', 'changelog']) {
+        if (pathStatus[p] === 'pending' || pathStatus[p] === 'ok') pathStatus[p] = 'failed';
+      }
+    }
+  } else if (config.method === 'pr') {
+    // --- PR method: write files locally, commit (push in phase 4) ---
+    try {
+      let anyFileWritten = false;
+
+      // Version file
+      if (pathStatus.versionFile === 'pending') {
+        writeVersionToFile(config, repoRoot, newVersion);
+        execOrThrow(`git add "${config.versionFile.path}"`, { cwd: repoRoot });
+        console.log(`Version file updated: ${config.versionFile.path} -> ${newVersion}`);
+        pathStatus.versionFile = 'ok';
+        anyFileWritten = true;
+      }
+
+      // Changelog
+      if (pathStatus.changelog === 'pending') {
+        const changelogFile = config.changelog.file;
+        if (changelogHeadingExists(repoRoot, changelogFile, newVersion)) {
+          console.log(`Changelog heading for ${newVersion} already exists — skipping.`);
+          pathStatus.changelog = 'skipped';
+        } else {
+          prependChangelog(repoRoot, changelogFile, newVersion, notes);
+          execOrThrow(`git add "${changelogFile}"`, { cwd: repoRoot });
+          console.log(`Changelog updated: ${changelogFile}`);
+          pathStatus.changelog = 'ok';
+          anyFileWritten = true;
+        }
+      }
+
+      // Commit locally (push happens in phase 4).
+      if (anyFileWritten) {
+        const commitMsg = `chore(release): ${newVersion}`;
+        withTmpFile(commitMsg, (tmpPath) => {
+          execOrThrow(`git commit -F "${tmpPath}"`, { cwd: repoRoot });
+        });
+        console.log('Local commit created for PR delivery.');
+      }
+    } catch (err) {
+      process.stderr.write(`Phase 2 (pr) failed: ${err.message}\n`);
+      for (const p of ['versionFile', 'changelog']) {
+        if (pathStatus[p] === 'pending' || pathStatus[p] === 'ok') pathStatus[p] = 'failed';
+      }
+    }
+  }
+
+  // =========================================================================
+  // PHASE 3: Tag — NEVER blocked by phase 2 failures
+  // =========================================================================
+
+  if (pathStatus.tag === 'pending') {
+    try {
+      const tagState = checkTagState(newTag, repoRoot);
+      if (tagState === 'reachable') {
+        console.log(`Tag ${newTag} already exists and is reachable. Skipping.`);
+        pathStatus.tag = 'skipped';
+      } else if (tagState === 'unreachable') {
+        process.stderr.write(`Tag ${newTag} exists but is NOT reachable from HEAD. Refusing to overwrite.\n`);
+        pathStatus.tag = 'failed';
+      } else {
+        // Tag is missing — create it.
+        const tagTarget = resolveTagTarget(bumpCommitSHA, branch, newVersion, mergeSha, repoRoot);
+        const tagMessage = notes || `Release ${newTag}`;
+        withTmpFile(tagMessage, (tmpPath) => {
+          execOrThrow(`git tag -a "${newTag}" -F "${tmpPath}" "${tagTarget}"`, { cwd: repoRoot });
+        });
+        execOrThrow(`git push origin "refs/tags/${newTag}"`, { cwd: repoRoot });
+        console.log(`Tag ${newTag} created at ${tagTarget.slice(0, 8)} and pushed.`);
+
+        // Create GitHub Release.
+        const releaseFlags = isRCRelease ? ' --prerelease' : '';
+        withTmpFile(notes || `${isRCRelease ? 'Pre-release' : 'Release'} ${newTag}`, (tmpPath) => {
+          execOrThrow(
+            `gh release create "${newTag}" --title "${newTag}" --notes-file "${tmpPath}"${releaseFlags}`,
+            { cwd: repoRoot }
+          );
+        });
+        console.log(`GitHub ${isRCRelease ? 'pre-release' : 'release'} created for ${newTag}.`);
+        pathStatus.tag = 'ok';
+      }
+    } catch (err) {
+      process.stderr.write(`Phase 3 (tag) failed: ${err.message}\n`);
+      pathStatus.tag = 'failed';
+    }
+  }
+
+  // =========================================================================
+  // PHASE 4: PR delivery — open PR when method=="pr" (skip for RC)
+  // =========================================================================
+
+  if (!isRCRelease && config.method === 'pr' &&
+      (pathStatus.versionFile === 'ok' || pathStatus.changelog === 'ok')) {
+    try {
+      const releaseBranch = `release/${newTag}`;
+      pushFilesViaPR(repoRoot, branch, releaseBranch, `chore(release): ${newVersion}`);
+    } catch (err) {
+      process.stderr.write(`Phase 4 (PR delivery) failed: ${err.message}\n`);
+      // Mark file-writing paths as failed since delivery failed.
+      for (const p of ['versionFile', 'changelog']) {
+        if (pathStatus[p] === 'ok') pathStatus[p] = 'failed';
+      }
+    }
+  }
+
+  // =========================================================================
+  // EXIT: log per-path status, treat leftover 'pending' as 'failed'
+  // =========================================================================
+
+  for (const p of ['versionFile', 'changelog', 'tag']) {
+    if (pathStatus[p] === 'pending') pathStatus[p] = 'failed';
+  }
+
+  console.log(`Path status: tag=${pathStatus.tag} versionFile=${pathStatus.versionFile} changelog=${pathStatus.changelog}`);
+  return pathStatus;
+}
+
+// ---------------------------------------------------------------------------
+// Main — phase 1 + orchestration
 // ---------------------------------------------------------------------------
 
 function main() {
   // KEEP: CI script invoked at repo root — do not change to resolveSdlcRoot()
   const repoRoot = process.cwd();
+  const branch = process.env.GITHUB_REF_NAME || 'main';
 
-  // Step 1: Read version config.
+  // =========================================================================
+  // PHASE 1: Read-only — config, PR, label, metadata, version resolution
+  // =========================================================================
+
   const config = readVersionConfig(repoRoot);
   if (!config) {
     console.log('No version config found. Skipping release.');
     process.exit(0);
   }
 
-  // Step 2: Find the merged PR that triggered this push.
   const pr = findMergedPR(repoRoot);
   if (!pr) {
     console.log('No merged PR found for HEAD. Skipping release.');
     process.exit(0);
   }
 
-  // Step 3: Check for a release:* label.
   const releaseLabel = findReleaseLabel(pr.labels);
   if (!releaseLabel) {
     console.log(`PR #${pr.number} has no release:* label. Skipping release.`);
@@ -439,184 +799,51 @@ function main() {
 
   console.log(`PR #${pr.number} merged with label: ${releaseLabel}`);
 
-  // Step 4: Parse label and extract metadata.
   const { level, isRC } = parseReleaseLabel(releaseLabel);
   const isRCRelease = isRC || hasPreReleaseMarker(pr.body);
   const notes = extractNotesFromBody(pr.body);
 
-  // Step 5: Resolve current version.
-  const tagPrefix = config.tagPrefix || '';
+  // Resolve current version.
+  const tagPrefix = config.tag.prefix;
   let currentVersion;
-  if (config.mode === 'tag') {
+  if (!config.versionFile.enabled) {
+    // Tag-only mode: derive version from existing tags.
     currentVersion = highestSemverTag(repoRoot, tagPrefix);
-    if (!currentVersion) {
-      // No tags yet — start from 0.0.0 so the bump produces a valid first version.
-      currentVersion = '0.0.0';
-    }
+    if (!currentVersion) currentVersion = '0.0.0';
   } else {
     currentVersion = readVersionFromFile(config, repoRoot);
   }
 
-  // Step 6: Compute the new version by bumping from the file version.
-  // Unlike prReleaseComputeIntent (which uses max(file, highestTag) to prevent
-  // collisions at PR-creation time), this post-merge script uses the file
-  // version alone. This guarantees idempotency: a re-run on the same merge
-  // commit always computes the same target tag, so the existence check (below)
-  // correctly short-circuits.
   const bumped = bumpSemver(currentVersion, level);
 
+  // Capture merge SHA before any local commits change HEAD.
+  const mergeSha = exec('git rev-parse HEAD', { cwd: repoRoot });
+
+  // RC: compute RC-specific version and tag.
+  let newVersion, newTag;
   if (isRCRelease) {
-    // ----- RC release flow -----
     const rcNum = findNextRCNumber(repoRoot, tagPrefix, bumped);
-    const rcVersion = `${bumped}-rc${rcNum}`;
-    const rcTag = `${tagPrefix}${rcVersion}`;
-
-    console.log(`RC release: ${rcTag} (base ${currentVersion} → ${bumped}, RC #${rcNum})`);
-
-    // Idempotency: if this RC tag already exists and is reachable, skip.
-    const tagState = checkTagState(rcTag, repoRoot);
-    if (tagState === 'reachable') {
-      console.log(`Tag ${rcTag} already exists and is reachable from HEAD. Nothing to do.`);
-      process.exit(0);
-    }
-    if (tagState === 'unreachable') {
-      process.stderr.write(`Tag ${rcTag} exists but is NOT reachable from HEAD. Refusing to overwrite.\n`);
-      process.exit(1);
-    }
-
-    // RC: do NOT bump version file. DO prepend CHANGELOG.
-    const filesToAdd = [];
-    if (config.changelog === true) {
-      const changelogFile = config.changelogFile || 'CHANGELOG.md';
-      prependChangelog(repoRoot, changelogFile, rcVersion, notes);
-      filesToAdd.push(changelogFile);
-      console.log(`Changelog updated: ${changelogFile} (RC entry ${rcVersion})`);
-    }
-
-    // Commit + push CHANGELOG if changed.
-    if (filesToAdd.length > 0) {
-      for (const f of filesToAdd) {
-        execOrThrow(`git add "${f}"`, { cwd: repoRoot });
-      }
-      let hasStagedChanges;
-      try {
-        execSync('git diff --cached --quiet', { cwd: repoRoot, stdio: 'pipe' });
-        hasStagedChanges = false;
-      } catch (err) {
-        if (err.status === 1) {
-          hasStagedChanges = true;
-        } else {
-          process.stderr.write(`git diff --cached --quiet failed (exit ${err.status}): ${err.message}\n`);
-          process.exit(1);
-        }
-      }
-      if (hasStagedChanges) {
-        const commitMsg = `chore(release): changelog for ${rcTag}`;
-        withTmpFile(commitMsg, (tmpPath) => {
-          execOrThrow(`git commit -F "${tmpPath}"`, { cwd: repoRoot });
-        });
-        const branch = process.env.GITHUB_REF_NAME || 'main';
-        execOrThrow(`git push origin HEAD:${branch}`, { cwd: repoRoot });
-        console.log(`Committed and pushed changelog update to ${branch}.`);
-      } else {
-        console.log('No staged changes after changelog write — files already at target.');
-      }
-    }
-
-    // Create RC tag (at HEAD, which now includes the changelog commit).
-    const tagMessage = notes || `Release ${rcTag}`;
-    withTmpFile(tagMessage, (tmpPath) => {
-      execOrThrow(`git tag -a "${rcTag}" -F "${tmpPath}" HEAD`, { cwd: repoRoot });
-    });
-    execOrThrow(`git push origin "refs/tags/${rcTag}"`, { cwd: repoRoot });
-    console.log(`Tag ${rcTag} created and pushed.`);
-
-    // Create GitHub pre-release.
-    withTmpFile(notes || `Pre-release ${rcTag}`, (tmpPath) => {
-      execOrThrow(`gh release create "${rcTag}" --title "${rcTag}" --notes-file "${tmpPath}" --prerelease`, { cwd: repoRoot });
-    });
-    console.log(`GitHub pre-release created for ${rcTag}.`);
+    newVersion = `${bumped}-rc${rcNum}`;
+    newTag = `${tagPrefix}${newVersion}`;
+    console.log(`RC release: ${newTag} (base ${currentVersion} -> ${bumped}, RC #${rcNum})`);
   } else {
-    // ----- Direct release flow -----
-    const newVersion = bumped;
-    const newTag = `${tagPrefix}${newVersion}`;
+    newVersion = bumped;
+    newTag = `${tagPrefix}${newVersion}`;
+    console.log(`Direct release: ${newTag} (base ${currentVersion} -> ${newVersion})`);
+  }
 
-    console.log(`Direct release: ${newTag} (base ${currentVersion} → ${newVersion})`);
+  // =========================================================================
+  // Phases 2–4: execute release
+  // =========================================================================
 
-    // Idempotency: if the final tag already exists and is reachable, skip.
-    const tagState = checkTagState(newTag, repoRoot);
-    if (tagState === 'reachable') {
-      console.log(`Tag ${newTag} already exists and is reachable from HEAD. Nothing to do.`);
-      process.exit(0);
-    }
-    if (tagState === 'unreachable') {
-      process.stderr.write(`Tag ${newTag} exists but is NOT reachable from HEAD. Refusing to overwrite.\n`);
-      process.exit(1);
-    }
+  const pathStatus = runRelease({
+    repoRoot, config, newVersion, newTag, isRCRelease, notes, branch, mergeSha,
+  });
 
-    // Step 7: Write version to file (skip in tag-only mode).
-    const filesToAdd = [];
-    if (config.mode !== 'tag' && config.versionFile) {
-      writeVersionToFile(config, repoRoot, newVersion);
-      filesToAdd.push(config.versionFile);
-      console.log(`Version file updated: ${config.versionFile} → ${newVersion}`);
-    }
-
-    // Step 8: Prepend CHANGELOG if enabled.
-    if (config.changelog === true) {
-      const changelogFile = config.changelogFile || 'CHANGELOG.md';
-      prependChangelog(repoRoot, changelogFile, newVersion, notes);
-      filesToAdd.push(changelogFile);
-      console.log(`Changelog updated: ${changelogFile}`);
-    }
-
-    // Step 9: Commit and push (only if files changed).
-    if (filesToAdd.length > 0) {
-      for (const f of filesToAdd) {
-        execOrThrow(`git add "${f}"`, { cwd: repoRoot });
-      }
-
-      // Guard: only commit if there are staged changes.
-      let hasStagedChanges;
-      try {
-        execSync('git diff --cached --quiet', { cwd: repoRoot, stdio: 'pipe' });
-        hasStagedChanges = false;
-      } catch (err) {
-        if (err.status === 1) {
-          hasStagedChanges = true;
-        } else {
-          process.stderr.write(`git diff --cached --quiet failed (exit ${err.status}): ${err.message}\n`);
-          process.exit(1);
-        }
-      }
-      if (hasStagedChanges) {
-        const commitMsg = `chore(release): ${newVersion}`;
-        withTmpFile(commitMsg, (tmpPath) => {
-          execOrThrow(`git commit -F "${tmpPath}"`, { cwd: repoRoot });
-        });
-
-        // Push to the branch — actions/checkout may leave HEAD detached.
-        const branch = process.env.GITHUB_REF_NAME || 'main';
-        execOrThrow(`git push origin HEAD:${branch}`, { cwd: repoRoot });
-        console.log(`Committed and pushed version bump to ${branch}.`);
-      } else {
-        console.log('No staged changes after version write — files already at target.');
-      }
-    }
-
-    // Step 10: Create tag.
-    const tagMessage = notes || `Release ${newTag}`;
-    withTmpFile(tagMessage, (tmpPath) => {
-      execOrThrow(`git tag -a "${newTag}" -F "${tmpPath}" HEAD`, { cwd: repoRoot });
-    });
-    execOrThrow(`git push origin "refs/tags/${newTag}"`, { cwd: repoRoot });
-    console.log(`Tag ${newTag} created and pushed.`);
-
-    // Step 11: Create GitHub release.
-    withTmpFile(notes || `Release ${newTag}`, (tmpPath) => {
-      execOrThrow(`gh release create "${newTag}" --title "${newTag}" --notes-file "${tmpPath}"`, { cwd: repoRoot });
-    });
-    console.log(`GitHub release created for ${newTag}.`);
+  const anyFailed = Object.values(pathStatus).some(s => s === 'failed');
+  if (anyFailed) {
+    process.stderr.write('One or more release paths failed.\n');
+    process.exit(1);
   }
 }
 
@@ -633,6 +860,10 @@ if (require.main === module) {
 
 module.exports = {
   RELEASE_ON_MAIN_SCRIPT_VERSION,
+  readVersionConfig,
+  runRelease,
   prependChangelog,
   checkTagState,
+  pushFilesViaPR,
+  changelogHeadingExists,
 };

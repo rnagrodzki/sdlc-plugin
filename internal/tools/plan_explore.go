@@ -38,8 +38,8 @@ const (
 
 // PlanExploreIn is the input for the plan_explore_prepare tool.
 type PlanExploreIn struct {
-	FromOpenspec string `json:"fromOpenspec"`
-	UserPrompt   string `json:"userPrompt"`
+	FromOpenspec string `json:"fromOpenspec" jsonschema_description:"Name of the openspec change to scope dynamic-dimension discovery to. Empty when not planning from an openspec change."`
+	UserPrompt   string `json:"userPrompt" jsonschema_description:"The user's original planning prompt/request text, used as a keyword-grep and web-research signal source for dimension discovery."`
 }
 
 // PlanExploreOut is the output for the plan_explore_prepare tool.

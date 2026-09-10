@@ -39,3 +39,12 @@ those same guardrails:
   Handlers must never serialize null for fields that logically should
   contain zero or more items — this ambiguity breaks LLM reasoning and
   violates the 'no ambiguous nulls' contract.
+
+## Cross-references
+
+- `mcp-contract-compliance.md` covers the specific structural tag/field
+  contracts (`jsonschema_description`, `enum`, `Next`, `Suggestion`)
+  introduced by the MCP Tooling Hardening plan — more granular than the
+  general quality rules above.
+- `skill-wiring-consistency.md` covers SKILL.md-to-tool parameter name
+  alignment, a distinct concern from tool-internal contract quality.

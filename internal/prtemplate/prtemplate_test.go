@@ -325,6 +325,79 @@ func TestValidateBody_ExtraHeadingsOK(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// ValidateReleaseCompat tests
+// ---------------------------------------------------------------------------
+
+func TestValidateReleaseCompat_Clean(t *testing.T) {
+	content := "## Summary\nDescribe changes\n\n## Test Plan\nHow to test\n"
+	if err := ValidateReleaseCompat(content); err != nil {
+		t.Errorf("expected nil error for clean template, got %v", err)
+	}
+}
+
+func TestValidateReleaseCompat_Empty(t *testing.T) {
+	if err := ValidateReleaseCompat(""); err != nil {
+		t.Errorf("expected nil error for empty content, got %v", err)
+	}
+}
+
+func TestValidateReleaseCompat_ConflictingPatterns(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		pattern string
+	}{
+		{
+			name:    "release-level",
+			content: "## Summary\n<!-- release-level:patch -->\n",
+			pattern: "<!-- release-level:",
+		},
+		{
+			name:    "release-pre",
+			content: "## Summary\n<!-- release-pre:rc -->\n",
+			pattern: "<!-- release-pre:",
+		},
+		{
+			name:    "release-notes-start",
+			content: "## Summary\n<!-- release-notes-start -->\n",
+			pattern: "<!-- release-notes-start",
+		},
+		{
+			name:    "release-notes-end",
+			content: "## Summary\n<!-- release-notes-end -->\n",
+			pattern: "<!-- release-notes-end",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateReleaseCompat(tt.content)
+			if err == nil {
+				t.Fatal("expected non-nil error for conflicting marker, got nil")
+			}
+			if !strings.Contains(err.Error(), tt.pattern) {
+				t.Errorf("error %q should mention pattern %q", err.Error(), tt.pattern)
+			}
+			if !strings.Contains(err.Error(), "remove it") {
+				t.Errorf("error %q should tell the user to remove it", err.Error())
+			}
+		})
+	}
+}
+
+func TestValidateReleaseCompat_FirstMatchWins(t *testing.T) {
+	// A template with multiple conflicting patterns still returns a single
+	// error naming the first pattern encountered (declaration order).
+	content := "<!-- release-level:patch -->\n<!-- release-pre:rc -->\n"
+	err := ValidateReleaseCompat(content)
+	if err == nil {
+		t.Fatal("expected non-nil error, got nil")
+	}
+	if !strings.Contains(err.Error(), "<!-- release-level:") {
+		t.Errorf("expected error to name the first conflicting pattern, got %q", err.Error())
+	}
+}
+
+// ---------------------------------------------------------------------------
 // extractHeadings unit test
 // ---------------------------------------------------------------------------
 

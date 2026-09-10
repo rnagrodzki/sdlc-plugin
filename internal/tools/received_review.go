@@ -17,7 +17,7 @@ import (
 
 // ReceivedReviewIn is the input for the received_review_prepare tool.
 type ReceivedReviewIn struct {
-	PR int `json:"pr"`
+	PR int `json:"pr" jsonschema_description:"Pull request number to fetch review view and checks for."`
 }
 
 // ReceivedReviewOut is the inline payload returned by received_review_prepare.

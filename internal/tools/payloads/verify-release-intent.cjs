@@ -18,7 +18,7 @@
  *     label.
  *   - For release:<level>-rc labels, a <!-- release-pre:rc --> marker is
  *     present.
- *   - The configured version file exists and is parseable (mode "file").
+ *   - The configured version file exists and is parseable (versionFile.enabled).
  *   - The computed target version (or next RC number) is not already
  *     tagged on the remote.
  *
@@ -36,8 +36,8 @@
 
 'use strict';
 
-/** @version 2 — verify-release-intent script version. Bump when behavior changes. */
-const VERIFY_RELEASE_INTENT_SCRIPT_VERSION = 2;
+/** @version 3 — verify-release-intent script version. Bump when behavior changes. */
+const VERIFY_RELEASE_INTENT_SCRIPT_VERSION = 3;
 
 const fs   = require('node:fs');
 const path = require('node:path');
@@ -187,24 +187,25 @@ function hasPreReleaseMarker(body) {
 // ---------------------------------------------------------------------------
 
 function readVersionFromFile(config, repoRoot) {
-  if (!config.versionFile) {
-    return { error: 'config.versionFile is not set and mode is not "tag".' };
+  const vf = config.versionFile || {};
+  if (!vf.path) {
+    return { error: 'config.versionFile.path is not set.' };
   }
 
-  const versionFilePath = path.join(repoRoot, config.versionFile);
+  const versionFilePath = path.join(repoRoot, vf.path);
   if (!fs.existsSync(versionFilePath)) {
-    return { error: `Version file not found: ${config.versionFile}` };
+    return { error: `Version file not found: ${vf.path}` };
   }
 
   const content = fs.readFileSync(versionFilePath, 'utf8');
-  const fileType = (config.fileType || '').toLowerCase();
+  const fileType = (vf.fileType || '').toLowerCase();
   let version = null;
 
   if (fileType === 'package.json' || fileType === 'plugin.json') {
     try {
       version = JSON.parse(content).version || null;
     } catch (err) {
-      return { error: `Error parsing ${config.versionFile}: ${err.message}` };
+      return { error: `Error parsing ${vf.path}: ${err.message}` };
     }
   } else if (fileType === 'cargo.toml' || fileType === 'pyproject.toml') {
     const match = content.match(/^\s*version\s*=\s*"([^"]+)"/m);
@@ -218,7 +219,7 @@ function readVersionFromFile(config, repoRoot) {
   }
 
   if (!version) {
-    return { error: `Could not read version from ${config.versionFile}` };
+    return { error: `Could not read version from ${vf.path}` };
   }
   return { version };
 }
@@ -404,9 +405,9 @@ function main() {
     return;
   }
 
-  const tagPrefix = config.tagPrefix || '';
+  const tagPrefix = config.tag?.prefix || '';
   let currentVersion;
-  if (config.mode === 'tag') {
+  if (!config.versionFile?.enabled) {
     currentVersion = highestSemverTag(repoRoot, tagPrefix) || '0.0.0';
   } else {
     const resolved = readVersionFromFile(config, repoRoot);

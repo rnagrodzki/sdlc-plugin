@@ -32,8 +32,8 @@ import (
 
 // LinksValidateIn is the input for the "links_validate" tool.
 type LinksValidateIn struct {
-	File    string `json:"file"`
-	Offline bool   `json:"offline,omitempty"`
+	File    string `json:"file" jsonschema_description:"Path to the file to extract URLs from and validate."`
+	Offline bool   `json:"offline,omitempty" jsonschema_description:"When true, skips network-reachability checks (GitHub/Jira/generic HTTP) and only performs offline validation."`
 }
 
 // LinkFinding is links.Result plus the line number of the URL's first
@@ -144,15 +144,15 @@ func RegisterLinksTools(s *mcpserver.Server) {
 // the optional explicit override for telemetry.ResolveSessionID's KD5
 // resolution chain (param first).
 type MCPFailureRecordIn struct {
-	Tool           string `json:"tool"`
-	HTTPStatus     int    `json:"httpStatus,omitempty"`
-	ErrorMessage   string `json:"errorMessage,omitempty"`
-	HookDenyReason string `json:"hookDenyReason,omitempty"`
-	RPath          string `json:"rPath,omitempty"`
-	Site           string `json:"site,omitempty"`
-	Project        string `json:"project,omitempty"`
-	Recovered      string `json:"recovered,omitempty"`
-	SessionID      string `json:"sessionId,omitempty"`
+	Tool           string `json:"tool" jsonschema_description:"Name of the MCP tool call that failed. Required."`
+	HTTPStatus     int    `json:"httpStatus,omitempty" jsonschema_description:"HTTP status code of the failed call, if any (e.g. 401/403 classify as auth)."`
+	ErrorMessage   string `json:"errorMessage,omitempty" jsonschema_description:"Error message text from the failed call, used for keyword-based classification (auth/workflow/transport)."`
+	HookDenyReason string `json:"hookDenyReason,omitempty" jsonschema_description:"Deny reason text from a hook that blocked the call, if the failure was a hook block (classifies as hook-block or schema based on the guardrail code it contains)."`
+	RPath          string `json:"rPath,omitempty" jsonschema_description:"Guardrail/rule code associated with the failure (e.g. \"R22\" classifies as link-verification)."`
+	Site           string `json:"site,omitempty" jsonschema_description:"Site identifier (e.g. Jira host) associated with the failed call, recorded on the failure entry."`
+	Project        string `json:"project,omitempty" jsonschema_description:"Project identifier associated with the failed call, recorded on the failure entry."`
+	Recovered      string `json:"recovered,omitempty" jsonschema_description:"Description of how the failure was recovered from, if it was, recorded on the failure entry."`
+	SessionID      string `json:"sessionId,omitempty" jsonschema_description:"Claude Code session ID. Explicit override for session-ID resolution (tried before the on-disk marker and env var)."`
 }
 
 // MCPFailureRecordOut is the output for the "mcp_failure_record" tool.

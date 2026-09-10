@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"strconv"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
+	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
@@ -98,7 +100,7 @@ var scaffoldManifest = []scaffoldManifestEntry{
 
 // ScaffoldCIIn is the input for the scaffold_ci tool.
 type ScaffoldCIIn struct {
-	Force bool `json:"force"`
+	Force bool `json:"force" jsonschema_description:"Overwrite existing CI scripts and workflow files that already exist in the project, instead of skipping them."`
 }
 
 // ScaffoldFileReport describes the result for a single manifest entry.
@@ -112,8 +114,9 @@ type ScaffoldFileReport struct {
 
 // ScaffoldCIOut is the output for the scaffold_ci tool.
 type ScaffoldCIOut struct {
-	Warnings []string             `json:"warnings"`
-	Files    []ScaffoldFileReport `json:"files"`
+	Warnings   []string             `json:"warnings"`
+	Files      []ScaffoldFileReport `json:"files"`
+	Protection RulesetCheckResult   `json:"protection"`
 }
 
 // scaffoldExtractVersion extracts a version number from content using the
@@ -240,16 +243,96 @@ func scaffoldCI(root string, force bool) (ScaffoldCIOut, error) {
 	}
 
 	return ScaffoldCIOut{
-		Warnings: warnings,
-		Files:    files,
+		Warnings:   warnings,
+		Files:      files,
+		Protection: checkBranchProtection(root, execx.Run),
 	}, nil
+}
+
+// --- branch protection check ---
+
+// scaffoldExecFunc matches execx.Run's signature, letting tests substitute a
+// fake for the real git/gh binaries.
+type scaffoldExecFunc func(name string, args []string, opts execx.Options) (string, error)
+
+// RulesetCheckResult reports whatever branch protection exists on the
+// project's default branch. It is purely informational: whether protection
+// requires a bypass depends on the repo's configured changelogMethod
+// ("push" is blocked by protection; "pr" and "skip" are not), which this
+// check does not have access to.
+type RulesetCheckResult struct {
+	HasRulesets    bool     `json:"hasRulesets"`
+	HasClassicProt bool     `json:"hasClassicProtection"`
+	DefaultBranch  string   `json:"defaultBranch"`
+	RulesetNames   []string `json:"rulesetNames"`
+	Notes          []string `json:"notes"`
+}
+
+// checkBranchProtection queries GitHub (via `gh api`) for rulesets and
+// classic branch protection on dir's default branch. Every failure mode (no
+// git remote, gh not installed/authenticated, non-GitHub remote, API error)
+// degrades to a result with an explanatory note — this check must never
+// fail scaffold_ci itself.
+func checkBranchProtection(dir string, execRun scaffoldExecFunc) RulesetCheckResult {
+	result := RulesetCheckResult{
+		Notes:        []string{},
+		RulesetNames: []string{},
+	}
+
+	originURL, err := execRun("git", []string{"remote", "get-url", "origin"}, execx.Options{Dir: dir})
+	if err != nil || originURL == "" {
+		result.Notes = append(result.Notes, "no git remote 'origin' found — skipping branch protection check")
+		return result
+	}
+	owner, repo, err := ghx.ParseRemoteOwner(originURL)
+	if err != nil {
+		result.Notes = append(result.Notes, fmt.Sprintf("could not parse owner/repo from remote %q: %s", originURL, err.Error()))
+		return result
+	}
+
+	defaultBranch, err := execRun("gh", []string{"api", fmt.Sprintf("repos/%s/%s", owner, repo), "--jq", ".default_branch"}, execx.Options{Dir: dir})
+	if err != nil || defaultBranch == "" {
+		result.Notes = append(result.Notes, "could not reach GitHub via gh api (is gh installed and authenticated?) — skipping branch protection check")
+		return result
+	}
+	result.DefaultBranch = defaultBranch
+
+	rulesetsRaw, err := execRun("gh", []string{"api", fmt.Sprintf("repos/%s/%s/rulesets", owner, repo)}, execx.Options{Dir: dir})
+	if err != nil {
+		result.Notes = append(result.Notes, "could not query repository rulesets (insufficient gh permissions, or none configured)")
+	} else {
+		var rulesets []struct {
+			Name string `json:"name"`
+		}
+		if jsonErr := json.Unmarshal([]byte(rulesetsRaw), &rulesets); jsonErr == nil {
+			for _, rs := range rulesets {
+				result.RulesetNames = append(result.RulesetNames, rs.Name)
+			}
+			result.HasRulesets = len(rulesets) > 0
+		} else {
+			result.Notes = append(result.Notes, fmt.Sprintf("could not parse rulesets response: %s", jsonErr.Error()))
+		}
+	}
+
+	_, protErr := execRun("gh", []string{"api", fmt.Sprintf("repos/%s/%s/branches/%s/protection", owner, repo, defaultBranch)}, execx.Options{Dir: dir})
+	result.HasClassicProt = protErr == nil
+
+	if result.HasRulesets || result.HasClassicProt {
+		result.Notes = append(result.Notes, fmt.Sprintf(
+			"branch protection is active on %q — tagging and GitHub Releases work normally; if changelogMethod is \"push\", the direct push will be blocked — use \"pr\" or \"skip\" instead",
+			result.DefaultBranch))
+	} else {
+		result.Notes = append(result.Notes, fmt.Sprintf("no branch protection detected on %q", result.DefaultBranch))
+	}
+
+	return result
 }
 
 // --- verify_tag_ancestry ---
 
 // VerifyTagAncestryIn is the input for the verify_tag_ancestry tool.
 type VerifyTagAncestryIn struct {
-	Tag string `json:"tag"`
+	Tag string `json:"tag" jsonschema_description:"Git tag to verify is an ancestor of HEAD."`
 }
 
 // VerifyTagAncestryOut is the output for the verify_tag_ancestry tool.

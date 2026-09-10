@@ -124,6 +124,8 @@ func TestVersionPrepare_BumpBaseFromRemoteTag(t *testing.T) {
 	gitTag(t, dir, "v1.2.0")
 	gitCommit(t, dir, "post-tag")
 
+	writeVersionConfig(t, dir, `{"tag":{"enabled":true,"prefix":"v"},"versionFile":{"enabled":true,"path":"package.json","fileType":"package.json"}}`)
+
 	config.Quiet = true
 	defer func() { config.Quiet = false }()
 
@@ -156,6 +158,8 @@ func TestVersionPrepare_DivergenceWarning(t *testing.T) {
 	gitCommit(t, dir, "init-pkg")
 	gitTag(t, dir, "v2.0.0")
 	gitCommit(t, dir, "post-tag")
+
+	writeVersionConfig(t, dir, `{"tag":{"enabled":true,"prefix":"v"},"versionFile":{"enabled":true,"path":"package.json","fileType":"package.json"}}`)
 
 	config.Quiet = true
 	defer func() { config.Quiet = false }()
@@ -196,7 +200,7 @@ func TestVersionPrepare_ConfigPresent(t *testing.T) {
 	writePackageJSON(t, dir, "1.0.0")
 	gitCommit(t, dir, "init-pkg")
 
-	writeVersionConfig(t, dir, `{"mode":"file","versionFile":"package.json","fileType":"package.json","tagPrefix":"v","changelog":true}`)
+	writeVersionConfig(t, dir, `{"versionFile":{"enabled":true,"path":"package.json","fileType":"package.json"},"tag":{"enabled":false,"prefix":"v"},"changelog":{"enabled":true}}`)
 
 	config.Quiet = true
 	defer func() { config.Quiet = false }()
@@ -212,11 +216,11 @@ func TestVersionPrepare_ConfigPresent(t *testing.T) {
 	if out.VersionConfig == nil {
 		t.Fatal("expected VersionConfig to be set")
 	}
-	if out.VersionConfig.Mode != "file" {
-		t.Errorf("versionConfig.Mode=%s, want file", out.VersionConfig.Mode)
+	if !out.VersionConfig.VersionFile.Enabled {
+		t.Error("versionConfig.VersionFile.Enabled=false, want true")
 	}
-	if out.VersionConfig.TagPrefix != "v" {
-		t.Errorf("versionConfig.TagPrefix=%s, want v", out.VersionConfig.TagPrefix)
+	if out.VersionConfig.Tag.Prefix != "v" {
+		t.Errorf("versionConfig.Tag.Prefix=%s, want v", out.VersionConfig.Tag.Prefix)
 	}
 	if out.ProposedConfig != nil {
 		t.Error("expected ProposedConfig to be nil when config is present")
@@ -246,11 +250,15 @@ func TestVersionPrepare_ConfigMissing_ProposedConfig(t *testing.T) {
 	if out.ProposedConfig == nil {
 		t.Fatal("expected ProposedConfig to be set")
 	}
-	if mode, ok := out.ProposedConfig["mode"].(string); !ok || mode != "file" {
-		t.Errorf("proposedConfig.mode=%v, want file", out.ProposedConfig["mode"])
+	vfRaw, ok := out.ProposedConfig["versionFile"].(map[string]any)
+	if !ok {
+		t.Fatalf("proposedConfig.versionFile=%v, want map", out.ProposedConfig["versionFile"])
 	}
-	if vf, ok := out.ProposedConfig["versionFile"].(string); !ok || vf != "package.json" {
-		t.Errorf("proposedConfig.versionFile=%v, want package.json", out.ProposedConfig["versionFile"])
+	if enabled, ok := vfRaw["enabled"].(bool); !ok || !enabled {
+		t.Errorf("proposedConfig.versionFile.enabled=%v, want true", vfRaw["enabled"])
+	}
+	if path, ok := vfRaw["path"].(string); !ok || path != "package.json" {
+		t.Errorf("proposedConfig.versionFile.path=%v, want package.json", vfRaw["path"])
 	}
 }
 
@@ -266,7 +274,7 @@ func TestVersionPrepare_ModeTag_VersionFromTag(t *testing.T) {
 	gitTag(t, dir, "v1.2.0")
 	gitCommit(t, dir, "post-tag")
 
-	writeVersionConfig(t, dir, `{"mode":"tag","tagPrefix":"v"}`)
+	writeVersionConfig(t, dir, `{"tag":{"enabled":true,"prefix":"v"}}`)
 
 	config.Quiet = true
 	defer func() { config.Quiet = false }()
@@ -316,7 +324,7 @@ func TestVersionPrepare_ModeTag_NoTags(t *testing.T) {
 	writePackageJSON(t, dir, "1.0.0")
 	gitCommit(t, dir, "init-pkg")
 
-	writeVersionConfig(t, dir, `{"mode":"tag","tagPrefix":"v"}`)
+	writeVersionConfig(t, dir, `{"tag":{"enabled":true,"prefix":"v"}}`)
 
 	config.Quiet = true
 	defer func() { config.Quiet = false }()
@@ -371,7 +379,7 @@ func TestVersionPrepare_ModeTag_IgnoresVersionFile(t *testing.T) {
 	gitTag(t, dir, "v1.0.0")
 	gitCommit(t, dir, "post-tag")
 
-	writeVersionConfig(t, dir, `{"mode":"tag","tagPrefix":"v"}`)
+	writeVersionConfig(t, dir, `{"tag":{"enabled":true,"prefix":"v"}}`)
 
 	config.Quiet = true
 	defer func() { config.Quiet = false }()
@@ -472,5 +480,33 @@ func TestVersionPrepare_ExistingRCs(t *testing.T) {
 	}
 	if len(rcs) != 2 {
 		t.Errorf("expected 2 existing RCs for 1.3.0, got %d: %v", len(rcs), rcs)
+	}
+}
+
+// TestVersionSuggestedPreRelease covers all three PreReleasePolicy values
+// against both existing-RCs states. Pure unit test, no filesystem or git
+// fixtures — versionSuggestedPreRelease is a pure function.
+func TestVersionSuggestedPreRelease(t *testing.T) {
+	cases := []struct {
+		name           string
+		policy         string
+		hasExistingRCs bool
+		want           string
+	}{
+		{"always-rc suggests RC with no existing RCs", "always-rc", false, "rc"},
+		{"always-rc suggests RC with existing RCs", "always-rc", true, "rc"},
+		{"continue-rc suggests RC only when existing RCs found", "continue-rc", true, "rc"},
+		{"continue-rc suggests nothing with no existing RCs", "continue-rc", false, ""},
+		{"never suggests nothing with existing RCs", "never", true, ""},
+		{"never suggests nothing with no existing RCs", "never", false, ""},
+		{"unrecognized policy falls through like never", "bogus", true, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := versionSuggestedPreRelease(tc.policy, tc.hasExistingRCs)
+			if got != tc.want {
+				t.Errorf("versionSuggestedPreRelease(%q, %v) = %q, want %q", tc.policy, tc.hasExistingRCs, got, tc.want)
+			}
+		})
 	}
 }

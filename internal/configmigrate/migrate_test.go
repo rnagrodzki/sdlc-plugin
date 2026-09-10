@@ -143,11 +143,15 @@ func TestMigrate_ProjectV4ToV5(t *testing.T) {
 		t.Error("v5 config.json must not have schemaVersion")
 	}
 	ver := config["version"].(map[string]any)
-	if ver["mode"] != "file" {
-		t.Error("version.mode should be 'file'")
+	vf, ok := ver["versionFile"].(map[string]any)
+	if !ok {
+		t.Fatalf("version.versionFile should be an object, got %#v", ver["versionFile"])
 	}
-	if ver["versionFile"] != "package.json" {
-		t.Error("version.versionFile should be 'package.json'")
+	if vf["enabled"] != true {
+		t.Error("version.versionFile.enabled should be true")
+	}
+	if vf["path"] != "package.json" {
+		t.Error("version.versionFile.path should be 'package.json'")
 	}
 	jira := config["jira"].(map[string]any)
 	if jira["defaultProject"] != "PROJ" {
@@ -183,8 +187,18 @@ func TestMigrate_ProjectV0ToV5(t *testing.T) {
 		t.Error("$schema from legacy should be stripped during relocation")
 	}
 	ver := config["version"].(map[string]any)
-	if ver["mode"] != "tag" {
-		t.Error("version.mode should be 'tag'")
+	tag, ok := ver["tag"].(map[string]any)
+	if !ok {
+		t.Fatalf("version.tag should be an object, got %#v", ver["tag"])
+	}
+	if tag["enabled"] != true {
+		t.Error("version.tag.enabled should be true")
+	}
+	if tag["prefix"] != "v" {
+		t.Error("version.tag.prefix should be 'v'")
+	}
+	if _, has := ver["versionFile"]; has {
+		t.Error("version.versionFile should be absent — old mode 'tag' maps to tag-only")
 	}
 }
 
@@ -482,11 +496,21 @@ func TestMigrate_LegacyIngestion_VersionAndJira(t *testing.T) {
 	}
 
 	ver := config["version"].(map[string]any)
-	if ver["mode"] != "file" {
-		t.Error("version.mode should be 'file'")
+	vf, ok := ver["versionFile"].(map[string]any)
+	if !ok {
+		t.Fatalf("version.versionFile should be an object, got %#v", ver["versionFile"])
 	}
-	if ver["fileType"] != "package.json" {
-		t.Error("version.fileType should be 'package.json'")
+	if vf["enabled"] != true {
+		t.Error("version.versionFile.enabled should be true")
+	}
+	if vf["path"] != "package.json" {
+		t.Error("version.versionFile.path should be 'package.json'")
+	}
+	if vf["fileType"] != "package.json" {
+		t.Error("version.versionFile.fileType should be 'package.json'")
+	}
+	if _, has := ver["tag"]; has {
+		t.Error("version.tag should be absent — old mode 'file' maps to versionFile-only")
 	}
 
 	jira := config["jira"].(map[string]any)
