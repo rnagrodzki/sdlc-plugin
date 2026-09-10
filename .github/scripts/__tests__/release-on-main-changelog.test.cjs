@@ -524,7 +524,7 @@ describe('runRelease — per-path independence', () => {
     assert.equal(tagSha, mergeSha, 'tag must point to mergeSha, not local bump commit HEAD');
   });
 
-  test('RC release skips phase 2 entirely and uses --prerelease', () => {
+  test('RC release skips phase 2 entirely and skips GitHub Release creation', () => {
     const dir = mkTmpDir('release-rc-');
     initGitRepo(dir);
     execSync('git remote add origin .', { cwd: dir });
@@ -557,8 +557,9 @@ describe('runRelease — per-path independence', () => {
     assert.equal(pathStatus.changelog, 'skipped');
     assert.equal(pathStatus.tag, 'ok');
 
-    // Verify --prerelease flag used
-    const ghLog = fs.readFileSync(ghLogPath, 'utf8');
-    assert.match(ghLog, /--prerelease/, 'RC release must use --prerelease flag');
+    // Tag pushed, but no GitHub Release created for RC
+    const tagSha = execSync('git rev-parse "v1.0.1-rc1^{commit}"', { cwd: dir, encoding: 'utf8' }).trim();
+    assert.equal(tagSha, mergeSha, 'RC tag must still be created and point to mergeSha');
+    assert.ok(!fs.existsSync(ghLogPath), 'gh should not be invoked at all for an RC release');
   });
 });

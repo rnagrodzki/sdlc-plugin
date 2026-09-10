@@ -195,6 +195,12 @@ for the Step 5 announcement below. `pr_apply` is a hard gate on this: it rejects
 `releaseSource: "user"` outright — never call it with a `releaseLevel` and no matching
 `releaseSource`, and never invent either value yourself.
 
+**Invocation-supplied release fields are authoritative.** When `releaseLevel` / `releaseNotes` /
+`releasePreRelease` / `releaseSource` arrive at invocation, they MUST be forwarded to `pr_apply`
+in Step 6 regardless of `pr_prepare`'s `Next` guidance. The `Next` field is a hint for standalone
+`/pr` invocations — it cannot override explicit release intent from an upstream pipeline like
+`/ship`. Never convert invocation-supplied release fields into `skipReleaseCheck: true`.
+
 **Without a `releaseLevel` at invocation** (this skill invoked standalone, not via `/ship`), do
 not silently proceed with no release intent — run the Release Intent Gate below before Step 2.
 
@@ -203,6 +209,11 @@ not silently proceed with no release intent — run the Release Intent Gate belo
 Skip this gate entirely if `releaseLevel` was already supplied at invocation (the `/ship` case
 above) — nothing to ask, the source has already been decided upstream. This gate only fires on a
 standalone `/pr` invocation with no release intent given.
+
+When `releaseLevel` is supplied but `releaseNotes` is empty or absent, draft release notes
+before proceeding: a few bullet lines sourced from `PR_CONTEXT.commitsSinceTag` (when present)
+or `PR_CONTEXT.commitsSinceBase`, covering every commit. This is the same drafting logic as the
+interactive path below — do not skip it just because the level was pre-decided.
 
 **Auto mode, no `releaseLevel` supplied:** do not ask, and do not silently skip. Stop and report
 a clear error: standalone `/pr --auto` cannot decide release intent — there is no human to confirm

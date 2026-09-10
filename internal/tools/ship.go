@@ -333,8 +333,12 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 	if shipCfg == nil {
 		shipCfg = map[string]any{}
 	}
+	versionCfg, _ := config.ReadSection(cfgRoot, "version")
+	if versionCfg == nil {
+		versionCfg = map[string]any{}
+	}
 
-	merged, sources := mergeShipFlags(cfgRoot, in, shipCfg)
+	merged, sources := mergeShipFlags(in, shipCfg, versionCfg)
 
 	errors := []string{}
 	warnings := []string{}
@@ -528,7 +532,7 @@ func stepsFieldLabel(source string) string {
 // CLI flags win when explicitly set, otherwise config, otherwise
 // shipmeta.ShipBuiltInDefaults. Returns the merged flag map plus, per key,
 // which precedence tier supplied the value.
-func mergeShipFlags(cfgRoot string, in ShipPrepareIn, cfg map[string]any) (map[string]any, map[string]string) {
+func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]any) (map[string]any, map[string]string) {
 	merged := map[string]any{}
 	sources := map[string]string{}
 
@@ -580,10 +584,31 @@ func mergeShipFlags(cfgRoot string, in ShipPrepareIn, cfg map[string]any) (map[s
 
 	// version.preRelease overrides a non-cli bump when it is a valid label.
 	if sources["bump"] != "cli" {
-		if versionCfg, _ := config.ReadSection(cfgRoot, "version"); versionCfg != nil {
-			if pr, ok := versionCfg["preRelease"].(string); ok && preReleaseLabelRe.MatchString(pr) {
-				merged["bump"] = pr
-				sources["bump"] = "config (version.preRelease)"
+		if pr, ok := versionCfg["preRelease"].(string); ok && preReleaseLabelRe.MatchString(pr) {
+			merged["bump"] = pr
+			sources["bump"] = "config (version.preRelease)"
+		} else if policy, _ := versionCfg["preReleasePolicy"].(string); policy == "always-rc" {
+			// version.preReleasePolicy: "always-rc" overrides bump to "rc" when no explicit preRelease is set.
+			if b, _ := merged["bump"].(string); b == "major" || b == "minor" || b == "patch" {
+				merged["bump"] = "rc"
+				sources["bump"] = "config (version.preReleasePolicy)"
+			}
+		}
+	}
+
+	// Enforce preReleasePolicy: "always-rc" at ship time.
+	// When preReleasePolicy is set to "always-rc", the final bump must result in an RC.
+	if policy, _ := versionCfg["preReleasePolicy"].(string); policy == "always-rc" {
+		bump, _ := merged["bump"].(string)
+		// Valid RC results: "rc" or a valid preRelease label (which implies RC)
+		isRC := bump == "rc" || (preReleaseLabelRe.MatchString(bump) && bump != "major" && bump != "minor" && bump != "patch")
+		if !isRC {
+			// Enforce by overriding to "rc" to ensure preReleasePolicy is not merely informational
+			merged["bump"] = "rc"
+			if sources["bump"] == "cli" {
+				sources["bump"] = "config (version.preReleasePolicy enforced over cli)"
+			} else {
+				sources["bump"] = "config (version.preReleasePolicy)"
 			}
 		}
 	}

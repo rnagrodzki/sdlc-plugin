@@ -163,6 +163,7 @@
     ]
   },
   "version": {
+    "preRelease": "rc",
     "preReleasePolicy": "always-rc",
     "method": "push",
     "tag": {

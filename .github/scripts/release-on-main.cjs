@@ -719,15 +719,18 @@ function runRelease({ repoRoot, config, newVersion, newTag, isRCRelease, notes, 
         execOrThrow(`git push origin "refs/tags/${newTag}"`, { cwd: repoRoot });
         console.log(`Tag ${newTag} created at ${tagTarget.slice(0, 8)} and pushed.`);
 
-        // Create GitHub Release.
-        const releaseFlags = isRCRelease ? ' --prerelease' : '';
-        withTmpFile(notes || `${isRCRelease ? 'Pre-release' : 'Release'} ${newTag}`, (tmpPath) => {
-          execOrThrow(
-            `gh release create "${newTag}" --title "${newTag}" --notes-file "${tmpPath}"${releaseFlags}`,
-            { cwd: repoRoot }
-          );
-        });
-        console.log(`GitHub ${isRCRelease ? 'pre-release' : 'release'} created for ${newTag}.`);
+        if (!isRCRelease) {
+          // Create GitHub Release only for final releases.
+          withTmpFile(notes || `Release ${newTag}`, (tmpPath) => {
+            execOrThrow(
+              `gh release create "${newTag}" --title "${newTag}" --notes-file "${tmpPath}"`,
+              { cwd: repoRoot }
+            );
+          });
+          console.log(`GitHub release created for ${newTag}.`);
+        } else {
+          console.log(`RC release: skipping GitHub Release creation for ${newTag}.`);
+        }
         pathStatus.tag = 'ok';
       }
     } catch (err) {

@@ -41,8 +41,22 @@ jobs:
           tag=$(git tag --points-at HEAD | head -n1)
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-      - name: Dispatch release build
+      - name: Check if tag is a pre-release
+        id: prerelease
         if: steps.tag.outputs.tag != ''
+        run: |
+          tag="${{ steps.tag.outputs.tag }}"
+          # Strip leading 'v' and M.M.P core — anything left means pre-release
+          remainder=$(echo "$tag" | sed -E 's/^v?[0-9]+\.[0-9]+\.[0-9]+//')
+          if [ -n "$remainder" ]; then
+            echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "Tag $tag is a pre-release — skipping binary build dispatch."
+          else
+            echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Dispatch release build
+        if: steps.tag.outputs.tag != '' && steps.prerelease.outputs.is_prerelease != 'true'
         run: gh workflow run release.yml --ref "${{ steps.tag.outputs.tag }}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

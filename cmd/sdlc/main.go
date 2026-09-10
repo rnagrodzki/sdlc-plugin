@@ -13,10 +13,11 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
 )
 
-// pluginVersion mirrors the "version" field in plugins/sdlc/.claude-plugin/plugin.json.
-// Keep these in sync manually — TestPluginVersionMatchesManifest fails the
-// build if they drift.
-const pluginVersion = "0.0.2"
+// pluginVersion is injected via ldflags at build time.
+// Defaults to "0.0.2" when not set (e.g., during development or manual builds).
+// Must be kept in sync with the "version" field in plugins/sdlc/.claude-plugin/plugin.json.
+// TestPluginVersionMatchesManifest verifies they match.
+var pluginVersion = "0.0.2"
 
 func main() {
 	if len(os.Args) < 2 {

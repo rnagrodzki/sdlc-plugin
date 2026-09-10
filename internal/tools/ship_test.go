@@ -1032,6 +1032,62 @@ func TestShipGC_AutoMigratesStaleConfig(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// mergeShipFlags tests
+// ---------------------------------------------------------------------------
+
+// TestMergeShipFlags_PreReleasePolicyAlwaysRC verifies that
+// preReleasePolicy: "always-rc" in versionCfg overrides a non-cli bump
+// (patch/minor/major) to "rc" when no explicit preRelease is set, and records
+// the source as "config (version.preReleasePolicy)".
+func TestMergeShipFlags_PreReleasePolicyAlwaysRC(t *testing.T) {
+	versionCfg := map[string]any{"preReleasePolicy": "always-rc"}
+	merged, sources := mergeShipFlags(ShipPrepareIn{}, map[string]any{}, versionCfg)
+
+	if b, ok := merged["bump"].(string); !ok || b != "rc" {
+		t.Errorf("Flags[bump] = %v, want %q (overridden by preReleasePolicy)", merged["bump"], "rc")
+	}
+	if src := sources["bump"]; src != "config (version.preReleasePolicy)" {
+		t.Errorf("Sources[bump] = %q, want %q", src, "config (version.preReleasePolicy)")
+	}
+}
+
+// TestMergeShipFlags_PreReleasePolicyContinueRC_NoOverride verifies that
+// preReleasePolicy: "continue-rc" does NOT override bump at ship time
+// (continue-rc enforcement is deferred to pr_prepare diagnostics only).
+func TestMergeShipFlags_PreReleasePolicyContinueRC_NoOverride(t *testing.T) {
+	versionCfg := map[string]any{"preReleasePolicy": "continue-rc"}
+	merged, sources := mergeShipFlags(ShipPrepareIn{}, map[string]any{}, versionCfg)
+
+	// Should resolve to the default bump (patch), not rc.
+	if b, ok := merged["bump"].(string); !ok || b != "patch" {
+		t.Errorf("Flags[bump] = %v, want %q (continue-rc must not override)", merged["bump"], "patch")
+	}
+	if src := sources["bump"]; src != "default" {
+		t.Errorf("Sources[bump] = %q, want %q (policy did not fire)", src, "default")
+	}
+}
+
+// TestMergeShipFlags_ExplicitPreReleaseTakesPrecedenceOverPolicy verifies
+// that an explicit version.preRelease field takes precedence over
+// version.preReleasePolicy, even when both are set.
+func TestMergeShipFlags_ExplicitPreReleaseTakesPrecedenceOverPolicy(t *testing.T) {
+	versionCfg := map[string]any{
+		"preRelease":       "rc",
+		"preReleasePolicy": "always-rc",
+	}
+	merged, sources := mergeShipFlags(ShipPrepareIn{}, map[string]any{}, versionCfg)
+
+	if b, ok := merged["bump"].(string); !ok || b != "rc" {
+		t.Errorf("Flags[bump] = %v, want %q", merged["bump"], "rc")
+	}
+	// Explicit preRelease takes precedence over policy, so source should be
+	// "config (version.preRelease)", not "config (version.preReleasePolicy)".
+	if src := sources["bump"]; src != "config (version.preRelease)" {
+		t.Errorf("Sources[bump] = %q, want %q (preRelease must take precedence over policy)", src, "config (version.preRelease)")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // ship_verify_side_effect tests
 // ---------------------------------------------------------------------------
 
