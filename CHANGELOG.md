@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.0.2] - 2026-09-10
+
+## Added
+- Next-step guidance to ship prepare and verify side-effect outputs
+
+## Changed
+- Moved release-intent ownership from version step into pr step
+- Consolidated version diagnostics and schema handling into pr step
+
+## Removed
+- Version MCP tools and CLI registration
+- Standalone version skill (functionality absorbed into pr step)
+
+## Fixed
+- MCP stdio startup: migrated off broken mark3labs/mcp-go to the official SDK
+- GoReleaser build dispatch timing after release-on-main tags
+
 ## [0.0.1] - 2026-09-10
 
 - Added a release-intent gate to `pr_apply`, requiring an explicit `releaseLevel` or an acknowledged `skipReleaseCheck`, keyed by `releaseSource` (`user`/`config`/`pipeline`) so unattended runs can't claim a human decided.
