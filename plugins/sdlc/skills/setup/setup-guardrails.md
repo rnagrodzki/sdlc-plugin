@@ -56,6 +56,9 @@ guardrail when its evidence condition is actually observed.
 | `dry` | quality | warning | Tasks must not duplicate logic that exists elsewhere — reuse existing functions or extract shared utilities. |
 | `kiss` | quality | warning | Tasks must prefer the simplest design that satisfies requirements — avoid unnecessary abstractions and over-engineering. |
 | `prefer-mcp-over-cli` | process | warning | Plans must route SDLC-process steps (setup, version, ship, review, commit, PR, jira) through this project's MCP tools rather than raw CLI invocations. Where an MCP tool covers the step, do not add a task that shells out for the same result. Batch what the MCP surface returns in one call rather than planning multiple round trips between harness and model. |
+| `mcp-error-has-suggestion` | mcp | error | Every new MCP error return path where recovery is possible must populate the Suggestion field on DomainError/InfraError/DataError. Raw error messages without structured recovery hints force the LLM to parse free-text. |
+| `mcp-output-drives-behavior` | mcp | warning | Tool output structs (*Out) should include a Next string field (json:"next") with an exact per-outcome hint guiding the LLM's next action. Outputs that return data without behavioral guidance leave the LLM to guess the next step. |
+| `mcp-parameter-documented` | mcp | error | Every exported field on an *In struct must have a jsonschema_description tag. Fields representing closed sets (validated by switch/const) must additionally have a jsonschema enum tag. Undocumented parameters create ambiguity for the LLM. |
 
 **Planning-discipline (this sub-flow only — plan-target; never proposed by setup-execution-guardrails.md):**
 

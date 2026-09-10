@@ -48,6 +48,8 @@ descriptions instead of the plan descriptions:
 | `dry` | quality | warning | Do not duplicate logic. If the same behavior exists elsewhere, reuse it or extract a shared function. |
 | `kiss` | quality | warning | Prefer the simplest implementation that satisfies the requirements. Avoid unnecessary abstractions and over-engineered solutions. |
 | `prefer-mcp-over-cli` | process | warning | Do not shell out via CLI for a step this project's MCP tools already cover (setup, version, ship, review, commit, PR, jira). Call the MCP tool instead, and batch multiple checks into as few calls as possible — every extra CLI round trip between harness and model slows execution and fragments feedback. |
+| `mcp-schema-tags-required` | mcp | error | New or modified *In structs must have jsonschema_description tags on all exported fields. Verify by checking that mcp.WithInputSchema[StructName]() produces non-empty description for every property in the generated schema. |
+| `skill-tool-param-sync` | mcp | warning | When a SKILL.md dispatches an MCP tool, every parameter name in the dispatch args must match a json tag on the tool's *In struct. Mismatched parameter names silently drop values and produce incorrect tool behavior. |
 
 ## Workflow
 
