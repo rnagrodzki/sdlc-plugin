@@ -158,6 +158,8 @@ type ShipPrepareOut struct {
 	// when the config was already current — no backup was written and no
 	// migration ran.
 	Migration *MigrationReport `json:"migration,omitempty"`
+
+	Next string `json:"next"`
 }
 
 // MigrationReport describes an inline config auto-migration performed by
@@ -170,6 +172,22 @@ type MigrationReport struct {
 	// BackupPath is the .bak file written before migrating config.json in
 	// place.
 	BackupPath string `json:"backupPath"`
+}
+
+// shipPrepareNext derives next-step guidance for a ShipPrepareOut, mirroring
+// prPrepareNext's pattern. Keyed on outcome: errors (fix and retry), gc
+// (complete, no follow-on), or success (proceed to ship_state).
+func shipPrepareNext(out ShipPrepareOut) string {
+	if out.Action == "gc" {
+		if len(out.Errors) > 0 {
+			return "GC failed. Fix the errors above and retry ship_prepare with gc:true."
+		}
+		return "GC complete. No further action needed."
+	}
+	if len(out.Errors) > 0 {
+		return "Fix the errors above, then call ship_prepare again."
+	}
+	return "Confirm release level, then call ship_state with action:\"begin-step\" for the first step in flags.steps."
 }
 
 // ShipVerifySideEffectIn is the input for the ship_verify_side_effect tool.
@@ -187,6 +205,7 @@ type ShipVerifySideEffectOut struct {
 	Landed     bool    `json:"landed"`
 	Expected   *string `json:"expected,omitempty"`
 	Reason     string  `json:"reason,omitempty"`
+	Next       string  `json:"next"`
 }
 
 // MarshalJSON branches on which of the two shapes ship.js's verifySideEffect
@@ -208,14 +227,16 @@ func (o ShipVerifySideEffectOut) MarshalJSON() ([]byte, error) {
 			Step   string `json:"step"`
 			Landed bool   `json:"landed"`
 			Reason string `json:"reason"`
-		}{Step: o.Step, Landed: o.Landed, Reason: o.Reason})
+			Next   string `json:"next"`
+		}{Step: o.Step, Landed: o.Landed, Reason: o.Reason, Next: o.Next})
 	}
 	return json.Marshal(struct {
 		Step       string  `json:"step"`
 		SideEffect string  `json:"sideEffect"`
 		Landed     bool    `json:"landed"`
 		Expected   *string `json:"expected"`
-	}{Step: o.Step, SideEffect: o.SideEffect, Landed: o.Landed, Expected: o.Expected})
+		Next       string  `json:"next"`
+	}{Step: o.Step, SideEffect: o.SideEffect, Landed: o.Landed, Expected: o.Expected, Next: o.Next})
 }
 
 // ---------------------------------------------------------------------------
@@ -285,13 +306,15 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 	if !in.SkipConfigCheck {
 		changes, backupPath, err := configmigrate.MigrateWithBackup(cfgRoot)
 		if err != nil {
-			return ShipPrepareOut{
+			out := ShipPrepareOut{
 				Errors:        []string{fmt.Sprintf("config-version: %s", err.Error())},
 				Warnings:      []string{},
 				Flags:         map[string]any{},
 				Sources:       map[string]string{},
 				PrunedOrphans: []string{},
-			}, nil
+			}
+			out.Next = shipPrepareNext(out)
+			return out, nil
 		}
 		if backupPath != "" {
 			migrationReport = &MigrationReport{Changes: changes, BackupPath: backupPath}
@@ -412,6 +435,7 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 	}
 
 	if len(errors) > 0 {
+		out.Next = shipPrepareNext(out)
 		return out, nil
 	}
 
@@ -451,6 +475,7 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 	out.StateFile = st.Path
 	out.PrunedOrphans = pruned
 	out.PipelineDisplay = pipeline.PipelineTable(configStepsFromScaffold(scaffold))
+	out.Next = shipPrepareNext(out)
 	return out, nil
 }
 
@@ -771,12 +796,14 @@ func shipGC(cfgRoot, activeRoot string, in ShipPrepareIn, migrationReport *Migra
 		TempDir:      os.Getenv("SDLC_EXPLORE_TMPDIR_OVERRIDE"),
 	})
 	if err != nil {
-		return ShipPrepareOut{
+		out := ShipPrepareOut{
 			Action:    "gc",
 			Errors:    []string{fmt.Sprintf("gc failed: %s", err.Error())},
 			Warnings:  []string{},
 			Migration: migrationReport,
 		}
+		out.Next = shipPrepareNext(out)
+		return out
 	}
 
 	report := &ShipGCReport{
@@ -788,13 +815,15 @@ func shipGC(cfgRoot, activeRoot string, in ShipPrepareIn, migrationReport *Migra
 		ExploreTempdirs: ShipGCBucket{Deleted: nonNilStrings(rpt.TempdirsDeleted), Kept: nonNilStrings(rpt.TempdirsKept)},
 	}
 
-	return ShipPrepareOut{
+	out := ShipPrepareOut{
 		Action:    "gc",
 		Report:    report,
 		Errors:    []string{},
 		Warnings:  []string{},
 		Migration: migrationReport,
 	}
+	out.Next = shipPrepareNext(out)
+	return out
 }
 
 // resolveGCTTLDays resolves --ttl-days per ship.js: CLI value > config
@@ -1000,6 +1029,7 @@ func shipVerifySideEffect(root, activeRoot string, in ShipVerifySideEffectIn, no
 			Step:   in.Step,
 			Landed: true,
 			Reason: "no-side-effect",
+			Next:   "No side effect to verify. Proceed to the next pipeline step.",
 		}, nil
 	}
 
@@ -1052,11 +1082,17 @@ func shipVerifySideEffect(root, activeRoot string, in ShipVerifySideEffectIn, no
 		expected = &in.Expected
 	}
 
+	next := "Side effect not yet landed. Retry or investigate."
+	if landed {
+		next = "Side effect verified. Proceed to the next pipeline step."
+	}
+
 	return ShipVerifySideEffectOut{
 		Step:       in.Step,
 		SideEffect: kind,
 		Landed:     landed,
 		Expected:   expected,
+		Next:       next,
 	}, nil
 }
 

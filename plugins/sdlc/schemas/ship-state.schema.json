@@ -55,7 +55,7 @@
           "oneOf": [
             {
               "type": "string",
-              "enum": ["major", "minor", "patch"]
+              "pattern": "^(major|minor|patch|[a-z][a-z0-9]*)$"
             },
             {
               "type": "null"

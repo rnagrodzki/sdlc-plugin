@@ -132,13 +132,13 @@ type PRPrepareOut struct {
 	Tags                *VersionTagInfo             `json:"tags,omitempty"`
 	CommitsSinceTag     []string                    `json:"commitsSinceTag,omitempty"`
 	ConventionalSummary *VersionConventionalSummary `json:"conventionalSummary,omitempty"`
-	ChangelogExists     bool                        `json:"changelogExists,omitempty"`
+	ChangelogExists     bool                        `json:"changelogExists"`
 	Idempotency         *VersionIdempotency         `json:"idempotency,omitempty"`
 	VersionDivergence   *DivergenceInfo             `json:"versionDivergence,omitempty"`
 	ExistingRCs         map[string][]string         `json:"existingRCs,omitempty"`
 	VersionConfig       *VersionConfigInfo          `json:"versionConfig,omitempty"`
 	DefaultBranch       string                      `json:"defaultBranch,omitempty"`
-	OnDefaultBranch     bool                        `json:"onDefaultBranch,omitempty"`
+	OnDefaultBranch     bool                        `json:"onDefaultBranch"`
 
 	Next string `json:"next"`
 }
@@ -876,9 +876,9 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 		case "user", "config":
 			// valid provenance
 		case "":
-			return PRApplyOut{}, &mcpserver.DomainError{Msg: "releaseSource is required when releaseLevel is set (must be \"user\" or \"config\")"}
+			return PRApplyOut{}, &mcpserver.DomainError{Msg: "releaseSource is required when releaseLevel is set (must be \"user\" or \"config\")", Suggestion: "Supply releaseSource: \"user\" (explicit human choice) or \"config\" (project/ship config default)."}
 		default:
-			return PRApplyOut{}, &mcpserver.DomainError{Msg: fmt.Sprintf("releaseSource must be \"user\" or \"config\", got %q", in.ReleaseSource)}
+			return PRApplyOut{}, &mcpserver.DomainError{Msg: fmt.Sprintf("releaseSource must be \"user\" or \"config\", got %q", in.ReleaseSource), Suggestion: "Set releaseSource to \"user\" or \"config\"."}
 		}
 		// Auto mode: nothing here can verify whether "user" truly traces
 		// back to an explicit human decision made upstream (an
@@ -888,7 +888,7 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 		// project/ship-config default) is deterministic enough to trust
 		// unattended.
 		if in.AutoMode && in.ReleaseSource == "user" {
-			return PRApplyOut{}, &mcpserver.DomainError{Msg: "releaseLevel in auto mode must come from config, not LLM"}
+			return PRApplyOut{}, &mcpserver.DomainError{Msg: "releaseLevel in auto mode must come from config, not LLM", Suggestion: "Use releaseSource: \"config\" when autoMode is true. Only config-derived release levels are trusted in unattended mode."}
 		}
 	}
 

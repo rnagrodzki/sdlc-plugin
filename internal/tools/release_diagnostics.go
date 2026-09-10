@@ -27,7 +27,7 @@ type VersionSourceInfo struct {
 // SuggestedPreRelease is "rc" when the version config's PreReleasePolicy
 // says to suggest one for this bump target: "always-rc" always suggests
 // one, "continue-rc" (the default) only when Result already has one or
-// more existing RC tags (see VersionPrepareOut.ExistingRCs) — i.e. this
+// more existing RC tags (see PRPrepareOut.ExistingRCs) — i.e. this
 // bump target is already mid-RC-train, so the safer default is another RC
 // rather than a final release — and "never" never suggests one. Empty
 // when there's no suggestion either way.

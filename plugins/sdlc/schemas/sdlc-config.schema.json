@@ -12,7 +12,7 @@
         "preRelease": {
           "type": "string",
           "pattern": "^[a-z][a-z0-9]*$",
-          "description": "Default pre-release label applied when no explicit base bump or --pre is given."
+          "description": "Default pre-release label applied when no explicit base bump is given."
         },
         "preReleasePolicy": {
           "type": "string",
