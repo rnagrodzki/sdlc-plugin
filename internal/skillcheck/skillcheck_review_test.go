@@ -29,8 +29,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
@@ -107,25 +106,20 @@ func reviewSkillsBuildRegistry(t *testing.T) map[string]bool {
 
 	mcpSrv := srv.MCPServer()
 
-	c, err := client.NewInProcessClient(mcpSrv)
+	ctx := context.Background()
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	if _, err := mcpSrv.Connect(ctx, serverTransport, nil); err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "skillcheck-review-test", Version: "0.0.0"}, nil)
+	c, err := client.Connect(ctx, clientTransport, nil)
 	if err != nil {
-		t.Fatalf("NewInProcessClient: %v", err)
+		t.Fatalf("client Connect: %v", err)
 	}
 	t.Cleanup(func() { c.Close() })
 
-	ctx := context.Background()
-	if err := c.Start(ctx); err != nil {
-		t.Fatalf("client.Start: %v", err)
-	}
-
-	initReq := mcp.InitializeRequest{}
-	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-	initReq.Params.ClientInfo = mcp.Implementation{Name: "skillcheck-review-test", Version: "0.0.0"}
-	if _, err := c.Initialize(ctx, initReq); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-
-	resp, err := c.ListTools(ctx, mcp.ListToolsRequest{})
+	resp, err := c.ListTools(ctx, nil)
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}

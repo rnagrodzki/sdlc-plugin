@@ -16,6 +16,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -23,8 +24,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
@@ -69,7 +69,7 @@ func planSkillsRepoRoot(t *testing.T) string {
 // the ones the two Task 45 skills happen to call), starts an in-process MCP
 // client against it, and returns the tools reported by a real ListTools()
 // call.
-func planSkillsListTools(t *testing.T) []mcp.Tool {
+func planSkillsListTools(t *testing.T) []*mcp.Tool {
 	t.Helper()
 
 	srv := mcpserver.New("skillcheck-plan-test", "0.0.0-test")
@@ -98,25 +98,20 @@ func planSkillsListTools(t *testing.T) []mcp.Tool {
 
 	mcpSrv := srv.MCPServer()
 
-	c, err := client.NewInProcessClient(mcpSrv)
+	ctx := context.Background()
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	if _, err := mcpSrv.Connect(ctx, serverTransport, nil); err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "skillcheck-plan-test", Version: "0.0.0"}, nil)
+	c, err := client.Connect(ctx, clientTransport, nil)
 	if err != nil {
-		t.Fatalf("NewInProcessClient: %v", err)
+		t.Fatalf("client Connect: %v", err)
 	}
 	t.Cleanup(func() { c.Close() })
 
-	ctx := context.Background()
-	if err := c.Start(ctx); err != nil {
-		t.Fatalf("client.Start: %v", err)
-	}
-
-	initReq := mcp.InitializeRequest{}
-	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-	initReq.Params.ClientInfo = mcp.Implementation{Name: "skillcheck-plan-test", Version: "0.0.0"}
-	if _, err := c.Initialize(ctx, initReq); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-
-	resp, err := c.ListTools(ctx, mcp.ListToolsRequest{})
+	resp, err := c.ListTools(ctx, nil)
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
@@ -152,8 +147,18 @@ func planSkillsBuildSchemas(t *testing.T) map[string]map[string]bool {
 	toolList := planSkillsListTools(t)
 	schemas := make(map[string]map[string]bool, len(toolList))
 	for _, tl := range toolList {
-		props := make(map[string]bool, len(tl.InputSchema.Properties))
-		for k := range tl.InputSchema.Properties {
+		raw, err := json.Marshal(tl.InputSchema)
+		if err != nil {
+			t.Fatalf("%s: marshal input schema: %v", tl.Name, err)
+		}
+		var schema struct {
+			Properties map[string]json.RawMessage `json:"properties"`
+		}
+		if err := json.Unmarshal(raw, &schema); err != nil {
+			t.Fatalf("%s: unmarshal input schema: %v", tl.Name, err)
+		}
+		props := make(map[string]bool, len(schema.Properties))
+		for k := range schema.Properties {
 			props[k] = true
 		}
 		schemas[tl.Name] = props

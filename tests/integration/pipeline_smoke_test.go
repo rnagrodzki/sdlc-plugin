@@ -65,8 +65,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
@@ -192,20 +191,16 @@ type envelope struct {
 	Error string          `json:"error,omitempty"`
 }
 
-func callTool(t *testing.T, c *client.Client, name string, args map[string]any) envelope {
+func callTool(t *testing.T, c *mcp.ClientSession, name string, args map[string]any) envelope {
 	t.Helper()
-	req := mcp.CallToolRequest{}
-	req.Params.Name = name
-	req.Params.Arguments = args
-
-	result, err := c.CallTool(context.Background(), req)
+	result, err := c.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: args})
 	if err != nil {
 		t.Fatalf("CallTool %q: %v", name, err)
 	}
 	if len(result.Content) == 0 {
 		t.Fatalf("CallTool %q: no content", name)
 	}
-	text, ok := result.Content[0].(mcp.TextContent)
+	text, ok := result.Content[0].(*mcp.TextContent)
 	if !ok {
 		t.Fatalf("CallTool %q: content[0] not TextContent, got %T", name, result.Content[0])
 	}
@@ -223,29 +218,25 @@ func callTool(t *testing.T, c *client.Client, name string, args map[string]any) 
 // every Register*Tools function in internal/tools) since this suite's job
 // is verifying the ship pipeline end to end, not re-exercising every tool
 // family's registration — that is already covered by internal/skillcheck.
-func setupShipClient(t *testing.T) *client.Client {
+func setupShipClient(t *testing.T) *mcp.ClientSession {
 	t.Helper()
 	srv := mcpserver.New("pipeline-smoke-test", "0.0.0-test")
 	tools.RegisterShipTools(srv)
 	tools.RegisterShipStateTools(srv)
 
-	c, err := client.NewInProcessClient(srv.MCPServer())
+	ctx := context.Background()
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	if _, err := srv.MCPServer().Connect(ctx, serverTransport, nil); err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "pipeline-smoke-test", Version: "0.0.0"}, nil)
+	c, err := client.Connect(ctx, clientTransport, nil)
 	if err != nil {
-		t.Fatalf("NewInProcessClient: %v", err)
+		t.Fatalf("client Connect: %v", err)
 	}
 	t.Cleanup(func() { c.Close() })
 
-	ctx := context.Background()
-	if err := c.Start(ctx); err != nil {
-		t.Fatalf("client.Start: %v", err)
-	}
-
-	initReq := mcp.InitializeRequest{}
-	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-	initReq.Params.ClientInfo = mcp.Implementation{Name: "pipeline-smoke-test", Version: "0.0.0"}
-	if _, err := c.Initialize(ctx, initReq); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
 	return c
 }
 
@@ -258,7 +249,7 @@ type shipStepEntry struct {
 	HasCond   bool   `json:"-"`
 }
 
-func readShipSteps(t *testing.T, c *client.Client) []shipStepEntry {
+func readShipSteps(t *testing.T, c *mcp.ClientSession) []shipStepEntry {
 	t.Helper()
 	env := callTool(t, c, "ship_state", map[string]any{"action": "read"})
 	if !env.OK {

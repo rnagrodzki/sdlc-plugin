@@ -6,8 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // --- test input / output types ---
@@ -30,20 +29,16 @@ type envelope struct {
 	Error string          `json:"error,omitempty"`
 }
 
-func callTool(t *testing.T, c *client.Client, name string, args map[string]any) (*mcp.CallToolResult, envelope) {
+func callTool(t *testing.T, c *mcp.ClientSession, name string, args map[string]any) (*mcp.CallToolResult, envelope) {
 	t.Helper()
-	req := mcp.CallToolRequest{}
-	req.Params.Name = name
-	req.Params.Arguments = args
-
-	result, err := c.CallTool(context.Background(), req)
+	result, err := c.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: args})
 	if err != nil {
 		t.Fatalf("CallTool %q: %v", name, err)
 	}
 	if len(result.Content) == 0 {
 		t.Fatalf("CallTool %q: no content", name)
 	}
-	text, ok := result.Content[0].(mcp.TextContent)
+	text, ok := result.Content[0].(*mcp.TextContent)
 	if !ok {
 		t.Fatalf("CallTool %q: content[0] not TextContent, got %T", name, result.Content[0])
 	}
@@ -55,7 +50,26 @@ func callTool(t *testing.T, c *client.Client, name string, args map[string]any) 
 	return result, env
 }
 
-func setupClient(t *testing.T) *client.Client {
+func connectInMemory(t *testing.T, srv *Server) *mcp.ClientSession {
+	t.Helper()
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+
+	ctx := context.Background()
+	if _, err := srv.mcp.Connect(ctx, serverTransport, nil); err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0.0.0"}, nil)
+	cs, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("client Connect: %v", err)
+	}
+	t.Cleanup(func() { cs.Close() })
+
+	return cs
+}
+
+func setupClient(t *testing.T) *mcp.ClientSession {
 	t.Helper()
 	srv := New("test", "0.0.0-test")
 
@@ -84,24 +98,7 @@ func setupClient(t *testing.T) *client.Client {
 		return echoOut{}, fmt.Errorf("something broke")
 	})
 
-	c, err := client.NewInProcessClient(srv.mcp)
-	if err != nil {
-		t.Fatalf("NewInProcessClient: %v", err)
-	}
-	t.Cleanup(func() { c.Close() })
-
-	if err := c.Start(context.Background()); err != nil {
-		t.Fatalf("client.Start: %v", err)
-	}
-
-	initReq := mcp.InitializeRequest{}
-	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-	initReq.Params.ClientInfo = mcp.Implementation{Name: "test", Version: "0.0.0"}
-	if _, err := c.Initialize(context.Background(), initReq); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-
-	return c
+	return connectInMemory(t, srv)
 }
 
 // --- tests ---
@@ -109,7 +106,7 @@ func setupClient(t *testing.T) *client.Client {
 func TestListToolsOrdering(t *testing.T) {
 	c := setupClient(t)
 
-	resp, err := c.ListTools(context.Background(), mcp.ListToolsRequest{})
+	resp, err := c.ListTools(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
@@ -128,7 +125,7 @@ func TestListToolsOrdering(t *testing.T) {
 	}
 
 	// Verify schema for zz-echo contains "msg" property with type string.
-	var echoTool mcp.Tool
+	var echoTool *mcp.Tool
 	for _, tool := range resp.Tools {
 		if tool.Name == "zz-echo" {
 			echoTool = tool
@@ -155,7 +152,7 @@ func TestListToolsOrdering(t *testing.T) {
 	}
 
 	// Call twice to verify stable ordering.
-	resp2, err := c.ListTools(context.Background(), mcp.ListToolsRequest{})
+	resp2, err := c.ListTools(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("ListTools (2nd): %v", err)
 	}
@@ -303,34 +300,21 @@ func TestWarningsPerCallAndSessionID(t *testing.T) {
 	srv := New("test", "0.0.0-test")
 
 	var firstDedup, secondDedup *Dedup
-	var capturedSessionID string
+	var firstSessionID, secondSessionID string
 	calls := 0
 	Register(srv, "capture-dedup", "captures dedup ref", func(ctx Ctx, in echoIn) (echoOut, error) {
 		calls++
 		if calls == 1 {
 			firstDedup = ctx.Warnings
-			capturedSessionID = ctx.SessionID
+			firstSessionID = ctx.SessionID
 		} else {
 			secondDedup = ctx.Warnings
+			secondSessionID = ctx.SessionID
 		}
 		return echoOut{Reply: "ok"}, nil
 	})
 
-	c, err := client.NewInProcessClient(srv.mcp)
-	if err != nil {
-		t.Fatalf("NewInProcessClient: %v", err)
-	}
-	t.Cleanup(func() { c.Close() })
-
-	if err := c.Start(context.Background()); err != nil {
-		t.Fatalf("client.Start: %v", err)
-	}
-	initReq := mcp.InitializeRequest{}
-	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-	initReq.Params.ClientInfo = mcp.Implementation{Name: "test", Version: "0.0.0"}
-	if _, err := c.Initialize(context.Background(), initReq); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	c := connectInMemory(t, srv)
 
 	callTool(t, c, "capture-dedup", map[string]any{"msg": "a"})
 	callTool(t, c, "capture-dedup", map[string]any{"msg": "b"})
@@ -339,8 +323,11 @@ func TestWarningsPerCallAndSessionID(t *testing.T) {
 		t.Error("each call should get a fresh Dedup instance")
 	}
 
-	// SessionID should be populated by the in-process transport.
-	if capturedSessionID == "" {
-		t.Error("Ctx.SessionID should be non-empty for in-process client")
+	// The in-memory/stdio transports don't assign a protocol session ID
+	// (only HTTP-based transports do), so Ctx.SessionID is consistently
+	// empty within a connection -- callers fall back to
+	// telemetry.ResolveSessionID's marker-file/env/PID chain instead.
+	if firstSessionID != secondSessionID {
+		t.Errorf("Ctx.SessionID should be stable within a connection: %q vs %q", firstSessionID, secondSessionID)
 	}
 }

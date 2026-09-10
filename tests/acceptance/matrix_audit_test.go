@@ -447,7 +447,7 @@ var kdRows = []kdRow{
 	},
 	{
 		id:        "KD12",
-		cutReason: "the two-dependency constraint (mark3labs/mcp-go + yaml.v3, everything else stdlib) is a go.mod/go.sum property enforced by `go build`/`go vet` succeeding, not independent runtime behavior a unit test would exercise.",
+		cutReason: "the two-dependency constraint (modelcontextprotocol/go-sdk + yaml.v3, everything else stdlib) is a go.mod/go.sum property enforced by `go build`/`go vet` succeeding, not independent runtime behavior a unit test would exercise.",
 	},
 	{
 		id:        "KD13",
