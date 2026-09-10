@@ -26,7 +26,7 @@ verification after each wave and automatic recovery from failures.
 | `--plan <path>` | Alternative way to specify the plan file path. | none |
 | `--quality <level>` | Quality tier: `full`, `balanced`, or `minimal` (see table below). | interactive prompt |
 | `--resume` | Resume from saved progress after an interruption. | off |
-| `--rebase <mode>` | Rebase strategy: `auto`, `skip`, or `prompt`. | `auto` |
+| `--rebase <mode>` | Rebase strategy: `auto`, `skip`, or `prompt`. | `skip` |
 | `--auto` | Skip all interactive prompts. | off |
 | `--branch <name>` | Create and check out this branch before executing. | auto-derived |
 | `--wave-timeout <s>` | Max seconds a single wave can run. | `1800` |

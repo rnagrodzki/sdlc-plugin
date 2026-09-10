@@ -24,9 +24,11 @@ findings are reported with severity levels.
 | `--base <branch>` | Compare against this branch instead of the auto-detected default. | auto-detected |
 | `--dry-run` | Show the review plan (dimensions, file counts) without running it. | off |
 
-**Note:** The review scope (which changes to include — all, committed, staged,
-or working tree) is controlled by project configuration in `.sdlc-v2/config.json`,
-not by command-line flags. Change it with `/setup`.
+**Note:** The review scope is controlled by project configuration in
+`.sdlc-v2/config.json`, not by command-line flags. Accepted values: `all`,
+`committed`, `staged`, `working`, and `worktree` — where `working` covers only
+unstaged edits (local scope) and `worktree` covers all tracked changes on the
+branch (branch scope). Change it with `/setup`.
 
 ## Examples
 

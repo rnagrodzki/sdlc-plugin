@@ -27,7 +27,7 @@ default. Optionally verify CI and wait for automated reviewer feedback.
 | `--quick` | Use the project's configured shortcut step list. Does nothing if no shortcut list is configured. | off |
 | `--quality <level>` | Quality tier forwarded to the execute step: `full`, `balanced`, or `minimal`. | unset (execute decides) |
 | `--bump <level>` | Release bump forwarded to the PR step: `patch`, `minor`, `major`, or a pre-release label. | `patch` |
-| `--draft` | Create the PR as a draft. | off |
+| `--draft` | Create the PR as a draft. **Not yet functional.** | off |
 | `--dry-run` | Print the pipeline table (steps, arguments, pauses) and stop without running anything. | off |
 | `--resume` | Resume from saved progress after an interruption. | off |
 | `--gc` | Clean up old saved-progress files and stop. Does not run the pipeline. | off |

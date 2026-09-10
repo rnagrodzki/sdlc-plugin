@@ -11,8 +11,8 @@ install, see [`smoke-test.md`](smoke-test.md).
 - Claude Code with plugin marketplace support.
 - `git`.
 - [GitHub CLI](https://cli.github.com/) (`gh`), authenticated (`gh auth
-  status`). Required by `pr`, `ship`, `verify-pipeline`, and
-  link validation — these shell out to `gh` directly.
+  status`). Required by `pr`, `ship`, `received-review`, `verify-pipeline`,
+  and link validation — these shell out to `gh` directly.
 - A Jira/Atlassian MCP connection, only if you plan to use `jira`.
   Everything else works without it.
 
