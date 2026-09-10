@@ -24,7 +24,7 @@ import (
 
 // SetupPrepareIn is the input for the setup_prepare tool.
 type SetupPrepareIn struct {
-	SkipConfigCheck bool `json:"skipConfigCheck"`
+	SkipConfigCheck bool `json:"skipConfigCheck" jsonschema_description:"Skips the config-version auto-migration gate normally run before preflight checks. Set only when the caller has already verified or migrated the config."`
 }
 
 // sectionRow is a JSON-friendly projection of setupmeta.Section with
@@ -135,7 +135,7 @@ func setupPrepare(root string, in SetupPrepareIn) (SetupPrepareOut, error) {
 
 // SetupInitIn is the input for the setup_init tool.
 type SetupInitIn struct {
-	Sections []string `json:"sections"`
+	Sections []string `json:"sections" jsonschema_description:"Section ids to seed as empty objects in the new config.json (e.g. \"version\", \"commit\"). Sections not listed are omitted from the scaffolded config."`
 }
 
 // SetupInitOut is the output for the setup_init tool.

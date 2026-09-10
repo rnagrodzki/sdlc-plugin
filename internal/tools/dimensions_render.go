@@ -33,13 +33,13 @@ type DimensionsRenderInstructionsIn struct {
 	// File is the review-dimension Markdown file to render (e.g.
 	// ".sdlc-v2/review-dimensions/security.md"), relative to the project root
 	// unless absolute. Required.
-	File string `json:"file"`
+	File string `json:"file" jsonschema_description:"The review-dimension Markdown file to render (e.g. \".sdlc-v2/review-dimensions/security.md\"), relative to the project root unless absolute. Required."`
 	// CommonFile optionally names a shared common-prompt Markdown file
 	// (normally ".sdlc-v2/review-dimensions/_common.md") whose trimmed content
 	// is injected as the rendered file's "## Common Review Instructions"
 	// section, mirroring the JS CLI's optional --common-file flag. Empty
 	// omits that section. Relative to the project root unless absolute.
-	CommonFile string `json:"commonFile,omitempty"`
+	CommonFile string `json:"commonFile,omitempty" jsonschema_description:"Optional shared common-prompt Markdown file (normally \".sdlc-v2/review-dimensions/_common.md\") whose trimmed content is injected as the rendered file's \"## Common Review Instructions\" section. Empty omits that section. Relative to the project root unless absolute."`
 	// ProjectRoot optionally overrides the root the ".github/instructions/"
 	// output path is written under (and that File/CommonFile resolve
 	// against when relative). Defaults to worktree.MainRoot() when empty —
@@ -48,7 +48,7 @@ type DimensionsRenderInstructionsIn struct {
 	// needs the mirror written under the ACTIVE worktree instead
 	// (repository.contentRoot from harden_prepare's manifest, which may
 	// differ from the main worktree), so it passes this explicitly.
-	ProjectRoot string `json:"projectRoot,omitempty"`
+	ProjectRoot string `json:"projectRoot,omitempty" jsonschema_description:"Overrides the root the .github/instructions/ output path is written under (and that file/commonFile resolve against when relative). Defaults to the main worktree root when empty."`
 }
 
 // DimensionsRenderInstructionsOut is the output for the

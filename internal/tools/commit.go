@@ -19,8 +19,8 @@ import (
 
 // CommitPrepareIn is the input for the commit_prepare tool.
 type CommitPrepareIn struct {
-	SkipConfigCheck bool   `json:"skipConfigCheck"`
-	SessionID       string `json:"sessionID"`
+	SkipConfigCheck bool   `json:"skipConfigCheck" jsonschema_description:"Skips the config-version auto-migration gate normally run before gathering commit context. Set only when the caller has already verified or migrated the config."`
+	SessionID       string `json:"sessionID" jsonschema_description:"Claude Code session ID. Reserved for future use; not currently read by commit_prepare."`
 }
 
 // CommitFlags mirrors the flag object from commit.js.
@@ -342,9 +342,9 @@ func nonEmptyLines(s string) []string {
 
 // CommitApplyIn is the input for the commit_apply tool.
 type CommitApplyIn struct {
-	Message         string `json:"message"`
-	SkipConfigCheck bool   `json:"skipConfigCheck"`
-	SessionID       string `json:"sessionID"`
+	Message         string `json:"message" jsonschema_description:"Commit message to use for 'git commit -m'. Must not be empty."`
+	SkipConfigCheck bool   `json:"skipConfigCheck" jsonschema_description:"Skips the config-version auto-migration gate normally run before staging and committing. Set only when the caller has already verified or migrated the config."`
+	SessionID       string `json:"sessionID" jsonschema_description:"Claude Code session ID. Reserved for future use; not currently read by commit_apply."`
 }
 
 // CommitApplyOut is the output for the commit_apply tool.

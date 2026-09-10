@@ -37,7 +37,7 @@ type SetupWriteSectionsIn struct {
 	// Each section's value REPLACES the section wholesale (WriteSection
 	// semantics) — callers must pass the complete object for a section, not
 	// a partial patch.
-	SectionsJSON string `json:"sectionsJson"`
+	SectionsJSON string `json:"sectionsJson" jsonschema_description:"JSON-encoded object mapping section id (e.g. \"version\", \"commit\") to the full field-value object for that section, e.g. {\"version\":{\"mode\":\"file\",\"versionFile\":\"package.json\"}}. Each section's value REPLACES the section wholesale — pass the complete object for a section, not a partial patch."`
 }
 
 // SetupWriteSectionsOut is the output for the setup_write_sections tool.

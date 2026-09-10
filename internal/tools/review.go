@@ -54,8 +54,8 @@ var pluginVersion = "unknown"
 
 // ReviewPrepareIn is the input for the review_prepare tool.
 type ReviewPrepareIn struct {
-	SkipConfigCheck bool   `json:"skipConfigCheck"`
-	Target          string `json:"target"`
+	SkipConfigCheck bool   `json:"skipConfigCheck" jsonschema_description:"Skips the config-version auto-migration gate normally run before preflight checks. Set only when the caller has already verified or migrated the config."`
+	Target          string `json:"target" jsonschema_description:"Base branch/ref to diff against, overriding the repo's detected default branch. Ignored when the configured review scope is \"staged\" or \"working\" (local, non-branch scopes)."`
 }
 
 // ReviewPrepareSummary mirrors the summary block of the JS manifest.

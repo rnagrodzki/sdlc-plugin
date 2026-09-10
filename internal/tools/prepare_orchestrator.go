@@ -58,32 +58,32 @@ import (
 // missing step/operation at runtime.
 type PrepareOrchestratorIn struct {
 	// Mode selects which prepare pipeline runs: "harden" or "error_report".
-	Mode string `json:"mode"`
+	Mode string `json:"mode" jsonschema_description:"Which prepare pipeline runs: \"harden\" or \"error_report\"."`
 
 	// --- shared across both modes ---
-	Skill      string `json:"skill"`
-	Step       string `json:"step,omitempty"`
-	Operation  string `json:"operation,omitempty"`
-	ErrorType  string `json:"errorType,omitempty"`
-	UserIntent string `json:"userIntent,omitempty"`
-	ArgsString string `json:"argsString,omitempty"`
+	Skill      string `json:"skill" jsonschema_description:"Name of the skill that was executing when the failure occurred."`
+	Step       string `json:"step,omitempty" jsonschema_description:"Pipeline step that was executing when the failure occurred, if applicable."`
+	Operation  string `json:"operation,omitempty" jsonschema_description:"Operation being attempted when the failure occurred."`
+	ErrorType  string `json:"errorType,omitempty" jsonschema_description:"Classification of the error, if known."`
+	UserIntent string `json:"userIntent,omitempty" jsonschema_description:"What the user was trying to accomplish."`
+	ArgsString string `json:"argsString,omitempty" jsonschema_description:"Raw argument string the skill/command was invoked with."`
 
 	// --- harden mode only (HardenPrepareIn) ---
-	FailureText     string `json:"failureText,omitempty"`
-	ExitCode        string `json:"exitCode,omitempty"`
-	FromIssue       string `json:"fromIssue,omitempty"`
-	SkipConfigCheck bool   `json:"skipConfigCheck,omitempty"`
+	FailureText     string `json:"failureText,omitempty" jsonschema_description:"Harden mode only. Raw failure text/output to analyze."`
+	ExitCode        string `json:"exitCode,omitempty" jsonschema_description:"Harden mode only. Process exit code observed at failure."`
+	FromIssue       string `json:"fromIssue,omitempty" jsonschema_description:"Harden mode only. Source issue number/reference this hardening pass is derived from, if any."`
+	SkipConfigCheck bool   `json:"skipConfigCheck,omitempty" jsonschema_description:"Harden mode only. Skips the config-version auto-migration gate normally run before preflight checks."`
 
 	// --- error_report mode only (ErrorReportPrepareIn) ---
-	Error                  string `json:"errorText,omitempty"`
-	ExitOrHTTPCode         string `json:"exitOrHttpCode,omitempty"`
-	SuggestedInvestigation string `json:"suggestedInvestigation,omitempty"`
+	Error                  string `json:"errorText,omitempty" jsonschema_description:"Error_report mode only. Raw error text to report."`
+	ExitOrHTTPCode         string `json:"exitOrHttpCode,omitempty" jsonschema_description:"Error_report mode only. Process exit code or HTTP status observed at failure."`
+	SuggestedInvestigation string `json:"suggestedInvestigation,omitempty" jsonschema_description:"Error_report mode only. Suggested next steps for investigating the failure, included in the drafted issue."`
 
 	// --- harden mode optional: history context ---
 	// HistoryPath, when set, points to .sdlc-v2/history/. The manifest
 	// includes recent run records and open deferred issues as additional
 	// evidence for hardening proposals.
-	HistoryPath string `json:"historyPath,omitempty"`
+	HistoryPath string `json:"historyPath,omitempty" jsonschema_description:"Harden mode only. Path to .sdlc-v2/history/. When set, the manifest includes recent run records and open deferred issues as additional evidence for hardening proposals."`
 }
 
 // PrepareOrchestratorOut is prepare_orchestrator's output: the path to the

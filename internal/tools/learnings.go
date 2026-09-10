@@ -21,14 +21,14 @@ const learningsLogHeader = "# SDLC Execution Learnings\n"
 // LearningsLogIn is the input for the learnings_log tool.
 type LearningsLogIn struct {
 	// Action selects the operation: "append" or "read".
-	Action string `json:"action"`
+	Action string `json:"action" jsonschema_description:"Selects the operation: \"append\" or \"read\"."`
 	// Entry is the markdown block to append (required for "append"). It is
 	// written verbatim, separated from surrounding content by one blank
 	// line; do not include a leading or trailing blank line.
-	Entry string `json:"entry"`
+	Entry string `json:"entry" jsonschema_description:"Markdown block to append (required for action \"append\"). Written verbatim, separated from surrounding content by one blank line; do not include a leading or trailing blank line."`
 	// TailLines, for "read", limits the returned content to the last N
 	// lines. Zero (default) returns the whole file.
-	TailLines int `json:"tailLines"`
+	TailLines int `json:"tailLines" jsonschema_description:"For action \"read\", limits the returned content to the last N lines. Zero (default) returns the whole file."`
 }
 
 // LearningsLogOut is the output for the learnings_log tool.

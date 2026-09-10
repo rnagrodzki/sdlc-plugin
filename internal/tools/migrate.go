@@ -22,9 +22,9 @@ import (
 // MigrateIn is the input for the migrate tool.
 type MigrateIn struct {
 	// Action selects the migration to run: "config" or "import".
-	Action string `json:"action"`
+	Action string `json:"action" jsonschema_description:"Selects the migration to run: \"config\" (schema migration via configmigrate engine) or \"import\" (non-destructively imports config, templates, jira-templates, learnings, and review-dimensions from the legacy plugin directory)."`
 	// DryRun, when true, reports what would change without writing.
-	DryRun bool `json:"dryRun"`
+	DryRun bool `json:"dryRun" jsonschema_description:"When true, reports what would change without writing anything."`
 }
 
 // MigrateOut is the output for the migrate tool.

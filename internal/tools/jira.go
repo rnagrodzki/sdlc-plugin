@@ -98,48 +98,48 @@ import (
 // 9 jira.js subcommands; the remaining fields are a superset of what each
 // action needs (unused fields for a given action are ignored).
 type JiraIn struct {
-	Action string `json:"action"`
+	Action string `json:"action" jsonschema_description:"Selects the operation: check, load, save, save-field, templates, init-templates, clear, copy-template, or validate-body. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
 
 	// Key is the Jira project key (jira.js's --project). Uppercased on use.
 	// Required for every action except validate-body (mirrors jira.js's
 	// parseArgs, which enforces --project for every subcommand but
 	// validate-body — including copy-template, which does not actually use
 	// it; that quirk is preserved for fidelity).
-	Key string `json:"key,omitempty"`
+	Key string `json:"key,omitempty" jsonschema_description:"Jira issue key (e.g. \"PROJ-123\"). Uppercased on use. Required for every action except validate-body."`
 
 	// MarkdownBody is the Jira description/comment body for validate-body.
-	MarkdownBody string `json:"markdownBody,omitempty"`
+	MarkdownBody string `json:"markdownBody,omitempty" jsonschema_description:"validate-body only: Jira description/comment markdown body to validate for Jira-flavor compatibility."`
 
 	// CacheDir overrides the default ~/.sdlc-cache/jira/<site>/ layout with
 	// a flat <CacheDir>/<KEY>.json path (jira.js's --cache-dir). This is
 	// also the hermetic-test hook: point it at a temp dir to avoid touching
 	// the real home cache.
-	CacheDir string `json:"cacheDir,omitempty"`
+	CacheDir string `json:"cacheDir,omitempty" jsonschema_description:"Overrides the default ~/.sdlc-cache/jira/<site>/ layout with a flat <cacheDir>/<KEY>.json path. Also the hermetic-test hook: point it at a temp dir to avoid touching the real home cache."`
 
 	// FieldName is the cache field to merge/overwrite for save-field.
-	FieldName string `json:"fieldName,omitempty"`
+	FieldName string `json:"fieldName,omitempty" jsonschema_description:"save-field only: name of the cached-issue field to merge/overwrite with data."`
 
 	// TemplateType is the destination issue-type name for copy-template.
-	TemplateType string `json:"templateType,omitempty"`
+	TemplateType string `json:"templateType,omitempty" jsonschema_description:"copy-template only: destination issue-type name to copy the template to."`
 
 	// TemplateFrom is the source template name (without .md) for
 	// copy-template.
-	TemplateFrom string `json:"templateFrom,omitempty"`
+	TemplateFrom string `json:"templateFrom,omitempty" jsonschema_description:"copy-template only: source template name (without .md extension) to copy from."`
 
 	// Site optionally disambiguates the home cache by site host, and (for
 	// validate-body only, per the disclosed limitation above) is otherwise
 	// inert.
-	Site string `json:"site,omitempty"`
+	Site string `json:"site,omitempty" jsonschema_description:"Disambiguates the home cache by Jira site host. Inert for validate-body."`
 
 	// TemplatesDir overrides plugin-tree discovery of the shipped jira
 	// templates/ directory (jira.js's --templates-dir). See deviation #3.
-	TemplatesDir string `json:"templatesDir,omitempty"`
+	TemplatesDir string `json:"templatesDir,omitempty" jsonschema_description:"Overrides plugin-tree discovery of the shipped jira templates/ directory."`
 
 	// Data carries the JSON payload for save/save-field (jira.js reads this
 	// from stdin). See deviation #3.
-	Data map[string]any `json:"data,omitempty"`
+	Data map[string]any `json:"data,omitempty" jsonschema_description:"save/save-field only: JSON payload to write to the cache. For save, must contain version, cloudId, project, siteUrl."`
 
-	SkipConfigCheck bool `json:"skipConfigCheck,omitempty"`
+	SkipConfigCheck bool `json:"skipConfigCheck,omitempty" jsonschema_description:"Skips the config-version auto-migration gate normally run before the action executes. Set only when the caller has already verified or migrated the config."`
 }
 
 // JiraValidateBodyOut is the validate-body action's payload.

@@ -52,13 +52,13 @@ import (
 // report — keyword-scope and web-research-signal detection are inert here;
 // only plan_explore_prepare's separate UserPrompt field can exercise them).
 type PlanPrepareIn struct {
-	SkipConfigCheck        bool   `json:"skipConfigCheck"`
-	FromOpenspec           string `json:"fromOpenspec"`
-	ResolveTemplate        bool   `json:"resolveTemplate"`
-	FromOpenspecDirect     bool   `json:"fromOpenspecDirect"`
-	OpenspecInlineGenerate bool   `json:"openspecInlineGenerate"`
-	Lightweight            bool   `json:"lightweight"`
-	FileCount              int    `json:"fileCount"`
+	SkipConfigCheck        bool   `json:"skipConfigCheck" jsonschema_description:"Skips the config-version auto-migration gate normally run before preparing plan metadata. Set only when the caller has already verified or migrated the config."`
+	FromOpenspec           string `json:"fromOpenspec" jsonschema_description:"Name of the openspec change to prepare plan metadata from (change validation, tasks inventory, explore-pack discovery). Empty when not planning from an openspec change."`
+	ResolveTemplate        bool   `json:"resolveTemplate" jsonschema_description:"When true, resolves the active plan template (project override, else shipped default) and includes the full template resolution in the output."`
+	FromOpenspecDirect     bool   `json:"fromOpenspecDirect" jsonschema_description:"True when the plan is being generated directly from an openspec change (no inline generation step). Combined with openspecInlineGenerate to determine whether openspec routing is active."`
+	OpenspecInlineGenerate bool   `json:"openspecInlineGenerate" jsonschema_description:"True when the openspec change proposal is being inline-generated as part of this plan run. Combined with fromOpenspecDirect to determine whether openspec routing is active."`
+	Lightweight            bool   `json:"lightweight" jsonschema_description:"Requests the lightweight complexity-routing path regardless of file count, adjusting dispatch metadata accordingly."`
+	FileCount              int    `json:"fileCount" jsonschema_description:"Number of files the change is expected to touch, used with lightweight to compute complexity routing (pipeline mode)."`
 }
 
 // OpenspecChangeInfo, OpenspecAuthoritative, and OpenspecInfo used to be
@@ -1315,8 +1315,8 @@ func markerKey(marker string) string {
 
 // PlanMarkIn is the input for the plan_mark tool.
 type PlanMarkIn struct {
-	Marker string `json:"marker"`
-	Path   string `json:"path"`
+	Marker string `json:"marker" jsonschema_description:"Checkpoint marker to stamp with the current timestamp: \"plan-file\", \"skillInvoked\", \"guardrailsEvaluated\", or \"critiqueRan\"."`
+	Path   string `json:"path" jsonschema_description:"Plan file path to record. Only used (and required) when marker is \"plan-file\"."`
 }
 
 // PlanMarkOut is the output for the plan_mark tool.

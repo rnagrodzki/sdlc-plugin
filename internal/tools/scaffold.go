@@ -100,7 +100,7 @@ var scaffoldManifest = []scaffoldManifestEntry{
 
 // ScaffoldCIIn is the input for the scaffold_ci tool.
 type ScaffoldCIIn struct {
-	Force bool `json:"force"`
+	Force bool `json:"force" jsonschema_description:"Overwrite existing CI scripts and workflow files that already exist in the project, instead of skipping them."`
 }
 
 // ScaffoldFileReport describes the result for a single manifest entry.
@@ -332,7 +332,7 @@ func checkBranchProtection(dir string, execRun scaffoldExecFunc) RulesetCheckRes
 
 // VerifyTagAncestryIn is the input for the verify_tag_ancestry tool.
 type VerifyTagAncestryIn struct {
-	Tag string `json:"tag"`
+	Tag string `json:"tag" jsonschema_description:"Git tag to verify is an ancestor of HEAD."`
 }
 
 // VerifyTagAncestryOut is the output for the verify_tag_ancestry tool.

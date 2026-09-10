@@ -46,8 +46,8 @@ import (
 // branch.ValidateExpectedBranch is dead code without something to compare
 // the current branch against — this mirrors pr.js's --expected-branch flag.
 type PRPrepareIn struct {
-	SkipConfigCheck bool   `json:"skipConfigCheck"`
-	ExpectedBranch  string `json:"expectedBranch,omitempty"`
+	SkipConfigCheck bool   `json:"skipConfigCheck" jsonschema_description:"Skips the config-version auto-migration gate normally run before preflight checks. Set only when the caller has already verified or migrated the config."`
+	ExpectedBranch  string `json:"expectedBranch,omitempty" jsonschema_description:"Branch the caller expects to be on. When set, the current branch is validated against it and the branch-guard hard gate rejects a mismatch."`
 }
 
 // PRAccountRow is a JSON-friendly projection of ghx.Account (which carries
@@ -451,17 +451,17 @@ func prValidateBodyCore(root string, in PRValidateBodyIn) (PRValidateBodyOut, er
 
 // PRApplyIn is the input for pr_apply.
 type PRApplyIn struct {
-	Title             string `json:"title"`
-	Body              string `json:"body"`
-	ReleaseLevel      string `json:"releaseLevel,omitempty"`
-	ReleasePreRelease string `json:"releasePreRelease,omitempty"`
-	ReleaseNotes      string `json:"releaseNotes,omitempty"`
+	Title             string `json:"title" jsonschema_description:"PR title, used for gh pr create/edit."`
+	Body              string `json:"body" jsonschema_description:"PR body text, used for gh pr create/edit."`
+	ReleaseLevel      string `json:"releaseLevel,omitempty" jsonschema:"enum=major,enum=minor,enum=patch" jsonschema_description:"Release bump level for this PR (e.g. \"patch\"/\"minor\"/\"major\"). Required unless skipReleaseCheck is true — an empty value without skipReleaseCheck is rejected so release intent is never skipped by omission; run /version first, or pass skipReleaseCheck: true to explicitly acknowledge no release."`
+	ReleasePreRelease string `json:"releasePreRelease,omitempty" jsonschema_description:"Pre-release identifier to attach to the release, when releaseLevel is set and this is a pre-release."`
+	ReleaseNotes      string `json:"releaseNotes,omitempty" jsonschema_description:"Release notes text associated with releaseLevel, when set."`
 	// ReleaseSource records who decided ReleaseLevel: "user" (explicit
 	// interactive choice), "config" (a project/ship-config default), or
 	// "pipeline" (computed deterministically by /ship's version step, not
 	// chosen by anyone). Required whenever ReleaseLevel is set — see the
 	// releaseSource validation block in prApplyCoreWith.
-	ReleaseSource string `json:"releaseSource,omitempty"`
+	ReleaseSource string `json:"releaseSource,omitempty" jsonschema:"enum=user,enum=config,enum=pipeline" jsonschema_description:"Who decided releaseLevel: \"user\" (explicit interactive choice), \"config\" (a project/ship-config default), or \"pipeline\" (computed deterministically by /ship's version step, not chosen by anyone). Required whenever releaseLevel is set. In autoMode, \"user\" is always rejected — resolve to \"config\" or \"pipeline\" instead of inventing a release level and labeling it \"user\" to bypass the gate."`
 	// AutoMode signals an unattended call (no human available to confirm
 	// anything right now — e.g. /ship or /pr run with --auto). Disclosed
 	// addition beyond the fact sheet's literal contract example: task 8
@@ -470,14 +470,14 @@ type PRApplyIn struct {
 	// mirrors the existing `Auto bool` field convention on CommitFlags
 	// (commit.go) / ShipApplyIn (ship.go) rather than inventing a second
 	// competing mechanism.
-	AutoMode bool `json:"autoMode"`
+	AutoMode bool `json:"autoMode" jsonschema_description:"Signals an unattended call with no human available to confirm anything right now (e.g. /ship or /pr run with --auto). When true, releaseSource=\"user\" is rejected."`
 	// SkipReleaseCheck acknowledges that this PR is being created/updated
 	// with no release intent (ReleaseLevel empty). Without it, an empty
 	// ReleaseLevel is rejected by the release-intent gate below — the
 	// caller must either set ReleaseLevel or explicitly opt out via this
 	// field, so a release decision is never silently skipped by omission.
 	// Ignored when ReleaseLevel is set.
-	SkipReleaseCheck bool `json:"skipReleaseCheck,omitempty"`
+	SkipReleaseCheck bool `json:"skipReleaseCheck,omitempty" jsonschema_description:"Explicitly acknowledges that this PR is being created/updated with no release intent (releaseLevel empty). Without it, an empty releaseLevel is rejected by the release-intent gate. Ignored when releaseLevel is set."`
 }
 
 // PRApplyOut is the output for pr_apply.

@@ -340,12 +340,12 @@ func verifyPipelineAwait(activeRoot string, in VerifyPipelineAwaitIn) (stepper.E
 // branch the fact sheet requires — duplicating that fallback logic here
 // would risk the two defaults drifting apart.
 type PollAwaitIn struct {
-	Target          string   `json:"target"`
-	PR              int      `json:"pr"`
-	TimeoutSeconds  int      `json:"timeout_seconds,omitempty"`
-	IntervalSeconds int      `json:"interval_seconds,omitempty"`
-	Reviewers       []string `json:"reviewers,omitempty"`
-	StateFile       string   `json:"state_file,omitempty"`
+	Target          string   `json:"target" jsonschema_description:"Polling target: \"remote_review\" (polls gh for a remote reviewer's verdict) or \"pipeline\" (polls gh PR checks for green/failed/pending)."`
+	PR              int      `json:"pr" jsonschema_description:"Pull request number to poll."`
+	TimeoutSeconds  int      `json:"timeout_seconds,omitempty" jsonschema_description:"Overall timeout in seconds for the polling operation to be considered done rather than still pending."`
+	IntervalSeconds int      `json:"interval_seconds,omitempty" jsonschema_description:"Minimum interval in seconds to wait between probes before reporting pending again."`
+	Reviewers       []string `json:"reviewers,omitempty" jsonschema_description:"target=remote_review only: GitHub usernames whose review verdict is being polled for."`
+	StateFile       string   `json:"state_file,omitempty" jsonschema_description:"Path to the stepper state file to resume polling from, as returned by a prior pending call."`
 }
 
 // pollAwait dispatches a poll_await call to the target's existing core
@@ -457,9 +457,9 @@ func pendingEnvelope(stateFile string, st stepper.PollState, ext map[string]any)
 // tool. See the RULING above for why this differs from the fact sheet's
 // stated {CheckName, Conclusion} contract.
 type VerifyPipelineClassifyIn struct {
-	CheckName  string `json:"check_name,omitempty"`
-	Conclusion string `json:"conclusion,omitempty"`
-	Logs       string `json:"logs"`
+	CheckName  string `json:"check_name,omitempty" jsonschema_description:"Name of the failed CI check, echoed back on the classification result."`
+	Conclusion string `json:"conclusion,omitempty" jsonschema_description:"Conclusion reported by the failed CI check (e.g. \"failure\", \"timed_out\"), echoed back on the classification result."`
+	Logs       string `json:"logs" jsonschema_description:"Log text from the failed check to classify into lint|test-failure|type-error|build-error|dependency|infra|unknown."`
 }
 
 // VerifyPipelineClassifyOut is the classification payload. Category and

@@ -39,10 +39,10 @@ import (
 // empty-string distinction for reason/error/result, are preserved without
 // literal typed struct fields (see detailIntPtr below).
 type ShipStateIn struct {
-	Action    string         `json:"action"`
-	Step      string         `json:"step,omitempty"`
-	Detail    map[string]any `json:"detail,omitempty"`
-	SessionID string         `json:"sessionId,omitempty"`
+	Action    string         `json:"action" jsonschema_description:"Operation to perform: init, begin-step, complete-step, start (legacy), complete (legacy), skip, fail, decide, defer, read, cleanup, cleanup-pipeline, gc, or migrate. Each action uses a subset of the other fields (unlisted fields are ignored)."`
+	Step      string         `json:"step,omitempty" jsonschema_description:"Pipeline step name. Required by begin-step, complete-step, start, complete, skip, fail, decide; ignored by other actions."`
+	Detail    map[string]any `json:"detail,omitempty" jsonschema_description:"Action-specific extra fields (e.g. branch, flags, outcome, result, reason, error, text, severity, file, title, line, force, ttlDays, dryRun, from, to, detail). See the action list for which sub-fields each action reads."`
+	SessionID string         `json:"sessionId,omitempty" jsonschema_description:"Session identifier used by init to stamp the created state's sessionId field, for correlating this run with the calling session."`
 }
 
 // ShipTodosOut is the output shape for the Go-native todos action. Mutating

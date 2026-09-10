@@ -19,24 +19,24 @@ import (
 // PlanSupportIn carries the merged input for the plan_support tool's 4
 // actions. Each field is consumed by one or more actions (noted in comments).
 type PlanSupportIn struct {
-	Action string `json:"action"` // "merge_results"|"material_snapshot"|"material_compare"|"openspec_appendix"
+	Action string `json:"action" jsonschema_description:"Selects the operation: \"merge_results\", \"material_snapshot\", \"material_compare\", or \"openspec_appendix\". Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."` // "merge_results"|"material_snapshot"|"material_compare"|"openspec_appendix"
 
 	// merge_results
-	LaneResults   []LaneResult `json:"laneResults,omitempty"`
-	LensResults   []LensResult `json:"lensResults,omitempty"`
-	ExpectedGates []string     `json:"expectedGates,omitempty"`
-	IsRedispatch  bool         `json:"isRedispatch,omitempty"`
+	LaneResults   []LaneResult `json:"laneResults,omitempty" jsonschema_description:"merge_results only: outcomes from each review lane to merge. At least one of laneResults or lensResults is required."`
+	LensResults   []LensResult `json:"lensResults,omitempty" jsonschema_description:"merge_results only: outcomes from each review lens to merge. At least one of laneResults or lensResults is required."`
+	ExpectedGates []string     `json:"expectedGates,omitempty" jsonschema_description:"merge_results only: gate IDs expected to be covered by the merged lane/lens results, used to compute coverage gaps."`
+	IsRedispatch  bool         `json:"isRedispatch,omitempty" jsonschema_description:"merge_results only: true when these results come from a redispatch (re-run) of lanes/lenses, affecting how merged status is computed."`
 
 	// material_snapshot / material_compare
-	FilePath string        `json:"filePath,omitempty"`
-	Snapshot *PlanSnapshot `json:"snapshot,omitempty"`
+	FilePath string        `json:"filePath,omitempty" jsonschema_description:"material_snapshot / material_compare only: path to the plan file to snapshot or compare."`
+	Snapshot *PlanSnapshot `json:"snapshot,omitempty" jsonschema_description:"material_compare only: the previously captured snapshot to compare the current plan file against."`
 
 	// openspec_appendix
-	ChangeName   string   `json:"changeName,omitempty"`
-	ProposalPath string   `json:"proposalPath,omitempty"`
-	DesignPath   string   `json:"designPath,omitempty"`
-	SpecPaths    []string `json:"specPaths,omitempty"`
-	PlanTasks    []string `json:"planTasks,omitempty"`
+	ChangeName   string   `json:"changeName,omitempty" jsonschema_description:"openspec_appendix only: name of the openspec change to generate the appendix for. Required."`
+	ProposalPath string   `json:"proposalPath,omitempty" jsonschema_description:"openspec_appendix only: path to the change's proposal.md, included in the generated appendix."`
+	DesignPath   string   `json:"designPath,omitempty" jsonschema_description:"openspec_appendix only: path to the change's design.md, included in the generated appendix."`
+	SpecPaths    []string `json:"specPaths,omitempty" jsonschema_description:"openspec_appendix only: paths to the change's spec files, included in the generated appendix."`
+	PlanTasks    []string `json:"planTasks,omitempty" jsonschema_description:"openspec_appendix only: plan task identifiers to cross-reference in the generated appendix."`
 }
 
 // PlanSupportOut is the unified output for the plan_support tool.
@@ -65,39 +65,39 @@ type PlanSupportOut struct {
 
 // LaneResult represents the outcome of a single review lane.
 type LaneResult struct {
-	Name    string   `json:"name"`
-	Status  string   `json:"status"` // "pass"|"fail"
-	Issues  []Issue  `json:"issues,omitempty"`
-	Passes  []string `json:"passes,omitempty"`
-	GateIDs []string `json:"gateIds,omitempty"`
+	Name    string   `json:"name" jsonschema_description:"Name of the review lane that produced this result."`
+	Status  string   `json:"status" jsonschema_description:"Outcome of the lane: \"pass\" or \"fail\"."` // "pass"|"fail"
+	Issues  []Issue  `json:"issues,omitempty" jsonschema_description:"Findings raised by this lane."`
+	Passes  []string `json:"passes,omitempty" jsonschema_description:"Descriptions of checks this lane explicitly passed."`
+	GateIDs []string `json:"gateIds,omitempty" jsonschema_description:"Gate IDs this lane covers, used to compute coverage against expectedGates."`
 }
 
 // LensResult represents the outcome of a single review lens.
 type LensResult struct {
-	Name            string   `json:"name"`
-	Status          string   `json:"status"` // "approved"|"rejected"|"conditional"
-	Issues          []Issue  `json:"issues,omitempty"`
-	Recommendations []string `json:"recommendations,omitempty"`
+	Name            string   `json:"name" jsonschema_description:"Name of the review lens that produced this result."`
+	Status          string   `json:"status" jsonschema_description:"Outcome of the lens: \"approved\", \"rejected\", or \"conditional\"."` // "approved"|"rejected"|"conditional"
+	Issues          []Issue  `json:"issues,omitempty" jsonschema_description:"Findings raised by this lens."`
+	Recommendations []string `json:"recommendations,omitempty" jsonschema_description:"Recommendations raised by this lens."`
 }
 
 // Issue represents a single finding from a lane or lens.
 type Issue struct {
-	GateID   string `json:"gateId,omitempty"`
-	Severity string `json:"severity"` // "blocking"|"advisory"
-	Summary  string `json:"summary"`
-	Source   string `json:"source,omitempty"` // lane or lens name
+	GateID   string `json:"gateId,omitempty" jsonschema_description:"Gate ID this finding relates to, if any."`
+	Severity string `json:"severity" jsonschema_description:"Severity of the finding: \"blocking\" or \"advisory\"."` // "blocking"|"advisory"
+	Summary  string `json:"summary" jsonschema_description:"Human-readable summary of the finding."`
+	Source   string `json:"source,omitempty" jsonschema_description:"Name of the lane or lens that raised this finding."` // lane or lens name
 }
 
 // PlanSnapshot captures the 7 structural dimensions of a plan file for
 // material-change detection (R64).
 type PlanSnapshot struct {
-	TaskCount           int                 `json:"taskCount"`
-	DeviationsRows      []string            `json:"deviationsRows,omitempty"`
-	FilesSet            map[string][]string `json:"filesSet,omitempty"`
-	Contracts           map[string]string   `json:"contracts,omitempty"`
-	DependsOn           map[string]string   `json:"dependsOn,omitempty"`
-	KeyDecisions        []string            `json:"keyDecisions,omitempty"`
-	OpenspecTaskMapping map[string]string   `json:"openspecTaskMapping,omitempty"`
+	TaskCount           int                 `json:"taskCount" jsonschema_description:"Number of tasks in the plan at the time of the snapshot."`
+	DeviationsRows      []string            `json:"deviationsRows,omitempty" jsonschema_description:"Rows from the plan's \"Deviations & assumptions\" section at the time of the snapshot."`
+	FilesSet            map[string][]string `json:"filesSet,omitempty" jsonschema_description:"Per-task set of files listed in the plan's \"Files:\" fields at the time of the snapshot."`
+	Contracts           map[string]string   `json:"contracts,omitempty" jsonschema_description:"Per-task \"Contract:\" field content at the time of the snapshot."`
+	DependsOn           map[string]string   `json:"dependsOn,omitempty" jsonschema_description:"Per-task \"Depends on\" field content at the time of the snapshot."`
+	KeyDecisions        []string            `json:"keyDecisions,omitempty" jsonschema_description:"Entries from the plan's \"Key Decisions\" section at the time of the snapshot."`
+	OpenspecTaskMapping map[string]string   `json:"openspecTaskMapping,omitempty" jsonschema_description:"Per-task openspec ref mapping (from \"**openspec-task:**\" blocks) at the time of the snapshot."`
 }
 
 // ---------------------------------------------------------------------------

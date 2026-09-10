@@ -22,8 +22,8 @@ import (
 
 // VersionPrepareIn is the input for the version_prepare tool.
 type VersionPrepareIn struct {
-	SkipConfigCheck bool   `json:"skipConfigCheck"`
-	SessionID       string `json:"sessionID"`
+	SkipConfigCheck bool   `json:"skipConfigCheck" jsonschema_description:"Skips the config-version auto-migration gate normally run before preflight checks. Set only when the caller has already verified or migrated the config."`
+	SessionID       string `json:"sessionID" jsonschema_description:"Reserved for future use; not currently read by version_prepare."`
 }
 
 // VersionSourceInfo describes the detected version source.
@@ -543,10 +543,10 @@ func fileExists(path string) bool {
 
 // VersionApplyIn is the input for the version_apply tool.
 type VersionApplyIn struct {
-	Level           string `json:"level"`
-	Notes           string `json:"notes"`
-	SkipConfigCheck bool   `json:"skipConfigCheck"`
-	SessionID       string `json:"sessionID"`
+	Level           string `json:"level" jsonschema_description:"Deprecated, unused: version_apply is a no-op. Pass releaseLevel to pr_apply instead."`
+	Notes           string `json:"notes" jsonschema_description:"Deprecated, unused: version_apply is a no-op. Pass releaseNotes to pr_apply instead."`
+	SkipConfigCheck bool   `json:"skipConfigCheck" jsonschema_description:"Deprecated, unused: version_apply is a no-op."`
+	SessionID       string `json:"sessionID" jsonschema_description:"Deprecated, unused: version_apply is a no-op."`
 }
 
 // VersionApplyOut is the output for the version_apply tool.
