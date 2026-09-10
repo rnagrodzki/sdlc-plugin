@@ -471,6 +471,144 @@ func TestPrApply_MissingTitle_DomainError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// prEnrichPermissionError (task 1) — auth-enriched permission errors from
+// ghPRCreate/ghPREdit.
+// ---------------------------------------------------------------------------
+
+// originRemoteExec returns an execRun stub that answers `git remote get-url
+// origin` with remoteURL and fails any other call.
+func originRemoteExec(remoteURL string) func(name string, args []string, opts execx.Options) (string, error) {
+	return func(name string, args []string, opts execx.Options) (string, error) {
+		if name == "git" && len(args) == 3 && args[0] == "remote" && args[1] == "get-url" && args[2] == "origin" {
+			return remoteURL, nil
+		}
+		return "", fmt.Errorf("unexpected exec call: %s %v", name, args)
+	}
+}
+
+func TestPrApply_PermissionError_EnrichedWithAuthHints(t *testing.T) {
+	rt := prRuntime{
+		ghPRForBranch: func(dir string) ghx.PRMetadata { return ghx.PRMetadata{Exists: false} },
+		ghPRCreate: func(dir, title, body string) (string, error) {
+			return "", errors.New("HTTP 403: Must be a collaborator to create pull requests")
+		},
+		execRun: originRemoteExec("https://github.com/acme/widgets.git"),
+		ghGetAccounts: func(dir, host string) ([]ghx.Account, error) {
+			return []ghx.Account{{Login: "other-user", Active: false}}, nil
+		},
+		ghAuthProbe: func(dir, host string) ghx.AuthProbeResult {
+			return ghx.AuthProbeResult{Authenticated: true, ActiveAccount: "me"}
+		},
+	}
+
+	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Add thing", Body: "Body text"}, rt)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) {
+		t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
+	}
+	if !strings.Contains(ie.Msg, "gh pr create:") {
+		t.Errorf("Msg: got %q, want it to reference gh pr create", ie.Msg)
+	}
+	if !strings.Contains(ie.Suggestion, "gh auth switch --user other-user") {
+		t.Errorf("Suggestion missing switch hint: %q", ie.Suggestion)
+	}
+	if !strings.Contains(ie.Suggestion, "acme/widgets") {
+		t.Errorf("Suggestion missing owner/repo: %q", ie.Suggestion)
+	}
+	if !strings.Contains(ie.Suggestion, "call pr_apply again with the same arguments") {
+		t.Errorf("Suggestion missing retry instruction: %q", ie.Suggestion)
+	}
+}
+
+func TestPrApply_PermissionError_FromEdit_EnrichedSameWay(t *testing.T) {
+	rt := prRuntime{
+		ghPRForBranch: func(dir string) ghx.PRMetadata {
+			return ghx.PRMetadata{Exists: true, Number: 9, URL: "https://github.com/acme/widgets/pull/9"}
+		},
+		ghPREdit: func(dir string, num int, title, body string) (string, error) {
+			return "", errors.New("HTTP 403: Resource not accessible by integration")
+		},
+		execRun: originRemoteExec("git@github.com:acme/widgets.git"),
+		ghGetAccounts: func(dir, host string) ([]ghx.Account, error) {
+			return []ghx.Account{{Login: "other-user", Active: false}}, nil
+		},
+		ghAuthProbe: func(dir, host string) ghx.AuthProbeResult {
+			return ghx.AuthProbeResult{Authenticated: true, ActiveAccount: "me"}
+		},
+	}
+
+	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Updated title", Body: "Body text"}, rt)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) {
+		t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
+	}
+	if !strings.Contains(ie.Msg, "gh pr edit:") {
+		t.Errorf("Msg: got %q, want it to reference gh pr edit", ie.Msg)
+	}
+	if !strings.Contains(ie.Suggestion, "gh auth switch --user other-user") {
+		t.Errorf("Suggestion missing switch hint: %q", ie.Suggestion)
+	}
+}
+
+func TestPrApply_NonPermissionError_PassesThroughUnenriched(t *testing.T) {
+	rt := prRuntime{
+		ghPRForBranch: func(dir string) ghx.PRMetadata { return ghx.PRMetadata{Exists: false} },
+		ghPRCreate: func(dir, title, body string) (string, error) {
+			return "", errors.New("connection reset by peer")
+		},
+		// execRun/ghGetAccounts/ghAuthProbe are deliberately left nil: since
+		// isPermissionError short-circuits before any of them would be
+		// called, a nil-func panic here would itself prove enrichment ran
+		// where it shouldn't have.
+	}
+
+	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Add thing", Body: "Body text"}, rt)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) {
+		t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
+	}
+	if ie.Suggestion != "" {
+		t.Errorf("expected no Suggestion for a non-permission error, got %q", ie.Suggestion)
+	}
+	if !strings.Contains(ie.Msg, "connection reset by peer") {
+		t.Errorf("Msg: got %q, want original error text preserved", ie.Msg)
+	}
+}
+
+func TestPrApply_PermissionError_NoOriginRemote_FallsBackToGeneric(t *testing.T) {
+	rt := prRuntime{
+		ghPRForBranch: func(dir string) ghx.PRMetadata { return ghx.PRMetadata{Exists: false} },
+		ghPRCreate: func(dir, title, body string) (string, error) {
+			return "", errors.New("HTTP 403: must be a collaborator")
+		},
+		execRun: func(name string, args []string, opts execx.Options) (string, error) {
+			return "", errors.New("fatal: no such remote 'origin'")
+		},
+	}
+
+	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Add thing", Body: "Body text"}, rt)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) {
+		t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
+	}
+	if ie.Suggestion != "" {
+		t.Errorf("expected no Suggestion when enrichment cannot resolve a remote, got %q", ie.Suggestion)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // releaseSource provenance gate (task 8) — pure unit tests, no FS.
 //
 // The negative cases (missing/invalid/auto-rejected releaseSource) all

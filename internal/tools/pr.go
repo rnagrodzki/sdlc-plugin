@@ -589,6 +589,9 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 	if meta.Exists {
 		url, err := rt.ghPREdit(workDir, meta.Number, in.Title, body)
 		if err != nil {
+			if enriched := prEnrichPermissionError(rt, workDir, "gh pr edit", err); enriched != nil {
+				return PRApplyOut{}, enriched
+			}
 			return PRApplyOut{}, &mcpserver.InfraError{Msg: "gh pr edit: " + err.Error(), Cause: err}
 		}
 		if url == "" {
@@ -604,6 +607,9 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 
 	url, err := rt.ghPRCreate(workDir, in.Title, body)
 	if err != nil {
+		if enriched := prEnrichPermissionError(rt, workDir, "gh pr create", err); enriched != nil {
+			return PRApplyOut{}, enriched
+		}
 		return PRApplyOut{}, &mcpserver.InfraError{Msg: "gh pr create: " + err.Error(), Cause: err}
 	}
 	if intent != nil {
@@ -612,6 +618,73 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 		}
 	}
 	return PRApplyOut{URL: url, Created: true, ReleaseIntent: intent}, nil
+}
+
+// isPermissionError reports whether err's message indicates gh CLI refused
+// pr create/pr edit for a permission reason (not a collaborator, a 403
+// response, or GitHub's "Resource not accessible" API message) rather than
+// some other infra failure (network, rate limit, malformed input) that
+// account-switch guidance wouldn't help with.
+func isPermissionError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "must be a collaborator") ||
+		strings.Contains(msg, "403") ||
+		strings.Contains(msg, "Resource not accessible")
+}
+
+// prEnrichPermissionError inspects originalErr for a gh CLI permission
+// failure from ghPRCreate/ghPREdit and, when found, returns an
+// *mcpserver.InfraError carrying account-switch guidance in its Suggestion
+// field — the same diagnostics buildAuthDiagnosticsWith/ghx.FormatAccessDenied
+// produce for pr_prepare's preflight, now surfaced at the point pr_apply
+// actually hits the failure. Returns nil (never a typed-nil interface,
+// callers check for that) when originalErr is not a permission error, or
+// when enrichment itself cannot proceed (no origin remote, remote URL
+// doesn't parse) — callers fall back to their own generic InfraError in
+// that case, matching the "falls back to nil" contract used throughout this
+// file's other best-effort helpers (e.g. ensureReleaseLabels).
+//
+// verb is a disclosed addition beyond the fact sheet's literal 3-arg
+// contract example: the same helper backs both the ghPRCreate (line ~605)
+// and ghPREdit (line ~590) call sites, whose existing generic-InfraError
+// messages are "gh pr create: "/"gh pr edit: " respectively — hardcoding
+// "gh pr create: " here would mislabel an edit failure.
+func prEnrichPermissionError(rt prRuntime, workDir, verb string, originalErr error) error {
+	if !isPermissionError(originalErr) {
+		return nil
+	}
+
+	originURL, err := rt.execRun("git", []string{"remote", "get-url", "origin"}, execx.Options{Dir: workDir})
+	if err != nil || strings.TrimSpace(originURL) == "" {
+		return nil
+	}
+	owner, repo, err := ghx.ParseRemoteOwner(originURL)
+	if err != nil {
+		return nil
+	}
+
+	accounts, _ := rt.ghGetAccounts(workDir, "github.com")
+	logins := make([]string, 0, len(accounts))
+	for _, a := range accounts {
+		logins = append(logins, a.Login)
+	}
+
+	activeAccount := ""
+	if probe := rt.ghAuthProbe(workDir, ""); probe.Authenticated {
+		activeAccount = probe.ActiveAccount
+	}
+
+	suggestion := ghx.FormatAccessDenied(activeAccount, owner, repo, logins) +
+		"\nAfter switching, call pr_apply again with the same arguments."
+
+	return &mcpserver.InfraError{
+		Msg:        verb + ": " + originalErr.Error(),
+		Suggestion: suggestion,
+		Cause:      originalErr,
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -972,7 +1045,9 @@ func RegisterPRTools(s *mcpserver.Server) {
 		"Creates a PR for the current branch, or edits the existing one, via gh pr create/gh pr edit (KD14 executor tool). "+
 			"When releaseLevel is set, releaseSource is required: \"user\" (explicit interactive choice), \"config\" (project/ship-config default), "+
 			"or \"pipeline\" (computed by /ship's version step). In autoMode, releaseSource=\"user\" is always rejected — an unattended caller must "+
-			"resolve to \"config\" or \"pipeline\"; never invent a release level yourself and label it \"user\" to bypass this.",
+			"resolve to \"config\" or \"pipeline\"; never invent a release level yourself and label it \"user\" to bypass this. "+
+			"A gh CLI permission error (not a collaborator, 403, Resource not accessible) is enriched with account-switch guidance "+
+			"(active account, target owner/repo, candidate accounts to switch to) in the error's suggestion field.",
 		func(ctx mcpserver.Ctx, in PRApplyIn) (PRApplyOut, error) {
 			mainRoot, err := worktree.MainRoot()
 			if err != nil {
