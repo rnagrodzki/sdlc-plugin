@@ -49,7 +49,7 @@ func Register[TIn, TOut any](s *Server, name, desc string, h func(ctx Ctx, in TI
 		defer func() {
 			if r := recover(); r != nil {
 				msg := fmt.Sprintf("panic: %v", r)
-				env, marshalErr := wrapErr("infra", msg)
+				env, marshalErr := wrapErr("infra", msg, "")
 				if marshalErr != nil {
 					// Last resort: raw text.
 					env = []byte(`{"ok":false,"code":"infra","error":"panic recovery marshal failure"}`)
@@ -67,7 +67,7 @@ func Register[TIn, TOut any](s *Server, name, desc string, h func(ctx Ctx, in TI
 		var in TIn
 		if err := req.BindArguments(&in); err != nil {
 			code, errMsg := "data", fmt.Sprintf("invalid input: %s", err.Error())
-			env, marshalErr := wrapErr(code, errMsg)
+			env, marshalErr := wrapErr(code, errMsg, "")
 			if marshalErr != nil {
 				env = []byte(`{"ok":false,"code":"data","error":"input bind failure"}`)
 			}
@@ -82,8 +82,8 @@ func Register[TIn, TOut any](s *Server, name, desc string, h func(ctx Ctx, in TI
 		// Call typed handler.
 		out, err := h(tCtx, in)
 		if err != nil {
-			code, errMsg := mapError(err)
-			env, marshalErr := wrapErr(code, errMsg)
+			code, errMsg, suggestion := mapError(err)
+			env, marshalErr := wrapErr(code, errMsg, suggestion)
 			if marshalErr != nil {
 				env = []byte(`{"ok":false,"code":"infra","error":"error envelope marshal failure"}`)
 			}
@@ -98,7 +98,7 @@ func Register[TIn, TOut any](s *Server, name, desc string, h func(ctx Ctx, in TI
 		// Success envelope.
 		env, marshalErr := wrapOK(out)
 		if marshalErr != nil {
-			errEnv, _ := wrapErr("infra", fmt.Sprintf("marshal result: %s", marshalErr.Error()))
+			errEnv, _ := wrapErr("infra", fmt.Sprintf("marshal result: %s", marshalErr.Error()), "")
 			return &mcp.CallToolResult{
 				Content: []mcp.Content{
 					mcp.TextContent{Type: "text", Text: string(errEnv)},

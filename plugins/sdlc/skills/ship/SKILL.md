@@ -28,7 +28,17 @@ Companion files, loaded on demand: [`config-format.md`](config-format.md) (`.sdl
 
 **2. Implicit resume check.** Call `ship_state({action:"read"})` even without `--resume` — a stale in-flight run can exist from a prior session. If the response carries `resumeBriefing` **and** `--resume` was explicitly passed (or `--auto` was not), follow [`entry-modes.md`](entry-modes.md)'s `--resume` handler now (render `resumeBriefing.display` verbatim, resume from `resumeBriefing.next`) — do not call `ship_prepare`. If `--auto` was passed **without** `--resume`, do not auto-follow `resumeBriefing` — proceed to a fresh run instead, but understand that `ship_prepare` (step 4) will **silently prune** that old resumable file as a side effect of writing new state (`state.Write`'s same-branch prune-on-write); it is not preserved. If no `resumeBriefing` at all (no file, a stamped-terminal file, or nothing ever started), continue below with no special handling.
 
-**3. Pre-`ship_prepare` branch setup.** If on the default branch and `--plan <path>` was given, `git checkout -b <name>` now — `ship_prepare` captures the branch synchronously.
+**3. Pre-`ship_prepare` branch setup.** If on the default branch and `--plan <path>` was given:
+  - Under `flags.auto`: `git checkout -b <name>` with a log line, no prompt.
+  - Otherwise (interactive mode): AskUserQuestion before branch creation:
+    > On the default branch ({branch}). A feature branch is needed.
+    > Derived name: `{derivedName}`
+    >
+    > Options:
+    > 1. **Create `{derivedName}`** — checkout and continue
+    > 2. **Use a different name** — specify your own branch name
+    
+    On option 1: `git checkout -b {derivedName}`. On option 2: ask for the name, then `git checkout -b {userProvidedName}`. Either way, `ship_prepare` captures the branch synchronously.
 
 **4. Call `ship_prepare`** with the parsed flags (`skipConfigCheck:false`, `hasPlan`, `auto`, `steps`, `quick`, `quality`, `bump`, `draft`, `dryRun`, `resume:false`, `rebase`, `openspecChange`, `planFile`, `gc:false`) → `{errors, warnings, flags, sources, branch, worktree, stateFile, prunedOrphans, report}`. Config auto-migrates internally (KD5 gate) — never hand-instruct a user to edit `schemaVersion`. `errors` non-empty: print each string verbatim, stop (no state was created). `warnings` non-empty: print each string verbatim, continue. `--dry-run`: render the pipeline table from `flags`/`sources` ([`entry-modes.md`](entry-modes.md)'s Dry-run section), then `ship_state({action:"skip", step, detail:{reason:"dry-run"}})` for every step in `flags.steps` and `ship_state({action:"cleanup-pipeline", detail:{force:false}})` to stamp the throwaway run terminal — `force:true` no longer deletes anything (it just preserves the file un-stamped), so it would leave a live-looking run behind for the next invocation to trip over. Then stop.
 
