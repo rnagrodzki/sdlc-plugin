@@ -39,7 +39,7 @@ templates, plan templates, guardrails, and more.
 |----|-------------------|
 | `version` | Where the version string lives |
 | `ship` | Ship pipeline preferences |
-| `jira` | Jira project key and site |
+| `jira` | Default Jira project key and allowed project list |
 | `review` | Review scope and settings |
 | `received-review` | How review feedback is processed |
 | `commit` | Commit message style |
@@ -85,7 +85,7 @@ Shows a menu of all sections with their status. Pick which to configure.
 - [/ship](ship.md) — Pipeline steps and review threshold configured here.
 - [/review](review.md) — Dimensions and scope configured here.
 - [/plan](plan.md) — Plan template and guardrails configured here.
-- [/jira](jira.md) — Jira project and site configured here.
+- [/jira](jira.md) — Jira project key configured here.
 
 ## Tips and gotchas
 

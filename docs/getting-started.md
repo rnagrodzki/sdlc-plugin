@@ -90,6 +90,9 @@ Each stage of a change maps to one skill. Run them in order, or let
 | Jira | `/jira` | Create, read, or update Jira issues linked to the work. |
 | After a failure | `/harden` | Propose guardrail changes so the same pipeline failure can't recur. |
 
+For detailed documentation on each skill (flags, examples, tips), see the
+[Skill Reference](skills/README.md).
+
 For the full end-to-end flow instead of running each stage by hand:
 
 ```
@@ -114,5 +117,6 @@ run end-to-end without stopping. Field reference: `README.md`
 
 - Run through [`smoke-test.md`](smoke-test.md) to confirm the install works
   end to end.
+- [Skill Reference](skills/README.md) — detailed docs for every slash command.
 - Hit an error? `README.md` → "Troubleshooting" covers launcher and
   MCP-registration failures.
