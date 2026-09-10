@@ -132,7 +132,7 @@ func TestShipPrepare_StateInit(t *testing.T) {
 // TestShipPrepare_StepScaffold_AllCanonicalSteps verifies that ship_prepare
 // seeds one step entry per configured step, in configured order, correctly
 // classified tracked/inline, and renders a matching PipelineDisplay table —
-// exercising all 10 shipmeta.CanonicalSteps names at once (5 tracked, 5
+// exercising all 9 shipmeta.CanonicalSteps names at once (4 tracked, 5
 // inline; "received-review"/"commit-fixes" are conditional-only and never
 // appear in ship.steps[]/CanonicalSteps, so they cannot be exercised via
 // config here).
@@ -200,8 +200,8 @@ func TestShipPrepare_StepScaffold_AllCanonicalSteps(t *testing.T) {
 			inlineCount++
 		}
 	}
-	if trackedCount != 5 || inlineCount != 5 {
-		t.Errorf("tracked/inline split = %d/%d, want 5/5", trackedCount, inlineCount)
+	if trackedCount != 4 || inlineCount != 5 {
+		t.Errorf("tracked/inline split = %d/%d, want 4/5", trackedCount, inlineCount)
 	}
 
 	wantTable := pipeline.PipelineTable(configStepsFromScaffold(shipmeta.InitialShipStepsFromConfig(shipmeta.CanonicalSteps)))
@@ -557,6 +557,41 @@ func TestShipPrepare_InvalidStep(t *testing.T) {
 	}
 	if len(out.Errors) == 0 {
 		t.Fatal("Errors is empty, want a reserved-step error for \"cleanup\"")
+	}
+}
+
+// TestShipPrepare_BumpWithoutPRStep verifies that a CLI-supplied --bump is
+// rejected when the "pr" step is skipped: version diagnostics now run inside
+// pr_prepare (the standalone "version" step no longer exists), so --bump has
+// nothing to feed once "pr" drops out of the resolved step list.
+func TestShipPrepare_BumpWithoutPRStep(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, "feat/bump-no-pr")
+
+	out, err := shipPrepare(dir, dir, ShipPrepareIn{
+		SkipConfigCheck: true,
+		Steps:           []string{"commit"},
+		Bump:            "minor",
+	})
+	if err != nil {
+		t.Fatalf("shipPrepare: %v", err)
+	}
+	if len(out.Errors) == 0 {
+		t.Fatal("Errors is empty, want a --bump-without-pr-step error")
+	}
+	found := false
+	for _, e := range out.Errors {
+		if strings.Contains(e, "pr step is skipped") && strings.Contains(e, `"pr"`) {
+			found = true
+		}
+		if strings.Contains(e, "version step") {
+			t.Errorf("error still references the removed version step: %q", e)
+		}
+	}
+	if !found {
+		t.Errorf("Errors = %v, want one referencing the skipped pr step", out.Errors)
 	}
 }
 
@@ -1022,31 +1057,6 @@ func TestShipVerifySideEffect_NoSideEffectStep(t *testing.T) {
 	}
 }
 
-// TestShipVerifySideEffect_VersionReleaseIntentValid verifies the "version"
-// step reports landed:true when Expected is a valid resolved bump level
-// (major/minor/patch), as version/SKILL.md's Step 1 (PLAN) can produce. The
-// version step no longer creates a tag at ship time (Task 12) — there is no
-// git side effect to check, only that a valid release intent was captured.
-func TestShipVerifySideEffect_VersionReleaseIntentValid(t *testing.T) {
-	dir := t.TempDir()
-	initGitFixture(t, dir)
-	gitCommit(t, dir, "initial")
-
-	out, err := shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "version", Expected: "minor"}, fixedNow(time.Now()))
-	if err != nil {
-		t.Fatalf("shipVerifySideEffect: %v", err)
-	}
-	if !out.Landed {
-		t.Error("Landed = false, want true")
-	}
-	if out.SideEffect != "release-intent" {
-		t.Errorf("SideEffect = %q, want %q", out.SideEffect, "release-intent")
-	}
-	if out.Expected == nil || *out.Expected != "minor" {
-		t.Errorf("Expected = %v, want minor", out.Expected)
-	}
-}
-
 // TestShipVerifySideEffect_JSONShape locks in ShipVerifySideEffectOut's
 // custom MarshalJSON against the two payload shapes ship.js's
 // verifySideEffect emit() actually produces (scripts/skill/ship.js's
@@ -1076,7 +1086,7 @@ func TestShipVerifySideEffect_JSONShape(t *testing.T) {
 	}
 
 	t.Run("has-side-effect no --expected", func(t *testing.T) {
-		out, err := shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "version"}, fixedNow(time.Now()))
+		out, err := shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "commit"}, fixedNow(time.Now()))
 		if err != nil {
 			t.Fatalf("shipVerifySideEffect: %v", err)
 		}
@@ -1091,13 +1101,13 @@ func TestShipVerifySideEffect_JSONShape(t *testing.T) {
 	})
 
 	t.Run("has-side-effect with --expected", func(t *testing.T) {
-		out, err := shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "version", Expected: "minor"}, fixedNow(time.Now()))
+		out, err := shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "commit", Expected: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}, fixedNow(time.Now()))
 		if err != nil {
 			t.Fatalf("shipVerifySideEffect: %v", err)
 		}
 		m := decode(t, out)
-		if v, ok := m["expected"]; !ok || v != "minor" {
-			t.Errorf(`"expected" = %v (present=%v), want "minor"`, v, ok)
+		if v, ok := m["expected"]; !ok || v != "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" {
+			t.Errorf(`"expected" = %v (present=%v), want "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"`, v, ok)
 		}
 	})
 
@@ -1116,11 +1126,12 @@ func TestShipVerifySideEffect_JSONShape(t *testing.T) {
 	})
 }
 
-// TestShipVerifySideEffect_VersionReleaseIntentInvalid verifies the
-// "version" step reports landed:false when Expected is not one of
-// major/minor/patch — e.g. empty (version_prepare/the version skill never
-// ran or never resolved a level) or a garbage value.
-func TestShipVerifySideEffect_VersionReleaseIntentInvalid(t *testing.T) {
+// TestShipVerifySideEffect_VersionStepHasNoSideEffect verifies the "version"
+// step — its release diagnostics now run inside the pr step's pr_prepare
+// call, not as a standalone step — reports landed:true, reason
+// "no-side-effect", regardless of Expected, since it no longer has an entry
+// in shipStepSideEffects.
+func TestShipVerifySideEffect_VersionStepHasNoSideEffect(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
@@ -1129,11 +1140,14 @@ func TestShipVerifySideEffect_VersionReleaseIntentInvalid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("shipVerifySideEffect: %v", err)
 	}
-	if out.Landed {
-		t.Error("Landed = true, want false")
+	if !out.Landed {
+		t.Error("Landed = false, want true")
 	}
-	if out.Expected == nil || *out.Expected != "v9.9.9" {
-		t.Errorf("Expected = %v, want v9.9.9", out.Expected)
+	if out.Reason != "no-side-effect" {
+		t.Errorf("Reason = %q, want %q", out.Reason, "no-side-effect")
+	}
+	if out.SideEffect != "" {
+		t.Errorf("SideEffect = %q, want empty", out.SideEffect)
 	}
 }
 
@@ -1224,8 +1238,7 @@ func TestShipVerifySideEffect_PRNotFound(t *testing.T) {
 // TestShipVerifySideEffect_CommitSha_ExpectedMatch verifies the "commit"
 // step reports landed:true and journals {kind:"sha", ref:<HEAD>} when
 // Expected matches the current HEAD sha (the write-path: a caller who just
-// produced a commit passes its own sha as Expected, mirroring the
-// "release-intent" kind's caller-supplied-expected convention).
+// produced a commit passes its own sha as Expected).
 func TestShipVerifySideEffect_CommitSha_ExpectedMatch(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
@@ -1363,9 +1376,9 @@ func TestShipVerifySideEffect_CommitSha_ResumeConfirmsJournal(t *testing.T) {
 
 // TestShipStateSchema_SideEffectsKindEnum proves AC4's schema-level
 // enforcement: ship-state.schema.json must accept a sideEffects entry with a
-// valid kind ("release-intent"/"pr"/"sha") and reject one with an
-// unrecognized kind, via the enum restriction — not merely something
-// application code happens to filter out.
+// valid kind ("pr"/"sha") and reject one with an unrecognized kind, via the
+// enum restriction — not merely something application code happens to
+// filter out.
 func TestShipStateSchema_SideEffectsKindEnum(t *testing.T) {
 	schemaPath, err := filepath.Abs(filepath.Join("..", "..", "plugins", "sdlc", "schemas", "ship-state.schema.json"))
 	if err != nil {
@@ -1406,9 +1419,9 @@ func TestShipStateSchema_SideEffectsKindEnum(t *testing.T) {
 
 	t.Run("valid kind accepted", func(t *testing.T) {
 		doc := baseState(map[string]any{
-			"version": map[string]any{
-				"kind":       "release-intent",
-				"ref":        "minor",
+			"pr": map[string]any{
+				"kind":       "pr",
+				"ref":        "42",
 				"verifiedAt": "2026-03-01T12:00:00Z",
 			},
 		})
@@ -1427,6 +1440,22 @@ func TestShipStateSchema_SideEffectsKindEnum(t *testing.T) {
 		})
 		if err := validate(t, doc); err == nil {
 			t.Error("expected schema validation to reject unknown sideEffects kind, got nil error")
+		}
+	})
+
+	t.Run("release-intent kind rejected", func(t *testing.T) {
+		// release-intent was removed from the enum when the standalone
+		// version tool was retired (its side effects now record as
+		// pr/sha only); prove the schema enforces the removal.
+		doc := baseState(map[string]any{
+			"version": map[string]any{
+				"kind":       "release-intent",
+				"ref":        "minor",
+				"verifiedAt": "2026-03-01T12:00:00Z",
+			},
+		})
+		if err := validate(t, doc); err == nil {
+			t.Error("expected schema validation to reject release-intent sideEffects kind, got nil error")
 		}
 	})
 }

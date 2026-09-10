@@ -16,7 +16,7 @@ import (
 // pluginVersion mirrors the "version" field in plugins/sdlc/.claude-plugin/plugin.json.
 // Keep these in sync manually — TestPluginVersionMatchesManifest fails the
 // build if they drift.
-const pluginVersion = "0.0.0"
+const pluginVersion = "0.0.1"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -50,7 +50,6 @@ func runVersion() {
 func runMCP() {
 	s := mcpserver.New("sdlc", pluginVersion)
 
-	tools.RegisterVersionTools(s)
 	tools.RegisterPlanTools(s)
 	tools.RegisterPlanExploreTools(s)
 	tools.RegisterLinksTools(s)

@@ -279,7 +279,7 @@ Detected configuration:
 
 Example rendering:
 ```
-1. [set] Version — Tells /version and /ship where the canonical version string lives.
+1. [set] Version — Tells /pr and /ship where the canonical version string lives.
 2. [not-set] Ship — Developer-local pipeline preferences for /ship.
 3. [not-set] Review dimensions — Review dimensions installed under .sdlc-v2/review-dimensions/*.yaml.
 4. [not-set] Plan template — Project-owned plan template at .sdlc-v2/plan-template.md.
@@ -478,8 +478,8 @@ After all `version` section fields are collected and BEFORE storing the section 
    | `package.json` | compatible | — |
    | `cargo.toml` | compatible | — |
    | `plugin.json` | compatible | — |
-   | `pyproject.toml` | partial | pyproject.toml uses PEP 440 pre-release format (e.g., `.rc1`), which differs from semver (`-rc.1`). /version writes a semver string that may not parse cleanly with PEP 440 tooling. Confirm before writing. |
-   | `pubspec.yaml` | incompatible | pubspec.yaml does not support semver pre-release labels. Setting preRelease will break /version at bump time. |
+   | `pyproject.toml` | partial | pyproject.toml uses PEP 440 pre-release format (e.g., `.rc1`), which differs from semver (`-rc.1`). The version bump, written post-merge by CI, may not parse cleanly with PEP 440 tooling. Confirm before writing. |
+   | `pubspec.yaml` | incompatible | pubspec.yaml does not support semver pre-release labels. Setting preRelease will break the post-merge CI version bump. |
    | `version-file` | unknown | Plain text version files accept any string, but downstream tooling that reads this file may not. Confirm before writing. |
 
 3. Branch on `level`:
@@ -876,7 +876,6 @@ legacy file conflicts, or user preferences that differ from defaults.
 
 ## See Also
 
-- [`/version`](../version/SKILL.md) — version bumps and release tags
 - [`/ship`](../ship/SKILL.md) — end-to-end feature shipping pipeline
 - [`/review`](../review/SKILL.md) — multi-dimension code review
 - [`/jira`](../jira/SKILL.md) — Jira integration

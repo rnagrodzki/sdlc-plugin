@@ -35,7 +35,7 @@ Read these files to understand conventions:
 
 1. `internal/mcpserver/register.go` — `Register[TIn, TOut]` function pattern
 2. `internal/mcpserver/envelope.go` — error types (`DomainError`, `InfraError`, `DataError`) with `Suggestion` field
-3. One existing tool file matching the closest sibling (manifest may specify which, else use `internal/tools/version.go` as default reference)
+3. One existing tool file matching the closest sibling (manifest may specify which, else use `internal/tools/jira.go` as default reference)
 4. One existing test file for that sibling
 
 ## Step 2 — Generate Input Struct

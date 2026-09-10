@@ -5,9 +5,11 @@
 // check), which used to back a standalone pr_validate_body tool here and
 // is now reused by validate's "pr_body" action (internal/tools/validators.go).
 //
-// Scope fence (task 25): pr_prepare mirrors only scripts/skill/pr.js's
+// Scope fence (task 25): pr_prepare mirrors scripts/skill/pr.js's
 // gh-auth-preflight + config-check + branch-guard + JIRA-detection +
-// template-load slice (main()'s Steps up to and including Step 4). It does
+// template-load slice (main()'s Steps up to and including Step 4), plus
+// version diagnostics (bump options, tags, commits since tag) when a
+// version config exists — see prVersionDiagnosticsWith. It does
 // NOT port getCommitsStructured, getDiffStat/getDiffContent,
 // getRemoteState/pushToRemote, fetchRepoLabels, or base-branch resolution
 // (Step 5 onward) — none of those primitives exist elsewhere in this Go
@@ -17,6 +19,7 @@ package tools
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -121,13 +124,31 @@ type PRPrepareOut struct {
 	JiraTicket string         `json:"jiraTicket,omitempty"`
 	Template   *PRTemplateOut `json:"template,omitempty"`
 
+	// Version diagnostics — populated only when the project has a version
+	// config section (cfg.Version != nil). All pointer/slice fields use
+	// omitempty so they vanish from the wire when no version config exists.
+	VersionSource       *VersionSourceInfo          `json:"versionSource,omitempty"`
+	BumpOptions         []VersionBumpOption         `json:"bumpOptions,omitempty"`
+	Tags                *VersionTagInfo             `json:"tags,omitempty"`
+	CommitsSinceTag     []string                    `json:"commitsSinceTag,omitempty"`
+	ConventionalSummary *VersionConventionalSummary `json:"conventionalSummary,omitempty"`
+	ChangelogExists     bool                        `json:"changelogExists"`
+	Idempotency         *VersionIdempotency         `json:"idempotency,omitempty"`
+	VersionDivergence   *DivergenceInfo             `json:"versionDivergence,omitempty"`
+	ExistingRCs         map[string][]string         `json:"existingRCs,omitempty"`
+	VersionConfig       *VersionConfigInfo          `json:"versionConfig,omitempty"`
+	DefaultBranch       string                      `json:"defaultBranch,omitempty"`
+	OnDefaultBranch     bool                        `json:"onDefaultBranch"`
+
 	Next string `json:"next"`
 }
 
 // prPrepareNext derives the next-step guidance for a PRPrepareOut, keyed off
 // its outcome: AccountMismatch (switch account), any other error (fix and
-// retry), or success (proceed to pr_apply). Mirrors the
-// VersionPrepareOut.Next pattern (version.go).
+// retry), or success (proceed to pr_apply, with version context folded in
+// when version diagnostics are present). Mirrors the summary-assembly
+// pattern formerly implemented by the standalone version tool's
+// versionPrepareSummary, now inlined here.
 func prPrepareNext(out PRPrepareOut) string {
 	if out.AccountMismatch {
 		return "Switch GitHub account, then call pr_prepare again."
@@ -135,7 +156,17 @@ func prPrepareNext(out PRPrepareOut) string {
 	if len(out.Errors) > 0 {
 		return "Fix the errors above, then call pr_prepare again."
 	}
-	return "Call pr_apply with title, body, and release fields."
+	base := "Call pr_apply with title, body, and release fields."
+	if out.Idempotency != nil && out.Idempotency.AlreadyBumped {
+		return fmt.Sprintf("%s Version already bumped at HEAD (tag %s); omit release fields.", base, out.Idempotency.TagAtHead)
+	}
+	if out.VersionConfig != nil && !out.OnDefaultBranch {
+		return fmt.Sprintf("%s Not on default branch (default: %s); version fields are informational only.", base, out.DefaultBranch)
+	}
+	if out.ConventionalSummary != nil && out.ConventionalSummary.Suggest != "" {
+		return fmt.Sprintf("%s Suggested release level: %s.", base, out.ConventionalSummary.Suggest)
+	}
+	return base
 }
 
 // ---------------------------------------------------------------------------
@@ -160,6 +191,8 @@ type prRuntime struct {
 	gitTagList          func(dir string) ([]string, error)
 	gitAllSemverTags    func(dir string) ([]string, error)
 	gitTagExists        func(dir, name string) (bool, error)
+	gitDefaultBranch    func(dir string) (string, error)
+	gitTagsAtHead       func(dir string) ([]string, error)
 	execRun             func(name string, args []string, opts execx.Options) (string, error)
 	configRead          func(root string) (*config.Config, error)
 	configReadSection   func(root, section string) (map[string]any, error)
@@ -186,6 +219,8 @@ var defaultPRRuntime = prRuntime{
 	gitTagList:          gitx.TagList,
 	gitAllSemverTags:    gitx.AllSemverTags,
 	gitTagExists:        gitx.TagExists,
+	gitDefaultBranch:    gitx.DefaultBranch,
+	gitTagsAtHead:       gitx.TagsAtHead,
 	execRun:             execx.Run,
 	configRead:          config.Read,
 	configReadSection:   config.ReadSection,
@@ -232,6 +267,233 @@ func buildAuthDiagnosticsWith(rt prRuntime, workDir, wantLogin, owner string, su
 		diag.LoginHint = "gh auth login --hostname github.com"
 	}
 	return diag
+}
+
+// prVersionDiagnostics holds the version-related fields gathered by
+// prVersionDiagnosticsWith, ready to be merged into PRPrepareOut.
+type prVersionDiagnostics struct {
+	VersionSource       *VersionSourceInfo
+	BumpOptions         []VersionBumpOption
+	Tags                *VersionTagInfo
+	CommitsSinceTag     []string
+	ConventionalSummary *VersionConventionalSummary
+	ChangelogExists     bool
+	Idempotency         *VersionIdempotency
+	VersionDivergence   *DivergenceInfo
+	ExistingRCs         map[string][]string
+	VersionConfig       *VersionConfigInfo
+	DefaultBranch       string
+	OnDefaultBranch     bool
+}
+
+// prVersionDiagnosticsWith gathers version diagnostic fields from the
+// project's config, tags, and commits. Mirrors the version-diagnostics
+// logic formerly implemented by the standalone version tool's
+// versionPrepare, but routes all I/O through rt (mockable) and degrades
+// failures to warnings instead of errors. Returns the diagnostic fields and
+// any warnings accumulated during the process.
+func prVersionDiagnosticsWith(rt prRuntime, mainRoot, workDir, currentBranch string, cfg *config.Config) (prVersionDiagnostics, []string) {
+	var warnings []string
+	diag := prVersionDiagnostics{
+		BumpOptions:     []VersionBumpOption{},
+		CommitsSinceTag: []string{},
+		Tags: &VersionTagInfo{
+			All:    []string{},
+			AtHead: []string{},
+		},
+		Idempotency: &VersionIdempotency{},
+	}
+
+	vs := cfg.Version
+	diag.VersionConfig = &VersionConfigInfo{
+		PreRelease:       vs.PreRelease,
+		PreReleasePolicy: vs.PreReleasePolicy,
+		Method:           vs.Method,
+		Tag:              vs.Tag,
+		VersionFile:      vs.VersionFile,
+		Changelog:        vs.Changelog,
+	}
+
+	isTagMode := !vs.VersionFile.Enabled
+	tagEnabled := vs.Tag.Enabled
+	tagPrefixFromConfig := vs.Tag.Prefix
+	changelogFile := vs.Changelog.File
+
+	// Default branch.
+	defaultBranch, err := rt.gitDefaultBranch(workDir)
+	if err != nil {
+		warnings = append(warnings, fmt.Sprintf("defaultBranch: %s", err.Error()))
+	}
+	diag.DefaultBranch = defaultBranch
+	diag.OnDefaultBranch = defaultBranch != "" && currentBranch == defaultBranch
+
+	// Version source detection (file mode only — tag mode resolves below).
+	var vf *version.VersionFile
+	if !isTagMode {
+		vf, err = rt.versionDetect(mainRoot, vs.VersionFile.Path, vs.VersionFile.FileType)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("version detection failed: %s", err.Error()))
+			return diag, warnings
+		}
+		diag.VersionSource = &VersionSourceInfo{
+			Path:    vf.Path,
+			Type:    vf.Type,
+			Version: vf.Version,
+		}
+	}
+
+	// Fetch tags from remote (best effort).
+	if fetchErr := rt.gitFetchTags(workDir); fetchErr != nil {
+		warnings = append(warnings, fmt.Sprintf("fetchTags: %s", fetchErr.Error()))
+	}
+
+	// Tags (TagList for release tags, AllSemverTags for RC scanning).
+	releaseTags, err := rt.gitTagList(workDir)
+	if err != nil {
+		warnings = append(warnings, fmt.Sprintf("tags: %s", err.Error()))
+	}
+
+	allTags, err := rt.gitAllSemverTags(workDir)
+	if err != nil {
+		warnings = append(warnings, fmt.Sprintf("allTags: %s", err.Error()))
+	}
+	if allTags != nil {
+		diag.Tags.All = allTags
+	}
+	if len(allTags) > 0 {
+		diag.Tags.Latest = allTags[0]
+	}
+
+	// Tag prefix: config > detect from tags > "v" default.
+	tagPrefix := tagPrefixFromConfig
+	if tagPrefix == "" && len(allTags) > 0 {
+		tagPrefix = detectTagPrefix(allTags)
+	}
+	diag.Tags.TagPrefix = tagPrefix
+
+	// Tag-mode version source: derive from highest semver git tag.
+	if isTagMode {
+		cur := prReleaseHighestTagVersion(releaseTags, tagPrefix)
+		if cur == "" {
+			cur = "0.0.0"
+			warnings = append(warnings, "no semver tags found; defaulting to 0.0.0 for initial release")
+		}
+		vf = &version.VersionFile{Version: cur}
+		diag.VersionSource = &VersionSourceInfo{
+			Type:    "tag",
+			Version: cur,
+		}
+	}
+
+	// Tags at HEAD.
+	atHead, err := rt.gitTagsAtHead(workDir)
+	if err != nil {
+		warnings = append(warnings, fmt.Sprintf("tagsAtHead: %s", err.Error()))
+	} else if atHead != nil {
+		diag.Tags.AtHead = atHead
+	}
+	if diag.Tags.All == nil {
+		diag.Tags.All = []string{}
+	}
+	if diag.Tags.AtHead == nil {
+		diag.Tags.AtHead = []string{}
+	}
+
+	// Idempotency: already bumped if semver tag at HEAD.
+	if len(diag.Tags.AtHead) > 0 {
+		diag.Idempotency.AlreadyBumped = true
+		diag.Idempotency.TagAtHead = diag.Tags.AtHead[0]
+	}
+
+	// Bump base: max(fileVersion, highestRemoteTag).
+	bumpBase := vf.Version
+	highestTag := prReleaseHighestTagVersion(releaseTags, tagPrefix)
+	if tagEnabled && highestTag != "" && prReleaseSemverGreater(highestTag, bumpBase) {
+		diag.VersionDivergence = &DivergenceInfo{
+			FileVersion: vf.Version,
+			TagVersion:  highestTag,
+			Message:     fmt.Sprintf("file version %s is behind remote tag %s; bump base uses tag version", vf.Version, highestTag),
+		}
+		warnings = append(warnings, diag.VersionDivergence.Message)
+		bumpBase = highestTag
+	}
+
+	// Bump options.
+	preReleasePolicy := "continue-rc"
+	if vs.PreReleasePolicy != "" {
+		preReleasePolicy = vs.PreReleasePolicy
+	}
+	bumpVF := &version.VersionFile{Version: bumpBase}
+	existingRCs := make(map[string][]string)
+	for _, level := range []string{"major", "minor", "patch"} {
+		result, bErr := version.Bump(bumpVF, level)
+		if bErr != nil {
+			warnings = append(warnings, fmt.Sprintf("bump %s: %s", level, bErr.Error()))
+			continue
+		}
+		rcNum := prReleaseFindNextRC(allTags, tagPrefix, result)
+		rcNext := result + "-rc" + strconv.Itoa(rcNum)
+
+		needle := tagPrefix + result + "-rc"
+		var rcs []string
+		for _, t := range allTags {
+			if strings.HasPrefix(t, needle) {
+				rcs = append(rcs, t)
+			}
+		}
+		if len(rcs) > 0 {
+			existingRCs[result] = rcs
+		}
+
+		suggestedPreRelease := versionSuggestedPreRelease(preReleasePolicy, len(rcs) > 0)
+		diag.BumpOptions = append(diag.BumpOptions, VersionBumpOption{
+			Level:               level,
+			Result:              result,
+			Current:             bumpBase,
+			RCNext:              rcNext,
+			SuggestedPreRelease: suggestedPreRelease,
+		})
+	}
+	if len(existingRCs) > 0 {
+		diag.ExistingRCs = existingRCs
+	}
+
+	// Commits since last tag.
+	latestForLog := ""
+	if len(releaseTags) > 0 {
+		latestForLog = releaseTags[0]
+	}
+	if latestForLog != "" {
+		logOut, logErr := rt.execRun("git", []string{
+			"log", "--oneline", latestForLog + "..HEAD",
+		}, execx.Options{Dir: workDir})
+		if logErr != nil {
+			warnings = append(warnings, fmt.Sprintf("commitsSinceTag: %s", logErr.Error()))
+		} else if logOut != "" {
+			diag.CommitsSinceTag = nonEmptyLines(logOut)
+		}
+	} else {
+		logOut, logErr := rt.execRun("git", []string{
+			"log", "--oneline",
+		}, execx.Options{Dir: workDir})
+		if logErr != nil {
+			warnings = append(warnings, fmt.Sprintf("commitsSinceTag: %s", logErr.Error()))
+		} else if logOut != "" {
+			diag.CommitsSinceTag = nonEmptyLines(logOut)
+		}
+	}
+
+	// Conventional commit summary.
+	diag.ConventionalSummary = analyzeConventionalCommits(diag.CommitsSinceTag)
+
+	// Changelog existence check.
+	clFile := "CHANGELOG.md"
+	if changelogFile != "" {
+		clFile = changelogFile
+	}
+	diag.ChangelogExists = fileExists(filepath.Join(mainRoot, clFile))
+
+	return diag, warnings
 }
 
 // detectJiraTicket ports pr.js's detectJiraTicket(branchName, commits):
@@ -429,6 +691,25 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 		}
 	}
 
+	// Version diagnostics — gated on version config presence. Failures
+	// degrade to warnings, never errors, so they don't block the PR flow.
+	if cfg, cfgErr := rt.configRead(mainRoot); cfgErr == nil && cfg != nil && cfg.Version != nil {
+		vd, vdWarnings := prVersionDiagnosticsWith(rt, mainRoot, workDir, currentBranch, cfg)
+		warnings = append(warnings, vdWarnings...)
+		out.VersionSource = vd.VersionSource
+		out.BumpOptions = vd.BumpOptions
+		out.Tags = vd.Tags
+		out.CommitsSinceTag = vd.CommitsSinceTag
+		out.ConventionalSummary = vd.ConventionalSummary
+		out.ChangelogExists = vd.ChangelogExists
+		out.Idempotency = vd.Idempotency
+		out.VersionDivergence = vd.VersionDivergence
+		out.ExistingRCs = vd.ExistingRCs
+		out.VersionConfig = vd.VersionConfig
+		out.DefaultBranch = vd.DefaultBranch
+		out.OnDefaultBranch = vd.OnDefaultBranch
+	}
+
 	out.Errors = errs
 	out.Warnings = warnings
 	out.OK = len(errs) == 0
@@ -476,15 +757,14 @@ func prValidateBodyCore(root string, in PRValidateBodyIn) (PRValidateBodyOut, er
 type PRApplyIn struct {
 	Title             string `json:"title" jsonschema_description:"PR title, used for gh pr create/edit."`
 	Body              string `json:"body" jsonschema_description:"PR body text, used for gh pr create/edit."`
-	ReleaseLevel      string `json:"releaseLevel,omitempty" jsonschema:"enum=major,enum=minor,enum=patch" jsonschema_description:"Release bump level for this PR (e.g. \"patch\"/\"minor\"/\"major\"). Required unless skipReleaseCheck is true — an empty value without skipReleaseCheck is rejected so release intent is never skipped by omission; run /version first, or pass skipReleaseCheck: true to explicitly acknowledge no release."`
+	ReleaseLevel      string `json:"releaseLevel,omitempty" jsonschema:"enum=major,enum=minor,enum=patch" jsonschema_description:"Release bump level for this PR (e.g. \"patch\"/\"minor\"/\"major\"). Required unless skipReleaseCheck is true — an empty value without skipReleaseCheck is rejected so release intent is never skipped by omission; pass skipReleaseCheck: true to explicitly acknowledge no release."`
 	ReleasePreRelease string `json:"releasePreRelease,omitempty" jsonschema_description:"Pre-release identifier to attach to the release, when releaseLevel is set and this is a pre-release."`
-	ReleaseNotes      string `json:"releaseNotes,omitempty" jsonschema_description:"Release notes text associated with releaseLevel, when set."`
+	ReleaseNotes      string `json:"releaseNotes,omitempty" jsonschema_description:"Release notes text associated with releaseLevel. Required (non-empty) whenever releaseLevel is set."`
 	// ReleaseSource records who decided ReleaseLevel: "user" (explicit
-	// interactive choice), "config" (a project/ship-config default), or
-	// "pipeline" (computed deterministically by /ship's version step, not
-	// chosen by anyone). Required whenever ReleaseLevel is set — see the
-	// releaseSource validation block in prApplyCoreWith.
-	ReleaseSource string `json:"releaseSource,omitempty" jsonschema:"enum=user,enum=config,enum=pipeline" jsonschema_description:"Who decided releaseLevel: \"user\" (explicit interactive choice), \"config\" (a project/ship-config default), or \"pipeline\" (computed deterministically by /ship's version step, not chosen by anyone). Required whenever releaseLevel is set. In autoMode, \"user\" is always rejected — resolve to \"config\" or \"pipeline\" instead of inventing a release level and labeling it \"user\" to bypass the gate."`
+	// interactive choice) or "config" (a project/ship-config default).
+	// Required whenever ReleaseLevel is set — see the releaseSource
+	// validation block in prApplyCoreWith.
+	ReleaseSource string `json:"releaseSource,omitempty" jsonschema:"enum=user,enum=config" jsonschema_description:"Who decided releaseLevel: \"user\" (explicit interactive choice) or \"config\" (a project/ship-config default). Required whenever releaseLevel is set. In autoMode, \"user\" is always rejected — resolve to \"config\" instead of inventing a release level and labeling it \"user\" to bypass the gate."`
 	// AutoMode signals an unattended call (no human available to confirm
 	// anything right now — e.g. /ship or /pr run with --auto). Disclosed
 	// addition beyond the fact sheet's literal contract example: task 8
@@ -565,7 +845,7 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 	if in.ReleaseLevel == "" && !in.SkipReleaseCheck {
 		return PRApplyOut{}, &mcpserver.DomainError{
 			Msg:        "releaseLevel is empty and skipReleaseCheck is false",
-			Suggestion: "Run /version to set release intent, or pass skipReleaseCheck: true to acknowledge no release.",
+			Suggestion: "Set releaseLevel (Step 1b of the pr skill, or --releaseLevel on this call) to declare release intent, or pass skipReleaseCheck: true to acknowledge no release.",
 		}
 	}
 
@@ -577,6 +857,12 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 		default:
 			return PRApplyOut{}, &mcpserver.DomainError{Msg: fmt.Sprintf("releaseLevel must be major, minor, or patch, got %q", in.ReleaseLevel)}
 		}
+		if strings.TrimSpace(in.ReleaseNotes) == "" {
+			return PRApplyOut{}, &mcpserver.DomainError{
+				Msg:        "releaseNotes is required when releaseLevel is set",
+				Suggestion: "Draft release notes describing changes in this release.",
+			}
+		}
 	}
 	if in.ReleasePreRelease != "" && in.ReleasePreRelease != "rc" {
 		return PRApplyOut{}, &mcpserver.DomainError{Msg: fmt.Sprintf("releasePreRelease must be \"rc\" or empty, got %q", in.ReleasePreRelease)}
@@ -587,23 +873,22 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 	// level and simply omit/misdeclare where it came from.
 	if in.ReleaseLevel != "" {
 		switch in.ReleaseSource {
-		case "user", "config", "pipeline":
+		case "user", "config":
 			// valid provenance
 		case "":
-			return PRApplyOut{}, &mcpserver.DomainError{Msg: "releaseSource is required when releaseLevel is set (must be \"user\", \"config\", or \"pipeline\")"}
+			return PRApplyOut{}, &mcpserver.DomainError{Msg: "releaseSource is required when releaseLevel is set (must be \"user\" or \"config\")", Suggestion: "Supply releaseSource: \"user\" (explicit human choice) or \"config\" (project/ship config default)."}
 		default:
-			return PRApplyOut{}, &mcpserver.DomainError{Msg: fmt.Sprintf("releaseSource must be \"user\", \"config\", or \"pipeline\", got %q", in.ReleaseSource)}
+			return PRApplyOut{}, &mcpserver.DomainError{Msg: fmt.Sprintf("releaseSource must be \"user\" or \"config\", got %q", in.ReleaseSource), Suggestion: "Set releaseSource to \"user\" or \"config\"."}
 		}
 		// Auto mode: nothing here can verify whether "user" truly traces
 		// back to an explicit human decision made upstream (an
 		// AskUserQuestion answer, an explicit --releaseLevel CLI arg) or
 		// was simply asserted by the calling LLM to slip past this gate —
-		// so auto mode refuses "user" unconditionally. Only "config"
-		// (a project/ship-config default) and "pipeline" (computed by
-		// /ship's version step, not chosen by anyone) are deterministic
-		// enough to trust unattended.
+		// so auto mode refuses "user" unconditionally. Only "config" (a
+		// project/ship-config default) is deterministic enough to trust
+		// unattended.
 		if in.AutoMode && in.ReleaseSource == "user" {
-			return PRApplyOut{}, &mcpserver.DomainError{Msg: "releaseLevel in auto mode must come from config or pipeline, not LLM"}
+			return PRApplyOut{}, &mcpserver.DomainError{Msg: "releaseLevel in auto mode must come from config, not LLM", Suggestion: "Use releaseSource: \"config\" when autoMode is true. Only config-derived release levels are trusted in unattended mode."}
 		}
 	}
 
@@ -1066,7 +1351,7 @@ func prReleaseAddLabelWith(rt prRuntime, workDir, label string) error {
 // responsibility.
 func RegisterPRTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "pr_prepare",
-		"Preflight checks for pr: config-version gate, gh-auth + active-account probe (with recovery-shaped diagnostics on failure), branch-guard hard gate, protected-branch rejection, JIRA ticket detection from the branch name, and PR template resolution.",
+		"Preflight checks for pr: config-version gate, gh-auth + active-account probe (with recovery-shaped diagnostics on failure), branch-guard hard gate, protected-branch rejection, JIRA ticket detection from the branch name, PR template resolution, and version diagnostics (bump options, tags, commits since tag, conventional commit summary, existing RCs) when a version config exists.",
 		func(ctx mcpserver.Ctx, in PRPrepareIn) (PRPrepareOut, error) {
 			mainRoot, err := worktree.MainRoot()
 			if err != nil {
@@ -1086,10 +1371,10 @@ func RegisterPRTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "pr_apply",
 		"Creates a PR for the current branch, or edits the existing one, via gh pr create/gh pr edit (KD14 executor tool). "+
 			"releaseLevel is required unless skipReleaseCheck is true — an empty releaseLevel without skipReleaseCheck is rejected so release "+
-			"intent is never skipped by omission; run /version first, or pass skipReleaseCheck: true to explicitly acknowledge no release. "+
-			"When releaseLevel is set, releaseSource is required: \"user\" (explicit interactive choice), \"config\" (project/ship-config default), "+
-			"or \"pipeline\" (computed by /ship's version step). In autoMode, releaseSource=\"user\" is always rejected — an unattended caller must "+
-			"resolve to \"config\" or \"pipeline\"; never invent a release level yourself and label it \"user\" to bypass this. "+
+			"intent is never skipped by omission; pass skipReleaseCheck: true to explicitly acknowledge no release. "+
+			"When releaseLevel is set, releaseNotes must be non-empty and releaseSource is required: \"user\" (explicit interactive choice) or "+
+			"\"config\" (project/ship-config default). In autoMode, releaseSource=\"user\" is always rejected — an unattended caller must resolve "+
+			"to \"config\"; never invent a release level yourself and label it \"user\" to bypass this. "+
 			"A gh CLI permission error (not a collaborator, 403, Resource not accessible) is enriched with account-switch guidance "+
 			"(active account, target owner/repo, candidate accounts to switch to) in the error's suggestion field.",
 		func(ctx mcpserver.Ctx, in PRApplyIn) (PRApplyOut, error) {

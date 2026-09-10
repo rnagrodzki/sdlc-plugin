@@ -22,10 +22,10 @@ this port's tool surface (`pr_prepare`, `pr_apply`) actually supports:
 - **This port does not support draft PRs, arbitrary label management, explicit base-branch
   override, or automatic account-switch retry on gh failure; if gh reports an error, stop and
   report it.** `pr_apply` accepts `title` and `body`, plus optional `releaseLevel` /
-  `releasePreRelease` / `releaseNotes` (forwarded from the version step — see "Release intent"
-  below): when `releaseLevel` is set, `pr_apply` injects release markers into the body and
-  auto-applies a `release:<level>[-rc]` label via `gh pr edit --add-label`. There is still no
-  field for `--draft`, an arbitrary `--label`, or a target base branch, and no recovery helper
+  `releasePreRelease` / `releaseNotes` (forwarded from `/ship`'s resolved bump config — see
+  "Release intent" below): when `releaseLevel` is set, `pr_apply` injects release markers into
+  the body and auto-applies a `release:<level>[-rc]` label via `gh pr edit --add-label`. There
+  is still no field for `--draft`, an arbitrary `--label`, or a target base branch, and no recovery helper
   runs after a failure.
 - `pr_prepare` does not supply a commit list, diff stat/content, remote state, changed files,
   repository labels, or a pre-detected create-vs-update mode. Draft the title and body using
@@ -158,10 +158,29 @@ of the PR). Do not ask for confirmation — the Step 5 approval gate is the cons
 | `jiraTicket` | Detected ticket reference from the branch name, or empty |
 | `template` | `{ path, legacy, headings, content }` or `null` — see PR Template above |
 
+**Version diagnostics** (present only when the project has a version config section; every
+field below is `omitempty` and absent entirely otherwise — treat their absence as "this project
+has no version config; skip bump-option presentation, fall back to the plain level-only prompt
+in Step 1b"):
+
+| Field | Description |
+| ----- | ----------- |
+| `versionSource` | `{ path, type, version }` — where the current version was read from |
+| `bumpOptions` | Array of `{ level, result, current, rcNext?, suggestedPreRelease? }` — one entry per possible bump target (major/minor/patch), each with the resulting version string and whether an RC pre-release is suggested |
+| `tags` | `{ all, atHead, latest, tagPrefix }` — tag inventory |
+| `commitsSinceTag` | Array of commit subject lines since the last tag |
+| `conventionalSummary` | `{ breaking, feat, fix, other, total, suggest }` — conventional-commit counts and a suggested bump level derived from them |
+| `changelogExists` | Boolean |
+| `idempotency` | `{ alreadyBumped, tagAtHead? }` — true when the current HEAD is already tagged at the target version (avoid double-bumping) |
+| `versionDivergence` | `{ fileVersion, tagVersion, message }`, present only when the version file and the highest tag disagree |
+| `existingRCs` | Map of level → existing RC tag list |
+| `versionConfig` | `{ preRelease?, preReleasePolicy, method, tag, versionFile, changelog }` — resolved version config section |
+| `defaultBranch` / `onDefaultBranch` | Branch info used to decide whether a release is even eligible |
+
 **Release intent (invocation input, not part of `PR_CONTEXT`):** when this skill is dispatched
 with `releaseLevel` / `releaseNotes` / `releasePreRelease` / `releaseSource` (e.g. by `/ship`
-forwarding the version step's resolved plan, with `releaseSource` set to `"config"` or
-`"pipeline"` per `/ship`'s own upfront gate), hold all of them for Step 6's `pr_apply` call and
+forwarding its own resolved bump config, with `releaseSource` set to `"config"` per `/ship`'s
+own upfront gate), hold all of them for Step 6's `pr_apply` call and
 for the Step 5 announcement below. `pr_apply` is a hard gate on this: it rejects any
 `releaseLevel` whose `releaseSource` is missing or invalid, and (in `autoMode`) rejects
 `releaseSource: "user"` outright — never call it with a `releaseLevel` and no matching
@@ -179,11 +198,11 @@ standalone `/pr` invocation with no release intent given.
 **Auto mode, no `releaseLevel` supplied:** do not ask, and do not silently skip. Stop and report
 a clear error: standalone `/pr --auto` cannot decide release intent — there is no human to confirm
 it and `pr_apply` rejects `releaseSource: "user"` under `autoMode` unconditionally. Run `/ship`
-instead, which resolves release intent (source `"config"` or `"pipeline"`) before it ever reaches
-this skill. If standalone auto-mode PR creation with a release label is truly needed, the caller
-must pass both `releaseLevel` and a `releaseSource` of `"config"` or `"pipeline"` as explicit
-dispatch args to this skill — there is no `/pr` CLI flag for this, so a human cannot trigger it
-directly. Do not fabricate a level or relabel it `"user"` to get past this.
+instead, which resolves release intent (source `"config"`) before it ever reaches this skill. If
+standalone auto-mode PR creation with a release label is truly needed, the caller must pass both
+`releaseLevel` and a `releaseSource` of `"config"` as explicit dispatch args to this skill —
+there is no `/pr` CLI flag for this, so a human cannot trigger it directly. Do not fabricate a
+level or relabel it `"user"` to get past this.
 
 **Interactive mode, no `releaseLevel` supplied:** use AskUserQuestion:
 
@@ -193,11 +212,31 @@ directly. Do not fabricate a level or relabel it `"user"` to get past this.
 > 1. **Set release level** — specify patch/minor/major (optionally with an RC pre-release)
 > 2. **Skip release (acknowledged)** — create this PR without release intent
 
-On option 1: ask which level (and whether it's an RC), then hold `releaseLevel` and
-`releaseSource: "user"` for Step 6. On option 2: proceed with no release intent — this was an
-explicit, acknowledged choice, so do not ask again at Step 5 or Step 6. Hold
-`skipReleaseCheck: true` for Step 6's `pr_apply` call — without it, `pr_apply` rejects an empty
-`releaseLevel` as an unacknowledged omission.
+**On option 1**, how the level is chosen depends on whether `PR_CONTEXT.bumpOptions` is present:
+
+- **`bumpOptions` present** (this project has a version config section): show the
+  conventional-commit signal first — `conventionalSummary`'s `breaking` / `feat` / `fix` /
+  `other` counts and its `suggest` field (the derived recommendation) — so the user has evidence
+  to decide with. Then ask a second AskUserQuestion built from `bumpOptions[]`: one option per
+  entry, labeled with that entry's `level` and `result` (the target version string, e.g.
+  "minor → 1.4.0"), pre-highlighting/defaulting the option whose `level` matches
+  `conventionalSummary.suggest`. When an entry's `suggestedPreRelease` is set, also offer its RC
+  variant (e.g. "minor (RC) → 1.4.0-rc1", using that entry's `rcNext` as the RC target version).
+  Hold the chosen `level` as `releaseLevel` and `releaseSource: "user"` for Step 6; hold
+  `releasePreRelease: "rc"` only if an RC variant was chosen.
+- **`bumpOptions` absent or empty** (no version config on this project): fall back to today's
+  plain prompt — ask which level (major/minor/patch) and whether it's an RC, with no
+  target-version preview. Hold `releaseLevel` and `releaseSource: "user"` for Step 6 as before.
+
+Once a level is chosen (either branch above), draft `releaseNotes`: a few bullet lines summarizing
+what this release contains, sourced from `PR_CONTEXT.commitsSinceTag` (when present) plus what
+you already know from the conversation — no git commands. Show the draft, let the user amend it,
+then hold the final text as `releaseNotes` for Step 6. `pr_apply` rejects a `releaseLevel` with
+empty `releaseNotes`, so this is not optional whenever a level is set.
+
+**On option 2:** proceed with no release intent — this was an explicit, acknowledged choice, so
+do not ask again at Step 5 or Step 6. Hold `skipReleaseCheck: true` for Step 6's `pr_apply` call
+— without it, `pr_apply` rejects an empty `releaseLevel` as an unacknowledged omission.
 
 ### Step 2 (PLAN): Draft PR Description
 
@@ -292,7 +331,7 @@ directly to Step 6. Treat the response as an implicit `yes`. All critique gates 
 still run — only the interactive approval prompt is skipped. (This is your own reading of the
 invocation arguments — `pr_prepare`'s output carries no `isAuto` field in this port.) Pass
 `autoMode: true` to `pr_apply` in Step 6 whenever `--auto` was passed here — this is what
-makes `pr_apply` enforce that `releaseLevel` (if any) came from config/pipeline, not the LLM.
+makes `pr_apply` enforce that `releaseLevel` (if any) came from config, not the LLM.
 
 ```text
 PR Title: <title>
@@ -338,9 +377,9 @@ pr_apply({
   title: <title>,
   body: <body>,
   releaseLevel: <if set — "major" | "minor" | "patch">,
-  releaseNotes: <if set>,
+  releaseNotes: <required whenever releaseLevel is set — non-empty>,
   releasePreRelease: <if set>,
-  releaseSource: <if releaseLevel set — "user" | "config" | "pipeline">,
+  releaseSource: <if releaseLevel set — "user" | "config">,
   skipReleaseCheck: <true — only when no releaseLevel and Step 1b option 2 was chosen>,
   autoMode: <true | false — whether --auto was passed to this skill invocation>
 }) → { url, created }
@@ -424,7 +463,6 @@ process quirks encountered while generating PR content.
 
 After creating or updating the PR, common follow-ups include:
 - `/review` — review the branch
-- `/version` — tag a release after merge
 
 If OpenSpec enrichment was applied in Step 2 (an active change was detected), also suggest:
 - `openspec validate --strict <change>` — validate change spec files structurally (after merge)
@@ -434,4 +472,3 @@ If OpenSpec enrichment was applied in Step 2 (an active change was detected), al
 
 - [`/commit`](../commit/SKILL.md) — commit changes before creating a PR
 - [`/review`](../review/SKILL.md) — review the branch
-- [`/version`](../version/SKILL.md) — tag a release after merge

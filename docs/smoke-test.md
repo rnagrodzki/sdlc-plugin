@@ -38,8 +38,8 @@ tools do you have from the sdlc plugin?"), or check your client's MCP/tool
 inspector if it has one.
 
 Expect: tools prefixed `mcp__plugin_sdlc_sdlc__`, e.g.
-`mcp__plugin_sdlc_sdlc__commit_prepare`, `mcp__plugin_sdlc_sdlc__version_prepare`.
-32 tools total (see README "Tool surface" table for the full list).
+`mcp__plugin_sdlc_sdlc__commit_prepare`, `mcp__plugin_sdlc_sdlc__pr_prepare`.
+30 tools total (see README "Tool surface" table for the full list).
 
 If no tools appear: this is the step that triggers the cold-cache binary
 download (the MCP connect path has a 60s budget, unlike hooks). Wait a few

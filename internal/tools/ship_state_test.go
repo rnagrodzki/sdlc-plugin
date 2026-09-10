@@ -136,8 +136,8 @@ func TestShipState_Init(t *testing.T) {
 		t.Errorf("sessionId = %v, want sess-init", data["sessionId"])
 	}
 	steps, ok := data["steps"].([]any)
-	if !ok || len(steps) != 7 {
-		t.Fatalf("steps = %v, want a 7-entry scaffold", data["steps"])
+	if !ok || len(steps) != 6 {
+		t.Fatalf("steps = %v, want a 6-entry scaffold", data["steps"])
 	}
 }
 
@@ -1551,8 +1551,8 @@ func TestShipState_SessionID_ClaimSessionCompatible(t *testing.T) {
 	}
 	// Steps must be untouched by the claim.
 	steps, _ := data["steps"].([]any)
-	if len(steps) != 7 {
-		t.Errorf("steps = %v, want the original 7-entry scaffold preserved", steps)
+	if len(steps) != 6 {
+		t.Errorf("steps = %v, want the original 6-entry scaffold preserved", steps)
 	}
 }
 

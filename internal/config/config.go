@@ -145,7 +145,7 @@ func (a *AutomationSection) StepMode(step string) string {
 // PreRelease is the default pre-release label applied when no explicit
 // base bump or --pre is given.
 //
-// PreReleasePolicy controls whether version_prepare suggests a
+// PreReleasePolicy controls whether pr_prepare suggests a
 // release-candidate build instead of a final release, when the caller
 // hasn't said otherwise (e.g. under --auto). One of:
 //   - "always-rc": always suggest an RC, regardless of whether the bump

@@ -1,5 +1,6 @@
 // Package skillcheck is a documentation/tool-surface consistency check for
-// Task 42's rewritten SKILL.md files (commit, version, pr).
+// Task 42's rewritten SKILL.md files (commit, pr; version was rewritten too
+// but has since been retired as a standalone skill).
 // It builds a real MCP tool registry by calling every Register*Tools
 // function in internal/tools against a fresh mcpserver.Server, then
 // verifies every MCP tool name referenced by the rewritten skill docs is
@@ -20,8 +21,7 @@ import (
 	"regexp"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
@@ -29,10 +29,11 @@ import (
 
 // commitSkillsFiles lists the SKILL.md files this task rewrote to call
 // Go-backed MCP tools instead of shelling out to node scripts. Paths are
-// relative to this package directory (internal/skillcheck).
+// relative to this package directory (internal/skillcheck). The standalone
+// "version" skill was retired (its responsibilities absorbed into pr) and
+// its SKILL.md no longer exists, so it is not listed here.
 var commitSkillsFiles = []string{
 	"../../plugins/sdlc/skills/commit/SKILL.md",
-	"../../plugins/sdlc/skills/version/SKILL.md",
 	"../../plugins/sdlc/skills/pr/SKILL.md",
 }
 
@@ -72,7 +73,6 @@ func commitSkillsBuildRegistry(t *testing.T) map[string]bool {
 	tools.RegisterShipTools(srv)
 	tools.RegisterSetupTools(srv)
 	tools.RegisterShipStateTools(srv)
-	tools.RegisterVersionTools(srv)
 	tools.RegisterValidateTools(srv)
 	tools.RegisterLearningsTools(srv)
 	tools.RegisterDimensionsRenderTools(srv)
@@ -81,25 +81,20 @@ func commitSkillsBuildRegistry(t *testing.T) map[string]bool {
 
 	mcpSrv := srv.MCPServer()
 
-	c, err := client.NewInProcessClient(mcpSrv)
+	ctx := context.Background()
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	if _, err := mcpSrv.Connect(ctx, serverTransport, nil); err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "skillcheck-test", Version: "0.0.0"}, nil)
+	c, err := client.Connect(ctx, clientTransport, nil)
 	if err != nil {
-		t.Fatalf("NewInProcessClient: %v", err)
+		t.Fatalf("client Connect: %v", err)
 	}
 	t.Cleanup(func() { c.Close() })
 
-	ctx := context.Background()
-	if err := c.Start(ctx); err != nil {
-		t.Fatalf("client.Start: %v", err)
-	}
-
-	initReq := mcp.InitializeRequest{}
-	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-	initReq.Params.ClientInfo = mcp.Implementation{Name: "skillcheck-test", Version: "0.0.0"}
-	if _, err := c.Initialize(ctx, initReq); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-
-	resp, err := c.ListTools(ctx, mcp.ListToolsRequest{})
+	resp, err := c.ListTools(ctx, nil)
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
@@ -151,9 +146,9 @@ func TestCommitSkillsToolReferencesExistInRegistry(t *testing.T) {
 // TestCommitSkillsRegistryContainsExpectedTools is a narrower sanity check:
 // every tool this task's rewritten skills are documented to call must be
 // present in the registry, by exact name. This pins the specific tool names
-// used across commit, version, and pr so a future rename in
-// internal/tools fails loudly here instead of only in the broader scan
-// above (which would also catch it, but this gives a more precise failure).
+// used across commit and pr so a future rename in internal/tools fails
+// loudly here instead of only in the broader scan above (which would also
+// catch it, but this gives a more precise failure).
 func TestCommitSkillsRegistryContainsExpectedTools(t *testing.T) {
 	registry := commitSkillsBuildRegistry(t)
 
@@ -161,8 +156,6 @@ func TestCommitSkillsRegistryContainsExpectedTools(t *testing.T) {
 		"commit_prepare",
 		"commit_apply",
 		"links_validate",
-		"version_prepare",
-		"version_apply",
 		"scaffold_ci",
 		"pr_prepare",
 		"pr_apply",

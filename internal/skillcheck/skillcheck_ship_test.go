@@ -20,8 +20,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
@@ -101,7 +100,6 @@ func shipSkillsBuildRegistry(t *testing.T) map[string]bool {
 	tools.RegisterSetupTools(srv)
 	tools.RegisterShipStateTools(srv)
 	tools.RegisterShipTools(srv)
-	tools.RegisterVersionTools(srv)
 	tools.RegisterValidateTools(srv)
 	tools.RegisterDimensionsRenderTools(srv)
 	tools.RegisterSetupWriteTools(srv)
@@ -109,25 +107,20 @@ func shipSkillsBuildRegistry(t *testing.T) map[string]bool {
 
 	mcpSrv := srv.MCPServer()
 
-	c, err := client.NewInProcessClient(mcpSrv)
+	ctx := context.Background()
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	if _, err := mcpSrv.Connect(ctx, serverTransport, nil); err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "skillcheck-ship-test", Version: "0.0.0"}, nil)
+	c, err := client.Connect(ctx, clientTransport, nil)
 	if err != nil {
-		t.Fatalf("NewInProcessClient: %v", err)
+		t.Fatalf("client Connect: %v", err)
 	}
 	t.Cleanup(func() { c.Close() })
 
-	ctx := context.Background()
-	if err := c.Start(ctx); err != nil {
-		t.Fatalf("client.Start: %v", err)
-	}
-
-	initReq := mcp.InitializeRequest{}
-	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-	initReq.Params.ClientInfo = mcp.Implementation{Name: "skillcheck-ship-test", Version: "0.0.0"}
-	if _, err := c.Initialize(ctx, initReq); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-
-	resp, err := c.ListTools(ctx, mcp.ListToolsRequest{})
+	resp, err := c.ListTools(ctx, nil)
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
@@ -210,7 +203,6 @@ func TestShipSkillsRegistryContainsExpectedTools(t *testing.T) {
 		"poll_await",
 		"verify_pipeline_classify",
 		"execute_state",
-		"version_apply",
 		"commit_apply",
 		"pr_apply",
 		"review_prepare",
@@ -223,7 +215,7 @@ func TestShipSkillsRegistryContainsExpectedTools(t *testing.T) {
 	}
 }
 
-// shipSkillsStepHeaders maps each of shipmeta's 13 canonical/lifecycle ship
+// shipSkillsStepHeaders maps each of shipmeta's 12 canonical/lifecycle ship
 // pipeline step names to the exact "### ..." (or "## ...") section heading
 // that documents that step's execution in skills/ship/SKILL.md. Used
 // by TestShipSkillsStepActionCrossCheck (AC1) to isolate each step's own
@@ -234,7 +226,6 @@ var shipSkillsStepHeaders = map[string]string{
 	"review":              "### review",
 	"received-review":     "### received-review (conditional)",
 	"commit-fixes":        "### commit-fixes (conditional)",
-	"version":             "### version",
 	"verify-openspec":     "### verify-openspec (inline, opt-in)",
 	"archive-openspec":    "### archive-openspec (inline)",
 	"pr":                  "### pr",
@@ -246,9 +237,9 @@ var shipSkillsStepHeaders = map[string]string{
 
 // shipSkillsStepExpectedActions maps each canonical step name to the
 // ship_state action name(s) at least one of which must appear within that
-// step's own section. The seven steps shipmeta.InitialShipSteps() scaffolds
+// step's own section. The six steps shipmeta.InitialShipSteps() scaffolds
 // up front (execute, commit, review, received-review, commit-fixes,
-// version, pr) route through the generic begin-step/complete-step pair; the
+// pr) route through the generic begin-step/complete-step pair; the
 // remaining steps have no steps[] scaffold entry (state-format.md's
 // scaffolding gap) and instead record their outcome via the generic
 // "decide" action, except the terminal "cleanup" step, which is a
@@ -260,7 +251,6 @@ var shipSkillsStepExpectedActions = map[string][]string{
 	"review":              {"begin-step", "complete-step"},
 	"received-review":     {"begin-step", "complete-step"},
 	"commit-fixes":        {"begin-step", "complete-step"},
-	"version":             {"begin-step", "complete-step"},
 	"verify-openspec":     {"decide"},
 	"archive-openspec":    {"decide"},
 	"pr":                  {"begin-step", "complete-step"},
@@ -299,10 +289,10 @@ func shipSkillsSection(content, heading string) (string, bool) {
 }
 
 // TestShipSkillsStepActionCrossCheck is the Files-note / Acceptance
-// Criterion 1 check: every one of shipmeta's 13 canonical ship pipeline
+// Criterion 1 check: every one of shipmeta's 12 canonical ship pipeline
 // step names must have its own documented section in ship/SKILL.md,
 // and that section must reference the ship_state action(s) that step's
-// lifecycle actually uses (begin-step/complete-step for the seven
+// lifecycle actually uses (begin-step/complete-step for the six
 // scaffolded steps, decide for the five non-scaffolded inline steps, and
 // cleanup-pipeline for the terminal cleanup step) -- guarding against a
 // step's prose silently drifting onto the wrong generic action.
@@ -310,11 +300,11 @@ func TestShipSkillsStepActionCrossCheck(t *testing.T) {
 	repoRoot := shipSkillsRepoRoot(t)
 	content := shipSkillsReadFile(t, repoRoot, "skills/ship/SKILL.md")
 
-	if len(shipSkillsStepHeaders) != 13 {
-		t.Fatalf("shipSkillsStepHeaders has %d entries, want 13 (shipmeta's canonical step count)", len(shipSkillsStepHeaders))
+	if len(shipSkillsStepHeaders) != 12 {
+		t.Fatalf("shipSkillsStepHeaders has %d entries, want 12 (shipmeta's canonical step count)", len(shipSkillsStepHeaders))
 	}
-	if len(shipSkillsStepExpectedActions) != 13 {
-		t.Fatalf("shipSkillsStepExpectedActions has %d entries, want 13", len(shipSkillsStepExpectedActions))
+	if len(shipSkillsStepExpectedActions) != 12 {
+		t.Fatalf("shipSkillsStepExpectedActions has %d entries, want 12", len(shipSkillsStepExpectedActions))
 	}
 
 	for step, heading := range shipSkillsStepHeaders {
@@ -357,7 +347,7 @@ var shipSkillsBashBlockRe = regexp.MustCompile("(?s)```bash\\n(.*?)```")
 // changelog file names that Acceptance Criterion 2 requires never appear
 // inside an LLM-executed ```bash block in the ship skill files: every
 // deterministic mutation must route through its executor tool
-// (commit_apply, pr_apply, version_apply, ship_verify_side_effect, plus the
+// (commit_apply, pr_apply, ship_verify_side_effect, plus the
 // user-facing manual tag/push pause, which lives outside any ```bash
 // block) rather than a direct git/gh invocation or a hand-edited version
 // file.
@@ -377,7 +367,7 @@ var shipSkillsForbiddenMutations = []*regexp.Regexp{
 // ship/SKILL.md nor verify-pipeline/SKILL.md may instruct the LLM
 // to run a git/gh mutation, or hand-edit a version/changelog file, directly
 // via an executable ```bash block -- every such mutation must instead
-// route through an executor tool (commit_apply, pr_apply, version_apply,
+// route through an executor tool (commit_apply, pr_apply,
 // ship_verify_side_effect) or, for the two disclosed manual-only gaps (tag
 // creation/push, post-PR-commit push), through a human-facing
 // AskUserQuestion pause rather than a Bash-tool-executed command.

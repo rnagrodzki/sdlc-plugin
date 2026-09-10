@@ -278,7 +278,15 @@ var datasetRows = []datasetRow{
 	{dataset: "verify-pipeline-exec.yaml", testRef: "TestVerifyPipelineAwait_PendingThenGreen"},
 	{dataset: "verify-tag-ancestry-exec.yaml", testRef: "TestVerifyTagAncestry_PassOnAncestor"},
 	{dataset: "version-lib-exec.yaml", testRef: "TestParseSemver"},
-	{dataset: "version-prepare-exec.yaml", testRef: "TestVersionPrepare_Basic"},
+	{
+		dataset: "version-prepare-exec.yaml",
+		testRef: "TestPrPrepare_IncludesVersionDiagnostics",
+		// The standalone version MCP tool (and its prepare/apply Go
+		// functions and tests) was retired after this audit was written;
+		// its version-diagnostics behavior was absorbed into the pr
+		// prepare tool (internal/tools/pr.go), which this test now
+		// covers instead of the removed prior test.
+	},
 	{dataset: "version-prerelease-exec.yaml", testRef: "TestBump"},
 	{
 		dataset:   "version-retag-exec.yaml",
@@ -447,7 +455,7 @@ var kdRows = []kdRow{
 	},
 	{
 		id:        "KD12",
-		cutReason: "the two-dependency constraint (mark3labs/mcp-go + yaml.v3, everything else stdlib) is a go.mod/go.sum property enforced by `go build`/`go vet` succeeding, not independent runtime behavior a unit test would exercise.",
+		cutReason: "the two-dependency constraint (modelcontextprotocol/go-sdk + yaml.v3, everything else stdlib) is a go.mod/go.sum property enforced by `go build`/`go vet` succeeding, not independent runtime behavior a unit test would exercise.",
 	},
 	{
 		id:        "KD13",

@@ -66,7 +66,7 @@
           "type": "array",
           "items": {
             "type": "string",
-            "enum": ["execute", "commit", "review", "version", "verify-openspec", "archive-openspec", "pr", "verify-pipeline", "await-remote-review", "learnings-commit"]
+            "enum": ["execute", "commit", "review", "verify-openspec", "archive-openspec", "pr", "verify-pipeline", "await-remote-review", "learnings-commit"]
           },
           "uniqueItems": true,
           "description": "Pipeline steps to run. Replaces legacy preset/skip fields."
@@ -75,7 +75,7 @@
           "type": "array",
           "items": {
             "type": "string",
-            "enum": ["execute", "commit", "review", "version", "verify-openspec", "archive-openspec", "pr", "verify-pipeline", "await-remote-review", "learnings-commit"]
+            "enum": ["execute", "commit", "review", "verify-openspec", "archive-openspec", "pr", "verify-pipeline", "await-remote-review", "learnings-commit"]
           },
           "uniqueItems": true,
           "description": "Optional shortened step list activated by --quick. When set, /ship --quick uses this list instead of steps[]. Unset means --quick is not available for this project. See R-quick-1."
@@ -83,7 +83,7 @@
         "bump": {
           "type": "string",
           "pattern": "^(major|minor|patch|[a-z][a-z0-9]*)$",
-          "description": "Version bump level. Accepts `major|minor|patch` or any pre-release label matching `^[a-z][a-z0-9]*$` (e.g., `rc`, `beta`, `alpha`). Label values are forwarded verbatim to version, where they are interpreted as `--bump patch --pre <label>`."
+          "description": "Version bump level. Accepts `major|minor|patch` or any pre-release label matching `^[a-z][a-z0-9]*$` (e.g., `rc`, `beta`, `alpha`). Label values are forwarded to pr_apply as releaseLevel:\"patch\" plus releasePreRelease:<label>."
         },
         "draft": {
           "type": "boolean",

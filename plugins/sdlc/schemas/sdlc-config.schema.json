@@ -7,17 +7,17 @@
   "$defs": {
     "versionSection": {
       "type": "object",
-      "description": "Controls the version skill's behaviour via three independently toggleable release paths — tag, versionFile, changelog — that share only bump policy (preRelease, preReleasePolicy) and delivery method. Each path is enabled or disabled explicitly; a missing sub-object means that path is disabled. This is a breaking config shape: the old flat shape (top-level \"mode\", string \"versionFile\", \"changelogMethod\"/\"changelog\" boolean, \"rcAutoContinue\" boolean) is rejected outright. Run /setup --only version to migrate.",
+      "description": "Controls version-related release behaviour via three independently toggleable release paths — tag, versionFile, changelog — that share only bump policy (preRelease, preReleasePolicy) and delivery method. Each path is enabled or disabled explicitly; a missing sub-object means that path is disabled. This is a breaking config shape: the old flat shape (top-level \"mode\", string \"versionFile\", \"changelogMethod\"/\"changelog\" boolean, \"rcAutoContinue\" boolean) is rejected outright. Run /setup --only version to migrate.",
       "properties": {
         "preRelease": {
           "type": "string",
           "pattern": "^[a-z][a-z0-9]*$",
-          "description": "Default pre-release label applied when no explicit base bump or --pre is given."
+          "description": "Default pre-release label applied when no explicit base bump is given."
         },
         "preReleasePolicy": {
           "type": "string",
           "enum": ["always-rc", "continue-rc", "never"],
-          "description": "Whether version_prepare suggests a release-candidate build instead of a final release when the caller hasn't said otherwise. Defaults to \"continue-rc\"."
+          "description": "Whether pr_prepare suggests a release-candidate build instead of a final release when the caller hasn't said otherwise. Defaults to \"continue-rc\"."
         },
         "method": {
           "type": "string",

@@ -237,7 +237,7 @@ func TestMigrate_ProjectV0ToV5_ShipStrippedFromConfig(t *testing.T) {
 		t.Error("ship.preset should be removed (migrated to steps)")
 	}
 	steps := stepsSlice(ship, "steps")
-	expectedSteps := []string{"execute", "commit", "review", "version", "archive-openspec", "pr", "learnings-commit"}
+	expectedSteps := []string{"execute", "commit", "review", "archive-openspec", "pr", "learnings-commit"}
 	if !reflect.DeepEqual(steps, expectedSteps) {
 		t.Errorf("ship.steps:\n  got:  %v\n  want: %v", steps, expectedSteps)
 	}
@@ -342,7 +342,7 @@ func TestMigrate_LocalV1ToV5_ShipPresetSkip(t *testing.T) {
 	}
 
 	steps := stepsSlice(ship, "steps")
-	expected := []string{"execute", "commit", "version", "archive-openspec", "pr", "learnings-commit"}
+	expected := []string{"execute", "commit", "archive-openspec", "pr", "learnings-commit"}
 	if !reflect.DeepEqual(steps, expected) {
 		t.Errorf("ship.steps:\n  got:  %v\n  want: %v", steps, expected)
 	}
@@ -451,6 +451,43 @@ func TestMigrate_LocalV2ToV5_RenameVersion(t *testing.T) {
 	ship := local["ship"].(map[string]any)
 	steps := stepsSlice(ship, "steps")
 	expected := []string{"execute", "commit", "pr"}
+	if !reflect.DeepEqual(steps, expected) {
+		t.Errorf("ship.steps:\n  got:  %v\n  want: %v", steps, expected)
+	}
+}
+
+func TestLocalMigrateV5ToV6_StripsVersionFromShipSteps(t *testing.T) {
+	root := t.TempDir()
+
+	// Provide a v6 config.json so project migration is skipped.
+	writeJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
+		"version": map[string]any{"mode": "file"},
+	})
+
+	// v5 local.json: ship.steps still carries the standalone "version" step
+	// from before it was folded into pr. Real v5 files carry no schemaVersion
+	// marker (removed by the v4→v5 step) — detectLocalVersion must sniff
+	// ship.steps for "version" to tell this apart from a v6 file, since
+	// neither v5 nor v6 local.json carries any version marker at all.
+	writeJSON(t, filepath.Join(root, paths.DataDir, "local.json"), map[string]any{
+		"ship": map[string]any{
+			"steps": []any{"execute", "commit", "review", "version", "archive-openspec", "pr", "learnings-commit"},
+		},
+	})
+
+	report, err := Migrate(root, Options{})
+	if err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	if !report.Migrated {
+		t.Fatal("expected Migrated=true")
+	}
+
+	local := readJSON(t, filepath.Join(root, paths.DataDir, "local.json"))
+
+	ship := local["ship"].(map[string]any)
+	steps := stepsSlice(ship, "steps")
+	expected := []string{"execute", "commit", "review", "archive-openspec", "pr", "learnings-commit"}
 	if !reflect.DeepEqual(steps, expected) {
 		t.Errorf("ship.steps:\n  got:  %v\n  want: %v", steps, expected)
 	}
@@ -964,6 +1001,165 @@ func TestMigrateWithBackup_StaleConfig_MigratesAndBacksUp(t *testing.T) {
 	migrated := readJSON(t, configPath)
 	if _, has := migrated["schemaVersion"]; has {
 		t.Error("migrated config.json must not have schemaVersion")
+	}
+}
+
+// TestMigrateWithBackup_V5Local_StripsVersionStep is a regression test for
+// the gap where MigrateWithBackup short-circuited on Verify(config.json)
+// alone: config.json is content-identical at v5 and v6 (its schema forbids
+// a schemaVersion marker), so a real v5 project's local.json — which still
+// carries the standalone "version" ship step — was silently never migrated,
+// leaving a stale ship.steps that ship.go later hard-rejects.
+func TestMigrateWithBackup_V5Local_StripsVersionStep(t *testing.T) {
+	root := t.TempDir()
+	// v6-equivalent config.json: no schemaVersion marker, Verify() reports
+	// current on its own.
+	writeJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
+		"version": map[string]any{"mode": "file"},
+	})
+	// v5 local.json: no schemaVersion marker either, but ship.steps still
+	// carries "version" — the only signal that it predates the v5->v6 step.
+	localPath := filepath.Join(root, paths.DataDir, "local.json")
+	writeJSON(t, localPath, map[string]any{
+		"ship": map[string]any{
+			"steps": []any{"execute", "commit", "review", "version", "archive-openspec", "pr", "learnings-commit"},
+		},
+	})
+
+	changes, backupPath, err := MigrateWithBackup(root)
+	if err != nil {
+		t.Fatalf("MigrateWithBackup: %v", err)
+	}
+	if len(changes) == 0 {
+		t.Error("changes is empty, want at least one applied step label")
+	}
+	if backupPath != localPath+".bak" {
+		t.Errorf("backupPath = %q, want %q (config.json untouched, only local.json backed up)", backupPath, localPath+".bak")
+	}
+	if _, statErr := os.Stat(localPath + ".bak"); statErr != nil {
+		t.Errorf("local.json.bak not written: %v", statErr)
+	}
+
+	local := readJSON(t, localPath)
+	ship := local["ship"].(map[string]any)
+	steps := stepsSlice(ship, "steps")
+	expected := []string{"execute", "commit", "review", "archive-openspec", "pr", "learnings-commit"}
+	if !reflect.DeepEqual(steps, expected) {
+		t.Errorf("ship.steps:\n  got:  %v\n  want: %v", steps, expected)
+	}
+}
+
+// TestMigrateWithBackup_V6Local_NoOp guards against over-eager detection:
+// a marker-less local.json whose ship.steps no longer contains "version"
+// (already v6, or born v6) must not be perpetually re-migrated just because
+// it lacks a schemaVersion field.
+func TestMigrateWithBackup_V6Local_NoOp(t *testing.T) {
+	root := t.TempDir()
+	writeJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
+		"version": map[string]any{"mode": "file"},
+	})
+	localPath := filepath.Join(root, paths.DataDir, "local.json")
+	writeJSON(t, localPath, map[string]any{
+		"ship": map[string]any{
+			"steps": []any{"execute", "commit", "review", "archive-openspec", "pr", "learnings-commit"},
+		},
+	})
+	before, err := os.Stat(localPath)
+	if err != nil {
+		t.Fatalf("stat local.json: %v", err)
+	}
+
+	changes, backupPath, err := MigrateWithBackup(root)
+	if err != nil {
+		t.Fatalf("MigrateWithBackup: %v", err)
+	}
+	if changes != nil {
+		t.Errorf("changes = %v, want nil for an already-current v6 local.json", changes)
+	}
+	if backupPath != "" {
+		t.Errorf("backupPath = %q, want empty for an already-current v6 local.json", backupPath)
+	}
+	if _, statErr := os.Stat(localPath + ".bak"); statErr == nil {
+		t.Error("local.json.bak written for an already-current local.json; want zero extra I/O")
+	}
+	after, err := os.Stat(localPath)
+	if err != nil {
+		t.Fatalf("stat local.json: %v", err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Errorf("local.json mtime changed (%v -> %v), want untouched", before.ModTime(), after.ModTime())
+	}
+}
+
+// TestDetectLocalVersion_NoShipKey_TreatedAsCurrent is a regression test:
+// a marker-less local.json with no "ship" key at all (valid — neither
+// "ship" nor "ship.steps" is `required` by sdlc-local.schema.json) must not
+// be misdetected as v1. The earlier fallback unconditionally returned
+// (1, true) for any marker-less file once the ship.steps sniff found
+// nothing to match, which caused MigrateWithBackup to replan and re-run the
+// full 1->6 migration chain on every call for a project shaped this way.
+func TestDetectLocalVersion_NoShipKey_TreatedAsCurrent(t *testing.T) {
+	root := t.TempDir()
+	writeJSON(t, filepath.Join(root, paths.DataDir, "local.json"), map[string]any{
+		"reviewThreshold": "low",
+	})
+
+	ver, exists := detectLocalVersion(root)
+	if !exists {
+		t.Fatal("detectLocalVersion: exists = false, want true")
+	}
+	if ver != CurrentSchemaVersion {
+		t.Errorf("detectLocalVersion = %d, want CurrentSchemaVersion (%d)", ver, CurrentSchemaVersion)
+	}
+}
+
+// TestDetectLocalVersion_ShipWithoutSteps_TreatedAsCurrent covers the other
+// half of the same gap: "ship" present but without a "steps" array (also
+// valid per the schema — e.g. a project that only set reviewThreshold).
+func TestDetectLocalVersion_ShipWithoutSteps_TreatedAsCurrent(t *testing.T) {
+	root := t.TempDir()
+	writeJSON(t, filepath.Join(root, paths.DataDir, "local.json"), map[string]any{
+		"ship": map[string]any{"reviewThreshold": "medium"},
+	})
+
+	ver, exists := detectLocalVersion(root)
+	if !exists {
+		t.Fatal("detectLocalVersion: exists = false, want true")
+	}
+	if ver != CurrentSchemaVersion {
+		t.Errorf("detectLocalVersion = %d, want CurrentSchemaVersion (%d)", ver, CurrentSchemaVersion)
+	}
+}
+
+// TestMigrateWithBackup_ShipWithoutSteps_NoPerpetualRemigration is the
+// end-to-end version of the two detectLocalVersion tests above: a
+// marker-less local.json shaped this way must be a true MigrateWithBackup
+// no-op — repeated calls must not keep producing local.json.bak files or
+// re-running the migration chain.
+func TestMigrateWithBackup_ShipWithoutSteps_NoPerpetualRemigration(t *testing.T) {
+	root := t.TempDir()
+	writeJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
+		"version": map[string]any{"mode": "file"},
+	})
+	localPath := filepath.Join(root, paths.DataDir, "local.json")
+	writeJSON(t, localPath, map[string]any{
+		"ship": map[string]any{"reviewThreshold": "medium"},
+	})
+
+	for i := 0; i < 2; i++ {
+		changes, backupPath, err := MigrateWithBackup(root)
+		if err != nil {
+			t.Fatalf("MigrateWithBackup call %d: %v", i, err)
+		}
+		if changes != nil {
+			t.Errorf("call %d: changes = %v, want nil", i, changes)
+		}
+		if backupPath != "" {
+			t.Errorf("call %d: backupPath = %q, want empty", i, backupPath)
+		}
+	}
+	if _, statErr := os.Stat(localPath + ".bak"); statErr == nil {
+		t.Error("local.json.bak written; want zero extra I/O for a ship-without-steps local.json")
 	}
 }
 

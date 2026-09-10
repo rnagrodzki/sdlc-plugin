@@ -85,8 +85,7 @@ Each stage of a change maps to one skill. Run them in order, or let
 | Commit | `/commit` | Generate a commit message from the staged diff and commit history, then commit. |
 | Review | `/review` | Multi-dimension code review (security, performance, docs, etc.) of the current diff. |
 | Respond to review | `/received-review` | Work through reviewer or CI feedback on an open PR. |
-| Version | `/version` | Diagnose version state: source, divergence, and recommended next bump. |
-| Open a PR | `/pr` | Generate a PR description from commits/diff and open it via `gh`. |
+| Open a PR | `/pr` | Generate a PR description from commits/diff and open it via `gh`; also diagnoses version state (source, divergence, recommended next bump) when a version config is set. |
 | Verify CI | `/verify-pipeline --pr <N>` | Diagnose and optionally fix a failing CI run on a PR. |
 | Jira | `/jira` | Create, read, or update Jira issues linked to the work. |
 | After a failure | `/harden` | Propose guardrail changes so the same pipeline failure can't recur. |
@@ -97,7 +96,7 @@ For the full end-to-end flow instead of running each stage by hand:
 /ship
 ```
 
-runs execute → commit → review → version → PR → CI verification as one
+runs execute → commit → review → PR → CI verification as one
 pipeline, stopping for confirmation between steps by default. For an
 unattended multi-hour run (execute → review-fix loop → ship, no stops):
 

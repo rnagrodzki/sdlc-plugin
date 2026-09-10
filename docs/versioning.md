@@ -4,7 +4,7 @@ This guide explains how the SDLC plugin manages project versions, automates rele
 
 ## Three Independent Release Paths
 
-Versioning is configured in `.sdlc-v2/config.json` under the `version` key. This is the config location the Go-side tools `version_prepare` and `version_apply` read and write (`scaffold_ci` scaffolds CI workflow files and does not itself read or write this config).
+Versioning is configured in `.sdlc-v2/config.json` under the `version` key. This is the config location the Go-side tools `pr_prepare` and `pr_apply` read, along with the CI scripts (`scaffold_ci` scaffolds those CI workflow files and does not itself read or write this config).
 
 A release is made of three independently toggleable paths, each carrying its own `enabled` flag:
 
@@ -88,11 +88,11 @@ You can also write the config manually, or run `/setup --only version` to reconf
 
 ## Breaking Config Change
 
-The pre-redesign flat shape (top-level `mode`, string `versionFile`, `changelogMethod`, boolean `changelog`, `rcAutoContinue`, `ticketPrefix`) is **rejected outright** by every reader (`version_prepare`, `pr_apply`, and every CI script) — there is no backward-compatible parsing and no automatic migration. A project still on the old shape gets a hard error naming `/setup --only version` as the fix. `ticketPrefix` in particular is dropped entirely — no CI script ever read it, and there is no replacement field.
+The pre-redesign flat shape (top-level `mode`, string `versionFile`, `changelogMethod`, boolean `changelog`, `rcAutoContinue`, `ticketPrefix`) is **rejected outright** by every reader (`pr_prepare`, `pr_apply`, and every CI script) — there is no backward-compatible parsing and no automatic migration. A project still on the old shape gets a hard error naming `/setup --only version` as the fix. `ticketPrefix` in particular is dropped entirely — no CI script ever read it, and there is no replacement field.
 
 ## How Releases Work
 
-Releases are **never created during the ship pipeline**. The version skill only diagnoses release readiness and drafts a bump level + release notes. Actual version bumps, tags, and changelog writes happen **post-merge via CI**.
+Releases are **never created during the ship pipeline**. Version diagnostics (release readiness, bump level, and notes) are computed during PR preparation and validation. Actual version bumps, tags, and changelog writes happen **post-merge via CI**.
 
 ### Pre-Merge Safety: verify-release-intent
 
@@ -115,9 +115,9 @@ This check validates any combination of enabled paths. When `versionFile.enabled
 ### The Release Flow
 
 ```
-1. Developer runs /ship (or /version + /pr separately)
-2. Version skill analyzes conventional commits since last tag
-3. Version skill suggests bump level (major/minor/patch)
+1. Developer runs /ship (or /pr)
+2. PR skill analyzes conventional commits since last tag
+3. PR skill suggests bump level (major/minor/patch)
 4. PR skill creates PR with:
    - release:<level> label (e.g., release:minor)
    - <!-- release-level:minor --> marker in PR body
@@ -171,7 +171,7 @@ Five CI scripts handle the release pipeline. All live under `.github/scripts/` a
 
 Matching workflow files live under `.github/workflows/`.
 
-**To scaffold CI workflows:** Run `/setup` which offers CI scaffolding, or call `scaffold_ci` directly. The version skill also offers scaffolding when `versionFile.enabled` is false and CI workflows are missing. Scaffolding also runs a read-only branch protection check against the repo's rulesets/classic protection and reports the result — see below.
+**To scaffold CI workflows:** Run `/setup` which offers CI scaffolding, or call `scaffold_ci` directly. Scaffolding also runs a read-only branch protection check against the repo's rulesets/classic protection and reports the result — see below.
 
 ### Delivery Method (`method`)
 
@@ -271,12 +271,12 @@ Version bumps follow semver. Given current version `1.2.3`:
 | `minor` | `1.3.0` | New features, backward-compatible |
 | `major` | `2.0.0` | Breaking changes |
 
-The version skill auto-suggests a level based on conventional commit prefixes:
+Version bumps are auto-suggested based on conventional commit prefixes:
 - `feat:` commits → suggests `minor`
 - `fix:` commits → suggests `patch`
 - `BREAKING CHANGE:` or `feat!:`/`fix!:` → suggests `major`
 
-You can override the suggestion by passing the level explicitly: `/version patch` or `/ship --bump minor`.
+You can override the suggestion by passing the level explicitly: `/pr --bump patch` or `/ship --bump minor`.
 
 ### PR Labels and Markers
 
@@ -318,7 +318,7 @@ RC releases let you publish a pre-release version for testing before committing 
 
 ### Creating an RC
 
-Use the `--rc` flag: `/version minor --rc` or `/ship --bump minor-rc`.
+Use the `--rc` flag: `/pr --bump minor-rc` or `/ship --bump minor-rc`.
 
 This creates:
 - Label: `release:minor-rc`
@@ -380,7 +380,7 @@ Full `.sdlc-v2/config.json` `version` section:
 | Field | Required | Default | Description |
 |---|---|---|---|
 | `preRelease` | No | — | Default pre-release label (e.g., `"rc"`) applied when no explicit base bump or `--pre` is given. |
-| `preReleasePolicy` | No | `"continue-rc"` | Whether `/version` suggests a release-candidate build: `"always-rc"` always suggests one, `"continue-rc"` only when the bump target already has existing RC tags (continue the RC train instead of a final release), `"never"` never suggests one. |
+| `preReleasePolicy` | No | `"continue-rc"` | Whether `/pr` suggests a release-candidate build: `"always-rc"` always suggests one, `"continue-rc"` only when the bump target already has existing RC tags (continue the RC train instead of a final release), `"never"` never suggests one. |
 | `method` | No | `"push"` | How the `versionFile` and `changelog` paths deliver their writes: `"push"` (direct commit to the default branch), `"pr"` (via a single `release/<tag>` PR — works with branch protection). Does not affect `tag`, which always pushes directly. |
 | `tag.enabled` | No | `false` | Whether the tag path is active: creates a git tag and GitHub Release on every bump. |
 | `tag.prefix` | No | auto-detected from existing tags; `/setup` writes `"v"` explicitly for new tag-only projects | Prefix for git tags (e.g., `v` for `v1.2.3`). |
@@ -390,7 +390,7 @@ Full `.sdlc-v2/config.json` `version` section:
 | `changelog.enabled` | No | `false` | Whether the changelog path is active: prepends a release entry on every bump. |
 | `changelog.file` | No | `"CHANGELOG.md"` (used only when `changelog.enabled`) | Path to changelog file. |
 
-At least one of `tag.enabled` or `versionFile.enabled` must be `true` — a config with both false (or absent) is rejected by `version_prepare`, `pr_apply`, and every CI script.
+At least one of `tag.enabled` or `versionFile.enabled` must be `true` — a config with both false (or absent) is rejected by `pr_prepare`, `pr_apply`, and every CI script.
 
 ## Troubleshooting
 
@@ -434,7 +434,7 @@ Not an issue in the current flow. `release-on-main.cjs` runs on push to main (af
 
 ### verify-release-intent fails with "No version config found"
 
-The scaffolded CI scripts (`release-on-main.cjs`, `retag-release.cjs`, `verify-release-intent.cjs`, `promote-release.cjs`, `check-changelog.cjs`) read version config exclusively from `.sdlc-v2/config.json`, matching the Go-side tools `version_prepare` and `version_apply`. There is no legacy fallback — a project still on the old `.sdlc/config.json` (or `.claude/sdlc.json` / `.claude/version.json`) layout must run the `migrate` tool first.
+The scaffolded CI scripts (`release-on-main.cjs`, `retag-release.cjs`, `verify-release-intent.cjs`, `promote-release.cjs`, `check-changelog.cjs`) read version config exclusively from `.sdlc-v2/config.json`, matching the Go-side tools `pr_prepare` and `pr_apply`. There is no legacy fallback — a project still on the old `.sdlc/config.json` (or `.claude/sdlc.json` / `.claude/version.json`) layout must run the `migrate` tool first.
 
 If `.sdlc-v2/config.json` is missing or has no `.version` section, release automation fails with:
 

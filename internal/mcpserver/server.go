@@ -1,30 +1,35 @@
 package mcpserver
 
 import (
-	"github.com/mark3labs/mcp-go/server"
+	"context"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// Server wraps the mcp-go MCPServer with typed registration helpers.
+// Server wraps the official MCP SDK's Server with typed registration helpers.
 type Server struct {
-	mcp *server.MCPServer
+	mcp *mcp.Server
 }
 
-// New creates a Server backed by a new MCPServer instance.
+// New creates a Server backed by a new mcp.Server instance.
 func New(name, version string) *Server {
 	return &Server{
-		mcp: server.NewMCPServer(name, version,
-			server.WithToolCapabilities(true),
-		),
+		mcp: mcp.NewServer(&mcp.Implementation{Name: name, Version: version}, nil),
 	}
 }
 
 // ServeStdio runs the MCP server over stdin/stdout with signal handling.
 func (s *Server) ServeStdio() error {
-	return server.ServeStdio(s.mcp)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return s.mcp.Run(ctx, &mcp.StdioTransport{})
 }
 
-// MCPServer returns the underlying *server.MCPServer, e.g. for wiring an
+// MCPServer returns the underlying *mcp.Server, e.g. for wiring an
 // in-process client in tests.
-func (s *Server) MCPServer() *server.MCPServer {
+func (s *Server) MCPServer() *mcp.Server {
 	return s.mcp
 }

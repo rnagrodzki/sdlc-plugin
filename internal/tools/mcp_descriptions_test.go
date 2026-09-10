@@ -5,8 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 )
 
@@ -21,7 +20,6 @@ func TestMCPToolParameterDescriptions(t *testing.T) {
 
 	// Mirrors cmd/sdlc/main.go's runMCP registration list exactly, so this
 	// test covers the same tool surface the real server exposes.
-	RegisterVersionTools(s)
 	RegisterPlanTools(s)
 	RegisterPlanExploreTools(s)
 	RegisterLinksTools(s)
@@ -46,23 +44,20 @@ func TestMCPToolParameterDescriptions(t *testing.T) {
 	RegisterPlanSupportTools(s)
 	RegisterLearningsTools(s)
 
-	c, err := client.NewInProcessClient(s.MCPServer())
+	ctx := context.Background()
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	if _, err := s.MCPServer().Connect(ctx, serverTransport, nil); err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0.0.0"}, nil)
+	c, err := client.Connect(ctx, clientTransport, nil)
 	if err != nil {
-		t.Fatalf("NewInProcessClient: %v", err)
+		t.Fatalf("client Connect: %v", err)
 	}
 	t.Cleanup(func() { c.Close() })
-	if err := c.Start(context.Background()); err != nil {
-		t.Fatalf("client.Start: %v", err)
-	}
 
-	initReq := mcp.InitializeRequest{}
-	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
-	initReq.Params.ClientInfo = mcp.Implementation{Name: "test", Version: "0.0.0"}
-	if _, err := c.Initialize(context.Background(), initReq); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
-
-	resp, err := c.ListTools(context.Background(), mcp.ListToolsRequest{})
+	resp, err := c.ListTools(ctx, nil)
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}

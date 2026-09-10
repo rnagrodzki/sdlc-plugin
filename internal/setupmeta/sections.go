@@ -126,7 +126,7 @@ var versionFields = []Field{
 		Type:        "string",
 		Options:     nil,
 		Default:     "",
-		Description: "When set (e.g., `rc`, `beta`, `alpha`), /version and /ship default to a pre-release bump (e.g., `1.2.4-rc.1`) on every default invocation until an explicit `major|minor|patch` graduates the release. Must match `^[a-z][a-z0-9]*$`; empty string omits the field and preserves stable-release behavior.",
+		Description: "When set (e.g., `rc`, `beta`, `alpha`), /pr and /ship default to a pre-release bump (e.g., `1.2.4-rc.1`) on every default invocation until an explicit `major|minor|patch` graduates the release. Must match `^[a-z][a-z0-9]*$`; empty string omits the field and preserves stable-release behavior.",
 	},
 	{
 		Name:        "preReleasePolicy",
@@ -134,7 +134,7 @@ var versionFields = []Field{
 		Type:        "enum",
 		Options:     []string{"always-rc", "continue-rc", "never"},
 		Default:     "continue-rc",
-		Description: "Controls whether /version suggests a release-candidate build instead of a final release. `always-rc` always suggests one; `continue-rc` (default) suggests one only when the bump target already has existing RC tags, continuing the RC train; `never` never suggests one.",
+		Description: "Controls whether /pr suggests a release-candidate build instead of a final release. `always-rc` always suggests one; `continue-rc` (default) suggests one only when the bump target already has existing RC tags, continuing the RC train; `never` never suggests one.",
 	},
 }
 
@@ -209,7 +209,7 @@ var ShipFields = []Field{
 		Type:        "enum",
 		Options:     []string{"patch", "minor", "major"},
 		Default:     "patch",
-		Description: "Applied by /version when no explicit bump argument is passed. The runtime value space is wider than this questionnaire presents: ship.bump in .sdlc-v2/local.json may also be a pre-release label matching `^[a-z][a-z0-9]*$` (e.g., `rc`, `beta`); enter such values via `ship-init.js --bump <label>` or by editing the config file. Schema (schemas/sdlc-local.schema.json) validates the union pattern.",
+		Description: "Applied by /pr when no explicit bump argument is passed. The runtime value space is wider than this questionnaire presents: ship.bump in .sdlc-v2/local.json may also be a pre-release label matching `^[a-z][a-z0-9]*$` (e.g., `rc`, `beta`); enter such values via `ship-init.js --bump <label>` or by editing the config file. Schema (schemas/sdlc-local.schema.json) validates the union pattern.",
 	},
 	{
 		Name:        "draft",
@@ -403,10 +403,10 @@ func Sections() []Section {
 		{
 			ID:              "version",
 			Label:           "version",
-			Purpose:         "Tells /version and /ship where the canonical version string lives (a file, or only git tags) and how releases are tagged. Without this section, version bumps and release tagging fall back to defaults that may not match your project layout.",
+			Purpose:         "Tells /pr and /ship where the canonical version string lives (a file, or only git tags) and how releases are tagged. Without this section, version bumps and release tagging fall back to defaults that may not match your project layout.",
 			ConfigFile:      ".sdlc-v2/config.json",
 			ConfigPath:      "version",
-			ConsumedBy:      []string{"version", "ship"},
+			ConsumedBy:      []string{"pr", "ship"},
 			FilesModified:   []string{".sdlc-v2/config.json"},
 			Optional:        false,
 			DelegatedTo:     "",

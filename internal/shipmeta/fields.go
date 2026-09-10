@@ -19,7 +19,7 @@ const MaxWaveTimeoutSeconds = 3600
 // appended unconditionally by the pipeline and is never user-configurable —
 // see ReservedSteps.
 var CanonicalSteps = []string{
-	"execute", "commit", "review", "version", "verify-openspec",
+	"execute", "commit", "review", "verify-openspec",
 	"archive-openspec", "pr", "verify-pipeline", "await-remote-review",
 	"learnings-commit",
 }
@@ -91,12 +91,12 @@ type ShipStateStep struct {
 }
 
 // TrackedShipSteps is the step-name set that gets a begin-step/complete-step
-// tracked lifecycle entry — exactly the 7 names InitialShipSteps seeds.
+// tracked lifecycle entry — exactly the 6 names InitialShipSteps seeds.
 // Every other known step name (see shipmeta_test.go's SubstepMap) is
-// "inline": recorded via the generic "decide" action instead. Mirrors
-// reference.md's "only 7 of the 13 known step names get a tracked entry".
+// "inline": recorded via the generic "decide" action instead. See
+// reference.md's tracked-vs-inline distinction.
 var TrackedShipSteps = []string{
-	"execute", "commit", "review", "received-review", "commit-fixes", "version", "pr",
+	"execute", "commit", "review", "received-review", "commit-fixes", "pr",
 }
 
 // IsTrackedShipStep reports whether name is one of TrackedShipSteps.
@@ -109,7 +109,7 @@ func IsTrackedShipStep(name string) bool {
 	return false
 }
 
-// InitialShipSteps returns the fixed 7-entry step scaffold used to
+// InitialShipSteps returns the fixed 6-entry step scaffold used to
 // initialize ship state, in source order. Every entry starts at status
 // "pending". Independent of ship.steps[]/flags.steps (the pipeline
 // configuration) — this scaffold is always the same regardless of config.
@@ -124,7 +124,6 @@ func InitialShipSteps() []ShipStateStep {
 		{Name: "review", Status: "pending"},
 		{Name: "received-review", Status: "pending", Condition: "if critical/high findings"},
 		{Name: "commit-fixes", Status: "pending", Condition: "if received-review made changes"},
-		{Name: "version", Status: "pending"},
 		{Name: "pr", Status: "pending"},
 	}
 }

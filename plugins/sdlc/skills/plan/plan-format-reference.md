@@ -262,7 +262,7 @@ artifact's column — the one its primary deliverable touches.
 ````markdown
 **Contract:**
 - shape (docs): MODIFY `docs/skills/auth.md`. Add a `## Token Lifecycle` section (audience: end
-  users) after `## Usage`; cross-link to `/version`:
+  users) after `## Usage`; cross-link to `/pr`:
   ```markdown
   ## Token Lifecycle
   - `pending` — issued, not yet activated

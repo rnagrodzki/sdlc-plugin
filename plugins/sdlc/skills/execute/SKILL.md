@@ -248,7 +248,7 @@ Success → `{ ok: true, totalPlanned: N, totalAccounted: N }`, proceed to Step 
 ```
 ERROR: execute completed all waves but planned tasks are unaccounted: <missingIds>
 ```
-A different error, `"verify-completeness cannot find plannedTaskIds in state — invariant check cannot run"`, means `init`'s `plannedTaskIds` was never recorded — a setup bug, equally a hard gate. Neither halt advances to commit/review/version/pr.
+A different error, `"verify-completeness cannot find plannedTaskIds in state — invariant check cannot run"`, means `init`'s `plannedTaskIds` was never recorded — a setup bug, equally a hard gate. Neither halt advances to commit/review/pr.
 
 ## Worker dispatch prompt
 
@@ -426,7 +426,7 @@ On failure or interruption (not all tasks completed), `cleanup` is not called at
 
 ## What's Next
 
-Common follow-ups: `/commit`, `/review`, `/version`, `/pr`.
+Common follow-ups: `/commit`, `/review`, `/pr`.
 
 If the plan was OpenSpec-sourced (`openspecSpecs` loaded in Step 1), extract the change name from the plan header and validate directly via Bash (no MCP tool or Go port exists for this):
 ```bash
@@ -445,5 +445,4 @@ fi
 - `./recovering-from-failures.md` — full error recovery playbook, escalation protocol, stalled-vs-timeout distinction
 - [`/commit`](../commit/SKILL.md) — commit changes after plan execution
 - [`/pr`](../pr/SKILL.md) — create a pull request after plan execution
-- [`/version`](../version/SKILL.md) — tag a release after plan execution
 - [`/review`](../review/SKILL.md) — review changes after plan execution

@@ -88,13 +88,12 @@ rm -rf ~/.sdlc-cache
 
 ### Tool surface
 
-The MCP server (`sdlc mcp`) registers 32 tools across 16 groups (grepped from
+The MCP server (`sdlc mcp`) registers 30 tools across 15 groups (grepped from
 `internal/tools/*.go`, wired in `cmd/sdlc/main.go`):
 
 | Group | Tools |
 |---|---|
 | Commit | `commit_prepare`, `commit_apply` |
-| Version | `version_prepare`, `version_apply` (deprecated no-op) |
 | Pull request | `pr_prepare`, `pr_apply` |
 | Plan | `plan_prepare`, `plan_mark`, `plan_explore_prepare`, `plan_support` |
 | Review | `review_prepare`, `received_review_prepare` |

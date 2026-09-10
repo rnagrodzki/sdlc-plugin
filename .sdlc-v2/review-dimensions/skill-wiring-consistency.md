@@ -34,10 +34,9 @@ Common mismatch patterns:
 
 ### Conditional dispatch completeness
 
-When a skill conditionally includes parameters (e.g., "when version ran,
-include releaseLevel"), verify that ALL required conditional parameters are
-included together. Example: `releaseLevel` requires `releaseSource` — if
-the skill forwards one but not the other, flag it.
+When a skill conditionally includes parameters, verify that ALL required
+conditional parameters are included together. Example: `releaseLevel` requires
+`releaseSource` — if the skill forwards one but not the other, flag it.
 
 ### Output field references
 
