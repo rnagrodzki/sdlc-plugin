@@ -124,6 +124,14 @@ type PRPrepareOut struct {
 	JiraTicket string         `json:"jiraTicket,omitempty"`
 	Template   *PRTemplateOut `json:"template,omitempty"`
 
+	// CommitsSinceBase lists this branch's own commit subjects, oldest first,
+	// since it diverged from the repo's default branch — always computed
+	// (unlike the version-config-gated fields below) so a freshly dispatched
+	// drafting agent (no conversation memory of earlier commits, e.g. ship's
+	// Agent-dispatched pr step) has ground truth for the PR body instead of
+	// only whatever commit it happens to see last.
+	CommitsSinceBase []string `json:"commitsSinceBase,omitempty"`
+
 	// Version diagnostics — populated only when the project has a version
 	// config section (cfg.Version != nil). All pointer/slice fields use
 	// omitempty so they vanish from the wire when no version config exists.
@@ -670,6 +678,22 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 	// JIRA ticket detection — branch-name-only in this port (see
 	// detectJiraTicket's doc comment).
 	out.JiraTicket = rt.jiraExtract(currentBranch)
+
+	// Commits since base branch — always computed (no version-config gate),
+	// so PR body drafting always has a ground-truth commit list to work
+	// from instead of relying solely on the drafting agent's own memory.
+	if defaultBranch, dbErr := rt.gitDefaultBranch(workDir); dbErr != nil {
+		warnings = append(warnings, fmt.Sprintf("commitsSinceBase: %s", dbErr.Error()))
+	} else if defaultBranch != "" && defaultBranch != currentBranch {
+		logOut, logErr := rt.execRun("git", []string{
+			"log", "--oneline", "--reverse", defaultBranch + "..HEAD",
+		}, execx.Options{Dir: workDir})
+		if logErr != nil {
+			warnings = append(warnings, fmt.Sprintf("commitsSinceBase: %s", logErr.Error()))
+		} else if logOut != "" {
+			out.CommitsSinceBase = nonEmptyLines(logOut)
+		}
+	}
 
 	// PR template resolution (shared with task 20's prtemplate package). A
 	// resolution failure is non-fatal — it becomes a warning, not an error,

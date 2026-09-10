@@ -217,6 +217,9 @@ error handling. Do not create anything.
 The `gh issue create` call MUST run in the main context — the orchestrator agent
 has no `Bash` tool and is forbidden from invoking `gh`.
 
+`PROPOSAL.body` must never include an AI-tool attribution line (e.g. "Generated
+with Claude Code" or similar) — GitHub issue bodies are not the place for it.
+
 ```bash
 gh issue create \
   --repo "rnagrodzki/sdlc-plugin" \
@@ -263,6 +266,8 @@ replaces the calling skill's own error output or stop behavior.
 - Create a GitHub issue without both consent gates passing.
 - Retry a failed `gh issue create` call a second time.
 - Leave `{placeholder}` text in the issue description.
+- Append an AI-tool attribution line ("Generated with Claude Code" or similar) to the
+  issue title or body.
 - Block or replace the calling skill's normal error handling.
 - Create issues in a repository other than `rnagrodzki/sdlc-plugin`.
 - Recursively dispatch this skill on its own prepare-tool or orchestrator crash —

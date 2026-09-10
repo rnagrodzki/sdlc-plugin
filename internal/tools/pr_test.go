@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -372,6 +373,7 @@ func TestPrPrepare_HappyPath_JiraAndTemplate(t *testing.T) {
 		},
 		gitCurrentBranch: func(dir string) (string, error) { return "feat/PROJ-123-add-thing", nil },
 		gitStatus:        func(dir string) (string, error) { return "", nil },
+		gitDefaultBranch: func(dir string) (string, error) { return "main", nil },
 		branchValidate:   branch.ValidateExpectedBranch,
 		jiraExtract:      func(branchName string) string { return detectJiraTicket(branchName, nil) },
 		templateResolve: func(root string) (*prtemplate.Template, error) {
@@ -544,6 +546,49 @@ func TestPrPrepare_IncludesVersionDiagnostics(t *testing.T) {
 	}
 }
 
+func TestPrPrepare_CommitsSinceBase_Populated(t *testing.T) {
+	rt := prRuntime{
+		ghAuthProbe: func(dir, host string) ghx.AuthProbeResult {
+			return ghx.AuthProbeResult{Authenticated: true, ActiveAccount: "someone"}
+		},
+		configReadSection: func(root, section string) (map[string]any, error) { return nil, nil },
+		configRead:        func(root string) (*config.Config, error) { return nil, nil },
+		execRun: func(name string, args []string, opts execx.Options) (string, error) {
+			if name == "git" && len(args) > 0 && args[0] == "log" && slices.Contains(args, "--reverse") {
+				return "aaa1111 feat: first commit\nbbb2222 fix: second commit\nccc3333 chore: third commit", nil
+			}
+			return "", errors.New("fatal: no such remote 'origin'")
+		},
+		gitCurrentBranch: func(dir string) (string, error) { return "feat/multi-commit", nil },
+		gitStatus:        func(dir string) (string, error) { return "", nil },
+		gitDefaultBranch: func(dir string) (string, error) { return "main", nil },
+		branchValidate:   branch.ValidateExpectedBranch,
+		jiraExtract:      func(branchName string) string { return "" },
+		templateResolve:  func(root string) (*prtemplate.Template, error) { return nil, nil },
+	}
+
+	out, err := prPrepareCoreWith("/mock/root", "/mock/work", PRPrepareIn{SkipConfigCheck: true}, rt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !out.OK {
+		t.Fatalf("expected OK=true, got errors: %v", out.Errors)
+	}
+	want := []string{
+		"aaa1111 feat: first commit",
+		"bbb2222 fix: second commit",
+		"ccc3333 chore: third commit",
+	}
+	if len(out.CommitsSinceBase) != len(want) {
+		t.Fatalf("CommitsSinceBase: got %d entries, want %d (%v)", len(out.CommitsSinceBase), len(want), out.CommitsSinceBase)
+	}
+	for i, w := range want {
+		if out.CommitsSinceBase[i] != w {
+			t.Errorf("CommitsSinceBase[%d]: got %q, want %q", i, out.CommitsSinceBase[i], w)
+		}
+	}
+}
+
 func TestPrPrepare_NoVersionConfig_OmitsVersionFields(t *testing.T) {
 	rt := prRuntime{
 		ghAuthProbe: func(dir, host string) ghx.AuthProbeResult {
@@ -556,6 +601,7 @@ func TestPrPrepare_NoVersionConfig_OmitsVersionFields(t *testing.T) {
 		},
 		gitCurrentBranch: func(dir string) (string, error) { return "feat/no-version", nil },
 		gitStatus:        func(dir string) (string, error) { return "", nil },
+		gitDefaultBranch: func(dir string) (string, error) { return "main", nil },
 		branchValidate:   branch.ValidateExpectedBranch,
 		jiraExtract:      func(branchName string) string { return "" },
 		templateResolve:  func(root string) (*prtemplate.Template, error) { return nil, nil },

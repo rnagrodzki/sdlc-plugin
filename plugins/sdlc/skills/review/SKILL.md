@@ -349,8 +349,9 @@ Wait for the user's reply.
   verbatim to the user. Stop. Do not retry. Do not edit URLs without user input. Do not
   bypass.
 
-  On all-clear, post the comment via `gh api` using the file body form (safe for large
-  markdown, backticks, quotes):
+  The comment body must never include an AI-tool attribution line ("Generated with Claude
+  Code" or similar). On all-clear, post the comment via `gh api` using the file body form
+  (safe for large markdown, backticks, quotes):
 
   ```bash
   gh api repos/{manifest.pr.owner}/{manifest.pr.repo}/issues/{manifest.pr.number}/comments -F body=@{manifest.diff_dir}/review-comment.md
