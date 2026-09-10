@@ -195,7 +195,9 @@ directly. Do not fabricate a level or relabel it `"user"` to get past this.
 
 On option 1: ask which level (and whether it's an RC), then hold `releaseLevel` and
 `releaseSource: "user"` for Step 6. On option 2: proceed with no release intent — this was an
-explicit, acknowledged choice, so do not ask again at Step 5 or Step 6.
+explicit, acknowledged choice, so do not ask again at Step 5 or Step 6. Hold
+`skipReleaseCheck: true` for Step 6's `pr_apply` call — without it, `pr_apply` rejects an empty
+`releaseLevel` as an unacknowledged omission.
 
 ### Step 2 (PLAN): Draft PR Description
 
@@ -327,7 +329,9 @@ edit URLs without user input. Do not bypass.
 
 On zero violations, publish. Include `releaseLevel`/`releaseNotes`/`releasePreRelease`/
 `releaseSource` only when a `releaseLevel` was resolved (Step 1 / Step 1b); omit them entirely
-for a no-release PR. `autoMode` mirrors whether `--auto` was passed to this skill invocation:
+for a no-release PR — instead pass `skipReleaseCheck: true` when Step 1b's option 2 was chosen
+(no release intent, explicitly acknowledged). `autoMode` mirrors whether `--auto` was passed to
+this skill invocation:
 
 ```
 pr_apply({
@@ -337,6 +341,7 @@ pr_apply({
   releaseNotes: <if set>,
   releasePreRelease: <if set>,
   releaseSource: <if releaseLevel set — "user" | "config" | "pipeline">,
+  skipReleaseCheck: <true — only when no releaseLevel and Step 1b option 2 was chosen>,
   autoMode: <true | false — whether --auto was passed to this skill invocation>
 }) → { url, created }
 ```
