@@ -132,7 +132,7 @@ func TestShipPrepare_StateInit(t *testing.T) {
 // TestShipPrepare_StepScaffold_AllCanonicalSteps verifies that ship_prepare
 // seeds one step entry per configured step, in configured order, correctly
 // classified tracked/inline, and renders a matching PipelineDisplay table —
-// exercising all 10 shipmeta.CanonicalSteps names at once (5 tracked, 5
+// exercising all 9 shipmeta.CanonicalSteps names at once (4 tracked, 5
 // inline; "received-review"/"commit-fixes" are conditional-only and never
 // appear in ship.steps[]/CanonicalSteps, so they cannot be exercised via
 // config here).
@@ -200,8 +200,8 @@ func TestShipPrepare_StepScaffold_AllCanonicalSteps(t *testing.T) {
 			inlineCount++
 		}
 	}
-	if trackedCount != 5 || inlineCount != 5 {
-		t.Errorf("tracked/inline split = %d/%d, want 5/5", trackedCount, inlineCount)
+	if trackedCount != 4 || inlineCount != 5 {
+		t.Errorf("tracked/inline split = %d/%d, want 4/5", trackedCount, inlineCount)
 	}
 
 	wantTable := pipeline.PipelineTable(configStepsFromScaffold(shipmeta.InitialShipStepsFromConfig(shipmeta.CanonicalSteps)))

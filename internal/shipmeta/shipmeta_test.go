@@ -64,11 +64,11 @@ func TestMaxWaveTimeoutSecondsMatchesSchema(t *testing.T) {
 //   - "learnings-commit": the source's "commit log" substep was dropped when
 //     the step was redefined as append-only (learnings/log.md is gitignored
 //     and never committed — see internal/tools/learnings.go).
-//   - "version": the source's {"bump version", "update CHANGELOG", "tag"}
-//     described the old manual-tag flow. Task 12 redefined the ship version
-//     step as diagnose-and-plan only (version_prepare + drafted release
-//     notes, no version_apply/tag/CHANGELOG write) — the actual bump/tag/
-//     CHANGELOG write now happens post-merge via release-on-main CI.
+//   - "version": dropped entirely. The standalone ship version step was
+//     merged into "pr": the pr_prepare tool (internal/tools/pr.go) now runs
+//     the version diagnostics that used to run as their own step. The pr
+//     step's SubstepMap entry below is unchanged — the merge is inside
+//     pr_prepare's implementation, not a new listed substep.
 func TestSubstepMapMatchesSource(t *testing.T) {
 	tests := []struct {
 		step string
@@ -79,7 +79,6 @@ func TestSubstepMapMatchesSource(t *testing.T) {
 		{"review", []string{"dispatch review dimensions", "collect verdicts"}},
 		{"received-review", []string{"fetch comments", "classify findings", "apply auto-fixes", "surface remaining"}},
 		{"commit-fixes", []string{"re-stage", "commit fixes"}},
-		{"version", []string{"diagnose version", "draft release notes"}},
 		{"verify-openspec", []string{"openspec validate --strict", "check result"}},
 		{"archive-openspec", []string{"validate", "run archive", "stage", "commit"}},
 		{"pr", []string{"push branch", "draft body", "gh pr create", "apply labels"}},
@@ -106,41 +105,24 @@ func TestSubstepMapMatchesSource(t *testing.T) {
 	}
 }
 
-// TestTodosForStepMatchesSource proves TodosForStep matches
-// stepTransition(state, "version").todos from scripts/lib/ship-todos.js for a
-// fixture with mixed completed/skipped/failed/pending/current step statuses,
-// except for the "version" step's own substeps: Task 12 redefined the ship
-// version step as diagnose-and-plan only (see SubstepMap's "version" entry
-// above and its comment), so those two entries below diverge intentionally
-// from the JS reference rather than being copied verbatim from it. The want
-// slice below was originally produced by running the actual JS reference,
-// then hand-edited for that one divergence:
-//
-//	node -e '
-//	  const { stepTransition } = require("scripts/lib/ship-todos.js");
-//	  const state = {
-//	    flags: { steps: ["execute", "commit", "review", "version", "pr"] },
-//	    steps: [
-//	      { name: "execute", status: "completed" },
-//	      { name: "commit",  status: "skipped" },
-//	      { name: "review",  status: "failed" },
-//	      { name: "version", status: "in_progress" },
-//	      { name: "pr",      status: "pending" },
-//	    ],
-//	  };
-//	  console.log(JSON.stringify(stepTransition(state, "version").todos));
-//	'
+// TestTodosForStepMatchesSource proves TodosForStep renders the expected
+// todo list for a fixture with mixed completed/skipped/failed/pending/
+// current step statuses, using "commit-fixes" as the in-progress step
+// (previously "version", before the standalone ship version step was merged
+// into "pr" — see TestSubstepMapMatchesSource's comment). The want slice
+// below follows directly from SubstepMap and the status-transition rules
+// documented on TodosForStep.
 func TestTodosForStepMatchesSource(t *testing.T) {
 	st := &state.State{
 		Data: map[string]any{
 			"flags": map[string]any{
-				"steps": []any{"execute", "commit", "review", "version", "pr"},
+				"steps": []any{"execute", "commit", "review", "commit-fixes", "pr"},
 			},
 			"steps": []any{
 				map[string]any{"name": "execute", "status": "completed"},
 				map[string]any{"name": "commit", "status": "skipped"},
 				map[string]any{"name": "review", "status": "failed"},
-				map[string]any{"name": "version", "status": "in_progress"},
+				map[string]any{"name": "commit-fixes", "status": "in_progress"},
 				map[string]any{"name": "pr", "status": "pending"},
 			},
 		},
@@ -154,8 +136,8 @@ func TestTodosForStepMatchesSource(t *testing.T) {
 		{Content: "Commit: restore stash (skipped)", ActiveForm: "Restore stash", Status: "completed"},
 		{Content: "Review: dispatch review dimensions (failed)", ActiveForm: "Dispatch review dimensions", Status: "completed"},
 		{Content: "Review: collect verdicts (failed)", ActiveForm: "Collect verdicts", Status: "completed"},
-		{Content: "Version: diagnose version", ActiveForm: "Diagnose version", Status: "in_progress"},
-		{Content: "Version: draft release notes", ActiveForm: "Draft release notes", Status: "pending"},
+		{Content: "Commit fixes: re-stage", ActiveForm: "Re-stage", Status: "in_progress"},
+		{Content: "Commit fixes: commit fixes", ActiveForm: "Commit fixes", Status: "pending"},
 		{Content: "Pr: push branch", ActiveForm: "Push branch", Status: "pending"},
 		{Content: "Pr: draft body", ActiveForm: "Draft body", Status: "pending"},
 		{Content: "Pr: gh pr create", ActiveForm: "Gh pr create", Status: "pending"},
@@ -163,8 +145,8 @@ func TestTodosForStepMatchesSource(t *testing.T) {
 		{Content: "Cleanup: cleanup pipeline state", ActiveForm: "Cleanup pipeline state", Status: "pending"},
 	}
 
-	got := TodosForStep("version", st)
+	got := TodosForStep("commit-fixes", st)
 	if !reflect.DeepEqual(got, want) {
-		t.Errorf("TodosForStep(\"version\", st) =\n%#v\nwant\n%#v", got, want)
+		t.Errorf("TodosForStep(\"commit-fixes\", st) =\n%#v\nwant\n%#v", got, want)
 	}
 }

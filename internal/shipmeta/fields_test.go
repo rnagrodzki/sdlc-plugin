@@ -31,11 +31,11 @@ func TestInitialShipStepsFromConfig_OrderAndKind(t *testing.T) {
 }
 
 // TestInitialShipStepsFromConfig_AllCanonicalSteps exercises the full
-// 10-name CanonicalSteps list (the F-ship-3 "10-step pipeline shows 10 rows"
-// scenario): 10 entries in, 10 out, in the same order, split 5 tracked / 5
+// 9-name CanonicalSteps list (the F-ship-3 "N-step pipeline shows N rows"
+// scenario): 9 entries in, 9 out, in the same order, split 4 tracked / 5
 // inline (received-review/commit-fixes are conditional-only and never
 // appear in CanonicalSteps, so the tracked set present here is exactly
-// execute/commit/review/version/pr).
+// execute/commit/review/pr).
 func TestInitialShipStepsFromConfig_AllCanonicalSteps(t *testing.T) {
 	got := InitialShipStepsFromConfig(CanonicalSteps)
 	if len(got) != len(CanonicalSteps) {
@@ -59,8 +59,8 @@ func TestInitialShipStepsFromConfig_AllCanonicalSteps(t *testing.T) {
 			t.Errorf("got[%d].Kind = %q, want %q or %q", i, step.Kind, "tracked", "inline")
 		}
 	}
-	if tracked != 5 || inline != 5 {
-		t.Errorf("tracked/inline split = %d/%d, want 5/5", tracked, inline)
+	if tracked != 4 || inline != 5 {
+		t.Errorf("tracked/inline split = %d/%d, want 4/5", tracked, inline)
 	}
 }
 
@@ -91,14 +91,14 @@ func TestInitialShipStepsFromConfig_Empty(t *testing.T) {
 }
 
 // TestInitialShipSteps_KindOmitted locks InitialShipSteps' pre-existing
-// fixed 7-entry scaffold to remain byte-shape identical to its callers
+// fixed 6-entry scaffold to remain byte-shape identical to its callers
 // (internal/tools/ship_state.go's "init" action): Kind stays the zero value
 // (empty string, omitted by its `omitempty` JSON tag) rather than being
 // backfilled to "tracked".
 func TestInitialShipSteps_KindOmitted(t *testing.T) {
 	steps := InitialShipSteps()
-	if len(steps) != 7 {
-		t.Fatalf("len(InitialShipSteps()) = %d, want 7", len(steps))
+	if len(steps) != 6 {
+		t.Fatalf("len(InitialShipSteps()) = %d, want 6", len(steps))
 	}
 	for _, s := range steps {
 		if s.Kind != "" {

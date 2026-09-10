@@ -366,6 +366,7 @@ func TestPrPrepare_HappyPath_JiraAndTemplate(t *testing.T) {
 			return ghx.AuthProbeResult{Authenticated: true, ActiveAccount: "someone"}
 		},
 		configReadSection: func(root, section string) (map[string]any, error) { return nil, nil },
+		configRead:        func(root string) (*config.Config, error) { return nil, nil },
 		execRun: func(name string, args []string, opts execx.Options) (string, error) {
 			return "", errors.New("fatal: no such remote 'origin'")
 		},
@@ -429,6 +430,244 @@ func TestPrPrepare_ProtectedBranch_Rejected(t *testing.T) {
 	}
 	if out.Next != "Fix the errors above, then call pr_prepare again." {
 		t.Errorf("Next: got %q", out.Next)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// pr_prepare — version diagnostics
+// ---------------------------------------------------------------------------
+
+func TestPrPrepare_IncludesVersionDiagnostics(t *testing.T) {
+	rt := prRuntime{
+		ghAuthProbe: func(dir, host string) ghx.AuthProbeResult {
+			return ghx.AuthProbeResult{Authenticated: true, ActiveAccount: "someone"}
+		},
+		configReadSection: func(root, section string) (map[string]any, error) { return nil, nil },
+		configRead: func(root string) (*config.Config, error) {
+			return &config.Config{
+				Version: &config.VersionSection{
+					PreReleasePolicy: "continue-rc",
+					Method:           "semver",
+					Tag:              config.VersionTagConfig{Enabled: true, Prefix: "v"},
+					VersionFile:      config.VersionFileConfig{Enabled: true, Path: "version.txt", FileType: "text"},
+					Changelog:        config.VersionChangelogConfig{Enabled: false},
+				},
+			}, nil
+		},
+		execRun: func(name string, args []string, opts execx.Options) (string, error) {
+			// Dispatch: git remote get-url origin vs git log
+			if name == "git" && len(args) > 0 && args[0] == "log" {
+				return "abc1234 feat: add feature X\ndef5678 fix: correct bug Y", nil
+			}
+			return "", errors.New("fatal: no such remote 'origin'")
+		},
+		gitCurrentBranch: func(dir string) (string, error) { return "feat/my-feature", nil },
+		gitStatus:        func(dir string) (string, error) { return "", nil },
+		branchValidate:   branch.ValidateExpectedBranch,
+		jiraExtract:      func(branchName string) string { return "" },
+		templateResolve:  func(root string) (*prtemplate.Template, error) { return nil, nil },
+		versionDetect: func(root, path, fileType string) (*version.VersionFile, error) {
+			return &version.VersionFile{Path: "version.txt", Type: "text", Version: "1.2.0"}, nil
+		},
+		gitFetchTags:     func(dir string) error { return nil },
+		gitTagList:       func(dir string) ([]string, error) { return []string{"v1.2.0"}, nil },
+		gitAllSemverTags: func(dir string) ([]string, error) { return []string{"v1.3.0-rc1", "v1.2.0"}, nil },
+		gitTagExists:     func(dir, name string) (bool, error) { return false, nil },
+		gitDefaultBranch: func(dir string) (string, error) { return "main", nil },
+		gitTagsAtHead:    func(dir string) ([]string, error) { return nil, nil },
+	}
+
+	out, err := prPrepareCoreWith("/mock/root", "/mock/work", PRPrepareIn{SkipConfigCheck: true}, rt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !out.OK {
+		t.Fatalf("expected OK=true, got errors: %v", out.Errors)
+	}
+
+	// VersionSource
+	if out.VersionSource == nil {
+		t.Fatal("expected VersionSource to be populated")
+	}
+	if out.VersionSource.Version != "1.2.0" {
+		t.Errorf("VersionSource.Version: got %q, want %q", out.VersionSource.Version, "1.2.0")
+	}
+
+	// BumpOptions
+	if len(out.BumpOptions) != 3 {
+		t.Fatalf("expected 3 BumpOptions, got %d", len(out.BumpOptions))
+	}
+
+	// Tags
+	if out.Tags == nil {
+		t.Fatal("expected Tags to be populated")
+	}
+	if len(out.Tags.All) == 0 {
+		t.Error("expected Tags.All to be non-empty")
+	}
+
+	// CommitsSinceTag
+	if len(out.CommitsSinceTag) == 0 {
+		t.Error("expected CommitsSinceTag to be non-empty")
+	}
+
+	// ConventionalSummary
+	if out.ConventionalSummary == nil {
+		t.Fatal("expected ConventionalSummary to be populated")
+	}
+	if out.ConventionalSummary.Feat != 1 {
+		t.Errorf("ConventionalSummary.Feat: got %d, want 1", out.ConventionalSummary.Feat)
+	}
+	if out.ConventionalSummary.Fix != 1 {
+		t.Errorf("ConventionalSummary.Fix: got %d, want 1", out.ConventionalSummary.Fix)
+	}
+
+	// ExistingRCs — seeded with v1.3.0-rc1
+	if out.ExistingRCs == nil {
+		t.Fatal("expected ExistingRCs to be populated")
+	}
+	if rcs, ok := out.ExistingRCs["1.3.0"]; !ok || len(rcs) == 0 {
+		t.Errorf("expected ExistingRCs[\"1.3.0\"] to contain rc tags, got %v", out.ExistingRCs)
+	}
+
+	// VersionConfig
+	if out.VersionConfig == nil {
+		t.Fatal("expected VersionConfig to be populated")
+	}
+
+	// DefaultBranch
+	if out.DefaultBranch != "main" {
+		t.Errorf("DefaultBranch: got %q, want %q", out.DefaultBranch, "main")
+	}
+	if out.OnDefaultBranch {
+		t.Error("expected OnDefaultBranch=false on feature branch")
+	}
+}
+
+func TestPrPrepare_NoVersionConfig_OmitsVersionFields(t *testing.T) {
+	rt := prRuntime{
+		ghAuthProbe: func(dir, host string) ghx.AuthProbeResult {
+			return ghx.AuthProbeResult{Authenticated: true, ActiveAccount: "someone"}
+		},
+		configReadSection: func(root, section string) (map[string]any, error) { return nil, nil },
+		configRead:        func(root string) (*config.Config, error) { return nil, nil },
+		execRun: func(name string, args []string, opts execx.Options) (string, error) {
+			return "", errors.New("fatal: no such remote 'origin'")
+		},
+		gitCurrentBranch: func(dir string) (string, error) { return "feat/no-version", nil },
+		gitStatus:        func(dir string) (string, error) { return "", nil },
+		branchValidate:   branch.ValidateExpectedBranch,
+		jiraExtract:      func(branchName string) string { return "" },
+		templateResolve:  func(root string) (*prtemplate.Template, error) { return nil, nil },
+	}
+
+	out, err := prPrepareCoreWith("/mock/root", "/mock/work", PRPrepareIn{SkipConfigCheck: true}, rt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !out.OK {
+		t.Fatalf("expected OK=true, got errors: %v", out.Errors)
+	}
+
+	// All version fields must be nil/zero when no version config exists.
+	if out.VersionSource != nil {
+		t.Errorf("expected nil VersionSource, got %+v", out.VersionSource)
+	}
+	if out.BumpOptions != nil {
+		t.Errorf("expected nil BumpOptions, got %+v", out.BumpOptions)
+	}
+	if out.Tags != nil {
+		t.Errorf("expected nil Tags, got %+v", out.Tags)
+	}
+	if out.CommitsSinceTag != nil {
+		t.Errorf("expected nil CommitsSinceTag, got %+v", out.CommitsSinceTag)
+	}
+	if out.ConventionalSummary != nil {
+		t.Errorf("expected nil ConventionalSummary, got %+v", out.ConventionalSummary)
+	}
+	if out.VersionConfig != nil {
+		t.Errorf("expected nil VersionConfig, got %+v", out.VersionConfig)
+	}
+	if out.DefaultBranch != "" {
+		t.Errorf("expected empty DefaultBranch, got %q", out.DefaultBranch)
+	}
+}
+
+func TestPrPrepare_VersionDetectionFails_WarningNotError(t *testing.T) {
+	rt := prRuntime{
+		ghAuthProbe: func(dir, host string) ghx.AuthProbeResult {
+			return ghx.AuthProbeResult{Authenticated: true, ActiveAccount: "someone"}
+		},
+		configReadSection: func(root, section string) (map[string]any, error) { return nil, nil },
+		configRead: func(root string) (*config.Config, error) {
+			return &config.Config{
+				Version: &config.VersionSection{
+					Method:      "semver",
+					Tag:         config.VersionTagConfig{Enabled: true, Prefix: "v"},
+					VersionFile: config.VersionFileConfig{Enabled: true, Path: "version.txt", FileType: "text"},
+				},
+			}, nil
+		},
+		execRun: func(name string, args []string, opts execx.Options) (string, error) {
+			return "", errors.New("fatal: no such remote 'origin'")
+		},
+		gitCurrentBranch: func(dir string) (string, error) { return "feat/broken-version", nil },
+		gitStatus:        func(dir string) (string, error) { return "", nil },
+		branchValidate:   branch.ValidateExpectedBranch,
+		jiraExtract:      func(branchName string) string { return "" },
+		templateResolve:  func(root string) (*prtemplate.Template, error) { return nil, nil },
+		versionDetect: func(root, path, fileType string) (*version.VersionFile, error) {
+			return nil, errors.New("version file not found")
+		},
+		gitFetchTags:     func(dir string) error { return nil },
+		gitTagList:       func(dir string) ([]string, error) { return nil, nil },
+		gitAllSemverTags: func(dir string) ([]string, error) { return nil, nil },
+		gitTagExists:     func(dir, name string) (bool, error) { return false, nil },
+		gitDefaultBranch: func(dir string) (string, error) { return "main", nil },
+		gitTagsAtHead:    func(dir string) ([]string, error) { return nil, nil },
+	}
+
+	out, err := prPrepareCoreWith("/mock/root", "/mock/work", PRPrepareIn{SkipConfigCheck: true}, rt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Must still be OK — version detection failure is a warning, not an error.
+	if !out.OK {
+		t.Fatalf("expected OK=true despite version detection failure, got errors: %v", out.Errors)
+	}
+	if len(out.Errors) > 0 {
+		t.Errorf("expected no errors, got %v", out.Errors)
+	}
+
+	// Must have a warning about the version detection failure.
+	found := false
+	for _, w := range out.Warnings {
+		if strings.Contains(w, "version detection failed") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected a warning containing 'version detection failed', got %v", out.Warnings)
+	}
+
+	// Nil slices must be normalized to empty (BumpOptions, CommitsSinceTag
+	// are initialized in prVersionDiagnosticsWith even on early return).
+	if out.BumpOptions == nil {
+		t.Error("expected BumpOptions to be non-nil empty slice")
+	}
+	if out.CommitsSinceTag == nil {
+		t.Error("expected CommitsSinceTag to be non-nil empty slice")
+	}
+	if out.Tags == nil {
+		t.Fatal("expected Tags to be non-nil")
+	}
+	if out.Tags.All == nil {
+		t.Error("expected Tags.All to be non-nil empty slice")
+	}
+	if out.Tags.AtHead == nil {
+		t.Error("expected Tags.AtHead to be non-nil empty slice")
 	}
 }
 
@@ -1276,6 +1515,68 @@ func TestEnsureReleaseLabels(t *testing.T) {
 		}
 		if len(created) != len(releaseLabels) {
 			t.Fatalf("expected all %d labels attempted despite one failure, got %d: %v", len(releaseLabels), len(created), created)
+		}
+	})
+}
+
+// TestPrPrepareNext_IncludesVersionContext verifies that prPrepareNext folds
+// version diagnostics into the Next hint (plan Task 1, step 3), covering the
+// idempotency, off-default-branch, and conventional-suggestion cases on top
+// of the pre-existing account-mismatch/error/plain-success cases.
+func TestPrPrepareNext_IncludesVersionContext(t *testing.T) {
+	t.Run("account mismatch takes priority", func(t *testing.T) {
+		out := PRPrepareOut{AccountMismatch: true}
+		if got := prPrepareNext(out); got != "Switch GitHub account, then call pr_prepare again." {
+			t.Errorf("prPrepareNext = %q", got)
+		}
+	})
+
+	t.Run("errors take priority", func(t *testing.T) {
+		out := PRPrepareOut{Errors: []string{"boom"}}
+		if got := prPrepareNext(out); got != "Fix the errors above, then call pr_prepare again." {
+			t.Errorf("prPrepareNext = %q", got)
+		}
+	})
+
+	t.Run("no version config falls back to plain success hint", func(t *testing.T) {
+		out := PRPrepareOut{}
+		if got := prPrepareNext(out); got != "Call pr_apply with title, body, and release fields." {
+			t.Errorf("prPrepareNext = %q", got)
+		}
+	})
+
+	t.Run("already bumped at HEAD", func(t *testing.T) {
+		out := PRPrepareOut{
+			VersionConfig: &VersionConfigInfo{},
+			Idempotency:   &VersionIdempotency{AlreadyBumped: true, TagAtHead: "v1.2.3"},
+		}
+		want := "Call pr_apply with title, body, and release fields. Version already bumped at HEAD (tag v1.2.3); omit release fields."
+		if got := prPrepareNext(out); got != want {
+			t.Errorf("prPrepareNext = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("not on default branch", func(t *testing.T) {
+		out := PRPrepareOut{
+			VersionConfig:   &VersionConfigInfo{},
+			OnDefaultBranch: false,
+			DefaultBranch:   "main",
+		}
+		want := "Call pr_apply with title, body, and release fields. Not on default branch (default: main); version fields are informational only."
+		if got := prPrepareNext(out); got != want {
+			t.Errorf("prPrepareNext = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("conventional suggestion surfaced", func(t *testing.T) {
+		out := PRPrepareOut{
+			VersionConfig:       &VersionConfigInfo{},
+			OnDefaultBranch:     true,
+			ConventionalSummary: &VersionConventionalSummary{Suggest: "minor"},
+		}
+		want := "Call pr_apply with title, body, and release fields. Suggested release level: minor."
+		if got := prPrepareNext(out); got != want {
+			t.Errorf("prPrepareNext = %q, want %q", got, want)
 		}
 	})
 }
