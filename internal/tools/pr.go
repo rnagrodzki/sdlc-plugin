@@ -471,6 +471,13 @@ type PRApplyIn struct {
 	// (commit.go) / ShipApplyIn (ship.go) rather than inventing a second
 	// competing mechanism.
 	AutoMode bool `json:"autoMode"`
+	// SkipReleaseCheck acknowledges that this PR is being created/updated
+	// with no release intent (ReleaseLevel empty). Without it, an empty
+	// ReleaseLevel is rejected by the release-intent gate below — the
+	// caller must either set ReleaseLevel or explicitly opt out via this
+	// field, so a release decision is never silently skipped by omission.
+	// Ignored when ReleaseLevel is set.
+	SkipReleaseCheck bool `json:"skipReleaseCheck,omitempty"`
 }
 
 // PRApplyOut is the output for pr_apply.
@@ -525,6 +532,17 @@ func prApplyCore(mainRoot, workDir string, in PRApplyIn) (PRApplyOut, error) {
 func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRApplyOut, error) {
 	if strings.TrimSpace(in.Title) == "" {
 		return PRApplyOut{}, &mcpserver.DomainError{Msg: "title is required"}
+	}
+
+	// Release-intent gate (task 2): a PR must not be created/updated with
+	// no release intent by silent omission. The caller either sets
+	// ReleaseLevel or explicitly acknowledges skipping it via
+	// SkipReleaseCheck.
+	if in.ReleaseLevel == "" && !in.SkipReleaseCheck {
+		return PRApplyOut{}, &mcpserver.DomainError{
+			Msg:        "releaseLevel is empty and skipReleaseCheck is false",
+			Suggestion: "Run /version to set release intent, or pass skipReleaseCheck: true to acknowledge no release.",
+		}
 	}
 
 	// Validate releaseLevel and releasePreRelease when set.
@@ -1043,6 +1061,8 @@ func RegisterPRTools(s *mcpserver.Server) {
 
 	mcpserver.Register(s, "pr_apply",
 		"Creates a PR for the current branch, or edits the existing one, via gh pr create/gh pr edit (KD14 executor tool). "+
+			"releaseLevel is required unless skipReleaseCheck is true — an empty releaseLevel without skipReleaseCheck is rejected so release "+
+			"intent is never skipped by omission; run /version first, or pass skipReleaseCheck: true to explicitly acknowledge no release. "+
 			"When releaseLevel is set, releaseSource is required: \"user\" (explicit interactive choice), \"config\" (project/ship-config default), "+
 			"or \"pipeline\" (computed by /ship's version step). In autoMode, releaseSource=\"user\" is always rejected — an unattended caller must "+
 			"resolve to \"config\" or \"pipeline\"; never invent a release level yourself and label it \"user\" to bypass this. "+

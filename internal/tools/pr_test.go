@@ -426,7 +426,7 @@ func TestPrApply_NoExistingPR_Creates(t *testing.T) {
 		},
 	}
 
-	out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Add thing", Body: "Body text"}, rt)
+	out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Add thing", Body: "Body text", SkipReleaseCheck: true}, rt)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -448,7 +448,7 @@ func TestPrApply_ExistingPR_Updates(t *testing.T) {
 		},
 	}
 
-	out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Updated title", Body: "Body text"}, rt)
+	out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Updated title", Body: "Body text", SkipReleaseCheck: true}, rt)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -467,6 +467,30 @@ func TestPrApply_MissingTitle_DomainError(t *testing.T) {
 	_, err := prApplyCore("/mock/root", "/mock/work", PRApplyIn{Title: "  ", Body: "x"})
 	if err == nil {
 		t.Fatal("expected an error for empty title")
+	}
+}
+
+// TestPrApply_NoReleaseLevel_NoSkip_DomainError (task 2) — the release-intent
+// gate rejects an empty ReleaseLevel unless SkipReleaseCheck is set. Runs
+// through defaultPRRuntime (via prApplyCore): the gate short-circuits before
+// any rt.* call, same reasoning as TestPrApply_MissingTitle_DomainError above.
+func TestPrApply_NoReleaseLevel_NoSkip_DomainError(t *testing.T) {
+	_, err := prApplyCore("/mock/root", "/mock/work", PRApplyIn{Title: "T", Body: "B"})
+	if err == nil {
+		t.Fatal("expected an error when releaseLevel is empty and skipReleaseCheck is false")
+	}
+	var de *mcpserver.DomainError
+	if !errors.As(err, &de) {
+		t.Fatalf("expected *mcpserver.DomainError, got %T: %v", err, err)
+	}
+	if !strings.Contains(de.Msg, "releaseLevel is empty") {
+		t.Errorf("Msg: got %q, want it to reference releaseLevel being empty", de.Msg)
+	}
+	if !strings.Contains(de.Suggestion, "/version") {
+		t.Errorf("Suggestion missing /version hint: %q", de.Suggestion)
+	}
+	if !strings.Contains(de.Suggestion, "skipReleaseCheck: true") {
+		t.Errorf("Suggestion missing skipReleaseCheck hint: %q", de.Suggestion)
 	}
 }
 
@@ -501,7 +525,7 @@ func TestPrApply_PermissionError_EnrichedWithAuthHints(t *testing.T) {
 		},
 	}
 
-	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Add thing", Body: "Body text"}, rt)
+	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Add thing", Body: "Body text", SkipReleaseCheck: true}, rt)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -540,7 +564,7 @@ func TestPrApply_PermissionError_FromEdit_EnrichedSameWay(t *testing.T) {
 		},
 	}
 
-	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Updated title", Body: "Body text"}, rt)
+	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Updated title", Body: "Body text", SkipReleaseCheck: true}, rt)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -568,7 +592,7 @@ func TestPrApply_NonPermissionError_PassesThroughUnenriched(t *testing.T) {
 		// where it shouldn't have.
 	}
 
-	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Add thing", Body: "Body text"}, rt)
+	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Add thing", Body: "Body text", SkipReleaseCheck: true}, rt)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -595,7 +619,7 @@ func TestPrApply_PermissionError_NoOriginRemote_FallsBackToGeneric(t *testing.T)
 		},
 	}
 
-	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Add thing", Body: "Body text"}, rt)
+	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Add thing", Body: "Body text", SkipReleaseCheck: true}, rt)
 	if err == nil {
 		t.Fatal("expected an error")
 	}
@@ -680,7 +704,7 @@ func TestReleaseSourceValidation(t *testing.T) {
 		// AutoMode with no releaseLevel and no releaseSource: nothing to
 		// validate — falls through to the ordinary no-release-intent path.
 		rt := fakeReleasePRRuntime()
-		out, err := prApplyCoreWith("", "", PRApplyIn{Title: "T", Body: "B", AutoMode: true}, rt)
+		out, err := prApplyCoreWith("", "", PRApplyIn{Title: "T", Body: "B", AutoMode: true, SkipReleaseCheck: true}, rt)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1011,8 +1035,9 @@ func TestPRApply_WithoutRelease_Unchanged(t *testing.T) {
 	}
 
 	out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
-		Title: "No release",
-		Body:  "Just a normal PR",
+		Title:            "No release",
+		Body:             "Just a normal PR",
+		SkipReleaseCheck: true,
 	}, rt)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
