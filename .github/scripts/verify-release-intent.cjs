@@ -18,7 +18,7 @@
  *     label.
  *   - For release:<level>-rc labels, a <!-- release-pre:rc --> marker is
  *     present.
- *   - The configured version file exists and is parseable (mode "file").
+ *   - The configured version file exists and is parseable (versionFile.enabled).
  *   - The computed target version (or next RC number) is not already
  *     tagged on the remote.
  *

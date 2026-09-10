@@ -94,11 +94,11 @@ describe('check-changelog.cjs pull_request CHANGELOG.md guard', () => {
     assert.doesNotMatch(result.stdout, /WARNING:/);
   });
 
-  test('does not warn on the automated changelog/<tag> branch itself', () => {
+  test('does not warn on the automated release/<tag> branch itself', () => {
     const dir = mkTmpDir('check-changelog-pr-');
     writeConfig(dir, { changelog: { enabled: true, file: 'CHANGELOG.md' } });
 
-    const result = runPRGuard(dir, 'CHANGELOG.md', 'changelog/v1.2.3');
+    const result = runPRGuard(dir, 'CHANGELOG.md', 'release/v1.2.3');
 
     assert.equal(result.status, 0, result.stderr);
     assert.doesNotMatch(result.stdout, /WARNING:/);

@@ -136,12 +136,12 @@ function main() {
   // at merge time, so a manual edit on the feature branch can conflict with
   // the generated entry once it merges.
   if (process.env.GITHUB_EVENT_NAME === 'pull_request') {
-    // The release workflow's own changelog delivery PR (branch
-    // `changelog/<tag>`, opened by pushChangelogViaPR in release-on-main.cjs)
+    // The release workflow's own release delivery PR (branch
+    // `release/<tag>`, opened by pushFilesViaPR in release-on-main.cjs)
     // legitimately modifies CHANGELOG.md on every release — skip the warning
     // for that branch pattern so it doesn't self-flag on every run.
     const headRef = process.env.GITHUB_HEAD_REF || '';
-    const isAutomatedChangelogBranch = headRef.startsWith('changelog/');
+    const isAutomatedChangelogBranch = headRef.startsWith('release/');
     const prConfig = readVersionConfig(repoRoot);
     if (prConfig && isChangelogValidationEnabled(prConfig) && !isAutomatedChangelogBranch) {
       const changelogFile = prConfig.changelog?.file || 'CHANGELOG.md';
