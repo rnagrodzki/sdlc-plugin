@@ -423,10 +423,13 @@ type kdRow struct {
 //     acceptance criteria; the F-findings and G/R markers are the
 //     paper trail behind them, not additional surface.
 //
-// 17 covered, 4 cut. None of the 4 cuts are behavior gaps — each is a
-// row whose substance is a build-time, naming, or documentation
-// convention with no independent runtime branch to unit test (see each
-// cutReason below).
+// 16 covered, 5 cut. Four of the 5 cuts are not behavior gaps — each is
+// a row whose substance is a build-time, naming, or documentation
+// convention with no independent runtime branch to unit test. The fifth,
+// KD17, is a genuine behavior gap opened later: its subject (the
+// /deliver skill's fix-loop config sourcing) was removed by plan
+// plan-full-documentation-for-misty-sundae.md, Task 1, so the decision
+// no longer has any runtime behavior to test (see each cutReason below).
 var kdRows = []kdRow{
 	{
 		id:      "KD1",
@@ -464,7 +467,10 @@ var kdRows = []kdRow{
 	{id: "KD14", testRef: "TestShipState_Next_HonorsAutomationConfig"},
 	{id: "KD15", testRef: "TestExecState_Ledger_RoundTrip"},
 	{id: "KD16", testRef: "TestMigrate_ConfigAction_V4ToV5"},
-	{id: "KD17", testRef: "TestDeliverSkillsFixLoopConfigFieldsPresent"},
+	{
+		id:        "KD17",
+		cutReason: "the fix-loop config-sourcing behavior this decision covered belonged to the /deliver skill (and its guard, TestDeliverSkillsFixLoopConfigFieldsPresent). Plan plan-full-documentation-for-misty-sundae.md, Task 1 removed /deliver entirely (plugins/sdlc/skills/deliver/) and its guard test (internal/skillcheck/skillcheck_deliver_test.go); there is no successor runtime behavior left to test.",
+	},
 	{
 		id:      "Contradiction-1",
 		testRef: "TestRun_RegistryContainsExactlyKnownHooks",

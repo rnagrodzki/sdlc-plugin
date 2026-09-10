@@ -71,34 +71,9 @@ If nothing appears on the very first session after install: expected on a
 cold cache (see README → "First-run binary fetch"). Do step 3 first, then
 retry this step with `/clear`.
 
-## 6. Resume mid-run deliver
-
-Seed a fixture deliver state file for the current branch, then resume:
-
-```bash
-cat > ".sdlc-v2/execution/deliver-$(git branch --show-current | tr -c 'a-zA-Z0-9-' '-')-20260101T000000Z.json" <<'EOF'
-{
-  "branch": "<current-branch>",
-  "planPath": "plans/example.md",
-  "phase": "review",
-  "phaseHistory": ["plan", "execute"],
-  "fixLoop": {"iteration": 0, "maxIterations": 3, "severityThreshold": "high", "history": []},
-  "terminal": null,
-  "createdAt": "2026-01-01T00:00:00Z",
-  "updatedAt": "2026-01-01T00:00:00Z"
-}
-EOF
-```
-
-Then ask Claude to run `/deliver --resume`.
-
-Expect: deliver reads the fixture file, reports resuming at the `review`
-phase (the fixture's recorded `phase`), and dispatches review next — it
-does not restart from the `plan` phase or re-dispatch execute-plan.
-
 ## Pass criteria
 
-All six steps produce their expected result with no unhandled error. A
+All five steps produce their expected result with no unhandled error. A
 step failing with a `sdlc-launcher: ...` fail-open diagnostic on stderr is a
 launcher/release problem, not a hook or tool-registration bug — resolve it
 per `README.md` → Troubleshooting before treating any later step as a real

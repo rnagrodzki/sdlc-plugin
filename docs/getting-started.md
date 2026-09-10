@@ -76,7 +76,7 @@ turns out to have legacy config, a skill will tell you so and name
 ## 3. The day-to-day workflow
 
 Each stage of a change maps to one skill. Run them in order, or let
-`ship` / `deliver` chain several of them for you.
+`ship` chain several of them for you.
 
 | Stage | Skill | When to use it |
 |---|---|---|
@@ -97,22 +97,17 @@ For the full end-to-end flow instead of running each stage by hand:
 ```
 
 runs execute → commit → review → PR → CI verification as one
-pipeline, stopping for confirmation between steps by default. For an
-unattended multi-hour run (execute → review-fix loop → ship, no stops):
+pipeline, stopping for confirmation between steps by default.
 
-```
-/deliver <plan-file>
-```
-
-Both accept `--resume` to pick back up from a saved state file if
+It accepts `--resume` to pick back up from a saved state file if
 interrupted.
 
 ## 4. Supervised vs. unattended
 
 By default (`automation.mode: supervised` in `.sdlc-v2/local.json`), every
 pipeline step stops for your confirmation. Set `mode: unattended`, optionally
-with per-step overrides in `automation.steps`, to let `ship` /
-`deliver` run end-to-end without stopping. Field reference: `README.md`
+with per-step overrides in `automation.steps`, to let `ship`
+run end-to-end without stopping. Field reference: `README.md`
 → "Automation config".
 
 ## Next steps
