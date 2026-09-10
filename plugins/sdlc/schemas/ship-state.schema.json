@@ -37,7 +37,7 @@
           "type": "array",
           "items": {
             "type": "string",
-            "enum": ["execute", "commit", "review", "received-review", "commit-fixes", "version", "pr", "verify-pipeline", "await-remote-review"]
+            "enum": ["execute", "commit", "review", "received-review", "commit-fixes", "pr", "verify-pipeline", "await-remote-review"]
           }
         },
         "preset": {
@@ -74,7 +74,7 @@
         "properties": {
           "name": {
             "type": "string",
-            "enum": ["execute", "commit", "review", "received-review", "commit-fixes", "version", "verify-openspec", "archive-openspec", "pr", "verify-pipeline", "await-remote-review", "learnings-commit"]
+            "enum": ["execute", "commit", "review", "received-review", "commit-fixes", "verify-openspec", "archive-openspec", "pr", "verify-pipeline", "await-remote-review", "learnings-commit"]
           },
           "status": {
             "type": "string",
@@ -207,7 +207,7 @@
         "properties": {
           "kind": {
             "type": "string",
-            "enum": ["release-intent", "pr", "sha"]
+            "enum": ["pr", "sha"]
           },
           "ref": {
             "type": "string"

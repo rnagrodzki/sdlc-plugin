@@ -50,7 +50,6 @@ func runVersion() {
 func runMCP() {
 	s := mcpserver.New("sdlc", pluginVersion)
 
-	tools.RegisterVersionTools(s)
 	tools.RegisterPlanTools(s)
 	tools.RegisterPlanExploreTools(s)
 	tools.RegisterLinksTools(s)

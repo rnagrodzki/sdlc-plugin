@@ -314,63 +314,6 @@ func TestCommitApply_WorktreeUnchangedOnFailure(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// version_apply tests
-//
-// version_apply is deprecated (plan Task 6): it no longer bumps the version
-// file or writes CHANGELOG.md. TestVersionApply_BumpMinor and
-// TestVersionApply_Idempotent, which asserted the old bumping behavior, are
-// replaced by TestVersionApply_Deprecated below.
-// ---------------------------------------------------------------------------
-
-// TestVersionApply_Deprecated verifies version_apply is a pure no-op that
-// returns a deprecation warning and a migration hint pointing at pr_apply,
-// and performs no file writes.
-func TestVersionApply_Deprecated(t *testing.T) {
-	dir := t.TempDir()
-	initGitFixture(t, dir)
-
-	pkg := `{"name": "test", "version": "1.0.0"}`
-	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(pkg), 0644); err != nil {
-		t.Fatal(err)
-	}
-	gitCommit(t, dir, "initial")
-
-	out, err := versionApply(dir, VersionApplyIn{
-		Level:           "minor",
-		Notes:           "## Changes\n- Added feature X",
-		SkipConfigCheck: true,
-	})
-	if err != nil {
-		t.Fatalf("versionApply: %v", err)
-	}
-
-	if out.Changed {
-		t.Error("expected Changed=false; version_apply must not perform the bump anymore")
-	}
-	if len(out.Warnings) == 0 {
-		t.Fatal("expected a deprecation warning")
-	}
-	if !strings.Contains(out.Warnings[0], "deprecated") || !strings.Contains(out.Warnings[0], "pr_apply") {
-		t.Errorf("expected warning to mention deprecation and pr_apply, got %q", out.Warnings[0])
-	}
-	if !strings.Contains(out.Next, "pr_apply") {
-		t.Errorf("expected Next to point callers at pr_apply, got %q", out.Next)
-	}
-
-	// No side effects: package.json unchanged, no CHANGELOG.md written.
-	pkgAfter, err := os.ReadFile(filepath.Join(dir, "package.json"))
-	if err != nil {
-		t.Fatalf("read package.json: %v", err)
-	}
-	if !strings.Contains(string(pkgAfter), "1.0.0") || strings.Contains(string(pkgAfter), "1.1.0") {
-		t.Errorf("package.json was modified; version_apply must have no side effects, got %s", pkgAfter)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "CHANGELOG.md")); !os.IsNotExist(err) {
-		t.Error("CHANGELOG.md should not be created by deprecated version_apply")
-	}
-}
-
-// ---------------------------------------------------------------------------
 // config check (AC4) tests
 // ---------------------------------------------------------------------------
 
@@ -419,52 +362,6 @@ func TestCommitPrepare_ConfigCheckFailsWithoutSkip(t *testing.T) {
 		if strings.Contains(e, "config check failed") {
 			t.Errorf("config check error should not appear with skip, got: %s", e)
 		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// version_prepare tests
-// ---------------------------------------------------------------------------
-
-// TestVersionPrepare_Basic verifies version_prepare returns expected
-// structure with a version file present.
-func TestVersionPrepare_Basic(t *testing.T) {
-	dir := t.TempDir()
-	initGitFixture(t, dir)
-
-	pkg := `{"name": "test", "version": "2.3.4"}`
-	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(pkg), 0644); err != nil {
-		t.Fatal(err)
-	}
-	gitCommit(t, dir, "initial")
-	gitTag(t, dir, "v2.3.4")
-	gitCommit(t, dir, "feat: new feature")
-
-	out, err := versionPrepare(dir, dir, VersionPrepareIn{SkipConfigCheck: true})
-	if err != nil {
-		t.Fatalf("versionPrepare: %v", err)
-	}
-
-	if out.Flow != "release" {
-		t.Errorf("expected flow 'release', got %q", out.Flow)
-	}
-	if out.VersionSource == nil {
-		t.Fatal("expected non-nil VersionSource")
-	}
-	if out.VersionSource.Version != "2.3.4" {
-		t.Errorf("expected version 2.3.4, got %s", out.VersionSource.Version)
-	}
-	if len(out.BumpOptions) != 3 {
-		t.Errorf("expected 3 bump options, got %d", len(out.BumpOptions))
-	}
-	if len(out.CommitsSinceTag) == 0 {
-		t.Error("expected commits since tag")
-	}
-	if out.ConventionalSummary == nil {
-		t.Fatal("expected non-nil ConventionalSummary")
-	}
-	if out.ConventionalSummary.Suggest != "minor" {
-		t.Errorf("expected suggested bump 'minor' (feat commit), got %q", out.ConventionalSummary.Suggest)
 	}
 }
 

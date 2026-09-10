@@ -1,5 +1,6 @@
 // Package skillcheck is a documentation/tool-surface consistency check for
-// Task 42's rewritten SKILL.md files (commit, version, pr).
+// Task 42's rewritten SKILL.md files (commit, pr; version was rewritten too
+// but has since been retired as a standalone skill).
 // It builds a real MCP tool registry by calling every Register*Tools
 // function in internal/tools against a fresh mcpserver.Server, then
 // verifies every MCP tool name referenced by the rewritten skill docs is
@@ -28,10 +29,11 @@ import (
 
 // commitSkillsFiles lists the SKILL.md files this task rewrote to call
 // Go-backed MCP tools instead of shelling out to node scripts. Paths are
-// relative to this package directory (internal/skillcheck).
+// relative to this package directory (internal/skillcheck). The standalone
+// "version" skill was retired (its responsibilities absorbed into pr) and
+// its SKILL.md no longer exists, so it is not listed here.
 var commitSkillsFiles = []string{
 	"../../plugins/sdlc/skills/commit/SKILL.md",
-	"../../plugins/sdlc/skills/version/SKILL.md",
 	"../../plugins/sdlc/skills/pr/SKILL.md",
 }
 
@@ -71,7 +73,6 @@ func commitSkillsBuildRegistry(t *testing.T) map[string]bool {
 	tools.RegisterShipTools(srv)
 	tools.RegisterSetupTools(srv)
 	tools.RegisterShipStateTools(srv)
-	tools.RegisterVersionTools(srv)
 	tools.RegisterValidateTools(srv)
 	tools.RegisterLearningsTools(srv)
 	tools.RegisterDimensionsRenderTools(srv)
@@ -145,9 +146,9 @@ func TestCommitSkillsToolReferencesExistInRegistry(t *testing.T) {
 // TestCommitSkillsRegistryContainsExpectedTools is a narrower sanity check:
 // every tool this task's rewritten skills are documented to call must be
 // present in the registry, by exact name. This pins the specific tool names
-// used across commit, version, and pr so a future rename in
-// internal/tools fails loudly here instead of only in the broader scan
-// above (which would also catch it, but this gives a more precise failure).
+// used across commit and pr so a future rename in internal/tools fails
+// loudly here instead of only in the broader scan above (which would also
+// catch it, but this gives a more precise failure).
 func TestCommitSkillsRegistryContainsExpectedTools(t *testing.T) {
 	registry := commitSkillsBuildRegistry(t)
 
@@ -155,8 +156,6 @@ func TestCommitSkillsRegistryContainsExpectedTools(t *testing.T) {
 		"commit_prepare",
 		"commit_apply",
 		"links_validate",
-		"version_prepare",
-		"version_apply",
 		"scaffold_ci",
 		"pr_prepare",
 		"pr_apply",

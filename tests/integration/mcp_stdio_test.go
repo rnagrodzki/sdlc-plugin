@@ -36,8 +36,7 @@ var expectedMCPTools = []string{
 	"received_review_prepare", "review_prepare", "scaffold_ci",
 	"setup_init", "setup_prepare", "setup_write_sections", "ship_prepare",
 	"ship_state", "ship_verify_side_effect", "validate",
-	"verify_pipeline_classify", "verify_tag_ancestry", "version_apply",
-	"version_prepare",
+	"verify_pipeline_classify", "verify_tag_ancestry",
 }
 
 // connectStdioClient spawns sdlcBinPath as "sdlc mcp" with its working

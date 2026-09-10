@@ -20,7 +20,6 @@ func TestMCPToolParameterDescriptions(t *testing.T) {
 
 	// Mirrors cmd/sdlc/main.go's runMCP registration list exactly, so this
 	// test covers the same tool surface the real server exposes.
-	RegisterVersionTools(s)
 	RegisterPlanTools(s)
 	RegisterPlanExploreTools(s)
 	RegisterLinksTools(s)

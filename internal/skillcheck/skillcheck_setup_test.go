@@ -123,7 +123,6 @@ func setupSkillsListTools(t *testing.T) []*mcp.Tool {
 	tools.RegisterSetupWriteTools(srv)
 	tools.RegisterShipStateTools(srv)
 	tools.RegisterShipTools(srv)
-	tools.RegisterVersionTools(srv)
 	tools.RegisterValidateTools(srv)
 	tools.RegisterDimensionsRenderTools(srv)
 	tools.RegisterLearningsTools(srv)

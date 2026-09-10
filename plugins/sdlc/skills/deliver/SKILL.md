@@ -194,7 +194,7 @@ Dispatch ship with `execute` and `review` excluded from its step list — delive
 
 If the project's `.sdlc-v2/local.json` configures `ship.steps` explicitly, use that list with `execute` and `review` removed instead of the fixed list above, so project-level customization (e.g. adding `verify-openspec` or `await-remote-review`) still applies.
 
-**Scaffold guard (required — prevents a hard crash):** `ship_state`'s init always scaffolds the fixed 7-step list (`execute, commit, review, received-review, commit-fixes, version, pr`) regardless of `--steps` — `plan`/`archive-openspec`/`verify-pipeline`/`learnings-commit` are separate inline steps outside this scaffold, not part of it. The `execute`/`review` scaffold entries carry no `condition` key — so left `pending` they permanently block every later step's `begin-step` call (`received-review`/`commit-fixes` already carry a `condition` key and don't need skipping). ship's own Step 5 has no "skip if absent from `flags.steps`" guard for `execute`/`review` (unlike `version`/`verify-pipeline`/`await-remote-review`/`learnings-commit`, which do have one). Add this instruction to the ship dispatch, beyond the base template, so the dispatched Agent neutralizes the scaffold itself instead of hitting the crash:
+**Scaffold guard (required — prevents a hard crash):** `ship_state`'s init always scaffolds the fixed 6-step list (`execute, commit, review, received-review, commit-fixes, pr`) regardless of `--steps` — `plan`/`archive-openspec`/`verify-pipeline`/`learnings-commit` are separate inline steps outside this scaffold, not part of it. The `execute`/`review` scaffold entries carry no `condition` key — so left `pending` they permanently block every later step's `begin-step` call (`received-review`/`commit-fixes` already carry a `condition` key and don't need skipping). ship's own Step 5 has no "skip if absent from `flags.steps`" guard for `execute`/`review` (unlike `verify-pipeline`/`await-remote-review`/`learnings-commit`, which do have one). Add this instruction to the ship dispatch, beyond the base template, so the dispatched Agent neutralizes the scaffold itself instead of hitting the crash:
 
 ```
 Before beginning your first real step (`commit`), call:
@@ -271,4 +271,4 @@ Print a final summary naming the terminal value, the state file path, and — on
 
 - [`/execute`](../execute/SKILL.md) — dispatched for the `execute` phase.
 - [`/review`](../review/SKILL.md) — dispatched for the `review` phase and every `fix-loop` re-check.
-- [`/ship`](../ship/SKILL.md) — dispatched for the `ship` phase; owns `version`, `pr`, `verify-pipeline`, and `learnings-commit`, and the two manual gates documented above.
+- [`/ship`](../ship/SKILL.md) — dispatched for the `ship` phase; owns `pr`, `verify-pipeline`, and `learnings-commit`, and the two manual gates documented above.

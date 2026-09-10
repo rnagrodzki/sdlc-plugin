@@ -98,7 +98,6 @@ func reviewSkillsBuildRegistry(t *testing.T) map[string]bool {
 	tools.RegisterSetupTools(srv)
 	tools.RegisterShipStateTools(srv)
 	tools.RegisterShipTools(srv)
-	tools.RegisterVersionTools(srv)
 	tools.RegisterValidateTools(srv)
 	tools.RegisterDimensionsRenderTools(srv)
 	tools.RegisterSetupWriteTools(srv)

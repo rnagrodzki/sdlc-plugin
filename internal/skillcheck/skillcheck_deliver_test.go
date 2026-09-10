@@ -110,7 +110,6 @@ func deliverSkillsBuildRegistry(t *testing.T) map[string]bool {
 	tools.RegisterShipStateTools(srv)
 	tools.RegisterShipTools(srv)
 	tools.RegisterValidateTools(srv)
-	tools.RegisterVersionTools(srv)
 
 	mcpSrv := srv.MCPServer()
 

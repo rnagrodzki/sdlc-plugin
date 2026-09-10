@@ -339,11 +339,9 @@ learnings_log({action: "append", entry: "## YYYY-MM-DD — commit: <brief summar
 
 After completing the commit, common follow-ups include:
 - `/review` — review the changes
-- `/version` — tag a release
 - `/pr` — create a pull request
 
 ## See Also
 
 - [`/review`](../review/SKILL.md) — review changes after committing
 - [`/pr`](../pr/SKILL.md) — create a PR after committing
-- [`/version`](../version/SKILL.md) — tag a release after committing

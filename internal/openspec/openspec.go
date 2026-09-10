@@ -322,7 +322,7 @@ func DeriveStage(hasTasks bool, tasksDone, tasksTotal int) string {
 }
 
 // fsFileExists reports whether path exists and is not a directory. A local,
-// unexported duplicate of tools.fileExists (internal/tools/version.go) —
+// unexported duplicate of tools.fileExists (internal/tools/release_diagnostics.go) —
 // that helper is unexported and unreachable from this package; duplicating
 // a two-line os.Stat check mirrors the repo's existing tolerance for this
 // exact kind of small cross-package duplication (see also

@@ -100,7 +100,6 @@ func shipSkillsBuildRegistry(t *testing.T) map[string]bool {
 	tools.RegisterSetupTools(srv)
 	tools.RegisterShipStateTools(srv)
 	tools.RegisterShipTools(srv)
-	tools.RegisterVersionTools(srv)
 	tools.RegisterValidateTools(srv)
 	tools.RegisterDimensionsRenderTools(srv)
 	tools.RegisterSetupWriteTools(srv)
@@ -204,7 +203,6 @@ func TestShipSkillsRegistryContainsExpectedTools(t *testing.T) {
 		"poll_await",
 		"verify_pipeline_classify",
 		"execute_state",
-		"version_apply",
 		"commit_apply",
 		"pr_apply",
 		"review_prepare",
@@ -349,7 +347,7 @@ var shipSkillsBashBlockRe = regexp.MustCompile("(?s)```bash\\n(.*?)```")
 // changelog file names that Acceptance Criterion 2 requires never appear
 // inside an LLM-executed ```bash block in the ship skill files: every
 // deterministic mutation must route through its executor tool
-// (commit_apply, pr_apply, version_apply, ship_verify_side_effect, plus the
+// (commit_apply, pr_apply, ship_verify_side_effect, plus the
 // user-facing manual tag/push pause, which lives outside any ```bash
 // block) rather than a direct git/gh invocation or a hand-edited version
 // file.
@@ -369,7 +367,7 @@ var shipSkillsForbiddenMutations = []*regexp.Regexp{
 // ship/SKILL.md nor verify-pipeline/SKILL.md may instruct the LLM
 // to run a git/gh mutation, or hand-edit a version/changelog file, directly
 // via an executable ```bash block -- every such mutation must instead
-// route through an executor tool (commit_apply, pr_apply, version_apply,
+// route through an executor tool (commit_apply, pr_apply,
 // ship_verify_side_effect) or, for the two disclosed manual-only gaps (tag
 // creation/push, post-PR-commit push), through a human-facing
 // AskUserQuestion pause rather than a Bash-tool-executed command.

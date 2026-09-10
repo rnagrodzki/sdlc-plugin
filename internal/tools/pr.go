@@ -146,8 +146,9 @@ type PRPrepareOut struct {
 // prPrepareNext derives the next-step guidance for a PRPrepareOut, keyed off
 // its outcome: AccountMismatch (switch account), any other error (fix and
 // retry), or success (proceed to pr_apply, with version context folded in
-// when version diagnostics are present). Mirrors the VersionPrepareOut.Next
-// pattern (version.go's versionPrepareSummary).
+// when version diagnostics are present). Mirrors the summary-assembly
+// pattern formerly implemented by the standalone version tool's
+// versionPrepareSummary, now inlined here.
 func prPrepareNext(out PRPrepareOut) string {
 	if out.AccountMismatch {
 		return "Switch GitHub account, then call pr_prepare again."
@@ -286,10 +287,11 @@ type prVersionDiagnostics struct {
 }
 
 // prVersionDiagnosticsWith gathers version diagnostic fields from the
-// project's config, tags, and commits. Mirrors version.go's versionPrepare
-// logic but routes all I/O through rt (mockable) and degrades failures to
-// warnings instead of errors. Returns the diagnostic fields and any
-// warnings accumulated during the process.
+// project's config, tags, and commits. Mirrors the version-diagnostics
+// logic formerly implemented by the standalone version tool's
+// versionPrepare, but routes all I/O through rt (mockable) and degrades
+// failures to warnings instead of errors. Returns the diagnostic fields and
+// any warnings accumulated during the process.
 func prVersionDiagnosticsWith(rt prRuntime, mainRoot, workDir, currentBranch string, cfg *config.Config) (prVersionDiagnostics, []string) {
 	var warnings []string
 	diag := prVersionDiagnostics{

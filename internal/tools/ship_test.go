@@ -1376,9 +1376,9 @@ func TestShipVerifySideEffect_CommitSha_ResumeConfirmsJournal(t *testing.T) {
 
 // TestShipStateSchema_SideEffectsKindEnum proves AC4's schema-level
 // enforcement: ship-state.schema.json must accept a sideEffects entry with a
-// valid kind ("release-intent"/"pr"/"sha") and reject one with an
-// unrecognized kind, via the enum restriction — not merely something
-// application code happens to filter out.
+// valid kind ("pr"/"sha") and reject one with an unrecognized kind, via the
+// enum restriction — not merely something application code happens to
+// filter out.
 func TestShipStateSchema_SideEffectsKindEnum(t *testing.T) {
 	schemaPath, err := filepath.Abs(filepath.Join("..", "..", "plugins", "sdlc", "schemas", "ship-state.schema.json"))
 	if err != nil {
@@ -1419,9 +1419,9 @@ func TestShipStateSchema_SideEffectsKindEnum(t *testing.T) {
 
 	t.Run("valid kind accepted", func(t *testing.T) {
 		doc := baseState(map[string]any{
-			"version": map[string]any{
-				"kind":       "release-intent",
-				"ref":        "minor",
+			"pr": map[string]any{
+				"kind":       "pr",
+				"ref":        "42",
 				"verifiedAt": "2026-03-01T12:00:00Z",
 			},
 		})
@@ -1440,6 +1440,22 @@ func TestShipStateSchema_SideEffectsKindEnum(t *testing.T) {
 		})
 		if err := validate(t, doc); err == nil {
 			t.Error("expected schema validation to reject unknown sideEffects kind, got nil error")
+		}
+	})
+
+	t.Run("release-intent kind rejected", func(t *testing.T) {
+		// release-intent was removed from the enum when the standalone
+		// version tool was retired (its side effects now record as
+		// pr/sha only); prove the schema enforces the removal.
+		doc := baseState(map[string]any{
+			"version": map[string]any{
+				"kind":       "release-intent",
+				"ref":        "minor",
+				"verifiedAt": "2026-03-01T12:00:00Z",
+			},
+		})
+		if err := validate(t, doc); err == nil {
+			t.Error("expected schema validation to reject release-intent sideEffects kind, got nil error")
 		}
 	})
 }
