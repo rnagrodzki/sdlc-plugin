@@ -393,8 +393,15 @@ func TestMigrate_ConfigAction_V4ToV5(t *testing.T) {
 		t.Error("config.json should not have schemaVersion after migration")
 	}
 	ver := configData["version"].(map[string]any)
-	if ver["mode"] != "file" {
-		t.Error("version.mode should be preserved")
+	vf, ok := ver["versionFile"].(map[string]any)
+	if !ok {
+		t.Fatalf("version.versionFile should be an object, got %#v", ver["versionFile"])
+	}
+	if vf["enabled"] != true {
+		t.Error("version.versionFile.enabled should be true")
+	}
+	if vf["path"] != "package.json" {
+		t.Error("version.versionFile.path should be 'package.json'")
 	}
 }
 
@@ -422,8 +429,15 @@ func TestMigrate_ConfigAction_LegacyToV5(t *testing.T) {
 		t.Error("v5 config.json should not have schemaVersion")
 	}
 	ver := configData["version"].(map[string]any)
-	if ver["mode"] != "tag" {
-		t.Error("version.mode should be 'tag'")
+	tag, ok := ver["tag"].(map[string]any)
+	if !ok {
+		t.Fatalf("version.tag should be an object, got %#v", ver["tag"])
+	}
+	if tag["enabled"] != true {
+		t.Error("version.tag.enabled should be true")
+	}
+	if tag["prefix"] != "v" {
+		t.Error("version.tag.prefix should be 'v'")
 	}
 }
 
