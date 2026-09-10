@@ -239,6 +239,9 @@ func TestPrPrepare_ConfigNeedsMigration_ShortCircuits(t *testing.T) {
 	if len(out.Errors) == 0 {
 		t.Fatalf("expected a config-version error message")
 	}
+	if out.Next != "Fix the errors above, then call pr_prepare again." {
+		t.Errorf("Next: got %q", out.Next)
+	}
 }
 
 func TestPrPrepare_BrokenAuth_EmbedsLoginDiagnostics(t *testing.T) {
@@ -269,6 +272,9 @@ func TestPrPrepare_BrokenAuth_EmbedsLoginDiagnostics(t *testing.T) {
 	}
 	if out.Diagnostics == nil || out.Diagnostics.LoginHint == "" {
 		t.Fatalf("expected embedded login diagnostics, got %+v", out.Diagnostics)
+	}
+	if out.Next != "Fix the errors above, then call pr_prepare again." {
+		t.Errorf("Next: got %q", out.Next)
 	}
 }
 
@@ -314,6 +320,9 @@ func TestPrPrepare_AccountMismatch_EmbedsAccountDiagnostics(t *testing.T) {
 	if len(out.Diagnostics.Candidates) != 2 {
 		t.Errorf("Candidates: got %d, want 2 (%+v)", len(out.Diagnostics.Candidates), out.Diagnostics.Candidates)
 	}
+	if out.Next != "Switch GitHub account, then call pr_prepare again." {
+		t.Errorf("Next: got %q", out.Next)
+	}
 }
 
 func TestPrPrepare_BranchGuardMismatch_HardGate(t *testing.T) {
@@ -345,6 +354,9 @@ func TestPrPrepare_BranchGuardMismatch_HardGate(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(out.Errors, " "), "Branch mismatch") {
 		t.Errorf("expected a branch-mismatch error, got %v", out.Errors)
+	}
+	if out.Next != "Fix the errors above, then call pr_prepare again." {
+		t.Errorf("Next: got %q", out.Next)
 	}
 }
 
@@ -386,6 +398,9 @@ func TestPrPrepare_HappyPath_JiraAndTemplate(t *testing.T) {
 	if out.BranchGuard == nil || out.BranchGuard.Active {
 		t.Errorf("expected an inactive BranchGuard (no ExpectedBranch configured), got %+v", out.BranchGuard)
 	}
+	if out.Next != "Call pr_apply with title, body, and release fields." {
+		t.Errorf("Next: got %q", out.Next)
+	}
 }
 
 func TestPrPrepare_ProtectedBranch_Rejected(t *testing.T) {
@@ -412,6 +427,9 @@ func TestPrPrepare_ProtectedBranch_Rejected(t *testing.T) {
 	if !strings.Contains(strings.Join(out.Errors, " "), "main") {
 		t.Errorf("expected a protected-branch error mentioning main, got %v", out.Errors)
 	}
+	if out.Next != "Fix the errors above, then call pr_prepare again." {
+		t.Errorf("Next: got %q", out.Next)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -436,6 +454,9 @@ func TestPrApply_NoExistingPR_Creates(t *testing.T) {
 	if out.URL != "https://github.com/o/r/pull/9" {
 		t.Errorf("URL: got %q", out.URL)
 	}
+	if !strings.Contains(out.Next, "PR created") {
+		t.Errorf("Next: got %q", out.Next)
+	}
 }
 
 func TestPrApply_ExistingPR_Updates(t *testing.T) {
@@ -457,6 +478,9 @@ func TestPrApply_ExistingPR_Updates(t *testing.T) {
 	}
 	if out.URL != "https://github.com/o/r/pull/9" {
 		t.Errorf("URL: got %q", out.URL)
+	}
+	if !strings.Contains(out.Next, "PR updated") {
+		t.Errorf("Next: got %q", out.Next)
 	}
 }
 

@@ -87,6 +87,7 @@ type CommitPrepareOut struct {
 	LastCommitMessage *string             `json:"lastCommitMessage"`
 	WipSquash         CommitWipSquash     `json:"wipSquash"`
 	BranchGuard       CommitBranchGuard   `json:"branchGuard"`
+	Next              string              `json:"next"`
 }
 
 // commitPrepare is the core logic, separated for testability.
@@ -232,6 +233,12 @@ func commitPrepare(cfgRoot, gitRoot string, in CommitPrepareIn) (CommitPrepareOu
 
 	// Branch guard (soft check, no config enforcement).
 	out.BranchGuard = CommitBranchGuard{OK: true}
+
+	if len(out.Errors) > 0 {
+		out.Next = "Fix the errors above, then call commit_prepare again."
+	} else {
+		out.Next = "Call commit_apply with the prepared payload."
+	}
 
 	return out, nil
 }

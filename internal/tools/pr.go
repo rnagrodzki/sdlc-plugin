@@ -120,6 +120,22 @@ type PRPrepareOut struct {
 
 	JiraTicket string         `json:"jiraTicket,omitempty"`
 	Template   *PRTemplateOut `json:"template,omitempty"`
+
+	Next string `json:"next"`
+}
+
+// prPrepareNext derives the next-step guidance for a PRPrepareOut, keyed off
+// its outcome: AccountMismatch (switch account), any other error (fix and
+// retry), or success (proceed to pr_apply). Mirrors the
+// VersionPrepareOut.Next pattern (version.go).
+func prPrepareNext(out PRPrepareOut) string {
+	if out.AccountMismatch {
+		return "Switch GitHub account, then call pr_prepare again."
+	}
+	if len(out.Errors) > 0 {
+		return "Fix the errors above, then call pr_prepare again."
+	}
+	return "Call pr_apply with title, body, and release fields."
 }
 
 // ---------------------------------------------------------------------------
@@ -258,7 +274,7 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 	if !in.SkipConfigCheck {
 		if err := rt.configMigrateVerify(mainRoot); err != nil {
 			errs = append(errs, fmt.Sprintf("config-version: %s", err.Error()))
-			return PRPrepareOut{Errors: errs, NeedsMigration: true}, nil
+			return PRPrepareOut{Errors: errs, NeedsMigration: true, Next: "Fix the errors above, then call pr_prepare again."}, nil
 		}
 	}
 
@@ -287,6 +303,7 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 		// wantLogin=="" means buildAuthDiagnosticsWith never finds a match,
 		// so it falls through to its own default LoginHint.
 		out.Diagnostics = buildAuthDiagnosticsWith(rt, workDir, "", "", nil)
+		out.Next = prPrepareNext(out)
 		return out, nil
 	}
 
@@ -297,6 +314,7 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 		errs = append(errs, ghx.FormatAccountMismatch(expectedAccount, authProbe.ActiveAccount))
 		out.Errors = errs
 		out.Diagnostics = buildAuthDiagnosticsWith(rt, workDir, expectedAccount, "", nil)
+		out.Next = prPrepareNext(out)
 		return out, nil
 	}
 
@@ -319,6 +337,7 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 			errs = append(errs, ghx.FormatAccessDenied(authProbe.ActiveAccount, owner, repo, probe.SuggestedAccounts))
 			out.Errors = errs
 			out.Diagnostics = buildAuthDiagnosticsWith(rt, workDir, "", owner, probe.SuggestedAccounts)
+			out.Next = prPrepareNext(out)
 			return out, nil
 		}
 		if probe.Accessible == nil {
@@ -339,6 +358,7 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 		errs = append(errs, err.Error())
 		out.Errors = errs
 		out.Warnings = warnings
+		out.Next = prPrepareNext(out)
 		return out, nil
 	}
 	out.CurrentBranch = currentBranch
@@ -369,6 +389,7 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 		errs = append(errs, guard.Message)
 		out.Errors = errs
 		out.Warnings = warnings
+		out.Next = prPrepareNext(out)
 		return out, nil
 	}
 
@@ -376,6 +397,7 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 		errs = append(errs, fmt.Sprintf("You are on the %s branch. Switch to a feature branch before creating a PR.", currentBranch))
 		out.Errors = errs
 		out.Warnings = warnings
+		out.Next = prPrepareNext(out)
 		return out, nil
 	}
 
@@ -410,6 +432,7 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 	out.Errors = errs
 	out.Warnings = warnings
 	out.OK = len(errs) == 0
+	out.Next = prPrepareNext(out)
 	return out, nil
 }
 
@@ -485,6 +508,7 @@ type PRApplyOut struct {
 	URL           string             `json:"url"`
 	Created       bool               `json:"created"`
 	ReleaseIntent *ReleaseIntentInfo `json:"releaseIntent,omitempty"`
+	Next          string             `json:"next"`
 }
 
 // ReleaseIntentInfo carries version metadata computed when releaseLevel is set.
@@ -620,7 +644,7 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 				return PRApplyOut{}, err
 			}
 		}
-		return PRApplyOut{URL: url, Created: false, ReleaseIntent: intent}, nil
+		return PRApplyOut{URL: url, Created: false, ReleaseIntent: intent, Next: "PR updated. If verify-pipeline is configured, call verify_pipeline_classify next."}, nil
 	}
 
 	url, err := rt.ghPRCreate(workDir, in.Title, body)
@@ -635,7 +659,7 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 			return PRApplyOut{}, err
 		}
 	}
-	return PRApplyOut{URL: url, Created: true, ReleaseIntent: intent}, nil
+	return PRApplyOut{URL: url, Created: true, ReleaseIntent: intent, Next: "PR created. If verify-pipeline is configured, call verify_pipeline_classify next."}, nil
 }
 
 // isPermissionError reports whether err's message indicates gh CLI refused
