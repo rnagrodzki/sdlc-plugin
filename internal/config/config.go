@@ -139,6 +139,12 @@ type AutomationSection struct {
 // The threshold a caller compares actual error/warning counts against is
 // computed as max(MinErrorFloor, ceil(MaxErrorRate * totalTasks)) — see
 // KD-3; that computation is not implemented in this package.
+//
+// Known limitation: these are plain value types, so applyAutomationDefaults
+// cannot distinguish an explicit zero from an absent key — an explicit
+// maxErrorRate:0 or maxWarningRate:0 in local.json is silently replaced by
+// the compiled default (0.15 / 0.40 respectively). Same caveat as
+// PushConfig.FeatureBranchAutoApprove.
 type DriftConfig struct {
 	MaxErrorRate   float64 `json:"maxErrorRate"`
 	MaxWarningRate float64 `json:"maxWarningRate"`

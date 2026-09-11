@@ -85,7 +85,7 @@ type ExecuteStateIn struct {
 	CLICommand        string         `json:"cliCommand,omitempty" jsonschema_description:"log-cli only: the Bash command that was executed."`
 	CLIExitCode       int            `json:"cliExitCode,omitempty" jsonschema_description:"log-cli only: the exit code of the command."`
 	CLIOutput         string         `json:"cliOutput,omitempty" jsonschema_description:"log-cli only: first ~500 characters of command output."`
-	DriftSeverity     string         `json:"driftSeverity,omitempty" jsonschema_description:"drift-log only: severity of the drift issue — one of error, warning, or info."`
+	DriftSeverity     string         `json:"driftSeverity,omitempty" jsonschema:"enum=error,enum=warning,enum=info" jsonschema_description:"drift-log only: severity of the drift issue — one of error, warning, or info."`
 	DriftSummary      string         `json:"driftSummary,omitempty" jsonschema_description:"drift-log only: one-line summary of the drift issue."`
 	DriftDetail       string         `json:"driftDetail,omitempty" jsonschema_description:"drift-log only: optional longer description of the drift issue."`
 	IssueDraftTitle   string         `json:"issueDraftTitle,omitempty" jsonschema_description:"issue-draft only: GH issue title (required)."`
@@ -114,21 +114,24 @@ type ExecWaveNarrationOut struct {
 // DriftLogOut is the output for a plan-drift check. wave-start returns it
 // (in place of ExecWaveNarrationOut) when the plan file's sha256 no longer
 // matches the planHash recorded at init, halting the wave before it starts.
-// The struct is shared with the drift-log action (KD-5 follow-up): Halt and
-// Reason are populated by wave-start's own comparison; DriftCount, Threshold,
-// and Logged are zero-value here and only meaningful once drift-log exists.
+// The struct is shared with the drift-log action (KD-5 follow-up). Both
+// code paths populate Logged and DriftCount so callers always get a
+// consistent view of drift state regardless of which path produced the
+// output. When Halt is true, Next tells the caller what to do.
 type DriftLogOut struct {
 	Logged     bool           `json:"logged"`
 	Halt       bool           `json:"halt"`
 	Reason     string         `json:"reason,omitempty"`
 	DriftCount map[string]int `json:"driftCount"`
 	Threshold  int            `json:"threshold"`
+	Next       string         `json:"next,omitempty"`
 }
 
 // IssueDraftOut is the output for the issue-draft action.
 type IssueDraftOut struct {
-	Added       bool `json:"added"`
-	TotalDrafts int  `json:"totalDrafts"`
+	Added       bool   `json:"added"`
+	TotalDrafts int    `json:"totalDrafts"`
+	Next        string `json:"next,omitempty"`
 }
 
 // ExecutionReportOut is the read-only end-of-run report returned by the
@@ -170,6 +173,9 @@ type ExecutionReportOut struct {
 
 	// Decisions
 	Decisions []string `json:"decisions,omitempty"`
+
+	// Next step guidance (empty string is valid "no next step").
+	Next string `json:"next,omitempty"`
 }
 
 // WaveReport is one wave's entry in ExecutionReportOut.Waves.
@@ -200,7 +206,8 @@ type TaskReport struct {
 // ReportSkippedOut is returned by the report action when
 // config.Automation.Report.Enabled is false.
 type ReportSkippedOut struct {
-	Skipped bool `json:"skipped"`
+	Skipped bool   `json:"skipped"`
+	Next    string `json:"next,omitempty"`
 }
 
 // ExecTaskNarrationOut is the narrated output for task-level execute_state
@@ -568,7 +575,8 @@ func execAssertBranch(st *state.State, resolved string) error {
 	recorded, _ := st.Data["branch"].(string)
 	if recorded != "" && recorded != resolved {
 		return &mcpserver.DomainError{
-			Msg: fmt.Sprintf("branch changed mid-session: init recorded %q, current is %q", recorded, resolved),
+			Msg:        fmt.Sprintf("branch changed mid-session: init recorded %q, current is %q", recorded, resolved),
+			Suggestion: fmt.Sprintf("Switch back to branch %q or start a new run with execute_state({action:\"init\"}) on the current branch.", recorded),
 		}
 	}
 	return nil
@@ -778,20 +786,23 @@ type IssueDraft struct {
 // execAppendIssueDraft appends an IssueDraft to data["pendingIssueDrafts"],
 // round-tripping it through JSON so the stored representation is always a
 // map[string]any — mirroring execAppendIssue's pattern for data["issues"].
-func execAppendIssueDraft(data map[string]any, draft IssueDraft) {
+// Returns an error on marshal/unmarshal failure so callers never misreport
+// success on a silently dropped draft.
+func execAppendIssueDraft(data map[string]any, draft IssueDraft) error {
 	raw, ok := data["pendingIssueDrafts"].([]any)
 	if !ok {
 		raw = []any{}
 	}
 	b, err := json.Marshal(draft)
 	if err != nil {
-		return
+		return fmt.Errorf("marshal issue draft: %w", err)
 	}
 	var m map[string]any
 	if err := json.Unmarshal(b, &m); err != nil {
-		return
+		return fmt.Errorf("unmarshal issue draft: %w", err)
 	}
 	data["pendingIssueDrafts"] = append(raw, m)
+	return nil
 }
 
 // countDriftIssues counts issues with category "drift" grouped by severity.
@@ -838,11 +849,12 @@ func execActionDriftLog(root, workDir string, in ExecuteStateIn, now func() time
 	case "error", "warning", "info":
 	default:
 		return nil, &mcpserver.DomainError{
-			Msg: fmt.Sprintf("driftSeverity must be one of error, warning, info; got %q", in.DriftSeverity),
+			Msg:        fmt.Sprintf("driftSeverity must be one of error, warning, info; got %q", in.DriftSeverity),
+			Suggestion: "Set driftSeverity to \"error\", \"warning\", or \"info\".",
 		}
 	}
 	if strings.TrimSpace(in.DriftSummary) == "" {
-		return nil, &mcpserver.DomainError{Msg: "driftSummary is required"}
+		return nil, &mcpserver.DomainError{Msg: "driftSummary is required", Suggestion: "Provide a driftSummary describing what changed."}
 	}
 
 	branch, err := execResolveBranch(in.Branch, workDir)
@@ -936,10 +948,10 @@ func execActionDriftLog(root, workDir string, in ExecuteStateIn, now func() time
 // approval question under --auto.
 func execActionIssueDraft(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	if strings.TrimSpace(in.IssueDraftTitle) == "" {
-		return nil, &mcpserver.DomainError{Msg: "issueDraftTitle is required"}
+		return nil, &mcpserver.DomainError{Msg: "issueDraftTitle is required", Suggestion: "Provide an issueDraftTitle for the GitHub issue."}
 	}
 	if strings.TrimSpace(in.IssueDraftBody) == "" {
-		return nil, &mcpserver.DomainError{Msg: "issueDraftBody is required"}
+		return nil, &mcpserver.DomainError{Msg: "issueDraftBody is required", Suggestion: "Provide an issueDraftBody with the issue description."}
 	}
 
 	branch, err := execResolveBranch(in.Branch, workDir)
@@ -954,13 +966,15 @@ func execActionIssueDraft(root, workDir string, in ExecuteStateIn, now func() ti
 		return nil, err
 	}
 
-	execAppendIssueDraft(st.Data, IssueDraft{
+	if appendErr := execAppendIssueDraft(st.Data, IssueDraft{
 		TaskID:    in.TaskID,
 		Title:     in.IssueDraftTitle,
 		Body:      in.IssueDraftBody,
 		Labels:    in.IssueDraftLabels,
 		Timestamp: now().UTC().Format(time.RFC3339),
-	})
+	}); appendErr != nil {
+		return nil, &mcpserver.InfraError{Msg: "append issue draft: " + appendErr.Error(), Cause: appendErr}
+	}
 
 	if err := state.Write(st); err != nil {
 		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
@@ -1018,6 +1032,7 @@ func execActionReport(root, workDir string, in ExecuteStateIn, now func() time.T
 		Branch: branch,
 		Format: format,
 		RunID:  execDeriveRunID(st.Data, 0),
+		Waves:  make([]WaveReport, 0),
 	}
 	out.PlanPath, _ = st.Data["planPath"].(string)
 	out.StartedAt, _ = st.Data["startedAt"].(string)
@@ -1118,9 +1133,13 @@ func execActionReport(root, workDir string, in ExecuteStateIn, now func() time.T
 // non-drift issue — none exist today) is dropped from all four buckets
 // rather than guessed at.
 func execReportBucketIssues(data map[string]any) (drifts, errs, warnings, concerns []StateIssue) {
+	drifts = make([]StateIssue, 0)
+	errs = make([]StateIssue, 0)
+	warnings = make([]StateIssue, 0)
+	concerns = make([]StateIssue, 0)
 	raw, ok := data["issues"].([]any)
 	if !ok {
-		return nil, nil, nil, nil
+		return drifts, errs, warnings, concerns
 	}
 	for _, v := range raw {
 		b, err := json.Marshal(v)
@@ -1481,8 +1500,11 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 				return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
 			}
 			return DriftLogOut{
-				Halt:   true,
-				Reason: "plan hash mismatch",
+				Logged:     true,
+				Halt:       true,
+				Reason:     "plan hash mismatch",
+				DriftCount: countDriftIssues(st.Data),
+				Next:       "Plan content has changed since init. Re-run execute_state({action:\"init\"}) to acknowledge the new plan, or investigate the drift.",
 			}, nil
 		}
 	}

@@ -458,10 +458,8 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 	// (hardcoded main/master), per the task contract.
 	if isDefaultBranch(currentBranch) && sliceContainsStr(stepsList, "pr") {
 		return ShipPrepareOut{}, &mcpserver.DomainError{
-			Msg: fmt.Sprintf(
-				"ship cannot run the \"pr\" step on default branch %q — pushing to main/master is never auto-approved. "+
-					"Switch to a feature branch, or remove \"pr\" from --steps/ship.steps[] if you don't intend to push.",
-				currentBranch),
+			Msg:        fmt.Sprintf("ship cannot run the \"pr\" step on default branch %q — pushing to main/master is never auto-approved", currentBranch),
+			Suggestion: "Switch to a feature branch, or remove \"pr\" from --steps/ship.steps[] if you don't intend to push.",
 		}
 	}
 

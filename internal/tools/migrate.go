@@ -22,7 +22,7 @@ import (
 // MigrateIn is the input for the migrate tool.
 type MigrateIn struct {
 	// Action selects the migration to run: "config", "import", or "layout".
-	Action string `json:"action" jsonschema_description:"Selects the migration to run: \"config\" (schema migration via configmigrate engine), \"import\" (non-destructively imports config, templates, jira-templates, learnings, and review-dimensions from the legacy plugin directory), or \"layout\" (moves this plugin's own old state layout, execution/, into the current runs/ layout)."`
+	Action string `json:"action" jsonschema:"enum=config,enum=import,enum=layout" jsonschema_description:"Selects the migration to run: \"config\" (schema migration via configmigrate engine), \"import\" (non-destructively imports config, templates, jira-templates, learnings, and review-dimensions from the legacy plugin directory), or \"layout\" (moves this plugin's own old state layout, execution/, into the current runs/ layout)."`
 	// DryRun, when true, reports what would change without writing.
 	DryRun bool `json:"dryRun" jsonschema_description:"When true, reports what would change without writing anything."`
 }
@@ -48,7 +48,8 @@ func migrate(root string, in MigrateIn) (MigrateOut, error) {
 		return migrateLayout(root, in.DryRun)
 	default:
 		return MigrateOut{}, &mcpserver.DomainError{
-			Msg: fmt.Sprintf("unknown migrate action %q; must be one of: config, import, layout", in.Action),
+			Msg:        fmt.Sprintf("unknown migrate action %q; must be one of: config, import, layout", in.Action),
+			Suggestion: "Set action to \"config\", \"import\", or \"layout\".",
 		}
 	}
 }
@@ -317,7 +318,15 @@ func migrateLayout(root string, dryRun bool) (MigrateOut, error) {
 	var changed []string
 	var skipped []string
 
-	if migrateDirExists(src) {
+	srcExists, srcErr := migrateStatExists(src)
+	if srcErr != nil {
+		return MigrateOut{
+			OK:     true,
+			Action: "layout",
+			Result: fmt.Sprintf("warning: cannot stat legacy %s: %s — skipping layout migration", src, srcErr.Error()),
+		}, nil
+	}
+	if srcExists {
 		entries, err := os.ReadDir(src)
 		if err != nil {
 			return MigrateOut{}, &mcpserver.InfraError{
@@ -426,7 +435,14 @@ func migrateLayoutMergeLedger(src, dst string, dryRun bool) (changed, skipped []
 // overwrite this migration must never do, so the pre-check is load-bearing,
 // not just an optimization.
 func migrateLayoutMoveEntry(src, dst, label string, isDir bool, dryRun bool) (changed, skipped string, err error) {
-	if migrateDirExists(dst) || migrateFileExists(dst) {
+	dstExists, statErr := migrateStatExists(dst)
+	if statErr != nil {
+		return "", "", &mcpserver.InfraError{
+			Msg:   fmt.Sprintf("cannot determine if destination %s exists: %s — refusing to move to avoid potential overwrite", dst, statErr.Error()),
+			Cause: statErr,
+		}
+	}
+	if dstExists {
 		return "", label, nil
 	}
 
@@ -478,6 +494,10 @@ func copyDir(src, dst string) error {
 }
 
 // migrateDirExists returns true if path exists and is a directory.
+// Non-IsNotExist stat errors are collapsed into false — acceptable for
+// import-action callers where the consequence is a harmless skip, but NOT
+// suitable for the layout-migration's load-bearing overwrite guard. Use
+// migrateStatExists for that.
 func migrateDirExists(path string) bool {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -487,12 +507,28 @@ func migrateDirExists(path string) bool {
 }
 
 // migrateFileExists returns true if path exists and is not a directory.
+// Same caveat as migrateDirExists — not suitable for load-bearing pre-checks.
 func migrateFileExists(path string) bool {
 	info, err := os.Stat(path)
 	if err != nil {
 		return false
 	}
 	return !info.IsDir()
+}
+
+// migrateStatExists returns (true, nil) when path exists, (false, nil) when
+// it genuinely does not exist, and (false, err) on any other stat error
+// (permission denied, I/O error, etc.). Used by load-bearing pre-checks
+// where collapsing all errors into "does not exist" risks silent overwrites.
+func migrateStatExists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
 }
 
 // copyFile copies src to dst by reading and writing content. Used instead

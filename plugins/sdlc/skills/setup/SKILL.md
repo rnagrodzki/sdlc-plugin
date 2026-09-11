@@ -247,6 +247,7 @@ otherwise):
 | `plan-guardrails` | `<N> configured` (array length) or empty. |
 | `execution-guardrails` | `<N> configured` (array length) or empty. |
 | `openspec-block` | `managed-block v<N>` when a block was found, else empty. |
+| `automation` | Join non-empty (two spaces) of `mode: <mode>` and `steps: <N> override(s)` (only when > 0). |
 
 **Phase 1 — Render the status block.** Print the status block using `section.label` and the
 computed `summary` verbatim:
@@ -366,7 +367,14 @@ both `.sdlc-v2/config.json` and `.sdlc-v2/local.json` schema versions and ingest
 legacy per-section files found in Step 0 — there is no separate project/local/`--unset-only`
 branch to run.
 
-Report both results to the user verbatim.
+Then run the layout migration (moves any pre-existing `.sdlc-v2/execution/` directory
+tree into the current `.sdlc-v2/runs/` layout — idempotent, always safe to run):
+
+```
+migrate({ action: "layout", dryRun: false }) → { ok, action, result, changed[] }
+```
+
+Report all three results to the user verbatim.
 
 **Delete legacy files (only when `migrate({action:"config"})`'s `result` started with
 `"migrated"` and named a non-empty `legacy ingested: [...]` list):** parse the

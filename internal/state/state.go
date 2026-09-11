@@ -235,7 +235,9 @@ func findInDir(dir, root, prefix, branch string) (*State, error) {
 // FindAny locates the most recent state file matching <prefix>-*.json in the
 // execution state directory (by mtime, newest first), regardless of which
 // branch produced it, reads and parses its JSON contents, and returns a
-// *State.
+// *State. Falls back to the legacy state directory (execution/) when no
+// match is found under the current layout (runs/), mirroring Find's own
+// legacy-dir fallback added in the same diff.
 //
 // Unlike Find, FindAny is branch-agnostic: it matches on the bare prefix
 // ("<prefix>-") rather than "<prefix>-<branchSlug>-", so it accepts the most
@@ -251,7 +253,20 @@ func findInDir(dir, root, prefix, branch string) (*State, error) {
 // name (via parseStateFilename), not from any caller-supplied branch, since
 // FindAny accepts files from any branch.
 func FindAny(root, prefix string) (*State, error) {
-	dir := stateDir(root)
+	st, err := findAnyInDir(stateDir(root), root, prefix)
+	if err != nil {
+		return nil, err
+	}
+	if st != nil {
+		return st, nil
+	}
+	return findAnyInDir(legacyStateDir(root), root, prefix)
+}
+
+// findAnyInDir performs the branch-agnostic <prefix>-*.json lookup within a
+// single directory, by mtime newest-first. Shared by FindAny across stateDir
+// and legacyStateDir.
+func findAnyInDir(dir, root, prefix string) (*State, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
