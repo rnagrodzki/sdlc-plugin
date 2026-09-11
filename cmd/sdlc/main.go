@@ -17,7 +17,7 @@ import (
 // Defaults to "0.0.2" when not set (e.g., during development or manual builds).
 // Must be kept in sync with the "version" field in plugins/sdlc/.claude-plugin/plugin.json.
 // TestPluginVersionMatchesManifest verifies they match.
-var pluginVersion = "0.0.2"
+var pluginVersion = "0.0.3"
 
 func main() {
 	if len(os.Args) < 2 {
