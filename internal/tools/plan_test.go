@@ -635,7 +635,7 @@ func TestPlanMark_WriteAndUpdate(t *testing.T) {
 		t.Fatalf("state files after marks = %v, want exactly 1 (prune-on-write)", stateFilesAfter)
 	}
 
-	raw, err := os.ReadFile(filepath.Join(dir, paths.DataDir, "execution", stateFilesAfter[0]))
+	raw, err := os.ReadFile(filepath.Join(dir, paths.DataDir, paths.RunsSubdir, stateFilesAfter[0]))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1051,7 +1051,7 @@ func sectionBody(t *testing.T, markdown, name string) string {
 // listStateFiles lists the basenames of files under <root>/.sdlc/execution/.
 func listStateFiles(t *testing.T, root string) []string {
 	t.Helper()
-	dir := filepath.Join(root, paths.DataDir, "execution")
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("readdir %s: %v", dir, err)

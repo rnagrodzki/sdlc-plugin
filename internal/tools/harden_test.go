@@ -671,7 +671,7 @@ func TestHardenPrepare_CLIEvidence(t *testing.T) {
 			},
 			{
 				Timestamp: "2026-09-11T00:00:01Z", Pipeline: "execute",
-				Wave: func() *int { v := 1; return &v }(),
+				Wave:   func() *int { v := 1; return &v }(),
 				Branch: "feature-x", Command: "npm test", ExitCode: 1, OutputHead: "FAIL",
 			},
 			{

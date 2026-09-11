@@ -361,7 +361,7 @@ func TestExecState_WaveStart_WithTasks(t *testing.T) {
 func TestExecState_WaveStart_MissingState(t *testing.T) {
 	root := t.TempDir()
 	// Create the state dir but no state file.
-	os.MkdirAll(filepath.Join(root, paths.DataDir, "execution"), 0o755)
+	os.MkdirAll(filepath.Join(root, paths.DataDir, paths.RunsSubdir), 0o755)
 
 	_, err := executeState(root, root, ExecuteStateIn{
 		Action: "wave-start",
@@ -1813,7 +1813,7 @@ func TestExecState_Read(t *testing.T) {
 
 func TestExecState_Read_Missing(t *testing.T) {
 	root := t.TempDir()
-	os.MkdirAll(filepath.Join(root, paths.DataDir, "execution"), 0o755)
+	os.MkdirAll(filepath.Join(root, paths.DataDir, paths.RunsSubdir), 0o755)
 
 	_, err := executeState(root, root, ExecuteStateIn{
 		Action: "read",
@@ -1957,7 +1957,7 @@ func TestExecState_Cleanup_IssueSummary_ErrorSetsHardenSuggestion(t *testing.T) 
 
 func TestExecState_Cleanup_Missing(t *testing.T) {
 	root := t.TempDir()
-	os.MkdirAll(filepath.Join(root, paths.DataDir, "execution"), 0o755)
+	os.MkdirAll(filepath.Join(root, paths.DataDir, paths.RunsSubdir), 0o755)
 
 	out, err := executeState(root, root, ExecuteStateIn{
 		Action: "cleanup",
@@ -1980,7 +1980,7 @@ func TestExecState_Cleanup_Missing(t *testing.T) {
 // run's directories untouched.
 func TestExecState_Cleanup_WithStartedAt_RemovesRunAndLedgerDirsOnly(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, paths.DataDir, "execution")
+	stateDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
 
 	startedAt := "2025-06-01T00:00:00Z"
 	runID := execNonDigitTRE.ReplaceAllString(startedAt, "") // "20250601T000000"
@@ -2042,8 +2042,8 @@ func TestExecState_Cleanup_WithStartedAt_RemovesRunAndLedgerDirsOnly(t *testing.
 }
 
 // TestExecState_Cleanup_EmptyRunID_NeverRemoveAllsExecutionDir is the
-// CRITICAL SAFETY test: filepath.Join(root, DataDir, "execution", "")
-// resolves to the execution directory itself (a trailing empty Join segment
+// CRITICAL SAFETY test: filepath.Join(root, DataDir, RunsSubdir, "")
+// resolves to the runs directory ITSELF (a trailing empty Join segment
 // is a no-op), so if cleanup ever called os.RemoveAll with an empty/derived
 // -empty runID it would wipe every run's data at once, not just one. This
 // test proves that never happens, both when startedAt is entirely absent and
@@ -2070,7 +2070,7 @@ func TestExecState_Cleanup_EmptyRunID_NeverRemoveAllsExecutionDir(t *testing.T) 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
-			stateDir := filepath.Join(root, paths.DataDir, "execution")
+			stateDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
 
 			createExecState(t, root, "feat/test", tc.data)
 
@@ -2294,7 +2294,7 @@ func TestExecState_WaveProgress_Write(t *testing.T) {
 	root := t.TempDir()
 
 	// Create execution dir for progress files.
-	os.MkdirAll(filepath.Join(root, paths.DataDir, "execution"), 0o755)
+	os.MkdirAll(filepath.Join(root, paths.DataDir, paths.RunsSubdir), 0o755)
 
 	_, err := executeState(root, root, ExecuteStateIn{
 		Action: "wave-progress",
@@ -2309,7 +2309,7 @@ func TestExecState_WaveProgress_Write(t *testing.T) {
 
 func TestExecState_WaveProgress_Read(t *testing.T) {
 	root := t.TempDir()
-	os.MkdirAll(filepath.Join(root, paths.DataDir, "execution"), 0o755)
+	os.MkdirAll(filepath.Join(root, paths.DataDir, paths.RunsSubdir), 0o755)
 
 	// Write then read.
 	_, _ = executeState(root, root, ExecuteStateIn{
@@ -2400,7 +2400,7 @@ func TestExecState_ResumeReset(t *testing.T) {
 
 func TestExecState_ResumeReset_MissingState(t *testing.T) {
 	root := t.TempDir()
-	os.MkdirAll(filepath.Join(root, paths.DataDir, "execution"), 0o755)
+	os.MkdirAll(filepath.Join(root, paths.DataDir, paths.RunsSubdir), 0o755)
 
 	result, err := executeState(root, root, ExecuteStateIn{
 		Action: "resume-reset",
@@ -3040,7 +3040,7 @@ func TestExecNormalizeTaskID(t *testing.T) {
 
 func TestExecState_GC_TTLDaysZeroPassthrough(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, paths.DataDir, "execution")
+	stateDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -3104,7 +3104,7 @@ func mkRunDir(t *testing.T, path string, mtime time.Time) {
 // the ledger/ directory's own mtime crossed the TTL.
 func TestExecReapRunDirectories_SkipsLedgerAsTopLevelEntry(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, paths.DataDir, "execution")
+	stateDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
 	clock := fixedClock(testNow)
 	stale := testNow.Add(-30 * 24 * time.Hour)
 
@@ -3134,7 +3134,7 @@ func TestExecReapRunDirectories_SkipsLedgerAsTopLevelEntry(t *testing.T) {
 // live ledger subdirectories.
 func TestExecReapRunDirectories_LedgerChildrenSweptIndividually(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, paths.DataDir, "execution")
+	stateDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
 	clock := fixedClock(testNow)
 	stale := testNow.Add(-30 * 24 * time.Hour)
 	fresh := testNow.Add(-1 * time.Hour)
@@ -3214,7 +3214,7 @@ func TestExecReapRunDirectories_LedgerChildrenSweptIndividually(t *testing.T) {
 // ledger entries without touching the filesystem.
 func TestExecReapRunDirectories_LedgerDryRun(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, paths.DataDir, "execution")
+	stateDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
 	clock := fixedClock(testNow)
 	stale := testNow.Add(-30 * 24 * time.Hour)
 
@@ -3249,7 +3249,7 @@ func TestExecReapRunDirectories_LedgerDryRun(t *testing.T) {
 // this result through unconditionally, so the shape must never omit the key.
 func TestExecReapRunDirectories_LedgerKeyPresentWhenStateDirMissing(t *testing.T) {
 	root := t.TempDir()
-	stateDir := filepath.Join(root, paths.DataDir, "execution") // never created
+	stateDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir) // never created
 	clock := fixedClock(testNow)
 
 	result := execReapRunDirectories(stateDir, 7, false, clock)

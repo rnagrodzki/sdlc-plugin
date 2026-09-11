@@ -837,7 +837,7 @@ var shipStateFileRe = regexp.MustCompile(`^ship-(.+)-\d{8}T\d{6}Z\.json$`)
 // that state.Write is about to prune. Must be called before state.Init
 // creates the new file, so its own path is never included.
 func existingShipStateFiles(root, branchSlug string) ([]string, error) {
-	dir := filepath.Join(root, paths.DataDir, "execution")
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {

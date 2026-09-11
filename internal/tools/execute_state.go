@@ -1359,7 +1359,7 @@ func execSummarizePriorWaveCtx(data map[string]any, root string, maxFiles, maxDe
 
 // ledgerDir returns the ledger directory for a run.
 func ledgerDir(root, runID string) string {
-	return filepath.Join(root, paths.DataDir, "execution", "ledger", runID)
+	return filepath.Join(root, paths.DataDir, paths.RunsSubdir, "ledger", runID)
 }
 
 // ledgerFilePath returns the per-worker ledger file path.
@@ -2701,8 +2701,8 @@ func execActionRead(root, workDir string, in ExecuteStateIn) (any, error) {
 // CRITICAL SAFETY: directory removal only happens when the state carries a
 // non-empty startedAt, from which the runID is derived (same derivation as
 // execReapRunDirectories' live-run detection). An empty/undeterminable runID
-// must never reach os.RemoveAll: filepath.Join(root, DataDir, "execution", "")
-// resolves to the execution directory ITSELF (a trailing empty Join segment
+// must never reach os.RemoveAll: filepath.Join(root, DataDir, RunsSubdir, "")
+// resolves to the runs directory ITSELF (a trailing empty Join segment
 // is a no-op), and RemoveAll-ing that would wipe every run's data at once.
 func execActionCleanup(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	branch, err := execResolveBranch(in.Branch, workDir)
@@ -2736,7 +2736,7 @@ func execActionCleanup(root, workDir string, in ExecuteStateIn, now func() time.
 	if startedAt, _ := st.Data["startedAt"].(string); startedAt != "" {
 		runID := execNonDigitTRE.ReplaceAllString(startedAt, "")
 		if runID != "" {
-			runDir := filepath.Join(root, paths.DataDir, "execution", runID)
+			runDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir, runID)
 			if rmErr := os.RemoveAll(runDir); rmErr != nil {
 				out["runDirError"] = rmErr.Error()
 			} else {
@@ -2780,7 +2780,7 @@ func execActionGC(root, workDir string, in ExecuteStateIn, now func() time.Time)
 	}
 
 	branchExists := gcBranchExistsFunc(workDir)
-	stateDir := filepath.Join(root, paths.DataDir, "execution")
+	stateDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
 
 	if in.DryRun {
 		return execGCDryRun(stateDir, ttlDays, branchExists, now)

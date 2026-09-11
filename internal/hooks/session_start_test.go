@@ -980,7 +980,7 @@ func TestCompactRecoveryPhase_ConsumeSidecar(t *testing.T) {
 		"  Current step: review",
 	})
 
-	sidecarPath := filepath.Join(root, paths.DataDir, "execution", ".compact-recovery-"+slug+".json")
+	sidecarPath := filepath.Join(root, paths.DataDir, paths.RunsSubdir, ".compact-recovery-"+slug+".json")
 	if _, err := os.Stat(sidecarPath); !os.IsNotExist(err) {
 		t.Errorf("sidecar still exists after single-use consume: stat err=%v", err)
 	}
@@ -989,7 +989,7 @@ func TestCompactRecoveryPhase_ConsumeSidecar(t *testing.T) {
 func TestCompactRecoveryPhase_StaleSweep(t *testing.T) {
 	branch := "feat/recovery-sweep"
 	root := gitFixture(t, branch)
-	execDir := filepath.Join(root, paths.DataDir, "execution")
+	execDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
 	mustMkdirAll(t, execDir)
 
 	staleFiles := []string{".compact-recovery-otherslug.json", ".stop-block-count-otherslug.json"}
@@ -1021,7 +1021,7 @@ func TestCompactRecoveryPhase_StaleSweep(t *testing.T) {
 func TestCompactRecoveryPhase_LegacyCleanup(t *testing.T) {
 	branch := "feat/recovery-legacy"
 	root := gitFixture(t, branch)
-	execDir := filepath.Join(root, paths.DataDir, "execution")
+	execDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
 	mustMkdirAll(t, execDir)
 	legacyPath := filepath.Join(execDir, ".compact-recovery.json")
 	mustWriteFile(t, legacyPath, "{}")
@@ -1041,7 +1041,7 @@ func TestCompactRecoveryPhase_LegacyCleanup(t *testing.T) {
 func TestCompactRecoveryPhase_LegacyCleanup_KeepsFresh(t *testing.T) {
 	branch := "feat/recovery-legacy-fresh"
 	root := gitFixture(t, branch)
-	execDir := filepath.Join(root, paths.DataDir, "execution")
+	execDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
 	mustMkdirAll(t, execDir)
 	legacyPath := filepath.Join(execDir, ".compact-recovery.json")
 	mustWriteFile(t, legacyPath, "{}") // fresh mtime, well within TTL
@@ -1174,7 +1174,7 @@ func TestSessionStart_PhaseIsolation(t *testing.T) {
 	// the state filename grammar, but containing invalid JSON, so
 	// state.Find returns a parse error and pipelineResumePhase must
 	// degrade to no lines rather than propagate the failure.
-	execDir := filepath.Join(root, paths.DataDir, "execution")
+	execDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
 	mustMkdirAll(t, execDir)
 	mustWriteFile(t, filepath.Join(execDir, "ship-"+slug+"-20260101T000000Z.json"), "{not valid json")
 

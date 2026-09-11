@@ -154,7 +154,7 @@ func TestInit_EmptySessionIDStoresNil(t *testing.T) {
 
 func TestFind_DelimiterAwareAndMtimeNewest(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, paths.DataDir, "execution")
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -227,13 +227,74 @@ func TestFind_NoMatch_ReturnsNilNil(t *testing.T) {
 	}
 }
 
+func TestFind_LegacyFallback_UsedWhenRunsDirHasNoMatch(t *testing.T) {
+	root := t.TempDir()
+
+	// Only the legacy execution/ directory has a matching file; runs/ is
+	// either absent or has no match for this prefix+branch.
+	legacyDir := filepath.Join(root, paths.DataDir, "execution")
+	if err := os.MkdirAll(legacyDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	name := "ship-main-20260101T100000Z.json"
+	if err := os.WriteFile(filepath.Join(legacyDir, name), []byte(`{"legacy":true}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	found, err := Find(root, "ship", "main")
+	if err != nil {
+		t.Fatalf("Find: unexpected error %v", err)
+	}
+	if found == nil {
+		t.Fatalf("Find returned nil, want fallback match from legacy execution/ dir")
+	}
+	if filepath.Base(found.Path) != name {
+		t.Fatalf("Find picked %q, want %q", filepath.Base(found.Path), name)
+	}
+	if legacy, _ := found.Data["legacy"].(bool); !legacy {
+		t.Fatalf("Find Data[legacy] = %v, want true (fixture came from legacy dir)", found.Data["legacy"])
+	}
+}
+
+func TestFind_PrefersRunsDirOverLegacyWhenBothMatch(t *testing.T) {
+	root := t.TempDir()
+
+	runsDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+	if err := os.MkdirAll(runsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll runs: %v", err)
+	}
+	legacyDir := filepath.Join(root, paths.DataDir, "execution")
+	if err := os.MkdirAll(legacyDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll legacy: %v", err)
+	}
+
+	name := "ship-main-20260101T100000Z.json"
+	if err := os.WriteFile(filepath.Join(runsDir, name), []byte(`{"legacy":false}`), 0o644); err != nil {
+		t.Fatalf("WriteFile runs: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(legacyDir, name), []byte(`{"legacy":true}`), 0o644); err != nil {
+		t.Fatalf("WriteFile legacy: %v", err)
+	}
+
+	found, err := Find(root, "ship", "main")
+	if err != nil {
+		t.Fatalf("Find: unexpected error %v", err)
+	}
+	if found == nil {
+		t.Fatalf("Find returned nil, want a match")
+	}
+	if legacy, _ := found.Data["legacy"].(bool); legacy {
+		t.Fatalf("Find picked the legacy fixture even though runs/ had a match")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Write — prune-on-write
 // ---------------------------------------------------------------------------
 
 func TestWrite_PrunesOldFiles(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, paths.DataDir, "execution")
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -546,7 +607,7 @@ func TestHookEnforcementAllowed(t *testing.T) {
 // through SDLC_STATE_DIR_OVERRIDE + node findStateFile.
 func TestFind_PrefixMatchIncludesSlugSuperstrings(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, paths.DataDir, "execution")
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -589,7 +650,7 @@ func TestFind_PrefixMatchIncludesSlugSuperstrings(t *testing.T) {
 
 func TestFind_MixedFixtureDir(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, paths.DataDir, "execution")
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -660,7 +721,7 @@ func TestFind_MixedFixtureDir(t *testing.T) {
 
 func TestInit_DoesNotPrune(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, paths.DataDir, "execution")
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -699,7 +760,7 @@ func TestFindAny_NoMatch_ReturnsNilNil(t *testing.T) {
 	}
 
 	// State dir exists but has no matching files.
-	dir := filepath.Join(root, paths.DataDir, "execution")
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -714,7 +775,7 @@ func TestFindAny_NoMatch_ReturnsNilNil(t *testing.T) {
 
 func TestFindAny_SingleMatch(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, paths.DataDir, "execution")
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -748,7 +809,7 @@ func TestFindAny_SingleMatch(t *testing.T) {
 
 func TestFindAny_MultipleMatches_PicksMostRecentByMtime(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, paths.DataDir, "execution")
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
@@ -785,7 +846,7 @@ func TestFindAny_MultipleMatches_PicksMostRecentByMtime(t *testing.T) {
 
 func TestFindAny_MixedPrefixesDoesNotCrossMatch(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, paths.DataDir, "execution")
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}

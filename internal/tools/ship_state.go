@@ -1306,7 +1306,7 @@ func shipStateCleanupPipeline(root, workDir string, in ShipStateIn, now func() t
 		return nil, &mcpserver.InfraError{Msg: "gc sweep: " + err.Error(), Cause: err}
 	}
 
-	stateDir := filepath.Join(root, paths.DataDir, "execution")
+	stateDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
 	reapResult := execReapRunDirectories(stateDir, ttlDays, false, now)
 
 	out := map[string]any{
@@ -1341,7 +1341,7 @@ func shipStateGC(root, workDir string, in ShipStateIn, now func() time.Time) (an
 	ttlDays := resolveGCTTLDays(root, detailIntPtr(in.Detail, "ttlDays"))
 
 	if detailBool(in.Detail, "dryRun") {
-		return shipGCDryRun(filepath.Join(root, paths.DataDir, "execution"), ttlDays, gcBranchExistsFunc(workDir), now)
+		return shipGCDryRun(filepath.Join(root, paths.DataDir, paths.RunsSubdir), ttlDays, gcBranchExistsFunc(workDir), now)
 	}
 
 	rpt, err := state.GC(root, state.GCOptions{

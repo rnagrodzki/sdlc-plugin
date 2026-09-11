@@ -356,7 +356,7 @@ func TestExecState_Report_ReadOnly(t *testing.T) {
 // for byte-for-byte before/after comparison in TestExecState_Report_ReadOnly.
 func findExecStatePath(t *testing.T, root, branch string) string {
 	t.Helper()
-	dir := filepath.Join(root, paths.DataDir, "execution")
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("read execution dir: %v", err)

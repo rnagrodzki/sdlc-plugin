@@ -400,7 +400,7 @@ type blockCounterFixture struct {
 // mutates the counter.
 func readBlockCounter(t *testing.T, root, branch string) (blockCounterFixture, bool) {
 	t.Helper()
-	path := filepath.Join(root, paths.DataDir, "execution", ".stop-block-count-"+state.SlugifyBranch(branch)+".json")
+	path := filepath.Join(root, paths.DataDir, paths.RunsSubdir, ".stop-block-count-"+state.SlugifyBranch(branch)+".json")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
