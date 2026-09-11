@@ -20,8 +20,8 @@ const learningsLogHeader = "# SDLC Execution Learnings\n"
 
 // LearningsLogIn is the input for the learnings_log tool.
 type LearningsLogIn struct {
-	// Action selects the operation: "append" or "read".
-	Action string `json:"action" jsonschema_description:"Selects the operation: \"append\" or \"read\"."`
+	// Action selects the operation: "append", "read", or "remove".
+	Action string `json:"action" jsonschema_description:"Selects the operation: \"append\", \"read\", or \"remove\"."`
 	// Entry is the markdown block to append (required for "append"). It is
 	// written verbatim, separated from surrounding content by one blank
 	// line; do not include a leading or trailing blank line.
@@ -29,6 +29,8 @@ type LearningsLogIn struct {
 	// TailLines, for "read", limits the returned content to the last N
 	// lines. Zero (default) returns the whole file.
 	TailLines int `json:"tailLines" jsonschema_description:"For action \"read\", limits the returned content to the last N lines. Zero (default) returns the whole file."`
+	// Indices, for "remove", selects which entries to delete.
+	Indices []int `json:"indices" jsonschema_description:"1-indexed entry numbers to remove (required for action \"remove\"). Entries are blocks separated by blank lines, header excluded."`
 }
 
 // LearningsLogOut is the output for the learnings_log tool.
@@ -55,9 +57,11 @@ func learningsLog(root string, in LearningsLogIn) (LearningsLogOut, error) {
 		return learningsAppend(path, rel, in.Entry)
 	case "read":
 		return learningsRead(path, rel, in.TailLines)
+	case "remove":
+		return learningsRemove(path, rel, in.Indices)
 	default:
 		return LearningsLogOut{}, &mcpserver.DomainError{
-			Msg: fmt.Sprintf("unknown learnings_log action %q; must be one of: append, read", in.Action),
+			Msg: fmt.Sprintf("unknown learnings_log action %q; must be one of: append, read, remove", in.Action),
 		}
 	}
 }
@@ -144,6 +148,74 @@ func learningsRead(path, rel string, tailLines int) (LearningsLogOut, error) {
 	}, nil
 }
 
+func learningsRemove(path, rel string, indices []int) (LearningsLogOut, error) {
+	if len(indices) == 0 {
+		return LearningsLogOut{}, &mcpserver.DomainError{Msg: "indices must not be empty for action \"remove\""}
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return LearningsLogOut{}, &mcpserver.DomainError{Msg: "learnings log does not exist; nothing to remove"}
+		}
+		return LearningsLogOut{}, &mcpserver.InfraError{
+			Msg:   fmt.Sprintf("read learnings log: %s", err.Error()),
+			Cause: err,
+		}
+	}
+
+	// Entries are blocks separated by a blank line ("\n\n"); the first block
+	// is the header and is not a removable entry.
+	blocks := strings.Split(string(data), "\n\n")
+	header := blocks[0]
+	entries := blocks[1:]
+	if len(entries) == 0 {
+		return LearningsLogOut{}, &mcpserver.DomainError{Msg: "learnings log has no entries to remove"}
+	}
+
+	remove := make(map[int]bool, len(indices))
+	for _, idx := range indices {
+		if idx < 1 || idx > len(entries) {
+			return LearningsLogOut{}, &mcpserver.DomainError{
+				Msg: fmt.Sprintf("index %d out of range; log has %d entries", idx, len(entries)),
+			}
+		}
+		remove[idx] = true
+	}
+
+	kept := make([]string, 0, len(entries))
+	for i, entry := range entries {
+		if remove[i+1] {
+			continue
+		}
+		kept = append(kept, strings.TrimRight(entry, "\n"))
+	}
+
+	var out strings.Builder
+	out.WriteString(strings.TrimRight(header, "\n"))
+	out.WriteString("\n")
+	if len(kept) > 0 {
+		out.WriteString("\n")
+		out.WriteString(strings.Join(kept, "\n\n"))
+		out.WriteString("\n")
+	}
+
+	if err := os.WriteFile(path, []byte(out.String()), 0o644); err != nil {
+		return LearningsLogOut{}, &mcpserver.InfraError{
+			Msg:   fmt.Sprintf("write learnings log: %s", err.Error()),
+			Cause: err,
+		}
+	}
+
+	return LearningsLogOut{
+		OK:      true,
+		Action:  "remove",
+		Path:    rel,
+		Exists:  true,
+		Changed: true,
+	}, nil
+}
+
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
@@ -151,7 +223,7 @@ func learningsRead(path, rel string, tailLines int) (LearningsLogOut, error) {
 // RegisterLearningsTools registers the learnings_log tool on the server.
 func RegisterLearningsTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "learnings_log",
-		"Appends to or reads "+paths.DataDir+"/learnings/log.md. Always resolves the MAIN git worktree root first (worktree.MainRoot, falling back to cwd) — a feature worktree's own copy of this file is never git-tracked and is lost when that worktree is removed, so every skill must go through this tool instead of Read/Edit-ing the file directly at the current worktree's path. action=\"append\" (entry: markdown block, no leading/trailing blank line) adds it as a new entry separated by one blank line, creating the file with its standard header on first use. action=\"read\" (optional tailLines) returns the current content, or exists=false when nothing has been logged yet.",
+		"Appends to, reads, or removes entries from "+paths.DataDir+"/learnings/log.md. Always resolves the MAIN git worktree root first (worktree.MainRoot, falling back to cwd) — a feature worktree's own copy of this file is never git-tracked and is lost when that worktree is removed, so every skill must go through this tool instead of Read/Edit-ing the file directly at the current worktree's path. action=\"append\" (entry: markdown block, no leading/trailing blank line) adds it as a new entry separated by one blank line, creating the file with its standard header on first use. action=\"read\" (optional tailLines) returns the current content, or exists=false when nothing has been logged yet. action=\"remove\" (indices: 1-indexed list of entry numbers, header excluded) deletes the specified entries and rewrites the file.",
 		func(ctx mcpserver.Ctx, in LearningsLogIn) (LearningsLogOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

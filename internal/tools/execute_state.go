@@ -1436,11 +1436,28 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 	st.Data["waves"] = []any{}
 	st.Data["context"] = map[string]any{}
 
+	// Cross-read ship state for pipeline auto-mode: when execute was
+	// dispatched from /ship and the user already approved --auto there,
+	// forward that into pipelineAuto so the high-risk gate (execute
+	// SKILL.md) doesn't force a second approval. Mirrors the
+	// deferredFindings cross-read in execActionReport above — a
+	// missing/unreadable ship state file (standalone execute, never
+	// dispatched via /ship) just leaves pipelineAuto false rather than
+	// failing this init.
+	st.Data["pipelineAuto"] = false
+	if shipSt, err := state.Find(root, "ship", in.Branch); err == nil && shipSt != nil {
+		if flags, ok := shipSt.Data["flags"].(map[string]any); ok {
+			if auto, ok := flags["auto"].(bool); ok && auto {
+				st.Data["pipelineAuto"] = true
+			}
+		}
+	}
+
 	if err := state.Write(st); err != nil {
 		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
 	}
 
-	result := map[string]any{"filePath": st.Path}
+	result := map[string]any{"filePath": st.Path, "pipelineAuto": st.Data["pipelineAuto"]}
 	if migrationReport != nil {
 		result["migration"] = migrationReport
 	}
