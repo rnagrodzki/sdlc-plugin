@@ -1,8 +1,8 @@
 ---
 name: harden
-description: "Use this skill after an SDLC pipeline failure to analyze hardening surfaces (plan and execute guardrails, review dimensions, copilot instructions) and propose user-approved edits that would prevent the same class of failure next time. Strengthen-only in v1 — never relaxes or removes existing rules. Required arguments: --failure-text <string> --skill <caller-name>. Optional: --step, --operation, --exit-code, --error-type, --user-intent, --args-string. Triggers on: harden, strengthen guardrails, prevent this failure, learn from this failure, after pipeline failure."
+description: "Use this skill after an SDLC pipeline failure to analyze hardening surfaces (plan and execute guardrails, review dimensions, copilot instructions) and propose user-approved edits that would prevent the same class of failure next time. Alternatively, use --from-learnings to batch-triage all non-harden learnings entries through the orchestrator. Strengthen-only in v1 — never relaxes or removes existing rules. Required arguments: --failure-text <string> --skill <caller-name> (or --from-issue <num> --skill <name>, or --from-learnings alone). Optional: --step, --operation, --exit-code, --error-type, --user-intent, --args-string. Triggers on: harden, strengthen guardrails, prevent this failure, learn from this failure, after pipeline failure, triage learnings."
 user-invocable: true
-argument-hint: "--failure-text <text> --skill <name> [--step <s>] [--operation <op>]"
+argument-hint: "--failure-text <text> --skill <name> [--step <s>] [--operation <op>] | --from-learnings"
 model: sonnet
 ---
 
@@ -46,18 +46,22 @@ rather than left implicit:
 
 | Mode | Flag | Required when |
 |---|---|---|
-| Inline failure text | `--failure-text <string>` | Always, unless `--from-issue` is used |
+| Inline failure text | `--failure-text <string>` | Default mode, unless another is used |
 | GitHub issue fetch | `--from-issue <num>` | Alternative to `--failure-text` |
+| Learnings triage | `--from-learnings` | Alternative to `--failure-text` / `--from-issue` |
 
-If both `--failure-text` and `--from-issue` are provided simultaneously, stop
-immediately with a clear mutual-exclusion error message. Do not call
-`prepare_orchestrator`.
+If more than one of `--failure-text`, `--from-issue`, or `--from-learnings` is
+provided, stop immediately with a clear mutual-exclusion error message. Do not
+call `prepare_orchestrator`.
 
-If neither `--failure-text` nor `--from-issue` is present, stop with an error
-message.
+If none of `--failure-text`, `--from-issue`, or `--from-learnings` is present,
+stop with an error message.
 
-Required flag (always): `--skill`. Optional: `--step`, `--operation`,
-`--exit-code`, `--error-type`, `--user-intent`, `--args-string`.
+Required flag: `--skill` — required for `--failure-text` and `--from-issue`
+modes; **not required** (and ignored if passed) for `--from-learnings` (the
+skill name is parsed from each entry's header). Optional: `--step`,
+`--operation`, `--exit-code`, `--error-type`, `--user-intent`,
+`--args-string`.
 
 **When `--from-issue <num>` is used:** `prepare_orchestrator` (mode `"harden"`) fetches the GitHub issue
 body automatically (via `gh issue view`). When the issue carries the
@@ -108,7 +112,147 @@ There is no bash trap spanning this run — `manifestPath` is a plain return
 value from the tool. Clean it up explicitly with `rm -f "<manifestPath>"` at
 every stop point below.
 
+### Step 1 — Alternative: `--from-learnings` Mode
+
+When `--from-learnings` is set, skip the normal `prepare_orchestrator` call
+above. Instead, triage every non-harden learnings entry through the
+orchestrator individually. Steps 2–4 are subsumed into this alternative path;
+resume at Step 5 with the grouped results.
+
+#### 1-FL.1 — Read and Parse Entries
+
+```
+learnings_log({action: "read"}) → {ok, exists, content}
+```
+
+If `exists == false` or `content` is empty, report `No learnings to triage.`
+and exit cleanly.
+
+Parse entries **exactly as `learningsRemove` does** — split the full content on
+`\n\n` (double newline), treat block[0] as the header (not a removable entry),
+and number the remaining blocks 1-indexed. Preserve each entry's original index
+throughout — never renumber after filtering.
+
+#### 1-FL.2 — Filter: Skip Harden-Prefixed Entries
+
+An entry is harden-prefixed when its first line matches the pattern
+`## YYYY-MM-DD — harden:` (em-dash `—`, not a plain hyphen). These entries are
+the skill's own learning-capture output (Step 7) and the plan skill depends on
+their `Dimensions:` line for duplicate-dimension suppression. Skip them — do
+not dispatch, do not remove.
+
+If no candidate entries remain after filtering, report `All learnings entries
+are harden-owned — nothing to triage.` and exit cleanly.
+
+#### 1-FL.3 — Preview Candidates
+
+Display a compact summary — one line per candidate:
+
+```
+harden --from-learnings: {N} candidate entries (of {total} total, {skipped} harden-owned skipped)
+
+  [{index}] {parsed_skill}: {first 80 chars of entry}
+  [{index}] {parsed_skill}: {first 80 chars of entry}
+  ...
+```
+
+Parse the skill name from each entry's header line: pattern
+`## YYYY-MM-DD — <skill>: ...` extracts `<skill>`. When the header does not
+match this pattern, use `"unknown"` as the skill name.
+
+#### 1-FL.4 — Per-Entry Orchestrator Dispatch
+
+For each candidate entry, in order:
+
+1. Call `prepare_orchestrator`:
+   ```
+   prepare_orchestrator({
+     mode: "harden",
+     failureText: "<full entry text>",
+     skill: "<parsed_skill>",
+     skipConfigCheck: true,
+   }) → { manifestPath }
+   ```
+   `skipConfigCheck: true` — config validation does not need to re-run per
+   entry. Store the `manifestPath` in a side table alongside the entry's
+   original 1-indexed position.
+
+   **On tool error for a single entry:** log the error, record the entry as
+   errored in the side table, and continue to the next. Do not abort the entire
+   triage run for one entry's prepare failure.
+
+2. Read `repository.contentRoot` from the manifest. Dispatch the
+   harden-orchestrator agent exactly as in Step 3:
+   ```
+   Agent({
+     subagent_type: "sdlc:harden-orchestrator",
+     model: "haiku",
+     prompt: "MANIFEST_FILE: <manifestPath>\nPROJECT_ROOT: <contentRoot>",
+   }) → RESULT
+   ```
+
+3. Record `{entryIndex, parsedSkill, manifestPath, RESULT}` in the side table.
+   If JSON parse of the orchestrator response fails, record the entry as
+   errored (no proposals) and continue.
+
+#### 1-FL.5 — Group by Classification
+
+After all entries are dispatched, group the side table by
+`RESULT.classification`:
+
+- **user-code** — entries whose proposals go through Step 5 (PRESENT and APPLY)
+- **ambiguous** — same as user-code for proposals; additionally eligible for
+  Step 5c (ambiguous upstream-report offer) per entry
+- **plugin-defect** — entries routed to Step 6 (PLUGIN-DEFECT ROUTE)
+
+Present the grouped summary:
+
+```
+harden --from-learnings: classification results
+
+  user-code:      {count} entries, {proposal_count} proposals
+  ambiguous:      {count} entries, {proposal_count} proposals
+  plugin-defect:  {count} entries
+  errored:        {count} entries (skipped)
+```
+
+Then proceed through Steps 5–6 with the grouped results. Process user-code
+entries first, then ambiguous, then plugin-defect. Within each classification
+group, proposals are presented per-entry in the Step 5 loop, following the same
+R-iteration-write contract, apply/skip/cancel flow, and 5a/5b/5c rules as the
+normal path. For plugin-defect entries, follow Step 6 per entry.
+
+Track which entries had at least one proposal receive an `apply` answer — these
+are **addressed** entries.
+
+#### 1-FL.6 — Remove Addressed Entries
+
+After all proposals have been presented and the apply/skip/cancel loop
+completes, determine which entries are **addressed**: an entry is addressed if
+and only if at least one proposal derived from it received an `apply` answer.
+Zero-proposal entries, all-skipped entries, and plugin-defect entries (even if
+error-report was dispatched) are **not** removed.
+
+Issue a **single** `learnings_log` remove call with all addressed indices:
+
+```
+learnings_log({action: "remove", indices: [<addressed entry indices>]})
+```
+
+Do **not** issue sequential single-index remove calls — each remove rewrites
+the file and shifts entry positions, so sequential calls would delete the wrong
+entries. If no entries were addressed, skip the remove call.
+
+#### 1-FL.7 — Cleanup
+
+`rm -f` every `manifestPath` in the side table on every exit path — including
+cancel mid-loop, zero-candidate exit, and normal completion. Then proceed to
+Step 7 (Learning Capture) as usual.
+
 ## Step 2 — CLASSIFY: Surface the Failure Classification (R5, R9)
+
+> **`--from-learnings` mode:** Steps 2–4 are handled within the Step 1
+> alternative path (1-FL.4 and 1-FL.5). Skip directly to Step 5.
 
 Read **only** the `failure.*` and `classification_hint` fields from the file at
 `manifestPath` — do not load the full surface arrays into the main context.
@@ -416,10 +560,15 @@ cleanup path).
   surface has its own canonical vocabulary; never substitute one for the other.
 - Leave a schema-invalid edit in place after a failed post-write `validate`
   call — revert per 5a.
+- Issue sequential single-index `learnings_log` remove calls in
+  `--from-learnings` mode — each remove rewrites the file and shifts entry
+  positions. Always collect all addressed indices and issue one batch remove
+  call (1-FL.6).
 
 ## When This Skill Is Invoked
 
 - **Standalone:** `/harden --failure-text "..." --skill plan --step "Step 5" --operation "reviewer-loop"`
+- **Learnings triage:** `/harden --from-learnings`
 - **Caller-dispatched:** Caller-dispatched skills present an opt-in menu option at their failure surfaces that dispatches `Skill(harden)` with the same flag shape. `ship` is intentionally NOT a caller — it delegates failure handling to its sub-skills, so harden reaches the user through whichever sub-skill failed.
 
 ## See Also
