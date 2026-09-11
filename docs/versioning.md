@@ -340,17 +340,19 @@ RC numbers are auto-detected from existing tags.
 
 ### Promoting RC to Final Release
 
-When testing is complete, promote the latest RC to a final release:
+When testing is complete, promote the latest RC to a final release without rebuilding:
 
-1. Go to Actions → "Promote Release" workflow
+1. Go to **Actions** → **SDLC Promote Release** workflow
 2. Enter the target version (e.g., `v1.3.0`)
 3. The workflow (`promote-release.cjs`) will:
-   - Find the latest RC tag for that version (e.g., `v1.3.0-rc3`)
-   - Create the final tag `v1.3.0` at the **same commit** as the RC (no rebuild)
-   - Bump the version file (when `versionFile.enabled`) and prepend the changelog entry (when `changelog.enabled`)
-   - Create a non-pre-release GitHub Release
+   - Run `git fetch --tags --force` to ensure all remote tags are present
+   - Find the latest RC tag for that version (e.g., `v1.3.0-rc3` — the highest RC number)
+   - Verify the final tag does not already exist (prevents duplicate promotions)
+   - Create the final tag `v1.3.0` at the **exact commit** where the RC tag points (no rebuild, no new commit at HEAD)
+   - Bump the version file (when `versionFile.enabled`) and prepend the changelog entry (when `changelog.enabled`) to the current branch HEAD as bookkeeping
+   - Create a non-pre-release GitHub Release with notes aggregated from all RC releases, deduplicated and labeled per-RC
 
-The final release tags the exact commit that was tested as the RC.
+The final release tags the exact commit that was tested as the RC — what you tested is what ships, no rebuild.
 
 ## Configuration Reference
 
@@ -381,8 +383,8 @@ Full `.sdlc-v2/config.json` `version` section:
 
 | Field | Required | Default | Description |
 |---|---|---|---|
-| `preRelease` | No | — | Default pre-release label (e.g., `"rc"`) applied when no explicit base bump or `--pre` is given. |
-| `preReleasePolicy` | No | `"continue-rc"` | Controls RC suggestion and enforcement. `"always-rc"`: enforces RC bumps in `/ship` (overrides resolved bump to `"rc"` regardless of source when no explicit `preRelease` is set); standalone `/pr` only suggests RC, it does not enforce. `"continue-rc"`: suggests RC only when existing RC tags are found (no ship-time enforcement). `"never"`: never suggests RC. |
+| `preRelease` | No | — | Default pre-release label (e.g., `"rc"`). Overrides the resolved bump when the bump did not come from a CLI `--bump` flag (i.e., overrides config `ship.bump` and the built-in default, but not an explicit CLI flag). |
+| `preReleasePolicy` | No | `"continue-rc"` | Controls RC suggestion and enforcement. `"always-rc"`: enforces RC bumps in `/ship` (overrides resolved bump to `"rc"` regardless of source, including an explicit CLI `--bump`); standalone `/pr` only suggests RC, it does not enforce. `"continue-rc"`: suggests RC only when existing RC tags are found (no ship-time enforcement). `"never"`: never suggests RC. |
 | `method` | No | `"push"` | How the `versionFile` and `changelog` paths deliver their writes: `"push"` (direct commit to the default branch), `"pr"` (via a single `release/<tag>` PR — works with branch protection). Does not affect `tag`, which always pushes directly. |
 | `tag.enabled` | No | `false` | Whether the tag path is active: creates a git tag and GitHub Release on every bump. |
 | `tag.prefix` | No | auto-detected from existing tags; `/setup` writes `"v"` explicitly for new tag-only projects | Prefix for git tags (e.g., `v` for `v1.2.3`). |
@@ -393,6 +395,33 @@ Full `.sdlc-v2/config.json` `version` section:
 | `changelog.file` | No | `"CHANGELOG.md"` (used only when `changelog.enabled`) | Path to changelog file. |
 
 At least one of `tag.enabled` or `versionFile.enabled` must be `true` — a config with both false (or absent) is rejected by `pr_prepare`, `pr_apply`, and every CI script.
+
+## Release Workflow Automation
+
+The plugin provides two workflows for automated releases:
+
+### release-on-main.cjs (Push to main)
+
+Triggered automatically on every push to `main`. Implements the 4-phase release flow:
+1. Find the merged PR and its `release:<level>` label
+2. Bump version file and changelog (skipped for RC)
+3. Create git tag and GitHub Release (never blocked by step 2)
+4. Deliver file writes via PR (when `method: "pr"`, skipped for RC)
+
+**Tag resolution:** When `tag.enabled` is true, the tag is created at the current commit (typically the merge commit). The tag is pushed to remote and a GitHub Release is created.
+
+### release-dispatch.yml (Release Dispatch workflow)
+
+A companion workflow that listens for `release-on-main` completion. Its purpose is to dispatch further CI actions (e.g., GoReleaser binary builds, deployments) triggered only by final (non-RC) releases.
+
+**Tag resolution (hardened):**
+The workflow resolves the final release tag on HEAD by:
+1. Fetching all tags (`fetch-tags: true`)
+2. Sorting tags by semver version in descending order (`--sort=-version:refname`)
+3. Filtering to exclude pre-release (RC) tags (`grep -v -- '-rc'`)
+4. Taking the first match — the highest final release version
+
+This ensures only actual releases (not RCs) trigger downstream automation like binary builds or deployments. RC tags are created by `release-on-main.cjs` but are intentionally skipped by `release-dispatch.yml`.
 
 ## Troubleshooting
 

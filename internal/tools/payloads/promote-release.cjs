@@ -50,12 +50,12 @@
  *     this one is a human-dispatched action that cannot do its job
  *     (version bump, changelog) without versionFile/tagPrefix — silently
  *     "succeeding" with nothing done would be a false positive.
- *   - GoReleaser attaching binaries on the pushed final tag depends on the
- *     tag push actually firing `on: push: tags:` workflows. Pushes
- *     authenticated with the default `secrets.GITHUB_TOKEN` do NOT trigger
- *     other workflow runs (GitHub's recursive-workflow guard). This script
- *     does not work around that — same caveat already disclosed by Task 7
- *     for release-on-main.cjs, deferred to the scaffold_ci wiring task.
+ *   - GoReleaser attaching binaries on the pushed final tag was addressed by
+ *     adding a dispatch bridge (Step 13) that explicitly runs release.yml at
+ *     the final tag. GitHub Actions does not cascade-trigger workflows from
+ *     GITHUB_TOKEN-authenticated pushes, so this explicit dispatch via `gh
+ *     workflow run` is the solution. The dispatch trigger is allowed even
+ *     with GITHUB_TOKEN (proven by release-dispatch.yml:57).
  *
  * Exit codes: 0 = success, 1 = error
  *
@@ -64,8 +64,8 @@
 
 'use strict';
 
-/** @version 4 — promote-release script version. Bump when behavior changes. */
-const PROMOTE_RELEASE_SCRIPT_VERSION = 4;
+/** @version 5 — promote-release script version. Bump when behavior changes. */
+const PROMOTE_RELEASE_SCRIPT_VERSION = 5;
 
 const fs   = require('node:fs');
 const path = require('node:path');
@@ -479,6 +479,37 @@ function main() {
     execOrThrow(`gh release create "${targetTag}" --title "${targetTag}" --notes-file "${tmpPath}"`, { cwd: repoRoot });
   });
   console.log(`GitHub release created for ${targetTag}.`);
+
+  // Step 13: Dispatch the Release workflow to build and attach binaries to
+  // the final tag. workflow_dispatch triggers are allowed even with
+  // GITHUB_TOKEN-authenticated calls (unlike push-triggered cascades).
+  // Best-effort: the tag and GitHub Release already exist at this point, so
+  // a dispatch failure is not fatal — binaries can be built manually by
+  // re-running the Release workflow from the Actions tab.
+  let dispatchOk = false;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      execOrThrow(
+        `gh workflow run release.yml --ref "${targetTag}"`,
+        { cwd: repoRoot }
+      );
+      dispatchOk = true;
+      break;
+    } catch (err) {
+      if (attempt < 2) {
+        console.log(`Release workflow dispatch attempt ${attempt} failed (${err.message}), retrying...`);
+      } else {
+        console.log(
+          `WARNING: Release workflow dispatch failed after ${attempt} attempts: ${err.message}\n` +
+          `The tag ${targetTag} and GitHub Release were created successfully.\n` +
+          `To build binaries, manually run the Release workflow from Actions > SDLC Release for ref ${targetTag}.`
+        );
+      }
+    }
+  }
+  if (dispatchOk) {
+    console.log(`Dispatched Release workflow at ${targetTag}.`);
+  }
 }
 
 // Only run when executed directly (`node promote-release.cjs <version>`) —

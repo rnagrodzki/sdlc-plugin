@@ -12,7 +12,7 @@
 # a release label, so conclusion alone can't tell success from no-op), and if
 # so, explicitly dispatches release.yml at that tag via workflow_dispatch,
 # which GITHUB_TOKEN-authored calls are allowed to trigger.
-name: Release Dispatch
+name: SDLC Release Dispatch
 
 on:
   workflow_run:
@@ -35,10 +35,10 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Find tag on current main tip
+      - name: Resolve final (non-RC) tag on HEAD
         id: tag
         run: |
-          tag=$(git tag --points-at HEAD | head -n1)
+          tag=$(git tag --points-at HEAD --sort=-version:refname | grep -v -- '-rc' | head -n1)
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Check if tag is a pre-release

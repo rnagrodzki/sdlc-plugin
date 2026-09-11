@@ -257,7 +257,7 @@ func scaffoldCI(root string, force bool) (ScaffoldCIOut, error) {
 // ScaffoldCIOut.Next, tailored to whether branch protection was detected on
 // the default branch.
 func scaffoldNextGuidance(protection RulesetCheckResult) string {
-	const promoteNote = "promote-release.yml was also scaffolded — use Actions > Promote Release to promote an RC to a final release without creating a PR."
+	const promoteNote = "promote-release.yml was also scaffolded — use Actions > SDLC Promote Release to promote an RC to a final release without creating a PR."
 	if protection.HasRulesets || protection.HasClassicProt {
 		return fmt.Sprintf(
 			"Branch protection is active on %q, which can block direct pushes when version.method is \"push\". "+

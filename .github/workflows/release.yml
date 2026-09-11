@@ -1,4 +1,4 @@
-name: Release
+name: SDLC Release
 
 # Triggered two ways:
 # - push: tags "v*" — fires for a tag pushed with real user credentials (e.g.
@@ -42,7 +42,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Run GoReleaser
+      - name: Build and publish release binaries
         if: steps.prerelease.outputs.skip != 'true'
         uses: goreleaser/goreleaser-action@v6
         with:
@@ -51,3 +51,4 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
