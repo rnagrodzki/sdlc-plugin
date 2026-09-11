@@ -438,6 +438,30 @@ func execFindState(root, branch string) (*state.State, error) {
 	return st, nil
 }
 
+// execAssertBranch enforces branch immutability for an in-flight run (KD-4):
+// once init has recorded a branch on the state file, every later action
+// resolving to a different branch string that nonetheless locates the same
+// state file is rejected instead of silently reading/writing under the
+// wrong branch identity. This only fires when execFindState's underlying
+// state.Find(root, "execute", branch) still resolves to the recorded run —
+// e.g. two raw branch strings that collide under SlugifyBranch (mid-session
+// rename or ref reformatting, "feat/x" vs "feat.x"), or one branch name that
+// is a filename prefix of another ("feat" vs "feat/x"). A branch string that
+// resolves to a genuinely different (or missing) state file fails earlier,
+// at execFindState, with a DataError — it never reaches this assertion. A
+// state file with no recorded branch (pre-KD-4 state, or branch stamped
+// nil) is not asserted against — recorded == "" is treated as "nothing to
+// compare".
+func execAssertBranch(st *state.State, resolved string) error {
+	recorded, _ := st.Data["branch"].(string)
+	if recorded != "" && recorded != resolved {
+		return &mcpserver.DomainError{
+			Msg: fmt.Sprintf("branch changed mid-session: init recorded %q, current is %q", recorded, resolved),
+		}
+	}
+	return nil
+}
+
 // execEnsureWaves ensures data["waves"] is a []any and returns it.
 func execEnsureWaves(data map[string]any) []any {
 	raw, ok := data["waves"].([]any)
@@ -917,6 +941,9 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 	if err != nil {
 		return nil, err
 	}
+	if err := execAssertBranch(st, branch); err != nil {
+		return nil, err
+	}
 
 	// Find existing wave or create new one.
 	w := execFindWave(st.Data, *in.Wave)
@@ -1081,6 +1108,9 @@ func execActionWaveDone(root, workDir string, in ExecuteStateIn, now func() time
 	if err != nil {
 		return nil, err
 	}
+	if err := execAssertBranch(st, branch); err != nil {
+		return nil, err
+	}
 
 	w := execFindOrCreateWave(st.Data, *in.Wave, now)
 
@@ -1211,6 +1241,9 @@ func execActionWaveFail(root, workDir string, in ExecuteStateIn, now func() time
 	if err != nil {
 		return nil, err
 	}
+	if err := execAssertBranch(st, branch); err != nil {
+		return nil, err
+	}
 
 	w := execFindOrCreateWave(st.Data, *in.Wave, now)
 	w["status"] = "failed"
@@ -1270,6 +1303,9 @@ func execActionWaveCommitted(root, workDir string, in ExecuteStateIn) (any, erro
 
 	st, err := execFindState(root, branch)
 	if err != nil {
+		return nil, err
+	}
+	if err := execAssertBranch(st, branch); err != nil {
 		return nil, err
 	}
 
@@ -1381,6 +1417,9 @@ func execActionWaveCommit(root, workDir string, in ExecuteStateIn) (any, error) 
 
 	st, err := execFindState(root, branch)
 	if err != nil {
+		return nil, err
+	}
+	if err := execAssertBranch(st, branch); err != nil {
 		return nil, err
 	}
 
@@ -1559,6 +1598,9 @@ func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time
 	if err != nil {
 		return nil, err
 	}
+	if err := execAssertBranch(st, branch); err != nil {
+		return nil, err
+	}
 
 	w := execFindOrCreateWave(st.Data, *in.Wave, now)
 	tasks, _ := w["tasks"].([]any)
@@ -1673,6 +1715,9 @@ func execActionTaskFail(root, workDir string, in ExecuteStateIn, now func() time
 	}
 	st, err := execFindState(root, branch)
 	if err != nil {
+		return nil, err
+	}
+	if err := execAssertBranch(st, branch); err != nil {
 		return nil, err
 	}
 
@@ -1920,6 +1965,9 @@ func execActionTaskContext(root, workDir string, in ExecuteStateIn) (any, error)
 	if err != nil {
 		return nil, err
 	}
+	if err := execAssertBranch(st, branch); err != nil {
+		return nil, err
+	}
 
 	runID := in.RunID
 	if runID == "" {
@@ -1992,6 +2040,9 @@ func execActionContext(root, workDir string, in ExecuteStateIn) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := execAssertBranch(st, branch); err != nil {
+		return nil, err
+	}
 
 	incomingMap, ok := incoming.(map[string]any)
 	if !ok {
@@ -2061,6 +2112,9 @@ func execActionRead(root, workDir string, in ExecuteStateIn) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := execAssertBranch(st, branch); err != nil {
+		return nil, err
+	}
 
 	// Enforce output cap — never return a silently truncated blob.
 	raw, marshalErr := json.Marshal(st.Data)
@@ -2118,6 +2172,9 @@ func execActionCleanup(root, workDir string, in ExecuteStateIn, now func() time.
 	if st == nil {
 		// Nothing to clean up — success.
 		return map[string]any{}, nil
+	}
+	if err := execAssertBranch(st, branch); err != nil {
+		return nil, err
 	}
 
 	completedAt := now().UTC().Format(time.RFC3339)
@@ -2452,6 +2509,9 @@ func execActionSummarizePriorWaveContext(root, workDir string, in ExecuteStateIn
 	if err != nil {
 		return nil, err
 	}
+	if err := execAssertBranch(st, branch); err != nil {
+		return nil, err
+	}
 
 	return execSummarizePriorWaveCtx(st.Data, root, in.MaxFiles, in.MaxDecisions, in.MaxInterfaces, in.MaxTaskIds), nil
 }
@@ -2553,6 +2613,11 @@ func execActionWaveSplit(root, workDir string, in ExecuteStateIn, now func() tim
 			branch, brErr := execResolveBranch(in.Branch, workDir)
 			if brErr == nil {
 				st, _ = state.Find(root, "execute", branch)
+				if st != nil && execAssertBranch(st, branch) != nil {
+					// Branch changed mid-session: skip best-effort persistence
+					// rather than write the split tree under the wrong run.
+					st = nil
+				}
 			}
 		}
 
@@ -2617,6 +2682,9 @@ func execActionVerifyCompleteness(root, workDir string, in ExecuteStateIn) (any,
 		}
 		st, err := execFindState(root, branch)
 		if err != nil {
+			return nil, err
+		}
+		if err := execAssertBranch(st, branch); err != nil {
 			return nil, err
 		}
 		data = st.Data
@@ -3056,6 +3124,9 @@ func execActionResumeReset(root, workDir string, in ExecuteStateIn) (any, error)
 	clearedTaskIds := []string{}
 
 	if st != nil {
+		if err := execAssertBranch(st, branch); err != nil {
+			return nil, err
+		}
 		resetWaves, clearedTaskIds = execResumeResetCandidates(st.Data)
 
 		if len(resetWaves) > 0 {

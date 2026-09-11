@@ -31,7 +31,7 @@ field that does not exist. Deviations, one line each:
 
 - **Q1 (binding ruling):** the `workspace` and `hooks` menu sections (source's 3.workspace
   / 3.hooks, issues #351/#370/#372) are dropped entirely. Go's `internal/setupmeta.Sections()`
-  is a frozen 16-id manifest with no `workspace`/`hooks` id — there is nothing to dispatch to.
+  is a frozen 17-id manifest with no `workspace`/`hooks` id — there is nothing to dispatch to.
   `--skip`/`--only` no longer accept those ids.
 - **State/summary/locked (Gap A):** Step 0/1 below compute `state` and `summary` per row by
   reading `.sdlc-v2/config.json` / `.sdlc-v2/local.json` directly and Globbing the content
@@ -72,9 +72,11 @@ field that does not exist. Deviations, one line each:
   re-reads the current `pr` object immediately before writing `pr` and preserves any
   `labels` key already present.
 - **`--only`/`--skip` id list corrected.** Source's own SKILL.md listed 13 ids for `--only`
-  (missing `received-review`). The table below lists the true 16 canonical ids from
+  (missing `received-review`). The table below lists the true 17 canonical ids from
   `internal/setupmeta.Sections()` (includes `plan-style` and `plan-tasks`, added after the
-  original port to expose `/plan`'s narrative-style and task-contract config).
+  original port to expose `/plan`'s narrative-style and task-contract config, and
+  `automation`, added to expose per-step pipeline automation mode, the execution report
+  toggle, plan-drift halting thresholds, and feature-branch push auto-approval).
 - **Delete-legacy-files prompt retained.** `migrate({ action: "config" })`'s `Result` string
   names every ingested legacy path inline (e.g. `"...legacy ingested: [.claude/sdlc.json
   .claude/version.json]"`) — `MigrateOut` has no dedicated array field for them, so Step 2
@@ -93,9 +95,9 @@ field that does not exist. Deviations, one line each:
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--migrate` | Force migration of legacy config files even if no legacy files are auto-detected | off |
-| `--skip <section>` | Skip a config section during setup. Valid values: any of the 16 canonical ids — `version`, `ship`, `jira`, `review`, `received-review`, `commit`, `pr`, `pr-labels`, `review-dimensions`, `pr-template`, `plan-template`, `plan-style`, `plan-tasks`, `plan-guardrails`, `execution-guardrails`, `openspec-block` | none |
+| `--skip <section>` | Skip a config section during setup. Valid values: any of the 17 canonical ids — `version`, `ship`, `jira`, `review`, `received-review`, `commit`, `pr`, `pr-labels`, `review-dimensions`, `pr-template`, `plan-template`, `plan-style`, `plan-tasks`, `plan-guardrails`, `execution-guardrails`, `openspec-block`, `automation` | none |
 | `--force` | Pre-check every menu row (reconfigure everything) instead of selecting only `not-set` rows | off |
-| `--only <ids>` | Comma-separated section ids to configure non-interactively (skips the menu). Same 16 ids as `--skip` above | none |
+| `--only <ids>` | Comma-separated section ids to configure non-interactively (skips the menu). Same 17 ids as `--skip` above | none |
 | `--dimensions` | Jump directly to review dimensions sub-flow (alias for `--only review-dimensions`) | off |
 | `--pr-template` | Jump directly to PR template sub-flow (skip config builder) | off |
 | `--guardrails` | Jump directly to plan guardrails sub-flow (skip config builder) | off |
@@ -127,11 +129,11 @@ If the system context contains "Plan mode is active":
    setup_prepare({ skipConfigCheck: false }) → { ok, needsMigration, sections[], defaultBranch, remoteOwner }
    ```
 
-   `sections[]` is the static 16-row descriptor list, always in canonical
+   `sections[]` is the static 17-row descriptor list, always in canonical
    `internal/setupmeta.Sections()` order: `version`, `ship`, `jira`, `review`,
    `received-review`, `commit`, `pr`, `pr-labels`, `review-dimensions`, `pr-template`,
    `plan-template`, `plan-style`, `plan-tasks`, `plan-guardrails`, `execution-guardrails`,
-   `openspec-block`. Each row carries `{ id, label, purpose, configFile, configPath,
+   `openspec-block`, `automation`. Each row carries `{ id, label, purpose, configFile, configPath,
    consumedBy, filesModified, optional, delegatedTo, confirmDetected, fields[] }`.
 
 2. Call `setup_init({ sections: [] })` once, unconditionally, to scaffold `.sdlc-v2/` (see Port
@@ -266,7 +268,7 @@ Detected configuration:
 ```
 
 **Phase 2 — Print the numbered menu directly to chat.** One line per row in the canonical
-16-id order, format:
+17-id order, format:
 
 ```
 <N>. [<state>] <section.label> — <first sentence of section.purpose>
@@ -304,7 +306,7 @@ default is always `all`.)
 
 **Phase 4 — Parse the reply**:
 - Empty reply → `all`.
-- `all` → every id from the 16-id canonical list.
+- `all` → every id from the 17-id canonical list.
 - `not-set` → ids whose computed `state === 'not-set'`.
 - `none` or `cancel` → empty list → print `No sections selected — no changes made.` and jump
   to Step 4.
@@ -419,7 +421,7 @@ For each id in `selectedIds`, in canonical `internal/setupmeta.Sections()` order
 
    | `delegatedTo` value | Dispatcher |
    |---|---|
-   | (empty) | Generic field-loop (3.G below) — dispatch one AskUserQuestion per `section.fields[]` entry, optionally gated by `section.confirmDetected`. Applies to `version`, `ship`, `jira`, `review`, `received-review`, `plan-style`, `plan-tasks`. |
+   | (empty) | Generic field-loop (3.G below) — dispatch one AskUserQuestion per `section.fields[]` entry, optionally gated by `section.confirmDetected`. Applies to `version`, `ship`, `jira`, `review`, `received-review`, `plan-style`, `plan-tasks`, `automation`. |
    | `'inline-commit-builder'` | Inline commit-pattern builder (3.commit below). |
    | `'inline-pr-builder'` | Inline PR-pattern builder (3.pr below). |
    | `'setup-dimensions'` | Run scan phase (3.S below), then read and follow `@setup-dimensions.md`, passing scan results as "Scan Input". Pass through `--add` and `--no-copilot` if present. |
@@ -436,7 +438,7 @@ config files" sub-section at the end of Step 3.
 #### 3.G. Generic field loop (`delegatedTo` empty)
 
 For sections with no `delegatedTo` (`version`, `ship`, `jira`, `review`, `received-review`,
-`plan-style`, `plan-tasks`):
+`plan-style`, `plan-tasks`, `automation`):
 
 If `section.confirmDetected === true` (currently only `version`), dispatch a meta-prompt
 FIRST using AskUserQuestion:
@@ -705,7 +707,7 @@ After collecting all answers AND confirming the diff preview above:
    `review`→`review`, `received-review`→`receivedReview`, `commit`→`commit`, `pr`→`pr`,
    `pr-labels`→`pr` (nested `labels`), `plan-style`→`planStyle`, `plan-tasks`→`plan` (nested
    `tasks`), `plan-guardrails`→`plan` (nested `guardrails`),
-   `execution-guardrails`→`execute` (nested `guardrails`).
+   `execution-guardrails`→`execute` (nested `guardrails`), `automation`→`automation`.
 
    Note: `pr-labels`, `plan-guardrails`, and `execution-guardrails` are configured by their
    own companion sub-flows (`setup-pr-labels.md`, `setup-guardrails.md`,

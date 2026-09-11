@@ -395,6 +395,71 @@ var prFields = []Field{
 	},
 }
 
+// automationFields mirrors the questionnaire-facing subset of the
+// automationSection JSON-schema def (schemas/sdlc-local.schema.json) and
+// internal/config.AutomationSection. Field.Type has no dedicated float
+// variant (Min/Max are *int), so the two drift rate fields are typed
+// "string" with string-literal defaults, matching how DriftConfig's
+// MaxErrorRate/MaxWarningRate (float64, range 0-1) are questionnaire-input
+// as decimal text rather than a numeric spinner.
+var automationFields = []Field{
+	{
+		Name:        "mode",
+		Label:       "Automation mode",
+		Type:        "enum",
+		Options:     []string{"supervised", "unattended"},
+		Default:     "supervised",
+		Description: "Default automation mode for pipeline steps not listed in automation.steps{}. \"supervised\" requires confirmation before each step; \"unattended\" runs automatically.",
+	},
+	{
+		Name:        "report.enabled",
+		Label:       "Emit execution report",
+		Type:        "boolean",
+		Options:     []string{"yes", "no"},
+		Default:     true,
+		Description: "Whether to emit an execution report at the end of an /execute or /ship run (KD-11).",
+	},
+	{
+		Name:        "report.format",
+		Label:       "Execution report format",
+		Type:        "enum",
+		Options:     []string{"md", "json"},
+		Default:     "md",
+		Description: "Output format for the execution report when report.enabled is true.",
+	},
+	{
+		Name:        "drift.maxErrorRate",
+		Label:       "Max error rate before halting",
+		Type:        "string",
+		Default:     "0.15",
+		Description: "Fraction (0-1) of total tasks that may error before an unattended run halts on plan drift. Effective threshold is max(drift.minErrorFloor, ceil(rate * totalTasks)).",
+	},
+	{
+		Name:        "drift.maxWarningRate",
+		Label:       "Max warning rate before halting",
+		Type:        "string",
+		Default:     "0.40",
+		Description: "Fraction (0-1) of total tasks that may warn before an unattended run halts on plan drift. Effective threshold is max(drift.minErrorFloor, ceil(rate * totalTasks)).",
+	},
+	{
+		Name:        "drift.minErrorFloor",
+		Label:       "Minimum error floor",
+		Type:        "number",
+		Default:     2,
+		Min:         intPtr(1),
+		Max:         intPtr(100),
+		Description: "Minimum absolute error count tolerated regardless of drift.maxErrorRate, so small plans aren't held to an unreachable fractional threshold.",
+	},
+	{
+		Name:        "push.featureBranchAutoApprove",
+		Label:       "Auto-approve feature-branch pushes",
+		Type:        "boolean",
+		Options:     []string{"yes", "no"},
+		Default:     true,
+		Description: "Auto-approve pushes to feature branches during /ship without a confirmation prompt. Forced true at runtime when automation.mode is \"unattended\"; default-branch pushes are always hard-gated regardless of this setting.",
+	},
+}
+
 // Sections returns the ordered list of setup section descriptors.
 // The order and IDs are frozen and must match the Node.js source
 // (scripts/lib/setup-sections.js SETUP_SECTIONS) exactly.
@@ -607,6 +672,19 @@ func Sections() []Section {
 			DelegatedTo:     "setup-openspec",
 			ConfirmDetected: false,
 			Fields:          nil,
+		},
+		{
+			ID:              "automation",
+			Label:           "automation",
+			Purpose:         "Per-step pipeline automation mode (supervised/unattended), the end-of-run execution report toggle, plan-drift halting thresholds, and feature-branch push auto-approval for /execute and /ship. Stored in .sdlc-v2/local.json (gitignored) so each developer can tune unattended-run behavior without affecting teammates.",
+			ConfigFile:      ".sdlc-v2/local.json",
+			ConfigPath:      "automation",
+			ConsumedBy:      []string{"execute", "ship"},
+			FilesModified:   []string{".sdlc-v2/local.json"},
+			Optional:        true,
+			DelegatedTo:     "",
+			ConfirmDetected: false,
+			Fields:          automationFields,
 		},
 	}
 }

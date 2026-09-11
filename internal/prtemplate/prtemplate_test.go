@@ -35,6 +35,7 @@ func TestSectionsSnapshot(t *testing.T) {
 		"plan-guardrails",
 		"execution-guardrails",
 		"openspec-block",
+		"automation",
 	}
 
 	sections := setupmeta.Sections()
@@ -104,10 +105,10 @@ func TestPrSectionHasFields(t *testing.T) {
 	t.Fatal("no section with id 'pr' found")
 }
 
-// TestSectionCount verifies the total number of sections (16).
+// TestSectionCount verifies the total number of sections (17).
 func TestSectionCount(t *testing.T) {
-	if got := len(setupmeta.Sections()); got != 16 {
-		t.Errorf("Sections() returned %d sections, want 16", got)
+	if got := len(setupmeta.Sections()); got != 17 {
+		t.Errorf("Sections() returned %d sections, want 17", got)
 	}
 }
 
