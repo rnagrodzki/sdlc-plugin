@@ -240,6 +240,18 @@
             }
           },
           "additionalProperties": false
+        },
+        "push": {
+          "type": "object",
+          "description": "Controls whether a feature-branch git push during ship is auto-approved without a manual confirmation pause (KD-1). Default-branch (main/master) push is never auto-approved regardless of this setting — ship_prepare hard-gates it server-side.",
+          "properties": {
+            "featureBranchAutoApprove": {
+              "type": "boolean",
+              "default": false,
+              "description": "When true, a feature-branch push skips the manual confirmation pause. Forced true at runtime when automation.mode is \"unattended\", even if explicitly set to false here."
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

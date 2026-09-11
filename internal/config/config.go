@@ -112,8 +112,11 @@ func detectLegacy(mainRoot string) error {
 // Drift configures the rate-based thresholds execute_state uses to decide
 // when a wave's error/warning rate is severe enough to halt an unattended
 // run (KD-3). Report configures the end-of-run execution report
-// (KD-11). Both are optional; nil means "use documented defaults" and is
-// filled in by applyAutomationDefaults.
+// (KD-11). Push configures whether a feature-branch git push is
+// auto-approved without a manual confirmation pause (KD-1); a default-branch
+// (main/master) push is never auto-approved regardless of this setting — see
+// PushConfig. All three are optional; nil means "use documented defaults"
+// and is filled in by applyAutomationDefaults.
 type AutomationSection struct {
 	Mode                       string            `json:"mode"`
 	ReviewFixIterations        int               `json:"reviewFixIterations"`
@@ -121,6 +124,7 @@ type AutomationSection struct {
 	Steps                      map[string]string `json:"steps,omitempty"`
 	Drift                      *DriftConfig      `json:"drift,omitempty"`
 	Report                     *ReportConfig     `json:"report,omitempty"`
+	Push                       *PushConfig       `json:"push,omitempty"`
 }
 
 // DriftConfig controls the rate-based thresholds used to decide when a
@@ -147,6 +151,19 @@ type DriftConfig struct {
 type ReportConfig struct {
 	Enabled bool   `json:"enabled"`
 	Format  string `json:"format"`
+}
+
+// PushConfig controls whether a feature-branch git push during ship is
+// auto-approved without a manual confirmation pause (KD-1). A default-branch
+// (main/master) push is never auto-approved by this setting — ship.go's
+// isDefaultBranch hard gate rejects it server-side regardless of config.
+//
+// Known limitation shared with DriftConfig.MaxWarningRate: FeatureBranchAutoApprove
+// is a plain bool, so its zero value can't distinguish an explicit "false"
+// from an absent key. applyAutomationDefaults forces it true whenever Mode
+// is "unattended", even if the config explicitly set it to false.
+type PushConfig struct {
+	FeatureBranchAutoApprove bool `json:"featureBranchAutoApprove"`
 }
 
 // StepMode returns the effective automation mode for the given step:
@@ -430,6 +447,13 @@ func parseAutomation(raw map[string]any) *AutomationSection {
 		}
 		a.Report = r
 	}
+	if pushRaw, ok := raw["push"].(map[string]any); ok {
+		p := &PushConfig{}
+		if v, ok := pushRaw["featureBranchAutoApprove"].(bool); ok {
+			p.FeatureBranchAutoApprove = v
+		}
+		a.Push = p
+	}
 	return a
 }
 
@@ -437,7 +461,8 @@ func parseAutomation(raw map[string]any) *AutomationSection {
 // defaults: mode "supervised", reviewFixIterations 3,
 // reviewFixSeverityThreshold "high", drift.maxErrorRate 0.15,
 // drift.maxWarningRate 0.40, drift.minErrorFloor 2, report.enabled true,
-// report.format "md".
+// report.format "md", push.featureBranchAutoApprove true when mode is
+// "unattended" (false otherwise).
 func applyAutomationDefaults(a *AutomationSection) {
 	if a.Mode == "" {
 		a.Mode = "supervised"
@@ -465,6 +490,12 @@ func applyAutomationDefaults(a *AutomationSection) {
 	}
 	if a.Report.Format == "" || (a.Report.Format != "md" && a.Report.Format != "json") {
 		a.Report.Format = "md"
+	}
+	if a.Push == nil {
+		a.Push = &PushConfig{}
+	}
+	if a.Mode == "unattended" && !a.Push.FeatureBranchAutoApprove {
+		a.Push.FeatureBranchAutoApprove = true
 	}
 }
 

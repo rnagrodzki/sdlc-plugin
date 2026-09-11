@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,7 +36,7 @@ import (
 // ExecuteStateIn carries the merged input for the execute_state tool's
 // actions. Each field is consumed by one or more actions (noted in comments).
 type ExecuteStateIn struct {
-	Action            string         `json:"action" jsonschema_description:"Selects the operation: wave-compute, init, wave-start, wave-done, wave-fail, wave-committed, wave-commit, task-done, task-fail, task-context, context, read, cleanup, gc, summarize-prior-wave-context, wave-split, verify-completeness, wave-progress, resume-reset, ledger_checkin, ledger_checkout, ledger_status, or log-cli. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
+	Action            string         `json:"action" jsonschema_description:"Selects the operation: wave-compute, init, wave-start, wave-done, wave-fail, wave-committed, wave-commit, task-done, task-fail, task-context, context, read, cleanup, gc, summarize-prior-wave-context, wave-split, verify-completeness, wave-progress, resume-reset, ledger_checkin, ledger_checkout, ledger_status, log-cli, or drift-log. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
 	Branch            string         `json:"branch,omitempty" jsonschema_description:"Git branch the execution state belongs to. Most actions accept it to scope the state file; falls back to the current branch when omitted."`
 	Quality           string         `json:"quality,omitempty" jsonschema_description:"Quality level to stamp on a newly initialized run (init only). Required — no config fallback exists for this field."`
 	TotalTasks        int            `json:"totalTasks,omitempty" jsonschema_description:"Total planned task count for a newly initialized run (init only)."`
@@ -84,6 +85,9 @@ type ExecuteStateIn struct {
 	CLICommand        string         `json:"cliCommand,omitempty" jsonschema_description:"log-cli only: the Bash command that was executed."`
 	CLIExitCode       int            `json:"cliExitCode,omitempty" jsonschema_description:"log-cli only: the exit code of the command."`
 	CLIOutput         string         `json:"cliOutput,omitempty" jsonschema_description:"log-cli only: first ~500 characters of command output."`
+	DriftSeverity     string         `json:"driftSeverity,omitempty" jsonschema_description:"drift-log only: severity of the drift issue — one of error, warning, or info."`
+	DriftSummary      string         `json:"driftSummary,omitempty" jsonschema_description:"drift-log only: one-line summary of the drift issue."`
+	DriftDetail       string         `json:"driftDetail,omitempty" jsonschema_description:"drift-log only: optional longer description of the drift issue."`
 }
 
 // ---------------------------------------------------------------------------
@@ -344,6 +348,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - ledger_checkin: Register a worker as active. Requires runId, workerId. Optional: stepId.
 - ledger_checkout: Mark a worker as done. Requires runId, workerId.
 - ledger_status: List worker statuses for a run. Requires runId. Optional: timeoutSeconds.
+- drift-log: Append a drift issue and evaluate the server-side stop condition. When accumulated error-severity drift issues exceed the threshold (max(minErrorFloor, ceil(maxErrorRate * totalTasks))), returns {halt:true}. Requires driftSeverity (error|warning|info), driftSummary. Optional: driftDetail, wave, taskId, branch.
 
 Returns a JSON envelope: {"ok":true, "data":{...}} on success, {"ok":false, "code":"...", "error":"..."} on failure.`,
 		func(ctx mcpserver.Ctx, in ExecuteStateIn) (any, error) {
@@ -419,6 +424,8 @@ func executeState(root, workDir string, in ExecuteStateIn, now func() time.Time)
 		return execActionLedgerStatus(root, in, now)
 	case "log-cli":
 		return execActionLogCLI(root, workDir, in)
+	case "drift-log":
+		return execActionDriftLog(root, workDir, in, now)
 	default:
 		return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("unknown action %q", in.Action)}
 	}
@@ -669,6 +676,136 @@ func execAppendIssue(data map[string]any, issue StateIssue) {
 		return
 	}
 	data["issues"] = append(raw, m)
+}
+
+// countDriftIssues counts issues with category "drift" grouped by severity.
+// All three severity keys (error, warning, info) are always present in the
+// returned map so callers never see a nil or partial map.
+func countDriftIssues(data map[string]any) map[string]int {
+	counts := map[string]int{"error": 0, "warning": 0, "info": 0}
+	raw, ok := data["issues"].([]any)
+	if !ok {
+		return counts
+	}
+	for _, entry := range raw {
+		m, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		if cat, _ := m["category"].(string); cat != "drift" {
+			continue
+		}
+		if sev, _ := m["severity"].(string); sev != "" {
+			counts[sev]++
+		}
+	}
+	return counts
+}
+
+// ---------------------------------------------------------------------------
+// Action: drift-log
+// ---------------------------------------------------------------------------
+
+// execActionDriftLog appends a drift issue to the state file and evaluates
+// the server-side stop condition. When the accumulated error-severity drift
+// count exceeds the threshold (max(minErrorFloor, ceil(maxErrorRate *
+// totalTasks))), it returns halt:true so the caller can abort the run.
+//
+// Decision: config.Read may fail in environments with no config file. In
+// that case the handler falls back to the compiled defaults defined in
+// internal/config (MaxErrorRate 0.15, MaxWarningRate 0.40, MinErrorFloor 2).
+// This duplicates the default values — accepted trade-off to keep drift-log
+// usable in bare repos and test fixtures.
+func execActionDriftLog(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
+	// Validate required fields.
+	switch in.DriftSeverity {
+	case "error", "warning", "info":
+	default:
+		return nil, &mcpserver.DomainError{
+			Msg: fmt.Sprintf("driftSeverity must be one of error, warning, info; got %q", in.DriftSeverity),
+		}
+	}
+	if strings.TrimSpace(in.DriftSummary) == "" {
+		return nil, &mcpserver.DomainError{Msg: "driftSummary is required"}
+	}
+
+	branch, err := execResolveBranch(in.Branch, workDir)
+	if err != nil {
+		return nil, err
+	}
+	st, err := execFindState(root, branch)
+	if err != nil {
+		return nil, err
+	}
+	if err := execAssertBranch(st, branch); err != nil {
+		return nil, err
+	}
+
+	// Determine wave — default to 0 when not supplied.
+	waveNum := 0
+	if in.Wave != nil {
+		waveNum = *in.Wave
+	}
+
+	// Append drift issue.
+	execAppendIssue(st.Data, StateIssue{
+		Wave:      waveNum,
+		Step:      "execute",
+		TaskID:    in.TaskID,
+		Severity:  in.DriftSeverity,
+		Category:  "drift",
+		Summary:   in.DriftSummary,
+		Detail:    in.DriftDetail,
+		Timestamp: now().UTC().Format(time.RFC3339),
+	})
+
+	if err := state.Write(st); err != nil {
+		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+	}
+
+	// Load drift config — fall back to compiled defaults on any error.
+	maxErrorRate := 0.15
+	minErrorFloor := 2
+	if cfg, cfgErr := config.Read(root); cfgErr == nil && cfg.Automation.Drift != nil {
+		maxErrorRate = cfg.Automation.Drift.MaxErrorRate
+		minErrorFloor = cfg.Automation.Drift.MinErrorFloor
+	}
+
+	// Resolve totalTasks from state data. JSON round-trip stores numbers as
+	// float64, so handle both int and float64.
+	totalTasks := 0
+	switch v := st.Data["totalTasks"].(type) {
+	case float64:
+		totalTasks = int(v)
+	case int:
+		totalTasks = v
+	}
+
+	// threshold = max(minErrorFloor, ceil(maxErrorRate * totalTasks))
+	rateTerm := int(math.Ceil(maxErrorRate * float64(totalTasks)))
+	threshold := minErrorFloor
+	if rateTerm > threshold {
+		threshold = rateTerm
+	}
+
+	counts := countDriftIssues(st.Data)
+
+	// Halt when error count exceeds threshold (strictly greater than).
+	if counts["error"] > threshold {
+		return DriftLogOut{
+			Logged:     true,
+			Halt:       true,
+			Reason:     fmt.Sprintf("drift error count %d exceeds threshold %d", counts["error"], threshold),
+			DriftCount: counts,
+			Threshold:  threshold,
+		}, nil
+	}
+
+	return DriftLogOut{
+		Logged:     true,
+		DriftCount: counts,
+		Threshold:  threshold,
+	}, nil
 }
 
 // execIssueSummary returns the total issue count and up to maxHighlights

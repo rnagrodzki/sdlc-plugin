@@ -341,8 +341,12 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 	if versionCfg == nil {
 		versionCfg = map[string]any{}
 	}
+	automationCfg, _ := config.ReadSection(cfgRoot, "automation")
+	if automationCfg == nil {
+		automationCfg = map[string]any{}
+	}
 
-	merged, sources := mergeShipFlags(in, shipCfg, versionCfg)
+	merged, sources := mergeShipFlags(in, shipCfg, versionCfg, automationCfg)
 
 	errors := []string{}
 	warnings := []string{}
@@ -444,6 +448,23 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 			"You are on the default branch %q. Ship pipelines should run on feature branches.", defaultBranch))
 	}
 
+	// KD-1 hard gate: pushing to a default branch (main/master) is never
+	// allowed, regardless of automation.push config. Unlike the warning
+	// above (informational, fires for any step config, driven by actual git
+	// config via gitx.DefaultBranch), this blocks outright — but only when
+	// the resolved steps actually include "pr" (the step that pushes the
+	// branch); a run with no "pr" step never pushes, so there is nothing to
+	// gate. isDefaultBranch is intentionally independent of git config
+	// (hardcoded main/master), per the task contract.
+	if isDefaultBranch(currentBranch) && sliceContainsStr(stepsList, "pr") {
+		return ShipPrepareOut{}, &mcpserver.DomainError{
+			Msg: fmt.Sprintf(
+				"ship cannot run the \"pr\" step on default branch %q — pushing to main/master is never auto-approved. "+
+					"Switch to a feature branch, or remove \"pr\" from --steps/ship.steps[] if you don't intend to push.",
+				currentBranch),
+		}
+	}
+
 	out := ShipPrepareOut{
 		Errors:        errors,
 		Warnings:      warnings,
@@ -535,6 +556,15 @@ func configStepsFromScaffold(scaffold []shipmeta.ShipStateStep) []pipeline.Confi
 	return out
 }
 
+// isDefaultBranch reports whether branch is a conventional default branch
+// name (main/master). KD-1 hard gate: intentionally independent of git
+// config (gitx.DefaultBranch, which reads origin/HEAD or init.defaultBranch)
+// — a repo whose default branch happens to be named something else is not
+// exempted, and a repo whose git config disagrees is not fooled either.
+func isDefaultBranch(branch string) bool {
+	return branch == "main" || branch == "master"
+}
+
 // stepsFieldLabel renders the source-appropriate name of the steps field for
 // error/warning messages ("--steps" for CLI-sourced values, "steps[]" for
 // config-sourced ones).
@@ -552,7 +582,7 @@ func stepsFieldLabel(source string) string {
 // bump regardless of source (including CLI).
 // Returns the merged flag map plus, per key, which precedence tier
 // supplied the value.
-func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]any) (map[string]any, map[string]string) {
+func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]any, automationCfg map[string]any) (map[string]any, map[string]string) {
 	merged := map[string]any{}
 	sources := map[string]string{}
 
@@ -635,6 +665,29 @@ func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]
 		merged["reviewThreshold"] = shipmeta.ShipBuiltInDefaults.ReviewThreshold
 		sources["reviewThreshold"] = "default"
 	}
+
+	// pushFeatureBranchAutoApprove (KD-1): automation.push.featureBranchAutoApprove
+	// config > mode-derived default. No CLI override — automation is a
+	// config-only section. Mirrors config.applyAutomationDefaults'
+	// precedence exactly, including its known limitation: an explicit
+	// "false" is indistinguishable from "absent" via the bool zero value,
+	// so "unattended" mode still forces it true (see
+	// internal/config.PushConfig). Consumed by the ship skill doc's pr-step
+	// dispatch to decide whether a feature-branch push still needs a
+	// manual AskUserQuestion pause; a default-branch push is never
+	// auto-approved regardless of this value — see isDefaultBranch below.
+	pushAutoApprove := false
+	sources["pushFeatureBranchAutoApprove"] = "default"
+	if pushRaw, ok := automationCfg["push"].(map[string]any); ok {
+		if v, ok := pushRaw["featureBranchAutoApprove"].(bool); ok {
+			pushAutoApprove = v
+			sources["pushFeatureBranchAutoApprove"] = "config"
+		}
+	}
+	if mode, _ := automationCfg["mode"].(string); mode == "unattended" && !pushAutoApprove {
+		pushAutoApprove = true
+	}
+	merged["pushFeatureBranchAutoApprove"] = pushAutoApprove
 
 	// rebase: cli string > config (bool coerced to "auto"/"skip", string
 	// verbatim, or — matching ship.js's unconditional `merged.rebase =

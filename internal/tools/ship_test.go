@@ -13,6 +13,7 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
+	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/pipeline"
 	"github.com/rnagrodzki/sdlc-plugin/internal/shipmeta"
@@ -349,7 +350,11 @@ func TestShipPrepare_OnDefaultBranchWarning(t *testing.T) {
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
-	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true})
+	// Steps excludes "pr" so this exercises only the informational warning,
+	// not the KD-1 hard gate (TestShipPrepare_DefaultBranchPushHardGate
+	// covers that — default steps include "pr" and would otherwise collide
+	// with this test's default-branch setup).
+	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true, Steps: []string{"commit"}})
 	if err != nil {
 		t.Fatalf("shipPrepare: %v", err)
 	}
@@ -361,6 +366,145 @@ func TestShipPrepare_OnDefaultBranchWarning(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("Warnings = %v, want a default-branch warning", out.Warnings)
+	}
+}
+
+// TestShipPrepare_DefaultBranchPushHardGate verifies KD-1's server-side hard
+// gate: running on main with the default steps (which include "pr", the
+// step that performs the git push) returns a DomainError instead of the
+// soft warning TestShipPrepare_OnDefaultBranchWarning exercises. No
+// automation.push config can override this — the gate is unconditional.
+func TestShipPrepare_DefaultBranchPushHardGate(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	_, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true})
+	if err == nil {
+		t.Fatal("shipPrepare: want DomainError for pr step on default branch, got nil error")
+	}
+	if _, ok := err.(*mcpserver.DomainError); !ok {
+		t.Fatalf("expected DomainError, got %T: %v", err, err)
+	}
+}
+
+// TestShipPrepare_DefaultBranchNoPRStepAllowed verifies the hard gate is
+// scoped to the "pr" step specifically: a default-branch run that excludes
+// "pr" from steps never pushes, so nothing is gated.
+func TestShipPrepare_DefaultBranchNoPRStepAllowed(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	_, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true, Steps: []string{"commit"}})
+	if err != nil {
+		t.Fatalf("shipPrepare: %v", err)
+	}
+}
+
+// TestShipPrepare_FeatureBranchPushAllowed verifies the hard gate does not
+// fire on a feature branch, even with the default steps (including "pr").
+func TestShipPrepare_FeatureBranchPushAllowed(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, "feature/x")
+
+	_, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("shipPrepare: %v", err)
+	}
+}
+
+func TestIsDefaultBranch(t *testing.T) {
+	cases := map[string]bool{
+		"main":          true,
+		"master":        true,
+		"feature/x":     false,
+		"":              false,
+		"main-ish":      false,
+		"trunk":         false,
+		"release/1.0.0": false,
+	}
+	for branch, want := range cases {
+		if got := isDefaultBranch(branch); got != want {
+			t.Errorf("isDefaultBranch(%q) = %v, want %v", branch, got, want)
+		}
+	}
+}
+
+// TestMergeShipFlags_PushDefaultSupervised verifies
+// pushFeatureBranchAutoApprove defaults to false under supervised mode (or
+// when automation config is absent entirely) — KD-1's baseline.
+func TestMergeShipFlags_PushDefaultSupervised(t *testing.T) {
+	merged, sources := mergeShipFlags(ShipPrepareIn{}, map[string]any{}, map[string]any{}, map[string]any{})
+	if v, _ := merged["pushFeatureBranchAutoApprove"].(bool); v != false {
+		t.Errorf("pushFeatureBranchAutoApprove = %v, want false", v)
+	}
+	if sources["pushFeatureBranchAutoApprove"] != "default" {
+		t.Errorf("sources[pushFeatureBranchAutoApprove] = %q, want %q", sources["pushFeatureBranchAutoApprove"], "default")
+	}
+}
+
+// TestMergeShipFlags_PushUnattendedForcesTrue verifies automation.mode ==
+// "unattended" forces pushFeatureBranchAutoApprove true when the config
+// didn't explicitly set it, mirroring config.applyAutomationDefaults.
+func TestMergeShipFlags_PushUnattendedForcesTrue(t *testing.T) {
+	automationCfg := map[string]any{"mode": "unattended"}
+	merged, _ := mergeShipFlags(ShipPrepareIn{}, map[string]any{}, map[string]any{}, automationCfg)
+	if v, _ := merged["pushFeatureBranchAutoApprove"].(bool); v != true {
+		t.Errorf("pushFeatureBranchAutoApprove = %v, want true", v)
+	}
+}
+
+// TestMergeShipFlags_PushExplicitConfigTrue verifies an explicit
+// automation.push.featureBranchAutoApprove: true survives under supervised
+// mode and is attributed to "config".
+func TestMergeShipFlags_PushExplicitConfigTrue(t *testing.T) {
+	automationCfg := map[string]any{
+		"push": map[string]any{"featureBranchAutoApprove": true},
+	}
+	merged, sources := mergeShipFlags(ShipPrepareIn{}, map[string]any{}, map[string]any{}, automationCfg)
+	if v, _ := merged["pushFeatureBranchAutoApprove"].(bool); v != true {
+		t.Errorf("pushFeatureBranchAutoApprove = %v, want true", v)
+	}
+	if sources["pushFeatureBranchAutoApprove"] != "config" {
+		t.Errorf("sources[pushFeatureBranchAutoApprove] = %q, want %q", sources["pushFeatureBranchAutoApprove"], "config")
+	}
+}
+
+// TestMergeShipFlags_PushExplicitFalseForcedTrueUnderUnattended verifies the
+// known, accepted quirk (mirrors config.PushConfig's doc and Task 6's
+// identical MaxWarningRate precedent): an explicit "false" is
+// indistinguishable from "absent" via the bool zero value, so "unattended"
+// mode still forces the value true even when config explicitly said false.
+func TestMergeShipFlags_PushExplicitFalseForcedTrueUnderUnattended(t *testing.T) {
+	automationCfg := map[string]any{
+		"mode": "unattended",
+		"push": map[string]any{"featureBranchAutoApprove": false},
+	}
+	merged, sources := mergeShipFlags(ShipPrepareIn{}, map[string]any{}, map[string]any{}, automationCfg)
+	if v, _ := merged["pushFeatureBranchAutoApprove"].(bool); v != true {
+		t.Errorf("pushFeatureBranchAutoApprove = %v, want true (unattended forces true despite explicit false)", v)
+	}
+	// sources still reports "config" since the key was explicitly present —
+	// the mode-forced override happens after attribution, matching how
+	// config.applyAutomationDefaults treats it as the resolved value, not a
+	// fallback.
+	if sources["pushFeatureBranchAutoApprove"] != "config" {
+		t.Errorf("sources[pushFeatureBranchAutoApprove] = %q, want %q", sources["pushFeatureBranchAutoApprove"], "config")
+	}
+}
+
+// TestMergeShipFlags_PushSupervisedExplicitFalseStaysFalse verifies the
+// explicit-false case works normally under supervised mode (no forcing).
+func TestMergeShipFlags_PushSupervisedExplicitFalseStaysFalse(t *testing.T) {
+	automationCfg := map[string]any{
+		"push": map[string]any{"featureBranchAutoApprove": false},
+	}
+	merged, _ := mergeShipFlags(ShipPrepareIn{}, map[string]any{}, map[string]any{}, automationCfg)
+	if v, _ := merged["pushFeatureBranchAutoApprove"].(bool); v != false {
+		t.Errorf("pushFeatureBranchAutoApprove = %v, want false", v)
 	}
 }
 
@@ -1041,7 +1185,7 @@ func TestShipGC_AutoMigratesStaleConfig(t *testing.T) {
 // the source as "config (version.preReleasePolicy)".
 func TestMergeShipFlags_PreReleasePolicyAlwaysRC(t *testing.T) {
 	versionCfg := map[string]any{"preReleasePolicy": "always-rc"}
-	merged, sources := mergeShipFlags(ShipPrepareIn{}, map[string]any{}, versionCfg)
+	merged, sources := mergeShipFlags(ShipPrepareIn{}, map[string]any{}, versionCfg, map[string]any{})
 
 	if b, ok := merged["bump"].(string); !ok || b != "rc" {
 		t.Errorf("Flags[bump] = %v, want %q (overridden by preReleasePolicy)", merged["bump"], "rc")
@@ -1056,7 +1200,7 @@ func TestMergeShipFlags_PreReleasePolicyAlwaysRC(t *testing.T) {
 // (continue-rc enforcement is deferred to pr_prepare diagnostics only).
 func TestMergeShipFlags_PreReleasePolicyContinueRC_NoOverride(t *testing.T) {
 	versionCfg := map[string]any{"preReleasePolicy": "continue-rc"}
-	merged, sources := mergeShipFlags(ShipPrepareIn{}, map[string]any{}, versionCfg)
+	merged, sources := mergeShipFlags(ShipPrepareIn{}, map[string]any{}, versionCfg, map[string]any{})
 
 	// Should resolve to the default bump (patch), not rc.
 	if b, ok := merged["bump"].(string); !ok || b != "patch" {
@@ -1075,7 +1219,7 @@ func TestMergeShipFlags_ExplicitPreReleaseTakesPrecedenceOverPolicy(t *testing.T
 		"preRelease":       "rc",
 		"preReleasePolicy": "always-rc",
 	}
-	merged, sources := mergeShipFlags(ShipPrepareIn{}, map[string]any{}, versionCfg)
+	merged, sources := mergeShipFlags(ShipPrepareIn{}, map[string]any{}, versionCfg, map[string]any{})
 
 	if b, ok := merged["bump"].(string); !ok || b != "rc" {
 		t.Errorf("Flags[bump] = %v, want %q", merged["bump"], "rc")
@@ -1092,7 +1236,7 @@ func TestMergeShipFlags_ExplicitPreReleaseTakesPrecedenceOverPolicy(t *testing.T
 // to "rc" and records the source as enforced-over-cli.
 func TestMergeShipFlags_PreReleasePolicyAlwaysRC_OverridesCLI(t *testing.T) {
 	versionCfg := map[string]any{"preReleasePolicy": "always-rc"}
-	merged, sources := mergeShipFlags(ShipPrepareIn{Bump: "patch"}, map[string]any{}, versionCfg)
+	merged, sources := mergeShipFlags(ShipPrepareIn{Bump: "patch"}, map[string]any{}, versionCfg, map[string]any{})
 
 	if b, ok := merged["bump"].(string); !ok || b != "rc" {
 		t.Errorf("Flags[bump] = %v, want %q (overridden by preReleasePolicy over cli)", merged["bump"], "rc")

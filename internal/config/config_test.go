@@ -546,6 +546,133 @@ func TestDrift_PartialOverrideGetsDefaults(t *testing.T) {
 	}
 }
 
+// TestPushDefaults verifies automation.push defaults to
+// FeatureBranchAutoApprove: false under supervised mode (KD-1 baseline).
+func TestPushDefaults(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+	setupProjectConfig(t, root, map[string]any{})
+
+	cfg, err := Read(root)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	a := cfg.Automation
+	if a.Push == nil {
+		t.Fatal("Push should not be nil")
+	}
+	if a.Push.FeatureBranchAutoApprove {
+		t.Error("Push.FeatureBranchAutoApprove = true, want false (default under supervised mode)")
+	}
+}
+
+// TestPush_RoundTrip writes a local.json with an explicit push config and
+// asserts the value survives Read unchanged.
+func TestPush_RoundTrip(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+	setupProjectConfig(t, root, map[string]any{})
+	setupLocalConfig(t, root, map[string]any{
+		"automation": map[string]any{
+			"push": map[string]any{
+				"featureBranchAutoApprove": true,
+			},
+		},
+	})
+
+	cfg, err := Read(root)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if !cfg.Automation.Push.FeatureBranchAutoApprove {
+		t.Error("Push.FeatureBranchAutoApprove = false, want true (explicit override)")
+	}
+}
+
+// TestPush_UnattendedModeForcesTrue verifies automation.mode: "unattended"
+// forces FeatureBranchAutoApprove true when push config is absent entirely,
+// per the literal contract in config.applyAutomationDefaults.
+func TestPush_UnattendedModeForcesTrue(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+	setupProjectConfig(t, root, map[string]any{})
+	setupLocalConfig(t, root, map[string]any{
+		"automation": map[string]any{
+			"mode": "unattended",
+		},
+	})
+
+	cfg, err := Read(root)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if !cfg.Automation.Push.FeatureBranchAutoApprove {
+		t.Error("Push.FeatureBranchAutoApprove = false, want true (unattended mode forces default true)")
+	}
+}
+
+// TestPush_UnattendedModeForcesTrueOverExplicitFalse verifies the known,
+// accepted zero-value-ambiguity limitation (mirrors the identical
+// MaxWarningRate precedent from Task 6): a plain bool field cannot
+// distinguish "explicitly false" from "absent" during JSON parsing, so
+// "unattended" mode still forces FeatureBranchAutoApprove true even when
+// config explicitly set it to false. This is given by the literal contract
+// snippet, not a bug to fix.
+func TestPush_UnattendedModeForcesTrueOverExplicitFalse(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+	setupProjectConfig(t, root, map[string]any{})
+	setupLocalConfig(t, root, map[string]any{
+		"automation": map[string]any{
+			"mode": "unattended",
+			"push": map[string]any{
+				"featureBranchAutoApprove": false,
+			},
+		},
+	})
+
+	cfg, err := Read(root)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if !cfg.Automation.Push.FeatureBranchAutoApprove {
+		t.Error("Push.FeatureBranchAutoApprove = false, want true (unattended forces true despite explicit false — known limitation)")
+	}
+}
+
+// TestPush_SupervisedModeExplicitFalseStaysFalse verifies the explicit-false
+// case behaves normally under supervised mode (no forcing).
+func TestPush_SupervisedModeExplicitFalseStaysFalse(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+	setupProjectConfig(t, root, map[string]any{})
+	setupLocalConfig(t, root, map[string]any{
+		"automation": map[string]any{
+			"push": map[string]any{
+				"featureBranchAutoApprove": false,
+			},
+		},
+	})
+
+	cfg, err := Read(root)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if cfg.Automation.Push.FeatureBranchAutoApprove {
+		t.Error("Push.FeatureBranchAutoApprove = true, want false (explicit false under supervised mode)")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Version section (typed VersionSection)
 // ---------------------------------------------------------------------------
