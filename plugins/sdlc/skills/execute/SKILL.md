@@ -188,7 +188,7 @@ One `execute_state` bootstrap, before wave 1, before any gate below (`wave-start
 execute_state({ action: "init", branch: "<branch>", quality: "<X>", totalTasks: N, plannedTaskIds: [<every task id from the plan>], planPath: "<PLAN_FILE>", planHash: "<sha256 of PLAN_FILE bytes>" })
 execute_state({ action: "context", data: { "planSummary": "<2-3 sentence goal of the plan>" } })
 ```
-Compute `planHash` here (`shasum -a 256 "$PLAN_FILE" | cut -d' ' -f1`) — the tool is a pure recorder and never computes it itself. `plannedTaskIds` seeds the invariant this loop's final gate checks against (below).
+Compute `planHash` here (`shasum -a 256 "$PLAN_FILE" | cut -d' ' -f1`) — the tool is a pure recorder and never computes it itself. `plannedTaskIds` seeds the invariant this loop's final gate checks against (below). The branch recorded at init is enforced server-side on every subsequent action — a mid-session `git checkout` to a different branch is rejected with a `DomainError`, not silently followed.
 
 **Pre-wave:** 1 trivial task → execute inline. 2+ trivial tasks → one batch Agent (haiku) using `## Worker dispatch prompt` below, concatenated one prompt per task. Mark each complete in TodoWrite as it finishes. This is a direct dispatch from main context — there is no wave-runner middle agent, and being dispatched as a subagent (e.g. by ship) doesn't change that; you dispatch this wave's Agents yourself either way.
 
@@ -287,7 +287,7 @@ There is no skill-side `commitWaves` flag or gate to check first — the tool st
 `--resume` (or `implicitResume`, below) does not hand-derive "what changed" from `waves[]`/`context` prose. `execute_state({action:"read"})` (and `resume-reset`) attach a `resumeBriefing` whenever the run is still in flight — render its `display` text as the starting point:
 
 1. `git worktree list --porcelain` → `<main-worktree>`; find the most recent `execute-<branch>-*.json` under `<main-worktree>/.sdlc-v2/execution/`. None found → warn and start fresh (still subject to the plan-argument gate if `EXPLICIT_PLAN_FILE` isn't set).
-2. `execute_state({action:"read"})` → `planPath`, `planHash`, `resumeBriefing`. Null/absent `planPath` (legacy file) → the plan-argument gate's halt applies, no prompting. Null/absent `planHash` → skip the comparison ("hash not recorded — comparison skipped"); otherwise recompute (`shasum -a 256`) and compare: match → continue; mismatch under `--auto` → halt ("Plan content has changed since execution started — auto mode halts rather than silently resuming against a changed plan"); mismatch interactively → AskUserQuestion (`resume` / `restart`; `restart` deletes the state file).
+2. `execute_state({action:"read"})` → `planPath`, `planHash`, `resumeBriefing`. Null/absent `planPath` (legacy file) → the plan-argument gate's halt applies, no prompting. Do not recompute or compare `planHash` here — the tool compares `planHash` server-side at `wave-start`; a mismatch halts execution there.
 3. **`gitCrossCheck`/`gitMismatches` on the briefing is a STOP condition, not an auto-recovery target.** A `committedSha` no longer reachable from HEAD (force-push, reset) means: warn with the mismatch and refuse to auto-recover; resolve manually. `gitCrossCheck:"confirmed"` (or absent, meaning no wave has committed yet) needs no action.
 4. Clear untrusted rows before computing the resume pointer:
    ```
@@ -335,6 +335,8 @@ After all waves: run the full test suite, run the build, run the linter (if conf
 ## Step 8 (CRITIQUE): Final Output Critique
 
 Does every plan task have a completed deliverable? Any orphaned files? Did anything drift from spec? Any leftover TODO/FIXME/HACK markers? Fix inline if possible, report otherwise.
+
+When drift detected, call `advisor()` first, then `execute_state({action:"drift-log", driftSeverity:"<error|warning|info>", driftSummary:"<one line>", driftDetail:"<optional detail>"})`. A `{halt:true}` response means accumulated error-severity drift exceeded the configured threshold — stop and escalate to the user rather than continuing past it.
 
 **8-bis. Final spec completeness** (only when `openspecSpecs` was loaded and the Speed tier wasn't selected) — also skip if every per-wave spec review passed clean and the plan has ≤ 3 waves. Otherwise dispatch one sonnet reviewer (same template as `## Wave loop`'s spec-compliance review) with **every** non-trivial task from **every** wave, the full combined `git diff --stat`, and the complete `openspecSpecs` content. Focus: cross-wave coverage gaps — requirements split across waves, requirements no wave claimed, requirements still incomplete after summing every wave. Same verdict handling as the in-wave review.
 

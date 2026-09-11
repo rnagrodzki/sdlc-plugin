@@ -36,7 +36,7 @@ import (
 // ExecuteStateIn carries the merged input for the execute_state tool's
 // actions. Each field is consumed by one or more actions (noted in comments).
 type ExecuteStateIn struct {
-	Action            string         `json:"action" jsonschema_description:"Selects the operation: wave-compute, init, wave-start, wave-done, wave-fail, wave-committed, wave-commit, task-done, task-fail, task-context, context, read, cleanup, gc, summarize-prior-wave-context, wave-split, verify-completeness, wave-progress, resume-reset, ledger_checkin, ledger_checkout, ledger_status, log-cli, or drift-log. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
+	Action            string         `json:"action" jsonschema_description:"Selects the operation: wave-compute, init, wave-start, wave-done, wave-fail, wave-committed, wave-commit, task-done, task-fail, task-context, context, read, cleanup, gc, summarize-prior-wave-context, wave-split, verify-completeness, wave-progress, resume-reset, ledger_checkin, ledger_checkout, ledger_status, log-cli, drift-log, or issue-draft. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
 	Branch            string         `json:"branch,omitempty" jsonschema_description:"Git branch the execution state belongs to. Most actions accept it to scope the state file; falls back to the current branch when omitted."`
 	Quality           string         `json:"quality,omitempty" jsonschema_description:"Quality level to stamp on a newly initialized run (init only). Required — no config fallback exists for this field."`
 	TotalTasks        int            `json:"totalTasks,omitempty" jsonschema_description:"Total planned task count for a newly initialized run (init only)."`
@@ -88,6 +88,9 @@ type ExecuteStateIn struct {
 	DriftSeverity     string         `json:"driftSeverity,omitempty" jsonschema_description:"drift-log only: severity of the drift issue — one of error, warning, or info."`
 	DriftSummary      string         `json:"driftSummary,omitempty" jsonschema_description:"drift-log only: one-line summary of the drift issue."`
 	DriftDetail       string         `json:"driftDetail,omitempty" jsonschema_description:"drift-log only: optional longer description of the drift issue."`
+	IssueDraftTitle   string         `json:"issueDraftTitle,omitempty" jsonschema_description:"issue-draft only: GH issue title (required)."`
+	IssueDraftBody    string         `json:"issueDraftBody,omitempty" jsonschema_description:"issue-draft only: GH issue body markdown (required)."`
+	IssueDraftLabels  []string       `json:"issueDraftLabels,omitempty" jsonschema_description:"issue-draft only: labels to apply (optional)."`
 }
 
 // ---------------------------------------------------------------------------
@@ -120,6 +123,12 @@ type DriftLogOut struct {
 	Reason     string         `json:"reason,omitempty"`
 	DriftCount map[string]int `json:"driftCount"`
 	Threshold  int            `json:"threshold"`
+}
+
+// IssueDraftOut is the output for the issue-draft action.
+type IssueDraftOut struct {
+	Added       bool `json:"added"`
+	TotalDrafts int  `json:"totalDrafts"`
 }
 
 // ExecTaskNarrationOut is the narrated output for task-level execute_state
@@ -349,6 +358,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - ledger_checkout: Mark a worker as done. Requires runId, workerId.
 - ledger_status: List worker statuses for a run. Requires runId. Optional: timeoutSeconds.
 - drift-log: Append a drift issue and evaluate the server-side stop condition. When accumulated error-severity drift issues exceed the threshold (max(minErrorFloor, ceil(maxErrorRate * totalTasks))), returns {halt:true}. Requires driftSeverity (error|warning|info), driftSummary. Optional: driftDetail, wave, taskId, branch.
+- issue-draft: Append a pending GH issue draft to the state file's pendingIssueDrafts list (append-only — never goes through the context action, never overwrites). Requires issueDraftTitle, issueDraftBody. Optional: issueDraftLabels, taskId, branch. Returns {added:true, totalDrafts:N}.
 
 Returns a JSON envelope: {"ok":true, "data":{...}} on success, {"ok":false, "code":"...", "error":"..."} on failure.`,
 		func(ctx mcpserver.Ctx, in ExecuteStateIn) (any, error) {
@@ -426,6 +436,8 @@ func executeState(root, workDir string, in ExecuteStateIn, now func() time.Time)
 		return execActionLogCLI(root, workDir, in)
 	case "drift-log":
 		return execActionDriftLog(root, workDir, in, now)
+	case "issue-draft":
+		return execActionIssueDraft(root, workDir, in, now)
 	default:
 		return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("unknown action %q", in.Action)}
 	}
@@ -678,6 +690,35 @@ func execAppendIssue(data map[string]any, issue StateIssue) {
 	data["issues"] = append(raw, m)
 }
 
+// IssueDraft is a single pending GH issue draft accumulated on the state
+// file's data["pendingIssueDrafts"] list by the issue-draft action.
+type IssueDraft struct {
+	TaskID    string   `json:"taskId,omitempty"`
+	Title     string   `json:"title"`
+	Body      string   `json:"body"`
+	Labels    []string `json:"labels,omitempty"`
+	Timestamp string   `json:"timestamp,omitempty"`
+}
+
+// execAppendIssueDraft appends an IssueDraft to data["pendingIssueDrafts"],
+// round-tripping it through JSON so the stored representation is always a
+// map[string]any — mirroring execAppendIssue's pattern for data["issues"].
+func execAppendIssueDraft(data map[string]any, draft IssueDraft) {
+	raw, ok := data["pendingIssueDrafts"].([]any)
+	if !ok {
+		raw = []any{}
+	}
+	b, err := json.Marshal(draft)
+	if err != nil {
+		return
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		return
+	}
+	data["pendingIssueDrafts"] = append(raw, m)
+}
+
 // countDriftIssues counts issues with category "drift" grouped by severity.
 // All three severity keys (error, warning, info) are always present in the
 // returned map so callers never see a nil or partial map.
@@ -806,6 +847,56 @@ func execActionDriftLog(root, workDir string, in ExecuteStateIn, now func() time
 		DriftCount: counts,
 		Threshold:  threshold,
 	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Action: issue-draft
+// ---------------------------------------------------------------------------
+
+// execActionIssueDraft appends a pending GH issue draft to the state file's
+// data["pendingIssueDrafts"] list. Decision KD-6: this is append-only and
+// deliberately bypasses the "context" action's allowed-key merge semantics —
+// every call accumulates a new entry, never overwrites a prior one. Ship
+// step 10b (Task 11) later reads the accumulated list for one batch
+// approval question under --auto.
+func execActionIssueDraft(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
+	if strings.TrimSpace(in.IssueDraftTitle) == "" {
+		return nil, &mcpserver.DomainError{Msg: "issueDraftTitle is required"}
+	}
+	if strings.TrimSpace(in.IssueDraftBody) == "" {
+		return nil, &mcpserver.DomainError{Msg: "issueDraftBody is required"}
+	}
+
+	branch, err := execResolveBranch(in.Branch, workDir)
+	if err != nil {
+		return nil, err
+	}
+	st, err := execFindState(root, branch)
+	if err != nil {
+		return nil, err
+	}
+	if err := execAssertBranch(st, branch); err != nil {
+		return nil, err
+	}
+
+	execAppendIssueDraft(st.Data, IssueDraft{
+		TaskID:    in.TaskID,
+		Title:     in.IssueDraftTitle,
+		Body:      in.IssueDraftBody,
+		Labels:    in.IssueDraftLabels,
+		Timestamp: now().UTC().Format(time.RFC3339),
+	})
+
+	if err := state.Write(st); err != nil {
+		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+	}
+
+	total := 0
+	if raw, ok := st.Data["pendingIssueDrafts"].([]any); ok {
+		total = len(raw)
+	}
+
+	return IssueDraftOut{Added: true, TotalDrafts: total}, nil
 }
 
 // execIssueSummary returns the total issue count and up to maxHighlights
