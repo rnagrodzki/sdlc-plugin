@@ -1,0 +1,1 @@
+No brnach changes without user approval. Even if work is shifting stay on the approved brnahc, never change on your own.

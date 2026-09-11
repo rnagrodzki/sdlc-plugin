@@ -758,6 +758,17 @@ func buildSkillTemplateIndex() map[string]string {
 	return index
 }
 
+// resetSkillTemplateIndex clears the cached skill template index and resets
+// the sync.Once guard so the next resolveSkillTemplate/buildSkillTemplateIndex
+// call re-walks and rebuilds it from scratch. Test seam only: production
+// code relies on the index being built at most once per process
+// (skillTemplateIndexOnce); tests that vary CLAUDE_PLUGIN_ROOT or HOME
+// between cases need a way to invalidate that cache between them.
+func resetSkillTemplateIndex() {
+	skillTemplateIndexOnce = sync.Once{}
+	skillTemplateIndex = nil
+}
+
 // resolveSkillTemplate finds a plan skill template file under
 // ~/.claude/plugins/*/skills/.../<templateName>, mirroring plan.js's find
 // cascade (`find ~/.claude/plugins -name <templateName> -path '*/plan/*'`)

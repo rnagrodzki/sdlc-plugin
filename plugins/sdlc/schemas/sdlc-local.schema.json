@@ -166,6 +166,84 @@
       },
       "additionalProperties": false
     },
+    "automationSection": {
+      "type": "object",
+      "description": "Controls per-step pipeline automation, the review-fix loop, plan-drift halting thresholds, and the end-of-run execution report.",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["supervised", "unattended"],
+          "default": "supervised",
+          "description": "Default automation mode for steps not listed in steps{}. \"supervised\" requires confirmation; \"unattended\" runs automatically."
+        },
+        "reviewFixIterations": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 3,
+          "description": "Maximum review-fix loop iterations."
+        },
+        "reviewFixSeverityThreshold": {
+          "type": "string",
+          "enum": ["critical", "high", "medium", "low"],
+          "default": "high",
+          "description": "Minimum review-finding severity that triggers a fix attempt."
+        },
+        "steps": {
+          "type": "object",
+          "description": "Per-step automation mode overrides, keyed by step name.",
+          "additionalProperties": {
+            "type": "string",
+            "enum": ["auto", "confirm"]
+          }
+        },
+        "drift": {
+          "type": "object",
+          "description": "Rate-based thresholds for halting an unattended run on plan drift (KD-3). The effective threshold is max(minErrorFloor, ceil(rate * totalTasks)).",
+          "properties": {
+            "maxErrorRate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "default": 0.15,
+              "description": "Fraction of total tasks that may error before the run halts."
+            },
+            "maxWarningRate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "default": 0.4,
+              "description": "Fraction of total tasks that may warn before the run halts."
+            },
+            "minErrorFloor": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 2,
+              "description": "Minimum absolute error count tolerated regardless of maxErrorRate, so small plans aren't held to an unreachable fractional threshold."
+            }
+          },
+          "additionalProperties": false
+        },
+        "report": {
+          "type": "object",
+          "description": "Controls the execution report emitted at the end of a run (KD-11).",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Whether to emit an execution report."
+            },
+            "format": {
+              "type": "string",
+              "enum": ["md", "json"],
+              "default": "md",
+              "description": "Execution report output format."
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "workspaceSection": {
       "type": "object",
       "description": "User-local workspace preferences. Workspace itself is auto-detected (branch/continue) — this section only carries branch-name derivation knobs consumed by lib/branch-name.js. The former worktree-placement and mode keys are removed (workspace is no longer user-selectable; fixes #378, #379).",
@@ -223,6 +301,9 @@
     },
     "workspace": {
       "$ref": "#/$defs/workspaceSection"
+    },
+    "automation": {
+      "$ref": "#/$defs/automationSection"
     }
   },
   "additionalProperties": false
