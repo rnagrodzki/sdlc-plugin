@@ -65,15 +65,15 @@ type ShipPrepareIn struct {
 	SkipConfigCheck bool `json:"skipConfigCheck" jsonschema_description:"Skips the config-version auto-migration gate normally run before preflight checks. Set only when the caller has already verified or migrated the config."`
 
 	HasPlan            bool     `json:"hasPlan" jsonschema_description:"Whether a plan already exists for this pipeline run. When true and planFile is empty while the execute step will run, this is a validation error — a plan file must be supplied."`
-	Auto               bool     `json:"auto" jsonschema_description:"Run the pipeline unattended (no human available to confirm anything right now). Merged with the ship config's auto default when not explicitly set on the CLI."`
-	Steps              []string `json:"steps" jsonschema_description:"Explicit ordered list of pipeline step names to run, overriding the config/quick-derived step list. Takes precedence over quick when non-empty."`
+	Auto               bool     `json:"auto" sdlcconfig:"ship.auto" jsonschema_description:"Run the pipeline unattended (no human available to confirm anything right now). Optional. Defaults to config ship.auto. Pass only to override."`
+	Steps              []string `json:"steps" sdlcconfig:"ship.steps" jsonschema_description:"Explicit ordered list of pipeline step names to run, overriding the quick-derived step list. Takes precedence over quick when non-empty. Optional. Defaults to config ship.steps. Pass only to override."`
 	Quick              bool     `json:"quick" jsonschema_description:"Use the abbreviated \"quick\" step list instead of the full pipeline, when steps is not explicitly supplied."`
-	Quality            string   `json:"quality" jsonschema:"enum=full,enum=balanced,enum=minimal" jsonschema_description:"Quality gate level to merge into the resolved pipeline config, overriding the config default when set."`
-	Bump               string   `json:"bump" jsonschema_description:"Version bump level (e.g. \"patch\"/\"minor\"/\"major\") to merge into the resolved pipeline config, overriding the config default when set."`
-	Draft              bool     `json:"draft" jsonschema_description:"Create the PR as a draft. Merged with the ship config's draft default when not explicitly set on the CLI."`
+	Quality            string   `json:"quality" jsonschema:"enum=full,enum=balanced,enum=minimal" jsonschema_description:"Quality gate level to merge into the resolved pipeline config."`
+	Bump               string   `json:"bump" sdlcconfig:"ship.bump" jsonschema_description:"Version bump level (e.g. \"patch\"/\"minor\"/\"major\") to merge into the resolved pipeline config. Optional. Defaults to config ship.bump. Pass only to override."`
+	Draft              bool     `json:"draft" sdlcconfig:"ship.draft" jsonschema_description:"Create the PR as a draft. Optional. Defaults to config ship.draft. Pass only to override."`
 	DryRun             bool     `json:"dryRun" jsonschema_description:"Validate and initialize state without performing any side-effecting pipeline actions."`
 	Resume             bool     `json:"resume" jsonschema_description:"Resume a previously initialized ship run from its persisted state instead of starting a new one."`
-	Rebase             string   `json:"rebase" jsonschema_description:"Rebase strategy/target branch to merge into the resolved pipeline config, when set."`
+	Rebase             string   `json:"rebase" sdlcconfig:"ship.rebase" jsonschema_description:"Rebase strategy/target branch to merge into the resolved pipeline config. Optional. Defaults to config ship.rebase. Pass only to override."`
 	OpenspecChange     string   `json:"openspecChange" jsonschema_description:"Name of the openspec change this ship run is associated with, when applicable."`
 	HookActivePipeline bool     `json:"hookActivePipeline" jsonschema_description:"Whether a hook reported an already-active pipeline for this session, recorded into the initialized state."`
 	PlanModeBlocked    bool     `json:"planModeBlocked" jsonschema_description:"Whether plan mode was blocked for this session, recorded into the initialized state."`
@@ -341,8 +341,12 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 	if versionCfg == nil {
 		versionCfg = map[string]any{}
 	}
+	automationCfg, _ := config.ReadSection(cfgRoot, "automation")
+	if automationCfg == nil {
+		automationCfg = map[string]any{}
+	}
 
-	merged, sources := mergeShipFlags(in, shipCfg, versionCfg)
+	merged, sources := mergeShipFlags(in, shipCfg, versionCfg, automationCfg)
 
 	errors := []string{}
 	warnings := []string{}
@@ -444,6 +448,21 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 			"You are on the default branch %q. Ship pipelines should run on feature branches.", defaultBranch))
 	}
 
+	// KD-1 hard gate: pushing to a default branch (main/master) is never
+	// allowed, regardless of automation.push config. Unlike the warning
+	// above (informational, fires for any step config, driven by actual git
+	// config via gitx.DefaultBranch), this blocks outright — but only when
+	// the resolved steps actually include "pr" (the step that pushes the
+	// branch); a run with no "pr" step never pushes, so there is nothing to
+	// gate. isDefaultBranch is intentionally independent of git config
+	// (hardcoded main/master), per the task contract.
+	if isDefaultBranch(currentBranch) && sliceContainsStr(stepsList, "pr") {
+		return ShipPrepareOut{}, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("ship cannot run the \"pr\" step on default branch %q — pushing to main/master is never auto-approved", currentBranch),
+			Suggestion: "Switch to a feature branch, or remove \"pr\" from --steps/ship.steps[] if you don't intend to push.",
+		}
+	}
+
 	out := ShipPrepareOut{
 		Errors:        errors,
 		Warnings:      warnings,
@@ -535,6 +554,15 @@ func configStepsFromScaffold(scaffold []shipmeta.ShipStateStep) []pipeline.Confi
 	return out
 }
 
+// isDefaultBranch reports whether branch is a conventional default branch
+// name (main/master). KD-1 hard gate: intentionally independent of git
+// config (gitx.DefaultBranch, which reads origin/HEAD or init.defaultBranch)
+// — a repo whose default branch happens to be named something else is not
+// exempted, and a repo whose git config disagrees is not fooled either.
+func isDefaultBranch(branch string) bool {
+	return branch == "main" || branch == "master"
+}
+
 // stepsFieldLabel renders the source-appropriate name of the steps field for
 // error/warning messages ("--steps" for CLI-sourced values, "steps[]" for
 // config-sourced ones).
@@ -552,7 +580,7 @@ func stepsFieldLabel(source string) string {
 // bump regardless of source (including CLI).
 // Returns the merged flag map plus, per key, which precedence tier
 // supplied the value.
-func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]any) (map[string]any, map[string]string) {
+func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]any, automationCfg map[string]any) (map[string]any, map[string]string) {
 	merged := map[string]any{}
 	sources := map[string]string{}
 
@@ -635,6 +663,29 @@ func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]
 		merged["reviewThreshold"] = shipmeta.ShipBuiltInDefaults.ReviewThreshold
 		sources["reviewThreshold"] = "default"
 	}
+
+	// pushFeatureBranchAutoApprove (KD-1): automation.push.featureBranchAutoApprove
+	// config > mode-derived default. No CLI override — automation is a
+	// config-only section. Mirrors config.applyAutomationDefaults'
+	// precedence exactly, including its known limitation: an explicit
+	// "false" is indistinguishable from "absent" via the bool zero value,
+	// so "unattended" mode still forces it true (see
+	// internal/config.PushConfig). Consumed by the ship skill doc's pr-step
+	// dispatch to decide whether a feature-branch push still needs a
+	// manual AskUserQuestion pause; a default-branch push is never
+	// auto-approved regardless of this value — see isDefaultBranch below.
+	pushAutoApprove := false
+	sources["pushFeatureBranchAutoApprove"] = "default"
+	if pushRaw, ok := automationCfg["push"].(map[string]any); ok {
+		if v, ok := pushRaw["featureBranchAutoApprove"].(bool); ok {
+			pushAutoApprove = v
+			sources["pushFeatureBranchAutoApprove"] = "config"
+		}
+	}
+	if mode, _ := automationCfg["mode"].(string); mode == "unattended" && !pushAutoApprove {
+		pushAutoApprove = true
+	}
+	merged["pushFeatureBranchAutoApprove"] = pushAutoApprove
 
 	// rebase: cli string > config (bool coerced to "auto"/"skip", string
 	// verbatim, or — matching ship.js's unconditional `merged.rebase =
@@ -784,7 +835,7 @@ var shipStateFileRe = regexp.MustCompile(`^ship-(.+)-\d{8}T\d{6}Z\.json$`)
 // that state.Write is about to prune. Must be called before state.Init
 // creates the new file, so its own path is never included.
 func existingShipStateFiles(root, branchSlug string) ([]string, error) {
-	dir := filepath.Join(root, paths.DataDir, "execution")
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {

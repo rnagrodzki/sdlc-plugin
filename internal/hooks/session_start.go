@@ -527,7 +527,7 @@ func compactRecoveryPhase() []string {
 		fmt.Fprintf(os.Stderr, "[sdlc/session-start] compact-recovery consumption failed: %v\n", err)
 		return nil
 	}
-	dir := filepath.Join(root, paths.DataDir, "execution")
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
 
 	var lines []string
 	if branch, err := gitx.CurrentBranch(resolveActiveWorktreeSafe()); err == nil && branch != "" && branch != "HEAD" {

@@ -15,6 +15,11 @@ const DataDir = ".sdlc-v2"
 // without re-introducing a scattered literal.
 const LegacyDataDir = ".sdlc"
 
+// RunsSubdir is the subdirectory (under DataDir) that holds execution-state
+// run files. It replaces the older "execution" subdirectory name; see
+// internal/state for the legacy fallback that still reads the old location.
+const RunsSubdir = "runs"
+
 // ProjectDir returns the absolute path to the SDLC data directory for a
 // given project root.
 func ProjectDir(root string) string {

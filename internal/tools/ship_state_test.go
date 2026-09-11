@@ -118,7 +118,7 @@ func TestShipState_Init(t *testing.T) {
 
 	path := shipStateInitFixture(t, dir, "feat/state-init")
 
-	wantDir := filepath.Join(dir, paths.DataDir, "execution")
+	wantDir := filepath.Join(dir, paths.DataDir, paths.RunsSubdir)
 	if filepath.Dir(path) != wantDir {
 		t.Errorf("state file dir = %q, want %q", filepath.Dir(path), wantDir)
 	}
@@ -148,7 +148,7 @@ func TestShipState_Init_PrunesOrphans(t *testing.T) {
 	checkoutBranch(t, dir, "feat/prune-me")
 
 	slug := state.SlugifyBranch("feat/prune-me")
-	orphan := filepath.Join(dir, paths.DataDir, "execution", fmt.Sprintf("ship-%s-20200101T000000Z.json", slug))
+	orphan := filepath.Join(dir, paths.DataDir, paths.RunsSubdir, fmt.Sprintf("ship-%s-20200101T000000Z.json", slug))
 	writeFile(t, orphan, `{"sessionId": null}`)
 
 	out, err := shipState(dir, dir, ShipStateIn{
@@ -1164,7 +1164,7 @@ func TestShipState_GC_DryRun_ClassifiesAndDropsCommit(t *testing.T) {
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
-	execDir := filepath.Join(dir, paths.DataDir, "execution")
+	execDir := filepath.Join(dir, paths.DataDir, paths.RunsSubdir)
 	staleShip := filepath.Join(execDir, "ship-dead-branch-20200101T000000Z.json")
 	writeFile(t, staleShip, `{}`)
 	setStateFileMtime(t, staleShip, 30*24*time.Hour)
@@ -1212,7 +1212,7 @@ func TestShipState_GC_RealRunIncludesCommitBucket(t *testing.T) {
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
-	execDir := filepath.Join(dir, paths.DataDir, "execution")
+	execDir := filepath.Join(dir, paths.DataDir, paths.RunsSubdir)
 	staleCommit := filepath.Join(execDir, "commit-dead-branch-20200101T000000Z.json")
 	writeFile(t, staleCommit, `{}`)
 	setStateFileMtime(t, staleCommit, 30*24*time.Hour)
@@ -1243,7 +1243,7 @@ func TestShipState_GC_TTLDaysZeroIsLiteral(t *testing.T) {
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
-	execDir := filepath.Join(dir, paths.DataDir, "execution")
+	execDir := filepath.Join(dir, paths.DataDir, paths.RunsSubdir)
 	f := filepath.Join(execDir, "ship-dead-branch-20200101T000000Z.json")
 	writeFile(t, f, `{}`)
 	setStateFileMtime(t, f, 1*time.Second)
@@ -1274,7 +1274,7 @@ func TestShipState_Migrate(t *testing.T) {
 	gitCommit(t, dir, "initial")
 
 	oldSlug := state.SlugifyBranch("feat/old-name")
-	execDir := filepath.Join(dir, paths.DataDir, "execution")
+	execDir := filepath.Join(dir, paths.DataDir, paths.RunsSubdir)
 	oldPath := filepath.Join(execDir, fmt.Sprintf("ship-%s-20200101T000000Z.json", oldSlug))
 	writeFile(t, oldPath, `{"branch": "feat/old-name"}`)
 

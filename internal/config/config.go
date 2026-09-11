@@ -108,11 +108,68 @@ func detectLegacy(mainRoot string) error {
 //
 // Steps maps individual step names to "auto" or "confirm", overriding
 // the Mode default for that step.
+//
+// Drift configures the rate-based thresholds execute_state uses to decide
+// when a wave's error/warning rate is severe enough to halt an unattended
+// run (KD-3). Report configures the end-of-run execution report
+// (KD-11). Push configures whether a feature-branch git push is
+// auto-approved without a manual confirmation pause (KD-1); a default-branch
+// (main/master) push is never auto-approved regardless of this setting — see
+// PushConfig. All three are optional; nil means "use documented defaults"
+// and is filled in by applyAutomationDefaults.
 type AutomationSection struct {
 	Mode                       string            `json:"mode"`
 	ReviewFixIterations        int               `json:"reviewFixIterations"`
 	ReviewFixSeverityThreshold string            `json:"reviewFixSeverityThreshold"`
 	Steps                      map[string]string `json:"steps,omitempty"`
+	Drift                      *DriftConfig      `json:"drift,omitempty"`
+	Report                     *ReportConfig     `json:"report,omitempty"`
+	Push                       *PushConfig       `json:"push,omitempty"`
+}
+
+// DriftConfig controls the rate-based thresholds used to decide when a
+// wave's error or warning rate is severe enough to halt an unattended run.
+//
+// MaxErrorRate and MaxWarningRate are fractions of total tasks in the run
+// (0.0-1.0). MinErrorFloor is a minimum absolute error count that always
+// applies regardless of MaxErrorRate, so a small plan isn't held to an
+// unreachable fractional threshold — e.g. with MinErrorFloor 2, a 4-task
+// plan tolerates up to 2 errors even though 0.15*4 rounds down to 0.
+//
+// The threshold a caller compares actual error/warning counts against is
+// computed as max(MinErrorFloor, ceil(MaxErrorRate * totalTasks)) — see
+// KD-3; that computation is not implemented in this package.
+//
+// Known limitation: these are plain value types, so applyAutomationDefaults
+// cannot distinguish an explicit zero from an absent key — an explicit
+// maxErrorRate:0 or maxWarningRate:0 in local.json is silently replaced by
+// the compiled default (0.15 / 0.40 respectively). Same caveat as
+// PushConfig.FeatureBranchAutoApprove.
+type DriftConfig struct {
+	MaxErrorRate   float64 `json:"maxErrorRate"`
+	MaxWarningRate float64 `json:"maxWarningRate"`
+	MinErrorFloor  int     `json:"minErrorFloor"`
+}
+
+// ReportConfig controls whether and how an execution report is emitted at
+// the end of a run (KD-11). Format is "md" or "json"; any other value is
+// clamped to "md" by applyAutomationDefaults.
+type ReportConfig struct {
+	Enabled bool   `json:"enabled"`
+	Format  string `json:"format"`
+}
+
+// PushConfig controls whether a feature-branch git push during ship is
+// auto-approved without a manual confirmation pause (KD-1). A default-branch
+// (main/master) push is never auto-approved by this setting — ship.go's
+// isDefaultBranch hard gate rejects it server-side regardless of config.
+//
+// Known limitation shared with DriftConfig.MaxWarningRate: FeatureBranchAutoApprove
+// is a plain bool, so its zero value can't distinguish an explicit "false"
+// from an absent key. applyAutomationDefaults forces it true whenever Mode
+// is "unattended", even if the config explicitly set it to false.
+type PushConfig struct {
+	FeatureBranchAutoApprove bool `json:"featureBranchAutoApprove"`
 }
 
 // StepMode returns the effective automation mode for the given step:
@@ -368,12 +425,50 @@ func parseAutomation(raw map[string]any) *AutomationSection {
 			}
 		}
 	}
+	if driftRaw, ok := raw["drift"].(map[string]any); ok {
+		d := &DriftConfig{}
+		if v, ok := driftRaw["maxErrorRate"].(float64); ok {
+			d.MaxErrorRate = v
+		}
+		if v, ok := driftRaw["maxWarningRate"].(float64); ok {
+			d.MaxWarningRate = v
+		}
+		if v, ok := driftRaw["minErrorFloor"].(float64); ok {
+			d.MinErrorFloor = int(v)
+		}
+		a.Drift = d
+	}
+	if reportRaw, ok := raw["report"].(map[string]any); ok {
+		// Enabled starts true so that a partial override (e.g. only
+		// "format" set) doesn't silently disable reporting — only an
+		// explicit "enabled": false in raw turns it off. See
+		// applyAutomationDefaults for the "report" key absent entirely
+		// case.
+		r := &ReportConfig{Enabled: true}
+		if v, ok := reportRaw["enabled"].(bool); ok {
+			r.Enabled = v
+		}
+		if v, ok := reportRaw["format"].(string); ok {
+			r.Format = v
+		}
+		a.Report = r
+	}
+	if pushRaw, ok := raw["push"].(map[string]any); ok {
+		p := &PushConfig{}
+		if v, ok := pushRaw["featureBranchAutoApprove"].(bool); ok {
+			p.FeatureBranchAutoApprove = v
+		}
+		a.Push = p
+	}
 	return a
 }
 
 // applyAutomationDefaults fills in zero-value fields with documented
 // defaults: mode "supervised", reviewFixIterations 3,
-// reviewFixSeverityThreshold "high".
+// reviewFixSeverityThreshold "high", drift.maxErrorRate 0.15,
+// drift.maxWarningRate 0.40, drift.minErrorFloor 2, report.enabled true,
+// report.format "md", push.featureBranchAutoApprove true when mode is
+// "unattended" (false otherwise).
 func applyAutomationDefaults(a *AutomationSection) {
 	if a.Mode == "" {
 		a.Mode = "supervised"
@@ -383,6 +478,30 @@ func applyAutomationDefaults(a *AutomationSection) {
 	}
 	if a.ReviewFixSeverityThreshold == "" {
 		a.ReviewFixSeverityThreshold = "high"
+	}
+	if a.Drift == nil {
+		a.Drift = &DriftConfig{}
+	}
+	if a.Drift.MaxErrorRate == 0 {
+		a.Drift.MaxErrorRate = 0.15
+	}
+	if a.Drift.MaxWarningRate == 0 {
+		a.Drift.MaxWarningRate = 0.40
+	}
+	if a.Drift.MinErrorFloor == 0 {
+		a.Drift.MinErrorFloor = 2
+	}
+	if a.Report == nil {
+		a.Report = &ReportConfig{Enabled: true}
+	}
+	if a.Report.Format == "" || (a.Report.Format != "md" && a.Report.Format != "json") {
+		a.Report.Format = "md"
+	}
+	if a.Push == nil {
+		a.Push = &PushConfig{}
+	}
+	if a.Mode == "unattended" && !a.Push.FeatureBranchAutoApprove {
+		a.Push.FeatureBranchAutoApprove = true
 	}
 }
 

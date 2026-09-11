@@ -3,8 +3,10 @@
 // (delimiter-aware mtime-newest), init/write with prune-on-write, and session
 // stamping.
 //
-// The canonical state directory lives at <root>/.sdlc-v2/execution/. Root is
+// The canonical state directory lives at <root>/.sdlc-v2/runs/. Root is
 // injected by callers so that no environment or git lookup is needed here.
+// For one release cycle, Find also falls back to the legacy
+// <root>/.sdlc-v2/execution/ location when a run isn't found under runs/.
 //
 // Filename format: <prefix>-<branchSlug>-<YYYYMMDDTHHmmssZ>.json
 // Accepted prefixes: ship, execute, plan (parser also accepts commit).
@@ -90,6 +92,14 @@ type State struct {
 
 // stateDir returns the canonical execution state directory for a root.
 func stateDir(root string) string {
+	return filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+}
+
+// legacyStateDir returns the pre-migration execution state directory for a
+// root. It is consulted by Find as a one-release-cycle fallback for state
+// files that haven't been moved to stateDir yet (see the "layout" action on
+// the migrate tool).
+func legacyStateDir(root string) string {
 	return filepath.Join(root, paths.DataDir, "execution")
 }
 
@@ -97,7 +107,7 @@ func stateDir(root string) string {
 // Init
 // ---------------------------------------------------------------------------
 
-// Init creates a new state file in <root>/.sdlc-v2/execution/ with the filename
+// Init creates a new state file in <root>/.sdlc-v2/runs/ with the filename
 // <prefix>-<branchSlug>-<timestamp>.json and the provided initial data.
 // The creating session's ID is stamped into Data["sessionId"]; an empty
 // sessionID is stored as nil (matching the JS behaviour of null).
@@ -149,8 +159,25 @@ func Init(root, prefix, branch, sessionID string) (*State, error) {
 //
 // Matching uses delimiter-aware prefix: strings.HasPrefix(name, prefix+"-"+slug+"-")
 // to mirror the JS findStateFile behaviour exactly.
+//
+// Find checks stateDir (runs/) first; if no match is found there, it falls
+// back to legacyStateDir (execution/) so runs created before the runs/
+// migration remain discoverable for one release cycle.
 func Find(root, prefix, branch string) (*State, error) {
-	dir := stateDir(root)
+	st, err := findInDir(stateDir(root), root, prefix, branch)
+	if err != nil {
+		return nil, err
+	}
+	if st != nil {
+		return st, nil
+	}
+	return findInDir(legacyStateDir(root), root, prefix, branch)
+}
+
+// findInDir performs the actual <prefix>-<branchSlug>-*.json lookup within a
+// single directory, by mtime newest-first. It is shared by Find across
+// stateDir and legacyStateDir.
+func findInDir(dir, root, prefix, branch string) (*State, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -208,7 +235,9 @@ func Find(root, prefix, branch string) (*State, error) {
 // FindAny locates the most recent state file matching <prefix>-*.json in the
 // execution state directory (by mtime, newest first), regardless of which
 // branch produced it, reads and parses its JSON contents, and returns a
-// *State.
+// *State. Falls back to the legacy state directory (execution/) when no
+// match is found under the current layout (runs/), mirroring Find's own
+// legacy-dir fallback added in the same diff.
 //
 // Unlike Find, FindAny is branch-agnostic: it matches on the bare prefix
 // ("<prefix>-") rather than "<prefix>-<branchSlug>-", so it accepts the most
@@ -224,7 +253,20 @@ func Find(root, prefix, branch string) (*State, error) {
 // name (via parseStateFilename), not from any caller-supplied branch, since
 // FindAny accepts files from any branch.
 func FindAny(root, prefix string) (*State, error) {
-	dir := stateDir(root)
+	st, err := findAnyInDir(stateDir(root), root, prefix)
+	if err != nil {
+		return nil, err
+	}
+	if st != nil {
+		return st, nil
+	}
+	return findAnyInDir(legacyStateDir(root), root, prefix)
+}
+
+// findAnyInDir performs the branch-agnostic <prefix>-*.json lookup within a
+// single directory, by mtime newest-first. Shared by FindAny across stateDir
+// and legacyStateDir.
+func findAnyInDir(dir, root, prefix string) (*State, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {

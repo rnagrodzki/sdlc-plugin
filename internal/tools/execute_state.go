@@ -1,9 +1,13 @@
 package tools
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,9 +36,9 @@ import (
 // ExecuteStateIn carries the merged input for the execute_state tool's
 // actions. Each field is consumed by one or more actions (noted in comments).
 type ExecuteStateIn struct {
-	Action            string         `json:"action" jsonschema_description:"Selects the operation: wave-compute, init, wave-start, wave-done, wave-fail, wave-committed, wave-commit, task-done, task-fail, task-context, context, read, cleanup, gc, summarize-prior-wave-context, wave-split, verify-completeness, wave-progress, resume-reset, ledger_checkin, ledger_checkout, ledger_status, or log-cli. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
+	Action            string         `json:"action" jsonschema_description:"Selects the operation: wave-compute, init, wave-start, wave-done, wave-fail, wave-committed, wave-commit, task-done, task-fail, task-context, context, read, cleanup, gc, summarize-prior-wave-context, wave-split, verify-completeness, wave-progress, resume-reset, ledger_checkin, ledger_checkout, ledger_status, log-cli, drift-log, issue-draft, or report. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
 	Branch            string         `json:"branch,omitempty" jsonschema_description:"Git branch the execution state belongs to. Most actions accept it to scope the state file; falls back to the current branch when omitted."`
-	Quality           string         `json:"quality,omitempty" jsonschema_description:"Quality level to stamp on a newly initialized run (init only)."`
+	Quality           string         `json:"quality,omitempty" jsonschema_description:"Quality level to stamp on a newly initialized run (init only). Required — no config fallback exists for this field."`
 	TotalTasks        int            `json:"totalTasks,omitempty" jsonschema_description:"Total planned task count for a newly initialized run (init only)."`
 	PlannedTaskIds    []string       `json:"plannedTaskIds,omitempty" jsonschema_description:"IDs of every task planned for this run (init only), used later to detect run completeness."`
 	PlanPath          string         `json:"planPath,omitempty" jsonschema_description:"Path to the plan file to parse into a wave schedule (wave-compute), or to record on a newly initialized run (init)."`
@@ -58,12 +62,12 @@ type ExecuteStateIn struct {
 	SkippedDep        bool           `json:"skippedDependency,omitempty" jsonschema_description:"task-fail only: true when the failure is a skipped dependency rather than a real failure; only a non-skipped failure updates the wave's failedTask."`
 	ErrorText         string         `json:"error,omitempty" jsonschema_description:"Failure or concern detail text: the failure cause for wave-fail (recorded as an issue and in failedWave), the concern detail for task-done's DONE_WITH_CONCERNS status, or the failure detail for task-fail."`
 	Data              string         `json:"data,omitempty" jsonschema_description:"context action only: JSON object of shared context keys to write (allowed keys: planSummary, completedTaskIds, filesAdded, filesModified, interfacesCreated, decisionsFromPriorWaves)."`
-	TTLDays           *int           `json:"ttlDays,omitempty" jsonschema_description:"gc only: age threshold in days beyond which stale state files are garbage-collected."`
+	TTLDays           *int           `json:"ttlDays,omitempty" sdlcconfig:"state.gc.ttlDays" jsonschema_description:"gc only: age threshold in days beyond which stale state files are garbage-collected. Optional. Defaults to config state.gc.ttlDays. Pass only to override."`
 	DryRun            bool           `json:"dryRun,omitempty" jsonschema_description:"gc only: when true, reports what would be garbage-collected without deleting anything."`
-	MaxFiles          int            `json:"maxFiles,omitempty" jsonschema_description:"Cap on the number of files summarized in prior-wave context (context, summarize-prior-wave-context)."`
-	MaxDecisions      int            `json:"maxDecisions,omitempty" jsonschema_description:"Cap on the number of decisions summarized in prior-wave context (context, summarize-prior-wave-context)."`
-	MaxInterfaces     int            `json:"maxInterfaces,omitempty" jsonschema_description:"Cap on the number of interfaces summarized in prior-wave context (context, summarize-prior-wave-context)."`
-	MaxTaskIds        int            `json:"maxTaskIds,omitempty" jsonschema_description:"Cap on the number of task IDs summarized in prior-wave context (context, summarize-prior-wave-context)."`
+	MaxFiles          int            `json:"maxFiles,omitempty" sdlcconfig:"execute.priorWaveContextCaps.maxFiles" jsonschema_description:"Cap on the number of files summarized in prior-wave context (context, summarize-prior-wave-context). Optional. Defaults to config execute.priorWaveContextCaps.maxFiles. Pass only to override."`
+	MaxDecisions      int            `json:"maxDecisions,omitempty" sdlcconfig:"execute.priorWaveContextCaps.maxDecisions" jsonschema_description:"Cap on the number of decisions summarized in prior-wave context (context, summarize-prior-wave-context). Optional. Defaults to config execute.priorWaveContextCaps.maxDecisions. Pass only to override."`
+	MaxInterfaces     int            `json:"maxInterfaces,omitempty" sdlcconfig:"execute.priorWaveContextCaps.maxInterfaces" jsonschema_description:"Cap on the number of interfaces summarized in prior-wave context (context, summarize-prior-wave-context). Optional. Defaults to config execute.priorWaveContextCaps.maxInterfaces. Pass only to override."`
+	MaxTaskIds        int            `json:"maxTaskIds,omitempty" sdlcconfig:"execute.priorWaveContextCaps.maxTaskIds" jsonschema_description:"Cap on the number of task IDs summarized in prior-wave context (context, summarize-prior-wave-context). Optional. Defaults to config execute.priorWaveContextCaps.maxTaskIds. Pass only to override."`
 	Dispatched        string         `json:"dispatched,omitempty" jsonschema_description:"wave-split only: description of tasks already dispatched, used to compute which remaining tasks form the new wave."`
 	MissingIds        string         `json:"missingIds,omitempty" jsonschema_description:"wave-split only: task IDs missing from the current wave that should be folded into the new split wave."`
 	SplitDepth        int            `json:"splitDepth,omitempty" jsonschema_description:"wave-split only: current recursive split depth, used together with maxSplitDepth to bound repeated splitting."`
@@ -81,6 +85,12 @@ type ExecuteStateIn struct {
 	CLICommand        string         `json:"cliCommand,omitempty" jsonschema_description:"log-cli only: the Bash command that was executed."`
 	CLIExitCode       int            `json:"cliExitCode,omitempty" jsonschema_description:"log-cli only: the exit code of the command."`
 	CLIOutput         string         `json:"cliOutput,omitempty" jsonschema_description:"log-cli only: first ~500 characters of command output."`
+	DriftSeverity     string         `json:"driftSeverity,omitempty" jsonschema:"enum=error,enum=warning,enum=info" jsonschema_description:"drift-log only: severity of the drift issue — one of error, warning, or info."`
+	DriftSummary      string         `json:"driftSummary,omitempty" jsonschema_description:"drift-log only: one-line summary of the drift issue."`
+	DriftDetail       string         `json:"driftDetail,omitempty" jsonschema_description:"drift-log only: optional longer description of the drift issue."`
+	IssueDraftTitle   string         `json:"issueDraftTitle,omitempty" jsonschema_description:"issue-draft only: GH issue title (required)."`
+	IssueDraftBody    string         `json:"issueDraftBody,omitempty" jsonschema_description:"issue-draft only: GH issue body markdown (required)."`
+	IssueDraftLabels  []string       `json:"issueDraftLabels,omitempty" jsonschema_description:"issue-draft only: labels to apply (optional)."`
 }
 
 // ---------------------------------------------------------------------------
@@ -98,6 +108,106 @@ type ExecWaveNarrationOut struct {
 	FactSheetErrors []string `json:"factSheetErrors,omitempty"`
 	IssueCount      int      `json:"issueCount,omitempty"`
 	IssueHighlights []string `json:"issueHighlights,omitempty"`
+	Warnings        []string `json:"warnings,omitempty"`
+}
+
+// DriftLogOut is the output for a plan-drift check. wave-start returns it
+// (in place of ExecWaveNarrationOut) when the plan file's sha256 no longer
+// matches the planHash recorded at init, halting the wave before it starts.
+// The struct is shared with the drift-log action (KD-5 follow-up). Both
+// code paths populate Logged and DriftCount so callers always get a
+// consistent view of drift state regardless of which path produced the
+// output. When Halt is true, Next tells the caller what to do.
+type DriftLogOut struct {
+	Logged     bool           `json:"logged"`
+	Halt       bool           `json:"halt"`
+	Reason     string         `json:"reason,omitempty"`
+	DriftCount map[string]int `json:"driftCount"`
+	Threshold  int            `json:"threshold"`
+	Next       string         `json:"next,omitempty"`
+}
+
+// IssueDraftOut is the output for the issue-draft action.
+type IssueDraftOut struct {
+	Added       bool   `json:"added"`
+	TotalDrafts int    `json:"totalDrafts"`
+	Next        string `json:"next,omitempty"`
+}
+
+// ExecutionReportOut is the read-only end-of-run report returned by the
+// report action (KD-11): everything ship step 10d needs to render (or
+// forward as JSON) a full account of the run. Format tells the caller how
+// to render it — "json" (write the struct verbatim) or "md" (render as
+// markdown) — sourced from config.Automation.Report.Format, defaulting to
+// "md". RunID is derived the same way wave-start's runId is (from the
+// state file's startedAt — see execDeriveRunID) so the caller never has to
+// invent a filename on its own.
+type ExecutionReportOut struct {
+	// Metadata
+	Branch    string `json:"branch"`
+	RunID     string `json:"runId,omitempty"`
+	PlanPath  string `json:"planPath,omitempty"`
+	StartedAt string `json:"startedAt"`
+	Duration  string `json:"duration"`
+	Format    string `json:"format"`
+
+	// Waves + Tasks
+	Waves []WaveReport `json:"waves"`
+
+	// Aggregates
+	TotalTasks     int `json:"totalTasks"`
+	CompletedTasks int `json:"completedTasks"`
+	FailedTasks    int `json:"failedTasks"`
+	SkippedTasks   int `json:"skippedTasks"`
+
+	// Issues by category — see execReportBucketIssues for the exact
+	// partitioning rule.
+	Drifts   []StateIssue `json:"drifts"`
+	Errors   []StateIssue `json:"errors"`
+	Warnings []StateIssue `json:"warnings"`
+	Concerns []StateIssue `json:"concerns"`
+
+	// Follow-ups
+	PendingIssueDrafts []any `json:"pendingIssueDrafts,omitempty"`
+	DeferredFindings   []any `json:"deferredFindings,omitempty"`
+
+	// Decisions
+	Decisions []string `json:"decisions,omitempty"`
+
+	// Next step guidance (empty string is valid "no next step").
+	Next string `json:"next,omitempty"`
+}
+
+// WaveReport is one wave's entry in ExecutionReportOut.Waves.
+type WaveReport struct {
+	Number       int          `json:"number"`
+	Status       string       `json:"status"`
+	StartedAt    string       `json:"startedAt,omitempty"`
+	CompletedAt  string       `json:"completedAt,omitempty"`
+	Duration     string       `json:"duration,omitempty"`
+	Tasks        []TaskReport `json:"tasks"`
+	CommittedSHA string       `json:"committedSha,omitempty"`
+}
+
+// TaskReport is one task's entry in WaveReport.Tasks. Duration is left
+// empty (omitted) — task-done records only completedAt, not a per-task
+// startedAt, so no duration is derivable from the data execute_state
+// already stores.
+type TaskReport struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	Complexity string `json:"complexity,omitempty"`
+	Risk       string `json:"risk,omitempty"`
+	Duration   string `json:"duration,omitempty"`
+	Files      string `json:"filesChanged,omitempty"`
+}
+
+// ReportSkippedOut is returned by the report action when
+// config.Automation.Report.Enabled is false.
+type ReportSkippedOut struct {
+	Skipped bool   `json:"skipped"`
+	Next    string `json:"next,omitempty"`
 }
 
 // ExecTaskNarrationOut is the narrated output for task-level execute_state
@@ -306,7 +416,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 
 - wave-compute: Stateless — parses the plan file at planPath and computes the wave schedule (no state file read/write). Requires planPath. Optional: extraDepsJson (JSON array of {task, dependsOn, reason} merged with each task's explicit "Depends on" field). Returns {route, preWave, waves[{number, tasks[], expectedFiles[], verificationHint}]}.
 - init: Create execution state. Runs the same config auto-migration gate as ship_prepare first (migrates and backs up an outdated config, or fails with a /setup pointer if none exists); result may include a "migration" report. Requires branch, quality. Optional: totalTasks, plannedTaskIds, planPath, planHash.
-- wave-start: Begin a wave. Returns narration (summary, display with task list + ETA, next). Requires wave. Optional: branch, tasksJson, runId (for fact sheets), detail ("concise"|"full").
+- wave-start: Begin a wave. Returns narration (summary, display with task list + ETA, next). Requires wave. Optional: branch, tasksJson, runId (for fact sheets), detail ("concise"|"full"). If the run recorded a planHash at init, the plan file's current sha256 is compared against it first; a mismatch returns {halt:true, reason:"plan hash mismatch"} instead of narration and does not start the wave. An unreadable/missing plan file does not halt — it proceeds with a warning in the response's "warnings" field.
 - wave-done: Complete a wave. Returns narration (summary, display with outcomes, timing, next wave preview + ETA). Records wave duration to TimingsStore. Requires wave. Optional: branch, decisions, status, detail ("concise"|"full").
 - wave-fail: Fail a wave. Returns narration (summary, display with failure cause). Requires wave. Optional: branch, timedOut, error (failure cause, recorded as an issue and in failedWave), status, detail ("concise"|"full").
 - wave-committed: Record a commit SHA for a completed wave. Requires wave. Optional: branch, sha.
@@ -326,6 +436,9 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - ledger_checkin: Register a worker as active. Requires runId, workerId. Optional: stepId.
 - ledger_checkout: Mark a worker as done. Requires runId, workerId.
 - ledger_status: List worker statuses for a run. Requires runId. Optional: timeoutSeconds.
+- drift-log: Append a drift issue and evaluate the server-side stop condition. When accumulated error-severity drift issues exceed the threshold (max(minErrorFloor, ceil(maxErrorRate * totalTasks))), returns {halt:true}. Requires driftSeverity (error|warning|info), driftSummary. Optional: driftDetail, wave, taskId, branch.
+- issue-draft: Append a pending GH issue draft to the state file's pendingIssueDrafts list (append-only — never goes through the context action, never overwrites). Requires issueDraftTitle, issueDraftBody. Optional: issueDraftLabels, taskId, branch. Returns {added:true, totalDrafts:N}.
+- report: Assemble the end-of-run execution report (KD-11), read-only (never writes state). Gated by config automation.report: {enabled:false} returns {skipped:true} immediately and nothing else. Otherwise returns {branch, runId, planPath, startedAt, duration, format, waves[{number, status, startedAt, completedAt, duration, tasks[{id, name, status, complexity, risk, filesChanged}], committedSha}], totalTasks, completedTasks, failedTasks, skippedTasks, drifts, errors, warnings, concerns, pendingIssueDrafts, deferredFindings, decisions}. format is "json" or "md" (default) from config — tells the caller whether to write the returned data as JSON verbatim or render it as markdown itself. Optional: branch.
 
 Returns a JSON envelope: {"ok":true, "data":{...}} on success, {"ok":false, "code":"...", "error":"..."} on failure.`,
 		func(ctx mcpserver.Ctx, in ExecuteStateIn) (any, error) {
@@ -401,6 +514,12 @@ func executeState(root, workDir string, in ExecuteStateIn, now func() time.Time)
 		return execActionLedgerStatus(root, in, now)
 	case "log-cli":
 		return execActionLogCLI(root, workDir, in)
+	case "drift-log":
+		return execActionDriftLog(root, workDir, in, now)
+	case "issue-draft":
+		return execActionIssueDraft(root, workDir, in, now)
+	case "report":
+		return execActionReport(root, workDir, in, now)
 	default:
 		return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("unknown action %q", in.Action)}
 	}
@@ -436,6 +555,31 @@ func execFindState(root, branch string) (*state.State, error) {
 		}
 	}
 	return st, nil
+}
+
+// execAssertBranch enforces branch immutability for an in-flight run (KD-4):
+// once init has recorded a branch on the state file, every later action
+// resolving to a different branch string that nonetheless locates the same
+// state file is rejected instead of silently reading/writing under the
+// wrong branch identity. This only fires when execFindState's underlying
+// state.Find(root, "execute", branch) still resolves to the recorded run —
+// e.g. two raw branch strings that collide under SlugifyBranch (mid-session
+// rename or ref reformatting, "feat/x" vs "feat.x"), or one branch name that
+// is a filename prefix of another ("feat" vs "feat/x"). A branch string that
+// resolves to a genuinely different (or missing) state file fails earlier,
+// at execFindState, with a DataError — it never reaches this assertion. A
+// state file with no recorded branch (pre-KD-4 state, or branch stamped
+// nil) is not asserted against — recorded == "" is treated as "nothing to
+// compare".
+func execAssertBranch(st *state.State, resolved string) error {
+	recorded, _ := st.Data["branch"].(string)
+	if recorded != "" && recorded != resolved {
+		return &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("branch changed mid-session: init recorded %q, current is %q", recorded, resolved),
+			Suggestion: fmt.Sprintf("Switch back to branch %q or start a new run with execute_state({action:\"init\"}) on the current branch.", recorded),
+		}
+	}
+	return nil
 }
 
 // execEnsureWaves ensures data["waves"] is a []any and returns it.
@@ -629,6 +773,397 @@ func execAppendIssue(data map[string]any, issue StateIssue) {
 	data["issues"] = append(raw, m)
 }
 
+// IssueDraft is a single pending GH issue draft accumulated on the state
+// file's data["pendingIssueDrafts"] list by the issue-draft action.
+type IssueDraft struct {
+	TaskID    string   `json:"taskId,omitempty"`
+	Title     string   `json:"title"`
+	Body      string   `json:"body"`
+	Labels    []string `json:"labels,omitempty"`
+	Timestamp string   `json:"timestamp,omitempty"`
+}
+
+// execAppendIssueDraft appends an IssueDraft to data["pendingIssueDrafts"],
+// round-tripping it through JSON so the stored representation is always a
+// map[string]any — mirroring execAppendIssue's pattern for data["issues"].
+// Returns an error on marshal/unmarshal failure so callers never misreport
+// success on a silently dropped draft.
+func execAppendIssueDraft(data map[string]any, draft IssueDraft) error {
+	raw, ok := data["pendingIssueDrafts"].([]any)
+	if !ok {
+		raw = []any{}
+	}
+	b, err := json.Marshal(draft)
+	if err != nil {
+		return fmt.Errorf("marshal issue draft: %w", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		return fmt.Errorf("unmarshal issue draft: %w", err)
+	}
+	data["pendingIssueDrafts"] = append(raw, m)
+	return nil
+}
+
+// countDriftIssues counts issues with category "drift" grouped by severity.
+// All three severity keys (error, warning, info) are always present in the
+// returned map so callers never see a nil or partial map.
+func countDriftIssues(data map[string]any) map[string]int {
+	counts := map[string]int{"error": 0, "warning": 0, "info": 0}
+	raw, ok := data["issues"].([]any)
+	if !ok {
+		return counts
+	}
+	for _, entry := range raw {
+		m, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		if cat, _ := m["category"].(string); cat != "drift" {
+			continue
+		}
+		if sev, _ := m["severity"].(string); sev != "" {
+			counts[sev]++
+		}
+	}
+	return counts
+}
+
+// ---------------------------------------------------------------------------
+// Action: drift-log
+// ---------------------------------------------------------------------------
+
+// execActionDriftLog appends a drift issue to the state file and evaluates
+// the server-side stop condition. When the accumulated error-severity drift
+// count exceeds the threshold (max(minErrorFloor, ceil(maxErrorRate *
+// totalTasks))), it returns halt:true so the caller can abort the run.
+//
+// Decision: config.Read may fail in environments with no config file. In
+// that case the handler falls back to the compiled defaults defined in
+// internal/config (MaxErrorRate 0.15, MaxWarningRate 0.40, MinErrorFloor 2).
+// This duplicates the default values — accepted trade-off to keep drift-log
+// usable in bare repos and test fixtures.
+func execActionDriftLog(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
+	// Validate required fields.
+	switch in.DriftSeverity {
+	case "error", "warning", "info":
+	default:
+		return nil, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("driftSeverity must be one of error, warning, info; got %q", in.DriftSeverity),
+			Suggestion: "Set driftSeverity to \"error\", \"warning\", or \"info\".",
+		}
+	}
+	if strings.TrimSpace(in.DriftSummary) == "" {
+		return nil, &mcpserver.DomainError{Msg: "driftSummary is required", Suggestion: "Provide a driftSummary describing what changed."}
+	}
+
+	branch, err := execResolveBranch(in.Branch, workDir)
+	if err != nil {
+		return nil, err
+	}
+	st, err := execFindState(root, branch)
+	if err != nil {
+		return nil, err
+	}
+	if err := execAssertBranch(st, branch); err != nil {
+		return nil, err
+	}
+
+	// Determine wave — default to 0 when not supplied.
+	waveNum := 0
+	if in.Wave != nil {
+		waveNum = *in.Wave
+	}
+
+	// Append drift issue.
+	execAppendIssue(st.Data, StateIssue{
+		Wave:      waveNum,
+		Step:      "execute",
+		TaskID:    in.TaskID,
+		Severity:  in.DriftSeverity,
+		Category:  "drift",
+		Summary:   in.DriftSummary,
+		Detail:    in.DriftDetail,
+		Timestamp: now().UTC().Format(time.RFC3339),
+	})
+
+	if err := state.Write(st); err != nil {
+		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+	}
+
+	// Load drift config — fall back to compiled defaults on any error.
+	maxErrorRate := 0.15
+	minErrorFloor := 2
+	if cfg, cfgErr := config.Read(root); cfgErr == nil && cfg.Automation.Drift != nil {
+		maxErrorRate = cfg.Automation.Drift.MaxErrorRate
+		minErrorFloor = cfg.Automation.Drift.MinErrorFloor
+	}
+
+	// Resolve totalTasks from state data. JSON round-trip stores numbers as
+	// float64, so handle both int and float64.
+	totalTasks := 0
+	switch v := st.Data["totalTasks"].(type) {
+	case float64:
+		totalTasks = int(v)
+	case int:
+		totalTasks = v
+	}
+
+	// threshold = max(minErrorFloor, ceil(maxErrorRate * totalTasks))
+	rateTerm := int(math.Ceil(maxErrorRate * float64(totalTasks)))
+	threshold := minErrorFloor
+	if rateTerm > threshold {
+		threshold = rateTerm
+	}
+
+	counts := countDriftIssues(st.Data)
+
+	// Halt when error count exceeds threshold (strictly greater than).
+	if counts["error"] > threshold {
+		return DriftLogOut{
+			Logged:     true,
+			Halt:       true,
+			Reason:     fmt.Sprintf("drift error count %d exceeds threshold %d", counts["error"], threshold),
+			DriftCount: counts,
+			Threshold:  threshold,
+		}, nil
+	}
+
+	return DriftLogOut{
+		Logged:     true,
+		DriftCount: counts,
+		Threshold:  threshold,
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Action: issue-draft
+// ---------------------------------------------------------------------------
+
+// execActionIssueDraft appends a pending GH issue draft to the state file's
+// data["pendingIssueDrafts"] list. Decision KD-6: this is append-only and
+// deliberately bypasses the "context" action's allowed-key merge semantics —
+// every call accumulates a new entry, never overwrites a prior one. Ship
+// step 10b (Task 11) later reads the accumulated list for one batch
+// approval question under --auto.
+func execActionIssueDraft(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
+	if strings.TrimSpace(in.IssueDraftTitle) == "" {
+		return nil, &mcpserver.DomainError{Msg: "issueDraftTitle is required", Suggestion: "Provide an issueDraftTitle for the GitHub issue."}
+	}
+	if strings.TrimSpace(in.IssueDraftBody) == "" {
+		return nil, &mcpserver.DomainError{Msg: "issueDraftBody is required", Suggestion: "Provide an issueDraftBody with the issue description."}
+	}
+
+	branch, err := execResolveBranch(in.Branch, workDir)
+	if err != nil {
+		return nil, err
+	}
+	st, err := execFindState(root, branch)
+	if err != nil {
+		return nil, err
+	}
+	if err := execAssertBranch(st, branch); err != nil {
+		return nil, err
+	}
+
+	if appendErr := execAppendIssueDraft(st.Data, IssueDraft{
+		TaskID:    in.TaskID,
+		Title:     in.IssueDraftTitle,
+		Body:      in.IssueDraftBody,
+		Labels:    in.IssueDraftLabels,
+		Timestamp: now().UTC().Format(time.RFC3339),
+	}); appendErr != nil {
+		return nil, &mcpserver.InfraError{Msg: "append issue draft: " + appendErr.Error(), Cause: appendErr}
+	}
+
+	if err := state.Write(st); err != nil {
+		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+	}
+
+	total := 0
+	if raw, ok := st.Data["pendingIssueDrafts"].([]any); ok {
+		total = len(raw)
+	}
+
+	return IssueDraftOut{Added: true, TotalDrafts: total}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Action: report
+// ---------------------------------------------------------------------------
+
+// execActionReport assembles the end-of-run execution report (KD-11):
+// waves+tasks, aggregate counts, issues bucketed into drifts/errors/
+// warnings/concerns, pending issue drafts, deferred findings, and
+// decisions. Mirrors execActionRead's state-loading pattern — read-only,
+// never calls state.Write.
+//
+// Behavior is gated by config.Automation.Report: Enabled == false returns
+// ReportSkippedOut{Skipped: true} immediately, before any state is loaded.
+// Format ("md", default, or "json") is echoed on the result so the caller
+// (ship step 10d) knows whether to render markdown itself or write the
+// JSON verbatim. config.Read may fail in bare repos/tests — falls back to
+// the compiled defaults (Enabled: true, Format: "md"), matching
+// execActionDriftLog's tolerance for a missing/unreadable config.
+func execActionReport(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
+	enabled := true
+	format := "md"
+	if cfg, err := config.Read(root); err == nil && cfg.Automation != nil && cfg.Automation.Report != nil {
+		enabled = cfg.Automation.Report.Enabled
+		format = cfg.Automation.Report.Format
+	}
+	if !enabled {
+		return ReportSkippedOut{Skipped: true}, nil
+	}
+
+	branch, err := execResolveBranch(in.Branch, workDir)
+	if err != nil {
+		return nil, err
+	}
+	st, err := execFindState(root, branch)
+	if err != nil {
+		return nil, err
+	}
+	if err := execAssertBranch(st, branch); err != nil {
+		return nil, err
+	}
+
+	out := ExecutionReportOut{
+		Branch: branch,
+		Format: format,
+		RunID:  execDeriveRunID(st.Data, 0),
+		Waves:  make([]WaveReport, 0),
+	}
+	out.PlanPath, _ = st.Data["planPath"].(string)
+	out.StartedAt, _ = st.Data["startedAt"].(string)
+	out.TotalTasks = execToInt(st.Data["totalTasks"])
+	if out.StartedAt != "" {
+		if d, ok := pipeline.Duration(out.StartedAt, now().UTC().Format(time.RFC3339)); ok {
+			out.Duration = pipeline.Humanize(d)
+		}
+	}
+
+	for _, w := range execEnsureWaves(st.Data) {
+		wm, ok := w.(map[string]any)
+		if !ok {
+			continue
+		}
+		wr := WaveReport{Number: execToInt(wm["number"])}
+		wr.Status, _ = wm["status"].(string)
+		wr.StartedAt, _ = wm["startedAt"].(string)
+		wr.CompletedAt, _ = wm["completedAt"].(string)
+		wr.CommittedSHA, _ = wm["committedSha"].(string)
+		if wr.StartedAt != "" && wr.CompletedAt != "" {
+			if d, ok := pipeline.Duration(wr.StartedAt, wr.CompletedAt); ok {
+				wr.Duration = pipeline.Humanize(d)
+			}
+		}
+
+		tasks, _ := wm["tasks"].([]any)
+		wr.Tasks = make([]TaskReport, 0, len(tasks))
+		for _, t := range tasks {
+			tm, ok := t.(map[string]any)
+			if !ok {
+				continue
+			}
+			tr := TaskReport{}
+			tr.ID, _ = tm["id"].(string)
+			tr.Name, _ = tm["name"].(string)
+			tr.Status, _ = tm["status"].(string)
+			tr.Complexity, _ = tm["complexity"].(string)
+			tr.Risk, _ = tm["risk"].(string)
+			if files, ok := tm["filesChanged"].([]any); ok {
+				parts := make([]string, 0, len(files))
+				for _, f := range files {
+					if s, ok := f.(string); ok {
+						parts = append(parts, s)
+					}
+				}
+				tr.Files = strings.Join(parts, ", ")
+			}
+			switch tr.Status {
+			case "completed":
+				out.CompletedTasks++
+			case "failed":
+				out.FailedTasks++
+			case "skipped-dependency":
+				out.SkippedTasks++
+			}
+			wr.Tasks = append(wr.Tasks, tr)
+		}
+		out.Waves = append(out.Waves, wr)
+	}
+
+	out.Drifts, out.Errors, out.Warnings, out.Concerns = execReportBucketIssues(st.Data)
+
+	if raw, ok := st.Data["pendingIssueDrafts"].([]any); ok && len(raw) > 0 {
+		out.PendingIssueDrafts = raw
+	}
+	// deferredFindings lives on ship_state's own state file, a distinct
+	// state.Find(root, "ship", branch) from this execute-run state — not on
+	// st.Data. Best-effort cross-read: a missing/unreadable ship state file
+	// (e.g. execute ran standalone, never dispatched via /ship) just leaves
+	// DeferredFindings unset rather than failing this read-only report.
+	if shipSt, err := state.Find(root, "ship", branch); err == nil && shipSt != nil {
+		if raw, ok := shipSt.Data["deferredFindings"].([]any); ok && len(raw) > 0 {
+			out.DeferredFindings = raw
+		}
+	}
+
+	if ctxMap, ok := st.Data["context"].(map[string]any); ok {
+		if raw, ok := ctxMap["decisionsFromPriorWaves"].([]any); ok {
+			for _, d := range raw {
+				if s, ok := d.(string); ok {
+					out.Decisions = append(out.Decisions, s)
+				}
+			}
+		}
+	}
+
+	return out, nil
+}
+
+// execReportBucketIssues partitions data["issues"] into the four buckets
+// ExecutionReportOut surfaces separately. Category "drift" always buckets
+// as Drifts, regardless of severity (drift-log accepts error/warning/info
+// severities); category "done-with-concerns" always buckets as Concerns.
+// Everything else buckets by severity: "error" -> Errors (today: wave-fail,
+// task-fail categories), "warning" -> Warnings. An issue that is neither a
+// recognized category nor error/warning severity (an "info"-severity
+// non-drift issue — none exist today) is dropped from all four buckets
+// rather than guessed at.
+func execReportBucketIssues(data map[string]any) (drifts, errs, warnings, concerns []StateIssue) {
+	drifts = make([]StateIssue, 0)
+	errs = make([]StateIssue, 0)
+	warnings = make([]StateIssue, 0)
+	concerns = make([]StateIssue, 0)
+	raw, ok := data["issues"].([]any)
+	if !ok {
+		return drifts, errs, warnings, concerns
+	}
+	for _, v := range raw {
+		b, err := json.Marshal(v)
+		if err != nil {
+			continue
+		}
+		var iss StateIssue
+		if err := json.Unmarshal(b, &iss); err != nil {
+			continue
+		}
+		switch {
+		case iss.Category == "drift":
+			drifts = append(drifts, iss)
+		case iss.Category == "done-with-concerns":
+			concerns = append(concerns, iss)
+		case iss.Severity == "error":
+			errs = append(errs, iss)
+		case iss.Severity == "warning":
+			warnings = append(warnings, iss)
+		}
+	}
+	return drifts, errs, warnings, concerns
+}
+
 // execIssueSummary returns the total issue count and up to maxHighlights
 // "[severity] summary" strings for the most recent issues in data["issues"],
 // for inclusion in wave-done/complete-step responses. issueCount and
@@ -654,6 +1189,22 @@ func execIssueSummary(data map[string]any, maxHighlights int) (int, []string) {
 		highlights = append(highlights, fmt.Sprintf("[%s] %s", sev, summary))
 	}
 	return len(raw), highlights
+}
+
+// sha256File returns the hex-encoded sha256 digest of the file at path, for
+// comparison against a planHash recorded at init (KD-5 drift detection).
+// The file is streamed through the hash rather than read fully into memory.
+func sha256File(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // IssueSummary is the end-of-run grouped issue report returned by the
@@ -827,7 +1378,7 @@ func execSummarizePriorWaveCtx(data map[string]any, root string, maxFiles, maxDe
 
 // ledgerDir returns the ledger directory for a run.
 func ledgerDir(root, runID string) string {
-	return filepath.Join(root, paths.DataDir, "execution", "ledger", runID)
+	return filepath.Join(root, paths.DataDir, paths.RunsSubdir, "ledger", runID)
 }
 
 // ledgerFilePath returns the per-worker ledger file path.
@@ -917,6 +1468,46 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 	if err != nil {
 		return nil, err
 	}
+	if err := execAssertBranch(st, branch); err != nil {
+		return nil, err
+	}
+
+	// KD-5: server-side plan-drift check. Compares the plan file's current
+	// sha256 against the hash recorded at init — before the wave (or any
+	// state mutation below) exists, so a halt here leaves the wave untouched.
+	// Empty/absent planHash (pre-KD-5 state, or init without a plan file)
+	// skips the comparison entirely. An unreadable/absent planPath is not
+	// treated as drift — filesystem hiccups shouldn't halt a run — but is
+	// surfaced as a warning in the normal response instead of silently
+	// swallowed.
+	var planHashWarnings []string
+	if storedHash, _ := st.Data["planHash"].(string); storedHash != "" {
+		planPath, _ := st.Data["planPath"].(string)
+		if planPath == "" {
+			planHashWarnings = append(planHashWarnings, "plan drift check skipped: no planPath recorded on this run")
+		} else if computed, hashErr := sha256File(planPath); hashErr != nil {
+			planHashWarnings = append(planHashWarnings, fmt.Sprintf("plan drift check skipped: could not read planPath %q: %s", planPath, hashErr.Error()))
+		} else if computed != storedHash {
+			execAppendIssue(st.Data, StateIssue{
+				Wave:      *in.Wave,
+				Severity:  "error",
+				Category:  "drift",
+				Summary:   "plan content changed since init",
+				Detail:    fmt.Sprintf("planPath %q sha256 is now %s, expected %s recorded at init", planPath, computed, storedHash),
+				Timestamp: now().UTC().Format(time.RFC3339),
+			})
+			if err := state.Write(st); err != nil {
+				return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+			}
+			return DriftLogOut{
+				Logged:     true,
+				Halt:       true,
+				Reason:     "plan hash mismatch",
+				DriftCount: countDriftIssues(st.Data),
+				Next:       "Plan content has changed since init. Re-run execute_state({action:\"init\"}) to acknowledge the new plan, or investigate the drift.",
+			}, nil
+		}
+	}
 
 	// Find existing wave or create new one.
 	w := execFindWave(st.Data, *in.Wave)
@@ -943,6 +1534,9 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 	// Write per-task fact sheets when tasksJson is provided.
 	var parsedTasks []any
 	result := ExecWaveNarrationOut{}
+	if len(planHashWarnings) > 0 {
+		result.Warnings = planHashWarnings
+	}
 
 	if in.TasksJSON != "" {
 		if err := json.Unmarshal([]byte(in.TasksJSON), &parsedTasks); err != nil {
@@ -1081,6 +1675,9 @@ func execActionWaveDone(root, workDir string, in ExecuteStateIn, now func() time
 	if err != nil {
 		return nil, err
 	}
+	if err := execAssertBranch(st, branch); err != nil {
+		return nil, err
+	}
 
 	w := execFindOrCreateWave(st.Data, *in.Wave, now)
 
@@ -1211,6 +1808,9 @@ func execActionWaveFail(root, workDir string, in ExecuteStateIn, now func() time
 	if err != nil {
 		return nil, err
 	}
+	if err := execAssertBranch(st, branch); err != nil {
+		return nil, err
+	}
 
 	w := execFindOrCreateWave(st.Data, *in.Wave, now)
 	w["status"] = "failed"
@@ -1270,6 +1870,9 @@ func execActionWaveCommitted(root, workDir string, in ExecuteStateIn) (any, erro
 
 	st, err := execFindState(root, branch)
 	if err != nil {
+		return nil, err
+	}
+	if err := execAssertBranch(st, branch); err != nil {
 		return nil, err
 	}
 
@@ -1381,6 +1984,9 @@ func execActionWaveCommit(root, workDir string, in ExecuteStateIn) (any, error) 
 
 	st, err := execFindState(root, branch)
 	if err != nil {
+		return nil, err
+	}
+	if err := execAssertBranch(st, branch); err != nil {
 		return nil, err
 	}
 
@@ -1559,6 +2165,9 @@ func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time
 	if err != nil {
 		return nil, err
 	}
+	if err := execAssertBranch(st, branch); err != nil {
+		return nil, err
+	}
 
 	w := execFindOrCreateWave(st.Data, *in.Wave, now)
 	tasks, _ := w["tasks"].([]any)
@@ -1673,6 +2282,9 @@ func execActionTaskFail(root, workDir string, in ExecuteStateIn, now func() time
 	}
 	st, err := execFindState(root, branch)
 	if err != nil {
+		return nil, err
+	}
+	if err := execAssertBranch(st, branch); err != nil {
 		return nil, err
 	}
 
@@ -1920,6 +2532,9 @@ func execActionTaskContext(root, workDir string, in ExecuteStateIn) (any, error)
 	if err != nil {
 		return nil, err
 	}
+	if err := execAssertBranch(st, branch); err != nil {
+		return nil, err
+	}
 
 	runID := in.RunID
 	if runID == "" {
@@ -1992,6 +2607,9 @@ func execActionContext(root, workDir string, in ExecuteStateIn) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := execAssertBranch(st, branch); err != nil {
+		return nil, err
+	}
 
 	incomingMap, ok := incoming.(map[string]any)
 	if !ok {
@@ -2061,6 +2679,9 @@ func execActionRead(root, workDir string, in ExecuteStateIn) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := execAssertBranch(st, branch); err != nil {
+		return nil, err
+	}
 
 	// Enforce output cap — never return a silently truncated blob.
 	raw, marshalErr := json.Marshal(st.Data)
@@ -2102,8 +2723,8 @@ func execActionRead(root, workDir string, in ExecuteStateIn) (any, error) {
 // CRITICAL SAFETY: directory removal only happens when the state carries a
 // non-empty startedAt, from which the runID is derived (same derivation as
 // execReapRunDirectories' live-run detection). An empty/undeterminable runID
-// must never reach os.RemoveAll: filepath.Join(root, DataDir, "execution", "")
-// resolves to the execution directory ITSELF (a trailing empty Join segment
+// must never reach os.RemoveAll: filepath.Join(root, DataDir, RunsSubdir, "")
+// resolves to the runs directory ITSELF (a trailing empty Join segment
 // is a no-op), and RemoveAll-ing that would wipe every run's data at once.
 func execActionCleanup(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	branch, err := execResolveBranch(in.Branch, workDir)
@@ -2118,6 +2739,9 @@ func execActionCleanup(root, workDir string, in ExecuteStateIn, now func() time.
 	if st == nil {
 		// Nothing to clean up — success.
 		return map[string]any{}, nil
+	}
+	if err := execAssertBranch(st, branch); err != nil {
+		return nil, err
 	}
 
 	completedAt := now().UTC().Format(time.RFC3339)
@@ -2134,7 +2758,7 @@ func execActionCleanup(root, workDir string, in ExecuteStateIn, now func() time.
 	if startedAt, _ := st.Data["startedAt"].(string); startedAt != "" {
 		runID := execNonDigitTRE.ReplaceAllString(startedAt, "")
 		if runID != "" {
-			runDir := filepath.Join(root, paths.DataDir, "execution", runID)
+			runDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir, runID)
 			if rmErr := os.RemoveAll(runDir); rmErr != nil {
 				out["runDirError"] = rmErr.Error()
 			} else {
@@ -2178,7 +2802,7 @@ func execActionGC(root, workDir string, in ExecuteStateIn, now func() time.Time)
 	}
 
 	branchExists := gcBranchExistsFunc(workDir)
-	stateDir := filepath.Join(root, paths.DataDir, "execution")
+	stateDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
 
 	if in.DryRun {
 		return execGCDryRun(stateDir, ttlDays, branchExists, now)
@@ -2452,6 +3076,9 @@ func execActionSummarizePriorWaveContext(root, workDir string, in ExecuteStateIn
 	if err != nil {
 		return nil, err
 	}
+	if err := execAssertBranch(st, branch); err != nil {
+		return nil, err
+	}
 
 	return execSummarizePriorWaveCtx(st.Data, root, in.MaxFiles, in.MaxDecisions, in.MaxInterfaces, in.MaxTaskIds), nil
 }
@@ -2553,6 +3180,11 @@ func execActionWaveSplit(root, workDir string, in ExecuteStateIn, now func() tim
 			branch, brErr := execResolveBranch(in.Branch, workDir)
 			if brErr == nil {
 				st, _ = state.Find(root, "execute", branch)
+				if st != nil && execAssertBranch(st, branch) != nil {
+					// Branch changed mid-session: skip best-effort persistence
+					// rather than write the split tree under the wrong run.
+					st = nil
+				}
 			}
 		}
 
@@ -2617,6 +3249,9 @@ func execActionVerifyCompleteness(root, workDir string, in ExecuteStateIn) (any,
 		}
 		st, err := execFindState(root, branch)
 		if err != nil {
+			return nil, err
+		}
+		if err := execAssertBranch(st, branch); err != nil {
 			return nil, err
 		}
 		data = st.Data
@@ -3056,6 +3691,9 @@ func execActionResumeReset(root, workDir string, in ExecuteStateIn) (any, error)
 	clearedTaskIds := []string{}
 
 	if st != nil {
+		if err := execAssertBranch(st, branch); err != nil {
+			return nil, err
+		}
 		resetWaves, clearedTaskIds = execResumeResetCandidates(st.Data)
 
 		if len(resetWaves) > 0 {

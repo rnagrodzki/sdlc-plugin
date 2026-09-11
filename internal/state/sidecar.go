@@ -49,7 +49,7 @@ type blockCountEnvelope struct {
 // ---------------------------------------------------------------------------
 
 // WriteRecoverySidecar writes a compact-recovery sidecar file.
-// File: .sdlc-v2/execution/.compact-recovery-<slug>.json
+// File: .sdlc-v2/runs/.compact-recovery-<slug>.json
 func WriteRecoverySidecar(root, slug string, data any) error {
 	dir := stateDir(root)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -93,7 +93,7 @@ func ConsumeRecoverySidecar(root, slug string) (any, error) {
 
 // StepBlockCount implements stop-pipeline-continue.js's consecutive-block
 // cap in one atomic call: read-reset-check-then-increment-or-delete.
-// File: .sdlc-v2/execution/.stop-block-count-<slug>.json
+// File: .sdlc-v2/runs/.stop-block-count-<slug>.json
 //
 // The sidecar is read first; an absent or corrupt/unparseable file degrades
 // silently to a fresh {StepName: "", Count: 0} counter (no error), mirroring

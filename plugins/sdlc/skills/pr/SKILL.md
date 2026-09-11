@@ -361,6 +361,11 @@ still run — only the interactive approval prompt is skipped. (This is your own
 invocation arguments — `pr_prepare`'s output carries no `isAuto` field in this port.) Pass
 `autoMode: true` to `pr_apply` in Step 6 whenever `--auto` was passed here — this is what
 makes `pr_apply` enforce that `releaseLevel` (if any) came from config, not the LLM.
+Skipping this publish/push prompt on `main`/`master` is not a real risk: Step 0's
+`PR_CONTEXT.ok` check already hard-stops on the default branch before Step 5 is ever
+reached (see Step 0 above), and — when this skill is dispatched by `/ship` — `ship_prepare`'s
+own `main`/`master` hard gate blocks the `pr` step from even being dispatched. This auto-skip
+only ever fires on a feature branch.
 
 ```text
 PR Title: <title>

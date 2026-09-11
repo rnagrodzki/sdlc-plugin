@@ -53,3 +53,79 @@ func TestShipFields_StepsOptionsMatchCanonicalSteps(t *testing.T) {
 		t.Errorf("ShipFields[steps].Default:\n  got:  %v\n  want: %v", steps.Default, CanonicalSteps)
 	}
 }
+
+// TestSections_Count pins the total number of setup sections (17, after the
+// "automation" section was added).
+func TestSections_Count(t *testing.T) {
+	if got := len(Sections()); got != 17 {
+		t.Errorf("Sections() returned %d sections, want 17", got)
+	}
+}
+
+// TestAutomationSection verifies the "automation" section descriptor: its
+// storage location, consuming skills, and the presence/shape of all 7
+// automationFields entries (mode, report.enabled, report.format,
+// drift.maxErrorRate, drift.maxWarningRate, drift.minErrorFloor,
+// push.featureBranchAutoApprove).
+func TestAutomationSection(t *testing.T) {
+	var automation *Section
+	sections := Sections()
+	for i := range sections {
+		if sections[i].ID == "automation" {
+			automation = &sections[i]
+			break
+		}
+	}
+	if automation == nil {
+		t.Fatal(`Sections() has no "automation" section`)
+	}
+
+	if automation.ConfigFile != ".sdlc-v2/local.json" {
+		t.Errorf("automation.ConfigFile = %q, want %q", automation.ConfigFile, ".sdlc-v2/local.json")
+	}
+	if automation.ConfigPath != "automation" {
+		t.Errorf("automation.ConfigPath = %q, want %q", automation.ConfigPath, "automation")
+	}
+	wantConsumedBy := []string{"execute", "ship"}
+	if !reflect.DeepEqual(automation.ConsumedBy, wantConsumedBy) {
+		t.Errorf("automation.ConsumedBy = %v, want %v", automation.ConsumedBy, wantConsumedBy)
+	}
+	if !automation.Optional {
+		t.Error("automation.Optional = false, want true")
+	}
+
+	wantFieldNames := []string{
+		"mode",
+		"report.enabled",
+		"report.format",
+		"drift.maxErrorRate",
+		"drift.maxWarningRate",
+		"drift.minErrorFloor",
+		"push.featureBranchAutoApprove",
+	}
+	if len(automation.Fields) != len(wantFieldNames) {
+		t.Fatalf("automation.Fields has %d entries, want %d", len(automation.Fields), len(wantFieldNames))
+	}
+	for i, name := range wantFieldNames {
+		if automation.Fields[i].Name != name {
+			t.Errorf("automation.Fields[%d].Name = %q, want %q", i, automation.Fields[i].Name, name)
+		}
+	}
+
+	var mode *Field
+	for i := range automation.Fields {
+		if automation.Fields[i].Name == "mode" {
+			mode = &automation.Fields[i]
+		}
+	}
+	if mode == nil {
+		t.Fatal(`automation.Fields has no "mode" entry`)
+	}
+	wantModeOptions := []string{"supervised", "unattended"}
+	if !reflect.DeepEqual(mode.Options, wantModeOptions) {
+		t.Errorf("automation mode.Options = %v, want %v", mode.Options, wantModeOptions)
+	}
+	if mode.Default != "supervised" {
+		t.Errorf("automation mode.Default = %v, want %q", mode.Default, "supervised")
+	}
+}

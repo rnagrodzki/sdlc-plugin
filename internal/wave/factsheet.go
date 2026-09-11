@@ -44,7 +44,7 @@ func validateRunID(runID string) error {
 
 // executionDir returns the per-run directory path under root.
 func executionDir(root, runID string) string {
-	return filepath.Join(root, paths.DataDir, "execution", runID)
+	return filepath.Join(root, paths.DataDir, paths.RunsSubdir, runID)
 }
 
 // normalizeTaskID strips a single leading 'T' or 't' when followed by a

@@ -188,6 +188,15 @@ func TestSetupInit_EmptyFixture_CreatesScaffold(t *testing.T) {
 		t.Error(".sdlc/ directory should exist")
 	}
 
+	// .sdlc/runs/ directory should exist.
+	runsInfo, err := os.Stat(filepath.Join(root, paths.DataDir, paths.RunsSubdir))
+	if err != nil {
+		t.Fatalf(".sdlc/%s/ directory should exist: %v", paths.RunsSubdir, err)
+	}
+	if !runsInfo.IsDir() {
+		t.Errorf(".sdlc/%s/ should be a directory", paths.RunsSubdir)
+	}
+
 	// .sdlc/.gitignore should exist with managed block.
 	sdlcGitignore, err := os.ReadFile(filepath.Join(root, paths.DataDir, ".gitignore"))
 	if err != nil {
@@ -199,6 +208,15 @@ func TestSetupInit_EmptyFixture_CreatesScaffold(t *testing.T) {
 	}
 	if !strings.Contains(content, "!config.json") {
 		t.Error(".sdlc/.gitignore should allowlist config.json")
+	}
+	// The deny-all "*" pattern is directory-agnostic: it must cover
+	// runs/ (and any other unlisted subdirectory) without runs/ ever
+	// being named explicitly.
+	if !strings.Contains(content, "*\n") {
+		t.Error(".sdlc/.gitignore should contain a deny-all \"*\" pattern covering runs/ implicitly")
+	}
+	if strings.Contains(content, paths.RunsSubdir) {
+		t.Errorf(".sdlc/.gitignore should not need to name %q explicitly — deny-all already covers it", paths.RunsSubdir)
 	}
 
 	// Root .gitignore should exist with managed block.

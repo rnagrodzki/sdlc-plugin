@@ -108,7 +108,7 @@ func TestWriteFactsheet_RoundTrip(t *testing.T) {
 	}
 
 	// File should exist at the expected path.
-	wantPath := filepath.Join(root, paths.DataDir, "execution", runID, "task-14.md")
+	wantPath := filepath.Join(root, paths.DataDir, paths.RunsSubdir, runID, "task-14.md")
 	if path != wantPath {
 		t.Fatalf("WriteFactsheet: path = %q, want %q", path, wantPath)
 	}
@@ -209,7 +209,7 @@ func TestWriteFactsheet_NoLeftoverTmpFiles(t *testing.T) {
 		t.Fatalf("WriteFactsheet: %v", err)
 	}
 
-	dir := filepath.Join(root, paths.DataDir, "execution", "run1")
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir, "run1")
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
 		if strings.HasSuffix(e.Name(), ".tmp") {
@@ -370,7 +370,7 @@ func TestListFactsheetIDs_IgnoresTmpFiles(t *testing.T) {
 	if _, err := WriteFactsheet(root, "run-1", Factsheet{ID: "1", Name: "real"}); err != nil {
 		t.Fatalf("WriteFactsheet: %v", err)
 	}
-	dir := filepath.Join(root, paths.DataDir, "execution", "run-1")
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir, "run-1")
 	if err := os.WriteFile(filepath.Join(dir, "task-2.abcd1234.tmp"), []byte("partial write"), 0o644); err != nil {
 		t.Fatalf("write stray tmp file: %v", err)
 	}
@@ -412,7 +412,7 @@ func TestReadProgress_MissingFile(t *testing.T) {
 
 func TestReadProgress_CorruptFile(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, paths.DataDir, "execution", "run1")
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir, "run1")
 	os.MkdirAll(dir, 0o755)
 	os.WriteFile(filepath.Join(dir, "progress.json"), []byte("not json{"), 0o644)
 
@@ -427,7 +427,7 @@ func TestReadProgress_CorruptFile(t *testing.T) {
 
 func TestReadProgress_NullTasksField(t *testing.T) {
 	root := t.TempDir()
-	dir := filepath.Join(root, paths.DataDir, "execution", "run1")
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir, "run1")
 	os.MkdirAll(dir, 0o755)
 	os.WriteFile(filepath.Join(dir, "progress.json"), []byte(`{"tasks":null}`), 0o644)
 
@@ -545,7 +545,7 @@ func TestUpdateProgress_NoLeftoverTmpFiles(t *testing.T) {
 		t.Fatalf("UpdateProgress: %v", err)
 	}
 
-	dir := filepath.Join(root, paths.DataDir, "execution", "run1")
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir, "run1")
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
 		if strings.HasSuffix(e.Name(), ".tmp") || strings.Contains(e.Name(), ".tmp-") {

@@ -375,6 +375,305 @@ func TestAutomation_StepModeInheritance(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Drift and report sub-sections (KD-3, KD-11)
+// ---------------------------------------------------------------------------
+
+func TestDriftReportDefaults(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+	setupProjectConfig(t, root, map[string]any{})
+
+	cfg, err := Read(root)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	a := cfg.Automation
+	if a.Drift == nil {
+		t.Fatal("Drift should not be nil")
+	}
+	if a.Drift.MaxErrorRate != 0.15 {
+		t.Errorf("Drift.MaxErrorRate = %v, want 0.15", a.Drift.MaxErrorRate)
+	}
+	if a.Drift.MaxWarningRate != 0.40 {
+		t.Errorf("Drift.MaxWarningRate = %v, want 0.40", a.Drift.MaxWarningRate)
+	}
+	if a.Drift.MinErrorFloor != 2 {
+		t.Errorf("Drift.MinErrorFloor = %d, want 2", a.Drift.MinErrorFloor)
+	}
+	if a.Report == nil {
+		t.Fatal("Report should not be nil")
+	}
+	if !a.Report.Enabled {
+		t.Error("Report.Enabled = false, want true (default)")
+	}
+	if a.Report.Format != "md" {
+		t.Errorf("Report.Format = %q, want %q", a.Report.Format, "md")
+	}
+}
+
+// TestDriftReport_RoundTrip writes a local.json with explicit drift and
+// report config and asserts every value survives Read unchanged (AC:
+// "Round-trip test: write local.json with drift + report config, read via
+// config.Load, assert values").
+func TestDriftReport_RoundTrip(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+	setupProjectConfig(t, root, map[string]any{})
+	setupLocalConfig(t, root, map[string]any{
+		"automation": map[string]any{
+			"drift": map[string]any{
+				"maxErrorRate":   0.25,
+				"maxWarningRate": 0.5,
+				"minErrorFloor":  float64(4),
+			},
+			"report": map[string]any{
+				"enabled": false,
+				"format":  "json",
+			},
+		},
+	})
+
+	cfg, err := Read(root)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	a := cfg.Automation
+	if a.Drift.MaxErrorRate != 0.25 {
+		t.Errorf("Drift.MaxErrorRate = %v, want 0.25", a.Drift.MaxErrorRate)
+	}
+	if a.Drift.MaxWarningRate != 0.5 {
+		t.Errorf("Drift.MaxWarningRate = %v, want 0.5", a.Drift.MaxWarningRate)
+	}
+	if a.Drift.MinErrorFloor != 4 {
+		t.Errorf("Drift.MinErrorFloor = %d, want 4", a.Drift.MinErrorFloor)
+	}
+	if a.Report.Enabled {
+		t.Error("Report.Enabled = true, want false (explicit override)")
+	}
+	if a.Report.Format != "json" {
+		t.Errorf("Report.Format = %q, want %q", a.Report.Format, "json")
+	}
+}
+
+// TestReport_PartialOverrideKeepsEnabledDefault verifies that setting only
+// report.format (without report.enabled) does not silently disable
+// reporting — Enabled must still default true.
+func TestReport_PartialOverrideKeepsEnabledDefault(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+	setupProjectConfig(t, root, map[string]any{})
+	setupLocalConfig(t, root, map[string]any{
+		"automation": map[string]any{
+			"report": map[string]any{
+				"format": "json",
+			},
+		},
+	})
+
+	cfg, err := Read(root)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	a := cfg.Automation
+	if !a.Report.Enabled {
+		t.Error("Report.Enabled = false, want true (default preserved under partial override)")
+	}
+	if a.Report.Format != "json" {
+		t.Errorf("Report.Format = %q, want %q", a.Report.Format, "json")
+	}
+}
+
+// TestReport_InvalidFormatClamped verifies an unrecognized format value is
+// clamped to "md" rather than propagated or erroring.
+func TestReport_InvalidFormatClamped(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+	setupProjectConfig(t, root, map[string]any{})
+	setupLocalConfig(t, root, map[string]any{
+		"automation": map[string]any{
+			"report": map[string]any{
+				"format": "xml",
+			},
+		},
+	})
+
+	cfg, err := Read(root)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if cfg.Automation.Report.Format != "md" {
+		t.Errorf("Report.Format = %q, want %q (invalid value clamped)", cfg.Automation.Report.Format, "md")
+	}
+}
+
+// TestDrift_PartialOverrideGetsDefaults verifies that setting only one
+// drift field leaves the others at their documented defaults.
+func TestDrift_PartialOverrideGetsDefaults(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+	setupProjectConfig(t, root, map[string]any{})
+	setupLocalConfig(t, root, map[string]any{
+		"automation": map[string]any{
+			"drift": map[string]any{
+				"maxErrorRate": 0.3,
+			},
+		},
+	})
+
+	cfg, err := Read(root)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	a := cfg.Automation
+	if a.Drift.MaxErrorRate != 0.3 {
+		t.Errorf("Drift.MaxErrorRate = %v, want 0.3", a.Drift.MaxErrorRate)
+	}
+	if a.Drift.MaxWarningRate != 0.40 {
+		t.Errorf("Drift.MaxWarningRate = %v, want 0.40 (default)", a.Drift.MaxWarningRate)
+	}
+	if a.Drift.MinErrorFloor != 2 {
+		t.Errorf("Drift.MinErrorFloor = %d, want 2 (default)", a.Drift.MinErrorFloor)
+	}
+}
+
+// TestPushDefaults verifies automation.push defaults to
+// FeatureBranchAutoApprove: false under supervised mode (KD-1 baseline).
+func TestPushDefaults(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+	setupProjectConfig(t, root, map[string]any{})
+
+	cfg, err := Read(root)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	a := cfg.Automation
+	if a.Push == nil {
+		t.Fatal("Push should not be nil")
+	}
+	if a.Push.FeatureBranchAutoApprove {
+		t.Error("Push.FeatureBranchAutoApprove = true, want false (default under supervised mode)")
+	}
+}
+
+// TestPush_RoundTrip writes a local.json with an explicit push config and
+// asserts the value survives Read unchanged.
+func TestPush_RoundTrip(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+	setupProjectConfig(t, root, map[string]any{})
+	setupLocalConfig(t, root, map[string]any{
+		"automation": map[string]any{
+			"push": map[string]any{
+				"featureBranchAutoApprove": true,
+			},
+		},
+	})
+
+	cfg, err := Read(root)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if !cfg.Automation.Push.FeatureBranchAutoApprove {
+		t.Error("Push.FeatureBranchAutoApprove = false, want true (explicit override)")
+	}
+}
+
+// TestPush_UnattendedModeForcesTrue verifies automation.mode: "unattended"
+// forces FeatureBranchAutoApprove true when push config is absent entirely,
+// per the literal contract in config.applyAutomationDefaults.
+func TestPush_UnattendedModeForcesTrue(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+	setupProjectConfig(t, root, map[string]any{})
+	setupLocalConfig(t, root, map[string]any{
+		"automation": map[string]any{
+			"mode": "unattended",
+		},
+	})
+
+	cfg, err := Read(root)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if !cfg.Automation.Push.FeatureBranchAutoApprove {
+		t.Error("Push.FeatureBranchAutoApprove = false, want true (unattended mode forces default true)")
+	}
+}
+
+// TestPush_UnattendedModeForcesTrueOverExplicitFalse verifies the known,
+// accepted zero-value-ambiguity limitation (mirrors the identical
+// MaxWarningRate precedent from Task 6): a plain bool field cannot
+// distinguish "explicitly false" from "absent" during JSON parsing, so
+// "unattended" mode still forces FeatureBranchAutoApprove true even when
+// config explicitly set it to false. This is given by the literal contract
+// snippet, not a bug to fix.
+func TestPush_UnattendedModeForcesTrueOverExplicitFalse(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+	setupProjectConfig(t, root, map[string]any{})
+	setupLocalConfig(t, root, map[string]any{
+		"automation": map[string]any{
+			"mode": "unattended",
+			"push": map[string]any{
+				"featureBranchAutoApprove": false,
+			},
+		},
+	})
+
+	cfg, err := Read(root)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if !cfg.Automation.Push.FeatureBranchAutoApprove {
+		t.Error("Push.FeatureBranchAutoApprove = false, want true (unattended forces true despite explicit false — known limitation)")
+	}
+}
+
+// TestPush_SupervisedModeExplicitFalseStaysFalse verifies the explicit-false
+// case behaves normally under supervised mode (no forcing).
+func TestPush_SupervisedModeExplicitFalseStaysFalse(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+	setupProjectConfig(t, root, map[string]any{})
+	setupLocalConfig(t, root, map[string]any{
+		"automation": map[string]any{
+			"push": map[string]any{
+				"featureBranchAutoApprove": false,
+			},
+		},
+	})
+
+	cfg, err := Read(root)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if cfg.Automation.Push.FeatureBranchAutoApprove {
+		t.Error("Push.FeatureBranchAutoApprove = true, want false (explicit false under supervised mode)")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Version section (typed VersionSection)
 // ---------------------------------------------------------------------------
 

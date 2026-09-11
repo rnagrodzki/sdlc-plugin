@@ -662,10 +662,15 @@ func buildGithubHosting(projectRoot string) GithubHosting {
 //
 // plan.js's resolveSkillTemplate/buildG17Dispatch try a workspace-relative
 // path (__dirname-sibling skills/plan/<name>) before falling back to a
-// find cascade over ~/.claude/plugins. The Go binary has no skills/ sibling
-// directory (no such convention exists in this repo), so only the find
-// cascade is implemented; a miss degrades to nil, matching plan.js's own
-// null-degrade contract exactly.
+// find cascade over ~/.claude/plugins. The Go binary mirrors that first step
+// with CLAUDE_PLUGIN_ROOT (see buildSkillTemplateIndex) and falls back to
+// the same find cascade; a miss on both degrades to nil, matching plan.js's
+// own null-degrade contract exactly.
+//
+// CLAUDE_PLUGIN_ROOT must be checked directly: a plugin installed in
+// dev/path mode (a marketplace entry whose "path" points at a local
+// checkout) is loaded straight from that path and never copied into
+// ~/.claude/plugins, so the find cascade alone can never see its templates.
 // ---------------------------------------------------------------------------
 
 // pluginVersionRe extracts a semver-looking path segment (".../N.N.N/skills")
@@ -704,37 +709,64 @@ var (
 // buildSkillTemplateIndex walks ~/.claude/plugins once, recording for every
 // filename found under a "/plan/" path segment the highest-semver match
 // (mirroring plan.js's per-template find + version-sort cascade, but
-// computed for all template names in a single pass).
+// computed for all template names in a single pass). Entries served
+// directly from CLAUDE_PLUGIN_ROOT (this plugin's own skills/plan/
+// directory, when running in dev/path mode) always win over anything the
+// walk finds, since they name the exact templates shipped with the
+// binary that is currently running.
 func buildSkillTemplateIndex() map[string]string {
 	index := map[string]string{}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return index
-	}
-	pluginsRoot := filepath.Join(home, ".claude", "plugins")
 
-	_ = filepath.WalkDir(pluginsRoot, func(p string, d os.DirEntry, err error) error {
-		if err != nil || d == nil {
-			return nil // skip unreadable entries, continue walking
-		}
-		if d.IsDir() {
-			if skillWalkSkipDirs[d.Name()] {
-				return filepath.SkipDir
+	home, err := os.UserHomeDir()
+	if err == nil {
+		pluginsRoot := filepath.Join(home, ".claude", "plugins")
+
+		_ = filepath.WalkDir(pluginsRoot, func(p string, d os.DirEntry, err error) error {
+			if err != nil || d == nil {
+				return nil // skip unreadable entries, continue walking
+			}
+			if d.IsDir() {
+				if skillWalkSkipDirs[d.Name()] {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !strings.Contains(filepath.ToSlash(p), "/plan/") {
+				return nil
+			}
+			name := d.Name()
+			existing, ok := index[name]
+			if !ok || comparePathVersion(existing, p) < 0 {
+				index[name] = p
 			}
 			return nil
+		})
+	}
+
+	if pluginRoot := os.Getenv("CLAUDE_PLUGIN_ROOT"); pluginRoot != "" {
+		planDir := filepath.Join(pluginRoot, "skills", "plan")
+		entries, err := os.ReadDir(planDir)
+		if err == nil {
+			for _, e := range entries {
+				if !e.IsDir() {
+					index[e.Name()] = filepath.Join(planDir, e.Name())
+				}
+			}
 		}
-		if !strings.Contains(filepath.ToSlash(p), "/plan/") {
-			return nil
-		}
-		name := d.Name()
-		existing, ok := index[name]
-		if !ok || comparePathVersion(existing, p) < 0 {
-			index[name] = p
-		}
-		return nil
-	})
+	}
 
 	return index
+}
+
+// resetSkillTemplateIndex clears the cached skill template index and resets
+// the sync.Once guard so the next resolveSkillTemplate/buildSkillTemplateIndex
+// call re-walks and rebuilds it from scratch. Test seam only: production
+// code relies on the index being built at most once per process
+// (skillTemplateIndexOnce); tests that vary CLAUDE_PLUGIN_ROOT or HOME
+// between cases need a way to invalidate that cache between them.
+func resetSkillTemplateIndex() {
+	skillTemplateIndexOnce = sync.Once{}
+	skillTemplateIndex = nil
 }
 
 // resolveSkillTemplate finds a plan skill template file under
