@@ -342,7 +342,7 @@ RC numbers are auto-detected from existing tags.
 
 When testing is complete, promote the latest RC to a final release without rebuilding:
 
-1. Go to **Actions** → **Promote Release** workflow
+1. Go to **Actions** → **SDLC Promote Release** workflow
 2. Enter the target version (e.g., `v1.3.0`)
 3. The workflow (`promote-release.cjs`) will:
    - Run `git fetch --tags --force` to ensure all remote tags are present
@@ -383,8 +383,8 @@ Full `.sdlc-v2/config.json` `version` section:
 
 | Field | Required | Default | Description |
 |---|---|---|---|
-| `preRelease` | No | — | Default pre-release label (e.g., `"rc"`) applied when no explicit base bump or `--pre` is given. |
-| `preReleasePolicy` | No | `"continue-rc"` | Controls RC suggestion and enforcement. `"always-rc"`: enforces RC bumps in `/ship` (overrides resolved bump to `"rc"` regardless of source when no explicit `preRelease` is set); standalone `/pr` only suggests RC, it does not enforce. `"continue-rc"`: suggests RC only when existing RC tags are found (no ship-time enforcement). `"never"`: never suggests RC. |
+| `preRelease` | No | — | Default pre-release label (e.g., `"rc"`). Overrides the resolved bump when the bump did not come from a CLI `--bump` flag (i.e., overrides config `ship.bump` and the built-in default, but not an explicit CLI flag). |
+| `preReleasePolicy` | No | `"continue-rc"` | Controls RC suggestion and enforcement. `"always-rc"`: enforces RC bumps in `/ship` (overrides resolved bump to `"rc"` regardless of source, including an explicit CLI `--bump`); standalone `/pr` only suggests RC, it does not enforce. `"continue-rc"`: suggests RC only when existing RC tags are found (no ship-time enforcement). `"never"`: never suggests RC. |
 | `method` | No | `"push"` | How the `versionFile` and `changelog` paths deliver their writes: `"push"` (direct commit to the default branch), `"pr"` (via a single `release/<tag>` PR — works with branch protection). Does not affect `tag`, which always pushes directly. |
 | `tag.enabled` | No | `false` | Whether the tag path is active: creates a git tag and GitHub Release on every bump. |
 | `tag.prefix` | No | auto-detected from existing tags; `/setup` writes `"v"` explicitly for new tag-only projects | Prefix for git tags (e.g., `v` for `v1.2.3`). |

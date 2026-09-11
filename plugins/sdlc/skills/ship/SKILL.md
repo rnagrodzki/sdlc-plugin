@@ -61,7 +61,7 @@ coverage analysis. Best-effort — skip logging if the state call fails.
 
 **6. Confirmation.** If `flags.auto`, skip. Otherwise render a step-by-step summary from the Steps section below (each step's name plus its actual will-run/skip resolution from `flags.steps`) and confirm via `AskUserQuestion`. The confirmed list is binding — do not skip a "will run" step on your own judgment afterward.
 
-**6b. Release-level confirmation.** Only when `pr` is present in `flags.steps` — a run with no `pr` step has no release intent to confirm, skip silently (`ship_prepare` itself rejects a CLI `--bump` given without `pr` configured — see reference.md's DO NOT list). Read `flags.bump` and `sources.bump` from `ship_prepare` (step 4) — the already-resolved bump level, determined by precedence: CLI flag > config `version.preRelease` > built-in default `"patch"`, then — **regardless of which tier won** — `version.preReleasePolicy: "always-rc"` enforces an RC suffix (e.g., `minor` becomes `minor-rc`, even if you passed `--bump minor` explicitly). This enforcement is **not advisory**: it cannot be bypassed via CLI flags and applies identically to `/ship` and `/pr` when the policy is set. `flags.bump` is never empty. Under `flags.auto`, skip the prompt entirely: no interactive confirmation happens in auto mode, so the level is always `releaseSource:"config"` (`pr_apply` rejects `releaseSource:"user"` under `autoMode` regardless of what's passed here). Otherwise, AskUserQuestion:
+**6b. Release-level confirmation.** Only when `pr` is present in `flags.steps` — a run with no `pr` step has no release intent to confirm, skip silently (`ship_prepare` itself rejects a CLI `--bump` given without `pr` configured — see reference.md's DO NOT list). Read `flags.bump` and `sources.bump` from `ship_prepare` (step 4) — the already-resolved bump level, determined by precedence: CLI flag > config `ship.bump` > built-in default `"patch"`, then `version.preRelease` overrides any non-CLI bump when it is a valid label, then — **regardless of which tier won** — `version.preReleasePolicy: "always-rc"` overrides the resolved bump to `"rc"` (e.g., `--bump minor` is replaced by `rc`, forwarded as `releaseLevel:"patch"` + `releasePreRelease:"rc"`, and a warning is emitted: `overrode explicit CLI --bump "minor" to "rc"`). This enforcement is **not advisory** and cannot be bypassed via CLI flags. It applies only to `/ship` (ship-time enforcement via `mergeShipFlags`); standalone `/pr` reads `preReleasePolicy` to *suggest* RC but does not enforce it — the user can ignore the suggestion. `flags.bump` is never empty. Under `flags.auto`, skip the prompt entirely: no interactive confirmation happens in auto mode, so the level is always `releaseSource:"config"` (`pr_apply` rejects `releaseSource:"user"` under `autoMode` regardless of what's passed here). Otherwise, AskUserQuestion:
 
 > Release level resolved to **{flags.bump}** (source: {sources.bump}).
 >
@@ -165,7 +165,7 @@ Not a `steps[]` entry — tracked directly via `action:"cleanup-pipeline"`, not 
 
 **After RC ships.** To promote an RC to a final release without creating another PR or rebuilding:
 
-1. Go to **Actions** → **Promote Release** workflow
+1. Go to **Actions** → **SDLC Promote Release** workflow
 2. Enter the target version (e.g., `v1.3.0`)
 3. The `promote-release.cjs` workflow:
    - Fetches all tags with `git fetch --tags --force`
@@ -177,7 +177,7 @@ Not a `steps[]` entry — tracked directly via `action:"cleanup-pipeline"`, not 
 
 The final release carries the exact code that was tested as the RC — what you tested is what ships.
 
-**Release dispatch.** Downstream CI workflows (via `release-dispatch.yml`) listen for final release tags and skip RC tags intentionally. The release-dispatch workflow uses hardened tag resolution: it sorts tags by semver version (`--sort=-version:refname`), filters to exclude pre-release tags (`grep -v -- '-rc'`), and takes the highest final release. This ensures RC releases do not trigger binary builds, deployments, or other release-specific CI actions.
+**Release dispatch.** Downstream CI workflows (via `release-dispatch.yml`) listen for final release tags and skip RC tags intentionally. The release-dispatch workflow uses hardened tag resolution **scoped to HEAD** (`git tag --points-at HEAD`): it sorts tags pointing at the current commit by semver version (`--sort=-version:refname`), filters to exclude pre-release tags (`grep -v -- '-rc'`), and takes the highest final release on that commit. This ensures RC releases do not trigger binary builds, deployments, or other release-specific CI actions.
 
 See [`docs/versioning.md`](../../../../docs/versioning.md#promoting-rc-to-final-release) and [`docs/versioning.md#release-workflow-automation`](../../../../docs/versioning.md#release-workflow-automation) for full details.
 
