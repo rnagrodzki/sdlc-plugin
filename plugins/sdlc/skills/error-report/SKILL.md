@@ -210,7 +210,93 @@ edits) and re-present. Loop until `yes` or `cancel`.
 **On `cancel`:** `rm -f "<manifestPath>"`. Return to the calling skill's normal
 error handling. Do not create anything.
 
-**On `yes`:** Continue to Step 7.
+**On `yes`:** Continue to Step 6b.
+
+## Step 6b — Duplicate Issue Search (main context)
+
+Search for existing open issues that may cover the same error:
+
+```bash
+CANDIDATES=$(gh issue list \
+  --repo "rnagrodzki/sdlc-plugin" \
+  --label "tooling-error" \
+  --label "$SKILL_NAME" \
+  --state open \
+  --limit 10 \
+  --json number,title,url)
+```
+
+Parse `CANDIDATES` JSON. Filter to issues whose title starts with `[$SKILL_NAME]`
+(same prefix as `PROPOSAL.title` per Step 5 format).
+
+**If no matches:** proceed to Step 7 silently (no prompt).
+
+**If matches found:** present via `AskUserQuestion`:
+
+```
+Similar open issue(s) found:
+  #42 — [plan] Task decomposition fails on empty specs
+  #38 — [plan] Gate A dispatch timeout
+
+Options:
+  comment  — add this error as a comment to an existing issue
+  new      — create a new issue, ignore matches
+  cancel   — skip issue creation
+```
+
+**On `comment`:** Display a list of matched issues and ask the user to select one:
+
+```
+Which issue should we comment on?
+  #42 — [plan] Task decomposition fails on empty specs
+  #38 — [plan] Gate A dispatch timeout
+  (cancel)
+```
+
+Once the user selects an issue number, construct the comment body:
+
+```
+Additional occurrence reported by error-report:
+
+{PROPOSAL.body}
+```
+
+Display the comment body for user approval via `AskUserQuestion`:
+
+```
+Comment to post on #{issue-number}:
+───────────────────────────────────────────
+{comment-body}
+───────────────────────────────────────────
+Post this comment? (yes / cancel)
+  yes    — post the comment as shown
+  cancel — skip
+```
+
+**On `yes` (comment approval):** Post the comment and return to the calling skill:
+
+```bash
+gh issue comment <number> \
+  --repo "rnagrodzki/sdlc-plugin" \
+  --body "$COMMENT_BODY"
+```
+
+Report success:
+
+```
+Comment added to #<number> — <url>
+```
+
+Then `rm -f "<manifestPath>"` and return control to the calling skill's normal
+error handling.
+
+**On `cancel` (comment approval):** `rm -f "<manifestPath>"`. Return to the
+calling skill's normal error handling. Do not post anything.
+
+**On `new`:** proceed to Step 7.
+
+**On `cancel` (initial match selection):** `rm -f "<manifestPath>"`. Return to the
+calling skill's normal error handling. Do not create anything.
 
 ## Step 7 — Create the GitHub Issue and Return (main context)
 
@@ -264,6 +350,7 @@ replaces the calling skill's own error output or stop behavior.
 - Run `gh issue create` inside the orchestrator agent. The agent has no `Bash`
   tool. Posting MUST run in the main context.
 - Create a GitHub issue without both consent gates passing.
+- Create a GitHub issue or comment without completing Step 6b (duplicate search).
 - Retry a failed `gh issue create` call a second time.
 - Leave `{placeholder}` text in the issue description.
 - Append an AI-tool attribution line ("Generated with Claude Code" or similar) to the
