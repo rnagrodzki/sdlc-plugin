@@ -3,6 +3,7 @@ package tools
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -34,24 +35,24 @@ func appendCLIEvidence(root string, entry CLIEvidenceEntry) error {
 	// Ensure directory exists
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
+		return fmt.Errorf("cli evidence: mkdir: %w", err)
 	}
 
 	// Marshal entry to JSON
 	b, err := json.Marshal(entry)
 	if err != nil {
-		return err
+		return fmt.Errorf("cli evidence: marshal: %w", err)
 	}
 
 	// Append with newline
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
-		return err
+		return fmt.Errorf("cli evidence: open: %w", err)
 	}
 	defer f.Close()
 
 	if _, err := f.Write(append(b, '\n')); err != nil {
-		return err
+		return fmt.Errorf("cli evidence: write: %w", err)
 	}
 
 	return nil
@@ -68,7 +69,7 @@ func readRecentCLIEvidence(root string, n int) ([]CLIEvidenceEntry, error) {
 		if os.IsNotExist(err) {
 			return []CLIEvidenceEntry{}, nil
 		}
-		return nil, err
+		return nil, fmt.Errorf("cli evidence: read: %w", err)
 	}
 
 	var entries []CLIEvidenceEntry

@@ -1,10 +1,13 @@
 package tools
 
 import (
+	"errors"
 	"os/exec"
+	"strings"
 	"testing"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
+	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 )
 
 // ---------------------------------------------------------------------------
@@ -179,6 +182,12 @@ esac
 	if out.Outstanding+out.Replied != out.Total {
 		t.Errorf("Outstanding+Replied (%d) != Total (%d)", out.Outstanding+out.Replied, out.Total)
 	}
+	if out.Next == "" {
+		t.Error("Next must be populated")
+	}
+	if !strings.Contains(out.Next, "Outstanding") {
+		t.Errorf("got Next=%q, want guidance about outstanding threads (Outstanding=%d)", out.Next, out.Outstanding)
+	}
 }
 
 // TestReceivedReviewVerify_ExplicitLogin confirms an explicitly supplied
@@ -210,5 +219,39 @@ esac
 	}
 	if out.Total != 1 || out.Replied != 1 || out.Outstanding != 0 {
 		t.Errorf("unexpected classification with explicit login: Total=%d Replied=%d Outstanding=%d", out.Total, out.Replied, out.Outstanding)
+	}
+	if strings.Contains(out.Next, "Outstanding") {
+		t.Errorf("got Next=%q, want no outstanding-threads guidance when Outstanding=0", out.Next)
+	}
+}
+
+// TestReceivedReviewVerify_CurrentLoginFailure_Suggestion confirms that when
+// ghx.CurrentLogin fails (no Login supplied, gh not authenticated), the
+// resulting InfraError carries a recovery Suggestion rather than leaving
+// callers to guess — mirroring ghx.AuthProbe's "gh auth login" guidance and
+// noting the Login input field lets callers bypass this lookup entirely.
+func TestReceivedReviewVerify_CurrentLoginFailure_Suggestion(t *testing.T) {
+	dir := setupGitRepoWithRemote(t, "https://github.com/owner/repo.git")
+
+	cleanup := stubGH(t, "#!/bin/sh\nexit 1\n")
+	defer cleanup()
+
+	_, err := receivedReviewVerify(dir, dir, ReceivedReviewVerifyIn{PR: 1})
+	if err == nil {
+		t.Fatal("expected error when gh api user fails")
+	}
+
+	var infraErr *mcpserver.InfraError
+	if !errors.As(err, &infraErr) {
+		t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
+	}
+	if infraErr.Suggestion == "" {
+		t.Error("expected non-empty Suggestion for recoverable gh-auth failure")
+	}
+	if !strings.Contains(infraErr.Suggestion, "gh auth login") {
+		t.Errorf("got Suggestion=%q, want gh auth login guidance", infraErr.Suggestion)
+	}
+	if !strings.Contains(infraErr.Suggestion, "login") {
+		t.Errorf("got Suggestion=%q, want it to mention the login input field as a bypass", infraErr.Suggestion)
 	}
 }

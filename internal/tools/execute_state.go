@@ -32,7 +32,7 @@ import (
 // ExecuteStateIn carries the merged input for the execute_state tool's
 // actions. Each field is consumed by one or more actions (noted in comments).
 type ExecuteStateIn struct {
-	Action            string         `json:"action" jsonschema_description:"Selects the operation: wave-compute, init, wave-start, wave-done, wave-fail, wave-committed, wave-commit, task-done, task-fail, task-context, context, read, cleanup, gc, summarize-prior-wave-context, wave-split, verify-completeness, wave-progress, resume-reset, ledger_checkin, ledger_checkout, or ledger_status. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
+	Action            string         `json:"action" jsonschema_description:"Selects the operation: wave-compute, init, wave-start, wave-done, wave-fail, wave-committed, wave-commit, task-done, task-fail, task-context, context, read, cleanup, gc, summarize-prior-wave-context, wave-split, verify-completeness, wave-progress, resume-reset, ledger_checkin, ledger_checkout, ledger_status, or log-cli. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
 	Branch            string         `json:"branch,omitempty" jsonschema_description:"Git branch the execution state belongs to. Most actions accept it to scope the state file; falls back to the current branch when omitted."`
 	Quality           string         `json:"quality,omitempty" jsonschema_description:"Quality level to stamp on a newly initialized run (init only)."`
 	TotalTasks        int            `json:"totalTasks,omitempty" jsonschema_description:"Total planned task count for a newly initialized run (init only)."`

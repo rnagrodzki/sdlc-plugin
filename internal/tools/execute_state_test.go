@@ -3866,3 +3866,131 @@ func TestExecState_WaveProgress_LastCompletedTask(t *testing.T) {
 		t.Errorf("progress = %v, want to contain lastCompletedTask 'T0'", result)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// log-cli
+// ---------------------------------------------------------------------------
+
+func TestExecState_LogCLI_AppendsEvidence(t *testing.T) {
+	root := t.TempDir()
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action:      "log-cli",
+		Branch:      "feat/test",
+		Wave:        intPtr(2),
+		CLICommand:  "go test ./...",
+		CLIExitCode: 0,
+		CLIOutput:   "ok  	github.com/example/pkg	0.5s",
+	}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("log-cli: %v", err)
+	}
+
+	m, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("result = %T, want map[string]any", result)
+	}
+	if m["ok"] != true || m["action"] != "log-cli" {
+		t.Errorf("result = %v, want ok=true action=log-cli", m)
+	}
+
+	path := filepath.Join(root, paths.DataDir, "evidence", "cli-executions.jsonl")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading evidence file: %v", err)
+	}
+
+	var entry CLIEvidenceEntry
+	line := strings.TrimSpace(string(b))
+	if err := json.Unmarshal([]byte(line), &entry); err != nil {
+		t.Fatalf("unmarshal evidence entry: %v (line=%q)", err, line)
+	}
+	if entry.Pipeline != "execute" {
+		t.Errorf("Pipeline = %q, want execute", entry.Pipeline)
+	}
+	if entry.Branch != "feat/test" {
+		t.Errorf("Branch = %q, want feat/test", entry.Branch)
+	}
+	if entry.Wave == nil || *entry.Wave != 2 {
+		t.Errorf("Wave = %v, want 2", entry.Wave)
+	}
+	if entry.Command != "go test ./..." {
+		t.Errorf("Command = %q, want %q", entry.Command, "go test ./...")
+	}
+	if entry.ExitCode != 0 {
+		t.Errorf("ExitCode = %d, want 0", entry.ExitCode)
+	}
+	if !strings.Contains(entry.OutputHead, "ok") {
+		t.Errorf("OutputHead = %q, want to contain command output", entry.OutputHead)
+	}
+}
+
+func TestExecState_LogCLI_BranchFallsBackToCurrent(t *testing.T) {
+	root := t.TempDir()
+
+	cmd := exec.Command("git", "init")
+	cmd.Dir = root
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+
+	_, err := executeState(root, root, ExecuteStateIn{
+		Action:      "log-cli",
+		CLICommand:  "echo hi",
+		CLIExitCode: 0,
+		CLIOutput:   "hi",
+	}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("log-cli without explicit branch: %v", err)
+	}
+
+	path := filepath.Join(root, paths.DataDir, "evidence", "cli-executions.jsonl")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading evidence file: %v", err)
+	}
+	var entry CLIEvidenceEntry
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(b))), &entry); err != nil {
+		t.Fatalf("unmarshal evidence entry: %v", err)
+	}
+	if entry.Branch == "" {
+		t.Error("expected Branch to fall back to the current git branch, got empty string")
+	}
+}
+
+// TestExecState_LogCLI_AppendFailure forces appendCLIEvidence to fail (a
+// regular file sits where the evidence directory must be created) and
+// confirms the handler wraps it as an *mcpserver.InfraError with a
+// "log-cli: " prefixed message, matching the wrapping convention used by
+// every other action in this dispatcher.
+func TestExecState_LogCLI_AppendFailure(t *testing.T) {
+	root := t.TempDir()
+
+	evidenceDir := filepath.Join(root, paths.DataDir, "evidence")
+	if err := os.MkdirAll(filepath.Dir(evidenceDir), 0755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	// Pre-create a regular file where the "evidence" directory must go, so
+	// os.MkdirAll inside appendCLIEvidence fails.
+	if err := os.WriteFile(evidenceDir, []byte("not a directory"), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	_, err := executeState(root, root, ExecuteStateIn{
+		Action:      "log-cli",
+		Branch:      "feat/test",
+		CLICommand:  "go build ./...",
+		CLIExitCode: 1,
+	}, fixedClock(testNow))
+	if err == nil {
+		t.Fatal("expected error when evidence directory cannot be created")
+	}
+
+	var infraErr *mcpserver.InfraError
+	if !errors.As(err, &infraErr) {
+		t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
+	}
+	if !strings.HasPrefix(infraErr.Msg, "log-cli:") {
+		t.Errorf("Msg = %q, want log-cli: prefix", infraErr.Msg)
+	}
+}

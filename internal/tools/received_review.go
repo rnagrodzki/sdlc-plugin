@@ -100,7 +100,7 @@ func receivedReviewPrepare(projectRoot, activeRoot string, in ReceivedReviewIn) 
 
 // ReceivedReviewVerifyIn is the input for the received_review_verify tool.
 type ReceivedReviewVerifyIn struct {
-	PR    int    `json:"pr" jsonschema_description:"Pull request number."`
+	PR    int    `json:"pr" jsonschema_description:"Pull request number to fetch review comment threads for."`
 	Login string `json:"login,omitempty" jsonschema_description:"GitHub login of the PR author. Defaults to current gh auth user."`
 }
 
@@ -113,7 +113,7 @@ type CommentThread struct {
 	Line       int    `json:"line,omitempty"`
 	Reviewer   string `json:"reviewer"`
 	Body       string `json:"body"`
-	Status     string `json:"status"` // "outstanding" | "replied" | "self-replied"
+	Status     string `json:"status" jsonschema:"enum=outstanding,enum=replied,enum=self-replied" jsonschema_description:"Thread classification relative to the PR author's replies: \"outstanding\" (no replies at all), \"self-replied\" (has replies, but none from the PR author), or \"replied\" (the PR author has replied)."`
 	ReplyCount int    `json:"replyCount"`
 }
 
@@ -126,6 +126,7 @@ type ReceivedReviewVerifyOut struct {
 	Outstanding int              `json:"outstanding"`
 	Replied     int              `json:"replied"`
 	Total       int              `json:"total"`
+	Next        string           `json:"next" jsonschema_description:"Actionable next-step guidance after classifying review threads."`
 }
 
 // ---------------------------------------------------------------------------
@@ -225,8 +226,9 @@ func receivedReviewVerify(projectRoot, activeRoot string, in ReceivedReviewVerif
 		login, err = ghx.CurrentLogin(activeRoot)
 		if err != nil {
 			return ReceivedReviewVerifyOut{}, &mcpserver.InfraError{
-				Msg:   fmt.Sprintf("resolve current gh login: %s", err.Error()),
-				Cause: err,
+				Msg:        fmt.Sprintf("resolve current gh login: %s", err.Error()),
+				Suggestion: "Not logged in to github.com. Run: gh auth login --hostname github.com. Alternatively, pass the \"login\" input field to skip this lookup.",
+				Cause:      err,
 			}
 		}
 	}
@@ -252,6 +254,11 @@ func receivedReviewVerify(projectRoot, activeRoot string, in ReceivedReviewVerif
 		}
 	}
 
+	next := "All review threads have a reply from the PR author. Safe to proceed."
+	if outstanding > 0 {
+		next = "Outstanding review threads remain — reply to each and address the feedback before proceeding."
+	}
+
 	return ReceivedReviewVerifyOut{
 		Version:     1,
 		Timestamp:   time.Now().UTC().Format(time.RFC3339),
@@ -260,6 +267,7 @@ func receivedReviewVerify(projectRoot, activeRoot string, in ReceivedReviewVerif
 		Outstanding: outstanding,
 		Replied:     replied,
 		Total:       len(threads),
+		Next:        next,
 	}, nil
 }
 

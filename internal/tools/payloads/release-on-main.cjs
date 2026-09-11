@@ -435,6 +435,10 @@ function changelogHeadingExists(repoRoot, changelogFile, version) {
  */
 function findLastFinalTag(repoRoot, tagPrefix) {
   const out = exec('git tag --list --sort=-v:refname', { cwd: repoRoot });
+  if (out === null) {
+    console.error('findLastFinalTag: git tag --list failed');
+    return null;
+  }
   if (!out) return null;
 
   for (const t of out.split('\n')) {
@@ -474,6 +478,10 @@ function collectNotesSinceTag(repoRoot, tag) {
     `gh pr list --state merged --base main --search "${searchQuery}" --json number,title,body --limit 100`,
     { cwd: repoRoot }
   );
+  if (out === null) {
+    console.error('collectNotesSinceTag: gh pr list failed');
+    return [];
+  }
   if (!out) return [];
 
   let prList = [];

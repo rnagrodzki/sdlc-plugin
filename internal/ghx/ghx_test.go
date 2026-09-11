@@ -306,6 +306,32 @@ func TestPRReviewComments_InvalidOwner(t *testing.T) {
 	}
 }
 
+// TestPRReviewComments_GHCommandError mirrors TestGHCommandError's pattern
+// for PRView: a failing `gh api ... --paginate` invocation must surface as
+// an error, not be silently swallowed into an empty result.
+func TestPRReviewComments_GHCommandError(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\nexit 1\n")
+	defer cleanup()
+
+	_, err := PRReviewComments(".", "owner", "repo", 42)
+	if err == nil {
+		t.Fatal("expected error from failing gh command")
+	}
+}
+
+// TestPRReviewComments_MalformedJSON confirms a non-EOF JSON decode failure
+// on the streamed --jq output (e.g. a truncated or corrupted object) is
+// surfaced as an error rather than silently dropped.
+func TestPRReviewComments_MalformedJSON(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\nprintf '{\"id\":1,\"path\":\"a.go\"' \n")
+	defer cleanup()
+
+	_, err := PRReviewComments(".", "owner", "repo", 42)
+	if err == nil {
+		t.Fatal("expected error for malformed JSON output")
+	}
+}
+
 func TestCurrentLogin(t *testing.T) {
 	cleanup := stubGH(t, "#!/bin/sh\necho \"octocat\"\n")
 	defer cleanup()
@@ -326,5 +352,18 @@ func TestCurrentLogin_Empty(t *testing.T) {
 	_, err := CurrentLogin(".")
 	if err == nil {
 		t.Fatal("expected error for empty login")
+	}
+}
+
+// TestCurrentLogin_GHCommandError mirrors TestGHCommandError's pattern: a
+// failing `gh api user` invocation (e.g. not authenticated) must surface as
+// an error.
+func TestCurrentLogin_GHCommandError(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\nexit 1\n")
+	defer cleanup()
+
+	_, err := CurrentLogin(".")
+	if err == nil {
+		t.Fatal("expected error from failing gh command")
 	}
 }

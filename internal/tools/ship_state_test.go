@@ -2140,3 +2140,147 @@ func isDomainError(err error) bool {
 	var de *mcpserver.DomainError
 	return errors.As(err, &de)
 }
+
+// ---------------------------------------------------------------------------
+// log-cli
+// ---------------------------------------------------------------------------
+
+func TestShipState_LogCLI_AppendsEvidence(t *testing.T) {
+	root := t.TempDir()
+
+	result, err := shipState(root, root, ShipStateIn{
+		Action: "log-cli",
+		Detail: map[string]any{
+			"branch":     "release/1.2",
+			"step":       "commit",
+			"command":    "git commit -m \"fix\"",
+			"exitCode":   1,
+			"outputHead": "error: nothing to commit",
+		},
+	}, fixedNow(time.Now()))
+	if err != nil {
+		t.Fatalf("log-cli: %v", err)
+	}
+
+	m, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("result = %T, want map[string]any", result)
+	}
+	if m["ok"] != true || m["action"] != "log-cli" {
+		t.Errorf("result = %v, want ok=true action=log-cli", m)
+	}
+
+	path := filepath.Join(root, paths.DataDir, "evidence", "cli-executions.jsonl")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading evidence file: %v", err)
+	}
+	var entry CLIEvidenceEntry
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(b))), &entry); err != nil {
+		t.Fatalf("unmarshal evidence entry: %v", err)
+	}
+	if entry.Pipeline != "ship" {
+		t.Errorf("Pipeline = %q, want ship", entry.Pipeline)
+	}
+	if entry.Step != "commit" {
+		t.Errorf("Step = %q, want commit", entry.Step)
+	}
+	if entry.Branch != "release/1.2" {
+		t.Errorf("Branch = %q, want release/1.2", entry.Branch)
+	}
+	if entry.Command != "git commit -m \"fix\"" {
+		t.Errorf("Command = %q, want the git commit invocation", entry.Command)
+	}
+	if entry.ExitCode != 1 {
+		t.Errorf("ExitCode = %d, want 1", entry.ExitCode)
+	}
+	if entry.OutputHead != "error: nothing to commit" {
+		t.Errorf("OutputHead = %q, want the stubbed error text", entry.OutputHead)
+	}
+	if entry.Wave != nil {
+		t.Errorf("Wave = %v, want nil (ship pipeline has no wave concept)", entry.Wave)
+	}
+}
+
+// TestShipState_LogCLI_MissingExitCodeDefaultsToZero exercises
+// detailIntPtr's nil-vs-set distinction from the caller's side: when
+// "exitCode" is absent from Detail entirely (as opposed to explicitly
+// present and 0), shipStateLogCLI must not error and must record ExitCode 0.
+func TestShipState_LogCLI_MissingExitCodeDefaultsToZero(t *testing.T) {
+	root := t.TempDir()
+
+	_, err := shipState(root, root, ShipStateIn{
+		Action: "log-cli",
+		Detail: map[string]any{
+			"branch":  "main",
+			"command": "echo hi",
+		},
+	}, fixedNow(time.Now()))
+	if err != nil {
+		t.Fatalf("log-cli without exitCode: %v", err)
+	}
+
+	path := filepath.Join(root, paths.DataDir, "evidence", "cli-executions.jsonl")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading evidence file: %v", err)
+	}
+	var entry CLIEvidenceEntry
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(b))), &entry); err != nil {
+		t.Fatalf("unmarshal evidence entry: %v", err)
+	}
+	if entry.ExitCode != 0 {
+		t.Errorf("ExitCode = %d, want 0 when omitted from Detail", entry.ExitCode)
+	}
+}
+
+// TestShipState_LogCLI_NoBranchNoGitRepo confirms branch resolution failure
+// (no explicit branch in Detail, workDir not a git repo) propagates
+// unwrapped as the *mcpserver.DomainError execResolveBranch produces,
+// rather than being swallowed or re-wrapped as an InfraError.
+func TestShipState_LogCLI_NoBranchNoGitRepo(t *testing.T) {
+	root := t.TempDir()
+
+	_, err := shipState(root, root, ShipStateIn{
+		Action: "log-cli",
+		Detail: map[string]any{"command": "echo hi"},
+	}, fixedNow(time.Now()))
+	if err == nil {
+		t.Fatal("expected error when branch cannot be resolved")
+	}
+	if !isDomainError(err) {
+		t.Errorf("error = %v (%T), want DomainError", err, err)
+	}
+}
+
+// TestShipState_LogCLI_AppendFailure forces appendCLIEvidence to fail (a
+// regular file sits where the evidence directory must be created) and
+// confirms shipStateLogCLI wraps it as an *mcpserver.InfraError with a
+// "log-cli: " prefixed message.
+func TestShipState_LogCLI_AppendFailure(t *testing.T) {
+	root := t.TempDir()
+
+	evidenceDir := filepath.Join(root, paths.DataDir, "evidence")
+	if err := os.MkdirAll(filepath.Dir(evidenceDir), 0755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(evidenceDir, []byte("not a directory"), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	_, err := shipState(root, root, ShipStateIn{
+		Action: "log-cli",
+		Detail: map[string]any{"branch": "main", "command": "go vet ./..."},
+	}, fixedNow(time.Now()))
+	if err == nil {
+		t.Fatal("expected error when evidence directory cannot be created")
+	}
+
+	var infraErr *mcpserver.InfraError
+	if !errors.As(err, &infraErr) {
+		t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
+	}
+	if !strings.HasPrefix(infraErr.Msg, "log-cli:") {
+		t.Errorf("Msg = %q, want log-cli: prefix", infraErr.Msg)
+	}
+}

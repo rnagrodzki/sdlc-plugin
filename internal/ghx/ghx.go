@@ -552,6 +552,9 @@ func PRReviewComments(dir string, owner, repo string, number int) ([]PRReviewCom
 	raw, err := run(dir, "api", apiPath, "--paginate", "--jq",
 		`.[] | {id: .id, path: .path, line: .line, login: .user.login, body: .body, in_reply_to_id: .in_reply_to_id}`)
 	if err != nil {
+		if errors.Is(err, execx.ErrOutputCap) {
+			return nil, fmt.Errorf("ghx: PRReviewComments: output exceeded cap: %w", err)
+		}
 		return nil, fmt.Errorf("ghx: PRReviewComments: fetch comments: %w", err)
 	}
 	if strings.TrimSpace(raw) == "" {

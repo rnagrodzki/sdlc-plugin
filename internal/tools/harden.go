@@ -641,7 +641,13 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 	branch, _ := gitx.CurrentBranch(contentRoot)
 	recentDiffSummary, _ := execx.Run("git", []string{"diff", "--shortstat", "HEAD~1..HEAD"}, execx.Options{Dir: contentRoot})
 
-	cliEvidence, _ := readRecentCLIEvidence(root, 20)
+	cliEvidence, cliEvidenceErr := readRecentCLIEvidence(root, 20)
+	if cliEvidenceErr != nil {
+		loadErrs = append(loadErrs, surfaceLoadError{
+			Surface: "cli-evidence",
+			Message: fmt.Sprintf("read failed: %s", cliEvidenceErr.Error()),
+		})
+	}
 	var branchCLIEvidence []CLIEvidenceEntry
 	for _, e := range cliEvidence {
 		if branch == "" || e.Branch == branch {

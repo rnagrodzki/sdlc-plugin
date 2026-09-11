@@ -13,12 +13,12 @@ func TestAppendCLIEvidence_CreatesDirectoryAndFile(t *testing.T) {
 	root := t.TempDir()
 
 	entry := CLIEvidenceEntry{
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-		Pipeline:  "ship",
-		Step:      "commit",
-		Branch:    "main",
-		Command:   "git commit -m \"test\"",
-		ExitCode:  0,
+		Timestamp:  time.Now().UTC().Format(time.RFC3339),
+		Pipeline:   "ship",
+		Step:       "commit",
+		Branch:     "main",
+		Command:    "git commit -m \"test\"",
+		ExitCode:   0,
 		OutputHead: "[main abc1234] test",
 	}
 
@@ -180,5 +180,38 @@ func TestReadRecentCLIEvidence_ReturnsAllIfLessThanN(t *testing.T) {
 
 	if len(entries) != 2 {
 		t.Fatalf("expected 2 entries (less than requested 10), got %d", len(entries))
+	}
+}
+
+// TestReadRecentCLIEvidence_SkipsMalformedLines confirms a corrupted/partial
+// JSONL line (e.g. from a crashed write) is silently skipped while
+// well-formed entries on either side of it are still parsed.
+func TestReadRecentCLIEvidence_SkipsMalformedLines(t *testing.T) {
+	root := t.TempDir()
+
+	path := filepath.Join(root, ".sdlc-v2", "evidence", "cli-executions.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+
+	good1 := `{"ts":"2026-09-11T00:00:00Z","pipeline":"ship","step":"commit","branch":"main","command":"git commit","exitCode":0,"outputHead":"ok1"}`
+	malformed := `{"ts":"2026-09-11T00:00:01Z", not valid json`
+	good2 := `{"ts":"2026-09-11T00:00:02Z","pipeline":"ship","step":"review","branch":"main","command":"gh pr create","exitCode":0,"outputHead":"ok2"}`
+
+	content := good1 + "\n" + malformed + "\n" + good2 + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write fixture failed: %v", err)
+	}
+
+	entries, err := readRecentCLIEvidence(root, 10)
+	if err != nil {
+		t.Fatalf("readRecentCLIEvidence failed: %v", err)
+	}
+
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 entries (malformed line skipped), got %d: %+v", len(entries), entries)
+	}
+	if entries[0].OutputHead != "ok1" || entries[1].OutputHead != "ok2" {
+		t.Errorf("unexpected entries around skipped malformed line: %+v", entries)
 	}
 }

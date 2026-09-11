@@ -202,6 +202,69 @@ func TestMigrate_ProjectV0ToV5(t *testing.T) {
 	}
 }
 
+// TestIngestLegacy_NestedSchemaStripped confirms a "$schema" key nested
+// inside an individual section object (not just the top-level sdlc.json
+// document) is stripped by ingestLegacy — covering the per-section
+// delete(m, "$schema") calls for the projectCfg loop (version/jira/commit/
+// pr/plan/execute) as well as the separate ship and review section blocks.
+//
+// This calls ingestLegacy directly (white-box) rather than through the
+// public Migrate() entry point. Migrate() routes any project with an
+// existing .claude/sdlc.json to relocateProjectConfig (only a top-level
+// $schema strip, see migrations.go), not to ingestLegacy: detectProjectVersion
+// treats .claude/sdlc.json's mere existence as "project config exists",
+// so ingestLegacy's `!projectExists` precondition can only be true when
+// .claude/sdlc.json is ABSENT — at which point ingestLegacy's own
+// sdlc.json read fails and its nested-$schema-stripping block never runs.
+// That makes this block unreachable through Migrate() in practice; this
+// test exercises ingestLegacy's own logic directly instead of asserting
+// behavior nothing in production can trigger.
+func TestIngestLegacy_NestedSchemaStripped(t *testing.T) {
+	root := t.TempDir()
+
+	writeJSON(t, filepath.Join(root, ".claude", "sdlc.json"), map[string]any{
+		"version": map[string]any{"mode": "file"},
+		"jira": map[string]any{
+			"$schema":        "https://example.com/jira-schema",
+			"defaultProject": "TEST",
+		},
+		"ship": map[string]any{
+			"$schema": "https://example.com/ship-schema",
+			"preset":  "full",
+		},
+		"review": map[string]any{
+			"$schema": "https://example.com/review-schema",
+		},
+	})
+
+	ingested, err := ingestLegacy(root)
+	if err != nil {
+		t.Fatalf("ingestLegacy: %v", err)
+	}
+	if len(ingested) == 0 {
+		t.Fatal("expected at least one ingested legacy file")
+	}
+
+	config := readJSON(t, filepath.Join(root, paths.DataDir, "config.json"))
+	jira := config["jira"].(map[string]any)
+	if _, has := jira["$schema"]; has {
+		t.Error("nested jira.$schema should be stripped during ingestion")
+	}
+	if jira["defaultProject"] != "TEST" {
+		t.Error("jira.defaultProject should survive $schema stripping")
+	}
+
+	local := readJSON(t, filepath.Join(root, paths.DataDir, "local.json"))
+	ship := local["ship"].(map[string]any)
+	if _, has := ship["$schema"]; has {
+		t.Error("nested ship.$schema should be stripped during ingestion")
+	}
+	review := local["review"].(map[string]any)
+	if _, has := review["$schema"]; has {
+		t.Error("nested review.$schema should be stripped during ingestion")
+	}
+}
+
 func TestMigrate_ProjectV0ToV5_ShipStrippedFromConfig(t *testing.T) {
 	root := t.TempDir()
 
@@ -1278,11 +1341,11 @@ func TestMigrate_ProjectV4_FullVersionShape(t *testing.T) {
 	writeJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
 		"schemaVersion": float64(4),
 		"version": map[string]any{
-			"mode":           "tag",
-			"tagPrefix":      "v",
-			"changelog":      true,
-			"changelogFile":  "CHANGELOG.md",
-			"preRelease":     "rc",
+			"mode":          "tag",
+			"tagPrefix":     "v",
+			"changelog":     true,
+			"changelogFile": "CHANGELOG.md",
+			"preRelease":    "rc",
 		},
 		"jira": map[string]any{
 			"defaultProject": "PROJ",
@@ -1507,11 +1570,11 @@ func TestMigrate_FullChain_V4ProjectAndV4Local(t *testing.T) {
 	writeJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
 		"schemaVersion": float64(4),
 		"version": map[string]any{
-			"mode":           "tag",
-			"tagPrefix":      "v",
-			"changelog":      true,
-			"changelogFile":  "CHANGELOG.md",
-			"preRelease":     "rc",
+			"mode":          "tag",
+			"tagPrefix":     "v",
+			"changelog":     true,
+			"changelogFile": "CHANGELOG.md",
+			"preRelease":    "rc",
 		},
 		"jira": map[string]any{
 			"defaultProject": "TEST",
@@ -1525,11 +1588,11 @@ func TestMigrate_FullChain_V4ProjectAndV4Local(t *testing.T) {
 	writeJSON(t, filepath.Join(root, paths.DataDir, "local.json"), map[string]any{
 		"schemaVersion": float64(4),
 		"ship": map[string]any{
-			"steps":                       []any{"execute", "commit", "review", "version", "archive-openspec", "pr", "learnings-commit"},
-			"bump":                        "minor",
-			"reviewThreshold":             "high",
-			"awaitRemoteReviewTimeout":    float64(300),
-			"awaitRemoteReviewInterval":   float64(30),
+			"steps":                     []any{"execute", "commit", "review", "version", "archive-openspec", "pr", "learnings-commit"},
+			"bump":                      "minor",
+			"reviewThreshold":           "high",
+			"awaitRemoteReviewTimeout":  float64(300),
+			"awaitRemoteReviewInterval": float64(30),
 		},
 	})
 
