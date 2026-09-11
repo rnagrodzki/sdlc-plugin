@@ -334,20 +334,9 @@ Options:
 - **yes** — migrate now (recommended)
 - **no** — configure from scratch (legacy files are left untouched)
 
-On **yes**, run the config migration:
-
-```
-migrate({ action: "config", dryRun: false }) → { ok, result, changed[] }
-```
-
-`result` is one of: `"up-to-date"` (nothing to do), or
-`"migrated (steps: [...], legacy ingested: [<path> <path> ...])"`. This single call migrates
-both `.sdlc-v2/config.json` and `.sdlc-v2/local.json` schema versions and ingests any of the six
-legacy per-section files found in Step 0 — there is no separate project/local/`--unset-only`
-branch to run.
-
-Then always run (the tool itself no-ops per-file/dir when a legacy source is absent, so this
-is safe even when no legacy `.sdlc/` content exists):
+On **yes**, first import legacy data from the old plugin directory (the tool itself
+no-ops per-file/dir when a legacy source is absent, so this is safe even when no legacy
+`.sdlc/` content exists):
 
 ```
 migrate({ action: "import", dryRun: false }) → { ok, result, changed[] }
@@ -361,6 +350,19 @@ but a key present only in the legacy file is added even when the new file alread
 `jira-templates/`, `learnings/`, `review-dimensions/`) is skipped whole-file/whole-dir when
 the destination already exists. `result` is either `"up-to-date: nothing to import"` or
 `"imported: [<path> <path> ...]"` (or `"would-import: [...]"` when `dryRun` is true).
+
+Then run the config migration (which now also sees and migrates any v4-shaped
+`config.json`/`local.json` data that import just copied in):
+
+```
+migrate({ action: "config", dryRun: false }) → { ok, result, changed[] }
+```
+
+`result` is one of: `"up-to-date"` (nothing to do), or
+`"migrated (steps: [...], legacy ingested: [<path> <path> ...])"`. This single call migrates
+both `.sdlc-v2/config.json` and `.sdlc-v2/local.json` schema versions and ingests any of the six
+legacy per-section files found in Step 0 — there is no separate project/local/`--unset-only`
+branch to run.
 
 Report both results to the user verbatim.
 

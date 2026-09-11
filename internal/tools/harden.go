@@ -163,6 +163,7 @@ type hardenManifest struct {
 	Pipeline           hardenPipeline     `json:"pipeline"`
 	Repository         hardenRepository   `json:"repository"`
 	History            *hardenHistory     `json:"history,omitempty"`
+	CLIEvidence        []CLIEvidenceEntry `json:"cliEvidence,omitempty"`
 	PluginRepoURL      string             `json:"pluginRepoUrl"`
 	Timestamp          string             `json:"timestamp"`
 	Errors             []surfaceLoadError `json:"errors"`
@@ -640,6 +641,20 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 	branch, _ := gitx.CurrentBranch(contentRoot)
 	recentDiffSummary, _ := execx.Run("git", []string{"diff", "--shortstat", "HEAD~1..HEAD"}, execx.Options{Dir: contentRoot})
 
+	cliEvidence, cliEvidenceErr := readRecentCLIEvidence(root, 20)
+	if cliEvidenceErr != nil {
+		loadErrs = append(loadErrs, surfaceLoadError{
+			Surface: "cli-evidence",
+			Message: fmt.Sprintf("read failed: %s", cliEvidenceErr.Error()),
+		})
+	}
+	var branchCLIEvidence []CLIEvidenceEntry
+	for _, e := range cliEvidence {
+		if branch == "" || e.Branch == branch {
+			branchCLIEvidence = append(branchCLIEvidence, e)
+		}
+	}
+
 	var exitCode *string
 	if in.ExitCode != "" {
 		v := in.ExitCode
@@ -676,6 +691,7 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 			Branch:            branch,
 			RecentDiffSummary: recentDiffSummary,
 		},
+		CLIEvidence:   branchCLIEvidence,
 		PluginRepoURL: hardenPluginRepoURL,
 		Timestamp:     time.Now().UTC().Format(time.RFC3339),
 		Errors:        loadErrs,

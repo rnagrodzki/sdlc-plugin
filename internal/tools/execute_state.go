@@ -32,7 +32,7 @@ import (
 // ExecuteStateIn carries the merged input for the execute_state tool's
 // actions. Each field is consumed by one or more actions (noted in comments).
 type ExecuteStateIn struct {
-	Action            string         `json:"action" jsonschema_description:"Selects the operation: wave-compute, init, wave-start, wave-done, wave-fail, wave-committed, wave-commit, task-done, task-fail, task-context, context, read, cleanup, gc, summarize-prior-wave-context, wave-split, verify-completeness, wave-progress, resume-reset, ledger_checkin, ledger_checkout, or ledger_status. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
+	Action            string         `json:"action" jsonschema_description:"Selects the operation: wave-compute, init, wave-start, wave-done, wave-fail, wave-committed, wave-commit, task-done, task-fail, task-context, context, read, cleanup, gc, summarize-prior-wave-context, wave-split, verify-completeness, wave-progress, resume-reset, ledger_checkin, ledger_checkout, ledger_status, or log-cli. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
 	Branch            string         `json:"branch,omitempty" jsonschema_description:"Git branch the execution state belongs to. Most actions accept it to scope the state file; falls back to the current branch when omitted."`
 	Quality           string         `json:"quality,omitempty" jsonschema_description:"Quality level to stamp on a newly initialized run (init only)."`
 	TotalTasks        int            `json:"totalTasks,omitempty" jsonschema_description:"Total planned task count for a newly initialized run (init only)."`
@@ -78,6 +78,9 @@ type ExecuteStateIn struct {
 	Detail            string         `json:"detail,omitempty" jsonschema_description:"Narration verbosity for wave-start/wave-done/wave-fail/wave-commit: \"concise\" or \"full\"."`
 	LastCompletedTask string         `json:"lastCompletedTask,omitempty" jsonschema_description:"wave-progress write only: ID of the most recently completed task, recorded in the heartbeat entry."`
 	Message           string         `json:"message,omitempty" jsonschema_description:"wave-commit only: commit message to use for 'git commit -m' when staging and committing the wave's changes."`
+	CLICommand        string         `json:"cliCommand,omitempty" jsonschema_description:"log-cli only: the Bash command that was executed."`
+	CLIExitCode       int            `json:"cliExitCode,omitempty" jsonschema_description:"log-cli only: the exit code of the command."`
+	CLIOutput         string         `json:"cliOutput,omitempty" jsonschema_description:"log-cli only: first ~500 characters of command output."`
 }
 
 // ---------------------------------------------------------------------------
@@ -396,6 +399,8 @@ func executeState(root, workDir string, in ExecuteStateIn, now func() time.Time)
 		return execActionLedgerCheckout(root, in, now)
 	case "ledger_status":
 		return execActionLedgerStatus(root, in, now)
+	case "log-cli":
+		return execActionLogCLI(root, workDir, in)
 	default:
 		return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("unknown action %q", in.Action)}
 	}
@@ -3259,4 +3264,32 @@ func execActionLedgerStatus(root string, in ExecuteStateIn, now func() time.Time
 		"workers":        workers,
 		"stalledWorkers": stalledWorkers,
 	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Action: log-cli
+// ---------------------------------------------------------------------------
+
+// execActionLogCLI logs a CLI execution to the evidence JSONL file.
+func execActionLogCLI(root, workDir string, in ExecuteStateIn) (any, error) {
+	branch, err := execResolveBranch(in.Branch, workDir)
+	if err != nil {
+		return nil, err
+	}
+
+	entry := CLIEvidenceEntry{
+		Timestamp:  time.Now().UTC().Format(time.RFC3339),
+		Pipeline:   "execute",
+		Wave:       in.Wave,
+		Branch:     branch,
+		Command:    in.CLICommand,
+		ExitCode:   in.CLIExitCode,
+		OutputHead: in.CLIOutput,
+	}
+
+	if err := appendCLIEvidence(root, entry); err != nil {
+		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("log-cli: %s", err.Error()), Cause: err}
+	}
+
+	return map[string]any{"ok": true, "action": "log-cli"}, nil
 }

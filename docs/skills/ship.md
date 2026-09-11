@@ -121,3 +121,6 @@ again.
   per-step automation setting in your project config controls whether
   individual steps pause even when `--auto` is off — the two do not imply
   each other, so check both if a step pauses (or doesn't) unexpectedly.
+- **Promoting an RC to final doesn't need a new PR.** Use the "Promote Release" GitHub
+  Actions workflow (Actions → Promote Release → Run workflow) to turn the latest RC tag
+  into a final release at the same tested commit. See [versioning docs](../versioning.md#promoting-rc-to-final-release).

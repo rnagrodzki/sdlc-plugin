@@ -261,12 +261,12 @@ func TestRulesetCheck_DetectsRulesetsAndClassicProtection(t *testing.T) {
 	}
 	foundCompatNote := false
 	for _, n := range out.Notes {
-		if strings.Contains(n, "changelogMethod") {
+		if strings.Contains(n, "method") {
 			foundCompatNote = true
 		}
 	}
 	if !foundCompatNote {
-		t.Errorf("expected a note explaining changelogMethod impact, got %v", out.Notes)
+		t.Errorf("expected a note explaining method impact, got %v", out.Notes)
 	}
 }
 
@@ -329,6 +329,76 @@ func TestRulesetCheck_GhUnavailable(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected a note mentioning gh, got %v", out.Notes)
+	}
+}
+
+// --- scaffoldNextGuidance (ScaffoldCIOut.Next) tests ---
+
+// TestScaffoldNextGuidance_ProtectionDetected verifies that when branch
+// protection is active, Next explains all three mitigation options and
+// points at /setup --only version.
+func TestScaffoldNextGuidance_ProtectionDetected(t *testing.T) {
+	next := scaffoldNextGuidance(RulesetCheckResult{
+		HasRulesets:   true,
+		DefaultBranch: "main",
+	})
+
+	required := []string{
+		`version.method to "pr"`,
+		".sdlc-v2/config.json",
+		"bypass actor",
+		"Bypass list",
+		"GitHub App token",
+		"Contents:write",
+		"GITHUB_TOKEN",
+		"/setup --only version",
+	}
+	for _, want := range required {
+		if !strings.Contains(next, want) {
+			t.Errorf("expected Next to mention %q, got: %s", want, next)
+		}
+	}
+
+	// Also reachable via classic protection alone (no rulesets).
+	next = scaffoldNextGuidance(RulesetCheckResult{
+		HasClassicProt: true,
+		DefaultBranch:  "main",
+	})
+	if !strings.Contains(next, "three options") {
+		t.Errorf("expected Next to mention three options for classic protection, got: %s", next)
+	}
+}
+
+// TestScaffoldNextGuidance_NoProtection verifies that when no branch
+// protection is detected, Next confirms both push and pr methods will work.
+func TestScaffoldNextGuidance_NoProtection(t *testing.T) {
+	next := scaffoldNextGuidance(RulesetCheckResult{})
+
+	for _, want := range []string{`"push"`, `"pr"`} {
+		if !strings.Contains(next, want) {
+			t.Errorf("expected Next to mention %s, got: %s", want, next)
+		}
+	}
+	if strings.Contains(next, "three options") {
+		t.Errorf("expected no-protection Next to omit protection guidance, got: %s", next)
+	}
+}
+
+// TestScaffoldCI_PopulatesNext verifies scaffoldCI wires Protection into Next
+// end-to-end (no git remote in the temp root, so no protection is detected).
+func TestScaffoldCI_PopulatesNext(t *testing.T) {
+	root := t.TempDir()
+
+	out, err := scaffoldCI(root, false)
+	if err != nil {
+		t.Fatalf("scaffoldCI: %v", err)
+	}
+
+	if out.Next == "" {
+		t.Fatal("expected Next to be populated")
+	}
+	if !strings.Contains(out.Next, `"push"`) || !strings.Contains(out.Next, `"pr"`) {
+		t.Errorf("expected Next to confirm both delivery methods work, got: %s", out.Next)
 	}
 }
 

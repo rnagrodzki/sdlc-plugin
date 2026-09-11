@@ -492,6 +492,10 @@ func ingestLegacy(mainRoot string) ([]string, error) {
 		ingested = append(ingested, ".claude/sdlc.json")
 		for _, key := range []string{"version", "jira", "commit", "pr", "plan", "execute"} {
 			if v, ok := sdlcData[key]; ok {
+				// Strip $schema from each section to match v5 format
+				if m, ok := v.(map[string]any); ok {
+					delete(m, "$schema")
+				}
 				if key == "version" {
 					v = migrateVersionShape(v)
 				}
@@ -500,11 +504,13 @@ func ingestLegacy(mainRoot string) ([]string, error) {
 		}
 		if v, ok := sdlcData["ship"]; ok {
 			if m, ok := v.(map[string]any); ok {
+				delete(m, "$schema")
 				localCfg["ship"] = m
 			}
 		}
 		if v, ok := sdlcData["review"]; ok {
 			if m, ok := v.(map[string]any); ok {
+				delete(m, "$schema")
 				localCfg["review"] = m
 			}
 		}

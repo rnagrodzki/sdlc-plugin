@@ -19,25 +19,26 @@ the proposed action plan.
 
 ## Scope of This Port
 
-This port does not classify review threads (outstanding/resolved/self-replied/stale); read
-the raw PR view/checks output and use judgment to identify unresolved feedback. Automatic
-per-thread reply/resolve is not supported.
+Thread classification (outstanding/replied/self-replied) is available via the
+`received_review_verify` tool — see Step 1b (informing initial triage) and Step 12.5
+(post-reply verification). Automatic per-thread resolution is still not supported.
 
 Concretely: the `received_review_prepare` tool returns only
 `{version, timestamp, pr:{number,owner,repo}, view, checks, plugin_version}` — a PR overview
-(`gh pr view`) and CI status (`gh pr checks`), nothing more. There is no per-thread
-`status` field, no `flags` object, no `reply_footer`, and no GraphQL review-thread ID. Every
-decision this skill made in a previous version by reading a pre-computed manifest field is
-now made by the model reading raw output and applying judgment instead — Steps 2–9 below
-already work this way and are unaffected. Two capabilities from a previous version are not
-available here and are not simulated:
+(`gh pr view`) and CI status (`gh pr checks`), nothing more; it does not classify threads.
+Classification comes from the separate `received_review_verify` tool instead, which returns
+`{version, timestamp, pr, threads, outstanding, replied, total}` — each entry in `threads`
+carries a `status` field (`outstanding` | `replied` | `self-replied`). There is still no
+`flags` object, no `reply_footer`, and no GraphQL review-thread ID exposed by either tool.
+Every decision this skill made in a previous version by reading a pre-computed manifest field
+is now made by the model reading raw output (plus `received_review_verify`'s structured
+status) and applying judgment — Steps 2–9 below already work this way and are unaffected. One
+capability from a previous version remains unavailable here and is not simulated:
 
-- **Auto-classification of thread state** (which comments are outstanding vs. already
-  resolved vs. already self-replied vs. stale). Step 1, below, always re-fetches the current
-  comment list live and expects the model to judge which are already addressed.
-- **Automatic thread resolution.** This skill can post replies (Step 12), but it does not
-  call the GitHub GraphQL `resolveReviewThread` mutation — resolve threads manually in the
-  GitHub UI after confirming the reply addresses the feedback, or ask the user to.
+- **Automatic thread resolution.** This skill can post replies (Step 12) and verify reply
+  status (Step 12.5), but it does not call the GitHub GraphQL `resolveReviewThread`
+  mutation — resolve threads manually in the GitHub UI after confirming the reply addresses
+  the feedback, or ask the user to.
 
 There is likewise no per-user configuration surface for auto-fix-by-severity or
 auto-harden-by-default in this port (no tool resolves `.sdlc-v2/local.json` for this skill).
@@ -108,6 +109,14 @@ same thread from the PR author explaining or confirming a fix, or a comment whos
 line no longer differs from what it originally flagged. When in doubt, include the comment
 rather than silently drop it — the cost of asking about an already-resolved comment is far
 lower than the cost of silently skipping live feedback (see Scope of This Port, above).
+
+Cross-reference with `received_review_verify({ pr: <PR_NUMBER> })` when a PR number is
+available — it returns `{ threads, outstanding, replied, total }` with each thread's
+structured `status` (`outstanding` | `replied` | `self-replied`), which is more reliable than
+the judgment above for identifying already-addressed threads. This is best-effort: if
+`received_review_verify` fails (bad PR, no remote, gh not authed), note the failure and
+proceed with the raw data already gathered above — do not block skill completion on this
+check.
 
 **On persistent `gh` failure** (auth error, repo not found): show the error, ask the user to
 verify `gh auth status` and PR number/access, then stop. This is a permissions/auth issue —
@@ -476,6 +485,25 @@ Replied to N threads (all left open — resolve manually in the GitHub UI where 
 - M replied with pushback
 - J replied with skip reason
 ```
+
+---
+
+## Step 12.5 — VERIFY: Confirm All Threads Replied
+
+After posting replies, verify completeness:
+
+received_review_verify({ pr: <PR_NUMBER> })
+→ { threads, outstanding, replied, total }
+
+If `outstanding > 0`:
+1. List outstanding threads (path, line, reviewer, body snippet)
+2. For each: draft and post a reply (following Step 7 format)
+3. Re-verify. Max 2 verification rounds — if still outstanding after 2 rounds,
+   report remaining threads to user for manual handling.
+
+If `outstanding === 0`: proceed to report.
+
+Best-effort: if `received_review_verify` itself fails (bad PR, no remote, gh not authed), note the failure and proceed to report anyway — do not block skill completion on this check.
 
 ---
 

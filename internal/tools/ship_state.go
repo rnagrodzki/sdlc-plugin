@@ -39,9 +39,9 @@ import (
 // empty-string distinction for reason/error/result, are preserved without
 // literal typed struct fields (see detailIntPtr below).
 type ShipStateIn struct {
-	Action    string         `json:"action" jsonschema_description:"Operation to perform: init, begin-step, complete-step, start (legacy), complete (legacy), skip, fail, decide, defer, read, cleanup, cleanup-pipeline, gc, or migrate. Each action uses a subset of the other fields (unlisted fields are ignored)."`
+	Action    string         `json:"action" jsonschema_description:"Operation to perform: init, begin-step, complete-step, start (legacy), complete (legacy), skip, fail, decide, defer, read, cleanup, cleanup-pipeline, gc, migrate, or log-cli. Each action uses a subset of the other fields (unlisted fields are ignored)."`
 	Step      string         `json:"step,omitempty" jsonschema_description:"Pipeline step name. Required by begin-step, complete-step, start, complete, skip, fail, decide; ignored by other actions."`
-	Detail    map[string]any `json:"detail,omitempty" jsonschema_description:"Action-specific extra fields (e.g. branch, flags, outcome, result, reason, error, text, severity, file, title, line, force, ttlDays, dryRun, from, to, detail). See the action list for which sub-fields each action reads."`
+	Detail    map[string]any `json:"detail,omitempty" jsonschema_description:"Action-specific extra fields (e.g. branch, flags, outcome, result, reason, error, text, severity, file, title, line, force, ttlDays, dryRun, from, to, detail; log-cli reads branch, command, exitCode, outputHead, step). See the action list for which sub-fields each action reads."`
 	SessionID string         `json:"sessionId,omitempty" jsonschema_description:"Session identifier used by init to stamp the created state's sessionId field, for correlating this run with the calling session."`
 }
 
@@ -531,6 +531,10 @@ func shipState(root, workDir string, in ShipStateIn, now func() time.Time) (any,
 		return shipStateDeferredProposeFollowups(root)
 	case "deferred_resolve":
 		return shipStateDeferredResolve(root, in)
+
+	// CLI evidence logging — persistent JSONL store that survives state-file GC.
+	case "log-cli":
+		return shipStateLogCLI(root, workDir, in)
 
 	default:
 		return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("unknown ship_state action %q", in.Action)}
@@ -1647,6 +1651,39 @@ func shipStateDeferredProposeFollowups(root string) (any, error) {
 		"groups":    groups,
 		"display":   summary,
 	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Action: log-cli
+// ---------------------------------------------------------------------------
+
+// shipStateLogCLI logs a CLI execution to the evidence JSONL file.
+func shipStateLogCLI(root, workDir string, in ShipStateIn) (any, error) {
+	branch, err := execResolveBranch(detailStr(in.Detail, "branch"), workDir)
+	if err != nil {
+		return nil, err
+	}
+
+	exitCode := 0
+	if ptr := detailIntPtr(in.Detail, "exitCode"); ptr != nil {
+		exitCode = *ptr
+	}
+
+	entry := CLIEvidenceEntry{
+		Timestamp:  time.Now().UTC().Format(time.RFC3339),
+		Pipeline:   "ship",
+		Step:       detailStr(in.Detail, "step"),
+		Branch:     branch,
+		Command:    detailStr(in.Detail, "command"),
+		ExitCode:   exitCode,
+		OutputHead: detailStr(in.Detail, "outputHead"),
+	}
+
+	if err := appendCLIEvidence(root, entry); err != nil {
+		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("log-cli: %s", err.Error()), Cause: err}
+	}
+
+	return map[string]any{"ok": true, "action": "log-cli"}, nil
 }
 
 // detailInt64 reads a numeric value from the detail map as int64.
