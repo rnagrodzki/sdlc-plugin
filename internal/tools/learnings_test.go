@@ -114,3 +114,200 @@ func TestLearningsLogUnknownActionRejected(t *testing.T) {
 		t.Fatal("expected error for unknown action, got nil")
 	}
 }
+
+// appendLearningsEntries appends each entry in order, failing the test on the
+// first error.
+func appendLearningsEntries(t *testing.T, root string, entries ...string) {
+	t.Helper()
+	for _, e := range entries {
+		if _, err := learningsLog(root, LearningsLogIn{Action: "append", Entry: e}); err != nil {
+			t.Fatalf("append %q: %v", e, err)
+		}
+	}
+}
+
+// readLearningsLog returns the raw content of the learnings log file.
+func readLearningsLog(t *testing.T, root string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root, paths.DataDir, "learnings", "log.md"))
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	return string(data)
+}
+
+func TestLearningsLog_Remove(t *testing.T) {
+	t.Run("removes single entry and preserves header", func(t *testing.T) {
+		root := t.TempDir()
+		appendLearningsEntries(t, root, "## one", "## two", "## three")
+
+		out, err := learningsLog(root, LearningsLogIn{Action: "remove", Indices: []int{2}})
+		if err != nil {
+			t.Fatalf("remove: %v", err)
+		}
+		if !out.OK || !out.Changed || out.Action != "remove" {
+			t.Fatalf("unexpected output: %+v", out)
+		}
+
+		content := readLearningsLog(t, root)
+		if !strings.HasPrefix(content, "# SDLC Execution Learnings\n") {
+			t.Fatalf("expected header preserved, got %q", content)
+		}
+		if strings.Contains(content, "## two") {
+			t.Fatalf("expected entry 2 removed, got %q", content)
+		}
+		if !strings.Contains(content, "## one") || !strings.Contains(content, "## three") {
+			t.Fatalf("expected entries 1 and 3 to remain, got %q", content)
+		}
+	})
+
+	t.Run("nonexistent log returns error", func(t *testing.T) {
+		root := t.TempDir()
+		if _, err := learningsLog(root, LearningsLogIn{Action: "remove", Indices: []int{1}}); err == nil {
+			t.Fatal("expected error removing from nonexistent log, got nil")
+		}
+	})
+
+	t.Run("empty log returns error", func(t *testing.T) {
+		root := t.TempDir()
+		path := filepath.Join(root, paths.DataDir, "learnings", "log.md")
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(path, []byte(""), 0o644); err != nil {
+			t.Fatalf("write empty log: %v", err)
+		}
+		if _, err := learningsLog(root, LearningsLogIn{Action: "remove", Indices: []int{1}}); err == nil {
+			t.Fatal("expected error removing from empty log, got nil")
+		}
+	})
+}
+
+func TestLearningsLog_RemoveMultiple(t *testing.T) {
+	cases := []struct {
+		name    string
+		indices []int
+	}{
+		{"ascending order", []int{1, 3}},
+		{"descending order", []int{3, 1}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			appendLearningsEntries(t, root, "## one", "## two", "## three")
+
+			out, err := learningsLog(root, LearningsLogIn{Action: "remove", Indices: tc.indices})
+			if err != nil {
+				t.Fatalf("remove: %v", err)
+			}
+			if !out.Changed {
+				t.Fatalf("unexpected output: %+v", out)
+			}
+
+			content := readLearningsLog(t, root)
+			if strings.Contains(content, "## one") || strings.Contains(content, "## three") {
+				t.Fatalf("expected entries 1 and 3 removed, got %q", content)
+			}
+			if !strings.Contains(content, "## two") {
+				t.Fatalf("expected entry 2 to remain, got %q", content)
+			}
+		})
+	}
+}
+
+func TestLearningsLog_RemoveOutOfBounds(t *testing.T) {
+	cases := []struct {
+		name    string
+		indices []int
+	}{
+		{"zero index", []int{0}},
+		{"negative index", []int{-1}},
+		{"index beyond entry count", []int{3}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			appendLearningsEntries(t, root, "## one", "## two")
+
+			if _, err := learningsLog(root, LearningsLogIn{Action: "remove", Indices: tc.indices}); err == nil {
+				t.Fatalf("expected out-of-bounds error for indices %v, got nil", tc.indices)
+			}
+		})
+	}
+}
+
+func TestLearningsLog_RemoveEmptyIndices(t *testing.T) {
+	root := t.TempDir()
+	appendLearningsEntries(t, root, "## one")
+
+	_, err := learningsLog(root, LearningsLogIn{Action: "remove", Indices: []int{}})
+	if err == nil {
+		t.Fatal("expected error for empty indices, got nil")
+	}
+}
+
+func TestLearningsLog_RemoveAllEntries(t *testing.T) {
+	root := t.TempDir()
+	appendLearningsEntries(t, root, "## one", "## two", "## three")
+
+	out, err := learningsLog(root, LearningsLogIn{Action: "remove", Indices: []int{1, 2, 3}})
+	if err != nil {
+		t.Fatalf("remove all: %v", err)
+	}
+	if !out.OK || !out.Changed {
+		t.Fatalf("unexpected output: %+v", out)
+	}
+
+	content := readLearningsLog(t, root)
+	// File should be header-only with no trailing blank-entries block.
+	if content != "# SDLC Execution Learnings\n" {
+		t.Fatalf("expected header-only file, got %q", content)
+	}
+
+	// A subsequent append should produce the same layout as a fresh file.
+	if _, err := learningsLog(root, LearningsLogIn{Action: "append", Entry: "## after-remove"}); err != nil {
+		t.Fatalf("append after remove-all: %v", err)
+	}
+	content = readLearningsLog(t, root)
+	if !strings.HasPrefix(content, "# SDLC Execution Learnings\n\n## after-remove\n") {
+		t.Fatalf("expected clean header+entry layout after remove-all+append, got %q", content)
+	}
+}
+
+func TestLearningsLog_RemoveEchoesContent(t *testing.T) {
+	root := t.TempDir()
+	appendLearningsEntries(t, root, "## entry-alpha", "## entry-beta", "## entry-gamma")
+
+	out, err := learningsLog(root, LearningsLogIn{Action: "remove", Indices: []int{1, 3}})
+	if err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+
+	// Content should echo the removed entries.
+	if !strings.Contains(out.Content, "## entry-alpha") {
+		t.Fatalf("expected removed entry 1 in Content, got %q", out.Content)
+	}
+	if !strings.Contains(out.Content, "## entry-gamma") {
+		t.Fatalf("expected removed entry 3 in Content, got %q", out.Content)
+	}
+	if strings.Contains(out.Content, "## entry-beta") {
+		t.Fatalf("Content should not contain kept entry, got %q", out.Content)
+	}
+}
+
+func TestLearningsLog_AppendRejectsBlankLine(t *testing.T) {
+	root := t.TempDir()
+
+	_, err := learningsLog(root, LearningsLogIn{
+		Action: "append",
+		Entry:  "## heading\n\nSecond paragraph",
+	})
+	if err == nil {
+		t.Fatal("expected error for entry containing blank line, got nil")
+	}
+	if !strings.Contains(err.Error(), "blank line") {
+		t.Fatalf("expected blank-line error, got %q", err.Error())
+	}
+}

@@ -13,7 +13,7 @@
  *
  * Flow:
  *   1. Resolve target tag from CLI arg (e.g. "v1.3.0").
- *   2. git fetch --tags.
+ *   2. git fetch --tags --force.
  *   3. Find the latest RC tag matching <target>-rc* (highest RC number).
  *   4. Error if no RC exists, or if the final tag already exists.
  *   5. Resolve the RC tag's commit SHA — this exact commit becomes the
@@ -383,7 +383,7 @@ function main() {
   }
 
   // Step 2: Fetch tags.
-  execOrThrow('git fetch --tags', { cwd: repoRoot });
+  execOrThrow('git fetch --tags --force', { cwd: repoRoot });
 
   // Step 3/4: Find the latest RC tag for the target version.
   const rcTag = findLatestRCTag(repoRoot, tagPrefix, targetBase);

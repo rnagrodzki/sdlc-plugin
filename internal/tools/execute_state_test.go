@@ -101,6 +101,9 @@ func TestExecState_Init(t *testing.T) {
 	if m["migration"] != nil {
 		t.Errorf("migration = %v, want nil for already-current config", m["migration"])
 	}
+	if pa, ok := m["pipelineAuto"].(bool); !ok || pa {
+		t.Errorf("pipelineAuto = %v, want false (no ship state)", m["pipelineAuto"])
+	}
 	if _, statErr := os.Stat(filepath.Join(root, paths.DataDir, "config.json.bak")); statErr == nil {
 		t.Error("config.json.bak written for already-current config; want zero extra I/O")
 	}
@@ -197,6 +200,139 @@ func TestExecState_Init_MissingQuality(t *testing.T) {
 	if _, ok := err.(*mcpserver.DomainError); !ok {
 		t.Errorf("expected DomainError, got %T", err)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// init — pipelineAuto cross-read from ship state
+// ---------------------------------------------------------------------------
+
+// createShipState creates a ship state file with the given data for tests.
+func createShipState(t *testing.T, root, branch string, data map[string]any) {
+	t.Helper()
+	st, err := state.Init(root, "ship", branch, "")
+	if err != nil {
+		t.Fatalf("create ship state: %v", err)
+	}
+	for k, v := range data {
+		st.Data[k] = v
+	}
+	if err := state.Write(st); err != nil {
+		t.Fatalf("write ship state: %v", err)
+	}
+}
+
+func TestExecState_Init_PipelineAuto(t *testing.T) {
+	t.Run("no ship state returns false", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+
+		result, err := executeState(root, root, ExecuteStateIn{
+			Action:  "init",
+			Branch:  "feat/test",
+			Quality: "standard",
+		}, fixedClock(testNow))
+		if err != nil {
+			t.Fatalf("init: %v", err)
+		}
+		m := result.(map[string]any)
+		if pa, ok := m["pipelineAuto"].(bool); !ok || pa {
+			t.Errorf("pipelineAuto = %v, want false", m["pipelineAuto"])
+		}
+	})
+
+	t.Run("ship state flags.auto=true returns true", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+		createShipState(t, root, "feat/test", map[string]any{
+			"flags": map[string]any{"auto": true},
+		})
+
+		result, err := executeState(root, root, ExecuteStateIn{
+			Action:  "init",
+			Branch:  "feat/test",
+			Quality: "standard",
+		}, fixedClock(testNow))
+		if err != nil {
+			t.Fatalf("init: %v", err)
+		}
+		m := result.(map[string]any)
+		if pa, ok := m["pipelineAuto"].(bool); !ok || !pa {
+			t.Errorf("pipelineAuto = %v, want true", m["pipelineAuto"])
+		}
+	})
+
+	t.Run("ship state flags.auto=false returns false", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+		createShipState(t, root, "feat/test", map[string]any{
+			"flags": map[string]any{"auto": false},
+		})
+
+		result, err := executeState(root, root, ExecuteStateIn{
+			Action:  "init",
+			Branch:  "feat/test",
+			Quality: "standard",
+		}, fixedClock(testNow))
+		if err != nil {
+			t.Fatalf("init: %v", err)
+		}
+		m := result.(map[string]any)
+		if pa, ok := m["pipelineAuto"].(bool); !ok || pa {
+			t.Errorf("pipelineAuto = %v, want false", m["pipelineAuto"])
+		}
+	})
+
+	t.Run("ship state flags.auto string type returns false", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+		createShipState(t, root, "feat/test", map[string]any{
+			"flags": map[string]any{"auto": "true"},
+		})
+
+		result, err := executeState(root, root, ExecuteStateIn{
+			Action:  "init",
+			Branch:  "feat/test",
+			Quality: "standard",
+		}, fixedClock(testNow))
+		if err != nil {
+			t.Fatalf("init: %v", err)
+		}
+		m := result.(map[string]any)
+		if pa, ok := m["pipelineAuto"].(bool); !ok || pa {
+			t.Errorf("pipelineAuto = %v, want false (string \"true\" is not bool true)", m["pipelineAuto"])
+		}
+	})
+
+	t.Run("corrupt ship state returns false with warning", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+		// Create a valid ship state, then overwrite its file with corrupt JSON.
+		createShipState(t, root, "feat/test", map[string]any{})
+		shipSt, err := state.Find(root, "ship", "feat/test")
+		if err != nil || shipSt == nil {
+			t.Fatalf("find ship state for corruption: err=%v, st=%v", err, shipSt)
+		}
+		if err := os.WriteFile(shipSt.Path, []byte("{not json"), 0o644); err != nil {
+			t.Fatalf("corrupt ship state: %v", err)
+		}
+
+		result, err := executeState(root, root, ExecuteStateIn{
+			Action:  "init",
+			Branch:  "feat/test",
+			Quality: "standard",
+		}, fixedClock(testNow))
+		if err != nil {
+			t.Fatalf("init: %v", err)
+		}
+		m := result.(map[string]any)
+		if pa, ok := m["pipelineAuto"].(bool); !ok || pa {
+			t.Errorf("pipelineAuto = %v, want false (corrupt ship state)", m["pipelineAuto"])
+		}
+		warnings, ok := m["warnings"].([]string)
+		if !ok || len(warnings) == 0 {
+			t.Errorf("expected non-empty warnings for corrupt ship state, got %v", m["warnings"])
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------

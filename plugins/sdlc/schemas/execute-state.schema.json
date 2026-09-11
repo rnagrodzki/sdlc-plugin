@@ -199,6 +199,10 @@
       ],
       "description": "Number of the most recent wave-fail. Set by wave-fail (R-TASK-17)."
     },
+    "pipelineAuto": {
+      "type": "boolean",
+      "description": "True when this branch's ship state has flags.auto=true at init time, forwarded so the execute SKILL.md high-risk gate can skip a second approval prompt."
+    },
     "issues": {
       "type": "array",
       "description": "Structured issue accumulator appended by task-fail, wave-fail, and DONE_WITH_CONCERNS task-done calls (R-TASK-17). Mirrors deferredFindings in ship-state.schema.json.",
