@@ -21,8 +21,8 @@ import (
 
 // MigrateIn is the input for the migrate tool.
 type MigrateIn struct {
-	// Action selects the migration to run: "config" or "import".
-	Action string `json:"action" jsonschema_description:"Selects the migration to run: \"config\" (schema migration via configmigrate engine) or \"import\" (non-destructively imports config, templates, jira-templates, learnings, and review-dimensions from the legacy plugin directory)."`
+	// Action selects the migration to run: "config", "import", or "layout".
+	Action string `json:"action" jsonschema_description:"Selects the migration to run: \"config\" (schema migration via configmigrate engine), \"import\" (non-destructively imports config, templates, jira-templates, learnings, and review-dimensions from the legacy plugin directory), or \"layout\" (moves this plugin's own old state layout, execution/, into the current runs/ layout)."`
 	// DryRun, when true, reports what would change without writing.
 	DryRun bool `json:"dryRun" jsonschema_description:"When true, reports what would change without writing anything."`
 }
@@ -44,9 +44,11 @@ func migrate(root string, in MigrateIn) (MigrateOut, error) {
 		return migrateConfig(root, in.DryRun)
 	case "import":
 		return importFromOld(root, in.DryRun)
+	case "layout":
+		return migrateLayout(root, in.DryRun)
 	default:
 		return MigrateOut{}, &mcpserver.DomainError{
-			Msg: fmt.Sprintf("unknown migrate action %q; must be one of: config, import", in.Action),
+			Msg: fmt.Sprintf("unknown migrate action %q; must be one of: config, import, layout", in.Action),
 		}
 	}
 }
@@ -275,6 +277,183 @@ func importJSONFileMerge(root, name string, dryRun bool) (string, bool, error) {
 	return rel, true, nil
 }
 
+// ---------------------------------------------------------------------------
+// migrate layout action
+// ---------------------------------------------------------------------------
+
+// migrateLayout moves a user's old on-disk state layout, paths.DataDir +
+// "/execution" (see state.legacyStateDir), into the current layout,
+// paths.DataDir + "/" + paths.RunsSubdir (see state.stateDir — unexported,
+// so this mirrors its construction rather than importing it). Unlike
+// importFromOld's cross-plugin copy (which must tolerate a different
+// mountpoint for the legacy plugin's data dir), execution/ and runs/ are
+// always siblings under the same DataDir on the same filesystem, so entries
+// are moved with os.Rename rather than copied.
+//
+// execution/ is not flat: besides top-level state JSON files, it holds
+// per-runID working directories (fact sheets etc., mirroring the runID
+// directories runs/ itself holds — see execActionCleanup's runDir) and a
+// ledger/ directory that is itself a collection of per-runID
+// subdirectories (see ledgerDir). Because new runs already write directly
+// under runs/ledger/<runID>, runs/ledger/ is very likely to already exist
+// and contain live entries by the time this migration runs, so
+// execution/ledger/ is merged into runs/ledger/ child-by-child rather than
+// renamed as a single directory (a whole-directory os.Rename would fail
+// outright once the destination exists as a non-empty directory, and even
+// if it didn't, os.Rename silently replacing an existing directory is not
+// the "skip on conflict" behaviour this migration promises elsewhere).
+//
+// Every entry — top-level file, top-level runID directory, or ledger/
+// child — is moved independently. A name that already exists at the
+// destination is left untouched at the source and reported in Result as
+// skipped, rather than overwritten or aborting the rest of the migration.
+// A missing or empty execution/ directory is a successful no-op (the
+// migration is idempotent: running it again after a successful run, or on
+// a project that never had the old layout, is always OK:true).
+func migrateLayout(root string, dryRun bool) (MigrateOut, error) {
+	src := filepath.Join(root, paths.DataDir, "execution")
+	dst := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+
+	var changed []string
+	var skipped []string
+
+	if migrateDirExists(src) {
+		entries, err := os.ReadDir(src)
+		if err != nil {
+			return MigrateOut{}, &mcpserver.InfraError{
+				Msg:   fmt.Sprintf("read %s: %s", src, err.Error()),
+				Cause: err,
+			}
+		}
+
+		for _, e := range entries {
+			name := e.Name()
+
+			if e.IsDir() && name == "ledger" {
+				c, s, err := migrateLayoutMergeLedger(filepath.Join(src, name), filepath.Join(dst, name), dryRun)
+				if err != nil {
+					return MigrateOut{}, err
+				}
+				changed = append(changed, c...)
+				skipped = append(skipped, s...)
+				continue
+			}
+
+			label := paths.DataDir + "/" + paths.RunsSubdir + "/" + name
+			c, s, err := migrateLayoutMoveEntry(filepath.Join(src, name), filepath.Join(dst, name), label, e.IsDir(), dryRun)
+			if err != nil {
+				return MigrateOut{}, err
+			}
+			if c != "" {
+				changed = append(changed, c)
+			}
+			if s != "" {
+				skipped = append(skipped, s)
+			}
+		}
+	}
+
+	verb := "migrated"
+	if dryRun {
+		verb = "would-migrate"
+	}
+
+	var result string
+	switch {
+	case len(changed) > 0 && len(skipped) > 0:
+		result = fmt.Sprintf("%s: %v; skipped (name conflict): %v", verb, changed, skipped)
+	case len(changed) > 0:
+		result = fmt.Sprintf("%s: %v", verb, changed)
+	case len(skipped) > 0:
+		result = fmt.Sprintf("up-to-date: skipped (name conflict): %v", skipped)
+	default:
+		result = "up-to-date: no legacy execution/ layout to migrate"
+	}
+
+	return MigrateOut{
+		OK:      true,
+		Action:  "layout",
+		DryRun:  dryRun,
+		Result:  result,
+		Changed: changed,
+	}, nil
+}
+
+// migrateLayoutMergeLedger merges execution/ledger/'s children individually
+// into runs/ledger/. Each child is a per-runID directory (see ledgerDir),
+// so the same per-entry move-or-skip logic as migrateLayoutMoveEntry
+// applies to each one; only the parent ledger/ directory itself is never
+// renamed as a unit. A missing execution/ledger/ (e.g. a legacy layout
+// predating the ledger feature) is a no-op, not an error.
+func migrateLayoutMergeLedger(src, dst string, dryRun bool) (changed, skipped []string, err error) {
+	entries, rdErr := os.ReadDir(src)
+	if rdErr != nil {
+		if os.IsNotExist(rdErr) {
+			return nil, nil, nil
+		}
+		return nil, nil, &mcpserver.InfraError{
+			Msg:   fmt.Sprintf("read %s: %s", src, rdErr.Error()),
+			Cause: rdErr,
+		}
+	}
+
+	for _, e := range entries {
+		name := e.Name()
+		label := paths.DataDir + "/" + paths.RunsSubdir + "/ledger/" + name
+		c, s, mErr := migrateLayoutMoveEntry(filepath.Join(src, name), filepath.Join(dst, name), label, e.IsDir(), dryRun)
+		if mErr != nil {
+			return nil, nil, mErr
+		}
+		if c != "" {
+			changed = append(changed, c)
+		}
+		if s != "" {
+			skipped = append(skipped, s)
+		}
+	}
+	return changed, skipped, nil
+}
+
+// migrateLayoutMoveEntry moves one execution/ entry (file or directory) to
+// its corresponding location under runs/, or reports it as skipped when
+// the destination name is already taken.
+//
+// The destination is pre-checked with os.Stat (via migrateDirExists /
+// migrateFileExists) before attempting any move — os.Rename does NOT
+// reliably error on an existing destination: replacing an existing file,
+// or an existing *empty* directory, succeeds silently on Unix. Relying on
+// Rename's own error to detect conflicts would risk exactly the silent
+// overwrite this migration must never do, so the pre-check is load-bearing,
+// not just an optimization.
+func migrateLayoutMoveEntry(src, dst, label string, isDir bool, dryRun bool) (changed, skipped string, err error) {
+	if migrateDirExists(dst) || migrateFileExists(dst) {
+		return "", label, nil
+	}
+
+	displayLabel := label
+	if isDir {
+		displayLabel += "/"
+	}
+
+	if dryRun {
+		return displayLabel, "", nil
+	}
+
+	if mkErr := os.MkdirAll(filepath.Dir(dst), 0o755); mkErr != nil {
+		return "", "", &mcpserver.InfraError{
+			Msg:   fmt.Sprintf("create %s directory: %s", filepath.Dir(dst), mkErr.Error()),
+			Cause: mkErr,
+		}
+	}
+	if rnErr := os.Rename(src, dst); rnErr != nil {
+		return "", "", &mcpserver.InfraError{
+			Msg:   fmt.Sprintf("move %s: %s", src, rnErr.Error()),
+			Cause: rnErr,
+		}
+	}
+	return displayLabel, "", nil
+}
+
 // copyDir recursively copies the src directory tree to dst, creating dst
 // and any needed subdirectories. Used by importFromOld for directory-shaped
 // legacy data (jira-templates/, learnings/, review-dimensions/).
@@ -345,7 +524,7 @@ func copyFile(src, dst string) error {
 // RegisterMigrateTools registers the migrate tool on the server.
 func RegisterMigrateTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "migrate",
-		"Runs a legacy migration. Actions: config (schema migration via configmigrate engine), import (non-destructively imports config, templates, jira-templates, learnings, and review-dimensions from the old plugin's "+paths.LegacyDataDir+"/ directory into "+paths.DataDir+"/ — config.json and local.json merge per top-level key so already-scaffolded empty files still receive legacy sections, everything else is skipped whole-file when the destination already exists).",
+		"Runs a legacy migration. Actions: config (schema migration via configmigrate engine), import (non-destructively imports config, templates, jira-templates, learnings, and review-dimensions from the old plugin's "+paths.LegacyDataDir+"/ directory into "+paths.DataDir+"/ — config.json and local.json merge per top-level key so already-scaffolded empty files still receive legacy sections, everything else is skipped whole-file when the destination already exists), layout (moves this plugin's own old state layout, "+paths.DataDir+"/execution/, into the current "+paths.DataDir+"/"+paths.RunsSubdir+"/ layout — state files, per-run directories, and ledger/ entries are each moved independently; a name conflict at the destination is skipped and reported rather than overwritten).",
 		func(ctx mcpserver.Ctx, in MigrateIn) (MigrateOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

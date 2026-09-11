@@ -322,6 +322,17 @@ func setupInit(root string, in SetupInitIn) (SetupInitOut, error) {
 		}
 	}
 
+	// 1b. Create .sdlc-v2/runs/ directory. state.Init also creates this
+	// lazily on first run, but scaffolding it eagerly here makes it
+	// discoverable right after setup, matching the other managed
+	// subdirectories setup owns (e.g. review-dimensions/).
+	if err := os.MkdirAll(filepath.Join(sdlcDir, paths.RunsSubdir), 0o755); err != nil {
+		return SetupInitOut{}, &mcpserver.InfraError{
+			Msg:   fmt.Sprintf("create %s/%s directory: %s", paths.DataDir, paths.RunsSubdir, err.Error()),
+			Cause: err,
+		}
+	}
+
 	// 2. Ensure .sdlc-v2/.gitignore with managed block.
 	sdlcGitignorePath := filepath.Join(sdlcDir, ".gitignore")
 	action, err := ensureManagedBlock(
