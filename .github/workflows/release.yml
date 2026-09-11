@@ -30,8 +30,8 @@ jobs:
         id: prerelease
         run: |
           ref="${GITHUB_REF_NAME:-}"
-          remainder=$(echo "$ref" | sed -E 's/^v?[0-9]+\.[0-9]+\.[0-9]+//')
-          if [ -n "$remainder" ]; then
+          is_pre=$(node .github/scripts/is-prerelease-tag.cjs "$ref")
+          if [ "$is_pre" = "true" ]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "::notice::Ref $ref is a pre-release — skipping binary build."
           fi

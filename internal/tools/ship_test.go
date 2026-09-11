@@ -1087,6 +1087,21 @@ func TestMergeShipFlags_ExplicitPreReleaseTakesPrecedenceOverPolicy(t *testing.T
 	}
 }
 
+// TestMergeShipFlags_PreReleasePolicyAlwaysRC_OverridesCLI verifies that
+// preReleasePolicy: "always-rc" overrides an explicit CLI bump (e.g. "patch")
+// to "rc" and records the source as enforced-over-cli.
+func TestMergeShipFlags_PreReleasePolicyAlwaysRC_OverridesCLI(t *testing.T) {
+	versionCfg := map[string]any{"preReleasePolicy": "always-rc"}
+	merged, sources := mergeShipFlags(ShipPrepareIn{Bump: "patch"}, map[string]any{}, versionCfg)
+
+	if b, ok := merged["bump"].(string); !ok || b != "rc" {
+		t.Errorf("Flags[bump] = %v, want %q (overridden by preReleasePolicy over cli)", merged["bump"], "rc")
+	}
+	if src := sources["bump"]; src != "config (version.preReleasePolicy enforced over cli)" {
+		t.Errorf("Sources[bump] = %q, want %q", src, "config (version.preReleasePolicy enforced over cli)")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ship_verify_side_effect tests
 // ---------------------------------------------------------------------------
