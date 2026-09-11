@@ -415,7 +415,7 @@ func RegisterExecuteStateTools(s *mcpserver.Server) {
 Pass "action" to select an operation. Each action uses a subset of the input fields (unlisted fields are ignored):
 
 - wave-compute: Stateless — parses the plan file at planPath and computes the wave schedule (no state file read/write). Requires planPath. Optional: extraDepsJson (JSON array of {task, dependsOn, reason} merged with each task's explicit "Depends on" field). Returns {route, preWave, waves[{number, tasks[], expectedFiles[], verificationHint}]}.
-- init: Create execution state. Runs the same config auto-migration gate as ship_prepare first (migrates and backs up an outdated config, or fails with a /setup pointer if none exists); result may include a "migration" report. Requires branch, quality. Optional: totalTasks, plannedTaskIds, planPath, planHash.
+- init: Create execution state. Runs the same config auto-migration gate as ship_prepare first (migrates and backs up an outdated config, or fails with a /setup pointer if none exists); result may include a "migration" report. Returns {filePath, pipelineAuto (true when this branch's ship state has flags.auto=true — forwarded so the execute SKILL.md high-risk gate can skip a second approval), warnings? (e.g. this branch's ship state exists but is unreadable), migration?}. Requires branch, quality. Optional: totalTasks, plannedTaskIds, planPath, planHash.
 - wave-start: Begin a wave. Returns narration (summary, display with task list + ETA, next). Requires wave. Optional: branch, tasksJson, runId (for fact sheets), detail ("concise"|"full"). If the run recorded a planHash at init, the plan file's current sha256 is compared against it first; a mismatch returns {halt:true, reason:"plan hash mismatch"} instead of narration and does not start the wave. An unreadable/missing plan file does not halt — it proceeds with a warning in the response's "warnings" field.
 - wave-done: Complete a wave. Returns narration (summary, display with outcomes, timing, next wave preview + ETA). Records wave duration to TimingsStore. Requires wave. Optional: branch, decisions, status, detail ("concise"|"full").
 - wave-fail: Fail a wave. Returns narration (summary, display with failure cause). Requires wave. Optional: branch, timedOut, error (failure cause, recorded as an issue and in failedWave), status, detail ("concise"|"full").
@@ -1439,13 +1439,20 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 	// Cross-read ship state for pipeline auto-mode: when execute was
 	// dispatched from /ship and the user already approved --auto there,
 	// forward that into pipelineAuto so the high-risk gate (execute
-	// SKILL.md) doesn't force a second approval. Mirrors the
-	// deferredFindings cross-read in execActionReport above — a
-	// missing/unreadable ship state file (standalone execute, never
-	// dispatched via /ship) just leaves pipelineAuto false rather than
-	// failing this init.
+	// SKILL.md) doesn't force a second approval.
+	//
+	// state.Find returns (nil, nil) when no matching file exists, and a
+	// non-nil error only on I/O or JSON-parse failures. We distinguish:
+	//   - (nil, nil): no ship state → pipelineAuto stays false, silently.
+	//   - (st, nil):  ship state found → read flags.auto.
+	//   - (_, err):   genuine I/O/parse failure → pipelineAuto stays false,
+	//                 but the error is surfaced as a warning so the caller
+	//                 can diagnose why auto-forward didn't happen.
 	st.Data["pipelineAuto"] = false
-	if shipSt, err := state.Find(root, "ship", in.Branch); err == nil && shipSt != nil {
+	var initWarnings []string
+	if shipSt, shipErr := state.Find(root, "ship", in.Branch); shipErr != nil {
+		initWarnings = append(initWarnings, fmt.Sprintf("ship state unreadable: %s", shipErr.Error()))
+	} else if shipSt != nil {
 		if flags, ok := shipSt.Data["flags"].(map[string]any); ok {
 			if auto, ok := flags["auto"].(bool); ok && auto {
 				st.Data["pipelineAuto"] = true
@@ -1458,6 +1465,9 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 	}
 
 	result := map[string]any{"filePath": st.Path, "pipelineAuto": st.Data["pipelineAuto"]}
+	if len(initWarnings) > 0 {
+		result["warnings"] = initWarnings
+	}
 	if migrationReport != nil {
 		result["migration"] = migrationReport
 	}
