@@ -109,6 +109,12 @@ When `openCount` is 0, render nothing.
 
 **10c. Record run history.** `ship_state({action:"history_record", detail:{skill:"ship", branch:<branch>, outcome:<"success"|"failure"|"partial">, duration_ms:<elapsed>, steps:<step names>, version:<step 6b's held bump value, when the pr step ran with a resolved release level>}})`. There is no version-producing step anymore — `detail.version` is repurposed to hold the bump value forwarded to the pr step (see `### pr` below): `flags.bump` as resolved by `ship_prepare`, unless step 6b's interactive prompt let the user override it, in which case the override. Not a semver string a version step used to compute. Omit it when `pr` wasn't configured for this run. Non-fatal — if recording fails, log a warning and continue.
 
+**10d. Execution report.** Call `execute_state({action:"report"})` → either `{skipped:true}` or a full `ExecutionReportOut` (`branch`, `runId`, `planPath`, `startedAt`, `duration`, `format`, `waves[]`, `totalTasks`/`completedTasks`/`failedTasks`/`skippedTasks`, `drifts`/`errors`/`warnings`/`concerns`, `pendingIssueDrafts`, `deferredFindings`, `decisions`). Gated by `automation.report.enabled` (config-owned, not a flag) — this step never prompts.
+- `{skipped:true}`: skip silently, no output.
+- `format:"json"`: write the returned object verbatim as JSON to `.sdlc-v2/reports/<runId>-report.json`.
+- `format:"md"` (default): render markdown with these sections, in order — Header (`branch`, `runId`, `duration`, task totals), wave-by-wave breakdown (`waves[]`: status, duration, committed SHA, each task's status/complexity/risk/files), timing summary, drift log (`drifts`), errors and concerns (`errors`, `warnings`, `concerns`), deferred follow-ups and pending issue drafts (`deferredFindings`, `pendingIssueDrafts`), decisions (`decisions`) — then write it to `.sdlc-v2/reports/<runId>-report.md` via the Write tool.
+- Either way, print the written file's path to the user as the last line of the pipeline. Non-fatal — if the report action errors, log a warning and continue.
+
 ---
 
 ## Steps

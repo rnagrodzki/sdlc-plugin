@@ -36,7 +36,7 @@ import (
 // ExecuteStateIn carries the merged input for the execute_state tool's
 // actions. Each field is consumed by one or more actions (noted in comments).
 type ExecuteStateIn struct {
-	Action            string         `json:"action" jsonschema_description:"Selects the operation: wave-compute, init, wave-start, wave-done, wave-fail, wave-committed, wave-commit, task-done, task-fail, task-context, context, read, cleanup, gc, summarize-prior-wave-context, wave-split, verify-completeness, wave-progress, resume-reset, ledger_checkin, ledger_checkout, ledger_status, log-cli, drift-log, or issue-draft. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
+	Action            string         `json:"action" jsonschema_description:"Selects the operation: wave-compute, init, wave-start, wave-done, wave-fail, wave-committed, wave-commit, task-done, task-fail, task-context, context, read, cleanup, gc, summarize-prior-wave-context, wave-split, verify-completeness, wave-progress, resume-reset, ledger_checkin, ledger_checkout, ledger_status, log-cli, drift-log, issue-draft, or report. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
 	Branch            string         `json:"branch,omitempty" jsonschema_description:"Git branch the execution state belongs to. Most actions accept it to scope the state file; falls back to the current branch when omitted."`
 	Quality           string         `json:"quality,omitempty" jsonschema_description:"Quality level to stamp on a newly initialized run (init only). Required — no config fallback exists for this field."`
 	TotalTasks        int            `json:"totalTasks,omitempty" jsonschema_description:"Total planned task count for a newly initialized run (init only)."`
@@ -129,6 +129,78 @@ type DriftLogOut struct {
 type IssueDraftOut struct {
 	Added       bool `json:"added"`
 	TotalDrafts int  `json:"totalDrafts"`
+}
+
+// ExecutionReportOut is the read-only end-of-run report returned by the
+// report action (KD-11): everything ship step 10d needs to render (or
+// forward as JSON) a full account of the run. Format tells the caller how
+// to render it — "json" (write the struct verbatim) or "md" (render as
+// markdown) — sourced from config.Automation.Report.Format, defaulting to
+// "md". RunID is derived the same way wave-start's runId is (from the
+// state file's startedAt — see execDeriveRunID) so the caller never has to
+// invent a filename on its own.
+type ExecutionReportOut struct {
+	// Metadata
+	Branch    string `json:"branch"`
+	RunID     string `json:"runId,omitempty"`
+	PlanPath  string `json:"planPath,omitempty"`
+	StartedAt string `json:"startedAt"`
+	Duration  string `json:"duration"`
+	Format    string `json:"format"`
+
+	// Waves + Tasks
+	Waves []WaveReport `json:"waves"`
+
+	// Aggregates
+	TotalTasks     int `json:"totalTasks"`
+	CompletedTasks int `json:"completedTasks"`
+	FailedTasks    int `json:"failedTasks"`
+	SkippedTasks   int `json:"skippedTasks"`
+
+	// Issues by category — see execReportBucketIssues for the exact
+	// partitioning rule.
+	Drifts   []StateIssue `json:"drifts"`
+	Errors   []StateIssue `json:"errors"`
+	Warnings []StateIssue `json:"warnings"`
+	Concerns []StateIssue `json:"concerns"`
+
+	// Follow-ups
+	PendingIssueDrafts []any `json:"pendingIssueDrafts,omitempty"`
+	DeferredFindings   []any `json:"deferredFindings,omitempty"`
+
+	// Decisions
+	Decisions []string `json:"decisions,omitempty"`
+}
+
+// WaveReport is one wave's entry in ExecutionReportOut.Waves.
+type WaveReport struct {
+	Number       int          `json:"number"`
+	Status       string       `json:"status"`
+	StartedAt    string       `json:"startedAt,omitempty"`
+	CompletedAt  string       `json:"completedAt,omitempty"`
+	Duration     string       `json:"duration,omitempty"`
+	Tasks        []TaskReport `json:"tasks"`
+	CommittedSHA string       `json:"committedSha,omitempty"`
+}
+
+// TaskReport is one task's entry in WaveReport.Tasks. Duration is left
+// empty (omitted) — task-done records only completedAt, not a per-task
+// startedAt, so no duration is derivable from the data execute_state
+// already stores.
+type TaskReport struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	Complexity string `json:"complexity,omitempty"`
+	Risk       string `json:"risk,omitempty"`
+	Duration   string `json:"duration,omitempty"`
+	Files      string `json:"filesChanged,omitempty"`
+}
+
+// ReportSkippedOut is returned by the report action when
+// config.Automation.Report.Enabled is false.
+type ReportSkippedOut struct {
+	Skipped bool `json:"skipped"`
 }
 
 // ExecTaskNarrationOut is the narrated output for task-level execute_state
@@ -359,6 +431,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - ledger_status: List worker statuses for a run. Requires runId. Optional: timeoutSeconds.
 - drift-log: Append a drift issue and evaluate the server-side stop condition. When accumulated error-severity drift issues exceed the threshold (max(minErrorFloor, ceil(maxErrorRate * totalTasks))), returns {halt:true}. Requires driftSeverity (error|warning|info), driftSummary. Optional: driftDetail, wave, taskId, branch.
 - issue-draft: Append a pending GH issue draft to the state file's pendingIssueDrafts list (append-only — never goes through the context action, never overwrites). Requires issueDraftTitle, issueDraftBody. Optional: issueDraftLabels, taskId, branch. Returns {added:true, totalDrafts:N}.
+- report: Assemble the end-of-run execution report (KD-11), read-only (never writes state). Gated by config automation.report: {enabled:false} returns {skipped:true} immediately and nothing else. Otherwise returns {branch, runId, planPath, startedAt, duration, format, waves[{number, status, startedAt, completedAt, duration, tasks[{id, name, status, complexity, risk, filesChanged}], committedSha}], totalTasks, completedTasks, failedTasks, skippedTasks, drifts, errors, warnings, concerns, pendingIssueDrafts, deferredFindings, decisions}. format is "json" or "md" (default) from config — tells the caller whether to write the returned data as JSON verbatim or render it as markdown itself. Optional: branch.
 
 Returns a JSON envelope: {"ok":true, "data":{...}} on success, {"ok":false, "code":"...", "error":"..."} on failure.`,
 		func(ctx mcpserver.Ctx, in ExecuteStateIn) (any, error) {
@@ -438,6 +511,8 @@ func executeState(root, workDir string, in ExecuteStateIn, now func() time.Time)
 		return execActionDriftLog(root, workDir, in, now)
 	case "issue-draft":
 		return execActionIssueDraft(root, workDir, in, now)
+	case "report":
+		return execActionReport(root, workDir, in, now)
 	default:
 		return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("unknown action %q", in.Action)}
 	}
@@ -897,6 +972,177 @@ func execActionIssueDraft(root, workDir string, in ExecuteStateIn, now func() ti
 	}
 
 	return IssueDraftOut{Added: true, TotalDrafts: total}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Action: report
+// ---------------------------------------------------------------------------
+
+// execActionReport assembles the end-of-run execution report (KD-11):
+// waves+tasks, aggregate counts, issues bucketed into drifts/errors/
+// warnings/concerns, pending issue drafts, deferred findings, and
+// decisions. Mirrors execActionRead's state-loading pattern — read-only,
+// never calls state.Write.
+//
+// Behavior is gated by config.Automation.Report: Enabled == false returns
+// ReportSkippedOut{Skipped: true} immediately, before any state is loaded.
+// Format ("md", default, or "json") is echoed on the result so the caller
+// (ship step 10d) knows whether to render markdown itself or write the
+// JSON verbatim. config.Read may fail in bare repos/tests — falls back to
+// the compiled defaults (Enabled: true, Format: "md"), matching
+// execActionDriftLog's tolerance for a missing/unreadable config.
+func execActionReport(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
+	enabled := true
+	format := "md"
+	if cfg, err := config.Read(root); err == nil && cfg.Automation != nil && cfg.Automation.Report != nil {
+		enabled = cfg.Automation.Report.Enabled
+		format = cfg.Automation.Report.Format
+	}
+	if !enabled {
+		return ReportSkippedOut{Skipped: true}, nil
+	}
+
+	branch, err := execResolveBranch(in.Branch, workDir)
+	if err != nil {
+		return nil, err
+	}
+	st, err := execFindState(root, branch)
+	if err != nil {
+		return nil, err
+	}
+	if err := execAssertBranch(st, branch); err != nil {
+		return nil, err
+	}
+
+	out := ExecutionReportOut{
+		Branch: branch,
+		Format: format,
+		RunID:  execDeriveRunID(st.Data, 0),
+	}
+	out.PlanPath, _ = st.Data["planPath"].(string)
+	out.StartedAt, _ = st.Data["startedAt"].(string)
+	out.TotalTasks = execToInt(st.Data["totalTasks"])
+	if out.StartedAt != "" {
+		if d, ok := pipeline.Duration(out.StartedAt, now().UTC().Format(time.RFC3339)); ok {
+			out.Duration = pipeline.Humanize(d)
+		}
+	}
+
+	for _, w := range execEnsureWaves(st.Data) {
+		wm, ok := w.(map[string]any)
+		if !ok {
+			continue
+		}
+		wr := WaveReport{Number: execToInt(wm["number"])}
+		wr.Status, _ = wm["status"].(string)
+		wr.StartedAt, _ = wm["startedAt"].(string)
+		wr.CompletedAt, _ = wm["completedAt"].(string)
+		wr.CommittedSHA, _ = wm["committedSha"].(string)
+		if wr.StartedAt != "" && wr.CompletedAt != "" {
+			if d, ok := pipeline.Duration(wr.StartedAt, wr.CompletedAt); ok {
+				wr.Duration = pipeline.Humanize(d)
+			}
+		}
+
+		tasks, _ := wm["tasks"].([]any)
+		wr.Tasks = make([]TaskReport, 0, len(tasks))
+		for _, t := range tasks {
+			tm, ok := t.(map[string]any)
+			if !ok {
+				continue
+			}
+			tr := TaskReport{}
+			tr.ID, _ = tm["id"].(string)
+			tr.Name, _ = tm["name"].(string)
+			tr.Status, _ = tm["status"].(string)
+			tr.Complexity, _ = tm["complexity"].(string)
+			tr.Risk, _ = tm["risk"].(string)
+			if files, ok := tm["filesChanged"].([]any); ok {
+				parts := make([]string, 0, len(files))
+				for _, f := range files {
+					if s, ok := f.(string); ok {
+						parts = append(parts, s)
+					}
+				}
+				tr.Files = strings.Join(parts, ", ")
+			}
+			switch tr.Status {
+			case "completed":
+				out.CompletedTasks++
+			case "failed":
+				out.FailedTasks++
+			case "skipped-dependency":
+				out.SkippedTasks++
+			}
+			wr.Tasks = append(wr.Tasks, tr)
+		}
+		out.Waves = append(out.Waves, wr)
+	}
+
+	out.Drifts, out.Errors, out.Warnings, out.Concerns = execReportBucketIssues(st.Data)
+
+	if raw, ok := st.Data["pendingIssueDrafts"].([]any); ok && len(raw) > 0 {
+		out.PendingIssueDrafts = raw
+	}
+	// deferredFindings lives on ship_state's own state file, a distinct
+	// state.Find(root, "ship", branch) from this execute-run state — not on
+	// st.Data. Best-effort cross-read: a missing/unreadable ship state file
+	// (e.g. execute ran standalone, never dispatched via /ship) just leaves
+	// DeferredFindings unset rather than failing this read-only report.
+	if shipSt, err := state.Find(root, "ship", branch); err == nil && shipSt != nil {
+		if raw, ok := shipSt.Data["deferredFindings"].([]any); ok && len(raw) > 0 {
+			out.DeferredFindings = raw
+		}
+	}
+
+	if ctxMap, ok := st.Data["context"].(map[string]any); ok {
+		if raw, ok := ctxMap["decisionsFromPriorWaves"].([]any); ok {
+			for _, d := range raw {
+				if s, ok := d.(string); ok {
+					out.Decisions = append(out.Decisions, s)
+				}
+			}
+		}
+	}
+
+	return out, nil
+}
+
+// execReportBucketIssues partitions data["issues"] into the four buckets
+// ExecutionReportOut surfaces separately. Category "drift" always buckets
+// as Drifts, regardless of severity (drift-log accepts error/warning/info
+// severities); category "done-with-concerns" always buckets as Concerns.
+// Everything else buckets by severity: "error" -> Errors (today: wave-fail,
+// task-fail categories), "warning" -> Warnings. An issue that is neither a
+// recognized category nor error/warning severity (an "info"-severity
+// non-drift issue — none exist today) is dropped from all four buckets
+// rather than guessed at.
+func execReportBucketIssues(data map[string]any) (drifts, errs, warnings, concerns []StateIssue) {
+	raw, ok := data["issues"].([]any)
+	if !ok {
+		return nil, nil, nil, nil
+	}
+	for _, v := range raw {
+		b, err := json.Marshal(v)
+		if err != nil {
+			continue
+		}
+		var iss StateIssue
+		if err := json.Unmarshal(b, &iss); err != nil {
+			continue
+		}
+		switch {
+		case iss.Category == "drift":
+			drifts = append(drifts, iss)
+		case iss.Category == "done-with-concerns":
+			concerns = append(concerns, iss)
+		case iss.Severity == "error":
+			errs = append(errs, iss)
+		case iss.Severity == "warning":
+			warnings = append(warnings, iss)
+		}
+	}
+	return drifts, errs, warnings, concerns
 }
 
 // execIssueSummary returns the total issue count and up to maxHighlights
