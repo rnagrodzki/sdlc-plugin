@@ -65,15 +65,15 @@ type ShipPrepareIn struct {
 	SkipConfigCheck bool `json:"skipConfigCheck" jsonschema_description:"Skips the config-version auto-migration gate normally run before preflight checks. Set only when the caller has already verified or migrated the config."`
 
 	HasPlan            bool     `json:"hasPlan" jsonschema_description:"Whether a plan already exists for this pipeline run. When true and planFile is empty while the execute step will run, this is a validation error — a plan file must be supplied."`
-	Auto               bool     `json:"auto" jsonschema_description:"Run the pipeline unattended (no human available to confirm anything right now). Merged with the ship config's auto default when not explicitly set on the CLI."`
-	Steps              []string `json:"steps" jsonschema_description:"Explicit ordered list of pipeline step names to run, overriding the config/quick-derived step list. Takes precedence over quick when non-empty."`
+	Auto               bool     `json:"auto" sdlcconfig:"ship.auto" jsonschema_description:"Run the pipeline unattended (no human available to confirm anything right now). Optional. Defaults to config ship.auto. Pass only to override."`
+	Steps              []string `json:"steps" sdlcconfig:"ship.steps" jsonschema_description:"Explicit ordered list of pipeline step names to run, overriding the quick-derived step list. Takes precedence over quick when non-empty. Optional. Defaults to config ship.steps. Pass only to override."`
 	Quick              bool     `json:"quick" jsonschema_description:"Use the abbreviated \"quick\" step list instead of the full pipeline, when steps is not explicitly supplied."`
-	Quality            string   `json:"quality" jsonschema:"enum=full,enum=balanced,enum=minimal" jsonschema_description:"Quality gate level to merge into the resolved pipeline config, overriding the config default when set."`
-	Bump               string   `json:"bump" jsonschema_description:"Version bump level (e.g. \"patch\"/\"minor\"/\"major\") to merge into the resolved pipeline config, overriding the config default when set."`
-	Draft              bool     `json:"draft" jsonschema_description:"Create the PR as a draft. Merged with the ship config's draft default when not explicitly set on the CLI."`
+	Quality            string   `json:"quality" jsonschema:"enum=full,enum=balanced,enum=minimal" jsonschema_description:"Quality gate level to merge into the resolved pipeline config."`
+	Bump               string   `json:"bump" sdlcconfig:"ship.bump" jsonschema_description:"Version bump level (e.g. \"patch\"/\"minor\"/\"major\") to merge into the resolved pipeline config. Optional. Defaults to config ship.bump. Pass only to override."`
+	Draft              bool     `json:"draft" sdlcconfig:"ship.draft" jsonschema_description:"Create the PR as a draft. Optional. Defaults to config ship.draft. Pass only to override."`
 	DryRun             bool     `json:"dryRun" jsonschema_description:"Validate and initialize state without performing any side-effecting pipeline actions."`
 	Resume             bool     `json:"resume" jsonschema_description:"Resume a previously initialized ship run from its persisted state instead of starting a new one."`
-	Rebase             string   `json:"rebase" jsonschema_description:"Rebase strategy/target branch to merge into the resolved pipeline config, when set."`
+	Rebase             string   `json:"rebase" sdlcconfig:"ship.rebase" jsonschema_description:"Rebase strategy/target branch to merge into the resolved pipeline config. Optional. Defaults to config ship.rebase. Pass only to override."`
 	OpenspecChange     string   `json:"openspecChange" jsonschema_description:"Name of the openspec change this ship run is associated with, when applicable."`
 	HookActivePipeline bool     `json:"hookActivePipeline" jsonschema_description:"Whether a hook reported an already-active pipeline for this session, recorded into the initialized state."`
 	PlanModeBlocked    bool     `json:"planModeBlocked" jsonschema_description:"Whether plan mode was blocked for this session, recorded into the initialized state."`

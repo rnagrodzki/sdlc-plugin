@@ -1,9 +1,12 @@
 package tools
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -98,6 +101,21 @@ type ExecWaveNarrationOut struct {
 	FactSheetErrors []string `json:"factSheetErrors,omitempty"`
 	IssueCount      int      `json:"issueCount,omitempty"`
 	IssueHighlights []string `json:"issueHighlights,omitempty"`
+	Warnings        []string `json:"warnings,omitempty"`
+}
+
+// DriftLogOut is the output for a plan-drift check. wave-start returns it
+// (in place of ExecWaveNarrationOut) when the plan file's sha256 no longer
+// matches the planHash recorded at init, halting the wave before it starts.
+// The struct is shared with the drift-log action (KD-5 follow-up): Halt and
+// Reason are populated by wave-start's own comparison; DriftCount, Threshold,
+// and Logged are zero-value here and only meaningful once drift-log exists.
+type DriftLogOut struct {
+	Logged     bool           `json:"logged"`
+	Halt       bool           `json:"halt"`
+	Reason     string         `json:"reason,omitempty"`
+	DriftCount map[string]int `json:"driftCount"`
+	Threshold  int            `json:"threshold"`
 }
 
 // ExecTaskNarrationOut is the narrated output for task-level execute_state
@@ -306,7 +324,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 
 - wave-compute: Stateless — parses the plan file at planPath and computes the wave schedule (no state file read/write). Requires planPath. Optional: extraDepsJson (JSON array of {task, dependsOn, reason} merged with each task's explicit "Depends on" field). Returns {route, preWave, waves[{number, tasks[], expectedFiles[], verificationHint}]}.
 - init: Create execution state. Runs the same config auto-migration gate as ship_prepare first (migrates and backs up an outdated config, or fails with a /setup pointer if none exists); result may include a "migration" report. Requires branch, quality. Optional: totalTasks, plannedTaskIds, planPath, planHash.
-- wave-start: Begin a wave. Returns narration (summary, display with task list + ETA, next). Requires wave. Optional: branch, tasksJson, runId (for fact sheets), detail ("concise"|"full").
+- wave-start: Begin a wave. Returns narration (summary, display with task list + ETA, next). Requires wave. Optional: branch, tasksJson, runId (for fact sheets), detail ("concise"|"full"). If the run recorded a planHash at init, the plan file's current sha256 is compared against it first; a mismatch returns {halt:true, reason:"plan hash mismatch"} instead of narration and does not start the wave. An unreadable/missing plan file does not halt — it proceeds with a warning in the response's "warnings" field.
 - wave-done: Complete a wave. Returns narration (summary, display with outcomes, timing, next wave preview + ETA). Records wave duration to TimingsStore. Requires wave. Optional: branch, decisions, status, detail ("concise"|"full").
 - wave-fail: Fail a wave. Returns narration (summary, display with failure cause). Requires wave. Optional: branch, timedOut, error (failure cause, recorded as an issue and in failedWave), status, detail ("concise"|"full").
 - wave-committed: Record a commit SHA for a completed wave. Requires wave. Optional: branch, sha.
@@ -680,6 +698,22 @@ func execIssueSummary(data map[string]any, maxHighlights int) (int, []string) {
 	return len(raw), highlights
 }
 
+// sha256File returns the hex-encoded sha256 digest of the file at path, for
+// comparison against a planHash recorded at init (KD-5 drift detection).
+// The file is streamed through the hash rather than read fully into memory.
+func sha256File(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
 // IssueSummary is the end-of-run grouped issue report returned by the
 // completion actions (execute's cleanup, ship's cleanup-pipeline) once
 // data["issues"] is non-empty. Response-only — never persisted to the state
@@ -945,6 +979,40 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 		return nil, err
 	}
 
+	// KD-5: server-side plan-drift check. Compares the plan file's current
+	// sha256 against the hash recorded at init — before the wave (or any
+	// state mutation below) exists, so a halt here leaves the wave untouched.
+	// Empty/absent planHash (pre-KD-5 state, or init without a plan file)
+	// skips the comparison entirely. An unreadable/absent planPath is not
+	// treated as drift — filesystem hiccups shouldn't halt a run — but is
+	// surfaced as a warning in the normal response instead of silently
+	// swallowed.
+	var planHashWarnings []string
+	if storedHash, _ := st.Data["planHash"].(string); storedHash != "" {
+		planPath, _ := st.Data["planPath"].(string)
+		if planPath == "" {
+			planHashWarnings = append(planHashWarnings, "plan drift check skipped: no planPath recorded on this run")
+		} else if computed, hashErr := sha256File(planPath); hashErr != nil {
+			planHashWarnings = append(planHashWarnings, fmt.Sprintf("plan drift check skipped: could not read planPath %q: %s", planPath, hashErr.Error()))
+		} else if computed != storedHash {
+			execAppendIssue(st.Data, StateIssue{
+				Wave:      *in.Wave,
+				Severity:  "error",
+				Category:  "drift",
+				Summary:   "plan content changed since init",
+				Detail:    fmt.Sprintf("planPath %q sha256 is now %s, expected %s recorded at init", planPath, computed, storedHash),
+				Timestamp: now().UTC().Format(time.RFC3339),
+			})
+			if err := state.Write(st); err != nil {
+				return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+			}
+			return DriftLogOut{
+				Halt:   true,
+				Reason: "plan hash mismatch",
+			}, nil
+		}
+	}
+
 	// Find existing wave or create new one.
 	w := execFindWave(st.Data, *in.Wave)
 	if w != nil {
@@ -970,6 +1038,9 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 	// Write per-task fact sheets when tasksJson is provided.
 	var parsedTasks []any
 	result := ExecWaveNarrationOut{}
+	if len(planHashWarnings) > 0 {
+		result.Warnings = planHashWarnings
+	}
 
 	if in.TasksJSON != "" {
 		if err := json.Unmarshal([]byte(in.TasksJSON), &parsedTasks); err != nil {
