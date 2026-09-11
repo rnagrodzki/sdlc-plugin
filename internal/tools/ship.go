@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -136,7 +137,10 @@ type ShipPrepareOut struct {
 	// the shape written into the initialized state's `flags` field.
 	Flags map[string]any `json:"flags"`
 	// Sources records, per flag key, which precedence tier won ("cli",
-	// "config", "config (version.preRelease)", "quick", or "default").
+	// "config", "config (version.preRelease)",
+	// "config (version.preReleasePolicy)",
+	// "config (version.preReleasePolicy enforced over cli)",
+	// "quick", or "default").
 	Sources map[string]string `json:"sources"`
 
 	Branch    string `json:"branch"`
@@ -333,11 +337,28 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 	if shipCfg == nil {
 		shipCfg = map[string]any{}
 	}
+	versionCfg, versionCfgErr := config.ReadSection(cfgRoot, "version")
+	if versionCfg == nil {
+		versionCfg = map[string]any{}
+	}
 
-	merged, sources := mergeShipFlags(cfgRoot, in, shipCfg)
+	merged, sources := mergeShipFlags(in, shipCfg, versionCfg)
 
 	errors := []string{}
 	warnings := []string{}
+
+	// Surface non-benign version config read errors (corrupted file, I/O).
+	// A missing section is expected and already handled by the nil default above.
+	if versionCfgErr != nil && !stderrors.Is(versionCfgErr, config.ErrNotFound) {
+		errors = append(errors, fmt.Sprintf("version config: %v", versionCfgErr))
+	}
+
+	// Warn when always-rc enforcement overrode an explicit CLI --bump.
+	if sources["bump"] == "config (version.preReleasePolicy enforced over cli)" {
+		warnings = append(warnings, fmt.Sprintf(
+			"preReleasePolicy %q overrode explicit CLI --bump %q to %q",
+			"always-rc", in.Bump, merged["bump"]))
+	}
 
 	stepsList, _ := merged["steps"].([]string)
 
@@ -526,9 +547,12 @@ func stepsFieldLabel(source string) string {
 
 // mergeShipFlags ports mergeFlags(cli, config) from scripts/skill/ship.js:
 // CLI flags win when explicitly set, otherwise config, otherwise
-// shipmeta.ShipBuiltInDefaults. Returns the merged flag map plus, per key,
-// which precedence tier supplied the value.
-func mergeShipFlags(cfgRoot string, in ShipPrepareIn, cfg map[string]any) (map[string]any, map[string]string) {
+// shipmeta.ShipBuiltInDefaults — except for bump under
+// preReleasePolicy: "always-rc", which unconditionally enforces an RC
+// bump regardless of source (including CLI).
+// Returns the merged flag map plus, per key, which precedence tier
+// supplied the value.
+func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]any) (map[string]any, map[string]string) {
 	merged := map[string]any{}
 	sources := map[string]string{}
 
@@ -580,10 +604,25 @@ func mergeShipFlags(cfgRoot string, in ShipPrepareIn, cfg map[string]any) (map[s
 
 	// version.preRelease overrides a non-cli bump when it is a valid label.
 	if sources["bump"] != "cli" {
-		if versionCfg, _ := config.ReadSection(cfgRoot, "version"); versionCfg != nil {
-			if pr, ok := versionCfg["preRelease"].(string); ok && preReleaseLabelRe.MatchString(pr) {
-				merged["bump"] = pr
-				sources["bump"] = "config (version.preRelease)"
+		if pr, ok := versionCfg["preRelease"].(string); ok && preReleaseLabelRe.MatchString(pr) {
+			merged["bump"] = pr
+			sources["bump"] = "config (version.preRelease)"
+		}
+	}
+
+	// Enforce preReleasePolicy: "always-rc" at ship time.
+	// When preReleasePolicy is set to "always-rc", the final bump must result in an RC.
+	if policy, _ := versionCfg["preReleasePolicy"].(string); policy == "always-rc" {
+		bump, _ := merged["bump"].(string)
+		// Valid RC results: "rc" or a valid preRelease label (which implies RC)
+		isRC := bump == "rc" || (preReleaseLabelRe.MatchString(bump) && bump != "major" && bump != "minor" && bump != "patch")
+		if !isRC {
+			// Enforce by overriding to "rc" to ensure preReleasePolicy is not merely informational
+			merged["bump"] = "rc"
+			if sources["bump"] == "cli" {
+				sources["bump"] = "config (version.preReleasePolicy enforced over cli)"
+			} else {
+				sources["bump"] = "config (version.preReleasePolicy)"
 			}
 		}
 	}

@@ -17,7 +17,7 @@ tasks:
   build:
     desc: Compile the sdlc binary to ./sdlc
     cmds:
-      - go build -o sdlc ./cmd/sdlc
+      - go build -ldflags "-X main.pluginVersion={{.VERSION}} -X github.com/rnagrodzki/sdlc-plugin/internal/tools.pluginVersion={{.VERSION}}" -o sdlc ./cmd/sdlc
 
   deploy:
     desc: Build and install into the launcher's cache so sdlc-launcher.sh execs it without downloading

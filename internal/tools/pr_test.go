@@ -1650,8 +1650,22 @@ func TestPrPrepareNext_IncludesVersionContext(t *testing.T) {
 			OnDefaultBranch: false,
 			DefaultBranch:   "main",
 		}
-		want := "Call pr_apply with title, body, and release fields. Not on default branch (default: main); version fields are informational only."
-		if got := prPrepareNext(out); got != want {
+		got := prPrepareNext(out)
+
+		// Verify the guidance encourages passing release fields, not discourages it
+		if strings.Contains(got, "informational only") {
+			t.Errorf("prPrepareNext should not say 'informational only' on feature branch, got: %q", got)
+		}
+		if !strings.Contains(got, "release fields") {
+			t.Errorf("prPrepareNext should mention 'release fields', got: %q", got)
+		}
+		if !strings.Contains(got, "main") {
+			t.Errorf("prPrepareNext should mention target branch, got: %q", got)
+		}
+
+		// Verify the exact new guidance
+		want := "Call pr_apply with title, body, and release fields. PR targets main — release fields must be forwarded to ship for the release label to be applied on merge."
+		if got != want {
 			t.Errorf("prPrepareNext = %q, want %q", got, want)
 		}
 	})

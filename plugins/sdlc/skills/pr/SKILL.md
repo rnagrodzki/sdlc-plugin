@@ -195,6 +195,15 @@ for the Step 5 announcement below. `pr_apply` is a hard gate on this: it rejects
 `releaseSource: "user"` outright — never call it with a `releaseLevel` and no matching
 `releaseSource`, and never invent either value yourself.
 
+**Invocation-supplied release fields are authoritative.** When `releaseLevel` / `releaseNotes` /
+`releasePreRelease` / `releaseSource` arrive at invocation, they MUST be forwarded to `pr_apply`
+in Step 6 regardless of `pr_prepare`'s `Next` guidance. The `Next` field is a hint for standalone
+`/pr` invocations — it cannot override explicit release intent from an upstream pipeline like
+`/ship`. Never convert invocation-supplied release fields into `skipReleaseCheck: true`.
+Exception: when `PR_CONTEXT.idempotency.alreadyBumped` is true, the idempotency guard takes
+precedence — omit release fields and pass `skipReleaseCheck: true` as `pr_prepare`'s Next
+instructs, even when release fields were supplied at invocation.
+
 **Without a `releaseLevel` at invocation** (this skill invoked standalone, not via `/ship`), do
 not silently proceed with no release intent — run the Release Intent Gate below before Step 2.
 
@@ -249,6 +258,12 @@ a `releaseLevel` with empty `releaseNotes`, so this is not optional whenever a l
 **On option 2:** proceed with no release intent — this was an explicit, acknowledged choice, so
 do not ask again at Step 5 or Step 6. Hold `skipReleaseCheck: true` for Step 6's `pr_apply` call
 — without it, `pr_apply` rejects an empty `releaseLevel` as an unacknowledged omission.
+
+**Release-notes drafting (applies regardless of gate path).** When `releaseLevel` is supplied
+but `releaseNotes` is empty or absent, draft release notes before proceeding: a few bullet lines
+sourced from `PR_CONTEXT.commitsSinceTag` (when present) or `PR_CONTEXT.commitsSinceBase`,
+covering every commit. This is the same drafting logic as the interactive path above — do not
+skip it just because the level was pre-decided.
 
 ### Step 2 (PLAN): Draft PR Description
 

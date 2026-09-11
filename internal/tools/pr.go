@@ -169,7 +169,7 @@ func prPrepareNext(out PRPrepareOut) string {
 		return fmt.Sprintf("%s Version already bumped at HEAD (tag %s); omit release fields.", base, out.Idempotency.TagAtHead)
 	}
 	if out.VersionConfig != nil && !out.OnDefaultBranch {
-		return fmt.Sprintf("%s Not on default branch (default: %s); version fields are informational only.", base, out.DefaultBranch)
+		return fmt.Sprintf("%s PR targets %s — release fields must be forwarded to ship for the release label to be applied on merge.", base, out.DefaultBranch)
 	}
 	if out.ConventionalSummary != nil && out.ConventionalSummary.Suggest != "" {
 		return fmt.Sprintf("%s Suggested release level: %s.", base, out.ConventionalSummary.Suggest)
