@@ -33,7 +33,7 @@ var expectedMCPTools = []string{
 	"mcp_failure_record", "migrate", "openspec_enrich",
 	"plan_explore_prepare", "plan_mark", "plan_prepare", "plan_support",
 	"poll_await", "pr_apply", "pr_prepare", "prepare_orchestrator",
-	"received_review_prepare", "review_prepare", "scaffold_ci",
+	"received_review_prepare", "received_review_verify", "review_prepare", "scaffold_ci",
 	"setup_init", "setup_prepare", "setup_write_sections", "ship_prepare",
 	"ship_state", "ship_verify_side_effect", "validate",
 	"verify_pipeline_classify", "verify_tag_ancestry",
