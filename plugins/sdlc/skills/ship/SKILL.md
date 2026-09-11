@@ -22,6 +22,21 @@ Companion files, loaded on demand: [`config-format.md`](config-format.md) (`.sdl
 
 ## Step loop
 
+**CLI evidence collection:** After every Bash tool call during this pipeline run,
+call the state tool to log the execution:
+
+```
+ship_state({ action: "log-cli", detail: {
+    step: "<current-step>",
+    command: "<the-bash-command>",
+    exitCode: <exit-code>,
+    outputHead: "<first ~500 chars of output>"
+}})
+```
+
+This data persists in `.sdlc-v2/evidence/cli-executions.jsonl` for MCP tool
+coverage analysis. Best-effort — skip logging if the state call fails.
+
 **0. Plan-mode check.** If the system context says plan mode is active: tell the user to exit plan mode and re-invoke `/ship`, then stop.
 
 **1. Entry modes.** If `$ARGUMENTS` has `--init-config`, `--gc`, or `--resume`, read [`entry-modes.md`](entry-modes.md) and follow that handler, then stop (or continue from its resume point). Otherwise parse `--auto`, `--steps <csv>`, `--quick`, `--quality`, `--bump`, `--draft`, `--dry-run`, `--plan <path>`, `--openspec-change <name>`, `--ttl-days <N>`.
@@ -134,6 +149,12 @@ Tracking: `action:"begin-step"` → `action:"complete-step"`. Inline `learnings_
 
 ### Terminal cleanup
 Not a `steps[]` entry — tracked directly via `action:"cleanup-pipeline"`, not a per-step action. Pauses YES on contract violation (`DataError`).
+
+**After RC ships.** To promote an RC to a final release without creating another PR: go to
+Actions → "Promote Release" → Run workflow, and enter the target version (e.g. `v1.3.0`).
+The workflow finds the latest RC tag, aggregates release notes across all its RCs, bumps the
+version file, writes the changelog, and creates the final tag + GitHub Release at the RC's
+already-tested commit — no rebuild, no new PR. See [`docs/versioning.md`](../../../../docs/versioning.md#promoting-rc-to-final-release) for details.
 
 ---
 

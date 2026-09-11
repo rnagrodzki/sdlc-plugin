@@ -78,6 +78,9 @@ type ExecuteStateIn struct {
 	Detail            string         `json:"detail,omitempty" jsonschema_description:"Narration verbosity for wave-start/wave-done/wave-fail/wave-commit: \"concise\" or \"full\"."`
 	LastCompletedTask string         `json:"lastCompletedTask,omitempty" jsonschema_description:"wave-progress write only: ID of the most recently completed task, recorded in the heartbeat entry."`
 	Message           string         `json:"message,omitempty" jsonschema_description:"wave-commit only: commit message to use for 'git commit -m' when staging and committing the wave's changes."`
+	CLICommand        string         `json:"cliCommand,omitempty" jsonschema_description:"log-cli only: the Bash command that was executed."`
+	CLIExitCode       int            `json:"cliExitCode,omitempty" jsonschema_description:"log-cli only: the exit code of the command."`
+	CLIOutput         string         `json:"cliOutput,omitempty" jsonschema_description:"log-cli only: first ~500 characters of command output."`
 }
 
 // ---------------------------------------------------------------------------
@@ -396,6 +399,8 @@ func executeState(root, workDir string, in ExecuteStateIn, now func() time.Time)
 		return execActionLedgerCheckout(root, in, now)
 	case "ledger_status":
 		return execActionLedgerStatus(root, in, now)
+	case "log-cli":
+		return execActionLogCLI(root, workDir, in)
 	default:
 		return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("unknown action %q", in.Action)}
 	}
@@ -3259,4 +3264,32 @@ func execActionLedgerStatus(root string, in ExecuteStateIn, now func() time.Time
 		"workers":        workers,
 		"stalledWorkers": stalledWorkers,
 	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Action: log-cli
+// ---------------------------------------------------------------------------
+
+// execActionLogCLI logs a CLI execution to the evidence JSONL file.
+func execActionLogCLI(root, workDir string, in ExecuteStateIn) (any, error) {
+	branch, err := execResolveBranch(in.Branch, workDir)
+	if err != nil {
+		return nil, err
+	}
+
+	entry := CLIEvidenceEntry{
+		Timestamp:  time.Now().UTC().Format(time.RFC3339),
+		Pipeline:   "execute",
+		Wave:       in.Wave,
+		Branch:     branch,
+		Command:    in.CLICommand,
+		ExitCode:   in.CLIExitCode,
+		OutputHead: in.CLIOutput,
+	}
+
+	if err := appendCLIEvidence(root, entry); err != nil {
+		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("log-cli: %s", err.Error()), Cause: err}
+	}
+
+	return map[string]any{"ok": true, "action": "log-cli"}, nil
 }

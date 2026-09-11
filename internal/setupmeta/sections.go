@@ -178,7 +178,7 @@ func intPtr(v int) *int { return &v }
 // Order matters — it is the default ordering and iteration order.
 // Mirrors CANONICAL_STEPS from scripts/lib/ship-fields.js.
 var CanonicalSteps = []string{
-	"execute", "commit", "review", "version", "verify-openspec",
+	"execute", "commit", "review", "verify-openspec",
 	"archive-openspec", "pr", "verify-pipeline", "await-remote-review",
 	"learnings-commit",
 }

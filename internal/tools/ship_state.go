@@ -532,6 +532,10 @@ func shipState(root, workDir string, in ShipStateIn, now func() time.Time) (any,
 	case "deferred_resolve":
 		return shipStateDeferredResolve(root, in)
 
+	// CLI evidence logging — persistent JSONL store that survives state-file GC.
+	case "log-cli":
+		return shipStateLogCLI(root, workDir, in)
+
 	default:
 		return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("unknown ship_state action %q", in.Action)}
 	}
@@ -1647,6 +1651,39 @@ func shipStateDeferredProposeFollowups(root string) (any, error) {
 		"groups":    groups,
 		"display":   summary,
 	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Action: log-cli
+// ---------------------------------------------------------------------------
+
+// shipStateLogCLI logs a CLI execution to the evidence JSONL file.
+func shipStateLogCLI(root, workDir string, in ShipStateIn) (any, error) {
+	branch, err := execResolveBranch(detailStr(in.Detail, "branch"), workDir)
+	if err != nil {
+		return nil, err
+	}
+
+	exitCode := 0
+	if ptr := detailIntPtr(in.Detail, "exitCode"); ptr != nil {
+		exitCode = *ptr
+	}
+
+	entry := CLIEvidenceEntry{
+		Timestamp:  time.Now().UTC().Format(time.RFC3339),
+		Pipeline:   "ship",
+		Step:       detailStr(in.Detail, "step"),
+		Branch:     branch,
+		Command:    detailStr(in.Detail, "command"),
+		ExitCode:   exitCode,
+		OutputHead: detailStr(in.Detail, "outputHead"),
+	}
+
+	if err := appendCLIEvidence(root, entry); err != nil {
+		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("log-cli: %s", err.Error()), Cause: err}
+	}
+
+	return map[string]any{"ok": true, "action": "log-cli"}, nil
 }
 
 // detailInt64 reads a numeric value from the detail map as int64.

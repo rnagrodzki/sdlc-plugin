@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os/exec"
 	"regexp"
@@ -510,4 +511,82 @@ func PREdit(dir string, number int, title, body string) (string, error) {
 		return "", fmt.Errorf("ghx: PREdit: invalid PR number %d", number)
 	}
 	return run(dir, "pr", "edit", fmt.Sprint(number), "--title", title, "--body", body)
+}
+
+// PRReviewComment is a single PR review comment as returned by
+// `repos/{owner}/{repo}/pulls/{number}/comments`. InReplyToID is 0 for a
+// root (top-level) comment and the id of the root comment for a reply —
+// GitHub reports this as JSON null for root comments, which decodes to the
+// int zero value, and real comment ids are always positive, so 0
+// unambiguously means "no parent".
+type PRReviewComment struct {
+	ID          int    `json:"id"`
+	Path        string `json:"path"`
+	Line        int    `json:"line"`
+	Login       string `json:"login"`
+	Body        string `json:"body"`
+	InReplyToID int    `json:"in_reply_to_id"`
+}
+
+// PRReviewComments fetches every review comment on a PR in a single
+// paginated `gh api ... --paginate --jq` call — not one call per comment —
+// including each comment's in_reply_to_id so callers can group comments
+// into reply threads without any further gh invocation. `--paginate`
+// re-runs the request for each page of results and streams each page's
+// `--jq` output one after another; with a `.[] | {...}` filter that yields
+// a stream of concatenated JSON objects (no enclosing array, no commas),
+// which json.Decoder.Decode can read one value at a time regardless of how
+// many pages fed into it.
+func PRReviewComments(dir string, owner, repo string, number int) ([]PRReviewComment, error) {
+	if number <= 0 {
+		return nil, fmt.Errorf("ghx: PRReviewComments: invalid PR number %d", number)
+	}
+	if err := validatePositionalArg(owner, "PRReviewComments owner"); err != nil {
+		return nil, err
+	}
+	if err := validatePositionalArg(repo, "PRReviewComments repo"); err != nil {
+		return nil, err
+	}
+
+	apiPath := fmt.Sprintf("repos/%s/%s/pulls/%d/comments", owner, repo, number)
+	raw, err := run(dir, "api", apiPath, "--paginate", "--jq",
+		`.[] | {id: .id, path: .path, line: .line, login: .user.login, body: .body, in_reply_to_id: .in_reply_to_id}`)
+	if err != nil {
+		return nil, fmt.Errorf("ghx: PRReviewComments: fetch comments: %w", err)
+	}
+	if strings.TrimSpace(raw) == "" {
+		return []PRReviewComment{}, nil
+	}
+
+	dec := json.NewDecoder(strings.NewReader(raw))
+	var comments []PRReviewComment
+	for {
+		var c PRReviewComment
+		decErr := dec.Decode(&c)
+		if decErr == io.EOF {
+			break
+		}
+		if decErr != nil {
+			return nil, fmt.Errorf("ghx: PRReviewComments: parse comments: %w", decErr)
+		}
+		comments = append(comments, c)
+	}
+
+	return comments, nil
+}
+
+// CurrentLogin returns the GitHub login of the currently authenticated gh
+// user via `gh api user --jq .login`, for callers (like
+// received_review_verify) that need to default an unset "author" parameter
+// to whoever is logged in.
+func CurrentLogin(dir string) (string, error) {
+	login, err := run(dir, "api", "user", "--jq", ".login")
+	if err != nil {
+		return "", fmt.Errorf("ghx: CurrentLogin: %w", err)
+	}
+	login = strings.TrimSpace(login)
+	if login == "" {
+		return "", fmt.Errorf("ghx: CurrentLogin: gh api user returned empty login")
+	}
+	return login, nil
 }

@@ -169,6 +169,20 @@ Always present all 3 tiers; default is Balanced. Selecting a tier updates model 
 
 ## Wave loop
 
+**CLI evidence collection:** After every Bash tool call during this pipeline run,
+call the state tool to log the execution:
+
+```
+execute_state({ action: "log-cli", wave: <current-wave-number>,
+    cliCommand: "<the-bash-command>",
+    cliExitCode: <exit-code>,
+    cliOutput: "<first ~500 chars of output>"
+})
+```
+
+This data persists in `.sdlc-v2/evidence/cli-executions.jsonl` for MCP tool
+coverage analysis. Best-effort — skip logging if the state call fails.
+
 One `execute_state` bootstrap, before wave 1, before any gate below (`wave-start` requires the state file to already exist):
 ```
 execute_state({ action: "init", branch: "<branch>", quality: "<X>", totalTasks: N, plannedTaskIds: [<every task id from the plan>], planPath: "<PLAN_FILE>", planHash: "<sha256 of PLAN_FILE bytes>" })

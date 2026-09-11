@@ -21,6 +21,9 @@ const {
   checkTagState,
   pushFilesViaPR,
   changelogHeadingExists,
+  findLastFinalTag,
+  collectNotesSinceTag,
+  aggregateNotesByCategory,
 } = require('../release-on-main.cjs');
 
 function mkTmpDir(prefix) {
@@ -55,6 +58,33 @@ ${failCheck}exit 0
   fs.writeFileSync(ghPath, script, 'utf8');
   fs.chmodSync(ghPath, 0o755);
 
+  const originalPath = process.env.PATH;
+  process.env.PATH = `${binDir}${path.delimiter}${originalPath}`;
+  try {
+    return fn();
+  } finally {
+    process.env.PATH = originalPath;
+  }
+}
+
+/**
+ * Installs a fake `gh` CLI on PATH that always prints `stdout` (a raw
+ * string, typically JSON) to its own stdout and exits 0, regardless of
+ * arguments. Unlike withFakeGh, this lets tests control what `gh` "returns"
+ * so functions that JSON.parse gh's output (like collectNotesSinceTag) can
+ * be tested without a real GitHub API call.
+ */
+function withFakeGhOutput(logPath, stdout, fn) {
+  const binDir = mkTmpDir('fake-gh-output-bin-');
+  const ghPath = path.join(binDir, 'gh');
+  const script = `#!/bin/sh
+echo "$@" >> "${logPath}"
+cat <<'GHOUT'
+${stdout}
+GHOUT
+`;
+  fs.writeFileSync(ghPath, script, 'utf8');
+  fs.chmodSync(ghPath, 0o755);
   const originalPath = process.env.PATH;
   process.env.PATH = `${binDir}${path.delimiter}${originalPath}`;
   try {
@@ -561,5 +591,167 @@ describe('runRelease — per-path independence', () => {
     const tagSha = execSync('git rev-parse "v1.0.1-rc1^{commit}"', { cwd: dir, encoding: 'utf8' }).trim();
     assert.equal(tagSha, mergeSha, 'RC tag must still be created and point to mergeSha');
     assert.ok(!fs.existsSync(ghLogPath), 'gh should not be invoked at all for an RC release');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Changelog aggregation helpers
+// ---------------------------------------------------------------------------
+
+describe('aggregateNotesByCategory', () => {
+  test('merges categories from multiple PRs', () => {
+    const input = [
+      '### Added\n- Feature A',
+      '### Added\n- Feature B\n\n### Fixed\n- Bug C',
+    ];
+    const result = aggregateNotesByCategory(input);
+    assert.match(result, /### Added/);
+    assert.match(result, /- Feature A/);
+    assert.match(result, /- Feature B/);
+    assert.match(result, /### Fixed/);
+    assert.match(result, /- Bug C/);
+  });
+
+  test('deduplicates identical items', () => {
+    const input = [
+      '### Added\n- Feature A',
+      '### Added\n- Feature A',
+    ];
+    const result = aggregateNotesByCategory(input);
+    const addedCount = (result.match(/- Feature A/g) || []).length;
+    assert.equal(addedCount, 1, 'identical items should not be duplicated');
+  });
+
+  test('handles notes without category headings', () => {
+    const input = ['- Raw bullet point'];
+    const result = aggregateNotesByCategory(input);
+    assert.match(result, /- Raw bullet point/);
+  });
+
+  test('handles empty notes list', () => {
+    const result = aggregateNotesByCategory([]);
+    assert.equal(result, '');
+  });
+
+  test('handles null/undefined notes', () => {
+    const result = aggregateNotesByCategory(null);
+    assert.equal(result, '');
+  });
+
+  test('groups items by category and sorts', () => {
+    const input = [
+      '### Fixed\n- Bug Z',
+      '### Added\n- Feature M',
+      '### Changed\n- Behavior X',
+    ];
+    const result = aggregateNotesByCategory(input);
+    const addedIdx = result.indexOf('### Added');
+    const changedIdx = result.indexOf('### Changed');
+    const fixedIdx = result.indexOf('### Fixed');
+    assert.ok(addedIdx < changedIdx && changedIdx < fixedIdx, 'categories should be ordered');
+  });
+});
+
+describe('findLastFinalTag', () => {
+  test('returns the latest non-RC semver tag', () => {
+    const dir = mkTmpDir('release-findtag-');
+    initGitRepo(dir);
+    execSync('git tag v1.0.0', { cwd: dir });
+    execSync('git tag v1.1.0-rc1', { cwd: dir });
+    execSync('git tag v1.0.1', { cwd: dir });
+    execSync('git tag v2.0.0-rc2', { cwd: dir });
+
+    const result = findLastFinalTag(dir, 'v');
+    assert.equal(result, '1.0.1', 'should return latest final tag (not RC)');
+  });
+
+  test('returns null when no final tags exist', () => {
+    const dir = mkTmpDir('release-findtag-');
+    initGitRepo(dir);
+    execSync('git tag v1.0.0-rc1', { cwd: dir });
+    execSync('git tag v1.0.0-rc2', { cwd: dir });
+
+    const result = findLastFinalTag(dir, 'v');
+    assert.equal(result, null, 'should return null when only RC tags exist');
+  });
+
+  test('respects tag prefix', () => {
+    const dir = mkTmpDir('release-findtag-');
+    initGitRepo(dir);
+    execSync('git tag release-1.0.0', { cwd: dir });
+    execSync('git tag release-1.1.0-rc1', { cwd: dir });
+    execSync('git tag other-2.0.0', { cwd: dir });
+
+    const result = findLastFinalTag(dir, 'release-');
+    assert.equal(result, '1.0.0', 'should only consider tags with the given prefix');
+  });
+
+  test('returns null when no tags exist', () => {
+    const dir = mkTmpDir('release-findtag-');
+    initGitRepo(dir);
+
+    const result = findLastFinalTag(dir, 'v');
+    assert.equal(result, null);
+  });
+});
+
+describe('collectNotesSinceTag', () => {
+  test('extracts notes from PR bodies using release-notes markers, falls back to title when absent', () => {
+    const dir = mkTmpDir('release-collectnotes-');
+    initGitRepo(dir);
+    execSync('git tag v1.0.0', { cwd: dir });
+
+    const prData = [
+      {
+        number: 1,
+        title: 'PR One title',
+        body: '<!-- release-notes-start -->\n### Added\n- Feature A\n<!-- release-notes-end -->',
+      },
+      {
+        number: 2,
+        title: 'PR Two title',
+        body: 'just a description, no markers',
+      },
+    ];
+
+    const logPath = path.join(mkTmpDir('release-collectnotes-log-'), 'gh.log');
+    const result = withFakeGhOutput(logPath, JSON.stringify(prData), () =>
+      collectNotesSinceTag(dir, 'v1.0.0')
+    );
+
+    assert.equal(result.length, 2);
+    assert.match(result[0], /### Added/);
+    assert.match(result[0], /- Feature A/);
+    assert.equal(result[1], '- PR Two title');
+  });
+
+  test('returns empty array when the tag does not exist', () => {
+    const dir = mkTmpDir('release-collectnotes-noexist-');
+    initGitRepo(dir);
+    // Do NOT create the tag
+
+    const result = collectNotesSinceTag(dir, 'v9.9.9-does-not-exist');
+    assert.deepEqual(result, []);
+  });
+
+  test('returns empty array when gh pr list returns no PRs', () => {
+    const dir = mkTmpDir('release-collectnotes-empty-');
+    initGitRepo(dir);
+    execSync('git tag v1.0.0', { cwd: dir });
+
+    const logPath = path.join(mkTmpDir('release-collectnotes-empty-log-'), 'gh.log');
+    const result = withFakeGhOutput(logPath, '[]', () =>
+      collectNotesSinceTag(dir, 'v1.0.0')
+    );
+
+    assert.deepEqual(result, []);
+  });
+
+  test('returns empty array for a falsy tag', () => {
+    const result1 = collectNotesSinceTag('/any/dir', '');
+    const result2 = collectNotesSinceTag('/any/dir', null);
+
+    assert.deepEqual(result1, []);
+    assert.deepEqual(result2, []);
   });
 });

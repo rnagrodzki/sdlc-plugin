@@ -1266,3 +1266,393 @@ func TestMigrateWithBackup_ReviewThresholdLow_SurvivesMigration(t *testing.T) {
 		t.Errorf("local.json failed schema validation:\n%v", err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// New tests for v4 schema coverage
+// ---------------------------------------------------------------------------
+
+func TestMigrate_ProjectV4_FullVersionShape(t *testing.T) {
+	root := t.TempDir()
+
+	// v4 config.json with full version shape
+	writeJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
+		"schemaVersion": float64(4),
+		"version": map[string]any{
+			"mode":           "tag",
+			"tagPrefix":      "v",
+			"changelog":      true,
+			"changelogFile":  "CHANGELOG.md",
+			"preRelease":     "rc",
+		},
+		"jira": map[string]any{
+			"defaultProject": "PROJ",
+		},
+	})
+
+	report, err := Migrate(root, Options{})
+	if err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	if !report.Migrated {
+		t.Fatal("expected Migrated=true")
+	}
+
+	config := readJSON(t, filepath.Join(root, paths.DataDir, "config.json"))
+
+	// Golden: no schemaVersion, no $schema, nested version shape
+	if _, has := config["schemaVersion"]; has {
+		t.Error("v5 config.json must not have schemaVersion")
+	}
+	if _, has := config["$schema"]; has {
+		t.Error("v5 config.json must not have $schema")
+	}
+
+	ver := config["version"].(map[string]any)
+
+	// tag section should exist with enabled=true and prefix="v"
+	tag, ok := ver["tag"].(map[string]any)
+	if !ok {
+		t.Fatalf("version.tag should be an object, got %#v", ver["tag"])
+	}
+	if tag["enabled"] != true {
+		t.Error("version.tag.enabled should be true")
+	}
+	if tag["prefix"] != "v" {
+		t.Error("version.tag.prefix should be 'v'")
+	}
+
+	// changelog section should exist with enabled=true and file="CHANGELOG.md"
+	cl, ok := ver["changelog"].(map[string]any)
+	if !ok {
+		t.Fatalf("version.changelog should be an object, got %#v", ver["changelog"])
+	}
+	if cl["enabled"] != true {
+		t.Error("version.changelog.enabled should be true")
+	}
+	if cl["file"] != "CHANGELOG.md" {
+		t.Error("version.changelog.file should be 'CHANGELOG.md'")
+	}
+
+	// preRelease should be preserved
+	if ver["preRelease"] != "rc" {
+		t.Error("version.preRelease should be 'rc'")
+	}
+
+	// versionFile should not exist (mode was tag)
+	if _, has := ver["versionFile"]; has {
+		t.Error("version.versionFile should not exist when mode was 'tag'")
+	}
+}
+
+func TestMigrate_LocalV4_FullShape(t *testing.T) {
+	root := t.TempDir()
+
+	// Provide v5 config.json so project migration is skipped
+	writeJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
+		"version": map[string]any{"mode": "file"},
+	})
+
+	// v4 local.json with full shape
+	// Note: By v4, earlier migrations have already applied:
+	// - preset/skip were migrated to steps in v1->v2
+	// - awaitReview/verifyPipeline booleans were migrated to steps in v3->v4
+	// - awaitReview* fields were renamed to awaitRemoteReview* in v3->v4
+	// So v4 has no preset, skip, awaitReview, verifyPipeline booleans.
+	writeJSON(t, filepath.Join(root, paths.DataDir, "local.json"), map[string]any{
+		"schemaVersion": float64(4),
+		"$schema":       "https://raw.githubusercontent.com/owner/sdlc-plugin/main/schemas/sdlc-local.schema.json",
+		"ship": map[string]any{
+			"steps":                       []any{"execute", "commit", "review", "version", "archive-openspec", "pr", "learnings-commit"},
+			"quick":                       []any{"execute", "commit", "version", "pr"},
+			"bump":                        "minor",
+			"draft":                       true,
+			"auto":                        false,
+			"reviewThreshold":             "high",
+			"awaitRemoteReviewTimeout":    float64(300),
+			"awaitRemoteReviewInterval":   float64(30),
+			"awaitRemoteReviewers":        []any{"reviewer1", "reviewer2"},
+			"verifyPipelineTimeout":       float64(600),
+			"verifyPipelineInterval":      float64(60),
+			"verifyPipelineMaxIterations": float64(3),
+		},
+		"review": map[string]any{
+			"scope": "all",
+		},
+		"receivedReview": map[string]any{
+			"alwaysFixSeverities": []any{"critical", "high"},
+		},
+	})
+
+	report, err := Migrate(root, Options{})
+	if err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	if !report.Migrated {
+		t.Fatal("expected Migrated=true")
+	}
+
+	local := readJSON(t, filepath.Join(root, paths.DataDir, "local.json"))
+
+	// Golden: no schemaVersion
+	if _, has := local["schemaVersion"]; has {
+		t.Error("v6 local.json must not have schemaVersion")
+	}
+	// $schema is preserved during migration (only stripped during legacy ingestion)
+	if _, has := local["$schema"]; !has {
+		t.Error("v6 local.json should preserve $schema if present")
+	}
+
+	ship := local["ship"].(map[string]any)
+
+	// "version" should be removed from ship.steps (v5->v6 step) but NOT from ship.quick
+	steps := stepsSlice(ship, "steps")
+	expectedSteps := []string{"execute", "commit", "review", "archive-openspec", "pr", "learnings-commit"}
+	if !reflect.DeepEqual(steps, expectedSteps) {
+		t.Errorf("ship.steps:\n  got:  %v\n  want: %v (version removed)", steps, expectedSteps)
+	}
+
+	quick := stepsSlice(ship, "quick")
+	expectedQuick := []string{"execute", "commit", "version", "pr"}
+	if !reflect.DeepEqual(quick, expectedQuick) {
+		t.Errorf("ship.quick:\n  got:  %v\n  want: %v (version preserved in quick)", quick, expectedQuick)
+	}
+
+	// Other ship fields should be preserved
+	if ship["bump"] != "minor" {
+		t.Error("ship.bump should be 'minor'")
+	}
+	if ship["draft"] != true {
+		t.Error("ship.draft should be true")
+	}
+	if ship["auto"] != false {
+		t.Error("ship.auto should be false")
+	}
+	if ship["reviewThreshold"] != "high" {
+		t.Error("ship.reviewThreshold should be 'high'")
+	}
+
+	// awaitRemoteReview* fields should be preserved (already renamed in v3->v4)
+	if ship["awaitRemoteReviewTimeout"] != float64(300) {
+		t.Error("ship.awaitRemoteReviewTimeout should be 300")
+	}
+	if ship["awaitRemoteReviewInterval"] != float64(30) {
+		t.Error("ship.awaitRemoteReviewInterval should be 30")
+	}
+	reviewers := ship["awaitRemoteReviewers"].([]any)
+	if len(reviewers) != 2 || reviewers[0] != "reviewer1" {
+		t.Error("ship.awaitRemoteReviewers should be preserved")
+	}
+
+	// Verify pipeline fields should be preserved
+	if ship["verifyPipelineTimeout"] != float64(600) {
+		t.Error("ship.verifyPipelineTimeout should be 600")
+	}
+	if ship["verifyPipelineInterval"] != float64(60) {
+		t.Error("ship.verifyPipelineInterval should be 60")
+	}
+	if ship["verifyPipelineMaxIterations"] != float64(3) {
+		t.Error("ship.verifyPipelineMaxIterations should be 3")
+	}
+
+	// review and receivedReview should be preserved
+	review := local["review"].(map[string]any)
+	if review["scope"] != "all" {
+		t.Error("review.scope should be 'all'")
+	}
+
+	receivedReview := local["receivedReview"].(map[string]any)
+	if len(receivedReview["alwaysFixSeverities"].([]any)) != 2 {
+		t.Error("receivedReview.alwaysFixSeverities should be preserved")
+	}
+}
+
+func TestMigrate_ProjectV4_SchemaRemovalNotApplied(t *testing.T) {
+	root := t.TempDir()
+
+	// v4 config.json with schemaVersion and $schema.
+	// Note: $schema stripping only happens during legacy ingestion (v0→v3 relocation).
+	// During v4→v5 migration, $schema is preserved (not stripped).
+	writeJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
+		"schemaVersion": float64(4),
+		"$schema":       "https://raw.githubusercontent.com/rnagrodzki/sdlc-plugin/main/schema.json",
+	})
+
+	report, err := Migrate(root, Options{})
+	if err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	if !report.Migrated {
+		t.Fatal("expected Migrated=true")
+	}
+
+	config := readJSON(t, filepath.Join(root, paths.DataDir, "config.json"))
+
+	// Golden: schemaVersion stripped, $schema preserved (only legacy relocation strips $schema)
+	if _, has := config["schemaVersion"]; has {
+		t.Error("v5 config.json must not have schemaVersion")
+	}
+	// $schema is preserved during v4→v5 migration (only stripped during legacy ingestion)
+	if _, has := config["$schema"]; !has {
+		t.Error("$schema should be preserved during v4→v5 migration")
+	}
+	if config["$schema"] != "https://raw.githubusercontent.com/rnagrodzki/sdlc-plugin/main/schema.json" {
+		t.Error("$schema URL should be preserved")
+	}
+}
+
+func TestMigrate_FullChain_V4ProjectAndV4Local(t *testing.T) {
+	root := t.TempDir()
+
+	// v4 project config (already through v0→v3→v4 migrations)
+	writeJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
+		"schemaVersion": float64(4),
+		"version": map[string]any{
+			"mode":           "tag",
+			"tagPrefix":      "v",
+			"changelog":      true,
+			"changelogFile":  "CHANGELOG.md",
+			"preRelease":     "rc",
+		},
+		"jira": map[string]any{
+			"defaultProject": "TEST",
+		},
+	})
+
+	// v4 local config (already through v1→v2→v3→v4 migrations)
+	// By v4, preset/skip are gone (migrated to steps in v1→v2),
+	// and awaitReview/verifyPipeline booleans are gone (migrated to steps in v3→v4).
+	// But ship.steps may still include "version" which gets removed in v5→v6.
+	writeJSON(t, filepath.Join(root, paths.DataDir, "local.json"), map[string]any{
+		"schemaVersion": float64(4),
+		"ship": map[string]any{
+			"steps":                       []any{"execute", "commit", "review", "version", "archive-openspec", "pr", "learnings-commit"},
+			"bump":                        "minor",
+			"reviewThreshold":             "high",
+			"awaitRemoteReviewTimeout":    float64(300),
+			"awaitRemoteReviewInterval":   float64(30),
+		},
+	})
+
+	report, err := Migrate(root, Options{})
+	if err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	if !report.Migrated {
+		t.Fatal("expected Migrated=true")
+	}
+
+	// Verify project config
+	config := readJSON(t, filepath.Join(root, paths.DataDir, "config.json"))
+	if _, has := config["schemaVersion"]; has {
+		t.Error("v6 config.json must not have schemaVersion")
+	}
+
+	ver := config["version"].(map[string]any)
+
+	// version.tag should exist with enabled=true and prefix="v"
+	tag, ok := ver["tag"].(map[string]any)
+	if !ok {
+		t.Fatalf("version.tag should be an object, got %#v", ver["tag"])
+	}
+	if tag["enabled"] != true {
+		t.Error("version.tag.enabled should be true")
+	}
+	if tag["prefix"] != "v" {
+		t.Error("version.tag.prefix should be 'v'")
+	}
+
+	// version.changelog should exist
+	cl, ok := ver["changelog"].(map[string]any)
+	if !ok {
+		t.Fatalf("version.changelog should be an object, got %#v", ver["changelog"])
+	}
+	if cl["enabled"] != true {
+		t.Error("version.changelog.enabled should be true")
+	}
+	if cl["file"] != "CHANGELOG.md" {
+		t.Error("version.changelog.file should be 'CHANGELOG.md'")
+	}
+
+	// preRelease should be preserved
+	if ver["preRelease"] != "rc" {
+		t.Error("version.preRelease should be 'rc'")
+	}
+
+	// Verify local config
+	local := readJSON(t, filepath.Join(root, paths.DataDir, "local.json"))
+	if _, has := local["schemaVersion"]; has {
+		t.Error("v6 local.json must not have schemaVersion")
+	}
+
+	ship := local["ship"].(map[string]any)
+
+	// "version" should be removed from ship.steps by v5→v6 migration
+	steps := stepsSlice(ship, "steps")
+	expectedSteps := []string{"execute", "commit", "review", "archive-openspec", "pr", "learnings-commit"}
+	if !reflect.DeepEqual(steps, expectedSteps) {
+		t.Errorf("ship.steps:\n  got:  %v\n  want: %v (version removed)", steps, expectedSteps)
+	}
+
+	// Other fields should be preserved
+	if ship["bump"] != "minor" {
+		t.Error("ship.bump should be 'minor'")
+	}
+	if ship["reviewThreshold"] != "high" {
+		t.Error("ship.reviewThreshold should be 'high'")
+	}
+	if ship["awaitRemoteReviewTimeout"] != float64(300) {
+		t.Error("ship.awaitRemoteReviewTimeout should be 300")
+	}
+	if ship["awaitRemoteReviewInterval"] != float64(30) {
+		t.Error("ship.awaitRemoteReviewInterval should be 30")
+	}
+
+	// Validate both files against their schemas
+	schemaPathConfig, err := filepath.Abs(filepath.Join("..", "..", "plugins", "sdlc", "schemas", "sdlc-config.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := jsonschema.NewCompiler()
+	schConfig, err := c.Compile(schemaPathConfig)
+	if err != nil {
+		t.Fatalf("compile config schema: %v", err)
+	}
+
+	fConfig, err := os.Open(filepath.Join(root, paths.DataDir, "config.json"))
+	if err != nil {
+		t.Fatalf("open config.json: %v", err)
+	}
+	defer fConfig.Close()
+
+	instConfig, err := jsonschema.UnmarshalJSON(fConfig)
+	if err != nil {
+		t.Fatalf("unmarshal config.json for schema validation: %v", err)
+	}
+	if err := schConfig.Validate(instConfig); err != nil {
+		t.Errorf("config.json failed schema validation:\n%v", err)
+	}
+
+	schemaPathLocal, err := filepath.Abs(filepath.Join("..", "..", "plugins", "sdlc", "schemas", "sdlc-local.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c2 := jsonschema.NewCompiler()
+	schLocal, err := c2.Compile(schemaPathLocal)
+	if err != nil {
+		t.Fatalf("compile local schema: %v", err)
+	}
+
+	fLocal, err := os.Open(filepath.Join(root, paths.DataDir, "local.json"))
+	if err != nil {
+		t.Fatalf("open local.json: %v", err)
+	}
+	defer fLocal.Close()
+
+	instLocal, err := jsonschema.UnmarshalJSON(fLocal)
+	if err != nil {
+		t.Fatalf("unmarshal local.json for schema validation: %v", err)
+	}
+	if err := schLocal.Validate(instLocal); err != nil {
+		t.Errorf("local.json failed schema validation:\n%v", err)
+	}
+}

@@ -117,6 +117,7 @@ type ScaffoldCIOut struct {
 	Warnings   []string             `json:"warnings"`
 	Files      []ScaffoldFileReport `json:"files"`
 	Protection RulesetCheckResult   `json:"protection"`
+	Next       string               `json:"next" jsonschema_description:"Actionable next-step guidance after scaffolding completes."`
 }
 
 // scaffoldExtractVersion extracts a version number from content using the
@@ -242,11 +243,35 @@ func scaffoldCI(root string, force bool) (ScaffoldCIOut, error) {
 		warnings = []string{}
 	}
 
+	protection := checkBranchProtection(root, execx.Run)
+
 	return ScaffoldCIOut{
 		Warnings:   warnings,
 		Files:      files,
-		Protection: checkBranchProtection(root, execx.Run),
+		Protection: protection,
+		Next:       scaffoldNextGuidance(protection),
 	}, nil
+}
+
+// scaffoldNextGuidance builds the actionable next-step guidance surfaced in
+// ScaffoldCIOut.Next, tailored to whether branch protection was detected on
+// the default branch.
+func scaffoldNextGuidance(protection RulesetCheckResult) string {
+	const promoteNote = "promote-release.yml was also scaffolded — use Actions > Promote Release to promote an RC to a final release without creating a PR."
+	if protection.HasRulesets || protection.HasClassicProt {
+		return fmt.Sprintf(
+			"Branch protection is active on %q, which can block direct pushes when version.method is \"push\". "+
+				"You have three options: "+
+				"(1) switch version.method to \"pr\" in .sdlc-v2/config.json to open a release PR instead of pushing directly; "+
+				"(2) keep \"push\" but add the workflow's identity (GitHub App or bot account) as a bypass actor in branch protection rulesets "+
+				"(Settings > Rules > Rulesets > select ruleset > Bypass list > Add bypass > select the GitHub Actions app or a dedicated deploy key); "+
+				"(3) use a GitHub App token with Contents:write permission and bypass privileges instead of the default GITHUB_TOKEN "+
+				"(set it as a repo secret and reference it in release-on-main.yml). "+
+				"Run /setup --only version to reconfigure. "+
+				promoteNote,
+			protection.DefaultBranch)
+	}
+	return "No branch protection detected. CI scripts are installed and both \"push\" and \"pr\" delivery methods will work. " + promoteNote
 }
 
 // --- branch protection check ---
@@ -319,7 +344,7 @@ func checkBranchProtection(dir string, execRun scaffoldExecFunc) RulesetCheckRes
 
 	if result.HasRulesets || result.HasClassicProt {
 		result.Notes = append(result.Notes, fmt.Sprintf(
-			"branch protection is active on %q — tagging and GitHub Releases work normally; if changelogMethod is \"push\", the direct push will be blocked — use \"pr\" or \"skip\" instead",
+			"branch protection is active on %q — tagging and GitHub Releases are unaffected; if version.method is \"push\", versionFile/changelog writes will be blocked by the protected branch — either switch method to \"pr\" in .sdlc-v2/config.json, or disable versionFile/changelog entirely",
 			result.DefaultBranch))
 	} else {
 		result.Notes = append(result.Notes, fmt.Sprintf("no branch protection detected on %q", result.DefaultBranch))
@@ -373,7 +398,7 @@ func verifyTagAncestry(root, tag string) (VerifyTagAncestryOut, error) {
 	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
 		return VerifyTagAncestryOut{
 			OK:      false,
-			Details: fmt.Sprintf("Tag '%s' is not an ancestor of HEAD. The release commit landed on a different branch. Delete the tag (git push origin :refs/tags/%s; git tag -d %s) and re-run version step on the correct branch.", tag, tag, tag),
+			Details: fmt.Sprintf("Tag '%s' is not an ancestor of HEAD. The release commit landed on a different branch. Delete the tag (git push origin :refs/tags/%s; git tag -d %s) and re-run the release workflow on the correct branch.", tag, tag, tag),
 		}, nil
 	}
 

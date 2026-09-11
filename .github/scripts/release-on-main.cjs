@@ -428,6 +428,153 @@ function changelogHeadingExists(repoRoot, changelogFile, version) {
   return content.includes(`## [${version}]`);
 }
 
+/**
+ * Find the last non-RC semver tag by scanning git tags and filtering out
+ * anything matching *-rc*.  Returns the version string (without prefix) or
+ * null if no final tag exists.
+ */
+function findLastFinalTag(repoRoot, tagPrefix) {
+  const out = exec('git tag --list --sort=-v:refname', { cwd: repoRoot });
+  if (!out) return null;
+
+  for (const t of out.split('\n')) {
+    if (!t.trim()) continue;
+    // Filter out RC tags
+    if (t.includes('-rc')) continue;
+
+    let v = t;
+    if (tagPrefix && v.startsWith(tagPrefix)) {
+      v = v.slice(tagPrefix.length);
+    } else if (tagPrefix) {
+      continue; // doesn't match prefix
+    }
+    v = v.replace(/^v/, '');
+    // Match semver format: x.y.z
+    if (/^\d+\.\d+\.\d+$/.test(v)) return v;
+  }
+  return null;
+}
+
+/**
+ * Collect release notes from all PRs merged since a given tag.
+ * Uses gh pr list to get merged PRs, then extracts release notes from
+ * each PR body. PRs without release notes contribute their title as a
+ * single bullet point.
+ */
+function collectNotesSinceTag(repoRoot, tag) {
+  if (!tag) return [];
+
+  // Get the date of the tag
+  const tagDate = exec(`git log -1 --format=%cI ${tag}`, { cwd: repoRoot });
+  if (!tagDate) return [];
+
+  // Find all merged PRs since this date
+  const searchQuery = `merged:>=${tagDate}`;
+  const out = exec(
+    `gh pr list --state merged --base main --search "${searchQuery}" --json number,title,body --limit 100`,
+    { cwd: repoRoot }
+  );
+  if (!out) return [];
+
+  let prList = [];
+  try {
+    prList = JSON.parse(out);
+  } catch (e) {
+    console.error('Failed to parse PR list:', e.message);
+    return [];
+  }
+
+  const notes = [];
+  for (const pr of prList) {
+    const prNotes = extractNotesFromBody(pr.body);
+    if (prNotes) {
+      notes.push(prNotes);
+    } else {
+      // Fallback to PR title as bullet
+      notes.push(`- ${pr.title}`);
+    }
+  }
+  return notes;
+}
+
+/**
+ * Aggregate notes from multiple PRs by keep-a-changelog category.
+ * Parses ### Added/Changed/Fixed/Removed headings and deduplicates
+ * identical items within each category. Returns a single string with
+ * merged sections.
+ */
+function aggregateNotesByCategory(notesList) {
+  if (!notesList || notesList.length === 0) return '';
+
+  const categories = {
+    'Added': new Set(),
+    'Changed': new Set(),
+    'Fixed': new Set(),
+    'Removed': new Set(),
+    'Other': new Set(),
+  };
+
+  // Parse each notes block and extract items by category
+  for (const notes of notesList) {
+    if (!notes) continue;
+
+    // Split by category headers
+    const lines = notes.split('\n');
+    let currentCategory = 'Other';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+
+      // Check if this line is a category header
+      if (trimmed.startsWith('### Added')) {
+        currentCategory = 'Added';
+        continue;
+      }
+      if (trimmed.startsWith('### Changed')) {
+        currentCategory = 'Changed';
+        continue;
+      }
+      if (trimmed.startsWith('### Fixed')) {
+        currentCategory = 'Fixed';
+        continue;
+      }
+      if (trimmed.startsWith('### Removed')) {
+        currentCategory = 'Removed';
+        continue;
+      }
+
+      // If it's a bullet point or non-empty content, add to current category
+      if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
+        categories[currentCategory].add(trimmed);
+      } else if (trimmed && !trimmed.startsWith('#')) {
+        // Non-heading, non-bullet content — wrap as bullet if not empty
+        categories[currentCategory].add(`- ${trimmed}`);
+      }
+    }
+  }
+
+  // Build output, only including categories with content
+  const result = [];
+  for (const cat of ['Added', 'Changed', 'Fixed', 'Removed']) {
+    if (categories[cat].size > 0) {
+      result.push(`### ${cat}`);
+      for (const item of Array.from(categories[cat]).sort()) {
+        result.push(item);
+      }
+      result.push('');
+    }
+  }
+
+  // Add Other if any uncategorized items
+  if (categories['Other'].size > 0) {
+    for (const item of Array.from(categories['Other']).sort()) {
+      result.push(item);
+    }
+  }
+
+  return result.join('\n').trim();
+}
+
 // ---------------------------------------------------------------------------
 // PR-based file delivery — pushes staged commit on HEAD to a dedicated
 // branch and opens a PR back into the release branch.
@@ -804,10 +951,29 @@ function main() {
 
   const { level, isRC } = parseReleaseLabel(releaseLabel);
   const isRCRelease = isRC || hasPreReleaseMarker(pr.body);
-  const notes = extractNotesFromBody(pr.body);
+
+  // Resolve tag prefix early — needed for version resolution and notes aggregation.
+  const tagPrefix = config.tag.prefix;
+
+  // For final releases, collect notes from all PRs since last final tag.
+  // For RC releases, use only the triggering PR's notes.
+  let notes;
+  if (isRCRelease) {
+    notes = extractNotesFromBody(pr.body);
+  } else {
+    const lastFinal = findLastFinalTag(repoRoot, tagPrefix);
+    const allNotes = lastFinal
+        ? collectNotesSinceTag(repoRoot, `${tagPrefix}${lastFinal}`)
+        : [];
+    // Always include current PR notes
+    const currentNotes = extractNotesFromBody(pr.body);
+    if (currentNotes && !allNotes.includes(currentNotes)) {
+      allNotes.push(currentNotes);
+    }
+    notes = aggregateNotesByCategory(allNotes);
+  }
 
   // Resolve current version.
-  const tagPrefix = config.tag.prefix;
   let currentVersion;
   if (!config.versionFile.enabled) {
     // Tag-only mode: derive version from existing tags.
@@ -869,4 +1035,7 @@ module.exports = {
   checkTagState,
   pushFilesViaPR,
   changelogHeadingExists,
+  findLastFinalTag,
+  collectNotesSinceTag,
+  aggregateNotesByCategory,
 };

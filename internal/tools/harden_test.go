@@ -648,6 +648,104 @@ func TestHardenPrepare_PipelineIssuesOmittedWhenNoIssuesKey(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// CLI evidence (cli-executions.jsonl wired into the manifest)
+// ---------------------------------------------------------------------------
+
+// TestHardenPrepare_CLIEvidence covers both halves of wiring
+// readRecentCLIEvidence into hardenManifest: (1) entries are filtered to the
+// resolved branch and (2) a missing evidence file is a no-op, not an error.
+// initGitFixture/gitCommit (scaffold_test.go, same package) give a real git
+// repo so gitx.CurrentBranch(contentRoot) resolves a known branch ("main")
+// instead of failing outside a repo, as it does in this file's other
+// fixtures (those rely on branch=="" skipping the filter entirely).
+func TestHardenPrepare_CLIEvidence(t *testing.T) {
+	t.Run("FiltersToCurrentBranch", func(t *testing.T) {
+		root := t.TempDir()
+		initGitFixture(t, root)
+		gitCommit(t, root, "c1")
+
+		entries := []CLIEvidenceEntry{
+			{
+				Timestamp: "2026-09-11T00:00:00Z", Pipeline: "ship", Step: "commit",
+				Branch: "main", Command: "git status", ExitCode: 0, OutputHead: "clean",
+			},
+			{
+				Timestamp: "2026-09-11T00:00:01Z", Pipeline: "execute",
+				Wave: func() *int { v := 1; return &v }(),
+				Branch: "feature-x", Command: "npm test", ExitCode: 1, OutputHead: "FAIL",
+			},
+			{
+				Timestamp: "2026-09-11T00:00:02Z", Pipeline: "ship", Step: "test",
+				Branch: "main", Command: "go build ./...", ExitCode: 0, OutputHead: "",
+			},
+		}
+		for _, e := range entries {
+			if err := appendCLIEvidence(root, e); err != nil {
+				t.Fatalf("appendCLIEvidence: %v", err)
+			}
+		}
+
+		out, err := hardenPrepare(root, root, HardenPrepareIn{
+			FailureText:     "boom",
+			Skill:           "ship",
+			SkipConfigCheck: true,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		manifest := readHardenManifest(t, out.ManifestPath)
+
+		raw, ok := manifest["cliEvidence"]
+		if !ok {
+			t.Fatal("cliEvidence key missing from manifest, want present with main-branch entries")
+		}
+		list, ok := raw.([]any)
+		if !ok {
+			t.Fatalf("cliEvidence is not an array: %T", raw)
+		}
+		if len(list) != 2 {
+			t.Fatalf("expected 2 main-branch entries, got %d: %+v", len(list), list)
+		}
+		first := list[0].(map[string]any)
+		if first["command"] != "git status" || first["branch"] != "main" {
+			t.Errorf("cliEvidence[0] = %+v, want the first main-branch entry (git status)", first)
+		}
+		second := list[1].(map[string]any)
+		if second["command"] != "go build ./..." || second["branch"] != "main" {
+			t.Errorf("cliEvidence[1] = %+v, want the second main-branch entry (go build ./...)", second)
+		}
+		for _, item := range list {
+			m := item.(map[string]any)
+			if m["branch"] == "feature-x" {
+				t.Errorf("cliEvidence leaked a non-matching-branch entry: %+v", m)
+			}
+		}
+	})
+
+	t.Run("MissingEvidenceFileOmitsFieldWithoutError", func(t *testing.T) {
+		root := t.TempDir()
+		initGitFixture(t, root)
+		gitCommit(t, root, "c1")
+
+		// Deliberately no cli-executions.jsonl written under this root.
+		out, err := hardenPrepare(root, root, HardenPrepareIn{
+			FailureText:     "boom",
+			Skill:           "ship",
+			SkipConfigCheck: true,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error with no evidence file present: %v", err)
+		}
+		manifest := readHardenManifest(t, out.ManifestPath)
+		if raw, ok := manifest["cliEvidence"]; ok {
+			if list, ok := raw.([]any); !ok || len(list) != 0 {
+				t.Errorf("cliEvidence = %+v (present, %T), want omitted or empty when no evidence file exists", raw, raw)
+			}
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
 // Pure-function helpers
 // ---------------------------------------------------------------------------
 

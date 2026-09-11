@@ -2,9 +2,11 @@ package ghx
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -231,5 +233,98 @@ func TestMissingGH_YieldsErrGHNotFound(t *testing.T) {
 	}
 	if !errors.Is(err, ErrGHNotFound) {
 		t.Errorf("expected ErrGHNotFound in chain, got: %v", err)
+	}
+}
+
+func TestPRReviewComments_EmptyPR(t *testing.T) {
+	// `gh api ... --paginate --jq '...'` prints nothing when the comments
+	// list is empty (no matches for the jq filter, not even "[]").
+	cleanup := stubGH(t, "#!/bin/sh\n")
+	defer cleanup()
+
+	comments, err := PRReviewComments(".", "owner", "repo", 42)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(comments) != 0 {
+		t.Errorf("got %d comments, want 0", len(comments))
+	}
+}
+
+func TestPRReviewComments_SingleBatchedCall(t *testing.T) {
+	// The stub records how many times it was invoked; PRReviewComments must
+	// call gh exactly once regardless of how many comments/replies come
+	// back — no N+1 per-comment follow-up calls.
+	dir := t.TempDir()
+	countFile := filepath.Join(dir, "calls")
+	script := fmt.Sprintf(`#!/bin/sh
+echo x >> %q
+printf '{"id":1,"path":"a.go","line":10,"login":"reviewer","body":"root comment","in_reply_to_id":null}\n'
+printf '{"id":2,"path":"a.go","line":10,"login":"author","body":"reply","in_reply_to_id":1}\n'
+`, countFile)
+	cleanup := stubGH(t, script)
+	defer cleanup()
+
+	comments, err := PRReviewComments(".", "owner", "repo", 42)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(comments) != 2 {
+		t.Fatalf("got %d comments, want 2", len(comments))
+	}
+
+	data, readErr := os.ReadFile(countFile)
+	if readErr != nil {
+		t.Fatalf("reading call-count file: %v", readErr)
+	}
+	calls := len(strings.Split(strings.TrimSpace(string(data)), "\n"))
+	if calls != 1 {
+		t.Errorf("gh invoked %d times, want exactly 1 (single batched call)", calls)
+	}
+
+	root := comments[0]
+	if root.ID != 1 || root.Path != "a.go" || root.Line != 10 || root.Login != "reviewer" || root.InReplyToID != 0 {
+		t.Errorf("unexpected root comment: %+v", root)
+	}
+	reply := comments[1]
+	if reply.ID != 2 || reply.Login != "author" || reply.InReplyToID != 1 {
+		t.Errorf("unexpected reply comment: %+v", reply)
+	}
+}
+
+func TestPRReviewComments_InvalidPRNumber(t *testing.T) {
+	_, err := PRReviewComments(".", "owner", "repo", 0)
+	if err == nil {
+		t.Fatal("expected error for invalid PR number")
+	}
+}
+
+func TestPRReviewComments_InvalidOwner(t *testing.T) {
+	_, err := PRReviewComments(".", "-invalid", "repo", 1)
+	if err == nil {
+		t.Fatal("expected error for invalid owner")
+	}
+}
+
+func TestCurrentLogin(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\necho \"octocat\"\n")
+	defer cleanup()
+
+	login, err := CurrentLogin(".")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if login != "octocat" {
+		t.Errorf("got %q, want %q", login, "octocat")
+	}
+}
+
+func TestCurrentLogin_Empty(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\necho \"\"\n")
+	defer cleanup()
+
+	_, err := CurrentLogin(".")
+	if err == nil {
+		t.Fatal("expected error for empty login")
 	}
 }
