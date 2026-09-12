@@ -107,13 +107,26 @@ When `openCount` is 0, render nothing.
 - For each approved draft, call `ship_state({action:"deferred_add", detail:{id:"execute-drift-<timestamp>-<N>", description:<draft.title>, source:"execute-drift"}})`, where `<timestamp>` is that draft's own `timestamp` field (RFC3339, always set by the execute step's `issue-draft` action) and `<N>` is that draft's 1-based position in `pendingIssueDrafts`. The timestamp makes the id collision-free across separate execute runs on the same branch — `pendingIssueDrafts` restarts at index 1 every run, so a position-only id (`execute-drift-<N>`) would collide with a prior run's entry of the same position in `deferred.json` (append-only, no dedup) and cause `deferred_resolve` to resolve the wrong entry; `<N>` alone still disambiguates two drafts recorded in the same run with an identical timestamp. This only records the draft's title for later triage — `description` carries `draft.title` only, not `draft.body` (`history.DeferredIssue` has no body field) — and it does not call `gh issue create` itself (that happens on a future run via the "Create GitHub issues" option above) — so approving here never blocks the rest of this pipeline.
 - Unapproved drafts: no action; they remain in `pendingIssueDrafts` on the execute state file.
 
-**10c. Record run history.** `ship_state({action:"history_record", detail:{skill:"ship", branch:<branch>, outcome:<"success"|"failure"|"partial">, duration_ms:<elapsed>, steps:<step names>, version:<step 6b's held bump value, when the pr step ran with a resolved release level>}})`. There is no version-producing step anymore — `detail.version` is repurposed to hold the bump value forwarded to the pr step (see `### pr` below): `flags.bump` as resolved by `ship_prepare`, unless step 6b's interactive prompt let the user override it, in which case the override. Not a semver string a version step used to compute. Omit it when `pr` wasn't configured for this run. Non-fatal — if recording fails, log a warning and continue.
-
-**10d. Execution report.** Call `execute_state({action:"report"})` → either `{skipped:true}` or a full `ExecutionReportOut` (`branch`, `runId`, `planPath`, `startedAt`, `duration`, `format`, `waves[]`, `totalTasks`/`completedTasks`/`failedTasks`/`skippedTasks`, `drifts`/`errors`/`warnings`/`concerns`, `pendingIssueDrafts`, `deferredFindings`, `decisions`). Gated by `automation.report.enabled` (config-owned, not a flag) — this step never prompts.
+**10c. Execution report.** Call `execute_state({action:"report"})` → either `{skipped:true}` or a full `ExecutionReportOut` (`branch`, `runId`, `planPath`, `startedAt`, `duration`, `format`, `waves[]`, `totalTasks`/`completedTasks`/`failedTasks`/`skippedTasks`, `stepTimings[]`, `cliEvidence[]`, `drifts`/`errors`/`warnings`/`concerns`, `guardrailHits[]`, `pendingIssueDrafts`, `deferredFindings`, `decisions`, `linkedLearnings`, `next`). Gated by `automation.report.enabled` (config-owned, not a flag) — this step never prompts. Runs **before** 10d so `history_record` can forward `guardrailHits` from this step's output.
 - `{skipped:true}`: skip silently, no output.
 - `format:"json"`: write the returned object verbatim as JSON to `.sdlc-v2/reports/<runId>-report.json`.
-- `format:"md"` (default): render markdown with these sections, in order — Header (`branch`, `runId`, `duration`, task totals), wave-by-wave breakdown (`waves[]`: status, duration, committed SHA, each task's status/complexity/risk/files), timing summary, drift log (`drifts`), errors and concerns (`errors`, `warnings`, `concerns`), deferred follow-ups and pending issue drafts (`deferredFindings`, `pendingIssueDrafts`), decisions (`decisions`) — then write it to `.sdlc-v2/reports/<runId>-report.md` via the Write tool.
+- `format:"md"` (default): render markdown with these sections, in order —
+  Header (`branch`, `runId`, `duration`, task totals),
+  wave-by-wave breakdown (`waves[]`: status, duration, committed SHA, each task's status/complexity/risk/files),
+  step timings (`stepTimings[]`: name, status, duration, humanWait marker),
+  CLI evidence summary (`cliEvidence[]`: command, exitCode, step),
+  timing summary,
+  drift log (`drifts`),
+  errors and concerns (`errors`, `warnings`, `concerns`),
+  guardrail hits (`guardrailHits[]`),
+  deferred follow-ups and pending issue drafts (`deferredFindings`, `pendingIssueDrafts`),
+  decisions (`decisions`),
+  linked learnings (`linkedLearnings`),
+  next steps (`next`, when non-empty)
+  — then write it to `.sdlc-v2/reports/<runId>-report.md` via the Write tool.
 - Either way, print the written file's path to the user as the last line of the pipeline. Non-fatal — if the report action errors, log a warning and continue.
+
+**10d. Record run history.** `ship_state({action:"history_record", detail:{skill:"ship", branch:<branch>, outcome:<"success"|"failure"|"partial">, duration_ms:<elapsed>, steps:<step names>, version:<step 6b's held bump value, when the pr step ran with a resolved release level>, guardrail_hits:<10c's report output `guardrailHits`, when non-empty>}})`. There is no version-producing step anymore — `detail.version` is repurposed to hold the bump value forwarded to the pr step (see `### pr` below): `flags.bump` as resolved by `ship_prepare`, unless step 6b's interactive prompt let the user override it, in which case the override. Not a semver string a version step used to compute. Omit it when `pr` wasn't configured for this run. `detail.guardrail_hits` carries 10c's `guardrailHits[]` verbatim so `history.RunRecord.GuardrailHits` is populated — omit it when 10c was skipped or the field is empty. Non-fatal — if recording fails, log a warning and continue.
 
 ---
 

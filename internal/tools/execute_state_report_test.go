@@ -1,8 +1,10 @@
 package tools
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
@@ -304,6 +306,267 @@ func TestExecState_Report_DecisionsAndFollowUps(t *testing.T) {
 	}
 }
 
+func TestExecState_Report_StepTimings(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	createExecState(t, root, "feat/report", map[string]any{
+		"branch": "feat/report",
+	})
+	createShipState(t, root, "feat/report", map[string]any{
+		"branch": "feat/report",
+		"steps": []any{
+			map[string]any{
+				"name":        "execute",
+				"status":      "completed",
+				"startedAt":   "2025-06-15T09:00:00Z",
+				"completedAt": "2025-06-15T09:30:00Z",
+			},
+			map[string]any{
+				"name":        "await-remote-review",
+				"status":      "completed",
+				"startedAt":   "2025-06-15T10:00:00Z",
+				"completedAt": "2025-06-15T10:05:00Z",
+			},
+			map[string]any{
+				"name":   "pr",
+				"status": "pending",
+			},
+		},
+	})
+	clock := fixedClock(testNow)
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "report",
+		Branch: "feat/report",
+	}, clock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := result.(ExecutionReportOut)
+
+	if len(out.StepTimings) != 3 {
+		t.Fatalf("expected 3 step timings, got %d: %+v", len(out.StepTimings), out.StepTimings)
+	}
+
+	execStep := out.StepTimings[0]
+	if execStep.Name != "execute" || execStep.Status != "completed" {
+		t.Errorf("unexpected execute step: %+v", execStep)
+	}
+	if execStep.Duration != "30m 00s" {
+		t.Errorf("expected execute step duration '30m 00s', got %q", execStep.Duration)
+	}
+	if execStep.HumanWait {
+		t.Error("expected execute step HumanWait=false")
+	}
+
+	reviewStep := out.StepTimings[1]
+	if !reviewStep.HumanWait {
+		t.Error("expected await-remote-review step HumanWait=true")
+	}
+	if reviewStep.Duration != "5m 00s" {
+		t.Errorf("expected await-remote-review duration '5m 00s', got %q", reviewStep.Duration)
+	}
+
+	prStep := out.StepTimings[2]
+	if prStep.StartedAt != "" || prStep.Duration != "" {
+		t.Errorf("expected pending pr step to have no startedAt/duration, got %+v", prStep)
+	}
+}
+
+func TestExecState_Report_CLIEvidence_FiltersByBranchAndShipStartedAt(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	createExecState(t, root, "feat/report", map[string]any{
+		"branch":    "feat/report",
+		"startedAt": "2025-06-15T09:00:00Z",
+	})
+	// Ship state's startedAt predates the execute state's startedAt — since
+	// must come from shipSt.Data["startedAt"], not out.StartedAt, so the
+	// earlier entry below (08:30) is included.
+	createShipState(t, root, "feat/report", map[string]any{
+		"branch":    "feat/report",
+		"startedAt": "2025-06-15T08:00:00Z",
+	})
+
+	if err := appendCLIEvidence(root, CLIEvidenceEntry{
+		Timestamp: "2025-06-15T07:00:00Z", // before since — excluded
+		Pipeline:  "ship",
+		Branch:    "feat/report",
+		Command:   "too-early",
+	}); err != nil {
+		t.Fatalf("appendCLIEvidence failed: %v", err)
+	}
+	if err := appendCLIEvidence(root, CLIEvidenceEntry{
+		Timestamp: "2025-06-15T08:30:00Z", // after ship startedAt — included
+		Pipeline:  "ship",
+		Branch:    "feat/report",
+		Command:   "in-window",
+	}); err != nil {
+		t.Fatalf("appendCLIEvidence failed: %v", err)
+	}
+	if err := appendCLIEvidence(root, CLIEvidenceEntry{
+		Timestamp: "2025-06-15T08:30:00Z",
+		Pipeline:  "ship",
+		Branch:    "other-branch", // different branch — excluded
+		Command:   "wrong-branch",
+	}); err != nil {
+		t.Fatalf("appendCLIEvidence failed: %v", err)
+	}
+	clock := fixedClock(testNow)
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "report",
+		Branch: "feat/report",
+	}, clock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := result.(ExecutionReportOut)
+
+	if len(out.CLIEvidence) != 1 {
+		t.Fatalf("expected 1 CLI evidence entry, got %d: %+v", len(out.CLIEvidence), out.CLIEvidence)
+	}
+	if out.CLIEvidence[0].Command != "in-window" {
+		t.Errorf("expected 'in-window' entry, got %q", out.CLIEvidence[0].Command)
+	}
+}
+
+func TestExecState_Report_CLIEvidenceAndStepTimings_EmptyWhenNoShipState(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	createExecState(t, root, "feat/report", map[string]any{
+		"branch": "feat/report",
+	})
+	clock := fixedClock(testNow)
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "report",
+		Branch: "feat/report",
+	}, clock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := result.(ExecutionReportOut)
+
+	if out.CLIEvidence == nil || len(out.CLIEvidence) != 0 {
+		t.Errorf("expected empty non-nil CLIEvidence, got %#v", out.CLIEvidence)
+	}
+	if out.StepTimings == nil || len(out.StepTimings) != 0 {
+		t.Errorf("expected empty non-nil StepTimings, got %#v", out.StepTimings)
+	}
+}
+
+func TestExecState_Report_GuardrailHits_ExtractedFromGuardrailDecisions(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	createExecState(t, root, "feat/report", map[string]any{
+		"branch": "feat/report",
+		"guardrailDecisions": []any{
+			map[string]any{"decideType": "guardrail", "id": "no-real-fs-git-in-tests", "decision": "override"},
+			map[string]any{"decideType": "guardrail", "id": "handler-data-contracts", "decision": "harden"},
+			map[string]any{"decideType": "other", "id": "ignored-non-guardrail-type"},
+		},
+	})
+	clock := fixedClock(testNow)
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "report",
+		Branch: "feat/report",
+	}, clock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := result.(ExecutionReportOut)
+
+	want := []string{"no-real-fs-git-in-tests", "handler-data-contracts"}
+	if len(out.GuardrailHits) != len(want) {
+		t.Fatalf("expected %d guardrail hits, got %d: %+v", len(want), len(out.GuardrailHits), out.GuardrailHits)
+	}
+	for i, id := range want {
+		if out.GuardrailHits[i] != id {
+			t.Errorf("guardrailHits[%d] = %q, want %q", i, out.GuardrailHits[i], id)
+		}
+	}
+}
+
+func TestExecState_Report_GuardrailHits_EmptyWhenNoDecisions(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	createExecState(t, root, "feat/report", map[string]any{
+		"branch": "feat/report",
+	})
+	clock := fixedClock(testNow)
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "report",
+		Branch: "feat/report",
+	}, clock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := result.(ExecutionReportOut)
+
+	if out.GuardrailHits == nil || len(out.GuardrailHits) != 0 {
+		t.Errorf("expected empty non-nil GuardrailHits, got %#v", out.GuardrailHits)
+	}
+}
+
+func TestExecState_Report_LinkedLearnings_CountsTaggedLines(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	// startedAt "2025-06-15T09:00:00Z" derives runId "20250615T090000"
+	// (execDeriveRunID strips non-digit/non-T characters).
+	createExecState(t, root, "feat/report", map[string]any{
+		"branch":    "feat/report",
+		"startedAt": "2025-06-15T09:00:00Z",
+	})
+	writeFile(t, filepath.Join(root, paths.DataDir, "learnings", "log.md"), "# SDLC Execution Learnings\n\n"+
+		"<!-- sdlc:run=20250615T090000 branch=feat/report -->\n"+
+		"## entry one\n\n"+
+		"<!-- sdlc:run=some-other-run branch=feat/report -->\n"+
+		"## entry from a different run\n\n"+
+		"<!-- sdlc:run=20250615T090000 branch=feat/report -->\n"+
+		"## entry two\n\n"+
+		"## untagged entry\n")
+	clock := fixedClock(testNow)
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "report",
+		Branch: "feat/report",
+	}, clock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := result.(ExecutionReportOut)
+
+	if out.LinkedLearnings != 2 {
+		t.Errorf("expected LinkedLearnings=2, got %d", out.LinkedLearnings)
+	}
+}
+
+func TestExecState_Report_LinkedLearnings_ZeroWhenLogMissing(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	createExecState(t, root, "feat/report", map[string]any{
+		"branch":    "feat/report",
+		"startedAt": "2025-06-15T09:00:00Z",
+	})
+	clock := fixedClock(testNow)
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "report",
+		Branch: "feat/report",
+	}, clock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := result.(ExecutionReportOut)
+
+	if out.LinkedLearnings != 0 {
+		t.Errorf("expected LinkedLearnings=0 when learnings log is missing, got %d", out.LinkedLearnings)
+	}
+}
+
 func TestExecState_Report_UnknownBranch(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
@@ -375,4 +638,228 @@ func findExecStatePath(t *testing.T, root, branch string) string {
 
 func dirJoin(dir, name string) string {
 	return filepath.Join(dir, name)
+}
+
+// ---------------------------------------------------------------------------
+// H2: JSON marshal assertions — verify omitempty removal
+// ---------------------------------------------------------------------------
+
+func TestExecState_Report_MarshalIncludesEmptyFields(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	createExecState(t, root, "feat/report", map[string]any{
+		"branch": "feat/report",
+	})
+	clock := fixedClock(testNow)
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "report",
+		Branch: "feat/report",
+	}, clock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := result.(ExecutionReportOut)
+
+	b, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	s := string(b)
+
+	for _, field := range []string{`"cliEvidence":[]`, `"stepTimings":[]`, `"guardrailHits":[]`, `"linkedLearnings":0`} {
+		if !strings.Contains(s, field) {
+			t.Errorf("expected JSON to contain %s, got:\n%s", field, s)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// M3: run ID collision test — trailing space delimiter
+// ---------------------------------------------------------------------------
+
+func TestExecState_Report_LinkedLearnings_NoPrefixCollision(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	createExecState(t, root, "feat/report", map[string]any{
+		"branch":    "feat/report",
+		"startedAt": "2025-06-15T09:00:00Z",
+	})
+	// RunID derived: "20250615T090000"
+	// Add entry with a runID that is a PREFIX of target runID — must not match.
+	writeFile(t, filepath.Join(root, paths.DataDir, "learnings", "log.md"), "# SDLC Execution Learnings\n\n"+
+		"<!-- sdlc:run=20250615T090000X branch=feat/report -->\n"+
+		"## entry with longer runID (prefix collision)\n\n"+
+		"<!-- sdlc:run=20250615T090000 branch=feat/report -->\n"+
+		"## entry with exact runID\n")
+	clock := fixedClock(testNow)
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "report",
+		Branch: "feat/report",
+	}, clock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := result.(ExecutionReportOut)
+
+	if out.LinkedLearnings != 1 {
+		t.Errorf("expected LinkedLearnings=1 (only exact match), got %d", out.LinkedLearnings)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// M7a: malformed step timing entry — must not panic
+// ---------------------------------------------------------------------------
+
+func TestExecState_Report_StepTimings_MalformedEntrySkipped(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	createExecState(t, root, "feat/report", map[string]any{
+		"branch": "feat/report",
+	})
+	createShipState(t, root, "feat/report", map[string]any{
+		"branch": "feat/report",
+		"steps": []any{
+			"not-a-map",
+			map[string]any{
+				"name":        "execute",
+				"status":      "completed",
+				"startedAt":   "2025-06-15T09:00:00Z",
+				"completedAt": "2025-06-15T09:05:00Z",
+			},
+		},
+	})
+	clock := fixedClock(testNow)
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "report",
+		Branch: "feat/report",
+	}, clock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := result.(ExecutionReportOut)
+
+	// Should extract the valid entry, skip the malformed one
+	if len(out.StepTimings) != 1 {
+		t.Errorf("expected 1 step timing (malformed entry skipped), got %d: %+v", len(out.StepTimings), out.StepTimings)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// M7b: malformed guardrail entry — must not panic
+// ---------------------------------------------------------------------------
+
+func TestExecState_Report_GuardrailHits_MalformedEntrySkipped(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	createExecState(t, root, "feat/report", map[string]any{
+		"branch": "feat/report",
+		"guardrailDecisions": []any{
+			"not-a-map",
+			42,
+			map[string]any{"decideType": "guardrail", "id": "valid-hit", "decision": "override"},
+		},
+	})
+	clock := fixedClock(testNow)
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "report",
+		Branch: "feat/report",
+	}, clock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := result.(ExecutionReportOut)
+
+	if len(out.GuardrailHits) != 1 || out.GuardrailHits[0] != "valid-hit" {
+		t.Errorf("expected [\"valid-hit\"], got %+v", out.GuardrailHits)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// M5: CLI evidence read error surfaced as warning
+// ---------------------------------------------------------------------------
+
+func TestExecState_Report_CLIEvidenceReadError_Warning(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	createExecState(t, root, "feat/report", map[string]any{
+		"branch":    "feat/report",
+		"startedAt": "2025-06-15T09:00:00Z",
+	})
+	// Create a directory at the evidence file path — os.ReadFile on a
+	// directory returns an error that is not IsNotExist.
+	evidencePath := filepath.Join(root, paths.DataDir, "evidence", "cli-executions.jsonl")
+	if err := os.MkdirAll(evidencePath, 0o755); err != nil {
+		t.Fatalf("mkdir at evidence path: %v", err)
+	}
+	clock := fixedClock(testNow)
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "report",
+		Branch: "feat/report",
+	}, clock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := result.(ExecutionReportOut)
+
+	if out.CLIEvidence == nil || len(out.CLIEvidence) != 0 {
+		t.Errorf("expected empty non-nil CLIEvidence on read error, got %#v", out.CLIEvidence)
+	}
+	found := false
+	for _, w := range out.Warnings {
+		if strings.Contains(w.Summary, "CLI evidence read failed") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected a warning about CLI evidence read failure, got warnings: %+v", out.Warnings)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// M6: learnings count read error surfaced as warning
+// ---------------------------------------------------------------------------
+
+func TestExecState_Report_LearningsCountError_Warning(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	createExecState(t, root, "feat/report", map[string]any{
+		"branch":    "feat/report",
+		"startedAt": "2025-06-15T09:00:00Z",
+	})
+	// Create a directory at the learnings log path — os.ReadFile on a
+	// directory returns an error that is not IsNotExist.
+	logPath := filepath.Join(root, paths.DataDir, "learnings", "log.md")
+	if err := os.MkdirAll(logPath, 0o755); err != nil {
+		t.Fatalf("mkdir at learnings path: %v", err)
+	}
+	clock := fixedClock(testNow)
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "report",
+		Branch: "feat/report",
+	}, clock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := result.(ExecutionReportOut)
+
+	if out.LinkedLearnings != 0 {
+		t.Errorf("expected LinkedLearnings=0 on read error, got %d", out.LinkedLearnings)
+	}
+	found := false
+	for _, w := range out.Warnings {
+		if strings.Contains(w.Summary, "Learnings count failed") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected a warning about learnings count failure, got warnings: %+v", out.Warnings)
+	}
 }

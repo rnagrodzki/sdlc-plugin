@@ -36,7 +36,7 @@ import (
 // ExecuteStateIn carries the merged input for the execute_state tool's
 // actions. Each field is consumed by one or more actions (noted in comments).
 type ExecuteStateIn struct {
-	Action            string         `json:"action" jsonschema_description:"Selects the operation: wave-compute, init, wave-start, wave-done, wave-fail, wave-committed, wave-commit, task-done, task-fail, task-context, context, read, cleanup, gc, summarize-prior-wave-context, wave-split, verify-completeness, wave-progress, resume-reset, ledger_checkin, ledger_checkout, ledger_status, log-cli, drift-log, issue-draft, or report. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
+	Action            string         `json:"action" jsonschema_description:"Selects the operation: wave-compute, init, wave-start, wave-done, wave-fail, wave-committed, wave-commit, task-done, task-fail, task-context, context, read, cleanup, gc, summarize-prior-wave-context, wave-split, verify-completeness, wave-progress, resume-reset, ledger_checkin, ledger_checkout, ledger_status, log-cli, drift-log, issue-draft, decide, or report. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
 	Branch            string         `json:"branch,omitempty" jsonschema_description:"Git branch the execution state belongs to. Most actions accept it to scope the state file; falls back to the current branch when omitted."`
 	Quality           string         `json:"quality,omitempty" jsonschema_description:"Quality level to stamp on a newly initialized run (init only). Required — no config fallback exists for this field."`
 	TotalTasks        int            `json:"totalTasks,omitempty" jsonschema_description:"Total planned task count for a newly initialized run (init only)."`
@@ -91,6 +91,10 @@ type ExecuteStateIn struct {
 	IssueDraftTitle   string         `json:"issueDraftTitle,omitempty" jsonschema_description:"issue-draft only: GH issue title (required)."`
 	IssueDraftBody    string         `json:"issueDraftBody,omitempty" jsonschema_description:"issue-draft only: GH issue body markdown (required)."`
 	IssueDraftLabels  []string       `json:"issueDraftLabels,omitempty" jsonschema_description:"issue-draft only: labels to apply (optional)."`
+	DecideType        string         `json:"decideType,omitempty" jsonschema:"enum=guardrail" jsonschema_description:"decide only: decision category. Currently: guardrail."`
+	DecideID          string         `json:"decideId,omitempty" jsonschema_description:"decide only: identifier of the item decided on (e.g. a guardrail slug)."`
+	DecideDecision    string         `json:"decideDecision,omitempty" jsonschema:"enum=override,enum=harden,enum=cancel,enum=fix" jsonschema_description:"decide only: choice made — override, harden, cancel, or fix."`
+	DecideReason      string         `json:"decideReason,omitempty" jsonschema_description:"decide only: optional free-text reason why this choice was made."`
 }
 
 // ---------------------------------------------------------------------------
@@ -134,6 +138,13 @@ type IssueDraftOut struct {
 	Next        string `json:"next,omitempty"`
 }
 
+// ExecDecideOut is the output for the decide action.
+type ExecDecideOut struct {
+	OK     bool   `json:"ok"`
+	Action string `json:"action"`
+	Next   string `json:"next"`
+}
+
 // ExecutionReportOut is the read-only end-of-run report returned by the
 // report action (KD-11): everything ship step 10d needs to render (or
 // forward as JSON) a full account of the run. Format tells the caller how
@@ -174,8 +185,30 @@ type ExecutionReportOut struct {
 	// Decisions
 	Decisions []string `json:"decisions,omitempty"`
 
+	// CLI evidence + step timings — both best-effort cross-reads from ship
+	// state (see execActionReport); normalized to empty (never nil) slices.
+	CLIEvidence []CLIEvidenceEntry `json:"cliEvidence"`
+	StepTimings []StepTiming       `json:"stepTimings"`
+
+	// GuardrailHits lists guardrail IDs decided during this run (KD-2),
+	// extracted from this state file's own data["guardrailDecisions"];
+	// normalized to empty (never nil). LinkedLearnings counts learnings log
+	// lines tagged with this run's ID (KD-3).
+	GuardrailHits   []string `json:"guardrailHits"`
+	LinkedLearnings int      `json:"linkedLearnings"`
+
 	// Next step guidance (empty string is valid "no next step").
 	Next string `json:"next,omitempty"`
+}
+
+// StepTiming is one ship-pipeline step's timing entry in
+// ExecutionReportOut.StepTimings, derived from ship state's data["steps"].
+type StepTiming struct {
+	Name      string `json:"name"`
+	Status    string `json:"status"`
+	StartedAt string `json:"startedAt,omitempty"`
+	Duration  string `json:"duration,omitempty"`
+	HumanWait bool   `json:"humanWait,omitempty"`
 }
 
 // WaveReport is one wave's entry in ExecutionReportOut.Waves.
@@ -438,6 +471,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - ledger_status: List worker statuses for a run. Requires runId. Optional: timeoutSeconds.
 - drift-log: Append a drift issue and evaluate the server-side stop condition. When accumulated error-severity drift issues exceed the threshold (max(minErrorFloor, ceil(maxErrorRate * totalTasks))), returns {halt:true}. Requires driftSeverity (error|warning|info), driftSummary. Optional: driftDetail, wave, taskId, branch.
 - issue-draft: Append a pending GH issue draft to the state file's pendingIssueDrafts list (append-only — never goes through the context action, never overwrites). Requires issueDraftTitle, issueDraftBody. Optional: issueDraftLabels, taskId, branch. Returns {added:true, totalDrafts:N}.
+- decide: Record a guardrail decision (append-only — never goes through the context action, never overwrites; distinct from ship state's own "decide" action, which writes a differently-shaped {step, decision} entry under a different key). Appends {decideType, id, decision, reason} to the state file's guardrailDecisions list. Requires decideType, decideId. Optional: decideDecision, decideReason, branch. Returns {ok:true, action:"decide", next:"..."}.
 - report: Assemble the end-of-run execution report (KD-11), read-only (never writes state). Gated by config automation.report: {enabled:false} returns {skipped:true} immediately and nothing else. Otherwise returns {branch, runId, planPath, startedAt, duration, format, waves[{number, status, startedAt, completedAt, duration, tasks[{id, name, status, complexity, risk, filesChanged}], committedSha}], totalTasks, completedTasks, failedTasks, skippedTasks, drifts, errors, warnings, concerns, pendingIssueDrafts, deferredFindings, decisions}. format is "json" or "md" (default) from config — tells the caller whether to write the returned data as JSON verbatim or render it as markdown itself. Optional: branch.
 
 Returns a JSON envelope: {"ok":true, "data":{...}} on success, {"ok":false, "code":"...", "error":"..."} on failure.`,
@@ -518,6 +552,8 @@ func executeState(root, workDir string, in ExecuteStateIn, now func() time.Time)
 		return execActionDriftLog(root, workDir, in, now)
 	case "issue-draft":
 		return execActionIssueDraft(root, workDir, in, now)
+	case "decide":
+		return execActionDecide(root, workDir, in)
 	case "report":
 		return execActionReport(root, workDir, in, now)
 	default:
@@ -805,6 +841,39 @@ func execAppendIssueDraft(data map[string]any, draft IssueDraft) error {
 	return nil
 }
 
+// GuardrailDecision is a single guardrail decision accumulated on the state
+// file's data["guardrailDecisions"] list by the decide action (KD-2). A
+// distinct key from ship state's data["decisions"] (shipStateDecide,
+// ship_state.go:927) — that key holds a differently-shaped {step, decision}
+// entry, so the two never collide.
+type GuardrailDecision struct {
+	DecideType string `json:"decideType"`
+	ID         string `json:"id"`
+	Decision   string `json:"decision,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+}
+
+// execAppendGuardrailDecision appends a GuardrailDecision to
+// data["guardrailDecisions"], round-tripping it through JSON so the stored
+// representation is always a map[string]any — mirroring
+// execAppendIssueDraft's pattern for data["pendingIssueDrafts"].
+func execAppendGuardrailDecision(data map[string]any, decision GuardrailDecision) error {
+	raw, ok := data["guardrailDecisions"].([]any)
+	if !ok {
+		raw = []any{}
+	}
+	b, err := json.Marshal(decision)
+	if err != nil {
+		return fmt.Errorf("marshal guardrail decision: %w", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		return fmt.Errorf("unmarshal guardrail decision: %w", err)
+	}
+	data["guardrailDecisions"] = append(raw, m)
+	return nil
+}
+
 // countDriftIssues counts issues with category "drift" grouped by severity.
 // All three severity keys (error, warning, info) are always present in the
 // returned map so callers never see a nil or partial map.
@@ -989,6 +1058,64 @@ func execActionIssueDraft(root, workDir string, in ExecuteStateIn, now func() ti
 }
 
 // ---------------------------------------------------------------------------
+// Action: decide
+// ---------------------------------------------------------------------------
+
+// execActionDecide records a guardrail decision (KD-2): appends
+// {decideType, id, decision, reason} to data["guardrailDecisions"] so the
+// end-of-run report can later extract guardrail hits from it. Mirrors
+// execActionIssueDraft's validate/resolve/append/write shape.
+func execActionDecide(root, workDir string, in ExecuteStateIn) (any, error) {
+	if strings.TrimSpace(in.DecideType) == "" {
+		return nil, &mcpserver.DomainError{Msg: "decideType is required", Suggestion: "Pass decideType (e.g. \"guardrail\")."}
+	}
+	if strings.TrimSpace(in.DecideID) == "" {
+		return nil, &mcpserver.DomainError{Msg: "decideId is required", Suggestion: "Pass the decideId of the item decided on (e.g. the guardrail slug)."}
+	}
+
+	branch, err := execResolveBranch(in.Branch, workDir)
+	if err != nil {
+		return nil, err
+	}
+	st, err := execFindState(root, branch)
+	if err != nil {
+		return nil, err
+	}
+	if err := execAssertBranch(st, branch); err != nil {
+		return nil, err
+	}
+
+	if appendErr := execAppendGuardrailDecision(st.Data, GuardrailDecision{
+		DecideType: in.DecideType,
+		ID:         in.DecideID,
+		Decision:   in.DecideDecision,
+		Reason:     in.DecideReason,
+	}); appendErr != nil {
+		return nil, &mcpserver.InfraError{Msg: "append guardrail decision: " + appendErr.Error(), Cause: appendErr}
+	}
+
+	if err := state.Write(st); err != nil {
+		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+	}
+
+	return ExecDecideOut{
+		OK:     true,
+		Action: "decide",
+		Next:   execDecideNextGuidance(in.DecideID, in.DecideDecision),
+	}, nil
+}
+
+// execDecideNextGuidance builds the Next guidance string for a decide action.
+// When a decision is recorded, it names the decision; when only the ID is
+// recorded (decision is empty), it omits the "as <decision>" clause.
+func execDecideNextGuidance(id, decision string) string {
+	if decision == "" {
+		return fmt.Sprintf("Guardrail %s recorded. Continue wave execution.", id)
+	}
+	return fmt.Sprintf("Guardrail %s recorded as %s. Continue wave execution.", id, decision)
+}
+
+// ---------------------------------------------------------------------------
 // Action: report
 // ---------------------------------------------------------------------------
 
@@ -1099,16 +1226,55 @@ func execActionReport(root, workDir string, in ExecuteStateIn, now func() time.T
 	if raw, ok := st.Data["pendingIssueDrafts"].([]any); ok && len(raw) > 0 {
 		out.PendingIssueDrafts = raw
 	}
-	// deferredFindings lives on ship_state's own state file, a distinct
-	// state.Find(root, "ship", branch) from this execute-run state — not on
-	// st.Data. Best-effort cross-read: a missing/unreadable ship state file
-	// (e.g. execute ran standalone, never dispatched via /ship) just leaves
-	// DeferredFindings unset rather than failing this read-only report.
-	if shipSt, err := state.Find(root, "ship", branch); err == nil && shipSt != nil {
+	// deferredFindings, step timings, and the CLI-evidence since-time all
+	// live on ship_state's own state file, a distinct state.Find(root,
+	// "ship", branch) from this execute-run state — not on st.Data.
+	// Best-effort cross-read: a missing/unreadable ship state file (e.g.
+	// execute ran standalone, never dispatched via /ship) just leaves these
+	// fields unset rather than failing this read-only report.
+	shipSt, _ := state.Find(root, "ship", branch)
+	if shipSt != nil {
 		if raw, ok := shipSt.Data["deferredFindings"].([]any); ok && len(raw) > 0 {
 			out.DeferredFindings = raw
 		}
+		out.StepTimings = extractStepTimings(shipSt.Data)
 	}
+	if out.StepTimings == nil {
+		out.StepTimings = []StepTiming{}
+	}
+
+	since := out.StartedAt
+	if shipSt != nil {
+		if shipStarted, ok := shipSt.Data["startedAt"].(string); ok && shipStarted != "" {
+			since = shipStarted
+		}
+	}
+	if evidence, err := readCLIEvidenceInWindow(root, branch, since, maxCLIEvidenceInWindow); err != nil {
+		out.Warnings = append(out.Warnings, StateIssue{
+			Severity: "warning",
+			Category: "cross-read",
+			Summary:  "CLI evidence read failed: " + err.Error(),
+		})
+	} else {
+		out.CLIEvidence = evidence
+	}
+	if out.CLIEvidence == nil {
+		out.CLIEvidence = []CLIEvidenceEntry{}
+	}
+
+	// GuardrailHits and LinkedLearnings live on this run's own state file
+	// (data["guardrailDecisions"], appended by the decide action) and the
+	// shared learnings log respectively — neither depends on shipSt.
+	out.GuardrailHits = extractGuardrailHits(st.Data)
+	linkedCount, linkedErr := countLinkedLearnings(root, out.RunID)
+	if linkedErr != nil {
+		out.Warnings = append(out.Warnings, StateIssue{
+			Severity: "warning",
+			Category: "cross-read",
+			Summary:  "Learnings count failed: " + linkedErr.Error(),
+		})
+	}
+	out.LinkedLearnings = linkedCount
 
 	if ctxMap, ok := st.Data["context"].(map[string]any); ok {
 		if raw, ok := ctxMap["decisionsFromPriorWaves"].([]any); ok {
@@ -1121,6 +1287,91 @@ func execActionReport(root, workDir string, in ExecuteStateIn, now func() time.T
 	}
 
 	return out, nil
+}
+
+// extractStepTimings reads ship state's data["steps"] (see
+// shipStepsSlice/ShipStateStep) and derives one StepTiming per entry.
+// Duration is computed via pipeline.Duration/Humanize when both startedAt
+// and completedAt are present and parse; otherwise Duration stays empty.
+// HumanWait is true for step names in pipeline.HumanWaitSteps (their
+// elapsed time reflects human latency, not pipeline work). Returns an empty
+// (never nil) slice when data["steps"] is absent or empty.
+func extractStepTimings(data map[string]any) []StepTiming {
+	out := []StepTiming{}
+	for _, s := range shipStepsSlice(data) {
+		sm, ok := s.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := sm["name"].(string)
+		timing := StepTiming{
+			Name:      name,
+			HumanWait: pipeline.HumanWaitSteps[name],
+		}
+		timing.Status, _ = sm["status"].(string)
+		timing.StartedAt, _ = sm["startedAt"].(string)
+		completedAt, _ := sm["completedAt"].(string)
+		if timing.StartedAt != "" && completedAt != "" {
+			if d, ok := pipeline.Duration(timing.StartedAt, completedAt); ok {
+				timing.Duration = pipeline.Humanize(d)
+			}
+		}
+		out = append(out, timing)
+	}
+	return out
+}
+
+// extractGuardrailHits extracts guardrail IDs from data["guardrailDecisions"]
+// (appended by the decide action, KD-2) where decideType == "guardrail".
+// Returns an empty (never nil) slice when the key is absent or holds no
+// guardrail-type decisions.
+func extractGuardrailHits(data map[string]any) []string {
+	hits := []string{}
+	raw, ok := data["guardrailDecisions"].([]any)
+	if !ok {
+		return hits
+	}
+	for _, d := range raw {
+		dm, ok := d.(map[string]any)
+		if !ok {
+			continue
+		}
+		if decideType, _ := dm["decideType"].(string); decideType != "guardrail" {
+			continue
+		}
+		if id, _ := dm["id"].(string); id != "" {
+			hits = append(hits, id)
+		}
+	}
+	return hits
+}
+
+// countLinkedLearnings counts learnings log lines tagged with this run's ID
+// (KD-3: learningsAppend prepends "<!-- sdlc:run=<runId> branch=<branch>
+// -->"). Matches by substring on "sdlc:run=<runId> " (trailing space
+// prevents prefix collisions), not the full tag, since the tag also
+// carries "branch=<branch>". Returns (0, nil) when runID is empty or the
+// log file does not exist. Returns a non-nil error only for unexpected
+// read failures (e.g. permission denied).
+func countLinkedLearnings(root, runID string) (int, error) {
+	if runID == "" {
+		return 0, nil
+	}
+	data, err := os.ReadFile(learningsLogPath(root))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	needle := "sdlc:run=" + runID + " "
+	count := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.Contains(line, needle) {
+			count++
+		}
+	}
+	return count, nil
 }
 
 // execReportBucketIssues partitions data["issues"] into the four buckets

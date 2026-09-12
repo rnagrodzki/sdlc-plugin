@@ -53,6 +53,48 @@ func TestLearningsAppendAddsSecondEntryWithBlankLineSeparator(t *testing.T) {
 	}
 }
 
+func TestLearningsAppendWithRunIDPrependsTag(t *testing.T) {
+	root := t.TempDir()
+
+	if _, err := learningsLog(root, LearningsLogIn{
+		Action: "append",
+		Entry:  "## entry",
+		RunID:  "20260912T100024",
+		Branch: "feat/ship-report-content-enrichment",
+	}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(root, paths.DataDir, "learnings", "log.md"))
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "<!-- sdlc:run=20260912T100024 branch=feat/ship-report-content-enrichment -->\n## entry") {
+		t.Fatalf("expected tagged entry, got %q", content)
+	}
+}
+
+func TestLearningsAppendWithoutRunIDUnchanged(t *testing.T) {
+	root := t.TempDir()
+
+	if _, err := learningsLog(root, LearningsLogIn{Action: "append", Entry: "## entry"}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(root, paths.DataDir, "learnings", "log.md"))
+	if err != nil {
+		t.Fatalf("read log: %v", err)
+	}
+	content := string(data)
+	if strings.Contains(content, "<!-- sdlc:run=") {
+		t.Fatalf("expected no run tag when RunID is empty, got %q", content)
+	}
+	if !strings.Contains(content, "## entry") {
+		t.Fatalf("expected entry present, got %q", content)
+	}
+}
+
 func TestLearningsAppendRejectsEmptyEntry(t *testing.T) {
 	root := t.TempDir()
 	if _, err := learningsLog(root, LearningsLogIn{Action: "append", Entry: "   "}); err == nil {

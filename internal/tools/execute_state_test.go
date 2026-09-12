@@ -4130,3 +4130,166 @@ func TestExecState_LogCLI_AppendFailure(t *testing.T) {
 		t.Errorf("Msg = %q, want log-cli: prefix", infraErr.Msg)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// decide
+// ---------------------------------------------------------------------------
+
+func TestExecState_Decide_MissingDecideType(t *testing.T) {
+	root := t.TempDir()
+	createExecState(t, root, "feat/decide", map[string]any{
+		"branch": "feat/decide",
+	})
+
+	_, err := executeState(root, root, ExecuteStateIn{
+		Action:         "decide",
+		Branch:         "feat/decide",
+		DecideID:       "no-real-fs-git-in-tests",
+		DecideDecision: "override",
+	}, fixedClock(testNow))
+	if err == nil {
+		t.Fatal("expected error for missing decideType")
+	}
+	domainErr, ok := err.(*mcpserver.DomainError)
+	if !ok {
+		t.Fatalf("expected DomainError, got %T: %v", err, err)
+	}
+	if domainErr.Suggestion == "" {
+		t.Error("expected a Suggestion on the DomainError")
+	}
+}
+
+func TestExecState_Decide_MissingID(t *testing.T) {
+	root := t.TempDir()
+	createExecState(t, root, "feat/decide", map[string]any{
+		"branch": "feat/decide",
+	})
+
+	_, err := executeState(root, root, ExecuteStateIn{
+		Action:         "decide",
+		Branch:         "feat/decide",
+		DecideType:     "guardrail",
+		DecideDecision: "override",
+	}, fixedClock(testNow))
+	if err == nil {
+		t.Fatal("expected error for missing id")
+	}
+	domainErr, ok := err.(*mcpserver.DomainError)
+	if !ok {
+		t.Fatalf("expected DomainError, got %T: %v", err, err)
+	}
+	if domainErr.Suggestion == "" {
+		t.Error("expected a Suggestion on the DomainError")
+	}
+}
+
+func TestExecState_Decide_SingleCall(t *testing.T) {
+	root := t.TempDir()
+	createExecState(t, root, "feat/decide", map[string]any{
+		"branch": "feat/decide",
+	})
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action:         "decide",
+		Branch:         "feat/decide",
+		DecideType:     "guardrail",
+		DecideID:       "no-real-fs-git-in-tests",
+		DecideDecision: "override",
+		DecideReason:   "one-off exception approved by reviewer",
+	}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	out, ok := result.(ExecDecideOut)
+	if !ok {
+		t.Fatalf("expected ExecDecideOut, got %T", result)
+	}
+	if !out.OK {
+		t.Error("expected OK=true")
+	}
+	if out.Action != "decide" {
+		t.Errorf("expected Action=decide, got %q", out.Action)
+	}
+	if out.Next == "" {
+		t.Error("expected a non-empty Next")
+	}
+
+	data := readExecState(t, root, "feat/decide")
+	decisions, _ := data["guardrailDecisions"].([]any)
+	if len(decisions) != 1 {
+		t.Fatalf("expected 1 guardrail decision in state, got %d", len(decisions))
+	}
+	decision, ok := decisions[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected decision entry to be a map, got %T", decisions[0])
+	}
+	if decision["decideType"] != "guardrail" {
+		t.Errorf("expected decideType %q, got %v", "guardrail", decision["decideType"])
+	}
+	if decision["id"] != "no-real-fs-git-in-tests" {
+		t.Errorf("expected id %q, got %v", "no-real-fs-git-in-tests", decision["id"])
+	}
+	if decision["decision"] != "override" {
+		t.Errorf("expected decision %q, got %v", "override", decision["decision"])
+	}
+	if decision["reason"] != "one-off exception approved by reviewer" {
+		t.Errorf("expected reason %q, got %v", "one-off exception approved by reviewer", decision["reason"])
+	}
+}
+
+func TestExecState_Decide_AccumulatesAcrossCalls(t *testing.T) {
+	root := t.TempDir()
+	createExecState(t, root, "feat/decide", map[string]any{
+		"branch": "feat/decide",
+	})
+
+	for i, id := range []string{"guardrail-a", "guardrail-b", "guardrail-c"} {
+		result, err := executeState(root, root, ExecuteStateIn{
+			Action:         "decide",
+			Branch:         "feat/decide",
+			DecideType:     "guardrail",
+			DecideID:       id,
+			DecideDecision: "harden",
+		}, fixedClock(testNow))
+		if err != nil {
+			t.Fatalf("unexpected error on call %d: %v", i, err)
+		}
+		if _, ok := result.(ExecDecideOut); !ok {
+			t.Fatalf("call %d: expected ExecDecideOut, got %T", i, result)
+		}
+	}
+
+	data := readExecState(t, root, "feat/decide")
+	decisions, _ := data["guardrailDecisions"].([]any)
+	if len(decisions) != 3 {
+		t.Fatalf("expected 3 accumulated decisions, got %d", len(decisions))
+	}
+	// Never overwritten: each entry keeps its own distinct id.
+	first, _ := decisions[0].(map[string]any)
+	third, _ := decisions[2].(map[string]any)
+	if first["id"] != "guardrail-a" {
+		t.Errorf("expected first decision id %q, got %v", "guardrail-a", first["id"])
+	}
+	if third["id"] != "guardrail-c" {
+		t.Errorf("expected third decision id %q, got %v", "guardrail-c", third["id"])
+	}
+}
+
+func TestExecState_Decide_UnknownBranch(t *testing.T) {
+	root := t.TempDir()
+
+	_, err := executeState(root, root, ExecuteStateIn{
+		Action:         "decide",
+		Branch:         "feat/does-not-exist",
+		DecideType:     "guardrail",
+		DecideID:       "some-guardrail",
+		DecideDecision: "cancel",
+	}, fixedClock(testNow))
+	if err == nil {
+		t.Fatal("expected error for missing state file")
+	}
+	if _, ok := err.(*mcpserver.DataError); !ok {
+		t.Fatalf("expected DataError, got %T: %v", err, err)
+	}
+}
