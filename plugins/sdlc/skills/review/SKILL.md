@@ -27,7 +27,7 @@ Parse `$ARGUMENTS`:
 
 **Scope note:** `review_prepare`'s only inputs are `target` and `skipConfigCheck` — scope
 (`all` / `committed` / `staged` / `working` / `worktree`) is read by the tool from
-`.sdlc-v2/config.json`'s `review.scope` (default `all`), not from a CLI flag. This port does
+`.sdlc-v2/config.toml`'s `review.scope` (default `all`), not from a CLI flag. This port does
 not expose `--committed` / `--staged` / `--working` / `--worktree` / `--set-default` /
 `--dimensions` flags; change scope by editing project config (`/setup`) instead.
 

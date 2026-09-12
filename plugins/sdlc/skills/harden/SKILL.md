@@ -282,7 +282,7 @@ Read `repository.contentRoot` and `repository.root` from the manifest JSON at
 `manifestPath` (a plain Read + JSON parse — no shell one-liner needed):
 
 - `CONTENT_ROOT` = `repository.contentRoot` (active worktree — dimensions/copilot paths rooted here).
-- `MAIN_ROOT` = `repository.root` (main worktree — `.sdlc-v2/config.json` rooted here).
+- `MAIN_ROOT` = `repository.root` (main worktree — `.sdlc-v2/config.toml` rooted here).
 
 Do NOT recompute either via `git`. Store both; they are needed in Step 5.
 
@@ -379,7 +379,7 @@ When the user selects **apply**:
 1. Apply the change to `targetFile` with Edit (preferred) or Write.
 2. Validate immediately:
    - For `surface == "plan-guardrails"` or `"execute-guardrails"`: `targetFile`
-     is `<MAIN_ROOT>/.sdlc-v2/config.json` (already an absolute path rooted at
+     is `<MAIN_ROOT>/.sdlc-v2/config.toml` (already an absolute path rooted at
      `repository.root` in the proposal — guardrail config is shared/main-rooted
      even when this skill runs from a linked worktree). Call
      `validate({ action: "guardrails", section: "plan" | "execute" })`
@@ -454,7 +454,7 @@ already chose the correct vocabulary in its proposal — never substitute one fo
 the other.
 
 **When `proposal.action === "consolidate"` (R15):** the proposal targets an
-existing guardrail by id. Read the current `.sdlc-v2/config.json` from disk,
+existing guardrail by id. Read the current `.sdlc-v2/config.toml` from disk,
 locate the guardrail in `<section>.guardrails[]` by the id specified in the
 proposal's `patch`, and replace its fields with the proposal's merged values
 (description, severity). Do NOT remove fields; do NOT lower severity

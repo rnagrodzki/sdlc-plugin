@@ -32,7 +32,7 @@ Read the manifest JSON from `MANIFEST_FILE`. The manifest contains:
 | `staged.truncatedFiles` | File paths whose full diffs were omitted (diffstat still available) |
 | `recentCommits` | Last 15 commits (oneline format) for style detection |
 | `lastCommitMessage` | Previous commit message (only when `flags.amend` is true) |
-| `commitConfig` | Commit message validation config from `.sdlc-v2/config.json` (null when absent) |
+| `commitConfig` | Commit message validation config from `.sdlc-v2/config.toml` (null when absent) |
 
 If the manifest's `errors` array is non-empty, return an empty string and stop. The skill body will surface the errors itself.
 
