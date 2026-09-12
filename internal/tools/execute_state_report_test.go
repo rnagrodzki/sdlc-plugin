@@ -304,6 +304,156 @@ func TestExecState_Report_DecisionsAndFollowUps(t *testing.T) {
 	}
 }
 
+func TestExecState_Report_StepTimings(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	createExecState(t, root, "feat/report", map[string]any{
+		"branch": "feat/report",
+	})
+	createShipState(t, root, "feat/report", map[string]any{
+		"branch": "feat/report",
+		"steps": []any{
+			map[string]any{
+				"name":        "execute",
+				"status":      "completed",
+				"startedAt":   "2025-06-15T09:00:00Z",
+				"completedAt": "2025-06-15T09:30:00Z",
+			},
+			map[string]any{
+				"name":        "await-remote-review",
+				"status":      "completed",
+				"startedAt":   "2025-06-15T10:00:00Z",
+				"completedAt": "2025-06-15T10:05:00Z",
+			},
+			map[string]any{
+				"name":   "pr",
+				"status": "pending",
+			},
+		},
+	})
+	clock := fixedClock(testNow)
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "report",
+		Branch: "feat/report",
+	}, clock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := result.(ExecutionReportOut)
+
+	if len(out.StepTimings) != 3 {
+		t.Fatalf("expected 3 step timings, got %d: %+v", len(out.StepTimings), out.StepTimings)
+	}
+
+	execStep := out.StepTimings[0]
+	if execStep.Name != "execute" || execStep.Status != "completed" {
+		t.Errorf("unexpected execute step: %+v", execStep)
+	}
+	if execStep.Duration != "30m 00s" {
+		t.Errorf("expected execute step duration '30m 00s', got %q", execStep.Duration)
+	}
+	if execStep.HumanWait {
+		t.Error("expected execute step HumanWait=false")
+	}
+
+	reviewStep := out.StepTimings[1]
+	if !reviewStep.HumanWait {
+		t.Error("expected await-remote-review step HumanWait=true")
+	}
+	if reviewStep.Duration != "5m 00s" {
+		t.Errorf("expected await-remote-review duration '5m 00s', got %q", reviewStep.Duration)
+	}
+
+	prStep := out.StepTimings[2]
+	if prStep.StartedAt != "" || prStep.Duration != "" {
+		t.Errorf("expected pending pr step to have no startedAt/duration, got %+v", prStep)
+	}
+}
+
+func TestExecState_Report_CLIEvidence_FiltersByBranchAndShipStartedAt(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	createExecState(t, root, "feat/report", map[string]any{
+		"branch":    "feat/report",
+		"startedAt": "2025-06-15T09:00:00Z",
+	})
+	// Ship state's startedAt predates the execute state's startedAt — since
+	// must come from shipSt.Data["startedAt"], not out.StartedAt, so the
+	// earlier entry below (08:30) is included.
+	createShipState(t, root, "feat/report", map[string]any{
+		"branch":    "feat/report",
+		"startedAt": "2025-06-15T08:00:00Z",
+	})
+
+	if err := appendCLIEvidence(root, CLIEvidenceEntry{
+		Timestamp: "2025-06-15T07:00:00Z", // before since — excluded
+		Pipeline:  "ship",
+		Branch:    "feat/report",
+		Command:   "too-early",
+	}); err != nil {
+		t.Fatalf("appendCLIEvidence failed: %v", err)
+	}
+	if err := appendCLIEvidence(root, CLIEvidenceEntry{
+		Timestamp: "2025-06-15T08:30:00Z", // after ship startedAt — included
+		Pipeline:  "ship",
+		Branch:    "feat/report",
+		Command:   "in-window",
+	}); err != nil {
+		t.Fatalf("appendCLIEvidence failed: %v", err)
+	}
+	if err := appendCLIEvidence(root, CLIEvidenceEntry{
+		Timestamp: "2025-06-15T08:30:00Z",
+		Pipeline:  "ship",
+		Branch:    "other-branch", // different branch — excluded
+		Command:   "wrong-branch",
+	}); err != nil {
+		t.Fatalf("appendCLIEvidence failed: %v", err)
+	}
+	clock := fixedClock(testNow)
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "report",
+		Branch: "feat/report",
+	}, clock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := result.(ExecutionReportOut)
+
+	if len(out.CLIEvidence) != 1 {
+		t.Fatalf("expected 1 CLI evidence entry, got %d: %+v", len(out.CLIEvidence), out.CLIEvidence)
+	}
+	if out.CLIEvidence[0].Command != "in-window" {
+		t.Errorf("expected 'in-window' entry, got %q", out.CLIEvidence[0].Command)
+	}
+}
+
+func TestExecState_Report_CLIEvidenceAndStepTimings_EmptyWhenNoShipState(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	createExecState(t, root, "feat/report", map[string]any{
+		"branch": "feat/report",
+	})
+	clock := fixedClock(testNow)
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "report",
+		Branch: "feat/report",
+	}, clock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := result.(ExecutionReportOut)
+
+	if out.CLIEvidence == nil || len(out.CLIEvidence) != 0 {
+		t.Errorf("expected empty non-nil CLIEvidence, got %#v", out.CLIEvidence)
+	}
+	if out.StepTimings == nil || len(out.StepTimings) != 0 {
+		t.Errorf("expected empty non-nil StepTimings, got %#v", out.StepTimings)
+	}
+}
+
 func TestExecState_Report_UnknownBranch(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)

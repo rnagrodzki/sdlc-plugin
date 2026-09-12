@@ -185,8 +185,23 @@ type ExecutionReportOut struct {
 	// Decisions
 	Decisions []string `json:"decisions,omitempty"`
 
+	// CLI evidence + step timings — both best-effort cross-reads from ship
+	// state (see execActionReport); normalized to empty (never nil) slices.
+	CLIEvidence []CLIEvidenceEntry `json:"cliEvidence,omitempty"`
+	StepTimings []StepTiming       `json:"stepTimings,omitempty"`
+
 	// Next step guidance (empty string is valid "no next step").
 	Next string `json:"next,omitempty"`
+}
+
+// StepTiming is one ship-pipeline step's timing entry in
+// ExecutionReportOut.StepTimings, derived from ship state's data["steps"].
+type StepTiming struct {
+	Name      string `json:"name"`
+	Status    string `json:"status"`
+	StartedAt string `json:"startedAt,omitempty"`
+	Duration  string `json:"duration,omitempty"`
+	HumanWait bool   `json:"humanWait,omitempty"`
 }
 
 // WaveReport is one wave's entry in ExecutionReportOut.Waves.
@@ -1194,15 +1209,34 @@ func execActionReport(root, workDir string, in ExecuteStateIn, now func() time.T
 	if raw, ok := st.Data["pendingIssueDrafts"].([]any); ok && len(raw) > 0 {
 		out.PendingIssueDrafts = raw
 	}
-	// deferredFindings lives on ship_state's own state file, a distinct
-	// state.Find(root, "ship", branch) from this execute-run state — not on
-	// st.Data. Best-effort cross-read: a missing/unreadable ship state file
-	// (e.g. execute ran standalone, never dispatched via /ship) just leaves
-	// DeferredFindings unset rather than failing this read-only report.
-	if shipSt, err := state.Find(root, "ship", branch); err == nil && shipSt != nil {
+	// deferredFindings, step timings, and the CLI-evidence since-time all
+	// live on ship_state's own state file, a distinct state.Find(root,
+	// "ship", branch) from this execute-run state — not on st.Data.
+	// Best-effort cross-read: a missing/unreadable ship state file (e.g.
+	// execute ran standalone, never dispatched via /ship) just leaves these
+	// fields unset rather than failing this read-only report.
+	shipSt, _ := state.Find(root, "ship", branch)
+	if shipSt != nil {
 		if raw, ok := shipSt.Data["deferredFindings"].([]any); ok && len(raw) > 0 {
 			out.DeferredFindings = raw
 		}
+		out.StepTimings = extractStepTimings(shipSt.Data)
+	}
+	if out.StepTimings == nil {
+		out.StepTimings = []StepTiming{}
+	}
+
+	since := out.StartedAt
+	if shipSt != nil {
+		if shipStarted, ok := shipSt.Data["startedAt"].(string); ok && shipStarted != "" {
+			since = shipStarted
+		}
+	}
+	if evidence, err := readCLIEvidenceInWindow(root, branch, since); err == nil {
+		out.CLIEvidence = evidence
+	}
+	if out.CLIEvidence == nil {
+		out.CLIEvidence = []CLIEvidenceEntry{}
 	}
 
 	if ctxMap, ok := st.Data["context"].(map[string]any); ok {
@@ -1216,6 +1250,38 @@ func execActionReport(root, workDir string, in ExecuteStateIn, now func() time.T
 	}
 
 	return out, nil
+}
+
+// extractStepTimings reads ship state's data["steps"] (see
+// shipStepsSlice/ShipStateStep) and derives one StepTiming per entry.
+// Duration is computed via pipeline.Duration/Humanize when both startedAt
+// and completedAt are present and parse; otherwise Duration stays empty.
+// HumanWait is true for step names in pipeline.HumanWaitSteps (their
+// elapsed time reflects human latency, not pipeline work). Returns an empty
+// (never nil) slice when data["steps"] is absent or empty.
+func extractStepTimings(data map[string]any) []StepTiming {
+	out := []StepTiming{}
+	for _, s := range shipStepsSlice(data) {
+		sm, ok := s.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := sm["name"].(string)
+		timing := StepTiming{
+			Name:      name,
+			HumanWait: pipeline.HumanWaitSteps[name],
+		}
+		timing.Status, _ = sm["status"].(string)
+		timing.StartedAt, _ = sm["startedAt"].(string)
+		completedAt, _ := sm["completedAt"].(string)
+		if timing.StartedAt != "" && completedAt != "" {
+			if d, ok := pipeline.Duration(timing.StartedAt, completedAt); ok {
+				timing.Duration = pipeline.Humanize(d)
+			}
+		}
+		out = append(out, timing)
+	}
+	return out
 }
 
 // execReportBucketIssues partitions data["issues"] into the four buckets

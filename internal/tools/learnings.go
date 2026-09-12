@@ -32,6 +32,10 @@ type LearningsLogIn struct {
 	TailLines int `json:"tailLines,omitempty" jsonschema_description:"For action \"read\", limits the returned content to the last N lines. Zero (default) returns the whole file."`
 	// Indices, for "remove", selects which entries to delete.
 	Indices []int `json:"indices,omitempty" jsonschema_description:"1-indexed entry numbers to remove (required for action \"remove\"). Entries are blocks separated by blank lines, header excluded."`
+	// RunID, for "append", tags the entry for later linkage to an execution run.
+	RunID string `json:"runId,omitempty" jsonschema_description:"Execution run ID to tag this entry for later linkage."`
+	// Branch, for "append", tags the entry with the branch name for later linkage.
+	Branch string `json:"branch,omitempty" jsonschema_description:"Branch name to tag this entry for later linkage."`
 }
 
 // LearningsLogOut is the output for the learnings_log tool.
@@ -56,7 +60,7 @@ func learningsLog(root string, in LearningsLogIn) (LearningsLogOut, error) {
 
 	switch in.Action {
 	case "append":
-		return learningsAppend(path, rel, in.Entry)
+		return learningsAppend(path, rel, in.Entry, in.RunID, in.Branch)
 	case "read":
 		return learningsRead(path, rel, in.TailLines)
 	case "remove":
@@ -69,7 +73,7 @@ func learningsLog(root string, in LearningsLogIn) (LearningsLogOut, error) {
 	}
 }
 
-func learningsAppend(path, rel, entry string) (LearningsLogOut, error) {
+func learningsAppend(path, rel, entry, runID, branch string) (LearningsLogOut, error) {
 	entry = strings.TrimSpace(entry)
 	if entry == "" {
 		return LearningsLogOut{}, &mcpserver.DomainError{
@@ -82,6 +86,10 @@ func learningsAppend(path, rel, entry string) (LearningsLogOut, error) {
 			Msg:        "entry must not contain a blank line (\"\\n\\n\"); blank lines delimit entries in the log",
 			Suggestion: "Use single newlines within an entry. Split multi-paragraph content into separate append calls, or join paragraphs with a single newline.",
 		}
+	}
+
+	if runID != "" {
+		entry = fmt.Sprintf("<!-- sdlc:run=%s branch=%s -->\n%s", runID, branch, entry)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
