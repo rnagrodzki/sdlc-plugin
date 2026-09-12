@@ -1,10 +1,11 @@
 ---
 name: mcp-tool-review
-description: MCP tool contract quality for the 27 handlers under internal/tools — precise descriptions, LLM-consumable output, actionable errors, per this project's own guardrails.
+description: MCP tool contract quality for handlers under internal/tools — precise input-shape and encoding descriptions, LLM-consumable output, actionable errors, and fail-loud validation of input shape violations.
 triggers:
   - "internal/tools/**"
   - "internal/mcpserver/**"
   - "plugins/sdlc/schemas/**"
+  - "internal/setupmeta/**"
 severity: high
 ---
 
@@ -39,6 +40,29 @@ those same guardrails:
   Handlers must never serialize null for fields that logically should
   contain zero or more items — this ambiguity breaks LLM reasoning and
   violates the 'no ambiguous nulls' contract.
+- Descriptor/doc strings naming filesystem paths, extensions, or glob
+  patterns must be verified against the actual implementation (grep the
+  loader for `paths.DataDir`, `filepath.Join`, `ReadDir`,
+  `strings.HasSuffix`) rather than trusted at face value.
+- Tool descriptions must state precisely what the tool does, what it
+  mutates, what it returns, AND (for multi-action tools) what inputs are
+  required vs optional for each action — following the `execute_state.go`
+  convention of "Requires: ... Optional: ..." at registration time. Vague
+  descriptions or missing per-action field semantics make it hard for the
+  calling model to pick the right tool and supply correct parameters.
+- A tool that changes its input/output shape must update the corresponding
+  JSON schema under `plugins/sdlc/schemas/*.schema.json`, AND proactively
+  validate that marshaled Go struct instances conform to the schema (every
+  field the Go struct writes must be accepted by the schema). Schema-code
+  drift — schemas rejecting fields that code writes, or vice versa —
+  breaks downstream tool consumption.
+- Multi-step APIs (append, log entries, stateful updates) that split on a
+  field separator (e.g. `learningsRemove` splits entries on `"\n\n"`) must
+  validate at entry time that inputs don't contain the separator, and
+  reject the write before mutation if they do. Mutation/removal operations
+  (delete, remove, unwind) must echo the affected resource or prior state
+  in the response (e.g. a `removed`/`prior` field) so callers can verify
+  what changed and support undo/recovery workflows.
 
 ## Cross-references
 

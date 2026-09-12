@@ -3,6 +3,7 @@ name: ci-cd-pipeline-review
 description: GitHub Actions workflows and the lefthook pre-push hook must stay in sync — test.yml explicitly documents this coupling.
 triggers:
   - ".github/workflows/**"
+  - ".github/scripts/**"
   - "lefthook.yml"
 severity: medium
 ---
@@ -27,3 +28,8 @@ hook — keep them in sync." Check:
   Actions log.
 - New workflow jobs that shell out reuse the project's existing tooling
   conventions rather than introducing a parallel, unreviewed script.
+- `.cjs` entrypoints exporting helper functions must guard their `main()`
+  invocation with `if (require.main === module)` so the module is importable
+  by tests.
+- New test suites (e.g. `__tests__/**`) introduced alongside a script must be
+  wired into the corresponding CI workflow (`test.yml`) in the same task.

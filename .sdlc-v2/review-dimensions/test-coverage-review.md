@@ -33,3 +33,19 @@ new changes to that same bar:
   conditions, and all possible output states from tool handlers (clean
   pass, empty results, error cases). Tests must verify that null never
   appears where an empty array/object is expected.
+- Test fixtures that hardcode system state (e.g. Register*Tools call lists
+  in skillcheck helpers) must be maintained in a single location, not
+  duplicated across multiple test files. When system state changes, all
+  dependent fixtures must be updated consistently.
+- When a struct's field type changes (int -> *int) or a JSON tag changes
+  (removing omitempty), identify and update every existing test in the same
+  package that asserts the old serialization or default-value behavior.
+  Existing tests not listed in the plan's file scope represent missed
+  change scope.
+- When a task modifies plugins/sdlc/skills/*/SKILL.md to add or change an
+  MCP tool dispatch, verify every corresponding Register*Tools call is
+  present in the matching internal/skillcheck/skillcheck_*_test.go
+  registry -- grep all Register*Tools patterns before finalizing the
+  task's file list. Plan Verification for such tasks must include
+  `go test ./internal/skillcheck/...` (or full `go test ./...`), not just
+  the modified package's unit tests.

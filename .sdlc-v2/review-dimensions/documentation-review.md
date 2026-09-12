@@ -4,7 +4,9 @@ description: Contributor-facing docs under docs/ and the root README stay accura
 triggers:
   - "docs/**"
   - "README.md"
-severity: low
+  - "plugins/sdlc/skills/**"
+  - "plugins/sdlc/schemas/**"
+severity: medium
 ---
 
 This project keeps contributor documentation in `docs/`
@@ -25,3 +27,8 @@ This project keeps contributor documentation in `docs/`
   under `docs/`, not under `skills/` (which is runtime-only) — flag any doc
   content added to `plugins/sdlc/skills/` that reads as contributor-facing
   background rather than skill instructions.
+- On any configuration path or directory rename (e.g. `.sdlc/` ->
+  `.sdlc-v2/`), perform a full-repository grep sweep across `docs/**`,
+  `README.md`, `plugins/sdlc/skills/**`, and `plugins/sdlc/schemas/**` to
+  catch all references and update them in the same task. Incomplete sweeps
+  leave contributors following stale instructions.

@@ -7,6 +7,7 @@ triggers:
   - "internal/jirakeys/**"
   - "internal/ghx/**"
   - "internal/gitx/**"
+  - "plugins/sdlc/skills/**"
 severity: medium
 ---
 
@@ -39,3 +40,27 @@ Several `internal/tools/*.go` files already follow this with their own
   downgrade a terminal error into "not found / no access."
 - Package documentation must accurately reflect the error-handling semantics
   that callers actually implement, not speculative retry behavior.
+- Skills that invoke external tools (`gh`, `docker`, `jira`, `git`) must
+  document what each non-zero exit code means and distinguish
+  transient/retryable errors (network timeouts, rate limits, checks
+  pending) from permanent failures (bad credentials, 404, not found).
+  Example: `gh pr checks` returns exit code 8 when checks are still
+  running — this must be handled as "transient, poll later", not
+  "permanent failure." Skills must warn users about machine-global or
+  out-of-scope side effects of external tool commands (e.g. `gh auth
+  switch` is global to the machine and persists after the script ends, not
+  scoped to the repo or session).
+- Do not discard errors from file-system operations (`os.WriteFile`,
+  `os.Remove`, `os.MkdirTemp`) or state-persistence operations
+  (`state.Write`, state reads) when the next line reports success to the
+  caller — never discard a file-system or state-persistence error when the
+  next line reports success to the caller.
+- When wrapping an error into a structured error type (`DataError`,
+  `DomainError`, `InfraError`), the `Cause` field MUST be populated with
+  the original error — never omit it. This preserves the error chain for
+  `errors.Unwrap()` and debugging.
+- Functions that return `(T, error)` and use nil-error-with-zero-T to
+  signal not-found (as opposed to an actual error) MUST document this
+  three-outcome contract in package godoc: found (value, nil), not-found
+  (zero, nil), error (zero, error). Callers must handle all three cases
+  explicitly and never collapse not-found into the same path as error.
