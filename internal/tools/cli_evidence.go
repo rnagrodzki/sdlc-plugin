@@ -91,3 +91,45 @@ func readRecentCLIEvidence(root string, n int) ([]CLIEvidenceEntry, error) {
 	}
 	return entries[len(entries)-n:], nil
 }
+
+// readCLIEvidenceInWindow reads entries from the JSONL file matching the
+// given branch whose timestamp is at or after since. Unlike
+// readRecentCLIEvidence (which returns the last N entries regardless of
+// branch), this filters by branch and time window so concurrent runs on
+// other branches sharing the same JSONL file don't pollute the result.
+// Timestamps are RFC3339 (time.Now().UTC().Format(time.RFC3339)), which
+// sort lexicographically, so string comparison is sufficient. Returns an
+// empty slice (never nil) and a nil error when the file is missing or
+// empty, or when nothing matches. Entries are returned in file order.
+func readCLIEvidenceInWindow(root, branch, since string) ([]CLIEvidenceEntry, error) {
+	path := cliEvidencePath(root)
+
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []CLIEvidenceEntry{}, nil
+		}
+		return nil, fmt.Errorf("cli evidence: read: %w", err)
+	}
+
+	entries := []CLIEvidenceEntry{}
+	lines := bytes.Split(b, []byte("\n"))
+	for _, line := range lines {
+		if len(line) == 0 {
+			continue
+		}
+		var entry CLIEvidenceEntry
+		if err := json.Unmarshal(line, &entry); err != nil {
+			continue // skip malformed lines
+		}
+		if entry.Branch != branch {
+			continue
+		}
+		if entry.Timestamp < since {
+			continue
+		}
+		entries = append(entries, entry)
+	}
+
+	return entries, nil
+}

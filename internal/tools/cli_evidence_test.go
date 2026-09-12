@@ -215,3 +215,135 @@ func TestReadRecentCLIEvidence_SkipsMalformedLines(t *testing.T) {
 		t.Errorf("unexpected entries around skipped malformed line: %+v", entries)
 	}
 }
+
+// TestReadCLIEvidenceInWindow_FiltersByBranchAndTime confirms the window
+// filter matches the contract example: entries from other branches and
+// entries before `since` are excluded, while matching entries preserve
+// file order.
+func TestReadCLIEvidenceInWindow_FiltersByBranchAndTime(t *testing.T) {
+	root := t.TempDir()
+
+	entries := []CLIEvidenceEntry{
+		{
+			Timestamp:  "2026-09-12T10:00:00Z",
+			Pipeline:   "ship",
+			Step:       "commit",
+			Branch:     "main",
+			Command:    "git commit",
+			ExitCode:   0,
+			OutputHead: "match",
+		},
+		{
+			Timestamp:  "2026-09-12T10:01:00Z",
+			Pipeline:   "ship",
+			Step:       "commit",
+			Branch:     "feat/x",
+			Command:    "git commit",
+			ExitCode:   1,
+			OutputHead: "wrong branch",
+		},
+		{
+			Timestamp:  "2026-09-12T09:00:00Z",
+			Pipeline:   "ship",
+			Step:       "review",
+			Branch:     "main",
+			Command:    "gh pr create",
+			ExitCode:   0,
+			OutputHead: "before since",
+		},
+	}
+
+	for _, e := range entries {
+		if err := appendCLIEvidence(root, e); err != nil {
+			t.Fatalf("appendCLIEvidence failed: %v", err)
+		}
+	}
+
+	got, err := readCLIEvidenceInWindow(root, "main", "2026-09-12T09:30:00Z")
+	if err != nil {
+		t.Fatalf("readCLIEvidenceInWindow failed: %v", err)
+	}
+
+	if len(got) != 1 {
+		t.Fatalf("expected 1 matching entry, got %d: %+v", len(got), got)
+	}
+	if got[0].OutputHead != "match" {
+		t.Fatalf("expected the 'main' branch entry at/after since, got %+v", got[0])
+	}
+}
+
+// TestReadCLIEvidenceInWindow_PreservesFileOrder confirms multiple matches
+// come back in the order they appear in the file.
+func TestReadCLIEvidenceInWindow_PreservesFileOrder(t *testing.T) {
+	root := t.TempDir()
+
+	entries := []CLIEvidenceEntry{
+		{Timestamp: "2026-09-12T10:00:00Z", Branch: "main", Command: "first"},
+		{Timestamp: "2026-09-12T10:01:00Z", Branch: "other", Command: "skipped"},
+		{Timestamp: "2026-09-12T10:02:00Z", Branch: "main", Command: "second"},
+		{Timestamp: "2026-09-12T10:03:00Z", Branch: "main", Command: "third"},
+	}
+
+	for _, e := range entries {
+		if err := appendCLIEvidence(root, e); err != nil {
+			t.Fatalf("appendCLIEvidence failed: %v", err)
+		}
+	}
+
+	got, err := readCLIEvidenceInWindow(root, "main", "2026-09-12T00:00:00Z")
+	if err != nil {
+		t.Fatalf("readCLIEvidenceInWindow failed: %v", err)
+	}
+
+	if len(got) != 3 {
+		t.Fatalf("expected 3 matching entries, got %d: %+v", len(got), got)
+	}
+	wantOrder := []string{"first", "second", "third"}
+	for i, w := range wantOrder {
+		if got[i].Command != w {
+			t.Errorf("entry %d: expected command %q, got %q", i, w, got[i].Command)
+		}
+	}
+}
+
+// TestReadCLIEvidenceInWindow_MissingFile confirms a missing evidence file
+// returns an empty (non-nil) slice and no error.
+func TestReadCLIEvidenceInWindow_MissingFile(t *testing.T) {
+	root := t.TempDir()
+
+	got, err := readCLIEvidenceInWindow(root, "main", "2026-09-12T00:00:00Z")
+	if err != nil {
+		t.Fatalf("readCLIEvidenceInWindow failed: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected non-nil empty slice, got nil")
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected 0 entries for missing file, got %d", len(got))
+	}
+}
+
+// TestReadCLIEvidenceInWindow_EmptyFile confirms an existing-but-empty
+// evidence file returns an empty (non-nil) slice and no error.
+func TestReadCLIEvidenceInWindow_EmptyFile(t *testing.T) {
+	root := t.TempDir()
+
+	path := filepath.Join(root, ".sdlc-v2", "evidence", "cli-executions.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir failed: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(""), 0o644); err != nil {
+		t.Fatalf("write empty fixture failed: %v", err)
+	}
+
+	got, err := readCLIEvidenceInWindow(root, "main", "2026-09-12T00:00:00Z")
+	if err != nil {
+		t.Fatalf("readCLIEvidenceInWindow failed: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected non-nil empty slice, got nil")
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected 0 entries for empty file, got %d", len(got))
+	}
+}
