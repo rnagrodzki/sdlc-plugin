@@ -1,20 +1,18 @@
 // Package tools: setup_write_sections tool (Task 44 addition).
 //
-// Gap this closes: setup_init (Task 26, internal/tools/setup.go) only ever
-// seeds EMPTY objects for the section ids it is given — SetupInitIn{Sections
-// []string} carries no field values, and config.WriteSection is otherwise
-// unexposed to any tool. The source skill's util/setup-init.js took full
-// --project-config/--local-config JSON blobs and wrote the user's actual
-// answers (e.g. version: {mode: "file", versionFile: "package.json"}). The
-// migration plan's Task 26 contract only commits to the empty-scaffold
-// behavior ("SetupInitIn{Sections []string} -> created-files report"); it is
-// silent on how collected field values reach config.json/local.json.
+// Gap this closes: setup_init (internal/tools/setup.go) writes complete
+// config.toml/local.toml templates verbatim — it takes no field values, and
+// config.WriteSection is otherwise unexposed to any tool. Some setup flows
+// (and skills built on top of setup) still need to persist real,
+// individually-collected field values (e.g. version: {mode: "file",
+// versionFile: "package.json"}) into a section after the template has been
+// dropped, rather than requiring the user to hand-edit every field.
 //
-// This is a small additive tool for setup's (Task 44) Step 3 "Writing
-// config files" sub-flow, which needs to persist the field values collected
-// via AskUserQuestion into the correct section. It does not modify
-// setup_init or config.WriteSection — it is a second, narrower caller of the
-// same read-merge-write primitive, taking real values instead of {}.
+// This is a small additive tool for that "writing config files" sub-flow,
+// which needs to persist the field values collected via AskUserQuestion
+// into the correct section. It does not modify setup_init or
+// config.WriteSection — it is a second, narrower caller of the same
+// read-merge-write primitive, taking real values instead of a template.
 package tools
 
 import (
@@ -52,7 +50,7 @@ type SetupWriteSectionsOut struct {
 // RegisterSetupWriteTools registers setup_write_sections on the server.
 func RegisterSetupWriteTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "setup_write_sections",
-		"INTERNAL — called by sdlc skills only. Writes real field-value data into one or more sdlc-v2 config sections (config.json for project sections, local.json for local sections), routing and validating via the same config.WriteSection primitive setup_init uses. Unlike setup_init (which only seeds empty {} sections), this accepts the actual assembled values collected during setup's per-section field loop.",
+		"INTERNAL — called by sdlc skills only. Writes real field-value data into one or more sdlc-v2 config sections (config.toml for project sections, local.toml for local sections), routing and validating via the same config.WriteSection primitive setup_init uses. Unlike setup_init (which writes the full config.toml/local.toml templates verbatim for the user to hand-edit), this accepts the actual assembled values collected during setup's per-section field loop.",
 		func(ctx mcpserver.Ctx, in SetupWriteSectionsIn) (SetupWriteSectionsOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

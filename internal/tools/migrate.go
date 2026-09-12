@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/configmigrate"
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
@@ -111,16 +112,24 @@ func migrateConfig(root string, dryRun bool) (MigrateOut, error) {
 	}, nil
 }
 
-// legacyImportJSONFiles are JSON-object files imported from
+// legacyImportConfigFiles are candidate config source files imported from
 // paths.LegacyDataDir into paths.DataDir by the "import" action using a
 // top-level key merge rather than a whole-file skip. setup's own scaffolding
-// (setup_init) always creates an empty {} config.json and local.json before
+// (setup_init) always creates an empty config.toml and local.toml before
 // migrate ever runs, so a whole-file "skip if destination exists" check made
 // these two entries permanently unreachable in practice. Merging per key
 // lets each already-scaffolded file still receive the legacy sections
 // (ship, version, plan.guardrails, ...), while never overwriting a key the
 // new config already holds a real value for.
-var legacyImportJSONFiles = []string{"config.json", "local.json"}
+//
+// Entries are tried in order per logical file ("config" / "local"): the
+// .toml candidate is preferred, falling back to the old plugin generation's
+// .json format only when no .toml counterpart exists in the legacy
+// directory. Whichever source format is found, the merged destination is
+// always written as TOML — .sdlc-v2 config reads are TOML-only (see
+// internal/config), so a merge that wrote JSON here would be silently
+// invisible to every other reader.
+var legacyImportConfigFiles = []string{"config.toml", "local.toml", "config.json", "local.json"}
 
 // legacyImportFiles are non-JSON files copied verbatim from
 // paths.LegacyDataDir into paths.DataDir by the "import" action, skipped
@@ -139,8 +148,21 @@ var legacyImportDirs = []string{"jira-templates", "learnings", "review-dimension
 func importFromOld(root string, dryRun bool) (MigrateOut, error) {
 	var changed []string
 
-	for _, name := range legacyImportJSONFiles {
-		rel, didChange, err := importJSONFileMerge(root, name, dryRun)
+	handledConfig := make(map[string]bool, 2)
+	for _, name := range legacyImportConfigFiles {
+		base := strings.TrimSuffix(name, filepath.Ext(name))
+		if handledConfig[base] {
+			// A .toml candidate for this logical file already matched
+			// earlier in the list; skip the .json fallback entry.
+			continue
+		}
+		src := filepath.Join(root, paths.LegacyDataDir, name)
+		if !migrateFileExists(src) {
+			continue
+		}
+		handledConfig[base] = true
+
+		rel, didChange, err := importConfigFileMerge(root, name, base+".toml", dryRun)
 		if err != nil {
 			return MigrateOut{}, err
 		}
@@ -213,32 +235,37 @@ func importFromOld(root string, dryRun bool) (MigrateOut, error) {
 	}, nil
 }
 
-// importJSONFileMerge imports one JSON-object file (config.json or
-// local.json) from paths.LegacyDataDir into paths.DataDir by merging
+// importConfigFileMerge imports one config source file (config.toml,
+// local.toml, or their legacy config.json/local.json counterparts) from
+// paths.LegacyDataDir into destName under paths.DataDir by merging
 // top-level keys: any key present in the legacy source but absent from the
 // destination is added; any key already present in the destination (even in
-// an otherwise-empty-looking file) is left untouched. Returns the changed
-// relative path and whether anything changed. A missing source, or a source
-// with no keys the destination lacks, is a no-op.
-func importJSONFileMerge(root, name string, dryRun bool) (string, bool, error) {
-	src := filepath.Join(root, paths.LegacyDataDir, name)
+// an otherwise-empty-looking file) is left untouched. srcName's extension
+// selects the source decoder (TOML or JSON, via readLegacyConfigFile);
+// destName is always the .toml counterpart — .sdlc-v2 config reads are
+// TOML-only, so merging into a .json destination would be invisible to
+// every other reader. Returns the changed relative path and whether
+// anything changed. A missing source, or a source with no keys the
+// destination lacks, is a no-op.
+func importConfigFileMerge(root, srcName, destName string, dryRun bool) (string, bool, error) {
+	src := filepath.Join(root, paths.LegacyDataDir, srcName)
 	if !migrateFileExists(src) {
 		return "", false, nil
 	}
 
 	var srcMap map[string]any
-	if err := fsx.ReadJSON(src, &srcMap); err != nil {
+	if err := readLegacyConfigFile(src, &srcMap); err != nil {
 		return "", false, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("read legacy %s: %s", name, err.Error()),
+			Msg:   fmt.Sprintf("read legacy %s: %s", srcName, err.Error()),
 			Cause: err,
 		}
 	}
 
-	dst := filepath.Join(root, paths.DataDir, name)
+	dst := filepath.Join(root, paths.DataDir, destName)
 	var dstMap map[string]any
-	if err := fsx.ReadJSON(dst, &dstMap); err != nil && !errors.Is(err, fsx.ErrNotFound) {
+	if err := fsx.ReadTOML(dst, &dstMap); err != nil && !errors.Is(err, fsx.ErrNotFound) {
 		return "", false, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("read %s: %s", name, err.Error()),
+			Msg:   fmt.Sprintf("read %s: %s", destName, err.Error()),
 			Cause: err,
 		}
 	}
@@ -258,7 +285,7 @@ func importJSONFileMerge(root, name string, dryRun bool) (string, bool, error) {
 		return "", false, nil
 	}
 
-	rel := paths.DataDir + "/" + name
+	rel := paths.DataDir + "/" + destName
 	if dryRun {
 		return rel, true, nil
 	}
@@ -269,13 +296,24 @@ func importJSONFileMerge(root, name string, dryRun bool) (string, bool, error) {
 			Cause: err,
 		}
 	}
-	if err := fsx.AtomicWriteJSON(dst, dstMap); err != nil {
+	if err := fsx.AtomicWriteTOML(dst, dstMap); err != nil {
 		return "", false, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("merge %s: %s", name, err.Error()),
+			Msg:   fmt.Sprintf("merge %s: %s", destName, err.Error()),
 			Cause: err,
 		}
 	}
 	return rel, true, nil
+}
+
+// readLegacyConfigFile decodes path into out, selecting the TOML or JSON
+// decoder by path's extension. Used by importConfigFileMerge to read a
+// legacy source file that may be in either format depending on the age of
+// the plugin generation it came from.
+func readLegacyConfigFile(path string, out *map[string]any) error {
+	if strings.HasSuffix(path, ".toml") {
+		return fsx.ReadTOML(path, out)
+	}
+	return fsx.ReadJSON(path, out)
 }
 
 // ---------------------------------------------------------------------------
@@ -560,7 +598,7 @@ func copyFile(src, dst string) error {
 // RegisterMigrateTools registers the migrate tool on the server.
 func RegisterMigrateTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "migrate",
-		"Runs a legacy migration. Actions: config (schema migration via configmigrate engine), import (non-destructively imports config, templates, jira-templates, learnings, and review-dimensions from the old plugin's "+paths.LegacyDataDir+"/ directory into "+paths.DataDir+"/ — config.json and local.json merge per top-level key so already-scaffolded empty files still receive legacy sections, everything else is skipped whole-file when the destination already exists), layout (moves this plugin's own old state layout, "+paths.DataDir+"/execution/, into the current "+paths.DataDir+"/"+paths.RunsSubdir+"/ layout — state files, per-run directories, and ledger/ entries are each moved independently; a name conflict at the destination is skipped and reported rather than overwritten).",
+		"Runs a legacy migration. Actions: config (schema migration via configmigrate engine), import (non-destructively imports config, templates, jira-templates, learnings, and review-dimensions from the old plugin's "+paths.LegacyDataDir+"/ directory into "+paths.DataDir+"/ — config.toml and local.toml merge per top-level key, accepting either a TOML or legacy JSON source file, so already-scaffolded files still receive legacy sections and everything else is skipped whole-file when the destination already exists), layout (moves this plugin's own old state layout, "+paths.DataDir+"/execution/, into the current "+paths.DataDir+"/"+paths.RunsSubdir+"/ layout — state files, per-run directories, and ledger/ entries are each moved independently; a name conflict at the destination is skipped and reported rather than overwritten).",
 		func(ctx mcpserver.Ctx, in MigrateIn) (MigrateOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

@@ -7,7 +7,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pelletier/go-toml/v2"
+	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/configmigrate"
+	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
@@ -174,7 +177,7 @@ func TestSetupPrepare_JSONSerializationCamelCase(t *testing.T) {
 func TestSetupInit_EmptyFixture_CreatesScaffold(t *testing.T) {
 	root := t.TempDir()
 
-	out, err := setupInit(root, SetupInitIn{Sections: []string{}})
+	out, err := setupInit(root, SetupInitIn{})
 	if err != nil {
 		t.Fatalf("setupInit: %v", err)
 	}
@@ -206,8 +209,8 @@ func TestSetupInit_EmptyFixture_CreatesScaffold(t *testing.T) {
 	if !strings.Contains(content, "sdlc-v2 managed") {
 		t.Error(".sdlc/.gitignore should contain managed block marker")
 	}
-	if !strings.Contains(content, "!config.json") {
-		t.Error(".sdlc/.gitignore should allowlist config.json")
+	if !strings.Contains(content, "!config.toml") {
+		t.Error(".sdlc/.gitignore should allowlist config.toml")
 	}
 	// The deny-all "*" pattern is directory-agnostic: it must cover
 	// runs/ (and any other unlisted subdirectory) without runs/ ever
@@ -229,41 +232,73 @@ func TestSetupInit_EmptyFixture_CreatesScaffold(t *testing.T) {
 		t.Error("root .gitignore should contain transient artifact pattern")
 	}
 
-	// config.json and local.json should exist with empty objects.
-	configData := readTestJSON(t, filepath.Join(root, paths.DataDir, "config.json"))
-	if len(configData) != 0 {
-		t.Errorf("config.json should be empty object, got %v", configData)
+	// config.toml and local.toml should exist, written verbatim from the
+	// embedded Go template constants — never through LLM context.
+	configBytes, err := os.ReadFile(filepath.Join(root, paths.DataDir, "config.toml"))
+	if err != nil {
+		t.Fatal("config.toml should exist")
 	}
-	localData := readTestJSON(t, filepath.Join(root, paths.DataDir, "local.json"))
-	if len(localData) != 0 {
-		t.Errorf("local.json should be empty object, got %v", localData)
+	if string(configBytes) != configTemplate {
+		t.Error("config.toml should match configTemplate verbatim")
 	}
+	localBytes, err := os.ReadFile(filepath.Join(root, paths.DataDir, "local.toml"))
+	if err != nil {
+		t.Fatal("local.toml should exist")
+	}
+	if string(localBytes) != localTemplate {
+		t.Error("local.toml should match localTemplate verbatim")
+	}
+
+	// Both new files should be reported as created, and the output should
+	// tell the caller (an LLM) what to do next.
+	if !contains(out.Created, paths.DataDir+"/config.toml") {
+		t.Errorf("expected %s/config.toml in Created, got %v", paths.DataDir, out.Created)
+	}
+	if !contains(out.Created, paths.DataDir+"/local.toml") {
+		t.Errorf("expected %s/local.toml in Created, got %v", paths.DataDir, out.Created)
+	}
+	if out.Next == "" {
+		t.Error("expected Next to carry edit/validate guidance")
+	}
+}
+
+// contains reports whether s is present in slice.
+func contains(slice []string, s string) bool {
+	for _, v := range slice {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 func TestSetupInit_V5SchemaCompliant(t *testing.T) {
 	root := t.TempDir()
 
-	_, err := setupInit(root, SetupInitIn{Sections: []string{"version"}})
+	_, err := setupInit(root, SetupInitIn{})
 	if err != nil {
 		t.Fatalf("setupInit: %v", err)
 	}
 
-	// config.json must pass configmigrate.Verify (no schemaVersion marker).
+	// config.toml must pass configmigrate.Verify (schema v1, TOML era).
 	if err := configmigrate.Verify(root); err != nil {
 		t.Errorf("scaffold should pass Verify: %v", err)
 	}
 
-	// config.json must not have schemaVersion field.
-	configData := readTestJSON(t, filepath.Join(root, paths.DataDir, "config.json"))
-	if _, has := configData["schemaVersion"]; has {
-		t.Error("config.json must not have schemaVersion field")
+	// config.toml must not have a schemaVersion field (the pre-v1 marker).
+	var raw map[string]any
+	if err := fsx.ReadTOML(filepath.Join(root, paths.DataDir, "config.toml"), &raw); err != nil {
+		t.Fatalf("read config.toml: %v", err)
+	}
+	if _, has := raw["schemaVersion"]; has {
+		t.Error("config.toml must not have schemaVersion field")
 	}
 }
 
 func TestSetupInit_WithProjectSections(t *testing.T) {
 	root := t.TempDir()
 
-	out, err := setupInit(root, SetupInitIn{Sections: []string{"version", "jira"}})
+	out, err := setupInit(root, SetupInitIn{})
 	if err != nil {
 		t.Fatalf("setupInit: %v", err)
 	}
@@ -272,20 +307,36 @@ func TestSetupInit_WithProjectSections(t *testing.T) {
 		t.Errorf("expected OK=true, errors: %v", out.Errors)
 	}
 
-	// config.json should have the seeded sections.
-	configData := readTestJSON(t, filepath.Join(root, paths.DataDir, "config.json"))
-	if _, has := configData["version"]; !has {
-		t.Error("config.json should have 'version' section")
+	// The always-full config.toml template should carry every project
+	// section, not a caller-selected subset.
+	cfg, err := config.Read(root)
+	if err != nil {
+		t.Fatalf("config.Read: %v", err)
 	}
-	if _, has := configData["jira"]; !has {
-		t.Error("config.json should have 'jira' section")
+	if cfg.Version == nil {
+		t.Error("config.toml template should have a 'version' section")
+	}
+	if cfg.Jira == nil {
+		t.Error("config.toml template should have a 'jira' section")
+	}
+	if cfg.Commit == nil {
+		t.Error("config.toml template should have a 'commit' section")
+	}
+	if cfg.PR == nil {
+		t.Error("config.toml template should have a 'pr' section")
+	}
+	if cfg.Plan == nil {
+		t.Error("config.toml template should have a 'plan' section")
+	}
+	if cfg.Execute == nil {
+		t.Error("config.toml template should have an 'execute' section")
 	}
 }
 
 func TestSetupInit_WithLocalSections(t *testing.T) {
 	root := t.TempDir()
 
-	out, err := setupInit(root, SetupInitIn{Sections: []string{"ship", "review"}})
+	out, err := setupInit(root, SetupInitIn{})
 	if err != nil {
 		t.Fatalf("setupInit: %v", err)
 	}
@@ -294,13 +345,21 @@ func TestSetupInit_WithLocalSections(t *testing.T) {
 		t.Errorf("expected OK=true, errors: %v", out.Errors)
 	}
 
-	// local.json should have the seeded sections.
-	localData := readTestJSON(t, filepath.Join(root, paths.DataDir, "local.json"))
-	if _, has := localData["ship"]; !has {
-		t.Error("local.json should have 'ship' section")
+	// The always-full local.toml template should carry ship and planStyle.
+	cfg, err := config.Read(root)
+	if err != nil {
+		t.Fatalf("config.Read: %v", err)
 	}
-	if _, has := localData["review"]; !has {
-		t.Error("local.json should have 'review' section")
+	if cfg.Ship == nil {
+		t.Error("local.toml template should have a 'ship' section")
+	}
+
+	planStyle, err := config.ReadSection(root, "planStyle")
+	if err != nil {
+		t.Fatalf("config.ReadSection(planStyle): %v", err)
+	}
+	if planStyle == nil {
+		t.Error("local.toml template should have a 'planStyle' section")
 	}
 }
 
@@ -308,12 +367,19 @@ func TestSetupInit_Idempotent(t *testing.T) {
 	root := t.TempDir()
 
 	// Run twice. Second run should not error and should report unchanged.
-	_, err := setupInit(root, SetupInitIn{Sections: []string{"version"}})
+	_, err := setupInit(root, SetupInitIn{})
 	if err != nil {
 		t.Fatalf("first setupInit: %v", err)
 	}
 
-	out, err := setupInit(root, SetupInitIn{Sections: []string{"version"}})
+	// Simulate a user hand-editing config.toml before the second run.
+	configPath := filepath.Join(root, paths.DataDir, "config.toml")
+	edited := configTemplate + "\n# user edit marker\n"
+	if err := os.WriteFile(configPath, []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := setupInit(root, SetupInitIn{})
 	if err != nil {
 		t.Fatalf("second setupInit: %v", err)
 	}
@@ -323,17 +389,27 @@ func TestSetupInit_Idempotent(t *testing.T) {
 
 	// Second run should not report config files as created.
 	for _, c := range out.Created {
-		if c == paths.DataDir+"/config.json" || c == paths.DataDir+"/local.json" {
+		if c == paths.DataDir+"/config.toml" || c == paths.DataDir+"/local.toml" {
 			t.Errorf("second run should not report %q as created", c)
 		}
 	}
 
+	// Second run must not clobber an existing config.toml — a user's edits
+	// survive a re-run of setup_init.
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal("read config.toml")
+	}
+	if !strings.Contains(string(content), "# user edit marker") {
+		t.Error("second run should not overwrite an existing config.toml")
+	}
+
 	// .sdlc/.gitignore should not have duplicate managed blocks.
-	content, err := os.ReadFile(filepath.Join(root, paths.DataDir, ".gitignore"))
+	giContent, err := os.ReadFile(filepath.Join(root, paths.DataDir, ".gitignore"))
 	if err != nil {
 		t.Fatal("read .sdlc/.gitignore")
 	}
-	count := strings.Count(string(content), "sdlc-v2 managed (do not edit)")
+	count := strings.Count(string(giContent), "sdlc-v2 managed (do not edit)")
 	if count != 1 {
 		t.Errorf("expected 1 managed block begin marker, got %d", count)
 	}
@@ -526,7 +602,7 @@ func TestSetupInit_ThenVerify_Passes(t *testing.T) {
 	root := t.TempDir()
 
 	// setup_init on empty fixture.
-	_, err := setupInit(root, SetupInitIn{Sections: []string{"version", "jira"}})
+	_, err := setupInit(root, SetupInitIn{})
 	if err != nil {
 		t.Fatalf("setupInit: %v", err)
 	}
@@ -572,5 +648,92 @@ func TestMigrate_Legacy_ConvergesToV5(t *testing.T) {
 
 	if err := configmigrate.Verify(root); err != nil {
 		t.Errorf("legacy->v5 migration should result in valid v5: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Template drift-prevention tests.
+//
+// These guard the embedded configTemplate/localTemplate constants against
+// drift from config's runtime schema (internal/config/schema.go) — they fail
+// loudly if a future schema change is not mirrored in the templates.
+// ---------------------------------------------------------------------------
+
+// TestConfigTemplateRoundTrip writes both templates to a temp .sdlc dir and
+// confirms config.Read() accepts them with no error.
+func TestConfigTemplateRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	dataDir := filepath.Join(root, paths.DataDir)
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "config.toml"), []byte(configTemplate), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "local.toml"), []byte(localTemplate), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := config.Read(root); err != nil {
+		t.Errorf("config.Read on template files: %v", err)
+	}
+}
+
+// TestConfigTemplateKeysMatchWhitelist parses configTemplate's top-level keys
+// and asserts they are exactly config.AllowedProjectKeys — symmetrically, so
+// neither the template nor the whitelist can silently drift from the other.
+func TestConfigTemplateKeysMatchWhitelist(t *testing.T) {
+	var parsed map[string]any
+	if err := toml.Unmarshal([]byte(configTemplate), &parsed); err != nil {
+		t.Fatalf("parse configTemplate: %v", err)
+	}
+
+	for key := range parsed {
+		if !config.AllowedProjectKeys[key] {
+			t.Errorf("configTemplate has key %q not in config.AllowedProjectKeys", key)
+		}
+	}
+	for key := range config.AllowedProjectKeys {
+		if _, has := parsed[key]; !has {
+			t.Errorf("config.AllowedProjectKeys has key %q missing from configTemplate", key)
+		}
+	}
+}
+
+// TestConfigTemplateGuardrailsAreNamedTables asserts plan.guardrails and
+// execute.guardrails in the raw template are named tables (map[string]any),
+// not array-of-tables — config.readProjectRaw normalizes them to []any only
+// on the config.Read() path, so this test parses configTemplate directly.
+func TestConfigTemplateGuardrailsAreNamedTables(t *testing.T) {
+	var parsed map[string]any
+	if err := toml.Unmarshal([]byte(configTemplate), &parsed); err != nil {
+		t.Fatalf("parse configTemplate: %v", err)
+	}
+
+	for _, section := range []string{"plan", "execute"} {
+		sec, ok := parsed[section].(map[string]any)
+		if !ok {
+			t.Fatalf("section %q missing or not a table", section)
+		}
+		guardrails, ok := sec["guardrails"]
+		if !ok {
+			t.Fatalf("section %q missing guardrails", section)
+		}
+		if _, ok := guardrails.(map[string]any); !ok {
+			t.Errorf("%s.guardrails should be a named table (map[string]any), got %T", section, guardrails)
+		}
+	}
+}
+
+// TestConfigTemplateIsValidTOML asserts both templates parse as valid TOML.
+func TestConfigTemplateIsValidTOML(t *testing.T) {
+	var cfg map[string]any
+	if err := toml.Unmarshal([]byte(configTemplate), &cfg); err != nil {
+		t.Errorf("configTemplate is not valid TOML: %v", err)
+	}
+
+	var local map[string]any
+	if err := toml.Unmarshal([]byte(localTemplate), &local); err != nil {
+		t.Errorf("localTemplate is not valid TOML: %v", err)
 	}
 }

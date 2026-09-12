@@ -119,13 +119,13 @@ func detectLegacy(mainRoot string) error {
 // PushConfig. All three are optional; nil means "use documented defaults"
 // and is filled in by applyAutomationDefaults.
 type AutomationSection struct {
-	Mode                       string            `json:"mode"`
-	ReviewFixIterations        int               `json:"reviewFixIterations"`
-	ReviewFixSeverityThreshold string            `json:"reviewFixSeverityThreshold"`
-	Steps                      map[string]string `json:"steps,omitempty"`
-	Drift                      *DriftConfig      `json:"drift,omitempty"`
-	Report                     *ReportConfig     `json:"report,omitempty"`
-	Push                       *PushConfig       `json:"push,omitempty"`
+	Mode                       string            `json:"mode" toml:"mode"`
+	ReviewFixIterations        int               `json:"reviewFixIterations" toml:"reviewFixIterations"`
+	ReviewFixSeverityThreshold string            `json:"reviewFixSeverityThreshold" toml:"reviewFixSeverityThreshold"`
+	Steps                      map[string]string `json:"steps,omitempty" toml:"steps,omitempty"`
+	Drift                      *DriftConfig      `json:"drift,omitempty" toml:"drift,omitempty"`
+	Report                     *ReportConfig     `json:"report,omitempty" toml:"report,omitempty"`
+	Push                       *PushConfig       `json:"push,omitempty" toml:"push,omitempty"`
 }
 
 // DriftConfig controls the rate-based thresholds used to decide when a
@@ -147,17 +147,17 @@ type AutomationSection struct {
 // the compiled default (0.15 / 0.40 respectively). Same caveat as
 // PushConfig.FeatureBranchAutoApprove.
 type DriftConfig struct {
-	MaxErrorRate   float64 `json:"maxErrorRate"`
-	MaxWarningRate float64 `json:"maxWarningRate"`
-	MinErrorFloor  int     `json:"minErrorFloor"`
+	MaxErrorRate   float64 `json:"maxErrorRate" toml:"maxErrorRate"`
+	MaxWarningRate float64 `json:"maxWarningRate" toml:"maxWarningRate"`
+	MinErrorFloor  int     `json:"minErrorFloor" toml:"minErrorFloor"`
 }
 
 // ReportConfig controls whether and how an execution report is emitted at
 // the end of a run (KD-11). Format is "md" or "json"; any other value is
 // clamped to "md" by applyAutomationDefaults.
 type ReportConfig struct {
-	Enabled bool   `json:"enabled"`
-	Format  string `json:"format"`
+	Enabled bool   `json:"enabled" toml:"enabled"`
+	Format  string `json:"format" toml:"format"`
 }
 
 // PushConfig controls whether a feature-branch git push during ship is
@@ -170,7 +170,7 @@ type ReportConfig struct {
 // from an absent key. applyAutomationDefaults forces it true whenever Mode
 // is "unattended", even if the config explicitly set it to false.
 type PushConfig struct {
-	FeatureBranchAutoApprove bool `json:"featureBranchAutoApprove"`
+	FeatureBranchAutoApprove bool `json:"featureBranchAutoApprove" toml:"featureBranchAutoApprove"`
 }
 
 // StepMode returns the effective automation mode for the given step:
@@ -220,19 +220,19 @@ func (a *AutomationSection) StepMode(step string) string {
 // there is no backward-compat reader. Run /setup --only version to
 // migrate.
 type VersionSection struct {
-	PreRelease       string                 `json:"preRelease"`
-	PreReleasePolicy string                 `json:"preReleasePolicy"`
-	Method           string                 `json:"method"`
-	Tag              VersionTagConfig       `json:"tag"`
-	VersionFile      VersionFileConfig      `json:"versionFile"`
-	Changelog        VersionChangelogConfig `json:"changelog"`
+	PreRelease       string                 `json:"preRelease" toml:"preRelease"`
+	PreReleasePolicy string                 `json:"preReleasePolicy" toml:"preReleasePolicy"`
+	Method           string                 `json:"method" toml:"method"`
+	Tag              VersionTagConfig       `json:"tag" toml:"tag"`
+	VersionFile      VersionFileConfig      `json:"versionFile" toml:"versionFile"`
+	Changelog        VersionChangelogConfig `json:"changelog" toml:"changelog"`
 }
 
 // VersionTagConfig is the tag release path: creating a git tag (and GitHub
 // Release) on version bump. Prefix is prepended to the tag name (e.g. "v").
 type VersionTagConfig struct {
-	Enabled bool   `json:"enabled"`
-	Prefix  string `json:"prefix"`
+	Enabled bool   `json:"enabled" toml:"enabled"`
+	Prefix  string `json:"prefix" toml:"prefix"`
 }
 
 // VersionFileConfig is the version-file release path: writing the bumped
@@ -240,17 +240,17 @@ type VersionTagConfig struct {
 // FileType names its format (package.json, cargo.toml, pyproject.toml,
 // pubspec.yaml, plugin.json, version-file).
 type VersionFileConfig struct {
-	Enabled  bool   `json:"enabled"`
-	Path     string `json:"path"`
-	FileType string `json:"fileType"`
+	Enabled  bool   `json:"enabled" toml:"enabled"`
+	Path     string `json:"path" toml:"path"`
+	FileType string `json:"fileType" toml:"fileType"`
 }
 
 // VersionChangelogConfig is the changelog release path: prepending a
 // release entry to a changelog file. When Enabled is true and File is
 // unset, File defaults to "CHANGELOG.md".
 type VersionChangelogConfig struct {
-	Enabled bool   `json:"enabled"`
-	File    string `json:"file"`
+	Enabled bool   `json:"enabled" toml:"enabled"`
+	File    string `json:"file" toml:"file"`
 }
 
 // errOldVersionShape is returned by parseVersionSection when the raw

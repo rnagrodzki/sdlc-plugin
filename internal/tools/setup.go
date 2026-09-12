@@ -6,10 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/configmigrate"
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
-	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
@@ -133,16 +131,18 @@ func setupPrepare(root string, in SetupPrepareIn) (SetupPrepareOut, error) {
 // setup_init
 // ---------------------------------------------------------------------------
 
-// SetupInitIn is the input for the setup_init tool.
-type SetupInitIn struct {
-	Sections []string `json:"sections" jsonschema_description:"Section ids to seed as empty objects in the new config.json (e.g. \"version\", \"commit\"). Sections not listed are omitted from the scaffolded config."`
-}
+// SetupInitIn is the input for the setup_init tool. It takes no fields:
+// setup_init always writes the complete config.toml/local.toml templates
+// (every field, heavily commented) rather than seeding a caller-selected
+// subset of sections — see configTemplate/localTemplate below.
+type SetupInitIn struct{}
 
 // SetupInitOut is the output for the setup_init tool.
 type SetupInitOut struct {
 	OK      bool     `json:"ok"`
 	Created []string `json:"created"`
 	Changed []string `json:"changed"`
+	Next    string   `json:"next"`
 	Errors  []string `json:"errors,omitempty"`
 }
 
@@ -157,7 +157,7 @@ const (
 var sdlcGitignorePatterns = []string{
 	"*",
 	"!.gitignore",
-	"!config.json",
+	"!config.toml",
 	"!review-dimensions/",
 	"!review-dimensions/**",
 }
@@ -306,6 +306,217 @@ func normalizeBlankLines(lines []string) []string {
 	return out
 }
 
+// configTemplate is the complete .sdlc-v2/config.toml scaffold written
+// verbatim by setup_init. It carries every project-level field (the
+// AllowedProjectKeys whitelist in internal/config/schema.go: version, jira,
+// commit, pr, plan, execute) with inline comments documenting valid values,
+// defaults, and purpose, plus example guardrail entries. There is no
+// interactive Q&A step any more — the user edits this file directly, then
+// runs the validate tool. jira is left uncommented (with empty string
+// values) rather than commented out: TestConfigTemplateKeysMatchWhitelist
+// requires every AllowedProjectKeys entry to actually parse out of this
+// template, not just be mentioned in a comment.
+const configTemplate = `# ─── SDLC Project Configuration (v1) ─────────────────────────────
+# Shared across the team — committed to version control.
+# Edit this file directly, then run the validate tool to check.
+# Delete sections you don't use.
+
+# ─── Versioning ───────────────────────────────────────────────────
+
+[version]
+# Current pre-release tag (free-form string, e.g. "rc", "beta", "alpha")
+preRelease = "rc"
+
+# When to apply pre-release tags.
+# Valid: "always-rc" | "continue-rc" | "never"
+#   always-rc    — every release gets an rc tag
+#   continue-rc  — only if already in rc
+#   never        — skip pre-release, go straight to release
+preReleasePolicy = "always-rc"
+
+# How versions reach the remote.
+# Valid: "push" | "pr"
+#   push — direct push to default branch
+#   pr   — create a pull request
+method = "push"
+
+[version.tag]
+# Create git tags for releases.
+enabled = true
+# Tag prefix (e.g. "v" → "v1.2.3", "" → "1.2.3")
+prefix = "v"
+
+[version.versionFile]
+# Write version number to a file on release.
+enabled = true
+# Path relative to repo root.
+path = ""
+# Valid: "package.json" | "plugin.json" | "version.txt" | "pyproject.toml"
+fileType = ""
+
+[version.changelog]
+# Auto-generate changelog from conventional commits.
+enabled = true
+# Changelog file path relative to repo root.
+file = "CHANGELOG.md"
+
+# ─── Jira integration (optional — clear the fields below if not using Jira) ──────
+
+[jira]
+# Jira instance hostname (e.g. "mycompany.atlassian.net")
+host = ""
+# Jira project key (e.g. "PROJ")
+projectKey = ""
+# Custom field ID for Epic Link (find in Jira admin → custom fields)
+epicFieldId = ""
+
+# ─── Commit conventions ──────────────────────────────────────────
+
+[commit]
+# Enforce conventional commits (type(scope): description).
+conventional = true
+# Require scope in commit messages.
+scopeRequired = false
+# Allowed commit types.
+allowedTypes = ["feat", "fix", "chore", "docs", "refactor", "test", "ci", "perf"]
+# Allowed scopes (empty = any scope accepted).
+allowedScopes = []
+
+# ─── Pull request defaults ───────────────────────────────────────
+
+[pr]
+# PR body template (path relative to repo root, or empty for default).
+template = ""
+# Labels to apply to PRs created by /ship.
+labels = []
+
+# ─── Plan guardrails ─────────────────────────────────────────────
+# Constraints enforced during plan creation.
+# ID is the table key — TOML enforces uniqueness, no duplicates possible.
+# severity: "error" (blocking, plan fails) or "warning" (advisory, shown but not blocking).
+#
+# Add your own guardrails as new [plan.guardrails.<your-id>] tables.
+# Example:
+#
+# [plan.guardrails.my-custom-rule]
+# severity = "warning"
+# description = "Explain what this guardrail enforces."
+
+[plan.guardrails.test-coverage-required]
+severity = "error"
+description = """
+Every task that creates or modifies source code \
+must include corresponding test cases."""
+
+[plan.guardrails.no-ci-bypass]
+severity = "error"
+description = "Plans must not include steps that skip or disable CI checks."
+
+# ─── Execute guardrails ──────────────────────────────────────────
+# Constraints enforced during task execution.
+# Same format as plan guardrails.
+
+[execute.guardrails.independent-completion-reverification]
+severity = "error"
+description = """
+Never record task-done from a self-report alone. \
+Always independently confirm via git diff and re-run \
+of build/vet/test commands."""
+`
+
+// localTemplate is the complete .sdlc-v2/local.toml scaffold written
+// verbatim by setup_init. It is gitignored (personal preferences, not a
+// team contract). automation is included as a commented-out example block
+// — it's genuinely optional and off by default, unlike jira/plan/execute
+// above which stay live so config.Read's project-key whitelist check
+// always sees every AllowedProjectKeys entry actually present.
+const localTemplate = `# ─── SDLC Local Configuration (v1) ───────────────────────────────
+# Personal preferences — gitignored, not shared with the team.
+# Edit this file directly, then run the validate tool to check.
+
+# ─── Ship pipeline ───────────────────────────────────────────────
+
+[ship]
+# Auto-run full pipeline without confirmation prompts.
+auto = true
+
+# Default version bump.
+# Valid: "major" | "minor" | "patch"
+bump = "patch"
+
+# Create PR as draft.
+draft = false
+
+# Review quality level.
+# Valid: "balanced" | "full" | "minimal"
+#   balanced — standard review depth
+#   full     — thorough, slower review
+#   minimal  — quick scan only
+quality = "balanced"
+
+# Rebase strategy before push/PR.
+# Valid: "auto" | "always" | "never"
+rebase = "auto"
+
+# Minimum review severity to block ship.
+# Valid: "low" | "medium" | "high" | "critical"
+reviewThreshold = "low"
+
+# Pipeline steps to execute during /ship (in order).
+# Valid steps: "execute" | "commit" | "review" | "pr" | "verify-pipeline"
+steps = ["execute", "commit", "review", "pr", "verify-pipeline"]
+
+# Quick mode steps (subset of steps, for /ship --quick).
+quick = ["execute", "commit", "review"]
+
+# ─── Polling intervals (seconds) ─────────────────────────────────
+
+# Execute wave polling.
+executeWaveInterval = 60
+executeWaveTimeout = 1800
+
+# CI/CD pipeline verification polling.
+verifyPipelineInterval = 60
+verifyPipelineMaxIterations = 3
+verifyPipelineTimeout = 1200
+
+# Remote review (e.g. GitHub Copilot) polling.
+awaitRemoteReviewers = []
+awaitRemoteReviewInterval = 60
+awaitRemoteReviewTimeout = 600
+
+# ─── Plan narrative style ────────────────────────────────────────
+
+[planStyle]
+# Valid: "technical" | "executive" | "mixed"
+audience = "technical"
+# Valid: "terse" | "normal" | "verbose"
+verbosity = "terse"
+# Free-form rules for plan narrative generation.
+narrativeRules = [
+  "Give enough background so someone without prior context can judge the change.",
+  "Use plain, simple English suited for non-native speakers.",
+]
+
+# ─── Automation (optional — delete if not using) ──────────────────
+
+# [automation]
+# # Valid: "full" | "supervised" | "off"
+# mode = "supervised"
+#
+# [automation.drift]
+# enabled = false
+# intervalMinutes = 30
+#
+# [automation.report]
+# enabled = false
+# format = "markdown"
+#
+# [automation.push]
+# enabled = false
+# requireReview = true
+`
+
 // setupInit is the core logic, separated from the handler for testability.
 func setupInit(root string, in SetupInitIn) (SetupInitOut, error) {
 	created := []string{}
@@ -373,42 +584,27 @@ func setupInit(root string, in SetupInitIn) (SetupInitOut, error) {
 		}
 	}
 
-	// 4. Seed config.json and local.json with empty sections for selected
-	//    sections. Uses config.WriteSection for each to get correct routing.
-	projectNeeded := false
-	localNeeded := false
-	for _, sec := range in.Sections {
-		if config.ProjectSections[sec] {
-			projectNeeded = true
+	// 4. Write the complete config.toml/local.toml templates directly to
+	//    disk — never through LLM context. Every field, with inline
+	//    documentation, is dropped in one shot; there is no more
+	//    per-section interactive seeding. Idempotent: an existing file is
+	//    left untouched so a re-run of /setup never clobbers a user's
+	//    edits.
+	configPath := filepath.Join(sdlcDir, "config.toml")
+	if _, statErr := os.Stat(configPath); statErr != nil {
+		if err := os.WriteFile(configPath, []byte(configTemplate), 0o644); err != nil {
+			errs = append(errs, fmt.Sprintf("config.toml: %s", err.Error()))
 		} else {
-			localNeeded = true
+			created = appendIfNew(created, paths.DataDir+"/config.toml")
 		}
 	}
 
-	// Ensure config.json exists (even if empty) when any project section or
-	// no sections are selected — setup always creates the scaffold.
-	configPath := filepath.Join(sdlcDir, "config.json")
-	localPath := filepath.Join(sdlcDir, "local.json")
-
-	if projectNeeded || len(in.Sections) == 0 {
-		if wasCreated, err := ensureJSONFile(configPath); err != nil {
-			errs = append(errs, fmt.Sprintf("config.json: %s", err.Error()))
-		} else if wasCreated {
-			created = appendIfNew(created, paths.DataDir+"/config.json")
-		}
-	}
-	if localNeeded || len(in.Sections) == 0 {
-		if wasCreated, err := ensureJSONFile(localPath); err != nil {
-			errs = append(errs, fmt.Sprintf("local.json: %s", err.Error()))
-		} else if wasCreated {
-			created = appendIfNew(created, paths.DataDir+"/local.json")
-		}
-	}
-
-	// Write empty objects for each selected section.
-	for _, sec := range in.Sections {
-		if err := config.WriteSection(root, sec, map[string]any{}); err != nil {
-			errs = append(errs, fmt.Sprintf("section %s: %s", sec, err.Error()))
+	localPath := filepath.Join(sdlcDir, "local.toml")
+	if _, statErr := os.Stat(localPath); statErr != nil {
+		if err := os.WriteFile(localPath, []byte(localTemplate), 0o644); err != nil {
+			errs = append(errs, fmt.Sprintf("local.toml: %s", err.Error()))
+		} else {
+			created = appendIfNew(created, paths.DataDir+"/local.toml")
 		}
 	}
 
@@ -416,21 +612,12 @@ func setupInit(root string, in SetupInitIn) (SetupInitOut, error) {
 		OK:      len(errs) == 0,
 		Created: created,
 		Changed: changed,
+		Next:    "config.toml and local.toml created — instruct the user to edit them by hand, then run the validate tool.",
 	}
 	if len(errs) > 0 {
 		out.Errors = errs
 	}
 	return out, nil
-}
-
-// ensureJSONFile creates a JSON file with an empty object if it does not
-// exist. Returns (true, nil) when the file was created, (false, nil) when
-// it already existed.
-func ensureJSONFile(path string) (bool, error) {
-	if _, err := os.Stat(path); err == nil {
-		return false, nil // already exists
-	}
-	return true, fsx.AtomicWriteJSON(path, map[string]any{})
 }
 
 // appendIfNew appends s to slice only if not already present.
@@ -468,7 +655,7 @@ func RegisterSetupTools(s *mcpserver.Server) {
 	)
 
 	mcpserver.Register(s, "setup_init",
-		"Creates the .sdlc-v2/ directory scaffold for a v5 config: .sdlc-v2/.gitignore, root .gitignore managed block, config.json, and local.json. Seeds empty objects for selected sections.",
+		"Creates the .sdlc-v2/ directory scaffold for a v1 (TOML) config: .sdlc-v2/.gitignore, root .gitignore managed block, config.toml, and local.toml. Writes the complete, heavily-commented templates directly to disk (never through LLM context) — every field is present, with inline docs and example guardrails. Idempotent: an existing config.toml/local.toml is left untouched. Instruct the user to edit the files by hand, then run the validate tool.",
 		func(ctx mcpserver.Ctx, in SetupInitIn) (SetupInitOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {
