@@ -18,6 +18,11 @@ import (
 // learningsLogHeader is written once, when the log file does not yet exist.
 const learningsLogHeader = "# SDLC Execution Learnings\n"
 
+// learningsLogPath returns the absolute path to the learnings log file.
+func learningsLogPath(root string) string {
+	return filepath.Join(root, paths.DataDir, "learnings", "log.md")
+}
+
 // LearningsLogIn is the input for the learnings_log tool.
 type LearningsLogIn struct {
 	// Action selects the operation: "append", "read", or "remove".
@@ -56,7 +61,7 @@ type LearningsLogOut struct {
 // git-tracked and is lost the moment the worktree is removed.
 func learningsLog(root string, in LearningsLogIn) (LearningsLogOut, error) {
 	rel := paths.DataDir + "/learnings/log.md"
-	path := filepath.Join(root, paths.DataDir, "learnings", "log.md")
+	path := learningsLogPath(root)
 
 	switch in.Action {
 	case "append":
@@ -258,7 +263,7 @@ func learningsRemove(path, rel string, indices []int) (LearningsLogOut, error) {
 // RegisterLearningsTools registers the learnings_log tool on the server.
 func RegisterLearningsTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "learnings_log",
-		"Appends to, reads, or removes entries from "+paths.DataDir+"/learnings/log.md. Always resolves the MAIN git worktree root first (worktree.MainRoot, falling back to cwd) — a feature worktree's own copy of this file is never git-tracked and is lost when that worktree is removed, so every skill must go through this tool instead of Read/Edit-ing the file directly at the current worktree's path. action=\"append\" (entry: markdown block, no leading/trailing blank line, must not contain a blank line — that is the entry delimiter) adds it as a new entry separated by one blank line, creating the file with its standard header on first use. action=\"read\" (optional tailLines) returns the current content, or exists=false when nothing has been logged yet. action=\"remove\" (indices: 1-indexed list of entry numbers, header excluded) deletes the specified entries, echoes the removed content in the response, and rewrites the file.",
+		"Appends to, reads, or removes entries from "+paths.DataDir+"/learnings/log.md. Always resolves the MAIN git worktree root first (worktree.MainRoot, falling back to cwd) — a feature worktree's own copy of this file is never git-tracked and is lost when that worktree is removed, so every skill must go through this tool instead of Read/Edit-ing the file directly at the current worktree's path. action=\"append\" (entry: markdown block, no leading/trailing blank line, must not contain a blank line — that is the entry delimiter; optional runId and branch tag the entry for later linkage to an execution run — the end-of-run report counts entries matching a given runId) adds it as a new entry separated by one blank line, creating the file with its standard header on first use. action=\"read\" (optional tailLines) returns the current content, or exists=false when nothing has been logged yet. action=\"remove\" (indices: 1-indexed list of entry numbers, header excluded) deletes the specified entries, echoes the removed content in the response, and rewrites the file.",
 		func(ctx mcpserver.Ctx, in LearningsLogIn) (LearningsLogOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

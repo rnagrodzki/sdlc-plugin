@@ -92,9 +92,9 @@ type ExecuteStateIn struct {
 	IssueDraftBody    string         `json:"issueDraftBody,omitempty" jsonschema_description:"issue-draft only: GH issue body markdown (required)."`
 	IssueDraftLabels  []string       `json:"issueDraftLabels,omitempty" jsonschema_description:"issue-draft only: labels to apply (optional)."`
 	DecideType        string         `json:"decideType,omitempty" jsonschema:"enum=guardrail" jsonschema_description:"decide only: decision category. Currently: guardrail."`
-	DecideID          string         `json:"id,omitempty" jsonschema_description:"decide only: identifier of the item decided on (e.g. a guardrail slug)."`
-	DecideDecision    string         `json:"decision,omitempty" jsonschema:"enum=override,enum=harden,enum=cancel,enum=fix" jsonschema_description:"decide only: choice made — override, harden, cancel, or fix."`
-	DecideReason      string         `json:"reason,omitempty" jsonschema_description:"decide only: optional free-text reason why this choice was made."`
+	DecideID          string         `json:"decideId,omitempty" jsonschema_description:"decide only: identifier of the item decided on (e.g. a guardrail slug)."`
+	DecideDecision    string         `json:"decideDecision,omitempty" jsonschema:"enum=override,enum=harden,enum=cancel,enum=fix" jsonschema_description:"decide only: choice made — override, harden, cancel, or fix."`
+	DecideReason      string         `json:"decideReason,omitempty" jsonschema_description:"decide only: optional free-text reason why this choice was made."`
 }
 
 // ---------------------------------------------------------------------------
@@ -187,15 +187,15 @@ type ExecutionReportOut struct {
 
 	// CLI evidence + step timings — both best-effort cross-reads from ship
 	// state (see execActionReport); normalized to empty (never nil) slices.
-	CLIEvidence []CLIEvidenceEntry `json:"cliEvidence,omitempty"`
-	StepTimings []StepTiming       `json:"stepTimings,omitempty"`
+	CLIEvidence []CLIEvidenceEntry `json:"cliEvidence"`
+	StepTimings []StepTiming       `json:"stepTimings"`
 
 	// GuardrailHits lists guardrail IDs decided during this run (KD-2),
 	// extracted from this state file's own data["guardrailDecisions"];
 	// normalized to empty (never nil). LinkedLearnings counts learnings log
 	// lines tagged with this run's ID (KD-3).
-	GuardrailHits   []string `json:"guardrailHits,omitempty"`
-	LinkedLearnings int      `json:"linkedLearnings,omitempty"`
+	GuardrailHits   []string `json:"guardrailHits"`
+	LinkedLearnings int      `json:"linkedLearnings"`
 
 	// Next step guidance (empty string is valid "no next step").
 	Next string `json:"next,omitempty"`
@@ -471,7 +471,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - ledger_status: List worker statuses for a run. Requires runId. Optional: timeoutSeconds.
 - drift-log: Append a drift issue and evaluate the server-side stop condition. When accumulated error-severity drift issues exceed the threshold (max(minErrorFloor, ceil(maxErrorRate * totalTasks))), returns {halt:true}. Requires driftSeverity (error|warning|info), driftSummary. Optional: driftDetail, wave, taskId, branch.
 - issue-draft: Append a pending GH issue draft to the state file's pendingIssueDrafts list (append-only — never goes through the context action, never overwrites). Requires issueDraftTitle, issueDraftBody. Optional: issueDraftLabels, taskId, branch. Returns {added:true, totalDrafts:N}.
-- decide: Record a guardrail decision (append-only — never goes through the context action, never overwrites; distinct from ship state's own "decide" action, which writes a differently-shaped {step, decision} entry under a different key). Appends {decideType, id, decision, reason} to the state file's guardrailDecisions list. Requires decideType, id. Optional: decision, reason, branch. Returns {ok:true, action:"decide", next:"..."}.
+- decide: Record a guardrail decision (append-only — never goes through the context action, never overwrites; distinct from ship state's own "decide" action, which writes a differently-shaped {step, decision} entry under a different key). Appends {decideType, id, decision, reason} to the state file's guardrailDecisions list. Requires decideType, decideId. Optional: decideDecision, decideReason, branch. Returns {ok:true, action:"decide", next:"..."}.
 - report: Assemble the end-of-run execution report (KD-11), read-only (never writes state). Gated by config automation.report: {enabled:false} returns {skipped:true} immediately and nothing else. Otherwise returns {branch, runId, planPath, startedAt, duration, format, waves[{number, status, startedAt, completedAt, duration, tasks[{id, name, status, complexity, risk, filesChanged}], committedSha}], totalTasks, completedTasks, failedTasks, skippedTasks, drifts, errors, warnings, concerns, pendingIssueDrafts, deferredFindings, decisions}. format is "json" or "md" (default) from config — tells the caller whether to write the returned data as JSON verbatim or render it as markdown itself. Optional: branch.
 
 Returns a JSON envelope: {"ok":true, "data":{...}} on success, {"ok":false, "code":"...", "error":"..."} on failure.`,
@@ -1070,7 +1070,7 @@ func execActionDecide(root, workDir string, in ExecuteStateIn) (any, error) {
 		return nil, &mcpserver.DomainError{Msg: "decideType is required", Suggestion: "Pass decideType (e.g. \"guardrail\")."}
 	}
 	if strings.TrimSpace(in.DecideID) == "" {
-		return nil, &mcpserver.DomainError{Msg: "id is required", Suggestion: "Pass the id of the item decided on (e.g. the guardrail slug)."}
+		return nil, &mcpserver.DomainError{Msg: "decideId is required", Suggestion: "Pass the decideId of the item decided on (e.g. the guardrail slug)."}
 	}
 
 	branch, err := execResolveBranch(in.Branch, workDir)
@@ -1101,8 +1101,18 @@ func execActionDecide(root, workDir string, in ExecuteStateIn) (any, error) {
 	return ExecDecideOut{
 		OK:     true,
 		Action: "decide",
-		Next:   fmt.Sprintf("Guardrail %s recorded as %s. Continue wave execution.", in.DecideID, in.DecideDecision),
+		Next:   execDecideNextGuidance(in.DecideID, in.DecideDecision),
 	}, nil
+}
+
+// execDecideNextGuidance builds the Next guidance string for a decide action.
+// When a decision is recorded, it names the decision; when only the ID is
+// recorded (decision is empty), it omits the "as <decision>" clause.
+func execDecideNextGuidance(id, decision string) string {
+	if decision == "" {
+		return fmt.Sprintf("Guardrail %s recorded. Continue wave execution.", id)
+	}
+	return fmt.Sprintf("Guardrail %s recorded as %s. Continue wave execution.", id, decision)
 }
 
 // ---------------------------------------------------------------------------
@@ -1239,7 +1249,13 @@ func execActionReport(root, workDir string, in ExecuteStateIn, now func() time.T
 			since = shipStarted
 		}
 	}
-	if evidence, err := readCLIEvidenceInWindow(root, branch, since); err == nil {
+	if evidence, err := readCLIEvidenceInWindow(root, branch, since, maxCLIEvidenceInWindow); err != nil {
+		out.Warnings = append(out.Warnings, StateIssue{
+			Severity: "warning",
+			Category: "cross-read",
+			Summary:  "CLI evidence read failed: " + err.Error(),
+		})
+	} else {
 		out.CLIEvidence = evidence
 	}
 	if out.CLIEvidence == nil {
@@ -1250,7 +1266,15 @@ func execActionReport(root, workDir string, in ExecuteStateIn, now func() time.T
 	// (data["guardrailDecisions"], appended by the decide action) and the
 	// shared learnings log respectively — neither depends on shipSt.
 	out.GuardrailHits = extractGuardrailHits(st.Data)
-	out.LinkedLearnings = countLinkedLearnings(root, out.RunID)
+	linkedCount, linkedErr := countLinkedLearnings(root, out.RunID)
+	if linkedErr != nil {
+		out.Warnings = append(out.Warnings, StateIssue{
+			Severity: "warning",
+			Category: "cross-read",
+			Summary:  "Learnings count failed: " + linkedErr.Error(),
+		})
+	}
+	out.LinkedLearnings = linkedCount
 
 	if ctxMap, ok := st.Data["context"].(map[string]any); ok {
 		if raw, ok := ctxMap["decisionsFromPriorWaves"].([]any); ok {
@@ -1324,26 +1348,30 @@ func extractGuardrailHits(data map[string]any) []string {
 
 // countLinkedLearnings counts learnings log lines tagged with this run's ID
 // (KD-3: learningsAppend prepends "<!-- sdlc:run=<runId> branch=<branch>
-// -->"). Matches by substring on "sdlc:run=<runId>", not the full tag,
-// since the tag also carries "branch=<branch>". Returns 0 when runID is
-// empty or the log file does not exist — best-effort, never an error.
-func countLinkedLearnings(root, runID string) int {
+// -->"). Matches by substring on "sdlc:run=<runId> " (trailing space
+// prevents prefix collisions), not the full tag, since the tag also
+// carries "branch=<branch>". Returns (0, nil) when runID is empty or the
+// log file does not exist. Returns a non-nil error only for unexpected
+// read failures (e.g. permission denied).
+func countLinkedLearnings(root, runID string) (int, error) {
 	if runID == "" {
-		return 0
+		return 0, nil
 	}
-	path := filepath.Join(root, paths.DataDir, "learnings", "log.md")
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(learningsLogPath(root))
 	if err != nil {
-		return 0
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
 	}
-	needle := "sdlc:run=" + runID
+	needle := "sdlc:run=" + runID + " "
 	count := 0
 	for _, line := range strings.Split(string(data), "\n") {
 		if strings.Contains(line, needle) {
 			count++
 		}
 	}
-	return count
+	return count, nil
 }
 
 // execReportBucketIssues partitions data["issues"] into the four buckets

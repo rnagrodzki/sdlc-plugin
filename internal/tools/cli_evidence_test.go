@@ -259,7 +259,7 @@ func TestReadCLIEvidenceInWindow_FiltersByBranchAndTime(t *testing.T) {
 		}
 	}
 
-	got, err := readCLIEvidenceInWindow(root, "main", "2026-09-12T09:30:00Z")
+	got, err := readCLIEvidenceInWindow(root, "main", "2026-09-12T09:30:00Z", 1000)
 	if err != nil {
 		t.Fatalf("readCLIEvidenceInWindow failed: %v", err)
 	}
@@ -290,7 +290,7 @@ func TestReadCLIEvidenceInWindow_PreservesFileOrder(t *testing.T) {
 		}
 	}
 
-	got, err := readCLIEvidenceInWindow(root, "main", "2026-09-12T00:00:00Z")
+	got, err := readCLIEvidenceInWindow(root, "main", "2026-09-12T00:00:00Z", 1000)
 	if err != nil {
 		t.Fatalf("readCLIEvidenceInWindow failed: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestReadCLIEvidenceInWindow_PreservesFileOrder(t *testing.T) {
 func TestReadCLIEvidenceInWindow_MissingFile(t *testing.T) {
 	root := t.TempDir()
 
-	got, err := readCLIEvidenceInWindow(root, "main", "2026-09-12T00:00:00Z")
+	got, err := readCLIEvidenceInWindow(root, "main", "2026-09-12T00:00:00Z", 1000)
 	if err != nil {
 		t.Fatalf("readCLIEvidenceInWindow failed: %v", err)
 	}
@@ -336,7 +336,7 @@ func TestReadCLIEvidenceInWindow_EmptyFile(t *testing.T) {
 		t.Fatalf("write empty fixture failed: %v", err)
 	}
 
-	got, err := readCLIEvidenceInWindow(root, "main", "2026-09-12T00:00:00Z")
+	got, err := readCLIEvidenceInWindow(root, "main", "2026-09-12T00:00:00Z", 1000)
 	if err != nil {
 		t.Fatalf("readCLIEvidenceInWindow failed: %v", err)
 	}
@@ -345,5 +345,41 @@ func TestReadCLIEvidenceInWindow_EmptyFile(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Fatalf("expected 0 entries for empty file, got %d", len(got))
+	}
+}
+
+// TestReadCLIEvidenceInWindow_CapReturnsTail confirms that when more entries
+// match than the cap n, only the last n (tail) are returned.
+func TestReadCLIEvidenceInWindow_CapReturnsTail(t *testing.T) {
+	root := t.TempDir()
+
+	entries := []CLIEvidenceEntry{
+		{Timestamp: "2026-09-12T10:00:00Z", Branch: "main", Command: "first"},
+		{Timestamp: "2026-09-12T10:01:00Z", Branch: "main", Command: "second"},
+		{Timestamp: "2026-09-12T10:02:00Z", Branch: "main", Command: "third"},
+		{Timestamp: "2026-09-12T10:03:00Z", Branch: "main", Command: "fourth"},
+		{Timestamp: "2026-09-12T10:04:00Z", Branch: "main", Command: "fifth"},
+	}
+
+	for _, e := range entries {
+		if err := appendCLIEvidence(root, e); err != nil {
+			t.Fatalf("appendCLIEvidence failed: %v", err)
+		}
+	}
+
+	got, err := readCLIEvidenceInWindow(root, "main", "2026-09-12T00:00:00Z", 3)
+	if err != nil {
+		t.Fatalf("readCLIEvidenceInWindow failed: %v", err)
+	}
+
+	if len(got) != 3 {
+		t.Fatalf("expected 3 entries (capped), got %d: %+v", len(got), got)
+	}
+	// Should be the last 3 (tail)
+	wantOrder := []string{"third", "fourth", "fifth"}
+	for i, w := range wantOrder {
+		if got[i].Command != w {
+			t.Errorf("entry %d: expected command %q, got %q", i, w, got[i].Command)
+		}
 	}
 }

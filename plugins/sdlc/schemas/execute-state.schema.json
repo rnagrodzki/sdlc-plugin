@@ -237,6 +237,36 @@
         "required": ["severity", "category", "summary", "timestamp"],
         "additionalProperties": false
       }
+    },
+    "guardrailDecisions": {
+      "type": "array",
+      "description": "Append-only list of guardrail decisions recorded by the decide action (KD-2).",
+      "items": {
+        "type": "object",
+        "properties": {
+          "decideType": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "decision": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": ["decideType", "id"],
+        "additionalProperties": false
+      }
+    },
+    "pendingIssueDrafts": {
+      "type": "array",
+      "description": "Append-only list of pending GH issue drafts recorded by the issue-draft action.",
+      "items": {
+        "type": "object"
+      }
     }
   },
   "required": ["version", "skill", "startedAt", "branch", "planHash", "totalTasks", "waves", "context"],
