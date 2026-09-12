@@ -31,3 +31,12 @@ both builds the `sdlc` MCP server and ships it as
   this project has already shown drift here (see the `.sdlc` vs
   `.sdlc-v2` / `.yaml` vs `.md` descriptor mismatch flagged in
   `internal/setupmeta/sections.go`).
+- Skill reference docs defining procedural keywords/markers (e.g.
+  "COMPLETE:") must ensure a diff modifying some occurrences does not
+  leave others orphaned; verify the entire file for remaining references
+  when a diff targets specific line ranges rather than the whole file.
+- Template files in `plugins/sdlc/templates/` must not diverge from
+  canonical sources in `internal/tools/payloads/` or elsewhere; if a
+  canonical payload is refactored, stale copies must be deleted rather
+  than maintained in parallel. Duplicate templates in separate directories
+  create silent drift risk.

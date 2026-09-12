@@ -1,9 +1,10 @@
 ---
 name: skill-wiring-consistency
-description: Validates that SKILL.md dispatch args match actual MCP tool *In struct JSON tags — catches silent parameter drops from name mismatches.
+description: Validates that SKILL.md dispatch args match actual MCP tool *In struct JSON tags AND that every tool reference is registered in internal/skillcheck shared registries — catches silent parameter drops and missing tool registrations.
 triggers:
   - "plugins/sdlc/skills/**"
   - "internal/tools/**"
+  - "internal/skillcheck/**"
 severity: high
 ---
 
@@ -51,6 +52,47 @@ struct's `json:"..."` tag.
   than in a dispatch instruction
 - Parameters documented with `omitempty` that are intentionally absent in
   a specific dispatch path
+
+### Skillcheck registry coverage
+
+When a SKILL.md file gains or modifies a tool dispatch, verify every
+`internal/skillcheck/skillcheck_*_test.go` file that enumerates MCP tools
+has a matching `Register*Tools()` call. Example: if `skills/execute/SKILL.md`
+adds a call to `learnings_log`, then `internal/skillcheck/skillcheck_plan_test.go`'s
+`planSkillsListTools` must call `tools.RegisterLearningsTools(srv)`. A
+missing registration causes the skillcheck validator to reject the tool
+reference with an "unknown tool" error, but only when skillcheck's own
+tests run — not during the touched package's unit tests.
+
+### Input structure and type validation
+
+Verify parameter names, types, and structure in a SKILL.md's constructed
+tool-call args match the tool's documented schema, including for
+composite/nested types.
+
+### Output verification before downstream dispatch
+
+Verify a tool's output structure (e.g. presence of a `## Contract` section)
+before downstream tasks consume it as input.
+
+### Sub-skill approval-gate orchestration
+
+When a SKILL.md dispatches another skill via the Agent tool, verify that
+any approval gates in the dispatched skill are satisfied at the
+orchestrator level, not assumed to work within the sub-agent. Agent-tool
+sub-agents cannot call AskUserQuestion directly. If a dispatched skill has
+a step calling AskUserQuestion, the orchestrator must explicitly plan to:
+(1) receive the paused sub-agent's request for approval, (2) call
+AskUserQuestion from the orchestrator context, (3) send the user's answer
+back to the sub-agent via SendMessage. Flag any dispatch of a skill with
+documented approval gates that lacks an explicit orchestration strategy.
+
+### Dispatch args notation clarity
+
+When a SKILL.md documents a tool dispatch with flag arguments, verify the
+notation is unambiguous — show a concrete filled example or explicitly
+document shorthand/interpolation, rather than bare flags a reader could
+take literally.
 
 ## Cross-references
 

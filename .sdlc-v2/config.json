@@ -14,21 +14,76 @@
       {
         "id": "mcp-schema-tags-required",
         "severity": "error",
-        "description": "New or modified *In structs must have jsonschema_description tags on all exported fields. Verify by checking that mcp.WithInputSchema[StructName]() produces non-empty description for every property in the generated schema."
+        "description": "New or modified *In and *Out structs must have jsonschema_description tags on all exported fields. *In fields representing closed sets must also have jsonschema enum tags. *Out structs must have concrete types (never `any`) and handlers must call both WithInputSchema[StructIn]() and WithOutputSchema[StructOut]() to expose complete schemas to the LLM. Verify generated schemas contain non-empty descriptions for every field and concrete output types."
       },
       {
         "id": "skill-tool-param-sync",
+        "severity": "error",
+        "description": "When a SKILL.md dispatches an MCP tool, every parameter name in the dispatch args must match a json tag on the tool's *In struct, and every parameter must include both name and value (no bare flags). Additionally, every MCP tool referenced in a SKILL.md must be registered via Register*Tools in all internal/skillcheck/*_test.go shared registries (planSkillsListTools, executeSkillsListTools, etc.). Mismatched parameter names, bare flags, or missing registrations silently break tool behavior or cause resolver failures."
+      },
+      {
+        "id": "wave-start-dispatch-input-integrity",
         "severity": "warning",
-        "description": "When a SKILL.md dispatches an MCP tool, every parameter name in the dispatch args must match a json tag on the tool's *In struct. Mismatched parameter names silently drop values and produce incorrect tool behavior."
+        "description": "Before dispatching to MCP tools, code must validate that constructed inputs match the tool's documented schema in field names, types, and structure. Specifically for wave-start: pass complete task objects with all required fields (id, title, complexity, risk, dependsOn, verify, files, acceptanceCriteria, contract, notes) -- the tool renders fact sheets from what it is given and does not re-derive task metadata from the plan file server-side. The dispatcher must also validate wave-start's tasksJson task-name-to-task-id mapping before sending to workers; a mislabel silently corrupts the fact sheet a worker receives and produces a phantom success report on the wrong task."
+      },
+      {
+        "id": "no-silent-fs-state-discard",
+        "severity": "error",
+        "description": "Do not silently discard errors returned from file-system operations (os.WriteFile, os.Remove, os.MkdirTemp, t.TempDir) or state-persistence operations (state.Write, storage reads) when the next line reports success to the caller. Propagate the error, explicitly handle it with a non-silent fallback, or explicitly document why it is safe to ignore."
+      },
+      {
+        "id": "independent-completion-reverification",
+        "severity": "error",
+        "description": "Never record task-done or wave-done from a self-report alone. A passing self-report is a claim, not evidence of correctness. Always independently confirm via `git diff --stat` scoped to expected files, then a full `git diff` read, then an independent re-run of the relevant build/vet/test commands -- run `go test ./...` (full suite), not just the plan's named per-package verify command, before marking any task done that changes a struct's field type or JSON tag. Do not trust pasted command output or worker/agent/coordinator self-reports of completion."
+      },
+      {
+        "id": "execute-handler-nil-normalization",
+        "severity": "error",
+        "description": "MCP tool handlers must normalize nil slices and maps to empty []T or map[K]V{} before returning. Nil collections serialize to JSON `null`, which breaks LLM consumption. Every handler that builds or filters a collection must check for nil at the dispatcher level and return empty instead -- verify this at execute time, not just in the plan's stated contract."
+      },
+      {
+        "id": "spec-compliance-literal-contract-diff",
+        "severity": "error",
+        "description": "Spec-compliance review of task completeness must perform literal contract-vs-diff comparison for any task with a Contract block, including Trivial tasks. Do not rely on plausibility checks or self-reported completion status."
+      },
+      {
+        "id": "worker-diff-matches-plan-files",
+        "severity": "error",
+        "description": "When a dispatched worker's actual diff scope (file count, file list) diverges from the task's Files section, stop and present the divergence to the user via AskUserQuestion before running spec-compliance review or committing -- even if the broader result builds/tests clean."
+      },
+      {
+        "id": "constant-literal-migration-verified-complete",
+        "severity": "error",
+        "description": "Before marking a task done that introduces a named constant to replace previously hardcoded string literals, execute a grep across the repo for the old literal and confirm zero remaining instances (outside intentional legacy-fallback paths). An incomplete rename creates two silently-diverging sources of truth and is worse than not renaming at all."
+      },
+      {
+        "id": "defer-unmet-task-dependencies",
+        "severity": "error",
+        "description": "If a task's own dependency/notes field declares it must run after other tasks land on the default branch, and the current execute run produces only a feature branch/PR, record the task via task-fail with skippedDependency:true and a detailed reason -- do not execute its commands. This prevents premature mutation of live release state when upstream tasks have not yet landed."
       }
     ]
   },
   "plan": {
     "guardrails": [
       {
-        "description": "Every task that creates or modifies source code must include corresponding test cases.",
+        "description": "Every task that creates or modifies source code must include corresponding test cases. Scripts must be structured as importable modules (entry-point main() guarded, e.g. `if (require.main === module)`) before test tasks are planned. Tests introduced by a task must be wired into CI in the same plan.",
         "id": "test-coverage-required",
         "severity": "error"
+      },
+      {
+        "id": "plan-verification-scope-completeness",
+        "severity": "error",
+        "description": "Plan Verification commands must account for cross-package dependencies, not just the touched package. Specifically: (1) when a task's Files include plugins/sdlc/skills/*/SKILL.md or add/change a tool dispatch, Verification must include `go test ./internal/skillcheck/...` (or full `go test ./...`) to catch tool-registration regressions that per-package tests miss; (2) when a task changes a struct's field type (e.g. int -> *int) or JSON tag (adding/removing omitempty), Verification must run `go test ./...` at the repository root to catch cross-package serialization/marshal regressions. Narrow per-package verification scoping has repeatedly missed these regressions in this codebase."
+      },
+      {
+        "id": "plan-claims-verified-against-source",
+        "severity": "error",
+        "description": "Any claim a plan makes about existing code, docs, or behavior (method signatures, config field names, doc section titles/positions, CLI flag semantics, prose descriptions of a mechanism, or the absence of a string/pattern in the codebase) must be verified by direct source reading (grep/read) before the plan is finalized or the claim is used to justify a task's completion. Never assert such claims from memory. This covers: contract diffs (reproduce struct/API shapes verbatim from source, never invent fields), audit/negative-assertion tasks (verify absence claims with grep, not partial search), prose-describing-code tasks (verify prose against source, not build/test success alone), and plan Contract blocks containing literal code/API/CLI details (verify against current source before finalization)."
+      },
+      {
+        "id": "wave-start-output-and-taskobject-verification",
+        "severity": "warning",
+        "description": "When a plan includes steps that dispatch to MCP tools whose outputs are consumed by downstream tasks (e.g. wave-start fact sheets), the plan must include explicit verification steps confirming output correctness before downstream processing. Specifically for wave-start: task objects passed to it must include all required metadata (id, title, complexity, risk, dependsOn, verify, files, acceptanceCriteria, contract text verbatim from the plan's Contract block, notes) -- the tool renders fact sheets from what it is given and does not re-derive metadata from the plan file. If metadata must be re-derived, use wave-compute first to extract it programmatically before constructing the wave-start call."
       },
       {
         "description": "Plans must not include steps that skip or disable CI checks.",
@@ -36,9 +91,9 @@
         "severity": "error"
       },
       {
-        "description": "Tasks must only address stated requirements; no gold-plating.",
+        "description": "Tasks must only address stated requirements; no gold-plating. A task's declared Files/line-range scope must be sufficient to achieve everything the task's own acceptance criteria and Verification steps require -- scope narrower than the task's own stated requirements is a plan defect to fix before execution. Conversely, each task's Files section defines the exhaustive edit boundary: if a dispatched worker's actual diff scope (file count, file list) diverges from the declared Files section, stop immediately and present the divergence to the user via AskUserQuestion before proceeding with spec-compliance review or commit, even if the broader result builds/tests clean.",
         "id": "no-scope-creep",
-        "severity": "warning"
+        "severity": "error"
       },
       {
         "description": "Each task must have exactly one clear deliverable.",
@@ -86,7 +141,7 @@
         "severity": "error"
       },
       {
-        "description": "Plans touching an MCP tool definition must state precisely what the tool does, its inputs/outputs, and when to call it. A vague or generic tool description is a blocking issue.",
+        "description": "Plans touching an MCP tool definition must state precisely what the tool does, its inputs/outputs, and when to call it. A vague or generic tool description is a blocking issue. When a tool's description or Purpose/FilesModified fields cite filesystem paths, extensions, directories, or glob patterns, verify the descriptor against the code that loads/walks the filesystem -- mismatched or stale path descriptors are blocking issues. For multi-action tools, the description must explicitly state what inputs are required vs optional for each action, using the \"Requires: ... Optional: ...\" convention from execute_state.go.",
         "id": "mcp-tool-description-precise",
         "severity": "error"
       },
@@ -138,7 +193,7 @@
       {
         "id": "handler-data-contracts",
         "severity": "error",
-        "description": "Plans that create or modify tool handlers or data-transformation pipelines must explicitly document nil/empty-collection edge cases and how they are normalized. Handlers must normalize nil to empty array/object at the dispatcher level before returning output; this normalization must happen within the handler, not left to downstream serialization or LLM interpretation."
+        "description": "Plans that create or modify tool handlers or data-transformation pipelines must explicitly document nil/empty-collection edge cases and how they are normalized. Handlers must normalize nil to empty array/object at the dispatcher level before returning output; this normalization must happen within the handler, not left to downstream serialization or LLM interpretation. Handlers must also validate input parameter shapes (required fields present, types correct) and reject invalid inputs with actionable errors BEFORE processing -- do not silently accept malformed input and produce corrupted downstream state."
       },
       {
         "id": "no-real-fs-git-in-tests",
@@ -152,13 +207,63 @@
       },
       {
         "id": "mcp-output-drives-behavior",
-        "severity": "warning",
-        "description": "Tool output structs (*Out) should include a Next string field (json:\"next\") with an exact per-outcome hint guiding the LLM's next action. Outputs that return data without behavioral guidance leave the LLM to guess the next step."
+        "severity": "error",
+        "description": "Every *Out struct (tool output) MUST include a Next string field (json:\"next\", no omitempty) with an exact per-outcome hint guiding the LLM's next action. Outputs must always include Next in JSON; empty string is valid for \"no next step\", but an absent field violates the contract."
       },
       {
         "id": "mcp-parameter-documented",
         "severity": "error",
-        "description": "Every exported field on an *In struct must have a jsonschema_description tag. Fields representing closed sets (validated by switch/const) must additionally have a jsonschema enum tag. Undocumented parameters create ambiguity for the LLM."
+        "description": "Every exported field on an *In struct must have a jsonschema_description tag. The description must explicitly state whether the field accepts plain-text strings or JSON-encoded input, and must provide a concrete example value. Fields representing closed sets (validated by switch/const) must additionally have a jsonschema enum tag. Undocumented or ambiguously-encoded parameters create ambiguity for the LLM and cause trial-and-error tool-call failures."
+      },
+      {
+        "id": "stateless-tool-input-protocol",
+        "severity": "error",
+        "description": "When a plan calls an MCP tool that re-resolves full state from a single input per invocation (e.g. setup_prepare({reply})), explicitly document in the plan that the tool requires full accumulated input on every call -- never send only partial or delta input. Include a two-call test scenario in the plan proving the accumulation protocol. Similarly, calls to material_compare or similar diff tools must pass the FULL prior artifact snapshot, not a summary or excerpt -- partial snapshots produce spurious drift reports and mask the actual changes being validated."
+      },
+      {
+        "id": "sub-skill-approval-orchestration",
+        "severity": "warning",
+        "description": "When a plan modifies a SKILL.md that dispatches another skill via the Agent tool, the plan must explicitly document how approval gates in the dispatched skill will be satisfied. Agent-tool sub-agents cannot call AskUserQuestion directly -- the orchestrator must plan to receive the sub-agent's request, call AskUserQuestion at orchestrator level, and relay the answer back via SendMessage."
+      },
+      {
+        "id": "trivial-task-contract-complexity",
+        "severity": "warning",
+        "description": "Tasks whose Contract blocks specify precise conditional logic, branching, state transitions, or specific function calls must not be classified Trivial by file-count alone. Trivial classification is appropriate only for straight prose additions. Tasks with logic contracts require Standard-level scrutiny."
+      },
+      {
+        "id": "plan-verification-soundness",
+        "severity": "warning",
+        "description": "Plan's Verification section must be logically consistent with the plan's own Key Decisions and Non-goals; a repo-wide grep for removal verification must explicitly exclude files that Key Decisions/Non-goals exempt from that removal."
+      },
+      {
+        "id": "schema-change-secondary-readers",
+        "severity": "error",
+        "description": "When a plan changes a config or data schema structure, identify all readers, writers, migrators, codegen, and test fixtures that consume the schema -- do not assume the declared-files list captures the scope. Use grep, package-import analysis, and full-module testing before marking the plan done."
+      },
+      {
+        "id": "schema-code-sync-required",
+        "severity": "error",
+        "description": "When a task modifies an MCP tool's input/output structs or a Go struct that is serialized to JSON, the corresponding JSON schema under plugins/sdlc/schemas/ must be updated in the same task. Schemas and code must not drift -- validate that marshaled Go instances conform to the schema before submission."
+      },
+      {
+        "id": "refactoring-includes-doc-sweep",
+        "severity": "warning",
+        "description": "Tasks that involve configuration/API renames or major refactoring must include documentation and schema updates in the same task -- do not defer doc and schema sweeps to follow-up work. Plan must explicitly enumerate which docs, READMEs, skill descriptions, and JSON schemas will be updated alongside code changes."
+      },
+      {
+        "id": "constant-literal-migration-complete",
+        "severity": "error",
+        "description": "When a task introduces a new constant to replace previously hardcoded string literals, the task's Verification section must include an explicit check (e.g. `grep -rn \"<old_literal>\" <scope> --include=*.go`) to confirm zero remaining instances outside intentional legacy-fallback paths. A partial migration creates two silently-diverging sources of truth and is worse than not migrating at all."
+      },
+      {
+        "id": "task-dependency-merge-gate",
+        "severity": "error",
+        "description": "Tasks whose Contract runs commands that mutate production/release state (gh release edit, gh workflow run, tag push, merge to release branch) must not execute in branch-only runs. Either structure the execute run to merge to the default branch, or declare the task's dependency on upstream tasks landing first via a structured dependency field -- prose Notes alone are not validated at plan time."
+      },
+      {
+        "id": "task-contract-cross-file-dependencies",
+        "severity": "error",
+        "description": "When a task's files list includes a file that appears as a key in a pinned-hash map (e.g. planSkillsReferenceFileHashes) or other cross-file guard, the task's acceptance criteria must explicitly document the coupling and required guard-update step."
       }
     ]
   },

@@ -1,16 +1,21 @@
 ---
 name: error-report
-description: "Internal skill invoked by other SDLC skills when they encounter an actionable error (script crash, CLI failure, persistent API error, build failure after retries). Proposes creating a GitHub issue in rnagrodzki/sdlc-plugin to track the error with full context capture, two-gate user consent, and pre-flight verification. NOT user-invocable — only dispatched from within another skill's error handling path."
-user-invocable: false
-disable-model-invocation: true
+description: "Invoked by other SDLC skills when they encounter an actionable error (script crash, CLI failure, persistent API error, build failure after retries). Proposes creating a GitHub issue in rnagrodzki/sdlc-plugin to track the error with full context capture, two-gate user consent, and pre-flight verification. Normally dispatched from within another skill's error-handling path; also directly user-invocable as a fallback when a calling skill could not dispatch it itself (supply Skill/Step/Operation/Error/exit code/error type inline)."
+user-invocable: true
 ---
 
 # Error-to-GitHub Issue Proposal
 
-<!-- disable-model-invocation: true prevents the harness from auto-triggering this skill
-     when conversation content matches the description. It does NOT prevent explicit
-     dispatch from another skill's error-handling path — that is the only intended
-     activation route. user-invocable: false hides the skill from the / menu.
+<!-- Do NOT set disable-model-invocation: true here — the harness enforces it as a
+     blanket block on ANY model-driven Skill-tool call, not just auto-triggering on
+     conversation-content match. That blocked this skill's only intended dispatch
+     route (another skill explicitly invoking it via the Skill tool from its own
+     error-handling path) and left it unreachable by both model and hidden user
+     invocation at once — confirmed by a direct tool-call rejection in production use.
+     user-invocable stays true so a caller that hits the Skill-tool restriction (or a
+     user replaying a harden/ship error-report payload manually) has a working
+     fallback: type /sdlc:error-report with the Skill/Step/Operation/Error fields
+     inline.
 
      Do NOT pin `model:` in this frontmatter — doing so would route this skill's own
      invocation into a subagent that inherits the full conversation transcript (issue
@@ -29,8 +34,13 @@ and the `gh issue create` call stay in the main context.
 
 ## When This Skill Is Invoked
 
-Another skill explicitly directs Claude here after encountering an issue-worthy
-error. The calling skill provides:
+Normally another skill explicitly directs Claude here (via the Skill tool) after
+encountering an issue-worthy error. When that dispatch is unavailable — e.g. a
+host restriction on Skill-tool calls from within another skill's context — the
+calling skill instead relays the same fields to the user to invoke directly:
+`/sdlc:error-report skill=<skill> step=<step> operation=<operation>
+error=<errorText> exitOrHttpCode=<code> errorType=<type>`. Either way, the
+invoker (skill or user) provides:
 
 - **Skill**: which skill encountered the error
 - **Step**: which step/operation failed
@@ -341,7 +351,9 @@ replaces the calling skill's own error output or stop behavior.
 
 ## DO NOT
 
-- Invoke this skill directly in response to user requests — it is internal only.
+- Auto-trigger on conversation content matching this skill's description — only
+  invoke via explicit dispatch (another skill's error-handling path) or explicit
+  user invocation (`/sdlc:error-report` with Skill/Step/Operation/Error supplied).
 - Pin `model:` in this skill's frontmatter — the harness will route the skill into a
   subagent that inherits the full conversation transcript. The
   orchestrator agent (Step 5) is the correct place to pin `model: haiku`.
