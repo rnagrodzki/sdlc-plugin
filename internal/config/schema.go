@@ -13,11 +13,11 @@ import (
 	"sort"
 )
 
-// allowedProjectKeys is the set of top-level property names permitted in
-// .sdlc-v2/config.json, extracted from plugins/sdlc/schemas/sdlc-config.schema.json.
+// AllowedProjectKeys is the set of top-level property names permitted in
+// .sdlc-v2/config.toml, extracted from plugins/sdlc/schemas/sdlc-config.schema.json.
 // TestSchemaSync verifies this list stays in sync with the schema file.
-var allowedProjectKeys = map[string]bool{
-	"$schema": true,
+// Exported so downstream tests (e.g. setup_test.go) can verify coverage.
+var AllowedProjectKeys = map[string]bool{
 	"version": true,
 	"jira":    true,
 	"commit":  true,
@@ -27,21 +27,21 @@ var allowedProjectKeys = map[string]bool{
 }
 
 // allowedLocalOnlyKeys is the set of top-level schema properties that are
-// personal preference, not team contract: they route to .sdlc-v2/local.json
+// personal preference, not team contract: they route to .sdlc-v2/local.toml
 // (see ProjectSections in config.go) and must never appear in
-// .sdlc-v2/config.json, so they are deliberately excluded from
-// allowedProjectKeys. TestSchemaSync checks schema top-level properties
-// against the union of allowedProjectKeys and this map.
+// .sdlc-v2/config.toml, so they are deliberately excluded from
+// AllowedProjectKeys. TestSchemaSync checks schema top-level properties
+// against the union of AllowedProjectKeys and this map.
 var allowedLocalOnlyKeys = map[string]bool{
 	"planStyle": true,
 }
 
 // validateProjectKeys checks that every top-level key in raw belongs to
-// allowedProjectKeys. Returns an error listing any unknown keys.
+// AllowedProjectKeys. Returns an error listing any unknown keys.
 func validateProjectKeys(raw map[string]any) error {
 	var unknown []string
 	for k := range raw {
-		if !allowedProjectKeys[k] {
+		if !AllowedProjectKeys[k] {
 			unknown = append(unknown, k)
 		}
 	}
@@ -49,5 +49,5 @@ func validateProjectKeys(raw map[string]any) error {
 		return nil
 	}
 	sort.Strings(unknown)
-	return fmt.Errorf("config: unknown top-level keys in .sdlc-v2/config.json: %v", unknown)
+	return fmt.Errorf("config: unknown top-level keys in .sdlc-v2/config.toml: %v", unknown)
 }

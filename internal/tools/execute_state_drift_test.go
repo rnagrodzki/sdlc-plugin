@@ -14,7 +14,7 @@ import (
 
 func TestExecState_DriftLog_InvalidSeverity(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
 	createExecState(t, root, "feat/drift", map[string]any{
 		"branch":     "feat/drift",
 		"totalTasks": 10,
@@ -37,7 +37,7 @@ func TestExecState_DriftLog_InvalidSeverity(t *testing.T) {
 
 func TestExecState_DriftLog_EmptySummary(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
 	createExecState(t, root, "feat/drift", map[string]any{
 		"branch":     "feat/drift",
 		"totalTasks": 10,
@@ -60,7 +60,7 @@ func TestExecState_DriftLog_EmptySummary(t *testing.T) {
 
 func TestExecState_DriftLog_BelowThreshold(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
 	createExecState(t, root, "feat/drift", map[string]any{
 		"branch":     "feat/drift",
 		"totalTasks": 10,
@@ -109,7 +109,7 @@ func TestExecState_DriftLog_BelowThreshold(t *testing.T) {
 func TestExecState_DriftLog_RateTermDominates(t *testing.T) {
 	// totalTasks=20 with defaults: ceil(0.15*20)=3 > floor 2, threshold=3.
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
 	createExecState(t, root, "feat/drift", map[string]any{
 		"branch":     "feat/drift",
 		"totalTasks": 20,
@@ -138,7 +138,7 @@ func TestExecState_DriftLog_RateTermDominates(t *testing.T) {
 func TestExecState_DriftLog_ExactlyAtThreshold_NoHalt(t *testing.T) {
 	// Boundary: error count == threshold must NOT halt.
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
 	createExecState(t, root, "feat/drift", map[string]any{
 		"branch":     "feat/drift",
 		"totalTasks": 10,
@@ -188,7 +188,7 @@ func TestExecState_DriftLog_ExactlyAtThreshold_NoHalt(t *testing.T) {
 
 func TestExecState_DriftLog_HaltOnExceed(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
 	createExecState(t, root, "feat/drift", map[string]any{
 		"branch":     "feat/drift",
 		"totalTasks": 10,
@@ -242,7 +242,7 @@ func TestExecState_DriftLog_HaltOnExceed(t *testing.T) {
 
 func TestExecState_DriftLog_WarningsDoNotTriggerHalt(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
 	createExecState(t, root, "feat/drift", map[string]any{
 		"branch":     "feat/drift",
 		"totalTasks": 10,
@@ -277,20 +277,16 @@ func TestExecState_DriftLog_WarningsDoNotTriggerHalt(t *testing.T) {
 }
 
 func TestExecState_DriftLog_ConfigWiring(t *testing.T) {
-	// Verify drift-log actually reads DriftConfig from config.json rather than
+	// Verify drift-log actually reads DriftConfig from config.toml rather than
 	// always falling back to compiled defaults.
 	// Custom config: maxErrorRate=0.5, minErrorFloor=1 → threshold = max(1, ceil(0.5*10)) = 5.
-	// Automation section lives in local.json, not config.json.
+	// Automation section lives in local.toml, not config.toml.
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
-	writeFile(t, filepath.Join(root, paths.DataDir, "local.json"), `{
-		"automation": {
-			"drift": {
-				"maxErrorRate": 0.5,
-				"minErrorFloor": 1
-			}
-		}
-	}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), `[automation.drift]
+maxErrorRate = 0.5
+minErrorFloor = 1
+`)
 	createExecState(t, root, "feat/drift", map[string]any{
 		"branch":     "feat/drift",
 		"totalTasks": 10,

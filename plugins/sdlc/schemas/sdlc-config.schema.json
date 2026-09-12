@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/rnagrodzki/sdlc-plugin/main/plugins/sdlc/schemas/sdlc-config.schema.json",
   "title": "SDLC Config",
-  "description": "Validates .sdlc-v2/config.json — unified project-level configuration for sdlc-plugin skills.",
+  "description": "Validates .sdlc-v2/config.toml — unified project-level configuration for sdlc-plugin skills.",
   "type": "object",
   "$defs": {
     "versionSection": {
@@ -275,11 +275,6 @@
     "guardrailItem": {
       "type": "object",
       "properties": {
-        "id": {
-          "type": "string",
-          "pattern": "^[a-z][a-z0-9]*(-[a-z0-9]+)*$",
-          "description": "Unique kebab-case identifier."
-        },
         "description": {
           "type": "string",
           "maxLength": 1024,
@@ -291,7 +286,7 @@
           "description": "error = blocking; warning = advisory. Defaults to error when omitted."
         }
       },
-      "required": ["id", "description"],
+      "required": ["description"],
       "additionalProperties": false
     },
     "planSection": {
@@ -299,10 +294,10 @@
       "description": "Controls plan behavior and custom guardrails.",
       "properties": {
         "guardrails": {
-          "type": "array",
-          "description": "Custom guardrails evaluated during plan critique phases.",
-          "minItems": 1,
-          "items": { "$ref": "#/$defs/guardrailItem" }
+          "type": "object",
+          "description": "Custom guardrails evaluated during plan critique phases, keyed by guardrail ID (TOML named table key).",
+          "minProperties": 1,
+          "additionalProperties": { "$ref": "#/$defs/guardrailItem" }
         },
         "tasks": {
           "type": "object",
@@ -329,10 +324,10 @@
       "description": "Controls execute-plan behavior and runtime guardrails.",
       "properties": {
         "guardrails": {
-          "type": "array",
-          "description": "Custom guardrails evaluated during execute-plan runtime (pre-wave and post-wave checks).",
-          "minItems": 1,
-          "items": { "$ref": "#/$defs/guardrailItem" }
+          "type": "object",
+          "description": "Custom guardrails evaluated during execute-plan runtime (pre-wave and post-wave checks), keyed by guardrail ID (TOML named table key).",
+          "minProperties": 1,
+          "additionalProperties": { "$ref": "#/$defs/guardrailItem" }
         },
         "commitWaves": {
           "type": "boolean",
@@ -366,10 +361,6 @@
     }
   },
   "properties": {
-    "$schema": {
-      "type": "string",
-      "description": "URL pointing to this schema."
-    },
     "version": {
       "$ref": "#/$defs/versionSection"
     },

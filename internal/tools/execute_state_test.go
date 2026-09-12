@@ -62,7 +62,8 @@ func readExecState(t *testing.T, root, branch string) map[string]any {
 
 func TestExecState_Init(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
 	clock := fixedClock(testNow)
 
 	result, err := executeState(root, root, ExecuteStateIn{
@@ -104,49 +105,41 @@ func TestExecState_Init(t *testing.T) {
 	if pa, ok := m["pipelineAuto"].(bool); !ok || pa {
 		t.Errorf("pipelineAuto = %v, want false (no ship state)", m["pipelineAuto"])
 	}
-	if _, statErr := os.Stat(filepath.Join(root, paths.DataDir, "config.json.bak")); statErr == nil {
-		t.Error("config.json.bak written for already-current config; want zero extra I/O")
+	if _, statErr := os.Stat(filepath.Join(root, paths.DataDir, "config.toml.bak")); statErr == nil {
+		t.Error("config.toml.bak written for already-current config; want zero extra I/O")
 	}
 }
 
-// TestExecState_Init_MigratesStaleConfig covers the KD5 gate: init on a
-// stale-but-migratable config auto-migrates in place (via
-// configmigrate.MigrateWithBackup) instead of hard-failing, and surfaces the
-// migration in the result.
-func TestExecState_Init_MigratesStaleConfig(t *testing.T) {
+// TestExecState_Init_StaleConfigRequiresSetup covers the KD5 gate on a
+// JSON-era config with no config.toml present. The TOML migration removed
+// JSON->TOML auto-migration entirely (configmigrate no longer has any
+// migration steps to run), so init must hard-fail with an actionable error
+// naming /setup instead of silently migrating in place.
+//
+// This replaces the former TestExecState_Init_MigratesStaleConfig, which
+// asserted the pre-TOML behavior (auto-migrate with a config.json.bak
+// backup, surfaced as a migration report) — a capability that no longer
+// exists once .sdlc-v2/config.toml is the only source of truth.
+func TestExecState_Init_StaleConfigRequiresSetup(t *testing.T) {
 	root := t.TempDir()
+	// Legacy JSON-era config, no config.toml: must not be silently migrated.
 	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{"schemaVersion": 4}`)
 	clock := fixedClock(testNow)
 
-	result, err := executeState(root, root, ExecuteStateIn{
+	_, err := executeState(root, root, ExecuteStateIn{
 		Action:  "init",
 		Branch:  "feat/test",
 		Quality: "standard",
 	}, clock)
-	if err != nil {
-		t.Fatalf("init: %v", err)
+	if err == nil {
+		t.Fatal("expected error for stale JSON-era config; TOML auto-migration was removed")
 	}
-
-	m, ok := result.(map[string]any)
-	if !ok {
-		t.Fatal("expected map result")
+	if !strings.Contains(err.Error(), "/setup") {
+		t.Errorf("expected error to mention /setup, got %q", err.Error())
 	}
-	if _, ok := m["filePath"].(string); !ok {
-		t.Fatal("expected filePath string in result")
+	if _, ok := err.(*mcpserver.DataError); !ok {
+		t.Errorf("expected DataError, got %T", err)
 	}
-	migration, ok := m["migration"].(*MigrationReport)
-	if !ok || migration == nil {
-		t.Fatalf("expected migration report in result, got %T: %v", m["migration"], m["migration"])
-	}
-	if migration.BackupPath == "" {
-		t.Error("expected non-empty BackupPath in migration report")
-	}
-	if _, statErr := os.Stat(migration.BackupPath); statErr != nil {
-		t.Errorf("backup file not found at %s: %v", migration.BackupPath, statErr)
-	}
-
-	// State was still created despite the auto-migration.
-	readExecState(t, root, "feat/test")
 }
 
 // TestExecState_Init_MissingConfig covers the KD5 gate's missing-config
@@ -224,7 +217,8 @@ func createShipState(t *testing.T, root, branch string, data map[string]any) {
 func TestExecState_Init_PipelineAuto(t *testing.T) {
 	t.Run("no ship state returns false", func(t *testing.T) {
 		root := t.TempDir()
-		writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+		writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
 
 		result, err := executeState(root, root, ExecuteStateIn{
 			Action:  "init",
@@ -242,7 +236,8 @@ func TestExecState_Init_PipelineAuto(t *testing.T) {
 
 	t.Run("ship state flags.auto=true returns true", func(t *testing.T) {
 		root := t.TempDir()
-		writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+		writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
 		createShipState(t, root, "feat/test", map[string]any{
 			"flags": map[string]any{"auto": true},
 		})
@@ -263,7 +258,8 @@ func TestExecState_Init_PipelineAuto(t *testing.T) {
 
 	t.Run("ship state flags.auto=false returns false", func(t *testing.T) {
 		root := t.TempDir()
-		writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+		writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
 		createShipState(t, root, "feat/test", map[string]any{
 			"flags": map[string]any{"auto": false},
 		})
@@ -284,7 +280,8 @@ func TestExecState_Init_PipelineAuto(t *testing.T) {
 
 	t.Run("ship state flags.auto string type returns false", func(t *testing.T) {
 		root := t.TempDir()
-		writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+		writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
 		createShipState(t, root, "feat/test", map[string]any{
 			"flags": map[string]any{"auto": "true"},
 		})
@@ -305,7 +302,8 @@ func TestExecState_Init_PipelineAuto(t *testing.T) {
 
 	t.Run("corrupt ship state returns false with warning", func(t *testing.T) {
 		root := t.TempDir()
-		writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+		writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
 		// Create a valid ship state, then overwrite its file with corrupt JSON.
 		createShipState(t, root, "feat/test", map[string]any{})
 		shipSt, err := state.Find(root, "ship", "feat/test")
