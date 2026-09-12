@@ -454,6 +454,117 @@ func TestExecState_Report_CLIEvidenceAndStepTimings_EmptyWhenNoShipState(t *test
 	}
 }
 
+func TestExecState_Report_GuardrailHits_ExtractedFromGuardrailDecisions(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	createExecState(t, root, "feat/report", map[string]any{
+		"branch": "feat/report",
+		"guardrailDecisions": []any{
+			map[string]any{"decideType": "guardrail", "id": "no-real-fs-git-in-tests", "decision": "override"},
+			map[string]any{"decideType": "guardrail", "id": "handler-data-contracts", "decision": "harden"},
+			map[string]any{"decideType": "other", "id": "ignored-non-guardrail-type"},
+		},
+	})
+	clock := fixedClock(testNow)
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "report",
+		Branch: "feat/report",
+	}, clock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := result.(ExecutionReportOut)
+
+	want := []string{"no-real-fs-git-in-tests", "handler-data-contracts"}
+	if len(out.GuardrailHits) != len(want) {
+		t.Fatalf("expected %d guardrail hits, got %d: %+v", len(want), len(out.GuardrailHits), out.GuardrailHits)
+	}
+	for i, id := range want {
+		if out.GuardrailHits[i] != id {
+			t.Errorf("guardrailHits[%d] = %q, want %q", i, out.GuardrailHits[i], id)
+		}
+	}
+}
+
+func TestExecState_Report_GuardrailHits_EmptyWhenNoDecisions(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	createExecState(t, root, "feat/report", map[string]any{
+		"branch": "feat/report",
+	})
+	clock := fixedClock(testNow)
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "report",
+		Branch: "feat/report",
+	}, clock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := result.(ExecutionReportOut)
+
+	if out.GuardrailHits == nil || len(out.GuardrailHits) != 0 {
+		t.Errorf("expected empty non-nil GuardrailHits, got %#v", out.GuardrailHits)
+	}
+}
+
+func TestExecState_Report_LinkedLearnings_CountsTaggedLines(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	// startedAt "2025-06-15T09:00:00Z" derives runId "20250615T090000"
+	// (execDeriveRunID strips non-digit/non-T characters).
+	createExecState(t, root, "feat/report", map[string]any{
+		"branch":    "feat/report",
+		"startedAt": "2025-06-15T09:00:00Z",
+	})
+	writeFile(t, filepath.Join(root, paths.DataDir, "learnings", "log.md"), "# SDLC Execution Learnings\n\n"+
+		"<!-- sdlc:run=20250615T090000 branch=feat/report -->\n"+
+		"## entry one\n\n"+
+		"<!-- sdlc:run=some-other-run branch=feat/report -->\n"+
+		"## entry from a different run\n\n"+
+		"<!-- sdlc:run=20250615T090000 branch=feat/report -->\n"+
+		"## entry two\n\n"+
+		"## untagged entry\n")
+	clock := fixedClock(testNow)
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "report",
+		Branch: "feat/report",
+	}, clock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := result.(ExecutionReportOut)
+
+	if out.LinkedLearnings != 2 {
+		t.Errorf("expected LinkedLearnings=2, got %d", out.LinkedLearnings)
+	}
+}
+
+func TestExecState_Report_LinkedLearnings_ZeroWhenLogMissing(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	createExecState(t, root, "feat/report", map[string]any{
+		"branch":    "feat/report",
+		"startedAt": "2025-06-15T09:00:00Z",
+	})
+	clock := fixedClock(testNow)
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "report",
+		Branch: "feat/report",
+	}, clock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := result.(ExecutionReportOut)
+
+	if out.LinkedLearnings != 0 {
+		t.Errorf("expected LinkedLearnings=0 when learnings log is missing, got %d", out.LinkedLearnings)
+	}
+}
+
 func TestExecState_Report_UnknownBranch(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)

@@ -190,6 +190,13 @@ type ExecutionReportOut struct {
 	CLIEvidence []CLIEvidenceEntry `json:"cliEvidence,omitempty"`
 	StepTimings []StepTiming       `json:"stepTimings,omitempty"`
 
+	// GuardrailHits lists guardrail IDs decided during this run (KD-2),
+	// extracted from this state file's own data["guardrailDecisions"];
+	// normalized to empty (never nil). LinkedLearnings counts learnings log
+	// lines tagged with this run's ID (KD-3).
+	GuardrailHits   []string `json:"guardrailHits,omitempty"`
+	LinkedLearnings int      `json:"linkedLearnings,omitempty"`
+
 	// Next step guidance (empty string is valid "no next step").
 	Next string `json:"next,omitempty"`
 }
@@ -1239,6 +1246,12 @@ func execActionReport(root, workDir string, in ExecuteStateIn, now func() time.T
 		out.CLIEvidence = []CLIEvidenceEntry{}
 	}
 
+	// GuardrailHits and LinkedLearnings live on this run's own state file
+	// (data["guardrailDecisions"], appended by the decide action) and the
+	// shared learnings log respectively — neither depends on shipSt.
+	out.GuardrailHits = extractGuardrailHits(st.Data)
+	out.LinkedLearnings = countLinkedLearnings(root, out.RunID)
+
 	if ctxMap, ok := st.Data["context"].(map[string]any); ok {
 		if raw, ok := ctxMap["decisionsFromPriorWaves"].([]any); ok {
 			for _, d := range raw {
@@ -1282,6 +1295,55 @@ func extractStepTimings(data map[string]any) []StepTiming {
 		out = append(out, timing)
 	}
 	return out
+}
+
+// extractGuardrailHits extracts guardrail IDs from data["guardrailDecisions"]
+// (appended by the decide action, KD-2) where decideType == "guardrail".
+// Returns an empty (never nil) slice when the key is absent or holds no
+// guardrail-type decisions.
+func extractGuardrailHits(data map[string]any) []string {
+	hits := []string{}
+	raw, ok := data["guardrailDecisions"].([]any)
+	if !ok {
+		return hits
+	}
+	for _, d := range raw {
+		dm, ok := d.(map[string]any)
+		if !ok {
+			continue
+		}
+		if decideType, _ := dm["decideType"].(string); decideType != "guardrail" {
+			continue
+		}
+		if id, _ := dm["id"].(string); id != "" {
+			hits = append(hits, id)
+		}
+	}
+	return hits
+}
+
+// countLinkedLearnings counts learnings log lines tagged with this run's ID
+// (KD-3: learningsAppend prepends "<!-- sdlc:run=<runId> branch=<branch>
+// -->"). Matches by substring on "sdlc:run=<runId>", not the full tag,
+// since the tag also carries "branch=<branch>". Returns 0 when runID is
+// empty or the log file does not exist — best-effort, never an error.
+func countLinkedLearnings(root, runID string) int {
+	if runID == "" {
+		return 0
+	}
+	path := filepath.Join(root, paths.DataDir, "learnings", "log.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	needle := "sdlc:run=" + runID
+	count := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.Contains(line, needle) {
+			count++
+		}
+	}
+	return count
 }
 
 // execReportBucketIssues partitions data["issues"] into the four buckets
