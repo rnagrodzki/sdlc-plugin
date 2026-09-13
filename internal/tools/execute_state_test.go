@@ -4390,3 +4390,165 @@ func TestExecState_Decide_UnknownBranch(t *testing.T) {
 		t.Fatalf("expected DataError, got %T: %v", err, err)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// wave-start: pre-write validation and plan cross-check
+// ---------------------------------------------------------------------------
+
+// TestExecState_WaveStart_DropsInvalidTasksJson verifies that non-map entries
+// and empty-id entries in tasksJson are dropped with a warning, and that
+// taskCount in the summary reflects only the valid tasks.
+func TestExecState_WaveStart_DropsInvalidTasksJson(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	createExecState(t, root, "feat/test", map[string]any{
+		"startedAt": testNow.UTC().Format(time.RFC3339),
+		"waves":     []any{},
+		"context":   map[string]any{},
+	})
+
+	// 5 entries: 1 valid, 1 non-map (string), 1 non-map (number),
+	// 1 map with empty id, 1 map with missing id key.
+	tasksJSON := `[
+		{"id":"T1","name":"Valid Task","description":"ok"},
+		"not a map",
+		42,
+		{"id":"","name":"Empty ID"},
+		{"name":"No ID field"}
+	]`
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action:    "wave-start",
+		Branch:    "feat/test",
+		Wave:      intPtr(1),
+		TasksJSON: tasksJSON,
+		RunID:     "test-run-drop",
+	}, clock)
+	if err != nil {
+		t.Fatalf("wave-start: %v", err)
+	}
+
+	m, ok := result.(ExecWaveNarrationOut)
+	if !ok {
+		t.Fatalf("result = %T, want ExecWaveNarrationOut", result)
+	}
+
+	// Only 1 valid task should have produced a fact sheet.
+	if len(m.FactSheets) != 1 {
+		t.Errorf("factSheets count = %d, want 1", len(m.FactSheets))
+	}
+
+	// Summary should report 1 task, not 5.
+	want := "Wave 1 started with 1 tasks."
+	if m.Summary != want {
+		t.Errorf("Summary = %q, want %q", m.Summary, want)
+	}
+
+	// Should have a warning about 4 dropped entries.
+	foundDropWarning := false
+	for _, w := range m.Warnings {
+		if strings.Contains(w, "dropped 4 entries") {
+			foundDropWarning = true
+			break
+		}
+	}
+	if !foundDropWarning {
+		t.Errorf("expected warning about 4 dropped entries, got warnings: %v", m.Warnings)
+	}
+}
+
+// TestExecState_WaveStart_PlanCrossCheck verifies that a name mismatch
+// between tasksJson and the plan headings produces a warning.
+func TestExecState_WaveStart_PlanCrossCheck(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	// Write a plan file with a task heading.
+	planPath := filepath.Join(root, "plan.md")
+	writeFile(t, planPath, `## Tasks
+
+### Task 1: Correct Name
+
+**Complexity:** Standard
+**Risk:** Low
+**Files:** a.go
+**Depends on:** none
+`)
+
+	createExecState(t, root, "feat/test", map[string]any{
+		"startedAt": testNow.UTC().Format(time.RFC3339),
+		"planPath":  planPath,
+		"waves":     []any{},
+		"context":   map[string]any{},
+	})
+
+	// tasksJson has a different name for task 1.
+	tasksJSON := `[{"id":"1","name":"Wrong Name","description":"mismatch test"}]`
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action:    "wave-start",
+		Branch:    "feat/test",
+		Wave:      intPtr(1),
+		TasksJSON: tasksJSON,
+		RunID:     "test-run-xcheck",
+	}, clock)
+	if err != nil {
+		t.Fatalf("wave-start: %v", err)
+	}
+
+	m, ok := result.(ExecWaveNarrationOut)
+	if !ok {
+		t.Fatalf("result = %T, want ExecWaveNarrationOut", result)
+	}
+
+	// Should have a warning about the name mismatch.
+	foundMismatch := false
+	for _, w := range m.Warnings {
+		if strings.Contains(w, "does not match plan heading") {
+			foundMismatch = true
+			break
+		}
+	}
+	if !foundMismatch {
+		t.Errorf("expected plan cross-check warning, got warnings: %v", m.Warnings)
+	}
+}
+
+// TestExecState_WaveStart_PlanCrossCheckSkipsMissingPlan verifies that the
+// plan cross-check silently skips when no planPath is recorded.
+func TestExecState_WaveStart_PlanCrossCheckSkipsMissingPlan(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	createExecState(t, root, "feat/test", map[string]any{
+		"startedAt": testNow.UTC().Format(time.RFC3339),
+		"waves":     []any{},
+		"context":   map[string]any{},
+	})
+
+	tasksJSON := `[{"id":"1","name":"Any Name","description":"no plan to check"}]`
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action:    "wave-start",
+		Branch:    "feat/test",
+		Wave:      intPtr(1),
+		TasksJSON: tasksJSON,
+		RunID:     "test-run-noplan",
+	}, clock)
+	if err != nil {
+		t.Fatalf("wave-start: %v", err)
+	}
+
+	m, ok := result.(ExecWaveNarrationOut)
+	if !ok {
+		t.Fatalf("result = %T, want ExecWaveNarrationOut", result)
+	}
+
+	// No mismatch warnings expected.
+	for _, w := range m.Warnings {
+		if strings.Contains(w, "does not match plan heading") {
+			t.Errorf("unexpected plan cross-check warning when no planPath: %s", w)
+		}
+	}
+}

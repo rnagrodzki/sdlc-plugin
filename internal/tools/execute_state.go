@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1812,6 +1813,8 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 
 	// Write per-task fact sheets when tasksJson is provided.
 	var parsedTasks []any
+	var validTasks []map[string]any
+	var dropped int
 	result := ExecWaveNarrationOut{}
 	if len(planHashWarnings) > 0 {
 		result.Warnings = planHashWarnings
@@ -1820,6 +1823,50 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 	if in.TasksJSON != "" {
 		if err := json.Unmarshal([]byte(in.TasksJSON), &parsedTasks); err != nil {
 			return nil, &mcpserver.DomainError{Msg: "tasksJson is not valid JSON: " + err.Error(), Cause: err}
+		}
+
+		// Pre-write validation: filter out non-map and empty-id entries,
+		// surfacing dropped entries as warnings instead of silently skipping.
+		for _, t := range parsedTasks {
+			tm, ok := t.(map[string]any)
+			if !ok {
+				dropped++
+				continue
+			}
+			id, _ := tm["id"].(string)
+			if id == "" {
+				dropped++
+				continue
+			}
+			validTasks = append(validTasks, tm)
+		}
+		if dropped > 0 {
+			result.Warnings = append(result.Warnings,
+				fmt.Sprintf("wave-start: dropped %d entries from tasksJson (not map or missing id)", dropped))
+		}
+
+		// Plan cross-check: warn when a task's name in tasksJson diverges
+		// from the plan heading. Warning-only — plan file may not exist
+		// (standalone execute without ship), so a missing plan silently skips.
+		if planPath, _ := st.Data["planPath"].(string); planPath != "" {
+			planContent, planErr := os.ReadFile(planPath)
+			if planErr == nil {
+				planTasks := extractTasks(string(planContent))
+				planNames := map[int]string{}
+				for _, pt := range planTasks {
+					planNames[pt.Number] = pt.Title
+				}
+				for _, tm := range validTasks {
+					id, _ := tm["id"].(string)
+					name := stringOrEmpty(tm["name"])
+					if n, err := strconv.Atoi(id); err == nil {
+						if expected, ok := planNames[n]; ok && name != expected {
+							result.Warnings = append(result.Warnings,
+								fmt.Sprintf("task %s: name %q does not match plan heading %q", id, name, expected))
+						}
+					}
+				}
+			}
 		}
 
 		runID := in.RunID
@@ -1831,15 +1878,8 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 
 		writtenPaths := []string{}
 		var factSheetErrors []string
-		for _, t := range parsedTasks {
-			tm, ok := t.(map[string]any)
-			if !ok {
-				continue
-			}
+		for _, tm := range validTasks {
 			id, _ := tm["id"].(string)
-			if id == "" {
-				continue
-			}
 
 			fs := wave.Factsheet{
 				ID:          id,
@@ -1887,8 +1927,12 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 		}
 	}
 
-	// Build narration.
+	// Build narration — taskCount reflects valid tasks (post-validation),
+	// not the raw parsedTasks slice which may have contained invalid entries.
 	taskCount := len(parsedTasks)
+	if len(validTasks) > 0 || dropped > 0 {
+		taskCount = len(validTasks)
+	}
 	result.Summary = fmt.Sprintf("Wave %d started with %d tasks.", *in.Wave, taskCount)
 
 	if execDetailLevel(in) == "full" {

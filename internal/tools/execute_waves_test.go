@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/wave"
 )
 
 // ---------------------------------------------------------------------------
@@ -398,5 +399,34 @@ func TestExecuteState_WaveComputeDispatch(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("root dir entries = %v, want none written by wave-compute", entries)
+	}
+}
+
+// TestWaveComputeRenderTasks_NameKey verifies that waveComputeRenderTasks
+// emits "name" (not "title") in its output maps, matching the key the
+// wave-start fact sheet writer reads via tm["name"].
+func TestWaveComputeRenderTasks_NameKey(t *testing.T) {
+	tasks := []wave.WaveTask{
+		{Number: 1, Title: "Fix the widget", Complexity: "Standard", Risk: "Low", Files: []string{"a.go"}, Verify: "tests"},
+		{Number: 2, Title: "Add feature", Complexity: "Complex", Risk: "High", Files: nil, Verify: ""},
+	}
+
+	rendered := waveComputeRenderTasks(tasks)
+
+	if len(rendered) != 2 {
+		t.Fatalf("len(rendered) = %d, want 2", len(rendered))
+	}
+
+	for i, m := range rendered {
+		if _, ok := m["title"]; ok {
+			t.Errorf("rendered[%d] has 'title' key — should be 'name'", i)
+		}
+		name, ok := m["name"]
+		if !ok {
+			t.Errorf("rendered[%d] missing 'name' key", i)
+		}
+		if name != tasks[i].Title {
+			t.Errorf("rendered[%d][\"name\"] = %q, want %q", i, name, tasks[i].Title)
+		}
 	}
 }

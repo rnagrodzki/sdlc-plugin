@@ -181,7 +181,7 @@ func waveComputeRenderTasks(tasks []wave.WaveTask) []map[string]any {
 	for _, t := range tasks {
 		rendered = append(rendered, map[string]any{
 			"id":         strconv.Itoa(t.Number),
-			"title":      t.Title,
+			"name":       t.Title,
 			"complexity": t.Complexity,
 			"risk":       t.Risk,
 			"files":      waveComputeStrSlice(t.Files),
