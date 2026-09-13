@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	version "github.com/rnagrodzki/sdlc-plugin"
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/configmigrate"
 	"github.com/rnagrodzki/sdlc-plugin/internal/difftrunc"
@@ -44,9 +45,9 @@ var severityRank = map[string]int{
 // maxActiveDimensions is the cap on simultaneously dispatched dimensions.
 const maxActiveDimensions = 8
 
-// pluginVersion is the plugin version embedded in manifests. Set by the build
-// system via ldflags in cmd/sdlc/main.go; defaults to "unknown" when not wired.
-var pluginVersion = "unknown"
+// pluginVersion is the plugin version embedded in manifests, read from
+// plugins/sdlc/.claude-plugin/plugin.json at compile time.
+var pluginVersion = version.Plugin
 
 // ---------------------------------------------------------------------------
 // Input / Output types

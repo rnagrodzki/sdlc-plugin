@@ -8,16 +8,16 @@ import (
 	"fmt"
 	"os"
 
+	version "github.com/rnagrodzki/sdlc-plugin"
 	"github.com/rnagrodzki/sdlc-plugin/internal/hooks"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
 )
 
-// pluginVersion is injected via ldflags at build time.
-// Defaults to "0.0.2" when not set (e.g., during development or manual builds).
-// Must be kept in sync with the "version" field in plugins/sdlc/.claude-plugin/plugin.json.
-// TestPluginVersionMatchesManifest verifies they match.
-var pluginVersion = "0.0.3"
+// pluginVersion is read from plugins/sdlc/.claude-plugin/plugin.json at
+// compile time (see version.go) — there is nothing left to hand-sync after
+// a release bumps the manifest's "version" field.
+var pluginVersion = version.Plugin
 
 func main() {
 	if len(os.Args) < 2 {
