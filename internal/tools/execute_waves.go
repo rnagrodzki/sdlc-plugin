@@ -111,22 +111,15 @@ func waveComputeParseTasks(content string) ([]wave.TaskInput, error) {
 }
 
 // waveComputeParseDependsOn extracts task-number references from a task's
-// **Depends on:** field (e.g. "Task 2, Task 3" or "none"), reusing pf4RefRe
-// (validators.go) - the same pattern PF4 plan validation uses.
+// **Depends on:** field (e.g. "Task 2, Task 3" or "none"), reusing
+// parseDependsOnRefs (validators.go) - the same parser PF4 plan validation
+// uses, so scheduling and validation never diverge on how a field is read.
 func waveComputeParseDependsOn(body string) []int {
 	dependsOn, ok := extractField(body, "Depends on")
 	if !ok || dependsOn == "" || strings.EqualFold(dependsOn, "none") {
 		return nil
 	}
-	var refs []int
-	for _, m := range pf4RefRe.FindAllStringSubmatch(dependsOn, -1) {
-		n, err := strconv.Atoi(m[1])
-		if err != nil {
-			continue
-		}
-		refs = append(refs, n)
-	}
-	return refs
+	return parseDependsOnRefs(dependsOn)
 }
 
 // waveComputeParseFiles extracts literal file paths from a task's

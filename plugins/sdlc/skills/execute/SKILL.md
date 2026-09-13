@@ -227,12 +227,20 @@ Compute `planHash` here (`shasum -a 256 "$PLAN_FILE" | cut -d' ' -f1`) — the t
    ```
    or `task-fail` (with `error`) for a `FAILED`/timed-out task. Then, unless the deadline branch above already wrote it: `execute_state({ action: "wave-fail", wave: N })` (any task failed after exhausting retries) or `execute_state({ action: "wave-done", wave: N [, decisions: "<json-array>"] })` (otherwise). Every field is sourced from each task's own completion checklist — omit `filesAdded` (don't substitute `filesChanged`) when a task didn't report it separately; `decisions` is the union of every task's reported decisions.
 
+   **Wave-done decisions guidance:** `decisions` is a JSON array string. When passing inline, single-quote the outer value to prevent shell expansion:
+   ```
+   execute_state({ action: "wave-done", wave: N, decisions: '[{"decision":"...","why":"..."}]' })
+   ```
+   Never embed multi-line JSON inline — stringify to single line first.
+
    **Issue drafts:** when a task's outcome or verification surfaces a finding that warrants a future GitHub issue (non-blocking technical debt, deferred improvement, discovered bug outside scope), record it:
    ```
    execute_state({ action: "issue-draft", branch: "<branch>", taskId: "<id>", issueDraftTitle: "<title>", issueDraftBody: "<body>" [, issueDraftLabels: ["<label>", ...]] })
    → { added: true, totalDrafts: N }
    ```
    Ship step 10b reads `pendingIssueDrafts` from `execute_state({action:"read"})` and presents them for batch approval. Only record genuine follow-ups — not task failures, not scope changes.
+
+   **CLI evidence and orchestrator decisions:** after all state writes complete, orchestrator-level decisions (task sequencing choices, retry budgets, guardrail overrides) belong in `wave-done`'s `decisions` field or recorded via `execute_state({action:"decide"})`. CLI execution evidence (which commands ran, their exit codes, output) is already captured automatically via a PostToolUse hook — no manual log-cli call is needed for narrative purposes.
 
 9. **OpenSpec task flip** — after `task-done` writes, before `wave-done`. Skip entirely when `refToTaskIds` is empty. Build `completedOpenspecTaskIds` from `execute_state({action:"read"})` (survives `--resume`; don't rely on conversation memory alone). For each `(ref, siblings)` not yet in `flippedRefs` whose siblings are now all completed: locate the checkbox in `openspec/changes/<change>/tasks.md` (by `line`, verified against `title`; else search by `title`), flip `- [ ]` → `- [x]` if not already done. Add `ref` to `flippedRefs` regardless of outcome. `not-found`/`io-error` → log one line to `.sdlc-v2/learnings/log.md` and collect into `openspecSyncWarnings` (Step 9) — never abort the wave for this.
 

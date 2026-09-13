@@ -397,7 +397,48 @@ func checkPF3(tasks []planTask) pfCheck {
 	return pfCheck{"PF3", "pass", "All tasks have valid metadata"}
 }
 
-var pf4RefRe = regexp.MustCompile(`(?i)Task\s+(\d+)`)
+// taskRefKeywordRe locates the first "Task"/"Tasks" keyword in a **Depends
+// on:** field value, marking where reference extraction starts.
+var taskRefKeywordRe = regexp.MustCompile(`(?i)Tasks?\b`)
+
+// dependsOnTokenRe matches one token immediately following the cursor in the
+// remainder of a **Depends on:** field: an optional leading comma/whitespace
+// separator, then a number, the word "and", or a repeated Task(s) keyword.
+// Anything else - notably "(", ")", "-", "." used to introduce parenthetical
+// notes or trailing prose - does not match, which ends extraction.
+var dependsOnTokenRe = regexp.MustCompile(`(?i)^\s*(?:,\s*)?(\d+|and|tasks?)\b`)
+
+// parseDependsOnRefs extracts task-number references from a plan task's
+// **Depends on:** field value (e.g. "Tasks 6, 7, and 8" -> [6, 7, 8]). It is
+// the single shared parser for checkPF4 (plan validation) and
+// waveComputeParseDependsOn (wave scheduling), so both interpret the field
+// identically.
+//
+// Extraction starts at the first "Task"/"Tasks" keyword and consumes only
+// digits, whitespace, commas, "and", and repeated Task(s) keywords - the
+// first character outside that set ends the scan. So
+// "Task 2 (needs Foo from line 42)" yields only [2]: the "(" stops
+// extraction before the "42" inside the parenthetical is ever considered.
+// A field with no "Task"/"Tasks" keyword at all (e.g. "none") returns nil.
+func parseDependsOnRefs(field string) []int {
+	loc := taskRefKeywordRe.FindStringIndex(field)
+	if loc == nil {
+		return nil
+	}
+	var refs []int
+	rest := field[loc[1]:]
+	for {
+		m := dependsOnTokenRe.FindStringSubmatch(rest)
+		if m == nil {
+			break
+		}
+		if n, err := strconv.Atoi(m[1]); err == nil {
+			refs = append(refs, n)
+		}
+		rest = rest[len(m[0]):]
+	}
+	return refs
+}
 
 func checkPF4(tasks []planTask) pfCheck {
 	taskNumbers := map[int]bool{}
@@ -414,10 +455,8 @@ func checkPF4(tasks []planTask) pfCheck {
 			depGraph[t.Number] = nil
 			continue
 		}
-		var refs []int
-		for _, m := range pf4RefRe.FindAllStringSubmatch(dependsOn, -1) {
-			refNum, _ := strconv.Atoi(m[1])
-			refs = append(refs, refNum)
+		refs := parseDependsOnRefs(dependsOn)
+		for _, refNum := range refs {
 			if !taskNumbers[refNum] {
 				issues = append(issues, fmt.Sprintf("Task %d: depends on nonexistent Task %d", t.Number, refNum))
 			}
