@@ -173,6 +173,12 @@ For each dimension entry with `status: "ACTIVE"` or `status: "TRUNCATED"`:
    complete diff for those files. No extra prompt wording is needed either way — the
    prepared file already reflects the right scope.
 
+   `truncated` scoping: `dimension.truncated` is `true` if EITHER the matched-file count
+   was capped (100 files max) OR the concatenated diff exceeded the 8000-byte
+   (`difftrunc.DefaultDiffMaxBytes`) content cap and had whole files dropped (largest-first).
+   When `true`, treat `diff_file` as partial — findings outside it may exist. A
+   `# --- Truncated ---` footer in `diff_file` lists the dropped files.
+
 5. Dispatch one Agent per ACTIVE/TRUNCATED dimension, **all in a single message**, with
    **`run_in_background: true`** — the inversion of the previous mandatory `false`. Use
    `model: dimension.model || manifest.subagent_model` per dimension (per-dimension override

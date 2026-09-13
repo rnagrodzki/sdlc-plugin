@@ -1609,6 +1609,9 @@ func TestExecState_TaskContext_HappyPath(t *testing.T) {
 	if len(sib.Files) != 2 || sib.Files[0] != "internal/widget/registry.go" {
 		t.Errorf("Siblings[0].Files = %v, want [internal/widget/registry.go internal/widget/index.go]", sib.Files)
 	}
+	if out.SiblingsUnknown {
+		t.Error("SiblingsUnknown = true, want false when wave-start recorded a planned task list")
+	}
 
 	// ExecutionRules
 	if out.ExecutionRules == nil {
@@ -1961,6 +1964,64 @@ func TestExecState_TaskContext_SiblingsExcludeSelf(t *testing.T) {
 	}
 	if len(out.ExecutionRules.FileScope) != 1 || out.ExecutionRules.FileScope[0] != "a.go" {
 		t.Errorf("FileScope = %v, want [a.go]", out.ExecutionRules.FileScope)
+	}
+	if out.SiblingsUnknown {
+		t.Error("SiblingsUnknown = true, want false when wave-start recorded a planned task list")
+	}
+}
+
+// TestExecState_TaskContext_SiblingsUnknownWhenNoPlannedList covers
+// execute-drift-2026-09-13T12:31:27Z-2: a wave-start call that received no
+// tasksJson (or one where every entry was dropped) never records a
+// "planned" list on the wave. task-context must flag SiblingsUnknown so
+// callers don't mistake an empty Siblings slice for "no other tasks in this
+// wave" when it actually means "sibling data was never captured".
+func TestExecState_TaskContext_SiblingsUnknownWhenNoPlannedList(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	createExecState(t, root, "feat/test", map[string]any{
+		"startedAt": testNow.UTC().Format(time.RFC3339),
+		"quality":   "balanced",
+		"waves":     []any{},
+	})
+
+	// wave-start with no tasksJson: creates the wave entry but never sets
+	// "planned" (see execute_state.go's `if in.TasksJSON != "" { ... }` guard).
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action: "wave-start",
+		Branch: "feat/test",
+		Wave:   intPtr(1),
+		RunID:  "run-unk",
+	}, clock); err != nil {
+		t.Fatalf("wave-start: %v", err)
+	}
+
+	// Fact sheet written directly, bypassing wave-start's tasksJson path, so
+	// task-context has something to read back.
+	if _, err := wave.WriteFactsheet(root, "run-unk", wave.Factsheet{
+		ID:   "1",
+		Name: "Task One",
+	}); err != nil {
+		t.Fatalf("WriteFactsheet: %v", err)
+	}
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "task-context",
+		Branch: "feat/test",
+		RunID:  "run-unk",
+		TaskID: "1",
+		Wave:   intPtr(1),
+	}, clock)
+	if err != nil {
+		t.Fatalf("task-context: %v", err)
+	}
+	out := result.(TaskContextOut)
+	if !out.SiblingsUnknown {
+		t.Error("SiblingsUnknown = false, want true when the wave has no planned task list")
+	}
+	if len(out.Siblings) != 0 {
+		t.Errorf("Siblings = %v, want empty", out.Siblings)
 	}
 }
 

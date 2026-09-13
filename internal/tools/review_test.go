@@ -439,6 +439,96 @@ and adherence to best practices. Check for potential bugs and edge cases.
 	}
 }
 
+// TestReviewPrepareDiffByteCapTruncation covers
+// review-drift-2026-09-13T-diff-truncation: a dimension can pass the
+// matched-file-count cap yet still have its concatenated diff exceed
+// difftrunc.DefaultDiffMaxBytes, silently dropping whole files from the
+// worker's .diff file. The manifest must flag this via `truncated`/`status`
+// rather than staying silent.
+func TestReviewPrepareDiffByteCapTruncation(t *testing.T) {
+	root := t.TempDir()
+
+	mustRun(t, root, "git", "init")
+	mustRun(t, root, "git", "config", "user.email", "test@test.com")
+	mustRun(t, root, "git", "config", "user.name", "Test")
+
+	writeFile(t, filepath.Join(root, "README.md"), "# test\n")
+	mustRun(t, root, "git", "add", ".")
+	mustRun(t, root, "git", "commit", "-m", "init")
+	mustRun(t, root, "git", "branch", "-M", "main")
+
+	mustRun(t, root, "git", "checkout", "-b", "feature")
+
+	// Three changed files, each comfortably under the 100-file matched-count
+	// cap, but whose combined diff exceeds difftrunc.DefaultDiffMaxBytes
+	// (8000 bytes) — only the content-size cap should trigger here.
+	bigBody := strings.Repeat("x", 4000)
+	for _, name := range []string{"a.go", "b.go", "c.go"} {
+		writeFile(t, filepath.Join(root, "src", name), fmt.Sprintf("package main\n// %s\n", bigBody))
+	}
+	mustRun(t, root, "git", "add", ".")
+	mustRun(t, root, "git", "commit", "-m", "add large go files")
+
+	dimDir := filepath.Join(root, paths.DataDir, "review-dimensions")
+	writeFile(t, filepath.Join(dimDir, "code-quality.md"), `---
+name: code-quality
+description: General code quality review
+triggers:
+  - "**/*.go"
+severity: medium
+---
+Review the code for quality issues.
+`)
+
+	sdlcDir := filepath.Join(root, paths.DataDir)
+	writeFile(t, filepath.Join(sdlcDir, "config.toml"), "")
+
+	out, err := reviewPrepare(root, root, ReviewPrepareIn{
+		SkipConfigCheck: true,
+		Target:          "main",
+	})
+	if err != nil {
+		t.Fatalf("reviewPrepare failed: %v", err)
+	}
+
+	manifestBytes, err := os.ReadFile(out.ManifestPath)
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	var manifest reviewManifest
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		t.Fatalf("unmarshal manifest: %v", err)
+	}
+	if len(manifest.Dimensions) != 1 {
+		t.Fatalf("expected 1 dimension in manifest, got %d", len(manifest.Dimensions))
+	}
+
+	dim := manifest.Dimensions[0]
+	if dim.MatchedCount != 3 {
+		t.Errorf("dimension matched_count: got %d, want 3", dim.MatchedCount)
+	}
+	if !dim.Truncated {
+		t.Error("dimension truncated: got false, want true (concatenated diff exceeds DefaultDiffMaxBytes)")
+	}
+	if dim.Status != "TRUNCATED" {
+		t.Errorf("dimension status: got %q, want TRUNCATED", dim.Status)
+	}
+	if dim.DiffFile == nil {
+		t.Fatal("dimension diff_file should not be nil")
+	}
+
+	diffContent, err := os.ReadFile(*dim.DiffFile)
+	if err != nil {
+		t.Fatalf("read diff file: %v", err)
+	}
+	if !strings.Contains(string(diffContent), "# --- Truncated ---") {
+		t.Error("diff file should contain the difftrunc truncation footer")
+	}
+	if len(diffContent) >= 3*4000 {
+		t.Errorf("diff file len = %d, want it capped well under the untruncated size", len(diffContent))
+	}
+}
+
 func TestReviewPrepareNoChangedFiles(t *testing.T) {
 	root := t.TempDir()
 

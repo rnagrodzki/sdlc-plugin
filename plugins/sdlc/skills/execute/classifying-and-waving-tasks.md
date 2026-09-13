@@ -166,6 +166,7 @@ template, no heartbeat instructions. All of that lives server-side and comes bac
 | `wave` | The wave number this task belongs to (int). |
 | `quality` | The execution quality tier selected at init (e.g. "balanced"). |
 | `siblings` | Other tasks in the same wave — each entry carries `id`, `name`, and `files`, giving workers awareness of parallel work without per-task file reads. Populated from wave-start's validated task list; excludes the worker's own task. |
+| `siblingsUnknown` | `true` when this wave has no planned-task list to derive `siblings` from — i.e. `wave-start` was called for this wave without `tasksJson`. Distinguishes "sibling data was never captured" from "this task genuinely has no siblings" (which reads as an empty `siblings` array with `siblingsUnknown` absent/false). Always call `wave-start` with `tasksJson` to avoid this. |
 | `executionRules` | Machine-readable equivalent of the prose `verify` and `reportBack` fields: `fileScope` (files this task may touch), `verifyMethod`, `heartbeatPhases`, and `reportFormat`. Workers can consume either the prose or the structured form. |
 
 The response is capped at 1 MiB; if `truncated: true` comes back, the worker proceeds with what

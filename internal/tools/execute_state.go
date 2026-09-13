@@ -279,17 +279,23 @@ type ExecWaveCommitOut struct {
 // verify guidance, and report-back instructions. Task 12 wires this into a
 // two-line worker dispatch form in place of today's fully-inlined prompts.
 type TaskContextOut struct {
-	TaskID         string          `json:"taskId"`
-	RunID          string          `json:"runId"`
-	Wave           int             `json:"wave"`
-	Quality        string          `json:"quality,omitempty"`
-	Siblings       []TaskSibling   `json:"siblings,omitempty"`
-	FactSheet      string          `json:"factSheet"`
-	PriorWaves     string          `json:"priorWaves"`
-	Verify         string          `json:"verify"`
-	ReportBack     string          `json:"reportBack"`
-	ExecutionRules *ExecutionRules `json:"executionRules,omitempty"`
-	Truncated      bool            `json:"truncated,omitempty"`
+	TaskID   string        `json:"taskId"`
+	RunID    string        `json:"runId"`
+	Wave     int           `json:"wave"`
+	Quality  string        `json:"quality,omitempty"`
+	Siblings []TaskSibling `json:"siblings,omitempty"`
+	// SiblingsUnknown is true when this wave has no "planned" task list to
+	// derive Siblings from (wave-start was never called with tasksJson for
+	// this wave), so an empty Siblings here means "sibling data was never
+	// captured", not "this task has no siblings". Lets callers distinguish
+	// the two cases instead of silently treating both as "alone in wave".
+	SiblingsUnknown bool            `json:"siblingsUnknown,omitempty"`
+	FactSheet       string          `json:"factSheet"`
+	PriorWaves      string          `json:"priorWaves"`
+	Verify          string          `json:"verify"`
+	ReportBack      string          `json:"reportBack"`
+	ExecutionRules  *ExecutionRules `json:"executionRules,omitempty"`
+	Truncated       bool            `json:"truncated,omitempty"`
 }
 
 // TaskSibling describes another task in the same wave, giving the worker
@@ -3019,8 +3025,10 @@ func execActionTaskContext(root, workDir string, in ExecuteStateIn) (any, error)
 	// Build siblings and own file scope from the wave's planned list.
 	var siblings []TaskSibling
 	var ownFiles []string
+	siblingsUnknown := true
 	if w := execFindWave(st.Data, waveNum); w != nil {
 		if planned, ok := w["planned"].([]any); ok {
+			siblingsUnknown = false
 			for _, entry := range planned {
 				em, ok := entry.(map[string]any)
 				if !ok {
@@ -3047,15 +3055,16 @@ func execActionTaskContext(root, workDir string, in ExecuteStateIn) (any, error)
 	quality, _ := st.Data["quality"].(string)
 
 	result := TaskContextOut{
-		TaskID:     taskID,
-		RunID:      runID,
-		Wave:       waveNum,
-		Quality:    quality,
-		Siblings:   siblings,
-		FactSheet:  content,
-		PriorWaves: execRenderPriorWaveSummary(summary),
-		Verify:     execTaskContextVerify(taskID),
-		ReportBack: execTaskContextReportBack(taskID, runID),
+		TaskID:          taskID,
+		RunID:           runID,
+		Wave:            waveNum,
+		Quality:         quality,
+		Siblings:        siblings,
+		SiblingsUnknown: siblingsUnknown,
+		FactSheet:       content,
+		PriorWaves:      execRenderPriorWaveSummary(summary),
+		Verify:          execTaskContextVerify(taskID),
+		ReportBack:      execTaskContextReportBack(taskID, runID),
 		ExecutionRules: &ExecutionRules{
 			FileScope:       ownFiles,
 			VerifyMethod:    execVerifyMethod,
