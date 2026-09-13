@@ -175,10 +175,12 @@ it has rather than treating the call as an error.
 concatenated in order, each following the same two-line form with its own `{taskId}`. The Agent
 works through them sequentially, calling `task-context` fresh for each before starting it.
 
-**Model, mode, and background dispatch mechanics are unchanged** — see `execute/SKILL.md`'s
-`## Wave loop` section: `model:` is required per task (haiku/sonnet/opus by complexity tier),
-`mode: "bypassPermissions"`, `run_in_background: true`, every task/batch of a wave fanned out in
-one message.
+**Naming, model, mode, and background dispatch mechanics** — see `execute/SKILL.md`'s
+`## Wave loop` section: every dispatch is named `worker-{runId}-{taskId}` (batch dispatch: the
+cluster's *first* task's ID — one Agent call, one name), giving the stall-nudge protocol (stage 5)
+a stable `SendMessage` target; `model:` is required per task (haiku/sonnet/opus by complexity
+tier), `mode: "bypassPermissions"`, `run_in_background: true`, every task/batch of a wave fanned
+out in one message.
 
 ## Common Dependency Patterns
 

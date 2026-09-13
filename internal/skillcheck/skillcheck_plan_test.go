@@ -50,6 +50,7 @@ var planSkillsBuiltinTools = map[string]bool{
 	"Read": true, "Write": true, "Edit": true, "Bash": true,
 	"Grep": true, "Glob": true, "AskUserQuestion": true,
 	"Skill": true, "Agent": true, "WebFetch": true, "WebSearch": true,
+	"SendMessage": true,
 }
 
 // planSkillsRepoRoot resolves the repository root from this test file's own
