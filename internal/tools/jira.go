@@ -69,6 +69,7 @@ package tools
 //     sets, not ordered lists.
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"net/url"
@@ -316,12 +317,20 @@ func jiraResolveEffectiveCachePath(key, cacheDir, site string) (jiraCacheResolut
 // Project config / membership (mirrors loadJiraConfig / validateProjectMembership)
 // ---------------------------------------------------------------------------
 
-func jiraLoadJiraConfig(mainRoot string) map[string]any {
+// jiraLoadJiraConfig reads the "jira" config section. A section that simply
+// does not exist yet (fresh project, no jira config written) is not an
+// error — callers get an empty map. Any other error (legacy config layout
+// detected, malformed TOML, …) is propagated so callers can surface it
+// instead of silently treating a stale project as unconfigured.
+func jiraLoadJiraConfig(mainRoot string) (map[string]any, error) {
 	section, err := config.ReadSection(mainRoot, "jira")
 	if err != nil {
-		return map[string]any{}
+		if errors.Is(err, config.ErrNotFound) {
+			return map[string]any{}, nil
+		}
+		return nil, err
 	}
-	return section
+	return section, nil
 }
 
 func jiraValidateProjectMembership(key string, jiraConfig map[string]any) string {
@@ -571,7 +580,30 @@ func parseURLHost(siteURL string) (string, error) {
 
 func jiraCheck(mainRoot string, in JiraIn) (any, error) {
 	key := strings.ToUpper(strings.TrimSpace(in.Key))
-	jiraConfig := jiraLoadJiraConfig(mainRoot)
+	jiraConfig, err := jiraLoadJiraConfig(mainRoot)
+	if err != nil {
+		// SkipConfigCheck asks us to bypass config-version gating entirely
+		// (see JiraIn.SkipConfigCheck doc); honor that here too, not just at
+		// jiraCore's own gate, and fall back to an empty section as before.
+		if in.SkipConfigCheck {
+			jiraConfig = map[string]any{}
+		} else {
+			return map[string]any{
+				"exists":         false,
+				"fresh":          false,
+				"projectKey":     key,
+				"cachePath":      nil,
+				"candidateSites": []string{},
+				"missing":        []string{"all"},
+				"flags": map[string]any{
+					"skipWorkflowDiscovery": false,
+					"site":                  jiraNullableString(in.Site),
+				},
+				"errors":   []string{err.Error()},
+				"warnings": []string{},
+			}, nil
+		}
+	}
 	if msg := jiraValidateProjectMembership(key, jiraConfig); msg != "" {
 		return nil, &mcpserver.DomainError{Msg: msg}
 	}

@@ -519,7 +519,7 @@ func loadGuardrails(mainRoot string) ([]map[string]any, string) {
 // PlanStyle configures personal plan narrative preferences: verbosity,
 // audience, and custom narrative rules. Loaded from the "planStyle" config
 // section, which is not a config.ProjectSections member and therefore
-// routes to .sdlc-v2/local.json (per-developer, gitignored).
+// routes to .sdlc-v2/local.toml (per-developer, gitignored).
 type PlanStyle struct {
 	Verbosity      string   `json:"verbosity"`
 	Audience       string   `json:"audience"`
@@ -529,7 +529,7 @@ type PlanStyle struct {
 // PlanTasks is the team contract for plan task deliverables: which fields
 // are required on every task, and the overall contract shape. Loaded from
 // the "plan" config section's "tasks" sub-key; "plan" is a
-// config.ProjectSections member, so it routes to .sdlc-v2/config.json
+// config.ProjectSections member, so it routes to .sdlc-v2/config.toml
 // (team-shared, committed).
 type PlanTasks struct {
 	RequiredFields []string `json:"requiredFields"`

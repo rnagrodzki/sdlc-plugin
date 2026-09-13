@@ -68,7 +68,7 @@ After invoking `/jira`, describe what you want in natural language.
   workflows, and transitions; the cache does not expire on its own. Use
   `--force-refresh` if the project's Jira configuration changed.
 - **Multi-project repos.** Add a `projects` array under the `jira` section of
-  `.sdlc-v2/config.json` to restrict which project keys are accepted, then
+  `.sdlc-v2/config.toml` to restrict which project keys are accepted, then
   use `--project <KEY>` to pick the active one per invocation.
 - **Templates.** Run `--init-templates` to copy default issue-type templates
   you can then customize per project.

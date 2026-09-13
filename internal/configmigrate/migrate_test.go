@@ -97,6 +97,19 @@ func TestDetectLocalVersion(t *testing.T) {
 			t.Errorf("detectLocalVersion() = (%d, %v), want (0, false)", ver, exists)
 		}
 	})
+
+	t.Run("sdlc dir exists, no local file -> missing (optional)", func(t *testing.T) {
+		// Unlike detectProjectVersion's "empty sdlc dir -> v0 stale" case,
+		// local.toml/local.json is documented as optional: a project with a
+		// current config.toml but no local override ever created must not be
+		// reported as stale merely because .sdlc-v2 exists.
+		root := t.TempDir()
+		mkSdlcDir(t, root)
+		ver, exists := detectLocalVersion(root)
+		if exists || ver != 0 {
+			t.Errorf("detectLocalVersion() = (%d, %v), want (0, false)", ver, exists)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -241,6 +254,22 @@ func TestMigrateWithBackup_StaleProjectConfig_NoAutoMigration(t *testing.T) {
 		if strings.HasSuffix(e.Name(), ".bak") {
 			t.Errorf("found unexpected backup file %s; MigrateWithBackup must not write one", e.Name())
 		}
+	}
+}
+
+func TestMigrateWithBackup_CurrentConfig_NoLocalFile_NoOp(t *testing.T) {
+	// A project may have a current config.toml and no local.toml at all —
+	// local config is optional and must not read as stale just because
+	// .sdlc-v2 exists.
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+
+	changes, backupPath, err := MigrateWithBackup(root)
+	if err != nil {
+		t.Fatalf("MigrateWithBackup() error = %v, want nil", err)
+	}
+	if changes != nil || backupPath != "" {
+		t.Errorf("MigrateWithBackup() = (%v, %q, nil), want (nil, \"\", nil)", changes, backupPath)
 	}
 }
 

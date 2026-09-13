@@ -114,29 +114,30 @@ called by name directly.
 
 ### Migrating a Node-era (pre-v5) project
 
-Config is read from `.sdlc-v2/config.json` (project) and `.sdlc-v2/local.json`
+Config is read from `.sdlc-v2/config.toml` (project) and `.sdlc-v2/local.toml`
 (user-local, gitignored). If any legacy pre-v5 marker file is found —
 `.claude/sdlc.json`, `.claude/version.json`, `.sdlc/jira-config.json`,
-`.sdlc/ship-config.json`, `.sdlc/review.json`, `.claude/review.json` — any
-tool that needs config fails with an error naming the `migrate` tool
+`.sdlc/ship-config.json`, `.sdlc/review.json`, `.claude/review.json`,
+`.sdlc-v2/config.json` (a v0/JSON-era config left in the current data dir) —
+any tool that needs config fails with an error naming the `migrate` tool
 (`internal/config/config.go`, `detectLegacy`).
 
 Ask Claude to run the `migrate` tool to move a project from the legacy
 (Node-plugin era) layout to the current one. It takes one of two actions,
 each independently, with an optional `dryRun`:
 
-- `config` — schema-migrates the legacy config file(s) into `.sdlc-v2/config.json`.
+- `config` — schema-migrates the legacy config file(s) into `.sdlc-v2/config.toml`.
 - `import` — non-destructively copies config, templates, jira-templates,
   learnings, and review-dimensions from the old plugin's data directory into
   the current one, skipping anything that already exists.
 
 For a project that has never had any sdlc config (not a migration, a fresh
-install), use `setup_init` instead — it scaffolds `.sdlc-v2/config.json` and
-`.sdlc-v2/local.json` from scratch.
+install), use `setup_init` instead — it scaffolds `.sdlc-v2/config.toml` and
+`.sdlc-v2/local.toml` from scratch.
 
 ### Automation config
 
-`.sdlc-v2/local.json`'s `automation` section controls how much confirmation
+`.sdlc-v2/local.toml`'s `automation` section controls how much confirmation
 pipeline steps require (`internal/config/config.go`):
 
 - `mode` — `supervised` (default) or `unattended`.

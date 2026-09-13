@@ -157,16 +157,22 @@ func detectProjectVersion(mainRoot string) (int, bool) {
 	return 0, false
 }
 
-// detectLocalVersion determines the schema version of the local config,
-// mirroring detectProjectVersion's file-existence rules for local.toml.
+// detectLocalVersion determines the schema version of the local config.
+// Unlike detectProjectVersion, mere existence of the .sdlc-v2 directory does
+// NOT imply staleness here: local.toml/local.json is documented as optional,
+// so a project with a current config.toml but no local override ever created
+// must not be reported as stale. Returns (1, true) if local.toml exists.
+// Returns (0, true) if a legacy local.json exists (JSON-era v0, genuinely
+// stale). Returns (0, false) if neither file exists, regardless of whether
+// .sdlc-v2 itself exists -- no local override was ever created.
 func detectLocalVersion(mainRoot string) (int, bool) {
 	tomlPath := filepath.Join(mainRoot, paths.DataDir, "local.toml")
 	if _, err := os.Stat(tomlPath); err == nil {
 		return CurrentSchemaVersion, true
 	}
 
-	sdlcDir := filepath.Join(mainRoot, paths.DataDir)
-	if _, err := os.Stat(sdlcDir); err == nil {
+	jsonPath := filepath.Join(mainRoot, paths.DataDir, "local.json")
+	if _, err := os.Stat(jsonPath); err == nil {
 		return 0, true
 	}
 

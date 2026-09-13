@@ -52,13 +52,15 @@ field that does not exist. Deviations, one line each:
   vs. the values assembled during Step 3 (see "Diff preview" below).
 - **R-SCRIPT-VERSIONS warning dropped.** No Go tool surfaces installed-vs-current CI script
   versions; there is nothing to compare. Step 0 has no equivalent warning.
-- **`setup_init` vs `setup_write_sections`:** `setup_init` (existing Go tool) only ever seeds
-  *empty* `{}` objects for the ids it is given — it cannot accept assembled field values the
-  way source's `util/setup-init.js --project-config ... --local-config ...` did. This port
-  calls `setup_init({ sections: [] })` once, near Step 0, purely to scaffold `.sdlc-v2/`, both
-  managed `.gitignore` blocks, and empty `config.toml`/`local.toml` — never with real ids
-  (passing real ids would seed spurious empty top-level keys that then need to be
-  overwritten). All real field values collected in Step 3 are written via the additive
+- **`setup_init` vs `setup_write_sections`:** `setup_init` (existing Go tool) takes no input
+  and always writes the *complete* `config.toml`/`local.toml` templates — every field, heavily
+  commented — directly to disk in one shot; it cannot accept assembled field values the way
+  source's `util/setup-init.js --project-config ... --local-config ...` did, and it no longer
+  seeds a caller-selected subset of sections or ids. It is idempotent: an existing
+  `config.toml`/`local.toml` is left untouched, so a re-run of `/setup` never clobbers a
+  user's edits. This port calls `setup_init({})` once, near Step 0, purely to scaffold
+  `.sdlc-v2/`, both managed `.gitignore` blocks, and the two TOML files if they don't already
+  exist. All real field values collected in Step 3 are written via the additive
   `setup_write_sections` tool instead (see "Writing config files").
 - **`setup_write_sections` keys are config-file top-level keys, not section ids.** The JSON
   key passed to `setup_write_sections` is the segment of `section.configPath` before its
@@ -136,11 +138,11 @@ If the system context contains "Plan mode is active":
    `openspec-block`, `automation`. Each row carries `{ id, label, purpose, configFile, configPath,
    consumedBy, filesModified, optional, delegatedTo, confirmDetected, fields[] }`.
 
-2. Call `setup_init({ sections: [] })` once, unconditionally, to scaffold `.sdlc-v2/` (see Port
-   Notes — this never carries real ids):
+2. Call `setup_init({})` once, unconditionally, to scaffold `.sdlc-v2/` (see Port Notes — it
+   takes no input and always writes the complete TOML templates):
 
    ```
-   setup_init({ sections: [] }) → { ok, created[], changed[] }
+   setup_init({}) → { ok, created[], changed[] }
    ```
 
    This ensures `.sdlc-v2/.gitignore`, the root `.gitignore` managed block, and empty

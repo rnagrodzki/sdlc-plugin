@@ -21,12 +21,12 @@ func List() []Surface {
 		{
 			ID:          "plan-guardrails",
 			Label:       "Plan guardrails",
-			Description: "Guardrail rules from the plan section of .sdlc-v2/config.json",
+			Description: "Guardrail rules from the plan section of .sdlc-v2/config.toml",
 		},
 		{
 			ID:          "execute-guardrails",
 			Label:       "Execute guardrails",
-			Description: "Guardrail rules from the execute section of .sdlc-v2/config.json",
+			Description: "Guardrail rules from the execute section of .sdlc-v2/config.toml",
 		},
 		{
 			ID:          "review-dimensions",

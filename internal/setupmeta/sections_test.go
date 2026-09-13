@@ -80,8 +80,8 @@ func TestAutomationSection(t *testing.T) {
 		t.Fatal(`Sections() has no "automation" section`)
 	}
 
-	if automation.ConfigFile != ".sdlc-v2/local.json" {
-		t.Errorf("automation.ConfigFile = %q, want %q", automation.ConfigFile, ".sdlc-v2/local.json")
+	if automation.ConfigFile != ".sdlc-v2/local.toml" {
+		t.Errorf("automation.ConfigFile = %q, want %q", automation.ConfigFile, ".sdlc-v2/local.toml")
 	}
 	if automation.ConfigPath != "automation" {
 		t.Errorf("automation.ConfigPath = %q, want %q", automation.ConfigPath, "automation")

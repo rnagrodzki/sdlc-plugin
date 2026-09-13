@@ -1325,6 +1325,12 @@ func validateGuardrailsAction(root string, in ValidateIn) ([]discovery.Finding, 
 		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("read %s guardrails section: %s", section, err.Error()), Cause: err}
 	}
 
+	// config.ReadSection always returns guardrails as []any: readProjectRaw
+	// runs normalizeGuardrailTables on every project-section read, converting
+	// the TOML named-table form ([plan.guardrails.<id>]) into this same
+	// array-of-objects shape (with "id" injected from the table key) before
+	// ReadSection ever extracts the section. There is no call path that
+	// hands this function the raw map[string]any table shape.
 	raw, ok := data["guardrails"].([]any)
 	if !ok {
 		return nil, nil

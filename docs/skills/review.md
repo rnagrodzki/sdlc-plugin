@@ -25,7 +25,7 @@ findings are reported with severity levels.
 | `--dry-run` | Show the review plan (dimensions, file counts) without running it. | off |
 
 **Note:** The review scope is controlled by project configuration in
-`.sdlc-v2/config.json`, not by command-line flags. Accepted values: `all`,
+`.sdlc-v2/config.toml`, not by command-line flags. Accepted values: `all`,
 `committed`, `staged`, `working`, and `worktree` — where `working` covers only
 unstaged edits (local scope) and `worktree` covers all tracked changes on the
 branch (branch scope). Change it with `/setup`.
@@ -66,7 +66,7 @@ Compares the current branch against `develop` instead of the default.
   `.sdlc-v2/review-dimensions/`. Run `/setup --dimensions` to add or change
   them.
 - **Scope is config-driven.** You cannot pass `--staged` or `--committed` on
-  the command line. The scope is set in `.sdlc-v2/config.json`. Use `/setup` to
+  the command line. The scope is set in `.sdlc-v2/config.toml`. Use `/setup` to
   change it.
 - **Dry run is useful for tuning.** If reviews miss files or take too long, use
   `--dry-run` to see the plan and adjust dimensions accordingly.

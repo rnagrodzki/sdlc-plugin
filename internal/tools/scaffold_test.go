@@ -345,7 +345,7 @@ func TestScaffoldNextGuidance_ProtectionDetected(t *testing.T) {
 
 	required := []string{
 		`version.method to "pr"`,
-		".sdlc-v2/config.json",
+		".sdlc-v2/config.toml",
 		"bypass actor",
 		"Bypass list",
 		"GitHub App token",

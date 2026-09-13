@@ -14,7 +14,7 @@ import (
 
 func TestExecState_IssueDraft_EmptyTitle(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
 	createExecState(t, root, "feat/drafts", map[string]any{
 		"branch": "feat/drafts",
 	})
@@ -36,7 +36,7 @@ func TestExecState_IssueDraft_EmptyTitle(t *testing.T) {
 
 func TestExecState_IssueDraft_EmptyBody(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
 	createExecState(t, root, "feat/drafts", map[string]any{
 		"branch": "feat/drafts",
 	})
@@ -58,7 +58,7 @@ func TestExecState_IssueDraft_EmptyBody(t *testing.T) {
 
 func TestExecState_IssueDraft_SingleCall(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
 	createExecState(t, root, "feat/drafts", map[string]any{
 		"branch": "feat/drafts",
 	})
@@ -113,7 +113,7 @@ func TestExecState_IssueDraft_SingleCall(t *testing.T) {
 
 func TestExecState_IssueDraft_AccumulatesAcrossCalls(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
 	createExecState(t, root, "feat/drafts", map[string]any{
 		"branch": "feat/drafts",
 	})
@@ -153,7 +153,7 @@ func TestExecState_IssueDraft_AccumulatesAcrossCalls(t *testing.T) {
 
 func TestExecState_IssueDraft_UnknownBranch(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
 	clock := fixedClock(testNow)
 
 	_, err := executeState(root, root, ExecuteStateIn{

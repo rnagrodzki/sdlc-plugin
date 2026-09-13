@@ -77,6 +77,11 @@ var legacyMarkers = []string{
 	filepath.Join(paths.LegacyDataDir, "ship-config.json"),
 	filepath.Join(paths.LegacyDataDir, "review.json"),
 	filepath.Join(".claude", "review.json"),
+	// .sdlc-v2/config.json itself: a v0 (JSON-era) project's config file,
+	// left behind in the CURRENT data dir by the pre-TOML layout. Without
+	// this marker, a project stuck on config.json (config.toml absent) is
+	// indistinguishable from a fresh project with no config at all.
+	filepath.Join(paths.DataDir, "config.json"),
 }
 
 // detectLegacy checks for pre-v5 config files. Returns an error naming

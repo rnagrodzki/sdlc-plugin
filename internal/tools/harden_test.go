@@ -43,6 +43,11 @@ func TestHardenPrepare_KD5Gate(t *testing.T) {
 }
 
 func TestHardenPrepare_SkipConfigCheckBypassesGate(t *testing.T) {
+	// SkipConfigCheck only disables hardenPrepare's own explicit KD5 gate
+	// (configmigrate.Verify). It does not make a legacy .sdlc-v2/config.json
+	// invisible: internal/config's legacyMarkers includes that path, so
+	// guardrailsPreflight's config.ReadSection call still catches it and
+	// fails pre-flight with a non-DataError, non-"config-version:" message.
 	root := t.TempDir()
 	sdlcDir := filepath.Join(root, paths.DataDir)
 	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
@@ -137,11 +142,9 @@ func TestHardenPrepare_MissingRequiredFields(t *testing.T) {
 
 func TestHardenPrepare_PreflightGuardrailFailureAbortsNoManifest(t *testing.T) {
 	root := t.TempDir()
-	writeConfigSection(t, root, "plan", map[string]any{
-		"guardrails": []map[string]any{
-			{"id": "Bad_ID", "description": "desc"},
-		},
-	})
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), ""+
+		"[plan.guardrails.Bad_ID]\n"+
+		"description = \"desc\"\n")
 
 	out, err := hardenPrepare(root, root, HardenPrepareIn{
 		FailureText:     "boom",
@@ -289,16 +292,13 @@ func TestHardenPrepare_ExitCodeEmptyIsNull(t *testing.T) {
 
 func TestHardenPrepare_LoadsGuardrailSurfaces(t *testing.T) {
 	root := t.TempDir()
-	// writeConfigSection replaces the whole config.json per call, so both
-	// sections must be written together in one file, not via two calls.
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{
-		"plan": {"guardrails": [
-			{"id": "no-console-log", "severity": "warning", "description": "Avoid console.log in production code."}
-		]},
-		"execute": {"guardrails": [
-			{"id": "no-severity-guardrail", "description": "Missing severity should default to error."}
-		]}
-	}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), ""+
+		"[plan.guardrails.no-console-log]\n"+
+		"severity = \"warning\"\n"+
+		"description = \"Avoid console.log in production code.\"\n"+
+		"\n"+
+		"[execute.guardrails.no-severity-guardrail]\n"+
+		"description = \"Missing severity should default to error.\"\n")
 
 	out, err := hardenPrepare(root, root, HardenPrepareIn{
 		FailureText:     "boom",

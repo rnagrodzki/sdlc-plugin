@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -562,37 +561,48 @@ func TestValidateCostTiersDocMissing(t *testing.T) {
 // guardrails
 // ---------------------------------------------------------------------------
 
-func writeConfigSection(t *testing.T, root, section string, data any) {
-	t.Helper()
-	raw := map[string]any{section: data}
-	b, err := json.Marshal(raw)
-	if err != nil {
-		t.Fatalf("marshal config: %v", err)
-	}
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), string(b))
-}
-
+// TestValidateGuardrailsAllChecks exercises validateOneGuardrail's checks via
+// a real config.toml. Guardrails are keyed named tables
+// ([plan.guardrails.<id>]); config.ReadSection always injects "id" from the
+// table key (see normalizeGuardrailTables/guardrailsTableToSlice in
+// internal/config/config.go), which makes two of the original JSON fixture's
+// cases structurally unrepresentable here and they are intentionally
+// dropped:
+//   - a guardrail with no "id" at all: every table key becomes a non-empty
+//     id, so the id-is-missing branch of validateOneGuardrail can no longer
+//     be reached through a config file.
+//   - two guardrails sharing one "id" (duplicate detection): TOML tables
+//     cannot repeat the same key ([plan.guardrails.dup-id] twice is a parse
+//     error), so the duplicate-id branch can no longer be reached through a
+//     config file either.
+//
+// Both branches are still reachable in principle if validateOneGuardrail is
+// ever called directly or fed a hand-rolled []any (e.g. a non-canonical
+// [[plan.guardrails]] array-of-tables with an explicit "id" field, which
+// normalizeGuardrailTables does not touch), but no test exercises that path
+// post-migration. Flagged as a coverage reduction, not fixed here.
 func TestValidateGuardrailsAllChecks(t *testing.T) {
 	root := t.TempDir()
-	writeConfigSection(t, root, "plan", map[string]any{
-		"guardrails": []map[string]any{
-			{"id": "good-guardrail", "description": "A valid guardrail description."},
-			{"id": "Bad_ID", "description": "desc"},
-			{"id": "dup-id", "description": "d1"},
-			{"id": "dup-id", "description": "d2"},
-			{"id": "sev-bad", "description": "d3", "severity": "critical"},
-			{"description": "missing id"},
-			{"id": "no-desc"},
-		},
-	})
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), ""+
+		"[plan.guardrails.good-guardrail]\n"+
+		"description = \"A valid guardrail description.\"\n"+
+		"\n"+
+		"[plan.guardrails.Bad_ID]\n"+
+		"description = \"desc\"\n"+
+		"\n"+
+		"[plan.guardrails.sev-bad]\n"+
+		"description = \"d3\"\n"+
+		"severity = \"critical\"\n"+
+		"\n"+
+		"[plan.guardrails.no-desc]\n")
 
 	findingsOut, err := validate(root, ValidateIn{Action: "guardrails"})
 	if err != nil {
 		t.Fatalf("validate: %v", err)
 	}
 	findings := findingsOut.Findings
-	if len(findings) != 5 {
-		t.Fatalf("expected 5 guardrail findings, got %d: %+v", len(findings), findings)
+	if len(findings) != 3 {
+		t.Fatalf("expected 3 guardrail findings, got %d: %+v", len(findings), findings)
 	}
 	for _, f := range findings {
 		if f.Severity != "error" {
@@ -607,22 +617,19 @@ func TestValidateGuardrailsAllChecks(t *testing.T) {
 	if byID["Bad_ID"] != 1 {
 		t.Errorf("expected 1 finding for Bad_ID, got %d", byID["Bad_ID"])
 	}
-	if byID["dup-id"] != 1 {
-		t.Errorf("expected 1 finding for dup-id (the duplicate), got %d", byID["dup-id"])
-	}
 	if byID["sev-bad"] != 1 {
 		t.Errorf("expected 1 finding for sev-bad, got %d", byID["sev-bad"])
-	}
-	if byID["(missing)"] != 1 {
-		t.Errorf("expected 1 finding for (missing) id, got %d", byID["(missing)"])
 	}
 	if byID["no-desc"] != 1 {
 		t.Errorf("expected 1 finding for no-desc, got %d", byID["no-desc"])
 	}
+	if byID["good-guardrail"] != 0 {
+		t.Errorf("expected 0 findings for good-guardrail, got %d", byID["good-guardrail"])
+	}
 }
 
 func TestValidateGuardrailsNoSectionIsPass(t *testing.T) {
-	root := t.TempDir() // no .sdlc/config.json at all
+	root := t.TempDir() // no .sdlc-v2/config.toml at all
 	findingsOut, err := validate(root, ValidateIn{Action: "guardrails"})
 	if err != nil {
 		t.Fatalf("validate: %v", err)
@@ -635,7 +642,7 @@ func TestValidateGuardrailsNoSectionIsPass(t *testing.T) {
 
 func TestValidateGuardrailsEmptySectionIsPass(t *testing.T) {
 	root := t.TempDir()
-	writeConfigSection(t, root, "plan", map[string]any{})
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "[plan]\n")
 	findingsOut, err := validate(root, ValidateIn{Action: "guardrails"})
 	if err != nil {
 		t.Fatalf("validate: %v", err)
@@ -648,11 +655,9 @@ func TestValidateGuardrailsEmptySectionIsPass(t *testing.T) {
 
 func TestValidateGuardrailsCustomSection(t *testing.T) {
 	root := t.TempDir()
-	writeConfigSection(t, root, "execute", map[string]any{
-		"guardrails": []map[string]any{
-			{"id": "exec-guardrail", "description": ""},
-		},
-	})
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), ""+
+		"[execute.guardrails.exec-guardrail]\n"+
+		"description = \"\"\n")
 	findingsOut, err := validate(root, ValidateIn{Action: "guardrails", Section: "execute"})
 	if err != nil {
 		t.Fatalf("validate: %v", err)

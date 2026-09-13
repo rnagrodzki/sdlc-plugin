@@ -41,7 +41,7 @@ var ValidSeverities = []string{"critical", "high", "medium", "low", "info"}
 // GuardrailSeverities is the canonical severity vocabulary for plan/execute
 // guardrails (R17) — ported from the source's GUARDRAIL_SEVERITIES. It is
 // unrelated to review-dimension frontmatter (guardrails are stored as JSON
-// entries in .sdlc-v2/config.json, not as Markdown files with YAML
+// entries in .sdlc-v2/config.toml, not as Markdown files with YAML
 // frontmatter), so it is not exercised by Validate; it is exported for
 // downstream consumers that need the vocabulary constant.
 var GuardrailSeverities = []string{"error", "warning"}

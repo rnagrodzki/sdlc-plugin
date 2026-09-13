@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -456,82 +457,32 @@ func TestSetupInit_RootGitignoreLegacyUpgrade(t *testing.T) {
 // migrate tests
 // ---------------------------------------------------------------------------
 
-func TestMigrate_ConfigAction_V4ToV5(t *testing.T) {
+// TestMigrate_ConfigAction_StaleProjectRefused replaces
+// TestMigrate_ConfigAction_V4ToV5 and TestMigrate_ConfigAction_LegacyToV5,
+// deleted here. Both asserted an automated JSON-content v4/legacy->v5
+// schema transform (schemaVersion stripping, version.versionFile/version.tag
+// object-promotion) that this plan's Wave 2 (commit 16ee676) already
+// retired at the configmigrate layer alongside TestMigrate_ProjectV4ToV5 —
+// see tests/acceptance/matrix_audit_test.go's KD2 entry for the same cut.
+// configmigrate.Migrate has exactly two outcomes now: a no-op on a current
+// project, or ErrVersionStale naming /setup; it never rewrites content. This
+// replacement asserts that correct refusal behavior instead of the retired
+// transform.
+func TestMigrate_ConfigAction_StaleProjectRefused(t *testing.T) {
 	root := t.TempDir()
 
-	// v4 config.
+	// v0 (JSON-era) config.json with no config.toml — a stale project.
 	writeTestJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
 		"schemaVersion": float64(4),
 		"version":       map[string]any{"mode": "file", "versionFile": "package.json"},
-		"jira":          map[string]any{"defaultProject": "PROJ"},
 	})
 
-	out, err := migrate(root, MigrateIn{Action: "config", DryRun: false})
-	if err != nil {
-		t.Fatalf("migrate config: %v", err)
+	_, err := migrate(root, MigrateIn{Action: "config", DryRun: false})
+	if err == nil {
+		t.Fatal("expected migrate config to refuse a stale project, got nil error")
 	}
-
-	if !out.OK {
-		t.Error("expected OK=true")
-	}
-	if !strings.Contains(out.Result, "migrated") {
-		t.Errorf("expected 'migrated' in result, got %q", out.Result)
-	}
-	if len(out.Changed) == 0 {
-		t.Error("expected non-empty Changed list")
-	}
-
-	// Verify v5 result.
-	configData := readTestJSON(t, filepath.Join(root, paths.DataDir, "config.json"))
-	if _, has := configData["schemaVersion"]; has {
-		t.Error("config.json should not have schemaVersion after migration")
-	}
-	ver := configData["version"].(map[string]any)
-	vf, ok := ver["versionFile"].(map[string]any)
-	if !ok {
-		t.Fatalf("version.versionFile should be an object, got %#v", ver["versionFile"])
-	}
-	if vf["enabled"] != true {
-		t.Error("version.versionFile.enabled should be true")
-	}
-	if vf["path"] != "package.json" {
-		t.Error("version.versionFile.path should be 'package.json'")
-	}
-}
-
-func TestMigrate_ConfigAction_LegacyToV5(t *testing.T) {
-	root := t.TempDir()
-
-	// Legacy .claude/sdlc.json.
-	writeTestJSON(t, filepath.Join(root, ".claude", "sdlc.json"), map[string]any{
-		"version": map[string]any{"mode": "tag", "tagPrefix": "v"},
-		"jira":    map[string]any{"defaultProject": "TEST"},
-	})
-
-	out, err := migrate(root, MigrateIn{Action: "config", DryRun: false})
-	if err != nil {
-		t.Fatalf("migrate config: %v", err)
-	}
-
-	if !out.OK {
-		t.Error("expected OK=true")
-	}
-
-	// Verify v5 result.
-	configData := readTestJSON(t, filepath.Join(root, paths.DataDir, "config.json"))
-	if _, has := configData["schemaVersion"]; has {
-		t.Error("v5 config.json should not have schemaVersion")
-	}
-	ver := configData["version"].(map[string]any)
-	tag, ok := ver["tag"].(map[string]any)
-	if !ok {
-		t.Fatalf("version.tag should be an object, got %#v", ver["tag"])
-	}
-	if tag["enabled"] != true {
-		t.Error("version.tag.enabled should be true")
-	}
-	if tag["prefix"] != "v" {
-		t.Error("version.tag.prefix should be 'v'")
+	if !errors.Is(err, configmigrate.ErrVersionStale) {
+		t.Errorf("expected error wrapping configmigrate.ErrVersionStale, got: %v", err)
 	}
 }
 
@@ -565,22 +516,13 @@ func TestMigrate_ConfigAction_DryRun(t *testing.T) {
 	}
 }
 
-func TestMigrate_ConfigAction_AlreadyV5(t *testing.T) {
-	root := t.TempDir()
-
-	writeTestJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
-		"version": map[string]any{"mode": "file"},
-	})
-
-	out, err := migrate(root, MigrateIn{Action: "config", DryRun: false})
-	if err != nil {
-		t.Fatalf("migrate config: %v", err)
-	}
-
-	if out.Result != "up-to-date" {
-		t.Errorf("expected 'up-to-date', got %q", out.Result)
-	}
-}
+// TestMigrate_ConfigAction_AlreadyV5 (deleted here) wrote a config.json
+// with no schemaVersion field to represent an "already v5" project. That
+// premise contradicts the TOML-only v5 format (internal/config/config.go):
+// any JSON content under .sdlc-v2/, schemaVersion or not, is stale per
+// configmigrate.detectProjectVersion — there is no "already v5" JSON state
+// to converge from. No replacement: TestMigrate_ConfigAction_StaleProjectRefused
+// above already covers the JSON-present refusal path.
 
 func TestMigrate_UnknownAction(t *testing.T) {
 	root := t.TempDir()
@@ -613,26 +555,22 @@ func TestSetupInit_ThenVerify_Passes(t *testing.T) {
 	}
 }
 
-// AC: migrate config converges legacy/v4 fixtures to v5.
-func TestMigrate_V4_ConvergesToV5(t *testing.T) {
-	root := t.TempDir()
-
-	writeTestJSON(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
-		"schemaVersion": float64(4),
-		"version":       map[string]any{"mode": "file"},
-		"jira":          map[string]any{"defaultProject": "X"},
-	})
-
-	_, err := migrate(root, MigrateIn{Action: "config"})
-	if err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-
-	if err := configmigrate.Verify(root); err != nil {
-		t.Errorf("v4->v5 migration should result in valid v5: %v", err)
-	}
-}
-
+// TestMigrate_V4_ConvergesToV5 (deleted here) asserted the same retired
+// v4-content-transform capability as TestMigrate_ConfigAction_V4ToV5 (see
+// TestMigrate_ConfigAction_StaleProjectRefused above); it now fails with
+// the same ErrVersionStale refusal.
+//
+// TestMigrate_Legacy_ConvergesToV5 below is left as-is (currently passing,
+// but vacuously): configmigrate.detectProjectVersion only scans for
+// .sdlc-v2/config.toml or a bare .sdlc-v2 dir, never the 6 legacy marker
+// paths outside .sdlc-v2 (.claude/sdlc.json included) — that scan is
+// internal/config's separate detectLegacy. So this fixture's
+// .claude/sdlc.json is invisible to migrate/Verify at this layer: migrate
+// no-ops (nothing to do) and Verify reports "current" for a project with no
+// .sdlc-v2 directory at all, rather than actually converging anything. Same
+// two-layer detection gap as the jira.go/config.go fixes above, latent here
+// since Verify's "nothing to do" and "successfully migrated" outcomes are
+// indistinguishable from this test's assertions alone.
 func TestMigrate_Legacy_ConvergesToV5(t *testing.T) {
 	root := t.TempDir()
 
