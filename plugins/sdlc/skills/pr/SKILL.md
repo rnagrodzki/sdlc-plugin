@@ -1,8 +1,8 @@
 ---
 name: pr
-description: "Use this skill when creating or updating a pull request, updating a PR description, or generating PR content from commits and diffs. Handles the full PR workflow: consumes pre-computed context from the `pr_prepare` MCP tool, generates description with plan-critique-improve-do-critique-improve, user review, and gh CLI execution. Auto-labels PRs based on context signals (branch, commits, diff, Jira) with mandatory approval. Arguments: [--draft] [--update] [--base <branch>] [--auto] [--label <name>]. Use --auto to skip interactive approval. Triggers on: create PR, open pull request, update PR, write PR description, PR summary, describe changes for a pull request."
+description: "Use this skill when creating or updating a pull request, updating a PR description, or generating PR content from commits and diffs. Handles the full PR workflow: consumes pre-computed context from the `pr_prepare` MCP tool, generates description with plan-critique-improve-do-critique-improve, user review, and gh CLI execution. Auto-labels PRs based on context signals (branch, commits, diff, Jira) with mandatory approval. Arguments: [--draft] [--update] [--base <branch>] [--auto] [--skip-approval] [--label <name>]. Use --auto to skip interactive approval and to mark pr_apply as running unattended. Use --skip-approval to skip only the Step 5 publish-confirmation prompt (e.g. when dispatched by ship, which already resolved release intent) without affecting autoMode. Triggers on: create PR, open pull request, update PR, write PR description, PR summary, describe changes for a pull request."
 user-invocable: true
-argument-hint: "[--draft] [--update] [--base <branch>] [--auto] [--label <name>]"
+argument-hint: "[--draft] [--update] [--base <branch>] [--auto] [--skip-approval] [--label <name>]"
 model: sonnet
 ---
 
@@ -252,8 +252,10 @@ everything since the last tag, which may span more than this branch) or `PR_CONT
 (always present, this branch's own commits) when `commitsSinceTag` is absent, plus what you
 already know from the conversation — no git commands. Cover every commit in whichever list you
 use; never leave `releaseNotes` empty or describe only the most recent commit. Show the draft,
-let the user amend it, then hold the final text as `releaseNotes` for Step 6. `pr_apply` rejects
-a `releaseLevel` with empty `releaseNotes`, so this is not optional whenever a level is set.
+let the user amend it, then hold the final text as `releaseNotes` for Step 6. If `releaseNotes`
+is left empty with a `releaseLevel` set, `pr_apply` auto-generates notes from commit history
+instead of rejecting — draft one yourself here anyway so the user sees and can amend it before
+it lands in the PR body.
 
 **On option 2:** proceed with no release intent — this was an explicit, acknowledged choice, so
 do not ask again at Step 5 or Step 6. Hold `skipReleaseCheck: true` for Step 6's `pr_apply` call
@@ -367,6 +369,18 @@ reached (see Step 0 above), and — when this skill is dispatched by `/ship` —
 own `main`/`master` hard gate blocks the `pr` step from even being dispatched. This auto-skip
 only ever fires on a feature branch.
 
+**`--skip-approval`:** if `--skip-approval` was passed to this skill invocation, also skip the
+AskUserQuestion prompt below — still display the full title and description first, then proceed
+directly to Step 6, treating the response as an implicit `yes`. All critique gates (Steps 3–4)
+still run. Proceed with the release level exactly as given at invocation — do not re-derive or
+remap it. This flag is independent of `--auto`: it exists for callers (chiefly `/ship`'s own `pr`
+dispatch) that already resolved release intent interactively before dispatching this skill, and
+that dispatch a sub-agent which cannot itself call AskUserQuestion. **`--skip-approval` does
+NOT imply `autoMode: true`** — the `autoMode` field passed to `pr_apply` in Step 6 is driven
+solely by whether `--auto` was passed, never by `--skip-approval`. `releaseSource` (if supplied
+by the caller) is likewise forwarded to `pr_apply` as-is — never remapped based on
+`--skip-approval`.
+
 ```text
 PR Title: <title>
 
@@ -415,7 +429,7 @@ pr_apply({
   releasePreRelease: <if set>,
   releaseSource: <if releaseLevel set — "user" | "config">,
   skipReleaseCheck: <true — only when no releaseLevel and Step 1b option 2 was chosen>,
-  autoMode: <true | false — whether --auto was passed to this skill invocation>
+  autoMode: <true | false — whether --auto (not --skip-approval) was passed to this skill invocation>
 }) → { url, created }
 ```
 
@@ -450,7 +464,7 @@ Pull request updated: <url>
 - Write generic descriptions ("various improvements", "code cleanup")
 - Fabricate a JIRA ticket, business reason, or technical claim
 - Include file paths in the Changes Overview section (only applies if that section exists)
-- Call `pr_apply` without explicit user approval (unless `--auto` was passed)
+- Call `pr_apply` without explicit user approval (unless `--auto` or `--skip-approval` was passed)
 - Skip the plan-critique-improve-do-critique-improve cycle before presenting to the user
 - Run git or gh commands to gather data — all context comes from `PR_CONTEXT` plus what you already know from the conversation
 
@@ -476,6 +490,9 @@ When invoking `error-report`, provide:
 
 - **No draft PRs, labels, or base-branch override**: this port's `pr_apply` only accepts
   `title` and `body` — none of `--draft`, `--label`, or `--base` can be honored.
+- **`--skip-approval` is not `--auto`**: `--skip-approval` only skips the Step 5
+  AskUserQuestion; it never sets `autoMode: true` on `pr_apply` and never changes how
+  `releaseSource` is forwarded. Only `--auto` drives `autoMode`.
 - **Create-vs-update is decided at publish time**: `pr_prepare` does not report whether a PR
   already exists for the branch, so the Step 5 plan must be presented generically; only
   `pr_apply`'s `created` field (Step 6) tells you which one happened.

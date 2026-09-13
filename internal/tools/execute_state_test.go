@@ -3090,6 +3090,105 @@ func TestExecState_Ledger_StatusMissingDir(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Ledger: expectedWorkers / missingWorkers detection
+// ---------------------------------------------------------------------------
+
+func TestExecState_Ledger_MissingWorkers(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	_, err := executeState(root, root, ExecuteStateIn{
+		Action:   "ledger_checkin",
+		RunID:    "run-1",
+		WorkerID: "worker-A",
+	}, clock)
+	if err != nil {
+		t.Fatalf("checkin: %v", err)
+	}
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action:          "ledger_status",
+		RunID:           "run-1",
+		ExpectedWorkers: []string{"worker-A", "worker-B", "worker-C"},
+	}, clock)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+
+	m := result.(map[string]any)
+	missing, ok := m["missingWorkers"].([]string)
+	if !ok {
+		t.Fatalf("missingWorkers has wrong type: %T", m["missingWorkers"])
+	}
+	if len(missing) != 2 || missing[0] != "worker-B" || missing[1] != "worker-C" {
+		t.Errorf("missingWorkers = %v, want [worker-B worker-C]", missing)
+	}
+}
+
+func TestExecState_Ledger_MissingWorkers_NotRequested(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	_, err := executeState(root, root, ExecuteStateIn{
+		Action:   "ledger_checkin",
+		RunID:    "run-1",
+		WorkerID: "worker-A",
+	}, clock)
+	if err != nil {
+		t.Fatalf("checkin: %v", err)
+	}
+
+	// No expectedWorkers passed — missingWorkers must be [] (never null), for
+	// backward compatibility with existing ledger_status callers.
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "ledger_status",
+		RunID:  "run-1",
+	}, clock)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+
+	m := result.(map[string]any)
+	missing, ok := m["missingWorkers"].([]string)
+	if !ok {
+		t.Fatalf("missingWorkers has wrong type: %T", m["missingWorkers"])
+	}
+	if len(missing) != 0 {
+		t.Errorf("missingWorkers = %v, want empty", missing)
+	}
+
+	encoded, err := json.Marshal(m)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(encoded), `"missingWorkers":null`) {
+		t.Errorf("missingWorkers serialized as null, want []: %s", encoded)
+	}
+}
+
+func TestExecState_Ledger_MissingWorkers_MissingDir(t *testing.T) {
+	root := t.TempDir()
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action:          "ledger_status",
+		RunID:           "nonexistent",
+		ExpectedWorkers: []string{"worker-A"},
+	}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("status on missing dir should succeed: %v", err)
+	}
+
+	m := result.(map[string]any)
+	missing, ok := m["missingWorkers"].([]string)
+	if !ok {
+		t.Fatalf("missingWorkers has wrong type: %T", m["missingWorkers"])
+	}
+	if len(missing) != 1 || missing[0] != "worker-A" {
+		t.Errorf("missingWorkers = %v, want [worker-A]", missing)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // unknown action
 // ---------------------------------------------------------------------------
 

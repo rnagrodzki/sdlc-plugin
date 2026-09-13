@@ -87,22 +87,30 @@ func findPlanState(branch string) *state.State {
 	return st
 }
 
-// planIntegrityFromState implements stop-plan-integrity.js's found-a-state
-// branch: the plan marker state file is ALWAYS deleted (single-use,
-// regardless of outcome), then REQUIRED_MARKERS are checked against
-// data.planIntegrity (each must be present and string-valued), and
+// planIntegrityFromState extends stop-plan-integrity.js's found-a-state
+// branch with a terminal "done" gate: plan_mark({marker: "done"}) is the
+// plan SKILL.md's own signal (stamped in Step 7, right before
+// ExitPlanMode) that the plan is finished. Absent that marker, the plan is
+// still running — e.g. a Stop fired mid-plan across a compaction or
+// sub-turn boundary — so the state file is left untouched and this returns
+// silently, with no evaluation and no deletion.
+//
+// Once "done" is present, the plan marker state file is ALWAYS deleted
+// (single-use, regardless of outcome), then REQUIRED_MARKERS are checked
+// against data.planIntegrity (each must be present and string-valued), and
 // data.planFilePath — if set — must stat to a non-empty file. Any missing
 // or failing marker produces one aggregated warning to stderr; the hook
 // itself never blocks.
 func planIntegrityFromState(st *state.State) Output {
 	silent := Output{ExitCode: 0}
-	defer func() { _ = os.Remove(st.Path) }()
 
-	if st.Data == nil {
+	pi, _ := st.Data["planIntegrity"].(map[string]any)
+
+	if _, hasDone := pi["done"]; !hasDone {
 		return silent
 	}
 
-	pi, _ := st.Data["planIntegrity"].(map[string]any)
+	defer func() { _ = os.Remove(st.Path) }()
 
 	var missing []string
 	for _, marker := range requiredPlanMarkers {

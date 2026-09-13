@@ -113,6 +113,63 @@ func TestPlanPrepare_KeySetAndDefaults(t *testing.T) {
 	}
 }
 
+// TestPlanPrepare_UserPromptForwarded verifies UserPrompt flows through to
+// buildExplorePack (surfaced in the written manifest's userPromptLength)
+// instead of the previously hardcoded empty string.
+func TestPlanPrepare_UserPromptForwarded(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	const prompt = "fix the login bug"
+	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, UserPrompt: prompt})
+	if err != nil {
+		t.Fatalf("planPrepareCore: %v", err)
+	}
+	if out.ExplorePack.ManifestPath == nil {
+		t.Fatalf("ExplorePack.ManifestPath is nil: %+v", out.ExplorePack)
+	}
+	data, err := os.ReadFile(*out.ExplorePack.ManifestPath)
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	var manifest map[string]any
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatalf("manifest is not valid JSON: %v", err)
+	}
+	if got, want := manifest["userPromptLength"], float64(len(prompt)); got != want {
+		t.Errorf("manifest.userPromptLength = %v, want %v", got, want)
+	}
+}
+
+// TestPlanPrepare_EmptyUserPromptBackwardCompatible verifies that omitting
+// UserPrompt behaves identically to the prior hardcoded-empty-string
+// behavior (manifest userPromptLength stays 0).
+func TestPlanPrepare_EmptyUserPromptBackwardCompatible(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("planPrepareCore: %v", err)
+	}
+	if out.ExplorePack.ManifestPath == nil {
+		t.Fatalf("ExplorePack.ManifestPath is nil: %+v", out.ExplorePack)
+	}
+	data, err := os.ReadFile(*out.ExplorePack.ManifestPath)
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	var manifest map[string]any
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatalf("manifest is not valid JSON: %v", err)
+	}
+	if got := manifest["userPromptLength"]; got != float64(0) {
+		t.Errorf("manifest.userPromptLength = %v, want 0 for empty UserPrompt", got)
+	}
+}
+
 // TestPlanPrepare_PlanTemplate verifies planTemplate.path is populated when
 // .sdlc/plan-template.md exists under mainRoot.
 func TestPlanPrepare_PlanTemplate(t *testing.T) {

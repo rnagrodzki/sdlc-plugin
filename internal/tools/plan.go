@@ -46,11 +46,12 @@ import (
 // plan_prepare types
 // ---------------------------------------------------------------------------
 
-// PlanPrepareIn is the input for the plan_prepare tool. This is the full
-// contract shape: it deliberately has no user-prompt field, so the embedded
-// explorePack always runs with an empty prompt (see RULING in the task
-// report — keyword-scope and web-research-signal detection are inert here;
-// only plan_explore_prepare's separate UserPrompt field can exercise them).
+// PlanPrepareIn is the input for the plan_prepare tool. UserPrompt is
+// forwarded into the embedded explorePack (see buildExplorePack below) so
+// keyword-scope and web-research-signal detection can run on it — the prior
+// deliberate-empty-prompt ruling predates those two features, which degrade
+// to no-ops without a prompt. plan_explore_prepare's separate UserPrompt
+// field remains the primary way to exercise them explicitly.
 type PlanPrepareIn struct {
 	SkipConfigCheck        bool   `json:"skipConfigCheck" jsonschema_description:"Skips the config-version auto-migration gate normally run before preparing plan metadata. Set only when the caller has already verified or migrated the config."`
 	FromOpenspec           string `json:"fromOpenspec" jsonschema_description:"Name of the openspec change to prepare plan metadata from (change validation, tasks inventory, explore-pack discovery). Empty when not planning from an openspec change."`
@@ -59,6 +60,7 @@ type PlanPrepareIn struct {
 	OpenspecInlineGenerate bool   `json:"openspecInlineGenerate" jsonschema_description:"True when the openspec change proposal is being inline-generated as part of this plan run. Combined with fromOpenspecDirect to determine whether openspec routing is active."`
 	Lightweight            bool   `json:"lightweight" jsonschema_description:"Requests the lightweight complexity-routing path regardless of file count, adjusting dispatch metadata accordingly."`
 	FileCount              int    `json:"fileCount" jsonschema_description:"Number of files the change is expected to touch, used with lightweight to compute complexity routing (pipeline mode)."`
+	UserPrompt             string `json:"userPrompt" jsonschema_description:"User's plan request text, forwarded to buildExplorePack for keyword-scope and web-research-signal detection. Empty behaves identically to prior versions."`
 }
 
 // OpenspecChangeInfo, OpenspecAuthoritative, and OpenspecInfo used to be
@@ -1277,7 +1279,7 @@ func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepar
 	planTasks := loadPlanTasks(mainRoot)
 
 	// 4. plan-explore discovery pack (KD4: in-process call, not subprocess).
-	explorePack := buildExplorePack(mainRoot, contentRoot, in.FromOpenspec, "")
+	explorePack := buildExplorePack(mainRoot, contentRoot, in.FromOpenspec, in.UserPrompt)
 
 	// 5. G17 dispatch + githubHosting signals.
 	githubHosting := buildGithubHosting(mainRoot)
@@ -1328,12 +1330,17 @@ func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepar
 // critiqueRan): the task's own binding Contract adds "skillInvoked" as a
 // fourth valid value (skillInvoked is otherwise only ever written
 // automatically during plan_prepare, never via an explicit CLI --mark in
-// the JS original).
+// the JS original), and "done" as a fifth: a terminal marker the plan
+// SKILL.md stamps right before ExitPlanMode to signal the plan is finished.
+// "done" is deliberately excluded from stop_hooks.go's requiredPlanMarkers —
+// it gates *whether* those four markers are checked at all (see
+// planIntegrityFromState), it is not itself one of the checked markers.
 var validMarkers = map[string]bool{
 	"plan-file":           true,
 	"skillInvoked":        true,
 	"guardrailsEvaluated": true,
 	"critiqueRan":         true,
+	"done":                true,
 }
 
 // markerKey maps a marker name to its planIntegrity JSON key, mirroring
@@ -1347,7 +1354,7 @@ func markerKey(marker string) string {
 
 // PlanMarkIn is the input for the plan_mark tool.
 type PlanMarkIn struct {
-	Marker string `json:"marker" jsonschema_description:"Checkpoint marker to stamp with the current timestamp: \"plan-file\", \"skillInvoked\", \"guardrailsEvaluated\", or \"critiqueRan\"."`
+	Marker string `json:"marker" jsonschema_description:"Checkpoint marker to stamp with the current timestamp: \"plan-file\", \"skillInvoked\", \"guardrailsEvaluated\", \"critiqueRan\", or the terminal \"done\" marker."`
 	Path   string `json:"path" jsonschema_description:"Plan file path to record. Only used (and required) when marker is \"plan-file\"."`
 }
 

@@ -59,6 +59,15 @@ func sessionStart(_ HookCtx, event Event) (Output, error) {
 	resume = append(resume, safeStringsPhase("jira-cache", jiraCachePhase)...)
 	resume = append(resume, safeStringsPhase("ship-config", shipConfigPhase)...)
 
+	// Fires on every compaction, independent of pipeline/sidecar state: a
+	// compacted SKILL.md body loses its deferred-tool references, so any
+	// skill relying on ToolSearch (plan, execute, ...) needs a reliably
+	// injected reminder to re-fetch them, not one gated on ship/execute
+	// pipeline recovery data existing.
+	if event.Source == "compact" {
+		resume = append(resume, "After compaction, re-fetch deferred tool schemas via ToolSearch (plan_mark, plan_support, etc.).")
+	}
+
 	lines := make([]string, 0, len(header)+len(resume))
 	lines = append(lines, header...)
 	lines = append(lines, resume...)

@@ -12,7 +12,9 @@
 package gitx
 
 import (
+	"errors"
 	"fmt"
+	"os/exec"
 	"regexp"
 	"strings"
 
@@ -292,4 +294,60 @@ func FetchTags(dir string) error {
 		return fmt.Errorf("gitx: fetch tags: %w", err)
 	}
 	return nil
+}
+
+// PushSetUpstream pushes HEAD to remote and sets it as the current branch's
+// upstream (git push -u <remote> HEAD). Returns an actionable error when
+// remote is empty, looks like a flag, or the push itself fails (auth,
+// network, rejected non-fast-forward, etc).
+func PushSetUpstream(dir, remote string) error {
+	if remote == "" {
+		return fmt.Errorf("gitx: push set upstream: remote is empty")
+	}
+	if err := validateRef(remote, "push set upstream"); err != nil {
+		return err
+	}
+	if _, err := execx.Run("git", []string{"push", "-u", remote, "HEAD"}, execx.Options{Dir: dir}); err != nil {
+		return fmt.Errorf("gitx: push set upstream: %w", err)
+	}
+	return nil
+}
+
+// HasUpstream reports whether the current branch has an upstream configured,
+// via "git rev-parse --abbrev-ref @{upstream}". Returns (false, nil) when no
+// upstream is configured — that is the expected, non-error outcome for a
+// freshly created local branch, signaled by git exiting 128. Returns
+// (false, err) for any other failure, including when dir is not a git
+// repository at all: "git rev-parse --abbrev-ref @{upstream}" also exits 128
+// in that case, so isRepo is checked first to tell the two apart, mirroring
+// TagExists.
+func HasUpstream(dir string) (bool, error) {
+	if !isRepo(dir) {
+		return false, fmt.Errorf("gitx: has upstream: %q is not a git repository", dir)
+	}
+	_, err := execx.Run("git", []string{"rev-parse", "--abbrev-ref", "@{upstream}"}, execx.Options{Dir: dir})
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 128 {
+		return false, nil
+	}
+	return false, fmt.Errorf("gitx: has upstream: %w", err)
+}
+
+// CommitsAhead returns the number of commits HEAD is ahead of its upstream
+// (git rev-list @{upstream}..HEAD --count). Callers should confirm an
+// upstream exists first (HasUpstream) — with none configured, the
+// underlying git command fails and that failure is returned as-is here.
+func CommitsAhead(dir string) (int, error) {
+	out, err := execx.Run("git", []string{"rev-list", "--count", "@{upstream}..HEAD"}, execx.Options{Dir: dir})
+	if err != nil {
+		return 0, fmt.Errorf("gitx: commits ahead: %w", err)
+	}
+	var count int
+	if _, err := fmt.Sscanf(out, "%d", &count); err != nil {
+		return 0, fmt.Errorf("gitx: commits ahead: could not parse %q: %w", out, err)
+	}
+	return count, nil
 }
