@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.0.4] - 2026-09-13
+
+### RC 1
+
+- Pin GoReleaser builds to the dispatched tag (env var + config-level pre-release-suffix guard) so binaries always build against the correct release, not a co-located RC tag
+- Bridge release promotion to dispatch the release build workflow at the final tag after creating the GitHub release, with retry and graceful degradation on transient failures
+- Harden release-dispatch tag resolution with sorted, RC-filtered tag selection
+- Bold the ship pipeline's always-rc policy-override notices and close the gap where the interactive "change level" path skipped the same enforcement
+- Add duplicate-issue search to the error-report skill so matching issues get a comment instead of a duplicate filing
+- Sync the `pluginVersion` fallback const with `plugin.json` (0.0.2 -> 0.0.3), fixing a pre-existing failing test
+
+### RC 2
+
+- Ship pipeline execution reports now include CLI evidence (time-windowed and capped), step timings, guardrail decisions, and links to related learnings entries
+- Guardrail decide-action JSON keys renamed for consistency (decideId/decideDecision/decideReason); execute-state schema extended with guardrailDecisions and pendingIssueDrafts
+- Ship skill rendering order updated so the execution report appears before the history-record step
+- Release pipeline hardened with error-report deduplication to prevent duplicate tooling-error issues (#15), building on the v0.0.3 promotion
+- Fixed a wave-2 regression in guardrail/learnings tracking and hardened error handling throughout
+
+### RC 3
+
+- Promoted version to v0.0.3
+- Hardened release pipeline; added error-report dedup (#15)
+- Added CLI evidence, timings, and learnings to execute report (#16)
+- Hardened setup flow
+- Fixed harden skill failing to create GitHub issues
+
+### RC 4
+
+- Migrate plugin config format from JSON to TOML (config.json/local.json → config.toml/local.toml)
+- Add TOML dependency and read/write helpers in fsx
+- Add TOML struct tags and a TOML-aware migrate import path; rewrite setup/scaffold templates for TOML
+- Sweep SKILL.md files, agent definitions, and architecture docs for the new config file names
+- Hand-craft canonical config.toml/local.toml and retire config.json
+- Fix legacy-detection regressions surfaced by the TOML migration
+- Port CI scaffold scripts from JSON to TOML config
+- Update setup and guardrails documentation for the new config format
+- Fix the integration test suite's stale config.json fixture
+
 ## [0.0.3] - 2026-09-11
 
 ### RC 1
