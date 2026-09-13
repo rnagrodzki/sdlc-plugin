@@ -425,7 +425,7 @@ pr_apply({
   title: <title>,
   body: <body>,
   releaseLevel: <if set — "major" | "minor" | "patch">,
-  releaseNotes: <required whenever releaseLevel is set — non-empty>,
+  releaseNotes: <strongly recommended whenever releaseLevel is set; pr_apply auto-generates from commit history when empty>,
   releasePreRelease: <if set>,
   releaseSource: <if releaseLevel set — "user" | "config">,
   skipReleaseCheck: <true — only when no releaseLevel and Step 1b option 2 was chosen>,

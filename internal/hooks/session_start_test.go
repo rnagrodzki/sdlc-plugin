@@ -1269,6 +1269,39 @@ func TestSessionStart_PhaseIsolation(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Compact-only deferred-tool-schema resume line (session_start.go lines 62-69)
+// ---------------------------------------------------------------------------
+
+func TestSessionStart_CompactDeferredToolSchemaLine(t *testing.T) {
+	// Isolate from any real repo/plugin/config so the only resume-section
+	// output comes from the compact-only block under test.
+	chdir(t, realPath(t, t.TempDir()))
+	t.Setenv("HOME", realPath(t, t.TempDir()))
+
+	wantSubstr := "After compaction, re-fetch deferred tool schemas via ToolSearch (plan_mark, plan_support, etc.)."
+
+	t.Run("compact source includes deferred-tool-schema line", func(t *testing.T) {
+		out, err := sessionStart(HookCtx{}, Event{Source: "compact"})
+		if err != nil {
+			t.Fatalf("sessionStart returned error: %v", err)
+		}
+		if !strings.Contains(out.PlainText, wantSubstr) {
+			t.Errorf("sessionStart(source=compact) missing deferred-tool-schema line:\n%s", out.PlainText)
+		}
+	})
+
+	t.Run("non-compact source omits deferred-tool-schema line", func(t *testing.T) {
+		out, err := sessionStart(HookCtx{}, Event{Source: "startup"})
+		if err != nil {
+			t.Fatalf("sessionStart returned error: %v", err)
+		}
+		if strings.Contains(out.PlainText, wantSubstr) {
+			t.Errorf("sessionStart(source=startup) unexpectedly contains deferred-tool-schema line:\n%s", out.PlainText)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
 // small fixture-writing helpers
 // ---------------------------------------------------------------------------
 

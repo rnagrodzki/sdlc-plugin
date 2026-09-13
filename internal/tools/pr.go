@@ -725,6 +725,7 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 		out.NeedsPush = true
 	} else if ahead, aheadErr := rt.gitCommitsAhead(workDir); aheadErr != nil {
 		warnings = append(warnings, fmt.Sprintf("commits ahead: %s", aheadErr.Error()))
+		out.NeedsPush = true
 	} else {
 		out.NeedsPush = ahead > 0
 	}

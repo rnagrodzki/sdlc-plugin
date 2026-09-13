@@ -90,8 +90,10 @@ rules:
 
 | Hook | Trigger | Handler | Effect |
 |------|---------|---------|--------|
-| `stop-plan-integrity` | `Stop` | `internal/hooks/stop_hooks.go` | Advisory check that all 4 planIntegrity markers were written. Reads + deletes state file. Falls back to transcript scanning (last 64KB for "Plan mode is active") when no state file found. Always ExitCode 0 (advisory). |
+| `stop-plan-integrity` | `Stop` | `internal/hooks/stop_hooks.go` | Advisory check that all 5 planIntegrity markers were written. Gates on `done` marker before evaluating or deleting state file. Falls back to transcript scanning (last 64KB for "Plan mode is active") when no state file found. Always ExitCode 0 (advisory). |
 | `post-tool-validate` | `PostToolUse` on `Edit\|Write` | `internal/hooks/post_tool_validate.go` | Runs format validation after edits to plan files |
+| `pipeline-continue` | `PostToolUse` on `Bash\|TodoWrite` | `internal/hooks/pipeline_continue.go` | Signals pipeline-aware hooks that a tool completed during an active pipeline |
+| `stop-pipeline-continue` | `Stop` | `internal/hooks/stop_hooks.go` | Counterpart to `pipeline-continue`; fires on session stop during an active pipeline |
 | `session-start` | `SessionStart` | `internal/hooks/session_start.go` | OpenSpec detection, version banner (`sdlc: v1.0.0`), skill count |
 
 Hook definitions are registered in `plugins/sdlc/hooks/hooks.json`.
@@ -175,7 +177,7 @@ the plan file.
 | **Tools called** | `plan_explore_prepare` (or inline `explorePack` from `plan_prepare`), `execute_state({action: "ledger_checkin"})` |
 | **Subagents** | 3-7 dimension exploration subagents (parallel fan-out, one per dimension), then 1 intake-audit subagent (prompt: `intake-verify-prompt.md`, model from `intakeAuditDispatch`) |
 | **Plan sections written** | None (discovery data feeds Step 2) |
-| **Failure modes** | Intake audit returns CRITICAL findings: pipeline blocks, surfaces to user. Explore pack errors: degraded mode with partial context. Brief has zero `F-DIM-N` findings: falls back to inline exploration. Dimension worker stalls twice: skipped with disclosure. |
+| **Failure modes** | Intake audit returns CRITICAL findings: pipeline blocks, surfaces to user. Explore pack errors: degraded mode with partial context. Brief has zero `F-DIM-N` findings: falls back to inline exploration. Dimension worker stalls twice: skipped with disclosure. Missing workers detected via `execute_state({action: "ledger_status", expectedWorkers: [...]})`: any IDs in `expectedWorkers` not found in the ledger are returned as `missingWorkers`. |
 
 The explore pack gathers: git scope (diff stats, branch info), OpenSpec paths,
 keyword grep results, web-research signal, skill registry sample, and recent
@@ -588,7 +590,7 @@ PF10) parses the active template to determine which sections are required.
 ## State & Integrity
 
 The `planIntegrity` system tracks whether the plan skill completed its full
-pipeline. Four markers must be present in the state file for a clean exit.
+pipeline. Five markers must be present in the state file for a clean exit.
 
 ```mermaid
 stateDiagram-v2
@@ -597,12 +599,13 @@ stateDiagram-v2
     SkillInvoked --> PlanFileSet: plan_mark("plan-file")
     PlanFileSet --> GuardrailsEvaluated: plan_mark("guardrailsEvaluated")
     GuardrailsEvaluated --> CritiqueRan: plan_mark("critiqueRan")
-    CritiqueRan --> Complete: All 4 markers present
-    Complete --> Consumed: Stop hook reads and deletes
-    Consumed --> [*]
+    CritiqueRan --> Done: plan_mark("done") (Step 7)
+    Done --> Consumed: Stop hook reads and deletes
+    CritiqueRan --> Waiting: Stop fires before "done"
+    Waiting --> [*]: State file kept (no evaluation, no deletion)
 
     note right of Created: Prune-on-write deletes older plan-branch-*.json
-    note right of Complete: stop-plan-integrity checks all 4 markers
+    note right of Done: stop-plan-integrity checks all 5 markers
     note right of Consumed: Single-shot read then delete
 ```
 
@@ -614,16 +617,17 @@ stateDiagram-v2
 | `plan-file` | `plan_mark` (explicit) | 0 | Plan file path was written |
 | `guardrailsEvaluated` | `plan_mark` (explicit) | 3 | Gate evaluation completed |
 | `critiqueRan` | `plan_mark` (explicit) | 3 | Critique merge barrier passed |
+| `done` | `plan_mark` (explicit) | 7 | Plan completed; gates stop-hook evaluation and state-file deletion |
 
 ### Stop Hook Behavior
 
 `stop-plan-integrity` in `internal/hooks/stop_hooks.go`:
 
 1. Attempts to find and read `plan-<branch>-*.json` state file.
-2. Calls `planIntegrityFromState`: checks all 4 markers present + `planFilePath` stat.
-3. If no state file found, falls back to `planIntegrityFromTranscript`: scans last 64KB of transcript for "Plan mode is active".
-4. Advisory only (ExitCode 0 always). Missing markers produce a warning, not a failure.
-5. State file is deleted after reading regardless of outcome.
+2. Calls `planIntegrityFromState`: first checks whether the `done` marker is present. If absent, the plan is still running — returns silently without evaluation or deletion.
+3. Once `done` is present, checks all 5 markers present + `planFilePath` stat, then deletes the state file (single-use).
+4. If no state file found, falls back to `planIntegrityFromTranscript`: scans last 64KB of transcript for "Plan mode is active".
+5. Advisory only (ExitCode 0 always). Missing markers produce a warning, not a failure.
 
 ---
 

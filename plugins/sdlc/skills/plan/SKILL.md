@@ -798,7 +798,7 @@ If `findings` is empty, the plan passed every applicable PF check — proceed to
 
 Where `<verdict line>` is the verbatim verdict label from the scorecard: *"All checks passed. Ready for archive."*, *"…Ready for archive (with noted improvements)."*, or *"…Fix before archiving."*. When no scorecard is present (non-OpenSpec plan or scorecard was not generated), omit this line entirely.
 
-Call `plan_mark({ marker: "done" })` before either branch below — writes the terminal `planIntegrity` marker the `stop-plan-integrity` Stop hook gates on (Task 2): without it, the hook keeps the plan state file indefinitely instead of evaluating and deleting it.
+Call `plan_mark({ marker: "done" })` before either branch below — writes the terminal `planIntegrity` marker the `stop-plan-integrity` Stop hook gates on: without it, the hook keeps the plan state file indefinitely instead of evaluating and deleting it.
 
 **Plan mode:** Announce the plan path and propose execution. Prepend any advisory output from the wrapper above the `ship` / `execute` lines:
 
