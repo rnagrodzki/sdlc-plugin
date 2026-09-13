@@ -31,35 +31,62 @@ func cliEvidencePath(root string) string {
 // mirroring readRecentCLIEvidence's caller-provided cap pattern.
 const maxCLIEvidenceInWindow = 200
 
-// appendCLIEvidence appends one JSONL line to .sdlc-v2/evidence/cli-executions.jsonl.
-// Creates directory and file if absent. Append-only, never truncated by pipeline lifecycle.
-func appendCLIEvidence(root string, entry CLIEvidenceEntry) error {
-	path := cliEvidencePath(root)
+// maxEvidenceFileBytes bounds each evidence JSONL file (Task 10). When
+// appending would land in a file already at or over this cap, the file is
+// rotated to a ".1" sibling (best-effort, overwriting any previous one)
+// before the new line is written to a fresh file — a single-generation
+// size-cap rotation, not a full logrotate scheme. This became necessary
+// once PostToolUse hooks started appending automatically on every Bash/MCP
+// tool call instead of only on explicit, comparatively rare log-cli calls:
+// cli-executions.jsonl was previously unbounded.
+const maxEvidenceFileBytes = 5 * 1024 * 1024 // 5 MiB
 
-	// Ensure directory exists
+// appendJSONLBounded appends one JSON-marshaled entry as a line to path,
+// creating the parent directory if absent, and rotating path to path+".1"
+// first when the file is already at or over maxEvidenceFileBytes. Rotation
+// failure is not fatal — the append still proceeds against the (possibly
+// still-oversized) existing file rather than dropping the entry.
+func appendJSONLBounded(path string, entry any) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("cli evidence: mkdir: %w", err)
+		return fmt.Errorf("evidence: mkdir: %w", err)
 	}
 
-	// Marshal entry to JSON
+	if info, statErr := os.Stat(path); statErr == nil && info.Size() >= maxEvidenceFileBytes {
+		_ = os.Rename(path, path+".1")
+	}
+
 	b, err := json.Marshal(entry)
 	if err != nil {
-		return fmt.Errorf("cli evidence: marshal: %w", err)
+		return fmt.Errorf("evidence: marshal: %w", err)
 	}
 
-	// Append with newline
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
-		return fmt.Errorf("cli evidence: open: %w", err)
+		return fmt.Errorf("evidence: open: %w", err)
 	}
 	defer f.Close()
 
 	if _, err := f.Write(append(b, '\n')); err != nil {
-		return fmt.Errorf("cli evidence: write: %w", err)
+		return fmt.Errorf("evidence: write: %w", err)
 	}
 
 	return nil
+}
+
+// appendCLIEvidence appends one JSONL line to .sdlc-v2/evidence/cli-executions.jsonl.
+// Creates directory and file if absent. Append-only, bounded by
+// appendJSONLBounded (Task 10) — never truncated by pipeline lifecycle.
+//
+// This does NOT dedup: readRecentCLIEvidence tests below (pre-dating Task
+// 10) call this in a tight loop with identical branch/command/exitCode and
+// expect every call to land as its own line — a caller-side dedup guard
+// belongs in the specific caller that needs it (see internal/hooks'
+// isDuplicateCLIEvidence, used only by the automatic pipeline-continue
+// hook), not centrally here, or those legitimate repeated-identical-command
+// sequences would be silently dropped.
+func appendCLIEvidence(root string, entry CLIEvidenceEntry) error {
+	return appendJSONLBounded(cliEvidencePath(root), entry)
 }
 
 // readAllCLIEvidence reads and parses all entries from the JSONL file.
@@ -147,4 +174,46 @@ func readCLIEvidenceInWindow(root, branch, since string, n int) ([]CLIEvidenceEn
 	}
 
 	return matched, nil
+}
+
+// ---------------------------------------------------------------------------
+// Exported wrappers (Task 10) -- internal/hooks needs to call these
+// directly from its PostToolUse handlers (pipeline_continue.go's automatic
+// Bash CLI recording, mcp_invocation_record.go's MCP invocation recording),
+// but Go visibility makes the unexported functions above (and
+// execute_state.go's execLastRecordedWave) uncallable cross-package. Each
+// wrapper is a pure one-line delegate; the unexported functions themselves
+// are unchanged.
+// ---------------------------------------------------------------------------
+
+// AppendCLIEvidence delegates to appendCLIEvidence for internal/hooks.
+func AppendCLIEvidence(root string, entry CLIEvidenceEntry) error {
+	return appendCLIEvidence(root, entry)
+}
+
+// LastCLIEvidenceEntry returns the most recently appended CLI evidence
+// entry (across all branches/pipelines — the file is a flat append log),
+// and false if the file is absent or empty. Used by internal/hooks' dedup
+// guard to detect an immediate duplicate recording of the same Bash
+// execution.
+func LastCLIEvidenceEntry(root string) (CLIEvidenceEntry, bool, error) {
+	entries, err := readRecentCLIEvidence(root, 1)
+	if err != nil || len(entries) == 0 {
+		return CLIEvidenceEntry{}, false, err
+	}
+	return entries[len(entries)-1], true, nil
+}
+
+// ExecLastRecordedWaveNumber returns the highest wave number recorded in an
+// execute state's data["waves"], or nil when there are none. Delegates to
+// execLastRecordedWave (execute_state.go) so internal/hooks' automatic CLI
+// evidence recording can populate CLIEvidenceEntry.Wave for an execute
+// pipeline the same way explicit log-cli callers already do.
+func ExecLastRecordedWaveNumber(data map[string]any) *int {
+	w := execLastRecordedWave(data)
+	if w == nil {
+		return nil
+	}
+	n := execToInt(w["number"])
+	return &n
 }

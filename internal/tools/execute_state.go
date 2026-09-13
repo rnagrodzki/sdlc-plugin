@@ -77,6 +77,7 @@ type ExecuteStateIn struct {
 	ReadProgress      bool           `json:"readProgress,omitempty" jsonschema_description:"wave-progress only: true to read the current per-task progress instead of writing a new heartbeat entry."`
 	SessionID         string         `json:"sessionId,omitempty" jsonschema_description:"init only: Claude Code session ID stamped into the newly initialized execution state."`
 	TimeoutSeconds    int            `json:"timeoutSeconds,omitempty" jsonschema_description:"ledger_status only: age threshold in seconds beyond which a checked-in worker with no checkout is reported as timed out."`
+	ExpectedWorkers   []string       `json:"expectedWorkers,omitempty" jsonschema_description:"ledger_status only: worker IDs expected to be registered for this run; any not found on disk are returned in missingWorkers."`
 	Payload           map[string]any `json:"payload,omitempty" jsonschema_description:"Reserved for future use; not currently read by any action."`
 	StepID            string         `json:"stepId,omitempty" jsonschema_description:"ledger_checkin only: identifier of the pipeline step the worker is registering activity for."`
 	Detail            string         `json:"detail,omitempty" jsonschema_description:"Narration verbosity for wave-start/wave-done/wave-fail/wave-commit: \"concise\" or \"full\"."`
@@ -468,7 +469,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - resume-reset: Reset in-progress waves for session resume. Optional: branch, stateFile. Returns {resetWaves, clearedTaskIds} as before; when the run is still in flight after the reset, the response also carries a "resumeBriefing" (same shape as read's) reflecting the sets it just cleared — resume-reset's willRedo always matches the task IDs in clearedTaskIds.
 - ledger_checkin: Register a worker as active. Requires runId, workerId. Optional: stepId.
 - ledger_checkout: Mark a worker as done. Requires runId, workerId.
-- ledger_status: List worker statuses for a run. Requires runId. Optional: timeoutSeconds.
+- ledger_status: List worker statuses for a run. Requires runId. Optional: timeoutSeconds, expectedWorkers (worker IDs expected to have checked in; any missing from the ledger are returned as missingWorkers).
 - drift-log: Append a drift issue and evaluate the server-side stop condition. When accumulated error-severity drift issues exceed the threshold (max(minErrorFloor, ceil(maxErrorRate * totalTasks))), returns {halt:true}. Requires driftSeverity (error|warning|info), driftSummary. Optional: driftDetail, wave, taskId, branch.
 - issue-draft: Append a pending GH issue draft to the state file's pendingIssueDrafts list (append-only — never goes through the context action, never overwrites). Requires issueDraftTitle, issueDraftBody. Optional: issueDraftLabels, taskId, branch. Returns {added:true, totalDrafts:N}.
 - decide: Record a guardrail decision (append-only — never goes through the context action, never overwrites; distinct from ship state's own "decide" action, which writes a differently-shaped {step, decision} entry under a different key). Appends {decideType, id, decision, reason} to the state file's guardrailDecisions list. Requires decideType, decideId. Optional: decideDecision, decideReason, branch. Returns {ok:true, action:"decide", next:"..."}.
@@ -4118,6 +4119,7 @@ func execActionLedgerStatus(root string, in ExecuteStateIn, now func() time.Time
 				"runId":          in.RunID,
 				"workers":        []any{},
 				"stalledWorkers": []string{},
+				"missingWorkers": missingWorkersOf(in.ExpectedWorkers, nil),
 			}, nil
 		}
 		return nil, &mcpserver.InfraError{Msg: "read ledger dir: " + err.Error(), Cause: err}
@@ -4126,6 +4128,7 @@ func execActionLedgerStatus(root string, in ExecuteStateIn, now func() time.Time
 	nowTime := now()
 	var workers []any
 	var stalledWorkers []string
+	registered := map[string]bool{}
 
 	for _, e := range entries {
 		name := e.Name()
@@ -4134,6 +4137,7 @@ func execActionLedgerStatus(root string, in ExecuteStateIn, now func() time.Time
 		}
 
 		workerID := strings.TrimSuffix(name, ".json")
+		registered[workerID] = true
 		fp := filepath.Join(dir, name)
 		var data map[string]any
 		if err := fsx.ReadJSON(fp, &data); err != nil {
@@ -4179,7 +4183,22 @@ func execActionLedgerStatus(root string, in ExecuteStateIn, now func() time.Time
 		"runId":          in.RunID,
 		"workers":        workers,
 		"stalledWorkers": stalledWorkers,
+		"missingWorkers": missingWorkersOf(in.ExpectedWorkers, registered),
 	}, nil
+}
+
+// missingWorkersOf returns the subset of expectedWorkers not present as keys
+// in registered, in the order they appear in expectedWorkers. It always
+// returns a non-nil slice so callers marshal "missingWorkers" as [] rather
+// than null when nothing is missing or no workers were expected.
+func missingWorkersOf(expectedWorkers []string, registered map[string]bool) []string {
+	missingWorkers := []string{}
+	for _, ew := range expectedWorkers {
+		if !registered[ew] {
+			missingWorkers = append(missingWorkers, ew)
+		}
+	}
+	return missingWorkers
 }
 
 // ---------------------------------------------------------------------------

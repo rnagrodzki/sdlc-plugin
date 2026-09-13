@@ -71,6 +71,17 @@ func releaseTestRuntime(fileVersion string) prRuntime {
 		ghLabelCreate:    func(dir, name, color, desc string) error { return nil },
 		ghPRForBranch:    func(dir string) ghx.PRMetadata { return ghx.PRMetadata{Exists: false} },
 		ghPRCreate:       func(dir, title, body string) (string, error) { return "https://example.com/pull/0", nil },
+		// Idle defaults for the push-decision block prApplyCoreWith always
+		// runs after release-intent computation: upstream already exists
+		// with 0 commits ahead, so no push is attempted and gitPushSetUpstream
+		// is never called. gitLogSinceTag defaults to no commits (idle for
+		// both the skipReleaseCheck verification gate and the release-notes
+		// auto-generation path). Callers exercising push/skip-check/notes
+		// behavior override the relevant field(s) explicitly.
+		gitHasUpstream:     func(dir string) (bool, error) { return true, nil },
+		gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
+		gitPushSetUpstream: func(dir, remote string) error { return nil },
+		gitLogSinceTag:     func(dir string) ([]string, error) { return nil, nil },
 	}
 }
 
@@ -374,6 +385,10 @@ func TestPrPrepare_HappyPath_JiraAndTemplate(t *testing.T) {
 		gitCurrentBranch: func(dir string) (string, error) { return "feat/PROJ-123-add-thing", nil },
 		gitStatus:        func(dir string) (string, error) { return "", nil },
 		gitDefaultBranch: func(dir string) (string, error) { return "main", nil },
+		// Idle upstream: already caught up, so NeedsPush computation resolves
+		// without either field's error path.
+		gitHasUpstream:   func(dir string) (bool, error) { return true, nil },
+		gitCommitsAhead:  func(dir string) (int, error) { return 0, nil },
 		branchValidate:   branch.ValidateExpectedBranch,
 		jiraExtract:      func(branchName string) string { return detectJiraTicket(branchName, nil) },
 		templateResolve: func(root string) (*prtemplate.Template, error) {
@@ -465,6 +480,8 @@ func TestPrPrepare_IncludesVersionDiagnostics(t *testing.T) {
 		},
 		gitCurrentBranch: func(dir string) (string, error) { return "feat/my-feature", nil },
 		gitStatus:        func(dir string) (string, error) { return "", nil },
+		gitHasUpstream:   func(dir string) (bool, error) { return true, nil },
+		gitCommitsAhead:  func(dir string) (int, error) { return 0, nil },
 		branchValidate:   branch.ValidateExpectedBranch,
 		jiraExtract:      func(branchName string) string { return "" },
 		templateResolve:  func(root string) (*prtemplate.Template, error) { return nil, nil },
@@ -562,6 +579,8 @@ func TestPrPrepare_CommitsSinceBase_Populated(t *testing.T) {
 		gitCurrentBranch: func(dir string) (string, error) { return "feat/multi-commit", nil },
 		gitStatus:        func(dir string) (string, error) { return "", nil },
 		gitDefaultBranch: func(dir string) (string, error) { return "main", nil },
+		gitHasUpstream:   func(dir string) (bool, error) { return true, nil },
+		gitCommitsAhead:  func(dir string) (int, error) { return 0, nil },
 		branchValidate:   branch.ValidateExpectedBranch,
 		jiraExtract:      func(branchName string) string { return "" },
 		templateResolve:  func(root string) (*prtemplate.Template, error) { return nil, nil },
@@ -602,6 +621,8 @@ func TestPrPrepare_NoVersionConfig_OmitsVersionFields(t *testing.T) {
 		gitCurrentBranch: func(dir string) (string, error) { return "feat/no-version", nil },
 		gitStatus:        func(dir string) (string, error) { return "", nil },
 		gitDefaultBranch: func(dir string) (string, error) { return "main", nil },
+		gitHasUpstream:   func(dir string) (bool, error) { return true, nil },
+		gitCommitsAhead:  func(dir string) (int, error) { return 0, nil },
 		branchValidate:   branch.ValidateExpectedBranch,
 		jiraExtract:      func(branchName string) string { return "" },
 		templateResolve:  func(root string) (*prtemplate.Template, error) { return nil, nil },
@@ -659,6 +680,8 @@ func TestPrPrepare_VersionDetectionFails_WarningNotError(t *testing.T) {
 		},
 		gitCurrentBranch: func(dir string) (string, error) { return "feat/broken-version", nil },
 		gitStatus:        func(dir string) (string, error) { return "", nil },
+		gitHasUpstream:   func(dir string) (bool, error) { return true, nil },
+		gitCommitsAhead:  func(dir string) (int, error) { return 0, nil },
 		branchValidate:   branch.ValidateExpectedBranch,
 		jiraExtract:      func(branchName string) string { return "" },
 		templateResolve:  func(root string) (*prtemplate.Template, error) { return nil, nil },
@@ -718,6 +741,115 @@ func TestPrPrepare_VersionDetectionFails_WarningNotError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// pr_prepare — NeedsPush
+// ---------------------------------------------------------------------------
+
+// prepareNeedsPushRuntime builds a prRuntime that reaches the NeedsPush
+// computation (past the config/auth/branch-guard/protected-branch checks),
+// with hasUpstream/commitsAhead as the only scenario-varying fields.
+func prepareNeedsPushRuntime(hasUpstream func(dir string) (bool, error), commitsAhead func(dir string) (int, error)) prRuntime {
+	return prRuntime{
+		ghAuthProbe: func(dir, host string) ghx.AuthProbeResult {
+			return ghx.AuthProbeResult{Authenticated: true, ActiveAccount: "someone"}
+		},
+		configReadSection: func(root, section string) (map[string]any, error) { return nil, nil },
+		configRead:        func(root string) (*config.Config, error) { return nil, nil },
+		execRun: func(name string, args []string, opts execx.Options) (string, error) {
+			return "", errors.New("fatal: no such remote 'origin'")
+		},
+		gitCurrentBranch: func(dir string) (string, error) { return "feat/x", nil },
+		gitStatus:        func(dir string) (string, error) { return "", nil },
+		gitDefaultBranch: func(dir string) (string, error) { return "main", nil },
+		gitHasUpstream:   hasUpstream,
+		gitCommitsAhead:  commitsAhead,
+		branchValidate:   branch.ValidateExpectedBranch,
+		jiraExtract:      func(branchName string) string { return "" },
+		templateResolve:  func(root string) (*prtemplate.Template, error) { return nil, nil },
+	}
+}
+
+func TestPrPrepare_NeedsPush(t *testing.T) {
+	t.Run("no upstream configured", func(t *testing.T) {
+		rt := prepareNeedsPushRuntime(
+			func(dir string) (bool, error) { return false, nil },
+			func(dir string) (int, error) {
+				t.Fatal("gitCommitsAhead should not be called when there is no upstream")
+				return 0, nil
+			},
+		)
+		out, err := prPrepareCoreWith("/mock/root", "/mock/work", PRPrepareIn{SkipConfigCheck: true}, rt)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !out.NeedsPush {
+			t.Error("expected NeedsPush=true when no upstream is configured")
+		}
+	})
+
+	t.Run("upstream exists with commits ahead", func(t *testing.T) {
+		rt := prepareNeedsPushRuntime(
+			func(dir string) (bool, error) { return true, nil },
+			func(dir string) (int, error) { return 3, nil },
+		)
+		out, err := prPrepareCoreWith("/mock/root", "/mock/work", PRPrepareIn{SkipConfigCheck: true}, rt)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !out.NeedsPush {
+			t.Error("expected NeedsPush=true when upstream is behind HEAD")
+		}
+	})
+
+	t.Run("upstream exists with zero commits ahead", func(t *testing.T) {
+		rt := prepareNeedsPushRuntime(
+			func(dir string) (bool, error) { return true, nil },
+			func(dir string) (int, error) { return 0, nil },
+		)
+		out, err := prPrepareCoreWith("/mock/root", "/mock/work", PRPrepareIn{SkipConfigCheck: true}, rt)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if out.NeedsPush {
+			t.Error("expected NeedsPush=false when upstream is already caught up")
+		}
+	})
+
+	t.Run("upstream check failure degrades to a warning plus fail-safe NeedsPush", func(t *testing.T) {
+		rt := prepareNeedsPushRuntime(
+			func(dir string) (bool, error) { return false, errors.New("boom") },
+			func(dir string) (int, error) {
+				t.Fatal("gitCommitsAhead should not be called after an upstream-check error")
+				return 0, nil
+			},
+		)
+		out, err := prPrepareCoreWith("/mock/root", "/mock/work", PRPrepareIn{SkipConfigCheck: true}, rt)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !out.NeedsPush {
+			t.Error("expected fail-safe NeedsPush=true after an upstream-check error")
+		}
+		if !strings.Contains(strings.Join(out.Warnings, " "), "upstream check") {
+			t.Errorf("expected a warning mentioning 'upstream check', got %v", out.Warnings)
+		}
+	})
+
+	t.Run("commits ahead check failure degrades to warning plus fail-safe NeedsPush", func(t *testing.T) {
+		rt := prepareNeedsPushRuntime(
+			func(dir string) (bool, error) { return true, nil },
+			func(dir string) (int, error) { return 0, errors.New("rev-list failed") },
+		)
+		out, err := prPrepareCoreWith("/mock/root", "/mock/work", PRPrepareIn{SkipConfigCheck: true}, rt)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !out.NeedsPush {
+			t.Error("expected NeedsPush=true when commits-ahead check fails (fail-safe)")
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
 // pr_apply
 // ---------------------------------------------------------------------------
 
@@ -727,6 +859,13 @@ func TestPrApply_NoExistingPR_Creates(t *testing.T) {
 		ghPRCreate: func(dir, title, body string) (string, error) {
 			return "https://github.com/o/r/pull/9", nil
 		},
+		// SkipReleaseCheck triggers the verification gate (gitLogSinceTag);
+		// idle upstream means the push-decision block never calls
+		// gitPushSetUpstream.
+		gitLogSinceTag:     func(dir string) ([]string, error) { return nil, nil },
+		gitHasUpstream:     func(dir string) (bool, error) { return true, nil },
+		gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
+		gitPushSetUpstream: func(dir, remote string) error { return nil },
 	}
 
 	out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Add thing", Body: "Body text", SkipReleaseCheck: true}, rt)
@@ -752,6 +891,10 @@ func TestPrApply_ExistingPR_Updates(t *testing.T) {
 		ghPREdit: func(dir string, num int, title, body string) (string, error) {
 			return "https://github.com/o/r/pull/9", nil
 		},
+		gitLogSinceTag:     func(dir string) ([]string, error) { return nil, nil },
+		gitHasUpstream:     func(dir string) (bool, error) { return true, nil },
+		gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
+		gitPushSetUpstream: func(dir, remote string) error { return nil },
 	}
 
 	out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Updated title", Body: "Body text", SkipReleaseCheck: true}, rt)
@@ -803,6 +946,212 @@ func TestPrApply_NoReleaseLevel_NoSkip_DomainError(t *testing.T) {
 	}
 }
 
+// TestPrApply_SkipReleaseCheck_Verification covers the skipReleaseCheck
+// verification gate: the flag alone cannot authorize skipping a release when
+// commits since the last tag are release-worthy (feat/fix/breaking) — it is
+// verified against rt.gitLogSinceTag + analyzeConventionalCommits.
+func TestPrApply_SkipReleaseCheck_Verification(t *testing.T) {
+	t.Run("autoMode hard-rejects the skip when release-worthy commits exist", func(t *testing.T) {
+		rt := releaseTestRuntime("1.0.0")
+		rt.gitLogSinceTag = func(dir string) ([]string, error) {
+			return []string{"aaa1111 feat: add widget"}, nil
+		}
+
+		_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
+			Title: "T", Body: "B", SkipReleaseCheck: true, AutoMode: true,
+		}, rt)
+		var de *mcpserver.DomainError
+		if !errors.As(err, &de) {
+			t.Fatalf("expected *mcpserver.DomainError, got %T: %v", err, err)
+		}
+		if !strings.Contains(de.Msg, "not allowed unattended") {
+			t.Errorf("Msg: got %q", de.Msg)
+		}
+	})
+
+	t.Run("interactive mode requires a non-empty skipReleaseReason", func(t *testing.T) {
+		rt := releaseTestRuntime("1.0.0")
+		rt.gitLogSinceTag = func(dir string) ([]string, error) {
+			return []string{"aaa1111 fix: correct bug"}, nil
+		}
+
+		_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
+			Title: "T", Body: "B", SkipReleaseCheck: true,
+		}, rt)
+		var de *mcpserver.DomainError
+		if !errors.As(err, &de) {
+			t.Fatalf("expected *mcpserver.DomainError, got %T: %v", err, err)
+		}
+		if !strings.Contains(de.Msg, "skipReleaseReason") {
+			t.Errorf("Msg: got %q", de.Msg)
+		}
+	})
+
+	t.Run("interactive mode with a skipReleaseReason passes despite release-worthy commits", func(t *testing.T) {
+		rt := releaseTestRuntime("1.0.0")
+		rt.gitLogSinceTag = func(dir string) ([]string, error) {
+			return []string{"aaa1111 feat: add widget"}, nil
+		}
+		rt.ghPRCreate = func(dir, title, body string) (string, error) {
+			return "https://github.com/o/r/pull/30", nil
+		}
+
+		_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
+			Title: "T", Body: "B", SkipReleaseCheck: true,
+			SkipReleaseReason: "docs-only follow-up, release tracked separately",
+		}, rt)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("commit history classified purely as other passes silently", func(t *testing.T) {
+		rt := releaseTestRuntime("1.0.0")
+		rt.gitLogSinceTag = func(dir string) ([]string, error) {
+			return []string{"aaa1111 chore: tidy up"}, nil
+		}
+		rt.ghPRCreate = func(dir, title, body string) (string, error) {
+			return "https://github.com/o/r/pull/31", nil
+		}
+
+		_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
+			Title: "T", Body: "B", SkipReleaseCheck: true,
+		}, rt)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("gitLogSinceTag failure surfaces as InfraError", func(t *testing.T) {
+		rt := releaseTestRuntime("1.0.0")
+		rt.gitLogSinceTag = func(dir string) ([]string, error) { return nil, errors.New("boom") }
+
+		_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
+			Title: "T", Body: "B", SkipReleaseCheck: true,
+		}, rt)
+		var ie *mcpserver.InfraError
+		if !errors.As(err, &ie) {
+			t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
+		}
+	})
+}
+
+// TestPrApply_Push covers the push-decision block: pr_apply pushes the
+// current branch before create/edit when there is no upstream, or when the
+// upstream exists but HEAD has moved ahead of it; it skips the push when the
+// upstream is already caught up, and surfaces upstream/commits-ahead/push
+// failures as InfraError.
+func TestPrApply_Push(t *testing.T) {
+	t.Run("no upstream configured triggers a push", func(t *testing.T) {
+		var pushed bool
+		rt := releaseTestRuntime("1.0.0")
+		rt.execRun = mockAddLabelExec("release:patch")
+		rt.gitHasUpstream = func(dir string) (bool, error) { return false, nil }
+		rt.gitCommitsAhead = func(dir string) (int, error) {
+			t.Fatal("gitCommitsAhead should not be called when there is no upstream")
+			return 0, nil
+		}
+		rt.gitPushSetUpstream = func(dir, remote string) error {
+			pushed = true
+			if remote != "origin" {
+				t.Errorf("remote: got %q, want %q", remote, "origin")
+			}
+			return nil
+		}
+
+		_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
+			Title: "T", Body: "B", ReleaseLevel: "patch", ReleaseNotes: "notes", ReleaseSource: "user",
+		}, rt)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !pushed {
+			t.Error("expected gitPushSetUpstream to be called when no upstream is configured")
+		}
+	})
+
+	t.Run("upstream behind HEAD triggers a push", func(t *testing.T) {
+		var pushed bool
+		rt := releaseTestRuntime("1.0.0")
+		rt.execRun = mockAddLabelExec("release:patch")
+		rt.gitHasUpstream = func(dir string) (bool, error) { return true, nil }
+		rt.gitCommitsAhead = func(dir string) (int, error) { return 2, nil }
+		rt.gitPushSetUpstream = func(dir, remote string) error { pushed = true; return nil }
+
+		_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
+			Title: "T", Body: "B", ReleaseLevel: "patch", ReleaseNotes: "notes", ReleaseSource: "user",
+		}, rt)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !pushed {
+			t.Error("expected gitPushSetUpstream to be called when upstream is behind HEAD")
+		}
+	})
+
+	t.Run("upstream already caught up skips the push", func(t *testing.T) {
+		rt := releaseTestRuntime("1.0.0")
+		rt.execRun = mockAddLabelExec("release:patch")
+		rt.gitHasUpstream = func(dir string) (bool, error) { return true, nil }
+		rt.gitCommitsAhead = func(dir string) (int, error) { return 0, nil }
+		rt.gitPushSetUpstream = func(dir, remote string) error {
+			t.Fatal("gitPushSetUpstream should not be called when upstream has 0 commits ahead")
+			return nil
+		}
+
+		_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
+			Title: "T", Body: "B", ReleaseLevel: "patch", ReleaseNotes: "notes", ReleaseSource: "user",
+		}, rt)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("push failure surfaces as InfraError", func(t *testing.T) {
+		rt := releaseTestRuntime("1.0.0")
+		rt.execRun = mockAddLabelExec("release:patch")
+		rt.gitHasUpstream = func(dir string) (bool, error) { return false, nil }
+		rt.gitPushSetUpstream = func(dir, remote string) error { return errors.New("boom") }
+
+		_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
+			Title: "T", Body: "B", ReleaseLevel: "patch", ReleaseNotes: "notes", ReleaseSource: "user",
+		}, rt)
+		var ie *mcpserver.InfraError
+		if !errors.As(err, &ie) {
+			t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
+		}
+	})
+
+	t.Run("upstream-check failure surfaces as InfraError", func(t *testing.T) {
+		rt := releaseTestRuntime("1.0.0")
+		rt.execRun = mockAddLabelExec("release:patch")
+		rt.gitHasUpstream = func(dir string) (bool, error) { return false, errors.New("boom") }
+
+		_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
+			Title: "T", Body: "B", ReleaseLevel: "patch", ReleaseNotes: "notes", ReleaseSource: "user",
+		}, rt)
+		var ie *mcpserver.InfraError
+		if !errors.As(err, &ie) {
+			t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
+		}
+	})
+
+	t.Run("commits-ahead check failure surfaces as InfraError", func(t *testing.T) {
+		rt := releaseTestRuntime("1.0.0")
+		rt.execRun = mockAddLabelExec("release:patch")
+		rt.gitHasUpstream = func(dir string) (bool, error) { return true, nil }
+		rt.gitCommitsAhead = func(dir string) (int, error) { return 0, errors.New("boom") }
+
+		_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
+			Title: "T", Body: "B", ReleaseLevel: "patch", ReleaseNotes: "notes", ReleaseSource: "user",
+		}, rt)
+		var ie *mcpserver.InfraError
+		if !errors.As(err, &ie) {
+			t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
+		}
+	})
+}
+
 // ---------------------------------------------------------------------------
 // prEnrichPermissionError (task 1) — auth-enriched permission errors from
 // ghPRCreate/ghPREdit.
@@ -832,6 +1181,10 @@ func TestPrApply_PermissionError_EnrichedWithAuthHints(t *testing.T) {
 		ghAuthProbe: func(dir, host string) ghx.AuthProbeResult {
 			return ghx.AuthProbeResult{Authenticated: true, ActiveAccount: "me"}
 		},
+		gitLogSinceTag:     func(dir string) ([]string, error) { return nil, nil },
+		gitHasUpstream:     func(dir string) (bool, error) { return true, nil },
+		gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
+		gitPushSetUpstream: func(dir, remote string) error { return nil },
 	}
 
 	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Add thing", Body: "Body text", SkipReleaseCheck: true}, rt)
@@ -871,6 +1224,10 @@ func TestPrApply_PermissionError_FromEdit_EnrichedSameWay(t *testing.T) {
 		ghAuthProbe: func(dir, host string) ghx.AuthProbeResult {
 			return ghx.AuthProbeResult{Authenticated: true, ActiveAccount: "me"}
 		},
+		gitLogSinceTag:     func(dir string) ([]string, error) { return nil, nil },
+		gitHasUpstream:     func(dir string) (bool, error) { return true, nil },
+		gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
+		gitPushSetUpstream: func(dir, remote string) error { return nil },
 	}
 
 	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Updated title", Body: "Body text", SkipReleaseCheck: true}, rt)
@@ -899,6 +1256,10 @@ func TestPrApply_NonPermissionError_PassesThroughUnenriched(t *testing.T) {
 		// isPermissionError short-circuits before any of them would be
 		// called, a nil-func panic here would itself prove enrichment ran
 		// where it shouldn't have.
+		gitLogSinceTag:     func(dir string) ([]string, error) { return nil, nil },
+		gitHasUpstream:     func(dir string) (bool, error) { return true, nil },
+		gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
+		gitPushSetUpstream: func(dir, remote string) error { return nil },
 	}
 
 	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Add thing", Body: "Body text", SkipReleaseCheck: true}, rt)
@@ -926,6 +1287,10 @@ func TestPrApply_PermissionError_NoOriginRemote_FallsBackToGeneric(t *testing.T)
 		execRun: func(name string, args []string, opts execx.Options) (string, error) {
 			return "", errors.New("fatal: no such remote 'origin'")
 		},
+		gitLogSinceTag:     func(dir string) ([]string, error) { return nil, nil },
+		gitHasUpstream:     func(dir string) (bool, error) { return true, nil },
+		gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
+		gitPushSetUpstream: func(dir, remote string) error { return nil },
 	}
 
 	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Add thing", Body: "Body text", SkipReleaseCheck: true}, rt)
@@ -973,6 +1338,11 @@ func fakeReleasePRRuntime() prRuntime {
 		ghPRForBranch:    func(dir string) ghx.PRMetadata { return ghx.PRMetadata{Exists: false} },
 		ghPRCreate:       func(dir, title, body string) (string, error) { return "https://example.com/pull/1", nil },
 		execRun:          func(name string, args []string, opts execx.Options) (string, error) { return "", nil },
+		// Same idle defaults as releaseTestRuntime — see its comment.
+		gitHasUpstream:     func(dir string) (bool, error) { return true, nil },
+		gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
+		gitPushSetUpstream: func(dir, remote string) error { return nil },
+		gitLogSinceTag:     func(dir string) ([]string, error) { return nil, nil },
 	}
 }
 
@@ -1061,39 +1431,88 @@ func TestReleaseSourceValidation(t *testing.T) {
 	})
 }
 
-// TestPrApply_EmptyReleaseNotes_DomainError covers the release-notes gate:
-// releaseLevel set with empty (or whitespace-only) releaseNotes must be
-// rejected before any gh/git call is made, with a Suggestion guiding the
-// caller to draft notes rather than skip them by omission.
-func TestPrApply_EmptyReleaseNotes_DomainError(t *testing.T) {
-	t.Run("empty releaseNotes is rejected", func(t *testing.T) {
-		_, err := prApplyCore("", "", PRApplyIn{
+// TestPrApply_EmptyReleaseNotes_AutoGenerated covers the release-notes
+// auto-generation path: releaseLevel set with empty (or whitespace-only)
+// releaseNotes is no longer rejected — notes are auto-generated from commits
+// since the last release tag (generateReleaseNotes) and folded into the PR
+// body, since this is tool-authoritative content derived deterministically
+// from git history, not something the calling LLM needs to draft.
+func TestPrApply_EmptyReleaseNotes_AutoGenerated(t *testing.T) {
+	t.Run("empty releaseNotes is auto-generated from commit history", func(t *testing.T) {
+		var capturedBody string
+		rt := releaseTestRuntime("1.0.0")
+		rt.gitLogSinceTag = func(dir string) ([]string, error) {
+			return []string{
+				"aaa1111 feat: add widget",
+				"bbb2222 fix: correct bug",
+			}, nil
+		}
+		rt.ghPRCreate = func(dir, title, body string) (string, error) {
+			capturedBody = body
+			return "https://github.com/o/r/pull/20", nil
+		}
+		rt.execRun = mockAddLabelExec("release:patch")
+
+		out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
 			Title: "T", Body: "B", ReleaseLevel: "patch", ReleaseNotes: "", ReleaseSource: "user",
-		})
-		if err == nil {
-			t.Fatal("expected an error for empty releaseNotes")
+		}, rt)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
 		}
-		var domainErr *mcpserver.DomainError
-		if !errors.As(err, &domainErr) {
-			t.Fatalf("expected *mcpserver.DomainError, got %T: %v", err, err)
+		if out.ReleaseIntent == nil || !out.ReleaseIntent.NotesInBody {
+			t.Fatal("expected auto-generated release notes to land in the body")
 		}
-		if domainErr.Msg != "releaseNotes is required when releaseLevel is set" {
-			t.Errorf("Msg: got %q", domainErr.Msg)
-		}
-		if domainErr.Suggestion == "" {
-			t.Error("expected a non-empty Suggestion")
+		if !strings.Contains(capturedBody, "add widget") || !strings.Contains(capturedBody, "correct bug") {
+			t.Errorf("body missing auto-generated release notes content, got: %s", capturedBody)
 		}
 	})
 
-	t.Run("whitespace-only releaseNotes is rejected", func(t *testing.T) {
-		_, err := prApplyCore("", "", PRApplyIn{
-			Title: "T", Body: "B", ReleaseLevel: "patch", ReleaseNotes: "   \n\t", ReleaseSource: "user",
-		})
-		if err == nil {
-			t.Fatal("expected an error for whitespace-only releaseNotes")
+	t.Run("whitespace-only releaseNotes is treated as empty and auto-generated", func(t *testing.T) {
+		rt := releaseTestRuntime("1.0.0")
+		rt.gitLogSinceTag = func(dir string) ([]string, error) { return nil, nil }
+		rt.ghPRCreate = func(dir, title, body string) (string, error) {
+			return "https://github.com/o/r/pull/21", nil
 		}
-		if !strings.Contains(err.Error(), "releaseNotes") {
-			t.Errorf("error should mention releaseNotes, got: %v", err)
+		rt.execRun = mockAddLabelExec("release:patch")
+
+		out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
+			Title: "T", Body: "B", ReleaseLevel: "patch", ReleaseNotes: "   \n\t", ReleaseSource: "user",
+		}, rt)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if out.ReleaseIntent == nil || !out.ReleaseIntent.NotesInBody {
+			t.Fatal("expected auto-generated notes to land in the body even for whitespace-only input")
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// prCommitGroups classification
+// ---------------------------------------------------------------------------
+
+func TestPrCommitGroups(t *testing.T) {
+	t.Run("bang-colon marks commit as breaking", func(t *testing.T) {
+		breaking, feat, fix, other := prCommitGroups([]string{"abc123 feat!: drop legacy API"})
+		if len(breaking) != 1 || breaking[0] != "feat!: drop legacy API" {
+			t.Errorf("expected breaking=[feat!: drop legacy API], got breaking=%v feat=%v fix=%v other=%v", breaking, feat, fix, other)
+		}
+	})
+
+	t.Run("BREAKING CHANGE in subject marks commit as breaking", func(t *testing.T) {
+		breaking, feat, fix, other := prCommitGroups([]string{"def456 refactor: BREAKING CHANGE in auth module"})
+		if len(breaking) != 1 || breaking[0] != "refactor: BREAKING CHANGE in auth module" {
+			t.Errorf("expected breaking=[refactor: BREAKING CHANGE in auth module], got breaking=%v feat=%v fix=%v other=%v", breaking, feat, fix, other)
+		}
+	})
+
+	t.Run("normal fix is not breaking", func(t *testing.T) {
+		breaking, feat, fix, other := prCommitGroups([]string{"aaa111 fix: normal bugfix"})
+		if len(breaking) != 0 {
+			t.Errorf("expected no breaking commits, got %v", breaking)
+		}
+		if len(fix) != 1 || fix[0] != "fix: normal bugfix" {
+			t.Errorf("expected fix=[fix: normal bugfix], got fix=%v feat=%v other=%v", fix, feat, other)
 		}
 	})
 }
@@ -1380,6 +1799,12 @@ func TestPRApply_WithoutRelease_Unchanged(t *testing.T) {
 			t.Fatalf("execRun should not be called when releaseLevel is unset, got: %s %v", name, args)
 			return "", nil
 		},
+		// SkipReleaseCheck triggers the verification gate (gitLogSinceTag);
+		// idle upstream keeps the push-decision block from calling
+		// gitPushSetUpstream (which would need its own mock here).
+		gitLogSinceTag:  func(dir string) ([]string, error) { return nil, nil },
+		gitHasUpstream:  func(dir string) (bool, error) { return true, nil },
+		gitCommitsAhead: func(dir string) (int, error) { return 0, nil },
 	}
 
 	out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{

@@ -24,6 +24,7 @@ release bump as part of opening the PR.
 | `--update` | Signals you're updating an existing PR. Has no practical effect: the skill auto-detects create vs. update either way. | off |
 | `--draft` | Create the PR as a draft. **Not yet functional.** | off |
 | `--base <branch>` | Target base branch. **Not yet functional.** | auto-detected |
+| `--skip-approval` | Skip only the Step 5 publish-confirmation prompt (e.g. when dispatched by ship, which already resolved release intent). Not equivalent to `--auto`. | off |
 | `--label <name>` | Add a label to the PR. **Not yet functional.** | none |
 
 ## Examples

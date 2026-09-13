@@ -348,6 +348,138 @@ func TestReadCLIEvidenceInWindow_EmptyFile(t *testing.T) {
 	}
 }
 
+// TestAppendCLIEvidence_RotatesWhenOverCap confirms Task 10's bounding
+// mechanism: once the evidence file is already at/over maxEvidenceFileBytes,
+// the next append rotates the existing content to a ".1" sibling and starts
+// a fresh file holding just the new entry, rather than growing the file
+// unboundedly.
+func TestAppendCLIEvidence_RotatesWhenOverCap(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, ".sdlc-v2", "evidence", "cli-executions.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	oversized := bytes.Repeat([]byte("x"), maxEvidenceFileBytes+1)
+	if err := os.WriteFile(path, oversized, 0o644); err != nil {
+		t.Fatalf("write oversized fixture: %v", err)
+	}
+
+	entry := CLIEvidenceEntry{
+		Timestamp: "2026-09-13T00:00:00Z", Pipeline: "ship", Branch: "main",
+		Command: "echo hi", ExitCode: 0, OutputHead: "hi",
+	}
+	if err := appendCLIEvidence(root, entry); err != nil {
+		t.Fatalf("appendCLIEvidence: %v", err)
+	}
+
+	rotated, err := os.ReadFile(path + ".1")
+	if err != nil {
+		t.Fatalf("expected rotated .1 file: %v", err)
+	}
+	if len(rotated) != len(oversized) {
+		t.Errorf("rotated file size = %d, want %d (the old oversized content)", len(rotated), len(oversized))
+	}
+
+	fresh, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("expected fresh file after rotation: %v", err)
+	}
+	var got CLIEvidenceEntry
+	if err := json.Unmarshal(bytes.TrimSpace(fresh), &got); err != nil {
+		t.Fatalf("fresh file not valid single-entry JSONL: %v (%s)", err, fresh)
+	}
+	if got.Command != "echo hi" {
+		t.Errorf("fresh file entry Command = %q, want %q", got.Command, "echo hi")
+	}
+}
+
+// TestAppendCLIEvidence_NoRotationUnderCap confirms ordinary, well-under-cap
+// usage never creates a ".1" sibling.
+func TestAppendCLIEvidence_NoRotationUnderCap(t *testing.T) {
+	root := t.TempDir()
+
+	for i := 0; i < 3; i++ {
+		entry := CLIEvidenceEntry{Timestamp: "2026-09-13T00:00:00Z", Branch: "main", Command: "echo hi"}
+		if err := appendCLIEvidence(root, entry); err != nil {
+			t.Fatalf("appendCLIEvidence: %v", err)
+		}
+	}
+
+	path := filepath.Join(root, ".sdlc-v2", "evidence", "cli-executions.jsonl")
+	if _, err := os.Stat(path + ".1"); !os.IsNotExist(err) {
+		t.Errorf("expected no .1 rotation file under cap, stat err = %v", err)
+	}
+}
+
+// TestLastCLIEvidenceEntry_EmptyFile confirms the exported dedup-guard
+// wrapper (Task 10) reports false, no error, on a missing/empty file.
+func TestLastCLIEvidenceEntry_EmptyFile(t *testing.T) {
+	root := t.TempDir()
+
+	_, ok, err := LastCLIEvidenceEntry(root)
+	if err != nil {
+		t.Fatalf("LastCLIEvidenceEntry: %v", err)
+	}
+	if ok {
+		t.Error("ok = true, want false for missing file")
+	}
+}
+
+// TestLastCLIEvidenceEntry_ReturnsMostRecent confirms it returns the last
+// appended entry, not the first.
+func TestLastCLIEvidenceEntry_ReturnsMostRecent(t *testing.T) {
+	root := t.TempDir()
+
+	for _, cmd := range []string{"first", "second", "third"} {
+		entry := CLIEvidenceEntry{Timestamp: "2026-09-13T00:00:00Z", Branch: "main", Command: cmd}
+		if err := appendCLIEvidence(root, entry); err != nil {
+			t.Fatalf("appendCLIEvidence: %v", err)
+		}
+	}
+
+	got, ok, err := LastCLIEvidenceEntry(root)
+	if err != nil {
+		t.Fatalf("LastCLIEvidenceEntry: %v", err)
+	}
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	if got.Command != "third" {
+		t.Errorf("Command = %q, want %q", got.Command, "third")
+	}
+}
+
+// TestExecLastRecordedWaveNumber_NoWaves confirms nil comes back when
+// data["waves"] is absent or empty.
+func TestExecLastRecordedWaveNumber_NoWaves(t *testing.T) {
+	if got := ExecLastRecordedWaveNumber(map[string]any{}); got != nil {
+		t.Errorf("got %v, want nil", *got)
+	}
+	if got := ExecLastRecordedWaveNumber(map[string]any{"waves": []any{}}); got != nil {
+		t.Errorf("got %v, want nil", *got)
+	}
+}
+
+// TestExecLastRecordedWaveNumber_ReturnsHighest confirms the exported
+// wrapper (Task 10) delegates correctly to execLastRecordedWave, returning
+// the highest wave "number" regardless of slice order.
+func TestExecLastRecordedWaveNumber_ReturnsHighest(t *testing.T) {
+	data := map[string]any{
+		"waves": []any{
+			map[string]any{"number": float64(2), "status": "completed"},
+			map[string]any{"number": float64(1), "status": "completed"},
+		},
+	}
+	got := ExecLastRecordedWaveNumber(data)
+	if got == nil {
+		t.Fatal("got nil, want a pointer to 2")
+	}
+	if *got != 2 {
+		t.Errorf("got %d, want 2", *got)
+	}
+}
+
 // TestReadCLIEvidenceInWindow_CapReturnsTail confirms that when more entries
 // match than the cap n, only the last n (tail) are returned.
 func TestReadCLIEvidenceInWindow_CapReturnsTail(t *testing.T) {

@@ -46,11 +46,12 @@ import (
 // plan_prepare types
 // ---------------------------------------------------------------------------
 
-// PlanPrepareIn is the input for the plan_prepare tool. This is the full
-// contract shape: it deliberately has no user-prompt field, so the embedded
-// explorePack always runs with an empty prompt (see RULING in the task
-// report — keyword-scope and web-research-signal detection are inert here;
-// only plan_explore_prepare's separate UserPrompt field can exercise them).
+// PlanPrepareIn is the input for the plan_prepare tool. UserPrompt is
+// forwarded into the embedded explorePack (see buildExplorePack below) so
+// keyword-scope and web-research-signal detection can run on it — the prior
+// deliberate-empty-prompt ruling predates those two features, which degrade
+// to no-ops without a prompt. plan_explore_prepare's separate UserPrompt
+// field remains the primary way to exercise them explicitly.
 type PlanPrepareIn struct {
 	SkipConfigCheck        bool   `json:"skipConfigCheck" jsonschema_description:"Skips the config-version auto-migration gate normally run before preparing plan metadata. Set only when the caller has already verified or migrated the config."`
 	FromOpenspec           string `json:"fromOpenspec" jsonschema_description:"Name of the openspec change to prepare plan metadata from (change validation, tasks inventory, explore-pack discovery). Empty when not planning from an openspec change."`
@@ -59,6 +60,7 @@ type PlanPrepareIn struct {
 	OpenspecInlineGenerate bool   `json:"openspecInlineGenerate" jsonschema_description:"True when the openspec change proposal is being inline-generated as part of this plan run. Combined with fromOpenspecDirect to determine whether openspec routing is active."`
 	Lightweight            bool   `json:"lightweight" jsonschema_description:"Requests the lightweight complexity-routing path regardless of file count, adjusting dispatch metadata accordingly."`
 	FileCount              int    `json:"fileCount" jsonschema_description:"Number of files the change is expected to touch, used with lightweight to compute complexity routing (pipeline mode)."`
+	UserPrompt             string `json:"userPrompt" jsonschema_description:"User's plan request text, forwarded to buildExplorePack for keyword-scope and web-research-signal detection. Empty behaves identically to prior versions."`
 }
 
 // OpenspecChangeInfo, OpenspecAuthoritative, and OpenspecInfo used to be
@@ -1155,6 +1157,39 @@ func writeSkillInvokedMarker(mainRoot, contentRoot string) {
 	}
 }
 
+// writeCreationIntent records the plan's creation intent — the originating
+// user prompt plus the computed complexity routing — into the SAME plan
+// state file writeSkillInvokedMarker just (re)created earlier in this same
+// planPrepareCore call. Only called when in.ResolveTemplate is true (the
+// call that actually resolves the template and computes routing); an
+// earlier plan_prepare call without resolveTemplate writes skillInvoked
+// only, no creationIntent.
+//
+// Uses state.Find + state.Write rather than state.Init: Init would create
+// yet another fresh (prune-pending) file and lose the skillInvoked
+// timestamp just stamped; Find retrieves the file that is already the sole
+// survivor for this branch, so the Write below has nothing left to prune.
+func writeCreationIntent(mainRoot, contentRoot string, in PlanPrepareIn) {
+	branch, err := gitx.CurrentBranch(contentRoot)
+	if err != nil || branch == "" {
+		return
+	}
+	st, err := state.Find(mainRoot, "plan", branch)
+	if err != nil || st == nil {
+		return
+	}
+	routing := computeComplexityRouting(in.FileCount, in.Lightweight)
+	st.Data["creationIntent"] = map[string]any{
+		"userPrompt": in.UserPrompt,
+		"scope":      routing.PipelineMode,
+		"routing":    routing.Reason,
+		"timestamp":  time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := state.Write(st); err != nil {
+		fmt.Fprintf(os.Stderr, "[plan] writeCreationIntent: state write failed: %v\n", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // plan_prepare core logic
 // ---------------------------------------------------------------------------
@@ -1180,6 +1215,9 @@ func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepar
 	}
 
 	writeSkillInvokedMarker(mainRoot, contentRoot)
+	if in.ResolveTemplate {
+		writeCreationIntent(mainRoot, contentRoot, in)
+	}
 
 	// 1. OpenSpec detection.
 	openspecInfo := openspec.DetectActiveChanges(contentRoot)
@@ -1277,7 +1315,7 @@ func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepar
 	planTasks := loadPlanTasks(mainRoot)
 
 	// 4. plan-explore discovery pack (KD4: in-process call, not subprocess).
-	explorePack := buildExplorePack(mainRoot, contentRoot, in.FromOpenspec, "")
+	explorePack := buildExplorePack(mainRoot, contentRoot, in.FromOpenspec, in.UserPrompt)
 
 	// 5. G17 dispatch + githubHosting signals.
 	githubHosting := buildGithubHosting(mainRoot)
@@ -1328,12 +1366,33 @@ func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepar
 // critiqueRan): the task's own binding Contract adds "skillInvoked" as a
 // fourth valid value (skillInvoked is otherwise only ever written
 // automatically during plan_prepare, never via an explicit CLI --mark in
-// the JS original).
+// the JS original), and "done" as a fifth: a terminal marker the plan
+// SKILL.md stamps right before ExitPlanMode to signal the plan is finished.
+// "done" is deliberately excluded from stop_hooks.go's requiredPlanMarkers —
+// it gates *whether* those four markers are checked at all (see
+// planIntegrityFromState), it is not itself one of the checked markers.
+//
+// "guardrailResults" and "criticalDecisions" are a sixth/seventh kind:
+// structured-data markers (see PlanMarkIn.Data) that append to their own
+// top-level st.Data key instead of stamping a timestamp into planIntegrity —
+// they never participate in the requiredPlanMarkers check.
 var validMarkers = map[string]bool{
 	"plan-file":           true,
 	"skillInvoked":        true,
 	"guardrailsEvaluated": true,
 	"critiqueRan":         true,
+	"done":                true,
+	"guardrailResults":    true,
+	"criticalDecisions":   true,
+}
+
+// structuredDataMarkers maps a plan_mark structured-data marker name to the
+// key inside PlanMarkIn.Data holding its array payload
+// (plan_mark({marker:"guardrailResults", data:{results:[...]}}) and
+// plan_mark({marker:"criticalDecisions", data:{decisions:[...]}})).
+var structuredDataMarkers = map[string]string{
+	"guardrailResults":  "results",
+	"criticalDecisions": "decisions",
 }
 
 // markerKey maps a marker name to its planIntegrity JSON key, mirroring
@@ -1347,8 +1406,9 @@ func markerKey(marker string) string {
 
 // PlanMarkIn is the input for the plan_mark tool.
 type PlanMarkIn struct {
-	Marker string `json:"marker" jsonschema_description:"Checkpoint marker to stamp with the current timestamp: \"plan-file\", \"skillInvoked\", \"guardrailsEvaluated\", or \"critiqueRan\"."`
-	Path   string `json:"path" jsonschema_description:"Plan file path to record. Only used (and required) when marker is \"plan-file\"."`
+	Marker string         `json:"marker" jsonschema_description:"Checkpoint marker: \"plan-file\", \"skillInvoked\", \"guardrailsEvaluated\", \"critiqueRan\", or the terminal \"done\" marker stamp the current timestamp into planIntegrity; \"guardrailResults\" and \"criticalDecisions\" instead append data's array payload to their own state key."`
+	Path   string         `json:"path" jsonschema_description:"Plan file path to record. Only used (and required) when marker is \"plan-file\"."`
+	Data   map[string]any `json:"data,omitempty" jsonschema_description:"Structured payload for the \"guardrailResults\" marker ({results:[{id,status,detail}]}) or the \"criticalDecisions\" marker ({decisions:[{key,choice,reason}]}). Ignored for every other marker."`
 }
 
 // PlanMarkOut is the output for the plan_mark tool.
@@ -1400,6 +1460,28 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 		return PlanMarkOut{}, &mcpserver.DomainError{
 			Msg: fmt.Sprintf("no plan state file found for branch %q; run plan_prepare first", branch),
 		}
+	}
+
+	// Structured-data markers append to their own top-level state key and
+	// never touch planIntegrity — the existing timestamp-marker flow below
+	// is entirely unaffected by this branch.
+	if dataKey, isStructured := structuredDataMarkers[in.Marker]; isStructured {
+		var newEntries []any
+		if in.Data != nil {
+			if arr, ok := in.Data[dataKey].([]any); ok {
+				newEntries = arr
+			}
+		}
+		existing, _ := st.Data[in.Marker].([]any)
+		st.Data[in.Marker] = append(existing, newEntries...)
+
+		if err := state.Write(st); err != nil {
+			return PlanMarkOut{}, &mcpserver.InfraError{
+				Msg:   fmt.Sprintf("write plan state file: %s", err.Error()),
+				Cause: err,
+			}
+		}
+		return PlanMarkOut{OK: true, Marker: in.Marker, Path: st.Path}, nil
 	}
 
 	integrity, ok := st.Data["planIntegrity"].(map[string]any)
@@ -1455,7 +1537,7 @@ func RegisterPlanTools(s *mcpserver.Server) {
 	)
 
 	mcpserver.Register(s, "plan_mark",
-		"INTERNAL — called by sdlc skills only. Write a plan-integrity checkpoint marker (plan-file, skillInvoked, guardrailsEvaluated, critiqueRan) into the current branch's plan state file.",
+		"INTERNAL — called by sdlc skills only. Write a plan-integrity checkpoint marker (plan-file, skillInvoked, guardrailsEvaluated, critiqueRan, done) into the current branch's plan state file, or append structured data (guardrailResults, criticalDecisions) to it.",
 		func(_ mcpserver.Ctx, in PlanMarkIn) (PlanMarkOut, error) {
 			mainRoot, err := worktree.MainRoot()
 			if err != nil {

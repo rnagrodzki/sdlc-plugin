@@ -685,3 +685,167 @@ func TestFetchTags_NotARepo(t *testing.T) {
 		t.Fatal("FetchTags outside repo: expected error, got nil")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// HasUpstream
+// ---------------------------------------------------------------------------
+
+func TestHasUpstream_True(t *testing.T) {
+	// Create a bare "origin" and clone it so the default branch tracks
+	// origin/main automatically.
+	origin := t.TempDir()
+	initGitRepo(t, origin)
+	// Convert to bare so it can serve as a remote.
+	bare := t.TempDir()
+	gitRun(t, bare, "clone", "--bare", origin, ".")
+
+	clone := t.TempDir()
+	gitRun(t, clone, "clone", bare, ".")
+	gitRun(t, clone, "config", "user.email", "test@test.com")
+	gitRun(t, clone, "config", "user.name", "Test")
+
+	got, err := HasUpstream(clone)
+	if err != nil {
+		t.Fatalf("HasUpstream: unexpected error: %v", err)
+	}
+	if !got {
+		t.Fatal("HasUpstream: got false, want true for tracked branch")
+	}
+}
+
+func TestHasUpstream_NoUpstream(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	got, err := HasUpstream(dir)
+	if err != nil {
+		t.Fatalf("HasUpstream: unexpected error: %v", err)
+	}
+	if got {
+		t.Fatal("HasUpstream: got true, want false for local-only branch")
+	}
+}
+
+func TestHasUpstream_NotARepo(t *testing.T) {
+	dir := t.TempDir()
+
+	_, err := HasUpstream(dir)
+	if err == nil {
+		t.Fatal("HasUpstream outside repo: expected error, got nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PushSetUpstream
+// ---------------------------------------------------------------------------
+
+func TestPushSetUpstream_EmptyRemote(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	err := PushSetUpstream(dir, "")
+	if err == nil {
+		t.Fatal("PushSetUpstream(\"\"): expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "remote is empty") {
+		t.Fatalf("PushSetUpstream(\"\"): error = %q, want mention of %q", err.Error(), "remote is empty")
+	}
+}
+
+func TestPushSetUpstream_InvalidRemote(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	err := PushSetUpstream(dir, "--delete")
+	if err == nil {
+		t.Fatal("PushSetUpstream(\"--delete\"): expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "looks like a flag") {
+		t.Fatalf("PushSetUpstream(\"--delete\"): error = %q, want mention of %q", err.Error(), "looks like a flag")
+	}
+}
+
+func TestPushSetUpstream_Success(t *testing.T) {
+	// Create a bare remote, clone it, make a commit, push with set-upstream.
+	bare := t.TempDir()
+	gitRun(t, bare, "init", "--bare")
+
+	clone := t.TempDir()
+	gitRun(t, clone, "clone", bare, ".")
+	gitRun(t, clone, "config", "user.email", "test@test.com")
+	gitRun(t, clone, "config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(clone, "push.txt"), []byte("push\n"), 0644); err != nil {
+		t.Fatalf("write push.txt: %v", err)
+	}
+	gitRun(t, clone, "add", "push.txt")
+	gitRun(t, clone, "commit", "-m", "initial commit")
+
+	if err := PushSetUpstream(clone, "origin"); err != nil {
+		t.Fatalf("PushSetUpstream: unexpected error: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CommitsAhead
+// ---------------------------------------------------------------------------
+
+func TestCommitsAhead_Zero(t *testing.T) {
+	// Clone a bare repo so the branch has an upstream, then make no further
+	// commits — ahead count should be 0.
+	origin := t.TempDir()
+	initGitRepo(t, origin)
+	bare := t.TempDir()
+	gitRun(t, bare, "clone", "--bare", origin, ".")
+
+	clone := t.TempDir()
+	gitRun(t, clone, "clone", bare, ".")
+	gitRun(t, clone, "config", "user.email", "test@test.com")
+	gitRun(t, clone, "config", "user.name", "Test")
+
+	got, err := CommitsAhead(clone)
+	if err != nil {
+		t.Fatalf("CommitsAhead: unexpected error: %v", err)
+	}
+	if got != 0 {
+		t.Fatalf("CommitsAhead: got %d, want 0", got)
+	}
+}
+
+func TestCommitsAhead_Positive(t *testing.T) {
+	origin := t.TempDir()
+	initGitRepo(t, origin)
+	bare := t.TempDir()
+	gitRun(t, bare, "clone", "--bare", origin, ".")
+
+	clone := t.TempDir()
+	gitRun(t, clone, "clone", bare, ".")
+	gitRun(t, clone, "config", "user.email", "test@test.com")
+	gitRun(t, clone, "config", "user.name", "Test")
+
+	// Make 2 local commits ahead of the upstream.
+	for i := 0; i < 2; i++ {
+		name := filepath.Join(clone, "ahead"+strings.Repeat("x", i)+".txt")
+		if err := os.WriteFile(name, []byte("x\n"), 0644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+		gitRun(t, clone, "add", ".")
+		gitRun(t, clone, "commit", "-m", "ahead commit")
+	}
+
+	got, err := CommitsAhead(clone)
+	if err != nil {
+		t.Fatalf("CommitsAhead: unexpected error: %v", err)
+	}
+	if got != 2 {
+		t.Fatalf("CommitsAhead: got %d, want 2", got)
+	}
+}
+
+func TestCommitsAhead_NotARepo(t *testing.T) {
+	dir := t.TempDir()
+
+	_, err := CommitsAhead(dir)
+	if err == nil {
+		t.Fatal("CommitsAhead outside repo: expected error, got nil")
+	}
+}

@@ -193,12 +193,18 @@ func TestStopStateSave_ExecuteFallback_DerivesWaveFields(t *testing.T) {
 // stopPlanIntegrity
 // ---------------------------------------------------------------------------
 
+// allPlanMarkers returns a planIntegrity map with all four
+// requiredPlanMarkers plus "done" set — i.e. a plan that has declared
+// itself finished (via plan_mark({marker: "done"})) with every checkpoint
+// present. Callers exercising the "plan still running" (no "done") path
+// must delete("done") from the returned map first.
 func allPlanMarkers() map[string]any {
 	return map[string]any{
 		"skillInvoked":        "2024-01-01T00:00:00Z",
 		"planFile":            "2024-01-01T00:00:01Z",
 		"guardrailsEvaluated": "2024-01-01T00:00:02Z",
 		"critiqueRan":         "2024-01-01T00:00:03Z",
+		"done":                "2024-01-01T00:00:04Z",
 	}
 }
 
@@ -282,6 +288,84 @@ func TestStopPlanIntegrity_MissingMarker_WarnsDeletesNeverBlocks(t *testing.T) {
 	}
 }
 
+// TestStopPlanIntegrity_CreationIntentUserPrompt_RicherWarning verifies that
+// when the plan state file carries a creationIntent.userPrompt (written by
+// plan_prepare's resolveTemplate call — see writeCreationIntent in
+// internal/tools/plan.go), the stop hook's warning names the originating
+// request instead of the generic header, while the rest of the aggregated
+// warning (missing-checkpoint list, description lines) is unchanged.
+func TestStopPlanIntegrity_CreationIntentUserPrompt_RicherWarning(t *testing.T) {
+	root := gitFixture(t, "feat/plan-intent")
+	branch := "feat/plan-intent"
+
+	planFile := filepath.Join(root, "plans", "my-plan.md")
+	mustMkdirAll(t, filepath.Join(root, "plans"))
+	mustWriteFile(t, planFile, "# Plan\n\nSome content.\n")
+
+	markers := allPlanMarkers()
+	delete(markers, "critiqueRan")
+	st := newPlanState(t, root, branch, markers, planFile)
+	st.Data["creationIntent"] = map[string]any{
+		"userPrompt": "fix the login bug",
+		"scope":      "lightweight",
+		"routing":    "2 files detected — lightweight pipeline",
+		"timestamp":  "2024-01-01T00:00:00Z",
+	}
+	if err := state.Write(st); err != nil {
+		t.Fatal(err)
+	}
+
+	var out Output
+	stderrText := captureStderr(t, func() {
+		var err error
+		out, err = stopPlanIntegrity(HookCtx{}, Event{})
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+	assertSilent(t, out)
+
+	if !strings.Contains(stderrText, "plan for 'fix the login bug' had incomplete checkpoints") {
+		t.Errorf("stderr = %q, want the creationIntent.userPrompt-enriched header", stderrText)
+	}
+	if !strings.Contains(stderrText, "Missing checkpoints: critiqueRan") {
+		t.Errorf("stderr = %q, want it to still list critiqueRan as missing", stderrText)
+	}
+	if !strings.Contains(stderrText, "critiqueRan: Step 3 self-critique did not run") {
+		t.Errorf("stderr = %q, want the critiqueRan description line", stderrText)
+	}
+}
+
+// TestStopPlanIntegrity_NoCreationIntent_GenericWarning verifies the
+// pre-existing generic header is unchanged when creationIntent is absent
+// (e.g. a plan state file created before this enrichment, or a plan_prepare
+// call that never passed resolveTemplate:true).
+func TestStopPlanIntegrity_NoCreationIntent_GenericWarning(t *testing.T) {
+	root := gitFixture(t, "feat/plan-no-intent")
+	branch := "feat/plan-no-intent"
+
+	planFile := filepath.Join(root, "plans", "my-plan.md")
+	mustMkdirAll(t, filepath.Join(root, "plans"))
+	mustWriteFile(t, planFile, "# Plan\n\nSome content.\n")
+
+	markers := allPlanMarkers()
+	delete(markers, "critiqueRan")
+	newPlanState(t, root, branch, markers, planFile)
+
+	stderrText := captureStderr(t, func() {
+		if _, err := stopPlanIntegrity(HookCtx{}, Event{}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	if !strings.Contains(stderrText, "WARNING: Plan presented with incomplete plan execution.") {
+		t.Errorf("stderr = %q, want the generic header when creationIntent is absent", stderrText)
+	}
+	if strings.Contains(stderrText, "had incomplete checkpoints") {
+		t.Errorf("stderr = %q, did not want the enriched header when creationIntent is absent", stderrText)
+	}
+}
+
 func TestStopPlanIntegrity_EmptyPlanFileOnDisk_FlagsPlanFileWithPath(t *testing.T) {
 	root := gitFixture(t, "feat/plan-empty-file")
 	branch := "feat/plan-empty-file"
@@ -310,6 +394,94 @@ func TestStopPlanIntegrity_EmptyPlanFileOnDisk_FlagsPlanFileWithPath(t *testing.
 	}
 	if !strings.Contains(stderrText, "planFilePath="+planFile) {
 		t.Errorf("stderr = %q, want the planFilePath-annotated description", stderrText)
+	}
+}
+
+func TestStopPlanIntegrity_NoDoneMarker_KeepsFileSilently(t *testing.T) {
+	root := gitFixture(t, "feat/plan-not-done")
+	branch := "feat/plan-not-done"
+
+	planFile := filepath.Join(root, "plans", "my-plan.md")
+	mustMkdirAll(t, filepath.Join(root, "plans"))
+	mustWriteFile(t, planFile, "# Plan\n\nSome content.\n")
+
+	markers := allPlanMarkers()
+	delete(markers, "done")
+	st := newPlanState(t, root, branch, markers, planFile)
+
+	var out Output
+	stderrText := captureStderr(t, func() {
+		var err error
+		out, err = stopPlanIntegrity(HookCtx{}, Event{})
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+	assertSilent(t, out)
+
+	if _, statErr := os.Stat(st.Path); statErr != nil {
+		t.Fatalf("plan state file should still exist (no %q marker — plan still running), stat err = %v", "done", statErr)
+	}
+	if stderrText != "" {
+		t.Errorf("stderr = %q, want empty (no evaluation happens before %q is stamped)", stderrText, "done")
+	}
+}
+
+func TestStopPlanIntegrity_NoDoneMarker_EvenWithMissingRequiredMarkers_KeepsFileSilently(t *testing.T) {
+	// Proves the "done" gate short-circuits BEFORE the requiredPlanMarkers
+	// check runs at all: a plan missing critiqueRan (which would normally
+	// warn once evaluated) produces no warning and no deletion as long as
+	// "done" is absent.
+	root := gitFixture(t, "feat/plan-not-done-missing")
+	branch := "feat/plan-not-done-missing"
+
+	markers := allPlanMarkers()
+	delete(markers, "done")
+	delete(markers, "critiqueRan")
+	st := newPlanState(t, root, branch, markers, "")
+
+	var out Output
+	stderrText := captureStderr(t, func() {
+		var err error
+		out, err = stopPlanIntegrity(HookCtx{}, Event{})
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+	assertSilent(t, out)
+
+	if _, statErr := os.Stat(st.Path); statErr != nil {
+		t.Fatalf("plan state file should still exist, stat err = %v", statErr)
+	}
+	if stderrText != "" {
+		t.Errorf("stderr = %q, want empty", stderrText)
+	}
+}
+
+func TestStopPlanIntegrity_NoPlanIntegrityData_KeepsFileSilently(t *testing.T) {
+	// A plan state file with no planIntegrity map at all (e.g. freshly
+	// initialized, before any plan_mark call) is treated the same as "no
+	// done marker": kept, silent, no warning.
+	root := gitFixture(t, "feat/plan-empty-integrity")
+	branch := "feat/plan-empty-integrity"
+
+	st := newPlanState(t, root, branch, nil, "")
+
+	var out Output
+	stderrText := captureStderr(t, func() {
+		var err error
+		out, err = stopPlanIntegrity(HookCtx{}, Event{})
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+	assertSilent(t, out)
+
+	if _, statErr := os.Stat(st.Path); statErr != nil {
+		t.Fatalf("plan state file should still exist, stat err = %v", statErr)
+	}
+	if stderrText != "" {
+		t.Errorf("stderr = %q, want empty", stderrText)
 	}
 }
 

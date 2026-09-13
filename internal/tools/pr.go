@@ -120,6 +120,12 @@ type PRPrepareOut struct {
 	UncommittedChanges bool                      `json:"uncommittedChanges,omitempty"`
 	DirtyFiles         []string                  `json:"dirtyFiles,omitempty"`
 	BranchGuard        *branch.BranchGuardResult `json:"branchGuard,omitempty"`
+	// NeedsPush reports whether pr_apply will need to push the current
+	// branch before it can create/edit the PR: true when no upstream is
+	// configured yet, or when HEAD is ahead of its upstream by one or more
+	// commits. pr_prepare only reports this — the push itself happens in
+	// pr_apply, since prepare is read-only.
+	NeedsPush bool `json:"needsPush"`
 
 	JiraTicket string         `json:"jiraTicket,omitempty"`
 	Template   *PRTemplateOut `json:"template,omitempty"`
@@ -209,6 +215,10 @@ type prRuntime struct {
 	branchValidate      func(current, expected string) branch.BranchGuardResult
 	jiraExtract         func(branchName string) string
 	templateResolve     func(root string) (*prtemplate.Template, error)
+	gitPushSetUpstream  func(dir, remote string) error
+	gitHasUpstream      func(dir string) (bool, error)
+	gitCommitsAhead     func(dir string) (int, error)
+	gitLogSinceTag      func(dir string) ([]string, error)
 }
 
 // defaultPRRuntime wires prRuntime to the real package-level implementations.
@@ -238,7 +248,11 @@ var defaultPRRuntime = prRuntime{
 	jiraExtract: func(branchName string) string {
 		return detectJiraTicket(branchName, nil)
 	},
-	templateResolve: prtemplate.Resolve,
+	templateResolve:    prtemplate.Resolve,
+	gitPushSetUpstream: gitx.PushSetUpstream,
+	gitHasUpstream:     gitx.HasUpstream,
+	gitCommitsAhead:    gitx.CommitsAhead,
+	gitLogSinceTag:     prGitLogSinceTag,
 }
 
 // buildAuthDiagnosticsWith synthesizes the PRAuthDiagnostics block for a
@@ -504,6 +518,30 @@ func prVersionDiagnosticsWith(rt prRuntime, mainRoot, workDir, currentBranch str
 	return diag, warnings
 }
 
+// prGitLogSinceTag is defaultPRRuntime's production implementation of
+// prRuntime.gitLogSinceTag: commit subjects (git log --oneline) since the
+// latest release tag, or full history when no release tag exists yet.
+// Mirrors prVersionDiagnosticsWith's commits-since-tag block above, slimmed
+// to a single error return instead of accumulating warnings — this backs
+// both the skipReleaseCheck verification gate and the release-notes
+// auto-generation path in prApplyCoreWith, neither of which has diagnostic
+// warnings to accumulate into.
+func prGitLogSinceTag(dir string) ([]string, error) {
+	tags, err := gitx.TagList(dir)
+	if err != nil {
+		return nil, fmt.Errorf("gitLogSinceTag: tag list: %w", err)
+	}
+	args := []string{"log", "--oneline"}
+	if len(tags) > 0 {
+		args = append(args, tags[0]+"..HEAD")
+	}
+	out, err := execx.Run("git", args, execx.Options{Dir: dir})
+	if err != nil {
+		return nil, fmt.Errorf("gitLogSinceTag: %w", err)
+	}
+	return nonEmptyLines(out), nil
+}
+
 // detectJiraTicket ports pr.js's detectJiraTicket(branchName, commits):
 // the branch name wins if it contains a JIRA key; otherwise the first
 // commit subject (in encounter order) that contains one wins.
@@ -675,6 +713,23 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 		warnings = append(warnings, fmt.Sprintf("Uncommitted changes detected (%d file(s)). They will NOT be included in the PR.", len(out.DirtyFiles)))
 	}
 
+	// Upstream/push status — read-only here (prepare never pushes); informs
+	// the caller whether pr_apply will need to push before it can
+	// create/edit the PR. An upstream-check failure degrades to a warning
+	// plus a fail-safe NeedsPush: true, matching every other diagnostic
+	// failure in this function.
+	if hasUpstream, upErr := rt.gitHasUpstream(workDir); upErr != nil {
+		warnings = append(warnings, fmt.Sprintf("upstream check: %s", upErr.Error()))
+		out.NeedsPush = true
+	} else if !hasUpstream {
+		out.NeedsPush = true
+	} else if ahead, aheadErr := rt.gitCommitsAhead(workDir); aheadErr != nil {
+		warnings = append(warnings, fmt.Sprintf("commits ahead: %s", aheadErr.Error()))
+		out.NeedsPush = true
+	} else {
+		out.NeedsPush = ahead > 0
+	}
+
 	// JIRA ticket detection — branch-name-only in this port (see
 	// detectJiraTicket's doc comment).
 	out.JiraTicket = rt.jiraExtract(currentBranch)
@@ -781,9 +836,9 @@ func prValidateBodyCore(root string, in PRValidateBodyIn) (PRValidateBodyOut, er
 type PRApplyIn struct {
 	Title             string `json:"title" jsonschema_description:"PR title, used for gh pr create/edit."`
 	Body              string `json:"body" jsonschema_description:"PR body text, used for gh pr create/edit."`
-	ReleaseLevel      string `json:"releaseLevel,omitempty" jsonschema:"enum=major,enum=minor,enum=patch" jsonschema_description:"Release bump level for this PR (e.g. \"patch\"/\"minor\"/\"major\"). Required unless skipReleaseCheck is true — an empty value without skipReleaseCheck is rejected so release intent is never skipped by omission; pass skipReleaseCheck: true to explicitly acknowledge no release."`
+	ReleaseLevel      string `json:"releaseLevel,omitempty" jsonschema:"enum=major,enum=minor,enum=patch" jsonschema_description:"Release bump level for this PR (e.g. \"patch\"/\"minor\"/\"major\"). Required unless skipReleaseCheck is true AND the commits since the last tag are release-worthy (feat/fix/breaking) — see skipReleaseCheck. An empty value without skipReleaseCheck is rejected so release intent is never skipped by omission; pass skipReleaseCheck: true to explicitly acknowledge no release."`
 	ReleasePreRelease string `json:"releasePreRelease,omitempty" jsonschema_description:"Pre-release identifier to attach to the release, when releaseLevel is set and this is a pre-release."`
-	ReleaseNotes      string `json:"releaseNotes,omitempty" jsonschema_description:"Release notes text associated with releaseLevel. Required (non-empty) whenever releaseLevel is set."`
+	ReleaseNotes      string `json:"releaseNotes,omitempty" jsonschema_description:"Release notes text associated with releaseLevel. When releaseLevel is set and this is left empty, notes are auto-generated from commits since the last release tag — no longer rejected as missing."`
 	// ReleaseSource records who decided ReleaseLevel: "user" (explicit
 	// interactive choice) or "config" (a project/ship-config default).
 	// Required whenever ReleaseLevel is set — see the releaseSource
@@ -804,7 +859,20 @@ type PRApplyIn struct {
 	// caller must either set ReleaseLevel or explicitly opt out via this
 	// field, so a release decision is never silently skipped by omission.
 	// Ignored when ReleaseLevel is set.
-	SkipReleaseCheck bool `json:"skipReleaseCheck,omitempty" jsonschema_description:"Explicitly acknowledges that this PR is being created/updated with no release intent (releaseLevel empty). Without it, an empty releaseLevel is rejected by the release-intent gate. Ignored when releaseLevel is set."`
+	//
+	// It is NOT honored blindly: prApplyCoreWith verifies it against commits
+	// since the last tag (via analyzeConventionalCommits). If any commit is
+	// feat/fix/breaking, skipping is release-worthy and this flag alone
+	// cannot authorize it — AutoMode rejects the skip outright, and
+	// interactive mode additionally requires SkipReleaseReason. Only a
+	// commit history classified purely as "other" passes silently.
+	SkipReleaseCheck bool `json:"skipReleaseCheck,omitempty" jsonschema_description:"Explicitly acknowledges that this PR is being created/updated with no release intent (releaseLevel empty). Ignored when releaseLevel is set. Verified against commits since the last tag: if any are feat/fix/breaking, the skip is release-worthy and is hard-rejected in autoMode, or requires a non-empty skipReleaseReason interactively. Only a commit history classified purely as \"other\" passes silently."`
+	// SkipReleaseReason explains why this PR intentionally skips the
+	// release check despite release-worthy (feat/fix/breaking) commits
+	// since the last tag. Required (non-empty) only in that situation, and
+	// only in interactive mode — AutoMode never allows the skip regardless
+	// of any reason given. Ignored otherwise.
+	SkipReleaseReason string `json:"skipReleaseReason,omitempty" jsonschema_description:"Explains why this PR intentionally skips the release check despite release-worthy (feat/fix/breaking) commits since the last tag. Required (non-empty) when skipReleaseCheck is true, releaseLevel is empty, autoMode is false, and such commits are present. Ignored otherwise."`
 }
 
 // PRApplyOut is the output for pr_apply.
@@ -873,6 +941,34 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 		}
 	}
 
+	// skipReleaseCheck verification gate: the flag alone cannot authorize
+	// skipping a release when commits since the last tag are release-worthy
+	// (feat/fix/breaking) — it must be verified against actual history, not
+	// honored on the caller's say-so. AutoMode hard-rejects the skip in that
+	// case; interactive mode requires an explicit SkipReleaseReason. Only a
+	// commit history classified purely as "other" passes silently.
+	if in.ReleaseLevel == "" && in.SkipReleaseCheck {
+		commits, logErr := rt.gitLogSinceTag(workDir)
+		if logErr != nil {
+			return PRApplyOut{}, &mcpserver.InfraError{Msg: "gitLogSinceTag: " + logErr.Error(), Cause: logErr}
+		}
+		summary := analyzeConventionalCommits(commits)
+		if summary.Feat > 0 || summary.Fix > 0 || summary.Breaking > 0 {
+			if in.AutoMode {
+				return PRApplyOut{}, &mcpserver.DomainError{
+					Msg:        "skipReleaseCheck is not allowed unattended: commits since the last tag include feat/fix/breaking changes",
+					Suggestion: fmt.Sprintf("Set releaseLevel (suggested: %s) instead of skipping the release check in auto mode.", summary.Suggest),
+				}
+			}
+			if strings.TrimSpace(in.SkipReleaseReason) == "" {
+				return PRApplyOut{}, &mcpserver.DomainError{
+					Msg:        "skipReleaseCheck requires skipReleaseReason: commits since the last tag include feat/fix/breaking changes",
+					Suggestion: fmt.Sprintf("Set releaseLevel (suggested: %s), or explain via skipReleaseReason why this PR intentionally skips the release despite release-worthy commits.", summary.Suggest),
+				}
+			}
+		}
+	}
+
 	// Validate releaseLevel and releasePreRelease when set.
 	if in.ReleaseLevel != "" {
 		switch in.ReleaseLevel {
@@ -882,10 +978,14 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 			return PRApplyOut{}, &mcpserver.DomainError{Msg: fmt.Sprintf("releaseLevel must be major, minor, or patch, got %q", in.ReleaseLevel)}
 		}
 		if strings.TrimSpace(in.ReleaseNotes) == "" {
-			return PRApplyOut{}, &mcpserver.DomainError{
-				Msg:        "releaseNotes is required when releaseLevel is set",
-				Suggestion: "Draft release notes describing changes in this release.",
+			// Auto-generate: tool-authoritative content derived
+			// deterministically from git history, not something the
+			// calling LLM needs to draft — see generateReleaseNotes.
+			commits, logErr := rt.gitLogSinceTag(workDir)
+			if logErr != nil {
+				return PRApplyOut{}, &mcpserver.InfraError{Msg: "gitLogSinceTag: " + logErr.Error(), Cause: logErr}
 			}
+			in.ReleaseNotes = generateReleaseNotes(commits, in.ReleaseLevel)
 		}
 	}
 	if in.ReleasePreRelease != "" && in.ReleasePreRelease != "rc" {
@@ -936,6 +1036,44 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 		_ = ensureReleaseLabels(rt, workDir)
 	}
 
+	// Push decision: pr_apply, not pr_prepare, is where the branch actually
+	// gets pushed (prepare stays read-only). No upstream configured, or an
+	// upstream that HEAD has moved ahead of, means gh pr create/edit would
+	// otherwise create/edit against a stale or missing remote branch; an
+	// upstream already caught up (0 commits ahead) skips the push entirely
+	// so a heavy pre-push hook isn't fired for no reason. Placed after
+	// release-intent computation, matching the existing "surface version
+	// errors before we touch the remote" ordering above.
+	hasUpstream, upErr := rt.gitHasUpstream(workDir)
+	if upErr != nil {
+		return PRApplyOut{}, &mcpserver.InfraError{
+			Msg:        "checking upstream: " + upErr.Error(),
+			Cause:      upErr,
+			Suggestion: "Verify the repository and current branch are in a valid git state, then retry.",
+		}
+	}
+	needsPush := !hasUpstream
+	if hasUpstream {
+		ahead, aheadErr := rt.gitCommitsAhead(workDir)
+		if aheadErr != nil {
+			return PRApplyOut{}, &mcpserver.InfraError{
+				Msg:        "checking commits ahead of upstream: " + aheadErr.Error(),
+				Cause:      aheadErr,
+				Suggestion: "Verify the branch's upstream is reachable, then retry.",
+			}
+		}
+		needsPush = ahead > 0
+	}
+	if needsPush {
+		if err := rt.gitPushSetUpstream(workDir, "origin"); err != nil {
+			return PRApplyOut{}, &mcpserver.InfraError{
+				Msg:        "git push: " + err.Error(),
+				Cause:      err,
+				Suggestion: "Push the current branch manually (git push -u origin HEAD), then retry pr_apply.",
+			}
+		}
+	}
+
 	meta := rt.ghPRForBranch(workDir)
 	if meta.Exists {
 		url, err := rt.ghPREdit(workDir, meta.Number, in.Title, body)
@@ -969,6 +1107,66 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 		}
 	}
 	return PRApplyOut{URL: url, Created: true, ReleaseIntent: intent, Next: "PR created. If verify-pipeline is configured, call verify_pipeline_classify next."}, nil
+}
+
+// prCommitGroups buckets one-line commit log entries ("<sha> <subject>")
+// into breaking/feat/fix/other groups for generateReleaseNotes. Its
+// classification predicates duplicate analyzeConventionalCommits'
+// (release_diagnostics.go is out of scope for this task, so it cannot be
+// refactored to share this instead) — a deliberate, disclosed, contained
+// duplication, kept minimal because this only needs per-commit subjects
+// grouped by bucket, not analyzeConventionalCommits' aggregate counts.
+func prCommitGroups(commits []string) (breaking, feat, fix, other []string) {
+	for _, line := range commits {
+		subject := line
+		if parts := strings.SplitN(line, " ", 2); len(parts) == 2 {
+			subject = parts[1]
+		}
+		lower := strings.ToLower(subject)
+		switch {
+		case strings.Contains(lower, "breaking change") || strings.Contains(lower, "!:"):
+			breaking = append(breaking, subject)
+		case strings.HasPrefix(lower, "feat") && len(lower) > 4 && (lower[4] == '(' || lower[4] == ':' || lower[4] == '!'):
+			feat = append(feat, subject)
+		case strings.HasPrefix(lower, "fix") && len(lower) > 3 && (lower[3] == '(' || lower[3] == ':' || lower[3] == '!'):
+			fix = append(fix, subject)
+		default:
+			other = append(other, subject)
+		}
+	}
+	return breaking, feat, fix, other
+}
+
+// generateReleaseNotes formats commits (one-line git log entries since the
+// last release tag) into release-notes text grouped by conventional-commit
+// type, for pr_apply's ReleaseNotes auto-generation path. This is
+// tool-authoritative content deterministically derived from git history —
+// not something the calling LLM needs to draft. level appears in the
+// heading for context only; it does not affect grouping.
+func generateReleaseNotes(commits []string, level string) string {
+	breaking, feat, fix, other := prCommitGroups(commits)
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Release notes (%s)\n", level)
+
+	section := func(title string, lines []string) {
+		if len(lines) == 0 {
+			return
+		}
+		fmt.Fprintf(&b, "\n%s:\n", title)
+		for _, l := range lines {
+			fmt.Fprintf(&b, "- %s\n", l)
+		}
+	}
+	section("Breaking changes", breaking)
+	section("Features", feat)
+	section("Fixes", fix)
+	section("Other changes", other)
+
+	if len(breaking)+len(feat)+len(fix)+len(other) == 0 {
+		return strings.TrimSpace(b.String()) + "\nNo commits found since the last release tag."
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // isPermissionError reports whether err's message indicates gh CLI refused
@@ -1375,7 +1573,7 @@ func prReleaseAddLabelWith(rt prRuntime, workDir, label string) error {
 // responsibility.
 func RegisterPRTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "pr_prepare",
-		"Preflight checks for pr: config-version gate, gh-auth + active-account probe (with recovery-shaped diagnostics on failure), branch-guard hard gate, protected-branch rejection, JIRA ticket detection from the branch name, PR template resolution, and version diagnostics (bump options, tags, commits since tag, conventional commit summary, existing RCs) when a version config exists.",
+		"Preflight checks for pr: config-version gate, gh-auth + active-account probe (with recovery-shaped diagnostics on failure), branch-guard hard gate, protected-branch rejection, JIRA ticket detection from the branch name, PR template resolution, upstream/push status (needsPush), and version diagnostics (bump options, tags, commits since tag, conventional commit summary, existing RCs) when a version config exists.",
 		func(ctx mcpserver.Ctx, in PRPrepareIn) (PRPrepareOut, error) {
 			mainRoot, err := worktree.MainRoot()
 			if err != nil {
@@ -1393,12 +1591,17 @@ func RegisterPRTools(s *mcpserver.Server) {
 	)
 
 	mcpserver.Register(s, "pr_apply",
-		"Creates a PR for the current branch, or edits the existing one, via gh pr create/gh pr edit (KD14 executor tool). "+
+		"Creates a PR for the current branch, or edits the existing one, via gh pr create/gh pr edit (KD14 executor tool). Pushes the branch "+
+			"first when needed (no upstream, or upstream behind HEAD); skips the push when upstream is already caught up, to avoid firing "+
+			"heavy pre-push hooks unnecessarily. "+
 			"releaseLevel is required unless skipReleaseCheck is true — an empty releaseLevel without skipReleaseCheck is rejected so release "+
-			"intent is never skipped by omission; pass skipReleaseCheck: true to explicitly acknowledge no release. "+
-			"When releaseLevel is set, releaseNotes must be non-empty and releaseSource is required: \"user\" (explicit interactive choice) or "+
-			"\"config\" (project/ship-config default). In autoMode, releaseSource=\"user\" is always rejected — an unattended caller must resolve "+
-			"to \"config\"; never invent a release level yourself and label it \"user\" to bypass this. "+
+			"intent is never skipped by omission; pass skipReleaseCheck: true to explicitly acknowledge no release. skipReleaseCheck is verified "+
+			"against commits since the last tag: if any are feat/fix/breaking, the skip is release-worthy and is hard-rejected in autoMode, or "+
+			"requires a non-empty skipReleaseReason interactively. "+
+			"When releaseLevel is set, releaseNotes is auto-generated from commits since the last tag if left empty, and releaseSource is "+
+			"required: \"user\" (explicit interactive choice) or \"config\" (project/ship-config default). In autoMode, releaseSource=\"user\" is "+
+			"always rejected — an unattended caller must resolve to \"config\"; never invent a release level yourself and label it \"user\" to "+
+			"bypass this. "+
 			"A gh CLI permission error (not a collaborator, 403, Resource not accessible) is enriched with account-switch guidance "+
 			"(active account, target owner/repo, candidate accounts to switch to) in the error's suggestion field.",
 		func(ctx mcpserver.Ctx, in PRApplyIn) (PRApplyOut, error) {
