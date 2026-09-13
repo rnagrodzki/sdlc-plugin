@@ -111,13 +111,15 @@ func TestRun_UnknownHook(t *testing.T) {
 // block-askuserquestion-auto, pipeline-continue, and post-tool-validate
 // (see hooks.go); Task 39 added the Stop/PreCompact quartet
 // (pre-compact-save, stop-state-save, stop-plan-integrity,
-// stop-pipeline-continue), bringing the registry to 8 total entries — still
-// a closed-set check, just over the current known set rather than a single
+// stop-pipeline-continue); Task 10 (config.toml migration run) added
+// record-mcp-invocation, bringing the registry to 9 total entries — still a
+// closed-set check, just over the current known set rather than a single
 // entry.
 func TestRun_RegistryContainsExactlyKnownHooks(t *testing.T) {
 	want := []string{
 		"session-start", "block-askuserquestion-auto", "pipeline-continue", "post-tool-validate",
 		"pre-compact-save", "stop-state-save", "stop-plan-integrity", "stop-pipeline-continue",
+		"record-mcp-invocation",
 	}
 	if len(registry) != len(want) {
 		t.Fatalf("registry has %d entries, want exactly %d: %v", len(registry), len(want), registryKeys())
@@ -186,6 +188,69 @@ func TestReadEvent(t *testing.T) {
 			}
 			if ctx.SessionID != c.wantSID {
 				t.Errorf("SessionID = %q, want %q", ctx.SessionID, c.wantSID)
+			}
+		})
+	}
+}
+
+// TestReadEvent_ToolNameAndToolResponse is Task 10's own readEvent case:
+// tool_name and tool_response must be read from the envelope's TOP LEVEL
+// (never reached for inside tool_input), and both must degrade to their zero
+// value (""/nil) rather than error when absent or the wrong JSON type.
+func TestReadEvent_ToolNameAndToolResponse(t *testing.T) {
+	cases := []struct {
+		name         string
+		stdin        io.Reader
+		wantToolName string
+		wantToolResp map[string]any
+	}{
+		{
+			name:         "tool_name and tool_response present",
+			stdin:        strings.NewReader(`{"tool_name":"Bash","tool_response":{"stdout":"ok","stderr":""}}`),
+			wantToolName: "Bash",
+			wantToolResp: map[string]any{"stdout": "ok", "stderr": ""},
+		},
+		{
+			name:         "mcp tool_name",
+			stdin:        strings.NewReader(`{"tool_name":"mcp__plugin_sdlc_sdlc__execute_state","tool_response":{"ok":true}}`),
+			wantToolName: "mcp__plugin_sdlc_sdlc__execute_state",
+			wantToolResp: map[string]any{"ok": true},
+		},
+		{
+			name:         "neither field present",
+			stdin:        strings.NewReader(`{"source":"startup"}`),
+			wantToolName: "",
+			wantToolResp: nil,
+		},
+		{
+			name: "tool_name lives inside tool_input only: top-level read must not find it there",
+			stdin: strings.NewReader(
+				`{"tool_input":{"tool_name":"decoy","command":"echo hi"}}`,
+			),
+			wantToolName: "",
+			wantToolResp: nil,
+		},
+		{
+			name:         "tool_response not an object: left nil, no panic",
+			stdin:        strings.NewReader(`{"tool_name":"Bash","tool_response":"not an object"}`),
+			wantToolName: "Bash",
+			wantToolResp: nil,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, event := readEvent(c.stdin)
+			if event.ToolName != c.wantToolName {
+				t.Errorf("ToolName = %q, want %q", event.ToolName, c.wantToolName)
+			}
+			if len(event.ToolResponse) != len(c.wantToolResp) {
+				t.Errorf("ToolResponse = %v, want %v", event.ToolResponse, c.wantToolResp)
+				return
+			}
+			for k, v := range c.wantToolResp {
+				if event.ToolResponse[k] != v {
+					t.Errorf("ToolResponse[%q] = %v, want %v", k, event.ToolResponse[k], v)
+				}
 			}
 		})
 	}

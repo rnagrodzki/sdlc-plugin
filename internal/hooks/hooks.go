@@ -34,10 +34,17 @@ type HookCtx struct {
 // holds the full decoded JSON object, or nil if stdin was empty, unreadable,
 // or not a JSON object. Source is envelope.source (e.g. "startup", "resume",
 // "clear", "compact"), defaulting to "startup" when absent or unparseable —
-// mirroring session-start.js's own default.
+// mirroring session-start.js's own default. ToolName and ToolResponse are
+// PostToolUse-only top-level envelope fields (envelope.tool_name,
+// envelope.tool_response) — Task 10 needs both read from the envelope's top
+// level, never from inside tool_input, to record MCP invocations and Bash
+// CLI executions. Both are zero-valued ("" / nil) for hook events that carry
+// neither (e.g. SessionStart, PreCompact).
 type Event struct {
-	Raw    map[string]any
-	Source string
+	Raw          map[string]any
+	Source       string
+	ToolName     string
+	ToolResponse map[string]any
 }
 
 // Output is a Handler's result. PlainText is written to stdout verbatim.
@@ -63,6 +70,7 @@ var registry = map[string]Handler{
 	"stop-state-save":            stopStateSave,
 	"stop-plan-integrity":        stopPlanIntegrity,
 	"stop-pipeline-continue":     stopPipelineContinue,
+	"record-mcp-invocation":      recordMCPInvocation,
 }
 
 // Run reads the hook's stdin envelope, dispatches to the handler registered
@@ -118,6 +126,12 @@ func readEvent(stdin io.Reader) (HookCtx, Event) {
 	}
 	if sid, ok := envelope["session_id"].(string); ok {
 		ctx.SessionID = sid
+	}
+	if toolName, ok := envelope["tool_name"].(string); ok {
+		event.ToolName = toolName
+	}
+	if toolResponse, ok := envelope["tool_response"].(map[string]any); ok {
+		event.ToolResponse = toolResponse
 	}
 
 	return ctx, event

@@ -9,6 +9,7 @@ import (
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
+	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
 )
 
 // ---------------------------------------------------------------------------
@@ -304,6 +305,163 @@ func TestPipelineContinue(t *testing.T) {
 			t.Fatal(err)
 		}
 		assertSilent(t, out)
+	})
+}
+
+// ---------------------------------------------------------------------------
+// pipeline-continue: automatic CLI evidence recording (Task 10)
+// ---------------------------------------------------------------------------
+
+func bashEvent(command string, toolResponse map[string]any) Event {
+	return Event{
+		ToolName:     "Bash",
+		Raw:          map[string]any{"tool_input": map[string]any{"command": command}},
+		ToolResponse: toolResponse,
+	}
+}
+
+func TestRecordBashExecution(t *testing.T) {
+	inProgressSteps := []any{
+		map[string]any{"name": "review", "status": "in_progress"},
+	}
+
+	t.Run("non-Bash tool: no evidence recorded", func(t *testing.T) {
+		// pipelineContinue's advancing-ship-state nudge fires regardless of
+		// tool name (matcher is Bash|TodoWrite) — only recordBashExecution's
+		// own recording is gated on ToolName=="Bash". So this only asserts
+		// no CLI evidence was written, not that the whole hook is silent.
+		root := gitFixture(t, "feat/cli-non-bash")
+		newShipState(t, root, "feat/cli-non-bash", "s1", inProgressSteps, map[string]any{"auto": true})
+
+		if _, err := pipelineContinue(HookCtx{SessionID: "s1"}, Event{ToolName: "TodoWrite"}); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, ok, _ := tools.LastCLIEvidenceEntry(root); ok {
+			t.Error("expected no CLI evidence for a TodoWrite call")
+		}
+	})
+
+	t.Run("Bash call, no ship/execute state: no evidence recorded", func(t *testing.T) {
+		root := gitFixture(t, "feat/cli-no-state")
+
+		out, err := pipelineContinue(HookCtx{SessionID: "s1"}, bashEvent("echo hi", nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertSilent(t, out)
+
+		if _, ok, _ := tools.LastCLIEvidenceEntry(root); ok {
+			t.Error("expected no CLI evidence with no ship/execute state on this branch")
+		}
+	})
+
+	t.Run("Bash call, advancing ship state: records evidence with correct fields", func(t *testing.T) {
+		root := gitFixture(t, "feat/cli-recorded")
+		newShipState(t, root, "feat/cli-recorded", "s1", inProgressSteps, map[string]any{"auto": true})
+
+		out, err := pipelineContinue(HookCtx{SessionID: "s1"}, bashEvent("go test ./...", map[string]any{"stdout": "ok"}))
+		mustAdditionalContext(t, out, err, "step 1 of 1 (review) is in_progress")
+
+		entry, ok, err := tools.LastCLIEvidenceEntry(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ok {
+			t.Fatal("expected a CLI evidence entry to have been recorded")
+		}
+		if entry.Pipeline != "ship" {
+			t.Errorf("Pipeline = %q, want ship", entry.Pipeline)
+		}
+		if entry.Step != "review" {
+			t.Errorf("Step = %q, want review", entry.Step)
+		}
+		if entry.Branch != "feat/cli-recorded" {
+			t.Errorf("Branch = %q, want feat/cli-recorded", entry.Branch)
+		}
+		if entry.Command != "go test ./..." {
+			t.Errorf("Command = %q, want %q", entry.Command, "go test ./...")
+		}
+		if entry.ExitCode != 0 {
+			t.Errorf("ExitCode = %d, want 0", entry.ExitCode)
+		}
+		if entry.OutputHead != "ok" {
+			t.Errorf("OutputHead = %q, want %q", entry.OutputHead, "ok")
+		}
+	})
+
+	t.Run("duplicate rapid-fire Bash call is suppressed", func(t *testing.T) {
+		root := gitFixture(t, "feat/cli-dedup")
+		newShipState(t, root, "feat/cli-dedup", "s1", inProgressSteps, map[string]any{"auto": true})
+
+		event := bashEvent("go build ./...", map[string]any{"stdout": "built"})
+		if _, err := pipelineContinue(HookCtx{SessionID: "s1"}, event); err != nil {
+			t.Fatal(err)
+		}
+		_, ok, err := tools.LastCLIEvidenceEntry(root)
+		if err != nil || !ok {
+			t.Fatalf("expected first entry recorded: ok=%v err=%v", ok, err)
+		}
+
+		// Immediate second fire of the identical event: same command, same
+		// exit code, timestamp within cliDedupWindow (2s) of the first.
+		if _, err := pipelineContinue(HookCtx{SessionID: "s1"}, event); err != nil {
+			t.Fatal(err)
+		}
+
+		// Assert by line count, not by comparing timestamps: both calls
+		// happen within the same second, so RFC3339-second-precision
+		// timestamps would be identical even if dedup failed to suppress
+		// the second write and a new line were appended.
+		evidencePath := filepath.Join(root, paths.DataDir, "evidence", "cli-executions.jsonl")
+		b, err := os.ReadFile(evidencePath)
+		if err != nil {
+			t.Fatalf("read cli evidence: %v", err)
+		}
+		lines := splitNonEmptyLines(string(b))
+		if len(lines) != 1 {
+			t.Errorf("got %d CLI evidence lines, want 1 (duplicate should be suppressed)", len(lines))
+		}
+	})
+}
+
+func TestExtractBashExitCode(t *testing.T) {
+	cases := []struct {
+		name string
+		in   map[string]any
+		want int
+	}{
+		{"nil response", nil, 0},
+		{"no exit code key", map[string]any{"stdout": "hi"}, 0},
+		{"exit_code key", map[string]any{"exit_code": float64(3)}, 3},
+		{"exitCode key", map[string]any{"exitCode": float64(7)}, 7},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := extractBashExitCode(c.in); got != c.want {
+				t.Errorf("extractBashExitCode(%v) = %d, want %d", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+func TestExtractOutputHead(t *testing.T) {
+	t.Run("short stdout returned as-is", func(t *testing.T) {
+		if got := extractOutputHead(map[string]any{"stdout": "hi"}); got != "hi" {
+			t.Errorf("got %q, want %q", got, "hi")
+		}
+	})
+	t.Run("no stdout key: empty string", func(t *testing.T) {
+		if got := extractOutputHead(map[string]any{}); got != "" {
+			t.Errorf("got %q, want empty", got)
+		}
+	})
+	t.Run("long stdout truncated to 500 chars", func(t *testing.T) {
+		long := strings.Repeat("x", 600)
+		got := extractOutputHead(map[string]any{"stdout": long})
+		if len(got) != 500 {
+			t.Errorf("len = %d, want 500", len(got))
+		}
 	})
 }
 

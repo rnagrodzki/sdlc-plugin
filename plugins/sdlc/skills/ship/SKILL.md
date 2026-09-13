@@ -22,20 +22,9 @@ Companion files, loaded on demand: [`config-format.md`](config-format.md) (`.sdl
 
 ## Step loop
 
-**CLI evidence collection:** After every Bash tool call during this pipeline run,
-call the state tool to log the execution:
-
-```
-ship_state({ action: "log-cli", detail: {
-    step: "<current-step>",
-    command: "<the-bash-command>",
-    exitCode: <exit-code>,
-    outputHead: "<first ~500 chars of output>"
-}})
-```
-
-This data persists in `.sdlc-v2/evidence/cli-executions.jsonl` for MCP tool
-coverage analysis. Best-effort — skip logging if the state call fails.
+**CLI evidence collection:** automatic — the `pipeline-continue` PostToolUse
+hook records every Bash execution to `.sdlc-v2/evidence/cli-executions.jsonl`
+on its own; no explicit `log-cli` call is needed here.
 
 **0. Plan-mode check.** If the system context says plan mode is active: tell the user to exit plan mode and re-invoke `/ship`, then stop.
 
