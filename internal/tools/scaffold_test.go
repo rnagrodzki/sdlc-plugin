@@ -43,9 +43,11 @@ func TestScaffoldCI_CreatesAllFiles(t *testing.T) {
 }
 
 // TestScaffoldCI_WrittenCJS_ReadsV2ConfigOnly verifies that written .cjs
-// files read .sdlc-v2/config.json exclusively — no legacy .sdlc/config.json
-// or .claude/sdlc.json fallback. Legacy config layouts are migration-only
-// territory (the "migrate" tool), never a read path for CI scripts.
+// files read .sdlc-v2/config.toml exclusively — no legacy .sdlc/config.json,
+// .claude/sdlc.json, or stale .sdlc-v2/config.json (the pre-TOML-migration
+// current-path, now itself a legacy layout) fallback. Legacy config layouts
+// are migration-only territory (the "migrate" tool), never a read path for
+// CI scripts.
 func TestScaffoldCI_WrittenCJS_ReadsV2ConfigOnly(t *testing.T) {
 	root := t.TempDir()
 
@@ -70,8 +72,11 @@ func TestScaffoldCI_WrittenCJS_ReadsV2ConfigOnly(t *testing.T) {
 		}
 		content := string(data)
 
-		if !strings.Contains(content, ".sdlc-v2/config.json") {
-			t.Errorf("%s: does not contain .sdlc-v2/config.json", p)
+		if !strings.Contains(content, ".sdlc-v2/config.toml") {
+			t.Errorf("%s: does not contain .sdlc-v2/config.toml", p)
+		}
+		if strings.Contains(content, ".sdlc-v2/config.json") {
+			t.Errorf("%s: contains stale pre-migration reference .sdlc-v2/config.json", p)
 		}
 		if strings.Contains(content, ".sdlc/config.json") {
 			t.Errorf("%s: contains stale legacy fallback reference .sdlc/config.json", p)
