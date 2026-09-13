@@ -273,6 +273,7 @@ type ExecWaveCommitOut struct {
 // two-line worker dispatch form in place of today's fully-inlined prompts.
 type TaskContextOut struct {
 	TaskID     string `json:"taskId"`
+	RunID      string `json:"runId"`
 	FactSheet  string `json:"factSheet"`
 	PriorWaves string `json:"priorWaves"`
 	Verify     string `json:"verify"`
@@ -643,6 +644,34 @@ func execFindWave(data map[string]any, waveNumber int) map[string]any {
 		}
 	}
 	return nil
+}
+
+// execCurrentWaveNum derives the current wave number from state's waves[]
+// array (there is no top-level scalar wave counter in the state shape).
+// It prefers the highest-numbered wave with status "in_progress"; if none
+// is in progress, it falls back to the highest wave number recorded; if no
+// waves exist yet, it returns 0.
+func execCurrentWaveNum(data map[string]any) int {
+	waves := execEnsureWaves(data)
+	highest := 0
+	inProgress := -1
+	for _, w := range waves {
+		wm, ok := w.(map[string]any)
+		if !ok {
+			continue
+		}
+		n := execToInt(wm["number"])
+		if n > highest {
+			highest = n
+		}
+		if status, _ := wm["status"].(string); status == "in_progress" && n > inProgress {
+			inProgress = n
+		}
+	}
+	if inProgress >= 0 {
+		return inProgress
+	}
+	return highest
 }
 
 // execFindOrCreateWave locates or creates a wave entry.
@@ -2755,15 +2784,17 @@ func execTaskContextVerify(taskID string) string {
 	)
 }
 
-// execTaskContextReportBack returns static report-back instructions for a
+// execTaskContextReportBack returns report-back instructions for a
 // dispatched worker, mirroring the heartbeat/completion-block conventions
 // documented in plugins/sdlc/skills/execute/SKILL.md and
 // classifying-and-waving-tasks.md (wave-progress phases, task-done/task-fail
-// recorded by the main session, not the worker itself).
-func execTaskContextReportBack(taskID string) string {
+// recorded by the main session, not the worker itself). The heartbeat
+// snippet interpolates the actual runID so workers can copy it verbatim
+// into their own wave-progress calls.
+func execTaskContextReportBack(taskID, runID string) string {
 	return fmt.Sprintf(
 		"Emit a heartbeat as you enter each phase: execute_state({ action: \"wave-progress\", "+
-			"runId: \"<RUN_ID>\", taskId: %q, phase: <phase> }) for phase in started, reading, "+
+			"runId: %q, taskId: %q, phase: <phase> }) for phase in started, reading, "+
 			"editing, verifying, reporting (each once).\n\n"+
 			"When finished, end your response with this completion block (blank line between each section):\n\n"+
 			"```\n"+
@@ -2792,7 +2823,7 @@ func execTaskContextReportBack(taskID string) string {
 			"The main session records completion via execute_state({ action: "+
 			"\"task-done\" | \"task-fail\", taskId: %q, ... }). Do not call task-done/task-fail "+
 			"yourself.",
-		taskID, taskID,
+		runID, taskID, taskID,
 	)
 }
 
@@ -2864,6 +2895,8 @@ func execActionTaskContext(root, workDir string, in ExecuteStateIn) (any, error)
 		waveNum := 0
 		if in.Wave != nil {
 			waveNum = *in.Wave
+		} else {
+			waveNum = execCurrentWaveNum(st.Data)
 		}
 		runID = execDeriveRunID(st.Data, waveNum)
 	}
@@ -2893,10 +2926,11 @@ func execActionTaskContext(root, workDir string, in ExecuteStateIn) (any, error)
 
 	result := TaskContextOut{
 		TaskID:     taskID,
+		RunID:      runID,
 		FactSheet:  content,
 		PriorWaves: execRenderPriorWaveSummary(summary),
 		Verify:     execTaskContextVerify(taskID),
-		ReportBack: execTaskContextReportBack(taskID),
+		ReportBack: execTaskContextReportBack(taskID, runID),
 	}
 
 	// Enforce the payload cap — never silently return a blob larger than

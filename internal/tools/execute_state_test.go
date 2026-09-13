@@ -1548,6 +1548,9 @@ func TestExecState_TaskContext_HappyPath(t *testing.T) {
 	if out.TaskID != "1" {
 		t.Errorf("TaskID = %q, want %q", out.TaskID, "1")
 	}
+	if out.RunID != "run-1" {
+		t.Errorf("RunID = %q, want %q", out.RunID, "run-1")
+	}
 	for _, want := range []string{"# Task 1: Build widget", "## Contract", "WidgetNew() *Widget", "## Acceptance Criteria", "- compiles"} {
 		if !strings.Contains(out.FactSheet, want) {
 			t.Errorf("FactSheet missing %q; got:\n%s", want, out.FactSheet)
@@ -1569,6 +1572,12 @@ func TestExecState_TaskContext_HappyPath(t *testing.T) {
 	}
 	if !strings.Contains(out.ReportBack, `"1"`) {
 		t.Errorf("ReportBack = %q, want the taskId interpolated", out.ReportBack)
+	}
+	if !strings.Contains(out.ReportBack, `"run-1"`) {
+		t.Errorf("ReportBack = %q, want the real runId interpolated", out.ReportBack)
+	}
+	if strings.Contains(out.ReportBack, "<RUN_ID>") {
+		t.Errorf("ReportBack = %q, want no literal <RUN_ID> placeholder", out.ReportBack)
 	}
 	if out.Truncated {
 		t.Error("Truncated = true, want false for a small fact sheet")
@@ -1853,6 +1862,56 @@ func TestExecState_TaskContext_RunIDFallsBackToDerivedID(t *testing.T) {
 	out := result.(TaskContextOut)
 	if !strings.Contains(out.FactSheet, "Derived run task") {
 		t.Errorf("FactSheet = %q, want it to contain the fact sheet written under the derived runID", out.FactSheet)
+	}
+}
+
+func TestExecState_TaskContext_DerivesWaveNumFromStateWhenWaveNil(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	// No top-level startedAt: execDeriveRunID falls back to "wave-<N>", so
+	// the derived runID directly reflects whatever waveNum is computed.
+	// This makes the test discriminating: before the fix, task-context
+	// hardcodes waveNum=0 when in.Wave is nil, deriving "wave-0" and
+	// failing to find the fact sheet wave-start wrote under "wave-2".
+	createExecState(t, root, "feat/test", map[string]any{
+		"waves":   []any{},
+		"context": map[string]any{},
+	})
+
+	tasksJSON := `[{"id":"1","name":"Wave two task"}]`
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action:    "wave-start",
+		Branch:    "feat/test",
+		Wave:      intPtr(2),
+		TasksJSON: tasksJSON,
+	}, clock); err != nil {
+		t.Fatalf("wave-start: %v", err)
+	}
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "task-context",
+		Branch: "feat/test",
+		TaskID: "1",
+	}, clock)
+	if err != nil {
+		t.Fatalf("task-context: %v", err)
+	}
+	out, ok := result.(TaskContextOut)
+	if !ok {
+		t.Fatalf("result = %T, want TaskContextOut", result)
+	}
+	if out.RunID != "wave-2" {
+		t.Errorf("RunID = %q, want %q (derived from the in-progress wave 2 recorded in state)", out.RunID, "wave-2")
+	}
+	if !strings.Contains(out.FactSheet, "Wave two task") {
+		t.Errorf("FactSheet = %q, want it to contain the fact sheet written under the derived wave-2 runID", out.FactSheet)
+	}
+	if !strings.Contains(out.ReportBack, `"wave-2"`) {
+		t.Errorf("ReportBack = %q, want the derived runId interpolated", out.ReportBack)
+	}
+	if strings.Contains(out.ReportBack, "<RUN_ID>") {
+		t.Errorf("ReportBack = %q, want no literal <RUN_ID> placeholder", out.ReportBack)
 	}
 }
 
