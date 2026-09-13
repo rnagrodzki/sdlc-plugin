@@ -272,13 +272,35 @@ type ExecWaveCommitOut struct {
 // verify guidance, and report-back instructions. Task 12 wires this into a
 // two-line worker dispatch form in place of today's fully-inlined prompts.
 type TaskContextOut struct {
-	TaskID     string `json:"taskId"`
-	RunID      string `json:"runId"`
-	FactSheet  string `json:"factSheet"`
-	PriorWaves string `json:"priorWaves"`
-	Verify     string `json:"verify"`
-	ReportBack string `json:"reportBack"`
-	Truncated  bool   `json:"truncated,omitempty"`
+	TaskID         string          `json:"taskId"`
+	RunID          string          `json:"runId"`
+	Wave           int             `json:"wave"`
+	Quality        string          `json:"quality,omitempty"`
+	Siblings       []TaskSibling   `json:"siblings,omitempty"`
+	FactSheet      string          `json:"factSheet"`
+	PriorWaves     string          `json:"priorWaves"`
+	Verify         string          `json:"verify"`
+	ReportBack     string          `json:"reportBack"`
+	ExecutionRules *ExecutionRules `json:"executionRules,omitempty"`
+	Truncated      bool            `json:"truncated,omitempty"`
+}
+
+// TaskSibling describes another task in the same wave, giving the worker
+// awareness of its peers without requiring per-task file reads.
+type TaskSibling struct {
+	ID    string   `json:"id"`
+	Name  string   `json:"name"`
+	Files []string `json:"files,omitempty"`
+}
+
+// ExecutionRules is the machine-readable equivalent of the prose Verify and
+// ReportBack fields. Workers can consume either form; the structured version
+// enables tooling that needs to parse scope or phases programmatically.
+type ExecutionRules struct {
+	FileScope       []string `json:"fileScope,omitempty"`
+	VerifyMethod    string   `json:"verifyMethod"`
+	HeartbeatPhases []string `json:"heartbeatPhases"`
+	ReportFormat    string   `json:"reportFormat"`
 }
 
 // ---------------------------------------------------------------------------
@@ -1949,6 +1971,22 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 			writtenPaths = append(writtenPaths, p)
 		}
 
+		// Store planned task list on the wave for task-context sibling lookup.
+		// This persists the validated task entries so that any worker calling
+		// task-context can discover its siblings without per-task file reads.
+		planned := make([]any, 0, len(validTasks))
+		for _, tm := range validTasks {
+			planned = append(planned, map[string]any{
+				"id":    tm["id"],
+				"name":  stringOrEmpty(tm["name"]),
+				"files": tm["files"],
+			})
+		}
+		w["planned"] = planned
+		if err := state.Write(st); err != nil {
+			return nil, &mcpserver.InfraError{Msg: "write state (planned): " + err.Error(), Cause: err}
+		}
+
 		result.RunID = runID
 		result.FactSheets = writtenPaths
 		if len(factSheetErrors) > 0 {
@@ -2718,6 +2756,21 @@ func execActionTaskFail(root, workDir string, in ExecuteStateIn, now func() time
 // Action: task-context
 // ---------------------------------------------------------------------------
 
+// execHeartbeatPhases is the canonical list of progress phases a dispatched
+// worker reports via wave-progress. Both the prose reportBack and the
+// structured ExecutionRules.HeartbeatPhases reference this single source so
+// they cannot diverge.
+var execHeartbeatPhases = []string{"started", "reading", "editing", "verifying", "reporting"}
+
+// execReportFormat is the completion-block template workers emit at the end
+// of their response. Referenced by both the prose reportBack and the
+// structured ExecutionRules.ReportFormat.
+const execReportFormat = "Summary: <one line>\n\nFiles created: <paths or none>\nFiles modified: <paths or none>\nTests: added=<yes|no|n/a> pass=<yes|no|n/a>\nBuild: pass=<yes|no|n/a>\n\nVERIFY: <symbol_name> in <file_path>\n\nConcerns:\n- <one bullet per concern, 3 max; omit if none>\n\nInterfaces:\n- <exported symbol; omit if none>\n\nDecisions:\n- <decision and why; omit if none>\n\nSTATUS: SUCCESS | DONE_WITH_CONCERNS | FAILED"
+
+// execVerifyMethod is a short description of the verification strategy
+// workers are expected to follow for each task.
+const execVerifyMethod = "build-and-test + git-diff-scope + VERIFY canary"
+
 // execTaskContextMaxBytes caps the serialized TaskContextOut payload, not
 // just the FactSheet field: FactSheet is the field most likely to be large
 // in practice, but PriorWaves carries execSummarizePriorWaveCtx's
@@ -2794,8 +2847,7 @@ func execTaskContextVerify(taskID string) string {
 func execTaskContextReportBack(taskID, runID string) string {
 	return fmt.Sprintf(
 		"Emit a heartbeat as you enter each phase: execute_state({ action: \"wave-progress\", "+
-			"runId: %q, taskId: %q, phase: <phase> }) for phase in started, reading, "+
-			"editing, verifying, reporting (each once).\n\n"+
+			"runId: %q, taskId: %q, phase: <phase> }) for phase in %s (each once).\n\n"+
 			"When finished, end your response with this completion block (blank line between each section):\n\n"+
 			"```\n"+
 			"Summary: <one line: what this task delivered, not how you worked>\n"+
@@ -2823,7 +2875,7 @@ func execTaskContextReportBack(taskID, runID string) string {
 			"The main session records completion via execute_state({ action: "+
 			"\"task-done\" | \"task-fail\", taskId: %q, ... }). Do not call task-done/task-fail "+
 			"yourself.",
-		runID, taskID, taskID,
+		runID, taskID, strings.Join(execHeartbeatPhases, ", "), taskID,
 	)
 }
 
@@ -2890,14 +2942,17 @@ func execActionTaskContext(root, workDir string, in ExecuteStateIn) (any, error)
 		return nil, err
 	}
 
+	// Compute waveNum unconditionally — it feeds result.Wave, sibling
+	// lookup, and (when runID is empty) execDeriveRunID.
+	waveNum := 0
+	if in.Wave != nil {
+		waveNum = *in.Wave
+	} else {
+		waveNum = execCurrentWaveNum(st.Data)
+	}
+
 	runID := in.RunID
 	if runID == "" {
-		waveNum := 0
-		if in.Wave != nil {
-			waveNum = *in.Wave
-		} else {
-			waveNum = execCurrentWaveNum(st.Data)
-		}
 		runID = execDeriveRunID(st.Data, waveNum)
 	}
 
@@ -2924,13 +2979,52 @@ func execActionTaskContext(root, workDir string, in ExecuteStateIn) (any, error)
 
 	summary := execSummarizePriorWaveCtx(st.Data, root, 0, 0, 0, 0)
 
+	// Build siblings and own file scope from the wave's planned list.
+	var siblings []TaskSibling
+	var ownFiles []string
+	if w := execFindWave(st.Data, waveNum); w != nil {
+		if planned, ok := w["planned"].([]any); ok {
+			for _, entry := range planned {
+				em, ok := entry.(map[string]any)
+				if !ok {
+					continue
+				}
+				eid, _ := em["id"].(string)
+				if eid == "" {
+					continue
+				}
+				files := anyToStringSlice(em["files"])
+				if eid == taskID {
+					ownFiles = files
+					continue // exclude self from siblings
+				}
+				siblings = append(siblings, TaskSibling{
+					ID:    eid,
+					Name:  stringOrEmpty(em["name"]),
+					Files: files,
+				})
+			}
+		}
+	}
+
+	quality, _ := st.Data["quality"].(string)
+
 	result := TaskContextOut{
 		TaskID:     taskID,
 		RunID:      runID,
+		Wave:       waveNum,
+		Quality:    quality,
+		Siblings:   siblings,
 		FactSheet:  content,
 		PriorWaves: execRenderPriorWaveSummary(summary),
 		Verify:     execTaskContextVerify(taskID),
 		ReportBack: execTaskContextReportBack(taskID, runID),
+		ExecutionRules: &ExecutionRules{
+			FileScope:       ownFiles,
+			VerifyMethod:    execVerifyMethod,
+			HeartbeatPhases: execHeartbeatPhases,
+			ReportFormat:    execReportFormat,
+		},
 	}
 
 	// Enforce the payload cap — never silently return a blob larger than

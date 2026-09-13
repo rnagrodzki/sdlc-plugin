@@ -1509,6 +1509,7 @@ func TestExecState_TaskContext_HappyPath(t *testing.T) {
 
 	createExecState(t, root, "feat/test", map[string]any{
 		"startedAt": testNow.UTC().Format(time.RFC3339),
+		"quality":   "balanced",
 		"waves":     []any{},
 		"context": map[string]any{
 			"planSummary":             "Build the widget API.",
@@ -1519,8 +1520,9 @@ func TestExecState_TaskContext_HappyPath(t *testing.T) {
 		},
 	})
 
-	// wave-start writes the fact sheet task-context will read back.
-	tasksJSON := `[{"id":"1","name":"Build widget","description":"desc","contract":"WidgetNew() *Widget","acceptanceCriteria":["compiles"],"files":["internal/widget/widget.go"]}]`
+	// wave-start writes the fact sheets task-context will read back.
+	// Two tasks so we can verify sibling awareness.
+	tasksJSON := `[{"id":"1","name":"Build widget","description":"desc","contract":"WidgetNew() *Widget","acceptanceCriteria":["compiles"],"files":["internal/widget/widget.go"]},{"id":"2","name":"Add registry","description":"desc2","contract":"Register()","acceptanceCriteria":["tests pass"],"files":["internal/widget/registry.go","internal/widget/index.go"]}]`
 	if _, err := executeState(root, root, ExecuteStateIn{
 		Action:    "wave-start",
 		Branch:    "feat/test",
@@ -1581,6 +1583,46 @@ func TestExecState_TaskContext_HappyPath(t *testing.T) {
 	}
 	if out.Truncated {
 		t.Error("Truncated = true, want false for a small fact sheet")
+	}
+
+	// New fields: wave, quality, siblings, executionRules.
+	if out.Wave != 1 {
+		t.Errorf("Wave = %d, want 1", out.Wave)
+	}
+	if out.Quality != "balanced" {
+		t.Errorf("Quality = %q, want %q", out.Quality, "balanced")
+	}
+
+	// Siblings should contain task 2 but not task 1 (self excluded).
+	if len(out.Siblings) != 1 {
+		t.Fatalf("len(Siblings) = %d, want 1", len(out.Siblings))
+	}
+	sib := out.Siblings[0]
+	if sib.ID != "2" {
+		t.Errorf("Siblings[0].ID = %q, want %q", sib.ID, "2")
+	}
+	if sib.Name != "Add registry" {
+		t.Errorf("Siblings[0].Name = %q, want %q", sib.Name, "Add registry")
+	}
+	if len(sib.Files) != 2 || sib.Files[0] != "internal/widget/registry.go" {
+		t.Errorf("Siblings[0].Files = %v, want [internal/widget/registry.go internal/widget/index.go]", sib.Files)
+	}
+
+	// ExecutionRules
+	if out.ExecutionRules == nil {
+		t.Fatal("ExecutionRules is nil")
+	}
+	if len(out.ExecutionRules.FileScope) != 1 || out.ExecutionRules.FileScope[0] != "internal/widget/widget.go" {
+		t.Errorf("ExecutionRules.FileScope = %v, want [internal/widget/widget.go]", out.ExecutionRules.FileScope)
+	}
+	if out.ExecutionRules.VerifyMethod == "" {
+		t.Error("ExecutionRules.VerifyMethod is empty")
+	}
+	if len(out.ExecutionRules.HeartbeatPhases) != 5 {
+		t.Errorf("len(HeartbeatPhases) = %d, want 5", len(out.ExecutionRules.HeartbeatPhases))
+	}
+	if out.ExecutionRules.ReportFormat == "" {
+		t.Error("ExecutionRules.ReportFormat is empty")
 	}
 }
 
@@ -1823,6 +1865,140 @@ func TestExecState_TaskContext_TruncatesPriorWavesWhenItAloneOverflows(t *testin
 	}
 	if len(raw) > execTaskContextMaxBytes+len(execTaskContextTruncationNote)*2 {
 		t.Errorf("serialized payload length = %d, want roughly <= cap", len(raw))
+	}
+}
+
+func TestExecState_WaveStart_PersistsPlannedList(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	createExecState(t, root, "feat/test", map[string]any{
+		"startedAt": testNow.UTC().Format(time.RFC3339),
+		"waves":     []any{},
+	})
+
+	tasksJSON := `[{"id":"10","name":"Alpha","files":["a.go"]},{"id":"20","name":"Beta","files":["b.go","c.go"]}]`
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action:    "wave-start",
+		Branch:    "feat/test",
+		Wave:      intPtr(1),
+		TasksJSON: tasksJSON,
+		RunID:     "run-planned",
+	}, clock); err != nil {
+		t.Fatalf("wave-start: %v", err)
+	}
+
+	// Read the state back and inspect waves[0].planned.
+	st, err := state.Find(root, "execute", "feat/test")
+	if err != nil {
+		t.Fatalf("state.Find: %v", err)
+	}
+	waves := st.Data["waves"].([]any)
+	w := waves[0].(map[string]any)
+	planned, ok := w["planned"].([]any)
+	if !ok {
+		t.Fatal("wave missing planned list")
+	}
+	if len(planned) != 2 {
+		t.Fatalf("len(planned) = %d, want 2", len(planned))
+	}
+	first := planned[0].(map[string]any)
+	if first["id"] != "10" || first["name"] != "Alpha" {
+		t.Errorf("planned[0] = %v, want id=10 name=Alpha", first)
+	}
+}
+
+func TestExecState_TaskContext_SiblingsExcludeSelf(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	createExecState(t, root, "feat/test", map[string]any{
+		"startedAt": testNow.UTC().Format(time.RFC3339),
+		"quality":   "full",
+		"waves":     []any{},
+	})
+
+	tasksJSON := `[{"id":"A","name":"Task A","files":["a.go"]},{"id":"B","name":"Task B","files":["b.go"]}]`
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action:    "wave-start",
+		Branch:    "feat/test",
+		Wave:      intPtr(1),
+		TasksJSON: tasksJSON,
+		RunID:     "run-sib",
+	}, clock); err != nil {
+		t.Fatalf("wave-start: %v", err)
+	}
+
+	// Request task-context for task A — siblings should contain only B.
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "task-context",
+		Branch: "feat/test",
+		RunID:  "run-sib",
+		TaskID: "A",
+		Wave:   intPtr(1),
+	}, clock)
+	if err != nil {
+		t.Fatalf("task-context: %v", err)
+	}
+	out := result.(TaskContextOut)
+	if out.Wave != 1 {
+		t.Errorf("Wave = %d, want 1", out.Wave)
+	}
+	if out.Quality != "full" {
+		t.Errorf("Quality = %q, want %q", out.Quality, "full")
+	}
+	if len(out.Siblings) != 1 {
+		t.Fatalf("len(Siblings) = %d, want 1", len(out.Siblings))
+	}
+	if out.Siblings[0].ID != "B" {
+		t.Errorf("Siblings[0].ID = %q, want %q", out.Siblings[0].ID, "B")
+	}
+	// ExecutionRules.FileScope should be task A's files
+	if out.ExecutionRules == nil {
+		t.Fatal("ExecutionRules is nil")
+	}
+	if len(out.ExecutionRules.FileScope) != 1 || out.ExecutionRules.FileScope[0] != "a.go" {
+		t.Errorf("FileScope = %v, want [a.go]", out.ExecutionRules.FileScope)
+	}
+}
+
+func TestExecState_TaskContext_WaveFromExecCurrentWaveNum(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	createExecState(t, root, "feat/test", map[string]any{
+		"startedAt": testNow.UTC().Format(time.RFC3339),
+		"waves":     []any{},
+	})
+
+	tasksJSON := `[{"id":"1","name":"Solo task","files":["x.go"]}]`
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action:    "wave-start",
+		Branch:    "feat/test",
+		Wave:      intPtr(3),
+		TasksJSON: tasksJSON,
+		RunID:     "run-wavenum",
+	}, clock); err != nil {
+		t.Fatalf("wave-start: %v", err)
+	}
+
+	// Do NOT pass Wave — task-context should derive it via execCurrentWaveNum.
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "task-context",
+		Branch: "feat/test",
+		RunID:  "run-wavenum",
+		TaskID: "1",
+	}, clock)
+	if err != nil {
+		t.Fatalf("task-context: %v", err)
+	}
+	out := result.(TaskContextOut)
+	if out.Wave != 3 {
+		t.Errorf("Wave = %d, want 3 (derived from in_progress wave)", out.Wave)
+	}
+	// Solo task — no siblings
+	if len(out.Siblings) != 0 {
+		t.Errorf("len(Siblings) = %d, want 0 for a single-task wave", len(out.Siblings))
 	}
 }
 
