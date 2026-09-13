@@ -136,18 +136,31 @@ func planIntegrityFromState(st *state.State) Output {
 		return silent
 	}
 
-	fmt.Fprint(os.Stderr, planIntegrityWarningText(missing, planFilePath))
+	intent, _ := st.Data["creationIntent"].(map[string]any)
+	userPrompt, _ := intent["userPrompt"].(string)
+
+	fmt.Fprint(os.Stderr, planIntegrityWarningText(missing, planFilePath, userPrompt))
 	return silent
 }
 
 // planIntegrityWarningText renders stop-plan-integrity.js's aggregated
-// warning verbatim: a header line, a "Missing checkpoints: a, b, ..." line,
-// then one "- marker: description" line per missing marker in
-// requiredPlanMarkers order. The planFile description is overridden to
-// include the actual (non-empty, unwritten-or-empty) path when known.
-func planIntegrityWarningText(missing []string, planFilePath string) string {
+// warning: a header line, a "Missing checkpoints: a, b, ..." line, then one
+// "- marker: description" line per missing marker in requiredPlanMarkers
+// order. The planFile description is overridden to include the actual
+// (non-empty, unwritten-or-empty) path when known.
+//
+// When userPrompt is non-empty (creationIntent.userPrompt, written by
+// plan_prepare's resolveTemplate call — see writeCreationIntent in
+// internal/tools/plan.go), the generic header is replaced by a richer one
+// naming the plan's originating request, matching plan.js's data-driven
+// warning text more closely than the marker-only header could.
+func planIntegrityWarningText(missing []string, planFilePath string, userPrompt string) string {
 	var b strings.Builder
-	b.WriteString("[plan-integrity] WARNING: Plan presented with incomplete plan execution.\n")
+	if userPrompt != "" {
+		b.WriteString(fmt.Sprintf("[plan-integrity] WARNING: plan for '%s' had incomplete checkpoints.\n", userPrompt))
+	} else {
+		b.WriteString("[plan-integrity] WARNING: Plan presented with incomplete plan execution.\n")
+	}
 	b.WriteString("  Missing checkpoints: " + strings.Join(missing, ", ") + "\n")
 	for _, marker := range missing {
 		desc := planMarkerDescriptions[marker]

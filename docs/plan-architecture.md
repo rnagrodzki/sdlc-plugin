@@ -185,7 +185,7 @@ plan files.
 (code, web, or hybrid) from the user prompt, scope hints, and OpenSpec
 context. One `Agent` subagent is dispatched per dimension, all in a single
 message with `run_in_background: true`. Each dimension worker writes its
-findings to `.sdlc-v2/execution/ledger/{runId}/{workerId}.findings.md` using
+findings to `.sdlc-v2/runs/ledger/{runId}/{workerId}.findings.md` using
 the `F-{dimension.name}-<n>` ID format. The orchestrator polls via
 `execute_state({action: "ledger_status"})` until all workers complete, then
 compiles a discovery brief. Stalled workers are given one extra poll cycle
@@ -315,7 +315,7 @@ message, all with `run_in_background: true`.
 
 Each worker explores its dimension independently (codebase reads for `code`,
 web research for `web`, both for `hybrid`) and writes findings to
-`.sdlc-v2/execution/ledger/{runId}/{workerId}.findings.md`. The orchestrator
+`.sdlc-v2/runs/ledger/{runId}/{workerId}.findings.md`. The orchestrator
 polls `execute_state({action: "ledger_status"})` until all workers complete or
 stall. Results are compiled into a discovery brief (`discovery-brief.md`) that
 feeds Step 2's decomposition.

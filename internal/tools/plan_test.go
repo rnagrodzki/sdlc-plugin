@@ -642,6 +642,222 @@ func TestPlanMark_WriteAndUpdate(t *testing.T) {
 	}
 }
 
+// readSoleStateDoc reads the single surviving plan-<slug>-*.json state file
+// under root and unmarshals it, failing the test if zero or more than one
+// file exists.
+func readSoleStateDoc(t *testing.T, root string) map[string]any {
+	t.Helper()
+	files := listStateFiles(t, root)
+	if len(files) != 1 {
+		t.Fatalf("state files = %v, want exactly 1", files)
+	}
+	raw, err := os.ReadFile(filepath.Join(root, paths.DataDir, paths.RunsSubdir, files[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	return doc
+}
+
+// TestPlanPrepare_CreationIntent_WrittenOnResolveTemplateOnly verifies
+// creationIntent is absent after a plain plan_prepare call (skillInvoked
+// only) and present — with the documented {userPrompt, scope, routing,
+// timestamp} shape — after a resolveTemplate:true call, without spawning a
+// second surviving state file (state.Find + state.Write append, not
+// state.Init).
+func TestPlanPrepare_CreationIntent_WrittenOnResolveTemplateOnly(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	if _, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+		t.Fatalf("planPrepareCore (first call): %v", err)
+	}
+	doc := readSoleStateDoc(t, dir)
+	if _, ok := doc["creationIntent"]; ok {
+		t.Errorf("creationIntent present after first (resolveTemplate=false) call: %v", doc["creationIntent"])
+	}
+	integrity, _ := doc["planIntegrity"].(map[string]any)
+	if _, ok := integrity["skillInvoked"]; !ok {
+		t.Fatalf("planIntegrity.skillInvoked missing after first call: %v", doc)
+	}
+
+	const prompt = "fix the login bug"
+	if _, err := planPrepareCore(dir, dir, PlanPrepareIn{
+		SkipConfigCheck: true, ResolveTemplate: true, UserPrompt: prompt, FileCount: 2,
+	}); err != nil {
+		t.Fatalf("planPrepareCore (resolveTemplate call): %v", err)
+	}
+
+	doc = readSoleStateDoc(t, dir) // still exactly one file — no re-pruning artifact
+	integrity, _ = doc["planIntegrity"].(map[string]any)
+	if _, ok := integrity["skillInvoked"]; !ok {
+		t.Errorf("planIntegrity.skillInvoked missing after resolveTemplate call: %v", doc)
+	}
+
+	intent, ok := doc["creationIntent"].(map[string]any)
+	if !ok {
+		t.Fatalf("creationIntent missing or wrong type after resolveTemplate call: %v", doc["creationIntent"])
+	}
+	if intent["userPrompt"] != prompt {
+		t.Errorf("creationIntent.userPrompt = %v, want %q", intent["userPrompt"], prompt)
+	}
+	if intent["scope"] != "lightweight" {
+		t.Errorf("creationIntent.scope = %v, want %q (2 files -> lightweight routing)", intent["scope"], "lightweight")
+	}
+	if s, ok := intent["routing"].(string); !ok || s == "" {
+		t.Errorf("creationIntent.routing = %v, want a non-empty string", intent["routing"])
+	}
+	if s, ok := intent["timestamp"].(string); !ok || s == "" {
+		t.Errorf("creationIntent.timestamp = %v, want a non-empty string", intent["timestamp"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// plan_mark structured-data marker tests (guardrailResults, criticalDecisions)
+// ---------------------------------------------------------------------------
+
+// TestPlanMark_GuardrailResults_AppendOnly verifies plan_mark({marker:
+// "guardrailResults", data:{results:[...]}}) appends to st.Data
+// ["guardrailResults"] across repeated calls without touching planIntegrity.
+func TestPlanMark_GuardrailResults_AppendOnly(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	if _, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+		t.Fatalf("planPrepareCore (seed): %v", err)
+	}
+
+	out1, err := planMark(dir, dir, PlanMarkIn{
+		Marker: "guardrailResults",
+		Data: map[string]any{"results": []any{
+			map[string]any{"id": "G1", "status": "pass", "detail": "ok"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("planMark(guardrailResults) #1: %v", err)
+	}
+	if !out1.OK {
+		t.Error("planMark(guardrailResults) #1 .OK = false, want true")
+	}
+
+	out2, err := planMark(dir, dir, PlanMarkIn{
+		Marker: "guardrailResults",
+		Data: map[string]any{"results": []any{
+			map[string]any{"id": "G2", "status": "fail", "detail": "missing file"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("planMark(guardrailResults) #2: %v", err)
+	}
+	if !out2.OK {
+		t.Error("planMark(guardrailResults) #2 .OK = false, want true")
+	}
+
+	doc := readSoleStateDoc(t, dir)
+	results, ok := doc["guardrailResults"].([]any)
+	if !ok {
+		t.Fatalf("guardrailResults missing or wrong type: %v", doc["guardrailResults"])
+	}
+	if len(results) != 2 {
+		t.Fatalf("len(guardrailResults) = %d, want 2 (append-only across both calls)", len(results))
+	}
+	first, _ := results[0].(map[string]any)
+	if first["id"] != "G1" {
+		t.Errorf("guardrailResults[0].id = %v, want G1", first["id"])
+	}
+	second, _ := results[1].(map[string]any)
+	if second["id"] != "G2" {
+		t.Errorf("guardrailResults[1].id = %v, want G2", second["id"])
+	}
+
+	// The existing integrity marker flow must be entirely unaffected: no
+	// planIntegrity key was ever created for a structured-data marker.
+	integrity, _ := doc["planIntegrity"].(map[string]any)
+	if _, ok := integrity["guardrailResults"]; ok {
+		t.Errorf("planIntegrity unexpectedly gained a guardrailResults key: %v", integrity)
+	}
+}
+
+// TestPlanMark_CriticalDecisions_AppendOnly mirrors
+// TestPlanMark_GuardrailResults_AppendOnly for the "criticalDecisions"
+// marker (data key "decisions" instead of "results").
+func TestPlanMark_CriticalDecisions_AppendOnly(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	if _, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+		t.Fatalf("planPrepareCore (seed): %v", err)
+	}
+
+	if _, err := planMark(dir, dir, PlanMarkIn{
+		Marker: "criticalDecisions",
+		Data: map[string]any{"decisions": []any{
+			map[string]any{"key": "template", "choice": "shipped-default", "reason": "no project override"},
+		}},
+	}); err != nil {
+		t.Fatalf("planMark(criticalDecisions) #1: %v", err)
+	}
+	if _, err := planMark(dir, dir, PlanMarkIn{
+		Marker: "criticalDecisions",
+		Data: map[string]any{"decisions": []any{
+			map[string]any{"key": "routing", "choice": "lightweight", "reason": "2 files"},
+		}},
+	}); err != nil {
+		t.Fatalf("planMark(criticalDecisions) #2: %v", err)
+	}
+
+	doc := readSoleStateDoc(t, dir)
+	decisions, ok := doc["criticalDecisions"].([]any)
+	if !ok {
+		t.Fatalf("criticalDecisions missing or wrong type: %v", doc["criticalDecisions"])
+	}
+	if len(decisions) != 2 {
+		t.Fatalf("len(criticalDecisions) = %d, want 2 (append-only across both calls)", len(decisions))
+	}
+}
+
+// TestPlanMark_ExistingIntegrityMarkers_IgnoreData verifies Data is accepted
+// but ignored for the pre-existing timestamp markers — passing it must not
+// change planIntegrity's stamped-timestamp behavior.
+func TestPlanMark_ExistingIntegrityMarkers_IgnoreData(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	if _, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+		t.Fatalf("planPrepareCore (seed): %v", err)
+	}
+
+	out, err := planMark(dir, dir, PlanMarkIn{
+		Marker: "critiqueRan",
+		Data:   map[string]any{"results": []any{map[string]any{"id": "should-be-ignored"}}},
+	})
+	if err != nil {
+		t.Fatalf("planMark(critiqueRan, with Data): %v", err)
+	}
+	if !out.OK {
+		t.Error("planMark(critiqueRan, with Data).OK = false, want true")
+	}
+
+	doc := readSoleStateDoc(t, dir)
+	integrity, ok := doc["planIntegrity"].(map[string]any)
+	if !ok {
+		t.Fatalf("planIntegrity missing or wrong type: %v", doc["planIntegrity"])
+	}
+	if s, ok := integrity["critiqueRan"].(string); !ok || s == "" {
+		t.Errorf("planIntegrity.critiqueRan = %v, want a non-empty timestamp string", integrity["critiqueRan"])
+	}
+	if _, ok := doc["results"]; ok {
+		t.Errorf("Data leaked into a top-level %q key: %v", "results", doc["results"])
+	}
+}
+
 // ---------------------------------------------------------------------------
 // plan_explore_prepare tests
 // ---------------------------------------------------------------------------

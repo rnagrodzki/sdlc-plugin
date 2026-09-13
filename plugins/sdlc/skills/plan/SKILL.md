@@ -196,7 +196,7 @@ After the `fromOpenspecDirect` enrichment block, determine which exploration pat
      ```
      workerId := slugify(dimension.name)
      ```
-     `slugify` lowercases the name, then collapses every run of characters outside `[A-Za-z0-9_-]` to a single `-`.
+     `slugify` lowercases the name, then collapses every run of characters outside `[A-Za-z0-9_-]` to a single `-`. Append this `workerId` to an `expectedWorkers` list accumulated across every dimension — the POLL step below passes the full list to `ledger_status`.
 
      Build each dimension's agent prompt from the matching per-mode body below, with the Coordination block appended to every mode:
 
@@ -267,7 +267,7 @@ After the `fromOpenspecDirect` enrichment block, determine which exploration pat
      ```
      1. Call execute_state({ action: "ledger_checkin", runId: "{runId}", workerId: "{workerId}" }) BEFORE starting exploration.
      2. Explore per the instructions above.
-     3. Write your findings to the file ".sdlc-v2/execution/ledger/{runId}/{workerId}.findings.md" as the raw F-{dimension.name}-n text block above, or the literal text ZERO_FINDINGS. Do this BEFORE the next step.
+     3. Write your findings to the file ".sdlc-v2/runs/ledger/{runId}/{workerId}.findings.md" as the raw F-{dimension.name}-n text block above, or the literal text ZERO_FINDINGS. Do this BEFORE the next step.
      4. Call execute_state({ action: "ledger_checkout", runId: "{runId}", workerId: "{workerId}" }) LAST, even when your findings file says ZERO_FINDINGS.
      ```
 
@@ -275,11 +275,13 @@ After the `fromOpenspecDirect` enrichment block, determine which exploration pat
 
      **Workflow variant:** Prefer the Workflow tool's native fan-out when available; otherwise use the flat background-dispatch + ledger path described above.
 
-  4. **POLL.** Loop calling `execute_state({ action: "ledger_status", runId, timeoutSeconds: 1800 })` roughly every 60 seconds until every dispatched `workerId` shows `status: "done"`.
+  4. **POLL.** Loop calling `execute_state({ action: "ledger_status", runId, expectedWorkers: [ids], timeoutSeconds: 1800 })`, passing the `expectedWorkers` list accumulated above, roughly every 60 seconds until every dispatched `workerId` shows `status: "done"`.
 
      **Stall handling (fail-partial-open, disclosed):** a `workerId` appearing in `stalledWorkers` is not yet failed — wait one more poll cycle. If it is **still** stalled on the next poll, stop waiting on it: proceed to CRITIQUE with the results collected so far, and explicitly name the skipped dimension(s) in `discovery-brief.md`'s `## Zero-Finding Dimensions` section with the note "skipped — worker stalled twice; no findings collected" — a disclosed degraded mode, not a silent drop.
 
-  5. **CRITIQUE.** Once every dispatched worker is `done` (or force-progressed past a stall above), read each worker's findings file at `.sdlc-v2/execution/ledger/{runId}/{workerId}.findings.md`:
+     **Missing-worker handling (same escalation pattern as stalls):** a `workerId` appearing in `missingWorkers` (dispatched but never checked in) is not yet failed — wait one more poll cycle. If it is **still** present in `missingWorkers` on the next poll, force-progress past it: proceed to CRITIQUE with the results collected so far, log a warning, and explicitly name the skipped dimension(s) in `discovery-brief.md`'s `## Zero-Finding Dimensions` section with the note "skipped — worker never checked in; no findings collected" — a disclosed degraded mode, not a silent drop.
+
+  5. **CRITIQUE.** Once every dispatched worker is `done` (or force-progressed past a stall above), read each worker's findings file at `.sdlc-v2/runs/ledger/{runId}/{workerId}.findings.md`:
      - **Deduplicate** — same file:line or same URL; keep the most specific observation.
      - **Severity consolidation** — same issue at different severities; keep the highest.
      - **Zero-finding dimensions** — list honestly; never fabricate findings for these.
@@ -335,9 +337,9 @@ After the `fromOpenspecDirect` enrichment block, determine which exploration pat
 
   7. **Read the brief** (`{outDir}/discovery-brief.md`) into context. It is the source of truth for Step 2 task provenance.
 
-  8. **Brief validation:** grep the brief's content for the pattern `F-[A-Z0-9_-]+-[0-9]+`. If zero matches are found, treat discovery as if it had failed: append one line to `.sdlc-v2/learnings/log.md`: `## <YYYY-MM-DD> — plan discovery returned brief without F-DIM-N findings; using fallback inline exploration`, delete the tempdir and ledger directory (`rm -rf "<outDir>"`, `rm -rf ".sdlc-v2/execution/ledger/<runId>"`), then proceed via the **Error fallback** path below. Rationale: a brief with no findings cannot satisfy G15 (Brief citation coverage) and would force every task into "out-of-scope addition" — better to fall back cleanly.
+  8. **Brief validation:** grep the brief's content for the pattern `F-[A-Z0-9_-]+-[0-9]+`. If zero matches are found, treat discovery as if it had failed: append one line to `.sdlc-v2/learnings/log.md`: `## <YYYY-MM-DD> — plan discovery returned brief without F-DIM-N findings; using fallback inline exploration`, delete the tempdir and ledger directory (`rm -rf "<outDir>"`, `rm -rf ".sdlc-v2/runs/ledger/<runId>"`), then proceed via the **Error fallback** path below. Rationale: a brief with no findings cannot satisfy G15 (Brief citation coverage) and would force every task into "out-of-scope addition" — better to fall back cleanly.
 
-  9. **Cleanup.** On successful brief validation, `rm -rf "<outDir>"` and `rm -rf ".sdlc-v2/execution/ledger/<runId>"` — the brief content is already loaded into context (step 7); nothing further reads the tempdir or the ledger directory.
+  9. **Cleanup.** On successful brief validation, `rm -rf "<outDir>"` and `rm -rf ".sdlc-v2/runs/ledger/<runId>"` — the brief content is already loaded into context (step 7); nothing further reads the tempdir or the ledger directory.
 
   **Brief consumption (when brief is present AND validation passed):**
   - Step 2 tasks MUST cite at least one `F-<DIM>-<n>` finding ID from the brief OR be explicitly marked "out-of-scope addition" with rationale (implements R27)

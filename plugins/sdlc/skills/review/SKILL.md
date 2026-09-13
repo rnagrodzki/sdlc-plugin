@@ -108,7 +108,9 @@ For each dimension entry with `status: "ACTIVE"` or `status: "TRUNCATED"`:
    ```
 
    `slugify` lowercases the name, then collapses every run of one-or-more characters
-   outside `[A-Za-z0-9_-]` to a single `-`.
+   outside `[A-Za-z0-9_-]` to a single `-`. **Append this `workerId` to an `expectedWorkers`
+   list accumulated across every dimension processed in this step** — Step 3 passes the full
+   list to `ledger_status`.
 
 3. **Do NOT read `dimension.slice_file` or `dimension.diff_file`.** The dispatched agent
    reads them itself (R-manifest-index-slices, #447) — reading them here would relocate the
@@ -153,7 +155,7 @@ For each dimension entry with `status: "ACTIVE"` or `status: "TRUNCATED"`:
       BEFORE reading your slice/diff files.
    2. Review per the instructions above. Cap at 20 findings (prioritize by severity).
    3. Write your findings to the file
-      ".sdlc-v2/execution/ledger/{runId}/{workerId}.findings.json" as a raw JSON array of
+      ".sdlc-v2/runs/ledger/{runId}/{workerId}.findings.json" as a raw JSON array of
       objects shaped {severity, file, line, rationale} — write `[]` if you have zero
       findings. Do this BEFORE the next step.
    4. Call execute_state({ action: "ledger_checkout", runId: "{runId}", workerId: "{workerId}" })
@@ -186,13 +188,13 @@ use the flat background-dispatch + ledger path described above.
 Loop calling:
 
 ```
-execute_state({ action: "ledger_status", runId, timeoutSeconds: 1800 })
-→ { runId, workers: [{ workerId, status, checkinAt, checkoutAt, stalled, stepId? }], stalledWorkers: [...] }
+execute_state({ action: "ledger_status", runId, expectedWorkers: [ids], timeoutSeconds: 1800 })
+→ { runId, workers: [{ workerId, status, checkinAt, checkoutAt, stalled, stepId? }], stalledWorkers: [...], missingWorkers: [...] }
 ```
 
-roughly every 60 seconds (a pacing suggestion for this session's own polling cadence, not a
-tool parameter) until every `workerId` dispatched in Step 2 shows `status: "done"` in
-`workers[]`.
+passing the `expectedWorkers` list accumulated in Step 2, roughly every 60 seconds (a pacing
+suggestion for this session's own polling cadence, not a tool parameter) until every
+`workerId` dispatched in Step 2 shows `status: "done"` in `workers[]`.
 
 **Stall handling (fail-partial-open, disclosed):**
 
@@ -203,13 +205,22 @@ tool parameter) until every `workerId` dispatched in Step 2 shows `status: "done
   skipped dimension(s) by name in the final `review-comment.md` (Step 5) — this is a
   disclosed degraded mode, not a silent drop.
 
+**Missing-worker handling (same escalation pattern as stalls):**
+
+- If a `workerId` appears in `missingWorkers` (dispatched but never checked in), do not treat
+  it as failed yet — wait one more poll cycle.
+- If it is **still** present in `missingWorkers` on the next poll, stop waiting on that
+  worker: force-progress to Step 4 with the results collected so far, log a warning, and
+  explicitly note the skipped dimension(s) by name in the final `review-comment.md` (Step 5)
+  — this is a disclosed degraded mode, not a silent drop.
+
 ---
 
 ## Step 4 — Consolidate Findings (relocated critique/dedupe pass)
 
 Once every dispatched worker is `done` (or was force-progressed past a stall per Step 3),
 read each worker's findings file at
-`.sdlc-v2/execution/ledger/<runId>/<workerId>.findings.json`. This is the same dedupe/
+`.sdlc-v2/runs/ledger/<runId>/<workerId>.findings.json`. This is the same dedupe/
 contradiction/severity-recalibration pass previously run by a separate orchestration step,
 now inline in this session:
 
@@ -432,7 +443,7 @@ normal completion):
 ```bash
 rm -f "<manifestPath>"
 rm -rf "{manifest.diff_dir}"
-rm -rf ".sdlc-v2/execution/ledger/<runId>"
+rm -rf ".sdlc-v2/runs/ledger/<runId>"
 ```
 
 ---

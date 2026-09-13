@@ -288,6 +288,84 @@ func TestStopPlanIntegrity_MissingMarker_WarnsDeletesNeverBlocks(t *testing.T) {
 	}
 }
 
+// TestStopPlanIntegrity_CreationIntentUserPrompt_RicherWarning verifies that
+// when the plan state file carries a creationIntent.userPrompt (written by
+// plan_prepare's resolveTemplate call — see writeCreationIntent in
+// internal/tools/plan.go), the stop hook's warning names the originating
+// request instead of the generic header, while the rest of the aggregated
+// warning (missing-checkpoint list, description lines) is unchanged.
+func TestStopPlanIntegrity_CreationIntentUserPrompt_RicherWarning(t *testing.T) {
+	root := gitFixture(t, "feat/plan-intent")
+	branch := "feat/plan-intent"
+
+	planFile := filepath.Join(root, "plans", "my-plan.md")
+	mustMkdirAll(t, filepath.Join(root, "plans"))
+	mustWriteFile(t, planFile, "# Plan\n\nSome content.\n")
+
+	markers := allPlanMarkers()
+	delete(markers, "critiqueRan")
+	st := newPlanState(t, root, branch, markers, planFile)
+	st.Data["creationIntent"] = map[string]any{
+		"userPrompt": "fix the login bug",
+		"scope":      "lightweight",
+		"routing":    "2 files detected — lightweight pipeline",
+		"timestamp":  "2024-01-01T00:00:00Z",
+	}
+	if err := state.Write(st); err != nil {
+		t.Fatal(err)
+	}
+
+	var out Output
+	stderrText := captureStderr(t, func() {
+		var err error
+		out, err = stopPlanIntegrity(HookCtx{}, Event{})
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+	assertSilent(t, out)
+
+	if !strings.Contains(stderrText, "plan for 'fix the login bug' had incomplete checkpoints") {
+		t.Errorf("stderr = %q, want the creationIntent.userPrompt-enriched header", stderrText)
+	}
+	if !strings.Contains(stderrText, "Missing checkpoints: critiqueRan") {
+		t.Errorf("stderr = %q, want it to still list critiqueRan as missing", stderrText)
+	}
+	if !strings.Contains(stderrText, "critiqueRan: Step 3 self-critique did not run") {
+		t.Errorf("stderr = %q, want the critiqueRan description line", stderrText)
+	}
+}
+
+// TestStopPlanIntegrity_NoCreationIntent_GenericWarning verifies the
+// pre-existing generic header is unchanged when creationIntent is absent
+// (e.g. a plan state file created before this enrichment, or a plan_prepare
+// call that never passed resolveTemplate:true).
+func TestStopPlanIntegrity_NoCreationIntent_GenericWarning(t *testing.T) {
+	root := gitFixture(t, "feat/plan-no-intent")
+	branch := "feat/plan-no-intent"
+
+	planFile := filepath.Join(root, "plans", "my-plan.md")
+	mustMkdirAll(t, filepath.Join(root, "plans"))
+	mustWriteFile(t, planFile, "# Plan\n\nSome content.\n")
+
+	markers := allPlanMarkers()
+	delete(markers, "critiqueRan")
+	newPlanState(t, root, branch, markers, planFile)
+
+	stderrText := captureStderr(t, func() {
+		if _, err := stopPlanIntegrity(HookCtx{}, Event{}); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	if !strings.Contains(stderrText, "WARNING: Plan presented with incomplete plan execution.") {
+		t.Errorf("stderr = %q, want the generic header when creationIntent is absent", stderrText)
+	}
+	if strings.Contains(stderrText, "had incomplete checkpoints") {
+		t.Errorf("stderr = %q, did not want the enriched header when creationIntent is absent", stderrText)
+	}
+}
+
 func TestStopPlanIntegrity_EmptyPlanFileOnDisk_FlagsPlanFileWithPath(t *testing.T) {
 	root := gitFixture(t, "feat/plan-empty-file")
 	branch := "feat/plan-empty-file"

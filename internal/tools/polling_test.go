@@ -199,6 +199,29 @@ func TestVerifyPipelineAwait_Failed(t *testing.T) {
 	}
 }
 
+// TestVerifyPipelineAwait_ExitCode8_PendingNotError is a regression test for
+// issue #20: `gh pr checks` exits 8 when checks are still pending, and this
+// must be classified as a pending poll state, not an error. polling.go:293
+// whitelists exit codes 0, 1, and 8; execx.RunAllowExit (via
+// ghx.PRChecksWithExitCode) separates the exit code from the returned error
+// so a non-zero-but-whitelisted exit never surfaces as err != nil here.
+func TestVerifyPipelineAwait_ExitCode8_PendingNotError(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\nprintf 'build\\tpending\\t1m\\thttps://x\\n'\nexit 8\n")
+	defer cleanup()
+
+	env, err := verifyPipelineAwait(".", VerifyPipelineAwaitIn{PR: 20, TimeoutSeconds: 1200, IntervalSeconds: 60})
+	if err != nil {
+		t.Fatalf("exit code 8 must not surface as a Go error: %v", err)
+	}
+	if env.Status != "pending" {
+		t.Fatalf("got status %q, want pending (exit code 8 is a whitelisted pending signal, not a failure)", env.Status)
+	}
+	if env.StateFile == nil || *env.StateFile == "" {
+		t.Fatalf("expected non-empty state_file for a pending poll")
+	}
+	defer os.Remove(*env.StateFile)
+}
+
 func TestVerifyPipelineAwait_MissingGHBinary(t *testing.T) {
 	origPath := os.Getenv("PATH")
 	os.Setenv("PATH", "")
