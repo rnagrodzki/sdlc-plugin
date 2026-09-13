@@ -25,6 +25,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/pipeline"
+	"github.com/rnagrodzki/sdlc-plugin/internal/shipmeta"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 	"github.com/rnagrodzki/sdlc-plugin/internal/wave"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
@@ -37,66 +38,72 @@ import (
 // ExecuteStateIn carries the merged input for the execute_state tool's
 // actions. Each field is consumed by one or more actions (noted in comments).
 type ExecuteStateIn struct {
-	Action            string         `json:"action" jsonschema_description:"Selects the operation: wave-compute, init, wave-start, wave-done, wave-fail, wave-committed, wave-commit, task-done, task-fail, task-context, context, read, cleanup, gc, summarize-prior-wave-context, wave-split, verify-completeness, wave-progress, resume-reset, ledger_checkin, ledger_checkout, ledger_status, log-cli, drift-log, issue-draft, decide, or report. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
-	Branch            string         `json:"branch,omitempty" jsonschema_description:"Git branch the execution state belongs to. Most actions accept it to scope the state file; falls back to the current branch when omitted."`
-	Quality           string         `json:"quality,omitempty" jsonschema_description:"Quality level to stamp on a newly initialized run (init only). Required — no config fallback exists for this field."`
-	TotalTasks        int            `json:"totalTasks,omitempty" jsonschema_description:"Total planned task count for a newly initialized run (init only)."`
-	PlannedTaskIds    []string       `json:"plannedTaskIds,omitempty" jsonschema_description:"IDs of every task planned for this run (init only), used later to detect run completeness."`
-	PlanPath          string         `json:"planPath,omitempty" jsonschema_description:"Path to the plan file to parse into a wave schedule (wave-compute), or to record on a newly initialized run (init)."`
-	PlanHash          string         `json:"planHash,omitempty" jsonschema_description:"Hash of the plan file content, recorded on a newly initialized run (init only) to detect later plan drift."`
-	ExtraDepsJSON     string         `json:"extraDepsJson,omitempty" jsonschema_description:"wave-compute only: JSON array of {task, dependsOn, reason} objects merged with each task's explicit \"Depends on\" field before the wave schedule is computed."`
-	Wave              *int           `json:"wave,omitempty" jsonschema_description:"Wave number the action applies to (wave-start, wave-done, wave-fail, wave-committed, wave-commit, task-done, task-fail, wave-split)."`
-	TasksJSON         string         `json:"tasksJson,omitempty" jsonschema_description:"wave-start only: JSON description of the wave's tasks, echoed back in the wave-start narration's task list."`
-	RunID             string         `json:"runId,omitempty" jsonschema_description:"Execution run identifier. Required by task-context, ledger_checkin, ledger_checkout, and ledger_status; optional elsewhere (e.g. wave-start, for fact sheets) where it falls back to the value derived from the state's startedAt/wave."`
-	WorkerID          string         `json:"workerId,omitempty" jsonschema_description:"Identifier of the per-task worker registering or clearing its ledger entry (ledger_checkin, ledger_checkout)."`
-	Decisions         string         `json:"decisions,omitempty" jsonschema_description:"wave-done only: free-text record of decisions made while completing the wave, surfaced in later summaries."`
-	Status            string         `json:"status,omitempty" jsonschema_description:"Outcome status to record: for wave-done/wave-fail, the wave's terminal status; for task-done, \"DONE_WITH_CONCERNS\" records a warning issue alongside the completion."`
-	TimedOut          bool           `json:"timedOut,omitempty" jsonschema_description:"wave-fail only: true when the wave failed because it timed out, rather than erroring outright."`
-	SHA               string         `json:"sha,omitempty" jsonschema_description:"wave-committed only: the git commit SHA to record for the completed wave."`
-	TaskID            string         `json:"taskId,omitempty" jsonschema_description:"Task identifier the action applies to (task-done, task-fail, task-context, wave-progress writes)."`
-	TaskName          string         `json:"taskName,omitempty" jsonschema_description:"task-done only: human-readable name of the completed task, surfaced in the running-tally narration."`
-	Complexity        string         `json:"complexity,omitempty" jsonschema_description:"task-done only: complexity rating recorded for the completed task."`
-	Risk              string         `json:"risk,omitempty" jsonschema_description:"task-done only: risk rating recorded for the completed task."`
-	FilesChanged      string         `json:"filesChanged,omitempty" jsonschema_description:"task-done only: description of files the task changed, recorded on the task's completion record."`
-	FilesAdded        string         `json:"filesAdded,omitempty" jsonschema_description:"task-done only: description of files the task added, recorded on the task's completion record."`
-	VerifyToken       string         `json:"verifyToken,omitempty" jsonschema_description:"task-done only: verification token/evidence recorded for the completed task."`
-	SkippedDep        bool           `json:"skippedDependency,omitempty" jsonschema_description:"task-fail only: true when the failure is a skipped dependency rather than a real failure; only a non-skipped failure updates the wave's failedTask."`
-	ErrorText         string         `json:"error,omitempty" jsonschema_description:"Failure or concern detail text: the failure cause for wave-fail (recorded as an issue and in failedWave), the concern detail for task-done's DONE_WITH_CONCERNS status, or the failure detail for task-fail."`
-	Data              string         `json:"data,omitempty" jsonschema_description:"context action only: JSON object of shared context keys to write (allowed keys: planSummary, completedTaskIds, filesAdded, filesModified, interfacesCreated, decisionsFromPriorWaves)."`
-	TTLDays           *int           `json:"ttlDays,omitempty" sdlcconfig:"state.gc.ttlDays" jsonschema_description:"gc only: age threshold in days beyond which stale state files are garbage-collected. Optional. Defaults to config state.gc.ttlDays. Pass only to override."`
-	DryRun            bool           `json:"dryRun,omitempty" jsonschema_description:"gc only: when true, reports what would be garbage-collected without deleting anything."`
-	MaxFiles          int            `json:"maxFiles,omitempty" sdlcconfig:"execute.priorWaveContextCaps.maxFiles" jsonschema_description:"Cap on the number of files summarized in prior-wave context (context, summarize-prior-wave-context). Optional. Defaults to config execute.priorWaveContextCaps.maxFiles. Pass only to override."`
-	MaxDecisions      int            `json:"maxDecisions,omitempty" sdlcconfig:"execute.priorWaveContextCaps.maxDecisions" jsonschema_description:"Cap on the number of decisions summarized in prior-wave context (context, summarize-prior-wave-context). Optional. Defaults to config execute.priorWaveContextCaps.maxDecisions. Pass only to override."`
-	MaxInterfaces     int            `json:"maxInterfaces,omitempty" sdlcconfig:"execute.priorWaveContextCaps.maxInterfaces" jsonschema_description:"Cap on the number of interfaces summarized in prior-wave context (context, summarize-prior-wave-context). Optional. Defaults to config execute.priorWaveContextCaps.maxInterfaces. Pass only to override."`
-	MaxTaskIds        int            `json:"maxTaskIds,omitempty" sdlcconfig:"execute.priorWaveContextCaps.maxTaskIds" jsonschema_description:"Cap on the number of task IDs summarized in prior-wave context (context, summarize-prior-wave-context). Optional. Defaults to config execute.priorWaveContextCaps.maxTaskIds. Pass only to override."`
-	Dispatched        string         `json:"dispatched,omitempty" jsonschema_description:"wave-split only: description of tasks already dispatched, used to compute which remaining tasks form the new wave."`
-	MissingIds        string         `json:"missingIds,omitempty" jsonschema_description:"wave-split only: task IDs missing from the current wave that should be folded into the new split wave."`
-	SplitDepth        int            `json:"splitDepth,omitempty" jsonschema_description:"wave-split only: current recursive split depth, used together with maxSplitDepth to bound repeated splitting."`
-	MaxSplitDepth     int            `json:"maxSplitDepth,omitempty" jsonschema_description:"wave-split only: maximum recursive split depth allowed before wave-split refuses to split further."`
-	StateFile         string         `json:"stateFile,omitempty" jsonschema_description:"Overrides the execution state file path to read/write, instead of the one derived from branch (wave-split, verify-completeness, resume-reset)."`
-	Phase             string         `json:"phase,omitempty" jsonschema_description:"wave-progress write only: the phase name to stamp on the task's heartbeat entry."`
-	ReadProgress      bool           `json:"readProgress,omitempty" jsonschema_description:"wave-progress only: true to read the current per-task progress instead of writing a new heartbeat entry."`
-	SessionID         string         `json:"sessionId,omitempty" jsonschema_description:"init only: Claude Code session ID stamped into the newly initialized execution state."`
-	TimeoutSeconds    int            `json:"timeoutSeconds,omitempty" jsonschema_description:"ledger_status only: age threshold in seconds beyond which a checked-in worker with no checkout is reported as timed out."`
-	ExpectedWorkers   []string       `json:"expectedWorkers,omitempty" jsonschema_description:"ledger_status only: worker IDs expected to be registered for this run; any not found on disk are returned in missingWorkers."`
-	Payload           map[string]any `json:"payload,omitempty" jsonschema_description:"Reserved for future use; not currently read by any action."`
-	StepID            string         `json:"stepId,omitempty" jsonschema_description:"ledger_checkin only: identifier of the pipeline step the worker is registering activity for."`
-	Detail            string         `json:"detail,omitempty" jsonschema_description:"Narration verbosity for wave-start/wave-done/wave-fail/wave-commit: \"concise\" or \"full\"."`
-	LastCompletedTask string         `json:"lastCompletedTask,omitempty" jsonschema_description:"wave-progress write only: ID of the most recently completed task, recorded in the heartbeat entry."`
-	Message           string         `json:"message,omitempty" jsonschema_description:"wave-commit only: commit message to use for 'git commit -m' when staging and committing the wave's changes."`
-	CLICommand        string         `json:"cliCommand,omitempty" jsonschema_description:"log-cli only: the Bash command that was executed."`
-	CLIExitCode       int            `json:"cliExitCode,omitempty" jsonschema_description:"log-cli only: the exit code of the command."`
-	CLIOutput         string         `json:"cliOutput,omitempty" jsonschema_description:"log-cli only: first ~500 characters of command output."`
-	DriftSeverity     string         `json:"driftSeverity,omitempty" jsonschema:"enum=error,enum=warning,enum=info" jsonschema_description:"drift-log only: severity of the drift issue — one of error, warning, or info."`
-	DriftSummary      string         `json:"driftSummary,omitempty" jsonschema_description:"drift-log only: one-line summary of the drift issue."`
-	DriftDetail       string         `json:"driftDetail,omitempty" jsonschema_description:"drift-log only: optional longer description of the drift issue."`
-	IssueDraftTitle   string         `json:"issueDraftTitle,omitempty" jsonschema_description:"issue-draft only: GH issue title (required)."`
-	IssueDraftBody    string         `json:"issueDraftBody,omitempty" jsonschema_description:"issue-draft only: GH issue body markdown (required)."`
-	IssueDraftLabels  []string       `json:"issueDraftLabels,omitempty" jsonschema_description:"issue-draft only: labels to apply (optional)."`
-	DecideType        string         `json:"decideType,omitempty" jsonschema:"enum=guardrail" jsonschema_description:"decide only: decision category. Currently: guardrail."`
-	DecideID          string         `json:"decideId,omitempty" jsonschema_description:"decide only: identifier of the item decided on (e.g. a guardrail slug)."`
-	DecideDecision    string         `json:"decideDecision,omitempty" jsonschema:"enum=override,enum=harden,enum=cancel,enum=fix" jsonschema_description:"decide only: choice made — override, harden, cancel, or fix."`
-	DecideReason      string         `json:"decideReason,omitempty" jsonschema_description:"decide only: optional free-text reason why this choice was made."`
+	Action              string         `json:"action" jsonschema_description:"Selects the operation: wave-compute, init, wave-start, wave-done, wave-fail, wave-committed, wave-commit, task-done, task-fail, task-context, context, read, cleanup, gc, summarize-prior-wave-context, wave-split, verify-completeness, wave-progress, resume-reset, ledger_checkin, ledger_checkout, ledger_status, log-cli, drift-log, issue-draft, decide, or report. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
+	Branch              string         `json:"branch,omitempty" jsonschema_description:"Git branch the execution state belongs to. Most actions accept it to scope the state file; falls back to the current branch when omitted."`
+	Quality             string         `json:"quality,omitempty" jsonschema_description:"Quality level to stamp on a newly initialized run (init only). Required — no config fallback exists for this field."`
+	TotalTasks          int            `json:"totalTasks,omitempty" jsonschema_description:"Total planned task count for a newly initialized run (init only)."`
+	WaveTimeoutSeconds  int            `json:"waveTimeoutSeconds,omitempty" jsonschema_description:"init only: this run's wave wall-clock deadline in seconds (the invoking CLI's --wave-timeout). Recorded on init and later read back by wave-progress's readProgress to compute stallCause via wave.ClassifyStall. When omitted, falls back to a ship-state cross-read of flags.executeWaveTimeout, then internal/shipmeta.ShipBuiltInDefaults.ExecuteWaveTimeout (1800s)."`
+	WaveIntervalSeconds int            `json:"waveIntervalSeconds,omitempty" jsonschema_description:"init only: this run's heartbeat liveness cadence in seconds (the invoking CLI's --wave-interval). Recorded on init and later read back by wave-progress's readProgress to compute stallCause via wave.ClassifyStall. When omitted, falls back to a ship-state cross-read of flags.executeWaveInterval, then internal/shipmeta.ShipBuiltInDefaults.ExecuteWaveInterval (60s)."`
+	PlannedTaskIds      []string       `json:"plannedTaskIds,omitempty" jsonschema_description:"IDs of every task planned for this run (init only), used later to detect run completeness."`
+	PlanPath            string         `json:"planPath,omitempty" jsonschema_description:"Path to the plan file to parse into a wave schedule (wave-compute), or to record on a newly initialized run (init)."`
+	PlanHash            string         `json:"planHash,omitempty" jsonschema_description:"Hash of the plan file content, recorded on a newly initialized run (init only) to detect later plan drift."`
+	ExtraDepsJSON       string         `json:"extraDepsJson,omitempty" jsonschema_description:"wave-compute only: JSON array of {task, dependsOn, reason} objects merged with each task's explicit \"Depends on\" field before the wave schedule is computed."`
+	Wave                *int           `json:"wave,omitempty" jsonschema_description:"Wave number the action applies to (wave-start, wave-done, wave-fail, wave-committed, wave-commit, task-done, task-fail, wave-split)."`
+	TasksJSON           string         `json:"tasksJson,omitempty" jsonschema_description:"wave-start only: JSON description of the wave's tasks, echoed back in the wave-start narration's task list."`
+	RunID               string         `json:"runId,omitempty" jsonschema_description:"Execution run identifier. Required by task-context, ledger_checkin, ledger_checkout, and ledger_status; optional elsewhere (e.g. wave-start, for fact sheets) where it falls back to the value derived from the state's startedAt/wave."`
+	WorkerID            string         `json:"workerId,omitempty" jsonschema_description:"Identifier of the per-task worker registering or clearing its ledger entry (ledger_checkin, ledger_checkout)."`
+	Decisions           string         `json:"decisions,omitempty" jsonschema_description:"wave-done only: free-text record of decisions made while completing the wave, surfaced in later summaries."`
+	Status              string         `json:"status,omitempty" jsonschema_description:"Outcome status to record: for wave-done/wave-fail, the wave's terminal status; for task-done, \"DONE_WITH_CONCERNS\" records a warning issue alongside the completion."`
+	TimedOut            bool           `json:"timedOut,omitempty" jsonschema_description:"wave-fail only: true when the wave failed because it timed out, rather than erroring outright."`
+	SHA                 string         `json:"sha,omitempty" jsonschema_description:"wave-committed only: the git commit SHA to record for the completed wave."`
+	TaskID              string         `json:"taskId,omitempty" jsonschema_description:"Task identifier the action applies to (task-done, task-fail, task-context, wave-progress writes)."`
+	TaskName            string         `json:"taskName,omitempty" jsonschema_description:"task-done only: human-readable name of the completed task, surfaced in the running-tally narration."`
+	Complexity          string         `json:"complexity,omitempty" jsonschema_description:"task-done only: complexity rating recorded for the completed task."`
+	Risk                string         `json:"risk,omitempty" jsonschema_description:"task-done only: risk rating recorded for the completed task."`
+	FilesChanged        string         `json:"filesChanged,omitempty" jsonschema_description:"task-done only: description of files the task changed, recorded on the task's completion record."`
+	FilesAdded          string         `json:"filesAdded,omitempty" jsonschema_description:"task-done only: description of files the task added, recorded on the task's completion record."`
+	VerifyToken         string         `json:"verifyToken,omitempty" jsonschema_description:"task-done only: verification token/evidence recorded for the completed task."`
+	SkippedDep          bool           `json:"skippedDependency,omitempty" jsonschema_description:"task-fail only: true when the failure is a skipped dependency rather than a real failure; only a non-skipped failure updates the wave's failedTask."`
+	ErrorText           string         `json:"error,omitempty" jsonschema_description:"Failure or concern detail text: the failure cause for wave-fail (recorded as an issue and in failedWave), the concern detail for task-done's DONE_WITH_CONCERNS status, or the failure detail for task-fail."`
+	Data                string         `json:"data,omitempty" jsonschema_description:"context action only: JSON object of shared context keys to write (allowed keys: planSummary, completedTaskIds, filesAdded, filesModified, interfacesCreated, decisionsFromPriorWaves)."`
+	TTLDays             *int           `json:"ttlDays,omitempty" sdlcconfig:"state.gc.ttlDays" jsonschema_description:"gc only: age threshold in days beyond which stale state files are garbage-collected. Optional. Defaults to config state.gc.ttlDays. Pass only to override."`
+	DryRun              bool           `json:"dryRun,omitempty" jsonschema_description:"gc only: when true, reports what would be garbage-collected without deleting anything."`
+	MaxFiles            int            `json:"maxFiles,omitempty" sdlcconfig:"execute.priorWaveContextCaps.maxFiles" jsonschema_description:"Cap on the number of files summarized in prior-wave context (context, summarize-prior-wave-context). Optional. Defaults to config execute.priorWaveContextCaps.maxFiles. Pass only to override."`
+	MaxDecisions        int            `json:"maxDecisions,omitempty" sdlcconfig:"execute.priorWaveContextCaps.maxDecisions" jsonschema_description:"Cap on the number of decisions summarized in prior-wave context (context, summarize-prior-wave-context). Optional. Defaults to config execute.priorWaveContextCaps.maxDecisions. Pass only to override."`
+	MaxInterfaces       int            `json:"maxInterfaces,omitempty" sdlcconfig:"execute.priorWaveContextCaps.maxInterfaces" jsonschema_description:"Cap on the number of interfaces summarized in prior-wave context (context, summarize-prior-wave-context). Optional. Defaults to config execute.priorWaveContextCaps.maxInterfaces. Pass only to override."`
+	MaxTaskIds          int            `json:"maxTaskIds,omitempty" sdlcconfig:"execute.priorWaveContextCaps.maxTaskIds" jsonschema_description:"Cap on the number of task IDs summarized in prior-wave context (context, summarize-prior-wave-context). Optional. Defaults to config execute.priorWaveContextCaps.maxTaskIds. Pass only to override."`
+	Dispatched          string         `json:"dispatched,omitempty" jsonschema_description:"wave-split only: description of tasks already dispatched, used to compute which remaining tasks form the new wave."`
+	MissingIds          string         `json:"missingIds,omitempty" jsonschema_description:"wave-split only: task IDs missing from the current wave that should be folded into the new split wave."`
+	SplitDepth          int            `json:"splitDepth,omitempty" jsonschema_description:"wave-split only: current recursive split depth, used together with maxSplitDepth to bound repeated splitting."`
+	MaxSplitDepth       int            `json:"maxSplitDepth,omitempty" jsonschema_description:"wave-split only: maximum recursive split depth allowed before wave-split refuses to split further."`
+	StateFile           string         `json:"stateFile,omitempty" jsonschema_description:"Overrides the execution state file path to read/write, instead of the one derived from branch (wave-split, verify-completeness, resume-reset)."`
+	Phase               string         `json:"phase,omitempty" jsonschema_description:"wave-progress write only: the phase name to stamp on the task's heartbeat entry."`
+	ReadProgress        bool           `json:"readProgress,omitempty" jsonschema_description:"wave-progress only: true to read the current per-task progress instead of writing a new heartbeat entry."`
+	SessionID           string         `json:"sessionId,omitempty" jsonschema_description:"init only: Claude Code session ID stamped into the newly initialized execution state."`
+	TimeoutSeconds      int            `json:"timeoutSeconds,omitempty" jsonschema_description:"ledger_status only: age threshold in seconds beyond which a checked-in worker with no checkout is reported as timed out."`
+	ExpectedWorkers     []string       `json:"expectedWorkers,omitempty" jsonschema_description:"ledger_status only: worker IDs expected to be registered for this run; any not found on disk are returned in missingWorkers."`
+	Payload             map[string]any `json:"payload,omitempty" jsonschema_description:"Reserved for future use; not currently read by any action."`
+	StepID              string         `json:"stepId,omitempty" jsonschema_description:"ledger_checkin only: identifier of the pipeline step the worker is registering activity for."`
+	Detail              string         `json:"detail,omitempty" jsonschema_description:"Narration verbosity for wave-start/wave-done/wave-fail/wave-commit: \"concise\" or \"full\"."`
+	LastCompletedTask   string         `json:"lastCompletedTask,omitempty" jsonschema_description:"wave-progress write only: ID of the most recently completed task, recorded in the heartbeat entry."`
+	AcceptanceDone      []int          `json:"acceptanceDone,omitempty" jsonschema_description:"wave-progress write only: 0-based indices, into the task's fact-sheet acceptance criteria, that the worker has completed so far (e.g. [0,2,3]). Replaces the previously recorded list; omit to leave it unchanged."`
+	FilesTouched        []string       `json:"filesTouched,omitempty" jsonschema_description:"wave-progress write only: files the worker has modified so far. Replaces the previously recorded list; omit to leave it unchanged."`
+	Blocker             string         `json:"blocker,omitempty" jsonschema_description:"wave-progress write only: free-text reason the worker is currently blocked. Omit to leave the previously recorded value unchanged."`
+	NudgedAt            string         `json:"nudgedAt,omitempty" jsonschema_description:"wave-progress write only: server-side nudge timestamp, written by the orchestration's nudge protocol and read back via readProgress to decide whether a task was already nudged. Omit to leave the previously recorded value unchanged."`
+	Message             string         `json:"message,omitempty" jsonschema_description:"wave-commit only: commit message to use for 'git commit -m' when staging and committing the wave's changes."`
+	CLICommand          string         `json:"cliCommand,omitempty" jsonschema_description:"log-cli only: the Bash command that was executed."`
+	CLIExitCode         int            `json:"cliExitCode,omitempty" jsonschema_description:"log-cli only: the exit code of the command."`
+	CLIOutput           string         `json:"cliOutput,omitempty" jsonschema_description:"log-cli only: first ~500 characters of command output."`
+	DriftSeverity       string         `json:"driftSeverity,omitempty" jsonschema:"enum=error,enum=warning,enum=info" jsonschema_description:"drift-log only: severity of the drift issue — one of error, warning, or info."`
+	DriftSummary        string         `json:"driftSummary,omitempty" jsonschema_description:"drift-log only: one-line summary of the drift issue."`
+	DriftDetail         string         `json:"driftDetail,omitempty" jsonschema_description:"drift-log only: optional longer description of the drift issue."`
+	IssueDraftTitle     string         `json:"issueDraftTitle,omitempty" jsonschema_description:"issue-draft only: GH issue title (required)."`
+	IssueDraftBody      string         `json:"issueDraftBody,omitempty" jsonschema_description:"issue-draft only: GH issue body markdown (required)."`
+	IssueDraftLabels    []string       `json:"issueDraftLabels,omitempty" jsonschema_description:"issue-draft only: labels to apply (optional)."`
+	DecideType          string         `json:"decideType,omitempty" jsonschema:"enum=guardrail" jsonschema_description:"decide only: decision category. Currently: guardrail."`
+	DecideID            string         `json:"decideId,omitempty" jsonschema_description:"decide only: identifier of the item decided on (e.g. a guardrail slug)."`
+	DecideDecision      string         `json:"decideDecision,omitempty" jsonschema:"enum=override,enum=harden,enum=cancel,enum=fix" jsonschema_description:"decide only: choice made — override, harden, cancel, or fix."`
+	DecideReason        string         `json:"decideReason,omitempty" jsonschema_description:"decide only: optional free-text reason why this choice was made."`
 }
 
 // ---------------------------------------------------------------------------
@@ -562,7 +569,7 @@ func executeState(root, workDir string, in ExecuteStateIn, now func() time.Time)
 	case "verify-completeness":
 		return execActionVerifyCompleteness(root, workDir, in)
 	case "wave-progress":
-		return execActionWaveProgress(root, in)
+		return execActionWaveProgress(root, workDir, in)
 	case "resume-reset":
 		return execActionResumeReset(root, workDir, in)
 	case "ledger_checkin":
@@ -1754,7 +1761,8 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 	//                 can diagnose why auto-forward didn't happen.
 	st.Data["pipelineAuto"] = false
 	var initWarnings []string
-	if shipSt, shipErr := state.Find(root, "ship", in.Branch); shipErr != nil {
+	shipSt, shipErr := state.Find(root, "ship", in.Branch)
+	if shipErr != nil {
 		initWarnings = append(initWarnings, fmt.Sprintf("ship state unreadable: %s", shipErr.Error()))
 	} else if shipSt != nil {
 		if flags, ok := shipSt.Data["flags"].(map[string]any); ok {
@@ -1763,6 +1771,34 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 			}
 		}
 	}
+
+	// Wave stall-timeout params, resolved once here so wave-progress's
+	// readProgress never re-derives them per call (see
+	// execWaveStallTimeouts). Source order: explicit init input (this run's
+	// own --wave-timeout/--wave-interval, forwarded by the invoking CLI) >
+	// a ship-state cross-read of the same run's flags.executeWaveTimeout /
+	// flags.executeWaveInterval (set when ship dispatched this run) >
+	// shipmeta.ShipBuiltInDefaults (the standalone-execute default).
+	waveTimeoutSec := shipmeta.ShipBuiltInDefaults.ExecuteWaveTimeout
+	waveIntervalSec := shipmeta.ShipBuiltInDefaults.ExecuteWaveInterval
+	if shipSt != nil {
+		if flags, ok := shipSt.Data["flags"].(map[string]any); ok {
+			if v := execToInt(flags["executeWaveTimeout"]); v > 0 {
+				waveTimeoutSec = v
+			}
+			if v := execToInt(flags["executeWaveInterval"]); v > 0 {
+				waveIntervalSec = v
+			}
+		}
+	}
+	if in.WaveTimeoutSeconds > 0 {
+		waveTimeoutSec = in.WaveTimeoutSeconds
+	}
+	if in.WaveIntervalSeconds > 0 {
+		waveIntervalSec = in.WaveIntervalSeconds
+	}
+	st.Data["waveTimeoutSeconds"] = waveTimeoutSec
+	st.Data["waveIntervalSeconds"] = waveIntervalSec
 
 	if err := state.Write(st); err != nil {
 		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
@@ -3788,7 +3824,45 @@ func execActionVerifyCompleteness(root, workDir string, in ExecuteStateIn) (any,
 // Action: wave-progress
 // ---------------------------------------------------------------------------
 
-func execActionWaveProgress(root string, in ExecuteStateIn) (any, error) {
+// TaskProgressWithStall wraps a task's raw progress entry with the
+// server-computed StallCause, so the orchestrator's readProgress poll gets
+// a ready verdict instead of doing its own UpdatedAt/StartedAt timestamp
+// arithmetic. StallCause is computed fresh per call by execActionWaveProgress
+// via wave.ClassifyStall — never persisted on the TaskProgress file itself.
+type TaskProgressWithStall struct {
+	wave.TaskProgress
+	StallCause string `json:"stallCause,omitempty"`
+}
+
+// ReadProgressOut is the readProgress-mode response shape for the
+// wave-progress action: the same top-level "tasks" key wave.Progress has
+// always returned, with each entry now wrapped in TaskProgressWithStall.
+type ReadProgressOut struct {
+	Tasks map[string]TaskProgressWithStall `json:"tasks"`
+}
+
+// execWaveStallTimeouts resolves the heartbeat/total timeout durations fed
+// into wave.ClassifyStall for a readProgress call. Source order: this run's
+// own execute state (recorded once at init — see execActionInit) > the
+// standalone-execute built-in defaults. A missing/unreadable execute state
+// file is not an error here — readProgress must answer the same "never
+// throw on read" contract wave.ReadProgress itself already has; it just
+// falls back to the built-in defaults.
+func execWaveStallTimeouts(root, branch string) (heartbeatTimeout, totalTimeout time.Duration) {
+	totalSec := shipmeta.ShipBuiltInDefaults.ExecuteWaveTimeout
+	intervalSec := shipmeta.ShipBuiltInDefaults.ExecuteWaveInterval
+	if st, err := state.Find(root, "execute", branch); err == nil && st != nil {
+		if v := execToInt(st.Data["waveTimeoutSeconds"]); v > 0 {
+			totalSec = v
+		}
+		if v := execToInt(st.Data["waveIntervalSeconds"]); v > 0 {
+			intervalSec = v
+		}
+	}
+	return time.Duration(intervalSec) * time.Second, time.Duration(totalSec) * time.Second
+}
+
+func execActionWaveProgress(root, workDir string, in ExecuteStateIn) (any, error) {
 	if in.RunID == "" {
 		return nil, &mcpserver.DomainError{Msg: "runId is required"}
 	}
@@ -3798,14 +3872,35 @@ func execActionWaveProgress(root string, in ExecuteStateIn) (any, error) {
 		if err != nil {
 			return nil, &mcpserver.DomainError{Msg: "read progress: " + err.Error(), Cause: err}
 		}
-		return p, nil
+
+		// Branch resolution failure (e.g. detached HEAD, no git repo) is not
+		// fatal here: execWaveStallTimeouts tolerates an empty/unresolvable
+		// branch by falling back to the built-in defaults.
+		branch, _ := execResolveBranch(in.Branch, workDir)
+		heartbeatTimeout, totalTimeout := execWaveStallTimeouts(root, branch)
+
+		now := time.Now()
+		tasks := make(map[string]TaskProgressWithStall, len(p.Tasks))
+		for taskID, tp := range p.Tasks {
+			tasks[taskID] = TaskProgressWithStall{
+				TaskProgress: tp,
+				StallCause:   string(wave.ClassifyStall(tp, now, heartbeatTimeout, totalTimeout)),
+			}
+		}
+		return ReadProgressOut{Tasks: tasks}, nil
 	}
 
 	if in.TaskID == "" {
 		return nil, &mcpserver.DomainError{Msg: "taskId is required (write mode)"}
 	}
 
-	if err := wave.UpdateProgress(root, in.RunID, in.TaskID, in.Phase, in.LastCompletedTask); err != nil {
+	fields := wave.ProgressFields{
+		AcceptanceDone: in.AcceptanceDone,
+		FilesTouched:   in.FilesTouched,
+		Blocker:        in.Blocker,
+		NudgedAt:       in.NudgedAt,
+	}
+	if err := wave.UpdateProgress(root, in.RunID, in.TaskID, in.Phase, in.LastCompletedTask, fields); err != nil {
 		if errors.Is(err, wave.ErrBadRunID) || errors.Is(err, wave.ErrBadPhase) {
 			return nil, &mcpserver.DomainError{Msg: err.Error(), Cause: err}
 		}

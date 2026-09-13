@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -331,6 +332,102 @@ func TestUpdateProgress_PreservesStartedAt(t *testing.T) {
 	}
 	if p.Tasks["1"].UpdatedAt == firstStartedAt {
 		t.Error("UpdatedAt should change on second write")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// UpdateProgress: structured-milestone fields (AcceptanceDone, FilesTouched,
+// Blocker, NudgedAt)
+// ---------------------------------------------------------------------------
+
+func TestUpdateProgress_WritesStructuredFields(t *testing.T) {
+	root := t.TempDir()
+	runID := "run1"
+
+	err := UpdateProgress(root, runID, "1", "editing", "", ProgressFields{
+		AcceptanceDone: []int{0, 2, 3},
+		FilesTouched:   []string{"a.go", "b.go"},
+		Blocker:        "waiting on review",
+		NudgedAt:       "2026-01-01T00:00:00.000Z",
+	})
+	if err != nil {
+		t.Fatalf("UpdateProgress: %v", err)
+	}
+
+	p, err := ReadProgress(root, runID)
+	if err != nil {
+		t.Fatalf("ReadProgress: %v", err)
+	}
+	tp, ok := p.Tasks["1"]
+	if !ok {
+		t.Fatal("task 1 not found in progress")
+	}
+	if got, want := tp.AcceptanceDone, []int{0, 2, 3}; !reflect.DeepEqual(got, want) {
+		t.Errorf("AcceptanceDone = %v, want %v", got, want)
+	}
+	if got, want := tp.FilesTouched, []string{"a.go", "b.go"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("FilesTouched = %v, want %v", got, want)
+	}
+	if tp.Blocker != "waiting on review" {
+		t.Errorf("Blocker = %q, want %q", tp.Blocker, "waiting on review")
+	}
+	if tp.NudgedAt != "2026-01-01T00:00:00.000Z" {
+		t.Errorf("NudgedAt = %q, want %q", tp.NudgedAt, "2026-01-01T00:00:00.000Z")
+	}
+}
+
+func TestUpdateProgress_PreservesStructuredFieldsWhenOmitted(t *testing.T) {
+	root := t.TempDir()
+	runID := "run1"
+
+	if err := UpdateProgress(root, runID, "1", "editing", "", ProgressFields{
+		AcceptanceDone: []int{0},
+		FilesTouched:   []string{"a.go"},
+		Blocker:        "blocked",
+		NudgedAt:       "2026-01-01T00:00:00.000Z",
+	}); err != nil {
+		t.Fatalf("UpdateProgress first: %v", err)
+	}
+
+	// Second write with no ProgressFields at all — plain positional call,
+	// exercising the variadic-omitted path new callers don't need to touch.
+	if err := UpdateProgress(root, runID, "1", "verifying", ""); err != nil {
+		t.Fatalf("UpdateProgress second: %v", err)
+	}
+
+	p, _ := ReadProgress(root, runID)
+	tp := p.Tasks["1"]
+	if got, want := tp.AcceptanceDone, []int{0}; !reflect.DeepEqual(got, want) {
+		t.Errorf("AcceptanceDone changed: got %v, want preserved %v", got, want)
+	}
+	if got, want := tp.FilesTouched, []string{"a.go"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("FilesTouched changed: got %v, want preserved %v", got, want)
+	}
+	if tp.Blocker != "blocked" {
+		t.Errorf("Blocker changed: got %q, want preserved %q", tp.Blocker, "blocked")
+	}
+	if tp.NudgedAt != "2026-01-01T00:00:00.000Z" {
+		t.Errorf("NudgedAt changed: got %q, want preserved %q", tp.NudgedAt, "2026-01-01T00:00:00.000Z")
+	}
+	if tp.Phase != "verifying" {
+		t.Errorf("Phase = %q, want %q", tp.Phase, "verifying")
+	}
+}
+
+func TestUpdateProgress_OverwritesAcceptanceDoneOnNextCall(t *testing.T) {
+	root := t.TempDir()
+	runID := "run1"
+
+	if err := UpdateProgress(root, runID, "1", "editing", "", ProgressFields{AcceptanceDone: []int{0}}); err != nil {
+		t.Fatalf("UpdateProgress first: %v", err)
+	}
+	if err := UpdateProgress(root, runID, "1", "verifying", "", ProgressFields{AcceptanceDone: []int{0, 1, 2}}); err != nil {
+		t.Fatalf("UpdateProgress second: %v", err)
+	}
+
+	p, _ := ReadProgress(root, runID)
+	if got, want := p.Tasks["1"].AcceptanceDone, []int{0, 1, 2}; !reflect.DeepEqual(got, want) {
+		t.Errorf("AcceptanceDone = %v, want %v", got, want)
 	}
 }
 
