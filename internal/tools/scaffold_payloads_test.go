@@ -88,7 +88,7 @@ func TestPayloads_SchemaChecksums(t *testing.T) {
 	// Expected SHA-256 hex digests computed from the source schemas.
 	expected := map[string]string{
 		"sdlc-local.schema.json":       "45757bd10fecddc36a6868cb3459bfc825f4118622335c6191f53997f8967e17",
-		"execute-state.schema.json":    "cd105fbea848783863828ac62fc2ad1de3b721bab5e764d1f86eea578f580811",
+		"execute-state.schema.json":    "f681bb96a7f2d653d7427effb13e16743ca3cf4f38587fa30fb8c87facaa5c97",
 		"ship-state.schema.json":       "0ce15500c0c6749492eec50d556e8d831871312eabbe3ce6affd4948d14a526f",
 		"review-dimension.schema.json": "107a3d573e0e1b45edf7e31b547c5f0b8f5c7ccca193923255ace6f93f8a559d",
 		"plugin.schema.json":           "c774282b3c8c54fc7418b767c5043353e11f65138b0be010cef8d57a6270fa67",

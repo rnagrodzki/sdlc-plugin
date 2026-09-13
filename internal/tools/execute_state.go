@@ -1937,6 +1937,10 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 		// (standalone execute without ship), so a missing plan silently skips.
 		if planPath, _ := st.Data["planPath"].(string); planPath != "" {
 			planContent, planErr := os.ReadFile(planPath)
+			if planErr != nil && !os.IsNotExist(planErr) {
+				result.Warnings = append(result.Warnings,
+					fmt.Sprintf("wave-start: plan cross-check skipped: %v", planErr))
+			}
 			if planErr == nil {
 				planTasks := extractTasks(string(planContent))
 				planNames := map[int]string{}
@@ -2032,10 +2036,7 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 
 	// Build narration — taskCount reflects valid tasks (post-validation),
 	// not the raw parsedTasks slice which may have contained invalid entries.
-	taskCount := len(parsedTasks)
-	if len(validTasks) > 0 || dropped > 0 {
-		taskCount = len(validTasks)
-	}
+	taskCount := len(validTasks)
 	result.Summary = fmt.Sprintf("Wave %d started with %d tasks.", *in.Wave, taskCount)
 
 	if execDetailLevel(in) == "full" {

@@ -36,15 +36,18 @@ not as a description of a nicer system that doesn't exist yet:
   checkin-staleness heuristic, independent of the wave-level timeout above — a worker can be
   individually reported `stalled` well before its wave's own `waveTimeout` elapses.
 
-**What does not exist:** `internal/wave/progress.go` defines a `ClassifyStall`/`StallCause`
-classifier (`StallCauseStalled` vs `StallCauseTimeout`) that would derive a real stalled-vs-timed-out
+**`ClassifyStall` in production:** `internal/wave/progress.go` defines a `ClassifyStall`/`StallCause`
+classifier (`StallCauseStalled` vs `StallCauseTimeout`) that derives a stalled-vs-timed-out
 verdict from a task's heartbeat history (`wave-progress` phase timestamps) against both a
-heartbeat-staleness threshold and a total-runtime threshold. It is implemented and unit-tested,
-but has **zero production callers** — no `execute_state` action invokes it. The two signals above
-are the entire distinction available today; do not describe or rely on a richer classifier-derived
-verdict. This is a known, previously-flagged plan gap, not something in scope for this doc to
-close — closing it means wiring `ClassifyStall` into `wave-fail`'s cause derivation and/or
-`ledger_status`'s per-worker read, which is unassigned production-code work.
+heartbeat-staleness threshold and a total-runtime threshold. It is now wired into the
+`wave-progress` action's `readProgress` path (`execute_state.go:execActionWaveProgress`) — when
+`readProgress: true` is passed, each returned task carries a `stallCause` field computed by
+`ClassifyStall` against the wave's resolved timeout/interval parameters (from
+`execWaveStallTimeouts`). This is the third signal alongside the two above, and it is the only
+one that derives a per-task verdict from actual heartbeat history rather than caller-supplied flags
+or plain checkin-staleness. It is NOT wired into `wave-fail`'s cause derivation or
+`ledger_status`'s per-worker read — those remain the caller-supplied-flag and
+checkin-staleness mechanisms described above, respectively.
 
 ## Failure Classification
 

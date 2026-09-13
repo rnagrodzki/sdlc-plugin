@@ -80,7 +80,7 @@ Only one case still hard-fails after this gate: **too new** — a `schemaVersion
 | `awaitRemoteReviewTimeout` | `integer` (≥30) | `600` | Maximum seconds `await-remote-review` polls for a reviewer response. |
 | `awaitRemoteReviewInterval` | `integer` (≥10) | `60` | Seconds between `await-remote-review` poll probes. |
 | `awaitRemoteReviewers` | `string[]` (minItems 1) | `["copilot"]` | Reviewer logins (case-insensitive) whose review satisfies the `await-remote-review` gate. |
-| `executeWaveTimeout` | `integer` (60–3600) | `1800` | Maximum seconds a single execute wave may run. Forwarded to `execute`. The `3600` ceiling is `shipmeta.MaxWaveTimeoutSeconds`. |
+| `executeWaveTimeout` | `integer` (60–3600) | `1800` | Maximum seconds a single execute wave may run; also used as the per-task total-runtime threshold for stall classification. Forwarded to `execute`. The `3600` ceiling is `shipmeta.MaxWaveTimeoutSeconds`. |
 | `executeWaveInterval` | `integer` (≥10) | `60` | Seconds between execute wave liveness poll attempts. Forwarded to `execute`. |
 | `execute.commitWaves` | `boolean` (nested under `execute`) | `false` | Forwarded to `execute` as its per-wave commit behavior. A non-boolean value here does not error — `ship_prepare` records `commitWavesInvalidType: true` in its output instead; treat that as a warning to surface, not a hard failure. |
 

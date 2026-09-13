@@ -267,6 +267,16 @@
       "items": {
         "type": "object"
       }
+    },
+    "waveTimeoutSeconds": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Per-wave timeout in seconds, resolved at init from explicit input > ship-state flags > built-in default (1800). Consumed by wave-progress's stallCause computation."
+    },
+    "waveIntervalSeconds": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Liveness poll interval in seconds, resolved at init from explicit input > ship-state flags > built-in default (60). Consumed by the wave loop's polling cadence."
     }
   },
   "required": ["version", "skill", "startedAt", "branch", "planHash", "totalTasks", "waves", "context"],

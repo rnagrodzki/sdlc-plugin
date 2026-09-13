@@ -18,7 +18,9 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
+	"github.com/rnagrodzki/sdlc-plugin/internal/shipmeta"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
+	"github.com/rnagrodzki/sdlc-plugin/internal/wave"
 )
 
 // fixedClock returns a clock function that always returns the same time.
@@ -4785,5 +4787,379 @@ func TestExecState_WaveStart_PlanCrossCheckSkipsMissingPlan(t *testing.T) {
 		if strings.Contains(w, "does not match plan heading") {
 			t.Errorf("unexpected plan cross-check warning when no planPath: %s", w)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Finding 5: 3-tier waveTimeoutSeconds / waveIntervalSeconds resolution
+// ---------------------------------------------------------------------------
+
+func TestExecState_InitWaveTimeout(t *testing.T) {
+	t.Run("defaults when no ship state and no explicit input", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+		writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
+
+		_, err := executeState(root, root, ExecuteStateIn{
+			Action:  "init",
+			Branch:  "feat/wt-defaults",
+			Quality: "standard",
+		}, fixedClock(testNow))
+		if err != nil {
+			t.Fatalf("init: %v", err)
+		}
+
+		data := readExecState(t, root, "feat/wt-defaults")
+		if got := execToInt(data["waveTimeoutSeconds"]); got != shipmeta.ShipBuiltInDefaults.ExecuteWaveTimeout {
+			t.Errorf("waveTimeoutSeconds = %d, want %d", got, shipmeta.ShipBuiltInDefaults.ExecuteWaveTimeout)
+		}
+		if got := execToInt(data["waveIntervalSeconds"]); got != shipmeta.ShipBuiltInDefaults.ExecuteWaveInterval {
+			t.Errorf("waveIntervalSeconds = %d, want %d", got, shipmeta.ShipBuiltInDefaults.ExecuteWaveInterval)
+		}
+	})
+
+	t.Run("ship state overrides defaults", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+		writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
+		createShipState(t, root, "feat/wt-ship", map[string]any{
+			"flags": map[string]any{
+				"executeWaveTimeout":  3600,
+				"executeWaveInterval": 120,
+			},
+		})
+
+		_, err := executeState(root, root, ExecuteStateIn{
+			Action:  "init",
+			Branch:  "feat/wt-ship",
+			Quality: "standard",
+		}, fixedClock(testNow))
+		if err != nil {
+			t.Fatalf("init: %v", err)
+		}
+
+		data := readExecState(t, root, "feat/wt-ship")
+		if got := execToInt(data["waveTimeoutSeconds"]); got != 3600 {
+			t.Errorf("waveTimeoutSeconds = %d, want 3600", got)
+		}
+		if got := execToInt(data["waveIntervalSeconds"]); got != 120 {
+			t.Errorf("waveIntervalSeconds = %d, want 120", got)
+		}
+	})
+
+	t.Run("explicit input overrides defaults", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+		writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
+
+		_, err := executeState(root, root, ExecuteStateIn{
+			Action:              "init",
+			Branch:              "feat/wt-explicit",
+			Quality:             "standard",
+			WaveTimeoutSeconds:  900,
+			WaveIntervalSeconds: 30,
+		}, fixedClock(testNow))
+		if err != nil {
+			t.Fatalf("init: %v", err)
+		}
+
+		data := readExecState(t, root, "feat/wt-explicit")
+		if got := execToInt(data["waveTimeoutSeconds"]); got != 900 {
+			t.Errorf("waveTimeoutSeconds = %d, want 900", got)
+		}
+		if got := execToInt(data["waveIntervalSeconds"]); got != 30 {
+			t.Errorf("waveIntervalSeconds = %d, want 30", got)
+		}
+	})
+
+	t.Run("full cascade explicit wins over ship state", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+		writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
+		createShipState(t, root, "feat/wt-cascade", map[string]any{
+			"flags": map[string]any{
+				"executeWaveTimeout":  3600,
+				"executeWaveInterval": 120,
+			},
+		})
+
+		_, err := executeState(root, root, ExecuteStateIn{
+			Action:              "init",
+			Branch:              "feat/wt-cascade",
+			Quality:             "standard",
+			WaveTimeoutSeconds:  500,
+			WaveIntervalSeconds: 15,
+		}, fixedClock(testNow))
+		if err != nil {
+			t.Fatalf("init: %v", err)
+		}
+
+		data := readExecState(t, root, "feat/wt-cascade")
+		if got := execToInt(data["waveTimeoutSeconds"]); got != 500 {
+			t.Errorf("waveTimeoutSeconds = %d, want 500 (explicit wins)", got)
+		}
+		if got := execToInt(data["waveIntervalSeconds"]); got != 15 {
+			t.Errorf("waveIntervalSeconds = %d, want 15 (explicit wins)", got)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Finding 6: TaskProgressWithStall / StallCause wiring
+// ---------------------------------------------------------------------------
+
+func TestExecState_WaveProgress_StallCause(t *testing.T) {
+	// Helper: write a progress file directly with controlled timestamps.
+	writeProgressFile := func(t *testing.T, root, runID, taskID string, tp wave.TaskProgress) {
+		t.Helper()
+		dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir, runID, "progress")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir progress: %v", err)
+		}
+		if err := fsx.AtomicWriteJSON(filepath.Join(dir, taskID+".json"), tp); err != nil {
+			t.Fatalf("write progress file: %v", err)
+		}
+	}
+
+	const branch = "feat/stall-test"
+	const runID = "run-stall-test"
+	nowStr := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+	oldStr := time.Now().Add(-1 * time.Hour).UTC().Format("2006-01-02T15:04:05.000Z")
+
+	t.Run("healthy task has empty stallCause", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+		writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
+		// Create execute state with large timeouts so nothing stalls.
+		createExecState(t, root, branch, map[string]any{
+			"waveTimeoutSeconds":  9999,
+			"waveIntervalSeconds": 9999,
+		})
+		writeProgressFile(t, root, runID, "task-healthy", wave.TaskProgress{
+			Phase:     "editing",
+			StartedAt: nowStr,
+			UpdatedAt: nowStr,
+		})
+
+		result, err := executeState(root, root, ExecuteStateIn{
+			Action:       "wave-progress",
+			RunID:        runID,
+			Branch:       branch,
+			ReadProgress: true,
+		}, fixedClock(testNow))
+		if err != nil {
+			t.Fatalf("readProgress: %v", err)
+		}
+		out, ok := result.(ReadProgressOut)
+		if !ok {
+			t.Fatalf("result type = %T, want ReadProgressOut", result)
+		}
+		tp, exists := out.Tasks["task-healthy"]
+		if !exists {
+			t.Fatal("task-healthy not found in readProgress result")
+		}
+		if tp.StallCause != "" {
+			t.Errorf("stallCause = %q, want empty for healthy task", tp.StallCause)
+		}
+	})
+
+	t.Run("stalled task has stallCause stalled", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+		writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
+		// Small heartbeat interval so 1-hour-old updatedAt triggers stall.
+		// Large total timeout so it doesn't trigger timeout.
+		createExecState(t, root, branch, map[string]any{
+			"waveTimeoutSeconds":  99999,
+			"waveIntervalSeconds": 5,
+		})
+		writeProgressFile(t, root, runID, "task-stalled", wave.TaskProgress{
+			Phase:     "editing",
+			StartedAt: nowStr,
+			UpdatedAt: oldStr,
+		})
+
+		result, err := executeState(root, root, ExecuteStateIn{
+			Action:       "wave-progress",
+			RunID:        runID,
+			Branch:       branch,
+			ReadProgress: true,
+		}, fixedClock(testNow))
+		if err != nil {
+			t.Fatalf("readProgress: %v", err)
+		}
+		out := result.(ReadProgressOut)
+		tp := out.Tasks["task-stalled"]
+		if tp.StallCause != "stalled" {
+			t.Errorf("stallCause = %q, want %q", tp.StallCause, "stalled")
+		}
+	})
+
+	t.Run("timed-out task has stallCause timeout", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+		writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
+		// Small total timeout so 1-hour-old startedAt triggers timeout.
+		createExecState(t, root, branch, map[string]any{
+			"waveTimeoutSeconds":  5,
+			"waveIntervalSeconds": 99999,
+		})
+		writeProgressFile(t, root, runID, "task-timedout", wave.TaskProgress{
+			Phase:     "editing",
+			StartedAt: oldStr,
+			UpdatedAt: nowStr,
+		})
+
+		result, err := executeState(root, root, ExecuteStateIn{
+			Action:       "wave-progress",
+			RunID:        runID,
+			Branch:       branch,
+			ReadProgress: true,
+		}, fixedClock(testNow))
+		if err != nil {
+			t.Fatalf("readProgress: %v", err)
+		}
+		out := result.(ReadProgressOut)
+		tp := out.Tasks["task-timedout"]
+		if tp.StallCause != "timeout" {
+			t.Errorf("stallCause = %q, want %q", tp.StallCause, "timeout")
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Finding 7: ExecuteStateIn → wave.ProgressFields mapping (write path)
+// ---------------------------------------------------------------------------
+
+func TestExecState_WaveProgress_FieldsMapping(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
+
+	const runID = "run-fields-test"
+
+	_, err := executeState(root, root, ExecuteStateIn{
+		Action:         "wave-progress",
+		RunID:          runID,
+		TaskID:         "task-1",
+		Phase:          "editing",
+		AcceptanceDone: []int{0, 2, 3},
+		FilesTouched:   []string{"main.go", "go.mod"},
+		Blocker:        "waiting on API review",
+		NudgedAt:       "2025-06-15T12:00:00.000Z",
+	}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("wave-progress write: %v", err)
+	}
+
+	// Read back via wave.ReadProgress and verify each field.
+	p, err := wave.ReadProgress(root, runID)
+	if err != nil {
+		t.Fatalf("ReadProgress: %v", err)
+	}
+	tp, ok := p.Tasks["task-1"]
+	if !ok {
+		t.Fatal("task-1 not found in progress")
+	}
+
+	// AcceptanceDone
+	wantAD := []int{0, 2, 3}
+	if len(tp.AcceptanceDone) != len(wantAD) {
+		t.Errorf("AcceptanceDone = %v, want %v", tp.AcceptanceDone, wantAD)
+	} else {
+		for i, v := range wantAD {
+			if tp.AcceptanceDone[i] != v {
+				t.Errorf("AcceptanceDone[%d] = %d, want %d", i, tp.AcceptanceDone[i], v)
+			}
+		}
+	}
+
+	// FilesTouched
+	wantFT := []string{"main.go", "go.mod"}
+	if len(tp.FilesTouched) != len(wantFT) {
+		t.Errorf("FilesTouched = %v, want %v", tp.FilesTouched, wantFT)
+	} else {
+		for i, v := range wantFT {
+			if tp.FilesTouched[i] != v {
+				t.Errorf("FilesTouched[%d] = %q, want %q", i, tp.FilesTouched[i], v)
+			}
+		}
+	}
+
+	// Blocker
+	if tp.Blocker != "waiting on API review" {
+		t.Errorf("Blocker = %q, want %q", tp.Blocker, "waiting on API review")
+	}
+
+	// NudgedAt
+	if tp.NudgedAt != "2025-06-15T12:00:00.000Z" {
+		t.Errorf("NudgedAt = %q, want %q", tp.NudgedAt, "2025-06-15T12:00:00.000Z")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Finding 8: execCurrentWaveNum — three branches
+// ---------------------------------------------------------------------------
+
+func TestExecCurrentWaveNum(t *testing.T) {
+	tests := []struct {
+		name string
+		data map[string]any
+		want int
+	}{
+		{
+			name: "no waves returns 0",
+			data: map[string]any{},
+			want: 0,
+		},
+		{
+			name: "no in-progress wave returns highest number",
+			data: map[string]any{
+				"waves": []any{
+					map[string]any{"number": 1, "status": "completed"},
+					map[string]any{"number": 3, "status": "completed"},
+					map[string]any{"number": 2, "status": "failed"},
+				},
+			},
+			want: 3,
+		},
+		{
+			name: "in-progress wave returns its number",
+			data: map[string]any{
+				"waves": []any{
+					map[string]any{"number": 1, "status": "completed"},
+					map[string]any{"number": 2, "status": "in_progress"},
+					map[string]any{"number": 3, "status": "completed"},
+				},
+			},
+			want: 2,
+		},
+		{
+			name: "multiple in-progress returns highest in-progress",
+			data: map[string]any{
+				"waves": []any{
+					map[string]any{"number": 1, "status": "in_progress"},
+					map[string]any{"number": 4, "status": "in_progress"},
+					map[string]any{"number": 5, "status": "completed"},
+				},
+			},
+			want: 4,
+		},
+		{
+			name: "empty waves array returns 0",
+			data: map[string]any{
+				"waves": []any{},
+			},
+			want: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := execCurrentWaveNum(tt.data)
+			if got != tt.want {
+				t.Errorf("execCurrentWaveNum() = %d, want %d", got, tt.want)
+			}
+		})
 	}
 }
