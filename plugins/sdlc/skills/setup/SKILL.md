@@ -158,12 +158,12 @@ If the system context contains "Plan mode is active":
      `# BEGIN MANAGED BY sdlc-utilities (v<N>)`; capture `<N>` as the managed-block version
      (no match, or file absent → no managed block).
 
-4. **Legacy-file detection** (mirrors `internal/configmigrate`'s `legacyMarkers` exactly —
+4. **Legacy-file detection** (mirrors `internal/config`'s `legacyMarkers` exactly —
    Glob each path relative to the project root): `.claude/sdlc.json`, `.claude/version.json`,
-   `.sdlc-v2/jira-config.json`, `.sdlc-v2/ship-config.json`, `.sdlc-v2/review.json`,
-   `.claude/review.json`. Also Glob `.claude/jira-templates/` separately — it drives
-   `migrate({ action: "import" })` in Step 2 but is not one of the six markers
-   `needsMigration` is based on.
+   `.sdlc/jira-config.json`, `.sdlc/ship-config.json`, `.sdlc/review.json`,
+   `.claude/review.json`, `.sdlc-v2/config.json`. Also Glob `.claude/jira-templates/`
+   separately — it drives `migrate({ action: "import" })` in Step 2 but is not one of the
+   seven markers `needsMigration` is based on.
 
 5. **Version detection** (source's `detected.versionFile`/`fileType`/`tagPrefix` — no Go
    field carries this): Glob in this priority order — `package.json`, `Cargo.toml`,
@@ -329,7 +329,7 @@ Step 2 / Step 3.
 
 **Skip this step if:** `needsMigration` is `false` AND `--migrate` was NOT passed.
 
-If any of the six legacy markers from Step 0 exist, or `--migrate` was passed, use
+If any of the seven legacy markers from Step 0 exist, or `--migrate` was passed, use
 AskUserQuestion:
 
 > Legacy or outdated config files detected. Migrate to the current config format before
@@ -348,8 +348,8 @@ migrate({ action: "import", dryRun: false }) → { ok, result, changed[] }
 ```
 
 This non-destructively copies config.json, local.json, templates, jira-templates, learnings,
-and review-dimensions from the old data directory into `.sdlc-v2/`. `config.json` and
-`local.json` merge per top-level key — a key the new file already holds is never overwritten,
+and review-dimensions from the old data directory into `.sdlc-v2/`. `config.toml` and
+`local.toml` merge per top-level key — a key the new file already holds is never overwritten,
 but a key present only in the legacy file is added even when the new file already exists
 (e.g. setup's own empty-`{}` scaffold). Everything else (`pr-template.md`, `plan-template.md`,
 `jira-templates/`, `learnings/`, `review-dimensions/`) is skipped whole-file/whole-dir when
@@ -365,7 +365,7 @@ migrate({ action: "config", dryRun: false }) → { ok, result, changed[] }
 
 `result` is one of: `"up-to-date"` (nothing to do), or
 `"migrated (steps: [...], legacy ingested: [<path> <path> ...])"`. This single call migrates
-both `.sdlc-v2/config.toml` and `.sdlc-v2/local.toml` schema versions and ingests any of the six
+both `.sdlc-v2/config.toml` and `.sdlc-v2/local.toml` schema versions and ingests any of the seven
 legacy per-section files found in Step 0 — there is no separate project/local/`--unset-only`
 branch to run.
 

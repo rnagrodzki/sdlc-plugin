@@ -91,7 +91,7 @@ func detectLegacy(mainRoot string) error {
 		p := filepath.Join(mainRoot, marker)
 		if _, err := os.Stat(p); err == nil {
 			return fmt.Errorf(
-				"config: legacy config layout detected (%s exists); run migrate to upgrade to v5 format",
+				"config: legacy config layout detected (%s exists); run /setup to initialize TOML config",
 				marker,
 			)
 		}
@@ -533,7 +533,7 @@ func readProjectRaw(mainRoot string) (map[string]any, error) {
 	// config.toml exists — check for v4 marker.
 	if _, hasSchemaVersion := raw["schemaVersion"]; hasSchemaVersion {
 		return nil, fmt.Errorf(
-			"config: %s has schemaVersion field (pre-v5 format); run migrate to upgrade",
+			"config: %s has schemaVersion field (pre-v5 format); run /setup to initialize TOML config",
 			projectPath,
 		)
 	}

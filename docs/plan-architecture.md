@@ -673,7 +673,7 @@ stateDiagram-v2
 
 | Surface | Configurable | Where | Override Mechanism |
 |---------|-------------|-------|-------------------|
-| Guardrails list | Yes | `.sdlc-v2/config.toml` `plan.guardrails` | Array of `{id, description, severity}` objects |
+| Guardrails list | Yes | `.sdlc-v2/config.toml` `plan.guardrails` | Object keyed by guardrail ID; each value has `{description, severity}` |
 | Required task fields | Yes | `.sdlc-v2/config.toml` `plan.tasks.requiredFields` | Array of field name strings |
 | Contract shape | Yes | `.sdlc-v2/config.toml` `plan.tasks.contractShape` | Shape key string |
 | Plan template | Yes | `.sdlc-v2/plan-template.md` | Project-local override of default template |

@@ -455,7 +455,7 @@ the other.
 
 **When `proposal.action === "consolidate"` (R15):** the proposal targets an
 existing guardrail by id. Read the current `.sdlc-v2/config.toml` from disk,
-locate the guardrail in `<section>.guardrails[]` by the id specified in the
+locate the guardrail table entry in `<section>.guardrails` by its key matching the id specified in the
 proposal's `patch`, and replace its fields with the proposal's merged values
 (description, severity). Do NOT remove fields; do NOT lower severity
 (strengthen-only invariant — R8/C9). If no guardrail with the target id exists

@@ -91,7 +91,7 @@ Blocking issues → stop and ask. Warnings only → show them and proceed.
 
 **Hook context fast-path:** An `Active execution:` line in the session-start system-reminder means the hook already found the state file — skip the filesystem scan when informing the resume prompt.
 
-**Guardrail loading:** Read `<main-worktree>/.sdlc-v2/config.toml`'s `execute.guardrails` array (absent file or key → empty). Store as `activeGuardrails`; print "Loaded N execution guardrails." or "No execution guardrails configured." Distinct from `plan.guardrails` (planning-time critique) — independently configured.
+**Guardrail loading:** Read `<main-worktree>/.sdlc-v2/config.toml`'s `execute.guardrails` table (absent file or key → empty). Store as `activeGuardrails`; print "Loaded N execution guardrails." or "No execution guardrails configured." Distinct from `plan.guardrails` (planning-time critique) — independently configured.
 
 ## Step 2 (CLASSIFY): Classify Tasks and Build Waves
 

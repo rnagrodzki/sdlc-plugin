@@ -80,7 +80,7 @@ guardrail when its evidence condition is actually observed.
 
 ### Step 0 — Prepare
 
-1. Read `.sdlc-v2/config.toml`. Extract the existing `plan.guardrails` array (empty if absent) as `existing`. Also extract the existing `plan.tasks` object (absent if not configured) as `existingTasks` — it must be written back unchanged in Step 3 (see "plan merge-preserve" note there).
+1. Read `.sdlc-v2/config.toml`. Extract the existing `plan.guardrails` table (empty if absent) as `existing`. Also extract the existing `plan.tasks` object (absent if not configured) as `existingTasks` — it must be written back unchanged in Step 3 (see "plan merge-preserve" note there).
 2. If not in `--add` mode and `existing` is non-empty: use AskUserQuestion: "`{existing.length}` guardrails already configured. Replace all, or use --add to expand?" Options: replace / cancel. On cancel, stop.
 3. Run the scan (Glob + Read, per Detection Helpers above) and build the evidence set.
 4. Optionally extract candidate rules from `CLAUDE.md`/`AGENTS.md`: lines containing "must", "never", "always", "require(s/d)", "forbidden", or "prohibited" (first 20 matches, deduplicated). Use these only as extra evidence for Step 1, not as guardrails to propose verbatim.
@@ -152,14 +152,14 @@ earlier (this run or a prior run) is silently wiped:
 ```
 setup_write_sections({
   sectionsJson: JSON.stringify({
-    plan: { guardrails: <FULL_GUARDRAILS_ARRAY>, tasks: <existingTasks, if present> }
+    plan: { guardrails: <FULL_GUARDRAILS_TABLE>, tasks: <existingTasks, if present> }
   })
 }) → { ok, written, errors }
 ```
 
 Omit the `tasks` key entirely when `existingTasks` is absent — do not write
-`tasks: {}`. `<FULL_GUARDRAILS_ARRAY>` is the selected guardrails from Step 2.
-In `--add` mode: prepend `existing` (from Step 0) to the array before
+`tasks: {}`. `<FULL_GUARDRAILS_TABLE>` is the selected guardrails table (object keyed by guardrail ID) from Step 2.
+In `--add` mode: merge `existing` (from Step 0) into the table before
 writing — the write is wholesale replacement, not a merge.
 
 ### Step 4 (VALIDATE)

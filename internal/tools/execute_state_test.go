@@ -134,8 +134,8 @@ func TestExecState_Init_StaleConfigRequiresSetup(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for stale JSON-era config; TOML auto-migration was removed")
 	}
-	if !strings.Contains(err.Error(), "/setup") {
-		t.Errorf("expected error to mention /setup, got %q", err.Error())
+	if !errors.Is(err, configmigrate.ErrVersionStale) {
+		t.Errorf("expected ErrVersionStale, got %v", err)
 	}
 	if _, ok := err.(*mcpserver.DataError); !ok {
 		t.Errorf("expected DataError, got %T", err)

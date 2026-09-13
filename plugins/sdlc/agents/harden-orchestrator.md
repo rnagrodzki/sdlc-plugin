@@ -29,8 +29,8 @@ Read the manifest JSON from `MANIFEST_FILE`. The manifest contains:
 | `failure.step` / `failure.operation` / `failure.exitCode` / `failure.errorType` | Optional context |
 | `failure.userIntent` / `failure.argsString` | Optional context |
 | `classification_hint` | Pre-computed hint or `null` (advisory only — do not blindly trust) |
-| `surfaces.planGuardrails[]` | `{id, severity, description}` — sdlc.json plan.guardrails |
-| `surfaces.executeGuardrails[]` | `{id, severity, description}` — sdlc.json execute.guardrails |
+| `surfaces.planGuardrails[]` | `{id, severity, description}` — config.toml plan.guardrails |
+| `surfaces.executeGuardrails[]` | `{id, severity, description}` — config.toml execute.guardrails |
 | `surfaces.reviewDimensions[]` | `{name, severity, description, triggers, model, path}` |
 | `surfaces.copilotInstructions[]` | `{applyTo, name, path}` |
 | `surfaces.errorReportSkillPath` | Resolved REFERENCE.md path for `error-report` |
@@ -107,7 +107,7 @@ Each proposal:
   "surface": "plan-guardrails | execute-guardrails | review-dimensions | copilot-instructions",
   "action": "add | strengthen | consolidate",
   "targetFile": "absolute path to the file that would be edited — for plan-guardrails/execute-guardrails use `<repository.root>/.sdlc-v2/config.toml` (main worktree); for review-dimensions/copilot-instructions use that surface's `path` field verbatim (active worktree, = repository.contentRoot-rooted)",
-  "patch": "preview block — for sdlc.json, the new/modified guardrail object as JSON; for review-dimensions, the new frontmatter or new rule line; for copilot-instructions, the new checklist line",
+  "patch": "preview block — for config.toml, the new/modified guardrail entry as TOML; for review-dimensions, the new frontmatter or new rule line; for copilot-instructions, the new checklist line",
   "rationale": "one to two sentences linking back to the failure signal"
 }
 ```

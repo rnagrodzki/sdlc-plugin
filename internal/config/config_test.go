@@ -179,6 +179,7 @@ func TestLegacyRefusal_MarkerFiles(t *testing.T) {
 		filepath.Join(paths.LegacyDataDir, "ship-config.json"),
 		filepath.Join(paths.LegacyDataDir, "review.json"),
 		filepath.Join(".claude", "review.json"),
+		filepath.Join(paths.DataDir, "config.json"),
 	}
 
 	for _, marker := range markers {
@@ -193,8 +194,8 @@ func TestLegacyRefusal_MarkerFiles(t *testing.T) {
 			if err == nil {
 				t.Fatalf("Read: expected error for legacy layout with %s, got nil", marker)
 			}
-			if !strings.Contains(err.Error(), "migrate") {
-				t.Errorf("error should name migrate tool, got: %v", err)
+			if !strings.Contains(err.Error(), "/setup") {
+				t.Errorf("error should name /setup, got: %v", err)
 			}
 		})
 	}
@@ -214,8 +215,8 @@ func TestLegacyRefusal_SchemaVersionField(t *testing.T) {
 	if err == nil {
 		t.Fatal("Read: expected error for v4 config with schemaVersion, got nil")
 	}
-	if !strings.Contains(err.Error(), "migrate") {
-		t.Errorf("error should name migrate tool, got: %v", err)
+	if !strings.Contains(err.Error(), "/setup") {
+		t.Errorf("error should name /setup, got: %v", err)
 	}
 }
 
@@ -230,8 +231,8 @@ func TestLegacyRefusal_ReadSectionAlsoRefuses(t *testing.T) {
 	if err == nil {
 		t.Fatal("ReadSection: expected error for legacy layout, got nil")
 	}
-	if !strings.Contains(err.Error(), "migrate") {
-		t.Errorf("error should name migrate tool, got: %v", err)
+	if !strings.Contains(err.Error(), "/setup") {
+		t.Errorf("error should name /setup, got: %v", err)
 	}
 }
 
@@ -1189,8 +1190,8 @@ func TestRead_RejectsUnknownProjectKeys(t *testing.T) {
 	}
 	// Should fail on the schemaVersion v4 marker check before even reaching
 	// key validation.
-	if !strings.Contains(err.Error(), "migrate") {
-		t.Errorf("error should name migrate, got: %v", err)
+	if !strings.Contains(err.Error(), "/setup") {
+		t.Errorf("error should name /setup, got: %v", err)
 	}
 }
 
