@@ -1,13 +1,13 @@
 # ship Configuration Reference
 
-This document describes the `ship` section of `.sdlc-v2/local.json`, the persistent configuration `ship_prepare` merges against CLI flags. Settings here apply to every `ship` invocation in the repository unless overridden by a CLI flag, and — for the automation knobs — the separate `automation` section described below.
+This document describes the `ship` section of `.sdlc-v2/local.toml`, the persistent configuration `ship_prepare` merges against CLI flags. Settings here apply to every `ship` invocation in the repository unless overridden by a CLI flag, and — for the automation knobs — the separate `automation` section described below.
 
 ---
 
 ## File Location
 
 ```
-<repo-root>/.sdlc-v2/local.json
+<repo-root>/.sdlc-v2/local.toml
 ```
 
 Create it manually or run `/setup` to walk through an interactive setup. There is no `--init-config` walkthrough in this port (see "No init-config walkthrough" below).
@@ -16,15 +16,15 @@ Create it manually or run `/setup` to walk through an interactive setup. There i
 
 ## Config version auto-migrates — you never hand-edit it
 
-`.sdlc-v2/config.json` carries a `schemaVersion` (current: `5`). Before `ship_prepare` does anything else, it runs an auto-migrate gate (`configmigrate.MigrateWithBackup`) that classifies the project's config into exactly one of three outcomes:
+`.sdlc-v2/config.toml` carries a `schemaVersion` (current: `5`). Before `ship_prepare` does anything else, it runs an auto-migrate gate (`configmigrate.MigrateWithBackup`) that classifies the project's config into exactly one of three outcomes:
 
-- **Missing** (no `config.json` and no legacy marker at all) — hard-fails with an actionable error pointing at `/setup`. There is nothing to migrate from.
+- **Missing** (no `config.toml` and no legacy marker at all) — hard-fails with an actionable error pointing at `/setup`. There is nothing to migrate from.
 - **Current** (`schemaVersion` already `5`) — no-op. No file is touched, no backup written, no change reported.
-- **Stale** (legacy layout, or an older `schemaVersion`) — backs up the existing `config.json` to `config.json.bak`, then migrates it (and `local.json`, if also stale) up to schema version 5 in place. The applied migration steps are reported back to the caller.
+- **Stale** (legacy layout, or an older `schemaVersion`) — backs up the existing `config.toml` to `config.toml.bak`, then migrates it (and `local.toml`, if also stale) up to schema version 5 in place. The applied migration steps are reported back to the caller.
 
 Only one case still hard-fails after this gate: **too new** — a `schemaVersion` newer than this plugin build understands. That is a genuine version mismatch (upgrade the plugin), not something auto-migration can fix.
 
-**Do not instruct a user to manually edit `schemaVersion` or hand-migrate `.sdlc-v2/config.json` for a version bump.** The gate already does this on every `ship_prepare` call — the only user-facing action ever needed is running `/setup` when no config exists at all, or upgrading the plugin when the config is too new.
+**Do not instruct a user to manually edit `schemaVersion` or hand-migrate `.sdlc-v2/config.toml` for a version bump.** The gate already does this on every `ship_prepare` call — the only user-facing action ever needed is running `/setup` when no config exists at all, or upgrading the plugin when the config is too new.
 
 ---
 
@@ -84,7 +84,7 @@ Only one case still hard-fails after this gate: **too new** — a `schemaVersion
 | `executeWaveInterval` | `integer` (≥10) | `60` | Seconds between execute wave liveness poll attempts. Forwarded to `execute`. |
 | `execute.commitWaves` | `boolean` (nested under `execute`) | `false` | Forwarded to `execute` as its per-wave commit behavior. A non-boolean value here does not error — `ship_prepare` records `commitWavesInvalidType: true` in its output instead; treat that as a warning to surface, not a hard failure. |
 
-There is no `workspace` field in this port. `ship_prepare` reads no such config key, and this pipeline never creates a git worktree — `execute` is always isolated with a feature branch (see `reference.md`'s "No `workspace` config field, no worktree mode"). If a project's `.sdlc-v2/local.json` still carries `ship.workspace` from the source skill, it is silently ignored — do not treat its presence as an error, and do not attempt to honor a `"worktree"` value.
+There is no `workspace` field in this port. `ship_prepare` reads no such config key, and this pipeline never creates a git worktree — `execute` is always isolated with a feature branch (see `reference.md`'s "No `workspace` config field, no worktree mode"). If a project's `.sdlc-v2/local.toml` still carries `ship.workspace` from the source skill, it is silently ignored — do not treat its presence as an error, and do not attempt to honor a `"worktree"` value.
 
 ### reviewThreshold Levels
 
@@ -108,7 +108,7 @@ The source skill's `--preset full|balanced|minimal` and `--skip <step,…>` flag
 `ship_prepare` resolves `steps` in this order, recorded per-field in its `sources` output:
 
 ```
-explicit steps input  >  quick (resolves ship.quick)  >  .sdlc-v2/local.json (ship.steps)  >  built-in defaults
+explicit steps input  >  quick (resolves ship.quick)  >  .sdlc-v2/local.toml (ship.steps)  >  built-in defaults
 ```
 
 `quick` and an explicit non-empty `steps` list are mutually exclusive in practice — when both are supplied, the explicit `steps` list wins (see `sources.steps` to confirm which tier actually applied). `auto`, `draft`, `bump`, `reviewThreshold`, `rebase`, and the numeric timing knobs each follow their own cli-input > config > default chain — see the Field Reference table above and `ship.go`'s `mergeShipFlags` for the authoritative per-field precedence.
@@ -120,7 +120,7 @@ explicit steps input  >  quick (resolves ship.quick)  >  .sdlc-v2/local.json (sh
 This port has **two independent knobs**, both of which end up controlling how much the pipeline pauses:
 
 1. **`ship.auto`** (this document's `auto` field, legacy-shaped) — a single pipeline-wide boolean. When `true`, this skill suppresses its own confirmation prompts (the Step loop's dispatch confirmation, the archive-openspec consent gate, etc.) throughout the run.
-2. **`automation` section** (new, separate top-level section of `.sdlc-v2/local.json` — sibling of `ship`, not nested under it) — a per-step automation policy read independently by `ship_state{action:"next"}`:
+2. **`automation` section** (new, separate top-level section of `.sdlc-v2/local.toml` — sibling of `ship`, not nested under it) — a per-step automation policy read independently by `ship_state{action:"next"}`:
    ```json
    {
      "automation": {
@@ -137,7 +137,7 @@ This port has **two independent knobs**, both of which end up controlling how mu
 
    `ship_state{action:"next"}`'s `automation` output field is this section's `StepMode(step)` result for whichever scaffolded step is next, defaulting to `"confirm"` on any config-read failure or when the section is absent entirely.
 
-These do not automatically agree. `ship.auto: true` with no `automation` section still leaves every step resolving to `"confirm"` from `ship_state{action:"next"}`'s point of view (its default is `"supervised"`, independent of `ship.auto`). Treat `ship.auto`/an explicit `auto` tool input as the pipeline-wide prompt-suppression switch, and the `automation` section as the finer-grained per-step signal the KD14 executor loop reads — document both to a user configuring `.sdlc-v2/local.json`, and do not assume setting one sets the other.
+These do not automatically agree. `ship.auto: true` with no `automation` section still leaves every step resolving to `"confirm"` from `ship_state{action:"next"}`'s point of view (its default is `"supervised"`, independent of `ship.auto`). Treat `ship.auto`/an explicit `auto` tool input as the pipeline-wide prompt-suppression switch, and the `automation` section as the finer-grained per-step signal the KD14 executor loop reads — document both to a user configuring `.sdlc-v2/local.toml`, and do not assume setting one sets the other.
 
 There is no standalone version step in this port. Release-intent resolution — reading `flags.bump`/`sources.bump` and, under interactive mode, confirming or letting the user override it (the main skill's step 6b) — is fully covered by `automation.mode: unattended` (or `ship.auto: true`) like any other step, since it skips its own confirmation prompt in either case. The real version bump/tag/CHANGELOG write happens post-merge via CI (`release-on-main.yml`/`verify-release-intent.yml`/`promote-release.yml`), outside this pipeline's automation surface entirely — see `reference.md`.
 
@@ -145,7 +145,7 @@ There is no standalone version step in this port. Release-intent resolution — 
 
 ## No `--init-config` walkthrough
 
-The source skill's `--init-config` entry mode ran an 8-step interactive questionnaire (steps to run, bump type, draft, auto, workspace isolation, rebase strategy, review threshold) and wrote the `ship` section via a dedicated init script. This port has no equivalent tool or script for that walkthrough. `entry-modes.md`'s `--init-config` handler redirects unconditionally to `/setup` — read that file for the exact wording. Do not reconstruct the source questionnaire inline in this skill, even partially, and do not write `.sdlc-v2/local.json` directly from this skill's own logic.
+The source skill's `--init-config` entry mode ran an 8-step interactive questionnaire (steps to run, bump type, draft, auto, workspace isolation, rebase strategy, review threshold) and wrote the `ship` section via a dedicated init script. This port has no equivalent tool or script for that walkthrough. `entry-modes.md`'s `--init-config` handler redirects unconditionally to `/setup` — read that file for the exact wording. Do not reconstruct the source questionnaire inline in this skill, even partially, and do not write `.sdlc-v2/local.toml` directly from this skill's own logic.
 
 ---
 

@@ -1,3 +1,8 @@
+// Package configmigrate provides schema-version detection for the SDLC
+// plugin's configuration files. The plugin ships config.toml/local.toml as
+// of schema v1 (TOML era); there is no automated migration from the legacy
+// JSON-era config.json/local.json format (schema v0). A project stuck on v0
+// must re-run /setup — see Migrate and MigrateWithBackup below.
 package configmigrate
 
 import (
@@ -5,69 +10,44 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
-	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
-// CurrentSchemaVersion is the current schema version. v5 uses a
-// section-based layout without a schemaVersion marker in the config files.
-// v6 additionally strips the standalone "version" ship step, now that pr
-// absorbs version diagnostics.
-const CurrentSchemaVersion = 6
+// CurrentSchemaVersion is the current schema version. TOML era — fresh
+// start. JSON-era schema versions (0-6) are history; see git log for the
+// migration-step machinery that used to bridge them.
+const CurrentSchemaVersion = 1
 
 // Sentinel errors.
 var (
-	ErrVersionTooNew   = errors.New("configmigrate: version too new")
-	ErrVersionStale    = errors.New("configmigrate: version stale")
-	ErrMigrationFailed = errors.New("configmigrate: migration failed")
-	ErrMigrationLocked = errors.New("configmigrate: migration locked")
+	// ErrVersionStale indicates a v0 (JSON-era) config was found. There is
+	// no automated migration path from JSON to TOML; the caller must be
+	// pointed at /setup.
+	ErrVersionStale = errors.New("configmigrate: version stale")
 
 	// ErrConfigMissing indicates the project has no SDLC config at all —
-	// neither a v5 config.json nor any pre-v5 legacy marker. Returned only
-	// by MigrateWithBackup, which distinguishes "never set up" from "stale"
+	// no .sdlc-v2 directory of any kind. Returned only by
+	// MigrateWithBackup, which distinguishes "never set up" from "stale"
 	// so callers can point the user at /setup instead of silently
 	// proceeding on bare defaults.
 	ErrConfigMissing = errors.New("configmigrate: config missing")
 )
 
-const (
-	defaultLockRetries    = 30
-	defaultLockRetryDelay = 100 * time.Millisecond
-)
+// staleMsg is the AC-mandated error text for a v0 (JSON-era) project: no
+// migration is attempted, just a clear pointer at the fix.
+const staleMsg = "TOML config required. Run /setup to initialize."
 
-// legacyMarkers are relative paths whose existence signals a pre-v5 layout.
-var legacyMarkers = []string{
-	filepath.Join(".claude", "sdlc.json"),
-	filepath.Join(".claude", "version.json"),
-	filepath.Join(paths.LegacyDataDir, "jira-config.json"),
-	filepath.Join(paths.LegacyDataDir, "ship-config.json"),
-	filepath.Join(paths.LegacyDataDir, "review.json"),
-	filepath.Join(".claude", "review.json"),
-}
+// Options configures the Migrate function. Retained as an empty struct for
+// signature compatibility with existing callers (internal/tools/migrate.go
+// constructs configmigrate.Options{}); the TOML era Migrate performs no
+// filesystem writes, so there is nothing left to configure.
+type Options struct{}
 
-// Options configures the Migrate function.
-type Options struct {
-	LockRetries    int           // 0 uses default (30).
-	LockRetryDelay time.Duration // 0 uses default (100ms).
-}
-
-func (o *Options) retries() int {
-	if o != nil && o.LockRetries > 0 {
-		return o.LockRetries
-	}
-	return defaultLockRetries
-}
-
-func (o *Options) retryDelay() time.Duration {
-	if o != nil && o.LockRetryDelay > 0 {
-		return o.LockRetryDelay
-	}
-	return defaultLockRetryDelay
-}
-
-// Report describes what the migration did.
+// Report describes what the migration did. TOML-era Migrate never mutates
+// anything, so a returned *Report is always zero-valued; the fields are
+// retained for signature compatibility with callers that inspect them
+// (internal/tools/migrate.go, internal/tools/ship.go).
 type Report struct {
 	Migrated       bool
 	StepsApplied   []string
@@ -78,126 +58,40 @@ type Report struct {
 // Verify
 // ---------------------------------------------------------------------------
 
-// Verify checks if config at mainRoot is current. Returns nil if v5,
-// ErrVersionStale if older (with message naming "migrate" tool),
-// ErrVersionTooNew if newer than CurrentSchemaVersion.
+// Verify checks if the project config at mainRoot is current. Returns nil
+// if config.toml exists (v1) or the project has no .sdlc-v2 directory at
+// all (nothing to verify yet — /setup handles that case). Returns
+// ErrVersionStale if a .sdlc-v2 directory exists without a config.toml
+// (JSON-era v0, or an empty scaffold).
 func Verify(mainRoot string) error {
-	configPath := filepath.Join(mainRoot, paths.DataDir, "config.json")
-	var raw map[string]any
-	err := fsx.ReadJSON(configPath, &raw)
-	if err != nil {
-		if errors.Is(err, fsx.ErrNotFound) {
-			if hasLegacy(mainRoot) {
-				return fmt.Errorf(
-					"%w: legacy config layout detected; run migrate to upgrade to v5 format",
-					ErrVersionStale,
-				)
-			}
-			return nil
-		}
-		return err
+	ver, exists := detectProjectVersion(mainRoot)
+	if !exists || ver == CurrentSchemaVersion {
+		return nil
 	}
-
-	version, hasSV := extractSchemaVersion(raw)
-	if !hasSV {
-		return nil // no schemaVersion field → already v5
-	}
-	if version > CurrentSchemaVersion {
-		return fmt.Errorf(
-			"%w: schemaVersion %d exceeds max supported version %d; upgrade the sdlc plugin",
-			ErrVersionTooNew, version, CurrentSchemaVersion,
-		)
-	}
-	if version < CurrentSchemaVersion {
-		return fmt.Errorf(
-			"%w: schemaVersion %d; run migrate to upgrade to v5 format",
-			ErrVersionStale, version,
-		)
-	}
-	return nil
+	return fmt.Errorf("%w: %s", ErrVersionStale, staleMsg)
 }
 
 // ---------------------------------------------------------------------------
 // Migrate
 // ---------------------------------------------------------------------------
 
-// Migrate runs all needed migration steps. This is the ONLY migration entry
-// point. Uses .sdlc/.migration.lock (O_EXCL create, retries with backoff)
-// for concurrency safety.
+// Migrate is the only migration entry point. There is no JSON→TOML
+// migration path (clean break, per the TOML config migration plan): a
+// v0 (JSON-era) project or local config makes Migrate fail outright rather
+// than attempt a conversion. A fresh project (no .sdlc-v2 directory) is a
+// no-op — /setup is responsible for creating the initial TOML config, not
+// Migrate.
 func Migrate(mainRoot string, opt Options) (*Report, error) {
-	lockPath, err := acquireLock(mainRoot, &opt)
-	if err != nil {
-		return nil, err
-	}
-	defer releaseLock(lockPath)
-
-	report := &Report{}
-	ctx := &migrationContext{
-		mainRoot:   mainRoot,
-		configPath: filepath.Join(mainRoot, paths.DataDir, "config.json"),
-		localPath:  filepath.Join(mainRoot, paths.DataDir, "local.json"),
-		legacyPath: filepath.Join(mainRoot, ".claude", "sdlc.json"),
-	}
-
 	projectVer, projectExists := detectProjectVersion(mainRoot)
 	localVer, localExists := detectLocalVersion(mainRoot)
 
-	// Nothing at all — check for legacy per-section files.
-	if !projectExists && !localExists {
-		if hasLegacy(mainRoot) {
-			ingested, err := ingestLegacy(mainRoot)
-			if err != nil {
-				return nil, err
-			}
-			report.Migrated = len(ingested) > 0
-			report.LegacyIngested = ingested
-		}
-		return report, nil
+	stale := (projectExists && projectVer < CurrentSchemaVersion) ||
+		(localExists && localVer < CurrentSchemaVersion)
+	if stale {
+		return nil, fmt.Errorf("%w: %s", ErrVersionStale, staleMsg)
 	}
 
-	// Version-too-new guards.
-	if projectExists && projectVer > CurrentSchemaVersion {
-		return nil, fmt.Errorf(
-			"%w: schemaVersion %d exceeds max supported version %d",
-			ErrVersionTooNew, projectVer, CurrentSchemaVersion,
-		)
-	}
-	if localExists && localVer > CurrentSchemaVersion {
-		return nil, fmt.Errorf(
-			"%w: local schemaVersion %d exceeds max supported version %d",
-			ErrVersionTooNew, localVer, CurrentSchemaVersion,
-		)
-	}
-
-	// Run project migrations.
-	if projectExists && projectVer < CurrentSchemaVersion {
-		steps, err := planSteps(projectMigrations, projectVer, CurrentSchemaVersion)
-		if err != nil {
-			return nil, err
-		}
-		applied, err := runSteps(ctx, steps, "project")
-		if err != nil {
-			return nil, err
-		}
-		report.StepsApplied = append(report.StepsApplied, applied...)
-		report.Migrated = true
-	}
-
-	// Run local migrations.
-	if localExists && localVer < CurrentSchemaVersion {
-		steps, err := planSteps(localMigrations, localVer, CurrentSchemaVersion)
-		if err != nil {
-			return nil, err
-		}
-		applied, err := runSteps(ctx, steps, "local")
-		if err != nil {
-			return nil, err
-		}
-		report.StepsApplied = append(report.StepsApplied, applied...)
-		report.Migrated = true
-	}
-
-	return report, nil
+	return &Report{}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -208,384 +102,79 @@ func Migrate(mainRoot string, opt Options) (*Report, error) {
 // execute_state's "init" action in place of a hard Verify failure. It
 // three-way classifies projectRoot's config:
 //
-//   - No config.json and no legacy marker at all: the project was never set
-//     up. Returns ErrConfigMissing (wrapped with an actionable message
-//     naming /setup) rather than fabricating a config from nothing.
-//   - Current (Verify returns nil AND local.json's own detected version is
-//     not stale): a no-op. Returns (nil, "", nil) without any filesystem
-//     write — callers must not report a migration or touch the file when
-//     nothing changed.
-//   - Stale (legacy layout, an old config.json schemaVersion, or a stale
-//     local.json detected independently of config.json — see
-//     detectLocalVersion): backs up whichever of config.json/local.json is
-//     about to be rewritten to a sibling .bak file, then delegates to
-//     Migrate to bring both up to CurrentSchemaVersion. Returns the
-//     combined StepsApplied+LegacyIngested labels as changes, plus one
-//     backup file path (config.json's, if both were backed up).
-//
-// ErrVersionTooNew is returned unchanged: a config written by a newer
-// plugin version cannot be auto-migrated backward, so this still hard-stops
-// the caller.
+//   - No .sdlc-v2 directory at all: the project was never set up. Returns
+//     ErrConfigMissing (wrapped with an actionable message naming /setup)
+//     rather than fabricating a config from nothing.
+//   - Current (config.toml and local.toml, wherever present, are both at
+//     CurrentSchemaVersion): a no-op. Returns (nil, "", nil) without
+//     touching the filesystem.
+//   - Stale (a .sdlc-v2 directory exists but config.toml and/or
+//     local.toml is missing — the JSON-era v0 layout, or an incomplete
+//     scaffold): there is no automated JSON→TOML migration, so this
+//     returns the same ErrVersionStale error as Migrate. No backup is
+//     written and no file is touched — callers must treat a non-nil error
+//     here as a hard stop pointing the user at /setup.
 func MigrateWithBackup(projectRoot string) (changes []string, backupPath string, err error) {
-	configPath := filepath.Join(projectRoot, paths.DataDir, "config.json")
-	_, statErr := os.Stat(configPath)
-	configExists := statErr == nil
+	projectVer, projectExists := detectProjectVersion(projectRoot)
+	localVer, localExists := detectLocalVersion(projectRoot)
 
-	if !configExists && !hasLegacy(projectRoot) {
+	if !projectExists && !localExists {
 		return nil, "", fmt.Errorf(
 			"%w: no SDLC config found at %s; run /setup to initialize this project",
-			ErrConfigMissing, filepath.Join(paths.DataDir, "config.json"),
+			ErrConfigMissing, filepath.Join(paths.DataDir, "config.toml"),
 		)
 	}
 
-	verifyErr := Verify(projectRoot)
-	if errors.Is(verifyErr, ErrVersionTooNew) {
-		return nil, "", verifyErr
+	stale := (projectExists && projectVer < CurrentSchemaVersion) ||
+		(localExists && localVer < CurrentSchemaVersion)
+	if stale {
+		return nil, "", fmt.Errorf("%w: %s", ErrVersionStale, staleMsg)
 	}
 
-	// Verify only ever inspects config.json. Past v4, config.json is
-	// structurally identical at every schema version (its JSON schema
-	// forbids a schemaVersion marker), so Verify()==nil correctly means
-	// "config.json is current" but says nothing about local.json — the
-	// only file the v5->v6 step (stripping the "version" ship step)
-	// touches. Consult local.json's own version independently so a stale
-	// local.json is never silently skipped just because config.json is
-	// current.
-	localVer, localExists := detectLocalVersion(projectRoot)
-	localStale := localExists && localVer < CurrentSchemaVersion
-
-	if verifyErr == nil && !localStale {
-		return nil, "", nil
-	}
-
-	// Back up whichever file(s) Migrate is about to rewrite in place. A
-	// purely-legacy project (config.json not yet created) has nothing to
-	// back up here — ingestLegacy only ever writes a fresh config.json/
-	// local.json, it never modifies the legacy source files it reads from.
-	if configExists && verifyErr != nil {
-		data, readErr := os.ReadFile(configPath)
-		if readErr != nil {
-			return nil, "", fmt.Errorf("%w: read config.json for backup: %v", ErrMigrationFailed, readErr)
-		}
-		backupPath = configPath + ".bak"
-		if writeErr := os.WriteFile(backupPath, data, 0o644); writeErr != nil {
-			return nil, "", fmt.Errorf("%w: write config.json.bak: %v", ErrMigrationFailed, writeErr)
-		}
-	}
-	if localStale {
-		localPath := filepath.Join(projectRoot, paths.DataDir, "local.json")
-		if data, readErr := os.ReadFile(localPath); readErr == nil {
-			localBackupPath := localPath + ".bak"
-			if writeErr := os.WriteFile(localBackupPath, data, 0o644); writeErr != nil {
-				return nil, "", fmt.Errorf("%w: write local.json.bak: %v", ErrMigrationFailed, writeErr)
-			}
-			if backupPath == "" {
-				backupPath = localBackupPath
-			}
-		}
-	}
-
-	report, migErr := Migrate(projectRoot, Options{})
-	if migErr != nil {
-		return nil, backupPath, migErr
-	}
-
-	changes = append(changes, report.StepsApplied...)
-	changes = append(changes, report.LegacyIngested...)
-	return changes, backupPath, nil
-}
-
-// ---------------------------------------------------------------------------
-// Lock management
-// ---------------------------------------------------------------------------
-
-// acquireLock creates .sdlc/.migration.lock with O_EXCL. Retries on EEXIST
-// up to retries times with retryDelay between attempts.
-func acquireLock(mainRoot string, opt *Options) (string, error) {
-	sdlcDir := filepath.Join(mainRoot, paths.DataDir)
-	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
-		return "", fmt.Errorf("%w: create %s directory: %v", ErrMigrationFailed, paths.DataDir, err)
-	}
-
-	lockPath := filepath.Join(sdlcDir, ".migration.lock")
-	retries := opt.retries()
-	delay := opt.retryDelay()
-
-	for attempt := 0; attempt <= retries; attempt++ {
-		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-		if err == nil {
-			fmt.Fprintf(f, "%d", os.Getpid())
-			f.Close()
-			return lockPath, nil
-		}
-		if !errors.Is(err, os.ErrExist) {
-			return "", fmt.Errorf("%w: lock create failed: %v", ErrMigrationFailed, err)
-		}
-		if attempt < retries {
-			time.Sleep(delay)
-		}
-	}
-
-	return "", fmt.Errorf(
-		"%w: lock file %s held by another process; if stale, remove it and retry",
-		ErrMigrationLocked, lockPath,
-	)
-}
-
-func releaseLock(lockPath string) {
-	os.Remove(lockPath) //nolint:errcheck // best-effort
+	return nil, "", nil
 }
 
 // ---------------------------------------------------------------------------
 // Version detection
 // ---------------------------------------------------------------------------
 
-// hasLegacy returns true if any pre-v5 legacy config files exist.
-func hasLegacy(mainRoot string) bool {
-	for _, marker := range legacyMarkers {
-		if _, err := os.Stat(filepath.Join(mainRoot, marker)); err == nil {
-			return true
-		}
-	}
-	return false
-}
-
-// extractSchemaVersion extracts the schemaVersion integer from a raw config.
-func extractSchemaVersion(raw map[string]any) (int, bool) {
-	v, ok := raw["schemaVersion"]
-	if !ok {
-		return 0, false
-	}
-	if f, ok := v.(float64); ok {
-		return int(f), true
-	}
-	return 0, false
-}
-
 // detectProjectVersion determines the schema version of the project config.
-// Returns (version, true) if a config or legacy unified config exists.
+// Returns (1, true) if config.toml exists (current, TOML era). Returns
+// (0, true) if the .sdlc-v2 directory exists but config.toml does not
+// (JSON-era v0, or an incomplete scaffold — needs /setup). Returns
+// (0, false) if there is no .sdlc-v2 directory at all (never set up).
 func detectProjectVersion(mainRoot string) (int, bool) {
-	configPath := filepath.Join(mainRoot, paths.DataDir, "config.json")
-	var raw map[string]any
-	if err := fsx.ReadJSON(configPath, &raw); err == nil {
-		if v, ok := extractSchemaVersion(raw); ok {
-			return v, true
-		}
-		return CurrentSchemaVersion, true // no schemaVersion → v5
+	tomlPath := filepath.Join(mainRoot, paths.DataDir, "config.toml")
+	if _, err := os.Stat(tomlPath); err == nil {
+		return CurrentSchemaVersion, true
 	}
-	// Check legacy unified config.
-	legacyPath := filepath.Join(mainRoot, ".claude", "sdlc.json")
-	if _, err := os.Stat(legacyPath); err == nil {
+
+	sdlcDir := filepath.Join(mainRoot, paths.DataDir)
+	if _, err := os.Stat(sdlcDir); err == nil {
 		return 0, true
 	}
+
 	return 0, false
 }
 
 // detectLocalVersion determines the schema version of the local config.
+// Unlike detectProjectVersion, mere existence of the .sdlc-v2 directory does
+// NOT imply staleness here: local.toml/local.json is documented as optional,
+// so a project with a current config.toml but no local override ever created
+// must not be reported as stale. Returns (1, true) if local.toml exists.
+// Returns (0, true) if a legacy local.json exists (JSON-era v0, genuinely
+// stale). Returns (0, false) if neither file exists, regardless of whether
+// .sdlc-v2 itself exists -- no local override was ever created.
 func detectLocalVersion(mainRoot string) (int, bool) {
-	localPath := filepath.Join(mainRoot, paths.DataDir, "local.json")
-	var raw map[string]any
-	if err := fsx.ReadJSON(localPath, &raw); err != nil {
-		return 0, false
-	}
-	if v, ok := extractSchemaVersion(raw); ok {
-		return v, true
-	}
-	// Legacy "version" integer (pre-v3 local configs).
-	if v, ok := raw["version"]; ok {
-		if f, ok := v.(float64); ok {
-			return int(f), true
-		}
-	}
-	// No marker at all. Real v1 local.json always carries the legacy
-	// "version" integer above, so reaching here means either v5 or v6:
-	// removeLocalSchemaVersion (v4->v5) strips the schemaVersion field and
-	// neither v5 nor v6 ever re-adds one. Sniff ship.steps for the
-	// standalone "version" entry (removed by the v5->v6 step) to tell them
-	// apart. Neither "ship" nor "ship.steps" is `required` by the local
-	// schema, so their absence is not evidence of staleness either —
-	// default to CurrentSchemaVersion (mirrors Verify()'s marker-less
-	// config.json == current) rather than falling back to v1, which would
-	// replan the full 1->6 chain and corrupt a valid v5/v6 file on every
-	// call.
-	if ship, ok := raw["ship"].(map[string]any); ok {
-		if steps, ok := ship["steps"].([]any); ok {
-			for _, s := range steps {
-				if s == "version" {
-					return 5, true
-				}
-			}
-		}
-	}
-	return CurrentSchemaVersion, true
-}
-
-// ---------------------------------------------------------------------------
-// Step planning and execution
-// ---------------------------------------------------------------------------
-
-// planSteps finds the ordered migration steps from `from` to `to`.
-func planSteps(registry []migrationStep, from, to int) ([]migrationStep, error) {
-	var steps []migrationStep
-	cursor := from
-	for cursor < to {
-		found := false
-		for _, s := range registry {
-			if s.from == cursor && s.to <= to {
-				steps = append(steps, s)
-				cursor = s.to
-				found = true
-				break
-			}
-		}
-		if !found {
-			return nil, fmt.Errorf(
-				"%w: no migration step from v%d toward v%d",
-				ErrMigrationFailed, cursor, to,
-			)
-		}
-	}
-	return steps, nil
-}
-
-// runSteps executes migration steps sequentially, rolling back on failure.
-func runSteps(ctx *migrationContext, steps []migrationStep, role string) ([]string, error) {
-	var labels []string
-	var applied []migrationStep
-	for _, step := range steps {
-		label := fmt.Sprintf("%s: v%d→v%d", role, step.from, step.to)
-		if err := step.run(ctx); err != nil {
-			// Roll back in reverse.
-			for i := len(applied) - 1; i >= 0; i-- {
-				if applied[i].rollback != nil {
-					applied[i].rollback(ctx) //nolint:errcheck // best-effort
-				}
-			}
-			return labels, fmt.Errorf("%w: %s: %v", ErrMigrationFailed, label, err)
-		}
-		labels = append(labels, label)
-		applied = append(applied, step)
-	}
-	return labels, nil
-}
-
-// ---------------------------------------------------------------------------
-// Legacy ingestion
-// ---------------------------------------------------------------------------
-
-// ingestLegacy reads all legacy per-section config files and writes v5
-// output (no schemaVersion). Project sections go to config.json; local
-// sections (ship, review) go to local.json.
-func ingestLegacy(mainRoot string) ([]string, error) {
-	if err := os.MkdirAll(filepath.Join(mainRoot, paths.DataDir), 0o755); err != nil {
-		return nil, fmt.Errorf("%w: create %s dir: %v", ErrMigrationFailed, paths.DataDir, err)
+	tomlPath := filepath.Join(mainRoot, paths.DataDir, "local.toml")
+	if _, err := os.Stat(tomlPath); err == nil {
+		return CurrentSchemaVersion, true
 	}
 
-	var ingested []string
-	projectCfg := make(map[string]any)
-	localCfg := make(map[string]any)
-
-	// .claude/sdlc.json — old unified config.
-	sdlcPath := filepath.Join(mainRoot, ".claude", "sdlc.json")
-	var sdlcData map[string]any
-	if err := fsx.ReadJSON(sdlcPath, &sdlcData); err == nil {
-		ingested = append(ingested, ".claude/sdlc.json")
-		for _, key := range []string{"version", "jira", "commit", "pr", "plan", "execute"} {
-			if v, ok := sdlcData[key]; ok {
-				// Strip $schema from each section to match v5 format
-				if m, ok := v.(map[string]any); ok {
-					delete(m, "$schema")
-				}
-				if key == "version" {
-					v = migrateVersionShape(v)
-				}
-				projectCfg[key] = v
-			}
-		}
-		if v, ok := sdlcData["ship"]; ok {
-			if m, ok := v.(map[string]any); ok {
-				delete(m, "$schema")
-				localCfg["ship"] = m
-			}
-		}
-		if v, ok := sdlcData["review"]; ok {
-			if m, ok := v.(map[string]any); ok {
-				delete(m, "$schema")
-				localCfg["review"] = m
-			}
-		}
+	jsonPath := filepath.Join(mainRoot, paths.DataDir, "local.json")
+	if _, err := os.Stat(jsonPath); err == nil {
+		return 0, true
 	}
 
-	// .claude/version.json — old version config.
-	versionPath := filepath.Join(mainRoot, ".claude", "version.json")
-	var versionData map[string]any
-	if err := fsx.ReadJSON(versionPath, &versionData); err == nil {
-		ingested = append(ingested, ".claude/version.json")
-		if projectCfg["version"] == nil {
-			delete(versionData, "$schema")
-			projectCfg["version"] = migrateVersionShape(versionData)
-		}
-	}
-
-	// .sdlc/jira-config.json — old jira config.
-	jiraPath := filepath.Join(mainRoot, paths.LegacyDataDir, "jira-config.json")
-	var jiraData map[string]any
-	if err := fsx.ReadJSON(jiraPath, &jiraData); err == nil {
-		ingested = append(ingested, ".sdlc/jira-config.json")
-		if projectCfg["jira"] == nil {
-			delete(jiraData, "$schema")
-			projectCfg["jira"] = jiraData
-		}
-	}
-
-	// .sdlc/ship-config.json → local.json ship section.
-	shipPath := filepath.Join(mainRoot, paths.LegacyDataDir, "ship-config.json")
-	var shipData map[string]any
-	if err := fsx.ReadJSON(shipPath, &shipData); err == nil {
-		ingested = append(ingested, ".sdlc/ship-config.json")
-		if localCfg["ship"] == nil {
-			delete(shipData, "$schema")
-			delete(shipData, "version")
-			applyShipPresetToSteps(shipData)
-			applyShipAwaitReview(shipData)
-			localCfg["ship"] = shipData
-		}
-	}
-
-	// .sdlc/review.json or .claude/review.json → local.json review section.
-	reviewPath := filepath.Join(mainRoot, paths.LegacyDataDir, "review.json")
-	var reviewData map[string]any
-	if err := fsx.ReadJSON(reviewPath, &reviewData); err == nil {
-		ingested = append(ingested, ".sdlc/review.json")
-		if localCfg["review"] == nil {
-			localCfg["review"] = extractReviewDefaults(reviewData)
-		}
-	} else {
-		claudeReviewPath := filepath.Join(mainRoot, ".claude", "review.json")
-		var claudeReviewData map[string]any
-		if err := fsx.ReadJSON(claudeReviewPath, &claudeReviewData); err == nil {
-			ingested = append(ingested, ".claude/review.json")
-			if localCfg["review"] == nil {
-				localCfg["review"] = extractReviewDefaults(claudeReviewData)
-			}
-		}
-	}
-
-	// Write v5 config.json (project sections, no schemaVersion).
-	configPath := filepath.Join(mainRoot, paths.DataDir, "config.json")
-	if len(projectCfg) > 0 {
-		if err := fsx.AtomicWriteJSON(configPath, projectCfg); err != nil {
-			return ingested, fmt.Errorf("%w: write config.json: %v", ErrMigrationFailed, err)
-		}
-	}
-
-	// Write v5 local.json (local sections, no schemaVersion).
-	localPath := filepath.Join(mainRoot, paths.DataDir, "local.json")
-	if len(localCfg) > 0 {
-		if err := fsx.AtomicWriteJSON(localPath, localCfg); err != nil {
-			return ingested, fmt.Errorf("%w: write local.json: %v", ErrMigrationFailed, err)
-		}
-	}
-
-	return ingested, nil
+	return 0, false
 }

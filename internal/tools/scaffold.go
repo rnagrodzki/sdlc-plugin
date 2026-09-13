@@ -262,7 +262,7 @@ func scaffoldNextGuidance(protection RulesetCheckResult) string {
 		return fmt.Sprintf(
 			"Branch protection is active on %q, which can block direct pushes when version.method is \"push\". "+
 				"You have three options: "+
-				"(1) switch version.method to \"pr\" in .sdlc-v2/config.json to open a release PR instead of pushing directly; "+
+				"(1) switch version.method to \"pr\" in .sdlc-v2/config.toml to open a release PR instead of pushing directly; "+
 				"(2) keep \"push\" but add the workflow's identity (GitHub App or bot account) as a bypass actor in branch protection rulesets "+
 				"(Settings > Rules > Rulesets > select ruleset > Bypass list > Add bypass > select the GitHub Actions app or a dedicated deploy key); "+
 				"(3) use a GitHub App token with Contents:write permission and bypass privileges instead of the default GITHUB_TOKEN "+
@@ -344,7 +344,7 @@ func checkBranchProtection(dir string, execRun scaffoldExecFunc) RulesetCheckRes
 
 	if result.HasRulesets || result.HasClassicProt {
 		result.Notes = append(result.Notes, fmt.Sprintf(
-			"branch protection is active on %q — tagging and GitHub Releases are unaffected; if version.method is \"push\", versionFile/changelog writes will be blocked by the protected branch — either switch method to \"pr\" in .sdlc-v2/config.json, or disable versionFile/changelog entirely",
+			"branch protection is active on %q — tagging and GitHub Releases are unaffected; if version.method is \"push\", versionFile/changelog writes will be blocked by the protected branch — either switch method to \"pr\" in .sdlc-v2/config.toml, or disable versionFile/changelog entirely",
 			result.DefaultBranch))
 	} else {
 		result.Notes = append(result.Notes, fmt.Sprintf("no branch protection detected on %q", result.DefaultBranch))

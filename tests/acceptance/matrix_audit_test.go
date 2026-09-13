@@ -236,7 +236,7 @@ var datasetRows = []datasetRow{
 	{dataset: "lib-worktree-exec.yaml", testRef: "TestMainRootIn_SingleWorktree"},
 	{dataset: "links-lib-exec.yaml", testRef: "TestValidate_MultipleURLs"},
 	{dataset: "markdown-to-adf-exec.yaml", testRef: "TestConvert_GoldenCorpus"},
-	{dataset: "migrate-config-exec.yaml", testRef: "TestMigrate_ConfigAction_V4ToV5"},
+	{dataset: "migrate-config-exec.yaml", testRef: "TestMigrate_ConfigAction_StaleProjectRefused"},
 	{dataset: "migrate-jira-templates-exec.yaml", testRef: "TestMigrateImportCopiesFreshFiles"},
 	{dataset: "openspec-enrich-exec.yaml", testRef: "TestEnrichConfig_AppendNewBlock"},
 	{dataset: "openspec-lib-exec.yaml", testRef: "TestDetect_ChangeList"},
@@ -423,13 +423,16 @@ type kdRow struct {
 //     acceptance criteria; the F-findings and G/R markers are the
 //     paper trail behind them, not additional surface.
 //
-// 16 covered, 5 cut. Four of the 5 cuts are not behavior gaps — each is
+// 15 covered, 6 cut. Four of the 6 cuts are not behavior gaps — each is
 // a row whose substance is a build-time, naming, or documentation
-// convention with no independent runtime branch to unit test. The fifth,
-// KD17, is a genuine behavior gap opened later: its subject (the
-// /deliver skill's fix-loop config sourcing) was removed by plan
-// plan-full-documentation-for-misty-sundae.md, Task 1, so the decision
-// no longer has any runtime behavior to test (see each cutReason below).
+// convention with no independent runtime branch to unit test. The other
+// two are decisions whose original subject was later removed by a
+// subsequent plan, leaving no runtime behavior left to test: KD17 (the
+// /deliver skill's fix-loop config sourcing, removed by plan
+// plan-full-documentation-for-misty-sundae.md, Task 1) and KD2 (the
+// migrate tool's automated JSON->TOML conversion, retired by plan
+// plan-everything-to-move-zazzy-flask.md in favor of a hard /setup
+// refusal — see each cutReason below).
 var kdRows = []kdRow{
 	{
 		id:      "KD1",
@@ -440,7 +443,10 @@ var kdRows = []kdRow{
 		// mcp-mode half is exercised end to end by
 		// tests/integration/pipeline_smoke_test.go via the built binary.
 	},
-	{id: "KD2", testRef: "TestMigrate_ProjectV4ToV5"},
+	{
+		id:        "KD2",
+		cutReason: "TestMigrate_ProjectV4ToV5 covered the migrate engine's automated v4->v5 (and legacy-layout) conversion, i.e. \"a v4 or legacy config produces a refusal that names the migrate tool ... the migrate tool converts v4 and all legacy layouts in one shot.\" Plan plan-everything-to-move-zazzy-flask.md (SDLC Config TOML Migration) retired that automated migration entirely: internal/configmigrate now performs no filesystem writes and no JSON->TOML conversion of any kind (see its package doc: \"there is no automated migration from the legacy JSON-era config.json/local.json format ... A project stuck on v0 must re-run /setup\"), so TestMigrate_ProjectV4ToV5 was deleted along with the v4/v5 step registry in commit 16ee676. KD2's other half — legacy/alternate config locations are detected and refused rather than silently read — is unaffected and still covered; see Contradiction-4 below (TestLegacyRefusal_MarkerFiles). There is no successor test for the automated-conversion half because that capability no longer exists by design.",
+	},
 	{id: "KD3", testRef: "TestDomainError"},
 	{id: "KD4", testRef: "TestReviewPrepareFixture"},
 	{id: "KD5", testRef: "TestShipPrepare_NoSessionID"},
@@ -466,7 +472,7 @@ var kdRows = []kdRow{
 	},
 	{id: "KD14", testRef: "TestShipState_Next_HonorsAutomationConfig"},
 	{id: "KD15", testRef: "TestExecState_Ledger_RoundTrip"},
-	{id: "KD16", testRef: "TestMigrate_ConfigAction_V4ToV5"},
+	{id: "KD16", testRef: "TestMigrate_ConfigAction_StaleProjectRefused"},
 	{
 		id:        "KD17",
 		cutReason: "the fix-loop config-sourcing behavior this decision covered belonged to the /deliver skill (and its guard, TestDeliverSkillsFixLoopConfigFieldsPresent). Plan plan-full-documentation-for-misty-sundae.md, Task 1 removed /deliver entirely (plugins/sdlc/skills/deliver/) and its guard test (internal/skillcheck/skillcheck_deliver_test.go); there is no successor runtime behavior left to test.",
@@ -494,7 +500,7 @@ var kdRows = []kdRow{
 		// hook / context-advisory sidecar; ground truth is zero
 		// UserPromptSubmit entries exist. Same registry, same proof.
 	},
-	{id: "Contradiction-4", testRef: "TestVerify_LegacyMarkers"},
+	{id: "Contradiction-4", testRef: "TestLegacyRefusal_MarkerFiles"},
 	// Config resolution is centralized on .sdlc/config.json as primary
 	// with no duplicate-copy drift risk: legacy/alternate config
 	// locations are detected and refused (naming the migrate tool) by a

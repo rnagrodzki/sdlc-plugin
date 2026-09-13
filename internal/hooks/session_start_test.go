@@ -1149,9 +1149,14 @@ func TestShipConfigPhase(t *testing.T) {
 	branch := "feat/ship-config"
 	root := gitFixture(t, branch)
 
-	localPath := filepath.Join(root, paths.DataDir, "local.json")
+	localPath := filepath.Join(root, paths.DataDir, "local.toml")
 	mustMkdirAll(t, filepath.Dir(localPath))
-	raw := `{"ship": {"steps": ["review", "commit"], "preset": "A", "skip": ["docs"], "bump": "minor", "reviewThreshold": 80}}`
+	raw := "[ship]\n" +
+		"steps = [\"review\", \"commit\"]\n" +
+		"preset = \"A\"\n" +
+		"skip = [\"docs\"]\n" +
+		"bump = \"minor\"\n" +
+		"reviewThreshold = 80\n"
 	mustWriteFile(t, localPath, raw)
 
 	assertLines(t, shipConfigPhase(), []string{

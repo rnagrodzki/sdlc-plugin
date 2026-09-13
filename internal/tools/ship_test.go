@@ -147,8 +147,8 @@ func TestShipPrepare_StepScaffold_AllCanonicalSteps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal CanonicalSteps: %v", err)
 	}
-	writeFile(t, filepath.Join(dir, ".sdlc-v2", "local.json"),
-		fmt.Sprintf(`{"ship": {"steps": %s}}`, stepsJSON))
+	writeFile(t, filepath.Join(dir, ".sdlc-v2", "local.toml"),
+		fmt.Sprintf("[ship]\nsteps = %s\n", stepsJSON))
 
 	out, err := shipPrepare(dir, dir, ShipPrepareIn{
 		SkipConfigCheck: true,
@@ -246,15 +246,17 @@ func TestShipPrepare_NoSessionID(t *testing.T) {
 }
 
 // TestShipPrepare_StepsFromConfig verifies that ship.steps[] configured in
-// .sdlc/local.json is picked up with Sources["steps"] == "config" (ship is
-// not a project section, so its config lives in local.json, not config.json).
+// .sdlc-v2/local.toml is picked up with Sources["steps"] == "config" (ship is
+// not a project section, so its config lives in local.toml, not config.toml).
 func TestShipPrepare_StepsFromConfig(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 	checkoutBranch(t, dir, "feat/config-steps")
 
-	writeFile(t, filepath.Join(dir, paths.DataDir, "local.json"), `{"ship": {"steps": ["commit", "review"]}}`)
+	writeFile(t, filepath.Join(dir, paths.DataDir, "local.toml"), `[ship]
+steps = ["commit", "review"]
+`)
 
 	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true})
 	if err != nil {
@@ -287,7 +289,9 @@ func TestShipPrepare_RebaseConfigMalformedValuePassesThrough(t *testing.T) {
 	gitCommit(t, dir, "initial")
 	checkoutBranch(t, dir, "feat/config-rebase")
 
-	writeFile(t, filepath.Join(dir, paths.DataDir, "local.json"), `{"ship": {"rebase": 42}}`)
+	writeFile(t, filepath.Join(dir, paths.DataDir, "local.toml"), `[ship]
+rebase = 42
+`)
 
 	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true})
 	if err != nil {
@@ -508,14 +512,12 @@ func TestMergeShipFlags_PushSupervisedExplicitFalseStaysFalse(t *testing.T) {
 	}
 }
 
-// TestShipPrepare_KD5Gate verifies the config-version gate's still-blocking
-// case: schemaVersion 1 has no registered migration path to v5
-// (projectMigrations only covers from 0/3/4), so configmigrate.
-// MigrateWithBackup cannot auto-migrate it and the gate still short-circuits
+// TestShipPrepare_KD5Gate verifies the config-version gate's blocking case:
+// a JSON-era config.json with no config.toml is stale by definition (the
+// TOML migration removed JSON->TOML auto-migration entirely — see
+// TestShipPrepare_StaleConfigRequiresSetup), so the gate short-circuits
 // using the soft style (matching plan.go/commit.go): nil Go error, a
-// minimal errors-only payload, and no state file written. This is distinct
-// from TestShipPrepare_AutoMigratesStaleConfig, which covers a migratable
-// stale config succeeding instead of failing.
+// minimal errors-only payload naming /setup, and no state file written.
 func TestShipPrepare_KD5Gate(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
@@ -531,6 +533,9 @@ func TestShipPrepare_KD5Gate(t *testing.T) {
 	if len(out.Errors) == 0 {
 		t.Fatal("Errors is empty, want a config-version error")
 	}
+	if !strings.Contains(out.Errors[0], "/setup") {
+		t.Errorf("Errors[0] = %q, want it to mention /setup", out.Errors[0])
+	}
 	if out.StateFile != "" {
 		t.Errorf("StateFile = %q, want empty (KD5 gate must not init state)", out.StateFile)
 	}
@@ -544,56 +549,41 @@ func TestShipPrepare_KD5Gate(t *testing.T) {
 	}
 }
 
-// TestShipPrepare_AutoMigratesStaleConfig verifies the KD5 gate's new
-// auto-migrate behavior: a stale-but-migratable config (schemaVersion 4, one
-// step short of current) is migrated in place, a config.json.bak backup is
-// written, and ship_prepare proceeds to initialize state normally instead of
-// hard-failing — the acceptance-criteria case this task exists to add.
-func TestShipPrepare_AutoMigratesStaleConfig(t *testing.T) {
+// TestShipPrepare_StaleConfigRequiresSetup verifies the KD5 gate on a
+// JSON-era config with no config.toml present: the TOML migration removed
+// JSON->TOML auto-migration entirely (configmigrate no longer has any
+// migration steps to run), so ship_prepare must report an actionable
+// /setup error via the soft errors-only payload instead of silently
+// migrating in place.
+//
+// This replaces the former TestShipPrepare_AutoMigratesStaleConfig, which
+// asserted the pre-TOML behavior (auto-migrate with a config.json.bak
+// backup, threaded through as a MigrationReport) — a capability that no
+// longer exists once .sdlc-v2/config.toml is the only source of truth.
+func TestShipPrepare_StaleConfigRequiresSetup(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
-	checkoutBranch(t, dir, "feat/kd5-automigrate")
+	checkoutBranch(t, dir, "feat/kd5-stale")
 
+	// Legacy JSON-era config, no config.toml: must not be silently migrated.
 	writeFile(t, filepath.Join(dir, paths.DataDir, "config.json"), `{"schemaVersion": 4}`)
 
-	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: false, SessionID: "sess-automigrate"})
+	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: false, SessionID: "sess-stale"})
 	if err != nil {
-		t.Fatalf("shipPrepare: %v", err)
+		t.Fatalf("shipPrepare: %v (KD5 gate must return nil error with Errors populated)", err)
 	}
-	if len(out.Errors) != 0 {
-		t.Fatalf("Errors = %v, want empty on successful auto-migration", out.Errors)
+	if len(out.Errors) == 0 {
+		t.Fatal("Errors is empty, want a config-version error naming /setup")
 	}
-	if out.StateFile == "" {
-		t.Error("StateFile is empty, want state initialized despite the auto-migration")
+	if !strings.Contains(out.Errors[0], "/setup") {
+		t.Errorf("Errors[0] = %q, want it to mention /setup", out.Errors[0])
 	}
-	if out.Migration == nil {
-		t.Fatal("Migration is nil, want a populated MigrationReport")
+	if out.StateFile != "" {
+		t.Errorf("StateFile = %q, want empty (stale config must not init state)", out.StateFile)
 	}
-	if out.Migration.BackupPath == "" {
-		t.Error("Migration.BackupPath is empty, want the .bak path")
-	}
-	if _, statErr := os.Stat(out.Migration.BackupPath); statErr != nil {
-		t.Errorf("backup file not found at %s: %v", out.Migration.BackupPath, statErr)
-	}
-	if filepath.Base(out.Migration.BackupPath) != "config.json.bak" {
-		t.Errorf("backup file = %q, want config.json.bak", filepath.Base(out.Migration.BackupPath))
-	}
-
-	backupRaw, err := os.ReadFile(out.Migration.BackupPath)
-	if err != nil {
-		t.Fatalf("read backup: %v", err)
-	}
-	if !strings.Contains(string(backupRaw), `"schemaVersion": 4`) {
-		t.Errorf("backup content = %q, want it to preserve the pre-migration schemaVersion 4 payload", backupRaw)
-	}
-
-	migratedRaw, err := os.ReadFile(filepath.Join(dir, paths.DataDir, "config.json"))
-	if err != nil {
-		t.Fatalf("read migrated config.json: %v", err)
-	}
-	if strings.Contains(string(migratedRaw), "schemaVersion") {
-		t.Errorf("migrated config.json = %q, want schemaVersion field removed", migratedRaw)
+	if out.Migration != nil {
+		t.Errorf("Migration = %v, want nil; JSON->TOML auto-migration no longer exists", out.Migration)
 	}
 }
 
@@ -627,11 +617,12 @@ func TestShipPrepare_CurrentConfig_NoExtraIO(t *testing.T) {
 	gitCommit(t, dir, "initial")
 	checkoutBranch(t, dir, "feat/kd5-current")
 
-	configPath := filepath.Join(dir, paths.DataDir, "config.json")
-	writeFile(t, configPath, `{}`)
+	configPath := filepath.Join(dir, paths.DataDir, "config.toml")
+	writeFile(t, configPath, "")
+	writeFile(t, filepath.Join(dir, paths.DataDir, "local.toml"), "")
 	before, err := os.Stat(configPath)
 	if err != nil {
-		t.Fatalf("stat config.json: %v", err)
+		t.Fatalf("stat config.toml: %v", err)
 	}
 
 	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: false, SessionID: "sess-current"})
@@ -645,15 +636,15 @@ func TestShipPrepare_CurrentConfig_NoExtraIO(t *testing.T) {
 		t.Errorf("Migration = %v, want nil for an already-current config", out.Migration)
 	}
 	if _, statErr := os.Stat(configPath + ".bak"); statErr == nil {
-		t.Error("config.json.bak written for an already-current config; want zero extra I/O")
+		t.Error("config.toml.bak written for an already-current config; want zero extra I/O")
 	}
 
 	after, err := os.Stat(configPath)
 	if err != nil {
-		t.Fatalf("stat config.json: %v", err)
+		t.Fatalf("stat config.toml: %v", err)
 	}
 	if !after.ModTime().Equal(before.ModTime()) {
-		t.Errorf("config.json mtime changed (%v -> %v), want untouched", before.ModTime(), after.ModTime())
+		t.Errorf("config.toml mtime changed (%v -> %v), want untouched", before.ModTime(), after.ModTime())
 	}
 }
 
@@ -807,7 +798,9 @@ func TestShipGC_CLITTLDaysOverridesConfig(t *testing.T) {
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
-	writeFile(t, filepath.Join(dir, paths.DataDir, "local.json"), `{"state": {"gc": {"ttlDays": 30}}}`)
+	writeFile(t, filepath.Join(dir, paths.DataDir, "local.toml"), `[state.gc]
+ttlDays = 30
+`)
 
 	execDir := filepath.Join(dir, paths.DataDir, paths.RunsSubdir)
 	f := filepath.Join(execDir, "ship-dead-branch-20200101T000000Z.json")
@@ -916,7 +909,9 @@ func TestShipGC_ConfigTTLDaysUsedWhenNoCLI(t *testing.T) {
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
-	writeFile(t, filepath.Join(dir, paths.DataDir, "local.json"), `{"state": {"gc": {"ttlDays": 1}}}`)
+	writeFile(t, filepath.Join(dir, paths.DataDir, "local.toml"), `[state.gc]
+ttlDays = 1
+`)
 
 	execDir := filepath.Join(dir, paths.DataDir, paths.RunsSubdir)
 	f := filepath.Join(execDir, "ship-dead-branch-20200101T000000Z.json")
@@ -1138,16 +1133,24 @@ func TestShipGC_RespectsKD5Gate(t *testing.T) {
 	if len(out.Errors) == 0 {
 		t.Fatal("Errors is empty, want a config-version error (KD5 gate must run before the gc short-circuit)")
 	}
+	if !strings.Contains(out.Errors[0], "/setup") {
+		t.Errorf("Errors[0] = %q, want it to mention /setup", out.Errors[0])
+	}
 	if out.Action == "gc" {
 		t.Errorf("Action = %q, want empty (KD5 gate must short-circuit before gc runs)", out.Action)
 	}
 }
 
-// TestShipGC_AutoMigratesStaleConfig verifies gc mode threads the migration
-// report through shipGC's dedicated return points: a stale-but-migratable
-// config auto-migrates before gc runs, and the resulting MigrationReport is
-// still present on the gc-shaped ShipPrepareOut (Action == "gc").
-func TestShipGC_AutoMigratesStaleConfig(t *testing.T) {
+// TestShipGC_StaleConfigRequiresSetup verifies gc mode does not bypass the
+// KD5 gate's /setup error: a JSON-era config.json with no config.toml is
+// stale by definition (JSON->TOML auto-migration no longer exists), so gc
+// must report the error via the gc-shaped ShipPrepareOut with Action still
+// empty and Migration nil, rather than proceeding.
+//
+// This replaces the former TestShipGC_AutoMigratesStaleConfig, which
+// asserted the pre-TOML auto-migrate-with-backup behavior threaded through
+// shipGC's return points.
+func TestShipGC_StaleConfigRequiresSetup(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
@@ -1156,22 +1159,19 @@ func TestShipGC_AutoMigratesStaleConfig(t *testing.T) {
 
 	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: false, Gc: true})
 	if err != nil {
-		t.Fatalf("shipPrepare: %v", err)
+		t.Fatalf("shipPrepare: %v (KD5 gate must return nil error)", err)
 	}
-	if out.Action != "gc" {
-		t.Errorf("Action = %q, want %q", out.Action, "gc")
+	if len(out.Errors) == 0 {
+		t.Fatal("Errors is empty, want a config-version error naming /setup")
 	}
-	if len(out.Errors) != 0 {
-		t.Fatalf("Errors = %v, want empty on successful auto-migration", out.Errors)
+	if !strings.Contains(out.Errors[0], "/setup") {
+		t.Errorf("Errors[0] = %q, want it to mention /setup", out.Errors[0])
 	}
-	if out.Migration == nil {
-		t.Fatal("Migration is nil, want a populated MigrationReport threaded through gc mode")
+	if out.Action == "gc" {
+		t.Errorf("Action = %q, want empty (KD5 gate must short-circuit before gc runs)", out.Action)
 	}
-	if out.Migration.BackupPath == "" {
-		t.Error("Migration.BackupPath is empty, want the .bak path")
-	}
-	if _, statErr := os.Stat(out.Migration.BackupPath); statErr != nil {
-		t.Errorf("backup file not found at %s: %v", out.Migration.BackupPath, statErr)
+	if out.Migration != nil {
+		t.Errorf("Migration = %v, want nil; JSON->TOML auto-migration no longer exists", out.Migration)
 	}
 }
 

@@ -54,8 +54,8 @@ Run once per repository, before using any other `sdlc` skill in it:
 /setup
 ```
 
-This scaffolds `.sdlc-v2/config.json` (project config, committed) and
-`.sdlc-v2/local.json` (user-local, gitignored) and walks you through a
+This scaffolds `.sdlc-v2/config.toml` (project config, committed) and
+`.sdlc-v2/local.toml` (user-local, gitignored) and walks you through a
 selective-section menu — review dimensions, PR template, guardrails, and
 more. Every section explains what it changes and which skills consume it
 before it prompts you for anything.
@@ -107,7 +107,7 @@ interrupted.
 
 ## 4. Supervised vs. unattended
 
-By default (`automation.mode: supervised` in `.sdlc-v2/local.json`), every
+By default (`automation.mode: supervised` in `.sdlc-v2/local.toml`), every
 pipeline step stops for your confirmation. Set `mode: unattended`, optionally
 with per-step overrides in `automation.steps`, to let `ship`
 run end-to-end without stopping. Field reference: `README.md`

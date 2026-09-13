@@ -341,9 +341,13 @@ Review the code for quality issues, including readability, maintainability,
 and adherence to best practices. Check for potential bugs and edge cases.
 `)
 
-	// Create config files needed by configmigrate.Verify.
+	// A current (empty) config.toml. SkipConfigCheck below bypasses the KD5
+	// gate anyway, and config.ReadSection(projectRoot, "review") reads
+	// local.toml (review is a local section, not a project one), so this
+	// file has no effect on the test outcome — it just keeps the fixture
+	// looking like a real project layout.
 	sdlcDir := filepath.Join(root, paths.DataDir)
-	writeFile(t, filepath.Join(sdlcDir, "config.json"), `{"schemaVersion": 5}`)
+	writeFile(t, filepath.Join(sdlcDir, "config.toml"), "")
 
 	// Run reviewPrepare.
 	out, err := reviewPrepare(root, root, ReviewPrepareIn{

@@ -29,13 +29,13 @@ Read the manifest JSON from `MANIFEST_FILE`. The manifest contains:
 | `failure.step` / `failure.operation` / `failure.exitCode` / `failure.errorType` | Optional context |
 | `failure.userIntent` / `failure.argsString` | Optional context |
 | `classification_hint` | Pre-computed hint or `null` (advisory only — do not blindly trust) |
-| `surfaces.planGuardrails[]` | `{id, severity, description}` — sdlc.json plan.guardrails |
-| `surfaces.executeGuardrails[]` | `{id, severity, description}` — sdlc.json execute.guardrails |
+| `surfaces.planGuardrails[]` | `{id, severity, description}` — config.toml plan.guardrails |
+| `surfaces.executeGuardrails[]` | `{id, severity, description}` — config.toml execute.guardrails |
 | `surfaces.reviewDimensions[]` | `{name, severity, description, triggers, model, path}` |
 | `surfaces.copilotInstructions[]` | `{applyTo, name, path}` |
 | `surfaces.errorReportSkillPath` | Resolved REFERENCE.md path for `error-report` |
 | `pipeline.shipState` / `pipeline.executeState` | Optional paused-pipeline state, or `null` |
-| `repository.root` | MAIN worktree — config/`.sdlc-v2/` root; use to build the `.sdlc-v2/config.json` targetFile for guardrail proposals |
+| `repository.root` | MAIN worktree — config/`.sdlc-v2/` root; use to build the `.sdlc-v2/config.toml` targetFile for guardrail proposals |
 | `repository.contentRoot` | ACTIVE worktree — root of `reviewDimensions[].path` / `copilotInstructions[].path`; equals `PROJECT_ROOT` |
 | `repository.branch` / `repository.recentDiffSummary` | Active-checkout metadata |
 | `pluginRepoUrl` | Constant URL of the plugin's GitHub repository — read directly from `MANIFEST_FILE` by SKILL.md (Steps 5c and 6) to construct the user-facing prompt; NOT included in orchestrator output JSON |
@@ -43,7 +43,7 @@ Read the manifest JSON from `MANIFEST_FILE`. The manifest contains:
 If you need the full body of a specific dimension or copilot instruction file to
 draft a proposal, you MAY Read the file via the `path` field in the manifest
 (these live under `PROJECT_ROOT` = `repository.contentRoot`). Do not Read files
-outside `PROJECT_ROOT`. Building the `.sdlc-v2/config.json` targetFile under
+outside `PROJECT_ROOT`. Building the `.sdlc-v2/config.toml` targetFile under
 `repository.root` (the main worktree) is emitting a path string, not a Read, and
 is permitted.
 
@@ -106,8 +106,8 @@ Each proposal:
 {
   "surface": "plan-guardrails | execute-guardrails | review-dimensions | copilot-instructions",
   "action": "add | strengthen | consolidate",
-  "targetFile": "absolute path to the file that would be edited — for plan-guardrails/execute-guardrails use `<repository.root>/.sdlc-v2/config.json` (main worktree); for review-dimensions/copilot-instructions use that surface's `path` field verbatim (active worktree, = repository.contentRoot-rooted)",
-  "patch": "preview block — for sdlc.json, the new/modified guardrail object as JSON; for review-dimensions, the new frontmatter or new rule line; for copilot-instructions, the new checklist line",
+  "targetFile": "absolute path to the file that would be edited — for plan-guardrails/execute-guardrails use `<repository.root>/.sdlc-v2/config.toml` (main worktree); for review-dimensions/copilot-instructions use that surface's `path` field verbatim (active worktree, = repository.contentRoot-rooted)",
+  "patch": "preview block — for config.toml, the new/modified guardrail entry as TOML; for review-dimensions, the new frontmatter or new rule line; for copilot-instructions, the new checklist line",
   "rationale": "one to two sentences linking back to the failure signal"
 }
 ```
@@ -168,7 +168,7 @@ Output a single JSON object and nothing else. When the envelope contains proposa
     {
       "surface": "plan-guardrails",
       "action": "consolidate",
-      "targetFile": "/abs/path/.sdlc-v2/config.json",
+      "targetFile": "/abs/path/.sdlc-v2/config.toml",
       "patch": "...",
       "rationale": "..."
     }

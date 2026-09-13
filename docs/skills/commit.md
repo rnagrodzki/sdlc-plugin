@@ -81,7 +81,7 @@ The skill learns your project's commit style from recent commits. Common pattern
 - **Scope** — `feat(auth):`, `fix(db):`, etc.
 - **Body and trailers** — Multi-line messages with structured details
 
-If your project has a custom `.sdlc-v2/config.json` with `commit` rules, those are enforced (subject pattern, required body, required trailers).
+If your project has a custom `.sdlc-v2/config.toml` with `commit` rules, those are enforced (subject pattern, required body, required trailers).
 
 ### WIP commits
 
@@ -107,7 +107,7 @@ The generated message is checked against:
 
 ## Configuration
 
-The skill respects project settings in `.sdlc-v2/config.json`:
+The skill respects project settings in `.sdlc-v2/config.toml`:
 
 - `commit.subjectPattern` — Regex the subject must match
 - `commit.subjectPatternError` — Custom error message when pattern fails
@@ -122,7 +122,7 @@ To set these up, run:
 /setup --pr-template
 ```
 
-Or edit `.sdlc-v2/config.json` directly.
+Or edit `.sdlc-v2/config.toml` directly.
 
 ## Limitations
 

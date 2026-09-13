@@ -41,7 +41,7 @@ capability from a previous version remains unavailable here and is not simulated
   the feedback, or ask the user to.
 
 There is likewise no per-user configuration surface for auto-fix-by-severity or
-auto-harden-by-default in this port (no tool resolves `.sdlc-v2/local.json` for this skill).
+auto-harden-by-default in this port (no tool resolves `.sdlc-v2/local.toml` for this skill).
 `--auto`, described in Steps 10–12 below, is parsed directly from this invocation's own
 `$ARGUMENTS` and has one meaning throughout: skip the confirmation prompt for "agree, will
 fix" items. There is no severity-based partial-auto mode.

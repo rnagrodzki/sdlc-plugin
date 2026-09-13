@@ -3,7 +3,7 @@
 Sub-flow of `/setup --execution-guardrails`. Scans the project and
 generates execution-focused guardrail proposals for the `execute` section,
 then lets the user review and select. Writes guardrails to
-`.sdlc-v2/config.json` via `setup_write_sections`.
+`.sdlc-v2/config.toml` via `setup_write_sections`.
 
 > **Port Notes** (Task 44 KD9 rewrite): same as `setup-guardrails.md` — no Go
 > tool equivalent exists for `skill/guardrails.js`'s scanning, so Step 0 below
@@ -11,9 +11,9 @@ then lets the user review and select. Writes guardrails to
 > (shared table, not duplicated here — this file supplies the execute-target
 > description column only). `validate-guardrails.js --section execute` →
 > `validate({ action: "guardrails", section: "execute" })`. Config writes go
-> through `setup_write_sections` (`{"execute": {"guardrails": [...]}}`),
+> through `setup_write_sections` (`{"execute": {"guardrails": {...}}}`),
 > wholesale — the `execute` config section's schema has a single `guardrails`
-> array property, same as `plan`.
+> table (object keyed by guardrail ID) property, same as `plan`.
 
 ## Arguments
 
@@ -55,7 +55,7 @@ descriptions instead of the plan descriptions:
 
 ### Step 0 — Prepare
 
-1. Read `.sdlc-v2/config.json`. Extract the existing `execute.guardrails` array (empty if absent) as `existing`.
+1. Read `.sdlc-v2/config.toml`. Extract the existing `execute.guardrails` table (object keyed by guardrail ID; empty if absent) as `existing`.
 2. If not in `--add` mode and `existing` is non-empty: use AskUserQuestion: "`{existing.length}` execution guardrails already configured. Replace all, or use --add to expand?" Options: replace / cancel. On cancel, stop.
 3. Run the scan per `setup-guardrails.md`'s Detection Helpers.
 
@@ -94,13 +94,13 @@ Allow multiple custom entries.
 ```
 setup_write_sections({
   sectionsJson: JSON.stringify({
-    execute: { guardrails: <FULL_GUARDRAILS_ARRAY> }
+    execute: { guardrails: <FULL_GUARDRAILS_TABLE> }
   })
 }) → { ok, written, errors }
 ```
 
-`<FULL_GUARDRAILS_ARRAY>` is the selected guardrails from Step 2. In `--add`
-mode: prepend `existing` (from Step 0) to the array before writing — the
+`<FULL_GUARDRAILS_TABLE>` is the selected guardrails from Step 2. In `--add`
+mode: merge `existing` (from Step 0) into the table before writing — the
 write is wholesale replacement, not a merge.
 
 ### Step 4 (VALIDATE)

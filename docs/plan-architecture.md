@@ -53,10 +53,10 @@ Fourteen files in `plugins/sdlc/skills/plan/`:
 
 | Surface | File | Routing |
 |---------|------|---------|
-| `plan` section (guardrails, tasks) | `.sdlc-v2/config.json` | `config.ProjectSections` (team-shared, committed) |
-| `plan.tasks.requiredFields` | `.sdlc-v2/config.json` | Array of field names for PF11 |
-| `plan.tasks.contractShape` | `.sdlc-v2/config.json` | Shape key for PF12 |
-| `planStyle` section | `.sdlc-v2/local.json` | `config.allowedLocalOnlyKeys` (per-developer, gitignored) |
+| `plan` section (guardrails, tasks) | `.sdlc-v2/config.toml` | `config.ProjectSections` (team-shared, committed) |
+| `plan.tasks.requiredFields` | `.sdlc-v2/config.toml` | Array of field names for PF11 |
+| `plan.tasks.contractShape` | `.sdlc-v2/config.toml` | Shape key for PF12 |
+| `planStyle` section | `.sdlc-v2/local.toml` | `config.allowedLocalOnlyKeys` (per-developer, gitignored) |
 | Plan template override | `.sdlc-v2/plan-template.md` | Detected by `plan_prepare` when `resolveTemplate: true` |
 | Plans directory | `.claude/settings.json` `plansDirectory` | Claude Code native setting |
 
@@ -151,7 +151,7 @@ flowchart TD
 | **Tools called** | `plan_prepare({resolveTemplate: true, fileCount: N})`, `plan_mark({marker: "plan-file", path: "..."})` |
 | **Subagents** | None |
 | **Plan sections written** | Template skeleton (header fields: Goal, Architecture, Source, Verification) via `skeletonMarkdown` + `headerMarkdown` |
-| **Failure modes** | Missing `.sdlc-v2/config.json`: benign fallback to defaults. Invalid OpenSpec change: `errors[]` populated, pipeline stops. |
+| **Failure modes** | Missing `.sdlc-v2/config.toml`: benign fallback to defaults. Invalid OpenSpec change: `errors[]` populated, pipeline stops. |
 
 `plan_prepare` returns the full context payload: OpenSpec info, guardrails,
 style, tasks config, explore pack, template resolution, lanes, lens reviewers,
@@ -654,7 +654,7 @@ stateDiagram-v2
 
 | Source | Interface | What It Provides |
 |--------|-----------|-----------------|
-| `/setup` | `.sdlc-v2/config.json` (plan section) | Guardrails, tasks config (requiredFields, contractShape) |
+| `/setup` | `.sdlc-v2/config.toml` (plan section) | Guardrails, tasks config (requiredFields, contractShape) |
 | `/execute` | `execute_state` ledger | Ledger checkin/checkout/status for execution tracking |
 | OpenSpec CLI | `openspec/changes/<name>/` directory | Proposal, delta specs, tasks, design docs for `--from-openspec` plans |
 | Session start hook | OpenSpec detection banner | Signals whether OpenSpec is active in the project |
@@ -673,14 +673,14 @@ stateDiagram-v2
 
 | Surface | Configurable | Where | Override Mechanism |
 |---------|-------------|-------|-------------------|
-| Guardrails list | Yes | `.sdlc-v2/config.json` `plan.guardrails` | Array of `{id, description, severity}` objects |
-| Required task fields | Yes | `.sdlc-v2/config.json` `plan.tasks.requiredFields` | Array of field name strings |
-| Contract shape | Yes | `.sdlc-v2/config.json` `plan.tasks.contractShape` | Shape key string |
+| Guardrails list | Yes | `.sdlc-v2/config.toml` `plan.guardrails` | Object keyed by guardrail ID; each value has `{description, severity}` |
+| Required task fields | Yes | `.sdlc-v2/config.toml` `plan.tasks.requiredFields` | Array of field name strings |
+| Contract shape | Yes | `.sdlc-v2/config.toml` `plan.tasks.contractShape` | Shape key string |
 | Plan template | Yes | `.sdlc-v2/plan-template.md` | Project-local override of default template |
 | Plans directory | Yes | `.claude/settings.json` `plansDirectory` | Claude Code native setting |
-| Verbosity | Yes | `.sdlc-v2/local.json` `planStyle.verbosity` | Per-developer (gitignored) |
-| Audience | Yes | `.sdlc-v2/local.json` `planStyle.audience` | Per-developer (gitignored) |
-| Narrative rules | Yes | `.sdlc-v2/local.json` `planStyle.narrativeRules` | Per-developer (gitignored) |
+| Verbosity | Yes | `.sdlc-v2/local.toml` `planStyle.verbosity` | Per-developer (gitignored) |
+| Audience | Yes | `.sdlc-v2/local.toml` `planStyle.audience` | Per-developer (gitignored) |
+| Narrative rules | Yes | `.sdlc-v2/local.toml` `planStyle.narrativeRules` | Per-developer (gitignored) |
 | Lane count (5) | No | `plan.go` `buildLanes()` | Hard-coded |
 | Lane-to-gate assignment | No | `plan.go` `buildLanes()` | Hard-coded |
 | Lane models (haiku/sonnet) | No | `plan.go` `buildLanes()` | Hard-coded |
@@ -700,11 +700,11 @@ Full source-to-enforcement chain for the 5 `planStyle`/`plan.tasks` config field
 
 | Config Field | File | Schema Location | Go Struct | Loaded By | SKILL.md Step | Enforced By |
 |---|---|---|---|---|---|---|
-| `planStyle.verbosity` | `.sdlc-v2/local.json` (personal) | `planStyleSection.verbosity` | `PlanStyle.Verbosity` | `loadPlanStyle` | Step 2 | LLM judgment |
-| `planStyle.audience` | `.sdlc-v2/local.json` (personal) | `planStyleSection.audience` | `PlanStyle.Audience` | `loadPlanStyle` | Step 2 | LLM judgment |
-| `planStyle.narrativeRules` | `.sdlc-v2/local.json` (personal) | `planStyleSection.narrativeRules` | `PlanStyle.NarrativeRules` | `loadPlanStyle` | Step 5 | Lens prompts (`{NARRATIVE_RULES}`) |
-| `plan.tasks.requiredFields` | `.sdlc-v2/config.json` (team) | `planSection.tasks.requiredFields` | `PlanTasks.RequiredFields` | `loadPlanTasks` | Step 2 (authored), Step 4 (revised) | PF11 (`checkPF11`) |
-| `plan.tasks.contractShape` | `.sdlc-v2/config.json` (team) | `planSection.tasks.contractShape` | `PlanTasks.ContractShape` | `loadPlanTasks` | Step 2 (authored), Step 4 (revised) | PF12 (`checkPF12`) |
+| `planStyle.verbosity` | `.sdlc-v2/local.toml` (personal) | `planStyleSection.verbosity` | `PlanStyle.Verbosity` | `loadPlanStyle` | Step 2 | LLM judgment |
+| `planStyle.audience` | `.sdlc-v2/local.toml` (personal) | `planStyleSection.audience` | `PlanStyle.Audience` | `loadPlanStyle` | Step 2 | LLM judgment |
+| `planStyle.narrativeRules` | `.sdlc-v2/local.toml` (personal) | `planStyleSection.narrativeRules` | `PlanStyle.NarrativeRules` | `loadPlanStyle` | Step 5 | Lens prompts (`{NARRATIVE_RULES}`) |
+| `plan.tasks.requiredFields` | `.sdlc-v2/config.toml` (team) | `planSection.tasks.requiredFields` | `PlanTasks.RequiredFields` | `loadPlanTasks` | Step 2 (authored), Step 4 (revised) | PF11 (`checkPF11`) |
+| `plan.tasks.contractShape` | `.sdlc-v2/config.toml` (team) | `planSection.tasks.contractShape` | `PlanTasks.ContractShape` | `loadPlanTasks` | Step 2 (authored), Step 4 (revised) | PF12 (`checkPF12`) |
 
 ---
 

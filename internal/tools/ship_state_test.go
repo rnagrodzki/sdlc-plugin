@@ -1371,7 +1371,7 @@ func TestShipState_Next_EmptyWhenPipelineComplete(t *testing.T) {
 
 // TestShipState_Next_MatchesBeginStepAcceptance is the AC3 consistency test:
 // "next returns the same step that begin-step would accept next, with the
-// automation mode resolved from a fixture v5 config." It writes a config
+// automation mode resolved from a fixture config." It writes a config
 // fixture, chains next -> begin-step on the same fixture/state, asserts
 // begin-step accepts exactly the step next named, and asserts next's
 // Automation field reflects the fixture config.
@@ -1383,7 +1383,10 @@ func TestShipState_Next_MatchesBeginStepAcceptance(t *testing.T) {
 	path := shipStateInitFixture(t, dir, "feat/next-matches-beginstep")
 	setStepStatus(t, path, "execute", "completed", map[string]any{"completedAt": "2026-01-01T00:00:00Z"})
 
-	writeFile(t, filepath.Join(dir, paths.DataDir, "config.json"), `{"version": 5, "automation": {"mode": "confirm"}}`)
+	// "automation" is a local section (internal/config/config.go
+	// ProjectSections), read from local.toml, not config.toml.
+	writeFile(t, filepath.Join(dir, paths.DataDir, "config.toml"), "")
+	writeFile(t, filepath.Join(dir, paths.DataDir, "local.toml"), "[automation]\nmode = \"confirm\"\n")
 
 	nextOut, err := shipState(dir, dir, ShipStateIn{
 		Action: "next",
@@ -1417,8 +1420,8 @@ func TestShipState_Next_HonorsAutomationConfig(t *testing.T) {
 	checkoutBranch(t, dir, "feat/next-automation")
 	shipStateInitFixture(t, dir, "feat/next-automation")
 
-	writeFile(t, filepath.Join(dir, paths.DataDir, "config.json"), `{}`)
-	writeFile(t, filepath.Join(dir, paths.DataDir, "local.json"), `{"automation": {"mode": "unattended"}}`)
+	writeFile(t, filepath.Join(dir, paths.DataDir, "config.toml"), "")
+	writeFile(t, filepath.Join(dir, paths.DataDir, "local.toml"), "[automation]\nmode = \"unattended\"\n")
 
 	out, err := shipState(dir, dir, ShipStateIn{
 		Action: "next",

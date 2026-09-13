@@ -40,7 +40,7 @@ STOP here. Do NOT use AskUserQuestion to request a path interactively, and do NO
 
 **Parse `--plan <path>` / positional argument:** store as `EXPLICIT_PLAN_FILE`. Forwarded by ship from `context.planFile` for compaction-stable plan discovery; users may also pass it directly for non-interactive invocations.
 
-**Parse `--wave-timeout <seconds>` / `--wave-interval <seconds>`:** store as `WAVE_TIMEOUT` / `WAVE_INTERVAL`. Internal flags forwarded by ship, which resolves them from `ship.executeWaveTimeout` / `ship.executeWaveInterval` in `.sdlc-v2/local.json` — this skill never reads that file itself. Standalone default: `internal/shipmeta.ShipBuiltInDefaults` (1800s timeout, 60s interval). Consumed by `## Wave loop`'s deadline enforcement and polling cadence.
+**Parse `--wave-timeout <seconds>` / `--wave-interval <seconds>`:** store as `WAVE_TIMEOUT` / `WAVE_INTERVAL`. Internal flags forwarded by ship, which resolves them from `ship.executeWaveTimeout` / `ship.executeWaveInterval` in `.sdlc-v2/local.toml` — this skill never reads that file itself. Standalone default: `internal/shipmeta.ShipBuiltInDefaults` (1800s timeout, 60s interval). Consumed by `## Wave loop`'s deadline enforcement and polling cadence.
 
 **Parse `--branch <name>`:** internal flag set by ship in pipeline mode — capture as `EXECUTE_NEW_BRANCH` and skip Workspace auto-detection below entirely (the caller's branch/cwd are trusted as authoritative). Standalone invocations never pass this.
 
@@ -51,7 +51,7 @@ If `--branch` was passed, skip straight to Pre-execution rebase. Otherwise:
 2. Current branch (`git branch --show-current` — never the cached `gitStatus` conversation snapshot, which is frozen at session start) vs. default branch (`git symbolic-ref refs/remotes/origin/HEAD`, fallback `main`).
 3. Derive:
    - **`continue`** — linked worktree, or current branch ≠ default. Run in place; `EXECUTE_NEW_BRANCH` stays unset. No worktree is created.
-   - **`branch`** — main worktree AND on the default branch. Read `<main-worktree>/.sdlc-v2/local.json`'s `workspace.branch` overrides (`template` default `"{type}/{slug}"`, `slugMaxLength` default `50`, `typeMap` default `{feature:'feat', bugfix:'fix', chore:'chore', docs:'docs', refactor:'refactor'}`); infer the logical type from the plan; derive a slug from the plan title (lowercase, collapse non-`[a-z0-9]` runs to `-`, trim, truncate to `slugMaxLength`); substitute into `template`. Then:
+   - **`branch`** — main worktree AND on the default branch. Read `<main-worktree>/.sdlc-v2/local.toml`'s `workspace.branch` overrides (`template` default `"{type}/{slug}"`, `slugMaxLength` default `50`, `typeMap` default `{feature:'feat', bugfix:'fix', chore:'chore', docs:'docs', refactor:'refactor'}`); infer the logical type from the plan; derive a slug from the plan title (lowercase, collapse non-`[a-z0-9]` runs to `-`, trim, truncate to `slugMaxLength`); substitute into `template`. Then:
      - Under `--auto`: `git checkout -b "$EXECUTE_NEW_BRANCH"` with a log line.
      - Otherwise (interactive mode): AskUserQuestion before branch creation:
        > On the default branch. A feature branch is needed.
@@ -91,7 +91,7 @@ Blocking issues → stop and ask. Warnings only → show them and proceed.
 
 **Hook context fast-path:** An `Active execution:` line in the session-start system-reminder means the hook already found the state file — skip the filesystem scan when informing the resume prompt.
 
-**Guardrail loading:** Read `<main-worktree>/.sdlc-v2/config.json`'s `execute.guardrails` array (absent file or key → empty). Store as `activeGuardrails`; print "Loaded N execution guardrails." or "No execution guardrails configured." Distinct from `plan.guardrails` (planning-time critique) — independently configured.
+**Guardrail loading:** Read `<main-worktree>/.sdlc-v2/config.toml`'s `execute.guardrails` table (absent file or key → empty). Store as `activeGuardrails`; print "Loaded N execution guardrails." or "No execution guardrails configured." Distinct from `plan.guardrails` (planning-time critique) — independently configured.
 
 ## Step 2 (CLASSIFY): Classify Tasks and Build Waves
 

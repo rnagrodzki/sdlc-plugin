@@ -9,7 +9,7 @@
  * Usage (GitHub Actions — workflow_dispatch):
  *   node .github/scripts/promote-release.cjs v1.3.0
  *
- * Reads: .sdlc-v2/config.json  (sdlc versioning config)
+ * Reads: .sdlc-v2/config.toml  (sdlc versioning config)
  *
  * Flow:
  *   1. Resolve target tag from CLI arg (e.g. "v1.3.0").
@@ -64,8 +64,8 @@
 
 'use strict';
 
-/** @version 5 — promote-release script version. Bump when behavior changes. */
-const PROMOTE_RELEASE_SCRIPT_VERSION = 5;
+/** @version 6 — promote-release script version. Bump when behavior changes. */
+const PROMOTE_RELEASE_SCRIPT_VERSION = 6;
 
 const fs   = require('node:fs');
 const path = require('node:path');
@@ -112,19 +112,80 @@ function fail(msg) {
 // ---------------------------------------------------------------------------
 
 /**
- * Read the version section from .sdlc-v2/config.json. CI script runs in
+ * Minimal TOML reader for the fixed `.sdlc-v2/config.toml` schema. Only
+ * supports what that schema actually uses: `[table]` / `[table.sub]`
+ * headers and `key = value` lines where value is a double- or
+ * single-quoted string, `true`/`false`, or a bare number — no arrays,
+ * inline tables, or multi-line strings. Not a general-purpose TOML parser;
+ * scoped to the known-fixed `[version]` table shape this script reads.
+ */
+function parseTomlValue(raw) {
+  let s = raw.trim();
+  if (s.startsWith('"')) {
+    let out = '';
+    for (let i = 1; i < s.length; i++) {
+      const c = s[i];
+      if (c === '\\' && i + 1 < s.length) {
+        const n = s[i + 1];
+        out += n === 'n' ? '\n' : n === 't' ? '\t' : n;
+        i++;
+        continue;
+      }
+      if (c === '"') break;
+      out += c;
+    }
+    return out;
+  }
+  if (s.startsWith("'")) {
+    const end = s.indexOf("'", 1);
+    return end >= 0 ? s.slice(1, end) : s.slice(1);
+  }
+  const hashIdx = s.indexOf('#');
+  if (hashIdx >= 0) s = s.slice(0, hashIdx).trim();
+  if (s === 'true') return true;
+  if (s === 'false') return false;
+  if (s !== '' && !Number.isNaN(Number(s))) return Number(s);
+  return s;
+}
+
+function parseSimpleToml(content) {
+  const root = {};
+  let current = root;
+  for (const rawLine of content.split('\n')) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const tableMatch = line.match(/^\[([A-Za-z0-9_.-]+)\]$/);
+    if (tableMatch) {
+      current = root;
+      for (const part of tableMatch[1].split('.')) {
+        if (typeof current[part] !== 'object' || current[part] === null || Array.isArray(current[part])) {
+          current[part] = {};
+        }
+        current = current[part];
+      }
+      continue;
+    }
+    const kvMatch = line.match(/^([A-Za-z0-9_-]+)\s*=\s*(.+)$/);
+    if (!kvMatch) continue;
+    current[kvMatch[1]] = parseTomlValue(kvMatch[2]);
+  }
+  return root;
+}
+
+/**
+ * Read the version section from .sdlc-v2/config.toml. CI script runs in
  * read-only context — never calls verifyAndMigrate. A repo still on a
  * legacy config layout must run `migrate` first; this script does not
  * fall back to any legacy path.
  */
 function readVersionConfig(repoRoot) {
-  const currentPath = path.join(repoRoot, '.sdlc-v2', 'config.json');
+  const currentPath = path.join(repoRoot, '.sdlc-v2', 'config.toml');
   if (!fs.existsSync(currentPath)) return null;
   try {
-    const config = JSON.parse(fs.readFileSync(currentPath, 'utf8'));
-    return config.version || null;
+    const root = parseSimpleToml(fs.readFileSync(currentPath, 'utf8'));
+    return root.version || null;
   } catch (err) {
-    fail(`Error parsing .sdlc-v2/config.json: ${err.message}`);
+    fail(`Error parsing .sdlc-v2/config.toml: ${err.message}`);
   }
 }
 
@@ -369,7 +430,7 @@ function main() {
 
   const config = readVersionConfig(repoRoot);
   if (!config) {
-    fail('No version config found (.sdlc-v2/config.json). Cannot promote release without versionFile/tagPrefix.');
+    fail('No version config found (.sdlc-v2/config.toml). Cannot promote release without versionFile/tagPrefix.');
   }
 
   const tagPrefix = config.tag?.prefix || '';

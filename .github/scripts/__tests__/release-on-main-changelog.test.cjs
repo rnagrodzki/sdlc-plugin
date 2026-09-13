@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Tests for release-on-main.cjs v7 — nested config shape, per-path
+ * Tests for release-on-main.cjs v8 — nested config shape, per-path
  * idempotency, changelog helpers, tag state checks, and per-path
  * independence (phase 3 runs regardless of phase 2 outcome).
  * Uses Node's built-in test runner (node --test) — no npm install required.
@@ -95,16 +95,35 @@ GHOUT
 }
 
 /**
- * Write a minimal .sdlc-v2/config.json in the given directory.
+ * Serializes a plain value as a TOML scalar, matching the subset
+ * release-on-main.cjs's parseSimpleToml understands.
+ */
+function tomlScalar(value) {
+  return typeof value === 'string' ? JSON.stringify(value) : String(value);
+}
+
+/**
+ * Writes a minimal .sdlc-v2/config.toml with a `[version]` table (for
+ * top-level keys, scalar or not) and one `[version.<key>]` sub-table per
+ * nested plain-object key — enough to cover every `version` shape these
+ * tests exercise, including the deliberately-invalid "old flat shape"
+ * fixtures (e.g. a bare string `versionFile`, or a boolean `changelog`).
  */
 function writeConfig(dir, versionSection) {
   const sdlcDir = path.join(dir, '.sdlc-v2');
   fs.mkdirSync(sdlcDir, { recursive: true });
-  fs.writeFileSync(
-    path.join(sdlcDir, 'config.json'),
-    JSON.stringify({ version: versionSection }, null, 2),
-    'utf8'
-  );
+  const scalarLines = [];
+  const tableBlocks = [];
+  for (const [key, val] of Object.entries(versionSection)) {
+    if (val !== null && typeof val === 'object' && !Array.isArray(val)) {
+      const subLines = Object.entries(val).map(([k, v]) => `${k} = ${tomlScalar(v)}`);
+      tableBlocks.push(`[version.${key}]\n${subLines.join('\n')}`);
+    } else {
+      scalarLines.push(`${key} = ${tomlScalar(val)}`);
+    }
+  }
+  const toml = ['[version]', ...scalarLines, '', ...tableBlocks].join('\n') + '\n';
+  fs.writeFileSync(path.join(sdlcDir, 'config.toml'), toml, 'utf8');
 }
 
 /**
@@ -267,7 +286,7 @@ describe('readVersionConfig', () => {
     const dir = mkTmpDir('release-config-');
     const sdlcDir = path.join(dir, '.sdlc-v2');
     fs.mkdirSync(sdlcDir, { recursive: true });
-    fs.writeFileSync(path.join(sdlcDir, 'config.json'), '{}', 'utf8');
+    fs.writeFileSync(path.join(sdlcDir, 'config.toml'), '', 'utf8');
 
     const config = readVersionConfig(dir);
     assert.equal(config, null);

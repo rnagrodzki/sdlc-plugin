@@ -149,25 +149,12 @@ func TestPlanPrepare_Guardrails(t *testing.T) {
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
-	sdlcDir := filepath.Join(dir, paths.DataDir)
-	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	cfg := map[string]any{
-		"plan": map[string]any{
-			"guardrails": []any{
-				map[string]any{"id": "no-secrets", "description": "Never commit secrets"},
-				map[string]any{"id": "test-coverage", "description": "Cover new branches"},
-			},
-		},
-	}
-	cfgData, err := json.Marshal(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(sdlcDir, "config.json"), cfgData, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, filepath.Join(dir, paths.DataDir, "config.toml"), ""+
+		"[plan.guardrails.no-secrets]\n"+
+		"description = \"Never commit secrets\"\n"+
+		"\n"+
+		"[plan.guardrails.test-coverage]\n"+
+		"description = \"Cover new branches\"\n")
 
 	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true})
 	if err != nil {
@@ -218,48 +205,23 @@ func TestPlanPrepare_StyleAndTasksDefaults(t *testing.T) {
 }
 
 // TestPlanPrepare_StyleAndTasksPopulated verifies planStyle (from
-// .sdlc/local.json) and plan.tasks (from .sdlc/config.json) values
+// .sdlc-v2/local.toml) and plan.tasks (from .sdlc-v2/config.toml) values
 // round-trip into PlanPrepareOut.Style and PlanPrepareOut.Tasks unchanged.
 func TestPlanPrepare_StyleAndTasksPopulated(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
-	sdlcDir := filepath.Join(dir, paths.DataDir)
-	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, filepath.Join(dir, paths.DataDir, "local.toml"), ""+
+		"[planStyle]\n"+
+		"verbosity = \"detailed\"\n"+
+		"audience = \"business\"\n"+
+		"narrativeRules = [\"Lead with impact\", \"Avoid jargon\"]\n")
 
-	localCfg := map[string]any{
-		"planStyle": map[string]any{
-			"verbosity":      "detailed",
-			"audience":       "business",
-			"narrativeRules": []any{"Lead with impact", "Avoid jargon"},
-		},
-	}
-	localData, err := json.Marshal(localCfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(sdlcDir, "local.json"), localData, 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	projectCfg := map[string]any{
-		"plan": map[string]any{
-			"tasks": map[string]any{
-				"requiredFields": []any{"Owner", "Rollback"},
-				"contractShape":  "minimal",
-			},
-		},
-	}
-	projectData, err := json.Marshal(projectCfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(sdlcDir, "config.json"), projectData, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, filepath.Join(dir, paths.DataDir, "config.toml"), ""+
+		"[plan.tasks]\n"+
+		"requiredFields = [\"Owner\", \"Rollback\"]\n"+
+		"contractShape = \"minimal\"\n")
 
 	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true})
 	if err != nil {
@@ -293,27 +255,9 @@ func TestPlanPrepare_TasksRequiredFieldsDedup(t *testing.T) {
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
-	sdlcDir := filepath.Join(dir, paths.DataDir)
-	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	cfg := map[string]any{
-		"plan": map[string]any{
-			"tasks": map[string]any{
-				"requiredFields": []any{
-					"Complexity", "Risk", "Files", "Verify", "Depends on",
-					"Owner", "Rollback",
-				},
-			},
-		},
-	}
-	cfgData, err := json.Marshal(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(sdlcDir, "config.json"), cfgData, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeFile(t, filepath.Join(dir, paths.DataDir, "config.toml"), ""+
+		"[plan.tasks]\n"+
+		"requiredFields = [\"Complexity\", \"Risk\", \"Files\", \"Verify\", \"Depends on\", \"Owner\", \"Rollback\"]\n")
 
 	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true})
 	if err != nil {
@@ -335,24 +279,8 @@ func TestPlanPrepare_TasksContractShapeEnum(t *testing.T) {
 			initGitFixture(t, dir)
 			gitCommit(t, dir, "initial")
 
-			sdlcDir := filepath.Join(dir, paths.DataDir)
-			if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
-				t.Fatal(err)
-			}
-			cfg := map[string]any{
-				"plan": map[string]any{
-					"tasks": map[string]any{
-						"contractShape": shape,
-					},
-				},
-			}
-			cfgData, err := json.Marshal(cfg)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(filepath.Join(sdlcDir, "config.json"), cfgData, 0o644); err != nil {
-				t.Fatal(err)
-			}
+			writeFile(t, filepath.Join(dir, paths.DataDir, "config.toml"), fmt.Sprintf(
+				"[plan.tasks]\ncontractShape = %q\n", shape))
 
 			out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true})
 			if err != nil {

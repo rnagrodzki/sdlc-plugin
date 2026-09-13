@@ -93,7 +93,7 @@ Shows a menu of all sections with their status. Pick which to configure.
   to add dimensions, change settings, or migrate legacy config.
 - **Section shortcuts save time.** Use `--dimensions`, `--guardrails`, or
   `--only <id>` to jump to what you need.
-- **Config location.** Project config: `.sdlc-v2/config.json` (committed).
-  Local preferences: `.sdlc-v2/local.json` (gitignored).
+- **Config location.** Project config: `.sdlc-v2/config.toml` (committed).
+  Local preferences: `.sdlc-v2/local.toml` (gitignored).
 - **Migration is usually automatic.** If legacy config is detected, skills tell
   you to run `--migrate`. You do not need to guess in advance.

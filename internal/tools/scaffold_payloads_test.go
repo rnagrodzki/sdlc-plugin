@@ -45,9 +45,11 @@ func TestPayloads_WorkflowsMatchCheckedIn(t *testing.T) {
 }
 
 // TestPayloads_CJSReadsV2ConfigOnly verifies that each embedded .cjs payload
-// reads .sdlc-v2/config.json exclusively — no legacy .sdlc/config.json or
-// .claude/sdlc.json fallback. Legacy config layouts are migration-only
-// territory (the "migrate" tool), never a read path for CI scripts.
+// reads .sdlc-v2/config.toml exclusively — no legacy .sdlc/config.json,
+// .claude/sdlc.json, or stale .sdlc-v2/config.json (the pre-TOML-migration
+// current-path, now itself a legacy layout) fallback. Legacy config layouts
+// are migration-only territory (the "migrate" tool), never a read path for
+// CI scripts.
 func TestPayloads_CJSReadsV2ConfigOnly(t *testing.T) {
 	payloads := Payloads()
 
@@ -65,8 +67,11 @@ func TestPayloads_CJSReadsV2ConfigOnly(t *testing.T) {
 		}
 		content := string(data)
 
-		if !strings.Contains(content, ".sdlc-v2/config.json") {
-			t.Errorf("%s: does not contain .sdlc-v2/config.json", name)
+		if !strings.Contains(content, ".sdlc-v2/config.toml") {
+			t.Errorf("%s: does not contain .sdlc-v2/config.toml", name)
+		}
+		if strings.Contains(content, ".sdlc-v2/config.json") {
+			t.Errorf("%s: contains stale pre-migration reference .sdlc-v2/config.json", name)
 		}
 		if strings.Contains(content, ".sdlc/config.json") {
 			t.Errorf("%s: contains stale legacy fallback reference .sdlc/config.json", name)
@@ -82,7 +87,7 @@ func TestPayloads_CJSReadsV2ConfigOnly(t *testing.T) {
 func TestPayloads_SchemaChecksums(t *testing.T) {
 	// Expected SHA-256 hex digests computed from the source schemas.
 	expected := map[string]string{
-		"sdlc-local.schema.json":       "46c18742de61b1a0c8c68d4082ab123e671484f9773731616daade5d130ec604",
+		"sdlc-local.schema.json":       "45757bd10fecddc36a6868cb3459bfc825f4118622335c6191f53997f8967e17",
 		"execute-state.schema.json":    "cd105fbea848783863828ac62fc2ad1de3b721bab5e764d1f86eea578f580811",
 		"ship-state.schema.json":       "0ce15500c0c6749492eec50d556e8d831871312eabbe3ce6affd4948d14a526f",
 		"review-dimension.schema.json": "107a3d573e0e1b45edf7e31b547c5f0b8f5c7ccca193923255ace6f93f8a559d",

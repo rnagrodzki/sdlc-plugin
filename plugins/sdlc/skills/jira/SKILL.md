@@ -65,7 +65,7 @@ removed entirely — the API call is never made with raw placeholder text.
 
 1. `--project <KEY>` argument. When `jira.projects` is set (≥2 entries), a project key outside the list is rejected (the `jira` tool's `check` action returns an error).
 2. Parse current git branch for `[A-Z]{2,10}-\d+` pattern (e.g., `feat/PROJ-123-fix` → `PROJ`). When `jira.projects` is set, accept only keys in the list; otherwise fall through.
-3. Read `.sdlc-v2/config.json` → `jira.defaultProject`.
+3. Read `.sdlc-v2/config.toml` → `jira.defaultProject`.
 4. When `jira.projects` has ≥2 entries, use AskUserQuestion with a closed list matching `jira.projects` ("Which Jira project key should I use?").
 5. Use AskUserQuestion to ask: "Which Jira project key should I use? (e.g., PROJ, TEAM)".
 

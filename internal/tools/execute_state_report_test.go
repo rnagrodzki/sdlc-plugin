@@ -17,12 +17,10 @@ import (
 
 func TestExecState_Report_Disabled(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
-	writeFile(t, filepath.Join(root, paths.DataDir, "local.json"), `{
-		"automation": {
-			"report": {"enabled": false}
-		}
-	}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), `[automation.report]
+enabled = false
+`)
 	createExecState(t, root, "feat/report", map[string]any{
 		"branch": "feat/report",
 	})
@@ -49,12 +47,10 @@ func TestExecState_Report_DisabledSkipsBeforeStateLookup(t *testing.T) {
 	// return {skipped:true} rather than a "no state file found" error, since
 	// disabled reporting is checked before the state file is loaded.
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
-	writeFile(t, filepath.Join(root, paths.DataDir, "local.json"), `{
-		"automation": {
-			"report": {"enabled": false}
-		}
-	}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), `[automation.report]
+enabled = false
+`)
 	clock := fixedClock(testNow)
 
 	result, err := executeState(root, root, ExecuteStateIn{
@@ -72,7 +68,7 @@ func TestExecState_Report_DisabledSkipsBeforeStateLookup(t *testing.T) {
 
 func TestExecState_Report_DefaultsToMDWhenNoConfig(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
 	createExecState(t, root, "feat/report", map[string]any{
 		"branch":     "feat/report",
 		"planPath":   "/plans/x.md",
@@ -115,12 +111,10 @@ func TestExecState_Report_DefaultsToMDWhenNoConfig(t *testing.T) {
 
 func TestExecState_Report_JSONFormatFromConfig(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
-	writeFile(t, filepath.Join(root, paths.DataDir, "local.json"), `{
-		"automation": {
-			"report": {"format": "json"}
-		}
-	}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), `[automation.report]
+format = "json"
+`)
 	createExecState(t, root, "feat/report", map[string]any{
 		"branch": "feat/report",
 	})
@@ -144,7 +138,7 @@ func TestExecState_Report_JSONFormatFromConfig(t *testing.T) {
 
 func TestExecState_Report_WavesTasksAndAggregates(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
 	createExecState(t, root, "feat/report", map[string]any{
 		"branch":     "feat/report",
 		"startedAt":  "2025-06-15T09:00:00Z",
@@ -235,7 +229,7 @@ func TestExecState_Report_WavesTasksAndAggregates(t *testing.T) {
 
 func TestExecState_Report_IssueBuckets(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
 	createExecState(t, root, "feat/report", map[string]any{
 		"branch": "feat/report",
 		"issues": []any{
@@ -274,7 +268,7 @@ func TestExecState_Report_IssueBuckets(t *testing.T) {
 
 func TestExecState_Report_DecisionsAndFollowUps(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
 	createExecState(t, root, "feat/report", map[string]any{
 		"branch": "feat/report",
 		"context": map[string]any{
@@ -308,7 +302,7 @@ func TestExecState_Report_DecisionsAndFollowUps(t *testing.T) {
 
 func TestExecState_Report_StepTimings(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
 	createExecState(t, root, "feat/report", map[string]any{
 		"branch": "feat/report",
 	})
@@ -375,7 +369,7 @@ func TestExecState_Report_StepTimings(t *testing.T) {
 
 func TestExecState_Report_CLIEvidence_FiltersByBranchAndShipStartedAt(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
 	createExecState(t, root, "feat/report", map[string]any{
 		"branch":    "feat/report",
 		"startedAt": "2025-06-15T09:00:00Z",
@@ -433,7 +427,7 @@ func TestExecState_Report_CLIEvidence_FiltersByBranchAndShipStartedAt(t *testing
 
 func TestExecState_Report_CLIEvidenceAndStepTimings_EmptyWhenNoShipState(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
 	createExecState(t, root, "feat/report", map[string]any{
 		"branch": "feat/report",
 	})
@@ -458,7 +452,7 @@ func TestExecState_Report_CLIEvidenceAndStepTimings_EmptyWhenNoShipState(t *test
 
 func TestExecState_Report_GuardrailHits_ExtractedFromGuardrailDecisions(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
 	createExecState(t, root, "feat/report", map[string]any{
 		"branch": "feat/report",
 		"guardrailDecisions": []any{
@@ -491,7 +485,7 @@ func TestExecState_Report_GuardrailHits_ExtractedFromGuardrailDecisions(t *testi
 
 func TestExecState_Report_GuardrailHits_EmptyWhenNoDecisions(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
 	createExecState(t, root, "feat/report", map[string]any{
 		"branch": "feat/report",
 	})
@@ -513,7 +507,7 @@ func TestExecState_Report_GuardrailHits_EmptyWhenNoDecisions(t *testing.T) {
 
 func TestExecState_Report_LinkedLearnings_CountsTaggedLines(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
 	// startedAt "2025-06-15T09:00:00Z" derives runId "20250615T090000"
 	// (execDeriveRunID strips non-digit/non-T characters).
 	createExecState(t, root, "feat/report", map[string]any{
@@ -546,7 +540,7 @@ func TestExecState_Report_LinkedLearnings_CountsTaggedLines(t *testing.T) {
 
 func TestExecState_Report_LinkedLearnings_ZeroWhenLogMissing(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
 	createExecState(t, root, "feat/report", map[string]any{
 		"branch":    "feat/report",
 		"startedAt": "2025-06-15T09:00:00Z",
@@ -569,7 +563,7 @@ func TestExecState_Report_LinkedLearnings_ZeroWhenLogMissing(t *testing.T) {
 
 func TestExecState_Report_UnknownBranch(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
 	clock := fixedClock(testNow)
 
 	_, err := executeState(root, root, ExecuteStateIn{
@@ -586,7 +580,7 @@ func TestExecState_Report_UnknownBranch(t *testing.T) {
 
 func TestExecState_Report_ReadOnly(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
 	createExecState(t, root, "feat/report", map[string]any{
 		"branch": "feat/report",
 		"waves":  []any{},
@@ -646,7 +640,7 @@ func dirJoin(dir, name string) string {
 
 func TestExecState_Report_MarshalIncludesEmptyFields(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
 	createExecState(t, root, "feat/report", map[string]any{
 		"branch": "feat/report",
 	})
@@ -680,7 +674,7 @@ func TestExecState_Report_MarshalIncludesEmptyFields(t *testing.T) {
 
 func TestExecState_Report_LinkedLearnings_NoPrefixCollision(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
 	createExecState(t, root, "feat/report", map[string]any{
 		"branch":    "feat/report",
 		"startedAt": "2025-06-15T09:00:00Z",
@@ -714,7 +708,7 @@ func TestExecState_Report_LinkedLearnings_NoPrefixCollision(t *testing.T) {
 
 func TestExecState_Report_StepTimings_MalformedEntrySkipped(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
 	createExecState(t, root, "feat/report", map[string]any{
 		"branch": "feat/report",
 	})
@@ -753,7 +747,7 @@ func TestExecState_Report_StepTimings_MalformedEntrySkipped(t *testing.T) {
 
 func TestExecState_Report_GuardrailHits_MalformedEntrySkipped(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
 	createExecState(t, root, "feat/report", map[string]any{
 		"branch": "feat/report",
 		"guardrailDecisions": []any{
@@ -784,7 +778,7 @@ func TestExecState_Report_GuardrailHits_MalformedEntrySkipped(t *testing.T) {
 
 func TestExecState_Report_CLIEvidenceReadError_Warning(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
 	createExecState(t, root, "feat/report", map[string]any{
 		"branch":    "feat/report",
 		"startedAt": "2025-06-15T09:00:00Z",
@@ -827,7 +821,7 @@ func TestExecState_Report_CLIEvidenceReadError_Warning(t *testing.T) {
 
 func TestExecState_Report_LearningsCountError_Warning(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.json"), `{}`)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
 	createExecState(t, root, "feat/report", map[string]any{
 		"branch":    "feat/report",
 		"startedAt": "2025-06-15T09:00:00Z",

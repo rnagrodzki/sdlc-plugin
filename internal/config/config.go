@@ -1,5 +1,5 @@
 // Package config reads and writes the sdlc plugin's two configuration files
-// — .sdlc-v2/config.json (project-level, committed) and .sdlc-v2/local.json
+// — .sdlc-v2/config.toml (project-level, committed) and .sdlc-v2/local.toml
 // (user-local, gitignored) — anchored at the main worktree root.
 //
 // This is a clean v5-only implementation: pre-v5 config layouts (individual
@@ -10,8 +10,8 @@
 //
 // Section routing follows the JS precedent (scripts/lib/config.js):
 // ProjectSections (version, jira, commit, pr, plan, execute) live in
-// config.json; all other sections (ship, review, receivedReview, workspace,
-// automation, …) live in local.json.
+// config.toml; all other sections (ship, review, receivedReview, workspace,
+// automation, …) live in local.toml.
 package config
 
 import (
@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
@@ -28,8 +29,8 @@ import (
 var ErrNotFound = errors.New("config: not found")
 
 // ProjectSections is the set of section names that live in the project
-// config (.sdlc-v2/config.json). All other sections live in the local config
-// (.sdlc-v2/local.json).
+// config (.sdlc-v2/config.toml). All other sections live in the local config
+// (.sdlc-v2/local.toml).
 var ProjectSections = map[string]bool{
 	"version": true,
 	"jira":    true,
@@ -76,6 +77,11 @@ var legacyMarkers = []string{
 	filepath.Join(paths.LegacyDataDir, "ship-config.json"),
 	filepath.Join(paths.LegacyDataDir, "review.json"),
 	filepath.Join(".claude", "review.json"),
+	// .sdlc-v2/config.json itself: a v0 (JSON-era) project's config file,
+	// left behind in the CURRENT data dir by the pre-TOML layout. Without
+	// this marker, a project stuck on config.json (config.toml absent) is
+	// indistinguishable from a fresh project with no config at all.
+	filepath.Join(paths.DataDir, "config.json"),
 }
 
 // detectLegacy checks for pre-v5 config files. Returns an error naming
@@ -85,7 +91,7 @@ func detectLegacy(mainRoot string) error {
 		p := filepath.Join(mainRoot, marker)
 		if _, err := os.Stat(p); err == nil {
 			return fmt.Errorf(
-				"config: legacy config layout detected (%s exists); run migrate to upgrade to v5 format",
+				"config: legacy config layout detected (%s exists); run /setup to initialize TOML config",
 				marker,
 			)
 		}
@@ -118,13 +124,13 @@ func detectLegacy(mainRoot string) error {
 // PushConfig. All three are optional; nil means "use documented defaults"
 // and is filled in by applyAutomationDefaults.
 type AutomationSection struct {
-	Mode                       string            `json:"mode"`
-	ReviewFixIterations        int               `json:"reviewFixIterations"`
-	ReviewFixSeverityThreshold string            `json:"reviewFixSeverityThreshold"`
-	Steps                      map[string]string `json:"steps,omitempty"`
-	Drift                      *DriftConfig      `json:"drift,omitempty"`
-	Report                     *ReportConfig     `json:"report,omitempty"`
-	Push                       *PushConfig       `json:"push,omitempty"`
+	Mode                       string            `json:"mode" toml:"mode"`
+	ReviewFixIterations        int               `json:"reviewFixIterations" toml:"reviewFixIterations"`
+	ReviewFixSeverityThreshold string            `json:"reviewFixSeverityThreshold" toml:"reviewFixSeverityThreshold"`
+	Steps                      map[string]string `json:"steps,omitempty" toml:"steps,omitempty"`
+	Drift                      *DriftConfig      `json:"drift,omitempty" toml:"drift,omitempty"`
+	Report                     *ReportConfig     `json:"report,omitempty" toml:"report,omitempty"`
+	Push                       *PushConfig       `json:"push,omitempty" toml:"push,omitempty"`
 }
 
 // DriftConfig controls the rate-based thresholds used to decide when a
@@ -146,17 +152,17 @@ type AutomationSection struct {
 // the compiled default (0.15 / 0.40 respectively). Same caveat as
 // PushConfig.FeatureBranchAutoApprove.
 type DriftConfig struct {
-	MaxErrorRate   float64 `json:"maxErrorRate"`
-	MaxWarningRate float64 `json:"maxWarningRate"`
-	MinErrorFloor  int     `json:"minErrorFloor"`
+	MaxErrorRate   float64 `json:"maxErrorRate" toml:"maxErrorRate"`
+	MaxWarningRate float64 `json:"maxWarningRate" toml:"maxWarningRate"`
+	MinErrorFloor  int     `json:"minErrorFloor" toml:"minErrorFloor"`
 }
 
 // ReportConfig controls whether and how an execution report is emitted at
 // the end of a run (KD-11). Format is "md" or "json"; any other value is
 // clamped to "md" by applyAutomationDefaults.
 type ReportConfig struct {
-	Enabled bool   `json:"enabled"`
-	Format  string `json:"format"`
+	Enabled bool   `json:"enabled" toml:"enabled"`
+	Format  string `json:"format" toml:"format"`
 }
 
 // PushConfig controls whether a feature-branch git push during ship is
@@ -169,7 +175,7 @@ type ReportConfig struct {
 // from an absent key. applyAutomationDefaults forces it true whenever Mode
 // is "unattended", even if the config explicitly set it to false.
 type PushConfig struct {
-	FeatureBranchAutoApprove bool `json:"featureBranchAutoApprove"`
+	FeatureBranchAutoApprove bool `json:"featureBranchAutoApprove" toml:"featureBranchAutoApprove"`
 }
 
 // StepMode returns the effective automation mode for the given step:
@@ -219,19 +225,19 @@ func (a *AutomationSection) StepMode(step string) string {
 // there is no backward-compat reader. Run /setup --only version to
 // migrate.
 type VersionSection struct {
-	PreRelease       string                 `json:"preRelease"`
-	PreReleasePolicy string                 `json:"preReleasePolicy"`
-	Method           string                 `json:"method"`
-	Tag              VersionTagConfig       `json:"tag"`
-	VersionFile      VersionFileConfig      `json:"versionFile"`
-	Changelog        VersionChangelogConfig `json:"changelog"`
+	PreRelease       string                 `json:"preRelease" toml:"preRelease"`
+	PreReleasePolicy string                 `json:"preReleasePolicy" toml:"preReleasePolicy"`
+	Method           string                 `json:"method" toml:"method"`
+	Tag              VersionTagConfig       `json:"tag" toml:"tag"`
+	VersionFile      VersionFileConfig      `json:"versionFile" toml:"versionFile"`
+	Changelog        VersionChangelogConfig `json:"changelog" toml:"changelog"`
 }
 
 // VersionTagConfig is the tag release path: creating a git tag (and GitHub
 // Release) on version bump. Prefix is prepended to the tag name (e.g. "v").
 type VersionTagConfig struct {
-	Enabled bool   `json:"enabled"`
-	Prefix  string `json:"prefix"`
+	Enabled bool   `json:"enabled" toml:"enabled"`
+	Prefix  string `json:"prefix" toml:"prefix"`
 }
 
 // VersionFileConfig is the version-file release path: writing the bumped
@@ -239,17 +245,17 @@ type VersionTagConfig struct {
 // FileType names its format (package.json, cargo.toml, pyproject.toml,
 // pubspec.yaml, plugin.json, version-file).
 type VersionFileConfig struct {
-	Enabled  bool   `json:"enabled"`
-	Path     string `json:"path"`
-	FileType string `json:"fileType"`
+	Enabled  bool   `json:"enabled" toml:"enabled"`
+	Path     string `json:"path" toml:"path"`
+	FileType string `json:"fileType" toml:"fileType"`
 }
 
 // VersionChangelogConfig is the changelog release path: prepending a
 // release entry to a changelog file. When Enabled is true and File is
 // unset, File defaults to "CHANGELOG.md".
 type VersionChangelogConfig struct {
-	Enabled bool   `json:"enabled"`
-	File    string `json:"file"`
+	Enabled bool   `json:"enabled" toml:"enabled"`
+	File    string `json:"file" toml:"file"`
 }
 
 // errOldVersionShape is returned by parseVersionSection when the raw
@@ -368,10 +374,10 @@ func applyVersionDefaults(v *VersionSection) {
 	}
 }
 
-// Config is the merged view of .sdlc-v2/config.json (project-level sections)
-// and .sdlc-v2/local.json (user-local sections).
+// Config is the merged view of .sdlc-v2/config.toml (project-level sections)
+// and .sdlc-v2/local.toml (user-local sections).
 type Config struct {
-	// Project-level sections (from .sdlc-v2/config.json).
+	// Project-level sections (from .sdlc-v2/config.toml).
 	Version *VersionSection
 	Jira    map[string]any
 	Commit  map[string]any
@@ -379,7 +385,7 @@ type Config struct {
 	Plan    map[string]any
 	Execute map[string]any
 
-	// Local sections (from .sdlc-v2/local.json).
+	// Local sections (from .sdlc-v2/local.toml).
 	Ship           map[string]any
 	Review         map[string]any
 	ReceivedReview map[string]any
@@ -505,15 +511,15 @@ func applyAutomationDefaults(a *AutomationSection) {
 	}
 }
 
-// readProjectRaw reads .sdlc-v2/config.json and returns its contents as a
-// raw map. When config.json is missing, checks for legacy layout markers
+// readProjectRaw reads .sdlc-v2/config.toml and returns its contents as a
+// raw map. When config.toml is missing, checks for legacy layout markers
 // and returns either a legacy-refusal error (naming "migrate") or
-// ErrNotFound. When config.json exists with a schemaVersion field (the v4
+// ErrNotFound. When config.toml exists with a schemaVersion field (the v4
 // marker), returns a legacy-refusal error.
 func readProjectRaw(mainRoot string) (map[string]any, error) {
-	projectPath := filepath.Join(mainRoot, paths.DataDir, "config.json")
+	projectPath := filepath.Join(mainRoot, paths.DataDir, "config.toml")
 	var raw map[string]any
-	err := fsx.ReadJSON(projectPath, &raw)
+	err := fsx.ReadTOML(projectPath, &raw)
 	if err != nil {
 		if errors.Is(err, fsx.ErrNotFound) {
 			if legacyErr := detectLegacy(mainRoot); legacyErr != nil {
@@ -524,25 +530,27 @@ func readProjectRaw(mainRoot string) (map[string]any, error) {
 		return nil, fmt.Errorf("config: %w", err)
 	}
 
-	// config.json exists — check for v4 marker.
+	// config.toml exists — check for v4 marker.
 	if _, hasSchemaVersion := raw["schemaVersion"]; hasSchemaVersion {
 		return nil, fmt.Errorf(
-			"config: %s has schemaVersion field (pre-v5 format); run migrate to upgrade",
+			"config: %s has schemaVersion field (pre-v5 format); run /setup to initialize TOML config",
 			projectPath,
 		)
 	}
+
+	normalizeGuardrailTables(raw)
 
 	traceRead(projectPath, "read")
 	return raw, nil
 }
 
-// readLocalRaw reads .sdlc-v2/local.json and returns its contents as a raw
+// readLocalRaw reads .sdlc-v2/local.toml and returns its contents as a raw
 // map. Returns (nil, nil) when the file does not exist — missing local
 // config is not an error.
 func readLocalRaw(mainRoot string) (map[string]any, error) {
-	localPath := filepath.Join(mainRoot, paths.DataDir, "local.json")
+	localPath := filepath.Join(mainRoot, paths.DataDir, "local.toml")
 	var raw map[string]any
-	err := fsx.ReadJSON(localPath, &raw)
+	err := fsx.ReadTOML(localPath, &raw)
 	if err != nil {
 		if errors.Is(err, fsx.ErrNotFound) {
 			traceRead(localPath, "read-miss")
@@ -554,14 +562,54 @@ func readLocalRaw(mainRoot string) (map[string]any, error) {
 	return raw, nil
 }
 
-// Read loads the full merged configuration from .sdlc-v2/config.json (project
-// sections) and .sdlc-v2/local.json (local sections) anchored at mainRoot.
+// normalizeGuardrailTables converts TOML named tables under
+// plan.guardrails and execute.guardrails from map[string]any (the TOML
+// named-table form [plan.guardrails.<id>]) into []any with each element's
+// "id" field injected from the table key. This boundary conversion keeps
+// downstream consumers that expect an array of guardrail objects working
+// unchanged.
+func normalizeGuardrailTables(raw map[string]any) {
+	for _, section := range []string{"plan", "execute"} {
+		sec, ok := raw[section].(map[string]any)
+		if !ok {
+			continue
+		}
+		if gm, ok := sec["guardrails"].(map[string]any); ok {
+			sec["guardrails"] = guardrailsTableToSlice(gm)
+		}
+	}
+}
+
+// guardrailsTableToSlice converts a map of named guardrail tables into a
+// deterministically ordered slice, injecting each map key as the "id"
+// field of the corresponding entry.
+func guardrailsTableToSlice(m map[string]any) []any {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	out := make([]any, 0, len(keys))
+	for _, k := range keys {
+		entry, ok := m[k].(map[string]any)
+		if !ok {
+			continue
+		}
+		entry["id"] = k
+		out = append(out, entry)
+	}
+	return out
+}
+
+// Read loads the full merged configuration from .sdlc-v2/config.toml (project
+// sections) and .sdlc-v2/local.toml (local sections) anchored at mainRoot.
 //
 // The mainRoot parameter should be the main worktree root, typically
 // obtained via worktree.MainRoot(). This ensures that config reads anchor
 // at the main worktree even when called from a linked worktree.
 //
-// Returns ErrNotFound when .sdlc-v2/config.json does not exist and no legacy
+// Returns ErrNotFound when .sdlc-v2/config.toml does not exist and no legacy
 // layout is detected. Returns an error naming the "migrate" tool when a
 // pre-v5 config layout is detected. Validates the project config's
 // top-level keys against the v5 schema.
@@ -614,7 +662,7 @@ func Read(mainRoot string) (*Config, error) {
 // appropriate file based on ProjectSections membership.
 //
 // For project sections (version, jira, commit, pr, plan, execute), reads
-// .sdlc-v2/config.json. For all other sections, reads .sdlc-v2/local.json.
+// .sdlc-v2/config.toml. For all other sections, reads .sdlc-v2/local.toml.
 //
 // Returns ErrNotFound when the file or section does not exist. Returns a
 // legacy refusal error (naming "migrate") when the project config layout
@@ -633,9 +681,9 @@ func ReadSection(mainRoot, name string) (map[string]any, error) {
 	}
 
 	// Local section.
-	localPath := filepath.Join(mainRoot, paths.DataDir, "local.json")
+	localPath := filepath.Join(mainRoot, paths.DataDir, "local.toml")
 	var localRaw map[string]any
-	if err := fsx.ReadJSON(localPath, &localRaw); err != nil {
+	if err := fsx.ReadTOML(localPath, &localRaw); err != nil {
 		if errors.Is(err, fsx.ErrNotFound) {
 			return nil, fmt.Errorf("config: %s: %w", localPath, ErrNotFound)
 		}
@@ -655,7 +703,7 @@ func ReadSection(mainRoot, name string) (map[string]any, error) {
 // clobbering other sections. Creates the .sdlc-v2 directory if needed.
 //
 // For project sections, validates the merged result against the v5 schema
-// before writing. Writes use fsx.AtomicWriteJSON for crash safety.
+// before writing. Writes use fsx.AtomicWriteTOML for crash safety.
 func WriteSection(mainRoot, name string, v map[string]any) error {
 	sdlcDir := filepath.Join(mainRoot, paths.DataDir)
 	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
@@ -663,9 +711,9 @@ func WriteSection(mainRoot, name string, v map[string]any) error {
 	}
 
 	if ProjectSections[name] {
-		configPath := filepath.Join(sdlcDir, "config.json")
+		configPath := filepath.Join(sdlcDir, "config.toml")
 		var existing map[string]any
-		if err := fsx.ReadJSON(configPath, &existing); err != nil {
+		if err := fsx.ReadTOML(configPath, &existing); err != nil {
 			if errors.Is(err, fsx.ErrNotFound) {
 				existing = make(map[string]any)
 			} else {
@@ -677,13 +725,13 @@ func WriteSection(mainRoot, name string, v map[string]any) error {
 			return err
 		}
 		traceRead(configPath, "write")
-		return fsx.AtomicWriteJSON(configPath, existing)
+		return fsx.AtomicWriteTOML(configPath, existing)
 	}
 
 	// Local section.
-	localPath := filepath.Join(sdlcDir, "local.json")
+	localPath := filepath.Join(sdlcDir, "local.toml")
 	var existing map[string]any
-	if err := fsx.ReadJSON(localPath, &existing); err != nil {
+	if err := fsx.ReadTOML(localPath, &existing); err != nil {
 		if errors.Is(err, fsx.ErrNotFound) {
 			existing = make(map[string]any)
 		} else {
@@ -692,5 +740,5 @@ func WriteSection(mainRoot, name string, v map[string]any) error {
 	}
 	existing[name] = v
 	traceRead(localPath, "write")
-	return fsx.AtomicWriteJSON(localPath, existing)
+	return fsx.AtomicWriteTOML(localPath, existing)
 }

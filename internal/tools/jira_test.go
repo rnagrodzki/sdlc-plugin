@@ -41,6 +41,12 @@ func writeJSONFile(t *testing.T, path string, v any) {
 // ---------------------------------------------------------------------------
 
 func TestJiraConfigVersionGate(t *testing.T) {
+	// jiraCore's own gate (configmigrate.Verify) doesn't scan the 6 legacy
+	// marker files outside .sdlc-v2 (.claude/sdlc.json included) — that scan
+	// is internal/config's detectLegacy, a separate mechanism. But
+	// jiraLoadJiraConfig calls config.ReadSection, which DOES route through
+	// detectLegacy, so the legacy marker is still caught one layer down and
+	// surfaced as a soft error from jiraCheck.
 	root := jiraTestRoot(t)
 	if err := os.MkdirAll(filepath.Join(root, ".claude"), 0o755); err != nil {
 		t.Fatal(err)
@@ -202,9 +208,7 @@ func TestJiraCheckStale(t *testing.T) {
 
 func TestJiraCheckProjectMembershipViolation(t *testing.T) {
 	root := jiraTestRoot(t)
-	writeJSONFile(t, filepath.Join(root, paths.DataDir, "config.json"), map[string]any{
-		"jira": map[string]any{"projects": []string{"FOO", "BAR"}},
-	})
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "[jira]\nprojects = [\"FOO\", \"BAR\"]\n")
 
 	_, err := jiraCore(root, JiraIn{Action: "check", Key: "BAZ", CacheDir: t.TempDir()}, true)
 	if err == nil {
@@ -376,7 +380,11 @@ func TestJiraTemplatesResolution(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := jiraCore(root, JiraIn{Action: "templates", Key: "FOO", CacheDir: cacheDir, TemplatesDir: templatesDir}, true)
+	// SkipConfigCheck: true — the MkdirAll above creates .sdlc-v2 as a side
+	// effect with no config.toml ever written, so without this the KD5 gate
+	// (configmigrate.Verify) sees a bare .sdlc-v2 dir and reports it stale,
+	// returning the soft errors-only payload with no "resolved" key.
+	out, err := jiraCore(root, JiraIn{Action: "templates", Key: "FOO", CacheDir: cacheDir, TemplatesDir: templatesDir, SkipConfigCheck: true}, true)
 	if err != nil {
 		t.Fatalf("templates failed: %v", err)
 	}
@@ -429,8 +437,11 @@ func TestJiraInitTemplates(t *testing.T) {
 		t.Fatalf("expected copied template at %s", dst)
 	}
 
-	// Second run should skip the now-existing Task.md.
-	out2, err := jiraCore(root, JiraIn{Action: "init-templates", Key: "FOO", CacheDir: cacheDir, TemplatesDir: templatesDir}, true)
+	// Second run should skip the now-existing Task.md. SkipConfigCheck: true
+	// — the first call's copy-template write created .sdlc-v2/jira-templates
+	// as a side effect with no config.toml, so without this the KD5 gate
+	// would now see a bare .sdlc-v2 dir and report it stale.
+	out2, err := jiraCore(root, JiraIn{Action: "init-templates", Key: "FOO", CacheDir: cacheDir, TemplatesDir: templatesDir, SkipConfigCheck: true}, true)
 	if err != nil {
 		t.Fatalf("second init-templates failed: %v", err)
 	}
@@ -465,10 +476,13 @@ func TestJiraCopyTemplate(t *testing.T) {
 		t.Fatalf("expected copied file at %s", dst)
 	}
 
-	// Second copy should report exists, not overwrite.
+	// Second copy should report exists, not overwrite. SkipConfigCheck: true
+	// — the first call created .sdlc-v2/jira-templates as a side effect with
+	// no config.toml, so without this the KD5 gate would now see a bare
+	// .sdlc-v2 dir and report it stale.
 	out2, err := jiraCore(root, JiraIn{
 		Action: "copy-template", Key: "FOO", TemplatesDir: templatesDir,
-		TemplateType: "Sub-bug", TemplateFrom: "Task",
+		TemplateType: "Sub-bug", TemplateFrom: "Task", SkipConfigCheck: true,
 	}, true)
 	if err != nil {
 		t.Fatalf("second copy-template failed: %v", err)

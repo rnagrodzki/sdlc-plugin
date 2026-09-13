@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
@@ -34,14 +35,27 @@ func writeJSON(t *testing.T, path string, v any) {
 	}
 }
 
+// writeTOML writes v as TOML to path, creating parent directories.
+// Uses fsx.AtomicWriteTOML which requires the parent directory to exist.
+func writeTOML(t *testing.T, path string, v any) {
+	t.Helper()
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll %s: %v", dir, err)
+	}
+	if err := fsx.AtomicWriteTOML(path, v); err != nil {
+		t.Fatalf("AtomicWriteTOML %s: %v", path, err)
+	}
+}
+
 func setupProjectConfig(t *testing.T, root string, cfg map[string]any) {
 	t.Helper()
-	writeJSON(t, filepath.Join(root, paths.DataDir, "config.json"), cfg)
+	writeTOML(t, filepath.Join(root, paths.DataDir, "config.toml"), cfg)
 }
 
 func setupLocalConfig(t *testing.T, root string, cfg map[string]any) {
 	t.Helper()
-	writeJSON(t, filepath.Join(root, paths.DataDir, "local.json"), cfg)
+	writeTOML(t, filepath.Join(root, paths.DataDir, "local.toml"), cfg)
 }
 
 func runGit(t *testing.T, dir string, args ...string) string {
@@ -165,6 +179,7 @@ func TestLegacyRefusal_MarkerFiles(t *testing.T) {
 		filepath.Join(paths.LegacyDataDir, "ship-config.json"),
 		filepath.Join(paths.LegacyDataDir, "review.json"),
 		filepath.Join(".claude", "review.json"),
+		filepath.Join(paths.DataDir, "config.json"),
 	}
 
 	for _, marker := range markers {
@@ -179,8 +194,8 @@ func TestLegacyRefusal_MarkerFiles(t *testing.T) {
 			if err == nil {
 				t.Fatalf("Read: expected error for legacy layout with %s, got nil", marker)
 			}
-			if !strings.Contains(err.Error(), "migrate") {
-				t.Errorf("error should name migrate tool, got: %v", err)
+			if !strings.Contains(err.Error(), "/setup") {
+				t.Errorf("error should name /setup, got: %v", err)
 			}
 		})
 	}
@@ -200,8 +215,8 @@ func TestLegacyRefusal_SchemaVersionField(t *testing.T) {
 	if err == nil {
 		t.Fatal("Read: expected error for v4 config with schemaVersion, got nil")
 	}
-	if !strings.Contains(err.Error(), "migrate") {
-		t.Errorf("error should name migrate tool, got: %v", err)
+	if !strings.Contains(err.Error(), "/setup") {
+		t.Errorf("error should name /setup, got: %v", err)
 	}
 }
 
@@ -216,8 +231,8 @@ func TestLegacyRefusal_ReadSectionAlsoRefuses(t *testing.T) {
 	if err == nil {
 		t.Fatal("ReadSection: expected error for legacy layout, got nil")
 	}
-	if !strings.Contains(err.Error(), "migrate") {
-		t.Errorf("error should name migrate tool, got: %v", err)
+	if !strings.Contains(err.Error(), "/setup") {
+		t.Errorf("error should name /setup, got: %v", err)
 	}
 }
 
@@ -995,9 +1010,14 @@ func TestWriteSection_RejectsUnknownProjectKeys(t *testing.T) {
 // Schema sync
 // ---------------------------------------------------------------------------
 
-// TestSchemaSync verifies that allowedProjectKeys matches the top-level
+// TestSchemaSync verifies that AllowedProjectKeys matches the top-level
 // properties declared in plugins/sdlc/schemas/sdlc-config.schema.json. This
 // is the mechanical sync check the task fact sheet requires.
+//
+// jsonOnlySchemaKeys lists keys present in the JSON schema but not in
+// AllowedProjectKeys because they have no TOML equivalent (e.g. $schema).
+// Task 9 will remove $schema from the schema file; until then, this
+// exclusion keeps the sync check passing.
 func TestSchemaSync(t *testing.T) {
 	schemaPath := filepath.Join("..", "..", "plugins", "sdlc", "schemas", "sdlc-config.schema.json")
 	data, err := os.ReadFile(schemaPath)
@@ -1012,20 +1032,141 @@ func TestSchemaSync(t *testing.T) {
 		t.Fatalf("could not parse schema: %v", err)
 	}
 
+	// Keys in the JSON schema that have no TOML config equivalent.
+	jsonOnlySchemaKeys := map[string]bool{
+		"$schema": true,
+	}
+
 	for key := range schema.Properties {
-		if !allowedProjectKeys[key] && !allowedLocalOnlyKeys[key] {
-			t.Errorf("schema property %q missing from allowedProjectKeys or allowedLocalOnlyKeys", key)
+		if jsonOnlySchemaKeys[key] {
+			continue
+		}
+		if !AllowedProjectKeys[key] && !allowedLocalOnlyKeys[key] {
+			t.Errorf("schema property %q missing from AllowedProjectKeys or allowedLocalOnlyKeys", key)
 		}
 	}
-	for key := range allowedProjectKeys {
+	for key := range AllowedProjectKeys {
 		if _, ok := schema.Properties[key]; !ok {
-			t.Errorf("allowedProjectKey %q missing from schema properties", key)
+			t.Errorf("AllowedProjectKey %q missing from schema properties", key)
 		}
 	}
 	for key := range allowedLocalOnlyKeys {
 		if _, ok := schema.Properties[key]; !ok {
 			t.Errorf("allowedLocalOnlyKey %q missing from schema properties", key)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Named-table guardrail conversion
+// ---------------------------------------------------------------------------
+
+// TestNamedTableGuardrails verifies that TOML named tables under
+// plan.guardrails and execute.guardrails are converted to []any slices
+// with the table key injected as the "id" field.
+func TestNamedTableGuardrails(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+
+	// Write raw TOML with named guardrail tables.
+	tomlContent := `
+[plan]
+style = "verbose"
+
+[plan.guardrails.no-console]
+description = "No console.log"
+severity = "error"
+
+[plan.guardrails.max-lines]
+description = "Max 500 lines"
+severity = "warning"
+
+[execute]
+parallel = true
+
+[execute.guardrails.lint-check]
+description = "Run linter"
+severity = "error"
+`
+	sdlcDir := filepath.Join(root, paths.DataDir)
+	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sdlcDir, "config.toml"), []byte(tomlContent), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Read plan section and verify guardrails converted.
+	planData, err := ReadSection(root, "plan")
+	if err != nil {
+		t.Fatalf("ReadSection(plan): %v", err)
+	}
+	if planData["style"] != "verbose" {
+		t.Errorf("plan.style = %v, want %q", planData["style"], "verbose")
+	}
+	guardrails, ok := planData["guardrails"].([]any)
+	if !ok {
+		t.Fatalf("plan.guardrails type = %T, want []any", planData["guardrails"])
+	}
+	if len(guardrails) != 2 {
+		t.Fatalf("plan.guardrails len = %d, want 2", len(guardrails))
+	}
+	// Sorted by key: max-lines before no-console.
+	g0 := guardrails[0].(map[string]any)
+	g1 := guardrails[1].(map[string]any)
+	if g0["id"] != "max-lines" {
+		t.Errorf("guardrails[0].id = %v, want %q", g0["id"], "max-lines")
+	}
+	if g0["severity"] != "warning" {
+		t.Errorf("guardrails[0].severity = %v, want %q", g0["severity"], "warning")
+	}
+	if g1["id"] != "no-console" {
+		t.Errorf("guardrails[1].id = %v, want %q", g1["id"], "no-console")
+	}
+
+	// Read execute section and verify guardrails converted.
+	execData, err := ReadSection(root, "execute")
+	if err != nil {
+		t.Fatalf("ReadSection(execute): %v", err)
+	}
+	execGuardrails, ok := execData["guardrails"].([]any)
+	if !ok {
+		t.Fatalf("execute.guardrails type = %T, want []any", execData["guardrails"])
+	}
+	if len(execGuardrails) != 1 {
+		t.Fatalf("execute.guardrails len = %d, want 1", len(execGuardrails))
+	}
+	eg0 := execGuardrails[0].(map[string]any)
+	if eg0["id"] != "lint-check" {
+		t.Errorf("execute.guardrails[0].id = %v, want %q", eg0["id"], "lint-check")
+	}
+}
+
+// TestNoGuardrailsKeyUntouched verifies that a section without a
+// guardrails key is not modified by normalizeGuardrailTables.
+func TestNoGuardrailsKeyUntouched(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+
+	setupProjectConfig(t, root, map[string]any{
+		"plan": map[string]any{
+			"style": "concise",
+		},
+	})
+
+	planData, err := ReadSection(root, "plan")
+	if err != nil {
+		t.Fatalf("ReadSection(plan): %v", err)
+	}
+	if planData["style"] != "concise" {
+		t.Errorf("plan.style = %v, want %q", planData["style"], "concise")
+	}
+	if _, exists := planData["guardrails"]; exists {
+		t.Error("plan.guardrails should not exist when not in config")
 	}
 }
 
@@ -1049,8 +1190,8 @@ func TestRead_RejectsUnknownProjectKeys(t *testing.T) {
 	}
 	// Should fail on the schemaVersion v4 marker check before even reaching
 	// key validation.
-	if !strings.Contains(err.Error(), "migrate") {
-		t.Errorf("error should name migrate, got: %v", err)
+	if !strings.Contains(err.Error(), "/setup") {
+		t.Errorf("error should name /setup, got: %v", err)
 	}
 }
 
@@ -1096,9 +1237,9 @@ func TestReadAnchorsAtMainWorktreeRoot(t *testing.T) {
 	linkedDir := filepath.Join(t.TempDir(), "linked")
 	runGit(t, mainDir, "worktree", "add", "-q", linkedDir, "-b", "test-branch")
 
-	// Linked worktree should not have .sdlc/config.json.
-	if _, err := os.Stat(filepath.Join(linkedDir, paths.DataDir, "config.json")); err == nil {
-		t.Fatal(".sdlc/config.json should not exist in linked worktree")
+	// Linked worktree should not have .sdlc/config.toml.
+	if _, err := os.Stat(filepath.Join(linkedDir, paths.DataDir, "config.toml")); err == nil {
+		t.Fatal(".sdlc/config.toml should not exist in linked worktree")
 	}
 
 	// Change cwd to the linked worktree and resolve main root.

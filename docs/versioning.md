@@ -4,7 +4,7 @@ This guide explains how the SDLC plugin manages project versions, automates rele
 
 ## Three Independent Release Paths
 
-Versioning is configured in `.sdlc-v2/config.json` under the `version` key. This is the config location the Go-side tools `pr_prepare` and `pr_apply` read, along with the CI scripts (`scaffold_ci` scaffolds those CI workflow files and does not itself read or write this config).
+Versioning is configured in `.sdlc-v2/config.toml` under the `version` key. This is the config location the Go-side tools `pr_prepare` and `pr_apply` read, along with the CI scripts (`scaffold_ci` scaffolds those CI workflow files and does not itself read or write this config).
 
 A release is made of three independently toggleable paths, each carrying its own `enabled` flag:
 
@@ -320,7 +320,7 @@ RC releases let you publish a pre-release version for testing before committing 
 
 Use the `--rc` flag: `/pr --bump minor-rc` or `/ship --bump minor-rc`.
 
-Alternatively, configure `version.preReleasePolicy: "always-rc"` in `.sdlc-v2/config.json` to enforce RC bumps automatically in the `/ship` pipeline without needing the `--rc` flag. See the [Configuration Reference](#configuration-reference) table below for details.
+Alternatively, configure `version.preReleasePolicy: "always-rc"` in `.sdlc-v2/config.toml` to enforce RC bumps automatically in the `/ship` pipeline without needing the `--rc` flag. See the [Configuration Reference](#configuration-reference) table below for details.
 
 This creates:
 - Label: `release:minor-rc`
@@ -356,7 +356,7 @@ The final release tags the exact commit that was tested as the RC — what you t
 
 ## Configuration Reference
 
-Full `.sdlc-v2/config.json` `version` section:
+Full `.sdlc-v2/config.toml` `version` section:
 
 ```json
 {
@@ -427,7 +427,7 @@ This ensures only actual releases (not RCs) trigger downstream automation like b
 
 ### "config: version section uses the old flat shape"
 
-The project's `.sdlc-v2/config.json` still has a `version` section in the pre-redesign flat shape (`mode`, string `versionFile`, `changelogMethod`, boolean `changelog`, or `rcAutoContinue`). Run `/setup --only version` to migrate to the new nested `tag`/`versionFile`/`changelog` shape — there is no automatic migration.
+The project's `.sdlc-v2/config.toml` still has a `version` section in the pre-redesign flat shape (`mode`, string `versionFile`, `changelogMethod`, boolean `changelog`, or `rcAutoContinue`). Run `/setup --only version` to migrate to the new nested `tag`/`versionFile`/`changelog` shape — there is no automatic migration.
 
 ### No release created after PR merge
 
@@ -465,12 +465,12 @@ Not an issue in the current flow. `release-on-main.cjs` runs on push to main (af
 
 ### verify-release-intent fails with "No version config found"
 
-The scaffolded CI scripts (`release-on-main.cjs`, `retag-release.cjs`, `verify-release-intent.cjs`, `promote-release.cjs`, `check-changelog.cjs`) read version config exclusively from `.sdlc-v2/config.json`, matching the Go-side tools `pr_prepare` and `pr_apply`. There is no legacy fallback — a project still on the old `.sdlc/config.json` (or `.claude/sdlc.json` / `.claude/version.json`) layout must run the `migrate` tool first.
+The scaffolded CI scripts (`release-on-main.cjs`, `retag-release.cjs`, `verify-release-intent.cjs`, `promote-release.cjs`, `check-changelog.cjs`) read version config exclusively from `.sdlc-v2/config.toml`, matching the Go-side tools `pr_prepare` and `pr_apply`. There is no legacy fallback — a project still on the old `.sdlc/config.json` (or `.claude/sdlc.json` / `.claude/version.json`) layout must run the `migrate` tool first.
 
-If `.sdlc-v2/config.json` is missing or has no `.version` section, release automation fails with:
+If `.sdlc-v2/config.toml` is missing or has no `.version` section, release automation fails with:
 
 ```
-No version config found (.sdlc-v2/config.json ".version" section). A release:* label requires a version config to compute the release target.
+No version config found (.sdlc-v2/config.toml ".version" section). A release:* label requires a version config to compute the release target.
 ```
 
-**Fix:** run `/setup` (or the `migrate` tool, if this project still has a legacy config) to create `.sdlc-v2/config.json` with a `version` section.
+**Fix:** run `/setup` (or the `migrate` tool, if this project still has a legacy config) to create `.sdlc-v2/config.toml` with a `version` section.

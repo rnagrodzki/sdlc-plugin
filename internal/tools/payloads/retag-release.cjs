@@ -10,7 +10,7 @@
  * Usage (GitHub Actions — runs on push to main):
  *   node .github/scripts/retag-release.cjs
  *
- * Reads: .sdlc-v2/config.json  (sdlc versioning config)
+ * Reads: .sdlc-v2/config.toml  (sdlc versioning config)
  * Version source:
  *   `versionFile.enabled: true`  — version read from the configured version
  *     file (package.json, plugin.json, etc.)
@@ -24,8 +24,8 @@
 
 'use strict';
 
-/** @version 7 — retag script version. Bump when behavior changes. */
-const RETAG_SCRIPT_VERSION = 7;
+/** @version 8 — retag script version. Bump when behavior changes. */
+const RETAG_SCRIPT_VERSION = 8;
 
 const fs   = require('node:fs');
 const path = require('node:path');
@@ -53,19 +53,80 @@ function execOrThrow(cmd, opts = {}) {
 // ---------------------------------------------------------------------------
 
 /**
- * Read the version section from .sdlc-v2/config.json. CI script runs in
+ * Minimal TOML reader for the fixed `.sdlc-v2/config.toml` schema. Only
+ * supports what that schema actually uses: `[table]` / `[table.sub]`
+ * headers and `key = value` lines where value is a double- or
+ * single-quoted string, `true`/`false`, or a bare number — no arrays,
+ * inline tables, or multi-line strings. Not a general-purpose TOML parser;
+ * scoped to the known-fixed `[version]` table shape this script reads.
+ */
+function parseTomlValue(raw) {
+  let s = raw.trim();
+  if (s.startsWith('"')) {
+    let out = '';
+    for (let i = 1; i < s.length; i++) {
+      const c = s[i];
+      if (c === '\\' && i + 1 < s.length) {
+        const n = s[i + 1];
+        out += n === 'n' ? '\n' : n === 't' ? '\t' : n;
+        i++;
+        continue;
+      }
+      if (c === '"') break;
+      out += c;
+    }
+    return out;
+  }
+  if (s.startsWith("'")) {
+    const end = s.indexOf("'", 1);
+    return end >= 0 ? s.slice(1, end) : s.slice(1);
+  }
+  const hashIdx = s.indexOf('#');
+  if (hashIdx >= 0) s = s.slice(0, hashIdx).trim();
+  if (s === 'true') return true;
+  if (s === 'false') return false;
+  if (s !== '' && !Number.isNaN(Number(s))) return Number(s);
+  return s;
+}
+
+function parseSimpleToml(content) {
+  const root = {};
+  let current = root;
+  for (const rawLine of content.split('\n')) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const tableMatch = line.match(/^\[([A-Za-z0-9_.-]+)\]$/);
+    if (tableMatch) {
+      current = root;
+      for (const part of tableMatch[1].split('.')) {
+        if (typeof current[part] !== 'object' || current[part] === null || Array.isArray(current[part])) {
+          current[part] = {};
+        }
+        current = current[part];
+      }
+      continue;
+    }
+    const kvMatch = line.match(/^([A-Za-z0-9_-]+)\s*=\s*(.+)$/);
+    if (!kvMatch) continue;
+    current[kvMatch[1]] = parseTomlValue(kvMatch[2]);
+  }
+  return root;
+}
+
+/**
+ * Read the version section from .sdlc-v2/config.toml. CI script runs in
  * read-only context — never calls verifyAndMigrate. A repo still on a
  * legacy config layout must run `migrate` first; this script does not
  * fall back to any legacy path.
  */
 function readVersionConfig(repoRoot) {
-  const currentPath = path.join(repoRoot, '.sdlc-v2', 'config.json');
+  const currentPath = path.join(repoRoot, '.sdlc-v2', 'config.toml');
   if (!fs.existsSync(currentPath)) return null;
   try {
-    const config = JSON.parse(fs.readFileSync(currentPath, 'utf8'));
-    return config.version || null;
+    const root = parseSimpleToml(fs.readFileSync(currentPath, 'utf8'));
+    return root.version || null;
   } catch (err) {
-    process.stderr.write(`Error parsing .sdlc-v2/config.json: ${err.message}\n`);
+    process.stderr.write(`Error parsing .sdlc-v2/config.toml: ${err.message}\n`);
     process.exit(1);
   }
 }
@@ -216,7 +277,7 @@ function main() {
 
   const config = readVersionConfig(repoRoot);
   if (!config) {
-    console.log('No .sdlc-v2/config.json found. Skipping retag.');
+    console.log('No .sdlc-v2/config.toml found. Skipping retag.');
     process.exit(0);
   }
 

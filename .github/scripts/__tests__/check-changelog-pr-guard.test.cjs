@@ -21,13 +21,34 @@ function mkTmpDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
+/**
+ * Serializes a plain-value or one-level-nested-object as a TOML scalar,
+ * matching the subset check-changelog.cjs's parseSimpleToml understands.
+ */
+function tomlScalar(value) {
+  return typeof value === 'string' ? JSON.stringify(value) : String(value);
+}
+
+/**
+ * Writes a minimal .sdlc-v2/config.toml with a `[version]` table (for
+ * top-level scalar keys) and one `[version.<key>]` sub-table per nested
+ * object key — enough to cover the `version` shape check-changelog.cjs
+ * actually reads (e.g. `changelog.enabled` / `changelog.file`).
+ */
 function writeConfig(dir, versionConfig) {
   fs.mkdirSync(path.join(dir, '.sdlc-v2'), { recursive: true });
-  fs.writeFileSync(
-    path.join(dir, '.sdlc-v2', 'config.json'),
-    JSON.stringify({ version: versionConfig }, null, 2),
-    'utf8'
-  );
+  const scalarLines = [];
+  const tableBlocks = [];
+  for (const [key, val] of Object.entries(versionConfig)) {
+    if (val !== null && typeof val === 'object' && !Array.isArray(val)) {
+      const subLines = Object.entries(val).map(([k, v]) => `${k} = ${tomlScalar(v)}`);
+      tableBlocks.push(`[version.${key}]\n${subLines.join('\n')}`);
+    } else {
+      scalarLines.push(`${key} = ${tomlScalar(val)}`);
+    }
+  }
+  const toml = ['[version]', ...scalarLines, '', ...tableBlocks].join('\n') + '\n';
+  fs.writeFileSync(path.join(dir, '.sdlc-v2', 'config.toml'), toml, 'utf8');
 }
 
 /**
