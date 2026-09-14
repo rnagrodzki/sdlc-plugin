@@ -608,6 +608,26 @@ func setupInit(root string, in SetupInitIn) (SetupInitOut, error) {
 		}
 	}
 
+	// 5. Clean up stale JSON-era config files. Runs unconditionally (not
+	// gated on whether the TOML above was just created), so a stale
+	// config.json/local.json left behind from before the TOML migration
+	// gets swept up on any /setup re-run. Rename rather than delete to
+	// preserve user data; skip if a .bak already exists so a second run
+	// never overwrites an earlier backup.
+	for _, base := range []string{"config", "local"} {
+		jsonPath := filepath.Join(sdlcDir, base+".json")
+		bakPath := filepath.Join(sdlcDir, base+".json.bak")
+		if _, err := os.Stat(jsonPath); err == nil {
+			if _, err := os.Stat(bakPath); err != nil {
+				if renameErr := os.Rename(jsonPath, bakPath); renameErr != nil {
+					errs = append(errs, fmt.Sprintf("%s.json cleanup: %s", base, renameErr.Error()))
+				} else {
+					changed = append(changed, fmt.Sprintf("%s/%s.json → %s.json.bak", paths.DataDir, base, base))
+				}
+			}
+		}
+	}
+
 	out := SetupInitOut{
 		OK:      len(errs) == 0,
 		Created: created,

@@ -1171,6 +1171,50 @@ func TestMergeShipFlags_PreReleasePolicyAlwaysRC_OverridesCLI(t *testing.T) {
 	}
 }
 
+// TestMergeShipFlags_PreReleasePolicyDefaultRC_NoCLI verifies that
+// preReleasePolicy: "default-rc" overrides a non-cli bump to "rc" when no
+// explicit CLI --bump was supplied, same as "always-rc" would.
+func TestMergeShipFlags_PreReleasePolicyDefaultRC_NoCLI(t *testing.T) {
+	versionCfg := map[string]any{"preReleasePolicy": "default-rc"}
+	merged, sources := mergeShipFlags(ShipPrepareIn{}, map[string]any{}, versionCfg)
+
+	if b, ok := merged["bump"].(string); !ok || b != "rc" {
+		t.Errorf("Flags[bump] = %v, want %q (overridden by default-rc)", merged["bump"], "rc")
+	}
+	if src := sources["bump"]; src != "config (version.preReleasePolicy)" {
+		t.Errorf("Sources[bump] = %q, want %q", src, "config (version.preReleasePolicy)")
+	}
+}
+
+// TestMergeShipFlags_PreReleasePolicyDefaultRC_CLIOverrides verifies that
+// preReleasePolicy: "default-rc" leaves an explicit CLI --bump patch alone
+// (CLI wins under default-rc, unlike always-rc).
+func TestMergeShipFlags_PreReleasePolicyDefaultRC_CLIOverrides(t *testing.T) {
+	versionCfg := map[string]any{"preReleasePolicy": "default-rc"}
+	merged, sources := mergeShipFlags(ShipPrepareIn{Bump: "patch"}, map[string]any{}, versionCfg)
+
+	if b, ok := merged["bump"].(string); !ok || b != "patch" {
+		t.Errorf("Flags[bump] = %v, want %q (default-rc must not override an explicit cli bump)", merged["bump"], "patch")
+	}
+	if src := sources["bump"]; src != "cli" {
+		t.Errorf("Sources[bump] = %q, want %q", src, "cli")
+	}
+}
+
+// TestMergeShipFlags_PreReleasePolicyDefaultRC_CLIMinor verifies that
+// preReleasePolicy: "default-rc" leaves an explicit CLI --bump minor alone.
+func TestMergeShipFlags_PreReleasePolicyDefaultRC_CLIMinor(t *testing.T) {
+	versionCfg := map[string]any{"preReleasePolicy": "default-rc"}
+	merged, sources := mergeShipFlags(ShipPrepareIn{Bump: "minor"}, map[string]any{}, versionCfg)
+
+	if b, ok := merged["bump"].(string); !ok || b != "minor" {
+		t.Errorf("Flags[bump] = %v, want %q (default-rc must not override an explicit cli bump)", merged["bump"], "minor")
+	}
+	if src := sources["bump"]; src != "cli" {
+		t.Errorf("Sources[bump] = %q, want %q", src, "cli")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ship_verify_side_effect tests
 // ---------------------------------------------------------------------------

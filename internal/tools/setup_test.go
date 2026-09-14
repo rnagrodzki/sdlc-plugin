@@ -453,6 +453,132 @@ func TestSetupInit_RootGitignoreLegacyUpgrade(t *testing.T) {
 	}
 }
 
+func TestSetupInit_CleansUpStaleJSON(t *testing.T) {
+	root := t.TempDir()
+	sdlcDir := filepath.Join(root, paths.DataDir)
+	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate a pre-migration project with stale JSON-era config files.
+	configJSONPath := filepath.Join(sdlcDir, "config.json")
+	localJSONPath := filepath.Join(sdlcDir, "local.json")
+	if err := os.WriteFile(configJSONPath, []byte(`{"old":"config"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(localJSONPath, []byte(`{"old":"local"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := setupInit(root, SetupInitIn{})
+	if err != nil {
+		t.Fatalf("setupInit: %v", err)
+	}
+	if !out.OK {
+		t.Errorf("expected OK=true, errors: %v", out.Errors)
+	}
+
+	// The stale JSON files should be gone, renamed to .bak.
+	if _, err := os.Stat(configJSONPath); !os.IsNotExist(err) {
+		t.Error("config.json should no longer exist after cleanup")
+	}
+	if _, err := os.Stat(localJSONPath); !os.IsNotExist(err) {
+		t.Error("local.json should no longer exist after cleanup")
+	}
+
+	configBak, err := os.ReadFile(filepath.Join(sdlcDir, "config.json.bak"))
+	if err != nil {
+		t.Fatal("config.json.bak should exist")
+	}
+	if string(configBak) != `{"old":"config"}` {
+		t.Error("config.json.bak should preserve the original JSON content")
+	}
+	localBak, err := os.ReadFile(filepath.Join(sdlcDir, "local.json.bak"))
+	if err != nil {
+		t.Fatal("local.json.bak should exist")
+	}
+	if string(localBak) != `{"old":"local"}` {
+		t.Error("local.json.bak should preserve the original JSON content")
+	}
+
+	if !contains(out.Changed, paths.DataDir+"/config.json → config.json.bak") {
+		t.Errorf("expected config.json rename in Changed, got %v", out.Changed)
+	}
+	if !contains(out.Changed, paths.DataDir+"/local.json → local.json.bak") {
+		t.Errorf("expected local.json rename in Changed, got %v", out.Changed)
+	}
+}
+
+func TestSetupInit_JSONCleanup_SkipsIfBakAlreadyExists(t *testing.T) {
+	root := t.TempDir()
+	sdlcDir := filepath.Join(root, paths.DataDir)
+	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	configJSONPath := filepath.Join(sdlcDir, "config.json")
+	bakPath := filepath.Join(sdlcDir, "config.json.bak")
+	if err := os.WriteFile(configJSONPath, []byte(`{"new":"config"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bakPath, []byte(`{"previous":"backup"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := setupInit(root, SetupInitIn{})
+	if err != nil {
+		t.Fatalf("setupInit: %v", err)
+	}
+
+	// config.json should be left in place — a prior backup must not be
+	// silently overwritten.
+	if _, err := os.Stat(configJSONPath); err != nil {
+		t.Error("config.json should still exist when a .bak already exists")
+	}
+	bakContent, err := os.ReadFile(bakPath)
+	if err != nil {
+		t.Fatal("config.json.bak should still exist")
+	}
+	if string(bakContent) != `{"previous":"backup"}` {
+		t.Error("existing config.json.bak should not be overwritten")
+	}
+	if contains(out.Changed, paths.DataDir+"/config.json → config.json.bak") {
+		t.Errorf("rename should be skipped when .bak already exists, got Changed=%v", out.Changed)
+	}
+}
+
+func TestSetupInit_JSONCleanup_RunsEvenWhenTOMLAlreadyExists(t *testing.T) {
+	root := t.TempDir()
+
+	// First run creates config.toml/local.toml.
+	if _, err := setupInit(root, SetupInitIn{}); err != nil {
+		t.Fatalf("first setupInit: %v", err)
+	}
+
+	// Simulate a stale config.json appearing after the TOML already exists
+	// (e.g. left over from before a prior migration).
+	sdlcDir := filepath.Join(root, paths.DataDir)
+	configJSONPath := filepath.Join(sdlcDir, "config.json")
+	if err := os.WriteFile(configJSONPath, []byte(`{"stale":"true"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := setupInit(root, SetupInitIn{})
+	if err != nil {
+		t.Fatalf("second setupInit: %v", err)
+	}
+
+	if _, err := os.Stat(configJSONPath); !os.IsNotExist(err) {
+		t.Error("config.json should be cleaned up even when config.toml already existed")
+	}
+	if _, err := os.Stat(filepath.Join(sdlcDir, "config.json.bak")); err != nil {
+		t.Error("config.json.bak should exist")
+	}
+	if !contains(out.Changed, paths.DataDir+"/config.json → config.json.bak") {
+		t.Errorf("expected config.json rename in Changed, got %v", out.Changed)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // migrate tests
 // ---------------------------------------------------------------------------

@@ -573,7 +573,9 @@ func stepsFieldLabel(source string) string {
 // CLI flags win when explicitly set, otherwise config, otherwise
 // shipmeta.ShipBuiltInDefaults — except for bump under
 // preReleasePolicy: "always-rc", which unconditionally enforces an RC
-// bump regardless of source (including CLI).
+// bump regardless of source (including CLI), and preReleasePolicy:
+// "default-rc", which enforces an RC bump only when no explicit CLI
+// --bump was supplied (an explicit CLI --bump always wins).
 // Returns the merged flag map plus, per key, which precedence tier
 // supplied the value.
 func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]any) (map[string]any, map[string]string) {
@@ -634,19 +636,26 @@ func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]
 		}
 	}
 
-	// Enforce preReleasePolicy: "always-rc" at ship time.
-	// When preReleasePolicy is set to "always-rc", the final bump must result in an RC.
-	if policy, _ := versionCfg["preReleasePolicy"].(string); policy == "always-rc" {
+	// Enforce preReleasePolicy: "always-rc" / "default-rc" at ship time.
+	// "always-rc" unconditionally forces the final bump to an RC, even
+	// overriding an explicit CLI --bump. "default-rc" forces an RC only
+	// when no explicit CLI --bump was supplied; an explicit CLI --bump
+	// always wins under "default-rc".
+	if policy, _ := versionCfg["preReleasePolicy"].(string); policy == "always-rc" || policy == "default-rc" {
 		bump, _ := merged["bump"].(string)
 		// Valid RC results: "rc" or a valid preRelease label (which implies RC)
 		isRC := bump == "rc" || (preReleaseLabelRe.MatchString(bump) && bump != "major" && bump != "minor" && bump != "patch")
 		if !isRC {
-			// Enforce by overriding to "rc" to ensure preReleasePolicy is not merely informational
-			merged["bump"] = "rc"
-			if sources["bump"] == "cli" {
-				sources["bump"] = "config (version.preReleasePolicy enforced over cli)"
+			if policy == "default-rc" && sources["bump"] == "cli" {
+				// default-rc: an explicit CLI --bump wins, leave it alone.
 			} else {
-				sources["bump"] = "config (version.preReleasePolicy)"
+				// Enforce by overriding to "rc" to ensure preReleasePolicy is not merely informational
+				merged["bump"] = "rc"
+				if sources["bump"] == "cli" {
+					sources["bump"] = "config (version.preReleasePolicy enforced over cli)"
+				} else {
+					sources["bump"] = "config (version.preReleasePolicy)"
+				}
 			}
 		}
 	}
