@@ -7,12 +7,15 @@
  * Designed to be copied into user projects under `.github/scripts/`.
  *
  * Usage (GitHub Actions — workflow_dispatch):
- *   node .github/scripts/promote-release.cjs v1.3.0
+ *   node .github/scripts/promote-release.cjs patch
+ *   (level: major | minor | patch)
  *
  * Reads: .sdlc-v2/config.toml  (sdlc versioning config)
  *
  * Flow:
- *   1. Resolve target tag from CLI arg (e.g. "v1.3.0").
+ *   1. Resolve the target version by discovering the active RC series
+ *      (highest base version with "-rcN" tags) and bumping the latest
+ *      stable tag by the requested level (major | minor | patch).
  *   2. git fetch --tags --force.
  *   3. Find the latest RC tag matching <target>-rc* (highest RC number).
  *   4. Error if no RC exists, or if the final tag already exists.
@@ -64,8 +67,8 @@
 
 'use strict';
 
-/** @version 6 — promote-release script version. Bump when behavior changes. */
-const PROMOTE_RELEASE_SCRIPT_VERSION = 6;
+/** @version 7 — promote-release script version. Bump when behavior changes. */
+const PROMOTE_RELEASE_SCRIPT_VERSION = 7;
 
 const fs   = require('node:fs');
 const path = require('node:path');
@@ -202,6 +205,108 @@ function parseStrictSemver(s) {
   const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(s);
   if (!m) return null;
   return { major: Number(m[1]), minor: Number(m[2]), patch: Number(m[3]) };
+}
+
+/**
+ * Lenient semver parse: strips a leading "v" and any pre-release/build
+ * metadata suffix, returning just the numeric core. Used for bump
+ * arithmetic and comparisons, where the input may be a stable version or
+ * an RC series base version (never a "-rcN" string itself).
+ */
+function parseSemver(s) {
+  s = s.replace(/^v/, '');
+  const core = s.split('-')[0];
+  const parts = core.split('.');
+  if (parts.length !== 3) return null;
+  const nums = parts.map(Number);
+  if (nums.some(isNaN)) return null;
+  return { major: nums[0], minor: nums[1], patch: nums[2] };
+}
+
+/**
+ * Bump a X.Y.Z version string by the given level, returning the new
+ * version string (no prefix). Exits via fail() on an invalid version or
+ * an unrecognized level.
+ */
+function bumpSemver(version, level) {
+  const sv = parseSemver(version);
+  if (!sv) fail(`Invalid semver: ${version}`);
+  switch (level) {
+    case 'major': return `${sv.major + 1}.0.0`;
+    case 'minor': return `${sv.major}.${sv.minor + 1}.0`;
+    case 'patch': return `${sv.major}.${sv.minor}.${sv.patch + 1}`;
+    default: fail(`Unknown bump level: ${level}`);
+  }
+}
+
+/**
+ * Find the most recent non-RC (final) semver tag by scanning git tags
+ * newest-first and returning the first one matching <prefix>X.Y.Z.
+ * Returns the full tag string (with prefix), or null if none exists.
+ */
+function findLatestStableTag(repoRoot, tagPrefix) {
+  const out = exec('git tag --list --sort=-v:refname', { cwd: repoRoot });
+  if (!out) return null;
+  for (const t of out.split('\n')) {
+    if (!t.trim() || t.includes('-rc')) continue;
+    let v = t;
+    if (tagPrefix && v.startsWith(tagPrefix)) {
+      v = v.slice(tagPrefix.length);
+    } else if (tagPrefix) {
+      continue;
+    }
+    if (/^\d+\.\d+\.\d+$/.test(v)) return t; // return full tag string
+  }
+  return null;
+}
+
+/**
+ * Find the active RC series: groups all "<prefix>X.Y.Z-rcN" tags by their
+ * base version and returns the tags for the highest base version.
+ * Returns { baseVersion, tags } (tags sorted ascending by RC number), or
+ * null if no RC tags exist at all.
+ */
+function findActiveRCSeries(repoRoot, tagPrefix) {
+  const out = exec('git tag --list', { cwd: repoRoot });
+  if (!out) return null;
+  const rcPattern = /-rc(\d+)$/;
+  const series = {};  // baseVersion -> [{tag, num}]
+  for (const t of out.split('\n')) {
+    if (!t.trim()) continue;
+    let v = t;
+    if (tagPrefix && v.startsWith(tagPrefix)) {
+      v = v.slice(tagPrefix.length);
+    } else if (tagPrefix) {
+      continue;
+    }
+    const m = rcPattern.exec(v);
+    if (!m) continue;
+    const base = v.slice(0, v.length - m[0].length);
+    if (!/^\d+\.\d+\.\d+$/.test(base)) continue;
+    if (!series[base]) series[base] = [];
+    series[base].push({ tag: t, num: parseInt(m[1], 10) });
+  }
+  let best = null;
+  for (const [base, tags] of Object.entries(series)) {
+    if (!best || semverGreater(base, best.baseVersion)) {
+      tags.sort((a, b) => a.num - b.num);
+      best = { baseVersion: base, tags: tags.map(t => t.tag) };
+    }
+  }
+  return best;
+}
+
+/**
+ * True when semver `a` is strictly greater than semver `b`. Either input
+ * failing to parse is treated as "not greater" (false), never throws.
+ */
+function semverGreater(a, b) {
+  const sa = parseSemver(a);
+  const sb = parseSemver(b);
+  if (!sa || !sb) return false;
+  if (sa.major !== sb.major) return sa.major > sb.major;
+  if (sa.minor !== sb.minor) return sa.minor > sb.minor;
+  return sa.patch > sb.patch;
 }
 
 // ---------------------------------------------------------------------------
@@ -422,10 +527,10 @@ function main() {
   // KEEP: CI script invoked at repo root — do not change to resolveSdlcRoot()
   const repoRoot = process.cwd();
 
-  // Step 1: Read target version from workflow input.
-  const targetTag = (process.argv[2] || '').trim();
-  if (!targetTag) {
-    fail('Usage: node promote-release.cjs <version>  (e.g. v1.3.0)');
+  // Step 1: Read the bump level from the workflow input.
+  const level = (process.argv[2] || '').trim();
+  if (!['major', 'minor', 'patch'].includes(level)) {
+    fail('Usage: node promote-release.cjs <level>  (level: major | minor | patch)');
   }
 
   const config = readVersionConfig(repoRoot);
@@ -434,20 +539,41 @@ function main() {
   }
 
   const tagPrefix = config.tag?.prefix || '';
-  if (tagPrefix && !targetTag.startsWith(tagPrefix)) {
-    fail(`Invalid version format: ${targetTag} (expected prefix "${tagPrefix}")`);
-  }
-  const targetBase = tagPrefix ? targetTag.slice(tagPrefix.length) : targetTag;
-
-  if (!parseStrictSemver(targetBase)) {
-    fail(`Invalid version format: ${targetTag} (expected <prefix>X.Y.Z, no pre-release suffix)`);
-  }
 
   // Step 2: Fetch tags.
   execOrThrow('git fetch --tags --force', { cwd: repoRoot });
 
-  // Step 3/4: Find the latest RC tag for the target version.
-  const rcTag = findLatestRCTag(repoRoot, tagPrefix, targetBase);
+  // Step 3/4: Discover the active RC series, then auto-resolve the target
+  // version by bumping the latest stable tag by the requested level.
+  const series = findActiveRCSeries(repoRoot, tagPrefix);
+  if (!series) {
+    fail('No RC tags found');
+  }
+  const stableTag = findLatestStableTag(repoRoot, tagPrefix);
+  const stableVersion = stableTag
+    ? (tagPrefix ? stableTag.slice(tagPrefix.length) : stableTag)
+    : '0.0.0';
+  const targetBase = bumpSemver(stableVersion, level);
+  const targetTag = `${tagPrefix}${targetBase}`;
+
+  // Guard against a bump level that would produce a version lower than the
+  // active RC series (e.g. a stale stable tag combined with "patch" while
+  // the active RC series is already a minor/major ahead).
+  const rcSv = parseSemver(series.baseVersion);
+  const tgtSv = parseSemver(targetBase);
+  if (tgtSv && rcSv && (
+    tgtSv.major < rcSv.major ||
+    (tgtSv.major === rcSv.major && tgtSv.minor < rcSv.minor) ||
+    (tgtSv.major === rcSv.major && tgtSv.minor === rcSv.minor && tgtSv.patch < rcSv.patch)
+  )) {
+    fail(`Chosen level "${level}" produces ${targetTag}, which is lower than the active RC series ${series.baseVersion}. Use a higher bump level.`);
+  }
+
+  console.log(`Active RC series: ${series.baseVersion} (${series.tags.length} RC(s))`);
+  console.log(`Latest stable: ${stableTag || '(none)'}`);
+  console.log(`Target version: ${targetTag}`);
+
+  const rcTag = findLatestRCTag(repoRoot, tagPrefix, series.baseVersion);
   if (!rcTag) {
     fail(`No RC tags found for ${targetTag}`);
   }
@@ -466,9 +592,12 @@ function main() {
   }
   console.log(`RC ${rcTag} -> ${rcSha}`);
 
-  // Step 7/8: Aggregate release notes from ALL RC GitHub Releases for this
-  // target — not just the latest RC — so multi-RC cycles don't lose notes.
-  const allRCTags = findAllRCTags(repoRoot, tagPrefix, targetBase);
+  // Step 7/8: Aggregate release notes from ALL RC GitHub Releases in the
+  // active RC series — not just the latest RC — so multi-RC cycles don't
+  // lose notes. Uses series.baseVersion (the RC series' own version), not
+  // targetBase, since RC tags/notes/changelog entries are keyed to the RC
+  // series, which may differ from the auto-resolved target version.
+  const allRCTags = findAllRCTags(repoRoot, tagPrefix, series.baseVersion);
   const notes = readAllRCNotes(allRCTags, repoRoot);
   console.log(`Aggregated notes from ${allRCTags.length} RC tag(s).`);
 
@@ -487,7 +616,7 @@ function main() {
   // Gate matches release-on-main.cjs: only when config.changelog.enabled is true.
   if (config.changelog?.enabled) {
     const changelogFile = config.changelog.file || 'CHANGELOG.md';
-    stripRCEntries(repoRoot, changelogFile, tagPrefix, targetBase);
+    stripRCEntries(repoRoot, changelogFile, tagPrefix, series.baseVersion);
     if (prependChangelogIfMissing(repoRoot, changelogFile, targetBase, notes)) {
       filesToAdd.push(changelogFile);
       console.log(`Changelog updated: ${changelogFile} (RC entries collapsed)`);
@@ -573,7 +702,7 @@ function main() {
   }
 }
 
-// Only run when executed directly (`node promote-release.cjs <version>`) —
+// Only run when executed directly (`node promote-release.cjs <level>`) —
 // requiring this file as a module (e.g. from tests) must not trigger a live
 // CI run (it would otherwise exit the process immediately on a missing arg).
 if (require.main === module) {
@@ -591,4 +720,8 @@ module.exports = {
   readAllRCNotes,
   stripRCEntries,
   prependChangelogIfMissing,
+  findActiveRCSeries,
+  findLatestStableTag,
+  bumpSemver,
+  parseSemver,
 };
