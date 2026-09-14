@@ -1364,6 +1364,169 @@ func TestExecState_TaskDone_DoneWithConcerns(t *testing.T) {
 	}
 }
 
+// TestExecState_TaskDone_DuplicateVerifyTokenWarning confirms a warning
+// (not an error — task-done still succeeds) is surfaced when a task's
+// verifyToken matches a sibling task's verifyToken already recorded in the
+// same wave, a phantom-success smell (two tasks claiming the same evidence).
+func TestExecState_TaskDone_DuplicateVerifyTokenWarning(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	createExecState(t, root, "feat/test", map[string]any{
+		"waves": []any{
+			map[string]any{"number": 1, "status": "in_progress", "tasks": []any{}},
+		},
+		"context": map[string]any{},
+	})
+
+	// T1 completes first and records a verifyToken.
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action:       "task-done",
+		Branch:       "feat/test",
+		Wave:         intPtr(1),
+		TaskID:       "T1",
+		FilesChanged: `["src/a.go"]`,
+		VerifyToken:  `"FooBar in src/a.go"`,
+	}, clock); err != nil {
+		t.Fatalf("task-done T1: %v", err)
+	}
+
+	// T2 reuses T1's exact verifyToken — should warn, not fail.
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action:       "task-done",
+		Branch:       "feat/test",
+		Wave:         intPtr(1),
+		TaskID:       "T2",
+		FilesChanged: `["src/b.go"]`,
+		VerifyToken:  `"FooBar in src/a.go"`,
+	}, clock)
+	if err != nil {
+		t.Fatalf("task-done T2: %v", err)
+	}
+	m, ok := result.(ExecTaskNarrationOut)
+	if !ok {
+		t.Fatalf("result = %T, want ExecTaskNarrationOut", result)
+	}
+	found := false
+	for _, w := range m.Warnings {
+		if w == "verifyToken duplicates task T1 — possible phantom success" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Warnings = %v, want entry for duplicate verifyToken against T1", m.Warnings)
+	}
+
+}
+
+// TestExecState_TaskDone_ResubmitNoSelfMatch confirms that re-submitting a
+// task (upsert) with the same verifyToken it already recorded does not
+// self-match and produce a spurious duplicate warning, since at
+// resubmission time it is the only task holding that token.
+func TestExecState_TaskDone_ResubmitNoSelfMatch(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	createExecState(t, root, "feat/test", map[string]any{
+		"waves": []any{
+			map[string]any{"number": 1, "status": "in_progress", "tasks": []any{}},
+		},
+		"context": map[string]any{},
+	})
+
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action:       "task-done",
+		Branch:       "feat/test",
+		Wave:         intPtr(1),
+		TaskID:       "T1",
+		FilesChanged: `["src/a.go"]`,
+		VerifyToken:  `"FooBar in src/a.go"`,
+	}, clock); err != nil {
+		t.Fatalf("task-done T1: %v", err)
+	}
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action:       "task-done",
+		Branch:       "feat/test",
+		Wave:         intPtr(1),
+		TaskID:       "T1",
+		FilesChanged: `["src/a.go"]`,
+		VerifyToken:  `"FooBar in src/a.go"`,
+	}, clock)
+	if err != nil {
+		t.Fatalf("task-done T1 resubmit: %v", err)
+	}
+	m, ok := result.(ExecTaskNarrationOut)
+	if !ok {
+		t.Fatalf("result = %T, want ExecTaskNarrationOut", result)
+	}
+	for _, w := range m.Warnings {
+		if strings.Contains(w, "possible phantom success") {
+			t.Errorf("Warnings = %v, want no self-match warning on upsert", m.Warnings)
+		}
+	}
+}
+
+// TestExecState_TaskDone_EmptyFilesChangedWarning confirms a warning is
+// surfaced when a non-FAILED task-done reports no filesChanged — a smell
+// for a task that did nothing observable — and that the warning is absent
+// once filesChanged is populated.
+func TestExecState_TaskDone_EmptyFilesChangedWarning(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	createExecState(t, root, "feat/test", map[string]any{
+		"waves": []any{
+			map[string]any{"number": 1, "status": "in_progress", "tasks": []any{}},
+		},
+		"context": map[string]any{},
+	})
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "task-done",
+		Branch: "feat/test",
+		Wave:   intPtr(1),
+		TaskID: "T1",
+	}, clock)
+	if err != nil {
+		t.Fatalf("task-done: %v", err)
+	}
+	m, ok := result.(ExecTaskNarrationOut)
+	if !ok {
+		t.Fatalf("result = %T, want ExecTaskNarrationOut", result)
+	}
+	found := false
+	for _, w := range m.Warnings {
+		if w == "no files reported changed — verify task produced real output" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Warnings = %v, want empty-filesChanged warning", m.Warnings)
+	}
+
+	// With filesChanged populated, the warning must not appear.
+	result, err = executeState(root, root, ExecuteStateIn{
+		Action:       "task-done",
+		Branch:       "feat/test",
+		Wave:         intPtr(1),
+		TaskID:       "T2",
+		FilesChanged: `["src/a.go"]`,
+	}, clock)
+	if err != nil {
+		t.Fatalf("task-done T2: %v", err)
+	}
+	m, ok = result.(ExecTaskNarrationOut)
+	if !ok {
+		t.Fatalf("result = %T, want ExecTaskNarrationOut", result)
+	}
+	for _, w := range m.Warnings {
+		if strings.Contains(w, "no files reported changed") {
+			t.Errorf("Warnings = %v, want no empty-filesChanged warning when filesChanged is populated", m.Warnings)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // task-fail
 // ---------------------------------------------------------------------------

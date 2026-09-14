@@ -253,9 +253,13 @@ type ReportSkippedOut struct {
 }
 
 // ExecTaskNarrationOut is the narrated output for task-level execute_state
-// actions (task-done, task-fail).
+// actions (task-done, task-fail). Warnings mirrors ExecWaveNarrationOut's
+// field of the same name: task-done still succeeds when populated — these
+// are phantom-success heuristics (duplicate verifyToken across sibling
+// tasks, or a completion with no filesChanged), not hard failures.
 type ExecTaskNarrationOut struct {
 	pipeline.Narration
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // ExecWaveCommitOut is the narrated output for the wave-commit action.
@@ -2643,6 +2647,35 @@ func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time
 		tasks = []any{}
 	}
 
+	// Phantom-success detection (KD, task 2): computed against the wave's
+	// existing tasks BEFORE this task's own entry is appended below, so a
+	// re-submission of the same task (upsert) never matches itself.
+	var warnings []string
+	if len(verifyTokens) > 0 {
+		for _, sibling := range tasks {
+			sm, ok := sibling.(map[string]any)
+			if !ok {
+				continue
+			}
+			if fmt.Sprint(sm["id"]) == in.TaskID {
+				continue // skip self on re-submission (upsert case)
+			}
+			sibTokens, _ := sm["verifyTokens"].([]any)
+			for _, tok := range sibTokens {
+				for _, vt := range verifyTokens {
+					if fmt.Sprint(tok) == fmt.Sprint(vt) {
+						warnings = append(warnings, fmt.Sprintf(
+							"verifyToken duplicates task %v — possible phantom success",
+							sm["id"]))
+					}
+				}
+			}
+		}
+	}
+	if len(filesChanged) == 0 && in.Status != "FAILED" {
+		warnings = append(warnings, "no files reported changed — verify task produced real output")
+	}
+
 	taskEntry := map[string]any{
 		"id":           in.TaskID,
 		"name":         in.TaskName,
@@ -2650,6 +2683,7 @@ func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time
 		"risk":         in.Risk,
 		"status":       "completed",
 		"filesChanged": filesChanged,
+		"verifyTokens": verifyTokens,
 		"completedAt":  now().UTC().Format(time.RFC3339),
 	}
 
@@ -2729,6 +2763,7 @@ func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time
 	completed, _, total := execCountWaveOutcomes(w)
 	result := ExecTaskNarrationOut{}
 	result.Summary = fmt.Sprintf("Task %s done (%d/%d reported).", in.TaskID, completed, total)
+	result.Warnings = warnings
 	return result, nil
 }
 
