@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.1] - 2026-09-14
+
+- Adds "default-rc" preReleasePolicy so /ship --bump patch produces a final release instead of an RC by default
+- Cleans up stale JSON config during setup
+- Follow-up commit fixing 15 code-review findings: TasksJSON/log-cli doc-schema mismatches, id-comparison consistency, DomainError Suggestion population, dedup fixes, new test coverage
+- Promote-release now uses a patch/minor/major dropdown instead of free-text version input
+- Ship executeDispatchArgs --quality interpolation fix
+- Supports cross-level RC promotion (e.g. promoting a patch-level RC as a minor or major release)
+- Target version is auto-calculated from the latest stable tag
+- Wave-start tasksJson validation hardening and phantom-success detection in execute_state.go
+- execute SKILL.md batch-phantom-defense documentation
+
 ## [0.1.0] - 2026-09-14
 
 ### RC 1
