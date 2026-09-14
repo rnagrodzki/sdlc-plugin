@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.1.0] - 2026-09-14
+
+### RC 1
+
+- Fix `pr.go`'s NeedsPush handling to fail safe when push state can't be determined, with added test coverage
+- Fix missingWorkers polling handling and ledger path resolution in the execute/plan pipeline; enrich plan state and add an exit-code-8 regression test
+- Add PostToolUse hooks that automatically record CLI/MCP execution telemetry
+- Close out test-coverage and documentation drift found during a received-review pass
+- Embed plugin.json's version at compile time via go:embed as the single source of truth, closing the recurring post-release version-drift test failure
+
+### RC 2
+
+- Fixed execute-skill bugs tracked as GitHub issues #24-#29, #17, #18 (dependency-ref parsing, flag passthrough, shell-quoting guidance, wave-start task JSON validation, fact-sheet field naming, real run ID threading through task-context/report-back)
+- Expanded task-context worker briefing to include wave context, quality gates, sibling-task awareness, and execution rules
+- Added structured progress milestones with server-side stallCause classification
+- Added a deterministic per-task stall/nudge response protocol
+- Added state-transition test coverage
+- Addressed 12 of 13 findings from code review; 1 finding (intentional double state.Write crash-safety checkpoint) kept with documented reasoning
+
+### RC 3
+
+- Promote-release now uses a patch/minor/major dropdown instead of free-text version input
+- Target version is auto-calculated from the latest stable tag
+- Supports cross-level RC promotion (e.g. promoting a patch-level RC as a minor or major release)
+- Adds "default-rc" preReleasePolicy so /ship --bump patch produces a final release instead of an RC by default
+- Cleans up stale JSON config during setup
+
 ## [0.0.4] - 2026-09-13
 
 ### RC 1
