@@ -645,17 +645,14 @@ func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]
 		bump, _ := merged["bump"].(string)
 		// Valid RC results: "rc" or a valid preRelease label (which implies RC)
 		isRC := bump == "rc" || (preReleaseLabelRe.MatchString(bump) && bump != "major" && bump != "minor" && bump != "patch")
-		if !isRC {
-			if policy == "default-rc" && sources["bump"] == "cli" {
-				// default-rc: an explicit CLI --bump wins, leave it alone.
+		if !isRC && !(policy == "default-rc" && sources["bump"] == "cli") {
+			// Enforce by overriding to "rc" to ensure preReleasePolicy is not merely informational.
+			// default-rc with an explicit CLI --bump is the one exception: the CLI wins.
+			merged["bump"] = "rc"
+			if sources["bump"] == "cli" {
+				sources["bump"] = "config (version.preReleasePolicy enforced over cli)"
 			} else {
-				// Enforce by overriding to "rc" to ensure preReleasePolicy is not merely informational
-				merged["bump"] = "rc"
-				if sources["bump"] == "cli" {
-					sources["bump"] = "config (version.preReleasePolicy enforced over cli)"
-				} else {
-					sources["bump"] = "config (version.preReleasePolicy)"
-				}
+				sources["bump"] = "config (version.preReleasePolicy)"
 			}
 		}
 	}

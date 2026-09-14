@@ -16,8 +16,8 @@
         },
         "preReleasePolicy": {
           "type": "string",
-          "enum": ["always-rc", "continue-rc", "never"],
-          "description": "Whether pr_prepare suggests a release-candidate build instead of a final release when the caller hasn't said otherwise. Defaults to \"continue-rc\"."
+          "enum": ["always-rc", "default-rc", "continue-rc", "never"],
+          "description": "Whether pr_prepare suggests a release-candidate build instead of a final release when the caller hasn't said otherwise. \"default-rc\" forces an RC unless an explicit CLI --bump overrides it. Defaults to \"continue-rc\"."
         },
         "method": {
           "type": "string",

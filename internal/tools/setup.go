@@ -328,8 +328,9 @@ const configTemplate = `# ─── SDLC Project Configuration (v1) ────
 preRelease = "rc"
 
 # When to apply pre-release tags.
-# Valid: "always-rc" | "continue-rc" | "never"
+# Valid: "always-rc" | "default-rc" | "continue-rc" | "never"
 #   always-rc    — every release gets an rc tag
+#   default-rc   — rc by default, but explicit CLI --bump overrides to final
 #   continue-rc  — only if already in rc
 #   never        — skip pre-release, go straight to release
 preReleasePolicy = "always-rc"
@@ -617,8 +618,8 @@ func setupInit(root string, in SetupInitIn) (SetupInitOut, error) {
 	for _, base := range []string{"config", "local"} {
 		jsonPath := filepath.Join(sdlcDir, base+".json")
 		bakPath := filepath.Join(sdlcDir, base+".json.bak")
-		if _, err := os.Stat(jsonPath); err == nil {
-			if _, err := os.Stat(bakPath); err != nil {
+		if _, statErr := os.Stat(jsonPath); statErr == nil {
+			if _, statErr := os.Stat(bakPath); statErr != nil {
 				if renameErr := os.Rename(jsonPath, bakPath); renameErr != nil {
 					errs = append(errs, fmt.Sprintf("%s.json cleanup: %s", base, renameErr.Error()))
 				} else {
@@ -675,7 +676,7 @@ func RegisterSetupTools(s *mcpserver.Server) {
 	)
 
 	mcpserver.Register(s, "setup_init",
-		"Creates the .sdlc-v2/ directory scaffold for a v1 (TOML) config: .sdlc-v2/.gitignore, root .gitignore managed block, config.toml, and local.toml. Writes the complete, heavily-commented templates directly to disk (never through LLM context) — every field is present, with inline docs and example guardrails. Idempotent: an existing config.toml/local.toml is left untouched. Instruct the user to edit the files by hand, then run the validate tool.",
+		"Creates the .sdlc-v2/ directory scaffold for a v1 (TOML) config: .sdlc-v2/.gitignore, root .gitignore managed block, config.toml, and local.toml. Writes the complete, heavily-commented templates directly to disk (never through LLM context) — every field is present, with inline docs and example guardrails. Idempotent: an existing config.toml/local.toml is left untouched. Also renames stale config.json/local.json to .bak (skipped if .bak already exists). Instruct the user to edit the files by hand, then run the validate tool.",
 		func(ctx mcpserver.Ctx, in SetupInitIn) (SetupInitOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {
