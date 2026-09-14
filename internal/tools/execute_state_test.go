@@ -1419,6 +1419,59 @@ func TestExecState_TaskDone_DuplicateVerifyTokenWarning(t *testing.T) {
 
 }
 
+// TestExecState_TaskDone_DuplicateVerifyTokenDedup confirms that a sibling
+// with multiple matching tokens produces only one warning per sibling, not
+// one per token match.
+func TestExecState_TaskDone_DuplicateVerifyTokenDedup(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	createExecState(t, root, "feat/test", map[string]any{
+		"waves": []any{
+			map[string]any{"number": 1, "status": "in_progress", "tasks": []any{}},
+		},
+		"context": map[string]any{},
+	})
+
+	// T1 completes with two verify tokens.
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action:       "task-done",
+		Branch:       "feat/test",
+		Wave:         intPtr(1),
+		TaskID:       "T1",
+		FilesChanged: `["src/a.go"]`,
+		VerifyToken:  `["tok-A","tok-B"]`,
+	}, clock); err != nil {
+		t.Fatalf("task-done T1: %v", err)
+	}
+
+	// T2 duplicates BOTH of T1's tokens — should produce exactly one warning.
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action:       "task-done",
+		Branch:       "feat/test",
+		Wave:         intPtr(1),
+		TaskID:       "T2",
+		FilesChanged: `["src/b.go"]`,
+		VerifyToken:  `["tok-A","tok-B"]`,
+	}, clock)
+	if err != nil {
+		t.Fatalf("task-done T2: %v", err)
+	}
+	m, ok := result.(ExecTaskNarrationOut)
+	if !ok {
+		t.Fatalf("result = %T, want ExecTaskNarrationOut", result)
+	}
+	count := 0
+	for _, w := range m.Warnings {
+		if strings.Contains(w, "duplicates task T1") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 deduped warning for T1, got %d; warnings = %v", count, m.Warnings)
+	}
+}
+
 // TestExecState_TaskDone_ResubmitNoSelfMatch confirms that re-submitting a
 // task (upsert) with the same verifyToken it already recorded does not
 // self-match and produce a spurious duplicate warning, since at
@@ -4652,6 +4705,29 @@ func TestExecState_LogCLI_BranchFallsBackToCurrent(t *testing.T) {
 	}
 }
 
+// TestExecState_LogCLI_EmptyCommandFails verifies that log-cli requires
+// a non-empty cliCommand field and returns a DomainError with a Suggestion.
+func TestExecState_LogCLI_EmptyCommandFails(t *testing.T) {
+	root := t.TempDir()
+
+	_, err := executeState(root, root, ExecuteStateIn{
+		Action:      "log-cli",
+		Branch:      "feat/test",
+		CLIExitCode: 0,
+		CLIOutput:   "some output",
+	}, fixedClock(testNow))
+	if err == nil {
+		t.Fatal("expected error for empty cliCommand")
+	}
+	de, ok := err.(*mcpserver.DomainError)
+	if !ok {
+		t.Fatalf("expected *mcpserver.DomainError, got %T: %v", err, err)
+	}
+	if de.Suggestion == "" {
+		t.Error("expected non-empty Suggestion on DomainError")
+	}
+}
+
 // TestExecState_LogCLI_AppendFailure forces appendCLIEvidence to fail (a
 // regular file sits where the evidence directory must be created) and
 // confirms the handler wraps it as an *mcpserver.InfraError with a
@@ -5182,12 +5258,64 @@ func TestExecState_WaveStart_InvalidJsonNoStateWrite(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
+	de, ok := err.(*mcpserver.DomainError)
+	if !ok {
+		t.Fatalf("expected *mcpserver.DomainError, got %T: %v", err, err)
+	}
+	if de.Cause == nil {
+		t.Error("expected DomainError.Cause to wrap the JSON parse error")
+	}
+	if de.Suggestion == "" {
+		t.Error("expected non-empty Suggestion on DomainError")
+	}
 
 	// Verify no wave was written to disk.
 	data := readExecState(t, root, "feat/test")
 	waves, _ := data["waves"].([]any)
 	if len(waves) != 0 {
 		t.Errorf("expected 0 waves on disk after invalid-json error, got %d", len(waves))
+	}
+}
+
+// TestExecState_WaveStart_FullDetail verifies that Detail:"full" populates
+// Display (via WaveStartBlock) and Next with ETA fields.
+func TestExecState_WaveStart_FullDetail(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	createExecState(t, root, "feat/test", map[string]any{
+		"startedAt": testNow.UTC().Format(time.RFC3339),
+		"waves":     []any{},
+		"context":   map[string]any{},
+	})
+
+	tasksJSON := `[{"id":"T1","name":"Build widget","description":"build it","complexity":"Standard"}]`
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action:    "wave-start",
+		Branch:    "feat/test",
+		Wave:      intPtr(1),
+		TasksJSON: tasksJSON,
+		Detail:    "full",
+	}, clock)
+	if err != nil {
+		t.Fatalf("wave-start full detail: %v", err)
+	}
+
+	out, ok := result.(ExecWaveNarrationOut)
+	if !ok {
+		t.Fatalf("result type = %T, want ExecWaveNarrationOut", result)
+	}
+	if out.Display == "" {
+		t.Error("expected non-empty Display for Detail:full")
+	}
+	if out.Next == nil {
+		t.Fatal("expected non-nil Next")
+	}
+	if out.Next.EtaSeconds <= 0 {
+		t.Errorf("EtaSeconds = %d, want > 0", out.Next.EtaSeconds)
+	}
+	if out.Next.EtaBasis == "" {
+		t.Error("expected non-empty EtaBasis")
 	}
 }
 
