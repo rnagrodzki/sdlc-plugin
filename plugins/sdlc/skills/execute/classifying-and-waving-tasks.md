@@ -183,6 +183,16 @@ a stable `SendMessage` target; `model:` is required per task (haiku/sonnet/opus 
 tier), `mode: "bypassPermissions"`, `run_in_background: true`, every task/batch of a wave fanned
 out in one message.
 
+**Post-completion verification (2+ tasks in a batch):** after the batch Agent returns, compare each
+task's `filesChanged`. If 2+ tasks report identical files, re-dispatch those tasks individually
+before calling `task-done`. Also run `git diff --stat` to confirm each reported file actually
+changed. This LLM-side check complements the server-side duplicate-`verifyToken` warning that
+`task-done` returns (`"verifyToken duplicates task {siblingId} — possible phantom success"`,
+emitted by `execActionTaskDone` in `execute_state.go`) — together they catch phantom success from
+both ends, so run this check even when `task-done` itself reports no warning.
+See `execute/SKILL.md`'s "Batch phantom defense" bullet and `recovering-from-failures.md`'s "For
+phantom success in batch agents" for the re-dispatch procedure.
+
 ## Common Dependency Patterns
 
 These implicit dependencies are easy to miss:

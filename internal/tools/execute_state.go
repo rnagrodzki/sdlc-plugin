@@ -38,7 +38,7 @@ import (
 // ExecuteStateIn carries the merged input for the execute_state tool's
 // actions. Each field is consumed by one or more actions (noted in comments).
 type ExecuteStateIn struct {
-	Action              string         `json:"action" jsonschema_description:"Selects the operation: wave-compute, init, wave-start, wave-done, wave-fail, wave-committed, wave-commit, task-done, task-fail, task-context, context, read, cleanup, gc, summarize-prior-wave-context, wave-split, verify-completeness, wave-progress, resume-reset, ledger_checkin, ledger_checkout, ledger_status, log-cli, drift-log, issue-draft, decide, or report. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
+	Action              string         `json:"action" jsonschema:"enum=wave-compute,enum=init,enum=wave-start,enum=wave-done,enum=wave-fail,enum=wave-committed,enum=wave-commit,enum=task-done,enum=task-fail,enum=task-context,enum=context,enum=read,enum=cleanup,enum=gc,enum=summarize-prior-wave-context,enum=wave-split,enum=verify-completeness,enum=wave-progress,enum=resume-reset,enum=ledger_checkin,enum=ledger_checkout,enum=ledger_status,enum=log-cli,enum=drift-log,enum=issue-draft,enum=decide,enum=report" jsonschema_description:"Selects the operation. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
 	Branch              string         `json:"branch,omitempty" jsonschema_description:"Git branch the execution state belongs to. Most actions accept it to scope the state file; falls back to the current branch when omitted."`
 	Quality             string         `json:"quality,omitempty" jsonschema_description:"Quality level to stamp on a newly initialized run (init only). Required — no config fallback exists for this field."`
 	TotalTasks          int            `json:"totalTasks,omitempty" jsonschema_description:"Total planned task count for a newly initialized run (init only)."`
@@ -49,7 +49,7 @@ type ExecuteStateIn struct {
 	PlanHash            string         `json:"planHash,omitempty" jsonschema_description:"Hash of the plan file content, recorded on a newly initialized run (init only) to detect later plan drift."`
 	ExtraDepsJSON       string         `json:"extraDepsJson,omitempty" jsonschema_description:"wave-compute only: JSON array of {task, dependsOn, reason} objects merged with each task's explicit \"Depends on\" field before the wave schedule is computed."`
 	Wave                *int           `json:"wave,omitempty" jsonschema_description:"Wave number the action applies to (wave-start, wave-done, wave-fail, wave-committed, wave-commit, task-done, task-fail, wave-split)."`
-	TasksJSON           string         `json:"tasksJson,omitempty" jsonschema_description:"wave-start only: JSON description of the wave's tasks, echoed back in the wave-start narration's task list."`
+	TasksJSON           string         `json:"tasksJson,omitempty" jsonschema_description:"wave-start: JSON array of task objects. Each entry: {id: string, name: string, description: string, complexity: string (optional — Trivial|Standard|Complex), contract: string (optional), acceptanceCriteria: string[] (optional — array of strings), files: string[] (optional)}. Entries missing required string fields (id, name, description) are dropped with a warning; if zero valid entries remain after filtering, the call fails with an error."`
 	RunID               string         `json:"runId,omitempty" jsonschema_description:"Execution run identifier. Required by task-context, ledger_checkin, ledger_checkout, and ledger_status; optional elsewhere (e.g. wave-start, for fact sheets) where it falls back to the value derived from the state's startedAt/wave."`
 	WorkerID            string         `json:"workerId,omitempty" jsonschema_description:"Identifier of the per-task worker registering or clearing its ledger entry (ledger_checkin, ledger_checkout)."`
 	Decisions           string         `json:"decisions,omitempty" jsonschema_description:"wave-done only: free-text record of decisions made while completing the wave, surfaced in later summaries."`
@@ -253,9 +253,13 @@ type ReportSkippedOut struct {
 }
 
 // ExecTaskNarrationOut is the narrated output for task-level execute_state
-// actions (task-done, task-fail).
+// actions (task-done, task-fail). Warnings mirrors ExecWaveNarrationOut's
+// field of the same name: task-done still succeeds when populated — these
+// are phantom-success heuristics (duplicate verifyToken across sibling
+// tasks, or a completion with no filesChanged), not hard failures.
 type ExecTaskNarrationOut struct {
 	pipeline.Narration
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // ExecWaveCommitOut is the narrated output for the wave-commit action.
@@ -492,7 +496,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - wave-fail: Fail a wave. Returns narration (summary, display with failure cause). Requires wave. Optional: branch, timedOut, error (failure cause, recorded as an issue and in failedWave), status, detail ("concise"|"full").
 - wave-committed: Record a commit SHA for a completed wave. Requires wave. Optional: branch, sha.
 - wave-commit: Stage and commit a completed wave's changes (git add -A + git commit -m message) and record the resulting sha on the wave, mirroring wave-committed's SHA-recording. Requires wave, message. Optional: branch, detail ("concise"|"full"). The wave must already be "completed" (call wave-done first). Empty diff: succeeds without committing ({committed:false, reason:"nothing to commit"}). When config execute.commitWaves is false, does not commit and instead returns an instruction to commit manually and call wave-committed. Idempotent on resume: an already-recorded committedSha that is still an ancestor of HEAD is reported ({idempotent:true}) rather than committed again.
-- task-done: Record task completion. Returns narration (summary with running tally). Requires wave, taskId. Optional: branch, taskName, complexity, risk, filesChanged, filesAdded, verifyToken, status ("DONE_WITH_CONCERNS" records a warning issue), error (concern detail for DONE_WITH_CONCERNS).
+- task-done: Record task completion. Returns narration (summary with running tally, warnings[] when phantom-success heuristics fire). Requires wave, taskId. Optional: branch, taskName, complexity, risk, filesChanged, filesAdded, verifyToken, status ("DONE_WITH_CONCERNS" records a warning issue), error (concern detail for DONE_WITH_CONCERNS).
 - task-fail: Record task failure. Returns narration (summary with running tally). Requires wave, taskId. Optional: branch, error, skippedDependency (records an issue; only a non-skipped failure updates failedTask).
 - task-context: Return everything a dispatched per-task worker needs in one call — fact-sheet content (embeds the plan-task's Contract/Acceptance Criteria/Files), a live prior-wave summary, verify guidance, and report-back instructions. Requires taskId. Optional: branch, runId (falls back the same way wave-start does, via startedAt/wave). The serialized payload is capped at 1 MiB; oversize content (fact sheet first, then prior-wave summary if still over cap) is truncated with truncated:true rather than erroring. Unknown taskId fails with an actionable error listing the valid IDs for that run.
 - context: Read/write shared context keys. Requires data (JSON object with allowed keys: planSummary, completedTaskIds, filesAdded, filesModified, interfacesCreated, decisionsFromPriorWaves). Optional: branch, maxFiles, maxDecisions, maxInterfaces, maxTaskIds.
@@ -507,6 +511,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - ledger_checkin: Register a worker as active. Requires runId, workerId. Optional: stepId.
 - ledger_checkout: Mark a worker as done. Requires runId, workerId.
 - ledger_status: List worker statuses for a run. Requires runId. Optional: timeoutSeconds, expectedWorkers (worker IDs expected to have checked in; any missing from the ledger are returned as missingWorkers).
+- log-cli: Append a CLI-captured output block to the run's evidence log. Requires cliCommand. Optional: cliExitCode, cliOutput, branch, wave.
 - drift-log: Append a drift issue and evaluate the server-side stop condition. When accumulated error-severity drift issues exceed the threshold (max(minErrorFloor, ceil(maxErrorRate * totalTasks))), returns {halt:true}. Requires driftSeverity (error|warning|info), driftSummary. Optional: driftDetail, wave, taskId, branch.
 - issue-draft: Append a pending GH issue draft to the state file's pendingIssueDrafts list (append-only — never goes through the context action, never overwrites). Requires issueDraftTitle, issueDraftBody. Optional: issueDraftLabels, taskId, branch. Returns {added:true, totalDrafts:N}.
 - decide: Record a guardrail decision (append-only — never goes through the context action, never overwrites; distinct from ship state's own "decide" action, which writes a differently-shaped {step, decision} entry under a different key). Appends {decideType, id, decision, reason} to the state file's guardrailDecisions list. Requires decideType, decideId. Optional: decideDecision, decideReason, branch. Returns {ok:true, action:"decide", next:"..."}.
@@ -1882,6 +1887,51 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 		}
 	}
 
+	// Parse and validate tasksJson BEFORE wave creation / state.Write
+	// so that invalid JSON never leaves a half-written wave on disk.
+	var validTasks []map[string]any
+	var validTasksAsAny []any // built in-line during validation to avoid a second copy loop
+	var dropped int
+	result := ExecWaveNarrationOut{}
+	if len(planHashWarnings) > 0 {
+		result.Warnings = planHashWarnings
+	}
+
+	if in.TasksJSON != "" {
+		var parsedTasks []any
+		if err := json.Unmarshal([]byte(in.TasksJSON), &parsedTasks); err != nil {
+			return nil, &mcpserver.DomainError{Msg: "tasksJson is not valid JSON: " + err.Error(), Cause: err, Suggestion: "tasksJson must be a JSON array of task objects, e.g. [{\"id\":\"T1\",\"name\":\"...\",\"description\":\"...\"}]"}
+		}
+
+		// Pre-write validation: filter out entries that are not maps or lack
+		// non-empty string id, name, or description — including numeric IDs
+		// which would otherwise cause a type-assertion miss.
+		for _, t := range parsedTasks {
+			tm, ok := t.(map[string]any)
+			if !ok {
+				dropped++
+				continue
+			}
+			if !isValidTaskEntry(tm) {
+				dropped++
+				continue
+			}
+			validTasks = append(validTasks, tm)
+			validTasksAsAny = append(validTasksAsAny, tm)
+		}
+		if dropped > 0 {
+			result.Warnings = append(result.Warnings,
+				fmt.Sprintf("wave-start: dropped %d entries from tasksJson (not map or missing/non-string id, name, or description)", dropped))
+		}
+
+		if len(validTasks) == 0 {
+			return nil, &mcpserver.DomainError{
+				Msg:        "tasksJson contains no valid task entries",
+				Suggestion: "Each entry must be an object with non-empty string fields: id, name, description",
+			}
+		}
+	}
+
 	// Find existing wave or create new one.
 	w := execFindWave(st.Data, *in.Wave)
 	if w != nil {
@@ -1905,39 +1955,7 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 	}
 
 	// Write per-task fact sheets when tasksJson is provided.
-	var parsedTasks []any
-	var validTasks []map[string]any
-	var dropped int
-	result := ExecWaveNarrationOut{}
-	if len(planHashWarnings) > 0 {
-		result.Warnings = planHashWarnings
-	}
-
 	if in.TasksJSON != "" {
-		if err := json.Unmarshal([]byte(in.TasksJSON), &parsedTasks); err != nil {
-			return nil, &mcpserver.DomainError{Msg: "tasksJson is not valid JSON: " + err.Error(), Cause: err}
-		}
-
-		// Pre-write validation: filter out non-map and empty-id entries,
-		// surfacing dropped entries as warnings instead of silently skipping.
-		for _, t := range parsedTasks {
-			tm, ok := t.(map[string]any)
-			if !ok {
-				dropped++
-				continue
-			}
-			id, _ := tm["id"].(string)
-			if id == "" {
-				dropped++
-				continue
-			}
-			validTasks = append(validTasks, tm)
-		}
-		if dropped > 0 {
-			result.Warnings = append(result.Warnings,
-				fmt.Sprintf("wave-start: dropped %d entries from tasksJson (not map or missing id)", dropped))
-		}
-
 		// Plan cross-check: warn when a task's name in tasksJson diverges
 		// from the plan heading. Warning-only — plan file may not exist
 		// (standalone execute without ship), so a missing plan silently skips.
@@ -2046,7 +2064,7 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 	result.Summary = fmt.Sprintf("Wave %d started with %d tasks.", *in.Wave, taskCount)
 
 	if execDetailLevel(in) == "full" {
-		waveTasks := execBuildWaveTasks(parsedTasks)
+		waveTasks := execBuildWaveTasks(validTasksAsAny)
 		wi := pipeline.WaveInfo{
 			Number: *in.Wave,
 			Tasks:  waveTasks,
@@ -2056,7 +2074,7 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 	}
 
 	// Build Next with ETA.
-	maxC := execMaxComplexityFromTasks(parsedTasks)
+	maxC := execMaxComplexityFromTasks(validTasksAsAny)
 	bucket := waveComplexityBucket(maxC)
 	ts := pipeline.NewTimingsStore(root)
 	etaSec, etaBasis := execWaveETA(ts, bucket)
@@ -2068,6 +2086,23 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 	}
 
 	return result, nil
+}
+
+// isValidTaskEntry checks that a task map has non-empty string id, name, and
+// description. Numeric IDs (e.g. {"id": 42}) are rejected — the value must be
+// a string, not merely truthy.
+func isValidTaskEntry(tm map[string]any) bool {
+	for _, key := range []string{"id", "name", "description"} {
+		v, ok := tm[key]
+		if !ok {
+			return false
+		}
+		s, isStr := v.(string)
+		if !isStr || s == "" {
+			return false
+		}
+	}
+	return true
 }
 
 // stringOrEmpty extracts a string from any, defaulting to empty.
@@ -2556,8 +2591,9 @@ func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time
 		}
 	}
 
-	// Parse verifyToken.
-	var verifyTokens []any
+	// Parse verifyToken — default to empty slice (not nil) so the persisted
+	// JSON contains [] rather than null, matching downstream type assertions.
+	verifyTokens := []any{}
 	if in.VerifyToken != "" {
 		var raw any
 		if err := json.Unmarshal([]byte(in.VerifyToken), &raw); err != nil {
@@ -2608,6 +2644,45 @@ func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time
 		tasks = []any{}
 	}
 
+	// Phantom-success detection (KD, task 2): computed against the wave's
+	// existing tasks BEFORE this task's own entry is appended below, so a
+	// re-submission of the same task (upsert) never matches itself.
+	var warnings []string
+	if len(verifyTokens) > 0 {
+		warnedSiblings := map[string]bool{}
+		for _, sibling := range tasks {
+			sm, ok := sibling.(map[string]any)
+			if !ok {
+				continue
+			}
+			if sid, _ := sm["id"].(string); sid == in.TaskID {
+				continue // skip self on re-submission (upsert case)
+			}
+			sibID := fmt.Sprint(sm["id"])
+			if warnedSiblings[sibID] {
+				continue
+			}
+			sibTokens, _ := sm["verifyTokens"].([]any)
+			for _, tok := range sibTokens {
+				for _, vt := range verifyTokens {
+					if fmt.Sprint(tok) == fmt.Sprint(vt) {
+						warnings = append(warnings, fmt.Sprintf(
+							"verifyToken duplicates task %v — possible phantom success",
+							sm["id"]))
+						warnedSiblings[sibID] = true
+						break
+					}
+				}
+				if warnedSiblings[sibID] {
+					break
+				}
+			}
+		}
+	}
+	if len(filesChanged) == 0 && in.Status != "FAILED" {
+		warnings = append(warnings, "no files reported changed — verify task produced real output")
+	}
+
 	taskEntry := map[string]any{
 		"id":           in.TaskID,
 		"name":         in.TaskName,
@@ -2615,6 +2690,7 @@ func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time
 		"risk":         in.Risk,
 		"status":       "completed",
 		"filesChanged": filesChanged,
+		"verifyTokens": verifyTokens,
 		"completedAt":  now().UTC().Format(time.RFC3339),
 	}
 
@@ -2694,6 +2770,7 @@ func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time
 	completed, _, total := execCountWaveOutcomes(w)
 	result := ExecTaskNarrationOut{}
 	result.Summary = fmt.Sprintf("Task %s done (%d/%d reported).", in.TaskID, completed, total)
+	result.Warnings = warnings
 	return result, nil
 }
 
@@ -4484,6 +4561,12 @@ func missingWorkersOf(expectedWorkers []string, registered map[string]bool) []st
 
 // execActionLogCLI logs a CLI execution to the evidence JSONL file.
 func execActionLogCLI(root, workDir string, in ExecuteStateIn) (any, error) {
+	if in.CLICommand == "" {
+		return nil, &mcpserver.DomainError{
+			Msg:        "cliCommand is required for log-cli",
+			Suggestion: "Pass the Bash command that was executed as the cliCommand field.",
+		}
+	}
 	branch, err := execResolveBranch(in.Branch, workDir)
 	if err != nil {
 		return nil, err
