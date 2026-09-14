@@ -39,10 +39,40 @@ const (
 
 // TaskProgress is one task's entry inside a progress marker.
 type TaskProgress struct {
-	Phase             string `json:"phase"`
-	UpdatedAt         string `json:"updatedAt"`
-	StartedAt         string `json:"startedAt,omitempty"`
-	LastCompletedTask string `json:"lastCompletedTask,omitempty"`
+	Phase             string   `json:"phase"`
+	UpdatedAt         string   `json:"updatedAt"`
+	StartedAt         string   `json:"startedAt,omitempty"`
+	LastCompletedTask string   `json:"lastCompletedTask,omitempty"`
+	AcceptanceDone    []int    `json:"acceptanceDone,omitempty"`
+	FilesTouched      []string `json:"filesTouched,omitempty"`
+	Blocker           string   `json:"blocker,omitempty"`
+	NudgedAt          string   `json:"nudgedAt,omitempty"`
+}
+
+// ProgressFields carries the optional structured-milestone fields
+// UpdateProgress's callers may set on a task's progress entry, on top of
+// the always-present phase/lastCompletedTask. Passing a zero-value
+// ProgressFields (or omitting the variadic argument to UpdateProgress
+// entirely) leaves each field's previously-recorded value untouched —
+// the same preserve-if-absent contract UpdateProgress already applies to
+// LastCompletedTask, extended uniformly to these fields rather than
+// special-cased per field.
+type ProgressFields struct {
+	// AcceptanceDone lists the 0-based indices, into the task's fact-sheet
+	// acceptance criteria, that the worker has completed so far. A nil
+	// slice preserves the existing value; callers that want to clear it
+	// pass a non-nil empty slice.
+	AcceptanceDone []int
+	// FilesTouched lists files the worker has modified so far. A nil slice
+	// preserves the existing value.
+	FilesTouched []string
+	// Blocker is a free-text reason the worker is currently blocked. An
+	// empty string preserves the existing value.
+	Blocker string
+	// NudgedAt is the server-side nudge timestamp (written/read by the
+	// orchestration's nudge protocol). An empty string preserves the
+	// existing value.
+	NudgedAt string
 }
 
 // Progress is the aggregated view of a run's progress markers, assembled by
@@ -128,10 +158,16 @@ func ReadProgress(root, runID string) (*Progress, error) {
 
 // UpdateProgress records a single task's phase as
 // <runDir>/progress/<taskID>.json via fsx.AtomicWriteJSON. The file is
-// read-modify-written so that StartedAt (set once on first write) and
-// LastCompletedTask survive across phase updates. Each task's file is
-// wholly owned by that task, so no cross-task race exists.
-func UpdateProgress(root, runID, taskID, phase, lastCompletedTask string) error {
+// read-modify-written so that StartedAt (set once on first write),
+// LastCompletedTask, and the optional ProgressFields (AcceptanceDone,
+// FilesTouched, Blocker, NudgedAt) survive across phase updates. Each
+// task's file is wholly owned by that task, so no cross-task race exists.
+//
+// fields is variadic so every existing 5-arg call site keeps compiling
+// unchanged: omitting it (or passing a zero-value ProgressFields) writes
+// only phase/lastCompletedTask, preserving whatever structured-milestone
+// data was recorded on a prior call.
+func UpdateProgress(root, runID, taskID, phase, lastCompletedTask string, fields ...ProgressFields) error {
 	if err := validateRunID(runID); err != nil {
 		return err
 	}
@@ -139,12 +175,17 @@ func UpdateProgress(root, runID, taskID, phase, lastCompletedTask string) error 
 		return fmt.Errorf("phase %q not in bounded enum (started|reading|editing|verifying|reporting): %w", phase, ErrBadPhase)
 	}
 
+	var f ProgressFields
+	if len(fields) > 0 {
+		f = fields[0]
+	}
+
 	dir := progressDir(root, runID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("wave: mkdir %s: %w", dir, err)
 	}
 
-	// Read existing to preserve StartedAt.
+	// Read existing to preserve StartedAt and any unset optional fields.
 	var existing TaskProgress
 	_ = fsx.ReadJSON(taskProgressPath(root, runID, taskID), &existing)
 
@@ -161,6 +202,27 @@ func UpdateProgress(root, runID, taskID, phase, lastCompletedTask string) error 
 		tp.LastCompletedTask = lastCompletedTask
 	} else if existing.LastCompletedTask != "" {
 		tp.LastCompletedTask = existing.LastCompletedTask
+	}
+
+	if f.AcceptanceDone != nil {
+		tp.AcceptanceDone = f.AcceptanceDone
+	} else {
+		tp.AcceptanceDone = existing.AcceptanceDone
+	}
+	if f.FilesTouched != nil {
+		tp.FilesTouched = f.FilesTouched
+	} else {
+		tp.FilesTouched = existing.FilesTouched
+	}
+	if f.Blocker != "" {
+		tp.Blocker = f.Blocker
+	} else {
+		tp.Blocker = existing.Blocker
+	}
+	if f.NudgedAt != "" {
+		tp.NudgedAt = f.NudgedAt
+	} else {
+		tp.NudgedAt = existing.NudgedAt
 	}
 
 	return fsx.AtomicWriteJSON(taskProgressPath(root, runID, taskID), tp)

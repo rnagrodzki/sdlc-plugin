@@ -733,9 +733,22 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 		}
 		dimDiff := strings.Join(parts, "\n")
 
-		// Apply difftrunc.Truncate unless requires-full-diff is set.
+		// Apply difftrunc.Truncate unless requires-full-diff is set. This is a
+		// separate cap from the matched-file-count truncation that set
+		// d.truncated above (matchFiles/loadAndMatchDimensions) — a dimension
+		// can pass the file-count cap yet still have its concatenated diff
+		// exceed DefaultDiffMaxBytes, silently dropping whole files. OR the
+		// two together so manifest.dimensions[].truncated reflects either cap,
+		// not just the file-count one.
 		if !d.requiresFullDiff {
+			beforeTrunc := dimDiff
 			dimDiff = difftrunc.Truncate(dimDiff, difftrunc.DefaultDiffMaxBytes, gitx.SplitDiffByFile)
+			if dimDiff != beforeTrunc {
+				d.truncated = true
+				if d.status == "ACTIVE" {
+					d.status = "TRUNCATED"
+				}
+			}
 		}
 
 		// Write .diff file.

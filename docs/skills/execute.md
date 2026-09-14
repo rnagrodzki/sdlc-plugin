@@ -29,7 +29,7 @@ verification after each wave and automatic recovery from failures.
 | `--rebase <mode>` | Rebase strategy: `auto`, `skip`, or `prompt`. | `skip` |
 | `--auto` | Skip all interactive prompts. | off |
 | `--branch <name>` | Create and check out this branch before executing. | auto-derived |
-| `--wave-timeout <s>` | Max seconds a single wave can run. | `1800` |
+| `--wave-timeout <s>` | Max seconds a single wave can run. Also used as the per-task total-runtime threshold for stall classification (`stallCause`). | `1800` |
 | `--wave-interval <s>` | Seconds between liveness checks during a wave. | `60` |
 
 ### Quality tiers

@@ -18,7 +18,9 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
+	"github.com/rnagrodzki/sdlc-plugin/internal/shipmeta"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
+	"github.com/rnagrodzki/sdlc-plugin/internal/wave"
 )
 
 // fixedClock returns a clock function that always returns the same time.
@@ -1509,6 +1511,7 @@ func TestExecState_TaskContext_HappyPath(t *testing.T) {
 
 	createExecState(t, root, "feat/test", map[string]any{
 		"startedAt": testNow.UTC().Format(time.RFC3339),
+		"quality":   "balanced",
 		"waves":     []any{},
 		"context": map[string]any{
 			"planSummary":             "Build the widget API.",
@@ -1519,8 +1522,9 @@ func TestExecState_TaskContext_HappyPath(t *testing.T) {
 		},
 	})
 
-	// wave-start writes the fact sheet task-context will read back.
-	tasksJSON := `[{"id":"1","name":"Build widget","description":"desc","contract":"WidgetNew() *Widget","acceptanceCriteria":["compiles"],"files":["internal/widget/widget.go"]}]`
+	// wave-start writes the fact sheets task-context will read back.
+	// Two tasks so we can verify sibling awareness.
+	tasksJSON := `[{"id":"1","name":"Build widget","description":"desc","contract":"WidgetNew() *Widget","acceptanceCriteria":["compiles"],"files":["internal/widget/widget.go"]},{"id":"2","name":"Add registry","description":"desc2","contract":"Register()","acceptanceCriteria":["tests pass"],"files":["internal/widget/registry.go","internal/widget/index.go"]}]`
 	if _, err := executeState(root, root, ExecuteStateIn{
 		Action:    "wave-start",
 		Branch:    "feat/test",
@@ -1548,6 +1552,9 @@ func TestExecState_TaskContext_HappyPath(t *testing.T) {
 	if out.TaskID != "1" {
 		t.Errorf("TaskID = %q, want %q", out.TaskID, "1")
 	}
+	if out.RunID != "run-1" {
+		t.Errorf("RunID = %q, want %q", out.RunID, "run-1")
+	}
 	for _, want := range []string{"# Task 1: Build widget", "## Contract", "WidgetNew() *Widget", "## Acceptance Criteria", "- compiles"} {
 		if !strings.Contains(out.FactSheet, want) {
 			t.Errorf("FactSheet missing %q; got:\n%s", want, out.FactSheet)
@@ -1570,8 +1577,57 @@ func TestExecState_TaskContext_HappyPath(t *testing.T) {
 	if !strings.Contains(out.ReportBack, `"1"`) {
 		t.Errorf("ReportBack = %q, want the taskId interpolated", out.ReportBack)
 	}
+	if !strings.Contains(out.ReportBack, `"run-1"`) {
+		t.Errorf("ReportBack = %q, want the real runId interpolated", out.ReportBack)
+	}
+	if strings.Contains(out.ReportBack, "<RUN_ID>") {
+		t.Errorf("ReportBack = %q, want no literal <RUN_ID> placeholder", out.ReportBack)
+	}
 	if out.Truncated {
 		t.Error("Truncated = true, want false for a small fact sheet")
+	}
+
+	// New fields: wave, quality, siblings, executionRules.
+	if out.Wave != 1 {
+		t.Errorf("Wave = %d, want 1", out.Wave)
+	}
+	if out.Quality != "balanced" {
+		t.Errorf("Quality = %q, want %q", out.Quality, "balanced")
+	}
+
+	// Siblings should contain task 2 but not task 1 (self excluded).
+	if len(out.Siblings) != 1 {
+		t.Fatalf("len(Siblings) = %d, want 1", len(out.Siblings))
+	}
+	sib := out.Siblings[0]
+	if sib.ID != "2" {
+		t.Errorf("Siblings[0].ID = %q, want %q", sib.ID, "2")
+	}
+	if sib.Name != "Add registry" {
+		t.Errorf("Siblings[0].Name = %q, want %q", sib.Name, "Add registry")
+	}
+	if len(sib.Files) != 2 || sib.Files[0] != "internal/widget/registry.go" {
+		t.Errorf("Siblings[0].Files = %v, want [internal/widget/registry.go internal/widget/index.go]", sib.Files)
+	}
+	if out.SiblingsUnknown {
+		t.Error("SiblingsUnknown = true, want false when wave-start recorded a planned task list")
+	}
+
+	// ExecutionRules
+	if out.ExecutionRules == nil {
+		t.Fatal("ExecutionRules is nil")
+	}
+	if len(out.ExecutionRules.FileScope) != 1 || out.ExecutionRules.FileScope[0] != "internal/widget/widget.go" {
+		t.Errorf("ExecutionRules.FileScope = %v, want [internal/widget/widget.go]", out.ExecutionRules.FileScope)
+	}
+	if out.ExecutionRules.VerifyMethod == "" {
+		t.Error("ExecutionRules.VerifyMethod is empty")
+	}
+	if len(out.ExecutionRules.HeartbeatPhases) != 5 {
+		t.Errorf("len(HeartbeatPhases) = %d, want 5", len(out.ExecutionRules.HeartbeatPhases))
+	}
+	if out.ExecutionRules.ReportFormat == "" {
+		t.Error("ExecutionRules.ReportFormat is empty")
 	}
 }
 
@@ -1817,6 +1873,198 @@ func TestExecState_TaskContext_TruncatesPriorWavesWhenItAloneOverflows(t *testin
 	}
 }
 
+func TestExecState_WaveStart_PersistsPlannedList(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	createExecState(t, root, "feat/test", map[string]any{
+		"startedAt": testNow.UTC().Format(time.RFC3339),
+		"waves":     []any{},
+	})
+
+	tasksJSON := `[{"id":"10","name":"Alpha","files":["a.go"]},{"id":"20","name":"Beta","files":["b.go","c.go"]}]`
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action:    "wave-start",
+		Branch:    "feat/test",
+		Wave:      intPtr(1),
+		TasksJSON: tasksJSON,
+		RunID:     "run-planned",
+	}, clock); err != nil {
+		t.Fatalf("wave-start: %v", err)
+	}
+
+	// Read the state back and inspect waves[0].planned.
+	st, err := state.Find(root, "execute", "feat/test")
+	if err != nil {
+		t.Fatalf("state.Find: %v", err)
+	}
+	waves := st.Data["waves"].([]any)
+	w := waves[0].(map[string]any)
+	planned, ok := w["planned"].([]any)
+	if !ok {
+		t.Fatal("wave missing planned list")
+	}
+	if len(planned) != 2 {
+		t.Fatalf("len(planned) = %d, want 2", len(planned))
+	}
+	first := planned[0].(map[string]any)
+	if first["id"] != "10" || first["name"] != "Alpha" {
+		t.Errorf("planned[0] = %v, want id=10 name=Alpha", first)
+	}
+}
+
+func TestExecState_TaskContext_SiblingsExcludeSelf(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	createExecState(t, root, "feat/test", map[string]any{
+		"startedAt": testNow.UTC().Format(time.RFC3339),
+		"quality":   "full",
+		"waves":     []any{},
+	})
+
+	tasksJSON := `[{"id":"A","name":"Task A","files":["a.go"]},{"id":"B","name":"Task B","files":["b.go"]}]`
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action:    "wave-start",
+		Branch:    "feat/test",
+		Wave:      intPtr(1),
+		TasksJSON: tasksJSON,
+		RunID:     "run-sib",
+	}, clock); err != nil {
+		t.Fatalf("wave-start: %v", err)
+	}
+
+	// Request task-context for task A — siblings should contain only B.
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "task-context",
+		Branch: "feat/test",
+		RunID:  "run-sib",
+		TaskID: "A",
+		Wave:   intPtr(1),
+	}, clock)
+	if err != nil {
+		t.Fatalf("task-context: %v", err)
+	}
+	out := result.(TaskContextOut)
+	if out.Wave != 1 {
+		t.Errorf("Wave = %d, want 1", out.Wave)
+	}
+	if out.Quality != "full" {
+		t.Errorf("Quality = %q, want %q", out.Quality, "full")
+	}
+	if len(out.Siblings) != 1 {
+		t.Fatalf("len(Siblings) = %d, want 1", len(out.Siblings))
+	}
+	if out.Siblings[0].ID != "B" {
+		t.Errorf("Siblings[0].ID = %q, want %q", out.Siblings[0].ID, "B")
+	}
+	// ExecutionRules.FileScope should be task A's files
+	if out.ExecutionRules == nil {
+		t.Fatal("ExecutionRules is nil")
+	}
+	if len(out.ExecutionRules.FileScope) != 1 || out.ExecutionRules.FileScope[0] != "a.go" {
+		t.Errorf("FileScope = %v, want [a.go]", out.ExecutionRules.FileScope)
+	}
+	if out.SiblingsUnknown {
+		t.Error("SiblingsUnknown = true, want false when wave-start recorded a planned task list")
+	}
+}
+
+// TestExecState_TaskContext_SiblingsUnknownWhenNoPlannedList covers
+// execute-drift-2026-09-13T12:31:27Z-2: a wave-start call that received no
+// tasksJson (or one where every entry was dropped) never records a
+// "planned" list on the wave. task-context must flag SiblingsUnknown so
+// callers don't mistake an empty Siblings slice for "no other tasks in this
+// wave" when it actually means "sibling data was never captured".
+func TestExecState_TaskContext_SiblingsUnknownWhenNoPlannedList(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	createExecState(t, root, "feat/test", map[string]any{
+		"startedAt": testNow.UTC().Format(time.RFC3339),
+		"quality":   "balanced",
+		"waves":     []any{},
+	})
+
+	// wave-start with no tasksJson: creates the wave entry but never sets
+	// "planned" (see execute_state.go's `if in.TasksJSON != "" { ... }` guard).
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action: "wave-start",
+		Branch: "feat/test",
+		Wave:   intPtr(1),
+		RunID:  "run-unk",
+	}, clock); err != nil {
+		t.Fatalf("wave-start: %v", err)
+	}
+
+	// Fact sheet written directly, bypassing wave-start's tasksJson path, so
+	// task-context has something to read back.
+	if _, err := wave.WriteFactsheet(root, "run-unk", wave.Factsheet{
+		ID:   "1",
+		Name: "Task One",
+	}); err != nil {
+		t.Fatalf("WriteFactsheet: %v", err)
+	}
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "task-context",
+		Branch: "feat/test",
+		RunID:  "run-unk",
+		TaskID: "1",
+		Wave:   intPtr(1),
+	}, clock)
+	if err != nil {
+		t.Fatalf("task-context: %v", err)
+	}
+	out := result.(TaskContextOut)
+	if !out.SiblingsUnknown {
+		t.Error("SiblingsUnknown = false, want true when the wave has no planned task list")
+	}
+	if len(out.Siblings) != 0 {
+		t.Errorf("Siblings = %v, want empty", out.Siblings)
+	}
+}
+
+func TestExecState_TaskContext_WaveFromExecCurrentWaveNum(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	createExecState(t, root, "feat/test", map[string]any{
+		"startedAt": testNow.UTC().Format(time.RFC3339),
+		"waves":     []any{},
+	})
+
+	tasksJSON := `[{"id":"1","name":"Solo task","files":["x.go"]}]`
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action:    "wave-start",
+		Branch:    "feat/test",
+		Wave:      intPtr(3),
+		TasksJSON: tasksJSON,
+		RunID:     "run-wavenum",
+	}, clock); err != nil {
+		t.Fatalf("wave-start: %v", err)
+	}
+
+	// Do NOT pass Wave — task-context should derive it via execCurrentWaveNum.
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "task-context",
+		Branch: "feat/test",
+		RunID:  "run-wavenum",
+		TaskID: "1",
+	}, clock)
+	if err != nil {
+		t.Fatalf("task-context: %v", err)
+	}
+	out := result.(TaskContextOut)
+	if out.Wave != 3 {
+		t.Errorf("Wave = %d, want 3 (derived from in_progress wave)", out.Wave)
+	}
+	// Solo task — no siblings
+	if len(out.Siblings) != 0 {
+		t.Errorf("len(Siblings) = %d, want 0 for a single-task wave", len(out.Siblings))
+	}
+}
+
 func TestExecState_TaskContext_RunIDFallsBackToDerivedID(t *testing.T) {
 	root := t.TempDir()
 	clock := fixedClock(testNow)
@@ -1853,6 +2101,56 @@ func TestExecState_TaskContext_RunIDFallsBackToDerivedID(t *testing.T) {
 	out := result.(TaskContextOut)
 	if !strings.Contains(out.FactSheet, "Derived run task") {
 		t.Errorf("FactSheet = %q, want it to contain the fact sheet written under the derived runID", out.FactSheet)
+	}
+}
+
+func TestExecState_TaskContext_DerivesWaveNumFromStateWhenWaveNil(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	// No top-level startedAt: execDeriveRunID falls back to "wave-<N>", so
+	// the derived runID directly reflects whatever waveNum is computed.
+	// This makes the test discriminating: before the fix, task-context
+	// hardcodes waveNum=0 when in.Wave is nil, deriving "wave-0" and
+	// failing to find the fact sheet wave-start wrote under "wave-2".
+	createExecState(t, root, "feat/test", map[string]any{
+		"waves":   []any{},
+		"context": map[string]any{},
+	})
+
+	tasksJSON := `[{"id":"1","name":"Wave two task"}]`
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action:    "wave-start",
+		Branch:    "feat/test",
+		Wave:      intPtr(2),
+		TasksJSON: tasksJSON,
+	}, clock); err != nil {
+		t.Fatalf("wave-start: %v", err)
+	}
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "task-context",
+		Branch: "feat/test",
+		TaskID: "1",
+	}, clock)
+	if err != nil {
+		t.Fatalf("task-context: %v", err)
+	}
+	out, ok := result.(TaskContextOut)
+	if !ok {
+		t.Fatalf("result = %T, want TaskContextOut", result)
+	}
+	if out.RunID != "wave-2" {
+		t.Errorf("RunID = %q, want %q (derived from the in-progress wave 2 recorded in state)", out.RunID, "wave-2")
+	}
+	if !strings.Contains(out.FactSheet, "Wave two task") {
+		t.Errorf("FactSheet = %q, want it to contain the fact sheet written under the derived wave-2 runID", out.FactSheet)
+	}
+	if !strings.Contains(out.ReportBack, `"wave-2"`) {
+		t.Errorf("ReportBack = %q, want the derived runId interpolated", out.ReportBack)
+	}
+	if strings.Contains(out.ReportBack, "<RUN_ID>") {
+		t.Errorf("ReportBack = %q, want no literal <RUN_ID> placeholder", out.ReportBack)
 	}
 }
 
@@ -4388,5 +4686,541 @@ func TestExecState_Decide_UnknownBranch(t *testing.T) {
 	}
 	if _, ok := err.(*mcpserver.DataError); !ok {
 		t.Fatalf("expected DataError, got %T: %v", err, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// wave-start: pre-write validation and plan cross-check
+// ---------------------------------------------------------------------------
+
+// TestExecState_WaveStart_DropsInvalidTasksJson verifies that non-map entries
+// and empty-id entries in tasksJson are dropped with a warning, and that
+// taskCount in the summary reflects only the valid tasks.
+func TestExecState_WaveStart_DropsInvalidTasksJson(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	createExecState(t, root, "feat/test", map[string]any{
+		"startedAt": testNow.UTC().Format(time.RFC3339),
+		"waves":     []any{},
+		"context":   map[string]any{},
+	})
+
+	// 5 entries: 1 valid, 1 non-map (string), 1 non-map (number),
+	// 1 map with empty id, 1 map with missing id key.
+	tasksJSON := `[
+		{"id":"T1","name":"Valid Task","description":"ok"},
+		"not a map",
+		42,
+		{"id":"","name":"Empty ID"},
+		{"name":"No ID field"}
+	]`
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action:    "wave-start",
+		Branch:    "feat/test",
+		Wave:      intPtr(1),
+		TasksJSON: tasksJSON,
+		RunID:     "test-run-drop",
+	}, clock)
+	if err != nil {
+		t.Fatalf("wave-start: %v", err)
+	}
+
+	m, ok := result.(ExecWaveNarrationOut)
+	if !ok {
+		t.Fatalf("result = %T, want ExecWaveNarrationOut", result)
+	}
+
+	// Only 1 valid task should have produced a fact sheet.
+	if len(m.FactSheets) != 1 {
+		t.Errorf("factSheets count = %d, want 1", len(m.FactSheets))
+	}
+
+	// Summary should report 1 task, not 5.
+	want := "Wave 1 started with 1 tasks."
+	if m.Summary != want {
+		t.Errorf("Summary = %q, want %q", m.Summary, want)
+	}
+
+	// Should have a warning about 4 dropped entries.
+	foundDropWarning := false
+	for _, w := range m.Warnings {
+		if strings.Contains(w, "dropped 4 entries") {
+			foundDropWarning = true
+			break
+		}
+	}
+	if !foundDropWarning {
+		t.Errorf("expected warning about 4 dropped entries, got warnings: %v", m.Warnings)
+	}
+}
+
+// TestExecState_WaveStart_PlanCrossCheck verifies that a name mismatch
+// between tasksJson and the plan headings produces a warning.
+func TestExecState_WaveStart_PlanCrossCheck(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	// Write a plan file with a task heading.
+	planPath := filepath.Join(root, "plan.md")
+	writeFile(t, planPath, `## Tasks
+
+### Task 1: Correct Name
+
+**Complexity:** Standard
+**Risk:** Low
+**Files:** a.go
+**Depends on:** none
+`)
+
+	createExecState(t, root, "feat/test", map[string]any{
+		"startedAt": testNow.UTC().Format(time.RFC3339),
+		"planPath":  planPath,
+		"waves":     []any{},
+		"context":   map[string]any{},
+	})
+
+	// tasksJson has a different name for task 1.
+	tasksJSON := `[{"id":"1","name":"Wrong Name","description":"mismatch test"}]`
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action:    "wave-start",
+		Branch:    "feat/test",
+		Wave:      intPtr(1),
+		TasksJSON: tasksJSON,
+		RunID:     "test-run-xcheck",
+	}, clock)
+	if err != nil {
+		t.Fatalf("wave-start: %v", err)
+	}
+
+	m, ok := result.(ExecWaveNarrationOut)
+	if !ok {
+		t.Fatalf("result = %T, want ExecWaveNarrationOut", result)
+	}
+
+	// Should have a warning about the name mismatch.
+	foundMismatch := false
+	for _, w := range m.Warnings {
+		if strings.Contains(w, "does not match plan heading") {
+			foundMismatch = true
+			break
+		}
+	}
+	if !foundMismatch {
+		t.Errorf("expected plan cross-check warning, got warnings: %v", m.Warnings)
+	}
+}
+
+// TestExecState_WaveStart_PlanCrossCheckSkipsMissingPlan verifies that the
+// plan cross-check silently skips when no planPath is recorded.
+func TestExecState_WaveStart_PlanCrossCheckSkipsMissingPlan(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	createExecState(t, root, "feat/test", map[string]any{
+		"startedAt": testNow.UTC().Format(time.RFC3339),
+		"waves":     []any{},
+		"context":   map[string]any{},
+	})
+
+	tasksJSON := `[{"id":"1","name":"Any Name","description":"no plan to check"}]`
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action:    "wave-start",
+		Branch:    "feat/test",
+		Wave:      intPtr(1),
+		TasksJSON: tasksJSON,
+		RunID:     "test-run-noplan",
+	}, clock)
+	if err != nil {
+		t.Fatalf("wave-start: %v", err)
+	}
+
+	m, ok := result.(ExecWaveNarrationOut)
+	if !ok {
+		t.Fatalf("result = %T, want ExecWaveNarrationOut", result)
+	}
+
+	// No mismatch warnings expected.
+	for _, w := range m.Warnings {
+		if strings.Contains(w, "does not match plan heading") {
+			t.Errorf("unexpected plan cross-check warning when no planPath: %s", w)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Finding 5: 3-tier waveTimeoutSeconds / waveIntervalSeconds resolution
+// ---------------------------------------------------------------------------
+
+func TestExecState_InitWaveTimeout(t *testing.T) {
+	t.Run("defaults when no ship state and no explicit input", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+		writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
+
+		_, err := executeState(root, root, ExecuteStateIn{
+			Action:  "init",
+			Branch:  "feat/wt-defaults",
+			Quality: "standard",
+		}, fixedClock(testNow))
+		if err != nil {
+			t.Fatalf("init: %v", err)
+		}
+
+		data := readExecState(t, root, "feat/wt-defaults")
+		if got := execToInt(data["waveTimeoutSeconds"]); got != shipmeta.ShipBuiltInDefaults.ExecuteWaveTimeout {
+			t.Errorf("waveTimeoutSeconds = %d, want %d", got, shipmeta.ShipBuiltInDefaults.ExecuteWaveTimeout)
+		}
+		if got := execToInt(data["waveIntervalSeconds"]); got != shipmeta.ShipBuiltInDefaults.ExecuteWaveInterval {
+			t.Errorf("waveIntervalSeconds = %d, want %d", got, shipmeta.ShipBuiltInDefaults.ExecuteWaveInterval)
+		}
+	})
+
+	t.Run("ship state overrides defaults", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+		writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
+		createShipState(t, root, "feat/wt-ship", map[string]any{
+			"flags": map[string]any{
+				"executeWaveTimeout":  3600,
+				"executeWaveInterval": 120,
+			},
+		})
+
+		_, err := executeState(root, root, ExecuteStateIn{
+			Action:  "init",
+			Branch:  "feat/wt-ship",
+			Quality: "standard",
+		}, fixedClock(testNow))
+		if err != nil {
+			t.Fatalf("init: %v", err)
+		}
+
+		data := readExecState(t, root, "feat/wt-ship")
+		if got := execToInt(data["waveTimeoutSeconds"]); got != 3600 {
+			t.Errorf("waveTimeoutSeconds = %d, want 3600", got)
+		}
+		if got := execToInt(data["waveIntervalSeconds"]); got != 120 {
+			t.Errorf("waveIntervalSeconds = %d, want 120", got)
+		}
+	})
+
+	t.Run("explicit input overrides defaults", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+		writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
+
+		_, err := executeState(root, root, ExecuteStateIn{
+			Action:              "init",
+			Branch:              "feat/wt-explicit",
+			Quality:             "standard",
+			WaveTimeoutSeconds:  900,
+			WaveIntervalSeconds: 30,
+		}, fixedClock(testNow))
+		if err != nil {
+			t.Fatalf("init: %v", err)
+		}
+
+		data := readExecState(t, root, "feat/wt-explicit")
+		if got := execToInt(data["waveTimeoutSeconds"]); got != 900 {
+			t.Errorf("waveTimeoutSeconds = %d, want 900", got)
+		}
+		if got := execToInt(data["waveIntervalSeconds"]); got != 30 {
+			t.Errorf("waveIntervalSeconds = %d, want 30", got)
+		}
+	})
+
+	t.Run("full cascade explicit wins over ship state", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+		writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
+		createShipState(t, root, "feat/wt-cascade", map[string]any{
+			"flags": map[string]any{
+				"executeWaveTimeout":  3600,
+				"executeWaveInterval": 120,
+			},
+		})
+
+		_, err := executeState(root, root, ExecuteStateIn{
+			Action:              "init",
+			Branch:              "feat/wt-cascade",
+			Quality:             "standard",
+			WaveTimeoutSeconds:  500,
+			WaveIntervalSeconds: 15,
+		}, fixedClock(testNow))
+		if err != nil {
+			t.Fatalf("init: %v", err)
+		}
+
+		data := readExecState(t, root, "feat/wt-cascade")
+		if got := execToInt(data["waveTimeoutSeconds"]); got != 500 {
+			t.Errorf("waveTimeoutSeconds = %d, want 500 (explicit wins)", got)
+		}
+		if got := execToInt(data["waveIntervalSeconds"]); got != 15 {
+			t.Errorf("waveIntervalSeconds = %d, want 15 (explicit wins)", got)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Finding 6: TaskProgressWithStall / StallCause wiring
+// ---------------------------------------------------------------------------
+
+func TestExecState_WaveProgress_StallCause(t *testing.T) {
+	// Helper: write a progress file directly with controlled timestamps.
+	writeProgressFile := func(t *testing.T, root, runID, taskID string, tp wave.TaskProgress) {
+		t.Helper()
+		dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir, runID, "progress")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir progress: %v", err)
+		}
+		if err := fsx.AtomicWriteJSON(filepath.Join(dir, taskID+".json"), tp); err != nil {
+			t.Fatalf("write progress file: %v", err)
+		}
+	}
+
+	const branch = "feat/stall-test"
+	const runID = "run-stall-test"
+	nowStr := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+	oldStr := time.Now().Add(-1 * time.Hour).UTC().Format("2006-01-02T15:04:05.000Z")
+
+	t.Run("healthy task has empty stallCause", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+		writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
+		// Create execute state with large timeouts so nothing stalls.
+		createExecState(t, root, branch, map[string]any{
+			"waveTimeoutSeconds":  9999,
+			"waveIntervalSeconds": 9999,
+		})
+		writeProgressFile(t, root, runID, "task-healthy", wave.TaskProgress{
+			Phase:     "editing",
+			StartedAt: nowStr,
+			UpdatedAt: nowStr,
+		})
+
+		result, err := executeState(root, root, ExecuteStateIn{
+			Action:       "wave-progress",
+			RunID:        runID,
+			Branch:       branch,
+			ReadProgress: true,
+		}, fixedClock(testNow))
+		if err != nil {
+			t.Fatalf("readProgress: %v", err)
+		}
+		out, ok := result.(ReadProgressOut)
+		if !ok {
+			t.Fatalf("result type = %T, want ReadProgressOut", result)
+		}
+		tp, exists := out.Tasks["task-healthy"]
+		if !exists {
+			t.Fatal("task-healthy not found in readProgress result")
+		}
+		if tp.StallCause != "" {
+			t.Errorf("stallCause = %q, want empty for healthy task", tp.StallCause)
+		}
+	})
+
+	t.Run("stalled task has stallCause stalled", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+		writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
+		// Small heartbeat interval so 1-hour-old updatedAt triggers stall.
+		// Large total timeout so it doesn't trigger timeout.
+		createExecState(t, root, branch, map[string]any{
+			"waveTimeoutSeconds":  99999,
+			"waveIntervalSeconds": 5,
+		})
+		writeProgressFile(t, root, runID, "task-stalled", wave.TaskProgress{
+			Phase:     "editing",
+			StartedAt: nowStr,
+			UpdatedAt: oldStr,
+		})
+
+		result, err := executeState(root, root, ExecuteStateIn{
+			Action:       "wave-progress",
+			RunID:        runID,
+			Branch:       branch,
+			ReadProgress: true,
+		}, fixedClock(testNow))
+		if err != nil {
+			t.Fatalf("readProgress: %v", err)
+		}
+		out := result.(ReadProgressOut)
+		tp := out.Tasks["task-stalled"]
+		if tp.StallCause != "stalled" {
+			t.Errorf("stallCause = %q, want %q", tp.StallCause, "stalled")
+		}
+	})
+
+	t.Run("timed-out task has stallCause timeout", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+		writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
+		// Small total timeout so 1-hour-old startedAt triggers timeout.
+		createExecState(t, root, branch, map[string]any{
+			"waveTimeoutSeconds":  5,
+			"waveIntervalSeconds": 99999,
+		})
+		writeProgressFile(t, root, runID, "task-timedout", wave.TaskProgress{
+			Phase:     "editing",
+			StartedAt: oldStr,
+			UpdatedAt: nowStr,
+		})
+
+		result, err := executeState(root, root, ExecuteStateIn{
+			Action:       "wave-progress",
+			RunID:        runID,
+			Branch:       branch,
+			ReadProgress: true,
+		}, fixedClock(testNow))
+		if err != nil {
+			t.Fatalf("readProgress: %v", err)
+		}
+		out := result.(ReadProgressOut)
+		tp := out.Tasks["task-timedout"]
+		if tp.StallCause != "timeout" {
+			t.Errorf("stallCause = %q, want %q", tp.StallCause, "timeout")
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Finding 7: ExecuteStateIn → wave.ProgressFields mapping (write path)
+// ---------------------------------------------------------------------------
+
+func TestExecState_WaveProgress_FieldsMapping(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
+
+	const runID = "run-fields-test"
+
+	_, err := executeState(root, root, ExecuteStateIn{
+		Action:         "wave-progress",
+		RunID:          runID,
+		TaskID:         "task-1",
+		Phase:          "editing",
+		AcceptanceDone: []int{0, 2, 3},
+		FilesTouched:   []string{"main.go", "go.mod"},
+		Blocker:        "waiting on API review",
+		NudgedAt:       "2025-06-15T12:00:00.000Z",
+	}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("wave-progress write: %v", err)
+	}
+
+	// Read back via wave.ReadProgress and verify each field.
+	p, err := wave.ReadProgress(root, runID)
+	if err != nil {
+		t.Fatalf("ReadProgress: %v", err)
+	}
+	tp, ok := p.Tasks["task-1"]
+	if !ok {
+		t.Fatal("task-1 not found in progress")
+	}
+
+	// AcceptanceDone
+	wantAD := []int{0, 2, 3}
+	if len(tp.AcceptanceDone) != len(wantAD) {
+		t.Errorf("AcceptanceDone = %v, want %v", tp.AcceptanceDone, wantAD)
+	} else {
+		for i, v := range wantAD {
+			if tp.AcceptanceDone[i] != v {
+				t.Errorf("AcceptanceDone[%d] = %d, want %d", i, tp.AcceptanceDone[i], v)
+			}
+		}
+	}
+
+	// FilesTouched
+	wantFT := []string{"main.go", "go.mod"}
+	if len(tp.FilesTouched) != len(wantFT) {
+		t.Errorf("FilesTouched = %v, want %v", tp.FilesTouched, wantFT)
+	} else {
+		for i, v := range wantFT {
+			if tp.FilesTouched[i] != v {
+				t.Errorf("FilesTouched[%d] = %q, want %q", i, tp.FilesTouched[i], v)
+			}
+		}
+	}
+
+	// Blocker
+	if tp.Blocker != "waiting on API review" {
+		t.Errorf("Blocker = %q, want %q", tp.Blocker, "waiting on API review")
+	}
+
+	// NudgedAt
+	if tp.NudgedAt != "2025-06-15T12:00:00.000Z" {
+		t.Errorf("NudgedAt = %q, want %q", tp.NudgedAt, "2025-06-15T12:00:00.000Z")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Finding 8: execCurrentWaveNum — three branches
+// ---------------------------------------------------------------------------
+
+func TestExecCurrentWaveNum(t *testing.T) {
+	tests := []struct {
+		name string
+		data map[string]any
+		want int
+	}{
+		{
+			name: "no waves returns 0",
+			data: map[string]any{},
+			want: 0,
+		},
+		{
+			name: "no in-progress wave returns highest number",
+			data: map[string]any{
+				"waves": []any{
+					map[string]any{"number": 1, "status": "completed"},
+					map[string]any{"number": 3, "status": "completed"},
+					map[string]any{"number": 2, "status": "failed"},
+				},
+			},
+			want: 3,
+		},
+		{
+			name: "in-progress wave returns its number",
+			data: map[string]any{
+				"waves": []any{
+					map[string]any{"number": 1, "status": "completed"},
+					map[string]any{"number": 2, "status": "in_progress"},
+					map[string]any{"number": 3, "status": "completed"},
+				},
+			},
+			want: 2,
+		},
+		{
+			name: "multiple in-progress returns highest in-progress",
+			data: map[string]any{
+				"waves": []any{
+					map[string]any{"number": 1, "status": "in_progress"},
+					map[string]any{"number": 4, "status": "in_progress"},
+					map[string]any{"number": 5, "status": "completed"},
+				},
+			},
+			want: 4,
+		},
+		{
+			name: "empty waves array returns 0",
+			data: map[string]any{
+				"waves": []any{},
+			},
+			want: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := execCurrentWaveNum(tt.data)
+			if got != tt.want {
+				t.Errorf("execCurrentWaveNum() = %d, want %d", got, tt.want)
+			}
+		})
 	}
 }

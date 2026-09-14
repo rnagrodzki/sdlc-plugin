@@ -142,7 +142,8 @@ On resource-constrained systems or when tasks share mutable state (databases, ca
 The wave-runner middle-agent is retired (KD15). The main session dispatches every per-task and
 batch Agent directly, and the dispatch prompt itself carries no protocol prose — everything a
 worker needs (fact sheet, guardrails, verify guidance, report-back instructions, prior-wave
-context) comes back from a single `task-context` call the worker makes itself.
+context, sibling awareness, and structured execution rules) comes back from a single
+`task-context` call the worker makes itself.
 
 Use this exact two-line prompt for every dispatch — single-task or one task from a batch cluster:
 
@@ -162,6 +163,11 @@ template, no heartbeat instructions. All of that lives server-side and comes bac
 | `priorWaves` | The old "Upstream Surfaces" fact-sheet snapshot, refreshed live at dispatch time (catches sibling tasks in the same wave that finished since `wave-start`). |
 | `verify` | The old "VERIFY:" canary instructions. |
 | `reportBack` | The old "Progress Reporting" heartbeat instructions and completion-checklist format — including the explicit reminder that the worker does NOT call `task-done`/`task-fail` itself; it reports its status block back to the main session, which records it. |
+| `wave` | The wave number this task belongs to (int). |
+| `quality` | The execution quality tier selected at init (e.g. "balanced"). |
+| `siblings` | Other tasks in the same wave — each entry carries `id`, `name`, and `files`, giving workers awareness of parallel work without per-task file reads. Populated from wave-start's validated task list; excludes the worker's own task. |
+| `siblingsUnknown` | `true` when this wave has no planned-task list to derive `siblings` from — i.e. `wave-start` was called for this wave without `tasksJson`. Distinguishes "sibling data was never captured" from "this task genuinely has no siblings" (which reads as an empty `siblings` array with `siblingsUnknown` absent/false). Always call `wave-start` with `tasksJson` to avoid this. |
+| `executionRules` | Machine-readable equivalent of the prose `verify` and `reportBack` fields: `fileScope` (files this task may touch), `verifyMethod`, `heartbeatPhases`, and `reportFormat`. Workers can consume either the prose or the structured form. |
 
 The response is capped at 1 MiB; if `truncated: true` comes back, the worker proceeds with what
 it has rather than treating the call as an error.
@@ -170,10 +176,12 @@ it has rather than treating the call as an error.
 concatenated in order, each following the same two-line form with its own `{taskId}`. The Agent
 works through them sequentially, calling `task-context` fresh for each before starting it.
 
-**Model, mode, and background dispatch mechanics are unchanged** — see `execute/SKILL.md`'s
-`## Wave loop` section: `model:` is required per task (haiku/sonnet/opus by complexity tier),
-`mode: "bypassPermissions"`, `run_in_background: true`, every task/batch of a wave fanned out in
-one message.
+**Naming, model, mode, and background dispatch mechanics** — see `execute/SKILL.md`'s
+`## Wave loop` section: every dispatch is named `worker-{runId}-{taskId}` (batch dispatch: the
+cluster's *first* task's ID — one Agent call, one name), giving the stall-nudge protocol (stage 5)
+a stable `SendMessage` target; `model:` is required per task (haiku/sonnet/opus by complexity
+tier), `mode: "bypassPermissions"`, `run_in_background: true`, every task/batch of a wave fanned
+out in one message.
 
 ## Common Dependency Patterns
 
