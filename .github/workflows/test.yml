@@ -26,3 +26,11 @@ jobs:
 
       - name: Test
         run: go test -tags integration ./...
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Test promote-release scripts
+        run: node --test .github/scripts/__tests__/promote-release-aggregate.test.cjs

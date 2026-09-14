@@ -20,6 +20,10 @@ const {
   readAllRCNotes,
   stripRCEntries,
   prependChangelogIfMissing,
+  findActiveRCSeries,
+  findLatestStableTag,
+  bumpSemver,
+  parseSemver,
 } = require('../promote-release.cjs');
 
 function mkTmpDir(prefix) {
@@ -219,5 +223,122 @@ describe('promotion CHANGELOG collapse', () => {
     assert.doesNotMatch(result, /## \[0\.0\.1-rc1\]/);
     assert.match(result, /## \[0\.0\.1\]/);
     assert.match(result, /Only RC notes\./);
+  });
+});
+
+describe('parseSemver', () => {
+  test('parses X.Y.Z', () => {
+    assert.deepEqual(parseSemver('1.2.3'), { major: 1, minor: 2, patch: 3 });
+  });
+
+  test('parses vX.Y.Z (strips leading v)', () => {
+    assert.deepEqual(parseSemver('v1.2.3'), { major: 1, minor: 2, patch: 3 });
+  });
+
+  test('parses X.Y.Z-rc1 (strips pre-release suffix)', () => {
+    assert.deepEqual(parseSemver('1.2.3-rc1'), { major: 1, minor: 2, patch: 3 });
+  });
+
+  test('returns null for invalid input', () => {
+    assert.equal(parseSemver('not-a-version'), null);
+    assert.equal(parseSemver('1.2'), null);
+    assert.equal(parseSemver('1.2.3.4'), null);
+  });
+});
+
+describe('bumpSemver', () => {
+  test('major increments and zeroes minor+patch', () => {
+    assert.equal(bumpSemver('1.2.3', 'major'), '2.0.0');
+  });
+
+  test('minor increments and zeroes patch', () => {
+    assert.equal(bumpSemver('1.2.3', 'minor'), '1.3.0');
+  });
+
+  test('patch increments', () => {
+    assert.equal(bumpSemver('1.2.3', 'patch'), '1.2.4');
+  });
+});
+
+describe('findLatestStableTag', () => {
+  test('returns highest non-RC semver tag', () => {
+    const dir = mkTmpDir('promote-stable-');
+    initGitRepo(dir);
+    execSync('git tag v0.0.1', { cwd: dir });
+    execSync('git tag v0.0.2', { cwd: dir });
+    execSync('git tag v0.1.0', { cwd: dir });
+
+    assert.equal(findLatestStableTag(dir, 'v'), 'v0.1.0');
+  });
+
+  test('ignores RC tags', () => {
+    const dir = mkTmpDir('promote-stable-');
+    initGitRepo(dir);
+    execSync('git tag v0.0.1', { cwd: dir });
+    execSync('git tag v0.0.2-rc1', { cwd: dir });
+
+    assert.equal(findLatestStableTag(dir, 'v'), 'v0.0.1');
+  });
+
+  test('returns null when no tags exist', () => {
+    const dir = mkTmpDir('promote-stable-');
+    initGitRepo(dir);
+
+    assert.equal(findLatestStableTag(dir, 'v'), null);
+  });
+});
+
+describe('findActiveRCSeries', () => {
+  test('returns highest base version series', () => {
+    const dir = mkTmpDir('promote-rcseries-');
+    initGitRepo(dir);
+    execSync('git tag v0.0.1-rc1', { cwd: dir });
+    execSync('git tag v0.1.0-rc1', { cwd: dir });
+
+    const series = findActiveRCSeries(dir, 'v');
+    assert.equal(series.baseVersion, '0.1.0');
+    assert.deepEqual(series.tags, ['v0.1.0-rc1']);
+  });
+
+  test('handles multiple RC series (picks highest)', () => {
+    const dir = mkTmpDir('promote-rcseries-');
+    initGitRepo(dir);
+    execSync('git tag v0.0.1-rc1', { cwd: dir });
+    execSync('git tag v0.0.1-rc2', { cwd: dir });
+    execSync('git tag v0.0.2-rc1', { cwd: dir });
+
+    const series = findActiveRCSeries(dir, 'v');
+    assert.equal(series.baseVersion, '0.0.2');
+    assert.deepEqual(series.tags, ['v0.0.2-rc1']);
+  });
+
+  test('returns null when no RC tags exist', () => {
+    const dir = mkTmpDir('promote-rcseries-');
+    initGitRepo(dir);
+    execSync('git tag v0.0.1', { cwd: dir });
+
+    assert.equal(findActiveRCSeries(dir, 'v'), null);
+  });
+
+  test('handles single RC tag', () => {
+    const dir = mkTmpDir('promote-rcseries-');
+    initGitRepo(dir);
+    execSync('git tag v0.0.1-rc1', { cwd: dir });
+
+    const series = findActiveRCSeries(dir, 'v');
+    assert.deepEqual(series, { baseVersion: '0.0.1', tags: ['v0.0.1-rc1'] });
+  });
+});
+
+describe('cross-level RC promotion scenario', () => {
+  test('findActiveRCSeries returns the patch RC series alongside an existing stable tag', () => {
+    const dir = mkTmpDir('promote-crosslevel-');
+    initGitRepo(dir);
+    execSync('git tag v1.0.0', { cwd: dir });
+    execSync('git tag v1.0.1-rc1', { cwd: dir });
+    execSync('git tag v1.0.1-rc2', { cwd: dir });
+
+    const series = findActiveRCSeries(dir, 'v');
+    assert.deepEqual(series, { baseVersion: '1.0.1', tags: ['v1.0.1-rc1', 'v1.0.1-rc2'] });
   });
 });

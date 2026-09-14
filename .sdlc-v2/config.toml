@@ -9,11 +9,12 @@
 preRelease = "rc"
 
 # When to apply pre-release tags.
-# Valid: "always-rc" | "continue-rc" | "never"
+# Valid: "always-rc" | "default-rc" | "continue-rc" | "never"
 #   always-rc    — every release gets an rc tag
+#   default-rc   — rc by default, but explicit CLI --bump overrides to final
 #   continue-rc  — only if already in rc
 #   never        — skip pre-release, go straight to release
-preReleasePolicy = "always-rc"
+preReleasePolicy = "default-rc"
 
 # How versions reach the remote.
 # Valid: "push" | "pr"
