@@ -1882,6 +1882,56 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 		}
 	}
 
+	// Parse and validate tasksJson BEFORE wave creation / state.Write
+	// so that invalid JSON never leaves a half-written wave on disk.
+	var validTasks []map[string]any
+	var validTasksAsAny []any
+	var dropped int
+	result := ExecWaveNarrationOut{}
+	if len(planHashWarnings) > 0 {
+		result.Warnings = planHashWarnings
+	}
+
+	if in.TasksJSON != "" {
+		var parsedTasks []any
+		if err := json.Unmarshal([]byte(in.TasksJSON), &parsedTasks); err != nil {
+			return nil, &mcpserver.DomainError{Msg: "tasksJson is not valid JSON: " + err.Error(), Cause: err}
+		}
+
+		// Pre-write validation: filter out entries that are not maps or lack
+		// non-empty string id, name, or description — including numeric IDs
+		// which would otherwise cause a type-assertion miss.
+		for _, t := range parsedTasks {
+			tm, ok := t.(map[string]any)
+			if !ok {
+				dropped++
+				continue
+			}
+			if !isValidTaskEntry(tm) {
+				dropped++
+				continue
+			}
+			validTasks = append(validTasks, tm)
+		}
+		if dropped > 0 {
+			result.Warnings = append(result.Warnings,
+				fmt.Sprintf("wave-start: dropped %d entries from tasksJson (not map or missing/non-string id, name, or description)", dropped))
+		}
+
+		if len(validTasks) == 0 {
+			return nil, &mcpserver.DomainError{
+				Msg:        "tasksJson contains no valid task entries",
+				Suggestion: "Each entry must be an object with non-empty string fields: id, name, description",
+			}
+		}
+
+		// Convert validated tasks to []any for functions that expect that type.
+		validTasksAsAny = make([]any, len(validTasks))
+		for i, tm := range validTasks {
+			validTasksAsAny[i] = tm
+		}
+	}
+
 	// Find existing wave or create new one.
 	w := execFindWave(st.Data, *in.Wave)
 	if w != nil {
@@ -1905,39 +1955,7 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 	}
 
 	// Write per-task fact sheets when tasksJson is provided.
-	var parsedTasks []any
-	var validTasks []map[string]any
-	var dropped int
-	result := ExecWaveNarrationOut{}
-	if len(planHashWarnings) > 0 {
-		result.Warnings = planHashWarnings
-	}
-
 	if in.TasksJSON != "" {
-		if err := json.Unmarshal([]byte(in.TasksJSON), &parsedTasks); err != nil {
-			return nil, &mcpserver.DomainError{Msg: "tasksJson is not valid JSON: " + err.Error(), Cause: err}
-		}
-
-		// Pre-write validation: filter out non-map and empty-id entries,
-		// surfacing dropped entries as warnings instead of silently skipping.
-		for _, t := range parsedTasks {
-			tm, ok := t.(map[string]any)
-			if !ok {
-				dropped++
-				continue
-			}
-			id, _ := tm["id"].(string)
-			if id == "" {
-				dropped++
-				continue
-			}
-			validTasks = append(validTasks, tm)
-		}
-		if dropped > 0 {
-			result.Warnings = append(result.Warnings,
-				fmt.Sprintf("wave-start: dropped %d entries from tasksJson (not map or missing id)", dropped))
-		}
-
 		// Plan cross-check: warn when a task's name in tasksJson diverges
 		// from the plan heading. Warning-only — plan file may not exist
 		// (standalone execute without ship), so a missing plan silently skips.
@@ -2046,7 +2064,7 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 	result.Summary = fmt.Sprintf("Wave %d started with %d tasks.", *in.Wave, taskCount)
 
 	if execDetailLevel(in) == "full" {
-		waveTasks := execBuildWaveTasks(parsedTasks)
+		waveTasks := execBuildWaveTasks(validTasksAsAny)
 		wi := pipeline.WaveInfo{
 			Number: *in.Wave,
 			Tasks:  waveTasks,
@@ -2056,7 +2074,7 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 	}
 
 	// Build Next with ETA.
-	maxC := execMaxComplexityFromTasks(parsedTasks)
+	maxC := execMaxComplexityFromTasks(validTasksAsAny)
 	bucket := waveComplexityBucket(maxC)
 	ts := pipeline.NewTimingsStore(root)
 	etaSec, etaBasis := execWaveETA(ts, bucket)
@@ -2068,6 +2086,23 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 	}
 
 	return result, nil
+}
+
+// isValidTaskEntry checks that a task map has non-empty string id, name, and
+// description. Numeric IDs (e.g. {"id": 42}) are rejected — the value must be
+// a string, not merely truthy.
+func isValidTaskEntry(tm map[string]any) bool {
+	for _, key := range []string{"id", "name", "description"} {
+		v, ok := tm[key]
+		if !ok {
+			return false
+		}
+		s, isStr := v.(string)
+		if !isStr || s == "" {
+			return false
+		}
+	}
+	return true
 }
 
 // stringOrEmpty extracts a string from any, defaulting to empty.

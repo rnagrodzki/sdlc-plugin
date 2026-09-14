@@ -1640,7 +1640,7 @@ func TestExecState_TaskContext_NormalizesTaskID(t *testing.T) {
 		"context": map[string]any{},
 	})
 
-	tasksJSON := `[{"id":"7","name":"Task seven"}]`
+	tasksJSON := `[{"id":"7","name":"Task seven","description":"desc"}]`
 	if _, err := executeState(root, root, ExecuteStateIn{
 		Action:    "wave-start",
 		Branch:    "feat/test",
@@ -1696,7 +1696,7 @@ func TestExecState_TaskContext_UnknownTaskID_ListsValidIDs(t *testing.T) {
 		"context": map[string]any{},
 	})
 
-	tasksJSON := `[{"id":"1","name":"First"},{"id":"2","name":"Second"}]`
+	tasksJSON := `[{"id":"1","name":"First","description":"d1"},{"id":"2","name":"Second","description":"d2"}]`
 	if _, err := executeState(root, root, ExecuteStateIn{
 		Action:    "wave-start",
 		Branch:    "feat/test",
@@ -1781,7 +1781,7 @@ func TestExecState_TaskContext_Truncation(t *testing.T) {
 	for i := 0; i < 40000; i++ {
 		criteria = append(criteria, fmt.Sprintf(`"criterion number %d, padded so this fact sheet blows past the one mebibyte cap"`, i))
 	}
-	tasksJSON := fmt.Sprintf(`[{"id":"1","name":"Huge task","acceptanceCriteria":[%s]}]`, strings.Join(criteria, ","))
+	tasksJSON := fmt.Sprintf(`[{"id":"1","name":"Huge task","description":"desc","acceptanceCriteria":[%s]}]`, strings.Join(criteria, ","))
 	if _, err := executeState(root, root, ExecuteStateIn{
 		Action:    "wave-start",
 		Branch:    "feat/test",
@@ -1831,7 +1831,7 @@ func TestExecState_TaskContext_TruncatesPriorWavesWhenItAloneOverflows(t *testin
 		},
 	})
 
-	tasksJSON := `[{"id":"1","name":"Tiny task"}]`
+	tasksJSON := `[{"id":"1","name":"Tiny task","description":"desc"}]`
 	if _, err := executeState(root, root, ExecuteStateIn{
 		Action:    "wave-start",
 		Branch:    "feat/test",
@@ -1882,7 +1882,7 @@ func TestExecState_WaveStart_PersistsPlannedList(t *testing.T) {
 		"waves":     []any{},
 	})
 
-	tasksJSON := `[{"id":"10","name":"Alpha","files":["a.go"]},{"id":"20","name":"Beta","files":["b.go","c.go"]}]`
+	tasksJSON := `[{"id":"10","name":"Alpha","description":"d1","files":["a.go"]},{"id":"20","name":"Beta","description":"d2","files":["b.go","c.go"]}]`
 	if _, err := executeState(root, root, ExecuteStateIn{
 		Action:    "wave-start",
 		Branch:    "feat/test",
@@ -1923,7 +1923,7 @@ func TestExecState_TaskContext_SiblingsExcludeSelf(t *testing.T) {
 		"waves":     []any{},
 	})
 
-	tasksJSON := `[{"id":"A","name":"Task A","files":["a.go"]},{"id":"B","name":"Task B","files":["b.go"]}]`
+	tasksJSON := `[{"id":"A","name":"Task A","description":"d1","files":["a.go"]},{"id":"B","name":"Task B","description":"d2","files":["b.go"]}]`
 	if _, err := executeState(root, root, ExecuteStateIn{
 		Action:    "wave-start",
 		Branch:    "feat/test",
@@ -2034,7 +2034,7 @@ func TestExecState_TaskContext_WaveFromExecCurrentWaveNum(t *testing.T) {
 		"waves":     []any{},
 	})
 
-	tasksJSON := `[{"id":"1","name":"Solo task","files":["x.go"]}]`
+	tasksJSON := `[{"id":"1","name":"Solo task","description":"desc","files":["x.go"]}]`
 	if _, err := executeState(root, root, ExecuteStateIn{
 		Action:    "wave-start",
 		Branch:    "feat/test",
@@ -2079,7 +2079,7 @@ func TestExecState_TaskContext_RunIDFallsBackToDerivedID(t *testing.T) {
 		"context":   map[string]any{},
 	})
 
-	tasksJSON := `[{"id":"1","name":"Derived run task"}]`
+	tasksJSON := `[{"id":"1","name":"Derived run task","description":"desc"}]`
 	if _, err := executeState(root, root, ExecuteStateIn{
 		Action:    "wave-start",
 		Branch:    "feat/test",
@@ -2118,7 +2118,7 @@ func TestExecState_TaskContext_DerivesWaveNumFromStateWhenWaveNil(t *testing.T) 
 		"context": map[string]any{},
 	})
 
-	tasksJSON := `[{"id":"1","name":"Wave two task"}]`
+	tasksJSON := `[{"id":"1","name":"Wave two task","description":"desc"}]`
 	if _, err := executeState(root, root, ExecuteStateIn{
 		Action:    "wave-start",
 		Branch:    "feat/test",
@@ -3811,7 +3811,7 @@ func TestExecState_WaveStart_Narration(t *testing.T) {
 		"context":   map[string]any{},
 	})
 
-	tasksJSON := `[{"id":"1","name":"Build API","complexity":"Standard"},{"id":"2","name":"Write tests","complexity":"Trivial"}]`
+	tasksJSON := `[{"id":"1","name":"Build API","description":"desc","complexity":"Standard"},{"id":"2","name":"Write tests","description":"desc","complexity":"Trivial"}]`
 	result, err := executeState(root, root, ExecuteStateIn{
 		Action:    "wave-start",
 		Branch:    "feat/test",
@@ -3856,7 +3856,7 @@ func TestExecState_WaveStart_Concise(t *testing.T) {
 		"context": map[string]any{},
 	})
 
-	tasksJSON := `[{"id":"1","name":"Task A","complexity":"Complex"}]`
+	tasksJSON := `[{"id":"1","name":"Task A","description":"desc","complexity":"Complex"}]`
 	result, err := executeState(root, root, ExecuteStateIn{
 		Action:    "wave-start",
 		Branch:    "feat/test",
@@ -4848,6 +4848,183 @@ func TestExecState_WaveStart_PlanCrossCheckSkipsMissingPlan(t *testing.T) {
 		if strings.Contains(w, "does not match plan heading") {
 			t.Errorf("unexpected plan cross-check warning when no planPath: %s", w)
 		}
+	}
+}
+
+// TestExecState_WaveStart_NumericIdDropped verifies that a task entry with a
+// numeric id (e.g. {"id": 42}) is dropped instead of panicking on type assertion.
+func TestExecState_WaveStart_NumericIdDropped(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	createExecState(t, root, "feat/test", map[string]any{
+		"startedAt": testNow.UTC().Format(time.RFC3339),
+		"waves":     []any{},
+		"context":   map[string]any{},
+	})
+
+	// One valid entry, one with numeric id.
+	tasksJSON := `[
+		{"id":"T1","name":"Valid","description":"ok"},
+		{"id":42,"name":"Numeric ID","description":"bad"}
+	]`
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action:    "wave-start",
+		Branch:    "feat/test",
+		Wave:      intPtr(1),
+		TasksJSON: tasksJSON,
+		RunID:     "test-run-numid",
+	}, clock)
+	if err != nil {
+		t.Fatalf("wave-start: %v", err)
+	}
+
+	m, ok := result.(ExecWaveNarrationOut)
+	if !ok {
+		t.Fatalf("result = %T, want ExecWaveNarrationOut", result)
+	}
+	if len(m.FactSheets) != 1 {
+		t.Errorf("factSheets count = %d, want 1", len(m.FactSheets))
+	}
+	foundWarning := false
+	for _, w := range m.Warnings {
+		if strings.Contains(w, "dropped 1 entr") {
+			foundWarning = true
+			break
+		}
+	}
+	if !foundWarning {
+		t.Errorf("expected warning about 1 dropped entry, got warnings: %v", m.Warnings)
+	}
+}
+
+// TestExecState_WaveStart_MissingNameOrDescDropped verifies that task entries
+// missing name or description are dropped with a warning.
+func TestExecState_WaveStart_MissingNameOrDescDropped(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	createExecState(t, root, "feat/test", map[string]any{
+		"startedAt": testNow.UTC().Format(time.RFC3339),
+		"waves":     []any{},
+		"context":   map[string]any{},
+	})
+
+	tasksJSON := `[
+		{"id":"T1","name":"Valid","description":"ok"},
+		{"id":"T2","name":"No desc"},
+		{"id":"T3","description":"No name"},
+		{"id":"T4","name":"","description":"empty name"}
+	]`
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action:    "wave-start",
+		Branch:    "feat/test",
+		Wave:      intPtr(1),
+		TasksJSON: tasksJSON,
+		RunID:     "test-run-fields",
+	}, clock)
+	if err != nil {
+		t.Fatalf("wave-start: %v", err)
+	}
+
+	m := result.(ExecWaveNarrationOut)
+	if len(m.FactSheets) != 1 {
+		t.Errorf("factSheets count = %d, want 1", len(m.FactSheets))
+	}
+	want := "Wave 1 started with 1 tasks."
+	if m.Summary != want {
+		t.Errorf("Summary = %q, want %q", m.Summary, want)
+	}
+	foundWarning := false
+	for _, w := range m.Warnings {
+		if strings.Contains(w, "dropped 3 entr") {
+			foundWarning = true
+			break
+		}
+	}
+	if !foundWarning {
+		t.Errorf("expected warning about 3 dropped entries, got warnings: %v", m.Warnings)
+	}
+}
+
+// TestExecState_WaveStart_ZeroValidTasksError verifies that when all tasksJson
+// entries are invalid, a DomainError with Suggestion is returned and no wave
+// is written to disk.
+func TestExecState_WaveStart_ZeroValidTasksError(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	createExecState(t, root, "feat/test", map[string]any{
+		"startedAt": testNow.UTC().Format(time.RFC3339),
+		"waves":     []any{},
+		"context":   map[string]any{},
+	})
+
+	// All entries invalid — no id, empty id, numeric id.
+	tasksJSON := `[
+		{"name":"No id","description":"bad"},
+		{"id":"","name":"Empty","description":"bad"},
+		{"id":99,"name":"Numeric","description":"bad"}
+	]`
+
+	_, err := executeState(root, root, ExecuteStateIn{
+		Action:    "wave-start",
+		Branch:    "feat/test",
+		Wave:      intPtr(1),
+		TasksJSON: tasksJSON,
+		RunID:     "test-run-zero",
+	}, clock)
+	if err == nil {
+		t.Fatal("expected error for zero valid tasks")
+	}
+	de, ok := err.(*mcpserver.DomainError)
+	if !ok {
+		t.Fatalf("expected DomainError, got %T: %v", err, err)
+	}
+	if de.Suggestion == "" {
+		t.Error("expected non-empty Suggestion on DomainError")
+	}
+	if !strings.Contains(de.Msg, "no valid task entries") {
+		t.Errorf("DomainError.Msg = %q, want contains 'no valid task entries'", de.Msg)
+	}
+
+	// Verify no wave was written to disk.
+	data := readExecState(t, root, "feat/test")
+	waves, _ := data["waves"].([]any)
+	if len(waves) != 0 {
+		t.Errorf("expected 0 waves on disk after zero-valid-tasks error, got %d", len(waves))
+	}
+}
+
+// TestExecState_WaveStart_InvalidJsonNoStateWrite verifies that invalid tasksJson
+// JSON does not leave a half-written wave on disk (validation before state.Write).
+func TestExecState_WaveStart_InvalidJsonNoStateWrite(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	createExecState(t, root, "feat/test", map[string]any{
+		"startedAt": testNow.UTC().Format(time.RFC3339),
+		"waves":     []any{},
+		"context":   map[string]any{},
+	})
+
+	_, err := executeState(root, root, ExecuteStateIn{
+		Action:    "wave-start",
+		Branch:    "feat/test",
+		Wave:      intPtr(1),
+		TasksJSON: `not valid json`,
+	}, clock)
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+
+	// Verify no wave was written to disk.
+	data := readExecState(t, root, "feat/test")
+	waves, _ := data["waves"].([]any)
+	if len(waves) != 0 {
+		t.Errorf("expected 0 waves on disk after invalid-json error, got %d", len(waves))
 	}
 }
 

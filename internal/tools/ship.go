@@ -743,6 +743,21 @@ func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]
 		merged["openspecChange"] = nil
 	}
 
+	// executeDispatchArgs: the CLI argument string the ship skill passes to
+	// the execute dispatch (Agent → execute), computed once here so the
+	// SKILL.md never has to conditionally interpolate --quality itself.
+	// --quality is only included when quality was actually set (see the
+	// "quality: cli only" block above, which intentionally omits the key
+	// rather than defaulting it) — an unconditional `--quality {flags.quality}`
+	// in SKILL.md would otherwise pass a literal empty string to execute.
+	var argParts []string
+	if q, ok := merged["quality"].(string); ok && q != "" {
+		argParts = append(argParts, "--quality", q)
+	}
+	argParts = append(argParts, "--wave-timeout", fmt.Sprint(merged["executeWaveTimeout"]))
+	argParts = append(argParts, "--wave-interval", fmt.Sprint(merged["executeWaveInterval"]))
+	merged["executeDispatchArgs"] = strings.Join(argParts, " ")
+
 	return merged, sources
 }
 

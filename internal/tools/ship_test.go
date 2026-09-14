@@ -1215,6 +1215,33 @@ func TestMergeShipFlags_PreReleasePolicyDefaultRC_CLIMinor(t *testing.T) {
 	}
 }
 
+// TestMergeShipFlags_ExecuteDispatchArgs_QualityAbsent verifies that when no
+// --quality was supplied, executeDispatchArgs omits --quality entirely
+// (rather than interpolating a bare/empty --quality flag) and still includes
+// --wave-timeout/--wave-interval computed from the merged flags.
+func TestMergeShipFlags_ExecuteDispatchArgs_QualityAbsent(t *testing.T) {
+	cfg := map[string]any{"executeWaveTimeout": 900, "executeWaveInterval": 30}
+	merged, _ := mergeShipFlags(ShipPrepareIn{}, cfg, map[string]any{})
+
+	want := "--wave-timeout 900 --wave-interval 30"
+	if got, _ := merged["executeDispatchArgs"].(string); got != want {
+		t.Errorf("Flags[executeDispatchArgs] = %q, want %q", got, want)
+	}
+}
+
+// TestMergeShipFlags_ExecuteDispatchArgs_QualityPresent verifies that when
+// --quality was supplied via CLI, executeDispatchArgs leads with
+// "--quality <value>" ahead of the wave-timeout/wave-interval flags.
+func TestMergeShipFlags_ExecuteDispatchArgs_QualityPresent(t *testing.T) {
+	cfg := map[string]any{"executeWaveTimeout": 900, "executeWaveInterval": 30}
+	merged, _ := mergeShipFlags(ShipPrepareIn{Quality: "full"}, cfg, map[string]any{})
+
+	want := "--quality full --wave-timeout 900 --wave-interval 30"
+	if got, _ := merged["executeDispatchArgs"].(string); got != want {
+		t.Errorf("Flags[executeDispatchArgs] = %q, want %q", got, want)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ship_verify_side_effect tests
 // ---------------------------------------------------------------------------
