@@ -14,6 +14,8 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/setupmeta"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
+
+	version "github.com/rnagrodzki/sdlc-plugin"
 )
 
 // ---------------------------------------------------------------------------
@@ -306,217 +308,21 @@ func normalizeBlankLines(lines []string) []string {
 	return out
 }
 
-// configTemplate is the complete .sdlc-v2/config.toml scaffold written
-// verbatim by setup_init. It carries every project-level field (the
-// AllowedProjectKeys whitelist in internal/config/schema.go: version, jira,
-// commit, pr, plan, execute) with inline comments documenting valid values,
-// defaults, and purpose, plus example guardrail entries. There is no
-// interactive Q&A step any more — the user edits this file directly, then
-// runs the validate tool. jira is left uncommented (with empty string
-// values) rather than commented out: TestConfigTemplateKeysMatchWhitelist
-// requires every AllowedProjectKeys entry to actually parse out of this
-// template, not just be mentioned in a comment.
-const configTemplate = `# ─── SDLC Project Configuration (v1) ─────────────────────────────
-# Shared across the team — committed to version control.
-# Edit this file directly, then run the validate tool to check.
-# Delete sections you don't use.
-
-# ─── Versioning ───────────────────────────────────────────────────
-
-[version]
-# Current pre-release tag (free-form string, e.g. "rc", "beta", "alpha")
-preRelease = "rc"
-
-# When to apply pre-release tags.
-# Valid: "always-rc" | "default-rc" | "continue-rc" | "never"
-#   always-rc    — every release gets an rc tag
-#   default-rc   — rc by default, but explicit CLI --bump overrides to final
-#   continue-rc  — only if already in rc
-#   never        — skip pre-release, go straight to release
-preReleasePolicy = "always-rc"
-
-# How versions reach the remote.
-# Valid: "push" | "pr"
-#   push — direct push to default branch
-#   pr   — create a pull request
-method = "push"
-
-[version.tag]
-# Create git tags for releases.
-enabled = true
-# Tag prefix (e.g. "v" → "v1.2.3", "" → "1.2.3")
-prefix = "v"
-
-[version.versionFile]
-# Write version number to a file on release.
-enabled = true
-# Path relative to repo root.
-path = ""
-# Valid: "package.json" | "plugin.json" | "version.txt" | "pyproject.toml"
-fileType = ""
-
-[version.changelog]
-# Auto-generate changelog from conventional commits.
-enabled = true
-# Changelog file path relative to repo root.
-file = "CHANGELOG.md"
-
-# ─── Jira integration (optional — clear the fields below if not using Jira) ──────
-
-[jira]
-# Jira instance hostname (e.g. "mycompany.atlassian.net")
-host = ""
-# Jira project key (e.g. "PROJ")
-projectKey = ""
-# Custom field ID for Epic Link (find in Jira admin → custom fields)
-epicFieldId = ""
-
-# ─── Commit conventions ──────────────────────────────────────────
-
-[commit]
-# Enforce conventional commits (type(scope): description).
-conventional = true
-# Require scope in commit messages.
-scopeRequired = false
-# Allowed commit types.
-allowedTypes = ["feat", "fix", "chore", "docs", "refactor", "test", "ci", "perf"]
-# Allowed scopes (empty = any scope accepted).
-allowedScopes = []
-
-# ─── Pull request defaults ───────────────────────────────────────
-
-[pr]
-# PR body template (path relative to repo root, or empty for default).
-template = ""
-# Labels to apply to PRs created by /ship.
-labels = []
-
-# ─── Plan guardrails ─────────────────────────────────────────────
-# Constraints enforced during plan creation.
-# ID is the table key — TOML enforces uniqueness, no duplicates possible.
-# severity: "error" (blocking, plan fails) or "warning" (advisory, shown but not blocking).
-#
-# Add your own guardrails as new [plan.guardrails.<your-id>] tables.
-# Example:
-#
-# [plan.guardrails.my-custom-rule]
-# severity = "warning"
-# description = "Explain what this guardrail enforces."
-
-[plan.guardrails.test-coverage-required]
-severity = "error"
-description = """
-Every task that creates or modifies source code \
-must include corresponding test cases."""
-
-[plan.guardrails.no-ci-bypass]
-severity = "error"
-description = "Plans must not include steps that skip or disable CI checks."
-
-# ─── Execute guardrails ──────────────────────────────────────────
-# Constraints enforced during task execution.
-# Same format as plan guardrails.
-
-[execute.guardrails.independent-completion-reverification]
-severity = "error"
-description = """
-Never record task-done from a self-report alone. \
-Always independently confirm via git diff and re-run \
-of build/vet/test commands."""
-`
-
-// localTemplate is the complete .sdlc-v2/local.toml scaffold written
-// verbatim by setup_init. It is gitignored (personal preferences, not a
-// team contract). automation is included as a commented-out example block
-// — it's genuinely optional and off by default, unlike jira/plan/execute
-// above which stay live so config.Read's project-key whitelist check
-// always sees every AllowedProjectKeys entry actually present.
-const localTemplate = `# ─── SDLC Local Configuration (v1) ───────────────────────────────
-# Personal preferences — gitignored, not shared with the team.
-# Edit this file directly, then run the validate tool to check.
-
-# ─── Ship pipeline ───────────────────────────────────────────────
-
-[ship]
-# Auto-run full pipeline without confirmation prompts.
-auto = true
-
-# Default version bump.
-# Valid: "major" | "minor" | "patch"
-bump = "patch"
-
-# Create PR as draft.
-draft = false
-
-# Review quality level.
-# Valid: "balanced" | "full" | "minimal"
-#   balanced — standard review depth
-#   full     — thorough, slower review
-#   minimal  — quick scan only
-quality = "balanced"
-
-# Rebase strategy before push/PR.
-# Valid: "auto" | "always" | "never"
-rebase = "auto"
-
-# Minimum review severity to block ship.
-# Valid: "low" | "medium" | "high" | "critical"
-reviewThreshold = "low"
-
-# Pipeline steps to execute during /ship (in order).
-# Valid steps: "execute" | "commit" | "review" | "pr" | "verify-pipeline"
-steps = ["execute", "commit", "review", "pr", "verify-pipeline"]
-
-# Quick mode steps (subset of steps, for /ship --quick).
-quick = ["execute", "commit", "review"]
-
-# ─── Polling intervals (seconds) ─────────────────────────────────
-
-# Execute wave polling.
-executeWaveInterval = 60
-executeWaveTimeout = 1800
-
-# CI/CD pipeline verification polling.
-verifyPipelineInterval = 60
-verifyPipelineMaxIterations = 3
-verifyPipelineTimeout = 1200
-
-# Remote review (e.g. GitHub Copilot) polling.
-awaitRemoteReviewers = []
-awaitRemoteReviewInterval = 60
-awaitRemoteReviewTimeout = 600
-
-# ─── Plan narrative style ────────────────────────────────────────
-
-[planStyle]
-# Valid: "technical" | "executive" | "mixed"
-audience = "technical"
-# Valid: "terse" | "normal" | "verbose"
-verbosity = "terse"
-# Free-form rules for plan narrative generation.
-narrativeRules = [
-  "Give enough background so someone without prior context can judge the change.",
-  "Use plain, simple English suited for non-native speakers.",
-]
-
-# ─── Automation (optional — delete if not using) ──────────────────
-
-# [automation]
-# # Valid: "full" | "supervised" | "off"
-# mode = "supervised"
-#
-# [automation.drift]
-# enabled = false
-# intervalMinutes = 30
-#
-# [automation.report]
-# enabled = false
-# format = "markdown"
-#
-# [automation.push]
-# enabled = false
-# requireReview = true
-`
+// configTemplate and localTemplate hold the complete .sdlc-v2/config.toml
+// and local.toml scaffolds written verbatim by setup_init. The canonical,
+// browsable source files live at plugins/sdlc/templates/config.toml and
+// local.toml; version.ConfigTemplate/LocalTemplate embed them at compile
+// time (go:embed can't reach outside internal/tools's own directory
+// subtree, so the go:embed directives live in the repo-root version
+// package instead — see configtemplates.go). jira is left uncommented
+// (with empty string values) in config.toml rather than commented out:
+// TestConfigTemplateKeysMatchWhitelist requires every AllowedProjectKeys
+// entry to actually parse out of the template, not just be mentioned in a
+// comment.
+var (
+	configTemplate = version.ConfigTemplate
+	localTemplate  = version.LocalTemplate
+)
 
 // setupInit is the core logic, separated from the handler for testability.
 func setupInit(root string, in SetupInitIn) (SetupInitOut, error) {

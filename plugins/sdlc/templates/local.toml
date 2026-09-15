@@ -1,0 +1,85 @@
+# ─── SDLC Local Configuration (v1) ───────────────────────────────
+# Personal preferences — gitignored, not shared with the team.
+# Edit this file directly, then run the validate tool to check.
+
+# ─── Ship pipeline ───────────────────────────────────────────────
+
+[ship]
+# Auto-run full pipeline without confirmation prompts.
+auto = true
+
+# Default version bump.
+# Valid: "major" | "minor" | "patch"
+bump = "patch"
+
+# Create PR as draft.
+draft = false
+
+# Review quality level.
+# Valid: "balanced" | "full" | "minimal"
+#   balanced — standard review depth
+#   full     — thorough, slower review
+#   minimal  — quick scan only
+quality = "balanced"
+
+# Rebase strategy before push/PR.
+# Valid: "auto" | "always" | "never"
+rebase = "auto"
+
+# Minimum review severity to block ship.
+# Valid: "low" | "medium" | "high" | "critical"
+reviewThreshold = "low"
+
+# Pipeline steps to execute during /ship (in order).
+# Valid steps: "execute" | "commit" | "review" | "pr" | "verify-pipeline"
+steps = ["execute", "commit", "review", "pr", "verify-pipeline"]
+
+# Quick mode steps (subset of steps, for /ship --quick).
+quick = ["execute", "commit", "review"]
+
+# ─── Polling intervals (seconds) ─────────────────────────────────
+
+# Execute wave polling.
+executeWaveInterval = 60
+executeWaveTimeout = 1800
+
+# CI/CD pipeline verification polling.
+verifyPipelineInterval = 60
+verifyPipelineMaxIterations = 3
+verifyPipelineTimeout = 1200
+
+# Remote review (e.g. GitHub Copilot) polling.
+awaitRemoteReviewers = []
+awaitRemoteReviewInterval = 60
+awaitRemoteReviewTimeout = 600
+
+# ─── Plan narrative style ────────────────────────────────────────
+
+[planStyle]
+# Valid: "technical" | "executive" | "mixed"
+audience = "technical"
+# Valid: "terse" | "normal" | "verbose"
+verbosity = "terse"
+# Free-form rules for plan narrative generation.
+narrativeRules = [
+  "Give enough background so someone without prior context can judge the change.",
+  "Use plain, simple English suited for non-native speakers.",
+]
+
+# ─── Automation (optional — delete if not using) ──────────────────
+
+# [automation]
+# # Valid: "full" | "supervised" | "off"
+# mode = "supervised"
+#
+# [automation.drift]
+# enabled = false
+# intervalMinutes = 30
+#
+# [automation.report]
+# enabled = false
+# format = "markdown"
+#
+# [automation.push]
+# enabled = false
+# requireReview = true

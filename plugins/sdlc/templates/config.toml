@@ -1,0 +1,107 @@
+# ─── SDLC Project Configuration (v1) ─────────────────────────────
+# Shared across the team — committed to version control.
+# Edit this file directly, then run the validate tool to check.
+# Delete sections you don't use.
+
+# ─── Versioning ───────────────────────────────────────────────────
+
+[version]
+# Current pre-release tag (free-form string, e.g. "rc", "beta", "alpha")
+preRelease = "rc"
+
+# When to apply pre-release tags.
+# Valid: "always-rc" | "default-rc" | "continue-rc" | "never"
+#   always-rc    — every release gets an rc tag
+#   default-rc   — rc by default, but explicit CLI --bump overrides to final
+#   continue-rc  — only if already in rc
+#   never        — skip pre-release, go straight to release
+preReleasePolicy = "always-rc"
+
+# How versions reach the remote.
+# Valid: "push" | "pr"
+#   push — direct push to default branch
+#   pr   — create a pull request
+method = "push"
+
+[version.tag]
+# Create git tags for releases.
+enabled = true
+# Tag prefix (e.g. "v" → "v1.2.3", "" → "1.2.3")
+prefix = "v"
+
+[version.versionFile]
+# Write version number to a file on release.
+enabled = true
+# Path relative to repo root.
+path = ""
+# Valid: "package.json" | "plugin.json" | "version.txt" | "pyproject.toml"
+fileType = ""
+
+[version.changelog]
+# Auto-generate changelog from conventional commits.
+enabled = true
+# Changelog file path relative to repo root.
+file = "CHANGELOG.md"
+
+# ─── Jira integration (optional — clear the fields below if not using Jira) ──────
+
+[jira]
+# Jira instance hostname (e.g. "mycompany.atlassian.net")
+host = ""
+# Jira project key (e.g. "PROJ")
+projectKey = ""
+# Custom field ID for Epic Link (find in Jira admin → custom fields)
+epicFieldId = ""
+
+# ─── Commit conventions ──────────────────────────────────────────
+
+[commit]
+# Enforce conventional commits (type(scope): description).
+conventional = true
+# Require scope in commit messages.
+scopeRequired = false
+# Allowed commit types.
+allowedTypes = ["feat", "fix", "chore", "docs", "refactor", "test", "ci", "perf"]
+# Allowed scopes (empty = any scope accepted).
+allowedScopes = []
+
+# ─── Pull request defaults ───────────────────────────────────────
+
+[pr]
+# PR body template (path relative to repo root, or empty for default).
+template = ""
+# Labels to apply to PRs created by /ship.
+labels = []
+
+# ─── Plan guardrails ─────────────────────────────────────────────
+# Constraints enforced during plan creation.
+# ID is the table key — TOML enforces uniqueness, no duplicates possible.
+# severity: "error" (blocking, plan fails) or "warning" (advisory, shown but not blocking).
+#
+# Add your own guardrails as new [plan.guardrails.<your-id>] tables.
+# Example:
+#
+# [plan.guardrails.my-custom-rule]
+# severity = "warning"
+# description = "Explain what this guardrail enforces."
+
+[plan.guardrails.test-coverage-required]
+severity = "error"
+description = """
+Every task that creates or modifies source code \
+must include corresponding test cases."""
+
+[plan.guardrails.no-ci-bypass]
+severity = "error"
+description = "Plans must not include steps that skip or disable CI checks."
+
+# ─── Execute guardrails ──────────────────────────────────────────
+# Constraints enforced during task execution.
+# Same format as plan guardrails.
+
+[execute.guardrails.independent-completion-reverification]
+severity = "error"
+description = """
+Never record task-done from a self-report alone. \
+Always independently confirm via git diff and re-run \
+of build/vet/test commands."""
