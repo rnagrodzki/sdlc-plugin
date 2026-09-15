@@ -71,6 +71,7 @@ type VersionConfigInfo struct {
 	PreRelease       string                        `json:"preRelease,omitempty"`
 	PreReleasePolicy string                        `json:"preReleasePolicy"`
 	Method           string                        `json:"method"`
+	PushAuth         config.PushAuth               `json:"pushAuth,omitempty"`
 	Tag              config.VersionTagConfig       `json:"tag"`
 	VersionFile      config.VersionFileConfig      `json:"versionFile"`
 	Changelog        config.VersionChangelogConfig `json:"changelog"`

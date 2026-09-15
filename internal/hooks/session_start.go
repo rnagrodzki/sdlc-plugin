@@ -31,6 +31,7 @@ import (
 // per-phase try/catch structure. Phases that can panic on unexpected input
 // are wrapped with recover() for the same reason; safePhase's fail-open
 // convention is documented on its own doc comment below.
+
 // BuildCommit and BuildTime are the sdlc binary's build metadata, surfaced
 // in the session-start header alongside PluginVersion. cmd/sdlc's main()
 // wires these from version.GetBuildInfo() before dispatching to Run (Task

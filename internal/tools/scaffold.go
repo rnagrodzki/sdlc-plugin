@@ -259,8 +259,11 @@ func scaffoldCI(root string, force bool) (ScaffoldCIOut, error) {
 	// not the fully-validated VersionSection) so scaffold_ci keeps working
 	// even when version config is absent or fails validation for reasons
 	// unrelated to CI auth (e.g. neither tag nor versionFile enabled yet).
+	var warnings []string
 	var versionMethod, pushAuthSecret string
-	if versionRaw, _ := config.ReadSection(root, "version"); versionRaw != nil {
+	if versionRaw, err := config.ReadSection(root, "version"); err != nil && !errors.Is(err, config.ErrNotFound) {
+		warnings = append(warnings, fmt.Sprintf("reading version config: %s", err.Error()))
+	} else if versionRaw != nil {
 		if s, ok := versionRaw["method"].(string); ok {
 			versionMethod = s
 		}
@@ -271,8 +274,6 @@ func scaffoldCI(root string, force bool) (ScaffoldCIOut, error) {
 		}
 	}
 	usePushAuthSecret := versionMethod == "push-with-secret" && pushAuthSecret != ""
-
-	var warnings []string
 	var files []ScaffoldFileReport
 
 	for _, entry := range scaffoldManifest {

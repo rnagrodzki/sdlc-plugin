@@ -297,11 +297,10 @@ configured):
    (Settings → Rules → Rulesets → select ruleset → Bypass list → Add
    bypass → select the GitHub App).
 
-**Note:** the project's `sdlc-config.schema.json` `version.method` enum
-does not (yet) list `"push-with-secret"` — it is validated by the Go config
-parser at runtime, not by that JSON schema. The schema value is
-documentation-only for this nested field; don't rely on IDE/JSON-schema
-validation to catch a typo in `method` here.
+**Note:** `version.method` and `version.pushAuth` are validated both by
+the JSON schema (`sdlc-config.schema.json`) and by the Go config parser
+at runtime. The schema's `method` enum includes `"push-with-secret"` and
+the `pushAuth` object with its `secretName` field.
 
 **Troubleshooting:**
 

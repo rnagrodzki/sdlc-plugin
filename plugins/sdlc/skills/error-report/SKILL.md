@@ -138,15 +138,14 @@ prepare_orchestrator({
   manifestPath,            // KD4 file handoff — Step 5 still passes this to
                             // the isolated orchestrator agent, which has no
                             // conversation context and must read the file itself
-  skill, step, operation, errorText,
-  exitOrHttpCode, errorType, userIntent, suggestedInvestigation,
-  repository, currentBranch, timestamp, labels,
+  mode,                    // echoes the mode parameter ("error_report")
 }
 ```
 
-`skill`, `step`, `operation`, and `errorText` are required; the rest may be empty
-strings — the tool tolerates empty optional fields and the orchestrator omits
-dependent template sections accordingly.
+The input fields `skill`, `step`, `operation`, and `errorText` are required; the
+rest may be empty strings — the tool tolerates empty optional fields. The return
+value contains only `manifestPath` and `mode`; the orchestrator reads all other
+fields from the manifest file at `manifestPath`.
 
 The structured fields above mirror the manifest's top-level content inline —
 use them directly in the main context (e.g. for the duplicate-issue search's

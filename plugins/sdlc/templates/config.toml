@@ -45,7 +45,8 @@ prefix = "v"
 enabled = true
 # Path relative to repo root.
 path = ""
-# Valid: "package.json" | "plugin.json" | "version.txt" | "pyproject.toml"
+# Valid: "package.json" | "plugin.json" | "version-file" | "pyproject.toml" |
+#        "cargo.toml" | "pubspec.yaml"
 fileType = ""
 
 [version.changelog]
@@ -54,24 +55,19 @@ enabled = true
 # Changelog file path relative to repo root.
 file = "CHANGELOG.md"
 
-# ─── Jira integration (optional — clear the fields below if not using Jira) ──────
+# ─── Jira integration (optional — delete this section if not using Jira) ──────
 
 [jira]
-# Jira instance hostname (e.g. "mycompany.atlassian.net")
-host = ""
-# Jira project key (e.g. "PROJ")
-projectKey = ""
-# Custom field ID for Epic Link (find in Jira admin → custom fields)
-epicFieldId = ""
+# Default Jira project key (2–10 uppercase letters, e.g. "PROJ").
+defaultProject = ""
+# Allowed Jira project keys when the repo maps to multiple projects.
+# Uncomment and list at least 2 keys to enable closed-list prompting.
+# projects = ["PROJ", "OPS"]
 
 # ─── Commit conventions ──────────────────────────────────────────
 
 [commit]
-# Enforce conventional commits (type(scope): description).
-conventional = true
-# Require scope in commit messages.
-scopeRequired = false
-# Allowed commit types.
+# Allowed commit types (conventional-commit prefix before the colon).
 allowedTypes = ["feat", "fix", "chore", "docs", "refactor", "test", "ci", "perf"]
 # Allowed scopes (empty = any scope accepted).
 allowedScopes = []
@@ -79,10 +75,10 @@ allowedScopes = []
 # ─── Pull request defaults ───────────────────────────────────────
 
 [pr]
-# PR body template (path relative to repo root, or empty for default).
-template = ""
-# Labels to apply to PRs created by /ship.
-labels = []
+# Label assignment mode for PRs created by /ship.
+# Valid: "off" (default, no automatic labels) | "rules" | "llm"
+# [pr.labels]
+# mode = "off"
 
 # ─── Plan guardrails ─────────────────────────────────────────────
 # Constraints enforced during plan creation.

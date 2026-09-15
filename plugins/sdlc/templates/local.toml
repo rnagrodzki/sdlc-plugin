@@ -15,23 +15,18 @@ bump = "patch"
 # Create PR as draft.
 draft = false
 
-# Review quality level.
-# Valid: "balanced" | "full" | "minimal"
-#   balanced — standard review depth
-#   full     — thorough, slower review
-#   minimal  — quick scan only
-quality = "balanced"
-
-# Rebase strategy before push/PR.
-# Valid: "auto" | "always" | "never"
-rebase = "auto"
+# Rebase onto default branch before shipping.
+# Valid: true | false | "prompt"
+rebase = true
 
 # Minimum review severity to block ship.
 # Valid: "low" | "medium" | "high" | "critical"
 reviewThreshold = "low"
 
 # Pipeline steps to execute during /ship (in order).
-# Valid steps: "execute" | "commit" | "review" | "pr" | "verify-pipeline"
+# Valid steps: "execute" | "commit" | "review" | "verify-openspec" |
+#   "archive-openspec" | "pr" | "verify-pipeline" |
+#   "await-remote-review" | "learnings-commit"
 steps = ["execute", "commit", "review", "pr", "verify-pipeline"]
 
 # Quick mode steps (subset of steps, for /ship --quick).
@@ -49,7 +44,7 @@ verifyPipelineMaxIterations = 3
 verifyPipelineTimeout = 1200
 
 # Remote review (e.g. GitHub Copilot) polling.
-awaitRemoteReviewers = []
+awaitRemoteReviewers = ["copilot"]
 awaitRemoteReviewInterval = 60
 awaitRemoteReviewTimeout = 600
 
@@ -58,7 +53,7 @@ awaitRemoteReviewTimeout = 600
 [planStyle]
 # Valid: "technical" | "executive" | "mixed"
 audience = "technical"
-# Valid: "terse" | "normal" | "verbose"
+# Valid: "terse" | "standard" | "detailed"
 verbosity = "terse"
 # Free-form rules for plan narrative generation.
 narrativeRules = [
@@ -69,17 +64,12 @@ narrativeRules = [
 # ─── Automation (optional — delete if not using) ──────────────────
 
 # [automation]
-# # Valid: "full" | "supervised" | "off"
+# # Valid: "supervised" | "unattended"
 # mode = "supervised"
+# reviewFixIterations = 3
+# reviewFixSeverityThreshold = "high"
 #
-# [automation.drift]
-# enabled = false
-# intervalMinutes = 30
-#
-# [automation.report]
-# enabled = false
-# format = "markdown"
-#
-# [automation.push]
-# enabled = false
-# requireReview = true
+# # Per-step overrides. Valid values: "auto" | "confirm"
+# [automation.steps]
+# execute = "confirm"
+# review = "auto"

@@ -115,14 +115,14 @@ records, alongside the resolved pipeline flags:
 - **`binaryVersion`** — the sdlc binary's build metadata (plugin version,
   commit, build time), so a state file can be traced back to the binary
   that produced it.
-- **`reportData`** — precomputed step counts (total/completed/pending/
-  skipped/failed), duration, decisions, deferred-finding count, and bump
-  provenance, attached whenever state is read. This lets the final pipeline
-  report be rendered from already-computed values instead of re-deriving
-  them from raw step/decision arrays.
+- **`reportData`** — step counts (total/completed/pending/skipped/failed),
+  duration, decisions, deferred-finding count, and bump provenance, computed
+  on the fly each time state is read (not persisted to disk). This lets the
+  final pipeline report be rendered from already-computed values instead of
+  re-deriving them from raw step/decision arrays.
 
-None of this requires extra flags or setup — it's recorded automatically by
-every run and read back automatically on resume.
+None of this requires extra flags or setup — it's recorded (or derived)
+automatically by every run and read back automatically on resume.
 
 ## Related skills
 

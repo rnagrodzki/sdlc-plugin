@@ -821,7 +821,7 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 		return HardenPrepareOut{}, &mcpserver.InfraError{Msg: fmt.Sprintf("write manifest: %s", err.Error()), Cause: err}
 	}
 
-	var surfaceIDs []string
+	surfaceIDs := []string{}
 	if len(planGuardrails) > 0 {
 		surfaceIDs = append(surfaceIDs, "plan-guardrails")
 	}

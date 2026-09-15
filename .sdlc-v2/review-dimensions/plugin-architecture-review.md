@@ -40,3 +40,9 @@ both builds the `sdlc` MCP server and ships it as
   canonical payload is refactored, stale copies must be deleted rather
   than maintained in parallel. Duplicate templates in separate directories
   create silent drift risk.
+- Config scaffold templates in `plugins/sdlc/templates/` (config.toml,
+  local.toml) must maintain field-name, enum-value, and comment parity
+  with `plugins/sdlc/schemas/sdlc-config.schema.json` — renamed schema
+  fields and enum options must be mirrored in template comments and
+  default values; verify manually or by validating template TOML against
+  the JSON schema.

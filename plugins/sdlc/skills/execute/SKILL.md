@@ -178,7 +178,7 @@ on its own; no explicit `log-cli` call is needed here.
 One `execute_state` bootstrap, before wave 1, before any gate below (`wave-start` requires the state file to already exist):
 ```
 execute_state({ action: "init", branch: "<branch>", quality: "<X>", totalTasks: N, plannedTaskIds: [<every task id from the plan>], planPath: "<PLAN_FILE>", planHash: "<sha256 of PLAN_FILE bytes>", waveTimeoutSeconds: WAVE_TIMEOUT, waveIntervalSeconds: WAVE_INTERVAL })
-execute_state({ action: "context", data: { "planSummary": "<2-3 sentence goal of the plan>" } })
+execute_state({ action: "context", data: "{\"planSummary\": \"<2-3 sentence goal of the plan>\"}" })
 ```
 Compute `planHash` here (`shasum -a 256 "$PLAN_FILE" | cut -d' ' -f1`) — the tool is a pure recorder at init time and never computes the hash itself (it stores it verbatim). At `wave-start`, the tool compares the stored hash against the plan file's current sha256 server-side; a mismatch halts the wave (see step 4 below). `plannedTaskIds` seeds the invariant this loop's final gate checks against (below). The branch recorded at init is enforced server-side on every subsequent action — a mid-session `git checkout` to a different branch is rejected with a `DomainError`, not silently followed. `init`'s response includes `pipelineAuto` (server cross-read of `ship` state's `flags.auto` — `true` when execute was dispatched from a `/ship` run where the user already approved `--auto`, `false` on a standalone execute or any ship run without `--auto`) — store it for the high-risk gate below (step 3).
 

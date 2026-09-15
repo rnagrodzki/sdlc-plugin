@@ -331,6 +331,7 @@ func prVersionDiagnosticsWith(rt prRuntime, mainRoot, workDir, currentBranch str
 		PreRelease:       vs.PreRelease,
 		PreReleasePolicy: vs.PreReleasePolicy,
 		Method:           vs.Method,
+		PushAuth:         vs.PushAuth,
 		Tag:              vs.Tag,
 		VersionFile:      vs.VersionFile,
 		Changelog:        vs.Changelog,

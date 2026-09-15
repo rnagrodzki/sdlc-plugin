@@ -1,6 +1,6 @@
 ---
 name: code-quality-review
-description: General Go code quality — idiomatic style, error handling shape, naming, dead code, and package boundaries across the sdlc-plugin module.
+description: General Go code quality — idiomatic style, error handling shape, naming, dead code, package boundaries, and doc comment conventions across the sdlc-plugin module.
 triggers:
   - "**/*.go"
 skip-when:
@@ -45,3 +45,10 @@ Review Go source changes for baseline code quality in this module
   verify the replacement is complete across the codebase — a partial
   migration creates two silently-diverging sources of truth and is worse
   than no migration at all.
+- Exported identifiers (`var`, `const`, `func`, `type`) must have an
+  explicit `//` doc comment on the line immediately preceding them; a
+  `//go:embed` directive alone is not sufficient — it is a compiler
+  directive, not documentation. File-header comment blocks must be followed
+  by a blank line before the `package` declaration, or they will be
+  misattached as the package doc string rather than remaining as
+  file-level comments.

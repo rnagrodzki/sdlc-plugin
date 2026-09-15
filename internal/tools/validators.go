@@ -75,7 +75,7 @@ type ValidateIn struct {
 	// Action selects the validator: plan_format | discovery | pr_template |
 	// cost_tiers | guardrails | dimensions | pr_body | ci_script_drift |
 	// worktree_anchoring.
-	Action string `json:"action" jsonschema_description:"Which validator to run: plan_format, discovery, pr_template, cost_tiers, guardrails, dimensions, pr_body, ci_script_drift, or worktree_anchoring."`
+	Action string `json:"action" jsonschema:"enum=plan_format,enum=discovery,enum=pr_template,enum=cost_tiers,enum=guardrails,enum=dimensions,enum=pr_body,enum=ci_script_drift,enum=worktree_anchoring" jsonschema_description:"Which validator to run: plan_format, discovery, pr_template, cost_tiers, guardrails, dimensions, pr_body, ci_script_drift, or worktree_anchoring."`
 	// File is the target file for plan_format and links... (plan_format only
 	// here; links_validate lives in links.go).
 	File string `json:"file,omitempty" jsonschema_description:"Target file to validate. Used by the plan_format action."`
@@ -144,7 +144,10 @@ func validate(root string, in ValidateIn) (ValidateOut, error) {
 	case "worktree_anchoring":
 		anchor, findings, err = validateWorktreeAnchoring(root)
 	default:
-		return ValidateOut{}, &mcpserver.DomainError{Msg: fmt.Sprintf("unknown validate action %q", in.Action)}
+		return ValidateOut{}, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("unknown validate action %q", in.Action),
+			Suggestion: "Valid actions: plan_format, discovery, pr_template, cost_tiers, guardrails, dimensions, pr_body, ci_script_drift, worktree_anchoring.",
+		}
 	}
 	if err != nil {
 		return ValidateOut{}, err
@@ -1562,16 +1565,20 @@ func sameWorktreePath(a, b string) bool {
 // anchor per internal/worktree's package doc), "active" when it exists only
 // under activeRoot (the misanchoring symptom this check exists to catch), or
 // "main" with the canonical (not-yet-created) path when neither exists yet.
-func resolveStateDirOwner(mainRoot, activeRoot string) (dir, owner string) {
+func resolveStateDirOwner(mainRoot, activeRoot string) (dir, owner string, statErr error) {
 	mainDir := filepath.Join(mainRoot, paths.DataDir)
 	if _, err := os.Stat(mainDir); err == nil {
-		return mainDir, "main"
+		return mainDir, "main", nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return mainDir, "main", fmt.Errorf("stat %s: %w", mainDir, err)
 	}
 	activeDir := filepath.Join(activeRoot, paths.DataDir)
 	if _, err := os.Stat(activeDir); err == nil {
-		return activeDir, "active"
+		return activeDir, "active", nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return activeDir, "active", fmt.Errorf("stat %s: %w", activeDir, err)
 	}
-	return mainDir, "main"
+	return mainDir, "main", nil
 }
 
 // validateWorktreeAnchoring builds the WorktreeAnchoringCheck and raises
@@ -1589,7 +1596,10 @@ func validateWorktreeAnchoring(root string) (*WorktreeAnchoringCheck, []discover
 		return nil, nil, &mcpserver.InfraError{Msg: fmt.Sprintf("determine bare status: %s", err.Error()), Cause: err}
 	}
 
-	stateDir, owner := resolveStateDirOwner(root, activeRoot)
+	stateDir, owner, statErr := resolveStateDirOwner(root, activeRoot)
+	if statErr != nil {
+		return nil, nil, &mcpserver.InfraError{Msg: fmt.Sprintf("resolve state dir owner: %s", statErr.Error()), Cause: statErr}
+	}
 
 	check := &WorktreeAnchoringCheck{
 		MainRoot:      root,
