@@ -1191,15 +1191,20 @@ func shipStateRead(root, workDir string, in ShipStateIn, now func() time.Time) (
 		return nil, err
 	}
 
-	if !shipRunInFlight(st.Data) {
-		return st.Data, nil
-	}
-
-	out := make(map[string]any, len(st.Data)+1)
+	nowVal := now()
+	out := make(map[string]any, len(st.Data)+2)
 	for k, v := range st.Data {
 		out[k] = v
 	}
-	out["resumeBriefing"] = shipBuildResumeBriefing(root, st.Data, now())
+	// reportData (R9): report-ready aggregates (step counts, duration, bump
+	// provenance, decisions, deferred findings, binary version) so the
+	// calling LLM can render the ship report without re-deriving it from
+	// raw state. Always attached, in-flight or not — a completed pipeline's
+	// final report needs this exactly as much as a resumed one's does.
+	out["reportData"] = shipBuildReportData(st.Data, nowVal)
+	if shipRunInFlight(st.Data) {
+		out["resumeBriefing"] = shipBuildResumeBriefing(root, st.Data, nowVal)
+	}
 	return out, nil
 }
 

@@ -43,5 +43,10 @@ func List() []Surface {
 			Label:       "Error report skill",
 			Description: "Sibling error-report skill REFERENCE.md template",
 		},
+		{
+			ID:          "skill-recommendation",
+			Label:       "Skill recommendation",
+			Description: "Recommend new skills/agents based on learnings and run stats",
+		},
 	}
 }

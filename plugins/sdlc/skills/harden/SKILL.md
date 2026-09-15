@@ -106,6 +106,18 @@ with `recentRuns` (last 10 pipeline run records from `runs.jsonl`) and
 orchestrator uses this as additional evidence — e.g. if the same guardrail hit
 appears in 3+ recent runs, proposal severity should escalate.
 
+The manifest's `surfaces.skillRecommendations` array (the `skill-recommendation`
+surface) is additional evidence in the same spirit as `history`, not an
+edit-proposal surface: it sources `learnings_log`'s `stats` action for
+recurring mined "Rule: ..." lessons (patterns seen 3+ times) and surfaces each
+as `{suggested, reason, patternCount, priority}`, where `priority` is
+`high`/`medium`/`low` based on how often the pattern recurs. It has no
+`targetFile` to edit — like `surfaces.errorReportSkillPath`, it is context for
+the orchestrator's rationale (e.g. "this recurring pattern suggests a new
+skill or guardrail, not just a one-off config edit"), never something Step 5
+applies via Edit/Write. When no learnings exist yet, this array is empty and
+the rest of the manifest is unaffected.
+
 **Do NOT read the full manifest file contents into the main context yet.**
 Step 2 needs only the classification preview (a small subset), and Step 3 hands
 the full manifest path to the orchestrator agent.
@@ -390,6 +402,13 @@ When the user selects **apply**:
      `validate({ action: "dimensions" })`.
    - For `surface == "copilot-instructions"`: no schema — skip validation,
      continue to 5b.
+   - `surface == "skill-recommendation"` is advisory-only manifest data (see
+     Step 1), not an edit-proposal surface — the orchestrator's Step 2 only
+     iterates the four user-side surfaces above and never reads
+     `surfaces.skillRecommendations`, so this case is not expected to occur.
+     If a proposal with this `surface` value ever arrives anyway, skip it
+     without applying (do not Edit/Write, do not validate) and continue to
+     the next proposal: there is no `targetFile` to safely resolve for it.
 3. **If `findings` is non-empty:** the just-applied write introduced a problem
    (Step 1's pre-flight already guaranteed the pre-existing on-disk state was
    clean, so any finding now is caused by this proposal). Revert `targetFile`

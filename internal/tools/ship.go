@@ -1196,6 +1196,126 @@ func shipVerifySideEffect(root, activeRoot string, in ShipVerifySideEffectIn, no
 }
 
 // ---------------------------------------------------------------------------
+// Report data (R9)
+// ---------------------------------------------------------------------------
+
+// ShipReportData is a report-ready aggregate of a ship state's raw Data map,
+// computed server-side so the calling LLM can render the final ship report
+// without re-deriving step counts, duration, decisions, or bump provenance
+// from raw state. Attached by ship_state's "read" action (ship_state.go)
+// under the "reportData" key.
+type ShipReportData struct {
+	// Version is the resolved release version. Ship state never records
+	// one: the "version" step's release diagnostics are folded into the pr
+	// step and not written back here (see shipStepSideEffects' comment
+	// above), so this is always "" today. Left for a future task to
+	// populate once/if a resolved release version is persisted to state.
+	Version          string            `json:"version"`
+	Bump             string            `json:"bump"`
+	BumpSource       string            `json:"bumpSource"`
+	PreRelease       string            `json:"preRelease,omitempty"`
+	PreReleasePolicy string            `json:"preReleasePolicy,omitempty"`
+	StepsTotal       int               `json:"stepsTotal"`
+	StepsCompleted   int               `json:"stepsCompleted"`
+	StepsPending     int               `json:"stepsPending"`
+	StepsSkipped     int               `json:"stepsSkipped"`
+	StepsFailed      int               `json:"stepsFailed"`
+	Duration         string            `json:"duration,omitempty"`
+	Decisions        []string          `json:"decisions"`
+	DeferredFindings int               `json:"deferredFindings"`
+	BinaryVersion    map[string]string `json:"binaryVersion"`
+}
+
+// shipBuildReportData computes ShipReportData from a ship state's raw Data
+// map (as written by shipPrepare/shipStateInit and mutated by shipState's
+// action handlers). data has always round-tripped through JSON by the time
+// a "read" happens (state.Find unmarshals the state file), so nested values
+// are map[string]any/[]any rather than the concrete Go types they started
+// as (map[string]string, version.BuildInfo, ...) — every lookup below type-
+// asserts defensively and falls back to the zero value instead of panicking
+// when a key is absent (e.g. state created via the "init" action, which
+// never sets sources/versionCfg/binaryVersion — only shipPrepare does).
+func shipBuildReportData(data map[string]any, now time.Time) ShipReportData {
+	flags, _ := data["flags"].(map[string]any)
+	sources, _ := data["sources"].(map[string]any)
+	versionCfg, _ := data["versionCfg"].(map[string]any)
+
+	bump, _ := flags["bump"].(string)
+	bumpSource, _ := sources["bump"].(string)
+	preRelease, _ := versionCfg["preRelease"].(string)
+	preReleasePolicy, _ := versionCfg["preReleasePolicy"].(string)
+
+	var total, completed, pending, skipped, failed int
+	for _, s := range shipStepsSlice(data) {
+		sm, ok := s.(map[string]any)
+		if !ok {
+			continue
+		}
+		total++
+		switch sm["status"] {
+		case "completed":
+			completed++
+		case "skipped":
+			skipped++
+		case "failed":
+			failed++
+		default: // "pending", "in_progress", or any unrecognized status
+			pending++
+		}
+	}
+
+	duration := ""
+	if startedAt, ok := data["startedAt"].(string); ok && startedAt != "" {
+		end := now.UTC().Format(time.RFC3339)
+		if completedAt, ok := data["pipelineCompletedAt"].(string); ok && completedAt != "" {
+			end = completedAt
+		}
+		if d, ok := pipeline.Duration(startedAt, end); ok {
+			duration = pipeline.Humanize(d)
+		}
+	}
+
+	decisionsRaw, _ := data["decisions"].([]any)
+	decisions := make([]string, 0, len(decisionsRaw))
+	for _, entry := range decisionsRaw {
+		dm, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		step, _ := dm["step"].(string)
+		text, _ := dm["decision"].(string)
+		decisions = append(decisions, fmt.Sprintf("%s: %s", step, text))
+	}
+
+	deferredFindings, _ := data["deferredFindings"].([]any)
+
+	binaryVersion := map[string]string{}
+	if bv, ok := data["binaryVersion"].(map[string]any); ok {
+		for k, v := range bv {
+			if s, ok := v.(string); ok {
+				binaryVersion[k] = s
+			}
+		}
+	}
+
+	return ShipReportData{
+		Bump:             bump,
+		BumpSource:       bumpSource,
+		PreRelease:       preRelease,
+		PreReleasePolicy: preReleasePolicy,
+		StepsTotal:       total,
+		StepsCompleted:   completed,
+		StepsPending:     pending,
+		StepsSkipped:     skipped,
+		StepsFailed:      failed,
+		Duration:         duration,
+		Decisions:        decisions,
+		DeferredFindings: len(deferredFindings),
+		BinaryVersion:    binaryVersion,
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
