@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.2] - 2026-09-15
+
+- Add CI push-with-secret authentication mode for protected branches
+- Add structured outputs across ship tooling: build commit hash, CI drift detection, learnings stats
+- Address review findings and strengthen guardrails across the pipeline
+- Document waves 1-5 (resolution trace, CI drift, worktree anchoring, structured harden/review output, learnings stats, skill recommendations, state-first step, push-with-secret CI auth)
+- Extract config templates into browsable TOML files; add skill-doc-drift review dimension
+- Precompute ship report data and expose a skill-recommendation surface for harden
+- Surface version info in ship_prepare; anchor git worktrees to the bare repo; add structured review fields; enforce state-first SKILL.md ordering
+
 ## [0.1.1] - 2026-09-14
 
 - Adds "default-rc" preReleasePolicy so /ship --bump patch produces a final release instead of an RC by default
