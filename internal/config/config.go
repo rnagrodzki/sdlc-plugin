@@ -204,6 +204,12 @@ func (a *AutomationSection) StepMode(step string) string {
 // writes when enabled. One of:
 //   - "push" (default): commit and push directly to main.
 //   - "pr": open a release PR instead of pushing directly to main.
+//   - "push-with-secret": commit and push directly to main like "push", but
+//     scaffolded CI (release-on-main.yml, promote-release.yml) authenticates
+//     with the repo secret named in PushAuth.SecretName instead of the
+//     default GITHUB_TOKEN — for repos whose branch-protection rulesets
+//     block direct pushes from the default token but allow a bypass-listed
+//     GitHub App identity (R10).
 //
 // PreRelease is the default pre-release label applied when no explicit
 // base bump or --pre is given.
@@ -231,6 +237,7 @@ type VersionSection struct {
 	Tag              VersionTagConfig       `json:"tag" toml:"tag"`
 	VersionFile      VersionFileConfig      `json:"versionFile" toml:"versionFile"`
 	Changelog        VersionChangelogConfig `json:"changelog" toml:"changelog"`
+	PushAuth         PushAuth               `json:"pushAuth" toml:"pushAuth"`
 }
 
 // VersionTagConfig is the tag release path: creating a git tag (and GitHub
@@ -256,6 +263,16 @@ type VersionFileConfig struct {
 type VersionChangelogConfig struct {
 	Enabled bool   `json:"enabled" toml:"enabled"`
 	File    string `json:"file" toml:"file"`
+}
+
+// PushAuth configures the alternate CI authentication used when Method is
+// "push-with-secret" (R10). SecretName names the repo secret — holding a
+// GitHub App installation token (or PAT) with Contents:write permission and
+// bypass privileges on the repo's branch-protection rulesets — that
+// scaffolded release-on-main.yml/promote-release.yml reference instead of
+// the default GITHUB_TOKEN. Ignored for every other Method value.
+type PushAuth struct {
+	SecretName string `json:"secretName" toml:"secretName"`
 }
 
 // errOldVersionShape is returned by parseVersionSection when the raw
@@ -344,6 +361,11 @@ func parseVersionSection(raw map[string]any) (*VersionSection, error) {
 		}
 		if s, ok := clRaw["file"].(string); ok {
 			v.Changelog.File = s
+		}
+	}
+	if paRaw, ok := raw["pushAuth"].(map[string]any); ok {
+		if s, ok := paRaw["secretName"].(string); ok {
+			v.PushAuth.SecretName = s
 		}
 	}
 

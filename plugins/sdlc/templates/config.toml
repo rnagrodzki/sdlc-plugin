@@ -18,10 +18,21 @@ preRelease = "rc"
 preReleasePolicy = "always-rc"
 
 # How versions reach the remote.
-# Valid: "push" | "pr"
-#   push — direct push to default branch
-#   pr   — create a pull request
+# Valid: "push" | "pr" | "push-with-secret"
+#   push             — direct push to default branch
+#   pr               — create a pull request
+#   push-with-secret — direct push, but scaffolded CI authenticates with the
+#                      repo secret named in [version.pushAuth] instead of
+#                      GITHUB_TOKEN (for rulesets that block the default
+#                      token but bypass-list a GitHub App)
 method = "push"
+
+# Only used when method = "push-with-secret". Uncomment and set secretName
+# to the repo secret holding a GitHub App installation token (or PAT) with
+# Contents:write permission and bypass privileges on branch-protection
+# rulesets.
+# [version.pushAuth]
+# secretName = "RELEASE_TOKEN"
 
 [version.tag]
 # Create git tags for releases.

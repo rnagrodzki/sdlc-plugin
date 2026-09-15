@@ -710,6 +710,9 @@ func TestParseVersionSection_Full(t *testing.T) {
 			"enabled": true,
 			"file":    "HISTORY.md",
 		},
+		"pushAuth": map[string]any{
+			"secretName": "RELEASE_TOKEN",
+		},
 	}
 
 	v, err := parseVersionSection(raw)
@@ -736,6 +739,31 @@ func TestParseVersionSection_Full(t *testing.T) {
 	}
 	if !v.Changelog.Enabled || v.Changelog.File != "HISTORY.md" {
 		t.Errorf("Changelog = %+v, want {Enabled:true File:HISTORY.md} (explicit file preserved, not overridden by default)", v.Changelog)
+	}
+	if v.PushAuth.SecretName != "RELEASE_TOKEN" {
+		t.Errorf("PushAuth.SecretName = %q, want %q", v.PushAuth.SecretName, "RELEASE_TOKEN")
+	}
+}
+
+func TestParseVersionSection_PushWithSecret(t *testing.T) {
+	v, err := parseVersionSection(map[string]any{
+		"method":      "push-with-secret",
+		"versionFile": map[string]any{"enabled": true, "path": "package.json"},
+		"pushAuth": map[string]any{
+			"secretName": "RELEASE_TOKEN",
+		},
+	})
+	if err != nil {
+		t.Fatalf("parseVersionSection: unexpected error: %v", err)
+	}
+	if v == nil {
+		t.Fatal("parseVersionSection: expected non-nil result")
+	}
+	if v.Method != "push-with-secret" {
+		t.Errorf("Method = %q, want %q", v.Method, "push-with-secret")
+	}
+	if v.PushAuth.SecretName != "RELEASE_TOKEN" {
+		t.Errorf("PushAuth.SecretName = %q, want %q", v.PushAuth.SecretName, "RELEASE_TOKEN")
 	}
 }
 

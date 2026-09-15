@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
@@ -238,9 +240,37 @@ func ciScriptDrift(root string) ([]CIScriptDriftEntry, error) {
 	return entries, nil
 }
 
+// pushAuthWorkflowKeys are the payload keys whose CI identity is affected by
+// version.method "push-with-secret" (R10): both authenticate git push (via
+// actions/checkout's persisted credential) and gh CLI calls (via the GH_TOKEN
+// env var) using the default GITHUB_TOKEN, which branch-protection rulesets
+// commonly block. verify-release-intent.yml and other GITHUB_TOKEN-using
+// workflows are read-only/non-push and intentionally excluded.
+var pushAuthWorkflowKeys = map[string]bool{
+	"release-on-main.yml": true,
+	"promote-release.yml": true,
+}
+
 // scaffoldCI is the core logic, separated for testability.
 func scaffoldCI(root string, force bool) (ScaffoldCIOut, error) {
 	payloads := Payloads()
+
+	// version.method/pushAuth.secretName are read tolerantly (raw section,
+	// not the fully-validated VersionSection) so scaffold_ci keeps working
+	// even when version config is absent or fails validation for reasons
+	// unrelated to CI auth (e.g. neither tag nor versionFile enabled yet).
+	var versionMethod, pushAuthSecret string
+	if versionRaw, _ := config.ReadSection(root, "version"); versionRaw != nil {
+		if s, ok := versionRaw["method"].(string); ok {
+			versionMethod = s
+		}
+		if pa, ok := versionRaw["pushAuth"].(map[string]any); ok {
+			if s, ok := pa["secretName"].(string); ok {
+				pushAuthSecret = s
+			}
+		}
+	}
+	usePushAuthSecret := versionMethod == "push-with-secret" && pushAuthSecret != ""
 
 	var warnings []string
 	var files []ScaffoldFileReport
@@ -252,6 +282,11 @@ func scaffoldCI(root string, force bool) (ScaffoldCIOut, error) {
 			return ScaffoldCIOut{}, &mcpserver.InfraError{
 				Msg: fmt.Sprintf("embedded payload %q not found", entry.PayloadKey),
 			}
+		}
+
+		if usePushAuthSecret && pushAuthWorkflowKeys[entry.PayloadKey] {
+			srcContent = bytes.ReplaceAll(srcContent,
+				[]byte("secrets.GITHUB_TOKEN"), []byte("secrets."+pushAuthSecret))
 		}
 
 		currentVersion, installedVersion, destExists, legacyExists, destPath, legacyPath, verr := scaffoldEntryVersions(root, entry, srcContent)
@@ -322,15 +357,34 @@ func scaffoldCI(root string, force bool) (ScaffoldCIOut, error) {
 		Warnings:   warnings,
 		Files:      files,
 		Protection: protection,
-		Next:       scaffoldNextGuidance(protection),
+		Next:       scaffoldNextGuidance(protection, versionMethod, pushAuthSecret),
 	}, nil
 }
 
 // scaffoldNextGuidance builds the actionable next-step guidance surfaced in
 // ScaffoldCIOut.Next, tailored to whether branch protection was detected on
-// the default branch.
-func scaffoldNextGuidance(protection RulesetCheckResult) string {
+// the default branch and to the configured version.method. When method is
+// "push-with-secret" the guidance gives step-by-step GitHub App setup
+// instructions (R10) rather than the generic "you have three options"
+// framing aimed at someone who hasn't chosen a method yet.
+func scaffoldNextGuidance(protection RulesetCheckResult, method, secretName string) string {
 	const promoteNote = "promote-release.yml was also scaffolded — use Actions > SDLC Promote Release to promote an RC to a final release without creating a PR."
+	if method == "push-with-secret" {
+		secretRef := secretName
+		if secretRef == "" {
+			secretRef = "<secretName>"
+		}
+		return fmt.Sprintf(
+			"version.method is \"push-with-secret\": release-on-main.yml and promote-release.yml authenticate with the %q repo secret instead of the default GITHUB_TOKEN, so they can bypass branch-protection rulesets that block the default token. "+
+				"Setup: "+
+				"(1) create a GitHub App with the Contents:write repository permission; "+
+				"(2) install the App on this repository; "+
+				"(3) generate an installation access token for the App and add it as a repository secret named %q; "+
+				"(4) add the App as a bypass actor in your branch protection rulesets "+
+				"(Settings > Rules > Rulesets > select ruleset > Bypass list > Add bypass > select the GitHub App). "+
+				promoteNote,
+			secretRef, secretRef)
+	}
 	if protection.HasRulesets || protection.HasClassicProt {
 		return fmt.Sprintf(
 			"Branch protection is active on %q, which can block direct pushes when version.method is \"push\". "+
