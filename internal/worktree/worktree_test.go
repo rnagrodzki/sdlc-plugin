@@ -113,6 +113,72 @@ func TestMainRootIn_SingleWorktree(t *testing.T) {
 	}
 }
 
+// TestMainRootIn_BareWithLinkedWorktree reproduces the porcelain shape from
+// a bare-clone-anchored worktree setup (e.g. CI checkouts that clone
+// `--bare` and add worktrees from it): `git worktree list --porcelain`
+// lists the bare repo first, followed by "bare" instead of HEAD/branch
+// lines, then the linked worktree. mainRootIn must skip the bare entry and
+// return the linked worktree's path, not the bare root.
+func TestMainRootIn_BareWithLinkedWorktree(t *testing.T) {
+	mainDir := t.TempDir()
+	setupMainRepo(t, mainDir)
+	branch := runGit(t, mainDir, "symbolic-ref", "--short", "HEAD")
+
+	bareDir := filepath.Join(t.TempDir(), "repo.git")
+	runGit(t, mainDir, "clone", "--bare", "-q", mainDir, bareDir)
+
+	linkedDir := filepath.Join(t.TempDir(), "linked")
+	runGit(t, bareDir, "worktree", "add", "-q", linkedDir, branch)
+
+	got, err := mainRootIn(linkedDir)
+	if err != nil {
+		t.Fatalf("mainRootIn(%s) returned error: %v", linkedDir, err)
+	}
+
+	if realPath(t, got) != realPath(t, linkedDir) {
+		t.Errorf("mainRootIn(%s) = %q, want %q (linked worktree, not bare root %q)", linkedDir, got, linkedDir, bareDir)
+	}
+}
+
+// TestMainRootIn_BareOnly_NoLinkedWorktrees confirms that a bare-only
+// registration (no linked worktrees exist yet) errors out rather than
+// silently falling back to the bare path once it is skipped.
+func TestMainRootIn_BareOnly_NoLinkedWorktrees(t *testing.T) {
+	mainDir := t.TempDir()
+	setupMainRepo(t, mainDir)
+
+	bareDir := filepath.Join(t.TempDir(), "repo.git")
+	runGit(t, mainDir, "clone", "--bare", "-q", mainDir, bareDir)
+
+	got, err := mainRootIn(bareDir)
+	if err == nil {
+		t.Fatalf("mainRootIn(%s) = %q, nil; want an error (only a bare entry exists)", bareDir, got)
+	}
+	if got != "" {
+		t.Errorf("mainRootIn(%s) = %q on error; want empty string", bareDir, got)
+	}
+}
+
+func TestIsBare(t *testing.T) {
+	mainDir := t.TempDir()
+	setupMainRepo(t, mainDir)
+
+	if bare, err := IsBare(mainDir); err != nil {
+		t.Fatalf("IsBare(%s) returned error: %v", mainDir, err)
+	} else if bare {
+		t.Errorf("IsBare(%s) = true, want false for a normal worktree", mainDir)
+	}
+
+	bareDir := filepath.Join(t.TempDir(), "repo.git")
+	runGit(t, mainDir, "clone", "--bare", "-q", mainDir, bareDir)
+
+	if bare, err := IsBare(bareDir); err != nil {
+		t.Fatalf("IsBare(%s) returned error: %v", bareDir, err)
+	} else if !bare {
+		t.Errorf("IsBare(%s) = false, want true for a bare repository", bareDir)
+	}
+}
+
 func TestMainRootIn_NonRepo(t *testing.T) {
 	dir := t.TempDir()
 

@@ -21,6 +21,8 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/shipmeta"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
+
+	version "github.com/rnagrodzki/sdlc-plugin"
 )
 
 // ---------------------------------------------------------------------------
@@ -142,6 +144,12 @@ type ShipPrepareOut struct {
 	// "config (version.preReleasePolicy enforced over cli)",
 	// "quick", or "default").
 	Sources map[string]string `json:"sources"`
+	// VersionCfg is the raw [version] config section as read at resolve
+	// time (config.ReadSection), snapshotted for diagnosability (R6).
+	VersionCfg map[string]any `json:"versionCfg"`
+	// BinaryVersion is the sdlc binary's build metadata (version.GetBuildInfo),
+	// recorded so a state file can be traced back to the binary that produced it.
+	BinaryVersion version.BuildInfo `json:"binaryVersion"`
 
 	Branch    string `json:"branch"`
 	Worktree  string `json:"worktree"`
@@ -459,11 +467,15 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 		}
 	}
 
+	binaryVersion := version.GetBuildInfo()
+
 	out := ShipPrepareOut{
 		Errors:        errors,
 		Warnings:      warnings,
 		Flags:         merged,
 		Sources:       sources,
+		VersionCfg:    versionCfg,
+		BinaryVersion: binaryVersion,
 		Branch:        currentBranch,
 		Worktree:      activeRoot,
 		PrunedOrphans: []string{},
@@ -496,6 +508,9 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 	st.Data["branch"] = currentBranch
 	st.Data["worktree"] = activeRoot
 	st.Data["flags"] = merged
+	st.Data["sources"] = sources
+	st.Data["versionCfg"] = versionCfg
+	st.Data["binaryVersion"] = binaryVersion
 	scaffold := shipmeta.InitialShipStepsFromConfig(stepsList)
 	st.Data["steps"] = scaffold
 	st.Data["decisions"] = []any{}

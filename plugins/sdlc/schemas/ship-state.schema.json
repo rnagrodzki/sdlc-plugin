@@ -220,6 +220,32 @@
         "required": ["kind", "ref", "verifiedAt"],
         "additionalProperties": false
       }
+    },
+    "sources": {
+      "type": "object",
+      "description": "Per-flag precedence trace (R6): records which tier won for each key in flags (\"cli\", \"config\", \"config (version.preRelease)\", \"config (version.preReleasePolicy)\", \"config (version.preReleasePolicy enforced over cli)\", \"quick\", or \"default\"). Written by ship_prepare alongside flags.",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "versionCfg": {
+      "type": "object",
+      "description": "Raw [version] config section snapshot as read by ship_prepare at flag-resolution time (config.ReadSection), for diagnosability. Shape mirrors the project's [version] TOML table and is intentionally not enumerated here to avoid drift."
+    },
+    "binaryVersion": {
+      "type": "object",
+      "description": "Build metadata of the sdlc binary that produced this state file (version.GetBuildInfo).",
+      "properties": {
+        "pluginVersion": {
+          "type": "string"
+        },
+        "commit": {
+          "type": "string"
+        },
+        "buildTime": {
+          "type": "string"
+        }
+      }
     }
   },
   "required": ["version", "startedAt", "branch", "flags", "steps"],

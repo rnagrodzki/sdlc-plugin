@@ -70,7 +70,9 @@ in the manifest. In that case, skip Step 3 — proceed directly to Step 4, which
 will route to Step 6 (PLUGIN-DEFECT ROUTE) without dispatching the orchestrator.
 Pass `fromIssue: "<num>"` to the Step 1 tool call.
 
-## Step 1 — CONSUME: Call `prepare_orchestrator` (mode: `"harden"`) (R4, R13)
+## Step 1 — CONSUME (mandatory Load State): Call `prepare_orchestrator` (mode: `"harden"`) (R4, R13)
+
+This is harden's mandatory state/config load — it runs immediately after Step 0's unavoidable argument parsing (harden cannot know what to load before knowing which of `--failure-text` / `--from-issue` / `--from-learnings`, plus `--skill`, was given) and before any other tool call in this skill. Use the manifest's structured fields (via `manifestPath`) for all downstream classification and analysis; do NOT read `.sdlc-v2/config.toml`, guardrail files, or dimension files directly to decide classification or what to load — `prepare_orchestrator`'s own pre-flight already validates them server-side (see Port Notes above). This is about the initial load only: Step 5a's apply/validate/revert cycle necessarily reads and rewrites `.sdlc-v2/config.toml` directly as part of applying and testing a proposed edit — that's a later write-path operation, not initial state, and is unaffected by this mandate.
 
 ```
 prepare_orchestrator({

@@ -48,6 +48,8 @@ invoker (skill or user) provides:
 - **Error**: full error details (exit code, message, HTTP status)
 - **Suggested investigation**: skill-specific diagnostic hints
 
+**State-first exemption:** Unlike execute/ship/plan/harden, this skill does not mandate a "Load State" call as its first action. It is reactive — dispatched only after another skill (or the user, replaying one manually) has already hit an issue-worthy failure — not a stateful, resumable multi-step flow with its own persisted run state to load first. Its one stateful call, `prepare_orchestrator({mode:"error_report"})` (Step 4), cannot run before Steps 1-3 by construction: it needs the error classified as issue-worthy (Step 1) and the user's consent to proceed (Step 3) as inputs. There is no raw state/config file this skill reads in place of that call.
+
 ## Step 1 — Classify (main context)
 
 Only proceed with a GitHub issue proposal for **issue-worthy** errors. Skip silently

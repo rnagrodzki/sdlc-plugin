@@ -48,7 +48,8 @@ func mainRootIn(dir string) (string, error) {
 		return "", errors.New("worktree: git worktree list returned empty output")
 	}
 
-	for _, line := range strings.Split(out, "\n") {
+	lines := strings.Split(out, "\n")
+	for i, line := range lines {
 		rest, ok := strings.CutPrefix(line, "worktree ")
 		if !ok {
 			continue
@@ -57,10 +58,40 @@ func mainRootIn(dir string) (string, error) {
 		if path == "" {
 			return "", errors.New("worktree: could not parse main worktree path from git worktree list output")
 		}
+		// A bare worktree entry's "worktree <path>" line is immediately
+		// followed by a literal "bare" line instead of the HEAD/branch lines
+		// a normal (linked or main) entry carries. `git worktree list`
+		// always lists the bare repository first when one is registered
+		// (e.g. a `git clone --bare` used as the anchor for linked
+		// worktrees), so naively returning the first "worktree " line here
+		// anchors .sdlc-v2/ to the bare root instead of the actual
+		// main/linked worktree. Skip past it and keep scanning for the
+		// first non-bare entry.
+		if i+1 < len(lines) && strings.TrimSpace(lines[i+1]) == "bare" {
+			continue
+		}
 		return path, nil
 	}
 
 	return "", errors.New("worktree: could not parse main worktree path from git worktree list output")
+}
+
+// IsBare reports whether the git worktree at dir is a bare repository (no
+// working tree checked out), via `git rev-parse --is-bare-repository`. An
+// empty dir means "use the process's current working directory".
+//
+// This is a defensive diagnostic, not part of MainRoot's own resolution:
+// mainRootIn already skips bare entries when scanning `git worktree list`
+// output, so MainRoot should never itself resolve to a bare path. Callers
+// (e.g. the validate tool's worktree_anchoring check) use IsBare to surface
+// a regression in that invariant rather than silently anchoring .sdlc-v2/ to
+// a worktree with no working files.
+func IsBare(dir string) (bool, error) {
+	out, err := execx.Run("git", []string{"rev-parse", "--is-bare-repository"}, execx.Options{Dir: dir})
+	if err != nil {
+		return false, fmt.Errorf("worktree: could not determine bare status: %w", err)
+	}
+	return strings.TrimSpace(out) == "true", nil
 }
 
 // ActiveRoot returns the absolute path of the ACTIVE worktree's top level —
