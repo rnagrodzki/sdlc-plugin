@@ -64,3 +64,10 @@ Several `internal/tools/*.go` files already follow this with their own
   three-outcome contract in package godoc: found (value, nil), not-found
   (zero, nil), error (zero, error). Callers must handle all three cases
   explicitly and never collapse not-found into the same path as error.
+
+## File-system operation error discrimination
+
+When reviewing code that uses `os.Stat`, `os.Open`, `filepath.ReadDir`, `filepath.Walk`, or similar file-system probes, verify that the code distinguishes "file or directory does not exist" from "other errors":
+
+- Use `errors.Is(err, fs.ErrNotExist)` or `os.IsNotExist(err)` explicitly. Do not collapse this condition into a generic error handler that treats "file missing" the same as "permission denied" or "I/O error".
+- Code that maps a file-system probe result to a benign zero-value (e.g., `if err != nil { return empty; }`  for a "not found" path) must first check for terminal errors like `execx.ErrOutputCap` via `errors.Is`, and propagate them rather than downgrading them to "not found."

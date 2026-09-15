@@ -762,6 +762,61 @@ func TestValidateDimensionsD10DuplicateName(t *testing.T) {
 // unknown action
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// ci_script_drift
+// ---------------------------------------------------------------------------
+
+func TestValidateCIScriptDrift_AllCurrentIsPass(t *testing.T) {
+	root := t.TempDir()
+	if _, err := scaffoldCI(root, false); err != nil {
+		t.Fatalf("scaffoldCI: %v", err)
+	}
+
+	out, err := validate(root, ValidateIn{Action: "ci_script_drift"})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if len(out.Findings) != 0 {
+		t.Errorf("expected no findings for a freshly scaffolded project, got %v", out.Findings)
+	}
+}
+
+func TestValidateCIScriptDrift_MissingAndOutdatedProduceDistinctFindings(t *testing.T) {
+	root := t.TempDir()
+	if _, err := scaffoldCI(root, false); err != nil {
+		t.Fatalf("scaffoldCI: %v", err)
+	}
+
+	// Downgrade one script, delete another entirely.
+	if err := os.WriteFile(filepath.Join(root, ".github", "workflows", "retag-release.yml"), []byte("# retag-release-version: 1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(root, ".github", "workflows", "check-changelog.yml")); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := validate(root, ValidateIn{Action: "ci_script_drift"})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+
+	outdated := findingsByID(out.Findings, "CI_SCRIPT_OUTDATED")
+	if len(outdated) != 1 {
+		t.Fatalf("expected 1 CI_SCRIPT_OUTDATED finding, got %d: %v", len(outdated), out.Findings)
+	}
+	if !strings.Contains(outdated[0].Message, "scaffold_ci({force:true})") {
+		t.Errorf("outdated finding message missing remediation hint: %s", outdated[0].Message)
+	}
+
+	missing := findingsByID(out.Findings, "CI_SCRIPT_MISSING")
+	if len(missing) != 1 {
+		t.Fatalf("expected 1 CI_SCRIPT_MISSING finding, got %d: %v", len(missing), out.Findings)
+	}
+	if !strings.Contains(missing[0].Message, "scaffold_ci({force:true})") {
+		t.Errorf("missing finding message missing remediation hint: %s", missing[0].Message)
+	}
+}
+
 func TestValidateUnknownAction(t *testing.T) {
 	root := t.TempDir()
 	_, err := validate(root, ValidateIn{Action: "nonsense"})

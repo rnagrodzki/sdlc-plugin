@@ -31,13 +31,23 @@ import (
 // per-phase try/catch structure. Phases that can panic on unexpected input
 // are wrapped with recover() for the same reason; safePhase's fail-open
 // convention is documented on its own doc comment below.
+
+// BuildCommit and BuildTime are the sdlc binary's build metadata, surfaced
+// in the session-start header alongside PluginVersion. cmd/sdlc's main()
+// wires these from version.GetBuildInfo() before dispatching to Run (Task
+// 1); they default to "unknown" for the same reason PluginVersion does.
+var (
+	BuildCommit = "unknown"
+	BuildTime   = "unknown"
+)
+
 func sessionStart(_ HookCtx, event Event) (Output, error) {
 	var header []string
 
 	pluginRoot, rootOK := safeResolvePluginRoot()
 	if rootOK {
 		count := safeCountSkills(pluginRoot)
-		header = append(header, fmt.Sprintf("sdlc: v%s (%d skills loaded)", PluginVersion, count))
+		header = append(header, fmt.Sprintf("sdlc: v%s (commit %s, built %s) (%d skills loaded)", PluginVersion, BuildCommit, BuildTime, count))
 	}
 
 	header = append(header, "Plan mode routing: always invoke plan via the Skill tool when plan mode is active.")

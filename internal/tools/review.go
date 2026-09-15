@@ -68,6 +68,19 @@ type ReviewPrepareSummary struct {
 	TotalChangedFiles   int `json:"total_changed_files"`
 	UncoveredFileCount  int `json:"uncovered_file_count"`
 	SuggestedDimensions int `json:"suggested_dimensions"`
+
+	// Precomputed report data (R9). review_prepare runs before review lanes
+	// execute, so findings counts/severity breakdowns don't exist yet — those
+	// come from post-lane aggregation, not from here. These fields let the
+	// skill caller build report headers from server-computed counts instead
+	// of re-deriving them.
+	DimensionsTotal   int    `json:"dimensionsTotal"`
+	DimensionsApplied int    `json:"dimensionsApplied"`
+	FilesChanged      int    `json:"filesChanged"`
+	CommitCount       int    `json:"commitCount"`
+	LinesChanged      int    `json:"linesChanged"`
+	Scope             string `json:"scope"`
+	HasPR             bool   `json:"hasPR"`
 }
 
 // ReviewPrepareOut is the output for the review_prepare tool.
@@ -554,6 +567,24 @@ func fetchDiff(base, dir, scope string) string {
 	return raw
 }
 
+// countChangedLines sums added and removed lines across a unified diff,
+// excluding the "+++ "/"--- " file header lines emitted per file hunk.
+func countChangedLines(diff string) int {
+	if diff == "" {
+		return 0
+	}
+	count := 0
+	for _, line := range strings.Split(diff, "\n") {
+		switch {
+		case strings.HasPrefix(line, "+++"), strings.HasPrefix(line, "---"):
+			continue
+		case strings.HasPrefix(line, "+"), strings.HasPrefix(line, "-"):
+			count++
+		}
+	}
+	return count
+}
+
 // ---------------------------------------------------------------------------
 // Dimension loading and matching
 // ---------------------------------------------------------------------------
@@ -851,6 +882,14 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 		TotalChangedFiles:   len(changedFiles),
 		UncoveredFileCount:  len(critique.UncoveredFiles),
 		SuggestedDimensions: len(critique.UncoveredSuggestions),
+
+		DimensionsTotal:   len(dims),
+		DimensionsApplied: activeDimCount,
+		FilesChanged:      len(changedFiles),
+		CommitCount:       commitCount,
+		LinesChanged:      countChangedLines(rawDiff),
+		Scope:             scope,
+		HasPR:             pr.Exists,
 	}
 
 	// Build and write manifest.

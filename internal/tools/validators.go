@@ -73,8 +73,9 @@ import (
 // ValidateIn is the input for the "validate" tool.
 type ValidateIn struct {
 	// Action selects the validator: plan_format | discovery | pr_template |
-	// cost_tiers | guardrails | dimensions | pr_body.
-	Action string `json:"action" jsonschema_description:"Which validator to run: plan_format, discovery, pr_template, cost_tiers, guardrails, dimensions, or pr_body."`
+	// cost_tiers | guardrails | dimensions | pr_body | ci_script_drift |
+	// worktree_anchoring.
+	Action string `json:"action" jsonschema:"enum=plan_format,enum=discovery,enum=pr_template,enum=cost_tiers,enum=guardrails,enum=dimensions,enum=pr_body,enum=ci_script_drift,enum=worktree_anchoring" jsonschema_description:"Which validator to run: plan_format, discovery, pr_template, cost_tiers, guardrails, dimensions, pr_body, ci_script_drift, or worktree_anchoring."`
 	// File is the target file for plan_format and links... (plan_format only
 	// here; links_validate lives in links.go).
 	File string `json:"file,omitempty" jsonschema_description:"Target file to validate. Used by the plan_format action."`
@@ -97,12 +98,16 @@ type ValidateIn struct {
 // ValidateOut is the output for the "validate" tool.
 type ValidateOut struct {
 	Findings []discovery.Finding `json:"findings"`
+	// WorktreeAnchoring is populated only by the worktree_anchoring action:
+	// which worktree (main or active) the .sdlc-v2/ state directory is
+	// currently anchored to (Task 4/R1 — see WorktreeAnchoringCheck).
+	WorktreeAnchoring *WorktreeAnchoringCheck `json:"worktreeAnchoring,omitempty"`
 }
 
 // RegisterValidateTools registers the "validate" MCP tool.
 func RegisterValidateTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "validate",
-		"Run a deterministic validator against the project: plan_format, discovery, pr_template, cost_tiers, guardrails, dimensions, or pr_body. Returns structured findings (id, severity, message, path) for failed checks only.",
+		"Run a deterministic validator against the project: plan_format, discovery, pr_template, cost_tiers, guardrails, dimensions, pr_body, ci_script_drift, or worktree_anchoring. Returns structured findings (id, severity, message, path) for failed checks only.",
 		func(ctx mcpserver.Ctx, in ValidateIn) (ValidateOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {
@@ -116,6 +121,7 @@ func RegisterValidateTools(s *mcpserver.Server) {
 func validate(root string, in ValidateIn) (ValidateOut, error) {
 	var (
 		findings []discovery.Finding
+		anchor   *WorktreeAnchoringCheck
 		err      error
 	)
 	switch in.Action {
@@ -133,8 +139,15 @@ func validate(root string, in ValidateIn) (ValidateOut, error) {
 		findings, err = validateDimensionsAction(root)
 	case "pr_body":
 		findings, err = validatePRBody(root, in)
+	case "ci_script_drift":
+		findings, err = validateCIScriptDrift(root)
+	case "worktree_anchoring":
+		anchor, findings, err = validateWorktreeAnchoring(root)
 	default:
-		return ValidateOut{}, &mcpserver.DomainError{Msg: fmt.Sprintf("unknown validate action %q", in.Action)}
+		return ValidateOut{}, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("unknown validate action %q", in.Action),
+			Suggestion: "Valid actions: plan_format, discovery, pr_template, cost_tiers, guardrails, dimensions, pr_body, ci_script_drift, worktree_anchoring.",
+		}
 	}
 	if err != nil {
 		return ValidateOut{}, err
@@ -144,7 +157,7 @@ func validate(root string, in ValidateIn) (ValidateOut, error) {
 	if findings == nil {
 		findings = []discovery.Finding{}
 	}
-	return ValidateOut{Findings: findings}, nil
+	return ValidateOut{Findings: findings, WorktreeAnchoring: anchor}, nil
 }
 
 // resolvePath resolves p against root unless it is already absolute.
@@ -1488,5 +1501,166 @@ func validateDimensionsAction(root string) ([]discovery.Finding, error) {
 		}
 	}
 
+	return findings, nil
+}
+
+// ---------------------------------------------------------------------------
+// ci_script_drift (Task 3, R2) -- flags CI scaffold scripts/workflows that
+// are outdated or not yet installed, reusing scaffold.go's ciScriptDrift
+// (also surfaced directly via setup_prepare's CIScriptDrift field). Only
+// non-"current" entries produce a finding -- an up-to-date script is not
+// drift, matching this dispatcher's "empty Findings means every check
+// passed" convention (see package doc).
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// worktree_anchoring (Task 4, R1) -- reports which git worktree (main or
+// active) the .sdlc-v2/ state directory is currently anchored to, and flags
+// two failure modes in that anchoring:
+//
+//   - the resolved main worktree is itself a bare repository (should never
+//     happen after mainRootIn's bare-entry skip in internal/worktree, but
+//     checked here as a regression guard rather than trusted silently);
+//   - .sdlc-v2/ exists under the ACTIVE worktree but not the main one, which
+//     means state/config reads and writes are split across worktrees (the
+//     visible symptom of the bare-anchoring bug this task fixes, and of any
+//     other bug in the same family).
+//
+// Known adjacent issue, documented here but deliberately NOT changed by this
+// task: internal/hooks/post_tool_validate.go:45 resolves its project root
+// via os.Getwd() rather than worktree.MainRoot() (a deliberate JS-source
+// ruling — see that file's own comment). In a linked worktree, .sdlc-v2/ may
+// not exist at cwd, so that hook silently no-ops instead of validating
+// anything. Same bug family as this task's fix, but a different code path
+// and out of scope here.
+// ---------------------------------------------------------------------------
+
+// WorktreeAnchoringCheck reports which git worktree (main or active) the
+// .sdlc-v2/ state directory is anchored to, so operators can diagnose the
+// "state written to the wrong worktree" bug family (Task 4/R1) instead of
+// hitting a silent no-op or a mysteriously empty state/config read.
+type WorktreeAnchoringCheck struct {
+	MainRoot      string `json:"mainRoot"`
+	ActiveRoot    string `json:"activeRoot"`
+	IsLinked      bool   `json:"isLinked"`
+	IsBare        bool   `json:"isBare"`
+	StateDir      string `json:"stateDir"`
+	StateDirOwner string `json:"stateDirOwner"` // main|active
+}
+
+// sameWorktreePath reports whether a and b resolve to the same real path,
+// falling back to a plain string comparison if either fails to resolve
+// (e.g. a path that no longer exists) rather than erroring out.
+func sameWorktreePath(a, b string) bool {
+	ra, errA := filepath.EvalSymlinks(a)
+	rb, errB := filepath.EvalSymlinks(b)
+	if errA != nil || errB != nil {
+		return a == b
+	}
+	return ra == rb
+}
+
+// resolveStateDirOwner reports which worktree currently owns the .sdlc-v2/
+// directory on disk: "main" when it exists under mainRoot (the canonical
+// anchor per internal/worktree's package doc), "active" when it exists only
+// under activeRoot (the misanchoring symptom this check exists to catch), or
+// "main" with the canonical (not-yet-created) path when neither exists yet.
+func resolveStateDirOwner(mainRoot, activeRoot string) (dir, owner string, statErr error) {
+	mainDir := filepath.Join(mainRoot, paths.DataDir)
+	if _, err := os.Stat(mainDir); err == nil {
+		return mainDir, "main", nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return mainDir, "main", fmt.Errorf("stat %s: %w", mainDir, err)
+	}
+	activeDir := filepath.Join(activeRoot, paths.DataDir)
+	if _, err := os.Stat(activeDir); err == nil {
+		return activeDir, "active", nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return activeDir, "active", fmt.Errorf("stat %s: %w", activeDir, err)
+	}
+	return mainDir, "main", nil
+}
+
+// validateWorktreeAnchoring builds the WorktreeAnchoringCheck and raises
+// findings for its two failure modes (see package doc above). root is
+// already resolved via worktree.MainRoot() by RegisterValidateTools, so it
+// is used directly as the check's MainRoot rather than re-resolving it.
+func validateWorktreeAnchoring(root string) (*WorktreeAnchoringCheck, []discovery.Finding, error) {
+	activeRoot, err := worktree.ActiveRoot()
+	if err != nil {
+		return nil, nil, &mcpserver.InfraError{Msg: fmt.Sprintf("resolve active worktree: %s", err.Error()), Cause: err}
+	}
+
+	isBare, err := worktree.IsBare(root)
+	if err != nil {
+		return nil, nil, &mcpserver.InfraError{Msg: fmt.Sprintf("determine bare status: %s", err.Error()), Cause: err}
+	}
+
+	stateDir, owner, statErr := resolveStateDirOwner(root, activeRoot)
+	if statErr != nil {
+		return nil, nil, &mcpserver.InfraError{Msg: fmt.Sprintf("resolve state dir owner: %s", statErr.Error()), Cause: statErr}
+	}
+
+	check := &WorktreeAnchoringCheck{
+		MainRoot:      root,
+		ActiveRoot:    activeRoot,
+		IsLinked:      !sameWorktreePath(root, activeRoot),
+		IsBare:        isBare,
+		StateDir:      stateDir,
+		StateDirOwner: owner,
+	}
+
+	var findings []discovery.Finding
+	if isBare {
+		findings = append(findings, discovery.Finding{
+			ID:       "WORKTREE_ANCHOR_BARE",
+			Severity: "error",
+			Message:  fmt.Sprintf("resolved main worktree %q is a bare repository -- %s would anchor to a root with no working tree", root, paths.DataDir),
+			Path:     root,
+		})
+	}
+	if owner == "active" {
+		findings = append(findings, discovery.Finding{
+			ID:       "WORKTREE_ANCHOR_MISMATCH",
+			Severity: "warning",
+			Message: fmt.Sprintf(
+				"%s exists under the active worktree (%s) but not the main worktree (%s) -- state/config may be split across worktrees",
+				paths.DataDir, activeRoot, root),
+			Path: stateDir,
+		})
+	}
+
+	return check, findings, nil
+}
+
+func validateCIScriptDrift(root string) ([]discovery.Finding, error) {
+	entries, err := ciScriptDrift(root)
+	if err != nil {
+		return nil, err
+	}
+
+	var findings []discovery.Finding
+	for _, e := range entries {
+		switch e.Action {
+		case "outdated":
+			findings = append(findings, discovery.Finding{
+				ID:       "CI_SCRIPT_OUTDATED",
+				Severity: "warning",
+				Message: fmt.Sprintf(
+					"%s is outdated (installed v%d, current v%d) — run scaffold_ci({force:true}) to update.",
+					e.Script, e.InstalledVersion, e.CurrentVersion),
+				Path: e.Script,
+			})
+		case "missing":
+			findings = append(findings, discovery.Finding{
+				ID:       "CI_SCRIPT_MISSING",
+				Severity: "warning",
+				Message: fmt.Sprintf(
+					"%s is not installed (current v%d) — run scaffold_ci({force:true}) to install.",
+					e.Script, e.CurrentVersion),
+				Path: e.Script,
+			})
+		}
+	}
 	return findings, nil
 }

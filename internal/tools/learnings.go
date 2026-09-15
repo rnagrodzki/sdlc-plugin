@@ -4,7 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
@@ -25,8 +28,8 @@ func learningsLogPath(root string) string {
 
 // LearningsLogIn is the input for the learnings_log tool.
 type LearningsLogIn struct {
-	// Action selects the operation: "append", "read", or "remove".
-	Action string `json:"action" jsonschema:"enum=append,enum=read,enum=remove" jsonschema_description:"Selects the operation: \"append\", \"read\", or \"remove\"."`
+	// Action selects the operation: "append", "read", "remove", or "stats".
+	Action string `json:"action" jsonschema:"enum=append,enum=read,enum=remove,enum=stats" jsonschema_description:"Selects the operation: \"append\", \"read\", \"remove\", or \"stats\"."`
 	// Entry is the markdown block to append (required for "append"). It is
 	// written verbatim, separated from surrounding content by one blank
 	// line; do not include a leading or trailing blank line. Must not
@@ -45,13 +48,35 @@ type LearningsLogIn struct {
 
 // LearningsLogOut is the output for the learnings_log tool.
 type LearningsLogOut struct {
-	OK      bool   `json:"ok"`
-	Action  string `json:"action"`
-	Path    string `json:"path"`
-	Exists  bool   `json:"exists"`
-	Changed bool   `json:"changed"`
-	Content string `json:"content,omitempty"`
-	Next    string `json:"next"`
+	OK      bool               `json:"ok"`
+	Action  string             `json:"action"`
+	Path    string             `json:"path"`
+	Exists  bool               `json:"exists"`
+	Changed bool               `json:"changed"`
+	Content string             `json:"content,omitempty"`
+	Next    string             `json:"next"`
+	Stats   *LearningsStatsOut `json:"stats,omitempty"`
+}
+
+// LearningsStatsOut is the aggregated result of the "stats" action: entry
+// counts by inferred category and skill, the top recurring mined lessons,
+// and a recent-failure count. Never an error — an empty or missing log
+// simply comes back with zero counts.
+type LearningsStatsOut struct {
+	TotalEntries   int              `json:"totalEntries"`
+	ByCategory     map[string]int   `json:"byCategory"`
+	BySkill        map[string]int   `json:"bySkill"`
+	TopPatterns    []PatternSummary `json:"topPatterns"`
+	RecentFailures int              `json:"recentFailures"`
+	LastUpdated    string           `json:"lastUpdated"`
+}
+
+// PatternSummary describes one recurring "Rule: ..." lesson mined from
+// entries in the learnings log.
+type PatternSummary struct {
+	Pattern  string `json:"pattern"`
+	Count    int    `json:"count"`
+	LastSeen string `json:"lastSeen"`
 }
 
 // learningsLog is the core logic, separated from the handler for testability.
@@ -70,10 +95,12 @@ func learningsLog(root string, in LearningsLogIn) (LearningsLogOut, error) {
 		return learningsRead(path, rel, in.TailLines)
 	case "remove":
 		return learningsRemove(path, rel, in.Indices)
+	case "stats":
+		return learningsStats(path, rel)
 	default:
 		return LearningsLogOut{}, &mcpserver.DomainError{
-			Msg:        fmt.Sprintf("unknown learnings_log action %q; must be one of: append, read, remove", in.Action),
-			Suggestion: "Set action to one of: \"append\", \"read\", \"remove\".",
+			Msg:        fmt.Sprintf("unknown learnings_log action %q; must be one of: append, read, remove, stats", in.Action),
+			Suggestion: "Set action to one of: \"append\", \"read\", \"remove\", \"stats\".",
 		}
 	}
 }
@@ -256,6 +283,174 @@ func learningsRemove(path, rel string, indices []int) (LearningsLogOut, error) {
 	}, nil
 }
 
+// learningsRecentWindow bounds how many of the most-recently appended
+// entries are considered when computing RecentFailures.
+const learningsRecentWindow = 20
+
+// learningsTopPatternsLimit caps how many distinct mined patterns "stats"
+// returns.
+const learningsTopPatternsLimit = 10
+
+var (
+	// learningsRunTagRe matches the "<!-- sdlc:run=X branch=Y -->" comment
+	// learningsAppend prepends to a tagged entry, capturing the branch name.
+	learningsRunTagRe = regexp.MustCompile(`^<!--\s*sdlc:run=\S+\s+branch=(\S*)\s*-->`)
+	// learningsSkillHeadingRe matches a "## <date> — <skill>: <title>" entry
+	// heading and captures the skill segment.
+	learningsSkillHeadingRe = regexp.MustCompile(`(?m)^##\s.*—\s*([A-Za-z][A-Za-z0-9_-]*)\s*:`)
+	// learningsRuleRe captures the actionable "Rule: ..." sentence some
+	// entries end with — the only structured "lesson" convention already in
+	// use across real log entries.
+	learningsRuleRe = regexp.MustCompile(`(?i)Rule:\s*(.+)$`)
+	// learningsDateRe extracts the first ISO date found in an entry, used as
+	// a best-effort "last seen" timestamp for a mined pattern.
+	learningsDateRe = regexp.MustCompile(`\d{4}-\d{2}-\d{2}`)
+)
+
+// learningsPatternAgg accumulates occurrences of one mined "Rule: ..."
+// pattern, keyed case-insensitively.
+type learningsPatternAgg struct {
+	display  string
+	count    int
+	lastSeen string
+}
+
+// learningsEntryCategory infers a category from an entry's run-tag branch
+// prefix (e.g. "feat/x" -> "feat", "fix/y" -> "fix"), matching this repo's
+// conventional-commit-style branch naming. Entries with no run tag, or an
+// untagged/empty branch, fall back to "uncategorized".
+func learningsEntryCategory(entry string) string {
+	m := learningsRunTagRe.FindStringSubmatch(entry)
+	if m == nil || m[1] == "" {
+		return "uncategorized"
+	}
+	branch := m[1]
+	if i := strings.Index(branch, "/"); i > 0 {
+		return branch[:i]
+	}
+	return branch
+}
+
+// learningsEntrySkill infers the authoring skill from a
+// "## <date> — <skill>: <title>" heading, when the entry has one. Entries
+// without such a heading fall back to "unspecified".
+func learningsEntrySkill(entry string) string {
+	m := learningsSkillHeadingRe.FindStringSubmatch(entry)
+	if m == nil {
+		return "unspecified"
+	}
+	return strings.ToLower(m[1])
+}
+
+// learningsEntryPattern extracts the trailing "Rule: ..." sentence from an
+// entry, if present, along with the first ISO date found anywhere in the
+// entry (used as a best-effort last-seen marker). Returns empty strings when
+// the entry has no "Rule:" clause.
+func learningsEntryPattern(entry string) (pattern, date string) {
+	m := learningsRuleRe.FindStringSubmatch(entry)
+	if m == nil {
+		return "", ""
+	}
+	pattern = strings.TrimSpace(m[1])
+	if r := []rune(pattern); len(r) > 240 {
+		pattern = strings.TrimSpace(string(r[:240])) + "..."
+	}
+	date = learningsDateRe.FindString(entry)
+	return pattern, date
+}
+
+// learningsStats implements the "stats" action: aggregated entry counts by
+// inferred category/skill, top recurring mined patterns, and a
+// recent-failure count. Never errors on a missing or empty log.
+func learningsStats(path, rel string) (LearningsLogOut, error) {
+	stats := LearningsStatsOut{
+		ByCategory:  map[string]int{},
+		BySkill:     map[string]int{},
+		TopPatterns: []PatternSummary{},
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return LearningsLogOut{OK: true, Action: "stats", Path: rel, Exists: false, Stats: &stats}, nil
+		}
+		return LearningsLogOut{}, &mcpserver.InfraError{
+			Msg:   fmt.Sprintf("read learnings log: %s", err.Error()),
+			Cause: err,
+		}
+	}
+
+	// Entries are blocks separated by a blank line ("\n\n"); the first block
+	// is the header and is not a real entry.
+	blocks := strings.Split(string(data), "\n\n")
+	var entries []string
+	if len(blocks) > 1 {
+		entries = blocks[1:]
+	}
+
+	recentStart := 0
+	if len(entries) > learningsRecentWindow {
+		recentStart = len(entries) - learningsRecentWindow
+	}
+
+	patternOrder := make([]string, 0, len(entries))
+	patternAggs := map[string]*learningsPatternAgg{}
+
+	for i, raw := range entries {
+		entry := strings.TrimSpace(raw)
+		if entry == "" {
+			continue
+		}
+		stats.TotalEntries++
+
+		category := learningsEntryCategory(entry)
+		stats.ByCategory[category]++
+		stats.BySkill[learningsEntrySkill(entry)]++
+
+		if i >= recentStart && category == "fix" {
+			stats.RecentFailures++
+		}
+
+		if pattern, date := learningsEntryPattern(entry); pattern != "" {
+			key := strings.ToLower(pattern)
+			agg, ok := patternAggs[key]
+			if !ok {
+				agg = &learningsPatternAgg{display: pattern}
+				patternAggs[key] = agg
+				patternOrder = append(patternOrder, key)
+			}
+			agg.count++
+			if date > agg.lastSeen {
+				agg.lastSeen = date
+			}
+		}
+	}
+
+	for _, key := range patternOrder {
+		agg := patternAggs[key]
+		stats.TopPatterns = append(stats.TopPatterns, PatternSummary{
+			Pattern:  agg.display,
+			Count:    agg.count,
+			LastSeen: agg.lastSeen,
+		})
+	}
+	sort.SliceStable(stats.TopPatterns, func(i, j int) bool {
+		if stats.TopPatterns[i].Count != stats.TopPatterns[j].Count {
+			return stats.TopPatterns[i].Count > stats.TopPatterns[j].Count
+		}
+		return stats.TopPatterns[i].LastSeen > stats.TopPatterns[j].LastSeen
+	})
+	if len(stats.TopPatterns) > learningsTopPatternsLimit {
+		stats.TopPatterns = stats.TopPatterns[:learningsTopPatternsLimit]
+	}
+
+	if info, statErr := os.Stat(path); statErr == nil {
+		stats.LastUpdated = info.ModTime().UTC().Format(time.RFC3339)
+	}
+
+	return LearningsLogOut{OK: true, Action: "stats", Path: rel, Exists: true, Stats: &stats}, nil
+}
+
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
@@ -263,7 +458,7 @@ func learningsRemove(path, rel string, indices []int) (LearningsLogOut, error) {
 // RegisterLearningsTools registers the learnings_log tool on the server.
 func RegisterLearningsTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "learnings_log",
-		"Appends to, reads, or removes entries from "+paths.DataDir+"/learnings/log.md. Always resolves the MAIN git worktree root first (worktree.MainRoot, falling back to cwd) — a feature worktree's own copy of this file is never git-tracked and is lost when that worktree is removed, so every skill must go through this tool instead of Read/Edit-ing the file directly at the current worktree's path. action=\"append\" (entry: markdown block, no leading/trailing blank line, must not contain a blank line — that is the entry delimiter; optional runId and branch tag the entry for later linkage to an execution run — the end-of-run report counts entries matching a given runId) adds it as a new entry separated by one blank line, creating the file with its standard header on first use. action=\"read\" (optional tailLines) returns the current content, or exists=false when nothing has been logged yet. action=\"remove\" (indices: 1-indexed list of entry numbers, header excluded) deletes the specified entries, echoes the removed content in the response, and rewrites the file.",
+		"Appends to, reads, removes, or summarizes entries in "+paths.DataDir+"/learnings/log.md. Always resolves the MAIN git worktree root first (worktree.MainRoot, falling back to cwd) — a feature worktree's own copy of this file is never git-tracked and is lost when that worktree is removed, so every skill must go through this tool instead of Read/Edit-ing the file directly at the current worktree's path. action=\"append\" (entry: markdown block, no leading/trailing blank line, must not contain a blank line — that is the entry delimiter; optional runId and branch tag the entry for later linkage to an execution run — the end-of-run report counts entries matching a given runId) adds it as a new entry separated by one blank line, creating the file with its standard header on first use. action=\"read\" (optional tailLines) returns the current content, or exists=false when nothing has been logged yet. action=\"remove\" (indices: 1-indexed list of entry numbers, header excluded) deletes the specified entries, echoes the removed content in the response, and rewrites the file. action=\"stats\" (no additional input) returns aggregated counts in the response's \"stats\" field: totalEntries; byCategory, inferred from each entry's optional run-tag branch prefix (e.g. \"feat/x\"/\"fix/y\" -> \"feat\"/\"fix\", matching this repo's branch convention — entries with no run tag count as \"uncategorized\"); bySkill, parsed from a \"## <date> — <skill>: <title>\" entry heading when present (else \"unspecified\"); topPatterns, the most-repeated trailing \"Rule: ...\" lessons mined from entry text (deduplicated case-insensitively, sorted by count then recency, capped at 10); and recentFailures, how many of the most recent 20 entries were tagged with a \"fix\" category. Never errors on a missing or empty log — every count simply comes back zero.",
 		func(ctx mcpserver.Ctx, in LearningsLogIn) (LearningsLogOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

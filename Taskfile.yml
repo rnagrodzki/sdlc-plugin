@@ -3,6 +3,10 @@ version: '3'
 vars:
   VERSION:
     sh: grep -m1 '"version"' plugins/sdlc/.claude-plugin/plugin.json | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/'
+  COMMIT:
+    sh: git rev-parse --short HEAD 2>/dev/null || echo dev
+  BUILD_TIME:
+    sh: date -u +%Y-%m-%dT%H:%M:%SZ
   CACHE_DIR:
     sh: echo "${SDLC_CACHE_DIR:-$HOME/.sdlc-cache}"
   ASSET: 'sdlc-{{.VERSION}}-{{OS}}-{{ARCH}}'
@@ -17,7 +21,7 @@ tasks:
   build:
     desc: Compile the sdlc binary to ./sdlc
     cmds:
-      - go build -ldflags "-X main.pluginVersion={{.VERSION}} -X github.com/rnagrodzki/sdlc-plugin/internal/tools.pluginVersion={{.VERSION}}" -o sdlc ./cmd/sdlc
+      - go build -ldflags "-X main.pluginVersion={{.VERSION}} -X github.com/rnagrodzki/sdlc-plugin/internal/tools.pluginVersion={{.VERSION}} -X github.com/rnagrodzki/sdlc-plugin.overrideCommit={{.COMMIT}} -X github.com/rnagrodzki/sdlc-plugin.overrideTime={{.BUILD_TIME}}" -o sdlc ./cmd/sdlc
 
   deploy:
     desc: Build and install into the launcher's cache so sdlc-launcher.sh execs it without downloading

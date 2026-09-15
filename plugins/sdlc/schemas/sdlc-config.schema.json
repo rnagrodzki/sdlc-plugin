@@ -21,8 +21,19 @@
         },
         "method": {
           "type": "string",
-          "enum": ["push", "pr"],
-          "description": "How the versionFile and changelog paths deliver their writes when enabled: \"push\" (default) commits and pushes directly to main; \"pr\" opens a release PR instead."
+          "enum": ["push", "pr", "push-with-secret"],
+          "description": "How the versionFile and changelog paths deliver their writes when enabled: \"push\" (default) commits and pushes directly to main; \"pr\" opens a release PR instead; \"push-with-secret\" pushes directly but scaffolded CI authenticates with the repo secret named in pushAuth.secretName instead of GITHUB_TOKEN."
+        },
+        "pushAuth": {
+          "type": "object",
+          "description": "Alternate CI authentication for the push-with-secret method. Ignored when method is not \"push-with-secret\".",
+          "properties": {
+            "secretName": {
+              "type": "string",
+              "description": "Name of the repo secret holding a GitHub App installation token (or PAT) with Contents:write permission and bypass privileges on branch-protection rulesets."
+            }
+          },
+          "additionalProperties": false
         },
         "tag": {
           "type": "object",

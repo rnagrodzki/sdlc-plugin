@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
@@ -120,6 +122,17 @@ type ScaffoldCIOut struct {
 	Next       string               `json:"next" jsonschema_description:"Actionable next-step guidance after scaffolding completes."`
 }
 
+// CIScriptDriftEntry reports how one CI scaffold script/workflow compares to
+// the version scaffold_ci would install. It is produced by ciScriptDrift
+// (Task 3, R2) and surfaced both in SetupPrepareOut.CIScriptDrift and by the
+// "ci_script_drift" validate action.
+type CIScriptDriftEntry struct {
+	Script           string `json:"script"`
+	InstalledVersion int    `json:"installedVersion"`
+	CurrentVersion   int    `json:"currentVersion"`
+	Action           string `json:"action"` // outdated|missing|current
+}
+
 // scaffoldExtractVersion extracts a version number from content using the
 // given regex. Returns 1 if no match is found, mirroring the JS default.
 func scaffoldExtractVersion(content string, re *regexp.Regexp) int {
@@ -134,11 +147,133 @@ func scaffoldExtractVersion(content string, re *regexp.Regexp) int {
 	return v
 }
 
+// scaffoldEntryVersions resolves currentVersion (from the embedded payload)
+// and installedVersion (from whichever of destPath/legacyPath exists on
+// disk, dest taking priority), plus the existence flags and resolved paths
+// needed by callers. It is the shared read-only file-inspection step behind
+// both scaffoldCI (which goes on to decide a write action from force) and
+// ciScriptDrift (a pure comparison used by setup_prepare and the
+// "ci_script_drift" validate action). The returned error, when non-nil, is
+// already formatted as "read <path>: <cause>" so callers can use it as-is.
+func scaffoldEntryVersions(root string, entry scaffoldManifestEntry, srcContent []byte) (currentVersion int, installedVersion *int, destExists, legacyExists bool, destPath, legacyPath string, err error) {
+	currentVersion = scaffoldExtractVersion(string(srcContent), entry.VersionRegex)
+
+	destPath = filepath.Join(root, entry.Dest)
+	destExists = scaffoldFileExists(destPath)
+
+	if entry.LegacyDest != "" {
+		legacyPath = filepath.Join(root, entry.LegacyDest)
+		legacyExists = scaffoldFileExists(legacyPath)
+	}
+
+	switch {
+	case destExists:
+		content, rerr := os.ReadFile(destPath)
+		if rerr != nil {
+			return currentVersion, nil, destExists, legacyExists, destPath, legacyPath, fmt.Errorf("read %s: %w", destPath, rerr)
+		}
+		v := scaffoldExtractVersion(string(content), entry.VersionRegex)
+		installedVersion = &v
+	case legacyExists:
+		content, rerr := os.ReadFile(legacyPath)
+		if rerr != nil {
+			return currentVersion, nil, destExists, legacyExists, destPath, legacyPath, fmt.Errorf("read %s: %w", legacyPath, rerr)
+		}
+		v := scaffoldExtractVersion(string(content), entry.VersionRegex)
+		installedVersion = &v
+	}
+
+	return currentVersion, installedVersion, destExists, legacyExists, destPath, legacyPath, nil
+}
+
+// ciScriptDrift is a read-only version comparison (Task 3, R2) over the same
+// scaffoldManifest scaffoldCI installs from. It never writes files —
+// scaffold_ci({force:true}) is the remediation surfaced by both
+// SetupPrepareOut.CIScriptDrift and the "ci_script_drift" validate action.
+// A legacy (.js) file is reported as "outdated" (it always needs --force to
+// migrate); an entry with neither file installed is reported as "missing"
+// rather than folded into "outdated", so callers can distinguish "never
+// scaffolded" from "stale".
+func ciScriptDrift(root string) ([]CIScriptDriftEntry, error) {
+	payloads := Payloads()
+
+	entries := make([]CIScriptDriftEntry, 0, len(scaffoldManifest))
+	for _, entry := range scaffoldManifest {
+		srcContent, ok := payloads[entry.PayloadKey]
+		if !ok {
+			// Should never happen with embedded payloads; degrade gracefully.
+			return nil, &mcpserver.InfraError{
+				Msg: fmt.Sprintf("embedded payload %q not found", entry.PayloadKey),
+			}
+		}
+
+		currentVersion, installedVersion, destExists, legacyExists, _, _, verr := scaffoldEntryVersions(root, entry, srcContent)
+		if verr != nil {
+			return nil, &mcpserver.InfraError{Msg: verr.Error(), Cause: errors.Unwrap(verr)}
+		}
+
+		installed := 0
+		var action string
+		switch {
+		case destExists:
+			installed = *installedVersion
+			if installed < currentVersion {
+				action = "outdated"
+			} else {
+				action = "current"
+			}
+		case legacyExists:
+			installed = *installedVersion
+			action = "outdated"
+		default:
+			action = "missing"
+		}
+
+		entries = append(entries, CIScriptDriftEntry{
+			Script:           entry.Dest,
+			InstalledVersion: installed,
+			CurrentVersion:   currentVersion,
+			Action:           action,
+		})
+	}
+
+	return entries, nil
+}
+
+// pushAuthWorkflowKeys are the payload keys whose CI identity is affected by
+// version.method "push-with-secret" (R10): both authenticate git push (via
+// actions/checkout's persisted credential) and gh CLI calls (via the GH_TOKEN
+// env var) using the default GITHUB_TOKEN, which branch-protection rulesets
+// commonly block. verify-release-intent.yml and other GITHUB_TOKEN-using
+// workflows are read-only/non-push and intentionally excluded.
+var pushAuthWorkflowKeys = map[string]bool{
+	"release-on-main.yml": true,
+	"promote-release.yml": true,
+}
+
 // scaffoldCI is the core logic, separated for testability.
 func scaffoldCI(root string, force bool) (ScaffoldCIOut, error) {
 	payloads := Payloads()
 
+	// version.method/pushAuth.secretName are read tolerantly (raw section,
+	// not the fully-validated VersionSection) so scaffold_ci keeps working
+	// even when version config is absent or fails validation for reasons
+	// unrelated to CI auth (e.g. neither tag nor versionFile enabled yet).
 	var warnings []string
+	var versionMethod, pushAuthSecret string
+	if versionRaw, err := config.ReadSection(root, "version"); err != nil && !errors.Is(err, config.ErrNotFound) {
+		warnings = append(warnings, fmt.Sprintf("reading version config: %s", err.Error()))
+	} else if versionRaw != nil {
+		if s, ok := versionRaw["method"].(string); ok {
+			versionMethod = s
+		}
+		if pa, ok := versionRaw["pushAuth"].(map[string]any); ok {
+			if s, ok := pa["secretName"].(string); ok {
+				pushAuthSecret = s
+			}
+		}
+	}
+	usePushAuthSecret := versionMethod == "push-with-secret" && pushAuthSecret != ""
 	var files []ScaffoldFileReport
 
 	for _, entry := range scaffoldManifest {
@@ -150,44 +285,18 @@ func scaffoldCI(root string, force bool) (ScaffoldCIOut, error) {
 			}
 		}
 
-		currentVersion := scaffoldExtractVersion(string(srcContent), entry.VersionRegex)
-
-		destPath := filepath.Join(root, entry.Dest)
-		destExists := scaffoldFileExists(destPath)
-
-		var legacyPath string
-		legacyExists := false
-		if entry.LegacyDest != "" {
-			legacyPath = filepath.Join(root, entry.LegacyDest)
-			legacyExists = scaffoldFileExists(legacyPath)
+		if usePushAuthSecret && pushAuthWorkflowKeys[entry.PayloadKey] {
+			srcContent = bytes.ReplaceAll(srcContent,
+				[]byte("secrets.GITHUB_TOKEN"), []byte("secrets."+pushAuthSecret))
 		}
 
-		var installedVersion *int
-		var action string
-
-		if destExists {
-			destContent, err := os.ReadFile(destPath)
-			if err != nil {
-				return ScaffoldCIOut{}, &mcpserver.InfraError{
-					Msg:   fmt.Sprintf("read %s: %s", destPath, err.Error()),
-					Cause: err,
-				}
-			}
-			v := scaffoldExtractVersion(string(destContent), entry.VersionRegex)
-			installedVersion = &v
-		} else if legacyExists {
-			legacyContent, err := os.ReadFile(legacyPath)
-			if err != nil {
-				return ScaffoldCIOut{}, &mcpserver.InfraError{
-					Msg:   fmt.Sprintf("read %s: %s", legacyPath, err.Error()),
-					Cause: err,
-				}
-			}
-			v := scaffoldExtractVersion(string(legacyContent), entry.VersionRegex)
-			installedVersion = &v
+		currentVersion, installedVersion, destExists, legacyExists, destPath, legacyPath, verr := scaffoldEntryVersions(root, entry, srcContent)
+		if verr != nil {
+			return ScaffoldCIOut{}, &mcpserver.InfraError{Msg: verr.Error(), Cause: errors.Unwrap(verr)}
 		}
 
 		// Determine action (write mode, not check-only).
+		var action string
 		if !destExists && legacyExists && force {
 			// Migration: delete legacy .js, install new .cjs.
 			if err := os.Remove(legacyPath); err != nil {
@@ -249,15 +358,34 @@ func scaffoldCI(root string, force bool) (ScaffoldCIOut, error) {
 		Warnings:   warnings,
 		Files:      files,
 		Protection: protection,
-		Next:       scaffoldNextGuidance(protection),
+		Next:       scaffoldNextGuidance(protection, versionMethod, pushAuthSecret),
 	}, nil
 }
 
 // scaffoldNextGuidance builds the actionable next-step guidance surfaced in
 // ScaffoldCIOut.Next, tailored to whether branch protection was detected on
-// the default branch.
-func scaffoldNextGuidance(protection RulesetCheckResult) string {
+// the default branch and to the configured version.method. When method is
+// "push-with-secret" the guidance gives step-by-step GitHub App setup
+// instructions (R10) rather than the generic "you have three options"
+// framing aimed at someone who hasn't chosen a method yet.
+func scaffoldNextGuidance(protection RulesetCheckResult, method, secretName string) string {
 	const promoteNote = "promote-release.yml was also scaffolded — use Actions > SDLC Promote Release to promote an RC to a final release without creating a PR."
+	if method == "push-with-secret" {
+		secretRef := secretName
+		if secretRef == "" {
+			secretRef = "<secretName>"
+		}
+		return fmt.Sprintf(
+			"version.method is \"push-with-secret\": release-on-main.yml and promote-release.yml authenticate with the %q repo secret instead of the default GITHUB_TOKEN, so they can bypass branch-protection rulesets that block the default token. "+
+				"Setup: "+
+				"(1) create a GitHub App with the Contents:write repository permission; "+
+				"(2) install the App on this repository; "+
+				"(3) generate an installation access token for the App and add it as a repository secret named %q; "+
+				"(4) add the App as a bypass actor in your branch protection rulesets "+
+				"(Settings > Rules > Rulesets > select ruleset > Bypass list > Add bypass > select the GitHub App). "+
+				promoteNote,
+			secretRef, secretRef)
+	}
 	if protection.HasRulesets || protection.HasClassicProt {
 		return fmt.Sprintf(
 			"Branch protection is active on %q, which can block direct pushes when version.method is \"push\". "+

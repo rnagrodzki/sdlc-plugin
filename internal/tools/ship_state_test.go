@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -862,6 +863,132 @@ func TestShipState_Read_InFlight_InProgressStep(t *testing.T) {
 	}
 	if len(briefing.SideEffects) != 0 {
 		t.Errorf("SideEffects = %v, want none recorded", briefing.SideEffects)
+	}
+}
+
+// TestShipState_Read_ReportData exercises R9: the read action must attach
+// report-ready aggregates (ShipReportData) computed server-side, so the
+// calling LLM never re-derives step counts/duration/bump provenance from
+// raw state. The fixture is seeded directly on disk (rather than through
+// ship_prepare) because sources/versionCfg/binaryVersion are only ever
+// written by shipPrepare, never by the "init" action shipStateInitFixture
+// uses — reportData must work off whatever the state file actually holds.
+func TestShipState_Read_ReportData(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, "feat/report-data")
+	path := shipStateInitFixture(t, dir, "feat/report-data")
+
+	data := readStateData(t, path)
+	data["startedAt"] = "2026-01-01T00:00:00Z"
+	data["flags"] = map[string]any{"bump": "minor"}
+	data["sources"] = map[string]any{"bump": "config (version.preRelease)"}
+	data["versionCfg"] = map[string]any{"preRelease": "beta", "preReleasePolicy": "default-rc"}
+	data["binaryVersion"] = map[string]any{"pluginVersion": "0.1.1", "commit": "abcdef1", "buildTime": "2026-01-01T00:00:00Z"}
+	raw, err := json.Marshal(data)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+
+	setStepStatus(t, path, "execute", "completed", map[string]any{
+		"startedAt":   "2026-01-01T00:00:00Z",
+		"completedAt": "2026-01-01T00:05:00Z",
+	})
+	setStepStatus(t, path, "commit", "skipped", nil)
+	setStepStatus(t, path, "review", "failed", map[string]any{
+		"startedAt": "2026-01-01T00:06:00Z",
+	})
+	// received-review, commit-fixes, pr stay at their scaffolded "pending".
+
+	if _, err := shipState(dir, dir, ShipStateIn{
+		Action: "decide",
+		Step:   "execute",
+		Detail: map[string]any{"branch": "feat/report-data", "text": "used minor bump"},
+	}, fixedNow(time.Now())); err != nil {
+		t.Fatalf("decide: %v", err)
+	}
+	if _, err := shipState(dir, dir, ShipStateIn{
+		Action: "defer",
+		Detail: map[string]any{
+			"branch":   "feat/report-data",
+			"severity": "low",
+			"file":     "foo.go",
+			"title":    "cleanup later",
+		},
+	}, fixedNow(time.Now())); err != nil {
+		t.Fatalf("defer: %v", err)
+	}
+
+	readNow := time.Date(2026, 1, 1, 0, 10, 0, 0, time.UTC)
+	result, err := shipState(dir, dir, ShipStateIn{
+		Action: "read",
+		Detail: map[string]any{"branch": "feat/report-data"},
+	}, fixedNow(readNow))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	out, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("output = %#v, want map[string]any", result)
+	}
+	rd, ok := out["reportData"].(ShipReportData)
+	if !ok {
+		t.Fatalf("reportData type = %T, want ShipReportData", out["reportData"])
+	}
+
+	if rd.Version != "" {
+		t.Errorf("Version = %q, want empty (no resolved release version tracked in ship state)", rd.Version)
+	}
+	if rd.Bump != "minor" {
+		t.Errorf("Bump = %q, want minor", rd.Bump)
+	}
+	if rd.BumpSource != "config (version.preRelease)" {
+		t.Errorf("BumpSource = %q, want %q", rd.BumpSource, "config (version.preRelease)")
+	}
+	if rd.PreRelease != "beta" {
+		t.Errorf("PreRelease = %q, want beta", rd.PreRelease)
+	}
+	if rd.PreReleasePolicy != "default-rc" {
+		t.Errorf("PreReleasePolicy = %q, want default-rc", rd.PreReleasePolicy)
+	}
+	if rd.StepsTotal != 6 {
+		t.Errorf("StepsTotal = %d, want 6", rd.StepsTotal)
+	}
+	if rd.StepsCompleted != 1 {
+		t.Errorf("StepsCompleted = %d, want 1", rd.StepsCompleted)
+	}
+	if rd.StepsSkipped != 1 {
+		t.Errorf("StepsSkipped = %d, want 1", rd.StepsSkipped)
+	}
+	if rd.StepsFailed != 1 {
+		t.Errorf("StepsFailed = %d, want 1", rd.StepsFailed)
+	}
+	if rd.StepsPending != 3 {
+		t.Errorf("StepsPending = %d, want 3 (received-review, commit-fixes, pr)", rd.StepsPending)
+	}
+	if rd.Duration != "10m 00s" {
+		t.Errorf("Duration = %q, want %q (startedAt to read's now, no pipelineCompletedAt)", rd.Duration, "10m 00s")
+	}
+	if len(rd.Decisions) != 1 || rd.Decisions[0] != "execute: used minor bump" {
+		t.Errorf("Decisions = %v, want [\"execute: used minor bump\"]", rd.Decisions)
+	}
+	if rd.DeferredFindings != 1 {
+		t.Errorf("DeferredFindings = %d, want 1", rd.DeferredFindings)
+	}
+	wantBinary := map[string]string{"pluginVersion": "0.1.1", "commit": "abcdef1", "buildTime": "2026-01-01T00:00:00Z"}
+	if !reflect.DeepEqual(rd.BinaryVersion, wantBinary) {
+		t.Errorf("BinaryVersion = %v, want %v", rd.BinaryVersion, wantBinary)
+	}
+
+	// read must remain a pure read: reportData is derived, never persisted.
+	onDisk := readStateData(t, path)
+	if _, ok := onDisk["reportData"]; ok {
+		t.Error("reportData must not be persisted to the state file")
 	}
 }
 

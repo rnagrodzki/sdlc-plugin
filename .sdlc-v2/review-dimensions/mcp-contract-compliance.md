@@ -61,6 +61,13 @@ and `mcp-output-drives-behavior` guardrails.
   every error response must include the `"suggestion"` field in JSON,
   empty string if no specific recovery applies, but never omitted.
 
+## Review procedure for closed-set enum tags and error-field coverage
+
+When reviewing changes to MCP handler code, perform these concrete checks:
+
+- **Enum-tag completeness:** For each modified handler function, identify every `switch` statement that validates a string field from an `*In` struct. Cross-reference each switched field against the struct definition and confirm it carries a `jsonschema enum=val1,enum=val2,...` tag matching the case labels. A switch on `Action` with cases "plan_format", "discovery", etc. must have `jsonschema enum=plan_format,enum=discovery,...` on the Action field.
+- **Error field coverage (Suggestion):** List every point in the handler where a `DomainError`, `InfraError`, or `DataError` is instantiated (including default/fallthrough cases in switch statements). Verify each one populates the `Suggestion` field with a recovery instruction. This is a common miss in default cases — confirm they explicitly set Suggestion, not silently omit it.
+
 ## Cross-references
 
 - General MCP tool quality rules are in `mcp-tool-review.md` — this

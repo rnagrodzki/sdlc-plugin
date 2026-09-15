@@ -64,9 +64,44 @@ type HardenPrepareIn struct {
 }
 
 // HardenPrepareOut is harden_prepare's output: the path to the written
-// manifest (KD4 file handoff).
+// manifest (KD4 file handoff) plus a set of the manifest's top-level fields
+// mirrored inline (R7), so callers that only need small/cheap fields (the
+// failure preview, surface/guardrail/dimension counts, branch) can read them
+// from the tool result instead of re-opening the manifest file. The full
+// manifest — surface arrays, pipeline state, CLI evidence, history — is still
+// only available by reading ManifestPath; this struct intentionally does not
+// duplicate those larger sections.
 type HardenPrepareOut struct {
+	// ManifestPath is kept for the orchestrator agent, which still consumes
+	// the full manifest file (KD4 handoff unchanged).
 	ManifestPath string `json:"manifestPath"`
+
+	// Failure mirrors hardenManifest.Failure verbatim.
+	Failure hardenFailure `json:"failure"`
+	// ClassificationHint mirrors hardenManifest.ClassificationHint verbatim.
+	ClassificationHint *string `json:"classificationHint"`
+
+	// Surfaces lists the IDs of surfaces that loaded at least one item:
+	// any of "plan-guardrails", "execute-guardrails", "review-dimensions",
+	// "copilot-instructions", "error-report-skill", "skill-recommendation".
+	Surfaces []string `json:"surfaces"`
+	// GuardrailCount is len(planGuardrails) + len(executeGuardrails).
+	GuardrailCount int `json:"guardrailCount"`
+	// DimensionCount is len(reviewDimensions).
+	DimensionCount int `json:"dimensionCount"`
+	// SkillRecommendationCount is len(skillRecommendations). The
+	// recommendations themselves are not mirrored here (same "cheap summary
+	// only" rule as the rest of this struct's doc comment) — the orchestrator
+	// reads the full list from manifestPath's surfaces.skillRecommendations.
+	SkillRecommendationCount int `json:"skillRecommendationCount"`
+
+	// Branch mirrors hardenManifest.Repository.Branch verbatim.
+	Branch string `json:"branch"`
+
+	// Summary is a deterministic one-line triage string: skill/step plus
+	// surface/guardrail/dimension counts and the load-error count. It is
+	// assembled from already-known fields, not generated prose.
+	Summary string `json:"summary"`
 }
 
 // ---------------------------------------------------------------------------
@@ -105,6 +140,21 @@ type hardenSurfaces struct {
 	ReviewDimensions     []reviewDimensionMeta `json:"reviewDimensions"`
 	CopilotInstructions  []copilotInstruction  `json:"copilotInstructions"`
 	ErrorReportSkillPath string                `json:"errorReportSkillPath"`
+	// SkillRecommendations is advisory-only, like ErrorReportSkillPath: it is
+	// not an edit-proposal surface with a targetFile the orchestrator can
+	// patch, just additional context (mined recurring learnings patterns) the
+	// orchestrator can use the same way it already uses history.recentRuns —
+	// see computeSkillRecommendations.
+	SkillRecommendations []SkillRecommendation `json:"skillRecommendations"`
+}
+
+// SkillRecommendation describes one candidate new skill or agent, mined from
+// a recurring learnings pattern via learnings_log's "stats" action.
+type SkillRecommendation struct {
+	Suggested    string `json:"suggested"`
+	Reason       string `json:"reason"`
+	PatternCount int    `json:"patternCount"`
+	Priority     string `json:"priority"` // high|medium|low
 }
 
 // hardenShipState / hardenExecuteState mirror readPipelineState()'s field
@@ -350,6 +400,69 @@ func resolveErrorReportSkill(errs *[]surfaceLoadError) string {
 		return abs
 	}
 	return resolved
+}
+
+// skillRecommendationMinCount is the minimum recurrence count a mined
+// learnings pattern (learningsStats' TopPatterns) must reach before it is
+// surfaced as a skill/agent recommendation — a one-off lesson is not yet a
+// signal worth proposing new tooling for.
+const skillRecommendationMinCount = 3
+
+// skillRecommendationPriority maps a pattern's recurrence count to a
+// priority bucket. Thresholds are deliberately coarse — this is a heuristic
+// triage aid for the orchestrator, not a scored ranking.
+func skillRecommendationPriority(count int) string {
+	switch {
+	case count >= 6:
+		return "high"
+	case count >= 4:
+		return "medium"
+	default:
+		return "low"
+	}
+}
+
+// computeSkillRecommendations is the skill-recommendation surface's loader,
+// following the same shape as loadReviewDimensions/loadCopilotInstructions:
+// populate a manifest field, record a surfaceLoadError on failure, and
+// return an empty (never nil) slice so the surface contributes nothing to
+// surfaceIDs when it finds nothing.
+//
+// It sources learningsStats (learnings.go, same package) — the Go function
+// backing learnings_log's "stats" action — for recurring mined "Rule: ..."
+// lessons and turns each one recurring at least skillRecommendationMinCount
+// times into a candidate skill/agent recommendation. learningsStats never
+// errors on a missing or empty log (it returns a zero-value Stats with
+// Exists: false); this function relies on that fail-open behavior so a
+// project with no learnings yet yields zero recommendations, not a crash or
+// a broken surface.
+func computeSkillRecommendations(root string, errs *[]surfaceLoadError) []SkillRecommendation {
+	rel := paths.DataDir + "/learnings/log.md"
+	out, err := learningsStats(learningsLogPath(root), rel)
+	if err != nil {
+		*errs = append(*errs, surfaceLoadError{
+			Surface: "skill-recommendation",
+			Message: fmt.Sprintf("learnings stats failed: %s", err.Error()),
+		})
+		return []SkillRecommendation{}
+	}
+	if out.Stats == nil {
+		return []SkillRecommendation{}
+	}
+
+	recs := make([]SkillRecommendation, 0, len(out.Stats.TopPatterns))
+	for _, p := range out.Stats.TopPatterns {
+		if p.Count < skillRecommendationMinCount {
+			continue
+		}
+		recs = append(recs, SkillRecommendation{
+			Suggested:    fmt.Sprintf("skill or guardrail addressing: %s", p.Pattern),
+			Reason:       fmt.Sprintf("Recurring learnings pattern seen %d times (last seen %s)", p.Count, orDash(p.LastSeen)),
+			PatternCount: p.Count,
+			Priority:     skillRecommendationPriority(p.Count),
+		})
+	}
+	return recs
 }
 
 // anySliceToStrings extracts the string elements of a decoded-JSON `[]any`
@@ -635,6 +748,7 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 	reviewDimensions := loadReviewDimensions(contentRoot, &loadErrs)
 	copilotInstructions := loadCopilotInstructions(contentRoot, &loadErrs)
 	errorReportSkillPath := resolveErrorReportSkill(&loadErrs)
+	skillRecommendations := computeSkillRecommendations(root, &loadErrs)
 
 	shipState, executeState, pipelineIssues := readHardenPipelineState(root)
 
@@ -679,6 +793,7 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 			ReviewDimensions:     reviewDimensions,
 			CopilotInstructions:  copilotInstructions,
 			ErrorReportSkillPath: errorReportSkillPath,
+			SkillRecommendations: skillRecommendations,
 		},
 		Pipeline: hardenPipeline{
 			ShipState:    shipState,
@@ -706,5 +821,51 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 		return HardenPrepareOut{}, &mcpserver.InfraError{Msg: fmt.Sprintf("write manifest: %s", err.Error()), Cause: err}
 	}
 
-	return HardenPrepareOut{ManifestPath: manifestPath}, nil
+	surfaceIDs := []string{}
+	if len(planGuardrails) > 0 {
+		surfaceIDs = append(surfaceIDs, "plan-guardrails")
+	}
+	if len(executeGuardrails) > 0 {
+		surfaceIDs = append(surfaceIDs, "execute-guardrails")
+	}
+	if len(reviewDimensions) > 0 {
+		surfaceIDs = append(surfaceIDs, "review-dimensions")
+	}
+	if len(copilotInstructions) > 0 {
+		surfaceIDs = append(surfaceIDs, "copilot-instructions")
+	}
+	if errorReportSkillPath != "" {
+		surfaceIDs = append(surfaceIDs, "error-report-skill")
+	}
+	if len(skillRecommendations) > 0 {
+		surfaceIDs = append(surfaceIDs, "skill-recommendation")
+	}
+
+	guardrailCount := len(planGuardrails) + len(executeGuardrails)
+	dimensionCount := len(reviewDimensions)
+	summary := fmt.Sprintf(
+		"skill=%s step=%s guardrails=%d dimensions=%d surfaces=%d loadErrors=%d",
+		manifest.Failure.Skill, orDash(manifest.Failure.Step), guardrailCount, dimensionCount, len(surfaceIDs), len(loadErrs),
+	)
+
+	return HardenPrepareOut{
+		ManifestPath:             manifestPath,
+		Failure:                  manifest.Failure,
+		ClassificationHint:       manifest.ClassificationHint,
+		Surfaces:                 surfaceIDs,
+		GuardrailCount:           guardrailCount,
+		DimensionCount:           dimensionCount,
+		SkillRecommendationCount: len(skillRecommendations),
+		Branch:                   manifest.Repository.Branch,
+		Summary:                  summary,
+	}, nil
+}
+
+// orDash returns "—" for an empty/blank string, otherwise s unchanged. Used
+// only for building HardenPrepareOut.Summary's human-readable one-liner.
+func orDash(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "—"
+	}
+	return s
 }

@@ -43,7 +43,8 @@ func usage() {
 }
 
 func runVersion() {
-	fmt.Println(pluginVersion)
+	info := version.GetBuildInfo()
+	fmt.Printf("sdlc v%s (commit %s, built %s)\n", info.PluginVersion, info.Commit, info.Time)
 }
 
 // runMCP builds the MCP server, registers every tool group, and serves it
@@ -90,5 +91,8 @@ func runHook() {
 	}
 
 	hooks.PluginVersion = pluginVersion
+	info := version.GetBuildInfo()
+	hooks.BuildCommit = info.Commit
+	hooks.BuildTime = info.Time
 	os.Exit(hooks.Run(os.Args[2], os.Stdin, os.Stdout))
 }

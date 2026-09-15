@@ -82,3 +82,7 @@ file — you do not need to pass it again.
 - **Resuming is safe.** If the session ends mid-execution, run
   `/execute --resume` in a new session. Progress is saved after each completed
   wave.
+- **State is always loaded first.** Regardless of `--resume`, the skill's
+  first action is an unconditional `execute_state({action: "read"})` call —
+  not just when resuming — so a stale in-flight run from a prior session is
+  always detected before anything else happens.

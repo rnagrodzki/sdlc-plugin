@@ -1,0 +1,75 @@
+# ─── SDLC Local Configuration (v1) ───────────────────────────────
+# Personal preferences — gitignored, not shared with the team.
+# Edit this file directly, then run the validate tool to check.
+
+# ─── Ship pipeline ───────────────────────────────────────────────
+
+[ship]
+# Auto-run full pipeline without confirmation prompts.
+auto = true
+
+# Default version bump.
+# Valid: "major" | "minor" | "patch"
+bump = "patch"
+
+# Create PR as draft.
+draft = false
+
+# Rebase onto default branch before shipping.
+# Valid: true | false | "prompt"
+rebase = true
+
+# Minimum review severity to block ship.
+# Valid: "low" | "medium" | "high" | "critical"
+reviewThreshold = "low"
+
+# Pipeline steps to execute during /ship (in order).
+# Valid steps: "execute" | "commit" | "review" | "verify-openspec" |
+#   "archive-openspec" | "pr" | "verify-pipeline" |
+#   "await-remote-review" | "learnings-commit"
+steps = ["execute", "commit", "review", "pr", "verify-pipeline"]
+
+# Quick mode steps (subset of steps, for /ship --quick).
+quick = ["execute", "commit", "review"]
+
+# ─── Polling intervals (seconds) ─────────────────────────────────
+
+# Execute wave polling.
+executeWaveInterval = 60
+executeWaveTimeout = 1800
+
+# CI/CD pipeline verification polling.
+verifyPipelineInterval = 60
+verifyPipelineMaxIterations = 3
+verifyPipelineTimeout = 1200
+
+# Remote review (e.g. GitHub Copilot) polling.
+awaitRemoteReviewers = ["copilot"]
+awaitRemoteReviewInterval = 60
+awaitRemoteReviewTimeout = 600
+
+# ─── Plan narrative style ────────────────────────────────────────
+
+[planStyle]
+# Valid: "technical" | "executive" | "mixed"
+audience = "technical"
+# Valid: "terse" | "standard" | "detailed"
+verbosity = "terse"
+# Free-form rules for plan narrative generation.
+narrativeRules = [
+  "Give enough background so someone without prior context can judge the change.",
+  "Use plain, simple English suited for non-native speakers.",
+]
+
+# ─── Automation (optional — delete if not using) ──────────────────
+
+# [automation]
+# # Valid: "supervised" | "unattended"
+# mode = "supervised"
+# reviewFixIterations = 3
+# reviewFixSeverityThreshold = "high"
+#
+# # Per-step overrides. Valid values: "auto" | "confirm"
+# [automation.steps]
+# execute = "confirm"
+# review = "auto"

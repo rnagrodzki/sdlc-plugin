@@ -48,6 +48,8 @@ invoker (skill or user) provides:
 - **Error**: full error details (exit code, message, HTTP status)
 - **Suggested investigation**: skill-specific diagnostic hints
 
+**State-first exemption:** Unlike execute/ship/plan/harden, this skill does not mandate a "Load State" call as its first action. It is reactive — dispatched only after another skill (or the user, replaying one manually) has already hit an issue-worthy failure — not a stateful, resumable multi-step flow with its own persisted run state to load first. Its one stateful call, `prepare_orchestrator({mode:"error_report"})` (Step 4), cannot run before Steps 1-3 by construction: it needs the error classified as issue-worthy (Step 1) and the user's consent to proceed (Step 3) as inputs. There is no raw state/config file this skill reads in place of that call.
+
 ## Step 1 — Classify (main context)
 
 Only proceed with a GitHub issue proposal for **issue-worthy** errors. Skip silently
@@ -132,12 +134,24 @@ prepare_orchestrator({
   userIntent: "<what the user was doing, if known>",
   argsString: "<arguments the calling skill was invoked with, if any>",
   suggestedInvestigation: "<skill-specific diagnostic hints, if any>",
-}) → { manifestPath }
+}) → {
+  manifestPath,            // KD4 file handoff — Step 5 still passes this to
+                            // the isolated orchestrator agent, which has no
+                            // conversation context and must read the file itself
+  mode,                    // echoes the mode parameter ("error_report")
+}
 ```
 
-`skill`, `step`, `operation`, and `errorText` are required; the rest may be empty
-strings — the tool tolerates empty optional fields and the orchestrator omits
-dependent template sections accordingly.
+The input fields `skill`, `step`, `operation`, and `errorText` are required; the
+rest may be empty strings — the tool tolerates empty optional fields. The return
+value contains only `manifestPath` and `mode`; the orchestrator reads all other
+fields from the manifest file at `manifestPath`.
+
+The structured fields above mirror the manifest's top-level content inline —
+use them directly in the main context (e.g. for the duplicate-issue search's
+label list, or logging) instead of reading the manifest file back. Only Step 5
+still needs `manifestPath` itself, because the dispatched orchestrator agent
+runs in isolation with no access to this return value.
 
 **On tool error:** show the error message to the user and stop. Do **not**
 recursively dispatch this skill on its own prepare-tool failure.

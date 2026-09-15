@@ -710,7 +710,7 @@ func TestSessionStart_HeaderLines_PluginRootResolved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sessionStart returned error: %v", err)
 	}
-	if !strings.Contains(out.PlainText, "sdlc: v9.9.9 (1 skills loaded)") {
+	if !strings.Contains(out.PlainText, "sdlc: v9.9.9 (commit unknown, built unknown) (1 skills loaded)") {
 		t.Errorf("version/skills line missing or wrong:\n%s", out.PlainText)
 	}
 	if !strings.Contains(out.PlainText, "sdlc plugin root: "+dir) {

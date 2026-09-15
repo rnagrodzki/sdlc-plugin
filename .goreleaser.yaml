@@ -17,6 +17,10 @@ builds:
       - arm64
     env:
       - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+      - -X github.com/rnagrodzki/sdlc-plugin.overrideCommit={{ .FullCommit }}
+      - -X github.com/rnagrodzki/sdlc-plugin.overrideTime={{ .Date }}
 
 archives:
   - id: sdlc

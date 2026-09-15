@@ -360,19 +360,25 @@ removal."""
 severity = "error"
 description = """
 When a plan changes a config or data schema structure, identify all readers, \
-writers, migrators, codegen, and test fixtures that consume the schema -- do \
-not assume the declared-files list captures the scope. Use grep, \
+writers, migrators, codegen, test fixtures, AND template files \
+(plugins/sdlc/templates/*.toml) that consume the schema -- do not assume the \
+declared-files list captures the scope. Template examples and comments must \
+validate against the schema; the Verification section must explicitly check \
+template-schema conformance (e.g. by reading templates and confirming all \
+enums/constraints match the schema) before marking the task done. Use grep, \
 package-import analysis, and full-module testing before marking the plan \
 done."""
 
 [plan.guardrails.schema-code-sync-required]
 severity = "error"
 description = """
-When a task modifies an MCP tool's input/output structs or a Go struct that \
-is serialized to JSON, the corresponding JSON schema under \
-plugins/sdlc/schemas/ must be updated in the same task. Schemas and code \
-must not drift -- validate that marshaled Go instances conform to the schema \
-before submission."""
+When a task modifies an MCP tool's input/output structs, a Go config struct \
+(internal/config/), or an enum field that is serialized to JSON or TOML, both \
+the corresponding JSON schema under plugins/sdlc/schemas/ AND the config \
+template at plugins/sdlc/templates/*.toml must be updated in the same task. \
+Schemas, code, and templates must not drift -- validate that marshaled Go \
+instances conform to the schema and that template field names and defaults \
+stay synchronized with the schema before submission."""
 
 [plan.guardrails.refactoring-includes-doc-sweep]
 severity = "warning"
@@ -440,9 +446,14 @@ New or modified *In and *Out structs must have jsonschema_description tags \
 on all exported fields. *In fields representing closed sets must also have \
 jsonschema enum tags. *Out structs must have concrete types (never `any`) \
 and handlers must call both WithInputSchema[StructIn]() and \
-WithOutputSchema[StructOut]() to expose complete schemas to the LLM. Verify \
-generated schemas contain non-empty descriptions for every field and \
-concrete output types."""
+WithOutputSchema[StructOut]() to expose complete schemas to the LLM. Before \
+marking done, execute: (1) grep for every switch statement validating an \
+*In field and cross-reference the field's enum tag to confirm all case \
+labels are present; (2) grep for every DomainError/InfraError/DataError \
+instantiation and verify Suggestion field is set (including in \
+default/fallthrough branches). (3) Run go build and go test to verify \
+schemas are generated and contain non-empty descriptions. Document audit \
+in task verification."""
 
 [execute.guardrails.skill-tool-param-sync]
 severity = "error"
@@ -534,3 +545,49 @@ a feature branch/PR, record the task via task-fail with \
 skippedDependency:true and a detailed reason -- do not execute its commands. \
 This prevents premature mutation of live release state when upstream tasks \
 have not yet landed."""
+
+[execute.guardrails.go-doc-comment-compliance]
+severity = "warning"
+description = """
+Before marking a task done that introduces or modifies exported Go \
+identifiers (var, const, func, type at package scope), verify each is \
+immediately preceded by a `//` doc comment (not a `//go:embed` directive \
+or other Go directive alone) following Go's documentation conventions. \
+Additionally, verify that any comment block preceding a `package` \
+declaration is separated by a blank line to prevent the comment from being \
+misattached as the package doc string. Use `grep -n \
+'^\\(var\\|const\\|func\\|type\\) [A-Z]' <changed_file>` and confirm each \
+match has a `//` comment line immediately above."""
+
+[execute.guardrails."schema-enum-code-sync-verified"]
+severity = "error"
+description = """\
+Before marking a task done that modifies plugins/sdlc/schemas/sdlc-config.schema.json, \
+grep internal/config/config.go for the field names and enum values in the modified \
+schema sections. Verify every enum value in the schema is recognized by the Go code \
+(typically a const iota or switch branch). Missing an enum value from the Go side \
+means the schema accepts values the code rejects, breaking configuration."""
+
+[execute.guardrails.config-schema-template-sync-verified]
+severity = "error"
+description = """\
+Before marking a task done that modifies internal/config/** or \
+plugins/sdlc/schemas/sdlc-config.schema.json or plugins/sdlc/templates/*.toml, \
+independently verify that all three stay synchronized: grep template comments \
+and field names against schema enums and keys, and validate the template TOML \
+against the JSON schema. A passing TestConfigTemplateRoundTrip indicates parser \
+acceptance only, not schema parity -- both must be verified. Do not defer \
+template sync as a 'documentation-only gap'."""
+
+[execute.guardrails.mcp-error-suggestion-coverage]
+severity = "error"
+description = """
+Before marking a task done that modifies error-returning handlers in \
+internal/tools/ or internal/mcpserver/, audit all DomainError/InfraError/ \
+DataError instantiations. Run: `grep -n 'DomainError{\\|InfraError{\\| \
+DataError{' internal/tools/MODIFIED.go internal/mcpserver/MODIFIED.go \
+2>/dev/null` and verify every match instantiates a Suggestion field with a \
+non-empty literal string or variable reference (never rely on omitempty to \
+skip the field). Suggestion must encode a recovery instruction for the \
+caller, not a generic message. Document the grep result and verified \
+instances in task verification section before marking done."""

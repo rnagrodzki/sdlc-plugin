@@ -36,9 +36,12 @@ The plugin's logic lives in a compiled Go binary that gets downloaded and
 cached on first use — nothing is bundled in the plugin install itself. On a
 cold cache:
 
-- Hooks (including the `sdlc: v<version> (<N> skills loaded)` SessionStart
-  banner) may print nothing on this very first session. Hooks run under a
-  short (~1s) timeout and fail open rather than wait on a download.
+- Hooks (including the `sdlc: v<version> (commit <hash>, built <time>) (<N>
+  skills loaded)` SessionStart banner) may print nothing on this very first
+  session. Hooks run under a short (~1s) timeout and fail open rather than
+  wait on a download. `<hash>`/`<time>` come from the binary's build info
+  (embedded at release build time, or read from Go's VCS stamping on a plain
+  `go build`) and default to `dev`/`unknown` when neither is available.
 - The first tool call, or `/reload-plugins` itself, opens the MCP connection,
   which has a longer budget (60s) and actually completes the download.
 
@@ -59,6 +62,11 @@ This scaffolds `.sdlc-v2/config.toml` (project config, committed) and
 selective-section menu — review dimensions, PR template, guardrails, and
 more. Every section explains what it changes and which skills consume it
 before it prompts you for anything.
+
+Both files are written verbatim from browsable, fully-commented template
+files shipped with the plugin at `plugins/sdlc/templates/config.toml` and
+`plugins/sdlc/templates/local.toml` — read them directly to preview the
+whole config shape before running `/setup`.
 
 If the repo already has SDLC config from the old Node-based plugin
 (markers like `.claude/sdlc.json`, `.sdlc/jira-config.json`,

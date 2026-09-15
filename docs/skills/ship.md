@@ -96,6 +96,34 @@ Shows which steps would run and where the pipeline would pause.
 Picks up from saved progress in a new session — no need to pass `--plan`
 again.
 
+## State and Resolution Trace
+
+Every `/ship` run reads its saved state before doing anything else — even
+when `--resume` isn't passed — because a stale in-flight run can exist from
+a prior session. The saved state file (one per branch, under `.sdlc-v2/`)
+records, alongside the resolved pipeline flags:
+
+- **`sources`** — a per-flag resolution trace: which precedence tier won for
+  each resolved flag. Values include `"cli"`, `"config"`, `"quick"`,
+  `"default"`, and, for the bump flag specifically,
+  `"config (version.preReleasePolicy enforced over cli)"` when
+  `preReleasePolicy: "always-rc"` overrides an explicit `--bump`. Useful for
+  answering "why did ship pick this bump/quality level?" after the fact.
+- **`versionCfg`** — a snapshot of the `[version]` config section as read
+  at flag-resolution time, for diagnosing version/bump issues without
+  needing to reconstruct what the config looked like when the run started.
+- **`binaryVersion`** — the sdlc binary's build metadata (plugin version,
+  commit, build time), so a state file can be traced back to the binary
+  that produced it.
+- **`reportData`** — step counts (total/completed/pending/skipped/failed),
+  duration, decisions, deferred-finding count, and bump provenance, computed
+  on the fly each time state is read (not persisted to disk). This lets the
+  final pipeline report be rendered from already-computed values instead of
+  re-deriving them from raw step/decision arrays.
+
+None of this requires extra flags or setup — it's recorded (or derived)
+automatically by every run and read back automatically on resume.
+
 ## Related skills
 
 - [/plan](plan.md) — Creates the plan file for the execute step.
