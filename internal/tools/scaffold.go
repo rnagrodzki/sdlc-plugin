@@ -120,6 +120,17 @@ type ScaffoldCIOut struct {
 	Next       string               `json:"next" jsonschema_description:"Actionable next-step guidance after scaffolding completes."`
 }
 
+// CIScriptDriftEntry reports how one CI scaffold script/workflow compares to
+// the version scaffold_ci would install. It is produced by ciScriptDrift
+// (Task 3, R2) and surfaced both in SetupPrepareOut.CIScriptDrift and by the
+// "ci_script_drift" validate action.
+type CIScriptDriftEntry struct {
+	Script           string `json:"script"`
+	InstalledVersion int    `json:"installedVersion"`
+	CurrentVersion   int    `json:"currentVersion"`
+	Action           string `json:"action"` // outdated|missing|current
+}
+
 // scaffoldExtractVersion extracts a version number from content using the
 // given regex. Returns 1 if no match is found, mirroring the JS default.
 func scaffoldExtractVersion(content string, re *regexp.Regexp) int {
@@ -132,6 +143,99 @@ func scaffoldExtractVersion(content string, re *regexp.Regexp) int {
 		return 1
 	}
 	return v
+}
+
+// scaffoldEntryVersions resolves currentVersion (from the embedded payload)
+// and installedVersion (from whichever of destPath/legacyPath exists on
+// disk, dest taking priority), plus the existence flags and resolved paths
+// needed by callers. It is the shared read-only file-inspection step behind
+// both scaffoldCI (which goes on to decide a write action from force) and
+// ciScriptDrift (a pure comparison used by setup_prepare and the
+// "ci_script_drift" validate action). The returned error, when non-nil, is
+// already formatted as "read <path>: <cause>" so callers can use it as-is.
+func scaffoldEntryVersions(root string, entry scaffoldManifestEntry, srcContent []byte) (currentVersion int, installedVersion *int, destExists, legacyExists bool, destPath, legacyPath string, err error) {
+	currentVersion = scaffoldExtractVersion(string(srcContent), entry.VersionRegex)
+
+	destPath = filepath.Join(root, entry.Dest)
+	destExists = scaffoldFileExists(destPath)
+
+	if entry.LegacyDest != "" {
+		legacyPath = filepath.Join(root, entry.LegacyDest)
+		legacyExists = scaffoldFileExists(legacyPath)
+	}
+
+	switch {
+	case destExists:
+		content, rerr := os.ReadFile(destPath)
+		if rerr != nil {
+			return currentVersion, nil, destExists, legacyExists, destPath, legacyPath, fmt.Errorf("read %s: %w", destPath, rerr)
+		}
+		v := scaffoldExtractVersion(string(content), entry.VersionRegex)
+		installedVersion = &v
+	case legacyExists:
+		content, rerr := os.ReadFile(legacyPath)
+		if rerr != nil {
+			return currentVersion, nil, destExists, legacyExists, destPath, legacyPath, fmt.Errorf("read %s: %w", legacyPath, rerr)
+		}
+		v := scaffoldExtractVersion(string(content), entry.VersionRegex)
+		installedVersion = &v
+	}
+
+	return currentVersion, installedVersion, destExists, legacyExists, destPath, legacyPath, nil
+}
+
+// ciScriptDrift is a read-only version comparison (Task 3, R2) over the same
+// scaffoldManifest scaffoldCI installs from. It never writes files —
+// scaffold_ci({force:true}) is the remediation surfaced by both
+// SetupPrepareOut.CIScriptDrift and the "ci_script_drift" validate action.
+// A legacy (.js) file is reported as "outdated" (it always needs --force to
+// migrate); an entry with neither file installed is reported as "missing"
+// rather than folded into "outdated", so callers can distinguish "never
+// scaffolded" from "stale".
+func ciScriptDrift(root string) ([]CIScriptDriftEntry, error) {
+	payloads := Payloads()
+
+	entries := make([]CIScriptDriftEntry, 0, len(scaffoldManifest))
+	for _, entry := range scaffoldManifest {
+		srcContent, ok := payloads[entry.PayloadKey]
+		if !ok {
+			// Should never happen with embedded payloads; degrade gracefully.
+			return nil, &mcpserver.InfraError{
+				Msg: fmt.Sprintf("embedded payload %q not found", entry.PayloadKey),
+			}
+		}
+
+		currentVersion, installedVersion, destExists, legacyExists, _, _, verr := scaffoldEntryVersions(root, entry, srcContent)
+		if verr != nil {
+			return nil, &mcpserver.InfraError{Msg: verr.Error(), Cause: errors.Unwrap(verr)}
+		}
+
+		installed := 0
+		var action string
+		switch {
+		case destExists:
+			installed = *installedVersion
+			if installed < currentVersion {
+				action = "outdated"
+			} else {
+				action = "current"
+			}
+		case legacyExists:
+			installed = *installedVersion
+			action = "outdated"
+		default:
+			action = "missing"
+		}
+
+		entries = append(entries, CIScriptDriftEntry{
+			Script:           entry.Dest,
+			InstalledVersion: installed,
+			CurrentVersion:   currentVersion,
+			Action:           action,
+		})
+	}
+
+	return entries, nil
 }
 
 // scaffoldCI is the core logic, separated for testability.
@@ -150,44 +254,13 @@ func scaffoldCI(root string, force bool) (ScaffoldCIOut, error) {
 			}
 		}
 
-		currentVersion := scaffoldExtractVersion(string(srcContent), entry.VersionRegex)
-
-		destPath := filepath.Join(root, entry.Dest)
-		destExists := scaffoldFileExists(destPath)
-
-		var legacyPath string
-		legacyExists := false
-		if entry.LegacyDest != "" {
-			legacyPath = filepath.Join(root, entry.LegacyDest)
-			legacyExists = scaffoldFileExists(legacyPath)
-		}
-
-		var installedVersion *int
-		var action string
-
-		if destExists {
-			destContent, err := os.ReadFile(destPath)
-			if err != nil {
-				return ScaffoldCIOut{}, &mcpserver.InfraError{
-					Msg:   fmt.Sprintf("read %s: %s", destPath, err.Error()),
-					Cause: err,
-				}
-			}
-			v := scaffoldExtractVersion(string(destContent), entry.VersionRegex)
-			installedVersion = &v
-		} else if legacyExists {
-			legacyContent, err := os.ReadFile(legacyPath)
-			if err != nil {
-				return ScaffoldCIOut{}, &mcpserver.InfraError{
-					Msg:   fmt.Sprintf("read %s: %s", legacyPath, err.Error()),
-					Cause: err,
-				}
-			}
-			v := scaffoldExtractVersion(string(legacyContent), entry.VersionRegex)
-			installedVersion = &v
+		currentVersion, installedVersion, destExists, legacyExists, destPath, legacyPath, verr := scaffoldEntryVersions(root, entry, srcContent)
+		if verr != nil {
+			return ScaffoldCIOut{}, &mcpserver.InfraError{Msg: verr.Error(), Cause: errors.Unwrap(verr)}
 		}
 
 		// Determine action (write mode, not check-only).
+		var action string
 		if !destExists && legacyExists && force {
 			// Migration: delete legacy .js, install new .cjs.
 			if err := os.Remove(legacyPath); err != nil {

@@ -47,9 +47,27 @@ type ErrorReportPrepareIn struct {
 }
 
 // ErrorReportPrepareOut is error_report_prepare's output: the path to the
-// written manifest (KD4 file handoff).
+// written manifest (KD4 file handoff — still required, the isolated
+// error-report-orchestrator subagent reads the manifest file itself), plus
+// the manifest's top-level fields mirrored inline so the caller (SKILL.md /
+// prepare_orchestrator) can use structured fields directly instead of
+// re-reading the manifest file. Values are copied verbatim from the
+// errorReportManifest built in errorReportPrepare, so trim/raw semantics
+// match the manifest exactly field-for-field.
 type ErrorReportPrepareOut struct {
-	ManifestPath string `json:"manifestPath"`
+	ManifestPath           string   `json:"manifestPath"` // kept for orchestrator
+	Skill                  string   `json:"skill"`
+	Step                   string   `json:"step"`
+	Operation              string   `json:"operation"`
+	ErrorText              string   `json:"errorText"`
+	ExitOrHTTPCode         string   `json:"exitOrHttpCode,omitempty"`
+	ErrorType              string   `json:"errorType,omitempty"`
+	UserIntent             string   `json:"userIntent,omitempty"`
+	Repository             string   `json:"repository"`
+	CurrentBranch          string   `json:"currentBranch"`
+	Timestamp              string   `json:"timestamp"`
+	SuggestedInvestigation string   `json:"suggestedInvestigation,omitempty"`
+	Labels                 []string `json:"labels"`
 }
 
 // ---------------------------------------------------------------------------
@@ -140,5 +158,19 @@ func errorReportPrepare(root string, in ErrorReportPrepareIn) (ErrorReportPrepar
 		return ErrorReportPrepareOut{}, &mcpserver.InfraError{Msg: fmt.Sprintf("write manifest: %s", err.Error()), Cause: err}
 	}
 
-	return ErrorReportPrepareOut{ManifestPath: manifestPath}, nil
+	return ErrorReportPrepareOut{
+		ManifestPath:           manifestPath,
+		Skill:                  manifest.Skill,
+		Step:                   manifest.Step,
+		Operation:              manifest.Operation,
+		ErrorText:              manifest.ErrorText,
+		ExitOrHTTPCode:         manifest.ExitOrHTTPCode,
+		ErrorType:              manifest.ErrorType,
+		UserIntent:             manifest.UserIntent,
+		Repository:             manifest.Repository,
+		CurrentBranch:          manifest.CurrentBranch,
+		Timestamp:              manifest.Timestamp,
+		SuggestedInvestigation: manifest.SuggestedInvestigation,
+		Labels:                 manifest.Labels,
+	}, nil
 }

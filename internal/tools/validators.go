@@ -73,8 +73,8 @@ import (
 // ValidateIn is the input for the "validate" tool.
 type ValidateIn struct {
 	// Action selects the validator: plan_format | discovery | pr_template |
-	// cost_tiers | guardrails | dimensions | pr_body.
-	Action string `json:"action" jsonschema_description:"Which validator to run: plan_format, discovery, pr_template, cost_tiers, guardrails, dimensions, or pr_body."`
+	// cost_tiers | guardrails | dimensions | pr_body | ci_script_drift.
+	Action string `json:"action" jsonschema_description:"Which validator to run: plan_format, discovery, pr_template, cost_tiers, guardrails, dimensions, pr_body, or ci_script_drift."`
 	// File is the target file for plan_format and links... (plan_format only
 	// here; links_validate lives in links.go).
 	File string `json:"file,omitempty" jsonschema_description:"Target file to validate. Used by the plan_format action."`
@@ -102,7 +102,7 @@ type ValidateOut struct {
 // RegisterValidateTools registers the "validate" MCP tool.
 func RegisterValidateTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "validate",
-		"Run a deterministic validator against the project: plan_format, discovery, pr_template, cost_tiers, guardrails, dimensions, or pr_body. Returns structured findings (id, severity, message, path) for failed checks only.",
+		"Run a deterministic validator against the project: plan_format, discovery, pr_template, cost_tiers, guardrails, dimensions, pr_body, or ci_script_drift. Returns structured findings (id, severity, message, path) for failed checks only.",
 		func(ctx mcpserver.Ctx, in ValidateIn) (ValidateOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {
@@ -133,6 +133,8 @@ func validate(root string, in ValidateIn) (ValidateOut, error) {
 		findings, err = validateDimensionsAction(root)
 	case "pr_body":
 		findings, err = validatePRBody(root, in)
+	case "ci_script_drift":
+		findings, err = validateCIScriptDrift(root)
 	default:
 		return ValidateOut{}, &mcpserver.DomainError{Msg: fmt.Sprintf("unknown validate action %q", in.Action)}
 	}
@@ -1488,5 +1490,46 @@ func validateDimensionsAction(root string) ([]discovery.Finding, error) {
 		}
 	}
 
+	return findings, nil
+}
+
+// ---------------------------------------------------------------------------
+// ci_script_drift (Task 3, R2) -- flags CI scaffold scripts/workflows that
+// are outdated or not yet installed, reusing scaffold.go's ciScriptDrift
+// (also surfaced directly via setup_prepare's CIScriptDrift field). Only
+// non-"current" entries produce a finding -- an up-to-date script is not
+// drift, matching this dispatcher's "empty Findings means every check
+// passed" convention (see package doc).
+// ---------------------------------------------------------------------------
+
+func validateCIScriptDrift(root string) ([]discovery.Finding, error) {
+	entries, err := ciScriptDrift(root)
+	if err != nil {
+		return nil, err
+	}
+
+	var findings []discovery.Finding
+	for _, e := range entries {
+		switch e.Action {
+		case "outdated":
+			findings = append(findings, discovery.Finding{
+				ID:       "CI_SCRIPT_OUTDATED",
+				Severity: "warning",
+				Message: fmt.Sprintf(
+					"%s is outdated (installed v%d, current v%d) — run scaffold_ci({force:true}) to update.",
+					e.Script, e.InstalledVersion, e.CurrentVersion),
+				Path: e.Script,
+			})
+		case "missing":
+			findings = append(findings, discovery.Finding{
+				ID:       "CI_SCRIPT_MISSING",
+				Severity: "warning",
+				Message: fmt.Sprintf(
+					"%s is not installed (current v%d) — run scaffold_ci({force:true}) to install.",
+					e.Script, e.CurrentVersion),
+				Path: e.Script,
+			})
+		}
+	}
 	return findings, nil
 }

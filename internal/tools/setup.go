@@ -64,6 +64,11 @@ type SetupPrepareOut struct {
 	Sections       []sectionRow `json:"sections"`
 	DefaultBranch  string       `json:"defaultBranch,omitempty"`
 	RemoteOwner    string       `json:"remoteOwner,omitempty"`
+	// CIScriptDrift compares each scaffold_ci-managed script/workflow
+	// against the version currently embedded in this binary (Task 3, R2).
+	// Best-effort: degrades to an empty list rather than failing
+	// setup_prepare if the comparison errors.
+	CIScriptDrift []CIScriptDriftEntry `json:"ciScriptDrift"`
 }
 
 // setupPrepare is the core logic, separated from the handler for testability.
@@ -120,12 +125,23 @@ func setupPrepare(root string, in SetupPrepareIn) (SetupPrepareOut, error) {
 		}
 	}
 
+	// Best-effort CI script drift comparison (Task 3, R2): never fails
+	// setup_prepare, degrades to an empty list on error.
+	ciDrift, driftErr := ciScriptDrift(root)
+	if driftErr != nil {
+		ciDrift = nil
+	}
+	if ciDrift == nil {
+		ciDrift = []CIScriptDriftEntry{}
+	}
+
 	return SetupPrepareOut{
 		OK:             true,
 		NeedsMigration: needsMigration,
 		Sections:       rows,
 		DefaultBranch:  defaultBranch,
 		RemoteOwner:    remoteOwner,
+		CIScriptDrift:  ciDrift,
 	}, nil
 }
 
@@ -464,7 +480,7 @@ func appendIfNew(slice []string, s string) []string {
 // RegisterSetupTools registers setup_prepare and setup_init on the server.
 func RegisterSetupTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "setup_prepare",
-		"Returns the canonical section descriptors for setup, with per-section field metadata and runtime-detected defaults (defaultBranch, remoteOwner). Optionally checks config migration state.",
+		"Returns the canonical section descriptors for setup, with per-section field metadata and runtime-detected defaults (defaultBranch, remoteOwner). Optionally checks config migration state. Also reports ciScriptDrift: per-script version comparison against the embedded scaffold_ci payloads, flagging outdated or not-yet-installed CI scripts (remediate with scaffold_ci({force:true})).",
 		func(ctx mcpserver.Ctx, in SetupPrepareIn) (SetupPrepareOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

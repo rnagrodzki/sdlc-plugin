@@ -132,12 +132,25 @@ prepare_orchestrator({
   userIntent: "<what the user was doing, if known>",
   argsString: "<arguments the calling skill was invoked with, if any>",
   suggestedInvestigation: "<skill-specific diagnostic hints, if any>",
-}) → { manifestPath }
+}) → {
+  manifestPath,            // KD4 file handoff — Step 5 still passes this to
+                            // the isolated orchestrator agent, which has no
+                            // conversation context and must read the file itself
+  skill, step, operation, errorText,
+  exitOrHttpCode, errorType, userIntent, suggestedInvestigation,
+  repository, currentBranch, timestamp, labels,
+}
 ```
 
 `skill`, `step`, `operation`, and `errorText` are required; the rest may be empty
 strings — the tool tolerates empty optional fields and the orchestrator omits
 dependent template sections accordingly.
+
+The structured fields above mirror the manifest's top-level content inline —
+use them directly in the main context (e.g. for the duplicate-issue search's
+label list, or logging) instead of reading the manifest file back. Only Step 5
+still needs `manifestPath` itself, because the dispatched orchestrator agent
+runs in isolation with no access to this return value.
 
 **On tool error:** show the error message to the user and stop. Do **not**
 recursively dispatch this skill on its own prepare-tool failure.

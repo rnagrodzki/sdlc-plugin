@@ -64,9 +64,39 @@ type HardenPrepareIn struct {
 }
 
 // HardenPrepareOut is harden_prepare's output: the path to the written
-// manifest (KD4 file handoff).
+// manifest (KD4 file handoff) plus a set of the manifest's top-level fields
+// mirrored inline (R7), so callers that only need small/cheap fields (the
+// failure preview, surface/guardrail/dimension counts, branch) can read them
+// from the tool result instead of re-opening the manifest file. The full
+// manifest — surface arrays, pipeline state, CLI evidence, history — is still
+// only available by reading ManifestPath; this struct intentionally does not
+// duplicate those larger sections.
 type HardenPrepareOut struct {
+	// ManifestPath is kept for the orchestrator agent, which still consumes
+	// the full manifest file (KD4 handoff unchanged).
 	ManifestPath string `json:"manifestPath"`
+
+	// Failure mirrors hardenManifest.Failure verbatim.
+	Failure hardenFailure `json:"failure"`
+	// ClassificationHint mirrors hardenManifest.ClassificationHint verbatim.
+	ClassificationHint *string `json:"classificationHint"`
+
+	// Surfaces lists the IDs of surfaces that loaded at least one item:
+	// any of "plan-guardrails", "execute-guardrails", "review-dimensions",
+	// "copilot-instructions", "error-report-skill".
+	Surfaces []string `json:"surfaces"`
+	// GuardrailCount is len(planGuardrails) + len(executeGuardrails).
+	GuardrailCount int `json:"guardrailCount"`
+	// DimensionCount is len(reviewDimensions).
+	DimensionCount int `json:"dimensionCount"`
+
+	// Branch mirrors hardenManifest.Repository.Branch verbatim.
+	Branch string `json:"branch"`
+
+	// Summary is a deterministic one-line triage string: skill/step plus
+	// surface/guardrail/dimension counts and the load-error count. It is
+	// assembled from already-known fields, not generated prose.
+	Summary string `json:"summary"`
 }
 
 // ---------------------------------------------------------------------------
@@ -706,5 +736,47 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 		return HardenPrepareOut{}, &mcpserver.InfraError{Msg: fmt.Sprintf("write manifest: %s", err.Error()), Cause: err}
 	}
 
-	return HardenPrepareOut{ManifestPath: manifestPath}, nil
+	var surfaceIDs []string
+	if len(planGuardrails) > 0 {
+		surfaceIDs = append(surfaceIDs, "plan-guardrails")
+	}
+	if len(executeGuardrails) > 0 {
+		surfaceIDs = append(surfaceIDs, "execute-guardrails")
+	}
+	if len(reviewDimensions) > 0 {
+		surfaceIDs = append(surfaceIDs, "review-dimensions")
+	}
+	if len(copilotInstructions) > 0 {
+		surfaceIDs = append(surfaceIDs, "copilot-instructions")
+	}
+	if errorReportSkillPath != "" {
+		surfaceIDs = append(surfaceIDs, "error-report-skill")
+	}
+
+	guardrailCount := len(planGuardrails) + len(executeGuardrails)
+	dimensionCount := len(reviewDimensions)
+	summary := fmt.Sprintf(
+		"skill=%s step=%s guardrails=%d dimensions=%d surfaces=%d loadErrors=%d",
+		manifest.Failure.Skill, orDash(manifest.Failure.Step), guardrailCount, dimensionCount, len(surfaceIDs), len(loadErrs),
+	)
+
+	return HardenPrepareOut{
+		ManifestPath:       manifestPath,
+		Failure:            manifest.Failure,
+		ClassificationHint: manifest.ClassificationHint,
+		Surfaces:           surfaceIDs,
+		GuardrailCount:     guardrailCount,
+		DimensionCount:     dimensionCount,
+		Branch:             manifest.Repository.Branch,
+		Summary:            summary,
+	}, nil
+}
+
+// orDash returns "—" for an empty/blank string, otherwise s unchanged. Used
+// only for building HardenPrepareOut.Summary's human-readable one-liner.
+func orDash(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "—"
+	}
+	return s
 }

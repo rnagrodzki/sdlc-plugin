@@ -198,6 +198,104 @@ func TestScaffoldCI_LegacyMigration(t *testing.T) {
 	}
 }
 
+// --- ciScriptDrift tests ---
+
+// TestCIScriptDrift_EmptyProjectAllMissing verifies ciScriptDrift reports
+// every manifest entry as "missing" (installedVersion 0), not "outdated",
+// when no CI scripts have ever been scaffolded.
+func TestCIScriptDrift_EmptyProjectAllMissing(t *testing.T) {
+	root := t.TempDir()
+
+	entries, err := ciScriptDrift(root)
+	if err != nil {
+		t.Fatalf("ciScriptDrift: %v", err)
+	}
+	if len(entries) != len(scaffoldManifest) {
+		t.Fatalf("expected %d entries, got %d", len(scaffoldManifest), len(entries))
+	}
+	for _, e := range entries {
+		if e.Action != "missing" {
+			t.Errorf("script %s: expected action 'missing', got %q", e.Script, e.Action)
+		}
+		if e.InstalledVersion != 0 {
+			t.Errorf("script %s: expected installedVersion 0, got %d", e.Script, e.InstalledVersion)
+		}
+		if e.CurrentVersion < 1 {
+			t.Errorf("script %s: expected currentVersion >= 1, got %d", e.Script, e.CurrentVersion)
+		}
+	}
+}
+
+// TestCIScriptDrift_AfterScaffoldAllCurrent verifies a freshly scaffolded
+// project reports every script as "current".
+func TestCIScriptDrift_AfterScaffoldAllCurrent(t *testing.T) {
+	root := t.TempDir()
+	if _, err := scaffoldCI(root, false); err != nil {
+		t.Fatalf("scaffoldCI: %v", err)
+	}
+
+	entries, err := ciScriptDrift(root)
+	if err != nil {
+		t.Fatalf("ciScriptDrift: %v", err)
+	}
+	for _, e := range entries {
+		if e.Action != "current" {
+			t.Errorf("script %s: expected action 'current', got %q", e.Script, e.Action)
+		}
+		if e.InstalledVersion != e.CurrentVersion {
+			t.Errorf("script %s: expected installedVersion == currentVersion, got %d != %d", e.Script, e.InstalledVersion, e.CurrentVersion)
+		}
+	}
+}
+
+// TestCIScriptDrift_OutdatedDistinctFromMissing verifies a stale installed
+// script is reported "outdated" while a never-installed script is reported
+// "missing" -- the two states the "action" enum must keep apart.
+func TestCIScriptDrift_OutdatedDistinctFromMissing(t *testing.T) {
+	root := t.TempDir()
+	if _, err := scaffoldCI(root, false); err != nil {
+		t.Fatalf("scaffoldCI: %v", err)
+	}
+
+	// Downgrade one installed script's version marker below current.
+	outdatedRel := filepath.Join(".github", "workflows", "retag-release.yml")
+	if err := os.WriteFile(filepath.Join(root, outdatedRel), []byte("# retag-release-version: 1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Delete another entry entirely so "missing" stays represented too.
+	missingRel := filepath.Join(".github", "workflows", "check-changelog.yml")
+	if err := os.Remove(filepath.Join(root, missingRel)); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := ciScriptDrift(root)
+	if err != nil {
+		t.Fatalf("ciScriptDrift: %v", err)
+	}
+
+	byScript := map[string]CIScriptDriftEntry{}
+	for _, e := range entries {
+		byScript[e.Script] = e
+	}
+
+	outdated := byScript[outdatedRel]
+	if outdated.Action != "outdated" {
+		t.Errorf("%s: expected action 'outdated', got %q", outdatedRel, outdated.Action)
+	}
+	if outdated.InstalledVersion != 1 {
+		t.Errorf("%s: expected installedVersion 1, got %d", outdatedRel, outdated.InstalledVersion)
+	}
+
+	missing := byScript[missingRel]
+	if missing.Action != "missing" {
+		t.Errorf("%s: expected action 'missing', got %q", missingRel, missing.Action)
+	}
+	if missing.InstalledVersion != 0 {
+		t.Errorf("%s: expected installedVersion 0, got %d", missingRel, missing.InstalledVersion)
+	}
+}
+
 // --- checkBranchProtection (RulesetCheck) tests ---
 
 // TestRulesetCheck_NoRemote verifies that a missing git remote degrades

@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -351,5 +352,117 @@ func TestLearningsLog_AppendRejectsBlankLine(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "blank line") {
 		t.Fatalf("expected blank-line error, got %q", err.Error())
+	}
+}
+
+// appendTaggedLearningsEntry appends an entry tagged with the given run ID
+// and branch, failing the test on error.
+func appendTaggedLearningsEntry(t *testing.T, root, entry, runID, branch string) {
+	t.Helper()
+	if _, err := learningsLog(root, LearningsLogIn{Action: "append", Entry: entry, RunID: runID, Branch: branch}); err != nil {
+		t.Fatalf("append %q: %v", entry, err)
+	}
+}
+
+func TestLearningsLog_StatsEmptyLogReturnsZeroCounts(t *testing.T) {
+	root := t.TempDir()
+
+	out, err := learningsLog(root, LearningsLogIn{Action: "stats"})
+	if err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	if !out.OK || out.Exists || out.Stats == nil {
+		t.Fatalf("unexpected output: %+v", out)
+	}
+	s := out.Stats
+	if s.TotalEntries != 0 || len(s.ByCategory) != 0 || len(s.BySkill) != 0 || len(s.TopPatterns) != 0 || s.RecentFailures != 0 {
+		t.Fatalf("expected all-zero stats for missing log, got %+v", s)
+	}
+}
+
+func TestLearningsLog_StatsCountsByCategoryAndSkill(t *testing.T) {
+	root := t.TempDir()
+
+	appendTaggedLearningsEntry(t, root, "## 2026-09-13 — execute: first lesson", "run1", "fix/issue-1")
+	appendTaggedLearningsEntry(t, root, "## 2026-09-14 — plan: second lesson", "run2", "feat/new-thing")
+	appendTaggedLearningsEntry(t, root, "**untagged bold lesson with no heading**", "", "")
+
+	out, err := learningsLog(root, LearningsLogIn{Action: "stats"})
+	if err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	s := out.Stats
+	if s.TotalEntries != 3 {
+		t.Fatalf("expected 3 entries, got %d", s.TotalEntries)
+	}
+	if s.ByCategory["fix"] != 1 || s.ByCategory["feat"] != 1 || s.ByCategory["uncategorized"] != 1 {
+		t.Fatalf("unexpected ByCategory: %+v", s.ByCategory)
+	}
+	if s.BySkill["execute"] != 1 || s.BySkill["plan"] != 1 || s.BySkill["unspecified"] != 1 {
+		t.Fatalf("unexpected BySkill: %+v", s.BySkill)
+	}
+	if s.LastUpdated == "" {
+		t.Fatalf("expected LastUpdated to be set, got %+v", s)
+	}
+}
+
+func TestLearningsLog_StatsTopPatternsAggregatesRuleText(t *testing.T) {
+	root := t.TempDir()
+
+	appendTaggedLearningsEntry(t, root, "## 2026-09-10 — execute: lesson one. Rule: always verify twice", "r1", "fix/a")
+	appendTaggedLearningsEntry(t, root, "## 2026-09-12 — execute: lesson two. Rule: Always verify twice", "r2", "fix/b")
+	appendTaggedLearningsEntry(t, root, "## 2026-09-11 — plan: lesson three. Rule: check the plan file first", "r3", "feat/c")
+
+	out, err := learningsLog(root, LearningsLogIn{Action: "stats"})
+	if err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	s := out.Stats
+	if len(s.TopPatterns) != 2 {
+		t.Fatalf("expected 2 distinct patterns (case-insensitive dedupe), got %+v", s.TopPatterns)
+	}
+	top := s.TopPatterns[0]
+	if top.Count != 2 || top.LastSeen != "2026-09-12" {
+		t.Fatalf("expected top pattern count=2 lastSeen=2026-09-12, got %+v", top)
+	}
+	if s.TopPatterns[1].Count != 1 {
+		t.Fatalf("expected second pattern count=1, got %+v", s.TopPatterns[1])
+	}
+}
+
+func TestLearningsLog_StatsRecentFailuresCountsWithinWindow(t *testing.T) {
+	root := t.TempDir()
+
+	// One old "fix" entry, then enough newer filler entries to push it
+	// outside the recent-failures window.
+	appendTaggedLearningsEntry(t, root, "old failure", "r0", "fix/old")
+	for i := 0; i < learningsRecentWindow; i++ {
+		appendTaggedLearningsEntry(t, root, fmt.Sprintf("filler %d", i), fmt.Sprintf("r%d", i+1), "feat/filler")
+	}
+
+	out, err := learningsLog(root, LearningsLogIn{Action: "stats"})
+	if err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	if out.Stats.RecentFailures != 0 {
+		t.Fatalf("expected old fix entry outside window to be excluded, got %d", out.Stats.RecentFailures)
+	}
+
+	appendTaggedLearningsEntry(t, root, "new failure", "rN", "fix/new")
+	out, err = learningsLog(root, LearningsLogIn{Action: "stats"})
+	if err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	if out.Stats.RecentFailures != 1 {
+		t.Fatalf("expected 1 recent fix entry, got %d", out.Stats.RecentFailures)
+	}
+}
+
+func TestLearningsLog_StatsUnknownActionStillRejected(t *testing.T) {
+	root := t.TempDir()
+	appendTaggedLearningsEntry(t, root, "## entry", "r1", "fix/a")
+
+	if _, err := learningsLog(root, LearningsLogIn{Action: "stat"}); err == nil {
+		t.Fatal("expected error for misspelled action, got nil")
 	}
 }
