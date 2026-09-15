@@ -49,6 +49,42 @@ review-dimension edits you can apply, skip, or cancel one at a time.
 Fetches the issue body and (if labeled `mcp-failure`) treats it as a
 pre-classified plugin defect, skipping straight to the `error-report` route.
 
+## Structured output
+
+`/harden`'s preparation step returns structured summary fields alongside the
+manifest path, so the orchestrator (and you, inspecting the raw tool output)
+don't have to open the manifest file just to see the shape of what loaded:
+`failure`, `classificationHint`, `surfaces` (IDs of surfaces that found at
+least one item — any of `plan-guardrails`, `execute-guardrails`,
+`review-dimensions`, `copilot-instructions`, `error-report-skill`,
+`skill-recommendation`), `guardrailCount`, `dimensionCount`,
+`skillRecommendationCount`, `branch`, and a one-line deterministic `summary`.
+The full manifest at `manifestPath` is still what the orchestrator reads to
+build proposals — these fields are a cheap summary layer on top of it, not a
+replacement.
+
+## Learnings stats
+
+`learnings_log` has a `"stats"` action that summarizes
+`.sdlc-v2/learnings/log.md` instead of returning it verbatim: total entry
+count, counts by category (inferred from each entry's branch tag, e.g.
+`feat`/`fix`) and by skill, the most-repeated recurring `Rule: ...` lessons
+(`topPatterns`, capped at 10, sorted by count then recency), and how many of
+the most recent 20 entries were failure-tagged (`recentFailures`). It never
+errors on a missing or empty log — every count comes back zero instead.
+
+## Skill recommendations
+
+`/harden` mines `learnings_log`'s stats for recurring lesson patterns and
+surfaces each one that has recurred at least 3 times as a candidate
+skill/guardrail recommendation, with a coarse advisory priority: `high` (seen
+6+ times), `medium` (4-5 times), or `low` (3 times). These are advisory data
+only — as of this writing, the harden orchestrator prompt still loops over
+the four pre-existing surfaces (plan guardrails, execute guardrails, review
+dimensions, Copilot instructions) and does not yet read or act on
+`skillRecommendations`, so treat this surface as informational until that
+consumption gap is closed.
+
 ## Related skills
 
 - [/error-report](../../plugins/sdlc/skills/error-report/SKILL.md) — Where

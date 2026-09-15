@@ -78,6 +78,34 @@ Shows a menu of all sections with their status. Pick which to configure.
 
     /setup --force
 
+## CI script drift detection
+
+Running `/setup` (or any skill that calls `setup_prepare`) also compares
+every CI scaffold script/workflow already installed in your repo against the
+version bundled with the plugin, and reports the result as `ciScriptDrift`:
+one entry per scaffolded script, each flagged `current`, `outdated`, or
+`missing`, with the installed and current version numbers.
+
+- **Remediate all of them at once:** re-run `scaffold_ci({force: true})` (or
+  `/setup` and re-confirm the `ship` section) to overwrite outdated scripts
+  with the bundled versions.
+- **Check drift independently**, without touching `/setup`'s other sections,
+  by calling `validate({action: "ci_script_drift"})`.
+
+## Config templates
+
+`/setup` writes `.sdlc-v2/config.toml` and `.sdlc-v2/local.toml` verbatim
+from the plugin's own template files at `plugins/sdlc/templates/config.toml`
+and `plugins/sdlc/templates/local.toml`. Both are plain, fully-commented TOML
+— open them directly if you want to see every available option (including
+ones `/setup`'s menu doesn't prompt for) before or instead of running the
+interactive flow.
+
+If your project uses the `push-with-secret` release method, its
+`[version.pushAuth]` section is documented in the `version` section of the
+config template and in [the versioning
+docs](../versioning.md#the-push-with-secret-method).
+
 ## Related skills
 
 - Every skill depends on `/setup` for its config. "Missing config" errors point

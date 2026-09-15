@@ -60,6 +60,10 @@ Loads the proposal, delta specs, and task list from
 - **Plan files are saved to disk.** The plan is written to a file. You pass
   that file path to `/execute` or `/ship` later — they do not pick it up
   automatically.
+- **State is loaded before anything else.** The skill's first action is
+  always a `plan_prepare(...)` call, which reads any saved plan-run state
+  before starting exploration or decomposition — this happens unconditionally,
+  not only when resuming a prior run.
 - **Complexity routing matters.** If your change touches only 1 file, the skill
   tells you no plan is needed (or writes a lightweight plan in plan mode). Full
   planning with multi-agent exploration kicks in for 4+ files or unclear scope.

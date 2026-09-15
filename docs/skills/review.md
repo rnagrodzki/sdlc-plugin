@@ -52,6 +52,27 @@ running any reviews.
 
 Compares the current branch against `develop` instead of the default.
 
+## Precomputed report data
+
+`/review`'s preparation step returns a set of already-computed counts
+alongside the dimension list, so the report header doesn't need to
+re-derive them: `dimensionsTotal`, `dimensionsApplied`, `filesChanged`,
+`commitCount`, `linesChanged`, `scope`, and `hasPR`. These describe the
+review's *input* (what's being reviewed and with which dimensions) — finding
+counts and severity breakdowns are **not** precomputed, since findings don't
+exist until each dimension's reviewer lane actually runs; those are
+aggregated after the lanes complete, same as before.
+
+## Example dimension: `skill-doc-drift`
+
+This project dogfoods its own review dimensions.
+`.sdlc-v2/review-dimensions/skill-doc-drift.md` checks that each
+`docs/skills/*.md` file stays in sync
+with its `SKILL.md` source of truth — steps, tool calls, flags, and mandatory
+gates like the state-first Step 1 described in [execute](execute.md) and
+[plan](plan.md). It's a useful pattern to copy if you want docs-vs-
+implementation drift caught automatically in your own project's reviews.
+
 ## Related skills
 
 - [/received-review](received-review.md) — Respond to the findings from this

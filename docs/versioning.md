@@ -86,6 +86,30 @@ Run `/setup` to auto-detect and configure versioning. The setup skill:
 
 You can also write the config manually, or run `/setup --only version` to reconfigure just this section (also the required path to migrate an old flat-shape `version` section — see "Breaking Config Change" below).
 
+### Config and State Location in Git Worktrees
+
+`.sdlc-v2/config.toml` (and every other `.sdlc-v2/` state/config path) is
+always resolved against the **main** git worktree root, never whichever
+worktree you happen to be running a command from. This matters for repos
+that use linked worktrees (e.g. a bare anchor repo with one or more linked
+checkouts): reading or writing `.sdlc-v2/` from the wrong worktree would
+silently split config and pipeline state across checkouts.
+
+Two failure modes are checked for and surfaced via
+`validate({action: "worktree_anchoring"})`:
+
+- **`WORKTREE_ANCHOR_BARE`** (error) — the resolved main worktree is itself
+  a bare repository (no working tree). This should not happen — worktree
+  resolution skips bare entries when scanning `git worktree list` — but is
+  checked as a regression guard.
+- **`WORKTREE_ANCHOR_MISMATCH`** (warning) — `.sdlc-v2/` exists under the
+  active worktree but not the main one, meaning config/state reads and
+  writes are currently split across worktrees.
+
+The check's output also reports `mainRoot`, `activeRoot`, `isLinked`,
+`isBare`, `stateDir`, and `stateDirOwner` (`"main"` or `"active"`) for
+diagnosis.
+
 ## Breaking Config Change
 
 The pre-redesign flat shape (top-level `mode`, string `versionFile`, `changelogMethod`, boolean `changelog`, `rcAutoContinue`, `ticketPrefix`) is **rejected outright** by every reader (`pr_prepare`, `pr_apply`, and every CI script) — there is no backward-compatible parsing and no automatic migration. A project still on the old shape gets a hard error naming `/setup --only version` as the fix. `ticketPrefix` in particular is dropped entirely — no CI script ever read it, and there is no replacement field.
@@ -93,6 +117,8 @@ The pre-redesign flat shape (top-level `mode`, string `versionFile`, `changelogM
 ## How Releases Work
 
 Releases are **never created during the ship pipeline**. Version diagnostics (release readiness, bump level, and notes) are computed during PR preparation and validation. Actual version bumps, tags, and changelog writes happen **post-merge via CI**.
+
+When you run `/ship`, the resolved `[version]` config section is snapshotted into the pipeline's saved state file at flag-resolution time (for diagnosability, not because a release happens there) — see [`skills/ship.md`](skills/ship.md#state-and-resolution-trace) for exactly what's recorded and how to read it back.
 
 ### Pre-Merge Safety: verify-release-intent
 
@@ -181,6 +207,7 @@ Controls how the `versionFile` and `changelog` paths deliver their writes when e
 |---|---|
 | `"push"` (default) | Direct commit and push to main. Simple, but blocked by branch protection. |
 | `"pr"` | Writes land on a single `release/<tag>` branch carrying both file writes, opened as a PR with auto-merge enabled. Works with branch protection. |
+| `"push-with-secret"` | Same direct-push behavior as `"push"`, but the scaffolded `release-on-main.yml`/`promote-release.yml` workflows authenticate with the repo secret named in `[version.pushAuth]` instead of the default `GITHUB_TOKEN` — for rulesets that block the default token but bypass-list a GitHub App identity. See "The `push-with-secret` method" below. |
 
 There is no `"skip"` value — to skip a path entirely, disable it (`versionFile.enabled: false` / `changelog.enabled: false`) rather than routing its delivery through a no-op method.
 
@@ -236,6 +263,46 @@ method) as a human-facing signal (it is not read by any script).
 `release:<level>` label — the release PR has no such label, so it is a
 no-op there regardless.
 
+### The `push-with-secret` method
+
+`push-with-secret` is a third option alongside `"push"`/`"pr"` for repos
+where branch-protection rulesets block the default `GITHUB_TOKEN` outright
+but bypass-list a GitHub App identity (a ruleset cannot bypass-list
+`github-actions[bot]` itself — see "Branch Protection & Release Workflow"
+above). It behaves exactly like `"push"` — a direct commit and push to
+`main` — except that `scaffold_ci` rewrites the `checkout` step's token in
+the scaffolded `release-on-main.yml` and `promote-release.yml` workflows
+from `secrets.GITHUB_TOKEN` to `secrets.<pushAuth.secretName>`, so the
+workflow's git operations (and `gh` CLI calls) authenticate as the bypass-
+listed App instead.
+
+Configure it with:
+
+```toml
+[version]
+method = "push-with-secret"
+
+[version.pushAuth]
+secretName = "RELEASE_TOKEN"
+```
+
+Setup (also printed by `scaffold_ci`'s `next` guidance when this method is
+configured):
+
+1. Create a GitHub App with the `Contents: write` repository permission.
+2. Install the App on this repository.
+3. Generate an installation access token for the App and add it as a repo
+   secret named `pushAuth.secretName` (e.g. `RELEASE_TOKEN`).
+4. Add the App as a bypass actor in your branch-protection rulesets
+   (Settings → Rules → Rulesets → select ruleset → Bypass list → Add
+   bypass → select the GitHub App).
+
+**Note:** the project's `sdlc-config.schema.json` `version.method` enum
+does not (yet) list `"push-with-secret"` — it is validated by the Go config
+parser at runtime, not by that JSON schema. The schema value is
+documentation-only for this nested field; don't rely on IDE/JSON-schema
+validation to catch a typo in `method` here.
+
 **Troubleshooting:**
 
 - **Release PR not created at all (`"pr"` method)** — check the
@@ -246,18 +313,24 @@ no-op there regardless.
   `GITHUB_TOKEN` permissions don't include `contents: write` /
   `pull-requests: write`.
 - **File-write commit rejected (`"push"` method)** — the branch is
-  protected. Switch `method` to `"pr"` (works around protection), or
-  remove the protection rule for the automation actor.
+  protected. Switch `method` to `"pr"` (works around protection), or to
+  `"push-with-secret"` if you have (or can set up) a bypass-listed GitHub
+  App, or remove the protection rule for the automation actor.
+- **File-write commit rejected (`"push-with-secret"` method)** — the
+  configured secret is missing, expired, or belongs to an identity not on
+  the ruleset's bypass list. Re-check `pushAuth.secretName` matches an
+  actual repo secret, and that the App backing it is listed as a bypass
+  actor.
 - **Release PR created but not merging (`"pr"` method)** — auto-merge is
   likely disabled repo-wide, or a required check on `main` is not
   configured to run on this PR. Merge it manually; this does not affect the
   already-published release.
 - **`scaffold_ci` reports "branch protection detected"** — informational,
   and only actionable if `method` is `"push"`: that method's
-  direct push will be blocked, so switch to `"pr"`. With
-  `"pr"` configured, no bypass or rule change is required. Disabling
-  `versionFile`/`changelog` entirely sidesteps this too, since only those
-  two paths use `method`.
+  direct push will be blocked, so switch to `"pr"` or `"push-with-secret"`.
+  With either configured, no bypass or rule change to the default token is
+  required. Disabling `versionFile`/`changelog` entirely sidesteps this
+  too, since only those two paths use `method`.
 
 ## Controlling Version Bumps via PRs
 
@@ -376,6 +449,9 @@ Full `.sdlc-v2/config.toml` `version` section:
     "changelog": {
       "enabled": false,
       "file": "CHANGELOG.md"
+    },
+    "pushAuth": {
+      "secretName": "RELEASE_TOKEN"
     }
   }
 }
@@ -385,7 +461,7 @@ Full `.sdlc-v2/config.toml` `version` section:
 |---|---|---|---|
 | `preRelease` | No | — | Default pre-release label (e.g., `"rc"`). Overrides the resolved bump when the bump did not come from a CLI `--bump` flag (i.e., overrides config `ship.bump` and the built-in default, but not an explicit CLI flag). |
 | `preReleasePolicy` | No | `"continue-rc"` | Controls RC suggestion and enforcement. `"always-rc"`: enforces RC bumps in `/ship` (overrides resolved bump to `"rc"` regardless of source, including an explicit CLI `--bump`); standalone `/pr` only suggests RC, it does not enforce. `"continue-rc"`: suggests RC only when existing RC tags are found (no ship-time enforcement). `"never"`: never suggests RC. |
-| `method` | No | `"push"` | How the `versionFile` and `changelog` paths deliver their writes: `"push"` (direct commit to the default branch), `"pr"` (via a single `release/<tag>` PR — works with branch protection). Does not affect `tag`, which always pushes directly. |
+| `method` | No | `"push"` | How the `versionFile` and `changelog` paths deliver their writes: `"push"` (direct commit to the default branch), `"pr"` (via a single `release/<tag>` PR — works with branch protection), or `"push-with-secret"` (direct push like `"push"`, but scaffolded CI authenticates with `pushAuth.secretName` instead of `GITHUB_TOKEN` — see "The `push-with-secret` method" above). Does not affect `tag`, which always pushes directly. Note: the JSON schema's `method` enum does not list `"push-with-secret"` yet — it is validated by the Go config parser at runtime instead. |
 | `tag.enabled` | No | `false` | Whether the tag path is active: creates a git tag and GitHub Release on every bump. |
 | `tag.prefix` | No | auto-detected from existing tags; `/setup` writes `"v"` explicitly for new tag-only projects | Prefix for git tags (e.g., `v` for `v1.2.3`). |
 | `versionFile.enabled` | No | `false` | Whether the version-file path is active. Also determines whether the current version is read from this file (`true`) or derived from git tags (`false`), independent of `tag.enabled`. |
@@ -393,6 +469,7 @@ Full `.sdlc-v2/config.toml` `version` section:
 | `versionFile.fileType` | Required if `versionFile.enabled` | inferred | Parser to use for the version file: `package.json`, `cargo.toml`, `pyproject.toml`, `pubspec.yaml`, `plugin.json`, or `version-file`. |
 | `changelog.enabled` | No | `false` | Whether the changelog path is active: prepends a release entry on every bump. |
 | `changelog.file` | No | `"CHANGELOG.md"` (used only when `changelog.enabled`) | Path to changelog file. |
+| `pushAuth.secretName` | Required if `method` is `"push-with-secret"` | `""` | Name of the repo secret holding a GitHub App installation token (or PAT) with `Contents: write` permission and bypass privileges on branch-protection rulesets. Ignored for every other `method` value. |
 
 At least one of `tag.enabled` or `versionFile.enabled` must be `true` — a config with both false (or absent) is rejected by `pr_prepare`, `pr_apply`, and every CI script.
 
