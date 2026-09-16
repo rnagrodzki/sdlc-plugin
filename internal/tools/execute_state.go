@@ -42,8 +42,8 @@ type ExecuteStateIn struct {
 	Branch              string         `json:"branch,omitempty" jsonschema_description:"Git branch the execution state belongs to. Most actions accept it to scope the state file; falls back to the current branch when omitted."`
 	Quality             string         `json:"quality,omitempty" jsonschema_description:"Quality level to stamp on a newly initialized run (init only). Required — no config fallback exists for this field."`
 	TotalTasks          int            `json:"totalTasks,omitempty" jsonschema_description:"Total planned task count for a newly initialized run (init only)."`
-	WaveTimeoutSeconds  int            `json:"waveTimeoutSeconds,omitempty" jsonschema_description:"init only: this run's wave wall-clock deadline in seconds (the invoking CLI's --wave-timeout). Recorded on init and later read back by wave-progress's readProgress to compute stallCause via wave.ClassifyStall. When omitted, falls back to a ship-state cross-read of flags.executeWaveTimeout, then internal/shipmeta.ShipBuiltInDefaults.ExecuteWaveTimeout (1800s)."`
-	WaveIntervalSeconds int            `json:"waveIntervalSeconds,omitempty" jsonschema_description:"init only: this run's heartbeat liveness cadence in seconds (the invoking CLI's --wave-interval). Recorded on init and later read back by wave-progress's readProgress to compute stallCause via wave.ClassifyStall. When omitted, falls back to a ship-state cross-read of flags.executeWaveInterval, then internal/shipmeta.ShipBuiltInDefaults.ExecuteWaveInterval (60s)."`
+	WaveTimeoutSeconds  int            `json:"waveTimeoutSeconds,omitempty" jsonschema_description:"init only: this run's wave wall-clock deadline in seconds (the invoking CLI's --wave-timeout). Recorded on init and later read back by wave-await to size its reclaim/timeout window. When omitted, falls back to a ship-state cross-read of flags.executeWaveTimeout, then internal/shipmeta.ShipBuiltInDefaults.ExecuteWaveTimeout (1800s)."`
+	WaveIntervalSeconds int            `json:"waveIntervalSeconds,omitempty" jsonschema_description:"init only: this run's heartbeat liveness cadence in seconds (the invoking CLI's --wave-interval). Recorded on init and later read back by wave-await to size its heartbeat/reclaim-grace window. When omitted, falls back to a ship-state cross-read of flags.executeWaveInterval, then internal/shipmeta.ShipBuiltInDefaults.ExecuteWaveInterval (60s)."`
 	PlannedTaskIds      []string       `json:"plannedTaskIds,omitempty" jsonschema_description:"IDs of every task planned for this run (init only), used later to detect run completeness."`
 	PlanPath            string         `json:"planPath,omitempty" jsonschema_description:"Path to the plan file to parse into a wave schedule (wave-compute), or to record on a newly initialized run (init)."`
 	PlanHash            string         `json:"planHash,omitempty" jsonschema_description:"Hash of the plan file content, recorded on a newly initialized run (init only) to detect later plan drift."`
@@ -292,20 +292,20 @@ type TaskContextOut struct {
 	// this wave), so an empty Siblings here means "sibling data was never
 	// captured", not "this task has no siblings". Lets callers distinguish
 	// the two cases instead of silently treating both as "alone in wave".
-	SiblingsUnknown bool            `json:"siblingsUnknown,omitempty"`
-	FactSheet       string          `json:"factSheet"`
+	SiblingsUnknown bool   `json:"siblingsUnknown,omitempty"`
+	FactSheet       string `json:"factSheet"`
 	// ResumeFrom carries the task's last recorded failure's harvested
 	// partial-work claim (set by task-fail when the worker had reported one
 	// via wave-progress before being reclaimed). The same data is also
 	// rendered into FactSheet's "Resume from a reclaimed attempt" section
 	// near the top, ahead of the tail-trim in execTaskContextCapPayload.
 	// Omitted entirely when the task's last failure recorded none.
-	ResumeFrom      *ResumeFrom     `json:"resumeFrom,omitempty"`
-	PriorWaves      string          `json:"priorWaves"`
-	Verify          string          `json:"verify"`
-	ReportBack      string          `json:"reportBack"`
-	ExecutionRules  *ExecutionRules `json:"executionRules,omitempty"`
-	Truncated       bool            `json:"truncated,omitempty"`
+	ResumeFrom     *ResumeFrom     `json:"resumeFrom,omitempty"`
+	PriorWaves     string          `json:"priorWaves"`
+	Verify         string          `json:"verify"`
+	ReportBack     string          `json:"reportBack"`
+	ExecutionRules *ExecutionRules `json:"executionRules,omitempty"`
+	Truncated      bool            `json:"truncated,omitempty"`
 }
 
 // TaskSibling describes another task in the same wave, giving the worker
@@ -1891,9 +1891,9 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 		}
 	}
 
-	// Wave stall-timeout params, resolved once here so wave-progress's
-	// readProgress never re-derives them per call (see
-	// execWaveStallTimeouts). Source order: explicit init input (this run's
+	// Wave stall-timeout params, resolved once here so wave-await never
+	// re-derives them per call (see execWaveStallTimeouts). Source order:
+	// explicit init input (this run's
 	// own --wave-timeout/--wave-interval, forwarded by the invoking CLI) >
 	// a ship-state cross-read of the same run's flags.executeWaveTimeout /
 	// flags.executeWaveInterval (set when ship dispatched this run) >
@@ -4312,7 +4312,8 @@ type ReadProgressOut struct {
 }
 
 // execWaveStallTimeouts resolves the heartbeat/total timeout durations fed
-// into wave.ClassifyStall for a readProgress call. Source order: this run's
+// into wave-await's server-state reclaim/timeout classification (see
+// execute_wave_await.go). Source order: this run's
 // own execute state (recorded once at init — see execActionInit) > the
 // standalone-execute built-in defaults. A missing/unreadable execute state
 // file is not an error here — readProgress must answer the same "never
