@@ -343,6 +343,48 @@ func parseTasks(content string) []TaskEntry {
 	return out
 }
 
+// pendingTaskRefs computes what ref-stamping a tasks.md file's content would
+// do, without writing anything: parsed is what planPrepareCore assigns to
+// openspecContext.Tasks; lines is the content with every missing ref stamped
+// in (write-once — a task line that already carries an inline ref comment is
+// left untouched); updated is how many lines gained a ref (0 when every task
+// line was already stamped). The actual write is stampTaskRefs's job.
+func pendingTaskRefs(original string) (lines []string, parsed []TaskEntry, updated int) {
+	parsed = parseTasks(original)
+	lines = strings.Split(original, "\n")
+	for _, entry := range parsed {
+		idx := entry.Line - 1
+		if idx < 0 || idx >= len(lines) {
+			continue
+		}
+		if refCommentPresenceRe.MatchString(lines[idx]) {
+			continue // write-once
+		}
+		trimmed := strings.TrimRightFunc(lines[idx], unicode.IsSpace)
+		lines[idx] = trimmed + fmt.Sprintf(" <!-- ref:%s -->", entry.Ref)
+		updated++
+	}
+	return lines, parsed, updated
+}
+
+// stampTaskRefs reads tasksPath, applies pendingTaskRefs, and writes the
+// result back only when at least one line gained a ref comment. Called only
+// from execute_state's init handler (after plan approval) — plan_prepare
+// itself must not write git-tracked files, since it runs inside plan mode.
+func stampTaskRefs(tasksPath string) (updated int, err error) {
+	original, err := os.ReadFile(tasksPath)
+	if err != nil {
+		return 0, err
+	}
+	lines, _, updated := pendingTaskRefs(string(original))
+	if updated > 0 {
+		if err := os.WriteFile(tasksPath, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+			return 0, err
+		}
+	}
+	return updated, nil
+}
+
 // ---------------------------------------------------------------------------
 // Requirement inventory (lib/openspec.js's getRequirementInventory)
 // ---------------------------------------------------------------------------
@@ -1261,36 +1303,22 @@ func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepar
 			}
 		}
 
-		// 2a. Parse tasks.md, inject <!-- ref:<ref> --> comments (idempotent,
-		// write-once — existing ref comments are left untouched).
+		// 2a. Parse tasks.md and compute which lines are still missing an
+		// inline <!-- ref:<ref> --> comment. plan_prepare runs inside plan
+		// mode and must not write git-tracked files — the actual stamp is
+		// applied later by execute_state({action:"init"}), once the plan is
+		// approved (see stampTaskRefs). TasksUpdated here is a PENDING count,
+		// not a record of a write plan_prepare itself performed.
 		if validation.Valid && validation.HasTasks && isSafeChangeName(in.FromOpenspec) {
 			tasksPath := filepath.Join(contentRoot, "openspec", "changes", in.FromOpenspec, "tasks.md")
 			if original, err := os.ReadFile(tasksPath); err == nil {
-				parsed := parseTasks(string(original))
+				_, parsed, updated := pendingTaskRefs(string(original))
 				openspecContext.Tasks = parsed
-
-				lines := strings.Split(string(original), "\n")
-				updated := 0
-				for _, entry := range parsed {
-					idx := entry.Line - 1
-					if idx < 0 || idx >= len(lines) {
-						continue
-					}
-					if refCommentPresenceRe.MatchString(lines[idx]) {
-						continue // write-once
-					}
-					trimmed := strings.TrimRightFunc(lines[idx], unicode.IsSpace)
-					lines[idx] = trimmed + fmt.Sprintf(" <!-- ref:%s -->", entry.Ref)
-					updated++
-				}
-				if updated > 0 {
-					_ = os.WriteFile(tasksPath, []byte(strings.Join(lines, "\n")), 0o644)
-				}
 				openspecContext.TasksUpdated = updated
 			}
-			// Read/write failures are non-fatal in plan.js (stderr warning
-			// only); silently absorbed here for the same "do not block
-			// prepare" contract.
+			// Read failures are non-fatal in plan.js (stderr warning only);
+			// silently absorbed here for the same "do not block prepare"
+			// contract.
 		}
 
 		// 2b. Requirement inventory — only runs for a valid change.
@@ -1518,11 +1546,10 @@ func RegisterPlanTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "plan_prepare",
 		"Prepare OpenSpec detection, guardrails, explore-pack discovery, and G17/lane/lens dispatch metadata for plan.",
 		mcpserver.Annotations{
-			Title:       "Prepare plan state and template",
-			ReadOnly:    false,
-			Destructive: true,
-			Idempotent:  false,
-			OpenWorld:   false,
+			Title:      "Prepare plan state and template",
+			ReadOnly:   true,
+			Idempotent: true,
+			OpenWorld:  false,
 		},
 		func(_ mcpserver.Ctx, in PlanPrepareIn) (PlanPrepareOut, error) {
 			mainRoot, err := worktree.MainRoot()

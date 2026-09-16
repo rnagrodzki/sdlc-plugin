@@ -1719,6 +1719,26 @@ func ledgerFilePath(root, runID, workerID string) string {
 // Action: init
 // ---------------------------------------------------------------------------
 
+// openspecSourceRe matches a plan document's "**Source:** openspec/changes/<name>/"
+// header line, written by the plan skill's Step 0 (and left as "[TBD]" or
+// something else, e.g. "conversation context", for a non-openspec plan).
+var openspecSourceRe = regexp.MustCompile(`(?m)^\*\*Source:\*\*\s*openspec/changes/([^\s/]+)/?\s*$`)
+
+// openspecChangeFromPlan extracts the OpenSpec change name from a plan
+// document's "**Source:**" header. Returns "" when the header is absent,
+// still the "[TBD]" placeholder, or names anything other than an openspec
+// change. It returns the raw captured segment as-is — including a
+// path-traversal shape like ".." — with no safety filtering; callers must
+// gate the result through isSafeChangeName before using it as a path
+// component (see execActionInit).
+func openspecChangeFromPlan(planContent string) string {
+	m := openspecSourceRe.FindStringSubmatch(planContent)
+	if m == nil {
+		return ""
+	}
+	return m[1]
+}
+
 func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	if in.Branch == "" {
 		return nil, &mcpserver.DomainError{Msg: "--branch is required for init"}
@@ -1786,6 +1806,24 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 		if flags, ok := shipSt.Data["flags"].(map[string]any); ok {
 			if auto, ok := flags["auto"].(bool); ok && auto {
 				st.Data["pipelineAuto"] = true
+			}
+		}
+	}
+
+	// Apply the openspec ref stamps plan_prepare deferred (see plan.go's
+	// pendingTaskRefs/stampTaskRefs): plan_prepare runs inside plan mode and
+	// must not touch git-tracked files, so it only computed which tasks.md
+	// lines were pending a ref comment. Now that the plan is approved, write
+	// them for real. Warning-only: a standalone execute has no plan file,
+	// and a missing or non-openspec plan is not an error.
+	if in.PlanPath != "" {
+		if content, readErr := os.ReadFile(in.PlanPath); readErr == nil {
+			if change := openspecChangeFromPlan(string(content)); change != "" && isSafeChangeName(change) {
+				tasksPath := filepath.Join(workDir, "openspec", "changes", change, "tasks.md")
+				if _, stampErr := stampTaskRefs(tasksPath); stampErr != nil {
+					initWarnings = append(initWarnings,
+						fmt.Sprintf("init: openspec ref stamp skipped: %v", stampErr))
+				}
 			}
 		}
 	}
