@@ -1,6 +1,6 @@
 # Spec Compliance Reviewer Prompt Template
 
-Use this template in Step 5c-bis when dispatching the per-wave spec compliance reviewer. Dispatch as a single agent (sonnet) after mechanical verification passes for the wave.
+Use this template in `## Wave loop` stage 6 (GATES) (`execute/SKILL.md`) when dispatching the per-wave spec compliance reviewer. Dispatch as a single agent (sonnet) once `wave-await` reports every task in the wave done — see `classifying-and-waving-tasks.md`'s `### Scoped Verification` for what "mechanical verification" means per task.
 
 **Purpose:** Verify that agents built what was requested — nothing more, nothing less.
 
@@ -97,7 +97,7 @@ Task tool (general-purpose):
 
 ## Handling Reviewer Findings
 
-**If ✅ Wave spec compliant:** proceed to Step 5d (progress report).
+**If ✅ Wave spec compliant:** proceed to the rest of `## Wave loop` stage 6 (GATES) — post-wave guardrail check, `wave-done`/`wave-commit`, then progress report.
 
 **If ❌ Issues found:**
 - 1–2 minor issues → fix inline in main context

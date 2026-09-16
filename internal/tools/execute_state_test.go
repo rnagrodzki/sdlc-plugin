@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -5577,7 +5578,13 @@ func TestExecState_InitWaveTimeout(t *testing.T) {
 // Finding 6: TaskProgressWithStall / StallCause wiring
 // ---------------------------------------------------------------------------
 
-func TestExecState_WaveProgress_StallCause(t *testing.T) {
+// TestExecState_WaveProgress_StallCauseRemoved is a regression guard for the
+// wave-await remodel: execActionWaveProgress no longer computes StallCause
+// via wave.ClassifyStall (stall/timeout classification now lives in
+// wave-await, driven by server state). readProgress must return an empty
+// stallCause for every task regardless of how stale its heartbeat or
+// startedAt is — it must never be silently reintroduced here.
+func TestExecState_WaveProgress_StallCauseRemoved(t *testing.T) {
 	// Helper: write a progress file directly with controlled timestamps.
 	writeProgressFile := func(t *testing.T, root, runID, taskID string, tp wave.TaskProgress) {
 		t.Helper()
@@ -5595,105 +5602,48 @@ func TestExecState_WaveProgress_StallCause(t *testing.T) {
 	nowStr := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
 	oldStr := time.Now().Add(-1 * time.Hour).UTC().Format("2006-01-02T15:04:05.000Z")
 
-	t.Run("healthy task has empty stallCause", func(t *testing.T) {
-		root := t.TempDir()
-		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
-		writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
-		// Create execute state with large timeouts so nothing stalls.
-		createExecState(t, root, branch, map[string]any{
-			"waveTimeoutSeconds":  9999,
-			"waveIntervalSeconds": 9999,
-		})
-		writeProgressFile(t, root, runID, "task-healthy", wave.TaskProgress{
-			Phase:     "editing",
-			StartedAt: nowStr,
-			UpdatedAt: nowStr,
-		})
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
+	// Small timeouts so a wave.ClassifyStall call — if one were mistakenly
+	// reintroduced — would trip on both of these tasks.
+	createExecState(t, root, branch, map[string]any{
+		"waveTimeoutSeconds":  5,
+		"waveIntervalSeconds": 5,
+	})
+	writeProgressFile(t, root, runID, "task-stale-heartbeat", wave.TaskProgress{
+		Phase:     "editing",
+		StartedAt: nowStr,
+		UpdatedAt: oldStr,
+	})
+	writeProgressFile(t, root, runID, "task-stale-started", wave.TaskProgress{
+		Phase:     "editing",
+		StartedAt: oldStr,
+		UpdatedAt: nowStr,
+	})
 
-		result, err := executeState(root, root, ExecuteStateIn{
-			Action:       "wave-progress",
-			RunID:        runID,
-			Branch:       branch,
-			ReadProgress: true,
-		}, fixedClock(testNow))
-		if err != nil {
-			t.Fatalf("readProgress: %v", err)
-		}
-		out, ok := result.(ReadProgressOut)
-		if !ok {
-			t.Fatalf("result type = %T, want ReadProgressOut", result)
-		}
-		tp, exists := out.Tasks["task-healthy"]
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action:       "wave-progress",
+		RunID:        runID,
+		Branch:       branch,
+		ReadProgress: true,
+	}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("readProgress: %v", err)
+	}
+	out, ok := result.(ReadProgressOut)
+	if !ok {
+		t.Fatalf("result type = %T, want ReadProgressOut", result)
+	}
+	for _, id := range []string{"task-stale-heartbeat", "task-stale-started"} {
+		tp, exists := out.Tasks[id]
 		if !exists {
-			t.Fatal("task-healthy not found in readProgress result")
+			t.Fatalf("%s not found in readProgress result", id)
 		}
 		if tp.StallCause != "" {
-			t.Errorf("stallCause = %q, want empty for healthy task", tp.StallCause)
+			t.Errorf("%s: stallCause = %q, want empty (classification moved to wave-await)", id, tp.StallCause)
 		}
-	})
-
-	t.Run("stalled task has stallCause stalled", func(t *testing.T) {
-		root := t.TempDir()
-		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
-		writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
-		// Small heartbeat interval so 1-hour-old updatedAt triggers stall.
-		// Large total timeout so it doesn't trigger timeout.
-		createExecState(t, root, branch, map[string]any{
-			"waveTimeoutSeconds":  99999,
-			"waveIntervalSeconds": 5,
-		})
-		writeProgressFile(t, root, runID, "task-stalled", wave.TaskProgress{
-			Phase:     "editing",
-			StartedAt: nowStr,
-			UpdatedAt: oldStr,
-		})
-
-		result, err := executeState(root, root, ExecuteStateIn{
-			Action:       "wave-progress",
-			RunID:        runID,
-			Branch:       branch,
-			ReadProgress: true,
-		}, fixedClock(testNow))
-		if err != nil {
-			t.Fatalf("readProgress: %v", err)
-		}
-		out := result.(ReadProgressOut)
-		tp := out.Tasks["task-stalled"]
-		if tp.StallCause != "stalled" {
-			t.Errorf("stallCause = %q, want %q", tp.StallCause, "stalled")
-		}
-	})
-
-	t.Run("timed-out task has stallCause timeout", func(t *testing.T) {
-		root := t.TempDir()
-		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
-		writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
-		// Small total timeout so 1-hour-old startedAt triggers timeout.
-		createExecState(t, root, branch, map[string]any{
-			"waveTimeoutSeconds":  5,
-			"waveIntervalSeconds": 99999,
-		})
-		writeProgressFile(t, root, runID, "task-timedout", wave.TaskProgress{
-			Phase:     "editing",
-			StartedAt: oldStr,
-			UpdatedAt: nowStr,
-		})
-
-		result, err := executeState(root, root, ExecuteStateIn{
-			Action:       "wave-progress",
-			RunID:        runID,
-			Branch:       branch,
-			ReadProgress: true,
-		}, fixedClock(testNow))
-		if err != nil {
-			t.Fatalf("readProgress: %v", err)
-		}
-		out := result.(ReadProgressOut)
-		tp := out.Tasks["task-timedout"]
-		if tp.StallCause != "timeout" {
-			t.Errorf("stallCause = %q, want %q", tp.StallCause, "timeout")
-		}
-	})
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -5715,7 +5665,6 @@ func TestExecState_WaveProgress_FieldsMapping(t *testing.T) {
 		AcceptanceDone: []int{0, 2, 3},
 		FilesTouched:   []string{"main.go", "go.mod"},
 		Blocker:        "waiting on API review",
-		NudgedAt:       "2025-06-15T12:00:00.000Z",
 	}, fixedClock(testNow))
 	if err != nil {
 		t.Fatalf("wave-progress write: %v", err)
@@ -5758,11 +5707,6 @@ func TestExecState_WaveProgress_FieldsMapping(t *testing.T) {
 	// Blocker
 	if tp.Blocker != "waiting on API review" {
 		t.Errorf("Blocker = %q, want %q", tp.Blocker, "waiting on API review")
-	}
-
-	// NudgedAt
-	if tp.NudgedAt != "2025-06-15T12:00:00.000Z" {
-		t.Errorf("NudgedAt = %q, want %q", tp.NudgedAt, "2025-06-15T12:00:00.000Z")
 	}
 }
 
@@ -5830,5 +5774,622 @@ func TestExecCurrentWaveNum(t *testing.T) {
 				t.Errorf("execCurrentWaveNum() = %d, want %d", got, tt.want)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// wave-await / task-redispatch wiring, server-state seeding
+// ---------------------------------------------------------------------------
+
+// TestExecState_WaveStart_SeedsServerState covers the acceptance criterion:
+// after wave-start with 3 tasks, all 3 have server state with dispatchedAt,
+// the caller-supplied workerName, and attempt:1.
+func TestExecState_WaveStart_SeedsServerState(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+	createExecState(t, root, "feat/test", map[string]any{
+		"startedAt": testNow.UTC().Format(time.RFC3339),
+		"waves":     []any{},
+		"context":   map[string]any{},
+	})
+
+	tasksJSON := `[
+		{"id":"T1","name":"Task One","description":"d1","workerName":"agent-alpha"},
+		{"id":"T2","name":"Task Two","description":"d2","workerName":"agent-beta"},
+		{"id":"T3","name":"Task Three","description":"d3","workerName":"agent-gamma"}
+	]`
+
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action: "wave-start", Branch: "feat/test", Wave: intPtr(1), TasksJSON: tasksJSON, RunID: "run1",
+	}, clock); err != nil {
+		t.Fatalf("wave-start: %v", err)
+	}
+
+	for _, tc := range []struct{ id, worker string }{
+		{"T1", "agent-alpha"}, {"T2", "agent-beta"}, {"T3", "agent-gamma"},
+	} {
+		s, found, err := wave.LoadServerState(root, "run1", tc.id)
+		if err != nil {
+			t.Fatalf("load server state for %s: %v", tc.id, err)
+		}
+		if !found {
+			t.Fatalf("server state for %s not seeded", tc.id)
+		}
+		if s.DispatchedAt == "" {
+			t.Errorf("%s: dispatchedAt empty", tc.id)
+		}
+		if s.WorkerName != tc.worker {
+			t.Errorf("%s: workerName = %q, want %q", tc.id, s.WorkerName, tc.worker)
+		}
+		if s.Attempt != 1 {
+			t.Errorf("%s: attempt = %d, want 1", tc.id, s.Attempt)
+		}
+	}
+}
+
+// TestExecState_WaveStart_SeedsBatchServerState covers the acceptance
+// criterion: a batch of 3 tasks seeds one shared batchId with batchIndex
+// 0,1,2 and the same workerName on all three.
+func TestExecState_WaveStart_SeedsBatchServerState(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+	createExecState(t, root, "feat/test", map[string]any{
+		"startedAt": testNow.UTC().Format(time.RFC3339),
+		"waves":     []any{},
+		"context":   map[string]any{},
+	})
+
+	tasksJSON := `[
+		{"id":"T1","name":"Task One","description":"d1","workerName":"agent-batch","batchId":"batch-1","batchIndex":0},
+		{"id":"T2","name":"Task Two","description":"d2","workerName":"agent-batch","batchId":"batch-1","batchIndex":1},
+		{"id":"T3","name":"Task Three","description":"d3","workerName":"agent-batch","batchId":"batch-1","batchIndex":2}
+	]`
+
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action: "wave-start", Branch: "feat/test", Wave: intPtr(1), TasksJSON: tasksJSON, RunID: "run1",
+	}, clock); err != nil {
+		t.Fatalf("wave-start: %v", err)
+	}
+
+	for i, id := range []string{"T1", "T2", "T3"} {
+		s, found, err := wave.LoadServerState(root, "run1", id)
+		if err != nil {
+			t.Fatalf("load server state for %s: %v", id, err)
+		}
+		if !found {
+			t.Fatalf("server state for %s not seeded", id)
+		}
+		if s.BatchID != "batch-1" {
+			t.Errorf("%s: batchId = %q, want batch-1", id, s.BatchID)
+		}
+		if s.BatchIndex != i {
+			t.Errorf("%s: batchIndex = %d, want %d", id, s.BatchIndex, i)
+		}
+		if s.WorkerName != "agent-batch" {
+			t.Errorf("%s: workerName = %q, want agent-batch", id, s.WorkerName)
+		}
+	}
+}
+
+// TestExecState_WaveStart_ResumeDoesNotResetDispatchedAt covers the
+// acceptance criterion: wave-start called again on resume must not reset
+// dispatchedAt for tasks that already have server state.
+func TestExecState_WaveStart_ResumeDoesNotResetDispatchedAt(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+	createExecState(t, root, "feat/test", map[string]any{
+		"startedAt": testNow.UTC().Format(time.RFC3339),
+		"waves":     []any{},
+		"context":   map[string]any{},
+	})
+
+	tasksJSON := `[{"id":"T1","name":"Task One","description":"d1","workerName":"agent-alpha"}]`
+
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action: "wave-start", Branch: "feat/test", Wave: intPtr(1), TasksJSON: tasksJSON, RunID: "run1",
+	}, clock); err != nil {
+		t.Fatalf("wave-start (first): %v", err)
+	}
+
+	first, found, err := wave.LoadServerState(root, "run1", "T1")
+	if err != nil || !found || first.DispatchedAt == "" {
+		t.Fatalf("expected seeded server state, err=%v found=%v state=%+v", err, found, first)
+	}
+
+	laterClock := fixedClock(testNow.Add(time.Hour))
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action: "wave-start", Branch: "feat/test", Wave: intPtr(1), TasksJSON: tasksJSON, RunID: "run1",
+	}, laterClock); err != nil {
+		t.Fatalf("wave-start (resume): %v", err)
+	}
+
+	second, found, err := wave.LoadServerState(root, "run1", "T1")
+	if err != nil || !found {
+		t.Fatalf("expected server state still present, err=%v found=%v", err, found)
+	}
+	if second.DispatchedAt != first.DispatchedAt {
+		t.Errorf("dispatchedAt changed on resume: %q -> %q", first.DispatchedAt, second.DispatchedAt)
+	}
+}
+
+// TestExecState_WaveStart_SeedingFailureIsNonFatal covers the acceptance
+// criterion: a seeding failure (here, an invalid runID rejected by
+// wave.LoadServerState/StoreServerState) appends a warning instead of
+// failing wave-start.
+func TestExecState_WaveStart_SeedingFailureIsNonFatal(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+	createExecState(t, root, "feat/test", map[string]any{
+		"waves":   []any{},
+		"context": map[string]any{},
+	})
+
+	tasksJSON := `[{"id":"T1","name":"Task One","description":"d1"}]`
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "wave-start", Branch: "feat/test", Wave: intPtr(1), TasksJSON: tasksJSON,
+		RunID: "bad run id!",
+	}, clock)
+	if err != nil {
+		t.Fatalf("wave-start: expected non-fatal seeding failure, got hard error: %v", err)
+	}
+	out, ok := result.(ExecWaveNarrationOut)
+	if !ok {
+		t.Fatalf("result = %T, want ExecWaveNarrationOut", result)
+	}
+	found := false
+	for _, w := range out.Warnings {
+		if strings.Contains(w, "seed server state") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a seed-server-state warning, got warnings=%v", out.Warnings)
+	}
+}
+
+// TestExecState_TaskContext_StampsContextFetchedAtOnce covers the
+// acceptance criterion: task-context sets contextFetchedAt once and never
+// overwrites it on a later call.
+func TestExecState_TaskContext_StampsContextFetchedAtOnce(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+	createExecState(t, root, "feat/test", map[string]any{
+		"startedAt": testNow.UTC().Format(time.RFC3339),
+		"waves":     []any{},
+		"context":   map[string]any{},
+	})
+
+	tasksJSON := `[{"id":"T1","name":"Task One","description":"d1"}]`
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action: "wave-start", Branch: "feat/test", Wave: intPtr(1), TasksJSON: tasksJSON, RunID: "run1",
+	}, clock); err != nil {
+		t.Fatalf("wave-start: %v", err)
+	}
+
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action: "task-context", Branch: "feat/test", Wave: intPtr(1), TaskID: "T1", RunID: "run1",
+	}, clock); err != nil {
+		t.Fatalf("task-context (first): %v", err)
+	}
+
+	first, found, err := wave.LoadServerState(root, "run1", "T1")
+	if err != nil || !found || first.ContextFetchedAt == "" {
+		t.Fatalf("expected contextFetchedAt stamped, err=%v found=%v state=%+v", err, found, first)
+	}
+
+	laterClock := fixedClock(testNow.Add(time.Hour))
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action: "task-context", Branch: "feat/test", Wave: intPtr(1), TaskID: "T1", RunID: "run1",
+	}, laterClock); err != nil {
+		t.Fatalf("task-context (second): %v", err)
+	}
+
+	second, found, err := wave.LoadServerState(root, "run1", "T1")
+	if err != nil || !found {
+		t.Fatalf("expected server state present, err=%v found=%v", err, found)
+	}
+	if second.ContextFetchedAt != first.ContextFetchedAt {
+		t.Errorf("contextFetchedAt overwritten: %q -> %q", first.ContextFetchedAt, second.ContextFetchedAt)
+	}
+}
+
+// TestExecState_TaskRedispatch_FreshSoloState covers the acceptance
+// criterion: task-redispatch produces a fresh dispatchedAt, empty
+// contextFetchedAt/reclaimRequestedAt/batchId, and attempt incremented --
+// even when the failed attempt was part of a batch.
+func TestExecState_TaskRedispatch_FreshSoloState(t *testing.T) {
+	root := t.TempDir()
+	const branch = "feat/test"
+	const runID = "run1"
+	clock := fixedClock(testNow)
+
+	createExecState(t, root, branch, map[string]any{
+		"waves": []any{
+			map[string]any{
+				"number":  1,
+				"status":  "in_progress",
+				"planned": []any{map[string]any{"id": "T1", "name": "Task One", "files": []any{}}},
+				"tasks":   []any{},
+			},
+		},
+	})
+
+	oldDispatch := waveAwaitFormat(testNow.Add(-2 * time.Hour))
+	if err := wave.StoreServerState(root, runID, "T1", wave.ServerTaskState{
+		DispatchedAt:       oldDispatch,
+		WorkerName:         "agent-batch",
+		BatchID:            "batch-1",
+		BatchIndex:         2,
+		ContextFetchedAt:   waveAwaitFormat(testNow.Add(-time.Hour)),
+		ReclaimRequestedAt: waveAwaitFormat(testNow.Add(-30 * time.Minute)),
+		Attempt:            1,
+	}); err != nil {
+		t.Fatalf("seed server state: %v", err)
+	}
+
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action: "task-fail", Branch: branch, Wave: intPtr(1), TaskID: "T1", RunID: runID, ErrorText: "boom",
+	}, clock); err != nil {
+		t.Fatalf("task-fail: %v", err)
+	}
+
+	laterClock := fixedClock(testNow.Add(time.Hour))
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action: "task-redispatch", Branch: branch, TaskID: "T1", RunID: runID,
+	}, laterClock); err != nil {
+		t.Fatalf("task-redispatch: %v", err)
+	}
+
+	next, found, err := wave.LoadServerState(root, runID, "T1")
+	if err != nil || !found {
+		t.Fatalf("expected server state present, err=%v found=%v", err, found)
+	}
+	if next.DispatchedAt == oldDispatch || next.DispatchedAt == "" {
+		t.Errorf("dispatchedAt not refreshed: %q", next.DispatchedAt)
+	}
+	if next.ContextFetchedAt != "" {
+		t.Errorf("contextFetchedAt not cleared: %q", next.ContextFetchedAt)
+	}
+	if next.ReclaimRequestedAt != "" {
+		t.Errorf("reclaimRequestedAt not cleared: %q", next.ReclaimRequestedAt)
+	}
+	if next.BatchID != "" {
+		t.Errorf("batchId not cleared: %q", next.BatchID)
+	}
+	if next.Attempt != 2 {
+		t.Errorf("attempt = %d, want 2", next.Attempt)
+	}
+}
+
+// TestExecState_TaskRedispatch_RejectsAtRetryCeiling covers the acceptance
+// criterion: task-redispatch at the 2-retry ceiling (attempt already at 3)
+// returns a DomainError with a Suggestion naming user escalation, and does
+// not seed a 4th attempt.
+func TestExecState_TaskRedispatch_RejectsAtRetryCeiling(t *testing.T) {
+	root := t.TempDir()
+	const branch = "feat/test"
+	const runID = "run1"
+	clock := fixedClock(testNow)
+
+	createExecState(t, root, branch, map[string]any{
+		"waves": []any{
+			map[string]any{
+				"number":  1,
+				"status":  "in_progress",
+				"planned": []any{map[string]any{"id": "T1", "name": "Task One", "files": []any{}}},
+				"tasks":   []any{waveAwaitClosedRow("T1", "failed")},
+			},
+		},
+	})
+	if err := wave.StoreServerState(root, runID, "T1", wave.ServerTaskState{
+		DispatchedAt: waveAwaitFormat(testNow.Add(-time.Hour)),
+		WorkerName:   "agent-1",
+		Attempt:      3,
+	}); err != nil {
+		t.Fatalf("seed server state: %v", err)
+	}
+
+	_, err := executeState(root, root, ExecuteStateIn{
+		Action: "task-redispatch", Branch: branch, TaskID: "T1", RunID: runID,
+	}, clock)
+	if err == nil {
+		t.Fatal("expected error at retry ceiling")
+	}
+	de, ok := err.(*mcpserver.DomainError)
+	if !ok {
+		t.Fatalf("expected DomainError, got %T: %v", err, err)
+	}
+	if !strings.Contains(strings.ToLower(de.Suggestion), "escalat") {
+		t.Errorf("Suggestion = %q, want mention of escalation", de.Suggestion)
+	}
+
+	next, found, err := wave.LoadServerState(root, runID, "T1")
+	if err != nil || !found {
+		t.Fatalf("expected server state unchanged, err=%v found=%v", err, found)
+	}
+	if next.Attempt != 3 {
+		t.Errorf("attempt changed to %d, want unchanged 3 (no 4th attempt seeded)", next.Attempt)
+	}
+}
+
+// TestExecState_TaskRedispatch_ReopensForWaveAwait covers the acceptance
+// criterion: task-redispatch flips the wave manifest row back to
+// in_progress, and a following wave-await reports that task in "open". This
+// also exercises both new dispatcher cases (task-redispatch, wave-await)
+// wired into executeState's switch.
+func TestExecState_TaskRedispatch_ReopensForWaveAwait(t *testing.T) {
+	root := t.TempDir()
+	const branch = "feat/test"
+	const runID = "run1"
+	clock := fixedClock(testNow)
+
+	createExecState(t, root, branch, map[string]any{
+		"waves": []any{
+			map[string]any{
+				"number":  1,
+				"status":  "in_progress",
+				"planned": []any{map[string]any{"id": "T1", "name": "Task One", "files": []any{}}},
+				"tasks":   []any{},
+			},
+		},
+	})
+
+	if err := wave.StoreServerState(root, runID, "T1", wave.ServerTaskState{
+		DispatchedAt: waveAwaitFormat(testNow.Add(-time.Hour)),
+		WorkerName:   "worker-T1",
+		Attempt:      1,
+	}); err != nil {
+		t.Fatalf("seed server state: %v", err)
+	}
+
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action: "task-fail", Branch: branch, Wave: intPtr(1), TaskID: "T1", RunID: runID, ErrorText: "boom",
+	}, clock); err != nil {
+		t.Fatalf("task-fail: %v", err)
+	}
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "task-redispatch", Branch: branch, TaskID: "T1", RunID: runID,
+	}, clock)
+	if err != nil {
+		t.Fatalf("task-redispatch: %v", err)
+	}
+	redispatchOut, ok := result.(TaskRedispatchOut)
+	if !ok {
+		t.Fatalf("task-redispatch result = %T, want TaskRedispatchOut", result)
+	}
+	if redispatchOut.Attempt != 2 {
+		t.Errorf("attempt = %v, want 2", redispatchOut.Attempt)
+	}
+	if redispatchOut.Next == "" {
+		t.Error("next is empty, want non-empty next-step instruction")
+	}
+
+	data := readExecState(t, root, branch)
+	w := data["waves"].([]any)[0].(map[string]any)
+	tasks := w["tasks"].([]any)
+	tm := tasks[0].(map[string]any)
+	if tm["status"] != "in_progress" {
+		t.Errorf("wave manifest row status = %v, want in_progress", tm["status"])
+	}
+
+	awaitResult, err := executeState(root, root, ExecuteStateIn{
+		Action: "wave-await", Branch: branch, RunID: runID, Wave: intPtr(1),
+	}, clock)
+	if err != nil {
+		t.Fatalf("wave-await: %v", err)
+	}
+	out, ok := awaitResult.(WaveAwaitOut)
+	if !ok {
+		t.Fatalf("wave-await result = %T, want WaveAwaitOut", awaitResult)
+	}
+	prog, ok := out.Progress.(waveAwaitProgress)
+	if !ok {
+		t.Fatalf("Progress = %T, want waveAwaitProgress", out.Progress)
+	}
+	if !containsStr(prog.Open, "T1") {
+		t.Errorf("expected T1 in open bucket, got %+v", prog)
+	}
+}
+
+// TestExecState_TaskFail_IdempotentAtSameAttempt covers the acceptance
+// criterion: task-fail for a task already failed at the same attempt is a
+// no-op, not an error, and does not duplicate the issue log or manifest row.
+func TestExecState_TaskFail_IdempotentAtSameAttempt(t *testing.T) {
+	root := t.TempDir()
+	const branch = "feat/test"
+	clock := fixedClock(testNow)
+
+	createExecState(t, root, branch, map[string]any{
+		"waves": []any{
+			map[string]any{"number": 1, "status": "in_progress", "tasks": []any{}},
+		},
+	})
+
+	in := ExecuteStateIn{
+		Action: "task-fail", Branch: branch, Wave: intPtr(1), TaskID: "T1", ErrorText: "boom",
+	}
+
+	if _, err := executeState(root, root, in, clock); err != nil {
+		t.Fatalf("task-fail (first): %v", err)
+	}
+
+	data := readExecState(t, root, branch)
+	issuesBefore, _ := data["issues"].([]any)
+
+	if _, err := executeState(root, root, in, clock); err != nil {
+		t.Fatalf("task-fail (second, expected no-op not error): %v", err)
+	}
+
+	data2 := readExecState(t, root, branch)
+	issuesAfter, _ := data2["issues"].([]any)
+	if len(issuesAfter) != len(issuesBefore) {
+		t.Errorf("issue count changed on repeat task-fail: %d -> %d", len(issuesBefore), len(issuesAfter))
+	}
+
+	waves := data2["waves"].([]any)
+	w := waves[0].(map[string]any)
+	tasks := w["tasks"].([]any)
+	if len(tasks) != 1 {
+		t.Errorf("expected exactly 1 task row after repeat task-fail, got %d", len(tasks))
+	}
+}
+
+// TestExecState_ResumeReset_SeedsServerStateForClearedTasks covers the
+// acceptance criterion: resume-reset on a wave with 3 in_progress tasks
+// produces 3 seeded server-state files.
+func TestExecState_ResumeReset_SeedsServerStateForClearedTasks(t *testing.T) {
+	root := t.TempDir()
+	const branch = "feat/test"
+	clock := fixedClock(testNow)
+
+	createExecState(t, root, branch, map[string]any{
+		"startedAt": testNow.UTC().Format(time.RFC3339),
+		"waves": []any{
+			map[string]any{
+				"number": 1,
+				"status": "in_progress",
+				"tasks": []any{
+					map[string]any{"id": "T1", "status": "in_progress"},
+					map[string]any{"id": "T2", "status": "in_progress"},
+					map[string]any{"id": "T3", "status": "in_progress"},
+				},
+			},
+		},
+		"context": map[string]any{},
+	})
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "resume-reset", Branch: branch,
+	}, clock)
+	if err != nil {
+		t.Fatalf("resume-reset: %v", err)
+	}
+	m, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("result = %T, want map[string]any", result)
+	}
+	if w, ok := m["warnings"]; ok {
+		t.Errorf("unexpected warnings: %v", w)
+	}
+
+	runID := execDeriveRunID(readExecState(t, root, branch), 1)
+	for _, id := range []string{"T1", "T2", "T3"} {
+		s, found, err := wave.LoadServerState(root, runID, id)
+		if err != nil {
+			t.Fatalf("load server state for %s: %v", id, err)
+		}
+		if !found {
+			t.Fatalf("expected server state seeded for %s", id)
+		}
+		if s.DispatchedAt == "" {
+			t.Errorf("%s: dispatchedAt empty", id)
+		}
+		if s.Attempt != 1 {
+			t.Errorf("%s: attempt = %d, want 1", id, s.Attempt)
+		}
+	}
+}
+
+// TestAnyToIntSlice_JSONRoundTrip covers the shape anyToIntSlice actually
+// sees in production: a []int written into a state file, then read back off
+// disk as a []any of float64 (encoding/json's default number type) after
+// json.Unmarshal into map[string]any.
+func TestAnyToIntSlice_JSONRoundTrip(t *testing.T) {
+	original := []int{0, 1, 2, 5}
+
+	raw, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var roundTripped any
+	if err := json.Unmarshal(raw, &roundTripped); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if _, ok := roundTripped.([]any); !ok {
+		t.Fatalf("roundTripped = %T, want []any (test assumption about encoding/json's default number decoding is wrong)", roundTripped)
+	}
+
+	got := anyToIntSlice(roundTripped)
+	if !reflect.DeepEqual(got, original) {
+		t.Errorf("anyToIntSlice(round-tripped %v) = %v, want %v", roundTripped, got, original)
+	}
+
+	// Direct []int (no JSON round-trip) passes through unchanged.
+	if got := anyToIntSlice([]int{3, 4}); !reflect.DeepEqual(got, []int{3, 4}) {
+		t.Errorf("anyToIntSlice([]int{3,4}) = %v, want [3 4]", got)
+	}
+
+	// Unrecognized shapes (including nil, the JSON-null case) return nil.
+	for _, v := range []any{nil, "not a slice", 42} {
+		if got := anyToIntSlice(v); got != nil {
+			t.Errorf("anyToIntSlice(%#v) = %v, want nil", v, got)
+		}
+	}
+}
+
+// TestExecParseResumeFrom_JSONRoundTrip verifies execParseResumeFrom
+// reassembles a *ResumeFrom from the map[string]any shape it actually
+// receives at runtime: a resumeFrom value written into a wave-manifest task
+// row, persisted to the state file as JSON, then read back and unmarshaled
+// into map[string]any before task-context hands it to this function. A
+// silent mis-decode here (e.g. AcceptanceDone silently dropping elements)
+// would corrupt a reopened task's retry worker context without ever
+// failing a live dispatch, since this function deliberately treats
+// malformed input as "no resumeFrom" rather than erroring.
+func TestExecParseResumeFrom_JSONRoundTrip(t *testing.T) {
+	original := &ResumeFrom{
+		AcceptanceDone:    []int{0, 2},
+		FilesTouched:      []string{"internal/tools/execute_state.go", "internal/wave/serverstate.go"},
+		LastCompletedTask: "3",
+		Blocker:           "waiting on upstream API contract",
+	}
+
+	raw, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+
+	got := execParseResumeFrom(m)
+	if got == nil {
+		t.Fatal("execParseResumeFrom(round-tripped map) = nil, want non-nil")
+	}
+	if !reflect.DeepEqual(got, original) {
+		t.Errorf("execParseResumeFrom(round-tripped map) = %+v, want %+v", got, original)
+	}
+
+	// Zero-value slice/string fields round-trip to empty (not nil) slices
+	// and empty strings, per execParseResumeFrom's documented normalization.
+	sparse := &ResumeFrom{}
+	raw, err = json.Marshal(sparse)
+	if err != nil {
+		t.Fatalf("json.Marshal(sparse): %v", err)
+	}
+	var sparseMap map[string]any
+	if err := json.Unmarshal(raw, &sparseMap); err != nil {
+		t.Fatalf("json.Unmarshal(sparse): %v", err)
+	}
+	gotSparse := execParseResumeFrom(sparseMap)
+	if gotSparse == nil {
+		t.Fatal("execParseResumeFrom(sparse round-tripped map) = nil, want non-nil")
+	}
+	if gotSparse.AcceptanceDone == nil || len(gotSparse.AcceptanceDone) != 0 {
+		t.Errorf("AcceptanceDone = %#v, want non-nil empty slice", gotSparse.AcceptanceDone)
+	}
+	if gotSparse.FilesTouched == nil || len(gotSparse.FilesTouched) != 0 {
+		t.Errorf("FilesTouched = %#v, want non-nil empty slice", gotSparse.FilesTouched)
+	}
+
+	// Malformed input (not a map, or a missing key entirely) reads as "no
+	// resumeFrom" rather than panicking or erroring.
+	for _, v := range []any{nil, "not a map", 42, []any{1, 2}} {
+		if got := execParseResumeFrom(v); got != nil {
+			t.Errorf("execParseResumeFrom(%#v) = %+v, want nil", v, got)
+		}
 	}
 }

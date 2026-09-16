@@ -461,7 +461,7 @@ var planSkillsReferenceFileHashes = map[string]string{
 	"skills/plan/plan-reviewer-prompt.md":             "b9e888dcf06960d9d9dc2c6039b01828d8c8e4ad5530cbf4d2d4872404d79e75",
 	"skills/plan/plan-format-reference.md":            "7e49dab05f23866c3a2ea44362b450b822f5fdb3367b4d77783ef0ce4609055c",
 	"skills/plan/plan-template-default.md":            "1fd3de86545ece6eb08e8736ef7dcc2c57ee534f8753a3c13ea2c60398be863b",
-	"skills/execute/spec-compliance-reviewer.md":      "ff6b385e1fade868e4c06fa4c2c5990a1e087e4894b1d4395f46c50c2342023b",
+	"skills/execute/spec-compliance-reviewer.md":      "b163b798f92a9247eda48763c08c8f4ec43872fae31201427f204ebb4c99af1e",
 }
 
 // TestPlanSkillsReferenceFilesAreUnmodified is the AC4 acceptance criterion:

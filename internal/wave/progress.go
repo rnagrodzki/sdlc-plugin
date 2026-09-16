@@ -25,18 +25,6 @@ var validPhases = map[string]bool{
 // supplied phase is not in the bounded enum.
 var ErrBadPhase = errors.New("wave: invalid phase")
 
-// StallCause classifies why a task's heartbeat is unhealthy.
-type StallCause string
-
-const (
-	// StallCauseNone means the heartbeat is healthy.
-	StallCauseNone StallCause = ""
-	// StallCauseStalled means the worker stopped sending heartbeat updates.
-	StallCauseStalled StallCause = "stalled"
-	// StallCauseTimeout means the task exceeded its total allowed runtime.
-	StallCauseTimeout StallCause = "timeout"
-)
-
 // TaskProgress is one task's entry inside a progress marker.
 type TaskProgress struct {
 	Phase             string   `json:"phase"`
@@ -46,7 +34,6 @@ type TaskProgress struct {
 	AcceptanceDone    []int    `json:"acceptanceDone,omitempty"`
 	FilesTouched      []string `json:"filesTouched,omitempty"`
 	Blocker           string   `json:"blocker,omitempty"`
-	NudgedAt          string   `json:"nudgedAt,omitempty"`
 }
 
 // ProgressFields carries the optional structured-milestone fields
@@ -69,16 +56,12 @@ type ProgressFields struct {
 	// Blocker is a free-text reason the worker is currently blocked. An
 	// empty string preserves the existing value.
 	Blocker string
-	// NudgedAt is the server-side nudge timestamp (written/read by the
-	// orchestration's nudge protocol). An empty string preserves the
-	// existing value.
-	NudgedAt string
 }
 
 // Progress is the aggregated view of a run's progress markers, assembled by
-// ReadProgress from every file under <root>/.sdlc-v2/execution/<runID>/progress/
+// ReadProgress from every file under <root>/.sdlc-v2/runs/<runID>/progress/
 // plus (at lower priority) the legacy single-file marker,
-// <root>/.sdlc-v2/execution/<runID>/progress.json. The exported shape is
+// <root>/.sdlc-v2/runs/<runID>/progress.json. The exported shape is
 // unchanged from the single-file era so MCP callers (execute_state's
 // wave-progress action) see no difference.
 type Progress struct {
@@ -88,8 +71,17 @@ type Progress struct {
 // progressDir returns the absolute path of a run's per-task progress
 // directory — one JSON file per task, named <taskID>.json. Writing here
 // (rather than to one shared file) eliminates the concurrent-write race by
-// construction: distinct tasks touch distinct files, so no read-modify-write
-// step or locking is needed.
+// construction: distinct tasks touch distinct files, so no cross-task
+// locking is needed. Within a single task's file, UpdateProgress does read
+// the existing record before writing the merged result back (a
+// read-modify-write, not a blind overwrite) so fields set on an earlier
+// call — StartedAt, LastCompletedTask, and any unset ProgressFields — carry
+// forward across phase updates; the single-writer-per-file property keeps
+// that read-modify-write race-free without locking. Each task's directory
+// entry also has a sibling <taskID>.server.json file (see serverstate.go)
+// holding server-owned dispatch/classification state; that file has its own,
+// separate writer — the server, never the worker — so it is unaffected by
+// this file's read-modify-write.
 func progressDir(root, runID string) string {
 	return filepath.Join(executionDir(root, runID), "progress")
 }
@@ -108,7 +100,7 @@ func taskProgressPath(root, runID, taskID string) string {
 }
 
 // ReadProgress aggregates every per-task file under
-// <root>/.sdlc-v2/execution/<runID>/progress/ into a single Progress, merging
+// <root>/.sdlc-v2/runs/<runID>/progress/ into a single Progress, merging
 // in the legacy single-file marker (if any) at lower priority — a taskID
 // present in both is resolved in favor of the per-task file. Missing or
 // unreadable files (legacy marker absent, progress/ directory absent, a
@@ -160,7 +152,7 @@ func ReadProgress(root, runID string) (*Progress, error) {
 // <runDir>/progress/<taskID>.json via fsx.AtomicWriteJSON. The file is
 // read-modify-written so that StartedAt (set once on first write),
 // LastCompletedTask, and the optional ProgressFields (AcceptanceDone,
-// FilesTouched, Blocker, NudgedAt) survive across phase updates. Each
+// FilesTouched, Blocker) survive across phase updates. Each
 // task's file is wholly owned by that task, so no cross-task race exists.
 //
 // fields is variadic so every existing 5-arg call site keeps compiling
@@ -219,42 +211,6 @@ func UpdateProgress(root, runID, taskID, phase, lastCompletedTask string, fields
 	} else {
 		tp.Blocker = existing.Blocker
 	}
-	if f.NudgedAt != "" {
-		tp.NudgedAt = f.NudgedAt
-	} else {
-		tp.NudgedAt = existing.NudgedAt
-	}
 
 	return fsx.AtomicWriteJSON(taskProgressPath(root, runID, taskID), tp)
-}
-
-// ClassifyStall determines whether a task's heartbeat indicates a stall,
-// a timeout, or is healthy. heartbeatTimeout is the max age of UpdatedAt
-// before declaring stalled; totalTimeout is the max total runtime from
-// StartedAt before declaring timeout. Timeout takes precedence when both
-// conditions hold.
-func ClassifyStall(tp TaskProgress, now time.Time, heartbeatTimeout, totalTimeout time.Duration) StallCause {
-	if tp.UpdatedAt == "" {
-		return StallCauseNone
-	}
-	updated, err := time.Parse("2006-01-02T15:04:05.000Z", tp.UpdatedAt)
-	if err != nil {
-		return StallCauseNone
-	}
-
-	// Timeout: total runtime exceeded.
-	if totalTimeout > 0 && tp.StartedAt != "" {
-		if started, sErr := time.Parse("2006-01-02T15:04:05.000Z", tp.StartedAt); sErr == nil {
-			if now.Sub(started) > totalTimeout {
-				return StallCauseTimeout
-			}
-		}
-	}
-
-	// Stall: heartbeat age exceeded.
-	if heartbeatTimeout > 0 && now.Sub(updated) > heartbeatTimeout {
-		return StallCauseStalled
-	}
-
-	return StallCauseNone
 }

@@ -82,7 +82,7 @@ execute_state({ action: "wave-compute", planPath: "<PLAN_FILE>", extraDepsJson: 
 - **`route`** — `"direct"` when the plan qualifies for small-plan direct execution (≤ 3 tasks, all Trivial/Standard, no High risk); `"waves"` otherwise. Step 2b (ROUTE) in `execute/SKILL.md` consumes this directly rather than re-deriving the condition.
 - **`preWave`** — trivial, dependency-free tasks that have downstream dependents, extracted to run before Wave 1. Execute inline if there is 1; dispatch as a single batch agent if there are 2+ (see Worker dispatch prompt below).
 - **`waves[].tasks`** — the wave's task list, already ordered (critical-path length descending, then task number ascending).
-- **`waves[].expectedFiles`** — the deterministic union of every task's declared `Files:` paths in the wave. Feed this straight into Step 5c-bis's expectedFiles cross-check — no manual union computation needed.
+- **`waves[].expectedFiles`** — the deterministic union of every task's declared `Files:` paths in the wave. Feed this straight into the spec-compliance review dispatched from `## Wave loop` stage 6 (GATES) in `execute/SKILL.md` (`spec-compliance-reviewer.md`) — no manual union computation needed.
 - **`waves[].verificationHint`** — set only when every task in the wave shares the identical `Verify:` value (scope hint included); omitted otherwise.
 
 **`extraDepsJson`** merges implicit dependencies into the graph alongside each task's explicit `Depends on:` field. It is a JSON array of `{ "task": <number>, "dependsOn": <number>, "reason": "<why>" }` entries — Common Dependency Patterns (below) is the guide for spotting these before calling wave-compute. Pass `"[]"` (or omit the field) when there are none.
@@ -102,23 +102,24 @@ What the tool does **not** decide — still requires LLM judgment at dispatch ti
 
 A task's `Verify:` field may carry a scope hint in parentheses — `Verify: tests (go test
 ./internal/tools/ -run TestFoo)` — as defined in `plan-format-reference.md`'s `## Verify Field —
-Scoped Hints`. It changes what the *task's own agent* runs; it never changes what gates the wave:
+Scoped Hints`. It changes what the *task's own agent* runs; there is no separate wave-level
+verification gate to compensate:
 
 - **Scope hint present:** the task's dispatched Agent runs the scoped command instead of the full
   suite as part of its own verification. This is what lets multiple tasks in the same wave that
   touch the same package run in parallel without every agent re-running — and contending over — the
   full suite.
 - **Scope hint absent:** the task's Agent falls back to running the full suite, same as today.
-- **Post-wave gate always runs the full suite regardless:** Step 5c's "Verification suite" check in
-  `execute/SKILL.md` runs the plan's verification command(s) once, after every task in the wave
-  reports done. It always runs the full suite — never a scoped command — no matter which (if any)
-  tasks in the wave used a scope hint mid-wave. A scope hint narrows an individual agent's own
-  verification; it never narrows the wave's gate.
+- **No post-wave full-suite gate exists anymore.** `## Wave loop` stage 6 (GATES) in
+  `execute/SKILL.md` does not re-run the plan's verification command(s) — it runs the
+  spec-compliance review, the guardrail check, and the wave commit, in that order. Each task's own
+  verification (scoped or full, per above) is the only verification that runs during the wave. The
+  full suite next runs once, at Step 7 (VERIFY), after ALL waves complete — not per wave. A scope
+  hint used mid-wave is therefore not independently re-checked by a full-suite run until then.
 
 `verificationHint` (returned per-wave by `wave-compute`, above) is a separate, narrower signal — it is only set when every task in
 the wave shares the identical `Verify:` value (scope hint included) — and exists to describe the
-wave for reporting/tooling. It does not change the post-wave gate's behavior of always running the
-full suite.
+wave for reporting/tooling. It does not trigger or gate any verification run.
 
 ## Adaptive Wave Size Cap
 
@@ -174,14 +175,26 @@ it has rather than treating the call as an error.
 
 **Batch dispatch (2+ Trivial tasks in one Agent):** send one prompt per task in the cluster,
 concatenated in order, each following the same two-line form with its own `{taskId}`. The Agent
-works through them sequentially, calling `task-context` fresh for each before starting it.
+works through them sequentially, calling `task-context` fresh for each before starting it. A batch
+is supervised as **one subject**, not several: the Agent returns once, after every member, so its
+members are never classified individually — the batch's newest heartbeat (from whichever member
+last reported progress) covers all of them, in both directions. A RECLAIM request always addresses
+the batch agent's real name, never a per-member name.
+
+**Batching and agent names are decided before `wave-start`**, not at dispatch time — stage 1 of
+`execute/SKILL.md`'s `## Wave loop` sends each task's `workerName`/`batchId`/`batchIndex` in
+`tasksJson` on the `wave-start` call itself, so the server can build the batch's single Subject
+(`wave.BuildSubjects`) before any dispatch happens. Choosing a batch grouping after `wave-start`
+has already returned leaves the server supervising three phantom solo agents instead of one batch
+subject.
 
 **Naming, model, mode, and background dispatch mechanics** — see `execute/SKILL.md`'s
 `## Wave loop` section: every dispatch is named `worker-{runId}-{taskId}` (batch dispatch: the
-cluster's *first* task's ID — one Agent call, one name), giving the stall-nudge protocol (stage 5)
-a stable `SendMessage` target; `model:` is required per task (haiku/sonnet/opus by complexity
-tier), `mode: "bypassPermissions"`, `run_in_background: true`, every task/batch of a wave fanned
-out in one message.
+cluster's *first* task's ID — one Agent call, one name); this name exists to give a RECLAIM
+request (`wave-await`'s `next` instruction — see `recovering-from-failures.md`'s
+`## Stalled vs Timeout`) a stable `SendMessage` target; `model:` is required per task
+(haiku/sonnet/opus by complexity tier), `mode: "bypassPermissions"`, `run_in_background: true`,
+every task/batch of a wave fanned out in one message.
 
 **Post-completion verification (2+ tasks in a batch):** after the batch Agent returns, compare each
 task's `filesChanged`. If 2+ tasks report identical files, re-dispatch those tasks individually

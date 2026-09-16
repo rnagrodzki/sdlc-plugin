@@ -69,7 +69,7 @@ Fourteen files in `plugins/sdlc/skills/plan/`:
 
 ### State System
 
-State files live in `.sdlc-v2/execution/` with the naming pattern:
+State files live in `.sdlc-v2/runs/` with the naming pattern:
 
 ```
 plan-<branchSlug>-<YYYYMMDDTHHmmssZ>.json

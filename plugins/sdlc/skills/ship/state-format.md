@@ -9,7 +9,7 @@ Every `ship_state` call takes `{action, step?, detail?, sessionId?}`. Action-spe
 ## File Location
 
 ```
-.sdlc-v2/execution/ship-<branch-slug>-<timestamp>.json
+.sdlc-v2/runs/ship-<branch-slug>-<timestamp>.json
 ```
 
 Managed by the shared `internal/state` package (the same one `execute_state`, `plan_state`, and `commit`'s state helpers use). The skill never constructs or parses this filename itself — every action resolves the file by current branch (or by an explicit `detail.branch` / `detail.stateFile`) and returns already-parsed JSON.

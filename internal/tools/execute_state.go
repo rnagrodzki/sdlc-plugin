@@ -38,25 +38,25 @@ import (
 // ExecuteStateIn carries the merged input for the execute_state tool's
 // actions. Each field is consumed by one or more actions (noted in comments).
 type ExecuteStateIn struct {
-	Action              string         `json:"action" jsonschema:"enum=wave-compute,enum=init,enum=wave-start,enum=wave-done,enum=wave-fail,enum=wave-committed,enum=wave-commit,enum=task-done,enum=task-fail,enum=task-context,enum=context,enum=read,enum=cleanup,enum=gc,enum=summarize-prior-wave-context,enum=wave-split,enum=verify-completeness,enum=wave-progress,enum=resume-reset,enum=ledger_checkin,enum=ledger_checkout,enum=ledger_status,enum=log-cli,enum=drift-log,enum=issue-draft,enum=decide,enum=report" jsonschema_description:"Selects the operation. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
+	Action              string         `json:"action" jsonschema:"enum=wave-compute,enum=init,enum=wave-start,enum=wave-done,enum=wave-fail,enum=wave-committed,enum=wave-commit,enum=task-done,enum=task-fail,enum=task-context,enum=context,enum=read,enum=cleanup,enum=gc,enum=summarize-prior-wave-context,enum=wave-split,enum=verify-completeness,enum=wave-progress,enum=wave-await,enum=task-redispatch,enum=resume-reset,enum=ledger_checkin,enum=ledger_checkout,enum=ledger_status,enum=log-cli,enum=drift-log,enum=issue-draft,enum=decide,enum=report" jsonschema_description:"Selects the operation. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
 	Branch              string         `json:"branch,omitempty" jsonschema_description:"Git branch the execution state belongs to. Most actions accept it to scope the state file; falls back to the current branch when omitted."`
 	Quality             string         `json:"quality,omitempty" jsonschema_description:"Quality level to stamp on a newly initialized run (init only). Required — no config fallback exists for this field."`
 	TotalTasks          int            `json:"totalTasks,omitempty" jsonschema_description:"Total planned task count for a newly initialized run (init only)."`
-	WaveTimeoutSeconds  int            `json:"waveTimeoutSeconds,omitempty" jsonschema_description:"init only: this run's wave wall-clock deadline in seconds (the invoking CLI's --wave-timeout). Recorded on init and later read back by wave-progress's readProgress to compute stallCause via wave.ClassifyStall. When omitted, falls back to a ship-state cross-read of flags.executeWaveTimeout, then internal/shipmeta.ShipBuiltInDefaults.ExecuteWaveTimeout (1800s)."`
-	WaveIntervalSeconds int            `json:"waveIntervalSeconds,omitempty" jsonschema_description:"init only: this run's heartbeat liveness cadence in seconds (the invoking CLI's --wave-interval). Recorded on init and later read back by wave-progress's readProgress to compute stallCause via wave.ClassifyStall. When omitted, falls back to a ship-state cross-read of flags.executeWaveInterval, then internal/shipmeta.ShipBuiltInDefaults.ExecuteWaveInterval (60s)."`
+	WaveTimeoutSeconds  int            `json:"waveTimeoutSeconds,omitempty" jsonschema_description:"init only: this run's wave wall-clock deadline in seconds (the invoking CLI's --wave-timeout). Recorded on init and later read back by wave-await to size its reclaim/timeout window. When omitted, falls back to a ship-state cross-read of flags.executeWaveTimeout, then internal/shipmeta.ShipBuiltInDefaults.ExecuteWaveTimeout (1800s)."`
+	WaveIntervalSeconds int            `json:"waveIntervalSeconds,omitempty" jsonschema_description:"init only: this run's heartbeat liveness cadence in seconds (the invoking CLI's --wave-interval). Recorded on init and later read back by wave-await to size its heartbeat/reclaim-grace window. When omitted, falls back to a ship-state cross-read of flags.executeWaveInterval, then internal/shipmeta.ShipBuiltInDefaults.ExecuteWaveInterval (60s)."`
 	PlannedTaskIds      []string       `json:"plannedTaskIds,omitempty" jsonschema_description:"IDs of every task planned for this run (init only), used later to detect run completeness."`
 	PlanPath            string         `json:"planPath,omitempty" jsonschema_description:"Path to the plan file to parse into a wave schedule (wave-compute), or to record on a newly initialized run (init)."`
 	PlanHash            string         `json:"planHash,omitempty" jsonschema_description:"Hash of the plan file content, recorded on a newly initialized run (init only) to detect later plan drift."`
 	ExtraDepsJSON       string         `json:"extraDepsJson,omitempty" jsonschema_description:"wave-compute only: JSON array of {task, dependsOn, reason} objects merged with each task's explicit \"Depends on\" field before the wave schedule is computed."`
-	Wave                *int           `json:"wave,omitempty" jsonschema_description:"Wave number the action applies to (wave-start, wave-done, wave-fail, wave-committed, wave-commit, task-done, task-fail, wave-split)."`
-	TasksJSON           string         `json:"tasksJson,omitempty" jsonschema_description:"wave-start: JSON array of task objects. Each entry: {id: string, name: string, description: string, complexity: string (optional — Trivial|Standard|Complex), contract: string (optional), acceptanceCriteria: string[] (optional — array of strings), files: string[] (optional)}. Entries missing required string fields (id, name, description) are dropped with a warning; if zero valid entries remain after filtering, the call fails with an error."`
-	RunID               string         `json:"runId,omitempty" jsonschema_description:"Execution run identifier. Required by task-context, ledger_checkin, ledger_checkout, and ledger_status; optional elsewhere (e.g. wave-start, for fact sheets) where it falls back to the value derived from the state's startedAt/wave."`
+	Wave                *int           `json:"wave,omitempty" jsonschema_description:"Wave number the action applies to (wave-start, wave-done, wave-fail, wave-committed, wave-commit, task-done, task-fail, wave-split, wave-await; also task-redispatch, optional, to scope the row search to one wave instead of scanning every wave)."`
+	TasksJSON           string         `json:"tasksJson,omitempty" jsonschema_description:"wave-start: JSON array of task objects. Each entry: {id: string, name: string, description: string, complexity: string (optional — Trivial|Standard|Complex), contract: string (optional), acceptanceCriteria: string[] (optional — array of strings), files: string[] (optional), workerName: string (optional — caller-supplied dispatch identity, never invented; falls back to a generated template when omitted), batchId: string (optional — shared by every task in one batch dispatch; omit for a solo task), batchIndex: number (optional — this task's 0-based position within its batch)}. Entries missing required string fields (id, name, description) are dropped with a warning; if zero valid entries remain after filtering, the call fails with an error. Seeds server-owned dispatch state (dispatchedAt, workerName, batchId/batchIndex, attempt:1) for every valid task."`
+	RunID               string         `json:"runId,omitempty" jsonschema_description:"Execution run identifier. Required by task-context, wave-await, ledger_checkin, ledger_checkout, and ledger_status; optional elsewhere (e.g. wave-start for fact sheets, task-redispatch) where it falls back to the value derived from the state's startedAt/wave."`
 	WorkerID            string         `json:"workerId,omitempty" jsonschema_description:"Identifier of the per-task worker registering or clearing its ledger entry (ledger_checkin, ledger_checkout)."`
 	Decisions           string         `json:"decisions,omitempty" jsonschema_description:"wave-done only: free-text record of decisions made while completing the wave, surfaced in later summaries."`
 	Status              string         `json:"status,omitempty" jsonschema_description:"Outcome status to record: for wave-done/wave-fail, the wave's terminal status; for task-done, \"DONE_WITH_CONCERNS\" records a warning issue alongside the completion."`
 	TimedOut            bool           `json:"timedOut,omitempty" jsonschema_description:"wave-fail only: true when the wave failed because it timed out, rather than erroring outright."`
 	SHA                 string         `json:"sha,omitempty" jsonschema_description:"wave-committed only: the git commit SHA to record for the completed wave."`
-	TaskID              string         `json:"taskId,omitempty" jsonschema_description:"Task identifier the action applies to (task-done, task-fail, task-context, wave-progress writes)."`
+	TaskID              string         `json:"taskId,omitempty" jsonschema_description:"Task identifier the action applies to (task-done, task-fail, task-context, wave-progress writes; required by task-redispatch)."`
 	TaskName            string         `json:"taskName,omitempty" jsonschema_description:"task-done only: human-readable name of the completed task, surfaced in the running-tally narration."`
 	Complexity          string         `json:"complexity,omitempty" jsonschema_description:"task-done only: complexity rating recorded for the completed task."`
 	Risk                string         `json:"risk,omitempty" jsonschema_description:"task-done only: risk rating recorded for the completed task."`
@@ -76,7 +76,7 @@ type ExecuteStateIn struct {
 	MissingIds          string         `json:"missingIds,omitempty" jsonschema_description:"wave-split only: task IDs missing from the current wave that should be folded into the new split wave."`
 	SplitDepth          int            `json:"splitDepth,omitempty" jsonschema_description:"wave-split only: current recursive split depth, used together with maxSplitDepth to bound repeated splitting."`
 	MaxSplitDepth       int            `json:"maxSplitDepth,omitempty" jsonschema_description:"wave-split only: maximum recursive split depth allowed before wave-split refuses to split further."`
-	StateFile           string         `json:"stateFile,omitempty" jsonschema_description:"Overrides the execution state file path to read/write, instead of the one derived from branch (wave-split, verify-completeness, resume-reset)."`
+	StateFile           string         `json:"stateFile,omitempty" jsonschema_description:"Overrides the execution state file path to read/write, instead of the one derived from branch (wave-split, verify-completeness, resume-reset). wave-await also reads this to persist its own resume-state (iteration counter) across bounded-poll calls, keyed by runId+wave."`
 	Phase               string         `json:"phase,omitempty" jsonschema_description:"wave-progress write only: the phase name to stamp on the task's heartbeat entry."`
 	ReadProgress        bool           `json:"readProgress,omitempty" jsonschema_description:"wave-progress only: true to read the current per-task progress instead of writing a new heartbeat entry."`
 	SessionID           string         `json:"sessionId,omitempty" jsonschema_description:"init only: Claude Code session ID stamped into the newly initialized execution state."`
@@ -89,7 +89,6 @@ type ExecuteStateIn struct {
 	AcceptanceDone      []int          `json:"acceptanceDone,omitempty" jsonschema_description:"wave-progress write only: 0-based indices, into the task's fact-sheet acceptance criteria, that the worker has completed so far (e.g. [0,2,3]). Replaces the previously recorded list; omit to leave it unchanged."`
 	FilesTouched        []string       `json:"filesTouched,omitempty" jsonschema_description:"wave-progress write only: files the worker has modified so far. Replaces the previously recorded list; omit to leave it unchanged."`
 	Blocker             string         `json:"blocker,omitempty" jsonschema_description:"wave-progress write only: free-text reason the worker is currently blocked. Omit to leave the previously recorded value unchanged."`
-	NudgedAt            string         `json:"nudgedAt,omitempty" jsonschema_description:"wave-progress write only: server-side nudge timestamp, written by the orchestration's nudge protocol and read back via readProgress to decide whether a task was already nudged. Omit to leave the previously recorded value unchanged."`
 	Message             string         `json:"message,omitempty" jsonschema_description:"wave-commit only: commit message to use for 'git commit -m' when staging and committing the wave's changes."`
 	CLICommand          string         `json:"cliCommand,omitempty" jsonschema_description:"log-cli only: the Bash command that was executed."`
 	CLIExitCode         int            `json:"cliExitCode,omitempty" jsonschema_description:"log-cli only: the exit code of the command."`
@@ -293,13 +292,20 @@ type TaskContextOut struct {
 	// this wave), so an empty Siblings here means "sibling data was never
 	// captured", not "this task has no siblings". Lets callers distinguish
 	// the two cases instead of silently treating both as "alone in wave".
-	SiblingsUnknown bool            `json:"siblingsUnknown,omitempty"`
-	FactSheet       string          `json:"factSheet"`
-	PriorWaves      string          `json:"priorWaves"`
-	Verify          string          `json:"verify"`
-	ReportBack      string          `json:"reportBack"`
-	ExecutionRules  *ExecutionRules `json:"executionRules,omitempty"`
-	Truncated       bool            `json:"truncated,omitempty"`
+	SiblingsUnknown bool   `json:"siblingsUnknown,omitempty"`
+	FactSheet       string `json:"factSheet"`
+	// ResumeFrom carries the task's last recorded failure's harvested
+	// partial-work claim (set by task-fail when the worker had reported one
+	// via wave-progress before being reclaimed). The same data is also
+	// rendered into FactSheet's "Resume from a reclaimed attempt" section
+	// near the top, ahead of the tail-trim in execTaskContextCapPayload.
+	// Omitted entirely when the task's last failure recorded none.
+	ResumeFrom     *ResumeFrom     `json:"resumeFrom,omitempty"`
+	PriorWaves     string          `json:"priorWaves"`
+	Verify         string          `json:"verify"`
+	ReportBack     string          `json:"reportBack"`
+	ExecutionRules *ExecutionRules `json:"executionRules,omitempty"`
+	Truncated      bool            `json:"truncated,omitempty"`
 }
 
 // TaskSibling describes another task in the same wave, giving the worker
@@ -491,14 +497,15 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 
 - wave-compute: Stateless — parses the plan file at planPath and computes the wave schedule (no state file read/write). Requires planPath. Optional: extraDepsJson (JSON array of {task, dependsOn, reason} merged with each task's explicit "Depends on" field). Returns {route, preWave, waves[{number, tasks[], expectedFiles[], verificationHint}]}.
 - init: Create execution state. Runs the same config auto-migration gate as ship_prepare first (migrates and backs up an outdated config, or fails with a /setup pointer if none exists); result may include a "migration" report. Returns {filePath, pipelineAuto (true when this branch's ship state has flags.auto=true — forwarded so the execute SKILL.md high-risk gate can skip a second approval), warnings? (e.g. this branch's ship state exists but is unreadable), migration?}. Requires branch, quality. Optional: totalTasks, plannedTaskIds, planPath, planHash.
-- wave-start: Begin a wave. Returns narration (summary, display with task list + ETA, next). Requires wave. Optional: branch, tasksJson, runId (for fact sheets), detail ("concise"|"full"). If the run recorded a planHash at init, the plan file's current sha256 is compared against it first; a mismatch returns {halt:true, reason:"plan hash mismatch"} instead of narration and does not start the wave. An unreadable/missing plan file does not halt — it proceeds with a warning in the response's "warnings" field.
+- wave-start: Begin a wave. Returns narration (summary, display with task list + ETA, next). Requires wave. Optional: branch, tasksJson, runId (for fact sheets), detail ("concise"|"full"). If the run recorded a planHash at init, the plan file's current sha256 is compared against it first; a mismatch returns {halt:true, reason:"plan hash mismatch"} instead of narration and does not start the wave. An unreadable/missing plan file does not halt — it proceeds with a warning in the response's "warnings" field. Seeds server-owned dispatch state (dispatchedAt, workerName, batchId/batchIndex, attempt:1) for every valid tasksJson entry that doesn't already have one — a task that already has server state (wave-start called again on resume) is left untouched. Seeding failure is non-fatal and appends to "warnings".
 - wave-done: Complete a wave. Returns narration (summary, display with outcomes, timing, next wave preview + ETA). Records wave duration to TimingsStore. Requires wave. Optional: branch, decisions, status, detail ("concise"|"full").
 - wave-fail: Fail a wave. Returns narration (summary, display with failure cause). Requires wave. Optional: branch, timedOut, error (failure cause, recorded as an issue and in failedWave), status, detail ("concise"|"full").
 - wave-committed: Record a commit SHA for a completed wave. Requires wave. Optional: branch, sha.
 - wave-commit: Stage and commit a completed wave's changes (git add -A + git commit -m message) and record the resulting sha on the wave, mirroring wave-committed's SHA-recording. Requires wave, message. Optional: branch, detail ("concise"|"full"). The wave must already be "completed" (call wave-done first). Empty diff: succeeds without committing ({committed:false, reason:"nothing to commit"}). When config execute.commitWaves is false, does not commit and instead returns an instruction to commit manually and call wave-committed. Idempotent on resume: an already-recorded committedSha that is still an ancestor of HEAD is reported ({idempotent:true}) rather than committed again.
 - task-done: Record task completion. Returns narration (summary with running tally, warnings[] when phantom-success heuristics fire). Requires wave, taskId. Optional: branch, taskName, complexity, risk, filesChanged, filesAdded, verifyToken, status ("DONE_WITH_CONCERNS" records a warning issue), error (concern detail for DONE_WITH_CONCERNS).
-- task-fail: Record task failure. Returns narration (summary with running tally). Requires wave, taskId. Optional: branch, error, skippedDependency (records an issue; only a non-skipped failure updates failedTask).
-- task-context: Return everything a dispatched per-task worker needs in one call — fact-sheet content (embeds the plan-task's Contract/Acceptance Criteria/Files), a live prior-wave summary, verify guidance, and report-back instructions. Requires taskId. Optional: branch, runId (falls back the same way wave-start does, via startedAt/wave). The serialized payload is capped at 1 MiB; oversize content (fact sheet first, then prior-wave summary if still over cap) is truncated with truncated:true rather than erroring. Unknown taskId fails with an actionable error listing the valid IDs for that run.
+- task-fail: Record task failure. Returns narration (summary with running tally). Requires wave, taskId. Optional: branch, error, skippedDependency (records an issue; only a non-skipped failure updates failedTask). Idempotent: a repeat call for a task already recorded as failed/skipped at the same attempt is a no-op — it does not duplicate the issue log or move completedAt forward.
+- task-redispatch: Reopen a failed task for another attempt. Requires taskId. Optional: branch, runId, wave (searches every wave for the task's closed row when omitted). Re-opens the task's wave-manifest row to "in_progress", then deletes and re-seeds the task's server state with a fresh dispatchedAt and attempt+1 — contextFetchedAt, reclaimRequestedAt, and batchId all come back empty, since a redispatch is always solo even if the failed attempt was batched. Refuses with a DomainError (Suggestion names user escalation) at the 2-retry ceiling (attempt already at 3) instead of seeding a 4th attempt.
+- task-context: Return everything a dispatched per-task worker needs in one call — fact-sheet content (embeds the plan-task's Contract/Acceptance Criteria/Files), a live prior-wave summary, verify guidance, and report-back instructions. Requires taskId. Optional: branch, runId (falls back the same way wave-start does, via startedAt/wave). The serialized payload is capped at 1 MiB; oversize content (fact sheet first, then prior-wave summary if still over cap) is truncated with truncated:true rather than erroring. Unknown taskId fails with an actionable error listing the valid IDs for that run. Stamps the task's server-state contextFetchedAt the first time it's called for that task; never overwrites it on later calls.
 - context: Read/write shared context keys. Requires data (JSON object with allowed keys: planSummary, completedTaskIds, filesAdded, filesModified, interfacesCreated, decisionsFromPriorWaves). Optional: branch, maxFiles, maxDecisions, maxInterfaces, maxTaskIds.
 - read: Return the full execution state blob. Optional: branch. When the run is in flight (some recorded wave isn't "completed", or plannedTaskIds has IDs not yet in context.completedTaskIds), the blob also carries a "resumeBriefing" (resumable, wavesDone, wavesRemaining, gitCrossCheck, gitMismatches, willRedo, willSkip, summary, display, next) — a dry-run preview of what resume-reset would do. A committedSha that no longer checks out as a git ancestor is reported via gitCrossCheck/gitMismatches, never as a read failure.
 - cleanup: Stamp a branch's execution state terminal (runStatus:"completed", runCompletedAt) instead of deleting it — the state file (and its issues[]) survives for later reads (e.g. /harden) until GC's TTL prunes it. Also removes the per-run working directory and ledger directory (working artifacts only, safe to delete) when the state carries a startedAt to derive the runID from; if startedAt is absent, directories are left untouched. Optional: branch.
@@ -507,7 +514,8 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - wave-split: Split remaining tasks into a new wave. Requires dispatched. Optional: wave, missingIds, branch, splitDepth, maxSplitDepth, stateFile.
 - verify-completeness: Verify all planned tasks are accounted for. Optional: branch, stateFile.
 - wave-progress: Read/write per-task progress. Requires runId. For reads: readProgress=true. For writes: taskId, phase. Optional: lastCompletedTask (recorded in the heartbeat entry).
-- resume-reset: Reset in-progress waves for session resume. Optional: branch, stateFile. Returns {resetWaves, clearedTaskIds} as before; when the run is still in flight after the reset, the response also carries a "resumeBriefing" (same shape as read's) reflecting the sets it just cleared — resume-reset's willRedo always matches the task IDs in clearedTaskIds.
+- wave-await: Bounded, non-blocking poll of a wave's still-open tasks, classifying each against its server-owned dispatch state (never-started/stalled/timeout/none) and returning explicit next-instructions (including the exact task-fail/task-redispatch call shape) for whatever it finds. Requires runId, wave. Optional: branch, stateFile (also used to persist wave-await's own resume-state, i.e. the iteration counter, across bounded-poll calls).
+- resume-reset: Reset in-progress waves for session resume. Optional: branch, stateFile. Returns {resetWaves, clearedTaskIds} as before; when the run is still in flight after the reset, the response also carries a "resumeBriefing" (same shape as read's) reflecting the sets it just cleared — resume-reset's willRedo always matches the task IDs in clearedTaskIds. Reseeds fresh server-owned dispatch state (attempt reset to 1) for every cleared task ID; seeding failure is non-fatal and appends to a "warnings" field.
 - ledger_checkin: Register a worker as active. Requires runId, workerId. Optional: stepId.
 - ledger_checkout: Mark a worker as done. Requires runId, workerId.
 - ledger_status: List worker statuses for a run. Requires runId. Optional: timeoutSeconds, expectedWorkers (worker IDs expected to have checked in; any missing from the ledger are returned as missingWorkers).
@@ -548,7 +556,7 @@ Returns a JSON envelope: {"ok":true, "data":{...}} on success, {"ok":false, "cod
 // ---------------------------------------------------------------------------
 
 // executeState dispatches to the correct action handler. root anchors
-// .sdlc-v2/execution/ lookups; workDir anchors git-branch detection.
+// .sdlc-v2/runs/ lookups; workDir anchors git-branch detection.
 // now is injected for testability (ledger stall detection, timestamps).
 func executeState(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	switch in.Action {
@@ -571,7 +579,7 @@ func executeState(root, workDir string, in ExecuteStateIn, now func() time.Time)
 	case "task-fail":
 		return execActionTaskFail(root, workDir, in, now)
 	case "task-context":
-		return execActionTaskContext(root, workDir, in)
+		return execActionTaskContext(root, workDir, in, now)
 	case "context":
 		return execActionContext(root, workDir, in)
 	case "read":
@@ -587,9 +595,13 @@ func executeState(root, workDir string, in ExecuteStateIn, now func() time.Time)
 	case "verify-completeness":
 		return execActionVerifyCompleteness(root, workDir, in)
 	case "wave-progress":
-		return execActionWaveProgress(root, workDir, in)
+		return execActionWaveProgress(root, in, now)
+	case "wave-await":
+		return execActionWaveAwait(root, in, now)
+	case "task-redispatch":
+		return execActionTaskRedispatch(root, workDir, in, now)
 	case "resume-reset":
-		return execActionResumeReset(root, workDir, in)
+		return execActionResumeReset(root, workDir, in, now)
 	case "ledger_checkin":
 		return execActionLedgerCheckin(root, in, now)
 	case "ledger_checkout":
@@ -811,6 +823,51 @@ func anyToStringSlice(v any) []string {
 	default:
 		return nil
 	}
+}
+
+// anyToIntSlice extracts a []int from any (handles []int, []any of
+// float64/int -- the shape a JSON-round-tripped state field takes, e.g. a
+// resumeFrom.acceptanceDone array reloaded from a state file on disk).
+func anyToIntSlice(v any) []int {
+	switch arr := v.(type) {
+	case []int:
+		return arr
+	case []any:
+		out := make([]int, 0, len(arr))
+		for _, el := range arr {
+			out = append(out, execToInt(el))
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+// execParseResumeFrom converts a wave-manifest task row's "resumeFrom"
+// value back into a *ResumeFrom. The value round-trips through the state
+// file's JSON on disk, so by the time task-context reads it back it is a
+// generic map[string]any, not a *ResumeFrom -- this reassembles it. Returns
+// nil for anything that isn't a well-formed resumeFrom object (including a
+// missing key), so an absent or corrupt record reads as "no resumeFrom"
+// rather than failing a live worker dispatch.
+func execParseResumeFrom(v any) *ResumeFrom {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return nil
+	}
+	rf := &ResumeFrom{
+		AcceptanceDone:    anyToIntSlice(m["acceptanceDone"]),
+		FilesTouched:      anyToStringSlice(m["filesTouched"]),
+		LastCompletedTask: stringOrEmpty(m["lastCompletedTask"]),
+		Blocker:           stringOrEmpty(m["blocker"]),
+	}
+	if rf.AcceptanceDone == nil {
+		rf.AcceptanceDone = []int{}
+	}
+	if rf.FilesTouched == nil {
+		rf.FilesTouched = []string{}
+	}
+	return rf
 }
 
 // execNormalizeTaskID strips a leading T/t before a digit, matching
@@ -1834,9 +1891,9 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 		}
 	}
 
-	// Wave stall-timeout params, resolved once here so wave-progress's
-	// readProgress never re-derives them per call (see
-	// execWaveStallTimeouts). Source order: explicit init input (this run's
+	// Wave stall-timeout params, resolved once here so wave-await never
+	// re-derives them per call (see execWaveStallTimeouts). Source order:
+	// explicit init input (this run's
 	// own --wave-timeout/--wave-interval, forwarded by the invoking CLI) >
 	// a ship-state cross-read of the same run's flags.executeWaveTimeout /
 	// flags.executeWaveInterval (set when ship dispatched this run) >
@@ -2086,6 +2143,41 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 			writtenPaths = append(writtenPaths, p)
 		}
 
+		// Seed server-owned dispatch state for every task in this wave-start
+		// call. A dispatched task must always have server state, even if its
+		// agent never actually runs -- wave-await's classification depends on
+		// it. A task that already has server state (wave-start called again
+		// on resume) is left untouched: dispatchedAt must never reset on an
+		// in-flight task. Seeding failure is non-fatal -- it is recorded as a
+		// warning, never fails the wave.
+		nowStamp := waveAwaitFormat(now())
+		for _, tm := range validTasks {
+			id, _ := tm["id"].(string)
+			if id == "" {
+				continue
+			}
+			if _, found, lerr := wave.LoadServerState(root, runID, id); lerr != nil {
+				result.Warnings = append(result.Warnings, fmt.Sprintf("wave-start: seed server state for task %s: %s", id, lerr.Error()))
+				continue
+			} else if found {
+				continue
+			}
+
+			workerName := stringOrEmpty(tm["workerName"])
+			if workerName == "" {
+				workerName = execDefaultWorkerName(id)
+			}
+			if err := wave.StoreServerState(root, runID, id, wave.ServerTaskState{
+				DispatchedAt: nowStamp,
+				WorkerName:   workerName,
+				BatchID:      stringOrEmpty(tm["batchId"]),
+				BatchIndex:   execToInt(tm["batchIndex"]),
+				Attempt:      1,
+			}); err != nil {
+				result.Warnings = append(result.Warnings, fmt.Sprintf("wave-start: seed server state for task %s: %s", id, err.Error()))
+			}
+		}
+
 		// Store planned task list on the wave for task-context sibling lookup.
 		// This persists the validated task entries so that any worker calling
 		// task-context can discover its siblings without per-task file reads.
@@ -2137,6 +2229,13 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 	}
 
 	return result, nil
+}
+
+// execDefaultWorkerName is the fallback workerName template used when a
+// wave-start tasksJson entry omits one. workerName is never invented beyond
+// this deterministic placeholder -- a caller-supplied name always wins.
+func execDefaultWorkerName(taskID string) string {
+	return "worker-" + taskID
 }
 
 // isValidTaskEntry checks that a task map has non-empty string id, name, and
@@ -2860,6 +2959,60 @@ func execActionTaskFail(root, workDir string, in ExecuteStateIn, now func() time
 		taskStatus = "skipped-dependency"
 	}
 
+	runID := in.RunID
+	if runID == "" {
+		runID = execDeriveRunID(st.Data, *in.Wave)
+	}
+	currentAttempt := 1
+	if s, found, lerr := wave.LoadServerState(root, runID, in.TaskID); lerr != nil {
+		return nil, &mcpserver.InfraError{Msg: "load server state for task " + in.TaskID + ": " + lerr.Error(), Cause: lerr}
+	} else if found {
+		currentAttempt = s.Attempt
+	}
+
+	// Idempotency: a repeat task-fail for the same task, at the same
+	// attempt, with no intervening task-redispatch, is a no-op -- not an
+	// error and not a re-record. It must not duplicate the issue log or
+	// move completedAt forward.
+	for _, t := range tasks {
+		tm, ok := t.(map[string]any)
+		if !ok {
+			continue
+		}
+		if tid, _ := tm["id"].(string); tid != in.TaskID {
+			continue
+		}
+		existingStatus, _ := tm["status"].(string)
+		existingAttempt := execToInt(tm["attempt"])
+		if existingStatus == taskStatus && existingAttempt == currentAttempt {
+			completed, failed, total := execCountWaveOutcomes(w)
+			result := ExecTaskNarrationOut{}
+			if in.SkippedDep {
+				result.Summary = fmt.Sprintf("Task %s already skipped at attempt %d (no-op) (%d/%d reported, %d failed).", in.TaskID, currentAttempt, completed+failed, total, failed)
+			} else {
+				result.Summary = fmt.Sprintf("Task %s already failed at attempt %d (no-op) (%d/%d reported, %d failed).", in.TaskID, currentAttempt, completed+failed, total, failed)
+			}
+			return result, nil
+		}
+		break
+	}
+
+	// Harvest whatever partial-work claim the worker last reported via
+	// wave-progress (if any) before this failure, so a later task-context
+	// call for a redispatched retry can surface it as a re-verify-first
+	// block (KD5 mitigation) instead of losing it. Advisory only -- stored
+	// on the fresh taskEntry below, never merged with an older record, so a
+	// second failure's harvest fully replaces the first's rather than
+	// accumulating stale data.
+	var resumeFrom *ResumeFrom
+	if prog, perr := wave.ReadProgress(root, runID); perr == nil {
+		if tp, ok := prog.Tasks[in.TaskID]; ok &&
+			(len(tp.AcceptanceDone) > 0 || len(tp.FilesTouched) > 0 || tp.LastCompletedTask != "" || tp.Blocker != "") {
+			rf := waveAwaitHarvest(tp)
+			resumeFrom = &rf
+		}
+	}
+
 	taskEntry := map[string]any{
 		"id":           in.TaskID,
 		"name":         in.TaskName,
@@ -2869,6 +3022,10 @@ func execActionTaskFail(root, workDir string, in ExecuteStateIn, now func() time
 		"filesChanged": []any{},
 		"error":        in.ErrorText,
 		"completedAt":  now().UTC().Format(time.RFC3339),
+		"attempt":      currentAttempt,
+	}
+	if resumeFrom != nil {
+		taskEntry["resumeFrom"] = resumeFrom
 	}
 
 	found := false
@@ -2924,6 +3081,163 @@ func execActionTaskFail(root, workDir string, in ExecuteStateIn, now func() time
 }
 
 // ---------------------------------------------------------------------------
+// Action: task-redispatch
+// ---------------------------------------------------------------------------
+
+// execFindWaveTaskRow locates the wave manifest and the tasks[] row for
+// taskID. If waveNum is non-nil, only that wave is searched; otherwise every
+// recorded wave is scanned. task-redispatch's documented call shape passes
+// only runId/taskId, never wave, so the row must be locatable by task ID
+// alone. Returns nil, nil, 0 if no matching row is found.
+func execFindWaveTaskRow(data map[string]any, taskID string, waveNum *int) (wm, tm map[string]any, foundWaveNum int) {
+	waves := execEnsureWaves(data)
+	for _, w := range waves {
+		wmCandidate, ok := w.(map[string]any)
+		if !ok {
+			continue
+		}
+		n := execToInt(wmCandidate["number"])
+		if waveNum != nil && n != *waveNum {
+			continue
+		}
+		tasks, _ := wmCandidate["tasks"].([]any)
+		for _, t := range tasks {
+			tmCandidate, ok := t.(map[string]any)
+			if !ok {
+				continue
+			}
+			if tid, _ := tmCandidate["id"].(string); tid == taskID {
+				return wmCandidate, tmCandidate, n
+			}
+		}
+	}
+	return nil, nil, 0
+}
+
+// TaskRedispatchOut is the returned payload for the task-redispatch action:
+// confirms the fresh, solo server state seeded for the reopened task and
+// tells the caller what to do next. Next is never empty -- guardrail
+// mcp-output-drives-behavior.
+type TaskRedispatchOut struct {
+	TaskID       string `json:"taskId"`
+	Wave         int    `json:"wave"`
+	RunID        string `json:"runId"`
+	DispatchedAt string `json:"dispatchedAt"`
+	WorkerName   string `json:"workerName"`
+	Attempt      int    `json:"attempt"`
+	RetriesLeft  int    `json:"retriesLeft"`
+	Next         string `json:"next"`
+}
+
+// execActionTaskRedispatch reopens a failed task for another attempt:
+//  1. re-opens the task's wave manifest row to "in_progress" -- task-fail
+//     closed it, and wave-await only classifies rows that are still open.
+//  2. deletes then re-stores the task's server state with a fresh
+//     dispatchedAt and attempt+1; contextFetchedAt, reclaimRequestedAt, and
+//     batchId all come back empty -- a redispatch is always solo, even when
+//     the failed attempt was part of a batch.
+//  3. refuses at the 2-retry ceiling (attempt already at 3) with a
+//     DomainError naming user escalation, rather than seeding a 4th
+//     attempt.
+func execActionTaskRedispatch(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
+	if in.TaskID == "" {
+		return nil, &mcpserver.DomainError{
+			Msg:        "taskId is required for task-redispatch",
+			Suggestion: "Pass taskId, e.g. execute_state {action:\"task-redispatch\", runId:\"<runId>\", taskId:\"<taskId>\"}.",
+		}
+	}
+
+	branch, err := execResolveBranch(in.Branch, workDir)
+	if err != nil {
+		return nil, err
+	}
+	st, err := execFindState(root, branch)
+	if err != nil {
+		return nil, err
+	}
+	if err := execAssertBranch(st, branch); err != nil {
+		return nil, err
+	}
+
+	wm, tm, waveNum := execFindWaveTaskRow(st.Data, in.TaskID, in.Wave)
+	if wm == nil || tm == nil {
+		return nil, &mcpserver.DataError{
+			Msg:        fmt.Sprintf("no task-fail record found for task %q; task-redispatch requires a prior task-fail", in.TaskID),
+			Suggestion: "Call task-fail for this task before task-redispatch.",
+		}
+	}
+	if status, _ := tm["status"].(string); status == "completed" {
+		return nil, &mcpserver.DomainError{
+			Msg: fmt.Sprintf("task %q is already completed; task-redispatch only applies to a failed task", in.TaskID),
+			Suggestion: fmt.Sprintf("Task %s already succeeded -- do not redispatch it. If this is unexpected, check task-fail was called for the right taskId.",
+				in.TaskID),
+		}
+	}
+
+	runID := in.RunID
+	if runID == "" {
+		runID = execDeriveRunID(st.Data, waveNum)
+	}
+
+	prev, found, lerr := wave.LoadServerState(root, runID, in.TaskID)
+	if lerr != nil {
+		return nil, &mcpserver.InfraError{Msg: "load server state for task " + in.TaskID + ": " + lerr.Error(), Cause: lerr}
+	}
+	attempt := 1
+	if found {
+		attempt = prev.Attempt
+	}
+	if waveAwaitRetriesLeft(attempt) <= 0 {
+		return nil, &mcpserver.DomainError{
+			Msg: fmt.Sprintf("task %q has exhausted its retries at attempt %d", in.TaskID, attempt),
+			Suggestion: fmt.Sprintf("Escalate task %s to the user instead of redispatching again — it has already used its 2 retries.",
+				in.TaskID),
+		}
+	}
+
+	// 1) Re-open the wave manifest row.
+	tm["status"] = "in_progress"
+	delete(tm, "completedAt")
+	delete(tm, "error")
+
+	// 2) Fresh, solo server state: new dispatchedAt, attempt+1, no
+	// contextFetchedAt/reclaimRequestedAt/batchId.
+	workerName := prev.WorkerName
+	if workerName == "" {
+		workerName = execDefaultWorkerName(in.TaskID)
+	}
+	if err := wave.DeleteServerState(root, runID, in.TaskID); err != nil {
+		return nil, &mcpserver.InfraError{Msg: "clear server state for task " + in.TaskID + ": " + err.Error(), Cause: err}
+	}
+	next := wave.ServerTaskState{
+		DispatchedAt: waveAwaitFormat(now()),
+		WorkerName:   workerName,
+		Attempt:      attempt + 1,
+	}
+	if err := wave.StoreServerState(root, runID, in.TaskID, next); err != nil {
+		return nil, &mcpserver.InfraError{Msg: "seed server state for task " + in.TaskID + ": " + err.Error(), Cause: err}
+	}
+
+	if err := state.Write(st); err != nil {
+		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+	}
+
+	return TaskRedispatchOut{
+		TaskID:       in.TaskID,
+		Wave:         waveNum,
+		RunID:        runID,
+		DispatchedAt: next.DispatchedAt,
+		WorkerName:   next.WorkerName,
+		Attempt:      next.Attempt,
+		RetriesLeft:  waveAwaitRetriesLeft(next.Attempt),
+		Next: fmt.Sprintf(
+			"Dispatch task %s again (worker %s, attempt %d), then call execute_state {action:\"wave-await\", runId:%q, wave:%d} to resume supervision. Do NOT run the wave gates yet.",
+			in.TaskID, next.WorkerName, next.Attempt, runID, waveNum,
+		),
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
 // Action: task-context
 // ---------------------------------------------------------------------------
 
@@ -2955,6 +3269,24 @@ const execVerifyMethod = "build-and-test + git-diff-scope + VERIFY canary"
 const execTaskContextMaxBytes = 1 << 20 // 1 MiB
 
 const execTaskContextTruncationNote = "\n\n... [truncated to fit the 1 MiB task-context cap]"
+
+// execInsertResumeFromSection splices a rendered "Resume from a reclaimed
+// attempt" section (wave.RenderResumeFromSection) into fact-sheet markdown
+// immediately after the "# Task <id>: <name>" header line, ahead of
+// execTaskContextCapPayload's tail-trim below. The on-disk fact-sheet file
+// itself is never rewritten: resumeFrom only becomes known after
+// WriteFactsheet originally wrote that file, at redispatch time, not at the
+// task's first dispatch -- this only augments the copy returned to the
+// caller.
+func execInsertResumeFromSection(content, section string) string {
+	nl := strings.Index(content, "\n")
+	if nl == -1 {
+		return strings.TrimRight(content, "\n") + "\n\n" + section
+	}
+	header := content[:nl+1]
+	rest := strings.TrimPrefix(content[nl+1:], "\n")
+	return header + "\n" + section + rest
+}
 
 // execTaskContextCapPayload enforces execTaskContextMaxBytes on the
 // serialized result, truncating whichever of FactSheet/PriorWaves is
@@ -3095,7 +3427,7 @@ func execRenderPriorWaveSummary(summary map[string]any) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-func execActionTaskContext(root, workDir string, in ExecuteStateIn) (any, error) {
+func execActionTaskContext(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	taskID := strings.TrimSpace(in.TaskID)
 	if taskID == "" {
 		return nil, &mcpserver.DomainError{Msg: "taskId is required for task-context"}
@@ -3148,6 +3480,20 @@ func execActionTaskContext(root, workDir string, in ExecuteStateIn) (any, error)
 		return nil, &mcpserver.InfraError{Msg: "read fact sheet: " + err.Error(), Cause: err}
 	}
 
+	// Stamp contextFetchedAt on server state exactly once. A missing server
+	// state (task-context called before wave-start seeded it) is not an
+	// error -- a live worker's dispatch call must never fail over
+	// bookkeeping absence. Once set, contextFetchedAt is never overwritten
+	// by a later call.
+	if s, found, lerr := wave.LoadServerState(root, runID, taskID); lerr != nil {
+		return nil, &mcpserver.InfraError{Msg: "load server state for task " + taskID + ": " + lerr.Error(), Cause: lerr}
+	} else if found && s.ContextFetchedAt == "" {
+		s.ContextFetchedAt = waveAwaitFormat(now())
+		if err := wave.StoreServerState(root, runID, taskID, s); err != nil {
+			return nil, &mcpserver.InfraError{Msg: "stamp contextFetchedAt for task " + taskID + ": " + err.Error(), Cause: err}
+		}
+	}
+
 	summary := execSummarizePriorWaveCtx(st.Data, root, 0, 0, 0, 0)
 
 	// Build siblings and own file scope from the wave's planned list.
@@ -3182,6 +3528,19 @@ func execActionTaskContext(root, workDir string, in ExecuteStateIn) (any, error)
 
 	quality, _ := st.Data["quality"].(string)
 
+	// Carry the task's last recorded failure's resumeFrom (if any) forward:
+	// into the structured field, and rendered into FactSheet immediately
+	// after the header, ahead of the tail-trim below. Absent, not empty,
+	// when the task never failed or failed without a harvested claim.
+	var resumeFrom *ResumeFrom
+	if _, tm, _ := execFindWaveTaskRow(st.Data, taskID, nil); tm != nil {
+		resumeFrom = execParseResumeFrom(tm["resumeFrom"])
+	}
+	if resumeFrom != nil {
+		section := wave.RenderResumeFromSection(resumeFrom.AcceptanceDone, resumeFrom.FilesTouched, resumeFrom.LastCompletedTask, resumeFrom.Blocker)
+		content = execInsertResumeFromSection(content, section)
+	}
+
 	result := TaskContextOut{
 		TaskID:          taskID,
 		RunID:           runID,
@@ -3190,6 +3549,7 @@ func execActionTaskContext(root, workDir string, in ExecuteStateIn) (any, error)
 		Siblings:        siblings,
 		SiblingsUnknown: siblingsUnknown,
 		FactSheet:       content,
+		ResumeFrom:      resumeFrom,
 		PriorWaves:      execRenderPriorWaveSummary(summary),
 		Verify:          execTaskContextVerify(taskID),
 		ReportBack:      execTaskContextReportBack(taskID, runID),
@@ -3962,11 +4322,11 @@ func execActionVerifyCompleteness(root, workDir string, in ExecuteStateIn) (any,
 // Action: wave-progress
 // ---------------------------------------------------------------------------
 
-// TaskProgressWithStall wraps a task's raw progress entry with the
-// server-computed StallCause, so the orchestrator's readProgress poll gets
-// a ready verdict instead of doing its own UpdatedAt/StartedAt timestamp
-// arithmetic. StallCause is computed fresh per call by execActionWaveProgress
-// via wave.ClassifyStall — never persisted on the TaskProgress file itself.
+// TaskProgressWithStall wraps a task's raw progress entry. StallCause is no
+// longer computed here — stall/timeout classification now lives in
+// wave-await (wave.ClassifyTask, server-state driven) — so the field is
+// always empty and omitted from JSON. The wrapper type is kept so
+// ReadProgressOut's shape is unchanged for existing callers.
 type TaskProgressWithStall struct {
 	wave.TaskProgress
 	StallCause string `json:"stallCause,omitempty"`
@@ -3980,7 +4340,8 @@ type ReadProgressOut struct {
 }
 
 // execWaveStallTimeouts resolves the heartbeat/total timeout durations fed
-// into wave.ClassifyStall for a readProgress call. Source order: this run's
+// into wave-await's server-state reclaim/timeout classification (see
+// execute_wave_await.go). Source order: this run's
 // own execute state (recorded once at init — see execActionInit) > the
 // standalone-execute built-in defaults. A missing/unreadable execute state
 // file is not an error here — readProgress must answer the same "never
@@ -4000,7 +4361,7 @@ func execWaveStallTimeouts(root, branch string) (heartbeatTimeout, totalTimeout 
 	return time.Duration(intervalSec) * time.Second, time.Duration(totalSec) * time.Second
 }
 
-func execActionWaveProgress(root, workDir string, in ExecuteStateIn) (any, error) {
+func execActionWaveProgress(root string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	if in.RunID == "" {
 		return nil, &mcpserver.DomainError{Msg: "runId is required"}
 	}
@@ -4011,19 +4372,9 @@ func execActionWaveProgress(root, workDir string, in ExecuteStateIn) (any, error
 			return nil, &mcpserver.DomainError{Msg: "read progress: " + err.Error(), Cause: err}
 		}
 
-		// Branch resolution failure (e.g. detached HEAD, no git repo) is not
-		// fatal here: execWaveStallTimeouts tolerates an empty/unresolvable
-		// branch by falling back to the built-in defaults.
-		branch, _ := execResolveBranch(in.Branch, workDir)
-		heartbeatTimeout, totalTimeout := execWaveStallTimeouts(root, branch)
-
-		now := time.Now()
 		tasks := make(map[string]TaskProgressWithStall, len(p.Tasks))
 		for taskID, tp := range p.Tasks {
-			tasks[taskID] = TaskProgressWithStall{
-				TaskProgress: tp,
-				StallCause:   string(wave.ClassifyStall(tp, now, heartbeatTimeout, totalTimeout)),
-			}
+			tasks[taskID] = TaskProgressWithStall{TaskProgress: tp}
 		}
 		return ReadProgressOut{Tasks: tasks}, nil
 	}
@@ -4036,7 +4387,6 @@ func execActionWaveProgress(root, workDir string, in ExecuteStateIn) (any, error
 		AcceptanceDone: in.AcceptanceDone,
 		FilesTouched:   in.FilesTouched,
 		Blocker:        in.Blocker,
-		NudgedAt:       in.NudgedAt,
 	}
 	if err := wave.UpdateProgress(root, in.RunID, in.TaskID, in.Phase, in.LastCompletedTask, fields); err != nil {
 		if errors.Is(err, wave.ErrBadRunID) || errors.Is(err, wave.ErrBadPhase) {
@@ -4360,7 +4710,7 @@ func execBuildResumeBriefing(workDir string, data map[string]any, redoTaskIDs []
 // Action: resume-reset
 // ---------------------------------------------------------------------------
 
-func execActionResumeReset(root, workDir string, in ExecuteStateIn) (any, error) {
+func execActionResumeReset(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	branch, err := execResolveBranch(in.Branch, workDir)
 	if err != nil {
 		return nil, err
@@ -4373,11 +4723,15 @@ func execActionResumeReset(root, workDir string, in ExecuteStateIn) (any, error)
 
 	resetWaves := []int{}
 	clearedTaskIds := []string{}
+	var seedWarnings []string
 
 	if st != nil {
 		if err := execAssertBranch(st, branch); err != nil {
 			return nil, err
 		}
+		// Candidate task IDs are captured here, before wm["tasks"] is
+		// cleared below, so the reseed loop still has each cleared task's
+		// pre-reset id to work from.
 		resetWaves, clearedTaskIds = execResumeResetCandidates(st.Data)
 
 		if len(resetWaves) > 0 {
@@ -4385,15 +4739,55 @@ func execActionResumeReset(root, workDir string, in ExecuteStateIn) (any, error)
 			for _, n := range resetWaves {
 				waveSet[n] = true
 			}
+			nowStamp := waveAwaitFormat(now())
 			waves, _ := st.Data["waves"].([]any)
 			for _, w := range waves {
 				wm, ok := w.(map[string]any)
 				if !ok {
 					continue
 				}
-				if waveSet[execToInt(wm["number"])] {
-					wm["tasks"] = []any{}
-					delete(wm, "completedAt")
+				waveNum := execToInt(wm["number"])
+				if !waveSet[waveNum] {
+					continue
+				}
+				preClearTasks, _ := wm["tasks"].([]any)
+				wm["tasks"] = []any{}
+				delete(wm, "completedAt")
+
+				runID := in.RunID
+				if runID == "" {
+					runID = execDeriveRunID(st.Data, waveNum)
+				}
+
+				// Reseed fresh server state for every task this reset just
+				// cleared -- a resumed run must dispatch each of them again,
+				// and a dispatched task always has server state. Attempt
+				// resets to 1: this is a fresh session resume, not a
+				// stalled-attempt retry. Seeding failure is non-fatal.
+				for _, t := range preClearTasks {
+					tm, ok := t.(map[string]any)
+					if !ok {
+						continue
+					}
+					id, _ := tm["id"].(string)
+					if id == "" {
+						continue
+					}
+					workerName := execDefaultWorkerName(id)
+					if prev, found, _ := wave.LoadServerState(root, runID, id); found && prev.WorkerName != "" {
+						workerName = prev.WorkerName
+					}
+					if err := wave.DeleteServerState(root, runID, id); err != nil {
+						seedWarnings = append(seedWarnings, fmt.Sprintf("resume-reset: clear server state for task %s: %s", id, err.Error()))
+						continue
+					}
+					if err := wave.StoreServerState(root, runID, id, wave.ServerTaskState{
+						DispatchedAt: nowStamp,
+						WorkerName:   workerName,
+						Attempt:      1,
+					}); err != nil {
+						seedWarnings = append(seedWarnings, fmt.Sprintf("resume-reset: seed server state for task %s: %s", id, err.Error()))
+					}
 				}
 			}
 			if err := state.Write(st); err != nil {
@@ -4405,6 +4799,9 @@ func execActionResumeReset(root, workDir string, in ExecuteStateIn) (any, error)
 	out := map[string]any{
 		"resetWaves":     resetWaves,
 		"clearedTaskIds": clearedTaskIds,
+	}
+	if len(seedWarnings) > 0 {
+		out["warnings"] = seedWarnings
 	}
 
 	if st != nil && execRunInFlight(st.Data) {
