@@ -1237,7 +1237,7 @@ func writeCreationIntent(mainRoot, contentRoot string, in PlanPrepareIn) {
 // ---------------------------------------------------------------------------
 
 // planPrepareCore is the core logic, separated from the handler for
-// testability. mainRoot anchors config/.sdlc-v2/execution/ lookups;
+// testability. mainRoot anchors config/.sdlc-v2/runs/ lookups;
 // contentRoot anchors OpenSpec content and git-branch detection (OpenSpec
 // scans live on the active branch in the active worktree).
 func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepareOut, error) {
@@ -1447,7 +1447,7 @@ type PlanMarkOut struct {
 }
 
 // planMark is the core logic, separated from the handler for testability.
-// mainRoot anchors the .sdlc-v2/execution/ state directory (state files are
+// mainRoot anchors the .sdlc-v2/runs/ state directory (state files are
 // always resolved relative to the main worktree, matching lib/state.js's
 // resolveStateDir); contentRoot anchors current-branch detection (the
 // branch actually being worked on, which may differ from main's branch in

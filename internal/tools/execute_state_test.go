@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -6154,12 +6155,15 @@ func TestExecState_TaskRedispatch_ReopensForWaveAwait(t *testing.T) {
 	if err != nil {
 		t.Fatalf("task-redispatch: %v", err)
 	}
-	m, ok := result.(map[string]any)
+	redispatchOut, ok := result.(TaskRedispatchOut)
 	if !ok {
-		t.Fatalf("task-redispatch result = %T, want map[string]any", result)
+		t.Fatalf("task-redispatch result = %T, want TaskRedispatchOut", result)
 	}
-	if m["attempt"] != 2 {
-		t.Errorf("attempt = %v, want 2", m["attempt"])
+	if redispatchOut.Attempt != 2 {
+		t.Errorf("attempt = %v, want 2", redispatchOut.Attempt)
+	}
+	if redispatchOut.Next == "" {
+		t.Error("next is empty, want non-empty next-step instruction")
 	}
 
 	data := readExecState(t, root, branch)
@@ -6284,6 +6288,108 @@ func TestExecState_ResumeReset_SeedsServerStateForClearedTasks(t *testing.T) {
 		}
 		if s.Attempt != 1 {
 			t.Errorf("%s: attempt = %d, want 1", id, s.Attempt)
+		}
+	}
+}
+
+// TestAnyToIntSlice_JSONRoundTrip covers the shape anyToIntSlice actually
+// sees in production: a []int written into a state file, then read back off
+// disk as a []any of float64 (encoding/json's default number type) after
+// json.Unmarshal into map[string]any.
+func TestAnyToIntSlice_JSONRoundTrip(t *testing.T) {
+	original := []int{0, 1, 2, 5}
+
+	raw, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var roundTripped any
+	if err := json.Unmarshal(raw, &roundTripped); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	if _, ok := roundTripped.([]any); !ok {
+		t.Fatalf("roundTripped = %T, want []any (test assumption about encoding/json's default number decoding is wrong)", roundTripped)
+	}
+
+	got := anyToIntSlice(roundTripped)
+	if !reflect.DeepEqual(got, original) {
+		t.Errorf("anyToIntSlice(round-tripped %v) = %v, want %v", roundTripped, got, original)
+	}
+
+	// Direct []int (no JSON round-trip) passes through unchanged.
+	if got := anyToIntSlice([]int{3, 4}); !reflect.DeepEqual(got, []int{3, 4}) {
+		t.Errorf("anyToIntSlice([]int{3,4}) = %v, want [3 4]", got)
+	}
+
+	// Unrecognized shapes (including nil, the JSON-null case) return nil.
+	for _, v := range []any{nil, "not a slice", 42} {
+		if got := anyToIntSlice(v); got != nil {
+			t.Errorf("anyToIntSlice(%#v) = %v, want nil", v, got)
+		}
+	}
+}
+
+// TestExecParseResumeFrom_JSONRoundTrip verifies execParseResumeFrom
+// reassembles a *ResumeFrom from the map[string]any shape it actually
+// receives at runtime: a resumeFrom value written into a wave-manifest task
+// row, persisted to the state file as JSON, then read back and unmarshaled
+// into map[string]any before task-context hands it to this function. A
+// silent mis-decode here (e.g. AcceptanceDone silently dropping elements)
+// would corrupt a reopened task's retry worker context without ever
+// failing a live dispatch, since this function deliberately treats
+// malformed input as "no resumeFrom" rather than erroring.
+func TestExecParseResumeFrom_JSONRoundTrip(t *testing.T) {
+	original := &ResumeFrom{
+		AcceptanceDone:    []int{0, 2},
+		FilesTouched:      []string{"internal/tools/execute_state.go", "internal/wave/serverstate.go"},
+		LastCompletedTask: "3",
+		Blocker:           "waiting on upstream API contract",
+	}
+
+	raw, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+
+	got := execParseResumeFrom(m)
+	if got == nil {
+		t.Fatal("execParseResumeFrom(round-tripped map) = nil, want non-nil")
+	}
+	if !reflect.DeepEqual(got, original) {
+		t.Errorf("execParseResumeFrom(round-tripped map) = %+v, want %+v", got, original)
+	}
+
+	// Zero-value slice/string fields round-trip to empty (not nil) slices
+	// and empty strings, per execParseResumeFrom's documented normalization.
+	sparse := &ResumeFrom{}
+	raw, err = json.Marshal(sparse)
+	if err != nil {
+		t.Fatalf("json.Marshal(sparse): %v", err)
+	}
+	var sparseMap map[string]any
+	if err := json.Unmarshal(raw, &sparseMap); err != nil {
+		t.Fatalf("json.Unmarshal(sparse): %v", err)
+	}
+	gotSparse := execParseResumeFrom(sparseMap)
+	if gotSparse == nil {
+		t.Fatal("execParseResumeFrom(sparse round-tripped map) = nil, want non-nil")
+	}
+	if gotSparse.AcceptanceDone == nil || len(gotSparse.AcceptanceDone) != 0 {
+		t.Errorf("AcceptanceDone = %#v, want non-nil empty slice", gotSparse.AcceptanceDone)
+	}
+	if gotSparse.FilesTouched == nil || len(gotSparse.FilesTouched) != 0 {
+		t.Errorf("FilesTouched = %#v, want non-nil empty slice", gotSparse.FilesTouched)
+	}
+
+	// Malformed input (not a map, or a missing key entirely) reads as "no
+	// resumeFrom" rather than panicking or erroring.
+	for _, v := range []any{nil, "not a map", 42, []any{1, 2}} {
+		if got := execParseResumeFrom(v); got != nil {
+			t.Errorf("execParseResumeFrom(%#v) = %+v, want nil", v, got)
 		}
 	}
 }

@@ -48,15 +48,15 @@ type ExecuteStateIn struct {
 	PlanPath            string         `json:"planPath,omitempty" jsonschema_description:"Path to the plan file to parse into a wave schedule (wave-compute), or to record on a newly initialized run (init)."`
 	PlanHash            string         `json:"planHash,omitempty" jsonschema_description:"Hash of the plan file content, recorded on a newly initialized run (init only) to detect later plan drift."`
 	ExtraDepsJSON       string         `json:"extraDepsJson,omitempty" jsonschema_description:"wave-compute only: JSON array of {task, dependsOn, reason} objects merged with each task's explicit \"Depends on\" field before the wave schedule is computed."`
-	Wave                *int           `json:"wave,omitempty" jsonschema_description:"Wave number the action applies to (wave-start, wave-done, wave-fail, wave-committed, wave-commit, task-done, task-fail, wave-split)."`
+	Wave                *int           `json:"wave,omitempty" jsonschema_description:"Wave number the action applies to (wave-start, wave-done, wave-fail, wave-committed, wave-commit, task-done, task-fail, wave-split, wave-await; also task-redispatch, optional, to scope the row search to one wave instead of scanning every wave)."`
 	TasksJSON           string         `json:"tasksJson,omitempty" jsonschema_description:"wave-start: JSON array of task objects. Each entry: {id: string, name: string, description: string, complexity: string (optional — Trivial|Standard|Complex), contract: string (optional), acceptanceCriteria: string[] (optional — array of strings), files: string[] (optional), workerName: string (optional — caller-supplied dispatch identity, never invented; falls back to a generated template when omitted), batchId: string (optional — shared by every task in one batch dispatch; omit for a solo task), batchIndex: number (optional — this task's 0-based position within its batch)}. Entries missing required string fields (id, name, description) are dropped with a warning; if zero valid entries remain after filtering, the call fails with an error. Seeds server-owned dispatch state (dispatchedAt, workerName, batchId/batchIndex, attempt:1) for every valid task."`
-	RunID               string         `json:"runId,omitempty" jsonschema_description:"Execution run identifier. Required by task-context, ledger_checkin, ledger_checkout, and ledger_status; optional elsewhere (e.g. wave-start, for fact sheets) where it falls back to the value derived from the state's startedAt/wave."`
+	RunID               string         `json:"runId,omitempty" jsonschema_description:"Execution run identifier. Required by task-context, wave-await, ledger_checkin, ledger_checkout, and ledger_status; optional elsewhere (e.g. wave-start for fact sheets, task-redispatch) where it falls back to the value derived from the state's startedAt/wave."`
 	WorkerID            string         `json:"workerId,omitempty" jsonschema_description:"Identifier of the per-task worker registering or clearing its ledger entry (ledger_checkin, ledger_checkout)."`
 	Decisions           string         `json:"decisions,omitempty" jsonschema_description:"wave-done only: free-text record of decisions made while completing the wave, surfaced in later summaries."`
 	Status              string         `json:"status,omitempty" jsonschema_description:"Outcome status to record: for wave-done/wave-fail, the wave's terminal status; for task-done, \"DONE_WITH_CONCERNS\" records a warning issue alongside the completion."`
 	TimedOut            bool           `json:"timedOut,omitempty" jsonschema_description:"wave-fail only: true when the wave failed because it timed out, rather than erroring outright."`
 	SHA                 string         `json:"sha,omitempty" jsonschema_description:"wave-committed only: the git commit SHA to record for the completed wave."`
-	TaskID              string         `json:"taskId,omitempty" jsonschema_description:"Task identifier the action applies to (task-done, task-fail, task-context, wave-progress writes)."`
+	TaskID              string         `json:"taskId,omitempty" jsonschema_description:"Task identifier the action applies to (task-done, task-fail, task-context, wave-progress writes; required by task-redispatch)."`
 	TaskName            string         `json:"taskName,omitempty" jsonschema_description:"task-done only: human-readable name of the completed task, surfaced in the running-tally narration."`
 	Complexity          string         `json:"complexity,omitempty" jsonschema_description:"task-done only: complexity rating recorded for the completed task."`
 	Risk                string         `json:"risk,omitempty" jsonschema_description:"task-done only: risk rating recorded for the completed task."`
@@ -76,7 +76,7 @@ type ExecuteStateIn struct {
 	MissingIds          string         `json:"missingIds,omitempty" jsonschema_description:"wave-split only: task IDs missing from the current wave that should be folded into the new split wave."`
 	SplitDepth          int            `json:"splitDepth,omitempty" jsonschema_description:"wave-split only: current recursive split depth, used together with maxSplitDepth to bound repeated splitting."`
 	MaxSplitDepth       int            `json:"maxSplitDepth,omitempty" jsonschema_description:"wave-split only: maximum recursive split depth allowed before wave-split refuses to split further."`
-	StateFile           string         `json:"stateFile,omitempty" jsonschema_description:"Overrides the execution state file path to read/write, instead of the one derived from branch (wave-split, verify-completeness, resume-reset)."`
+	StateFile           string         `json:"stateFile,omitempty" jsonschema_description:"Overrides the execution state file path to read/write, instead of the one derived from branch (wave-split, verify-completeness, resume-reset). wave-await also reads this to persist its own resume-state (iteration counter) across bounded-poll calls, keyed by runId+wave."`
 	Phase               string         `json:"phase,omitempty" jsonschema_description:"wave-progress write only: the phase name to stamp on the task's heartbeat entry."`
 	ReadProgress        bool           `json:"readProgress,omitempty" jsonschema_description:"wave-progress only: true to read the current per-task progress instead of writing a new heartbeat entry."`
 	SessionID           string         `json:"sessionId,omitempty" jsonschema_description:"init only: Claude Code session ID stamped into the newly initialized execution state."`
@@ -514,7 +514,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - wave-split: Split remaining tasks into a new wave. Requires dispatched. Optional: wave, missingIds, branch, splitDepth, maxSplitDepth, stateFile.
 - verify-completeness: Verify all planned tasks are accounted for. Optional: branch, stateFile.
 - wave-progress: Read/write per-task progress. Requires runId. For reads: readProgress=true. For writes: taskId, phase. Optional: lastCompletedTask (recorded in the heartbeat entry).
-- wave-await: Bounded, non-blocking poll of a wave's still-open tasks, classifying each against its server-owned dispatch state (never-started/stalled/timeout/none) and returning explicit next-instructions (including the exact task-fail/task-redispatch call shape) for whatever it finds. Requires runId, wave. Optional: branch.
+- wave-await: Bounded, non-blocking poll of a wave's still-open tasks, classifying each against its server-owned dispatch state (never-started/stalled/timeout/none) and returning explicit next-instructions (including the exact task-fail/task-redispatch call shape) for whatever it finds. Requires runId, wave. Optional: branch, stateFile (also used to persist wave-await's own resume-state, i.e. the iteration counter, across bounded-poll calls).
 - resume-reset: Reset in-progress waves for session resume. Optional: branch, stateFile. Returns {resetWaves, clearedTaskIds} as before; when the run is still in flight after the reset, the response also carries a "resumeBriefing" (same shape as read's) reflecting the sets it just cleared — resume-reset's willRedo always matches the task IDs in clearedTaskIds. Reseeds fresh server-owned dispatch state (attempt reset to 1) for every cleared task ID; seeding failure is non-fatal and appends to a "warnings" field.
 - ledger_checkin: Register a worker as active. Requires runId, workerId. Optional: stepId.
 - ledger_checkout: Mark a worker as done. Requires runId, workerId.
@@ -556,7 +556,7 @@ Returns a JSON envelope: {"ok":true, "data":{...}} on success, {"ok":false, "cod
 // ---------------------------------------------------------------------------
 
 // executeState dispatches to the correct action handler. root anchors
-// .sdlc-v2/execution/ lookups; workDir anchors git-branch detection.
+// .sdlc-v2/runs/ lookups; workDir anchors git-branch detection.
 // now is injected for testability (ledger stall detection, timestamps).
 func executeState(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	switch in.Action {
@@ -2964,7 +2964,9 @@ func execActionTaskFail(root, workDir string, in ExecuteStateIn, now func() time
 		runID = execDeriveRunID(st.Data, *in.Wave)
 	}
 	currentAttempt := 1
-	if s, found, _ := wave.LoadServerState(root, runID, in.TaskID); found {
+	if s, found, lerr := wave.LoadServerState(root, runID, in.TaskID); lerr != nil {
+		return nil, &mcpserver.InfraError{Msg: "load server state for task " + in.TaskID + ": " + lerr.Error(), Cause: lerr}
+	} else if found {
 		currentAttempt = s.Attempt
 	}
 
@@ -3112,6 +3114,21 @@ func execFindWaveTaskRow(data map[string]any, taskID string, waveNum *int) (wm, 
 	return nil, nil, 0
 }
 
+// TaskRedispatchOut is the returned payload for the task-redispatch action:
+// confirms the fresh, solo server state seeded for the reopened task and
+// tells the caller what to do next. Next is never empty -- guardrail
+// mcp-output-drives-behavior.
+type TaskRedispatchOut struct {
+	TaskID       string `json:"taskId"`
+	Wave         int    `json:"wave"`
+	RunID        string `json:"runId"`
+	DispatchedAt string `json:"dispatchedAt"`
+	WorkerName   string `json:"workerName"`
+	Attempt      int    `json:"attempt"`
+	RetriesLeft  int    `json:"retriesLeft"`
+	Next         string `json:"next"`
+}
+
 // execActionTaskRedispatch reopens a failed task for another attempt:
 //  1. re-opens the task's wave manifest row to "in_progress" -- task-fail
 //     closed it, and wave-await only classifies rows that are still open.
@@ -3124,7 +3141,10 @@ func execFindWaveTaskRow(data map[string]any, taskID string, waveNum *int) (wm, 
 //     attempt.
 func execActionTaskRedispatch(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	if in.TaskID == "" {
-		return nil, &mcpserver.DomainError{Msg: "taskId is required for task-redispatch"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "taskId is required for task-redispatch",
+			Suggestion: "Pass taskId, e.g. execute_state {action:\"task-redispatch\", runId:\"<runId>\", taskId:\"<taskId>\"}.",
+		}
 	}
 
 	branch, err := execResolveBranch(in.Branch, workDir)
@@ -3147,7 +3167,11 @@ func execActionTaskRedispatch(root, workDir string, in ExecuteStateIn, now func(
 		}
 	}
 	if status, _ := tm["status"].(string); status == "completed" {
-		return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("task %q is already completed; task-redispatch only applies to a failed task", in.TaskID)}
+		return nil, &mcpserver.DomainError{
+			Msg: fmt.Sprintf("task %q is already completed; task-redispatch only applies to a failed task", in.TaskID),
+			Suggestion: fmt.Sprintf("Task %s already succeeded -- do not redispatch it. If this is unexpected, check task-fail was called for the right taskId.",
+				in.TaskID),
+		}
 	}
 
 	runID := in.RunID
@@ -3198,14 +3222,18 @@ func execActionTaskRedispatch(root, workDir string, in ExecuteStateIn, now func(
 		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
 	}
 
-	return map[string]any{
-		"taskId":       in.TaskID,
-		"wave":         waveNum,
-		"runId":        runID,
-		"dispatchedAt": next.DispatchedAt,
-		"workerName":   next.WorkerName,
-		"attempt":      next.Attempt,
-		"retriesLeft":  waveAwaitRetriesLeft(next.Attempt),
+	return TaskRedispatchOut{
+		TaskID:       in.TaskID,
+		Wave:         waveNum,
+		RunID:        runID,
+		DispatchedAt: next.DispatchedAt,
+		WorkerName:   next.WorkerName,
+		Attempt:      next.Attempt,
+		RetriesLeft:  waveAwaitRetriesLeft(next.Attempt),
+		Next: fmt.Sprintf(
+			"Dispatch task %s again (worker %s, attempt %d), then call execute_state {action:\"wave-await\", runId:%q, wave:%d} to resume supervision. Do NOT run the wave gates yet.",
+			in.TaskID, next.WorkerName, next.Attempt, runID, waveNum,
+		),
 	}, nil
 }
 
