@@ -271,14 +271,69 @@
     "waveTimeoutSeconds": {
       "type": "integer",
       "minimum": 1,
-      "description": "Per-wave timeout in seconds, resolved at init from explicit input > ship-state flags > built-in default (1800). Consumed by wave-progress's stallCause computation."
+      "description": "Per-wave timeout in seconds, resolved at init from explicit input > ship-state flags > built-in default (1800). Consumed by wave-await as each open task's total-runtime ceiling (the totalTimeout passed to wave.ClassifyTask)."
     },
     "waveIntervalSeconds": {
       "type": "integer",
       "minimum": 1,
-      "description": "Liveness poll interval in seconds, resolved at init from explicit input > ship-state flags > built-in default (60). Consumed by the wave loop's polling cadence."
+      "description": "Liveness poll interval in seconds, resolved at init from explicit input > ship-state flags > built-in default (60). Consumed by wave-await for three things: (1) the polling cadence between probes; (2) a heartbeat-staleness threshold of 3x this value (default 180s) before a worker is considered stalled; (3) a reclaim grace of max(2x this value, 120s) (default 120s) before an unresponsive worker is failed."
     }
   },
   "required": ["version", "skill", "startedAt", "branch", "planHash", "totalTasks", "waves", "context"],
-  "additionalProperties": false
+  "additionalProperties": false,
+  "$defs": {
+    "waveAwaitInput": {
+      "description": "Documentation only — not a property of the persisted state document; authoritative source is the jsonschema_description tags on ExecuteStateIn in internal/tools/execute_state.go. Input fields consumed by the wave-await action, which replaces the old client-side stall classification with a single server-driven bounded poll of a wave's still-open task rows.",
+      "type": "object",
+      "properties": {
+        "runId": {
+          "type": "string",
+          "description": "Execution run identifier. Falls back to the value derived from the state's startedAt/wave when omitted."
+        },
+        "wave": {
+          "type": "integer",
+          "description": "Wave number to probe."
+        },
+        "stateFile": {
+          "type": "string",
+          "description": "Overrides the execution state file path to read/write, instead of the one derived from branch. Also used to persist wave-await's own resume-state (iteration counter) across bounded-poll calls, keyed by runId+wave."
+        }
+      }
+    },
+    "waveAwaitOutput": {
+      "description": "Documentation only — not a property of the persisted state document; authoritative source is the WaveAwaitOut struct (embeds stepper.Envelope) in internal/tools/execute_wave_await.go. Shape returned by one non-blocking wave-await probe.",
+      "type": "object",
+      "properties": {
+        "status": { "type": "string", "description": "stepper.Envelope field." },
+        "step": { "type": ["string", "null"], "description": "stepper.Envelope field." },
+        "llm_decision": { "description": "stepper.Envelope field." },
+        "state_file": { "type": ["string", "null"], "description": "stepper.Envelope field." },
+        "progress": { "description": "stepper.Envelope field: {iteration, waitedSeconds, timeoutSeconds, intervalSeconds, open[], queued[], stalled[], recorded[]}." },
+        "ext": { "type": "object", "description": "stepper.Envelope field. May carry reclaimRequests[] ({taskIds[], workerName, message}, one entry per subject) and failures[] (WaveAwaitFailure: {taskId, workerName, cause: TIMEOUT|STALLED_RECLAIMED|STALLED_NO_REPLY, attempt, retriesLeft, resumeFrom?})." },
+        "error": { "type": "string", "description": "stepper.Envelope field. Populated only when status is \"error\"." },
+        "next": { "type": "string", "description": "Authoritative instruction the calling skill must follow verbatim: e.g. TaskStop+task-fail, SendMessage reclaim, task-redispatch, dispatch the next task, or poll again. No omitempty — guardrail mcp-output-drives-behavior." }
+      },
+      "required": ["status", "next"]
+    },
+    "taskRedispatchInput": {
+      "description": "Documentation only — not a property of the persisted state document; authoritative source is the jsonschema_description tags on ExecuteStateIn and the task-redispatch entry in the execute_state tool description, both in internal/tools/execute_state.go. Input fields consumed by task-redispatch, which reopens a failed task for another attempt.",
+      "type": "object",
+      "properties": {
+        "taskId": { "type": "string", "description": "Task identifier to reopen. Required." },
+        "branch": { "type": "string", "description": "Falls back to the current branch when omitted." },
+        "runId": { "type": "string", "description": "Falls back to the value derived from the state's startedAt/wave when omitted." },
+        "wave": { "type": "integer", "description": "Searches every wave for the task's closed row when omitted." }
+      },
+      "required": ["taskId"]
+    },
+    "waveStartTaskEntry": {
+      "description": "Documentation only — not a property of the persisted state document; authoritative source is the TasksJSON jsonschema_description tag on ExecuteStateIn in internal/tools/execute_state.go. Three optional fields wave-start accepts per task entry in tasksJson, consumed only to seed server-owned per-task dispatch state (internal/wave.ServerTaskState, a separate unschemed file) — never persisted to this document's waves[].tasks[] rows.",
+      "type": "object",
+      "properties": {
+        "workerName": { "type": "string", "description": "Caller-supplied dispatch identity, never invented; falls back to a generated template when omitted." },
+        "batchId": { "type": "string", "description": "Shared by every task in one batch dispatch; omit for a solo task." },
+        "batchIndex": { "type": "integer", "description": "This task's 0-based position within its batch." }
+      }
+    }
+  }
 }

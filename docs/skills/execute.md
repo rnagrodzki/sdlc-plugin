@@ -29,8 +29,8 @@ verification after each wave and automatic recovery from failures.
 | `--rebase <mode>` | Rebase strategy: `auto`, `skip`, or `prompt`. | `skip` |
 | `--auto` | Skip all interactive prompts. | off |
 | `--branch <name>` | Create and check out this branch before executing. | auto-derived |
-| `--wave-timeout <s>` | Max seconds a single wave can run. Also used as the per-task total-runtime threshold for stall classification (`stallCause`). | `1800` |
-| `--wave-interval <s>` | Seconds between liveness checks during a wave. | `60` |
+| `--wave-timeout <s>` | Max seconds a single wave can run. Also used as each task's total-runtime ceiling when the server classifies still-open tasks. | `1800` |
+| `--wave-interval <s>` | Seconds between wave-await liveness polls. Also sets a heartbeat-staleness threshold of 3x this value (default 180s) before a worker is considered stalled, and a reclaim grace of max(2x this value, 120s) (default 120s) before an unresponsive worker is failed. | `60` |
 
 ### Quality tiers
 
@@ -86,3 +86,12 @@ file — you do not need to pass it again.
   first action is an unconditional `execute_state({action: "read"})` call —
   not just when resuming — so a stale in-flight run from a prior session is
   always detected before anything else happens.
+- **Waves are supervised by a server-driven poll, not the session itself.**
+  After dispatching a wave's tasks, the skill repeatedly calls
+  `execute_state({action: "wave-await"})` on the `--wave-interval` cadence.
+  The server classifies each still-open task, and its response's `next`
+  field tells the skill exactly what to do next: keep polling, reclaim a
+  stalled worker, redispatch a task that timed out or went unanswered (via
+  `execute_state({action: "task-redispatch"})`, up to two retries), or move
+  on once the wave is done. The skill always follows `next` as given rather
+  than re-deriving its own liveness logic.
