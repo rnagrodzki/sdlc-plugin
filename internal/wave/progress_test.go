@@ -337,7 +337,7 @@ func TestUpdateProgress_PreservesStartedAt(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // UpdateProgress: structured-milestone fields (AcceptanceDone, FilesTouched,
-// Blocker, NudgedAt)
+// Blocker)
 // ---------------------------------------------------------------------------
 
 func TestUpdateProgress_WritesStructuredFields(t *testing.T) {
@@ -348,7 +348,6 @@ func TestUpdateProgress_WritesStructuredFields(t *testing.T) {
 		AcceptanceDone: []int{0, 2, 3},
 		FilesTouched:   []string{"a.go", "b.go"},
 		Blocker:        "waiting on review",
-		NudgedAt:       "2026-01-01T00:00:00.000Z",
 	})
 	if err != nil {
 		t.Fatalf("UpdateProgress: %v", err)
@@ -371,9 +370,6 @@ func TestUpdateProgress_WritesStructuredFields(t *testing.T) {
 	if tp.Blocker != "waiting on review" {
 		t.Errorf("Blocker = %q, want %q", tp.Blocker, "waiting on review")
 	}
-	if tp.NudgedAt != "2026-01-01T00:00:00.000Z" {
-		t.Errorf("NudgedAt = %q, want %q", tp.NudgedAt, "2026-01-01T00:00:00.000Z")
-	}
 }
 
 func TestUpdateProgress_PreservesStructuredFieldsWhenOmitted(t *testing.T) {
@@ -384,7 +380,6 @@ func TestUpdateProgress_PreservesStructuredFieldsWhenOmitted(t *testing.T) {
 		AcceptanceDone: []int{0},
 		FilesTouched:   []string{"a.go"},
 		Blocker:        "blocked",
-		NudgedAt:       "2026-01-01T00:00:00.000Z",
 	}); err != nil {
 		t.Fatalf("UpdateProgress first: %v", err)
 	}
@@ -406,9 +401,6 @@ func TestUpdateProgress_PreservesStructuredFieldsWhenOmitted(t *testing.T) {
 	if tp.Blocker != "blocked" {
 		t.Errorf("Blocker changed: got %q, want preserved %q", tp.Blocker, "blocked")
 	}
-	if tp.NudgedAt != "2026-01-01T00:00:00.000Z" {
-		t.Errorf("NudgedAt changed: got %q, want preserved %q", tp.NudgedAt, "2026-01-01T00:00:00.000Z")
-	}
 	if tp.Phase != "verifying" {
 		t.Errorf("Phase = %q, want %q", tp.Phase, "verifying")
 	}
@@ -428,84 +420,5 @@ func TestUpdateProgress_OverwritesAcceptanceDoneOnNextCall(t *testing.T) {
 	p, _ := ReadProgress(root, runID)
 	if got, want := p.Tasks["1"].AcceptanceDone, []int{0, 1, 2}; !reflect.DeepEqual(got, want) {
 		t.Errorf("AcceptanceDone = %v, want %v", got, want)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// ClassifyStall
-// ---------------------------------------------------------------------------
-
-func TestClassifyStall_Healthy(t *testing.T) {
-	now := time.Now().UTC()
-	tp := TaskProgress{
-		Phase:     "editing",
-		UpdatedAt: now.Add(-10 * time.Second).Format("2006-01-02T15:04:05.000Z"),
-		StartedAt: now.Add(-60 * time.Second).Format("2006-01-02T15:04:05.000Z"),
-	}
-	cause := ClassifyStall(tp, now, 30*time.Second, 5*time.Minute)
-	if cause != StallCauseNone {
-		t.Errorf("cause = %q, want empty (healthy)", cause)
-	}
-}
-
-func TestClassifyStall_Stalled(t *testing.T) {
-	now := time.Now().UTC()
-	tp := TaskProgress{
-		Phase:     "editing",
-		UpdatedAt: now.Add(-60 * time.Second).Format("2006-01-02T15:04:05.000Z"),
-		StartedAt: now.Add(-90 * time.Second).Format("2006-01-02T15:04:05.000Z"),
-	}
-	cause := ClassifyStall(tp, now, 30*time.Second, 5*time.Minute)
-	if cause != StallCauseStalled {
-		t.Errorf("cause = %q, want 'stalled'", cause)
-	}
-}
-
-func TestClassifyStall_Timeout(t *testing.T) {
-	now := time.Now().UTC()
-	tp := TaskProgress{
-		Phase:     "editing",
-		UpdatedAt: now.Add(-10 * time.Second).Format("2006-01-02T15:04:05.000Z"),
-		StartedAt: now.Add(-10 * time.Minute).Format("2006-01-02T15:04:05.000Z"),
-	}
-	cause := ClassifyStall(tp, now, 30*time.Second, 5*time.Minute)
-	if cause != StallCauseTimeout {
-		t.Errorf("cause = %q, want 'timeout'", cause)
-	}
-}
-
-func TestClassifyStall_TimeoutPrecedence(t *testing.T) {
-	// Both stalled and timed out: timeout wins.
-	now := time.Now().UTC()
-	tp := TaskProgress{
-		Phase:     "editing",
-		UpdatedAt: now.Add(-60 * time.Second).Format("2006-01-02T15:04:05.000Z"),
-		StartedAt: now.Add(-10 * time.Minute).Format("2006-01-02T15:04:05.000Z"),
-	}
-	cause := ClassifyStall(tp, now, 30*time.Second, 5*time.Minute)
-	if cause != StallCauseTimeout {
-		t.Errorf("cause = %q, want 'timeout' (precedence)", cause)
-	}
-}
-
-func TestClassifyStall_EmptyUpdatedAt(t *testing.T) {
-	tp := TaskProgress{Phase: "started"}
-	cause := ClassifyStall(tp, time.Now(), 30*time.Second, 5*time.Minute)
-	if cause != StallCauseNone {
-		t.Errorf("cause = %q, want empty for missing UpdatedAt", cause)
-	}
-}
-
-func TestClassifyStall_ZeroTimeouts(t *testing.T) {
-	now := time.Now().UTC()
-	tp := TaskProgress{
-		Phase:     "editing",
-		UpdatedAt: now.Add(-10 * time.Minute).Format("2006-01-02T15:04:05.000Z"),
-		StartedAt: now.Add(-30 * time.Minute).Format("2006-01-02T15:04:05.000Z"),
-	}
-	// Zero timeouts: no stall detection.
-	cause := ClassifyStall(tp, now, 0, 0)
-	if cause != StallCauseNone {
-		t.Errorf("cause = %q, want empty with zero timeouts", cause)
 	}
 }
