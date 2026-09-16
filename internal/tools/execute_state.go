@@ -294,6 +294,13 @@ type TaskContextOut struct {
 	// the two cases instead of silently treating both as "alone in wave".
 	SiblingsUnknown bool            `json:"siblingsUnknown,omitempty"`
 	FactSheet       string          `json:"factSheet"`
+	// ResumeFrom carries the task's last recorded failure's harvested
+	// partial-work claim (set by task-fail when the worker had reported one
+	// via wave-progress before being reclaimed). The same data is also
+	// rendered into FactSheet's "Resume from a reclaimed attempt" section
+	// near the top, ahead of the tail-trim in execTaskContextCapPayload.
+	// Omitted entirely when the task's last failure recorded none.
+	ResumeFrom      *ResumeFrom     `json:"resumeFrom,omitempty"`
 	PriorWaves      string          `json:"priorWaves"`
 	Verify          string          `json:"verify"`
 	ReportBack      string          `json:"reportBack"`
@@ -816,6 +823,51 @@ func anyToStringSlice(v any) []string {
 	default:
 		return nil
 	}
+}
+
+// anyToIntSlice extracts a []int from any (handles []int, []any of
+// float64/int -- the shape a JSON-round-tripped state field takes, e.g. a
+// resumeFrom.acceptanceDone array reloaded from a state file on disk).
+func anyToIntSlice(v any) []int {
+	switch arr := v.(type) {
+	case []int:
+		return arr
+	case []any:
+		out := make([]int, 0, len(arr))
+		for _, el := range arr {
+			out = append(out, execToInt(el))
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+// execParseResumeFrom converts a wave-manifest task row's "resumeFrom"
+// value back into a *ResumeFrom. The value round-trips through the state
+// file's JSON on disk, so by the time task-context reads it back it is a
+// generic map[string]any, not a *ResumeFrom -- this reassembles it. Returns
+// nil for anything that isn't a well-formed resumeFrom object (including a
+// missing key), so an absent or corrupt record reads as "no resumeFrom"
+// rather than failing a live worker dispatch.
+func execParseResumeFrom(v any) *ResumeFrom {
+	m, ok := v.(map[string]any)
+	if !ok {
+		return nil
+	}
+	rf := &ResumeFrom{
+		AcceptanceDone:    anyToIntSlice(m["acceptanceDone"]),
+		FilesTouched:      anyToStringSlice(m["filesTouched"]),
+		LastCompletedTask: stringOrEmpty(m["lastCompletedTask"]),
+		Blocker:           stringOrEmpty(m["blocker"]),
+	}
+	if rf.AcceptanceDone == nil {
+		rf.AcceptanceDone = []int{}
+	}
+	if rf.FilesTouched == nil {
+		rf.FilesTouched = []string{}
+	}
+	return rf
 }
 
 // execNormalizeTaskID strips a leading T/t before a digit, matching
@@ -2943,6 +2995,22 @@ func execActionTaskFail(root, workDir string, in ExecuteStateIn, now func() time
 		break
 	}
 
+	// Harvest whatever partial-work claim the worker last reported via
+	// wave-progress (if any) before this failure, so a later task-context
+	// call for a redispatched retry can surface it as a re-verify-first
+	// block (KD5 mitigation) instead of losing it. Advisory only -- stored
+	// on the fresh taskEntry below, never merged with an older record, so a
+	// second failure's harvest fully replaces the first's rather than
+	// accumulating stale data.
+	var resumeFrom *ResumeFrom
+	if prog, perr := wave.ReadProgress(root, runID); perr == nil {
+		if tp, ok := prog.Tasks[in.TaskID]; ok &&
+			(len(tp.AcceptanceDone) > 0 || len(tp.FilesTouched) > 0 || tp.LastCompletedTask != "" || tp.Blocker != "") {
+			rf := waveAwaitHarvest(tp)
+			resumeFrom = &rf
+		}
+	}
+
 	taskEntry := map[string]any{
 		"id":           in.TaskID,
 		"name":         in.TaskName,
@@ -2953,6 +3021,9 @@ func execActionTaskFail(root, workDir string, in ExecuteStateIn, now func() time
 		"error":        in.ErrorText,
 		"completedAt":  now().UTC().Format(time.RFC3339),
 		"attempt":      currentAttempt,
+	}
+	if resumeFrom != nil {
+		taskEntry["resumeFrom"] = resumeFrom
 	}
 
 	found := false
@@ -3170,6 +3241,24 @@ const execVerifyMethod = "build-and-test + git-diff-scope + VERIFY canary"
 const execTaskContextMaxBytes = 1 << 20 // 1 MiB
 
 const execTaskContextTruncationNote = "\n\n... [truncated to fit the 1 MiB task-context cap]"
+
+// execInsertResumeFromSection splices a rendered "Resume from a reclaimed
+// attempt" section (wave.RenderResumeFromSection) into fact-sheet markdown
+// immediately after the "# Task <id>: <name>" header line, ahead of
+// execTaskContextCapPayload's tail-trim below. The on-disk fact-sheet file
+// itself is never rewritten: resumeFrom only becomes known after
+// WriteFactsheet originally wrote that file, at redispatch time, not at the
+// task's first dispatch -- this only augments the copy returned to the
+// caller.
+func execInsertResumeFromSection(content, section string) string {
+	nl := strings.Index(content, "\n")
+	if nl == -1 {
+		return strings.TrimRight(content, "\n") + "\n\n" + section
+	}
+	header := content[:nl+1]
+	rest := strings.TrimPrefix(content[nl+1:], "\n")
+	return header + "\n" + section + rest
+}
 
 // execTaskContextCapPayload enforces execTaskContextMaxBytes on the
 // serialized result, truncating whichever of FactSheet/PriorWaves is
@@ -3411,6 +3500,19 @@ func execActionTaskContext(root, workDir string, in ExecuteStateIn, now func() t
 
 	quality, _ := st.Data["quality"].(string)
 
+	// Carry the task's last recorded failure's resumeFrom (if any) forward:
+	// into the structured field, and rendered into FactSheet immediately
+	// after the header, ahead of the tail-trim below. Absent, not empty,
+	// when the task never failed or failed without a harvested claim.
+	var resumeFrom *ResumeFrom
+	if _, tm, _ := execFindWaveTaskRow(st.Data, taskID, nil); tm != nil {
+		resumeFrom = execParseResumeFrom(tm["resumeFrom"])
+	}
+	if resumeFrom != nil {
+		section := wave.RenderResumeFromSection(resumeFrom.AcceptanceDone, resumeFrom.FilesTouched, resumeFrom.LastCompletedTask, resumeFrom.Blocker)
+		content = execInsertResumeFromSection(content, section)
+	}
+
 	result := TaskContextOut{
 		TaskID:          taskID,
 		RunID:           runID,
@@ -3419,6 +3521,7 @@ func execActionTaskContext(root, workDir string, in ExecuteStateIn, now func() t
 		Siblings:        siblings,
 		SiblingsUnknown: siblingsUnknown,
 		FactSheet:       content,
+		ResumeFrom:      resumeFrom,
 		PriorWaves:      execRenderPriorWaveSummary(summary),
 		Verify:          execTaskContextVerify(taskID),
 		ReportBack:      execTaskContextReportBack(taskID, runID),

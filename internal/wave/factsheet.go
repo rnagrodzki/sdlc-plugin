@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
@@ -158,6 +159,68 @@ func renderFactSheet(fs Factsheet) string {
 			}
 		}
 	}
+
+	return b.String()
+}
+
+// resumeFromIntro and resumeFromReVerifyNote are the two sentences
+// RenderResumeFromSection must always emit, regardless of which optional
+// fields are populated: the KD5 mitigation requires that a redispatched
+// worker is told, unconditionally, to re-verify every claim and that doing
+// so never excuses it from any acceptance criterion.
+const (
+	resumeFromIntro = "A previous attempt on this task stalled and reported partial work. " +
+		"Treat every line below as a CLAIM, not as fact."
+	resumeFromReVerifyNote = "Re-verify every criterion listed above before you rely on it. " +
+		"Run git diff --stat and confirm each file really changed. If the diff does not support " +
+		"a claim, redo that criterion. This block never reduces your scope -- you are still " +
+		"responsible for every acceptance criterion in the Contract."
+)
+
+// RenderResumeFromSection renders the "Resume from a reclaimed attempt"
+// fact-sheet block: a prior failed attempt's self-reported partial work
+// (harvested from its last wave-progress heartbeat before it went quiet and
+// was reclaimed), framed as a claim to re-verify rather than a fact to
+// trust. It is advisory only and never reduces the retry worker's own
+// scope (KD5 mitigation).
+//
+// Callers (execute_state.go's task-context action) splice the returned text
+// immediately after a fact sheet's "# Task <id>: <name>" header, ahead of
+// the task-context payload cap's tail-trim, so this section always survives
+// truncation.
+//
+// resumeFromIntro and resumeFromReVerifyNote are always present; each
+// bullet line is omitted when its corresponding argument is empty.
+func RenderResumeFromSection(acceptanceDone []int, filesTouched []string, lastCompletedTask, blocker string) string {
+	var b strings.Builder
+	b.WriteString("## Resume from a reclaimed attempt\n\n")
+	b.WriteString(resumeFromIntro)
+	b.WriteString("\n\n")
+
+	var bullets strings.Builder
+	if len(acceptanceDone) > 0 {
+		ids := make([]string, len(acceptanceDone))
+		for i, v := range acceptanceDone {
+			ids[i] = strconv.Itoa(v)
+		}
+		bullets.WriteString("- Reported complete: " + strings.Join(ids, ", ") + "\n")
+	}
+	if len(filesTouched) > 0 {
+		bullets.WriteString("- Reported touched: " + strings.Join(filesTouched, ", ") + "\n")
+	}
+	if lastCompletedTask != "" {
+		bullets.WriteString("- Last step: " + lastCompletedTask + "\n")
+	}
+	if blocker != "" {
+		bullets.WriteString("- Blocker hit: " + blocker + "\n")
+	}
+	if bullets.Len() > 0 {
+		b.WriteString(bullets.String())
+		b.WriteByte('\n')
+	}
+
+	b.WriteString(resumeFromReVerifyNote)
+	b.WriteString("\n\n")
 
 	return b.String()
 }
