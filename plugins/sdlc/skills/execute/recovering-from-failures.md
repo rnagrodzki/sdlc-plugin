@@ -19,14 +19,19 @@ the user (branch was reset/force-pushed since that wave committed), not treated 
 
 ## Stalled vs Timeout
 
-A single server-driven classifier now supervises every dispatched task — there is exactly one
-mechanism, not several competing ones. `execute_state({action:"wave-await", runId, wave})`
+For stall and timeout detection specifically, a single server-driven classifier supervises every
+dispatched task — the skill does not run a second, competing staleness check of its own.
+`execute_state({action:"wave-await", runId, wave})`
 (SKILL.md's `## Wave loop` stage 4) is a bounded, non-blocking poll that classifies every still-open
 task row against its server-owned dispatch state (`wave.BuildSubjects` / `wave.ClassifyTask`) and
 returns an explicit `next` instruction the calling skill follows verbatim. The skill never computes
-elapsed time, never classifies staleness itself, and never decides which task to fail — the server
-already did (see SKILL.md's `## DO NOT`). A batch agent is classified as one subject, never as
-independent members — see `classifying-and-waving-tasks.md`'s batch-dispatch paragraph.
+elapsed time, never classifies staleness itself, and never decides which task to fail for a stall or
+timeout — the server already did (see SKILL.md's `## DO NOT`). This does not extend to every failure
+category below: build/test/lint failures, phantom success, and similar are detected by the main
+session itself (see `## Failure Classification`), which then supplies the classification directly —
+e.g. `execute_state({action:"wave-fail", ..., timedOut:<bool>})`'s `timedOut` is caller-supplied, not
+server-derived, for that call. A batch agent is classified as one subject, never as independent
+members — see `classifying-and-waving-tasks.md`'s batch-dispatch paragraph.
 
 When `wave-await` can no longer wait on a task, it reports exactly one of three causes in
 `ext.failed[].cause`, each carried through to the `task-fail` call the `next` instruction orders:

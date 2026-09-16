@@ -71,7 +71,7 @@ Each sub-skill has its own error recovery. ship does not duplicate their recover
 
 **Pipeline plan is binding.** The pipeline table displayed and confirmed at Step loop item 6 is a contract. Step statuses (`will_run`, `skipped`, `conditional`) come from `ship_prepare`'s resolved flags — the LLM follows them, it does not override them. A step marked `will_run` must be dispatched. This mirrors the source incident where a review step was skipped because the LLM judged the changes "just docs/config" — the pipeline's value is precisely in catching cases where the developer thinks changes are low-risk but review disagrees.
 
-**State files are tool-managed.** Use `ship_state` (and `execute_state` for the execute sub-pipeline) for every state read/write. Never hand-write JSON to `.sdlc-v2/execution/`. See `state-format.md` for the exact schema — `steps[]` gets one entry per name in `flags.steps`; only `received-review`/`commit-fixes` never get an entry (see the DO NOT list above).
+**State files are tool-managed.** Use `ship_state` (and `execute_state` for the execute sub-pipeline) for every state read/write. Never hand-write JSON to `.sdlc-v2/runs/`. See `state-format.md` for the exact schema — `steps[]` gets one entry per name in `flags.steps`; only `received-review`/`commit-fixes` never get an entry (see the DO NOT list above).
 
 **No Agent SDK worktrees.** ship isolates the `execute` step with a plain `git checkout -b <branch>` run by this skill itself, then dispatches `execute` without `--branch` so its own Step 1 sees a non-default current branch and yields `continue`. There is no `EnterWorktree`/`ExitWorktree` tool use anywhere in this pipeline, and no `isolation: "worktree"` on any Agent dispatch.
 

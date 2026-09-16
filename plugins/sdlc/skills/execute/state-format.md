@@ -1,6 +1,6 @@
 # Execute-Plan State File Format
 
-The `execute` skill writes a JSON state file to `.sdlc-v2/execution/` at execution start and updates it after each wave and task. This file enables crash recovery via `--resume` and provides a transparent record of every wave and task executed during the run.
+The `execute` skill writes a JSON state file to `.sdlc-v2/runs/` at execution start and updates it after each wave and task. This file enables crash recovery via `--resume` and provides a transparent record of every wave and task executed during the run.
 
 JSON Schemas are available at `schemas/execute-state.schema.json` and `schemas/ship-state.schema.json` for validation and IDE autocompletion.
 
@@ -9,20 +9,20 @@ JSON Schemas are available at `schemas/execute-state.schema.json` and `schemas/s
 ## File Location
 
 ```
-<main-worktree>/.sdlc-v2/execution/execute-<branch>-<timestamp>.json
+<main-worktree>/.sdlc-v2/runs/execute-<branch>-<timestamp>.json
 ```
 
 - `<main-worktree>` — absolute path to the main git working tree (see [Worktree Safety](#worktree-safety) below)
 - `<branch>` — current git branch name with `/` replaced by `-`
 - `<timestamp>` — ISO 8601 UTC timestamp at execution start, compacted to `YYYYMMDDTHHmmssZ`
 
-Example: `.sdlc-v2/execution/execute-feat-my-feature-20260328T143000Z.json`
+Example: `.sdlc-v2/runs/execute-feat-my-feature-20260328T143000Z.json`
 
 ---
 
 ## Worktree Safety
 
-State files are always written to the **main working tree's** `.sdlc-v2/execution/`, not the current working directory. This ensures state survives worktree cleanup — if `execute` runs inside a linked worktree, the state file is still accessible after that worktree is removed.
+State files are always written to the **main working tree's** `.sdlc-v2/runs/`, not the current working directory. This ensures state survives worktree cleanup — if `execute` runs inside a linked worktree, the state file is still accessible after that worktree is removed.
 
 **Main working tree resolution:**
 
@@ -44,7 +44,7 @@ HEAD 789abc012def
 branch refs/heads/feat/my-feature
 ```
 
-The main working tree is `/Users/dev/myrepo`. The state file is written to `/Users/dev/myrepo/.sdlc-v2/execution/`.
+The main working tree is `/Users/dev/myrepo`. The state file is written to `/Users/dev/myrepo/.sdlc-v2/runs/`.
 
 If there is only one worktree entry (no linked worktrees), the main working tree is the current repo root.
 
@@ -290,7 +290,7 @@ While a wave is running, each dispatched worker records its current phase in a s
 <stateDir>/<runId>/progress/<taskId>.json
 ```
 
-- `<stateDir>` — `resolveStateDir()`'s return value, which already ends in `.sdlc-v2/execution`. There is no additional `execution/` path segment: the `progress/` directory sits directly inside the per-run directory, alongside that run's per-task fact sheets (`task-<id>.md`).
+- `<stateDir>` — `resolveStateDir()`'s return value, which already ends in `.sdlc-v2/runs`. There is no additional `runs/` path segment: the `progress/` directory sits directly inside the per-run directory, alongside that run's per-task fact sheets (`task-<id>.md`).
 - `<runId>` — the run identifier passed to `execute_state({action:"wave-start", runId:...})` and threaded through the wave manifest.
 - `<taskId>` — one file per task, written only by that task. Distinct tasks touch distinct files, so two workers updating different tasks at the same time never race on the same file. Within a single task's file, writes ARE a read-modify-write (see `**Per-task file shape**` below) — the single-writer-per-file property keeps that race-free without locking.
 
@@ -300,7 +300,7 @@ server-owned dispatch/classification state, a wholly separate file with its own,
 
 One `progress/` directory covers the entire run, not one per wave — task IDs from every wave land side by side in the same directory, and the wave number plays no part in the path or the write/read call.
 
-Example: `.sdlc-v2/execution/run-20260328T143000Z/progress/3.json`
+Example: `.sdlc-v2/runs/run-20260328T143000Z/progress/3.json`
 
 **Per-task file shape:**
 
@@ -355,12 +355,12 @@ anything a worker itself writes — a stalled or misbehaving worker can never co
 | `dispatchedAt`        | string | Timestamp the server recorded when this task (or its batch) was dispatched. Anchors `wave-await`'s per-task total-timeout bound. |
 | `workerName`          | string | The Agent dispatch name — `worker-{runId}-{taskId}` for a solo task, or the batch's first task's name for a batch member. |
 | `batchId`             | string \| absent | Present only when this task was dispatched as part of a batch; shared by every member. Absent entirely (`omitempty`) for a solo task. |
-| `batchIndex`          | number \| absent | This task's position within its batch (`0` for the first member). Absent entirely (`omitempty`) for a solo task. |
+| `batchIndex`          | number \| absent | This task's position within its batch (`0` for the first member). `omitempty` on a plain `int` also drops the field when its value is the zero value — so `batchIndex` is absent both for a solo task AND for a batch's first member (index `0`). Do not use its absence to detect "solo task"; check `batchId`'s absence instead (a solo task's `batchId` is always empty, which no batch member's ever is). |
 | `contextFetchedAt`    | string \| absent | Timestamp the worker called `task-context` for this task. Absent until the worker has fetched it. |
 | `reclaimRequestedAt`  | string \| absent | Timestamp `wave-await` stamped when it relayed a RECLAIM `SendMessage` for this task's subject. Absent (`omitempty`) when no reclaim is in flight — not shown in the example above. |
 | `attempt`             | number | This task's current attempt number, starting at `1`; incremented by `task-redispatch`. |
 
-The per-run directory is not swept by the top-level state-file GC (which only scans `.json` files directly under `.sdlc-v2/execution/`) — the whole run directory, `progress/` included (both `<taskId>.json` and `<taskId>.server.json` files), is reaped by `--gc` alongside the fact sheets in that same directory.
+The per-run directory is not swept by the top-level state-file GC (which only scans `.json` files directly under `.sdlc-v2/runs/`) — the whole run directory, `progress/` included (both `<taskId>.json` and `<taskId>.server.json` files), is reaped by `--gc` alongside the fact sheets in that same directory.
 
 ---
 
@@ -454,7 +454,7 @@ inline a fact sheet, guardrails block, and reporting instructions into the dispa
 | Field        | Type    | Description |
 |--------------|---------|--------------|
 | `taskId`     | string  | Echoes the requested task ID. |
-| `factSheet`  | string  | The task's fact-sheet markdown (`<stateDir>/<runId>/task-<id>.md` — see [Progress Markers](#progress-markers-in-flight-wave-liveness) above for why `<stateDir>` already ends in `.sdlc-v2/execution` with no extra `execution/` segment) — Contract, Acceptance Criteria, Files. |
+| `factSheet`  | string  | The task's fact-sheet markdown (`<stateDir>/<runId>/task-<id>.md` — see [Progress Markers](#progress-markers-in-flight-wave-liveness) above for why `<stateDir>` already ends in `.sdlc-v2/runs` with no extra `runs/` segment) — Contract, Acceptance Criteria, Files. |
 | `priorWaves` | string  | A live prior-wave summary, re-rendered at call time (not a snapshot from `wave-start`), so it reflects sibling tasks in the same wave that finished since the wave began. |
 | `verify`     | string  | Verify-step guidance for this task. |
 | `reportBack` | string  | Instructions for how the worker reports its outcome — including that the worker does not call `task-done`/`task-fail` itself; it reports a status block back to the dispatching session, which records the outcome. |
