@@ -482,11 +482,10 @@ func RegisterSetupTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "setup_prepare",
 		"Returns the canonical section descriptors for setup, with per-section field metadata and runtime-detected defaults (defaultBranch, remoteOwner). Optionally checks config migration state. Also reports ciScriptDrift: per-script version comparison against the embedded scaffold_ci payloads, flagging outdated or not-yet-installed CI scripts (remediate with scaffold_ci({force:true})).",
 		mcpserver.Annotations{
-			Title:       "Prepare SDLC setup context",
-			ReadOnly:    false,
-			Destructive: true,
-			Idempotent:  true,
-			OpenWorld:   false,
+			Title:      "Prepare SDLC setup context",
+			ReadOnly:   true,
+			Idempotent: true,
+			OpenWorld:  false,
 		},
 		func(ctx mcpserver.Ctx, in SetupPrepareIn) (SetupPrepareOut, error) {
 			root, err := worktree.MainRoot()

@@ -1817,13 +1817,19 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 	// them for real. Warning-only: a standalone execute has no plan file,
 	// and a missing or non-openspec plan is not an error.
 	if in.PlanPath != "" {
-		if content, readErr := os.ReadFile(in.PlanPath); readErr == nil {
-			if change := openspecChangeFromPlan(string(content)); change != "" && isSafeChangeName(change) {
-				tasksPath := filepath.Join(workDir, "openspec", "changes", change, "tasks.md")
-				if _, stampErr := stampTaskRefs(tasksPath); stampErr != nil {
-					initWarnings = append(initWarnings,
-						fmt.Sprintf("init: openspec ref stamp skipped: %v", stampErr))
-				}
+		content, readErr := os.ReadFile(in.PlanPath)
+		if readErr != nil {
+			// A caller-supplied planPath that cannot be read is worth
+			// surfacing: the ref stamp is silently skipped, and without a
+			// warning the caller has no way to tell that from "the plan was
+			// not an openspec plan". Still non-fatal — init must succeed.
+			initWarnings = append(initWarnings,
+				fmt.Sprintf("init: openspec ref stamp skipped: plan unreadable: %v", readErr))
+		} else if change := openspecChangeFromPlan(string(content)); change != "" && isSafeChangeName(change) {
+			tasksPath := filepath.Join(workDir, "openspec", "changes", change, "tasks.md")
+			if _, stampErr := stampTaskRefs(tasksPath); stampErr != nil {
+				initWarnings = append(initWarnings,
+					fmt.Sprintf("init: openspec ref stamp skipped: %v", stampErr))
 			}
 		}
 	}

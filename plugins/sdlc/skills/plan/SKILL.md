@@ -71,7 +71,7 @@ Example — OpenSpec gate check:
    - `openspec/changes/<name>/design.md` — technical approach (may not exist yet; skip if absent)
    - All files matching `openspec/changes/<name>/specs/*.md` — delta specs (the requirements)
    - `openspec/changes/<name>/tasks.md` — OpenSpec's task checklist (may not exist; skip if absent)
-6. Store these as `openspecContext` for use in Steps 1–5. Update the plan file header `**Source:**` to `openspec/changes/<name>/` — this exact header is what `execute_state({action:"init"})` later reads to find and ref-stamp `tasks.md`, so it must be present verbatim for that to happen. `plan_prepare` itself only computes which task lines are still missing an inline `<!-- ref:... -->` comment: `openspecContext.tasksUpdated` is a PENDING count, not a write `plan_prepare` performed (it runs in plan mode and must not touch git-tracked files) — the stamp is applied once the plan is approved and execute starts.
+6. Store these as `openspecContext` for use in Steps 1–5. Update the plan file header `**Source:**` to `openspec/changes/<name>/` — required verbatim: `execute_state({action:"init"})` reads this exact header to ref-stamp `tasks.md` later. Do NOT report `openspecContext.tasksUpdated` as tasks updated — it is a pending count, not a write. Rationale: `docs/plan-architecture.md` § "OpenSpec tasks.md Ref Stamping".
 
 **Complexity routing:**
 

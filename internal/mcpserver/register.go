@@ -62,6 +62,13 @@ func (a Annotations) apply(t *mcp.Tool) {
 // the tool's input (derived from struct tags). The handler receives a
 // deserialized TIn and returns TOut, which is wrapped in a KD3 envelope.
 //
+// a carries the tool's MCP annotations and is required -- there is no
+// zero-value default, because Go's false zero value for Destructive and
+// OpenWorld would silently under-claim danger (the MCP spec defaults both to
+// true). Classify the tool against the ReadOnly boundary rule before filling
+// it in, and add the matching row to the toolAnnotations golden map in
+// internal/tools/annotations_test.go; see docs/mcp-tool-annotations.md.
+//
 // All handler outcomes -- success, typed errors, panics -- are returned as
 // text content in the MCP result with appropriate envelope and IsError flag.
 // The handler never returns a Go error, so the protocol layer never sees a

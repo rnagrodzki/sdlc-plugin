@@ -37,6 +37,7 @@ Read these files to understand conventions:
 2. `internal/mcpserver/envelope.go` — error types (`DomainError`, `InfraError`, `DataError`) with `Suggestion` field
 3. One existing tool file matching the closest sibling (manifest may specify which, else use `internal/tools/jira.go` as default reference)
 4. One existing test file for that sibling
+5. `internal/tools/annotations_test.go` — the `toolAnnotations` golden map you must emit a row for. Read it before emitting `toolAnnotationsEntry`: copy the `annotationPolicy` field order and the `reason` phrasing style from the existing rows, and place the new row in the READ-ONLY or WRITER group that matches the annotations you emit. The group header comments carry row counts (`// READ-ONLY (N rows)`) — increment the one you add to.
 
 ## Step 2 — Generate Input Struct
 

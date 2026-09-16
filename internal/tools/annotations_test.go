@@ -28,7 +28,7 @@ type annotationPolicy struct {
 // updating this map) and zero-value hazards (a forgotten Destructive:true
 // that defaults to false).
 var toolAnnotations = map[string]annotationPolicy{
-	// READ-ONLY (14 rows)
+	// READ-ONLY (16 rows)
 	"validate": {
 		title:      "Validate SDLC artifacts",
 		readOnly:   true,
@@ -127,8 +127,22 @@ var toolAnnotations = map[string]annotationPolicy{
 		openWorld:  false,
 		reason:     "Task 3 relocated its one tracked-file write (openspec tasks.md ref stamp) into execute_state's init handler; plan_prepare itself now only reads",
 	},
+	"review_prepare": {
+		title:      "Prepare code review payload",
+		readOnly:   true,
+		idempotent: true,
+		openWorld:  false,
+		reason:     "every write lands in os.MkdirTemp(\"\", \"sdlc-review-\") — per-dimension .diff/.slice.json and manifest.json; no input field redirects that path; diffs come from local git diff",
+	},
+	"setup_prepare": {
+		title:      "Prepare SDLC setup context",
+		readOnly:   true,
+		idempotent: true,
+		openWorld:  false,
+		reason:     "no writes at all: configmigrate.Verify, setupmeta.Sections, gitx.DefaultBranch, git remote get-url, ciScriptDrift are read-only; the managed-section os.WriteFile belongs to setup_write_sections/setup_init, not setupPrepare",
+	},
 
-	// WRITER (17 rows)
+	// WRITER (15 rows)
 	"commit_apply": {
 		title:       "Create a git commit",
 		readOnly:    false,
@@ -193,14 +207,6 @@ var toolAnnotations = map[string]annotationPolicy{
 		openWorld:   false,
 		reason:      "os.WriteFile → tracked openspec/config.yaml; managed block rewritten in place",
 	},
-	"review_prepare": {
-		title:       "Prepare code review payload",
-		readOnly:    false,
-		destructive: true,
-		idempotent:  true,
-		openWorld:   false,
-		reason:      "os.WriteFile; fsx.AtomicWriteJSON",
-	},
 	"jira": {
 		title:       "Manage local Jira cache",
 		readOnly:    false,
@@ -248,14 +254,6 @@ var toolAnnotations = map[string]annotationPolicy{
 		idempotent:  true,
 		openWorld:   false,
 		reason:      "os.WriteFile; .sdlc-v2/.gitignore",
-	},
-	"setup_prepare": {
-		title:       "Prepare SDLC setup context",
-		readOnly:    false,
-		destructive: true,
-		idempotent:  true,
-		openWorld:   false,
-		reason:      "os.WriteFile on the managed-section path",
 	},
 	"setup_write_sections": {
 		title:       "Write SDLC config sections",
@@ -458,6 +456,13 @@ func TestReadOnlyToolsWriteNothingTracked(t *testing.T) {
 				_, _ = shipVerifySideEffect(root, root, ShipVerifySideEffectIn{Step: "review"}, time.Now)
 			case "plan_prepare":
 				_, _ = planPrepareCore(root, root, PlanPrepareIn{SkipConfigCheck: true})
+			case "setup_prepare":
+				_, _ = setupPrepare(root, SetupPrepareIn{})
+			case "review_prepare":
+				// Writes only into os.MkdirTemp("", "sdlc-review-"), never
+				// into root — so the fixture tree must stay clean even when
+				// the call succeeds and produces a full manifest.
+				_, _ = reviewPrepare(root, root, ReviewPrepareIn{SkipConfigCheck: true})
 			default:
 				t.Fatalf("no direct-call wiring for read-only tool %q — add one to this switch", toolName)
 			}
