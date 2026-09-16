@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.4] - 2026-09-16
+
+- Added a new `task-redispatch` action for reclaiming and reassigning stalled or timed-out tasks
+- Added server-owned task state tracking and a unified stall classifier, replacing the old client-side `ClassifyStall`/`StallCause`/`NudgedAt` logic
+- Fixed schema issues (new `in_progress` status enum, stale path references) and typed the `task-redispatch` return value
+- Refreshed and swept supporting documentation for the new stall model, with added skillcheck coverage
+- Replaced the execute skill's in-context, 12-stage wave-supervision loop with a single server-driven `wave-await` MCP action
+- Seeded server-side wave state at dispatch time and surfaced `resumeFrom` claims in the retry worker's fact sheet so redispatched tasks retain prior progress context
+
 ## [0.1.3] - 2026-09-16
 
 - Add a golden regression test for tool annotations, plus documentation
