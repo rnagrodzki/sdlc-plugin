@@ -174,14 +174,26 @@ it has rather than treating the call as an error.
 
 **Batch dispatch (2+ Trivial tasks in one Agent):** send one prompt per task in the cluster,
 concatenated in order, each following the same two-line form with its own `{taskId}`. The Agent
-works through them sequentially, calling `task-context` fresh for each before starting it.
+works through them sequentially, calling `task-context` fresh for each before starting it. A batch
+is supervised as **one subject**, not several: the Agent returns once, after every member, so its
+members are never classified individually — the batch's newest heartbeat (from whichever member
+last reported progress) covers all of them, in both directions. A RECLAIM request always addresses
+the batch agent's real name, never a per-member name.
+
+**Batching and agent names are decided before `wave-start`**, not at dispatch time — stage 1 of
+`execute/SKILL.md`'s `## Wave loop` sends each task's `workerName`/`batchId`/`batchIndex` in
+`tasksJson` on the `wave-start` call itself, so the server can build the batch's single Subject
+(`wave.BuildSubjects`) before any dispatch happens. Choosing a batch grouping after `wave-start`
+has already returned leaves the server supervising three phantom solo agents instead of one batch
+subject.
 
 **Naming, model, mode, and background dispatch mechanics** — see `execute/SKILL.md`'s
 `## Wave loop` section: every dispatch is named `worker-{runId}-{taskId}` (batch dispatch: the
-cluster's *first* task's ID — one Agent call, one name), giving the stall-nudge protocol (stage 5)
-a stable `SendMessage` target; `model:` is required per task (haiku/sonnet/opus by complexity
-tier), `mode: "bypassPermissions"`, `run_in_background: true`, every task/batch of a wave fanned
-out in one message.
+cluster's *first* task's ID — one Agent call, one name); this name exists to give a RECLAIM
+request (`wave-await`'s `next` instruction — see `recovering-from-failures.md`'s
+`## Stalled vs Timeout`) a stable `SendMessage` target; `model:` is required per task
+(haiku/sonnet/opus by complexity tier), `mode: "bypassPermissions"`, `run_in_background: true`,
+every task/batch of a wave fanned out in one message.
 
 **Post-completion verification (2+ tasks in a batch):** after the batch Agent returns, compare each
 task's `filesChanged`. If 2+ tasks report identical files, re-dispatch those tasks individually

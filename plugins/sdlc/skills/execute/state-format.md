@@ -292,7 +292,11 @@ While a wave is running, each dispatched worker records its current phase in a s
 
 - `<stateDir>` — `resolveStateDir()`'s return value, which already ends in `.sdlc-v2/execution`. There is no additional `execution/` path segment: the `progress/` directory sits directly inside the per-run directory, alongside that run's per-task fact sheets (`task-<id>.md`).
 - `<runId>` — the run identifier passed to `execute_state({action:"wave-start", runId:...})` and threaded through the wave manifest.
-- `<taskId>` — one file per task, written only by that task. Distinct tasks touch distinct files, so two workers updating different tasks at the same time never race on the same file — no read-modify-write step, no locking.
+- `<taskId>` — one file per task, written only by that task. Distinct tasks touch distinct files, so two workers updating different tasks at the same time never race on the same file. Within a single task's file, writes ARE a read-modify-write (see `**Per-task file shape**` below) — the single-writer-per-file property keeps that race-free without locking.
+
+Each task's `<taskId>.json` also has a sibling `<taskId>.server.json` in the same directory —
+server-owned dispatch/classification state, a wholly separate file with its own, separate writer
+(the server, never the worker). See **Server state file** below.
 
 One `progress/` directory covers the entire run, not one per wave — task IDs from every wave land side by side in the same directory, and the wave number plays no part in the path or the write/read call.
 
@@ -309,7 +313,7 @@ Example: `.sdlc-v2/execution/run-20260328T143000Z/progress/3.json`
 | `phase`     | string | One of `started`, `reading`, `editing`, `verifying`, `reporting` — a free-text phase is rejected. |
 | `updatedAt` | string | ISO 8601 UTC timestamp of the most recent write for that task.                                   |
 
-Written via `execute_state({action:"wave-progress", runId:<id>, taskId:<id>, phase:<phase>})` — a pure atomic tmp-write + rename of `progress/<taskId>.json`, no read step. The action takes flat top-level fields, not a nested `payload` object, and does not accept a wave number at all.
+Written via `execute_state({action:"wave-progress", runId:<id>, taskId:<id>, phase:<phase>})` — an atomic tmp-write + rename of `progress/<taskId>.json`, but it is a read-modify-write, not a blind overwrite: the write reads the file's existing record first (`wave.UpdateProgress`), so `startedAt` (set once, on the first write), `lastCompletedTask`, and the optional structured-milestone fields (`acceptanceDone`, `filesTouched`, `blocker` — `ProgressFields`, passed via the tool's `acceptanceDone`/`filesTouched`/`blocker`/`lastCompletedTask` fields) carry forward across phase updates rather than being wiped by a call that omits them. The action takes flat top-level fields, not a nested `payload` object, and does not accept a wave number at all.
 
 **Read shape (unchanged):** `execute_state({action:"wave-progress", runId:<id>, readProgress:true})` still returns one aggregated object, keyed by task ID across the whole run:
 
@@ -322,9 +326,41 @@ Written via `execute_state({action:"wave-progress", runId:<id>, taskId:<id>, pha
 }
 ```
 
-It builds this by reading every file in `progress/` and merging in the legacy single-file marker (`<stateDir>/<runId>/progress.json`, from before this per-task-file layout) at lower priority — if a task ID appears in both, the per-task file wins. Nothing writes the legacy path anymore; it is read-only, for backward compatibility with runs that started before this format changed. Missing directory, missing legacy file, or one corrupt per-task file are all swallowed — `readProgress:true` returns `{"tasks":{}}` when no marker exists yet rather than erroring, same as before.
+It builds this by reading every file in `progress/` and merging in the legacy single-file marker (`<stateDir>/<runId>/progress.json`, from before this per-task-file layout) at lower priority — if a task ID appears in both, the per-task file wins. Nothing writes the legacy path anymore; it is read-only, for backward compatibility with runs that started before this format changed. Missing directory, missing legacy file, or one corrupt per-task file are all swallowed — `readProgress:true` returns `{"tasks":{}}` when no marker exists yet rather than erroring, same as before. This aggregation covers only the worker-owned `<taskId>.json` files (plus the legacy marker) — the server-owned `<taskId>.server.json` siblings described below are never included in a `readProgress:true` response.
 
-The per-run directory is not swept by the top-level state-file GC (which only scans `.json` files directly under `.sdlc-v2/execution/`) — the whole run directory, `progress/` included, is reaped by `--gc` alongside the fact sheets in that same directory.
+### Server state file
+
+Alongside each task's worker-written `<taskId>.json`, the server keeps its own
+`<taskId>.server.json` in the same `progress/` directory — one per task, written and read only by
+the server (`wave.StoreServerState`/`wave.LoadServerState`), never by the dispatched worker. No
+`execute_state` action exposes its contents directly; it exists to drive `wave-await`'s
+classification (see `recovering-from-failures.md`'s `## Stalled vs Timeout`) without depending on
+anything a worker itself writes — a stalled or misbehaving worker can never corrupt it.
+
+**Per-task server-state file shape** (batch member shown; a solo task omits `batchId`/`batchIndex` entirely):
+
+```json
+{
+  "dispatchedAt": "2026-03-28T14:31:05.000Z",
+  "workerName": "worker-run-20260328T143000Z-4",
+  "batchId": "run-20260328T143000Z-wave1",
+  "batchIndex": 1,
+  "contextFetchedAt": "2026-03-28T14:31:07.000Z",
+  "attempt": 1
+}
+```
+
+| Field                | Type   | Description                                                                                          |
+|-----------------------|--------|-------------------------------------------------------------------------------------------------------|
+| `dispatchedAt`        | string | Timestamp the server recorded when this task (or its batch) was dispatched. Anchors `wave-await`'s per-task total-timeout bound. |
+| `workerName`          | string | The Agent dispatch name — `worker-{runId}-{taskId}` for a solo task, or the batch's first task's name for a batch member. |
+| `batchId`             | string \| absent | Present only when this task was dispatched as part of a batch; shared by every member. Absent entirely (`omitempty`) for a solo task. |
+| `batchIndex`          | number \| absent | This task's position within its batch (`0` for the first member). Absent entirely (`omitempty`) for a solo task. |
+| `contextFetchedAt`    | string \| absent | Timestamp the worker called `task-context` for this task. Absent until the worker has fetched it. |
+| `reclaimRequestedAt`  | string \| absent | Timestamp `wave-await` stamped when it relayed a RECLAIM `SendMessage` for this task's subject. Absent (`omitempty`) when no reclaim is in flight — not shown in the example above. |
+| `attempt`             | number | This task's current attempt number, starting at `1`; incremented by `task-redispatch`. |
+
+The per-run directory is not swept by the top-level state-file GC (which only scans `.json` files directly under `.sdlc-v2/execution/`) — the whole run directory, `progress/` included (both `<taskId>.json` and `<taskId>.server.json` files), is reaped by `--gc` alongside the fact sheets in that same directory.
 
 ---
 

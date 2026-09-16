@@ -19,35 +19,27 @@ the user (branch was reset/force-pushed since that wave committed), not treated 
 
 ## Stalled vs Timeout
 
-Two distinct signals exist today for a worker or wave gone quiet. They are surfaced through
-different mechanisms and are **not** unified behind one classifier — read this section literally,
-not as a description of a nicer system that doesn't exist yet:
+A single server-driven classifier now supervises every dispatched task — there is exactly one
+mechanism, not several competing ones. `execute_state({action:"wave-await", runId, wave})`
+(SKILL.md's `## Wave loop` stage 4) is a bounded, non-blocking poll that classifies every still-open
+task row against its server-owned dispatch state (`wave.BuildSubjects` / `wave.ClassifyTask`) and
+returns an explicit `next` instruction the calling skill follows verbatim. The skill never computes
+elapsed time, never classifies staleness itself, and never decides which task to fail — the server
+already did (see SKILL.md's `## DO NOT`). A batch agent is classified as one subject, never as
+independent members — see `classifying-and-waving-tasks.md`'s batch-dispatch paragraph.
 
-- **Wave-level timeout.** The wave's wall-clock deadline (`waveTimeout`, SKILL.md `## Wave loop`)
-  elapsed before every dispatched task in the wave reported completion. The main session marks
-  each still-incomplete task with `task-fail` (`error: "TIMEOUT"`), then calls `wave-done` with
-  `status: "partial", timedOut: true`. If the wave is later marked failed outright, `wave-fail`'s
-  narration reports `cause: "timeout"` vs `cause: "failure"` — this is driven entirely by the
-  caller-supplied `timedOut` flag on the call, not by the tool inspecting the worker's actual
-  heartbeat history.
-- **Per-worker stall (ledger).** `execute_state({action:"ledger_status", runId, timeoutSeconds})`
-  returns a `stalled` boolean per worker: `true` only when that worker's ledger status is
-  `"active"` and its last `checkinAt` is older than `timeoutSeconds`. This is a plain
-  checkin-staleness heuristic, independent of the wave-level timeout above — a worker can be
-  individually reported `stalled` well before its wave's own `waveTimeout` elapses.
+When `wave-await` can no longer wait on a task, it reports exactly one of three causes in
+`ext.failed[].cause`, each carried through to the `task-fail` call the `next` instruction orders:
 
-**`ClassifyStall` in production:** `internal/wave/progress.go` defines a `ClassifyStall`/`StallCause`
-classifier (`StallCauseStalled` vs `StallCauseTimeout`) that derives a stalled-vs-timed-out
-verdict from a task's heartbeat history (`wave-progress` phase timestamps) against both a
-heartbeat-staleness threshold and a total-runtime threshold. It is now wired into the
-`wave-progress` action's `readProgress` path (`execute_state.go:execActionWaveProgress`) — when
-`readProgress: true` is passed, each returned task carries a `stallCause` field computed by
-`ClassifyStall` against the wave's resolved timeout/interval parameters (from
-`execWaveStallTimeouts`). This is the third signal alongside the two above, and it is the only
-one that derives a per-task verdict from actual heartbeat history rather than caller-supplied flags
-or plain checkin-staleness. It is NOT wired into `wave-fail`'s cause derivation or
-`ledger_status`'s per-worker read — those remain the caller-supplied-flag and
-checkin-staleness mechanisms described above, respectively.
+| Cause | Meaning | Retry budget | `resumeFrom` present |
+|---|---|---|---|
+| `TIMEOUT` | The task (or its batch) has been dispatched longer than the wave's total timeout (`waveTimeoutSeconds`, set at `init`), regardless of heartbeat freshness. Wins outright — no reclaim attempt, even one already in flight. | Counts toward the 2-retry ceiling below | No |
+| `STALLED_RECLAIMED` | The worker (or batch) went quiet past the heartbeat-staleness threshold, was sent a RECLAIM `SendMessage`, and replied with a fresh heartbeat before the reclaim grace period elapsed. | Counts toward the 2-retry ceiling below | Yes — harvested from the worker's last `wave-progress` write (`acceptanceDone`, `filesTouched`, `lastCompletedTask`, `blocker`) |
+| `STALLED_NO_REPLY` | The worker (or batch) went quiet, was sent a RECLAIM `SendMessage`, and never replied within the reclaim grace period. | Counts toward the 2-retry ceiling below | No |
+
+Every cause counts toward the same 2-retry ceiling as every other failure category in this
+document — `wave-await`'s response carries `retriesLeft: 0` once a task has exhausted it, at which
+point the `next` instruction orders escalation instead of a further retry.
 
 ## Failure Classification
 
@@ -73,7 +65,13 @@ checkin-staleness mechanisms described above, respectively.
 ## Recovery Strategies
 
 ### Agent timeout / error output
-Re-dispatch with the same prompt plus this addition at the top:
+If this failure was surfaced by `wave-await` (the task went quiet or timed out — `TIMEOUT`,
+`STALLED_RECLAIMED`, or `STALLED_NO_REPLY`, see `## Stalled vs Timeout` above), first `TaskStop`
+the worker (an ownership/authorization error here is an expected fallback, not a blocker — proceed
+anyway), then `execute_state({action:"task-fail", wave:<N>, taskId:"<id>", error:"<cause>"})`, then
+`execute_state({action:"task-redispatch", runId:"<runId>", taskId:"<id>"})`, in that order. A bare
+Agent call after a stall is a defect, not a shortcut. Only then re-dispatch with the same prompt
+plus this addition at the top:
 ```
 RETRY: Previous attempt failed with the following error:
 {error message or description of what happened}
@@ -159,7 +157,11 @@ When a batch agent reports mixed results (some tasks SUCCESS, some tasks FAILED)
 
 1. Accept the succeeded tasks as final — do not re-run them
 2. Extract each failed task from the batch into its own individual retry
-3. Re-dispatch each failed task as a standalone agent with:
+3. For each failed task: `TaskStop` the batch worker (an ownership/authorization error is an
+   expected fallback, not a blocker — proceed anyway), then `execute_state({action:"task-fail",
+   wave:<N>, taskId:"<id>", error:"<failure detail>"})`, then `execute_state({action:"task-redispatch",
+   runId:"<runId>", taskId:"<id>"})`, in that order — a bare Agent call after a stall is a defect,
+   not a shortcut. Only then re-dispatch each failed task as a standalone agent with:
    - The single-task Worker dispatch prompt (see `classifying-and-waving-tasks.md`'s `## Worker dispatch prompt`) — not a batch dispatch
    - Model escalated one step: haiku → sonnet
    - `mode: "bypassPermissions"` passed explicitly to the Agent tool
@@ -180,7 +182,13 @@ When an agent reports successful completion but `git diff --stat` shows no chang
    - Agent wrote to a wrong path (e.g., a copy in `/tmp`) instead of the actual file
    - Agent hallucinated completing the task without invoking any file-editing tool
 
-3. **Re-dispatch with escalated model and explicit constraints:**
+3. **`TaskStop` the worker, `task-fail`, `task-redispatch`, then re-dispatch with escalated model
+   and explicit constraints:** If this phantom success was also flagged by `wave-await` as a stall
+   (see `## Stalled vs Timeout` above), first `TaskStop` the worker (an ownership/authorization
+   error is an expected fallback, not a blocker — proceed anyway), then
+   `execute_state({action:"task-fail", wave:<N>, taskId:"<id>", error:"phantom success"})`, then
+   `execute_state({action:"task-redispatch", runId:"<runId>", taskId:"<id>"})` — a bare Agent call
+   after a stall is a defect, not a shortcut. Only then re-dispatch:
    ```
    RETRY: Previous attempt reported success, but git diff shows no changes to the expected files.
    Your edits did NOT persist. This usually means a method other than the Edit tool was used.
@@ -202,7 +210,7 @@ When an agent times out or hangs indefinitely despite `mode: "bypassPermissions"
 
 1. **Check first:** Ask the user to confirm whether a permission prompt is visible in their terminal. If so, they should respond to it — the agent will resume automatically.
 
-2. **If no prompt is visible** (agent genuinely hung, not waiting on user input): treat as a standard timeout. Re-dispatch with failure context and one model escalation step.
+2. **If no prompt is visible** (agent genuinely hung, not waiting on user input): treat as a standard timeout. First `TaskStop` the worker (an ownership/authorization error is an expected fallback, not a blocker — proceed anyway), then `execute_state({action:"task-fail", wave:<N>, taskId:"<id>", error:"TIMEOUT"})`, then `execute_state({action:"task-redispatch", runId:"<runId>", taskId:"<id>"})` — a bare Agent call after a stall is a defect, not a shortcut. Only then re-dispatch with failure context and one model escalation step.
 
 ### Agent status: NEEDS_CONTEXT
 
@@ -223,7 +231,12 @@ This counts as one retry toward the 2-retry budget. If the agent reports NEEDS_C
 The agent cannot complete the task. Assess the blocker before acting:
 
 1. **Context problem** — the agent lacks information to proceed:
-   Provide the missing context and re-dispatch with the same or escalated model. Counts as one retry.
+   If this was surfaced by `wave-await` as a stall (see `## Stalled vs Timeout` above), first
+   `TaskStop` the worker (an ownership/authorization error is an expected fallback, not a blocker —
+   proceed anyway), then `execute_state({action:"task-fail", wave:<N>, taskId:"<id>", error:"<cause>"})`,
+   then `execute_state({action:"task-redispatch", runId:"<runId>", taskId:"<id>"})` — a bare Agent
+   call after a stall is a defect, not a shortcut. Only then provide the missing context and
+   re-dispatch with the same or escalated model. Counts as one retry.
 
 2. **Capability problem** — the task requires more reasoning than the assigned model:
    Re-dispatch with an escalated model (haiku → sonnet → opus). Counts as one retry.
