@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/rnagrodzki/sdlc-plugin/main/plugins/sdlc/schemas/ship-state.schema.json",
   "title": "Ship State",
-  "description": "Validates .sdlc-v2/execution/ship-*.json",
+  "description": "Validates .sdlc-v2/runs/ship-*.json",
   "type": "object",
   "properties": {
     "version": {

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/rnagrodzki/sdlc-plugin/main/plugins/sdlc/schemas/execute-state.schema.json",
   "title": "Execute State",
-  "description": "Validates .sdlc-v2/execution/execute-*.json",
+  "description": "Validates .sdlc-v2/runs/execute-*.json",
   "type": "object",
   "properties": {
     "version": {
@@ -112,7 +112,8 @@
                 },
                 "status": {
                   "type": "string",
-                  "enum": ["completed", "failed", "skipped-dependency"]
+                  "enum": ["completed", "failed", "skipped-dependency", "in_progress"],
+                  "description": "in_progress marks a row reopened by task-redispatch -- task-fail closes a row to failed/skipped-dependency, and task-redispatch flips it back to in_progress for the new attempt."
                 },
                 "error": {
                   "type": "string"
@@ -309,7 +310,7 @@
         "llm_decision": { "description": "stepper.Envelope field." },
         "state_file": { "type": ["string", "null"], "description": "stepper.Envelope field." },
         "progress": { "description": "stepper.Envelope field: {iteration, waitedSeconds, timeoutSeconds, intervalSeconds, open[], queued[], stalled[], recorded[]}." },
-        "ext": { "type": "object", "description": "stepper.Envelope field. May carry reclaimRequests[] ({taskIds[], workerName, message}, one entry per subject) and failures[] (WaveAwaitFailure: {taskId, workerName, cause: TIMEOUT|STALLED_RECLAIMED|STALLED_NO_REPLY, attempt, retriesLeft, resumeFrom?})." },
+        "ext": { "type": "object", "description": "stepper.Envelope field. May carry reclaimRequests[] ({taskIds[], workerName, message}, one entry per subject) and failed[] (WaveAwaitFailure: {taskId, workerName, cause: TIMEOUT|STALLED_RECLAIMED|STALLED_NO_REPLY, attempt, retriesLeft, resumeFrom?})." },
         "error": { "type": "string", "description": "stepper.Envelope field. Populated only when status is \"error\"." },
         "next": { "type": "string", "description": "Authoritative instruction the calling skill must follow verbatim: e.g. TaskStop+task-fail, SendMessage reclaim, task-redispatch, dispatch the next task, or poll again. No omitempty — guardrail mcp-output-drives-behavior." }
       },
@@ -325,6 +326,21 @@
         "wave": { "type": "integer", "description": "Searches every wave for the task's closed row when omitted." }
       },
       "required": ["taskId"]
+    },
+    "taskRedispatchOutput": {
+      "description": "Documentation only — not a property of the persisted state document; authoritative source is the TaskRedispatchOut struct in internal/tools/execute_state.go. Shape returned by task-redispatch.",
+      "type": "object",
+      "properties": {
+        "taskId": { "type": "string" },
+        "wave": { "type": "integer" },
+        "runId": { "type": "string" },
+        "dispatchedAt": { "type": "string" },
+        "workerName": { "type": "string" },
+        "attempt": { "type": "integer" },
+        "retriesLeft": { "type": "integer" },
+        "next": { "type": "string", "description": "Authoritative instruction the calling skill must follow verbatim: dispatch the redispatched task, then resume wave-await. No omitempty — guardrail mcp-output-drives-behavior." }
+      },
+      "required": ["taskId", "wave", "runId", "dispatchedAt", "workerName", "attempt", "retriesLeft", "next"]
     },
     "waveStartTaskEntry": {
       "description": "Documentation only — not a property of the persisted state document; authoritative source is the TasksJSON jsonschema_description tag on ExecuteStateIn in internal/tools/execute_state.go. Three optional fields wave-start accepts per task entry in tasksJson, consumed only to seed server-owned per-task dispatch state (internal/wave.ServerTaskState, a separate unschemed file) — never persisted to this document's waves[].tasks[] rows.",
