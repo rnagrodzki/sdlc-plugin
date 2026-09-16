@@ -71,7 +71,7 @@ Example — OpenSpec gate check:
    - `openspec/changes/<name>/design.md` — technical approach (may not exist yet; skip if absent)
    - All files matching `openspec/changes/<name>/specs/*.md` — delta specs (the requirements)
    - `openspec/changes/<name>/tasks.md` — OpenSpec's task checklist (may not exist; skip if absent)
-6. Store these as `openspecContext` for use in Steps 1–5. Update the plan file header `**Source:**` to `openspec/changes/<name>/`.
+6. Store these as `openspecContext` for use in Steps 1–5. Update the plan file header `**Source:**` to `openspec/changes/<name>/` — required verbatim: `execute_state({action:"init"})` reads this exact header to ref-stamp `tasks.md` later. Do NOT report `openspecContext.tasksUpdated` as tasks updated — it is a pending count, not a write. Rationale: `docs/plan-architecture.md` § "OpenSpec tasks.md Ref Stamping".
 
 **Complexity routing:**
 

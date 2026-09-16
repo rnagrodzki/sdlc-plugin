@@ -459,6 +459,12 @@ func learningsStats(path, rel string) (LearningsLogOut, error) {
 func RegisterLearningsTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "learnings_log",
 		"Appends to, reads, removes, or summarizes entries in "+paths.DataDir+"/learnings/log.md. Always resolves the MAIN git worktree root first (worktree.MainRoot, falling back to cwd) — a feature worktree's own copy of this file is never git-tracked and is lost when that worktree is removed, so every skill must go through this tool instead of Read/Edit-ing the file directly at the current worktree's path. action=\"append\" (entry: markdown block, no leading/trailing blank line, must not contain a blank line — that is the entry delimiter; optional runId and branch tag the entry for later linkage to an execution run — the end-of-run report counts entries matching a given runId) adds it as a new entry separated by one blank line, creating the file with its standard header on first use. action=\"read\" (optional tailLines) returns the current content, or exists=false when nothing has been logged yet. action=\"remove\" (indices: 1-indexed list of entry numbers, header excluded) deletes the specified entries, echoes the removed content in the response, and rewrites the file. action=\"stats\" (no additional input) returns aggregated counts in the response's \"stats\" field: totalEntries; byCategory, inferred from each entry's optional run-tag branch prefix (e.g. \"feat/x\"/\"fix/y\" -> \"feat\"/\"fix\", matching this repo's branch convention — entries with no run tag count as \"uncategorized\"); bySkill, parsed from a \"## <date> — <skill>: <title>\" entry heading when present (else \"unspecified\"); topPatterns, the most-repeated trailing \"Rule: ...\" lessons mined from entry text (deduplicated case-insensitively, sorted by count then recency, capped at 10); and recentFailures, how many of the most recent 20 entries were tagged with a \"fix\" category. Never errors on a missing or empty log — every count simply comes back zero.",
+		mcpserver.Annotations{
+			Title:      "Append to learnings log",
+			ReadOnly:   true,
+			Idempotent: true,
+			OpenWorld:  false,
+		},
 		func(ctx mcpserver.Ctx, in LearningsLogIn) (LearningsLogOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

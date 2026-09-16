@@ -63,6 +63,13 @@ type DimensionsRenderInstructionsOut struct {
 func RegisterDimensionsRenderTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "dimensions_render_instructions",
 		"Renders one review-dimension Markdown file to its GitHub Copilot instructions-mirror at .github/instructions/<name>.instructions.md (R-copilot-mirror). Port of scripts/lib/dimension-to-instructions.js's CLI entrypoint.",
+		mcpserver.Annotations{
+			Title:       "Render review dimension files",
+			ReadOnly:    false,
+			Destructive: true,
+			Idempotent:  true,
+			OpenWorld:   false,
+		},
 		func(ctx mcpserver.Ctx, in DimensionsRenderInstructionsIn) (DimensionsRenderInstructionsOut, error) {
 			root := in.ProjectRoot
 			if root == "" {

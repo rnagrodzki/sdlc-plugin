@@ -400,17 +400,24 @@ func TestPlanPrepare_OpenspecDetection(t *testing.T) {
 }
 
 // TestPlanPrepare_FromOpenspec_ValidChange verifies --from-openspec
-// validation, the flat FromOpenspecResult shape, and tasks.md ref-comment
-// injection (write-once, idempotent).
+// validation, the flat FromOpenspecResult shape, and the ref-stamp
+// relocation: planPrepareCore only computes a PENDING count and must not
+// touch tasks.md on disk (plan mode's no-tracked-file-write contract); the
+// stamp itself is applied later by execute_state({action:"init"}), and only
+// then does a second planPrepareCore report 0 pending (idempotent).
 func TestPlanPrepare_FromOpenspec_ValidChange(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
+	writeFile(t, filepath.Join(dir, paths.DataDir, "config.toml"), "")
+	writeFile(t, filepath.Join(dir, paths.DataDir, "local.toml"), "")
 
 	changeDir := filepath.Join(dir, "openspec", "changes", "add-widget")
 	tasksContent := "- [ ] First task\n- [x] Second task <!-- ref:existing-ref -->\n"
 	writeOpenspecFixtureChange(t, changeDir, tasksContent)
 
+	// Step 1: planPrepareCore computes the pending ref stamps but writes
+	// nothing to disk.
 	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, FromOpenspec: "add-widget"})
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
@@ -435,16 +442,39 @@ func TestPlanPrepare_FromOpenspec_ValidChange(t *testing.T) {
 		t.Errorf("FromOpenspec tasks = done=%d total=%d, want done=1 total=2", fo.TasksDone, fo.TasksTotal)
 	}
 
-	// tasks.md ref injection: the first line had no ref comment and must
-	// gain one; the second line already had one and must be left untouched.
+	// The first task line has no ref comment (1 pending); the second
+	// already has one and must not be double-counted.
 	if out.OpenspecContext.TasksUpdated != 1 {
-		t.Errorf("OpenspecContext.TasksUpdated = %d, want 1", out.OpenspecContext.TasksUpdated)
+		t.Errorf("OpenspecContext.TasksUpdated = %d, want 1 (pending)", out.OpenspecContext.TasksUpdated)
 	}
 	if len(out.OpenspecContext.Tasks) != 2 {
 		t.Fatalf("len(OpenspecContext.Tasks) = %d, want 2", len(out.OpenspecContext.Tasks))
 	}
 	if out.OpenspecContext.Tasks[1].Ref != "existing-ref" {
 		t.Errorf("Tasks[1].Ref = %q, want existing-ref (from inline comment)", out.OpenspecContext.Tasks[1].Ref)
+	}
+
+	unchanged, err := os.ReadFile(filepath.Join(changeDir, "tasks.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(unchanged) != tasksContent {
+		t.Errorf("tasks.md changed on disk after planPrepareCore; want untouched (plan mode must not write tracked files): got %q, want %q", string(unchanged), tasksContent)
+	}
+
+	// Step 2: execute_state({action:"init"}) is what actually stamps the
+	// file, keyed off the plan document's "**Source:**" header.
+	planPath := filepath.Join(dir, "plan.md")
+	planContent := "# Widget Implementation Plan\n\n**Goal:** Add a widget\n**Source:** openspec/changes/add-widget/\n"
+	writeFile(t, planPath, planContent)
+
+	if _, err := executeState(dir, dir, ExecuteStateIn{
+		Action:   "init",
+		Branch:   "feat/add-widget",
+		Quality:  "standard",
+		PlanPath: planPath,
+	}, fixedClock(testNow)); err != nil {
+		t.Fatalf("execute_state init: %v", err)
 	}
 
 	rewritten, err := os.ReadFile(filepath.Join(changeDir, "tasks.md"))
@@ -462,14 +492,14 @@ func TestPlanPrepare_FromOpenspec_ValidChange(t *testing.T) {
 		t.Errorf("line 1 ref comment count != 1 (must not double-inject): %q", lines[1])
 	}
 
-	// Re-running prepare must be idempotent: no further updates once every
-	// task line already carries a ref comment.
+	// Step 3: now that execute's init has stamped the file, a fresh
+	// planPrepareCore run must report 0 pending — genuinely idempotent.
 	out2, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, FromOpenspec: "add-widget"})
 	if err != nil {
 		t.Fatalf("planPrepareCore (2nd run): %v", err)
 	}
 	if out2.OpenspecContext.TasksUpdated != 0 {
-		t.Errorf("2nd run OpenspecContext.TasksUpdated = %d, want 0 (idempotent)", out2.OpenspecContext.TasksUpdated)
+		t.Errorf("2nd run OpenspecContext.TasksUpdated = %d, want 0 (idempotent, already stamped by execute init)", out2.OpenspecContext.TasksUpdated)
 	}
 }
 
@@ -489,6 +519,72 @@ func TestPlanPrepare_FromOpenspec_MissingChange(t *testing.T) {
 	}
 	if len(out.Errors) == 0 {
 		t.Error("Errors is empty, want a change-directory-not-found error")
+	}
+}
+
+// TestOpenspecChangeFromPlan verifies the plan-document "**Source:**" header
+// parser that execute_state's init handler uses to find which openspec
+// change to ref-stamp. It returns "" whenever there is nothing safe to act
+// on: no header, the unfilled "[TBD]" placeholder, or a non-openspec source.
+// A bare change-name segment (e.g. "..") is returned verbatim — traversal
+// safety is deliberately NOT duplicated here; the init call site gates the
+// result through isSafeChangeName before using it (see execActionInit).
+func TestOpenspecChangeFromPlan(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{"valid header with trailing slash", "# Plan\n\n**Source:** openspec/changes/add-widget/\n", "add-widget"},
+		{"valid header without trailing slash", "**Source:** openspec/changes/add-widget\n", "add-widget"},
+		{"no header at all", "# Plan\n\n**Goal:** something\n", ""},
+		{"unfilled TBD placeholder", "**Source:** [TBD]\n", ""},
+		{"non-openspec source", "**Source:** conversation context\n", ""},
+		{"traversal-shaped segment returned raw", "**Source:** openspec/changes/../\n", ".."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := openspecChangeFromPlan(tc.content)
+			if got != tc.want {
+				t.Errorf("openspecChangeFromPlan(%q) = %q, want %q", tc.content, got, tc.want)
+			}
+		})
+	}
+
+	// Close the loop: the traversal-shaped segment above is exactly what
+	// isSafeChangeName must reject, so execActionInit's
+	// `change != "" && isSafeChangeName(change)` guard does nothing with it.
+	if isSafeChangeName("..") {
+		t.Error(`isSafeChangeName("..") = true, want false — init's traversal guard would not fire`)
+	}
+}
+
+// TestStampTaskRefs_WriteOnceIdempotent verifies stampTaskRefs (called by
+// execute_state's init handler) only writes when a task line actually gains
+// a ref comment, and reports 0 on a second call against the already-stamped
+// file.
+func TestStampTaskRefs_WriteOnceIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	tasksPath := filepath.Join(dir, "tasks.md")
+	original := "- [ ] First task\n- [x] Second task <!-- ref:existing-ref -->\n"
+	if err := os.WriteFile(tasksPath, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := stampTaskRefs(tasksPath)
+	if err != nil {
+		t.Fatalf("stampTaskRefs: %v", err)
+	}
+	if updated != 1 {
+		t.Errorf("updated = %d, want 1", updated)
+	}
+
+	updated2, err := stampTaskRefs(tasksPath)
+	if err != nil {
+		t.Fatalf("stampTaskRefs (2nd call): %v", err)
+	}
+	if updated2 != 0 {
+		t.Errorf("2nd call updated = %d, want 0 (write-once, idempotent)", updated2)
 	}
 }
 

@@ -429,6 +429,12 @@ func commitApply(cfgRoot, gitRoot string, in CommitApplyIn) (CommitApplyOut, err
 func RegisterCommitTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "commit_prepare",
 		"Gather commit context: staged/unstaged/untracked files, diffs, recent commits, commit config, and branch information.",
+		mcpserver.Annotations{
+			Title:      "Prepare commit context",
+			ReadOnly:   true,
+			Idempotent: true,
+			OpenWorld:  false,
+		},
 		func(ctx mcpserver.Ctx, in CommitPrepareIn) (CommitPrepareOut, error) {
 			cfgRoot, err := worktree.MainRoot()
 			if err != nil {
@@ -450,6 +456,13 @@ func RegisterCommitTools(s *mcpserver.Server) {
 
 	mcpserver.Register(s, "commit_apply",
 		"Stage all changes and create a git commit with the given message, returning the commit SHA.",
+		mcpserver.Annotations{
+			Title:       "Create a git commit",
+			ReadOnly:    false,
+			Destructive: true,
+			Idempotent:  false,
+			OpenWorld:   false,
+		},
 		func(ctx mcpserver.Ctx, in CommitApplyIn) (CommitApplyOut, error) {
 			cfgRoot, err := worktree.MainRoot()
 			if err != nil {

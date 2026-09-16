@@ -37,6 +37,7 @@ Read these files to understand conventions:
 2. `internal/mcpserver/envelope.go` — error types (`DomainError`, `InfraError`, `DataError`) with `Suggestion` field
 3. One existing tool file matching the closest sibling (manifest may specify which, else use `internal/tools/jira.go` as default reference)
 4. One existing test file for that sibling
+5. `internal/tools/annotations_test.go` — the `toolAnnotations` golden map you must emit a row for. Read it before emitting `toolAnnotationsEntry`: copy the `annotationPolicy` field order and the `reason` phrasing style from the existing rows, and place the new row in the READ-ONLY or WRITER group that matches the annotations you emit. The group header comments carry row counts (`// READ-ONLY (N rows)`) — increment the one you add to.
 
 ## Step 2 — Generate Input Struct
 
@@ -73,7 +74,26 @@ Build the `mcpserver.Register[ToolNameIn, ToolNameOut]` call:
 
 - Tool name string matches `toolName` from manifest
 - Description matches `description` from manifest
+- Include the `mcpserver.Annotations{...}` struct with:
+  - Title: short display name (2-5 words)
+  - ReadOnly: false for new tools (conservative default — the developer audits and updates this)
+  - Destructive: true (conservative default)
+  - Idempotent: false (conservative default)
+  - OpenWorld: true (conservative default)
 - Handler wraps `toolNameCore` with worktree resolution pattern from reference file
+
+Also generate a matching entry for the golden map in `internal/tools/annotations_test.go`:
+
+```go
+"tool_name": {
+    title:       "Tool Title",
+    readOnly:    false,
+    destructive: true,
+    idempotent:  false,
+    openWorld:   true,
+    reason:      "not audited — conservative default",
+},
+```
 
 ## Step 6 — Generate Test Skeleton
 
@@ -115,6 +135,7 @@ Output a single JSON object:
     }
   ],
   "registrationSnippet": "mcpserver.Register[ToolNameIn, ToolNameOut](...)",
+  "toolAnnotationsEntry": "\"tool_name\": { title: \"...\", readOnly: false, destructive: true, idempotent: false, openWorld: true, reason: \"not audited — conservative default\" },",
   "summary": "Generated N files for tool_name"
 }
 ```

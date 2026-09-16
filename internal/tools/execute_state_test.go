@@ -112,6 +112,146 @@ func TestExecState_Init(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// init: openspec tasks.md ref stamping
+// ---------------------------------------------------------------------------
+//
+// plan_prepare runs inside plan mode and must not write git-tracked files, so
+// it only computes which tasks.md lines are pending a ref comment. init
+// applies them for real via stampTaskRefs. Every failure on that path is
+// warning-only — a standalone execute has no plan file, and a non-openspec
+// plan is not an error — which makes the warnings the only externally visible
+// evidence that a stamp was skipped. These tests pin that evidence.
+
+// seedInitConfig writes the minimal config pair that gets init past the KD5
+// config-version gate.
+func seedInitConfig(t *testing.T, root string) {
+	t.Helper()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
+}
+
+// initResultWarnings extracts the warnings slice from an init result. A nil
+// return means init reported no warnings at all.
+func initResultWarnings(t *testing.T, result any) []string {
+	t.Helper()
+	m, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("init result = %T, want map[string]any", result)
+	}
+	if m["warnings"] == nil {
+		return nil
+	}
+	w, ok := m["warnings"].([]string)
+	if !ok {
+		t.Fatalf("warnings = %T, want []string", m["warnings"])
+	}
+	return w
+}
+
+// assertWarning fails unless exactly one warning contains substr.
+func assertWarning(t *testing.T, warnings []string, substr string) {
+	t.Helper()
+	count := 0
+	for _, w := range warnings {
+		if strings.Contains(w, substr) {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("warnings containing %q = %d, want 1; got %v", substr, count, warnings)
+	}
+}
+
+// assertNoWarning fails if any warning contains substr.
+func assertNoWarning(t *testing.T, warnings []string, substr string) {
+	t.Helper()
+	for _, w := range warnings {
+		if strings.Contains(w, substr) {
+			t.Errorf("unexpected warning containing %q: %v", substr, warnings)
+			return
+		}
+	}
+}
+
+// TestExecState_Init_UnreadablePlanPathWarns covers the os.ReadFile failure
+// on in.PlanPath. The read error was previously discarded, which made an
+// unreadable plan indistinguishable from a plan that simply is not an
+// openspec plan.
+func TestExecState_Init_UnreadablePlanPathWarns(t *testing.T) {
+	root := t.TempDir()
+	seedInitConfig(t, root)
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action:   "init",
+		Branch:   "feat/test",
+		Quality:  "standard",
+		PlanPath: filepath.Join(root, "does-not-exist.md"),
+	}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("init: %v (an unreadable plan must stay warning-only)", err)
+	}
+
+	assertWarning(t, initResultWarnings(t, result), "openspec ref stamp skipped: plan unreadable")
+}
+
+// TestExecState_Init_MissingOpenspecTasksWarns covers the stampTaskRefs
+// failure path: the plan names an openspec change, but that change has no
+// tasks.md on disk.
+func TestExecState_Init_MissingOpenspecTasksWarns(t *testing.T) {
+	root := t.TempDir()
+	seedInitConfig(t, root)
+	planPath := filepath.Join(root, "plan.md")
+	writeFile(t, planPath, "# Plan\n\n**Source:** openspec/changes/add-widget/\n")
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action:   "init",
+		Branch:   "feat/test",
+		Quality:  "standard",
+		PlanPath: planPath,
+	}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("init: %v (a missing tasks.md must stay warning-only)", err)
+	}
+
+	warnings := initResultWarnings(t, result)
+	assertWarning(t, warnings, "openspec ref stamp skipped")
+	// The plan itself read fine — this must not be reported as unreadable.
+	assertNoWarning(t, warnings, "plan unreadable")
+}
+
+// TestExecState_Init_StampsOpenspecTaskRefs covers the success path end to
+// end: init resolves the change from the plan's Source header and stamps the
+// change's tasks.md, warning about nothing.
+func TestExecState_Init_StampsOpenspecTaskRefs(t *testing.T) {
+	root := t.TempDir()
+	seedInitConfig(t, root)
+	planPath := filepath.Join(root, "plan.md")
+	writeFile(t, planPath, "# Plan\n\n**Source:** openspec/changes/add-widget/\n")
+	tasksPath := filepath.Join(root, "openspec", "changes", "add-widget", "tasks.md")
+	writeFile(t, tasksPath, "- [ ] First task\n")
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action:   "init",
+		Branch:   "feat/test",
+		Quality:  "standard",
+		PlanPath: planPath,
+	}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	assertNoWarning(t, initResultWarnings(t, result), "openspec ref stamp skipped")
+
+	stamped, readErr := os.ReadFile(tasksPath)
+	if readErr != nil {
+		t.Fatalf("read stamped tasks.md: %v", readErr)
+	}
+	if !strings.Contains(string(stamped), "<!-- ref:") {
+		t.Errorf("tasks.md gained no ref comment; got %q", string(stamped))
+	}
+}
+
 // TestExecState_Init_StaleConfigRequiresSetup covers the KD5 gate on a
 // JSON-era config with no config.toml present. The TOML migration removed
 // JSON->TOML auto-migration entirely (configmigrate no longer has any

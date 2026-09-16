@@ -481,6 +481,12 @@ func appendIfNew(slice []string, s string) []string {
 func RegisterSetupTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "setup_prepare",
 		"Returns the canonical section descriptors for setup, with per-section field metadata and runtime-detected defaults (defaultBranch, remoteOwner). Optionally checks config migration state. Also reports ciScriptDrift: per-script version comparison against the embedded scaffold_ci payloads, flagging outdated or not-yet-installed CI scripts (remediate with scaffold_ci({force:true})).",
+		mcpserver.Annotations{
+			Title:      "Prepare SDLC setup context",
+			ReadOnly:   true,
+			Idempotent: true,
+			OpenWorld:  false,
+		},
 		func(ctx mcpserver.Ctx, in SetupPrepareIn) (SetupPrepareOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {
@@ -499,6 +505,13 @@ func RegisterSetupTools(s *mcpserver.Server) {
 
 	mcpserver.Register(s, "setup_init",
 		"Creates the .sdlc-v2/ directory scaffold for a v1 (TOML) config: .sdlc-v2/.gitignore, root .gitignore managed block, config.toml, and local.toml. Writes the complete, heavily-commented templates directly to disk (never through LLM context) — every field is present, with inline docs and example guardrails. Idempotent: an existing config.toml/local.toml is left untouched. Also renames stale config.json/local.json to .bak (skipped if .bak already exists). Instruct the user to edit the files by hand, then run the validate tool.",
+		mcpserver.Annotations{
+			Title:       "Initialize SDLC config files",
+			ReadOnly:    false,
+			Destructive: true,
+			Idempotent:  true,
+			OpenWorld:   false,
+		},
 		func(ctx mcpserver.Ctx, in SetupInitIn) (SetupInitOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

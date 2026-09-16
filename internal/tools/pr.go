@@ -1575,6 +1575,13 @@ func prReleaseAddLabelWith(rt prRuntime, workDir, label string) error {
 func RegisterPRTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "pr_prepare",
 		"Preflight checks for pr: config-version gate, gh-auth + active-account probe (with recovery-shaped diagnostics on failure), branch-guard hard gate, protected-branch rejection, JIRA ticket detection from the branch name, PR template resolution, upstream/push status (needsPush), and version diagnostics (bump options, tags, commits since tag, conventional commit summary, existing RCs) when a version config exists.",
+		mcpserver.Annotations{
+			Title:       "Prepare pull request context",
+			ReadOnly:    false,
+			Destructive: true,
+			Idempotent:  true,
+			OpenWorld:   true,
+		},
 		func(ctx mcpserver.Ctx, in PRPrepareIn) (PRPrepareOut, error) {
 			mainRoot, err := worktree.MainRoot()
 			if err != nil {
@@ -1605,6 +1612,13 @@ func RegisterPRTools(s *mcpserver.Server) {
 			"bypass this. "+
 			"A gh CLI permission error (not a collaborator, 403, Resource not accessible) is enriched with account-switch guidance "+
 			"(active account, target owner/repo, candidate accounts to switch to) in the error's suggestion field.",
+		mcpserver.Annotations{
+			Title:       "Create or update pull request",
+			ReadOnly:    false,
+			Destructive: true,
+			Idempotent:  false,
+			OpenWorld:   true,
+		},
 		func(ctx mcpserver.Ctx, in PRApplyIn) (PRApplyOut, error) {
 			mainRoot, err := worktree.MainRoot()
 			if err != nil {

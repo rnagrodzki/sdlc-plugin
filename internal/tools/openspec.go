@@ -70,6 +70,13 @@ type OpenspecEnrichOut struct {
 func RegisterOpenspecTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "openspec_enrich",
 		"INTERNAL — called by sdlc skills only. Idempotent enrichment of openspec/config.yaml with a managed block pointing contributors to sdlc-utilities skills.",
+		mcpserver.Annotations{
+			Title:       "Write OpenSpec config block",
+			ReadOnly:    false,
+			Destructive: true,
+			Idempotent:  true,
+			OpenWorld:   false,
+		},
 		func(ctx mcpserver.Ctx, in OpenspecEnrichIn) (OpenspecEnrichOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

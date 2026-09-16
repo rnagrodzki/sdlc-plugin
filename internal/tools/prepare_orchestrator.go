@@ -249,6 +249,13 @@ func injectHardenHistory(manifestPath, histPath string) error {
 func RegisterPrepareOrchestratorTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "prepare_orchestrator",
 		"INTERNAL — called by sdlc skills only. Pre-compute either the harden-orchestrator or error-report-orchestrator manifest, selected via mode (\"harden\" or \"error_report\"). harden mode covers failure details, guardrail/dimension/copilot surfaces, pipeline state, and repository context after an SDLC pipeline failure. error_report mode covers calling-skill error context plus repository/branch environment fields for a tooling-error report. Writes the manifest to a temp file and returns its path.",
+		mcpserver.Annotations{
+			Title:       "Write orchestrator manifest",
+			ReadOnly:    false,
+			Destructive: true,
+			Idempotent:  true,
+			OpenWorld:   false,
+		},
 		func(ctx mcpserver.Ctx, in PrepareOrchestratorIn) (PrepareOrchestratorOut, error) {
 			return prepareOrchestrator(in)
 		},

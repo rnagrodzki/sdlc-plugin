@@ -449,6 +449,12 @@ func sampleRecentPlans(mainRoot string) []string {
 func RegisterPlanExploreTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "plan_explore_prepare",
 		"INTERNAL — called by sdlc skills only. Run dynamic-dimension discovery (git scope, OpenSpec paths, keyword grep, web-research signal, skill registry, recent plans) and write a manifest.json into a fresh tempdir for plan's explore orchestrator.",
+		mcpserver.Annotations{
+			Title:      "Prepare plan exploration pack",
+			ReadOnly:   true,
+			Idempotent: true,
+			OpenWorld:  false,
+		},
 		func(_ mcpserver.Ctx, in PlanExploreIn) (PlanExploreOut, error) {
 			mainRoot, err := worktree.MainRoot()
 			if err != nil {

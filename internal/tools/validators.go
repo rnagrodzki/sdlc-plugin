@@ -108,6 +108,12 @@ type ValidateOut struct {
 func RegisterValidateTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "validate",
 		"Run a deterministic validator against the project: plan_format, discovery, pr_template, cost_tiers, guardrails, dimensions, pr_body, ci_script_drift, or worktree_anchoring. Returns structured findings (id, severity, message, path) for failed checks only.",
+		mcpserver.Annotations{
+			Title:      "Validate SDLC artifacts",
+			ReadOnly:   true,
+			Idempotent: true,
+			OpenWorld:  false,
+		},
 		func(ctx mcpserver.Ctx, in ValidateIn) (ValidateOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

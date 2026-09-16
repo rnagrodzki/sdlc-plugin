@@ -17,7 +17,7 @@ Seven MCP tools are called directly by the plan skill pipeline.
 
 | Tool | Registration | Purpose |
 |------|-------------|---------|
-| `plan_prepare` | `internal/tools/plan.go` `RegisterPlanTools` | Context detection, template resolution, OpenSpec validation, guardrail loading, lane/lens construction, complexity routing |
+| `plan_prepare` | `internal/tools/plan.go` `RegisterPlanTools` | Context detection, template resolution, OpenSpec validation, guardrail loading, lane/lens construction, complexity routing. Computes pending OpenSpec tasks.md ref stamps but never writes them — see [OpenSpec tasks.md Ref Stamping](#openspec-tasksmd-ref-stamping) |
 | `plan_mark` | `internal/tools/plan.go` `RegisterPlanTools` | Write planIntegrity markers (`skillInvoked`, `plan-file`, `guardrailsEvaluated`, `critiqueRan`) |
 | `plan_explore_prepare` | `internal/tools/plan_explore.go` `RegisterPlanExploreTools` | Build standalone explore pack (git scope, OpenSpec paths, keyword grep, web-research signal, skill registry sample, recent plans) |
 | `plan_support` | `internal/tools/plan_support.go` `RegisterPlanSupportTools` | Four actions: `merge_results`, `material_snapshot`, `material_compare`, `openspec_appendix` |
@@ -169,6 +169,41 @@ fileCount 4+   -> full       (all steps)
 The `plan_mark({marker: "skillInvoked"})` marker is auto-written by
 `plan_prepare` itself. The `plan-file` marker is set explicitly after writing
 the plan file.
+
+#### OpenSpec tasks.md Ref Stamping
+
+When the plan attaches to an OpenSpec change, each task line in
+`openspec/changes/<name>/tasks.md` eventually carries an inline
+`<!-- ref:... -->` comment linking it back to a plan task. That write is
+**deferred out of the plan pipeline entirely**:
+
+| Stage | Tool | What happens |
+|-------|------|--------------|
+| Plan | `plan_prepare` | `pendingTaskRefs` computes which task lines still lack a ref comment. Nothing is written. `openspecContext.tasksUpdated` is that **pending count**. |
+| Execute | `execute_state({action: "init"})` | `stampTaskRefs` writes the ref comments for real, once the plan is approved. |
+
+The split exists because `tasks.md` is git-tracked and the plan skill runs
+under Claude Code plan mode, which must not modify tracked files. Keeping
+`plan_prepare` write-free is also what lets it stay `ReadOnly:true` in its MCP
+annotations (see docs/mcp-tool-annotations.md) and therefore callable in plan
+mode at all.
+
+Two consequences worth knowing:
+
+- **`tasksUpdated` is not a write count.** Reporting it as "N tasks updated"
+  after `plan_prepare` is wrong — nothing has been updated yet.
+- **The `**Source:** openspec/changes/<name>/` plan header is load-bearing.**
+  `execute_state`'s init handler re-reads the plan file and matches that exact
+  header (`openspecSourceRe`) to recover the change name; the resolved name is
+  then run through `isSafeChangeName` before any path is built from it. A
+  missing or reworded header means no stamp, silently.
+
+Stamping is warning-only on every failure path — a standalone execute has no
+plan file, and a non-OpenSpec plan is not an error. An unreadable plan file, or
+a change whose `tasks.md` is absent, surfaces as an entry in init's
+`warnings[]` rather than failing the run. `stampTaskRefs` is write-once and
+idempotent: a line that already has a ref comment is skipped, and a run where
+nothing is pending writes no file at all.
 
 ### Step 1: Discovery and Exploration
 

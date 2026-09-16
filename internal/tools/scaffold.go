@@ -544,6 +544,13 @@ func verifyTagAncestry(root, tag string) (VerifyTagAncestryOut, error) {
 func RegisterScaffoldTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "scaffold_ci",
 		"INTERNAL — called by sdlc skills only. Deterministically copies CI scripts and workflow files into a user project from embedded payloads.",
+		mcpserver.Annotations{
+			Title:       "Scaffold CI workflow files",
+			ReadOnly:    false,
+			Destructive: true,
+			Idempotent:  true,
+			OpenWorld:   false,
+		},
 		func(ctx mcpserver.Ctx, in ScaffoldCIIn) (ScaffoldCIOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {
@@ -558,6 +565,12 @@ func RegisterScaffoldTools(s *mcpserver.Server) {
 
 	mcpserver.Register(s, "verify_tag_ancestry",
 		"INTERNAL — called by sdlc skills only. Verify a git tag is an ancestor of HEAD.",
+		mcpserver.Annotations{
+			Title:      "Check release tag ancestry",
+			ReadOnly:   true,
+			Idempotent: true,
+			OpenWorld:  false,
+		},
 		func(ctx mcpserver.Ctx, in VerifyTagAncestryIn) (VerifyTagAncestryOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

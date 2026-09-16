@@ -74,27 +74,51 @@ func setupClient(t *testing.T) *mcp.ClientSession {
 	srv := New("test", "0.0.0-test")
 
 	// Register tools in NON-alphabetical order to verify stable ordering.
-	Register(srv, "zz-echo", "echoes input", func(ctx Ctx, in echoIn) (echoOut, error) {
+	Register(srv, "zz-echo", "echoes input", Annotations{
+		Title:      "Echo input",
+		ReadOnly:   true,
+		Idempotent: true,
+	}, func(ctx Ctx, in echoIn) (echoOut, error) {
 		return echoOut{Reply: "echo:" + in.Msg}, nil
 	})
 
-	Register(srv, "aa-domain-err", "returns domain error", func(ctx Ctx, in echoIn) (echoOut, error) {
+	Register(srv, "aa-domain-err", "returns domain error", Annotations{
+		Title:      "Return domain error",
+		ReadOnly:   true,
+		Idempotent: true,
+	}, func(ctx Ctx, in echoIn) (echoOut, error) {
 		return echoOut{}, &DomainError{Msg: "bad request"}
 	})
 
-	Register(srv, "bb-infra-err", "returns infra error", func(ctx Ctx, in echoIn) (echoOut, error) {
+	Register(srv, "bb-infra-err", "returns infra error", Annotations{
+		Title:      "Return infra error",
+		ReadOnly:   true,
+		Idempotent: true,
+	}, func(ctx Ctx, in echoIn) (echoOut, error) {
 		return echoOut{}, &InfraError{Msg: "connection refused"}
 	})
 
-	Register(srv, "cc-data-err", "returns data error", func(ctx Ctx, in echoIn) (echoOut, error) {
+	Register(srv, "cc-data-err", "returns data error", Annotations{
+		Title:      "Return data error",
+		ReadOnly:   true,
+		Idempotent: true,
+	}, func(ctx Ctx, in echoIn) (echoOut, error) {
 		return echoOut{}, &DataError{Msg: "schema mismatch"}
 	})
 
-	Register(srv, "dd-panic", "panics", func(ctx Ctx, in echoIn) (echoOut, error) {
+	Register(srv, "dd-panic", "panics", Annotations{
+		Title:      "Panic for testing",
+		ReadOnly:   true,
+		Idempotent: true,
+	}, func(ctx Ctx, in echoIn) (echoOut, error) {
 		panic("kaboom")
 	})
 
-	Register(srv, "ee-unknown-err", "returns untyped error", func(ctx Ctx, in echoIn) (echoOut, error) {
+	Register(srv, "ee-unknown-err", "returns untyped error", Annotations{
+		Title:      "Return untyped error",
+		ReadOnly:   true,
+		Idempotent: true,
+	}, func(ctx Ctx, in echoIn) (echoOut, error) {
 		return echoOut{}, fmt.Errorf("something broke")
 	})
 
@@ -302,7 +326,11 @@ func TestWarningsPerCallAndSessionID(t *testing.T) {
 	var firstDedup, secondDedup *Dedup
 	var firstSessionID, secondSessionID string
 	calls := 0
-	Register(srv, "capture-dedup", "captures dedup ref", func(ctx Ctx, in echoIn) (echoOut, error) {
+	Register(srv, "capture-dedup", "captures dedup ref", Annotations{
+		Title:      "Capture dedup",
+		ReadOnly:   true,
+		Idempotent: true,
+	}, func(ctx Ctx, in echoIn) (echoOut, error) {
 		calls++
 		if calls == 1 {
 			firstDedup = ctx.Warnings
