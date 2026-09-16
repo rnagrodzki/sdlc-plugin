@@ -1213,6 +1213,13 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - clear: Clear cached data for an issue. Requires key. Optional: cacheDir, site, skipConfigCheck.
 - copy-template: Copy a template between types. Requires key, templateType, templateFrom. Optional: templatesDir, skipConfigCheck.
 - validate-body: Validate markdown body for Jira compatibility. Optional: markdownBody, cacheDir, skipConfigCheck.`,
+		mcpserver.Annotations{
+			Title:       "Manage local Jira cache",
+			ReadOnly:    false,
+			Destructive: true,
+			Idempotent:  false,
+			OpenWorld:   false,
+		},
 		func(_ mcpserver.Ctx, in JiraIn) (any, error) {
 			mainRoot, err := worktree.MainRoot()
 			if err != nil {

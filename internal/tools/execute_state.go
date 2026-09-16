@@ -518,6 +518,13 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - report: Assemble the end-of-run execution report (KD-11), read-only (never writes state). Gated by config automation.report: {enabled:false} returns {skipped:true} immediately and nothing else. Otherwise returns {branch, runId, planPath, startedAt, duration, format, waves[{number, status, startedAt, completedAt, duration, tasks[{id, name, status, complexity, risk, filesChanged}], committedSha}], totalTasks, completedTasks, failedTasks, skippedTasks, drifts, errors, warnings, concerns, pendingIssueDrafts, deferredFindings, decisions}. format is "json" or "md" (default) from config — tells the caller whether to write the returned data as JSON verbatim or render it as markdown itself. Optional: branch.
 
 Returns a JSON envelope: {"ok":true, "data":{...}} on success, {"ok":false, "code":"...", "error":"..."} on failure.`,
+		mcpserver.Annotations{
+			Title:       "Read or update execute run state",
+			ReadOnly:    false,
+			Destructive: true,
+			Idempotent:  false,
+			OpenWorld:   false,
+		},
 		func(ctx mcpserver.Ctx, in ExecuteStateIn) (any, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

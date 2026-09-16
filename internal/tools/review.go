@@ -1031,6 +1031,13 @@ func emptyFileContextIfNil(fc []fileContextEntry) []fileContextEntry {
 func RegisterReviewTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "review_prepare",
 		"Pre-compute review manifest: git state, dimension matching, diff slicing, commit context. Writes manifest + per-dimension .diff and .slice.json files to a temp directory.",
+		mcpserver.Annotations{
+			Title:       "Prepare code review payload",
+			ReadOnly:    false,
+			Destructive: true,
+			Idempotent:  true,
+			OpenWorld:   false,
+		},
 		func(ctx mcpserver.Ctx, in ReviewPrepareIn) (ReviewPrepareOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

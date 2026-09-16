@@ -51,6 +51,13 @@ type SetupWriteSectionsOut struct {
 func RegisterSetupWriteTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "setup_write_sections",
 		"INTERNAL — called by sdlc skills only. Writes real field-value data into one or more sdlc-v2 config sections (config.toml for project sections, local.toml for local sections), routing and validating via the same config.WriteSection primitive setup_init uses. Unlike setup_init (which writes the full config.toml/local.toml templates verbatim for the user to hand-edit), this accepts the actual assembled values collected during setup's per-section field loop.",
+		mcpserver.Annotations{
+			Title:       "Write SDLC config sections",
+			ReadOnly:    false,
+			Destructive: true,
+			Idempotent:  false,
+			OpenWorld:   false,
+		},
 		func(ctx mcpserver.Ctx, in SetupWriteSectionsIn) (SetupWriteSectionsOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

@@ -125,6 +125,12 @@ func linksValidate(root string, in LinksValidateIn) (LinksValidateOut, error) {
 func RegisterLinksTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "links_validate",
 		"Extract URLs from a file and validate each: GitHub issue/PR identity+existence, Atlassian Jira host match, generic HTTP(S) reachability.",
+		mcpserver.Annotations{
+			Title:      "Check documentation links",
+			ReadOnly:   true,
+			Idempotent: true,
+			OpenWorld:  true,
+		},
 		func(ctx mcpserver.Ctx, in LinksValidateIn) (LinksValidateOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {
@@ -195,6 +201,12 @@ func mcpFailureRecord(root string, in MCPFailureRecordIn) (MCPFailureRecordOut, 
 func RegisterMCPFailureTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "mcp_failure_record",
 		"INTERNAL — called by sdlc skills only. Classify an MCP tool-call failure and record it to .sdlc-v2/learnings/log.md for later analysis.",
+		mcpserver.Annotations{
+			Title:      "Record MCP tool failure",
+			ReadOnly:   true,
+			Idempotent: true,
+			OpenWorld:  false,
+		},
 		func(ctx mcpserver.Ctx, in MCPFailureRecordIn) (MCPFailureRecordOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

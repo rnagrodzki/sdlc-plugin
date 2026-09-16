@@ -1517,6 +1517,13 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 func RegisterPlanTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "plan_prepare",
 		"Prepare OpenSpec detection, guardrails, explore-pack discovery, and G17/lane/lens dispatch metadata for plan.",
+		mcpserver.Annotations{
+			Title:       "Prepare plan state and template",
+			ReadOnly:    false,
+			Destructive: true,
+			Idempotent:  false,
+			OpenWorld:   false,
+		},
 		func(_ mcpserver.Ctx, in PlanPrepareIn) (PlanPrepareOut, error) {
 			mainRoot, err := worktree.MainRoot()
 			if err != nil {
@@ -1538,6 +1545,12 @@ func RegisterPlanTools(s *mcpserver.Server) {
 
 	mcpserver.Register(s, "plan_mark",
 		"INTERNAL — called by sdlc skills only. Write a plan-integrity checkpoint marker (plan-file, skillInvoked, guardrailsEvaluated, critiqueRan, done) into the current branch's plan state file, or append structured data (guardrailResults, criticalDecisions) to it.",
+		mcpserver.Annotations{
+			Title:      "Record plan progress marker",
+			ReadOnly:   true,
+			Idempotent: true,
+			OpenWorld:  false,
+		},
 		func(_ mcpserver.Ctx, in PlanMarkIn) (PlanMarkOut, error) {
 			mainRoot, err := worktree.MainRoot()
 			if err != nil {

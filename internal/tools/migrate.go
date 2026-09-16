@@ -599,6 +599,13 @@ func copyFile(src, dst string) error {
 func RegisterMigrateTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "migrate",
 		"Runs a legacy migration. Actions: config (schema migration via configmigrate engine), import (non-destructively imports config, templates, jira-templates, learnings, and review-dimensions from the old plugin's "+paths.LegacyDataDir+"/ directory into "+paths.DataDir+"/ — config.toml and local.toml merge per top-level key, accepting either a TOML or legacy JSON source file, so already-scaffolded files still receive legacy sections and everything else is skipped whole-file when the destination already exists), layout (moves this plugin's own old state layout, "+paths.DataDir+"/execution/, into the current "+paths.DataDir+"/"+paths.RunsSubdir+"/ layout — state files, per-run directories, and ledger/ entries are each moved independently; a name conflict at the destination is skipped and reported rather than overwritten).",
+		mcpserver.Annotations{
+			Title:       "Migrate SDLC config",
+			ReadOnly:    false,
+			Destructive: true,
+			Idempotent:  true,
+			OpenWorld:   false,
+		},
 		func(ctx mcpserver.Ctx, in MigrateIn) (MigrateOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

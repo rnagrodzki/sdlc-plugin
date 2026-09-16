@@ -602,6 +602,13 @@ func ClassifyLogs(text string) VerifyPipelineClassifyOut {
 func RegisterPollingTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "poll_await",
 		`INTERNAL — called by sdlc skills only. Run one bounded KD8 probe for a polling target: target: "remote_review" polls gh for a remote reviewer's verdict on a PR; target: "pipeline" polls gh PR checks for green/failed/pending. One non-blocking probe per call. Returns a stepper envelope (status pending + state_file to resume, or status done/error with the verdict in ext).`,
+		mcpserver.Annotations{
+			Title:       "Await CI or PR completion",
+			ReadOnly:    false,
+			Destructive: true,
+			Idempotent:  false,
+			OpenWorld:   true,
+		},
 		func(ctx mcpserver.Ctx, in PollAwaitIn) (stepper.Envelope, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {
@@ -617,6 +624,12 @@ func RegisterPollingTools(s *mcpserver.Server) {
 
 	mcpserver.Register(s, "verify_pipeline_classify",
 		"INTERNAL — called by sdlc skills only. Classify failed-check log text into lint|test-failure|type-error|build-error|dependency|infra|unknown.",
+		mcpserver.Annotations{
+			Title:      "Classify CI failure logs",
+			ReadOnly:   true,
+			Idempotent: true,
+			OpenWorld:  false,
+		},
 		func(ctx mcpserver.Ctx, in VerifyPipelineClassifyIn) (VerifyPipelineClassifyOut, error) {
 			out := ClassifyLogs(in.Logs)
 			out.CheckName = in.CheckName

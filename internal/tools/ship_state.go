@@ -1767,6 +1767,13 @@ Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide
 - deferred_list: List all deferred issues. Returns {issues, openCount}.
 - deferred_propose_followups: Return open deferred issues grouped by priority with a formatted display summary. Returns {openCount, groups, display}.
 - deferred_resolve: Mark a deferred issue as resolved by ID. Requires detail.id. Returns {ok, id}. Errors if the ID is not found.`,
+		mcpserver.Annotations{
+			Title:       "Read or update ship run state",
+			ReadOnly:    false,
+			Destructive: true,
+			Idempotent:  false,
+			OpenWorld:   false,
+		},
 		func(ctx mcpserver.Ctx, in ShipStateIn) (any, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

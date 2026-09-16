@@ -279,6 +279,12 @@ func receivedReviewVerify(projectRoot, activeRoot string, in ReceivedReviewVerif
 func RegisterReceivedReviewTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "received_review_prepare",
 		"INTERNAL — called by sdlc skills only. Fetch PR view and checks for the received-review skill. Returns an inline payload with PR metadata.",
+		mcpserver.Annotations{
+			Title:      "Fetch PR review feedback",
+			ReadOnly:   true,
+			Idempotent: true,
+			OpenWorld:  true,
+		},
 		func(ctx mcpserver.Ctx, in ReceivedReviewIn) (ReceivedReviewOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {
@@ -297,6 +303,12 @@ func RegisterReceivedReviewTools(s *mcpserver.Server) {
 
 	mcpserver.Register(s, "received_review_verify",
 		"INTERNAL — called by sdlc skills only. Fetch all review comment threads on a PR and classify each as outstanding, replied, or self-replied relative to the PR author's login. Returns per-thread status plus outstanding/replied/total counts.",
+		mcpserver.Annotations{
+			Title:      "Verify review replies posted",
+			ReadOnly:   true,
+			Idempotent: true,
+			OpenWorld:  true,
+		},
 		func(ctx mcpserver.Ctx, in ReceivedReviewVerifyIn) (ReceivedReviewVerifyOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

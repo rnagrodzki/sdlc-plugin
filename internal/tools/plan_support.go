@@ -156,6 +156,12 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - material_snapshot: Snapshot plan material for change detection. Requires filePath.
 - material_compare: Compare current plan material against a snapshot. Requires filePath, snapshot.
 - openspec_appendix: Generate an openspec appendix. Requires changeName. Optional: proposalPath, designPath, specPaths, planTasks.`,
+		mcpserver.Annotations{
+			Title:      "Read plan support data",
+			ReadOnly:   true,
+			Idempotent: true,
+			OpenWorld:  false,
+		},
 		func(ctx mcpserver.Ctx, in PlanSupportIn) (PlanSupportOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {

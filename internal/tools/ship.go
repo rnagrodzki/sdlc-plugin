@@ -1324,6 +1324,13 @@ func shipBuildReportData(data map[string]any, now time.Time) ShipReportData {
 func RegisterShipTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "ship_prepare",
 		"Merge ship CLI flags with ship config, validate the resolved pipeline (pure checks only — no gh-auth or openspec-aware step computation), and initialize ship execution state.",
+		mcpserver.Annotations{
+			Title:       "Prepare ship pipeline run",
+			ReadOnly:    false,
+			Destructive: true,
+			Idempotent:  false,
+			OpenWorld:   true,
+		},
 		func(ctx mcpserver.Ctx, in ShipPrepareIn) (ShipPrepareOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {
@@ -1342,6 +1349,12 @@ func RegisterShipTools(s *mcpserver.Server) {
 
 	mcpserver.Register(s, "ship_verify_side_effect",
 		"Verify that a ship pipeline step's expected side effect (a PR or commit sha) actually landed, and record it in the ship state's sideEffects journal for idempotent resume.",
+		mcpserver.Annotations{
+			Title:      "Verify ship step side effect",
+			ReadOnly:   true,
+			Idempotent: true,
+			OpenWorld:  true,
+		},
 		func(ctx mcpserver.Ctx, in ShipVerifySideEffectIn) (ShipVerifySideEffectOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {
