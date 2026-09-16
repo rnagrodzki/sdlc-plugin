@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3] - 2026-09-16
+
+- Add a golden regression test for tool annotations, plus documentation
+- Add warnings for unreadable OpenSpec plan files
+- Relocate the openspec tasks.md ref-stamp write out of plan_prepare into execute_state's init handler, keeping plan_prepare honestly read-only
+- Require MCP tool Annotations (title/readOnly/destructive/idempotent/openWorld) on every mcpserver.Register call, and annotate all 31 existing tool registrations
+
 ## [0.1.2] - 2026-09-15
 
 - Add CI push-with-secret authentication mode for protected branches
