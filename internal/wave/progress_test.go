@@ -1,6 +1,8 @@
 package wave
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 )
 
 // ---------------------------------------------------------------------------
@@ -420,5 +424,144 @@ func TestUpdateProgress_OverwritesAcceptanceDoneOnNextCall(t *testing.T) {
 	p, _ := ReadProgress(root, runID)
 	if got, want := p.Tasks["1"].AcceptanceDone, []int{0, 1, 2}; !reflect.DeepEqual(got, want) {
 		t.Errorf("AcceptanceDone = %v, want %v", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TouchProgress — in-memory fake progressStore, no real filesystem I/O.
+//
+// Deviation from the plan's literal acceptance criterion 7 ("Tests use
+// t.TempDir() (filesystem) ... matching internal/wave/progress_test.go"):
+// these tests exercise TouchProgress against a fake progressStore instead
+// of a real temp directory. This is the fs-writer seam introduced to
+// satisfy the no-real-fs-git-in-tests guardrail (error severity) for new
+// test code, per the harden decision recorded against that guardrail. The
+// pre-existing UpdateProgress/ReadProgress tests above are untouched and
+// still use t.TempDir() — only this new test code uses the fake.
+// ---------------------------------------------------------------------------
+
+// fakeProgressStore is an in-memory progressStore. It is not used by any
+// pre-existing test — only by the TouchProgress tests below — so it never
+// needs to interoperate with real fsx/os paths, only with the path strings
+// progress.go itself builds.
+type fakeProgressStore struct {
+	mu    sync.Mutex
+	files map[string][]byte
+}
+
+func newFakeProgressStore() *fakeProgressStore {
+	return &fakeProgressStore{files: map[string][]byte{}}
+}
+
+func (f *fakeProgressStore) mkdirAll(string) error {
+	return nil
+}
+
+func (f *fakeProgressStore) readJSON(path string, out any) error {
+	f.mu.Lock()
+	raw, ok := f.files[path]
+	f.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("fakeProgressStore: %s: %w", path, fsx.ErrNotFound)
+	}
+	return json.Unmarshal(raw, out)
+}
+
+func (f *fakeProgressStore) writeJSON(path string, v any) error {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	f.mu.Lock()
+	f.files[path] = raw
+	f.mu.Unlock()
+	return nil
+}
+
+// seed pre-populates path with v, as if a prior UpdateProgress/TouchProgress
+// call had already written it.
+func (f *fakeProgressStore) seed(path string, v TaskProgress) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	f.mu.Lock()
+	f.files[path] = raw
+	f.mu.Unlock()
+}
+
+// withFakeProgressStore swaps progressStoreImpl for a fresh fake for the
+// duration of the calling test, restoring the real implementation via
+// t.Cleanup.
+func withFakeProgressStore(t *testing.T) *fakeProgressStore {
+	t.Helper()
+	fake := newFakeProgressStore()
+	old := progressStoreImpl
+	progressStoreImpl = fake
+	t.Cleanup(func() { progressStoreImpl = old })
+	return fake
+}
+
+func TestTouchProgress_AdvancesOnlyUpdatedAt(t *testing.T) {
+	fake := withFakeProgressStore(t)
+	root, runID, taskID := "fake-root", "run1", "3"
+
+	existing := TaskProgress{
+		Phase:             "editing",
+		UpdatedAt:         "2020-01-01T00:00:00.000Z",
+		StartedAt:         "2019-12-31T00:00:00.000Z",
+		LastCompletedTask: "prep",
+		AcceptanceDone:    []int{0, 1},
+		FilesTouched:      []string{"a.go", "b.go"},
+		Blocker:           "waiting on review",
+	}
+	fake.seed(taskProgressPath(root, runID, taskID), existing)
+
+	if err := TouchProgress(root, runID, taskID); err != nil {
+		t.Fatalf("TouchProgress: unexpected error: %v", err)
+	}
+
+	var got TaskProgress
+	if err := fake.readJSON(taskProgressPath(root, runID, taskID), &got); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+
+	if got.UpdatedAt == existing.UpdatedAt {
+		t.Errorf("UpdatedAt did not advance: still %q", got.UpdatedAt)
+	}
+	got.UpdatedAt = existing.UpdatedAt // neutralize before comparing the rest
+	if !reflect.DeepEqual(got, existing) {
+		t.Errorf("TouchProgress changed fields other than UpdatedAt: got %+v, want %+v (with UpdatedAt equalized)", got, existing)
+	}
+}
+
+func TestTouchProgress_CreatesAbsentFileAsStarted(t *testing.T) {
+	withFakeProgressStore(t)
+	root, runID, taskID := "fake-root", "run1", "9"
+
+	if err := TouchProgress(root, runID, taskID); err != nil {
+		t.Fatalf("TouchProgress: unexpected error: %v", err)
+	}
+
+	var got TaskProgress
+	fake := progressStoreImpl.(*fakeProgressStore)
+	if err := fake.readJSON(taskProgressPath(root, runID, taskID), &got); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+
+	if got.Phase != "started" {
+		t.Errorf("Phase = %q, want %q", got.Phase, "started")
+	}
+	if got.StartedAt == "" || got.StartedAt != got.UpdatedAt {
+		t.Errorf("StartedAt = %q, want equal to UpdatedAt %q", got.StartedAt, got.UpdatedAt)
+	}
+}
+
+func TestTouchProgress_RejectsBadRunID(t *testing.T) {
+	withFakeProgressStore(t)
+
+	err := TouchProgress("fake-root", "not a valid run id!", "1")
+	if !errors.Is(err, ErrBadRunID) {
+		t.Fatalf("TouchProgress: got err = %v, want ErrBadRunID", err)
 	}
 }

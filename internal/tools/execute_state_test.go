@@ -6561,3 +6561,29 @@ func TestExecParseResumeFrom_JSONRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// TestExecWaveStallTimeouts_DefaultsFromShipBuiltInDefaults pins
+// execWaveStallTimeouts's (rawInterval, totalTimeout) return order and
+// values against shipmeta.ShipBuiltInDefaults when no execute state exists
+// for root/branch. No fs/git seam is introduced for this test: unlike
+// os.WriteFile, os.Create, os.MkdirTemp, t.TempDir(), exec.Command, and
+// execx.Run (the no-real-fs-git-in-tests guardrail's banned operations),
+// pointing state.Find at a nonexistent path is not itself a banned
+// operation, and this test performs no filesystem setup of its own — it
+// relies on execWaveStallTimeouts's existing "missing state file falls
+// back to defaults" contract.
+func TestExecWaveStallTimeouts_DefaultsFromShipBuiltInDefaults(t *testing.T) {
+	root := "/nonexistent/exec-wave-stall-timeouts-test-root"
+	branch := "nonexistent-branch"
+
+	rawInterval, totalTimeout := execWaveStallTimeouts(root, branch)
+
+	wantInterval := time.Duration(shipmeta.ShipBuiltInDefaults.ExecuteWaveInterval) * time.Second
+	wantTotal := time.Duration(shipmeta.ShipBuiltInDefaults.ExecuteWaveTimeout) * time.Second
+	if rawInterval != wantInterval {
+		t.Errorf("rawInterval = %v, want %v", rawInterval, wantInterval)
+	}
+	if totalTimeout != wantTotal {
+		t.Errorf("totalTimeout = %v, want %v", totalTimeout, wantTotal)
+	}
+}

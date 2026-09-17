@@ -93,6 +93,32 @@
             "type": "boolean",
             "description": "Set by `wave-done --timed-out` (R-WAVE-DEADLINE, #506). Read on resume to skip re-waiting."
           },
+          "runId": {
+            "type": "string",
+            "description": "Run identifier for this wave's fact sheets and progress directory (<root>/.sdlc-v2/runs/<runId>/). Written by wave-start. Read by the wave-liveness PostToolUse hook, which has no runId input of its own and must not re-derive it from startedAt."
+          },
+          "planned": {
+            "type": "array",
+            "description": "The wave's validated task manifest, written by wave-start. Read by task-context for sibling lookup, by wave-await for still-open task detection, and by the wave-liveness hook to map an edited file back to its owning task.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "files": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": ["id"]
+            }
+          },
           "tasks": {
             "type": "array",
             "items": {

@@ -2294,13 +2294,21 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 		// task-context can discover its siblings without per-task file reads.
 		planned := make([]any, 0, len(validTasks))
 		for _, tm := range validTasks {
+			files, _ := tm["files"].([]any)
+			if files == nil {
+				files = []any{}
+			}
 			planned = append(planned, map[string]any{
 				"id":    tm["id"],
 				"name":  stringOrEmpty(tm["name"]),
-				"files": tm["files"],
+				"files": files,
 			})
 		}
 		w["planned"] = planned
+		// Persist the run ID authoritatively: the PostToolUse liveness hook
+		// has no runId input and must not re-derive it from startedAt via
+		// execDeriveRunID.
+		w["runId"] = runID
 		if err := state.Write(st); err != nil {
 			return nil, &mcpserver.InfraError{Msg: "write state (planned): " + err.Error(), Cause: err}
 		}
@@ -4458,7 +4466,7 @@ type ReadProgressOut struct {
 // file is not an error here — readProgress must answer the same "never
 // throw on read" contract wave.ReadProgress itself already has; it just
 // falls back to the built-in defaults.
-func execWaveStallTimeouts(root, branch string) (heartbeatTimeout, totalTimeout time.Duration) {
+func execWaveStallTimeouts(root, branch string) (rawInterval, totalTimeout time.Duration) {
 	totalSec := shipmeta.ShipBuiltInDefaults.ExecuteWaveTimeout
 	intervalSec := shipmeta.ShipBuiltInDefaults.ExecuteWaveInterval
 	if st, err := state.Find(root, "execute", branch); err == nil && st != nil {
