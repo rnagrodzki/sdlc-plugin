@@ -42,8 +42,10 @@ field that does not exist. Deviations, one line each:
   instead, and Step 2 still runs before the menu answers are acted on.
 - **Misplaced-section detection:** source additionally flagged a section `legacy` when a key
   was nested at the wrong config-file top level (e.g. `ship` under `.sdlc-v2/config.toml`). No
-  Go equivalent exists; dropped. The legacy-file markers checked in Step 0 still catch every
-  concrete legacy layout `internal/configmigrate` knows how to migrate.
+  Go equivalent exists; dropped. No client-side scan of the seven legacy marker files exists
+  in this port either — Step 0 never enumerates them. `needsMigration` (from `setup_prepare`)
+  is a narrower signal: whether `.sdlc-v2/config.toml`/`local.toml` exist and their schema
+  version, not a legacy-marker scan.
 - **`preReleaseCompat` (Gap B):** inlined as a static 6-row table in 3.G below, copied
   verbatim from source's `PRE_RELEASE_COMPAT` constant (`scripts/skill/setup.js`) — no Go
   tool field carries it.
@@ -299,7 +301,7 @@ Example rendering:
 ```
 1. [set] Version — Tells /pr and /ship where the canonical version string lives.
 2. [not-set] Ship — Developer-local pipeline preferences for /ship.
-3. [not-set] Review dimensions — Review dimensions installed under .sdlc-v2/review-dimensions/*.yaml.
+3. [not-set] Review dimensions — Review dimensions installed under .sdlc-v2/review-dimensions/*.md.
 4. [not-set] Plan template — Project-owned plan template at .sdlc-v2/plan-template.md.
 ```
 
@@ -342,8 +344,9 @@ Step 2 / Step 3.
 
 **Skip this step if:** `needsMigration` is `false` AND `--migrate` was NOT passed.
 
-Since this step only runs when `needsMigration` is `true` (legacy files detected server-side
-by `setup_prepare`, per Step 0 item 1) or `--migrate` was passed, use AskUserQuestion:
+Since this step only runs when `needsMigration` is `true` (`.sdlc-v2/config.toml`/`local.toml`
+missing or schema-stale, per `setup_prepare` in Step 0 item 1 — not a scan for legacy marker
+files) or `--migrate` was passed, use AskUserQuestion:
 
 > Legacy or outdated config files detected. Migrate to the current config format before
 > proceeding?
@@ -379,8 +382,8 @@ migrate({ action: "config", dryRun: false }) → { ok, result, changed[] }
 `result` is one of: `"up-to-date"` (nothing to do), or
 `"migrated (steps: [...], legacy ingested: [<path> <path> ...])"`. This single call migrates
 both `.sdlc-v2/config.toml` and `.sdlc-v2/local.toml` schema versions and ingests any of the seven
-legacy per-section files found in Step 0 — there is no separate project/local/`--unset-only`
-branch to run.
+legacy per-section files present on disk — this call discovers them itself, they are not
+pre-enumerated in Step 0 — there is no separate project/local/`--unset-only` branch to run.
 
 Then run the layout migration (moves any pre-existing `.sdlc-v2/execution/` directory
 tree into the current `.sdlc-v2/runs/` layout — idempotent, always safe to run):
@@ -666,8 +669,10 @@ Before invoking `setup-dimensions` or `setup-pr-template`, run the project signa
   `**/playwright.config.*`.
 - **Existing review dimensions:** reuse the Step 0 snapshot's `listDimensions` result (count
   and names) — no fresh call needed.
-- **Existing guardrails:** reuse the Step 0 snapshot's `projectConfig` → `plan.guardrails`
-  array if present (no fresh read).
+- **Existing guardrails:** not available here. There is no MCP tool that returns
+  `plan.guardrails`'s current contents, and `setup-guardrails.md`'s own Step 0 does not read
+  `.sdlc-v2/config.toml` either — its `--add` mode proposal list is not deduplicated against
+  existing ids (see its Gotchas).
 - **GitHub hosting detection:** Bash for `git remote -v` and `gh repo view` (safe). Glob for
   `.github/`.
 - **CLAUDE.md / AGENTS.md:** Read `CLAUDE.md`, `AGENTS.md`, `.claude/CLAUDE.md` if present.

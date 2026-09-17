@@ -57,7 +57,8 @@ func postToolValidate(ctx HookCtx, event Event) (Output, error) {
 		// No file arg: the dimensions validator scans .sdlc-v2/review-dimensions
 		// itself rather than validating one file.
 		//
-		// Deviation from the :45 root ruling, for this branch only: dimension
+		// Deviation from the raw-cwd root ruling above (KEEP: hook entry
+		// point — do not change to resolveSdlcRoot()), for this branch only: dimension
 		// files are git-tracked content, so per the root rule they must be
 		// read from the ACTIVE worktree, not the raw process cwd -- otherwise
 		// this hook and the validate/dimensions and review_prepare tools would

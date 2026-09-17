@@ -618,6 +618,30 @@ func TestPostToolValidate_Dimensions_Findings_Blocks(t *testing.T) {
 	mustBlock(t, out, err, "D1")
 }
 
+// TestPostToolValidate_Dimensions_UsesActiveWorktreeRoot_NotRawCwd exercises
+// the dimRoot resolution in postToolValidate's dimension branch: cwd is a
+// nested subdirectory of a real git repo, so raw os.Getwd() and
+// worktree.ActiveRoot() (git rev-parse --show-toplevel) disagree. The
+// dimension file lives at the git root, not the nested cwd. If postToolValidate
+// used the raw cwd (the ruling this branch deliberately deviates from), it
+// would scan <nested cwd>/.sdlc-v2/review-dimensions, find nothing, and stay
+// silent -- so a block here proves the hook read from the resolved worktree
+// root instead.
+func TestPostToolValidate_Dimensions_UsesActiveWorktreeRoot_NotRawCwd(t *testing.T) {
+	root := gitFixture(t, "main")
+
+	dimDir := filepath.Join(root, paths.DataDir, "review-dimensions")
+	mustMkdirAll(t, dimDir)
+	mustWriteFile(t, filepath.Join(dimDir, "bad.md"), "no frontmatter delimiters in this file\n")
+
+	nested := filepath.Join(root, "sub", "dir")
+	mustMkdirAll(t, nested)
+	chdir(t, nested)
+
+	out, err := postToolValidate(HookCtx{}, triggerEvent(filepath.Join(nested, paths.DataDir, "review-dimensions", "security.yaml")))
+	mustBlock(t, out, err, "D1")
+}
+
 func TestPostToolValidate_PRTemplate_MissingFile_Blocks(t *testing.T) {
 	dir := realPath(t, t.TempDir())
 	chdir(t, dir)

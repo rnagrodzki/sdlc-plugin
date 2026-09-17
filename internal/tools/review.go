@@ -100,8 +100,10 @@ type ReviewPrepareOut struct {
 	// Omitted (zero value) in normal manifest mode.
 	Saved bool `json:"saved,omitempty"`
 	// Next carries actionable next-step guidance after a save-mode call.
-	// Empty in normal manifest mode.
-	Next string `json:"next,omitempty" jsonschema_description:"Actionable next-step guidance after a save-mode call."`
+	// Empty string in normal manifest mode — not omitted, since callers must
+	// be able to tell "no next step" apart from "field absent" (repo-wide
+	// Next-field contract; see execute_wave_await.go's guardrail comment).
+	Next string `json:"next" jsonschema_description:"Actionable next-step guidance after a save-mode call. Empty string when there is none."`
 }
 
 // ---------------------------------------------------------------------------

@@ -84,7 +84,7 @@ type ExecuteStateIn struct {
 	ExpectedWorkers     []string       `json:"expectedWorkers,omitempty" jsonschema_description:"ledger_status only: worker IDs expected to be registered for this run; any not found on disk are returned in missingWorkers."`
 	Payload             map[string]any `json:"payload,omitempty" jsonschema_description:"Reserved for future use; not currently read by any action."`
 	StepID              string         `json:"stepId,omitempty" jsonschema_description:"ledger_checkin only: identifier of the pipeline step the worker is registering activity for."`
-	Findings            string         `json:"findings,omitempty" jsonschema_description:"ledger_checkout only: free-text findings payload (e.g. a JSON array or markdown block) to persist alongside this worker's checkout record, returned later by ledger_status."`
+	Findings            string         `json:"findings,omitempty" jsonschema_description:"ledger_checkout only: free-text findings payload to persist alongside this worker's checkout record, returned later by ledger_status. Not schema-validated, but review workers conventionally pass a JSON array of objects shaped {severity, file, line, rationale} (a markdown block is also accepted). Capped at 64 KiB; larger payloads should be persisted to a file under .sdlc-v2/ and referenced by path instead."`
 	Detail              string         `json:"detail,omitempty" jsonschema_description:"Narration verbosity for wave-start/wave-done/wave-fail/wave-commit: \"concise\" or \"full\"."`
 	LastCompletedTask   string         `json:"lastCompletedTask,omitempty" jsonschema_description:"wave-progress write only: ID of the most recently completed task, recorded in the heartbeat entry."`
 	AcceptanceDone      []int          `json:"acceptanceDone,omitempty" jsonschema_description:"wave-progress write only: 0-based indices, into the task's fact-sheet acceptance criteria, that the worker has completed so far (e.g. [0,2,3]). Replaces the previously recorded list; omit to leave it unchanged."`
@@ -209,8 +209,9 @@ type ExecutionReportOut struct {
 	GuardrailHits   []string `json:"guardrailHits"`
 	LinkedLearnings int      `json:"linkedLearnings"`
 
-	// Next step guidance (empty string is valid "no next step").
-	Next string `json:"next,omitempty"`
+	// Next step guidance (empty string is valid "no next step", never
+	// omitted — callers must be able to tell that apart from field absent).
+	Next string `json:"next"`
 
 	// Path and Written are populated only when the caller passed write:true
 	// (see execActionReport's write branch). Path is the absolute path the
@@ -260,9 +261,11 @@ type TaskReport struct {
 // (the zero value) — reporting being disabled means nothing is ever
 // persisted, whether or not the caller asked for write:true.
 type ReportSkippedOut struct {
-	Skipped bool   `json:"skipped"`
-	Written bool   `json:"written"`
-	Next    string `json:"next,omitempty"`
+	Skipped bool `json:"skipped"`
+	Written bool `json:"written"`
+	// Next is never omitted (empty string is valid "no next step", not
+	// field absent) — same repo-wide Next-field contract as ExecutionReportOut.
+	Next string `json:"next"`
 }
 
 // ExecTaskNarrationOut is the narrated output for task-level execute_state
@@ -636,7 +639,7 @@ func executeState(root, workDir string, in ExecuteStateIn, now func() time.Time)
 	case "report":
 		return execActionReport(root, workDir, in, now)
 	default:
-		return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("unknown action %q", in.Action)}
+		return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("unknown action %q", in.Action), Suggestion: "Pass one of the actions listed in execute_state's tool description (e.g. \"wave-start\", \"task-done\", \"ledger_status\")."}
 	}
 }
 
@@ -1496,38 +1499,38 @@ func execActionReport(root, workDir string, in ExecuteStateIn, now func() time.T
 func execWriteReportFile(root, runID, ext string, content any) (string, error) {
 	dir := filepath.Join(root, paths.DataDir, "reports")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", &mcpserver.InfraError{Msg: "mkdir reports dir: " + err.Error(), Cause: err}
+		return "", &mcpserver.InfraError{Msg: "mkdir reports dir: " + err.Error(), Cause: err, Suggestion: "Check that .sdlc-v2/ is writable and there is no file named reports/ blocking directory creation."}
 	}
 	path := filepath.Join(dir, runID+"-report."+ext)
 
 	if ext == "json" {
 		if err := fsx.AtomicWriteJSON(path, content); err != nil {
-			return "", &mcpserver.InfraError{Msg: "write report: " + err.Error(), Cause: err}
+			return "", &mcpserver.InfraError{Msg: "write report: " + err.Error(), Cause: err, Suggestion: "Check disk space and write permissions on .sdlc-v2/reports/, then retry."}
 		}
 		return path, nil
 	}
 
 	data, ok := content.([]byte)
 	if !ok {
-		return "", &mcpserver.InfraError{Msg: fmt.Sprintf("write report: unsupported content type %T for ext %q", content, ext)}
+		return "", &mcpserver.InfraError{Msg: fmt.Sprintf("write report: unsupported content type %T for ext %q", content, ext), Suggestion: "Pass format \"json\" with a struct body, or format \"md\" with a []byte body — no other content/ext combination is supported."}
 	}
 	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
 	if err != nil {
-		return "", &mcpserver.InfraError{Msg: "create temp report file: " + err.Error(), Cause: err}
+		return "", &mcpserver.InfraError{Msg: "create temp report file: " + err.Error(), Cause: err, Suggestion: "Check disk space and write permissions on .sdlc-v2/reports/, then retry."}
 	}
 	tmpName := tmp.Name()
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		os.Remove(tmpName)
-		return "", &mcpserver.InfraError{Msg: "write temp report file: " + err.Error(), Cause: err}
+		return "", &mcpserver.InfraError{Msg: "write temp report file: " + err.Error(), Cause: err, Suggestion: "Check disk space on the .sdlc-v2/reports/ volume, then retry."}
 	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpName)
-		return "", &mcpserver.InfraError{Msg: "close temp report file: " + err.Error(), Cause: err}
+		return "", &mcpserver.InfraError{Msg: "close temp report file: " + err.Error(), Cause: err, Suggestion: "Retry the write; if this persists, check for a filesystem or disk issue on .sdlc-v2/reports/."}
 	}
 	if err := os.Rename(tmpName, path); err != nil {
 		os.Remove(tmpName)
-		return "", &mcpserver.InfraError{Msg: "rename temp report file into place: " + err.Error(), Cause: err}
+		return "", &mcpserver.InfraError{Msg: "rename temp report file into place: " + err.Error(), Cause: err, Suggestion: "Check that .sdlc-v2/reports/ is on a single filesystem and writable, then retry."}
 	}
 	return path, nil
 }
@@ -4970,6 +4973,13 @@ func execActionLedgerCheckin(root string, in ExecuteStateIn, now func() time.Tim
 // Action: ledger_checkout
 // ---------------------------------------------------------------------------
 
+// execFindingsMaxBytes caps the size of a single worker's findings payload
+// accepted by ledger_checkout. Enforced here (not at ledger_status/read
+// time) so an oversized payload is rejected while still recoverable,
+// instead of being persisted and then unboundedly echoed back by
+// ledger_status across many workers.
+const execFindingsMaxBytes = 64 * 1024 // 64 KiB
+
 func execActionLedgerCheckout(root string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	if in.RunID == "" {
 		return nil, &mcpserver.DomainError{
@@ -4999,11 +5009,33 @@ func execActionLedgerCheckout(root string, in ExecuteStateIn, now func() time.Ti
 		}
 	}
 
+	// Enforce a size cap on the findings payload at checkout time — the
+	// point where it is still recoverable (the caller can trim and retry)
+	// — rather than at ledger_status/read time, where it would already be
+	// persisted and unreadable through the tool. Mirrors the
+	// execReadMaxBytes/execx.ErrOutputCap precedent: a distinct error,
+	// never a silent truncation. Cap is well above the small findings
+	// payloads used by TestExecState_Ledger_FindingsRoundTrip.
+	if len(in.Findings) > execFindingsMaxBytes {
+		return nil, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("findings is %d bytes, exceeds cap of %d bytes", len(in.Findings), execFindingsMaxBytes),
+			Suggestion: "Trim the findings payload, or persist it to a file under .sdlc-v2/ and reference that path instead of inlining the full content.",
+		}
+	}
+
 	fp := ledgerFilePath(root, in.RunID, in.WorkerID)
 
-	// Read existing file to preserve checkinAt/stepId.
+	// Read existing file to preserve checkinAt/stepId. A missing file is
+	// expected (first checkout for this worker); anything else (corrupt
+	// JSON, permission error) must surface instead of silently becoming an
+	// empty map and reporting success over lost data.
 	existing := map[string]any{}
-	_ = fsx.ReadJSON(fp, &existing)
+	if err := fsx.ReadJSON(fp, &existing); err != nil && !errors.Is(err, fsx.ErrNotFound) {
+		return nil, &mcpserver.DomainError{
+			Msg:        "read existing ledger entry: " + err.Error(),
+			Suggestion: "The ledger file for this worker may be corrupted. Inspect or remove it under .sdlc-v2/, then retry checkout.",
+		}
+	}
 
 	existing["status"] = "done"
 	existing["checkoutAt"] = now().UTC().Format(time.RFC3339)
@@ -5164,7 +5196,14 @@ func execActionLedgerCleanup(root string, in ExecuteStateIn) (any, error) {
 
 	dir := ledgerDir(root, in.RunID)
 	removed := true
-	if _, err := os.Stat(dir); err != nil {
+	// Workers echoes which worker ids existed before deletion — per the
+	// repo's mutation-contract convention that destructive operations echo
+	// affected state. Deliberately IDs only, never findings payloads: a
+	// findings echo here would reintroduce the unbounded-output problem
+	// capped at ledger_checkout (see execFindingsMaxBytes).
+	workers := []string{}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
 		if !os.IsNotExist(err) {
 			return nil, &mcpserver.InfraError{
 				Msg:        "stat ledger dir: " + err.Error(),
@@ -5173,6 +5212,15 @@ func execActionLedgerCleanup(root string, in ExecuteStateIn) (any, error) {
 			}
 		}
 		removed = false
+	} else {
+		for _, e := range entries {
+			name := e.Name()
+			if e.IsDir() || !strings.HasSuffix(name, ".json") {
+				continue
+			}
+			workers = append(workers, strings.TrimSuffix(name, ".json"))
+		}
+		sort.Strings(workers)
 	}
 
 	if err := os.RemoveAll(dir); err != nil {
@@ -5187,6 +5235,7 @@ func execActionLedgerCleanup(root string, in ExecuteStateIn) (any, error) {
 		"ok":      true,
 		"runId":   in.RunID,
 		"removed": removed,
+		"workers": workers,
 	}, nil
 }
 

@@ -148,6 +148,12 @@ func RegisterDimensionsRenderTools(s *mcpserver.Server) {
 // dimensionsRenderInstructions is the core logic, separated from the
 // handler for testability.
 func dimensionsRenderInstructions(root string, in DimensionsRenderInstructionsIn) (DimensionsRenderInstructionsOut, error) {
+	if in.WriteDimension && in.ListDimensions {
+		return DimensionsRenderInstructionsOut{}, &mcpserver.DomainError{
+			Msg:        "at most one of writeDimension, listDimensions may be true",
+			Suggestion: "Set exactly one mode-select field per call; leave the other false or omitted.",
+		}
+	}
 	if in.WriteDimension {
 		return writeDimensionFile(root, in)
 	}

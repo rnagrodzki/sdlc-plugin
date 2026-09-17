@@ -101,14 +101,16 @@ import (
 // tool; the remaining fields are a superset of what each action needs
 // (unused fields for a given action are ignored).
 type JiraIn struct {
-	Action string `json:"action" jsonschema_description:"Selects the operation: check, check-default-project, load, save, save-field, templates, init-templates, clear, copy-template, validate-body, write-critique, or write-approval. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
+	Action string `json:"action" jsonschema:"enum=check,enum=check-default-project,enum=load,enum=save,enum=save-field,enum=templates,enum=init-templates,enum=clear,enum=copy-template,enum=validate-body,enum=write-critique,enum=write-approval" jsonschema_description:"Selects the operation: check, check-default-project, load, save, save-field, templates, init-templates, clear, copy-template, validate-body, write-critique, or write-approval. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
 
 	// Key is the Jira project key (jira.js's --project). Uppercased on use.
-	// Required for every action except validate-body (mirrors jira.js's
-	// parseArgs, which enforces --project for every subcommand but
-	// validate-body — including copy-template, which does not actually use
-	// it; that quirk is preserved for fidelity).
-	Key string `json:"key,omitempty" jsonschema_description:"Jira issue key (e.g. \"PROJ-123\"). Uppercased on use. Required for every action except validate-body."`
+	// Required for every action except validate-body, check-default-project,
+	// write-critique, and write-approval (mirrors jira.js's parseArgs, which
+	// enforces --project for every subcommand but validate-body — including
+	// copy-template, which does not actually use it; that quirk is preserved
+	// for fidelity — plus check-default-project/write-critique/write-approval,
+	// none of which read Key at all).
+	Key string `json:"key,omitempty" jsonschema_description:"Jira issue key (e.g. \"PROJ-123\"). Uppercased on use. Required for every action except validate-body, check-default-project, write-critique, and write-approval."`
 
 	// MarkdownBody is the Jira description/comment body for validate-body.
 	MarkdownBody string `json:"markdownBody,omitempty" jsonschema_description:"validate-body only: Jira description/comment markdown body to validate for Jira-flavor compatibility."`
@@ -1304,8 +1306,15 @@ func jiraCore(mainRoot string, in JiraIn, offline bool) (any, error) {
 		}
 	}
 
-	if in.Action != "validate-body" && in.Action != "check-default-project" && strings.TrimSpace(in.Key) == "" {
-		return nil, &mcpserver.DomainError{Msg: "key is required"}
+	switch in.Action {
+	case "validate-body", "check-default-project", "write-critique", "write-approval":
+		// These actions never read in.Key (write-critique/write-approval
+		// address their artifact by hash, not by issue key) — exempt from
+		// the key-required gate below.
+	default:
+		if strings.TrimSpace(in.Key) == "" {
+			return nil, &mcpserver.DomainError{Msg: "key is required"}
+		}
 	}
 
 	switch in.Action {
@@ -1334,7 +1343,7 @@ func jiraCore(mainRoot string, in JiraIn, offline bool) (any, error) {
 	case "write-approval":
 		return jiraWriteApproval(mainRoot, in)
 	default:
-		return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("unknown jira action %q", in.Action)}
+		return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("unknown jira action %q", in.Action), Suggestion: "Pass one of the actions listed in jira's Action enum (e.g. \"load\", \"save\", \"templates\", \"validate-body\")."}
 	}
 }
 

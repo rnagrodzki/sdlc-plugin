@@ -3668,6 +3668,97 @@ func TestExecState_Ledger_FindingsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestExecState_Ledger_Cleanup_EchoesWorkers(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	for _, workerID := range []string{"worker-B", "worker-A"} {
+		if _, err := executeState(root, root, ExecuteStateIn{
+			Action:   "ledger_checkin",
+			RunID:    "run-echo",
+			WorkerID: workerID,
+		}, clock); err != nil {
+			t.Fatalf("checkin %s: %v", workerID, err)
+		}
+	}
+
+	cleanupResult, err := executeState(root, root, ExecuteStateIn{
+		Action: "ledger_cleanup",
+		RunID:  "run-echo",
+	}, clock)
+	if err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	cr := cleanupResult.(map[string]any)
+	if cr["removed"] != true {
+		t.Errorf("cleanup removed = %v, want true", cr["removed"])
+	}
+	workers, ok := cr["workers"].([]string)
+	if !ok {
+		t.Fatalf("expected workers to be []string, got %T: %v", cr["workers"], cr["workers"])
+	}
+	if got, want := workers, []string{"worker-A", "worker-B"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("workers = %v, want %v (sorted)", got, want)
+	}
+}
+
+func TestExecState_Ledger_Checkout_FindingsTooLarge(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action:   "ledger_checkin",
+		RunID:    "run-oversized",
+		WorkerID: "worker-A",
+	}, clock); err != nil {
+		t.Fatalf("checkin: %v", err)
+	}
+
+	oversized := strings.Repeat("x", execFindingsMaxBytes+1)
+	_, err := executeState(root, root, ExecuteStateIn{
+		Action:   "ledger_checkout",
+		RunID:    "run-oversized",
+		WorkerID: "worker-A",
+		Findings: oversized,
+	}, clock)
+	if err == nil {
+		t.Fatal("expected error when findings exceeds execFindingsMaxBytes")
+	}
+	if _, ok := err.(*mcpserver.DomainError); !ok {
+		t.Errorf("expected *mcpserver.DomainError, got %T: %v", err, err)
+	}
+}
+
+func TestExecState_Ledger_Checkout_CorruptExistingFile(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action:   "ledger_checkin",
+		RunID:    "run-corrupt",
+		WorkerID: "worker-A",
+	}, clock); err != nil {
+		t.Fatalf("checkin: %v", err)
+	}
+
+	fp := ledgerFilePath(root, "run-corrupt", "worker-A")
+	if err := os.WriteFile(fp, []byte("not valid json"), 0o644); err != nil {
+		t.Fatalf("corrupt ledger file: %v", err)
+	}
+
+	_, err := executeState(root, root, ExecuteStateIn{
+		Action:   "ledger_checkout",
+		RunID:    "run-corrupt",
+		WorkerID: "worker-A",
+	}, clock)
+	if err == nil {
+		t.Fatal("expected error when existing ledger file is corrupt")
+	}
+	if _, ok := err.(*mcpserver.DomainError); !ok {
+		t.Errorf("expected *mcpserver.DomainError, got %T: %v", err, err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Ledger: stall detection with injected clock
 // ---------------------------------------------------------------------------

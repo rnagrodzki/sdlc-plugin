@@ -733,6 +733,101 @@ func TestJiraExtractUrlsDedupesAndTrimsPunctuation(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// write-critique / write-approval
+// ---------------------------------------------------------------------------
+
+func TestJiraWriteCritique_HappyPath(t *testing.T) {
+	root := jiraTestRoot(t)
+	data := map[string]any{"initial": "a", "findings": "b", "final": "c"}
+
+	out, err := jiraCore(root, JiraIn{Action: "write-critique", Hash: "abc123", Data: data}, true)
+	if err != nil {
+		t.Fatalf("jiraCore: %v", err)
+	}
+	m, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]any, got %T", out)
+	}
+	if m["saved"] != true {
+		t.Errorf("expected saved=true, got %v", m["saved"])
+	}
+
+	writePath := filepath.Join(root, paths.DataDir, "state", "artifacts", "critique-abc123.json")
+	var got map[string]any
+	b, err := os.ReadFile(writePath)
+	if err != nil {
+		t.Fatalf("read critique artifact: %v", err)
+	}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("unmarshal critique artifact: %v", err)
+	}
+	if got["initial"] != "a" || got["findings"] != "b" || got["final"] != "c" {
+		t.Errorf("written critique = %#v, want %#v", got, data)
+	}
+}
+
+func TestJiraWriteCritique_MissingData_Errors(t *testing.T) {
+	root := jiraTestRoot(t)
+
+	_, err := jiraCore(root, JiraIn{Action: "write-critique", Hash: "abc123"}, true)
+	if err == nil {
+		t.Fatal("expected error when data is nil")
+	}
+	if _, ok := err.(*mcpserver.DomainError); !ok {
+		t.Errorf("expected *mcpserver.DomainError, got %T: %v", err, err)
+	}
+}
+
+func TestJiraWriteCritique_InvalidHash_Errors(t *testing.T) {
+	root := jiraTestRoot(t)
+	data := map[string]any{"initial": "a", "findings": "b", "final": "c"}
+
+	for _, hash := range []string{"", "../escape", "has/slash", "has space"} {
+		_, err := jiraCore(root, JiraIn{Action: "write-critique", Hash: hash, Data: data}, true)
+		if err == nil {
+			t.Errorf("hash %q: expected error, got nil", hash)
+			continue
+		}
+		if _, ok := err.(*mcpserver.DomainError); !ok {
+			t.Errorf("hash %q: expected *mcpserver.DomainError, got %T: %v", hash, err, err)
+		}
+	}
+}
+
+func TestJiraWriteApproval_HappyPath(t *testing.T) {
+	root := jiraTestRoot(t)
+
+	out, err := jiraCore(root, JiraIn{Action: "write-approval", Hash: "abc123"}, true)
+	if err != nil {
+		t.Fatalf("jiraCore: %v", err)
+	}
+	m, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]any, got %T", out)
+	}
+	if m["saved"] != true {
+		t.Errorf("expected saved=true, got %v", m["saved"])
+	}
+
+	writePath := filepath.Join(root, paths.DataDir, "state", "artifacts", "approval-abc123.token")
+	if _, err := os.Stat(writePath); err != nil {
+		t.Fatalf("expected approval token file to exist: %v", err)
+	}
+}
+
+func TestJiraWriteApproval_InvalidHash_Errors(t *testing.T) {
+	root := jiraTestRoot(t)
+
+	_, err := jiraCore(root, JiraIn{Action: "write-approval", Hash: "has/slash"}, true)
+	if err == nil {
+		t.Fatal("expected error for path-traversal-shaped hash")
+	}
+	if _, ok := err.(*mcpserver.DomainError); !ok {
+		t.Errorf("expected *mcpserver.DomainError, got %T: %v", err, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // RegisterJiraTools smoke test
 // ---------------------------------------------------------------------------
 

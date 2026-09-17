@@ -145,6 +145,20 @@ func setupPrepare(root string, in SetupPrepareIn) (SetupPrepareOut, error) {
 	}, nil
 }
 
+// boolCount returns how many of the given booleans are true. Used to reject
+// ambiguous multi-mode-select input (e.g. two mutually exclusive "select
+// this mode" fields both set to true) instead of silently picking the first
+// one in dispatch order.
+func boolCount(bs ...bool) int {
+	n := 0
+	for _, b := range bs {
+		if b {
+			n++
+		}
+	}
+	return n
+}
+
 // ---------------------------------------------------------------------------
 // setup_init
 // ---------------------------------------------------------------------------
@@ -158,8 +172,8 @@ func setupPrepare(root string, in SetupPrepareIn) (SetupPrepareOut, error) {
 // CheckPRTemplate, and ReadPlanTemplate (this task) select three more,
 // all read-only, so setup's skills never need a bare Glob/Read on a
 // .sdlc-v2/ path to check for or show these two files. Mode fields are
-// checked in a fixed order (first-wins, no conflict validation), the same
-// precedent as WritePlanTemplate/WritePRTemplate.
+// mutually exclusive: setupInit rejects a call with more than one set to
+// true, instead of silently picking one by dispatch order.
 type SetupInitIn struct {
 	// WritePlanTemplate selects write mode: copy the shipped
 	// plan-template-default.md byte-for-byte to .sdlc-v2/plan-template.md
@@ -420,6 +434,12 @@ var (
 
 // setupInit is the core logic, separated from the handler for testability.
 func setupInit(root string, in SetupInitIn) (SetupInitOut, error) {
+	if n := boolCount(in.WritePlanTemplate, in.WritePRTemplate, in.CheckPlanTemplate, in.CheckPRTemplate, in.ReadPlanTemplate); n > 1 {
+		return SetupInitOut{}, &mcpserver.DomainError{
+			Msg:        "at most one of writePlanTemplate, writePRTemplate, checkPlanTemplate, checkPRTemplate, readPlanTemplate may be true",
+			Suggestion: "Set exactly one mode-select field per call; leave the rest false or omitted.",
+		}
+	}
 	if in.WritePlanTemplate {
 		return setupWritePlanTemplate(root)
 	}

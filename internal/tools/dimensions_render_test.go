@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
@@ -130,5 +131,76 @@ func TestDimensionsRender_WriteDimension_SetsNext(t *testing.T) {
 	}
 	if out.Dimensions == nil {
 		t.Error("expected Dimensions to be a non-nil empty slice on write mode")
+	}
+}
+
+func TestDimensionsRender_WriteDimension_EmptyName_Errors(t *testing.T) {
+	root := t.TempDir()
+
+	_, err := dimensionsRenderInstructions(root, DimensionsRenderInstructionsIn{
+		WriteDimension: true,
+		Content:        "body",
+	})
+	if err == nil {
+		t.Fatal("expected error when name is empty")
+	}
+	if _, ok := err.(*mcpserver.DomainError); !ok {
+		t.Errorf("expected *mcpserver.DomainError, got %T: %v", err, err)
+	}
+}
+
+func TestDimensionsRender_WriteDimension_EmptyContent_Errors(t *testing.T) {
+	root := t.TempDir()
+
+	_, err := dimensionsRenderInstructions(root, DimensionsRenderInstructionsIn{
+		WriteDimension: true,
+		Name:           "security",
+	})
+	if err == nil {
+		t.Fatal("expected error when content is empty")
+	}
+	if _, ok := err.(*mcpserver.DomainError); !ok {
+		t.Errorf("expected *mcpserver.DomainError, got %T: %v", err, err)
+	}
+}
+
+func TestDimensionsRender_WriteDimension_PathTraversalName_Errors(t *testing.T) {
+	root := t.TempDir()
+
+	for _, name := range []string{"../escape", "sub/dir", `back\slash`, ".."} {
+		_, err := dimensionsRenderInstructions(root, DimensionsRenderInstructionsIn{
+			WriteDimension: true,
+			Name:           name,
+			Content:        "body",
+		})
+		if err == nil {
+			t.Errorf("name %q: expected error, got nil", name)
+			continue
+		}
+		if _, ok := err.(*mcpserver.DomainError); !ok {
+			t.Errorf("name %q: expected *mcpserver.DomainError, got %T: %v", name, err, err)
+		}
+	}
+
+	// Confirm no file escaped review-dimensions/.
+	if _, statErr := os.Stat(filepath.Join(root, "escape.md")); !os.IsNotExist(statErr) {
+		t.Error("path-traversal name must not create a file outside review-dimensions/")
+	}
+}
+
+func TestDimensionsRender_MultipleModes_Rejected(t *testing.T) {
+	root := t.TempDir()
+
+	_, err := dimensionsRenderInstructions(root, DimensionsRenderInstructionsIn{
+		WriteDimension: true,
+		ListDimensions: true,
+		Name:           "security",
+		Content:        "body",
+	})
+	if err == nil {
+		t.Fatal("expected error when writeDimension and listDimensions are both true")
+	}
+	if _, ok := err.(*mcpserver.DomainError); !ok {
+		t.Errorf("expected *mcpserver.DomainError, got %T: %v", err, err)
 	}
 }

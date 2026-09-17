@@ -1690,7 +1690,7 @@ func validateWorktreeAnchoring(root string) (*WorktreeAnchoringCheck, []discover
 	if check.IsLinked {
 		strayFindings, err := findStrayStateEntries(root, activeRoot)
 		if err != nil {
-			return nil, nil, &mcpserver.InfraError{Msg: fmt.Sprintf("scan linked worktree state: %s", err.Error()), Cause: err}
+			return nil, nil, &mcpserver.InfraError{Msg: fmt.Sprintf("scan linked worktree state: %s", err.Error()), Cause: err, Suggestion: "Check that both the main and active worktree state directories are readable, then retry."}
 		}
 		findings = append(findings, strayFindings...)
 	}

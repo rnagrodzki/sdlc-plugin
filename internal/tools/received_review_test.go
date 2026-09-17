@@ -2,12 +2,15 @@ package tools
 
 import (
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
 // ---------------------------------------------------------------------------
@@ -115,6 +118,46 @@ func TestReceivedReviewVerify_InvalidPR(t *testing.T) {
 	_, err := receivedReviewVerify(t.TempDir(), t.TempDir(), ReceivedReviewVerifyIn{PR: 0})
 	if err == nil {
 		t.Fatal("expected error for invalid PR number")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// writeReplyBodies
+// ---------------------------------------------------------------------------
+
+func TestWriteReplyBodies_HappyPath(t *testing.T) {
+	root := t.TempDir()
+
+	out, err := writeReplyBodies(root, ReceivedReviewVerifyIn{
+		WriteReplyBodies: true,
+		Content:          "## Reply to thread 1\n\nDone.\n",
+	})
+	if err != nil {
+		t.Fatalf("writeReplyBodies: %v", err)
+	}
+	if out.Next == "" {
+		t.Error("expected Next to be populated")
+	}
+
+	outPath := filepath.Join(root, paths.DataDir, "state", "artifacts", "received-review-reply-bodies.md")
+	got, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatalf("read written file: %v", err)
+	}
+	if string(got) != "## Reply to thread 1\n\nDone.\n" {
+		t.Errorf("written content = %q, want the passed content verbatim", got)
+	}
+}
+
+func TestWriteReplyBodies_EmptyContent_Errors(t *testing.T) {
+	root := t.TempDir()
+
+	_, err := writeReplyBodies(root, ReceivedReviewVerifyIn{WriteReplyBodies: true})
+	if err == nil {
+		t.Fatal("expected error when content is empty")
+	}
+	if _, ok := err.(*mcpserver.DomainError); !ok {
+		t.Errorf("expected *mcpserver.DomainError, got %T: %v", err, err)
 	}
 }
 

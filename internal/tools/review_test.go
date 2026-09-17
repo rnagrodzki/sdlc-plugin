@@ -9,7 +9,9 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
@@ -579,6 +581,60 @@ func TestReviewPrepareNoDimensions(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "No review dimensions") {
 		t.Errorf("expected 'No review dimensions' error, got: %s", err.Error())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// saveReviewComment
+// ---------------------------------------------------------------------------
+
+func TestSaveReviewComment_HappyPath(t *testing.T) {
+	root := t.TempDir()
+
+	mustRun(t, root, "git", "init")
+	mustRun(t, root, "git", "config", "user.email", "test@test.com")
+	mustRun(t, root, "git", "config", "user.name", "Test")
+	writeFile(t, filepath.Join(root, "README.md"), "# test\n")
+	mustRun(t, root, "git", "add", ".")
+	mustRun(t, root, "git", "commit", "-m", "init")
+	mustRun(t, root, "git", "checkout", "-b", "feature/foo.bar")
+
+	out, err := saveReviewComment(root, root, ReviewPrepareIn{
+		SaveReview: true,
+		Content:    "## Review\n\nLooks fine.\n",
+	})
+	if err != nil {
+		t.Fatalf("saveReviewComment: %v", err)
+	}
+	if !out.Saved {
+		t.Error("expected Saved=true")
+	}
+	if out.Next == "" {
+		t.Error("expected Next to be populated")
+	}
+
+	// Branch name "feature/foo.bar" must be sanitized to a bare filename
+	// (reviewBranchUnsafeRe replaces every non [a-zA-Z0-9_-] char with "-").
+	date := time.Now().UTC().Format("2006-01-02")
+	wantPath := filepath.Join(root, paths.DataDir, "reviews", fmt.Sprintf("feature-foo-bar-%s.md", date))
+	got, err := os.ReadFile(wantPath)
+	if err != nil {
+		t.Fatalf("expected sanitized-branch file %s, read err: %v", wantPath, err)
+	}
+	if string(got) != "## Review\n\nLooks fine.\n" {
+		t.Errorf("written content = %q, want the passed content verbatim", got)
+	}
+}
+
+func TestSaveReviewComment_EmptyContent_Errors(t *testing.T) {
+	root := t.TempDir()
+
+	_, err := saveReviewComment(root, root, ReviewPrepareIn{SaveReview: true})
+	if err == nil {
+		t.Fatal("expected error when content is empty")
+	}
+	if _, ok := err.(*mcpserver.DomainError); !ok {
+		t.Errorf("expected *mcpserver.DomainError, got %T: %v", err, err)
 	}
 }
 

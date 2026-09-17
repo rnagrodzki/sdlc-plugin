@@ -31,11 +31,14 @@ import (
 type SetupWriteSectionsIn struct {
 	// SectionsJSON is a JSON-encoded object mapping section id (e.g.
 	// "version", "commit") to the full field-value object for that section,
-	// e.g. {"version":{"mode":"file","versionFile":"package.json"}}.
-	// Each section's value REPLACES the section wholesale (WriteSection
-	// semantics) — callers must pass the complete object for a section, not
-	// a partial patch.
-	SectionsJSON string `json:"sectionsJson" jsonschema_description:"JSON-encoded object mapping section id (e.g. \"version\", \"commit\") to the full field-value object for that section, e.g. {\"version\":{\"mode\":\"file\",\"versionFile\":\"package.json\"}}. Each section's value REPLACES the section wholesale — pass the complete object for a section, not a partial patch."`
+	// e.g. {"version":{"mode":"file","versionFile":"package.json"}}. A
+	// plain top-level id (e.g. "version") REPLACES that section wholesale.
+	// A dotted id (e.g. "plan.guardrails") is routed by config.WriteSection
+	// to the nested table at that LEAF path — siblings under the same
+	// top-level key are preserved, and only the leaf is replaced wholesale.
+	// Either way, callers must pass the complete object for the id they
+	// name, not a partial patch of it.
+	SectionsJSON string `json:"sectionsJson" jsonschema_description:"JSON-encoded object mapping section id (e.g. \"version\", \"commit\") to the full field-value object for that section, e.g. {\"version\":{\"mode\":\"file\",\"versionFile\":\"package.json\"}}. A plain top-level id REPLACES that section wholesale. A dotted id (e.g. \"plan.guardrails\") merges at that nested leaf instead, preserving sibling keys under the same top-level section — the leaf itself is still replaced wholesale, not patched. Pass the complete object for the id you name."`
 }
 
 // SetupWriteSectionsOut is the output for the setup_write_sections tool.
