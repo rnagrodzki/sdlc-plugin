@@ -42,8 +42,10 @@ field that does not exist. Deviations, one line each:
   instead, and Step 2 still runs before the menu answers are acted on.
 - **Misplaced-section detection:** source additionally flagged a section `legacy` when a key
   was nested at the wrong config-file top level (e.g. `ship` under `.sdlc-v2/config.toml`). No
-  Go equivalent exists; dropped. The legacy-file markers checked in Step 0 still catch every
-  concrete legacy layout `internal/configmigrate` knows how to migrate.
+  Go equivalent exists; dropped. No client-side scan of the seven legacy marker files exists
+  in this port either — Step 0 never enumerates them. `needsMigration` (from `setup_prepare`)
+  is a narrower signal: whether `.sdlc-v2/config.toml`/`local.toml` exist and their schema
+  version, not a legacy-marker scan.
 - **`preReleaseCompat` (Gap B):** inlined as a static 6-row table in 3.G below, copied
   verbatim from source's `PRE_RELEASE_COMPAT` constant (`scripts/skill/setup.js`) — no Go
   tool field carries it.
@@ -62,17 +64,24 @@ field that does not exist. Deviations, one line each:
   `.sdlc-v2/`, both managed `.gitignore` blocks, and the two TOML files if they don't already
   exist. All real field values collected in Step 3 are written via the additive
   `setup_write_sections` tool instead (see "Writing config files").
-- **`setup_write_sections` keys are config-file top-level keys, not section ids.** The JSON
-  key passed to `setup_write_sections` is the segment of `section.configPath` before its
-  first `.` — e.g. `received-review`'s `configPath` is `receivedReview` (camelCase, no
-  hyphen) → write under key `receivedReview`; `plan-guardrails`'s `configPath` is
-  `plan.guardrails` → write under key `plan` as `{ guardrails: [...] }`. Never use
-  `section.id` verbatim as the write key.
-- **`pr` wholesale-write hazard.** `pr-labels` (`setup-pr-labels.md`) and this file's own
-  3.pr both write into the same top-level `pr` config key. `setup_write_sections` /
-  `config.WriteSection` replace a key wholesale, so "Writing config files" below always
-  re-reads the current `pr` object immediately before writing `pr` and preserves any
-  `labels` key already present.
+- **`setup_write_sections` keys can be dotted section paths, not just top-level keys.**
+  `config.WriteSection` walks a dotted key (e.g. `plan.guardrails`, `execute.guardrails`,
+  `pr.labels`, `plan.tasks`) to the addressed leaf, replaces only that leaf, and leaves
+  every sibling untouched. Use `section.configPath` itself as the write key whenever the
+  value at that path is a JSON object/table — every section below qualifies except `pr`'s
+  own scalar fields: e.g. `received-review`'s `configPath` is `receivedReview` → write under
+  key `receivedReview`; `plan-guardrails`'s `configPath` is `plan.guardrails` → write under
+  key `plan.guardrails` directly (not `plan`). A leaf value must itself be a JSON object —
+  `config.WriteSection` cannot address a single scalar field this way (see the `pr`
+  exception below). Never use `section.id` verbatim as the write key.
+- **`pr` wholesale-write hazard (one-directional now).** `pr-labels`
+  (`setup-pr-labels.md`) writes the dotted leaf `pr.labels` directly and is no longer part of
+  this hazard. This file's own 3.pr write is the one exception to the dotted-leaf rule above:
+  `titlePattern`/`allowedTypes`/`allowedScopes`/`expectedAccount`/etc. are scalar fields, not
+  tables, so they cannot be addressed as `pr.titlePattern` — 3.pr must write the `pr`
+  top-level key wholesale. `config.WriteSection` replaces a key wholesale, so "Writing config
+  files" below still re-reads the current `pr` object immediately before writing `pr` and
+  preserves any `labels` key already present.
 - **`--only`/`--skip` id list corrected.** Source's own SKILL.md listed 13 ids for `--only`
   (missing `received-review`). The table below lists the true 17 canonical ids from
   `internal/setupmeta.Sections()` (includes `plan-style` and `plan-tasks`, added after the
@@ -152,27 +161,33 @@ If the system context contains "Plan mode is active":
    unless Step 2 migration or a write changes the files):
    - Read `.sdlc-v2/config.toml` → `projectConfig` (absent file = `{}`, not an error).
    - Read `.sdlc-v2/local.toml` → `localConfig` (absent file = `{}`).
-   - Glob `.sdlc-v2/review-dimensions/*.yaml` → dimension count.
-   - Glob `.sdlc-v2/pr-template.md` and `.sdlc-v2/plan-template.md` → existence booleans.
+
+   Disclosed gap: `setup_prepare` returns section metadata (ids, labels,
+   fields), never the config files' own contents, and no other MCP tool
+   returns full `.sdlc-v2/config.toml` / `local.toml` contents. This bare
+   Read is setup's own bootstrap of its cache and has no tool-backed
+   alternative — same underlying limitation as `setup-guardrails.md`'s
+   Step 0 note. Every later reference to `projectConfig`/`localConfig`
+   below reuses this cache, not a fresh read.
+   - Call `dimensions_render_instructions({ listDimensions: true })` →
+     `{ ok, dimensions[], count, next }` for the installed review-dimension count and names
+     (fixes a pre-existing `.yaml`→`.md` extension bug in the old bare Glob here — dimension
+     files are `.md`).
+   - Call `setup_init({ checkPRTemplate: true })` → `{ ok, exists }` and
+     `setup_init({ checkPlanTemplate: true })` → `{ ok, exists }` for the pr-template.md /
+     plan-template.md existence booleans.
    - If `openspec/config.yaml` exists, Read it and search for a line matching
      `# BEGIN MANAGED BY sdlc-utilities (v<N>)`; capture `<N>` as the managed-block version
      (no match, or file absent → no managed block).
 
-4. **Legacy-file detection** (mirrors `internal/config`'s `legacyMarkers` exactly —
-   Glob each path relative to the project root): `.claude/sdlc.json`, `.claude/version.json`,
-   `.sdlc/jira-config.json`, `.sdlc/ship-config.json`, `.sdlc/review.json`,
-   `.claude/review.json`, `.sdlc-v2/config.json`. Also Glob `.claude/jira-templates/`
-   separately — it drives `migrate({ action: "import" })` in Step 2 but is not one of the
-   seven markers `needsMigration` is based on.
-
-5. **Version detection** (source's `detected.versionFile`/`fileType`/`tagPrefix` — no Go
+4. **Version detection** (source's `detected.versionFile`/`fileType`/`tagPrefix` — no Go
    field carries this): Glob in this priority order — `package.json`, `Cargo.toml`,
    `pyproject.toml`, `pubspec.yaml`, `plugin.json` — first match sets `detected.versionFile`
    and the matching `fileType` enum value. Run `git tag --list` (Bash); if any tags exist,
    take the common leading non-digit substring of the most recent few tags as
    `detected.tagPrefix`; default to `v` when there are no tags or no consistent prefix.
 
-6. **Flag routing** (unchanged from source). The direct-entry flags map onto `--only`, which
+5. **Flag routing** (unchanged from source). The direct-entry flags map onto `--only`, which
    drives Step 3 directly:
 
    | Flag passed | Equivalent `--only <id>` |
@@ -286,7 +301,7 @@ Example rendering:
 ```
 1. [set] Version — Tells /pr and /ship where the canonical version string lives.
 2. [not-set] Ship — Developer-local pipeline preferences for /ship.
-3. [not-set] Review dimensions — Review dimensions installed under .sdlc-v2/review-dimensions/*.yaml.
+3. [not-set] Review dimensions — Review dimensions installed under .sdlc-v2/review-dimensions/*.md.
 4. [not-set] Plan template — Project-owned plan template at .sdlc-v2/plan-template.md.
 ```
 
@@ -329,8 +344,9 @@ Step 2 / Step 3.
 
 **Skip this step if:** `needsMigration` is `false` AND `--migrate` was NOT passed.
 
-If any of the seven legacy markers from Step 0 exist, or `--migrate` was passed, use
-AskUserQuestion:
+Since this step only runs when `needsMigration` is `true` (`.sdlc-v2/config.toml`/`local.toml`
+missing or schema-stale, per `setup_prepare` in Step 0 item 1 — not a scan for legacy marker
+files) or `--migrate` was passed, use AskUserQuestion:
 
 > Legacy or outdated config files detected. Migrate to the current config format before
 > proceeding?
@@ -366,8 +382,8 @@ migrate({ action: "config", dryRun: false }) → { ok, result, changed[] }
 `result` is one of: `"up-to-date"` (nothing to do), or
 `"migrated (steps: [...], legacy ingested: [<path> <path> ...])"`. This single call migrates
 both `.sdlc-v2/config.toml` and `.sdlc-v2/local.toml` schema versions and ingests any of the seven
-legacy per-section files found in Step 0 — there is no separate project/local/`--unset-only`
-branch to run.
+legacy per-section files present on disk — this call discovers them itself, they are not
+pre-enumerated in Step 0 — there is no separate project/local/`--unset-only` branch to run.
 
 Then run the layout migration (moves any pre-existing `.sdlc-v2/execution/` directory
 tree into the current `.sdlc-v2/runs/` layout — idempotent, always safe to run):
@@ -394,7 +410,8 @@ On **no** (top-level choice: configure from scratch): proceed directly to Step 3
 migrating.
 
 After migration (or after the delete-legacy prompt resolves), re-run Step 0's snapshot
-(re-call `setup_prepare` and re-Read `.sdlc-v2/config.toml` / `.sdlc-v2/local.toml`) so Step 3's
+(re-call `setup_prepare` and re-Read `.sdlc-v2/config.toml` / `.sdlc-v2/local.toml` — same
+disclosed gap as Step 0, no tool-backed alternative) so Step 3's
 "Current value" lines and Step 1's already-computed `state`/`summary` reflect the migrated
 config.
 
@@ -650,16 +667,20 @@ Before invoking `setup-dimensions` or `setup-pr-template`, run the project signa
   `**/sequelize*`, `**/typeorm*`, `**/sqlalchemy*`.
 - **Test structure:** Glob for `test/`, `tests/`, `spec/`, `__tests__/`, `cypress/`,
   `**/playwright.config.*`.
-- **Existing review dimensions:** Glob for `.sdlc-v2/review-dimensions/*` (count and names;
-  reuse the Step 0 snapshot when this is the first delegated section in the loop).
-- **Existing guardrails:** Read `.sdlc-v2/config.toml` → `plan.guardrails` array if present.
+- **Existing review dimensions:** reuse the Step 0 snapshot's `listDimensions` result (count
+  and names) — no fresh call needed.
+- **Existing guardrails:** not available here. There is no MCP tool that returns
+  `plan.guardrails`'s current contents, and `setup-guardrails.md`'s own Step 0 does not read
+  `.sdlc-v2/config.toml` either — its `--add` mode proposal list is not deduplicated against
+  existing ids (see its Gotchas).
 - **GitHub hosting detection:** Bash for `git remote -v` and `gh repo view` (safe). Glob for
   `.github/`.
 - **CLAUDE.md / AGENTS.md:** Read `CLAUDE.md`, `AGENTS.md`, `.claude/CLAUDE.md` if present.
 - **PR template:** Glob for `.github/PULL_REQUEST_TEMPLATE.md`,
   `.github/pull_request_template.md`.
 - **Recent PRs:** Bash for `gh pr list --limit 5 --json title,body` (safe).
-- **Existing PR template:** Glob for `.sdlc-v2/pr-template.md` (reuse Step 0 snapshot).
+- **Existing PR template:** reuse the Step 0 snapshot's `checkPRTemplate` result — no fresh
+  call needed.
 - **JIRA evidence:** Bash for `git log --oneline -20` and `git rev-parse --abbrev-ref HEAD`
   (safe).
 
@@ -712,22 +733,29 @@ Otherwise, ask the user to confirm the diff via AskUserQuestion. On rejection, p
 After collecting all answers AND confirming the diff preview above:
 
 1. **Assemble the write map.** For each section actually configured in Step 3 (not skipped),
-   compute its `setup_write_sections` key as the segment of `section.configPath` before its
-   first `.` (see Port Notes): `version`→`version`, `ship`→`ship`, `jira`→`jira`,
-   `review`→`review`, `received-review`→`receivedReview`, `commit`→`commit`, `pr`→`pr`,
-   `pr-labels`→`pr` (nested `labels`), `plan-style`→`planStyle`, `plan-tasks`→`plan` (nested
-   `tasks`), `plan-guardrails`→`plan` (nested `guardrails`),
-   `execution-guardrails`→`execute` (nested `guardrails`), `automation`→`automation`.
+   compute its `setup_write_sections` key as `section.configPath` itself (see Port Notes),
+   used as a dotted leaf: `version`→`version`, `ship`→`ship`, `jira`→`jira`, `review`→`review`,
+   `received-review`→`receivedReview`, `commit`→`commit`, `plan-style`→`planStyle`,
+   `plan-tasks`→`plan.tasks`, `automation`→`automation`. `pr` is the one exception — its
+   `configPath` is `pr` but its value has scalar fields, so it is written as the `pr`
+   top-level key wholesale (see "pr merge-preserve" below), never as a dotted leaf.
 
    Note: `pr-labels`, `plan-guardrails`, and `execution-guardrails` are configured by their
    own companion sub-flows (`setup-pr-labels.md`, `setup-guardrails.md`,
-   `setup-execution-guardrails.md`), which each call `setup_write_sections` themselves
-   using their own read-merge-write sequencing — do not re-write those keys here.
+   `setup-execution-guardrails.md`), which each call `setup_write_sections` themselves with
+   their own dotted leaves (`pr.labels`, `plan.guardrails`/`plan.guardrails.<id>`,
+   `execute.guardrails`/`execute.guardrails.<id>`) — do not re-write those keys here.
 
-2. **`pr` merge-preserve.** If `pr` was configured in 3.pr this run, immediately before
-   writing, Read the current `.sdlc-v2/config.toml` and check for an existing `pr.labels` key
-   (it may have been written by `setup-pr-labels.md` in an earlier or the same run). If
-   present, include it unchanged in the object being written:
+2. **`pr` merge-preserve (genuinely still needed).** `pr`'s fields
+   (`titlePattern`/`allowedTypes`/`allowedScopes`/`expectedAccount`/etc.) are scalars, not
+   tables, so — unlike every other section here — they cannot be written as a dotted leaf;
+   3.pr's write must replace the `pr` top-level key wholesale. If `pr` was configured in 3.pr
+   this run, immediately before writing, Read the current `.sdlc-v2/config.toml` and check
+   for an existing `pr.labels` key (it may have been written by `setup-pr-labels.md` in an
+   earlier or the same run). If present, include it unchanged in the object being written.
+   No MCP tool returns this value, so this Read is a deliberate, disclosed exception to the
+   dotted-leaf posture elsewhere in this file — it is the one place a wholesale `pr` write is
+   unavoidable:
 
    ```
    setup_write_sections({
@@ -737,22 +765,18 @@ After collecting all answers AND confirming the diff preview above:
    }) → { ok, written, errors }
    ```
 
-3. **`plan` merge-preserve.** If `plan-tasks` was configured in the generic field loop (3.G)
-   this run, immediately before writing, Read the current `.sdlc-v2/config.toml` and check for
-   an existing `plan.guardrails` key (it may have been written earlier in this same run by
-   `setup-guardrails.md`, which writes immediately rather than deferring to this step, or by a
-   prior run). If present, include it unchanged in the object being written:
+3. **`plan.tasks` writes as a dotted leaf — no read needed.** If `plan-tasks` was configured
+   in the generic field loop (3.G) this run, write it directly as `"plan.tasks"`. This is a
+   dotted leaf, not the `plan` top-level key, so `plan.guardrails` (written independently by
+   `setup-guardrails.md`) is never touched by this call and there is nothing to preserve:
 
    ```
    setup_write_sections({
      sectionsJson: JSON.stringify({
-       plan: { tasks: <assembledPlanTasksFromStep3>, guardrails: <existing plan.guardrails if present> }
+       "plan.tasks": <assembledPlanTasksFromStep3>
      })
    }) → { ok, written, errors }
    ```
-
-   Omit the `guardrails` key entirely when no existing value is present — do not write
-   `guardrails: []`.
 
 4. **Everything else** writes directly, one key per assembled section, in a single batched
    call where possible:
@@ -774,7 +798,8 @@ After collecting all answers AND confirming the diff preview above:
 ### Step 3b — Validate Written Config
 
 Re-run Step 0's snapshot (re-call `setup_prepare`, re-Read `.sdlc-v2/config.toml` and
-`.sdlc-v2/local.toml`) and recompute `state` for every id that was just written.
+`.sdlc-v2/local.toml` — same disclosed gap as Step 0, no tool-backed alternative) and
+recompute `state` for every id that was just written.
 
 Confirm every id written in "Writing config files" now shows `state === 'set'`. If any
 written id still shows `not-set` (write silently no-opped or the value resolved as empty),
@@ -813,10 +838,11 @@ skipped or unchanged.
 
 This skill is safe to re-run. Already-configured sections show `[set]` in Step 1 and are
 skipped by the `not-set` menu token unless `--force` is passed. `setup_write_sections` /
-`config.WriteSection` replace a section wholesale — see "Writing config files" for the two
-cases (`pr`, `plan`) where this port must explicitly re-read and merge before writing, since
-Go has no read-merge-write primitive equivalent to source's
-`writeProjectConfig`/`writeLocalConfig`.
+`config.WriteSection` replace a section wholesale per key — writing a dotted leaf (e.g.
+`plan.guardrails`, `plan.tasks`, `pr.labels`) replaces only that leaf and preserves siblings
+automatically, no read-merge needed. `pr`'s own scalar fields are the one exception: `pr`
+must still be written as its top-level key wholesale, so "Writing config files" explicitly
+re-reads and merges in any existing `pr.labels` before that write.
 
 ---
 
@@ -836,9 +862,11 @@ Go has no read-merge-write primitive equivalent to source's
   Step 1 (Phases 1–4).
 - Assume `mode` for the `version` section — it is a required field, always ask or detect.
 - Write the `pr` config key without first checking for and preserving an existing
-  `pr.labels` sibling (see "Writing config files").
-- Write the `plan` config key without first checking for and preserving whichever sibling
-  (`plan.guardrails` or `plan.tasks`) wasn't just configured (see "Writing config files").
+  `pr.labels` sibling (see "Writing config files") — this is the one remaining wholesale-key
+  write in this file.
+- Write `plan.guardrails`, `plan.tasks`, `execute.guardrails`, or `pr.labels` as anything
+  other than a dotted leaf — writing the `plan`/`execute`/`pr` top-level key instead would
+  clobber whichever sibling value wasn't just configured.
 
 ---
 
@@ -855,14 +883,18 @@ detected in Step 0, default to `mode: "file"`. When none was found, default to
 **Ship config is developer-local.** Ship preferences live in `.sdlc-v2/local.toml` (gitignored),
 not in `.sdlc-v2/config.toml`. Each developer has their own ship preferences.
 
-**`setup_write_sections` is wholesale, not merge, per key.** Unlike source's
-`writeProjectConfig`/`writeLocalConfig`, there is no automatic read-merge-write across an
-entire config file — each call replaces exactly the top-level keys it names. The `pr` /
-`pr.labels` and `plan.tasks` / `plan.guardrails` interactions (see "Writing config files")
-are the places in this file where that distinction has an observable correctness
-consequence; the `setup-pr-labels.md`, `setup-guardrails.md`, and
-`setup-execution-guardrails.md` companion sub-flows each handle their own equivalent
-read-preserve-write internally.
+**`setup_write_sections` is wholesale-per-leaf, not merge, at whatever key you name.** Each
+call replaces exactly the keys it names — but a key can be a dotted path (`plan.guardrails`,
+`plan.tasks`, `execute.guardrails`, `pr.labels`), and a dotted-path write replaces only that
+leaf, leaving siblings under the parent table untouched with no read needed first. `pr`'s own
+fields are the one exception: they are scalars, not a table, so they cannot be addressed as a
+dotted leaf (`pr.titlePattern` would try to write a table where a string belongs, and fails)
+— 3.pr must write the `pr` top-level key wholesale, which is why "Writing config files" still
+explicitly re-reads and merges in any existing `pr.labels` before that one write. The
+`setup-pr-labels.md`, `setup-guardrails.md`, and `setup-execution-guardrails.md` companion
+sub-flows write their own dotted leaves (`pr.labels`, `plan.guardrails`/
+`plan.guardrails.<id>`, `execute.guardrails`/`execute.guardrails.<id>`) independently and need
+no merge step of their own.
 
 **Legacy review config has two possible locations.** `.sdlc-v2/review.json` and
 `.claude/review.json` are both legacy paths; `internal/configmigrate` prefers

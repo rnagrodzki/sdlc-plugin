@@ -1101,3 +1101,71 @@ func TestValidatePlanFormat_PF12(t *testing.T) {
 		}
 	})
 }
+
+// ---------------------------------------------------------------------------
+// worktree_anchoring stray-state detection (Task 8)
+// ---------------------------------------------------------------------------
+
+func TestFindStrayStateEntries_PlantedFileProducesFinding(t *testing.T) {
+	mainRoot := t.TempDir()
+	activeRoot := t.TempDir()
+
+	activeDataDir := filepath.Join(activeRoot, paths.DataDir)
+	if err := os.MkdirAll(filepath.Join(activeDataDir, "reports"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(activeDataDir, "reports", "x.md"), []byte("stray"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	findings, err := findStrayStateEntries(mainRoot, activeRoot)
+	if err != nil {
+		t.Fatalf("findStrayStateEntries: %v", err)
+	}
+	strayFindings := findingsByID(findings, "WORKTREE_ANCHOR_STRAY_STATE")
+	if len(strayFindings) != 1 {
+		t.Fatalf("expected 1 WORKTREE_ANCHOR_STRAY_STATE finding, got %d: %+v", len(strayFindings), findings)
+	}
+	if strayFindings[0].Severity != "error" {
+		t.Errorf("severity = %q, want error", strayFindings[0].Severity)
+	}
+	if !strings.Contains(strayFindings[0].Message, "reports") {
+		t.Errorf("message = %q, want mention of the stray entry name", strayFindings[0].Message)
+	}
+}
+
+func TestFindStrayStateEntries_OnlyTrackedFilesProducesNoFinding(t *testing.T) {
+	mainRoot := t.TempDir()
+	activeRoot := t.TempDir()
+
+	activeDataDir := filepath.Join(activeRoot, paths.DataDir)
+	if err := os.MkdirAll(filepath.Join(activeDataDir, "review-dimensions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{".gitignore", "config.toml"} {
+		if err := os.WriteFile(filepath.Join(activeDataDir, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	findings, err := findStrayStateEntries(mainRoot, activeRoot)
+	if err != nil {
+		t.Fatalf("findStrayStateEntries: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected no findings, got %+v", findings)
+	}
+}
+
+func TestFindStrayStateEntries_MissingStateDirIsNotAnError(t *testing.T) {
+	mainRoot := t.TempDir()
+	activeRoot := t.TempDir() // no .sdlc-v2/ created at all in the active worktree
+
+	findings, err := findStrayStateEntries(mainRoot, activeRoot)
+	if err != nil {
+		t.Fatalf("findStrayStateEntries: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected no findings, got %+v", findings)
+	}
+}

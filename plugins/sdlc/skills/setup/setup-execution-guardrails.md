@@ -11,9 +11,11 @@ then lets the user review and select. Writes guardrails to
 > (shared table, not duplicated here — this file supplies the execute-target
 > description column only). `validate-guardrails.js --section execute` →
 > `validate({ action: "guardrails", section: "execute" })`. Config writes go
-> through `setup_write_sections` (`{"execute": {"guardrails": {...}}}`),
-> wholesale — the `execute` config section's schema has a single `guardrails`
-> table (object keyed by guardrail ID) property, same as `plan`.
+> through `setup_write_sections` using the dotted leaf `execute.guardrails`
+> (replace mode) or per-id `execute.guardrails.<id>` leaves (`--add` mode) —
+> never the `execute` top-level key. There is no MCP tool that returns the
+> current `execute.guardrails` table's contents, so `--add` mode cannot
+> detect which ids are already configured — see Gotchas.
 
 ## Arguments
 
@@ -55,9 +57,13 @@ descriptions instead of the plan descriptions:
 
 ### Step 0 — Prepare
 
-1. Read `.sdlc-v2/config.toml`. Extract the existing `execute.guardrails` table (object keyed by guardrail ID; empty if absent) as `existing`.
-2. If not in `--add` mode and `existing` is non-empty: use AskUserQuestion: "`{existing.length}` execution guardrails already configured. Replace all, or use --add to expand?" Options: replace / cancel. On cancel, stop.
-3. Run the scan per `setup-guardrails.md`'s Detection Helpers.
+1. Run the scan per `setup-guardrails.md`'s Detection Helpers.
+
+No `.sdlc-v2/config.toml` read happens here. There is no MCP tool that
+returns the current `execute.guardrails` table's contents, so this
+sub-flow cannot tell whether execution guardrails are already configured
+or which ids exist — `--add` mode's proposal list is not deduplicated
+against them (see Gotchas).
 
 ### Step 1 (REVIEW) — Build and Refine Proposals
 
@@ -66,7 +72,8 @@ Planning-discipline) and the scan results:
 
 1. Include every conditional guardrail whose evidence condition is met, using the execute description above.
 2. Include every always-on guardrail, using the execute description above.
-3. In `--add` mode: exclude any `id` already present in `existing`.
+3. In `--add` mode: there is no existing-ids list to exclude against (see
+   Step 0) — propose from the full catalog as usual.
 4. Drop proposals that don't make sense despite matching a signal.
 5. Cap at 3-8 proposals.
 
@@ -89,19 +96,36 @@ On **custom**: collect id (validate kebab-case pattern
 `^[a-z][a-z0-9]*(-[a-z0-9]+)*$`), description, severity (default: error).
 Allow multiple custom entries.
 
+In `--add` mode, warn before this prompt: "This project's current execution
+guardrails can't be listed automatically — if any proposal below is already
+configured, selecting it will overwrite its description/severity with the
+catalog's values."
+
 ### Step 3 (WRITE) — Write Config
+
+Replace mode (no `--add`) writes the whole `execute.guardrails` leaf:
 
 ```
 setup_write_sections({
   sectionsJson: JSON.stringify({
-    execute: { guardrails: <FULL_GUARDRAILS_TABLE> }
+    "execute.guardrails": <FULL_GUARDRAILS_TABLE>
   })
 }) → { ok, written, errors }
 ```
 
-`<FULL_GUARDRAILS_TABLE>` is the selected guardrails from Step 2. In `--add`
-mode: merge `existing` (from Step 0) into the table before writing — the
-write is wholesale replacement, not a merge.
+`<FULL_GUARDRAILS_TABLE>` is the selected guardrails from Step 2.
+
+`--add` mode writes one dotted leaf per selected id, in a single call, so
+only those ids are touched:
+
+```
+setup_write_sections({
+  sectionsJson: JSON.stringify({
+    "execute.guardrails.<id1>": { description: <description>, severity: <severity> },
+    "execute.guardrails.<id2>": { description: <description>, severity: <severity> }
+  })
+}) → { ok, written, errors }
+```
 
 ### Step 4 (VALIDATE)
 
@@ -119,11 +143,22 @@ show the findings and offer to fix them.
 - Skip AskUserQuestion for user interaction.
 - Scan the entire codebase — use the Guardrail Catalog's evidence conditions, not an unbounded scan.
 - Propose any Planning-discipline guardrail — those are `plan`-target only (see `setup-guardrails.md`).
+- Read `.sdlc-v2/config.toml` (bare Read, Glob, or Bash) to inspect the
+  current `execute.guardrails` table — no such read is available; see Step 0
+  and Gotchas.
 
 ## Gotchas
 
 - **The Guardrail Catalog (`setup-guardrails.md`) is the source of truth for scanning.** Do not invent guardrails outside it except through the custom-guardrail path.
-- **Config write is wholesale, not merge.** `setup_write_sections` replaces the `execute` section entirely. In `--add` mode, the skill must read existing guardrails (Step 0) and prepend them to the selection before writing.
+- **`--add` mode cannot detect already-configured ids.** No MCP tool exposes
+  the current `execute.guardrails` table's contents (`setup_write_sections`
+  only writes; `validate({action:"guardrails", section:"execute"})` returns
+  pass/fail findings, not raw guardrail data), and a bare Read of
+  `.sdlc-v2/config.toml` is not available to this sub-flow. If the user
+  reselects an id that's already configured, that id's write overwrites its
+  `description`/`severity` with the catalog's current values — this is a
+  real data-loss path, not harmless idempotency. Warn the user before Stage
+  A/custom (see Step 2).
 - **Custom guardrails need ID validation.** The kebab-case pattern `^[a-z][a-z0-9]*(-[a-z0-9]+)*$` must be enforced before writing.
 
 ## See Also

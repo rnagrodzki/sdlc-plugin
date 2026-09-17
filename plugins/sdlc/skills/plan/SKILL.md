@@ -269,8 +269,7 @@ After the `fromOpenspecDirect` enrichment block, determine which exploration pat
      ```
      1. Call execute_state({ action: "ledger_checkin", runId: "{runId}", workerId: "{workerId}" }) BEFORE starting exploration.
      2. Explore per the instructions above.
-     3. Write your findings to the file ".sdlc-v2/runs/ledger/{runId}/{workerId}.findings.md" as the raw F-{dimension.name}-n text block above, or the literal text ZERO_FINDINGS. Do this BEFORE the next step.
-     4. Call execute_state({ action: "ledger_checkout", runId: "{runId}", workerId: "{workerId}" }) LAST, even when your findings file says ZERO_FINDINGS.
+     3. Call execute_state({ action: "ledger_checkout", runId: "{runId}", workerId: "{workerId}", findings: "<raw F-{dimension.name}-n text block above, or the literal text ZERO_FINDINGS>" }) LAST — this single call both records your checkout and persists your findings.
      ```
 
      Dispatch one Agent per dimension, **all in a single message**, with `run_in_background: true`, `subagent_type: general-purpose`, `model: dimension.model`. **Do NOT pass `isolation: "worktree"` or any `isolation` value** (forbidden per issues #370/#372).
@@ -283,7 +282,7 @@ After the `fromOpenspecDirect` enrichment block, determine which exploration pat
 
      **Missing-worker handling (same escalation pattern as stalls):** a `workerId` appearing in `missingWorkers` (dispatched but never checked in) is not yet failed — wait one more poll cycle. If it is **still** present in `missingWorkers` on the next poll, force-progress past it: proceed to CRITIQUE with the results collected so far, log a warning, and explicitly name the skipped dimension(s) in `discovery-brief.md`'s `## Zero-Finding Dimensions` section with the note "skipped — worker never checked in; no findings collected" — a disclosed degraded mode, not a silent drop.
 
-  5. **CRITIQUE.** Once every dispatched worker is `done` (or force-progressed past a stall above), read each worker's findings file at `.sdlc-v2/runs/ledger/{runId}/{workerId}.findings.md`:
+  5. **CRITIQUE.** Once every dispatched worker is `done` (or force-progressed past a stall above), read each worker's `findings` field from `execute_state({ action: "ledger_status", runId, expectedWorkers: [ids] })`'s `workers[]` response (collected during the poll in step 4):
      - **Deduplicate** — same file:line or same URL; keep the most specific observation.
      - **Severity consolidation** — same issue at different severities; keep the highest.
      - **Zero-finding dimensions** — list honestly; never fabricate findings for these.
@@ -339,9 +338,9 @@ After the `fromOpenspecDirect` enrichment block, determine which exploration pat
 
   7. **Read the brief** (`{outDir}/discovery-brief.md`) into context. It is the source of truth for Step 2 task provenance.
 
-  8. **Brief validation:** grep the brief's content for the pattern `F-[A-Z0-9_-]+-[0-9]+`. If zero matches are found, treat discovery as if it had failed: append one line to `.sdlc-v2/learnings/log.md`: `## <YYYY-MM-DD> — plan discovery returned brief without F-DIM-N findings; using fallback inline exploration`, delete the tempdir and ledger directory (`rm -rf "<outDir>"`, `rm -rf ".sdlc-v2/runs/ledger/<runId>"`), then proceed via the **Error fallback** path below. Rationale: a brief with no findings cannot satisfy G15 (Brief citation coverage) and would force every task into "out-of-scope addition" — better to fall back cleanly.
+  8. **Brief validation:** grep the brief's content for the pattern `F-[A-Z0-9_-]+-[0-9]+`. If zero matches are found, treat discovery as if it had failed: call `learnings_log({action:"append", entry:"## <YYYY-MM-DD> — plan discovery returned brief without F-DIM-N findings; using fallback inline exploration"})`, delete the tempdir and clean up the ledger (`rm -rf "<outDir>"`, `execute_state({ action: "ledger_cleanup", runId: "<runId>" })`), then proceed via the **Error fallback** path below. Rationale: a brief with no findings cannot satisfy G15 (Brief citation coverage) and would force every task into "out-of-scope addition" — better to fall back cleanly.
 
-  9. **Cleanup.** On successful brief validation, `rm -rf "<outDir>"` and `rm -rf ".sdlc-v2/runs/ledger/<runId>"` — the brief content is already loaded into context (step 7); nothing further reads the tempdir or the ledger directory.
+  9. **Cleanup.** On successful brief validation, `rm -rf "<outDir>"` and `execute_state({ action: "ledger_cleanup", runId: "<runId>" })` — the brief content is already loaded into context (step 7); nothing further reads the tempdir or the ledger directory.
 
   **Brief consumption (when brief is present AND validation passed):**
   - Step 2 tasks MUST cite at least one `F-<DIM>-<n>` finding ID from the brief OR be explicitly marked "out-of-scope addition" with rationale (implements R27)
@@ -352,7 +351,7 @@ After the `fromOpenspecDirect` enrichment block, determine which exploration pat
   - Issue all Glob/Grep/Read calls for inline exploration in a SINGLE message (parallel dispatch). (implements R37, Fixes #418)
 
 - **Error fallback** (`explorePack.error` is non-null, or brief validation found zero `F-<DIM>-<n>` IDs):
-  - Append one line to `.sdlc-v2/learnings/log.md`: `## <YYYY-MM-DD> — plan discovery skipped: <explorePack.error or "brief without F-DIM-N findings">`
+  - Call `learnings_log({action:"append", entry:"## <YYYY-MM-DD> — plan discovery skipped: <explorePack.error or 'brief without F-DIM-N findings'>"})`
   - Use inline exploration below. Plan still produced. (implements R28)
   - Issue all Glob/Grep/Read calls for inline exploration in a SINGLE message (parallel dispatch). (implements R37, Fixes #418)
 
@@ -582,9 +581,9 @@ For each `lanes[i]` entry (i = 0..4):
 ```
 { laneStatus: "failed", gateIds: lanes[i].gateIds, issues: [{ gateId: lanes[i].gateIds[0], severity: "error", message: "Lane <name> skipped — promptTemplatePath null (template not found at prepare time)", blocking: true }], passes: [] }
 ```
-Exception: lane 4 (G17/dimension-coverage) — when `lanes[4].promptTemplatePath` is null, treat as empty findings (advisory per R31 dispatch-failure fallback) and continue. Log to `.sdlc-v2/learnings/log.md`:
+Exception: lane 4 (G17/dimension-coverage) — when `lanes[4].promptTemplatePath` is null, treat as empty findings (advisory per R31 dispatch-failure fallback) and continue. Call:
 ```
-## YYYY-MM-DD — plan: G17 skipped — promptTemplatePath null (template not found at prepare time)
+learnings_log({action:"append", entry:"## YYYY-MM-DD — plan: G17 skipped — promptTemplatePath null (template not found at prepare time)"})
 ```
 
 **No `isolation: "worktree"` on any lane dispatch** (forbidden per issues #370/#372).
@@ -695,7 +694,7 @@ For each `lensReviewers[i]` entry (i = 0..2):
   - `{REQUIREMENTS_JSON}` — `JSON.stringify(openspecContext.requirements)` when present, or `"null"` (null-safe; lens prompts render `"null"` as `"none — inventory unavailable, use checklist"`)
   - `{NARRATIVE_RULES}` — `style.narrativeRules` from the `plan_prepare` output, joined as a newline-separated list, or `"none configured"` when the array is empty. Threads the project's narrative writing rules into lens reviewer evaluation.
 
-When `lensReviewers[i].promptTemplatePath` is null, skip that lens and log to `.sdlc-v2/learnings/log.md`: `## YYYY-MM-DD — plan: lens "<name>" skipped — promptTemplatePath null (template not found at prepare time)`. Continue with remaining lenses.
+When `lensReviewers[i].promptTemplatePath` is null, skip that lens and call `learnings_log({action:"append", entry:"## YYYY-MM-DD — plan: lens \"<name>\" skipped — promptTemplatePath null (template not found at prepare time)"})`. Continue with remaining lenses.
 
 **No `isolation: "worktree"` on any lens reviewer dispatch** (forbidden per issues #370/#372).
 
@@ -857,7 +856,7 @@ Do NOT report the plan as "validated" on format-floor PASS alone. Format floor =
 
 ## Learning Capture
 
-After writing the plan, append to `.sdlc-v2/learnings/log.md`:
+After writing the plan, call `learnings_log({action:"append", entry:...})` with an entry covering:
 
 - Requirements that needed significant clarification before decomposition
 - Scope decisions (what was included/excluded and why)

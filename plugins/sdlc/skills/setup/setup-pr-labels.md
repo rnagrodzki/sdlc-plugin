@@ -10,16 +10,21 @@ Configure how `/pr` chooses labels for a project. Writes the
 This sub-flow is invoked by `setup` via the `delegatedTo: 'setup-pr-labels'`
 section descriptor (`pr-labels` row, `internal/setupmeta/sections.go`).
 
-> **Port Notes** (Task 44 KD9 rewrite): config reads use the Read tool
-> directly against `.sdlc-v2/config.toml` (no `readSection` MCP tool is
-> exposed); writes use `setup_write_sections`, which replaces a top-level
-> config key wholesale — since `pr.labels` is a nested sub-key sharing the
-> `pr` object with `titlePattern`/`allowedTypes`/etc., Step 5 below always
-> reads the current `pr` section first and spreads it before writing (see
-> Gotcha 1). There is no Go schema validator for `pr.labels`'s nested shape
-> (`config.WriteSection` only checks top-level key names) — this sub-flow's
-> own collection-time checks (Step 4) are the only validation; the Quality
-> Gates section reflects this.
+> **Port Notes** (Task 44 KD9 rewrite): writes use `setup_write_sections`,
+> which now supports dotted section paths — Step 5 below writes the dotted
+> leaf `pr.labels` directly, so `titlePattern`/`allowedTypes`/`labels`/etc.
+> siblings on the `pr` object are untouched and no preserve-read is needed
+> for this write. Step 2's idempotency check still needs the *current*
+> `pr.labels` value (to show it and to seed `--append` mode's rule list in
+> Step 4), and no MCP tool returns raw config-section content — `validate`
+> checks findings, it doesn't return data, and `setup_prepare` returns only
+> static section metadata. Step 2 and the Step 4 append-seed therefore still
+> use a direct Read of `.sdlc-v2/config.toml` as a disclosed gap (see
+> Gotchas) rather than a tool call; this is display/seed-only, never a
+> write path. There is no Go schema validator for `pr.labels`'s nested
+> shape (`config.WriteSection` only checks top-level key names) — this
+> sub-flow's own collection-time checks (Step 4) are the only validation;
+> the Quality Gates section reflects this.
 
 ---
 
@@ -166,22 +171,20 @@ Build the final block:
 - `llm` → `{ mode: 'llm' }`
 - `rules` → `{ mode: 'rules', rules: [...] }`
 
-Read `.sdlc-v2/config.toml` (Read tool) to get the current `pr` section (empty
-object if absent). Merge the labels block in **without clobbering**
-`titlePattern`, `allowedTypes`, or any other sibling key, then write the full
-`pr` section back:
+Write the dotted leaf `pr.labels` directly — no read of the `pr` section is
+needed or performed here. `setup_write_sections`'s dotted-path support
+(`config.WriteSection`) writes only the `labels` key inside `pr` and leaves
+`titlePattern`, `allowedTypes`, and every other `pr.*` sibling untouched:
 
 ```
 setup_write_sections({
   sectionsJson: JSON.stringify({
-    pr: { ...currentPrSection, labels: <BLOCK> }
+    "pr.labels": <BLOCK>
   })
 }) → { ok, written, errors }
 ```
 
-`<BLOCK>` is the object built above. `...currentPrSection` MUST come from the
-Read in this step, not from any earlier cached copy — the `pr` section may
-have changed since Step 1.
+`<BLOCK>` is the object built above.
 
 ### Step 6 — Confirm
 
@@ -203,9 +206,8 @@ Before marking complete, verify:
   least one value
 - Every rule's `label` exists in the scanned `repoLabels`
 - No partial writes occurred when the user cancelled or `gh` failed
-- No sibling `pr.*` key was lost (spot-check by reading `.sdlc-v2/config.toml`
-  after the write and confirming `titlePattern`/`allowedTypes`/etc. survived,
-  if they were present before)
+- No sibling `pr.*` key was lost — structurally guaranteed by the dotted
+  `pr.labels` write (Step 5); no spot-check read is needed
 
 ---
 
@@ -223,7 +225,7 @@ Before marking complete, verify:
 When invoking `error-report`, provide:
 - **Skill**: setup (pr-labels sub-flow)
 - **Step**: Step 5 — Write
-- **Operation**: `setup_write_sections({ sectionsJson: JSON.stringify({ pr: ... }) })`
+- **Operation**: `setup_write_sections({ sectionsJson: JSON.stringify({ "pr.labels": ... }) })`
 - **Error**: full tool error message
 - **Suggested investigation**: file permissions on `.sdlc-v2/config.toml`; plugin install integrity
 
@@ -231,13 +233,13 @@ When invoking `error-report`, provide:
 
 ## Gotchas
 
-1. **Never clobber sibling `pr.*` keys.**
-   *Symptom:* `pr.titlePattern` (or any other `pr.*` key) is wiped after the
-   sub-flow runs.
-   *Root cause:* `setup_write_sections` replaces the entire `pr` section
-   wholesale (`config.WriteSection` semantics) — it does not merge.
-   *Mitigation:* Always read the current `pr` section (Step 5), spread it,
-   and only override the `labels` key.
+1. **Step 2's idempotency check and Step 4's `--append` seed still read the
+   raw file.** No MCP tool returns the current `pr.labels` value (`validate`
+   returns findings, not data; `setup_prepare` returns only static section
+   metadata) — Step 2 and the append-seed in Step 4 read
+   `.sdlc-v2/config.toml` directly for display/seeding only. This is a
+   disclosed gap, not a write path: Step 5's write never reads this section
+   back and cannot be corrupted by it.
 
 2. **Empty `repoLabels` looks like a `gh` failure but isn't.**
    *Symptom:* User sees no labels to pick from in `rules` mode and assumes
@@ -278,7 +280,8 @@ When invoking `error-report`, provide:
 ## DO NOT
 
 - Do NOT write `.sdlc-v2/config.toml` on any prompt where the user picks `cancel`.
-- Do NOT replace the entire `pr` section without first reading and spreading it — only set/replace the `labels` key.
+- Do NOT write the `pr` top-level key wholesale — always write the dotted
+  leaf `pr.labels` (Step 5) so sibling `pr.*` keys are untouched.
 - Do NOT accept a free-text label that isn't in `repoLabels` — the rule will be
   stripped by `/pr`'s label evaluator later, leaving the user with a silent dead rule.
 - Do NOT proceed to the rules loop if `gh label list` failed — `rules` mode

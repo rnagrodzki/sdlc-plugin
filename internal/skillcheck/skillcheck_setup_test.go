@@ -31,10 +31,13 @@ import (
 
 // setupSkillsCallFiles lists the Task 44 setup files, relative to the
 // repository root, that actually contain "name({ ... })" MCP tool-call
-// pseudocode and are therefore cross-checked against the registry. Three of
-// the nine companion files (setupSkillsReferenceOnlyFiles below) are pure
-// reference/copy sub-flows with no tool calls at all and are checked
-// separately for mere existence.
+// pseudocode and are therefore cross-checked against the registry.
+// setup-plan-template.md now calls setup_init({ writePlanTemplate: true })
+// (Task 45 moved its scaffold write off a bare `cp` shell command and into
+// that tool), so it belongs here rather than in setupSkillsReferenceOnlyFiles.
+// Two of the nine companion files (setupSkillsReferenceOnlyFiles below) are
+// pure reference tables with no tool calls at all and are checked separately
+// for mere existence.
 var setupSkillsCallFiles = []string{
 	"skills/setup/SKILL.md",
 	"skills/setup/setup-dimensions.md",
@@ -43,18 +46,16 @@ var setupSkillsCallFiles = []string{
 	"skills/setup/setup-guardrails.md",
 	"skills/setup/setup-execution-guardrails.md",
 	"skills/setup/setup-openspec.md",
+	"skills/setup/setup-plan-template.md",
 }
 
 // setupSkillsReferenceOnlyFiles are companion files that legitimately
 // contain zero "name({ ... })" MCP tool-call sites: dimension-catalog.md and
-// scan-patterns.md are static reference tables consumed by prose elsewhere,
-// and setup-plan-template.md scaffolds its output via a plain `cp` shell
-// command rather than any MCP tool. They are asserted to exist and be
-// non-empty, not scanned for tool calls.
+// scan-patterns.md are static reference tables consumed by prose elsewhere.
+// They are asserted to exist and be non-empty, not scanned for tool calls.
 var setupSkillsReferenceOnlyFiles = []string{
 	"skills/setup/dimension-catalog.md",
 	"skills/setup/scan-patterns.md",
-	"skills/setup/setup-plan-template.md",
 }
 
 // setupSkillsCallRe matches this repo's documented tool-call pseudocode

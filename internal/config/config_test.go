@@ -1035,6 +1035,330 @@ func TestWriteSection_RejectsUnknownProjectKeys(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Dotted section paths
+// ---------------------------------------------------------------------------
+
+// readRawTOML reads one of the two config files straight off disk, bypassing
+// readProjectRaw (and therefore normalizeGuardrailTables), so assertions see
+// the literal document WriteSection produced.
+func readRawTOML(t *testing.T, root, file string) map[string]any {
+	t.Helper()
+	var raw map[string]any
+	if err := fsx.ReadTOML(filepath.Join(root, paths.DataDir, file), &raw); err != nil {
+		t.Fatalf("ReadTOML %s: %v", file, err)
+	}
+	return raw
+}
+
+// digTable walks a chain of table keys and returns the table at the end.
+// Returns nil when any segment is absent or is not a table.
+func digTable(raw map[string]any, keys ...string) map[string]any {
+	cur := raw
+	for _, k := range keys {
+		next, ok := cur[k].(map[string]any)
+		if !ok {
+			return nil
+		}
+		cur = next
+	}
+	return cur
+}
+
+// seedDottedFixture writes a project config with two nested tables under both
+// "plan" and "pr", so every dotted-write row has a sibling to preserve.
+func seedDottedFixture(t *testing.T, root string) {
+	t.Helper()
+	setupProjectConfig(t, root, map[string]any{
+		"plan": map[string]any{
+			"tasks":      map[string]any{"note": "tasks-original"},
+			"guardrails": map[string]any{"g1": map[string]any{"severity": "error"}},
+		},
+		"pr": map[string]any{
+			"titlePattern": "^feat",
+			"labels":       map[string]any{"mapping": map[string]any{"feat": "enhancement"}},
+		},
+	})
+}
+
+// TestWriteSection_DottedPathsPreserveSiblings covers the data-loss chain this
+// change exists to kill: a dotted name merges at the LEAF, so sibling tables
+// under the same top-level key survive without the caller pre-reading them.
+// A plain top-level name keeps its old wholesale-replace semantics.
+func TestWriteSection_DottedPathsPreserveSiblings(t *testing.T) {
+	tests := []struct {
+		name    string
+		section string
+		value   map[string]any
+		check   func(t *testing.T, raw map[string]any)
+	}{
+		{
+			name:    "top-level name replaces the whole section",
+			section: "plan",
+			value:   map[string]any{"tasks": map[string]any{"note": "tasks-new"}},
+			check: func(t *testing.T, raw map[string]any) {
+				if tasks := digTable(raw, "plan", "tasks"); tasks == nil || tasks["note"] != "tasks-new" {
+					t.Errorf("plan.tasks = %v, want note=tasks-new", raw["plan"])
+				}
+				if g := digTable(raw, "plan", "guardrails"); g != nil {
+					t.Errorf("plan.guardrails = %v, want dropped by wholesale replace", g)
+				}
+				// A different top-level key is never touched.
+				if pr := digTable(raw, "pr", "labels", "mapping"); pr == nil || pr["feat"] != "enhancement" {
+					t.Errorf("pr.labels.mapping = %v, want preserved", raw["pr"])
+				}
+			},
+		},
+		{
+			name:    "plan.guardrails preserves plan.tasks",
+			section: "plan.guardrails",
+			value:   map[string]any{"g2": map[string]any{"severity": "warning"}},
+			check: func(t *testing.T, raw map[string]any) {
+				if tasks := digTable(raw, "plan", "tasks"); tasks == nil || tasks["note"] != "tasks-original" {
+					t.Errorf("plan.tasks = %v, want preserved", raw["plan"])
+				}
+				g := digTable(raw, "plan", "guardrails")
+				if g == nil {
+					t.Fatalf("plan.guardrails missing: %v", raw["plan"])
+				}
+				if _, stale := g["g1"]; stale {
+					t.Errorf("plan.guardrails still has g1: leaf write must be wholesale")
+				}
+				if digTable(g, "g2") == nil {
+					t.Errorf("plan.guardrails.g2 = %v, want written", g)
+				}
+			},
+		},
+		{
+			name:    "plan.tasks preserves plan.guardrails",
+			section: "plan.tasks",
+			value:   map[string]any{"note": "tasks-new"},
+			check: func(t *testing.T, raw map[string]any) {
+				if g := digTable(raw, "plan", "guardrails", "g1"); g == nil || g["severity"] != "error" {
+					t.Errorf("plan.guardrails.g1 = %v, want preserved", raw["plan"])
+				}
+				if tasks := digTable(raw, "plan", "tasks"); tasks == nil || tasks["note"] != "tasks-new" {
+					t.Errorf("plan.tasks = %v, want note=tasks-new", raw["plan"])
+				}
+			},
+		},
+		{
+			name:    "pr.labels preserves pr.titlePattern",
+			section: "pr.labels",
+			value:   map[string]any{"mapping": map[string]any{"fix": "bug"}},
+			check: func(t *testing.T, raw map[string]any) {
+				pr, ok := raw["pr"].(map[string]any)
+				if !ok {
+					t.Fatalf("pr = %T, want table", raw["pr"])
+				}
+				if pr["titlePattern"] != "^feat" {
+					t.Errorf("pr.titlePattern = %v, want preserved", pr["titlePattern"])
+				}
+				mapping := digTable(raw, "pr", "labels", "mapping")
+				if mapping == nil || mapping["fix"] != "bug" {
+					t.Errorf("pr.labels.mapping = %v, want fix=bug", pr["labels"])
+				}
+				if _, stale := mapping["feat"]; stale {
+					t.Errorf("pr.labels.mapping still has feat: leaf write must be wholesale")
+				}
+				// Sections other than "pr" are untouched.
+				if tasks := digTable(raw, "plan", "tasks"); tasks == nil || tasks["note"] != "tasks-original" {
+					t.Errorf("plan.tasks = %v, want preserved", raw["plan"])
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resetTrace()
+			Quiet = true
+			defer func() { Quiet = false }()
+			root := t.TempDir()
+			seedDottedFixture(t, root)
+
+			if err := WriteSection(root, tc.section, tc.value); err != nil {
+				t.Fatalf("WriteSection(%q): %v", tc.section, err)
+			}
+			tc.check(t, readRawTOML(t, root, "config.toml"))
+		})
+	}
+}
+
+// TestWriteSection_DottedLeafClearIsWholesale pins the "writing {} at a leaf
+// clears that leaf and nothing else" rule.
+func TestWriteSection_DottedLeafClearIsWholesale(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+	seedDottedFixture(t, root)
+
+	if err := WriteSection(root, "plan.tasks", map[string]any{}); err != nil {
+		t.Fatalf("WriteSection(plan.tasks): %v", err)
+	}
+
+	raw := readRawTOML(t, root, "config.toml")
+	tasks := digTable(raw, "plan", "tasks")
+	if tasks == nil {
+		t.Fatalf("plan.tasks missing entirely; want an empty table: %v", raw["plan"])
+	}
+	if len(tasks) != 0 {
+		t.Errorf("plan.tasks = %v, want empty", tasks)
+	}
+	if g := digTable(raw, "plan", "guardrails", "g1"); g == nil || g["severity"] != "error" {
+		t.Errorf("plan.guardrails.g1 = %v, want preserved by a leaf clear", raw["plan"])
+	}
+}
+
+// TestWriteSection_DottedRoutingUsesFirstSegment is the regression guard for
+// the routing bug this change could easily have introduced: looking up the
+// FULL dotted name in ProjectSections would miss, sending "pr.labels" to
+// local.toml.
+func TestWriteSection_DottedRoutingUsesFirstSegment(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+
+	if err := WriteSection(root, "pr.labels", map[string]any{"mapping": map[string]any{"fix": "bug"}}); err != nil {
+		t.Fatalf("WriteSection(pr.labels): %v", err)
+	}
+	if mapping := digTable(readRawTOML(t, root, "config.toml"), "pr", "labels", "mapping"); mapping == nil || mapping["fix"] != "bug" {
+		t.Errorf("pr.labels.mapping missing from config.toml, want the project file")
+	}
+	if _, err := os.Stat(filepath.Join(root, paths.DataDir, "local.toml")); err == nil {
+		t.Errorf("local.toml was created; a dotted project section must never route local")
+	}
+
+	// The mirror case: a dotted NON-project section still routes local.
+	if err := WriteSection(root, "review.thresholds", map[string]any{"blocking": "high"}); err != nil {
+		t.Fatalf("WriteSection(review.thresholds): %v", err)
+	}
+	if th := digTable(readRawTOML(t, root, "local.toml"), "review", "thresholds"); th == nil || th["blocking"] != "high" {
+		t.Errorf("review.thresholds missing from local.toml, want the local file")
+	}
+	if _, present := readRawTOML(t, root, "config.toml")["review"]; present {
+		t.Errorf("review leaked into config.toml")
+	}
+}
+
+// TestWriteSection_DottedValidatesMergedDocument verifies validateProjectKeys
+// still runs against the whole merged document, not just the written leaf.
+func TestWriteSection_DottedValidatesMergedDocument(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+	setupProjectConfig(t, root, map[string]any{
+		"plan":    map[string]any{"tasks": map[string]any{"note": "keep"}},
+		"unknown": map[string]any{"bad": true},
+	})
+
+	err := WriteSection(root, "plan.tasks", map[string]any{"note": "new"})
+	if err == nil {
+		t.Fatal("WriteSection(plan.tasks): expected validation error for pre-existing unknown key, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown") {
+		t.Errorf("error should name the unknown top-level key, got: %v", err)
+	}
+}
+
+// TestWriteSection_RejectsMalformedDottedName guards against an empty segment
+// silently creating a table keyed by the empty string.
+func TestWriteSection_RejectsMalformedDottedName(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+
+	for _, name := range []string{"", "plan.", ".guardrails", "plan..tasks"} {
+		if err := WriteSection(root, name, map[string]any{"a": "b"}); err == nil {
+			t.Errorf("WriteSection(%q): expected an error, got nil", name)
+		}
+		if _, err := ReadSection(root, name); err == nil {
+			t.Errorf("ReadSection(%q): expected an error, got nil", name)
+		}
+	}
+}
+
+// TestReadSection_DottedPath mirrors the dotted write: a dotted name returns
+// the table at the leaf, from whichever file the FIRST segment routes to.
+func TestReadSection_DottedPath(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+	seedDottedFixture(t, root)
+	setupLocalConfig(t, root, map[string]any{
+		"review": map[string]any{"thresholds": map[string]any{"blocking": "high"}},
+	})
+
+	tasks, err := ReadSection(root, "plan.tasks")
+	if err != nil {
+		t.Fatalf("ReadSection(plan.tasks): %v", err)
+	}
+	if tasks["note"] != "tasks-original" {
+		t.Errorf("plan.tasks.note = %v, want tasks-original", tasks["note"])
+	}
+
+	labels, err := ReadSection(root, "pr.labels")
+	if err != nil {
+		t.Fatalf("ReadSection(pr.labels): %v", err)
+	}
+	if mapping := digTable(labels, "mapping"); mapping == nil || mapping["feat"] != "enhancement" {
+		t.Errorf("pr.labels.mapping = %v, want feat=enhancement", labels["mapping"])
+	}
+
+	th, err := ReadSection(root, "review.thresholds")
+	if err != nil {
+		t.Fatalf("ReadSection(review.thresholds): %v", err)
+	}
+	if th["blocking"] != "high" {
+		t.Errorf("review.thresholds.blocking = %v, want high", th["blocking"])
+	}
+
+	// A missing leaf, and a leaf that exists but is not a table, are both
+	// ErrNotFound rather than a panic or a zero-value map.
+	for _, name := range []string{"plan.missing", "pr.titlePattern", "missing.leaf"} {
+		if _, err := ReadSection(root, name); !errors.Is(err, ErrNotFound) {
+			t.Errorf("ReadSection(%q) error = %v, want ErrNotFound", name, err)
+		}
+	}
+}
+
+// TestReadSection_DottedGuardrailsAreNormalizedToAList documents a deliberate
+// exception. readProjectRaw runs normalizeGuardrailTables, which rewrites
+// plan.guardrails / execute.guardrails into a []any list before the dotted
+// walk sees them, so those two leaves are not tables on the read path and a
+// dotted read of exactly those names returns ErrNotFound. Callers read the
+// parent section and index ["guardrails"] — the shape every existing consumer
+// (internal/tools/guardrails.go, plan.go, validators.go) already expects.
+// WriteSection is unaffected: it merges through fsx.ReadTOML directly.
+func TestReadSection_DottedGuardrailsAreNormalizedToAList(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+	seedDottedFixture(t, root)
+
+	if _, err := ReadSection(root, "plan.guardrails"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("ReadSection(plan.guardrails) error = %v, want ErrNotFound (normalizeGuardrailTables)", err)
+	}
+
+	plan, err := ReadSection(root, "plan")
+	if err != nil {
+		t.Fatalf("ReadSection(plan): %v", err)
+	}
+	guardrails, ok := plan["guardrails"].([]any)
+	if !ok {
+		t.Fatalf("plan[guardrails] type = %T, want []any", plan["guardrails"])
+	}
+	if len(guardrails) != 1 {
+		t.Errorf("plan.guardrails len = %d, want 1", len(guardrails))
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Schema sync
 // ---------------------------------------------------------------------------
 

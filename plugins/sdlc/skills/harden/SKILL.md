@@ -475,7 +475,9 @@ already chose the correct vocabulary in its proposal — never substitute one fo
 the other.
 
 **When `proposal.action === "consolidate"` (R15):** the proposal targets an
-existing guardrail by id. Read the current `.sdlc-v2/config.toml` from disk,
+existing guardrail by id. Use the `targetFile` content already re-read at
+the top of 5a (R-iteration-write rule 1) — `targetFile` is
+`<MAIN_ROOT>/.sdlc-v2/config.toml`, same as the guardrail case in 5a step 2 —
 locate the guardrail table entry in `<section>.guardrails` by its key matching the id specified in the
 proposal's `patch`, and replace its fields with the proposal's merged values
 (description, severity). Do NOT remove fields; do NOT lower severity
@@ -551,8 +553,9 @@ The `AmbiguousOffer` line records the Step 5c outcome:
 - `offered-skipped` — Step 5c offered the upstream-report and the user chose
   `skip`.
 
-Mirror the append pattern used by `commit` and `execute`. Create
-the `.sdlc-v2/learnings/` directory and `log.md` file if they don't exist.
+`learnings_log`'s `append` action creates `.sdlc-v2/learnings/log.md` (and its
+directory) itself, main-rooted, if they don't already exist — no separate
+filesystem step is needed here.
 
 `rm -f "<manifestPath>"` here if it has not already been removed by an earlier
 step (it should have been — this is a defensive final check, not a new

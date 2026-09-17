@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/configmigrate"
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
+	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
@@ -576,6 +578,243 @@ func TestSetupInit_JSONCleanup_RunsEvenWhenTOMLAlreadyExists(t *testing.T) {
 	}
 	if !contains(out.Changed, paths.DataDir+"/config.json → config.json.bak") {
 		t.Errorf("expected config.json rename in Changed, got %v", out.Changed)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// setup_init check/read template-mode tests
+// ---------------------------------------------------------------------------
+
+func TestSetupInit_CheckPlanTemplate_Missing(t *testing.T) {
+	root := t.TempDir()
+
+	out, err := setupInit(root, SetupInitIn{CheckPlanTemplate: true})
+	if err != nil {
+		t.Fatalf("setupInit: %v", err)
+	}
+	if !out.OK {
+		t.Errorf("expected OK=true, errors: %v", out.Errors)
+	}
+	if out.Exists {
+		t.Error("expected Exists=false when plan-template.md does not exist")
+	}
+	if out.Next == "" {
+		t.Error("expected Next to be populated")
+	}
+	// Check mode must never create .sdlc-v2/ as a side effect.
+	if _, statErr := os.Stat(filepath.Join(root, paths.DataDir)); !os.IsNotExist(statErr) {
+		t.Error("checkPlanTemplate must not create .sdlc-v2/ on an empty project")
+	}
+}
+
+func TestSetupInit_CheckPlanTemplate_Exists(t *testing.T) {
+	root := t.TempDir()
+	sdlcDir := filepath.Join(root, paths.DataDir)
+	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sdlcDir, "plan-template.md"), []byte("# Plan\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := setupInit(root, SetupInitIn{CheckPlanTemplate: true})
+	if err != nil {
+		t.Fatalf("setupInit: %v", err)
+	}
+	if !out.Exists {
+		t.Error("expected Exists=true when plan-template.md exists")
+	}
+	if out.Content != "" {
+		t.Errorf("check mode must not return content, got %q", out.Content)
+	}
+}
+
+func TestSetupInit_MultipleModes_Rejected(t *testing.T) {
+	root := t.TempDir()
+
+	_, err := setupInit(root, SetupInitIn{CheckPlanTemplate: true, CheckPRTemplate: true})
+	if err == nil {
+		t.Fatal("expected error when two mode-select fields are true")
+	}
+	if _, ok := err.(*mcpserver.DomainError); !ok {
+		t.Errorf("expected *mcpserver.DomainError, got %T: %v", err, err)
+	}
+}
+
+func TestSetupInit_CheckPRTemplate_MissingAndExists(t *testing.T) {
+	root := t.TempDir()
+
+	out, err := setupInit(root, SetupInitIn{CheckPRTemplate: true})
+	if err != nil {
+		t.Fatalf("setupInit: %v", err)
+	}
+	if out.Exists {
+		t.Error("expected Exists=false when pr-template.md does not exist")
+	}
+
+	sdlcDir := filepath.Join(root, paths.DataDir)
+	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sdlcDir, "pr-template.md"), []byte("# PR\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err = setupInit(root, SetupInitIn{CheckPRTemplate: true})
+	if err != nil {
+		t.Fatalf("setupInit: %v", err)
+	}
+	if !out.Exists {
+		t.Error("expected Exists=true when pr-template.md exists")
+	}
+}
+
+func TestSetupInit_ReadPlanTemplate_Missing(t *testing.T) {
+	root := t.TempDir()
+
+	out, err := setupInit(root, SetupInitIn{ReadPlanTemplate: true})
+	if err != nil {
+		t.Fatalf("setupInit: %v", err)
+	}
+	if !out.OK {
+		t.Errorf("expected OK=true, errors: %v", out.Errors)
+	}
+	if out.Exists {
+		t.Error("expected Exists=false when plan-template.md does not exist")
+	}
+	if out.Content != "" {
+		t.Errorf("expected empty Content when file does not exist, got %q", out.Content)
+	}
+	if out.Next == "" {
+		t.Error("expected Next to be populated")
+	}
+	// Read mode must never create .sdlc-v2/ as a side effect.
+	if _, statErr := os.Stat(filepath.Join(root, paths.DataDir)); !os.IsNotExist(statErr) {
+		t.Error("readPlanTemplate must not create .sdlc-v2/ on an empty project")
+	}
+}
+
+func TestSetupInit_ReadPlanTemplate_Exists(t *testing.T) {
+	root := t.TempDir()
+	sdlcDir := filepath.Join(root, paths.DataDir)
+	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const body = "## Required Sections\n- Summary\n"
+	if err := os.WriteFile(filepath.Join(sdlcDir, "plan-template.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := setupInit(root, SetupInitIn{ReadPlanTemplate: true})
+	if err != nil {
+		t.Fatalf("setupInit: %v", err)
+	}
+	if !out.Exists {
+		t.Error("expected Exists=true when plan-template.md exists")
+	}
+	if out.Content != body {
+		t.Errorf("expected Content=%q, got %q", body, out.Content)
+	}
+}
+
+// TestSetupInit_WritePlanTemplate_HappyPath exercises setupWritePlanTemplate
+// through setupInit, using the same CLAUDE_PLUGIN_ROOT/HOME hermetic-template
+// resolution seam as TestSkillTemplateIndex_PluginRoot
+// (plan_template_lint_test.go), so it resolves the testdata fixture instead
+// of depending on the real machine's ~/.claude/plugins.
+func TestSetupInit_WritePlanTemplate_HappyPath(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CLAUDE_PLUGIN_ROOT", filepath.Join("testdata", "plugins", "sdlc"))
+	resetSkillTemplateIndex()
+	t.Cleanup(resetSkillTemplateIndex)
+
+	root := t.TempDir()
+	out, err := setupInit(root, SetupInitIn{WritePlanTemplate: true})
+	if err != nil {
+		t.Fatalf("setupInit: %v", err)
+	}
+	if !out.OK {
+		t.Errorf("expected OK=true, errors: %v", out.Errors)
+	}
+	if out.Next == "" {
+		t.Error("expected Next to be populated")
+	}
+	wantCreated := []string{paths.DataDir + "/plan-template.md"}
+	if !reflect.DeepEqual(out.Created, wantCreated) {
+		t.Errorf("Created = %v, want %v", out.Created, wantCreated)
+	}
+
+	fixture, err := os.ReadFile(filepath.Join("testdata", "plugins", "sdlc", "skills", "plan", "plan-template-default.md"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(root, paths.DataDir, "plan-template.md"))
+	if err != nil {
+		t.Fatalf("read written plan-template.md: %v", err)
+	}
+	if string(got) != string(fixture) {
+		t.Errorf("written content = %q, want fixture content %q", got, fixture)
+	}
+}
+
+// TestSetupInit_WritePlanTemplate_MissingShippedFile_Errors covers the
+// resolveSkillTemplate-returns-nil branch: with no CLAUDE_PLUGIN_ROOT set and
+// HOME pointed at an empty temp dir, no plan-template-default.md can be
+// found anywhere, so setupWritePlanTemplate must fail instead of writing
+// nothing silently.
+func TestSetupInit_WritePlanTemplate_MissingShippedFile_Errors(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CLAUDE_PLUGIN_ROOT", "")
+	resetSkillTemplateIndex()
+	t.Cleanup(resetSkillTemplateIndex)
+
+	root := t.TempDir()
+	_, err := setupInit(root, SetupInitIn{WritePlanTemplate: true})
+	if err == nil {
+		t.Fatal("expected error when no shipped plan-template-default.md can be resolved")
+	}
+	if _, ok := err.(*mcpserver.DataError); !ok {
+		t.Errorf("expected *mcpserver.DataError, got %T: %v", err, err)
+	}
+}
+
+func TestSetupInit_WritePRTemplate_HappyPath(t *testing.T) {
+	root := t.TempDir()
+	const body = "## PR Template\n\nDescribe the change.\n"
+
+	out, err := setupInit(root, SetupInitIn{WritePRTemplate: true, Content: body})
+	if err != nil {
+		t.Fatalf("setupInit: %v", err)
+	}
+	if !out.OK {
+		t.Errorf("expected OK=true, errors: %v", out.Errors)
+	}
+	if out.Next == "" {
+		t.Error("expected Next to be populated")
+	}
+	wantCreated := []string{paths.DataDir + "/pr-template.md"}
+	if !reflect.DeepEqual(out.Created, wantCreated) {
+		t.Errorf("Created = %v, want %v", out.Created, wantCreated)
+	}
+
+	got, err := os.ReadFile(filepath.Join(root, paths.DataDir, "pr-template.md"))
+	if err != nil {
+		t.Fatalf("read written pr-template.md: %v", err)
+	}
+	if string(got) != body {
+		t.Errorf("written content = %q, want %q", got, body)
+	}
+}
+
+func TestSetupInit_WritePRTemplate_EmptyContent_Errors(t *testing.T) {
+	root := t.TempDir()
+
+	_, err := setupInit(root, SetupInitIn{WritePRTemplate: true})
+	if err == nil {
+		t.Fatal("expected error when content is empty")
+	}
+	if _, ok := err.(*mcpserver.DomainError); !ok {
+		t.Errorf("expected *mcpserver.DomainError, got %T: %v", err, err)
 	}
 }
 

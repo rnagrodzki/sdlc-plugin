@@ -9,10 +9,10 @@ tailored template, guides the user through customization section by section, the
 >   collapses onto `validate({ action: "pr_template" })`: empty `findings` = pass;
 >   non-empty `findings` = validation-fail (recoverable, no error-report); the tool
 >   call itself erroring = crash-equivalent (route to error-report).
-> - Step 6 below writes with the Write tool directly to `.sdlc-v2/pr-template.md`
->   (which creates `.sdlc-v2/` automatically if needed) — source's `mkdir -p
->   .claude` was a stale leftover from before the `.claude/` → `.sdlc-v2/`
->   migration and is dropped.
+> - Step 6 below writes via `setup_init({ writePRTemplate: true, content })`, which creates
+>   `.sdlc-v2/` automatically if needed, main-worktree-rooted (Task 6 — moved off a bare
+>   Write to a `.sdlc-v2/` path). Source's `mkdir -p .claude` was a stale leftover from
+>   before the `.claude/` → `.sdlc-v2/` migration and is dropped.
 
 ---
 
@@ -134,8 +134,12 @@ updated template again. Loop until the user says **accept**.
 
 After the user accepts:
 
-1. Write the accepted template to `.sdlc-v2/pr-template.md` (Write tool — creates
-   `.sdlc-v2/` automatically if it does not already exist).
+1. Write the accepted template through the tool:
+   ```
+   setup_init({ writePRTemplate: true, content: "<accepted template>" })
+   ```
+   This creates `.sdlc-v2/` automatically if it does not already exist, under the main
+   worktree root, and does not return a path.
 
 2. Confirm success:
 

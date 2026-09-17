@@ -17,10 +17,9 @@ None — this sub-flow takes no arguments.
 
 ### Step 1 — Check for an Existing Template
 
-Check whether `.sdlc-v2/plan-template.md` already exists (Glob for `.sdlc-v2/plan-template.md`).
+Call `setup_init({ readPlanTemplate: true })` → `{ ok, exists, content }`.
 
-**If it exists:** Read and show the current file content to the user, then use
-AskUserQuestion:
+**If `exists` is true:** show `content` to the user, then use AskUserQuestion:
 
 > `.sdlc-v2/plan-template.md` already exists. Replace it with the default template?
 
@@ -30,25 +29,26 @@ Options:
 
 On **cancel**: print `No changes made — existing .sdlc-v2/plan-template.md kept.` and stop.
 
-**If it does not exist:** proceed directly to Step 2.
+**If `exists` is false:** proceed directly to Step 2.
 
 ---
 
 ### Step 2 — Copy the Default Template
 
-```bash
-# Substitute <PLUGIN_ROOT> from the `sdlc plugin root:` context line.
-mkdir -p .sdlc-v2
-cp "<PLUGIN_ROOT>/skills/plan/plan-template-default.md" .sdlc-v2/plan-template.md
+```
+setup_init({ writePlanTemplate: true })
 ```
 
-Confirm the copy succeeded (file exists and is non-empty) before continuing.
+The tool resolves the shipped default and copies it byte-for-byte to
+`.sdlc-v2/plan-template.md` under the main worktree root. Confirm `ok: true` in the
+response before continuing.
 
 ---
 
 ### Step 3 — Print Summary
 
-Read the written `.sdlc-v2/plan-template.md` and print a summary of its defined sections:
+Call `setup_init({ readPlanTemplate: true })` → `{ ok, exists, content }` and print a summary
+of `content`'s defined sections:
 
 ```
 Written to .sdlc-v2/plan-template.md
@@ -77,8 +77,9 @@ each heading. To reset to the shipped default, re-run `/setup --plan-template`.
   content and obtaining explicit "replace" consent via AskUserQuestion.
 - Do NOT edit `plan/plan-template-default.md` itself — it is the shipped source; the
   project copy at `.sdlc-v2/plan-template.md` is the customization point.
-- Do NOT write the file with the Write or Edit tools — always copy via `cp` so the shipped
-  default is reproduced byte-for-byte.
+- Do NOT write the file with the Write, Edit, or Bash `cp` — always call
+  `setup_init({ writePlanTemplate: true })` so the shipped default is reproduced
+  byte-for-byte, main-worktree-rooted, with no path returned to this skill.
 
 ---
 

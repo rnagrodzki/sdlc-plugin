@@ -3591,6 +3591,174 @@ func TestExecState_Ledger_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestExecState_Ledger_FindingsRoundTrip verifies that findings passed to
+// ledger_checkout are persisted and surfaced back via ledger_status, and that
+// ledger_cleanup removes the ledger directory (reporting removed=false on a
+// second call once it's already gone).
+func TestExecState_Ledger_FindingsRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action:   "ledger_checkin",
+		RunID:    "run-findings",
+		WorkerID: "worker-A",
+	}, clock); err != nil {
+		t.Fatalf("checkin: %v", err)
+	}
+
+	checkoutResult, err := executeState(root, root, ExecuteStateIn{
+		Action:   "ledger_checkout",
+		RunID:    "run-findings",
+		WorkerID: "worker-A",
+		Findings: `[{"severity":"high","file":"a.go","line":1,"rationale":"x"}]`,
+	}, clock)
+	if err != nil {
+		t.Fatalf("checkout: %v", err)
+	}
+	co := checkoutResult.(map[string]any)
+	if co["findings"] != `[{"severity":"high","file":"a.go","line":1,"rationale":"x"}]` {
+		t.Errorf("checkout confirmation findings = %v, want echoed findings", co["findings"])
+	}
+
+	statusResult, err := executeState(root, root, ExecuteStateIn{
+		Action: "ledger_status",
+		RunID:  "run-findings",
+	}, clock)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	workers := statusResult.(map[string]any)["workers"].([]any)
+	if len(workers) != 1 {
+		t.Fatalf("expected 1 worker, got %d", len(workers))
+	}
+	w := workers[0].(map[string]any)
+	if w["findings"] != `[{"severity":"high","file":"a.go","line":1,"rationale":"x"}]` {
+		t.Errorf("status findings = %v, want checkout's findings echoed back", w["findings"])
+	}
+
+	// Cleanup removes the ledger directory.
+	cleanupResult, err := executeState(root, root, ExecuteStateIn{
+		Action: "ledger_cleanup",
+		RunID:  "run-findings",
+	}, clock)
+	if err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	cr := cleanupResult.(map[string]any)
+	if cr["removed"] != true {
+		t.Errorf("cleanup removed = %v, want true", cr["removed"])
+	}
+	if _, err := os.Stat(ledgerDir(root, "run-findings")); !os.IsNotExist(err) {
+		t.Errorf("ledger dir should no longer exist, stat err = %v", err)
+	}
+
+	// A second cleanup on an already-gone directory reports removed=false and
+	// does not error.
+	cleanupResult2, err := executeState(root, root, ExecuteStateIn{
+		Action: "ledger_cleanup",
+		RunID:  "run-findings",
+	}, clock)
+	if err != nil {
+		t.Fatalf("second cleanup: %v", err)
+	}
+	cr2 := cleanupResult2.(map[string]any)
+	if cr2["removed"] != false {
+		t.Errorf("second cleanup removed = %v, want false", cr2["removed"])
+	}
+}
+
+func TestExecState_Ledger_Cleanup_EchoesWorkers(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	for _, workerID := range []string{"worker-B", "worker-A"} {
+		if _, err := executeState(root, root, ExecuteStateIn{
+			Action:   "ledger_checkin",
+			RunID:    "run-echo",
+			WorkerID: workerID,
+		}, clock); err != nil {
+			t.Fatalf("checkin %s: %v", workerID, err)
+		}
+	}
+
+	cleanupResult, err := executeState(root, root, ExecuteStateIn{
+		Action: "ledger_cleanup",
+		RunID:  "run-echo",
+	}, clock)
+	if err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	cr := cleanupResult.(map[string]any)
+	if cr["removed"] != true {
+		t.Errorf("cleanup removed = %v, want true", cr["removed"])
+	}
+	workers, ok := cr["workers"].([]string)
+	if !ok {
+		t.Fatalf("expected workers to be []string, got %T: %v", cr["workers"], cr["workers"])
+	}
+	if got, want := workers, []string{"worker-A", "worker-B"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("workers = %v, want %v (sorted)", got, want)
+	}
+}
+
+func TestExecState_Ledger_Checkout_FindingsTooLarge(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action:   "ledger_checkin",
+		RunID:    "run-oversized",
+		WorkerID: "worker-A",
+	}, clock); err != nil {
+		t.Fatalf("checkin: %v", err)
+	}
+
+	oversized := strings.Repeat("x", execFindingsMaxBytes+1)
+	_, err := executeState(root, root, ExecuteStateIn{
+		Action:   "ledger_checkout",
+		RunID:    "run-oversized",
+		WorkerID: "worker-A",
+		Findings: oversized,
+	}, clock)
+	if err == nil {
+		t.Fatal("expected error when findings exceeds execFindingsMaxBytes")
+	}
+	if _, ok := err.(*mcpserver.DomainError); !ok {
+		t.Errorf("expected *mcpserver.DomainError, got %T: %v", err, err)
+	}
+}
+
+func TestExecState_Ledger_Checkout_CorruptExistingFile(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action:   "ledger_checkin",
+		RunID:    "run-corrupt",
+		WorkerID: "worker-A",
+	}, clock); err != nil {
+		t.Fatalf("checkin: %v", err)
+	}
+
+	fp := ledgerFilePath(root, "run-corrupt", "worker-A")
+	if err := os.WriteFile(fp, []byte("not valid json"), 0o644); err != nil {
+		t.Fatalf("corrupt ledger file: %v", err)
+	}
+
+	_, err := executeState(root, root, ExecuteStateIn{
+		Action:   "ledger_checkout",
+		RunID:    "run-corrupt",
+		WorkerID: "worker-A",
+	}, clock)
+	if err == nil {
+		t.Fatal("expected error when existing ledger file is corrupt")
+	}
+	if _, ok := err.(*mcpserver.DomainError); !ok {
+		t.Errorf("expected *mcpserver.DomainError, got %T: %v", err, err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Ledger: stall detection with injected clock
 // ---------------------------------------------------------------------------

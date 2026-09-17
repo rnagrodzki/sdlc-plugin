@@ -21,6 +21,11 @@ writes files, and validates with the `validate` MCP tool.
 > - `lib/dimensions.js::readCommonPrompt` (the inline `node -e` reading
 >   `_common.md`) is now handled inside `dimensions_render_instructions` itself
 >   — pass `commonFile` and the tool reads it. No separate read step needed.
+> - Step 6's dimension-file authoring (previously a bare `Write` to
+>   `.sdlc-v2/review-dimensions/<name>.md`) now goes through
+>   `dimensions_render_instructions({ writeDimension: true, name, content })`
+>   (Task 5, root-rule unification) — no step in this file writes to a
+>   `.sdlc-v2/` path directly anymore.
 
 > **CRITICAL — Inline output only.** Always produce dimension proposals, evidence
 > citations, and trigger patterns directly in your current response. Never write
@@ -29,8 +34,9 @@ writes files, and validates with the `validate` MCP tool.
 > **Permission context:** This sub-flow inherits the parent skill's permission mode.
 > Do NOT call ExitPlanMode, change permission settings, or exit any mode during this
 > sub-flow. Do NOT ask the user to approve file writes individually — the parent
-> (setup) manages mode transitions. Write all dimension files in rapid
-> succession to minimize permission prompts.
+> (setup) manages mode transitions. Create all dimension files in rapid
+> succession (via `dimensions_render_instructions`'s write mode) to minimize
+> permission prompts.
 
 ---
 
@@ -83,8 +89,9 @@ following scan results in its Step 3.S "Scan phase":
 
 ### Step 2 — Discover Existing Dimensions
 
-Check `.sdlc-v2/review-dimensions/` (Glob `.sdlc-v2/review-dimensions/*.md`) for
-already-installed dimension files.
+Call `dimensions_render_instructions({ listDimensions: true })` →
+`{ ok, dimensions[], count, next }` for already-installed dimension files (`dimensions[]`
+gives each installed dimension's name).
 
 In `--add` (expansion) mode:
 
@@ -168,10 +175,22 @@ Use AskUserQuestion to ask: "Install which dimensions?" Options: **all** /
 
 For each selected dimension:
 
-1. Ensure `.sdlc-v2/review-dimensions/` exists (create if needed).
-2. Write the full dimension file (frontmatter + tailored body) per the
-   Dimension Frontmatter Spec, customized with project-specific evidence.
-3. Confirm each file written with its path.
+1. Compose the full dimension file content (frontmatter + tailored body) per
+   the Dimension Frontmatter Spec, customized with project-specific evidence.
+2. Call:
+
+   ```
+   dimensions_render_instructions({
+     writeDimension: true,
+     name: "<dimension-name>",
+     content: "<full frontmatter + body Markdown>",
+   }) → { ok, path }
+   ```
+
+   The tool creates `.sdlc-v2/review-dimensions/` itself if needed and writes
+   `<dimension-name>.md` under it, rooted at the active worktree — no bare
+   `Write` to a `.sdlc-v2/` path.
+3. Confirm each file with its returned `path`.
 
 ---
 
@@ -182,7 +201,9 @@ Call `validate({ action: "dimensions" })`.
 - **Findings present:** show them (id, severity, message, path). Use
   AskUserQuestion: "Fix these validation errors automatically? (yes / no)".
   On `yes`, correct the offending file(s) per the Dimension Frontmatter Spec
-  and re-validate.
+  — persist each correction with
+  `dimensions_render_instructions({ writeDimension: true, name, content })`
+  — and re-validate.
 - **Tool call itself errors (infra failure):** this is a prepare-tool-class
   failure — offer to invoke error-report, provide: Skill=setup,
   Step=Step 7 — Validate Installation, Operation=validate dimensions,
