@@ -4,9 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
-	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
 
 // blockAskUserQuestionAuto is the "block-askuserquestion-auto" hook handler
@@ -50,8 +48,9 @@ func blockAskUserQuestionAuto(ctx HookCtx, event Event) (Output, error) {
 
 // gatedAdvancingShipState resolves the current branch's ship state via the
 // exact root/branch split session_start.go's pipelineResumePhase already
-// established (worktree.MainRoot for the state file, gitx.CurrentBranch over
-// resolveActiveWorktreeSafe for the branch), then applies the shared
+// established (mainRootFunc for the state file, currentBranchFunc over
+// resolveActiveWorktreeSafe for the branch — see gitseam.go), then applies
+// the shared
 // state.PipelineAdvancing / state.HookEnforcementAllowed gate that both
 // block-askuserquestion-auto and pipeline-continue perform identically
 // before diverging into their own deny/nudge logic. ok is true only when a
@@ -62,11 +61,11 @@ func blockAskUserQuestionAuto(ctx HookCtx, event Event) (Output, error) {
 func gatedAdvancingShipState(hookName, sessionID string) (data map[string]any, adv state.PipelineAdvancingResult, ok bool) {
 	notAdvancing := state.PipelineAdvancingResult{Index: -1}
 
-	root, err := worktree.MainRoot()
+	root, err := mainRootFunc()
 	if err != nil {
 		return nil, notAdvancing, false
 	}
-	branch, err := gitx.CurrentBranch(resolveActiveWorktreeSafe())
+	branch, err := currentBranchFunc(resolveActiveWorktreeSafe())
 	if err != nil || branch == "" || branch == "HEAD" {
 		return nil, notAdvancing, false
 	}

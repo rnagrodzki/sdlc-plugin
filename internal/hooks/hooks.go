@@ -71,6 +71,7 @@ var registry = map[string]Handler{
 	"stop-plan-integrity":        stopPlanIntegrity,
 	"stop-pipeline-continue":     stopPipelineContinue,
 	"record-mcp-invocation":      recordMCPInvocation,
+	"wave-liveness":              waveLiveness,
 }
 
 // Run reads the hook's stdin envelope, dispatches to the handler registered
