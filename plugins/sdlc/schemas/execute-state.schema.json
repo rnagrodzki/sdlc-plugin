@@ -303,7 +303,7 @@
     "waveIntervalSeconds": {
       "type": "integer",
       "minimum": 1,
-      "description": "Liveness poll interval in seconds, resolved at init from explicit input > ship-state flags > built-in default (60). Consumed by wave-await for three things: (1) the polling cadence between probes; (2) a heartbeat-staleness threshold of 3x this value (default 180s) before a worker is considered stalled; (3) a reclaim grace of max(2x this value, 120s) (default 120s) before an unresponsive worker is failed."
+      "description": "Liveness poll interval in seconds, resolved at init from explicit input > ship-state flags > built-in default (60). Consumed by wave-await for three things: (1) the polling cadence between probes; (2) a heartbeat-staleness threshold of 10x this value (default 600s) before a worker is considered stalled; (3) a reclaim grace of max(5x this value, 300s) (default 300s) before a worker that never answers the reclaim is failed. A worker that DOES answer is not failed at all -- the reply is treated as proof of life and the same attempt continues."
     }
   },
   "required": ["version", "skill", "startedAt", "branch", "planHash", "totalTasks", "waves", "context"],
@@ -336,7 +336,7 @@
         "llm_decision": { "description": "stepper.Envelope field." },
         "state_file": { "type": ["string", "null"], "description": "stepper.Envelope field." },
         "progress": { "description": "stepper.Envelope field: {iteration, waitedSeconds, timeoutSeconds, intervalSeconds, open[], queued[], stalled[], recorded[]}." },
-        "ext": { "type": "object", "description": "stepper.Envelope field. May carry reclaimRequests[] ({taskIds[], workerName, message}, one entry per subject) and failed[] (WaveAwaitFailure: {taskId, workerName, cause: TIMEOUT|STALLED_RECLAIMED|STALLED_NO_REPLY, attempt, retriesLeft, resumeFrom?})." },
+        "ext": { "type": "object", "description": "stepper.Envelope field. May carry reclaimRequests[] ({taskIds[], workerName, message}, one entry per subject) and failed[] (WaveAwaitFailure: {taskId, workerName, cause: TIMEOUT|STALLED_NO_REPLY, attempt, retriesLeft})." },
         "error": { "type": "string", "description": "stepper.Envelope field. Populated only when status is \"error\"." },
         "next": { "type": "string", "description": "Authoritative instruction the calling skill must follow verbatim: e.g. TaskStop+task-fail, SendMessage reclaim, task-redispatch, dispatch the next task, or poll again. No omitempty — guardrail mcp-output-drives-behavior." }
       },

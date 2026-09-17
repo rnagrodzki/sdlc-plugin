@@ -23,8 +23,8 @@ const waveAwaitTimeLayout = "2006-01-02T15:04:05.000Z"
 // Contract (Final Shape, plan i-want-to-simplify-magical-fox.md)
 // ---------------------------------------------------------------------------
 
-// ResumeFrom carries what a reclaimed worker had recorded in its own
-// progress file at the moment its heartbeat was harvested. It is advisory
+// ResumeFrom carries what a failed worker had recorded in its own progress
+// file at the moment task-fail harvested it. It is advisory
 // only: it never reduces a retry's scope, it only tells the redispatched
 // attempt (or the human escalated to) what was already done.
 type ResumeFrom struct {
@@ -36,14 +36,14 @@ type ResumeFrom struct {
 
 // WaveAwaitFailure is one still-open task row that wave-await has just
 // classified as unable to make further progress on its own: it timed out,
-// or it was reclaimed (with or without a reply) after going quiet.
+// or it went quiet and never answered its reclaim. A worker that DOES
+// answer is not a failure and never appears here.
 type WaveAwaitFailure struct {
-	TaskID      string      `json:"taskId"`
-	WorkerName  string      `json:"workerName"`
-	Cause       string      `json:"cause"`       // TIMEOUT | STALLED_RECLAIMED | STALLED_NO_REPLY
-	Attempt     int         `json:"attempt"`     // the attempt that just failed
-	RetriesLeft int         `json:"retriesLeft"` // 0 means terminal, escalate to the user
-	ResumeFrom  *ResumeFrom `json:"resumeFrom,omitempty"`
+	TaskID      string `json:"taskId"`
+	WorkerName  string `json:"workerName"`
+	Cause       string `json:"cause"`       // TIMEOUT | STALLED_NO_REPLY
+	Attempt     int    `json:"attempt"`     // the attempt that just failed
+	RetriesLeft int    `json:"retriesLeft"` // 0 means terminal, escalate to the user
 }
 
 // WaveAwaitOut is the result of one non-blocking wave-await probe.
@@ -175,10 +175,10 @@ func execActionWaveAwait(root string, in ExecuteStateIn, now func() time.Time) (
 	}
 
 	rawInterval, totalTimeout := execWaveStallTimeouts(root, branch)
-	heartbeatTimeout := 3 * rawInterval
-	reclaimGrace := 2 * rawInterval
-	if reclaimGrace < 120*time.Second {
-		reclaimGrace = 120 * time.Second
+	heartbeatTimeout := 10 * rawInterval
+	reclaimGrace := 5 * rawInterval
+	if reclaimGrace < 300*time.Second {
+		reclaimGrace = 300 * time.Second
 	}
 	intervalSeconds := int(rawInterval / time.Second)
 	if intervalSeconds <= 0 {
@@ -258,26 +258,14 @@ func execActionWaveAwait(root string, in ExecuteStateIn, now func() time.Time) (
 			// becomes healthy again, and the harvest must still run).
 			replied := subj.Liveness != "" && waveAwaitTimeAfter(subj.Liveness, subj.ReclaimRequested)
 			if replied {
-				stalledBucket = append(stalledBucket, subj.OpenTaskIDs...)
-				for _, id := range subj.OpenTaskIDs {
-					rf := waveAwaitHarvest(progress.Tasks[id])
-					f := WaveAwaitFailure{
-						TaskID:      id,
-						WorkerName:  subj.WorkerName,
-						Cause:       "STALLED_RECLAIMED",
-						Attempt:     subj.Attempt,
-						RetriesLeft: waveAwaitRetriesLeft(subj.Attempt),
-						ResumeFrom:  &rf,
-					}
-					failures = append(failures, f)
-					failureClauses = append(failureClauses, waveAwaitFailureClause(f, in.RunID, waveNum, intervalSeconds))
-					if f.RetriesLeft > 0 {
-						blocking = true
-					}
-				}
+				// The reply IS the liveness proof. Clear the stamp and let the
+				// SAME attempt continue: no failure, no TaskStop, no retry
+				// consumed.
 				if err := waveAwaitClearReclaim(root, in.RunID, subj.TaskIDs); err != nil {
 					return WaveAwaitOut{}, &mcpserver.InfraError{Msg: "clear reclaim stamp: " + err.Error(), Cause: err}
 				}
+				openBucket = append(openBucket, subj.OpenTaskIDs...)
+				blocking = true
 			} else if waveAwaitAge(nowT, subj.ReclaimRequested) > reclaimGrace {
 				stalledBucket = append(stalledBucket, subj.OpenTaskIDs...)
 				for _, id := range subj.OpenTaskIDs {
@@ -559,10 +547,12 @@ func waveAwaitAge(now time.Time, ts string) time.Duration {
 // that has just been stamped for reclaim.
 func waveAwaitReclaimMessage(runID string, taskIDs []string) string {
 	return fmt.Sprintf(
-		"Stop work on task(s) %s now. Do not start new edits. Immediately call execute_state "+
-			"{action:\"wave-progress\", runId:%q, taskId:\"<taskId>\", phase:\"reporting\", "+
-			"acceptanceDone:[...], filesTouched:[...], lastCompletedTask:\"...\", blocker:\"...\"} "+
-			"for each task listed, describing exactly what you finished, then stop.",
+		"Liveness check for task(s) %s. You have been quiet past the heartbeat threshold. "+
+			"Do NOT stop and do NOT abandon your work. Immediately call execute_state "+
+			"{action:\"wave-progress\", runId:%q, taskId:\"<taskId>\", phase:\"<the phase you "+
+			"are actually in right now>\", acceptanceDone:[...], filesTouched:[...], "+
+			"lastCompletedTask:\"...\"} for each task listed, then continue exactly where you "+
+			"left off.",
 		strings.Join(taskIDs, ", "), runID,
 	)
 }
