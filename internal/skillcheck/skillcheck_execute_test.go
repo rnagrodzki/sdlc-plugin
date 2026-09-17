@@ -264,7 +264,7 @@ func TestExecuteSkillsWaveLoopNamesCoreActions(t *testing.T) {
 // server-driven poll replaced them. No execute skill file may reference
 // them by name — a lingering reference would mean the docs still describe a
 // mechanism that no longer exists in the code.
-var executeSkillsRemovedSymbols = []string{"stallCause", "nudgedAt", "STALLED_AFTER_NUDGE", "ClassifyStall"}
+var executeSkillsRemovedSymbols = []string{"stallCause", "nudgedAt", "STALLED_AFTER_NUDGE", "ClassifyStall", "STALLED_RECLAIMED"}
 
 // TestExecuteSkillsNoRemovedSymbols is Acceptance Criterion (c).
 func TestExecuteSkillsNoRemovedSymbols(t *testing.T) {

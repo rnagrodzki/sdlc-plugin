@@ -106,6 +106,8 @@ Each element represents one execution wave in order. Wave `0` is the pre-wave (s
     "number": 1,
     "status": "in_progress",
     "startedAt": "2026-03-28T14:31:05Z",
+    "runId": "20260917-103511",
+    "planned": [ { "id": "3", "name": "Implement OAuth2 provider integration", "files": ["src/auth/oauth.ts"] } ],
     "tasks": [ ... ]
   },
   {
@@ -116,6 +118,11 @@ Each element represents one execution wave in order. Wave `0` is the pre-wave (s
 ]
 ```
 
+`runId` and `planned` appear only once a wave has actually been started —
+`wave-start` writes both in the same call. `runId` is what the wave-liveness
+`PostToolUse` hook reads to find this run's progress directory; it has no
+`runId` input of its own, so this field on the wave row is its only source.
+
 | Field         | Type    | Present when                             | Description                                                          |
 |---------------|---------|------------------------------------------|----------------------------------------------------------------------|
 | `number`      | number  | always                                   | Wave number. `0` for the pre-wave; `1`, `2`, ... for execution waves.|
@@ -124,6 +131,8 @@ Each element represents one execution wave in order. Wave `0` is the pre-wave (s
 | `completedAt` | string  | status is `completed`, `partial`, or `failed` | ISO 8601 UTC timestamp when the wave finished — successfully, partially (timed out), or with an error. |
 | `timedOut`    | boolean | present only on a wave whose deadline elapsed | `true` when `execute_state({action:"wave-done", wave:<n>, status:"partial", timedOut:true})` recorded that the wave's wall-clock deadline (`executeWaveTimeout`) elapsed before every in-wave task finished. Written only by that call — main context reads this field but never writes it. Absent on waves that never timed out. |
 | `committedSha` | string \| absent | present only after a commit was recorded for this wave | The git commit SHA covering this wave's changes. Written by `wave-commit` or the legacy `wave-committed` (see below). Absent until the wave has been committed. |
+| `runId`       | string  | present once the wave has been started via `wave-start` | The run identifier for this wave's fact sheets and progress directory (`<stateDir>/<runId>/`). Written once, by `wave-start`; never re-derived afterward. The wave-liveness `PostToolUse` hook (see [Progress Markers](#progress-markers-in-flight-wave-liveness) below) reads this field to find the run's progress directory — it has no `runId` input of its own and must not guess one from `startedAt`. |
+| `planned`     | array   | present once the wave has been started via `wave-start` | The wave's validated task manifest (`{id, name, files}` per task), written once by `wave-start`. Read by `task-context` for sibling lookup, by `wave-await` to detect still-open tasks, and by the wave-liveness hook to map an edited file back to its owning task. |
 | `tasks`       | array   | always                                   | Per-task records for this wave (see below).                          |
 
 ### Recording a wave's commit: `wave-commit` vs `wave-committed`

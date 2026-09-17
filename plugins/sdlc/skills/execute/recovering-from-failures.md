@@ -33,18 +33,28 @@ e.g. `execute_state({action:"wave-fail", ..., timedOut:<bool>})`'s `timedOut` is
 server-derived, for that call. A batch agent is classified as one subject, never as independent
 members — see `classifying-and-waving-tasks.md`'s batch-dispatch paragraph.
 
-When `wave-await` can no longer wait on a task, it reports exactly one of three causes in
+When `wave-await` can no longer wait on a task, it reports exactly one of two causes in
 `ext.failed[].cause`, each carried through to the `task-fail` call the `next` instruction orders:
 
-| Cause | Meaning | Retry budget | `resumeFrom` present |
-|---|---|---|---|
-| `TIMEOUT` | The task (or its batch) has been dispatched longer than the wave's total timeout (`waveTimeoutSeconds`, set at `init`), regardless of heartbeat freshness. Wins outright — no reclaim attempt, even one already in flight. | Counts toward the 2-retry ceiling below | No |
-| `STALLED_RECLAIMED` | The worker (or batch) went quiet past the heartbeat-staleness threshold, was sent a RECLAIM `SendMessage`, and replied with a fresh heartbeat before the reclaim grace period elapsed. | Counts toward the 2-retry ceiling below | Yes — harvested from the worker's last `wave-progress` write (`acceptanceDone`, `filesTouched`, `lastCompletedTask`, `blocker`) |
-| `STALLED_NO_REPLY` | The worker (or batch) went quiet, was sent a RECLAIM `SendMessage`, and never replied within the reclaim grace period. | Counts toward the 2-retry ceiling below | No |
+| Cause | Meaning | Retry budget |
+|---|---|---|
+| `TIMEOUT` | The task (or its batch) has been dispatched longer than the wave's total timeout (`waveTimeoutSeconds`, set at `init`), regardless of heartbeat freshness. Wins outright — no reclaim attempt, even one already in flight. | Counts toward the 2-retry ceiling below |
+| `STALLED_NO_REPLY` | The worker (or batch) went quiet, was sent a RECLAIM `SendMessage`, and never replied within the reclaim grace period. | Counts toward the 2-retry ceiling below |
 
 Every cause counts toward the same 2-retry ceiling as every other failure category in this
 document — `wave-await`'s response carries `retriesLeft: 0` once a task has exhausted it, at which
 point the `next` instruction orders escalation instead of a further retry.
+
+A worker that replies to a RECLAIM is not a failure at all, and never appears in `ext.failed[]`.
+`wave-await` clears the reclaim stamp and returns the task to the open bucket (`progress.open`):
+the same attempt continues, there is no `TaskStop`, and no retry is consumed. Treat a RECLAIM as a
+liveness check, not a kill order — it exists to confirm the worker is still alive, not to end its
+attempt.
+
+`wave-await` no longer carries its own `resumeFrom` field on a failure — `task-fail` is what
+harvests `acceptanceDone`, `filesTouched`, `lastCompletedTask`, and `blocker` from the worker's
+last `wave-progress` write, so a redispatched retry still gets a partial-work claim, for both
+remaining causes (`TIMEOUT` and `STALLED_NO_REPLY` alike).
 
 ## Failure Classification
 
@@ -70,8 +80,8 @@ point the `next` instruction orders escalation instead of a further retry.
 ## Recovery Strategies
 
 ### Agent timeout / error output
-If this failure was surfaced by `wave-await` (the task went quiet or timed out — `TIMEOUT`,
-`STALLED_RECLAIMED`, or `STALLED_NO_REPLY`, see `## Stalled vs Timeout` above), first `TaskStop`
+If this failure was surfaced by `wave-await` (the task went quiet or timed out — `TIMEOUT` or
+`STALLED_NO_REPLY`, see `## Stalled vs Timeout` above), first `TaskStop`
 the worker (an ownership/authorization error here is an expected fallback, not a blocker — proceed
 anyway), then `execute_state({action:"task-fail", wave:<N>, taskId:"<id>", error:"<cause>"})`, then
 `execute_state({action:"task-redispatch", runId:"<runId>", taskId:"<id>"})`, in that order. A bare
@@ -382,3 +392,9 @@ When a wave produces fundamentally broken output that cannot be recovered throug
    git stash drop stash@{0}
    ```
    If aborting: leave the stash for the user to inspect.
+
+## See Also
+
+- [`docs/execute-wave-supervision.md`](../../../../docs/execute-wave-supervision.md) — heartbeats,
+  the three ceilings, reclaim, and retry semantics behind this document's `## Stalled vs Timeout`
+  section.
