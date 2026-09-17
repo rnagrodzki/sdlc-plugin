@@ -20,3 +20,4 @@ Default severity: medium
 - No exported identifiers with zero module-wide callers
 - Nil-guarding on newly-pointer-typed struct fields before dereference
 - Constant migrations: verify replacements are complete, no hardcoded literal divergence
+- Testable design: functions that are tested and access live filesystem or git state should expose injectable parameters or dependencies (e.g. directory overrides, mocked implementations) so tests can avoid real I/O. Check existing test files in the change to verify whether tested functions expose such injection points; if not, flag as a testability blocker.
