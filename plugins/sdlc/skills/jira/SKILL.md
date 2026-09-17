@@ -65,7 +65,7 @@ removed entirely — the API call is never made with raw placeholder text.
 
 1. `--project <KEY>` argument. When `jira.projects` is set (≥2 entries), a project key outside the list is rejected (the `jira` tool's `check` action returns an error).
 2. Parse current git branch for `[A-Z]{2,10}-\d+` pattern (e.g., `feat/PROJ-123-fix` → `PROJ`). When `jira.projects` is set, accept only keys in the list; otherwise fall through.
-3. Read `.sdlc-v2/config.toml` → `jira.defaultProject`.
+3. Call `jira({ action: "check-default-project" })` → `defaultProject` (empty string if unset).
 4. When `jira.projects` has ≥2 entries, use AskUserQuestion with a closed list matching `jira.projects` ("Which Jira project key should I use?").
 5. Use AskUserQuestion to ask: "Which Jira project key should I use? (e.g., PROJ, TEAM)".
 
@@ -353,7 +353,7 @@ Skip this step for read operations (`search`, `view`). For every write operation
 3. Compute the canonical content hash and write the critique artifact:
    - Canonicalize the payload (stable key order, `trimEnd` on every string value — R21.1). Callers do not need to strip trailing whitespace from file-sourced payloads (e.g., markdown bodies that end in `\n`).
    - Compute the hash via Bash: `printf '%s' "$canonical_json" | sha256sum | cut -c1-12` (or `shasum -a 256` where `sha256sum` is unavailable) — the same shell-level, tool-neutral hash for every write operation.
-   - Write the critique artifact with the `Write` tool to `.sdlc-v2/state/artifacts/critique-<hash>.json`: `{ initial: '<one-line summary of initial draft>', findings: [...], final: '<one-line summary of final payload>' }`.
+   - Write the critique artifact through the tool: `jira({ action: "write-critique", key: "<PROJECT_KEY>", hash: "<hash>", data: { initial: '<one-line summary of initial draft>', findings: [...], final: '<one-line summary of final payload>' } })`.
 4. Surface the critique to the user as an `Initial:` / `Critique:` / `Final:` block — do not apply deltas silently.
 
 ## Step 2.6 — Approval (write-ops only, R17)
@@ -365,7 +365,7 @@ Skip for read operations. Implements R17.
    - **approve** — proceed to Step 3 dispatch
    - **change <what>** — describe the desired change; loop back to Step 2.5 with the revised draft (new hash, fresh artifacts; the previous artifacts are stale and can be deleted)
    - **cancel** — abort the operation, do not dispatch
-3. On `approve` only, write the approval token with the `Write` tool to `.sdlc-v2/state/artifacts/approval-<hash>.token` (its content is not read back — its existence, next to the critique artifact from Step 2.5, is the record that this exact payload was approved this turn).
+3. On `approve` only, write the approval token through the tool: `jira({ action: "write-approval", key: "<PROJECT_KEY>", hash: "<hash>" })` (its content is not read back — its existence, next to the critique artifact from Step 2.5, is the record that this exact payload was approved this turn).
 4. Proceed to Step 3.
 
 ## Step 2.7 — Link verification (write-ops only, R22) — HARD GATE
@@ -726,7 +726,7 @@ is always incorrect.
 - Resolve a description template — override or shipped — before building `description` (R18)
 - Escalate every low-confidence placeholder marker via `AskUserQuestion` (R19)
 - Run a critique pass before the approval gate; surface findings to the user (R20)
-- Write the critique and approval-token artifacts with the `Write` tool, and compute the canonical content hash via `sha256sum`/`shasum` (through Bash) over the canonicalized payload (R21)
+- Write the critique and approval-token artifacts via `jira({ action: "write-critique"/"write-approval", ... })`, and compute the canonical content hash via `sha256sum`/`shasum` (through Bash) over the canonicalized payload (R21)
 - Compose description section bodies as bullet lists or numbered lists; emit `## Acceptance Criteria` content as `- [ ] …` checklist items only (R25)
 
 ## DO NOT

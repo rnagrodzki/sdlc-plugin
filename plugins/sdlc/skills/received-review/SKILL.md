@@ -407,10 +407,15 @@ Before any `gh api` reply is posted, validate every URL embedded in every drafte
 Reply bodies must never include an AI-tool attribution line ("Generated with Claude Code" or
 similar).
 
-1. Concatenate all reply bodies (one per line) and write them with the `Write` tool to
-   `.sdlc-v2/state/artifacts/received-review-reply-bodies.md` (overwrite each run — this is a
-   scratch working file, not a durable record).
-2. Validate:
+1. Concatenate all reply bodies (one per line) and write them via the tool (overwrite each
+   run — this is a scratch working file, not a durable record):
+   ```
+   received_review_verify({ writeReplyBodies: true, content: "<concatenated reply bodies>" })
+   ```
+   This writes `.sdlc-v2/state/artifacts/received-review-reply-bodies.md` under the main
+   worktree root, not the current working directory.
+2. Validate — the path below is resolved against the same main-worktree root the write above
+   used, so it finds the file regardless of which worktree this session is running in:
    ```
    links_validate({ file: ".sdlc-v2/state/artifacts/received-review-reply-bodies.md", offline: false })
    → { results: [{ url, line, status, reason, detail }] }

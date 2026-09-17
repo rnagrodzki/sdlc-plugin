@@ -96,10 +96,12 @@ import (
 // ---------------------------------------------------------------------------
 
 // JiraIn is the input contract for the jira tool. Action selects one of the
-// 9 jira.js subcommands; the remaining fields are a superset of what each
-// action needs (unused fields for a given action are ignored).
+// 9 jira.js subcommands, or one of two Task 6 additions (write-critique,
+// write-approval) that move jira/SKILL.md's plain artifact writes into this
+// tool; the remaining fields are a superset of what each action needs
+// (unused fields for a given action are ignored).
 type JiraIn struct {
-	Action string `json:"action" jsonschema_description:"Selects the operation: check, load, save, save-field, templates, init-templates, clear, copy-template, or validate-body. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
+	Action string `json:"action" jsonschema_description:"Selects the operation: check, check-default-project, load, save, save-field, templates, init-templates, clear, copy-template, validate-body, write-critique, or write-approval. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
 
 	// Key is the Jira project key (jira.js's --project). Uppercased on use.
 	// Required for every action except validate-body (mirrors jira.js's
@@ -141,6 +143,12 @@ type JiraIn struct {
 	Data map[string]any `json:"data,omitempty" jsonschema_description:"save/save-field only: JSON payload to write to the cache. For save, must contain version, cloudId, project, siteUrl."`
 
 	SkipConfigCheck bool `json:"skipConfigCheck,omitempty" jsonschema_description:"Skips the config-version auto-migration gate normally run before the action executes. Set only when the caller has already verified or migrated the config."`
+
+	// Hash names the artifact file for write-critique/write-approval: a
+	// content hash (e.g. `printf '%s' "$json" | sha256sum | cut -c1-12`)
+	// computed by the skill so the same hash later identifies which
+	// artifact an approval decision applies to.
+	Hash string `json:"hash,omitempty" jsonschema_description:"write-critique/write-approval only: content hash (e.g. sha256sum | cut -c1-12) naming the artifact file."`
 }
 
 // JiraValidateBodyOut is the validate-body action's payload.
@@ -785,6 +793,41 @@ func jiraCheck(mainRoot string, in JiraIn) (any, error) {
 }
 
 // ---------------------------------------------------------------------------
+// Action: check-default-project
+// ---------------------------------------------------------------------------
+
+// jiraCheckDefaultProject reads jira.defaultProject from config, so
+// jira/SKILL.md's Step 0 project-key-resolution fallback (its step 3) can
+// resolve it through this tool instead of a bare skill-markdown Read of
+// .sdlc-v2/config.toml — a bare Read resolves relative to the agent's
+// current working directory, which can be a linked git worktree rather than
+// the main worktree where .sdlc-v2/ actually lives.
+//
+// This is deliberately its own action rather than an addition to check:
+// check requires an already-known project Key (jiraValidateProjectMembership
+// runs against it), but the skill needs defaultProject BEFORE it knows which
+// key to check — steps 1/2 of the fallback may already have failed to
+// produce one.
+//
+// A missing or unreadable jira config section is a valid "no default
+// configured" result, not a failure: any error from jiraLoadJiraConfig
+// (including the non-ErrNotFound cases, e.g. a detected legacy layout) is
+// treated the same as an empty section here, so this action never returns
+// an error.
+func jiraCheckDefaultProject(mainRoot string, in JiraIn) (any, error) {
+	jiraConfig, err := jiraLoadJiraConfig(mainRoot)
+	if err != nil {
+		jiraConfig = map[string]any{}
+	}
+	defaultProject, _ := jiraConfig["defaultProject"].(string)
+	return map[string]any{
+		"ok":             true,
+		"defaultProject": defaultProject,
+		"next":           "Use defaultProject if non-empty; otherwise continue the ordered project-key fallback (AskUserQuestion).",
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
 // Action: load
 // ---------------------------------------------------------------------------
 
@@ -1154,6 +1197,99 @@ func jiraValidateBody(mainRoot string, in JiraIn, offline bool) (any, error) {
 }
 
 // ---------------------------------------------------------------------------
+// Actions: write-critique, write-approval
+// ---------------------------------------------------------------------------
+
+// jiraArtifactHashRe restricts Hash to a bare alphanumeric filename
+// segment, so it cannot be used to escape .sdlc-v2/state/artifacts/ via a
+// path separator or "..".
+var jiraArtifactHashRe = regexp.MustCompile(`^[a-zA-Z0-9]+$`)
+
+func jiraValidateHash(hash string) error {
+	if hash == "" {
+		return &mcpserver.DomainError{
+			Msg:        "hash is required",
+			Suggestion: "Pass the content hash computed via sha256sum/shasum (e.g. `printf '%s' \"$canonical_json\" | sha256sum | cut -c1-12`).",
+		}
+	}
+	if !jiraArtifactHashRe.MatchString(hash) {
+		return &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("invalid hash %q: must be alphanumeric only", hash),
+			Suggestion: "Pass only the alphanumeric hash digest, with no path separator or extra characters.",
+		}
+	}
+	return nil
+}
+
+// jiraWriteCritique persists in.Data (the {initial, findings, final}
+// critique payload) to
+// <mainRoot>/.sdlc-v2/state/artifacts/critique-<hash>.json, so jira/SKILL.md's
+// Step 2.5 can write the critique artifact through this tool instead of a
+// bare Write to a .sdlc-v2/ path.
+func jiraWriteCritique(mainRoot string, in JiraIn) (any, error) {
+	if err := jiraValidateHash(in.Hash); err != nil {
+		return nil, err
+	}
+	if in.Data == nil {
+		return nil, &mcpserver.DomainError{
+			Msg:        "data is required for write-critique",
+			Suggestion: "Pass the critique payload ({initial, findings, final}) as data.",
+		}
+	}
+
+	dir := filepath.Join(mainRoot, paths.DataDir, "state", "artifacts")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, &mcpserver.InfraError{
+			Msg:        "create artifacts dir: " + err.Error(),
+			Suggestion: "Check filesystem permissions and available disk space for the project root, then retry.",
+			Cause:      err,
+		}
+	}
+
+	writePath := filepath.Join(dir, fmt.Sprintf("critique-%s.json", in.Hash))
+	if err := fsx.AtomicWriteJSON(writePath, in.Data); err != nil {
+		return nil, &mcpserver.InfraError{
+			Msg:        "write critique artifact: " + err.Error(),
+			Suggestion: "Check filesystem permissions and available disk space for the project root, then retry.",
+			Cause:      err,
+		}
+	}
+	return map[string]any{"saved": true, "hash": in.Hash, "next": "Critique artifact written — present Initial:/Critique:/Final: to the user, then proceed to Step 2.6 approval."}, nil
+}
+
+// jiraWriteApproval persists an approval token to
+// <mainRoot>/.sdlc-v2/state/artifacts/approval-<hash>.token, so
+// jira/SKILL.md's Step 2.6 can write the approval token through this tool
+// instead of a bare Write to a .sdlc-v2/ path. Its content is not read back
+// by any tool — only the file's existence is checked — so the token text
+// itself is not part of this action's contract.
+func jiraWriteApproval(mainRoot string, in JiraIn) (any, error) {
+	if err := jiraValidateHash(in.Hash); err != nil {
+		return nil, err
+	}
+
+	dir := filepath.Join(mainRoot, paths.DataDir, "state", "artifacts")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, &mcpserver.InfraError{
+			Msg:        "create artifacts dir: " + err.Error(),
+			Suggestion: "Check filesystem permissions and available disk space for the project root, then retry.",
+			Cause:      err,
+		}
+	}
+
+	writePath := filepath.Join(dir, fmt.Sprintf("approval-%s.token", in.Hash))
+	token := fmt.Sprintf("approved %s\n", time.Now().UTC().Format(time.RFC3339))
+	if err := os.WriteFile(writePath, []byte(token), 0o644); err != nil {
+		return nil, &mcpserver.InfraError{
+			Msg:        "write approval token: " + err.Error(),
+			Suggestion: "Check filesystem permissions and available disk space for the project root, then retry.",
+			Cause:      err,
+		}
+	}
+	return map[string]any{"saved": true, "hash": in.Hash, "next": "Approval token written — proceed to Step 3 dispatch."}, nil
+}
+
+// ---------------------------------------------------------------------------
 // Dispatch + registration
 // ---------------------------------------------------------------------------
 
@@ -1168,13 +1304,15 @@ func jiraCore(mainRoot string, in JiraIn, offline bool) (any, error) {
 		}
 	}
 
-	if in.Action != "validate-body" && strings.TrimSpace(in.Key) == "" {
+	if in.Action != "validate-body" && in.Action != "check-default-project" && strings.TrimSpace(in.Key) == "" {
 		return nil, &mcpserver.DomainError{Msg: "key is required"}
 	}
 
 	switch in.Action {
 	case "check":
 		return jiraCheck(mainRoot, in)
+	case "check-default-project":
+		return jiraCheckDefaultProject(mainRoot, in)
 	case "load":
 		return jiraLoad(mainRoot, in)
 	case "save":
@@ -1191,6 +1329,10 @@ func jiraCore(mainRoot string, in JiraIn, offline bool) (any, error) {
 		return jiraCopyTemplate(mainRoot, in)
 	case "validate-body":
 		return jiraValidateBody(mainRoot, in, offline)
+	case "write-critique":
+		return jiraWriteCritique(mainRoot, in)
+	case "write-approval":
+		return jiraWriteApproval(mainRoot, in)
 	default:
 		return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("unknown jira action %q", in.Action)}
 	}
@@ -1205,6 +1347,7 @@ func RegisterJiraTools(s *mcpserver.Server) {
 Pass "action" to select an operation. Each action uses a subset of the input fields (unlisted fields are ignored):
 
 - check: Check Jira issue cache and templates. Requires key. Optional: cacheDir, site, templatesDir, skipConfigCheck.
+- check-default-project: Look up jira.defaultProject from config (empty string if unset). No required fields. Optional: skipConfigCheck.
 - load: Load cached Jira issue data. Requires key. Optional: cacheDir, site, skipConfigCheck.
 - save: Save Jira issue data to cache. Requires key, data (must contain version, cloudId, project, siteUrl). Optional: cacheDir, site, skipConfigCheck.
 - save-field: Save a single field to cached issue data. Requires key, fieldName, data. Optional: cacheDir, site, skipConfigCheck.
@@ -1212,7 +1355,9 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - init-templates: Initialize default templates. Requires key. Optional: cacheDir, site, templatesDir, skipConfigCheck.
 - clear: Clear cached data for an issue. Requires key. Optional: cacheDir, site, skipConfigCheck.
 - copy-template: Copy a template between types. Requires key, templateType, templateFrom. Optional: templatesDir, skipConfigCheck.
-- validate-body: Validate markdown body for Jira compatibility. Optional: markdownBody, cacheDir, skipConfigCheck.`,
+- validate-body: Validate markdown body for Jira compatibility. Optional: markdownBody, cacheDir, skipConfigCheck.
+- write-critique: Write the {initial, findings, final} critique artifact to .sdlc-v2/state/artifacts/critique-<hash>.json. Requires key, hash, data. Optional: skipConfigCheck.
+- write-approval: Write the approval token to .sdlc-v2/state/artifacts/approval-<hash>.token. Requires key, hash. Optional: skipConfigCheck.`,
 		mcpserver.Annotations{
 			Title:       "Manage local Jira cache",
 			ReadOnly:    false,

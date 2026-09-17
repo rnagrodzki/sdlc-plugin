@@ -149,11 +149,50 @@ func setupPrepare(root string, in SetupPrepareIn) (SetupPrepareOut, error) {
 // setup_init
 // ---------------------------------------------------------------------------
 
-// SetupInitIn is the input for the setup_init tool. It takes no fields:
+// SetupInitIn is the input for the setup_init tool. With no fields set,
 // setup_init always writes the complete config.toml/local.toml templates
 // (every field, heavily commented) rather than seeding a caller-selected
-// subset of sections — see configTemplate/localTemplate below.
-type SetupInitIn struct{}
+// subset of sections — see configTemplate/localTemplate below. The
+// WritePlanTemplate/WritePRTemplate fields select two unrelated write
+// modes (Task 6) that skip that scaffold entirely. CheckPlanTemplate,
+// CheckPRTemplate, and ReadPlanTemplate (this task) select three more,
+// all read-only, so setup's skills never need a bare Glob/Read on a
+// .sdlc-v2/ path to check for or show these two files. Mode fields are
+// checked in a fixed order (first-wins, no conflict validation), the same
+// precedent as WritePlanTemplate/WritePRTemplate.
+type SetupInitIn struct {
+	// WritePlanTemplate selects write mode: copy the shipped
+	// plan-template-default.md byte-for-byte to .sdlc-v2/plan-template.md
+	// instead of scaffolding config.toml/local.toml. Lets
+	// setup-plan-template.md's Step 2 create the project's plan template
+	// through this tool instead of a bare `cp` to a .sdlc-v2/ path.
+	WritePlanTemplate bool `json:"writePlanTemplate,omitempty" jsonschema_description:"Selects write mode: copy the shipped plan-template-default.md byte-for-byte to .sdlc-v2/plan-template.md instead of scaffolding config.toml/local.toml. When true, all other setup_init behavior is skipped."`
+	// WritePRTemplate selects write mode: persist Content verbatim to
+	// .sdlc-v2/pr-template.md instead of scaffolding
+	// config.toml/local.toml. Lets setup-pr-template.md's Step 6 write
+	// the accepted PR template through this tool instead of a bare Write
+	// to a .sdlc-v2/ path.
+	WritePRTemplate bool `json:"writePRTemplate,omitempty" jsonschema_description:"Selects write mode: persist content verbatim to .sdlc-v2/pr-template.md instead of scaffolding config.toml/local.toml. Requires content. When true, all other setup_init behavior is skipped."`
+	// Content is the full PR template Markdown to write for
+	// WritePRTemplate mode. Required when WritePRTemplate is true;
+	// ignored otherwise.
+	Content string `json:"content,omitempty" jsonschema_description:"Full PR template Markdown to write verbatim for write-PR-template mode. Required when writePRTemplate is true."`
+	// CheckPlanTemplate selects check mode: report whether
+	// .sdlc-v2/plan-template.md exists, without reading its content. Lets
+	// setup/SKILL.md's snapshot steps check for the file through this tool
+	// instead of a bare Glob on a .sdlc-v2/ path.
+	CheckPlanTemplate bool `json:"checkPlanTemplate,omitempty" jsonschema_description:"Selects check mode: report whether .sdlc-v2/plan-template.md exists (out.exists), without reading its content. When true, all other setup_init behavior is skipped."`
+	// CheckPRTemplate selects check mode: report whether
+	// .sdlc-v2/pr-template.md exists, without reading its content. Lets
+	// setup/SKILL.md's snapshot steps check for the file through this tool
+	// instead of a bare Glob on a .sdlc-v2/ path.
+	CheckPRTemplate bool `json:"checkPRTemplate,omitempty" jsonschema_description:"Selects check mode: report whether .sdlc-v2/pr-template.md exists (out.exists), without reading its content. When true, all other setup_init behavior is skipped."`
+	// ReadPlanTemplate selects read mode: report whether
+	// .sdlc-v2/plan-template.md exists and, when it does, its full content.
+	// Lets setup-plan-template.md's Steps 1 and 3 show the file's content
+	// through this tool instead of a bare Read on a .sdlc-v2/ path.
+	ReadPlanTemplate bool `json:"readPlanTemplate,omitempty" jsonschema_description:"Selects read mode: report whether .sdlc-v2/plan-template.md exists (out.exists) and, when it does, its full content (out.content, empty string otherwise). When true, all other setup_init behavior is skipped."`
+}
 
 // SetupInitOut is the output for the setup_init tool.
 type SetupInitOut struct {
@@ -162,6 +201,15 @@ type SetupInitOut struct {
 	Changed []string `json:"changed"`
 	Next    string   `json:"next"`
 	Errors  []string `json:"errors,omitempty"`
+	// Exists is check/read mode's result: whether the checked/read file
+	// exists. Always present (never omitted) on those paths so callers see
+	// an explicit "false" rather than a missing key; false and unset on the
+	// scaffold/write-mode paths.
+	Exists bool `json:"exists"`
+	// Content is read mode's result: the full content of
+	// .sdlc-v2/plan-template.md when it exists, or "" when it does not.
+	// Always present (never omitted); empty on every other path.
+	Content string `json:"content"`
 }
 
 // Managed-block markers for .sdlc-v2/.gitignore.
@@ -170,14 +218,44 @@ const (
 	sdlcGitignoreEnd   = "# <<< sdlc-v2 managed"
 )
 
+// CommittableStateEntry describes one entry inside .sdlc-v2/ that is
+// legitimately tracked in git, in every worktree.
+type CommittableStateEntry struct {
+	Name  string
+	IsDir bool
+}
+
+// CommittableStateDirEntries is the canonical allowlist of entries inside
+// .sdlc-v2/ that are committed to git rather than being worktree-local
+// state (the "committable set" underpinning the root rule in the worktree
+// anchoring design). Both the .gitignore managed block below
+// (sdlcGitignorePatterns) and worktree_anchoring's stray-state check
+// (findStrayStateEntries in validators.go) derive their allowlists from
+// this single source so the two cannot drift apart.
+var CommittableStateDirEntries = []CommittableStateEntry{
+	{Name: ".gitignore"},
+	{Name: "config.toml"},
+	{Name: "review-dimensions", IsDir: true},
+}
+
 // sdlcGitignorePatterns are the deny-all + allowlist patterns inside
 // .sdlc-v2/.gitignore, mirroring SDLC_GITIGNORE_PATTERNS from the JS source.
-var sdlcGitignorePatterns = []string{
-	"*",
-	"!.gitignore",
-	"!config.toml",
-	"!review-dimensions/",
-	"!review-dimensions/**",
+var sdlcGitignorePatterns = buildSdlcGitignorePatterns(CommittableStateDirEntries)
+
+// buildSdlcGitignorePatterns turns the committable-entry allowlist into
+// gitignore deny-all + allowlist syntax: a directory entry needs both
+// "!name/" (to unignore the directory itself) and "!name/**" (to unignore
+// its contents), a file entry needs only "!name".
+func buildSdlcGitignorePatterns(entries []CommittableStateEntry) []string {
+	patterns := []string{"*"}
+	for _, e := range entries {
+		if e.IsDir {
+			patterns = append(patterns, "!"+e.Name+"/", "!"+e.Name+"/**")
+		} else {
+			patterns = append(patterns, "!"+e.Name)
+		}
+	}
+	return patterns
 }
 
 // Managed-block markers for root .gitignore (v3).
@@ -342,6 +420,22 @@ var (
 
 // setupInit is the core logic, separated from the handler for testability.
 func setupInit(root string, in SetupInitIn) (SetupInitOut, error) {
+	if in.WritePlanTemplate {
+		return setupWritePlanTemplate(root)
+	}
+	if in.WritePRTemplate {
+		return setupWritePRTemplate(root, in)
+	}
+	if in.CheckPlanTemplate {
+		return setupCheckTemplateExists(root, "plan-template.md")
+	}
+	if in.CheckPRTemplate {
+		return setupCheckTemplateExists(root, "pr-template.md")
+	}
+	if in.ReadPlanTemplate {
+		return setupReadPlanTemplate(root)
+	}
+
 	created := []string{}
 	changed := []string{}
 	var errs []string
@@ -473,6 +567,157 @@ func appendIfNew(slice []string, s string) []string {
 	return append(slice, s)
 }
 
+// setupWritePlanTemplate copies the shipped plan-template-default.md
+// byte-for-byte to <root>/.sdlc-v2/plan-template.md, so
+// setup-plan-template.md's Step 2 can call this tool instead of a bare `cp`
+// to a .sdlc-v2/ path. Byte-for-byte: os.ReadFile/os.WriteFile only, no
+// parsing or re-serialization, matching the skill's own constraint that the
+// shipped default be reproduced exactly.
+func setupWritePlanTemplate(root string) (SetupInitOut, error) {
+	defaultPath := resolveSkillTemplate("plan-template-default.md")
+	if defaultPath == nil {
+		return SetupInitOut{}, &mcpserver.DataError{
+			Msg: "setup_init: shipped plan-template-default.md not found — plugin installation may be corrupt",
+		}
+	}
+
+	content, err := os.ReadFile(*defaultPath)
+	if err != nil {
+		return SetupInitOut{}, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("read %s: %s", *defaultPath, err.Error()),
+			Suggestion: "Check filesystem permissions on the plugin installation directory, then retry.",
+			Cause:      err,
+		}
+	}
+
+	sdlcDir := filepath.Join(root, paths.DataDir)
+	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
+		return SetupInitOut{}, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("create %s directory: %s", paths.DataDir, err.Error()),
+			Suggestion: "Check filesystem permissions and available disk space for the project root, then retry.",
+			Cause:      err,
+		}
+	}
+
+	outPath := filepath.Join(sdlcDir, "plan-template.md")
+	if err := os.WriteFile(outPath, content, 0o644); err != nil {
+		return SetupInitOut{}, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("write %s: %s", outPath, err.Error()),
+			Suggestion: "Check filesystem permissions and available disk space for the project root, then retry.",
+			Cause:      err,
+		}
+	}
+
+	return SetupInitOut{
+		OK:      true,
+		Created: []string{paths.DataDir + "/plan-template.md"},
+		Changed: []string{},
+		Next:    "Plan template written to .sdlc-v2/plan-template.md — now the active template for plan's Step 2 planner.",
+	}, nil
+}
+
+// setupWritePRTemplate persists in.Content verbatim to
+// <root>/.sdlc-v2/pr-template.md, so setup-pr-template.md's Step 6 can call
+// this tool instead of a bare Write to a .sdlc-v2/ path.
+func setupWritePRTemplate(root string, in SetupInitIn) (SetupInitOut, error) {
+	if in.Content == "" {
+		return SetupInitOut{}, &mcpserver.DomainError{
+			Msg:        "setup_init: content is required when writePRTemplate is true",
+			Suggestion: "Pass the accepted PR template Markdown as content when writePRTemplate is true.",
+		}
+	}
+
+	sdlcDir := filepath.Join(root, paths.DataDir)
+	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
+		return SetupInitOut{}, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("create %s directory: %s", paths.DataDir, err.Error()),
+			Suggestion: "Check filesystem permissions and available disk space for the project root, then retry.",
+			Cause:      err,
+		}
+	}
+
+	outPath := filepath.Join(sdlcDir, "pr-template.md")
+	if err := os.WriteFile(outPath, []byte(in.Content), 0o644); err != nil {
+		return SetupInitOut{}, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("write %s: %s", outPath, err.Error()),
+			Suggestion: "Check filesystem permissions and available disk space for the project root, then retry.",
+			Cause:      err,
+		}
+	}
+
+	return SetupInitOut{
+		OK:      true,
+		Created: []string{paths.DataDir + "/pr-template.md"},
+		Changed: []string{},
+		Next:    "PR template written to .sdlc-v2/pr-template.md.",
+	}, nil
+}
+
+// setupCheckTemplateExists reports whether <root>/.sdlc-v2/<name> exists,
+// without reading its content, so setup/SKILL.md's snapshot steps can check
+// for plan-template.md/pr-template.md through this tool instead of a bare
+// Glob on a .sdlc-v2/ path.
+func setupCheckTemplateExists(root, name string) (SetupInitOut, error) {
+	path := filepath.Join(root, paths.DataDir, name)
+	_, err := os.Stat(path)
+	exists := err == nil
+	if err != nil && !os.IsNotExist(err) {
+		return SetupInitOut{}, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("stat %s: %s", path, err.Error()),
+			Suggestion: "Check filesystem permissions on the project root, then retry.",
+			Cause:      err,
+		}
+	}
+
+	next := fmt.Sprintf("%s/%s does not exist.", paths.DataDir, name)
+	if exists {
+		next = fmt.Sprintf("%s/%s exists.", paths.DataDir, name)
+	}
+
+	return SetupInitOut{
+		OK:      true,
+		Created: []string{},
+		Changed: []string{},
+		Exists:  exists,
+		Next:    next,
+	}, nil
+}
+
+// setupReadPlanTemplate reports whether <root>/.sdlc-v2/plan-template.md
+// exists and, when it does, its full content, so setup-plan-template.md's
+// Steps 1 and 3 can show the file's content through this tool instead of a
+// bare Read on a .sdlc-v2/ path.
+func setupReadPlanTemplate(root string) (SetupInitOut, error) {
+	path := filepath.Join(root, paths.DataDir, "plan-template.md")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return SetupInitOut{
+				OK:      true,
+				Created: []string{},
+				Changed: []string{},
+				Exists:  false,
+				Content: "",
+				Next:    paths.DataDir + "/plan-template.md does not exist — nothing to show.",
+			}, nil
+		}
+		return SetupInitOut{}, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("read %s: %s", path, err.Error()),
+			Suggestion: "Check filesystem permissions on the project root, then retry.",
+			Cause:      err,
+		}
+	}
+
+	return SetupInitOut{
+		OK:      true,
+		Created: []string{},
+		Changed: []string{},
+		Exists:  true,
+		Content: string(content),
+		Next:    "Show content to the user before deciding whether to overwrite, or summarize its sections.",
+	}, nil
+}
+
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
@@ -504,7 +749,7 @@ func RegisterSetupTools(s *mcpserver.Server) {
 	)
 
 	mcpserver.Register(s, "setup_init",
-		"Creates the .sdlc-v2/ directory scaffold for a v1 (TOML) config: .sdlc-v2/.gitignore, root .gitignore managed block, config.toml, and local.toml. Writes the complete, heavily-commented templates directly to disk (never through LLM context) — every field is present, with inline docs and example guardrails. Idempotent: an existing config.toml/local.toml is left untouched. Also renames stale config.json/local.json to .bak (skipped if .bak already exists). Instruct the user to edit the files by hand, then run the validate tool.",
+		"Creates the .sdlc-v2/ directory scaffold for a v1 (TOML) config: .sdlc-v2/.gitignore, root .gitignore managed block, config.toml, and local.toml. Writes the complete, heavily-commented templates directly to disk (never through LLM context) — every field is present, with inline docs and example guardrails. Idempotent: an existing config.toml/local.toml is left untouched. Also renames stale config.json/local.json to .bak (skipped if .bak already exists). Instruct the user to edit the files by hand, then run the validate tool. With writePlanTemplate:true, instead copies the shipped plan-template-default.md byte-for-byte to .sdlc-v2/plan-template.md. With writePRTemplate:true, instead writes content verbatim to .sdlc-v2/pr-template.md. With checkPlanTemplate:true or checkPRTemplate:true, instead reports whether plan-template.md/pr-template.md exists (out.exists), without reading it. With readPlanTemplate:true, instead reports whether plan-template.md exists and its full content (out.exists, out.content).",
 		mcpserver.Annotations{
 			Title:       "Initialize SDLC config files",
 			ReadOnly:    false,

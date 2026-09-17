@@ -38,7 +38,7 @@ import (
 // ExecuteStateIn carries the merged input for the execute_state tool's
 // actions. Each field is consumed by one or more actions (noted in comments).
 type ExecuteStateIn struct {
-	Action              string         `json:"action" jsonschema:"enum=wave-compute,enum=init,enum=wave-start,enum=wave-done,enum=wave-fail,enum=wave-committed,enum=wave-commit,enum=task-done,enum=task-fail,enum=task-context,enum=context,enum=read,enum=cleanup,enum=gc,enum=summarize-prior-wave-context,enum=wave-split,enum=verify-completeness,enum=wave-progress,enum=wave-await,enum=task-redispatch,enum=resume-reset,enum=ledger_checkin,enum=ledger_checkout,enum=ledger_status,enum=log-cli,enum=drift-log,enum=issue-draft,enum=decide,enum=report" jsonschema_description:"Selects the operation. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
+	Action              string         `json:"action" jsonschema:"enum=wave-compute,enum=init,enum=wave-start,enum=wave-done,enum=wave-fail,enum=wave-committed,enum=wave-commit,enum=task-done,enum=task-fail,enum=task-context,enum=context,enum=read,enum=cleanup,enum=gc,enum=summarize-prior-wave-context,enum=wave-split,enum=verify-completeness,enum=wave-progress,enum=wave-await,enum=task-redispatch,enum=resume-reset,enum=ledger_checkin,enum=ledger_checkout,enum=ledger_status,enum=ledger_cleanup,enum=log-cli,enum=drift-log,enum=issue-draft,enum=decide,enum=report" jsonschema_description:"Selects the operation. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
 	Branch              string         `json:"branch,omitempty" jsonschema_description:"Git branch the execution state belongs to. Most actions accept it to scope the state file; falls back to the current branch when omitted."`
 	Quality             string         `json:"quality,omitempty" jsonschema_description:"Quality level to stamp on a newly initialized run (init only). Required — no config fallback exists for this field."`
 	TotalTasks          int            `json:"totalTasks,omitempty" jsonschema_description:"Total planned task count for a newly initialized run (init only)."`
@@ -84,6 +84,7 @@ type ExecuteStateIn struct {
 	ExpectedWorkers     []string       `json:"expectedWorkers,omitempty" jsonschema_description:"ledger_status only: worker IDs expected to be registered for this run; any not found on disk are returned in missingWorkers."`
 	Payload             map[string]any `json:"payload,omitempty" jsonschema_description:"Reserved for future use; not currently read by any action."`
 	StepID              string         `json:"stepId,omitempty" jsonschema_description:"ledger_checkin only: identifier of the pipeline step the worker is registering activity for."`
+	Findings            string         `json:"findings,omitempty" jsonschema_description:"ledger_checkout only: free-text findings payload (e.g. a JSON array or markdown block) to persist alongside this worker's checkout record, returned later by ledger_status."`
 	Detail              string         `json:"detail,omitempty" jsonschema_description:"Narration verbosity for wave-start/wave-done/wave-fail/wave-commit: \"concise\" or \"full\"."`
 	LastCompletedTask   string         `json:"lastCompletedTask,omitempty" jsonschema_description:"wave-progress write only: ID of the most recently completed task, recorded in the heartbeat entry."`
 	AcceptanceDone      []int          `json:"acceptanceDone,omitempty" jsonschema_description:"wave-progress write only: 0-based indices, into the task's fact-sheet acceptance criteria, that the worker has completed so far (e.g. [0,2,3]). Replaces the previously recorded list; omit to leave it unchanged."`
@@ -103,6 +104,9 @@ type ExecuteStateIn struct {
 	DecideID            string         `json:"decideId,omitempty" jsonschema_description:"decide only: identifier of the item decided on (e.g. a guardrail slug)."`
 	DecideDecision      string         `json:"decideDecision,omitempty" jsonschema:"enum=override,enum=harden,enum=cancel,enum=fix" jsonschema_description:"decide only: choice made — override, harden, cancel, or fix."`
 	DecideReason        string         `json:"decideReason,omitempty" jsonschema_description:"decide only: optional free-text reason why this choice was made."`
+	Write               bool           `json:"write,omitempty" jsonschema_description:"report only: persist the report under <main worktree>/.sdlc-v2/reports/ instead of only returning it. Default false (read-only)."`
+	Format              string         `json:"format,omitempty" jsonschema:"enum=json,enum=md" jsonschema_description:"report only: overrides the format normally sourced from config.automation.report.format (\"json\" or \"md\"). Required alongside write=true so the caller's second (body-carrying) call and the tool agree on which file extension to persist."`
+	Body                string         `json:"body,omitempty" jsonschema_description:"report only: rendered markdown body to persist. Required when write=true and format=md (the caller renders markdown itself and hands the tool the exact text to write); ignored for format=json, where the tool recomputes and persists the report struct itself."`
 }
 
 // ---------------------------------------------------------------------------
@@ -207,6 +211,13 @@ type ExecutionReportOut struct {
 
 	// Next step guidance (empty string is valid "no next step").
 	Next string `json:"next,omitempty"`
+
+	// Path and Written are populated only when the caller passed write:true
+	// (see execActionReport's write branch). Path is the absolute path the
+	// report was persisted to under <main worktree>/.sdlc-v2/reports/;
+	// Written is false on every read-only call (the default).
+	Path    string `json:"path,omitempty"`
+	Written bool   `json:"written"`
 }
 
 // StepTiming is one ship-pipeline step's timing entry in
@@ -245,9 +256,12 @@ type TaskReport struct {
 }
 
 // ReportSkippedOut is returned by the report action when
-// config.Automation.Report.Enabled is false.
+// config.Automation.Report.Enabled is false. Written is always false here
+// (the zero value) — reporting being disabled means nothing is ever
+// persisted, whether or not the caller asked for write:true.
 type ReportSkippedOut struct {
 	Skipped bool   `json:"skipped"`
+	Written bool   `json:"written"`
 	Next    string `json:"next,omitempty"`
 }
 
@@ -517,13 +531,14 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - wave-await: Bounded, non-blocking poll of a wave's still-open tasks, classifying each against its server-owned dispatch state (never-started/stalled/timeout/none) and returning explicit next-instructions (including the exact task-fail/task-redispatch call shape) for whatever it finds. Requires runId, wave. Optional: branch, stateFile (also used to persist wave-await's own resume-state, i.e. the iteration counter, across bounded-poll calls).
 - resume-reset: Reset in-progress waves for session resume. Optional: branch, stateFile. Returns {resetWaves, clearedTaskIds} as before; when the run is still in flight after the reset, the response also carries a "resumeBriefing" (same shape as read's) reflecting the sets it just cleared — resume-reset's willRedo always matches the task IDs in clearedTaskIds. Reseeds fresh server-owned dispatch state (attempt reset to 1) for every cleared task ID; seeding failure is non-fatal and appends to a "warnings" field.
 - ledger_checkin: Register a worker as active. Requires runId, workerId. Optional: stepId.
-- ledger_checkout: Mark a worker as done. Requires runId, workerId.
-- ledger_status: List worker statuses for a run. Requires runId. Optional: timeoutSeconds, expectedWorkers (worker IDs expected to have checked in; any missing from the ledger are returned as missingWorkers).
+- ledger_checkout: Mark a worker as done. Requires runId, workerId. Optional: findings (free-text payload — e.g. a JSON array or markdown block — persisted alongside this worker's checkout record and returned later by ledger_status).
+- ledger_status: List worker statuses for a run. Requires runId. Optional: timeoutSeconds, expectedWorkers (worker IDs expected to have checked in; any missing from the ledger are returned as missingWorkers). Each entry in the returned workers[] carries a "findings" field when that worker's ledger_checkout call set one; omitted when absent.
+- ledger_cleanup: Remove a run's entire ledger directory (all per-worker checkin/checkout/findings files). Requires runId. Returns {ok, runId, removed} where removed is false when the directory didn't exist.
 - log-cli: Append a CLI-captured output block to the run's evidence log. Requires cliCommand. Optional: cliExitCode, cliOutput, branch, wave.
 - drift-log: Append a drift issue and evaluate the server-side stop condition. When accumulated error-severity drift issues exceed the threshold (max(minErrorFloor, ceil(maxErrorRate * totalTasks))), returns {halt:true}. Requires driftSeverity (error|warning|info), driftSummary. Optional: driftDetail, wave, taskId, branch.
 - issue-draft: Append a pending GH issue draft to the state file's pendingIssueDrafts list (append-only — never goes through the context action, never overwrites). Requires issueDraftTitle, issueDraftBody. Optional: issueDraftLabels, taskId, branch. Returns {added:true, totalDrafts:N}.
 - decide: Record a guardrail decision (append-only — never goes through the context action, never overwrites; distinct from ship state's own "decide" action, which writes a differently-shaped {step, decision} entry under a different key). Appends {decideType, id, decision, reason} to the state file's guardrailDecisions list. Requires decideType, decideId. Optional: decideDecision, decideReason, branch. Returns {ok:true, action:"decide", next:"..."}.
-- report: Assemble the end-of-run execution report (KD-11), read-only (never writes state). Gated by config automation.report: {enabled:false} returns {skipped:true} immediately and nothing else. Otherwise returns {branch, runId, planPath, startedAt, duration, format, waves[{number, status, startedAt, completedAt, duration, tasks[{id, name, status, complexity, risk, filesChanged}], committedSha}], totalTasks, completedTasks, failedTasks, skippedTasks, drifts, errors, warnings, concerns, pendingIssueDrafts, deferredFindings, decisions}. format is "json" or "md" (default) from config — tells the caller whether to write the returned data as JSON verbatim or render it as markdown itself. Optional: branch.
+- report: Assemble the end-of-run execution report (KD-11). With write omitted or false, this is read-only (never writes state or any file). Gated by config automation.report: {enabled:false} returns {skipped:true, written:false} immediately and nothing else — regardless of write. Otherwise returns {branch, runId, planPath, startedAt, duration, format, waves[{number, status, startedAt, completedAt, duration, tasks[{id, name, status, complexity, risk, filesChanged}], committedSha}], totalTasks, completedTasks, failedTasks, skippedTasks, drifts, errors, warnings, concerns, pendingIssueDrafts, deferredFindings, decisions, path, written, next}. format is "json" or "md" (default) from config, or overridden by the format input field. write:true persists the report under <main worktree>/.sdlc-v2/reports/<runId>-report.<ext> and sets path/written on the response instead of leaving the caller to construct that path itself. For format=json, write:true alone is enough — the tool recomputes and writes the full struct. For format=md, write:true additionally requires body (the caller's own rendered markdown) — the tool persists that exact text rather than rendering it again. Optional: branch, write, format, body.
 
 Returns a JSON envelope: {"ok":true, "data":{...}} on success, {"ok":false, "code":"...", "error":"..."} on failure.`,
 		mcpserver.Annotations{
@@ -608,6 +623,8 @@ func executeState(root, workDir string, in ExecuteStateIn, now func() time.Time)
 		return execActionLedgerCheckout(root, in, now)
 	case "ledger_status":
 		return execActionLedgerStatus(root, in, now)
+	case "ledger_cleanup":
+		return execActionLedgerCleanup(root, in)
 	case "log-cli":
 		return execActionLogCLI(root, workDir, in)
 	case "drift-log":
@@ -1274,6 +1291,12 @@ func execActionReport(root, workDir string, in ExecuteStateIn, now func() time.T
 		enabled = cfg.Automation.Report.Enabled
 		format = cfg.Automation.Report.Format
 	}
+	if in.Format != "" {
+		if in.Format != "json" && in.Format != "md" {
+			return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("report: unknown format %q (want json or md)", in.Format), Suggestion: "Pass format as \"json\" or \"md\", or omit it to use config.automation.report.format."}
+		}
+		format = in.Format
+	}
 	if !enabled {
 		return ReportSkippedOut{Skipped: true}, nil
 	}
@@ -1289,11 +1312,34 @@ func execActionReport(root, workDir string, in ExecuteStateIn, now func() time.T
 	if err := execAssertBranch(st, branch); err != nil {
 		return nil, err
 	}
+	runID := execDeriveRunID(st.Data, 0)
+
+	// Write mode with format=md: the caller (ship SKILL.md) already fetched
+	// the read-only report in a prior call, rendered it to markdown itself,
+	// and now hands the tool that exact text to persist — recomputing the
+	// full report here would be wasted work the caller already did.
+	if in.Write && format == "md" {
+		if strings.TrimSpace(in.Body) == "" {
+			return nil, &mcpserver.DomainError{Msg: "report: write=true with format=md requires body (the rendered markdown text to persist)", Suggestion: "Call report read-only first, render the markdown yourself, then call again with write:true, format:\"md\", body:\"<rendered markdown>\"."}
+		}
+		path, err := execWriteReportFile(root, runID, "md", []byte(in.Body))
+		if err != nil {
+			return nil, err
+		}
+		return ExecutionReportOut{
+			Branch:  branch,
+			RunID:   runID,
+			Format:  "md",
+			Path:    path,
+			Written: true,
+			Next:    "Report persisted. Show the path to the user; do not write it yourself.",
+		}, nil
+	}
 
 	out := ExecutionReportOut{
 		Branch: branch,
 		Format: format,
-		RunID:  execDeriveRunID(st.Data, 0),
+		RunID:  runID,
 		Waves:  make([]WaveReport, 0),
 	}
 	out.PlanPath, _ = st.Data["planPath"].(string)
@@ -1421,7 +1467,69 @@ func execActionReport(root, workDir string, in ExecuteStateIn, now func() time.T
 		}
 	}
 
+	// Write mode with format=json: the tool has just recomputed the full
+	// report struct above, so persist that same struct verbatim rather than
+	// asking the caller to write it (and risk it landing in a linked
+	// worktree instead of the main one — see execWriteReportFile).
+	if in.Write && format == "json" {
+		path, werr := execWriteReportFile(root, runID, "json", out)
+		if werr != nil {
+			return nil, werr
+		}
+		out.Path = path
+		out.Written = true
+		out.Next = "Report persisted. Show the path to the user; do not write it yourself."
+	}
+
 	return out, nil
+}
+
+// execWriteReportFile persists an execution report under <root>/.sdlc-v2/
+// reports/<runID>-report.<ext>, main-worktree-rooted via the same root
+// callers already resolve through worktree.MainRoot() (see
+// RegisterExecuteStateTools) rather than the session's possibly-linked-
+// worktree cwd. It creates the reports/ directory if needed and writes
+// atomically (temp file + rename) so a reader never observes a partial
+// file. content is either an ExecutionReportOut (ext "json", marshaled via
+// fsx.AtomicWriteJSON) or raw markdown bytes (ext "md", written as-is).
+// Returns the absolute path written.
+func execWriteReportFile(root, runID, ext string, content any) (string, error) {
+	dir := filepath.Join(root, paths.DataDir, "reports")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", &mcpserver.InfraError{Msg: "mkdir reports dir: " + err.Error(), Cause: err}
+	}
+	path := filepath.Join(dir, runID+"-report."+ext)
+
+	if ext == "json" {
+		if err := fsx.AtomicWriteJSON(path, content); err != nil {
+			return "", &mcpserver.InfraError{Msg: "write report: " + err.Error(), Cause: err}
+		}
+		return path, nil
+	}
+
+	data, ok := content.([]byte)
+	if !ok {
+		return "", &mcpserver.InfraError{Msg: fmt.Sprintf("write report: unsupported content type %T for ext %q", content, ext)}
+	}
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return "", &mcpserver.InfraError{Msg: "create temp report file: " + err.Error(), Cause: err}
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return "", &mcpserver.InfraError{Msg: "write temp report file: " + err.Error(), Cause: err}
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return "", &mcpserver.InfraError{Msg: "close temp report file: " + err.Error(), Cause: err}
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
+		return "", &mcpserver.InfraError{Msg: "rename temp report file into place: " + err.Error(), Cause: err}
+	}
+	return path, nil
 }
 
 // extractStepTimings reads ship state's data["steps"] (see
@@ -4864,10 +4972,16 @@ func execActionLedgerCheckin(root string, in ExecuteStateIn, now func() time.Tim
 
 func execActionLedgerCheckout(root string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	if in.RunID == "" {
-		return nil, &mcpserver.DomainError{Msg: "runId is required"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "runId is required",
+			Suggestion: "Pass the runId of the execute run whose worker is checking out.",
+		}
 	}
 	if in.WorkerID == "" {
-		return nil, &mcpserver.DomainError{Msg: "workerId is required"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "workerId is required",
+			Suggestion: "Pass the workerId that was used for ledger_checkin.",
+		}
 	}
 	if err := execValidateSafeID(in.RunID, "runId"); err != nil {
 		return nil, err
@@ -4878,7 +4992,11 @@ func execActionLedgerCheckout(root string, in ExecuteStateIn, now func() time.Ti
 
 	dir := ledgerDir(root, in.RunID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "mkdir ledger: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        "mkdir ledger: " + err.Error(),
+			Suggestion: "Check filesystem permissions on the project root, then retry.",
+			Cause:      err,
+		}
 	}
 
 	fp := ledgerFilePath(root, in.RunID, in.WorkerID)
@@ -4889,16 +5007,27 @@ func execActionLedgerCheckout(root string, in ExecuteStateIn, now func() time.Ti
 
 	existing["status"] = "done"
 	existing["checkoutAt"] = now().UTC().Format(time.RFC3339)
+	if in.Findings != "" {
+		existing["findings"] = in.Findings
+	}
 
 	if err := fsx.AtomicWriteJSON(fp, existing); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "write ledger: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        "write ledger: " + err.Error(),
+			Suggestion: "Check filesystem permissions on the project root, then retry.",
+			Cause:      err,
+		}
 	}
-	return map[string]any{
+	confirmation := map[string]any{
 		"runId":      in.RunID,
 		"workerId":   in.WorkerID,
 		"status":     "done",
 		"checkoutAt": existing["checkoutAt"],
-	}, nil
+	}
+	if in.Findings != "" {
+		confirmation["findings"] = in.Findings
+	}
+	return confirmation, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -4907,7 +5036,10 @@ func execActionLedgerCheckout(root string, in ExecuteStateIn, now func() time.Ti
 
 func execActionLedgerStatus(root string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	if in.RunID == "" {
-		return nil, &mcpserver.DomainError{Msg: "runId is required"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "runId is required",
+			Suggestion: "Pass the runId of the execute run whose ledger status to check.",
+		}
 	}
 	if err := execValidateSafeID(in.RunID, "runId"); err != nil {
 		return nil, err
@@ -4924,7 +5056,11 @@ func execActionLedgerStatus(root string, in ExecuteStateIn, now func() time.Time
 				"missingWorkers": missingWorkersOf(in.ExpectedWorkers, nil),
 			}, nil
 		}
-		return nil, &mcpserver.InfraError{Msg: "read ledger dir: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        "read ledger dir: " + err.Error(),
+			Suggestion: "Check filesystem permissions on the project root, then retry.",
+			Cause:      err,
+		}
 	}
 
 	nowTime := now()
@@ -4950,6 +5086,7 @@ func execActionLedgerStatus(root string, in ExecuteStateIn, now func() time.Time
 		checkinAt, _ := data["checkinAt"].(string)
 		checkoutAt, _ := data["checkoutAt"].(string)
 		stepID, _ := data["stepId"].(string)
+		findings, _ := data["findings"].(string)
 
 		stalled := false
 		if status == "active" && in.TimeoutSeconds > 0 && checkinAt != "" {
@@ -4970,6 +5107,9 @@ func execActionLedgerStatus(root string, in ExecuteStateIn, now func() time.Time
 		}
 		if stepID != "" {
 			entry["stepId"] = stepID
+		}
+		if findings != "" {
+			entry["findings"] = findings
 		}
 		workers = append(workers, entry)
 	}
@@ -5001,6 +5141,53 @@ func missingWorkersOf(expectedWorkers []string, registered map[string]bool) []st
 		}
 	}
 	return missingWorkers
+}
+
+// ---------------------------------------------------------------------------
+// Action: ledger_cleanup
+// ---------------------------------------------------------------------------
+
+// execActionLedgerCleanup removes a run's entire ledger directory (every
+// per-worker checkin/checkout/findings file). Callers (plan, review) invoke
+// this once a run's findings have already been read out of ledger_status's
+// response — the on-disk ledger files have no further use after that point.
+func execActionLedgerCleanup(root string, in ExecuteStateIn) (any, error) {
+	if in.RunID == "" {
+		return nil, &mcpserver.DomainError{
+			Msg:        "runId is required",
+			Suggestion: "Pass the runId whose ledger directory should be removed.",
+		}
+	}
+	if err := execValidateSafeID(in.RunID, "runId"); err != nil {
+		return nil, err
+	}
+
+	dir := ledgerDir(root, in.RunID)
+	removed := true
+	if _, err := os.Stat(dir); err != nil {
+		if !os.IsNotExist(err) {
+			return nil, &mcpserver.InfraError{
+				Msg:        "stat ledger dir: " + err.Error(),
+				Cause:      err,
+				Suggestion: "Check filesystem permissions on .sdlc-v2/runs/ledger/ and retry.",
+			}
+		}
+		removed = false
+	}
+
+	if err := os.RemoveAll(dir); err != nil {
+		return nil, &mcpserver.InfraError{
+			Msg:        "remove ledger dir: " + err.Error(),
+			Cause:      err,
+			Suggestion: "Check filesystem permissions on .sdlc-v2/runs/ledger/ and retry.",
+		}
+	}
+
+	return map[string]any{
+		"ok":      true,
+		"runId":   in.RunID,
+		"removed": removed,
+	}, nil
 }
 
 // ---------------------------------------------------------------------------

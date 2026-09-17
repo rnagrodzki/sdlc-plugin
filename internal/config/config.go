@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
@@ -433,6 +434,60 @@ func extractSection(raw map[string]any, name string) map[string]any {
 	return section
 }
 
+// validateSectionName rejects a dotted section name with an empty segment
+// (e.g. "plan.", ".guardrails", "a..b"), which would otherwise create or read
+// a table keyed by the empty string.
+func validateSectionName(name string) error {
+	if name == "" {
+		return fmt.Errorf("config: invalid section name %q", name)
+	}
+	for _, part := range strings.Split(name, ".") {
+		if part == "" {
+			return fmt.Errorf("config: invalid section name %q", name)
+		}
+	}
+	return nil
+}
+
+// extractSectionPath walks a dotted section path (e.g. "plan.guardrails")
+// through raw and returns the table at the leaf. Returns nil when any segment
+// is absent or is not a table. A name without a "." behaves exactly like
+// extractSection.
+func extractSectionPath(raw map[string]any, name string) map[string]any {
+	cur := raw
+	parts := strings.Split(name, ".")
+	for i, part := range parts {
+		next := extractSection(cur, part)
+		if next == nil {
+			return nil
+		}
+		if i == len(parts)-1 {
+			return next
+		}
+		cur = next
+	}
+	return nil
+}
+
+// setSectionPath assigns v at the dotted section path within raw, creating
+// intermediate tables as needed and replacing any intermediate value that is
+// not a table. Assignment at the leaf is wholesale, so siblings of the leaf
+// survive but the leaf's own previous contents do not. A name without a "."
+// degenerates to raw[name] = v.
+func setSectionPath(raw map[string]any, name string, v map[string]any) {
+	parts := strings.Split(name, ".")
+	cur := raw
+	for _, part := range parts[:len(parts)-1] {
+		next, ok := cur[part].(map[string]any)
+		if !ok {
+			next = make(map[string]any)
+			cur[part] = next
+		}
+		cur = next
+	}
+	cur[parts[len(parts)-1]] = v
+}
+
 // parseAutomation converts a raw JSON map into an AutomationSection.
 func parseAutomation(raw map[string]any) *AutomationSection {
 	a := &AutomationSection{}
@@ -686,16 +741,33 @@ func Read(mainRoot string) (*Config, error) {
 // For project sections (version, jira, commit, pr, plan, execute), reads
 // .sdlc-v2/config.toml. For all other sections, reads .sdlc-v2/local.toml.
 //
+// name accepts either a top-level section name ("plan") or a dotted path to
+// a nested table ("pr.labels"), in which case the table at the leaf is
+// returned. Routing uses the FIRST segment, so a dotted project-section path
+// still reads .sdlc-v2/config.toml.
+//
+// Exception: readProjectRaw normalizes plan.guardrails and execute.guardrails
+// into a []any list (see normalizeGuardrailTables), so those two leaves are no
+// longer tables by the time the dotted walk reaches them and a dotted read of
+// exactly those paths returns ErrNotFound. Read the parent section and index
+// ["guardrails"] instead. WriteSection is unaffected: it merges through
+// fsx.ReadTOML, not readProjectRaw, so writing at plan.guardrails works.
+//
 // Returns ErrNotFound when the file or section does not exist. Returns a
 // legacy refusal error (naming "migrate") when the project config layout
 // is pre-v5 and a project section is requested.
 func ReadSection(mainRoot, name string) (map[string]any, error) {
-	if ProjectSections[name] {
+	if err := validateSectionName(name); err != nil {
+		return nil, err
+	}
+	top, _, _ := strings.Cut(name, ".")
+
+	if ProjectSections[top] {
 		projectRaw, err := readProjectRaw(mainRoot)
 		if err != nil {
 			return nil, err
 		}
-		section := extractSection(projectRaw, name)
+		section := extractSectionPath(projectRaw, name)
 		if section == nil {
 			return nil, fmt.Errorf("config: section %q: %w", name, ErrNotFound)
 		}
@@ -713,7 +785,7 @@ func ReadSection(mainRoot, name string) (map[string]any, error) {
 	}
 	traceRead(localPath, "read")
 
-	section := extractSection(localRaw, name)
+	section := extractSectionPath(localRaw, name)
 	if section == nil {
 		return nil, fmt.Errorf("config: section %q: %w", name, ErrNotFound)
 	}
@@ -724,15 +796,27 @@ func ReadSection(mainRoot, name string) (map[string]any, error) {
 // file based on ProjectSections membership. Uses read-merge-write to avoid
 // clobbering other sections. Creates the .sdlc-v2 directory if needed.
 //
+// WriteSection accepts either a top-level section name ("plan") or a dotted
+// path to a nested table ("plan.guardrails"). A dotted path merges at the
+// LEAF: siblings under the same top-level key are preserved automatically.
+// Leaf semantics remain wholesale, so clearing a leaf still works. Routing
+// uses the FIRST segment, so a dotted project-section path still lands in
+// .sdlc-v2/config.toml, never local.toml.
+//
 // For project sections, validates the merged result against the v5 schema
 // before writing. Writes use fsx.AtomicWriteTOML for crash safety.
 func WriteSection(mainRoot, name string, v map[string]any) error {
+	if err := validateSectionName(name); err != nil {
+		return err
+	}
+	top, _, _ := strings.Cut(name, ".")
+
 	sdlcDir := filepath.Join(mainRoot, paths.DataDir)
 	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
 		return fmt.Errorf("config: create .sdlc-v2 dir: %w", err)
 	}
 
-	if ProjectSections[name] {
+	if ProjectSections[top] {
 		configPath := filepath.Join(sdlcDir, "config.toml")
 		var existing map[string]any
 		if err := fsx.ReadTOML(configPath, &existing); err != nil {
@@ -742,7 +826,7 @@ func WriteSection(mainRoot, name string, v map[string]any) error {
 				return fmt.Errorf("config: %w", err)
 			}
 		}
-		existing[name] = v
+		setSectionPath(existing, name, v)
 		if err := validateProjectKeys(existing); err != nil {
 			return err
 		}
@@ -760,7 +844,7 @@ func WriteSection(mainRoot, name string, v map[string]any) error {
 			return fmt.Errorf("config: %w", err)
 		}
 	}
-	existing[name] = v
+	setSectionPath(existing, name, v)
 	traceRead(localPath, "write")
 	return fsx.AtomicWriteTOML(localPath, existing)
 }

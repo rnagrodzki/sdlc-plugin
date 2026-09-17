@@ -3591,6 +3591,83 @@ func TestExecState_Ledger_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestExecState_Ledger_FindingsRoundTrip verifies that findings passed to
+// ledger_checkout are persisted and surfaced back via ledger_status, and that
+// ledger_cleanup removes the ledger directory (reporting removed=false on a
+// second call once it's already gone).
+func TestExecState_Ledger_FindingsRoundTrip(t *testing.T) {
+	root := t.TempDir()
+	clock := fixedClock(testNow)
+
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action:   "ledger_checkin",
+		RunID:    "run-findings",
+		WorkerID: "worker-A",
+	}, clock); err != nil {
+		t.Fatalf("checkin: %v", err)
+	}
+
+	checkoutResult, err := executeState(root, root, ExecuteStateIn{
+		Action:   "ledger_checkout",
+		RunID:    "run-findings",
+		WorkerID: "worker-A",
+		Findings: `[{"severity":"high","file":"a.go","line":1,"rationale":"x"}]`,
+	}, clock)
+	if err != nil {
+		t.Fatalf("checkout: %v", err)
+	}
+	co := checkoutResult.(map[string]any)
+	if co["findings"] != `[{"severity":"high","file":"a.go","line":1,"rationale":"x"}]` {
+		t.Errorf("checkout confirmation findings = %v, want echoed findings", co["findings"])
+	}
+
+	statusResult, err := executeState(root, root, ExecuteStateIn{
+		Action: "ledger_status",
+		RunID:  "run-findings",
+	}, clock)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	workers := statusResult.(map[string]any)["workers"].([]any)
+	if len(workers) != 1 {
+		t.Fatalf("expected 1 worker, got %d", len(workers))
+	}
+	w := workers[0].(map[string]any)
+	if w["findings"] != `[{"severity":"high","file":"a.go","line":1,"rationale":"x"}]` {
+		t.Errorf("status findings = %v, want checkout's findings echoed back", w["findings"])
+	}
+
+	// Cleanup removes the ledger directory.
+	cleanupResult, err := executeState(root, root, ExecuteStateIn{
+		Action: "ledger_cleanup",
+		RunID:  "run-findings",
+	}, clock)
+	if err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	cr := cleanupResult.(map[string]any)
+	if cr["removed"] != true {
+		t.Errorf("cleanup removed = %v, want true", cr["removed"])
+	}
+	if _, err := os.Stat(ledgerDir(root, "run-findings")); !os.IsNotExist(err) {
+		t.Errorf("ledger dir should no longer exist, stat err = %v", err)
+	}
+
+	// A second cleanup on an already-gone directory reports removed=false and
+	// does not error.
+	cleanupResult2, err := executeState(root, root, ExecuteStateIn{
+		Action: "ledger_cleanup",
+		RunID:  "run-findings",
+	}, clock)
+	if err != nil {
+		t.Fatalf("second cleanup: %v", err)
+	}
+	cr2 := cleanupResult2.(map[string]any)
+	if cr2["removed"] != false {
+		t.Errorf("second cleanup removed = %v, want false", cr2["removed"])
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Ledger: stall detection with injected clock
 // ---------------------------------------------------------------------------

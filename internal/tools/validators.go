@@ -119,6 +119,17 @@ func RegisterValidateTools(s *mcpserver.Server) {
 			if err != nil {
 				return ValidateOut{}, &mcpserver.InfraError{Msg: fmt.Sprintf("resolve project root: %s", err.Error()), Cause: err}
 			}
+			// dimensions is the one action whose target files are git-tracked
+			// content that must be read from the ACTIVE worktree (root rule),
+			// not the main worktree every other action anchors to. Swap the
+			// root passed into validate() for this action only; fail open to
+			// the already-resolved main root so a resolution error here never
+			// blocks the other eight actions.
+			if in.Action == "dimensions" {
+				if activeRoot, aerr := worktree.ActiveRoot(); aerr == nil {
+					root = activeRoot
+				}
+			}
 			return validate(root, in)
 		},
 	)
@@ -1566,6 +1577,47 @@ func sameWorktreePath(a, b string) bool {
 	return ra == rb
 }
 
+// findStrayStateEntries reports every top-level entry inside
+// <activeRoot>/.sdlc-v2/ that is not part of the committable set (see
+// CommittableStateDirEntries in setup.go). Every linked worktree
+// legitimately has .gitignore, config.toml, and review-dimensions/ because
+// they're tracked in git -- anything else there is worktree-local state
+// that leaked into the linked worktree instead of landing in the main
+// worktree's .sdlc-v2/ (the bug family this check exists to catch). A
+// missing directory is not an error: a linked worktree with no .sdlc-v2/ at
+// all has nothing stray to report.
+func findStrayStateEntries(mainRoot, activeRoot string) ([]discovery.Finding, error) {
+	activeDir := filepath.Join(activeRoot, paths.DataDir)
+	entries, err := os.ReadDir(activeDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read %s: %w", activeDir, err)
+	}
+
+	allowed := make(map[string]bool, len(CommittableStateDirEntries))
+	for _, e := range CommittableStateDirEntries {
+		allowed[e.Name] = true
+	}
+
+	var findings []discovery.Finding
+	for _, entry := range entries {
+		if allowed[entry.Name()] {
+			continue
+		}
+		findings = append(findings, discovery.Finding{
+			ID:       "WORKTREE_ANCHOR_STRAY_STATE",
+			Severity: "error",
+			Message: fmt.Sprintf(
+				"%s exists in the linked worktree; state belongs in %s/",
+				entry.Name(), filepath.Join(mainRoot, paths.DataDir)),
+			Path: filepath.Join(activeDir, entry.Name()),
+		})
+	}
+	return findings, nil
+}
+
 // resolveStateDirOwner reports which worktree currently owns the .sdlc-v2/
 // directory on disk: "main" when it exists under mainRoot (the canonical
 // anchor per internal/worktree's package doc), "active" when it exists only
@@ -1634,6 +1686,13 @@ func validateWorktreeAnchoring(root string) (*WorktreeAnchoringCheck, []discover
 				paths.DataDir, activeRoot, root),
 			Path: stateDir,
 		})
+	}
+	if check.IsLinked {
+		strayFindings, err := findStrayStateEntries(root, activeRoot)
+		if err != nil {
+			return nil, nil, &mcpserver.InfraError{Msg: fmt.Sprintf("scan linked worktree state: %s", err.Error()), Cause: err}
+		}
+		findings = append(findings, strayFindings...)
 	}
 
 	return check, findings, nil

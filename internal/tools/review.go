@@ -57,6 +57,15 @@ var pluginVersion = version.Plugin
 type ReviewPrepareIn struct {
 	SkipConfigCheck bool   `json:"skipConfigCheck" jsonschema_description:"Skips the config-version auto-migration gate normally run before preflight checks. Set only when the caller has already verified or migrated the config."`
 	Target          string `json:"target" jsonschema_description:"Base branch/ref to diff against, overriding the repo's detected default branch. Ignored when the configured review scope is \"staged\" or \"working\" (local, non-branch scopes)."`
+	// SaveReview selects save mode: persist Content to
+	// .sdlc-v2/reviews/<branch>-<date>.md under the main worktree root
+	// instead of preparing a review manifest. Lets review/SKILL.md's Step 7
+	// save a review comment through this tool instead of a bare
+	// mkdir/cp to a .sdlc-v2/ path.
+	SaveReview bool `json:"saveReview,omitempty" jsonschema_description:"Selects save mode: persist content to .sdlc-v2/reviews/<branch>-<date>.md under the main worktree root instead of preparing a review manifest. When true, content is required and all other fields are ignored."`
+	// Content is the review comment body to persist verbatim for save mode.
+	// Required when SaveReview is true.
+	Content string `json:"content,omitempty" jsonschema_description:"Review comment body to persist verbatim for save mode. Required when saveReview is true."`
 }
 
 // ReviewPrepareSummary mirrors the summary block of the JS manifest.
@@ -87,6 +96,12 @@ type ReviewPrepareSummary struct {
 type ReviewPrepareOut struct {
 	ManifestPath string               `json:"manifestPath"`
 	Summary      ReviewPrepareSummary `json:"summary"`
+	// Saved is set in save mode: true once Content has been persisted.
+	// Omitted (zero value) in normal manifest mode.
+	Saved bool `json:"saved,omitempty"`
+	// Next carries actionable next-step guidance after a save-mode call.
+	// Empty in normal manifest mode.
+	Next string `json:"next,omitempty" jsonschema_description:"Actionable next-step guidance after a save-mode call."`
 }
 
 // ---------------------------------------------------------------------------
@@ -658,7 +673,17 @@ func loadAndMatchDimensions(projectRoot string, changedFiles []string) []reviewD
 // Core logic (separated from handler for testability)
 // ---------------------------------------------------------------------------
 
+// reviewBranchUnsafeRe matches any character not safe for a bare filename
+// segment, mirroring review/SKILL.md's prior inline shell substitution
+// "${branch//[^a-zA-Z0-9_-]/-}" used to sanitize a branch name for a
+// .sdlc-v2/reviews/ filename.
+var reviewBranchUnsafeRe = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
+
 func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPrepareOut, error) {
+	if in.SaveReview {
+		return saveReviewComment(projectRoot, activeRoot, in)
+	}
+
 	// KD5 gate: config version check.
 	if !in.SkipConfigCheck {
 		if err := configmigrate.Verify(projectRoot); err != nil {
@@ -708,8 +733,11 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 		}
 	}
 
-	// Load and match dimensions.
-	dims := loadAndMatchDimensions(projectRoot, changedFiles)
+	// Load and match dimensions. Dimension files are git-tracked content, so
+	// per the root rule they load from the ACTIVE worktree, not projectRoot
+	// (MainRoot) -- a branch-local dimension file must be visible even inside
+	// a linked worktree.
+	dims := loadAndMatchDimensions(activeRoot, changedFiles)
 	if len(dims) == 0 {
 		return ReviewPrepareOut{}, &mcpserver.DomainError{
 			Msg: "No review dimensions found in " + paths.DataDir + "/review-dimensions/",
@@ -1023,6 +1051,49 @@ func emptyFileContextIfNil(fc []fileContextEntry) []fileContextEntry {
 	return fc
 }
 
+// saveReviewComment is save mode's core logic: persist in.Content to
+// <projectRoot>/.sdlc-v2/reviews/<branch>-<date>.md, so review/SKILL.md's
+// Step 7 can save a review comment through this tool instead of a bare
+// mkdir/cp to a .sdlc-v2/ path. Rooted at projectRoot (worktree.MainRoot())
+// rather than activeRoot, since .sdlc-v2/ state must land in the main
+// worktree regardless of which linked worktree a review runs in; the
+// branch name itself is still read from activeRoot (the branch actually
+// under review).
+func saveReviewComment(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPrepareOut, error) {
+	if in.Content == "" {
+		return ReviewPrepareOut{}, &mcpserver.DomainError{
+			Msg:        "review_prepare: content is required when saveReview is true",
+			Suggestion: "Pass the review comment body as content when saveReview is true.",
+		}
+	}
+
+	branch, err := gitx.CurrentBranch(activeRoot)
+	if err != nil || branch == "" {
+		branch = "detached"
+	}
+	branchSafe := reviewBranchUnsafeRe.ReplaceAllString(branch, "-")
+
+	dir := filepath.Join(projectRoot, paths.DataDir, "reviews")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return ReviewPrepareOut{}, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("create %s: %s", dir, err.Error()),
+			Suggestion: "Check filesystem permissions and available disk space for the project root, then retry.",
+			Cause:      err,
+		}
+	}
+
+	outPath := filepath.Join(dir, fmt.Sprintf("%s-%s.md", branchSafe, time.Now().UTC().Format("2006-01-02")))
+	if err := os.WriteFile(outPath, []byte(in.Content), 0o644); err != nil {
+		return ReviewPrepareOut{}, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("write %s: %s", outPath, err.Error()),
+			Suggestion: "Check filesystem permissions and available disk space for the project root, then retry.",
+			Cause:      err,
+		}
+	}
+
+	return ReviewPrepareOut{Saved: true, Next: "Review saved to .sdlc-v2/reviews/ — not posted to the PR."}, nil
+}
+
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
@@ -1030,7 +1101,7 @@ func emptyFileContextIfNil(fc []fileContextEntry) []fileContextEntry {
 // RegisterReviewTools registers review_prepare on the server.
 func RegisterReviewTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "review_prepare",
-		"Pre-compute review manifest: git state, dimension matching, diff slicing, commit context. Writes manifest + per-dimension .diff and .slice.json files to a temp directory.",
+		"Pre-compute review manifest: git state, dimension matching, diff slicing, commit context. Writes manifest + per-dimension .diff and .slice.json files to a temp directory. With saveReview:true, persists content verbatim to .sdlc-v2/reviews/<branch>-<date>.md instead.",
 		mcpserver.Annotations{
 			Title:      "Prepare code review payload",
 			ReadOnly:   true,

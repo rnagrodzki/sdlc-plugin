@@ -83,7 +83,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		readOnly:   true,
 		idempotent: true,
 		openWorld:  true,
-		reason:     "ghx.PRReviewComments",
+		reason:     "ghx.PRReviewComments; writeReplyBodies mode writes only to gitignored .sdlc-v2/state/artifacts/received-review-reply-bodies.md",
 	},
 	"plan_mark": {
 		title:      "Record plan progress marker",
@@ -132,7 +132,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		readOnly:   true,
 		idempotent: true,
 		openWorld:  false,
-		reason:     "every write lands in os.MkdirTemp(\"\", \"sdlc-review-\") — per-dimension .diff/.slice.json and manifest.json; no input field redirects that path; diffs come from local git diff",
+		reason:     "every write lands in os.MkdirTemp(\"\", \"sdlc-review-\") — per-dimension .diff/.slice.json and manifest.json; no input field redirects that path; diffs come from local git diff; saveReview mode writes only to gitignored .sdlc-v2/reviews/",
 	},
 	"setup_prepare": {
 		title:      "Prepare SDLC setup context",
@@ -213,7 +213,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		destructive: true,
 		idempotent:  false,
 		openWorld:   false,
-		reason:      "os.WriteFile, AtomicWriteJSON, os.Remove. No network — Atlassian calls go through the Atlassian MCP server, not this tool",
+		reason:      "os.WriteFile, AtomicWriteJSON, os.Remove; write-critique/write-approval add critique-<hash>.json / approval-<hash>.token under .sdlc-v2/state/artifacts/. No network — Atlassian calls go through the Atlassian MCP server, not this tool",
 	},
 	"migrate": {
 		title:       "Migrate SDLC config",
@@ -253,7 +253,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		destructive: true,
 		idempotent:  true,
 		openWorld:   false,
-		reason:      "os.WriteFile; .sdlc-v2/.gitignore",
+		reason:      "os.WriteFile; .sdlc-v2/.gitignore; writePlanTemplate/writePRTemplate modes add .sdlc-v2/plan-template.md / .sdlc-v2/pr-template.md",
 	},
 	"setup_write_sections": {
 		title:       "Write SDLC config sections",
@@ -381,8 +381,9 @@ func TestEveryToolMatchesItsAnnotationDecision(t *testing.T) {
 // TestReadOnlyToolsWriteNothingTracked verifies that every read-only tool
 // leaves the git working tree clean after execution. This is a backstop
 // against refactors that inadvertently push a write into a read-only tool.
-// Tools with external dependencies (links_validate, received_review_*) are
-// skipped with a recorded reason.
+// Tools with external dependencies (links_validate, received_review_prepare)
+// are skipped with a recorded reason. received_review_verify's write-mode
+// path (writeReplyBodies) has no such dependency and is exercised directly.
 func TestReadOnlyToolsWriteNothingTracked(t *testing.T) {
 	readOnlyTools := make([]string, 0)
 	for name, policy := range toolAnnotations {
@@ -403,8 +404,6 @@ func TestReadOnlyToolsWriteNothingTracked(t *testing.T) {
 				t.Skip("links_validate requires HTTP reachability; skipped in fixtures")
 			case "received_review_prepare":
 				t.Skip("received_review_prepare requires GitHub API access; skipped in fixtures")
-			case "received_review_verify":
-				t.Skip("received_review_verify requires GitHub API access; skipped in fixtures")
 			}
 
 			// Create a minimal fixture repo, seed it via setup_init (creates
@@ -463,6 +462,13 @@ func TestReadOnlyToolsWriteNothingTracked(t *testing.T) {
 				// into root — so the fixture tree must stay clean even when
 				// the call succeeds and produces a full manifest.
 				_, _ = reviewPrepare(root, root, ReviewPrepareIn{SkipConfigCheck: true})
+				// saveReview mode writes to gitignored .sdlc-v2/reviews/ —
+				// must also leave the tracked tree clean.
+				_, _ = reviewPrepare(root, root, ReviewPrepareIn{SaveReview: true, Content: "test review comment"})
+			case "received_review_verify":
+				// writeReplyBodies mode writes to gitignored
+				// .sdlc-v2/state/artifacts/ — no GitHub API call involved.
+				_, _ = receivedReviewVerify(root, root, ReceivedReviewVerifyIn{WriteReplyBodies: true, Content: "test reply body"})
 			default:
 				t.Fatalf("no direct-call wiring for read-only tool %q — add one to this switch", toolName)
 			}

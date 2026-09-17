@@ -124,6 +124,19 @@ records, alongside the resolved pipeline flags:
 None of this requires extra flags or setup — it's recorded (or derived)
 automatically by every run and read back automatically on resume.
 
+### Execution report
+
+Near the end of a run, `/ship` assembles an execution report —
+per-wave task outcomes, step timings, CLI evidence, drift/error/warning
+counts, guardrail hits, and any deferred findings or pending issue drafts —
+gated by the project's `automation.report` config (`enabled`, and `format`:
+`"json"` or `"md"`, default `"md"`). When enabled, the tool persists it
+under `.sdlc-v2/reports/<runId>-report.{json,md}` in the main worktree (not
+wherever the session happens to be running from, e.g. a linked worktree) and
+`/ship` prints that path as the last line of the run. Disabled reporting
+(`automation.report.enabled = false`) skips this step silently — nothing is
+written.
+
 ## Related skills
 
 - [/plan](plan.md) — Creates the plan file for the execute step.

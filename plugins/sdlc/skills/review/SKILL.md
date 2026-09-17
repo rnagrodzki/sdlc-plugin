@@ -154,12 +154,10 @@ For each dimension entry with `status: "ACTIVE"` or `status: "TRUNCATED"`:
    1. Call execute_state({ action: "ledger_checkin", runId: "{runId}", workerId: "{workerId}" })
       BEFORE reading your slice/diff files.
    2. Review per the instructions above. Cap at 20 findings (prioritize by severity).
-   3. Write your findings to the file
-      ".sdlc-v2/runs/ledger/{runId}/{workerId}.findings.json" as a raw JSON array of
-      objects shaped {severity, file, line, rationale} — write `[]` if you have zero
-      findings. Do this BEFORE the next step.
-   4. Call execute_state({ action: "ledger_checkout", runId: "{runId}", workerId: "{workerId}" })
-      LAST, even when your findings file is an empty array.
+   3. Call execute_state({ action: "ledger_checkout", runId: "{runId}", workerId: "{workerId}",
+      findings: "<raw JSON array [...] you wrote, or [] if zero findings>" }) LAST — this single
+      call both records checkout and persists your findings as a JSON array of objects shaped
+      {severity, file, line, rationale}.
 
    ## Constraints
    - Review ONLY the files listed above — do not read other files
@@ -195,7 +193,7 @@ Loop calling:
 
 ```
 execute_state({ action: "ledger_status", runId, expectedWorkers: [ids], timeoutSeconds: 1800 })
-→ { runId, workers: [{ workerId, status, checkinAt, checkoutAt, stalled, stepId? }], stalledWorkers: [...], missingWorkers: [...] }
+→ { runId, workers: [{ workerId, status, checkinAt, checkoutAt, stalled, stepId?, findings? }], stalledWorkers: [...], missingWorkers: [...] }
 ```
 
 passing the `expectedWorkers` list accumulated in Step 2, roughly every 60 seconds (a pacing
@@ -225,10 +223,10 @@ suggestion for this session's own polling cadence, not a tool parameter) until e
 ## Step 4 — Consolidate Findings (relocated critique/dedupe pass)
 
 Once every dispatched worker is `done` (or was force-progressed past a stall per Step 3),
-read each worker's findings file at
-`.sdlc-v2/runs/ledger/<runId>/<workerId>.findings.json`. This is the same dedupe/
-contradiction/severity-recalibration pass previously run by a separate orchestration step,
-now inline in this session:
+read each worker's `findings` field from the `workers[]` array of the `ledger_status`
+response collected during the Step 3 poll (parse each worker's `findings` string as the JSON
+array it was written as). This is the same dedupe/contradiction/severity-recalibration pass
+previously run by a separate orchestration step, now inline in this session:
 
 **Critique:**
 
@@ -379,10 +377,11 @@ Wait for the user's reply.
 
 - `save` → (implements `R-reviews-path` — canonical save target is `.sdlc-v2/reviews/`)
 
-  ```bash
-  BRANCH_SAFE="${branch//[^a-zA-Z0-9_-]/-}"
-  mkdir -p .sdlc-v2/reviews
-  cp "{manifest.diff_dir}/review-comment.md" ".sdlc-v2/reviews/${BRANCH_SAFE}-$(date +%Y-%m-%d).md"
+  Read `{manifest.diff_dir}/review-comment.md`, then pass its content to the tool — the
+  branch name and destination path are resolved server-side, main-worktree-rooted:
+
+  ```
+  review_prepare({ saveReview: true, content: "<review-comment.md content>" })
   ```
 
 - `cancel` → no action. The comment is already visible in the terminal from Step 6.
@@ -449,7 +448,10 @@ normal completion):
 ```bash
 rm -f "<manifestPath>"
 rm -rf "{manifest.diff_dir}"
-rm -rf ".sdlc-v2/runs/ledger/<runId>"
+```
+
+```
+execute_state({ action: "ledger_cleanup", runId: "<runId>" })
 ```
 
 ---
@@ -458,9 +460,9 @@ rm -rf ".sdlc-v2/runs/ledger/<runId>"
 
 - Do NOT read a dimension's `slice_file` or `diff_file` contents into this session — the
   dispatched agent reads them (Step 2)
-- Do NOT invent a `findings` field on any `execute_state` ledger action — none of
-  `ledger_checkin` / `ledger_checkout` / `ledger_status` carries a findings/result payload;
-  findings travel only through the sibling `<workerId>.findings.json` file (Step 2)
+- Do NOT write findings to a `.sdlc-v2/runs/ledger/` file directly — pass them via
+  `ledger_checkout`'s `findings` field (Step 2) and read them back from `ledger_status`'s
+  response (Step 4)
 - Do NOT invoke error-report for user errors — only for tool-call crashes
 - Do NOT skip the Step 3 poll and consolidate on partial or zero results without a worker
   actually confirmed stalled twice in a row

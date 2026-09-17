@@ -8,6 +8,7 @@ import (
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/discovery"
 	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
+	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
 
 // Path-trigger regexes, ported verbatim from post-tool-validate.js
@@ -55,7 +56,19 @@ func postToolValidate(ctx HookCtx, event Event) (Output, error) {
 	case postToolValidateDimensionRe.MatchString(filePath):
 		// No file arg: the dimensions validator scans .sdlc-v2/review-dimensions
 		// itself rather than validating one file.
-		findings, verr = tools.ValidateDimensionsAction(root)
+		//
+		// Deviation from the :45 root ruling, for this branch only: dimension
+		// files are git-tracked content, so per the root rule they must be
+		// read from the ACTIVE worktree, not the raw process cwd -- otherwise
+		// this hook and the validate/dimensions and review_prepare tools would
+		// disagree about which dimension files exist inside a linked
+		// worktree. Fail open to root (cwd) so a resolution error here never
+		// silently disables this hook.
+		dimRoot := root
+		if activeRoot, aerr := worktree.ActiveRoot(); aerr == nil {
+			dimRoot = activeRoot
+		}
+		findings, verr = tools.ValidateDimensionsAction(dimRoot)
 	case postToolValidatePRTemplateRe.MatchString(filePath):
 		// No file arg: the pr-template validator resolves the template
 		// itself rather than validating the edited path directly.

@@ -580,6 +580,130 @@ func TestSetupInit_JSONCleanup_RunsEvenWhenTOMLAlreadyExists(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// setup_init check/read template-mode tests
+// ---------------------------------------------------------------------------
+
+func TestSetupInit_CheckPlanTemplate_Missing(t *testing.T) {
+	root := t.TempDir()
+
+	out, err := setupInit(root, SetupInitIn{CheckPlanTemplate: true})
+	if err != nil {
+		t.Fatalf("setupInit: %v", err)
+	}
+	if !out.OK {
+		t.Errorf("expected OK=true, errors: %v", out.Errors)
+	}
+	if out.Exists {
+		t.Error("expected Exists=false when plan-template.md does not exist")
+	}
+	if out.Next == "" {
+		t.Error("expected Next to be populated")
+	}
+	// Check mode must never create .sdlc-v2/ as a side effect.
+	if _, statErr := os.Stat(filepath.Join(root, paths.DataDir)); !os.IsNotExist(statErr) {
+		t.Error("checkPlanTemplate must not create .sdlc-v2/ on an empty project")
+	}
+}
+
+func TestSetupInit_CheckPlanTemplate_Exists(t *testing.T) {
+	root := t.TempDir()
+	sdlcDir := filepath.Join(root, paths.DataDir)
+	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sdlcDir, "plan-template.md"), []byte("# Plan\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := setupInit(root, SetupInitIn{CheckPlanTemplate: true})
+	if err != nil {
+		t.Fatalf("setupInit: %v", err)
+	}
+	if !out.Exists {
+		t.Error("expected Exists=true when plan-template.md exists")
+	}
+	if out.Content != "" {
+		t.Errorf("check mode must not return content, got %q", out.Content)
+	}
+}
+
+func TestSetupInit_CheckPRTemplate_MissingAndExists(t *testing.T) {
+	root := t.TempDir()
+
+	out, err := setupInit(root, SetupInitIn{CheckPRTemplate: true})
+	if err != nil {
+		t.Fatalf("setupInit: %v", err)
+	}
+	if out.Exists {
+		t.Error("expected Exists=false when pr-template.md does not exist")
+	}
+
+	sdlcDir := filepath.Join(root, paths.DataDir)
+	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sdlcDir, "pr-template.md"), []byte("# PR\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err = setupInit(root, SetupInitIn{CheckPRTemplate: true})
+	if err != nil {
+		t.Fatalf("setupInit: %v", err)
+	}
+	if !out.Exists {
+		t.Error("expected Exists=true when pr-template.md exists")
+	}
+}
+
+func TestSetupInit_ReadPlanTemplate_Missing(t *testing.T) {
+	root := t.TempDir()
+
+	out, err := setupInit(root, SetupInitIn{ReadPlanTemplate: true})
+	if err != nil {
+		t.Fatalf("setupInit: %v", err)
+	}
+	if !out.OK {
+		t.Errorf("expected OK=true, errors: %v", out.Errors)
+	}
+	if out.Exists {
+		t.Error("expected Exists=false when plan-template.md does not exist")
+	}
+	if out.Content != "" {
+		t.Errorf("expected empty Content when file does not exist, got %q", out.Content)
+	}
+	if out.Next == "" {
+		t.Error("expected Next to be populated")
+	}
+	// Read mode must never create .sdlc-v2/ as a side effect.
+	if _, statErr := os.Stat(filepath.Join(root, paths.DataDir)); !os.IsNotExist(statErr) {
+		t.Error("readPlanTemplate must not create .sdlc-v2/ on an empty project")
+	}
+}
+
+func TestSetupInit_ReadPlanTemplate_Exists(t *testing.T) {
+	root := t.TempDir()
+	sdlcDir := filepath.Join(root, paths.DataDir)
+	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const body = "## Required Sections\n- Summary\n"
+	if err := os.WriteFile(filepath.Join(sdlcDir, "plan-template.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := setupInit(root, SetupInitIn{ReadPlanTemplate: true})
+	if err != nil {
+		t.Fatalf("setupInit: %v", err)
+	}
+	if !out.Exists {
+		t.Error("expected Exists=true when plan-template.md exists")
+	}
+	if out.Content != body {
+		t.Errorf("expected Content=%q, got %q", body, out.Content)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // migrate tests
 // ---------------------------------------------------------------------------
 

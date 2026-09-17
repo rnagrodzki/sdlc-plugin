@@ -2,12 +2,15 @@ package tools
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/configmigrate"
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
 
@@ -100,8 +103,19 @@ func receivedReviewPrepare(projectRoot, activeRoot string, in ReceivedReviewIn) 
 
 // ReceivedReviewVerifyIn is the input for the received_review_verify tool.
 type ReceivedReviewVerifyIn struct {
-	PR    int    `json:"pr" jsonschema_description:"Pull request number to fetch review comment threads for."`
+	PR    int    `json:"pr,omitempty" jsonschema_description:"Pull request number to fetch review comment threads for. Required unless writeReplyBodies is true."`
 	Login string `json:"login,omitempty" jsonschema_description:"GitHub login of the PR author. Defaults to current gh auth user."`
+	// WriteReplyBodies selects write mode: persist Content to
+	// .sdlc-v2/state/artifacts/received-review-reply-bodies.md under the
+	// main worktree root (overwriting any existing file) instead of
+	// classifying review threads. Lets received-review/SKILL.md's Step
+	// 11.7 write reply bodies through this tool instead of a bare Write to
+	// a .sdlc-v2/ path.
+	WriteReplyBodies bool `json:"writeReplyBodies,omitempty" jsonschema_description:"Selects write mode: persist content to .sdlc-v2/state/artifacts/received-review-reply-bodies.md under the main worktree root (overwriting any existing file) instead of classifying review threads. When true, content is required and pr/login are ignored."`
+	// Content is the concatenated PR reply bodies (one per line) to
+	// persist verbatim for write mode. Required when WriteReplyBodies is
+	// true.
+	Content string `json:"content,omitempty" jsonschema_description:"Concatenated PR reply bodies (one per line) to persist verbatim for write mode. Required when writeReplyBodies is true."`
 }
 
 // CommentThread is one PR review comment thread — a root (top-level) review
@@ -189,6 +203,10 @@ func classifyCommentThreads(comments []ghx.PRReviewComment, login string) []Comm
 }
 
 func receivedReviewVerify(projectRoot, activeRoot string, in ReceivedReviewVerifyIn) (ReceivedReviewVerifyOut, error) {
+	if in.WriteReplyBodies {
+		return writeReplyBodies(projectRoot, in)
+	}
+
 	// KD5 gate.
 	if err := configmigrate.Verify(projectRoot); err != nil {
 		return ReceivedReviewVerifyOut{}, &mcpserver.DataError{
@@ -271,6 +289,46 @@ func receivedReviewVerify(projectRoot, activeRoot string, in ReceivedReviewVerif
 	}, nil
 }
 
+// writeReplyBodies is write mode's core logic: persist in.Content to
+// <root>/.sdlc-v2/state/artifacts/received-review-reply-bodies.md
+// (overwriting any existing file), so received-review/SKILL.md's Step
+// 11.7 can write reply bodies through this tool instead of a bare Write to
+// a .sdlc-v2/ path. root is always worktree.MainRoot() -- state artifacts
+// follow the main worktree, not the active one.
+func writeReplyBodies(root string, in ReceivedReviewVerifyIn) (ReceivedReviewVerifyOut, error) {
+	if in.Content == "" {
+		return ReceivedReviewVerifyOut{}, &mcpserver.DomainError{
+			Msg:        "received_review_verify: content is required when writeReplyBodies is true",
+			Suggestion: "Pass the concatenated reply bodies as content when writeReplyBodies is true.",
+		}
+	}
+
+	dir := filepath.Join(root, paths.DataDir, "state", "artifacts")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return ReceivedReviewVerifyOut{}, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("create %s: %s", dir, err.Error()),
+			Suggestion: "Check filesystem permissions and available disk space for the project root, then retry.",
+			Cause:      err,
+		}
+	}
+
+	outPath := filepath.Join(dir, "received-review-reply-bodies.md")
+	if err := os.WriteFile(outPath, []byte(in.Content), 0o644); err != nil {
+		return ReceivedReviewVerifyOut{}, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("write %s: %s", outPath, err.Error()),
+			Suggestion: "Check filesystem permissions and available disk space for the project root, then retry.",
+			Cause:      err,
+		}
+	}
+
+	return ReceivedReviewVerifyOut{
+		Version:   1,
+		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		Threads:   []CommentThread{},
+		Next:      "Reply bodies written — call links_validate with the same file path before posting.",
+	}, nil
+}
+
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
@@ -302,7 +360,7 @@ func RegisterReceivedReviewTools(s *mcpserver.Server) {
 	)
 
 	mcpserver.Register(s, "received_review_verify",
-		"INTERNAL — called by sdlc skills only. Fetch all review comment threads on a PR and classify each as outstanding, replied, or self-replied relative to the PR author's login. Returns per-thread status plus outstanding/replied/total counts.",
+		"INTERNAL — called by sdlc skills only. Fetch all review comment threads on a PR and classify each as outstanding, replied, or self-replied relative to the PR author's login. Returns per-thread status plus outstanding/replied/total counts. With writeReplyBodies:true, persists content verbatim to .sdlc-v2/state/artifacts/received-review-reply-bodies.md instead.",
 		mcpserver.Annotations{
 			Title:      "Verify review replies posted",
 			ReadOnly:   true,

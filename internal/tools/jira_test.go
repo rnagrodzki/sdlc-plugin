@@ -99,6 +99,11 @@ func TestJiraKeyRequiredExceptValidateBody(t *testing.T) {
 	if _, err := jiraCore(root, JiraIn{Action: "validate-body", MarkdownBody: "no urls here"}, true); err != nil {
 		t.Fatalf("validate-body should not require key: %v", err)
 	}
+	// check-default-project must NOT require key either — the skill needs
+	// defaultProject before it knows which key to check.
+	if _, err := jiraCore(root, JiraIn{Action: "check-default-project"}, true); err != nil {
+		t.Fatalf("check-default-project should not require key: %v", err)
+	}
 }
 
 func TestJiraUnknownAction(t *testing.T) {
@@ -213,6 +218,59 @@ func TestJiraCheckProjectMembershipViolation(t *testing.T) {
 	_, err := jiraCore(root, JiraIn{Action: "check", Key: "BAZ", CacheDir: t.TempDir()}, true)
 	if err == nil {
 		t.Fatal("expected DomainError for project not in jira.projects")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// check-default-project
+// ---------------------------------------------------------------------------
+
+func TestJiraCheckDefaultProjectUnset(t *testing.T) {
+	root := jiraTestRoot(t)
+
+	out, err := jiraCore(root, JiraIn{Action: "check-default-project"}, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	m := out.(map[string]any)
+	if m["ok"] != true {
+		t.Fatalf("expected ok=true, got %#v", m["ok"])
+	}
+	if m["defaultProject"] != "" {
+		t.Fatalf("expected empty defaultProject with no config, got %#v", m["defaultProject"])
+	}
+	if next, _ := m["next"].(string); next == "" {
+		t.Fatal("expected non-empty next hint")
+	}
+}
+
+func TestJiraCheckDefaultProjectSet(t *testing.T) {
+	root := jiraTestRoot(t)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "[jira]\ndefaultProject = \"FOO\"\n")
+
+	out, err := jiraCore(root, JiraIn{Action: "check-default-project"}, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	m := out.(map[string]any)
+	if m["defaultProject"] != "FOO" {
+		t.Fatalf("expected defaultProject=FOO, got %#v", m["defaultProject"])
+	}
+}
+
+func TestJiraCheckDefaultProjectWrongTypeIsEmpty(t *testing.T) {
+	root := jiraTestRoot(t)
+	// defaultProject as a non-string value (e.g. an accidental array) must
+	// not error — it's treated the same as unset.
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "[jira]\ndefaultProject = [\"FOO\"]\n")
+
+	out, err := jiraCore(root, JiraIn{Action: "check-default-project"}, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	m := out.(map[string]any)
+	if m["defaultProject"] != "" {
+		t.Fatalf("expected empty defaultProject for wrong-type value, got %#v", m["defaultProject"])
 	}
 }
 

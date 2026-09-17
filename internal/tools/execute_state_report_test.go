@@ -819,6 +819,215 @@ func TestExecState_Report_CLIEvidenceReadError_Warning(t *testing.T) {
 // M6: learnings count read error surfaced as warning
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// write mode: persisting the report under <root>/.sdlc-v2/reports/
+// ---------------------------------------------------------------------------
+
+func TestExecState_Report_WriteJSON_AnchorsToRootNotWorkDir(t *testing.T) {
+	root := t.TempDir()
+	// workDir simulates a linked worktree's cwd — distinct from root, which
+	// simulates the main worktree. The report must land under root.
+	workDir := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	createExecState(t, root, "feat/report", map[string]any{
+		"branch":    "feat/report",
+		"startedAt": "2025-06-15T09:00:00Z",
+	})
+	clock := fixedClock(testNow)
+
+	result, err := executeState(root, workDir, ExecuteStateIn{
+		Action: "report",
+		Branch: "feat/report",
+		Write:  true,
+		Format: "json",
+	}, clock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out, ok := result.(ExecutionReportOut)
+	if !ok {
+		t.Fatalf("expected ExecutionReportOut, got %T", result)
+	}
+	if !out.Written {
+		t.Error("expected written=true")
+	}
+	wantPath := filepath.Join(root, paths.DataDir, "reports", out.RunID+"-report.json")
+	if out.Path != wantPath {
+		t.Errorf("expected path %q, got %q", wantPath, out.Path)
+	}
+
+	data, err := os.ReadFile(wantPath)
+	if err != nil {
+		t.Fatalf("expected report file at %s: %v", wantPath, err)
+	}
+	var persisted ExecutionReportOut
+	if err := json.Unmarshal(data, &persisted); err != nil {
+		t.Fatalf("persisted report is not valid JSON: %v", err)
+	}
+	if persisted.Branch != "feat/report" {
+		t.Errorf("persisted report branch = %q, want feat/report", persisted.Branch)
+	}
+
+	if _, err := os.Stat(filepath.Join(workDir, paths.DataDir, "reports")); !os.IsNotExist(err) {
+		t.Errorf("expected no reports dir under workDir %s, stat err=%v", workDir, err)
+	}
+}
+
+func TestExecState_Report_WriteJSON_DoesNotMutateStateFile(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	createExecState(t, root, "feat/report", map[string]any{
+		"branch": "feat/report",
+		"waves":  []any{},
+	})
+	clock := fixedClock(testNow)
+
+	stPath := findExecStatePath(t, root, "feat/report")
+	before, err := os.ReadFile(stPath)
+	if err != nil {
+		t.Fatalf("read state file before call: %v", err)
+	}
+
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action: "report",
+		Branch: "feat/report",
+		Write:  true,
+		Format: "json",
+	}, clock); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	after, err := os.ReadFile(stPath)
+	if err != nil {
+		t.Fatalf("read state file after call: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Error("report write mode must not mutate the execute state file — only the reports/ file")
+	}
+}
+
+func TestExecState_Report_WriteMD_PersistsBodyVerbatim(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	createExecState(t, root, "feat/report", map[string]any{
+		"branch":    "feat/report",
+		"startedAt": "2025-06-15T09:00:00Z",
+	})
+	clock := fixedClock(testNow)
+	body := "# Execution Report\n\nSomething rendered by the skill.\n"
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "report",
+		Branch: "feat/report",
+		Write:  true,
+		Format: "md",
+		Body:   body,
+	}, clock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out, ok := result.(ExecutionReportOut)
+	if !ok {
+		t.Fatalf("expected ExecutionReportOut, got %T", result)
+	}
+	if !out.Written {
+		t.Error("expected written=true")
+	}
+	if !strings.HasSuffix(out.Path, "-report.md") {
+		t.Errorf("expected path to end in -report.md, got %q", out.Path)
+	}
+	if out.Next == "" {
+		t.Error("expected non-empty next guidance")
+	}
+
+	data, err := os.ReadFile(out.Path)
+	if err != nil {
+		t.Fatalf("expected report file at %s: %v", out.Path, err)
+	}
+	if string(data) != body {
+		t.Errorf("persisted markdown body = %q, want %q", string(data), body)
+	}
+}
+
+func TestExecState_Report_WriteMD_MissingBodyFails(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	createExecState(t, root, "feat/report", map[string]any{
+		"branch": "feat/report",
+	})
+	clock := fixedClock(testNow)
+
+	_, err := executeState(root, root, ExecuteStateIn{
+		Action: "report",
+		Branch: "feat/report",
+		Write:  true,
+		Format: "md",
+	}, clock)
+	if err == nil {
+		t.Fatal("expected error when write=true, format=md and body is empty")
+	}
+	if _, ok := err.(*mcpserver.DomainError); !ok {
+		t.Fatalf("expected DomainError, got %T: %v", err, err)
+	}
+}
+
+func TestExecState_Report_WriteWithUnknownFormatFails(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	createExecState(t, root, "feat/report", map[string]any{
+		"branch": "feat/report",
+	})
+	clock := fixedClock(testNow)
+
+	_, err := executeState(root, root, ExecuteStateIn{
+		Action: "report",
+		Branch: "feat/report",
+		Write:  true,
+		Format: "yaml",
+	}, clock)
+	if err == nil {
+		t.Fatal("expected error for unknown format")
+	}
+	if _, ok := err.(*mcpserver.DomainError); !ok {
+		t.Fatalf("expected DomainError, got %T: %v", err, err)
+	}
+}
+
+func TestExecState_Report_WriteDisabled_NoFileWritten(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), `[automation.report]
+enabled = false
+`)
+	createExecState(t, root, "feat/report", map[string]any{
+		"branch": "feat/report",
+	})
+	clock := fixedClock(testNow)
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "report",
+		Branch: "feat/report",
+		Write:  true,
+		Format: "json",
+	}, clock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out, ok := result.(ReportSkippedOut)
+	if !ok {
+		t.Fatalf("expected ReportSkippedOut, got %T", result)
+	}
+	if !out.Skipped {
+		t.Error("expected skipped=true")
+	}
+	if out.Written {
+		t.Error("expected written=false when reporting is disabled")
+	}
+	if _, statErr := os.Stat(filepath.Join(root, paths.DataDir, "reports")); !os.IsNotExist(statErr) {
+		t.Errorf("expected no reports dir to be created, stat err=%v", statErr)
+	}
+}
+
 func TestExecState_Report_LearningsCountError_Warning(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
