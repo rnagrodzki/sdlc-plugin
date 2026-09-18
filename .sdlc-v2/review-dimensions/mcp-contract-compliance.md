@@ -34,32 +34,33 @@ and `mcp-output-drives-behavior` guardrails.
 ## Output struct contracts (`*Out`)
 
 - Every `*Out` struct that serves as a tool's primary output MUST have a
-  `Next string json:"next"` field — the struct tag MUST NOT include
-  `omitempty`. The field must appear in every response JSON. Empty string
-  `""` means "no next step"; an absent field violates the contract.
+  root `Next string json:"next"` field, which the renderer hoists to the
+  result's `**Next:**` line. A genuinely terminal tool may omit it, but its
+  tool description must say so.
 - `Next` must be populated with an exact per-outcome string, not free-form
   interpolation. Pattern: `VersionPrepareOut.Next` at version.go.
-- Tool handlers registering via `Register[TIn,TOut]` MUST call
-  `WithOutputSchema[TOut]` to expose the concrete output structure to the
-  LLM. Omitting `WithOutputSchema` hides the output shape from the model.
-- Handler signatures MUST return concrete `*Out` types, never `any` or
-  `interface{}`. Type erasure prevents schema generation and forces the
-  LLM to guess the output shape.
-- Collections (slices, maps) must be initialized as empty `[]T` or
-  `map[K]V{}`, never nil. Nil collections serialize to JSON null;
-  normalize at the dispatcher level before returning output.
+- Tools publish no output schema. The renderer in `internal/mcpserver`
+  shows the LLM the concrete shape by rendering every field with its JSON
+  key as the label, so the output shape is visible in the result itself.
+- Handler signatures SHOULD return a concrete `*Out` type. Four tools
+  (`execute_state`, `jira`, `ship_state`, `poll_await`) return `any` across
+  dozens of actions; the reflection renderer walks those too, so `any` is a
+  readability cost, not a contract violation. A new tool with a single
+  output shape has no reason to use it.
+- A nil or empty collection must render as `(none)`. The renderer does
+  this at the dispatcher level, so handlers do not have to pre-initialize
+  slices, and no result may show a blank line or an empty heading where a
+  collection was.
 
 ## Error contracts
 
 - When a handler returns a `DomainError`, `InfraError`, or `DataError` with
   a recoverable condition (the caller can do something to fix it), the
   `Suggestion` field MUST be populated with a specific recovery instruction.
-- Non-recoverable errors (unexpected panics, marshal failures) should still
-  populate `Suggestion` (with a generic message or empty string), not rely
-  on `omitempty` to hide it.
-- The `Suggestion` field MUST NOT have `omitempty` on the struct tag —
-  every error response must include the `"suggestion"` field in JSON,
-  empty string if no specific recovery applies, but never omitted.
+
+Every error result MUST render a non-empty `## Do this` section. When a typed
+error carries no `Suggestion`, `defaultRecovery(code)` supplies one; a rendered
+error with an empty or missing `## Do this` section is a defect.
 
 ## Review procedure for closed-set enum tags and error-field coverage
 

@@ -9,7 +9,7 @@ triggers:
 severity: high
 ---
 
-This project's actual "API surface" is not HTTP routes but 27 MCP tool
+This project's actual "API surface" is not HTTP routes but 31 MCP tool
 handlers in `internal/tools/*.go`, served through `internal/mcpserver`. This
 is deliberately a custom dimension, not a generic `api-review`, because the
 project's own `.sdlc-v2/config.json` `plan.guardrails`/`execute.guardrails`
@@ -23,9 +23,10 @@ those same guardrails:
   and what it returns — vague descriptions ("handles setup") make it hard
   for the calling model to pick the right tool.
 - Tool output is structured for LLM consumption: consistent field names
-  across related tools, no ambiguous nulls where an empty array/object
-  would be clearer, and large or unbounded output is paginated or capped
-  rather than dumped raw (see `internal/execx`'s `ErrOutputCap` precedent).
+  across related tools, no ambiguous nulls — a nil or empty collection
+  renders as `(none)`, never a blank line — and large or unbounded output
+  is paginated or capped rather than dumped raw (see `internal/execx`'s
+  `ErrOutputCap` precedent).
 - Errors returned by a tool are actionable — they say what went wrong and
   what the caller should do next, not just "failed" or a raw Go error
   string with no context.
@@ -35,11 +36,11 @@ those same guardrails:
 - New tools follow the existing naming convention (`<noun>_<verb>` or
   `<verb>_<noun>`, matching siblings already registered in
   `internal/mcpserver`) rather than introducing an inconsistent scheme.
-- Collection fields (arrays, slices) must normalize nil to empty
-  array/object at the dispatcher level before returning tool output.
-  Handlers must never serialize null for fields that logically should
-  contain zero or more items — this ambiguity breaks LLM reasoning and
-  violates the 'no ambiguous nulls' contract.
+- Collection fields (arrays, slices) that are nil or empty must render as
+  `(none)` at the dispatcher level before the result leaves the plugin.
+  Handlers must never leave a blank line or an empty heading for a field
+  that logically should contain zero or more items — this ambiguity
+  breaks LLM reasoning and violates the 'no ambiguous nulls' contract.
 - Descriptor/doc strings naming filesystem paths, extensions, or glob
   patterns must be verified against the actual implementation (grep the
   loader for `paths.DataDir`, `filepath.Join`, `ReadDir`,

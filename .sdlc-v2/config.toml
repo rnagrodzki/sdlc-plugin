@@ -286,9 +286,10 @@ severity = "error"
 description = """
 Plans that create or modify tool handlers or data-transformation pipelines \
 must explicitly document nil/empty-collection edge cases and how they are \
-normalized. Handlers must normalize nil to empty array/object at the \
-dispatcher level before returning output; this normalization must happen \
-within the handler, not left to downstream serialization or LLM \
+normalized. A nil or empty collection must render as an explicit, visible \
+marker at the dispatcher level before the result leaves the plugin; it must \
+never render as a blank line, a heading with nothing under it, or the word \
+"null". This normalization happens inside the plugin, never left to LLM \
 interpretation. Handlers must also validate input parameter shapes (required \
 fields present, types correct) and reject invalid inputs with actionable \
 errors BEFORE processing -- do not silently accept malformed input and \
@@ -321,10 +322,11 @@ without structured recovery hints force the LLM to parse free-text."""
 [plan.guardrails.mcp-output-drives-behavior]
 severity = "error"
 description = """
-Every *Out struct (tool output) MUST include a Next string field \
-(json:"next", no omitempty) with an exact per-outcome hint guiding the LLM's \
-next action. Outputs must always include Next in JSON; empty string is valid \
-for "no next step", but an absent field violates the contract."""
+Every tool result MUST tell the LLM what to do next. A tool whose result \
+has a next step supplies it as a root-level `next` string field, which the \
+renderer hoists to the `**Next:**` line. A tool that is genuinely terminal \
+may omit the field, but its tool description must say so. A result whose \
+next step is implied but unstated violates the contract."""
 
 [plan.guardrails.mcp-parameter-documented]
 severity = "error"
@@ -506,9 +508,9 @@ severity = "error"
 description = """
 New or modified *In and *Out structs must have jsonschema_description tags \
 on all exported fields. *In fields representing closed sets must also have \
-jsonschema enum tags. *Out structs must have concrete types (never `any`) \
-and handlers must call both WithInputSchema[StructIn]() and \
-WithOutputSchema[StructOut]() to expose complete schemas to the LLM. Before \
+jsonschema enum tags. *Out structs should have concrete types; `any` is \
+permitted for a multi-action tool, because the renderer walks it. Tools \
+publish an input schema only -- there is no output schema to expose. Before \
 marking done, execute: (1) grep for every switch statement validating an \
 *In field and cross-reference the field's enum tag to confirm all case \
 labels are present; (2) grep for every DomainError/InfraError/DataError \
