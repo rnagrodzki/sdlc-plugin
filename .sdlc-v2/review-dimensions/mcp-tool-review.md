@@ -64,6 +64,12 @@ those same guardrails:
   in the response (e.g. a `removed`/`prior` field) so callers can verify
   what changed and support undo/recovery workflows.
 
+- When a narration/message template references a set of enum-like phase or
+  state values (e.g. a heartbeat/liveness message's phase list), the
+  values used must match the canonical enum definition exactly — flag a
+  hand-written free-text placeholder list that can drift from the real
+  enum.
+
 ## Cross-references
 
 - `mcp-contract-compliance.md` covers the specific structural tag/field

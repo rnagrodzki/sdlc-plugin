@@ -57,21 +57,26 @@ description = """
 Every task that creates or modifies source code must include corresponding \
 test cases. Scripts must be structured as importable modules (entry-point \
 main() guarded, e.g. `if (require.main === module)`) before test tasks are \
-planned. Tests introduced by a task must be wired into CI in the same plan."""
+planned. Tests introduced by a task must be wired into CI in the same plan. \
+For JS/Node scripts, this means an actual `node --test` (or equivalent) \
+invocation in the CI workflow file -- verify the workflow file runs the new \
+test file, not just that the test file exists."""
 
 [plan.guardrails.plan-verification-scope-completeness]
 severity = "error"
 description = """
 Plan Verification commands must account for cross-package dependencies, not \
-just the touched package. Specifically: (1) when a task's Files include \
-plugins/sdlc/skills/*/SKILL.md or add/change a tool dispatch, Verification \
-must include `go test ./internal/skillcheck/...` (or full `go test ./...`) \
-to catch tool-registration regressions that per-package tests miss; (2) when \
-a task changes a struct's field type (e.g. int -> *int) or JSON tag \
-(adding/removing omitempty), Verification must run `go test ./...` at the \
-repository root to catch cross-package serialization/marshal regressions. \
-Narrow per-package verification scoping has repeatedly missed these \
-regressions in this codebase."""
+just the touched package. Specifically: (1) Files including \
+plugins/sdlc/skills/*/SKILL.md or a tool-dispatch change require `go test \
+./internal/skillcheck/...` (or full `go test ./...`) to catch registration \
+regressions; (2) a struct field-type or JSON-tag change requires `go test \
+./...` at repo root for cross-package serialization regressions; (3) an MCP \
+tool binary/server change requires a redeploy/reload-plugins step before \
+tool-invocation verification; (4) a config/data schema change requires \
+integration-tagged tests, not just unit tests; (5) a SKILL.md prose edit \
+that shifts line numbers requires re-running any line-keyed exception map \
+(e.g. skillcheck) against the new numbers. Narrow per-package scoping has \
+repeatedly missed these regressions."""
 
 [plan.guardrails.plan-claims-verified-against-source]
 severity = "error"
@@ -79,29 +84,32 @@ description = """
 Any claim a plan makes about existing code, docs, or behavior (method \
 signatures, config field names, doc section titles/positions, CLI flag \
 semantics, prose descriptions of a mechanism, or the absence of a \
-string/pattern in the codebase) must be verified by direct source reading \
-(grep/read) before the plan is finalized or the claim is used to justify a \
-task's completion. Never assert such claims from memory. This covers: \
-contract diffs (reproduce struct/API shapes verbatim from source, never \
-invent fields), audit/negative-assertion tasks (verify absence claims with \
-grep, not partial search), prose-describing-code tasks (verify prose against \
-source, not build/test success alone), and plan Contract blocks containing \
-literal code/API/CLI details (verify against current source before \
-finalization)."""
+string/pattern) must be verified by direct source reading (grep/read) \
+before the plan is finalized or used to justify a task's completion. Never \
+assert from memory. Covers: contract diffs (reproduce struct/API shapes \
+verbatim, never invent fields), audit/negative-assertion tasks (verify \
+absence with grep, not partial search), prose-describing-code tasks (verify \
+against source, not build/test success alone), Contract blocks with literal \
+code/API/CLI details (verify against current source), claims that a design \
+element "mirrors" an existing pattern (cite exact file:line, not a \
+paraphrase), and MCP tool annotation/reason strings (verify via call-graph \
+search, not a plausible-sounding reason)."""
 
 [plan.guardrails.wave-start-output-and-taskobject-verification]
-severity = "warning"
+severity = "error"
 description = """
 When a plan includes steps that dispatch to MCP tools whose outputs are \
 consumed by downstream tasks (e.g. wave-start fact sheets), the plan must \
 include explicit verification steps confirming output correctness before \
 downstream processing. Specifically for wave-start: task objects passed to \
-it must include all required metadata (id, title, complexity, risk, \
+it must include all required metadata (id, name, complexity, risk, \
 dependsOn, verify, files, acceptanceCriteria, contract text verbatim from \
 the plan's Contract block, notes) -- the tool renders fact sheets from what \
-it is given and does not re-derive metadata from the plan file. If metadata \
-must be re-derived, use wave-compute first to extract it programmatically \
-before constructing the wave-start call."""
+it is given and does not re-derive metadata from the plan file. A task \
+object reduced to only {id, name} or any subset missing \
+description/contract is a critique failure. If metadata must be \
+re-derived, use wave-compute first to extract it programmatically before \
+constructing the wave-start call."""
 
 [plan.guardrails.no-ci-bypass]
 severity = "error"
@@ -135,7 +143,10 @@ abstractions, premature generalization, or unused parameters."""
 severity = "warning"
 description = """
 Tasks must not duplicate logic that exists elsewhere — reuse existing \
-functions or extract shared utilities."""
+functions or extract shared utilities. Enum-like literal value lists (e.g. \
+phase names, status codes) must be defined once and referenced from a \
+single canonical source, not re-typed as free-text literals across \
+multiple files or templates."""
 
 [plan.guardrails.kiss]
 severity = "warning"
@@ -294,7 +305,11 @@ violate this rule. When a plan introduces test tasks against code that \
 performs real fs/git operations, it must either cite an existing injectable \
 seam (a function parameter or dependency) in the code under test, or \
 include a task to introduce such a seam and order it before the test \
-tasks."""
+tasks. When a plan's stated acceptance criteria appear to require \
+exercising real fs/git behavior, the plan must explicitly flag this \
+guardrail conflict in Key Decisions and resolve it (inject a seam, or \
+narrow the AC) rather than silently violating either the AC or this \
+guardrail."""
 
 [plan.guardrails.mcp-error-has-suggestion]
 severity = "error"
@@ -320,7 +335,11 @@ plain-text strings or JSON-encoded input, and must provide a concrete \
 example value. Fields representing closed sets (validated by switch/const) \
 must additionally have a jsonschema enum tag. Undocumented or \
 ambiguously-encoded parameters create ambiguity for the LLM and cause \
-trial-and-error tool-call failures."""
+trial-and-error tool-call failures. For example, a field accepting a \
+JSON-encoded array must say so explicitly and give a literal example value \
+(e.g. `filesChanged: '["a.go","b.go"]'`) -- a description that says \
+"free-text" or omits encoding entirely while the handler requires JSON is a \
+contract violation even if the field is otherwise documented."""
 
 [plan.guardrails.stateless-tool-input-protocol]
 severity = "error"
@@ -342,7 +361,38 @@ tool, the plan must explicitly document how approval gates in the dispatched \
 skill will be satisfied. Agent-tool sub-agents cannot call AskUserQuestion \
 directly -- the orchestrator must plan to receive the sub-agent's request, \
 call AskUserQuestion at orchestrator level, and relay the answer back via \
-SendMessage."""
+SendMessage. The plan must also document how stall/authorization errors \
+raised by a nested dispatch (e.g. TaskStop returning a hard authorization \
+error when invoked from within a nested skill, such as /ship nesting \
+execute) are surfaced to and handled by the top-level orchestrator."""
+
+[plan.guardrails.acceptance-criteria-all-options-viable]
+severity = "warning"
+description = """
+When a task's acceptance criteria offer the executor a choice between \
+multiple options (e.g. "use X or Y"), each offered option must be \
+independently viable in the current codebase/environment -- verify each \
+option's preconditions before including it, not just the option ultimately \
+expected to be chosen. An AC offering a non-viable option is a plan \
+defect."""
+
+[plan.guardrails.wave-start-task-id-format-validation]
+severity = "warning"
+description = """
+When a plan's tasksJson (or equivalent task-id references in Contract/ \
+dependsOn fields) uses task IDs, the ID format must be consistent across \
+every reference to the same task -- a bare numeral (e.g. "1") and a \
+prefixed form (e.g. "task-1") for the same task are not interchangeable \
+inputs to downstream tooling. State the canonical ID format once and use \
+it verbatim everywhere the task is referenced."""
+
+[plan.guardrails.multi-wave-gates-enforcement]
+severity = "warning"
+description = """
+For multi-wave plans, the plan must explicitly schedule the GATES stage \
+(spec-compliance review) to run before wave-done/wave-commit for every \
+wave, not only the final wave -- a plan that only verifies GATES ran once \
+at the end can silently skip spec-compliance review for earlier waves."""
 
 [plan.guardrails.trivial-task-contract-complexity]
 severity = "warning"
@@ -358,7 +408,10 @@ description = """
 Plan's Verification section must be logically consistent with the plan's own \
 Key Decisions and Non-goals; a repo-wide grep for removal verification must \
 explicitly exclude files that Key Decisions/Non-goals exempt from that \
-removal."""
+removal. When the removal-grep is scoped to specific search terms, it must \
+be cross-checked with a second independent method (e.g. a broader wildcard \
+grep across all file extensions, or LSP findReferences) to catch call sites \
+the primary search terms miss."""
 
 [plan.guardrails.schema-change-secondary-readers]
 severity = "error"
@@ -366,8 +419,10 @@ description = """
 When a plan changes a config or data schema structure, identify all readers, \
 writers, migrators, codegen, test fixtures, AND template files \
 (plugins/sdlc/templates/*.toml) that consume the schema -- do not assume the \
-declared-files list captures the scope. Template examples and comments must \
-validate against the schema; the Verification section must explicitly check \
+declared-files list captures the scope. Also identify CI workflow files \
+(.github/workflows/*.yml) and documentation (docs/, README) that reference \
+schema fields or examples. Template examples and comments must validate \
+against the schema; the Verification section must explicitly check \
 template-schema conformance (e.g. by reading templates and confirming all \
 enums/constraints match the schema) before marking the task done. Use grep, \
 package-import analysis, and full-module testing before marking the plan \
@@ -458,9 +513,12 @@ marking done, execute: (1) grep for every switch statement validating an \
 *In field and cross-reference the field's enum tag to confirm all case \
 labels are present; (2) grep for every DomainError/InfraError/DataError \
 instantiation and verify Suggestion field is set (including in \
-default/fallthrough branches). (3) Run go build and go test to verify \
-schemas are generated and contain non-empty descriptions. Document audit \
-in task verification."""
+default/fallthrough branches); (3) grep *In string fields parsed via \
+json.Unmarshal and verify their description states the JSON-encoding \
+requirement with an example -- a "free-text" or encoding-silent \
+description on a JSON-only field is a contract violation; (4) run go build \
+and go test to verify schemas are generated. Document audit in task \
+verification."""
 
 [execute.guardrails.skill-tool-param-sync]
 severity = "error"
@@ -475,18 +533,21 @@ missing registrations silently break tool behavior or cause resolver \
 failures."""
 
 [execute.guardrails.wave-start-dispatch-input-integrity]
-severity = "warning"
+severity = "error"
 description = """
 Before dispatching to MCP tools, code must validate that constructed inputs \
 match the tool's documented schema in field names, types, and structure. \
 Specifically for wave-start: pass complete task objects with all required \
-fields (id, title, complexity, risk, dependsOn, verify, files, \
+fields (id, name, complexity, risk, dependsOn, verify, files, \
 acceptanceCriteria, contract, notes) -- the tool renders fact sheets from \
 what it is given and does not re-derive task metadata from the plan file \
 server-side. The dispatcher must also validate wave-start's tasksJson \
 task-name-to-task-id mapping before sending to workers; a mislabel silently \
-corrupts the fact sheet a worker receives and produces a phantom success \
-report on the wrong task."""
+corrupts the fact sheet a worker receives. For task-done/wave-done, \
+filesAdded must be validated as a subset of filesChanged before dispatch, \
+and status values must use the tool's declared enum (e.g. \
+DONE_WITH_CONCERNS is distinct from DONE) -- do not invent status \
+strings."""
 
 [execute.guardrails.no-silent-fs-state-discard]
 severity = "error"
@@ -507,7 +568,13 @@ diff` read, then an independent re-run of the relevant build/vet/test \
 commands -- run `go test ./...` (full suite), not just the plan's named \
 per-package verify command, before marking any task done that changes a \
 struct's field type or JSON tag. Do not trust pasted command output or \
-worker/agent/coordinator self-reports of completion."""
+worker/agent/coordinator self-reports of completion. Also: re-run \
+integration-tagged tests named in Verification, not just unit tests; treat \
+sub-agent/worker narration as a claim, not evidence -- re-derive \
+completion from primary sources yourself; after a SKILL.md edit, re-run any \
+line-keyed validator (e.g. skillcheck); before marking a binary-dependent \
+task done, verify the binary's build timestamp is newer than the source \
+change."""
 
 [execute.guardrails.execute-handler-nil-normalization]
 severity = "error"
@@ -524,7 +591,9 @@ description = """
 Spec-compliance review of task completeness must perform literal \
 contract-vs-diff comparison for any task with a Contract block, including \
 Trivial tasks. Do not rely on plausibility checks or self-reported \
-completion status."""
+completion status. Before comparing diff-vs-contract, verify the \
+contract's cited site/location actually exists at the stated path -- do \
+not assume the plan's site citation is correct without checking."""
 
 [execute.guardrails.worker-diff-matches-plan-files]
 severity = "error"
@@ -532,7 +601,12 @@ description = """
 When a dispatched worker's actual diff scope (file count, file list) \
 diverges from the task's Files section, stop and present the divergence to \
 the user via AskUserQuestion before running spec-compliance review or \
-committing -- even if the broader result builds/tests clean."""
+committing -- even if the broader result builds/tests clean. Subagent \
+orchestrators that cannot call AskUserQuestion directly (e.g. nested \
+Agent-tool dispatches) must instead call `execute_state({action:"decide", \
+decideType:"guardrail", decideDecision:"override"})` to record the \
+override and relay it to the top-level orchestrator for real user \
+confirmation."""
 
 [execute.guardrails.constant-literal-migration-verified-complete]
 severity = "error"
@@ -541,7 +615,10 @@ Before marking a task done that introduces a named constant to replace \
 previously hardcoded string literals, execute a grep across the repo for the \
 old literal and confirm zero remaining instances (outside intentional \
 legacy-fallback paths). An incomplete rename creates two silently-diverging \
-sources of truth and is worse than not renaming at all."""
+sources of truth and is worse than not renaming at all. This also applies \
+to deleting an exported symbol (function, type, constant) entirely -- grep \
+the whole repo, not just the package being changed, since callers in \
+unrelated packages are easy to miss."""
 
 [execute.guardrails.defer-unmet-task-dependencies]
 severity = "error"
@@ -552,6 +629,98 @@ a feature branch/PR, record the task via task-fail with \
 skippedDependency:true and a detailed reason -- do not execute its commands. \
 This prevents premature mutation of live release state when upstream tasks \
 have not yet landed."""
+
+[execute.guardrails.mcp-binary-redeployed-before-tool-verification]
+severity = "error"
+description = """
+Before running any MCP-tool-invocation-based verification step for a task \
+that changed the tool's binary/server code, redeploy or reload the plugin \
+so the running server reflects the change. Verification steps that invoke \
+the tool while the old binary is still loaded exercise stale behavior and \
+can pass despite a real defect."""
+
+[execute.guardrails.refactor-consolidation-test-validation]
+severity = "error"
+description = """
+When a refactor consolidates duplicate logic (e.g. merging two near-identical \
+functions or code paths), verify that every test which depended on the \
+pre-consolidation behavior (e.g. an unconditional write that the merged path \
+now makes conditional) still passes against the consolidated code -- do not \
+assume behavioral equivalence from the refactor's intent alone. Run the full \
+affected test suite, not just tests for the new shared path."""
+
+[execute.guardrails.gates-stage-before-wave-done]
+severity = "error"
+description = """
+The GATES stage (spec-compliance review) must run and pass before wave-done \
+or wave-commit is called for any wave -- do not call wave-done/wave-commit \
+before GATES has completed for that wave, even under time pressure or when \
+a nested skill invocation makes the ordering implicit rather than explicit \
+in the dispatch sequence."""
+
+[execute.guardrails.task-id-format-consistency]
+severity = "warning"
+description = """
+Task IDs passed to execute_state calls (taskId, dependsOn references) must \
+match the exact ID format declared in the plan/tasksJson -- do not silently \
+normalize between a bare numeral and a prefixed form (e.g. "1" vs \
+"task-1"). A format mismatch can silently fail an ID lookup instead of \
+erroring."""
+
+[execute.guardrails.shell-command-error-handling]
+severity = "warning"
+description = """
+Shell commands executed by tooling/scripts must check and propagate exit \
+codes (e.g. an execOrThrow-equivalent, not a bare exec that swallows \
+non-zero status) -- a silently-ignored non-zero exit produces a false \
+success signal to the caller."""
+
+[execute.guardrails.test-body-execution-verified]
+severity = "error"
+description = """
+A test that passes without exercising the target code (e.g. an empty body, \
+a body that never calls the function under test, or a mocked-away real \
+boundary) does not count as coverage. Before marking a test task done, \
+verify the test body actually invokes the code path it claims to cover and \
+would fail if that code were broken."""
+
+[execute.guardrails.preflight-covers-actual-operations]
+severity = "error"
+description = """
+A read-only preflight check (e.g. checking repo/PR visibility) does not \
+guarantee a subsequent write operation (e.g. `gh pr create`) will succeed -- \
+permission requirements can differ (e.g. "must be a collaborator" applies \
+to creating a PR but not to reading one). Do not treat a passing preflight \
+as proof the real operation will succeed; verify the preflight checks the \
+same permission class as the operation it precedes."""
+
+[execute.guardrails.mcp-tool-annotation-reason-call-graph-verified]
+severity = "warning"
+description = """
+Before marking done a task that adds or changes an MCP tool annotation \
+(e.g. read-only, idempotent) with a reason string explaining why it is \
+safe, verify the reason against an actual call-graph/reference search of \
+the handler -- a plausible-sounding reason string is not evidence the \
+annotation is correct."""
+
+[execute.guardrails.nested-stall-handler-gating]
+severity = "error"
+description = """
+When execute runs as a nested dispatch inside another skill (e.g. /ship \
+invoking execute), TaskStop may return a hard authorization error instead \
+of the normal stall-handling flow. Before marking a task done or wave \
+complete in a nested run, verify the stall-handling path was actually \
+exercised and did not silently fail due to nested-authorization \
+rejection."""
+
+[execute.guardrails.enum-field-consistency-verified]
+severity = "warning"
+description = """
+When a narration/message template references a set of enum-like phase or \
+state values, the values used must match the canonical enum definition \
+exactly (e.g. the phases list used by heartbeat/liveness messaging) -- do \
+not hand-write a free-text placeholder list that can drift from the real \
+enum."""
 
 [execute.guardrails.go-doc-comment-compliance]
 severity = "warning"
@@ -596,5 +765,7 @@ DataError{' internal/tools/MODIFIED.go internal/mcpserver/MODIFIED.go \
 2>/dev/null` and verify every match instantiates a Suggestion field with a \
 non-empty literal string or variable reference (never rely on omitempty to \
 skip the field). Suggestion must encode a recovery instruction for the \
-caller, not a generic message. Document the grep result and verified \
-instances in task verification section before marking done."""
+caller, not a generic message. Scope the grep to the entire modified \
+handler function, including branches not touched by this task's diff -- a \
+gap can pre-exist in code adjacent to the change. Document the grep result \
+and verified instances in task verification section before marking done."""

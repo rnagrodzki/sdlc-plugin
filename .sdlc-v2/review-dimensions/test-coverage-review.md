@@ -49,3 +49,14 @@ new changes to that same bar:
   task's file list. Plan Verification for such tasks must include
   `go test ./internal/skillcheck/...` (or full `go test ./...`), not just
   the modified package's unit tests.
+- JS/Node test files (`*.test.js`, run via `node --test`) must be wired
+  into CI (`.github/workflows/*.yml`), not just present locally — verify
+  against the actual workflow file, not assumed.
+- A test must actually exercise the code path it claims to cover; an empty
+  body or an assertion the code never reaches does not count as coverage —
+  verify by reading the test body, not by the presence of a `_test.go` or
+  `.test.js` file alone.
+- A passing read-only preflight check does not prove a subsequent write
+  operation will succeed (permission requirements can differ). Tests that
+  validate preflight behavior must be distinguished from tests that
+  validate the write operation itself.

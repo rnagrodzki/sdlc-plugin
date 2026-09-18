@@ -94,6 +94,14 @@ notation is unambiguous — show a concrete filled example or explicitly
 document shorthand/interpolation, rather than bare flags a reader could
 take literally.
 
+### wave-start / task-done field name and encoding wiring
+
+When a SKILL.md documents dispatching `wave-start` or `task-done`, verify
+task-object field names match the tool's schema exactly (`name`, not
+`title`), and that any field requiring JSON-encoded string input (e.g.
+`filesAdded`, `verifyToken`) is documented as such in the skill's dispatch
+instructions, not left implicit.
+
 ## Cross-references
 
 - `mcp-tool-review.md` covers general tool quality.
