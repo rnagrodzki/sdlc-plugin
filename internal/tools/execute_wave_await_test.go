@@ -18,12 +18,12 @@ import (
 // (waveIntervalSeconds=60, waveTimeoutSeconds=1800), matching every test
 // below that doesn't override them on the state file:
 //
-//	heartbeatTimeout = 3 * 60  = 180s
-//	reclaimGrace     = max(2*60, 120) = 120s
+//	heartbeatTimeout = 10 * 60  = 600s
+//	reclaimGrace     = max(5*60, 300) = 300s
 //	totalTimeout     = 1800s
 const (
-	waveAwaitTestHeartbeat = 180 * time.Second
-	waveAwaitTestGrace     = 120 * time.Second
+	waveAwaitTestHeartbeat = 600 * time.Second
+	waveAwaitTestGrace     = 300 * time.Second
 	waveAwaitTestTotal     = 1800 * time.Second
 )
 
@@ -282,7 +282,7 @@ func TestExecActionWaveAwait_NeverStartedTriggersReclaimStamp(t *testing.T) {
 		"waves": []any{waveAwaitManifest(1, []map[string]any{waveAwaitPlannedEntry("1")}, nil)},
 	})
 	waveAwaitStoreServerState(t, root, runID, "1", wave.ServerTaskState{
-		DispatchedAt: waveAwaitTs(-200 * time.Second), // > 180s heartbeatTimeout
+		DispatchedAt: waveAwaitTs(-700 * time.Second), // > 600s heartbeatTimeout
 		WorkerName:   "worker-1",
 		// ContextFetchedAt empty: never-started.
 		Attempt: 1,
@@ -319,13 +319,13 @@ func TestExecActionWaveAwait_StalledTriggersReclaimStamp(t *testing.T) {
 		"waves": []any{waveAwaitManifest(1, []map[string]any{waveAwaitPlannedEntry("1")}, nil)},
 	})
 	waveAwaitStoreServerState(t, root, runID, "1", wave.ServerTaskState{
-		DispatchedAt:     waveAwaitTs(-500 * time.Second),
+		DispatchedAt:     waveAwaitTs(-1500 * time.Second),
 		WorkerName:       "worker-1",
-		ContextFetchedAt: waveAwaitTs(-490 * time.Second), // started fine
+		ContextFetchedAt: waveAwaitTs(-1490 * time.Second), // started fine
 		Attempt:          1,
 	})
 	waveAwaitWriteProgress(t, root, runID, "1", wave.TaskProgress{
-		Phase: "editing", UpdatedAt: waveAwaitTs(-200 * time.Second), // stale > 180s
+		Phase: "editing", UpdatedAt: waveAwaitTs(-700 * time.Second), // stale > 600s
 	})
 
 	out, err := execActionWaveAwait(root, ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}, fixedClock(testNow))
@@ -353,7 +353,7 @@ func TestExecActionWaveAwait_DuplicateCallsDontRestartGrace(t *testing.T) {
 		"waves": []any{waveAwaitManifest(1, []map[string]any{waveAwaitPlannedEntry("1")}, nil)},
 	})
 	waveAwaitStoreServerState(t, root, runID, "1", wave.ServerTaskState{
-		DispatchedAt: waveAwaitTs(-200 * time.Second),
+		DispatchedAt: waveAwaitTs(-700 * time.Second), // > 600s heartbeatTimeout
 		WorkerName:   "worker-1",
 		Attempt:      1,
 	})
@@ -390,7 +390,12 @@ func TestExecActionWaveAwait_DuplicateCallsDontRestartGrace(t *testing.T) {
 // Reclaim resolution: reply vs. no-reply
 // ---------------------------------------------------------------------------
 
-func TestExecActionWaveAwait_ReclaimReplyHarvestsAndClearsStamp(t *testing.T) {
+// TestExecActionWaveAwait_ReclaimReplyIsTreatedAsProofOfLifeNotFailure pins
+// the new contract: a worker that answers its reclaim is never a failure.
+// The reply itself is the liveness proof — the stamp is cleared and the
+// same attempt (same Attempt, no TaskStop, no task-fail, no retry consumed)
+// simply keeps going.
+func TestExecActionWaveAwait_ReclaimReplyIsTreatedAsProofOfLifeNotFailure(t *testing.T) {
 	root := t.TempDir()
 	runID := "run1"
 	createExecState(t, root, "feat/test", map[string]any{
@@ -415,45 +420,33 @@ func TestExecActionWaveAwait_ReclaimReplyHarvestsAndClearsStamp(t *testing.T) {
 		t.Fatalf("execActionWaveAwait: %v", err)
 	}
 	if out.Status != "pending" {
-		t.Errorf("status = %q, want pending (attempt 1, retries left)", out.Status)
+		t.Errorf("status = %q, want pending (task still open, just reclaimed)", out.Status)
 	}
 	failures := out.Ext["failed"].([]WaveAwaitFailure)
-	if len(failures) != 1 {
-		t.Fatalf("expected 1 failure, got %d: %+v", len(failures), failures)
+	if len(failures) != 0 {
+		t.Fatalf("expected 0 failures — a reply is proof of life, not a failure, got %d: %+v", len(failures), failures)
 	}
-	f := failures[0]
-	if f.Cause != "STALLED_RECLAIMED" {
-		t.Errorf("cause = %q, want STALLED_RECLAIMED", f.Cause)
+	prog := out.Progress.(waveAwaitProgress)
+	if !containsStr(prog.Open, "1") {
+		t.Errorf("expected task 1 back in the open bucket after a reclaim reply, got %+v", prog)
 	}
-	if f.RetriesLeft != 2 {
-		t.Errorf("retriesLeft = %d, want 2 (attempt 1)", f.RetriesLeft)
-	}
-	if f.ResumeFrom == nil {
-		t.Fatal("expected ResumeFrom to be populated on STALLED_RECLAIMED")
-	}
-	if f.ResumeFrom.LastCompletedTask != "did the thing" || f.ResumeFrom.Blocker != "unclear next step" {
-		t.Errorf("unexpected resumeFrom: %+v", f.ResumeFrom)
-	}
-	if len(f.ResumeFrom.AcceptanceDone) != 2 || len(f.ResumeFrom.FilesTouched) != 1 {
-		t.Errorf("resumeFrom fields not harvested: %+v", f.ResumeFrom)
+	if containsStr(prog.Stalled, "1") {
+		t.Errorf("task 1 must not still be reported stalled after replying, got %+v", prog)
 	}
 
-	if !strings.Contains(out.Next, "TaskStop") {
-		t.Errorf("next must order TaskStop first, got %q", out.Next)
+	if strings.Contains(out.Next, "TaskStop") {
+		t.Errorf("next must not order TaskStop for a subject that replied, got %q", out.Next)
 	}
-	if idx := strings.Index(out.Next, "TaskStop"); idx < 0 || strings.Index(out.Next, "task-fail") < idx {
-		t.Errorf("next must order TaskStop before task-fail, got %q", out.Next)
-	}
-	if strings.Index(out.Next, "task-fail") > strings.Index(out.Next, "task-redispatch") {
-		t.Errorf("next must order task-fail before task-redispatch, got %q", out.Next)
-	}
-	if !strings.Contains(out.Next, "Do NOT run the wave gates yet") {
-		t.Errorf("expected 'Do NOT run the wave gates yet' wording for a retryable failure, got %q", out.Next)
+	if !strings.Contains(out.Next, "wave-await") {
+		t.Errorf("expected next to order another wave-await call, got %q", out.Next)
 	}
 
 	s := waveAwaitLoadServerState(t, root, runID, "1")
 	if s.ReclaimRequestedAt != "" {
-		t.Errorf("expected reclaim stamp cleared after harvest, still %q", s.ReclaimRequestedAt)
+		t.Errorf("expected reclaim stamp cleared after a reply, still %q", s.ReclaimRequestedAt)
+	}
+	if s.Attempt != 1 {
+		t.Errorf("Attempt must be unchanged by a reclaim reply, got %d, want 1", s.Attempt)
 	}
 }
 
@@ -464,10 +457,10 @@ func TestExecActionWaveAwait_ReclaimNoReplyAfterGraceFailsWithoutResumeFrom(t *t
 		"waves": []any{waveAwaitManifest(1, []map[string]any{waveAwaitPlannedEntry("1")}, nil)},
 	})
 	waveAwaitStoreServerState(t, root, runID, "1", wave.ServerTaskState{
-		DispatchedAt:       waveAwaitTs(-500 * time.Second),
+		DispatchedAt:       waveAwaitTs(-1500 * time.Second),
 		WorkerName:         "worker-1",
-		ContextFetchedAt:   waveAwaitTs(-490 * time.Second),
-		ReclaimRequestedAt: waveAwaitTs(-130 * time.Second), // > 120s grace
+		ContextFetchedAt:   waveAwaitTs(-1490 * time.Second),
+		ReclaimRequestedAt: waveAwaitTs(-310 * time.Second), // > 300s grace
 		Attempt:            3,                               // ceiling: no retries left
 	})
 	// No progress update since before the reclaim stamp: never replied.
@@ -486,9 +479,6 @@ func TestExecActionWaveAwait_ReclaimNoReplyAfterGraceFailsWithoutResumeFrom(t *t
 	f := failures[0]
 	if f.Cause != "STALLED_NO_REPLY" {
 		t.Errorf("cause = %q, want STALLED_NO_REPLY", f.Cause)
-	}
-	if f.ResumeFrom != nil {
-		t.Errorf("expected absent resumeFrom on STALLED_NO_REPLY, got %+v", f.ResumeFrom)
 	}
 	if f.RetriesLeft != 0 {
 		t.Errorf("retriesLeft = %d, want 0 (attempt 3, ceiling)", f.RetriesLeft)
@@ -586,11 +576,11 @@ func TestExecActionWaveAwait_RetriesLeftKeepsWavePendingWithRedispatchOrdering(t
 		DispatchedAt:       waveAwaitTs(-500 * time.Second),
 		WorkerName:         "worker-run7-3",
 		ContextFetchedAt:   waveAwaitTs(-490 * time.Second),
-		ReclaimRequestedAt: waveAwaitTs(-50 * time.Second),
-		Attempt:            2, // retriesLeft = 1
+		ReclaimRequestedAt: waveAwaitTs(-310 * time.Second), // > 300s grace, never answered
+		Attempt:            2,                               // retriesLeft = 1
 	})
 	waveAwaitWriteProgress(t, root, runID, "4", wave.TaskProgress{
-		Phase: "reporting", UpdatedAt: waveAwaitTs(-10 * time.Second),
+		Phase: "editing", UpdatedAt: waveAwaitTs(-400 * time.Second), // older than the stamp: no reply
 	})
 
 	out, err := execActionWaveAwait(root, ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}, fixedClock(testNow))
@@ -731,15 +721,15 @@ func TestExecActionWaveAwait_StalledBatchReclaimsAllOpenMembersTogether(t *testi
 	})
 	for i, id := range []string{"B1", "B2"} {
 		waveAwaitStoreServerState(t, root, runID, id, wave.ServerTaskState{
-			DispatchedAt:     waveAwaitTs(-500 * time.Second),
+			DispatchedAt:     waveAwaitTs(-1500 * time.Second),
 			WorkerName:       "worker-batch",
 			BatchID:          "batch-2",
 			BatchIndex:       i,
-			ContextFetchedAt: waveAwaitTs(-490 * time.Second),
+			ContextFetchedAt: waveAwaitTs(-1490 * time.Second),
 			Attempt:          1,
 		})
 		waveAwaitWriteProgress(t, root, runID, id, wave.TaskProgress{
-			Phase: "editing", UpdatedAt: waveAwaitTs(-300 * time.Second), // stale
+			Phase: "editing", UpdatedAt: waveAwaitTs(-700 * time.Second), // stale
 		})
 	}
 
@@ -787,15 +777,15 @@ func TestExecActionWaveAwait_ClosedBatchIndexZeroStillLoadedForLiveness(t *testi
 		)},
 	})
 	waveAwaitStoreServerState(t, root, runID, "B1", wave.ServerTaskState{
-		DispatchedAt:     waveAwaitTs(-500 * time.Second),
+		DispatchedAt:     waveAwaitTs(-1500 * time.Second),
 		WorkerName:       "worker-batch3",
 		BatchID:          "batch-3",
 		BatchIndex:       0,
-		ContextFetchedAt: waveAwaitTs(-490 * time.Second),
+		ContextFetchedAt: waveAwaitTs(-1490 * time.Second),
 		Attempt:          1,
 	})
 	waveAwaitWriteProgress(t, root, runID, "B1", wave.TaskProgress{
-		Phase: "reporting", UpdatedAt: waveAwaitTs(-300 * time.Second),
+		Phase: "reporting", UpdatedAt: waveAwaitTs(-700 * time.Second),
 	})
 	// B2: open, batchIndex 1, never fetched its own context, no progress
 	// file at all — classified solo this alone reads as never-started.
@@ -943,34 +933,16 @@ func TestExecActionWaveAwait_EmptyBucketsSerializeAsEmptyArraysNotNull(t *testin
 	}
 }
 
-func TestExecActionWaveAwait_ResumeFromSlicesNeverNull(t *testing.T) {
-	root := t.TempDir()
-	runID := "run1"
-	createExecState(t, root, "feat/test", map[string]any{
-		"waves": []any{waveAwaitManifest(1, []map[string]any{waveAwaitPlannedEntry("1")}, nil)},
-	})
-	waveAwaitStoreServerState(t, root, runID, "1", wave.ServerTaskState{
-		DispatchedAt:       waveAwaitTs(-500 * time.Second),
-		WorkerName:         "worker-1",
-		ContextFetchedAt:   waveAwaitTs(-490 * time.Second),
-		ReclaimRequestedAt: waveAwaitTs(-50 * time.Second),
-		Attempt:            1,
-	})
-	// Worker replied but never recorded AcceptanceDone/FilesTouched.
-	waveAwaitWriteProgress(t, root, runID, "1", wave.TaskProgress{
-		Phase: "reporting", UpdatedAt: waveAwaitTs(-10 * time.Second),
-	})
-
-	out, err := execActionWaveAwait(root, ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}, fixedClock(testNow))
-	if err != nil {
-		t.Fatalf("execActionWaveAwait: %v", err)
-	}
-	raw, err := json.Marshal(out)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if strings.Contains(string(raw), `"acceptanceDone":null`) || strings.Contains(string(raw), `"filesTouched":null`) {
-		t.Errorf("resumeFrom slices must never serialize as null, got %s", raw)
+// TestWaveAwaitHarvest_SlicesNeverNil pins the same invariant the deleted
+// TestExecActionWaveAwait_ResumeFromSlicesNeverNull used to check indirectly
+// through a full wave-await payload — now checked directly against the
+// function that actually owns the normalization, since a reclaim reply no
+// longer builds a wave-await ResumeFrom at all (task-fail is the only
+// caller left, see execute_state.go).
+func TestWaveAwaitHarvest_SlicesNeverNil(t *testing.T) {
+	rf := waveAwaitHarvest(wave.TaskProgress{})
+	if rf.AcceptanceDone == nil || rf.FilesTouched == nil {
+		t.Errorf("harvest must normalize nil slices to empty, got %+v", rf)
 	}
 }
 

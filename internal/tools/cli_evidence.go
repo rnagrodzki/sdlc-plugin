@@ -217,3 +217,59 @@ func ExecLastRecordedWaveNumber(data map[string]any) *int {
 	n := execToInt(w["number"])
 	return &n
 }
+
+// ExecOpenWaveTaskFiles returns the newest recorded wave's run ID and a map
+// of task ID to the files that task owns, restricted to still-open tasks.
+// The open rule is not restated here: it delegates to waveAwaitPlannedIDs
+// and waveAwaitClosedStatus, the same helpers execActionWaveAwait uses. A
+// planned ID is open when it is absent from the closed-status map or its
+// status is "in_progress".
+// Returns ("", nil) when no wave, no runId, or no planned manifest exists.
+// Plain types only: internal/hooks resolves the file match itself (see
+// wave.ResolveTaskForFile), which is also where path normalization
+// happens — file lists here are returned exactly as recorded.
+func ExecOpenWaveTaskFiles(data map[string]any) (runID string, filesByTask map[string][]string) {
+	w := execLastRecordedWave(data)
+	if w == nil {
+		return "", nil
+	}
+	runID, _ = w["runId"].(string)
+	if runID == "" {
+		return "", nil
+	}
+	plannedIDs := waveAwaitPlannedIDs(w)
+	if len(plannedIDs) == 0 {
+		return "", nil
+	}
+	closed := waveAwaitClosedStatus(w)
+
+	planned, _ := w["planned"].([]any)
+	filesByID := map[string][]any{}
+	for _, p := range planned {
+		pm, ok := p.(map[string]any)
+		if !ok {
+			continue
+		}
+		id, _ := pm["id"].(string)
+		if id == "" {
+			continue
+		}
+		files, _ := pm["files"].([]any)
+		filesByID[id] = files
+	}
+
+	out := map[string][]string{}
+	for _, id := range plannedIDs {
+		if status, found := closed[id]; found && status != "in_progress" {
+			continue
+		}
+		strFiles := make([]string, 0, len(filesByID[id]))
+		for _, f := range filesByID[id] {
+			if s, ok := f.(string); ok {
+				strFiles = append(strFiles, s)
+			}
+		}
+		out[id] = strFiles
+	}
+	return runID, out
+}

@@ -1,10 +1,8 @@
 package hooks
 
 import (
-	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
-	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
 
 // resolveRootBranch resolves the repo root and current branch the same way
@@ -12,12 +10,16 @@ import (
 // (pre_compact_save.go) already do. ok is false when either resolution
 // fails, or the branch is empty/detached (HEAD) — matching both of those
 // handlers' silent-bail behavior on the same conditions.
+//
+// Resolution goes through mainRootFunc/currentBranchFunc (gitseam.go)
+// rather than calling worktree.MainRoot/gitx.CurrentBranch directly, so
+// tests can fake both without shelling out to real git.
 func resolveRootBranch() (root, branch string, ok bool) {
-	root, err := worktree.MainRoot()
+	root, err := mainRootFunc()
 	if err != nil {
 		return "", "", false
 	}
-	branch, err = gitx.CurrentBranch(resolveActiveWorktreeSafe())
+	branch, err = currentBranchFunc(resolveActiveWorktreeSafe())
 	if err != nil || branch == "" || branch == "HEAD" {
 		return "", "", false
 	}

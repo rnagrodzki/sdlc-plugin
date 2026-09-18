@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -513,5 +514,123 @@ func TestReadCLIEvidenceInWindow_CapReturnsTail(t *testing.T) {
 		if got[i].Command != w {
 			t.Errorf("entry %d: expected command %q, got %q", i, w, got[i].Command)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ExecOpenWaveTaskFiles — pure, in-memory map[string]any fixtures. No
+// filesystem or git access at all: the function's only input is a plain
+// map, so these tests need no fs/git seam.
+// ---------------------------------------------------------------------------
+
+func TestExecOpenWaveTaskFiles_NoWaves(t *testing.T) {
+	runID, files := ExecOpenWaveTaskFiles(map[string]any{})
+	if runID != "" || files != nil {
+		t.Fatalf("ExecOpenWaveTaskFiles(no waves) = (%q, %v), want (\"\", nil)", runID, files)
+	}
+}
+
+func TestExecOpenWaveTaskFiles_NoRunID(t *testing.T) {
+	data := map[string]any{
+		"waves": []any{
+			map[string]any{
+				"number": 1,
+				"planned": []any{
+					map[string]any{"id": "T1", "name": "x", "files": []any{"a.go"}},
+				},
+			},
+		},
+	}
+	runID, files := ExecOpenWaveTaskFiles(data)
+	if runID != "" || files != nil {
+		t.Fatalf("ExecOpenWaveTaskFiles(no runId) = (%q, %v), want (\"\", nil)", runID, files)
+	}
+}
+
+func TestExecOpenWaveTaskFiles_NoPlanned(t *testing.T) {
+	data := map[string]any{
+		"waves": []any{
+			map[string]any{
+				"number": 1,
+				"runId":  "run1",
+			},
+		},
+	}
+	runID, files := ExecOpenWaveTaskFiles(data)
+	if runID != "" || files != nil {
+		t.Fatalf("ExecOpenWaveTaskFiles(no planned) = (%q, %v), want (\"\", nil)", runID, files)
+	}
+}
+
+func TestExecOpenWaveTaskFiles_FiltersClosedNonInProgress(t *testing.T) {
+	data := map[string]any{
+		"waves": []any{
+			map[string]any{
+				"number": 2,
+				"status": "in_progress",
+				"runId":  "run-2",
+				"planned": []any{
+					map[string]any{"id": "T1", "name": "one", "files": []any{"./internal/a.go", "internal/b.go"}},
+					map[string]any{"id": "T2", "name": "two", "files": []any{"internal/c.go"}},
+					map[string]any{"id": "T3", "name": "three", "files": []any{"internal/d.go"}},
+				},
+				"tasks": []any{
+					map[string]any{"id": "T2", "status": "completed"},
+					map[string]any{"id": "T3", "status": "in_progress"},
+				},
+			},
+		},
+	}
+
+	runID, files := ExecOpenWaveTaskFiles(data)
+	if runID != "run-2" {
+		t.Fatalf("runID = %q, want %q", runID, "run-2")
+	}
+
+	// T1 has no row at all (open by default). T3's row status is
+	// in_progress (open). T2's row status is completed (excluded). File
+	// lists are returned exactly as recorded -- "./internal/a.go" is not
+	// normalized here; that is wave.ResolveTaskForFile's job (Task 1).
+	want := map[string][]string{
+		"T1": {"./internal/a.go", "internal/b.go"},
+		"T3": {"internal/d.go"},
+	}
+	if !reflect.DeepEqual(files, want) {
+		t.Fatalf("files = %#v, want %#v", files, want)
+	}
+	if _, excluded := files["T2"]; excluded {
+		t.Errorf("T2 should be excluded (status completed), got entry %v", files["T2"])
+	}
+}
+
+func TestExecOpenWaveTaskFiles_PicksNewestWave(t *testing.T) {
+	data := map[string]any{
+		"waves": []any{
+			map[string]any{
+				"number": 1,
+				"runId":  "run-1",
+				"planned": []any{
+					map[string]any{"id": "T1", "name": "one", "files": []any{"internal/old.go"}},
+				},
+			},
+			map[string]any{
+				"number": 2,
+				"runId":  "run-2",
+				"planned": []any{
+					map[string]any{"id": "T9", "name": "nine", "files": []any{"internal/new.go"}},
+				},
+			},
+		},
+	}
+
+	runID, files := ExecOpenWaveTaskFiles(data)
+	if runID != "run-2" {
+		t.Fatalf("runID = %q, want %q", runID, "run-2")
+	}
+	if _, ok := files["T9"]; !ok {
+		t.Fatalf("expected T9 present from the newest wave, got %#v", files)
+	}
+	if _, ok := files["T1"]; ok {
+		t.Fatalf("did not expect T1 (older wave) present, got %#v", files)
 	}
 }

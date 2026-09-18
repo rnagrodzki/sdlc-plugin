@@ -52,3 +52,9 @@ Review Go source changes for baseline code quality in this module
   by a blank line before the `package` declaration, or they will be
   misattached as the package doc string rather than remaining as
   file-level comments.
+- Testable design: functions that are tested and access live filesystem,
+  git state, or external services should expose injectable parameters or
+  dependencies (e.g. directory overrides, mocked implementations) so tests
+  can use mock/temporary implementations instead of real I/O. A function
+  without such an injection point forces its tests to perform real I/O,
+  violating the `no-real-fs-git-in-tests` guardrail.

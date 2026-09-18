@@ -50,6 +50,17 @@
         ]
       },
       {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/sdlc-launcher.sh",
+            "args": ["hook", "wave-liveness"],
+            "timeout": 3000
+          }
+        ]
+      },
+      {
         "matcher": "mcp__plugin_sdlc_sdlc__.*",
         "hooks": [
           {

@@ -116,8 +116,12 @@ func safeCountSkills(pluginRoot string) (count int) {
 // helpers never throw, always falling back to the raw cwd. This is that
 // fallback for the hook package, where every phase must degrade rather than
 // abort.
+//
+// Resolution goes through activeRootFunc (gitseam.go) rather than calling
+// worktree.ActiveRoot directly, so tests can fake it without shelling out
+// to real git.
 func resolveActiveWorktreeSafe() string {
-	if root, err := worktree.ActiveRoot(); err == nil && root != "" {
+	if root, err := activeRootFunc(); err == nil && root != "" {
 		return root
 	}
 	if cwd, err := os.Getwd(); err == nil {

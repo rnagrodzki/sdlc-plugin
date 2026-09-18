@@ -30,7 +30,7 @@ verification after each wave and automatic recovery from failures.
 | `--auto` | Skip all interactive prompts. | off |
 | `--branch <name>` | Create and check out this branch before executing. | auto-derived |
 | `--wave-timeout <s>` | Max seconds a single wave can run. Also used as each task's total-runtime ceiling when the server classifies still-open tasks. | `1800` |
-| `--wave-interval <s>` | Seconds between wave-await liveness polls. Also sets a heartbeat-staleness threshold of 3x this value (default 180s) before a worker is considered stalled, and a reclaim grace of max(2x this value, 120s) (default 120s) before an unresponsive worker is failed. | `60` |
+| `--wave-interval <s>` | Seconds between wave-await liveness polls. Also sets a heartbeat-staleness threshold of 10x this value (default 600s) before a worker is considered stalled, and a reclaim grace of max(5x this value, 300s) (default 300s) before a worker that never answers the reclaim is failed. See [Execute wave supervision](../execute-wave-supervision.md). | `60` |
 
 ### Quality tiers
 
@@ -69,6 +69,11 @@ file — you do not need to pass it again.
 - [/ship](ship.md) — Runs `/execute` as its first step, then continues with
   commit, review, and PR.
 
+## See also
+
+- [Execute wave supervision](../execute-wave-supervision.md) — how heartbeats,
+  the three ceilings, reclaim, and retries actually work.
+
 ## Tips and gotchas
 
 - **The plan file path is required.** The skill never guesses which plan to
@@ -91,7 +96,9 @@ file — you do not need to pass it again.
   `execute_state({action: "wave-await"})` on the `--wave-interval` cadence.
   The server classifies each still-open task, and its response's `next`
   field tells the skill exactly what to do next: keep polling, reclaim a
-  stalled worker, redispatch a task that timed out or went unanswered (via
-  `execute_state({action: "task-redispatch"})`, up to two retries), or move
-  on once the wave is done. The skill always follows `next` as given rather
-  than re-deriving its own liveness logic.
+  stalled worker, redispatch a task that timed out or never answered its
+  reclaim (via `execute_state({action: "task-redispatch"})`, up to two
+  retries), or move on once the wave is done. A worker that *does* answer a
+  reclaim is kept: the reply proves it is alive, so the same attempt
+  continues and no retry is spent. The skill always follows `next` as given
+  rather than re-deriving its own liveness logic.

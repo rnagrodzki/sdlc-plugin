@@ -99,6 +99,45 @@ func taskProgressPath(root, runID, taskID string) string {
 	return filepath.Join(progressDir(root, runID), taskID+".json")
 }
 
+// progressStore abstracts the filesystem operations UpdateProgress and
+// TouchProgress perform on a task's progress file, so their tests can
+// substitute an in-memory fake instead of real disk I/O — required by the
+// no-real-fs-git-in-tests guardrail once new tests are added alongside
+// them. ReadProgress predates this seam and is not routed through it: its
+// tests are pre-existing and out of scope for the change that introduced
+// this interface.
+type progressStore interface {
+	// readJSON loads path into out, mirroring fsx.ReadJSON's error
+	// contract (wraps fsx.ErrNotFound when the path is absent).
+	readJSON(path string, out any) error
+	// writeJSON atomically writes v to path, mirroring
+	// fsx.AtomicWriteJSON.
+	writeJSON(path string, v any) error
+	// mkdirAll ensures dir exists, mirroring os.MkdirAll.
+	mkdirAll(dir string) error
+}
+
+// realProgressStore is the production progressStore, backed by fsx and os.
+type realProgressStore struct{}
+
+func (realProgressStore) readJSON(path string, out any) error {
+	return fsx.ReadJSON(path, out)
+}
+
+func (realProgressStore) writeJSON(path string, v any) error {
+	return fsx.AtomicWriteJSON(path, v)
+}
+
+func (realProgressStore) mkdirAll(dir string) error {
+	return os.MkdirAll(dir, 0o755)
+}
+
+// progressStoreImpl is the package-level progressStore used by
+// UpdateProgress and TouchProgress. Tests may swap it for an in-memory
+// fake for the duration of a single test (save the old value, defer
+// restoring it); production code must never reassign it.
+var progressStoreImpl progressStore = realProgressStore{}
+
 // ReadProgress aggregates every per-task file under
 // <root>/.sdlc-v2/runs/<runID>/progress/ into a single Progress, merging
 // in the legacy single-file marker (if any) at lower priority — a taskID
@@ -173,13 +212,13 @@ func UpdateProgress(root, runID, taskID, phase, lastCompletedTask string, fields
 	}
 
 	dir := progressDir(root, runID)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := progressStoreImpl.mkdirAll(dir); err != nil {
 		return fmt.Errorf("wave: mkdir %s: %w", dir, err)
 	}
 
 	// Read existing to preserve StartedAt and any unset optional fields.
 	var existing TaskProgress
-	_ = fsx.ReadJSON(taskProgressPath(root, runID, taskID), &existing)
+	_ = progressStoreImpl.readJSON(taskProgressPath(root, runID, taskID), &existing)
 
 	now := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
 	tp := TaskProgress{
@@ -212,5 +251,39 @@ func UpdateProgress(root, runID, taskID, phase, lastCompletedTask string, fields
 		tp.Blocker = existing.Blocker
 	}
 
-	return fsx.AtomicWriteJSON(taskProgressPath(root, runID, taskID), tp)
+	return progressStoreImpl.writeJSON(taskProgressPath(root, runID, taskID), tp)
+}
+
+// TouchProgress advances only UpdatedAt on a task's progress file,
+// preserving every other recorded field. It is the liveness-only sibling of
+// UpdateProgress: there is no phase argument, so the validPhases invariant
+// is untouched. A missing file is created with Phase "started" so a worker
+// that never called wave-progress still reports liveness.
+func TouchProgress(root, runID, taskID string) error {
+	if err := validateRunID(runID); err != nil {
+		return err
+	}
+
+	dir := progressDir(root, runID)
+	if err := progressStoreImpl.mkdirAll(dir); err != nil {
+		return fmt.Errorf("wave: mkdir %s: %w", dir, err)
+	}
+
+	// Read existing to preserve every field except UpdatedAt. A missing or
+	// corrupt file yields a zero-value TaskProgress, handled below the same
+	// way UpdateProgress handles a first write.
+	var existing TaskProgress
+	_ = progressStoreImpl.readJSON(taskProgressPath(root, runID, taskID), &existing)
+
+	now := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+	tp := existing
+	tp.UpdatedAt = now
+	if tp.Phase == "" {
+		tp.Phase = "started"
+	}
+	if tp.StartedAt == "" {
+		tp.StartedAt = now
+	}
+
+	return progressStoreImpl.writeJSON(taskProgressPath(root, runID, taskID), tp)
 }
