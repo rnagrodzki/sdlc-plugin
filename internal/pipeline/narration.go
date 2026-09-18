@@ -20,10 +20,10 @@ type NextAction struct {
 	EtaBasis    string `json:"etaBasis,omitempty"`
 }
 
-// Narration is the data payload embedded inside the existing KD3 envelope
-// returned by MCP tool responses (execute_state, ship_state, etc). The KD3
-// envelope wrapping itself is untouched by this package — Narration only
-// supplies the payload that goes inside it.
+// Narration is the data payload rendered into the Markdown result returned
+// by MCP tool responses (execute_state, ship_state, etc). The renderer in
+// internal/mcpserver is untouched by this package — Narration only supplies
+// the payload it walks.
 //
 // Display is authoritative for user-facing rendering: callers (and
 // SKILL.md instructions) render Display verbatim. Summary is a shorter
@@ -31,7 +31,7 @@ type NextAction struct {
 // rendering.
 type Narration struct {
 	Summary string      `json:"summary"`
-	Display string      `json:"display"`
+	Display string      `json:"display" render:"raw"`
 	Timing  *TimingInfo `json:"timing,omitempty"`
 	Next    *NextAction `json:"next,omitempty"`
 }
