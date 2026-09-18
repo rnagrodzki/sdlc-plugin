@@ -410,31 +410,35 @@ If multiple state files exist for the same branch (from multiple failed attempts
 
 ## Derived Response Shapes (Not Persisted)
 
-Two shapes ride alongside the state blob on certain actions' responses. Neither is a field written
-into the JSON file on disk — both are computed fresh from the persisted fields above every time
-they're returned, so there is nothing to keep in sync by hand.
+Two shapes are rendered alongside the state fields on certain actions' responses. Neither is a
+field written into the JSON file on disk — both are computed fresh from the persisted fields above
+every time they're rendered, so there is nothing to keep in sync by hand.
 
 ### `resumeBriefing`
 
-Attached under a `resumeBriefing` key on `read` and `resume-reset` responses, but only when
+Rendered as a `resumeBriefing` section on `read` and `resume-reset` responses, but only when
 `execRunInFlight()` is true — i.e. some recorded wave isn't `"completed"`, or `plannedTaskIds` has
 IDs not yet in `context.completedTaskIds`. A finished, cleaned-up run (or one that never set
-`plannedTaskIds`) carries no `resumeBriefing` at all.
+`plannedTaskIds`) carries no `resumeBriefing` section at all.
 
-```json
-{
-  "resumeBriefing": {
-    "resumable": true,
-    "wavesDone": 3,
-    "wavesRemaining": 2,
-    "gitCrossCheck": "mismatch",
-    "gitMismatches": ["wave 2: committedSha a1b2c3d is not an ancestor of HEAD"],
-    "willRedo": ["4"],
-    "willSkip": ["1", "2", "3"],
-    "summary": "...",
-    "display": "..."
-  }
-}
+It renders as a `## resumeBriefing` heading followed by one bullet per field:
+
+```
+## resumeBriefing
+- resumable: true
+- wavesDone: 3
+- wavesRemaining: 2
+- gitCrossCheck: mismatch
+- gitMismatches:
+  - wave 2: committedSha a1b2c3d is not an ancestor of HEAD
+- willRedo:
+  - 4
+- willSkip:
+  - 1
+  - 2
+  - 3
+- summary: ...
+- display: ...
 ```
 
 | Field            | Type     | Description |

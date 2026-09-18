@@ -102,8 +102,8 @@ For each skill:
 
 Produce a single document covering:
 - Package structure and responsibilities
-- MCP tool registration flow (mcpserver.Register → handler → envelope)
-- Error classification (DomainError/InfraError/DataError → KD3 codes)
+- MCP tool registration flow (mcpserver.Register → handler → renderOK)
+- Error classification (DomainError/InfraError/DataError → rendered error codes)
 - Dependency injection pattern (runtime structs, *CoreWith functions)
 - Skill → tool dispatch chain
 - Review dimensions and guardrail enforcement points

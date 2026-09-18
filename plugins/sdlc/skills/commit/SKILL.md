@@ -56,7 +56,7 @@ only an override, not a required field.
 
 **On tool error:** show the error to the user and stop.
 
-Treat the returned `data` object as `COMMIT_CONTEXT`.
+Treat the returned result as `COMMIT_CONTEXT`. The tool has already written it to disk.
 
 **If `COMMIT_CONTEXT.errors` is non-empty**, show each error message and stop. (This
 includes "no files staged for commit" and any config-check failure — this port has no
@@ -112,16 +112,16 @@ check it yourself against that rule; if it matches, revise it before presenting.
 
 ### Step 2 (PLAN): Dispatch the commit-orchestrator Agent
 
-`sdlc:commit-orchestrator` only has Read tool access — it cannot call MCP tools itself. Write
-`COMMIT_CONTEXT` to a scratch JSON file first (via the Write tool), then point the agent at
-that file:
+`sdlc:commit-orchestrator` only has Read tool access — it cannot call MCP tools itself. Point
+the agent at the manifest file `commit_prepare` already wrote to disk — forward its
+`manifestPath` value verbatim, with no Write-tool step of your own:
 
 - `subagent_type`: `sdlc:commit-orchestrator`
 - `model`: `haiku`
 - `prompt` (exactly two lines, no other content):
 
   ```text
-  MANIFEST_FILE: <path to the scratch file you just wrote>
+  MANIFEST_FILE: <the manifestPath value from commit_prepare>
   PROJECT_ROOT: <cwd>
   ```
 

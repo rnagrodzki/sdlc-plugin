@@ -145,7 +145,8 @@ requirement (for example, by an orchestrating pipeline); otherwise omit it.
 
 **On tool error:** show the error to the user and stop.
 
-Treat the returned `data` as `PR_CONTEXT`.
+Treat the returned result as `PR_CONTEXT`. Field names render as `- <key>: <value>` lines;
+the field paths below are unchanged.
 
 **If `PR_CONTEXT.ok` is `false`**, `PR_CONTEXT.errors` already explains why — this single
 check covers every hard-gate failure in this port: config-migration failure, gh not

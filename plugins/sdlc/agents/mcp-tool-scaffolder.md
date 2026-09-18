@@ -54,8 +54,10 @@ Build the `*In` struct with:
 Build the `*Out` struct with:
 
 - All fields from manifest `outputFields`
-- `Next string json:"next"` field (always present, no omitempty)
-- No nil-able slices — use `[]T` not `*[]T`, initialize to empty in handler
+- A root `Next string json:"next"` field, unless the tool is genuinely terminal — the renderer
+  hoists it to the result's `**Next:**` line, and a terminal tool must say so in its description
+- Prefer `[]T` over `*[]T`. A nil or empty slice renders as `(none)`, so the handler does not have
+  to pre-initialize it to make the result readable
 
 ## Step 4 — Generate Handler Function
 
@@ -111,9 +113,8 @@ Before returning, verify:
 
 - Every `*In` field has `jsonschema_description` tag
 - Closed-set fields have enum tags
-- `*Out` has `Next string json:"next"` (no omitempty)
+- `*Out` has a root `Next string json:"next"`, or the tool description states it is terminal
 - Error paths with recovery populate `Suggestion`
-- Slices initialized to empty, not nil
 - Test file imports match what's needed
 - Handler signature matches `Register[TIn, TOut]` expectations
 - Naming conventions match existing tools in the package
