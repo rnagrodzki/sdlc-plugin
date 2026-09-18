@@ -18,3 +18,6 @@ triggers:
   of the config schema — when schema field names, enum values, or structure
   changes, validate that corresponding template comments, defaults, and
   field names stay synchronized.
+- CI workflow files (`.github/workflows/*.yml`) and doc files (`docs/**`,
+  `README.md`) that reference schema/config field names or paths are also
+  secondary readers — check they stay in sync with a schema/config change.

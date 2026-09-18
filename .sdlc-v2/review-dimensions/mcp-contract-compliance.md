@@ -68,6 +68,24 @@ When reviewing changes to MCP handler code, perform these concrete checks:
 - **Enum-tag completeness:** For each modified handler function, identify every `switch` statement that validates a string field from an `*In` struct. Cross-reference each switched field against the struct definition and confirm it carries a `jsonschema enum=val1,enum=val2,...` tag matching the case labels. A switch on `Action` with cases "plan_format", "discovery", etc. must have `jsonschema enum=plan_format,enum=discovery,...` on the Action field.
 - **Error field coverage (Suggestion):** List every point in the handler where a `DomainError`, `InfraError`, or `DataError` is instantiated (including default/fallthrough cases in switch statements). Verify each one populates the `Suggestion` field with a recovery instruction. This is a common miss in default cases — confirm they explicitly set Suggestion, not silently omit it.
 
+## JSON-encoded string fields
+
+- An `*In` field whose Go type is `string` but whose handler parses it via
+  `json.Unmarshal` MUST have a `jsonschema_description` that explicitly
+  states the JSON-encoding requirement, with an example value. A
+  description that omits this (or says "free-text") while the handler
+  requires JSON is a contract violation.
+- For task-done/wave-done inputs: `filesAdded` must be a documented subset
+  of `filesChanged`, and status fields must use the tool's declared enum
+  (e.g. `DONE_WITH_CONCERNS` distinct from `DONE`) — flag any invented or
+  conflated status string.
+
+## Annotation reason accuracy
+
+- A tool annotation (read-only, idempotent) with a reason string must be
+  checked against an actual call-graph/reference search of the handler —
+  a plausible-sounding reason is not evidence the annotation is correct.
+
 ## Cross-references
 
 - General MCP tool quality rules are in `mcp-tool-review.md` — this

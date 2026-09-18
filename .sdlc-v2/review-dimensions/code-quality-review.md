@@ -44,7 +44,16 @@ Review Go source changes for baseline code quality in this module
   replace hardcoded string literals (e.g. `"execution"`), code review must
   verify the replacement is complete across the codebase — a partial
   migration creates two silently-diverging sources of truth and is worse
-  than no migration at all.
+  than no migration at all. The same applies to deleting an exported
+  symbol entirely — grep the whole repo, not just the changed package,
+  since callers in unrelated packages are easy to miss.
+- CI workflow files (`.github/workflows/*.yml`) that reference schema/config
+  field names or paths must stay synchronized when those fields change —
+  treat them like any other doc-comment path reference.
+- An MCP tool annotation (e.g. read-only, idempotent) with a reason string
+  must be checked against an actual call-graph/reference search of the
+  handler — a plausible-sounding reason is not evidence the annotation is
+  correct.
 - Exported identifiers (`var`, `const`, `func`, `type`) must have an
   explicit `//` doc comment on the line immediately preceding them; a
   `//go:embed` directive alone is not sufficient — it is a compiler
