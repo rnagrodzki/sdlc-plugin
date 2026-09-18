@@ -549,11 +549,10 @@ func waveAwaitReclaimMessage(runID string, taskIDs []string) string {
 	return fmt.Sprintf(
 		"Liveness check for task(s) %s. You have been quiet past the heartbeat threshold. "+
 			"Do NOT stop and do NOT abandon your work. Immediately call execute_state "+
-			"{action:\"wave-progress\", runId:%q, taskId:\"<taskId>\", phase:\"<the phase you "+
-			"are actually in right now>\", acceptanceDone:[...], filesTouched:[...], "+
-			"lastCompletedTask:\"...\"} for each task listed, then continue exactly where you "+
-			"left off.",
-		strings.Join(taskIDs, ", "), runID,
+			"{action:\"wave-progress\", runId:%q, taskId:\"<taskId>\", phase:<phase, one of %s>, "+
+			"acceptanceDone:[...], filesTouched:[...], lastCompletedTask:\"...\"} for each task "+
+			"listed, then continue exactly where you left off.",
+		strings.Join(taskIDs, ", "), runID, strings.Join(execHeartbeatPhases, ", "),
 	)
 }
 
