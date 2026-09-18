@@ -301,6 +301,22 @@ func TestRenderOKNilAndEmptyCollectionsRenderNone(t *testing.T) {
 	}
 }
 
+// TestRenderOKMapFieldPopulated covers a populated map[string]string struct
+// field (fxEmpties.Config): it owns its own section (rule 5) and its entries
+// render as sorted "- key: value" bullets (rule 11), matching the
+// already-covered empty case in TestRenderOKNilAndEmptyCollectionsRenderNone.
+func TestRenderOKMapFieldPopulated(t *testing.T) {
+	out := renderOK("links_validate", fxEmpties{
+		Name:   "x",
+		Config: map[string]string{"z": "26", "a": "1", "m": "13"},
+	})
+
+	want := "## config\n- a: 1\n- m: 13\n- z: 26\n"
+	if !strings.Contains(out, want) {
+		t.Fatalf("populated map field did not render as a sorted-bullet section:\nwant contains %q\ngot:\n%s", want, out)
+	}
+}
+
 // --- Rules 9 and 10 ---
 
 func TestRenderOKFencesBacktickContent(t *testing.T) {

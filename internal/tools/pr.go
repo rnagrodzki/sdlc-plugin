@@ -688,8 +688,8 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 
 	// Branch-guard HARD GATE (issues #347-349). Must run before the
 	// protected-branch check, matching pr.js's exact ordering. JS reports
-	// this as exit code 3; the KD3 envelope has no analogous concept, so it
-	// is represented here as a normal (non-error) payload carrying the
+	// this as exit code 3; a rendered tool result has no analogous concept,
+	// so it is represented here as a normal (non-error) payload carrying the
 	// BranchGuard result — pr.js itself still emits a full JSON payload
 	// (not a bare error) at this point.
 	guard := rt.branchValidate(currentBranch, in.ExpectedBranch)

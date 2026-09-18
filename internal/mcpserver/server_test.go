@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -21,15 +23,20 @@ type echoOut struct {
 
 // --- helpers ---
 
-// envelope is the parsed KD3 envelope from tool results.
-type envelope struct {
-	OK    bool            `json:"ok"`
-	Data  json.RawMessage `json:"data,omitempty"`
-	Code  string          `json:"code,omitempty"`
-	Error string          `json:"error,omitempty"`
+// renderedResult is the parsed first line and body of a rendered tool
+// result: "# <tool> — ok" or "# <tool> — error (<code>)", per render.go /
+// envelope.go's renderOK / renderError.
+type renderedResult struct {
+	Tool string
+	OK   bool
+	Code string
+	Body string
 }
 
-func callTool(t *testing.T, c *mcp.ClientSession, name string, args map[string]any) (*mcp.CallToolResult, envelope) {
+// resultHeadRe pins the renderer's first-line contract from Task 1.
+var resultHeadRe = regexp.MustCompile(`^# ([a-z_]+) — (?:(ok)|error \((domain|infra|data)\))$`)
+
+func callTool(t *testing.T, c *mcp.ClientSession, name string, args map[string]any) (*mcp.CallToolResult, renderedResult) {
 	t.Helper()
 	result, err := c.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: args})
 	if err != nil {
@@ -42,12 +49,12 @@ func callTool(t *testing.T, c *mcp.ClientSession, name string, args map[string]a
 	if !ok {
 		t.Fatalf("CallTool %q: content[0] not TextContent, got %T", name, result.Content[0])
 	}
-
-	var env envelope
-	if err := json.Unmarshal([]byte(text.Text), &env); err != nil {
-		t.Fatalf("CallTool %q: unmarshal envelope: %v\nraw: %s", name, err, text.Text)
+	head, body, _ := strings.Cut(text.Text, "\n")
+	m := resultHeadRe.FindStringSubmatch(head)
+	if m == nil {
+		t.Fatalf("CallTool %q: first line %q does not match %s", name, head, resultHeadRe)
 	}
-	return result, env
+	return result, renderedResult{Tool: m[1], OK: m[2] == "ok", Code: m[3], Body: body}
 }
 
 func connectInMemory(t *testing.T, srv *Server) *mcp.ClientSession {
@@ -74,7 +81,7 @@ func setupClient(t *testing.T) *mcp.ClientSession {
 	srv := New("test", "0.0.0-test")
 
 	// Register tools in NON-alphabetical order to verify stable ordering.
-	Register(srv, "zz-echo", "echoes input", Annotations{
+	Register(srv, "zz_echo", "echoes input", Annotations{
 		Title:      "Echo input",
 		ReadOnly:   true,
 		Idempotent: true,
@@ -82,7 +89,7 @@ func setupClient(t *testing.T) *mcp.ClientSession {
 		return echoOut{Reply: "echo:" + in.Msg}, nil
 	})
 
-	Register(srv, "aa-domain-err", "returns domain error", Annotations{
+	Register(srv, "aa_domain_err", "returns domain error", Annotations{
 		Title:      "Return domain error",
 		ReadOnly:   true,
 		Idempotent: true,
@@ -90,7 +97,7 @@ func setupClient(t *testing.T) *mcp.ClientSession {
 		return echoOut{}, &DomainError{Msg: "bad request"}
 	})
 
-	Register(srv, "bb-infra-err", "returns infra error", Annotations{
+	Register(srv, "bb_infra_err", "returns infra error", Annotations{
 		Title:      "Return infra error",
 		ReadOnly:   true,
 		Idempotent: true,
@@ -98,7 +105,7 @@ func setupClient(t *testing.T) *mcp.ClientSession {
 		return echoOut{}, &InfraError{Msg: "connection refused"}
 	})
 
-	Register(srv, "cc-data-err", "returns data error", Annotations{
+	Register(srv, "cc_data_err", "returns data error", Annotations{
 		Title:      "Return data error",
 		ReadOnly:   true,
 		Idempotent: true,
@@ -106,7 +113,7 @@ func setupClient(t *testing.T) *mcp.ClientSession {
 		return echoOut{}, &DataError{Msg: "schema mismatch"}
 	})
 
-	Register(srv, "dd-panic", "panics", Annotations{
+	Register(srv, "dd_panic", "panics", Annotations{
 		Title:      "Panic for testing",
 		ReadOnly:   true,
 		Idempotent: true,
@@ -114,7 +121,7 @@ func setupClient(t *testing.T) *mcp.ClientSession {
 		panic("kaboom")
 	})
 
-	Register(srv, "ee-unknown-err", "returns untyped error", Annotations{
+	Register(srv, "ee_unknown_err", "returns untyped error", Annotations{
 		Title:      "Return untyped error",
 		ReadOnly:   true,
 		Idempotent: true,
@@ -138,7 +145,7 @@ func TestListToolsOrdering(t *testing.T) {
 		t.Fatal("ListTools: nil response")
 	}
 
-	want := []string{"aa-domain-err", "bb-infra-err", "cc-data-err", "dd-panic", "ee-unknown-err", "zz-echo"}
+	want := []string{"aa_domain_err", "bb_infra_err", "cc_data_err", "dd_panic", "ee_unknown_err", "zz_echo"}
 	if len(resp.Tools) != len(want) {
 		t.Fatalf("ListTools: got %d tools, want %d", len(resp.Tools), len(want))
 	}
@@ -148,10 +155,10 @@ func TestListToolsOrdering(t *testing.T) {
 		}
 	}
 
-	// Verify schema for zz-echo contains "msg" property with type string.
+	// Verify schema for zz_echo contains "msg" property with type string.
 	var echoTool *mcp.Tool
 	for _, tool := range resp.Tools {
-		if tool.Name == "zz-echo" {
+		if tool.Name == "zz_echo" {
 			echoTool = tool
 			break
 		}
@@ -189,51 +196,46 @@ func TestListToolsOrdering(t *testing.T) {
 
 func TestSuccessEnvelope(t *testing.T) {
 	c := setupClient(t)
-	result, env := callTool(t, c, "zz-echo", map[string]any{"msg": "hello"})
+	result, env := callTool(t, c, "zz_echo", map[string]any{"msg": "hello"})
 
 	if result.IsError {
 		t.Error("IsError should be false for success")
 	}
 	if !env.OK {
-		t.Error("envelope.ok should be true")
+		t.Error("rendered result should be ok")
 	}
-
-	var data echoOut
-	if err := json.Unmarshal(env.Data, &data); err != nil {
-		t.Fatalf("unmarshal data: %v", err)
-	}
-	if data.Reply != "echo:hello" {
-		t.Errorf("reply = %q, want %q", data.Reply, "echo:hello")
+	if !strings.Contains(env.Body, "- reply: echo:hello") {
+		t.Errorf("body missing reply bullet, got: %s", env.Body)
 	}
 }
 
 func TestDomainError(t *testing.T) {
 	c := setupClient(t)
-	result, env := callTool(t, c, "aa-domain-err", map[string]any{"msg": "x"})
+	result, env := callTool(t, c, "aa_domain_err", map[string]any{"msg": "x"})
 
 	if !result.IsError {
 		t.Error("IsError should be true for domain error")
 	}
 	if env.OK {
-		t.Error("envelope.ok should be false")
+		t.Error("rendered result should not be ok")
 	}
 	if env.Code != "domain" {
 		t.Errorf("code = %q, want %q", env.Code, "domain")
 	}
-	if env.Error != "bad request" {
-		t.Errorf("error = %q, want %q", env.Error, "bad request")
+	if !strings.Contains(env.Body, "## What happened\nbad request\n") {
+		t.Errorf("body missing error message, got: %s", env.Body)
 	}
 }
 
 func TestInfraError(t *testing.T) {
 	c := setupClient(t)
-	result, env := callTool(t, c, "bb-infra-err", map[string]any{"msg": "x"})
+	result, env := callTool(t, c, "bb_infra_err", map[string]any{"msg": "x"})
 
 	if !result.IsError {
 		t.Error("IsError should be true for infra error")
 	}
 	if env.OK {
-		t.Error("envelope.ok should be false")
+		t.Error("rendered result should not be ok")
 	}
 	if env.Code != "infra" {
 		t.Errorf("code = %q, want %q", env.Code, "infra")
@@ -242,13 +244,13 @@ func TestInfraError(t *testing.T) {
 
 func TestDataError(t *testing.T) {
 	c := setupClient(t)
-	result, env := callTool(t, c, "cc-data-err", map[string]any{"msg": "x"})
+	result, env := callTool(t, c, "cc_data_err", map[string]any{"msg": "x"})
 
 	if !result.IsError {
 		t.Error("IsError should be true for data error")
 	}
 	if env.OK {
-		t.Error("envelope.ok should be false")
+		t.Error("rendered result should not be ok")
 	}
 	if env.Code != "data" {
 		t.Errorf("code = %q, want %q", env.Code, "data")
@@ -257,34 +259,34 @@ func TestDataError(t *testing.T) {
 
 func TestPanicRecovery(t *testing.T) {
 	c := setupClient(t)
-	result, env := callTool(t, c, "dd-panic", map[string]any{"msg": "x"})
+	result, env := callTool(t, c, "dd_panic", map[string]any{"msg": "x"})
 
 	if !result.IsError {
 		t.Error("IsError should be true for panic")
 	}
 	if env.OK {
-		t.Error("envelope.ok should be false")
+		t.Error("rendered result should not be ok")
 	}
 	if env.Code != "infra" {
 		t.Errorf("code = %q, want %q", env.Code, "infra")
 	}
-	if env.Error != "panic: kaboom" {
-		t.Errorf("error = %q, want %q", env.Error, "panic: kaboom")
+	if !strings.Contains(env.Body, "## What happened\npanic: kaboom\n") {
+		t.Errorf("body missing panic message, got: %s", env.Body)
 	}
 
 	// Server must survive -- a subsequent call should succeed.
-	result2, env2 := callTool(t, c, "zz-echo", map[string]any{"msg": "after-panic"})
+	result2, env2 := callTool(t, c, "zz_echo", map[string]any{"msg": "after-panic"})
 	if result2.IsError {
 		t.Error("server should survive panic: IsError true on follow-up call")
 	}
 	if !env2.OK {
-		t.Error("server should survive panic: envelope.ok false on follow-up call")
+		t.Error("server should survive panic: follow-up call should be ok")
 	}
 }
 
 func TestUnknownErrorMapsToInfra(t *testing.T) {
 	c := setupClient(t)
-	result, env := callTool(t, c, "ee-unknown-err", map[string]any{"msg": "x"})
+	result, env := callTool(t, c, "ee_unknown_err", map[string]any{"msg": "x"})
 
 	if !result.IsError {
 		t.Error("IsError should be true for unknown error")
@@ -297,7 +299,7 @@ func TestUnknownErrorMapsToInfra(t *testing.T) {
 func TestBadInputMapsToData(t *testing.T) {
 	c := setupClient(t)
 	// Send wrong type for "msg" field (number instead of string).
-	result, env := callTool(t, c, "zz-echo", map[string]any{"msg": 42})
+	result, env := callTool(t, c, "zz_echo", map[string]any{"msg": 42})
 
 	if !result.IsError {
 		t.Error("IsError should be true for bad input")
@@ -326,7 +328,7 @@ func TestWarningsPerCallAndSessionID(t *testing.T) {
 	var firstDedup, secondDedup *Dedup
 	var firstSessionID, secondSessionID string
 	calls := 0
-	Register(srv, "capture-dedup", "captures dedup ref", Annotations{
+	Register(srv, "capture_dedup", "captures dedup ref", Annotations{
 		Title:      "Capture dedup",
 		ReadOnly:   true,
 		Idempotent: true,
@@ -344,8 +346,8 @@ func TestWarningsPerCallAndSessionID(t *testing.T) {
 
 	c := connectInMemory(t, srv)
 
-	callTool(t, c, "capture-dedup", map[string]any{"msg": "a"})
-	callTool(t, c, "capture-dedup", map[string]any{"msg": "b"})
+	callTool(t, c, "capture_dedup", map[string]any{"msg": "a"})
+	callTool(t, c, "capture_dedup", map[string]any{"msg": "b"})
 
 	if firstDedup == secondDedup {
 		t.Error("each call should get a fresh Dedup instance")

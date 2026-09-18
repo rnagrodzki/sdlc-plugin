@@ -1,38 +1,9 @@
 package mcpserver
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 )
-
-func TestWrapErr_WithSuggestion(t *testing.T) {
-	raw, err := wrapErr("domain", "releaseLevel is empty", "Run /version to set release intent.")
-	if err != nil {
-		t.Fatalf("wrapErr returned error: %v", err)
-	}
-	if !strings.Contains(string(raw), `"suggestion":"Run /version to set release intent."`) {
-		t.Fatalf("expected suggestion in envelope JSON, got: %s", raw)
-	}
-
-	var got envelopeErr
-	if err := json.Unmarshal(raw, &got); err != nil {
-		t.Fatalf("unmarshal envelope: %v", err)
-	}
-	if got.Suggestion != "Run /version to set release intent." {
-		t.Errorf("Suggestion = %q, want %q", got.Suggestion, "Run /version to set release intent.")
-	}
-}
-
-func TestWrapErr_WithoutSuggestion(t *testing.T) {
-	raw, err := wrapErr("infra", "something failed", "")
-	if err != nil {
-		t.Fatalf("wrapErr returned error: %v", err)
-	}
-	if strings.Contains(string(raw), "suggestion") {
-		t.Fatalf("expected no suggestion key in envelope JSON (omitempty), got: %s", raw)
-	}
-}
 
 func TestMapError_ExtractsSuggestion(t *testing.T) {
 	tests := []struct {
@@ -91,7 +62,7 @@ func (e errUnknown) Error() string { return string(e) }
 
 func TestRenderError_ExactShape(t *testing.T) {
 	got := renderError("mytool", "domain", "bad input", "fix the input")
-	want := "# mytool — error: domain\n\n## What happened\nbad input\n\n## Do this\nfix the input\n"
+	want := "# mytool — error (domain)\n\n## What happened\nbad input\n\n## Do this\nfix the input\n"
 	if got != want {
 		t.Errorf("renderError() =\n%q\nwant\n%q", got, want)
 	}
@@ -99,7 +70,7 @@ func TestRenderError_ExactShape(t *testing.T) {
 
 func TestRenderError_EmptySuggestionUsesDefaultRecovery(t *testing.T) {
 	got := renderError("mytool", "data", "schema mismatch", "")
-	want := "# mytool — error: data\n\n## What happened\nschema mismatch\n\n## Do this\n" + defaultRecovery("data") + "\n"
+	want := "# mytool — error (data)\n\n## What happened\nschema mismatch\n\n## Do this\n" + defaultRecovery("data") + "\n"
 	if got != want {
 		t.Errorf("renderError() =\n%q\nwant\n%q", got, want)
 	}

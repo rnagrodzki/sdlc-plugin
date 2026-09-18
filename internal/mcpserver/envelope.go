@@ -1,11 +1,9 @@
 // Package mcpserver wraps the mcp-go SDK with typed tool registration,
-// KD3 envelope formatting, and error classification.
+// Markdown result rendering, and error classification.
 package mcpserver
 
 import (
-	"encoding/json"
 	"errors"
-	"fmt"
 	"sync"
 )
 
@@ -44,7 +42,7 @@ type DataError struct {
 func (e *DataError) Error() string { return e.Msg }
 func (e *DataError) Unwrap() error { return e.Cause }
 
-// mapError classifies an error into a KD3 code, message, and recovery
+// mapError classifies an error into an error code, message, and recovery
 // suggestion. Wrapped errors are matched via errors.As. Unknown errors
 // default to "infra" with no suggestion.
 func mapError(err error) (code string, msg string, suggestion string) {
@@ -76,7 +74,7 @@ func mapError(err error) (code string, msg string, suggestion string) {
 // defaultRecovery(code).
 func renderError(tool, code, msg, suggestion string) string {
 	r := &renderer{empty: true}
-	r.line("# " + tool + " — error: " + code)
+	r.line("# " + tool + " — error (" + code + ")")
 
 	r.blank()
 	r.heading(2, "What happened")
@@ -96,7 +94,7 @@ func renderError(tool, code, msg, suggestion string) string {
 	return r.b.String()
 }
 
-// defaultRecovery returns generic recovery guidance for a KD3 error code,
+// defaultRecovery returns generic recovery guidance for an error code,
 // used by renderError when the error itself carries no suggestion. A code
 // other than "domain" or "data" (including "infra" and any code this
 // function doesn't recognize) gets the infra text: an unclassified failure
@@ -110,48 +108,6 @@ func defaultRecovery(code string) string {
 	default:
 		return "This looks like an environment or infrastructure failure (filesystem, network, or process). Check that the underlying system is reachable and retry."
 	}
-}
-
-// --- KD3 envelope ---
-
-// OKEnvelope is the success envelope shape published via WithOutputSchema.
-// It mirrors the runtime envelope that wrapOK produces, giving callers a
-// machine-readable output schema: {"ok":true,"data":<TOut>}.
-type OKEnvelope[T any] struct {
-	OK   bool `json:"ok"`
-	Data T    `json:"data"`
-}
-
-type envelopeOK struct {
-	OK   bool            `json:"ok"`
-	Data json.RawMessage `json:"data"`
-}
-
-type envelopeErr struct {
-	OK         bool   `json:"ok"`
-	Code       string `json:"code"`
-	Error      string `json:"error"`
-	Suggestion string `json:"suggestion,omitempty"`
-}
-
-// wrapOK marshals data into a KD3 success envelope: {"ok":true,"data":...}.
-//
-// TODO: nil slices/maps in the input struct serialize as JSON null instead of
-// []/{}. Callers should initialize slice fields to empty (e.g. []string{})
-// rather than leaving them nil. A central normalization pass here would be
-// the definitive fix but requires reflection; see review finding #12.
-func wrapOK(data any) ([]byte, error) {
-	raw, err := json.Marshal(data)
-	if err != nil {
-		return nil, fmt.Errorf("marshal data: %w", err)
-	}
-	return json.Marshal(envelopeOK{OK: true, Data: raw})
-}
-
-// wrapErr builds a KD3 error envelope: {"ok":false,"code":"...","error":"..."}.
-// suggestion is omitted from the JSON when empty.
-func wrapErr(code, msg, suggestion string) ([]byte, error) {
-	return json.Marshal(envelopeErr{OK: false, Code: code, Error: msg, Suggestion: suggestion})
 }
 
 // --- Dedup ---
