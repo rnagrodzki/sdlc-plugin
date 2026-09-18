@@ -1,0 +1,151 @@
+package tools
+
+import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"strconv"
+	"testing"
+)
+
+// files lists the 10 source files task 5 ("hand-written recovery text for
+// the worst error sites") is scoped to.
+var errSuggestionFiles = []string{
+	"ship_state.go",
+	"execute_state.go",
+	"validators.go",
+	"scaffold.go",
+	"jira.go",
+	"pr.go",
+	"review.go",
+	"received_review.go",
+	"dimensions_render.go",
+	"setup.go",
+}
+
+const errSuggestionBoilerplate = "Check filesystem permissions and available disk space for the project root, then retry."
+
+var errSuggestionTypeNames = map[string]bool{
+	"DomainError": true,
+	"InfraError":  true,
+	"DataError":   true,
+}
+
+// suggestionLit finds the Suggestion field's value in an mcpserver error
+// composite literal, if a Suggestion key is present at all.
+func suggestionLit(lit *ast.CompositeLit) (kv *ast.KeyValueExpr, present bool) {
+	for _, elt := range lit.Elts {
+		k, ok := elt.(*ast.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		key, ok := k.Key.(*ast.Ident)
+		if !ok || key.Name != "Suggestion" {
+			continue
+		}
+		return k, true
+	}
+	return nil, false
+}
+
+// walkErrorLiterals parses path and calls fn for every
+// mcpserver.{Domain,Infra,Data}Error composite literal found in it.
+func walkErrorLiterals(t *testing.T, path string, fn func(fset *token.FileSet, lit *ast.CompositeLit)) {
+	t.Helper()
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	ast.Inspect(f, func(n ast.Node) bool {
+		lit, ok := n.(*ast.CompositeLit)
+		if !ok {
+			return true
+		}
+		sel, ok := lit.Type.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		pkgIdent, ok := sel.X.(*ast.Ident)
+		if !ok || pkgIdent.Name != "mcpserver" || !errSuggestionTypeNames[sel.Sel.Name] {
+			return true
+		}
+		fn(fset, lit)
+		return true
+	})
+}
+
+// TestErrorLiteralsNoBoilerplateSuggestion walks every mcpserver.*Error
+// literal in the 10 files task 5 touches and asserts none of them still
+// carry the generic, copy-pasted "Check filesystem permissions..."
+// Suggestion. This pins the 14/15 boilerplate copies task 5 rewrites
+// (pr.go, review.go, received_review.go, dimensions_render.go, jira.go,
+// setup.go) without over-constraining the ~220 other literals in these
+// files that other tasks/waves own and this task does not touch.
+//
+// A Suggestion built from a non-literal expression (fmt.Sprintf, a
+// variable, ...) is skipped -- it cannot be the boilerplate constant and
+// is out of this test's scope.
+func TestErrorLiteralsNoBoilerplateSuggestion(t *testing.T) {
+	for _, name := range errSuggestionFiles {
+		path := name
+		t.Run(path, func(t *testing.T) {
+			walkErrorLiterals(t, path, func(fset *token.FileSet, lit *ast.CompositeLit) {
+				kv, present := suggestionLit(lit)
+				if !present {
+					return
+				}
+				bl, ok := kv.Value.(*ast.BasicLit)
+				if !ok || bl.Kind != token.STRING {
+					return
+				}
+				text, err := strconv.Unquote(bl.Value)
+				if err != nil {
+					return
+				}
+				pos := fset.Position(lit.Pos())
+				if text == "" {
+					t.Errorf("%s:%d: Suggestion is an empty string literal", path, pos.Line)
+				}
+				if text == errSuggestionBoilerplate {
+					t.Errorf("%s:%d: Suggestion still uses the generic boilerplate text", path, pos.Line)
+				}
+			})
+		})
+	}
+}
+
+// TestShipStateErrorLiteralsHaveRealSuggestions walks every
+// mcpserver.*Error literal in ship_state.go -- task 5's fact sheet covers
+// all 59 sites in this file, so "every literal" is exact here -- and
+// asserts each one has a plain string Suggestion of at least 40
+// characters that is not the generic boilerplate.
+func TestShipStateErrorLiteralsHaveRealSuggestions(t *testing.T) {
+	const path = "ship_state.go"
+	walkErrorLiterals(t, path, func(fset *token.FileSet, lit *ast.CompositeLit) {
+		pos := fset.Position(lit.Pos())
+		sel := lit.Type.(*ast.SelectorExpr)
+
+		kv, present := suggestionLit(lit)
+		if !present {
+			t.Errorf("%s:%d: %s is missing a Suggestion field", path, pos.Line, sel.Sel.Name)
+			return
+		}
+		bl, ok := kv.Value.(*ast.BasicLit)
+		if !ok || bl.Kind != token.STRING {
+			t.Errorf("%s:%d: %s.Suggestion must be a plain string literal", path, pos.Line, sel.Sel.Name)
+			return
+		}
+		text, err := strconv.Unquote(bl.Value)
+		if err != nil {
+			t.Errorf("%s:%d: %s.Suggestion is an unparsable string literal: %v", path, pos.Line, sel.Sel.Name, err)
+			return
+		}
+		if text == errSuggestionBoilerplate {
+			t.Errorf("%s:%d: %s.Suggestion still uses the generic boilerplate text", path, pos.Line, sel.Sel.Name)
+		}
+		if len(text) < 40 {
+			t.Errorf("%s:%d: %s.Suggestion is shorter than 40 chars: %q", path, pos.Line, sel.Sel.Name, text)
+		}
+	})
+}

@@ -209,7 +209,11 @@ func ciScriptDrift(root string) ([]CIScriptDriftEntry, error) {
 
 		currentVersion, installedVersion, destExists, legacyExists, _, _, verr := scaffoldEntryVersions(root, entry, srcContent)
 		if verr != nil {
-			return nil, &mcpserver.InfraError{Msg: verr.Error(), Cause: errors.Unwrap(verr)}
+			return nil, &mcpserver.InfraError{
+				Msg:        fmt.Sprintf("check installed version of CI script %s: %s", entry.Dest, verr.Error()),
+				Suggestion: "Check read permission on the CI script file named above under .github/workflows/, then retry scaffold_ci with dryRun true.",
+				Cause:      errors.Unwrap(verr),
+			}
 		}
 
 		installed := 0
@@ -292,7 +296,11 @@ func scaffoldCI(root string, force bool) (ScaffoldCIOut, error) {
 
 		currentVersion, installedVersion, destExists, legacyExists, destPath, legacyPath, verr := scaffoldEntryVersions(root, entry, srcContent)
 		if verr != nil {
-			return ScaffoldCIOut{}, &mcpserver.InfraError{Msg: verr.Error(), Cause: errors.Unwrap(verr)}
+			return ScaffoldCIOut{}, &mcpserver.InfraError{
+				Msg:        fmt.Sprintf("check installed version of CI script %s: %s", entry.Dest, verr.Error()),
+				Suggestion: "Check write permission on the CI script file named above under .github/workflows/, then retry scaffold_ci.",
+				Cause:      errors.Unwrap(verr),
+			}
 		}
 
 		// Determine action (write mode, not check-only).

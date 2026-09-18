@@ -761,7 +761,11 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 		// template conflicts with the release markers pr_apply injects
 		// automatically (prReleaseInjectMarkers below).
 		if compatErr := prtemplate.ValidateReleaseCompat(tmpl.Content); compatErr != nil {
-			return PRPrepareOut{}, &mcpserver.DomainError{Msg: compatErr.Error()}
+			return PRPrepareOut{}, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("PR template %s conflicts with the release markers pr_apply injects: %v", tmpl.Path, compatErr),
+				Suggestion: "Edit the custom PR template file and delete the conflicting release-marker line; pr_apply injects release markers itself and refuses templates that already define them.",
+				Cause:      compatErr,
+			}
 		}
 		out.Template = &PRTemplateOut{
 			Path:     tmpl.Path,

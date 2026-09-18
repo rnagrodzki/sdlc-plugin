@@ -740,7 +740,7 @@ Fix each blocking issue identified by the reviewer. Rewrite the plan file with f
 
 **Material change detection (implements R64):**
 
-Before rewriting the plan file with fixes, call `plan_support({action: "material_snapshot", filePath: planPath})` and store the returned `snapshot`. After the rewrite, call `plan_support({action: "material_compare", filePath: planPath, snapshot: <snapshot>})`. The tool compares all seven structural dimensions (task count, deviations rows, files-set, contracts, depends-on, key decisions, openspec-task mapping) and returns `material` (boolean) and `triggers` (list of fired trigger descriptions). If `material` is true, set `materialChangeDetected = true`. Wording-only and formatting-only fixes are NOT material (R64).
+Before rewriting the plan file with fixes, call `plan_support({action: "material_snapshot", filePath: planPath})` and store the returned `snapshotPath`. After the rewrite, call `plan_support({action: "material_compare", filePath: planPath, snapshotPath: <snapshotPath>})`. The tool compares all seven structural dimensions (task count, deviations rows, files-set, contracts, depends-on, key decisions, openspec-task mapping) and returns `material` (boolean) and `triggers` (list of fired trigger descriptions). If `material` is true, set `materialChangeDetected = true`. Wording-only and formatting-only fixes are NOT material (R64).
 
 Re-dispatch the reviewer (back to Step 5 loop). When `materialChangeDetected` is true, the Step 5 merged dispatch path activates — see "Material change detection and merged re-dispatch" in Step 5.
 

@@ -3594,7 +3594,11 @@ func execActionTaskContext(root, workDir string, in ExecuteStateIn, now func() t
 			return nil, &mcpserver.DomainError{Msg: msg, Cause: err}
 		}
 		if errors.Is(err, wave.ErrBadRunID) {
-			return nil, &mcpserver.DomainError{Msg: err.Error(), Cause: err}
+			return nil, &mcpserver.DomainError{
+				Msg:        err.Error(),
+				Suggestion: "Pass runId exactly as returned by execute_state init/wave-start (only letters, digits, underscore, hyphen), then retry task-context.",
+				Cause:      err,
+			}
 		}
 		return nil, &mcpserver.InfraError{Msg: "read fact sheet: " + err.Error(), Cause: err}
 	}
@@ -4244,7 +4248,11 @@ func execActionWaveSplit(root, workDir string, in ExecuteStateIn, now func() tim
 	if err != nil {
 		var maxErr *wave.MaxSplitDepthExceededError
 		if errors.As(err, &maxErr) {
-			return nil, &mcpserver.DomainError{Msg: err.Error(), Cause: err}
+			return nil, &mcpserver.DomainError{
+				Msg:        err.Error(),
+				Suggestion: "Call AskUserQuestion with the unresolved task IDs from missingIds to escalate for manual wave-split resolution instead of retrying automatically.",
+				Cause:      err,
+			}
 		}
 		return nil, &mcpserver.InfraError{Msg: "wave split: " + err.Error(), Cause: err}
 	}
@@ -4509,7 +4517,11 @@ func execActionWaveProgress(root string, in ExecuteStateIn, now func() time.Time
 	}
 	if err := wave.UpdateProgress(root, in.RunID, in.TaskID, in.Phase, in.LastCompletedTask, fields); err != nil {
 		if errors.Is(err, wave.ErrBadRunID) || errors.Is(err, wave.ErrBadPhase) {
-			return nil, &mcpserver.DomainError{Msg: err.Error(), Cause: err}
+			return nil, &mcpserver.DomainError{
+				Msg:        err.Error(),
+				Suggestion: "Pass a runId matching [A-Za-z0-9_-] and a phase from started|reading|editing|verifying|reporting, then retry wave-progress.",
+				Cause:      err,
+			}
 		}
 		return nil, &mcpserver.InfraError{Msg: "update progress: " + err.Error(), Cause: err}
 	}

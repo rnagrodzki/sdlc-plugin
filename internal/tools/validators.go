@@ -1280,7 +1280,11 @@ func validateCostTiers(root string, in ValidateIn) ([]discovery.Finding, error) 
 
 	docSkills, docAgents, err := parseCostTierDocTables(root)
 	if err != nil {
-		return nil, &mcpserver.DataError{Msg: err.Error(), Cause: err}
+		return nil, &mcpserver.DataError{
+			Msg:        fmt.Sprintf("parse cost-tier tables in docs/cost-tiers.md: %s", err.Error()),
+			Suggestion: "Fix the \"## 3. Skill Table\" and \"## 4. Agent Table\" headings and row format in docs/cost-tiers.md, then retry.",
+			Cause:      err,
+		}
 	}
 
 	var findings []discovery.Finding

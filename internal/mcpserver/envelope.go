@@ -64,6 +64,54 @@ func mapError(err error) (code string, msg string, suggestion string) {
 	return "infra", err.Error(), ""
 }
 
+// --- Markdown error rendering ---
+
+// renderError renders a failed tool result as the Markdown text that becomes
+// the tool's content[0].text. It reuses render.go's renderer for the same
+// heading/blank-line/plain-block primitives renderOK uses, so success and
+// error output share one visual style.
+//
+// The "Do this" section is never empty: when suggestion is "" (the error
+// carried no caller-supplied recovery text), it falls back to
+// defaultRecovery(code).
+func renderError(tool, code, msg, suggestion string) string {
+	r := &renderer{empty: true}
+	r.line("# " + tool + " — error: " + code)
+
+	r.blank()
+	r.heading(2, "What happened")
+	if msg == "" {
+		r.line(renderNone)
+	} else {
+		r.writeBlock(msg)
+	}
+
+	if suggestion == "" {
+		suggestion = defaultRecovery(code)
+	}
+	r.blank()
+	r.heading(2, "Do this")
+	r.writeBlock(suggestion)
+
+	return r.b.String()
+}
+
+// defaultRecovery returns generic recovery guidance for a KD3 error code,
+// used by renderError when the error itself carries no suggestion. A code
+// other than "domain" or "data" (including "infra" and any code this
+// function doesn't recognize) gets the infra text: an unclassified failure
+// is more likely a plumbing problem than a caller mistake.
+func defaultRecovery(code string) string {
+	switch code {
+	case "domain":
+		return "Check the input against this tool's documented parameters and retry with a corrected value."
+	case "data":
+		return "The underlying data may be missing, malformed, or stale. Inspect the referenced file or record, regenerate it if needed, and retry."
+	default:
+		return "This looks like an environment or infrastructure failure (filesystem, network, or process). Check that the underlying system is reachable and retry."
+	}
+}
+
 // --- KD3 envelope ---
 
 // OKEnvelope is the success envelope shape published via WithOutputSchema.

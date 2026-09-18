@@ -614,7 +614,7 @@ func setupWritePlanTemplate(root string) (SetupInitOut, error) {
 	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
 		return SetupInitOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("create %s directory: %s", paths.DataDir, err.Error()),
-			Suggestion: "Check filesystem permissions and available disk space for the project root, then retry.",
+			Suggestion: "Create .sdlc-v2 manually with write permission, or free disk space on the project root, then retry setup_init with writePlanTemplate true.",
 			Cause:      err,
 		}
 	}
@@ -623,7 +623,7 @@ func setupWritePlanTemplate(root string) (SetupInitOut, error) {
 	if err := os.WriteFile(outPath, content, 0o644); err != nil {
 		return SetupInitOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("write %s: %s", outPath, err.Error()),
-			Suggestion: "Check filesystem permissions and available disk space for the project root, then retry.",
+			Suggestion: "Check write permission on .sdlc-v2/plan-template.md and free disk space on the project root, then retry setup_init with the same content.",
 			Cause:      err,
 		}
 	}
@@ -651,7 +651,7 @@ func setupWritePRTemplate(root string, in SetupInitIn) (SetupInitOut, error) {
 	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
 		return SetupInitOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("create %s directory: %s", paths.DataDir, err.Error()),
-			Suggestion: "Check filesystem permissions and available disk space for the project root, then retry.",
+			Suggestion: "Create .sdlc-v2 manually with write permission, or free disk space on the project root, then retry setup_init with writePRTemplate true.",
 			Cause:      err,
 		}
 	}
@@ -660,7 +660,7 @@ func setupWritePRTemplate(root string, in SetupInitIn) (SetupInitOut, error) {
 	if err := os.WriteFile(outPath, []byte(in.Content), 0o644); err != nil {
 		return SetupInitOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("write %s: %s", outPath, err.Error()),
-			Suggestion: "Check filesystem permissions and available disk space for the project root, then retry.",
+			Suggestion: "Check write permission on .sdlc-v2/pr-template.md and free disk space on the project root, then retry setup_init with the same content.",
 			Cause:      err,
 		}
 	}

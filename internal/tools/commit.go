@@ -1,7 +1,9 @@
 package tools
 
 import (
+	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
@@ -88,6 +90,7 @@ type CommitPrepareOut struct {
 	WipSquash         CommitWipSquash     `json:"wipSquash"`
 	BranchGuard       CommitBranchGuard   `json:"branchGuard"`
 	Next              string              `json:"next"`
+	ManifestPath      string              `json:"manifestPath" jsonschema_description:"Path to a JSON manifest file holding this entire result, written to disk so the caller (e.g. the commit skill dispatching sdlc:commit-orchestrator) can pass the path to a subagent instead of round-tripping the full JSON through its own context."`
 }
 
 // commitPrepare is the core logic, separated for testability.
@@ -240,7 +243,43 @@ func commitPrepare(cfgRoot, gitRoot string, in CommitPrepareIn) (CommitPrepareOu
 		out.Next = "Call commit_apply with the prepared payload."
 	}
 
+	// Write the manifest to disk so callers (e.g. the commit skill, which
+	// dispatches sdlc:commit-orchestrator) can hand a file path to a
+	// subagent instead of round-tripping this entire JSON payload through
+	// their own context. Mirrors the rest of this function's soft-fail
+	// style: a write failure becomes a warning, not a hard error, and
+	// ManifestPath is left empty.
+	if manifestPath, err := writeCommitManifest(out); err != nil {
+		out.Warnings = append(out.Warnings, fmt.Sprintf("manifestPath: %s", err.Error()))
+	} else {
+		out.ManifestPath = manifestPath
+	}
+
 	return out, nil
+}
+
+// writeCommitManifest marshals out (with ManifestPath already pointed at the
+// file it is about to write) to JSON and writes it via the fsseam, returning
+// the path.
+func writeCommitManifest(out CommitPrepareOut) (string, error) {
+	dir, err := mkdirTempFunc("", "sdlc-commit-manifest-")
+	if err != nil {
+		return "", fmt.Errorf("create manifest temp dir: %w", err)
+	}
+
+	manifestPath := filepath.Join(dir, "manifest.json")
+	out.ManifestPath = manifestPath
+
+	manifestJSON, err := json.Marshal(out)
+	if err != nil {
+		return "", fmt.Errorf("marshal manifest: %w", err)
+	}
+
+	if err := writeFileFunc(manifestPath, manifestJSON, 0o644); err != nil {
+		return "", fmt.Errorf("write manifest file %q: %w", manifestPath, err)
+	}
+
+	return manifestPath, nil
 }
 
 // detectWipSquash detects WIP commits on the current branch since

@@ -49,6 +49,7 @@ func TestCommitPrepare_KeySet(t *testing.T) {
 		"onDefaultBranch", "flags", "migration", "commitConfig",
 		"staged", "unstaged", "untracked", "recentCommits",
 		"lastCommitMessage", "wipSquash", "branchGuard", "next",
+		"manifestPath",
 	}
 	for _, k := range expectedTopKeys {
 		if _, ok := m[k]; !ok {
@@ -122,6 +123,82 @@ func TestCommitPrepare_KeySet(t *testing.T) {
 
 	if out.Next != "Call commit_apply with the prepared payload." {
 		t.Errorf("Next: got %q", out.Next)
+	}
+}
+
+// TestCommitPrepare_ManifestPath verifies that commit_prepare writes its
+// entire result to disk via the fsseam and returns a readable ManifestPath
+// instead of relying on the caller to round-trip the full JSON payload
+// through its own context.
+func TestCommitPrepare_ManifestPath(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	// The manifest write/read goes through the fsseam (mkdirTempFunc,
+	// writeFileFunc, readFileFunc) — install fakes so this test never
+	// touches the real filesystem for that path. dir/initGitFixture above
+	// is the real git repo fixture commitPrepare needs to run git commands
+	// against; it is unrelated to the fsseam and out of scope here.
+	installFakeFS(t)
+
+	out, err := commitPrepare(dir, dir, CommitPrepareIn{SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("commitPrepare: %v", err)
+	}
+
+	if out.ManifestPath == "" {
+		t.Fatal("expected non-empty ManifestPath")
+	}
+
+	raw, err := readFileFunc(out.ManifestPath)
+	if err != nil {
+		t.Fatalf("read manifest file %q: %v", out.ManifestPath, err)
+	}
+
+	var manifest CommitPrepareOut
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		t.Fatalf("decode manifest file %q: %v", out.ManifestPath, err)
+	}
+	if manifest.CurrentBranch != out.CurrentBranch {
+		t.Errorf("manifest CurrentBranch = %q, want %q", manifest.CurrentBranch, out.CurrentBranch)
+	}
+	if manifest.ManifestPath != out.ManifestPath {
+		t.Errorf("manifest ManifestPath = %q, want %q", manifest.ManifestPath, out.ManifestPath)
+	}
+}
+
+// TestCommitPrepare_ManifestWriteFailure verifies that when the fsseam's
+// mkdirTempFunc fails, commit_prepare soft-fails: it appends a warning and
+// leaves ManifestPath empty, consistent with the rest of this function's
+// all-soft-fail error style (it never returns a non-nil error).
+func TestCommitPrepare_ManifestWriteFailure(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	origMkdirTemp := mkdirTempFunc
+	mkdirTempFunc = func(string, string) (string, error) {
+		return "", os.ErrPermission
+	}
+	defer func() { mkdirTempFunc = origMkdirTemp }()
+
+	out, err := commitPrepare(dir, dir, CommitPrepareIn{SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("commitPrepare returned an error, want soft-fail: %v", err)
+	}
+	if out.ManifestPath != "" {
+		t.Errorf("ManifestPath = %q, want empty on write failure", out.ManifestPath)
+	}
+	found := false
+	for _, w := range out.Warnings {
+		if strings.Contains(w, "manifestPath") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("Warnings = %v, want one mentioning manifestPath", out.Warnings)
 	}
 }
 

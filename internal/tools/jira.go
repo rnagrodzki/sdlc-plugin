@@ -882,7 +882,11 @@ func jiraSave(mainRoot string, in JiraIn) (any, error) {
 	if in.CacheDir != "" {
 		p, err := jiraGetCachePath(key, in.CacheDir)
 		if err != nil {
-			return nil, &mcpserver.InfraError{Msg: err.Error(), Cause: err}
+			return nil, &mcpserver.InfraError{
+				Msg:        fmt.Sprintf("resolve cache path under cacheDir %q: %s", in.CacheDir, err.Error()),
+				Suggestion: "Check write permission on the cacheDir path passed to jira, or pass a different writable cacheDir, then retry.",
+				Cause:      err,
+			}
 		}
 		writePath = p
 	} else {
@@ -1033,7 +1037,11 @@ func jiraClear(mainRoot string, in JiraIn) (any, error) {
 	if in.CacheDir != "" {
 		p, err := jiraGetCachePath(key, in.CacheDir)
 		if err != nil {
-			return nil, &mcpserver.InfraError{Msg: err.Error(), Cause: err}
+			return nil, &mcpserver.InfraError{
+				Msg:        fmt.Sprintf("resolve cache path under cacheDir %q: %s", in.CacheDir, err.Error()),
+				Suggestion: "Check write permission on the cacheDir path passed to jira, or pass a different writable cacheDir, then retry.",
+				Cause:      err,
+			}
 		}
 		if fileExists(p) {
 			if err := os.Remove(p); err != nil {
@@ -1243,7 +1251,7 @@ func jiraWriteCritique(mainRoot string, in JiraIn) (any, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        "create artifacts dir: " + err.Error(),
-			Suggestion: "Check filesystem permissions and available disk space for the project root, then retry.",
+			Suggestion: "Create .sdlc-v2/state/artifacts manually with write permission, or free disk space on the project root, then retry jira write-critique.",
 			Cause:      err,
 		}
 	}
@@ -1252,7 +1260,7 @@ func jiraWriteCritique(mainRoot string, in JiraIn) (any, error) {
 	if err := fsx.AtomicWriteJSON(writePath, in.Data); err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        "write critique artifact: " + err.Error(),
-			Suggestion: "Check filesystem permissions and available disk space for the project root, then retry.",
+			Suggestion: "Check write permission on .sdlc-v2/state/artifacts and free disk space on the project root, then retry jira write-critique with the same hash.",
 			Cause:      err,
 		}
 	}
@@ -1274,7 +1282,7 @@ func jiraWriteApproval(mainRoot string, in JiraIn) (any, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        "create artifacts dir: " + err.Error(),
-			Suggestion: "Check filesystem permissions and available disk space for the project root, then retry.",
+			Suggestion: "Create .sdlc-v2/state/artifacts manually with write permission, or free disk space on the project root, then retry jira write-approval.",
 			Cause:      err,
 		}
 	}
@@ -1284,7 +1292,7 @@ func jiraWriteApproval(mainRoot string, in JiraIn) (any, error) {
 	if err := os.WriteFile(writePath, []byte(token), 0o644); err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        "write approval token: " + err.Error(),
-			Suggestion: "Check filesystem permissions and available disk space for the project root, then retry.",
+			Suggestion: "Check write permission on .sdlc-v2/state/artifacts and free disk space on the project root, then retry jira write-approval with the same hash.",
 			Cause:      err,
 		}
 	}

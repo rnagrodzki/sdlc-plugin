@@ -1,8 +1,10 @@
 package tools
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -28,8 +30,8 @@ type PlanSupportIn struct {
 	IsRedispatch  bool         `json:"isRedispatch,omitempty" jsonschema_description:"merge_results only: true when these results come from a redispatch (re-run) of lanes/lenses, affecting how merged status is computed."`
 
 	// material_snapshot / material_compare
-	FilePath string        `json:"filePath,omitempty" jsonschema_description:"material_snapshot / material_compare only: path to the plan file to snapshot or compare."`
-	Snapshot *PlanSnapshot `json:"snapshot,omitempty" jsonschema_description:"material_compare only: the previously captured snapshot to compare the current plan file against."`
+	FilePath     string `json:"filePath,omitempty" jsonschema_description:"material_snapshot / material_compare only: path to the plan file to snapshot or compare."`
+	SnapshotPath string `json:"snapshotPath,omitempty" jsonschema_description:"material_compare only: path to the snapshot file returned by material_snapshot's snapshotPath field, to compare the current plan file against."`
 
 	// openspec_appendix
 	ChangeName   string   `json:"changeName,omitempty" jsonschema_description:"openspec_appendix only: name of the openspec change to generate the appendix for. Required."`
@@ -53,7 +55,7 @@ type PlanSupportOut struct {
 	Recommendations []string `json:"recommendations,omitempty"`
 
 	// material_snapshot
-	Snapshot *PlanSnapshot `json:"snapshot,omitempty"`
+	SnapshotPath string `json:"snapshotPath,omitempty" jsonschema_description:"material_snapshot only: path to the snapshot file just written to disk. Pass this to material_compare's snapshotPath field."`
 
 	// material_compare
 	Material bool     `json:"material,omitempty"`
@@ -153,8 +155,8 @@ func RegisterPlanSupportTools(s *mcpserver.Server) {
 Pass "action" to select an operation. Each action uses a subset of the input fields (unlisted fields are ignored):
 
 - merge_results: Merge lane/lens review results. Requires at least one of laneResults or lensResults. Optional: expectedGates, isRedispatch.
-- material_snapshot: Snapshot plan material for change detection. Requires filePath.
-- material_compare: Compare current plan material against a snapshot. Requires filePath, snapshot.
+- material_snapshot: Snapshot plan material for change detection. Requires filePath. Returns snapshotPath.
+- material_compare: Compare current plan material against a snapshot. Requires filePath, snapshotPath (from material_snapshot).
 - openspec_appendix: Generate an openspec appendix. Requires changeName. Optional: proposalPath, designPath, specPaths, planTasks.`,
 		mcpserver.Annotations{
 			Title:      "Read plan support data",
@@ -398,25 +400,67 @@ func mergeResults(in PlanSupportIn) (PlanSupportOut, error) {
 func materialSnapshot(in PlanSupportIn) (PlanSupportOut, error) {
 	if in.FilePath == "" {
 		return PlanSupportOut{}, &mcpserver.DomainError{
-			Msg: "material_snapshot requires filePath — provide the path to the plan file to snapshot",
+			Msg:        "material_snapshot requires filePath — provide the path to the plan file to snapshot",
+			Suggestion: "Call plan_support again with action=\"material_snapshot\" and a non-empty filePath pointing to the plan file.",
 		}
 	}
 
-	content, err := os.ReadFile(in.FilePath)
+	content, err := readFileFunc(in.FilePath)
 	if err != nil {
 		return PlanSupportOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("read plan file %q: %s", in.FilePath, err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("read plan file %q: %s", in.FilePath, err.Error()),
+			Suggestion: fmt.Sprintf("Check that %q exists and is readable, then retry material_snapshot with the corrected filePath.", in.FilePath),
+			Cause:      err,
 		}
 	}
 
 	snap := snapshotPlan(string(content))
 
+	snapshotPath, err := writePlanSnapshot(snap)
+	if err != nil {
+		return PlanSupportOut{}, err
+	}
+
 	return PlanSupportOut{
-		Summary:  fmt.Sprintf("Snapshot captured: %d tasks, %d deviation rows, %d key decisions.", snap.TaskCount, len(snap.DeviationsRows), len(snap.KeyDecisions)),
-		Next:     "Use material_compare after plan modifications to detect material changes.",
-		Snapshot: &snap,
+		Summary:      fmt.Sprintf("Snapshot captured: %d tasks, %d deviation rows, %d key decisions.", snap.TaskCount, len(snap.DeviationsRows), len(snap.KeyDecisions)),
+		Next:         "Use material_compare after plan modifications to detect material changes.",
+		SnapshotPath: snapshotPath,
 	}, nil
+}
+
+// writePlanSnapshot marshals snap to JSON and writes it to a fresh temp file
+// via the fsseam, so the caller can pass the file path forward to
+// material_compare instead of round-tripping the full snapshot JSON through
+// its own context.
+func writePlanSnapshot(snap PlanSnapshot) (string, error) {
+	dir, err := mkdirTempFunc("", "sdlc-plan-snapshot-")
+	if err != nil {
+		return "", &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("create snapshot temp dir: %s", err.Error()),
+			Suggestion: "Check available disk space and permissions on the OS temp directory, then retry material_snapshot.",
+			Cause:      err,
+		}
+	}
+
+	snapJSON, err := json.Marshal(snap)
+	if err != nil {
+		return "", &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("marshal snapshot: %s", err.Error()),
+			Suggestion: "This indicates a bug in the snapshot builder, not a filesystem or input problem — report it rather than retrying.",
+			Cause:      err,
+		}
+	}
+
+	snapshotPath := filepath.Join(dir, "snapshot.json")
+	if err := writeFileFunc(snapshotPath, snapJSON, 0o644); err != nil {
+		return "", &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("write snapshot file %q: %s", snapshotPath, err.Error()),
+			Suggestion: fmt.Sprintf("Check permissions and available disk space at %q, then retry material_snapshot.", dir),
+			Cause:      err,
+		}
+	}
+
+	return snapshotPath, nil
 }
 
 // snapshotPlan extracts the 7 structural dimensions from plan markdown content.
@@ -595,25 +639,32 @@ func extractSectionEntryKeys(content string, headingRe *regexp.Regexp) []string 
 func materialCompare(in PlanSupportIn) (PlanSupportOut, error) {
 	if in.FilePath == "" {
 		return PlanSupportOut{}, &mcpserver.DomainError{
-			Msg: "material_compare requires filePath — provide the path to the updated plan file",
+			Msg:        "material_compare requires filePath — provide the path to the updated plan file",
+			Suggestion: "Call plan_support again with action=\"material_compare\" and a non-empty filePath pointing to the updated plan file.",
 		}
 	}
-	if in.Snapshot == nil {
+	if in.SnapshotPath == "" {
 		return PlanSupportOut{}, &mcpserver.DomainError{
-			Msg: "material_compare requires snapshot — provide the prior snapshot from material_snapshot",
+			Msg:        "material_compare requires snapshotPath — call material_snapshot first and pass its returned snapshotPath",
+			Suggestion: "Call plan_support with action=\"material_snapshot\" and the same filePath first, then pass the snapshotPath it returns back verbatim.",
 		}
 	}
 
-	content, err := os.ReadFile(in.FilePath)
+	before, err := readPlanSnapshot(in.SnapshotPath)
+	if err != nil {
+		return PlanSupportOut{}, err
+	}
+
+	content, err := readFileFunc(in.FilePath)
 	if err != nil {
 		return PlanSupportOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("read plan file %q: %s", in.FilePath, err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("read plan file %q: %s", in.FilePath, err.Error()),
+			Suggestion: fmt.Sprintf("Check that %q exists and is readable, then retry material_compare with the corrected filePath.", in.FilePath),
+			Cause:      err,
 		}
 	}
 
 	after := snapshotPlan(string(content))
-	before := in.Snapshot
 	var triggers []string
 
 	// 1. Task count delta.
@@ -666,6 +717,54 @@ func materialCompare(in PlanSupportIn) (PlanSupportOut, error) {
 		Material: material,
 		Triggers: triggers,
 	}, nil
+}
+
+// readPlanSnapshot reads and validates the snapshot file at path, written
+// earlier by material_snapshot via the fsseam. It rejects 4 distinct ways
+// the referenced file can fail to be a usable snapshot: unreadable, not
+// JSON, and well-formed JSON that isn't a PlanSnapshot (missing the
+// required taskCount key, or otherwise undecodable) — each error message
+// names material_snapshot as the call to (re-)run.
+func readPlanSnapshot(path string) (*PlanSnapshot, error) {
+	raw, err := readFileFunc(path)
+	if err != nil {
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("read snapshot file %q: %s", path, err.Error()),
+			Suggestion: "Call plan_support with action=\"material_snapshot\" again to regenerate the snapshot file, then pass the new snapshotPath back verbatim.",
+			Cause:      err,
+		}
+	}
+
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return nil, &mcpserver.DataError{
+			Msg:        fmt.Sprintf("snapshot file %q is not valid JSON: %s", path, err.Error()),
+			Suggestion: "Call plan_support with action=\"material_snapshot\" again to regenerate the snapshot file, then pass the new snapshotPath back verbatim.",
+			Cause:      err,
+		}
+	}
+	if _, ok := probe["taskCount"]; !ok {
+		return nil, &mcpserver.DataError{
+			Msg:        fmt.Sprintf("snapshot file %q is not a plan snapshot (missing taskCount field)", path),
+			Suggestion: "Call plan_support with action=\"material_snapshot\" again to regenerate the snapshot file, then pass the new snapshotPath back verbatim.",
+		}
+	}
+
+	var snap PlanSnapshot
+	if err := json.Unmarshal(raw, &snap); err != nil {
+		return nil, &mcpserver.DataError{
+			Msg:        fmt.Sprintf("snapshot file %q could not be decoded as a plan snapshot: %s", path, err.Error()),
+			Suggestion: "Call plan_support with action=\"material_snapshot\" again to regenerate the snapshot file, then pass the new snapshotPath back verbatim.",
+			Cause:      err,
+		}
+	}
+	if snap.TaskCount == 0 && snap.FilesSet == nil {
+		return nil, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("snapshot file %q parsed but holds no snapshot material (taskCount is 0 and filesSet is empty)", path),
+			Suggestion: "Call plan_support with action=\"material_snapshot\" again on a plan file that has at least one task, then pass the new snapshotPath back verbatim.",
+		}
+	}
+	return &snap, nil
 }
 
 // sortedStringSliceEqual compares two already-sorted string slices for equality.

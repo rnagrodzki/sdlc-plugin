@@ -1079,7 +1079,7 @@ func saveReviewComment(projectRoot, activeRoot string, in ReviewPrepareIn) (Revi
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return ReviewPrepareOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("create %s: %s", dir, err.Error()),
-			Suggestion: "Check filesystem permissions and available disk space for the project root, then retry.",
+			Suggestion: "Create .sdlc-v2/reviews manually with write permission, or free disk space on the project root, then retry review_prepare with saveReview true.",
 			Cause:      err,
 		}
 	}
@@ -1088,7 +1088,7 @@ func saveReviewComment(projectRoot, activeRoot string, in ReviewPrepareIn) (Revi
 	if err := os.WriteFile(outPath, []byte(in.Content), 0o644); err != nil {
 		return ReviewPrepareOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("write %s: %s", outPath, err.Error()),
-			Suggestion: "Check filesystem permissions and available disk space for the project root, then retry.",
+			Suggestion: "Check write permission on .sdlc-v2/reviews and free disk space on the project root, then retry review_prepare with the same content.",
 			Cause:      err,
 		}
 	}
