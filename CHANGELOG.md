@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.5] - 2026-09-18
+
+- Fixes:
+- Reclaim message now uses a valid phase enum instead of a free-text placeholder.
+- Release notes (patch)
+- SDLC config paths now anchor to worktree roots instead of resolving relative to cwd.
+- Wave-await liveness check now treats a reclaim reply as proof-of-life instead of a failure, with updated thresholds and docs.
+- Wave-liveness PostToolUse hook now stamps per-task progress on Edit/Write, confirmed to fire inside Task-tool-dispatched subagents.
+- fix(config): anchor SDLC paths to worktree roots
+- fix(tools): address review findings for worktree-anchor-sdlc-paths
+- fs-writer seam and progress-touch tracking added for wave-start runs; tests now require this injectable seam instead of touching real fs/git.
+
 ## [0.1.4] - 2026-09-16
 
 - Added a new `task-redispatch` action for reclaiming and reassigning stalled or timed-out tasks
