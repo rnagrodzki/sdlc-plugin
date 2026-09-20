@@ -12,7 +12,7 @@ Every `ship_state` call takes `{action, step?, detail?, sessionId?}`. Action-spe
 .sdlc-v2/runs/ship-<branch-slug>-<timestamp>.json
 ```
 
-Managed by the shared `internal/state` package (the same one `execute_state`, `plan_state`, and `commit`'s state helpers use). The skill never constructs or parses this filename itself — every action resolves the file by current branch (or by an explicit `detail.branch` / `detail.stateFile`) and returns already-parsed JSON.
+Managed by the shared `internal/state` package (the same one `execute_state`, `plan_state`, and `commit`'s state helpers use). The skill never constructs or parses this filename itself — every action resolves the file by current branch (or by an explicit `detail.branch` / `detail.stateFile`) and returns the parsed state rendered as Markdown (see `docs/mcp-output-contract.md`), never a raw file to parse.
 
 ---
 
@@ -137,7 +137,7 @@ This scaffold's entries carry no `kind` field at all (omitted) and — uniquely 
 
 `ship_state{action:"next"}` renders `step` and `automation` as bullet fields: it walks `steps[]` **in the order the entries were scaffolded** (i.e. the order the pipeline was configured in), setting `step` to the name of the first entry where R-b1 says progress is blocked. `step` is declared `omitempty`, so once every entry is terminal it drops out of the rendered output entirely and only `automation` still renders. `automation` resolves via the project's `automation.mode`/`automation.steps` config (see `config-format.md`), defaulting to `"confirm"` on any config-read failure.
 
-Because `steps[]` is now config-driven (see above), `next` walks **every** configured step in order — `verify-openspec`, `archive-openspec`, `verify-pipeline`, `await-remote-review`, and `learnings-commit` are all visible to it when configured, not skipped. The one caveat carried over from the scaffold gap: `received-review` and `commit-fixes` are never in `steps[]` at all, so `next` never names them — they are conditional sub-steps this skill's own prose dispatches directly (based on the review verdict), not something to wait on `next` for. An empty `next` result means every *configured* step is terminal; it does not by itself distinguish "pipeline actually done" from "conditional review-fix loop still pending a verdict" — that judgment stays with the skill's own review-verdict handling.
+Because `steps[]` is now config-driven (see above), `next` walks **every** configured step in order — `verify-openspec`, `archive-openspec`, `verify-pipeline`, `await-remote-review`, and `learnings-commit` are all visible to it when configured, not skipped. The one caveat carried over from the scaffold gap: `received-review` and `commit-fixes` are never in `steps[]` at all, so `next` never names them — they are conditional sub-steps this skill's own prose dispatches directly (based on the review verdict), not something to wait on `next` for. A `next` result with no `step` bullet (only `automation`) means every *configured* step is terminal; it does not by itself distinguish "pipeline actually done" from "conditional review-fix loop still pending a verdict" — that judgment stays with the skill's own review-verdict handling.
 
 ---
 
@@ -211,6 +211,8 @@ Idempotency journal keyed by step name, recording each step's verified git/PR si
 
 ## Lifecycle: Cleanup
 
+The JSON objects shown in this section are **field inventories, not the wire format** — every tool result is rendered as Markdown bullets and `## name` sections (see `docs/mcp-output-contract.md`). Read them as "these fields are present with these values", not as text to parse.
+
 Two actions, both terminal, neither a `steps[]` entry. **Neither deletes the state file.** Both stamp it terminal and leave it in place — it survives for later reads (including a subsequent `--resume` attempt, which will correctly report no run in flight) until GC's TTL prunes it.
 
 - **`ship_state{action:"cleanup", detail:{branch?}}`** — validates the pipeline contract (every `steps[]` entry, tracked or inline, must be `completed`, `skipped`, or `failed`; a `pending` entry, or any `in_progress` entry, is a violation — `failed` is never a violation), then stamps `pipelineStatus:"completed"` + `pipelineCompletedAt:<timestamp>` via `state.Write` and returns `{"valid":true,"cleaned":true,"pipelineStatus":"completed","pipelineCompletedAt":"..."}`. No state file found is a silent no-op returning `{}`. A contract violation returns a `DataError` listing the violating steps; the file is left completely untouched (not stamped).
@@ -246,12 +248,14 @@ Note: `ship_state{action:"gc"}` (no `-pipeline` suffix) is a different, narrower
 resumable        bool
 lastStep         string
 lastStepStatus   string   // a "failed" step still reports resumable:true, never an error
-sideEffects      object
+sideEffects      string[]
 summary          string
 display          string   // markdown — render verbatim, do not paraphrase
 timing           {stepSeconds, pipelineSeconds, idleSeconds, human}
-next             string   // the step to resume from
+next             {id, instruction, etaSeconds, etaBasis}   // id is the step to resume from
 ```
+
+This is a field inventory, not the wire format. In the rendered result the scalars and the `sideEffects` list appear as bullets under a `## resumeBriefing` section, `display` is emitted verbatim as a raw block at column 0, and the two object fields render as their own `### resumeBriefing.timing` and `### resumeBriefing.next` sub-sections.
 
 `resumeBriefing` is **absent** — meaning "nothing to resume, fall through to a fresh start" — in three cases: no state file exists for the branch; the only file found is already stamped terminal (`pipelineStatus:"completed"`); or a state file exists but no step has ever actually started (nothing was ever in flight to resume). All three are safe to treat identically: proceed to the normal fresh-start path (`ship_prepare`), whose own orphan-pruning removes the stale/empty file as a side effect of writing the new one.
 

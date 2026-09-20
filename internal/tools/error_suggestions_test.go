@@ -8,8 +8,10 @@ import (
 	"testing"
 )
 
-// files lists the 10 source files task 5 ("hand-written recovery text for
-// the worst error sites") is scoped to.
+// files lists the source files the "hand-written recovery text for the worst
+// error sites" sweep is scoped to. The first ten come from task 5;
+// plan_support.go and commit.go were added when the Markdown-output branch
+// changed their error sites and filled in their missing Suggestions.
 var errSuggestionFiles = []string{
 	"ship_state.go",
 	"execute_state.go",
@@ -21,6 +23,8 @@ var errSuggestionFiles = []string{
 	"received_review.go",
 	"dimensions_render.go",
 	"setup.go",
+	"plan_support.go",
+	"commit.go",
 }
 
 const errSuggestionBoilerplate = "Check filesystem permissions and available disk space for the project root, then retry."

@@ -73,10 +73,15 @@ func (a Annotations) apply(t *mcp.Tool) {
 // All handler outcomes -- success, typed errors, panics -- are returned as
 // Markdown text content in the MCP result with the appropriate IsError flag.
 // The handler never returns a Go error, so the protocol layer never sees a
-// JSON-RPC error from tool execution. Input is unmarshaled and validated
-// manually (rather than via the SDK's generic AddTool) so that invalid input
-// can be reported as a rendered "data" error instead of a protocol-level
-// error.
+// JSON-RPC error from tool execution. Input is unmarshaled here rather than
+// via the SDK's generic AddTool so that a malformed payload can be reported
+// as a rendered "data" error instead of a protocol-level error.
+//
+// The unmarshal is the only input check: the advertised InputSchema is not
+// enforced at call time (go-sdk v1.7.0's Server.AddTool does not validate
+// input either). Unknown fields are dropped and missing required fields
+// arrive as zero values, so a handler that treats a zero value as meaningful
+// must reject it itself -- see shipStateGC's detail.dryRun type check.
 func Register[TIn, TOut any](s *Server, name, desc string, a Annotations, h func(ctx Ctx, in TIn) (TOut, error)) {
 	inSchema, err := schemaFor[TIn]()
 	if err != nil {
@@ -110,8 +115,9 @@ func Register[TIn, TOut any](s *Server, name, desc string, a Annotations, h func
 		defer func() {
 			if r := recover(); r != nil {
 				msg := fmt.Sprintf("panic: %v", r)
+				const panicRecovery = "Do not retry with the same arguments: a panic is a defect in the tool, so the call fails the same way every time. Record it with mcp_failure_record and use another route to reach the goal."
 				result = &mcp.CallToolResult{
-					Content: []mcp.Content{&mcp.TextContent{Text: renderError(name, "infra", msg, "")}},
+					Content: []mcp.Content{&mcp.TextContent{Text: renderError(name, "infra", msg, panicRecovery)}},
 					IsError: true,
 				}
 			}
@@ -122,8 +128,9 @@ func Register[TIn, TOut any](s *Server, name, desc string, a Annotations, h func
 		if len(req.Params.Arguments) > 0 {
 			if err := json.Unmarshal(req.Params.Arguments, &in); err != nil {
 				errMsg := fmt.Sprintf("invalid input: %s", err.Error())
+				const badInputRecovery = "Check the argument names and value types against this tool's input schema, then retry with corrected arguments."
 				return &mcp.CallToolResult{
-					Content: []mcp.Content{&mcp.TextContent{Text: renderError(name, "data", errMsg, "")}},
+					Content: []mcp.Content{&mcp.TextContent{Text: renderError(name, "data", errMsg, badInputRecovery)}},
 					IsError: true,
 				}, nil
 			}

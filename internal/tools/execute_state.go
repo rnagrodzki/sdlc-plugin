@@ -52,7 +52,7 @@ type ExecuteStateIn struct {
 	TasksJSON           string         `json:"tasksJson,omitempty" jsonschema_description:"wave-start: JSON array of task objects. Each entry: {id: string, name: string, description: string, complexity: string (optional — Trivial|Standard|Complex), contract: string (optional), acceptanceCriteria: string[] (optional — array of strings), files: string[] (optional), workerName: string (optional — caller-supplied dispatch identity, never invented; falls back to a generated template when omitted), batchId: string (optional — shared by every task in one batch dispatch; omit for a solo task), batchIndex: number (optional — this task's 0-based position within its batch)}. Entries missing required string fields (id, name, description) are dropped with a warning; if zero valid entries remain after filtering, the call fails with an error. Seeds server-owned dispatch state (dispatchedAt, workerName, batchId/batchIndex, attempt:1) for every valid task."`
 	RunID               string         `json:"runId,omitempty" jsonschema_description:"Execution run identifier. Required by task-context, wave-await, ledger_checkin, ledger_checkout, and ledger_status; optional elsewhere (e.g. wave-start for fact sheets, task-redispatch) where it falls back to the value derived from the state's startedAt/wave."`
 	WorkerID            string         `json:"workerId,omitempty" jsonschema_description:"Identifier of the per-task worker registering or clearing its ledger entry (ledger_checkin, ledger_checkout)."`
-	Decisions           string         `json:"decisions,omitempty" jsonschema_description:"wave-done only: free-text record of decisions made while completing the wave, surfaced in later summaries."`
+	Decisions           string         `json:"decisions,omitempty" jsonschema_description:"wave-done only: JSON array of decisions made while completing the wave, encoded as a string; surfaced in later summaries. Plain prose is rejected. Example: \"[\\\"Chose sqlite over postgres for the local cache\\\"]\"."`
 	Status              string         `json:"status,omitempty" jsonschema_description:"Outcome status to record: for wave-done/wave-fail, the wave's terminal status; for task-done, \"DONE_WITH_CONCERNS\" records a warning issue alongside the completion."`
 	TimedOut            bool           `json:"timedOut,omitempty" jsonschema_description:"wave-fail only: true when the wave failed because it timed out, rather than erroring outright."`
 	SHA                 string         `json:"sha,omitempty" jsonschema_description:"wave-committed only: the git commit SHA to record for the completed wave."`
@@ -60,20 +60,20 @@ type ExecuteStateIn struct {
 	TaskName            string         `json:"taskName,omitempty" jsonschema_description:"task-done only: human-readable name of the completed task, surfaced in the running-tally narration."`
 	Complexity          string         `json:"complexity,omitempty" jsonschema_description:"task-done only: complexity rating recorded for the completed task."`
 	Risk                string         `json:"risk,omitempty" jsonschema_description:"task-done only: risk rating recorded for the completed task."`
-	FilesChanged        string         `json:"filesChanged,omitempty" jsonschema_description:"task-done only: description of files the task changed, recorded on the task's completion record."`
-	FilesAdded          string         `json:"filesAdded,omitempty" jsonschema_description:"task-done only: description of files the task added, recorded on the task's completion record."`
-	VerifyToken         string         `json:"verifyToken,omitempty" jsonschema_description:"task-done only: verification token/evidence recorded for the completed task."`
+	FilesChanged        string         `json:"filesChanged,omitempty" jsonschema_description:"task-done only: JSON array of file paths the task changed, encoded as a string. Example: \"[\\\"src/auth/jwt.ts\\\",\\\"src/auth/oauth.ts\\\"]\"."`
+	FilesAdded          string         `json:"filesAdded,omitempty" jsonschema_description:"task-done only: JSON array of file paths the task created, encoded as a string. List only newly created files; each one belongs in filesChanged as well. Example: \"[\\\"src/auth/oauth.ts\\\"]\"."`
+	VerifyToken         string         `json:"verifyToken,omitempty" jsonschema_description:"task-done only: verification evidence for the completed task, encoded as a JSON string or a JSON array of strings. A bare token is rejected as invalid JSON. Example: \"[\\\"go test ./... ok\\\"]\" or \"\\\"go test ./... ok\\\"\"."`
 	SkippedDep          bool           `json:"skippedDependency,omitempty" jsonschema_description:"task-fail only: true when the failure is a skipped dependency rather than a real failure; only a non-skipped failure updates the wave's failedTask."`
 	ErrorText           string         `json:"error,omitempty" jsonschema_description:"Failure or concern detail text: the failure cause for wave-fail (recorded as an issue and in failedWave), the concern detail for task-done's DONE_WITH_CONCERNS status, or the failure detail for task-fail."`
-	Data                string         `json:"data,omitempty" jsonschema_description:"context action only: JSON object of shared context keys to write (allowed keys: planSummary, completedTaskIds, filesAdded, filesModified, interfacesCreated, decisionsFromPriorWaves)."`
+	Data                string         `json:"data,omitempty" jsonschema_description:"context action only: JSON object of shared context keys to write, encoded as a string (allowed keys: planSummary, completedTaskIds, filesAdded, filesModified, interfacesCreated, decisionsFromPriorWaves). Example: \"{\\\"planSummary\\\":\\\"Add OAuth login\\\"}\"."`
 	TTLDays             *int           `json:"ttlDays,omitempty" sdlcconfig:"state.gc.ttlDays" jsonschema_description:"gc only: age threshold in days beyond which stale state files are garbage-collected. Optional. Defaults to config state.gc.ttlDays. Pass only to override."`
 	DryRun              bool           `json:"dryRun,omitempty" jsonschema_description:"gc only: when true, reports what would be garbage-collected without deleting anything."`
 	MaxFiles            int            `json:"maxFiles,omitempty" sdlcconfig:"execute.priorWaveContextCaps.maxFiles" jsonschema_description:"Cap on the number of files summarized in prior-wave context (context, summarize-prior-wave-context). Optional. Defaults to config execute.priorWaveContextCaps.maxFiles. Pass only to override."`
 	MaxDecisions        int            `json:"maxDecisions,omitempty" sdlcconfig:"execute.priorWaveContextCaps.maxDecisions" jsonschema_description:"Cap on the number of decisions summarized in prior-wave context (context, summarize-prior-wave-context). Optional. Defaults to config execute.priorWaveContextCaps.maxDecisions. Pass only to override."`
 	MaxInterfaces       int            `json:"maxInterfaces,omitempty" sdlcconfig:"execute.priorWaveContextCaps.maxInterfaces" jsonschema_description:"Cap on the number of interfaces summarized in prior-wave context (context, summarize-prior-wave-context). Optional. Defaults to config execute.priorWaveContextCaps.maxInterfaces. Pass only to override."`
 	MaxTaskIds          int            `json:"maxTaskIds,omitempty" sdlcconfig:"execute.priorWaveContextCaps.maxTaskIds" jsonschema_description:"Cap on the number of task IDs summarized in prior-wave context (context, summarize-prior-wave-context). Optional. Defaults to config execute.priorWaveContextCaps.maxTaskIds. Pass only to override."`
-	Dispatched          string         `json:"dispatched,omitempty" jsonschema_description:"wave-split only: description of tasks already dispatched, used to compute which remaining tasks form the new wave."`
-	MissingIds          string         `json:"missingIds,omitempty" jsonschema_description:"wave-split only: task IDs missing from the current wave that should be folded into the new split wave."`
+	Dispatched          string         `json:"dispatched,omitempty" jsonschema_description:"wave-split only: JSON array of task ID strings already dispatched, encoded as a string; used to compute which remaining tasks form the new wave. Required by wave-split. Example: \"[\\\"1\\\",\\\"2\\\"]\"."`
+	MissingIds          string         `json:"missingIds,omitempty" jsonschema_description:"wave-split only: JSON array of task ID strings missing from the current wave, encoded as a string; these are folded into the new split wave. Example: \"[\\\"3\\\"]\"."`
 	SplitDepth          int            `json:"splitDepth,omitempty" jsonschema_description:"wave-split only: current recursive split depth, used together with maxSplitDepth to bound repeated splitting."`
 	MaxSplitDepth       int            `json:"maxSplitDepth,omitempty" jsonschema_description:"wave-split only: maximum recursive split depth allowed before wave-split refuses to split further."`
 	StateFile           string         `json:"stateFile,omitempty" jsonschema_description:"Overrides the execution state file path to read/write, instead of the one derived from branch (wave-split, verify-completeness, resume-reset). wave-await also reads this to persist its own resume-state (iteration counter) across bounded-poll calls, keyed by runId+wave."`
@@ -3596,7 +3596,7 @@ func execActionTaskContext(root, workDir string, in ExecuteStateIn, now func() t
 		if errors.Is(err, wave.ErrBadRunID) {
 			return nil, &mcpserver.DomainError{
 				Msg:        err.Error(),
-				Suggestion: "Pass runId exactly as returned by execute_state init/wave-start (only letters, digits, underscore, hyphen), then retry task-context.",
+				Suggestion: "Pass runId exactly as returned by execute_state wave-start (runId field; only letters, digits, underscore, hyphen), then retry task-context.",
 				Cause:      err,
 			}
 		}
@@ -4250,7 +4250,7 @@ func execActionWaveSplit(root, workDir string, in ExecuteStateIn, now func() tim
 		if errors.As(err, &maxErr) {
 			return nil, &mcpserver.DomainError{
 				Msg:        err.Error(),
-				Suggestion: "Call AskUserQuestion with the unresolved task IDs from missingIds to escalate for manual wave-split resolution instead of retrying automatically.",
+				Suggestion: "Escalate the unresolved task IDs from missingIds instead of retrying: call AskUserQuestion when running at top level; when running nested or under pipelineAuto, halt the wave and return missingIds to the parent orchestrator.",
 				Cause:      err,
 			}
 		}

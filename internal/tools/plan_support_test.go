@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -13,8 +14,31 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 )
 
+// errorClassOf returns "domain", "infra" or "data" for the three mcpserver
+// typed errors, or "" if err is nil or untyped. suggestionOf below reports
+// only the recovery text, which is identical in shape across all three
+// classes — tests that care which class an error path produces assert on this
+// instead, so a domain error silently becoming an infra error fails.
+func errorClassOf(err error) string {
+	var de *mcpserver.DomainError
+	if errors.As(err, &de) {
+		return "domain"
+	}
+	var ie *mcpserver.InfraError
+	if errors.As(err, &ie) {
+		return "infra"
+	}
+	var dte *mcpserver.DataError
+	if errors.As(err, &dte) {
+		return "data"
+	}
+	return ""
+}
+
 // suggestionOf returns the Suggestion field of err when it is one of the
-// three mcpserver typed errors, or "" if err is nil or untyped.
+// three mcpserver typed errors, or "" if err is nil or untyped. It
+// deliberately does not report the class — pair it with errorClassOf when the
+// class matters.
 func suggestionOf(err error) string {
 	var de *mcpserver.DomainError
 	if errors.As(err, &de) {
@@ -718,13 +742,20 @@ func TestPlanMaterialChange_OpenspecMappingChanged(t *testing.T) {
 // as an InfraError, and (2)-(5) the 4 distinct ways a caller-supplied
 // snapshotPath can fail to be a usable snapshot in material_compare — empty,
 // unreadable, not JSON, and well-formed JSON that isn't a PlanSnapshot. Each
-// error is expected to name material_snapshot as the call to (re-)run.
+// error is expected to name material_snapshot; the three read-back failures
+// also warn that the pre-edit baseline is lost, because re-snapshotting after
+// the plan rewrite would report material:false and skip the R64 gate.
+//
+// A snapshot that decodes cleanly is never rejected for being empty — see
+// TestPlanMaterialCompare_ZeroTaskSnapshotRoundTrips.
 // ---------------------------------------------------------------------------
 
-// TestPlanMaterialSnapshot_WriteFailure verifies that when the fsseam's
+// TestPlanMaterialSnapshot_MkdirTempFailure verifies that when the fsseam's
 // mkdirTempFunc fails, material_snapshot surfaces an error instead of
-// silently returning an empty SnapshotPath.
-func TestPlanMaterialSnapshot_WriteFailure(t *testing.T) {
+// silently returning an empty SnapshotPath. The sibling writeFileFunc
+// failure is covered by TestPlanMaterialErrorPaths/"snapshot file write
+// failure" — this test only fails the temp-dir step.
+func TestPlanMaterialSnapshot_MkdirTempFailure(t *testing.T) {
 	fake := installFakeFS(t)
 	path := "/fake-plans/plan.md"
 	fake.put(path, materialBasePlan())
@@ -829,27 +860,170 @@ func TestPlanMaterialCompare_WellFormedNonSnapshotJSON(t *testing.T) {
 	}
 }
 
-// TestPlanMaterialCompare_EmptySnapshotMaterial verifies a snapshotPath
-// pointing at well-formed, decodable JSON that nonetheless holds no
-// snapshot material (taskCount is 0 and filesSet is empty) is rejected
-// rather than silently compared as an empty baseline.
-func TestPlanMaterialCompare_EmptySnapshotMaterial(t *testing.T) {
+// materialZeroTaskPlan returns a plan with no "### Task N:" headings but a
+// populated Deviations & assumptions table and Key Decisions section. It is
+// the fixture for the zero-task round trip below: snapshotPlan gives it
+// TaskCount 0 and four empty maps, and every one of those maps is dropped on
+// marshal by omitempty, so the snapshot file it produces carries taskCount 0
+// and no filesSet/contracts/dependsOn/openspecTaskMapping keys at all.
+func materialZeroTaskPlan() string {
+	return materialHeader + materialTail
+}
+
+// TestPlanMaterialCompare_ZeroTaskSnapshotRoundTrips verifies material_compare
+// accepts a snapshot that material_snapshot itself wrote for a plan with no
+// tasks. A guard used to reject `taskCount == 0 && filesSet == nil`, which is
+// precisely the shape of a legitimate zero-task snapshot after the omitempty
+// maps are dropped — so the tool rejected its own output, and the R64
+// re-validation gate was skipped because material_compare never returned.
+//
+// Both halves of the round trip are asserted: comparing the zero-task plan
+// against itself reports no material change, and comparing it against a plan
+// that has tasks fires the task-count trigger.
+func TestPlanMaterialCompare_ZeroTaskSnapshotRoundTrips(t *testing.T) {
+	t.Run("unchanged", func(t *testing.T) {
+		out := materialCompareCheck(t, materialZeroTaskPlan(), materialZeroTaskPlan())
+		assertNoMaterialChange(t, out)
+	})
+
+	t.Run("tasks added", func(t *testing.T) {
+		out := materialCompareCheck(t, materialZeroTaskPlan(), materialBasePlan())
+		if !out.Material {
+			t.Fatalf("Material = false, want true; Triggers = %v", out.Triggers)
+		}
+		want := "Task count changed: 0 -> 4"
+		found := false
+		for _, trigger := range out.Triggers {
+			if trigger == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("Triggers = %v, want one of them to be %q", out.Triggers, want)
+		}
+	})
+}
+
+// TestPlanMaterialCompare_MinimalZeroTaskSnapshotAccepted pins the exact
+// on-disk shape the deleted guard rejected: a snapshot file holding taskCount
+// 0 and nothing else. The taskCount presence probe in readPlanSnapshot is what
+// separates a non-snapshot JSON document from this legitimately empty one (see
+// TestPlanMaterialCompare_WellFormedNonSnapshotJSON), so no further guard is
+// needed and this input must compare cleanly.
+func TestPlanMaterialCompare_MinimalZeroTaskSnapshotAccepted(t *testing.T) {
 	fake := installFakeFS(t)
+	// materialHeader alone: no tasks, no deviations table, no key decisions,
+	// so every snapshot dimension is empty and the marshalled snapshot is
+	// exactly {"taskCount":0}.
 	planPath := "/fake-plans/plan.md"
-	fake.put(planPath, materialBasePlan())
+	fake.put(planPath, materialHeader)
 
 	snapshotPath := "/fake-plans/snapshot.json"
 	fake.put(snapshotPath, `{"taskCount":0}`)
 
-	_, err := materialCompare(PlanSupportIn{FilePath: planPath, SnapshotPath: snapshotPath})
-	if err == nil {
-		t.Fatal("expected error for well-formed JSON with no snapshot material")
+	out, err := materialCompare(PlanSupportIn{FilePath: planPath, SnapshotPath: snapshotPath})
+	if err != nil {
+		t.Fatalf("materialCompare on a minimal zero-task snapshot: %v", err)
 	}
-	if !strings.Contains(err.Error(), "no snapshot material") {
-		t.Errorf("error = %q, want it to mention holding no snapshot material", err.Error())
+	if out.Material {
+		t.Errorf("Material = true, want false; Triggers = %v", out.Triggers)
 	}
-	if !strings.Contains(suggestionOf(err), "material_snapshot") {
-		t.Errorf("Suggestion = %q, want it to point back at material_snapshot", suggestionOf(err))
+}
+
+// TestPlanMaterialErrorPaths covers the material_snapshot / material_compare
+// failure modes that carry recovery text but had no test: empty and
+// unreadable filePath on both actions, a snapshot file write failure, and a
+// snapshot document whose taskCount key is present (so the probe passes) but
+// whose value makes the PlanSnapshot decode fail. Each case asserts the error
+// class as well as the message, so a path silently changing class is caught.
+func TestPlanMaterialErrorPaths(t *testing.T) {
+	const planPath = "/fake-plans/plan.md"
+	const snapshotPath = "/fake-plans/snapshot.json"
+
+	cases := []struct {
+		name      string
+		setup     func(t *testing.T, fake *fakeFS)
+		call      func() (PlanSupportOut, error)
+		wantClass string
+		wantMsg   string
+	}{
+		{
+			name:      "snapshot empty filePath",
+			call:      func() (PlanSupportOut, error) { return materialSnapshot(PlanSupportIn{}) },
+			wantClass: "domain",
+			wantMsg:   "requires filePath",
+		},
+		{
+			name: "snapshot unreadable plan file",
+			call: func() (PlanSupportOut, error) {
+				return materialSnapshot(PlanSupportIn{FilePath: "/fake-plans/missing.md"})
+			},
+			wantClass: "infra",
+			wantMsg:   "read plan file",
+		},
+		{
+			name: "snapshot file write failure",
+			setup: func(t *testing.T, fake *fakeFS) {
+				fake.put(planPath, materialBasePlan())
+				orig := writeFileFunc
+				writeFileFunc = func(string, []byte, os.FileMode) error { return os.ErrPermission }
+				t.Cleanup(func() { writeFileFunc = orig })
+			},
+			call:      func() (PlanSupportOut, error) { return materialSnapshot(PlanSupportIn{FilePath: planPath}) },
+			wantClass: "infra",
+			wantMsg:   "write snapshot file",
+		},
+		{
+			name:      "compare empty filePath",
+			call:      func() (PlanSupportOut, error) { return materialCompare(PlanSupportIn{SnapshotPath: snapshotPath}) },
+			wantClass: "domain",
+			wantMsg:   "requires filePath",
+		},
+		{
+			name: "compare unreadable plan file",
+			setup: func(t *testing.T, fake *fakeFS) {
+				fake.put(snapshotPath, `{"taskCount":4}`)
+			},
+			call: func() (PlanSupportOut, error) {
+				return materialCompare(PlanSupportIn{FilePath: "/fake-plans/missing.md", SnapshotPath: snapshotPath})
+			},
+			wantClass: "infra",
+			wantMsg:   "read plan file",
+		},
+		{
+			name: "compare undecodable snapshot past the taskCount probe",
+			setup: func(t *testing.T, fake *fakeFS) {
+				fake.put(planPath, materialBasePlan())
+				fake.put(snapshotPath, `{"taskCount":"four"}`)
+			},
+			call: func() (PlanSupportOut, error) {
+				return materialCompare(PlanSupportIn{FilePath: planPath, SnapshotPath: snapshotPath})
+			},
+			wantClass: "data",
+			wantMsg:   "could not be decoded",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := installFakeFS(t)
+			if tc.setup != nil {
+				tc.setup(t, fake)
+			}
+			_, err := tc.call()
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if got := errorClassOf(err); got != tc.wantClass {
+				t.Errorf("error class = %q, want %q (err: %v)", got, tc.wantClass, err)
+			}
+			if !strings.Contains(err.Error(), tc.wantMsg) {
+				t.Errorf("error = %q, want it to contain %q", err.Error(), tc.wantMsg)
+			}
+			if suggestionOf(err) == "" {
+				t.Error("Suggestion is empty, want recovery text")
+			}
+		})
 	}
 }
 
@@ -888,29 +1062,66 @@ func oldShapeTriggers(before, after PlanSnapshot) (material bool, triggers []str
 // (old shape) to taking a snapshotPath read from disk (new shape): for the
 // same before/after fixture pair, computing triggers directly from two
 // in-memory PlanSnapshot values (old shape) must agree exactly with
-// materialCompare's file-path-based result (new shape). The fixture pair
-// changes three dimensions at once (files, contract, and a new task) so a
-// partial-agreement bug would not slip through on a single-trigger case.
+// materialCompare's file-path-based result (new shape).
+//
+// Each case also pins the literal triggers it expects. oldShapeTriggers is a
+// copy of the production derivation, so agreement alone would pass even if
+// both copies were wrong; the literal list is the independent check. The
+// second case starts from a zero-task plan, where every omitempty map is
+// dropped by the JSON round trip — the input class the deleted
+// "empty snapshot" guard used to reject outright.
 func TestPlanMaterialCompare_OldShapeAgreesWithNewShape(t *testing.T) {
 	changedTask1 := strings.Replace(materialTask1, "- internal/tools/foo.go\n", "- internal/tools/foo-renamed.go\n", 1)
 	changedTask1 = strings.Replace(changedTask1, "- shape: does X\n", "- shape: does X, revised\n", 1)
-	after := materialHeader + changedTask1 + materialTask2 + materialTask3 + materialTask4 + materialTask5 + materialTail
 
-	before := materialBasePlan()
-
-	oldMaterial, oldTriggers := oldShapeTriggers(snapshotPlan(before), snapshotPlan(after))
-	newOut := materialCompareCheck(t, before, after)
-
-	if oldMaterial != newOut.Material {
-		t.Fatalf("old-shape Material = %v, new-shape Material = %v, want equal", oldMaterial, newOut.Material)
+	cases := []struct {
+		name         string
+		before       string
+		after        string
+		wantTriggers []string
+	}{
+		{
+			name:   "files, contract and task count",
+			before: materialBasePlan(),
+			after:  materialHeader + changedTask1 + materialTask2 + materialTask3 + materialTask4 + materialTask5 + materialTail,
+			wantTriggers: []string{
+				"Task count changed: 4 -> 5",
+				"Files changed in: Task 1",
+				"Contract changed in: Task 1",
+			},
+		},
+		{
+			name:   "zero-task snapshot against the full plan",
+			before: materialZeroTaskPlan(),
+			after:  materialBasePlan(),
+			wantTriggers: []string{
+				"Task count changed: 0 -> 4",
+				"Files changed in: Task 1, Task 2",
+				"Contract changed in: Task 1, Task 2",
+				"Depends on changed in: Task 1, Task 2",
+				"OpenSpec task mapping changed in: Task 1, Task 2",
+			},
+		},
 	}
-	if len(oldTriggers) != len(newOut.Triggers) {
-		t.Fatalf("old-shape Triggers = %v, new-shape Triggers = %v, want equal", oldTriggers, newOut.Triggers)
-	}
-	for i := range oldTriggers {
-		if oldTriggers[i] != newOut.Triggers[i] {
-			t.Errorf("trigger[%d]: old-shape = %q, new-shape = %q, want equal", i, oldTriggers[i], newOut.Triggers[i])
-		}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			oldMaterial, oldTriggers := oldShapeTriggers(snapshotPlan(tc.before), snapshotPlan(tc.after))
+			newOut := materialCompareCheck(t, tc.before, tc.after)
+
+			if oldMaterial != newOut.Material {
+				t.Fatalf("old-shape Material = %v, new-shape Material = %v, want equal", oldMaterial, newOut.Material)
+			}
+			if !newOut.Material {
+				t.Fatal("Material = false, want true for a changed fixture pair")
+			}
+			if !reflect.DeepEqual(oldTriggers, newOut.Triggers) {
+				t.Fatalf("old-shape Triggers = %v, new-shape Triggers = %v, want equal", oldTriggers, newOut.Triggers)
+			}
+			if !reflect.DeepEqual(newOut.Triggers, tc.wantTriggers) {
+				t.Errorf("Triggers = %v, want %v", newOut.Triggers, tc.wantTriggers)
+			}
+		})
 	}
 }
 

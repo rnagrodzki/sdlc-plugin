@@ -39,7 +39,7 @@ import (
 // empty-string distinction for reason/error/result, are preserved without
 // literal typed struct fields (see detailIntPtr below).
 type ShipStateIn struct {
-	Action    string         `json:"action" jsonschema_description:"Operation to perform: init, begin-step, complete-step, start (legacy), complete (legacy), skip, fail, decide, defer, read, cleanup, cleanup-pipeline, gc, migrate, or log-cli. Each action uses a subset of the other fields (unlisted fields are ignored)."`
+	Action    string         `json:"action" jsonschema:"enum=init,enum=begin-step,enum=complete-step,enum=start,enum=complete,enum=skip,enum=fail,enum=decide,enum=defer,enum=read,enum=next,enum=todos,enum=cleanup,enum=cleanup-pipeline,enum=gc,enum=migrate,enum=history_record,enum=deferred_add,enum=deferred_list,enum=deferred_propose_followups,enum=deferred_resolve,enum=log-cli" jsonschema_description:"Operation to perform: init, begin-step, complete-step, start (legacy), complete (legacy), skip, fail, decide, defer, read, next, todos, cleanup, cleanup-pipeline, gc, migrate, history_record, deferred_add, deferred_list, deferred_propose_followups, deferred_resolve, or log-cli. Each action uses a subset of the other fields (unlisted fields are ignored)."`
 	Step      string         `json:"step,omitempty" jsonschema_description:"Pipeline step name. Required by begin-step, complete-step, start, complete, skip, fail, decide; ignored by other actions."`
 	Detail    map[string]any `json:"detail,omitempty" jsonschema_description:"Action-specific extra fields (e.g. branch, flags, outcome, result, reason, error, text, severity, file, title, line, force, ttlDays, dryRun, from, to, detail; log-cli reads branch, command, exitCode, outputHead, step). See the action list for which sub-fields each action reads."`
 	SessionID string         `json:"sessionId,omitempty" jsonschema_description:"Session identifier used by init to stamp the created state's sessionId field, for correlating this run with the calling session."`
@@ -385,6 +385,7 @@ func shipLoadState(root, workDir string, in ShipStateIn) (*state.State, error) {
 			return nil, &mcpserver.DataError{
 				Msg:        fmt.Sprintf("state file not found: %s", stateFile),
 				Suggestion: "Pass an existing state file path in detail.stateFile, or omit stateFile to resolve by branch instead.",
+				Cause:      err,
 			}
 		}
 		if errors.Is(err, fsx.ErrParse) {
@@ -412,7 +413,7 @@ func shipStartStepCore(data map[string]any, stepName string, now func() time.Tim
 	if step == nil {
 		return &mcpserver.DataError{
 			Msg:        fmt.Sprintf("step %q not found in state", stepName),
-			Suggestion: "Pass a step name that matches shipmeta.InitialShipSteps() (e.g. execute, commit, review, pr), then retry.",
+			Suggestion: "Run ship_state read and pass one of the step names listed under steps, then retry.",
 		}
 	}
 	step["status"] = "in_progress"
@@ -433,7 +434,7 @@ func shipCompleteStepCore(data map[string]any, stepName string, hasResult bool, 
 	if step == nil {
 		return &mcpserver.DataError{
 			Msg:        fmt.Sprintf("step %q not found in state", stepName),
-			Suggestion: "Call begin-step with this same step name before completing it, or check the step name spelling against the pipeline's step list.",
+			Suggestion: "Run ship_state read to list the step names recorded in the state file, then pass one of those names.",
 		}
 	}
 	if outcome == "failure" {
@@ -564,7 +565,7 @@ func shipState(root, workDir string, in ShipStateIn, now func() time.Time) (any,
 	default:
 		return nil, &mcpserver.DomainError{
 			Msg:        fmt.Sprintf("unknown ship_state action %q", in.Action),
-			Suggestion: "Pass one of: init, begin-step, complete-step, skip, fail, decide, defer, read, cleanup, cleanup-pipeline, gc, migrate, next, todos, log-cli.",
+			Suggestion: "Pass one of: init, begin-step, complete-step, start, complete, skip, fail, decide, defer, read, next, todos, cleanup, cleanup-pipeline, gc, migrate, history_record, deferred_add, deferred_list, deferred_propose_followups, deferred_resolve, log-cli. start and complete are legacy aliases of begin-step and complete-step.",
 		}
 	}
 }
@@ -794,7 +795,7 @@ func shipStateBeginStep(root, workDir string, in ShipStateIn, now func() time.Ti
 	if err := state.Write(st); err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("write ship state to %s: %s", st.Path, err.Error()),
-			Suggestion: "Check write permission on the ship state file path above and free disk space on the project root, then retry begin-step.",
+			Suggestion: "Check write permission on the ship state file path above and free disk space on the project root, then retry ship_state begin-step.",
 			Cause:      err,
 		}
 	}
@@ -867,7 +868,7 @@ func shipStateCompleteStep(root, workDir string, in ShipStateIn, now func() time
 	if err := state.Write(st); err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("write ship state to %s: %s", st.Path, err.Error()),
-			Suggestion: "Check write permission on the ship state file path above and free disk space on the project root, then retry complete-step.",
+			Suggestion: "Check write permission on the ship state file path above and free disk space on the project root, then retry ship_state complete-step.",
 			Cause:      err,
 		}
 	}
@@ -927,7 +928,7 @@ func shipStateSkip(root, workDir string, in ShipStateIn, now func() time.Time) (
 	if step == nil {
 		return nil, &mcpserver.DataError{
 			Msg:        fmt.Sprintf("step %q not found in state", in.Step),
-			Suggestion: "Pass a step name that matches shipmeta.InitialShipSteps() (e.g. execute, commit, review, pr), then retry ship_state skip.",
+			Suggestion: "Run ship_state read and pass one of the step names listed under steps, then retry ship_state skip.",
 		}
 	}
 	step["status"] = "skipped"
@@ -971,7 +972,7 @@ func shipStateFail(root, workDir string, in ShipStateIn, now func() time.Time) (
 	if step == nil {
 		return nil, &mcpserver.DataError{
 			Msg:        fmt.Sprintf("step %q not found in state", in.Step),
-			Suggestion: "Pass a step name that matches shipmeta.InitialShipSteps() (e.g. execute, commit, review, pr), then retry ship_state fail.",
+			Suggestion: "Run ship_state read and pass one of the step names listed under steps, then retry ship_state fail.",
 		}
 	}
 	step["status"] = "failed"
@@ -1477,6 +1478,20 @@ var shipDryRunStateFileRE = regexp.MustCompile(`^(ship|execute|plan|commit)-(.+)
 func shipStateGC(root, workDir string, in ShipStateIn, now func() time.Time) (any, error) {
 	ttlDays := resolveGCTTLDays(root, detailIntPtr(in.Detail, "ttlDays"))
 
+	// gc deletes state files when dryRun is absent or false, so a mistyped
+	// or misplaced flag must fail loud rather than fall through to the real
+	// sweep: detailBool reports false for any non-bool value (the string
+	// "true" included), and a top-level dryRun argument never reaches Detail
+	// at all.
+	if v, ok := in.Detail["dryRun"]; ok {
+		if _, isBool := v.(bool); !isBool {
+			return nil, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("detail.dryRun must be a boolean, got %T", v),
+				Suggestion: "Pass detail.dryRun as the JSON boolean true (not the string \"true\"), or omit it to run the real sweep. dryRun is read from detail, never from the top level of the arguments.",
+			}
+		}
+	}
+
 	if detailBool(in.Detail, "dryRun") {
 		return shipGCDryRun(filepath.Join(root, paths.DataDir, paths.RunsSubdir), ttlDays, gcBranchExistsFunc(workDir), now)
 	}
@@ -1789,6 +1804,7 @@ func shipStateDeferredResolve(root string, in ShipStateIn) (any, error) {
 			return nil, &mcpserver.DomainError{
 				Msg:        fmt.Sprintf("deferred_resolve: %s", err.Error()),
 				Suggestion: "Call ship_state deferred_list to see valid open issue ids, then retry deferred_resolve with a matching id.",
+				Cause:      err,
 			}
 		}
 		return nil, &mcpserver.InfraError{
@@ -1880,8 +1896,8 @@ func shipStateLogCLI(root, workDir string, in ShipStateIn) (any, error) {
 
 	if err := appendCLIEvidence(root, entry); err != nil {
 		return nil, &mcpserver.InfraError{
-			Msg:        fmt.Sprintf("log-cli: %s", err.Error()),
-			Suggestion: "Check write permission on .sdlc-v2/evidence/cli-executions.jsonl and free disk space on the project root, then retry.",
+			Msg:        fmt.Sprintf("log-cli: append CLI evidence to %s: %s", cliEvidencePath(root), err.Error()),
+			Suggestion: "Check write permission on the CLI evidence file named above and free disk space on the project root, then retry.",
 			Cause:      err,
 		}
 	}

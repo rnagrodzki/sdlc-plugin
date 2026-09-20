@@ -2,7 +2,8 @@
 
 Every MCP tool result is rendered as plain Markdown text in `content[0].text`. There is no JSON
 envelope, no `structuredContent`, and no `outputSchema` — a tool's return value (a `*Out` struct, a
-pointer to one, or a bare `map[string]any` for the four tools that have no struct) is walked by
+pointer to one, or a bare `map[string]any` for the three tools that return `any` — `execute_state`,
+`ship_state` and `jira`) is walked by
 reflection and turned into Markdown by one shared renderer. Every tool's output goes through the same
 code, so there are 2 shapes total (success, error), not one per tool.
 
@@ -11,8 +12,8 @@ Source of truth:
 - `internal/mcpserver/render.go` — the success renderer (`renderOK`) and its reflection walker.
 - `internal/mcpserver/envelope.go` — error classification (`mapError`, the `DomainError` /
   `InfraError` / `DataError` types) and the error renderer (`renderError`, `defaultRecovery`).
-- `internal/mcpserver/register.go` — wires both into the five exit paths of every registered tool's
-  handler.
+- `internal/mcpserver/register.go` — wires both into the four exit paths of every registered tool's
+  handler: recovered panic, input unmarshal failure, handler error, success.
 
 ## First line
 

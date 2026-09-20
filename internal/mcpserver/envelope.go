@@ -10,7 +10,7 @@ import (
 // --- Error types ---
 
 // DomainError represents a business-logic violation (e.g. invalid input from
-// the caller's perspective). Mapped to envelope code "domain".
+// the caller's perspective). Rendered with error code "domain".
 type DomainError struct {
 	Msg        string
 	Suggestion string
@@ -21,7 +21,7 @@ func (e *DomainError) Error() string { return e.Msg }
 func (e *DomainError) Unwrap() error { return e.Cause }
 
 // InfraError represents an infrastructure failure (network, filesystem, etc.).
-// Mapped to envelope code "infra".
+// Rendered with error code "infra".
 type InfraError struct {
 	Msg        string
 	Suggestion string
@@ -32,7 +32,7 @@ func (e *InfraError) Error() string { return e.Msg }
 func (e *InfraError) Unwrap() error { return e.Cause }
 
 // DataError represents a data-layer problem (schema mismatch, parse failure).
-// Mapped to envelope code "data".
+// Rendered with error code "data".
 type DataError struct {
 	Msg        string
 	Suggestion string
@@ -73,7 +73,7 @@ func mapError(err error) (code string, msg string, suggestion string) {
 // carried no caller-supplied recovery text), it falls back to
 // defaultRecovery(code).
 func renderError(tool, code, msg, suggestion string) string {
-	r := &renderer{empty: true}
+	r := newRenderer()
 	r.line("# " + tool + " — error (" + code + ")")
 
 	r.blank()

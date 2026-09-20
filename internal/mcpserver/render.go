@@ -92,8 +92,17 @@ type renderer struct {
 // the tool's content[0].text. tool is the registered tool name; out is the
 // handler's return value, which may be a struct, a pointer to one, or a bare
 // map[string]any.
+// newRenderer returns a renderer ready for either output path. seen must be
+// a live map, not nil: the walker writes to it when it descends into a
+// pointer or a map (render.go's resolve), and a write to a nil map panics.
+// renderError only calls line/heading/writeBlock today, but it shares this
+// constructor so a later call into the walker cannot fault.
+func newRenderer() *renderer {
+	return &renderer{seen: make(map[cycleKey]bool), empty: true}
+}
+
 func renderOK(tool string, out any) string {
-	r := &renderer{seen: make(map[cycleKey]bool), empty: true}
+	r := newRenderer()
 	r.line("# " + tool + " — ok")
 
 	root, release, cycle := r.resolve(reflect.ValueOf(out))

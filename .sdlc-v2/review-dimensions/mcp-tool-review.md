@@ -12,7 +12,7 @@ severity: high
 This project's actual "API surface" is not HTTP routes but 31 MCP tool
 handlers in `internal/tools/*.go`, served through `internal/mcpserver`. This
 is deliberately a custom dimension, not a generic `api-review`, because the
-project's own `.sdlc-v2/config.json` `plan.guardrails`/`execute.guardrails`
+project's own `.sdlc-v2/config.toml` `plan.guardrails`/`execute.guardrails`
 already name this as a first-class concern (e.g.
 `mcp-tool-description-precise`, `mcp-output-llm-contract`,
 `mcp-error-actionable`, `payload-clarity-for-llms`,

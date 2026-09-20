@@ -137,7 +137,7 @@ If the system context contains "Plan mode is active":
 ### Step 0 (CONSUME): Call `pr_prepare`
 
 ```
-pr_prepare({ skipConfigCheck: false, expectedBranch: "<optional>" }) → data
+pr_prepare({ skipConfigCheck: false, expectedBranch: "<optional>" }) → PR_CONTEXT
 ```
 
 Pass `expectedBranch` only if this skill was invoked with an explicit expected-branch
@@ -145,8 +145,13 @@ requirement (for example, by an orchestrating pipeline); otherwise omit it.
 
 **On tool error:** show the error to the user and stop.
 
-Treat the returned result as `PR_CONTEXT`. Field names render as `- <key>: <value>` lines;
-the field paths below are unchanged.
+Treat the returned result as `PR_CONTEXT`. Root scalars render as `- <key>: <value>` bullets
+under `## Fields`; object fields (`template`, `versionSource`, `tags`, `idempotency`,
+`versionDivergence`, `versionConfig`, `branchGuard`) render as `## <key>` sections, with maps
+(`existingRCs`) and slices of objects (`bumpOptions`) as `## <key>` / `## <key>[i]` sections. A
+field that is itself an object gets a nested `### <key>.<sub>` section; everything else is a
+bullet. `next` is the `**Next:**` line. An omitted
+`omitempty` field is absent, not `null`. The field paths below are unchanged.
 
 **If `PR_CONTEXT.ok` is `false`**, `PR_CONTEXT.errors` already explains why — this single
 check covers every hard-gate failure in this port: config-migration failure, gh not
@@ -431,7 +436,8 @@ pr_apply({
   releaseSource: <if releaseLevel set — "user" | "config">,
   skipReleaseCheck: <true — only when no releaseLevel and Step 1b option 2 was chosen>,
   autoMode: <true | false — whether --auto (not --skip-approval) was passed to this skill invocation>
-}) → { url, created }
+})
+# the result carries `- url:` and `- created:` bullets
 ```
 
 **On tool error:** show the error to the user and stop — this port does not retry or attempt

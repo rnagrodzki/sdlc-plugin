@@ -15,9 +15,32 @@ import (
 // commit_prepare tests
 // ---------------------------------------------------------------------------
 
+// redirectTempManifests points the fsseam's mkdirTempFunc at a t.TempDir()
+// root for the duration of t. commitPrepare always ends by writing its
+// manifest through mkdirTempFunc("", "sdlc-commit-manifest-"); without this
+// redirect the directory lands in os.TempDir(), nothing removes it, and every
+// `go test` run leaks one sdlc-commit-manifest-* directory per test that calls
+// commitPrepare with the real fsseam installed.
+//
+// Unlike installFakeFS this keeps real file I/O, so tests that assert on
+// git-driven behaviour are unaffected — only the manifest's destination moves.
+func redirectTempManifests(t *testing.T) {
+	t.Helper()
+	root := t.TempDir()
+	orig := mkdirTempFunc
+	mkdirTempFunc = func(dir, pattern string) (string, error) {
+		if dir == "" {
+			dir = root
+		}
+		return os.MkdirTemp(dir, pattern)
+	}
+	t.Cleanup(func() { mkdirTempFunc = orig })
+}
+
 // TestCommitPrepare_KeySet verifies that CommitPrepareOut marshals exactly
 // the top-level and nested key sets expected by the commit orchestrator.
 func TestCommitPrepare_KeySet(t *testing.T) {
+	redirectTempManifests(t)
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
@@ -202,9 +225,45 @@ func TestCommitPrepare_ManifestWriteFailure(t *testing.T) {
 	}
 }
 
+// TestCommitPrepare_ManifestFileWriteFailure covers the second failure mode in
+// writeCommitManifest: the temp directory is created but the file write fails.
+// TestCommitPrepare_ManifestWriteFailure above only fails mkdirTempFunc, so
+// without this case the writeFileFunc branch never runs.
+func TestCommitPrepare_ManifestFileWriteFailure(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	installFakeFS(t)
+	origWriteFile := writeFileFunc
+	writeFileFunc = func(string, []byte, os.FileMode) error {
+		return os.ErrPermission
+	}
+	t.Cleanup(func() { writeFileFunc = origWriteFile })
+
+	out, err := commitPrepare(dir, dir, CommitPrepareIn{SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("commitPrepare returned an error, want soft-fail: %v", err)
+	}
+	if out.ManifestPath != "" {
+		t.Errorf("ManifestPath = %q, want empty when the manifest file write fails", out.ManifestPath)
+	}
+	found := false
+	for _, w := range out.Warnings {
+		if strings.Contains(w, "manifestPath") && strings.Contains(w, "write manifest file") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("Warnings = %v, want one naming manifestPath and the failed file write", out.Warnings)
+	}
+}
+
 // TestCommitPrepare_NilSlicesSerializeAsArrays verifies that all slice
 // fields serialize as JSON arrays (not null).
 func TestCommitPrepare_NilSlicesSerializeAsArrays(t *testing.T) {
+	redirectTempManifests(t)
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
@@ -238,6 +297,7 @@ func TestCommitPrepare_NilSlicesSerializeAsArrays(t *testing.T) {
 // TestCommitPrepare_NoStagedFiles verifies that with nothing staged,
 // errors contains the expected message but no Go error is returned.
 func TestCommitPrepare_NoStagedFiles(t *testing.T) {
+	redirectTempManifests(t)
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
@@ -397,6 +457,7 @@ func TestCommitApply_WorktreeUnchangedOnFailure(t *testing.T) {
 // TestCommitPrepare_ConfigCheckFailsWithoutSkip verifies that with a stale
 // config, commit_prepare fails unless skipConfigCheck is set.
 func TestCommitPrepare_ConfigCheckFailsWithoutSkip(t *testing.T) {
+	redirectTempManifests(t)
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
@@ -449,6 +510,7 @@ func TestCommitPrepare_ConfigCheckFailsWithoutSkip(t *testing.T) {
 // TestCommitPrepare_WipSquashDetection verifies WIP commit detection on
 // a feature branch.
 func TestCommitPrepare_WipSquashDetection(t *testing.T) {
+	redirectTempManifests(t)
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")

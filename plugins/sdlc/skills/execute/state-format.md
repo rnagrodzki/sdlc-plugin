@@ -324,7 +324,7 @@ Example: `.sdlc-v2/runs/run-20260328T143000Z/progress/3.json`
 
 Written via `execute_state({action:"wave-progress", runId:<id>, taskId:<id>, phase:<phase>})` — an atomic tmp-write + rename of `progress/<taskId>.json`, but it is a read-modify-write, not a blind overwrite: the write reads the file's existing record first (`wave.UpdateProgress`), so `startedAt` (set once, on the first write), `lastCompletedTask`, and the optional structured-milestone fields (`acceptanceDone`, `filesTouched`, `blocker` — `ProgressFields`, passed via the tool's `acceptanceDone`/`filesTouched`/`blocker`/`lastCompletedTask` fields) carry forward across phase updates rather than being wiped by a call that omits them. The action takes flat top-level fields, not a nested `payload` object, and does not accept a wave number at all.
 
-**Read shape (unchanged):** `execute_state({action:"wave-progress", runId:<id>, readProgress:true})` still returns one aggregated object, keyed by task ID across the whole run:
+**Read shape (unchanged):** `execute_state({action:"wave-progress", runId:<id>, readProgress:true})` still returns one aggregated object, keyed by task ID across the whole run. The JSON below is a **field inventory, not the wire format** — the result arrives as Markdown: a `## tasks` section with one `### tasks.<taskId>` sub-section per task, each carrying `- phase:` and `- updatedAt:` bullets. It is never text to parse:
 
 ```json
 {
@@ -335,7 +335,7 @@ Written via `execute_state({action:"wave-progress", runId:<id>, taskId:<id>, pha
 }
 ```
 
-It builds this by reading every file in `progress/` and merging in the legacy single-file marker (`<stateDir>/<runId>/progress.json`, from before this per-task-file layout) at lower priority — if a task ID appears in both, the per-task file wins. Nothing writes the legacy path anymore; it is read-only, for backward compatibility with runs that started before this format changed. Missing directory, missing legacy file, or one corrupt per-task file are all swallowed — `readProgress:true` returns `{"tasks":{}}` when no marker exists yet rather than erroring, same as before. This aggregation covers only the worker-owned `<taskId>.json` files (plus the legacy marker) — the server-owned `<taskId>.server.json` siblings described below are never included in a `readProgress:true` response.
+It builds this by reading every file in `progress/` and merging in the legacy single-file marker (`<stateDir>/<runId>/progress.json`, from before this per-task-file layout) at lower priority — if a task ID appears in both, the per-task file wins. Nothing writes the legacy path anymore; it is read-only, for backward compatibility with runs that started before this format changed. Missing directory, missing legacy file, or one corrupt per-task file are all swallowed — `readProgress:true` returns an empty `tasks` map (rendered as a `## tasks` section reading `(none)`) when no marker exists yet rather than erroring, same as before. This aggregation covers only the worker-owned `<taskId>.json` files (plus the legacy marker) — the server-owned `<taskId>.server.json` siblings described below are never included in a `readProgress:true` response.
 
 ### Server state file
 
@@ -421,10 +421,18 @@ Rendered as a `resumeBriefing` section on `read` and `resume-reset` responses, b
 IDs not yet in `context.completedTaskIds`. A finished, cleaned-up run (or one that never set
 `plannedTaskIds`) carries no `resumeBriefing` section at all.
 
-It renders as a `## resumeBriefing` heading followed by one bullet per field:
+It renders as a `## resumeBriefing` heading whose scalar and string-list fields are bullets,
+followed by a sub-section per object field. The embedded `pipeline.Narration` fields come first,
+because the renderer walks embedded structs before the outer ones. `display` is `render:"raw"`: when
+it is multi-line it renders as a bare `- display:` bullet followed by its text verbatim at column 0,
+never fenced and never indented.
 
 ```
 ## resumeBriefing
+- summary: Run resumable: wave 3 of 5 interrupted 12m ago.
+- display:
+**Resume briefing**
+- Wave 3 of 5 interrupted
 - resumable: true
 - wavesDone: 3
 - wavesRemaining: 2
@@ -437,9 +445,18 @@ It renders as a `## resumeBriefing` heading followed by one bullet per field:
   - 1
   - 2
   - 3
-- summary: ...
-- display: ...
+
+### resumeBriefing.timing
+- stepSeconds: 740
+- human: step 12m
+
+### resumeBriefing.next
+- id: wave-3
+- instruction: Re-dispatch wave 3.
 ```
+
+`timing` and `next` are objects, so they are `### resumeBriefing.<field>` sub-sections, not bullets.
+Both are `omitempty`: when unset, the sub-section is absent entirely.
 
 | Field            | Type     | Description |
 |------------------|----------|--------------|

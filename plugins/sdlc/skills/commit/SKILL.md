@@ -48,7 +48,7 @@ If the system context contains "Plan mode is active":
 ### Step 0 (CONSUME): Call `commit_prepare`
 
 ```
-commit_prepare({ skipConfigCheck: false, sessionID: "" }) → data
+commit_prepare({ skipConfigCheck: false, sessionID: "" }) → COMMIT_CONTEXT
 ```
 
 Leave `sessionID` empty unless you already know the session identifier from context — it is
@@ -56,7 +56,10 @@ only an override, not a required field.
 
 **On tool error:** show the error to the user and stop.
 
-Treat the returned result as `COMMIT_CONTEXT`. The tool has already written it to disk.
+Treat the returned result as `COMMIT_CONTEXT`. When `manifestPath` names a file, the tool has
+already written the manifest to disk. A temp-dir or temp-file write failure is soft: the tool
+still returns, `manifestPath` renders as `(none)`, and a `manifestPath:` entry is added to
+`warnings` — see the guard in Step 2.
 
 **If `COMMIT_CONTEXT.errors` is non-empty**, show each error message and stop. (This
 includes "no files staged for commit" and any config-check failure — this port has no
@@ -90,11 +93,9 @@ skipped in that case).
 
 ### Step 1c (WIP-commit squash detection — reporting only)
 
-Read `wipSquash` from `COMMIT_CONTEXT`:
-
-```json
-{ "wipSquash": { "commits": ["<sha>\t<subject>", ...], "stagedClean": true } }
-```
+Read the `wipSquash` section of `COMMIT_CONTEXT`. It renders as a `## wipSquash` section with
+a `- commits:` bullet list (one `<sha>\t<subject>` entry per line) and a `- stagedClean: true`
+bullet.
 
 `commits[]` lists commits between the branch's fork-point and `HEAD` whose subject starts
 with `wip(` or `wip:` (case-insensitive).
@@ -114,7 +115,13 @@ check it yourself against that rule; if it matches, revise it before presenting.
 
 `sdlc:commit-orchestrator` only has Read tool access — it cannot call MCP tools itself. Point
 the agent at the manifest file `commit_prepare` already wrote to disk — forward its
-`manifestPath` value verbatim, with no Write-tool step of your own:
+`manifestPath` value verbatim, with no Write-tool step of your own.
+
+**Guard (check before dispatching):** if `manifestPath` is empty or renders as `(none)`, the
+manifest was never written. Do NOT dispatch the agent — it would read a missing file. Show the
+`manifestPath:` warning from `COMMIT_CONTEXT.warnings` to the user and stop. An empty
+`manifestPath` is a write failure, not an `errors[]` hit, so the Step 0 `errors` check does not
+catch it.
 
 - `subagent_type`: `sdlc:commit-orchestrator`
 - `model`: `haiku`
@@ -226,7 +233,8 @@ Options:
 2. Call the commit tool:
 
    ```
-   commit_apply({ message: MESSAGE, skipConfigCheck: false, sessionID: "" }) → { sha }
+   commit_apply({ message: MESSAGE, skipConfigCheck: false, sessionID: "" })
+   # the result carries a `- sha: <sha>` bullet
    ```
 
    **On tool error:** show the error to the user and stop.

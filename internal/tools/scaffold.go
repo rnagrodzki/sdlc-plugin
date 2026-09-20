@@ -211,8 +211,8 @@ func ciScriptDrift(root string) ([]CIScriptDriftEntry, error) {
 		if verr != nil {
 			return nil, &mcpserver.InfraError{
 				Msg:        fmt.Sprintf("check installed version of CI script %s: %s", entry.Dest, verr.Error()),
-				Suggestion: "Check read permission on the CI script file named above under .github/workflows/, then retry scaffold_ci with dryRun true.",
-				Cause:      errors.Unwrap(verr),
+				Suggestion: "Check read permission on the CI script file named in the message above, then re-run the same setup_prepare or validate call.",
+				Cause:      verr,
 			}
 		}
 
@@ -298,8 +298,8 @@ func scaffoldCI(root string, force bool) (ScaffoldCIOut, error) {
 		if verr != nil {
 			return ScaffoldCIOut{}, &mcpserver.InfraError{
 				Msg:        fmt.Sprintf("check installed version of CI script %s: %s", entry.Dest, verr.Error()),
-				Suggestion: "Check write permission on the CI script file named above under .github/workflows/, then retry scaffold_ci.",
-				Cause:      errors.Unwrap(verr),
+				Suggestion: "Check read permission on the CI script file named in the message above, then retry scaffold_ci.",
+				Cause:      verr,
 			}
 		}
 

@@ -35,9 +35,11 @@ Read these files to understand conventions:
 
 1. `internal/mcpserver/register.go` — `Register[TIn, TOut]` function pattern
 2. `internal/mcpserver/envelope.go` — error types (`DomainError`, `InfraError`, `DataError`) with `Suggestion` field
-3. One existing tool file matching the closest sibling (manifest may specify which, else use `internal/tools/jira.go` as default reference)
-4. One existing test file for that sibling
-5. `internal/tools/annotations_test.go` — the `toolAnnotations` golden map you must emit a row for. Read it before emitting `toolAnnotationsEntry`: copy the `annotationPolicy` field order and the `reason` phrasing style from the existing rows, and place the new row in the READ-ONLY or WRITER group that matches the annotations you emit. The group header comments carry row counts (`// READ-ONLY (N rows)`) — increment the one you add to.
+3. `internal/mcpserver/render.go` — the Markdown renderer that walks every `*Out` struct: the root `Next` hoist, the `render:"raw"` tag, and the `(none)` rule for nil/empty collections
+4. `docs/mcp-output-contract.md` — the same rules as prose, plus the error-code and `## Do this` requirements
+5. One existing tool file matching the closest sibling (manifest may specify which, else use `internal/tools/jira.go` as default reference)
+6. One existing test file for that sibling
+7. `internal/tools/annotations_test.go` — the `toolAnnotations` golden map you must emit a row for. Read it before emitting `toolAnnotationsEntry`: copy the `annotationPolicy` field order and the `reason` phrasing style from the existing rows, and place the new row in the READ-ONLY or WRITER group that matches the annotations you emit. The group header comments carry row counts (`// READ-ONLY (N rows)`) — increment the one you add to.
 
 ## Step 2 — Generate Input Struct
 

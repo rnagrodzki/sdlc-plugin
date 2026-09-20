@@ -654,3 +654,83 @@ func structJSONNames(t reflect.Type) []string {
 	}
 	return names
 }
+
+// --- Non-struct roots (rule 1 edge cases) ---
+
+// fxSliceOwnership mirrors the three slice shapes production reaches but the
+// fixtures above miss: plan.go's Guardrails []map[string]any, execute_state's
+// []any fields, and a slice of struct pointers.
+type fxSliceOwnership struct {
+	Name       string           `json:"name"`
+	PtrLanes   []*fxLane        `json:"ptrLanes"`
+	Guardrails []map[string]any `json:"guardrails"`
+	Mixed      []any            `json:"mixed"`
+	Scalars    []any            `json:"scalars"`
+}
+
+// TestRenderOKNonStructRoots covers renderOK's root guards: a handler
+// declared as returning any can hand the renderer nil, a nil pointer, a
+// pointer cycle, or a bare scalar. Nothing downstream of renderOK's entry
+// may print "null" or panic.
+func TestRenderOKNonStructRoots(t *testing.T) {
+	var nilPtr *fxFlat
+
+	var box any
+	box = &box // a pointer to the interface that holds it: a one-hop cycle
+
+	cases := []struct {
+		name string
+		out  any
+		want string // full expected output
+	}{
+		{"nil", nil, "# ship_state — ok\n"},
+		{"typed nil pointer", nilPtr, "# ship_state — ok\n"},
+		{"pointer cycle", box, "# ship_state — ok\n"},
+		{"string", "done", "# ship_state — ok\n\n## Fields\n- value: done\n"},
+		{"int", 42, "# ship_state — ok\n\n## Fields\n- value: 42\n"},
+		{"bool", true, "# ship_state — ok\n\n## Fields\n- value: true\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := renderOK("ship_state", tc.out)
+			if got != tc.want {
+				t.Fatalf("renderOK(%#v) =\n%q\nwant\n%q", tc.out, got, tc.want)
+			}
+			if strings.Contains(got, "null") {
+				t.Fatalf("output must never contain JSON null:\n%s", got)
+			}
+		})
+	}
+}
+
+// TestRenderOKSliceElementOwnership pins elemOwnsSection for the three
+// element kinds no other fixture exercises: a pointer to a struct, a map,
+// and an interface holding a struct. Each must own an indexed section; a
+// []any of scalars must stay a bullet list.
+func TestRenderOKSliceElementOwnership(t *testing.T) {
+	out := renderOK("plan_prepare", fxSliceOwnership{
+		Name:     "x",
+		PtrLanes: []*fxLane{{Name: "file-existence", Severity: "error"}},
+		Guardrails: []map[string]any{
+			{"id": "G1", "rule": "no direct writes"},
+		},
+		Mixed:   []any{fxLane{Name: "static-structural", Severity: "warning"}},
+		Scalars: []any{"alpha", 7},
+	})
+
+	for _, want := range []string{
+		"## ptrLanes[0]\n- name: file-existence\n- severity: error\n",
+		"## guardrails[0]\n- id: G1\n- rule: no direct writes\n",
+		"## mixed[0]\n- name: static-structural\n- severity: warning\n",
+		"- scalars:\n  - alpha\n  - 7\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q:\n%s", want, out)
+		}
+	}
+	for _, unwanted := range []string{"\n## ptrLanes\n", "\n## guardrails\n", "\n## mixed\n", "## scalars"} {
+		if strings.Contains(out, unwanted) {
+			t.Fatalf("unexpected heading %q:\n%s", unwanted, out)
+		}
+	}
+}

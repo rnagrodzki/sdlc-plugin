@@ -33,6 +33,14 @@ type renderedResult struct {
 	Body string
 }
 
+// Suggestion texts for the *_hint fixture tools, asserted verbatim in
+// TestSuggestionReachesClient.
+const (
+	domainHintText = "Pass a non-empty msg, then retry."
+	infraHintText  = "Check the network route to the upstream host, then retry."
+	dataHintText   = "Regenerate the record from its source, then retry."
+)
+
 // resultHeadRe pins the renderer's first-line contract from Task 1.
 var resultHeadRe = regexp.MustCompile(`^# ([a-z_]+) — (?:(ok)|error \((domain|infra|data)\))$`)
 
@@ -121,6 +129,34 @@ func setupClient(t *testing.T) *mcp.ClientSession {
 		panic("kaboom")
 	})
 
+	// The three *_hint tools below prove the Suggestion survives the trip
+	// through mapError and renderError into the client's content[0].text.
+	// The *_err tools above deliberately carry no Suggestion, so they pin
+	// the defaultRecovery fallback instead.
+	Register(srv, "ff_domain_hint", "returns domain error with a suggestion", Annotations{
+		Title:      "Return domain error with suggestion",
+		ReadOnly:   true,
+		Idempotent: true,
+	}, func(ctx Ctx, in echoIn) (echoOut, error) {
+		return echoOut{}, &DomainError{Msg: "bad request", Suggestion: domainHintText}
+	})
+
+	Register(srv, "gg_infra_hint", "returns infra error with a suggestion", Annotations{
+		Title:      "Return infra error with suggestion",
+		ReadOnly:   true,
+		Idempotent: true,
+	}, func(ctx Ctx, in echoIn) (echoOut, error) {
+		return echoOut{}, &InfraError{Msg: "connection refused", Suggestion: infraHintText}
+	})
+
+	Register(srv, "hh_data_hint", "returns data error with a suggestion", Annotations{
+		Title:      "Return data error with suggestion",
+		ReadOnly:   true,
+		Idempotent: true,
+	}, func(ctx Ctx, in echoIn) (echoOut, error) {
+		return echoOut{}, &DataError{Msg: "schema mismatch", Suggestion: dataHintText}
+	})
+
 	Register(srv, "ee_unknown_err", "returns untyped error", Annotations{
 		Title:      "Return untyped error",
 		ReadOnly:   true,
@@ -145,13 +181,23 @@ func TestListToolsOrdering(t *testing.T) {
 		t.Fatal("ListTools: nil response")
 	}
 
-	want := []string{"aa_domain_err", "bb_infra_err", "cc_data_err", "dd_panic", "ee_unknown_err", "zz_echo"}
+	want := []string{"aa_domain_err", "bb_infra_err", "cc_data_err", "dd_panic", "ee_unknown_err", "ff_domain_hint", "gg_infra_hint", "hh_data_hint", "zz_echo"}
 	if len(resp.Tools) != len(want) {
 		t.Fatalf("ListTools: got %d tools, want %d", len(resp.Tools), len(want))
 	}
 	for i, name := range want {
 		if resp.Tools[i].Name != name {
 			t.Errorf("ListTools[%d]: got %q, want %q", i, resp.Tools[i].Name, name)
+		}
+	}
+
+	// No tool may advertise an output schema: the Markdown contract
+	// (docs/mcp-output-contract.md) says content[0].text is the only
+	// channel, and an outputSchema would oblige the server to send
+	// structuredContent back.
+	for _, tool := range resp.Tools {
+		if tool.OutputSchema != nil {
+			t.Errorf("tool %q has OutputSchema %#v, want nil", tool.Name, tool.OutputSchema)
 		}
 	}
 
@@ -206,6 +252,9 @@ func TestSuccessEnvelope(t *testing.T) {
 	}
 	if !strings.Contains(env.Body, "- reply: echo:hello") {
 		t.Errorf("body missing reply bullet, got: %s", env.Body)
+	}
+	if result.StructuredContent != nil {
+		t.Errorf("StructuredContent = %#v, want nil (Markdown text is the only channel)", result.StructuredContent)
 	}
 }
 
@@ -273,6 +322,14 @@ func TestPanicRecovery(t *testing.T) {
 	if !strings.Contains(env.Body, "## What happened\npanic: kaboom\n") {
 		t.Errorf("body missing panic message, got: %s", env.Body)
 	}
+	// A panic is deterministic, so the recovery text must not be the
+	// generic "retry" fallback defaultRecovery("infra") would supply.
+	if !strings.Contains(env.Body, "## Do this\nDo not retry with the same arguments") {
+		t.Errorf("panic recovery text should tell the caller not to retry, got: %s", env.Body)
+	}
+	if !strings.Contains(env.Body, "mcp_failure_record") {
+		t.Errorf("panic recovery text should name mcp_failure_record, got: %s", env.Body)
+	}
 
 	// Server must survive -- a subsequent call should succeed.
 	result2, env2 := callTool(t, c, "zz_echo", map[string]any{"msg": "after-panic"})
@@ -306,6 +363,51 @@ func TestBadInputMapsToData(t *testing.T) {
 	}
 	if env.Code != "data" {
 		t.Errorf("code = %q, want %q", env.Code, "data")
+	}
+	// The fault is the caller's arguments, so the recovery text must point
+	// at the input schema rather than at defaultRecovery("data")'s advice
+	// about a stale underlying record.
+	if !strings.Contains(env.Body, "## Do this\nCheck the argument names and value types against this tool's input schema") {
+		t.Errorf("bad-input recovery text should point at the input schema, got: %s", env.Body)
+	}
+}
+
+// TestSuggestionReachesClient proves a handler's Suggestion survives
+// mapError and renderError and lands in the client-visible text. Without it
+// nothing pins register.go's suggestion argument: dropping it would still
+// render a "## Do this" section, filled with defaultRecovery text.
+func TestSuggestionReachesClient(t *testing.T) {
+	c := setupClient(t)
+
+	cases := []struct {
+		tool string
+		code string
+		msg  string
+		hint string
+	}{
+		{"ff_domain_hint", "domain", "bad request", domainHintText},
+		{"gg_infra_hint", "infra", "connection refused", infraHintText},
+		{"hh_data_hint", "data", "schema mismatch", dataHintText},
+	}
+	for _, tc := range cases {
+		t.Run(tc.tool, func(t *testing.T) {
+			result, env := callTool(t, c, tc.tool, map[string]any{"msg": "x"})
+			if !result.IsError {
+				t.Error("IsError should be true")
+			}
+			if env.Tool != tc.tool {
+				t.Errorf("header tool = %q, want %q", env.Tool, tc.tool)
+			}
+			if env.Code != tc.code {
+				t.Errorf("code = %q, want %q", env.Code, tc.code)
+			}
+			if !strings.Contains(env.Body, "## What happened\n"+tc.msg+"\n") {
+				t.Errorf("body missing error message, got: %s", env.Body)
+			}
+			if !strings.Contains(env.Body, "## Do this\n"+tc.hint) {
+				t.Errorf("body missing the handler's Suggestion, got: %s", env.Body)
+			}
+		})
 	}
 }
 

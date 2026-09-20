@@ -442,6 +442,11 @@ func TestReadOnlyToolsWriteNothingTracked(t *testing.T) {
 			case "verify_tag_ancestry":
 				_, _ = verifyTagAncestry(root, "v0.0.0-does-not-exist")
 			case "commit_prepare":
+				// commitPrepare writes its manifest through
+				// mkdirTempFunc("", ...); redirect it into a t.TempDir() so
+				// this run does not leak an sdlc-commit-manifest-* directory
+				// into the OS temp dir.
+				redirectTempManifests(t)
 				_, _ = commitPrepare(root, root, CommitPrepareIn{SkipConfigCheck: true})
 			case "plan_mark":
 				_, _ = planMark(root, root, PlanMarkIn{Marker: "guardrailsEvaluated"})
