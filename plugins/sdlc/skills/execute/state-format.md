@@ -452,7 +452,7 @@ It renders as a `## resumeBriefing` heading followed by one bullet per field:
 | `willSkip`       | string[] | Task IDs already recorded complete that `resume-reset` would leave alone. |
 
 `resumeBriefing` also embeds `pipeline.Narration` (`summary`, `display`, and optionally `timing`/
-`next`) — same envelope shape used across every other `execute_state` action. See
+`next`) — same shape used across every other `execute_state` action. See
 `recovering-from-failures.md` for how this briefing anchors the resume flow, and for the
 stalled-vs-timeout distinction (a separate, unrelated signal — do not conflate `gitCrossCheck` with
 a stalled or timed-out task).
