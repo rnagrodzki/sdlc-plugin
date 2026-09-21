@@ -15,10 +15,10 @@ package integration
 
 import (
 	"context"
-	"encoding/json"
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -99,16 +99,14 @@ func TestMCPStdio_CallToolRoundTrip(t *testing.T) {
 
 	env := callTool(t, c, "links_validate", map[string]any{"file": "NOTES.md", "offline": true})
 	if !env.OK {
-		t.Fatalf("links_validate: not ok: code=%s error=%s", env.Code, env.Error)
+		t.Fatalf("links_validate: not ok: code=%s body=%s", env.Code, env.Body)
 	}
-
-	var data struct {
-		Results []map[string]any `json:"results"`
-	}
-	if err := json.Unmarshal(env.Data, &data); err != nil {
-		t.Fatalf("unmarshal links_validate data: %v\nraw: %s", err, env.Data)
-	}
-	if len(data.Results) != 0 {
-		t.Fatalf("links_validate results = %v, want empty (no URLs in NOTES.md)", data.Results)
+	// NOTES.md holds no URLs, so Results is a nil []LinkFinding. LinkFinding is
+	// a struct, so an empty/nil slice of it owns its own section (render.go
+	// rule 6/8), not a "- results: (none)" bullet: it renders as its own
+	// heading with "(none)" as the whole body. KD-I / walker rule 8 requires
+	// this explicit marker, never a blank line.
+	if !strings.Contains(env.Body, "## results\n(none)\n") {
+		t.Fatalf("links_validate: want \"## results\\n(none)\\n\" in body, got:\n%s", env.Body)
 	}
 }

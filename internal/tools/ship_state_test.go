@@ -4,9 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -2412,5 +2416,162 @@ func TestShipState_LogCLI_AppendFailure(t *testing.T) {
 	}
 	if !strings.HasPrefix(infraErr.Msg, "log-cli:") {
 		t.Errorf("Msg = %q, want log-cli: prefix", infraErr.Msg)
+	}
+}
+
+// shipStateDispatcherActions parses ship_state.go and returns every case
+// label of the shipState dispatcher switch — the one switch on in.Action
+// that has a default clause. The detail-level validation switch above it
+// switches on in.Action too, but has no default, so it is skipped.
+//
+// Reading the labels from the source instead of restating them keeps the
+// two tests below honest: adding a case to the dispatcher without touching
+// the enum tag or the unknown-action hint fails them.
+func shipStateDispatcherActions(t *testing.T) []string {
+	t.Helper()
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "ship_state.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse ship_state.go: %v", err)
+	}
+
+	var actions []string
+	ast.Inspect(f, func(n ast.Node) bool {
+		sw, ok := n.(*ast.SwitchStmt)
+		if !ok {
+			return true
+		}
+		sel, ok := sw.Tag.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "Action" {
+			return true
+		}
+		hasDefault := false
+		for _, stmt := range sw.Body.List {
+			if cc, isCase := stmt.(*ast.CaseClause); isCase && cc.List == nil {
+				hasDefault = true
+			}
+		}
+		if !hasDefault {
+			return true
+		}
+		for _, stmt := range sw.Body.List {
+			cc, isCase := stmt.(*ast.CaseClause)
+			if !isCase {
+				continue
+			}
+			for _, expr := range cc.List {
+				bl, isLit := expr.(*ast.BasicLit)
+				if !isLit || bl.Kind != token.STRING {
+					continue
+				}
+				name, uerr := strconv.Unquote(bl.Value)
+				if uerr != nil {
+					t.Fatalf("unquote case label %s: %v", bl.Value, uerr)
+				}
+				actions = append(actions, name)
+			}
+		}
+		return true
+	})
+
+	if len(actions) == 0 {
+		t.Fatal("found no dispatcher case labels in ship_state.go")
+	}
+	return actions
+}
+
+// TestShipStateActionEnumCoversDispatcher pins the jsonschema enum tag on
+// ShipStateIn.Action to the dispatcher's own case labels. Without this the
+// schema can advertise fewer actions than the tool accepts, which is how
+// next, todos and the five history/deferred actions stayed hidden from
+// callers while ship/SKILL.md called them.
+func TestShipStateActionEnumCoversDispatcher(t *testing.T) {
+	field, ok := reflect.TypeOf(ShipStateIn{}).FieldByName("Action")
+	if !ok {
+		t.Fatal("ShipStateIn has no Action field")
+	}
+
+	tagged := map[string]bool{}
+	for _, part := range strings.Split(field.Tag.Get("jsonschema"), ",") {
+		if v, found := strings.CutPrefix(strings.TrimSpace(part), "enum="); found {
+			tagged[v] = true
+		}
+	}
+	if len(tagged) == 0 {
+		t.Fatal("Action has no jsonschema enum= entries")
+	}
+
+	actions := shipStateDispatcherActions(t)
+	for _, a := range actions {
+		if !tagged[a] {
+			t.Errorf("dispatcher accepts action %q but the enum tag omits it", a)
+		}
+		delete(tagged, a)
+	}
+	for extra := range tagged {
+		t.Errorf("enum tag advertises action %q that the dispatcher does not accept", extra)
+	}
+
+	desc := field.Tag.Get("jsonschema_description")
+	for _, a := range actions {
+		if !strings.Contains(desc, a) {
+			t.Errorf("Action description omits accepted action %q", a)
+		}
+	}
+}
+
+// TestShipStateUnknownActionHintListsEveryAction pins the default case's
+// recovery text to the dispatcher's case labels, so a caller who mistypes
+// an action name is shown a complete list rather than a partial one.
+func TestShipStateUnknownActionHintListsEveryAction(t *testing.T) {
+	_, err := shipState(t.TempDir(), t.TempDir(), ShipStateIn{Action: "defered_add"}, fixedNow(time.Now()))
+	if err == nil {
+		t.Fatal("expected an error for an unknown action")
+	}
+	if got := errorClassOf(err); got != "domain" {
+		t.Errorf("error class = %q, want domain", got)
+	}
+
+	hint := suggestionOf(err)
+	for _, a := range shipStateDispatcherActions(t) {
+		if !strings.Contains(hint, a) {
+			t.Errorf("unknown-action hint omits accepted action %q: %s", a, hint)
+		}
+	}
+}
+
+// TestShipStateGCRejectsMistypedDryRun covers the guard that keeps a
+// mistyped flag from turning a dry run into a real delete: detailBool
+// reports false for any non-bool, so without the guard {"dryRun":"true"}
+// would fall through and sweep the state directory.
+func TestShipStateGCRejectsMistypedDryRun(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	stale := filepath.Join(dir, paths.DataDir, paths.RunsSubdir, "ship-dead-branch-20200101T000000Z.json")
+	writeFile(t, stale, `{}`)
+	setStateFileMtime(t, stale, 30*24*time.Hour)
+
+	_, err := shipState(dir, dir, ShipStateIn{
+		Action: "gc",
+		Detail: map[string]any{"dryRun": "true"},
+	}, fixedNow(time.Now()))
+	if err == nil {
+		t.Fatal("expected an error for a string dryRun value")
+	}
+	if got := errorClassOf(err); got != "domain" {
+		t.Errorf("error class = %q, want domain", got)
+	}
+	var domainErr *mcpserver.DomainError
+	if errors.As(err, &domainErr) && !strings.Contains(domainErr.Msg, "detail.dryRun") {
+		t.Errorf("Msg = %q, want it to name detail.dryRun", domainErr.Msg)
+	}
+	if hint := suggestionOf(err); !strings.Contains(hint, "detail.dryRun") {
+		t.Errorf("Suggestion = %q, want it to name detail.dryRun", hint)
+	}
+
+	if _, statErr := os.Stat(stale); statErr != nil {
+		t.Errorf("stale state file was deleted despite the rejected dryRun: %v", statErr)
 	}
 }

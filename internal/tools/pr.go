@@ -688,8 +688,8 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 
 	// Branch-guard HARD GATE (issues #347-349). Must run before the
 	// protected-branch check, matching pr.js's exact ordering. JS reports
-	// this as exit code 3; the KD3 envelope has no analogous concept, so it
-	// is represented here as a normal (non-error) payload carrying the
+	// this as exit code 3; a rendered tool result has no analogous concept,
+	// so it is represented here as a normal (non-error) payload carrying the
 	// BranchGuard result — pr.js itself still emits a full JSON payload
 	// (not a bare error) at this point.
 	guard := rt.branchValidate(currentBranch, in.ExpectedBranch)
@@ -761,7 +761,11 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 		// template conflicts with the release markers pr_apply injects
 		// automatically (prReleaseInjectMarkers below).
 		if compatErr := prtemplate.ValidateReleaseCompat(tmpl.Content); compatErr != nil {
-			return PRPrepareOut{}, &mcpserver.DomainError{Msg: compatErr.Error()}
+			return PRPrepareOut{}, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("PR template %s conflicts with the release markers pr_apply injects: %v", tmpl.Path, compatErr),
+				Suggestion: "Edit the custom PR template file and delete the conflicting release-marker line; pr_apply injects release markers itself and refuses templates that already define them.",
+				Cause:      compatErr,
+			}
 		}
 		out.Template = &PRTemplateOut{
 			Path:     tmpl.Path,
@@ -928,7 +932,10 @@ func prApplyCore(mainRoot, workDir string, in PRApplyIn) (PRApplyOut, error) {
 // calls go through rt, enabling mock injection in tests.
 func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRApplyOut, error) {
 	if strings.TrimSpace(in.Title) == "" {
-		return PRApplyOut{}, &mcpserver.DomainError{Msg: "title is required"}
+		return PRApplyOut{}, &mcpserver.DomainError{
+			Msg:        "title is required",
+			Suggestion: "Pass a non-empty title: use the prTitle value from pr_prepare, or draft one from the branch's commits.",
+		}
 	}
 
 	// Release-intent gate (task 2): a PR must not be created/updated with
@@ -976,7 +983,10 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 		case "major", "minor", "patch":
 			// valid
 		default:
-			return PRApplyOut{}, &mcpserver.DomainError{Msg: fmt.Sprintf("releaseLevel must be major, minor, or patch, got %q", in.ReleaseLevel)}
+			return PRApplyOut{}, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("releaseLevel must be major, minor, or patch, got %q", in.ReleaseLevel),
+				Suggestion: "Set releaseLevel to exactly one of major, minor or patch, or omit it and set releaseSkipReason instead.",
+			}
 		}
 		if strings.TrimSpace(in.ReleaseNotes) == "" {
 			// Auto-generate: tool-authoritative content derived
@@ -990,7 +1000,10 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 		}
 	}
 	if in.ReleasePreRelease != "" && in.ReleasePreRelease != "rc" {
-		return PRApplyOut{}, &mcpserver.DomainError{Msg: fmt.Sprintf("releasePreRelease must be \"rc\" or empty, got %q", in.ReleasePreRelease)}
+		return PRApplyOut{}, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("releasePreRelease must be \"rc\" or empty, got %q", in.ReleasePreRelease),
+			Suggestion: "Set releasePreRelease to \"rc\" for a release candidate, or omit the field for a normal release.",
+		}
 	}
 
 	// releaseSource provenance gate (task 8). Deterministic, MCP-layer
@@ -1323,7 +1336,10 @@ func prReleaseComputeIntentWith(rt prRuntime, mainRoot, workDir, level, preRelea
 	// Check tag collision.
 	exists, err := rt.gitTagExists(workDir, tagName)
 	if err == nil && exists {
-		return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("tag %q already exists — version collision", tagName)}
+		return nil, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("tag %q already exists — version collision", tagName),
+			Suggestion: "The computed version is already tagged. Raise releaseLevel (for example patch to minor), or delete the stale tag if it was created by mistake, then retry pr_apply.",
+		}
 	}
 
 	// Build label.

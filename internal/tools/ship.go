@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"encoding/json"
 	stderrors "errors"
 	"fmt"
 	"os"
@@ -208,47 +207,19 @@ type ShipVerifySideEffectIn struct {
 	Expected string `json:"expected" jsonschema_description:"Expected side-effect value (PR number or commit sha) to check landed, matching the step."`
 }
 
-// ShipVerifySideEffectOut is the output for the ship_verify_side_effect tool,
-// mirroring the payload shapes emitted by verifySideEffect in
-// scripts/skill/ship.js.
+// ShipVerifySideEffectOut is the output for the ship_verify_side_effect tool.
+//
+// Expected has no omitempty on purpose. The renderer drops an omitempty field
+// whose value is empty (rule 14 in docs/mcp-output-contract.md), so a
+// has-side-effect check with no caller-supplied Expected would hide the
+// "expected" line. Without omitempty it renders `- expected: (none)`.
 type ShipVerifySideEffectOut struct {
 	Step       string  `json:"step"`
 	SideEffect string  `json:"sideEffect,omitempty"`
 	Landed     bool    `json:"landed"`
-	Expected   *string `json:"expected,omitempty"`
+	Expected   *string `json:"expected"`
 	Reason     string  `json:"reason,omitempty"`
 	Next       string  `json:"next"`
-}
-
-// MarshalJSON branches on which of the two shapes ship.js's verifySideEffect
-// emit() calls actually produces — plain struct tags can't express this,
-// since the field set differs per branch, not just field values:
-//
-//   - no-side-effect (Reason set): {step, landed, reason} — no "expected" or
-//     "sideEffect" key at all, matching `emit({ step, landed, reason:
-//     'no-side-effect' }, 0)`.
-//   - has-side-effect (Reason empty): {step, sideEffect, landed, expected} —
-//     "expected" is ALWAYS present, as a JSON string or null, matching
-//     `emit({ step, sideEffect, landed, expected: expected || null }, ...)`.
-//     `omitempty` on Expected *string alone would wrongly drop the key here
-//     too when Expected is nil (e.g. verifying a step with no --expected
-//     tag), which is exactly the bug this method fixes.
-func (o ShipVerifySideEffectOut) MarshalJSON() ([]byte, error) {
-	if o.Reason != "" {
-		return json.Marshal(struct {
-			Step   string `json:"step"`
-			Landed bool   `json:"landed"`
-			Reason string `json:"reason"`
-			Next   string `json:"next"`
-		}{Step: o.Step, Landed: o.Landed, Reason: o.Reason, Next: o.Next})
-	}
-	return json.Marshal(struct {
-		Step       string  `json:"step"`
-		SideEffect string  `json:"sideEffect"`
-		Landed     bool    `json:"landed"`
-		Expected   *string `json:"expected"`
-		Next       string  `json:"next"`
-	}{Step: o.Step, SideEffect: o.SideEffect, Landed: o.Landed, Expected: o.Expected, Next: o.Next})
 }
 
 // ---------------------------------------------------------------------------

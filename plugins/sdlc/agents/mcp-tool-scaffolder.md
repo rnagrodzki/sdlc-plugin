@@ -34,10 +34,12 @@ Read the manifest JSON from `MANIFEST_FILE`. The manifest contains:
 Read these files to understand conventions:
 
 1. `internal/mcpserver/register.go` — `Register[TIn, TOut]` function pattern
-2. `internal/mcpserver/envelope.go` — error types (`DomainError`, `InfraError`, `DataError`) with `Suggestion` field
-3. One existing tool file matching the closest sibling (manifest may specify which, else use `internal/tools/jira.go` as default reference)
-4. One existing test file for that sibling
-5. `internal/tools/annotations_test.go` — the `toolAnnotations` golden map you must emit a row for. Read it before emitting `toolAnnotationsEntry`: copy the `annotationPolicy` field order and the `reason` phrasing style from the existing rows, and place the new row in the READ-ONLY or WRITER group that matches the annotations you emit. The group header comments carry row counts (`// READ-ONLY (N rows)`) — increment the one you add to.
+2. `internal/mcpserver/errors.go` — error types (`DomainError`, `InfraError`, `DataError`) with `Suggestion` field
+3. `internal/mcpserver/render.go` — the Markdown renderer that walks every `*Out` struct: the root `Next` hoist, the `render:"raw"` tag, and the `(none)` rule for nil/empty collections
+4. `docs/mcp-output-contract.md` — the same rules as prose, plus the error-code and `## Do this` requirements
+5. One existing tool file matching the closest sibling (manifest may specify which, else use `internal/tools/jira.go` as default reference)
+6. One existing test file for that sibling
+7. `internal/tools/annotations_test.go` — the `toolAnnotations` golden map you must emit a row for. Read it before emitting `toolAnnotationsEntry`: copy the `annotationPolicy` field order and the `reason` phrasing style from the existing rows, and place the new row in the READ-ONLY or WRITER group that matches the annotations you emit. The group header comments carry row counts (`// READ-ONLY (N rows)`) — increment the one you add to.
 
 ## Step 2 — Generate Input Struct
 
@@ -54,8 +56,10 @@ Build the `*In` struct with:
 Build the `*Out` struct with:
 
 - All fields from manifest `outputFields`
-- `Next string json:"next"` field (always present, no omitempty)
-- No nil-able slices — use `[]T` not `*[]T`, initialize to empty in handler
+- A root `Next string json:"next"` field, unless the tool is genuinely terminal — the renderer
+  hoists it to the result's `**Next:**` line, and a terminal tool must say so in its description
+- Prefer `[]T` over `*[]T`. A nil or empty slice renders as `(none)`, so the handler does not have
+  to pre-initialize it to make the result readable
 
 ## Step 4 — Generate Handler Function
 
@@ -111,9 +115,8 @@ Before returning, verify:
 
 - Every `*In` field has `jsonschema_description` tag
 - Closed-set fields have enum tags
-- `*Out` has `Next string json:"next"` (no omitempty)
+- `*Out` has a root `Next string json:"next"`, or the tool description states it is terminal
 - Error paths with recovery populate `Suggestion`
-- Slices initialized to empty, not nil
 - Test file imports match what's needed
 - Handler signature matches `Register[TIn, TOut]` expectations
 - Naming conventions match existing tools in the package

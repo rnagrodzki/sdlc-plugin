@@ -29,6 +29,11 @@ Read the manifest JSON from `MANIFEST_FILE`. The manifest contains:
 
 ## Step 1 — Read Source Files
 
+In `tool-reference` and `architecture-overview` modes, also read `internal/mcpserver/render.go` and
+`docs/mcp-output-contract.md` before documenting any tool result shape: results are Markdown, not
+JSON, and those two files carry the rules (root `Next` hoist, `render:"raw"`, `(none)` for nil or
+empty collections, the `## Do this` section on errors).
+
 Read every file in `targets`. For Go files, extract:
 - Struct definitions with field names, types, json tags, jsonschema_description tags
 - Function signatures and doc comments
@@ -102,8 +107,8 @@ For each skill:
 
 Produce a single document covering:
 - Package structure and responsibilities
-- MCP tool registration flow (mcpserver.Register → handler → envelope)
-- Error classification (DomainError/InfraError/DataError → KD3 codes)
+- MCP tool registration flow (mcpserver.Register → handler → renderOK)
+- Error classification (DomainError/InfraError/DataError → rendered error codes)
 - Dependency injection pattern (runtime structs, *CoreWith functions)
 - Skill → tool dispatch chain
 - Review dimensions and guardrail enforcement points

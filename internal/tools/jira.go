@@ -265,6 +265,21 @@ func jiraGetCachePath(key, cacheDir string) (string, error) {
 	return filepath.Join(cacheDir, key+".json"), nil
 }
 
+// jiraExplicitCachePath resolves <cacheDir>/<key>.json for the save and clear
+// actions, which use cacheDir directly instead of the home-cache layout. A
+// failure comes back as the InfraError both actions return.
+func jiraExplicitCachePath(key, cacheDir string) (string, error) {
+	p, err := jiraGetCachePath(key, cacheDir)
+	if err != nil {
+		return "", &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("resolve cache path under cacheDir %q: %s", cacheDir, err.Error()),
+			Suggestion: "Check write permission on the cacheDir path passed to jira, or pass a different writable cacheDir, then retry.",
+			Cause:      err,
+		}
+	}
+	return p, nil
+}
+
 // jiraCacheResolution mirrors jira.js's resolveEffectiveCachePath return
 // shape ({ path, warnings, candidateSites }); Path == "" means no cache
 // could be resolved.
@@ -875,14 +890,18 @@ func jiraSave(mainRoot string, in JiraIn) (any, error) {
 		}
 	}
 	if len(missingFields) > 0 {
-		return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("cache JSON is missing required fields: %s", strings.Join(missingFields, ", "))}
+		missing := strings.Join(missingFields, ", ")
+		return nil, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("cache JSON is missing required fields: %s", missing),
+			Suggestion: fmt.Sprintf("Add %s to data. Then call jira save again. Data needs version, cloudId, project and siteUrl.", missing),
+		}
 	}
 
 	var writePath string
 	if in.CacheDir != "" {
-		p, err := jiraGetCachePath(key, in.CacheDir)
+		p, err := jiraExplicitCachePath(key, in.CacheDir)
 		if err != nil {
-			return nil, &mcpserver.InfraError{Msg: err.Error(), Cause: err}
+			return nil, err
 		}
 		writePath = p
 	} else {
@@ -892,16 +911,27 @@ func jiraSave(mainRoot string, in JiraIn) (any, error) {
 			resolvedSite = jiraSanitizeSiteHost(siteURL)
 		}
 		if resolvedSite == "" {
-			return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("cannot derive site host from siteUrl: %v", data["siteUrl"])}
+			return nil, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("cannot derive site host from siteUrl: %v", data["siteUrl"]),
+				Suggestion: "Set data.siteUrl to the full Jira site URL, for example \"https://acme.atlassian.net\". Then call jira save again.",
+			}
 		}
 		writePath = filepath.Join(jiraHomeCacheRoot(), resolvedSite, key+".json")
 	}
 
 	if err := os.MkdirAll(filepath.Dir(writePath), 0o755); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "create cache dir: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        "create cache dir: " + err.Error(),
+			Suggestion: fmt.Sprintf("Check write permission on %s and free disk space, or pass cacheDir with a writable folder. Then call jira save again.", filepath.Dir(writePath)),
+			Cause:      err,
+		}
 	}
 	if err := fsx.AtomicWriteJSON(writePath, data); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "write cache file: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        "write cache file: " + err.Error(),
+			Suggestion: fmt.Sprintf("Check write permission on %s and free disk space. Then call jira save again with the same data.", writePath),
+			Cause:      err,
+		}
 	}
 	return map[string]any{"saved": true, "cachePath": writePath}, nil
 }
@@ -1031,13 +1061,17 @@ func jiraInitTemplates(mainRoot string, in JiraIn) (any, error) {
 func jiraClear(mainRoot string, in JiraIn) (any, error) {
 	key := strings.ToUpper(strings.TrimSpace(in.Key))
 	if in.CacheDir != "" {
-		p, err := jiraGetCachePath(key, in.CacheDir)
+		p, err := jiraExplicitCachePath(key, in.CacheDir)
 		if err != nil {
-			return nil, &mcpserver.InfraError{Msg: err.Error(), Cause: err}
+			return nil, err
 		}
 		if fileExists(p) {
 			if err := os.Remove(p); err != nil {
-				return nil, &mcpserver.InfraError{Msg: "delete cache file: " + err.Error(), Cause: err}
+				return nil, &mcpserver.InfraError{
+					Msg:        "delete cache file: " + err.Error(),
+					Suggestion: fmt.Sprintf("Check delete permission on the file %s and its folder. Then call jira clear again.", p),
+					Cause:      err,
+				}
 			}
 		}
 		return map[string]any{"cleared": true, "cachePath": p}, nil
@@ -1048,7 +1082,11 @@ func jiraClear(mainRoot string, in JiraIn) (any, error) {
 	for _, c := range candidates {
 		if fileExists(c.Path) {
 			if err := os.Remove(c.Path); err != nil {
-				return nil, &mcpserver.InfraError{Msg: "delete cache file: " + err.Error(), Cause: err}
+				return nil, &mcpserver.InfraError{
+					Msg:        "delete cache file: " + err.Error(),
+					Suggestion: fmt.Sprintf("Check delete permission on the file %s and its folder. Then call jira clear again.", c.Path),
+					Cause:      err,
+				}
 			}
 			cleared = append(cleared, c.Path)
 		}
@@ -1243,7 +1281,7 @@ func jiraWriteCritique(mainRoot string, in JiraIn) (any, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        "create artifacts dir: " + err.Error(),
-			Suggestion: "Check filesystem permissions and available disk space for the project root, then retry.",
+			Suggestion: "Create " + paths.DataDir + "/state/artifacts manually with write permission, or free disk space on the project root, then retry jira write-critique.",
 			Cause:      err,
 		}
 	}
@@ -1252,7 +1290,7 @@ func jiraWriteCritique(mainRoot string, in JiraIn) (any, error) {
 	if err := fsx.AtomicWriteJSON(writePath, in.Data); err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        "write critique artifact: " + err.Error(),
-			Suggestion: "Check filesystem permissions and available disk space for the project root, then retry.",
+			Suggestion: "Check write permission on " + paths.DataDir + "/state/artifacts and free disk space on the project root, then retry jira write-critique with the same hash.",
 			Cause:      err,
 		}
 	}
@@ -1274,7 +1312,7 @@ func jiraWriteApproval(mainRoot string, in JiraIn) (any, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        "create artifacts dir: " + err.Error(),
-			Suggestion: "Check filesystem permissions and available disk space for the project root, then retry.",
+			Suggestion: "Create " + paths.DataDir + "/state/artifacts manually with write permission, or free disk space on the project root, then retry jira write-approval.",
 			Cause:      err,
 		}
 	}
@@ -1284,7 +1322,7 @@ func jiraWriteApproval(mainRoot string, in JiraIn) (any, error) {
 	if err := os.WriteFile(writePath, []byte(token), 0o644); err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        "write approval token: " + err.Error(),
-			Suggestion: "Check filesystem permissions and available disk space for the project root, then retry.",
+			Suggestion: "Check write permission on " + paths.DataDir + "/state/artifacts and free disk space on the project root, then retry jira write-approval with the same hash.",
 			Cause:      err,
 		}
 	}

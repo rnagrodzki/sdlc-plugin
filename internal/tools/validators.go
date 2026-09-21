@@ -1134,6 +1134,18 @@ var (
 	agentTableHeadingRe = regexp.MustCompile(`^##\s+4\.\s+Agent Table`)
 )
 
+// Heading names the cost-tier parser looks for, shared by the parser's own
+// error text and by validateCostTiers' recovery hint so the two cannot drift.
+const (
+	costTierSkillHeading = "## 3. Skill Table"
+	costTierAgentHeading = "## 4. Agent Table"
+)
+
+// errCostTierDocRead marks a docs/cost-tiers.md read failure. It separates
+// "the file is missing or unreadable" from "the file read fine but its
+// tables are malformed", which need different recovery advice.
+var errCostTierDocRead = errors.New("read cost-tier doc")
+
 func splitTableRow(line string) []string {
 	t := strings.TrimSpace(line)
 	t = strings.TrimPrefix(t, "|")
@@ -1206,15 +1218,16 @@ func parseCostTierDocTables(root string) (skills, agents []docRow, err error) {
 	docPath := filepath.Join(root, "docs", "cost-tiers.md")
 	content, err := os.ReadFile(docPath)
 	if err != nil {
-		return nil, nil, fmt.Errorf("docs/cost-tiers.md: not found: %w", err)
+		// os.ReadFile's error already names docPath; do not repeat it.
+		return nil, nil, fmt.Errorf("%w: %w", errCostTierDocRead, err)
 	}
 	lines := strings.Split(string(content), "\n")
 
-	skills, err = findCostTierTableAfterHeading(lines, skillTableHeadingRe, "## 3. Skill Table")
+	skills, err = findCostTierTableAfterHeading(lines, skillTableHeadingRe, costTierSkillHeading)
 	if err != nil {
 		return nil, nil, err
 	}
-	agents, err = findCostTierTableAfterHeading(lines, agentTableHeadingRe, "## 4. Agent Table")
+	agents, err = findCostTierTableAfterHeading(lines, agentTableHeadingRe, costTierAgentHeading)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1280,7 +1293,18 @@ func validateCostTiers(root string, in ValidateIn) ([]discovery.Finding, error) 
 
 	docSkills, docAgents, err := parseCostTierDocTables(root)
 	if err != nil {
-		return nil, &mcpserver.DataError{Msg: err.Error(), Cause: err}
+		// The error text already carries the file path, so the Msg must not
+		// repeat it, and a missing file needs different advice than a
+		// malformed table.
+		suggestion := fmt.Sprintf("Fix the %q and %q headings and the row format below them, then retry.", costTierSkillHeading, costTierAgentHeading)
+		if errors.Is(err, errCostTierDocRead) {
+			suggestion = "Create the cost-tier doc at the path named above, or check read permission on it, then retry."
+		}
+		return nil, &mcpserver.DataError{
+			Msg:        fmt.Sprintf("cost-tier tables: %s", err.Error()),
+			Suggestion: suggestion,
+			Cause:      err,
+		}
 	}
 
 	var findings []discovery.Finding

@@ -140,9 +140,9 @@ var versionFields = []Field{
 		Name:        "preReleasePolicy",
 		Label:       "Release-candidate continuation policy",
 		Type:        "enum",
-		Options:     []string{"always-rc", "continue-rc", "never"},
+		Options:     []string{"always-rc", "default-rc", "continue-rc", "never"},
 		Default:     "continue-rc",
-		Description: "Controls whether /pr suggests a release-candidate build instead of a final release. `always-rc` always suggests one; `continue-rc` (default) suggests one only when the bump target already has existing RC tags, continuing the RC train; `never` never suggests one.",
+		Description: "Controls whether /pr suggests a release-candidate build instead of a final release. `always-rc` always suggests one; `default-rc` suggests one by default, but an explicit CLI `--bump` overrides it to a final release; `continue-rc` (default) suggests one only when the bump target already has existing RC tags, continuing the RC train; `never` never suggests one.",
 	},
 }
 

@@ -62,6 +62,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -186,14 +187,23 @@ func mustWriteFile(t *testing.T, path, content string) {
 // MCP request/response marshaling, not a mock or a direct Go function call.
 // ---------------------------------------------------------------------------
 
-type envelope struct {
-	OK    bool            `json:"ok"`
-	Data  json.RawMessage `json:"data,omitempty"`
-	Code  string          `json:"code,omitempty"`
-	Error string          `json:"error,omitempty"`
+// renderedResult is the parsed first line and body of a rendered tool
+// result: "# <tool> — ok" or "# <tool> — error (<code>)", per render.go's
+// renderOK and errors.go's renderError. Duplicated from
+// internal/mcpserver's test helper of the same name -- this is a separate
+// package (tests/integration, build-tagged) and cannot import a sibling
+// package's _test.go-only helpers.
+type renderedResult struct {
+	Tool string
+	OK   bool
+	Code string
+	Body string
 }
 
-func callTool(t *testing.T, c *mcp.ClientSession, name string, args map[string]any) envelope {
+// resultHeadRe pins the renderer's first-line contract from Task 1.
+var resultHeadRe = regexp.MustCompile(`^# ([a-z_]+) — (?:(ok)|error \((domain|infra|data)\))$`)
+
+func callTool(t *testing.T, c *mcp.ClientSession, name string, args map[string]any) renderedResult {
 	t.Helper()
 	result, err := c.CallTool(context.Background(), &mcp.CallToolParams{Name: name, Arguments: args})
 	if err != nil {
@@ -206,12 +216,12 @@ func callTool(t *testing.T, c *mcp.ClientSession, name string, args map[string]a
 	if !ok {
 		t.Fatalf("CallTool %q: content[0] not TextContent, got %T", name, result.Content[0])
 	}
-
-	var env envelope
-	if err := json.Unmarshal([]byte(text.Text), &env); err != nil {
-		t.Fatalf("CallTool %q: unmarshal envelope: %v\nraw: %s", name, err, text.Text)
+	head, body, _ := strings.Cut(text.Text, "\n")
+	m := resultHeadRe.FindStringSubmatch(head)
+	if m == nil {
+		t.Fatalf("CallTool %q: first line %q does not match %s", name, head, resultHeadRe)
 	}
-	return env
+	return renderedResult{Tool: m[1], OK: m[2] == "ok", Code: m[3], Body: body}
 }
 
 // setupShipClient registers the ship pipeline's own tool surface
@@ -251,33 +261,46 @@ type shipStepEntry struct {
 	HasCond   bool   `json:"-"`
 }
 
+// stepsSectionRE matches one "## steps[N]" section and captures its bullet
+// lines. render.go renders a []struct field as sibling "## <key>[i]"
+// sections at the same heading level (rule 6), heading immediately followed
+// by its "- key: value" bullets with no blank line in between.
+var stepsSectionRE = regexp.MustCompile(`(?m)^## steps\[\d+\]\n((?:- .+\n)*)`)
+
+// stepBulletRE matches one "- key: value" bullet line inside a steps[N]
+// section.
+var stepBulletRE = regexp.MustCompile(`(?m)^- (\w+): (.*)$`)
+
 func readShipSteps(t *testing.T, c *mcp.ClientSession) []shipStepEntry {
 	t.Helper()
 	env := callTool(t, c, "ship_state", map[string]any{"action": "read"})
 	if !env.OK {
-		t.Fatalf("ship_state read: not ok: code=%s error=%s", env.Code, env.Error)
+		t.Fatalf("ship_state read: not ok: code=%s body=%s", env.Code, env.Body)
 	}
 
-	var data map[string]any
-	if err := json.Unmarshal(env.Data, &data); err != nil {
-		t.Fatalf("ship_state read: unmarshal data: %v", err)
-	}
-	rawSteps, _ := data["steps"].([]any)
-	if len(rawSteps) == 0 {
-		t.Fatalf("ship_state read: no steps in state data: %v", data)
+	sections := stepsSectionRE.FindAllStringSubmatch(env.Body, -1)
+	if len(sections) == 0 {
+		t.Fatalf("ship_state read: no steps[N] sections in rendered body:\n%s", env.Body)
 	}
 
-	steps := make([]shipStepEntry, 0, len(rawSteps))
-	for _, raw := range rawSteps {
-		sm, ok := raw.(map[string]any)
-		if !ok {
-			t.Fatalf("ship_state read: step entry not an object: %v", raw)
+	steps := make([]shipStepEntry, 0, len(sections))
+	for _, sec := range sections {
+		var entry shipStepEntry
+		for _, b := range stepBulletRE.FindAllStringSubmatch(sec[1], -1) {
+			switch key, val := b[1], b[2]; key {
+			case "name":
+				entry.Name = val
+			case "status":
+				entry.Status = val
+			case "condition":
+				// shipmeta.ShipStateStep.Condition is `json:"condition,omitempty"`:
+				// the key is present in the rendered bullets only when the step
+				// actually carries a condition (never present-but-empty).
+				entry.Condition = val
+				entry.HasCond = true
+			}
 		}
-		name, _ := sm["name"].(string)
-		status, _ := sm["status"].(string)
-		cond, hasCond := sm["condition"]
-		condStr, _ := cond.(string)
-		steps = append(steps, shipStepEntry{Name: name, Status: status, Condition: condStr, HasCond: hasCond})
+		steps = append(steps, entry)
 	}
 	return steps
 }
@@ -315,23 +338,18 @@ func TestPipelineSmoke_FullShipPipeline(t *testing.T) {
 		"sessionId": "smoke-session-1",
 	})
 	if !prepEnv.OK {
-		t.Fatalf("ship_prepare: not ok: code=%s error=%s", prepEnv.Code, prepEnv.Error)
+		t.Fatalf("ship_prepare: not ok: code=%s body=%s", prepEnv.Code, prepEnv.Body)
 	}
-	var prepOut struct {
-		Errors    []string          `json:"errors"`
-		Warnings  []string          `json:"warnings"`
-		StateFile string            `json:"stateFile"`
-		Flags     map[string]any    `json:"flags"`
-		Sources   map[string]string `json:"sources"`
+	// ShipPrepareOut.Errors has no omitempty, so an empty slice always
+	// renders. It's a []string (not []struct), so it's a plain bullet, not
+	// its own section: an empty Errors renders "- errors: (none)" (rule 8).
+	if !strings.Contains(prepEnv.Body, "- errors: (none)") {
+		t.Fatalf("ship_prepare: unexpected errors, body:\n%s", prepEnv.Body)
 	}
-	if err := json.Unmarshal(prepEnv.Data, &prepOut); err != nil {
-		t.Fatalf("ship_prepare: unmarshal: %v", err)
-	}
-	if len(prepOut.Errors) != 0 {
-		t.Fatalf("ship_prepare: unexpected errors: %v", prepOut.Errors)
-	}
-	if prepOut.StateFile == "" {
-		t.Fatalf("ship_prepare: expected a stateFile to be initialized, got none (warnings=%v)", prepOut.Warnings)
+	// StateFile is `json:"stateFile,omitempty"`: the bullet is present at
+	// all only once a real path is set.
+	if !strings.Contains(prepEnv.Body, "- stateFile: ") {
+		t.Fatalf("ship_prepare: expected a stateFile to be initialized, got none, body:\n%s", prepEnv.Body)
 	}
 
 	// --- discover the real step scaffold (Open Question 2: do not assume) ---
@@ -360,34 +378,34 @@ func TestPipelineSmoke_FullShipPipeline(t *testing.T) {
 		case name == "version":
 			env := callTool(t, c, "ship_state", map[string]any{"action": "skip", "step": name})
 			if !env.OK {
-				t.Fatalf("ship_state skip %q: not ok: code=%s error=%s", name, env.Code, env.Error)
+				t.Fatalf("ship_state skip %q: not ok: code=%s body=%s", name, env.Code, env.Body)
 			}
 		case i == 0:
 			env := callTool(t, c, "ship_state", map[string]any{"action": "start", "step": name})
 			if !env.OK {
-				t.Fatalf("ship_state start %q: not ok: code=%s error=%s", name, env.Code, env.Error)
+				t.Fatalf("ship_state start %q: not ok: code=%s body=%s", name, env.Code, env.Body)
 			}
 			env = callTool(t, c, "ship_state", map[string]any{"action": "complete-step", "step": name})
 			if !env.OK {
-				t.Fatalf("ship_state complete-step %q: not ok: code=%s error=%s", name, env.Code, env.Error)
+				t.Fatalf("ship_state complete-step %q: not ok: code=%s body=%s", name, env.Code, env.Body)
 			}
 		case i == len(nonConditional)-1:
 			env := callTool(t, c, "ship_state", map[string]any{"action": "begin-step", "step": name})
 			if !env.OK {
-				t.Fatalf("ship_state begin-step %q: not ok: code=%s error=%s", name, env.Code, env.Error)
+				t.Fatalf("ship_state begin-step %q: not ok: code=%s body=%s", name, env.Code, env.Body)
 			}
 			env = callTool(t, c, "ship_state", map[string]any{"action": "complete", "step": name})
 			if !env.OK {
-				t.Fatalf("ship_state complete %q: not ok: code=%s error=%s", name, env.Code, env.Error)
+				t.Fatalf("ship_state complete %q: not ok: code=%s body=%s", name, env.Code, env.Body)
 			}
 		default:
 			env := callTool(t, c, "ship_state", map[string]any{"action": "begin-step", "step": name})
 			if !env.OK {
-				t.Fatalf("ship_state begin-step %q: not ok: code=%s error=%s", name, env.Code, env.Error)
+				t.Fatalf("ship_state begin-step %q: not ok: code=%s body=%s", name, env.Code, env.Body)
 			}
 			env = callTool(t, c, "ship_state", map[string]any{"action": "complete-step", "step": name})
 			if !env.OK {
-				t.Fatalf("ship_state complete-step %q: not ok: code=%s error=%s", name, env.Code, env.Error)
+				t.Fatalf("ship_state complete-step %q: not ok: code=%s body=%s", name, env.Code, env.Body)
 			}
 		}
 	}
@@ -416,14 +434,10 @@ func TestPipelineSmoke_FullShipPipeline(t *testing.T) {
 	// state (conditional-pending steps count as terminal-OK).
 	cleanupEnv := callTool(t, c, "ship_state", map[string]any{"action": "cleanup"})
 	if !cleanupEnv.OK {
-		t.Fatalf("ship_state cleanup: not ok: code=%s error=%s", cleanupEnv.Code, cleanupEnv.Error)
+		t.Fatalf("ship_state cleanup: not ok: code=%s body=%s", cleanupEnv.Code, cleanupEnv.Body)
 	}
-	var cleanupOut map[string]any
-	if err := json.Unmarshal(cleanupEnv.Data, &cleanupOut); err != nil {
-		t.Fatalf("ship_state cleanup: unmarshal: %v", err)
-	}
-	if cleanupOut["cleaned"] != true {
-		t.Errorf("ship_state cleanup: expected cleaned=true, got %v", cleanupOut)
+	if !strings.Contains(cleanupEnv.Body, "- cleaned: true") {
+		t.Errorf("ship_state cleanup: expected cleaned=true, body:\n%s", cleanupEnv.Body)
 	}
 }
 
@@ -447,7 +461,7 @@ func TestPipelineSmoke_StopHookBlockCount(t *testing.T) {
 
 	prepEnv := callTool(t, c, "ship_prepare", map[string]any{"sessionId": sessionID})
 	if !prepEnv.OK {
-		t.Fatalf("ship_prepare: not ok: code=%s error=%s", prepEnv.Code, prepEnv.Error)
+		t.Fatalf("ship_prepare: not ok: code=%s body=%s", prepEnv.Code, prepEnv.Body)
 	}
 
 	steps := readShipSteps(t, c)
@@ -458,7 +472,7 @@ func TestPipelineSmoke_StopHookBlockCount(t *testing.T) {
 
 	beginEnv := callTool(t, c, "ship_state", map[string]any{"action": "begin-step", "step": firstStep})
 	if !beginEnv.OK {
-		t.Fatalf("ship_state begin-step %q: not ok: code=%s error=%s", firstStep, beginEnv.Code, beginEnv.Error)
+		t.Fatalf("ship_state begin-step %q: not ok: code=%s body=%s", firstStep, beginEnv.Code, beginEnv.Body)
 	}
 
 	stdin := `{"session_id":"` + sessionID + `"}`

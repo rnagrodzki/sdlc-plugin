@@ -25,12 +25,13 @@ type VersionSourceInfo struct {
 // VersionBumpOption describes a single bump possibility.
 //
 // SuggestedPreRelease is "rc" when the version config's PreReleasePolicy
-// says to suggest one for this bump target: "always-rc" always suggests
-// one, "continue-rc" (the default) only when Result already has one or
-// more existing RC tags (see PRPrepareOut.ExistingRCs) — i.e. this
-// bump target is already mid-RC-train, so the safer default is another RC
-// rather than a final release — and "never" never suggests one. Empty
-// when there's no suggestion either way.
+// says to suggest one for this bump target: "always-rc" and "default-rc"
+// always suggest one (they differ only in /ship, where an explicit CLI
+// --bump beats "default-rc"), "continue-rc" (the default) only when Result
+// already has one or more existing RC tags (see PRPrepareOut.ExistingRCs) —
+// i.e. this bump target is already mid-RC-train, so the safer default is
+// another RC rather than a final release — and "never" never suggests one.
+// Empty when there's no suggestion either way.
 type VersionBumpOption struct {
 	Level               string `json:"level"`
 	Result              string `json:"result"`
@@ -86,15 +87,16 @@ type DivergenceInfo struct {
 }
 
 // versionSuggestedPreRelease resolves the version config's PreReleasePolicy
-// enum ("always-rc" | "continue-rc" | "never") plus whether the bump target
-// already has one or more existing RC tags into a SuggestedPreRelease value
-// for a VersionBumpOption: "rc" to suggest a release candidate, "" to
-// suggest a final release. Pure and side-effect-free so it's unit-testable
-// without any filesystem or git fixtures. An unrecognized policy value
-// falls through with no suggestion, same as "never".
+// enum ("always-rc" | "default-rc" | "continue-rc" | "never") plus whether
+// the bump target already has one or more existing RC tags into a
+// SuggestedPreRelease value for a VersionBumpOption: "rc" to suggest a
+// release candidate, "" to suggest a final release. Pure and side-effect-free
+// so it's unit-testable without any filesystem or git fixtures. An
+// unrecognized policy value falls through with no suggestion, same as
+// "never".
 func versionSuggestedPreRelease(policy string, hasExistingRCs bool) string {
 	switch policy {
-	case "always-rc":
+	case "always-rc", "default-rc":
 		return "rc"
 	case "continue-rc":
 		if hasExistingRCs {

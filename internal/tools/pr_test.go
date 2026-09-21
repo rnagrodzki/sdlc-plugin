@@ -387,10 +387,10 @@ func TestPrPrepare_HappyPath_JiraAndTemplate(t *testing.T) {
 		gitDefaultBranch: func(dir string) (string, error) { return "main", nil },
 		// Idle upstream: already caught up, so NeedsPush computation resolves
 		// without either field's error path.
-		gitHasUpstream:   func(dir string) (bool, error) { return true, nil },
-		gitCommitsAhead:  func(dir string) (int, error) { return 0, nil },
-		branchValidate:   branch.ValidateExpectedBranch,
-		jiraExtract:      func(branchName string) string { return detectJiraTicket(branchName, nil) },
+		gitHasUpstream:  func(dir string) (bool, error) { return true, nil },
+		gitCommitsAhead: func(dir string) (int, error) { return 0, nil },
+		branchValidate:  branch.ValidateExpectedBranch,
+		jiraExtract:     func(branchName string) string { return detectJiraTicket(branchName, nil) },
 		templateResolve: func(root string) (*prtemplate.Template, error) {
 			return &prtemplate.Template{
 				Path:     filepath.Join(root, paths.DataDir, "pr-template.md"),
@@ -2106,4 +2106,60 @@ func TestPrPrepareNext_IncludesVersionContext(t *testing.T) {
 			t.Errorf("prPrepareNext = %q, want %q", got, want)
 		}
 	})
+}
+
+// TestPrPrepare_ReleaseMarkerTemplateConflict covers the early gate in
+// prPrepareCoreWith: a custom PR template that already carries a release
+// marker must fail before any body is drafted, because pr_apply injects the
+// markers itself. Only internal/prtemplate tested ValidateReleaseCompat
+// before; nothing proved pr_prepare acts on its verdict.
+func TestPrPrepare_ReleaseMarkerTemplateConflict(t *testing.T) {
+	const tmplPath = "/mock/root/.sdlc-v2/pr-template.md"
+
+	rt := prRuntime{
+		ghAuthProbe: func(dir, host string) ghx.AuthProbeResult {
+			return ghx.AuthProbeResult{Authenticated: true, ActiveAccount: "someone"}
+		},
+		configReadSection: func(root, section string) (map[string]any, error) { return nil, nil },
+		configRead:        func(root string) (*config.Config, error) { return nil, nil },
+		execRun: func(name string, args []string, opts execx.Options) (string, error) {
+			return "", errors.New("fatal: no such remote 'origin'")
+		},
+		gitCurrentBranch: func(dir string) (string, error) { return "feat/add-thing", nil },
+		gitStatus:        func(dir string) (string, error) { return "", nil },
+		gitDefaultBranch: func(dir string) (string, error) { return "main", nil },
+		gitHasUpstream:   func(dir string) (bool, error) { return true, nil },
+		gitCommitsAhead:  func(dir string) (int, error) { return 0, nil },
+		branchValidate:   branch.ValidateExpectedBranch,
+		jiraExtract:      func(branchName string) string { return detectJiraTicket(branchName, nil) },
+		templateResolve: func(root string) (*prtemplate.Template, error) {
+			return &prtemplate.Template{
+				Path:     tmplPath,
+				Content:  "## Summary\n\n<!-- release-level: minor -->\n\n## Testing\n",
+				Headings: []string{"Summary", "Testing"},
+			}, nil
+		},
+	}
+
+	_, err := prPrepareCoreWith("/mock/root", "/mock/work", PRPrepareIn{SkipConfigCheck: true}, rt)
+	if err == nil {
+		t.Fatal("expected an error for a template carrying a release marker")
+	}
+
+	var domainErr *mcpserver.DomainError
+	if !errors.As(err, &domainErr) {
+		t.Fatalf("expected *mcpserver.DomainError, got %T: %v", err, err)
+	}
+	if !strings.Contains(domainErr.Msg, tmplPath) {
+		t.Errorf("Msg = %q, want it to name the template path", domainErr.Msg)
+	}
+	if !strings.Contains(domainErr.Msg, "release-level") {
+		t.Errorf("Msg = %q, want it to name the conflicting marker", domainErr.Msg)
+	}
+	if domainErr.Suggestion == "" {
+		t.Error("Suggestion must not be empty")
+	}
+	if domainErr.Cause == nil {
+		t.Error("Cause must carry the ValidateReleaseCompat error")
+	}
 }

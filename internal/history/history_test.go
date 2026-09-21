@@ -342,3 +342,41 @@ func TestFileWriter_AddDeferred_CorruptFile(t *testing.T) {
 		t.Fatal("expected error when deferred.json is corrupt, got nil")
 	}
 }
+
+// TestFileWriter_PathAccessors_MatchWrittenFiles pins that RunsPath and
+// DeferredPath name the files the writer really creates. Callers print these
+// paths in error messages, so a drift would point users at the wrong file.
+func TestFileWriter_PathAccessors_MatchWrittenFiles(t *testing.T) {
+	dir := t.TempDir()
+	w := NewFileWriter(dir)
+
+	if err := w.AppendRun(RunRecord{Timestamp: "2026-01-01T00:00:00Z", Skill: "ship", Outcome: "success"}); err != nil {
+		t.Fatalf("AppendRun: %v", err)
+	}
+	if err := w.AddDeferred(DeferredIssue{ID: "d1", Status: "open"}); err != nil {
+		t.Fatalf("AddDeferred: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		got  string
+		want string
+	}{
+		{"RunsPath", w.RunsPath(), filepath.Join(dir, "runs.jsonl")},
+		{"DeferredPath", w.DeferredPath(), filepath.Join(dir, "deferred.json")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.got != tc.want {
+				t.Errorf("path = %q, want %q", tc.got, tc.want)
+			}
+			info, err := os.Stat(tc.got)
+			if err != nil {
+				t.Fatalf("file not found at accessor path: %v", err)
+			}
+			if info.Size() == 0 {
+				t.Errorf("file at %q is empty, want the written record", tc.got)
+			}
+		})
+	}
+}

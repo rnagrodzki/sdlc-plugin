@@ -297,9 +297,11 @@ user.
 | **Failure modes** | Material change detected: re-dispatch from Step 3 (full) or Step 5 (non-material). |
 
 Before applying fixes, a `material_snapshot` captures 7 structural dimensions
-of the plan. After fixes, `material_compare` compares against the snapshot. A
-material change triggers re-dispatch to Step 3; a non-material change
-re-dispatches only Step 5.
+of the plan, writes them to a temp file (`sdlc-plan-snapshot-*/snapshot.json`)
+and returns its `snapshotPath`. After fixes, `material_compare` reads that
+`snapshotPath` back and compares it against the current plan. A material
+change triggers re-dispatch to Step 3; a non-material change re-dispatches
+only Step 5.
 
 The 7 snapshot dimensions (`PlanSnapshot` type in `plan_support.go`):
 `taskCount`, `deviationsRows`, `filesSet`, `contracts`, `dependsOn`,
@@ -434,8 +436,9 @@ sequenceDiagram
         else Issues found
             Note over O: Step 6 - apply fixes
             O->>PS: material_snapshot(planPath)
+            PS-->>O: {snapshotPath}
             Note over O: Apply fixes to plan
-            O->>PS: material_compare(planPath, snapshot)
+            O->>PS: material_compare(planPath, snapshotPath)
             alt Material change
                 Note over O: Re-dispatch Step 3 + Step 5
             else Non-material change
@@ -462,9 +465,11 @@ re-dispatches.
 
 The material-change detection uses `plan_support` actions:
 
-1. `material_snapshot` captures the 7 dimensions before fixes.
+1. `material_snapshot` captures the 7 dimensions before fixes, writes them to a
+   temp file and returns its `snapshotPath`.
 2. The orchestrator applies fixes.
-3. `material_compare` diffs against the snapshot and returns `{material: bool, triggers: []}`.
+3. `material_compare` is called with the same `filePath` plus that
+   `snapshotPath`, and returns `{material: bool, triggers: []}`.
 
 The `triggers` array names which dimensions changed (e.g., `"taskCount"`,
 `"contracts"`, `"dependsOn"`), giving the orchestrator visibility into what

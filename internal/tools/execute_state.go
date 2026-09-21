@@ -52,7 +52,7 @@ type ExecuteStateIn struct {
 	TasksJSON           string         `json:"tasksJson,omitempty" jsonschema_description:"wave-start: JSON array of task objects. Each entry: {id: string, name: string, description: string, complexity: string (optional — Trivial|Standard|Complex), contract: string (optional), acceptanceCriteria: string[] (optional — array of strings), files: string[] (optional), workerName: string (optional — caller-supplied dispatch identity, never invented; falls back to a generated template when omitted), batchId: string (optional — shared by every task in one batch dispatch; omit for a solo task), batchIndex: number (optional — this task's 0-based position within its batch)}. Entries missing required string fields (id, name, description) are dropped with a warning; if zero valid entries remain after filtering, the call fails with an error. Seeds server-owned dispatch state (dispatchedAt, workerName, batchId/batchIndex, attempt:1) for every valid task."`
 	RunID               string         `json:"runId,omitempty" jsonschema_description:"Execution run identifier. Required by task-context, wave-await, ledger_checkin, ledger_checkout, and ledger_status; optional elsewhere (e.g. wave-start for fact sheets, task-redispatch) where it falls back to the value derived from the state's startedAt/wave."`
 	WorkerID            string         `json:"workerId,omitempty" jsonschema_description:"Identifier of the per-task worker registering or clearing its ledger entry (ledger_checkin, ledger_checkout)."`
-	Decisions           string         `json:"decisions,omitempty" jsonschema_description:"wave-done only: free-text record of decisions made while completing the wave, surfaced in later summaries."`
+	Decisions           string         `json:"decisions,omitempty" jsonschema_description:"wave-done only: JSON array of decisions made while completing the wave, encoded as a string; surfaced in later summaries. Plain prose is rejected. Example: \"[\\\"Chose sqlite over postgres for the local cache\\\"]\"."`
 	Status              string         `json:"status,omitempty" jsonschema_description:"Outcome status to record: for wave-done/wave-fail, the wave's terminal status; for task-done, \"DONE_WITH_CONCERNS\" records a warning issue alongside the completion."`
 	TimedOut            bool           `json:"timedOut,omitempty" jsonschema_description:"wave-fail only: true when the wave failed because it timed out, rather than erroring outright."`
 	SHA                 string         `json:"sha,omitempty" jsonschema_description:"wave-committed only: the git commit SHA to record for the completed wave."`
@@ -60,20 +60,20 @@ type ExecuteStateIn struct {
 	TaskName            string         `json:"taskName,omitempty" jsonschema_description:"task-done only: human-readable name of the completed task, surfaced in the running-tally narration."`
 	Complexity          string         `json:"complexity,omitempty" jsonschema_description:"task-done only: complexity rating recorded for the completed task."`
 	Risk                string         `json:"risk,omitempty" jsonschema_description:"task-done only: risk rating recorded for the completed task."`
-	FilesChanged        string         `json:"filesChanged,omitempty" jsonschema_description:"task-done only: description of files the task changed, recorded on the task's completion record."`
-	FilesAdded          string         `json:"filesAdded,omitempty" jsonschema_description:"task-done only: description of files the task added, recorded on the task's completion record."`
-	VerifyToken         string         `json:"verifyToken,omitempty" jsonschema_description:"task-done only: verification token/evidence recorded for the completed task."`
+	FilesChanged        string         `json:"filesChanged,omitempty" jsonschema_description:"task-done only: JSON array of file paths the task changed, encoded as a string. Example: \"[\\\"src/auth/jwt.ts\\\",\\\"src/auth/oauth.ts\\\"]\"."`
+	FilesAdded          string         `json:"filesAdded,omitempty" jsonschema_description:"task-done only: JSON array of file paths the task created, encoded as a string. List only newly created files; each one belongs in filesChanged as well. Example: \"[\\\"src/auth/oauth.ts\\\"]\"."`
+	VerifyToken         string         `json:"verifyToken,omitempty" jsonschema_description:"task-done only: verification evidence for the completed task, encoded as a JSON string or a JSON array of strings. A bare token is rejected as invalid JSON. Example: \"[\\\"go test ./... ok\\\"]\" or \"\\\"go test ./... ok\\\"\"."`
 	SkippedDep          bool           `json:"skippedDependency,omitempty" jsonschema_description:"task-fail only: true when the failure is a skipped dependency rather than a real failure; only a non-skipped failure updates the wave's failedTask."`
 	ErrorText           string         `json:"error,omitempty" jsonschema_description:"Failure or concern detail text: the failure cause for wave-fail (recorded as an issue and in failedWave), the concern detail for task-done's DONE_WITH_CONCERNS status, or the failure detail for task-fail."`
-	Data                string         `json:"data,omitempty" jsonschema_description:"context action only: JSON object of shared context keys to write (allowed keys: planSummary, completedTaskIds, filesAdded, filesModified, interfacesCreated, decisionsFromPriorWaves)."`
+	Data                string         `json:"data,omitempty" jsonschema_description:"context action only: JSON object of shared context keys to write, encoded as a string (allowed keys: planSummary, completedTaskIds, filesAdded, filesModified, interfacesCreated, decisionsFromPriorWaves). Example: \"{\\\"planSummary\\\":\\\"Add OAuth login\\\"}\"."`
 	TTLDays             *int           `json:"ttlDays,omitempty" sdlcconfig:"state.gc.ttlDays" jsonschema_description:"gc only: age threshold in days beyond which stale state files are garbage-collected. Optional. Defaults to config state.gc.ttlDays. Pass only to override."`
 	DryRun              bool           `json:"dryRun,omitempty" jsonschema_description:"gc only: when true, reports what would be garbage-collected without deleting anything."`
 	MaxFiles            int            `json:"maxFiles,omitempty" sdlcconfig:"execute.priorWaveContextCaps.maxFiles" jsonschema_description:"Cap on the number of files summarized in prior-wave context (context, summarize-prior-wave-context). Optional. Defaults to config execute.priorWaveContextCaps.maxFiles. Pass only to override."`
 	MaxDecisions        int            `json:"maxDecisions,omitempty" sdlcconfig:"execute.priorWaveContextCaps.maxDecisions" jsonschema_description:"Cap on the number of decisions summarized in prior-wave context (context, summarize-prior-wave-context). Optional. Defaults to config execute.priorWaveContextCaps.maxDecisions. Pass only to override."`
 	MaxInterfaces       int            `json:"maxInterfaces,omitempty" sdlcconfig:"execute.priorWaveContextCaps.maxInterfaces" jsonschema_description:"Cap on the number of interfaces summarized in prior-wave context (context, summarize-prior-wave-context). Optional. Defaults to config execute.priorWaveContextCaps.maxInterfaces. Pass only to override."`
 	MaxTaskIds          int            `json:"maxTaskIds,omitempty" sdlcconfig:"execute.priorWaveContextCaps.maxTaskIds" jsonschema_description:"Cap on the number of task IDs summarized in prior-wave context (context, summarize-prior-wave-context). Optional. Defaults to config execute.priorWaveContextCaps.maxTaskIds. Pass only to override."`
-	Dispatched          string         `json:"dispatched,omitempty" jsonschema_description:"wave-split only: description of tasks already dispatched, used to compute which remaining tasks form the new wave."`
-	MissingIds          string         `json:"missingIds,omitempty" jsonschema_description:"wave-split only: task IDs missing from the current wave that should be folded into the new split wave."`
+	Dispatched          string         `json:"dispatched,omitempty" jsonschema_description:"wave-split only: JSON array of task ID strings already dispatched, encoded as a string; used to compute which remaining tasks form the new wave. Required by wave-split. Example: \"[\\\"1\\\",\\\"2\\\"]\"."`
+	MissingIds          string         `json:"missingIds,omitempty" jsonschema_description:"wave-split only: JSON array of task ID strings missing from the current wave, encoded as a string; these are folded into the new split wave. Example: \"[\\\"3\\\"]\"."`
 	SplitDepth          int            `json:"splitDepth,omitempty" jsonschema_description:"wave-split only: current recursive split depth, used together with maxSplitDepth to bound repeated splitting."`
 	MaxSplitDepth       int            `json:"maxSplitDepth,omitempty" jsonschema_description:"wave-split only: maximum recursive split depth allowed before wave-split refuses to split further."`
 	StateFile           string         `json:"stateFile,omitempty" jsonschema_description:"Overrides the execution state file path to read/write, instead of the one derived from branch (wave-split, verify-completeness, resume-reset). wave-await also reads this to persist its own resume-state (iteration counter) across bounded-poll calls, keyed by runId+wave."`
@@ -519,7 +519,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - wave-fail: Fail a wave. Returns narration (summary, display with failure cause). Requires wave. Optional: branch, timedOut, error (failure cause, recorded as an issue and in failedWave), status, detail ("concise"|"full").
 - wave-committed: Record a commit SHA for a completed wave. Requires wave. Optional: branch, sha.
 - wave-commit: Stage and commit a completed wave's changes (git add -A + git commit -m message) and record the resulting sha on the wave, mirroring wave-committed's SHA-recording. Requires wave, message. Optional: branch, detail ("concise"|"full"). The wave must already be "completed" (call wave-done first). Empty diff: succeeds without committing ({committed:false, reason:"nothing to commit"}). When config execute.commitWaves is false, does not commit and instead returns an instruction to commit manually and call wave-committed. Idempotent on resume: an already-recorded committedSha that is still an ancestor of HEAD is reported ({idempotent:true}) rather than committed again.
-- task-done: Record task completion. Returns narration (summary with running tally, warnings[] when phantom-success heuristics fire). Requires wave, taskId. Optional: branch, taskName, complexity, risk, filesChanged, filesAdded, verifyToken, status ("DONE_WITH_CONCERNS" records a warning issue), error (concern detail for DONE_WITH_CONCERNS).
+- task-done: Record task completion. Returns narration (summary with running tally, warnings[] when phantom-success heuristics fire). Requires wave, taskId. Optional: branch, taskName, complexity, risk, filesChanged, filesAdded, verifyToken, status ("DONE_WITH_CONCERNS" records a warning issue), error (concern detail for DONE_WITH_CONCERNS). A taskId that is not in a non-empty plannedTaskIds is still recorded, with a warning that names it.
 - task-fail: Record task failure. Returns narration (summary with running tally). Requires wave, taskId. Optional: branch, error, skippedDependency (records an issue; only a non-skipped failure updates failedTask). Idempotent: a repeat call for a task already recorded as failed/skipped at the same attempt is a no-op — it does not duplicate the issue log or move completedAt forward.
 - task-redispatch: Reopen a failed task for another attempt. Requires taskId. Optional: branch, runId, wave (searches every wave for the task's closed row when omitted). Re-opens the task's wave-manifest row to "in_progress", then deletes and re-seeds the task's server state with a fresh dispatchedAt and attempt+1 — contextFetchedAt, reclaimRequestedAt, and batchId all come back empty, since a redispatch is always solo even if the failed attempt was batched. Refuses with a DomainError (Suggestion names user escalation) at the 2-retry ceiling (attempt already at 3) instead of seeding a 4th attempt.
 - task-context: Return everything a dispatched per-task worker needs in one call — fact-sheet content (embeds the plan-task's Contract/Acceptance Criteria/Files), a live prior-wave summary, verify guidance, and report-back instructions. Requires taskId. Optional: branch, runId (falls back the same way wave-start does, via startedAt/wave). The serialized payload is capped at 1 MiB; oversize content (fact sheet first, then prior-wave summary if still over cap) is truncated with truncated:true rather than erroring. Unknown taskId fails with an actionable error listing the valid IDs for that run. Stamps the task's server-state contextFetchedAt the first time it's called for that task; never overwrites it on later calls.
@@ -529,7 +529,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - gc: Garbage-collect stale state files. Optional: ttlDays, dryRun, branch.
 - summarize-prior-wave-context: Summarize context from prior waves. Optional: branch, maxFiles, maxDecisions, maxInterfaces, maxTaskIds.
 - wave-split: Split remaining tasks into a new wave. Requires dispatched. Optional: wave, missingIds, branch, splitDepth, maxSplitDepth, stateFile.
-- verify-completeness: Verify all planned tasks are accounted for. Optional: branch, stateFile.
+- verify-completeness: Verify all planned tasks are accounted for. Optional: branch, stateFile. When planned tasks are missing, the error also names any recorded task ids that are not in plannedTaskIds.
 - wave-progress: Read/write per-task progress. Requires runId. For reads: readProgress=true. For writes: taskId, phase. Optional: lastCompletedTask (recorded in the heartbeat entry).
 - wave-await: Bounded, non-blocking poll of a wave's still-open tasks, classifying each against its server-owned dispatch state (never-started/stalled/timeout/none) and returning explicit next-instructions (including the exact task-fail/task-redispatch call shape) for whatever it finds. Requires runId, wave. Optional: branch, stateFile (also used to persist wave-await's own resume-state, i.e. the iteration counter, across bounded-poll calls).
 - resume-reset: Reset in-progress waves for session resume. Optional: branch, stateFile. Returns {resetWaves, clearedTaskIds} as before; when the run is still in flight after the reset, the response also carries a "resumeBriefing" (same shape as read's) reflecting the sets it just cleared — resume-reset's willRedo always matches the task IDs in clearedTaskIds. Reseeds fresh server-owned dispatch state (attempt reset to 1) for every cleared task ID; seeding failure is non-fatal and appends to a "warnings" field.
@@ -543,7 +543,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - decide: Record a guardrail decision (append-only — never goes through the context action, never overwrites; distinct from ship state's own "decide" action, which writes a differently-shaped {step, decision} entry under a different key). Appends {decideType, id, decision, reason} to the state file's guardrailDecisions list. Requires decideType, decideId. Optional: decideDecision, decideReason, branch. Returns {ok:true, action:"decide", next:"..."}.
 - report: Assemble the end-of-run execution report (KD-11). With write omitted or false, this is read-only (never writes state or any file). Gated by config automation.report: {enabled:false} returns {skipped:true, written:false} immediately and nothing else — regardless of write. Otherwise returns {branch, runId, planPath, startedAt, duration, format, waves[{number, status, startedAt, completedAt, duration, tasks[{id, name, status, complexity, risk, filesChanged}], committedSha}], totalTasks, completedTasks, failedTasks, skippedTasks, drifts, errors, warnings, concerns, pendingIssueDrafts, deferredFindings, decisions, path, written, next}. format is "json" or "md" (default) from config, or overridden by the format input field. write:true persists the report under <main worktree>/.sdlc-v2/reports/<runId>-report.<ext> and sets path/written on the response instead of leaving the caller to construct that path itself. For format=json, write:true alone is enough — the tool recomputes and writes the full struct. For format=md, write:true additionally requires body (the caller's own rendered markdown) — the tool persists that exact text rather than rendering it again. Optional: branch, write, format, body.
 
-Returns a JSON envelope: {"ok":true, "data":{...}} on success, {"ok":false, "code":"...", "error":"..."} on failure.`,
+Returns Markdown: a "# execute_state — ok" heading, a **Next:** line, then the fields above. Failures return "# execute_state — error (<code>)" with a "## What happened" and a "## Do this" section.`,
 		mcpserver.Annotations{
 			Title:       "Read or update execute run state",
 			ReadOnly:    false,
@@ -898,6 +898,28 @@ func execNormalizeTaskID(id string) string {
 		return s[1:]
 	}
 	return s
+}
+
+// execPlannedTaskIDs returns the run's planned task ids: the top-level
+// plannedTaskIds, else context.plannedTaskIds. It returns nil when neither
+// key is present, and an empty non-nil slice for an empty plan.
+func execPlannedTaskIDs(data map[string]any) []string {
+	ids := anyToStringSlice(data["plannedTaskIds"])
+	if ids == nil {
+		if ctx, ok := data["context"].(map[string]any); ok {
+			ids = anyToStringSlice(ctx["plannedTaskIds"])
+		}
+	}
+	return ids
+}
+
+// execNormalizedIDSet returns the set of normalized forms of ids.
+func execNormalizedIDSet(ids []string) map[string]bool {
+	set := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		set[execNormalizeTaskID(id)] = true
+	}
+	return set
 }
 
 // execValidateSafeID validates that an ID matches the safe pattern.
@@ -1499,13 +1521,13 @@ func execActionReport(root, workDir string, in ExecuteStateIn, now func() time.T
 func execWriteReportFile(root, runID, ext string, content any) (string, error) {
 	dir := filepath.Join(root, paths.DataDir, "reports")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", &mcpserver.InfraError{Msg: "mkdir reports dir: " + err.Error(), Cause: err, Suggestion: "Check that .sdlc-v2/ is writable and there is no file named reports/ blocking directory creation."}
+		return "", &mcpserver.InfraError{Msg: "mkdir reports dir: " + err.Error(), Cause: err, Suggestion: "Check that " + paths.DataDir + "/ is writable and there is no file named reports/ blocking directory creation."}
 	}
 	path := filepath.Join(dir, runID+"-report."+ext)
 
 	if ext == "json" {
 		if err := fsx.AtomicWriteJSON(path, content); err != nil {
-			return "", &mcpserver.InfraError{Msg: "write report: " + err.Error(), Cause: err, Suggestion: "Check disk space and write permissions on .sdlc-v2/reports/, then retry."}
+			return "", &mcpserver.InfraError{Msg: "write report: " + err.Error(), Cause: err, Suggestion: "Check disk space and write permissions on " + paths.DataDir + "/reports/, then retry."}
 		}
 		return path, nil
 	}
@@ -1516,21 +1538,21 @@ func execWriteReportFile(root, runID, ext string, content any) (string, error) {
 	}
 	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
 	if err != nil {
-		return "", &mcpserver.InfraError{Msg: "create temp report file: " + err.Error(), Cause: err, Suggestion: "Check disk space and write permissions on .sdlc-v2/reports/, then retry."}
+		return "", &mcpserver.InfraError{Msg: "create temp report file: " + err.Error(), Cause: err, Suggestion: "Check disk space and write permissions on " + paths.DataDir + "/reports/, then retry."}
 	}
 	tmpName := tmp.Name()
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		os.Remove(tmpName)
-		return "", &mcpserver.InfraError{Msg: "write temp report file: " + err.Error(), Cause: err, Suggestion: "Check disk space on the .sdlc-v2/reports/ volume, then retry."}
+		return "", &mcpserver.InfraError{Msg: "write temp report file: " + err.Error(), Cause: err, Suggestion: "Check disk space on the " + paths.DataDir + "/reports/ volume, then retry."}
 	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpName)
-		return "", &mcpserver.InfraError{Msg: "close temp report file: " + err.Error(), Cause: err, Suggestion: "Retry the write; if this persists, check for a filesystem or disk issue on .sdlc-v2/reports/."}
+		return "", &mcpserver.InfraError{Msg: "close temp report file: " + err.Error(), Cause: err, Suggestion: "Retry the write; if this persists, check for a filesystem or disk issue on " + paths.DataDir + "/reports/."}
 	}
 	if err := os.Rename(tmpName, path); err != nil {
 		os.Remove(tmpName)
-		return "", &mcpserver.InfraError{Msg: "rename temp report file into place: " + err.Error(), Cause: err, Suggestion: "Check that .sdlc-v2/reports/ is on a single filesystem and writable, then retry."}
+		return "", &mcpserver.InfraError{Msg: "rename temp report file into place: " + err.Error(), Cause: err, Suggestion: "Check that " + paths.DataDir + "/reports/ is on a single filesystem and writable, then retry."}
 	}
 	return path, nil
 }
@@ -1921,7 +1943,7 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 	// convention for this action — a genuinely missing config (never ran
 	// /setup) or a too-new schema is reported the same way as any other
 	// execActionInit validation failure: a Go error mapped to the tool's
-	// {"ok":false,...} envelope.
+	// rendered "error (data)" result.
 	changes, backupPath, err := configmigrate.MigrateWithBackup(root)
 	if err != nil {
 		return nil, &mcpserver.DataError{Msg: fmt.Sprintf("config-version: %s", err.Error()), Cause: err}
@@ -2388,7 +2410,10 @@ func stringOrEmpty(v any) string {
 
 func execActionWaveDone(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	if in.Wave == nil {
-		return nil, &mcpserver.DomainError{Msg: "--wave is required"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "--wave is required",
+			Suggestion: "Pass wave as the wave number, e.g. execute_state {action:\"wave-done\", wave:1}.",
+		}
 	}
 	if err := execValidateDetail(in); err != nil {
 		return nil, err
@@ -2399,7 +2424,11 @@ func execActionWaveDone(root, workDir string, in ExecuteStateIn, now func() time
 	var decisions []any
 	if in.Decisions != "" {
 		if err := json.Unmarshal([]byte(in.Decisions), &decisions); err != nil {
-			return nil, &mcpserver.DomainError{Msg: "decisions is not valid JSON: " + err.Error(), Cause: err}
+			return nil, &mcpserver.DomainError{
+				Msg:        "decisions is not valid JSON: " + err.Error(),
+				Suggestion: "Pass decisions as a string with a JSON array of strings, e.g. [\"Chose sqlite over postgres\"]. Plain prose is not valid JSON.",
+				Cause:      err,
+			}
 		}
 	}
 
@@ -2424,7 +2453,10 @@ func execActionWaveDone(root, workDir string, in ExecuteStateIn, now func() time
 		status = "completed"
 	}
 	if status != "completed" && status != "partial" {
-		return nil, &mcpserver.DomainError{Msg: "--status must be one of completed, partial"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "--status must be one of completed, partial",
+			Suggestion: "Pass status as \"completed\" or \"partial\", or leave it out to use \"completed\".",
+		}
 	}
 	w["status"] = status
 	if in.TimedOut {
@@ -2444,7 +2476,11 @@ func execActionWaveDone(root, workDir string, in ExecuteStateIn, now func() time
 	ctx["decisionsFromPriorWaves"] = decArr
 
 	if err := state.Write(st); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        "write state: " + err.Error(),
+			Suggestion: "Check that " + paths.DataDir + "/" + paths.RunsSubdir + "/ is writable and the disk is not full, then retry wave-done.",
+			Cause:      err,
+		}
 	}
 
 	// Build narration.
@@ -2838,17 +2874,27 @@ func execActionWaveCommit(root, workDir string, in ExecuteStateIn) (any, error) 
 
 func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	if in.Wave == nil {
-		return nil, &mcpserver.DomainError{Msg: "--wave is required"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "--wave is required",
+			Suggestion: "Pass wave as the wave number of this task, e.g. execute_state {action:\"task-done\", wave:1, taskId:\"<taskId>\"}.",
+		}
 	}
 	if in.TaskID == "" {
-		return nil, &mcpserver.DomainError{Msg: "taskId is required"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "taskId is required",
+			Suggestion: "Pass taskId, e.g. execute_state {action:\"task-done\", wave:1, taskId:\"<taskId>\"}.",
+		}
 	}
 
 	// Parse filesChanged.
 	var filesChanged []any
 	if in.FilesChanged != "" {
 		if err := json.Unmarshal([]byte(in.FilesChanged), &filesChanged); err != nil {
-			return nil, &mcpserver.DomainError{Msg: "filesChanged is not valid JSON: " + err.Error(), Cause: err}
+			return nil, &mcpserver.DomainError{
+				Msg:        "filesChanged is not valid JSON: " + err.Error(),
+				Suggestion: "Pass filesChanged as a string with a JSON array of file paths, e.g. [\"internal/tools/foo.go\",\"internal/tools/bar.go\"].",
+				Cause:      err,
+			}
 		}
 	}
 
@@ -2856,7 +2902,11 @@ func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time
 	var filesAdded []any
 	if in.FilesAdded != "" {
 		if err := json.Unmarshal([]byte(in.FilesAdded), &filesAdded); err != nil {
-			return nil, &mcpserver.DomainError{Msg: "filesAdded is not valid JSON: " + err.Error(), Cause: err}
+			return nil, &mcpserver.DomainError{
+				Msg:        "filesAdded is not valid JSON: " + err.Error(),
+				Suggestion: "Pass filesAdded as a string with a JSON array of new file paths, e.g. [\"internal/tools/foo.go\"]. Each path must also be in filesChanged.",
+				Cause:      err,
+			}
 		}
 	}
 
@@ -2866,7 +2916,11 @@ func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time
 	if in.VerifyToken != "" {
 		var raw any
 		if err := json.Unmarshal([]byte(in.VerifyToken), &raw); err != nil {
-			return nil, &mcpserver.DomainError{Msg: "verifyToken is not valid JSON: " + err.Error(), Cause: err}
+			return nil, &mcpserver.DomainError{
+				Msg:        "verifyToken is not valid JSON: " + err.Error(),
+				Suggestion: "Pass verifyToken as a JSON array of strings, e.g. [\"go test ./... ok\"], or as one quoted JSON string. A bare word without quotes is not valid JSON.",
+				Cause:      err,
+			}
 		}
 		switch v := raw.(type) {
 		case string:
@@ -2874,7 +2928,10 @@ func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time
 		case []any:
 			verifyTokens = v
 		default:
-			return nil, &mcpserver.DomainError{Msg: "verifyToken must be a JSON array or string"}
+			return nil, &mcpserver.DomainError{
+				Msg:        "verifyToken must be a JSON array or string",
+				Suggestion: "Pass verifyToken as a JSON array of strings, e.g. [\"go test ./... ok\"], or as one quoted JSON string.",
+			}
 		}
 	}
 
@@ -2889,7 +2946,8 @@ func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time
 		if s, ok := f.(string); ok {
 			if !changedSet[s] {
 				return nil, &mcpserver.DomainError{
-					Msg: fmt.Sprintf("filesAdded entry %q is not present in filesChanged (filesAdded must be a subset of filesChanged)", s),
+					Msg:        fmt.Sprintf("filesAdded entry %q is not present in filesChanged (filesAdded must be a subset of filesChanged)", s),
+					Suggestion: fmt.Sprintf("Add %q to filesChanged, or remove it from filesAdded, then call task-done again.", s),
 				}
 			}
 		}
@@ -2950,6 +3008,12 @@ func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time
 	}
 	if len(filesChanged) == 0 && in.Status != "FAILED" {
 		warnings = append(warnings, "no files reported changed — verify task produced real output")
+	}
+	// A run without a plan (nil or empty plannedTaskIds) has nothing to check against.
+	if planned := execPlannedTaskIDs(st.Data); len(planned) > 0 && !execNormalizedIDSet(planned)[execNormalizeTaskID(in.TaskID)] {
+		warnings = append(warnings, fmt.Sprintf(
+			"taskId %q is not in plannedTaskIds — recorded anyway, but verify-completeness will not count it toward any planned task",
+			in.TaskID))
 	}
 
 	taskEntry := map[string]any{
@@ -3032,7 +3096,11 @@ func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time
 	ctx["completedTaskIds"] = ctArr
 
 	if err := state.Write(st); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        "write state: " + err.Error(),
+			Suggestion: "Check that " + paths.DataDir + "/" + paths.RunsSubdir + "/ is writable and the disk is not full, then retry task-done.",
+			Cause:      err,
+		}
 	}
 
 	// Narration: running tally.
@@ -3549,7 +3617,10 @@ func execRenderPriorWaveSummary(summary map[string]any) string {
 func execActionTaskContext(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	taskID := strings.TrimSpace(in.TaskID)
 	if taskID == "" {
-		return nil, &mcpserver.DomainError{Msg: "taskId is required for task-context"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "taskId is required for task-context",
+			Suggestion: "Pass taskId, e.g. execute_state {action:\"task-context\", runId:\"<runId>\", taskId:\"<taskId>\"}.",
+		}
 	}
 
 	branch, err := execResolveBranch(in.Branch, workDir)
@@ -3583,20 +3654,38 @@ func execActionTaskContext(root, workDir string, in ExecuteStateIn, now func() t
 		if errors.Is(err, wave.ErrFactsheetNotFound) {
 			ids, listErr := wave.ListFactsheetIDs(root, runID)
 			if listErr != nil {
-				return nil, &mcpserver.InfraError{Msg: "list fact sheets: " + listErr.Error(), Cause: listErr}
+				return nil, &mcpserver.InfraError{
+					Msg:        "list fact sheets: " + listErr.Error(),
+					Suggestion: "Check that " + paths.DataDir + "/" + paths.RunsSubdir + "/" + runID + "/ is a readable directory, then retry task-context.",
+					Cause:      listErr,
+				}
 			}
 			msg := fmt.Sprintf("no fact sheet for task %q under run %q", taskID, runID)
 			if len(ids) > 0 {
-				msg += "; valid task IDs: " + strings.Join(ids, ", ")
-			} else {
-				msg += "; run has no fact sheets yet (call wave-start first)"
+				return nil, &mcpserver.DomainError{
+					Msg:        msg + "; valid task IDs: " + strings.Join(ids, ", "),
+					Suggestion: fmt.Sprintf("Call task-context again with taskId set to one of: %s.", strings.Join(ids, ", ")),
+					Cause:      err,
+				}
 			}
-			return nil, &mcpserver.DomainError{Msg: msg, Cause: err}
+			return nil, &mcpserver.DomainError{
+				Msg:        msg + "; run has no fact sheets yet (call wave-start first)",
+				Suggestion: fmt.Sprintf("Call execute_state wave-start for run %q to write its fact sheets, then retry task-context.", runID),
+				Cause:      err,
+			}
 		}
 		if errors.Is(err, wave.ErrBadRunID) {
-			return nil, &mcpserver.DomainError{Msg: err.Error(), Cause: err}
+			return nil, &mcpserver.DomainError{
+				Msg:        err.Error(),
+				Suggestion: "Pass runId exactly as returned by execute_state wave-start (runId field; only letters, digits, underscore, hyphen), then retry task-context.",
+				Cause:      err,
+			}
 		}
-		return nil, &mcpserver.InfraError{Msg: "read fact sheet: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        "read fact sheet: " + err.Error(),
+			Suggestion: fmt.Sprintf("Make sure the fact sheet file for task %q (path above) is readable, then retry task-context.", taskID),
+			Cause:      err,
+		}
 	}
 
 	// Stamp contextFetchedAt on server state exactly once. A missing server
@@ -3605,11 +3694,19 @@ func execActionTaskContext(root, workDir string, in ExecuteStateIn, now func() t
 	// bookkeeping absence. Once set, contextFetchedAt is never overwritten
 	// by a later call.
 	if s, found, lerr := wave.LoadServerState(root, runID, taskID); lerr != nil {
-		return nil, &mcpserver.InfraError{Msg: "load server state for task " + taskID + ": " + lerr.Error(), Cause: lerr}
+		return nil, &mcpserver.InfraError{
+			Msg:        "load server state for task " + taskID + ": " + lerr.Error(),
+			Suggestion: "Check that " + paths.DataDir + "/" + paths.RunsSubdir + "/" + runID + "/progress/" + taskID + ".server.json is readable and holds valid JSON, then retry task-context.",
+			Cause:      lerr,
+		}
 	} else if found && s.ContextFetchedAt == "" {
 		s.ContextFetchedAt = waveAwaitFormat(now())
 		if err := wave.StoreServerState(root, runID, taskID, s); err != nil {
-			return nil, &mcpserver.InfraError{Msg: "stamp contextFetchedAt for task " + taskID + ": " + err.Error(), Cause: err}
+			return nil, &mcpserver.InfraError{
+				Msg:        "stamp contextFetchedAt for task " + taskID + ": " + err.Error(),
+				Suggestion: "Check that " + paths.DataDir + "/" + paths.RunsSubdir + "/" + runID + "/progress/ is writable and the disk is not full, then retry task-context.",
+				Cause:      err,
+			}
 		}
 	}
 
@@ -4193,18 +4290,29 @@ func execActionSummarizePriorWaveContext(root, workDir string, in ExecuteStateIn
 
 func execActionWaveSplit(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	if in.Dispatched == "" {
-		return nil, &mcpserver.DomainError{Msg: "--dispatched is required (JSON array of task ID strings)"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "--dispatched is required (JSON array of task ID strings)",
+			Suggestion: "Pass dispatched as a string with a JSON array of the dispatched task IDs, e.g. [\"1\",\"2\",\"3\"].",
+		}
 	}
 
 	var dispatched []any
 	if err := json.Unmarshal([]byte(in.Dispatched), &dispatched); err != nil {
-		return nil, &mcpserver.DomainError{Msg: "dispatched is not valid JSON: " + err.Error(), Cause: err}
+		return nil, &mcpserver.DomainError{
+			Msg:        "dispatched is not valid JSON: " + err.Error(),
+			Suggestion: "Pass dispatched as a string with a JSON array of task IDs, e.g. [\"1\",\"2\",\"3\"]. Put double quotes around each ID.",
+			Cause:      err,
+		}
 	}
 
 	var missingIds []any
 	if in.MissingIds != "" {
 		if err := json.Unmarshal([]byte(in.MissingIds), &missingIds); err != nil {
-			return nil, &mcpserver.DomainError{Msg: "missingIds is not valid JSON: " + err.Error(), Cause: err}
+			return nil, &mcpserver.DomainError{
+				Msg:        "missingIds is not valid JSON: " + err.Error(),
+				Suggestion: "Pass missingIds as a string with a JSON array of task IDs, e.g. [\"3\"]. Or leave missingIds out.",
+				Cause:      err,
+			}
 		}
 	}
 
@@ -4233,7 +4341,8 @@ func execActionWaveSplit(root, workDir string, in ExecuteStateIn, now func() tim
 	// constant MaxSplitDepth=3). If the user's max is lower, gate here.
 	if splitDepth >= maxSplitDepth {
 		return nil, &mcpserver.DomainError{
-			Msg: fmt.Sprintf("splitDepth %d exceeds maxSplitDepth %d — manual escalation required", splitDepth, maxSplitDepth),
+			Msg:        fmt.Sprintf("splitDepth %d exceeds maxSplitDepth %d — manual escalation required", splitDepth, maxSplitDepth),
+			Suggestion: "Do not call wave-split again. Escalate the tasks in missingIds: call AskUserQuestion at top level, or halt the wave and return missingIds to the parent orchestrator when nested or under pipelineAuto.",
 		}
 	}
 
@@ -4244,9 +4353,17 @@ func execActionWaveSplit(root, workDir string, in ExecuteStateIn, now func() tim
 	if err != nil {
 		var maxErr *wave.MaxSplitDepthExceededError
 		if errors.As(err, &maxErr) {
-			return nil, &mcpserver.DomainError{Msg: err.Error(), Cause: err}
+			return nil, &mcpserver.DomainError{
+				Msg:        err.Error(),
+				Suggestion: "Escalate the unresolved task IDs from missingIds instead of retrying: call AskUserQuestion when running at top level; when running nested or under pipelineAuto, halt the wave and return missingIds to the parent orchestrator.",
+				Cause:      err,
+			}
 		}
-		return nil, &mcpserver.InfraError{Msg: "wave split: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        "wave split: " + err.Error(),
+			Suggestion: "Retry wave-split once with the same input. If it fails again, stop the wave and show this error to the user.",
+			Cause:      err,
+		}
 	}
 
 	// Build result matching JS shape.
@@ -4342,8 +4459,9 @@ func execActionVerifyCompleteness(root, workDir string, in ExecuteStateIn) (any,
 	if in.StateFile != "" {
 		if err := fsx.ReadJSON(in.StateFile, &data); err != nil {
 			return nil, &mcpserver.DomainError{
-				Msg:   fmt.Sprintf("cannot read state file %q: %s", in.StateFile, err.Error()),
-				Cause: err,
+				Msg:        fmt.Sprintf("cannot read state file %q: %s", in.StateFile, err.Error()),
+				Suggestion: "Pass stateFile as the path to an existing execute state JSON file, or leave stateFile out to use the state file for the current branch.",
+				Cause:      err,
 			}
 		}
 	} else {
@@ -4389,16 +4507,11 @@ func execActionVerifyCompleteness(root, workDir string, in ExecuteStateIn) (any,
 	}
 
 	// Determine planned task IDs.
-	plannedIDs := anyToStringSlice(data["plannedTaskIds"])
-	if plannedIDs == nil {
-		if ctx, ok := data["context"].(map[string]any); ok {
-			plannedIDs = anyToStringSlice(ctx["plannedTaskIds"])
-		}
-	}
-
+	plannedIDs := execPlannedTaskIDs(data)
 	if plannedIDs == nil {
 		return nil, &mcpserver.DomainError{
-			Msg: "verify-completeness cannot find plannedTaskIds in state — invariant check cannot run",
+			Msg:        "verify-completeness cannot find plannedTaskIds in state — invariant check cannot run",
+			Suggestion: "This run has no plannedTaskIds. Start a new run with execute_state action \"init\" and plannedTaskIds set to an array of the planned task IDs, e.g. [\"1\",\"2\",\"3\"].",
 		}
 	}
 
@@ -4431,9 +4544,29 @@ func execActionVerifyCompleteness(root, workDir string, in ExecuteStateIn) (any,
 	}
 
 	// Incomplete — DataError (JS exit 65).
+	msg := fmt.Sprintf("incomplete: %d of %d planned tasks unaccounted (missingIds: %s)",
+		len(missingIDs), totalPlanned, strings.Join(missingIDs, ", "))
+
+	// A recorded id outside the plan (usually a typo of a missing id) never
+	// counts toward completeness. Sorted so the message is deterministic.
+	plannedSet := execNormalizedIDSet(plannedIDs)
+	var unknownIDs []string
+	for id := range accountedByID {
+		if !plannedSet[execNormalizeTaskID(id)] {
+			unknownIDs = append(unknownIDs, id)
+		}
+	}
+	if len(unknownIDs) > 0 {
+		sort.Strings(unknownIDs)
+		unknown := strings.Join(unknownIDs, ", ")
+		return nil, &mcpserver.DataError{
+			Msg:        msg + "; unknown ids recorded: " + unknown,
+			Suggestion: fmt.Sprintf("Compare the unknown ids (%s) with plannedTaskIds. If one is a typo for a missing id, call task-done again with the planned id. Then call task-done or task-fail for each id in missingIds and run verify-completeness again.", unknown),
+		}
+	}
 	return nil, &mcpserver.DataError{
-		Msg: fmt.Sprintf("incomplete: %d of %d planned tasks unaccounted (missingIds: %s)",
-			len(missingIDs), totalPlanned, strings.Join(missingIDs, ", ")),
+		Msg:        msg,
+		Suggestion: "Call task-done or task-fail for each id in missingIds, then call verify-completeness again.",
 	}
 }
 
@@ -4482,13 +4615,20 @@ func execWaveStallTimeouts(root, branch string) (rawInterval, totalTimeout time.
 
 func execActionWaveProgress(root string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	if in.RunID == "" {
-		return nil, &mcpserver.DomainError{Msg: "runId is required"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "runId is required",
+			Suggestion: "Pass runId exactly as returned by execute_state wave-start (runId field), then retry wave-progress.",
+		}
 	}
 
 	if in.ReadProgress {
 		p, err := wave.ReadProgress(root, in.RunID)
 		if err != nil {
-			return nil, &mcpserver.DomainError{Msg: "read progress: " + err.Error(), Cause: err}
+			return nil, &mcpserver.DomainError{
+				Msg:        "read progress: " + err.Error(),
+				Suggestion: "Pass runId exactly as returned by execute_state wave-start (only letters, digits, underscore, hyphen), then retry wave-progress.",
+				Cause:      err,
+			}
 		}
 
 		tasks := make(map[string]TaskProgressWithStall, len(p.Tasks))
@@ -4499,7 +4639,10 @@ func execActionWaveProgress(root string, in ExecuteStateIn, now func() time.Time
 	}
 
 	if in.TaskID == "" {
-		return nil, &mcpserver.DomainError{Msg: "taskId is required (write mode)"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "taskId is required (write mode)",
+			Suggestion: "Pass taskId and phase to record progress, or set readProgress:true to read the progress of every task.",
+		}
 	}
 
 	fields := wave.ProgressFields{
@@ -4509,9 +4652,17 @@ func execActionWaveProgress(root string, in ExecuteStateIn, now func() time.Time
 	}
 	if err := wave.UpdateProgress(root, in.RunID, in.TaskID, in.Phase, in.LastCompletedTask, fields); err != nil {
 		if errors.Is(err, wave.ErrBadRunID) || errors.Is(err, wave.ErrBadPhase) {
-			return nil, &mcpserver.DomainError{Msg: err.Error(), Cause: err}
+			return nil, &mcpserver.DomainError{
+				Msg:        err.Error(),
+				Suggestion: "Pass a runId matching [A-Za-z0-9_-] and a phase from started|reading|editing|verifying|reporting, then retry wave-progress.",
+				Cause:      err,
+			}
 		}
-		return nil, &mcpserver.InfraError{Msg: "update progress: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        "update progress: " + err.Error(),
+			Suggestion: "Check that " + paths.DataDir + "/" + paths.RunsSubdir + "/" + in.RunID + "/progress/ is writable and the disk is not full, then retry wave-progress.",
+			Cause:      err,
+		}
 	}
 	return map[string]any{}, nil
 }
@@ -5027,7 +5178,7 @@ func execActionLedgerCheckout(root string, in ExecuteStateIn, now func() time.Ti
 	if len(in.Findings) > execFindingsMaxBytes {
 		return nil, &mcpserver.DomainError{
 			Msg:        fmt.Sprintf("findings is %d bytes, exceeds cap of %d bytes", len(in.Findings), execFindingsMaxBytes),
-			Suggestion: "Trim the findings payload, or persist it to a file under .sdlc-v2/ and reference that path instead of inlining the full content.",
+			Suggestion: "Trim the findings payload, or persist it to a file under " + paths.DataDir + "/ and reference that path instead of inlining the full content.",
 		}
 	}
 
@@ -5041,7 +5192,7 @@ func execActionLedgerCheckout(root string, in ExecuteStateIn, now func() time.Ti
 	if err := fsx.ReadJSON(fp, &existing); err != nil && !errors.Is(err, fsx.ErrNotFound) {
 		return nil, &mcpserver.DomainError{
 			Msg:        "read existing ledger entry: " + err.Error(),
-			Suggestion: "The ledger file for this worker may be corrupted. Inspect or remove it under .sdlc-v2/, then retry checkout.",
+			Suggestion: "The ledger file for this worker may be corrupted. Inspect or remove it under " + paths.DataDir + "/, then retry checkout.",
 		}
 	}
 
@@ -5216,7 +5367,7 @@ func execActionLedgerCleanup(root string, in ExecuteStateIn) (any, error) {
 			return nil, &mcpserver.InfraError{
 				Msg:        "stat ledger dir: " + err.Error(),
 				Cause:      err,
-				Suggestion: "Check filesystem permissions on .sdlc-v2/runs/ledger/ and retry.",
+				Suggestion: "Check filesystem permissions on " + paths.DataDir + "/runs/ledger/ and retry.",
 			}
 		}
 		removed = false
@@ -5235,7 +5386,7 @@ func execActionLedgerCleanup(root string, in ExecuteStateIn) (any, error) {
 		return nil, &mcpserver.InfraError{
 			Msg:        "remove ledger dir: " + err.Error(),
 			Cause:      err,
-			Suggestion: "Check filesystem permissions on .sdlc-v2/runs/ledger/ and retry.",
+			Suggestion: "Check filesystem permissions on " + paths.DataDir + "/runs/ledger/ and retry.",
 		}
 	}
 

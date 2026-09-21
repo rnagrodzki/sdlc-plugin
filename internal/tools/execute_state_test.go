@@ -1721,6 +1721,75 @@ func TestExecState_TaskDone_EmptyFilesChangedWarning(t *testing.T) {
 	}
 }
 
+// TestExecState_TaskDone_UnknownTaskID confirms a taskId outside a non-empty
+// plannedTaskIds is still recorded but flagged with a warning, and that
+// normalized matches (1 vs T1) and plan-less runs stay silent.
+func TestExecState_TaskDone_UnknownTaskID(t *testing.T) {
+	withPlan := func(extra map[string]any) map[string]any {
+		d := map[string]any{
+			"waves":   []any{map[string]any{"number": 1, "status": "in_progress", "tasks": []any{}}},
+			"context": map[string]any{},
+		}
+		for k, v := range extra {
+			d[k] = v
+		}
+		return d
+	}
+
+	tests := []struct {
+		name     string
+		data     map[string]any
+		taskID   string
+		wantWarn bool
+	}{
+		{"planned id, same form", withPlan(map[string]any{"plannedTaskIds": []any{"T1", "T2"}}), "T1", false},
+		{"planned id, prefix only on the plan side", withPlan(map[string]any{"plannedTaskIds": []any{"T1", "T2"}}), "2", false},
+		{"planned id, prefix only on the task side", withPlan(map[string]any{"plannedTaskIds": []any{"1", "2"}}), "T2", false},
+		{"unknown id", withPlan(map[string]any{"plannedTaskIds": []any{"1", "2"}}), "T9", true},
+		{"unknown id, plan only under context", withPlan(map[string]any{"context": map[string]any{"plannedTaskIds": []any{"1", "2"}}}), "T9", true},
+		{"no plannedTaskIds key", withPlan(nil), "T9", false},
+		{"empty plannedTaskIds", withPlan(map[string]any{"plannedTaskIds": []any{}}), "T9", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			createExecState(t, root, "feat/test", tt.data)
+
+			result, err := executeState(root, root, ExecuteStateIn{
+				Action:       "task-done",
+				Branch:       "feat/test",
+				Wave:         intPtr(1),
+				TaskID:       tt.taskID,
+				FilesChanged: `["src/a.go"]`,
+			}, fixedClock(testNow))
+			if err != nil {
+				t.Fatalf("task-done: %v", err)
+			}
+			m, ok := result.(ExecTaskNarrationOut)
+			if !ok {
+				t.Fatalf("result = %T, want ExecTaskNarrationOut", result)
+			}
+			if tt.wantWarn {
+				assertWarning(t, m.Warnings, fmt.Sprintf("taskId %q is not in plannedTaskIds", tt.taskID))
+			} else {
+				assertNoWarning(t, m.Warnings, "not in plannedTaskIds")
+			}
+
+			waves, _ := readExecState(t, root, "feat/test")["waves"].([]any)
+			if len(waves) != 1 {
+				t.Fatalf("waves = %v, want 1 wave", waves)
+			}
+			tasks, _ := waves[0].(map[string]any)["tasks"].([]any)
+			if len(tasks) != 1 {
+				t.Fatalf("tasks = %v, want the task recorded even when its id is unknown", tasks)
+			}
+			if id, _ := tasks[0].(map[string]any)["id"].(string); id != tt.taskID {
+				t.Errorf("recorded task id = %q, want %q", id, tt.taskID)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // task-fail
 // ---------------------------------------------------------------------------
@@ -3072,6 +3141,153 @@ func TestExecState_VerifyCompleteness_NormalizeTaskID(t *testing.T) {
 	m := result.(map[string]any)
 	if m["ok"] != true {
 		t.Error("expected ok=true after normalizing task IDs")
+	}
+}
+
+// verifyCompletenessState seeds a run with the given plannedTaskIds and one
+// wave holding the given id -> status task records.
+func verifyCompletenessState(t *testing.T, root string, planned []any, recorded [][2]string) {
+	t.Helper()
+	tasks := []any{}
+	for _, r := range recorded {
+		tasks = append(tasks, map[string]any{"id": r[0], "status": r[1]})
+	}
+	createExecState(t, root, "feat/test", map[string]any{
+		"plannedTaskIds": planned,
+		"waves":          []any{map[string]any{"number": 1, "status": "completed", "tasks": tasks}},
+		"context":        map[string]any{},
+	})
+}
+
+// TestExecState_VerifyCompleteness_IncompleteNamesUnknownIDs confirms the
+// incomplete error keeps its original prefix, names recorded ids that are not
+// in the plan (sorted, so the text is stable), and carries recovery text.
+func TestExecState_VerifyCompleteness_IncompleteNamesUnknownIDs(t *testing.T) {
+	tests := []struct {
+		name         string
+		recorded     [][2]string
+		wantMsg      string
+		wantSuggests []string
+		notSuggests  []string
+	}{
+		{
+			name:         "no unknown ids",
+			recorded:     [][2]string{{"T1", "completed"}},
+			wantMsg:      "incomplete: 2 of 3 planned tasks unaccounted (missingIds: 2, 3)",
+			wantSuggests: []string{"task-done or task-fail", "verify-completeness"},
+			notSuggests:  []string{"unknown ids"},
+		},
+		{
+			name:         "unknown ids are sorted",
+			recorded:     [][2]string{{"T1", "completed"}, {"T9", "completed"}, {"T10", "completed"}},
+			wantMsg:      "incomplete: 2 of 3 planned tasks unaccounted (missingIds: 2, 3); unknown ids recorded: T10, T9",
+			wantSuggests: []string{"(T10, T9)", "task-done again with the planned id"},
+		},
+		{
+			name:         "failed task with unknown id",
+			recorded:     [][2]string{{"T1", "completed"}, {"t7", "failed"}},
+			wantMsg:      "incomplete: 2 of 3 planned tasks unaccounted (missingIds: 2, 3); unknown ids recorded: t7",
+			wantSuggests: []string{"(t7)"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			verifyCompletenessState(t, root, []any{"1", "2", "3"}, tt.recorded)
+
+			_, err := executeState(root, root, ExecuteStateIn{
+				Action: "verify-completeness",
+				Branch: "feat/test",
+			}, fixedClock(testNow))
+
+			var de *mcpserver.DataError
+			if !errors.As(err, &de) {
+				t.Fatalf("err = %T (%v), want *mcpserver.DataError", err, err)
+			}
+			if de.Msg != tt.wantMsg {
+				t.Errorf("Msg = %q, want %q", de.Msg, tt.wantMsg)
+			}
+			for _, s := range tt.wantSuggests {
+				if !strings.Contains(de.Suggestion, s) {
+					t.Errorf("Suggestion = %q, want it to contain %q", de.Suggestion, s)
+				}
+			}
+			for _, s := range tt.notSuggests {
+				if strings.Contains(de.Suggestion, s) {
+					t.Errorf("Suggestion = %q, want it not to contain %q", de.Suggestion, s)
+				}
+			}
+		})
+	}
+}
+
+// TestExecState_VerifyCompleteness_UnknownIDDoesNotBlockSuccess pins the
+// success path: a stray recorded id never fails a run whose plan is fully
+// accounted for.
+func TestExecState_VerifyCompleteness_UnknownIDDoesNotBlockSuccess(t *testing.T) {
+	root := t.TempDir()
+	verifyCompletenessState(t, root, []any{"1", "2"},
+		[][2]string{{"T1", "completed"}, {"T2", "completed"}, {"T9", "completed"}})
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "verify-completeness",
+		Branch: "feat/test",
+	}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("verify-completeness: %v", err)
+	}
+	m, ok := result.(map[string]any)
+	if !ok || m["ok"] != true {
+		t.Errorf("result = %v, want ok=true", result)
+	}
+}
+
+// TestExecState_VerifyCompleteness_DomainErrorsCarryRecoveryText covers the
+// two input-side failures: no plannedTaskIds in the state, and an unreadable
+// stateFile override.
+func TestExecState_VerifyCompleteness_DomainErrorsCarryRecoveryText(t *testing.T) {
+	tests := []struct {
+		name        string
+		setup       func(t *testing.T, root string) ExecuteStateIn
+		wantMsg     string
+		wantSuggest string
+	}{
+		{
+			name: "no plannedTaskIds",
+			setup: func(t *testing.T, root string) ExecuteStateIn {
+				createExecState(t, root, "feat/test", map[string]any{"context": map[string]any{}})
+				return ExecuteStateIn{Action: "verify-completeness", Branch: "feat/test"}
+			},
+			wantMsg:     "cannot find plannedTaskIds",
+			wantSuggest: "plannedTaskIds",
+		},
+		{
+			name: "unreadable stateFile",
+			setup: func(t *testing.T, root string) ExecuteStateIn {
+				return ExecuteStateIn{Action: "verify-completeness", StateFile: filepath.Join(root, "missing.json")}
+			},
+			wantMsg:     "cannot read state file",
+			wantSuggest: "stateFile",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			in := tt.setup(t, root)
+
+			_, err := executeState(root, root, in, fixedClock(testNow))
+
+			var de *mcpserver.DomainError
+			if !errors.As(err, &de) {
+				t.Fatalf("err = %T (%v), want *mcpserver.DomainError", err, err)
+			}
+			if !strings.Contains(de.Msg, tt.wantMsg) {
+				t.Errorf("Msg = %q, want it to contain %q", de.Msg, tt.wantMsg)
+			}
+			if !strings.Contains(de.Suggestion, tt.wantSuggest) {
+				t.Errorf("Suggestion = %q, want it to contain %q", de.Suggestion, tt.wantSuggest)
+			}
+		})
 	}
 }
 

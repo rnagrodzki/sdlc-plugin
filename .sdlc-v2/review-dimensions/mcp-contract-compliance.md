@@ -34,32 +34,49 @@ and `mcp-output-drives-behavior` guardrails.
 ## Output struct contracts (`*Out`)
 
 - Every `*Out` struct that serves as a tool's primary output MUST have a
-  `Next string json:"next"` field — the struct tag MUST NOT include
-  `omitempty`. The field must appear in every response JSON. Empty string
-  `""` means "no next step"; an absent field violates the contract.
+  root `Next string json:"next"` field, which the renderer hoists to the
+  result's `**Next:**` line. A genuinely terminal tool may omit it, but its
+  tool description must say so.
 - `Next` must be populated with an exact per-outcome string, not free-form
   interpolation. Pattern: `VersionPrepareOut.Next` at version.go.
-- Tool handlers registering via `Register[TIn,TOut]` MUST call
-  `WithOutputSchema[TOut]` to expose the concrete output structure to the
-  LLM. Omitting `WithOutputSchema` hides the output shape from the model.
-- Handler signatures MUST return concrete `*Out` types, never `any` or
-  `interface{}`. Type erasure prevents schema generation and forces the
-  LLM to guess the output shape.
-- Collections (slices, maps) must be initialized as empty `[]T` or
-  `map[K]V{}`, never nil. Nil collections serialize to JSON null;
-  normalize at the dispatcher level before returning output.
+- Tools publish no output schema. The renderer in `internal/mcpserver`
+  shows the LLM the concrete shape by rendering every field with its JSON
+  key as the label, so the output shape is visible in the result itself.
+  Verify: `grep -rn 'OutputSchema' internal/ --include='*.go'` returns no
+  non-test hit.
+- Handler signatures SHOULD return a concrete `*Out` type. Three tools
+  return `any` across dozens of actions: `execute_state`
+  (`internal/tools/execute_state.go`), `ship_state`
+  (`internal/tools/ship_state.go`) and `jira` (`internal/tools/jira.go`).
+  The reflection renderer walks those too, so `any` is a readability cost,
+  not a contract violation. A new tool with a single output shape has no
+  reason to use it. (`poll_await` is NOT one of them — it returns a
+  concrete `stepper.Envelope`.) Verify — expect exactly 3 hits:
+  `grep -rn 'mcpserver.Ctx, in [A-Za-z]*) (any, error)' internal/tools/*.go`
+- A nil or empty collection must render as `(none)`. The renderer does
+  this at the dispatcher level (`renderNone` in
+  `internal/mcpserver/render.go`), so handlers do not have to
+  pre-initialize slices, and no result may show a blank line or an empty
+  heading where a collection was.
+- `omitempty` wins over `(none)`. Rule 14 in `docs/mcp-output-contract.md`
+  runs first, when the renderer collects a struct's fields: a field tagged
+  `omitempty` or `omitzero` with an empty value is left out completely. Only
+  an untagged field renders `- <key>: (none)`. So "absent" in a skill or doc
+  means the field carries `omitempty`, and "`(none)`" means it does not.
+  Decide per field: drop `omitempty` when the reader must see that the value
+  is empty (for example `ShipVerifySideEffectOut.Expected`). When a doc says
+  a field is absent, check its tag with `grep -n '<jsonKey>' internal/tools/*.go`.
 
 ## Error contracts
 
 - When a handler returns a `DomainError`, `InfraError`, or `DataError` with
   a recoverable condition (the caller can do something to fix it), the
   `Suggestion` field MUST be populated with a specific recovery instruction.
-- Non-recoverable errors (unexpected panics, marshal failures) should still
-  populate `Suggestion` (with a generic message or empty string), not rely
-  on `omitempty` to hide it.
-- The `Suggestion` field MUST NOT have `omitempty` on the struct tag —
-  every error response must include the `"suggestion"` field in JSON,
-  empty string if no specific recovery applies, but never omitted.
+
+Every error result MUST render a non-empty `## Do this` section. When a typed
+error carries no `Suggestion`, `defaultRecovery(code)` supplies one; a rendered
+error with an empty or missing `## Do this` section is a defect. Both live in
+`internal/mcpserver/envelope.go` (`defaultRecovery`, called from `renderError`).
 
 ## Review procedure for closed-set enum tags and error-field coverage
 

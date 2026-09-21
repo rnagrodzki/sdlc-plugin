@@ -1,12 +1,14 @@
 package tools
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/discovery"
+	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
@@ -1167,5 +1169,62 @@ func TestFindStrayStateEntries_MissingStateDirIsNotAnError(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Fatalf("expected no findings, got %+v", findings)
+	}
+}
+
+// TestValidateCostTiers_ErrorsByCause pins the two recovery paths of
+// validateCostTiers: a missing or unreadable docs/cost-tiers.md must not be
+// reported as a heading problem, and neither message may print the file path
+// twice.
+func TestValidateCostTiers_ErrorsByCause(t *testing.T) {
+	cases := []struct {
+		name        string
+		doc         string // "" means: do not create the file
+		wantHint    string
+		notWantHint string
+	}{
+		{
+			name:        "missing file",
+			doc:         "",
+			wantHint:    "check read permission",
+			notWantHint: "headings",
+		},
+		{
+			name:        "malformed tables",
+			doc:         "# Cost tiers\n\nNo tables here.\n",
+			wantHint:    "## 3. Skill Table",
+			notWantHint: "read permission",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			if tc.doc != "" {
+				writeFile(t, filepath.Join(root, "docs", "cost-tiers.md"), tc.doc)
+			}
+
+			_, err := validateCostTiers(root, ValidateIn{})
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if got := errorClassOf(err); got != "data" {
+				t.Errorf("error class = %q, want data", got)
+			}
+
+			var dataErr *mcpserver.DataError
+			if !errors.As(err, &dataErr) {
+				t.Fatalf("expected *mcpserver.DataError, got %T", err)
+			}
+			if n := strings.Count(dataErr.Msg, "cost-tiers.md"); n != 1 {
+				t.Errorf("Msg names cost-tiers.md %d times, want exactly 1: %s", n, dataErr.Msg)
+			}
+			if !strings.Contains(dataErr.Suggestion, tc.wantHint) {
+				t.Errorf("Suggestion = %q, want it to contain %q", dataErr.Suggestion, tc.wantHint)
+			}
+			if strings.Contains(dataErr.Suggestion, tc.notWantHint) {
+				t.Errorf("Suggestion = %q, must not contain %q", dataErr.Suggestion, tc.notWantHint)
+			}
+		})
 	}
 }

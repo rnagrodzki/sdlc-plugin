@@ -295,7 +295,7 @@ func writeDimensionFile(root string, in DimensionsRenderInstructionsIn) (Dimensi
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return DimensionsRenderInstructionsOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("create %s: %s", dir, err.Error()),
-			Suggestion: "Check filesystem permissions and available disk space for the project root, then retry.",
+			Suggestion: "Create " + paths.DataDir + "/review-dimensions manually with write permission, or free disk space on the project root, then retry dimensions_render_instructions with writeDimension true.",
 			Cause:      err,
 		}
 	}
@@ -304,7 +304,7 @@ func writeDimensionFile(root string, in DimensionsRenderInstructionsIn) (Dimensi
 	if err := os.WriteFile(outPath, []byte(in.Content), 0o644); err != nil {
 		return DimensionsRenderInstructionsOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("write %s: %s", outPath, err.Error()),
-			Suggestion: "Check filesystem permissions and available disk space for the project root, then retry.",
+			Suggestion: "Check write permission on " + paths.DataDir + "/review-dimensions and free disk space on the project root, then retry with the same name and content.",
 			Cause:      err,
 		}
 	}

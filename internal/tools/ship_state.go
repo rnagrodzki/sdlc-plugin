@@ -39,7 +39,7 @@ import (
 // empty-string distinction for reason/error/result, are preserved without
 // literal typed struct fields (see detailIntPtr below).
 type ShipStateIn struct {
-	Action    string         `json:"action" jsonschema_description:"Operation to perform: init, begin-step, complete-step, start (legacy), complete (legacy), skip, fail, decide, defer, read, cleanup, cleanup-pipeline, gc, migrate, or log-cli. Each action uses a subset of the other fields (unlisted fields are ignored)."`
+	Action    string         `json:"action" jsonschema:"enum=init,enum=begin-step,enum=complete-step,enum=start,enum=complete,enum=skip,enum=fail,enum=decide,enum=defer,enum=read,enum=next,enum=todos,enum=cleanup,enum=cleanup-pipeline,enum=gc,enum=migrate,enum=history_record,enum=deferred_add,enum=deferred_list,enum=deferred_propose_followups,enum=deferred_resolve,enum=log-cli" jsonschema_description:"Operation to perform: init, begin-step, complete-step, start (legacy), complete (legacy), skip, fail, decide, defer, read, next, todos, cleanup, cleanup-pipeline, gc, migrate, history_record, deferred_add, deferred_list, deferred_propose_followups, deferred_resolve, or log-cli. Each action uses a subset of the other fields (unlisted fields are ignored)."`
 	Step      string         `json:"step,omitempty" jsonschema_description:"Pipeline step name. Required by begin-step, complete-step, start, complete, skip, fail, decide; ignored by other actions."`
 	Detail    map[string]any `json:"detail,omitempty" jsonschema_description:"Action-specific extra fields (e.g. branch, flags, outcome, result, reason, error, text, severity, file, title, line, force, ttlDays, dryRun, from, to, detail; log-cli reads branch, command, exitCode, outputHead, step). See the action list for which sub-fields each action reads."`
 	SessionID string         `json:"sessionId,omitempty" jsonschema_description:"Session identifier used by init to stamp the created state's sessionId field, for correlating this run with the calling session."`
@@ -343,10 +343,17 @@ func shipBuildNextAction(data map[string]any, ts *pipeline.TimingsStore) *pipeli
 func shipFindState(root, branch string) (*state.State, error) {
 	st, err := state.Find(root, "ship", branch)
 	if err != nil {
-		return nil, &mcpserver.InfraError{Msg: "find state: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("find ship state for branch %q: %s", branch, err.Error()),
+			Suggestion: "Check read permission on " + paths.DataDir + "/runs/ship-<branch-slug>-*.json and that the directory exists, then retry.",
+			Cause:      err,
+		}
 	}
 	if st == nil {
-		return nil, &mcpserver.DataError{Msg: fmt.Sprintf("no ship state found for branch %q", branch)}
+		return nil, &mcpserver.DataError{
+			Msg:        fmt.Sprintf("no ship state found for branch %q", branch),
+			Suggestion: "Run ship_state init with detail.branch set to this branch before calling other ship_state actions.",
+		}
 	}
 	return st, nil
 }
@@ -375,12 +382,24 @@ func shipLoadState(root, workDir string, in ShipStateIn) (*state.State, error) {
 	var data map[string]any
 	if err := fsx.ReadJSON(stateFile, &data); err != nil {
 		if errors.Is(err, fsx.ErrNotFound) {
-			return nil, &mcpserver.DataError{Msg: fmt.Sprintf("state file not found: %s", stateFile)}
+			return nil, &mcpserver.DataError{
+				Msg:        fmt.Sprintf("state file not found: %s", stateFile),
+				Suggestion: "Pass an existing state file path in detail.stateFile, or omit stateFile to resolve by branch instead.",
+				Cause:      err,
+			}
 		}
 		if errors.Is(err, fsx.ErrParse) {
-			return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("failed to parse state file %s: %s", stateFile, err.Error()), Cause: err}
+			return nil, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("failed to parse state file %s: %s", stateFile, err.Error()),
+				Suggestion: "Fix the JSON syntax in the state file named above, or delete it and re-run ship_state init to regenerate it.",
+				Cause:      err,
+			}
 		}
-		return nil, &mcpserver.InfraError{Msg: "read state file: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("read state file %s: %s", stateFile, err.Error()),
+			Suggestion: "Check read permission on the state file path passed as detail.stateFile, then retry.",
+			Cause:      err,
+		}
 	}
 	return &state.State{Path: stateFile, Root: root, Data: data}, nil
 }
@@ -392,7 +411,10 @@ func shipLoadState(root, workDir string, in ShipStateIn) (*state.State, error) {
 func shipStartStepCore(data map[string]any, stepName string, now func() time.Time) error {
 	step := shipFindStepEntry(data, stepName)
 	if step == nil {
-		return &mcpserver.DataError{Msg: fmt.Sprintf("step %q not found in state", stepName)}
+		return &mcpserver.DataError{
+			Msg:        fmt.Sprintf("step %q not found in state", stepName),
+			Suggestion: "Run ship_state read and pass one of the step names listed under steps, then retry.",
+		}
 	}
 	step["status"] = "in_progress"
 	step["startedAt"] = now().UTC().Format(time.RFC3339)
@@ -410,7 +432,10 @@ func shipStartStepCore(data map[string]any, stepName string, now func() time.Tim
 func shipCompleteStepCore(data map[string]any, stepName string, hasResult bool, resultVal any, outcome string, now func() time.Time) error {
 	step := shipFindStepEntry(data, stepName)
 	if step == nil {
-		return &mcpserver.DataError{Msg: fmt.Sprintf("step %q not found in state", stepName)}
+		return &mcpserver.DataError{
+			Msg:        fmt.Sprintf("step %q not found in state", stepName),
+			Suggestion: "Run ship_state read to list the step names recorded in the state file, then pass one of those names.",
+		}
 	}
 	if outcome == "failure" {
 		step["status"] = "failed"
@@ -481,7 +506,8 @@ func shipState(root, workDir string, in ShipStateIn, now func() time.Time) (any,
 	case "begin-step", "complete-step", "start", "complete", "skip", "fail", "decide", "defer":
 		if v := detailStr(in.Detail, "detail"); v != "" && v != "full" && v != "concise" {
 			return nil, &mcpserver.DomainError{
-				Msg: fmt.Sprintf(`detail must be "concise" or "full", got %q; pass detail.detail="concise" or omit for default "full"`, v),
+				Msg:        fmt.Sprintf(`%s: detail must be "concise" or "full", got %q; pass detail.detail="concise" or omit for default "full"`, in.Action, v),
+				Suggestion: "Pass detail.detail as the string \"concise\" or \"full\" only, or omit the field entirely to use the default.",
 			}
 		}
 	}
@@ -537,7 +563,10 @@ func shipState(root, workDir string, in ShipStateIn, now func() time.Time) (any,
 		return shipStateLogCLI(root, workDir, in)
 
 	default:
-		return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("unknown ship_state action %q", in.Action)}
+		return nil, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("unknown ship_state action %q", in.Action),
+			Suggestion: "Pass one of: init, begin-step, complete-step, start, complete, skip, fail, decide, defer, read, next, todos, cleanup, cleanup-pipeline, gc, migrate, history_record, deferred_add, deferred_list, deferred_propose_followups, deferred_resolve, log-cli. start and complete are legacy aliases of begin-step and complete-step.",
+		}
 	}
 }
 
@@ -566,12 +595,20 @@ func shipStateInit(root, workDir string, in ShipStateIn, now func() time.Time) (
 	branchSlug := state.SlugifyBranch(branch)
 	pruned, err := existingShipStateFiles(root, branchSlug)
 	if err != nil {
-		return nil, &mcpserver.InfraError{Msg: "scan existing ship state files: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("scan existing ship state files for branch slug %q: %s", branchSlug, err.Error()),
+			Suggestion: "Check read permission on " + paths.DataDir + "/runs/ and that ship-<branch-slug>-*.json files are not corrupted, then retry ship_state init.",
+			Cause:      err,
+		}
 	}
 
 	st, err := state.Init(root, "ship", branch, in.SessionID)
 	if err != nil {
-		return nil, &mcpserver.InfraError{Msg: "init ship state: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("init ship state for branch %q: %s", branch, err.Error()),
+			Suggestion: "Check write permission on " + paths.DataDir + "/runs/ and available disk space on the project root, then retry ship_state init.",
+			Cause:      err,
+		}
 	}
 
 	st.Data["version"] = 1
@@ -584,7 +621,11 @@ func shipStateInit(root, workDir string, in ShipStateIn, now func() time.Time) (
 	st.Data["deferredFindings"] = []any{}
 
 	if err := state.Write(st); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "write ship state: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("write ship state to %s: %s", st.Path, err.Error()),
+			Suggestion: "Check write permission on the ship state file path above and free disk space on the project root, then retry ship_state init.",
+			Cause:      err,
+		}
 	}
 
 	return map[string]any{
@@ -601,7 +642,10 @@ func shipStateInit(root, workDir string, in ShipStateIn, now func() time.Time) (
 
 func shipStateStart(root, workDir string, in ShipStateIn, now func() time.Time) (any, error) {
 	if in.Step == "" {
-		return nil, &mcpserver.DomainError{Msg: "step is required"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "start: step is required",
+			Suggestion: "Pass the step field naming a pipeline step (e.g. \"execute\"), then retry ship_state start.",
+		}
 	}
 	st, err := shipResolveAndFind(detailStr(in.Detail, "branch"), workDir, root)
 	if err != nil {
@@ -611,7 +655,11 @@ func shipStateStart(root, workDir string, in ShipStateIn, now func() time.Time) 
 		return nil, err
 	}
 	if err := state.Write(st); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("write ship state to %s: %s", st.Path, err.Error()),
+			Suggestion: "Check write permission on the ship state file path above and free disk space on the project root, then retry ship_state start.",
+			Cause:      err,
+		}
 	}
 
 	ts := pipeline.NewTimingsStore(root)
@@ -635,7 +683,10 @@ func shipStateStart(root, workDir string, in ShipStateIn, now func() time.Time) 
 
 func shipStateComplete(root, workDir string, in ShipStateIn, now func() time.Time) (any, error) {
 	if in.Step == "" {
-		return nil, &mcpserver.DomainError{Msg: "step is required"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "complete: step is required",
+			Suggestion: "Pass the step field naming the pipeline step to complete, then retry ship_state complete.",
+		}
 	}
 	st, err := shipResolveAndFind(detailStr(in.Detail, "branch"), workDir, root)
 	if err != nil {
@@ -653,7 +704,11 @@ func shipStateComplete(root, workDir string, in ShipStateIn, now func() time.Tim
 		return nil, err
 	}
 	if err := state.Write(st); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("write ship state to %s: %s", st.Path, err.Error()),
+			Suggestion: "Check write permission on the ship state file path above and free disk space on the project root, then retry ship_state complete.",
+			Cause:      err,
+		}
 	}
 
 	var completedAtAfter string
@@ -687,7 +742,10 @@ func shipStateComplete(root, workDir string, in ShipStateIn, now func() time.Tim
 
 func shipStateBeginStep(root, workDir string, in ShipStateIn, now func() time.Time) (any, error) {
 	if in.Step == "" {
-		return nil, &mcpserver.DomainError{Msg: "step is required"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "begin-step: step is required",
+			Suggestion: "Pass the step field naming the pipeline step to begin, then retry ship_state begin-step.",
+		}
 	}
 	st, err := shipLoadState(root, workDir, in)
 	if err != nil {
@@ -725,7 +783,8 @@ func shipStateBeginStep(root, workDir string, in ShipStateIn, now func() time.Ti
 			// override; the rest of the proceed-gate call sites (cleanup,
 			// cleanup-pipeline) keep DataError.
 			return nil, &mcpserver.DomainError{
-				Msg: fmt.Sprintf("cannot begin step %q — prior step(s) not terminal-OK: %s; complete or skip the blocking step(s) first", in.Step, strings.Join(blocking, ", ")),
+				Msg:        fmt.Sprintf("cannot begin step %q — prior step(s) not terminal-OK: %s; complete or skip the blocking step(s) first", in.Step, strings.Join(blocking, ", ")),
+				Suggestion: "Call ship_state complete-step or skip for each blocking step listed above, then retry begin-step.",
 			}
 		}
 	}
@@ -734,7 +793,11 @@ func shipStateBeginStep(root, workDir string, in ShipStateIn, now func() time.Ti
 		return nil, err
 	}
 	if err := state.Write(st); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("write ship state to %s: %s", st.Path, err.Error()),
+			Suggestion: "Check write permission on the ship state file path above and free disk space on the project root, then retry ship_state begin-step.",
+			Cause:      err,
+		}
 	}
 
 	ts := pipeline.NewTimingsStore(root)
@@ -768,14 +831,20 @@ func shipStateBeginStep(root, workDir string, in ShipStateIn, now func() time.Ti
 
 func shipStateCompleteStep(root, workDir string, in ShipStateIn, now func() time.Time) (any, error) {
 	if in.Step == "" {
-		return nil, &mcpserver.DomainError{Msg: "step is required"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "complete-step: step is required",
+			Suggestion: "Pass the step field naming the pipeline step to complete, then retry complete-step.",
+		}
 	}
 
 	outcome := "success"
 	if raw, ok := in.Detail["outcome"]; ok {
 		s, isStr := raw.(string)
 		if !isStr || (s != "success" && s != "failure") {
-			return nil, &mcpserver.DomainError{Msg: fmt.Sprintf(`outcome must be "success" or "failure", got %v`, raw)}
+			return nil, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf(`complete-step: outcome must be "success" or "failure", got %v`, raw),
+				Suggestion: "Pass detail.outcome as the exact string \"success\" or \"failure\", then retry complete-step.",
+			}
 		}
 		outcome = s
 	}
@@ -797,7 +866,11 @@ func shipStateCompleteStep(root, workDir string, in ShipStateIn, now func() time
 		return nil, err
 	}
 	if err := state.Write(st); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("write ship state to %s: %s", st.Path, err.Error()),
+			Suggestion: "Check write permission on the ship state file path above and free disk space on the project root, then retry ship_state complete-step.",
+			Cause:      err,
+		}
 	}
 
 	var completedAtAfter string
@@ -842,7 +915,10 @@ func shipStateCompleteStep(root, workDir string, in ShipStateIn, now func() time
 
 func shipStateSkip(root, workDir string, in ShipStateIn, now func() time.Time) (any, error) {
 	if in.Step == "" {
-		return nil, &mcpserver.DomainError{Msg: "step is required"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "skip: step is required",
+			Suggestion: "Pass the step field naming the pipeline step to skip, then retry ship_state skip.",
+		}
 	}
 	st, err := shipResolveAndFind(detailStr(in.Detail, "branch"), workDir, root)
 	if err != nil {
@@ -850,7 +926,10 @@ func shipStateSkip(root, workDir string, in ShipStateIn, now func() time.Time) (
 	}
 	step := shipFindStepEntry(st.Data, in.Step)
 	if step == nil {
-		return nil, &mcpserver.DataError{Msg: fmt.Sprintf("step %q not found in state", in.Step)}
+		return nil, &mcpserver.DataError{
+			Msg:        fmt.Sprintf("step %q not found in state", in.Step),
+			Suggestion: "Run ship_state read and pass one of the step names listed under steps, then retry ship_state skip.",
+		}
 	}
 	step["status"] = "skipped"
 	step["completedAt"] = now().UTC().Format(time.RFC3339)
@@ -858,7 +937,11 @@ func shipStateSkip(root, workDir string, in ShipStateIn, now func() time.Time) (
 		step["reason"] = v
 	}
 	if err := state.Write(st); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("write ship state to %s: %s", st.Path, err.Error()),
+			Suggestion: "Check write permission on the ship state file path above and free disk space on the project root, then retry ship_state skip.",
+			Cause:      err,
+		}
 	}
 
 	pos, total := shipStepPosition(st.Data, in.Step)
@@ -876,7 +959,10 @@ func shipStateSkip(root, workDir string, in ShipStateIn, now func() time.Time) (
 
 func shipStateFail(root, workDir string, in ShipStateIn, now func() time.Time) (any, error) {
 	if in.Step == "" {
-		return nil, &mcpserver.DomainError{Msg: "step is required"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "fail: step is required",
+			Suggestion: "Pass the step field naming the pipeline step to fail, then retry ship_state fail.",
+		}
 	}
 	st, err := shipResolveAndFind(detailStr(in.Detail, "branch"), workDir, root)
 	if err != nil {
@@ -884,7 +970,10 @@ func shipStateFail(root, workDir string, in ShipStateIn, now func() time.Time) (
 	}
 	step := shipFindStepEntry(st.Data, in.Step)
 	if step == nil {
-		return nil, &mcpserver.DataError{Msg: fmt.Sprintf("step %q not found in state", in.Step)}
+		return nil, &mcpserver.DataError{
+			Msg:        fmt.Sprintf("step %q not found in state", in.Step),
+			Suggestion: "Run ship_state read and pass one of the step names listed under steps, then retry ship_state fail.",
+		}
 	}
 	step["status"] = "failed"
 	var detail string
@@ -908,7 +997,11 @@ func shipStateFail(root, workDir string, in ShipStateIn, now func() time.Time) (
 	})
 
 	if err := state.Write(st); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("write ship state to %s: %s", st.Path, err.Error()),
+			Suggestion: "Check write permission on the ship state file path above and free disk space on the project root, then retry ship_state fail.",
+			Cause:      err,
+		}
 	}
 
 	pos, total := shipStepPosition(st.Data, in.Step)
@@ -926,7 +1019,10 @@ func shipStateFail(root, workDir string, in ShipStateIn, now func() time.Time) (
 
 func shipStateDecide(root, workDir string, in ShipStateIn) (any, error) {
 	if in.Step == "" {
-		return nil, &mcpserver.DomainError{Msg: "step is required"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "decide: step is required",
+			Suggestion: "Pass the step field naming the pipeline step this decision applies to, then retry ship_state decide.",
+		}
 	}
 	st, err := shipResolveAndFind(detailStr(in.Detail, "branch"), workDir, root)
 	if err != nil {
@@ -939,7 +1035,11 @@ func shipStateDecide(root, workDir string, in ShipStateIn) (any, error) {
 	})
 	st.Data["decisions"] = decisions
 	if err := state.Write(st); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("write ship state to %s: %s", st.Path, err.Error()),
+			Suggestion: "Check write permission on the ship state file path above and free disk space on the project root, then retry ship_state decide.",
+			Cause:      err,
+		}
 	}
 
 	out := ShipStepNarrationOut{
@@ -959,7 +1059,10 @@ func shipStateDefer(root, workDir string, in ShipStateIn) (any, error) {
 	file := detailStr(in.Detail, "file")
 	title := detailStr(in.Detail, "title")
 	if severity == "" || file == "" || title == "" {
-		return nil, &mcpserver.DomainError{Msg: "severity, file, and title are required for defer"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "defer: severity, file, and title are required",
+			Suggestion: "Pass detail.severity, detail.file, and detail.title all as non-empty strings, then retry ship_state defer.",
+		}
 	}
 	st, err := shipResolveAndFind(detailStr(in.Detail, "branch"), workDir, root)
 	if err != nil {
@@ -974,7 +1077,11 @@ func shipStateDefer(root, workDir string, in ShipStateIn) (any, error) {
 	})
 	st.Data["deferredFindings"] = findings
 	if err := state.Write(st); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("write ship state to %s: %s", st.Path, err.Error()),
+			Suggestion: "Check write permission on the ship state file path above and free disk space on the project root, then retry ship_state defer.",
+			Cause:      err,
+		}
 	}
 
 	out := ShipStepNarrationOut{
@@ -1219,7 +1326,11 @@ func shipStateCleanup(root, workDir string, in ShipStateIn, now func() time.Time
 	}
 	st, findErr := state.Find(root, "ship", branch)
 	if findErr != nil {
-		return nil, &mcpserver.InfraError{Msg: "find state: " + findErr.Error(), Cause: findErr}
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("find ship state for branch %q: %s", branch, findErr.Error()),
+			Suggestion: "Check read permission on " + paths.DataDir + "/runs/ship-<branch-slug>-*.json and that the directory exists, then retry ship_state cleanup.",
+			Cause:      findErr,
+		}
 	}
 	if st == nil {
 		// Nothing to clean up — cmdCleanup exits 0 silently in this case.
@@ -1228,16 +1339,23 @@ func shipStateCleanup(root, workDir string, in ShipStateIn, now func() time.Time
 
 	valid, violations := shipValidatePipelineContract(st.Data)
 	if !valid {
-		return nil, &mcpserver.DataError{Msg: fmt.Sprintf(
-			"pipeline contract violation: %d step(s) not in terminal state (%s) — state file preserved",
-			len(violations), shipFormatViolations(violations))}
+		return nil, &mcpserver.DataError{
+			Msg: fmt.Sprintf(
+				"pipeline contract violation: %d step(s) not in terminal state (%s) — state file preserved",
+				len(violations), shipFormatViolations(violations)),
+			Suggestion: "Complete, skip, or fail each step listed above so it reaches a terminal state, then retry ship_state cleanup.",
+		}
 	}
 
 	completedAt := now().UTC().Format(time.RFC3339)
 	st.Data["pipelineStatus"] = "completed"
 	st.Data["pipelineCompletedAt"] = completedAt
 	if err := state.Write(st); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("write ship state to %s: %s", st.Path, err.Error()),
+			Suggestion: "Check write permission on the ship state file path above and free disk space on the project root, then retry ship_state cleanup.",
+			Cause:      err,
+		}
 	}
 	return map[string]any{
 		"valid":               true,
@@ -1250,6 +1368,10 @@ func shipStateCleanup(root, workDir string, in ShipStateIn, now func() time.Time
 // ---------------------------------------------------------------------------
 // Action: cleanup-pipeline (single branch's cleanup + a full GC sweep)
 // ---------------------------------------------------------------------------
+
+// shipGCFunc is the GC sweep entry point. Tests replace it to force a sweep
+// failure: state.GC fails only on a read error that Find and Write hit first.
+var shipGCFunc = state.GC
 
 // shipStateCleanupPipeline ports cmdCleanupPipeline: force and no-state-file
 // both skip the contract check but still fall through to the GC sweep; only
@@ -1267,7 +1389,11 @@ func shipStateCleanupPipeline(root, workDir string, in ShipStateIn, now func() t
 	}
 	st, findErr := state.Find(root, "ship", branch)
 	if findErr != nil {
-		return nil, &mcpserver.InfraError{Msg: "find state: " + findErr.Error(), Cause: findErr}
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("find ship state for branch %q: %s", branch, findErr.Error()),
+			Suggestion: "Check read permission on " + paths.DataDir + "/runs/ship-<branch-slug>-*.json and that the directory exists, then retry ship_state cleanup-pipeline.",
+			Cause:      findErr,
+		}
 	}
 
 	force := detailBool(in.Detail, "force")
@@ -1275,6 +1401,7 @@ func shipStateCleanupPipeline(root, workDir string, in ShipStateIn, now func() t
 
 	var currentRun map[string]any
 	var issueSummary *IssueSummary
+	runStamped := false
 	switch {
 	case force:
 		currentRun = map[string]any{"cleaned": false, "preservedReason": "force"}
@@ -1283,16 +1410,24 @@ func shipStateCleanupPipeline(root, workDir string, in ShipStateIn, now func() t
 	default:
 		valid, violations := shipValidatePipelineContract(st.Data)
 		if !valid {
-			return nil, &mcpserver.DataError{Msg: fmt.Sprintf(
-				"pipeline contract violation: %d step(s) not in terminal state (%s) — state file preserved",
-				len(violations), shipFormatViolations(violations))}
+			return nil, &mcpserver.DataError{
+				Msg: fmt.Sprintf(
+					"pipeline contract violation: %d step(s) not in terminal state (%s) — state file preserved",
+					len(violations), shipFormatViolations(violations)),
+				Suggestion: "Complete, skip, or fail each step listed above so it reaches a terminal state, then retry ship_state cleanup-pipeline.",
+			}
 		}
 		completedAt := now().UTC().Format(time.RFC3339)
 		st.Data["pipelineStatus"] = "completed"
 		st.Data["pipelineCompletedAt"] = completedAt
 		if err := state.Write(st); err != nil {
-			return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+			return nil, &mcpserver.InfraError{
+				Msg:        fmt.Sprintf("write ship state to %s: %s", st.Path, err.Error()),
+				Suggestion: "Check write permission on the ship state file path above and free disk space on the project root, then retry ship_state cleanup-pipeline.",
+				Cause:      err,
+			}
 		}
+		runStamped = true
 		currentRun = map[string]any{
 			"valid":               true,
 			"cleaned":             true,
@@ -1302,16 +1437,24 @@ func shipStateCleanupPipeline(root, workDir string, in ShipStateIn, now func() t
 		issueSummary = execIssueSummaryFull(st.Data)
 	}
 
-	rpt, err := state.GC(root, state.GCOptions{
+	stateDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+	rpt, err := shipGCFunc(root, state.GCOptions{
 		TTL:          time.Duration(ttlDays) * 24 * time.Hour,
 		BranchExists: gcBranchExistsFunc(workDir),
 		TempDir:      os.Getenv("SDLC_EXPLORE_TMPDIR_OVERRIDE"),
 	})
 	if err != nil {
-		return nil, &mcpserver.InfraError{Msg: "gc sweep: " + err.Error(), Cause: err}
+		msg := fmt.Sprintf("gc sweep over %s: %s", stateDir, err.Error())
+		if runStamped {
+			msg = fmt.Sprintf("run is already marked completed; only the gc sweep over %s failed: %s", stateDir, err.Error())
+		}
+		return nil, &mcpserver.InfraError{
+			Msg:        msg,
+			Suggestion: "Check that no other process holds a lock on " + paths.DataDir + "/runs/ and that files there are not corrupted. Then call ship_state gc to retry only the sweep, with the same detail.ttlDays if you set one.",
+			Cause:      err,
+		}
 	}
 
-	stateDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
 	reapResult := execReapRunDirectories(stateDir, ttlDays, false, now)
 
 	out := map[string]any{
@@ -1345,17 +1488,35 @@ var shipDryRunStateFileRE = regexp.MustCompile(`^(ship|execute|plan|commit)-(.+)
 func shipStateGC(root, workDir string, in ShipStateIn, now func() time.Time) (any, error) {
 	ttlDays := resolveGCTTLDays(root, detailIntPtr(in.Detail, "ttlDays"))
 
+	// gc deletes state files when dryRun is absent or false, so a mistyped
+	// or misplaced flag must fail loud rather than fall through to the real
+	// sweep: detailBool reports false for any non-bool value (the string
+	// "true" included), and a top-level dryRun argument never reaches Detail
+	// at all.
+	if v, ok := in.Detail["dryRun"]; ok {
+		if _, isBool := v.(bool); !isBool {
+			return nil, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("gc: detail.dryRun must be a boolean, got %T", v),
+				Suggestion: "Pass detail.dryRun as the JSON boolean true (not the string \"true\"), or omit it to run the real sweep. dryRun is read from detail, never from the top level of the arguments.",
+			}
+		}
+	}
+
 	if detailBool(in.Detail, "dryRun") {
 		return shipGCDryRun(filepath.Join(root, paths.DataDir, paths.RunsSubdir), ttlDays, gcBranchExistsFunc(workDir), now)
 	}
 
-	rpt, err := state.GC(root, state.GCOptions{
+	rpt, err := shipGCFunc(root, state.GCOptions{
 		TTL:          time.Duration(ttlDays) * 24 * time.Hour,
 		BranchExists: gcBranchExistsFunc(workDir),
 		TempDir:      os.Getenv("SDLC_EXPLORE_TMPDIR_OVERRIDE"),
 	})
 	if err != nil {
-		return nil, &mcpserver.InfraError{Msg: "gc: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("gc sweep over %s: %s", filepath.Join(root, paths.DataDir, paths.RunsSubdir), err.Error()),
+			Suggestion: "Check that no other process holds a lock on " + paths.DataDir + "/runs/ and that files there are not corrupted, then retry ship_state gc.",
+			Cause:      err,
+		}
 	}
 
 	return ShipStateGCReport{
@@ -1381,7 +1542,11 @@ func shipGCDryRun(stateDir string, ttlDays int, branchExists func(string) bool, 
 
 	entries, err := os.ReadDir(stateDir)
 	if err != nil && !os.IsNotExist(err) {
-		return nil, &mcpserver.InfraError{Msg: "gc readdir: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("read state directory %s: %s", stateDir, err.Error()),
+			Suggestion: "Check read permission on " + paths.DataDir + "/runs/, then retry ship_state gc with detail.dryRun true.",
+			Cause:      err,
+		}
 	}
 
 	nowMs := now().UnixMilli()
@@ -1450,7 +1615,10 @@ func shipStateMigrate(root string, in ShipStateIn) (any, error) {
 	from := detailStr(in.Detail, "from")
 	to := detailStr(in.Detail, "to")
 	if from == "" || to == "" {
-		return nil, &mcpserver.DomainError{Msg: "from and to are required for migrate"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "migrate: from and to are required",
+			Suggestion: "Pass detail.from and detail.to as the old and new branch names, then retry ship_state migrate.",
+		}
 	}
 	// from/to are branch names, but MigrateBranchSlug matches against
 	// slug-shaped filename fragments — slugify both first. Safe even when
@@ -1459,7 +1627,11 @@ func shipStateMigrate(root string, in ShipStateIn) (any, error) {
 	oldSlug := state.SlugifyBranch(from)
 	newSlug := state.SlugifyBranch(to)
 	if err := state.MigrateBranchSlug(root, oldSlug, newSlug); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "migrate: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("migrate ship state files from slug %q to %q: %s", oldSlug, newSlug, err.Error()),
+			Suggestion: "Check write permission on " + paths.DataDir + "/runs/ for both the old and new branch slugs above, then retry ship_state migrate.",
+			Cause:      err,
+		}
 	}
 	return map[string]any{"migrated": true}, nil
 }
@@ -1521,7 +1693,10 @@ func historyDir(root string) string {
 func shipStateHistoryRecord(root string, in ShipStateIn) (any, error) {
 	d := in.Detail
 	if d == nil {
-		return nil, &mcpserver.DomainError{Msg: "history_record requires detail with run record fields"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "history_record: detail with run record fields is required",
+			Suggestion: "Pass detail.skill and detail.outcome (plus optional ts, branch, duration_ms, version), then retry history_record.",
+		}
 	}
 
 	rec := history.RunRecord{
@@ -1536,10 +1711,16 @@ func shipStateHistoryRecord(root string, in ShipStateIn) (any, error) {
 		rec.Timestamp = time.Now().UTC().Format(time.RFC3339)
 	}
 	if rec.Skill == "" {
-		return nil, &mcpserver.DomainError{Msg: "history_record: detail.skill is required"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "history_record: detail.skill is required",
+			Suggestion: "Pass detail.skill naming the skill that ran (e.g. \"ship\"), then retry history_record.",
+		}
 	}
 	if rec.Outcome == "" {
-		return nil, &mcpserver.DomainError{Msg: "history_record: detail.outcome is required"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "history_record: detail.outcome is required",
+			Suggestion: "Pass detail.outcome naming the run's result (e.g. \"success\" or \"failure\"), then retry history_record.",
+		}
 	}
 
 	rec.Steps = detailStrSlice(d, "steps")
@@ -1548,7 +1729,11 @@ func shipStateHistoryRecord(root string, in ShipStateIn) (any, error) {
 
 	w := history.NewFileWriter(historyDir(root))
 	if err := w.AppendRun(rec); err != nil {
-		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("history_record: %s", err.Error()), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("append run record to %s: %s", w.RunsPath(), err.Error()),
+			Suggestion: "Check write permission on " + paths.DataDir + "/history/runs.jsonl and free disk space on the project root, then retry history_record.",
+			Cause:      err,
+		}
 	}
 	return map[string]any{"ok": true, "ts": rec.Timestamp}, nil
 }
@@ -1560,7 +1745,10 @@ func shipStateHistoryRecord(root string, in ShipStateIn) (any, error) {
 func shipStateDeferredAdd(root string, in ShipStateIn) (any, error) {
 	d := in.Detail
 	if d == nil {
-		return nil, &mcpserver.DomainError{Msg: "deferred_add requires detail with issue fields"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "deferred_add: detail with issue fields is required",
+			Suggestion: "Pass detail.id and detail.description (plus optional created, source, priority), then retry deferred_add.",
+		}
 	}
 
 	issue := history.DeferredIssue{
@@ -1572,10 +1760,16 @@ func shipStateDeferredAdd(root string, in ShipStateIn) (any, error) {
 		Status:      "open",
 	}
 	if issue.ID == "" {
-		return nil, &mcpserver.DomainError{Msg: "deferred_add: detail.id is required"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "deferred_add: detail.id is required",
+			Suggestion: "Pass detail.id as a unique string identifying this deferred issue, then retry deferred_add.",
+		}
 	}
 	if issue.Description == "" {
-		return nil, &mcpserver.DomainError{Msg: "deferred_add: detail.description is required"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "deferred_add: detail.description is required",
+			Suggestion: "Pass detail.description describing the deferred issue, then retry deferred_add.",
+		}
 	}
 	if issue.Created == "" {
 		issue.Created = time.Now().UTC().Format(time.RFC3339)
@@ -1586,7 +1780,11 @@ func shipStateDeferredAdd(root string, in ShipStateIn) (any, error) {
 
 	w := history.NewFileWriter(historyDir(root))
 	if err := w.AddDeferred(issue); err != nil {
-		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("deferred_add: %s", err.Error()), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("add deferred issue to %s: %s", w.DeferredPath(), err.Error()),
+			Suggestion: "Check write permission on " + paths.DataDir + "/history/deferred.json and free disk space on the project root, then retry deferred_add.",
+			Cause:      err,
+		}
 	}
 	return map[string]any{"ok": true, "id": issue.ID}, nil
 }
@@ -1598,18 +1796,32 @@ func shipStateDeferredAdd(root string, in ShipStateIn) (any, error) {
 func shipStateDeferredResolve(root string, in ShipStateIn) (any, error) {
 	d := in.Detail
 	if d == nil {
-		return nil, &mcpserver.DomainError{Msg: "deferred_resolve requires detail with id field"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "deferred_resolve: detail with id field is required",
+			Suggestion: "Pass detail.id naming the deferred issue to resolve, then retry deferred_resolve.",
+		}
 	}
 	id := detailStr(d, "id")
 	if id == "" {
-		return nil, &mcpserver.DomainError{Msg: "deferred_resolve: detail.id is required"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "deferred_resolve: detail.id is required",
+			Suggestion: "Pass detail.id naming the deferred issue to resolve, then retry deferred_resolve.",
+		}
 	}
 	w := history.NewFileWriter(historyDir(root))
 	if err := w.ResolveDeferred(id); err != nil {
 		if strings.Contains(err.Error(), "not found") {
-			return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("deferred_resolve: %s", err.Error())}
+			return nil, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("deferred_resolve: %s", err.Error()),
+				Suggestion: "Call ship_state deferred_list to see valid open issue ids, then retry deferred_resolve with a matching id.",
+				Cause:      err,
+			}
 		}
-		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("deferred_resolve: %s", err.Error()), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("resolve deferred issue %q in %s: %s", id, w.DeferredPath(), err.Error()),
+			Suggestion: "Check write permission on " + paths.DataDir + "/history/deferred.json, then retry deferred_resolve.",
+			Cause:      err,
+		}
 	}
 	return map[string]any{"ok": true, "id": id}, nil
 }
@@ -1622,7 +1834,11 @@ func shipStateDeferredList(root string) (any, error) {
 	w := history.NewFileWriter(historyDir(root))
 	issues, err := w.ListDeferred()
 	if err != nil {
-		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("deferred_list: %s", err.Error()), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("read deferred issues from %s: %s", w.DeferredPath(), err.Error()),
+			Suggestion: "Check read permission on " + paths.DataDir + "/history/deferred.json and that it is not corrupted, then retry deferred_list.",
+			Cause:      err,
+		}
 	}
 	if issues == nil {
 		issues = []history.DeferredIssue{}
@@ -1642,7 +1858,11 @@ func shipStateDeferredProposeFollowups(root string) (any, error) {
 	w := history.NewFileWriter(historyDir(root))
 	issues, err := w.ListDeferred()
 	if err != nil {
-		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("deferred_propose_followups: %s", err.Error()), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("read deferred issues from %s: %s", w.DeferredPath(), err.Error()),
+			Suggestion: "Check read permission on " + paths.DataDir + "/history/deferred.json and that it is not corrupted, then retry deferred_propose_followups.",
+			Cause:      err,
+		}
 	}
 	if issues == nil {
 		issues = []history.DeferredIssue{}
@@ -1685,7 +1905,11 @@ func shipStateLogCLI(root, workDir string, in ShipStateIn) (any, error) {
 	}
 
 	if err := appendCLIEvidence(root, entry); err != nil {
-		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("log-cli: %s", err.Error()), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("log-cli: append CLI evidence to %s: %s", cliEvidencePath(root), err.Error()),
+			Suggestion: "Check write permission on the CLI evidence file named above and free disk space on the project root, then retry.",
+			Cause:      err,
+		}
 	}
 
 	return map[string]any{"ok": true, "action": "log-cli"}, nil
@@ -1777,7 +2001,11 @@ Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide
 		func(ctx mcpserver.Ctx, in ShipStateIn) (any, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {
-				return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("resolve project root: %s", err.Error()), Cause: err}
+				return nil, &mcpserver.InfraError{
+					Msg:        fmt.Sprintf("resolve project root: %s", err.Error()),
+					Suggestion: "Check that the current directory is inside a git worktree with a valid " + paths.DataDir + " project root, then retry.",
+					Cause:      err,
+				}
 			}
 			workDir, err := worktree.ActiveRoot()
 			if err != nil {

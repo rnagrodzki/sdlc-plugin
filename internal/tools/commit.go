@@ -88,6 +88,7 @@ type CommitPrepareOut struct {
 	WipSquash         CommitWipSquash     `json:"wipSquash"`
 	BranchGuard       CommitBranchGuard   `json:"branchGuard"`
 	Next              string              `json:"next"`
+	ManifestPath      string              `json:"manifestPath" jsonschema_description:"Path to a JSON manifest file holding this entire result, written to disk so the caller (e.g. the commit skill dispatching sdlc:commit-orchestrator) can pass the path to a subagent instead of round-tripping the full JSON through its own context."`
 }
 
 // commitPrepare is the core logic, separated for testability.
@@ -240,7 +241,29 @@ func commitPrepare(cfgRoot, gitRoot string, in CommitPrepareIn) (CommitPrepareOu
 		out.Next = "Call commit_apply with the prepared payload."
 	}
 
+	// Write the manifest to disk so callers (e.g. the commit skill, which
+	// dispatches sdlc:commit-orchestrator) can hand a file path to a
+	// subagent instead of round-tripping this entire JSON payload through
+	// their own context. Mirrors the rest of this function's soft-fail
+	// style: a write failure becomes a warning, not a hard error, and
+	// ManifestPath is left empty.
+	if manifestPath, err := writeCommitManifest(out); err != nil {
+		out.Warnings = append(out.Warnings, fmt.Sprintf("manifestPath: %s", err.Error()))
+	} else {
+		out.ManifestPath = manifestPath
+	}
+
 	return out, nil
+}
+
+// writeCommitManifest marshals out (with ManifestPath already pointed at the
+// file it is about to write) to JSON and writes it via the fsseam, returning
+// the path.
+func writeCommitManifest(out CommitPrepareOut) (string, error) {
+	return writeTempJSON("sdlc-commit-manifest-", "manifest", func(path string) any {
+		out.ManifestPath = path
+		return out
+	})
 }
 
 // detectWipSquash detects WIP commits on the current branch since
@@ -363,7 +386,8 @@ type CommitApplyOut struct {
 func commitApply(cfgRoot, gitRoot string, in CommitApplyIn) (CommitApplyOut, error) {
 	if strings.TrimSpace(in.Message) == "" {
 		return CommitApplyOut{}, &mcpserver.DataError{
-			Msg: "commit message must not be empty",
+			Msg:        "commit message must not be empty",
+			Suggestion: "Draft the commit message from the commit_prepare payload (or its manifest file) and call commit_apply again with a non-empty message.",
 		}
 	}
 
@@ -371,8 +395,9 @@ func commitApply(cfgRoot, gitRoot string, in CommitApplyIn) (CommitApplyOut, err
 	if !in.SkipConfigCheck {
 		if err := configmigrate.Verify(cfgRoot); err != nil {
 			return CommitApplyOut{}, &mcpserver.DataError{
-				Msg:   fmt.Sprintf("config check failed: %s", err.Error()),
-				Cause: err,
+				Msg:        fmt.Sprintf("config check failed: %s", err.Error()),
+				Suggestion: "Run the sdlc migrate tool to bring the project config up to date, then retry commit_apply. Pass skipConfigCheck only when the mismatch is known and intentional.",
+				Cause:      err,
 			}
 		}
 	}
@@ -381,8 +406,9 @@ func commitApply(cfgRoot, gitRoot string, in CommitApplyIn) (CommitApplyOut, err
 	_, err := execx.Run("git", []string{"add", "-A"}, execx.Options{Dir: gitRoot})
 	if err != nil {
 		return CommitApplyOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("git add: %s", err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("git add: %s", err.Error()),
+			Suggestion: "Inspect the working tree with git status: an unresolved merge conflict, a lock file, or a permission problem blocks staging. Resolve it, then retry commit_apply.",
+			Cause:      err,
 		}
 	}
 
@@ -390,13 +416,15 @@ func commitApply(cfgRoot, gitRoot string, in CommitApplyIn) (CommitApplyOut, err
 	stagedNames, err := execx.Run("git", []string{"diff", "--cached", "--name-only"}, execx.Options{Dir: gitRoot})
 	if err != nil {
 		return CommitApplyOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("git diff --cached: %s", err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("git diff --cached: %s", err.Error()),
+			Suggestion: "Inspect the repository with git status — the index may be locked or corrupt. Resolve it, then retry commit_apply.",
+			Cause:      err,
 		}
 	}
 	if strings.TrimSpace(stagedNames) == "" {
 		return CommitApplyOut{}, &mcpserver.DataError{
-			Msg: "nothing to commit after staging",
+			Msg:        "nothing to commit after staging",
+			Suggestion: "There are no changes to commit. Modify or add files first, then call commit_prepare again to build a fresh payload before retrying commit_apply.",
 		}
 	}
 
@@ -404,8 +432,9 @@ func commitApply(cfgRoot, gitRoot string, in CommitApplyIn) (CommitApplyOut, err
 	_, err = execx.Run("git", []string{"commit", "-m", in.Message}, execx.Options{Dir: gitRoot})
 	if err != nil {
 		return CommitApplyOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("git commit: %s", err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("git commit: %s", err.Error()),
+			Suggestion: "Read the git output above: a failing commit hook or a missing user.name/user.email is the usual cause. Fix it, then retry commit_apply with the same message.",
+			Cause:      err,
 		}
 	}
 
@@ -413,8 +442,9 @@ func commitApply(cfgRoot, gitRoot string, in CommitApplyIn) (CommitApplyOut, err
 	sha, err := execx.Run("git", []string{"rev-parse", "HEAD"}, execx.Options{Dir: gitRoot})
 	if err != nil {
 		return CommitApplyOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("git rev-parse HEAD: %s", err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("git rev-parse HEAD: %s", err.Error()),
+			Suggestion: "The commit may already have landed — run git log -1 to check before retrying commit_apply, so the same change is not committed twice.",
+			Cause:      err,
 		}
 	}
 
@@ -428,7 +458,7 @@ func commitApply(cfgRoot, gitRoot string, in CommitApplyIn) (CommitApplyOut, err
 // RegisterCommitTools registers commit_prepare and commit_apply on the server.
 func RegisterCommitTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "commit_prepare",
-		"Gather commit context: staged/unstaged/untracked files, diffs, recent commits, commit config, and branch information.",
+		"Gather commit context: staged/unstaged/untracked files, diffs, recent commits, commit config, and branch information. Also writes the full result as a JSON manifest into a new temp directory and returns its path as manifestPath (hand that path to sdlc:commit-orchestrator instead of the payload); if the write fails, manifestPath is empty and the reason is appended to warnings.",
 		mcpserver.Annotations{
 			Title:      "Prepare commit context",
 			ReadOnly:   true,
@@ -439,15 +469,17 @@ func RegisterCommitTools(s *mcpserver.Server) {
 			cfgRoot, err := worktree.MainRoot()
 			if err != nil {
 				return CommitPrepareOut{}, &mcpserver.InfraError{
-					Msg:   fmt.Sprintf("resolve main root: %s", err.Error()),
-					Cause: err,
+					Msg:        fmt.Sprintf("resolve main root: %s", err.Error()),
+					Suggestion: "Run commit_prepare from inside a git repository (or one of its worktrees) so the main root can be resolved, then retry.",
+					Cause:      err,
 				}
 			}
 			gitRoot, err := worktree.ActiveRoot()
 			if err != nil {
 				return CommitPrepareOut{}, &mcpserver.InfraError{
-					Msg:   fmt.Sprintf("resolve active root: %s", err.Error()),
-					Cause: err,
+					Msg:        fmt.Sprintf("resolve active root: %s", err.Error()),
+					Suggestion: "Run commit_prepare from inside a git working tree — the current directory is not one. Change into the repository, then retry.",
+					Cause:      err,
 				}
 			}
 			return commitPrepare(cfgRoot, gitRoot, in)
@@ -467,15 +499,17 @@ func RegisterCommitTools(s *mcpserver.Server) {
 			cfgRoot, err := worktree.MainRoot()
 			if err != nil {
 				return CommitApplyOut{}, &mcpserver.InfraError{
-					Msg:   fmt.Sprintf("resolve main root: %s", err.Error()),
-					Cause: err,
+					Msg:        fmt.Sprintf("resolve main root: %s", err.Error()),
+					Suggestion: "Run commit_apply from inside a git repository (or one of its worktrees) so the main root can be resolved, then retry.",
+					Cause:      err,
 				}
 			}
 			gitRoot, err := worktree.ActiveRoot()
 			if err != nil {
 				return CommitApplyOut{}, &mcpserver.InfraError{
-					Msg:   fmt.Sprintf("resolve active root: %s", err.Error()),
-					Cause: err,
+					Msg:        fmt.Sprintf("resolve active root: %s", err.Error()),
+					Suggestion: "Run commit_apply from inside a git working tree — the current directory is not one. Change into the repository, then retry.",
+					Cause:      err,
 				}
 			}
 			return commitApply(cfgRoot, gitRoot, in)

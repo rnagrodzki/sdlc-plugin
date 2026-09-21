@@ -60,7 +60,8 @@ func (a Annotations) apply(t *mcp.Tool) {
 
 // Register adds a typed tool to the server. TIn defines the JSON schema for
 // the tool's input (derived from struct tags). The handler receives a
-// deserialized TIn and returns TOut, which is wrapped in a KD3 envelope.
+// deserialized TIn and returns TOut, which is rendered to Markdown by
+// renderOK.
 //
 // a carries the tool's MCP annotations and is required -- there is no
 // zero-value default, because Go's false zero value for Destructive and
@@ -70,27 +71,27 @@ func (a Annotations) apply(t *mcp.Tool) {
 // internal/tools/annotations_test.go; see docs/mcp-tool-annotations.md.
 //
 // All handler outcomes -- success, typed errors, panics -- are returned as
-// text content in the MCP result with appropriate envelope and IsError flag.
+// Markdown text content in the MCP result with the appropriate IsError flag.
 // The handler never returns a Go error, so the protocol layer never sees a
-// JSON-RPC error from tool execution. Input is unmarshaled and validated
-// manually (rather than via the SDK's generic AddTool) so that invalid input
-// can be reported through the KD3 "data" error envelope instead of a
-// protocol-level error.
+// JSON-RPC error from tool execution. Input is unmarshaled here rather than
+// via the SDK's generic AddTool so that a malformed payload can be reported
+// as a rendered "data" error instead of a protocol-level error.
+//
+// The unmarshal is the only input check: the advertised InputSchema is not
+// enforced at call time (go-sdk v1.7.0's Server.AddTool does not validate
+// input either). Unknown fields are dropped and missing required fields
+// arrive as zero values, so a handler that treats a zero value as meaningful
+// must reject it itself -- see shipStateGC's detail.dryRun type check.
 func Register[TIn, TOut any](s *Server, name, desc string, a Annotations, h func(ctx Ctx, in TIn) (TOut, error)) {
 	inSchema, err := schemaFor[TIn]()
 	if err != nil {
 		panic(fmt.Sprintf("mcpserver: register %q: input schema: %v", name, err))
 	}
-	outSchema, err := schemaFor[OKEnvelope[TOut]]()
-	if err != nil {
-		panic(fmt.Sprintf("mcpserver: register %q: output schema: %v", name, err))
-	}
 
 	tool := &mcp.Tool{
-		Name:         name,
-		Description:  desc,
-		InputSchema:  inSchema,
-		OutputSchema: outSchema,
+		Name:        name,
+		Description: desc,
+		InputSchema: inSchema,
 	}
 
 	a.apply(tool)
@@ -110,19 +111,13 @@ func Register[TIn, TOut any](s *Server, name, desc string, a Annotations, h func
 			Warnings:  warnings,
 		}
 
-		// Panic recovery -- convert to code:"infra" envelope.
+		// Panic recovery -- convert to a rendered "infra" error result.
 		defer func() {
 			if r := recover(); r != nil {
 				msg := fmt.Sprintf("panic: %v", r)
-				env, marshalErr := wrapErr("infra", msg, "")
-				if marshalErr != nil {
-					// Last resort: raw text.
-					env = []byte(`{"ok":false,"code":"infra","error":"panic recovery marshal failure"}`)
-				}
+				const panicRecovery = "Do not retry with the same arguments: a panic is a defect in the tool, so the call fails the same way every time. Record it with mcp_failure_record and use another route to reach the goal."
 				result = &mcp.CallToolResult{
-					Content: []mcp.Content{
-						&mcp.TextContent{Text: string(env)},
-					},
+					Content: []mcp.Content{&mcp.TextContent{Text: renderError(name, "infra", msg, panicRecovery)}},
 					IsError: true,
 				}
 			}
@@ -132,15 +127,10 @@ func Register[TIn, TOut any](s *Server, name, desc string, a Annotations, h func
 		var in TIn
 		if len(req.Params.Arguments) > 0 {
 			if err := json.Unmarshal(req.Params.Arguments, &in); err != nil {
-				code, errMsg := "data", fmt.Sprintf("invalid input: %s", err.Error())
-				env, marshalErr := wrapErr(code, errMsg, "")
-				if marshalErr != nil {
-					env = []byte(`{"ok":false,"code":"data","error":"input bind failure"}`)
-				}
+				errMsg := fmt.Sprintf("invalid input: %s", err.Error())
+				const badInputRecovery = "Check the argument names and value types against this tool's input schema, then retry with corrected arguments."
 				return &mcp.CallToolResult{
-					Content: []mcp.Content{
-						&mcp.TextContent{Text: string(env)},
-					},
+					Content: []mcp.Content{&mcp.TextContent{Text: renderError(name, "data", errMsg, badInputRecovery)}},
 					IsError: true,
 				}, nil
 			}
@@ -150,36 +140,15 @@ func Register[TIn, TOut any](s *Server, name, desc string, a Annotations, h func
 		out, err := h(tCtx, in)
 		if err != nil {
 			code, errMsg, suggestion := mapError(err)
-			env, marshalErr := wrapErr(code, errMsg, suggestion)
-			if marshalErr != nil {
-				env = []byte(`{"ok":false,"code":"infra","error":"error envelope marshal failure"}`)
-			}
 			return &mcp.CallToolResult{
-				Content: []mcp.Content{
-					&mcp.TextContent{Text: string(env)},
-				},
-				IsError: true,
-			}, nil
-		}
-
-		// Success envelope.
-		env, marshalErr := wrapOK(out)
-		if marshalErr != nil {
-			errEnv, _ := wrapErr("infra", fmt.Sprintf("marshal result: %s", marshalErr.Error()), "")
-			return &mcp.CallToolResult{
-				Content: []mcp.Content{
-					&mcp.TextContent{Text: string(errEnv)},
-				},
+				Content: []mcp.Content{&mcp.TextContent{Text: renderError(name, code, errMsg, suggestion)}},
 				IsError: true,
 			}, nil
 		}
 
 		return &mcp.CallToolResult{
-			Content: []mcp.Content{
-				&mcp.TextContent{Text: string(env)},
-			},
-			StructuredContent: OKEnvelope[TOut]{OK: true, Data: out},
-			IsError:           false,
+			Content: []mcp.Content{&mcp.TextContent{Text: renderOK(name, out)}},
+			IsError: false,
 		}, nil
 	}
 

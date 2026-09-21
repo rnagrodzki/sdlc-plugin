@@ -41,7 +41,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		readOnly:   true,
 		idempotent: true,
 		openWorld:  false,
-		reason:     "only os.ReadFile/os.Stat",
+		reason:     "os.ReadFile/os.Stat plus os.MkdirTemp(\"\", \"sdlc-plan-snapshot-\") for material_snapshot's snapshotPath output",
 	},
 	"verify_pipeline_classify": {
 		title:      "Classify CI failure logs",
@@ -62,7 +62,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		readOnly:   true,
 		idempotent: true,
 		openWorld:  false,
-		reason:     "local git reads; commit.go imports neither os nor fsx",
+		reason:     "local git reads plus os.MkdirTemp(\"\", \"sdlc-commit-manifest-\") for the manifestPath output",
 	},
 	"links_validate": {
 		title:      "Check documentation links",
@@ -442,6 +442,11 @@ func TestReadOnlyToolsWriteNothingTracked(t *testing.T) {
 			case "verify_tag_ancestry":
 				_, _ = verifyTagAncestry(root, "v0.0.0-does-not-exist")
 			case "commit_prepare":
+				// commitPrepare writes its manifest through
+				// mkdirTempFunc("", ...); redirect it into a t.TempDir() so
+				// this run does not leak an sdlc-commit-manifest-* directory
+				// into the OS temp dir.
+				redirectTempManifests(t)
 				_, _ = commitPrepare(root, root, CommitPrepareIn{SkipConfigCheck: true})
 			case "plan_mark":
 				_, _ = planMark(root, root, PlanMarkIn{Marker: "guardrailsEvaluated"})

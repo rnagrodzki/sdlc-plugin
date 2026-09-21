@@ -1,7 +1,10 @@
 package tools
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"regexp"
 	"sort"
@@ -19,7 +22,7 @@ import (
 // PlanSupportIn carries the merged input for the plan_support tool's 4
 // actions. Each field is consumed by one or more actions (noted in comments).
 type PlanSupportIn struct {
-	Action string `json:"action" jsonschema_description:"Selects the operation: \"merge_results\", \"material_snapshot\", \"material_compare\", or \"openspec_appendix\". Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."` // "merge_results"|"material_snapshot"|"material_compare"|"openspec_appendix"
+	Action string `json:"action" jsonschema:"enum=merge_results,enum=material_snapshot,enum=material_compare,enum=openspec_appendix" jsonschema_description:"Selects the operation: \"merge_results\", \"material_snapshot\", \"material_compare\", or \"openspec_appendix\". Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."` // "merge_results"|"material_snapshot"|"material_compare"|"openspec_appendix"
 
 	// merge_results
 	LaneResults   []LaneResult `json:"laneResults,omitempty" jsonschema_description:"merge_results only: outcomes from each review lane to merge. At least one of laneResults or lensResults is required."`
@@ -28,8 +31,8 @@ type PlanSupportIn struct {
 	IsRedispatch  bool         `json:"isRedispatch,omitempty" jsonschema_description:"merge_results only: true when these results come from a redispatch (re-run) of lanes/lenses, affecting how merged status is computed."`
 
 	// material_snapshot / material_compare
-	FilePath string        `json:"filePath,omitempty" jsonschema_description:"material_snapshot / material_compare only: path to the plan file to snapshot or compare."`
-	Snapshot *PlanSnapshot `json:"snapshot,omitempty" jsonschema_description:"material_compare only: the previously captured snapshot to compare the current plan file against."`
+	FilePath     string `json:"filePath,omitempty" jsonschema_description:"material_snapshot / material_compare only: path to the plan file to snapshot or compare."`
+	SnapshotPath string `json:"snapshotPath,omitempty" jsonschema_description:"material_compare only: path to the snapshot file returned by material_snapshot's snapshotPath field, to compare the current plan file against."`
 
 	// openspec_appendix
 	ChangeName   string   `json:"changeName,omitempty" jsonschema_description:"openspec_appendix only: name of the openspec change to generate the appendix for. Required."`
@@ -53,11 +56,17 @@ type PlanSupportOut struct {
 	Recommendations []string `json:"recommendations,omitempty"`
 
 	// material_snapshot
-	Snapshot *PlanSnapshot `json:"snapshot,omitempty"`
+	SnapshotPath string `json:"snapshotPath,omitempty" jsonschema_description:"material_snapshot only: path to the snapshot file just written to disk. Pass this to material_compare's snapshotPath field."`
 
 	// material_compare
-	Material bool     `json:"material,omitempty"`
-	Triggers []string `json:"triggers,omitempty"`
+	//
+	// Neither field carries omitempty: plan/SKILL.md Step 6 reads `material`
+	// as a boolean and `triggers` as a list, and an omitted field is
+	// indistinguishable from false/empty in the rendered output. The cost is
+	// two extra lines ("material: false", "triggers: (none)") on the three
+	// actions that do not populate them.
+	Material bool     `json:"material"`
+	Triggers []string `json:"triggers"`
 
 	// openspec_appendix
 	AppendixMarkdown string `json:"appendixMarkdown,omitempty"`
@@ -153,8 +162,8 @@ func RegisterPlanSupportTools(s *mcpserver.Server) {
 Pass "action" to select an operation. Each action uses a subset of the input fields (unlisted fields are ignored):
 
 - merge_results: Merge lane/lens review results. Requires at least one of laneResults or lensResults. Optional: expectedGates, isRedispatch.
-- material_snapshot: Snapshot plan material for change detection. Requires filePath.
-- material_compare: Compare current plan material against a snapshot. Requires filePath, snapshot.
+- material_snapshot: Snapshot plan material for change detection. Requires filePath. Returns snapshotPath.
+- material_compare: Compare current plan material against a snapshot. Requires filePath, snapshotPath (from material_snapshot).
 - openspec_appendix: Generate an openspec appendix. Requires changeName. Optional: proposalPath, designPath, specPaths, planTasks.`,
 		mcpserver.Annotations{
 			Title:      "Read plan support data",
@@ -167,7 +176,11 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 			if err != nil {
 				cwd, cwdErr := os.Getwd()
 				if cwdErr != nil {
-					return PlanSupportOut{}, &mcpserver.InfraError{Msg: "resolve root: " + err.Error(), Cause: err}
+					return PlanSupportOut{}, &mcpserver.InfraError{
+						Msg:        "resolve root: " + err.Error(),
+						Suggestion: "Run plan_support from inside a git repository (or a worktree of one) so the main root can be resolved, then retry.",
+						Cause:      err,
+					}
 				}
 				root = cwd
 			}
@@ -198,7 +211,8 @@ func planSupportCore(mainRoot, contentRoot string, in PlanSupportIn) (PlanSuppor
 		return openspecAppendix(mainRoot, in)
 	default:
 		return PlanSupportOut{}, &mcpserver.DomainError{
-			Msg: fmt.Sprintf("unknown action %q — valid actions: merge_results, material_snapshot, material_compare, openspec_appendix", in.Action),
+			Msg:        fmt.Sprintf("unknown action %q — valid actions: merge_results, material_snapshot, material_compare, openspec_appendix", in.Action),
+			Suggestion: "Call plan_support again with action set to exactly one of merge_results, material_snapshot, material_compare or openspec_appendix.",
 		}
 	}
 }
@@ -215,7 +229,8 @@ func issueKey(iss Issue) string {
 func mergeResults(in PlanSupportIn) (PlanSupportOut, error) {
 	if len(in.LaneResults) == 0 && len(in.LensResults) == 0 {
 		return PlanSupportOut{}, &mcpserver.DomainError{
-			Msg: "merge_results requires at least one of laneResults or lensResults to be non-empty",
+			Msg:        "merge_results requires at least one of laneResults or lensResults to be non-empty",
+			Suggestion: "Collect the lane and/or lens reviewer results first, then call merge_results with laneResults, lensResults, or both populated.",
 		}
 	}
 
@@ -398,25 +413,48 @@ func mergeResults(in PlanSupportIn) (PlanSupportOut, error) {
 func materialSnapshot(in PlanSupportIn) (PlanSupportOut, error) {
 	if in.FilePath == "" {
 		return PlanSupportOut{}, &mcpserver.DomainError{
-			Msg: "material_snapshot requires filePath — provide the path to the plan file to snapshot",
+			Msg:        "material_snapshot requires filePath — provide the path to the plan file to snapshot",
+			Suggestion: "Call plan_support again with action=\"material_snapshot\" and a non-empty filePath pointing to the plan file.",
 		}
 	}
 
-	content, err := os.ReadFile(in.FilePath)
+	content, err := readFileFunc(in.FilePath)
 	if err != nil {
 		return PlanSupportOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("read plan file %q: %s", in.FilePath, err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("read plan file %q: %s", in.FilePath, err.Error()),
+			Suggestion: fmt.Sprintf("Check that %q exists and is readable, then retry material_snapshot with the corrected filePath.", in.FilePath),
+			Cause:      err,
 		}
 	}
 
 	snap := snapshotPlan(string(content))
 
+	snapshotPath, err := writePlanSnapshot(snap)
+	if err != nil {
+		return PlanSupportOut{}, err
+	}
+
 	return PlanSupportOut{
-		Summary:  fmt.Sprintf("Snapshot captured: %d tasks, %d deviation rows, %d key decisions.", snap.TaskCount, len(snap.DeviationsRows), len(snap.KeyDecisions)),
-		Next:     "Use material_compare after plan modifications to detect material changes.",
-		Snapshot: &snap,
+		Summary:      fmt.Sprintf("Snapshot captured: %d tasks, %d deviation rows, %d key decisions.", snap.TaskCount, len(snap.DeviationsRows), len(snap.KeyDecisions)),
+		Next:         "After editing the plan, call plan_support with action=\"material_compare\", the same filePath, and the snapshotPath returned above.",
+		SnapshotPath: snapshotPath,
 	}, nil
+}
+
+// writePlanSnapshot marshals snap to JSON and writes it to a fresh temp file
+// via the fsseam, so the caller can pass the file path forward to
+// material_compare instead of round-tripping the full snapshot JSON through
+// its own context.
+func writePlanSnapshot(snap PlanSnapshot) (string, error) {
+	snapshotPath, err := writeTempJSON("sdlc-plan-snapshot-", "snapshot", func(string) any { return snap })
+	if err != nil {
+		return "", &mcpserver.InfraError{
+			Msg:        err.Error(),
+			Suggestion: "Check available disk space and permissions on the OS temp directory, then retry material_snapshot.",
+			Cause:      err,
+		}
+	}
+	return snapshotPath, nil
 }
 
 // snapshotPlan extracts the 7 structural dimensions from plan markdown content.
@@ -595,25 +633,32 @@ func extractSectionEntryKeys(content string, headingRe *regexp.Regexp) []string 
 func materialCompare(in PlanSupportIn) (PlanSupportOut, error) {
 	if in.FilePath == "" {
 		return PlanSupportOut{}, &mcpserver.DomainError{
-			Msg: "material_compare requires filePath — provide the path to the updated plan file",
+			Msg:        "material_compare requires filePath — provide the path to the updated plan file",
+			Suggestion: "Call plan_support again with action=\"material_compare\" and a non-empty filePath pointing to the updated plan file.",
 		}
 	}
-	if in.Snapshot == nil {
+	if in.SnapshotPath == "" {
 		return PlanSupportOut{}, &mcpserver.DomainError{
-			Msg: "material_compare requires snapshot — provide the prior snapshot from material_snapshot",
+			Msg:        "material_compare requires snapshotPath — call material_snapshot first and pass its returned snapshotPath",
+			Suggestion: "Call plan_support with action=\"material_snapshot\" and the same filePath first, then pass the snapshotPath it returns back verbatim.",
 		}
 	}
 
-	content, err := os.ReadFile(in.FilePath)
+	content, err := readFileFunc(in.FilePath)
 	if err != nil {
 		return PlanSupportOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("read plan file %q: %s", in.FilePath, err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("read plan file %q: %s", in.FilePath, err.Error()),
+			Suggestion: fmt.Sprintf("Check that %q exists and is readable, then retry material_compare with the corrected filePath.", in.FilePath),
+			Cause:      err,
 		}
+	}
+
+	before, err := readPlanSnapshot(in.SnapshotPath)
+	if err != nil {
+		return PlanSupportOut{}, err
 	}
 
 	after := snapshotPlan(string(content))
-	before := in.Snapshot
 	var triggers []string
 
 	// 1. Task count delta.
@@ -666,6 +711,68 @@ func materialCompare(in PlanSupportIn) (PlanSupportOut, error) {
 		Material: material,
 		Triggers: triggers,
 	}, nil
+}
+
+// readPlanSnapshot reads and validates the snapshot file at path, written
+// earlier by material_snapshot via the fsseam. It rejects 5 distinct ways
+// the referenced file can fail to be a usable snapshot: missing, unreadable
+// for another reason (permission, I/O), not JSON, and well-formed JSON that
+// isn't a PlanSnapshot (missing the required taskCount key, or otherwise
+// undecodable).
+//
+// A decoded snapshot with taskCount 0 and no other keys is NOT rejected: it
+// is exactly what material_snapshot writes for a plan with no "### Task N:"
+// headings, because every collection field on PlanSnapshot is omitempty and
+// an empty map is dropped on marshal. The taskCount presence probe above
+// already separates non-snapshot JSON from a legitimately empty snapshot.
+//
+// No error tells the caller to re-snapshot blindly: plan/SKILL.md calls
+// material_snapshot BEFORE the plan rewrite, so a snapshot regenerated after
+// the rewrite would match the current plan and report material:false,
+// silently skipping the R64 re-validation gate. Every recovery text either
+// warns that the baseline is lost or limits re-snapshotting to an unedited
+// plan.
+func readPlanSnapshot(path string) (*PlanSnapshot, error) {
+	raw, err := readFileFunc(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, &mcpserver.InfraError{
+				Msg:        fmt.Sprintf("snapshotPath %q points to a file that is missing: it was deleted or never written", path),
+				Suggestion: "If you have not edited the plan yet, run plan_support with action=\"material_snapshot\" again and pass the new snapshotPath. If you already edited it, do NOT re-snapshot: treat the change as material and run the critique lanes and lenses again.",
+				Cause:      err,
+			}
+		}
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("read snapshot file %q: %s", path, err.Error()),
+			Suggestion: fmt.Sprintf("Make %q readable for this process, then call material_compare again with the same snapshotPath. If you cannot fix it, treat the change as material and run the critique lanes and lenses again.", path),
+			Cause:      err,
+		}
+	}
+
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return nil, &mcpserver.DataError{
+			Msg:        fmt.Sprintf("snapshot file %q is not valid JSON: %s", path, err.Error()),
+			Suggestion: "The pre-edit baseline is lost. If the plan has already been rewritten, do NOT re-snapshot — a snapshot taken now matches the current plan and would report material:false; treat this as a material change and re-run the critique lanes and lenses. Only re-run material_snapshot if the plan has not been edited yet.",
+			Cause:      err,
+		}
+	}
+	if _, ok := probe["taskCount"]; !ok {
+		return nil, &mcpserver.DataError{
+			Msg:        fmt.Sprintf("snapshot file %q is not a plan snapshot (missing taskCount field)", path),
+			Suggestion: "The pre-edit baseline is lost. If the plan has already been rewritten, do NOT re-snapshot — a snapshot taken now matches the current plan and would report material:false; treat this as a material change and re-run the critique lanes and lenses. Only re-run material_snapshot if the plan has not been edited yet.",
+		}
+	}
+
+	var snap PlanSnapshot
+	if err := json.Unmarshal(raw, &snap); err != nil {
+		return nil, &mcpserver.DataError{
+			Msg:        fmt.Sprintf("snapshot file %q could not be decoded as a plan snapshot: %s", path, err.Error()),
+			Suggestion: "The pre-edit baseline is lost. If the plan has already been rewritten, do NOT re-snapshot — a snapshot taken now matches the current plan and would report material:false; treat this as a material change and re-run the critique lanes and lenses. Only re-run material_snapshot if the plan has not been edited yet.",
+			Cause:      err,
+		}
+	}
+	return &snap, nil
 }
 
 // sortedStringSliceEqual compares two already-sorted string slices for equality.
@@ -734,7 +841,8 @@ func diffStringSliceMaps(before, after map[string][]string) []string {
 func openspecAppendix(mainRoot string, in PlanSupportIn) (PlanSupportOut, error) {
 	if in.ChangeName == "" {
 		return PlanSupportOut{}, &mcpserver.DomainError{
-			Msg: "openspec_appendix requires changeName — provide the openspec change name",
+			Msg:        "openspec_appendix requires changeName — provide the openspec change name",
+			Suggestion: "Call plan_support again with action=\"openspec_appendix\" and changeName set to the openspec change directory name (the folder under openspec/changes/).",
 		}
 	}
 
