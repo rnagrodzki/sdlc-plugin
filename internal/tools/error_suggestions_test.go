@@ -52,6 +52,44 @@ func suggestionLit(lit *ast.CompositeLit) (kv *ast.KeyValueExpr, present bool) {
 	return nil, false
 }
 
+// suggestionText returns the constant text a Suggestion expression carries:
+// a string literal, the format string of a fmt.Sprintf call, or the joined
+// literal parts of a "+" concatenation. ok is false when the expression holds
+// no string literal at all (a bare variable or an opaque call result).
+func suggestionText(e ast.Expr) (text string, ok bool) {
+	switch v := e.(type) {
+	case *ast.BasicLit:
+		if v.Kind != token.STRING {
+			return "", false
+		}
+		s, err := strconv.Unquote(v.Value)
+		if err != nil {
+			return "", false
+		}
+		return s, true
+	case *ast.ParenExpr:
+		return suggestionText(v.X)
+	case *ast.BinaryExpr:
+		if v.Op != token.ADD {
+			return "", false
+		}
+		l, lok := suggestionText(v.X)
+		r, rok := suggestionText(v.Y)
+		return l + r, lok || rok
+	case *ast.CallExpr:
+		sel, isSel := v.Fun.(*ast.SelectorExpr)
+		if !isSel || len(v.Args) == 0 {
+			return "", false
+		}
+		pkg, isIdent := sel.X.(*ast.Ident)
+		if !isIdent || pkg.Name != "fmt" || sel.Sel.Name != "Sprintf" {
+			return "", false
+		}
+		return suggestionText(v.Args[0])
+	}
+	return "", false
+}
+
 // walkErrorLiterals parses path and calls fn for every
 // mcpserver.{Domain,Infra,Data}Error composite literal found in it.
 func walkErrorLiterals(t *testing.T, path string, fn func(fset *token.FileSet, lit *ast.CompositeLit)) {
@@ -99,12 +137,8 @@ func TestErrorLiteralsNoBoilerplateSuggestion(t *testing.T) {
 				if !present {
 					return
 				}
-				bl, ok := kv.Value.(*ast.BasicLit)
-				if !ok || bl.Kind != token.STRING {
-					return
-				}
-				text, err := strconv.Unquote(bl.Value)
-				if err != nil {
+				text, ok := suggestionText(kv.Value)
+				if !ok {
 					return
 				}
 				pos := fset.Position(lit.Pos())
@@ -122,8 +156,8 @@ func TestErrorLiteralsNoBoilerplateSuggestion(t *testing.T) {
 // TestShipStateErrorLiteralsHaveRealSuggestions walks every
 // mcpserver.*Error literal in ship_state.go -- task 5's fact sheet covers
 // all 59 sites in this file, so "every literal" is exact here -- and
-// asserts each one has a plain string Suggestion of at least 40
-// characters that is not the generic boilerplate.
+// asserts each one has a Suggestion whose constant text is at least 40
+// characters and is not the generic boilerplate.
 func TestShipStateErrorLiteralsHaveRealSuggestions(t *testing.T) {
 	const path = "ship_state.go"
 	walkErrorLiterals(t, path, func(fset *token.FileSet, lit *ast.CompositeLit) {
@@ -135,14 +169,9 @@ func TestShipStateErrorLiteralsHaveRealSuggestions(t *testing.T) {
 			t.Errorf("%s:%d: %s is missing a Suggestion field", path, pos.Line, sel.Sel.Name)
 			return
 		}
-		bl, ok := kv.Value.(*ast.BasicLit)
-		if !ok || bl.Kind != token.STRING {
-			t.Errorf("%s:%d: %s.Suggestion must be a plain string literal", path, pos.Line, sel.Sel.Name)
-			return
-		}
-		text, err := strconv.Unquote(bl.Value)
-		if err != nil {
-			t.Errorf("%s:%d: %s.Suggestion is an unparsable string literal: %v", path, pos.Line, sel.Sel.Name, err)
+		text, ok := suggestionText(kv.Value)
+		if !ok {
+			t.Errorf("%s:%d: %s.Suggestion must be a string literal, a fmt.Sprintf with a literal format, or a \"+\" concatenation containing a literal", path, pos.Line, sel.Sel.Name)
 			return
 		}
 		if text == errSuggestionBoilerplate {
