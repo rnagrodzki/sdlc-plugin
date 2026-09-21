@@ -307,7 +307,7 @@ func writeReplyBodies(root string, in ReceivedReviewVerifyIn) (ReceivedReviewVer
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return ReceivedReviewVerifyOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("create %s: %s", dir, err.Error()),
-			Suggestion: "Create .sdlc-v2/state/artifacts manually with write permission, or free disk space on the project root, then retry received_review_verify with writeReplyBodies true.",
+			Suggestion: "Create " + paths.DataDir + "/state/artifacts manually with write permission, or free disk space on the project root, then retry received_review_verify with writeReplyBodies true.",
 			Cause:      err,
 		}
 	}
@@ -316,7 +316,7 @@ func writeReplyBodies(root string, in ReceivedReviewVerifyIn) (ReceivedReviewVer
 	if err := os.WriteFile(outPath, []byte(in.Content), 0o644); err != nil {
 		return ReceivedReviewVerifyOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("write %s: %s", outPath, err.Error()),
-			Suggestion: "Check write permission on .sdlc-v2/state/artifacts and free disk space on the project root, then retry received_review_verify with the same content.",
+			Suggestion: "Check write permission on " + paths.DataDir + "/state/artifacts and free disk space on the project root, then retry received_review_verify with the same content.",
 			Cause:      err,
 		}
 	}

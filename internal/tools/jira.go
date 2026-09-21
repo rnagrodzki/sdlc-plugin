@@ -1281,7 +1281,7 @@ func jiraWriteCritique(mainRoot string, in JiraIn) (any, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        "create artifacts dir: " + err.Error(),
-			Suggestion: "Create .sdlc-v2/state/artifacts manually with write permission, or free disk space on the project root, then retry jira write-critique.",
+			Suggestion: "Create " + paths.DataDir + "/state/artifacts manually with write permission, or free disk space on the project root, then retry jira write-critique.",
 			Cause:      err,
 		}
 	}
@@ -1290,7 +1290,7 @@ func jiraWriteCritique(mainRoot string, in JiraIn) (any, error) {
 	if err := fsx.AtomicWriteJSON(writePath, in.Data); err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        "write critique artifact: " + err.Error(),
-			Suggestion: "Check write permission on .sdlc-v2/state/artifacts and free disk space on the project root, then retry jira write-critique with the same hash.",
+			Suggestion: "Check write permission on " + paths.DataDir + "/state/artifacts and free disk space on the project root, then retry jira write-critique with the same hash.",
 			Cause:      err,
 		}
 	}
@@ -1312,7 +1312,7 @@ func jiraWriteApproval(mainRoot string, in JiraIn) (any, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        "create artifacts dir: " + err.Error(),
-			Suggestion: "Create .sdlc-v2/state/artifacts manually with write permission, or free disk space on the project root, then retry jira write-approval.",
+			Suggestion: "Create " + paths.DataDir + "/state/artifacts manually with write permission, or free disk space on the project root, then retry jira write-approval.",
 			Cause:      err,
 		}
 	}
@@ -1322,7 +1322,7 @@ func jiraWriteApproval(mainRoot string, in JiraIn) (any, error) {
 	if err := os.WriteFile(writePath, []byte(token), 0o644); err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        "write approval token: " + err.Error(),
-			Suggestion: "Check write permission on .sdlc-v2/state/artifacts and free disk space on the project root, then retry jira write-approval with the same hash.",
+			Suggestion: "Check write permission on " + paths.DataDir + "/state/artifacts and free disk space on the project root, then retry jira write-approval with the same hash.",
 			Cause:      err,
 		}
 	}
