@@ -597,7 +597,8 @@ func setupWritePlanTemplate(root string) (SetupInitOut, error) {
 	defaultPath := resolveSkillTemplate("plan-template-default.md")
 	if defaultPath == nil {
 		return SetupInitOut{}, &mcpserver.DataError{
-			Msg: "setup_init: shipped plan-template-default.md not found — plugin installation may be corrupt",
+			Msg:        "setup_init: shipped plan-template-default.md not found — plugin installation may be corrupt",
+			Suggestion: "Update or reinstall the sdlc plugin so plan-template-default.md ships with it. Then call setup_init again with writePlanTemplate true.",
 		}
 	}
 

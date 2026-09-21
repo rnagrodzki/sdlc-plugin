@@ -203,7 +203,8 @@ func ciScriptDrift(root string) ([]CIScriptDriftEntry, error) {
 		if !ok {
 			// Should never happen with embedded payloads; degrade gracefully.
 			return nil, &mcpserver.InfraError{
-				Msg: fmt.Sprintf("embedded payload %q not found", entry.PayloadKey),
+				Msg:        fmt.Sprintf("embedded payload %q not found", entry.PayloadKey),
+				Suggestion: fmt.Sprintf("The sdlc plugin is missing its embedded file %q. Update or reinstall the plugin, then re-run the same setup_prepare or validate call.", entry.PayloadKey),
 			}
 		}
 
@@ -285,7 +286,8 @@ func scaffoldCI(root string, force bool) (ScaffoldCIOut, error) {
 		if !ok {
 			// Should never happen with embedded payloads; degrade gracefully.
 			return ScaffoldCIOut{}, &mcpserver.InfraError{
-				Msg: fmt.Sprintf("embedded payload %q not found", entry.PayloadKey),
+				Msg:        fmt.Sprintf("embedded payload %q not found", entry.PayloadKey),
+				Suggestion: fmt.Sprintf("The sdlc plugin is missing its embedded file %q. Update or reinstall the plugin, then run scaffold_ci again.", entry.PayloadKey),
 			}
 		}
 
@@ -309,8 +311,9 @@ func scaffoldCI(root string, force bool) (ScaffoldCIOut, error) {
 			// Migration: delete legacy .js, install new .cjs.
 			if err := os.Remove(legacyPath); err != nil {
 				return ScaffoldCIOut{}, &mcpserver.InfraError{
-					Msg:   fmt.Sprintf("remove legacy %s: %s", legacyPath, err.Error()),
-					Cause: err,
+					Msg:        fmt.Sprintf("remove legacy %s: %s", legacyPath, err.Error()),
+					Suggestion: fmt.Sprintf("Delete %s by hand or make its folder writable. Then run scaffold_ci again with force true.", legacyPath),
+					Cause:      err,
 				}
 			}
 			action = "migrated"
@@ -335,14 +338,16 @@ func scaffoldCI(root string, force bool) (ScaffoldCIOut, error) {
 			destDir := filepath.Dir(destPath)
 			if err := os.MkdirAll(destDir, 0755); err != nil {
 				return ScaffoldCIOut{}, &mcpserver.InfraError{
-					Msg:   fmt.Sprintf("mkdir %s: %s", destDir, err.Error()),
-					Cause: err,
+					Msg:        fmt.Sprintf("mkdir %s: %s", destDir, err.Error()),
+					Suggestion: fmt.Sprintf("Remove any file that blocks the folder %s and make its parent writable. Then run scaffold_ci again.", destDir),
+					Cause:      err,
 				}
 			}
 			if err := os.WriteFile(destPath, srcContent, 0644); err != nil {
 				return ScaffoldCIOut{}, &mcpserver.InfraError{
-					Msg:   fmt.Sprintf("write %s: %s", destPath, err.Error()),
-					Cause: err,
+					Msg:        fmt.Sprintf("write %s: %s", destPath, err.Error()),
+					Suggestion: fmt.Sprintf("Check write permission on %s and free disk space on the project root. Then run scaffold_ci again.", destPath),
+					Cause:      err,
 				}
 			}
 		}
