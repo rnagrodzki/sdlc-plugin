@@ -220,6 +220,8 @@ func (a *AutomationSection) StepMode(step string) string {
 // hasn't said otherwise (e.g. under --auto). One of:
 //   - "always-rc": always suggest an RC, regardless of whether the bump
 //     target already has RC tags.
+//   - "default-rc": suggest an RC by default, like "always-rc", but an
+//     explicit CLI --bump overrides it to a final release when /ship runs.
 //   - "continue-rc" (default): suggest an RC only when the bump target
 //     already has one or more existing RC tags — i.e. once a version has
 //     an RC out, staying in RC mode is the safer default until something

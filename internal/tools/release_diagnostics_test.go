@@ -4,7 +4,7 @@ import (
 	"testing"
 )
 
-// TestVersionSuggestedPreRelease covers all three PreReleasePolicy values
+// TestVersionSuggestedPreRelease covers every PreReleasePolicy value
 // against both existing-RCs states. Pure unit test, no filesystem or git
 // fixtures — versionSuggestedPreRelease is a pure function.
 func TestVersionSuggestedPreRelease(t *testing.T) {
@@ -16,6 +16,8 @@ func TestVersionSuggestedPreRelease(t *testing.T) {
 	}{
 		{"always-rc suggests RC with no existing RCs", "always-rc", false, "rc"},
 		{"always-rc suggests RC with existing RCs", "always-rc", true, "rc"},
+		{"default-rc suggests RC with no existing RCs", "default-rc", false, "rc"},
+		{"default-rc suggests RC with existing RCs", "default-rc", true, "rc"},
 		{"continue-rc suggests RC only when existing RCs found", "continue-rc", true, "rc"},
 		{"continue-rc suggests nothing with no existing RCs", "continue-rc", false, ""},
 		{"never suggests nothing with existing RCs", "never", true, ""},

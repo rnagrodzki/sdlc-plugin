@@ -1,9 +1,67 @@
 package setupmeta
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 )
+
+// TestVersionFields_PreReleasePolicyMatchesSchema keeps the setup wizard's
+// preReleasePolicy field in step with the enum in sdlc-config.schema.json:
+// same options in the same order, a default that is one of them, and a
+// description that names every option.
+func TestVersionFields_PreReleasePolicyMatchesSchema(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "plugins", "sdlc", "schemas", "sdlc-config.schema.json"))
+	if err != nil {
+		t.Fatalf("read schema: %v", err)
+	}
+	var schema struct {
+		Defs struct {
+			VersionSection struct {
+				Properties struct {
+					PreReleasePolicy struct {
+						Enum []string `json:"enum"`
+					} `json:"preReleasePolicy"`
+				} `json:"properties"`
+			} `json:"versionSection"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(data, &schema); err != nil {
+		t.Fatalf("parse schema: %v", err)
+	}
+	wantOptions := schema.Defs.VersionSection.Properties.PreReleasePolicy.Enum
+	if len(wantOptions) == 0 {
+		t.Fatal("schema has no $defs.versionSection.properties.preReleasePolicy.enum")
+	}
+
+	var field *Field
+	for i := range versionFields {
+		if versionFields[i].Name == "preReleasePolicy" {
+			field = &versionFields[i]
+			break
+		}
+	}
+	if field == nil {
+		t.Fatal(`versionFields has no "preReleasePolicy" field`)
+	}
+
+	if !reflect.DeepEqual(field.Options, wantOptions) {
+		t.Errorf("preReleasePolicy Options:\n  got:  %v\n  want: %v (schema enum)", field.Options, wantOptions)
+	}
+	def, _ := field.Default.(string)
+	if !slices.Contains(field.Options, def) {
+		t.Errorf("preReleasePolicy Default %v is not one of Options %v", field.Default, field.Options)
+	}
+	for _, opt := range field.Options {
+		if !strings.Contains(field.Description, "`"+opt+"`") {
+			t.Errorf("preReleasePolicy Description does not name option %q", opt)
+		}
+	}
+}
 
 // TestCanonicalSteps_Contents pins CanonicalSteps' exact contents and order.
 // This slice seeds the ship.steps setup-wizard field's Options and Default
