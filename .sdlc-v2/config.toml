@@ -298,19 +298,17 @@ produce corrupted downstream state."""
 [plan.guardrails.no-real-fs-git-in-tests]
 severity = "error"
 description = """
-Tests must not perform real filesystem operations (os.WriteFile, os.Create, \
-os.MkdirTemp, t.TempDir) or execute real git/gh commands (exec.Command, \
-execx.Run). Use dependency injection with mock/fake implementations instead. \
-Existing test helpers like stubGHDispatch that write to temp directories \
-violate this rule. When a plan introduces test tasks against code that \
-performs real fs/git operations, it must either cite an existing injectable \
-seam (a function parameter or dependency) in the code under test, or \
-include a task to introduce such a seam and order it before the test \
-tasks. When a plan's stated acceptance criteria appear to require \
-exercising real fs/git behavior, the plan must explicitly flag this \
-guardrail conflict in Key Decisions and resolve it (inject a seam, or \
-narrow the AC) rather than silently violating either the AC or this \
-guardrail."""
+Tests must not write outside t.TempDir, call real gh, or reach the network. \
+Real filesystem operations inside t.TempDir (os.WriteFile, os.MkdirTemp) \
+are allowed. Real git commands are allowed in a temporary repository \
+created under t.TempDir. Reason: a temp dir is isolated and removed \
+automatically, and a fake git can pass while real git use is broken. Use \
+dependency injection with fakes for gh, for the network, and for a failure \
+a real filesystem cannot produce on demand (a full disk, a permission error \
+in the middle of a write). When a plan's test tasks need such a failure, \
+the plan must cite an existing injectable seam (a function parameter or \
+dependency) in the code under test, or include a task to introduce one and \
+order it before the test tasks."""
 
 [plan.guardrails.mcp-error-has-suggestion]
 severity = "error"
@@ -494,14 +492,16 @@ round trip between harness and model slows execution and fragments feedback."""
 [execute.guardrails.no-real-fs-git-in-tests]
 severity = "error"
 description = """
-Tests must not perform real filesystem operations (os.WriteFile, os.Create, \
-os.MkdirTemp, t.TempDir) or execute real git/gh commands (exec.Command, \
-execx.Run). Use dependency injection with mock/fake implementations instead. \
-Existing test helpers like stubGHDispatch that write to temp directories \
-violate this rule. When extending pre-existing test files that already use \
-real fs/git patterns, the extension must not compound the violation — add \
-the necessary injectable seam before writing test code, do not defer \
-it."""
+Tests must not write outside t.TempDir, call real gh, or reach the network. \
+Real filesystem operations inside t.TempDir (os.WriteFile, os.MkdirTemp) \
+are allowed. Real git commands are allowed in a temporary repository \
+created under t.TempDir. Reason: a temp dir is isolated and removed \
+automatically, and a fake git can pass while real git use is broken. Use \
+dependency injection with fakes for gh, for the network, and for a failure \
+a real filesystem cannot produce on demand (a full disk, a permission error \
+in the middle of a write). Add the injectable seam before writing the test \
+that needs it; do not defer it. Do not add a seam only to avoid a temp \
+dir."""
 
 [execute.guardrails.mcp-schema-tags-required]
 severity = "error"
@@ -581,11 +581,17 @@ change."""
 [execute.guardrails.execute-handler-nil-normalization]
 severity = "error"
 description = """
-MCP tool handlers must normalize nil slices and maps to empty []T or \
-map[K]V{} before returning. Nil collections serialize to JSON `null`, which \
-breaks LLM consumption. Every handler that builds or filters a collection \
-must check for nil at the dispatcher level and return empty instead -- \
-verify this at execute time, not just in the plan's stated contract."""
+MCP tool output is Markdown. The renderer prints a nil or empty slice, map, \
+pointer, or string as `(none)`, so a handler does not need to turn nil into \
+an empty collection before returning. Verify these at execute time, not just \
+in the plan's stated contract: (1) a field the reader must see even when it \
+is empty has no `omitempty` or `omitzero` tag, because the renderer drops a \
+tagged field whose value is the zero value (rule 14 in \
+docs/mcp-output-contract.md); (2) no code or test depends on the difference \
+between nil and empty in tool output, because the reader cannot tell them \
+apart; (3) no test expects JSON `null` in tool output. Values written to a \
+persisted JSON state file are different: normalize nil there, because a \
+`null` can break a later reader that type-asserts a slice."""
 
 [execute.guardrails.spec-compliance-literal-contract-diff]
 severity = "error"
@@ -764,10 +770,12 @@ Before marking a task done that modifies error-returning handlers in \
 internal/tools/ or internal/mcpserver/, audit all DomainError/InfraError/ \
 DataError instantiations. Run: `grep -n 'DomainError{\\|InfraError{\\| \
 DataError{' internal/tools/MODIFIED.go internal/mcpserver/MODIFIED.go \
-2>/dev/null` and verify every match instantiates a Suggestion field with a \
-non-empty literal string or variable reference (never rely on omitempty to \
-skip the field). Suggestion must encode a recovery instruction for the \
-caller, not a generic message. Scope the grep to the entire modified \
+2>/dev/null` and verify every match sets a Suggestion field to a non-empty \
+string expression (a literal, a fmt.Sprintf, or a concatenation). Do not \
+leave the field empty and rely on the default: when Suggestion is empty the \
+renderer fills `## Do this` with generic text for the error class, which \
+does not tell the caller how to recover from this specific error. Suggestion \
+must encode a recovery instruction for the caller, not a generic message. Scope the grep to the entire modified \
 handler function, including branches not touched by this task's diff -- a \
 gap can pre-exist in code adjacent to the change. Document the grep result \
 and verified instances in task verification section before marking done."""

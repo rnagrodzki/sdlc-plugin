@@ -58,6 +58,14 @@ and `mcp-output-drives-behavior` guardrails.
   `internal/mcpserver/render.go`), so handlers do not have to
   pre-initialize slices, and no result may show a blank line or an empty
   heading where a collection was.
+- `omitempty` wins over `(none)`. Rule 14 in `docs/mcp-output-contract.md`
+  runs first, when the renderer collects a struct's fields: a field tagged
+  `omitempty` or `omitzero` with an empty value is left out completely. Only
+  an untagged field renders `- <key>: (none)`. So "absent" in a skill or doc
+  means the field carries `omitempty`, and "`(none)`" means it does not.
+  Decide per field: drop `omitempty` when the reader must see that the value
+  is empty (for example `ShipVerifySideEffectOut.Expected`). When a doc says
+  a field is absent, check its tag with `grep -n '<jsonKey>' internal/tools/*.go`.
 
 ## Error contracts
 
