@@ -2,8 +2,10 @@ package tools
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -317,6 +319,49 @@ func TestJiraSaveThenLoadRoundTrip(t *testing.T) {
 	lm := loadOut.(map[string]any)
 	if lm["cloudId"] != "cloud-1" {
 		t.Fatalf("expected round-tripped cloudId, got %#v", lm["cloudId"])
+	}
+}
+
+// TestJiraExplicitCacheDir_Unusable_SaveAndClear pins the InfraError that save
+// and clear share when an explicit cacheDir cannot be created. The cacheDir
+// sits below a regular file, so MkdirAll fails with "not a directory".
+func TestJiraExplicitCacheDir_Unusable_SaveAndClear(t *testing.T) {
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cacheDir := filepath.Join(blocker, "cache")
+	data := map[string]any{
+		"version": float64(1),
+		"cloudId": "cloud-1",
+		"project": map[string]any{"key": "FOO"},
+		"siteUrl": "https://example.atlassian.net",
+	}
+
+	cases := []struct {
+		name string
+		in   JiraIn
+	}{
+		{"save", JiraIn{Action: "save", Key: "FOO", CacheDir: cacheDir, Data: data}},
+		{"clear", JiraIn{Action: "clear", Key: "FOO", CacheDir: cacheDir}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := jiraCore(jiraTestRoot(t), tc.in, true)
+			var ie *mcpserver.InfraError
+			if !errors.As(err, &ie) {
+				t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
+			}
+			if !strings.Contains(ie.Msg, "resolve cache path under cacheDir") || !strings.Contains(ie.Msg, cacheDir) {
+				t.Errorf("Msg should name the step and the cacheDir %q, got %q", cacheDir, ie.Msg)
+			}
+			if !strings.Contains(ie.Suggestion, "cacheDir") {
+				t.Errorf("Suggestion should name the cacheDir input, got %q", ie.Suggestion)
+			}
+			if ie.Cause == nil {
+				t.Error("expected Cause to carry the MkdirAll error")
+			}
+		})
 	}
 }
 
