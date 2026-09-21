@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 )
 
 // TestShipState_InputErrorMsgsStartWithAction pins the Msg shape for a missing
@@ -58,6 +59,128 @@ func TestShipState_InputErrorMsgsStartWithAction(t *testing.T) {
 			}
 			if !strings.HasPrefix(domainErr.Msg, tc.want) {
 				t.Errorf("Msg = %q, want prefix %q", domainErr.Msg, tc.want)
+			}
+		})
+	}
+}
+
+// failShipGC replaces the GC sweep with one that always fails and returns the
+// injected cause. The filesystem cannot fail the sweep on its own here: state.GC
+// errors only on a directory read error, and Find and Write read the same
+// directory first and fail before the sweep starts.
+func failShipGC(t *testing.T) error {
+	t.Helper()
+	cause := errors.New("simulated readdir failure")
+	orig := shipGCFunc
+	shipGCFunc = func(string, state.GCOptions) (*state.GCReport, error) { return nil, cause }
+	t.Cleanup(func() { shipGCFunc = orig })
+	return cause
+}
+
+// TestShipState_CleanupPipeline_GCFailureAfterStamp proves the InfraError says
+// the run is already completed when only the sweep fails, and that the claim
+// is true: the stamp is on disk. The Suggestion must name the action that
+// retries just the sweep, because repeating cleanup-pipeline stamps again.
+func TestShipState_CleanupPipeline_GCFailureAfterStamp(t *testing.T) {
+	const branch = "feat/gc-fails-after-stamp"
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, branch)
+	path := shipStateInitFixture(t, dir, branch)
+	terminalStatus := map[string]string{
+		"execute": "completed", "commit": "completed", "review": "completed",
+		"received-review": "skipped", "commit-fixes": "skipped",
+		"version": "completed", "pr": "completed",
+	}
+	for name, status := range terminalStatus {
+		setStepStatus(t, path, name, status, map[string]any{"completedAt": "2026-01-01T00:00:00Z"})
+	}
+	cause := failShipGC(t)
+
+	fixedTime := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	_, err := shipState(dir, dir, ShipStateIn{
+		Action: "cleanup-pipeline",
+		Detail: map[string]any{"branch": branch},
+	}, fixedNow(fixedTime))
+
+	var infraErr *mcpserver.InfraError
+	if !errors.As(err, &infraErr) {
+		t.Fatalf("error = %v (%T), want *mcpserver.InfraError", err, err)
+	}
+	if !errors.Is(err, cause) {
+		t.Errorf("error does not wrap the sweep failure: %v", err)
+	}
+	if !strings.Contains(infraErr.Msg, "already marked completed") {
+		t.Errorf("Msg = %q, want it to say the run is already marked completed", infraErr.Msg)
+	}
+	if !strings.Contains(infraErr.Msg, "gc sweep") {
+		t.Errorf("Msg = %q, want it to name the failed gc sweep", infraErr.Msg)
+	}
+	if !strings.Contains(infraErr.Suggestion, "ship_state gc") {
+		t.Errorf("Suggestion = %q, want it to name the ship_state gc action", infraErr.Suggestion)
+	}
+
+	st, findErr := state.Find(dir, "ship", branch)
+	if findErr != nil || st == nil {
+		t.Fatalf("state should still be findable, findErr=%v st=%v", findErr, st)
+	}
+	if st.Data["pipelineStatus"] != "completed" {
+		t.Errorf("persisted pipelineStatus = %v, want completed", st.Data["pipelineStatus"])
+	}
+	if want := fixedTime.Format(time.RFC3339); st.Data["pipelineCompletedAt"] != want {
+		t.Errorf("persisted pipelineCompletedAt = %v, want %s", st.Data["pipelineCompletedAt"], want)
+	}
+}
+
+// TestShipState_CleanupPipeline_GCFailureWithoutStamp guards the other side:
+// force and no-state-file runs never write the completed stamp, so a sweep
+// failure there must not claim the run is already completed.
+func TestShipState_CleanupPipeline_GCFailureWithoutStamp(t *testing.T) {
+	cases := []struct {
+		name      string
+		withState bool
+		detail    map[string]any
+	}{
+		{"force", true, map[string]any{"force": true}},
+		{"no state file", false, map[string]any{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			const branch = "feat/gc-fails-no-stamp"
+			dir := t.TempDir()
+			initGitFixture(t, dir)
+			gitCommit(t, dir, "initial")
+			checkoutBranch(t, dir, branch)
+			if tc.withState {
+				shipStateInitFixture(t, dir, branch)
+			}
+			failShipGC(t)
+			tc.detail["branch"] = branch
+
+			_, err := shipState(dir, dir, ShipStateIn{Action: "cleanup-pipeline", Detail: tc.detail}, fixedNow(time.Now()))
+
+			var infraErr *mcpserver.InfraError
+			if !errors.As(err, &infraErr) {
+				t.Fatalf("error = %v (%T), want *mcpserver.InfraError", err, err)
+			}
+			if strings.Contains(infraErr.Msg, "already marked completed") {
+				t.Errorf("Msg = %q, must not claim a completed stamp that was never written", infraErr.Msg)
+			}
+			if !strings.Contains(infraErr.Msg, "gc sweep over") {
+				t.Errorf("Msg = %q, want it to name the failed gc sweep", infraErr.Msg)
+			}
+			if !strings.Contains(infraErr.Suggestion, "ship_state gc") {
+				t.Errorf("Suggestion = %q, want it to name the ship_state gc action", infraErr.Suggestion)
+			}
+			if tc.withState {
+				st, findErr := state.Find(dir, "ship", branch)
+				if findErr != nil || st == nil {
+					t.Fatalf("state should still be findable, findErr=%v st=%v", findErr, st)
+				}
+				if _, stamped := st.Data["pipelineStatus"]; stamped {
+					t.Errorf("pipelineStatus = %v, want key absent on the %s path", st.Data["pipelineStatus"], tc.name)
+				}
 			}
 		})
 	}

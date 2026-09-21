@@ -1369,6 +1369,10 @@ func shipStateCleanup(root, workDir string, in ShipStateIn, now func() time.Time
 // Action: cleanup-pipeline (single branch's cleanup + a full GC sweep)
 // ---------------------------------------------------------------------------
 
+// shipGCFunc is the GC sweep entry point. Tests replace it to force a sweep
+// failure: state.GC fails only on a read error that Find and Write hit first.
+var shipGCFunc = state.GC
+
 // shipStateCleanupPipeline ports cmdCleanupPipeline: force and no-state-file
 // both skip the contract check but still fall through to the GC sweep; only
 // an actual contract violation returns early before the sweep runs. Both the
@@ -1397,6 +1401,7 @@ func shipStateCleanupPipeline(root, workDir string, in ShipStateIn, now func() t
 
 	var currentRun map[string]any
 	var issueSummary *IssueSummary
+	runStamped := false
 	switch {
 	case force:
 		currentRun = map[string]any{"cleaned": false, "preservedReason": "force"}
@@ -1422,6 +1427,7 @@ func shipStateCleanupPipeline(root, workDir string, in ShipStateIn, now func() t
 				Cause:      err,
 			}
 		}
+		runStamped = true
 		currentRun = map[string]any{
 			"valid":               true,
 			"cleaned":             true,
@@ -1431,20 +1437,24 @@ func shipStateCleanupPipeline(root, workDir string, in ShipStateIn, now func() t
 		issueSummary = execIssueSummaryFull(st.Data)
 	}
 
-	rpt, err := state.GC(root, state.GCOptions{
+	stateDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+	rpt, err := shipGCFunc(root, state.GCOptions{
 		TTL:          time.Duration(ttlDays) * 24 * time.Hour,
 		BranchExists: gcBranchExistsFunc(workDir),
 		TempDir:      os.Getenv("SDLC_EXPLORE_TMPDIR_OVERRIDE"),
 	})
 	if err != nil {
+		msg := fmt.Sprintf("gc sweep over %s: %s", stateDir, err.Error())
+		if runStamped {
+			msg = fmt.Sprintf("run is already marked completed; only the gc sweep over %s failed: %s", stateDir, err.Error())
+		}
 		return nil, &mcpserver.InfraError{
-			Msg:        fmt.Sprintf("gc sweep over %s: %s", filepath.Join(root, paths.DataDir, paths.RunsSubdir), err.Error()),
-			Suggestion: "Check that no other process holds a lock on .sdlc-v2/runs/ and that files there are not corrupted, then retry ship_state cleanup-pipeline.",
+			Msg:        msg,
+			Suggestion: "Check that no other process holds a lock on .sdlc-v2/runs/ and that files there are not corrupted. Then call ship_state gc to retry only the sweep, with the same detail.ttlDays if you set one.",
 			Cause:      err,
 		}
 	}
 
-	stateDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
 	reapResult := execReapRunDirectories(stateDir, ttlDays, false, now)
 
 	out := map[string]any{
@@ -1496,7 +1506,7 @@ func shipStateGC(root, workDir string, in ShipStateIn, now func() time.Time) (an
 		return shipGCDryRun(filepath.Join(root, paths.DataDir, paths.RunsSubdir), ttlDays, gcBranchExistsFunc(workDir), now)
 	}
 
-	rpt, err := state.GC(root, state.GCOptions{
+	rpt, err := shipGCFunc(root, state.GCOptions{
 		TTL:          time.Duration(ttlDays) * 24 * time.Hour,
 		BranchExists: gcBranchExistsFunc(workDir),
 		TempDir:      os.Getenv("SDLC_EXPLORE_TMPDIR_OVERRIDE"),
