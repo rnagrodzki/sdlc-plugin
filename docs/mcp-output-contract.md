@@ -10,7 +10,7 @@ code, so there are 2 shapes total (success, error), not one per tool.
 Source of truth:
 
 - `internal/mcpserver/render.go` — the success renderer (`renderOK`) and its reflection walker.
-- `internal/mcpserver/envelope.go` — error classification (`mapError`, the `DomainError` /
+- `internal/mcpserver/errors.go` — error classification (`mapError`, the `DomainError` /
   `InfraError` / `DataError` types) and the error renderer (`renderError`, `defaultRecovery`).
 - `internal/mcpserver/register.go` — wires both into the four exit paths of every registered tool's
   handler: recovered panic, input unmarshal failure, handler error, success.
@@ -141,7 +141,7 @@ An error result has exactly two sections after the first line:
 
 ### Error codes
 
-`internal/mcpserver/envelope.go` defines three error types, each mapped to one code by `mapError` via
+`internal/mcpserver/errors.go` defines three error types, each mapped to one code by `mapError` via
 `errors.As`:
 
 | Go type | code | meaning |
@@ -182,6 +182,6 @@ so it stays visibly delimited and cannot merge into the surrounding document.
 ## See also
 
 - `internal/mcpserver/render_test.go` — golden fixtures for the walker rules above.
-- `internal/mcpserver/envelope_test.go` — `mapError` and `defaultRecovery` tests.
+- `internal/mcpserver/errors_test.go` — `mapError` and `defaultRecovery` tests.
 - `docs/mcp-tool-annotations.md` — the annotation contract (`ReadOnly`, `Destructive`, `Idempotent`,
   `OpenWorld`) that sits alongside this output contract on every registered tool.

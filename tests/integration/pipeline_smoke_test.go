@@ -188,8 +188,8 @@ func mustWriteFile(t *testing.T, path, content string) {
 // ---------------------------------------------------------------------------
 
 // renderedResult is the parsed first line and body of a rendered tool
-// result: "# <tool> — ok" or "# <tool> — error (<code>)", per render.go /
-// envelope.go's renderOK / renderError. Duplicated from
+// result: "# <tool> — ok" or "# <tool> — error (<code>)", per render.go's
+// renderOK and errors.go's renderError. Duplicated from
 // internal/mcpserver's test helper of the same name -- this is a separate
 // package (tests/integration, build-tagged) and cannot import a sibling
 // package's _test.go-only helpers.

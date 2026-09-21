@@ -24,8 +24,8 @@ type echoOut struct {
 // --- helpers ---
 
 // renderedResult is the parsed first line and body of a rendered tool
-// result: "# <tool> — ok" or "# <tool> — error (<code>)", per render.go /
-// envelope.go's renderOK / renderError.
+// result: "# <tool> — ok" or "# <tool> — error (<code>)", per render.go's
+// renderOK and errors.go's renderError.
 type renderedResult struct {
 	Tool string
 	OK   bool

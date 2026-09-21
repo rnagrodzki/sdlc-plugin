@@ -34,7 +34,7 @@ Read the manifest JSON from `MANIFEST_FILE`. The manifest contains:
 Read these files to understand conventions:
 
 1. `internal/mcpserver/register.go` — `Register[TIn, TOut]` function pattern
-2. `internal/mcpserver/envelope.go` — error types (`DomainError`, `InfraError`, `DataError`) with `Suggestion` field
+2. `internal/mcpserver/errors.go` — error types (`DomainError`, `InfraError`, `DataError`) with `Suggestion` field
 3. `internal/mcpserver/render.go` — the Markdown renderer that walks every `*Out` struct: the root `Next` hoist, the `render:"raw"` tag, and the `(none)` rule for nil/empty collections
 4. `docs/mcp-output-contract.md` — the same rules as prose, plus the error-code and `## Do this` requirements
 5. One existing tool file matching the closest sibling (manifest may specify which, else use `internal/tools/jira.go` as default reference)
