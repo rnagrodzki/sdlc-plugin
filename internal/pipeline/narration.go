@@ -26,9 +26,10 @@ type NextAction struct {
 // the payload it walks.
 //
 // Display is authoritative for user-facing rendering: callers (and
-// SKILL.md instructions) render Display verbatim. Summary is a shorter
-// form intended for speech / Key Decisions logs, not for markdown
-// rendering.
+// SKILL.md instructions) render Display verbatim. Its render:"raw" tag makes
+// the renderer emit it unfenced (rule 10 in docs/mcp-output-contract.md).
+// Summary is a shorter form intended for speech / Key Decisions logs, not
+// for markdown rendering.
 type Narration struct {
 	Summary string      `json:"summary"`
 	Display string      `json:"display" render:"raw"`
