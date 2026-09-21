@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"slices"
 	"strconv"
 	"testing"
 )
@@ -90,6 +91,17 @@ func suggestionText(e ast.Expr) (text string, ok bool) {
 	return "", false
 }
 
+// isErrorLit reports whether lit is an mcpserver.{Domain,Infra,Data}Error
+// composite literal.
+func isErrorLit(lit *ast.CompositeLit) bool {
+	sel, ok := lit.Type.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	pkgIdent, ok := sel.X.(*ast.Ident)
+	return ok && pkgIdent.Name == "mcpserver" && errSuggestionTypeNames[sel.Sel.Name]
+}
+
 // walkErrorLiterals parses path and calls fn for every
 // mcpserver.{Domain,Infra,Data}Error composite literal found in it.
 func walkErrorLiterals(t *testing.T, path string, fn func(fset *token.FileSet, lit *ast.CompositeLit)) {
@@ -101,15 +113,7 @@ func walkErrorLiterals(t *testing.T, path string, fn func(fset *token.FileSet, l
 	}
 	ast.Inspect(f, func(n ast.Node) bool {
 		lit, ok := n.(*ast.CompositeLit)
-		if !ok {
-			return true
-		}
-		sel, ok := lit.Type.(*ast.SelectorExpr)
-		if !ok {
-			return true
-		}
-		pkgIdent, ok := sel.X.(*ast.Ident)
-		if !ok || pkgIdent.Name != "mcpserver" || !errSuggestionTypeNames[sel.Sel.Name] {
+		if !ok || !isErrorLit(lit) {
 			return true
 		}
 		fn(fset, lit)
@@ -181,4 +185,77 @@ func TestShipStateErrorLiteralsHaveRealSuggestions(t *testing.T) {
 			t.Errorf("%s:%d: %s.Suggestion is shorter than 40 chars: %q", path, pos.Line, sel.Sel.Name, text)
 		}
 	})
+}
+
+// errSuggestionFuncs lists the functions in which every error literal must
+// carry a real Suggestion. A whole-file check is not possible: execute_state.go
+// and jira.go still hold many literals that rely on the default recovery text.
+// These are the functions the Markdown-output branch filled in.
+var errSuggestionFuncs = map[string][]string{
+	"execute_state.go": {
+		"execActionTaskContext",
+		"execActionWaveSplit",
+		"execActionWaveProgress",
+		"execActionWaveDone",
+		"execActionTaskDone",
+		"execActionVerifyCompleteness",
+	},
+	"scaffold.go": {"ciScriptDrift", "scaffoldCI"},
+	"jira.go":     {"jiraSave", "jiraClear"},
+	"setup.go":    {"setupWritePlanTemplate"},
+}
+
+// TestFuncErrorLiteralsHaveRealSuggestions asserts that every
+// mcpserver.*Error literal inside the functions in errSuggestionFuncs has a
+// Suggestion with at least 40 characters of constant text that is not the
+// generic boilerplate. It also fails when a listed function no longer exists
+// or holds no error literal, so a rename cannot silently turn the check off.
+func TestFuncErrorLiteralsHaveRealSuggestions(t *testing.T) {
+	for file, funcs := range errSuggestionFuncs {
+		t.Run(file, func(t *testing.T) {
+			fset := token.NewFileSet()
+			f, err := parser.ParseFile(fset, file, nil, 0)
+			if err != nil {
+				t.Fatalf("parse %s: %v", file, err)
+			}
+			found := map[string]int{}
+			for _, decl := range f.Decls {
+				fd, ok := decl.(*ast.FuncDecl)
+				if !ok || !slices.Contains(funcs, fd.Name.Name) {
+					continue
+				}
+				ast.Inspect(fd, func(n ast.Node) bool {
+					lit, ok := n.(*ast.CompositeLit)
+					if !ok || !isErrorLit(lit) {
+						return true
+					}
+					found[fd.Name.Name]++
+					where := fset.Position(lit.Pos())
+					kind := lit.Type.(*ast.SelectorExpr).Sel.Name
+					kv, present := suggestionLit(lit)
+					if !present {
+						t.Errorf("%s:%d (%s): %s is missing a Suggestion field", file, where.Line, fd.Name.Name, kind)
+						return true
+					}
+					text, ok := suggestionText(kv.Value)
+					if !ok {
+						t.Errorf("%s:%d (%s): %s.Suggestion must be a string literal, a fmt.Sprintf with a literal format, or a \"+\" concatenation containing a literal", file, where.Line, fd.Name.Name, kind)
+						return true
+					}
+					if text == errSuggestionBoilerplate {
+						t.Errorf("%s:%d (%s): %s.Suggestion uses the generic boilerplate text", file, where.Line, fd.Name.Name, kind)
+					}
+					if len(text) < 40 {
+						t.Errorf("%s:%d (%s): %s.Suggestion is shorter than 40 chars: %q", file, where.Line, fd.Name.Name, kind, text)
+					}
+					return true
+				})
+			}
+			for _, name := range funcs {
+				if found[name] == 0 {
+					t.Errorf("%s: %s holds no error literal (renamed or removed?) — update errSuggestionFuncs", file, name)
+				}
+			}
+		})
+	}
 }
