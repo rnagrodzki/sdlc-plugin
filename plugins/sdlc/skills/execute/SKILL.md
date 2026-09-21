@@ -200,7 +200,7 @@ Compute `planHash` yourself (`shasum -a 256 "$PLAN_FILE" | cut -d' ' -f1`) — t
 ```
 execute_state({ action: "verify-completeness" })
 ```
-Success → `{ ok: true, totalPlanned: N, totalAccounted: N }`, proceed to Step 7. Failure → `error` reads exactly `"incomplete: <k> of <n> planned tasks unaccounted (missingIds: <comma-separated-ids>)"`; extract `missingIds` from that message (it's authoritative — don't recompute it) and halt:
+Success → `{ ok: true, totalPlanned: N, totalAccounted: N }`, proceed to Step 7. Failure → `error` starts with `"incomplete: <k> of <n> planned tasks unaccounted (missingIds: <comma-separated-ids>)"`, followed by `"; unknown ids recorded: <ids>"` only when a recorded task id is not in `plannedTaskIds` (usually a typo of a missing id); extract `missingIds` from that message (it's authoritative — don't recompute it) and halt:
 ```
 ERROR: execute completed all waves but planned tasks are unaccounted: <missingIds>
 ```
