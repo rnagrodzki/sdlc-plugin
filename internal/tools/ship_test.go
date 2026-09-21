@@ -1268,71 +1268,44 @@ func TestShipVerifySideEffect_NoSideEffectStep(t *testing.T) {
 	}
 }
 
-// TestShipVerifySideEffect_JSONShape locks in ShipVerifySideEffectOut's
-// custom MarshalJSON against the two payload shapes ship.js's
-// verifySideEffect emit() actually produces (scripts/skill/ship.js's
-// verifySideEffect): has-side-effect always includes "expected" (a string or
-// JSON null, never omitted), while no-side-effect omits "expected" and
-// "sideEffect" entirely. Asserting on struct field values alone (as the
-// other tests in this section do) would not catch a regression where
-// `omitempty` on Expected *string silently drops the "expected" key when it
-// is nil — this test decodes the actual marshaled bytes into a
-// map[string]any to catch exactly that class of bug.
-func TestShipVerifySideEffect_JSONShape(t *testing.T) {
+// TestShipVerifySideEffect_ExpectedEcho checks the Expected field the
+// renderer prints: nil when the caller passed none, the caller's value when
+// one was passed. The rendered shape itself (including the "(none)" line and
+// the field staying visible) is pinned by tests/integration's
+// TestShipVerifySideEffect_RenderedFields.
+func TestShipVerifySideEffect_ExpectedEcho(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
-	decode := func(t *testing.T, out ShipVerifySideEffectOut) map[string]any {
-		t.Helper()
-		b, err := json.Marshal(out)
-		if err != nil {
-			t.Fatalf("json.Marshal: %v", err)
-		}
-		var m map[string]any
-		if err := json.Unmarshal(b, &m); err != nil {
-			t.Fatalf("json.Unmarshal(%s): %v", b, err)
-		}
-		return m
-	}
-
-	t.Run("has-side-effect no --expected", func(t *testing.T) {
+	t.Run("no expected value", func(t *testing.T) {
 		out, err := shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "commit"}, fixedNow(time.Now()))
 		if err != nil {
 			t.Fatalf("shipVerifySideEffect: %v", err)
 		}
-		m := decode(t, out)
-		v, ok := m["expected"]
-		if !ok {
-			t.Fatal(`"expected" key missing, want it present with value null`)
-		}
-		if v != nil {
-			t.Errorf(`"expected" = %v, want null`, v)
+		if out.Expected != nil {
+			t.Errorf("Expected = %q, want nil", *out.Expected)
 		}
 	})
 
-	t.Run("has-side-effect with --expected", func(t *testing.T) {
-		out, err := shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "commit", Expected: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}, fixedNow(time.Now()))
+	t.Run("with expected value", func(t *testing.T) {
+		const sha = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+		out, err := shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "commit", Expected: sha}, fixedNow(time.Now()))
 		if err != nil {
 			t.Fatalf("shipVerifySideEffect: %v", err)
 		}
-		m := decode(t, out)
-		if v, ok := m["expected"]; !ok || v != "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef" {
-			t.Errorf(`"expected" = %v (present=%v), want "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"`, v, ok)
+		if out.Expected == nil || *out.Expected != sha {
+			t.Errorf("Expected = %v, want %q", out.Expected, sha)
 		}
 	})
 
-	t.Run("no-side-effect", func(t *testing.T) {
+	t.Run("no side effect leaves expected nil", func(t *testing.T) {
 		out, err := shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "review"}, fixedNow(time.Now()))
 		if err != nil {
 			t.Fatalf("shipVerifySideEffect: %v", err)
 		}
-		m := decode(t, out)
-		if _, ok := m["expected"]; ok {
-			t.Errorf(`"expected" key present = %v, want it absent entirely`, m["expected"])
-		}
-		if _, ok := m["sideEffect"]; ok {
-			t.Errorf(`"sideEffect" key present = %v, want it absent entirely`, m["sideEffect"])
+		if out.Expected != nil {
+			t.Errorf("Expected = %q, want nil", *out.Expected)
 		}
 	})
 }
