@@ -2388,7 +2388,10 @@ func stringOrEmpty(v any) string {
 
 func execActionWaveDone(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	if in.Wave == nil {
-		return nil, &mcpserver.DomainError{Msg: "--wave is required"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "--wave is required",
+			Suggestion: "Pass wave as the wave number, e.g. execute_state {action:\"wave-done\", wave:1}.",
+		}
 	}
 	if err := execValidateDetail(in); err != nil {
 		return nil, err
@@ -2399,7 +2402,11 @@ func execActionWaveDone(root, workDir string, in ExecuteStateIn, now func() time
 	var decisions []any
 	if in.Decisions != "" {
 		if err := json.Unmarshal([]byte(in.Decisions), &decisions); err != nil {
-			return nil, &mcpserver.DomainError{Msg: "decisions is not valid JSON: " + err.Error(), Cause: err}
+			return nil, &mcpserver.DomainError{
+				Msg:        "decisions is not valid JSON: " + err.Error(),
+				Suggestion: "Pass decisions as a string with a JSON array of strings, e.g. [\"Chose sqlite over postgres\"]. Plain prose is not valid JSON.",
+				Cause:      err,
+			}
 		}
 	}
 
@@ -2424,7 +2431,10 @@ func execActionWaveDone(root, workDir string, in ExecuteStateIn, now func() time
 		status = "completed"
 	}
 	if status != "completed" && status != "partial" {
-		return nil, &mcpserver.DomainError{Msg: "--status must be one of completed, partial"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "--status must be one of completed, partial",
+			Suggestion: "Pass status as \"completed\" or \"partial\", or leave it out to use \"completed\".",
+		}
 	}
 	w["status"] = status
 	if in.TimedOut {
@@ -2444,7 +2454,11 @@ func execActionWaveDone(root, workDir string, in ExecuteStateIn, now func() time
 	ctx["decisionsFromPriorWaves"] = decArr
 
 	if err := state.Write(st); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        "write state: " + err.Error(),
+			Suggestion: "Check that " + paths.DataDir + "/" + paths.RunsSubdir + "/ is writable and the disk is not full, then retry wave-done.",
+			Cause:      err,
+		}
 	}
 
 	// Build narration.
@@ -2838,17 +2852,27 @@ func execActionWaveCommit(root, workDir string, in ExecuteStateIn) (any, error) 
 
 func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	if in.Wave == nil {
-		return nil, &mcpserver.DomainError{Msg: "--wave is required"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "--wave is required",
+			Suggestion: "Pass wave as the wave number of this task, e.g. execute_state {action:\"task-done\", wave:1, taskId:\"<taskId>\"}.",
+		}
 	}
 	if in.TaskID == "" {
-		return nil, &mcpserver.DomainError{Msg: "taskId is required"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "taskId is required",
+			Suggestion: "Pass taskId, e.g. execute_state {action:\"task-done\", wave:1, taskId:\"<taskId>\"}.",
+		}
 	}
 
 	// Parse filesChanged.
 	var filesChanged []any
 	if in.FilesChanged != "" {
 		if err := json.Unmarshal([]byte(in.FilesChanged), &filesChanged); err != nil {
-			return nil, &mcpserver.DomainError{Msg: "filesChanged is not valid JSON: " + err.Error(), Cause: err}
+			return nil, &mcpserver.DomainError{
+				Msg:        "filesChanged is not valid JSON: " + err.Error(),
+				Suggestion: "Pass filesChanged as a string with a JSON array of file paths, e.g. [\"internal/tools/foo.go\",\"internal/tools/bar.go\"].",
+				Cause:      err,
+			}
 		}
 	}
 
@@ -2856,7 +2880,11 @@ func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time
 	var filesAdded []any
 	if in.FilesAdded != "" {
 		if err := json.Unmarshal([]byte(in.FilesAdded), &filesAdded); err != nil {
-			return nil, &mcpserver.DomainError{Msg: "filesAdded is not valid JSON: " + err.Error(), Cause: err}
+			return nil, &mcpserver.DomainError{
+				Msg:        "filesAdded is not valid JSON: " + err.Error(),
+				Suggestion: "Pass filesAdded as a string with a JSON array of new file paths, e.g. [\"internal/tools/foo.go\"]. Each path must also be in filesChanged.",
+				Cause:      err,
+			}
 		}
 	}
 
@@ -2866,7 +2894,11 @@ func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time
 	if in.VerifyToken != "" {
 		var raw any
 		if err := json.Unmarshal([]byte(in.VerifyToken), &raw); err != nil {
-			return nil, &mcpserver.DomainError{Msg: "verifyToken is not valid JSON: " + err.Error(), Cause: err}
+			return nil, &mcpserver.DomainError{
+				Msg:        "verifyToken is not valid JSON: " + err.Error(),
+				Suggestion: "Pass verifyToken as a JSON array of strings, e.g. [\"go test ./... ok\"], or as one quoted JSON string. A bare word without quotes is not valid JSON.",
+				Cause:      err,
+			}
 		}
 		switch v := raw.(type) {
 		case string:
@@ -2874,7 +2906,10 @@ func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time
 		case []any:
 			verifyTokens = v
 		default:
-			return nil, &mcpserver.DomainError{Msg: "verifyToken must be a JSON array or string"}
+			return nil, &mcpserver.DomainError{
+				Msg:        "verifyToken must be a JSON array or string",
+				Suggestion: "Pass verifyToken as a JSON array of strings, e.g. [\"go test ./... ok\"], or as one quoted JSON string.",
+			}
 		}
 	}
 
@@ -2889,7 +2924,8 @@ func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time
 		if s, ok := f.(string); ok {
 			if !changedSet[s] {
 				return nil, &mcpserver.DomainError{
-					Msg: fmt.Sprintf("filesAdded entry %q is not present in filesChanged (filesAdded must be a subset of filesChanged)", s),
+					Msg:        fmt.Sprintf("filesAdded entry %q is not present in filesChanged (filesAdded must be a subset of filesChanged)", s),
+					Suggestion: fmt.Sprintf("Add %q to filesChanged, or remove it from filesAdded, then call task-done again.", s),
 				}
 			}
 		}
@@ -3032,7 +3068,11 @@ func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time
 	ctx["completedTaskIds"] = ctArr
 
 	if err := state.Write(st); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        "write state: " + err.Error(),
+			Suggestion: "Check that " + paths.DataDir + "/" + paths.RunsSubdir + "/ is writable and the disk is not full, then retry task-done.",
+			Cause:      err,
+		}
 	}
 
 	// Narration: running tally.
