@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -454,7 +455,7 @@ func (f *fakeFS) readFile(path string) ([]byte, error) {
 	defer f.mu.Unlock()
 	data, ok := f.files[path]
 	if !ok {
-		return nil, fmt.Errorf("open %s: no such file or directory", path)
+		return nil, &fs.PathError{Op: "open", Path: path, Err: fs.ErrNotExist}
 	}
 	return append([]byte(nil), data...), nil
 }
@@ -739,12 +740,13 @@ func TestPlanMaterialChange_OpenspecMappingChanged(t *testing.T) {
 // material_snapshot now writes the snapshot to disk via fsseam.go instead of
 // returning it verbatim, and material_compare reads it back by path. These
 // tests cover: (1) material_snapshot's own write failure path, soft-wrapped
-// as an InfraError, and (2)-(5) the 4 distinct ways a caller-supplied
+// as an InfraError, and (2)-(6) the 5 distinct ways a caller-supplied
 // snapshotPath can fail to be a usable snapshot in material_compare — empty,
-// unreadable, not JSON, and well-formed JSON that isn't a PlanSnapshot. Each
-// error is expected to name material_snapshot; the three read-back failures
-// also warn that the pre-edit baseline is lost, because re-snapshotting after
-// the plan rewrite would report material:false and skip the R64 gate.
+// missing, unreadable for another reason, not JSON, and well-formed JSON that
+// isn't a PlanSnapshot. Every recovery text either warns that the pre-edit
+// baseline is lost or limits re-snapshotting to an unedited plan, because
+// re-snapshotting after the plan rewrite would report material:false and skip
+// the R64 gate.
 //
 // A snapshot that decodes cleanly is never rejected for being empty — see
 // TestPlanMaterialCompare_ZeroTaskSnapshotRoundTrips.
@@ -811,6 +813,79 @@ func TestPlanMaterialCompare_UnreadableSnapshotPath(t *testing.T) {
 	}
 	if !strings.Contains(suggestionOf(err), "material_snapshot") {
 		t.Errorf("Suggestion = %q, want it to point back at material_snapshot", suggestionOf(err))
+	}
+}
+
+// TestPlanMaterialCompare_SnapshotReadFailure verifies readPlanSnapshot words
+// a missing snapshot file differently from any other read failure, because
+// the next step differs: a missing file may be regenerated (only while the
+// plan is unedited), an unreadable one needs its permissions fixed. The
+// missing-file case uses a real path in t.TempDir; the seam only forces the
+// permission failure.
+func TestPlanMaterialCompare_SnapshotReadFailure(t *testing.T) {
+	dir := t.TempDir()
+	planPath := filepath.Join(dir, "plan.md")
+	if err := os.WriteFile(planPath, []byte(materialBasePlan()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	missingPath := filepath.Join(dir, "gone", "snapshot.json")
+	deniedPath := filepath.Join(dir, "denied.json")
+
+	origRead := readFileFunc
+	readFileFunc = func(p string) ([]byte, error) {
+		if p == deniedPath {
+			return nil, &fs.PathError{Op: "open", Path: p, Err: fs.ErrPermission}
+		}
+		return origRead(p)
+	}
+	t.Cleanup(func() { readFileFunc = origRead })
+
+	infraErr := func(t *testing.T, snapshotPath string) *mcpserver.InfraError {
+		t.Helper()
+		_, err := materialCompare(PlanSupportIn{FilePath: planPath, SnapshotPath: snapshotPath})
+		var ie *mcpserver.InfraError
+		if !errors.As(err, &ie) {
+			t.Fatalf("error = %T (%v), want *mcpserver.InfraError", err, err)
+		}
+		return ie
+	}
+
+	missing := infraErr(t, missingPath)
+	if !errors.Is(missing, fs.ErrNotExist) {
+		t.Errorf("missing-file error does not wrap fs.ErrNotExist: %v", missing)
+	}
+	for _, want := range []string{"snapshotPath", missingPath, "missing"} {
+		if !strings.Contains(missing.Msg, want) {
+			t.Errorf("missing-file Msg = %q, want it to contain %q", missing.Msg, want)
+		}
+	}
+	for _, want := range []string{`action="material_snapshot"`, "new snapshotPath", "re-snapshot"} {
+		if !strings.Contains(missing.Suggestion, want) {
+			t.Errorf("missing-file Suggestion = %q, want it to contain %q", missing.Suggestion, want)
+		}
+	}
+
+	denied := infraErr(t, deniedPath)
+	if !errors.Is(denied, fs.ErrPermission) {
+		t.Errorf("permission error does not wrap fs.ErrPermission: %v", denied)
+	}
+	for _, want := range []string{deniedPath, "permission denied"} {
+		if !strings.Contains(denied.Msg, want) {
+			t.Errorf("permission Msg = %q, want it to contain %q", denied.Msg, want)
+		}
+	}
+	for _, want := range []string{deniedPath, "readable", "material_compare"} {
+		if !strings.Contains(denied.Suggestion, want) {
+			t.Errorf("permission Suggestion = %q, want it to contain %q", denied.Suggestion, want)
+		}
+	}
+	if strings.Contains(denied.Suggestion, "new snapshotPath") {
+		t.Errorf("permission Suggestion = %q, must not tell the caller to make a new snapshot", denied.Suggestion)
+	}
+
+	if missing.Msg == denied.Msg || missing.Suggestion == denied.Suggestion {
+		t.Errorf("missing and permission failures share text:\n  missing: %q / %q\n  denied:  %q / %q",
+			missing.Msg, missing.Suggestion, denied.Msg, denied.Suggestion)
 	}
 }
 

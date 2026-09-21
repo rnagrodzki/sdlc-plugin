@@ -2,7 +2,9 @@ package tools
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -732,10 +734,11 @@ func materialCompare(in PlanSupportIn) (PlanSupportOut, error) {
 }
 
 // readPlanSnapshot reads and validates the snapshot file at path, written
-// earlier by material_snapshot via the fsseam. It rejects 4 distinct ways
-// the referenced file can fail to be a usable snapshot: unreadable, not
-// JSON, and well-formed JSON that isn't a PlanSnapshot (missing the
-// required taskCount key, or otherwise undecodable).
+// earlier by material_snapshot via the fsseam. It rejects 5 distinct ways
+// the referenced file can fail to be a usable snapshot: missing, unreadable
+// for another reason (permission, I/O), not JSON, and well-formed JSON that
+// isn't a PlanSnapshot (missing the required taskCount key, or otherwise
+// undecodable).
 //
 // A decoded snapshot with taskCount 0 and no other keys is NOT rejected: it
 // is exactly what material_snapshot writes for a plan with no "### Task N:"
@@ -743,17 +746,25 @@ func materialCompare(in PlanSupportIn) (PlanSupportOut, error) {
 // an empty map is dropped on marshal. The taskCount presence probe above
 // already separates non-snapshot JSON from a legitimately empty snapshot.
 //
-// Every error message warns that the baseline is lost rather than telling
-// the caller to re-snapshot blindly: plan/SKILL.md calls material_snapshot
-// BEFORE the plan rewrite, so a snapshot regenerated after the rewrite would
-// match the current plan and report material:false, silently skipping the
-// R64 re-validation gate.
+// No error tells the caller to re-snapshot blindly: plan/SKILL.md calls
+// material_snapshot BEFORE the plan rewrite, so a snapshot regenerated after
+// the rewrite would match the current plan and report material:false,
+// silently skipping the R64 re-validation gate. Every recovery text either
+// warns that the baseline is lost or limits re-snapshotting to an unedited
+// plan.
 func readPlanSnapshot(path string) (*PlanSnapshot, error) {
 	raw, err := readFileFunc(path)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, &mcpserver.InfraError{
+				Msg:        fmt.Sprintf("snapshotPath %q points to a file that is missing: it was deleted or never written", path),
+				Suggestion: "If you have not edited the plan yet, run plan_support with action=\"material_snapshot\" again and pass the new snapshotPath. If you already edited it, do NOT re-snapshot: treat the change as material and run the critique lanes and lenses again.",
+				Cause:      err,
+			}
+		}
 		return nil, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("read snapshot file %q: %s", path, err.Error()),
-			Suggestion: "The pre-edit baseline is lost. If the plan has already been rewritten, do NOT re-snapshot — a snapshot taken now matches the current plan and would report material:false; treat this as a material change and re-run the critique lanes and lenses. Only re-run material_snapshot if the plan has not been edited yet.",
+			Suggestion: fmt.Sprintf("Make %q readable for this process, then call material_compare again with the same snapshotPath. If you cannot fix it, treat the change as material and run the critique lanes and lenses again.", path),
 			Cause:      err,
 		}
 	}
