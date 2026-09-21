@@ -2,11 +2,14 @@ package tools
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 )
 
@@ -181,6 +184,47 @@ func TestShipState_CleanupPipeline_GCFailureWithoutStamp(t *testing.T) {
 				if _, stamped := st.Data["pipelineStatus"]; stamped {
 					t.Errorf("pipelineStatus = %v, want key absent on the %s path", st.Data["pipelineStatus"], tc.name)
 				}
+			}
+		})
+	}
+}
+
+// TestShipState_HistoryErrorMsgsNameWriterPath pins the file path printed in
+// each history InfraError. The path comes from the FileWriter accessors, so it
+// must equal where the writer puts the file.
+func TestShipState_HistoryErrorMsgsNameWriterPath(t *testing.T) {
+	cases := []struct {
+		name string
+		in   ShipStateIn
+		file string
+	}{
+		{"history_record", ShipStateIn{Action: "history_record", Detail: map[string]any{"skill": "ship", "outcome": "success"}}, "runs.jsonl"},
+		{"deferred_add", ShipStateIn{Action: "deferred_add", Detail: map[string]any{"id": "d1", "description": "x"}}, "deferred.json"},
+		{"deferred_resolve", ShipStateIn{Action: "deferred_resolve", Detail: map[string]any{"id": "d1"}}, "deferred.json"},
+		{"deferred_list", ShipStateIn{Action: "deferred_list"}, "deferred.json"},
+		{"deferred_propose_followups", ShipStateIn{Action: "deferred_propose_followups"}, "deferred.json"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(root, paths.DataDir), 0o755); err != nil {
+				t.Fatalf("setup: %v", err)
+			}
+			// A regular file where the history directory belongs makes every
+			// history read and write fail, on any platform.
+			historyPath := filepath.Join(root, paths.DataDir, "history")
+			if err := os.WriteFile(historyPath, []byte("x"), 0o644); err != nil {
+				t.Fatalf("setup: %v", err)
+			}
+
+			_, err := shipState(root, root, tc.in, fixedNow(time.Now()))
+
+			var infraErr *mcpserver.InfraError
+			if !errors.As(err, &infraErr) {
+				t.Fatalf("error = %v (%T), want *mcpserver.InfraError", err, err)
+			}
+			if want := filepath.Join(historyPath, tc.file); !strings.Contains(infraErr.Msg, want) {
+				t.Errorf("Msg = %q, want it to contain %q", infraErr.Msg, want)
 			}
 		})
 	}

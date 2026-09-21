@@ -1730,7 +1730,7 @@ func shipStateHistoryRecord(root string, in ShipStateIn) (any, error) {
 	w := history.NewFileWriter(historyDir(root))
 	if err := w.AppendRun(rec); err != nil {
 		return nil, &mcpserver.InfraError{
-			Msg:        fmt.Sprintf("append run record to %s: %s", filepath.Join(historyDir(root), "runs.jsonl"), err.Error()),
+			Msg:        fmt.Sprintf("append run record to %s: %s", w.RunsPath(), err.Error()),
 			Suggestion: "Check write permission on " + paths.DataDir + "/history/runs.jsonl and free disk space on the project root, then retry history_record.",
 			Cause:      err,
 		}
@@ -1781,7 +1781,7 @@ func shipStateDeferredAdd(root string, in ShipStateIn) (any, error) {
 	w := history.NewFileWriter(historyDir(root))
 	if err := w.AddDeferred(issue); err != nil {
 		return nil, &mcpserver.InfraError{
-			Msg:        fmt.Sprintf("add deferred issue to %s: %s", filepath.Join(historyDir(root), "deferred.json"), err.Error()),
+			Msg:        fmt.Sprintf("add deferred issue to %s: %s", w.DeferredPath(), err.Error()),
 			Suggestion: "Check write permission on " + paths.DataDir + "/history/deferred.json and free disk space on the project root, then retry deferred_add.",
 			Cause:      err,
 		}
@@ -1818,7 +1818,7 @@ func shipStateDeferredResolve(root string, in ShipStateIn) (any, error) {
 			}
 		}
 		return nil, &mcpserver.InfraError{
-			Msg:        fmt.Sprintf("resolve deferred issue %q in %s: %s", id, filepath.Join(historyDir(root), "deferred.json"), err.Error()),
+			Msg:        fmt.Sprintf("resolve deferred issue %q in %s: %s", id, w.DeferredPath(), err.Error()),
 			Suggestion: "Check write permission on " + paths.DataDir + "/history/deferred.json, then retry deferred_resolve.",
 			Cause:      err,
 		}
@@ -1835,7 +1835,7 @@ func shipStateDeferredList(root string) (any, error) {
 	issues, err := w.ListDeferred()
 	if err != nil {
 		return nil, &mcpserver.InfraError{
-			Msg:        fmt.Sprintf("read deferred issues from %s: %s", filepath.Join(historyDir(root), "deferred.json"), err.Error()),
+			Msg:        fmt.Sprintf("read deferred issues from %s: %s", w.DeferredPath(), err.Error()),
 			Suggestion: "Check read permission on " + paths.DataDir + "/history/deferred.json and that it is not corrupted, then retry deferred_list.",
 			Cause:      err,
 		}
@@ -1859,7 +1859,7 @@ func shipStateDeferredProposeFollowups(root string) (any, error) {
 	issues, err := w.ListDeferred()
 	if err != nil {
 		return nil, &mcpserver.InfraError{
-			Msg:        fmt.Sprintf("read deferred issues from %s: %s", filepath.Join(historyDir(root), "deferred.json"), err.Error()),
+			Msg:        fmt.Sprintf("read deferred issues from %s: %s", w.DeferredPath(), err.Error()),
 			Suggestion: "Check read permission on " + paths.DataDir + "/history/deferred.json and that it is not corrupted, then retry deferred_propose_followups.",
 			Cause:      err,
 		}

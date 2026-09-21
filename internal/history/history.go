@@ -74,11 +74,13 @@ func (w *FileWriter) ensureDir() error {
 	return os.MkdirAll(w.root, 0o755)
 }
 
-func (w *FileWriter) runsPath() string {
+// RunsPath returns the file that AppendRun writes to.
+func (w *FileWriter) RunsPath() string {
 	return filepath.Join(w.root, "runs.jsonl")
 }
 
-func (w *FileWriter) deferredPath() string {
+// DeferredPath returns the file that AddDeferred and ResolveDeferred write to.
+func (w *FileWriter) DeferredPath() string {
 	return filepath.Join(w.root, "deferred.json")
 }
 
@@ -93,7 +95,7 @@ func (w *FileWriter) AppendRun(record RunRecord) error {
 	}
 	line = append(line, '\n')
 
-	f, err := os.OpenFile(w.runsPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(w.RunsPath(), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return fmt.Errorf("history: open runs.jsonl: %w", err)
 	}
@@ -144,7 +146,7 @@ func (w *FileWriter) ResolveDeferred(id string) error {
 }
 
 func (w *FileWriter) readDeferred() ([]DeferredIssue, error) {
-	data, err := os.ReadFile(w.deferredPath())
+	data, err := os.ReadFile(w.DeferredPath())
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -167,12 +169,12 @@ func (w *FileWriter) writeDeferred(issues []DeferredIssue) error {
 		return fmt.Errorf("history: marshal deferred.json: %w", err)
 	}
 	data = append(data, '\n')
-	return os.WriteFile(w.deferredPath(), data, 0o644)
+	return os.WriteFile(w.DeferredPath(), data, 0o644)
 }
 
 // ReadRecentRuns reads the last n RunRecords from runs.jsonl.
 func (w *FileWriter) ReadRecentRuns(n int) ([]RunRecord, error) {
-	data, err := os.ReadFile(w.runsPath())
+	data, err := os.ReadFile(w.RunsPath())
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
