@@ -24,7 +24,8 @@ import (
 //
 // Unlike installFakeFS this keeps real file I/O, so tests that assert on
 // git-driven behaviour are unaffected — only the manifest's destination moves.
-func redirectTempManifests(t *testing.T) {
+// It returns the root so a test can list what the code under test left behind.
+func redirectTempManifests(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
 	orig := mkdirTempFunc
@@ -35,6 +36,22 @@ func redirectTempManifests(t *testing.T) {
 		return os.MkdirTemp(dir, pattern)
 	}
 	t.Cleanup(func() { mkdirTempFunc = orig })
+	return root
+}
+
+// tempEntries returns the names inside root, the directory that
+// redirectTempManifests returned.
+func tempEntries(t *testing.T, root string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatalf("read temp root %q: %v", root, err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return names
 }
 
 // TestCommitPrepare_KeySet verifies that CommitPrepareOut marshals exactly
@@ -257,6 +274,33 @@ func TestCommitPrepare_ManifestFileWriteFailure(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("Warnings = %v, want one naming manifestPath and the failed file write", out.Warnings)
+	}
+}
+
+// TestCommitPrepare_ManifestFileWriteFailureRemovesTempDir runs the failed
+// manifest write against a real temp root: the sdlc-commit-manifest-* dir that
+// was created must be removed, not left behind empty.
+func TestCommitPrepare_ManifestFileWriteFailureRemovesTempDir(t *testing.T) {
+	root := redirectTempManifests(t)
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	origWriteFile := writeFileFunc
+	writeFileFunc = func(string, []byte, os.FileMode) error {
+		return os.ErrPermission
+	}
+	t.Cleanup(func() { writeFileFunc = origWriteFile })
+
+	out, err := commitPrepare(dir, dir, CommitPrepareIn{SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("commitPrepare returned an error, want soft-fail: %v", err)
+	}
+	if out.ManifestPath != "" {
+		t.Errorf("ManifestPath = %q, want empty when the manifest file write fails", out.ManifestPath)
+	}
+	if left := tempEntries(t, root); len(left) != 0 {
+		t.Errorf("temp root still holds %v after a failed manifest write, want it empty", left)
 	}
 }
 

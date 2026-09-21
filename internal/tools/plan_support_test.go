@@ -777,6 +777,119 @@ func TestPlanMaterialSnapshot_MkdirTempFailure(t *testing.T) {
 	}
 }
 
+// TestPlanMaterialSnapshot_WriteFailureRemovesTempDir runs the failed snapshot
+// write against a real temp root: the sdlc-plan-snapshot-* dir that was created
+// must be removed, and the error must keep its InfraError shape.
+func TestPlanMaterialSnapshot_WriteFailureRemovesTempDir(t *testing.T) {
+	root := redirectTempManifests(t)
+	planPath := filepath.Join(t.TempDir(), "plan.md")
+	if err := os.WriteFile(planPath, []byte(materialBasePlan()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	origWriteFile := writeFileFunc
+	writeFileFunc = func(string, []byte, os.FileMode) error { return os.ErrPermission }
+	t.Cleanup(func() { writeFileFunc = origWriteFile })
+
+	_, err := materialSnapshot(PlanSupportIn{FilePath: planPath})
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) {
+		t.Fatalf("error = %T (%v), want *mcpserver.InfraError", err, err)
+	}
+	if !strings.Contains(ie.Msg, "write snapshot file") {
+		t.Errorf("Msg = %q, want it to name the failed snapshot file write", ie.Msg)
+	}
+	if !strings.Contains(ie.Suggestion, "material_snapshot") {
+		t.Errorf("Suggestion = %q, want it to name the call to retry", ie.Suggestion)
+	}
+	if !errors.Is(err, os.ErrPermission) {
+		t.Errorf("error does not wrap the write failure: %v", err)
+	}
+	if left := tempEntries(t, root); len(left) != 0 {
+		t.Errorf("temp root still holds %v after a failed snapshot write, want it empty", left)
+	}
+}
+
+// TestWriteTempJSON_FailureRemovesDir verifies every failure after the temp
+// dir exists removes it, so a failed write does not leak an empty sdlc-* dir.
+func TestWriteTempJSON_FailureRemovesDir(t *testing.T) {
+	cases := []struct {
+		name     string
+		payload  any
+		writeErr error
+		wantMsg  string
+	}{
+		{"file write fails", map[string]string{"k": "v"}, os.ErrPermission, "write thing file"},
+		{"marshal fails", func() {}, nil, "marshal thing"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := redirectTempManifests(t)
+			if tc.writeErr != nil {
+				origWriteFile := writeFileFunc
+				writeFileFunc = func(string, []byte, os.FileMode) error { return tc.writeErr }
+				t.Cleanup(func() { writeFileFunc = origWriteFile })
+			}
+
+			path, err := writeTempJSON("sdlc-test-", "thing", func(string) any { return tc.payload })
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if path != "" {
+				t.Errorf("path = %q, want empty on failure", path)
+			}
+			if !strings.Contains(err.Error(), tc.wantMsg) {
+				t.Errorf("error = %q, want it to contain %q", err.Error(), tc.wantMsg)
+			}
+			if tc.writeErr != nil && !errors.Is(err, tc.writeErr) {
+				t.Errorf("error does not wrap %v: %v", tc.writeErr, err)
+			}
+			if left := tempEntries(t, root); len(left) != 0 {
+				t.Errorf("temp root still holds %v after a failed write, want it empty", left)
+			}
+		})
+	}
+}
+
+// TestWriteTempJSON_SuccessLeavesReadableFile verifies a successful write
+// keeps its dir (the calling agent reads the file later), hands payload the
+// same path it returns, and leaves valid JSON there.
+func TestWriteTempJSON_SuccessLeavesReadableFile(t *testing.T) {
+	root := redirectTempManifests(t)
+
+	var seen string
+	path, err := writeTempJSON("sdlc-test-", "thing", func(p string) any {
+		seen = p
+		return map[string]string{"selfPath": p}
+	})
+	if err != nil {
+		t.Fatalf("writeTempJSON: %v", err)
+	}
+	if seen != path {
+		t.Errorf("payload saw path %q, want the returned path %q", seen, path)
+	}
+	if filepath.Base(path) != "thing.json" || filepath.Dir(filepath.Dir(path)) != root {
+		t.Errorf("path = %q, want <root>/sdlc-test-*/thing.json under %q", path, root)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %q: %v", path, err)
+	}
+	var got map[string]string
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("decode %q: %v", path, err)
+	}
+	if got["selfPath"] != path {
+		t.Errorf("selfPath = %q, want %q", got["selfPath"], path)
+	}
+
+	left := tempEntries(t, root)
+	if len(left) != 1 || !strings.HasPrefix(left[0], "sdlc-test-") {
+		t.Errorf("temp root holds %v, want exactly one sdlc-test-* dir", left)
+	}
+}
+
 // TestPlanMaterialCompare_EmptySnapshotPath verifies an empty snapshotPath is
 // rejected before any file I/O.
 func TestPlanMaterialCompare_EmptySnapshotPath(t *testing.T) {

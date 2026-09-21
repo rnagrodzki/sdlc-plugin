@@ -1,9 +1,7 @@
 package tools
 
 import (
-	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
@@ -262,24 +260,10 @@ func commitPrepare(cfgRoot, gitRoot string, in CommitPrepareIn) (CommitPrepareOu
 // file it is about to write) to JSON and writes it via the fsseam, returning
 // the path.
 func writeCommitManifest(out CommitPrepareOut) (string, error) {
-	dir, err := mkdirTempFunc("", "sdlc-commit-manifest-")
-	if err != nil {
-		return "", fmt.Errorf("create manifest temp dir: %w", err)
-	}
-
-	manifestPath := filepath.Join(dir, "manifest.json")
-	out.ManifestPath = manifestPath
-
-	manifestJSON, err := json.Marshal(out)
-	if err != nil {
-		return "", fmt.Errorf("marshal manifest: %w", err)
-	}
-
-	if err := writeFileFunc(manifestPath, manifestJSON, 0o644); err != nil {
-		return "", fmt.Errorf("write manifest file %q: %w", manifestPath, err)
-	}
-
-	return manifestPath, nil
+	return writeTempJSON("sdlc-commit-manifest-", "manifest", func(path string) any {
+		out.ManifestPath = path
+		return out
+	})
 }
 
 // detectWipSquash detects WIP commits on the current branch since

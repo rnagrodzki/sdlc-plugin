@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -447,33 +446,14 @@ func materialSnapshot(in PlanSupportIn) (PlanSupportOut, error) {
 // material_compare instead of round-tripping the full snapshot JSON through
 // its own context.
 func writePlanSnapshot(snap PlanSnapshot) (string, error) {
-	dir, err := mkdirTempFunc("", "sdlc-plan-snapshot-")
+	snapshotPath, err := writeTempJSON("sdlc-plan-snapshot-", "snapshot", func(string) any { return snap })
 	if err != nil {
 		return "", &mcpserver.InfraError{
-			Msg:        fmt.Sprintf("create snapshot temp dir: %s", err.Error()),
+			Msg:        err.Error(),
 			Suggestion: "Check available disk space and permissions on the OS temp directory, then retry material_snapshot.",
 			Cause:      err,
 		}
 	}
-
-	snapJSON, err := json.Marshal(snap)
-	if err != nil {
-		return "", &mcpserver.InfraError{
-			Msg:        fmt.Sprintf("marshal snapshot: %s", err.Error()),
-			Suggestion: "This indicates a bug in the snapshot builder, not a filesystem or input problem — report it rather than retrying.",
-			Cause:      err,
-		}
-	}
-
-	snapshotPath := filepath.Join(dir, "snapshot.json")
-	if err := writeFileFunc(snapshotPath, snapJSON, 0o644); err != nil {
-		return "", &mcpserver.InfraError{
-			Msg:        fmt.Sprintf("write snapshot file %q: %s", snapshotPath, err.Error()),
-			Suggestion: fmt.Sprintf("Check permissions and available disk space at %q, then retry material_snapshot.", dir),
-			Cause:      err,
-		}
-	}
-
 	return snapshotPath, nil
 }
 
