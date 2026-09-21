@@ -345,7 +345,7 @@ func shipFindState(root, branch string) (*state.State, error) {
 	if err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("find ship state for branch %q: %s", branch, err.Error()),
-			Suggestion: "Check read permission on .sdlc-v2/runs/ship-<branch-slug>-*.json and that the directory exists, then retry.",
+			Suggestion: "Check read permission on " + paths.DataDir + "/runs/ship-<branch-slug>-*.json and that the directory exists, then retry.",
 			Cause:      err,
 		}
 	}
@@ -597,7 +597,7 @@ func shipStateInit(root, workDir string, in ShipStateIn, now func() time.Time) (
 	if err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("scan existing ship state files for branch slug %q: %s", branchSlug, err.Error()),
-			Suggestion: "Check read permission on .sdlc-v2/runs/ and that ship-<branch-slug>-*.json files are not corrupted, then retry ship_state init.",
+			Suggestion: "Check read permission on " + paths.DataDir + "/runs/ and that ship-<branch-slug>-*.json files are not corrupted, then retry ship_state init.",
 			Cause:      err,
 		}
 	}
@@ -606,7 +606,7 @@ func shipStateInit(root, workDir string, in ShipStateIn, now func() time.Time) (
 	if err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("init ship state for branch %q: %s", branch, err.Error()),
-			Suggestion: "Check write permission on .sdlc-v2/runs/ and available disk space on the project root, then retry ship_state init.",
+			Suggestion: "Check write permission on " + paths.DataDir + "/runs/ and available disk space on the project root, then retry ship_state init.",
 			Cause:      err,
 		}
 	}
@@ -1328,7 +1328,7 @@ func shipStateCleanup(root, workDir string, in ShipStateIn, now func() time.Time
 	if findErr != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("find ship state for branch %q: %s", branch, findErr.Error()),
-			Suggestion: "Check read permission on .sdlc-v2/runs/ship-<branch-slug>-*.json and that the directory exists, then retry ship_state cleanup.",
+			Suggestion: "Check read permission on " + paths.DataDir + "/runs/ship-<branch-slug>-*.json and that the directory exists, then retry ship_state cleanup.",
 			Cause:      findErr,
 		}
 	}
@@ -1391,7 +1391,7 @@ func shipStateCleanupPipeline(root, workDir string, in ShipStateIn, now func() t
 	if findErr != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("find ship state for branch %q: %s", branch, findErr.Error()),
-			Suggestion: "Check read permission on .sdlc-v2/runs/ship-<branch-slug>-*.json and that the directory exists, then retry ship_state cleanup-pipeline.",
+			Suggestion: "Check read permission on " + paths.DataDir + "/runs/ship-<branch-slug>-*.json and that the directory exists, then retry ship_state cleanup-pipeline.",
 			Cause:      findErr,
 		}
 	}
@@ -1450,7 +1450,7 @@ func shipStateCleanupPipeline(root, workDir string, in ShipStateIn, now func() t
 		}
 		return nil, &mcpserver.InfraError{
 			Msg:        msg,
-			Suggestion: "Check that no other process holds a lock on .sdlc-v2/runs/ and that files there are not corrupted. Then call ship_state gc to retry only the sweep, with the same detail.ttlDays if you set one.",
+			Suggestion: "Check that no other process holds a lock on " + paths.DataDir + "/runs/ and that files there are not corrupted. Then call ship_state gc to retry only the sweep, with the same detail.ttlDays if you set one.",
 			Cause:      err,
 		}
 	}
@@ -1514,7 +1514,7 @@ func shipStateGC(root, workDir string, in ShipStateIn, now func() time.Time) (an
 	if err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("gc sweep over %s: %s", filepath.Join(root, paths.DataDir, paths.RunsSubdir), err.Error()),
-			Suggestion: "Check that no other process holds a lock on .sdlc-v2/runs/ and that files there are not corrupted, then retry ship_state gc.",
+			Suggestion: "Check that no other process holds a lock on " + paths.DataDir + "/runs/ and that files there are not corrupted, then retry ship_state gc.",
 			Cause:      err,
 		}
 	}
@@ -1544,7 +1544,7 @@ func shipGCDryRun(stateDir string, ttlDays int, branchExists func(string) bool, 
 	if err != nil && !os.IsNotExist(err) {
 		return nil, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("read state directory %s: %s", stateDir, err.Error()),
-			Suggestion: "Check read permission on .sdlc-v2/runs/, then retry ship_state gc with detail.dryRun true.",
+			Suggestion: "Check read permission on " + paths.DataDir + "/runs/, then retry ship_state gc with detail.dryRun true.",
 			Cause:      err,
 		}
 	}
@@ -1629,7 +1629,7 @@ func shipStateMigrate(root string, in ShipStateIn) (any, error) {
 	if err := state.MigrateBranchSlug(root, oldSlug, newSlug); err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("migrate ship state files from slug %q to %q: %s", oldSlug, newSlug, err.Error()),
-			Suggestion: "Check write permission on .sdlc-v2/runs/ for both the old and new branch slugs above, then retry ship_state migrate.",
+			Suggestion: "Check write permission on " + paths.DataDir + "/runs/ for both the old and new branch slugs above, then retry ship_state migrate.",
 			Cause:      err,
 		}
 	}
@@ -1731,7 +1731,7 @@ func shipStateHistoryRecord(root string, in ShipStateIn) (any, error) {
 	if err := w.AppendRun(rec); err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("append run record to %s: %s", filepath.Join(historyDir(root), "runs.jsonl"), err.Error()),
-			Suggestion: "Check write permission on .sdlc-v2/history/runs.jsonl and free disk space on the project root, then retry history_record.",
+			Suggestion: "Check write permission on " + paths.DataDir + "/history/runs.jsonl and free disk space on the project root, then retry history_record.",
 			Cause:      err,
 		}
 	}
@@ -1782,7 +1782,7 @@ func shipStateDeferredAdd(root string, in ShipStateIn) (any, error) {
 	if err := w.AddDeferred(issue); err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("add deferred issue to %s: %s", filepath.Join(historyDir(root), "deferred.json"), err.Error()),
-			Suggestion: "Check write permission on .sdlc-v2/history/deferred.json and free disk space on the project root, then retry deferred_add.",
+			Suggestion: "Check write permission on " + paths.DataDir + "/history/deferred.json and free disk space on the project root, then retry deferred_add.",
 			Cause:      err,
 		}
 	}
@@ -1819,7 +1819,7 @@ func shipStateDeferredResolve(root string, in ShipStateIn) (any, error) {
 		}
 		return nil, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("resolve deferred issue %q in %s: %s", id, filepath.Join(historyDir(root), "deferred.json"), err.Error()),
-			Suggestion: "Check write permission on .sdlc-v2/history/deferred.json, then retry deferred_resolve.",
+			Suggestion: "Check write permission on " + paths.DataDir + "/history/deferred.json, then retry deferred_resolve.",
 			Cause:      err,
 		}
 	}
@@ -1836,7 +1836,7 @@ func shipStateDeferredList(root string) (any, error) {
 	if err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("read deferred issues from %s: %s", filepath.Join(historyDir(root), "deferred.json"), err.Error()),
-			Suggestion: "Check read permission on .sdlc-v2/history/deferred.json and that it is not corrupted, then retry deferred_list.",
+			Suggestion: "Check read permission on " + paths.DataDir + "/history/deferred.json and that it is not corrupted, then retry deferred_list.",
 			Cause:      err,
 		}
 	}
@@ -1860,7 +1860,7 @@ func shipStateDeferredProposeFollowups(root string) (any, error) {
 	if err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("read deferred issues from %s: %s", filepath.Join(historyDir(root), "deferred.json"), err.Error()),
-			Suggestion: "Check read permission on .sdlc-v2/history/deferred.json and that it is not corrupted, then retry deferred_propose_followups.",
+			Suggestion: "Check read permission on " + paths.DataDir + "/history/deferred.json and that it is not corrupted, then retry deferred_propose_followups.",
 			Cause:      err,
 		}
 	}
@@ -2003,7 +2003,7 @@ Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide
 			if err != nil {
 				return nil, &mcpserver.InfraError{
 					Msg:        fmt.Sprintf("resolve project root: %s", err.Error()),
-					Suggestion: "Check that the current directory is inside a git worktree with a valid .sdlc-v2 project root, then retry.",
+					Suggestion: "Check that the current directory is inside a git worktree with a valid " + paths.DataDir + " project root, then retry.",
 					Cause:      err,
 				}
 			}
