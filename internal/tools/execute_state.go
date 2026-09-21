@@ -1521,13 +1521,13 @@ func execActionReport(root, workDir string, in ExecuteStateIn, now func() time.T
 func execWriteReportFile(root, runID, ext string, content any) (string, error) {
 	dir := filepath.Join(root, paths.DataDir, "reports")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", &mcpserver.InfraError{Msg: "mkdir reports dir: " + err.Error(), Cause: err, Suggestion: "Check that .sdlc-v2/ is writable and there is no file named reports/ blocking directory creation."}
+		return "", &mcpserver.InfraError{Msg: "mkdir reports dir: " + err.Error(), Cause: err, Suggestion: "Check that " + paths.DataDir + "/ is writable and there is no file named reports/ blocking directory creation."}
 	}
 	path := filepath.Join(dir, runID+"-report."+ext)
 
 	if ext == "json" {
 		if err := fsx.AtomicWriteJSON(path, content); err != nil {
-			return "", &mcpserver.InfraError{Msg: "write report: " + err.Error(), Cause: err, Suggestion: "Check disk space and write permissions on .sdlc-v2/reports/, then retry."}
+			return "", &mcpserver.InfraError{Msg: "write report: " + err.Error(), Cause: err, Suggestion: "Check disk space and write permissions on " + paths.DataDir + "/reports/, then retry."}
 		}
 		return path, nil
 	}
@@ -1538,21 +1538,21 @@ func execWriteReportFile(root, runID, ext string, content any) (string, error) {
 	}
 	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
 	if err != nil {
-		return "", &mcpserver.InfraError{Msg: "create temp report file: " + err.Error(), Cause: err, Suggestion: "Check disk space and write permissions on .sdlc-v2/reports/, then retry."}
+		return "", &mcpserver.InfraError{Msg: "create temp report file: " + err.Error(), Cause: err, Suggestion: "Check disk space and write permissions on " + paths.DataDir + "/reports/, then retry."}
 	}
 	tmpName := tmp.Name()
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		os.Remove(tmpName)
-		return "", &mcpserver.InfraError{Msg: "write temp report file: " + err.Error(), Cause: err, Suggestion: "Check disk space on the .sdlc-v2/reports/ volume, then retry."}
+		return "", &mcpserver.InfraError{Msg: "write temp report file: " + err.Error(), Cause: err, Suggestion: "Check disk space on the " + paths.DataDir + "/reports/ volume, then retry."}
 	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpName)
-		return "", &mcpserver.InfraError{Msg: "close temp report file: " + err.Error(), Cause: err, Suggestion: "Retry the write; if this persists, check for a filesystem or disk issue on .sdlc-v2/reports/."}
+		return "", &mcpserver.InfraError{Msg: "close temp report file: " + err.Error(), Cause: err, Suggestion: "Retry the write; if this persists, check for a filesystem or disk issue on " + paths.DataDir + "/reports/."}
 	}
 	if err := os.Rename(tmpName, path); err != nil {
 		os.Remove(tmpName)
-		return "", &mcpserver.InfraError{Msg: "rename temp report file into place: " + err.Error(), Cause: err, Suggestion: "Check that .sdlc-v2/reports/ is on a single filesystem and writable, then retry."}
+		return "", &mcpserver.InfraError{Msg: "rename temp report file into place: " + err.Error(), Cause: err, Suggestion: "Check that " + paths.DataDir + "/reports/ is on a single filesystem and writable, then retry."}
 	}
 	return path, nil
 }
@@ -5178,7 +5178,7 @@ func execActionLedgerCheckout(root string, in ExecuteStateIn, now func() time.Ti
 	if len(in.Findings) > execFindingsMaxBytes {
 		return nil, &mcpserver.DomainError{
 			Msg:        fmt.Sprintf("findings is %d bytes, exceeds cap of %d bytes", len(in.Findings), execFindingsMaxBytes),
-			Suggestion: "Trim the findings payload, or persist it to a file under .sdlc-v2/ and reference that path instead of inlining the full content.",
+			Suggestion: "Trim the findings payload, or persist it to a file under " + paths.DataDir + "/ and reference that path instead of inlining the full content.",
 		}
 	}
 
@@ -5192,7 +5192,7 @@ func execActionLedgerCheckout(root string, in ExecuteStateIn, now func() time.Ti
 	if err := fsx.ReadJSON(fp, &existing); err != nil && !errors.Is(err, fsx.ErrNotFound) {
 		return nil, &mcpserver.DomainError{
 			Msg:        "read existing ledger entry: " + err.Error(),
-			Suggestion: "The ledger file for this worker may be corrupted. Inspect or remove it under .sdlc-v2/, then retry checkout.",
+			Suggestion: "The ledger file for this worker may be corrupted. Inspect or remove it under " + paths.DataDir + "/, then retry checkout.",
 		}
 	}
 
@@ -5367,7 +5367,7 @@ func execActionLedgerCleanup(root string, in ExecuteStateIn) (any, error) {
 			return nil, &mcpserver.InfraError{
 				Msg:        "stat ledger dir: " + err.Error(),
 				Cause:      err,
-				Suggestion: "Check filesystem permissions on .sdlc-v2/runs/ledger/ and retry.",
+				Suggestion: "Check filesystem permissions on " + paths.DataDir + "/runs/ledger/ and retry.",
 			}
 		}
 		removed = false
@@ -5386,7 +5386,7 @@ func execActionLedgerCleanup(root string, in ExecuteStateIn) (any, error) {
 		return nil, &mcpserver.InfraError{
 			Msg:        "remove ledger dir: " + err.Error(),
 			Cause:      err,
-			Suggestion: "Check filesystem permissions on .sdlc-v2/runs/ledger/ and retry.",
+			Suggestion: "Check filesystem permissions on " + paths.DataDir + "/runs/ledger/ and retry.",
 		}
 	}
 
