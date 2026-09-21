@@ -3549,7 +3549,10 @@ func execRenderPriorWaveSummary(summary map[string]any) string {
 func execActionTaskContext(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	taskID := strings.TrimSpace(in.TaskID)
 	if taskID == "" {
-		return nil, &mcpserver.DomainError{Msg: "taskId is required for task-context"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "taskId is required for task-context",
+			Suggestion: "Pass taskId, e.g. execute_state {action:\"task-context\", runId:\"<runId>\", taskId:\"<taskId>\"}.",
+		}
 	}
 
 	branch, err := execResolveBranch(in.Branch, workDir)
@@ -3583,15 +3586,25 @@ func execActionTaskContext(root, workDir string, in ExecuteStateIn, now func() t
 		if errors.Is(err, wave.ErrFactsheetNotFound) {
 			ids, listErr := wave.ListFactsheetIDs(root, runID)
 			if listErr != nil {
-				return nil, &mcpserver.InfraError{Msg: "list fact sheets: " + listErr.Error(), Cause: listErr}
+				return nil, &mcpserver.InfraError{
+					Msg:        "list fact sheets: " + listErr.Error(),
+					Suggestion: "Check that " + paths.DataDir + "/" + paths.RunsSubdir + "/" + runID + "/ is a readable directory, then retry task-context.",
+					Cause:      listErr,
+				}
 			}
 			msg := fmt.Sprintf("no fact sheet for task %q under run %q", taskID, runID)
 			if len(ids) > 0 {
-				msg += "; valid task IDs: " + strings.Join(ids, ", ")
-			} else {
-				msg += "; run has no fact sheets yet (call wave-start first)"
+				return nil, &mcpserver.DomainError{
+					Msg:        msg + "; valid task IDs: " + strings.Join(ids, ", "),
+					Suggestion: fmt.Sprintf("Call task-context again with taskId set to one of: %s.", strings.Join(ids, ", ")),
+					Cause:      err,
+				}
 			}
-			return nil, &mcpserver.DomainError{Msg: msg, Cause: err}
+			return nil, &mcpserver.DomainError{
+				Msg:        msg + "; run has no fact sheets yet (call wave-start first)",
+				Suggestion: fmt.Sprintf("Call execute_state wave-start for run %q to write its fact sheets, then retry task-context.", runID),
+				Cause:      err,
+			}
 		}
 		if errors.Is(err, wave.ErrBadRunID) {
 			return nil, &mcpserver.DomainError{
@@ -3600,7 +3613,11 @@ func execActionTaskContext(root, workDir string, in ExecuteStateIn, now func() t
 				Cause:      err,
 			}
 		}
-		return nil, &mcpserver.InfraError{Msg: "read fact sheet: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        "read fact sheet: " + err.Error(),
+			Suggestion: fmt.Sprintf("Make sure the fact sheet file for task %q (path above) is readable, then retry task-context.", taskID),
+			Cause:      err,
+		}
 	}
 
 	// Stamp contextFetchedAt on server state exactly once. A missing server
@@ -3609,11 +3626,19 @@ func execActionTaskContext(root, workDir string, in ExecuteStateIn, now func() t
 	// bookkeeping absence. Once set, contextFetchedAt is never overwritten
 	// by a later call.
 	if s, found, lerr := wave.LoadServerState(root, runID, taskID); lerr != nil {
-		return nil, &mcpserver.InfraError{Msg: "load server state for task " + taskID + ": " + lerr.Error(), Cause: lerr}
+		return nil, &mcpserver.InfraError{
+			Msg:        "load server state for task " + taskID + ": " + lerr.Error(),
+			Suggestion: "Check that " + paths.DataDir + "/" + paths.RunsSubdir + "/" + runID + "/progress/" + taskID + ".server.json is readable and holds valid JSON, then retry task-context.",
+			Cause:      lerr,
+		}
 	} else if found && s.ContextFetchedAt == "" {
 		s.ContextFetchedAt = waveAwaitFormat(now())
 		if err := wave.StoreServerState(root, runID, taskID, s); err != nil {
-			return nil, &mcpserver.InfraError{Msg: "stamp contextFetchedAt for task " + taskID + ": " + err.Error(), Cause: err}
+			return nil, &mcpserver.InfraError{
+				Msg:        "stamp contextFetchedAt for task " + taskID + ": " + err.Error(),
+				Suggestion: "Check that " + paths.DataDir + "/" + paths.RunsSubdir + "/" + runID + "/progress/ is writable and the disk is not full, then retry task-context.",
+				Cause:      err,
+			}
 		}
 	}
 
@@ -4197,18 +4222,29 @@ func execActionSummarizePriorWaveContext(root, workDir string, in ExecuteStateIn
 
 func execActionWaveSplit(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	if in.Dispatched == "" {
-		return nil, &mcpserver.DomainError{Msg: "--dispatched is required (JSON array of task ID strings)"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "--dispatched is required (JSON array of task ID strings)",
+			Suggestion: "Pass dispatched as a string with a JSON array of the dispatched task IDs, e.g. [\"1\",\"2\",\"3\"].",
+		}
 	}
 
 	var dispatched []any
 	if err := json.Unmarshal([]byte(in.Dispatched), &dispatched); err != nil {
-		return nil, &mcpserver.DomainError{Msg: "dispatched is not valid JSON: " + err.Error(), Cause: err}
+		return nil, &mcpserver.DomainError{
+			Msg:        "dispatched is not valid JSON: " + err.Error(),
+			Suggestion: "Pass dispatched as a string with a JSON array of task IDs, e.g. [\"1\",\"2\",\"3\"]. Put double quotes around each ID.",
+			Cause:      err,
+		}
 	}
 
 	var missingIds []any
 	if in.MissingIds != "" {
 		if err := json.Unmarshal([]byte(in.MissingIds), &missingIds); err != nil {
-			return nil, &mcpserver.DomainError{Msg: "missingIds is not valid JSON: " + err.Error(), Cause: err}
+			return nil, &mcpserver.DomainError{
+				Msg:        "missingIds is not valid JSON: " + err.Error(),
+				Suggestion: "Pass missingIds as a string with a JSON array of task IDs, e.g. [\"3\"]. Or leave missingIds out.",
+				Cause:      err,
+			}
 		}
 	}
 
@@ -4237,7 +4273,8 @@ func execActionWaveSplit(root, workDir string, in ExecuteStateIn, now func() tim
 	// constant MaxSplitDepth=3). If the user's max is lower, gate here.
 	if splitDepth >= maxSplitDepth {
 		return nil, &mcpserver.DomainError{
-			Msg: fmt.Sprintf("splitDepth %d exceeds maxSplitDepth %d — manual escalation required", splitDepth, maxSplitDepth),
+			Msg:        fmt.Sprintf("splitDepth %d exceeds maxSplitDepth %d — manual escalation required", splitDepth, maxSplitDepth),
+			Suggestion: "Do not call wave-split again. Escalate the tasks in missingIds: call AskUserQuestion at top level, or halt the wave and return missingIds to the parent orchestrator when nested or under pipelineAuto.",
 		}
 	}
 
@@ -4254,7 +4291,11 @@ func execActionWaveSplit(root, workDir string, in ExecuteStateIn, now func() tim
 				Cause:      err,
 			}
 		}
-		return nil, &mcpserver.InfraError{Msg: "wave split: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        "wave split: " + err.Error(),
+			Suggestion: "Retry wave-split once with the same input. If it fails again, stop the wave and show this error to the user.",
+			Cause:      err,
+		}
 	}
 
 	// Build result matching JS shape.
@@ -4490,13 +4531,20 @@ func execWaveStallTimeouts(root, branch string) (rawInterval, totalTimeout time.
 
 func execActionWaveProgress(root string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	if in.RunID == "" {
-		return nil, &mcpserver.DomainError{Msg: "runId is required"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "runId is required",
+			Suggestion: "Pass runId exactly as returned by execute_state wave-start (runId field), then retry wave-progress.",
+		}
 	}
 
 	if in.ReadProgress {
 		p, err := wave.ReadProgress(root, in.RunID)
 		if err != nil {
-			return nil, &mcpserver.DomainError{Msg: "read progress: " + err.Error(), Cause: err}
+			return nil, &mcpserver.DomainError{
+				Msg:        "read progress: " + err.Error(),
+				Suggestion: "Pass runId exactly as returned by execute_state wave-start (only letters, digits, underscore, hyphen), then retry wave-progress.",
+				Cause:      err,
+			}
 		}
 
 		tasks := make(map[string]TaskProgressWithStall, len(p.Tasks))
@@ -4507,7 +4555,10 @@ func execActionWaveProgress(root string, in ExecuteStateIn, now func() time.Time
 	}
 
 	if in.TaskID == "" {
-		return nil, &mcpserver.DomainError{Msg: "taskId is required (write mode)"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "taskId is required (write mode)",
+			Suggestion: "Pass taskId and phase to record progress, or set readProgress:true to read the progress of every task.",
+		}
 	}
 
 	fields := wave.ProgressFields{
@@ -4523,7 +4574,11 @@ func execActionWaveProgress(root string, in ExecuteStateIn, now func() time.Time
 				Cause:      err,
 			}
 		}
-		return nil, &mcpserver.InfraError{Msg: "update progress: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        "update progress: " + err.Error(),
+			Suggestion: "Check that " + paths.DataDir + "/" + paths.RunsSubdir + "/" + in.RunID + "/progress/ is writable and the disk is not full, then retry wave-progress.",
+			Cause:      err,
+		}
 	}
 	return map[string]any{}, nil
 }
