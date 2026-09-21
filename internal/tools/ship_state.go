@@ -506,7 +506,7 @@ func shipState(root, workDir string, in ShipStateIn, now func() time.Time) (any,
 	case "begin-step", "complete-step", "start", "complete", "skip", "fail", "decide", "defer":
 		if v := detailStr(in.Detail, "detail"); v != "" && v != "full" && v != "concise" {
 			return nil, &mcpserver.DomainError{
-				Msg:        fmt.Sprintf(`detail must be "concise" or "full", got %q; pass detail.detail="concise" or omit for default "full"`, v),
+				Msg:        fmt.Sprintf(`%s: detail must be "concise" or "full", got %q; pass detail.detail="concise" or omit for default "full"`, in.Action, v),
 				Suggestion: "Pass detail.detail as the string \"concise\" or \"full\" only, or omit the field entirely to use the default.",
 			}
 		}
@@ -643,7 +643,7 @@ func shipStateInit(root, workDir string, in ShipStateIn, now func() time.Time) (
 func shipStateStart(root, workDir string, in ShipStateIn, now func() time.Time) (any, error) {
 	if in.Step == "" {
 		return nil, &mcpserver.DomainError{
-			Msg:        "ship_state start: step is required",
+			Msg:        "start: step is required",
 			Suggestion: "Pass the step field naming a pipeline step (e.g. \"execute\"), then retry ship_state start.",
 		}
 	}
@@ -684,7 +684,7 @@ func shipStateStart(root, workDir string, in ShipStateIn, now func() time.Time) 
 func shipStateComplete(root, workDir string, in ShipStateIn, now func() time.Time) (any, error) {
 	if in.Step == "" {
 		return nil, &mcpserver.DomainError{
-			Msg:        "ship_state complete: step is required",
+			Msg:        "complete: step is required",
 			Suggestion: "Pass the step field naming the pipeline step to complete, then retry ship_state complete.",
 		}
 	}
@@ -743,7 +743,7 @@ func shipStateComplete(root, workDir string, in ShipStateIn, now func() time.Tim
 func shipStateBeginStep(root, workDir string, in ShipStateIn, now func() time.Time) (any, error) {
 	if in.Step == "" {
 		return nil, &mcpserver.DomainError{
-			Msg:        "ship_state begin-step: step is required",
+			Msg:        "begin-step: step is required",
 			Suggestion: "Pass the step field naming the pipeline step to begin, then retry ship_state begin-step.",
 		}
 	}
@@ -832,7 +832,7 @@ func shipStateBeginStep(root, workDir string, in ShipStateIn, now func() time.Ti
 func shipStateCompleteStep(root, workDir string, in ShipStateIn, now func() time.Time) (any, error) {
 	if in.Step == "" {
 		return nil, &mcpserver.DomainError{
-			Msg:        "ship_state complete-step: step is required",
+			Msg:        "complete-step: step is required",
 			Suggestion: "Pass the step field naming the pipeline step to complete, then retry complete-step.",
 		}
 	}
@@ -842,7 +842,7 @@ func shipStateCompleteStep(root, workDir string, in ShipStateIn, now func() time
 		s, isStr := raw.(string)
 		if !isStr || (s != "success" && s != "failure") {
 			return nil, &mcpserver.DomainError{
-				Msg:        fmt.Sprintf(`outcome must be "success" or "failure", got %v`, raw),
+				Msg:        fmt.Sprintf(`complete-step: outcome must be "success" or "failure", got %v`, raw),
 				Suggestion: "Pass detail.outcome as the exact string \"success\" or \"failure\", then retry complete-step.",
 			}
 		}
@@ -916,7 +916,7 @@ func shipStateCompleteStep(root, workDir string, in ShipStateIn, now func() time
 func shipStateSkip(root, workDir string, in ShipStateIn, now func() time.Time) (any, error) {
 	if in.Step == "" {
 		return nil, &mcpserver.DomainError{
-			Msg:        "ship_state skip: step is required",
+			Msg:        "skip: step is required",
 			Suggestion: "Pass the step field naming the pipeline step to skip, then retry ship_state skip.",
 		}
 	}
@@ -960,7 +960,7 @@ func shipStateSkip(root, workDir string, in ShipStateIn, now func() time.Time) (
 func shipStateFail(root, workDir string, in ShipStateIn, now func() time.Time) (any, error) {
 	if in.Step == "" {
 		return nil, &mcpserver.DomainError{
-			Msg:        "ship_state fail: step is required",
+			Msg:        "fail: step is required",
 			Suggestion: "Pass the step field naming the pipeline step to fail, then retry ship_state fail.",
 		}
 	}
@@ -1020,7 +1020,7 @@ func shipStateFail(root, workDir string, in ShipStateIn, now func() time.Time) (
 func shipStateDecide(root, workDir string, in ShipStateIn) (any, error) {
 	if in.Step == "" {
 		return nil, &mcpserver.DomainError{
-			Msg:        "ship_state decide: step is required",
+			Msg:        "decide: step is required",
 			Suggestion: "Pass the step field naming the pipeline step this decision applies to, then retry ship_state decide.",
 		}
 	}
@@ -1060,7 +1060,7 @@ func shipStateDefer(root, workDir string, in ShipStateIn) (any, error) {
 	title := detailStr(in.Detail, "title")
 	if severity == "" || file == "" || title == "" {
 		return nil, &mcpserver.DomainError{
-			Msg:        "ship_state defer: severity, file, and title are required for defer",
+			Msg:        "defer: severity, file, and title are required",
 			Suggestion: "Pass detail.severity, detail.file, and detail.title all as non-empty strings, then retry ship_state defer.",
 		}
 	}
@@ -1486,7 +1486,7 @@ func shipStateGC(root, workDir string, in ShipStateIn, now func() time.Time) (an
 	if v, ok := in.Detail["dryRun"]; ok {
 		if _, isBool := v.(bool); !isBool {
 			return nil, &mcpserver.DomainError{
-				Msg:        fmt.Sprintf("detail.dryRun must be a boolean, got %T", v),
+				Msg:        fmt.Sprintf("gc: detail.dryRun must be a boolean, got %T", v),
 				Suggestion: "Pass detail.dryRun as the JSON boolean true (not the string \"true\"), or omit it to run the real sweep. dryRun is read from detail, never from the top level of the arguments.",
 			}
 		}
@@ -1606,7 +1606,7 @@ func shipStateMigrate(root string, in ShipStateIn) (any, error) {
 	to := detailStr(in.Detail, "to")
 	if from == "" || to == "" {
 		return nil, &mcpserver.DomainError{
-			Msg:        "ship_state migrate: from and to are required",
+			Msg:        "migrate: from and to are required",
 			Suggestion: "Pass detail.from and detail.to as the old and new branch names, then retry ship_state migrate.",
 		}
 	}
@@ -1684,7 +1684,7 @@ func shipStateHistoryRecord(root string, in ShipStateIn) (any, error) {
 	d := in.Detail
 	if d == nil {
 		return nil, &mcpserver.DomainError{
-			Msg:        "ship_state history_record: detail with run record fields is required",
+			Msg:        "history_record: detail with run record fields is required",
 			Suggestion: "Pass detail.skill and detail.outcome (plus optional ts, branch, duration_ms, version), then retry history_record.",
 		}
 	}
@@ -1736,7 +1736,7 @@ func shipStateDeferredAdd(root string, in ShipStateIn) (any, error) {
 	d := in.Detail
 	if d == nil {
 		return nil, &mcpserver.DomainError{
-			Msg:        "ship_state deferred_add: detail with issue fields is required",
+			Msg:        "deferred_add: detail with issue fields is required",
 			Suggestion: "Pass detail.id and detail.description (plus optional created, source, priority), then retry deferred_add.",
 		}
 	}
@@ -1787,7 +1787,7 @@ func shipStateDeferredResolve(root string, in ShipStateIn) (any, error) {
 	d := in.Detail
 	if d == nil {
 		return nil, &mcpserver.DomainError{
-			Msg:        "ship_state deferred_resolve: detail with id field is required",
+			Msg:        "deferred_resolve: detail with id field is required",
 			Suggestion: "Pass detail.id naming the deferred issue to resolve, then retry deferred_resolve.",
 		}
 	}
