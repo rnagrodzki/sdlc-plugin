@@ -664,11 +664,6 @@ func materialCompare(in PlanSupportIn) (PlanSupportOut, error) {
 		}
 	}
 
-	before, err := readPlanSnapshot(in.SnapshotPath)
-	if err != nil {
-		return PlanSupportOut{}, err
-	}
-
 	content, err := readFileFunc(in.FilePath)
 	if err != nil {
 		return PlanSupportOut{}, &mcpserver.InfraError{
@@ -676,6 +671,11 @@ func materialCompare(in PlanSupportIn) (PlanSupportOut, error) {
 			Suggestion: fmt.Sprintf("Check that %q exists and is readable, then retry material_compare with the corrected filePath.", in.FilePath),
 			Cause:      err,
 		}
+	}
+
+	before, err := readPlanSnapshot(in.SnapshotPath)
+	if err != nil {
+		return PlanSupportOut{}, err
 	}
 
 	after := snapshotPlan(string(content))

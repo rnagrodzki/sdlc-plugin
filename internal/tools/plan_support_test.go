@@ -889,6 +889,31 @@ func TestPlanMaterialCompare_SnapshotReadFailure(t *testing.T) {
 	}
 }
 
+// TestPlanMaterialCompare_BothPathsUnreadable pins the read order: the plan
+// file is read before the snapshot, so when both paths are bad the caller
+// sees the plan-file error and fixes filePath first.
+func TestPlanMaterialCompare_BothPathsUnreadable(t *testing.T) {
+	installFakeFS(t)
+
+	_, err := materialCompare(PlanSupportIn{
+		FilePath:     "/fake-plans/missing-plan.md",
+		SnapshotPath: "/fake-plans/missing-snapshot.json",
+	})
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) {
+		t.Fatalf("error = %T (%v), want *mcpserver.InfraError", err, err)
+	}
+	if !strings.Contains(ie.Msg, "read plan file") || !strings.Contains(ie.Msg, "missing-plan.md") {
+		t.Errorf("Msg = %q, want the plan-file read error", ie.Msg)
+	}
+	if strings.Contains(ie.Msg, "snapshot") {
+		t.Errorf("Msg = %q, must not mention the snapshot when the plan file is unreadable", ie.Msg)
+	}
+	if !strings.Contains(ie.Suggestion, "corrected filePath") {
+		t.Errorf("Suggestion = %q, want it to point at filePath", ie.Suggestion)
+	}
+}
+
 // TestPlanMaterialCompare_NonJSONSnapshotContent verifies a snapshotPath
 // pointing at non-JSON content is rejected.
 func TestPlanMaterialCompare_NonJSONSnapshotContent(t *testing.T) {
