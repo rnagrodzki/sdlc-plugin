@@ -519,7 +519,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - wave-fail: Fail a wave. Returns narration (summary, display with failure cause). Requires wave. Optional: branch, timedOut, error (failure cause, recorded as an issue and in failedWave), status, detail ("concise"|"full").
 - wave-committed: Record a commit SHA for a completed wave. Requires wave. Optional: branch, sha.
 - wave-commit: Stage and commit a completed wave's changes (git add -A + git commit -m message) and record the resulting sha on the wave, mirroring wave-committed's SHA-recording. Requires wave, message. Optional: branch, detail ("concise"|"full"). The wave must already be "completed" (call wave-done first). Empty diff: succeeds without committing ({committed:false, reason:"nothing to commit"}). When config execute.commitWaves is false, does not commit and instead returns an instruction to commit manually and call wave-committed. Idempotent on resume: an already-recorded committedSha that is still an ancestor of HEAD is reported ({idempotent:true}) rather than committed again.
-- task-done: Record task completion. Returns narration (summary with running tally, warnings[] when phantom-success heuristics fire). Requires wave, taskId. Optional: branch, taskName, complexity, risk, filesChanged, filesAdded, verifyToken, status ("DONE_WITH_CONCERNS" records a warning issue), error (concern detail for DONE_WITH_CONCERNS).
+- task-done: Record task completion. Returns narration (summary with running tally, warnings[] when phantom-success heuristics fire). Requires wave, taskId. Optional: branch, taskName, complexity, risk, filesChanged, filesAdded, verifyToken, status ("DONE_WITH_CONCERNS" records a warning issue), error (concern detail for DONE_WITH_CONCERNS). A taskId that is not in a non-empty plannedTaskIds is still recorded, with a warning that names it.
 - task-fail: Record task failure. Returns narration (summary with running tally). Requires wave, taskId. Optional: branch, error, skippedDependency (records an issue; only a non-skipped failure updates failedTask). Idempotent: a repeat call for a task already recorded as failed/skipped at the same attempt is a no-op — it does not duplicate the issue log or move completedAt forward.
 - task-redispatch: Reopen a failed task for another attempt. Requires taskId. Optional: branch, runId, wave (searches every wave for the task's closed row when omitted). Re-opens the task's wave-manifest row to "in_progress", then deletes and re-seeds the task's server state with a fresh dispatchedAt and attempt+1 — contextFetchedAt, reclaimRequestedAt, and batchId all come back empty, since a redispatch is always solo even if the failed attempt was batched. Refuses with a DomainError (Suggestion names user escalation) at the 2-retry ceiling (attempt already at 3) instead of seeding a 4th attempt.
 - task-context: Return everything a dispatched per-task worker needs in one call — fact-sheet content (embeds the plan-task's Contract/Acceptance Criteria/Files), a live prior-wave summary, verify guidance, and report-back instructions. Requires taskId. Optional: branch, runId (falls back the same way wave-start does, via startedAt/wave). The serialized payload is capped at 1 MiB; oversize content (fact sheet first, then prior-wave summary if still over cap) is truncated with truncated:true rather than erroring. Unknown taskId fails with an actionable error listing the valid IDs for that run. Stamps the task's server-state contextFetchedAt the first time it's called for that task; never overwrites it on later calls.
@@ -529,7 +529,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - gc: Garbage-collect stale state files. Optional: ttlDays, dryRun, branch.
 - summarize-prior-wave-context: Summarize context from prior waves. Optional: branch, maxFiles, maxDecisions, maxInterfaces, maxTaskIds.
 - wave-split: Split remaining tasks into a new wave. Requires dispatched. Optional: wave, missingIds, branch, splitDepth, maxSplitDepth, stateFile.
-- verify-completeness: Verify all planned tasks are accounted for. Optional: branch, stateFile.
+- verify-completeness: Verify all planned tasks are accounted for. Optional: branch, stateFile. When planned tasks are missing, the error also names any recorded task ids that are not in plannedTaskIds.
 - wave-progress: Read/write per-task progress. Requires runId. For reads: readProgress=true. For writes: taskId, phase. Optional: lastCompletedTask (recorded in the heartbeat entry).
 - wave-await: Bounded, non-blocking poll of a wave's still-open tasks, classifying each against its server-owned dispatch state (never-started/stalled/timeout/none) and returning explicit next-instructions (including the exact task-fail/task-redispatch call shape) for whatever it finds. Requires runId, wave. Optional: branch, stateFile (also used to persist wave-await's own resume-state, i.e. the iteration counter, across bounded-poll calls).
 - resume-reset: Reset in-progress waves for session resume. Optional: branch, stateFile. Returns {resetWaves, clearedTaskIds} as before; when the run is still in flight after the reset, the response also carries a "resumeBriefing" (same shape as read's) reflecting the sets it just cleared — resume-reset's willRedo always matches the task IDs in clearedTaskIds. Reseeds fresh server-owned dispatch state (attempt reset to 1) for every cleared task ID; seeding failure is non-fatal and appends to a "warnings" field.
@@ -898,6 +898,28 @@ func execNormalizeTaskID(id string) string {
 		return s[1:]
 	}
 	return s
+}
+
+// execPlannedTaskIDs returns the run's planned task ids: the top-level
+// plannedTaskIds, else context.plannedTaskIds. It returns nil when neither
+// key is present, and an empty non-nil slice for an empty plan.
+func execPlannedTaskIDs(data map[string]any) []string {
+	ids := anyToStringSlice(data["plannedTaskIds"])
+	if ids == nil {
+		if ctx, ok := data["context"].(map[string]any); ok {
+			ids = anyToStringSlice(ctx["plannedTaskIds"])
+		}
+	}
+	return ids
+}
+
+// execNormalizedIDSet returns the set of normalized forms of ids.
+func execNormalizedIDSet(ids []string) map[string]bool {
+	set := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		set[execNormalizeTaskID(id)] = true
+	}
+	return set
 }
 
 // execValidateSafeID validates that an ID matches the safe pattern.
@@ -2987,6 +3009,12 @@ func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time
 	if len(filesChanged) == 0 && in.Status != "FAILED" {
 		warnings = append(warnings, "no files reported changed — verify task produced real output")
 	}
+	// A run without a plan (nil or empty plannedTaskIds) has nothing to check against.
+	if planned := execPlannedTaskIDs(st.Data); len(planned) > 0 && !execNormalizedIDSet(planned)[execNormalizeTaskID(in.TaskID)] {
+		warnings = append(warnings, fmt.Sprintf(
+			"taskId %q is not in plannedTaskIds — recorded anyway, but verify-completeness will not count it toward any planned task",
+			in.TaskID))
+	}
 
 	taskEntry := map[string]any{
 		"id":           in.TaskID,
@@ -4431,8 +4459,9 @@ func execActionVerifyCompleteness(root, workDir string, in ExecuteStateIn) (any,
 	if in.StateFile != "" {
 		if err := fsx.ReadJSON(in.StateFile, &data); err != nil {
 			return nil, &mcpserver.DomainError{
-				Msg:   fmt.Sprintf("cannot read state file %q: %s", in.StateFile, err.Error()),
-				Cause: err,
+				Msg:        fmt.Sprintf("cannot read state file %q: %s", in.StateFile, err.Error()),
+				Suggestion: "Pass stateFile as the path to an existing execute state JSON file, or leave stateFile out to use the state file for the current branch.",
+				Cause:      err,
 			}
 		}
 	} else {
@@ -4478,16 +4507,11 @@ func execActionVerifyCompleteness(root, workDir string, in ExecuteStateIn) (any,
 	}
 
 	// Determine planned task IDs.
-	plannedIDs := anyToStringSlice(data["plannedTaskIds"])
-	if plannedIDs == nil {
-		if ctx, ok := data["context"].(map[string]any); ok {
-			plannedIDs = anyToStringSlice(ctx["plannedTaskIds"])
-		}
-	}
-
+	plannedIDs := execPlannedTaskIDs(data)
 	if plannedIDs == nil {
 		return nil, &mcpserver.DomainError{
-			Msg: "verify-completeness cannot find plannedTaskIds in state — invariant check cannot run",
+			Msg:        "verify-completeness cannot find plannedTaskIds in state — invariant check cannot run",
+			Suggestion: "This run has no plannedTaskIds. Start a new run with execute_state action \"init\" and plannedTaskIds set to an array of the planned task IDs, e.g. [\"1\",\"2\",\"3\"].",
 		}
 	}
 
@@ -4520,9 +4544,29 @@ func execActionVerifyCompleteness(root, workDir string, in ExecuteStateIn) (any,
 	}
 
 	// Incomplete — DataError (JS exit 65).
+	msg := fmt.Sprintf("incomplete: %d of %d planned tasks unaccounted (missingIds: %s)",
+		len(missingIDs), totalPlanned, strings.Join(missingIDs, ", "))
+
+	// A recorded id outside the plan (usually a typo of a missing id) never
+	// counts toward completeness. Sorted so the message is deterministic.
+	plannedSet := execNormalizedIDSet(plannedIDs)
+	var unknownIDs []string
+	for id := range accountedByID {
+		if !plannedSet[execNormalizeTaskID(id)] {
+			unknownIDs = append(unknownIDs, id)
+		}
+	}
+	if len(unknownIDs) > 0 {
+		sort.Strings(unknownIDs)
+		unknown := strings.Join(unknownIDs, ", ")
+		return nil, &mcpserver.DataError{
+			Msg:        msg + "; unknown ids recorded: " + unknown,
+			Suggestion: fmt.Sprintf("Compare the unknown ids (%s) with plannedTaskIds. If one is a typo for a missing id, call task-done again with the planned id. Then call task-done or task-fail for each id in missingIds and run verify-completeness again.", unknown),
+		}
+	}
 	return nil, &mcpserver.DataError{
-		Msg: fmt.Sprintf("incomplete: %d of %d planned tasks unaccounted (missingIds: %s)",
-			len(missingIDs), totalPlanned, strings.Join(missingIDs, ", ")),
+		Msg:        msg,
+		Suggestion: "Call task-done or task-fail for each id in missingIds, then call verify-completeness again.",
 	}
 }
 
