@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.1.6] - 2026-09-22
+
+### RC 1
+
+- chore(harden): strengthened plan and execute guardrails and review dimensions from a 26-entry learnings-log triage (13 plan guardrails, 17 execute guardrails, 10 review dimensions — 7 edited, 3 new — plus 3 new copilot-instructions mirrors)
+
+### RC 2
+
+- MCP tools now return human-readable Markdown instead of a JSON envelope, via one generic reflection renderer.
+- Tool errors now state what failed and how to recover.
+- Skills, agents and review guardrails rewritten for the Markdown output; new contract doc at docs/mcp-output-contract.md.
+- `execute_state` warns on unknown task ids, `ship_verify_side_effect` always shows the expected line, and `default-rc` pre-release policy works in release diagnostics and the setup wizard.
+
+### RC 3
+
+- feat(tooling): improve error handling and deferred findings persistence — review-fix follow-up addressing 84 findings from received-review (81 fixed, 3 recorded as needs-direction deferrals)
+- feat(tooling): add error fixes and deferred skill — sweeps tooling error handling and adds a skill for recording findings that need human direction
+- feat(mcp): return Markdown from MCP tools, drop the JSON envelope (#52)
+- chore(harden): apply 26-entry learnings triage across guardrails and review dimensions (#44)
+
 ## [0.1.5] - 2026-09-18
 
 - Fixes:
