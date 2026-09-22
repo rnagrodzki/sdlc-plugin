@@ -8,7 +8,7 @@ triggers:
   - "internal/ghx/**"
   - "internal/gitx/**"
   - "plugins/sdlc/skills/**"
-severity: medium
+severity: high
 ---
 
 `internal/execx` sets the pattern for this codebase: a distinct sentinel
@@ -64,6 +64,18 @@ Several `internal/tools/*.go` files already follow this with their own
   three-outcome contract in package godoc: found (value, nil), not-found
   (zero, nil), error (zero, error). Callers must handle all three cases
   explicitly and never collapse not-found into the same path as error.
+- When a file implements two or more near-identical polling or retry loops,
+  verify they agree on probe-vs-timeout ordering, error classification, and
+  final-probe-on-timeout behavior; if a fix is applied to one loop, mirror it
+  to the other or consolidate the loops to prevent drift.
+- When handler code calls `os.ReadFile`, `os.Stat`, `filepath.ReadDir`, or
+  similar filesystem probes, errors must be classified: use
+  `errors.Is(err, fs.ErrNotExist)` to distinguish "file does not exist" from
+  "permission denied", "I/O error", or other conditions. Never report all
+  filesystem read errors uniformly as "file not found". Additionally, do not
+  silently fall back to a default value or built-in template when a
+  configured file is unreadable — surface the error to the caller so they
+  can choose recovery.
 
 ## File-system operation error discrimination
 

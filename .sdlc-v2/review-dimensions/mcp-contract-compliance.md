@@ -78,6 +78,17 @@ error carries no `Suggestion`, `defaultRecovery(code)` supplies one; a rendered
 error with an empty or missing `## Do this` section is a defect. Both live in
 `internal/mcpserver/envelope.go` (`defaultRecovery`, called from `renderError`).
 
+## Handler input validation
+
+- When a handler receives new fields in an `*In` struct, it must explicitly
+  validate each field's type and value before using it. Silent type
+  coercion (e.g. accepting a string when an int is expected, silently
+  falling back to a default value) is a defect. Handlers must fail-loud:
+  validate or reject, never silently coerce. For example, if a field is
+  expected to be one of a known set of values, the handler must check it
+  against that set and reject unknown values with a `DomainError`, not
+  silently fall back to a default.
+
 ## Review procedure for closed-set enum tags and error-field coverage
 
 When reviewing changes to MCP handler code, perform these concrete checks:
