@@ -98,10 +98,9 @@ func learningsLog(root string, in LearningsLogIn) (LearningsLogOut, error) {
 	case "stats":
 		return learningsStats(path, rel)
 	default:
-		return LearningsLogOut{}, &mcpserver.DomainError{
-			Msg:        fmt.Sprintf("unknown learnings_log action %q; must be one of: append, read, remove, stats", in.Action),
-			Suggestion: "Set action to one of: \"append\", \"read\", \"remove\", \"stats\".",
-		}
+		return LearningsLogOut{}, unknownActionError("learnings_log action", in.Action,
+			"; must be one of: append, read, remove, stats",
+			"set action to one of: \"append\", \"read\", \"remove\", \"stats\"")
 	}
 }
 

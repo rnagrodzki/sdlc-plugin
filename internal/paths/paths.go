@@ -20,8 +20,22 @@ const LegacyDataDir = ".sdlc"
 // internal/state for the legacy fallback that still reads the old location.
 const RunsSubdir = "runs"
 
+// HistorySubdir is the subdirectory (under DataDir) that holds the durable
+// cross-run history store: the run log and the deferred-issue backlog. It
+// outlives state-file GC, so several packages read and write it; they must
+// join it through HistoryDir rather than repeating the literal.
+const HistorySubdir = "history"
+
 // ProjectDir returns the absolute path to the SDLC data directory for a
 // given project root.
 func ProjectDir(root string) string {
 	return filepath.Join(root, DataDir)
+}
+
+// HistoryDir returns the absolute path to the durable history directory for a
+// given project root. It is what internal/history.NewFileWriter expects; the
+// individual file names inside it (runs.jsonl, deferred.json) belong to that
+// package and are reached through FileWriter.RunsPath / FileWriter.DeferredPath.
+func HistoryDir(root string) string {
+	return filepath.Join(root, DataDir, HistorySubdir)
 }

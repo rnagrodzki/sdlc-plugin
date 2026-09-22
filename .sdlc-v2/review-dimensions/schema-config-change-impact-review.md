@@ -21,3 +21,11 @@ triggers:
 - CI workflow files (`.github/workflows/*.yml`) and doc files (`docs/**`,
   `README.md`) that reference schema/config field names or paths are also
   secondary readers — check they stay in sync with a schema/config change.
+- When any Go struct serialized to JSON (especially `*In`/`*Out` structs
+  for MCP tools) gains new exported fields, the corresponding JSON schema
+  under `plugins/sdlc/schemas/` MUST be updated in the same change to
+  document the new fields. Schema-code drift — schemas lacking new fields
+  that the Go code writes, or vice versa — breaks downstream consumers.
+  Audit: for each new exported field added to a serialized struct, grep the
+  schema file to confirm a matching property definition exists with
+  `jsonschema_description`.

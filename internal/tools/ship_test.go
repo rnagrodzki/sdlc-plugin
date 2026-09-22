@@ -1242,6 +1242,36 @@ func TestMergeShipFlags_ExecuteDispatchArgs_QualityPresent(t *testing.T) {
 	}
 }
 
+// TestMergeShipFlags_ReviewThreshold_ConfigOverDefault pins the precedence of
+// ship.reviewThreshold: a configured value wins and reports source "config";
+// an absent or empty value falls back to the built-in default and reports
+// source "default". The default's value is pinned separately by
+// TestShippedReviewThresholdDefaultsAgree in internal/config.
+func TestMergeShipFlags_ReviewThreshold_ConfigOverDefault(t *testing.T) {
+	def := shipmeta.ShipBuiltInDefaults.ReviewThreshold
+	cases := []struct {
+		name       string
+		cfg        map[string]any
+		wantValue  string
+		wantSource string
+	}{
+		{"configured value wins over the default", map[string]any{"reviewThreshold": "critical"}, "critical", "config"},
+		{"absent key falls back to the default", map[string]any{}, def, "default"},
+		{"empty string falls back to the default", map[string]any{"reviewThreshold": ""}, def, "default"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			merged, sources := mergeShipFlags(ShipPrepareIn{}, tc.cfg, map[string]any{})
+			if got, _ := merged["reviewThreshold"].(string); got != tc.wantValue {
+				t.Errorf("Flags[reviewThreshold] = %q, want %q", got, tc.wantValue)
+			}
+			if got := sources["reviewThreshold"]; got != tc.wantSource {
+				t.Errorf("Sources[reviewThreshold] = %q, want %q", got, tc.wantSource)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ship_verify_side_effect tests
 // ---------------------------------------------------------------------------

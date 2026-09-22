@@ -140,13 +140,17 @@ Tasks must not add functionality beyond stated requirements — no speculative \
 abstractions, premature generalization, or unused parameters."""
 
 [plan.guardrails.dry]
-severity = "warning"
+severity = "error"
 description = """
 Tasks must not duplicate logic that exists elsewhere — reuse existing \
 functions or extract shared utilities. Enum-like literal value lists (e.g. \
 phase names, status codes) must be defined once and referenced from a \
 single canonical source, not re-typed as free-text literals across \
-multiple files or templates."""
+multiple files or templates. When a codebase contains two or more \
+near-identical code paths (e.g. two polling loops, two error-classification \
+switches), a fix applied to one path must either be mirrored to the other \
+immediately or the paths must be consolidated — a divergent fix is worse \
+than not fixing at all."""
 
 [plan.guardrails.kiss]
 severity = "warning"
@@ -202,7 +206,9 @@ or glob patterns, verify the descriptor against the code that loads/walks \
 the filesystem -- mismatched or stale path descriptors are blocking issues. \
 For multi-action tools, the description must explicitly state what inputs \
 are required vs optional for each action, using the "Requires: ... Optional: \
-..." convention from execute_state.go."""
+..." convention from execute_state.go. When adding a new action or side \
+effect to an existing tool handler, update the description to name the new \
+side effect and its error-handling contract before marking the task done."""
 
 [plan.guardrails.skill-mcp-connectivity]
 severity = "warning"
@@ -437,7 +443,12 @@ the corresponding JSON schema under plugins/sdlc/schemas/ AND the config \
 template at plugins/sdlc/templates/*.toml must be updated in the same task. \
 Schemas, code, and templates must not drift -- validate that marshaled Go \
 instances conform to the schema and that template field names and defaults \
-stay synchronized with the schema before submission."""
+stay synchronized with the schema before submission. When new fields are \
+added to an *In struct as part of a sub-feature, the task must also verify: \
+(1) each new input field is validated (not silently coerced) in the \
+handler; (2) each new output value generated (e.g. an id) is echoed in the \
+response; (3) all new *In fields carry jsonschema_description tags and \
+appropriate enum tags for closed sets."""
 
 [plan.guardrails.refactoring-includes-doc-sweep]
 severity = "warning"
@@ -558,7 +569,29 @@ Do not silently discard errors returned from file-system operations \
 (os.WriteFile, os.Remove, os.MkdirTemp, t.TempDir) or state-persistence \
 operations (state.Write, storage reads) when the next line reports success \
 to the caller. Propagate the error, explicitly handle it with a non-silent \
-fallback, or explicitly document why it is safe to ignore."""
+fallback, or explicitly document why it is safe to ignore. When a handler \
+action writes a state file owned by another tool: (1) errors from the \
+write must surface in the handler's output field, not be dropped; (2) a \
+not-found condition (the side-effect state file does not exist) must be \
+distinguished from actual read/write errors in both the error type and \
+the caller's output so the caller can choose recovery; (3) the cross-tool \
+side effect and its error contract must be documented in the tool's \
+description at registration time."""
+
+[execute.guardrails.skill-prose-source-verification]
+severity = "error"
+description = """
+Before marking a task done that modifies a SKILL.md file, independently \
+verify that all prose claims about tool behavior, dispatch \
+scaffolds/resources, and schema validation are accurate by direct \
+source-reading against Go implementation. When prose asserts that a \
+dispatch references a resource or scaffold, grep the tool's handler to \
+confirm it exists; when prose claims conditional behavior (e.g. "write is \
+best-effort"), verify the condition in the actual handler code; when prose \
+lists or references enum values, verify each is in the actual schema; when \
+a behavior or routing is described in multiple skill sections, confirm \
+consistency across all sections and against current source. Do not rely \
+on build/test success as evidence of prose accuracy."""
 
 [execute.guardrails.independent-completion-reverification]
 severity = "error"
@@ -576,7 +609,8 @@ sub-agent/worker narration as a claim, not evidence -- re-derive \
 completion from primary sources yourself; after a SKILL.md edit, re-run any \
 line-keyed validator (e.g. skillcheck); before marking a binary-dependent \
 task done, verify the binary's build timestamp is newer than the source \
-change."""
+change. Also cross-reference JSON-serialized struct diffs against the \
+schema."""
 
 [execute.guardrails.execute-handler-nil-normalization]
 severity = "error"
@@ -731,15 +765,18 @@ not hand-write a free-text placeholder list that can drift from the real \
 enum."""
 
 [execute.guardrails.go-doc-comment-compliance]
-severity = "warning"
+severity = "error"
 description = """
 Before marking a task done that introduces or modifies exported Go \
 identifiers (var, const, func, type at package scope), verify each is \
 immediately preceded by a `//` doc comment (not a `//go:embed` directive \
 or other Go directive alone) following Go's documentation conventions. \
-Additionally, verify that any comment block preceding a `package` \
-declaration is separated by a blank line to prevent the comment from being \
-misattached as the package doc string. Use `grep -n \
+Verify that the doc comment's claims match the code body: a comment \
+describing four cases when only two execute, or promising behavior that \
+the code does not implement, is a finding. Additionally, verify that any \
+comment block preceding a `package` declaration is separated by a blank \
+line to prevent the comment from being misattached as the package doc \
+string. Use `grep -n \
 '^\\(var\\|const\\|func\\|type\\) [A-Z]' <changed_file>` and confirm each \
 match has a `//` comment line immediately above."""
 

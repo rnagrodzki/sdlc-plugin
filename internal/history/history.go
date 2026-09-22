@@ -34,6 +34,12 @@ type RunRecord struct {
 }
 
 // DeferredIssue is a problem deferred from a pipeline run for later triage.
+//
+// Severity, File, Line and Reason are optional: they carry the structured
+// detail a review finding already has, so a triage step can draft a GitHub
+// issue body without unpacking it back out of Description. All four are
+// omitempty, so a deferred.json written before they existed still parses —
+// encoding/json leaves absent fields at their zero value.
 type DeferredIssue struct {
 	ID          string `json:"id"`
 	Created     string `json:"created"`
@@ -41,6 +47,75 @@ type DeferredIssue struct {
 	Priority    string `json:"priority"`
 	Description string `json:"description"`
 	Status      string `json:"status"`
+	Severity    string `json:"severity,omitempty"`
+	File        string `json:"file,omitempty"`
+	Line        int    `json:"line,omitempty"`
+	Reason      string `json:"reason,omitempty"`
+}
+
+// Accepted values for DeferredIssue.Reason — why the item was deferred
+// instead of fixed. This is the single definition of the set: callers
+// validate through ValidDeferredReason and render through DeferredReasons
+// rather than restating the literals.
+const (
+	// ReasonBelowThreshold — the finding's severity was under the
+	// configured review threshold, so the pipeline never routed it to a fix.
+	ReasonBelowThreshold = "below-threshold"
+	// ReasonNeedsDirection — two or more candidate approaches exist and a
+	// human has to pick one (KD-13).
+	ReasonNeedsDirection = "needs-direction"
+	// ReasonDisagree — the finding was judged wrong, with the reasoning
+	// recorded for a human to check.
+	ReasonDisagree = "disagree"
+	// ReasonWontFix — the finding is accepted but deliberately not fixed.
+	ReasonWontFix = "wont-fix"
+)
+
+// Accepted values for DeferredIssue.Status. OpenDeferred,
+// DeferredByPriority and ResolveDeferred all key off these exact strings,
+// so a writer that spells one of them differently silently disappears from
+// every triage view — hence constants rather than repeated literals.
+const (
+	// StatusOpen — the item is still awaiting triage.
+	StatusOpen = "open"
+	// StatusResolved — the item has been dealt with.
+	StatusResolved = "resolved"
+)
+
+// Accepted values for DeferredIssue.Priority — the buckets
+// DeferredByPriority groups on and FormatDeferredSummary renders in order.
+const (
+	PriorityHigh   = "high"
+	PriorityMedium = "medium"
+	PriorityLow    = "low"
+)
+
+// Known values for DeferredIssue.Source — which pipeline stage created the
+// item. Unlike Reason, this set is not validated: deferred_add accepts a
+// caller-supplied source verbatim. The constants exist so the two in-tree
+// producers agree with the strings that triage tooling matches on.
+const (
+	// SourceReviewBelowThreshold — written by ship_state defer.
+	SourceReviewBelowThreshold = "review-below-threshold"
+	// SourceExecuteDrift — written by execute_state issue-draft.
+	SourceExecuteDrift = "execute-drift"
+)
+
+// DeferredReasons returns the accepted DeferredIssue.Reason values in a
+// stable order, for error messages and documentation.
+func DeferredReasons() []string {
+	return []string{ReasonBelowThreshold, ReasonNeedsDirection, ReasonDisagree, ReasonWontFix}
+}
+
+// ValidDeferredReason reports whether reason is one of the accepted values.
+// The empty string is not valid: callers treat "" as "unset" and skip the
+// check rather than passing it here.
+func ValidDeferredReason(reason string) bool {
+	switch reason {
+	case ReasonBelowThreshold, ReasonNeedsDirection, ReasonDisagree, ReasonWontFix:
+		return true
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------
@@ -134,7 +209,7 @@ func (w *FileWriter) ResolveDeferred(id string) error {
 	found := false
 	for i := range issues {
 		if issues[i].ID == id {
-			issues[i].Status = "resolved"
+			issues[i].Status = StatusResolved
 			found = true
 			break
 		}
@@ -250,7 +325,7 @@ func (m *MemWriter) ResolveDeferred(id string) error {
 	defer m.mu.Unlock()
 	for i := range m.Deferred {
 		if m.Deferred[i].ID == id {
-			m.Deferred[i].Status = "resolved"
+			m.Deferred[i].Status = StatusResolved
 			return nil
 		}
 	}
@@ -265,7 +340,7 @@ func (m *MemWriter) ResolveDeferred(id string) error {
 func DeferredByPriority(issues []DeferredIssue) map[string][]DeferredIssue {
 	groups := map[string][]DeferredIssue{}
 	for _, issue := range issues {
-		if issue.Status != "open" {
+		if issue.Status != StatusOpen {
 			continue
 		}
 		groups[issue.Priority] = append(groups[issue.Priority], issue)
@@ -277,7 +352,7 @@ func DeferredByPriority(issues []DeferredIssue) map[string][]DeferredIssue {
 func OpenDeferred(issues []DeferredIssue) []DeferredIssue {
 	var open []DeferredIssue
 	for _, issue := range issues {
-		if issue.Status == "open" {
+		if issue.Status == StatusOpen {
 			open = append(open, issue)
 		}
 	}
@@ -295,7 +370,7 @@ func FormatDeferredSummary(issues []DeferredIssue) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "%d deferred issue(s) from previous runs still open:\n\n", len(open))
 
-	for _, prio := range []string{"high", "medium", "low"} {
+	for _, prio := range []string{PriorityHigh, PriorityMedium, PriorityLow} {
 		items := groups[prio]
 		if len(items) == 0 {
 			continue

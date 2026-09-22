@@ -1,8 +1,10 @@
 package history
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -378,5 +380,99 @@ func TestFileWriter_PathAccessors_MatchWrittenFiles(t *testing.T) {
 				t.Errorf("file at %q is empty, want the written record", tc.got)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DeferredIssue optional fields and the Reason enum — no filesystem
+// ---------------------------------------------------------------------------
+
+// A deferred.json written before Severity/File/Line/Reason existed must
+// still parse, leaving the new fields at their zero values.
+func TestDeferredIssue_UnmarshalLegacyEntryLeavesNewFieldsZero(t *testing.T) {
+	legacy := `[{"id":"old-1","created":"2025-01-01T00:00:00Z","source":"manual",` +
+		`"priority":"medium","description":"an older entry","status":"open"}]`
+
+	var issues []DeferredIssue
+	if err := json.Unmarshal([]byte(legacy), &issues); err != nil {
+		t.Fatalf("unmarshal legacy deferred.json: %v", err)
+	}
+	if len(issues) != 1 {
+		t.Fatalf("issues = %d, want 1", len(issues))
+	}
+	got := issues[0]
+	if got.ID != "old-1" || got.Description != "an older entry" || got.Status != "open" {
+		t.Errorf("existing fields lost: %+v", got)
+	}
+	if got.Severity != "" || got.File != "" || got.Line != 0 || got.Reason != "" {
+		t.Errorf("new fields = %q/%q/%d/%q, want all zero", got.Severity, got.File, got.Line, got.Reason)
+	}
+}
+
+// The new fields are omitempty, so an entry that does not set them
+// serializes exactly as it did before they were added.
+func TestDeferredIssue_MarshalOmitsEmptyOptionalFields(t *testing.T) {
+	b, err := json.Marshal(DeferredIssue{
+		ID: "x-1", Created: "2025-01-01T00:00:00Z", Source: "manual",
+		Priority: "medium", Description: "d", Status: "open",
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, key := range []string{"severity", "file", "line", "reason"} {
+		if strings.Contains(string(b), `"`+key+`"`) {
+			t.Errorf("marshalled entry %s contains empty optional key %q", b, key)
+		}
+	}
+}
+
+func TestDeferredIssue_RoundTripsOptionalFields(t *testing.T) {
+	want := DeferredIssue{
+		ID: "x-2", Created: "2025-01-01T00:00:00Z", Source: "review-below-threshold",
+		Priority: "high", Description: "d", Status: "open",
+		Severity: "high", File: "internal/foo.go", Line: 42, Reason: ReasonBelowThreshold,
+	}
+	b, err := json.Marshal(want)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got DeferredIssue
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got != want {
+		t.Errorf("round trip = %+v, want %+v", got, want)
+	}
+}
+
+func TestValidDeferredReason(t *testing.T) {
+	valid := []string{"below-threshold", "needs-direction", "disagree", "wont-fix"}
+	for _, r := range valid {
+		if !ValidDeferredReason(r) {
+			t.Errorf("ValidDeferredReason(%q) = false, want true", r)
+		}
+	}
+	for _, r := range []string{"", "below threshold", "Below-Threshold", "won't-fix", "other"} {
+		if ValidDeferredReason(r) {
+			t.Errorf("ValidDeferredReason(%q) = true, want false", r)
+		}
+	}
+}
+
+// DeferredReasons is the rendering half of the same single definition, so
+// it must list exactly the values ValidDeferredReason accepts.
+func TestDeferredReasons_MatchesValidator(t *testing.T) {
+	got := DeferredReasons()
+	want := []string{ReasonBelowThreshold, ReasonNeedsDirection, ReasonDisagree, ReasonWontFix}
+	if len(got) != len(want) {
+		t.Fatalf("DeferredReasons() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("DeferredReasons() = %v, want %v", got, want)
+		}
+		if !ValidDeferredReason(got[i]) {
+			t.Errorf("DeferredReasons() lists %q, which ValidDeferredReason rejects", got[i])
+		}
 	}
 }

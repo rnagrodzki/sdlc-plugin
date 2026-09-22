@@ -76,6 +76,65 @@ func PRView(dir string, n int) (string, error) {
 	return run(dir, "pr", "view", fmt.Sprint(n))
 }
 
+// PRReview is one submitted review on a PR, flattened from the entries of
+// `gh pr view <n> --json reviews`. State is gh's raw upper-case review state
+// (APPROVED, COMMENTED, CHANGES_REQUESTED, DISMISSED, PENDING); Login is the
+// reviewer's GitHub login exactly as gh reports it (no case or [bot]
+// normalization); SubmittedAt is gh's RFC3339 timestamp, empty for a review
+// that has not been submitted.
+type PRReview struct {
+	Login       string
+	State       string
+	SubmittedAt string
+}
+
+// PRReviews returns the reviews on PR n via `gh pr view <n> --json
+// reviews`, in the order gh reports them (oldest first). gh prints an object
+// of the form {"reviews":[...]}; this returns the parsed array flattened to
+// PRReview. Empty output, or a PR with no reviews, yields an empty slice and
+// a nil error. A gh failure is returned unchanged (wrapped ErrGHNotFound when
+// the binary is missing), so callers keep gh errors distinct from "no
+// verdict yet".
+//
+// The name describes what it returns, not how it asks gh for it — matching
+// its PRView/PRChecks siblings, so swapping the underlying gh query (REST
+// vs --json) would not force a rename on every caller.
+func PRReviews(dir string, n int) ([]PRReview, error) {
+	if n <= 0 {
+		return nil, fmt.Errorf("ghx: PRReviews: invalid PR number %d", n)
+	}
+	raw, err := run(dir, "pr", "view", fmt.Sprint(n), "--json", "reviews")
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(raw) == "" {
+		return []PRReview{}, nil
+	}
+
+	var parsed struct {
+		Reviews []struct {
+			Author struct {
+				Login string `json:"login"`
+			} `json:"author"`
+			State       string `json:"state"`
+			SubmittedAt string `json:"submittedAt"`
+		} `json:"reviews"`
+	}
+	if jsonErr := json.Unmarshal([]byte(raw), &parsed); jsonErr != nil {
+		return nil, fmt.Errorf("ghx: PRReviews: parse gh pr view output: %w", jsonErr)
+	}
+
+	reviews := make([]PRReview, 0, len(parsed.Reviews))
+	for _, r := range parsed.Reviews {
+		reviews = append(reviews, PRReview{
+			Login:       r.Author.Login,
+			State:       r.State,
+			SubmittedAt: r.SubmittedAt,
+		})
+	}
+	return reviews, nil
+}
+
 // PRChecks returns the output of `gh pr checks <n>` run inside dir.
 func PRChecks(dir string, n int) (string, error) {
 	if n <= 0 {

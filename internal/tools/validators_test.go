@@ -1,9 +1,11 @@
 package tools
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -294,6 +296,58 @@ func TestValidatePlanFormatFileNotFound(t *testing.T) {
 	_, err := validate(root, ValidateIn{Action: "plan_format", File: "missing.md"})
 	if err == nil {
 		t.Fatal("expected error for missing plan file")
+	}
+}
+
+// TestValidatePlanFormatFile_UnreadableIsNotFileNotFound pins that a plan
+// path which exists but cannot be read (here: a directory, which
+// os.ReadFile refuses) is reported as unreadable, not as "file not found".
+// The two need different fixes: re-checking an already-correct path versus
+// fixing permissions or the file type.
+func TestValidatePlanFormatFile_UnreadableIsNotFileNotFound(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "plan.md"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := validate(root, ValidateIn{Action: "plan_format", File: "plan.md"})
+	var domErr *mcpserver.DomainError
+	if !errors.As(err, &domErr) {
+		t.Fatalf("want *mcpserver.DomainError, got %T: %v", err, err)
+	}
+	if strings.Contains(domErr.Msg, "file not found") {
+		t.Errorf("Msg = %q, an existing-but-unreadable path must not say file not found", domErr.Msg)
+	}
+	if !strings.Contains(domErr.Msg, "cannot read") {
+		t.Errorf("Msg = %q, want it to say cannot read", domErr.Msg)
+	}
+	if !strings.Contains(domErr.Suggestion, "regular file") {
+		t.Errorf("Suggestion = %q, want it to mention that the path must be a regular file", domErr.Suggestion)
+	}
+}
+
+// TestValidatePlanFormatFinal_UnreadableTemplateErrors pins the same split
+// for the PF10 template path when validatePlanFormat reads it directly
+// (final mode, not through ValidatePlanFormatForHook's skip-on-unreadable
+// loop): an existing-but-unreadable template errors as unreadable, not as
+// "template not found".
+func TestValidatePlanFormatFinal_UnreadableTemplateErrors(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "plan.md"), goodPlan)
+	if err := os.MkdirAll(filepath.Join(root, "template.md"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := validate(root, ValidateIn{Action: "plan_format", File: "plan.md", Final: true, Template: "template.md"})
+	var domErr *mcpserver.DomainError
+	if !errors.As(err, &domErr) {
+		t.Fatalf("want *mcpserver.DomainError, got %T: %v", err, err)
+	}
+	if strings.Contains(domErr.Msg, "template not found") {
+		t.Errorf("Msg = %q, an existing-but-unreadable template must not say template not found", domErr.Msg)
+	}
+	if !strings.Contains(domErr.Msg, "cannot read") {
+		t.Errorf("Msg = %q, want it to say cannot read", domErr.Msg)
 	}
 }
 
@@ -1226,5 +1280,519 @@ func TestValidateCostTiers_ErrorsByCause(t *testing.T) {
 				t.Errorf("Suggestion = %q, must not contain %q", dataErr.Suggestion, tc.notWantHint)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// plan_format: self-contained failure messages (fix text, Verify scope hints)
+// ---------------------------------------------------------------------------
+
+func TestValidVerifyValue(t *testing.T) {
+	accept := []string{
+		"tests",
+		"build",
+		"lint",
+		"manual",
+		"tests (go test ./internal/tools/ -run TestFoo)",
+		"build (go build ./...)",
+		"lint(golangci-lint run ./internal/...)",
+		"manual (open the page and check the header)",
+		`tests (go test ./... -run "(TestA|TestB)")`,
+		"  tests  ",
+	}
+	for _, v := range accept {
+		if !validVerifyValue(v) {
+			t.Errorf("validVerifyValue(%q) = false, want true", v)
+		}
+	}
+
+	reject := []string{
+		"",
+		"flaky",
+		"Tests",
+		"tests (",
+		"tests (a",
+		"tests ()",
+		"tests (  )",
+		"tests)",
+		"tests (a) (b)",
+		"testsuite (x)",
+		"tests x",
+	}
+	for _, v := range reject {
+		if validVerifyValue(v) {
+			t.Errorf("validVerifyValue(%q) = true, want false", v)
+		}
+	}
+}
+
+func TestSplitVerifyValues(t *testing.T) {
+	cases := []struct {
+		field string
+		want  []string
+	}{
+		{"tests", []string{"tests"}},
+		{"tests, build", []string{"tests", "build"}},
+		{"tests (go test ./a/ -run A,B), build", []string{"tests (go test ./a/ -run A,B)", "build"}},
+		{"tests (a, (b, c)), lint", []string{"tests (a, (b, c))", "lint"}},
+		// An unclosed "(" keeps the rest of the field in one value, which
+		// validVerifyValue then rejects.
+		{"tests (a, b", []string{"tests (a, b"}},
+	}
+	for _, tc := range cases {
+		got := splitVerifyValues(tc.field)
+		for i := range got {
+			got[i] = strings.TrimSpace(got[i])
+		}
+		if strings.Join(got, "|") != strings.Join(tc.want, "|") || len(got) != len(tc.want) {
+			t.Errorf("splitVerifyValues(%q) = %q, want %q", tc.field, got, tc.want)
+		}
+	}
+}
+
+func TestValidatePlanFormatPF3VerifyScopeHint(t *testing.T) {
+	cases := []struct {
+		name    string
+		verify  string
+		wantBad string // quoted value expected in the message; empty means PF3 must pass
+	}{
+		{"scope hint", "tests (go test ./internal/tools/ -run TestFoo)", ""},
+		{"hint with comma, then a second value", "tests (go test ./a/ -run A,B), build", ""},
+		{"all four values with hints", "tests (go test ./a/), build (go build ./...), lint (go vet ./...), manual (check the header)", ""},
+		{"unclosed paren", "tests (", `"tests ("`},
+		{"empty hint", "tests ()", `"tests ()"`},
+		{"unknown word", "flaky", `"flaky"`},
+		{"one good value, one bad", "tests, flaky", `"flaky"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			plan := strings.Replace(goodPlan, "**Verify:** tests\n", "**Verify:** "+tc.verify+"\n", 1)
+			writeFile(t, filepath.Join(root, "plan.md"), plan)
+
+			out, err := validate(root, ValidateIn{Action: "plan_format", File: "plan.md"})
+			if err != nil {
+				t.Fatalf("validate: %v", err)
+			}
+			pf3 := findingsByID(out.Findings, "PF3")
+
+			if tc.wantBad == "" {
+				if len(pf3) != 0 {
+					t.Fatalf("Verify %q should pass PF3, got: %+v", tc.verify, pf3)
+				}
+				return
+			}
+			if len(pf3) != 1 {
+				t.Fatalf("Verify %q: expected 1 PF3 finding, got %d: %+v", tc.verify, len(pf3), out.Findings)
+			}
+			for _, want := range []string{"invalid Verify value(s)", tc.wantBad, "tests|build|lint|manual"} {
+				if !strings.Contains(pf3[0].Message, want) {
+					t.Errorf("PF3 message %q should contain %q", pf3[0].Message, want)
+				}
+			}
+			if !strings.Contains(pf3[0].Fix, "**Verify:** tests | build | lint | manual") {
+				t.Errorf("PF3 fix %q should write the accepted Verify shape", pf3[0].Fix)
+			}
+		})
+	}
+}
+
+func TestValidatePlanFormatMultiIssueMessagesAreLists(t *testing.T) {
+	root := t.TempDir()
+	plan := strings.Replace(goodPlan, "**Complexity:** Standard", "**Complexity:** Bogus", 1)
+	plan = strings.Replace(plan, "**Risk:** Low\n**Depends on:** none", "**Risk:** Extreme\n**Depends on:** none", 1)
+	plan = strings.Replace(plan, "**Verify:** tests\n", "**Verify:** flaky\n", 1)
+	writeFile(t, filepath.Join(root, "plan.md"), plan)
+
+	out, err := validate(root, ValidateIn{Action: "plan_format", File: "plan.md"})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	pf3 := findingsByID(out.Findings, "PF3")
+	if len(pf3) != 1 {
+		t.Fatalf("expected 1 PF3 finding, got %d: %+v", len(pf3), out.Findings)
+	}
+	msg := pf3[0].Message
+	if strings.Contains(msg, "; ") {
+		t.Errorf("PF3 message must not join sub-issues with %q: %q", "; ", msg)
+	}
+	if got := strings.Count(msg, "\n- Task 1: "); got != 3 {
+		t.Errorf("PF3 message has %d %q bullets, want 3 (Complexity, Risk, Verify): %q", got, "- Task 1: ", msg)
+	}
+}
+
+func TestValidatePlanFormatFindingsCarryPathAndFix(t *testing.T) {
+	root := t.TempDir()
+	plan := strings.Replace(goodPlan, "## Deviations & assumptions\n\nNone.\n\n", "", 1)
+	plan = strings.Replace(plan, "**Contract:**\n- shape: does X\n- names: Foo\n- mirror: existing pattern in bar.go\n- decisions: none\n- sync: none\n", "", 1)
+	plan = strings.Replace(plan, "### Task 2:", "### Task 4:", 1)
+	plan = strings.Replace(plan, "## Verification Scorecard\n\nAll good.\n", "", 1)
+	writeFile(t, filepath.Join(root, "plan.md"), plan)
+
+	out, err := validate(root, ValidateIn{Action: "plan_format", File: "plan.md", Final: true})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+
+	wantPath := filepath.Join(root, "plan.md")
+	markers := map[string][]string{
+		"PF2": {"### Task N: Title", "**Complexity:**", "**Verify:**", "**Acceptance criteria:**"},
+		"PF6": {"## Deviations & assumptions", "| Item | asked | does | why |"},
+		"PF7": {"**Contract:**", "- shape", "- names", "- mirror", "- decisions", "- sync"},
+		"PF9": {"## Verification Scorecard", "traceability matrix"},
+	}
+	for id, wantMarkers := range markers {
+		found := findingsByID(out.Findings, id)
+		if len(found) != 1 {
+			t.Fatalf("expected 1 %s finding, got %d: %+v", id, len(found), out.Findings)
+		}
+		f := found[0]
+		if f.Path != wantPath {
+			t.Errorf("%s Path = %q, want %q", id, f.Path, wantPath)
+		}
+		for _, m := range wantMarkers {
+			if !strings.Contains(f.Fix, m) {
+				t.Errorf("%s fix should contain %q, got:\n%s", id, m, f.Fix)
+			}
+		}
+	}
+
+	// The failing task numbers travel in the message where the check knows them.
+	if pf7 := findingsByID(out.Findings, "PF7"); len(pf7) == 1 && !strings.Contains(pf7[0].Message, "Task 1") {
+		t.Errorf("PF7 message %q should name Task 1", pf7[0].Message)
+	}
+	if pf2 := findingsByID(out.Findings, "PF2"); len(pf2) == 1 && !strings.Contains(pf2[0].Message, "gap between Task 1 and Task 4") {
+		t.Errorf("PF2 message %q should name the gap", pf2[0].Message)
+	}
+}
+
+func TestValidatePlanFormatPF11MessageNamesConfigKey(t *testing.T) {
+	tasks := []planTask{{Number: 2, Title: "Second", Body: "no owner field here\n"}}
+	result := checkPF11(tasks, []string{"Owner"})
+	if result.status != "fail" {
+		t.Fatalf("status = %q, want fail", result.status)
+	}
+	for _, want := range []string{"plan.tasks.requiredFields", "Task 2", "'Owner'"} {
+		if !strings.Contains(result.message, want) {
+			t.Errorf("PF11 message %q should contain %q", result.message, want)
+		}
+	}
+	if !strings.Contains(result.fix, "**Owner:** <value>") {
+		t.Errorf("PF11 fix %q should show the missing field's shape", result.fix)
+	}
+}
+
+// docPointerLineRe matches a line that only sends the reader elsewhere: a
+// markdown file name, the words "reference" or "documentation", or an
+// instruction to see/read/consult a doc.
+var docPointerLineRe = regexp.MustCompile(`(?i)\.md\b|\b(reference|documentation)\b|\b(see|read|consult|refer to)\b.*\bdocs?\b`)
+
+// fixPointsOnlyAtDoc reports whether every non-blank line of fix is a pointer
+// at a document. An empty fix is not a pointer: it means the message already
+// says everything.
+func fixPointsOnlyAtDoc(fix string) bool {
+	lines, pointers := 0, 0
+	for _, line := range strings.Split(fix, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		lines++
+		if docPointerLineRe.MatchString(line) {
+			pointers++
+		}
+	}
+	return lines > 0 && lines == pointers
+}
+
+func TestFixPointsOnlyAtDoc(t *testing.T) {
+	pointers := []string{
+		"see plan-format-reference.md",
+		"see the reference documentation for the accepted shape",
+		"refer to plan-format-reference.md\nread the docs",
+	}
+	for _, fix := range pointers {
+		if !fixPointsOnlyAtDoc(fix) {
+			t.Errorf("fixPointsOnlyAtDoc(%q) = false, want true", fix)
+		}
+	}
+	notPointers := []string{
+		"",
+		"  ## Deviations & assumptions\n  | Item | asked | does | why |",
+		"write the block below (see plan-format-reference.md):\n  **Contract:**\n  - shape: x",
+		"  - shape (<code|docs|openspec>): the decided shape",
+	}
+	for _, fix := range notPointers {
+		if fixPointsOnlyAtDoc(fix) {
+			t.Errorf("fixPointsOnlyAtDoc(%q) = true, want false", fix)
+		}
+	}
+}
+
+// TestPlanFormatFixesAreSelfContained runs every plan-format check through each
+// of its failure shapes and asserts the result stands on its own: a fix never
+// consists of only a pointer at a reference document, sub-issues are not
+// joined with "; ", the text is plain ASCII (no emoji), and PF2, PF6, PF7 and
+// PF9 always write the accepted shape inline.
+func TestPlanFormatFixesAreSelfContained(t *testing.T) {
+	contractless := []planTask{{Number: 1, Title: "T", Body: "- Create: foo.go\n"}}
+	shallowContract := []planTask{{Number: 1, Title: "T", Body: "- Create: foo.go\n**Contract:** does X\n"}}
+	badMeta := "**Complexity:** Bogus\n**Risk:** Low\n**Depends on:** none\n**Verify:** tests\n"
+
+	cases := []struct {
+		name        string
+		check       pfCheck
+		mustHaveFix bool
+	}{
+		{"PF1 missing header fields", checkPF1("no header fields here"), false},
+		{"PF2 no tasks", checkPF2(nil), true},
+		{"PF2 numbering starts high", checkPF2([]planTask{{Number: 5}}), true},
+		{"PF2 gap", checkPF2([]planTask{{Number: 1}, {Number: 3}}), true},
+		{"PF2 duplicate", checkPF2([]planTask{{Number: 1}, {Number: 1}}), true},
+		{"PF3 invalid complexity", checkPF3([]planTask{{Number: 1, Body: badMeta}}), false},
+		{"PF3 missing verify and depends", checkPF3([]planTask{{Number: 1, Body: "**Complexity:** Trivial\n**Risk:** Low\n"}}), false},
+		{"PF3 invalid verify", checkPF3([]planTask{{Number: 1, Body: "**Complexity:** Trivial\n**Risk:** Low\n**Depends on:** none\n**Verify:** flaky\n"}}), false},
+		{"PF4 nonexistent dependency", checkPF4([]planTask{{Number: 1, Body: "**Depends on:** Task 9\n"}}), false},
+		{"PF4 cycle", checkPF4([]planTask{{Number: 1, Body: "**Depends on:** Task 2\n"}, {Number: 2, Body: "**Depends on:** Task 1\n"}}), false},
+		{"PF5 missing acceptance criteria", checkPF5([]planTask{{Number: 1, Body: "nothing here\n"}}), false},
+		{"PF5 no checkbox", checkPF5([]planTask{{Number: 1, Body: "**Acceptance criteria:**\nplain text\n"}}), false},
+		{"PF6 missing deviations", checkPF6("no such section"), true},
+		{"PF7 missing contract", checkPF7(contractless), true},
+		{"PF9 missing scorecard", checkPF9("no such section"), true},
+		{"PF10 missing template section", checkPF10("no such section", []string{"Rollback Plan"}, "plan-template.md"), false},
+		{"PF11 missing custom field", checkPF11([]planTask{{Number: 1, Body: "x\n"}}, []string{"Owner"}), false},
+		{"PF12 no contract block", checkPF12(contractless, "full"), false},
+		{"PF12 shallow contract", checkPF12(shallowContract, "full"), false},
+	}
+
+	seen := map[string]bool{}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := tc.check
+			seen[c.id] = true
+			if c.status != "fail" {
+				t.Fatalf("status = %q, want fail (the fixture must trigger the failure)", c.status)
+			}
+			if c.message == "" {
+				t.Error("failure message is empty")
+			}
+			if tc.mustHaveFix && c.fix == "" {
+				t.Errorf("%s must carry a fix that writes the accepted shape inline", c.id)
+			}
+			if fixPointsOnlyAtDoc(c.fix) {
+				t.Errorf("%s fix only points at a document:\n%s", c.id, c.fix)
+			}
+			if strings.Contains(c.message, "; ") {
+				t.Errorf("%s message joins sub-issues with %q: %q", c.id, "; ", c.message)
+			}
+			for _, r := range c.message + c.fix {
+				if r > 127 {
+					t.Errorf("%s text contains non-ASCII rune %q", c.id, r)
+					break
+				}
+			}
+		})
+	}
+
+	// Every check that can fail is covered. PF8 does not exist in this format.
+	for _, id := range []string{"PF1", "PF2", "PF3", "PF4", "PF5", "PF6", "PF7", "PF9", "PF10", "PF11", "PF12"} {
+		if !seen[id] {
+			t.Errorf("no failure case for %s in TestPlanFormatFixesAreSelfContained", id)
+		}
+	}
+}
+
+func TestFindingFixJSONOmitEmpty(t *testing.T) {
+	without, err := json.Marshal(discovery.Finding{ID: "PF1", Severity: "error", Message: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(without), "fix") {
+		t.Errorf("Finding without Fix must not emit a fix key: %s", without)
+	}
+
+	with, err := json.Marshal(discovery.Finding{ID: "PF1", Severity: "error", Message: "m", Fix: "do x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(with), `"fix":"do x"`) {
+		t.Errorf("Finding with Fix must emit the fix key: %s", with)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ValidatePlanFormatForHook (post-tool-validate hook entry point)
+// ---------------------------------------------------------------------------
+
+// planWithoutScorecard passes every per-edit check; only the final-only PF9
+// scorecard is missing.
+func planWithoutScorecard() string {
+	return strings.Replace(goodPlan, "## Verification Scorecard\n\nAll good.\n", "", 1)
+}
+
+// planBlockedByPF6 fails PF6 (per-edit) and also lacks the PF9 scorecard.
+func planBlockedByPF6() string {
+	return strings.Replace(planWithoutScorecard(), "## Deviations & assumptions\n\nNone.\n\n", "", 1)
+}
+
+const templateWithRollback = `# Plan Template
+
+## Required Sections
+
+- Rollback Plan
+`
+
+// hookRoot returns a fresh project root holding plan.md, with no plugin root
+// set, so a test only sees the templates it writes itself.
+func hookRoot(t *testing.T, plan string) string {
+	t.Helper()
+	t.Setenv("CLAUDE_PLUGIN_ROOT", "")
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "plan.md"), plan)
+	return root
+}
+
+func TestValidatePlanFormatForHook_NothingBlocking_NoOutput(t *testing.T) {
+	root := hookRoot(t, planWithoutScorecard())
+	// Both final-only checks would fail here (no scorecard, template section
+	// missing). With nothing blocking they must not be reported.
+	writeFile(t, filepath.Join(root, paths.DataDir, "plan-template.md"), templateWithRollback)
+
+	blocking, final, err := ValidatePlanFormatForHook(root, "plan.md")
+	if err != nil {
+		t.Fatalf("ValidatePlanFormatForHook: %v", err)
+	}
+	if blocking != nil || final != nil {
+		t.Errorf("want nil, nil for a plan with nothing blocking; got blocking=%+v final=%+v", blocking, final)
+	}
+}
+
+func TestValidatePlanFormatForHook_Blocking_NoTemplate_ReportsPF9Only(t *testing.T) {
+	root := hookRoot(t, planBlockedByPF6())
+
+	blocking, final, err := ValidatePlanFormatForHook(root, "plan.md")
+	if err != nil {
+		t.Fatalf("ValidatePlanFormatForHook: %v", err)
+	}
+	if len(findingsByID(blocking, "PF6")) != 1 {
+		t.Fatalf("want a PF6 blocking finding, got %+v", blocking)
+	}
+	if len(final) != 1 || final[0].ID != "PF9" {
+		t.Fatalf("want exactly PF9 in the final-only list when no template resolves, got %+v", final)
+	}
+	if final[0].Path != filepath.Join(root, "plan.md") || !strings.Contains(final[0].Fix, "## Verification Scorecard") {
+		t.Errorf("PF9 should carry Path and an inline fix, got %+v", final[0])
+	}
+	for _, f := range blocking {
+		if f.ID == "PF9" || f.ID == "PF10" {
+			t.Errorf("%s must not appear in the blocking list", f.ID)
+		}
+	}
+}
+
+func TestValidatePlanFormatForHook_ProjectTemplate_AddsPF10(t *testing.T) {
+	root := hookRoot(t, planBlockedByPF6())
+	tpl := filepath.Join(root, paths.DataDir, "plan-template.md")
+	writeFile(t, tpl, templateWithRollback)
+
+	_, final, err := ValidatePlanFormatForHook(root, "plan.md")
+	if err != nil {
+		t.Fatalf("ValidatePlanFormatForHook: %v", err)
+	}
+	pf10 := findingsByID(final, "PF10")
+	if len(pf10) != 1 {
+		t.Fatalf("want 1 PF10 in the final-only list, got %+v", final)
+	}
+	if !strings.Contains(pf10[0].Message, "Rollback Plan") || !strings.Contains(pf10[0].Message, tpl) {
+		t.Errorf("PF10 message %q should name the missing section and the template path", pf10[0].Message)
+	}
+	if len(findingsByID(final, "PF9")) != 1 {
+		t.Errorf("PF9 should still be reported next to PF10, got %+v", final)
+	}
+}
+
+func TestValidatePlanFormatForHook_PluginDefaultTemplate(t *testing.T) {
+	root := hookRoot(t, planBlockedByPF6())
+	pluginRoot := t.TempDir()
+	t.Setenv("CLAUDE_PLUGIN_ROOT", pluginRoot)
+	defaultTpl := filepath.Join(pluginRoot, "skills", "plan", "plan-template-default.md")
+	writeFile(t, defaultTpl, templateWithRollback)
+
+	_, final, err := ValidatePlanFormatForHook(root, "plan.md")
+	if err != nil {
+		t.Fatalf("ValidatePlanFormatForHook: %v", err)
+	}
+	pf10 := findingsByID(final, "PF10")
+	if len(pf10) != 1 || !strings.Contains(pf10[0].Message, defaultTpl) {
+		t.Fatalf("want PF10 naming the CLAUDE_PLUGIN_ROOT default template %s, got %+v", defaultTpl, final)
+	}
+}
+
+func TestValidatePlanFormatForHook_ProjectTemplateWinsOverPluginDefault(t *testing.T) {
+	root := hookRoot(t, planBlockedByPF6())
+	projectTpl := filepath.Join(root, paths.DataDir, "plan-template.md")
+	writeFile(t, projectTpl, templateWithRollback)
+	pluginRoot := t.TempDir()
+	t.Setenv("CLAUDE_PLUGIN_ROOT", pluginRoot)
+	writeFile(t, filepath.Join(pluginRoot, "skills", "plan", "plan-template-default.md"), templateWithRollback)
+
+	_, final, err := ValidatePlanFormatForHook(root, "plan.md")
+	if err != nil {
+		t.Fatalf("ValidatePlanFormatForHook: %v", err)
+	}
+	pf10 := findingsByID(final, "PF10")
+	if len(pf10) != 1 || !strings.Contains(pf10[0].Message, projectTpl) {
+		t.Fatalf("want a single PF10 naming the project template %s, got %+v", projectTpl, final)
+	}
+}
+
+func TestValidatePlanFormatForHook_UnreadableTemplate_SkipsPF10(t *testing.T) {
+	root := hookRoot(t, planBlockedByPF6())
+	// A directory where the template file should be: reading it fails.
+	if err := os.MkdirAll(filepath.Join(root, paths.DataDir, "plan-template.md"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	blocking, final, err := ValidatePlanFormatForHook(root, "plan.md")
+	if err != nil {
+		t.Fatalf("a template that cannot be read must not fail the hook, got: %v", err)
+	}
+	if len(blocking) == 0 {
+		t.Error("blocking findings must still be returned")
+	}
+	if len(final) != 1 || final[0].ID != "PF9" {
+		t.Errorf("want PF9 only when the template cannot be read, got %+v", final)
+	}
+}
+
+func TestValidatePlanFormatForHook_MissingPlanFile_ErrorHasSuggestion(t *testing.T) {
+	root := hookRoot(t, goodPlan)
+
+	_, _, err := ValidatePlanFormatForHook(root, "missing.md")
+	var domErr *mcpserver.DomainError
+	if !errors.As(err, &domErr) {
+		t.Fatalf("want *mcpserver.DomainError, got %T: %v", err, err)
+	}
+	if domErr.Suggestion == "" {
+		t.Error("DomainError must carry a Suggestion")
+	}
+}
+
+func TestHookPlanTemplateCandidates(t *testing.T) {
+	root := t.TempDir()
+
+	t.Setenv("CLAUDE_PLUGIN_ROOT", "")
+	got := hookPlanTemplateCandidates(root)
+	if len(got) != 1 || got[0] != filepath.Join(root, paths.DataDir, "plan-template.md") {
+		t.Errorf("without CLAUDE_PLUGIN_ROOT want only the project template, got %q", got)
+	}
+
+	t.Setenv("CLAUDE_PLUGIN_ROOT", "/plugin")
+	got = hookPlanTemplateCandidates(root)
+	want := []string{
+		filepath.Join(root, paths.DataDir, "plan-template.md"),
+		filepath.Join("/plugin", "skills", "plan", "plan-template-default.md"),
+	}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("candidates = %q, want %q (project override first)", got, want)
 	}
 }

@@ -86,7 +86,7 @@ Every entry carries a `kind`: `"tracked"` for the four step names with a purpose
 
 ### The two names with no entry at all
 
-`received-review` and `commit-fixes` are **never** members of `ship.steps[]` / `flags.steps` — they are conditional sub-steps triggered by a review verdict, not pipeline-composition choices (see `shipmeta.CanonicalSteps`, which excludes both). Because `InitialShipStepsFromConfig` only creates an entry for names present in `stepsList`, these two **never get a `steps[]` entry, under any real `ship_prepare`-driven run.** `begin-step`, `complete-step`, `start`, `complete`, `skip`, and `fail` all look a step up by name (`shipFindStepEntry`, a plain linear scan) and return a `DataError` ("step %q not found in state") for either name. Track their outcome with `ship_state{action:"decide", step:"received-review"|"commit-fixes", detail:{text:"..."}}` instead — `decide` never validates against `steps[]`, so it always succeeds.
+`received-review` and `commit-fixes` are **never** members of `ship.steps[]` / `flags.steps` — they are conditional sub-steps triggered by review findings at or above `flags.reviewThreshold` (per finding, not by the review's overall Verdict line), not pipeline-composition choices (see `shipmeta.CanonicalSteps`, which excludes both). Because `InitialShipStepsFromConfig` only creates an entry for names present in `stepsList`, these two **never get a `steps[]` entry, under any real `ship_prepare`-driven run.** `begin-step`, `complete-step`, `start`, `complete`, `skip`, and `fail` all look a step up by name (`shipFindStepEntry`, a plain linear scan) and return a `DataError` ("step %q not found in state") for either name. Track their outcome with `ship_state{action:"decide", step:"received-review"|"commit-fixes", detail:{text:"..."}}` instead — `decide` never validates against `steps[]`, so it always succeeds.
 
 ### A legacy raw scaffold still exists, but this skill never uses it
 
@@ -164,13 +164,13 @@ Appended by `ship_state{action:"decide", step, detail:{text}}`. Never overwritte
 
 ## `deferredFindings` Array
 
-Appended by `ship_state{action:"defer", detail:{severity, file, title, line?}}`. `severity`, `file`, and `title` are required by the tool (a `DomainError` otherwise); `line` is passed through as-is (including `null`).
+Appended by `ship_state{action:"defer", detail:{severity, file, title, line?, reason?, description?}}`. `severity`, `file`, and `title` are required by the tool (a `DomainError` otherwise); `line` is passed through as-is (including `null`). `reason` is optional: one of `below-threshold`, `needs-direction`, `disagree`, `wont-fix` (any other value is a `DomainError` that names the accepted set). An omitted `reason` records `below-threshold`. `description` is optional and defaults to `title`. The same call also writes the finding to `.sdlc-v2/history/deferred.json`, which `/sdlc:deferred` reads.
 
 ```json
-{ "severity": "medium", "file": "src/auth.ts", "line": 42, "title": "Extract token validation" }
+{ "severity": "medium", "file": "src/auth.ts", "line": 42, "title": "Extract token validation", "reason": "below-threshold" }
 ```
 
-Only `medium` and `low` findings should be deferred this way. `critical`/`high` findings are expected to route through `received-review` instead.
+Ship's review routing defers each finding below `flags.reviewThreshold` this way, with `reason: "below-threshold"`. `received-review` defers the findings it does not fix (`needs-direction`, `disagree`, `wont-fix`) at any severity.
 
 ---
 

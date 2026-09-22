@@ -67,3 +67,8 @@ Review Go source changes for baseline code quality in this module
   can use mock/temporary implementations instead of real I/O. A function
   without such an injection point forces its tests to perform real I/O,
   violating the `no-real-fs-git-in-tests` guardrail.
+- Doc comments must be verified against the code body they describe; a doc
+  string claiming a function does X when it does Y, or describing four
+  cases when only two execute, is a finding. Exported identifiers with zero
+  module-wide callers are dead code, regardless of presence of a doc
+  comment.

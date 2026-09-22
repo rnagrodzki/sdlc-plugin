@@ -31,6 +31,7 @@ Strengthen-only: it never relaxes or removes an existing rule.
 | `--error-type <type>` | Category of error, if known. | — |
 | `--user-intent <text>` | What the user was trying to accomplish. | — |
 | `--args-string <text>` | The invocation arguments that led to the failure. | — |
+| `--auto` | Accept every proposal without asking, and list each one under "Auto-accepted" in the output. For subagent dispatch, where `AskUserQuestion` is not available — [`/received-review --auto`](received-review.md) passes it when its Step 11.6 dispatches `/harden`. Does not change what may be proposed: still strengthen-only, and each edit is still validated and reverted on failure. Never files an `error-report` issue. Not valid with `--from-learnings`. | off |
 
 ## Examples
 
@@ -108,11 +109,22 @@ consumption gap is closed.
 - **Nothing is written without approval.** Each proposal is presented
   individually with a patch preview; you choose apply, skip, or cancel per
   proposal. Cancelling stops the whole run without applying later proposals.
+  The one exception is `--auto`: the caller passed it on purpose, so every
+  proposal is applied without a prompt and listed under "Auto-accepted". See
+  the `/ship --auto` note below for the one caller that does this unattended.
 - **`--failure-text` and `--from-issue` are mutually exclusive.** Provide
   exactly one, not both.
-- **Not directly part of `/ship`.** `/ship` does not call `/harden` itself —
-  it delegates failure handling to whichever sub-skill failed, and that
-  sub-skill's own failure menu offers `/harden` as an option.
+- **`/ship` does not call `/harden` directly — but `/ship --auto` reaches
+  it.** In a normal run, `/ship` delegates failure handling to whichever
+  sub-skill failed, and that sub-skill's own failure menu offers `/harden`.
+  With `--auto`, though, `/ship` forwards the flag to
+  [`/received-review`](received-review.md), whose Step 11.6 clusters the
+  review findings and dispatches `harden --auto` for each cluster (capped at
+  5). That run edits your project's guardrails and review dimensions with no
+  confirmation prompt. Each edit is still strengthen-only, still
+  schema-validated, still reverted if validation fails, and listed under
+  "Auto-accepted" in the output `/received-review` relays back — but the point
+  stands: an unattended `/ship --auto` can change your project's guardrails.
 - **New review dimensions get a Copilot mirror automatically.** When a
   proposal adds a brand-new review dimension, `/harden` generates the
   matching Copilot instructions file for you — existing dimensions are not

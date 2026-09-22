@@ -237,20 +237,29 @@ var shipSkillsStepHeaders = map[string]string{
 
 // shipSkillsStepExpectedActions maps each canonical step name to the
 // ship_state action name(s) at least one of which must appear within that
-// step's own section. The six steps shipmeta.InitialShipSteps() scaffolds
-// up front (execute, commit, review, received-review, commit-fixes,
-// pr) route through the generic begin-step/complete-step pair; the
-// remaining steps have no steps[] scaffold entry (state-format.md's
-// scaffolding gap) and instead record their outcome via the generic
-// "decide" action, except the terminal "cleanup" step, which is a
-// shipmeta.ReservedSteps entry driven by the dedicated "cleanup-pipeline"
-// action rather than a per-step one.
+// step's own section.
+//
+// A step routes through the generic begin-step/complete-step pair only when
+// the run's steps[] scaffold actually holds an entry for it. ship_prepare
+// builds that scaffold with shipmeta.InitialShipStepsFromConfig(stepsList)
+// — one entry per CONFIGURED step — so the only names that can appear are
+// shipmeta.ValidSteps members. received-review and commit-fixes are not in
+// ValidSteps (they are conditional, hand-sequenced steps, not configurable
+// ones), so no /ship run ever seeds an entry for them and begin-step would
+// fail with `step "received-review" not found in state`. They record their
+// outcome through the generic "decide" action instead, the same as the
+// inline steps with no scaffold entry. shipmeta.InitialShipSteps()'s fixed
+// 6-entry scaffold does name both, but only ship_state action="init" uses
+// it — never the /ship path this skill documents.
+//
+// The terminal "cleanup" step is a shipmeta.ReservedSteps entry driven by
+// the dedicated "cleanup-pipeline" action rather than a per-step one.
 var shipSkillsStepExpectedActions = map[string][]string{
 	"execute":             {"begin-step", "complete-step"},
 	"commit":              {"begin-step", "complete-step"},
 	"review":              {"begin-step", "complete-step"},
-	"received-review":     {"begin-step", "complete-step"},
-	"commit-fixes":        {"begin-step", "complete-step"},
+	"received-review":     {"decide"},
+	"commit-fixes":        {"decide"},
 	"verify-openspec":     {"decide"},
 	"archive-openspec":    {"decide"},
 	"pr":                  {"begin-step", "complete-step"},

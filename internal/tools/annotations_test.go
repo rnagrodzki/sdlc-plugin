@@ -149,7 +149,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		destructive: true,
 		idempotent:  false,
 		openWorld:   false,
-		reason:      "git add -A + git commit; no ghx/http in commit.go",
+		reason:      "git add -- <explicit tracked paths> (never -A; .sdlc-v2/ excluded) + git commit; no ghx/http in commit.go",
 	},
 	"pr_prepare": {
 		title:       "Prepare pull request context",
@@ -197,7 +197,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		destructive: true,
 		idempotent:  false,
 		openWorld:   true,
-		reason:      "caller-redirectable state_file; ghx.PRView, ghx.PRChecksWithExitCode",
+		reason:      "caller-redirectable state_file; ghx.PRReviews, ghx.PRChecksWithExitCode",
 	},
 	"openspec_enrich": {
 		title:       "Write OpenSpec config block",

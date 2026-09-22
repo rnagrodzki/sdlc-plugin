@@ -66,12 +66,38 @@ those same guardrails:
   (delete, remove, unwind) must echo the affected resource or prior state
   in the response (e.g. a `removed`/`prior` field) so callers can verify
   what changed and support undo/recovery workflows.
+- When a new sub-feature or action is added to an existing handler with new
+  input/output fields, verify: (1) every new input field is explicitly
+  validated for type and content in the handler (not silently coerced);
+  (2) every generated output value (IDs, timestamps) is echoed in the
+  response so the caller can verify what was recorded; (3) the JSON schema
+  is updated to document all new `*In` fields with `jsonschema_description`
+  tags and closed-set enums where applicable.
+- When a handler action writes a state file owned by another tool (a
+  cross-tool side effect), verify: (1) the action's description in the
+  tool registration names the side effect and its recovery contract; (2)
+  any error from the state write (permission denied, disk full, concurrent
+  write) surfaces in the tool's output — not dropped, not conflated with
+  "file not found"; (3) a not-found condition (the side-effect state file
+  does not exist yet) is distinguished from a real read/write error in the
+  error handling and output; (4) any reset or modification of
+  sibling-owned state is echoed in the tool's response so the caller can
+  verify what was affected; (5) the new output field name and type match
+  the sibling tools' `*Out` field names and types in the same file (e.g.
+  if one tool outputs `Warnings []string`, a parallel output from a
+  different action must not use `Warning string`).
 
 - When a narration/message template references a set of enum-like phase or
   state values (e.g. a heartbeat/liveness message's phase list), the
   values used must match the canonical enum definition exactly — flag a
   hand-written free-text placeholder list that can drift from the real
   enum.
+- When a handler's actions or output fields change (e.g. a new `fix` field
+  is added to an `*Out` struct, or a new action is introduced), the tool's
+  registered `Description` (passed to `mcpserver.Register*`) must be
+  updated to name the new action's Requires/Optional inputs and every new
+  output field by name. A tool description that omits changed or new
+  actions/fields is incomplete.
 
 ## Cross-references
 

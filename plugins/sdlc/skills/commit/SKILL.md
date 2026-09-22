@@ -1,8 +1,8 @@
 ---
 name: commit
-description: "Use this skill when committing staged changes, creating a git commit, or generating a commit message. Analyzes staged diff and recent commit history to generate a message matching the project's style. Stashes unstaged changes to isolate the commit, commits after user confirmation, and auto-restores the stash. Arguments: [--no-stash] [--scope <scope>] [--type <type>] [--amend] [--auto] [--force-default-branch]. Use --auto to skip interactive approval. Triggers on: commit changes, create commit, write commit message, git commit, smart commit, commit staged, stage and commit."
+description: "Use this skill when committing changes, creating a git commit, or generating a commit message. Analyzes the staged diff and recent commit history to generate a message matching the project's style, then commits after user confirmation. Commits tracked changes (modified and deleted files, except those under the .sdlc-v2 data directory) together with whatever is already staged; never stages untracked files, never stashes, never amends. At least one file must be staged first. Arguments: [--scope <scope>] [--type <type>] [--auto] [--force-default-branch]. Use --auto to skip interactive approval. Triggers on: commit changes, create commit, write commit message, git commit, smart commit, commit staged, stage and commit."
 user-invocable: true
-argument-hint: "[--no-stash] [--scope <scope>] [--type <type>] [--amend] [--auto] [--force-default-branch]"
+argument-hint: "[--scope <scope>] [--type <type>] [--auto] [--force-default-branch]"
 model: haiku
 ---
 
@@ -16,13 +16,14 @@ the project's style, and commit after user confirmation via the `commit_apply` M
 ## Port Notes (read before using this skill)
 
 This is a Go/MCP port of the original script-driven skill. Its tool surface
-(`commit_prepare`, `commit_apply`) is narrower than the frontmatter's argument-hint
-suggests. Concretely:
+(`commit_prepare`, `commit_apply`) is narrower than the original script's flag set.
+Concretely:
 
-- `--no-stash` is a no-op. This port never stashes anything — see Step 5.
+- `--no-stash` and `--amend` are legacy flags from the script-driven skill. They are no
+  longer in the argument-hint; ignore them if a user still types them. This port never
+  stashes anything (see Step 5) and always creates a new commit.
 - `--scope <scope>` / `--type <type>` are forwarded to the orchestrator only as drafting
   hints in its prompt text; no tool validates or enforces them.
-- `--amend` is **not supported**. This port always creates a new commit.
 - `--force-default-branch` is a no-op. There is no automatic block on committing to the
   default branch in this port to override — see Step 0's default-branch note.
 - `--auto` still works, but purely as your own interpretation of the skill's invocation
@@ -30,7 +31,7 @@ suggests. Concretely:
 
 ## When to Use This Skill
 
-- Committing staged changes with an auto-generated message
+- Committing staged plus tracked changes with an auto-generated message
 - Generating a commit message that matches the project's existing style
 - Detecting (not auto-squashing — see Step 1c) WIP commits made by execute
 
@@ -86,10 +87,14 @@ this check entirely and proceed to Step 1.
 
 Read from `COMMIT_CONTEXT`: `currentBranch`, `staged.files`, `staged.fileCount`,
 `staged.diffStat`, `staged.diff` (or `staged.diffStat` plus `staged.truncatedFiles` when
-`staged.diffTruncated` is true), `unstaged.hasChanges`, `recentCommits`,
-`commitConfig.subjectPattern`, `commitConfig.subjectPatternError` (`commitConfig` is `null`
-when the project has no `commit` config section — treat every `commitConfig.*` gate below as
-skipped in that case).
+`staged.diffTruncated` is true), `unstaged.hasChanges`, `unstaged.files`,
+`unstaged.fileCount`, `untracked.files`, `recentCommits`, `commitConfig.subjectPattern`,
+`commitConfig.subjectPatternError` (`commitConfig` is `null` when the project has no `commit`
+config section — treat every `commitConfig.*` gate below as skipped in that case).
+
+`unstaged.files` matters for the Step 5 plan: `commit_apply` stages those tracked files too,
+except any under `.sdlc-v2/`. Split the list on that prefix when you render the plan.
+`untracked.files` is never committed.
 
 ### Step 1c (WIP-commit squash detection — reporting only)
 
@@ -155,10 +160,15 @@ the orchestrator's returned `MESSAGE` is already self-critiqued against the gate
 
 ### Step 5 (DO): Present and Execute
 
-**This port stages and commits everything currently in the working tree; there is no
-stash-isolation of unstaged changes and no amend support.**
+**This port commits every tracked change except under `.sdlc-v2/`, plus what is already
+staged; untracked files are never staged for you, and there is no stash-isolation and no
+amend support.** At least one file must already be staged — `commit_prepare` fails with
+"no files staged for commit" otherwise, so Step 0 would already have stopped.
 
-Show the full commit plan to the user with `MESSAGE` and the staged-file summary from Step 1.
+Show the full commit plan to the user with `MESSAGE`, the staged-file summary from Step 1,
+and the `unstaged.files` / `untracked.files` breakdown. `MESSAGE` was drafted from the
+**staged** diff only; if the also-staged files change what the commit means, say so and let
+the user pick `edit`.
 **Do not call `commit_apply` before receiving explicit user approval via AskUserQuestion.**
 
 **Auto mode:** If `--auto` was passed to this skill invocation, skip the AskUserQuestion
@@ -179,10 +189,19 @@ Staged:     3 files changed, +142, -12
   src/auth/index.ts
   tests/auth/pkce.test.ts
 
+Also staged by commit_apply:          (unstaged.files, minus .sdlc-v2/ — omit when empty)
+  src/auth/session.ts
+
+Left out (.sdlc-v2/):                 (unstaged.files under .sdlc-v2/ — omit when empty)
+  .sdlc-v2/config.toml
+
+Not committed (untracked):            (untracked.files — omit when empty)
+  src/auth/notes.md
+
 Trailer:    OpenSpec-Change: add-oauth2-pkce  (if applicable)
 
-Note:       everything in the working tree is staged and committed together
-            (no stash-isolation in this port)
+Note:       the message describes the staged diff only; the "also staged"
+            files are committed with it. No stash-isolation in this port.
 ────────────────────────────────────────────
 
 ```
@@ -252,17 +271,29 @@ commit, tell the user: "The commit hook rejected this commit. Fix the hook issue
 
 ### Step 6 (CRITIQUE): Verify
 
-`commit_apply`'s returned `sha` is the confirmation — a non-empty `sha` means the commit
-succeeded. No further command is needed to verify it.
+A non-empty `sha` means the commit succeeded. No further command is needed to verify it.
+`commit_apply` also returns `summary`, `skippedUntrackedPaths`, `skippedTrackedPaths` and a
+`**Next:**` line — read all of them. **Never report a skipped path as committed.**
 
 Show the result:
 
 ```
 ✓ Committed: a1b2c3d feat(auth): add OAuth2 PKCE flow
-  Files:   3 files changed, +142, -12
+  <the summary value, verbatim>
+
+  Not committed (untracked):    (omit this block when skippedUntrackedPaths is (none))
+    src/auth/notes.md
+  Not committed (.sdlc-v2/):    (omit this block when skippedTrackedPaths is (none))
+    .sdlc-v2/config.toml
 ```
 
-(Use the first 7 characters of `sha` in place of `a1b2c3d`.)
+(Use the first 7 characters of `sha` in place of `a1b2c3d`. Quote `summary` as returned —
+do not recompute the file count or invent a diff stat; `commit_apply` returns neither.)
+
+**When either skipped list is non-empty:** if the result carries a `**Next:**` line, follow
+it verbatim. If it does not, tell the user to `git add <the listed paths>` and run `/commit`
+again — and say plainly that this creates a **second** commit, because the first one already
+landed.
 
 ---
 
@@ -321,10 +352,12 @@ When invoking `error-report`, provide:
 
 ## Gotchas
 
-- **No stash isolation**: unlike the original script-driven skill, this port always commits
-  the full working tree via `commit_apply`. If you need to commit only part of your changes,
-  stage exactly what you want before invoking this skill, then use another means to preserve
-  the rest — this skill does not do it for you.
+- **No stash isolation**: unlike the original script-driven skill, this port commits every
+  tracked change except under `.sdlc-v2/`, plus whatever is already staged. Untracked files
+  are never committed — `git add` a new file first. Staging a subset does **not** narrow the
+  commit: the unstaged tracked edits go in too. For a partial commit, move the edits you want
+  left out with `git stash push -- <paths>` before invoking this skill, or commit by hand with
+  plain `git commit` outside it.
 - **No amend support**: to change the last commit, use another tool outside this skill.
 - **WIP commits are not squashed**: see Step 1c — they remain as separate commits.
 - **Commit on default branch**: a warning is shown (Step 0), but nothing blocks it — the
