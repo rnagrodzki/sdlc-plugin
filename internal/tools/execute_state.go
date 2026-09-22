@@ -22,6 +22,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
+	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/pipeline"
@@ -143,10 +144,14 @@ type DriftLogOut struct {
 	Next       string         `json:"next,omitempty"`
 }
 
-// IssueDraftOut is the output for the issue-draft action.
+// IssueDraftOut is the output for the issue-draft action. Warning is set
+// only when the durable deferred.json write failed: the draft is still on
+// the state file and the call still succeeded, but the loss must be visible
+// to the caller rather than swallowed.
 type IssueDraftOut struct {
 	Added       bool   `json:"added"`
 	TotalDrafts int    `json:"totalDrafts"`
+	Warning     string `json:"warning,omitempty"`
 	Next        string `json:"next,omitempty"`
 }
 
@@ -539,7 +544,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - ledger_cleanup: Remove a run's entire ledger directory (all per-worker checkin/checkout/findings files). Requires runId. Returns {ok, runId, removed} where removed is false when the directory didn't exist.
 - log-cli: Append a CLI-captured output block to the run's evidence log. Requires cliCommand. Optional: cliExitCode, cliOutput, branch, wave.
 - drift-log: Append a drift issue and evaluate the server-side stop condition. When accumulated error-severity drift issues exceed the threshold (max(minErrorFloor, ceil(maxErrorRate * totalTasks))), returns {halt:true}. Requires driftSeverity (error|warning|info), driftSummary. Optional: driftDetail, wave, taskId, branch.
-- issue-draft: Append a pending GH issue draft to the state file's pendingIssueDrafts list (append-only — never goes through the context action, never overwrites). Requires issueDraftTitle, issueDraftBody. Optional: issueDraftLabels, taskId, branch. Returns {added:true, totalDrafts:N}.
+- issue-draft: Append a pending GH issue draft to the state file's pendingIssueDrafts list (append-only — never goes through the context action, never overwrites). The draft title is also recorded durably in .sdlc-v2/history/deferred.json (source "execute-drift", id "execute-drift-<timestamp>-<N>") so it survives state-file GC — no follow-up deferred_add is needed. Requires issueDraftTitle, issueDraftBody. Optional: issueDraftLabels, taskId, branch. Returns {added:true, totalDrafts:N}, plus warning when the deferred.json write failed (the call still succeeds).
 - decide: Record a guardrail decision (append-only — never goes through the context action, never overwrites; distinct from ship state's own "decide" action, which writes a differently-shaped {step, decision} entry under a different key). Appends {decideType, id, decision, reason} to the state file's guardrailDecisions list. Requires decideType, decideId. Optional: decideDecision, decideReason, branch. Returns {ok:true, action:"decide", next:"..."}.
 - report: Assemble the end-of-run execution report (KD-11). With write omitted or false, this is read-only (never writes state or any file). Gated by config automation.report: {enabled:false} returns {skipped:true, written:false} immediately and nothing else — regardless of write. Otherwise returns {branch, runId, planPath, startedAt, duration, format, waves[{number, status, startedAt, completedAt, duration, tasks[{id, name, status, complexity, risk, filesChanged}], committedSha}], totalTasks, completedTasks, failedTasks, skippedTasks, drifts, errors, warnings, concerns, pendingIssueDrafts, deferredFindings, decisions, path, written, next}. format is "json" or "md" (default) from config, or overridden by the format input field. write:true persists the report under <main worktree>/.sdlc-v2/reports/<runId>-report.<ext> and sets path/written on the response instead of leaving the caller to construct that path itself. For format=json, write:true alone is enough — the tool recomputes and writes the full struct. For format=md, write:true additionally requires body (the caller's own rendered markdown) — the tool persists that exact text rather than rendering it again. Optional: branch, write, format, body.
 
@@ -639,7 +644,8 @@ func executeState(root, workDir string, in ExecuteStateIn, now func() time.Time)
 	case "report":
 		return execActionReport(root, workDir, in, now)
 	default:
-		return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("unknown action %q", in.Action), Suggestion: "Pass one of the actions listed in execute_state's tool description (e.g. \"wave-start\", \"task-done\", \"ledger_status\")."}
+		return nil, unknownActionError("action", in.Action, "",
+			"pass one of the actions listed in execute_state's tool description (e.g. \"wave-start\", \"task-done\", \"ledger_status\")")
 	}
 }
 
@@ -1192,6 +1198,13 @@ func execActionDriftLog(root, workDir string, in ExecuteStateIn, now func() time
 // every call accumulates a new entry, never overwrites a prior one. Ship
 // step 10b (Task 11) later reads the accumulated list for one batch
 // approval question under --auto.
+//
+// The draft is also written to .sdlc-v2/history/deferred.json here, at
+// creation (KD-1). data["pendingIssueDrafts"] lives on the run-scoped state
+// file that GC sweeps, so a draft that only ever existed there was lost
+// whenever the ship skill did not reach step 10b — the reported bug. The
+// durable write is best-effort: it never fails the call, but a failure is
+// named in the returned Warning.
 func execActionIssueDraft(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	if strings.TrimSpace(in.IssueDraftTitle) == "" {
 		return nil, &mcpserver.DomainError{Msg: "issueDraftTitle is required", Suggestion: "Provide an issueDraftTitle for the GitHub issue."}
@@ -1212,18 +1225,30 @@ func execActionIssueDraft(root, workDir string, in ExecuteStateIn, now func() ti
 		return nil, err
 	}
 
+	// One timestamp for both stores, so the deferred.json id and the draft's
+	// own timestamp field always agree.
+	draftTimestamp := now().UTC().Format(time.RFC3339)
+
 	if appendErr := execAppendIssueDraft(st.Data, IssueDraft{
 		TaskID:    in.TaskID,
 		Title:     in.IssueDraftTitle,
 		Body:      in.IssueDraftBody,
 		Labels:    in.IssueDraftLabels,
-		Timestamp: now().UTC().Format(time.RFC3339),
+		Timestamp: draftTimestamp,
 	}); appendErr != nil {
-		return nil, &mcpserver.InfraError{Msg: "append issue draft: " + appendErr.Error(), Cause: appendErr}
+		return nil, &mcpserver.InfraError{
+			Msg:        "append issue draft: " + appendErr.Error(),
+			Suggestion: "The draft could not be serialised to JSON. Retry issue-draft with plain-text issueDraftTitle and issueDraftBody; if it fails again, report it as a tooling error.",
+			Cause:      appendErr,
+		}
 	}
 
 	if err := state.Write(st); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        "write state: " + err.Error(),
+			Suggestion: "Check that the .sdlc-v2/runs directory is writable and the disk has free space, then retry the issue-draft call.",
+			Cause:      err,
+		}
 	}
 
 	total := 0
@@ -1231,7 +1256,22 @@ func execActionIssueDraft(root, workDir string, in ExecuteStateIn, now func() ti
 		total = len(raw)
 	}
 
-	return IssueDraftOut{Added: true, TotalDrafts: total}, nil
+	// total is this draft's 1-based position in pendingIssueDrafts. The
+	// timestamp keeps the id collision-free across separate execute runs on
+	// the same branch, where the position restarts at 1; the position
+	// disambiguates two drafts recorded within the same second.
+	out := IssueDraftOut{Added: true, TotalDrafts: total}
+	if persistErr := persistDeferred(root, history.DeferredIssue{
+		ID:          fmt.Sprintf("execute-drift-%s-%d", draftTimestamp, total),
+		Created:     draftTimestamp,
+		Source:      "execute-drift",
+		Priority:    "medium",
+		Description: in.IssueDraftTitle, // title only — DeferredIssue has no body field
+		Status:      "open",
+	}); persistErr != nil {
+		out.Warning = strings.TrimSpace(deferredPersistWarning(persistErr))
+	}
+	return out, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -4453,8 +4493,66 @@ func execActionWaveSplit(root, workDir string, in ExecuteStateIn, now func() tim
 // Action: verify-completeness
 // ---------------------------------------------------------------------------
 
+// reconcileShipStepAfterExecute clears a stale block-cap-exhausted mark from
+// the branch's ship state. The stop hook marks a ship step failed with
+// failedReason state.FailedReasonBlockCapExhausted when the session runs out
+// of continuations; it cannot know whether execute later succeeds. Only
+// execute knows, and only at completion, so verify-completeness calls this on
+// success: the execute step goes back to "pending" and loses its failedReason.
+// A step failed for any other reason, or a block-cap mark on a step other than
+// execute, is left untouched, because clearing it would hide a real failure.
+//
+// Best-effort: every error path (no ship state, unreadable or corrupt file,
+// no steps, write failure) is a silent no-op. This must never fail the
+// execute call.
+func reconcileShipStepAfterExecute(root, branch string) {
+	st, err := state.Find(root, "ship", branch)
+	if err != nil || st == nil {
+		return
+	}
+	steps, ok := st.Data["steps"].([]any)
+	if !ok {
+		return
+	}
+	changed := false
+	for _, raw := range steps {
+		s, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if status, _ := s["status"].(string); status != "failed" {
+			continue
+		}
+		if reason, _ := s["failedReason"].(string); reason != state.FailedReasonBlockCapExhausted {
+			continue
+		}
+		// Only the execute step is reconciled. A block-cap mark on another
+		// step (review, pr, ...) says that step ran out of continuations;
+		// execute finishing proves nothing about it. Same name-or-id
+		// display rule the stop hook uses to pick the step it marks.
+		name, _ := s["name"].(string)
+		if name == "" {
+			name, _ = s["id"].(string)
+		}
+		if name != "execute" {
+			continue
+		}
+		s["status"] = "pending"
+		delete(s, "failedReason")
+		changed = true
+	}
+	if !changed {
+		return
+	}
+	_ = state.Write(st)
+}
+
 func execActionVerifyCompleteness(root, workDir string, in ExecuteStateIn) (any, error) {
 	var data map[string]any
+	// reconcileBranch is the branch whose ship state is reconciled on
+	// success. The stateFile path resolves no branch, so it starts from
+	// in.Branch and falls back to the branch recorded in the state data.
+	var reconcileBranch string
 
 	if in.StateFile != "" {
 		if err := fsx.ReadJSON(in.StateFile, &data); err != nil {
@@ -4464,6 +4562,7 @@ func execActionVerifyCompleteness(root, workDir string, in ExecuteStateIn) (any,
 				Cause:      err,
 			}
 		}
+		reconcileBranch = in.Branch
 	} else {
 		branch, err := execResolveBranch(in.Branch, workDir)
 		if err != nil {
@@ -4477,6 +4576,7 @@ func execActionVerifyCompleteness(root, workDir string, in ExecuteStateIn) (any,
 			return nil, err
 		}
 		data = st.Data
+		reconcileBranch = branch
 	}
 
 	// Collect all task entries across waves.
@@ -4536,6 +4636,15 @@ func execActionVerifyCompleteness(root, workDir string, in ExecuteStateIn) (any,
 	totalAccounted := len(accountedIDs)
 
 	if len(missingIDs) == 0 {
+		// Execute reached completion: clear a stale block-cap-exhausted mark
+		// the stop hook left on this branch's ship step. Prefer the branch
+		// recorded at init; skip when no branch is known (best-effort).
+		if recorded, _ := data["branch"].(string); recorded != "" {
+			reconcileBranch = recorded
+		}
+		if reconcileBranch != "" {
+			reconcileShipStepAfterExecute(root, reconcileBranch)
+		}
 		return map[string]any{
 			"ok":             true,
 			"totalPlanned":   totalPlanned,

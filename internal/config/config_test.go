@@ -11,6 +11,8 @@ import (
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
+	"github.com/rnagrodzki/sdlc-plugin/internal/setupmeta"
+	"github.com/rnagrodzki/sdlc-plugin/internal/shipmeta"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
 
@@ -1700,5 +1702,80 @@ func TestTracing_SuppressedWhenQuiet(t *testing.T) {
 	traceRead("/test/quiet", "read")
 	if traced["/test/quiet"] {
 		t.Error("path should not be traced when Quiet is true")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Shipped defaults
+// ---------------------------------------------------------------------------
+
+// TestShippedReviewThresholdDefaultsAgree pins every shipped default for
+// ship.reviewThreshold to one value (KD-15). Four places state it: the
+// template that setup copies, the setup wizard, the built-in fallback that
+// ship_prepare uses when a project sets no ship.reviewThreshold, and the
+// default column of ship/config-format.md. When one moves without the others,
+// a project gets a different fix-loop depth depending on how it was set up.
+func TestShippedReviewThresholdDefaultsAgree(t *testing.T) {
+	const want = "low"
+	repo := filepath.Join("..", "..")
+
+	// Template: [ship].reviewThreshold in plugins/sdlc/templates/local.toml.
+	var tmpl struct {
+		Ship struct {
+			ReviewThreshold string `toml:"reviewThreshold"`
+		} `toml:"ship"`
+	}
+	tmplPath := filepath.Join(repo, "plugins", "sdlc", "templates", "local.toml")
+	if err := fsx.ReadTOML(tmplPath, &tmpl); err != nil {
+		t.Fatalf("read template: %v", err)
+	}
+
+	// Setup wizard: the default of the ship section's reviewThreshold field.
+	wizard, found := "", false
+	for _, f := range setupmeta.ShipFields {
+		if f.Name == "reviewThreshold" {
+			wizard, _ = f.Default.(string)
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal(`setupmeta.ShipFields has no "reviewThreshold" field`)
+	}
+
+	// Docs: the Default cell of the reviewThreshold row in the field reference.
+	docPath := filepath.Join(repo, "plugins", "sdlc", "skills", "ship", "config-format.md")
+	doc, err := os.ReadFile(docPath)
+	if err != nil {
+		t.Fatalf("read config-format.md: %v", err)
+	}
+	row := ""
+	for _, line := range strings.Split(string(doc), "\n") {
+		if strings.HasPrefix(line, "| `reviewThreshold` |") {
+			row = line
+			break
+		}
+	}
+	if row == "" {
+		t.Fatal("config-format.md has no reviewThreshold row in the Field Reference table")
+	}
+	// Cells: "", field, type, default, description, "". The type cell holds
+	// escaped pipes (\|) that are not column separators.
+	cells := strings.Split(strings.ReplaceAll(row, `\|`, "\x00"), "|")
+	if len(cells) < 5 {
+		t.Fatalf("config-format.md reviewThreshold row has %d cells, want at least 5: %s", len(cells), row)
+	}
+	docDefault := strings.Trim(strings.TrimSpace(cells[3]), "`\"")
+
+	got := map[string]string{
+		"plugins/sdlc/templates/local.toml [ship].reviewThreshold":          tmpl.Ship.ReviewThreshold,
+		"setupmeta.ShipFields reviewThreshold Default":                      wizard,
+		"shipmeta.ShipBuiltInDefaults.ReviewThreshold":                      shipmeta.ShipBuiltInDefaults.ReviewThreshold,
+		"plugins/sdlc/skills/ship/config-format.md reviewThreshold default": docDefault,
+	}
+	for source, value := range got {
+		if value != want {
+			t.Errorf("%s = %q, want %q; all shipped reviewThreshold defaults must name one value", source, value, want)
+		}
 	}
 }

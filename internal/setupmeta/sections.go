@@ -248,7 +248,7 @@ var ShipFields = []Field{
 		Label:       "Minimum severity that blocks the pipeline",
 		Type:        "enum",
 		Options:     []string{"critical", "high", "medium", "low"},
-		Default:     "high",
+		Default:     "low",
 		Description: "Findings at or above this severity halt the pipeline",
 	},
 	{

@@ -34,6 +34,12 @@ type RunRecord struct {
 }
 
 // DeferredIssue is a problem deferred from a pipeline run for later triage.
+//
+// Severity, File, Line and Reason are optional: they carry the structured
+// detail a review finding already has, so a triage step can draft a GitHub
+// issue body without unpacking it back out of Description. All four are
+// omitempty, so a deferred.json written before they existed still parses —
+// encoding/json leaves absent fields at their zero value.
 type DeferredIssue struct {
 	ID          string `json:"id"`
 	Created     string `json:"created"`
@@ -41,6 +47,45 @@ type DeferredIssue struct {
 	Priority    string `json:"priority"`
 	Description string `json:"description"`
 	Status      string `json:"status"`
+	Severity    string `json:"severity,omitempty"`
+	File        string `json:"file,omitempty"`
+	Line        int    `json:"line,omitempty"`
+	Reason      string `json:"reason,omitempty"`
+}
+
+// Accepted values for DeferredIssue.Reason — why the item was deferred
+// instead of fixed. This is the single definition of the set: callers
+// validate through ValidDeferredReason and render through DeferredReasons
+// rather than restating the literals.
+const (
+	// ReasonBelowThreshold — the finding's severity was under the
+	// configured review threshold, so the pipeline never routed it to a fix.
+	ReasonBelowThreshold = "below-threshold"
+	// ReasonNeedsDirection — two or more candidate approaches exist and a
+	// human has to pick one (KD-13).
+	ReasonNeedsDirection = "needs-direction"
+	// ReasonDisagree — the finding was judged wrong, with the reasoning
+	// recorded for a human to check.
+	ReasonDisagree = "disagree"
+	// ReasonWontFix — the finding is accepted but deliberately not fixed.
+	ReasonWontFix = "wont-fix"
+)
+
+// DeferredReasons returns the accepted DeferredIssue.Reason values in a
+// stable order, for error messages and documentation.
+func DeferredReasons() []string {
+	return []string{ReasonBelowThreshold, ReasonNeedsDirection, ReasonDisagree, ReasonWontFix}
+}
+
+// ValidDeferredReason reports whether reason is one of the accepted values.
+// The empty string is not valid: callers treat "" as "unset" and skip the
+// check rather than passing it here.
+func ValidDeferredReason(reason string) bool {
+	switch reason {
+	case ReasonBelowThreshold, ReasonNeedsDirection, ReasonDisagree, ReasonWontFix:
+		return true
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------

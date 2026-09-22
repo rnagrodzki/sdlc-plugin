@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
@@ -39,17 +40,15 @@ func classifyGHError(err error) string {
 // exactly one non-blocking probe per call and returns a stepper.Envelope —
 // "pending" with a state_file to resume, or a terminal "done"/"error".
 //
-// RULING: ghx has no REST/GraphQL PR-reviews endpoint (internal/ghx/ghx.go
-// only wraps `gh pr view`/`gh pr checks`/plain-text commands — see Task 29's
-// received_review.go precedent for the same gap on review threads). Rather
-// than reconstructing the JS source's structured review-state parsing via a
-// new direct `gh api ... --jq ...` call (which would duplicate ghx's own
-// binary-not-found classification outside of ghx), this port evaluates
-// ghx.PRView's plain-text output with evaluateReviewText below. This is a
-// heuristic over unstructured text, not the JS source's exact
-// APPROVED/COMMENTED/CHANGES_REQUESTED/PENDING REST states — see
-// evaluateReviewText's doc comment for the exact matching rule and its
-// known limitations.
+// Review state comes from ghx.PRReviewsJSON (`gh pr view <n> --json
+// reviews`) and is evaluated by evaluateReviews over the structured
+// reviewer login and review state — not by pattern-matching `gh pr view`'s
+// plain-text output.
+//
+// The probe runs even when the poll state is already timed out, and the
+// timeout verdict is only reported if that final probe also finds nothing. A
+// review that lands during the last interval therefore resolves as a verdict,
+// not as a false timeout.
 // ---------------------------------------------------------------------------
 
 // AwaitRemoteReviewIn is the input for the await_remote_review tool.
@@ -66,59 +65,69 @@ type AwaitRemoteReviewIn struct {
 	StateFile       string   `json:"state_file,omitempty"`
 }
 
-// reviewerPattern returns a regexp fragment matching the raw login forms
-// gh's plain-text output may render for a configured reviewer, mirroring
-// evaluateReviews' (R56) [bot]-suffix strip and copilot-variant
-// canonicalization from the JS source — but applied as a text pattern
-// instead of a structured-field comparison, since ghx has no structured
-// reviews surface.
-func reviewerPattern(login string) string {
-	if strings.EqualFold(login, "copilot") {
-		return `copilot(?:-pull-request-reviewer)?(?:\[bot\])?`
+// canonicalReviewer normalizes a GitHub login for comparison: trimmed,
+// lower-cased, without a "[bot]" suffix, with Copilot's reviewer-bot login
+// ("copilot-pull-request-reviewer") folded into "copilot" — the name the
+// default reviewer list uses — mirroring the JS source's evaluateReviews
+// (R56) [bot]-suffix strip and copilot-variant canonicalization.
+func canonicalReviewer(login string) string {
+	l := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(login)), "[bot]")
+	if l == "copilot-pull-request-reviewer" {
+		return "copilot"
 	}
-	return regexp.QuoteMeta(login) + `(?:\[bot\])?`
+	return l
 }
 
-// evaluateReviewText is a best-effort port of evaluateReviews (R51-R53,
-// R56) that works over `gh pr view`'s plain-text output instead of the JS
-// source's structured REST review list, because ghx.PRView is the only gh
-// surface available for PR reviews (no --json/GraphQL counterpart — see
-// this file's package doc comment above).
+// submittedBefore reports whether RFC3339 timestamp a is strictly earlier
+// than b. A missing or unparseable timestamp on either side reports false,
+// which makes the caller fall back to gh's own oldest-first review order.
+func submittedBefore(a, b string) bool {
+	ta, errA := time.Parse(time.RFC3339, a)
+	tb, errB := time.Parse(time.RFC3339, b)
+	return errA == nil && errB == nil && ta.Before(tb)
+}
+
+// evaluateReviews ports evaluateReviews (R51-R53, R56) over the structured
+// review list from ghx.PRReviewsJSON. For each configured reviewer, in the
+// order given, it takes that reviewer's most recent submitted review and maps
+// its state to the JS source's verdict buckets:
 //
-// It looks for "<reviewer login> (<state>)" — the shape gh pr view prints
-// in its "reviewers:" summary line — and maps the parenthesized state to
-// the JS source's verdict buckets:
+//	APPROVED                          -> "approved-clean"
+//	COMMENTED / CHANGES_REQUESTED     -> "actionable"
+//	anything else (DISMISSED)         -> no verdict (keep waiting)
 //
-//	(Approved)                          -> "approved-clean"
-//	(Commented) / (Changes requested) /
-//	  (Requested changes)               -> "actionable"
-//	anything else (e.g. a bare pending
-//	  reviewer with no parenthetical, or
-//	  an unrecognized state)            -> not matched (still pending)
+// The first configured reviewer with a verdict wins. Reviewer logins are
+// compared case-insensitively via canonicalReviewer. A review by anyone not
+// in the configured list is ignored, as is a PENDING review (an unsubmitted
+// draft). "Most recent" is by SubmittedAt; when a timestamp is missing or
+// unparseable, later entries in gh's oldest-first order win.
 //
-// Reviewers are checked in the order given; the first match wins. This
-// does not reproduce the JS source's submittedAt-based "pick the latest
-// review" tie-break (gh's plain-text summary only shows each reviewer's
-// current state once, not per-review history), and does not enforce the
-// JS source's authorType === 'Bot' guard on the copilot login (that field
-// is not present in plain text either). Both are documented simplifications
-// consistent with this tool's text-heuristic approach.
-func evaluateReviewText(text string, reviewers []string) (status, reviewer, rawState string) {
+// The returned reviewer is the configured name that matched (as passed in,
+// not the login gh reported) and rawState is gh's raw review state.
+func evaluateReviews(reviews []ghx.PRReview, reviewers []string) (status, reviewer, rawState string) {
 	for _, r := range reviewers {
-		if strings.TrimSpace(r) == "" {
+		want := canonicalReviewer(r)
+		if want == "" {
 			continue
 		}
-		re := regexp.MustCompile(`(?i)\b` + reviewerPattern(r) + `\s*\(([^)]*)\)`)
-		m := re.FindStringSubmatch(text)
-		if m == nil {
+		var latest *ghx.PRReview
+		for i := range reviews {
+			rv := &reviews[i]
+			if canonicalReviewer(rv.Login) != want || strings.EqualFold(rv.State, "PENDING") {
+				continue
+			}
+			if latest == nil || !submittedBefore(rv.SubmittedAt, latest.SubmittedAt) {
+				latest = rv
+			}
+		}
+		if latest == nil {
 			continue
 		}
-		state := strings.ToLower(strings.TrimSpace(m[1]))
-		switch state {
-		case "approved":
-			return "approved-clean", r, m[1]
-		case "commented", "changes requested", "requested changes":
-			return "actionable", r, m[1]
+		switch strings.ToUpper(latest.State) {
+		case "APPROVED":
+			return "approved-clean", r, latest.State
+		case "COMMENTED", "CHANGES_REQUESTED":
+			return "actionable", r, latest.State
 		}
 	}
 	return "", "", ""
@@ -127,7 +136,10 @@ func evaluateReviewText(text string, reviewers []string) (status, reviewer, rawS
 // awaitRemoteReview implements one KD8 probe of await_remote_review.
 func awaitRemoteReview(activeRoot string, in AwaitRemoteReviewIn) (stepper.Envelope, error) {
 	if in.PR <= 0 {
-		return stepper.Envelope{}, &mcpserver.DomainError{Msg: "pr must be a positive integer"}
+		return stepper.Envelope{}, &mcpserver.DomainError{
+			Msg:        "pr must be a positive integer",
+			Suggestion: "Pass pr as the pull request number (a positive integer), then call the tool again.",
+		}
 	}
 
 	timeoutSeconds := in.TimeoutSeconds
@@ -157,19 +169,19 @@ func awaitRemoteReview(activeRoot string, in AwaitRemoteReviewIn) (stepper.Envel
 		}), nil
 	}
 
-	if st.TimedOut() {
-		return timeoutEnvelope(stateFile, st, map[string]any{
-			"reviewers": reviewers,
-			"pr_number": in.PR,
-		})
-	}
+	// Final probe: probe even when the poll state is already timed out. A
+	// review that landed during the last interval must resolve as a verdict,
+	// not as a false timeout. A probe error returns before the timeout branch,
+	// so a transient gh failure never marks the state exhausted and stays
+	// retryable.
+	timedOut := st.TimedOut()
 
-	view, err := ghx.PRView(activeRoot, in.PR)
+	reviews, err := ghx.PRReviewsJSON(activeRoot, in.PR)
 	if err != nil {
 		return stepper.NewError(stateFile, classifyGHError(err)), nil
 	}
 
-	status, reviewer, rawState := evaluateReviewText(view, reviewers)
+	status, reviewer, rawState := evaluateReviews(reviews, reviewers)
 	if status != "" {
 		return stepper.Done(stateFile, "", map[string]any{
 			"verdict":   status,
@@ -177,6 +189,13 @@ func awaitRemoteReview(activeRoot string, in AwaitRemoteReviewIn) (stepper.Envel
 			"state":     rawState,
 			"pr_number": in.PR,
 		}), nil
+	}
+
+	if timedOut {
+		return timeoutEnvelope(stateFile, st, map[string]any{
+			"reviewers": reviewers,
+			"pr_number": in.PR,
+		})
 	}
 
 	return pendingEnvelope(stateFile, st, map[string]any{

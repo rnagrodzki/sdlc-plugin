@@ -161,10 +161,8 @@ func validate(root string, in ValidateIn) (ValidateOut, error) {
 	case "worktree_anchoring":
 		anchor, findings, err = validateWorktreeAnchoring(root)
 	default:
-		return ValidateOut{}, &mcpserver.DomainError{
-			Msg:        fmt.Sprintf("unknown validate action %q", in.Action),
-			Suggestion: "Valid actions: plan_format, discovery, pr_template, cost_tiers, guardrails, dimensions, pr_body, ci_script_drift, worktree_anchoring.",
-		}
+		return ValidateOut{}, unknownActionError("validate action", in.Action, "",
+			"pass one of the valid actions: plan_format, discovery, pr_template, cost_tiers, guardrails, dimensions, pr_body, ci_script_drift, worktree_anchoring")
 	}
 	if err != nil {
 		return ValidateOut{}, err
@@ -198,10 +196,39 @@ func containsStr(list []string, v string) bool {
 // plan_format (PF1-PF7, PF9, PF10) -- ports scripts/ci/validate-plan-format.js
 // ---------------------------------------------------------------------------
 
+// pfCheck is one plan-format check result.
+//
+// message says what is wrong; when it lists several offenders it uses
+// pfIssueList so each one sits on its own line. fix states the accepted shape
+// inline, so the author can correct the plan without opening another file. It
+// is empty when message already says everything (PF1, PF3, PF10, PF12 name
+// their expected values). A fix never consists of only a pointer to a
+// reference document; TestPlanFormatFixesAreSelfContained pins that.
 type pfCheck struct {
 	id      string
 	status  string // "pass" | "fail"
 	message string
+	fix     string
+}
+
+func pfPass(id, message string) pfCheck {
+	return pfCheck{id: id, status: "pass", message: message}
+}
+
+func pfFail(id, message, fix string) pfCheck {
+	return pfCheck{id: id, status: "fail", message: message, fix: fix}
+}
+
+// pfIssueList renders headline plus one "- " bullet per issue, so sub-issues
+// stay on their own lines instead of being joined onto a single line.
+func pfIssueList(headline string, issues []string) string {
+	return headline + "\n- " + strings.Join(issues, "\n- ")
+}
+
+// pfLines joins fix or message lines. Indentation inside a line is part of the
+// shape being shown and is kept as written.
+func pfLines(lines ...string) string {
+	return strings.Join(lines, "\n")
 }
 
 type planTask struct {
@@ -210,19 +237,33 @@ type planTask struct {
 	Body   string
 }
 
-func validatePlanFormat(root string, in ValidateIn) ([]discovery.Finding, error) {
-	if in.File == "" {
-		return nil, &mcpserver.DomainError{Msg: "plan_format: file is required"}
+// readPlanFile resolves file against root and reads it. Both failures carry a
+// Suggestion (guardrail mcp-error-suggestion-coverage).
+func readPlanFile(root, file string) (filePath, content string, err error) {
+	if file == "" {
+		return "", "", &mcpserver.DomainError{
+			Msg:        "plan_format: file is required",
+			Suggestion: "Pass file: the path to the plan .md file, absolute or relative to the project root.",
+		}
 	}
-	filePath := resolvePath(root, in.File)
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("plan_format: file not found: %s", filePath), Cause: err}
+	filePath = resolvePath(root, file)
+	data, rerr := os.ReadFile(filePath)
+	if rerr != nil {
+		return "", "", &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("plan_format: file not found: %s", filePath),
+			Suggestion: "Check the path. A relative path resolves against the project root.",
+			Cause:      rerr,
+		}
 	}
-	content := string(data)
-	tasks := extractTasks(content)
+	return filePath, string(data), nil
+}
 
-	checks := []pfCheck{
+// planBlockingChecks runs the checks that apply on every plan edit (PF1-PF7,
+// PF11, PF12). PF9 and PF10 are final-only and are not part of this set.
+func planBlockingChecks(root, content string) []pfCheck {
+	tasks := extractTasks(content)
+	planTasks := loadPlanTasks(root)
+	return []pfCheck{
 		checkPF1(content),
 		checkPF2(tasks),
 		checkPF3(tasks),
@@ -230,10 +271,30 @@ func validatePlanFormat(root string, in ValidateIn) ([]discovery.Finding, error)
 		checkPF5(tasks),
 		checkPF6(content),
 		checkPF7(tasks),
+		checkPF11(tasks, planTasks.RequiredFields),
+		checkPF12(tasks, planTasks.ContractShape),
+	}
+}
+
+// pfFindings converts the failed checks into findings; passing checks produce
+// none, per this dispatcher's "findings are failed checks only" convention.
+func pfFindings(checks []pfCheck, filePath string) []discovery.Finding {
+	var findings []discovery.Finding
+	for _, c := range checks {
+		if c.status == "fail" {
+			findings = append(findings, discovery.Finding{ID: c.id, Severity: "error", Message: c.message, Path: filePath, Fix: c.fix})
+		}
+	}
+	return findings
+}
+
+func validatePlanFormat(root string, in ValidateIn) ([]discovery.Finding, error) {
+	filePath, content, err := readPlanFile(root, in.File)
+	if err != nil {
+		return nil, err
 	}
 
-	planTasks := loadPlanTasks(root)
-	checks = append(checks, checkPF11(tasks, planTasks.RequiredFields), checkPF12(tasks, planTasks.ContractShape))
+	checks := planBlockingChecks(root, content)
 
 	if in.Final {
 		checks = append(checks, checkPF9(content))
@@ -241,19 +302,64 @@ func validatePlanFormat(root string, in ValidateIn) ([]discovery.Finding, error)
 			templatePath := resolvePath(root, in.Template)
 			sections, terr := parseTemplateRequiredSections(templatePath)
 			if terr != nil {
-				return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("plan_format: template not found: %s", templatePath), Cause: terr}
+				return nil, &mcpserver.DomainError{
+					Msg:        fmt.Sprintf("plan_format: template not found: %s", templatePath),
+					Suggestion: "Pass template: the path to the plan template .md, or omit it to skip the PF10 section check.",
+					Cause:      terr,
+				}
 			}
-			checks = append(checks, checkPF10(content, sections))
+			checks = append(checks, checkPF10(content, sections, templatePath))
 		}
 	}
 
-	var findings []discovery.Finding
-	for _, c := range checks {
-		if c.status == "fail" {
-			findings = append(findings, discovery.Finding{ID: c.id, Severity: "error", Message: c.message, Path: filePath})
-		}
+	return pfFindings(checks, filePath), nil
+}
+
+// ValidatePlanFormatForHook is the PostToolUse hook's entry point. It reads
+// the plan once and returns:
+//
+//   - blocking: the checks that apply on every edit (PF1-PF7, PF11, PF12).
+//   - willFailAtFinal: PF9, plus PF10 when a plan template resolves. Only
+//     computed when blocking is non-empty, so a plan with nothing to fix stays
+//     silent instead of nagging about checks that only run at --final.
+//
+// Both slices reuse the one read of the plan. The only other file read is the
+// template, resolved by hookPlanTemplateCandidates. A template that cannot be
+// found or read skips PF10 and never fails the hook.
+func ValidatePlanFormatForHook(root, file string) (blocking, willFailAtFinal []discovery.Finding, err error) {
+	filePath, content, err := readPlanFile(root, file)
+	if err != nil {
+		return nil, nil, err
 	}
-	return findings, nil
+
+	blocking = pfFindings(planBlockingChecks(root, content), filePath)
+	if len(blocking) == 0 {
+		return nil, nil, nil
+	}
+
+	finalChecks := []pfCheck{checkPF9(content)}
+	for _, candidate := range hookPlanTemplateCandidates(root) {
+		sections, terr := parseTemplateRequiredSections(candidate)
+		if terr != nil {
+			continue
+		}
+		finalChecks = append(finalChecks, checkPF10(content, sections, candidate))
+		break
+	}
+	return blocking, pfFindings(finalChecks, filePath), nil
+}
+
+// hookPlanTemplateCandidates lists where the hook looks for the plan template,
+// cheapest first: the project override, then the shipped default under
+// CLAUDE_PLUGIN_ROOT. It does not use resolveSkillTemplate: that walks the
+// whole plugin cache the first time it runs, and the hook is a fresh process
+// after every plan edit, so the walk would be paid on every edit.
+func hookPlanTemplateCandidates(root string) []string {
+	candidates := []string{filepath.Join(root, paths.DataDir, "plan-template.md")}
+	if pluginRoot := os.Getenv("CLAUDE_PLUGIN_ROOT"); pluginRoot != "" {
+		candidates = append(candidates, filepath.Join(pluginRoot, "skills", "plan", "plan-template-default.md"))
+	}
+	return candidates
 }
 
 var fieldMarkerCache = map[string]*regexp.Regexp{}
@@ -327,6 +433,15 @@ func extractTasks(content string) []planTask {
 	return tasks
 }
 
+// pf1FieldHints is the accepted value for each header field, from
+// plan-format-reference.md's "Document Header" block.
+var pf1FieldHints = map[string]string{
+	"Goal":         "one sentence: what this plan implements",
+	"Architecture": "2-3 sentences: the overall approach and key design decisions",
+	"Source":       `spec file path, or "conversation context"`,
+	"Verification": "primary verification command, e.g. go test ./...",
+}
+
 func checkPF1(content string) pfCheck {
 	fields := []string{"Goal", "Architecture", "Source", "Verification"}
 	var missing []string
@@ -337,14 +452,35 @@ func checkPF1(content string) pfCheck {
 		}
 	}
 	if len(missing) > 0 {
-		return pfCheck{"PF1", "fail", fmt.Sprintf("Missing or empty header field(s): %s", strings.Join(missing, ", "))}
+		// The message names the fields. The fix adds what it does not say: a
+		// field only counts when its value is on the same line as the label.
+		fix := []string{"write each as a bold label with its value on the same line, above the first task:"}
+		for _, f := range missing {
+			fix = append(fix, fmt.Sprintf("  **%s:** <%s>", f, pf1FieldHints[f]))
+		}
+		return pfFail("PF1", fmt.Sprintf("Missing or empty header field(s): %s", strings.Join(missing, ", ")), pfLines(fix...))
 	}
-	return pfCheck{"PF1", "pass", "All header fields present"}
+	return pfPass("PF1", "All header fields present")
 }
+
+// pf2Fix writes out the accepted plan shape for every PF2 failure: a missing,
+// misnumbered or duplicated task heading is fixed by writing the block below.
+var pf2Fix = pfLines(
+	`every task is a "### Task N: Title" heading outside any code fence, numbered from 1 (or 0) with no gaps or repeats, followed by this block:`,
+	"  **Complexity:** Trivial | Standard | Complex",
+	"  **Risk:** Low | Medium | High",
+	`  **Depends on:** Task X, Task Y   (or "none"; no forward references)`,
+	"  **Verify:** tests | build | lint | manual   (a scope hint may follow: tests (go test ./pkg/ -run TestFoo))",
+	"  **Files:**",
+	"  - Modify: `path/to/file.go` - what changes",
+	"  **Contract:**   (required when Files has a Create/Modify/Test bullet; see PF7)",
+	"  **Acceptance criteria:**",
+	"  - [ ] a specific, verifiable criterion",
+)
 
 func checkPF2(tasks []planTask) pfCheck {
 	if len(tasks) == 0 {
-		return pfCheck{"PF2", "fail", "No tasks found (expected ### Task N: format)"}
+		return pfFail("PF2", `No tasks found: the plan has no "### Task N: Title" heading outside a code fence`, pf2Fix)
 	}
 	numbers := make([]int, len(tasks))
 	for i, t := range tasks {
@@ -353,78 +489,164 @@ func checkPF2(tasks []planTask) pfCheck {
 	sort.Ints(numbers)
 	start := numbers[0]
 	if start != 0 && start != 1 {
-		return pfCheck{"PF2", "fail", fmt.Sprintf("Task numbering must start at 0 or 1, found: %d", start)}
-	}
-	var gaps []string
-	var dupes []string
-	for i := 1; i < len(numbers); i++ {
-		if numbers[i] == numbers[i-1] {
-			dupes = append(dupes, strconv.Itoa(numbers[i]))
-		} else if numbers[i] != numbers[i-1]+1 {
-			gaps = append(gaps, fmt.Sprintf("gap between Task %d and Task %d", numbers[i-1], numbers[i]))
-		}
+		return pfFail("PF2", fmt.Sprintf("Task numbering must start at 0 or 1, found: %d", start), pf2Fix)
 	}
 	var issues []string
-	if len(gaps) > 0 {
-		issues = append(issues, fmt.Sprintf("non-contiguous numbering: %s", strings.Join(gaps, ", ")))
-	}
-	if len(dupes) > 0 {
-		issues = append(issues, fmt.Sprintf("duplicate task number(s): %s", strings.Join(dupes, ", ")))
+	for i := 1; i < len(numbers); i++ {
+		if numbers[i] == numbers[i-1] {
+			issues = append(issues, fmt.Sprintf("duplicate task number: %d", numbers[i]))
+		} else if numbers[i] != numbers[i-1]+1 {
+			issues = append(issues, fmt.Sprintf("gap between Task %d and Task %d", numbers[i-1], numbers[i]))
+		}
 	}
 	if len(issues) > 0 {
-		return pfCheck{"PF2", "fail", fmt.Sprintf("Task numbering issues: %s", strings.Join(issues, "; "))}
+		return pfFail("PF2", pfIssueList("Task numbering issues:", issues), pf2Fix)
 	}
-	return pfCheck{"PF2", "pass", fmt.Sprintf("%d task(s) numbered contiguously from %d", len(tasks), start)}
+	return pfPass("PF2", fmt.Sprintf("%d task(s) numbered contiguously from %d", len(tasks), start))
 }
 
 var (
 	validComplexity = []string{"Trivial", "Standard", "Complex"}
 	validRisk       = []string{"Low", "Medium", "High"}
 	validVerify     = []string{"tests", "build", "lint", "manual"}
-	verifySplitRe   = regexp.MustCompile(`,\s*`)
+)
+
+// splitVerifyValues splits a **Verify:** value on commas that sit outside
+// parentheses, so a scope hint that itself contains a comma stays attached to
+// its value: "tests (go test ./a/ -run A,B), build" -> two values. An
+// unclosed "(" keeps the rest of the field in one value, which then fails
+// validVerifyValue.
+func splitVerifyValues(field string) []string {
+	var values []string
+	depth, start := 0, 0
+	for i := 0; i < len(field); i++ {
+		switch field[i] {
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		case ',':
+			if depth == 0 {
+				values = append(values, field[start:i])
+				start = i + 1
+			}
+		}
+	}
+	return append(values, field[start:])
+}
+
+// balancedParens reports whether every "(" in s has a matching ")" after it
+// and no ")" comes without one.
+func balancedParens(s string) bool {
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth < 0 {
+				return false
+			}
+		}
+	}
+	return depth == 0
+}
+
+// validVerifyValue reports whether v is one accepted Verify value: a word from
+// validVerify, optionally followed by a scope hint in parentheses, e.g.
+// "tests (go test ./internal/tools/ -run TestFoo)". The hint must be
+// non-empty and its parentheses must balance, so "tests (" and "tests ()"
+// fail, as does any word outside validVerify ("flaky").
+func validVerifyValue(v string) bool {
+	v = strings.TrimSpace(v)
+	for _, word := range validVerify {
+		rest, ok := strings.CutPrefix(v, word)
+		if !ok {
+			continue
+		}
+		if rest == "" {
+			return true
+		}
+		rest = strings.TrimLeft(rest, " \t")
+		if !strings.HasPrefix(rest, "(") || !strings.HasSuffix(rest, ")") {
+			continue
+		}
+		hint := rest[1 : len(rest)-1]
+		if strings.TrimSpace(hint) != "" && balancedParens(hint) {
+			return true
+		}
+	}
+	return false
+}
+
+// pf3VerifyFix and pf3DependsFix are the PF3 fix lines for the two fields whose
+// accepted shape the message alone does not show. Complexity and Risk already
+// list their allowed values in the message, so they add no fix line.
+const (
+	pf3VerifyFix  = `**Verify:** tests | build | lint | manual - comma-separate several; end any value with a scope hint in balanced parentheses, e.g. **Verify:** tests (go test ./pkg/ -run TestFoo), build`
+	pf3DependsFix = `**Depends on:** Task X, Task Y   (or "none")`
 )
 
 func checkPF3(tasks []planTask) pfCheck {
 	var issues []string
+	var verifyBad, dependsBad bool
 	for _, t := range tasks {
 		prefix := fmt.Sprintf("Task %d", t.Number)
 
 		if complexity, ok := extractField(t.Body, "Complexity"); !ok || complexity == "" {
-			issues = append(issues, prefix+": missing **Complexity:**")
+			issues = append(issues, prefix+": missing **Complexity:** (expected: "+strings.Join(validComplexity, "|")+")")
 		} else if !containsStr(validComplexity, complexity) {
 			issues = append(issues, fmt.Sprintf("%s: invalid Complexity %q (expected: %s)", prefix, complexity, strings.Join(validComplexity, "|")))
 		}
 
 		if risk, ok := extractField(t.Body, "Risk"); !ok || risk == "" {
-			issues = append(issues, prefix+": missing **Risk:**")
+			issues = append(issues, prefix+": missing **Risk:** (expected: "+strings.Join(validRisk, "|")+")")
 		} else if !containsStr(validRisk, risk) {
 			issues = append(issues, fmt.Sprintf("%s: invalid Risk %q (expected: %s)", prefix, risk, strings.Join(validRisk, "|")))
 		}
 
 		if dependsOn, ok := extractField(t.Body, "Depends on"); !ok || dependsOn == "" {
-			issues = append(issues, prefix+": missing **Depends on:**")
+			issues = append(issues, prefix+`: missing **Depends on:** (expected: Task N, Task M, or "none")`)
+			dependsBad = true
 		}
 
 		verify, ok := extractField(t.Body, "Verify")
 		if !ok || verify == "" {
-			issues = append(issues, prefix+": missing **Verify:**")
+			issues = append(issues, prefix+": missing **Verify:** (expected: "+pf3VerifyExpected()+")")
+			verifyBad = true
 		} else {
 			var invalid []string
-			for _, v := range verifySplitRe.Split(verify, -1) {
-				v = strings.TrimSpace(v)
-				if !containsStr(validVerify, v) {
-					invalid = append(invalid, v)
+			for _, v := range splitVerifyValues(verify) {
+				if !validVerifyValue(v) {
+					invalid = append(invalid, fmt.Sprintf("%q", strings.TrimSpace(v)))
 				}
 			}
 			if len(invalid) > 0 {
-				issues = append(issues, fmt.Sprintf("%s: invalid Verify value(s): %s (expected: %s)", prefix, strings.Join(invalid, ", "), strings.Join(validVerify, "|")))
+				issues = append(issues, fmt.Sprintf("%s: invalid Verify value(s): %s (expected: %s)", prefix, strings.Join(invalid, ", "), pf3VerifyExpected()))
+				verifyBad = true
 			}
 		}
 	}
-	if len(issues) > 0 {
-		return pfCheck{"PF3", "fail", strings.Join(issues, "; ")}
+	if len(issues) == 0 {
+		return pfPass("PF3", "All tasks have valid metadata")
 	}
-	return pfCheck{"PF3", "pass", "All tasks have valid metadata"}
+	var fix []string
+	if dependsBad {
+		fix = append(fix, pf3DependsFix)
+	}
+	if verifyBad {
+		fix = append(fix, pf3VerifyFix)
+	}
+	return pfFail("PF3", pfIssueList("Invalid or missing task metadata:", issues), pfLines(fix...))
+}
+
+// pf3VerifyExpected is the accepted Verify shape shown in PF3's messages: the
+// word list plus the optional scope hint.
+func pf3VerifyExpected() string {
+	return strings.Join(validVerify, "|") + `, each optionally followed by a "(scope hint)"`
 }
 
 // taskRefKeywordRe locates the first "Task"/"Tasks" keyword in a **Depends
@@ -469,6 +691,10 @@ func parseDependsOnRefs(field string) []int {
 	}
 	return refs
 }
+
+// pf4Fix states what PF4 accepts. It does not enforce "no forward references"
+// (only existence and no cycles), so the fix does not claim it.
+const pf4Fix = `**Depends on:** lists only tasks that exist, written "Task N" and separated by commas (or "none"); to break a cycle, remove one dependency from the loop`
 
 func checkPF4(tasks []planTask) pfCheck {
 	taskNumbers := map[int]bool{}
@@ -544,9 +770,9 @@ func checkPF4(tasks []planTask) pfCheck {
 	}
 
 	if len(issues) > 0 {
-		return pfCheck{"PF4", "fail", strings.Join(issues, "; ")}
+		return pfFail("PF4", pfIssueList("Invalid task dependencies:", issues), pf4Fix)
 	}
-	return pfCheck{"PF4", "pass", "All dependencies valid, no cycles"}
+	return pfPass("PF4", "All dependencies valid, no cycles")
 }
 
 var (
@@ -574,6 +800,13 @@ func extractDelimitedBlock(body string, startRe *regexp.Regexp, boundaries []str
 	return rest[:end], true
 }
 
+var pf5Fix = pfLines(
+	"give each task an acceptance block with at least one checkbox line:",
+	"  **Acceptance criteria:**",
+	"  - [ ] a specific, verifiable criterion",
+	"keep **Notes:** to 5 non-blank lines or fewer",
+)
+
 func checkPF5(tasks []planTask) pfCheck {
 	var issues []string
 	for _, t := range tasks {
@@ -600,23 +833,50 @@ func checkPF5(tasks []planTask) pfCheck {
 		}
 	}
 	if len(issues) > 0 {
-		return pfCheck{"PF5", "fail", strings.Join(issues, "; ")}
+		return pfFail("PF5", pfIssueList("Invalid acceptance criteria or notes:", issues), pf5Fix)
 	}
-	return pfCheck{"PF5", "pass", "All tasks have valid Acceptance criteria"}
+	return pfPass("PF5", "All tasks have valid Acceptance criteria")
 }
 
 var pf6Re = regexp.MustCompile(`(?im)^##\s+Deviations\s*&\s*assumptions`)
 
+// pf6Fix writes out the section PF6 accepts: a level-2 heading plus the
+// four-column table from plan-format-reference.md's "Deviations & assumptions".
+var pf6Fix = pfLines(
+	`add this section after "## Context" and before the first task, as a level-2 heading outside any code fence:`,
+	"  ## Deviations & assumptions",
+	"  | Item | asked | does | why |",
+	"  |---|---|---|---|",
+	"  | what diverges or is assumed | yes or no | what the plan does | why |",
+	`  (with nothing to record, keep the header row and add one row saying "none")`,
+)
+
 func checkPF6(content string) pfCheck {
 	if !pf6Re.MatchString(stripFences(content)) {
-		return pfCheck{"PF6", "fail", `Missing required "## Deviations & assumptions" section`}
+		return pfFail("PF6", `Missing required "## Deviations & assumptions" section`, pf6Fix)
 	}
-	return pfCheck{"PF6", "pass", "Deviations & assumptions section present"}
+	return pfPass("PF6", "Deviations & assumptions section present")
 }
 
 var (
 	pf7BulletRe   = regexp.MustCompile(`(?m)^[-*]\s+(Create|Modify|Test):`)
 	pf7ContractRe = regexp.MustCompile(`(?m)^\*\*Contract:\*\*`)
+)
+
+// contractBlockShape is the accepted **Contract:** block, shared by the PF7 and
+// PF12 fixes. The five keys are the ones pf12RequiredKeyRes checks.
+var contractBlockShape = pfLines(
+	"  **Contract:**",
+	"  - shape (<code|docs|openspec>): the decided shape of the deliverable",
+	"  - names: exact symbols, IDs or headings this task introduces or touches",
+	"  - mirror: the existing artifact this mirrors, with line anchors",
+	"  - decisions: choices already made for this task",
+	"  - sync: sibling artifacts that must stay consistent with it",
+)
+
+var pf7Fix = pfLines(
+	"every task with a Create/Modify/Test bullet under **Files:** needs a **Contract:** block carrying all five keys:",
+	contractBlockShape,
 )
 
 func checkPF7(tasks []planTask) pfCheck {
@@ -627,9 +887,9 @@ func checkPF7(tasks []planTask) pfCheck {
 		}
 	}
 	if len(offenders) > 0 {
-		return pfCheck{"PF7", "fail", fmt.Sprintf("Missing **Contract:** block: %s", strings.Join(offenders, ", "))}
+		return pfFail("PF7", fmt.Sprintf("Missing **Contract:** block: %s", strings.Join(offenders, ", ")), pf7Fix)
 	}
-	return pfCheck{"PF7", "pass", "All artifact-touching tasks have a Contract block"}
+	return pfPass("PF7", "All artifact-touching tasks have a Contract block")
 }
 
 // checkPF11 enforces the team-configured "plan.tasks.requiredFields" contract
@@ -641,20 +901,31 @@ func checkPF7(tasks []planTask) pfCheck {
 // gracefully to a pass with no per-task looping.
 func checkPF11(tasks []planTask, requiredFields []string) pfCheck {
 	if len(requiredFields) == 0 {
-		return pfCheck{"PF11", "pass", "No custom required fields configured"}
+		return pfPass("PF11", "No custom required fields configured")
 	}
 	var issues []string
+	firstMissing := ""
 	for _, t := range tasks {
 		for _, field := range requiredFields {
 			if v, ok := extractField(t.Body, field); !ok || v == "" {
 				issues = append(issues, fmt.Sprintf("Task %d: missing required field '%s'", t.Number, field))
+				if firstMissing == "" {
+					firstMissing = field
+				}
 			}
 		}
 	}
 	if len(issues) > 0 {
-		return pfCheck{"PF11", "fail", strings.Join(issues, "; ")}
+		// The headline names the config key: these fields are this project's
+		// own requirement, not part of the built-in plan format.
+		headline := "Missing custom task field(s) required by config key plan.tasks.requiredFields (project-specific, not built in):"
+		fix := pfLines(
+			fmt.Sprintf("add each missing field to its task as a bold label with the value on the same line, e.g. **%s:** <value>", firstMissing),
+			"or remove the field from plan.tasks.requiredFields in the project SDLC config if it is no longer required",
+		)
+		return pfFail("PF11", pfIssueList(headline, issues), fix)
 	}
-	return pfCheck{"PF11", "pass", "All tasks have required custom fields"}
+	return pfPass("PF11", "All tasks have required custom fields")
 }
 
 // pf12ContractStartRe locates the content of a **Contract:** block (the
@@ -688,6 +959,14 @@ func contractMissingKeys(block string) []string {
 	return missing
 }
 
+// pf12Fix adds what the message does not say: how each key is written, and that
+// the depth of this check is project-configured.
+var pf12Fix = pfLines(
+	`put all five keys under **Contract:**, one "- key: value" line each:`,
+	contractBlockShape,
+	`config key plan.tasks.contractShape sets how deep this is checked: "full" (default, all five keys), "minimal" (the block only), "none" (off)`,
+)
+
 // checkPF12 enforces the team-configured "plan.tasks.contractShape" contract
 // (loaded via loadPlanTasks in plan.go) against artifact-touching tasks
 // (same gating as PF7's pf7BulletRe):
@@ -704,7 +983,7 @@ func checkPF12(tasks []planTask, contractShape string) pfCheck {
 		contractShape = "full"
 	}
 	if contractShape == "none" {
-		return pfCheck{"PF12", "pass", "Contract shape check skipped (contractShape: none)"}
+		return pfPass("PF12", "Contract shape check skipped (contractShape: none)")
 	}
 
 	var issues []string
@@ -728,18 +1007,28 @@ func checkPF12(tasks []planTask, contractShape string) pfCheck {
 		}
 	}
 	if len(issues) > 0 {
-		return pfCheck{"PF12", "fail", strings.Join(issues, "; ")}
+		return pfFail("PF12", pfIssueList(fmt.Sprintf("Contract block problems (contractShape: %s):", contractShape), issues), pf12Fix)
 	}
-	return pfCheck{"PF12", "pass", "All Contract blocks match required shape"}
+	return pfPass("PF12", "All Contract blocks match required shape")
 }
 
 var pf9Re = regexp.MustCompile(`(?im)^##\s+Verification\s+Scorecard`)
 
+// pf9Fix writes out the scorecard the plan skill assembles at Gate B (see the
+// "Verification Scorecard" step in the plan SKILL.md). PF9 itself only checks
+// that the heading exists; the three parts below are what the section carries.
+var pf9Fix = pfLines(
+	`add a level-2 heading "## Verification Scorecard" outside any code fence, with three parts:`,
+	"  - a dimension table: one row each for Completeness, Correctness and Coherence, with counts of CRITICAL / WARNING / SUGGESTION / PASS findings",
+	"  - a traceability matrix: one row per requirement, with the task(s) that cover it and a status of covered | partial | uncovered",
+	`  - a verdict line: "All checks passed. Ready for archive." | "... Ready for archive (with noted improvements)." | "... Fix before archiving."`,
+)
+
 func checkPF9(content string) pfCheck {
 	if pf9Re.MatchString(stripFences(content)) {
-		return pfCheck{"PF9", "pass", "Verification Scorecard section present"}
+		return pfPass("PF9", "Verification Scorecard section present")
 	}
-	return pfCheck{"PF9", "fail", `Missing required "## Verification Scorecard" section`}
+	return pfFail("PF9", `Missing required "## Verification Scorecard" section`, pf9Fix)
 }
 
 var pf10WSRunRe = regexp.MustCompile(`\s+`)
@@ -754,9 +1043,12 @@ func buildSectionHeadingRegex(name string) *regexp.Regexp {
 	return regexp.MustCompile(`(?im)^##\s+` + withWS + `(?:\s|$)`)
 }
 
-func checkPF10(content string, sections []string) pfCheck {
+// checkPF10 checks the plan against the template's required sections.
+// templatePath is the template those sections came from; it appears in the
+// message so the author knows which template set the requirement.
+func checkPF10(content string, sections []string, templatePath string) pfCheck {
 	if len(sections) == 0 {
-		return pfCheck{"PF10", "pass", "No template-required sections to check"}
+		return pfPass("PF10", "No template-required sections to check")
 	}
 	stripped := stripFences(content)
 	var missing []string
@@ -766,9 +1058,15 @@ func checkPF10(content string, sections []string) pfCheck {
 		}
 	}
 	if len(missing) > 0 {
-		return pfCheck{"PF10", "fail", fmt.Sprintf("Missing required section(s): %s", strings.Join(missing, ", "))}
+		// The message names the sections. The fix adds the heading form that
+		// counts: level 2, outside any code fence.
+		fix := []string{"add each as a level-2 heading outside any code fence:"}
+		for _, name := range missing {
+			fix = append(fix, "  ## "+name)
+		}
+		return pfFail("PF10", fmt.Sprintf("Missing required section(s) from template %s: %s", templatePath, strings.Join(missing, ", ")), pfLines(fix...))
 	}
-	return pfCheck{"PF10", "pass", "All template-required sections present"}
+	return pfPass("PF10", "All template-required sections present")
 }
 
 var (

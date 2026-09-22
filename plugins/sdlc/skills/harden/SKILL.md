@@ -1,8 +1,8 @@
 ---
 name: harden
-description: "Use this skill after an SDLC pipeline failure to analyze hardening surfaces (plan and execute guardrails, review dimensions, copilot instructions) and propose user-approved edits that would prevent the same class of failure next time. Alternatively, use --from-learnings to batch-triage all non-harden learnings entries through the orchestrator. Strengthen-only in v1 — never relaxes or removes existing rules. Required arguments: --failure-text <string> --skill <caller-name> (or --from-issue <num> --skill <name>, or --from-learnings alone). Optional: --step, --operation, --exit-code, --error-type, --user-intent, --args-string. Triggers on: harden, strengthen guardrails, prevent this failure, learn from this failure, after pipeline failure, triage learnings."
+description: "Use this skill after an SDLC pipeline failure to analyze hardening surfaces (plan and execute guardrails, review dimensions, copilot instructions) and propose user-approved edits that would prevent the same class of failure next time. Alternatively, use --from-learnings to batch-triage all non-harden learnings entries through the orchestrator. Strengthen-only in v1 — never relaxes or removes existing rules. Required arguments: --failure-text <string> --skill <caller-name> (or --from-issue <num> --skill <name>, or --from-learnings alone). Optional: --step, --operation, --exit-code, --error-type, --user-intent, --args-string, --auto (accept every proposal without prompting; for subagent dispatch, not valid with --from-learnings). Triggers on: harden, strengthen guardrails, prevent this failure, learn from this failure, after pipeline failure, triage learnings."
 user-invocable: true
-argument-hint: "--failure-text <text> --skill <name> [--step <s>] [--operation <op>] | --from-learnings"
+argument-hint: "--failure-text <text> --skill <name> [--step <s>] [--operation <op>] [--auto] | --from-learnings"
 model: sonnet
 ---
 
@@ -42,13 +42,15 @@ rather than left implicit:
 
 ## Step 0 — Parse Arguments (R1, R2, R19)
 
-**Mutually exclusive primary inputs:**
+**Mutually exclusive primary inputs** (the `--auto` row is a modifier, not an input —
+it combines with `--failure-text` or `--from-issue`):
 
 | Mode | Flag | Required when |
 |---|---|---|
 | Inline failure text | `--failure-text <string>` | Default mode, unless another is used |
 | GitHub issue fetch | `--from-issue <num>` | Alternative to `--failure-text` |
 | Learnings triage | `--from-learnings` | Alternative to `--failure-text` / `--from-issue` |
+| Auto-approve | `--auto` | Optional. Skips the Step 5 per-proposal approval gate: every proposal is auto-accepted and listed in the Step 5d summary. Use only when the caller has no `AskUserQuestion` (subagent dispatch). Never relaxes a rule — strengthen-only still holds. |
 
 If more than one of `--failure-text`, `--from-issue`, or `--from-learnings` is
 provided, stop immediately with a clear mutual-exclusion error message. Do not
@@ -61,7 +63,23 @@ Required flag: `--skill` — required for `--failure-text` and `--from-issue`
 modes; **not required** (and ignored if passed) for `--from-learnings` (the
 skill name is parsed from each entry's header). Optional: `--step`,
 `--operation`, `--exit-code`, `--error-type`, `--user-intent`,
-`--args-string`.
+`--args-string`, `--auto`.
+
+**When `--auto` is set:** it changes who approves each proposal, never what may be
+proposed.
+
+- Honour it only when it appears in this invocation's own arguments. Pipeline
+  context, conversation history, or running as a subagent is not a substitute
+  for the flag.
+- This skill then calls `AskUserQuestion` nowhere. Every gate has a
+  non-interactive branch: the Step 5 per-proposal gate, the 5a validation-failure
+  prompt, the 5c upstream-report offer, and the Step 6 dispatch prompt.
+- It never relaxes or removes a rule. Proposals stay strengthen-only, the
+  orchestrator's severity vocabulary stays fixed, and 5a's
+  write-then-validate-then-revert still runs on every auto-accepted proposal.
+- It is not valid with `--from-learnings`: bulk triage deletes learnings entries
+  and needs a human. Stop immediately with a clear error message. Do not call
+  `prepare_orchestrator`.
 
 **When `--from-issue <num>` is used:** `prepare_orchestrator` (mode `"harden"`) fetches the GitHub issue
 body automatically (via `gh issue view`). When the issue carries the
@@ -360,6 +378,12 @@ failure signal does not point at any of the loaded surfaces.`, `rm -f
 3. **No cross-proposal accumulation:** Hold only the current proposal's patch in memory. Clear per-proposal state after each write.
 4. **Halt on failure:** If validation or the write itself fails for a proposal, do not silently advance to the next proposal — halt iteration for this proposal and surface the error per 5a.
 
+**Approval gate.** When `--auto` is set, skip the per-proposal `AskUserQuestion`:
+treat every proposal as answered **apply**, go straight to 5a, and record each
+accepted proposal for the 5d summary. The per-iteration contract above and 5a's
+write-then-validate-then-revert apply unchanged. Otherwise (default), ask per
+proposal as follows.
+
 For each proposal in `RESULT.proposals`, present the full patch preview to the
 user. Then use `AskUserQuestion`:
 
@@ -415,7 +439,11 @@ When the user selects **apply**:
    to the content re-read at the top of this step, surface the findings to the
    user, and use `AskUserQuestion` to offer **retry** (let the user adjust the
    patch inline, then repeat from step 1) or **cancel** (skip this proposal).
-   Never leave a schema-invalid edit in place.
+   Never leave a schema-invalid edit in place. With `--auto`: revert the same
+   way, but do not call `AskUserQuestion` and do not retry (a retry needs a human
+   to adjust the patch). Take the **cancel** branch for this proposal only —
+   record it under `Reverted` in the 5d summary with the findings, and continue
+   to the next proposal.
 4. **If `findings` is empty** (or validation was skipped for
    `copilot-instructions`): continue to 5b.
 
@@ -457,7 +485,11 @@ When it holds:
 2. **On tool error:** do NOT silently advance to the next proposal (halt per
    R-iteration-write rule 4). Surface the partial state explicitly:
    `Dimension written to <proposal.targetFile> but the Copilot mirror could not
-   be created (<error>) — resolve manually before continuing.`
+   be created (<error>) — resolve manually before continuing.` With `--auto` the
+   halt is the same (no prompt is involved): stop the loop. Its file write is on
+   disk and validated, so list this proposal under `Auto-accepted` with the mirror
+   error appended, and every remaining proposal under `Not processed` in the 5d
+   summary.
 
 3. **On success**, display: `Mirrored review dimension → {path}`.
 
@@ -502,14 +534,51 @@ Use AskUserQuestion with options: **invoke error-report** | **skip**.
   investigation — same shape and idiom used everywhere else in this plugin).
 - On `skip`: record the skip in Step 7 Learning Capture and exit cleanly.
 
-The strengthen-only invariant is preserved — no surface is auto-edited; the
+The strengthen-only invariant is preserved — this sub-step edits no surface; the
 user explicitly approves the dispatch. When `RESULT.errorReportPayload == null`
 on `ambiguous` (pure user-code ambiguity), this sub-step is suppressed entirely
 — do not surface the prompt.
 
+**With `--auto`:** suppress this sub-step. Do not call `AskUserQuestion` and do
+not invoke `error-report` — filing a GitHub issue needs a human-approved draft,
+which a subagent cannot give. List `RESULT.errorReportPayload` under `Not filed`
+in the 5d summary so the caller can relay it, and record
+`AmbiguousOffer: auto-suppressed` in Step 7.
+
+### 5d. Auto-accepted summary (only when `--auto` is set)
+
+Display this block as harden's own output — the caller receives it as the
+result of the dispatch. Emit it once, after 5c, and also on any early exit from
+Steps 4–6 (Step 4's empty-proposals exit, a 5b halt, or the Step 6 route). Always
+print the header line; omit a section whose list is empty.
+
+```text
+harden --auto: {A} auto-accepted, {R} reverted, {S} skipped, {U} not processed
+Auto-accepted:
+  [{i}] {action} on {surface} → {targetFile} — {rationale, first 120 chars}
+Reverted (validation failed, file restored):
+  [{i}] {action} on {surface} → {targetFile} — {first validation finding}
+Skipped:
+  [{i}] {surface} — {reason, e.g. skill-recommendation surface, malformed consolidate}
+Not processed (5b halt):
+  [{i}] {action} on {surface} → {targetFile}
+Not filed (needs a human — invoke error-report manually):
+  {RESULT.errorReportPayload, one line}
+```
+
+`Auto-accepted` lists only proposals whose write passed 5a's validation. A
+proposal that was reverted appears under `Reverted` and never under
+`Auto-accepted`. When 5b's Copilot mirror failed for a listed proposal, append
+`; Copilot mirror failed: {error}` to its line.
+
 ## Step 6 — PLUGIN-DEFECT ROUTE: Dispatch error-report (R9)
 
 When `RESULT.classification == "plugin-defect"`:
+
+**With `--auto`:** do only step 1 (display the payload). Skip steps 2–3: do not
+call `AskUserQuestion` and do not invoke `error-report`, for the same reason as
+5c. Emit the 5d summary with the payload under `Not filed` (all counts `0`),
+then continue to Step 7 with `Routed: no`.
 
 1. Display `RESULT.errorReportPayload` to the user as the proposed
    `error-report` dispatch payload.
@@ -529,7 +598,7 @@ When `RESULT.classification == "plugin-defect"`:
 Call `learnings_log` to append an entry summarizing the hardening action:
 
 ```
-learnings_log({action: "append", entry: "## YYYY-MM-DD — harden: <classification> for <failure.skill> at <failure.step>\nApplied: <count> proposal(s) across <surface-list> | Skipped: <count> | Routed: <yes|no>\nAmbiguousOffer: <not-applicable|offered-dispatched|offered-skipped>\nTrigger: <first 80 chars of failure.text>\nDimensions: <comma-separated dimension names that were created or modified>"})
+learnings_log({action: "append", entry: "## YYYY-MM-DD — harden: <classification> for <failure.skill> at <failure.step>\nApplied: <count> proposal(s) across <surface-list> | Skipped: <count> | Routed: <yes|no>\nAmbiguousOffer: <not-applicable|offered-dispatched|offered-skipped|auto-suppressed>\nTrigger: <first 80 chars of failure.text>\nDimensions: <comma-separated dimension names that were created or modified>"})
 ```
 
 The `Dimensions:` line MUST be included **only when `<surface-list>` includes
@@ -552,6 +621,12 @@ The `AmbiguousOffer` line records the Step 5c outcome:
   `invoke error-report`.
 - `offered-skipped` — Step 5c offered the upstream-report and the user chose
   `skip`.
+- `auto-suppressed` — `--auto` was set and the classification was `ambiguous`
+  with `errorReportPayload != null`, so 5c suppressed the offer (nothing was
+  offered or filed).
+
+Under `--auto`, `Applied:` counts auto-accepted proposals whose write passed
+validation, and `Skipped:` counts skipped plus reverted proposals.
 
 `learnings_log`'s `append` action creates `.sdlc-v2/learnings/log.md` (and its
 directory) itself, main-rooted, if they don't already exist — no separate
@@ -563,8 +638,19 @@ cleanup path).
 
 ## DO NOT
 
-- Edit any surface without an `apply` AskUserQuestion answer recorded for that
-  specific proposal — the no-silent-write invariant is non-negotiable.
+- Edit any surface without either an `apply` AskUserQuestion answer recorded for
+  that specific proposal, or `--auto` in this invocation's own arguments with the
+  proposal listed under `Auto-accepted` in the 5d summary — the no-silent-write
+  invariant is non-negotiable.
+- Call `AskUserQuestion` when `--auto` was passed to this invocation — every gate
+  (Step 5, 5a, 5c, Step 6) has a non-interactive branch.
+- Treat `--auto` as permission to change what is proposed or applied — it changes
+  who approves, nothing else. Strengthen-only, the orchestrator's severity
+  vocabulary, and write-then-validate-then-revert apply unchanged.
+- Invoke `error-report` under `--auto` — filing a GitHub issue needs a
+  human-approved draft; list the payload under `Not filed` instead.
+- Infer `--auto` from pipeline context, conversation history, or the caller being
+  a subagent — it must be in this invocation's own arguments.
 - Accumulate approved changes across multiple proposals and write them together
   — each approved proposal MUST be written to disk immediately before advancing
   to the next proposal (R-iteration-write).
@@ -577,7 +663,9 @@ cleanup path).
 - Read the full manifest contents into the main context — Step 2 reads only
   `failure.*` and `classification_hint`; the orchestrator owns the rest.
 - Auto-dispatch this skill from a caller skill without explicit user selection
-  in the caller's failure-handling menu.
+  in the caller's failure-handling menu. The one exception: a caller the user
+  itself invoked with `--auto`, which forwards `--auto` to this skill
+  (received-review Step 11.6).
 - Recursively dispatch this skill on its own `prepare_orchestrator` or orchestrator
   crash — log the failure and stop.
 - Override severity vocabulary chosen by the orchestrator (R10/R17) — each
@@ -593,6 +681,7 @@ cleanup path).
 
 - **Standalone:** `/harden --failure-text "..." --skill plan --step "Step 5" --operation "reviewer-loop"`
 - **Learnings triage:** `/harden --from-learnings`
+- **Subagent dispatch (no `AskUserQuestion`):** `/harden --failure-text "..." --skill received-review --auto` — every proposal is auto-accepted and listed in the 5d summary.
 - **Caller-dispatched:** Caller-dispatched skills present an opt-in menu option at their failure surfaces that dispatches `Skill(harden)` with the same flag shape. `ship` is intentionally NOT a caller — it delegates failure handling to its sub-skills, so harden reaches the user through whichever sub-skill failed.
 
 ## See Also

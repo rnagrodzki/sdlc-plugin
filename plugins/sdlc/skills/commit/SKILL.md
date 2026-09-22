@@ -155,8 +155,8 @@ the orchestrator's returned `MESSAGE` is already self-critiqued against the gate
 
 ### Step 5 (DO): Present and Execute
 
-**This port stages and commits everything currently in the working tree; there is no
-stash-isolation of unstaged changes and no amend support.**
+**This port commits every tracked change plus what is already staged; untracked files are
+never staged for you, and there is no stash-isolation and no amend support.**
 
 Show the full commit plan to the user with `MESSAGE` and the staged-file summary from Step 1.
 **Do not call `commit_apply` before receiving explicit user approval via AskUserQuestion.**
@@ -181,8 +181,8 @@ Staged:     3 files changed, +142, -12
 
 Trailer:    OpenSpec-Change: add-oauth2-pkce  (if applicable)
 
-Note:       everything in the working tree is staged and committed together
-            (no stash-isolation in this port)
+Note:       tracked changes and already-staged files are committed together;
+            untracked files are left out (no stash-isolation in this port)
 ────────────────────────────────────────────
 
 ```
@@ -322,7 +322,7 @@ When invoking `error-report`, provide:
 ## Gotchas
 
 - **No stash isolation**: unlike the original script-driven skill, this port always commits
-  the full working tree via `commit_apply`. If you need to commit only part of your changes,
+  every tracked change via `commit_apply`, never untracked files: `git add` a new file first. If you need to commit only part of your changes,
   stage exactly what you want before invoking this skill, then use another means to preserve
   the rest — this skill does not do it for you.
 - **No amend support**: to change the last commit, use another tool outside this skill.

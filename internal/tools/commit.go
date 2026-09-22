@@ -10,6 +10,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
 
@@ -201,16 +202,7 @@ func commitPrepare(cfgRoot, gitRoot string, in CommitPrepareIn) (CommitPrepareOu
 	if err != nil {
 		out.Warnings = append(out.Warnings, fmt.Sprintf("status: %s", err.Error()))
 	}
-	if statusOut != "" {
-		for _, line := range strings.Split(statusOut, "\n") {
-			if strings.HasPrefix(line, "?? ") {
-				out.Untracked.Files = append(out.Untracked.Files, strings.TrimPrefix(line, "?? "))
-			}
-		}
-	}
-	if out.Untracked.Files == nil {
-		out.Untracked.Files = []string{}
-	}
+	out.Untracked.Files = untrackedPaths(statusOut)
 	out.Untracked.FileCount = len(out.Untracked.Files)
 
 	// Recent commits (last 15, oneline).
@@ -351,6 +343,19 @@ func computeTruncatedFiles(original, truncated string) []string {
 	return omitted
 }
 
+// untrackedPaths returns the untracked entries ("?? <path>") from
+// `git status --porcelain` output. A wholly untracked directory is one entry
+// with a trailing slash, as git prints it. Never returns nil.
+func untrackedPaths(statusOut string) []string {
+	files := []string{}
+	for _, line := range strings.Split(statusOut, "\n") {
+		if strings.HasPrefix(line, "?? ") {
+			files = append(files, strings.TrimPrefix(line, "?? "))
+		}
+	}
+	return files
+}
+
 // nonEmptyLines splits s by newline and returns non-empty lines.
 func nonEmptyLines(s string) []string {
 	raw := strings.Split(strings.TrimSpace(s), "\n")
@@ -379,10 +384,72 @@ type CommitApplyIn struct {
 
 // CommitApplyOut is the output for the commit_apply tool.
 type CommitApplyOut struct {
-	SHA string `json:"sha"`
+	SHA                   string   `json:"sha" jsonschema_description:"Full SHA of the commit that was created."`
+	Summary               string   `json:"summary" jsonschema_description:"Plain-language result: the short SHA, how many files the commit holds, and which untracked paths were left out. Quote this instead of assuming everything in the working tree was committed."`
+	SkippedUntrackedPaths []string `json:"skippedUntrackedPaths" jsonschema_description:"Untracked paths that commit_apply did NOT stage or commit; a wholly untracked directory is listed as dir/. commit_apply stages only tracked files that have changes, plus files already staged, and never anything under .sdlc-v2/. Renders as (none) when nothing was skipped. Never report these paths as committed: run git add on any that belong in the change, then commit again."`
+}
+
+// scopedStagePaths returns the explicit path list commit_apply stages: tracked
+// files whose working-tree state differs from the index (modified or deleted).
+// That is the tracked half of what commit_prepare lists, minus what is already
+// staged. Files already in the index are left out on purpose: they need no
+// staging, and git add fails with "pathspec did not match" on a path that is
+// staged as deleted or renamed away. Untracked files are never in scope, and
+// everything under paths.DataDir is dropped whatever git reports.
+//
+// -z keeps names with spaces, quotes, or non-ASCII bytes intact. Without it git
+// wraps them in quotes, and the later git add would not match the file.
+func scopedStagePaths(gitRoot string) ([]string, error) {
+	out, err := execx.Run("git", []string{"diff", "--name-only", "-z"}, execx.Options{Dir: gitRoot})
+	if err != nil {
+		return nil, err
+	}
+	scoped := []string{}
+	for _, p := range strings.Split(out, "\x00") {
+		if p == "" || p == paths.DataDir || strings.HasPrefix(p, paths.DataDir+"/") {
+			continue
+		}
+		scoped = append(scoped, p)
+	}
+	return scoped, nil
+}
+
+// maxListedPaths caps how many paths a message names inline. The full list
+// always stays in SkippedUntrackedPaths.
+const maxListedPaths = 10
+
+// listPaths joins up to maxListedPaths entries for use inside a message, and
+// returns "(none)" for an empty list.
+func listPaths(list []string) string {
+	if len(list) == 0 {
+		return "(none)"
+	}
+	if len(list) <= maxListedPaths {
+		return strings.Join(list, ", ")
+	}
+	return fmt.Sprintf("%s, and %d more", strings.Join(list[:maxListedPaths], ", "), len(list)-maxListedPaths)
+}
+
+// commitApplySummary builds the plain-language Summary for CommitApplyOut.
+func commitApplySummary(sha string, fileCount int, skipped []string) string {
+	short := sha
+	if len(short) > 7 {
+		short = short[:7]
+	}
+	summary := fmt.Sprintf("Committed %s with %d file(s).", short, fileCount)
+	if len(skipped) == 0 {
+		return summary + " No untracked paths were left out."
+	}
+	return summary + fmt.Sprintf(
+		" %d untracked path(s) were NOT committed and are still untracked: %s. commit_apply stages only tracked changes and files already staged. Run git add on any that belong in this change, then commit again. Do not report them as committed.",
+		len(skipped), listPaths(skipped))
 }
 
 // commitApply is the core logic, separated for testability.
+//
+// Staging is scoped, never tree-wide: it stages the explicit path list from
+// scopedStagePaths and commits together with whatever is already staged.
+// Untracked files are left alone and returned in SkippedUntrackedPaths.
 func commitApply(cfgRoot, gitRoot string, in CommitApplyIn) (CommitApplyOut, error) {
 	if strings.TrimSpace(in.Message) == "" {
 		return CommitApplyOut{}, &mcpserver.DataError{
@@ -402,13 +469,39 @@ func commitApply(cfgRoot, gitRoot string, in CommitApplyIn) (CommitApplyOut, err
 		}
 	}
 
-	// Stage all changes.
-	_, err := execx.Run("git", []string{"add", "-A"}, execx.Options{Dir: gitRoot})
+	// Resolve the scope before touching the index. Both queries are read-only,
+	// so a failure here leaves the repository exactly as it was.
+	scopedPaths, err := scopedStagePaths(gitRoot)
 	if err != nil {
 		return CommitApplyOut{}, &mcpserver.InfraError{
-			Msg:        fmt.Sprintf("git add: %s", err.Error()),
-			Suggestion: "Inspect the working tree with git status: an unresolved merge conflict, a lock file, or a permission problem blocks staging. Resolve it, then retry commit_apply.",
+			Msg:        fmt.Sprintf("git diff --name-only: %s", err.Error()),
+			Suggestion: "Inspect the repository with git status — the index may be locked or corrupt. Resolve it, then retry commit_apply.",
 			Cause:      err,
+		}
+	}
+	statusOut, err := gitx.Status(gitRoot)
+	if err != nil {
+		return CommitApplyOut{}, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("git status: %s", err.Error()),
+			Suggestion: "Inspect the repository with git status — the index may be locked or corrupt. Resolve it, then retry commit_apply.",
+			Cause:      err,
+		}
+	}
+	skipped := untrackedPaths(statusOut)
+
+	// Stage the explicit path list, never the whole tree. --literal-pathspecs
+	// stops a file name with glob characters or a leading ':' from being read as
+	// a pattern that matches more than that one file. An empty list skips the
+	// call: git add with no pathspec stages nothing. Paths outside scopedPaths
+	// stay untracked and are reported in SkippedUntrackedPaths.
+	if len(scopedPaths) > 0 {
+		args := append([]string{"--literal-pathspecs", "add", "--"}, scopedPaths...)
+		if _, err := execx.Run("git", args, execx.Options{Dir: gitRoot}); err != nil {
+			return CommitApplyOut{}, &mcpserver.InfraError{
+				Msg:        fmt.Sprintf("git add: %s", err.Error()),
+				Suggestion: "Inspect the working tree with git status: an unresolved merge conflict, a lock file, or a permission problem blocks staging. Resolve it, then retry commit_apply.",
+				Cause:      err,
+			}
 		}
 	}
 
@@ -423,8 +516,9 @@ func commitApply(cfgRoot, gitRoot string, in CommitApplyIn) (CommitApplyOut, err
 	}
 	if strings.TrimSpace(stagedNames) == "" {
 		return CommitApplyOut{}, &mcpserver.DataError{
-			Msg:        "nothing to commit after staging",
-			Suggestion: "There are no changes to commit. Modify or add files first, then call commit_prepare again to build a fresh payload before retrying commit_apply.",
+			Msg: fmt.Sprintf("nothing to commit: pathspec %s produced no staged changes and nothing was staged before; untracked paths left out: %s",
+				listPaths(scopedPaths), listPaths(skipped)),
+			Suggestion: "commit_apply stages only tracked files that have changes, plus files already staged. It never stages untracked files or anything under .sdlc-v2/. If the change you want is in the untracked paths named above, run git add on them and call commit_apply again. Otherwise modify or add files first, then call commit_prepare again to build a fresh payload before retrying commit_apply.",
 		}
 	}
 
@@ -448,7 +542,12 @@ func commitApply(cfgRoot, gitRoot string, in CommitApplyIn) (CommitApplyOut, err
 		}
 	}
 
-	return CommitApplyOut{SHA: strings.TrimSpace(sha)}, nil
+	sha = strings.TrimSpace(sha)
+	return CommitApplyOut{
+		SHA:                   sha,
+		Summary:               commitApplySummary(sha, len(nonEmptyLines(stagedNames)), skipped),
+		SkippedUntrackedPaths: skipped,
+	}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -487,7 +586,7 @@ func RegisterCommitTools(s *mcpserver.Server) {
 	)
 
 	mcpserver.Register(s, "commit_apply",
-		"Stage all changes and create a git commit with the given message, returning the commit SHA.",
+		"Create a git commit with the given message from the tracked changes in the working tree plus anything already staged, and return the commit SHA. Files are staged by an explicit path list, never by sweeping the whole tree: untracked files are not staged or deleted and are named in skippedUntrackedPaths, and nothing under .sdlc-v2/ is staged. git add any untracked file that belongs in the commit before calling.",
 		mcpserver.Annotations{
 			Title:       "Create a git commit",
 			ReadOnly:    false,

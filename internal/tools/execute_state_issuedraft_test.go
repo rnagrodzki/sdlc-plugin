@@ -2,8 +2,10 @@ package tools
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
@@ -148,6 +150,123 @@ func TestExecState_IssueDraft_AccumulatesAcrossCalls(t *testing.T) {
 	}
 	if third["title"] != "third issue" {
 		t.Errorf("expected third draft title %q, got %v", "third issue", third["title"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// issue-draft: durable persistence to .sdlc-v2/history/deferred.json (KD-1)
+// ---------------------------------------------------------------------------
+
+func TestExecState_IssueDraft_PersistsToDeferredHistory(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	createExecState(t, root, "feat/drafts", map[string]any{"branch": "feat/drafts"})
+	mem := useMemHistory(t)
+
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action:          "issue-draft",
+		Branch:          "feat/drafts",
+		IssueDraftTitle: "Fix flaky test",
+		IssueDraftBody:  "The test fails intermittently.",
+		TaskID:          "7",
+	}, fixedClock(testNow)); err != nil {
+		t.Fatalf("issue-draft: %v", err)
+	}
+
+	if len(mem.Deferred) != 1 {
+		t.Fatalf("deferred.json entries = %d, want 1", len(mem.Deferred))
+	}
+	ts := testNow.UTC().Format("2006-01-02T15:04:05Z07:00")
+	want := history.DeferredIssue{
+		ID:          "execute-drift-" + ts + "-1",
+		Created:     ts,
+		Source:      "execute-drift",
+		Priority:    "medium",
+		Description: "Fix flaky test", // title only — DeferredIssue has no body field
+		Status:      "open",
+	}
+	if mem.Deferred[0] != want {
+		t.Errorf("deferred entry =\n %+v\nwant\n %+v", mem.Deferred[0], want)
+	}
+}
+
+// Two drafts recorded at the same instant must land as two entries with
+// distinct ids — the 1-based position disambiguates them.
+func TestExecState_IssueDraft_SameTimestampDistinctIDs(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	createExecState(t, root, "feat/drafts", map[string]any{"branch": "feat/drafts"})
+	mem := useMemHistory(t)
+
+	for _, title := range []string{"first issue", "second issue"} {
+		if _, err := executeState(root, root, ExecuteStateIn{
+			Action:          "issue-draft",
+			Branch:          "feat/drafts",
+			IssueDraftTitle: title,
+			IssueDraftBody:  "body for " + title,
+		}, fixedClock(testNow)); err != nil {
+			t.Fatalf("issue-draft %q: %v", title, err)
+		}
+	}
+
+	if len(mem.Deferred) != 2 {
+		t.Fatalf("deferred.json entries = %d, want 2", len(mem.Deferred))
+	}
+	if mem.Deferred[0].ID == mem.Deferred[1].ID {
+		t.Errorf("both entries share id %q, want distinct ids", mem.Deferred[0].ID)
+	}
+	if !strings.HasSuffix(mem.Deferred[0].ID, "-1") || !strings.HasSuffix(mem.Deferred[1].ID, "-2") {
+		t.Errorf("ids = %q, %q; want 1-based position suffixes -1 and -2",
+			mem.Deferred[0].ID, mem.Deferred[1].ID)
+	}
+}
+
+// Re-entry (the same id written twice) must not duplicate the entry.
+func TestExecState_IssueDraft_ReentryKeepsOneEntryPerID(t *testing.T) {
+	mem := useMemHistory(t)
+	issue := history.DeferredIssue{ID: "execute-drift-ts-1", Description: "drift", Status: "open"}
+
+	for i := 0; i < 2; i++ {
+		if err := persistDeferred(t.TempDir(), issue); err != nil {
+			t.Fatalf("persistDeferred call %d: %v", i, err)
+		}
+	}
+	if len(mem.Deferred) != 1 {
+		t.Errorf("entries = %d, want 1", len(mem.Deferred))
+	}
+}
+
+func TestExecState_IssueDraft_PersistFailureWarnsButSucceeds(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	createExecState(t, root, "feat/drafts", map[string]any{"branch": "feat/drafts"})
+	useFailingHistory(t)
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action:          "issue-draft",
+		Branch:          "feat/drafts",
+		IssueDraftTitle: "Fix flaky test",
+		IssueDraftBody:  "The test fails intermittently.",
+	}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("issue-draft must not fail when deferred.json is unwritable: %v", err)
+	}
+
+	out, ok := result.(IssueDraftOut)
+	if !ok {
+		t.Fatalf("expected IssueDraftOut, got %T", result)
+	}
+	if !out.Added || out.TotalDrafts != 1 {
+		t.Errorf("out = %+v, want Added=true TotalDrafts=1", out)
+	}
+	if !strings.Contains(out.Warning, "deferred.json") || !strings.Contains(out.Warning, "no space left on device") {
+		t.Errorf("warning = %q, want it to name the deferred.json write failure", out.Warning)
+	}
+
+	// The run-scoped write still happened — only the durable one was lost.
+	data := readExecState(t, root, "feat/drafts")
+	if drafts, _ := data["pendingIssueDrafts"].([]any); len(drafts) != 1 {
+		t.Errorf("pendingIssueDrafts = %v, want 1 entry", drafts)
 	}
 }
 

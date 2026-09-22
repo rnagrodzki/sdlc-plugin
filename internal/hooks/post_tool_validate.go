@@ -50,7 +50,9 @@ func postToolValidate(ctx HookCtx, event Event) (Output, error) {
 
 	var (
 		findings []discovery.Finding
-		verr     error
+		// finalOnly holds checks that only run at --final (plan branch only).
+		finalOnly []discovery.Finding
+		verr      error
 	)
 	switch {
 	case postToolValidateDimensionRe.MatchString(filePath):
@@ -75,9 +77,11 @@ func postToolValidate(ctx HookCtx, event Event) (Output, error) {
 		// itself rather than validating the edited path directly.
 		findings, verr = tools.ValidatePRTemplate(root)
 	case postToolValidatePlanRe.MatchString(filePath):
-		// Final is always false here: this hook never triggers the stricter
-		// PF9/PF10 checks the real source only runs from other call sites.
-		findings, verr = tools.ValidatePlanFormat(root, tools.ValidateIn{File: filePath, Final: false})
+		// PF9/PF10 only block at --final, so they never make this hook block
+		// on their own. ValidatePlanFormatForHook returns them separately, and
+		// only when something already blocks, so they can be shown as a
+		// preview of what the next step will also reject.
+		findings, finalOnly, verr = tools.ValidatePlanFormatForHook(root, filePath)
 	default:
 		return silent, nil
 	}
@@ -89,18 +93,68 @@ func postToolValidate(ctx HookCtx, event Event) (Output, error) {
 	// hook conveys blocking findings via exit code 2 + stderr with no JSON
 	// payload at all; Output has no stderr channel, so this reports the same
 	// findings as a decision/reason JSON payload instead.
+	reason := joinValidationFindings(findings)
+	if len(finalOnly) > 0 {
+		reason += "\n\n" + finalOnlyHeading + "\n" + joinValidationFindings(finalOnly)
+	}
 	return Output{JSON: map[string]any{
 		"decision": "block",
-		"reason":   joinValidationFindings(findings),
+		"reason":   reason,
 	}, ExitCode: 0}, nil
 }
 
-// joinValidationFindings renders findings as one "ID: message" line each,
-// for the "reason" string carried in postToolValidate's blocking payload.
+// finalOnlyHeading introduces the findings of checks that run only at --final.
+const finalOnlyHeading = "will fail at --final:"
+
+// fixIndent aligns the continuation lines of a fix under the text that follows
+// "  fix:  ", so a multi-line shape reads as one block.
+const fixIndent = "        "
+
+// joinValidationFindings renders each finding as its own block, blocks
+// separated by a blank line, for the "reason" string carried in
+// postToolValidate's blocking payload. It is shared by all three hook
+// branches (dimensions, pr-template, plan):
+//
+//	PF7: Missing **Contract:** block: Task 3, Task 5
+//	  file: /path/to/plan.md
+//	  fix:  every task with a Create/Modify/Test bullet ...
+//	          **Contract:**
+//
+// Extra lines of a multi-line message are indented under the first. The file
+// and fix lines are omitted when the finding has no Path or Fix.
 func joinValidationFindings(findings []discovery.Finding) string {
-	lines := make([]string, len(findings))
+	blocks := make([]string, len(findings))
 	for i, f := range findings {
-		lines[i] = fmt.Sprintf("%s: %s", f.ID, f.Message)
+		blocks[i] = renderFindingBlock(f)
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(blocks, "\n\n")
+}
+
+func renderFindingBlock(f discovery.Finding) string {
+	var b strings.Builder
+	msgLines := strings.Split(f.Message, "\n")
+	fmt.Fprintf(&b, "%s: %s", f.ID, msgLines[0])
+	for _, line := range msgLines[1:] {
+		b.WriteString("\n" + indentLine("  ", line))
+	}
+	if f.Path != "" {
+		fmt.Fprintf(&b, "\n  file: %s", f.Path)
+	}
+	if f.Fix != "" {
+		fixLines := strings.Split(f.Fix, "\n")
+		fmt.Fprintf(&b, "\n  fix:  %s", fixLines[0])
+		for _, line := range fixLines[1:] {
+			b.WriteString("\n" + indentLine(fixIndent, line))
+		}
+	}
+	return b.String()
+}
+
+// indentLine prefixes line with indent, leaving a blank line blank so the
+// output carries no trailing whitespace.
+func indentLine(indent, line string) string {
+	if line == "" {
+		return ""
+	}
+	return indent + line
 }

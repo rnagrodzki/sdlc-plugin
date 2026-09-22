@@ -1,13 +1,16 @@
 package tools
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/stepper"
 )
@@ -38,14 +41,59 @@ func stubGH(t *testing.T, script string) func() {
 	}
 }
 
+// stubGHReviews installs a fake gh that answers exactly `gh pr view <pr>
+// --json reviews` with the JSON for the given reviews, in the shape gh
+// prints ({"reviews":[{"author":{"login":...},"state":...,"submittedAt":...}]}).
+// Any other argv exits 3, so a test that expects a verdict also proves the
+// exact command awaitRemoteReview issues.
+func stubGHReviews(t *testing.T, pr int, reviews ...ghx.PRReview) func() {
+	t.Helper()
+
+	entries := make([]map[string]any, 0, len(reviews))
+	for _, r := range reviews {
+		entries = append(entries, map[string]any{
+			"author":      map[string]string{"login": r.Login},
+			"state":       r.State,
+			"submittedAt": r.SubmittedAt,
+		})
+	}
+	body, err := json.Marshal(map[string]any{"reviews": entries})
+	if err != nil {
+		t.Fatalf("marshal stub reviews: %v", err)
+	}
+
+	script := fmt.Sprintf("#!/bin/sh\n"+
+		"[ \"$*\" = \"pr view %d --json reviews\" ] || { echo \"unexpected gh args: $*\" >&2; exit 3; }\n"+
+		"printf '%%s\\n' '%s'\n", pr, body)
+	return stubGH(t, script)
+}
+
+// newTimedOutPollState persists a poll state whose deadline has already
+// passed and returns its state file path.
+func newTimedOutPollState(t *testing.T) string {
+	t.Helper()
+
+	stateFile, err := stepper.NewStateFilePath("await-remote-review")
+	if err != nil {
+		t.Fatalf("NewStateFilePath: %v", err)
+	}
+	t.Cleanup(func() { os.Remove(stateFile) })
+
+	st := stepper.NewPollState("await-remote-review", 1, 1)
+	st.StartedAt -= 1000 // force TimedOut()
+	if err := stepper.SavePollState(stateFile, st); err != nil {
+		t.Fatalf("SavePollState: %v", err)
+	}
+	return stateFile
+}
+
 // ---------------------------------------------------------------------------
 // await_remote_review
 // ---------------------------------------------------------------------------
 
 func TestAwaitRemoteReview_PendingThenResume(t *testing.T) {
-	// gh pr view prints a reviewers summary with no parenthesized state for
-	// copilot yet (still pending review).
-	cleanup := stubGH(t, "#!/bin/sh\necho \"reviewers: copilot\"\n")
+	// No reviews yet: copilot has not reviewed.
+	cleanup := stubGHReviews(t, 42)
 	defer cleanup()
 
 	in := AwaitRemoteReviewIn{PR: 42, TimeoutSeconds: 600, IntervalSeconds: 60}
@@ -62,7 +110,7 @@ func TestAwaitRemoteReview_PendingThenResume(t *testing.T) {
 	defer os.Remove(*env.StateFile)
 
 	// Resume: pass the state_file back in, gh now reports an approval.
-	cleanup2 := stubGH(t, "#!/bin/sh\necho \"reviewers: copilot (Approved)\"\n")
+	cleanup2 := stubGHReviews(t, 42, ghx.PRReview{Login: "copilot-pull-request-reviewer", State: "APPROVED"})
 	defer cleanup2()
 
 	in2 := AwaitRemoteReviewIn{PR: 42, TimeoutSeconds: 600, IntervalSeconds: 60, StateFile: *env.StateFile}
@@ -79,7 +127,7 @@ func TestAwaitRemoteReview_PendingThenResume(t *testing.T) {
 }
 
 func TestAwaitRemoteReview_ActionableOnChangesRequested(t *testing.T) {
-	cleanup := stubGH(t, "#!/bin/sh\necho \"reviewers: copilot (Changes requested)\"\n")
+	cleanup := stubGHReviews(t, 7, ghx.PRReview{Login: "copilot-pull-request-reviewer", State: "CHANGES_REQUESTED"})
 	defer cleanup()
 
 	env, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 7, TimeoutSeconds: 600, IntervalSeconds: 60})
@@ -88,6 +136,61 @@ func TestAwaitRemoteReview_ActionableOnChangesRequested(t *testing.T) {
 	}
 	if env.Status != "done" || env.Ext["verdict"] != "actionable" {
 		t.Fatalf("got status=%q verdict=%v, want done/actionable", env.Status, env.Ext["verdict"])
+	}
+}
+
+func TestAwaitRemoteReview_UnconfiguredReviewerIgnored(t *testing.T) {
+	// mallory approved, but only copilot is configured: still pending.
+	cleanup := stubGHReviews(t, 9, ghx.PRReview{Login: "mallory", State: "APPROVED"})
+	defer cleanup()
+
+	env, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 9, TimeoutSeconds: 600, IntervalSeconds: 60})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if env.Status != "pending" {
+		t.Fatalf("got status %q ext=%v, want pending", env.Status, env.Ext)
+	}
+	defer os.Remove(*env.StateFile)
+}
+
+func TestAwaitRemoteReview_ReviewerLoginCaseInsensitive(t *testing.T) {
+	cleanup := stubGHReviews(t, 11, ghx.PRReview{Login: "alice", State: "COMMENTED"})
+	defer cleanup()
+
+	env, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 11, TimeoutSeconds: 600, IntervalSeconds: 60, Reviewers: []string{"ALICE"}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if env.Status != "done" || env.Ext["verdict"] != "actionable" || env.Ext["reviewer"] != "ALICE" {
+		t.Fatalf("got status=%q ext=%v, want done/actionable/ALICE", env.Status, env.Ext)
+	}
+}
+
+func TestAwaitRemoteReview_EmptyGHOutputIsPending(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\nexit 0\n")
+	defer cleanup()
+
+	env, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 3, TimeoutSeconds: 600, IntervalSeconds: 60})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if env.Status != "pending" {
+		t.Fatalf("got status %q, want pending", env.Status)
+	}
+	defer os.Remove(*env.StateFile)
+}
+
+func TestAwaitRemoteReview_MalformedGHOutputIsError(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\necho 'not json'\n")
+	defer cleanup()
+
+	env, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 3, TimeoutSeconds: 600, IntervalSeconds: 60})
+	if err != nil {
+		t.Fatalf("unexpected Go error (should be classified into the envelope): %v", err)
+	}
+	if env.Status != "error" {
+		t.Fatalf("got status %q, want error", env.Status)
 	}
 }
 
@@ -117,20 +220,11 @@ func TestAwaitRemoteReview_MissingGHBinary(t *testing.T) {
 }
 
 func TestAwaitRemoteReview_Timeout(t *testing.T) {
-	cleanup := stubGH(t, "#!/bin/sh\necho \"reviewers: copilot\"\n")
+	// The final probe finds no review, so the timed-out state reports timeout.
+	cleanup := stubGHReviews(t, 1)
 	defer cleanup()
 
-	stateFile, err := stepper.NewStateFilePath("await-remote-review")
-	if err != nil {
-		t.Fatalf("NewStateFilePath: %v", err)
-	}
-	defer os.Remove(stateFile)
-
-	st := stepper.NewPollState("await-remote-review", 1, 1)
-	st.StartedAt -= 1000 // force TimedOut()
-	if err := stepper.SavePollState(stateFile, st); err != nil {
-		t.Fatalf("SavePollState: %v", err)
-	}
+	stateFile := newTimedOutPollState(t)
 
 	env, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 1, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
 	if err != nil {
@@ -148,6 +242,79 @@ func TestAwaitRemoteReview_Timeout(t *testing.T) {
 	}
 	if env2.Ext["verdict"] != "skipped" {
 		t.Fatalf("got verdict %v, want skipped", env2.Ext["verdict"])
+	}
+}
+
+// TestAwaitRemoteReview_TimedOutFinalProbeFindsVerdict is the false-timeout
+// regression: a review that lands during the last interval leaves the poll
+// state timed out AND the review present. The final probe must return the
+// verdict, not "timeout".
+func TestAwaitRemoteReview_TimedOutFinalProbeFindsVerdict(t *testing.T) {
+	tests := []struct {
+		name        string
+		state       string
+		wantVerdict string
+	}{
+		{"approved", "APPROVED", "approved-clean"},
+		{"changes requested", "CHANGES_REQUESTED", "actionable"},
+		{"commented", "COMMENTED", "actionable"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cleanup := stubGHReviews(t, 5, ghx.PRReview{Login: "copilot-pull-request-reviewer", State: tt.state})
+			defer cleanup()
+
+			stateFile := newTimedOutPollState(t)
+
+			env, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 5, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if env.Status != "done" || env.Ext["verdict"] != tt.wantVerdict {
+				t.Fatalf("got status=%q verdict=%v, want done/%s", env.Status, env.Ext["verdict"], tt.wantVerdict)
+			}
+			if _, timedOut := env.Ext["waited_seconds"]; timedOut {
+				t.Fatalf("verdict envelope must not carry the timeout envelope's waited_seconds: %v", env.Ext)
+			}
+		})
+	}
+}
+
+// TestAwaitRemoteReview_TimedOutProbeErrorStaysRetryable pins that a gh
+// failure on the final probe surfaces as an error envelope — it is not
+// folded into the timeout path, and it does not mark the state exhausted, so
+// the next call probes again and can still find the verdict.
+func TestAwaitRemoteReview_TimedOutProbeErrorStaysRetryable(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\nexit 1\n")
+	defer cleanup()
+
+	stateFile := newTimedOutPollState(t)
+
+	env, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 5, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
+	if err != nil {
+		t.Fatalf("unexpected Go error (should be classified into the envelope): %v", err)
+	}
+	if env.Status != "error" {
+		t.Fatalf("got status=%q ext=%v, want error", env.Status, env.Ext)
+	}
+
+	st, err := stepper.LoadPollState(stateFile)
+	if err != nil {
+		t.Fatalf("LoadPollState: %v", err)
+	}
+	if st.Exhausted {
+		t.Fatal("a probe error must not mark the poll state exhausted")
+	}
+
+	cleanup2 := stubGHReviews(t, 5, ghx.PRReview{Login: "copilot-pull-request-reviewer", State: "APPROVED"})
+	defer cleanup2()
+
+	env2, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 5, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
+	if err != nil {
+		t.Fatalf("unexpected error on retry: %v", err)
+	}
+	if env2.Status != "done" || env2.Ext["verdict"] != "approved-clean" {
+		t.Fatalf("retry got status=%q verdict=%v, want done/approved-clean", env2.Status, env2.Ext["verdict"])
 	}
 }
 
@@ -256,7 +423,7 @@ func TestVerifyPipelineAwait_InvalidPR(t *testing.T) {
 // progress.timeout_seconds — pendingEnvelope writes the resolved
 // st.TimeoutSeconds there.
 func TestPollAwait_RemoteReviewDefaultTimeout(t *testing.T) {
-	cleanup := stubGH(t, "#!/bin/sh\necho \"reviewers: copilot\"\n")
+	cleanup := stubGHReviews(t, 42)
 	defer cleanup()
 
 	env, err := pollAwait(".", PollAwaitIn{Target: "remote_review", PR: 42})
@@ -420,33 +587,75 @@ func TestClassifyLogs_PassthroughViaTool(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// evaluateReviewText / evaluateChecksText (unit-level, no gh involved)
+// evaluateReviews / evaluateChecksText (unit-level, no gh involved)
 // ---------------------------------------------------------------------------
 
-func TestEvaluateReviewText(t *testing.T) {
+func TestEvaluateReviews(t *testing.T) {
+	const (
+		t1 = "2026-01-01T10:00:00Z"
+		t2 = "2026-01-01T11:00:00Z"
+	)
 	tests := []struct {
 		name         string
-		text         string
+		reviews      []ghx.PRReview
 		reviewers    []string
 		wantStatus   string
 		wantReviewer string
+		wantState    string
 	}{
-		{"no match yet", "reviewers: copilot", []string{"copilot"}, "", ""},
-		{"approved", "reviewers: copilot (Approved)", []string{"copilot"}, "approved-clean", "copilot"},
-		{"changes requested", "reviewers: copilot (Changes requested)", []string{"copilot"}, "actionable", "copilot"},
-		{"commented", "reviewers: copilot (Commented)", []string{"copilot"}, "actionable", "copilot"},
-		{"bot suffix", "reviewers: copilot-pull-request-reviewer[bot] (Approved)", []string{"copilot"}, "approved-clean", "copilot"},
-		{"custom reviewer", "reviewers: alice (Approved)", []string{"alice"}, "approved-clean", "alice"},
-		{"empty reviewers list", "reviewers: copilot (Approved)", nil, "", ""},
+		{"no reviews yet", nil, []string{"copilot"}, "", "", ""},
+		{"approved", []ghx.PRReview{{Login: "copilot", State: "APPROVED"}}, []string{"copilot"}, "approved-clean", "copilot", "APPROVED"},
+		{"changes requested", []ghx.PRReview{{Login: "copilot", State: "CHANGES_REQUESTED"}}, []string{"copilot"}, "actionable", "copilot", "CHANGES_REQUESTED"},
+		{"commented", []ghx.PRReview{{Login: "copilot", State: "COMMENTED"}}, []string{"copilot"}, "actionable", "copilot", "COMMENTED"},
+		{"copilot bot login", []ghx.PRReview{{Login: "copilot-pull-request-reviewer[bot]", State: "APPROVED"}}, []string{"copilot"}, "approved-clean", "copilot", "APPROVED"},
+		{"copilot reviewer login without bot suffix", []ghx.PRReview{{Login: "copilot-pull-request-reviewer", State: "COMMENTED"}}, []string{"copilot"}, "actionable", "copilot", "COMMENTED"},
+		{"copilot mixed case", []ghx.PRReview{{Login: "Copilot", State: "APPROVED"}}, []string{"copilot"}, "approved-clean", "copilot", "APPROVED"},
+		{"custom reviewer", []ghx.PRReview{{Login: "alice", State: "APPROVED"}}, []string{"alice"}, "approved-clean", "alice", "APPROVED"},
+		{"login match is case-insensitive", []ghx.PRReview{{Login: "alice", State: "APPROVED"}}, []string{"ALICE"}, "approved-clean", "ALICE", "APPROVED"},
+		{"configured name is not a substring match", []ghx.PRReview{{Login: "alice-bot-2", State: "APPROVED"}}, []string{"alice"}, "", "", ""},
+		{"unconfigured reviewer ignored", []ghx.PRReview{{Login: "mallory", State: "APPROVED"}}, []string{"alice"}, "", "", ""},
+		{"unconfigured reviewer does not hide configured one", []ghx.PRReview{
+			{Login: "mallory", State: "APPROVED"},
+			{Login: "alice", State: "COMMENTED"},
+		}, []string{"alice"}, "actionable", "alice", "COMMENTED"},
+		{"empty reviewers list", []ghx.PRReview{{Login: "copilot", State: "APPROVED"}}, nil, "", "", ""},
+		{"blank reviewer entry skipped", []ghx.PRReview{{Login: "", State: "APPROVED"}}, []string{"", "  "}, "", "", ""},
+		{"first configured reviewer with a verdict wins", []ghx.PRReview{
+			{Login: "bob", State: "APPROVED"},
+			{Login: "alice", State: "COMMENTED"},
+		}, []string{"alice", "bob"}, "actionable", "alice", "COMMENTED"},
+		{"later review wins by timestamp", []ghx.PRReview{
+			{Login: "alice", State: "COMMENTED", SubmittedAt: t1},
+			{Login: "alice", State: "APPROVED", SubmittedAt: t2},
+		}, []string{"alice"}, "approved-clean", "alice", "APPROVED"},
+		{"timestamp beats slice order", []ghx.PRReview{
+			{Login: "alice", State: "APPROVED", SubmittedAt: t2},
+			{Login: "alice", State: "COMMENTED", SubmittedAt: t1},
+		}, []string{"alice"}, "approved-clean", "alice", "APPROVED"},
+		{"without timestamps, later entry wins", []ghx.PRReview{
+			{Login: "alice", State: "APPROVED"},
+			{Login: "alice", State: "CHANGES_REQUESTED"},
+		}, []string{"alice"}, "actionable", "alice", "CHANGES_REQUESTED"},
+		{"pending draft review ignored", []ghx.PRReview{
+			{Login: "alice", State: "APPROVED", SubmittedAt: t1},
+			{Login: "alice", State: "PENDING"},
+		}, []string{"alice"}, "approved-clean", "alice", "APPROVED"},
+		{"dismissed latest review is no verdict", []ghx.PRReview{
+			{Login: "alice", State: "COMMENTED", SubmittedAt: t1},
+			{Login: "alice", State: "DISMISSED", SubmittedAt: t2},
+		}, []string{"alice"}, "", "", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			status, reviewer, _ := evaluateReviewText(tt.text, tt.reviewers)
+			status, reviewer, rawState := evaluateReviews(tt.reviews, tt.reviewers)
 			if status != tt.wantStatus {
 				t.Fatalf("status = %q, want %q", status, tt.wantStatus)
 			}
 			if reviewer != tt.wantReviewer {
 				t.Fatalf("reviewer = %q, want %q", reviewer, tt.wantReviewer)
+			}
+			if rawState != tt.wantState {
+				t.Fatalf("rawState = %q, want %q", rawState, tt.wantState)
 			}
 		})
 	}

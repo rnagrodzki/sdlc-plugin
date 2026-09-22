@@ -14,6 +14,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/frontmatter"
 	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
+	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/openspec"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
@@ -49,6 +50,12 @@ func sessionStart(_ HookCtx, event Event) (Output, error) {
 		count := safeCountSkills(pluginRoot)
 		header = append(header, fmt.Sprintf("sdlc: v%s (commit %s, built %s) (%d skills loaded)", PluginVersion, BuildCommit, BuildTime, count))
 	}
+
+	// Header lines that sit beside the version line each get their own
+	// safeStringsPhase call, directly below this comment: independent of
+	// rootOK, and a failure in one never blanks another.
+	header = append(header, safeStringsPhase("binary-skew", binarySkewPhase)...)
+	header = append(header, safeStringsPhase("deferred-backlog", deferredBacklogPhase)...)
 
 	header = append(header, "Plan mode routing: always invoke plan via the Skill tool when plan mode is active.")
 
@@ -330,6 +337,108 @@ func countUserInvocableSkills(pluginRoot string) int {
 		}
 	}
 	return count
+}
+
+// ---------------------------------------------------------------------------
+// Phase: binary skew (self-host only)
+// ---------------------------------------------------------------------------
+
+// selfHostLauncherRel is the path, relative to a worktree root, of this
+// plugin's launcher script. It exists only in the plugin's own source
+// repository, so its presence marks the working project as the self-host
+// case. In a downstream repository "the repo is ahead of the deployed binary"
+// means nothing, so binarySkewPhase must stay silent there.
+var selfHostLauncherRel = filepath.Join("plugins", "sdlc", "bin", "sdlc-launcher.sh")
+
+// binarySkewPhase warns when the deployed binary was built from a different
+// commit than the checkout this session runs in. After a source change, the
+// running MCP server keeps the old behavior until `task deploy` is re-run and
+// the plugin is reloaded (issues #22 and #48).
+//
+// Every failure path returns nil (no line, no error): missing git, not a
+// repository, unborn or detached HEAD, or a BuildCommit that is not a real
+// commit. Hooks must never block a session (sdlc-launcher.sh), so silence is
+// the only failure mode. The cost is one local git process (no network, no
+// gh), and it is spawned only after the launcher check passes, so downstream
+// repositories never pay for it.
+func binarySkewPhase() []string {
+	// "unknown" is the un-wired default (always the value under go test) and
+	// "dev" is version.GetBuildInfo's no-VCS fallback. Neither is a commit, so
+	// a "mismatch" against them says nothing about the deployed binary.
+	switch BuildCommit {
+	case "", "unknown", "dev":
+		return nil
+	}
+
+	dir := resolveActiveWorktreeSafe()
+	if dir == "" {
+		return nil
+	}
+	if fi, err := os.Stat(filepath.Join(dir, selfHostLauncherRel)); err != nil || fi.IsDir() {
+		return nil
+	}
+
+	// One process answers both questions. "--short" cannot be used here: it
+	// puts rev-parse in single-revision mode, so the ref name cannot be asked
+	// in the same call. The full sha is shortened below to 7 characters, the
+	// length version.GetBuildInfo truncates BuildCommit to.
+	out, err := execx.Run("git", []string{"rev-parse", "HEAD", "--abbrev-ref", "HEAD"}, execx.Options{Dir: dir})
+	if err != nil {
+		return nil
+	}
+	parts := strings.Split(out, "\n")
+	if len(parts) != 2 {
+		return nil
+	}
+	head, ref := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+	if head == "" || ref == "HEAD" { // "HEAD" means detached
+		return nil
+	}
+
+	// Prefix match, not equality: BuildCommit is at most 7 characters, while
+	// head is the full sha.
+	if strings.HasPrefix(head, BuildCommit) {
+		return nil
+	}
+	if len(head) > 7 {
+		head = head[:7]
+	}
+	return []string{fmt.Sprintf("sdlc: deployed binary is behind this repo (binary %s, HEAD %s) — run `task deploy`", BuildCommit, head)}
+}
+
+// ---------------------------------------------------------------------------
+// Phase: deferred backlog
+// ---------------------------------------------------------------------------
+
+// deferredBacklogPhase points at the triage skill when the durable deferred
+// store holds open items. Items are written at creation time by the ship and
+// execute handlers (KD-1), so the store — not any pipeline state file — is the
+// source of truth for what is still open. The line names the skill, not a
+// tool (KD-3): /sdlc:deferred is what a person runs next.
+//
+// It anchors to the MAIN worktree, unlike binarySkewPhase: ship_state.go and
+// execute_state.go write deferred.json under worktree.MainRoot(), so a session
+// started inside a linked worktree must read the same file.
+//
+// Every failure path returns nil (no line, no error): unresolvable root, a
+// missing or empty file, a corrupt file, and a store with no open items.
+// There is deliberately no "0 deferred" line — silence means nothing to
+// triage. The cost is one local git process (shared with the other phases'
+// own root lookups) and one file read; no network, no gh.
+func deferredBacklogPhase() []string {
+	root, err := mainRootFunc()
+	if err != nil || root == "" {
+		return nil
+	}
+	issues, err := history.NewFileWriter(filepath.Join(root, paths.DataDir, "history")).ListDeferred()
+	if err != nil {
+		return nil
+	}
+	n := len(history.OpenDeferred(issues))
+	if n == 0 {
+		return nil
+	}
+	return []string{fmt.Sprintf("sdlc: %d deferred item%s open — run /sdlc:deferred to triage", n, pluralS(n))}
 }
 
 // ---------------------------------------------------------------------------

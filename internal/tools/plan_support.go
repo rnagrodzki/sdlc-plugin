@@ -210,10 +210,9 @@ func planSupportCore(mainRoot, contentRoot string, in PlanSupportIn) (PlanSuppor
 	case "openspec_appendix":
 		return openspecAppendix(mainRoot, in)
 	default:
-		return PlanSupportOut{}, &mcpserver.DomainError{
-			Msg:        fmt.Sprintf("unknown action %q — valid actions: merge_results, material_snapshot, material_compare, openspec_appendix", in.Action),
-			Suggestion: "Call plan_support again with action set to exactly one of merge_results, material_snapshot, material_compare or openspec_appendix.",
-		}
+		return PlanSupportOut{}, unknownActionError("action", in.Action,
+			" — valid actions: merge_results, material_snapshot, material_compare, openspec_appendix",
+			"call plan_support again with action set to exactly one of merge_results, material_snapshot, material_compare or openspec_appendix")
 	}
 }
 

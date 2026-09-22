@@ -48,10 +48,9 @@ func migrate(root string, in MigrateIn) (MigrateOut, error) {
 	case "layout":
 		return migrateLayout(root, in.DryRun)
 	default:
-		return MigrateOut{}, &mcpserver.DomainError{
-			Msg:        fmt.Sprintf("unknown migrate action %q; must be one of: config, import, layout", in.Action),
-			Suggestion: "Set action to \"config\", \"import\", or \"layout\".",
-		}
+		return MigrateOut{}, unknownActionError("migrate action", in.Action,
+			"; must be one of: config, import, layout",
+			"set action to \"config\", \"import\", or \"layout\"")
 	}
 }
 

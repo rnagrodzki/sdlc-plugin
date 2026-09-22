@@ -18,6 +18,12 @@ const recoverySidecarTTL = time.Hour
 // failed instead. See StepBlockCount.
 const stopBlockCap = 3
 
+// FailedReasonBlockCapExhausted is the failedReason the stop-pipeline-continue
+// hook writes when it marks a ship step failed after stopBlockCap blocks. The
+// execute_state reconcile matches on the same value to clear that mark once
+// execute completes, so both packages must reference this constant.
+const FailedReasonBlockCapExhausted = "block-cap-exhausted"
+
 // ---------------------------------------------------------------------------
 // Path helpers
 // ---------------------------------------------------------------------------

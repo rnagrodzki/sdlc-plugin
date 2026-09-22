@@ -38,7 +38,7 @@ Only one case still hard-fails after this gate: **too new** — a `schemaVersion
     "bump": "patch",
     "draft": false,
     "auto": false,
-    "reviewThreshold": "high",
+    "reviewThreshold": "low",
     "rebase": "auto",
     "verifyPipelineTimeout": 1200,
     "verifyPipelineInterval": 60,
@@ -72,7 +72,7 @@ Only one case still hard-fails after this gate: **too new** — a `schemaVersion
 | `bump` | `"patch"` \| `"minor"` \| `"major"` \| pre-release label | `"patch"` | Default release bump, read at the main skill's step 6b and forwarded (as `releaseLevel`/`releasePreRelease`) to the `pr` step's `pr_apply` call — not applied by any standalone step. Overridden by an explicit `bump` on `ship_prepare`'s input. A configured `version.preRelease` label (a separate, top-level config section) overrides this default too, but never overrides an explicit CLI/tool-input bump. |
 | `draft` | `boolean` | `false` | When `true`, PRs are created as drafts. |
 | `auto` | `boolean` | `false` | Legacy pipeline-wide auto flag: when `true`, `ship_prepare` resolves `auto: true` and this pipeline suppresses its own confirmation prompts. Distinct from the `automation` section below — see "Two automation mechanisms." |
-| `reviewThreshold` | `"critical"` \| `"high"` \| `"medium"` \| `"low"` | `"high"` | Minimum review-finding severity that triggers the received-review fix loop. See table below. |
+| `reviewThreshold` | `"critical"` \| `"high"` \| `"medium"` \| `"low"` | `"low"` | Minimum review-finding severity that triggers the received-review fix loop. The default `"low"` sends every finding, including Low, into the fix loop. See table below. |
 | `rebase` | `boolean` \| `"auto"` \| `"skip"` \| any string | `"auto"` | A JSON `true`/`false` is coerced to `"auto"`/`"skip"`; any other string is passed through as-is. `"auto"` rebases onto the default branch after all commits, before the next configured main-loop step; `"skip"` never rebases. There is no `"prompt"` mode in this port — treat any unrecognized string as informational only, not as a request to ask the user. |
 | `verifyPipelineTimeout` | `integer` (≥30) | `1200` | Maximum seconds `verify-pipeline` polls CI checks before giving up. |
 | `verifyPipelineInterval` | `integer` (≥10) | `60` | Seconds between `verify-pipeline` poll probes. |
@@ -95,7 +95,7 @@ There is no `workspace` field in this port. `ship_prepare` reads no such config 
 | `"medium"` | Critical + High + Medium |
 | `"low"` | Critical + High + Medium + Low (every finding) |
 
-At `"high"` (the default), findings rated Medium or lower are reported but do not block the ship pipeline. `"low"` is the strictest setting — every finding, regardless of severity, triggers the fix loop.
+At `"low"` (the default), every finding, including Low, enters the `received-review` fix loop. When a project raises the threshold, each finding below it is not dropped: `ship` records it durably through `ship_state` `defer` (reason `below-threshold`) in `.sdlc-v2/history/deferred.json`, and Step 10 points to `/sdlc:deferred` for acting on them.
 
 ### Legacy CLI sugar — not supported
 

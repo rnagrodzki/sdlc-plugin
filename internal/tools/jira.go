@@ -1381,7 +1381,8 @@ func jiraCore(mainRoot string, in JiraIn, offline bool) (any, error) {
 	case "write-approval":
 		return jiraWriteApproval(mainRoot, in)
 	default:
-		return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("unknown jira action %q", in.Action), Suggestion: "Pass one of the actions listed in jira's Action enum (e.g. \"load\", \"save\", \"templates\", \"validate-body\")."}
+		return nil, unknownActionError("jira action", in.Action, "",
+			"pass one of the actions listed in jira's Action enum (e.g. \"load\", \"save\", \"templates\", \"validate-body\")")
 	}
 }
 

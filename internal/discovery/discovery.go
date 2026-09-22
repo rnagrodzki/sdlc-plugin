@@ -41,11 +41,17 @@ import (
 )
 
 // Finding represents a single validation finding from a failed check.
+//
+// Fix is optional: when set, it states the accepted shape inline (not just a
+// pointer to a reference document) so the author can correct the violation
+// without opening anything else. Checks that have nothing to add beyond
+// Message leave it empty, and it is then omitted from JSON.
 type Finding struct {
 	ID       string `json:"id"`
 	Severity string `json:"severity"`
 	Message  string `json:"message"`
 	Path     string `json:"path"`
+	Fix      string `json:"fix,omitempty"`
 }
 
 // ValidateAll runs all PD1–PD16 discovery checks against root and returns

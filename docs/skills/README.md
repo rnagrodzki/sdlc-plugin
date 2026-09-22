@@ -29,6 +29,9 @@ This directory contains user-facing documentation for each SDLC plugin skill. Fo
 ### Hardening
 - [`harden`](harden.md) — Propose guardrail changes to prevent the same pipeline failure from recurring.
 
+### Follow-ups
+- [`deferred`](deferred.md) — List deferred items from earlier runs, then file them as GitHub issues or resolve them without filing.
+
 ### Setup
 - [`setup`](setup.md) — Initialize or reconfigure SDLC plugin settings for a project.
 

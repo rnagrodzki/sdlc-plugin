@@ -3,6 +3,7 @@ package hooks
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/openspec"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
@@ -717,6 +719,452 @@ func TestSessionStart_HeaderLines_PluginRootResolved(t *testing.T) {
 	if !strings.Contains(out.PlainText, "sdlc plugin root: "+dir) {
 		t.Errorf("plugin-root line missing or wrong:\n%s", out.PlainText)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Binary skew phase (self-host only)
+//
+// Every case builds a real git repo under t.TempDir and chdirs into it: the
+// phase resolves its directory through worktree.ActiveRoot (cwd-based) and
+// asks git itself for HEAD, so a fake would not exercise either boundary.
+// ---------------------------------------------------------------------------
+
+// setBuildCommit swaps BuildCommit for the test's duration.
+func setBuildCommit(t *testing.T, v string) {
+	t.Helper()
+	orig := BuildCommit
+	BuildCommit = v
+	t.Cleanup(func() { BuildCommit = orig })
+}
+
+// writeSelfHostLauncher creates the file whose presence marks dir as this
+// plugin's own source repository.
+func writeSelfHostLauncher(t *testing.T, dir string) {
+	t.Helper()
+	mustMkdirAll(t, filepath.Join(dir, "plugins", "sdlc", "bin"))
+	mustWriteFile(t, filepath.Join(dir, "plugins", "sdlc", "bin", "sdlc-launcher.sh"), "#!/bin/sh\n")
+}
+
+// selfHostFixture is a one-commit git repo with the launcher present, HOME
+// isolated so the plugin-root fallback never walks the real ~/.claude/plugins.
+// It returns the repo path and its full HEAD sha.
+func selfHostFixture(t *testing.T) (dir, head string) {
+	t.Helper()
+	t.Setenv("HOME", realPath(t, t.TempDir()))
+	dir = gitFixture(t, "main")
+	writeSelfHostLauncher(t, dir)
+	return dir, runGit(t, dir, "rev-parse", "HEAD")
+}
+
+// otherCommit returns a 7-character hex value that is not a prefix of head.
+func otherCommit(head string) string {
+	if strings.HasPrefix(head, "0000000") {
+		return "1111111"
+	}
+	return "0000000"
+}
+
+func skewLine(binary, head string) string {
+	return "sdlc: deployed binary is behind this repo (binary " + binary + ", HEAD " + head[:7] + ") — run `task deploy`"
+}
+
+func TestBinarySkewPhase_MismatchWarns(t *testing.T) {
+	_, head := selfHostFixture(t)
+	stale := otherCommit(head)
+	setBuildCommit(t, stale)
+
+	assertLines(t, binarySkewPhase(), []string{skewLine(stale, head)})
+}
+
+func TestBinarySkewPhase_MatchingCommitIsSilent(t *testing.T) {
+	_, head := selfHostFixture(t)
+
+	// BuildCommit is truncated to 7 characters at build time; a shorter
+	// abbreviation or a full sha must not be reported as skew either.
+	for name, commit := range map[string]string{
+		"seven characters": head[:7],
+		"shorter prefix":   head[:4],
+		"full sha":         head,
+	} {
+		t.Run(name, func(t *testing.T) {
+			setBuildCommit(t, commit)
+			if got := binarySkewPhase(); got != nil {
+				t.Errorf("binarySkewPhase() = %q, want no lines when BuildCommit %q matches HEAD %q", got, commit, head)
+			}
+		})
+	}
+}
+
+func TestBinarySkewPhase_LauncherAbsentIsSilent(t *testing.T) {
+	t.Setenv("HOME", realPath(t, t.TempDir()))
+	dir := gitFixture(t, "main") // a downstream repo: no launcher
+	setBuildCommit(t, otherCommit(runGit(t, dir, "rev-parse", "HEAD")))
+
+	if got := binarySkewPhase(); got != nil {
+		t.Errorf("binarySkewPhase() = %q, want no lines outside the self-host repo", got)
+	}
+}
+
+func TestBinarySkewPhase_LauncherIsDirectoryIsSilent(t *testing.T) {
+	t.Setenv("HOME", realPath(t, t.TempDir()))
+	dir := gitFixture(t, "main")
+	mustMkdirAll(t, filepath.Join(dir, "plugins", "sdlc", "bin", "sdlc-launcher.sh"))
+	setBuildCommit(t, otherCommit(runGit(t, dir, "rev-parse", "HEAD")))
+
+	if got := binarySkewPhase(); got != nil {
+		t.Errorf("binarySkewPhase() = %q, want no lines when the launcher path is a directory", got)
+	}
+}
+
+func TestBinarySkewPhase_DetachedHeadIsSilent(t *testing.T) {
+	dir, head := selfHostFixture(t)
+	setBuildCommit(t, otherCommit(head))
+	runGit(t, dir, "checkout", "-q", "--detach")
+
+	if got := binarySkewPhase(); got != nil {
+		t.Errorf("binarySkewPhase() = %q, want no lines on a detached HEAD", got)
+	}
+}
+
+func TestBinarySkewPhase_UnbornHeadIsSilent(t *testing.T) {
+	t.Setenv("HOME", realPath(t, t.TempDir()))
+	dir := realPath(t, t.TempDir())
+	runGit(t, dir, "init", "-q") // no commit: HEAD does not resolve
+	chdir(t, dir)
+	writeSelfHostLauncher(t, dir)
+	setBuildCommit(t, "0000000")
+
+	if got := binarySkewPhase(); got != nil {
+		t.Errorf("binarySkewPhase() = %q, want no lines when HEAD does not resolve", got)
+	}
+}
+
+func TestBinarySkewPhase_NotARepositoryIsSilent(t *testing.T) {
+	t.Setenv("HOME", realPath(t, t.TempDir()))
+	dir := realPath(t, t.TempDir())
+	// Keep git from discovering a repository above the temp dir.
+	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(dir))
+	chdir(t, dir)
+	writeSelfHostLauncher(t, dir)
+	setBuildCommit(t, "0000000")
+
+	if got := binarySkewPhase(); got != nil {
+		t.Errorf("binarySkewPhase() = %q, want no lines outside a git repository", got)
+	}
+}
+
+func TestBinarySkewPhase_GitMissingIsSilent(t *testing.T) {
+	_, head := selfHostFixture(t) // built first: the fixture itself needs git
+	setBuildCommit(t, otherCommit(head))
+	t.Setenv("PATH", realPath(t, t.TempDir())) // an empty PATH: no git binary
+
+	if got := binarySkewPhase(); got != nil {
+		t.Errorf("binarySkewPhase() = %q, want no lines when git cannot be run", got)
+	}
+}
+
+func TestBinarySkewPhase_UnstampedBuildIsSilent(t *testing.T) {
+	selfHostFixture(t)
+
+	// None of these is a commit, so none can be "behind" HEAD.
+	for _, commit := range []string{"", "unknown", "dev"} {
+		t.Run("BuildCommit="+commit, func(t *testing.T) {
+			setBuildCommit(t, commit)
+			if got := binarySkewPhase(); got != nil {
+				t.Errorf("binarySkewPhase() = %q, want no lines for BuildCommit %q", got, commit)
+			}
+		})
+	}
+}
+
+// TestSessionStart_BinarySkewLineFollowsVersionLine pins the append point:
+// the skew line sits directly under the "sdlc: v..." version line, and
+// nothing is added when the commits match or outside the self-host repo.
+func TestSessionStart_BinarySkewLineFollowsVersionLine(t *testing.T) {
+	dir, head := selfHostFixture(t)
+	mustMkdirAll(t, filepath.Join(dir, ".claude-plugin"))
+	mustWriteFile(t, filepath.Join(dir, ".claude-plugin", "plugin.json"), `{"name":"sdlc"}`)
+	mustMkdirAll(t, filepath.Join(dir, "skills", "plan"))
+	mustWriteFile(t, filepath.Join(dir, "skills", "plan", "SKILL.md"), "---\nuser-invocable: true\n---\nbody\n")
+
+	origVersion := PluginVersion
+	PluginVersion = "9.9.9"
+	t.Cleanup(func() { PluginVersion = origVersion })
+
+	run := func(t *testing.T) []string {
+		t.Helper()
+		out, err := sessionStart(HookCtx{}, Event{Source: "startup"})
+		if err != nil {
+			t.Fatalf("sessionStart returned error: %v", err)
+		}
+		return strings.Split(strings.TrimRight(out.PlainText, "\n"), "\n")
+	}
+
+	t.Run("mismatch", func(t *testing.T) {
+		stale := otherCommit(head)
+		setBuildCommit(t, stale)
+
+		lines := run(t)
+		want := []string{
+			"sdlc: v9.9.9 (commit " + stale + ", built unknown) (1 skills loaded)",
+			skewLine(stale, head),
+			"Plan mode routing: always invoke plan via the Skill tool when plan mode is active.",
+		}
+		if len(lines) < len(want) {
+			t.Fatalf("header has %d lines, want at least %d:\n%q", len(lines), len(want), lines)
+		}
+		assertLines(t, lines[:len(want)], want)
+	})
+
+	t.Run("match", func(t *testing.T) {
+		setBuildCommit(t, head[:7])
+		for _, l := range run(t) {
+			if strings.Contains(l, "deployed binary is behind") {
+				t.Errorf("unexpected skew line when the commits match: %q", l)
+			}
+		}
+	})
+
+	t.Run("launcher absent", func(t *testing.T) {
+		setBuildCommit(t, otherCommit(head))
+		if err := os.Remove(filepath.Join(dir, "plugins", "sdlc", "bin", "sdlc-launcher.sh")); err != nil {
+			t.Fatal(err)
+		}
+		for _, l := range run(t) {
+			if strings.Contains(l, "deployed binary is behind") {
+				t.Errorf("unexpected skew line outside the self-host repo: %q", l)
+			}
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Deferred backlog phase
+//
+// The unit cases point mainRootFunc (gitseam.go) at a temp dir and build the
+// store through history.FileWriter, the writer the ship and execute handlers
+// use, so the file the phase reads has the real on-disk shape. No git and no
+// gh run in them. The combined case at the end needs a real git repo because
+// binarySkewPhase shells out to git itself.
+// ---------------------------------------------------------------------------
+
+// withMainRoot points mainRootFunc at root for the test's duration.
+func withMainRoot(t *testing.T, root string) {
+	t.Helper()
+	orig := mainRootFunc
+	mainRootFunc = func() (string, error) { return root, nil }
+	t.Cleanup(func() { mainRootFunc = orig })
+}
+
+// deferredStore returns the writer over root's .sdlc-v2/history directory.
+func deferredStore(root string) *history.FileWriter {
+	return history.NewFileWriter(filepath.Join(root, paths.DataDir, "history"))
+}
+
+// addDeferred appends one item with the given id and status to w.
+func addDeferred(t *testing.T, w *history.FileWriter, id, status string) {
+	t.Helper()
+	err := w.AddDeferred(history.DeferredIssue{
+		ID:          id,
+		Created:     "2026-09-21T00:00:00Z",
+		Source:      "review",
+		Priority:    "medium",
+		Description: "finding " + id,
+		Status:      status,
+	})
+	if err != nil {
+		t.Fatalf("AddDeferred(%s): %v", id, err)
+	}
+}
+
+func backlogLine(n, noun string) string {
+	return "sdlc: " + n + " deferred " + noun + " open — run /sdlc:deferred to triage"
+}
+
+func TestDeferredBacklogPhase_ThreeOpenItems(t *testing.T) {
+	root := realPath(t, t.TempDir())
+	withMainRoot(t, root)
+	w := deferredStore(root)
+	for _, id := range []string{"d-1", "d-2", "d-3"} {
+		addDeferred(t, w, id, "open")
+	}
+
+	assertLines(t, deferredBacklogPhase(), []string{backlogLine("3", "items")})
+}
+
+func TestDeferredBacklogPhase_OneOpenItemIsSingular(t *testing.T) {
+	root := realPath(t, t.TempDir())
+	withMainRoot(t, root)
+	addDeferred(t, deferredStore(root), "d-1", "open")
+
+	assertLines(t, deferredBacklogPhase(), []string{backlogLine("1", "item")})
+}
+
+func TestDeferredBacklogPhase_ResolvedItemsAreNotCounted(t *testing.T) {
+	root := realPath(t, t.TempDir())
+	withMainRoot(t, root)
+	w := deferredStore(root)
+	for _, id := range []string{"d-1", "d-2", "d-3"} {
+		addDeferred(t, w, id, "open")
+	}
+	if err := w.ResolveDeferred("d-2"); err != nil {
+		t.Fatal(err)
+	}
+
+	assertLines(t, deferredBacklogPhase(), []string{backlogLine("2", "items")})
+
+	// Once every item is resolved the backlog is empty, so no line at all.
+	for _, id := range []string{"d-1", "d-3"} {
+		if err := w.ResolveDeferred(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := deferredBacklogPhase(); got != nil {
+		t.Errorf("deferredBacklogPhase() = %q, want no lines when every item is resolved", got)
+	}
+}
+
+// TestDeferredBacklogPhase_SilentWhenNothingToTriage pins that every "nothing
+// to report" shape produces no line: there is no "0 deferred" line.
+func TestDeferredBacklogPhase_SilentWhenNothingToTriage(t *testing.T) {
+	cases := []struct {
+		name string
+		// setup writes the fixture under the history dir; nil means the dir is
+		// never created, so deferred.json is missing.
+		setup func(t *testing.T, historyDir string)
+	}{
+		{"file missing", nil},
+		{"empty array", func(t *testing.T, dir string) {
+			mustWriteFile(t, filepath.Join(dir, "deferred.json"), "[]\n")
+		}},
+		{"empty file", func(t *testing.T, dir string) {
+			mustWriteFile(t, filepath.Join(dir, "deferred.json"), "")
+		}},
+		{"corrupt file", func(t *testing.T, dir string) {
+			mustWriteFile(t, filepath.Join(dir, "deferred.json"), "{not valid json")
+		}},
+		{"wrong JSON shape", func(t *testing.T, dir string) {
+			mustWriteFile(t, filepath.Join(dir, "deferred.json"), `{"open": 3}`)
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := realPath(t, t.TempDir())
+			withMainRoot(t, root)
+			if tc.setup != nil {
+				dir := filepath.Join(root, paths.DataDir, "history")
+				mustMkdirAll(t, dir)
+				tc.setup(t, dir)
+			}
+			if got := deferredBacklogPhase(); got != nil {
+				t.Errorf("deferredBacklogPhase() = %q, want no lines", got)
+			}
+		})
+	}
+}
+
+func TestDeferredBacklogPhase_MainRootUnresolvedIsSilent(t *testing.T) {
+	orig := mainRootFunc
+	mainRootFunc = func() (string, error) { return "", errors.New("not a git repo") }
+	t.Cleanup(func() { mainRootFunc = orig })
+
+	if got := deferredBacklogPhase(); got != nil {
+		t.Errorf("deferredBacklogPhase() = %q, want no lines when the main root cannot be resolved", got)
+	}
+}
+
+// TestDeferredBacklogPhase_ReadsMainRootNotActiveWorktree pins the anchor:
+// the ship and execute handlers write deferred.json under the MAIN worktree,
+// so a session inside a linked worktree must read that file, not one under
+// its own checkout. binarySkewPhase makes the opposite choice on purpose.
+func TestDeferredBacklogPhase_ReadsMainRootNotActiveWorktree(t *testing.T) {
+	mainRoot := realPath(t, t.TempDir())
+	linked := realPath(t, t.TempDir())
+	withMainRoot(t, mainRoot)
+	origActive := activeRootFunc
+	activeRootFunc = func() (string, error) { return linked, nil }
+	t.Cleanup(func() { activeRootFunc = origActive })
+
+	addDeferred(t, deferredStore(mainRoot), "d-1", "open")
+	addDeferred(t, deferredStore(linked), "d-x", "open")
+	addDeferred(t, deferredStore(linked), "d-y", "open")
+
+	assertLines(t, deferredBacklogPhase(), []string{backlogLine("1", "item")})
+}
+
+// TestSessionStart_DeferredBacklogLineFollowsSkewLine pins the append point:
+// the backlog line sits directly below the binary-skew line, and the two are
+// independent, so either can appear without the other.
+func TestSessionStart_DeferredBacklogLineFollowsSkewLine(t *testing.T) {
+	dir, head := selfHostFixture(t)
+	mustMkdirAll(t, filepath.Join(dir, ".claude-plugin"))
+	mustWriteFile(t, filepath.Join(dir, ".claude-plugin", "plugin.json"), `{"name":"sdlc"}`)
+	mustMkdirAll(t, filepath.Join(dir, "skills", "plan"))
+	mustWriteFile(t, filepath.Join(dir, "skills", "plan", "SKILL.md"), "---\nuser-invocable: true\n---\nbody\n")
+
+	origVersion := PluginVersion
+	PluginVersion = "9.9.9"
+	t.Cleanup(func() { PluginVersion = origVersion })
+
+	w := deferredStore(dir)
+	addDeferred(t, w, "d-1", "open")
+	addDeferred(t, w, "d-2", "open")
+
+	run := func(t *testing.T) []string {
+		t.Helper()
+		out, err := sessionStart(HookCtx{}, Event{Source: "startup"})
+		if err != nil {
+			t.Fatalf("sessionStart returned error: %v", err)
+		}
+		return strings.Split(strings.TrimRight(out.PlainText, "\n"), "\n")
+	}
+	const planRouting = "Plan mode routing: always invoke plan via the Skill tool when plan mode is active."
+
+	t.Run("skew and backlog", func(t *testing.T) {
+		stale := otherCommit(head)
+		setBuildCommit(t, stale)
+
+		lines := run(t)
+		want := []string{
+			"sdlc: v9.9.9 (commit " + stale + ", built unknown) (1 skills loaded)",
+			skewLine(stale, head),
+			backlogLine("2", "items"),
+			planRouting,
+		}
+		if len(lines) < len(want) {
+			t.Fatalf("header has %d lines, want at least %d:\n%q", len(lines), len(want), lines)
+		}
+		assertLines(t, lines[:len(want)], want)
+	})
+
+	t.Run("backlog only", func(t *testing.T) {
+		setBuildCommit(t, head[:7])
+
+		lines := run(t)
+		want := []string{
+			"sdlc: v9.9.9 (commit " + head[:7] + ", built unknown) (1 skills loaded)",
+			backlogLine("2", "items"),
+			planRouting,
+		}
+		if len(lines) < len(want) {
+			t.Fatalf("header has %d lines, want at least %d:\n%q", len(lines), len(want), lines)
+		}
+		assertLines(t, lines[:len(want)], want)
+	})
+
+	t.Run("no open items", func(t *testing.T) {
+		setBuildCommit(t, head[:7])
+		for _, id := range []string{"d-1", "d-2"} {
+			if err := w.ResolveDeferred(id); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, l := range run(t) {
+			if strings.Contains(l, "deferred item") {
+				t.Errorf("unexpected backlog line with no open items: %q", l)
+			}
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------

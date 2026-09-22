@@ -91,6 +91,6 @@ implementation drift caught automatically in your own project's reviews.
   change it.
 - **Dry run is useful for tuning.** If reviews miss files or take too long, use
   `--dry-run` to see the plan and adjust dimensions accordingly.
-- **Severity levels drive pipelines.** In `/ship`, findings above the configured
-  threshold trigger an automatic fix loop. Lower-severity findings are reported
-  but do not block.
+- **Severity levels drive pipelines.** In `/ship`, findings at or above the
+  configured threshold trigger an automatic fix loop. Lower-severity findings do
+  not block. They are saved for [/deferred](deferred.md), not dropped.

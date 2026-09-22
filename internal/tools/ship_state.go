@@ -530,7 +530,7 @@ func shipState(root, workDir string, in ShipStateIn, now func() time.Time) (any,
 	case "decide":
 		return shipStateDecide(root, workDir, in)
 	case "defer":
-		return shipStateDefer(root, workDir, in)
+		return shipStateDefer(root, workDir, in, now)
 	case "read":
 		return shipStateRead(root, workDir, in, now)
 	case "cleanup":
@@ -563,10 +563,8 @@ func shipState(root, workDir string, in ShipStateIn, now func() time.Time) (any,
 		return shipStateLogCLI(root, workDir, in)
 
 	default:
-		return nil, &mcpserver.DomainError{
-			Msg:        fmt.Sprintf("unknown ship_state action %q", in.Action),
-			Suggestion: "Pass one of: init, begin-step, complete-step, start, complete, skip, fail, decide, defer, read, next, todos, cleanup, cleanup-pipeline, gc, migrate, history_record, deferred_add, deferred_list, deferred_propose_followups, deferred_resolve, log-cli. start and complete are legacy aliases of begin-step and complete-step.",
-		}
+		return nil, unknownActionError("ship_state action", in.Action, "",
+			"pass one of: init, begin-step, complete-step, start, complete, skip, fail, decide, defer, read, next, todos, cleanup, cleanup-pipeline, gc, migrate, history_record, deferred_add, deferred_list, deferred_propose_followups, deferred_resolve, log-cli (start and complete are legacy aliases of begin-step and complete-step)")
 	}
 }
 
@@ -1054,7 +1052,13 @@ func shipStateDecide(root, workDir string, in ShipStateIn) (any, error) {
 	return out, nil
 }
 
-func shipStateDefer(root, workDir string, in ShipStateIn) (any, error) {
+// shipStateDefer records a below-threshold review finding. It writes the
+// finding twice: to the run-scoped ship state file (data["deferredFindings"],
+// which GC eventually sweeps) and to .sdlc-v2/history/deferred.json, which
+// survives that sweep (KD-1). Persistence happens here, at creation, so it
+// cannot depend on the ship skill reaching step 10b — any earlier exit used
+// to lose the finding outright.
+func shipStateDefer(root, workDir string, in ShipStateIn, now func() time.Time) (any, error) {
 	severity := detailStr(in.Detail, "severity")
 	file := detailStr(in.Detail, "file")
 	title := detailStr(in.Detail, "title")
@@ -1064,9 +1068,43 @@ func shipStateDefer(root, workDir string, in ShipStateIn) (any, error) {
 			Suggestion: "Pass detail.severity, detail.file, and detail.title all as non-empty strings, then retry ship_state defer.",
 		}
 	}
+	// reason is optional; when present it must be one of the values
+	// history.ValidDeferredReason accepts. The set is defined once, in
+	// internal/history, and is not restated here. The message names the
+	// whole accepted set, so a caller reading only the error text knows
+	// every value it may pass (mcp-error-actionable).
+	reason := detailStr(in.Detail, "reason")
+	accepted := strings.Join(history.DeferredReasons(), " | ")
+	if reason != "" && !history.ValidDeferredReason(reason) {
+		return nil, &mcpserver.DomainError{
+			Msg: fmt.Sprintf("defer: detail.reason %q is not a recognised deferral reason — accepted values are %s",
+				reason, accepted),
+			Suggestion: "Pass detail.reason as one of " + accepted +
+				", or omit it entirely to record " + history.ReasonBelowThreshold + ", then retry ship_state defer.",
+		}
+	}
+	if reason == "" {
+		// An omitted reason is the below-threshold case: the finding was
+		// routed out of the fix loop by its severity, not by a judgment
+		// call. Recording it explicitly keeps every deferred entry
+		// attributable — no entry carries an empty reason.
+		reason = history.ReasonBelowThreshold
+	}
+	// description is optional and carries the deferring agent's own
+	// reasoning (for needs-direction: the candidate approaches and the
+	// trade-off). It falls back to the title, which is what every caller
+	// that predates the field records today.
+	description := detailStr(in.Detail, "description")
+	if description == "" {
+		description = title
+	}
 	st, err := shipResolveAndFind(detailStr(in.Detail, "branch"), workDir, root)
 	if err != nil {
 		return nil, err
+	}
+	line := 0
+	if p := detailIntPtr(in.Detail, "line"); p != nil {
+		line = *p
 	}
 	findings, _ := st.Data["deferredFindings"].([]any)
 	findings = append(findings, map[string]any{
@@ -1074,6 +1112,7 @@ func shipStateDefer(root, workDir string, in ShipStateIn) (any, error) {
 		"file":     file,
 		"line":     in.Detail["line"],
 		"title":    title,
+		"reason":   reason,
 	})
 	st.Data["deferredFindings"] = findings
 	if err := state.Write(st); err != nil {
@@ -1084,9 +1123,27 @@ func shipStateDefer(root, workDir string, in ShipStateIn) (any, error) {
 		}
 	}
 
+	timestamp := now().UTC().Format(time.RFC3339)
+	persistErr := persistDeferred(root, history.DeferredIssue{
+		ID:          fmt.Sprintf("review-deferred-%s-%d", timestamp, len(findings)),
+		Created:     timestamp,
+		Source:      "review-below-threshold",
+		Priority:    priorityFromSeverity(severity),
+		Description: description,
+		Status:      "open",
+		Severity:    severity,
+		File:        file,
+		Line:        line,
+		Reason:      reason,
+	})
+
+	summary := fmt.Sprintf("Deferred finding recorded: %s.", title)
+	if persistErr != nil {
+		summary += deferredPersistWarning(persistErr)
+	}
 	out := ShipStepNarrationOut{
 		Narration: pipeline.Narration{
-			Summary: fmt.Sprintf("Deferred finding recorded: %s.", title),
+			Summary: summary,
 		},
 	}
 	if shipDetailLevel(in) == "full" {
@@ -1690,6 +1747,65 @@ func historyDir(root string) string {
 	return filepath.Join(root, paths.DataDir, "history")
 }
 
+// historyWriter returns the history.Writer used by the durable deferred
+// writes that shipStateDefer and execActionIssueDraft make at creation time
+// (KD-1). It is a package-level var purely so tests can substitute
+// history.MemWriter and never touch the real filesystem; the deferred_add /
+// deferred_list / deferred_resolve / deferred_propose_followups actions keep
+// constructing their own FileWriter directly, so this seam cannot change
+// their behaviour.
+var historyWriter = func(root string) history.Writer {
+	return history.NewFileWriter(historyDir(root))
+}
+
+// persistDeferred writes issue to .sdlc-v2/history/deferred.json unless an
+// entry with the same ID is already there.
+//
+// The store itself stays append-only with no dedup — deferred_add's
+// contract depends on that. The skip lives here instead, so that a handler
+// re-entered after a partial failure (state written, deferred.json write
+// failed, caller retries) does not end up with the same id recorded twice.
+func persistDeferred(root string, issue history.DeferredIssue) error {
+	w := historyWriter(root)
+	existing, err := w.ListDeferred()
+	if err != nil {
+		return err
+	}
+	for _, e := range existing {
+		if e.ID == issue.ID {
+			return nil
+		}
+	}
+	return w.AddDeferred(issue)
+}
+
+// deferredPersistWarning renders the sentence appended to a handler's
+// narration when persistDeferred failed. The write is best-effort — losing
+// deferred.json must not fail the caller's actual work — but it is never
+// swallowed: a silent failure of the fix for silent loss would be worse
+// than the original bug.
+func deferredPersistWarning(err error) string {
+	return fmt.Sprintf(
+		" WARNING: could not persist this item to %s/history/deferred.json (%s)."+
+			" It is recorded on the run-scoped state file only, and will be lost when that file is garbage-collected.",
+		paths.DataDir, err.Error())
+}
+
+// priorityFromSeverity maps a review finding's severity onto the three
+// priority buckets DeferredByPriority groups on. An unrecognised severity
+// falls back to "medium", matching deferred_add's default.
+func priorityFromSeverity(severity string) string {
+	switch strings.ToLower(strings.TrimSpace(severity)) {
+	case "critical", "high":
+		return "high"
+	case "medium":
+		return "medium"
+	case "low", "info", "trivial", "nit":
+		return "low"
+	}
+	return "medium"
+}
+
 func shipStateHistoryRecord(root string, in ShipStateIn) (any, error) {
 	d := in.Detail
 	if d == nil {
@@ -1978,7 +2094,7 @@ Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide
 - skip: Skip a step. Requires step. Returns narration. Optional: detail.branch, detail.reason, detail.detail.
 - fail: Fail a step. Requires step. Returns narration. Optional: detail.branch, detail.error (recorded as issue), detail.detail.
 - decide: Record a decision. Requires step. Returns narration. Optional: detail.branch, detail.text, detail.detail.
-- defer: Record a deferred finding. Returns narration. Requires detail.severity, detail.file, detail.title. Optional: detail.branch, detail.line, detail.detail.
+- defer: Record a deferred finding. Writes it both to the run-scoped ship state file and durably to .sdlc-v2/history/deferred.json (source "review-below-threshold"), so it survives state-file GC — no follow-up deferred_add is needed. Returns narration; a failed deferred.json write does not fail the call but is named in the summary. Requires detail.severity, detail.file, detail.title. Optional: detail.branch, detail.line, detail.detail, detail.description (the deferring agent's own reasoning; defaults to detail.title), detail.reason (one of `+strings.Join(history.DeferredReasons(), " | ")+`; an omitted reason records `+history.ReasonBelowThreshold+`).
 - read: Return the full ship state. Optional: detail.branch. When the pipeline is in flight (some step still blocks proceed and at least one step has been started), the state also carries a "resumeBriefing" (resumable, lastStep, lastStepStatus, sideEffects, summary, display, timing{stepSeconds,pipelineSeconds,idleSeconds,human}, next). A step left "failed" is still reported resumable:true, never as an error.
 - cleanup: Stamp a branch's ship state terminal (pipelineStatus:"completed", pipelineCompletedAt) instead of deleting it, after validating every step is in a terminal state — the state survives for later reads until GC's TTL prunes it. Optional: detail.branch.
 - cleanup-pipeline: Same stamp-instead-of-delete for the current branch's ship state (force/no-state-file skip the contract check), followed by an unconditional GC + per-run-directory sweep. Optional: detail.branch, detail.force, detail.ttlDays.

@@ -14,7 +14,7 @@ On-demand companion for `ship/SKILL.md` (implements R-progressive-disclosure). R
 | `gh`/network error during an inline step (verify-pipeline, await-remote-review, archive) | `poll_await({target:"pipeline"|"remote_review", ...})` already returns a stepper `error` status on transient `gh` failures — log it and re-probe on the next turn rather than aborting immediately | No — transient |
 | `ship_state` write fails (`InfraError`) | Warn and continue where safe; if it happens inside `begin-step`/`complete-step`, stop and surface the error — state persistence is not optional for resume correctness | No |
 | Resume state file corrupt or missing | `ship_state{action:"read"}` will report the failure; treat as "no prior run" and start fresh | No |
-| Review verdict unparseable | Treat as APPROVED WITH NOTES, warn the user, defer all findings | No |
+| Review result has no parsable `#### [SEVERITY]` finding heading | Treat the review as finding-free, warn the user, record `bypassed 0 finding(s)` with `ship_state{action:"decide", step:"review"}`. Never fall back to the `Verdict:` line. | No |
 | Sub-skill Agent times out | Stop the pipeline, save state, inform the user to `--resume` | No — transient |
 
 **Resume instruction format** (printed on step failure after retries exhausted or on any unrecoverable step error):
@@ -53,9 +53,9 @@ Each sub-skill has its own error recovery. ship does not duplicate their recover
 
 **Staging gap after execute.** `execute` creates and modifies files but does not stage them. ship must run `git add -A -- ':!.sdlc-v2/'` between execute and commit. Missing this produces an empty commit.
 
-**Verdict detection is text-based.** Parse the conversation for a line matching `Verdict: <VERDICT>`. The review orchestrator always emits this. If the conversation is compacted between review and verdict parsing, the verdict may be lost — treat a missing verdict as APPROVED WITH NOTES and warn the user.
+**Finding detection is text-based and per finding.** Parse the conversation for each `#### [{SEVERITY}] {title}` heading the review orchestrator emits (the file and line come from the `**File:**` line under it) and route every finding on its own severity — see `SKILL.md` Decisions & gates. The `Verdict: <VERDICT>` line is a summary for the log, not a router. If the conversation is compacted between review and finding parsing, the headings may be lost — treat a review with no parsable heading as finding-free, warn the user, and record `bypassed 0 finding(s)`.
 
-**received-review supports `--auto`.** When forwarded, both its consent prompt and its reply/resolve prompt are skipped. "Will fix" items are auto-implemented and their threads auto-resolved via in-thread replies. "Disagree"/"won't fix" items are displayed but not auto-implemented; their threads are replied to but left open for the reviewer. Critique gates and verification still run. Without `--auto`, the pipeline pauses for human approval at both gates.
+**received-review supports `--auto`.** When forwarded, both its consent prompt and its reply/resolve prompt are skipped. "Will fix" items are auto-implemented and their threads auto-resolved via in-thread replies. Every other outcome ("won't fix", "disagree", "cannot verify", "needs direction") becomes `needs-direction`: it is displayed, not auto-implemented, recorded through `ship_state{action:"defer"}`, and its thread is replied to but left open for the reviewer. Critique gates and verification still run. Without `--auto`, the pipeline pauses for human approval at both gates.
 
 **Double commit is intentional.** The feature commit (step 2) and the review-fix commit (step 5) are separate `commit_apply` calls. This keeps feature work and review fixes distinct in git history. Do not squash them.
 

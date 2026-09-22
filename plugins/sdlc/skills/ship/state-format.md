@@ -164,13 +164,13 @@ Appended by `ship_state{action:"decide", step, detail:{text}}`. Never overwritte
 
 ## `deferredFindings` Array
 
-Appended by `ship_state{action:"defer", detail:{severity, file, title, line?}}`. `severity`, `file`, and `title` are required by the tool (a `DomainError` otherwise); `line` is passed through as-is (including `null`).
+Appended by `ship_state{action:"defer", detail:{severity, file, title, line?, reason?, description?}}`. `severity`, `file`, and `title` are required by the tool (a `DomainError` otherwise); `line` is passed through as-is (including `null`). `reason` is optional: one of `below-threshold`, `needs-direction`, `disagree`, `wont-fix` (any other value is a `DomainError` that names the accepted set). An omitted `reason` records `below-threshold`. `description` is optional and defaults to `title`. The same call also writes the finding to `.sdlc-v2/history/deferred.json`, which `/sdlc:deferred` reads.
 
 ```json
-{ "severity": "medium", "file": "src/auth.ts", "line": 42, "title": "Extract token validation" }
+{ "severity": "medium", "file": "src/auth.ts", "line": 42, "title": "Extract token validation", "reason": "below-threshold" }
 ```
 
-Only `medium` and `low` findings should be deferred this way. `critical`/`high` findings are expected to route through `received-review` instead.
+Ship's review routing defers each finding below `flags.reviewThreshold` this way, with `reason: "below-threshold"`. `received-review` defers the findings it does not fix (`needs-direction`, `disagree`, `wont-fix`) at any severity.
 
 ---
 

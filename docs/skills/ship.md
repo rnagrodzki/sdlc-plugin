@@ -153,8 +153,9 @@ written.
   threshold, release bump, and more.
 - **`--quick` needs configuration.** It uses a shortened step list from your
   project config. Nothing happens if no shortcut list is set up.
-- **Review threshold.** Default: `high` — only critical and high findings
-  trigger the fix loop. Change it via `/setup`.
+- **Review threshold.** Default: `low` — every finding, including Low,
+  triggers the fix loop. Change it via `/setup`. Findings below a higher
+  threshold are saved for [/deferred](deferred.md), not dropped.
 - **Saved progress survives sessions.** Run `/ship --resume` in a new session
   to continue an interrupted pipeline.
 - **Two independent automation controls.** `--auto` (and its config
