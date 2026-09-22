@@ -8,13 +8,13 @@ model: sonnet
 
 # Deferred Follow-ups (SDLC)
 
-Some findings are recorded during a pipeline run but not fixed: review findings below the review threshold, and issue drafts raised by the execute step. Each one is stored the moment it is found, in .sdlc-v2/history/deferred.json, so it survives an early exit and state-file cleanup. This skill shows the open items and lets you triage them. You can file an item as a GitHub issue, or close it without filing.
+Some findings are recorded during a pipeline run but not fixed: review findings below the review threshold, issue drafts raised by the execute step, and findings `/received-review` left unfixed (`wont-fix`, `disagree`, `needs-direction`). Each one is written to `<MAIN_ROOT>/.sdlc-v2/history/deferred.json` the moment it is found, so it normally survives an early exit and state-file cleanup. That write is best-effort: the recording tool warns instead of failing, so an item whose write failed is not here. This skill shows the open items and lets you triage them. You can file an item as a GitHub issue, or close it without filing.
 
 **Announce at start:** "I'm using deferred (sdlc v{sdlc_version})." - extract the version from the `sdlc:` line in the session-start system-reminder. If no version is in context, omit the parenthetical.
 
 **Render every `display` field verbatim.** A `ship_state` response with a `display` field is pre-formatted markdown. Print it as it is. Never paraphrase or reformat it.
 
-Companion file: [`reference.md`](reference.md) holds the triage flow. Ship Step 10b follows the same file, so the flow is written down once.
+Companion file: [`reference.md`](reference.md) holds the triage flow. Ship Step 10b follows the same file.
 
 ---
 
@@ -34,14 +34,16 @@ Stop with a one-line usage message, `/sdlc:deferred [--list | --resolve <id>]`, 
 
 1. Call `ship_state({action:"deferred_list"})`. It returns `{issues, openCount}`. `issues` includes resolved items and has no `display`, so this mode formats its own output.
 2. If `openCount` is 0, print exactly `No deferred items open.` and stop. Print no table.
-3. Otherwise print a markdown table of the items whose `status` is `open`, with the columns `ID`, `Priority`, `Source`, `Created` and `Description`. Put high priority first, and the oldest first within one priority. When an item has `file`, add ` (file:line)` after its description, and drop `:line` when `line` is 0. Do not print resolved items.
+3. Otherwise print a markdown table of the items whose `status` is `open`, with the columns `ID`, `Priority`, `Reason`, `Created` and `Description`. Fill `Reason` from the item's `reason`, falling back to its `source` when `reason` is unset — `source` is `review-below-threshold` on every `ship_state defer` record, so it is not the reason on its own. Put high priority first, and the oldest first within one priority. When an item has `file`, add ` (file:line)` after its description, and drop `:line` when `line` is 0. Do not print resolved items.
 4. Stop. Ask nothing and change nothing.
 
 ### 2b. `--resolve <id>`
 
-1. Call `ship_state({action:"deferred_resolve", detail:{id:"<id>"}})`. It returns `{ok, id}`.
-2. On success, print `Resolved <id> without filing an issue.` and stop.
-3. On an error, print the tool's message and its suggestion as they are, and stop. An unknown id means the id is wrong or already resolved: tell the user to run `/sdlc:deferred --list` to see the open ids.
+1. Call `ship_state({action:"deferred_list"})` and look for this id. `deferred_resolve` succeeds on an already-resolved id, so check the status first.
+2. If the item is there and its `status` is not `open`, print `<id> is already resolved.` and stop. Call nothing else.
+3. Otherwise call `ship_state({action:"deferred_resolve", detail:{id:"<id>"}})`. It returns `{ok, id}`.
+4. On success, print `Resolved <id> without filing an issue.` and stop.
+5. On an error, print the tool's message and its suggestion as they are, and stop. An unknown id means the id is wrong: tell the user to run `/sdlc:deferred --list` to see the open ids.
 
 This mode never asks a question and never calls `gh`.
 
@@ -57,7 +59,8 @@ This mode never asks a question and never calls `gh`.
 ## Rules
 
 - Before every `gh issue create`, show the full drafted title and body in chat and get the user's approval. No approval, no issue.
-- Every issue gets the label `deferred-followup`.
+- Every issue gets the label `deferred-followup`, unless the user chose to file without it because the label does not exist yet.
+- `gh label create` writes to the shared remote repo. Never run it without asking the user first.
 - Never append an AI-tool attribution line ("Generated with Claude Code" or similar) to an issue body.
 - Call `deferred_resolve` for an item only after its issue was created, or when the user chose to resolve it without filing.
 - Never Read or edit the deferred store file by hand. Every change goes through `ship_state`.

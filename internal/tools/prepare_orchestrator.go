@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
@@ -165,7 +164,7 @@ func prepareOrchestrator(in PrepareOrchestratorIn) (PrepareOrchestratorOut, erro
 		// provided (or auto-resolved from root).
 		histPath := in.HistoryPath
 		if histPath == "" {
-			histPath = filepath.Join(root, paths.DataDir, "history")
+			histPath = paths.HistoryDir(root)
 		}
 		if err := injectHardenHistory(out.ManifestPath, histPath); err != nil {
 			// Non-fatal — history is supplementary evidence; log as

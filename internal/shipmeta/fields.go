@@ -33,8 +33,19 @@ var ReservedSteps = []string{"cleanup"}
 // VALID_STEPS in scripts/lib/ship-fields.js (an alias of CANONICAL_STEPS).
 var ValidSteps = CanonicalSteps
 
-// shipBuiltInDefaults holds ship.js's BUILT_IN_DEFAULTS runtime fallback
-// values. Mirrors BUILT_IN_DEFAULTS in scripts/lib/ship-fields.js.
+// shipBuiltInDefaults holds the runtime fallback values used when neither a
+// CLI flag nor the project's ship config supplies one.
+//
+// The ShipBuiltInDefaults table below is the AUTHORITY for these values —
+// the JS BUILT_IN_DEFAULTS it was ported from no longer exists in this repo.
+// Two places restate them for readers and must not drift:
+// plugins/sdlc/skills/ship/config-format.md (the Field Reference table, its
+// Full Example JSON block and the surrounding prose) and
+// plugins/sdlc/templates/local.toml (what /setup copies into a new project).
+// internal/config's TestShippedReviewThresholdDefaultsAgree pins the
+// reviewThreshold value across this table, the template, the setup wizard
+// and the docs; the remaining fields are unguarded, so change them together
+// by hand.
 type shipBuiltInDefaultsT struct {
 	Steps                       []string
 	Bump                        string
@@ -52,12 +63,13 @@ type shipBuiltInDefaultsT struct {
 	ExecuteWaveInterval         int
 }
 
-// ShipBuiltInDefaults holds ship.js's BUILT_IN_DEFAULTS runtime fallback
-// values (used when neither CLI flag nor ship config supplies a value).
-// NOTE: Steps here is PRESET_TO_STEPS.balanced (narrower than
-// CanonicalSteps) — an intentional, source-documented divergence between the
-// questionnaire default and the runtime fallback (see
-// scripts/lib/config-migrations.js).
+// ShipBuiltInDefaults holds the runtime fallback values (used when neither a
+// CLI flag nor the ship config supplies a value). See shipBuiltInDefaultsT
+// above for which files restate these values.
+// NOTE: Steps here is the "balanced" preset step list (narrower than
+// CanonicalSteps) — an intentional divergence between the questionnaire
+// default and the runtime fallback, kept from the JS config-migrations this
+// table was ported from.
 var ShipBuiltInDefaults = shipBuiltInDefaultsT{
 	Steps:                       []string{"execute", "commit", "review", "archive-openspec", "pr", "learnings-commit"},
 	Bump:                        "patch",

@@ -16,14 +16,25 @@ import (
 // the no-real-fs-git-in-tests guardrail (error severity) requires for any
 // new test code exercising them.
 //
-// Only the handlers that gained new tests as part of this change
-// (resolveRootBranch in evidence.go, resolveActiveWorktreeSafe in
-// session_start.go, gatedAdvancingShipState in block_askuserquestion.go,
-// and the new waveLiveness hook) are routed through these vars. Every
-// other worktree.*/gitx.*/state.Find call site in this package (e.g.
+// Routed through these vars (keep this list in step with
+// `grep -n 'mainRootFunc\|activeRootFunc\|currentBranchFunc\|findStateFunc' *.go`):
+//
+//   - resolveRootBranch (evidence.go) — mainRootFunc, currentBranchFunc
+//   - resolveActiveWorktreeSafe (session_start.go) — activeRootFunc
+//   - deferredBacklogPhase (session_start.go) — mainRootFunc
+//   - gatedAdvancingShipState (block_askuserquestion.go) — mainRootFunc,
+//     currentBranchFunc
+//   - waveLiveness (wave_liveness.go) — findStateFunc
+//
+// Every other worktree.*/gitx.*/state.Find call site in this package (e.g.
 // post_tool_validate.go, pre_compact_save.go, stop_hooks.go) is
-// intentionally left calling the real packages directly — out of scope for
-// this change, unaffected by it.
+// intentionally left calling the real packages directly — out of scope,
+// unaffected.
+//
+// binarySkewPhase (session_start.go) is deliberately NOT routed here: it
+// runs `git rev-parse` against the plugin's own checkout, not the project
+// worktree, so none of these vars describe what it resolves. Its tests build
+// a real repo under t.TempDir(), which no-real-fs-git-in-tests permits.
 var (
 	// mainRootFunc resolves the main worktree root. Defaults to
 	// worktree.MainRoot.

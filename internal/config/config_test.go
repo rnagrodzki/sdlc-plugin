@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -1709,12 +1710,40 @@ func TestTracing_SuppressedWhenQuiet(t *testing.T) {
 // Shipped defaults
 // ---------------------------------------------------------------------------
 
+// extractFencedJSON returns the content of the first ```json fenced block
+// that appears after the given heading in doc. It fails the test if either
+// the heading or the fence is missing, rather than silently returning "".
+func extractFencedJSON(t *testing.T, doc, heading string) string {
+	t.Helper()
+	idx := strings.Index(doc, heading)
+	if idx < 0 {
+		t.Fatalf("no %q heading found", heading)
+	}
+	rest := doc[idx:]
+	const fenceOpen = "```json"
+	start := strings.Index(rest, fenceOpen)
+	if start < 0 {
+		t.Fatalf("no fenced json block after %q heading", heading)
+	}
+	rest = rest[start+len(fenceOpen):]
+	end := strings.Index(rest, "```")
+	if end < 0 {
+		t.Fatalf("unterminated fenced json block after %q heading", heading)
+	}
+	return rest[:end]
+}
+
 // TestShippedReviewThresholdDefaultsAgree pins every shipped default for
-// ship.reviewThreshold to one value (KD-15). Four places state it: the
-// template that setup copies, the setup wizard, the built-in fallback that
-// ship_prepare uses when a project sets no ship.reviewThreshold, and the
-// default column of ship/config-format.md. When one moves without the others,
-// a project gets a different fix-loop depth depending on how it was set up.
+// ship.reviewThreshold to one value (KD-15). Four places are the source of
+// truth: the template that setup copies, the setup wizard, the built-in
+// fallback that ship_prepare uses when a project sets no ship.reviewThreshold,
+// and the default column of ship/config-format.md's Field Reference table.
+// Five more restate the same value for a reader and are pinned here too:
+// config-format.md's "Full Example" JSON block and its "(the default)"
+// prose sentence, entry-modes.md's dry-run text (two spots), and
+// docs/skills/ship.md's Review threshold bullet. When one moves without the
+// others, a project gets a different fix-loop depth depending on how it was
+// set up, or a doc describes a default that no longer exists.
 func TestShippedReviewThresholdDefaultsAgree(t *testing.T) {
 	const want = "low"
 	repo := filepath.Join("..", "..")
@@ -1767,11 +1796,61 @@ func TestShippedReviewThresholdDefaultsAgree(t *testing.T) {
 	}
 	docDefault := strings.Trim(strings.TrimSpace(cells[3]), "`\"")
 
+	// config-format.md: the "Full Example" fenced JSON block restates the
+	// default inline. Parse it as JSON rather than regexp so a reformat
+	// cannot silently defeat the check.
+	fullExampleJSON := extractFencedJSON(t, string(doc), "## Full Example")
+	var example struct {
+		Ship struct {
+			ReviewThreshold string `json:"reviewThreshold"`
+		} `json:"ship"`
+	}
+	if err := json.Unmarshal([]byte(fullExampleJSON), &example); err != nil {
+		t.Fatalf("parse config-format.md Full Example JSON: %v", err)
+	}
+
+	// config-format.md: the "(the default)" prose sentence.
+	proseMatch := regexp.MustCompile("At `\"(\\w+)\"` \\(the default\\)").FindStringSubmatch(string(doc))
+	if proseMatch == nil {
+		t.Fatal(`config-format.md has no "At "X" (the default)" sentence`)
+	}
+
+	// entry-modes.md: the dry-run text restates the default twice.
+	entryPath := filepath.Join(repo, "plugins", "sdlc", "skills", "ship", "entry-modes.md")
+	entryDoc, err := os.ReadFile(entryPath)
+	if err != nil {
+		t.Fatalf("read entry-modes.md: %v", err)
+	}
+	dryRunMatch := regexp.MustCompile(`threshold (\w+),`).FindStringSubmatch(string(entryDoc))
+	if dryRunMatch == nil {
+		t.Fatal(`entry-modes.md has no "threshold X," dry-run text`)
+	}
+	aboveMatch := regexp.MustCompile(`every finding \((\w+) and above\)`).FindStringSubmatch(string(entryDoc))
+	if aboveMatch == nil {
+		t.Fatal(`entry-modes.md has no "every finding (X and above)" text`)
+	}
+
+	// docs/skills/ship.md: the Review threshold bullet.
+	shipDocPath := filepath.Join(repo, "docs", "skills", "ship.md")
+	shipDoc, err := os.ReadFile(shipDocPath)
+	if err != nil {
+		t.Fatalf("read docs/skills/ship.md: %v", err)
+	}
+	bulletMatch := regexp.MustCompile("Review threshold\\.\\*\\* Default: `(\\w+)`").FindStringSubmatch(string(shipDoc))
+	if bulletMatch == nil {
+		t.Fatal(`docs/skills/ship.md has no "Review threshold." Default bullet`)
+	}
+
 	got := map[string]string{
-		"plugins/sdlc/templates/local.toml [ship].reviewThreshold":          tmpl.Ship.ReviewThreshold,
-		"setupmeta.ShipFields reviewThreshold Default":                      wizard,
-		"shipmeta.ShipBuiltInDefaults.ReviewThreshold":                      shipmeta.ShipBuiltInDefaults.ReviewThreshold,
-		"plugins/sdlc/skills/ship/config-format.md reviewThreshold default": docDefault,
+		"plugins/sdlc/templates/local.toml [ship].reviewThreshold":              tmpl.Ship.ReviewThreshold,
+		"setupmeta.ShipFields reviewThreshold Default":                          wizard,
+		"shipmeta.ShipBuiltInDefaults.ReviewThreshold":                          shipmeta.ShipBuiltInDefaults.ReviewThreshold,
+		"plugins/sdlc/skills/ship/config-format.md reviewThreshold default":     docDefault,
+		"plugins/sdlc/skills/ship/config-format.md Full Example JSON":           example.Ship.ReviewThreshold,
+		`plugins/sdlc/skills/ship/config-format.md "(the default)" prose`:       proseMatch[1],
+		`plugins/sdlc/skills/ship/entry-modes.md dry-run "threshold X," text`:   dryRunMatch[1],
+		`plugins/sdlc/skills/ship/entry-modes.md "every finding (X and above)"`: aboveMatch[1],
+		"docs/skills/ship.md Review threshold bullet":                           bulletMatch[1],
 	}
 	for source, value := range got {
 		if value != want {

@@ -24,6 +24,22 @@ import (
 //     "; must be one of: a, b". Pass "" when the site has none.
 //   - advice: the site's valid-action advice as a lowercase phrase with no
 //     trailing period. It is spliced into "Either <advice>, or update ...".
+//
+// msgTail and advice are both free text and adjacent, so a transposed pair
+// still compiles and only shows up in the rendered error. Copy the argument
+// order from this worked call:
+//
+//	unknownActionError("jira action", in.Action, "; must be one of: link, sync",
+//		"pass one of the valid actions: link, sync")
+//
+// which renders as:
+//
+//	Msg:        unknown jira action "unlink" (sdlc v0.1.5, commit abc1234); must be one of: link, sync
+//	Suggestion: This action is not in the running binary. Either pass one of the
+//	            valid actions: link, sync, or update the sdlc plugin — ...
+//
+// i.e. msgTail continues the MESSAGE (leading "; " or " " included, since it
+// is concatenated raw) and advice continues the SUGGESTION.
 func unknownActionError(kind, action, msgTail, advice string) *mcpserver.DomainError {
 	info := version.GetBuildInfo()
 	return &mcpserver.DomainError{

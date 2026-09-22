@@ -515,6 +515,9 @@ proposal's `patch`, and replace its fields with the proposal's merged values
 (description, severity). Do NOT remove fields; do NOT lower severity
 (strengthen-only invariant — R8/C9). If no guardrail with the target id exists
 in the current file, treat the proposal as malformed and surface to the user.
+With `--auto`: do not call `AskUserQuestion` — skip the proposal without writing
+and list it under `Skipped` in the 5d summary as `malformed consolidate`, then
+continue to the next proposal.
 `consolidate` goes through the same write-then-validate-then-revert flow as 5a.
 
 ### 5c. Ambiguous upstream-report offer (R-ambig-offer)
@@ -539,11 +542,13 @@ user explicitly approves the dispatch. When `RESULT.errorReportPayload == null`
 on `ambiguous` (pure user-code ambiguity), this sub-step is suppressed entirely
 — do not surface the prompt.
 
-**With `--auto`:** suppress this sub-step. Do not call `AskUserQuestion` and do
-not invoke `error-report` — filing a GitHub issue needs a human-approved draft,
-which a subagent cannot give. List `RESULT.errorReportPayload` under `Not filed`
-in the 5d summary so the caller can relay it, and record
-`AmbiguousOffer: auto-suppressed` in Step 7.
+**With `--auto`, when `RESULT.errorReportPayload != null`:** suppress this
+sub-step. Do not call `AskUserQuestion` and do not invoke `error-report` —
+filing a GitHub issue needs a human-approved draft, which a subagent cannot
+give. List `RESULT.errorReportPayload` under `Not filed` in the 5d summary so
+the caller can relay it, and record `AmbiguousOffer: auto-suppressed` in Step 7.
+When `errorReportPayload == null` there is no payload to relay: the sub-step is
+already suppressed by the paragraph above, and Step 7 records `not-applicable`.
 
 ### 5d. Auto-accepted summary (only when `--auto` is set)
 

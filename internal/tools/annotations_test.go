@@ -197,7 +197,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		destructive: true,
 		idempotent:  false,
 		openWorld:   true,
-		reason:      "caller-redirectable state_file; ghx.PRReviewsJSON, ghx.PRChecksWithExitCode",
+		reason:      "caller-redirectable state_file; ghx.PRReviews, ghx.PRChecksWithExitCode",
 	},
 	"openspec_enrich": {
 		title:       "Write OpenSpec config block",

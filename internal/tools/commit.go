@@ -385,8 +385,10 @@ type CommitApplyIn struct {
 // CommitApplyOut is the output for the commit_apply tool.
 type CommitApplyOut struct {
 	SHA                   string   `json:"sha" jsonschema_description:"Full SHA of the commit that was created."`
-	Summary               string   `json:"summary" jsonschema_description:"Plain-language result: the short SHA, how many files the commit holds, and which untracked paths were left out. Quote this instead of assuming everything in the working tree was committed."`
+	Summary               string   `json:"summary" jsonschema_description:"Plain-language result: the short SHA, how many files the commit holds, and which untracked and tracked paths were left out. Quote this instead of assuming everything in the working tree was committed. The follow-up step is in next, not here."`
 	SkippedUntrackedPaths []string `json:"skippedUntrackedPaths" jsonschema_description:"Untracked paths that commit_apply did NOT stage or commit; a wholly untracked directory is listed as dir/. commit_apply stages only tracked files that have changes, plus files already staged, and never anything under .sdlc-v2/. Renders as (none) when nothing was skipped. Never report these paths as committed: run git add on any that belong in the change, then commit again."`
+	SkippedTrackedPaths   []string `json:"skippedTrackedPaths" jsonschema_description:"Tracked paths with working-tree changes that commit_apply did NOT stage or commit because they live under .sdlc-v2/ (the runtime state directory, e.g. .sdlc-v2/config.toml). They are still modified in the working tree. Renders as (none) when nothing was skipped. Never report these paths as committed: run git add on any that belong in the change, then commit again."`
+	Next                  string   `json:"next" jsonschema_description:"The exact follow-up step: either a confirmation that the commit holds everything, or the git add plus commit_apply retry needed for the paths named in skippedUntrackedPaths and skippedTrackedPaths."`
 }
 
 // scopedStagePaths returns the explicit path list commit_apply stages: tracked
@@ -397,25 +399,34 @@ type CommitApplyOut struct {
 // staged as deleted or renamed away. Untracked files are never in scope, and
 // everything under paths.DataDir is dropped whatever git reports.
 //
+// The second return value holds the tracked paths that the paths.DataDir filter
+// dropped, so the caller can report what it left uncommitted instead of
+// silently swallowing it. Both slices are non-nil.
+//
 // -z keeps names with spaces, quotes, or non-ASCII bytes intact. Without it git
 // wraps them in quotes, and the later git add would not match the file.
-func scopedStagePaths(gitRoot string) ([]string, error) {
+func scopedStagePaths(gitRoot string) (scoped, skippedTracked []string, err error) {
 	out, err := execx.Run("git", []string{"diff", "--name-only", "-z"}, execx.Options{Dir: gitRoot})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	scoped := []string{}
+	scoped = []string{}
+	skippedTracked = []string{}
 	for _, p := range strings.Split(out, "\x00") {
-		if p == "" || p == paths.DataDir || strings.HasPrefix(p, paths.DataDir+"/") {
+		if p == "" {
+			continue
+		}
+		if p == paths.DataDir || strings.HasPrefix(p, paths.DataDir+"/") {
+			skippedTracked = append(skippedTracked, p)
 			continue
 		}
 		scoped = append(scoped, p)
 	}
-	return scoped, nil
+	return scoped, skippedTracked, nil
 }
 
-// maxListedPaths caps how many paths a message names inline. The full list
-// always stays in SkippedUntrackedPaths.
+// maxListedPaths caps how many paths a message names inline. The full lists
+// always stay in SkippedUntrackedPaths and SkippedTrackedPaths.
 const maxListedPaths = 10
 
 // listPaths joins up to maxListedPaths entries for use inside a message, and
@@ -430,26 +441,53 @@ func listPaths(list []string) string {
 	return fmt.Sprintf("%s, and %d more", strings.Join(list[:maxListedPaths], ", "), len(list)-maxListedPaths)
 }
 
-// commitApplySummary builds the plain-language Summary for CommitApplyOut.
-func commitApplySummary(sha string, fileCount int, skipped []string) string {
-	short := sha
-	if len(short) > 7 {
-		short = short[:7]
+// commitApplySummary builds the plain-language Summary for CommitApplyOut. It
+// describes the outcome only; the follow-up step lives in Next.
+func commitApplySummary(sha string, fileCount int, skippedUntracked, skippedTracked []string) string {
+	summary := fmt.Sprintf("Committed %s with %d file(s).", shortSHA(sha), fileCount)
+	if len(skippedUntracked) == 0 {
+		summary += " No untracked paths were left out."
+	} else {
+		summary += fmt.Sprintf(
+			" %d untracked path(s) were NOT committed and are still untracked: %s.",
+			len(skippedUntracked), listPaths(skippedUntracked))
 	}
-	summary := fmt.Sprintf("Committed %s with %d file(s).", short, fileCount)
-	if len(skipped) == 0 {
-		return summary + " No untracked paths were left out."
+	if len(skippedTracked) > 0 {
+		summary += fmt.Sprintf(
+			" %d tracked path(s) under %s/ were NOT committed and are still modified in the working tree: %s.",
+			len(skippedTracked), paths.DataDir, listPaths(skippedTracked))
 	}
-	return summary + fmt.Sprintf(
-		" %d untracked path(s) were NOT committed and are still untracked: %s. commit_apply stages only tracked changes and files already staged. Run git add on any that belong in this change, then commit again. Do not report them as committed.",
-		len(skipped), listPaths(skipped))
+	return summary
+}
+
+// commitApplyNext builds the Next line for CommitApplyOut: one fixed
+// confirmation when the commit holds everything, and an explicit git add plus
+// retry instruction naming the paths that were left out otherwise.
+func commitApplyNext(skippedUntracked, skippedTracked []string) string {
+	if len(skippedUntracked) == 0 && len(skippedTracked) == 0 {
+		return "Commit created and nothing was left out. Report the sha above as the committed change."
+	}
+	parts := []string{}
+	if len(skippedUntracked) > 0 {
+		parts = append(parts, fmt.Sprintf(
+			"These untracked paths were left out and are still untracked: %s. Run git add on the ones that belong in this change, then call commit_apply again. Do not report them as committed.",
+			listPaths(skippedUntracked)))
+	}
+	if len(skippedTracked) > 0 {
+		parts = append(parts, fmt.Sprintf(
+			"These tracked paths under %s/ were left out and are still uncommitted: %s. Run git add on the ones that belong in this change, then call commit_apply again. Do not report them as committed.",
+			paths.DataDir, listPaths(skippedTracked)))
+	}
+	return strings.Join(parts, " ")
 }
 
 // commitApply is the core logic, separated for testability.
 //
 // Staging is scoped, never tree-wide: it stages the explicit path list from
 // scopedStagePaths and commits together with whatever is already staged.
-// Untracked files are left alone and returned in SkippedUntrackedPaths.
+// Untracked files are left alone and returned in SkippedUntrackedPaths, and
+// tracked changes under paths.DataDir are left alone and returned in
+// SkippedTrackedPaths. Next names the follow-up step for both.
 func commitApply(cfgRoot, gitRoot string, in CommitApplyIn) (CommitApplyOut, error) {
 	if strings.TrimSpace(in.Message) == "" {
 		return CommitApplyOut{}, &mcpserver.DataError{
@@ -471,7 +509,7 @@ func commitApply(cfgRoot, gitRoot string, in CommitApplyIn) (CommitApplyOut, err
 
 	// Resolve the scope before touching the index. Both queries are read-only,
 	// so a failure here leaves the repository exactly as it was.
-	scopedPaths, err := scopedStagePaths(gitRoot)
+	scopedPaths, skippedTracked, err := scopedStagePaths(gitRoot)
 	if err != nil {
 		return CommitApplyOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("git diff --name-only: %s", err.Error()),
@@ -516,9 +554,9 @@ func commitApply(cfgRoot, gitRoot string, in CommitApplyIn) (CommitApplyOut, err
 	}
 	if strings.TrimSpace(stagedNames) == "" {
 		return CommitApplyOut{}, &mcpserver.DataError{
-			Msg: fmt.Sprintf("nothing to commit: pathspec %s produced no staged changes and nothing was staged before; untracked paths left out: %s",
-				listPaths(scopedPaths), listPaths(skipped)),
-			Suggestion: "commit_apply stages only tracked files that have changes, plus files already staged. It never stages untracked files or anything under .sdlc-v2/. If the change you want is in the untracked paths named above, run git add on them and call commit_apply again. Otherwise modify or add files first, then call commit_prepare again to build a fresh payload before retrying commit_apply.",
+			Msg: fmt.Sprintf("nothing to commit: pathspec %s produced no staged changes and nothing was staged before; untracked paths left out: %s; tracked paths under %s/ left out: %s",
+				listPaths(scopedPaths), listPaths(skipped), paths.DataDir, listPaths(skippedTracked)),
+			Suggestion: "commit_apply stages only tracked files that have changes, plus files already staged. It never stages untracked files or anything under .sdlc-v2/. If the change you want is in the untracked or the tracked paths named above, run git add on them and call commit_apply again. Otherwise modify or add files first, then call commit_prepare again to build a fresh payload before retrying commit_apply.",
 		}
 	}
 
@@ -545,8 +583,10 @@ func commitApply(cfgRoot, gitRoot string, in CommitApplyIn) (CommitApplyOut, err
 	sha = strings.TrimSpace(sha)
 	return CommitApplyOut{
 		SHA:                   sha,
-		Summary:               commitApplySummary(sha, len(nonEmptyLines(stagedNames)), skipped),
+		Summary:               commitApplySummary(sha, len(nonEmptyLines(stagedNames)), skipped, skippedTracked),
 		SkippedUntrackedPaths: skipped,
+		SkippedTrackedPaths:   skippedTracked,
+		Next:                  commitApplyNext(skipped, skippedTracked),
 	}, nil
 }
 
@@ -586,7 +626,7 @@ func RegisterCommitTools(s *mcpserver.Server) {
 	)
 
 	mcpserver.Register(s, "commit_apply",
-		"Create a git commit with the given message from the tracked changes in the working tree plus anything already staged, and return the commit SHA. Files are staged by an explicit path list, never by sweeping the whole tree: untracked files are not staged or deleted and are named in skippedUntrackedPaths, and nothing under .sdlc-v2/ is staged. git add any untracked file that belongs in the commit before calling.",
+		"Create a git commit with the given message from the tracked changes in the working tree plus anything already staged, and return the commit SHA. Files are staged by an explicit path list, never by sweeping the whole tree: untracked files are not staged or deleted and are named in skippedUntrackedPaths, and tracked changes under .sdlc-v2/ are not staged either and are named in skippedTrackedPaths. git add any file from either list that belongs in the commit before calling. Not terminal: read next, which states whether the commit holds everything or a git add plus a second commit_apply call is still needed.",
 		mcpserver.Annotations{
 			Title:       "Create a git commit",
 			ReadOnly:    false,

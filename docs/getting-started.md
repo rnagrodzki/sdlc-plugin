@@ -90,13 +90,14 @@ Each stage of a change maps to one skill. Run them in order, or let
 |---|---|---|
 | Plan | `/plan` | Turn a requirement, spec, or description into a task-decomposed implementation plan. |
 | Execute | `/execute <plan-file>` | Implement a plan file wave by wave, with per-wave verification. |
-| Commit | `/commit` | Generate a commit message from the staged diff and commit history, then commit. |
+| Commit | `/commit` | Generate a commit message from the staged diff and commit history, then commit tracked changes plus staged files (untracked files stay out). |
 | Review | `/review` | Multi-dimension code review (security, performance, docs, etc.) of the current diff. |
 | Respond to review | `/received-review` | Work through reviewer or CI feedback on an open PR. |
 | Open a PR | `/pr` | Generate a PR description from commits/diff and open it via `gh`; also diagnoses version state (source, divergence, recommended next bump) when a version config is set. |
 | Verify CI | `/verify-pipeline --pr <N>` | Diagnose and optionally fix a failing CI run on a PR. |
 | Jira | `/jira` | Create, read, or update Jira issues linked to the work. |
 | After a failure | `/harden` | Propose guardrail changes so the same pipeline failure can't recur. |
+| After a run | `/deferred` | Triage findings that were saved but not fixed — review findings and issue drafts earlier runs recorded and left open. |
 
 For detailed documentation on each skill (flags, examples, tips), see the
 [Skill Reference](skills/README.md).

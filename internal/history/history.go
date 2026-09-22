@@ -71,6 +71,36 @@ const (
 	ReasonWontFix = "wont-fix"
 )
 
+// Accepted values for DeferredIssue.Status. OpenDeferred,
+// DeferredByPriority and ResolveDeferred all key off these exact strings,
+// so a writer that spells one of them differently silently disappears from
+// every triage view — hence constants rather than repeated literals.
+const (
+	// StatusOpen — the item is still awaiting triage.
+	StatusOpen = "open"
+	// StatusResolved — the item has been dealt with.
+	StatusResolved = "resolved"
+)
+
+// Accepted values for DeferredIssue.Priority — the buckets
+// DeferredByPriority groups on and FormatDeferredSummary renders in order.
+const (
+	PriorityHigh   = "high"
+	PriorityMedium = "medium"
+	PriorityLow    = "low"
+)
+
+// Known values for DeferredIssue.Source — which pipeline stage created the
+// item. Unlike Reason, this set is not validated: deferred_add accepts a
+// caller-supplied source verbatim. The constants exist so the two in-tree
+// producers agree with the strings that triage tooling matches on.
+const (
+	// SourceReviewBelowThreshold — written by ship_state defer.
+	SourceReviewBelowThreshold = "review-below-threshold"
+	// SourceExecuteDrift — written by execute_state issue-draft.
+	SourceExecuteDrift = "execute-drift"
+)
+
 // DeferredReasons returns the accepted DeferredIssue.Reason values in a
 // stable order, for error messages and documentation.
 func DeferredReasons() []string {
@@ -179,7 +209,7 @@ func (w *FileWriter) ResolveDeferred(id string) error {
 	found := false
 	for i := range issues {
 		if issues[i].ID == id {
-			issues[i].Status = "resolved"
+			issues[i].Status = StatusResolved
 			found = true
 			break
 		}
@@ -295,7 +325,7 @@ func (m *MemWriter) ResolveDeferred(id string) error {
 	defer m.mu.Unlock()
 	for i := range m.Deferred {
 		if m.Deferred[i].ID == id {
-			m.Deferred[i].Status = "resolved"
+			m.Deferred[i].Status = StatusResolved
 			return nil
 		}
 	}
@@ -310,7 +340,7 @@ func (m *MemWriter) ResolveDeferred(id string) error {
 func DeferredByPriority(issues []DeferredIssue) map[string][]DeferredIssue {
 	groups := map[string][]DeferredIssue{}
 	for _, issue := range issues {
-		if issue.Status != "open" {
+		if issue.Status != StatusOpen {
 			continue
 		}
 		groups[issue.Priority] = append(groups[issue.Priority], issue)
@@ -322,7 +352,7 @@ func DeferredByPriority(issues []DeferredIssue) map[string][]DeferredIssue {
 func OpenDeferred(issues []DeferredIssue) []DeferredIssue {
 	var open []DeferredIssue
 	for _, issue := range issues {
-		if issue.Status == "open" {
+		if issue.Status == StatusOpen {
 			open = append(open, issue)
 		}
 	}
@@ -340,7 +370,7 @@ func FormatDeferredSummary(issues []DeferredIssue) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "%d deferred issue(s) from previous runs still open:\n\n", len(open))
 
-	for _, prio := range []string{"high", "medium", "low"} {
+	for _, prio := range []string{PriorityHigh, PriorityMedium, PriorityLow} {
 		items := groups[prio]
 		if len(items) == 0 {
 			continue

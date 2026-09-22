@@ -49,6 +49,7 @@ package tools
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -107,7 +108,19 @@ type ValidateOut struct {
 // RegisterValidateTools registers the "validate" MCP tool.
 func RegisterValidateTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "validate",
-		"Run a deterministic validator against the project: plan_format, discovery, pr_template, cost_tiers, guardrails, dimensions, pr_body, ci_script_drift, or worktree_anchoring. Returns structured findings (id, severity, message, path) for failed checks only.",
+		`Run a deterministic validator against the project.
+
+Pass "action" to select the validator. Each action uses a subset of the input fields (unlisted fields are ignored). Returns structured findings (id, severity, message, path, fix) for FAILED checks only — an empty findings list means every check passed. "fix" carries the accepted shape inline and is set on every plan_format failure (PF1-PF12); the other actions leave it empty.
+
+- plan_format: Check a plan .md against PF1-PF7, PF11 and PF12, plus PF9 and PF10 when final is true. Requires file. Optional: final (adds the scorecard check PF9 and, with template, the section check PF10), template (plan template path for PF10; omit it to skip PF10).
+- discovery: Check the project's discovery artifacts (PD1-PD16). No inputs.
+- pr_template: Check the PR template file itself (V1-V5) at its canonical or legacy path. No inputs.
+- cost_tiers: Compare skill/agent model tiers against the cost-tier doc tables. Optional: strict (true reports the INHERITED finding kind as severity "error" instead of "warning").
+- guardrails: Check the guardrails list in a config section for per-guardrail id/description/severity. Optional: section (defaults to "plan"). A section that does not exist returns no findings.
+- dimensions: Check the review-dimension files, including a cross-file duplicate-name check (D10). Reads the ACTIVE worktree, unlike every other action. No inputs.
+- pr_body: Check a PR body against the PR template's required sections. Requires body — an empty body is not rejected, it simply reports every required section as missing.
+- ci_script_drift: Check the generated CI scripts against their current sources. No inputs.
+- worktree_anchoring: Check which worktree the .sdlc-v2/ state directory is anchored to. No inputs. Also returns worktreeAnchoring{}.`,
 		mcpserver.Annotations{
 			Title:      "Validate SDLC artifacts",
 			ReadOnly:   true,
@@ -200,10 +213,14 @@ func containsStr(list []string, v string) bool {
 //
 // message says what is wrong; when it lists several offenders it uses
 // pfIssueList so each one sits on its own line. fix states the accepted shape
-// inline, so the author can correct the plan without opening another file. It
-// is empty when message already says everything (PF1, PF3, PF10, PF12 name
-// their expected values). A fix never consists of only a pointer to a
-// reference document; TestPlanFormatFixesAreSelfContained pins that.
+// inline, so the author can correct the plan without opening another file.
+// Every failure path currently sets a fix — even the checks whose message
+// already names the expected values (PF1, PF3, PF10, PF12), where the fix
+// adds what the message leaves out, such as that a header field only counts
+// when its value sits on the same line as the label. A fix never consists of
+// only a pointer to a reference document; TestPlanFormatFixesAreSelfContained
+// pins that, and pins an inline shape for PF2, PF6, PF7 and PF9 specifically.
+// fix is empty only on a passing check, which pfFindings never emits.
 type pfCheck struct {
 	id      string
 	status  string // "pass" | "fail"
@@ -237,8 +254,12 @@ type planTask struct {
 	Body   string
 }
 
-// readPlanFile resolves file against root and reads it. Both failures carry a
-// Suggestion (guardrail mcp-error-suggestion-coverage).
+// readPlanFile resolves file against root and reads it. Every failure carries
+// a Suggestion (guardrail mcp-error-suggestion-coverage), and the three
+// failures are kept apart: no file passed, the path does not exist, and the
+// path exists but cannot be read (permission denied, a directory, an I/O
+// error). Reporting the last two as one "file not found" sends the caller to
+// re-check a path that is already correct.
 func readPlanFile(root, file string) (filePath, content string, err error) {
 	if file == "" {
 		return "", "", &mcpserver.DomainError{
@@ -249,13 +270,37 @@ func readPlanFile(root, file string) (filePath, content string, err error) {
 	filePath = resolvePath(root, file)
 	data, rerr := os.ReadFile(filePath)
 	if rerr != nil {
-		return "", "", &mcpserver.DomainError{
-			Msg:        fmt.Sprintf("plan_format: file not found: %s", filePath),
+		return "", "", planReadError("file", filePath, rerr)
+	}
+	return filePath, string(data), nil
+}
+
+// planReadError turns an os.ReadFile failure into the DomainError the
+// plan_format action returns. what names the thing being read ("file" for the
+// plan, "template" for the PF10 template) so one helper serves both sites.
+// Only fs.ErrNotExist is reported as not-found; anything else names the read
+// failure so the caller looks at permissions and the file type instead of the
+// path.
+func planReadError(what, path string, rerr error) *mcpserver.DomainError {
+	if errors.Is(rerr, fs.ErrNotExist) {
+		if what == "template" {
+			return &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("plan_format: template not found: %s", path),
+				Suggestion: "Pass template: the path to the plan template .md, or omit it to skip the PF10 section check.",
+				Cause:      rerr,
+			}
+		}
+		return &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("plan_format: file not found: %s", path),
 			Suggestion: "Check the path. A relative path resolves against the project root.",
 			Cause:      rerr,
 		}
 	}
-	return filePath, string(data), nil
+	return &mcpserver.DomainError{
+		Msg:        fmt.Sprintf("plan_format: cannot read %s: %s: %s", what, path, rerr.Error()),
+		Suggestion: fmt.Sprintf("The path exists but could not be read. Check that %s is a regular file (not a directory) and that this process has read permission on it.", path),
+		Cause:      rerr,
+	}
 }
 
 // planBlockingChecks runs the checks that apply on every plan edit (PF1-PF7,
@@ -302,11 +347,7 @@ func validatePlanFormat(root string, in ValidateIn) ([]discovery.Finding, error)
 			templatePath := resolvePath(root, in.Template)
 			sections, terr := parseTemplateRequiredSections(templatePath)
 			if terr != nil {
-				return nil, &mcpserver.DomainError{
-					Msg:        fmt.Sprintf("plan_format: template not found: %s", templatePath),
-					Suggestion: "Pass template: the path to the plan template .md, or omit it to skip the PF10 section check.",
-					Cause:      terr,
-				}
+				return nil, planReadError("template", templatePath, terr)
 			}
 			checks = append(checks, checkPF10(content, sections, templatePath))
 		}
@@ -326,6 +367,12 @@ func validatePlanFormat(root string, in ValidateIn) ([]discovery.Finding, error)
 // Both slices reuse the one read of the plan. The only other file read is the
 // template, resolved by hookPlanTemplateCandidates. A template that cannot be
 // found or read skips PF10 and never fails the hook.
+//
+// The candidate loop falls through to the next candidate only when the
+// current one does not exist. A candidate that exists but cannot be read
+// (permission, a directory, an I/O error) stops the loop and skips PF10: the
+// project asked for that template, so previewing PF10 against the shipped
+// default would check the plan against sections the project never required.
 func ValidatePlanFormatForHook(root, file string) (blocking, willFailAtFinal []discovery.Finding, err error) {
 	filePath, content, err := readPlanFile(root, file)
 	if err != nil {
@@ -341,7 +388,12 @@ func ValidatePlanFormatForHook(root, file string) (blocking, willFailAtFinal []d
 	for _, candidate := range hookPlanTemplateCandidates(root) {
 		sections, terr := parseTemplateRequiredSections(candidate)
 		if terr != nil {
-			continue
+			if errors.Is(terr, fs.ErrNotExist) {
+				continue
+			}
+			// The candidate is there but unreadable: skip PF10 entirely
+			// rather than silently checking against a different template.
+			break
 		}
 		finalChecks = append(finalChecks, checkPF10(content, sections, candidate))
 		break
@@ -465,11 +517,17 @@ func checkPF1(content string) pfCheck {
 
 // pf2Fix writes out the accepted plan shape for every PF2 failure: a missing,
 // misnumbered or duplicated task heading is fixed by writing the block below.
+//
+// It states only what plan_format actually enforces. "No forward references"
+// is a plan-authoring convention documented in plan-format-reference.md, not
+// a validated rule: checkPF4 checks existence and cycles only (see pf4Fix),
+// so naming it here would tell the author a forward reference fails the
+// check when it does not.
 var pf2Fix = pfLines(
 	`every task is a "### Task N: Title" heading outside any code fence, numbered from 1 (or 0) with no gaps or repeats, followed by this block:`,
 	"  **Complexity:** Trivial | Standard | Complex",
 	"  **Risk:** Low | Medium | High",
-	`  **Depends on:** Task X, Task Y   (or "none"; no forward references)`,
+	`  **Depends on:** Task X, Task Y   (or "none"; every Task N must exist and the graph must have no cycle)`,
 	"  **Verify:** tests | build | lint | manual   (a scope hint may follow: tests (go test ./pkg/ -run TestFoo))",
 	"  **Files:**",
 	"  - Modify: `path/to/file.go` - what changes",
@@ -1788,17 +1846,18 @@ func classifyDimensionMessage(msg string) (id, severity string) {
 }
 
 // ---------------------------------------------------------------------------
-// Exported wrappers (Task 38) -- internal/hooks needs to call these three
+// Exported wrappers (Task 38) -- internal/hooks needs to call these
 // validators directly (post-tool-validate.js's in-process port), but Go
 // visibility makes the unexported functions above uncallable cross-package.
 // Each wrapper is a pure one-line delegate; the unexported functions and the
 // validate dispatcher above are unchanged.
+//
+// Two wrappers live here, both called from internal/hooks/post_tool_validate.go.
+// The hook's plan_format entry point is NOT one of them: it is
+// ValidatePlanFormatForHook above, which splits blocking from final-only
+// findings and reuses one read of the plan. A plain ValidatePlanFormat
+// delegate existed here and was removed once nothing called it.
 // ---------------------------------------------------------------------------
-
-// ValidatePlanFormat delegates to validatePlanFormat for internal/hooks.
-func ValidatePlanFormat(root string, in ValidateIn) ([]discovery.Finding, error) {
-	return validatePlanFormat(root, in)
-}
 
 // ValidatePRTemplate delegates to validatePRTemplate for internal/hooks.
 func ValidatePRTemplate(root string) ([]discovery.Finding, error) {

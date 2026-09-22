@@ -430,7 +430,7 @@ func deferredBacklogPhase() []string {
 	if err != nil || root == "" {
 		return nil
 	}
-	issues, err := history.NewFileWriter(filepath.Join(root, paths.DataDir, "history")).ListDeferred()
+	issues, err := history.NewFileWriter(paths.HistoryDir(root)).ListDeferred()
 	if err != nil {
 		return nil
 	}

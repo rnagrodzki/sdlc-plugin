@@ -3267,18 +3267,50 @@ func seedCompleteExecRun(t *testing.T, root string, extra map[string]any) {
 	createExecState(t, root, "feat/test", data)
 }
 
-// verifyCompletenessOK runs verify-completeness and asserts the success map
-// is exactly {ok, totalPlanned, totalAccounted}: the reconcile adds no key.
-func verifyCompletenessOK(t *testing.T, root string, in ExecuteStateIn) {
+// verifyCompletenessOK runs verify-completeness and asserts the success map is
+// exactly {ok, totalPlanned, totalAccounted, shipStepReconciled}. The
+// ship-state write is never invisible: wantReconciled is the step it reset, or
+// "(none)". DeepEqual also pins that no "warnings" key appears on a clean run.
+func verifyCompletenessOK(t *testing.T, root string, in ExecuteStateIn, wantReconciled string) {
 	t.Helper()
 	result, err := executeState(root, root, in, fixedClock(testNow))
 	if err != nil {
 		t.Fatalf("verify-completeness: %v", err)
 	}
-	want := map[string]any{"ok": true, "totalPlanned": 1, "totalAccounted": 1}
+	want := map[string]any{
+		"ok": true, "totalPlanned": 1, "totalAccounted": 1,
+		"shipStepReconciled": wantReconciled,
+	}
 	if !reflect.DeepEqual(result, want) {
 		t.Errorf("result = %v, want %v", result, want)
 	}
+}
+
+// verifyCompletenessWarned runs verify-completeness, asserts it still reports
+// ok:true with nothing reconciled, and returns the single warning it carries.
+// This is the contract for a ship state that could not be read or written: the
+// execute run is complete, but the stale mark on disk must not be hidden.
+func verifyCompletenessWarned(t *testing.T, root string, in ExecuteStateIn) string {
+	t.Helper()
+	result, err := executeState(root, root, in, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("verify-completeness: %v", err)
+	}
+	m, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("result = %T, want map", result)
+	}
+	if m["ok"] != true {
+		t.Errorf("ok = %v, want true (a ship-state problem must not fail the verify)", m["ok"])
+	}
+	if m["shipStepReconciled"] != "(none)" {
+		t.Errorf("shipStepReconciled = %v, want (none)", m["shipStepReconciled"])
+	}
+	warnings, _ := m["warnings"].([]string)
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %v, want exactly one", m["warnings"])
+	}
+	return warnings[0]
 }
 
 // findShipStateForReconcile returns the ship state for feat/test, failing the
@@ -3317,7 +3349,7 @@ func TestExecState_VerifyCompleteness_ReconcilesBlockCapExhausted(t *testing.T) 
 		map[string]any{"name": "review", "status": "pending"},
 	}})
 
-	verifyCompletenessOK(t, root, ExecuteStateIn{Action: "verify-completeness", Branch: "feat/test"})
+	verifyCompletenessOK(t, root, ExecuteStateIn{Action: "verify-completeness", Branch: "feat/test"}, "execute")
 
 	st := findShipStateForReconcile(t, root)
 	first := shipStepAt(t, st, 0)
@@ -3326,6 +3358,11 @@ func TestExecState_VerifyCompleteness_ReconcilesBlockCapExhausted(t *testing.T) 
 	}
 	if _, has := first["failedReason"]; has {
 		t.Errorf("failedReason still present: %v", first)
+	}
+	// The mark is not erased, only demoted: it is the stop hook's only record
+	// that this run exhausted its continuation budget.
+	if first["reconciledReason"] != "block-cap-exhausted" {
+		t.Errorf("reconciledReason = %v, want block-cap-exhausted preserved", first["reconciledReason"])
 	}
 	if first["name"] != "execute" {
 		t.Errorf("name = %v, want execute (other fields must survive)", first["name"])
@@ -3346,7 +3383,7 @@ func TestExecState_VerifyCompleteness_ReconcileClearsOnlyBlockCap(t *testing.T) 
 		map[string]any{"name": "review", "status": "failed", "failedReason": "review-rejected"},
 	}})
 
-	verifyCompletenessOK(t, root, ExecuteStateIn{Action: "verify-completeness", Branch: "feat/test"})
+	verifyCompletenessOK(t, root, ExecuteStateIn{Action: "verify-completeness", Branch: "feat/test"}, "execute")
 
 	st := findShipStateForReconcile(t, root)
 	if got := shipStepAt(t, st, 0)["status"]; got != "pending" {
@@ -3369,7 +3406,7 @@ func TestExecState_VerifyCompleteness_ReconcileOnlyTouchesExecuteStep(t *testing
 		map[string]any{"name": "review", "status": "failed", "failedReason": state.FailedReasonBlockCapExhausted},
 	}})
 
-	verifyCompletenessOK(t, root, ExecuteStateIn{Action: "verify-completeness", Branch: "feat/test"})
+	verifyCompletenessOK(t, root, ExecuteStateIn{Action: "verify-completeness", Branch: "feat/test"}, "execute")
 
 	st := findShipStateForReconcile(t, root)
 	if got := shipStepAt(t, st, 0)["status"]; got != "pending" {
@@ -3396,7 +3433,7 @@ func TestExecState_VerifyCompleteness_ReconcileLeavesOtherFailureByteIdentical(t
 		t.Fatalf("read ship state: %v", err)
 	}
 
-	verifyCompletenessOK(t, root, ExecuteStateIn{Action: "verify-completeness", Branch: "feat/test"})
+	verifyCompletenessOK(t, root, ExecuteStateIn{Action: "verify-completeness", Branch: "feat/test"}, "(none)")
 
 	after, err := os.ReadFile(shipSt.Path)
 	if err != nil {
@@ -3413,7 +3450,7 @@ func TestExecState_VerifyCompleteness_ReconcileNoShipState(t *testing.T) {
 	root := t.TempDir()
 	seedCompleteExecRun(t, root, nil)
 
-	verifyCompletenessOK(t, root, ExecuteStateIn{Action: "verify-completeness", Branch: "feat/test"})
+	verifyCompletenessOK(t, root, ExecuteStateIn{Action: "verify-completeness", Branch: "feat/test"}, "(none)")
 
 	if st, err := state.Find(root, "ship", "feat/test"); err != nil || st != nil {
 		t.Errorf("ship state = %v (err %v), want none", st, err)
@@ -3421,22 +3458,26 @@ func TestExecState_VerifyCompleteness_ReconcileNoShipState(t *testing.T) {
 }
 
 // TestExecState_VerifyCompleteness_ReconcileBrokenShipState covers every
-// best-effort no-op that must not fail the execute call: corrupt JSON, steps
-// missing or of the wrong type, and an unreadable ship state file.
+// broken ship state that must not fail the execute call: corrupt JSON, steps
+// missing or of the wrong type, and an unreadable ship state file. A file that
+// cannot be read at all is reported as a warning (the mark on disk is still
+// unknown); a readable file with no usable steps[] is a quiet no-op.
 func TestExecState_VerifyCompleteness_ReconcileBrokenShipState(t *testing.T) {
 	const shipFile = "ship-feat-test-20250101T000000Z.json"
 	tests := []struct {
 		name     string
 		contents string
 		chmod    bool
+		wantWarn bool
 	}{
-		{name: "corrupt json", contents: "{not json"},
+		{name: "corrupt json", contents: "{not json", wantWarn: true},
 		{name: "steps missing", contents: `{"flags":{}}`},
 		{name: "steps wrong type", contents: `{"steps":"oops"}`},
 		{
 			name:     "unreadable file",
 			contents: `{"steps":[{"name":"execute","status":"failed","failedReason":"block-cap-exhausted"}]}`,
 			chmod:    true,
+			wantWarn: true,
 		},
 	}
 	for _, tt := range tests {
@@ -3455,7 +3496,15 @@ func TestExecState_VerifyCompleteness_ReconcileBrokenShipState(t *testing.T) {
 				}
 			}
 
-			verifyCompletenessOK(t, root, ExecuteStateIn{Action: "verify-completeness", Branch: "feat/test"})
+			in := ExecuteStateIn{Action: "verify-completeness", Branch: "feat/test"}
+			if tt.wantWarn {
+				warning := verifyCompletenessWarned(t, root, in)
+				if !strings.Contains(warning, "feat/test") || !strings.Contains(warning, "verify-completeness again") {
+					t.Errorf("warning = %q, want it to name the branch and the retry", warning)
+				}
+			} else {
+				verifyCompletenessOK(t, root, in, "(none)")
+			}
 
 			if tt.chmod {
 				if err := os.Chmod(shipPath, 0o644); err != nil {
@@ -3473,10 +3522,11 @@ func TestExecState_VerifyCompleteness_ReconcileBrokenShipState(t *testing.T) {
 	}
 }
 
-// TestExecState_VerifyCompleteness_ReconcileWriteErrorIsSilent makes the ship
-// state write fail (read-only runs dir) and confirms verify-completeness
-// still returns ok while the mark stays as it was.
-func TestExecState_VerifyCompleteness_ReconcileWriteErrorIsSilent(t *testing.T) {
+// TestExecState_VerifyCompleteness_ReconcileWriteErrorIsWarned makes the ship
+// state write fail (read-only runs dir) and confirms verify-completeness still
+// returns ok while naming the failure: the stale mark stays on disk, so a
+// later /ship --resume would act on it, and the caller must be told.
+func TestExecState_VerifyCompleteness_ReconcileWriteErrorIsWarned(t *testing.T) {
 	root := t.TempDir()
 	seedCompleteExecRun(t, root, nil)
 	createShipState(t, root, "feat/test", map[string]any{"steps": []any{
@@ -3492,7 +3542,10 @@ func TestExecState_VerifyCompleteness_ReconcileWriteErrorIsSilent(t *testing.T) 
 		t.Skip("runs dir stays writable with mode 0500 (running as root)")
 	}
 
-	verifyCompletenessOK(t, root, ExecuteStateIn{Action: "verify-completeness", Branch: "feat/test"})
+	warning := verifyCompletenessWarned(t, root, ExecuteStateIn{Action: "verify-completeness", Branch: "feat/test"})
+	if !strings.Contains(warning, "block-cap-exhausted") || !strings.Contains(warning, "/ship --resume") {
+		t.Errorf("warning = %q, want it to name the stale mark and its consequence", warning)
+	}
 
 	st := findShipStateForReconcile(t, root)
 	if got := shipStepAt(t, st, 0); got["status"] != "failed" || got["failedReason"] != "block-cap-exhausted" {
@@ -3514,7 +3567,7 @@ func TestExecState_VerifyCompleteness_ReconcileViaStateFile(t *testing.T) {
 			t.Fatalf("find execute state: %v", err)
 		}
 
-		verifyCompletenessOK(t, root, ExecuteStateIn{Action: "verify-completeness", StateFile: execSt.Path})
+		verifyCompletenessOK(t, root, ExecuteStateIn{Action: "verify-completeness", StateFile: execSt.Path}, "execute")
 
 		got := shipStepAt(t, findShipStateForReconcile(t, root), 0)
 		if got["status"] != "pending" {
@@ -3536,12 +3589,90 @@ func TestExecState_VerifyCompleteness_ReconcileViaStateFile(t *testing.T) {
 			t.Fatalf("find execute state: %v", err)
 		}
 
-		verifyCompletenessOK(t, root, ExecuteStateIn{Action: "verify-completeness", StateFile: execSt.Path})
+		verifyCompletenessOK(t, root, ExecuteStateIn{Action: "verify-completeness", StateFile: execSt.Path}, "(none)")
 
 		if got := shipStepAt(t, findShipStateForReconcile(t, root), 0); got["status"] != "failed" {
 			t.Errorf("status = %v, want failed (no branch to reconcile)", got["status"])
 		}
 	})
+}
+
+// TestExecState_VerifyCompleteness_ReconcileMatchesStepByID pins the name-or-id
+// display rule the reconcile shares with the stop hook: a step carrying only an
+// id is matched by that id, and only when the id is "execute".
+func TestExecState_VerifyCompleteness_ReconcileMatchesStepByID(t *testing.T) {
+	tests := []struct {
+		name           string
+		stepID         string
+		wantReconciled string
+		wantStatus     string
+	}{
+		{name: "id execute is reconciled", stepID: "execute", wantReconciled: "execute", wantStatus: "pending"},
+		{name: "id review stays failed", stepID: "review", wantReconciled: "(none)", wantStatus: "failed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			seedCompleteExecRun(t, root, nil)
+			createShipState(t, root, "feat/test", map[string]any{"steps": []any{
+				map[string]any{"id": tt.stepID, "status": "failed", "failedReason": state.FailedReasonBlockCapExhausted},
+			}})
+
+			verifyCompletenessOK(t, root,
+				ExecuteStateIn{Action: "verify-completeness", Branch: "feat/test"}, tt.wantReconciled)
+
+			got := shipStepAt(t, findShipStateForReconcile(t, root), 0)
+			if got["status"] != tt.wantStatus {
+				t.Errorf("status = %v, want %v", got["status"], tt.wantStatus)
+			}
+			if tt.wantStatus == "pending" {
+				if _, has := got["failedReason"]; has {
+					t.Errorf("failedReason still present: %v", got)
+				}
+				if got["reconciledReason"] != state.FailedReasonBlockCapExhausted {
+					t.Errorf("reconciledReason = %v, want the mark preserved", got["reconciledReason"])
+				}
+			} else if got["failedReason"] != state.FailedReasonBlockCapExhausted {
+				t.Errorf("failedReason = %v, want untouched", got["failedReason"])
+			}
+		})
+	}
+}
+
+// TestExecState_VerifyCompleteness_ReconcileWithFailedTask covers the case the
+// reconcile is most dangerous in: a run that completes with a failed task still
+// counts as "accounted", so the block-cap mark is cleared. The mark must
+// survive as reconciledReason, or the stall-failed nested run leaves no trace.
+func TestExecState_VerifyCompleteness_ReconcileWithFailedTask(t *testing.T) {
+	root := t.TempDir()
+	verifyCompletenessState(t, root, []any{"1", "2"},
+		[][2]string{{"T1", "completed"}, {"T2", "failed"}})
+	createShipState(t, root, "feat/test", map[string]any{"steps": []any{
+		map[string]any{"name": "execute", "status": "failed", "failedReason": state.FailedReasonBlockCapExhausted},
+	}})
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "verify-completeness",
+		Branch: "feat/test",
+	}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("verify-completeness: %v", err)
+	}
+	want := map[string]any{
+		"ok": true, "totalPlanned": 2, "totalAccounted": 2,
+		"shipStepReconciled": "execute",
+	}
+	if !reflect.DeepEqual(result, want) {
+		t.Errorf("result = %v, want %v", result, want)
+	}
+
+	got := shipStepAt(t, findShipStateForReconcile(t, root), 0)
+	if got["status"] != "pending" {
+		t.Errorf("status = %v, want pending", got["status"])
+	}
+	if got["reconciledReason"] != state.FailedReasonBlockCapExhausted {
+		t.Errorf("reconciledReason = %v, want the block-cap evidence kept", got["reconciledReason"])
+	}
 }
 
 // TestExecState_VerifyCompleteness_IncompleteDoesNotReconcile pins that the

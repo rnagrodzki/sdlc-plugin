@@ -131,7 +131,8 @@
         "properties": {
           "severity": {
             "type": "string",
-            "enum": ["critical", "high", "medium", "low"]
+            "description": "Review severity of the finding, lowercased by the defer action. info is included: the default reviewThreshold is low, so info findings are exactly what a default run defers.",
+            "enum": ["critical", "high", "medium", "low", "info"]
           },
           "file": {
             "type": "string"
@@ -148,6 +149,11 @@
           },
           "title": {
             "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why the finding was deferred instead of fixed. Written by defer since the deferred-reason change; absent on entries recorded before it, so not required.",
+            "enum": ["below-threshold", "needs-direction", "disagree", "wont-fix"]
           }
         },
         "required": ["severity", "file", "title"]

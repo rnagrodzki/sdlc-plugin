@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/stepper"
@@ -68,18 +69,20 @@ func stubGHReviews(t *testing.T, pr int, reviews ...ghx.PRReview) func() {
 	return stubGH(t, script)
 }
 
-// newTimedOutPollState persists a poll state whose deadline has already
-// passed and returns its state file path.
-func newTimedOutPollState(t *testing.T) string {
+// newTimedOutPollState persists a poll state for skill whose deadline has
+// already passed and returns its state file path. skill is the poll's own
+// name ("await-remote-review" or "verify-pipeline") so each tool's tests
+// resume a state file of the shape that tool itself would have written.
+func newTimedOutPollState(t *testing.T, skill string) string {
 	t.Helper()
 
-	stateFile, err := stepper.NewStateFilePath("await-remote-review")
+	stateFile, err := stepper.NewStateFilePath(skill)
 	if err != nil {
 		t.Fatalf("NewStateFilePath: %v", err)
 	}
 	t.Cleanup(func() { os.Remove(stateFile) })
 
-	st := stepper.NewPollState("await-remote-review", 1, 1)
+	st := stepper.NewPollState(skill, 1, 1)
 	st.StartedAt -= 1000 // force TimedOut()
 	if err := stepper.SavePollState(stateFile, st); err != nil {
 		t.Fatalf("SavePollState: %v", err)
@@ -224,7 +227,7 @@ func TestAwaitRemoteReview_Timeout(t *testing.T) {
 	cleanup := stubGHReviews(t, 1)
 	defer cleanup()
 
-	stateFile := newTimedOutPollState(t)
+	stateFile := newTimedOutPollState(t, "await-remote-review")
 
 	env, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 1, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
 	if err != nil {
@@ -264,7 +267,7 @@ func TestAwaitRemoteReview_TimedOutFinalProbeFindsVerdict(t *testing.T) {
 			cleanup := stubGHReviews(t, 5, ghx.PRReview{Login: "copilot-pull-request-reviewer", State: tt.state})
 			defer cleanup()
 
-			stateFile := newTimedOutPollState(t)
+			stateFile := newTimedOutPollState(t, "await-remote-review")
 
 			env, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 5, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
 			if err != nil {
@@ -280,41 +283,165 @@ func TestAwaitRemoteReview_TimedOutFinalProbeFindsVerdict(t *testing.T) {
 	}
 }
 
-// TestAwaitRemoteReview_TimedOutProbeErrorStaysRetryable pins that a gh
-// failure on the final probe surfaces as an error envelope — it is not
-// folded into the timeout path, and it does not mark the state exhausted, so
-// the next call probes again and can still find the verdict.
-func TestAwaitRemoteReview_TimedOutProbeErrorStaysRetryable(t *testing.T) {
+// TestAwaitRemoteReview_ProbeErrorBeforeTimeoutStaysRetryable pins the
+// before-the-deadline half of DD3: a gh failure while the poll still has
+// budget left surfaces as a retryable error envelope, does not mark the
+// state exhausted, and the next call probes again and can still find the
+// verdict.
+func TestAwaitRemoteReview_ProbeErrorBeforeTimeoutStaysRetryable(t *testing.T) {
 	cleanup := stubGH(t, "#!/bin/sh\nexit 1\n")
 	defer cleanup()
 
-	stateFile := newTimedOutPollState(t)
-
-	env, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 5, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
+	env, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 5, TimeoutSeconds: 600, IntervalSeconds: 60})
 	if err != nil {
 		t.Fatalf("unexpected Go error (should be classified into the envelope): %v", err)
 	}
 	if env.Status != "error" {
 		t.Fatalf("got status=%q ext=%v, want error", env.Status, env.Ext)
 	}
+	if env.Ext["retryable"] != true {
+		t.Fatalf("ext.retryable = %v, want true for an unclassified gh failure", env.Ext["retryable"])
+	}
+	if env.StateFile == nil || *env.StateFile == "" {
+		t.Fatal("an error envelope must keep the state_file so the caller can resume")
+	}
+	stateFile := *env.StateFile
+	defer os.Remove(stateFile)
 
 	st, err := stepper.LoadPollState(stateFile)
 	if err != nil {
 		t.Fatalf("LoadPollState: %v", err)
 	}
 	if st.Exhausted {
-		t.Fatal("a probe error must not mark the poll state exhausted")
+		t.Fatal("a probe error before the deadline must not mark the poll state exhausted")
 	}
 
 	cleanup2 := stubGHReviews(t, 5, ghx.PRReview{Login: "copilot-pull-request-reviewer", State: "APPROVED"})
 	defer cleanup2()
 
-	env2, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 5, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
+	env2, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 5, TimeoutSeconds: 600, IntervalSeconds: 60, StateFile: stateFile})
 	if err != nil {
 		t.Fatalf("unexpected error on retry: %v", err)
 	}
 	if env2.Status != "done" || env2.Ext["verdict"] != "approved-clean" {
 		t.Fatalf("retry got status=%q verdict=%v, want done/approved-clean", env2.Status, env2.Ext["verdict"])
+	}
+}
+
+// TestAwaitRemoteReview_TimedOutPersistentProbeErrorEndsPoll is the
+// unbounded-poll regression (DD3): once the deadline has passed, a gh
+// failure must END the poll instead of returning yet another error envelope.
+// The skills treat an error envelope as transient and re-probe with no cap,
+// so a gh failure that keeps happening after the deadline (expired
+// credentials, deleted PR, uninstalled gh) left the poll with no end at all.
+//
+// This replaces the former TestAwaitRemoteReview_TimedOutProbeErrorStaysRetryable,
+// which asserted the opposite (error envelope, state not exhausted) and so
+// pinned the unbounded behavior. Its retryable-probe-error coverage lives on
+// in TestAwaitRemoteReview_ProbeErrorBeforeTimeoutStaysRetryable above.
+func TestAwaitRemoteReview_TimedOutPersistentProbeErrorEndsPoll(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\necho 'gh: Not Found (HTTP 404)' >&2\nexit 1\n")
+	defer cleanup()
+
+	stateFile := newTimedOutPollState(t, "await-remote-review")
+
+	env, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 5, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
+	if err != nil {
+		t.Fatalf("unexpected Go error (should be classified into the envelope): %v", err)
+	}
+	if env.Status != "done" || env.Ext["verdict"] != "timeout" {
+		t.Fatalf("got status=%q verdict=%v, want done/timeout (a timed-out probe error must end the poll)", env.Status, env.Ext["verdict"])
+	}
+	probeErr, _ := env.Ext["probe_error"].(string)
+	if probeErr == "" {
+		t.Fatalf("timeout envelope must carry the probe error in ext.probe_error, got ext=%v", env.Ext)
+	}
+	if env.Ext["probe_error_class"] != ghClassNotFound {
+		t.Fatalf("ext.probe_error_class = %v, want %q", env.Ext["probe_error_class"], ghClassNotFound)
+	}
+
+	st, err := stepper.LoadPollState(stateFile)
+	if err != nil {
+		t.Fatalf("LoadPollState: %v", err)
+	}
+	if !st.Exhausted {
+		t.Fatal("ending the poll must mark the state exhausted")
+	}
+
+	// The loop really is over: the next call short-circuits to "skipped"
+	// without probing gh again, even though gh is still failing.
+	env2, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 5, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
+	if err != nil {
+		t.Fatalf("unexpected error on exhausted resume: %v", err)
+	}
+	if env2.Status != "done" || env2.Ext["verdict"] != "skipped" {
+		t.Fatalf("got status=%q verdict=%v, want done/skipped", env2.Status, env2.Ext["verdict"])
+	}
+}
+
+// TestClassifyGHError pins the failure classes the envelope exposes in
+// ext.error_class / ext.probe_error_class, and which of them stay retryable.
+func TestClassifyGHError(t *testing.T) {
+	tests := []struct {
+		name          string
+		err           error
+		wantClass     string
+		wantRetryable bool
+		wantInfraMsg  bool
+	}{
+		{"missing gh binary", fmt.Errorf("%w: exec: \"gh\": executable file not found in $PATH", ghx.ErrGHNotFound), ghClassMissing, false, true},
+		{"output cap", fmt.Errorf("execx: gh: %w", execx.ErrOutputCap), ghClassOutputCap, false, true},
+		{"expired credentials", errors.New("execx: gh pr view 5: exit status 1: gh: Bad credentials (HTTP 401)"), ghClassAuth, false, false},
+		{"forbidden", errors.New("execx: gh pr view 5: exit status 1: gh: Must have admin rights (HTTP 403)"), ghClassForbidden, false, false},
+		{"deleted pr", errors.New("execx: gh pr view 5: exit status 1: gh: Not Found (HTTP 404)"), ghClassNotFound, false, false},
+		{"no pr for branch", errors.New("execx: gh pr view 5: exit status 1: no pull requests found for branch \"x\""), ghClassNotFound, false, false},
+		{"rate limited", errors.New("execx: gh pr view 5: exit status 1: API rate limit exceeded (HTTP 403)"), ghClassRateLimit, true, false},
+		{"offline", errors.New("execx: gh pr view 5: exit status 1: could not resolve host: api.github.com"), ghClassNetwork, true, false},
+		{"unrecognized", errors.New("execx: gh pr view 5: exit status 1"), ghClassUnknown, true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyGHError(tt.err)
+			if got.Class != tt.wantClass {
+				t.Fatalf("class = %q, want %q", got.Class, tt.wantClass)
+			}
+			if got.Retryable != tt.wantRetryable {
+				t.Fatalf("retryable = %v, want %v", got.Retryable, tt.wantRetryable)
+			}
+			if strings.HasPrefix(got.Message, "infra: ") != tt.wantInfraMsg {
+				t.Fatalf("message %q: infra prefix = %v, want %v", got.Message, !tt.wantInfraMsg, tt.wantInfraMsg)
+			}
+			if got.Message == "" {
+				t.Fatal("message must never be empty")
+			}
+		})
+	}
+}
+
+// TestAwaitRemoteReview_ErrorEnvelopeCarriesClass proves the classification
+// reaches the envelope, not just classifyGHError's return value: a missing
+// gh binary is permanent, so the caller must be able to see that re-probing
+// cannot help.
+func TestAwaitRemoteReview_ErrorEnvelopeCarriesClass(t *testing.T) {
+	origPath := os.Getenv("PATH")
+	os.Setenv("PATH", "")
+	defer os.Setenv("PATH", origPath)
+
+	env, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 1, TimeoutSeconds: 600, IntervalSeconds: 60})
+	if err != nil {
+		t.Fatalf("unexpected Go error (should be classified into the envelope): %v", err)
+	}
+	if env.Status != "error" {
+		t.Fatalf("got status %q, want error", env.Status)
+	}
+	if env.Ext["error_class"] != ghClassMissing {
+		t.Fatalf("ext.error_class = %v, want %q", env.Ext["error_class"], ghClassMissing)
+	}
+	if env.Ext["retryable"] != false {
+		t.Fatalf("ext.retryable = %v, want false (a missing gh binary is permanent)", env.Ext["retryable"])
+	}
+	if env.StateFile != nil {
+		defer os.Remove(*env.StateFile)
 	}
 }
 
@@ -410,6 +537,114 @@ func TestVerifyPipelineAwait_InvalidPR(t *testing.T) {
 	_, err := verifyPipelineAwait(".", VerifyPipelineAwaitIn{PR: -1})
 	if err == nil {
 		t.Fatal("expected error for pr <= 0")
+	}
+}
+
+// TestVerifyPipelineAwait_Timeout mirrors TestAwaitRemoteReview_Timeout: the
+// final probe still finds pending checks, so the timed-out state reports
+// timeout, and a subsequent call against the now-exhausted state file
+// short-circuits to "skipped" without probing gh again.
+func TestVerifyPipelineAwait_Timeout(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\nprintf 'build\\tpending\\t1m\\thttps://x\\n'\nexit 8\n")
+	defer cleanup()
+
+	stateFile := newTimedOutPollState(t, "verify-pipeline")
+
+	env, err := verifyPipelineAwait(".", VerifyPipelineAwaitIn{PR: 1, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if env.Status != "done" || env.Ext["verdict"] != "timeout" {
+		t.Fatalf("got status=%q verdict=%v, want done/timeout", env.Status, env.Ext["verdict"])
+	}
+	if env.Ext["pending_checks"] == nil {
+		t.Fatalf("expected pending_checks to be included in ext on timeout")
+	}
+
+	env2, err := verifyPipelineAwait(".", VerifyPipelineAwaitIn{PR: 1, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
+	if err != nil {
+		t.Fatalf("unexpected error on exhausted resume: %v", err)
+	}
+	if env2.Ext["verdict"] != "skipped" {
+		t.Fatalf("got verdict %v, want skipped", env2.Ext["verdict"])
+	}
+}
+
+// TestVerifyPipelineAwait_TimedOutFinalProbeFindsVerdict is verify_pipeline_await's
+// half of the R1 false-timeout regression: a pipeline that turns green (or
+// fails) during the last interval must resolve as that verdict, not
+// "timeout", mirroring TestAwaitRemoteReview_TimedOutFinalProbeFindsVerdict.
+func TestVerifyPipelineAwait_TimedOutFinalProbeFindsVerdict(t *testing.T) {
+	tests := []struct {
+		name        string
+		script      string
+		wantVerdict string
+	}{
+		{"green", "#!/bin/sh\nprintf 'build\\tpass\\t2m\\thttps://x\\n'\n", "green"},
+		{"failed", "#!/bin/sh\nprintf 'lint\\tfail\\t30s\\thttps://x\\n'\nexit 1\n", "failed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cleanup := stubGH(t, tt.script)
+			defer cleanup()
+
+			stateFile := newTimedOutPollState(t, "verify-pipeline")
+
+			env, err := verifyPipelineAwait(".", VerifyPipelineAwaitIn{PR: 5, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if env.Status != "done" || env.Ext["verdict"] != tt.wantVerdict {
+				t.Fatalf("got status=%q verdict=%v, want done/%s", env.Status, env.Ext["verdict"], tt.wantVerdict)
+			}
+			if _, timedOut := env.Ext["waited_seconds"]; timedOut {
+				t.Fatalf("verdict envelope must not carry the timeout envelope's waited_seconds: %v", env.Ext)
+			}
+		})
+	}
+}
+
+// TestVerifyPipelineAwait_TimedOutPersistentProbeErrorEndsPoll is
+// verify_pipeline_await's half of the DD3 unbounded-poll regression: once
+// the deadline has passed, a gh failure must END the poll rather than
+// returning yet another error envelope. This exercises the exitCode !=
+// 0/1/8 -> probeFailureEnvelope call site specifically (the err != nil site
+// is already covered by TestVerifyPipelineAwait_MissingGHBinary).
+func TestVerifyPipelineAwait_TimedOutPersistentProbeErrorEndsPoll(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\nexit 2\n")
+	defer cleanup()
+
+	stateFile := newTimedOutPollState(t, "verify-pipeline")
+
+	env, err := verifyPipelineAwait(".", VerifyPipelineAwaitIn{PR: 5, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
+	if err != nil {
+		t.Fatalf("unexpected Go error (should be classified into the envelope): %v", err)
+	}
+	if env.Status != "done" || env.Ext["verdict"] != "timeout" {
+		t.Fatalf("got status=%q verdict=%v, want done/timeout (a timed-out probe error must end the poll)", env.Status, env.Ext["verdict"])
+	}
+	probeErr, _ := env.Ext["probe_error"].(string)
+	if probeErr == "" {
+		t.Fatalf("timeout envelope must carry the probe error in ext.probe_error, got ext=%v", env.Ext)
+	}
+	if env.Ext["probe_error_class"] != ghClassUnexpectedExit {
+		t.Fatalf("ext.probe_error_class = %v, want %q", env.Ext["probe_error_class"], ghClassUnexpectedExit)
+	}
+
+	st, err := stepper.LoadPollState(stateFile)
+	if err != nil {
+		t.Fatalf("LoadPollState: %v", err)
+	}
+	if !st.Exhausted {
+		t.Fatal("ending the poll must mark the state exhausted")
+	}
+
+	env2, err := verifyPipelineAwait(".", VerifyPipelineAwaitIn{PR: 5, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
+	if err != nil {
+		t.Fatalf("unexpected error on exhausted resume: %v", err)
+	}
+	if env2.Status != "done" || env2.Ext["verdict"] != "skipped" {
+		t.Fatalf("got status=%q verdict=%v, want done/skipped", env2.Status, env2.Ext["verdict"])
 	}
 }
 

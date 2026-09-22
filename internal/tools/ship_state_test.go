@@ -15,6 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/santhosh-tekuri/jsonschema/v6"
+
+	"github.com/rnagrodzki/sdlc-plugin/internal/dimensions"
 	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
@@ -55,6 +58,24 @@ func useFailingHistory(t *testing.T) {
 	t.Helper()
 	prev := historyWriter
 	historyWriter = func(string) history.Writer { return &failingHistoryWriter{} }
+	t.Cleanup(func() { historyWriter = prev })
+}
+
+// listFailingHistoryWriter fails ListDeferred — an unreadable or corrupt
+// deferred.json. persistDeferred returns before AddDeferred in that case,
+// so this covers the earlier of its two failure exits.
+type listFailingHistoryWriter struct{ history.MemWriter }
+
+func (f *listFailingHistoryWriter) ListDeferred() ([]history.DeferredIssue, error) {
+	return nil, errors.New("deferred.json is not readable")
+}
+
+// useListFailingHistory points historyWriter at a writer whose ListDeferred
+// always fails.
+func useListFailingHistory(t *testing.T) {
+	t.Helper()
+	prev := historyWriter
+	historyWriter = func(string) history.Writer { return &listFailingHistoryWriter{} }
 	t.Cleanup(func() { historyWriter = prev })
 }
 
@@ -786,17 +807,18 @@ func deferFixture(t *testing.T, branch string) (dir, statePath string) {
 }
 
 func TestShipState_Defer_PersistsToDeferredHistory(t *testing.T) {
-	dir, _ := deferFixture(t, "feat/defer-persist")
+	dir, path := deferFixture(t, "feat/defer-persist")
 	mem := useMemHistory(t)
 	now := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
 
-	if _, err := shipState(dir, dir, ShipStateIn{
+	out, err := shipState(dir, dir, ShipStateIn{
 		Action: "defer",
 		Detail: map[string]any{
 			"branch": "feat/defer-persist", "severity": "High", "file": "internal/foo.go",
 			"line": float64(42), "title": "unchecked error",
 		},
-	}, fixedNow(now)); err != nil {
+	}, fixedNow(now))
+	if err != nil {
 		t.Fatalf("defer: %v", err)
 	}
 
@@ -807,17 +829,197 @@ func TestShipState_Defer_PersistsToDeferredHistory(t *testing.T) {
 	want := history.DeferredIssue{
 		ID:          "review-deferred-2026-03-04T05:06:07Z-1",
 		Created:     "2026-03-04T05:06:07Z",
-		Source:      "review-below-threshold",
-		Priority:    "high",
+		Source:      history.SourceReviewBelowThreshold,
+		Priority:    history.PriorityHigh,
 		Description: "unchecked error",
-		Status:      "open",
-		Severity:    "High",
+		Status:      history.StatusOpen,
+		Severity:    "high",
 		File:        "internal/foo.go",
 		Line:        42,
 		Reason:      history.ReasonBelowThreshold,
 	}
 	if got != want {
 		t.Errorf("deferred entry =\n %+v\nwant\n %+v", got, want)
+	}
+
+	// The state entry records the same normalized severity and the same
+	// parsed line as deferred.json — one input must never leave two
+	// durable records that disagree.
+	f := deferredStateEntry(t, path, 0)
+	if f["severity"] != "high" {
+		t.Errorf("state finding severity = %v, want the normalized %q", f["severity"], "high")
+	}
+	if f["line"] != float64(42) {
+		t.Errorf("state finding line = %#v, want 42", f["line"])
+	}
+
+	// A mutating call names the resource it created (the id a later
+	// deferred_resolve needs) and where it landed.
+	n, ok := out.(ShipStepNarrationOut)
+	if !ok {
+		t.Fatalf("output = %#v, want ShipStepNarrationOut", out)
+	}
+	if !strings.Contains(n.Summary, want.ID) {
+		t.Errorf("summary = %q, want it to name the generated id %q", n.Summary, want.ID)
+	}
+	if !strings.Contains(n.Summary, "deferred.json") {
+		t.Errorf("summary = %q, want it to name the file written", n.Summary)
+	}
+}
+
+// deferredStateEntry reads deferredFindings[i] out of the state file at
+// path. Several defer cases below assert on the run-scoped record as well
+// as the durable one.
+func deferredStateEntry(t *testing.T, path string, i int) map[string]any {
+	t.Helper()
+	findings, _ := readStateData(t, path)["deferredFindings"].([]any)
+	if len(findings) <= i {
+		t.Fatalf("deferredFindings = %v, want at least %d entries", findings, i+1)
+	}
+	f, ok := findings[i].(map[string]any)
+	if !ok {
+		t.Fatalf("deferredFindings[%d] = %#v, want an object", i, findings[i])
+	}
+	return f
+}
+
+// TestShipState_Defer_AcceptsInfoSeverity pins the severity the default
+// threshold actually defers: reviewThreshold defaults to "low", so "info"
+// is the severity ship review routes below threshold on a default run. It
+// must be accepted by the handler and by ship-state.schema.json.
+func TestShipState_Defer_AcceptsInfoSeverity(t *testing.T) {
+	dir, path := deferFixture(t, "feat/defer-info")
+	mem := useMemHistory(t)
+
+	if _, err := shipState(dir, dir, ShipStateIn{
+		Action: "defer",
+		Detail: map[string]any{
+			"branch": "feat/defer-info", "severity": "info", "file": "a.go",
+			"title": "naming could be clearer",
+		},
+	}, fixedNow(time.Now())); err != nil {
+		t.Fatalf("defer with severity info: %v", err)
+	}
+	if len(mem.Deferred) != 1 {
+		t.Fatalf("deferred.json entries = %d, want 1", len(mem.Deferred))
+	}
+	if got := mem.Deferred[0].Severity; got != "info" {
+		t.Errorf("deferred.json severity = %q, want %q", got, "info")
+	}
+	if got := mem.Deferred[0].Priority; got != history.PriorityLow {
+		t.Errorf("priority = %q, want %q", got, history.PriorityLow)
+	}
+	if f := deferredStateEntry(t, path, 0); f["severity"] != "info" {
+		t.Errorf("state finding severity = %v, want %q", f["severity"], "info")
+	}
+}
+
+// TestShipState_Defer_RejectsUnknownSeverity covers the symmetric half of
+// the reason validation: an unrecognised severity used to be stored raw in
+// both records while priorityFromSeverity silently bucketed it as medium.
+func TestShipState_Defer_RejectsUnknownSeverity(t *testing.T) {
+	dir, path := deferFixture(t, "feat/defer-bad-severity")
+	mem := useMemHistory(t)
+
+	_, err := shipState(dir, dir, ShipStateIn{
+		Action: "defer",
+		Detail: map[string]any{
+			"branch": "feat/defer-bad-severity", "severity": "blocker", "file": "a.go",
+			"title": "nit",
+		},
+	}, fixedNow(time.Now()))
+	if err == nil {
+		t.Fatal(`defer with severity "blocker": want error, got nil`)
+	}
+	if !isDomainError(err) {
+		t.Errorf("error = %v (%T), want DomainError", err, err)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "blocker") {
+		t.Errorf("error message does not name the rejected value: %s", msg)
+	}
+	for _, want := range dimensions.ValidSeverities {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error message does not name accepted severity %q: %s", want, msg)
+		}
+	}
+	if len(mem.Deferred) != 0 {
+		t.Errorf("deferred entries = %d, want 0 — a rejected call must not persist", len(mem.Deferred))
+	}
+	if findings, _ := readStateData(t, path)["deferredFindings"].([]any); len(findings) != 0 {
+		t.Errorf("deferredFindings = %v, want 0 — a rejected call must not touch the state file", findings)
+	}
+}
+
+// TestShipState_Defer_RejectsWrongTypedDetails covers the silent-coercion
+// path: detailStr reads any non-string as "", which for these optional
+// fields is indistinguishable from "omitted" — so a wrong-typed reason used
+// to be recorded as below-threshold and a wrong-typed description as the
+// title, both with a success narration.
+func TestShipState_Defer_RejectsWrongTypedDetails(t *testing.T) {
+	cases := map[string]map[string]any{
+		"reason":      {"reason": float64(5)},
+		"description": {"description": []any{"a", "b"}},
+		"line":        {"line": "42"},
+	}
+	for key, extra := range cases {
+		t.Run(key, func(t *testing.T) {
+			dir, path := deferFixture(t, "feat/defer-bad-"+key)
+			mem := useMemHistory(t)
+
+			detail := map[string]any{
+				"branch": "feat/defer-bad-" + key, "severity": "low",
+				"file": "a.go", "title": "nit",
+			}
+			for k, v := range extra {
+				detail[k] = v
+			}
+			_, err := shipState(dir, dir, ShipStateIn{Action: "defer", Detail: detail}, fixedNow(time.Now()))
+			if err == nil {
+				t.Fatalf("defer with wrong-typed detail.%s: want error, got nil", key)
+			}
+			if !isDomainError(err) {
+				t.Errorf("error = %v (%T), want DomainError", err, err)
+			}
+			if !strings.Contains(err.Error(), "detail."+key) {
+				t.Errorf("error message does not name the offending key: %s", err.Error())
+			}
+			if len(mem.Deferred) != 0 {
+				t.Errorf("deferred entries = %d, want 0", len(mem.Deferred))
+			}
+			if findings, _ := readStateData(t, path)["deferredFindings"].([]any); len(findings) != 0 {
+				t.Errorf("deferredFindings = %v, want 0", findings)
+			}
+		})
+	}
+}
+
+// TestShipState_Defer_NullDetailsReadAsOmitted pins the other half of the
+// type check: a JSON null is how a caller spells "no value", so it must
+// take the omitted defaults rather than being rejected as a wrong type.
+func TestShipState_Defer_NullDetailsReadAsOmitted(t *testing.T) {
+	dir, path := deferFixture(t, "feat/defer-null-details")
+	mem := useMemHistory(t)
+
+	if _, err := shipState(dir, dir, ShipStateIn{
+		Action: "defer",
+		Detail: map[string]any{
+			"branch": "feat/defer-null-details", "severity": "low", "file": "a.go",
+			"title": "nit", "reason": nil, "description": nil, "line": nil,
+		},
+	}, fixedNow(time.Now())); err != nil {
+		t.Fatalf("defer with null optional details: %v", err)
+	}
+	if len(mem.Deferred) != 1 {
+		t.Fatalf("deferred.json entries = %d, want 1", len(mem.Deferred))
+	}
+	got := mem.Deferred[0]
+	if got.Reason != history.ReasonBelowThreshold || got.Description != "nit" || got.Line != 0 {
+		t.Errorf("entry = %+v, want the omitted defaults (reason=%s, description=title, line=0)",
+			got, history.ReasonBelowThreshold)
+	}
+	if f := deferredStateEntry(t, path, 0); f["line"] != nil {
+		t.Errorf("state finding line = %#v, want null", f["line"])
 	}
 }
 
@@ -949,9 +1151,17 @@ func TestShipState_Defer_DescriptionCarriesReasoning(t *testing.T) {
 	}
 }
 
+// TestShipState_Defer_PersistFailureNamedInNarration also pins
+// deferredPersistWarning's recovery instruction (not just the loss): a
+// warning that only names what was lost, with no path back to a durable
+// record, leaves the caller stuck. now is fixed so the generated id is
+// predictable and can be asserted verbatim, the same way
+// TestShipState_Defer_PersistsToDeferredHistory does for the success path.
 func TestShipState_Defer_PersistFailureNamedInNarration(t *testing.T) {
 	dir, path := deferFixture(t, "feat/defer-persist-fail")
 	useFailingHistory(t)
+	now := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	const wantID = "review-deferred-2026-03-04T05:06:07Z-1"
 
 	out, err := shipState(dir, dir, ShipStateIn{
 		Action: "defer",
@@ -959,7 +1169,7 @@ func TestShipState_Defer_PersistFailureNamedInNarration(t *testing.T) {
 			"branch": "feat/defer-persist-fail", "severity": "medium",
 			"file": "internal/foo.go", "title": "unchecked error",
 		},
-	}, fixedNow(time.Now()))
+	}, fixedNow(now))
 	if err != nil {
 		t.Fatalf("defer must not fail when deferred.json is unwritable: %v", err)
 	}
@@ -971,10 +1181,55 @@ func TestShipState_Defer_PersistFailureNamedInNarration(t *testing.T) {
 	if !strings.Contains(n.Summary, "deferred.json") || !strings.Contains(n.Summary, "no space left on device") {
 		t.Errorf("summary = %q, want it to name the deferred.json write failure", n.Summary)
 	}
+	if !strings.Contains(n.Summary, "deferred_add") {
+		t.Errorf("summary = %q, want it to name the ship_state deferred_add recovery action", n.Summary)
+	}
+	if !strings.Contains(n.Summary, wantID) {
+		t.Errorf("summary = %q, want it to name the lost item's id %q so deferred_add can recreate it", n.Summary, wantID)
+	}
+	if !strings.Contains(n.Summary, "unchecked error") {
+		t.Errorf("summary = %q, want it to name the lost item's description", n.Summary)
+	}
+	if !strings.Contains(n.Summary, "second entry") {
+		t.Errorf("summary = %q, want it to warn that repeating the original call is not a recovery", n.Summary)
+	}
 
 	// The run-scoped write still happened — only the durable one was lost.
 	data := readStateData(t, path)
 	if findings, _ := data["deferredFindings"].([]any); len(findings) != 1 {
+		t.Errorf("deferredFindings = %v, want 1 entry", findings)
+	}
+}
+
+// TestShipState_Defer_ReadFailureNamedInNarration covers persistDeferred's
+// earlier exit: the dedupe read of deferred.json fails, so AddDeferred is
+// never reached. The call must still succeed and still surface the loss —
+// the same contract as the write-failure case above.
+func TestShipState_Defer_ReadFailureNamedInNarration(t *testing.T) {
+	dir, path := deferFixture(t, "feat/defer-read-fail")
+	useListFailingHistory(t)
+
+	out, err := shipState(dir, dir, ShipStateIn{
+		Action: "defer",
+		Detail: map[string]any{
+			"branch": "feat/defer-read-fail", "severity": "medium",
+			"file": "internal/foo.go", "title": "unchecked error",
+		},
+	}, fixedNow(time.Now()))
+	if err != nil {
+		t.Fatalf("defer must not fail when deferred.json is unreadable: %v", err)
+	}
+
+	n, ok := out.(ShipStepNarrationOut)
+	if !ok {
+		t.Fatalf("output = %#v, want ShipStepNarrationOut", out)
+	}
+	if !strings.Contains(n.Summary, "deferred.json") || !strings.Contains(n.Summary, "not readable") {
+		t.Errorf("summary = %q, want it to name the deferred.json read failure", n.Summary)
+	}
+
+	// The run-scoped write still happened — only the durable one was lost.
+	if findings, _ := readStateData(t, path)["deferredFindings"].([]any); len(findings) != 1 {
 		t.Errorf("deferredFindings = %v, want 1 entry", findings)
 	}
 }
@@ -993,10 +1248,93 @@ func TestPersistDeferred_SkipsDuplicateID(t *testing.T) {
 	}
 }
 
+// TestShipStateSchema_DeferredFindingsEntry proves the published schema
+// accepts exactly what the defer action writes. The handler and
+// ship-state.schema.json carry the severity and reason vocabularies
+// separately, so this is the test that keeps them in sync: every value
+// dimensions.ValidSeverities and history.DeferredReasons() allow must
+// validate, and an invalid one must be rejected by the enum — not merely
+// filtered out by application code.
+func TestShipStateSchema_DeferredFindingsEntry(t *testing.T) {
+	schemaPath, err := filepath.Abs(filepath.Join("..", "..", "plugins", "sdlc", "schemas", "ship-state.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sch, err := jsonschema.NewCompiler().Compile(schemaPath)
+	if err != nil {
+		t.Fatalf("compile schema: %v", err)
+	}
+
+	validate := func(t *testing.T, finding map[string]any) error {
+		t.Helper()
+		raw, err := json.Marshal(map[string]any{
+			"version":   float64(1),
+			"startedAt": "2026-03-01T12:00:00Z",
+			"branch":    "feat/schema-test",
+			"flags":     map[string]any{},
+			"steps": []any{
+				map[string]any{"name": "review", "status": "completed"},
+			},
+			"deferredFindings": []any{finding},
+		})
+		if err != nil {
+			t.Fatalf("marshal doc: %v", err)
+		}
+		inst, err := jsonschema.UnmarshalJSON(strings.NewReader(string(raw)))
+		if err != nil {
+			t.Fatalf("unmarshal doc for schema validation: %v", err)
+		}
+		return sch.Validate(inst)
+	}
+
+	entry := func(overrides map[string]any) map[string]any {
+		f := map[string]any{
+			"severity": "low", "file": "a.go", "line": float64(7),
+			"title": "nit", "reason": history.ReasonBelowThreshold,
+		}
+		for k, v := range overrides {
+			f[k] = v
+		}
+		return f
+	}
+
+	for _, sev := range dimensions.ValidSeverities {
+		if err := validate(t, entry(map[string]any{"severity": sev})); err != nil {
+			t.Errorf("severity %q: schema rejected a value the defer action accepts: %v", sev, err)
+		}
+	}
+	for _, reason := range history.DeferredReasons() {
+		if err := validate(t, entry(map[string]any{"reason": reason})); err != nil {
+			t.Errorf("reason %q: schema rejected a value the defer action accepts: %v", reason, err)
+		}
+	}
+	// reason is absent on entries written before the field existed.
+	noReason := entry(nil)
+	delete(noReason, "reason")
+	if err := validate(t, noReason); err != nil {
+		t.Errorf("entry without reason: want accepted (pre-existing state files have none), got %v", err)
+	}
+	if err := validate(t, entry(map[string]any{"line": nil})); err != nil {
+		t.Errorf("entry with null line: want accepted, got %v", err)
+	}
+	// The enums must do the rejecting. "High" is the raw-case value the
+	// handler now normalizes before writing.
+	if err := validate(t, entry(map[string]any{"severity": "High"})); err == nil {
+		t.Error(`severity "High": want schema rejection, got nil`)
+	}
+	if err := validate(t, entry(map[string]any{"reason": "because-i-said-so"})); err == nil {
+		t.Error(`reason "because-i-said-so": want schema rejection, got nil`)
+	}
+}
+
 func TestPriorityFromSeverity(t *testing.T) {
+	// "trivial" and "nit" are NOT review severities (dimensions.ValidSeverities
+	// is critical|high|medium|low|info) and no producer emits them, so they
+	// take the unknown-value default like any other unrecognised string.
 	cases := map[string]string{
 		"critical": "high", "Critical": "high", "HIGH": "high", " high ": "high",
-		"medium": "medium", "low": "low", "info": "low", "trivial": "low", "nit": "low",
+		"medium": "medium", "low": "low", "info": "low",
+		"trivial": "medium", "nit": "medium",
 		"": "medium", "banana": "medium",
 	}
 	for in, want := range cases {

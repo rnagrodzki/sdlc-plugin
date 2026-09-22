@@ -21,3 +21,5 @@ Default severity: medium
 - Nil-guarding on newly-pointer-typed struct fields before dereference
 - Constant migrations: verify replacements are complete, no hardcoded literal divergence
 - Testable design: functions that are tested and access live filesystem or git state should expose injectable parameters or dependencies (e.g. directory overrides, mocked implementations) so tests can avoid real I/O. Check existing test files in the change to verify whether tested functions expose such injection points; if not, flag as a testability blocker.
+- Sibling polling/retry loops and error-classification logic: when a file contains two or more near-identical code paths, verify they agree on probe-vs-timeout ordering, error classification, and final-probe behavior; if one is fixed, the fix must be mirrored to the other or the paths consolidated
+- Doc comments must match the code: if a comment claims a function does X when it actually does Y, or describes four cases when only two execute, flag it as a finding. A doc string is not just a presence requirement — it must be accurate.

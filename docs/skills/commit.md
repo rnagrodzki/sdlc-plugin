@@ -1,12 +1,16 @@
 # Commit Skill
 
-Use `/commit` to generate a commit message that matches your project's style, review it, and commit staged changes.
+Use `/commit` to generate a commit message that matches your project's style, review it, and commit.
+
+What ends up in the commit: every tracked file with working-tree changes (modified or
+deleted), except anything under `.sdlc-v2/`, plus whatever you already staged. Untracked
+files are never committed. At least one file must be staged before you run the skill.
 
 ## When to use it
 
-- You have staged changes ready to commit
+- You have changes ready to commit, with at least one file staged
 - You want the commit message to automatically match your project's existing style (e.g., conventional commits)
-- You need to verify the staged changes before committing
+- You need to review what goes into the commit before it is made
 
 ## Usage
 
@@ -16,24 +20,29 @@ Use `/commit` to generate a commit message that matches your project's style, re
 
 ### Options
 
-- `--no-stash` — Deprecated; no effect in this port
 - `--scope <scope>` — Hint for the commit scope (forwarded to the message generator)
 - `--type <type>` — Hint for the commit type (forwarded to the message generator)
-- `--amend` — Not supported; use other tools to amend
 - `--auto` — Skip interactive approval and commit automatically
 - `--force-default-branch` — Deprecated; no effect in this port
 
+`--no-stash` and `--amend` are legacy flags from the old script-driven skill. They are gone
+from the argument hint and are ignored if you still type them: this port never stashes and
+never amends.
+
 ## Workflow
 
-### Step 1: Stage your changes
+### Step 1: Stage at least one change
 
-Before running `/commit`, stage the exact files you want to commit:
+Before running `/commit`, stage something — the skill refuses to run with an empty index
+("no files staged for commit"):
 
 ```bash
 git add <files>
 ```
 
-The skill works with staged changes only. Unstaged changes are preserved but not included in the commit.
+Staging does **not** narrow the commit. The skill commits every tracked file that has
+working-tree changes (except under `.sdlc-v2/`) along with what you staged. Untracked files
+are never committed — `git add` a new file first if you want it in.
 
 ### Step 2: Run the skill
 
@@ -45,16 +54,24 @@ The skill will:
 
 1. **Analyze** your staged diff and recent commits
 2. **Generate** a commit message that matches your project's style
-3. **Present** the message and staged file summary for your review
+3. **Present** the message plus the file breakdown — staged, also-staged tracked changes, paths left out under `.sdlc-v2/`, and untracked files that stay out
 4. **Verify** the message against any project-configured commit rules (subject pattern, required trailers, etc.)
 5. **Commit** after you approve
+
+The message is drafted from the **staged** diff. If the also-staged tracked files change what
+the commit means, choose `edit` and adjust the message before confirming.
 
 ### Step 3: Review and confirm
 
 The skill shows:
 - The generated commit message (subject and body)
 - Files included in the commit and their changes
+- Files left out: untracked paths, and tracked paths under `.sdlc-v2/`
 - Any detected issues (e.g., breaking rules defined in your project config)
+
+After the commit, the skill reports the result summary from `commit_apply` and names any path
+it skipped (`skippedUntrackedPaths`, `skippedTrackedPaths`). Anything named there is still
+uncommitted — `git add` it and run `/commit` again to put it in a second commit.
 
 Review the message and choose one of:
 - **yes** — commit as shown
@@ -127,7 +144,9 @@ Or edit `.sdlc-v2/config.toml` directly.
 ## Limitations
 
 - **No amend support** — To change the last commit, use `git commit --amend` directly or reset and re-commit.
-- **No stash isolation** — All staged changes are committed together. To commit only part of your working tree, stage exactly what you want first.
+- **No stash isolation** — Tracked changes and staged files are committed together, so staging a subset does not produce a partial commit. To commit only part of your working tree, move the rest out first with `git stash push -- <paths>`, or commit by hand with plain `git commit`.
+- **Untracked files are never committed** — `git add` a new file before running the skill, or it stays out.
+- **`.sdlc-v2/` is never committed by the skill** — Changes to the runtime state directory are left in the working tree; commit them yourself if you mean to.
 - **No WIP squashing** — WIP commits remain as separate commits; squash them manually if needed.
 - **Commit on default branch** — Allowed but warned about; you must confirm.
 

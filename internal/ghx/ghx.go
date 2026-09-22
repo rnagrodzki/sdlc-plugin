@@ -88,16 +88,20 @@ type PRReview struct {
 	SubmittedAt string
 }
 
-// PRReviewsJSON returns the reviews on PR n via `gh pr view <n> --json
+// PRReviews returns the reviews on PR n via `gh pr view <n> --json
 // reviews`, in the order gh reports them (oldest first). gh prints an object
 // of the form {"reviews":[...]}; this returns the parsed array flattened to
 // PRReview. Empty output, or a PR with no reviews, yields an empty slice and
 // a nil error. A gh failure is returned unchanged (wrapped ErrGHNotFound when
 // the binary is missing), so callers keep gh errors distinct from "no
 // verdict yet".
-func PRReviewsJSON(dir string, n int) ([]PRReview, error) {
+//
+// The name describes what it returns, not how it asks gh for it — matching
+// its PRView/PRChecks siblings, so swapping the underlying gh query (REST
+// vs --json) would not force a rename on every caller.
+func PRReviews(dir string, n int) ([]PRReview, error) {
 	if n <= 0 {
-		return nil, fmt.Errorf("ghx: PRReviewsJSON: invalid PR number %d", n)
+		return nil, fmt.Errorf("ghx: PRReviews: invalid PR number %d", n)
 	}
 	raw, err := run(dir, "pr", "view", fmt.Sprint(n), "--json", "reviews")
 	if err != nil {
@@ -117,7 +121,7 @@ func PRReviewsJSON(dir string, n int) ([]PRReview, error) {
 		} `json:"reviews"`
 	}
 	if jsonErr := json.Unmarshal([]byte(raw), &parsed); jsonErr != nil {
-		return nil, fmt.Errorf("ghx: PRReviewsJSON: parse gh pr view output: %w", jsonErr)
+		return nil, fmt.Errorf("ghx: PRReviews: parse gh pr view output: %w", jsonErr)
 	}
 
 	reviews := make([]PRReview, 0, len(parsed.Reviews))

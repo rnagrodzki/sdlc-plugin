@@ -7,24 +7,109 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/stepper"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
 
-// classifyGHError formats a gh invocation error for the stepper envelope's
-// error path, per this task's dependency note: "Missing gh binary yields a
-// classified infra error, not a panic — propagate that classification into
-// the stepper envelope's error path rather than swallowing it." A missing
-// gh binary (ghx.ErrGHNotFound) is labeled distinctly from any other gh
-// failure (auth, network, bad PR number) so a caller can tell "gh isn't
-// installed" apart from "gh ran and failed."
-func classifyGHError(err error) string {
-	if errors.Is(err, ghx.ErrGHNotFound) {
-		return "infra: " + err.Error()
+// ghFailure is one classified gh invocation failure: the message that goes
+// into the stepper envelope's error path, a stable machine-readable class,
+// and whether re-probing could plausibly succeed.
+//
+// The class exists because the envelope's Error field is free text: a caller
+// reading only that string cannot tell a permanent failure (gh not
+// installed, expired credentials, deleted PR) from a transient one (network
+// blip, rate limit) and so cannot decide whether to re-probe or stop.
+type ghFailure struct {
+	Message   string
+	Class     string
+	Retryable bool
+}
+
+// gh failure classes carried in the envelope's ext.error_class /
+// ext.probe_error_class.
+const (
+	ghClassMissing        = "gh-missing"
+	ghClassOutputCap      = "output-cap"
+	ghClassAuth           = "auth"
+	ghClassForbidden      = "forbidden"
+	ghClassNotFound       = "not-found"
+	ghClassRateLimit      = "rate-limit"
+	ghClassNetwork        = "network"
+	ghClassUnexpectedExit = "unexpected-exit"
+	ghClassUnknown        = "unknown"
+)
+
+// ghStderrClasses maps a lower-cased substring of gh's own stderr onto a
+// failure class. execx.Run appends the failed command's stderr to the error
+// it returns, so err.Error() carries gh's message ("gh: Not Found (HTTP
+// 404)", "Bad credentials", "could not resolve host", ...) and is the only
+// signal available here.
+//
+// Order matters: the first match wins. Rate limiting is checked before HTTP
+// 403 because GitHub answers a rate-limited request with 403, so a bare 403
+// match would hide it. HTTP statuses are matched as "http 4NN" rather than
+// as bare digits so a PR number in the command line cannot be mistaken for
+// a status code.
+var ghStderrClasses = []struct {
+	substr    string
+	class     string
+	retryable bool
+}{
+	{"rate limit", ghClassRateLimit, true},
+	{"http 401", ghClassAuth, false},
+	{"bad credentials", ghClassAuth, false},
+	{"requires authentication", ghClassAuth, false},
+	{"gh auth login", ghClassAuth, false},
+	{"http 403", ghClassForbidden, false},
+	{"http 404", ghClassNotFound, false},
+	{"could not resolve to a pullrequest", ghClassNotFound, false},
+	{"no pull requests found", ghClassNotFound, false},
+	{"could not resolve host", ghClassNetwork, true},
+	{"no such host", ghClassNetwork, true},
+	{"connection refused", ghClassNetwork, true},
+	{"connection reset", ghClassNetwork, true},
+	{"network is unreachable", ghClassNetwork, true},
+	{"i/o timeout", ghClassNetwork, true},
+	{"tls handshake timeout", ghClassNetwork, true},
+}
+
+// classifyGHError classifies a gh invocation error for the stepper
+// envelope's error path, per this task's dependency note: "Missing gh binary
+// yields a classified infra error, not a panic — propagate that
+// classification into the stepper envelope's error path rather than
+// swallowing it."
+//
+// A missing gh binary (ghx.ErrGHNotFound) and an output-cap overflow
+// (execx.ErrOutputCap) are matched with errors.Is and keep the "infra: "
+// message prefix; everything else is classified from gh's stderr text via
+// ghStderrClasses. An unrecognized failure is reported as ghClassUnknown and
+// stays retryable, so a gh message this table does not know about keeps the
+// pre-existing re-probe behavior rather than silently ending a poll.
+//
+// Known limitation: only the remote_review probe reaches this classifier
+// with gh's stderr attached. The pipeline probe goes through
+// execx.RunAllowExit, which turns any plain process exit into
+// (stdout, exitCode, nil) and discards stderr — so a gh auth or 404 failure
+// on that path arrives as an unexpected exit code, not as one of the classes
+// above.
+func classifyGHError(err error) ghFailure {
+	switch {
+	case errors.Is(err, ghx.ErrGHNotFound):
+		return ghFailure{Message: "infra: " + err.Error(), Class: ghClassMissing}
+	case errors.Is(err, execx.ErrOutputCap):
+		return ghFailure{Message: "infra: " + err.Error(), Class: ghClassOutputCap}
 	}
-	return err.Error()
+
+	haystack := strings.ToLower(err.Error())
+	for _, c := range ghStderrClasses {
+		if strings.Contains(haystack, c.substr) {
+			return ghFailure{Message: err.Error(), Class: c.class, Retryable: c.retryable}
+		}
+	}
+	return ghFailure{Message: err.Error(), Class: ghClassUnknown, Retryable: true}
 }
 
 // ---------------------------------------------------------------------------
@@ -40,15 +125,12 @@ func classifyGHError(err error) string {
 // exactly one non-blocking probe per call and returns a stepper.Envelope —
 // "pending" with a state_file to resume, or a terminal "done"/"error".
 //
-// Review state comes from ghx.PRReviewsJSON (`gh pr view <n> --json
-// reviews`) and is evaluated by evaluateReviews over the structured
-// reviewer login and review state — not by pattern-matching `gh pr view`'s
-// plain-text output.
+// Review state comes from ghx.PRReviews (`gh pr view <n> --json reviews`)
+// and is evaluated by evaluateReviews over the structured reviewer login and
+// review state — not by pattern-matching `gh pr view`'s plain-text output.
 //
-// The probe runs even when the poll state is already timed out, and the
-// timeout verdict is only reported if that final probe also finds nothing. A
-// review that lands during the last interval therefore resolves as a verdict,
-// not as a false timeout.
+// Probe ordering is DD3, shared verbatim with verify_pipeline_await below:
+// read the deadline, probe, and only then decide. See probeFailureEnvelope.
 // ---------------------------------------------------------------------------
 
 // AwaitRemoteReviewIn is the input for the await_remote_review tool.
@@ -88,7 +170,7 @@ func submittedBefore(a, b string) bool {
 }
 
 // evaluateReviews ports evaluateReviews (R51-R53, R56) over the structured
-// review list from ghx.PRReviewsJSON. For each configured reviewer, in the
+// review list from ghx.PRReviews. For each configured reviewer, in the
 // order given, it takes that reviewer's most recent submitted review and maps
 // its state to the JS source's verdict buckets:
 //
@@ -169,16 +251,17 @@ func awaitRemoteReview(activeRoot string, in AwaitRemoteReviewIn) (stepper.Envel
 		}), nil
 	}
 
-	// Final probe: probe even when the poll state is already timed out. A
-	// review that landed during the last interval must resolve as a verdict,
-	// not as a false timeout. A probe error returns before the timeout branch,
-	// so a transient gh failure never marks the state exhausted and stays
-	// retryable.
+	// DD3 ordering (see probeFailureEnvelope): read the deadline first, then
+	// probe unconditionally. A review that landed during the last interval
+	// must resolve as a verdict, not as a false timeout.
 	timedOut := st.TimedOut()
 
-	reviews, err := ghx.PRReviewsJSON(activeRoot, in.PR)
+	reviews, err := ghx.PRReviews(activeRoot, in.PR)
 	if err != nil {
-		return stepper.NewError(stateFile, classifyGHError(err)), nil
+		return probeFailureEnvelope(stateFile, st, timedOut, classifyGHError(err), map[string]any{
+			"pr_number": in.PR,
+			"reviewers": reviewers,
+		})
 	}
 
 	status, reviewer, rawState := evaluateReviews(reviews, reviewers)
@@ -208,7 +291,11 @@ func awaitRemoteReview(activeRoot string, in AwaitRemoteReviewIn) (stepper.Envel
 // verify_pipeline_await
 //
 // Ports scripts/skill/verify-pipeline.js (R41-R44, R47-R49). Same KD8
-// bounded-polling shape as await_remote_review above.
+// bounded-polling shape as await_remote_review above, down to DD3's probe
+// ordering: this tool used to return the timeout envelope BEFORE probing, so
+// a pipeline that turned green during the last interval was reported as a
+// false timeout while its sibling reported the verdict. Both now read the
+// deadline, probe, and only then decide (see probeFailureEnvelope).
 //
 // RULING: ghx.PRChecksWithExitCode wraps plain `gh pr checks <n>`
 // (tab-separated name/state/elapsed/link columns), not `--json`.
@@ -273,7 +360,10 @@ func evaluateChecksText(text string) (failed, pending []checkResult) {
 // verifyPipelineAwait implements one KD8 probe of verify_pipeline_await.
 func verifyPipelineAwait(activeRoot string, in VerifyPipelineAwaitIn) (stepper.Envelope, error) {
 	if in.PR <= 0 {
-		return stepper.Envelope{}, &mcpserver.DomainError{Msg: "pr must be a positive integer"}
+		return stepper.Envelope{}, &mcpserver.DomainError{
+			Msg:        "pr must be a positive integer",
+			Suggestion: "Pass pr as the pull request number (a positive integer), then call the tool again.",
+		}
 	}
 
 	timeoutSeconds := in.TimeoutSeconds
@@ -299,18 +389,24 @@ func verifyPipelineAwait(activeRoot string, in VerifyPipelineAwaitIn) (stepper.E
 		}), nil
 	}
 
-	if st.TimedOut() {
-		return timeoutEnvelope(stateFile, st, map[string]any{
-			"pr_number": in.PR,
-		})
-	}
+	// DD3 ordering (see probeFailureEnvelope): read the deadline first, then
+	// probe unconditionally. A pipeline that turned green during the last
+	// interval must resolve as a verdict, not as a false timeout.
+	timedOut := st.TimedOut()
 
 	checksText, exitCode, err := ghx.PRChecksWithExitCode(activeRoot, in.PR)
 	if err != nil {
-		return stepper.NewError(stateFile, classifyGHError(err)), nil
+		return probeFailureEnvelope(stateFile, st, timedOut, classifyGHError(err), map[string]any{
+			"pr_number": in.PR,
+		})
 	}
 	if exitCode != 0 && exitCode != 1 && exitCode != 8 {
-		return stepper.NewError(stateFile, fmt.Sprintf("gh pr checks: unexpected exit code %d", exitCode)), nil
+		return probeFailureEnvelope(stateFile, st, timedOut, ghFailure{
+			Message: fmt.Sprintf("gh pr checks: unexpected exit code %d", exitCode),
+			Class:   ghClassUnexpectedExit,
+		}, map[string]any{
+			"pr_number": in.PR,
+		})
 	}
 
 	failed, pending := evaluateChecksText(checksText)
@@ -327,6 +423,13 @@ func verifyPipelineAwait(activeRoot string, in VerifyPipelineAwaitIn) (stepper.E
 			"verdict":   "green",
 			"pr_number": in.PR,
 		}), nil
+	}
+
+	if timedOut {
+		return timeoutEnvelope(stateFile, st, map[string]any{
+			"pr_number":      in.PR,
+			"pending_checks": pending,
+		})
 	}
 
 	return pendingEnvelope(stateFile, st, map[string]any{
@@ -363,7 +466,7 @@ type PollAwaitIn struct {
 	PR              int      `json:"pr" jsonschema_description:"Pull request number to poll."`
 	TimeoutSeconds  int      `json:"timeout_seconds,omitempty" jsonschema_description:"Overall timeout in seconds for the polling operation to be considered done rather than still pending."`
 	IntervalSeconds int      `json:"interval_seconds,omitempty" jsonschema_description:"Minimum interval in seconds to wait between probes before reporting pending again."`
-	Reviewers       []string `json:"reviewers,omitempty" jsonschema_description:"target=remote_review only: GitHub usernames whose review verdict is being polled for."`
+	Reviewers       []string `json:"reviewers,omitempty" jsonschema_description:"target=remote_review only: GitHub usernames whose review verdict is being polled for. Matching is case-insensitive, a trailing \"[bot]\" suffix is ignored, and the login \"copilot-pull-request-reviewer\" matches \"copilot\". The first listed reviewer that has a verdict wins. Defaults to [\"copilot\"] when omitted."`
 	StateFile       string   `json:"state_file,omitempty" jsonschema_description:"Path to the stepper state file to resume polling from, as returned by a prior pending call."`
 }
 
@@ -389,7 +492,8 @@ func pollAwait(activeRoot string, in PollAwaitIn) (stepper.Envelope, error) {
 		})
 	default:
 		return stepper.Envelope{}, &mcpserver.DomainError{
-			Msg: fmt.Sprintf(`target must be "remote_review" or "pipeline", got %q`, in.Target),
+			Msg:        fmt.Sprintf(`target must be "remote_review" or "pipeline", got %q`, in.Target),
+			Suggestion: `Pass target as "remote_review" to poll a reviewer's verdict on the PR, or "pipeline" to poll the PR's checks, then call the tool again.`,
 		}
 	}
 }
@@ -419,6 +523,51 @@ func loadOrInitPollState(stateFile, skill string, timeoutSeconds, intervalSecond
 	}
 	*out = newPath
 	return stepper.NewPollState(skill, timeoutSeconds, intervalSeconds), nil
+}
+
+// probeFailureEnvelope is DD3: the single failed-probe branch both polling
+// tools share.
+//
+//	timedOut := st.TimedOut()
+//	probe...
+//	on probe error -> probeFailureEnvelope(..., timedOut, ...)
+//	verdict found  -> Done(verdict)
+//	timedOut       -> timeoutEnvelope
+//	otherwise      -> pendingEnvelope
+//
+// Once the deadline has passed a failed probe ENDS the poll: the terminal
+// timeout envelope carries the probe's own error in ext.probe_error /
+// ext.probe_error_class. Before the deadline the same failure is a retryable
+// error envelope that leaves the state unexhausted, so the next call probes
+// again and can still find the verdict.
+//
+// The timed-out branch is what bounds the poll. The ship skill treats an
+// error envelope as transient and re-probes with no cap (ship/SKILL.md's
+// poll-loop entries, ship/reference.md's error table), so returning an error
+// envelope for a gh failure that keeps happening after the deadline —
+// expired credentials, a deleted PR, an uninstalled gh — left the poll with
+// no end at all.
+func probeFailureEnvelope(stateFile string, st stepper.PollState, timedOut bool, f ghFailure, ext map[string]any) (stepper.Envelope, error) {
+	if timedOut {
+		ext["probe_error"] = f.Message
+		ext["probe_error_class"] = f.Class
+		return timeoutEnvelope(stateFile, st, ext)
+	}
+	// The envelope hands the caller a state_file to resume from, so that
+	// file has to exist: on the first probe of a fresh poll,
+	// loadOrInitPollState only picks the path — nothing has written it yet,
+	// and only pendingEnvelope/timeoutEnvelope save. Without this save the
+	// resume path would miss, the next call would start a brand-new poll,
+	// and the deadline would never arrive because elapsed time keeps
+	// resetting. Iteration is left alone: a failed probe observed nothing,
+	// and StartedAt (which TimedOut reads) is what has to survive.
+	if err := stepper.SavePollState(stateFile, st); err != nil {
+		return stepper.Envelope{}, &mcpserver.InfraError{Msg: "persist resume state: " + err.Error(), Cause: err}
+	}
+	env := stepper.NewError(stateFile, f.Message)
+	env.Ext["error_class"] = f.Class
+	env.Ext["retryable"] = f.Retryable
+	return env, nil
 }
 
 // timeoutEnvelope marks st exhausted, persists it, and returns the "done"
@@ -620,7 +769,7 @@ func ClassifyLogs(text string) VerifyPipelineClassifyOut {
 // registered so far.
 func RegisterPollingTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "poll_await",
-		`INTERNAL — called by sdlc skills only. Run one bounded KD8 probe for a polling target: target: "remote_review" polls gh for a remote reviewer's verdict on a PR; target: "pipeline" polls gh PR checks for green/failed/pending. One non-blocking probe per call. Returns a stepper envelope (status pending + state_file to resume, or status done/error with the verdict in ext).`,
+		`INTERNAL — called by sdlc skills only. Run one bounded KD8 probe for a polling target: target: "remote_review" polls gh for a remote reviewer's verdict on a PR; target: "pipeline" polls gh PR checks. One non-blocking probe per call. Returns a stepper envelope: status "pending" means no verdict yet — wait interval_seconds and call again with the returned state_file; status "error" means the gh probe failed before the deadline (ext.retryable says whether re-probing can help); status "done" carries a terminal ext.verdict. For target "remote_review" ext.verdict is one of "approved-clean" (reviewer approved), "actionable" (reviewer commented or requested changes), "timeout" (deadline passed with no verdict) or "skipped" (this state_file already timed out). For target "pipeline" it is "green" (all checks passed), "failed" (a check failed; ext.checks_raw holds the raw check list), "timeout" or "skipped". Every "done" verdict ends the poll.`,
 		mcpserver.Annotations{
 			Title:       "Await CI or PR completion",
 			ReadOnly:    false,

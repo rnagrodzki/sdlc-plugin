@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -682,23 +683,191 @@ func TestCommitApply_OnlyUntracked_ErrorNamesPathspec(t *testing.T) {
 
 // TestCommitApply_TrackedDataDirChangeNotStaged verifies a tracked file under
 // .sdlc-v2/ (config.toml is tracked by design) is never staged by this tool:
-// it stays a pending working-tree modification.
+// it stays a pending working-tree modification, and the output says so instead
+// of claiming nothing was left behind.
 func TestCommitApply_TrackedDataDirChangeNotStaged(t *testing.T) {
 	dir := newCommitApplyRepo(t)
-	cfg := filepath.Join(paths.DataDir, "config.toml")
-	writeRepoFile(t, dir, cfg, "a = 1\n")
-	runGit(t, dir, "add", cfg)
-	runGit(t, dir, "commit", "-m", "track config")
+	cfg := trackDataDirConfig(t, dir)
 	writeRepoFile(t, dir, cfg, "a = 2\n")
 	writeRepoFile(t, dir, "initial.txt", "changed")
 
-	applyCommit(t, dir)
+	out := applyCommit(t, dir)
 
 	if got := gitOutTrim(t, dir, "show", "--name-only", "--format=", "HEAD"); got != "initial.txt" {
 		t.Errorf("commit should hold only initial.txt, got:\n%s", got)
 	}
 	if got := gitOutTrim(t, dir, "status", "--porcelain"); got != "M "+cfg && got != " M "+cfg {
 		t.Errorf("%s should remain a pending modification, git status got %q", cfg, got)
+	}
+	if len(out.SkippedTrackedPaths) != 1 || out.SkippedTrackedPaths[0] != cfg {
+		t.Errorf("SkippedTrackedPaths: want [%s], got %#v", cfg, out.SkippedTrackedPaths)
+	}
+	if !strings.Contains(out.Summary, cfg) || !strings.Contains(out.Summary, "NOT committed") {
+		t.Errorf("Summary must name the skipped tracked path and say it was not committed, got %q", out.Summary)
+	}
+	for _, want := range []string{cfg, "git add", "Do not report them as committed"} {
+		if !strings.Contains(out.Next, want) {
+			t.Errorf("Next should contain %q, got %q", want, out.Next)
+		}
+	}
+}
+
+// trackDataDirConfig commits a tracked .sdlc-v2/config.toml into the fixture
+// repository and returns its repo-relative path.
+func trackDataDirConfig(t *testing.T, dir string) string {
+	t.Helper()
+	cfg := filepath.Join(paths.DataDir, "config.toml")
+	writeRepoFile(t, dir, cfg, "a = 1\n")
+	runGit(t, dir, "add", cfg)
+	runGit(t, dir, "commit", "-m", "track config")
+	return cfg
+}
+
+// TestCommitApply_Next pins the two Next outcomes: the exact confirmation when
+// the commit holds every change, and the git add plus retry instruction naming
+// the untracked paths that were left out.
+func TestCommitApply_Next(t *testing.T) {
+	t.Run("nothing left out", func(t *testing.T) {
+		dir := newCommitApplyRepo(t)
+		writeRepoFile(t, dir, "initial.txt", "changed")
+
+		out := applyCommit(t, dir)
+
+		want := "Commit created and nothing was left out. Report the sha above as the committed change."
+		if out.Next != want {
+			t.Errorf("Next = %q, want %q", out.Next, want)
+		}
+	})
+
+	t.Run("untracked path left out", func(t *testing.T) {
+		dir := newCommitApplyRepo(t)
+		writeRepoFile(t, dir, "initial.txt", "changed")
+		writeRepoFile(t, dir, "stray.txt", "stray")
+
+		out := applyCommit(t, dir)
+
+		for _, want := range []string{"stray.txt", "git add", "call commit_apply again", "Do not report them as committed"} {
+			if !strings.Contains(out.Next, want) {
+				t.Errorf("Next should contain %q, got %q", want, out.Next)
+			}
+		}
+		if strings.Contains(out.Next, "nothing was left out") {
+			t.Errorf("Next must not claim nothing was left out, got %q", out.Next)
+		}
+		// The instruction belongs in Next, not in the descriptive Summary.
+		if strings.Contains(out.Summary, "git add") {
+			t.Errorf("Summary should stay descriptive, got %q", out.Summary)
+		}
+	})
+}
+
+// TestCommitApply_OnlyTrackedDataDirChange_ErrorNamesTrackedPath pins the
+// nothing-to-commit error when the sole working-tree change is a tracked file
+// under .sdlc-v2/: the error must name that path instead of reporting
+// "(none)" everywhere.
+func TestCommitApply_OnlyTrackedDataDirChange_ErrorNamesTrackedPath(t *testing.T) {
+	dir := newCommitApplyRepo(t)
+	cfg := trackDataDirConfig(t, dir)
+	writeRepoFile(t, dir, cfg, "a = 2\n")
+	headBefore := gitOutTrim(t, dir, "rev-parse", "HEAD")
+
+	_, err := commitApply(dir, dir, CommitApplyIn{Message: "chore: nothing", SkipConfigCheck: true})
+	if err == nil {
+		t.Fatal("expected an error when the only change is a tracked .sdlc-v2 file")
+	}
+	for _, want := range []string{"nothing to commit", "tracked paths under " + paths.DataDir + "/ left out", cfg} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should contain %q, got: %s", want, err.Error())
+		}
+	}
+	var de *mcpserver.DataError
+	if !errors.As(err, &de) || strings.TrimSpace(de.Suggestion) == "" {
+		t.Errorf("error should be a *mcpserver.DataError with a non-empty Suggestion, got %#v", err)
+	}
+	if got := gitOutTrim(t, dir, "rev-parse", "HEAD"); got != headBefore {
+		t.Errorf("HEAD moved on a failed commit: %s -> %s", headBefore, got)
+	}
+}
+
+// TestCommitApply_ScopeQueryFailuresAreInfraErrors pins the two read-only
+// scope queries that run before the index is touched: both report an
+// *mcpserver.InfraError naming the git command that failed.
+func TestCommitApply_ScopeQueryFailuresAreInfraErrors(t *testing.T) {
+	t.Run("git diff --name-only", func(t *testing.T) {
+		// A directory that is not a git repository: the first query fails.
+		dir := t.TempDir()
+
+		_, err := commitApply(dir, dir, CommitApplyIn{Message: "chore: x", SkipConfigCheck: true})
+
+		var ie *mcpserver.InfraError
+		if !errors.As(err, &ie) {
+			t.Fatalf("error should be a *mcpserver.InfraError, got %#v", err)
+		}
+		if !strings.Contains(ie.Msg, "git diff --name-only") {
+			t.Errorf("error should name the failing command, got %q", ie.Msg)
+		}
+		if strings.TrimSpace(ie.Suggestion) == "" {
+			t.Error("InfraError must carry a Suggestion")
+		}
+	})
+
+	t.Run("git status", func(t *testing.T) {
+		dir := newCommitApplyRepo(t)
+		writeRepoFile(t, dir, "initial.txt", "changed")
+		// git status rejects an invalid enum value for this key while
+		// git diff --name-only ignores it, so only the second query fails.
+		runGit(t, dir, "config", "status.showUntrackedFiles", "bogus")
+		probe := exec.Command("git", "status", "--porcelain")
+		probe.Dir = dir
+		if probe.Run() == nil {
+			t.Skip("this git accepts status.showUntrackedFiles=bogus; cannot force a status failure")
+		}
+
+		_, err := commitApply(dir, dir, CommitApplyIn{Message: "chore: x", SkipConfigCheck: true})
+
+		var ie *mcpserver.InfraError
+		if !errors.As(err, &ie) {
+			t.Fatalf("error should be a *mcpserver.InfraError, got %#v", err)
+		}
+		if !strings.Contains(ie.Msg, "git status") {
+			t.Errorf("error should name the failing command, got %q", ie.Msg)
+		}
+		if strings.TrimSpace(ie.Suggestion) == "" {
+			t.Error("InfraError must carry a Suggestion")
+		}
+	})
+}
+
+// TestListPaths pins the inline path list at every boundary of
+// maxListedPaths: empty, one, exactly the cap, and over the cap where the
+// "and N more" tail must count the omitted entries.
+func TestListPaths(t *testing.T) {
+	makePaths := func(n int) []string {
+		list := make([]string, n)
+		for i := range list {
+			list[i] = fmt.Sprintf("a%d", i)
+		}
+		return list
+	}
+	tenPaths := "a0, a1, a2, a3, a4, a5, a6, a7, a8, a9"
+
+	tests := []struct {
+		name  string
+		count int
+		want  string
+	}{
+		{"empty", 0, "(none)"},
+		{"one", 1, "a0"},
+		{"at the cap", 10, tenPaths},
+		{"one over the cap", 11, tenPaths + ", and 1 more"},
+		{"well over the cap", 15, tenPaths + ", and 5 more"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := listPaths(makePaths(tc.count)); got != tc.want {
+				t.Errorf("listPaths(%d entries) = %q, want %q", tc.count, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -754,7 +923,7 @@ func TestCommitApply_RenderedOutputNamesSkippedPaths(t *testing.T) {
 		if head, _, _ := strings.Cut(text, "\n"); head != "# commit_apply — ok" {
 			t.Errorf("first line = %q, want %q", head, "# commit_apply — ok")
 		}
-		for _, want := range []string{"## Summary", "skippedUntrackedPaths:", "- stray.txt", "NOT committed"} {
+		for _, want := range []string{"## Summary", "skippedUntrackedPaths:", "- stray.txt", "NOT committed", "**Next:**", "git add"} {
 			if !strings.Contains(text, want) {
 				t.Errorf("rendered output should contain %q, got:\n%s", want, text)
 			}
@@ -770,6 +939,9 @@ func TestCommitApply_RenderedOutputNamesSkippedPaths(t *testing.T) {
 
 		if !strings.Contains(text, "- skippedUntrackedPaths: (none)") {
 			t.Errorf("empty skippedUntrackedPaths should render as (none), got:\n%s", text)
+		}
+		if !strings.Contains(text, "- skippedTrackedPaths: (none)") {
+			t.Errorf("empty skippedTrackedPaths should render as (none), got:\n%s", text)
 		}
 	})
 }

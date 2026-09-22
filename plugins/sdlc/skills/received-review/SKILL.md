@@ -157,7 +157,7 @@ Determine the verification status:
 - **partially correct** — some aspects correct, some not
 - **cannot verify** — would need runtime data or external context
 
-For "cannot verify" items: state the limitation explicitly. Without `--auto`, ask the user for direction. With `--auto` there is no one to ask — the item becomes a `needs-direction` finding in Step 4 and is recorded there; it is never dropped for being unverifiable.
+For "cannot verify" items: state the limitation explicitly. Without `--auto`, ask the user for direction. With `--auto` there is no one to ask — the item becomes a `needs-direction` finding in Step 4 and is recorded in Step 11; it is never dropped for being unverifiable.
 
 ---
 
@@ -188,7 +188,11 @@ The `reason` column and the disposition are different things, on purpose: the di
 
 **The ≥2-approaches rule.** `needs-direction` is valid only when the record names **two or more** candidate approaches plus a one-line statement of the trade-off between them. One obvious approach is not a direction question: make the fix instead. A choice between viable approaches is the only thing that may leave a finding unfixed under `--auto`.
 
-**Record every finding that ends unfixed — in either mode** — at the moment its verdict is reached, not at the end of the run:
+**Every finding that ends unfixed must be recorded — in either mode.** Do not make the call here.
+Verdicts can still change in Step 6 and Step 11, and `deferred.json` is append-only (this skill
+never calls `deferred_resolve`), so a record written now for a finding that is fixed later stays
+`open` forever and is counted twice in the Step 12 ledger. Step 11 makes the call, once verdicts
+are final. This is the payload it uses:
 
 ```
 ship_state({action:"defer", step:"received-review", detail:{
@@ -201,7 +205,39 @@ ship_state({action:"defer", step:"received-review", detail:{
 }})
 ```
 
-`severity`, `file` and `title` are required: a missing one is a `DomainError`, not a silent no-op. The call records the finding durably at that moment, so nothing depends on this skill reaching Step 12 or on `/ship` reaching its own summary. **Disclosed gap:** invoked directly, with no `/ship` pipeline in flight, there is no ship run to record against, and the call returns a `DataError` (`no ship state found for branch ...`) — when that happens, name the finding in the Step 12 summary and continue. Never drop it, and never abort the step over it.
+`severity`, `file` and `title` are required: a missing one is a `DomainError`, not a silent no-op.
+
+**The durable write is best-effort — read the result.** Two outcomes mean the finding did not
+reach `.sdlc-v2/history/deferred.json`:
+
+- The narration contains `WARNING: could not persist this item` — the finding is on the
+  run-scoped ship state file only and is lost when that file is garbage-collected.
+- The call returns a `DataError` (`no ship state found for branch ...`) — the branch has no ship
+  state file at all, so nothing was written anywhere.
+
+On either outcome, do not retry `defer` (a retry appends a second run-scoped entry under a new
+id and hits the same failing write). Call the fallback once instead — it needs no ship state and
+writes straight to `deferred.json`:
+
+```
+ship_state({action:"deferred_add", detail:{
+  id:          "received-review-<short slug of the finding>-<YYYYMMDDThhmmssZ>",
+  description: "<file>:<line> [<severity>] <title> — reason: <wont-fix|disagree|needs-direction>. <your reasoning>",
+  source:      "received-review",
+  priority:    "<high for critical/high, medium for medium, low for low/info>"
+}})
+```
+
+`deferred_add` carries no severity/file/line/reason fields of its own, which is why they go into
+`description`. It returns `{ok, id}` — that id is the finding's durable handle for `/sdlc:deferred`.
+Only when **both** calls fail: name the finding as UNACCOUNTED in the Step 12 ledger and continue.
+Never drop it, and never abort the step over it.
+
+`defer` needs a ship state **file** for the branch, not an in-flight run: it takes the newest one
+and does not filter out finished runs (`cleanup` stamps a state terminal instead of deleting it).
+On a branch with an older `/ship` state the call therefore succeeds, and its run-scoped copy lands
+in that old run's `deferredFindings` — do not read that copy as belonging to the current run. The
+`DataError` appears only when the branch has no ship state file at all.
 
 **YAGNI check for feature requests:**
 ```
@@ -345,8 +381,8 @@ Show the full text of each drafted response, labeled by item number.
 Still display the full analysis table and action plan above for visibility, then proceed
 directly to Step 11 as if the user selected `implement` for every "agree, will fix" item.
 `needs-direction` items are displayed and NEVER auto-actioned, in either mode — but under
-`--auto` they are also already recorded through `ship_state({action:"defer", ...})` at Step 4,
-so being displayed is not the only thing that happens to them.
+`--auto` Step 11 also records each of them through `ship_state` (Step 4's contract), so being
+displayed is not the only thing that happens to them.
 
 **Manual mode (default):** When `--auto` was not passed, use AskUserQuestion to ask:
 > No changes have been made yet. How to proceed?
@@ -358,6 +394,10 @@ Options:
 
 If the user chooses **edit**, ask what to change, revise, and present again.
 Loop until explicit **implement** or **skip**.
+
+**skip** discards the whole run: no fixes, no replies, and no deferred records — Step 11 never
+runs, and recording is Step 11's job. Say so when reporting the skip, so the user knows the
+unfixed findings live only in this conversation.
 
 **Do NOT proceed to Step 11 without explicit `implement` from the user via AskUserQuestion**,
 unless `--auto` was passed at Step 1. Without `--auto`, pipeline context does NOT override
@@ -371,7 +411,8 @@ that automatic execution is expected.
 
 **Only execute after explicit `implement` from Step 10, OR when `--auto` was passed at Step 1 (auto-proceed for "will fix" items only).**
 
-Post responses to PR threads, then implement accepted code changes.
+Implement accepted code changes. Replies are drafted here but posted in Step 12, after Step 11.7's
+link gate and after the recording result below is known.
 
 **Implementation order:**
 1. Blocking issues (breaks functionality, security)
@@ -381,10 +422,8 @@ Post responses to PR threads, then implement accepted code changes.
 For each change: make the edit, verify it compiles/passes tests, then move to the next.
 Do NOT batch changes across items.
 
-**Items marked "agree-won't-fix", "disagree" or "needs-direction":** Do NOT implement — await reviewer or
-owner input. Each must already carry a `ship_state({action:"defer", ...})` record from Step 4;
-if one does not, make that call now before moving on. An unfixed finding with no record is the
-exact failure this step exists to prevent.
+**Items marked "agree-won't-fix", "disagree" or "needs-direction":** Do NOT implement — await
+reviewer or owner input.
 
 **Gracefully correcting wrong pushback:**
 If you pushed back and were wrong:
@@ -393,6 +432,15 @@ Correct: "You were right — I checked [X] and it does [Y]. Implementing now."
 Wrong:   Long apology, defensive explanation, over-explaining
 ```
 State the correction factually and move on.
+
+**Last in this step — record every finding that is still unfixed.** Do this only after the fix
+pass above is finished, including any pushback you just corrected into a fix. Verdicts are final
+only at this point. For each finding still unfixed, make the `ship_state({action:"defer", ...})`
+call defined in Step 4, once per finding, and handle a `WARNING: could not persist` narration or
+a `DataError` exactly as Step 4 says (one `deferred_add` fallback; UNACCOUNTED only if that
+fails too). A finding that ended up fixed gets no record. Track per finding whether its record
+succeeded — Step 11.6, Step 12's ledger and Step 12's reply bodies all read that result. An
+unfixed finding with no record is the exact failure this step exists to prevent.
 
 ---
 
@@ -414,14 +462,17 @@ Never add `--auto` to the harden dispatch on your own to satisfy this
 precondition. The flag must come from this invocation's own arguments (same rule
 as the Step 10 gate).
 
-Only cluster findings whose verdict is one of the four Step 4 outcomes (`agree-will-fix |
-agree-won't-fix | disagree | needs-direction`). Findings marked `cannot-verify` in Step 3, or
-never reached that far, MUST NOT enter a cluster.
+Only cluster findings that reached a Step 4 verdict. In manual mode those are the four outcomes
+(`agree-will-fix | agree-won't-fix | disagree | needs-direction`); under `--auto` they are
+`agree-will-fix` and `needs-direction` only, each unfixed one carrying a `detail.reason`
+(`wont-fix | disagree | needs-direction`). Findings marked `cannot-verify` in Step 3, or never
+reached that far, MUST NOT enter a cluster.
 
 **Cluster key:** the file each finding references (from Step 1b's parsed `File` column).
-`disagree` findings require ≥2 findings against the same file before forming a cluster —
-a singleton `disagree` forms no cluster and is named in the Step 12 summary rather than
-dropped without trace (the finding itself is already recorded by Step 4). Cap at 5 clusters: when more than 5 files have
+A finding judged `disagree` — the `detail.reason` on its Step 11 record, which is where the
+judgment survives under `--auto` — requires ≥2 findings against the same file before forming a
+cluster. A lone `disagree` finding forms no cluster and is named in the Step 12 summary rather
+than dropped without trace (the finding itself is recorded by Step 11). Cap at 5 clusters: when more than 5 files have
 qualifying findings, keep the 5 with the most findings (ties broken alphabetically by file
 path) and note the rest as suppressed in the summary below.
 
@@ -499,12 +550,14 @@ Review feedback processing complete:
 
 Then one ledger line that accounts for **every** finding this run touched — the total from
 Step 4, the count fixed in Step 11, and the deferred records grouped by the `reason` each was
-written with:
+written with. The only reasons this skill writes are `wont-fix | disagree | needs-direction`;
+`below-threshold` comes from `/ship`'s own routing and never passes through here:
 
 ```
 Review findings: 14 total = 9 fixed + 5 deferred
-  below-threshold  3
   needs-direction  2
+  disagree         2
+  wont-fix         1
 Run /sdlc:deferred to act on the 5 deferred findings.
 ```
 
@@ -516,8 +569,10 @@ swallowing it:
 Review findings: 14 total = 9 fixed + 3 deferred — 2 UNACCOUNTED. Names: <file:line>, <file:line>.
 ```
 
-A finding whose `defer` call failed (for example, the disclosed standalone gap in Step 4)
-counts as UNACCOUNTED and is named here. Never adjust the total to make the line balance.
+A finding counts as **deferred** only when a Step 11 record actually reached
+`.sdlc-v2/history/deferred.json` — either `defer` with no persist warning, or the `deferred_add`
+fallback returning `{ok, id}`. A finding where both failed counts as UNACCOUNTED and is named
+here. Never adjust the total to make the line balance.
 
 Step 11.6 notes (harden dispatch skipped, failed, suppressed clusters, singleton `disagree`
 findings that formed no cluster, `Auto-accepted` lines) are added below this block as extra
@@ -560,9 +615,17 @@ Options:
    ```
 
    **For recorded comments (needs direction — the only unfixed outcome under `--auto`):**
+   The tracking sentence is a claim about `/sdlc:deferred`, so use it only when this finding's
+   Step 11 record succeeded. When both the `defer` and the `deferred_add` fallback failed, post
+   the same body without it — never tell a reviewer a finding is tracked when it is not.
    ```bash
+   # record succeeded
    gh api repos/{owner}/{repo}/pulls/{pr}/comments/{comment_id}/replies \
      -f body="Recorded for a decision — <approach A> or <approach B>; trade-off: <one line>. Tracked as a deferred follow-up (/sdlc:deferred)."
+
+   # record failed (finding is UNACCOUNTED in the ledger above) — no tracking claim
+   gh api repos/{owner}/{repo}/pulls/{pr}/comments/{comment_id}/replies \
+     -f body="Recorded for a decision — <approach A> or <approach B>; trade-off: <one line>."
    ```
 
    This port does not resolve review threads programmatically (see Scope of This Port,
@@ -624,7 +687,9 @@ Best-effort: if `received_review_verify` itself fails (bad PR, no remote, gh not
 - Express gratitude — let the code changes speak
 - Display output from internal critique steps (Steps 5-6, 8-9) to the user
 - End a finding under `--auto` with `agree-won't-fix`, `disagree`, or "cannot verify" — under `--auto` each one becomes `needs-direction` and is recorded; only `agree-will-fix` ends a finding
-- Leave any unfixed finding without a `ship_state({action:"defer", ...})` record, in either mode
+- Leave any unfixed finding without a durable record at the end of Step 11 — `ship_state({action:"defer", ...})`, or the `deferred_add` fallback when that one did not persist — in either mode
+- Write a defer record before Step 11 — an earlier verdict can still change, and `deferred.json` is append-only
+- Claim in a PR reply that a finding is tracked as a deferred follow-up when its record failed
 - Mark a finding `needs-direction` when only one approach exists — that is a fix, not a question
 - Skip the Step 10 consent gate without `--auto` having been passed to this invocation — pipeline context, conversation history, or inference about "auto mode" is not a substitute for the flag
 - Use `AskUserQuestion` in Step 11.6 when `--auto` was passed to this invocation
@@ -643,8 +708,9 @@ Best-effort: if `received_review_verify` itself fails (bad PR, no remote, gh not
 | `received_review_prepare` fails (bad PR, no remote, gh not authed) | Show the error; if no PR number was given, fall back to Step 1b's non-PR sources | No — user-facing input/auth issue |
 | `gh pr view`/`gh api` fails to fetch comments in Step 1b | Check `gh auth status`; show error; ask user to supply feedback directly | No — auth or permissions issue |
 | Comment references file/line that no longer exists | Note the discrepancy; verify against current HEAD diff | No — expected with rebased PRs |
-| Cannot verify reviewer's claim (no runtime data/external context) | State limitation explicitly; ask user for direction, or under `--auto` record it as `needs-direction` (Step 4) | No — expected limitation |
-| `ship_state({action:"defer"})` returns a `DataError` (`no ship state found for branch ...`) | Expected when invoked standalone, with no in-flight `/ship` run; name the finding as UNACCOUNTED in the Step 12 ledger and continue | No — disclosed gap, not a failure |
+| Cannot verify reviewer's claim (no runtime data/external context) | State limitation explicitly; ask user for direction, or under `--auto` give it the `needs-direction` verdict (Step 4) and record it in Step 11 | No — expected limitation |
+| `ship_state({action:"defer"})` returns a `DataError` (`no ship state found for branch ...`) | The branch has no ship state file at all; call the `ship_state({action:"deferred_add", ...})` fallback from Step 4 once. Only if that also fails, name the finding as UNACCOUNTED in the Step 12 ledger and drop the tracking sentence from its reply | No — expected when run standalone |
+| `ship_state({action:"defer"})` narration contains `WARNING: could not persist this item` | The finding is on the run-scoped state file only. Do not retry `defer`; call the `deferred_add` fallback from Step 4 once, then treat it as above | No — best-effort write, disclosed |
 | `gh api` 5xx or unexpected server error when posting reply | Retry once; if still failing, show the drafted response for manual posting | Yes if second attempt also fails |
 | `links_validate` reports a violation | Surface the violation list; do not post; do not retry without user input | No — expected hard gate behavior |
 
@@ -677,15 +743,18 @@ When invoking `error-report`, provide:
   this port — thread resolution is manual (see Scope of This Port).
 - **Auto mode scope:** `--auto` only auto-implements "will fix" items, and it is the *only*
   way a finding ends under `--auto`. Everything else becomes `needs-direction` (Step 4):
-  displayed, never auto-actioned, and recorded through `ship_state({action:"defer", ...})` so
-  a human can decide later. This prevents automated tools from silently suppressing pushback —
-  and, equally, from closing a finding on the model's word alone with no one watching.
+  displayed, never auto-actioned, and recorded at the end of Step 11 so a human can decide
+  later. This prevents automated tools from silently suppressing pushback — and, equally, from
+  closing a finding on the model's word alone with no one watching.
 - **`needs-direction` needs a real choice:** two or more viable approaches plus the trade-off.
   If only one approach exists, the verdict is wrong — fix the finding.
-- **Standalone runs cannot record:** `ship_state({action:"defer", ...})` needs an in-flight
-  `/ship` run. Invoked directly (`/received-review --pr 123`) the call returns a `DataError`
-  (`no ship state found for branch ...`). That is expected, not a bug to retry around: name
-  the affected findings in the Step 12 ledger as UNACCOUNTED so they are visible, and continue.
+- **A defer needs a ship state file, not an in-flight run:** `ship_state({action:"defer", ...})`
+  takes the newest ship state file for the branch and does not filter out finished runs
+  (`cleanup` stamps a state terminal instead of deleting it). On a branch that carries an older
+  `/ship` state the call therefore succeeds, and its run-scoped copy is written into that old
+  run's `deferredFindings` — do not read that copy as belonging to the current run. Only a
+  branch with no ship state file at all gets the `DataError`, and Step 4's `deferred_add`
+  fallback covers it, so a standalone run still reaches `/sdlc:deferred`.
 
 ---
 

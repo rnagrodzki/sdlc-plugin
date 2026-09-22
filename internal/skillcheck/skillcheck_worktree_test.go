@@ -199,7 +199,7 @@ var worktreeSkillsProhibitionMisses = map[string]worktreeSkillsException{
 		contains: "a bare Read of `.sdlc-v2/config.toml` is not",
 		reason:   `negation word is "not" ("... is not available to this sub-flow" on the next line), which is not in the (do not|don't|never|no) alternation`,
 	},
-	"skills/ship/SKILL.md:102": {
+	"skills/ship/SKILL.md:94": {
 		contains: "Never construct a",
 		reason:   `"(read-only) -> ... Never construct a .sdlc-v2/ path" -- "read" appears earlier in the same line, before "Never", and the prohibited verb is "construct" (not in the read|write|glob alternation)`,
 	},

@@ -958,7 +958,7 @@ func withMainRoot(t *testing.T, root string) {
 
 // deferredStore returns the writer over root's .sdlc-v2/history directory.
 func deferredStore(root string) *history.FileWriter {
-	return history.NewFileWriter(filepath.Join(root, paths.DataDir, "history"))
+	return history.NewFileWriter(paths.HistoryDir(root))
 }
 
 // addDeferred appends one item with the given id and status to w.
@@ -1052,7 +1052,7 @@ func TestDeferredBacklogPhase_SilentWhenNothingToTriage(t *testing.T) {
 			root := realPath(t, t.TempDir())
 			withMainRoot(t, root)
 			if tc.setup != nil {
-				dir := filepath.Join(root, paths.DataDir, "history")
+				dir := paths.HistoryDir(root)
 				mustMkdirAll(t, dir)
 				tc.setup(t, dir)
 			}

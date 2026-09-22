@@ -22,7 +22,7 @@ default. Optionally verify CI and wait for automated reviewer feedback.
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--plan <path>` | Plan file to execute. Omit to skip the execute step and start from commit. | none |
-| `--auto` | Suppress all confirmation prompts for the whole run. | off |
+| `--auto` | Suppress all confirmation prompts for the whole run. One exception: filing a GitHub issue for an execute-step draft still asks — see [End-of-run summary](#end-of-run-summary). | off |
 | `--steps <csv>` | Comma-separated list of steps to run, overriding the project's configured step list. | from config |
 | `--quick` | Use the project's configured shortcut step list. Does nothing if no shortcut list is configured. | off |
 | `--quality <level>` | Quality tier forwarded to the execute step: `full`, `balanced`, or `minimal`. | unset (execute decides) |
@@ -124,6 +124,37 @@ records, alongside the resolved pipeline flags:
 None of this requires extra flags or setup — it's recorded (or derived)
 automatically by every run and read back automatically on resume.
 
+### End-of-run summary
+
+After the last step, `/ship` prints the step table, the decisions log and the
+deferred findings. Two parts of that summary are worth knowing about:
+
+- **Review-findings ledger.** When the review step ran, the summary closes
+  with one ledger that accounts for *every* finding the review produced — how
+  many were fixed by `received-review`, and how many were deferred, grouped by
+  the reason each was deferred with:
+
+      Review findings: 14 total = 9 fixed + 5 deferred
+        below-threshold  3
+        needs-direction  2
+      Run /sdlc:deferred to act on the 5 deferred findings.
+
+  The numbers are meant to add up. When they don't, `/ship` says so on the
+  same line (`— 2 UNACCOUNTED`) and names the findings, instead of quietly
+  adjusting the total. An unbalanced ledger is a reporting bug worth seeing.
+
+- **Deferred follow-ups (Step 10b).** After the summary, `/ship` checks for
+  deferred items that are still open — review findings that were saved rather
+  than fixed, plus any issue drafts the execute step raised. If there are
+  none, nothing is printed. If there are, it offers the same triage flow
+  [/deferred](deferred.md) runs: file GitHub issues for the ones worth
+  filing, resolve the rest, or leave them for later. With `--auto`, the open
+  items are still listed but the triage question is not asked — they stay
+  open for a later run. The execute-step issue drafts are the exception: they
+  are offered even under `--auto`, because creating a GitHub issue always
+  needs your approval. Nothing is lost either way — every deferred item is
+  already written to disk when it is created.
+
 ### Execution report
 
 Near the end of a run, `/ship` assembles an execution report —
@@ -145,6 +176,8 @@ written.
 - [/review](review.md) — Review step.
 - [/pr](pr.md) — PR creation step.
 - [/verify-pipeline](verify-pipeline.md) — Optional post-PR CI verification.
+- [/deferred](deferred.md) — Triage the findings and issue drafts a run left
+  open.
 - [/setup](setup.md) — Configure pipeline steps and settings.
 
 ## Tips and gotchas

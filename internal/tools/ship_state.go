@@ -7,11 +7,13 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
+	"github.com/rnagrodzki/sdlc-plugin/internal/dimensions"
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
@@ -41,7 +43,7 @@ import (
 type ShipStateIn struct {
 	Action    string         `json:"action" jsonschema:"enum=init,enum=begin-step,enum=complete-step,enum=start,enum=complete,enum=skip,enum=fail,enum=decide,enum=defer,enum=read,enum=next,enum=todos,enum=cleanup,enum=cleanup-pipeline,enum=gc,enum=migrate,enum=history_record,enum=deferred_add,enum=deferred_list,enum=deferred_propose_followups,enum=deferred_resolve,enum=log-cli" jsonschema_description:"Operation to perform: init, begin-step, complete-step, start (legacy), complete (legacy), skip, fail, decide, defer, read, next, todos, cleanup, cleanup-pipeline, gc, migrate, history_record, deferred_add, deferred_list, deferred_propose_followups, deferred_resolve, or log-cli. Each action uses a subset of the other fields (unlisted fields are ignored)."`
 	Step      string         `json:"step,omitempty" jsonschema_description:"Pipeline step name. Required by begin-step, complete-step, start, complete, skip, fail, decide; ignored by other actions."`
-	Detail    map[string]any `json:"detail,omitempty" jsonschema_description:"Action-specific extra fields (e.g. branch, flags, outcome, result, reason, error, text, severity, file, title, line, force, ttlDays, dryRun, from, to, detail; log-cli reads branch, command, exitCode, outputHead, step). See the action list for which sub-fields each action reads."`
+	Detail    map[string]any `json:"detail,omitempty" jsonschema_description:"Action-specific extra fields (e.g. branch, flags, outcome, result, reason, description, error, text, severity, file, title, line, force, ttlDays, dryRun, from, to, detail; log-cli reads branch, command, exitCode, outputHead, step). See the action list for which sub-fields each action reads."`
 	SessionID string         `json:"sessionId,omitempty" jsonschema_description:"Session identifier used by init to stamp the created state's sessionId field, for correlating this run with the calling session."`
 }
 
@@ -120,6 +122,32 @@ func detailStr(d map[string]any, key string) string {
 func detailBool(d map[string]any, key string) bool {
 	v, _ := d[key].(bool)
 	return v
+}
+
+// shipDetailString reads an optional string out of Detail and fails loud on
+// a wrong-typed value instead of silently reading it as absent. detailStr
+// yields "" for any non-string, which for an optional field is
+// indistinguishable from "omitted" — so `detail.reason: 5` would quietly
+// record the omitted-reason default while the caller believes it passed a
+// reason. A JSON null is treated as omitted (same convention as
+// detailIntPtr), since that is how a caller spells "no value".
+func shipDetailString(d map[string]any, action, key, suggestion string) (string, error) {
+	v, ok := d[key]
+	if !ok || v == nil {
+		return "", nil
+	}
+	s, isStr := v.(string)
+	if !isStr {
+		return "", &mcpserver.DomainError{
+			Msg: fmt.Sprintf("%s: detail.%s must be a string, got %T", action, key, v),
+			// The literal prefix states the type rule that every caller
+			// shares; the caller's own suggestion names the accepted
+			// values. Keeping the prefix inline (not a parameter) is what
+			// mcp-error-suggestion-coverage checks for.
+			Suggestion: fmt.Sprintf("Pass detail.%s as a JSON string, or omit the key entirely. %s", key, suggestion),
+		}
+	}
+	return s, nil
 }
 
 // detailIntPtr extracts an optional integer from Detail, distinguishing
@@ -1059,26 +1087,52 @@ func shipStateDecide(root, workDir string, in ShipStateIn) (any, error) {
 // cannot depend on the ship skill reaching step 10b — any earlier exit used
 // to lose the finding outright.
 func shipStateDefer(root, workDir string, in ShipStateIn, now func() time.Time) (any, error) {
-	severity := detailStr(in.Detail, "severity")
+	rawSeverity := detailStr(in.Detail, "severity")
 	file := detailStr(in.Detail, "file")
 	title := detailStr(in.Detail, "title")
-	if severity == "" || file == "" || title == "" {
+	if rawSeverity == "" || file == "" || title == "" {
 		return nil, &mcpserver.DomainError{
 			Msg:        "defer: severity, file, and title are required",
 			Suggestion: "Pass detail.severity, detail.file, and detail.title all as non-empty strings, then retry ship_state defer.",
 		}
 	}
-	// reason is optional; when present it must be one of the values
-	// history.ValidDeferredReason accepts. The set is defined once, in
-	// internal/history, and is not restated here. The message names the
-	// whole accepted set, so a caller reading only the error text knows
-	// every value it may pass (mcp-error-actionable).
-	reason := detailStr(in.Detail, "reason")
+	// severity must name one of the review severities. It used to be stored
+	// raw, so "HIGH" or a typo reached both stores while
+	// priorityFromSeverity quietly bucketed the unknown value as medium —
+	// a silent degraded write. The accepted set is dimensions.ValidSeverities
+	// (the same vocabulary review findings are emitted with), not a literal
+	// restated here; "info" is in it deliberately, since the default
+	// reviewThreshold is "low" and info is exactly what a default run
+	// defers. The normalized lowercase form is what both stores record.
+	severity := strings.ToLower(strings.TrimSpace(rawSeverity))
+	acceptedSeverities := strings.Join(dimensions.ValidSeverities, " | ")
+	if !slices.Contains(dimensions.ValidSeverities, severity) {
+		return nil, &mcpserver.DomainError{
+			Msg: fmt.Sprintf("defer: detail.severity %q is not a recognised review severity — accepted values are %s",
+				rawSeverity, acceptedSeverities),
+			Suggestion: "Pass detail.severity as one of " + acceptedSeverities +
+				" (case-insensitive — the lowercase form is what gets recorded), then retry ship_state defer.",
+		}
+	}
+	// reason is optional; when present it must be a string naming one of
+	// the values history.ValidDeferredReason accepts. The set is defined
+	// once, in internal/history, and is not restated here. The message
+	// names the whole accepted set, so a caller reading only the error text
+	// knows every value it may pass (mcp-error-actionable).
 	accepted := strings.Join(history.DeferredReasons(), " | ")
+	reasonSuggestion := "Pass detail.reason as one of " + accepted +
+		", or omit it entirely to record " + history.ReasonBelowThreshold + ", then retry ship_state defer."
+	reason, err := shipDetailString(in.Detail, "defer", "reason", reasonSuggestion)
+	if err != nil {
+		return nil, err
+	}
 	if reason != "" && !history.ValidDeferredReason(reason) {
 		return nil, &mcpserver.DomainError{
 			Msg: fmt.Sprintf("defer: detail.reason %q is not a recognised deferral reason — accepted values are %s",
 				reason, accepted),
+			// Spelled out inline rather than reusing reasonSuggestion:
+			// mcp-error-suggestion-coverage requires the Suggestion field
+			// to carry its own literal text.
 			Suggestion: "Pass detail.reason as one of " + accepted +
 				", or omit it entirely to record " + history.ReasonBelowThreshold + ", then retry ship_state defer.",
 		}
@@ -1094,23 +1148,43 @@ func shipStateDefer(root, workDir string, in ShipStateIn, now func() time.Time) 
 	// reasoning (for needs-direction: the candidate approaches and the
 	// trade-off). It falls back to the title, which is what every caller
 	// that predates the field records today.
-	description := detailStr(in.Detail, "description")
-	if description == "" {
-		description = title
-	}
-	st, err := shipResolveAndFind(detailStr(in.Detail, "branch"), workDir, root)
+	description, err := shipDetailString(in.Detail, "defer", "description",
+		"Pass detail.description as a string carrying your reasoning for deferring, or omit it to default to detail.title, then retry ship_state defer.")
 	if err != nil {
 		return nil, err
 	}
+	if description == "" {
+		description = title
+	}
+	// line is optional, but a present non-numeric value used to be written
+	// raw into the state entry while deferred.json got detailIntPtr's
+	// parse (0) — one bad input, two durable records that disagree. Reject
+	// it instead, and write the one parsed value to both.
+	var linePtr *int
+	if v, ok := in.Detail["line"]; ok && v != nil {
+		if linePtr = detailIntPtr(in.Detail, "line"); linePtr == nil {
+			return nil, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("defer: detail.line must be an integer, got %T", v),
+				Suggestion: "Pass detail.line as a JSON number naming the line of the finding, or omit it entirely, then retry ship_state defer.",
+			}
+		}
+	}
 	line := 0
-	if p := detailIntPtr(in.Detail, "line"); p != nil {
-		line = *p
+	var lineValue any
+	if linePtr != nil {
+		line = *linePtr
+		lineValue = line
+	}
+
+	st, err := shipResolveAndFind(detailStr(in.Detail, "branch"), workDir, root)
+	if err != nil {
+		return nil, err
 	}
 	findings, _ := st.Data["deferredFindings"].([]any)
 	findings = append(findings, map[string]any{
 		"severity": severity,
 		"file":     file,
-		"line":     in.Detail["line"],
+		"line":     lineValue,
 		"title":    title,
 		"reason":   reason,
 	})
@@ -1124,22 +1198,32 @@ func shipStateDefer(root, workDir string, in ShipStateIn, now func() time.Time) 
 	}
 
 	timestamp := now().UTC().Format(time.RFC3339)
+	// The id is echoed in the narration: it is the handle every later
+	// deferred_* call needs, and a mutating call that does not name the
+	// resource it created leaves the caller unable to refer to it.
+	deferredID := fmt.Sprintf("review-deferred-%s-%d", timestamp, len(findings))
+	// The file name belongs to internal/history, so ask that package for it
+	// instead of repeating the literal here. This value is only shown in the
+	// narration; the write itself goes through persistDeferred.
+	deferredPath := history.NewFileWriter(historyDir(root)).DeferredPath()
 	persistErr := persistDeferred(root, history.DeferredIssue{
-		ID:          fmt.Sprintf("review-deferred-%s-%d", timestamp, len(findings)),
+		ID:          deferredID,
 		Created:     timestamp,
-		Source:      "review-below-threshold",
+		Source:      history.SourceReviewBelowThreshold,
 		Priority:    priorityFromSeverity(severity),
 		Description: description,
-		Status:      "open",
+		Status:      history.StatusOpen,
 		Severity:    severity,
 		File:        file,
 		Line:        line,
 		Reason:      reason,
 	})
 
-	summary := fmt.Sprintf("Deferred finding recorded: %s.", title)
+	summary := fmt.Sprintf("Deferred finding recorded: %s (id %s).", title, deferredID)
 	if persistErr != nil {
-		summary += deferredPersistWarning(persistErr)
+		summary += " " + deferredPersistWarning(persistErr, deferredID, title)
+	} else {
+		summary += fmt.Sprintf(" Written to %s.", deferredPath)
 	}
 	out := ShipStepNarrationOut{
 		Narration: pipeline.Narration{
@@ -1743,8 +1827,11 @@ func shipStateTodos(root, workDir string, in ShipStateIn) (any, error) {
 // Action: history_record — append a pipeline run record to .sdlc-v2/history/runs.jsonl
 // ---------------------------------------------------------------------------
 
+// historyDir is a thin alias for paths.HistoryDir so this file keeps one
+// short local name for a path it joins in many places. The literal
+// "history" subdirectory lives in internal/paths and is never repeated here.
 func historyDir(root string) string {
-	return filepath.Join(root, paths.DataDir, "history")
+	return paths.HistoryDir(root)
 }
 
 // historyWriter returns the history.Writer used by the durable deferred
@@ -1762,9 +1849,17 @@ var historyWriter = func(root string) history.Writer {
 // entry with the same ID is already there.
 //
 // The store itself stays append-only with no dedup — deferred_add's
-// contract depends on that. The skip lives here instead, so that a handler
-// re-entered after a partial failure (state written, deferred.json write
-// failed, caller retries) does not end up with the same id recorded twice.
+// contract depends on that. The skip lives here instead, for a caller that
+// re-sends the same id directly (deferred_add is idempotent per id; so is a
+// direct persistDeferred call in a test).
+//
+// It does NOT protect shipStateDefer or execActionIssueDraft against their
+// own retries: both mint id from timestamp+count at call time (fresh state
+// on every invocation), so a caller that re-runs defer/issue-draft after a
+// failed persist gets a brand-new id, not the one that just failed. That
+// retry is not a recovery — it adds a second run-scoped entry while the
+// first stays lost — which is exactly why deferredPersistWarning below
+// points the caller at deferred_add instead of "try again".
 func persistDeferred(root string, issue history.DeferredIssue) error {
 	w := historyWriter(root)
 	existing, err := w.ListDeferred()
@@ -1779,31 +1874,46 @@ func persistDeferred(root string, issue history.DeferredIssue) error {
 	return w.AddDeferred(issue)
 }
 
-// deferredPersistWarning renders the sentence appended to a handler's
-// narration when persistDeferred failed. The write is best-effort — losing
-// deferred.json must not fail the caller's actual work — but it is never
-// swallowed: a silent failure of the fix for silent loss would be worse
-// than the original bug.
-func deferredPersistWarning(err error) string {
+// deferredPersistWarning renders the sentence a handler surfaces when
+// persistDeferred failed. The write is best-effort — losing deferred.json
+// must not fail the caller's actual work — but it is never swallowed: a
+// silent failure of the fix for silent loss would be worse than the
+// original bug.
+//
+// The sentence carries no leading space: every caller adds its own
+// separator (shipStateDefer appends to a summary, execActionIssueDraft
+// assigns it to a Warning field), and a helper with two spacing
+// conventions is one the next caller gets wrong.
+//
+// id and title are the failed item's, so the text can name a concrete
+// recovery instead of only naming the loss. Repeating the original call is
+// NOT that recovery — it appends a second run-scoped entry under a fresh
+// id rather than completing the first one — so the instruction points at
+// deferred_add, which writes the durable store directly.
+func deferredPersistWarning(err error, id, title string) string {
 	return fmt.Sprintf(
-		" WARNING: could not persist this item to %s/history/deferred.json (%s)."+
-			" It is recorded on the run-scoped state file only, and will be lost when that file is garbage-collected.",
-		paths.DataDir, err.Error())
+		"WARNING: could not persist this item to %s/history/deferred.json (%s)."+
+			" It is recorded on the run-scoped state file only, and will be lost when that file is garbage-collected."+
+			" Recover it with ship_state action=deferred_add (detail.id=%q, detail.description=%q)."+
+			" Do not repeat the original call — it records a second entry instead of recovering this one.",
+		paths.DataDir, err.Error(), id, title)
 }
 
 // priorityFromSeverity maps a review finding's severity onto the three
-// priority buckets DeferredByPriority groups on. An unrecognised severity
-// falls back to "medium", matching deferred_add's default.
+// priority buckets DeferredByPriority groups on. The cases cover
+// dimensions.ValidSeverities exactly — shipStateDefer rejects anything else
+// before calling this, so the fallback is only reached by callers that do
+// not validate first; it stays "medium", matching deferred_add's default.
 func priorityFromSeverity(severity string) string {
 	switch strings.ToLower(strings.TrimSpace(severity)) {
 	case "critical", "high":
-		return "high"
+		return history.PriorityHigh
 	case "medium":
-		return "medium"
-	case "low", "info", "trivial", "nit":
-		return "low"
+		return history.PriorityMedium
+	case "low", "info":
+		return history.PriorityLow
 	}
-	return "medium"
+	return history.PriorityMedium
 }
 
 func shipStateHistoryRecord(root string, in ShipStateIn) (any, error) {
@@ -1873,7 +1983,7 @@ func shipStateDeferredAdd(root string, in ShipStateIn) (any, error) {
 		Source:      detailStr(d, "source"),
 		Priority:    detailStr(d, "priority"),
 		Description: detailStr(d, "description"),
-		Status:      "open",
+		Status:      history.StatusOpen,
 	}
 	if issue.ID == "" {
 		return nil, &mcpserver.DomainError{
@@ -1891,7 +2001,7 @@ func shipStateDeferredAdd(root string, in ShipStateIn) (any, error) {
 		issue.Created = time.Now().UTC().Format(time.RFC3339)
 	}
 	if issue.Priority == "" {
-		issue.Priority = "medium"
+		issue.Priority = history.PriorityMedium
 	}
 
 	w := history.NewFileWriter(historyDir(root))
@@ -2094,7 +2204,7 @@ Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide
 - skip: Skip a step. Requires step. Returns narration. Optional: detail.branch, detail.reason, detail.detail.
 - fail: Fail a step. Requires step. Returns narration. Optional: detail.branch, detail.error (recorded as issue), detail.detail.
 - decide: Record a decision. Requires step. Returns narration. Optional: detail.branch, detail.text, detail.detail.
-- defer: Record a deferred finding. Writes it both to the run-scoped ship state file and durably to .sdlc-v2/history/deferred.json (source "review-below-threshold"), so it survives state-file GC — no follow-up deferred_add is needed. Returns narration; a failed deferred.json write does not fail the call but is named in the summary. Requires detail.severity, detail.file, detail.title. Optional: detail.branch, detail.line, detail.detail, detail.description (the deferring agent's own reasoning; defaults to detail.title), detail.reason (one of `+strings.Join(history.DeferredReasons(), " | ")+`; an omitted reason records `+history.ReasonBelowThreshold+`).
+- defer: Record a deferred finding. Writes it both to the run-scoped ship state file and durably to .sdlc-v2/history/deferred.json (source "`+history.SourceReviewBelowThreshold+`"), so it survives state-file GC — no follow-up deferred_add is needed. Returns narration naming the generated deferred id (review-deferred-<timestamp>-<N>) and the file it was written to; a failed deferred.json write does not fail the call but is named in the summary, with the deferred_add call that recovers it. Requires detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`, case-insensitive; the lowercase form is recorded), detail.file, detail.title. Optional: detail.branch, detail.line (integer), detail.detail, detail.description (the deferring agent's own reasoning; defaults to detail.title), detail.reason (one of `+strings.Join(history.DeferredReasons(), " | ")+`; an omitted reason records `+history.ReasonBelowThreshold+`).
 - read: Return the full ship state. Optional: detail.branch. When the pipeline is in flight (some step still blocks proceed and at least one step has been started), the state also carries a "resumeBriefing" (resumable, lastStep, lastStepStatus, sideEffects, summary, display, timing{stepSeconds,pipelineSeconds,idleSeconds,human}, next). A step left "failed" is still reported resumable:true, never as an error.
 - cleanup: Stamp a branch's ship state terminal (pipelineStatus:"completed", pipelineCompletedAt) instead of deleting it, after validating every step is in a terminal state — the state survives for later reads until GC's TTL prunes it. Optional: detail.branch.
 - cleanup-pipeline: Same stamp-instead-of-delete for the current branch's ship state (force/no-state-file skip the contract check), followed by an unconditional GC + per-run-directory sweep. Optional: detail.branch, detail.force, detail.ttlDays.

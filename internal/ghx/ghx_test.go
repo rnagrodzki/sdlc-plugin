@@ -332,6 +332,98 @@ func TestPRReviewComments_MalformedJSON(t *testing.T) {
 	}
 }
 
+// ── PRReviews ────────────────────────────────────────────────────────────
+
+func TestPRReviews(t *testing.T) {
+	script := "#!/bin/sh\n" +
+		"[ \"$*\" = \"pr view 42 --json reviews\" ] || { echo \"unexpected gh args: $*\" >&2; exit 3; }\n" +
+		"printf '%s\\n' '{\"reviews\":[" +
+		"{\"author\":{\"login\":\"alice\"},\"state\":\"COMMENTED\",\"submittedAt\":\"2026-01-01T10:00:00Z\"}," +
+		"{\"author\":{\"login\":\"copilot-pull-request-reviewer\"},\"state\":\"APPROVED\",\"submittedAt\":\"2026-01-01T11:00:00Z\"}" +
+		"]}'\n"
+	cleanup := stubGH(t, script)
+	defer cleanup()
+
+	reviews, err := PRReviews(".", 42)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(reviews) != 2 {
+		t.Fatalf("got %d reviews, want 2", len(reviews))
+	}
+	if reviews[0].Login != "alice" || reviews[0].State != "COMMENTED" || reviews[0].SubmittedAt != "2026-01-01T10:00:00Z" {
+		t.Errorf("unexpected first review: %+v", reviews[0])
+	}
+	if reviews[1].Login != "copilot-pull-request-reviewer" || reviews[1].State != "APPROVED" || reviews[1].SubmittedAt != "2026-01-01T11:00:00Z" {
+		t.Errorf("unexpected second review: %+v", reviews[1])
+	}
+}
+
+func TestPRReviews_EmptyOutput(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\nexit 0\n")
+	defer cleanup()
+
+	reviews, err := PRReviews(".", 5)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reviews == nil {
+		t.Fatal("expected non-nil empty slice for empty gh output")
+	}
+	if len(reviews) != 0 {
+		t.Errorf("got %d reviews, want 0", len(reviews))
+	}
+}
+
+func TestPRReviews_NoReviews(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\nprintf '{\"reviews\":[]}'\n")
+	defer cleanup()
+
+	reviews, err := PRReviews(".", 5)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if reviews == nil {
+		t.Fatal("expected non-nil empty slice for a PR with no reviews")
+	}
+	if len(reviews) != 0 {
+		t.Errorf("got %d reviews, want 0", len(reviews))
+	}
+}
+
+func TestPRReviews_InvalidPRNumber(t *testing.T) {
+	_, err := PRReviews(".", 0)
+	if err == nil {
+		t.Fatal("expected error for invalid PR number")
+	}
+}
+
+// TestPRReviews_GHCommandError mirrors TestGHCommandError's pattern for
+// PRView: a failing `gh pr view ... --json reviews` invocation must surface
+// as an error, unwrapped, rather than being swallowed into an empty result.
+func TestPRReviews_GHCommandError(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\nexit 1\n")
+	defer cleanup()
+
+	_, err := PRReviews(".", 42)
+	if err == nil {
+		t.Fatal("expected error from failing gh command")
+	}
+}
+
+func TestPRReviews_MalformedJSON(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\necho 'not json'\n")
+	defer cleanup()
+
+	_, err := PRReviews(".", 42)
+	if err == nil {
+		t.Fatal("expected error for malformed JSON output")
+	}
+	if !strings.Contains(err.Error(), "parse gh pr view output") {
+		t.Errorf("expected parse error message, got: %v", err)
+	}
+}
+
 func TestCurrentLogin(t *testing.T) {
 	cleanup := stubGH(t, "#!/bin/sh\necho \"octocat\"\n")
 	defer cleanup()

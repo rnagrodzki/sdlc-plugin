@@ -299,6 +299,58 @@ func TestValidatePlanFormatFileNotFound(t *testing.T) {
 	}
 }
 
+// TestValidatePlanFormatFile_UnreadableIsNotFileNotFound pins that a plan
+// path which exists but cannot be read (here: a directory, which
+// os.ReadFile refuses) is reported as unreadable, not as "file not found".
+// The two need different fixes: re-checking an already-correct path versus
+// fixing permissions or the file type.
+func TestValidatePlanFormatFile_UnreadableIsNotFileNotFound(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "plan.md"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := validate(root, ValidateIn{Action: "plan_format", File: "plan.md"})
+	var domErr *mcpserver.DomainError
+	if !errors.As(err, &domErr) {
+		t.Fatalf("want *mcpserver.DomainError, got %T: %v", err, err)
+	}
+	if strings.Contains(domErr.Msg, "file not found") {
+		t.Errorf("Msg = %q, an existing-but-unreadable path must not say file not found", domErr.Msg)
+	}
+	if !strings.Contains(domErr.Msg, "cannot read") {
+		t.Errorf("Msg = %q, want it to say cannot read", domErr.Msg)
+	}
+	if !strings.Contains(domErr.Suggestion, "regular file") {
+		t.Errorf("Suggestion = %q, want it to mention that the path must be a regular file", domErr.Suggestion)
+	}
+}
+
+// TestValidatePlanFormatFinal_UnreadableTemplateErrors pins the same split
+// for the PF10 template path when validatePlanFormat reads it directly
+// (final mode, not through ValidatePlanFormatForHook's skip-on-unreadable
+// loop): an existing-but-unreadable template errors as unreadable, not as
+// "template not found".
+func TestValidatePlanFormatFinal_UnreadableTemplateErrors(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "plan.md"), goodPlan)
+	if err := os.MkdirAll(filepath.Join(root, "template.md"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := validate(root, ValidateIn{Action: "plan_format", File: "plan.md", Final: true, Template: "template.md"})
+	var domErr *mcpserver.DomainError
+	if !errors.As(err, &domErr) {
+		t.Fatalf("want *mcpserver.DomainError, got %T: %v", err, err)
+	}
+	if strings.Contains(domErr.Msg, "template not found") {
+		t.Errorf("Msg = %q, an existing-but-unreadable template must not say template not found", domErr.Msg)
+	}
+	if !strings.Contains(domErr.Msg, "cannot read") {
+		t.Errorf("Msg = %q, want it to say cannot read", domErr.Msg)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // discovery
 // ---------------------------------------------------------------------------

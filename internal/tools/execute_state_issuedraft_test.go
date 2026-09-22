@@ -88,6 +88,9 @@ func TestExecState_IssueDraft_SingleCall(t *testing.T) {
 	if out.TotalDrafts != 1 {
 		t.Errorf("expected TotalDrafts=1, got %d", out.TotalDrafts)
 	}
+	if len(out.Warnings) != 0 {
+		t.Errorf("Warnings = %v, want none on a clean persist", out.Warnings)
+	}
 
 	data := readExecState(t, root, "feat/drafts")
 	drafts, _ := data["pendingIssueDrafts"].([]any)
@@ -163,13 +166,14 @@ func TestExecState_IssueDraft_PersistsToDeferredHistory(t *testing.T) {
 	createExecState(t, root, "feat/drafts", map[string]any{"branch": "feat/drafts"})
 	mem := useMemHistory(t)
 
-	if _, err := executeState(root, root, ExecuteStateIn{
+	result, err := executeState(root, root, ExecuteStateIn{
 		Action:          "issue-draft",
 		Branch:          "feat/drafts",
 		IssueDraftTitle: "Fix flaky test",
 		IssueDraftBody:  "The test fails intermittently.",
 		TaskID:          "7",
-	}, fixedClock(testNow)); err != nil {
+	}, fixedClock(testNow))
+	if err != nil {
 		t.Fatalf("issue-draft: %v", err)
 	}
 
@@ -187,6 +191,25 @@ func TestExecState_IssueDraft_PersistsToDeferredHistory(t *testing.T) {
 	}
 	if mem.Deferred[0] != want {
 		t.Errorf("deferred entry =\n %+v\nwant\n %+v", mem.Deferred[0], want)
+	}
+
+	// The response echoes the id it just wrote, so the caller can name the
+	// entry in a later deferred operation without reconstructing the format.
+	out, ok := result.(IssueDraftOut)
+	if !ok {
+		t.Fatalf("expected IssueDraftOut, got %T", result)
+	}
+	if out.DeferredID != want.ID {
+		t.Errorf("DeferredID = %q, want %q", out.DeferredID, want.ID)
+	}
+	if len(out.Warnings) != 0 {
+		t.Errorf("Warnings = %v, want none", out.Warnings)
+	}
+	if !strings.Contains(out.Next, "durably") {
+		t.Errorf("Next = %q, want it to say the draft is recorded durably", out.Next)
+	}
+	if strings.Contains(out.Next, "deferred_add") {
+		t.Errorf("Next = %q, want no recovery call on the success path", out.Next)
 	}
 }
 
@@ -221,20 +244,11 @@ func TestExecState_IssueDraft_SameTimestampDistinctIDs(t *testing.T) {
 	}
 }
 
-// Re-entry (the same id written twice) must not duplicate the entry.
-func TestExecState_IssueDraft_ReentryKeepsOneEntryPerID(t *testing.T) {
-	mem := useMemHistory(t)
-	issue := history.DeferredIssue{ID: "execute-drift-ts-1", Description: "drift", Status: "open"}
-
-	for i := 0; i < 2; i++ {
-		if err := persistDeferred(t.TempDir(), issue); err != nil {
-			t.Fatalf("persistDeferred call %d: %v", i, err)
-		}
-	}
-	if len(mem.Deferred) != 1 {
-		t.Errorf("entries = %d, want 1", len(mem.Deferred))
-	}
-}
+// The same-id guard inside persistDeferred is pinned by
+// TestPersistDeferred_SkipsDuplicateID in ship_state_test.go. It is not
+// reachable from issue-draft: every call appends a draft and derives the id
+// from the new 1-based position, so two calls always mean two distinct ids
+// (TestExecState_IssueDraft_SameTimestampDistinctIDs pins that).
 
 func TestExecState_IssueDraft_PersistFailureWarnsButSucceeds(t *testing.T) {
 	root := t.TempDir()
@@ -259,8 +273,24 @@ func TestExecState_IssueDraft_PersistFailureWarnsButSucceeds(t *testing.T) {
 	if !out.Added || out.TotalDrafts != 1 {
 		t.Errorf("out = %+v, want Added=true TotalDrafts=1", out)
 	}
-	if !strings.Contains(out.Warning, "deferred.json") || !strings.Contains(out.Warning, "no space left on device") {
-		t.Errorf("warning = %q, want it to name the deferred.json write failure", out.Warning)
+	// Nothing durable was written, so no id may be echoed.
+	if out.DeferredID != "" {
+		t.Errorf("DeferredID = %q, want empty when the persist failed", out.DeferredID)
+	}
+	if len(out.Warnings) != 1 {
+		t.Fatalf("Warnings = %v, want exactly one", out.Warnings)
+	}
+	warning := out.Warnings[0]
+	if !strings.Contains(warning, "deferred.json") || !strings.Contains(warning, "no space left on device") {
+		t.Errorf("warning = %q, want it to name the deferred.json write failure", warning)
+	}
+	// The recovery must be actionable: the exact call, the exact id, and an
+	// explicit "do not retry" (a retry appends a duplicate draft).
+	wantID := "execute-drift-" + testNow.UTC().Format("2006-01-02T15:04:05Z07:00") + "-1"
+	for _, want := range []string{"ship_state action=deferred_add", "detail.id=" + wantID, "detail.description=Fix flaky test", "Do NOT retry issue-draft"} {
+		if !strings.Contains(out.Next, want) {
+			t.Errorf("Next = %q, want it to contain %q", out.Next, want)
+		}
 	}
 
 	// The run-scoped write still happened — only the durable one was lost.
