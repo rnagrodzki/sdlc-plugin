@@ -39,9 +39,10 @@ import (
 // ExecuteStateIn carries the merged input for the execute_state tool's
 // actions. Each field is consumed by one or more actions (noted in comments).
 type ExecuteStateIn struct {
-	Action              string         `json:"action" jsonschema:"enum=wave-compute,enum=init,enum=wave-start,enum=wave-done,enum=wave-fail,enum=wave-committed,enum=wave-commit,enum=task-done,enum=task-fail,enum=task-context,enum=context,enum=read,enum=cleanup,enum=gc,enum=summarize-prior-wave-context,enum=wave-split,enum=verify-completeness,enum=wave-progress,enum=wave-await,enum=task-redispatch,enum=resume-reset,enum=ledger_checkin,enum=ledger_checkout,enum=ledger_status,enum=ledger_cleanup,enum=log-cli,enum=drift-log,enum=issue-draft,enum=decide,enum=report" jsonschema_description:"Selects the operation. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
+	Action              string         `json:"action" jsonschema:"enum=wave-compute,enum=init,enum=wave-start,enum=wave-done,enum=wave-fail,enum=wave-committed,enum=wave-commit,enum=task-done,enum=task-fail,enum=task-context,enum=context,enum=read,enum=cleanup,enum=gc,enum=summarize-prior-wave-context,enum=wave-split,enum=verify-completeness,enum=wave-progress,enum=wave-await,enum=task-redispatch,enum=resume-reset,enum=ledger_checkin,enum=ledger_checkout,enum=ledger_status,enum=ledger_cleanup,enum=log-cli,enum=drift-log,enum=issue-draft,enum=decide,enum=resolve-config,enum=report" jsonschema_description:"Selects the operation. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
 	Branch              string         `json:"branch,omitempty" jsonschema_description:"Git branch the execution state belongs to. Most actions accept it to scope the state file; falls back to the current branch when omitted."`
-	Quality             string         `json:"quality,omitempty" jsonschema_description:"Quality level to stamp on a newly initialized run (init only). Required — no config fallback exists for this field."`
+	Auto                bool           `json:"auto,omitempty" sdlcconfig:"execute.auto" jsonschema_description:"resolve-config only: true when the caller passed --auto. Optional. Defaults to config execute.auto. Pass only to override."`
+	Quality             string         `json:"quality,omitempty" jsonschema_description:"Quality tier. init: required -- the tier stamped on the newly initialized run; pass the value resolve-config returned. resolve-config: the --quality CLI value, which wins over config execute.quality when non-empty."`
 	TotalTasks          int            `json:"totalTasks,omitempty" jsonschema_description:"Total planned task count for a newly initialized run (init only)."`
 	WaveTimeoutSeconds  int            `json:"waveTimeoutSeconds,omitempty" jsonschema_description:"init only: this run's wave wall-clock deadline in seconds (the invoking CLI's --wave-timeout). Recorded on init and later read back by wave-await to size its reclaim/timeout window. When omitted, falls back to a ship-state cross-read of flags.executeWaveTimeout, then internal/shipmeta.ShipBuiltInDefaults.ExecuteWaveTimeout (1800s)."`
 	WaveIntervalSeconds int            `json:"waveIntervalSeconds,omitempty" jsonschema_description:"init only: this run's heartbeat liveness cadence in seconds (the invoking CLI's --wave-interval). Recorded on init and later read back by wave-await to size its heartbeat/reclaim-grace window. When omitted, falls back to a ship-state cross-read of flags.executeWaveInterval, then internal/shipmeta.ShipBuiltInDefaults.ExecuteWaveInterval (60s)."`
@@ -166,6 +167,17 @@ type ExecDecideOut struct {
 	OK     bool   `json:"ok"`
 	Action string `json:"action"`
 	Next   string `json:"next"`
+}
+
+// ExecuteResolveConfigOut is the resolved execute runtime config. Every
+// field is the post-merge effective value; Sources says where each came
+// from, mirroring ship_prepare's merged/sources pair (ship.go:640-716).
+type ExecuteResolveConfigOut struct {
+	Auto                bool              `json:"auto" jsonschema_description:"Effective auto mode: true when the --auto flag was passed, or this branch's ship state has flags.auto=true, or config execute.auto is true."`
+	Quality             string            `json:"quality,omitempty" jsonschema_description:"Resolved quality tier (full|balanced|minimal), or empty when nothing supplied one and auto is false -- in which case the execute skill presents its tier selection prompt."`
+	HighRiskAutoApprove bool              `json:"highRiskAutoApprove" jsonschema_description:"True when a high-risk wave proceeds without a second approval because the plan was already approved at plan time."`
+	Sources             map[string]string `json:"sources" jsonschema_description:"Per-key provenance: cli, pipeline, config, default, or unset."`
+	Warnings            []string          `json:"warnings,omitempty" jsonschema_description:"Non-fatal problems: an unreadable ship state, or a config value of the wrong type or outside the allowed enum (the built-in default is used instead)."`
 }
 
 // ExecutionReportOut is the read-only end-of-run report returned by the
@@ -524,6 +536,7 @@ func RegisterExecuteStateTools(s *mcpserver.Server) {
 Pass "action" to select an operation. Each action uses a subset of the input fields (unlisted fields are ignored):
 
 - wave-compute: Stateless — parses the plan file at planPath and computes the wave schedule (no state file read/write). Requires planPath. Optional: extraDepsJson (JSON array of {task, dependsOn, reason} merged with each task's explicit "Depends on" field). Returns {route, preWave, waves[{number, tasks[], expectedFiles[], verificationHint}]}.
+- resolve-config: Stateless — resolves this run's effective auto mode, quality tier and high-risk auto-approval from CLI flags, this branch's ship state and config [execute] (no state file read/write). Optional: branch (enables the ship-state auto cross-read), quality (--quality), auto (--auto). Returns {auto, quality?, highRiskAutoApprove, sources, warnings?}.
 - init: Create execution state. Runs the same config auto-migration gate as ship_prepare first (migrates and backs up an outdated config, or fails with a /setup pointer if none exists); result may include a "migration" report. Returns {filePath, pipelineAuto (true when this branch's ship state has flags.auto=true — forwarded so the execute SKILL.md high-risk gate can skip a second approval), warnings? (e.g. this branch's ship state exists but is unreadable), migration?}. Requires branch, quality. Optional: totalTasks, plannedTaskIds, planPath, planHash.
 - wave-start: Begin a wave. Returns narration (summary, display with task list + ETA, next). Requires wave. Optional: branch, tasksJson, runId (for fact sheets), detail ("concise"|"full"). If the run recorded a planHash at init, the plan file's current sha256 is compared against it first; a mismatch returns {halt:true, reason:"plan hash mismatch"} instead of narration and does not start the wave. An unreadable/missing plan file does not halt — it proceeds with a warning in the response's "warnings" field. Seeds server-owned dispatch state (dispatchedAt, workerName, batchId/batchIndex, attempt:1) for every valid tasksJson entry that doesn't already have one — a task that already has server state (wave-start called again on resume) is left untouched. Seeding failure is non-fatal and appends to "warnings".
 - wave-done: Complete a wave. Returns narration (summary, display with outcomes, timing, next wave preview + ETA). Records wave duration to TimingsStore. Requires wave. Optional: branch, decisions, status, detail ("concise"|"full").
@@ -591,6 +604,8 @@ func executeState(root, workDir string, in ExecuteStateIn, now func() time.Time)
 	switch in.Action {
 	case "wave-compute":
 		return execActionWaveCompute(in)
+	case "resolve-config":
+		return execActionResolveConfig(root, in)
 	case "init":
 		return execActionInit(root, workDir, in, now)
 	case "wave-start":
@@ -1987,6 +2002,116 @@ func openspecChangeFromPlan(planContent string) string {
 	return m[1]
 }
 
+// execActionResolveConfig resolves effective auto mode, quality tier, and
+// high-risk auto-approval from CLI flags, ship state, and config.
+func execActionResolveConfig(root string, in ExecuteStateIn) (any, error) {
+	out := ExecuteResolveConfigOut{
+		Sources:  make(map[string]string),
+		Warnings: []string{},
+	}
+
+	// Resolve auto: CLI > pipeline > config > default
+	if in.Auto {
+		out.Auto = true
+		out.Sources["auto"] = "cli"
+	} else {
+		// Only cross-read ship state if branch is provided
+		if in.Branch != "" {
+			_, pipelineAuto, plWarnings := execPipelineAuto(root, in.Branch)
+			out.Warnings = append(out.Warnings, plWarnings...)
+			if pipelineAuto {
+				out.Auto = true
+				out.Sources["auto"] = "pipeline"
+			}
+		}
+
+		if !out.Auto {
+			// Try config
+			sect, err := config.ReadSection(root, "execute")
+			if err != nil || sect == nil {
+				out.Sources["auto"] = "default"
+				// out.Auto stays false
+			} else {
+				if ca, ok := sect["auto"].(bool); ok && ca {
+					out.Auto = true
+					out.Sources["auto"] = "config"
+				} else {
+					out.Sources["auto"] = "default"
+				}
+			}
+		}
+	}
+
+	// Resolve quality: CLI > config > (default if auto) > unset
+	if in.Quality != "" {
+		out.Quality = in.Quality
+		out.Sources["quality"] = "cli"
+	} else {
+		// Try config
+		sect, err := config.ReadSection(root, "execute")
+		if err != nil || sect == nil {
+			// Fall through to default logic
+		} else {
+			if rawQuality, ok := sect["quality"]; ok {
+				if cq, isString := rawQuality.(string); isString {
+					// Validate against validQuality
+					valid := false
+					for _, v := range validQuality {
+						if cq == v {
+							valid = true
+							break
+						}
+					}
+					if valid {
+						out.Quality = cq
+						out.Sources["quality"] = "config"
+					} else {
+						out.Warnings = append(out.Warnings, fmt.Sprintf("config execute.quality %q is not in allowed values %v; using default", cq, validQuality))
+						out.Sources["quality"] = "default"
+					}
+				} else {
+					// Wrong type
+					out.Warnings = append(out.Warnings, fmt.Sprintf("config execute.quality has wrong type %T; expected string; using default", rawQuality))
+					out.Sources["quality"] = "default"
+				}
+			}
+		}
+
+		// Apply default if still empty
+		if out.Quality == "" {
+			if out.Auto {
+				out.Quality = "balanced"
+				out.Sources["quality"] = "default"
+			} else {
+				out.Sources["quality"] = "unset"
+			}
+		}
+	}
+
+	// Resolve highRiskAutoApprove: config > default
+	sect2, err := config.ReadSection(root, "execute")
+	if err != nil || sect2 == nil {
+		out.HighRiskAutoApprove = false
+		out.Sources["highRiskAutoApprove"] = "default"
+	} else {
+		if rawHraa, ok := sect2["highRiskAutoApprove"]; ok {
+			if hraa, isBool := rawHraa.(bool); isBool {
+				out.HighRiskAutoApprove = hraa
+				out.Sources["highRiskAutoApprove"] = "config"
+			} else {
+				out.Warnings = append(out.Warnings, fmt.Sprintf("config execute.highRiskAutoApprove has wrong type %T; expected bool; using default", rawHraa))
+				out.HighRiskAutoApprove = false
+				out.Sources["highRiskAutoApprove"] = "default"
+			}
+		} else {
+			out.HighRiskAutoApprove = false
+			out.Sources["highRiskAutoApprove"] = "default"
+		}
+	}
+
+	return out, nil
+}
+
 func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	if in.Branch == "" {
 		return nil, &mcpserver.DomainError{Msg: "--branch is required for init"}
@@ -2036,27 +2161,11 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 	// Cross-read ship state for pipeline auto-mode: when execute was
 	// dispatched from /ship and the user already approved --auto there,
 	// forward that into pipelineAuto so the high-risk gate (execute
-	// SKILL.md) doesn't force a second approval.
-	//
-	// state.Find returns (nil, nil) when no matching file exists, and a
-	// non-nil error only on I/O or JSON-parse failures. We distinguish:
-	//   - (nil, nil): no ship state → pipelineAuto stays false, silently.
-	//   - (st, nil):  ship state found → read flags.auto.
-	//   - (_, err):   genuine I/O/parse failure → pipelineAuto stays false,
-	//                 but the error is surfaced as a warning so the caller
-	//                 can diagnose why auto-forward didn't happen.
-	st.Data["pipelineAuto"] = false
-	var initWarnings []string
-	shipSt, shipErr := state.Find(root, "ship", in.Branch)
-	if shipErr != nil {
-		initWarnings = append(initWarnings, fmt.Sprintf("ship state unreadable: %s", shipErr.Error()))
-	} else if shipSt != nil {
-		if flags, ok := shipSt.Data["flags"].(map[string]any); ok {
-			if auto, ok := flags["auto"].(bool); ok && auto {
-				st.Data["pipelineAuto"] = true
-			}
-		}
-	}
+	// SKILL.md) doesn't force a second approval. Extracted into
+	// execPipelineAuto (execute_config.go) so resolve-config can share the
+	// exact same cross-read logic instead of duplicating it.
+	shipSt, pipelineAuto, initWarnings := execPipelineAuto(root, in.Branch)
+	st.Data["pipelineAuto"] = pipelineAuto
 
 	// Apply the openspec ref stamps plan_prepare deferred (see plan.go's
 	// pendingTaskRefs/stampTaskRefs): plan_prepare runs inside plan mode and
@@ -4400,7 +4509,7 @@ func execActionWaveSplit(root, workDir string, in ExecuteStateIn, now func() tim
 	if splitDepth >= maxSplitDepth {
 		return nil, &mcpserver.DomainError{
 			Msg:        fmt.Sprintf("splitDepth %d exceeds maxSplitDepth %d — manual escalation required", splitDepth, maxSplitDepth),
-			Suggestion: "Do not call wave-split again. Escalate the tasks in missingIds: call AskUserQuestion at top level, or halt the wave and return missingIds to the parent orchestrator when nested or under pipelineAuto.",
+			Suggestion: "Do not call wave-split again. Escalate the tasks in missingIds: call AskUserQuestion at top level, or halt the wave and return missingIds to the parent orchestrator when nested or in auto mode.",
 		}
 	}
 
@@ -4413,7 +4522,7 @@ func execActionWaveSplit(root, workDir string, in ExecuteStateIn, now func() tim
 		if errors.As(err, &maxErr) {
 			return nil, &mcpserver.DomainError{
 				Msg:        err.Error(),
-				Suggestion: "Escalate the unresolved task IDs from missingIds instead of retrying: call AskUserQuestion when running at top level; when running nested or under pipelineAuto, halt the wave and return missingIds to the parent orchestrator.",
+				Suggestion: "Escalate the unresolved task IDs from missingIds instead of retrying: call AskUserQuestion when running at top level; when nested or in auto mode, halt the wave and return missingIds to the parent orchestrator.",
 				Cause:      err,
 			}
 		}
