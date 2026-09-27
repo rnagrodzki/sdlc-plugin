@@ -827,7 +827,11 @@ type PRValidateBodyOut struct {
 func prValidateBodyCore(root string, in PRValidateBodyIn) (PRValidateBodyOut, error) {
 	tmpl, err := prtemplate.Resolve(root)
 	if err != nil {
-		return PRValidateBodyOut{}, &mcpserver.InfraError{Msg: "resolve pr template: " + err.Error(), Cause: err}
+		return PRValidateBodyOut{}, &mcpserver.InfraError{
+			Msg:        "resolve pr template: " + err.Error(),
+			Suggestion: "Run pr_prepare, which surfaces the resolved template path or a resolution warning; fix that file, then retry validate's pr_body action.",
+			Cause:      err,
+		}
 	}
 	issues := prtemplate.ValidateBody(in.Body, tmpl)
 	return PRValidateBodyOut{OK: len(issues) == 0, Errors: issues}, nil
@@ -958,7 +962,11 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 	if in.ReleaseLevel == "" && in.SkipReleaseCheck {
 		commits, logErr := rt.gitLogSinceTag(workDir)
 		if logErr != nil {
-			return PRApplyOut{}, &mcpserver.InfraError{Msg: "gitLogSinceTag: " + logErr.Error(), Cause: logErr}
+			return PRApplyOut{}, &mcpserver.InfraError{
+				Msg:        "gitLogSinceTag: " + logErr.Error(),
+				Suggestion: "Check for a shallow clone (git fetch --unshallow) or a tag pointing at an unreachable commit, then retry pr_apply.",
+				Cause:      logErr,
+			}
 		}
 		summary := analyzeConventionalCommits(commits)
 		if summary.Feat > 0 || summary.Fix > 0 || summary.Breaking > 0 {
@@ -994,7 +1002,11 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 			// calling LLM needs to draft — see generateReleaseNotes.
 			commits, logErr := rt.gitLogSinceTag(workDir)
 			if logErr != nil {
-				return PRApplyOut{}, &mcpserver.InfraError{Msg: "gitLogSinceTag: " + logErr.Error(), Cause: logErr}
+				return PRApplyOut{}, &mcpserver.InfraError{
+					Msg:        "gitLogSinceTag: " + logErr.Error(),
+					Suggestion: "Pass releaseNotes explicitly to skip auto-generation, or fix a shallow clone (git fetch --unshallow) so tag history is reachable, then retry pr_apply.",
+					Cause:      logErr,
+				}
 			}
 			in.ReleaseNotes = generateReleaseNotes(commits, in.ReleaseLevel)
 		}
@@ -1095,7 +1107,10 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 			if enriched := prEnrichPermissionError(rt, workDir, "gh pr edit", err); enriched != nil {
 				return PRApplyOut{}, enriched
 			}
-			return PRApplyOut{}, &mcpserver.InfraError{Msg: "gh pr edit: " + err.Error(), Cause: err}
+			return PRApplyOut{}, &mcpserver.InfraError{
+				Msg:   "gh pr edit: " + err.Error(),
+				Cause: err,
+			}
 		}
 		if url == "" {
 			url = meta.URL
@@ -1113,7 +1128,10 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 		if enriched := prEnrichPermissionError(rt, workDir, "gh pr create", err); enriched != nil {
 			return PRApplyOut{}, enriched
 		}
-		return PRApplyOut{}, &mcpserver.InfraError{Msg: "gh pr create: " + err.Error(), Cause: err}
+		return PRApplyOut{}, &mcpserver.InfraError{
+			Msg:   "gh pr create: " + err.Error(),
+			Cause: err,
+		}
 	}
 	if intent != nil {
 		if err := prReleaseAddLabelWith(rt, workDir, intent.LabelApplied); err != nil {
@@ -1299,7 +1317,10 @@ func prReleaseComputeIntentWith(rt prRuntime, mainRoot, workDir, level, preRelea
 	} else {
 		vf, err := rt.versionDetect(mainRoot, versionFilePath, fileType)
 		if err != nil {
-			return nil, &mcpserver.DomainError{Msg: "version detection: " + err.Error()}
+			return nil, &mcpserver.DomainError{
+				Msg:        "version detection: " + err.Error(),
+				Suggestion: "Check the version file path and fileType configured in the project's version config point to an existing, parseable file, then retry pr_apply.",
+			}
 		}
 		fileVersion = vf.Version
 	}
@@ -1316,7 +1337,10 @@ func prReleaseComputeIntentWith(rt prRuntime, mainRoot, workDir, level, preRelea
 	syntheticVF := &version.VersionFile{Version: bumpBase}
 	bumped, err := version.Bump(syntheticVF, level)
 	if err != nil {
-		return nil, &mcpserver.DomainError{Msg: "version bump: " + err.Error()}
+		return nil, &mcpserver.DomainError{
+			Msg:        "version bump: " + err.Error(),
+			Suggestion: "Check that the current version string is valid semver before bumping; fix the version file or git tag it was derived from, then retry pr_apply.",
+		}
 	}
 
 	computedVersion := bumped
@@ -1574,7 +1598,11 @@ func ensureReleaseLabels(rt prRuntime, workDir string) error {
 func prReleaseAddLabelWith(rt prRuntime, workDir, label string) error {
 	_, err := rt.execRun("gh", []string{"pr", "edit", "--add-label", label}, execx.Options{Dir: workDir})
 	if err != nil {
-		return &mcpserver.InfraError{Msg: "gh pr edit --add-label: " + err.Error(), Cause: err}
+		return &mcpserver.InfraError{
+			Msg:        "gh pr edit --add-label: " + err.Error(),
+			Suggestion: fmt.Sprintf("Create the %s label (gh label create %s) if it is missing, or confirm the PR is still open; the PR itself was already created/updated — gh pr view shows it. Then retry pr_apply.", label, label),
+			Cause:      err,
+		}
 	}
 	return nil
 }
@@ -1603,7 +1631,11 @@ func RegisterPRTools(s *mcpserver.Server) {
 			if err != nil {
 				mainRoot, err = os.Getwd()
 				if err != nil {
-					return PRPrepareOut{}, &mcpserver.InfraError{Msg: fmt.Sprintf("resolve project root: %s", err.Error()), Cause: err}
+					return PRPrepareOut{}, &mcpserver.InfraError{
+						Msg:        fmt.Sprintf("resolve project root: %s", err.Error()),
+						Suggestion: "Check that the process's working directory still exists and is accessible, then retry pr_prepare.",
+						Cause:      err,
+					}
 				}
 			}
 			workDir, err := worktree.ActiveRoot()
@@ -1640,7 +1672,11 @@ func RegisterPRTools(s *mcpserver.Server) {
 			if err != nil {
 				mainRoot, err = os.Getwd()
 				if err != nil {
-					return PRApplyOut{}, &mcpserver.InfraError{Msg: fmt.Sprintf("resolve project root: %s", err.Error()), Cause: err}
+					return PRApplyOut{}, &mcpserver.InfraError{
+						Msg:        fmt.Sprintf("resolve project root: %s", err.Error()),
+						Suggestion: "Check that the process's working directory still exists and is accessible, then retry pr_apply.",
+						Cause:      err,
+					}
 				}
 			}
 			workDir, err := worktree.ActiveRoot()

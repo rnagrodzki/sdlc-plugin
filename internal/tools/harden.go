@@ -662,8 +662,9 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 	if !in.SkipConfigCheck {
 		if err := configmigrate.Verify(root); err != nil {
 			return HardenPrepareOut{}, &mcpserver.DataError{
-				Msg:   fmt.Sprintf("config-version: %s", err.Error()),
-				Cause: err,
+				Msg:        fmt.Sprintf("config-version: %s", err.Error()),
+				Suggestion: "Run the migrate tool to bring the project's config up to date, or pass skipConfigCheck: true once it's already verified, then retry harden_prepare.",
+				Cause:      err,
 			}
 		}
 	}
@@ -674,7 +675,8 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 	// R19 — --from-issue mutual exclusion with --failure-text.
 	if hasFailureText && hasFromIssue {
 		return HardenPrepareOut{}, &mcpserver.DomainError{
-			Msg: "--failure-text and --from-issue are mutually exclusive — provide one or the other, not both",
+			Msg:        "--failure-text and --from-issue are mutually exclusive — provide one or the other, not both",
+			Suggestion: "If you already have the failure text, drop fromIssue; if you're citing a GitHub issue, drop failureText and pass fromIssue with just the issue number.",
 		}
 	}
 
@@ -686,23 +688,26 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 		issueNum := strings.TrimSpace(in.FromIssue)
 		if !hardenIssueNumberRe.MatchString(issueNum) {
 			return HardenPrepareOut{}, &mcpserver.DomainError{
-				Msg: fmt.Sprintf("--from-issue: invalid issue number %q — must be a positive integer", issueNum),
+				Msg:        fmt.Sprintf("--from-issue: invalid issue number %q — must be a positive integer", issueNum),
+				Suggestion: "Strip any '#' or URL prefix from fromIssue and pass only the digits, e.g. fromIssue: \"123\".",
 			}
 		}
 
 		out, err := execx.Run("gh", []string{"issue", "view", issueNum, "--json", "body,labels,title"}, execx.Options{Dir: root})
 		if err != nil {
 			return HardenPrepareOut{}, &mcpserver.InfraError{
-				Msg:   fmt.Sprintf("--from-issue %s: gh issue view failed: %s", issueNum, err.Error()),
-				Cause: err,
+				Msg:        fmt.Sprintf("--from-issue %s: gh issue view failed: %s", issueNum, err.Error()),
+				Suggestion: fmt.Sprintf("Verify issue #%s exists in this repo and that gh auth status shows an authenticated account, then retry harden_prepare with fromIssue.", issueNum),
+				Cause:      err,
 			}
 		}
 
 		var issueJSON ghIssueViewResult
 		if jsonErr := json.Unmarshal([]byte(out), &issueJSON); jsonErr != nil {
 			return HardenPrepareOut{}, &mcpserver.InfraError{
-				Msg:   fmt.Sprintf("--from-issue %s: gh issue view returned invalid JSON: %s", issueNum, jsonErr.Error()),
-				Cause: jsonErr,
+				Msg:        fmt.Sprintf("--from-issue %s: gh issue view returned invalid JSON: %s", issueNum, jsonErr.Error()),
+				Suggestion: fmt.Sprintf("Run gh issue view %s --json body,labels,title directly to inspect the raw output; an outdated gh CLI version is the usual cause of an unexpected JSON shape.", issueNum),
+				Cause:      jsonErr,
 			}
 		}
 
@@ -727,7 +732,10 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 		for i, m := range missing {
 			msgs[i] = "Missing required field: " + m
 		}
-		return HardenPrepareOut{}, &mcpserver.DomainError{Msg: strings.Join(msgs, "; ")}
+		return HardenPrepareOut{}, &mcpserver.DomainError{
+			Msg:        strings.Join(msgs, "; "),
+			Suggestion: fmt.Sprintf("Supply %s in the harden_prepare call; failureText may come from fromIssue's issue body instead.", strings.Join(missing, " and ")),
+		}
 	}
 
 	// R16 — pre-flight validation. Any error aborts before the manifest is
@@ -737,7 +745,8 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 	preflightErrors = append(preflightErrors, dimensionsPreflight(contentRoot)...)
 	if len(preflightErrors) > 0 {
 		return HardenPrepareOut{}, &mcpserver.DomainError{
-			Msg: fmt.Sprintf("pre-flight validation failed: %s", strings.Join(preflightErrors, "; ")),
+			Msg:        fmt.Sprintf("pre-flight validation failed: %s", strings.Join(preflightErrors, "; ")),
+			Suggestion: "Fix the guardrail or review-dimension file named in each error above under .sdlc-v2, then retry harden_prepare.",
 		}
 	}
 
@@ -814,11 +823,19 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 
 	tmpDir, err := os.MkdirTemp("", "sdlc-harden-")
 	if err != nil {
-		return HardenPrepareOut{}, &mcpserver.InfraError{Msg: fmt.Sprintf("create temp dir: %s", err.Error()), Cause: err}
+		return HardenPrepareOut{}, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("create temp dir: %s", err.Error()),
+			Suggestion: "Check available disk space and write permission on the OS temp directory, then retry harden_prepare.",
+			Cause:      err,
+		}
 	}
 	manifestPath := filepath.Join(tmpDir, "manifest.json")
 	if err := fsx.AtomicWriteJSON(manifestPath, manifest); err != nil {
-		return HardenPrepareOut{}, &mcpserver.InfraError{Msg: fmt.Sprintf("write manifest: %s", err.Error()), Cause: err}
+		return HardenPrepareOut{}, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("write manifest: %s", err.Error()),
+			Suggestion: "Check write permission on the temp directory named in the error above and that disk space isn't exhausted, then retry harden_prepare.",
+			Cause:      err,
+		}
 	}
 
 	surfaceIDs := []string{}

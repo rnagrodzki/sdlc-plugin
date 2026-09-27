@@ -130,7 +130,7 @@ Pass "action" to select the validator. Each action uses a subset of the input fi
 		func(ctx mcpserver.Ctx, in ValidateIn) (ValidateOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {
-				return ValidateOut{}, &mcpserver.InfraError{Msg: fmt.Sprintf("resolve project root: %s", err.Error()), Cause: err}
+				return ValidateOut{}, &mcpserver.InfraError{Msg: fmt.Sprintf("resolve project root: %s", err.Error()), Suggestion: "Run validate from inside a git working tree (or a linked worktree) of this project; no git repository could be found from the current directory.", Cause: err}
 			}
 			// dimensions is the one action whose target files are git-tracked
 			// content that must be read from the ACTIVE worktree (root rule),
@@ -1271,7 +1271,7 @@ const prMinBodyLength = 20
 func validatePRTemplate(root string) ([]discovery.Finding, error) {
 	tmpl, err := prtemplate.Resolve(root)
 	if err != nil {
-		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("resolve pr template: %s", err.Error()), Cause: err}
+		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("resolve pr template: %s", err.Error()), Suggestion: "Check read permission on " + paths.DataDir + "/pr-template.md and .claude/pr-template.md, then retry validate with action=\"pr_template\".", Cause: err}
 	}
 
 	var templatePath string
@@ -1771,7 +1771,7 @@ func validateGuardrailsAction(root string, in ValidateIn) ([]discovery.Finding, 
 		if errors.Is(err, config.ErrNotFound) {
 			return nil, nil
 		}
-		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("read %s guardrails section: %s", section, err.Error()), Cause: err}
+		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("read %s guardrails section: %s", section, err.Error()), Suggestion: fmt.Sprintf("Check that config.toml's [%s] section is valid TOML and readable, then retry.", section), Cause: err}
 	}
 
 	// config.ReadSection always returns guardrails as []any: readProjectRaw
@@ -1873,7 +1873,7 @@ func validateDimensionsAction(root string) ([]discovery.Finding, error) {
 	dir := filepath.Join(root, paths.DataDir, "review-dimensions")
 	dims, err := dimensions.Load(dir)
 	if err != nil {
-		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("load review dimensions: %s", err.Error()), Cause: err}
+		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("load review dimensions: %s", err.Error()), Suggestion: "Check filesystem permissions on " + paths.DataDir + "/review-dimensions/, then retry validate with action=\"dimensions\".", Cause: err}
 	}
 
 	var findings []discovery.Finding
@@ -2027,17 +2027,17 @@ func resolveStateDirOwner(mainRoot, activeRoot string) (dir, owner string, statE
 func validateWorktreeAnchoring(root string) (*WorktreeAnchoringCheck, []discovery.Finding, error) {
 	activeRoot, err := worktree.ActiveRoot()
 	if err != nil {
-		return nil, nil, &mcpserver.InfraError{Msg: fmt.Sprintf("resolve active worktree: %s", err.Error()), Cause: err}
+		return nil, nil, &mcpserver.InfraError{Msg: fmt.Sprintf("resolve active worktree: %s", err.Error()), Suggestion: "Run validate with action=\"worktree_anchoring\" from inside a git working tree; no active worktree could be resolved.", Cause: err}
 	}
 
 	isBare, err := worktree.IsBare(root)
 	if err != nil {
-		return nil, nil, &mcpserver.InfraError{Msg: fmt.Sprintf("determine bare status: %s", err.Error()), Cause: err}
+		return nil, nil, &mcpserver.InfraError{Msg: fmt.Sprintf("determine bare status: %s", err.Error()), Suggestion: fmt.Sprintf("Check that %s is a valid, readable git repository (its .git directory or file), then retry.", root), Cause: err}
 	}
 
 	stateDir, owner, statErr := resolveStateDirOwner(root, activeRoot)
 	if statErr != nil {
-		return nil, nil, &mcpserver.InfraError{Msg: fmt.Sprintf("resolve state dir owner: %s", statErr.Error()), Cause: statErr}
+		return nil, nil, &mcpserver.InfraError{Msg: fmt.Sprintf("resolve state dir owner: %s", statErr.Error()), Suggestion: "Check filesystem permissions on " + paths.DataDir + " under both the main root and the active worktree root, then retry.", Cause: statErr}
 	}
 
 	check := &WorktreeAnchoringCheck{

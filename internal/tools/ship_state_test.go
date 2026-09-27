@@ -867,6 +867,103 @@ func TestShipState_Defer_PersistsToDeferredHistory(t *testing.T) {
 	}
 }
 
+// TestShipState_Defer_SourceOverride pins P4: a caller can name its own
+// source instead of getting the hardcoded review-below-threshold value —
+// received-review needs this to record its own wont-fix/disagree/
+// needs-direction findings under a source that names it, not review.
+func TestShipState_Defer_SourceOverride(t *testing.T) {
+	dir, _ := deferFixture(t, "feat/defer-source-override")
+	mem := useMemHistory(t)
+
+	_, err := shipState(dir, dir, ShipStateIn{
+		Action: "defer",
+		Detail: map[string]any{
+			"branch": "feat/defer-source-override", "severity": "medium",
+			"file": "internal/foo.go", "title": "wont fix this", "source": "received-review",
+		},
+	}, fixedNow(time.Now()))
+	if err != nil {
+		t.Fatalf("defer: %v", err)
+	}
+	if len(mem.Deferred) != 1 {
+		t.Fatalf("deferred.json entries = %d, want 1", len(mem.Deferred))
+	}
+	if got := mem.Deferred[0].Source; got != history.SourceReceivedReview {
+		t.Errorf("Source = %q, want %q", got, history.SourceReceivedReview)
+	}
+}
+
+// TestShipState_Defer_StatelessFallback pins E10: a branch with no ship
+// state file (never ran ship_state init) must still be able to defer a
+// finding — history.json is the only durable store, so it becomes the
+// sole target instead of failing outright.
+func TestShipState_Defer_StatelessFallback(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, "feat/defer-stateless")
+	mem := useMemHistory(t)
+
+	out, err := shipState(dir, dir, ShipStateIn{
+		Action: "defer",
+		Detail: map[string]any{
+			"branch": "feat/defer-stateless", "severity": "medium",
+			"file": "internal/foo.go", "title": "unchecked error",
+		},
+	}, fixedNow(time.Now()))
+	if err != nil {
+		t.Fatalf("defer with no ship state: want success via the history-only fallback, got: %v", err)
+	}
+	if len(mem.Deferred) != 1 {
+		t.Fatalf("deferred.json entries = %d, want 1", len(mem.Deferred))
+	}
+	if got := mem.Deferred[0].Source; got != history.SourceReviewBelowThreshold {
+		t.Errorf("Source = %q, want the default %q", got, history.SourceReviewBelowThreshold)
+	}
+
+	n, ok := out.(ShipStepNarrationOut)
+	if !ok {
+		t.Fatalf("output = %#v, want ShipStepNarrationOut", out)
+	}
+	if !strings.Contains(n.Summary, "deferred.json") {
+		t.Errorf("summary = %q, want it to name the file written", n.Summary)
+	}
+}
+
+// TestShipState_Defer_StatelessFallback_IDCountsExistingHistory pins the
+// id-counter half of the stateless path: with no run-scoped
+// deferredFindings slice to measure, the running count must come from
+// history's own ListDeferred instead of resetting to 1 on every call.
+func TestShipState_Defer_StatelessFallback_IDCountsExistingHistory(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, "feat/defer-stateless-count")
+	mem := useMemHistory(t)
+
+	detail := map[string]any{
+		"branch": "feat/defer-stateless-count", "severity": "low",
+		"file": "internal/foo.go", "title": "first",
+	}
+	if _, err := shipState(dir, dir, ShipStateIn{Action: "defer", Detail: detail}, fixedNow(time.Now())); err != nil {
+		t.Fatalf("first defer: %v", err)
+	}
+	detail["title"] = "second"
+	if _, err := shipState(dir, dir, ShipStateIn{Action: "defer", Detail: detail}, fixedNow(time.Now())); err != nil {
+		t.Fatalf("second defer: %v", err)
+	}
+
+	if len(mem.Deferred) != 2 {
+		t.Fatalf("deferred.json entries = %d, want 2", len(mem.Deferred))
+	}
+	if !strings.HasSuffix(mem.Deferred[0].ID, "-1") {
+		t.Errorf("first id = %q, want it to end in -1", mem.Deferred[0].ID)
+	}
+	if !strings.HasSuffix(mem.Deferred[1].ID, "-2") {
+		t.Errorf("second id = %q, want it to end in -2", mem.Deferred[1].ID)
+	}
+}
+
 // deferredStateEntry reads deferredFindings[i] out of the state file at
 // path. Several defer cases below assert on the run-scoped record as well
 // as the durable one.
@@ -961,6 +1058,7 @@ func TestShipState_Defer_RejectsWrongTypedDetails(t *testing.T) {
 		"reason":      {"reason": float64(5)},
 		"description": {"description": []any{"a", "b"}},
 		"line":        {"line": "42"},
+		"source":      {"source": float64(5)},
 	}
 	for key, extra := range cases {
 		t.Run(key, func(t *testing.T) {

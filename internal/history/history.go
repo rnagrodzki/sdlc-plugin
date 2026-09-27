@@ -95,8 +95,12 @@ const (
 // caller-supplied source verbatim. The constants exist so the two in-tree
 // producers agree with the strings that triage tooling matches on.
 const (
-	// SourceReviewBelowThreshold — written by ship_state defer.
+	// SourceReviewBelowThreshold — written by ship_state defer's default source.
 	SourceReviewBelowThreshold = "review-below-threshold"
+	// SourceReceivedReview — written by ship_state defer when the caller is
+	// received-review, recording a finding the user marked wont-fix,
+	// disagree, or needs-direction.
+	SourceReceivedReview = "received-review"
 	// SourceExecuteDrift — written by execute_state issue-draft.
 	SourceExecuteDrift = "execute-drift"
 )

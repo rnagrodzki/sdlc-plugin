@@ -22,6 +22,7 @@ import (
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/links"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/telemetry"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
@@ -93,12 +94,19 @@ func extractURLs(text string) []extractedURL {
 
 func linksValidate(root string, in LinksValidateIn) (LinksValidateOut, error) {
 	if in.File == "" {
-		return LinksValidateOut{}, &mcpserver.DomainError{Msg: "links_validate: file is required"}
+		return LinksValidateOut{}, &mcpserver.DomainError{
+			Msg:        "links_validate: file is required",
+			Suggestion: "Pass the file field with a path to the file to scan for links, then retry links_validate.",
+		}
 	}
 	filePath := resolvePath(root, in.File)
 	data, err := os.ReadFile(filePath)
 	if err != nil {
-		return LinksValidateOut{}, &mcpserver.DomainError{Msg: fmt.Sprintf("links_validate: file not found: %s", filePath), Cause: err}
+		return LinksValidateOut{}, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("links_validate: file not found: %s", filePath),
+			Suggestion: "Check that the file field is spelled correctly and resolves to an existing path under the repository root, then retry.",
+			Cause:      err,
+		}
 	}
 
 	extracted := extractURLs(string(data))
@@ -134,7 +142,11 @@ func RegisterLinksTools(s *mcpserver.Server) {
 		func(ctx mcpserver.Ctx, in LinksValidateIn) (LinksValidateOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {
-				return LinksValidateOut{}, &mcpserver.InfraError{Msg: fmt.Sprintf("resolve project root: %s", err.Error()), Cause: err}
+				return LinksValidateOut{}, &mcpserver.InfraError{
+					Msg:        fmt.Sprintf("resolve project root: %s", err.Error()),
+					Suggestion: "Check that the current directory is inside a git worktree with a valid " + paths.DataDir + " project root, then retry.",
+					Cause:      err,
+				}
 			}
 			return linksValidate(root, in)
 		},
@@ -170,7 +182,10 @@ type MCPFailureRecordOut struct {
 
 func mcpFailureRecord(root string, in MCPFailureRecordIn) (MCPFailureRecordOut, error) {
 	if in.Tool == "" {
-		return MCPFailureRecordOut{}, &mcpserver.DomainError{Msg: "mcp_failure_record: tool is required"}
+		return MCPFailureRecordOut{}, &mcpserver.DomainError{
+			Msg:        "mcp_failure_record: tool is required",
+			Suggestion: "Pass the tool field naming the MCP tool call that failed, then retry mcp_failure_record.",
+		}
 	}
 
 	class := telemetry.Classify(telemetry.Signal{
@@ -190,7 +205,11 @@ func mcpFailureRecord(root string, in MCPFailureRecordIn) (MCPFailureRecordOut, 
 		Recovered: in.Recovered,
 	}
 	if err := telemetry.Record(root, failure); err != nil {
-		return MCPFailureRecordOut{}, &mcpserver.InfraError{Msg: fmt.Sprintf("record mcp failure: %s", err.Error()), Cause: err}
+		return MCPFailureRecordOut{}, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("record mcp failure: %s", err.Error()),
+			Suggestion: "Check write permission on " + paths.DataDir + "/learnings/log.md and that the directory exists, then retry.",
+			Cause:      err,
+		}
 	}
 
 	sessionID := telemetry.ResolveSessionID(in.SessionID, root)
@@ -210,7 +229,11 @@ func RegisterMCPFailureTools(s *mcpserver.Server) {
 		func(ctx mcpserver.Ctx, in MCPFailureRecordIn) (MCPFailureRecordOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {
-				return MCPFailureRecordOut{}, &mcpserver.InfraError{Msg: fmt.Sprintf("resolve project root: %s", err.Error()), Cause: err}
+				return MCPFailureRecordOut{}, &mcpserver.InfraError{
+					Msg:        fmt.Sprintf("resolve project root: %s", err.Error()),
+					Suggestion: "Check that the current directory is inside a git worktree with a valid " + paths.DataDir + " project root, then retry.",
+					Cause:      err,
+				}
 			}
 			if in.SessionID == "" {
 				in.SessionID = ctx.SessionID

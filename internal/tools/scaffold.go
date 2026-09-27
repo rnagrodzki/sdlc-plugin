@@ -568,8 +568,9 @@ func RegisterScaffoldTools(s *mcpserver.Server) {
 			root, err := worktree.MainRoot()
 			if err != nil {
 				return ScaffoldCIOut{}, &mcpserver.InfraError{
-					Msg:   fmt.Sprintf("resolve project root: %s", err.Error()),
-					Cause: err,
+					Msg:        fmt.Sprintf("resolve project root: %s", err.Error()),
+					Suggestion: "Run `git worktree list --porcelain` in this directory to see why it failed — git may be missing or this isn't a git repository. Fix that, then retry scaffold_ci.",
+					Cause:      err,
 				}
 			}
 			return scaffoldCI(root, in.Force)
@@ -588,8 +589,9 @@ func RegisterScaffoldTools(s *mcpserver.Server) {
 			root, err := worktree.MainRoot()
 			if err != nil {
 				return VerifyTagAncestryOut{}, &mcpserver.InfraError{
-					Msg:   fmt.Sprintf("resolve project root: %s", err.Error()),
-					Cause: err,
+					Msg:        fmt.Sprintf("resolve project root: %s", err.Error()),
+					Suggestion: "Run `git worktree list --porcelain` in this directory to see why it failed — git may be missing or this isn't a git repository. Fix that, then retry verify_tag_ancestry.",
+					Cause:      err,
 				}
 			}
 			return verifyTagAncestry(root, in.Tag)

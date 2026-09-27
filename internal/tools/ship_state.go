@@ -368,6 +368,12 @@ func shipBuildNextAction(data map[string]any, ts *pipeline.TimingsStore) *pipeli
 // Branch / state resolution helpers
 // ---------------------------------------------------------------------------
 
+// errNoShipState is the Cause behind shipFindState's "no ship state found"
+// DataError. Wrapping it lets a caller detect this specific, expected case
+// with errors.Is instead of matching on Msg text, which would break the
+// moment the message is reworded.
+var errNoShipState = errors.New("no ship state found for branch")
+
 func shipFindState(root, branch string) (*state.State, error) {
 	st, err := state.Find(root, "ship", branch)
 	if err != nil {
@@ -381,6 +387,7 @@ func shipFindState(root, branch string) (*state.State, error) {
 		return nil, &mcpserver.DataError{
 			Msg:        fmt.Sprintf("no ship state found for branch %q", branch),
 			Suggestion: "Run ship_state init with detail.branch set to this branch before calling other ship_state actions.",
+			Cause:      errNoShipState,
 		}
 	}
 	return st, nil
@@ -1176,32 +1183,63 @@ func shipStateDefer(root, workDir string, in ShipStateIn, now func() time.Time) 
 		lineValue = line
 	}
 
-	st, err := shipResolveAndFind(detailStr(in.Detail, "branch"), workDir, root)
+	// source names the tool actually recording this deferral. It defaults to
+	// the review-below-threshold value every caller used to get hardcoded,
+	// but received-review (and any future caller) can name itself instead.
+	source, err := shipDetailString(in.Detail, "defer", "source",
+		"Common values: \"review-below-threshold\" (the default) or \"received-review\".")
 	if err != nil {
 		return nil, err
 	}
-	findings, _ := st.Data["deferredFindings"].([]any)
-	findings = append(findings, map[string]any{
-		"severity": severity,
-		"file":     file,
-		"line":     lineValue,
-		"title":    title,
-		"reason":   reason,
-	})
-	st.Data["deferredFindings"] = findings
-	if err := state.Write(st); err != nil {
-		return nil, &mcpserver.InfraError{
-			Msg:        fmt.Sprintf("write ship state to %s: %s", st.Path, err.Error()),
-			Suggestion: "Check write permission on the ship state file path above and free disk space on the project root, then retry ship_state defer.",
-			Cause:      err,
+	if source == "" {
+		source = history.SourceReviewBelowThreshold
+	}
+
+	st, err := shipResolveAndFind(detailStr(in.Detail, "branch"), workDir, root)
+	stateless := errors.Is(err, errNoShipState)
+	if err != nil && !stateless {
+		return nil, err
+	}
+
+	var findingsCount int
+	if stateless {
+		// No ship state file for this branch — history is the only durable
+		// store available, so skip the run-scoped write entirely and go
+		// straight to persistDeferred below.
+		existing, listErr := historyWriter(root).ListDeferred()
+		if listErr != nil {
+			return nil, &mcpserver.InfraError{
+				Msg:        fmt.Sprintf("list deferred issues: %s", listErr.Error()),
+				Suggestion: "Check read permission on " + paths.DataDir + "/history/deferred.json, then retry ship_state defer.",
+				Cause:      listErr,
+			}
 		}
+		findingsCount = len(existing) + 1
+	} else {
+		findings, _ := st.Data["deferredFindings"].([]any)
+		findings = append(findings, map[string]any{
+			"severity": severity,
+			"file":     file,
+			"line":     lineValue,
+			"title":    title,
+			"reason":   reason,
+		})
+		st.Data["deferredFindings"] = findings
+		if err := state.Write(st); err != nil {
+			return nil, &mcpserver.InfraError{
+				Msg:        fmt.Sprintf("write ship state to %s: %s", st.Path, err.Error()),
+				Suggestion: "Check write permission on the ship state file path above and free disk space on the project root, then retry ship_state defer.",
+				Cause:      err,
+			}
+		}
+		findingsCount = len(findings)
 	}
 
 	timestamp := now().UTC().Format(time.RFC3339)
 	// The id is echoed in the narration: it is the handle every later
 	// deferred_* call needs, and a mutating call that does not name the
 	// resource it created leaves the caller unable to refer to it.
-	deferredID := fmt.Sprintf("review-deferred-%s-%d", timestamp, len(findings))
+	deferredID := fmt.Sprintf("review-deferred-%s-%d", timestamp, findingsCount)
 	// The file name belongs to internal/history, so ask that package for it
 	// instead of repeating the literal here. This value is only shown in the
 	// narration; the write itself goes through persistDeferred.
@@ -1209,7 +1247,7 @@ func shipStateDefer(root, workDir string, in ShipStateIn, now func() time.Time) 
 	persistErr := persistDeferred(root, history.DeferredIssue{
 		ID:          deferredID,
 		Created:     timestamp,
-		Source:      history.SourceReviewBelowThreshold,
+		Source:      source,
 		Priority:    priorityFromSeverity(severity),
 		Description: description,
 		Status:      history.StatusOpen,
@@ -1230,7 +1268,7 @@ func shipStateDefer(root, workDir string, in ShipStateIn, now func() time.Time) 
 			Summary: summary,
 		},
 	}
-	if shipDetailLevel(in) == "full" {
+	if !stateless && shipDetailLevel(in) == "full" {
 		ts := pipeline.NewTimingsStore(root)
 		out.Display = pipeline.StepProgressBlock(shipBuildStepRows(st.Data), ts)
 	}

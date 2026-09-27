@@ -201,23 +201,27 @@ ship_state({action:"defer", step:"received-review", detail:{
   title:       "<the finding in one line>",
   line:        <line number, when known>,
   reason:      "<wont-fix | disagree | needs-direction>",
-  description: "<your own reasoning — approach A vs approach B, then the trade-off in one line>"
+  description: "<your own reasoning — approach A vs approach B, then the trade-off in one line>",
+  source:      "received-review",
 }})
 ```
 
 `severity`, `file` and `title` are required: a missing one is a `DomainError`, not a silent no-op.
+`source: "received-review"` names this step as the origin, in place of the default
+`review-below-threshold` — `/sdlc:deferred`'s triage table reads it. A branch with no ship state
+file still succeeds: the call falls back to writing `deferred.json` directly, with no run-scoped
+copy.
 
-**The durable write is best-effort — read the result.** Two outcomes mean the finding did not
+**The durable write is best-effort — read the result.** One outcome means the finding did not
 reach `.sdlc-v2/history/deferred.json`:
 
 - The narration contains `WARNING: could not persist this item` — the finding is on the
-  run-scoped ship state file only and is lost when that file is garbage-collected.
-- The call returns a `DataError` (`no ship state found for branch ...`) — the branch has no ship
-  state file at all, so nothing was written anywhere.
+  run-scoped ship state file only (or was dropped entirely, on the no-state fallback path) and is
+  lost when that file is garbage-collected.
 
-On either outcome, do not retry `defer` (a retry appends a second run-scoped entry under a new
-id and hits the same failing write). Call the fallback once instead — it needs no ship state and
-writes straight to `deferred.json`:
+On this outcome, do not retry `defer` (a retry appends a second entry under a new id and hits the
+same failing write). Call the fallback once instead — it needs no ship state and writes straight
+to `deferred.json`:
 
 ```
 ship_state({action:"deferred_add", detail:{
@@ -233,11 +237,11 @@ ship_state({action:"deferred_add", detail:{
 Only when **both** calls fail: name the finding as UNACCOUNTED in the Step 12 ledger and continue.
 Never drop it, and never abort the step over it.
 
-`defer` needs a ship state **file** for the branch, not an in-flight run: it takes the newest one
-and does not filter out finished runs (`cleanup` stamps a state terminal instead of deleting it).
-On a branch with an older `/ship` state the call therefore succeeds, and its run-scoped copy lands
-in that old run's `deferredFindings` — do not read that copy as belonging to the current run. The
-`DataError` appears only when the branch has no ship state file at all.
+`defer` does not need a ship state **file** for the branch: with none, it writes straight to
+`deferred.json` and skips the run-scoped copy. When a state file does exist — including an older
+`/ship` state, since `defer` takes the newest one and does not filter out finished runs (`cleanup`
+stamps a state terminal instead of deleting it) — the run-scoped copy lands in that run's
+`deferredFindings`; do not read that copy as belonging to the current run.
 
 **YAGNI check for feature requests:**
 ```
@@ -436,9 +440,9 @@ State the correction factually and move on.
 **Last in this step — record every finding that is still unfixed.** Do this only after the fix
 pass above is finished, including any pushback you just corrected into a fix. Verdicts are final
 only at this point. For each finding still unfixed, make the `ship_state({action:"defer", ...})`
-call defined in Step 4, once per finding, and handle a `WARNING: could not persist` narration or
-a `DataError` exactly as Step 4 says (one `deferred_add` fallback; UNACCOUNTED only if that
-fails too). A finding that ended up fixed gets no record. Track per finding whether its record
+call defined in Step 4, once per finding, and handle a `WARNING: could not persist` narration
+exactly as Step 4 says (one `deferred_add` fallback; UNACCOUNTED only if that fails too). A
+finding that ended up fixed gets no record. Track per finding whether its record
 succeeded — Step 11.6, Step 12's ledger and Step 12's reply bodies all read that result. An
 unfixed finding with no record is the exact failure this step exists to prevent.
 
@@ -709,8 +713,7 @@ Best-effort: if `received_review_verify` itself fails (bad PR, no remote, gh not
 | `gh pr view`/`gh api` fails to fetch comments in Step 1b | Check `gh auth status`; show error; ask user to supply feedback directly | No — auth or permissions issue |
 | Comment references file/line that no longer exists | Note the discrepancy; verify against current HEAD diff | No — expected with rebased PRs |
 | Cannot verify reviewer's claim (no runtime data/external context) | State limitation explicitly; ask user for direction, or under `--auto` give it the `needs-direction` verdict (Step 4) and record it in Step 11 | No — expected limitation |
-| `ship_state({action:"defer"})` returns a `DataError` (`no ship state found for branch ...`) | The branch has no ship state file at all; call the `ship_state({action:"deferred_add", ...})` fallback from Step 4 once. Only if that also fails, name the finding as UNACCOUNTED in the Step 12 ledger and drop the tracking sentence from its reply | No — expected when run standalone |
-| `ship_state({action:"defer"})` narration contains `WARNING: could not persist this item` | The finding is on the run-scoped state file only. Do not retry `defer`; call the `deferred_add` fallback from Step 4 once, then treat it as above | No — best-effort write, disclosed |
+| `ship_state({action:"defer"})` narration contains `WARNING: could not persist this item` | The finding was not written to `deferred.json`. Do not retry `defer`; call the `deferred_add` fallback from Step 4 once. Only if that also fails, name the finding as UNACCOUNTED in the Step 12 ledger and drop the tracking sentence from its reply | No — best-effort write, disclosed |
 | `gh api` 5xx or unexpected server error when posting reply | Retry once; if still failing, show the drafted response for manual posting | Yes if second attempt also fails |
 | `links_validate` reports a violation | Surface the violation list; do not post; do not retry without user input | No — expected hard gate behavior |
 
@@ -748,13 +751,13 @@ When invoking `error-report`, provide:
   closing a finding on the model's word alone with no one watching.
 - **`needs-direction` needs a real choice:** two or more viable approaches plus the trade-off.
   If only one approach exists, the verdict is wrong — fix the finding.
-- **A defer needs a ship state file, not an in-flight run:** `ship_state({action:"defer", ...})`
-  takes the newest ship state file for the branch and does not filter out finished runs
-  (`cleanup` stamps a state terminal instead of deleting it). On a branch that carries an older
-  `/ship` state the call therefore succeeds, and its run-scoped copy is written into that old
-  run's `deferredFindings` — do not read that copy as belonging to the current run. Only a
-  branch with no ship state file at all gets the `DataError`, and Step 4's `deferred_add`
-  fallback covers it, so a standalone run still reaches `/sdlc:deferred`.
+- **A defer does not need a ship state file, and does not need an in-flight run:**
+  `ship_state({action:"defer", ...})` writes straight to `deferred.json` when the branch has no
+  ship state file, so a standalone run still reaches `/sdlc:deferred`. When a state file does
+  exist, `defer` takes the newest one and does not filter out finished runs (`cleanup` stamps a
+  state terminal instead of deleting it) — on a branch that carries an older `/ship` state, the
+  run-scoped copy is written into that old run's `deferredFindings`; do not read that copy as
+  belonging to the current run.
 
 ---
 

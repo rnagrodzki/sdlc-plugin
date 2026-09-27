@@ -690,8 +690,9 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 	if !in.SkipConfigCheck {
 		if err := configmigrate.Verify(projectRoot); err != nil {
 			return ReviewPrepareOut{}, &mcpserver.DataError{
-				Msg:   fmt.Sprintf("config-version: %s", err.Error()),
-				Cause: err,
+				Msg:        fmt.Sprintf("config-version: %s", err.Error()),
+				Suggestion: "Run the sdlc migrate tool with action \"config\" to bring the project config up to date, then retry review_prepare. Pass skipConfigCheck only when the mismatch is known and intentional.",
+				Cause:      err,
 			}
 		}
 	}
@@ -715,8 +716,9 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 		b, err := gitx.DefaultBranch(activeRoot)
 		if err != nil {
 			return ReviewPrepareOut{}, &mcpserver.InfraError{
-				Msg:   fmt.Sprintf("detect base branch: %s", err.Error()),
-				Cause: err,
+				Msg:        fmt.Sprintf("detect base branch: %s", err.Error()),
+				Suggestion: "Pass target with an explicit base branch/ref, or set review.scope to \"staged\" or \"working\" to skip base-branch detection, then retry review_prepare.",
+				Cause:      err,
 			}
 		}
 		base = b
@@ -731,7 +733,8 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 	changedFiles := getChangedFilesList(base, activeRoot, scope)
 	if len(changedFiles) == 0 {
 		return ReviewPrepareOut{}, &mcpserver.DomainError{
-			Msg: "No changed files found",
+			Msg:        "No changed files found",
+			Suggestion: "Check that there are changes for the configured scope (" + scope + ") relative to the base branch, or adjust review.scope or target, then retry review_prepare.",
 		}
 	}
 
@@ -742,7 +745,8 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 	dims := loadAndMatchDimensions(activeRoot, changedFiles)
 	if len(dims) == 0 {
 		return ReviewPrepareOut{}, &mcpserver.DomainError{
-			Msg: "No review dimensions found in " + paths.DataDir + "/review-dimensions/",
+			Msg:        "No review dimensions found in " + paths.DataDir + "/review-dimensions/",
+			Suggestion: "Run migrate with action \"import\" to pull review-dimensions from the legacy plugin, or add dimension files to " + paths.DataDir + "/review-dimensions/, then retry review_prepare.",
 		}
 	}
 
@@ -773,8 +777,9 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 	tmpDir, err := os.MkdirTemp("", "sdlc-review-")
 	if err != nil {
 		return ReviewPrepareOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("create temp dir: %s", err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("create temp dir: %s", err.Error()),
+			Suggestion: "Check available disk space and write permission on the system temp directory, then retry review_prepare.",
+			Cause:      err,
 		}
 	}
 
@@ -816,8 +821,9 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 		diffPath := filepath.Join(tmpDir, d.name+".diff")
 		if err := os.WriteFile(diffPath, []byte(dimDiff), 0644); err != nil {
 			return ReviewPrepareOut{}, &mcpserver.InfraError{
-				Msg:   fmt.Sprintf("write diff %s: %s", diffPath, err.Error()),
-				Cause: err,
+				Msg:        fmt.Sprintf("write diff %s: %s", diffPath, err.Error()),
+				Suggestion: "Check write permission and free disk space in the temp review directory " + tmpDir + ", then retry review_prepare.",
+				Cause:      err,
 			}
 		}
 		dp := diffPath
@@ -840,14 +846,16 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 		sliceJSON, err := json.Marshal(sliceData)
 		if err != nil {
 			return ReviewPrepareOut{}, &mcpserver.InfraError{
-				Msg:   fmt.Sprintf("marshal slice %s: %s", slicePath, err.Error()),
-				Cause: err,
+				Msg:        fmt.Sprintf("marshal slice %s: %s", slicePath, err.Error()),
+				Suggestion: "Check dimension " + d.name + "'s body and file-context content for invalid UTF-8 or unsupported values, then retry review_prepare.",
+				Cause:      err,
 			}
 		}
 		if err := os.WriteFile(slicePath, sliceJSON, 0644); err != nil {
 			return ReviewPrepareOut{}, &mcpserver.InfraError{
-				Msg:   fmt.Sprintf("write slice %s: %s", slicePath, err.Error()),
-				Cause: err,
+				Msg:        fmt.Sprintf("write slice %s: %s", slicePath, err.Error()),
+				Suggestion: "Check write permission and free disk space in the temp review directory " + tmpDir + ", then retry review_prepare.",
+				Cause:      err,
 			}
 		}
 		sp := slicePath
@@ -951,8 +959,9 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 	manifestPath := filepath.Join(tmpDir, "manifest.json")
 	if err := fsx.AtomicWriteJSON(manifestPath, manifest); err != nil {
 		return ReviewPrepareOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("write manifest: %s", err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("write manifest: %s", err.Error()),
+			Suggestion: "Check write permission and free disk space in the temp review directory " + tmpDir + ", then retry review_prepare.",
+			Cause:      err,
 		}
 	}
 
@@ -1114,8 +1123,9 @@ func RegisterReviewTools(s *mcpserver.Server) {
 			root, err := worktree.MainRoot()
 			if err != nil {
 				return ReviewPrepareOut{}, &mcpserver.InfraError{
-					Msg:   fmt.Sprintf("resolve project root: %s", err.Error()),
-					Cause: err,
+					Msg:        fmt.Sprintf("resolve project root: %s", err.Error()),
+					Suggestion: "Run review_prepare from inside a git repository with a working git installation, then retry.",
+					Cause:      err,
 				}
 			}
 			activeRoot, err := worktree.ActiveRoot()

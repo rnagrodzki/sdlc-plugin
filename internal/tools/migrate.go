@@ -81,8 +81,9 @@ func migrateConfig(root string, dryRun bool) (MigrateOut, error) {
 	report, err := configmigrate.Migrate(root, configmigrate.Options{})
 	if err != nil {
 		return MigrateOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("config migration failed: %s", err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("config migration failed: %s", err.Error()),
+			Suggestion: "Check " + paths.DataDir + "/config.toml and local.toml for permission or syntax errors, fix them, then retry migrate with action \"config\".",
+			Cause:      err,
 		}
 	}
 
@@ -183,14 +184,16 @@ func importFromOld(root string, dryRun bool) (MigrateOut, error) {
 		}
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return MigrateOut{}, &mcpserver.InfraError{
-				Msg:   fmt.Sprintf("create %s directory: %s", paths.DataDir, err.Error()),
-				Cause: err,
+				Msg:        fmt.Sprintf("create %s directory: %s", paths.DataDir, err.Error()),
+				Suggestion: "Check write permission on the project root so " + paths.DataDir + " can be created, then retry migrate with action \"import\".",
+				Cause:      err,
 			}
 		}
 		if err := copyFile(src, dst); err != nil {
 			return MigrateOut{}, &mcpserver.InfraError{
-				Msg:   fmt.Sprintf("copy %s: %s", name, err.Error()),
-				Cause: err,
+				Msg:        fmt.Sprintf("copy %s: %s", name, err.Error()),
+				Suggestion: "Check read permission on " + paths.LegacyDataDir + "/" + name + " and write permission on " + paths.DataDir + ", then retry migrate with action \"import\".",
+				Cause:      err,
 			}
 		}
 		changed = append(changed, rel)
@@ -209,8 +212,9 @@ func importFromOld(root string, dryRun bool) (MigrateOut, error) {
 		}
 		if err := copyDir(src, dst); err != nil {
 			return MigrateOut{}, &mcpserver.InfraError{
-				Msg:   fmt.Sprintf("copy %s: %s", name, err.Error()),
-				Cause: err,
+				Msg:        fmt.Sprintf("copy %s: %s", name, err.Error()),
+				Suggestion: "Check read permission on " + paths.LegacyDataDir + "/" + name + "/ and write permission on " + paths.DataDir + ", then retry migrate with action \"import\".",
+				Cause:      err,
 			}
 		}
 		changed = append(changed, rel)
@@ -255,8 +259,9 @@ func importConfigFileMerge(root, srcName, destName string, dryRun bool) (string,
 	var srcMap map[string]any
 	if err := readLegacyConfigFile(src, &srcMap); err != nil {
 		return "", false, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("read legacy %s: %s", srcName, err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("read legacy %s: %s", srcName, err.Error()),
+			Suggestion: "Fix the syntax of " + paths.LegacyDataDir + "/" + srcName + ", or delete it to skip that legacy source, then retry migrate with action \"import\".",
+			Cause:      err,
 		}
 	}
 
@@ -264,8 +269,9 @@ func importConfigFileMerge(root, srcName, destName string, dryRun bool) (string,
 	var dstMap map[string]any
 	if err := fsx.ReadTOML(dst, &dstMap); err != nil && !errors.Is(err, fsx.ErrNotFound) {
 		return "", false, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("read %s: %s", destName, err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("read %s: %s", destName, err.Error()),
+			Suggestion: "Fix the TOML syntax in " + paths.DataDir + "/" + destName + ", or delete it and re-run setup_init to regenerate it, then retry migrate with action \"import\".",
+			Cause:      err,
 		}
 	}
 	if dstMap == nil {
@@ -291,14 +297,16 @@ func importConfigFileMerge(root, srcName, destName string, dryRun bool) (string,
 
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return "", false, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("create %s directory: %s", paths.DataDir, err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("create %s directory: %s", paths.DataDir, err.Error()),
+			Suggestion: "Check write permission on the project root so " + paths.DataDir + " can be created, then retry migrate with action \"import\".",
+			Cause:      err,
 		}
 	}
 	if err := fsx.AtomicWriteTOML(dst, dstMap); err != nil {
 		return "", false, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("merge %s: %s", destName, err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("merge %s: %s", destName, err.Error()),
+			Suggestion: "Check write permission and free disk space on " + paths.DataDir + ", then retry migrate with action \"import\".",
+			Cause:      err,
 		}
 	}
 	return rel, true, nil
@@ -367,8 +375,9 @@ func migrateLayout(root string, dryRun bool) (MigrateOut, error) {
 		entries, err := os.ReadDir(src)
 		if err != nil {
 			return MigrateOut{}, &mcpserver.InfraError{
-				Msg:   fmt.Sprintf("read %s: %s", src, err.Error()),
-				Cause: err,
+				Msg:        fmt.Sprintf("read %s: %s", src, err.Error()),
+				Suggestion: "Check read permission on " + paths.DataDir + "/execution, then retry migrate with action \"layout\".",
+				Cause:      err,
 			}
 		}
 
@@ -438,8 +447,9 @@ func migrateLayoutMergeLedger(src, dst string, dryRun bool) (changed, skipped []
 			return nil, nil, nil
 		}
 		return nil, nil, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("read %s: %s", src, rdErr.Error()),
-			Cause: rdErr,
+			Msg:        fmt.Sprintf("read %s: %s", src, rdErr.Error()),
+			Suggestion: "Check read permission on " + paths.DataDir + "/execution/ledger, then retry migrate with action \"layout\".",
+			Cause:      rdErr,
 		}
 	}
 
@@ -475,8 +485,9 @@ func migrateLayoutMoveEntry(src, dst, label string, isDir bool, dryRun bool) (ch
 	dstExists, statErr := migrateStatExists(dst)
 	if statErr != nil {
 		return "", "", &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("cannot determine if destination %s exists: %s — refusing to move to avoid potential overwrite", dst, statErr.Error()),
-			Cause: statErr,
+			Msg:        fmt.Sprintf("cannot determine if destination %s exists: %s — refusing to move to avoid potential overwrite", dst, statErr.Error()),
+			Suggestion: "Resolve the permission or I/O error on the destination path above, then retry migrate with action \"layout\".",
+			Cause:      statErr,
 		}
 	}
 	if dstExists {
@@ -494,14 +505,16 @@ func migrateLayoutMoveEntry(src, dst, label string, isDir bool, dryRun bool) (ch
 
 	if mkErr := os.MkdirAll(filepath.Dir(dst), 0o755); mkErr != nil {
 		return "", "", &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("create %s directory: %s", filepath.Dir(dst), mkErr.Error()),
-			Cause: mkErr,
+			Msg:        fmt.Sprintf("create %s directory: %s", filepath.Dir(dst), mkErr.Error()),
+			Suggestion: "Check write permission on " + paths.DataDir + "/" + paths.RunsSubdir + ", then retry migrate with action \"layout\".",
+			Cause:      mkErr,
 		}
 	}
 	if rnErr := os.Rename(src, dst); rnErr != nil {
 		return "", "", &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("move %s: %s", src, rnErr.Error()),
-			Cause: rnErr,
+			Msg:        fmt.Sprintf("move %s: %s", src, rnErr.Error()),
+			Suggestion: "Check write permission on both " + paths.DataDir + "/execution and " + paths.DataDir + "/" + paths.RunsSubdir + ", and that no other process has the entry open, then retry migrate with action \"layout\".",
+			Cause:      rnErr,
 		}
 	}
 	return displayLabel, "", nil
@@ -611,8 +624,9 @@ func RegisterMigrateTools(s *mcpserver.Server) {
 				root, err = os.Getwd()
 				if err != nil {
 					return MigrateOut{}, &mcpserver.InfraError{
-						Msg:   fmt.Sprintf("resolve project root: %s", err.Error()),
-						Cause: err,
+						Msg:        fmt.Sprintf("resolve project root: %s", err.Error()),
+						Suggestion: "Run migrate from an existing working directory inside a git repository — the current directory may have been deleted or unmounted.",
+						Cause:      err,
 					}
 				}
 			}

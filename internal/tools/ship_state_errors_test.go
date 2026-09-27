@@ -167,7 +167,6 @@ func TestShipState_NoStateForBranch(t *testing.T) {
 		{Action: "skip", Step: "execute"},
 		{Action: "fail", Step: "execute"},
 		{Action: "decide", Step: "execute"},
-		{Action: "defer", Detail: map[string]any{"severity": "low", "file": "a.go", "title": "t"}},
 		{Action: "read"},
 		{Action: "next"},
 		{Action: "todos"},
@@ -182,6 +181,22 @@ func TestShipState_NoStateForBranch(t *testing.T) {
 				t.Errorf("error text = %q, want it to name branch %q", text, shipErrBranch)
 			}
 		})
+	}
+}
+
+// TestShipState_Defer_NoStateForBranch pins the one deliberate exception to
+// the no-state-means-data-error rule above: defer falls back to a
+// history-only record (see TestShipState_Defer_StatelessFallback) instead of
+// failing, so it must succeed here where every other action errors.
+func TestShipState_Defer_NoStateForBranch(t *testing.T) {
+	dir := t.TempDir()
+	useMemHistory(t)
+	_, err := shipState(dir, dir, ShipStateIn{
+		Action: "defer",
+		Detail: shipErrWithBranch(map[string]any{"severity": "low", "file": "a.go", "title": "t"}),
+	}, shipErrNow)
+	if err != nil {
+		t.Fatalf("defer with no ship state: want success via the history-only fallback, got: %v", err)
 	}
 }
 

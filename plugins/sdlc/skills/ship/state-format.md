@@ -164,7 +164,7 @@ Appended by `ship_state{action:"decide", step, detail:{text}}`. Never overwritte
 
 ## `deferredFindings` Array
 
-Appended by `ship_state{action:"defer", detail:{severity, file, title, line?, reason?, description?}}`. `severity`, `file`, and `title` are required by the tool (a `DomainError` otherwise); `line` is passed through as-is (including `null`). `reason` is optional: one of `below-threshold`, `needs-direction`, `disagree`, `wont-fix` (any other value is a `DomainError` that names the accepted set). An omitted `reason` records `below-threshold`. `description` is optional and defaults to `title`. The same call also writes the finding to `.sdlc-v2/history/deferred.json`, which `/sdlc:deferred` reads.
+Appended by `ship_state{action:"defer", detail:{severity, file, title, line?, reason?, description?, source?}}`. `severity`, `file`, and `title` are required by the tool (a `DomainError` otherwise); `line` is passed through as-is (including `null`). `reason` is optional: one of `below-threshold`, `needs-direction`, `disagree`, `wont-fix` (any other value is a `DomainError` that names the accepted set). An omitted `reason` records `below-threshold`. `description` is optional and defaults to `title`. `source` is optional and defaults to `review-below-threshold`; `/received-review` passes `source: "received-review"` to name itself as the item's origin. When the branch has no ship state file, the call skips this run-scoped record and only records the finding to `.sdlc-v2/history/deferred.json`. Otherwise the same call also writes the finding there, which `/sdlc:deferred` reads.
 
 ```json
 { "severity": "medium", "file": "src/auth.ts", "line": 42, "title": "Extract token validation", "reason": "below-threshold" }

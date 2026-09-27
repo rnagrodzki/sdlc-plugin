@@ -118,6 +118,43 @@ func TestExecState_Init(t *testing.T) {
 	}
 }
 
+// TestExecState_Init_StampsCommitWaves covers the st.Data["commitWaves"]
+// stamp: init reuses the same field resolve-config resolved, and normalizes
+// anything outside {"true","false"} (an omitted CommitWaves, in particular)
+// to "true" so the wave-commit gate always finds a valid string.
+func TestExecState_Init_StampsCommitWaves(t *testing.T) {
+	tests := []struct {
+		name        string
+		in          string
+		wantStamped string
+	}{
+		{name: "explicit false", in: "false", wantStamped: "false"},
+		{name: "explicit true", in: "true", wantStamped: "true"},
+		{name: "omitted defaults to true", in: "", wantStamped: "true"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			seedInitConfig(t, root)
+
+			_, err := executeState(root, root, ExecuteStateIn{
+				Action:      "init",
+				Branch:      "feat/test",
+				Quality:     "standard",
+				CommitWaves: tt.in,
+			}, fixedClock(testNow))
+			if err != nil {
+				t.Fatalf("init: %v", err)
+			}
+
+			data := readExecState(t, root, "feat/test")
+			if got := data["commitWaves"]; got != tt.wantStamped {
+				t.Errorf("commitWaves = %v, want %q", got, tt.wantStamped)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // init: openspec tasks.md ref stamping
 // ---------------------------------------------------------------------------
@@ -1304,6 +1341,81 @@ func TestExecState_WaveCommit_CommitWavesDisabled(t *testing.T) {
 	w := data["waves"].([]any)[0].(map[string]any)
 	if _, has := w["committedSha"]; has {
 		t.Errorf("committedSha = %v, want unset", w["committedSha"])
+	}
+}
+
+// TestExecState_WaveCommit_StateCommitWavesOverridesConfig covers the
+// st.Data["commitWaves"]-first path: a run initialized with commitWaves
+// resolved to "false" must skip the commit even though top-level
+// execute.commitWaves config says true, since the state file's own
+// resolved value (recorded at init) is what this run actually agreed to.
+func TestExecState_WaveCommit_StateCommitWavesOverridesConfig(t *testing.T) {
+	root := t.TempDir()
+
+	createExecState(t, root, "feat/test", map[string]any{
+		"waves": []any{
+			map[string]any{"number": 1, "status": "completed", "tasks": []any{}},
+		},
+		"context":     map[string]any{},
+		"commitWaves": "false",
+	})
+	if err := config.WriteSection(root, "execute", map[string]any{"commitWaves": true}); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	res, err := executeState(root, root, ExecuteStateIn{
+		Action:  "wave-commit",
+		Branch:  "feat/test",
+		Wave:    intPtr(1),
+		Message: "msg",
+	}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("wave-commit: %v", err)
+	}
+
+	out, ok := res.(ExecWaveCommitOut)
+	if !ok {
+		t.Fatalf("result type = %T, want ExecWaveCommitOut", res)
+	}
+	if out.Committed {
+		t.Error("Committed = true, want false when st.Data[\"commitWaves\"] is \"false\", even though config says true")
+	}
+}
+
+// TestExecState_WaveCommit_MissingStateCommitWavesFallsBackToConfig covers
+// a pre-existing state file (created before this field existed) with no
+// st.Data["commitWaves"] key at all: the gate must fall back to
+// execCommitWavesEnabled(root) rather than treating the absent key as false.
+func TestExecState_WaveCommit_MissingStateCommitWavesFallsBackToConfig(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	seedExecStateCommitted(t, dir, map[string]any{"number": 1, "status": "completed", "tasks": []any{}})
+	if err := config.WriteSection(dir, "execute", map[string]any{"commitWaves": true}); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("wave 1 work"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := executeState(dir, dir, ExecuteStateIn{
+		Action:  "wave-commit",
+		Branch:  "feat/test",
+		Wave:    intPtr(1),
+		Message: "msg",
+	}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("wave-commit: %v", err)
+	}
+
+	out, ok := res.(ExecWaveCommitOut)
+	if !ok {
+		t.Fatalf("result type = %T, want ExecWaveCommitOut", res)
+	}
+	if !out.Committed {
+		t.Error("Committed = false, want true: no st.Data[\"commitWaves\"] should fall back to config execute.commitWaves=true")
 	}
 }
 
@@ -7446,6 +7558,102 @@ quality = "minimal"
 	// Assert no new entries were created (no state file written)
 	if beforeCount != afterCount {
 		t.Errorf("entry count changed: before=%d, after=%d (resolve-config must not write state)", beforeCount, afterCount)
+	}
+}
+
+func TestExecuteState_ResolveConfig_CommitWaves_Precedence(t *testing.T) {
+	tests := []struct {
+		name        string
+		cliValue    string
+		execCfg     string
+		wantValue   bool
+		wantSource  string
+		wantWarning string
+	}{
+		{
+			name:       "cli true wins over config",
+			cliValue:   "true",
+			execCfg:    "commitWaves = false\n",
+			wantValue:  true,
+			wantSource: "cli",
+		},
+		{
+			name:       "cli false wins over config",
+			cliValue:   "false",
+			execCfg:    "commitWaves = true\n",
+			wantValue:  false,
+			wantSource: "cli",
+		},
+		{
+			name:       "config true, no cli",
+			execCfg:    "commitWaves = true\n",
+			wantValue:  true,
+			wantSource: "config",
+		},
+		{
+			name:       "config false, no cli",
+			execCfg:    "commitWaves = false\n",
+			wantValue:  false,
+			wantSource: "config",
+		},
+		{
+			name:       "nothing configured defaults to true",
+			wantValue:  true,
+			wantSource: "default",
+		},
+		{
+			name:        "invalid cli value falls through to default",
+			cliValue:    "maybe",
+			wantValue:   true,
+			wantSource:  "default",
+			wantWarning: `--commit-waves "maybe" is not "true" or "false"`,
+		},
+		{
+			name:        "wrong-typed config falls through to default",
+			execCfg:     `commitWaves = "yes"` + "\n",
+			wantValue:   true,
+			wantSource:  "default",
+			wantWarning: "config execute.commitWaves has the wrong type",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			if tt.execCfg != "" {
+				writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "[execute]\n"+tt.execCfg)
+			}
+
+			out, err := executeState(root, root, ExecuteStateIn{
+				Action:      "resolve-config",
+				CommitWaves: tt.cliValue,
+			}, fixedClock(testNow))
+			if err != nil {
+				t.Fatalf("executeState resolve-config: %v", err)
+			}
+			result, ok := out.(ExecuteResolveConfigOut)
+			if !ok {
+				t.Fatalf("result type = %T, want ExecuteResolveConfigOut", out)
+			}
+			if result.CommitWaves != tt.wantValue {
+				t.Errorf("CommitWaves = %v, want %v", result.CommitWaves, tt.wantValue)
+			}
+			if got := result.Sources["commitWaves"]; got != tt.wantSource {
+				t.Errorf("Sources[commitWaves] = %q, want %q", got, tt.wantSource)
+			}
+			if tt.wantWarning != "" {
+				found := false
+				for _, w := range result.Warnings {
+					if strings.Contains(w, tt.wantWarning) {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("Warnings = %v, want one containing %q", result.Warnings, tt.wantWarning)
+				}
+			}
+		})
 	}
 }
 

@@ -124,7 +124,10 @@ func errorReportPrepare(root string, in ErrorReportPrepareIn) (ErrorReportPrepar
 		for i, m := range missing {
 			msgs[i] = "Missing required field: " + m
 		}
-		return ErrorReportPrepareOut{}, &mcpserver.DomainError{Msg: strings.Join(msgs, "; ")}
+		return ErrorReportPrepareOut{}, &mcpserver.DomainError{
+			Msg:        strings.Join(msgs, "; "),
+			Suggestion: "Set skill, step, operation, and errorText in the input, then call error_report_prepare again.",
+		}
 	}
 
 	skill := strings.TrimSpace(in.Skill)
@@ -151,11 +154,19 @@ func errorReportPrepare(root string, in ErrorReportPrepareIn) (ErrorReportPrepar
 
 	tmpDir, err := os.MkdirTemp("", "sdlc-error-report-")
 	if err != nil {
-		return ErrorReportPrepareOut{}, &mcpserver.InfraError{Msg: fmt.Sprintf("create temp dir: %s", err.Error()), Cause: err}
+		return ErrorReportPrepareOut{}, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("create temp dir: %s", err.Error()),
+			Suggestion: "Check that the OS temp directory allows creating new directories, then retry error_report_prepare.",
+			Cause:      err,
+		}
 	}
 	manifestPath := filepath.Join(tmpDir, "manifest.json")
 	if err := fsx.AtomicWriteJSON(manifestPath, manifest); err != nil {
-		return ErrorReportPrepareOut{}, &mcpserver.InfraError{Msg: fmt.Sprintf("write manifest: %s", err.Error()), Cause: err}
+		return ErrorReportPrepareOut{}, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("write manifest: %s", err.Error()),
+			Suggestion: "Check available disk space and write permission on the temp directory created just before this step, then retry error_report_prepare — it creates a fresh one each call.",
+			Cause:      err,
+		}
 	}
 
 	return ErrorReportPrepareOut{

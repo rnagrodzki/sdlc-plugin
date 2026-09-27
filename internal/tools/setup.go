@@ -465,8 +465,9 @@ func setupInit(root string, in SetupInitIn) (SetupInitOut, error) {
 	// 1. Create .sdlc-v2/ directory.
 	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
 		return SetupInitOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("create %s directory: %s", paths.DataDir, err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("create %s directory: %s", paths.DataDir, err.Error()),
+			Suggestion: "Check write permission on the project root and free disk space, then retry setup_init.",
+			Cause:      err,
 		}
 	}
 
@@ -476,8 +477,9 @@ func setupInit(root string, in SetupInitIn) (SetupInitOut, error) {
 	// subdirectories setup owns (e.g. review-dimensions/).
 	if err := os.MkdirAll(filepath.Join(sdlcDir, paths.RunsSubdir), 0o755); err != nil {
 		return SetupInitOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("create %s/%s directory: %s", paths.DataDir, paths.RunsSubdir, err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("create %s/%s directory: %s", paths.DataDir, paths.RunsSubdir, err.Error()),
+			Suggestion: "Check write permission on " + paths.DataDir + " and free disk space, then retry setup_init.",
+			Cause:      err,
 		}
 	}
 
@@ -760,8 +762,9 @@ func RegisterSetupTools(s *mcpserver.Server) {
 				root, err = os.Getwd()
 				if err != nil {
 					return SetupPrepareOut{}, &mcpserver.InfraError{
-						Msg:   fmt.Sprintf("resolve project root: %s", err.Error()),
-						Cause: err,
+						Msg:        fmt.Sprintf("resolve project root: %s", err.Error()),
+						Suggestion: "Restart the sdlc MCP server from a directory that still exists, then retry setup_prepare.",
+						Cause:      err,
 					}
 				}
 			}
@@ -784,8 +787,9 @@ func RegisterSetupTools(s *mcpserver.Server) {
 				root, err = os.Getwd()
 				if err != nil {
 					return SetupInitOut{}, &mcpserver.InfraError{
-						Msg:   fmt.Sprintf("resolve project root: %s", err.Error()),
-						Cause: err,
+						Msg:        fmt.Sprintf("resolve project root: %s", err.Error()),
+						Suggestion: "Restart the sdlc MCP server from a directory that still exists, then retry setup_init.",
+						Cause:      err,
 					}
 				}
 			}

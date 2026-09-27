@@ -125,8 +125,9 @@ func learningsAppend(path, rel, entry, runID, branch string) (LearningsLogOut, e
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return LearningsLogOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("create learnings directory: %s", err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("create learnings directory: %s", err.Error()),
+			Suggestion: "Check write permission on " + paths.DataDir + "/learnings and that its parent directory exists, then retry action=\"append\".",
+			Cause:      err,
 		}
 	}
 
@@ -134,8 +135,9 @@ func learningsAppend(path, rel, entry, runID, branch string) (LearningsLogOut, e
 	exists := err == nil
 	if err != nil && !os.IsNotExist(err) {
 		return LearningsLogOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("read learnings log: %s", err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("read learnings log: %s", err.Error()),
+			Suggestion: "Check read permission on " + rel + " and that it is a regular file, then retry action=\"append\".",
+			Cause:      err,
 		}
 	}
 
@@ -155,8 +157,9 @@ func learningsAppend(path, rel, entry, runID, branch string) (LearningsLogOut, e
 
 	if err := os.WriteFile(path, []byte(out.String()), 0o644); err != nil {
 		return LearningsLogOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("write learnings log: %s", err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("write learnings log: %s", err.Error()),
+			Suggestion: "Check write permission on " + rel + " and free disk space, then retry action=\"append\".",
+			Cause:      err,
 		}
 	}
 
@@ -177,8 +180,9 @@ func learningsRead(path, rel string, tailLines int) (LearningsLogOut, error) {
 			return LearningsLogOut{OK: true, Action: "read", Path: rel, Exists: false}, nil
 		}
 		return LearningsLogOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("read learnings log: %s", err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("read learnings log: %s", err.Error()),
+			Suggestion: "Check read permission on " + rel + " and that it is a regular file, then retry action=\"read\".",
+			Cause:      err,
 		}
 	}
 
@@ -217,8 +221,9 @@ func learningsRemove(path, rel string, indices []int) (LearningsLogOut, error) {
 			}
 		}
 		return LearningsLogOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("read learnings log: %s", err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("read learnings log: %s", err.Error()),
+			Suggestion: "Check read permission on " + rel + " and that it is a regular file, then retry action=\"remove\".",
+			Cause:      err,
 		}
 	}
 
@@ -266,8 +271,9 @@ func learningsRemove(path, rel string, indices []int) (LearningsLogOut, error) {
 
 	if err := os.WriteFile(path, []byte(out.String()), 0o644); err != nil {
 		return LearningsLogOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("write learnings log: %s", err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("write learnings log: %s", err.Error()),
+			Suggestion: "Check write permission on " + rel + " and free disk space, then retry action=\"remove\".",
+			Cause:      err,
 		}
 	}
 
@@ -374,8 +380,9 @@ func learningsStats(path, rel string) (LearningsLogOut, error) {
 			return LearningsLogOut{OK: true, Action: "stats", Path: rel, Exists: false, Stats: &stats}, nil
 		}
 		return LearningsLogOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("read learnings log: %s", err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("read learnings log: %s", err.Error()),
+			Suggestion: "Check read permission on " + rel + " and that it is a regular file, then retry action=\"stats\".",
+			Cause:      err,
 		}
 	}
 
@@ -470,8 +477,9 @@ func RegisterLearningsTools(s *mcpserver.Server) {
 				root, err = os.Getwd()
 				if err != nil {
 					return LearningsLogOut{}, &mcpserver.InfraError{
-						Msg:   fmt.Sprintf("resolve project root: %s", err.Error()),
-						Cause: err,
+						Msg:        fmt.Sprintf("resolve project root: %s", err.Error()),
+						Suggestion: "Run learnings_log from a directory this process can access; both git-worktree resolution and the current working directory lookup failed.",
+						Cause:      err,
 					}
 				}
 			}

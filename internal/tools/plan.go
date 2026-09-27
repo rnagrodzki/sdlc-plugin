@@ -1460,33 +1460,38 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 		}
 		sort.Strings(names)
 		return PlanMarkOut{}, &mcpserver.DomainError{
-			Msg: fmt.Sprintf("unknown marker %q; must be one of: %s", in.Marker, strings.Join(names, ", ")),
+			Msg:        fmt.Sprintf("unknown marker %q; must be one of: %s", in.Marker, strings.Join(names, ", ")),
+			Suggestion: "Pass one of the marker names listed above exactly as spelled (case-sensitive) in the marker field, then retry plan_mark.",
 		}
 	}
 	if in.Marker == "plan-file" && strings.TrimSpace(in.Path) == "" {
 		return PlanMarkOut{}, &mcpserver.DomainError{
-			Msg: `marker "plan-file" requires a non-empty path`,
+			Msg:        `marker "plan-file" requires a non-empty path`,
+			Suggestion: "Pass the plan document's file path in the path field — it is stored as planFilePath in the plan state file for later steps to read.",
 		}
 	}
 
 	branch, err := gitx.CurrentBranch(contentRoot)
 	if err != nil || branch == "" {
 		return PlanMarkOut{}, &mcpserver.InfraError{
-			Msg:   "could not determine current branch",
-			Cause: err,
+			Msg:        "could not determine current branch",
+			Suggestion: "Check out a named branch in the active worktree (not a detached HEAD), then retry plan_mark.",
+			Cause:      err,
 		}
 	}
 
 	st, err := state.Find(mainRoot, "plan", branch)
 	if err != nil {
 		return PlanMarkOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("find plan state file: %s", err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("find plan state file: %s", err.Error()),
+			Suggestion: "Check read permission on " + paths.DataDir + "/runs/plan-<branch-slug>-*.json and that the file is not corrupted, then retry plan_mark.",
+			Cause:      err,
 		}
 	}
 	if st == nil {
 		return PlanMarkOut{}, &mcpserver.DomainError{
-			Msg: fmt.Sprintf("no plan state file found for branch %q; run plan_prepare first", branch),
+			Msg:        fmt.Sprintf("no plan state file found for branch %q; run plan_prepare first", branch),
+			Suggestion: "Confirm this is the same branch plan_prepare was run on — the plan state file is looked up by branch name, so switching branches loses it.",
 		}
 	}
 
@@ -1505,8 +1510,9 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 
 		if err := state.Write(st); err != nil {
 			return PlanMarkOut{}, &mcpserver.InfraError{
-				Msg:   fmt.Sprintf("write plan state file: %s", err.Error()),
-				Cause: err,
+				Msg:        fmt.Sprintf("write plan state file: %s", err.Error()),
+				Suggestion: "Check write permission on the plan state file path above and free disk space on the project root, then retry plan_mark with the same marker and data.",
+				Cause:      err,
 			}
 		}
 		return PlanMarkOut{OK: true, Marker: in.Marker, Path: st.Path}, nil
@@ -1526,8 +1532,9 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 
 	if err := state.Write(st); err != nil {
 		return PlanMarkOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("write plan state file: %s", err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("write plan state file: %s", err.Error()),
+			Suggestion: "Check write permission on the plan state file path above and free disk space on the project root, then retry plan_mark with the same marker (and path, if marker is \"plan-file\").",
+			Cause:      err,
 		}
 	}
 
@@ -1555,15 +1562,17 @@ func RegisterPlanTools(s *mcpserver.Server) {
 			mainRoot, err := worktree.MainRoot()
 			if err != nil {
 				return PlanPrepareOut{}, &mcpserver.InfraError{
-					Msg:   fmt.Sprintf("resolve main root: %s", err.Error()),
-					Cause: err,
+					Msg:        fmt.Sprintf("resolve main root: %s", err.Error()),
+					Suggestion: "Run plan_prepare from inside a git repository (or one of its worktrees) so the main root can be resolved, then retry.",
+					Cause:      err,
 				}
 			}
 			contentRoot, err := worktree.ActiveRoot()
 			if err != nil {
 				return PlanPrepareOut{}, &mcpserver.InfraError{
-					Msg:   fmt.Sprintf("resolve active root: %s", err.Error()),
-					Cause: err,
+					Msg:        fmt.Sprintf("resolve active root: %s", err.Error()),
+					Suggestion: "Run plan_prepare from inside a git working tree — the current directory is not one. Change into the repository, then retry.",
+					Cause:      err,
 				}
 			}
 			return planPrepareCore(mainRoot, contentRoot, in)
@@ -1582,15 +1591,17 @@ func RegisterPlanTools(s *mcpserver.Server) {
 			mainRoot, err := worktree.MainRoot()
 			if err != nil {
 				return PlanMarkOut{}, &mcpserver.InfraError{
-					Msg:   fmt.Sprintf("resolve main root: %s", err.Error()),
-					Cause: err,
+					Msg:        fmt.Sprintf("resolve main root: %s", err.Error()),
+					Suggestion: "Run plan_mark from inside a git repository (or one of its worktrees) so the main root can be resolved, then retry.",
+					Cause:      err,
 				}
 			}
 			contentRoot, err := worktree.ActiveRoot()
 			if err != nil {
 				return PlanMarkOut{}, &mcpserver.InfraError{
-					Msg:   fmt.Sprintf("resolve active root: %s", err.Error()),
-					Cause: err,
+					Msg:        fmt.Sprintf("resolve active root: %s", err.Error()),
+					Suggestion: "Run plan_mark from inside a git working tree — the current directory is not one. Change into the repository, then retry.",
+					Cause:      err,
 				}
 			}
 			return planMark(mainRoot, contentRoot, in)

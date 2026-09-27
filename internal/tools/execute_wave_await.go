@@ -8,6 +8,7 @@ import (
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/stepper"
 	"github.com/rnagrodzki/sdlc-plugin/internal/wave"
 )
@@ -199,7 +200,11 @@ func execActionWaveAwait(root string, in ExecuteStateIn, now func() time.Time) (
 	for _, id := range plannedIDs {
 		s, found, lerr := wave.LoadServerState(root, in.RunID, id)
 		if lerr != nil {
-			return WaveAwaitOut{}, &mcpserver.InfraError{Msg: "load server state for task " + id + ": " + lerr.Error(), Cause: lerr}
+			return WaveAwaitOut{}, &mcpserver.InfraError{
+				Msg:        "load server state for task " + id + ": " + lerr.Error(),
+				Suggestion: "Check that " + paths.DataDir + "/runs/" + in.RunID + "/progress/" + id + ".server.json is valid JSON, then retry wave-await.",
+				Cause:      lerr,
+			}
 		}
 		if found {
 			states[id] = s
@@ -214,7 +219,11 @@ func execActionWaveAwait(root string, in ExecuteStateIn, now func() time.Time) (
 
 	progress, err := wave.ReadProgress(root, in.RunID)
 	if err != nil {
-		return WaveAwaitOut{}, &mcpserver.InfraError{Msg: "read progress: " + err.Error(), Cause: err}
+		return WaveAwaitOut{}, &mcpserver.InfraError{
+			Msg:        "read progress: " + err.Error(),
+			Suggestion: "Check that the per-task progress files under " + paths.DataDir + "/runs/" + in.RunID + "/progress are valid JSON, then retry wave-await.",
+			Cause:      err,
+		}
 	}
 
 	subjects := wave.BuildSubjects(states, progress.Tasks, openIDs)
@@ -262,7 +271,11 @@ func execActionWaveAwait(root string, in ExecuteStateIn, now func() time.Time) (
 				// SAME attempt continue: no failure, no TaskStop, no retry
 				// consumed.
 				if err := waveAwaitClearReclaim(root, in.RunID, subj.TaskIDs); err != nil {
-					return WaveAwaitOut{}, &mcpserver.InfraError{Msg: "clear reclaim stamp: " + err.Error(), Cause: err}
+					return WaveAwaitOut{}, &mcpserver.InfraError{
+						Msg:        "clear reclaim stamp: " + err.Error(),
+						Suggestion: "Check write permission on the server-state files for task(s) " + strings.Join(subj.TaskIDs, ", ") + " under " + paths.DataDir + "/runs/" + in.RunID + "/progress, then retry wave-await.",
+						Cause:      err,
+					}
 				}
 				openBucket = append(openBucket, subj.OpenTaskIDs...)
 				blocking = true
@@ -306,7 +319,11 @@ func execActionWaveAwait(root string, in ExecuteStateIn, now func() time.Time) (
 			// would leave that field permanently empty and the reclaim
 			// would never be detected on the next call.
 			if err := waveAwaitStampReclaim(root, in.RunID, subj.TaskIDs, nowStr); err != nil {
-				return WaveAwaitOut{}, &mcpserver.InfraError{Msg: "stamp reclaim request: " + err.Error(), Cause: err}
+				return WaveAwaitOut{}, &mcpserver.InfraError{
+					Msg:        "stamp reclaim request: " + err.Error(),
+					Suggestion: "Check write permission on the server-state files for task(s) " + strings.Join(subj.TaskIDs, ", ") + " under " + paths.DataDir + "/runs/" + in.RunID + "/progress, then retry wave-await.",
+					Cause:      err,
+				}
 			}
 			stalledBucket = append(stalledBucket, subj.OpenTaskIDs...)
 			rr := waveAwaitReclaimRequest{
@@ -654,7 +671,11 @@ func waveAwaitPollFile(in ExecuteStateIn, runID string, waveNum int, nowT time.T
 	if statePath == "" {
 		p, err := stepper.NewStateFilePath("wave-await")
 		if err != nil {
-			return waveAwaitPollState{}, "", &mcpserver.InfraError{Msg: "create wave-await state file: " + err.Error(), Cause: err}
+			return waveAwaitPollState{}, "", &mcpserver.InfraError{
+				Msg:        "create wave-await state file: " + err.Error(),
+				Suggestion: "Retry once; if it recurs, the OS random source is unavailable while naming the state file — escalate rather than looping.",
+				Cause:      err,
+			}
 		}
 		statePath = p
 	}
@@ -677,7 +698,11 @@ func waveAwaitPollFile(in ExecuteStateIn, runID string, waveNum int, nowT time.T
 	ps.Iteration++
 
 	if err := fsx.AtomicWriteJSON(statePath, ps); err != nil {
-		return waveAwaitPollState{}, "", &mcpserver.InfraError{Msg: "save wave-await state file: " + err.Error(), Cause: err}
+		return waveAwaitPollState{}, "", &mcpserver.InfraError{
+			Msg:        "save wave-await state file: " + err.Error(),
+			Suggestion: "Check write permission on " + statePath + ", then retry wave-await with the same stateFile.",
+			Cause:      err,
+		}
 	}
 	return ps, statePath, nil
 }
