@@ -270,6 +270,10 @@ PREVIOUSLY BLOCKED: The previous agent could not complete this task because:
 {Provide additional context, or describe how the task scope has been adjusted}
 ```
 
+### Wave-split depth exhaustion (CONTEXT_OVERFLOW recovery)
+
+When `wave-split` recursion reaches `maxSplitDepth` and cannot split further, do NOT retry splitting. Instead, escalate to the user with the full structured missing-IDs error. When EXECUTE_AUTO is true, print the error and halt — never call AskUserQuestion, which would deadlock an unattended run.
+
 ### Malformed or missing completion checklist
 
 The agent returned output but the structured completion checklist block is absent or unparseable (cannot extract Summary:/VERIFY:/STATUS: lines).

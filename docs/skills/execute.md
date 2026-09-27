@@ -40,6 +40,20 @@ verification after each wave and automatic recovery from failures.
 | `balanced` | Default. Good balance of speed and correctness. |
 | `minimal` | Slowest but highest correctness. Uses the strongest models throughout. |
 
+## Configuration
+
+`.sdlc-v2/config.toml` (project-level, committed):
+
+| Key | Type | Default | Effect |
+|---|---|---|---|
+| `execute.auto` | boolean | `false` | Run unattended. Suppresses the branch, tier, resume and high-risk prompts. Never overrides an error-severity guardrail failure. |
+| `execute.quality` | `"full"` \| `"balanced"` \| `"minimal"` | unset | Fixes the model preset and skips the tier-selection prompt. `--quality` overrides it. Unset plus `auto = true` resolves to `balanced`. |
+| `execute.highRiskAutoApprove` | boolean | `false` | A wave with a High-risk task proceeds without a second approval, because the plan was approved at plan time. |
+
+Resolution order is `--quality` / `--auto` flag, then a dispatching `/ship` run's auto mode, then these keys, then the built-in default. The `execute_state` tool's `resolve-config` action performs the merge and reports each value's source.
+
+`execute.quality` is distinct from `automation.mode` in `.sdlc-v2/local.toml`: `automation` gates whether `/ship` hands control to `/execute`, while these keys govern prompts inside `/execute` once it has control.
+
 ## Examples
 
 **Execute a plan with default settings:**

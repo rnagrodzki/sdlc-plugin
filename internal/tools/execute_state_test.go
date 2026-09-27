@@ -4,11 +4,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -7385,5 +7389,186 @@ func TestExecWaveStallTimeouts_DefaultsFromShipBuiltInDefaults(t *testing.T) {
 	}
 	if totalTimeout != wantTotal {
 		t.Errorf("totalTimeout = %v, want %v", totalTimeout, wantTotal)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// resolve-config action tests
+// ---------------------------------------------------------------------------
+
+// TestExecuteState_ResolveConfigDispatch tests that resolve-config routes
+// through the executeState dispatcher without writing a state file. It proves
+// that resolve-config is stateless — it reads config.toml and ship state but
+// never creates an execute state file.
+func TestExecuteState_ResolveConfigDispatch(t *testing.T) {
+	root := t.TempDir()
+	configTOML := `[execute]
+auto = true
+quality = "minimal"
+`
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), configTOML)
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
+
+	// Snapshot os.ReadDir(root) before the call
+	entriesBefore, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatalf("read root before: %v", err)
+	}
+	beforeCount := len(entriesBefore)
+
+	// Call resolve-config through the dispatcher
+	out, err := executeState(root, root, ExecuteStateIn{
+		Action: "resolve-config",
+	}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("executeState resolve-config: %v", err)
+	}
+
+	// Parse the result
+	result, ok := out.(ExecuteResolveConfigOut)
+	if !ok {
+		t.Fatalf("result type = %T, want ExecuteResolveConfigOut", out)
+	}
+	if !result.Auto {
+		t.Errorf("auto = %v, want true", result.Auto)
+	}
+	if result.Quality != "minimal" {
+		t.Errorf("quality = %q, want minimal", result.Quality)
+	}
+
+	// Snapshot os.ReadDir(root) after the call
+	entriesAfter, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatalf("read root after: %v", err)
+	}
+	afterCount := len(entriesAfter)
+
+	// Assert no new entries were created (no state file written)
+	if beforeCount != afterCount {
+		t.Errorf("entry count changed: before=%d, after=%d (resolve-config must not write state)", beforeCount, afterCount)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Action enum coverage test
+// ---------------------------------------------------------------------------
+
+// executeStateDispatcherActions extracts action case labels from the
+// executeState dispatcher switch statement, mirroring the approach in
+// ship_state_test.go's shipStateDispatcherActions.
+func executeStateDispatcherActions(t *testing.T) []string {
+	t.Helper()
+
+	// Read execute_state.go from the current package
+	content, readErr := os.ReadFile("execute_state.go")
+	if readErr != nil {
+		t.Fatalf("read execute_state.go: %v", readErr)
+	}
+
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "execute_state.go", content, 0)
+	if err != nil {
+		t.Fatalf("parse execute_state.go: %v", err)
+	}
+
+	var actions []string
+	ast.Inspect(f, func(n ast.Node) bool {
+		sw, ok := n.(*ast.SwitchStmt)
+		if !ok {
+			return true
+		}
+		sel, ok := sw.Tag.(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "Action" {
+			return true
+		}
+		// Check for default case
+		hasDefault := false
+		for _, stmt := range sw.Body.List {
+			if cc, isCase := stmt.(*ast.CaseClause); isCase && cc.List == nil {
+				hasDefault = true
+			}
+		}
+		if !hasDefault {
+			return true
+		}
+		// Extract action names
+		for _, stmt := range sw.Body.List {
+			cc, isCase := stmt.(*ast.CaseClause)
+			if !isCase {
+				continue
+			}
+			for _, expr := range cc.List {
+				bl, isLit := expr.(*ast.BasicLit)
+				if !isLit || bl.Kind != token.STRING {
+					continue
+				}
+				name, uerr := strconv.Unquote(bl.Value)
+				if uerr != nil {
+					t.Fatalf("unquote case label %s: %v", bl.Value, uerr)
+				}
+				actions = append(actions, name)
+			}
+		}
+		return true
+	})
+
+	if len(actions) == 0 {
+		t.Fatal("found no dispatcher case labels in execute_state.go")
+	}
+	return actions
+}
+
+// TestExecuteStateActionEnumCoversDispatcher pins the jsonschema enum tag on
+// ExecuteStateIn.Action to the dispatcher's own case labels, ensuring the
+// schema advertises exactly what the tool accepts and no hidden actions.
+func TestExecuteStateActionEnumCoversDispatcher(t *testing.T) {
+	field, ok := reflect.TypeOf(ExecuteStateIn{}).FieldByName("Action")
+	if !ok {
+		t.Fatal("ExecuteStateIn.Action field not found")
+	}
+
+	tag := field.Tag.Get("jsonschema")
+	if tag == "" {
+		t.Fatal("ExecuteStateIn.Action has no jsonschema tag")
+	}
+
+	// Extract enum values from the tag
+	var schemaEnums []string
+	for _, part := range strings.Split(tag, ",") {
+		if strings.HasPrefix(part, "enum=") {
+			schemaEnums = append(schemaEnums, strings.TrimPrefix(part, "enum="))
+		}
+	}
+
+	if len(schemaEnums) == 0 {
+		t.Fatal("no enum values found in jsonschema tag")
+	}
+
+	// Get dispatcher actions
+	dispatcherActions := executeStateDispatcherActions(t)
+
+	// Check both directions
+	schemaSet := make(map[string]bool)
+	for _, a := range schemaEnums {
+		schemaSet[a] = true
+	}
+
+	dispatcherSet := make(map[string]bool)
+	for _, a := range dispatcherActions {
+		dispatcherSet[a] = true
+	}
+
+	// Schema should not advertise actions the dispatcher doesn't handle
+	for _, a := range schemaEnums {
+		if !dispatcherSet[a] {
+			t.Errorf("schema advertises action %q not in dispatcher", a)
+		}
+	}
+
+	// Dispatcher should not have unlisted actions (except default, which is not an action)
+	for _, a := range dispatcherActions {
+		if !schemaSet[a] {
+			t.Errorf("dispatcher handles action %q not in schema enum", a)
+		}
 	}
 }
