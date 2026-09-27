@@ -41,8 +41,8 @@ import (
 type ExecuteStateIn struct {
 	Action              string         `json:"action" jsonschema:"enum=wave-compute,enum=init,enum=wave-start,enum=wave-done,enum=wave-fail,enum=wave-committed,enum=wave-commit,enum=task-done,enum=task-fail,enum=task-context,enum=context,enum=read,enum=cleanup,enum=gc,enum=summarize-prior-wave-context,enum=wave-split,enum=verify-completeness,enum=wave-progress,enum=wave-await,enum=task-redispatch,enum=resume-reset,enum=ledger_checkin,enum=ledger_checkout,enum=ledger_status,enum=ledger_cleanup,enum=log-cli,enum=drift-log,enum=issue-draft,enum=decide,enum=resolve-config,enum=report" jsonschema_description:"Selects the operation. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
 	Branch              string         `json:"branch,omitempty" jsonschema_description:"Git branch the execution state belongs to. Most actions accept it to scope the state file; falls back to the current branch when omitted."`
-	Auto                bool           `json:"auto,omitempty" sdlcconfig:"execute.auto" jsonschema_description:"resolve-config only: true when the caller passed --auto. Optional. Defaults to config execute.auto. Pass only to override."`
-	Quality             string         `json:"quality,omitempty" jsonschema_description:"Quality tier. init: required -- the tier stamped on the newly initialized run; pass the value resolve-config returned. resolve-config: the --quality CLI value, which wins over config execute.quality when non-empty."`
+	Auto                bool           `json:"auto,omitempty" sdlcconfig:"execute.auto" jsonschema_description:"resolve-config only: true when the caller passed --auto. Omitting it does not mean auto is off: the resolution order is CLI > pipeline > config > default, so auto also resolves to true when branch is supplied and that branch's ship state has flags.auto=true. Optional. Defaults to config execute.auto. Pass only to override."`
+	Quality             string         `json:"quality,omitempty" jsonschema:"enum=full,enum=balanced,enum=minimal" jsonschema_description:"Quality tier. init: required -- the tier stamped on the newly initialized run; pass the value resolve-config returned. resolve-config: the --quality CLI value, which wins over config execute.quality when non-empty. A resolve-config value outside the enum is non-fatal: it is reported in warnings and resolution falls through to config, then the auto default, then the skill's tier prompt."`
 	TotalTasks          int            `json:"totalTasks,omitempty" jsonschema_description:"Total planned task count for a newly initialized run (init only)."`
 	WaveTimeoutSeconds  int            `json:"waveTimeoutSeconds,omitempty" jsonschema_description:"init only: this run's wave wall-clock deadline in seconds (the invoking CLI's --wave-timeout). Recorded on init and later read back by wave-await to size its reclaim/timeout window. When omitted, falls back to a ship-state cross-read of flags.executeWaveTimeout, then internal/shipmeta.ShipBuiltInDefaults.ExecuteWaveTimeout (1800s)."`
 	WaveIntervalSeconds int            `json:"waveIntervalSeconds,omitempty" jsonschema_description:"init only: this run's heartbeat liveness cadence in seconds (the invoking CLI's --wave-interval). Recorded on init and later read back by wave-await to size its heartbeat/reclaim-grace window. When omitted, falls back to a ship-state cross-read of flags.executeWaveInterval, then internal/shipmeta.ShipBuiltInDefaults.ExecuteWaveInterval (60s)."`
@@ -174,8 +174,8 @@ type ExecDecideOut struct {
 // from, mirroring ship_prepare's merged/sources pair (ship.go:640-716).
 type ExecuteResolveConfigOut struct {
 	Auto                bool              `json:"auto" jsonschema_description:"Effective auto mode: true when the --auto flag was passed, or this branch's ship state has flags.auto=true, or config execute.auto is true."`
-	Quality             string            `json:"quality,omitempty" jsonschema_description:"Resolved quality tier (full|balanced|minimal), or empty when nothing supplied one and auto is false -- in which case the execute skill presents its tier selection prompt."`
-	HighRiskAutoApprove bool              `json:"highRiskAutoApprove" jsonschema_description:"True when a high-risk wave proceeds without a second approval because the plan was already approved at plan time."`
+	Quality             string            `json:"quality" jsonschema_description:"Resolved quality tier (full|balanced|minimal), or empty when nothing supplied one and auto is false -- in which case the execute skill presents its tier selection prompt. Never omitted: empty is a load-bearing outcome a reader must be able to tell apart from an absent field."`
+	HighRiskAutoApprove bool              `json:"highRiskAutoApprove" jsonschema_description:"Effective high-risk auto-approval, read from config execute.highRiskAutoApprove (a static project setting) and false otherwise. No plan-approval state is consulted; sources.highRiskAutoApprove reports whether the value came from config or the built-in default."`
 	Sources             map[string]string `json:"sources" jsonschema_description:"Per-key provenance: cli, pipeline, config, default, or unset."`
 	Warnings            []string          `json:"warnings,omitempty" jsonschema_description:"Non-fatal problems: an unreadable ship state, or a config value of the wrong type or outside the allowed enum (the built-in default is used instead)."`
 }
@@ -536,8 +536,8 @@ func RegisterExecuteStateTools(s *mcpserver.Server) {
 Pass "action" to select an operation. Each action uses a subset of the input fields (unlisted fields are ignored):
 
 - wave-compute: Stateless — parses the plan file at planPath and computes the wave schedule (no state file read/write). Requires planPath. Optional: extraDepsJson (JSON array of {task, dependsOn, reason} merged with each task's explicit "Depends on" field). Returns {route, preWave, waves[{number, tasks[], expectedFiles[], verificationHint}]}.
-- resolve-config: Stateless — resolves this run's effective auto mode, quality tier and high-risk auto-approval from CLI flags, this branch's ship state and config [execute] (no state file read/write). Optional: branch (enables the ship-state auto cross-read), quality (--quality), auto (--auto). Returns {auto, quality?, highRiskAutoApprove, sources, warnings?}.
-- init: Create execution state. Runs the same config auto-migration gate as ship_prepare first (migrates and backs up an outdated config, or fails with a /setup pointer if none exists); result may include a "migration" report. Returns {filePath, pipelineAuto (true when this branch's ship state has flags.auto=true — forwarded so the execute SKILL.md high-risk gate can skip a second approval), warnings? (e.g. this branch's ship state exists but is unreadable), migration?}. Requires branch, quality. Optional: totalTasks, plannedTaskIds, planPath, planHash.
+- resolve-config: Stateless — resolves this run's effective auto mode, quality tier and high-risk auto-approval from CLI flags, this branch's ship state and config [execute] (no state file read/write). Optional: branch (enables the ship-state auto cross-read), quality (--quality), auto (--auto). An out-of-enum quality warns and falls through to config, then the auto default, rather than failing. Returns {auto, quality (always present; empty means "ask the user for a tier"), highRiskAutoApprove, sources, warnings?}.
+- init: Create execution state. Runs the same config auto-migration gate as ship_prepare first (migrates and backs up an outdated config, or fails with a /setup pointer if none exists); result may include a "migration" report. Returns {filePath, pipelineAuto (true when this branch's ship state has flags.auto=true — reported for diagnostics only; the execute SKILL.md high-risk gate no longer reads it, because resolve-config performs the same ship-state cross-read at Step 0 and folds the result into its effective auto value), warnings? (e.g. this branch's ship state exists but is unreadable), migration?}. Requires branch, quality. Optional: totalTasks, plannedTaskIds, planPath, planHash.
 - wave-start: Begin a wave. Returns narration (summary, display with task list + ETA, next). Requires wave. Optional: branch, tasksJson, runId (for fact sheets), detail ("concise"|"full"). If the run recorded a planHash at init, the plan file's current sha256 is compared against it first; a mismatch returns {halt:true, reason:"plan hash mismatch"} instead of narration and does not start the wave. An unreadable/missing plan file does not halt — it proceeds with a warning in the response's "warnings" field. Seeds server-owned dispatch state (dispatchedAt, workerName, batchId/batchIndex, attempt:1) for every valid tasksJson entry that doesn't already have one — a task that already has server state (wave-start called again on resume) is left untouched. Seeding failure is non-fatal and appends to "warnings".
 - wave-done: Complete a wave. Returns narration (summary, display with outcomes, timing, next wave preview + ETA). Records wave duration to TimingsStore. Requires wave. Optional: branch, decisions, status, detail ("concise"|"full").
 - wave-fail: Fail a wave. Returns narration (summary, display with failure cause). Requires wave. Optional: branch, timedOut, error (failure cause, recorded as an issue and in failedWave), status, detail ("concise"|"full").
@@ -2010,6 +2010,23 @@ func execActionResolveConfig(root string, in ExecuteStateIn) (any, error) {
 		Warnings: []string{},
 	}
 
+	// Read config [execute] once and reuse it for all three resolutions,
+	// matching execSummarizePriorWaveCtx/execCommitWavesEnabled rather than
+	// re-parsing config.toml per key. A genuine read failure (malformed TOML,
+	// I/O or permission error) is distinguished from an absent section and
+	// surfaced as a warning instead of collapsing into "not configured" —
+	// the same distinction scaffold.go and execPipelineAuto already make.
+	// execSection stays nil on any error; indexing a nil map is safe, so each
+	// resolution below reads it without a further nil check.
+	var execSection map[string]any
+	if sect, err := config.ReadSection(root, "execute"); err != nil {
+		if !errors.Is(err, config.ErrNotFound) {
+			out.Warnings = append(out.Warnings, fmt.Sprintf("config execute section unreadable: %s; using defaults", err.Error()))
+		}
+	} else {
+		execSection = sect
+	}
+
 	// Resolve auto: CLI > pipeline > config > default
 	if in.Auto {
 		out.Auto = true
@@ -2026,54 +2043,44 @@ func execActionResolveConfig(root string, in ExecuteStateIn) (any, error) {
 		}
 
 		if !out.Auto {
-			// Try config
-			sect, err := config.ReadSection(root, "execute")
-			if err != nil || sect == nil {
-				out.Sources["auto"] = "default"
-				// out.Auto stays false
+			if ca, ok := execSection["auto"].(bool); ok && ca {
+				out.Auto = true
+				out.Sources["auto"] = "config"
 			} else {
-				if ca, ok := sect["auto"].(bool); ok && ca {
-					out.Auto = true
-					out.Sources["auto"] = "config"
-				} else {
-					out.Sources["auto"] = "default"
-				}
+				out.Sources["auto"] = "default"
 			}
 		}
 	}
 
-	// Resolve quality: CLI > config > (default if auto) > unset
-	if in.Quality != "" {
-		out.Quality = in.Quality
+	// Resolve quality: CLI > config > (default if auto) > unset.
+	// An out-of-enum CLI value is non-fatal and does not short-circuit: it
+	// warns and falls through to the same config/default/unset path an absent
+	// flag takes, mirroring the config branch below. Erroring here instead
+	// would reject the legacy A/B/C tiers the execute skill still accepts and
+	// normalizes (SKILL.md "Quality auto-selection"), which no code path
+	// normalizes before this call.
+	cliQuality := in.Quality
+	if cliQuality != "" && !sliceContainsStr(validQuality, cliQuality) {
+		out.Warnings = append(out.Warnings, fmt.Sprintf("--quality %q is not in allowed values %v; falling back to config, then the default", cliQuality, validQuality))
+		cliQuality = ""
+	}
+	if cliQuality != "" {
+		out.Quality = cliQuality
 		out.Sources["quality"] = "cli"
 	} else {
-		// Try config
-		sect, err := config.ReadSection(root, "execute")
-		if err != nil || sect == nil {
-			// Fall through to default logic
-		} else {
-			if rawQuality, ok := sect["quality"]; ok {
-				if cq, isString := rawQuality.(string); isString {
-					// Validate against validQuality
-					valid := false
-					for _, v := range validQuality {
-						if cq == v {
-							valid = true
-							break
-						}
-					}
-					if valid {
-						out.Quality = cq
-						out.Sources["quality"] = "config"
-					} else {
-						out.Warnings = append(out.Warnings, fmt.Sprintf("config execute.quality %q is not in allowed values %v; using default", cq, validQuality))
-						out.Sources["quality"] = "default"
-					}
+		if rawQuality, ok := execSection["quality"]; ok {
+			if cq, isString := rawQuality.(string); isString {
+				if sliceContainsStr(validQuality, cq) {
+					out.Quality = cq
+					out.Sources["quality"] = "config"
 				} else {
-					// Wrong type
-					out.Warnings = append(out.Warnings, fmt.Sprintf("config execute.quality has wrong type %T; expected string; using default", rawQuality))
+					out.Warnings = append(out.Warnings, fmt.Sprintf("config execute.quality %q is not in allowed values %v; using default", cq, validQuality))
 					out.Sources["quality"] = "default"
 				}
+			} else {
+				// Wrong type
+				out.Warnings = append(out.Warnings, fmt.Sprintf("config execute.quality has wrong type %T; expected string; using default", rawQuality))
+				out.Sources["quality"] = "default"
 			}
 		}
 
@@ -2089,24 +2096,18 @@ func execActionResolveConfig(root string, in ExecuteStateIn) (any, error) {
 	}
 
 	// Resolve highRiskAutoApprove: config > default
-	sect2, err := config.ReadSection(root, "execute")
-	if err != nil || sect2 == nil {
-		out.HighRiskAutoApprove = false
-		out.Sources["highRiskAutoApprove"] = "default"
-	} else {
-		if rawHraa, ok := sect2["highRiskAutoApprove"]; ok {
-			if hraa, isBool := rawHraa.(bool); isBool {
-				out.HighRiskAutoApprove = hraa
-				out.Sources["highRiskAutoApprove"] = "config"
-			} else {
-				out.Warnings = append(out.Warnings, fmt.Sprintf("config execute.highRiskAutoApprove has wrong type %T; expected bool; using default", rawHraa))
-				out.HighRiskAutoApprove = false
-				out.Sources["highRiskAutoApprove"] = "default"
-			}
+	if rawHraa, ok := execSection["highRiskAutoApprove"]; ok {
+		if hraa, isBool := rawHraa.(bool); isBool {
+			out.HighRiskAutoApprove = hraa
+			out.Sources["highRiskAutoApprove"] = "config"
 		} else {
+			out.Warnings = append(out.Warnings, fmt.Sprintf("config execute.highRiskAutoApprove has wrong type %T; expected bool; using default", rawHraa))
 			out.HighRiskAutoApprove = false
 			out.Sources["highRiskAutoApprove"] = "default"
 		}
+	} else {
+		out.HighRiskAutoApprove = false
+		out.Sources["highRiskAutoApprove"] = "default"
 	}
 
 	return out, nil

@@ -24,10 +24,10 @@ verification after each wave and automatic recovery from failures.
 |------|-------------|---------|
 | `<plan-file-path>` | Path to the plan file. Required unless resuming. | none |
 | `--plan <path>` | Alternative way to specify the plan file path. | none |
-| `--quality <level>` | Quality tier: `full`, `balanced`, or `minimal` (see table below). | interactive prompt |
+| `--quality <level>` | Quality tier: `full`, `balanced`, or `minimal` (see table below). | interactive prompt — unless `execute.quality` is set, which fixes the tier and skips the prompt without this flag. See [Configuration](#configuration). |
 | `--resume` | Resume from saved progress after an interruption. | off |
 | `--rebase <mode>` | Rebase strategy: `auto`, `skip`, or `prompt`. | `skip` |
-| `--auto` | Skip all interactive prompts. | off |
+| `--auto` | Skip all interactive prompts. | off — unless `execute.auto` is set, or a dispatching `/ship` run is itself in auto mode; the three sources are OR-combined. See [Configuration](#configuration). |
 | `--branch <name>` | Create and check out this branch before executing. | auto-derived |
 | `--wave-timeout <s>` | Max seconds a single wave can run. Also used as each task's total-runtime ceiling when the server classifies still-open tasks. | `1800` |
 | `--wave-interval <s>` | Seconds between wave-await liveness polls. Also sets a heartbeat-staleness threshold of 10x this value (default 600s) before a worker is considered stalled, and a reclaim grace of max(5x this value, 300s) (default 300s) before a worker that never answers the reclaim is failed. See [Execute wave supervision](../execute-wave-supervision.md). | `60` |
@@ -47,8 +47,8 @@ verification after each wave and automatic recovery from failures.
 | Key | Type | Default | Effect |
 |---|---|---|---|
 | `execute.auto` | boolean | `false` | Run unattended. Suppresses the branch, tier, resume and high-risk prompts. Never overrides an error-severity guardrail failure. |
-| `execute.quality` | `"full"` \| `"balanced"` \| `"minimal"` | unset | Fixes the model preset and skips the tier-selection prompt. `--quality` overrides it. Unset plus `auto = true` resolves to `balanced`. |
-| `execute.highRiskAutoApprove` | boolean | `false` | A wave with a High-risk task proceeds without a second approval, because the plan was approved at plan time. |
+| `execute.quality` | `"full"` \| `"balanced"` \| `"minimal"` | unset | Fixes the model preset and skips the tier-selection prompt. `--quality` overrides it. Unset plus `auto = true` resolves to `balanced`. A value outside the three allowed tiers — from this key or from `--quality` — is not fatal: it is reported as a warning and resolution falls through to the next source. |
+| `execute.highRiskAutoApprove` | boolean | `false` | A wave with a High-risk task proceeds without a second approval. Read from this key alone — no plan-approval state is consulted. When a high-risk wave auto-proceeds because of this key (or `execute.auto`) rather than a per-run `--auto`, `/execute` prints a warning at wave start naming the config source. |
 
 Resolution order is `--quality` / `--auto` flag, then a dispatching `/ship` run's auto mode, then these keys, then the built-in default. The `execute_state` tool's `resolve-config` action performs the merge and reports each value's source.
 
@@ -105,6 +105,14 @@ file — you do not need to pass it again.
   first action is an unconditional `execute_state({action: "read"})` call —
   not just when resuming — so a stale in-flight run from a prior session is
   always detected before anything else happens.
+- **Runtime config is resolved second, and always.** Immediately after loading
+  state, the skill calls `execute_state({action: "resolve-config"})` to merge
+  `--quality` / `--auto`, a dispatching `/ship` run's auto mode, and the
+  `execute.*` config keys into one effective answer. It is that call — not a
+  direct read of `config.toml` — that decides the tier, whether prompts are
+  suppressed, and whether a high-risk wave needs a second approval. The skill
+  prints each value with its source, so you can always see which of the three
+  tiers supplied it.
 - **Waves are supervised by a server-driven poll, not the session itself.**
   After dispatching a wave's tasks, the skill repeatedly calls
   `execute_state({action: "wave-await"})` on the `--wave-interval` cadence.

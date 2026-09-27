@@ -179,7 +179,7 @@ var worktreeSkillsDescriptiveNoAction = map[string]worktreeSkillsException{
 // instruction elsewhere. Each entry was verified individually against this
 // repo's current file content. Keyed by "relative/path:line".
 var worktreeSkillsProhibitionMisses = map[string]worktreeSkillsException{
-	"skills/execute/SKILL.md:294": {
+	"skills/execute/SKILL.md:300": {
 		contains: "never append to",
 		reason:   `"never append to .sdlc-v2/learnings/log.md directly" -- prohibited verb is "append" (not in the read|write|glob alternation), and "write" appears earlier in the same line (in "a later write would land outside it"), before "never"`,
 	},
