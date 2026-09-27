@@ -39,9 +39,11 @@ import (
 // ExecuteStateIn carries the merged input for the execute_state tool's
 // actions. Each field is consumed by one or more actions (noted in comments).
 type ExecuteStateIn struct {
-	Action              string         `json:"action" jsonschema:"enum=wave-compute,enum=init,enum=wave-start,enum=wave-done,enum=wave-fail,enum=wave-committed,enum=wave-commit,enum=task-done,enum=task-fail,enum=task-context,enum=context,enum=read,enum=cleanup,enum=gc,enum=summarize-prior-wave-context,enum=wave-split,enum=verify-completeness,enum=wave-progress,enum=wave-await,enum=task-redispatch,enum=resume-reset,enum=ledger_checkin,enum=ledger_checkout,enum=ledger_status,enum=ledger_cleanup,enum=log-cli,enum=drift-log,enum=issue-draft,enum=decide,enum=report" jsonschema_description:"Selects the operation. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
+	Action              string         `json:"action" jsonschema:"enum=wave-compute,enum=init,enum=wave-start,enum=wave-done,enum=wave-fail,enum=wave-committed,enum=wave-commit,enum=task-done,enum=task-fail,enum=task-context,enum=context,enum=read,enum=cleanup,enum=gc,enum=summarize-prior-wave-context,enum=wave-split,enum=verify-completeness,enum=wave-progress,enum=wave-await,enum=task-redispatch,enum=resume-reset,enum=ledger_checkin,enum=ledger_checkout,enum=ledger_status,enum=ledger_cleanup,enum=log-cli,enum=drift-log,enum=issue-draft,enum=decide,enum=resolve-config,enum=report" jsonschema_description:"Selects the operation. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
 	Branch              string         `json:"branch,omitempty" jsonschema_description:"Git branch the execution state belongs to. Most actions accept it to scope the state file; falls back to the current branch when omitted."`
-	Quality             string         `json:"quality,omitempty" jsonschema_description:"Quality level to stamp on a newly initialized run (init only). Required — no config fallback exists for this field."`
+	Auto                bool           `json:"auto,omitempty" sdlcconfig:"execute.auto" jsonschema_description:"resolve-config only: true when the caller passed --auto. Omitting it does not mean auto is off: the resolution order is CLI > pipeline > config > default, so auto also resolves to true when branch is supplied and that branch's ship state has flags.auto=true. Optional. Defaults to config execute.auto. Pass only to override."`
+	Quality             string         `json:"quality,omitempty" jsonschema:"enum=full,enum=balanced,enum=minimal" jsonschema_description:"Quality tier. init: required -- the tier stamped on the newly initialized run; pass the value resolve-config returned. resolve-config: the --quality CLI value, which wins over config execute.quality when non-empty. A resolve-config value outside the enum is non-fatal: it is reported in warnings and resolution falls through to config, then the auto default, then the skill's tier prompt."`
+	CommitWaves         string         `json:"commitWaves,omitempty" jsonschema:"enum=true,enum=false" jsonschema_description:"Whether execute commits each wave separately; empty resolves from CLI/config/default true."`
 	TotalTasks          int            `json:"totalTasks,omitempty" jsonschema_description:"Total planned task count for a newly initialized run (init only)."`
 	WaveTimeoutSeconds  int            `json:"waveTimeoutSeconds,omitempty" jsonschema_description:"init only: this run's wave wall-clock deadline in seconds (the invoking CLI's --wave-timeout). Recorded on init and later read back by wave-await to size its reclaim/timeout window. When omitted, falls back to a ship-state cross-read of flags.executeWaveTimeout, then internal/shipmeta.ShipBuiltInDefaults.ExecuteWaveTimeout (1800s)."`
 	WaveIntervalSeconds int            `json:"waveIntervalSeconds,omitempty" jsonschema_description:"init only: this run's heartbeat liveness cadence in seconds (the invoking CLI's --wave-interval). Recorded on init and later read back by wave-await to size its heartbeat/reclaim-grace window. When omitted, falls back to a ship-state cross-read of flags.executeWaveInterval, then internal/shipmeta.ShipBuiltInDefaults.ExecuteWaveInterval (60s)."`
@@ -166,6 +168,18 @@ type ExecDecideOut struct {
 	OK     bool   `json:"ok"`
 	Action string `json:"action"`
 	Next   string `json:"next"`
+}
+
+// ExecuteResolveConfigOut is the resolved execute runtime config. Every
+// field is the post-merge effective value; Sources says where each came
+// from, mirroring ship_prepare's merged/sources pair (ship.go:640-716).
+type ExecuteResolveConfigOut struct {
+	Auto                bool              `json:"auto" jsonschema_description:"Effective auto mode: true when the --auto flag was passed, or this branch's ship state has flags.auto=true, or config execute.auto is true."`
+	Quality             string            `json:"quality" jsonschema_description:"Resolved quality tier (full|balanced|minimal), or empty when nothing supplied one and auto is false -- in which case the execute skill presents its tier selection prompt. Never omitted: empty is a load-bearing outcome a reader must be able to tell apart from an absent field."`
+	CommitWaves         bool              `json:"commitWaves" jsonschema_description:"Effective commit-waves setting: whether execute commits each wave separately. Resolution order CLI > config execute.commitWaves > default true; sources.commitWaves reports which one won."`
+	HighRiskAutoApprove bool              `json:"highRiskAutoApprove" jsonschema_description:"Effective high-risk auto-approval, read from config execute.highRiskAutoApprove (a static project setting) and false otherwise. No plan-approval state is consulted; sources.highRiskAutoApprove reports whether the value came from config or the built-in default."`
+	Sources             map[string]string `json:"sources" jsonschema_description:"Per-key provenance: cli, pipeline, config, default, or unset."`
+	Warnings            []string          `json:"warnings,omitempty" jsonschema_description:"Non-fatal problems: an unreadable ship state, or a config value of the wrong type or outside the allowed enum (the built-in default is used instead)."`
 }
 
 // ExecutionReportOut is the read-only end-of-run report returned by the
@@ -369,7 +383,7 @@ func execDetailLevel(in ExecuteStateIn) string {
 // execValidateDetail returns a DomainError if the detail value is invalid.
 func execValidateDetail(in ExecuteStateIn) error {
 	if in.Detail != "" && in.Detail != "concise" && in.Detail != "full" {
-		return &mcpserver.DomainError{Msg: fmt.Sprintf("detail must be \"concise\" or \"full\", got %q", in.Detail)}
+		return &mcpserver.DomainError{Msg: fmt.Sprintf("detail must be \"concise\" or \"full\", got %q", in.Detail), Suggestion: "Pass detail as \"concise\" or \"full\", or omit the field entirely."}
 	}
 	return nil
 }
@@ -524,7 +538,8 @@ func RegisterExecuteStateTools(s *mcpserver.Server) {
 Pass "action" to select an operation. Each action uses a subset of the input fields (unlisted fields are ignored):
 
 - wave-compute: Stateless — parses the plan file at planPath and computes the wave schedule (no state file read/write). Requires planPath. Optional: extraDepsJson (JSON array of {task, dependsOn, reason} merged with each task's explicit "Depends on" field). Returns {route, preWave, waves[{number, tasks[], expectedFiles[], verificationHint}]}.
-- init: Create execution state. Runs the same config auto-migration gate as ship_prepare first (migrates and backs up an outdated config, or fails with a /setup pointer if none exists); result may include a "migration" report. Returns {filePath, pipelineAuto (true when this branch's ship state has flags.auto=true — forwarded so the execute SKILL.md high-risk gate can skip a second approval), warnings? (e.g. this branch's ship state exists but is unreadable), migration?}. Requires branch, quality. Optional: totalTasks, plannedTaskIds, planPath, planHash.
+- resolve-config: Stateless — resolves this run's effective auto mode, quality tier and high-risk auto-approval from CLI flags, this branch's ship state and config [execute] (no state file read/write). Optional: branch (enables the ship-state auto cross-read), quality (--quality), auto (--auto). An out-of-enum quality warns and falls through to config, then the auto default, rather than failing. Returns {auto, quality (always present; empty means "ask the user for a tier"), highRiskAutoApprove, sources, warnings?}.
+- init: Create execution state. Runs the same config auto-migration gate as ship_prepare first (migrates and backs up an outdated config, or fails with a /setup pointer if none exists); result may include a "migration" report. Returns {filePath, pipelineAuto (true when this branch's ship state has flags.auto=true — reported for diagnostics only; the execute SKILL.md high-risk gate no longer reads it, because resolve-config performs the same ship-state cross-read at Step 0 and folds the result into its effective auto value), warnings? (e.g. this branch's ship state exists but is unreadable), migration?}. Requires branch, quality. Optional: totalTasks, plannedTaskIds, planPath, planHash.
 - wave-start: Begin a wave. Returns narration (summary, display with task list + ETA, next). Requires wave. Optional: branch, tasksJson, runId (for fact sheets), detail ("concise"|"full"). If the run recorded a planHash at init, the plan file's current sha256 is compared against it first; a mismatch returns {halt:true, reason:"plan hash mismatch"} instead of narration and does not start the wave. An unreadable/missing plan file does not halt — it proceeds with a warning in the response's "warnings" field. Seeds server-owned dispatch state (dispatchedAt, workerName, batchId/batchIndex, attempt:1) for every valid tasksJson entry that doesn't already have one — a task that already has server state (wave-start called again on resume) is left untouched. Seeding failure is non-fatal and appends to "warnings".
 - wave-done: Complete a wave. Returns narration (summary, display with outcomes, timing, next wave preview + ETA). Records wave duration to TimingsStore. Requires wave. Optional: branch, decisions, status, detail ("concise"|"full").
 - wave-fail: Fail a wave. Returns narration (summary, display with failure cause). Requires wave. Optional: branch, timedOut, error (failure cause, recorded as an issue and in failedWave), status, detail ("concise"|"full").
@@ -567,7 +582,7 @@ Returns Markdown: a "# execute_state — ok" heading, a **Next:** line, then the
 			if err != nil {
 				cwd, cwdErr := os.Getwd()
 				if cwdErr != nil {
-					return nil, &mcpserver.InfraError{Msg: "resolve root: " + err.Error(), Cause: err}
+					return nil, &mcpserver.InfraError{Msg: "resolve root: " + err.Error(), Cause: err, Suggestion: "Run execute_state from inside a valid, accessible working directory within the git repository, then retry."}
 				}
 				root = cwd
 			}
@@ -591,6 +606,8 @@ func executeState(root, workDir string, in ExecuteStateIn, now func() time.Time)
 	switch in.Action {
 	case "wave-compute":
 		return execActionWaveCompute(in)
+	case "resolve-config":
+		return execActionResolveConfig(root, in)
 	case "init":
 		return execActionInit(root, workDir, in, now)
 	case "wave-start":
@@ -667,7 +684,7 @@ func execResolveBranch(branch, workDir string) (string, error) {
 	}
 	b, err := gitx.CurrentBranch(workDir)
 	if err != nil {
-		return "", &mcpserver.DomainError{Msg: "could not determine branch: " + err.Error(), Cause: err}
+		return "", &mcpserver.DomainError{Msg: "could not determine branch: " + err.Error(), Cause: err, Suggestion: "Pass branch explicitly in the request, or run this from a git checkout with a resolvable HEAD."}
 	}
 	return b, nil
 }
@@ -677,11 +694,12 @@ func execResolveBranch(branch, workDir string) (string, error) {
 func execFindState(root, branch string) (*state.State, error) {
 	st, err := state.Find(root, "execute", branch)
 	if err != nil {
-		return nil, &mcpserver.InfraError{Msg: "find state: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{Msg: "find state: " + err.Error(), Cause: err, Suggestion: "Check read permission on " + paths.DataDir + "/runs/execute-<branch-slug>-*.json and that the JSON in it is well-formed, then retry."}
 	}
 	if st == nil {
 		return nil, &mcpserver.DataError{
-			Msg: fmt.Sprintf("no state file found for branch %q", branch),
+			Msg:        fmt.Sprintf("no state file found for branch %q", branch),
+			Suggestion: "Run execute_state init with branch set to this branch before calling other execute_state actions.",
 		}
 	}
 	return st, nil
@@ -938,7 +956,8 @@ func execNormalizedIDSet(ids []string) map[string]bool {
 func execValidateSafeID(id, label string) error {
 	if !execSafeIDRE.MatchString(id) {
 		return &mcpserver.DomainError{
-			Msg: fmt.Sprintf("%s contains invalid characters (expected only [A-Za-z0-9_-]): %q", label, id),
+			Msg:        fmt.Sprintf("%s contains invalid characters (expected only [A-Za-z0-9_-]): %q", label, id),
+			Suggestion: fmt.Sprintf("Strip characters from %s other than letters, digits, underscores, and hyphens, then retry.", label),
 		}
 	}
 	return nil
@@ -1146,7 +1165,7 @@ func execActionDriftLog(root, workDir string, in ExecuteStateIn, now func() time
 	})
 
 	if err := state.Write(st); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err, Suggestion: "Check that " + paths.DataDir + "/" + paths.RunsSubdir + "/ is writable and the disk is not full, then retry drift-log."}
 	}
 
 	// Load drift config — fall back to compiled defaults on any error.
@@ -1326,11 +1345,15 @@ func execActionDecide(root, workDir string, in ExecuteStateIn) (any, error) {
 		Decision:   in.DecideDecision,
 		Reason:     in.DecideReason,
 	}); appendErr != nil {
-		return nil, &mcpserver.InfraError{Msg: "append guardrail decision: " + appendErr.Error(), Cause: appendErr}
+		return nil, &mcpserver.InfraError{
+			Msg:        "append guardrail decision: " + appendErr.Error(),
+			Cause:      appendErr,
+			Suggestion: "The decision could not be serialised to JSON. Retry decide with plain-text decideType, decideId, decideDecision, and decideReason; if it fails again, report it as a tooling error.",
+		}
 	}
 
 	if err := state.Write(st); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err, Suggestion: "Check that " + paths.DataDir + "/" + paths.RunsSubdir + "/ is writable and the disk is not full, then retry decide."}
 	}
 
 	return ExecDecideOut{
@@ -1987,12 +2010,148 @@ func openspecChangeFromPlan(planContent string) string {
 	return m[1]
 }
 
+// execActionResolveConfig resolves effective auto mode, quality tier, and
+// high-risk auto-approval from CLI flags, ship state, and config.
+func execActionResolveConfig(root string, in ExecuteStateIn) (any, error) {
+	out := ExecuteResolveConfigOut{
+		Sources:  make(map[string]string),
+		Warnings: []string{},
+	}
+
+	// Read config [execute] once and reuse it for all three resolutions,
+	// matching execSummarizePriorWaveCtx/execCommitWavesEnabled rather than
+	// re-parsing config.toml per key. A genuine read failure (malformed TOML,
+	// I/O or permission error) is distinguished from an absent section and
+	// surfaced as a warning instead of collapsing into "not configured" —
+	// the same distinction scaffold.go and execPipelineAuto already make.
+	// execSection stays nil on any error; indexing a nil map is safe, so each
+	// resolution below reads it without a further nil check.
+	var execSection map[string]any
+	if sect, err := config.ReadSection(root, "execute"); err != nil {
+		if !errors.Is(err, config.ErrNotFound) {
+			out.Warnings = append(out.Warnings, fmt.Sprintf("config execute section unreadable: %s; using defaults", err.Error()))
+		}
+	} else {
+		execSection = sect
+	}
+
+	// Resolve auto: CLI > pipeline > config > default
+	if in.Auto {
+		out.Auto = true
+		out.Sources["auto"] = "cli"
+	} else {
+		// Only cross-read ship state if branch is provided
+		if in.Branch != "" {
+			_, pipelineAuto, plWarnings := execPipelineAuto(root, in.Branch)
+			out.Warnings = append(out.Warnings, plWarnings...)
+			if pipelineAuto {
+				out.Auto = true
+				out.Sources["auto"] = "pipeline"
+			}
+		}
+
+		if !out.Auto {
+			if ca, ok := execSection["auto"].(bool); ok && ca {
+				out.Auto = true
+				out.Sources["auto"] = "config"
+			} else {
+				out.Sources["auto"] = "default"
+			}
+		}
+	}
+
+	// Resolve quality: CLI > config > (default if auto) > unset.
+	// An out-of-enum CLI value is non-fatal and does not short-circuit: it
+	// warns and falls through to the same config/default/unset path an absent
+	// flag takes, mirroring the config branch below. Erroring here instead
+	// would reject the legacy A/B/C tiers the execute skill still accepts and
+	// normalizes (SKILL.md "Quality auto-selection"), which no code path
+	// normalizes before this call.
+	cliQuality := in.Quality
+	if cliQuality != "" && !sliceContainsStr(validQuality, cliQuality) {
+		out.Warnings = append(out.Warnings, fmt.Sprintf("--quality %q is not in allowed values %v; falling back to config, then the default", cliQuality, validQuality))
+		cliQuality = ""
+	}
+	if cliQuality != "" {
+		out.Quality = cliQuality
+		out.Sources["quality"] = "cli"
+	} else {
+		if rawQuality, ok := execSection["quality"]; ok {
+			if cq, isString := rawQuality.(string); isString {
+				if sliceContainsStr(validQuality, cq) {
+					out.Quality = cq
+					out.Sources["quality"] = "config"
+				} else {
+					out.Warnings = append(out.Warnings, fmt.Sprintf("config execute.quality %q is not in allowed values %v; using default", cq, validQuality))
+					out.Sources["quality"] = "default"
+				}
+			} else {
+				// Wrong type
+				out.Warnings = append(out.Warnings, fmt.Sprintf("config execute.quality has wrong type %T; expected string; using default", rawQuality))
+				out.Sources["quality"] = "default"
+			}
+		}
+
+		// Apply default if still empty
+		if out.Quality == "" {
+			if out.Auto {
+				out.Quality = "balanced"
+				out.Sources["quality"] = "default"
+			} else {
+				out.Sources["quality"] = "unset"
+			}
+		}
+	}
+
+	// Resolve commitWaves: CLI > config (top-level execute.commitWaves) > default true.
+	cliCommitWaves := in.CommitWaves
+	if cliCommitWaves != "" && cliCommitWaves != "true" && cliCommitWaves != "false" {
+		out.Warnings = append(out.Warnings, fmt.Sprintf(
+			"--commit-waves %q is not \"true\" or \"false\"; falling back to config, then the default", cliCommitWaves))
+		cliCommitWaves = ""
+	}
+	switch {
+	case cliCommitWaves != "":
+		out.CommitWaves = cliCommitWaves == "true"
+		out.Sources["commitWaves"] = "cli"
+	case execSection != nil:
+		if cw, ok := execSection["commitWaves"].(bool); ok {
+			out.CommitWaves = cw
+			out.Sources["commitWaves"] = "config"
+		} else if _, exists := execSection["commitWaves"]; exists {
+			out.Warnings = append(out.Warnings, "config execute.commitWaves has the wrong type; expected bool; using default")
+			out.CommitWaves, out.Sources["commitWaves"] = true, "default"
+		} else {
+			out.CommitWaves, out.Sources["commitWaves"] = true, "default"
+		}
+	default:
+		out.CommitWaves, out.Sources["commitWaves"] = true, "default"
+	}
+
+	// Resolve highRiskAutoApprove: config > default
+	if rawHraa, ok := execSection["highRiskAutoApprove"]; ok {
+		if hraa, isBool := rawHraa.(bool); isBool {
+			out.HighRiskAutoApprove = hraa
+			out.Sources["highRiskAutoApprove"] = "config"
+		} else {
+			out.Warnings = append(out.Warnings, fmt.Sprintf("config execute.highRiskAutoApprove has wrong type %T; expected bool; using default", rawHraa))
+			out.HighRiskAutoApprove = false
+			out.Sources["highRiskAutoApprove"] = "default"
+		}
+	} else {
+		out.HighRiskAutoApprove = false
+		out.Sources["highRiskAutoApprove"] = "default"
+	}
+
+	return out, nil
+}
+
 func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	if in.Branch == "" {
-		return nil, &mcpserver.DomainError{Msg: "--branch is required for init"}
+		return nil, &mcpserver.DomainError{Msg: "--branch is required for init", Suggestion: "Pass branch (the target branch name) in the init call."}
 	}
 	if in.Quality == "" {
-		return nil, &mcpserver.DomainError{Msg: "--quality is required for init"}
+		return nil, &mcpserver.DomainError{Msg: "--quality is required for init", Suggestion: "Pass quality as \"full\", \"balanced\", or \"minimal\" — call execute_state resolve-config first to get the value to use."}
 	}
 
 	// KD5 gate: same auto-migrate-with-backup gate as ship_prepare
@@ -2004,7 +2163,7 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 	// rendered "error (data)" result.
 	changes, backupPath, err := configmigrate.MigrateWithBackup(root)
 	if err != nil {
-		return nil, &mcpserver.DataError{Msg: fmt.Sprintf("config-version: %s", err.Error()), Cause: err}
+		return nil, &mcpserver.DataError{Msg: fmt.Sprintf("config-version: %s", err.Error()), Cause: err, Suggestion: "Run the sdlc migrate tool to bring the project config up to date, or /setup if no config exists yet, then retry execute_state init."}
 	}
 	var migrationReport *MigrationReport
 	if backupPath != "" {
@@ -2013,7 +2172,7 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 
 	st, err := state.Init(root, "execute", in.Branch, in.SessionID)
 	if err != nil {
-		return nil, &mcpserver.InfraError{Msg: "init state: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{Msg: "init state: " + err.Error(), Cause: err, Suggestion: "Check write permission on " + paths.DataDir + "/" + paths.RunsSubdir + "/ and available disk space on the project root, then retry execute_state init."}
 	}
 
 	st.Data["version"] = 1
@@ -2024,6 +2183,10 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 	st.Data["planPath"] = nilIfEmptyStr(in.PlanPath)
 	st.Data["planHash"] = nilIfEmptyStr(in.PlanHash)
 	st.Data["quality"] = in.Quality
+	st.Data["commitWaves"] = in.CommitWaves
+	if st.Data["commitWaves"] != "true" && st.Data["commitWaves"] != "false" {
+		st.Data["commitWaves"] = "true"
+	}
 	st.Data["totalTasks"] = in.TotalTasks
 	if in.PlannedTaskIds != nil {
 		st.Data["plannedTaskIds"] = in.PlannedTaskIds
@@ -2036,27 +2199,11 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 	// Cross-read ship state for pipeline auto-mode: when execute was
 	// dispatched from /ship and the user already approved --auto there,
 	// forward that into pipelineAuto so the high-risk gate (execute
-	// SKILL.md) doesn't force a second approval.
-	//
-	// state.Find returns (nil, nil) when no matching file exists, and a
-	// non-nil error only on I/O or JSON-parse failures. We distinguish:
-	//   - (nil, nil): no ship state → pipelineAuto stays false, silently.
-	//   - (st, nil):  ship state found → read flags.auto.
-	//   - (_, err):   genuine I/O/parse failure → pipelineAuto stays false,
-	//                 but the error is surfaced as a warning so the caller
-	//                 can diagnose why auto-forward didn't happen.
-	st.Data["pipelineAuto"] = false
-	var initWarnings []string
-	shipSt, shipErr := state.Find(root, "ship", in.Branch)
-	if shipErr != nil {
-		initWarnings = append(initWarnings, fmt.Sprintf("ship state unreadable: %s", shipErr.Error()))
-	} else if shipSt != nil {
-		if flags, ok := shipSt.Data["flags"].(map[string]any); ok {
-			if auto, ok := flags["auto"].(bool); ok && auto {
-				st.Data["pipelineAuto"] = true
-			}
-		}
-	}
+	// SKILL.md) doesn't force a second approval. Extracted into
+	// execPipelineAuto (execute_config.go) so resolve-config can share the
+	// exact same cross-read logic instead of duplicating it.
+	shipSt, pipelineAuto, initWarnings := execPipelineAuto(root, in.Branch)
+	st.Data["pipelineAuto"] = pipelineAuto
 
 	// Apply the openspec ref stamps plan_prepare deferred (see plan.go's
 	// pendingTaskRefs/stampTaskRefs): plan_prepare runs inside plan mode and
@@ -2111,7 +2258,7 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 	st.Data["waveIntervalSeconds"] = waveIntervalSec
 
 	if err := state.Write(st); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err, Suggestion: "Check that " + paths.DataDir + "/" + paths.RunsSubdir + "/ is writable and the disk is not full, then retry execute_state init."}
 	}
 
 	result := map[string]any{"filePath": st.Path, "pipelineAuto": st.Data["pipelineAuto"]}
@@ -2130,7 +2277,7 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 
 func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	if in.Wave == nil {
-		return nil, &mcpserver.DomainError{Msg: "--wave is required"}
+		return nil, &mcpserver.DomainError{Msg: "--wave is required", Suggestion: "Pass wave (the wave number to start) in the request."}
 	}
 	if err := execValidateDetail(in); err != nil {
 		return nil, err
@@ -2174,7 +2321,7 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 				Timestamp: now().UTC().Format(time.RFC3339),
 			})
 			if err := state.Write(st); err != nil {
-				return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+				return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err, Suggestion: "Check that " + paths.DataDir + "/" + paths.RunsSubdir + "/ is writable and the disk is not full, then retry wave-start."}
 			}
 			return DriftLogOut{
 				Logged:     true,
@@ -2250,7 +2397,7 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 	}
 
 	if err := state.Write(st); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err, Suggestion: "Check that " + paths.DataDir + "/" + paths.RunsSubdir + "/ is writable and the disk is not full, then retry wave-start."}
 	}
 
 	// Write per-task fact sheets when tasksJson is provided.
@@ -2390,7 +2537,7 @@ func execActionWaveStart(root, workDir string, in ExecuteStateIn, now func() tim
 		// execDeriveRunID.
 		w["runId"] = runID
 		if err := state.Write(st); err != nil {
-			return nil, &mcpserver.InfraError{Msg: "write state (planned): " + err.Error(), Cause: err}
+			return nil, &mcpserver.InfraError{Msg: "write state (planned): " + err.Error(), Cause: err, Suggestion: "Check that " + paths.DataDir + "/" + paths.RunsSubdir + "/ is writable and the disk is not full, then retry wave-start."}
 		}
 
 		result.RunID = runID
@@ -2624,7 +2771,7 @@ func execActionWaveDone(root, workDir string, in ExecuteStateIn, now func() time
 
 func execActionWaveFail(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	if in.Wave == nil {
-		return nil, &mcpserver.DomainError{Msg: "--wave is required"}
+		return nil, &mcpserver.DomainError{Msg: "--wave is required", Suggestion: "Pass wave (the wave number that failed) in the request."}
 	}
 	if err := execValidateDetail(in); err != nil {
 		return nil, err
@@ -2662,7 +2809,7 @@ func execActionWaveFail(root, workDir string, in ExecuteStateIn, now func() time
 	})
 
 	if err := state.Write(st); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err, Suggestion: "Check that " + paths.DataDir + "/" + paths.RunsSubdir + "/ is writable and the disk is not full, then retry wave-fail."}
 	}
 
 	// Narration.
@@ -2691,7 +2838,7 @@ func execActionWaveFail(root, workDir string, in ExecuteStateIn, now func() time
 
 func execActionWaveCommitted(root, workDir string, in ExecuteStateIn) (any, error) {
 	if in.Wave == nil {
-		return nil, &mcpserver.DomainError{Msg: "--wave is required"}
+		return nil, &mcpserver.DomainError{Msg: "--wave is required", Suggestion: "Pass wave (the wave number to record a commit for) in the request."}
 	}
 
 	branch, err := execResolveBranch(in.Branch, workDir)
@@ -2710,14 +2857,16 @@ func execActionWaveCommitted(root, workDir string, in ExecuteStateIn) (any, erro
 	w := execFindWave(st.Data, *in.Wave)
 	if w == nil {
 		return nil, &mcpserver.DomainError{
-			Msg: fmt.Sprintf("wave %d not found in state", *in.Wave),
+			Msg:        fmt.Sprintf("wave %d not found in state", *in.Wave),
+			Suggestion: "Call wave-start with this wave number first, or check the number against execute_state read's waves list.",
 		}
 	}
 
 	waveStatus, _ := w["status"].(string)
 	if waveStatus != "completed" {
 		return nil, &mcpserver.DomainError{
-			Msg: fmt.Sprintf("wave %d status is %q, expected \"completed\"", *in.Wave, waveStatus),
+			Msg:        fmt.Sprintf("wave %d status is %q, expected \"completed\"", *in.Wave, waveStatus),
+			Suggestion: "Call wave-done for this wave before wave-committed; only a wave already marked \"completed\" can record a commit.",
 		}
 	}
 
@@ -2733,13 +2882,14 @@ func execActionWaveCommitted(root, workDir string, in ExecuteStateIn) (any, erro
 			return map[string]any{"committedSha": newSha, "idempotent": true}, nil
 		}
 		return nil, &mcpserver.DomainError{
-			Msg: fmt.Sprintf("wave %d already has committedSha %q — refusing to overwrite with %v", *in.Wave, existing, newSha),
+			Msg:        fmt.Sprintf("wave %d already has committedSha %q — refusing to overwrite with %v", *in.Wave, existing, newSha),
+			Suggestion: "Do not call wave-committed again for this wave; if the recorded sha is wrong, fix it directly in the state file instead of overwriting via this action.",
 		}
 	}
 
 	w["committedSha"] = newSha
 	if err := state.Write(st); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err, Suggestion: "Check that " + paths.DataDir + "/" + paths.RunsSubdir + "/ is writable and the disk is not full, then retry wave-committed."}
 	}
 	return map[string]any{"committedSha": newSha, "idempotent": false}, nil
 }
@@ -2799,13 +2949,13 @@ func shortSHA(sha string) string {
 // rather than diverging from them.
 func execActionWaveCommit(root, workDir string, in ExecuteStateIn) (any, error) {
 	if in.Wave == nil {
-		return nil, &mcpserver.DomainError{Msg: "--wave is required"}
+		return nil, &mcpserver.DomainError{Msg: "--wave is required", Suggestion: "Pass wave (the wave number to commit) in the request."}
 	}
 	if err := execValidateDetail(in); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(in.Message) == "" {
-		return nil, &mcpserver.DomainError{Msg: "message is required for wave-commit"}
+		return nil, &mcpserver.DomainError{Msg: "message is required for wave-commit", Suggestion: "Pass message (the commit message to use) in the request."}
 	}
 
 	branch, err := execResolveBranch(in.Branch, workDir)
@@ -2824,14 +2974,16 @@ func execActionWaveCommit(root, workDir string, in ExecuteStateIn) (any, error) 
 	w := execFindWave(st.Data, *in.Wave)
 	if w == nil {
 		return nil, &mcpserver.DomainError{
-			Msg: fmt.Sprintf("wave %d not found in state", *in.Wave),
+			Msg:        fmt.Sprintf("wave %d not found in state", *in.Wave),
+			Suggestion: "Call wave-start with this wave number first, or check the number against execute_state read's waves list.",
 		}
 	}
 
 	waveStatus, _ := w["status"].(string)
 	if waveStatus != "completed" {
 		return nil, &mcpserver.DomainError{
-			Msg: fmt.Sprintf("wave %d status is %q, expected \"completed\"", *in.Wave, waveStatus),
+			Msg:        fmt.Sprintf("wave %d status is %q, expected \"completed\"", *in.Wave, waveStatus),
+			Suggestion: "Call wave-done for this wave before wave-commit; only a wave already marked \"completed\" can be committed.",
 		}
 	}
 
@@ -2849,13 +3001,15 @@ func execActionWaveCommit(root, workDir string, in ExecuteStateIn) (any, error) 
 			isAncestor, ancErr := execIsAncestor(workDir, existingSha)
 			if ancErr != nil {
 				return nil, &mcpserver.InfraError{
-					Msg:   fmt.Sprintf("git merge-base --is-ancestor %s HEAD: %s", existingSha, ancErr.Error()),
-					Cause: ancErr,
+					Msg:        fmt.Sprintf("git merge-base --is-ancestor %s HEAD: %s", existingSha, ancErr.Error()),
+					Cause:      ancErr,
+					Suggestion: "Inspect the repository with git status — the recorded sha may no longer exist or the repo may be corrupt. Resolve it, then retry wave-commit.",
 				}
 			}
 			if !isAncestor {
 				return nil, &mcpserver.DomainError{
-					Msg: fmt.Sprintf("wave %d already has committedSha %q which is not an ancestor of HEAD — refusing to commit again automatically", *in.Wave, existingSha),
+					Msg:        fmt.Sprintf("wave %d already has committedSha %q which is not an ancestor of HEAD — refusing to commit again automatically", *in.Wave, existingSha),
+					Suggestion: "The wave's git history has diverged from the recorded sha (e.g. after a rebase or force-push). Call wave-committed manually with the correct sha, or investigate the divergence before retrying wave-commit.",
 				}
 			}
 
@@ -2869,7 +3023,11 @@ func execActionWaveCommit(root, workDir string, in ExecuteStateIn) (any, error) 
 		}
 	}
 
-	if !execCommitWavesEnabled(root) {
+	enabled := execCommitWavesEnabled(root)
+	if cw, ok := st.Data["commitWaves"].(string); ok && cw != "" {
+		enabled = cw == "true"
+	}
+	if !enabled {
 		result := ExecWaveCommitOut{Committed: false, Reason: "execute.commitWaves is false"}
 		result.Summary = fmt.Sprintf("Wave %d not committed (execute.commitWaves is false).", *in.Wave)
 		if full {
@@ -2883,12 +3041,12 @@ func execActionWaveCommit(root, workDir string, in ExecuteStateIn) (any, error) 
 	}
 
 	if _, err := execx.Run("git", []string{"add", "-A"}, execx.Options{Dir: workDir}); err != nil {
-		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("git add: %s", err.Error()), Cause: err}
+		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("git add: %s", err.Error()), Cause: err, Suggestion: "Inspect the repository with git status — the working tree or index may be locked or corrupt. Resolve it, then retry wave-commit."}
 	}
 
 	staged, err := execx.Run("git", []string{"diff", "--cached", "--name-only"}, execx.Options{Dir: workDir})
 	if err != nil {
-		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("git diff --cached: %s", err.Error()), Cause: err}
+		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("git diff --cached: %s", err.Error()), Cause: err, Suggestion: "Inspect the repository with git status — the index may be locked or corrupt. Resolve it, then retry wave-commit."}
 	}
 	staged = strings.TrimSpace(staged)
 	if staged == "" {
@@ -2904,17 +3062,17 @@ func execActionWaveCommit(root, workDir string, in ExecuteStateIn) (any, error) 
 
 	// Commit message lands verbatim: no tool-added prefix.
 	if _, err := execx.Run("git", []string{"commit", "-m", in.Message}, execx.Options{Dir: workDir}); err != nil {
-		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("git commit: %s", err.Error()), Cause: err}
+		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("git commit: %s", err.Error()), Cause: err, Suggestion: "Read the git output above: a failing commit hook or a missing user.name/user.email is the usual cause. Fix it, then retry wave-commit with the same message."}
 	}
 
 	sha, err := shipHeadSHA(workDir)
 	if err != nil {
-		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("git rev-parse HEAD: %s", err.Error()), Cause: err}
+		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("git rev-parse HEAD: %s", err.Error()), Cause: err, Suggestion: "The commit was made but its sha could not be read back. Run git rev-parse HEAD manually and call wave-committed with that sha to record it."}
 	}
 
 	w["committedSha"] = sha
 	if err := state.Write(st); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err, Suggestion: "Check that " + paths.DataDir + "/" + paths.RunsSubdir + "/ is writable and the disk is not full, then retry wave-commit."}
 	}
 
 	result := ExecWaveCommitOut{Committed: true, SHA: sha, Idempotent: false}
@@ -3175,10 +3333,10 @@ func execActionTaskDone(root, workDir string, in ExecuteStateIn, now func() time
 
 func execActionTaskFail(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	if in.Wave == nil {
-		return nil, &mcpserver.DomainError{Msg: "--wave is required"}
+		return nil, &mcpserver.DomainError{Msg: "--wave is required", Suggestion: "Pass wave (the wave number the task belongs to) in the request."}
 	}
 	if in.TaskID == "" {
-		return nil, &mcpserver.DomainError{Msg: "taskId is required"}
+		return nil, &mcpserver.DomainError{Msg: "taskId is required", Suggestion: "Pass taskId (the ID of the task that failed) in the request."}
 	}
 
 	branch, err := execResolveBranch(in.Branch, workDir)
@@ -3210,7 +3368,7 @@ func execActionTaskFail(root, workDir string, in ExecuteStateIn, now func() time
 	}
 	currentAttempt := 1
 	if s, found, lerr := wave.LoadServerState(root, runID, in.TaskID); lerr != nil {
-		return nil, &mcpserver.InfraError{Msg: "load server state for task " + in.TaskID + ": " + lerr.Error(), Cause: lerr}
+		return nil, &mcpserver.InfraError{Msg: "load server state for task " + in.TaskID + ": " + lerr.Error(), Cause: lerr, Suggestion: "Check that " + paths.DataDir + "/" + paths.RunsSubdir + "/" + runID + "/progress/" + in.TaskID + ".server.json is readable and holds valid JSON, then retry task-fail."}
 	} else if found {
 		currentAttempt = s.Attempt
 	}
@@ -3311,7 +3469,7 @@ func execActionTaskFail(root, workDir string, in ExecuteStateIn, now func() time
 	})
 
 	if err := state.Write(st); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err, Suggestion: "Check that " + paths.DataDir + "/" + paths.RunsSubdir + "/ is writable and the disk is not full, then retry task-fail."}
 	}
 
 	// Narration: running tally.
@@ -3426,7 +3584,7 @@ func execActionTaskRedispatch(root, workDir string, in ExecuteStateIn, now func(
 
 	prev, found, lerr := wave.LoadServerState(root, runID, in.TaskID)
 	if lerr != nil {
-		return nil, &mcpserver.InfraError{Msg: "load server state for task " + in.TaskID + ": " + lerr.Error(), Cause: lerr}
+		return nil, &mcpserver.InfraError{Msg: "load server state for task " + in.TaskID + ": " + lerr.Error(), Cause: lerr, Suggestion: "Check that " + paths.DataDir + "/" + paths.RunsSubdir + "/" + runID + "/progress/" + in.TaskID + ".server.json is readable and holds valid JSON, then retry task-redispatch."}
 	}
 	attempt := 1
 	if found {
@@ -3452,7 +3610,7 @@ func execActionTaskRedispatch(root, workDir string, in ExecuteStateIn, now func(
 		workerName = execDefaultWorkerName(in.TaskID)
 	}
 	if err := wave.DeleteServerState(root, runID, in.TaskID); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "clear server state for task " + in.TaskID + ": " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{Msg: "clear server state for task " + in.TaskID + ": " + err.Error(), Cause: err, Suggestion: "Check write permission on " + paths.DataDir + "/" + paths.RunsSubdir + "/" + runID + "/progress/" + in.TaskID + ".server.json, then retry task-redispatch."}
 	}
 	next := wave.ServerTaskState{
 		DispatchedAt: waveAwaitFormat(now()),
@@ -3460,11 +3618,11 @@ func execActionTaskRedispatch(root, workDir string, in ExecuteStateIn, now func(
 		Attempt:      attempt + 1,
 	}
 	if err := wave.StoreServerState(root, runID, in.TaskID, next); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "seed server state for task " + in.TaskID + ": " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{Msg: "seed server state for task " + in.TaskID + ": " + err.Error(), Cause: err, Suggestion: "Check write permission on " + paths.DataDir + "/" + paths.RunsSubdir + "/" + runID + "/progress/ and available disk space, then retry task-redispatch."}
 	}
 
 	if err := state.Write(st); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err, Suggestion: "Check that " + paths.DataDir + "/" + paths.RunsSubdir + "/ is writable and the disk is not full, then retry task-redispatch."}
 	}
 
 	return TaskRedispatchOut{
@@ -3850,12 +4008,12 @@ func execActionTaskContext(root, workDir string, in ExecuteStateIn, now func() t
 
 func execActionContext(root, workDir string, in ExecuteStateIn) (any, error) {
 	if in.Data == "" {
-		return nil, &mcpserver.DomainError{Msg: "--data is required"}
+		return nil, &mcpserver.DomainError{Msg: "--data is required", Suggestion: "Pass data as a JSON object string with one or more allowed keys: planSummary, completedTaskIds, filesAdded, filesModified, interfacesCreated, decisionsFromPriorWaves."}
 	}
 
 	var incoming any
 	if err := json.Unmarshal([]byte(in.Data), &incoming); err != nil {
-		return nil, &mcpserver.DomainError{Msg: "data is not valid JSON: " + err.Error(), Cause: err}
+		return nil, &mcpserver.DomainError{Msg: "data is not valid JSON: " + err.Error(), Cause: err, Suggestion: "Pass data as a valid JSON object string, e.g. \"{\\\"planSummary\\\":\\\"...\\\"}\"."}
 	}
 
 	branch, err := execResolveBranch(in.Branch, workDir)
@@ -3872,7 +4030,7 @@ func execActionContext(root, workDir string, in ExecuteStateIn) (any, error) {
 
 	incomingMap, ok := incoming.(map[string]any)
 	if !ok {
-		return nil, &mcpserver.DomainError{Msg: "--data must be a JSON object"}
+		return nil, &mcpserver.DomainError{Msg: "--data must be a JSON object", Suggestion: "Pass data as a JSON object (not an array or scalar), encoded as a string."}
 	}
 
 	// Validate keys against whitelist.
@@ -3884,27 +4042,28 @@ func execActionContext(root, workDir string, in ExecuteStateIn) (any, error) {
 	}
 	if len(unknown) > 0 {
 		return nil, &mcpserver.DomainError{
-			Msg: fmt.Sprintf("data contains unknown context keys: %s", strings.Join(unknown, ", ")),
+			Msg:        fmt.Sprintf("data contains unknown context keys: %s", strings.Join(unknown, ", ")),
+			Suggestion: "Remove the unknown keys and retry with only planSummary, completedTaskIds, filesAdded, filesModified, interfacesCreated, or decisionsFromPriorWaves.",
 		}
 	}
 	if len(incomingMap) == 0 {
-		return nil, &mcpserver.DomainError{Msg: "data is an empty object — nothing to merge"}
+		return nil, &mcpserver.DomainError{Msg: "data is an empty object — nothing to merge", Suggestion: "Include at least one allowed context key with a non-empty value in data."}
 	}
 
 	// Validate types.
 	for key, value := range incomingMap {
 		if key == "planSummary" {
 			if _, ok := value.(string); !ok {
-				return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("data.%s must be a string", key)}
+				return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("data.%s must be a string", key), Suggestion: "Pass data.planSummary as a plain JSON string value, not an array or object."}
 			}
 		} else {
 			arr, arrOk := value.([]any)
 			if !arrOk {
-				return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("data.%s must be an array of strings", key)}
+				return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("data.%s must be an array of strings", key), Suggestion: fmt.Sprintf("Pass data.%s as a JSON array of strings.", key)}
 			}
 			for _, v := range arr {
 				if _, strOk := v.(string); !strOk {
-					return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("data.%s must be an array of strings", key)}
+					return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("data.%s must be an array of strings", key), Suggestion: fmt.Sprintf("Remove the non-string entries from data.%s — every element must be a string.", key)}
 				}
 			}
 		}
@@ -3915,7 +4074,7 @@ func execActionContext(root, workDir string, in ExecuteStateIn) (any, error) {
 	st.Data["context"] = merged
 
 	if err := state.Write(st); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err, Suggestion: "Check that " + paths.DataDir + "/" + paths.RunsSubdir + "/ is writable and the disk is not full, then retry the context action."}
 	}
 	return map[string]any{}, nil
 }
@@ -3945,11 +4104,12 @@ func execActionRead(root, workDir string, in ExecuteStateIn) (any, error) {
 	// Enforce output cap — never return a silently truncated blob.
 	raw, marshalErr := json.Marshal(st.Data)
 	if marshalErr != nil {
-		return nil, &mcpserver.InfraError{Msg: "marshal state: " + marshalErr.Error(), Cause: marshalErr}
+		return nil, &mcpserver.InfraError{Msg: "marshal state: " + marshalErr.Error(), Cause: marshalErr, Suggestion: "The state file likely holds a non-JSON-serializable value written outside this tool. Inspect the state file named in this run's branch and fix or remove the offending field."}
 	}
 	if len(raw) > execReadMaxBytes {
 		return nil, &mcpserver.DomainError{
-			Msg: fmt.Sprintf("state blob is %d bytes, exceeds read cap of %d bytes", len(raw), execReadMaxBytes),
+			Msg:        fmt.Sprintf("state blob is %d bytes, exceeds read cap of %d bytes", len(raw), execReadMaxBytes),
+			Suggestion: "Use a narrower action (context, task-context, summarize-prior-wave-context) instead of read, or gc old runs to shrink the state file.",
 		}
 	}
 
@@ -3993,7 +4153,7 @@ func execActionCleanup(root, workDir string, in ExecuteStateIn, now func() time.
 
 	st, findErr := state.Find(root, "execute", branch)
 	if findErr != nil {
-		return nil, &mcpserver.InfraError{Msg: "find state: " + findErr.Error(), Cause: findErr}
+		return nil, &mcpserver.InfraError{Msg: "find state: " + findErr.Error(), Cause: findErr, Suggestion: "Check read permission on " + paths.DataDir + "/runs/execute-<branch-slug>-*.json and that the JSON in it is well-formed, then retry cleanup."}
 	}
 	if st == nil {
 		// Nothing to clean up — success.
@@ -4034,7 +4194,7 @@ func execActionCleanup(root, workDir string, in ExecuteStateIn, now func() time.
 	}
 
 	if err := state.Write(st); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err, Suggestion: "Check that " + paths.DataDir + "/" + paths.RunsSubdir + "/ is writable and the disk is not full, then retry cleanup."}
 	}
 
 	if summary := execIssueSummaryFull(st.Data); summary != nil {
@@ -4080,7 +4240,7 @@ func execActionGC(root, workDir string, in ExecuteStateIn, now func() time.Time)
 		BranchExists: branchExists,
 	})
 	if err != nil {
-		return nil, &mcpserver.InfraError{Msg: "gc failed: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{Msg: "gc failed: " + err.Error(), Cause: err, Suggestion: "Check filesystem permissions under " + paths.DataDir + "/" + paths.RunsSubdir + "/ and that no state files are locked by another process, then retry gc."}
 	}
 
 	dirResult := execReapRunDirectories(stateDir, ttlDays, false, now)
@@ -4128,7 +4288,7 @@ func execGCDryRun(stateDir string, ttlDays int, branchExists func(string) bool, 
 
 	entries, err := os.ReadDir(stateDir)
 	if err != nil && !os.IsNotExist(err) {
-		return nil, &mcpserver.InfraError{Msg: "gc readdir: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{Msg: "gc readdir: " + err.Error(), Cause: err, Suggestion: "Check read permission on " + paths.DataDir + "/" + paths.RunsSubdir + "/, then retry gc with dryRun true."}
 	}
 
 	nowTime := now()
@@ -4400,7 +4560,7 @@ func execActionWaveSplit(root, workDir string, in ExecuteStateIn, now func() tim
 	if splitDepth >= maxSplitDepth {
 		return nil, &mcpserver.DomainError{
 			Msg:        fmt.Sprintf("splitDepth %d exceeds maxSplitDepth %d — manual escalation required", splitDepth, maxSplitDepth),
-			Suggestion: "Do not call wave-split again. Escalate the tasks in missingIds: call AskUserQuestion at top level, or halt the wave and return missingIds to the parent orchestrator when nested or under pipelineAuto.",
+			Suggestion: "Do not call wave-split again. Escalate the tasks in missingIds: call AskUserQuestion at top level, or halt the wave and return missingIds to the parent orchestrator when nested or in auto mode.",
 		}
 	}
 
@@ -4413,7 +4573,7 @@ func execActionWaveSplit(root, workDir string, in ExecuteStateIn, now func() tim
 		if errors.As(err, &maxErr) {
 			return nil, &mcpserver.DomainError{
 				Msg:        err.Error(),
-				Suggestion: "Escalate the unresolved task IDs from missingIds instead of retrying: call AskUserQuestion when running at top level; when running nested or under pipelineAuto, halt the wave and return missingIds to the parent orchestrator.",
+				Suggestion: "Escalate the unresolved task IDs from missingIds instead of retrying: call AskUserQuestion when running at top level; when nested or in auto mode, halt the wave and return missingIds to the parent orchestrator.",
 				Cause:      err,
 			}
 		}
@@ -5154,7 +5314,11 @@ func execActionResumeReset(root, workDir string, in ExecuteStateIn, now func() t
 
 	st, findErr := state.Find(root, "execute", branch)
 	if findErr != nil {
-		return nil, &mcpserver.InfraError{Msg: "find state: " + findErr.Error(), Cause: findErr}
+		return nil, &mcpserver.InfraError{
+			Msg:        "find state: " + findErr.Error(),
+			Cause:      findErr,
+			Suggestion: "Check read permission on " + paths.DataDir + "/runs/execute-<branch-slug>-*.json and that the JSON in it is well-formed, then retry resume-reset.",
+		}
 	}
 
 	resetWaves := []int{}
@@ -5227,7 +5391,11 @@ func execActionResumeReset(root, workDir string, in ExecuteStateIn, now func() t
 				}
 			}
 			if err := state.Write(st); err != nil {
-				return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err}
+				return nil, &mcpserver.InfraError{
+					Msg:        "write state: " + err.Error(),
+					Cause:      err,
+					Suggestion: "Check that " + paths.DataDir + "/" + paths.RunsSubdir + "/ is writable and the disk is not full, then retry resume-reset.",
+				}
 			}
 		}
 	}
@@ -5253,10 +5421,10 @@ func execActionResumeReset(root, workDir string, in ExecuteStateIn, now func() t
 
 func execActionLedgerCheckin(root string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	if in.RunID == "" {
-		return nil, &mcpserver.DomainError{Msg: "runId is required"}
+		return nil, &mcpserver.DomainError{Msg: "runId is required", Suggestion: "Pass runId (the execution run identifier) in the request."}
 	}
 	if in.WorkerID == "" {
-		return nil, &mcpserver.DomainError{Msg: "workerId is required"}
+		return nil, &mcpserver.DomainError{Msg: "workerId is required", Suggestion: "Pass workerId (this worker's identifier) in the request."}
 	}
 	if err := execValidateSafeID(in.RunID, "runId"); err != nil {
 		return nil, err
@@ -5267,7 +5435,11 @@ func execActionLedgerCheckin(root string, in ExecuteStateIn, now func() time.Tim
 
 	dir := ledgerDir(root, in.RunID)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "mkdir ledger: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        "mkdir ledger: " + err.Error(),
+			Cause:      err,
+			Suggestion: "Check write permission on " + paths.DataDir + "/" + paths.RunsSubdir + "/ledger/ and available disk space, then retry ledger_checkin.",
+		}
 	}
 
 	fp := ledgerFilePath(root, in.RunID, in.WorkerID)
@@ -5280,7 +5452,11 @@ func execActionLedgerCheckin(root string, in ExecuteStateIn, now func() time.Tim
 	}
 
 	if err := fsx.AtomicWriteJSON(fp, data); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "write ledger: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        "write ledger: " + err.Error(),
+			Cause:      err,
+			Suggestion: "Check write permission on " + paths.DataDir + "/" + paths.RunsSubdir + "/ledger/" + in.RunID + "/ and available disk space, then retry ledger_checkin.",
+		}
 	}
 	confirmation := map[string]any{
 		"runId":     in.RunID,
@@ -5592,7 +5768,11 @@ func execActionLogCLI(root, workDir string, in ExecuteStateIn) (any, error) {
 	}
 
 	if err := appendCLIEvidence(root, entry); err != nil {
-		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("log-cli: %s", err.Error()), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("log-cli: %s", err.Error()),
+			Cause:      err,
+			Suggestion: "Check write permission on " + paths.DataDir + "/evidence/cli-executions.jsonl and that the disk is not full, then retry log-cli.",
+		}
 	}
 
 	return map[string]any{"ok": true, "action": "log-cli"}, nil

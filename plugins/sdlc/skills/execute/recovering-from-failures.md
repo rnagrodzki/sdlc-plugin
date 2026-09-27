@@ -355,7 +355,7 @@ If not found, skip — the capability is not installed.
 2. Re-dispatch each half as a separate sub-wave, recomputing the byte budget (see [classifying-and-waving-tasks.md](classifying-and-waving-tasks.md)'s Adaptive Wave Size Cap) before dispatch.
 3. Each sub-wave starts with a fresh retry budget (consistent with the "scope problem" recovery precedent above).
 4. If a sub-wave itself returns CONTEXT_OVERFLOW, recurse: call `execute_state({action:"wave-split"})` again with incremented `splitDepth`.
-5. **Maximum split depth: 3.** If the call fails with `MaxSplitDepthExceededError`, do NOT split further. Escalate to the user with the full structured missing-IDs error: `{missingIds, totalPlanned, totalAccounted}`.
+5. **Maximum split depth: 3.** If the call fails with `MaxSplitDepthExceededError`, do NOT split further. Escalate to the user with the full structured missing-IDs error: `{missingIds, totalPlanned, totalAccounted}` — via "## Escalation Protocol" above, **except when EXECUTE_AUTO is true**: then print the same structured error and halt, and never call AskUserQuestion, which would deadlock an unattended run.
 
 **Why split the full dispatched set (not just missing IDs):**
 Splitting only the missing IDs risks re-overflowing if the dependencies or shared context for those tasks require the full set to be present in the wave. Splitting the original set guarantees each half fits in the model's context.

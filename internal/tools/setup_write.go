@@ -67,8 +67,9 @@ func RegisterSetupWriteTools(s *mcpserver.Server) {
 				root, err = os.Getwd()
 				if err != nil {
 					return SetupWriteSectionsOut{}, &mcpserver.InfraError{
-						Msg:   fmt.Sprintf("resolve project root: %s", err.Error()),
-						Cause: err,
+						Msg:        fmt.Sprintf("resolve project root: %s", err.Error()),
+						Suggestion: "Restart the sdlc MCP server from a directory that still exists, then retry setup_write_sections.",
+						Cause:      err,
 					}
 				}
 			}
@@ -112,18 +113,25 @@ func expandDottedKeys(flat map[string]any) map[string]any {
 // testability.
 func setupWriteSections(root string, in SetupWriteSectionsIn) (SetupWriteSectionsOut, error) {
 	if in.SectionsJSON == "" {
-		return SetupWriteSectionsOut{}, &mcpserver.DomainError{Msg: "setup_write_sections: sectionsJson is required"}
+		return SetupWriteSectionsOut{}, &mcpserver.DomainError{
+			Msg:        "setup_write_sections: sectionsJson is required",
+			Suggestion: "Pass a JSON-encoded object mapping section id to its full field-value object in sectionsJson, e.g. {\"version\":{\"mode\":\"file\"}}.",
+		}
 	}
 
 	var sections map[string]map[string]any
 	if err := json.Unmarshal([]byte(in.SectionsJSON), &sections); err != nil {
 		return SetupWriteSectionsOut{}, &mcpserver.DomainError{
-			Msg:   fmt.Sprintf("setup_write_sections: invalid sectionsJson: %s", err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("setup_write_sections: invalid sectionsJson: %s", err.Error()),
+			Suggestion: "Fix the JSON syntax in sectionsJson so it parses as an object of section id to field-value object, then retry.",
+			Cause:      err,
 		}
 	}
 	if len(sections) == 0 {
-		return SetupWriteSectionsOut{}, &mcpserver.DomainError{Msg: "setup_write_sections: sectionsJson must contain at least one section"}
+		return SetupWriteSectionsOut{}, &mcpserver.DomainError{
+			Msg:        "setup_write_sections: sectionsJson must contain at least one section",
+			Suggestion: "Pick a section id from setup_prepare's sections list, then add its field-value object to sectionsJson before calling again.",
+		}
 	}
 
 	// Sort ids for deterministic output ordering.

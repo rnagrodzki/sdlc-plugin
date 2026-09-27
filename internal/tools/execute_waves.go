@@ -26,7 +26,10 @@ import (
 // to produce the wave schedule.
 func execActionWaveCompute(in ExecuteStateIn) (any, error) {
 	if in.PlanPath == "" {
-		return nil, &mcpserver.DomainError{Msg: "wave-compute: planPath is required"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "wave-compute: planPath is required",
+			Suggestion: `Pass planPath, e.g. execute_state {action:"wave-compute", planPath:"<plan.md>"}.`,
+		}
 	}
 
 	// Parse extraDepsJson before touching the filesystem: argument errors
@@ -34,13 +37,21 @@ func execActionWaveCompute(in ExecuteStateIn) (any, error) {
 	var extraDeps []wave.ExtraDep
 	if in.ExtraDepsJSON != "" {
 		if err := json.Unmarshal([]byte(in.ExtraDepsJSON), &extraDeps); err != nil {
-			return nil, &mcpserver.DomainError{Msg: "wave-compute: extraDepsJson is not valid JSON: " + err.Error(), Cause: err}
+			return nil, &mcpserver.DomainError{
+				Msg:        "wave-compute: extraDepsJson is not valid JSON: " + err.Error(),
+				Suggestion: "Fix extraDepsJson to a JSON array of {task, dependsOn, reason} objects, then retry.",
+				Cause:      err,
+			}
 		}
 	}
 
 	content, err := os.ReadFile(in.PlanPath)
 	if err != nil {
-		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("wave-compute: read plan file %q: %s", in.PlanPath, err.Error()), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("wave-compute: read plan file %q: %s", in.PlanPath, err.Error()),
+			Suggestion: "Check that planPath exists and is readable, then retry.",
+			Cause:      err,
+		}
 	}
 
 	tasks, err := waveComputeParseTasks(string(content))
@@ -50,7 +61,11 @@ func execActionWaveCompute(in ExecuteStateIn) (any, error) {
 
 	out, err := wave.ComputeWaves(wave.ComputeInput{Tasks: tasks, ExtraDeps: extraDeps})
 	if err != nil {
-		return nil, &mcpserver.DomainError{Msg: "wave-compute: " + err.Error(), Cause: err}
+		return nil, &mcpserver.DomainError{
+			Msg:        "wave-compute: " + err.Error(),
+			Suggestion: "Fix the Depends-on reference named above, in either the plan's **Depends on:** field or extraDepsJson, then retry.",
+			Cause:      err,
+		}
 	}
 
 	return waveComputeRenderOutput(out), nil
@@ -63,7 +78,10 @@ func execActionWaveCompute(in ExecuteStateIn) (any, error) {
 func waveComputeParseTasks(content string) ([]wave.TaskInput, error) {
 	planTasks := extractTasks(content)
 	if len(planTasks) == 0 {
-		return nil, &mcpserver.DomainError{Msg: `wave-compute: no tasks found in plan (expected "### Task N: <title>" headings)`}
+		return nil, &mcpserver.DomainError{
+			Msg:        `wave-compute: no tasks found in plan (expected "### Task N: <title>" headings)`,
+			Suggestion: `Add at least one "### Task N: <title>" heading to the plan file at planPath, then retry.`,
+		}
 	}
 
 	var issues []string
@@ -104,7 +122,10 @@ func waveComputeParseTasks(content string) ([]wave.TaskInput, error) {
 	}
 
 	if len(issues) > 0 {
-		return nil, &mcpserver.DomainError{Msg: "wave-compute: plan task metadata invalid: " + strings.Join(issues, "; ")}
+		return nil, &mcpserver.DomainError{
+			Msg:        "wave-compute: plan task metadata invalid: " + strings.Join(issues, "; "),
+			Suggestion: "Add the missing **Complexity:**/**Risk:** fields (or fix the invalid values) for the tasks named above in the plan file, then retry.",
+		}
 	}
 
 	return tasks, nil

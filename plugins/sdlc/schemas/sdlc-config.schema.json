@@ -344,6 +344,21 @@
           "type": "boolean",
           "default": true,
           "description": "Whether execute_state's wave-commit action stages and commits each completed wave's changes itself (git add -A + git commit). When false, wave-commit does not touch git and instead returns an instruction to commit the wave manually and record the sha via wave-committed."
+        },
+        "auto": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether /execute runs unattended: interactive prompts are suppressed, a feature branch is auto-created when starting on the default branch, and high-risk waves proceed without a second approval. Error-severity guardrail violations still halt execution and are never auto-overridden. Combined by OR with the --auto flag and with a dispatching /ship run's auto mode."
+        },
+        "quality": {
+          "type": "string",
+          "enum": ["full", "balanced", "minimal"],
+          "description": "Execution quality tier (model preset) applied without presenting /execute's tier-selection prompt. full = Speed (fastest, lightest models, skips the spec-compliance review); balanced = Balanced; minimal = Quality (strongest models, maximum correctness). The --quality flag overrides this. When unset and auto is false, /execute presents the prompt; when unset and auto is true, balanced is used."
+        },
+        "highRiskAutoApprove": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether a wave containing a High-risk task proceeds without an approval prompt, on the grounds that the plan was already approved at plan time. Independent of auto: set this alone to keep every other prompt while skipping just the high-risk gate."
         }
       },
       "additionalProperties": false

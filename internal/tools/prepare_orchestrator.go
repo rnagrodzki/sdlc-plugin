@@ -147,8 +147,9 @@ func prepareOrchestrator(in PrepareOrchestratorIn) (PrepareOrchestratorOut, erro
 		root, err := worktree.MainRoot()
 		if err != nil {
 			return PrepareOrchestratorOut{}, &mcpserver.InfraError{
-				Msg:   fmt.Sprintf("resolve project root: %s", err.Error()),
-				Cause: err,
+				Msg:        fmt.Sprintf("resolve project root: %s", err.Error()),
+				Suggestion: "Verify the sdlc MCP server's working directory is inside a git repository (git worktree list must succeed there), then retry prepare_orchestrator with mode harden.",
+				Cause:      err,
 			}
 		}
 		contentRoot := activeWorktreeRootSafe()
@@ -178,8 +179,9 @@ func prepareOrchestrator(in PrepareOrchestratorIn) (PrepareOrchestratorOut, erro
 		root, err := worktree.MainRoot()
 		if err != nil {
 			return PrepareOrchestratorOut{}, &mcpserver.InfraError{
-				Msg:   fmt.Sprintf("resolve project root: %s", err.Error()),
-				Cause: err,
+				Msg:        fmt.Sprintf("resolve project root: %s", err.Error()),
+				Suggestion: "Verify the sdlc MCP server's working directory is inside a git repository (git worktree list must succeed there), then retry prepare_orchestrator with mode error_report.",
+				Cause:      err,
 			}
 		}
 		out, err := errorReportPrepare(root, toErrorReportPrepareIn(in))
@@ -190,7 +192,8 @@ func prepareOrchestrator(in PrepareOrchestratorIn) (PrepareOrchestratorOut, erro
 
 	default:
 		return PrepareOrchestratorOut{}, &mcpserver.DomainError{
-			Msg: fmt.Sprintf("mode: invalid value %q — must be \"harden\" or \"error_report\"", in.Mode),
+			Msg:        fmt.Sprintf("mode: invalid value %q — must be \"harden\" or \"error_report\"", in.Mode),
+			Suggestion: "Set mode to \"harden\" to draft hardening proposals after an SDLC pipeline failure, or to \"error_report\" to draft a tooling-error issue, then retry.",
 		}
 	}
 }

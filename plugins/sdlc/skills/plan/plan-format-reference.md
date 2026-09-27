@@ -587,7 +587,7 @@ The system SHALL sign every outbound webhook payload with HMAC-SHA256.
 | Complexity | `Trivial` \| `Standard` \| `Complex` | Used by execute for model assignment and wave building |
 | Risk | `Low` \| `Medium` \| `High` | High-risk tasks trigger a user confirmation gate before execution |
 | Depends on | `Task N, Task M` or `none` | Must reference tasks by their exact number; no forward references |
-| Verify | `tests` \| `build` \| `lint` \| `manual` | Multiple allowed: `tests, build`. `tests` accepts an optional scope hint in parentheses — see `## Verify Field — Scoped Hints` below |
+| Verify | `tests` \| `build` \| `lint` \| `manual` | Multiple allowed: `tests, build`. Any value accepts an optional scope hint in parentheses — see `## Verify Field — Scoped Hints` below |
 | Contract | Indented `- key: value` list with keys `shape`, `names`, `mirror`, `decisions`, `sync` (required), `example` (optional) | Required for every artifact-touching task; `shape` is type-aware (code/docs/openspec column derived from `Files:` paths); judged by G18 |
 | Files → Create | Relative path from project root | Must be exact — agents use this to know what to create |
 | Files → Modify | Relative path + one-line description of change | Required if an existing file is modified |
@@ -601,11 +601,13 @@ The system SHALL sign every outbound webhook payload with HMAC-SHA256.
 
 ## Verify Field — Scoped Hints
 
-`Verify: tests` accepts an optional scope hint in parentheses, naming the exact command an executing
-agent should run for that task instead of the full suite:
+Any `Verify` value — `tests`, `build`, `lint`, or `manual` — accepts an optional scope hint in
+parentheses, naming the exact command an executing agent should run for that task instead of the
+full suite or default tool:
 
 ```markdown
 **Verify:** tests (go test ./internal/tools/ -run TestFoo)
+**Verify:** build (go build ./cmd/foo/)
 ```
 
 | Value | Agent runs | Post-wave gate |
@@ -613,6 +615,7 @@ agent should run for that task instead of the full suite:
 | `tests` | full test suite | full test suite |
 | `tests (go test ./pkg/foo/)` | scoped command only | full test suite |
 | `build` | build only | build |
+| `build (go build ./cmd/foo/)` | scoped build only | build |
 | `manual` | nothing automated | nothing |
 
 When a scope hint is present, `execute` runs the scoped command instead of the full suite for that

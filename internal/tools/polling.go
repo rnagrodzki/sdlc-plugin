@@ -10,6 +10,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/stepper"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
@@ -517,8 +518,9 @@ func loadOrInitPollState(stateFile, skill string, timeoutSeconds, intervalSecond
 	newPath, err := stepper.NewStateFilePath(skill)
 	if err != nil {
 		return stepper.PollState{}, &mcpserver.InfraError{
-			Msg:   "create resume state file: " + err.Error(),
-			Cause: err,
+			Msg:        "create resume state file: " + err.Error(),
+			Suggestion: "Retry once; if it recurs, the OS random source is unavailable while naming the state file — escalate rather than looping.",
+			Cause:      err,
 		}
 	}
 	*out = newPath
@@ -562,7 +564,11 @@ func probeFailureEnvelope(stateFile string, st stepper.PollState, timedOut bool,
 	// resetting. Iteration is left alone: a failed probe observed nothing,
 	// and StartedAt (which TimedOut reads) is what has to survive.
 	if err := stepper.SavePollState(stateFile, st); err != nil {
-		return stepper.Envelope{}, &mcpserver.InfraError{Msg: "persist resume state: " + err.Error(), Cause: err}
+		return stepper.Envelope{}, &mcpserver.InfraError{
+			Msg:        "persist resume state: " + err.Error(),
+			Suggestion: "Check write permission on " + stateFile + ", then retry poll_await with the same state_file to resume the probe.",
+			Cause:      err,
+		}
 	}
 	env := stepper.NewError(stateFile, f.Message)
 	env.Ext["error_class"] = f.Class
@@ -577,7 +583,11 @@ func probeFailureEnvelope(stateFile string, st stepper.PollState, timedOut bool,
 func timeoutEnvelope(stateFile string, st stepper.PollState, ext map[string]any) (stepper.Envelope, error) {
 	st.Exhausted = true
 	if err := stepper.SavePollState(stateFile, st); err != nil {
-		return stepper.Envelope{}, &mcpserver.InfraError{Msg: "persist resume state: " + err.Error(), Cause: err}
+		return stepper.Envelope{}, &mcpserver.InfraError{
+			Msg:        "persist resume state: " + err.Error(),
+			Suggestion: "Check write permission on " + stateFile + ", then retry poll_await — the exhausted marker did not persist.",
+			Cause:      err,
+		}
 	}
 	ext["verdict"] = "timeout"
 	ext["waited_seconds"] = st.WaitedSeconds()
@@ -589,7 +599,11 @@ func timeoutEnvelope(stateFile string, st stepper.PollState, ext map[string]any)
 func pendingEnvelope(stateFile string, st stepper.PollState, ext map[string]any) (stepper.Envelope, error) {
 	st.Iteration++
 	if err := stepper.SavePollState(stateFile, st); err != nil {
-		return stepper.Envelope{}, &mcpserver.InfraError{Msg: "persist resume state: " + err.Error(), Cause: err}
+		return stepper.Envelope{}, &mcpserver.InfraError{
+			Msg:        "persist resume state: " + err.Error(),
+			Suggestion: "Check write permission on " + stateFile + ", then retry poll_await — the iteration count did not persist.",
+			Cause:      err,
+		}
 	}
 	progress := map[string]any{
 		"iteration":        st.Iteration,
@@ -780,7 +794,11 @@ func RegisterPollingTools(s *mcpserver.Server) {
 		func(ctx mcpserver.Ctx, in PollAwaitIn) (stepper.Envelope, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {
-				return stepper.Envelope{}, &mcpserver.InfraError{Msg: "resolve project root: " + err.Error(), Cause: err}
+				return stepper.Envelope{}, &mcpserver.InfraError{
+					Msg:        "resolve project root: " + err.Error(),
+					Suggestion: "Check that the current directory is inside a git worktree with a valid " + paths.DataDir + " project root, then retry.",
+					Cause:      err,
+				}
 			}
 			activeRoot, err := worktree.ActiveRoot()
 			if err != nil {

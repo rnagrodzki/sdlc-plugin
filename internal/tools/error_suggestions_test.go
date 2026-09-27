@@ -16,6 +16,7 @@ import (
 var errSuggestionFiles = []string{
 	"ship_state.go",
 	"execute_state.go",
+	"execute_config.go",
 	"validators.go",
 	"scaffold.go",
 	"jira.go",

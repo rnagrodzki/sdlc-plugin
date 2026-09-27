@@ -48,7 +48,7 @@ Only one case still hard-fails after this gate: **too new** — a `schemaVersion
     "awaitRemoteReviewers": ["copilot"],
     "executeWaveTimeout": 1800,
     "executeWaveInterval": 60,
-    "execute": { "commitWaves": false }
+    "execute": { "commitWaves": true }
   },
   "automation": {
     "mode": "supervised",
@@ -82,7 +82,7 @@ Only one case still hard-fails after this gate: **too new** — a `schemaVersion
 | `awaitRemoteReviewers` | `string[]` (minItems 1) | `["copilot"]` | Reviewer logins (case-insensitive) whose review satisfies the `await-remote-review` gate. |
 | `executeWaveTimeout` | `integer` (60–3600) | `1800` | Maximum seconds a single execute wave may run; also used as the per-task total-runtime threshold for stall classification. Forwarded to `execute`. The `3600` ceiling is `shipmeta.MaxWaveTimeoutSeconds`. |
 | `executeWaveInterval` | `integer` (≥10) | `60` | Seconds between execute wave liveness poll attempts. Forwarded to `execute`. |
-| `execute.commitWaves` | `boolean` (nested under `execute`) | `false` | Forwarded to `execute` as its per-wave commit behavior. A non-boolean value here does not error — `ship_prepare` records `commitWavesInvalidType: true` in its output instead; treat that as a warning to surface, not a hard failure. |
+| `execute.commitWaves` | `boolean` (nested under `execute`) | `true` | Forwarded to `execute` as `--commit-waves`, but only when this key is explicitly set — an unset key leaves `execute`'s own top-level `execute.commitWaves` config (or its built-in default `true`) in charge. A non-boolean value here does not error — `ship_prepare` records `commitWavesInvalidType: true` in its output instead; treat that as a warning to surface, not a hard failure. |
 
 There is no `workspace` field in this port. `ship_prepare` reads no such config key, and this pipeline never creates a git worktree — `execute` is always isolated with a feature branch (see `reference.md`'s "No `workspace` config field, no worktree mode"). If a project's `.sdlc-v2/local.toml` still carries `ship.workspace` from the source skill, it is silently ignored — do not treat its presence as an error, and do not attempt to honor a `"worktree"` value.
 

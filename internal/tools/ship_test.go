@@ -1242,6 +1242,94 @@ func TestMergeShipFlags_ExecuteDispatchArgs_QualityPresent(t *testing.T) {
 	}
 }
 
+// TestMergeShipFlags_CommitWaves_DefaultTrueNotForwarded verifies the fixed
+// dead default (was false, must be true) and that an unconfigured
+// ship.execute.commitWaves forwards no --commit-waves flag at all —
+// execute's own top-level execute.commitWaves config must decide instead.
+func TestMergeShipFlags_CommitWaves_DefaultTrueNotForwarded(t *testing.T) {
+	merged, sources := mergeShipFlags(ShipPrepareIn{}, map[string]any{}, map[string]any{})
+
+	if v, _ := merged["executeCommitWaves"].(bool); !v {
+		t.Errorf("Flags[executeCommitWaves] = %v, want true", merged["executeCommitWaves"])
+	}
+	if src := sources["executeCommitWaves"]; src != "default" {
+		t.Errorf("Sources[executeCommitWaves] = %q, want %q", src, "default")
+	}
+	if got, _ := merged["executeDispatchArgs"].(string); strings.Contains(got, "--commit-waves") {
+		t.Errorf("executeDispatchArgs = %q, want no --commit-waves for an unconfigured default", got)
+	}
+}
+
+// TestMergeShipFlags_CommitWaves_ConfigForwarded verifies that an explicitly
+// configured ship.execute.commitWaves is both merged with source "config"
+// and forwarded as --commit-waves in executeDispatchArgs.
+func TestMergeShipFlags_CommitWaves_ConfigForwarded(t *testing.T) {
+	cfg := map[string]any{"execute": map[string]any{"commitWaves": false}}
+	merged, sources := mergeShipFlags(ShipPrepareIn{}, cfg, map[string]any{})
+
+	if v, _ := merged["executeCommitWaves"].(bool); v {
+		t.Errorf("Flags[executeCommitWaves] = %v, want false", merged["executeCommitWaves"])
+	}
+	if src := sources["executeCommitWaves"]; src != "config" {
+		t.Errorf("Sources[executeCommitWaves] = %q, want %q", src, "config")
+	}
+	want := "--wave-timeout 1800 --wave-interval 60 --commit-waves false"
+	if got, _ := merged["executeDispatchArgs"].(string); got != want {
+		t.Errorf("executeDispatchArgs = %q, want %q", got, want)
+	}
+}
+
+// TestMergeShipFlags_CommitWaves_InvalidType verifies the wrong-typed-value
+// path: the dead default's fix must land here too (defaults to true, not
+// false), and an invalid type never sets source to "config", so it is never
+// forwarded to execute.
+func TestMergeShipFlags_CommitWaves_InvalidType(t *testing.T) {
+	cfg := map[string]any{"execute": map[string]any{"commitWaves": "nope"}}
+	merged, sources := mergeShipFlags(ShipPrepareIn{}, cfg, map[string]any{})
+
+	if v, _ := merged["executeCommitWaves"].(bool); !v {
+		t.Errorf("Flags[executeCommitWaves] = %v, want true", merged["executeCommitWaves"])
+	}
+	if src := sources["executeCommitWaves"]; src != "default" {
+		t.Errorf("Sources[executeCommitWaves] = %q, want %q", src, "default")
+	}
+	if invalid, _ := merged["commitWavesInvalidType"].(bool); !invalid {
+		t.Error("Flags[commitWavesInvalidType] = false, want true")
+	}
+	if got, _ := merged["executeDispatchArgs"].(string); strings.Contains(got, "--commit-waves") {
+		t.Errorf("executeDispatchArgs = %q, want no --commit-waves for an invalid-type config value", got)
+	}
+}
+
+// TestShipPrepare_CommitWavesInvalidTypeWarns verifies the warning text at
+// the shipPrepare level says "defaulting to true", matching the dead
+// default's fix — it previously said "defaulting to false", which was wrong
+// twice over: the merged default is true, and the warning must describe it.
+func TestShipPrepare_CommitWavesInvalidTypeWarns(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	writeFile(t, filepath.Join(dir, paths.DataDir, "local.toml"), `[ship.execute]
+commitWaves = "nope"
+`)
+
+	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true, Steps: []string{"commit"}})
+	if err != nil {
+		t.Fatalf("shipPrepare: %v", err)
+	}
+	want := "execute.commitWaves in ship config is not a boolean — value ignored, defaulting to true. Set it to true or false explicitly."
+	found := false
+	for _, w := range out.Warnings {
+		if w == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Warnings = %v, want to contain %q", out.Warnings, want)
+	}
+}
+
 // TestMergeShipFlags_ReviewThreshold_ConfigOverDefault pins the precedence of
 // ship.reviewThreshold: a configured value wins and reports source "config";
 // an absent or empty value falls back to the built-in default and reports

@@ -102,8 +102,26 @@ task-object field names match the tool's schema exactly (`name`, not
 `filesAdded`, `verifyToken`) is documented as such in the skill's dispatch
 instructions, not left implicit.
 
+### Line-keyed pin drift
+
+When a SKILL.md file's prose is edited in a way that shifts line numbers
+(lines added or removed above a pinned reference), verify every
+line-number-keyed exception map or pin table in
+`internal/skillcheck/*_test.go` (or elsewhere) that references a line in
+the edited file was re-derived against the new numbering. A pin left
+pointing at its old line number after the file shifted silently protects
+the wrong line — or no line at all — and skillcheck's own tests will not
+catch this unless they assert on line content, not just line number. This
+is a recurring failure mode in this repo (see commit d0567d5, "repair
+line-number-keyed pins after execute SKILL.md rewire"): treat any SKILL.md
+diff that adds/removes lines above a location a pin table references as
+requiring the pin table to be checked, not just the SKILL.md content.
+
 ## Cross-references
 
 - `mcp-tool-review.md` covers general tool quality.
 - `mcp-contract-compliance.md` covers struct-level tag requirements.
+- `skill-flow-soundness.md` covers the shape of a single skill's flow
+  (reachability, gate consistency), a different failure mode from the
+  parameter-wiring and pin-drift checks in this file.
 - Guardrail: `skill-tool-param-sync` (execute) enforces this at execution time.

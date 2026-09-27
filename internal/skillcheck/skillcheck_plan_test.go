@@ -459,7 +459,7 @@ var planSkillsReferenceFileHashes = map[string]string{
 	"skills/plan/lens-requirements-prompt.md":         "f11079debb98beea1810ee281873f3c8a6024dd15006c5b63ed3933f900e582c",
 	"skills/plan/lens-risk-prompt.md":                 "c07da38779172712157f8e06dfd8a3f59812a5eb2f4c0c370846b2aefc72c2e2",
 	"skills/plan/plan-reviewer-prompt.md":             "b9e888dcf06960d9d9dc2c6039b01828d8c8e4ad5530cbf4d2d4872404d79e75",
-	"skills/plan/plan-format-reference.md":            "7e49dab05f23866c3a2ea44362b450b822f5fdb3367b4d77783ef0ce4609055c",
+	"skills/plan/plan-format-reference.md":            "7c0c0a9872f31979b04aeab4ba42290dc4a08ee7c1b1cacc07f95b0e1e572a5e",
 	"skills/plan/plan-template-default.md":            "1fd3de86545ece6eb08e8736ef7dcc2c57ee534f8753a3c13ea2c60398be863b",
 	"skills/execute/spec-compliance-reviewer.md":      "b163b798f92a9247eda48763c08c8f4ec43872fae31201427f204ebb4c99af1e",
 }

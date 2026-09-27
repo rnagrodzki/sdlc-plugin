@@ -34,7 +34,7 @@ All three actions belong to `ship_state`. This flow needs no other MCP tool. It 
 
 An item has `id`, `created`, `source`, `priority`, `description` and `status`. It may also have `severity`, `file`, `line` and `reason`. It has no body field.
 
-`source` names the tool that recorded the item, not the reason it was deferred. `ship_state defer` writes source `review-below-threshold` and an id `review-deferred-<timestamp>-<N>` for **every** record it makes — including `/received-review`'s `wont-fix`, `disagree` and `needs-direction` findings, which are not below any threshold. Read `reason` to tell those apart. The execute step writes source `execute-drift` and an id `execute-drift-<timestamp>-<N>`, with no `reason`. `deferred_add` takes a caller-supplied `source` and `id`, so neither is a closed set. The tool that finds an item records it at that moment. This flow never adds an item.
+`source` names the tool that recorded the item, not the reason it was deferred. `ship_state defer` writes an id `review-deferred-<timestamp>-<N>` and a caller-supplied `source`, defaulting to `review-below-threshold` when the caller omits it — `/received-review` passes `source: "received-review"` explicitly for its `wont-fix`, `disagree` and `needs-direction` findings, which are not below any threshold. Read `reason` to tell those apart. The execute step writes source `execute-drift` and an id `execute-drift-<timestamp>-<N>`, with no `reason`. `deferred_add` takes a caller-supplied `source` and `id` too, so none of this is a closed set. The tool that finds an item records it at that moment. This flow never adds an item.
 
 ## The flow
 

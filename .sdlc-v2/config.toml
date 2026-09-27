@@ -487,6 +487,31 @@ pinned-hash map (e.g. planSkillsReferenceFileHashes) or other cross-file \
 guard, the task's acceptance criteria must explicitly document the coupling \
 and required guard-update step."""
 
+[plan.guardrails.skill-flow-soundness]
+severity = "error"
+description = """
+When a plan task modifies a SKILL.md, the plan must narrate the skill's \
+full step flow end-to-end (entry to every exit state) and verify it is \
+logically sound before the task is marked done: every step is reachable \
+under some valid input, every terminal state (success, cancel, error, \
+stall) has an explicit next instruction, gating conditions do not \
+contradict each other across steps, every flag in the Arguments table is \
+referenced in Workflow and vice versa, and step-number cross-references \
+(within the file and in companion sub-flows) are updated after any \
+reordering. A flow that reads correctly line-by-line but contains an \
+unreachable branch or a dead end is still a plan defect."""
+
+[plan.guardrails.skill-resume-safety]
+severity = "warning"
+description = """
+When a plan task adds or modifies a multi-step SKILL.md workflow, the plan \
+must document how that skill behaves if interrupted mid-flow and re-invoked \
+(state file re-read, idempotent re-run of already-completed steps, no \
+duplicate side effect on a step that partially succeeded). A skill with no \
+documented resume behavior is assumed unsafe to re-enter after an \
+interruption -- the plan must either add that documentation or explicitly \
+justify why the skill is single-shot and re-entry is not a concern."""
+
 # ─── Execute guardrails ──────────────────────────────────────────
 # Constraints enforced during task execution (by the execute skill's
 # self-critique pass). Same format and severity semantics as plan
@@ -816,3 +841,17 @@ must encode a recovery instruction for the caller, not a generic message. Scope 
 handler function, including branches not touched by this task's diff -- a \
 gap can pre-exist in code adjacent to the change. Document the grep result \
 and verified instances in task verification section before marking done."""
+
+[execute.guardrails.skill-flow-soundness]
+severity = "error"
+description = """
+Before marking done a task that modifies a SKILL.md, independently walk the \
+skill's step flow end-to-end and verify: every step is reachable under some \
+valid input, every terminal state (success, cancel, error, stall) has an \
+explicit next instruction, no two gating conditions across steps contradict \
+each other, every flag in the Arguments table is referenced in Workflow and \
+vice versa, and step-number cross-references (in this file and in any \
+companion sub-flow it dispatches) match the post-edit numbering. Do not \
+rely on the plan's own flow narration as evidence -- re-derive reachability \
+and gate consistency from the current file content, since the edit itself \
+may have introduced the defect the plan's narration predates."""

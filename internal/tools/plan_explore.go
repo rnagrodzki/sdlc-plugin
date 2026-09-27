@@ -459,15 +459,17 @@ func RegisterPlanExploreTools(s *mcpserver.Server) {
 			mainRoot, err := worktree.MainRoot()
 			if err != nil {
 				return PlanExploreOut{}, &mcpserver.InfraError{
-					Msg:   fmt.Sprintf("resolve main root: %s", err.Error()),
-					Cause: err,
+					Msg:        fmt.Sprintf("resolve main root: %s", err.Error()),
+					Suggestion: "Verify the sdlc MCP server's working directory is inside a git repository (git worktree list must succeed there), then retry plan_explore_prepare.",
+					Cause:      err,
 				}
 			}
 			contentRoot, err := worktree.ActiveRoot()
 			if err != nil {
 				return PlanExploreOut{}, &mcpserver.InfraError{
-					Msg:   fmt.Sprintf("resolve active root: %s", err.Error()),
-					Cause: err,
+					Msg:        fmt.Sprintf("resolve active root: %s", err.Error()),
+					Suggestion: "Verify the sdlc MCP server's working directory is inside a git checkout (git rev-parse --show-toplevel must succeed there), then retry plan_explore_prepare.",
+					Cause:      err,
 				}
 			}
 
@@ -477,7 +479,10 @@ func RegisterPlanExploreTools(s *mcpserver.Server) {
 				if pack.Error != nil {
 					msg = fmt.Sprintf("plan-explore: %s", *pack.Error)
 				}
-				return PlanExploreOut{}, &mcpserver.InfraError{Msg: msg}
+				return PlanExploreOut{}, &mcpserver.InfraError{
+					Msg:        msg,
+					Suggestion: "Check that the OS temp directory is writable and has free space, then retry plan_explore_prepare.",
+				}
 			}
 			return PlanExploreOut{ManifestPath: *pack.ManifestPath}, nil
 		},

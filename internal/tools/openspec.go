@@ -9,6 +9,7 @@ import (
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/openspec"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
 
@@ -80,7 +81,11 @@ func RegisterOpenspecTools(s *mcpserver.Server) {
 		func(ctx mcpserver.Ctx, in OpenspecEnrichIn) (OpenspecEnrichOut, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {
-				return OpenspecEnrichOut{}, &mcpserver.InfraError{Msg: fmt.Sprintf("resolve project root: %s", err.Error()), Cause: err}
+				return OpenspecEnrichOut{}, &mcpserver.InfraError{
+					Msg:        fmt.Sprintf("resolve project root: %s", err.Error()),
+					Suggestion: "Check that the current directory is inside a git worktree with a valid " + paths.DataDir + " project root, then retry.",
+					Cause:      err,
+				}
 			}
 			return enrichConfig(root, in)
 		},
@@ -120,8 +125,9 @@ func enrichConfig(root string, in OpenspecEnrichIn) (OpenspecEnrichOut, error) {
 	content, err := os.ReadFile(configPath)
 	if err != nil {
 		return OpenspecEnrichOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("read %s: %s", configPath, err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("read %s: %s", configPath, err.Error()),
+			Suggestion: "Check read permission on " + configPath + " and that the file exists, then retry openspec_enrich.",
+			Cause:      err,
 		}
 	}
 
@@ -146,8 +152,9 @@ func enrichConfig(root string, in OpenspecEnrichIn) (OpenspecEnrichOut, error) {
 
 		if err := os.WriteFile(configPath, []byte(newContent), 0644); err != nil {
 			return OpenspecEnrichOut{}, &mcpserver.InfraError{
-				Msg:   fmt.Sprintf("write %s: %s", configPath, err.Error()),
-				Cause: err,
+				Msg:        fmt.Sprintf("write %s: %s", configPath, err.Error()),
+				Suggestion: "Check write permission on " + configPath + ", then retry openspec_enrich with remove:true.",
+				Cause:      err,
 			}
 		}
 		return OpenspecEnrichOut{
@@ -182,8 +189,9 @@ func enrichConfig(root string, in OpenspecEnrichIn) (OpenspecEnrichOut, error) {
 		newContent := text + separator + enrichBlockTemplate + "\n"
 		if err := os.WriteFile(configPath, []byte(newContent), 0644); err != nil {
 			return OpenspecEnrichOut{}, &mcpserver.InfraError{
-				Msg:   fmt.Sprintf("write %s: %s", configPath, err.Error()),
-				Cause: err,
+				Msg:        fmt.Sprintf("write %s: %s", configPath, err.Error()),
+				Suggestion: "Check write permission on " + configPath + ", then retry openspec_enrich to append the managed block again.",
+				Cause:      err,
 			}
 		}
 		return OpenspecEnrichOut{
@@ -239,8 +247,9 @@ func enrichConfig(root string, in OpenspecEnrichIn) (OpenspecEnrichOut, error) {
 	newContent := before + enrichBlockTemplate + after
 	if err := os.WriteFile(configPath, []byte(newContent), 0644); err != nil {
 		return OpenspecEnrichOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("write %s: %s", configPath, err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("write %s: %s", configPath, err.Error()),
+			Suggestion: "Check write permission on " + configPath + ", then retry openspec_enrich to update the managed block to the current version.",
+			Cause:      err,
 		}
 	}
 	return OpenspecEnrichOut{

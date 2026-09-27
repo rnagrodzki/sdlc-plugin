@@ -137,7 +137,7 @@ func RegisterDimensionsRenderTools(s *mcpserver.Server) {
 				var err error
 				root, err = worktree.ActiveRoot()
 				if err != nil {
-					return DimensionsRenderInstructionsOut{}, &mcpserver.InfraError{Msg: fmt.Sprintf("resolve project root: %s", err.Error()), Cause: err}
+					return DimensionsRenderInstructionsOut{}, &mcpserver.InfraError{Msg: fmt.Sprintf("resolve project root: %s", err.Error()), Suggestion: "Pass projectRoot explicitly to bypass active-worktree resolution, or run dimensions_render_instructions from inside a git working tree.", Cause: err}
 				}
 			}
 			return dimensionsRenderInstructions(root, in)
@@ -161,23 +161,28 @@ func dimensionsRenderInstructions(root string, in DimensionsRenderInstructionsIn
 		return listDimensionFiles(root)
 	}
 	if in.File == "" {
-		return DimensionsRenderInstructionsOut{}, &mcpserver.DomainError{Msg: "dimensions_render_instructions: file is required"}
+		return DimensionsRenderInstructionsOut{}, &mcpserver.DomainError{
+			Msg:        "dimensions_render_instructions: file is required",
+			Suggestion: "Pass file: the review-dimension Markdown path to render, or set writeDimension or listDimensions true to use a different mode.",
+		}
 	}
 	filePath := resolvePath(root, in.File)
 
 	content, err := os.ReadFile(filePath)
 	if err != nil {
 		return DimensionsRenderInstructionsOut{}, &mcpserver.DomainError{
-			Msg:   fmt.Sprintf("dimensions_render_instructions: cannot read %s: %s", filePath, err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("dimensions_render_instructions: cannot read %s: %s", filePath, err.Error()),
+			Suggestion: "Check that file resolves to an existing, readable file — relative paths resolve against projectRoot (or the active worktree root) unless absolute.",
+			Cause:      err,
 		}
 	}
 
 	meta, body, err := frontmatter.Parse(content)
 	if err != nil {
 		return DimensionsRenderInstructionsOut{}, &mcpserver.DomainError{
-			Msg:   fmt.Sprintf("dimensions_render_instructions: %s: %s", filePath, err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("dimensions_render_instructions: %s: %s", filePath, err.Error()),
+			Suggestion: "Fix the YAML frontmatter block (--- delimiters) in the dimension file, or run validate with action=\"dimensions\" first to see all frontmatter issues.",
+			Cause:      err,
 		}
 	}
 
@@ -199,7 +204,8 @@ func dimensionsRenderInstructions(root string, in DimensionsRenderInstructionsIn
 	rendered := dimensions.ToInstructions(d)
 	if rendered == "" {
 		return DimensionsRenderInstructionsOut{}, &mcpserver.DomainError{
-			Msg: fmt.Sprintf("dimensions_render_instructions: %s lacks a usable name or a non-empty triggers list; cannot render", filePath),
+			Msg:        fmt.Sprintf("dimensions_render_instructions: %s lacks a usable name or a non-empty triggers list; cannot render", filePath),
+			Suggestion: "Add a name and at least one trigger pattern to the dimension file's YAML frontmatter, then retry.",
 		}
 	}
 
@@ -208,14 +214,16 @@ func dimensionsRenderInstructions(root string, in DimensionsRenderInstructionsIn
 
 	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
 		return DimensionsRenderInstructionsOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("create %s: %s", filepath.Dir(outPath), err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("create %s: %s", filepath.Dir(outPath), err.Error()),
+			Suggestion: fmt.Sprintf("Check write permission on %s, then retry.", filepath.Dir(outPath)),
+			Cause:      err,
 		}
 	}
 	if err := os.WriteFile(outPath, []byte(rendered), 0o644); err != nil {
 		return DimensionsRenderInstructionsOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("write %s: %s", outPath, err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("write %s: %s", outPath, err.Error()),
+			Suggestion: fmt.Sprintf("Check write permission on %s and free disk space, then retry.", outPath),
+			Cause:      err,
 		}
 	}
 

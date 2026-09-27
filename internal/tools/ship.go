@@ -409,7 +409,7 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 	// execute.commitWaves configured with a non-boolean value.
 	if invalid, _ := merged["commitWavesInvalidType"].(bool); invalid {
 		warnings = append(warnings, "execute.commitWaves in ship config is not a boolean — value ignored, "+
-			"defaulting to false. Set it to true or false explicitly.")
+			"defaulting to true. Set it to true or false explicitly.")
 	}
 
 	// Unconditional review-pause notice.
@@ -462,16 +462,18 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 	pruned, err := existingShipStateFiles(cfgRoot, branchSlug)
 	if err != nil {
 		return ShipPrepareOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("scan existing ship state files: %s", err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("scan existing ship state files: %s", err.Error()),
+			Suggestion: "Check read permission on " + paths.DataDir + "/runs/ and that ship-<branch-slug>-*.json files are not corrupted, then retry ship_prepare.",
+			Cause:      err,
 		}
 	}
 
 	st, err := state.Init(cfgRoot, "ship", currentBranch, in.SessionID)
 	if err != nil {
 		return ShipPrepareOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("init ship state: %s", err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("init ship state: %s", err.Error()),
+			Suggestion: "Check write permission on " + paths.DataDir + "/runs/ and available disk space on the project root, then retry ship_prepare.",
+			Cause:      err,
 		}
 	}
 	st.Data["version"] = 1
@@ -489,8 +491,9 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 
 	if err := state.Write(st); err != nil {
 		return ShipPrepareOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("write ship state: %s", err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("write ship state: %s", err.Error()),
+			Suggestion: "Check write permission on the already-initialized state file under " + paths.DataDir + "/runs/ and free disk space on the project root, then retry ship_prepare.",
+			Cause:      err,
 		}
 	}
 
@@ -700,9 +703,9 @@ func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]
 		sources["awaitRemoteReviewers"] = "default"
 	}
 
-	// execute.commitWaves: config bool > default false, with an
+	// execute.commitWaves: config bool > default true, with an
 	// invalid-type marker warning consumed by validation.
-	merged["executeCommitWaves"] = false
+	merged["executeCommitWaves"] = true
 	sources["executeCommitWaves"] = "default"
 	if execCfg, ok := cfg["execute"].(map[string]any); ok {
 		if v, exists := execCfg["commitWaves"]; exists {
@@ -742,6 +745,15 @@ func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]
 	}
 	argParts = append(argParts, "--wave-timeout", fmt.Sprint(merged["executeWaveTimeout"]))
 	argParts = append(argParts, "--wave-interval", fmt.Sprint(merged["executeWaveInterval"]))
+	// --commit-waves is only forwarded when ship.execute.commitWaves was
+	// explicitly configured: cfg here is the [ship] section, so this key is
+	// ship.execute.commitWaves, a different TOML path from the top-level
+	// [execute] commitWaves that execute itself resolves against. Forwarding
+	// the default unconditionally would silently override a user's own
+	// top-level execute.commitWaves on every ship run.
+	if sources["executeCommitWaves"] == "config" {
+		argParts = append(argParts, "--commit-waves", fmt.Sprint(merged["executeCommitWaves"]))
+	}
 	merged["executeDispatchArgs"] = strings.Join(argParts, " ")
 
 	return merged, sources
@@ -1120,8 +1132,9 @@ func shipVerifySideEffect(root, activeRoot string, in ShipVerifySideEffectIn, no
 		headSHA, err := shipHeadSHA(activeRoot)
 		if err != nil {
 			return ShipVerifySideEffectOut{}, &mcpserver.InfraError{
-				Msg:   fmt.Sprintf("git rev-parse HEAD: %s", err.Error()),
-				Cause: err,
+				Msg:        fmt.Sprintf("git rev-parse HEAD: %s", err.Error()),
+				Suggestion: "Inspect the worktree at the resolved active root with git status — HEAD may be unborn or the git directory corrupt. Resolve it, then retry ship_verify_side_effect.",
+				Cause:      err,
 			}
 		}
 		switch {
@@ -1141,8 +1154,9 @@ func shipVerifySideEffect(root, activeRoot string, in ShipVerifySideEffectIn, no
 		shipRecordSideEffect(st.Data, in.Step, kind, ref, now())
 		if err := state.Write(st); err != nil {
 			return ShipVerifySideEffectOut{}, &mcpserver.InfraError{
-				Msg:   fmt.Sprintf("write ship state: %s", err.Error()),
-				Cause: err,
+				Msg:        fmt.Sprintf("write ship state: %s", err.Error()),
+				Suggestion: "Check write permission on the ship state file for this branch under " + paths.DataDir + "/runs/ and free disk space on the project root, then retry ship_verify_side_effect.",
+				Cause:      err,
 			}
 		}
 	}
@@ -1306,8 +1320,9 @@ func RegisterShipTools(s *mcpserver.Server) {
 			root, err := worktree.MainRoot()
 			if err != nil {
 				return ShipPrepareOut{}, &mcpserver.InfraError{
-					Msg:   fmt.Sprintf("resolve project root: %s", err.Error()),
-					Cause: err,
+					Msg:        fmt.Sprintf("resolve project root: %s", err.Error()),
+					Suggestion: "Run ship_prepare from inside a git repository (or one of its worktrees) so the main root can be resolved, then retry.",
+					Cause:      err,
 				}
 			}
 			activeRoot, err := worktree.ActiveRoot()
@@ -1330,8 +1345,9 @@ func RegisterShipTools(s *mcpserver.Server) {
 			root, err := worktree.MainRoot()
 			if err != nil {
 				return ShipVerifySideEffectOut{}, &mcpserver.InfraError{
-					Msg:   fmt.Sprintf("resolve project root: %s", err.Error()),
-					Cause: err,
+					Msg:        fmt.Sprintf("resolve project root: %s", err.Error()),
+					Suggestion: "Run ship_verify_side_effect from inside a git repository (or one of its worktrees) so the main root can be resolved, then retry.",
+					Cause:      err,
 				}
 			}
 			activeRoot, err := worktree.ActiveRoot()

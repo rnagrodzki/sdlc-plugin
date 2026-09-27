@@ -19,7 +19,7 @@ draft = false
 # Valid: true | false | "prompt"
 rebase = true
 
-# Minimum review severity to block ship.
+# Minimum severity that triggers the review fix loop (lower findings are deferred, not dropped).
 # Valid: "low" | "medium" | "high" | "critical"
 reviewThreshold = "low"
 

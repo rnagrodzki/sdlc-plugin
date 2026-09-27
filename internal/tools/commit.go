@@ -501,7 +501,7 @@ func commitApply(cfgRoot, gitRoot string, in CommitApplyIn) (CommitApplyOut, err
 		if err := configmigrate.Verify(cfgRoot); err != nil {
 			return CommitApplyOut{}, &mcpserver.DataError{
 				Msg:        fmt.Sprintf("config check failed: %s", err.Error()),
-				Suggestion: "Run the sdlc migrate tool to bring the project config up to date, then retry commit_apply. Pass skipConfigCheck only when the mismatch is known and intentional.",
+				Suggestion: "The " + paths.DataDir + " directory has no config.toml and migrate cannot convert a JSON-era config; run /setup to write it, then retry commit_apply. Pass skipConfigCheck only when the mismatch is known and intentional.",
 				Cause:      err,
 			}
 		}

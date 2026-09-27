@@ -630,12 +630,19 @@ func jiraCheck(mainRoot string, in JiraIn) (any, error) {
 		}
 	}
 	if msg := jiraValidateProjectMembership(key, jiraConfig); msg != "" {
-		return nil, &mcpserver.DomainError{Msg: msg}
+		return nil, &mcpserver.DomainError{
+			Msg:        msg,
+			Suggestion: "Add key to jira.projects in .sdlc-v2/config.toml, or pass a key already listed there.",
+		}
 	}
 
 	resolved, err := jiraResolveEffectiveCachePath(key, in.CacheDir, in.Site)
 	if err != nil {
-		return nil, &mcpserver.InfraError{Msg: "resolve cache path: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        "resolve cache path: " + err.Error(),
+			Suggestion: "Check write permission on the cacheDir passed to jira check, or omit cacheDir to use the default ~/.sdlc-cache/jira layout, then retry.",
+			Cause:      err,
+		}
 	}
 
 	// flags.skipWorkflowDiscovery is a dead passthrough in jira.js itself
@@ -852,22 +859,37 @@ func jiraLoad(mainRoot string, in JiraIn) (any, error) {
 	key := strings.ToUpper(strings.TrimSpace(in.Key))
 	resolved, err := jiraResolveEffectiveCachePath(key, in.CacheDir, in.Site)
 	if err != nil {
-		return nil, &mcpserver.InfraError{Msg: "resolve cache path: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        "resolve cache path: " + err.Error(),
+			Suggestion: "Check write permission on the cacheDir passed to jira load, or omit cacheDir to use the default ~/.sdlc-cache/jira layout, then retry.",
+			Cause:      err,
+		}
 	}
 	if resolved.Path == "" {
 		if len(resolved.CandidateSites) >= 2 {
 			return nil, &mcpserver.DomainError{
-				Msg: fmt.Sprintf("multiple cache entries for '%s' — pass site to disambiguate", key),
+				Msg:        fmt.Sprintf("multiple cache entries for '%s' — pass site to disambiguate", key),
+				Suggestion: "Call jira check with the same key to see the candidateSites list, then pass one of those values as site.",
 			}
 		}
-		return nil, &mcpserver.DataError{Msg: "no cache found for project; run cache initialization first"}
+		return nil, &mcpserver.DataError{
+			Msg:        "no cache found for project; run cache initialization first",
+			Suggestion: "Call jira save with key and a data payload containing version, cloudId, project and siteUrl to create the cache, then retry load.",
+		}
 	}
 	if !fileExists(resolved.Path) {
-		return nil, &mcpserver.DataError{Msg: "no cache found for project; run cache initialization first"}
+		return nil, &mcpserver.DataError{
+			Msg:        "no cache found for project; run cache initialization first",
+			Suggestion: fmt.Sprintf("Call jira save with key %q and the same cacheDir/site so the cache file is created at %s, then retry load.", key, resolved.Path),
+		}
 	}
 	var cache map[string]any
 	if err := fsx.ReadJSON(resolved.Path, &cache); err != nil {
-		return nil, &mcpserver.DataError{Msg: fmt.Sprintf("cache file is not valid JSON: %s", err.Error()), Cause: err}
+		return nil, &mcpserver.DataError{
+			Msg:        fmt.Sprintf("cache file is not valid JSON: %s", err.Error()),
+			Suggestion: "Fix the JSON syntax in the cache file at " + resolved.Path + ", or delete it and call jira save to regenerate it.",
+			Cause:      err,
+		}
 	}
 	return cache, nil
 }
@@ -943,27 +965,44 @@ func jiraSave(mainRoot string, in JiraIn) (any, error) {
 func jiraSaveField(mainRoot string, in JiraIn) (any, error) {
 	key := strings.ToUpper(strings.TrimSpace(in.Key))
 	if in.FieldName == "" {
-		return nil, &mcpserver.DomainError{Msg: "fieldName is required for save-field"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "fieldName is required for save-field",
+			Suggestion: "Pass fieldName set to the cache key you want to merge or overwrite (e.g. \"issueTypes\", \"workflows\"), then call save-field again.",
+		}
 	}
 	if in.Data == nil {
 		// jira.js can only reach its merge logic with a successfully-parsed
 		// stdin JSON value; a typed caller that omits Data most likely made
 		// a mistake, so this is rejected rather than silently nulling the
 		// field. See deviation #5.
-		return nil, &mcpserver.DomainError{Msg: "data is required for save-field"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "data is required for save-field",
+			Suggestion: "Pass the JSON value to merge into fieldName as data, even an empty object {}, then call save-field again.",
+		}
 	}
 
 	resolved, err := jiraResolveEffectiveCachePath(key, in.CacheDir, in.Site)
 	if err != nil {
-		return nil, &mcpserver.InfraError{Msg: "resolve cache path: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        "resolve cache path: " + err.Error(),
+			Suggestion: "Check write permission on the cacheDir passed to jira save-field, or omit cacheDir to use the default ~/.sdlc-cache/jira layout, then retry.",
+			Cause:      err,
+		}
 	}
 	if resolved.Path == "" || !fileExists(resolved.Path) {
-		return nil, &mcpserver.DataError{Msg: "no cache found for project; run cache initialization first"}
+		return nil, &mcpserver.DataError{
+			Msg:        "no cache found for project; run cache initialization first",
+			Suggestion: "Call jira save first to create the cache file for this key, then retry save-field.",
+		}
 	}
 
 	var cache map[string]any
 	if err := fsx.ReadJSON(resolved.Path, &cache); err != nil {
-		return nil, &mcpserver.DataError{Msg: fmt.Sprintf("cache file is not valid JSON: %s", err.Error()), Cause: err}
+		return nil, &mcpserver.DataError{
+			Msg:        fmt.Sprintf("cache file is not valid JSON: %s", err.Error()),
+			Suggestion: fmt.Sprintf("Fix the JSON syntax in the cache file at %s, or delete it and call jira save to regenerate it before retrying save-field.", resolved.Path),
+			Cause:      err,
+		}
 	}
 
 	existing, existingIsObj := cache[in.FieldName].(map[string]any)
@@ -981,7 +1020,11 @@ func jiraSaveField(mainRoot string, in JiraIn) (any, error) {
 	}
 
 	if err := fsx.AtomicWriteJSON(resolved.Path, cache); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "write cache file: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        "write cache file: " + err.Error(),
+			Suggestion: "Check write permission on " + resolved.Path + " and free disk space, then retry save-field with the same fieldName and data.",
+			Cause:      err,
+		}
 	}
 	return map[string]any{"saved": true, "field": in.FieldName, "cachePath": resolved.Path}, nil
 }
@@ -994,7 +1037,11 @@ func jiraTemplates(mainRoot string, in JiraIn) (any, error) {
 	key := strings.ToUpper(strings.TrimSpace(in.Key))
 	resolved, err := jiraResolveEffectiveCachePath(key, in.CacheDir, in.Site)
 	if err != nil {
-		return nil, &mcpserver.InfraError{Msg: "resolve cache path: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        "resolve cache path: " + err.Error(),
+			Suggestion: "Check write permission on the cacheDir passed to jira templates, or omit cacheDir to use the default ~/.sdlc-cache/jira layout, then retry.",
+			Cause:      err,
+		}
 	}
 	templatesDir := jiraResolveTemplatesDir(in.TemplatesDir)
 	return jiraResolveTemplateStatus(mainRoot, resolved.Path, templatesDir), nil
@@ -1008,7 +1055,11 @@ func jiraInitTemplates(mainRoot string, in JiraIn) (any, error) {
 	key := strings.ToUpper(strings.TrimSpace(in.Key))
 	resolved, err := jiraResolveEffectiveCachePath(key, in.CacheDir, in.Site)
 	if err != nil {
-		return nil, &mcpserver.InfraError{Msg: "resolve cache path: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        "resolve cache path: " + err.Error(),
+			Suggestion: "Check write permission on the cacheDir passed to jira init-templates, or omit cacheDir to use the default ~/.sdlc-cache/jira layout, then retry.",
+			Cause:      err,
+		}
 	}
 
 	issueTypes := []string{}
@@ -1027,7 +1078,11 @@ func jiraInitTemplates(mainRoot string, in JiraIn) (any, error) {
 	templatesDir := jiraResolveTemplatesDir(in.TemplatesDir)
 	customDir := filepath.Join(mainRoot, paths.DataDir, "jira-templates")
 	if err := os.MkdirAll(customDir, 0o755); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "create custom templates dir: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        "create custom templates dir: " + err.Error(),
+			Suggestion: "Check write permission on " + paths.DataDir + "/jira-templates under the project root, then retry init-templates.",
+			Cause:      err,
+		}
 	}
 
 	initialized := []string{}
@@ -1043,7 +1098,11 @@ func jiraInitTemplates(mainRoot string, in JiraIn) (any, error) {
 		src := filepath.Join(templatesDir, issueType+".md")
 		if fileExists(src) {
 			if err := jiraCopyFile(src, dst); err != nil {
-				return nil, &mcpserver.InfraError{Msg: "copy template: " + err.Error(), Cause: err}
+				return nil, &mcpserver.InfraError{
+					Msg:        "copy template: " + err.Error(),
+					Suggestion: "Check read permission on the shipped template at " + src + " and write permission on " + dst + ", then retry init-templates.",
+					Cause:      err,
+				}
 			}
 			initialized = append(initialized, issueType)
 		} else {
@@ -1100,18 +1159,28 @@ func jiraClear(mainRoot string, in JiraIn) (any, error) {
 
 func jiraCopyTemplate(mainRoot string, in JiraIn) (any, error) {
 	if in.TemplateType == "" || in.TemplateFrom == "" {
-		return nil, &mcpserver.DomainError{Msg: "templateType and templateFrom are required for copy-template"}
+		return nil, &mcpserver.DomainError{
+			Msg:        "templateType and templateFrom are required for copy-template",
+			Suggestion: "Pass templateType set to the destination issue-type name and templateFrom set to the source template name (without .md), then retry copy-template.",
+		}
 	}
 
 	templatesDir := jiraResolveTemplatesDir(in.TemplatesDir)
 	src := filepath.Join(templatesDir, in.TemplateFrom+".md")
 	if !fileExists(src) {
-		return nil, &mcpserver.DataError{Msg: fmt.Sprintf("template source not found: %s", src)}
+		return nil, &mcpserver.DataError{
+			Msg:        fmt.Sprintf("template source not found: %s", src),
+			Suggestion: "Call jira templates to list the available default template names, then pass one of those as templateFrom.",
+		}
 	}
 
 	dst := filepath.Join(mainRoot, paths.DataDir, "jira-templates", in.TemplateType+".md")
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "create custom templates dir: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        "create custom templates dir: " + err.Error(),
+			Suggestion: "Check write permission on " + paths.DataDir + "/jira-templates under the project root, then retry copy-template.",
+			Cause:      err,
+		}
 	}
 
 	if fileExists(dst) {
@@ -1119,7 +1188,11 @@ func jiraCopyTemplate(mainRoot string, in JiraIn) (any, error) {
 	}
 
 	if err := jiraCopyFile(src, dst); err != nil {
-		return nil, &mcpserver.InfraError{Msg: "copy template: " + err.Error(), Cause: err}
+		return nil, &mcpserver.InfraError{
+			Msg:        "copy template: " + err.Error(),
+			Suggestion: "Check read permission on " + src + " and write permission on " + dst + ", then retry copy-template.",
+			Cause:      err,
+		}
 	}
 	return map[string]any{"copied": true, "type": in.TemplateType, "from": in.TemplateFrom, "destination": dst}, nil
 }
@@ -1228,7 +1301,11 @@ func jiraValidateBody(mainRoot string, in JiraIn, offline bool) (any, error) {
 	if in.MarkdownBody != "" {
 		adfDoc, err := adf.Convert(in.MarkdownBody)
 		if err != nil {
-			return nil, &mcpserver.InfraError{Msg: "convert markdown to ADF: " + err.Error(), Cause: err}
+			return nil, &mcpserver.InfraError{
+				Msg:        "convert markdown to ADF: " + err.Error(),
+				Suggestion: "Simplify or fix the markdown in markdownBody — the ADF converter rejected it — and call validate-body again.",
+				Cause:      err,
+			}
 		}
 		out.ADF = adfDoc
 	}
@@ -1351,7 +1428,10 @@ func jiraCore(mainRoot string, in JiraIn, offline bool) (any, error) {
 		// the key-required gate below.
 	default:
 		if strings.TrimSpace(in.Key) == "" {
-			return nil, &mcpserver.DomainError{Msg: "key is required"}
+			return nil, &mcpserver.DomainError{
+				Msg:        "key is required",
+				Suggestion: "Pass key set to the Jira project key (e.g. \"PROJ\") — every action except validate-body, check-default-project, write-critique, and write-approval requires it.",
+			}
 		}
 	}
 
@@ -1416,7 +1496,11 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 		func(_ mcpserver.Ctx, in JiraIn) (any, error) {
 			mainRoot, err := worktree.MainRoot()
 			if err != nil {
-				return nil, &mcpserver.InfraError{Msg: "resolve main root: " + err.Error(), Cause: err}
+				return nil, &mcpserver.InfraError{
+					Msg:        "resolve main root: " + err.Error(),
+					Suggestion: "Run jira from inside a git repository (or one of its worktrees) so the main root can be resolved, then retry.",
+					Cause:      err,
+				}
 			}
 			offline := os.Getenv("SDLC_LINKS_OFFLINE") == "1"
 			return jiraCore(mainRoot, in, offline)

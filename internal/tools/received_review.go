@@ -51,15 +51,17 @@ func receivedReviewPrepare(projectRoot, activeRoot string, in ReceivedReviewIn) 
 	// KD5 gate.
 	if err := configmigrate.Verify(projectRoot); err != nil {
 		return ReceivedReviewOut{}, &mcpserver.DataError{
-			Msg:   fmt.Sprintf("config-version: %s", err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("config-version: %s", err.Error()),
+			Suggestion: "The " + paths.DataDir + " directory has no config.toml and migrate cannot convert a JSON-era config; run /setup to write it, then retry received_review_prepare with the same pr number.",
+			Cause:      err,
 		}
 	}
 
 	// Validate PR number.
 	if in.PR <= 0 {
 		return ReceivedReviewOut{}, &mcpserver.DomainError{
-			Msg: "pr must be a positive integer",
+			Msg:        "pr must be a positive integer",
+			Suggestion: "Look up the PR number for this branch (e.g. gh pr view) and pass it in the pr field, then retry received_review_prepare.",
 		}
 	}
 
@@ -67,16 +69,18 @@ func receivedReviewPrepare(projectRoot, activeRoot string, in ReceivedReviewIn) 
 	remoteURL, err := execx.Run("git", []string{"remote", "get-url", "origin"}, execx.Options{Dir: activeRoot})
 	if err != nil {
 		return ReceivedReviewOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("get git remote URL: %s", err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("get git remote URL: %s", err.Error()),
+			Suggestion: "Add a remote named origin (git remote add origin <url>) in the active worktree, then retry received_review_prepare.",
+			Cause:      err,
 		}
 	}
 
 	owner, repo, err := ghx.ParseRemoteOwner(remoteURL)
 	if err != nil {
 		return ReceivedReviewOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("parse remote owner/repo: %s", err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("parse remote owner/repo: %s", err.Error()),
+			Suggestion: "Point origin at a git@host:owner/repo or https://host/owner/repo URL so owner and repo can be parsed, then retry received_review_prepare.",
+			Cause:      err,
 		}
 	}
 
@@ -84,8 +88,9 @@ func receivedReviewPrepare(projectRoot, activeRoot string, in ReceivedReviewIn) 
 	view, err := ghx.PRView(activeRoot, in.PR)
 	if err != nil {
 		return ReceivedReviewOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("gh pr view %d: %s", in.PR, err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("gh pr view %d: %s", in.PR, err.Error()),
+			Suggestion: "Confirm the PR number exists on this repo and gh is authenticated (gh auth status), then retry received_review_prepare.",
+			Cause:      err,
 		}
 	}
 
@@ -210,15 +215,17 @@ func receivedReviewVerify(projectRoot, activeRoot string, in ReceivedReviewVerif
 	// KD5 gate.
 	if err := configmigrate.Verify(projectRoot); err != nil {
 		return ReceivedReviewVerifyOut{}, &mcpserver.DataError{
-			Msg:   fmt.Sprintf("config-version: %s", err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("config-version: %s", err.Error()),
+			Suggestion: "The " + paths.DataDir + " directory has no config.toml and migrate cannot convert a JSON-era config; run /setup to write it, then retry received_review_verify with the same pr number.",
+			Cause:      err,
 		}
 	}
 
 	// Validate PR number.
 	if in.PR <= 0 {
 		return ReceivedReviewVerifyOut{}, &mcpserver.DomainError{
-			Msg: "pr must be a positive integer",
+			Msg:        "pr must be a positive integer",
+			Suggestion: "Look up the PR number for this branch (e.g. gh pr view) and pass it in the pr field, then retry received_review_verify.",
 		}
 	}
 
@@ -226,16 +233,18 @@ func receivedReviewVerify(projectRoot, activeRoot string, in ReceivedReviewVerif
 	remoteURL, err := execx.Run("git", []string{"remote", "get-url", "origin"}, execx.Options{Dir: activeRoot})
 	if err != nil {
 		return ReceivedReviewVerifyOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("get git remote URL: %s", err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("get git remote URL: %s", err.Error()),
+			Suggestion: "Add a remote named origin (git remote add origin <url>) in the active worktree, then retry received_review_verify.",
+			Cause:      err,
 		}
 	}
 
 	owner, repo, err := ghx.ParseRemoteOwner(remoteURL)
 	if err != nil {
 		return ReceivedReviewVerifyOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("parse remote owner/repo: %s", err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("parse remote owner/repo: %s", err.Error()),
+			Suggestion: "Point origin at a git@host:owner/repo or https://host/owner/repo URL so owner and repo can be parsed, then retry received_review_verify.",
+			Cause:      err,
 		}
 	}
 
@@ -255,8 +264,9 @@ func receivedReviewVerify(projectRoot, activeRoot string, in ReceivedReviewVerif
 	comments, err := ghx.PRReviewComments(activeRoot, owner, repo, in.PR)
 	if err != nil {
 		return ReceivedReviewVerifyOut{}, &mcpserver.InfraError{
-			Msg:   fmt.Sprintf("fetch PR review comments: %s", err.Error()),
-			Cause: err,
+			Msg:        fmt.Sprintf("fetch PR review comments: %s", err.Error()),
+			Suggestion: "Confirm gh is authenticated for this repo (gh auth status) and the pr number is correct, then retry received_review_verify.",
+			Cause:      err,
 		}
 	}
 
@@ -347,8 +357,9 @@ func RegisterReceivedReviewTools(s *mcpserver.Server) {
 			root, err := worktree.MainRoot()
 			if err != nil {
 				return ReceivedReviewOut{}, &mcpserver.InfraError{
-					Msg:   fmt.Sprintf("resolve project root: %s", err.Error()),
-					Cause: err,
+					Msg:        fmt.Sprintf("resolve project root: %s", err.Error()),
+					Suggestion: "Run received_review_prepare from inside a git repository (or one of its worktrees) so the main root can be resolved, then retry.",
+					Cause:      err,
 				}
 			}
 			activeRoot, err := worktree.ActiveRoot()
@@ -371,8 +382,9 @@ func RegisterReceivedReviewTools(s *mcpserver.Server) {
 			root, err := worktree.MainRoot()
 			if err != nil {
 				return ReceivedReviewVerifyOut{}, &mcpserver.InfraError{
-					Msg:   fmt.Sprintf("resolve project root: %s", err.Error()),
-					Cause: err,
+					Msg:        fmt.Sprintf("resolve project root: %s", err.Error()),
+					Suggestion: "Run received_review_verify from inside a git repository (or one of its worktrees) so the main root can be resolved, then retry.",
+					Cause:      err,
 				}
 			}
 			activeRoot, err := worktree.ActiveRoot()

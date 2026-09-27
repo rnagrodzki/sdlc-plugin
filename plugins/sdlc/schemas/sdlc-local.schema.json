@@ -96,7 +96,7 @@
         "reviewThreshold": {
           "type": "string",
           "enum": ["critical", "high", "medium", "low"],
-          "description": "Minimum severity level that blocks the pipeline."
+          "description": "Minimum severity level that triggers the review fix loop. Findings below it are deferred, not dropped -- see /sdlc:deferred."
         },
         "rebase": {
           "description": "Whether to rebase before shipping, or prompt the user.",
