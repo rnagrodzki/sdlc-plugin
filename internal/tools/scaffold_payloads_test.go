@@ -8,23 +8,20 @@ import (
 	"testing"
 )
 
-// TestPayloads_WorkflowsMatchCheckedIn verifies every embedded workflow
-// payload is byte-identical to this repo's own checked-in copy under
-// .github/workflows/. scaffold_ci's drift detection reads a version comment
-// (e.g. "# retag-release-version: N"), not a content hash — hardening a
-// checked-in workflow (SHA-pinning an action, adding a permissions block)
-// without also bumping its payload's version number desyncs the two
-// silently: already-scaffolded projects would see "skipped" instead of
-// "outdated" and never get the fix. This test catches that class of drift
-// directly, independent of the version-comment mechanism.
-func TestPayloads_WorkflowsMatchCheckedIn(t *testing.T) {
+// TestPayloads_MatchCheckedIn verifies every embedded payload (workflow
+// .yml and CI script .cjs alike) is byte-identical to this repo's own
+// checked-in copy under .github/. scaffold_ci's drift detection reads a
+// version comment (e.g. "# retag-release-version: N") or a version const
+// (e.g. "const RETAG_SCRIPT_VERSION = N"), not a content hash — hardening a
+// checked-in file (SHA-pinning an action, adding a permissions block,
+// tightening a .cjs helper) without also bumping its payload's version
+// number desyncs the two silently: already-scaffolded projects would see
+// "skipped" instead of "outdated" and never get the fix. This test catches
+// that class of drift directly, independent of the version mechanism.
+func TestPayloads_MatchCheckedIn(t *testing.T) {
 	payloads := Payloads()
 
 	for _, entry := range scaffoldManifest {
-		if !strings.HasSuffix(entry.PayloadKey, ".yml") {
-			continue
-		}
-
 		payload, ok := payloads[entry.PayloadKey]
 		if !ok {
 			t.Fatalf("expected payload %q not found in Payloads()", entry.PayloadKey)

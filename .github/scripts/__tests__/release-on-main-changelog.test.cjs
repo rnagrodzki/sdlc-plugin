@@ -183,6 +183,10 @@ function setupRepoWithProtectedOrigin() {
   const repoDir = path.join(baseDir, 'work');
   // Clone from bare so origin is set up
   execSync(`git clone -q "${bareDir}" "${repoDir}"`);
+  // Pin the branch name — git's default initial branch depends on the
+  // environment's init.defaultBranch config, but the rest of this helper
+  // (and the code under test) hardcodes "main".
+  execSync('git checkout -b main', { cwd: repoDir });
   execSync('git config user.email "test@example.com"', { cwd: repoDir });
   execSync('git config user.name "Test"', { cwd: repoDir });
 

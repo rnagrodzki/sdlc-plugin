@@ -118,7 +118,7 @@ var versionFields = []Field{
 		Type:        "enum",
 		Options:     []string{"push", "pr", "push-with-secret"},
 		Default:     "push",
-		Description: "Controls how the versionFile and changelog paths deliver their writes when either is enabled. `push` (default) commits and pushes directly to main (simple, but blocked by branch protection). `pr` opens a single release PR carrying both file writes instead of pushing directly (works with branch protection). `push-with-secret` behaves like `push`, but scaffolded CI (release-on-main.yml, promote-release.yml) authenticates with the repo secret named in pushAuth.secretName instead of the default GITHUB_TOKEN, for rulesets that bypass-list a GitHub App but block the default token. Does not affect the tag path, which always pushes tags/releases directly.",
+		Description: "Controls how the versionFile and changelog paths deliver their writes when either is enabled. `push` (default) commits and pushes directly to main (simple, but blocked by branch protection/rulesets unless the token chain resolves to a bypass-listed identity). `pr` opens a single release PR carrying both file writes instead of pushing directly (works with branch protection without a bypass identity, though a protected release tag still needs one). `push-with-secret` is a deprecated alias for `push` — release-on-main.cjs and promote-release.cjs normalize it before running. Does not affect the tag path, which always pushes tags/releases directly. See docs/versioning.md#protected-branches-and-rulesets.",
 	},
 	{
 		Name:        "pushAuth.secretName",
@@ -126,7 +126,7 @@ var versionFields = []Field{
 		Type:        "string",
 		Options:     nil,
 		Default:     "",
-		Description: "Name of the repo secret holding a GitHub App installation token (or PAT) with Contents:write permission and bypass privileges on branch-protection rulesets. Scaffolded release-on-main.yml/promote-release.yml reference this secret instead of GITHUB_TOKEN. Ignored unless method is push-with-secret.",
+		Description: "Name of the repo secret holding the App or PAT token used in place of the default RELEASE_TOKEN fallback for release pushes. When set to a value other than RELEASE_TOKEN, scaffold_ci rewrites the secrets.RELEASE_TOKEN reference in release-on-main.yml, promote-release.yml, and retag-release.yml to this name, for any method value, not only push-with-secret. See docs/versioning.md#protected-branches-and-rulesets.",
 	},
 	{
 		Name:        "preRelease",

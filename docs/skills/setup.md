@@ -103,10 +103,11 @@ and `plugins/sdlc/templates/local.toml`. Both are plain, fully-commented TOML
 ones `/setup`'s menu doesn't prompt for) before or instead of running the
 interactive flow.
 
-If your project uses the `push-with-secret` release method, its
+If your project needs a custom CI push-auth secret — e.g. because
+branch-protection rulesets block the default token — its
 `[version.pushAuth]` section is documented in the `version` section of the
 config template and in [the versioning
-docs](../versioning.md#the-push-with-secret-method).
+docs](../versioning.md#protected-branches-and-rulesets).
 
 ## Related skills
 

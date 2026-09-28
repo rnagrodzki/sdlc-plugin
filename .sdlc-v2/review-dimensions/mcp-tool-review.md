@@ -98,6 +98,12 @@ those same guardrails:
   updated to name the new action's Requires/Optional inputs and every new
   output field by name. A tool description that omits changed or new
   actions/fields is incomplete.
+- Values read from config or state files and spliced into generated
+  artifacts (workflow YAML, templated code, shell scripts) must be
+  validated against the destination syntax before the splice (e.g. a
+  GitHub Actions secret name against `^[A-Za-z_][A-Za-z0-9_]*$` with no
+  `GITHUB_` prefix). A bad value must fail loud with a `DomainError` that
+  names the value and the rule it breaks; it must never reach disk.
 
 ## Cross-references
 

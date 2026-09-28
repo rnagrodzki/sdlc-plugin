@@ -1,17 +1,25 @@
+# Token-agnostic dispatcher for release.yml.
+#
+# release.yml is dispatch-only (workflow_dispatch: {}, no "push: tags: v*"
+# trigger). Release tags can be pushed with any of several credentials — a
+# GitHub App installation token, a RELEASE_TOKEN PAT, or the default
+# GITHUB_TOKEN (see the token chain in release-on-main.cjs /
+# promote-release.cjs) — and those credentials behave differently for
+# workflow triggers: a PAT- or App-token-authored push DOES trigger
+# "push: tags", but a GITHUB_TOKEN-authored push never triggers any other
+# workflow. A push trigger on release.yml would therefore double-run it for
+# PAT/App-pushed tags and never run it at all for GITHUB_TOKEN-pushed tags.
+# This workflow avoids both failure modes: once "Release on Main" finishes,
+# it checks whether main's current tip actually got tagged (release-on-main.cjs
+# no-ops — exit 0, no tag — on merges without a release label, so conclusion
+# alone can't tell success from no-op), and if so, explicitly dispatches
+# release.yml at that tag via workflow_dispatch — exactly once, regardless of
+# which credential pushed it.
+#
 # Repo-local workaround, not part of the sdlc scaffold template (see
 # internal/tools/payloads/release-on-main.yml — this file is intentionally
 # absent from that directory). Other projects scaffolded from this plugin
 # don't build/publish binaries and don't need this step.
-#
-# release-on-main.yml runs release-on-main.cjs, which pushes the release
-# commit and tag using the default GITHUB_TOKEN. GitHub Actions does not
-# cascade-trigger other workflows (including release.yml's "push: tags: v*")
-# from GITHUB_TOKEN-authored pushes. This workflow closes that gap: once
-# "Release on Main" finishes, it checks whether main's current tip actually
-# got tagged (release-on-main.cjs no-ops — exit 0, no tag — on merges without
-# a release label, so conclusion alone can't tell success from no-op), and if
-# so, explicitly dispatches release.yml at that tag via workflow_dispatch,
-# which GITHUB_TOKEN-authored calls are allowed to trigger.
 name: SDLC Release Dispatch
 
 on:

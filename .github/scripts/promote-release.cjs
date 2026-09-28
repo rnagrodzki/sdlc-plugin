@@ -34,7 +34,10 @@
  *      already-built RC rather than rebuilding at HEAD.
  *   7. Commit + push the bump BEFORE creating the tag/release, so a push
  *      failure (branch protection, non-fast-forward) aborts before the
- *      irreversible tag + GitHub Release are created.
+ *      irreversible tag + GitHub Release are created. With version.method
+ *      = "pr" the bump goes to release/<tag> and a no-release PR is opened
+ *      (auto-merge requested, best-effort) instead of pushing the branch.
+ *      A ruleset (GH013) rejection fails with RULESET_PUSH_HINT.
  *   8. Create the final annotated tag at the RC's SHA, push it, and create
  *      a non-pre-release GitHub Release.
  *
@@ -67,8 +70,8 @@
 
 'use strict';
 
-/** @version 7 — promote-release script version. Bump when behavior changes. */
-const PROMOTE_RELEASE_SCRIPT_VERSION = 7;
+/** @version 8 — promote-release script version. Bump when behavior changes. */
+const PROMOTE_RELEASE_SCRIPT_VERSION = 8;
 
 const fs   = require('node:fs');
 const path = require('node:path');
@@ -89,6 +92,104 @@ function exec(cmd, opts = {}) {
 
 function execOrThrow(cmd, opts = {}) {
   return execSync(cmd, { encoding: 'utf8', stdio: 'pipe', ...opts }).trim();
+}
+
+/**
+ * Build the hint shown when a push is rejected by a branch/tag ruleset.
+ * Kept byte-for-byte identical (copy-pasted, not imported — payloads are
+ * standalone scripts) in release-on-main.cjs and retag-release.cjs.
+ *   secretName — configured version.pushAuth.secretName, i.e. the secret the
+ *                scaffolded workflow actually reads (default RELEASE_TOKEN).
+ *   tagPush    — true when the rejected ref is a tag. method = "pr" only
+ *                reroutes the version-bump commit, so it is not offered then.
+ */
+function rulesetPushHint({ secretName, tagPush } = {}) {
+  const secret = secretName || 'RELEASE_TOKEN';
+  const lines = [
+    'Push rejected by a branch/tag ruleset: the pushing identity is not on its bypass list',
+    '(GITHUB_TOKEN can never bypass rulesets).',
+    'If a GitHub App or PAT is already configured: add that App or user to the bypass list of',
+    'every ruleset covering this ref, and check that the PAT has not expired.',
+    'Otherwise fix one of:',
+    '  1. Set repo variable RELEASE_APP_CLIENT_ID + secret RELEASE_APP_PRIVATE_KEY for a GitHub App',
+    '     that is on the ruleset bypass list.',
+    `  2. Set secret ${secret} to a fine-grained PAT of a user on the bypass list.`,
+  ];
+  if (!tagPush) lines.push('  3. Use version.method = "pr" (release commits go through a PR).');
+  lines.push('Docs: https://github.com/rnagrodzki/sdlc-plugin/blob/main/docs/versioning.md#protected-branches-and-rulesets');
+  return lines.join('\n');
+}
+
+/** Hint for a branch push with the default RELEASE_TOKEN secret. */
+const RULESET_PUSH_HINT = rulesetPushHint();
+
+/** @returns {string|null} hint when stderr is a ruleset rejection, else null */
+function classifyPushError(stderr, hintOpts) {
+  return /GH013|Repository rule violations|protected branch/i.test(String(stderr || ''))
+    ? rulesetPushHint(hintOpts) : null;
+}
+
+/**
+ * Tolerant read of version.pushAuth.secretName from .sdlc-v2/config.toml.
+ * Returns '' on any failure — it only words an error hint, so it must never
+ * throw or exit on the error path.
+ */
+function readPushAuthSecretName(repoRoot) {
+  try {
+    const raw = parseSimpleToml(fs.readFileSync(path.join(repoRoot, '.sdlc-v2', 'config.toml'), 'utf8'));
+    const s = raw.version && raw.version.pushAuth && raw.version.pushAuth.secretName;
+    return typeof s === 'string' ? s : '';
+  } catch (_) {
+    return '';
+  }
+}
+
+/**
+ * Run a `git push` command in repoRoot. On a ruleset rejection, rethrow
+ * with the ruleset hint leading the message; otherwise rethrow as-is.
+ */
+function pushOrExplain(cmd, repoRoot) {
+  try {
+    return execOrThrow(cmd, { cwd: repoRoot });
+  } catch (err) {
+    const hint = classifyPushError(err.stderr, {
+      secretName: readPushAuthSecretName(repoRoot),
+      tagPush: /refs\/tags\//.test(cmd),
+    });
+    if (hint) throw new Error(`${hint}\n\n${String(err.stderr).trim()}`);
+    throw err;
+  }
+}
+
+/**
+ * Deliver the promote bump commit (already committed on HEAD).
+ * method 'pr': push to release/<targetTag>, open a PR into `branch` labeled
+ * no-release, and request auto-merge (non-fatal when unavailable).
+ * Any other method: push HEAD straight to `branch`.
+ * @param {{repoRoot:string, method:string, branch:string, targetTag:string}} opts
+ * @returns {{delivered:'push'|'pr', prUrl?:string}}
+ */
+function deliverBump({ repoRoot, method, branch, targetTag }) {
+  if (method === 'pr') {
+    const prBranch = `release/${targetTag}`;
+    pushOrExplain(`git push origin HEAD:refs/heads/${prBranch}`, repoRoot);
+    const prUrl = execOrThrow(
+      `gh pr create --base "${branch}" --head "${prBranch}" ` +
+      `--title "chore(release): promote ${targetTag}" ` +
+      `--body "Automated version bump for ${targetTag}." --label "no-release"`,
+      { cwd: repoRoot });
+    const prRef = prUrl || prBranch;
+    console.log(`Release PR opened: ${prRef} (${prBranch} -> ${branch})`);
+    try {
+      execOrThrow(`gh pr merge "${prRef}" --auto --squash --delete-branch`, { cwd: repoRoot });
+      console.log(`Auto-merge enabled for ${prRef}.`);
+    } catch (err) {
+      console.log(`WARNING: auto-merge not enabled for ${prRef}: ${err.message}. Merge it manually.`);
+    }
+    return { delivered: 'pr', prUrl };
+  }
+  pushOrExplain(`git push origin HEAD:${branch}`, repoRoot);
+  return { delivered: 'push' };
 }
 
 /**
@@ -245,7 +346,7 @@ function bumpSemver(version, level) {
  * Returns the full tag string (with prefix), or null if none exists.
  */
 function findLatestStableTag(repoRoot, tagPrefix) {
-  const out = exec('git tag --list --sort=-v:refname', { cwd: repoRoot });
+  const out = execOrThrow('git tag --list --sort=-v:refname', { cwd: repoRoot });
   if (!out) return null;
   for (const t of out.split('\n')) {
     if (!t.trim() || t.includes('-rc')) continue;
@@ -267,7 +368,7 @@ function findLatestStableTag(repoRoot, tagPrefix) {
  * null if no RC tags exist at all.
  */
 function findActiveRCSeries(repoRoot, tagPrefix) {
-  const out = exec('git tag --list', { cwd: repoRoot });
+  const out = execOrThrow('git tag --list', { cwd: repoRoot });
   if (!out) return null;
   const rcPattern = /-rc(\d+)$/;
   const series = {};  // baseVersion -> [{tag, num}]
@@ -561,11 +662,12 @@ function main() {
   // the active RC series is already a minor/major ahead).
   const rcSv = parseSemver(series.baseVersion);
   const tgtSv = parseSemver(targetBase);
-  if (tgtSv && rcSv && (
+  if (!rcSv || !tgtSv) fail(`Internal error: unparseable versions rc=${series.baseVersion} tgt=${targetBase}`);
+  if (
     tgtSv.major < rcSv.major ||
     (tgtSv.major === rcSv.major && tgtSv.minor < rcSv.minor) ||
     (tgtSv.major === rcSv.major && tgtSv.minor === rcSv.minor && tgtSv.patch < rcSv.patch)
-  )) {
+  ) {
     fail(`Chosen level "${level}" produces ${targetTag}, which is lower than the active RC series ${series.baseVersion}. Use a higher bump level.`);
   }
 
@@ -649,8 +751,11 @@ function main() {
       });
 
       const branch = process.env.GITHUB_REF_NAME || 'main';
-      execOrThrow(`git push origin HEAD:${branch}`, { cwd: repoRoot });
-      console.log(`Committed and pushed version bump to ${branch}.`);
+      const method = config.method === 'push-with-secret' ? 'push' : (config.method || 'push');
+      const result = deliverBump({ repoRoot, method, branch, targetTag });
+      if (result.delivered === 'push') {
+        console.log(`Committed and pushed version bump to ${branch}.`);
+      }
     } else {
       console.log('No staged changes after version write — files already at target.');
     }
@@ -661,7 +766,16 @@ function main() {
   withTmpFile(notes, (tmpPath) => {
     execOrThrow(`git tag -a "${targetTag}" -F "${tmpPath}" "${rcSha}"`, { cwd: repoRoot });
   });
-  execOrThrow(`git push origin "refs/tags/${targetTag}"`, { cwd: repoRoot });
+  try {
+    pushOrExplain(`git push origin "refs/tags/${targetTag}"`, repoRoot);
+  } catch (err) {
+    // Drop the local tag so a re-run does not trip on a tag that never
+    // reached the remote.
+    if (exec(`git tag -d "${targetTag}"`, { cwd: repoRoot, stdio: 'pipe' }) === null) {
+      console.log(`WARNING: could not delete local tag ${targetTag} after the failed push. Delete it by hand before a re-run.`);
+    }
+    throw err;
+  }
   console.log(`Tag ${targetTag} created at ${rcSha} and pushed.`);
 
   // Step 12: Create the final (non-pre-release) GitHub Release.
@@ -724,4 +838,8 @@ module.exports = {
   findLatestStableTag,
   bumpSemver,
   parseSemver,
+  deliverBump,
+  classifyPushError,
+  rulesetPushHint,
+  RULESET_PUSH_HINT,
 };

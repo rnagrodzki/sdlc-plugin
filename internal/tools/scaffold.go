@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
@@ -245,40 +246,76 @@ func ciScriptDrift(root string) ([]CIScriptDriftEntry, error) {
 	return entries, nil
 }
 
+// defaultReleaseSecret is the secret name baked into the embedded payloads'
+// token-chain fallback (steps.release-token.outputs.token ||
+// secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN). scaffoldCI only rewrites
+// secrets.RELEASE_TOKEN to a configured pushAuth.secretName when that name
+// differs from this default — an unset secretName, or one matching it,
+// means the payload's own RELEASE_TOKEN fallback already does the right
+// thing.
+const defaultReleaseSecret = "RELEASE_TOKEN"
+
 // pushAuthWorkflowKeys are the payload keys whose CI identity is affected by
-// version.method "push-with-secret" (R10): both authenticate git push (via
-// actions/checkout's persisted credential) and gh CLI calls (via the GH_TOKEN
-// env var) using the default GITHUB_TOKEN, which branch-protection rulesets
-// commonly block. verify-release-intent.yml and other GITHUB_TOKEN-using
+// a configured pushAuth.secretName (R10): each authenticates git push (via
+// actions/checkout's persisted credential) and gh CLI calls (via the
+// GH_TOKEN env var) through the token chain (GitHub App token ->
+// secrets.RELEASE_TOKEN -> secrets.GITHUB_TOKEN), regardless of
+// version.method. verify-release-intent.yml and other GITHUB_TOKEN-using
 // workflows are read-only/non-push and intentionally excluded.
 var pushAuthWorkflowKeys = map[string]bool{
 	"release-on-main.yml": true,
 	"promote-release.yml": true,
+	"retag-release.yml":   true,
+}
+
+// secretNamePattern is GitHub's secret-name syntax: letters, digits and
+// underscores, no leading digit. The GITHUB_ prefix is reserved and checked
+// separately (Go regexp has no lookahead).
+var secretNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// validateSecretName rejects a pushAuth.secretName that is not a legal
+// GitHub Actions secret name. scaffoldCI splices the name verbatim into
+// generated workflow YAML, so a bad value must fail loudly here instead of
+// producing a broken workflow that only fails later in GitHub Actions.
+func validateSecretName(name string) error {
+	if !secretNamePattern.MatchString(name) || strings.HasPrefix(strings.ToUpper(name), "GITHUB_") {
+		return &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("version.pushAuth.secretName %q is not a valid GitHub Actions secret name", name),
+			Suggestion: "Use only letters, digits and underscores, do not start with a digit or GITHUB_ (for example RELEASE_TOKEN). Fix it in .sdlc-v2/config.toml, then run scaffold_ci again.",
+		}
+	}
+	return nil
 }
 
 // scaffoldCI is the core logic, separated for testability.
 func scaffoldCI(root string, force bool) (ScaffoldCIOut, error) {
 	payloads := Payloads()
 
-	// version.method/pushAuth.secretName are read tolerantly (raw section,
-	// not the fully-validated VersionSection) so scaffold_ci keeps working
-	// even when version config is absent or fails validation for reasons
-	// unrelated to CI auth (e.g. neither tag nor versionFile enabled yet).
+	// pushAuth.secretName is read tolerantly (raw section, not the
+	// fully-validated VersionSection) so scaffold_ci keeps working even when
+	// version config is absent or fails validation for reasons unrelated to
+	// CI auth (e.g. neither tag nor versionFile enabled yet).
 	var warnings []string
-	var versionMethod, pushAuthSecret string
+	var pushAuthSecret string
 	if versionRaw, err := config.ReadSection(root, "version"); err != nil && !errors.Is(err, config.ErrNotFound) {
 		warnings = append(warnings, fmt.Sprintf("reading version config: %s", err.Error()))
 	} else if versionRaw != nil {
-		if s, ok := versionRaw["method"].(string); ok {
-			versionMethod = s
-		}
 		if pa, ok := versionRaw["pushAuth"].(map[string]any); ok {
 			if s, ok := pa["secretName"].(string); ok {
 				pushAuthSecret = s
 			}
 		}
 	}
-	usePushAuthSecret := versionMethod == "push-with-secret" && pushAuthSecret != ""
+	// rewriteSecret fires for any version.method whenever a non-default
+	// secret name is configured — an unset secretName, or one equal to
+	// defaultReleaseSecret, leaves the payload's own RELEASE_TOKEN fallback
+	// untouched.
+	rewriteSecret := pushAuthSecret != "" && pushAuthSecret != defaultReleaseSecret
+	if rewriteSecret {
+		if err := validateSecretName(pushAuthSecret); err != nil {
+			return ScaffoldCIOut{}, err
+		}
+	}
 	var files []ScaffoldFileReport
 
 	for _, entry := range scaffoldManifest {
@@ -291,9 +328,9 @@ func scaffoldCI(root string, force bool) (ScaffoldCIOut, error) {
 			}
 		}
 
-		if usePushAuthSecret && pushAuthWorkflowKeys[entry.PayloadKey] {
+		if rewriteSecret && pushAuthWorkflowKeys[entry.PayloadKey] {
 			srcContent = bytes.ReplaceAll(srcContent,
-				[]byte("secrets.GITHUB_TOKEN"), []byte("secrets."+pushAuthSecret))
+				[]byte("secrets."+defaultReleaseSecret), []byte("secrets."+pushAuthSecret))
 		}
 
 		currentVersion, installedVersion, destExists, legacyExists, destPath, legacyPath, verr := scaffoldEntryVersions(root, entry, srcContent)
@@ -371,48 +408,55 @@ func scaffoldCI(root string, force bool) (ScaffoldCIOut, error) {
 		Warnings:   warnings,
 		Files:      files,
 		Protection: protection,
-		Next:       scaffoldNextGuidance(protection, versionMethod, pushAuthSecret),
+		Next:       scaffoldNextGuidance(protection, pushAuthSecret),
 	}, nil
 }
 
 // scaffoldNextGuidance builds the actionable next-step guidance surfaced in
-// ScaffoldCIOut.Next, tailored to whether branch protection was detected on
-// the default branch and to the configured version.method. When method is
-// "push-with-secret" the guidance gives step-by-step GitHub App setup
-// instructions (R10) rather than the generic "you have three options"
-// framing aimed at someone who hasn't chosen a method yet.
-func scaffoldNextGuidance(protection RulesetCheckResult, method, secretName string) string {
+// ScaffoldCIOut.Next. Branch protection/rulesets block the default
+// GITHUB_TOKEN from pushing release commits and tags (GH013) regardless of
+// version.method, so whenever protection is detected the guidance offers
+// the same three mitigations — a GitHub App token, an admin PAT stored
+// under the configured pushAuth.secretName (or defaultReleaseSecret when
+// unset), or switching to version.method = "pr" — rather than branching on
+// which method is currently configured. With no protection detected, a
+// configured non-default secretName still gets a note naming the secret the
+// release workflows read, so its setup is not silently dropped.
+func scaffoldNextGuidance(protection RulesetCheckResult, secretName string) string {
 	const promoteNote = "promote-release.yml was also scaffolded — use Actions > SDLC Promote Release to promote an RC to a final release without creating a PR."
-	if method == "push-with-secret" {
-		secretRef := secretName
-		if secretRef == "" {
-			secretRef = "<secretName>"
+
+	if !protection.HasRulesets && !protection.HasClassicProt {
+		next := "No branch protection detected. CI scripts are installed and both \"push\" and \"pr\" delivery methods will work. "
+		if secretName != "" && secretName != defaultReleaseSecret {
+			next += fmt.Sprintf("The release workflows read secret %s first (then fall back to GITHUB_TOKEN): "+
+				"store a GitHub App token or fine-grained PAT (Contents, Pull requests, Actions: read/write) under that name, "+
+				"and add its identity to the bypass list if you add rulesets later. ", secretName)
 		}
-		return fmt.Sprintf(
-			"version.method is \"push-with-secret\": release-on-main.yml and promote-release.yml authenticate with the %q repo secret instead of the default GITHUB_TOKEN, so they can bypass branch-protection rulesets that block the default token. "+
-				"Setup: "+
-				"(1) create a GitHub App with the Contents:write repository permission; "+
-				"(2) install the App on this repository; "+
-				"(3) generate an installation access token for the App and add it as a repository secret named %q; "+
-				"(4) add the App as a bypass actor in your branch protection rulesets "+
-				"(Settings > Rules > Rulesets > select ruleset > Bypass list > Add bypass > select the GitHub App). "+
-				promoteNote,
-			secretRef, secretRef)
+		return next + promoteNote
 	}
-	if protection.HasRulesets || protection.HasClassicProt {
-		return fmt.Sprintf(
-			"Branch protection is active on %q, which can block direct pushes when version.method is \"push\". "+
-				"You have three options: "+
-				"(1) switch version.method to \"pr\" in .sdlc-v2/config.toml to open a release PR instead of pushing directly; "+
-				"(2) keep \"push\" but add the workflow's identity (GitHub App or bot account) as a bypass actor in branch protection rulesets "+
-				"(Settings > Rules > Rulesets > select ruleset > Bypass list > Add bypass > select the GitHub Actions app or a dedicated deploy key); "+
-				"(3) use a GitHub App token with Contents:write permission and bypass privileges instead of the default GITHUB_TOKEN "+
-				"(set it as a repo secret and reference it in release-on-main.yml). "+
-				"Run /setup --only version to reconfigure. "+
-				promoteNote,
-			protection.DefaultBranch)
+
+	secretRef := secretName
+	if secretRef == "" {
+		secretRef = defaultReleaseSecret
 	}
-	return "No branch protection detected. CI scripts are installed and both \"push\" and \"pr\" delivery methods will work. " + promoteNote
+
+	return fmt.Sprintf(
+		"Branch protection/rulesets detected on %q. GITHUB_TOKEN cannot bypass rulesets,\n"+
+			"so release pushes (version bump commit, release tags) will be rejected (GH013).\n"+
+			"Pick one:\n"+
+			"  1. GitHub App (recommended): create an App with Contents, Pull requests and Actions\n"+
+			"     read/write; install it on this repo; set repo variable RELEASE_APP_CLIENT_ID and\n"+
+			"     secret RELEASE_APP_PRIVATE_KEY; add the App to the bypass list of every ruleset\n"+
+			"     that covers %q and release tags.\n"+
+			"  2. Admin PAT: create a fine-grained PAT (Contents, Pull requests, Actions: read/write)\n"+
+			"     for a user whose role is on the bypass list; store it as secret %s.\n"+
+			"     PATs expire - rotate before expiry.\n"+
+			"  3. method = \"pr\": release commits go through a PR. Works only if release PRs can\n"+
+			"     merge without a human approval, or a human merges them.\n"+
+			"Do not require status checks on all branches (~ALL); require them on ~DEFAULT_BRANCH only.\n"+
+			"See https://github.com/rnagrodzki/sdlc-plugin/blob/main/docs/versioning.md#protected-branches-and-rulesets. "+
+			promoteNote,
+		protection.DefaultBranch, protection.DefaultBranch, secretRef)
 }
 
 // --- branch protection check ---
@@ -485,7 +529,7 @@ func checkBranchProtection(dir string, execRun scaffoldExecFunc) RulesetCheckRes
 
 	if result.HasRulesets || result.HasClassicProt {
 		result.Notes = append(result.Notes, fmt.Sprintf(
-			"branch protection is active on %q — tagging and GitHub Releases are unaffected; if version.method is \"push\", versionFile/changelog writes will be blocked by the protected branch — either switch method to \"pr\" in .sdlc-v2/config.toml, or disable versionFile/changelog entirely",
+			"branch protection is active on %q — release pushes need a token on the ruleset bypass list (see scaffold next steps); tag rulesets need the same bypass entry",
 			result.DefaultBranch))
 	} else {
 		result.Notes = append(result.Notes, fmt.Sprintf("no branch protection detected on %q", result.DefaultBranch))
