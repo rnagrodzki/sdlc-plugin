@@ -225,7 +225,7 @@ var worktreeSkillsDisclosedGapExceptions = map[string]worktreeSkillsException{
 		contains: "localConfig",
 		reason:   `Read of local.toml; same disclosed-gap comment (lines 165-171) as line 162`,
 	},
-	"skills/setup/SKILL.md:413": {
+	"skills/setup/SKILL.md:414": {
 		contains: "re-call `setup_prepare` and re-Read",
 		reason:   `re-Read of config.toml/local.toml; the continuation line immediately below reads "same disclosed gap as Step 0, no tool-backed alternative"`,
 	},

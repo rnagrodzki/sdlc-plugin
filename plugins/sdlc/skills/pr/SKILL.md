@@ -155,8 +155,9 @@ bullet. `next` is the `**Next:**` line. An omitted
 
 **If `PR_CONTEXT.ok` is `false`**, `PR_CONTEXT.errors` already explains why — this single
 check covers every hard-gate failure in this port: config-migration failure, gh not
-authenticated, gh account mismatch, branch-guard failure, and being on the default branch
-(`main`/`master`). Show each error message and stop.
+authenticated, gh account mismatch, a personal key in `.sdlc-v2/config.toml` that could not
+be moved to `.sdlc-v2/local.toml` automatically, branch-guard failure, and being on the
+default branch (`main`/`master`). Show each error message and stop.
 
 **If `PR_CONTEXT.warnings` is non-empty**, show the warnings prominently before continuing
 (this includes an uncommitted-changes warning when applicable — those files will not be part
@@ -166,7 +167,7 @@ of the PR). Do not ask for confirmation — the Step 5 approval gate is the cons
 
 | Field | Description |
 | ----- | ----------- |
-| `ghAuthenticated` / `activeAccount` / `expectedAccount` | GitHub CLI auth state (a mismatch already caused a Step 0 stop) |
+| `ghAuthenticated` / `activeAccount` / `expectedAccount` | GitHub CLI auth state; `expectedAccount` comes from `.sdlc-v2/local.toml` `[github]` (a mismatch already caused a Step 0 stop) |
 | `currentBranch` | The branch being PR'd |
 | `uncommittedChanges` / `dirtyFiles` | Uncommitted files that will NOT be part of the PR |
 | `jiraTicket` | Detected ticket reference from the branch name, or empty |

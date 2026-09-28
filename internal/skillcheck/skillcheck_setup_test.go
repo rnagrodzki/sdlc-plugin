@@ -530,7 +530,7 @@ func TestSetupSkillsOnlySkipIdsMatchManifest(t *testing.T) {
 
 	canonicalIDs := []string{
 		"version", "ship", "jira", "review", "received-review", "commit",
-		"pr", "pr-labels", "review-dimensions", "pr-template", "plan-template",
+		"pr", "github", "pr-labels", "review-dimensions", "pr-template", "plan-template",
 		"plan-style", "plan-tasks", "plan-guardrails", "execution-guardrails", "openspec-block",
 	}
 	for _, id := range canonicalIDs {

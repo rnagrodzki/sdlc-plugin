@@ -27,7 +27,7 @@ If the system context contains "Plan mode is active":
 **Resolve runtime config (mandatory) — the second action of this skill, immediately after Load State:**
 Call `execute_state({ action: "resolve-config", branch: "<current branch>", quality: "<--quality value, omit when the flag was absent>", auto: <true only when --auto was passed>, commitWaves: "<--commit-waves value, omit when the flag was absent>" })`.
 
-Store from the response: `auto` as EXECUTE_AUTO, `quality` as EXECUTE_QUALITY (may be empty), `highRiskAutoApprove` as EXECUTE_HIGH_RISK_AUTO, `commitWaves` as EXECUTE_COMMIT_WAVES — the response's `commitWaves` is a JSON boolean; store it as the string `"true"`/`"false"` (matching `--commit-waves`'s own value shape), since that is the form `init` (below) expects. Print one line: `Execute config: auto=<EXECUTE_AUTO> (<sources.auto>), quality=<EXECUTE_QUALITY or "prompt"> (<sources.quality>), highRiskAutoApprove=<EXECUTE_HIGH_RISK_AUTO> (<sources.highRiskAutoApprove>), commitWaves=<EXECUTE_COMMIT_WAVES> (<sources.commitWaves>)`. Surface any `warnings` verbatim.
+Store from the response: `auto` as EXECUTE_AUTO, `quality` as EXECUTE_QUALITY (may be empty), `highRiskAutoApprove` as EXECUTE_HIGH_RISK_AUTO, `commitWaves` as EXECUTE_COMMIT_WAVES — the response's `commitWaves` is a JSON boolean; store it as the string `"true"`/`"false"` (matching `--commit-waves`'s own value shape), since that is the form `init` (below) expects. Print one line: `Execute config: auto=<EXECUTE_AUTO> (<sources.auto>), quality=<EXECUTE_QUALITY or "prompt"> (<sources.quality>), highRiskAutoApprove=<EXECUTE_HIGH_RISK_AUTO> (<sources.highRiskAutoApprove>), commitWaves=<EXECUTE_COMMIT_WAVES> (<sources.commitWaves>)`. Surface any `warnings` verbatim (this includes the notice when personal keys were moved from `.sdlc-v2/config.toml` to `.sdlc-v2/local.toml`). If the call returns an error (a personal key that could not be moved automatically), show its message and suggestion, then stop. Do not fall back to defaults.
 
 Do NOT read `.sdlc-v2/config.toml` to obtain these four values — this call is their only sanctioned source. EXECUTE_AUTO suppresses prompts about the user's intent. It must never be used to override a guardrail failure — that is a rule this skill follows (see the DO NOT list at the end of this file), not a check the tool enforces: the `decide` action is an append-only recorder that writes whatever decision it is given, `override` included, without inspecting any auto state.
 
@@ -45,7 +45,7 @@ STOP here. Do NOT use AskUserQuestion to request a path interactively, and do NO
 
 **Evaluating the gate before Step 1 runs:** The mandatory Load State call above already ran. When a resume is in effect, its `planPath` satisfies the gate's resume carve-out — no separate lookup is needed here. `## Resume` re-reads (and reconciles: `resumeBriefing`, `gitCrossCheck`, `resume-reset`, `context`) later purely to act on the result; that re-read is redundant with, not a replacement for, the mandatory one above.
 
-**Parse `--auto`:** forces auto mode; effective auto is EXECUTE_AUTO (derived by resolve-config). Tier selection is satisfied by `--quality` OR `execute.quality` in config OR auto mode.
+**Parse `--auto`:** forces auto mode; effective auto is EXECUTE_AUTO (derived by resolve-config). Tier selection is satisfied by `--quality` OR `executePrefs.quality` in `.sdlc-v2/local.toml` OR auto mode.
 
 **Parse `--plan <path>` / positional argument:** store as `EXPLICIT_PLAN_FILE`. Forwarded by ship from `context.planFile` for compaction-stable plan discovery; users may also pass it directly for non-interactive invocations.
 
@@ -146,7 +146,7 @@ Note every issue found.
 
 Fix each critique issue. Then present the final wave structure with per-task model assignments:
 
-**Quality auto-selection:** The tier comes from EXECUTE_QUALITY (derived by resolve-config). Skip Step 4's prompt whenever EXECUTE_QUALITY is non-empty. Legacy `A`/`B`/`C` are accepted and normalized here. An invalid `--quality` or `execute.quality` value never arrives as EXECUTE_QUALITY at all — resolve-config warns and falls through — so it lands on this prompt when EXECUTE_AUTO is false, and on `balanced` with no prompt when EXECUTE_AUTO is true.
+**Quality auto-selection:** The tier comes from EXECUTE_QUALITY (derived by resolve-config). Skip Step 4's prompt whenever EXECUTE_QUALITY is non-empty. Legacy `A`/`B`/`C` are accepted and normalized here. An invalid `--quality` or `executePrefs.quality` value never arrives as EXECUTE_QUALITY at all — resolve-config warns and falls through — so it lands on this prompt when EXECUTE_AUTO is false, and on `balanced` with no prompt when EXECUTE_AUTO is true.
 
 ```
 Execution Plan
@@ -173,7 +173,7 @@ Skip this whole block when EXECUTE_QUALITY is non-empty; print `Quality tier: <q
 Otherwise, use AskUserQuestion to select a quality tier:
 > Select execution quality tier
 Options: **full** (Speed) | **balanced** (Balanced, default) | **minimal** (Quality) | **custom** | **cancel**
-Tip: Use `[execute] quality = "balanced"` in `.sdlc-v2/config.toml` to skip this prompt next time.
+Tip: Use `[executePrefs] quality = "balanced"` in `.sdlc-v2/local.toml` to skip this prompt next time.
 ```
 
 Always present all 3 tiers; default is Balanced. Selecting a tier updates model assignments and proceeds to execution immediately — tier selection IS the approval. "custom" opens per-task editing before execution. "cancel" aborts.
@@ -195,10 +195,10 @@ Compute `planHash` yourself (`shasum -a 256 "$PLAN_FILE" | cut -d' ' -f1`) — t
 
 **Per wave, in order:**
 
-1. **WAVE-START.** TodoWrite: close the previous wave's todos `completed` (skip on wave 1), open this wave's as `in_progress`. If `activeGuardrails` is non-empty, run the error-severity pre-wave check (assess this wave's task descriptions plus the cumulative `git diff --stat` against each `severity:"error"` guardrail; FAIL → AskUserQuestion `override`/`harden`/`cancel`, `harden` dispatches `Skill("harden", "--failure-text \"<guardrail failure text>\" --skill execute --step \"pre-wave guardrail\"")` and re-evaluates, EXECUTE_AUTO and EXECUTE_HIGH_RISK_AUTO both block and never auto-override; record the outcome via `execute_state({ action: "decide", decideType: "guardrail", decideId: "<slug>", decideDecision: "<...>" })`). A high-risk wave proceeds without a prompt when EXECUTE_AUTO or EXECUTE_HIGH_RISK_AUTO is true; otherwise AskUserQuestion (`yes`/`skip`/`cancel`). When it proceeds without a prompt **and** the deciding value came from the committed config file rather than a per-run signal — Step 0 reported `sources.highRiskAutoApprove == "config"`, or `sources.auto == "config"` — print this line before dispatching, so a `config.toml` checked into the repo can never skip a high-risk approval silently:
+1. **WAVE-START.** TodoWrite: close the previous wave's todos `completed` (skip on wave 1), open this wave's as `in_progress`. If `activeGuardrails` is non-empty, run the error-severity pre-wave check (assess this wave's task descriptions plus the cumulative `git diff --stat` against each `severity:"error"` guardrail; FAIL → AskUserQuestion `override`/`harden`/`cancel`, `harden` dispatches `Skill("harden", "--failure-text \"<guardrail failure text>\" --skill execute --step \"pre-wave guardrail\"")` and re-evaluates, EXECUTE_AUTO and EXECUTE_HIGH_RISK_AUTO both block and never auto-override; record the outcome via `execute_state({ action: "decide", decideType: "guardrail", decideId: "<slug>", decideDecision: "<...>" })`). A high-risk wave proceeds without a prompt when EXECUTE_AUTO or EXECUTE_HIGH_RISK_AUTO is true; otherwise AskUserQuestion (`yes`/`skip`/`cancel`). When it proceeds without a prompt **and** the deciding value came from a saved config file rather than a per-run signal — Step 0 reported `sources.highRiskAutoApprove == "config"`, or `sources.auto == "config"` — print this line before dispatching, so a saved setting can never skip a high-risk approval silently:
 
 ```
-WARNING: high-risk wave <N> auto-approved from .sdlc-v2/config.toml (<execute.highRiskAutoApprove|execute.auto>), not a per-run --auto. Breaking, irreversible, credential or infra changes in this wave will proceed without confirmation.
+WARNING: high-risk wave <N> auto-approved from .sdlc-v2/local.toml (<executePrefs.highRiskAutoApprove|executePrefs.auto>), not a per-run --auto. Breaking, irreversible, credential or infra changes in this wave will proceed without confirmation.
 ```
 
 A per-run source (`sources.* == "cli"` or `"pipeline"`) needs no warning — the user supplied the flag, or `/ship` forwarded an auto run the user already approved. **Batching and agent names are decided here, before `wave-start`, and sent in `tasksJson` as `workerName`/`batchId`/`batchIndex` per task — stage 2 must dispatch with exactly those names.** Then: `execute_state({ action: "wave-start", wave: N, tasksJson: "<json>" }) → { runId, factSheets: [...] }`. A `{halt:true, reason:"plan hash mismatch", next:"...", ...}` response means the plan drifted since `init` — stop, render `reason`/`next`, dispatch nothing.
@@ -371,7 +371,7 @@ On failure or interruption (not all tasks completed), `cleanup` is not called at
 - Split a wave's Agent fan-out across more than one message, or dispatch with `run_in_background: false`
 - Assume `cleanup` deletes the state file — it stamps `runStatus`; only `gc`'s TTL sweep removes the file
 - Write state files for small-plan direct execution (≤ 3 tasks)
-- Auto-override error-severity guardrail violations in auto mode (--auto, pipeline auto, or execute.auto)
+- Auto-override error-severity guardrail violations in auto mode (--auto, pipeline auto, or executePrefs.auto)
 - Evaluate warning-severity guardrails pre-wave — post-wave only, against actual changes
 - Dispatch agents without `model:` — omitting it defaults to opus
 - Touch `ship-*` state files or the `ship_state` tool — ship owns its own state lifecycle

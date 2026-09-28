@@ -31,7 +31,7 @@ field that does not exist. Deviations, one line each:
 
 - **Q1 (binding ruling):** the `workspace` and `hooks` menu sections (source's 3.workspace
   / 3.hooks, issues #351/#370/#372) are dropped entirely. Go's `internal/setupmeta.Sections()`
-  is a frozen 17-id manifest with no `workspace`/`hooks` id — there is nothing to dispatch to.
+  is a frozen 18-id manifest with no `workspace`/`hooks` id — there is nothing to dispatch to.
   `--skip`/`--only` no longer accept those ids.
 - **State/summary/locked (Gap A):** Step 0/1 below compute `state` and `summary` per row by
   reading `.sdlc-v2/config.toml` / `.sdlc-v2/local.toml` directly and Globbing the content
@@ -77,13 +77,13 @@ field that does not exist. Deviations, one line each:
 - **`pr` wholesale-write hazard (one-directional now).** `pr-labels`
   (`setup-pr-labels.md`) writes the dotted leaf `pr.labels` directly and is no longer part of
   this hazard. This file's own 3.pr write is the one exception to the dotted-leaf rule above:
-  `titlePattern`/`allowedTypes`/`allowedScopes`/`expectedAccount`/etc. are scalar fields, not
+  `titlePattern`/`allowedTypes`/`allowedScopes`/etc. are scalar fields, not
   tables, so they cannot be addressed as `pr.titlePattern` — 3.pr must write the `pr`
   top-level key wholesale. `config.WriteSection` replaces a key wholesale, so "Writing config
   files" below still re-reads the current `pr` object immediately before writing `pr` and
   preserves any `labels` key already present.
 - **`--only`/`--skip` id list corrected.** Source's own SKILL.md listed 13 ids for `--only`
-  (missing `received-review`). The table below lists the true 17 canonical ids from
+  (missing `received-review`). The table below lists the true 18 canonical ids from
   `internal/setupmeta.Sections()` (includes `plan-style` and `plan-tasks`, added after the
   original port to expose `/plan`'s narrative-style and task-contract config, and
   `automation`, added to expose per-step pipeline automation mode, the execution report
@@ -106,9 +106,9 @@ field that does not exist. Deviations, one line each:
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--migrate` | Force migration of legacy config files even if no legacy files are auto-detected | off |
-| `--skip <section>` | Skip a config section during setup. Valid values: any of the 17 canonical ids — `version`, `ship`, `jira`, `review`, `received-review`, `commit`, `pr`, `pr-labels`, `review-dimensions`, `pr-template`, `plan-template`, `plan-style`, `plan-tasks`, `plan-guardrails`, `execution-guardrails`, `openspec-block`, `automation` | none |
+| `--skip <section>` | Skip a config section during setup. Valid values: any of the 18 canonical ids — `version`, `ship`, `jira`, `review`, `received-review`, `commit`, `pr`, `github`, `pr-labels`, `review-dimensions`, `pr-template`, `plan-template`, `plan-style`, `plan-tasks`, `plan-guardrails`, `execution-guardrails`, `openspec-block`, `automation` | none |
 | `--force` | Pre-check every menu row (reconfigure everything) instead of selecting only `not-set` rows | off |
-| `--only <ids>` | Comma-separated section ids to configure non-interactively (skips the menu). Same 17 ids as `--skip` above | none |
+| `--only <ids>` | Comma-separated section ids to configure non-interactively (skips the menu). Same 18 ids as `--skip` above | none |
 | `--dimensions` | Jump directly to review dimensions sub-flow (alias for `--only review-dimensions`) | off |
 | `--pr-template` | Jump directly to PR template sub-flow (skip config builder) | off |
 | `--guardrails` | Jump directly to plan guardrails sub-flow (skip config builder) | off |
@@ -140,9 +140,9 @@ If the system context contains "Plan mode is active":
    setup_prepare({ skipConfigCheck: false }) → { ok, needsMigration, sections[], defaultBranch, remoteOwner }
    ```
 
-   `sections[]` is the static 17-row descriptor list, always in canonical
+   `sections[]` is the static 18-row descriptor list, always in canonical
    `internal/setupmeta.Sections()` order: `version`, `ship`, `jira`, `review`,
-   `received-review`, `commit`, `pr`, `pr-labels`, `review-dimensions`, `pr-template`,
+   `received-review`, `commit`, `pr`, `github`, `pr-labels`, `review-dimensions`, `pr-template`,
    `plan-template`, `plan-style`, `plan-tasks`, `plan-guardrails`, `execution-guardrails`,
    `openspec-block`, `automation`. Each row carries `{ id, label, purpose, configFile, configPath,
    consumedBy, filesModified, optional, delegatedTo, confirmDetected, fields[] }`.
@@ -230,7 +230,7 @@ branches — see Port Notes):
    `section.configPath` as a dot-path into `projectConfig` (e.g. `plan.guardrails`,
    `pr.labels`). If the resolved value is an array, `set` requires `length > 0`; any other
    non-null resolved value is `set`. Unresolved (any segment missing) → `not-set`.
-3. **`.sdlc-v2/local.toml` sections** (`ship`, `review`, `received-review`, `plan-style`): `set`
+3. **`.sdlc-v2/local.toml` sections** (`ship`, `review`, `received-review`, `plan-style`, `github`): `set`
    when `localConfig[section.configPath]` (e.g. `localConfig.receivedReview`,
    `localConfig.planStyle`) is non-null, else `not-set`.
 
@@ -254,7 +254,8 @@ otherwise):
 | `review` | `scope: <scope>` or empty. |
 | `received-review` | `auto-apply: <a,b>` (joined `alwaysFixSeverities`) or empty. |
 | `commit` | Join non-empty (two spaces) of `pattern: <subjectPattern>` (truncate to 37 chars + `...` if over 40) and `types: <allowedTypes.length>`. |
-| `pr` | Join non-empty (two spaces) of `defaultBranch: <defaultBranch>` and `pattern: <titlePattern>` (same 40-char truncation). Does **not** include `labels` — see the `pr-labels` row. |
+| `pr` | `pattern: <titlePattern>` (same 40-char truncation), or empty. Does **not** include `labels` — see the `pr-labels` row. |
+| `github` | `account: <expectedAccount>`, or empty. |
 | `pr-labels` | From `pr.labels.mode`: `off` → `off — no automatic labels`; `rules` → `rules: <N> rule(s)`; `llm` → `llm — model picks labels`; absent → empty. |
 | `review-dimensions` | `<count> installed` or empty. |
 | `pr-template` | `installed` or empty. |
@@ -286,7 +287,7 @@ Detected configuration:
 ```
 
 **Phase 2 — Print the numbered menu directly to chat.** One line per row in the canonical
-17-id order, format:
+18-id order, format:
 
 ```
 <N>. [<state>] <section.label> — <first sentence of section.purpose>
@@ -324,7 +325,7 @@ default is always `all`.)
 
 **Phase 4 — Parse the reply**:
 - Empty reply → `all`.
-- `all` → every id from the 17-id canonical list.
+- `all` → every id from the 18-id canonical list.
 - `not-set` → ids whose computed `state === 'not-set'`.
 - `none` or `cancel` → empty list → print `No sections selected — no changes made.` and jump
   to Step 4.
@@ -448,7 +449,7 @@ For each id in `selectedIds`, in canonical `internal/setupmeta.Sections()` order
 
    | `delegatedTo` value | Dispatcher |
    |---|---|
-   | (empty) | Generic field-loop (3.G below) — dispatch one AskUserQuestion per `section.fields[]` entry, optionally gated by `section.confirmDetected`. Applies to `version`, `ship`, `jira`, `review`, `received-review`, `plan-style`, `plan-tasks`, `automation`. |
+   | (empty) | Generic field-loop (3.G below) — dispatch one AskUserQuestion per `section.fields[]` entry, optionally gated by `section.confirmDetected`. Applies to `version`, `ship`, `jira`, `review`, `received-review`, `github`, `plan-style`, `plan-tasks`, `automation`. |
    | `'inline-commit-builder'` | Inline commit-pattern builder (3.commit below). |
    | `'inline-pr-builder'` | Inline PR-pattern builder (3.pr below). |
    | `'setup-dimensions'` | Run scan phase (3.S below), then read and follow `@setup-dimensions.md`, passing scan results as "Scan Input". Pass through `--add` and `--no-copilot` if present. |
@@ -465,7 +466,8 @@ config files" sub-section at the end of Step 3.
 #### 3.G. Generic field loop (`delegatedTo` empty)
 
 For sections with no `delegatedTo` (`version`, `ship`, `jira`, `review`, `received-review`,
-`plan-style`, `plan-tasks`, `automation`):
+`github`, `plan-style`, `plan-tasks`, `automation`). For `github.expectedAccount`, use
+`remoteOwner` from `setup_prepare` as the default instead of `field.default`:
 
 If `section.confirmDetected === true` (currently only `version`), dispatch a meta-prompt
 FIRST using AskUserQuestion:
@@ -636,10 +638,8 @@ On **custom**: Ask:
 
 On **skip**: Do not write a `pr` section.
 
-Also collect `defaultBranch` and `expectedAccount` per `prFields` (`internal/setupmeta`):
-default `defaultBranch` to the `defaultBranch` value returned by `setup_prepare`; default
-`expectedAccount` to `remoteOwner` from the same call. Offer both as editable defaults via
-AskUserQuestion rather than silently accepting them.
+The expected GitHub account is not part of `pr`. The `github` section (3.G) collects it
+into `.sdlc-v2/local.toml`.
 
 Store the assembled `pr` config for use in the "Writing config files" step. **`pr` is shared
 with `pr-labels`** — see "Writing config files" below for the required read-preserve-write
@@ -718,7 +718,7 @@ actually changed:
 ```text
 | path                      | before        | after         |
 |---------------------------|---------------|---------------|
-| pr.expectedAccount        | (unset)       | rnagrodzki    |
+| github.expectedAccount    | (unset)       | rnagrodzki    |
 | version.tagPrefix         | v             | release/      |
 ```
 
@@ -735,7 +735,7 @@ After collecting all answers AND confirming the diff preview above:
 1. **Assemble the write map.** For each section actually configured in Step 3 (not skipped),
    compute its `setup_write_sections` key as `section.configPath` itself (see Port Notes),
    used as a dotted leaf: `version`→`version`, `ship`→`ship`, `jira`→`jira`, `review`→`review`,
-   `received-review`→`receivedReview`, `commit`→`commit`, `plan-style`→`planStyle`,
+   `received-review`→`receivedReview`, `commit`→`commit`, `github`→`github`, `plan-style`→`planStyle`,
    `plan-tasks`→`plan.tasks`, `automation`→`automation`. `pr` is the one exception — its
    `configPath` is `pr` but its value has scalar fields, so it is written as the `pr`
    top-level key wholesale (see "pr merge-preserve" below), never as a dotted leaf.
@@ -747,7 +747,7 @@ After collecting all answers AND confirming the diff preview above:
    `execute.guardrails`/`execute.guardrails.<id>`) — do not re-write those keys here.
 
 2. **`pr` merge-preserve (genuinely still needed).** `pr`'s fields
-   (`titlePattern`/`allowedTypes`/`allowedScopes`/`expectedAccount`/etc.) are scalars, not
+   (`titlePattern`/`allowedTypes`/`allowedScopes`/etc.) are scalars, not
    tables, so — unlike every other section here — they cannot be written as a dotted leaf;
    3.pr's write must replace the `pr` top-level key wholesale. If `pr` was configured in 3.pr
    this run, immediately before writing, Read the current `.sdlc-v2/config.toml` and check

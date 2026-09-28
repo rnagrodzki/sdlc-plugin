@@ -44,6 +44,7 @@ templates, plan templates, guardrails, and more.
 | `received-review` | How review feedback is processed |
 | `commit` | Commit message style |
 | `pr` | PR description settings |
+| `github` | Your GitHub login for the /pr account check (local.toml) |
 | `pr-labels` | Auto-labeling rules |
 | `review-dimensions` | Review dimensions |
 | `pr-template` | Custom PR description template |
