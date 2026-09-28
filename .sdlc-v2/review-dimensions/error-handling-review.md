@@ -83,3 +83,10 @@ When reviewing code that uses `os.Stat`, `os.Open`, `filepath.ReadDir`, `filepat
 
 - Use `errors.Is(err, fs.ErrNotExist)` or `os.IsNotExist(err)` explicitly. Do not collapse this condition into a generic error handler that treats "file missing" the same as "permission denied" or "I/O error".
 - Code that maps a file-system probe result to a benign zero-value (e.g., `if err != nil { return empty; }`  for a "not found" path) must first check for terminal errors like `execx.ErrOutputCap` via `errors.Is`, and propagate them rather than downgrading them to "not found."
+
+## Config-read error discrimination
+
+When handler code reads configuration via `config.Read`, `config.ReadSection`, or `configReadSection`, errors must be explicitly classified:
+
+- Use `errors.Is(err, config.ErrNotFound)` to distinguish "section does not exist" (benign) from "actual read/parse/permission error" (requires propagation or explicit handling).
+- A handler that maps a config-not-found result to a benign zero-value (e.g., "not configured") must check `errors.Is(err, config.ErrNotFound)` first and distinguish it from parse errors (`TOML syntax error`), permission errors (`access denied`), or other real failures. Never collapse these conditions — a malformed `.sdlc-v2/local.toml` or `.sdlc-v2/config.toml` must surface to the caller as an error, not silently treated as "not configured". Code that silently downgrades config parse/permission errors to "value not set" masks misconfiguration that the user should fix.

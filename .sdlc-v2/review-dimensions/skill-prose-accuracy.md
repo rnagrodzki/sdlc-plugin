@@ -23,3 +23,6 @@ triggers:
   must be checked against real permission/behavior differences in the
   underlying command — a passing read-only check does not prove a write
   operation will succeed.
+- When SKILL.md contains hardcoded enumerations of Go-defined structural sets (section ids from internal/setupmeta.Sections(), local.toml section lists, state-computation rule sections), verify the enumeration re-derives from that canonical source: name every element, confirm the stated count equals the enumeration length, and re-verify after any structural change that no element is silently omitted or misnamed.
+- When an instruction or exception overrides generic guidance (e.g., 'use remoteOwner instead of field.default'), place it adjacent to the instruction it overrides, not distant in a section intro or unrelated paragraph.
+- When a modification removes a paragraph that carried reader instructions (e.g., a step to collect a field), verify the instruction survives elsewhere in the modified text or an explicit ruling documents why it was dropped; silent deletion of instructions is a failure.

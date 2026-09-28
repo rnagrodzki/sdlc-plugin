@@ -60,7 +60,11 @@ main() guarded, e.g. `if (require.main === module)`) before test tasks are \
 planned. Tests introduced by a task must be wired into CI in the same plan. \
 For JS/Node scripts, this means an actual `node --test` (or equivalent) \
 invocation in the CI workflow file -- verify the workflow file runs the new \
-test file, not just that the test file exists."""
+test file, not just that the test file exists. When adding new conditional \
+branches, error paths, or alternative flows to a tool handler, each new branch \
+must have an explicit test case that exercises it. A task that adds a new \
+warning/error branch to a handler without a test case exercising that branch \
+is incomplete."""
 
 [plan.guardrails.plan-verification-scope-completeness]
 severity = "error"
@@ -455,9 +459,17 @@ severity = "warning"
 description = """
 Tasks that involve configuration/API renames or major refactoring must \
 include documentation and schema updates in the same task -- do not defer \
-doc and schema sweeps to follow-up work. Plan must explicitly enumerate \
-which docs, READMEs, skill descriptions, and JSON schemas will be updated \
-alongside code changes."""
+doc and schema sweeps to follow-up work. When documentation updates occur, \
+the plan must verify that the update is comprehensive: (1) grep all \
+relevant documentation files (docs/, plugins/sdlc/skills/**/*.md, README, \
+SKILL.md files) for old key/API names to confirm all mentions are updated, \
+not just the primary section; (2) for SKILL.md migrations that change or add \
+flags, cross-check the front-matter argument-hint against all tables/sections \
+in the corresponding docs/skills/*.md file (Flags table, Arguments, Tips, \
+examples) to verify every declared flag is documented. Plan must explicitly \
+enumerate which docs, READMEs, skill descriptions, and JSON schemas will be \
+updated alongside code changes, and include verification steps that confirm \
+completeness."""
 
 [plan.guardrails.constant-literal-migration-complete]
 severity = "error"
@@ -685,7 +697,12 @@ legacy-fallback paths). An incomplete rename creates two silently-diverging \
 sources of truth and is worse than not renaming at all. This also applies \
 to deleting an exported symbol (function, type, constant) entirely -- grep \
 the whole repo, not just the package being changed, since callers in \
-unrelated packages are easy to miss."""
+unrelated packages are easy to miss. Extends equally to config-key or \
+namespace renames (e.g. moving a config field to a new section, renaming a \
+key prefix like `execute.*` to `executePrefs.*`): grep the entire repository \
+including all documentation files (docs/**, plugins/sdlc/skills/**/*.md) and \
+configuration templates for the old name, confirming zero remaining \
+instances or explicit legacy-fallback justification."""
 
 [execute.guardrails.defer-unmet-task-dependencies]
 severity = "error"
@@ -801,7 +818,10 @@ describing four cases when only two execute, or promising behavior that \
 the code does not implement, is a finding. Additionally, verify that any \
 comment block preceding a `package` declaration is separated by a blank \
 line to prevent the comment from being misattached as the package doc \
-string. Use `grep -n \
+string. Comments must not carry planning-artifact references (step \
+numbers like '// Step 10.', plan section names like 'Final Shape', or \
+task IDs) -- these are authoring leftovers that must be removed before \
+shipping. Use `grep -n \
 '^\\(var\\|const\\|func\\|type\\) [A-Z]' <changed_file>` and confirm each \
 match has a `//` comment line immediately above."""
 
