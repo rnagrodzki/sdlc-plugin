@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.1.7] - 2026-09-28
+
+### RC 1
+
+- Add stateless `resolve-config` action to `execute_state` plus new config schema/template keys, so execute mode's auto/quality/highRiskAutoApprove settings can come from `.sdlc-v2/config.toml`
+- Rewire execute skill's quality-tier and high-risk-wave prompt gates to resolve from project config first, only falling back to interactive prompts when undecided (with resolution-matrix tests)
+- Fix skillcheck's line-number-keyed pins after the execute SKILL.md rewire
+- Consolidate config reads in execute and clarify output; harden config-driven execute mode (22 review findings fixed): validate CLI `--quality` input, distinguish "not found" from real config read errors, and warn loudly when a high-risk wave auto-proceeds from committed config
+
+### RC 2
+
+- Move per-developer config keys (pr.expectedAccount, execute.auto/quality/highRiskAutoApprove) out of committed .sdlc-v2/config.toml into gitignored .sdlc-v2/local.toml
+- Add automatic migration (internal/configmigrate/movedkeys.go) for repos with personal keys still in the old committed config
+- Fix nil-pointer-in-interface bug: MigrateMovedKeys now returns a plain error instead of a concrete *MovedKeysErr pointer
+- Harden pr_prepare warning/error reporting around the migration path, sync review-dimension guardrails and skill docs
+
+### RC 3
+
+- Release pipeline now falls back through a GitHub App token, then RELEASE_TOKEN, then GITHUB_TOKEN, so releases keep working under GitHub rulesets that block direct pushes
+- Added GH013 (ruleset rejection) error classification with secret-name-aware remediation hints
+- promote-release can now deliver its commit via a pull request instead of requiring a direct push
+- retag-release now guards against retagging non-release commits or running outside main
+- CI trigger is dispatch-only (dropped tag-push) and now runs the full Node test suite
+- Documented protected-branches-and-rulesets behavior in the versioning docs
+- Fixed 15 code-review findings: secret-name validation for generated CI files, restored push-with-secret guidance text, corrected schema permission description, added default/pattern validation for the secret-name field, fixed Node 21+ test glob
+- Hardened review checklists and execute/plan guardrails based on review findings
+- Moved personal per-developer config keys to local.toml; execute step now resolves auto/quality/highRiskAutoApprove from config
+
 ## [0.1.6] - 2026-09-22
 
 ### RC 1
