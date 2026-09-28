@@ -56,7 +56,7 @@ Fourteen files in `plugins/sdlc/skills/plan/`:
 | `plan` section (guardrails, tasks) | `.sdlc-v2/config.toml` | `config.ProjectSections` (team-shared, committed) |
 | `plan.tasks.requiredFields` | `.sdlc-v2/config.toml` | Array of field names for PF11 |
 | `plan.tasks.contractShape` | `.sdlc-v2/config.toml` | Shape key for PF12 |
-| `planStyle` section | `.sdlc-v2/local.toml` | `config.allowedLocalOnlyKeys` (per-developer, gitignored) |
+| `planStyle` section | `.sdlc-v2/local.toml` | `config.ProjectSections` routing: not a project section (per-developer, gitignored) |
 | Plan template override | `.sdlc-v2/plan-template.md` | Detected by `plan_prepare` when `resolveTemplate: true` |
 | Plans directory | `.claude/settings.json` `plansDirectory` | Claude Code native setting |
 

@@ -7510,16 +7510,19 @@ func TestExecWaveStallTimeouts_DefaultsFromShipBuiltInDefaults(t *testing.T) {
 
 // TestExecuteState_ResolveConfigDispatch tests that resolve-config routes
 // through the executeState dispatcher without writing a state file. It proves
-// that resolve-config is stateless — it reads config.toml and ship state but
-// never creates an execute state file.
+// that resolve-config never creates an execute state file — it reads
+// config.toml, local.toml and ship state, and (only when a stale
+// auto/quality/highRiskAutoApprove key needs migrating, which this fixture's
+// clean [executePrefs]-only local.toml does not trigger) may rewrite
+// config.toml/local.toml via configmigrate.MigrateMovedKeys.
 func TestExecuteState_ResolveConfigDispatch(t *testing.T) {
 	root := t.TempDir()
-	configTOML := `[execute]
+	localTOML := `[executePrefs]
 auto = true
 quality = "minimal"
 `
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), configTOML)
-	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), localTOML)
 
 	// Snapshot os.ReadDir(root) before the call
 	entriesBefore, err := os.ReadDir(root)

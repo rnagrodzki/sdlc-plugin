@@ -380,19 +380,11 @@ var planTasksFields = []Field{
 	},
 }
 
-// prFields holds the two flat fields on the 'pr' section. In the Node.js
-// source these have runtime-computed defaults (detectBaseBranchSafe,
-// parseRemoteOwner). Here the defaults are zero-valued; the consuming tool
-// (Task 26: setup_prepare) computes them at prepare time.
-var prFields = []Field{
-	{
-		Name:        "defaultBranch",
-		Label:       "Target branch for PRs",
-		Type:        "string",
-		Options:     nil,
-		Default:     "",
-		Description: "Branch PRs are merged into. Auto-detected from the remote default branch; override for repos using develop, release/*, etc. When set, /pr uses this value before falling back to runtime git detection.",
-	},
+// githubFields holds the one flat field on the 'github' section. In the
+// Node.js source this field has a runtime-computed default
+// (parseRemoteOwner). Here the default is zero-valued; the consuming tool
+// (Task 26: setup_prepare) computes it at prepare time.
+var githubFields = []Field{
 	{
 		Name:        "expectedAccount",
 		Label:       "Expected gh account",
@@ -554,7 +546,7 @@ func Sections() []Section {
 		{
 			ID:              "pr",
 			Label:           "pr",
-			Purpose:         "PR title validation rules used by /pr: title regex, allowed Conventional-Commits types/scopes, required trailers, plus expected GitHub account for active-account preflight. Mirrors commit patterns; can copy the commit config or use a different style.",
+			Purpose:         "PR title validation rules used by /pr: title regex, allowed Conventional-Commits types/scopes, required trailers. Mirrors commit patterns; can copy the commit config or use a different style.",
 			ConfigFile:      ".sdlc-v2/config.toml",
 			ConfigPath:      "pr",
 			ConsumedBy:      []string{"pr"},
@@ -562,7 +554,20 @@ func Sections() []Section {
 			Optional:        true,
 			DelegatedTo:     "inline-pr-builder",
 			ConfirmDetected: false,
-			Fields:          prFields,
+			Fields:          nil,
+		},
+		{
+			ID:              "github",
+			Label:           "github",
+			Purpose:         "Personal GitHub login that /pr expects to be active (active-account preflight). Stored in the gitignored local.toml because each developer has their own.",
+			ConfigFile:      ".sdlc-v2/local.toml",
+			ConfigPath:      "github",
+			ConsumedBy:      []string{"pr"},
+			FilesModified:   []string{".sdlc-v2/local.toml"},
+			Optional:        true,
+			DelegatedTo:     "",
+			ConfirmDetected: false,
+			Fields:          githubFields,
 		},
 		{
 			ID:              "pr-labels",

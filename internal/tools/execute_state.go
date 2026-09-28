@@ -41,8 +41,8 @@ import (
 type ExecuteStateIn struct {
 	Action              string         `json:"action" jsonschema:"enum=wave-compute,enum=init,enum=wave-start,enum=wave-done,enum=wave-fail,enum=wave-committed,enum=wave-commit,enum=task-done,enum=task-fail,enum=task-context,enum=context,enum=read,enum=cleanup,enum=gc,enum=summarize-prior-wave-context,enum=wave-split,enum=verify-completeness,enum=wave-progress,enum=wave-await,enum=task-redispatch,enum=resume-reset,enum=ledger_checkin,enum=ledger_checkout,enum=ledger_status,enum=ledger_cleanup,enum=log-cli,enum=drift-log,enum=issue-draft,enum=decide,enum=resolve-config,enum=report" jsonschema_description:"Selects the operation. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
 	Branch              string         `json:"branch,omitempty" jsonschema_description:"Git branch the execution state belongs to. Most actions accept it to scope the state file; falls back to the current branch when omitted."`
-	Auto                bool           `json:"auto,omitempty" sdlcconfig:"execute.auto" jsonschema_description:"resolve-config only: true when the caller passed --auto. Omitting it does not mean auto is off: the resolution order is CLI > pipeline > config > default, so auto also resolves to true when branch is supplied and that branch's ship state has flags.auto=true. Optional. Defaults to config execute.auto. Pass only to override."`
-	Quality             string         `json:"quality,omitempty" jsonschema:"enum=full,enum=balanced,enum=minimal" jsonschema_description:"Quality tier. init: required -- the tier stamped on the newly initialized run; pass the value resolve-config returned. resolve-config: the --quality CLI value, which wins over config execute.quality when non-empty. A resolve-config value outside the enum is non-fatal: it is reported in warnings and resolution falls through to config, then the auto default, then the skill's tier prompt."`
+	Auto                bool           `json:"auto,omitempty" sdlcconfig:"executePrefs.auto" jsonschema_description:"resolve-config only: true when the caller passed --auto. Omitting it does not mean auto is off: the resolution order is CLI > pipeline > config > default, so auto also resolves to true when branch is supplied and that branch's ship state has flags.auto=true. Optional. Defaults to config executePrefs.auto. Pass only to override."`
+	Quality             string         `json:"quality,omitempty" jsonschema:"enum=full,enum=balanced,enum=minimal" jsonschema_description:"Quality tier. init: required -- the tier stamped on the newly initialized run; pass the value resolve-config returned. resolve-config: the --quality CLI value, which wins over executePrefs.quality in .sdlc-v2/local.toml when non-empty. A resolve-config value outside the enum is non-fatal: it is reported in warnings and resolution falls through to config, then the auto default, then the skill's tier prompt."`
 	CommitWaves         string         `json:"commitWaves,omitempty" jsonschema:"enum=true,enum=false" jsonschema_description:"Whether execute commits each wave separately; empty resolves from CLI/config/default true."`
 	TotalTasks          int            `json:"totalTasks,omitempty" jsonschema_description:"Total planned task count for a newly initialized run (init only)."`
 	WaveTimeoutSeconds  int            `json:"waveTimeoutSeconds,omitempty" jsonschema_description:"init only: this run's wave wall-clock deadline in seconds (the invoking CLI's --wave-timeout). Recorded on init and later read back by wave-await to size its reclaim/timeout window. When omitted, falls back to a ship-state cross-read of flags.executeWaveTimeout, then internal/shipmeta.ShipBuiltInDefaults.ExecuteWaveTimeout (1800s)."`
@@ -174,10 +174,10 @@ type ExecDecideOut struct {
 // field is the post-merge effective value; Sources says where each came
 // from, mirroring ship_prepare's merged/sources pair (ship.go:640-716).
 type ExecuteResolveConfigOut struct {
-	Auto                bool              `json:"auto" jsonschema_description:"Effective auto mode: true when the --auto flag was passed, or this branch's ship state has flags.auto=true, or config execute.auto is true."`
+	Auto                bool              `json:"auto" jsonschema_description:"Effective auto mode: true when the --auto flag was passed, or this branch's ship state has flags.auto=true, or executePrefs.auto in .sdlc-v2/local.toml is true."`
 	Quality             string            `json:"quality" jsonschema_description:"Resolved quality tier (full|balanced|minimal), or empty when nothing supplied one and auto is false -- in which case the execute skill presents its tier selection prompt. Never omitted: empty is a load-bearing outcome a reader must be able to tell apart from an absent field."`
 	CommitWaves         bool              `json:"commitWaves" jsonschema_description:"Effective commit-waves setting: whether execute commits each wave separately. Resolution order CLI > config execute.commitWaves > default true; sources.commitWaves reports which one won."`
-	HighRiskAutoApprove bool              `json:"highRiskAutoApprove" jsonschema_description:"Effective high-risk auto-approval, read from config execute.highRiskAutoApprove (a static project setting) and false otherwise. No plan-approval state is consulted; sources.highRiskAutoApprove reports whether the value came from config or the built-in default."`
+	HighRiskAutoApprove bool              `json:"highRiskAutoApprove" jsonschema_description:"Effective high-risk auto-approval, from executePrefs.highRiskAutoApprove in .sdlc-v2/local.toml (a personal setting) and false otherwise. No plan-approval state is consulted; sources.highRiskAutoApprove reports whether the value came from config or the built-in default."`
 	Sources             map[string]string `json:"sources" jsonschema_description:"Per-key provenance: cli, pipeline, config, default, or unset."`
 	Warnings            []string          `json:"warnings,omitempty" jsonschema_description:"Non-fatal problems: an unreadable ship state, or a config value of the wrong type or outside the allowed enum (the built-in default is used instead)."`
 }
@@ -538,7 +538,7 @@ func RegisterExecuteStateTools(s *mcpserver.Server) {
 Pass "action" to select an operation. Each action uses a subset of the input fields (unlisted fields are ignored):
 
 - wave-compute: Stateless — parses the plan file at planPath and computes the wave schedule (no state file read/write). Requires planPath. Optional: extraDepsJson (JSON array of {task, dependsOn, reason} merged with each task's explicit "Depends on" field). Returns {route, preWave, waves[{number, tasks[], expectedFiles[], verificationHint}]}.
-- resolve-config: Stateless — resolves this run's effective auto mode, quality tier and high-risk auto-approval from CLI flags, this branch's ship state and config [execute] (no state file read/write). Optional: branch (enables the ship-state auto cross-read), quality (--quality), auto (--auto). An out-of-enum quality warns and falls through to config, then the auto default, rather than failing. Returns {auto, quality (always present; empty means "ask the user for a tier"), highRiskAutoApprove, sources, warnings?}.
+- resolve-config: Stateless — resolves this run's effective auto mode, quality tier and high-risk auto-approval from CLI flags, this branch's ship state, local.toml [executePrefs] (auto, quality, highRiskAutoApprove) and config.toml [execute] (commitWaves) (no state file read/write). First moves auto, quality or highRiskAutoApprove from config.toml [execute] to local.toml [executePrefs] (reported in warnings); fails with a data error (message plus suggestion) when that move is not safe. Optional: branch (enables the ship-state auto cross-read), quality (--quality), auto (--auto). An out-of-enum quality warns and falls through to config, then the auto default, rather than failing. Returns {auto, quality (always present; empty means "ask the user for a tier"), highRiskAutoApprove, sources, warnings?}.
 - init: Create execution state. Runs the same config auto-migration gate as ship_prepare first (migrates and backs up an outdated config, or fails with a /setup pointer if none exists); result may include a "migration" report. Returns {filePath, pipelineAuto (true when this branch's ship state has flags.auto=true — reported for diagnostics only; the execute SKILL.md high-risk gate no longer reads it, because resolve-config performs the same ship-state cross-read at Step 0 and folds the result into its effective auto value), warnings? (e.g. this branch's ship state exists but is unreadable), migration?}. Requires branch, quality. Optional: totalTasks, plannedTaskIds, planPath, planHash.
 - wave-start: Begin a wave. Returns narration (summary, display with task list + ETA, next). Requires wave. Optional: branch, tasksJson, runId (for fact sheets), detail ("concise"|"full"). If the run recorded a planHash at init, the plan file's current sha256 is compared against it first; a mismatch returns {halt:true, reason:"plan hash mismatch"} instead of narration and does not start the wave. An unreadable/missing plan file does not halt — it proceeds with a warning in the response's "warnings" field. Seeds server-owned dispatch state (dispatchedAt, workerName, batchId/batchIndex, attempt:1) for every valid tasksJson entry that doesn't already have one — a task that already has server state (wave-start called again on resume) is left untouched. Seeding failure is non-fatal and appends to "warnings".
 - wave-done: Complete a wave. Returns narration (summary, display with outcomes, timing, next wave preview + ETA). Records wave duration to TimingsStore. Requires wave. Optional: branch, decisions, status, detail ("concise"|"full").
@@ -2018,14 +2018,29 @@ func execActionResolveConfig(root string, in ExecuteStateIn) (any, error) {
 		Warnings: []string{},
 	}
 
-	// Read config [execute] once and reuse it for all three resolutions,
-	// matching execSummarizePriorWaveCtx/execCommitWavesEnabled rather than
-	// re-parsing config.toml per key. A genuine read failure (malformed TOML,
+	// Move any stale auto/quality/highRiskAutoApprove keys out of
+	// config.toml [execute] into local.toml [executePrefs] before reading
+	// either file, so the reads below always see the post-migration layout.
+	// A move that is not safe (e.g. a conflicting value already in
+	// local.toml) is a data problem, not a resolution warning — it is
+	// reported the same way execActionInit reports its config-version gate
+	// (execute_state.go's KD5 gate above).
+	moved, mk := configmigrate.MigrateMovedKeys(root)
+	if mk != nil {
+		return nil, &mcpserver.DataError{Msg: mk.Error(), Suggestion: mk.Suggestion(), Cause: mk}
+	}
+	if len(moved) > 0 {
+		out.Warnings = append(out.Warnings, configmigrate.MovedKeysWarning(moved))
+	}
+
+	// Read config [execute] once for commitWaves; auto, quality and
+	// highRiskAutoApprove come from local [executePrefs] after the
+	// moved-keys migration above. A genuine read failure (malformed TOML,
 	// I/O or permission error) is distinguished from an absent section and
 	// surfaced as a warning instead of collapsing into "not configured" —
 	// the same distinction scaffold.go and execPipelineAuto already make.
-	// execSection stays nil on any error; indexing a nil map is safe, so each
-	// resolution below reads it without a further nil check.
+	// execSection stays nil on any error; indexing a nil map is safe, so
+	// commitWaves reads it without a further nil check.
 	var execSection map[string]any
 	if sect, err := config.ReadSection(root, "execute"); err != nil {
 		if !errors.Is(err, config.ErrNotFound) {
@@ -2033,6 +2048,17 @@ func execActionResolveConfig(root string, in ExecuteStateIn) (any, error) {
 		}
 	} else {
 		execSection = sect
+	}
+
+	// executePrefs is the local (gitignored) home for auto, quality and
+	// highRiskAutoApprove. Same error-vs-absent handling as execSection.
+	var prefs map[string]any
+	if sect, err := config.ReadSection(root, "executePrefs"); err != nil {
+		if !errors.Is(err, config.ErrNotFound) {
+			out.Warnings = append(out.Warnings, fmt.Sprintf("local executePrefs section unreadable: %s; using defaults", err.Error()))
+		}
+	} else {
+		prefs = sect
 	}
 
 	// Resolve auto: CLI > pipeline > config > default
@@ -2051,7 +2077,7 @@ func execActionResolveConfig(root string, in ExecuteStateIn) (any, error) {
 		}
 
 		if !out.Auto {
-			if ca, ok := execSection["auto"].(bool); ok && ca {
+			if ca, ok := prefs["auto"].(bool); ok && ca {
 				out.Auto = true
 				out.Sources["auto"] = "config"
 			} else {
@@ -2076,18 +2102,18 @@ func execActionResolveConfig(root string, in ExecuteStateIn) (any, error) {
 		out.Quality = cliQuality
 		out.Sources["quality"] = "cli"
 	} else {
-		if rawQuality, ok := execSection["quality"]; ok {
+		if rawQuality, ok := prefs["quality"]; ok {
 			if cq, isString := rawQuality.(string); isString {
 				if sliceContainsStr(validQuality, cq) {
 					out.Quality = cq
 					out.Sources["quality"] = "config"
 				} else {
-					out.Warnings = append(out.Warnings, fmt.Sprintf("config execute.quality %q is not in allowed values %v; using default", cq, validQuality))
+					out.Warnings = append(out.Warnings, fmt.Sprintf("local executePrefs.quality %q is not in allowed values %v; using default", cq, validQuality))
 					out.Sources["quality"] = "default"
 				}
 			} else {
 				// Wrong type
-				out.Warnings = append(out.Warnings, fmt.Sprintf("config execute.quality has wrong type %T; expected string; using default", rawQuality))
+				out.Warnings = append(out.Warnings, fmt.Sprintf("local executePrefs.quality has wrong type %T; expected string; using default", rawQuality))
 				out.Sources["quality"] = "default"
 			}
 		}
@@ -2129,12 +2155,12 @@ func execActionResolveConfig(root string, in ExecuteStateIn) (any, error) {
 	}
 
 	// Resolve highRiskAutoApprove: config > default
-	if rawHraa, ok := execSection["highRiskAutoApprove"]; ok {
+	if rawHraa, ok := prefs["highRiskAutoApprove"]; ok {
 		if hraa, isBool := rawHraa.(bool); isBool {
 			out.HighRiskAutoApprove = hraa
 			out.Sources["highRiskAutoApprove"] = "config"
 		} else {
-			out.Warnings = append(out.Warnings, fmt.Sprintf("config execute.highRiskAutoApprove has wrong type %T; expected bool; using default", rawHraa))
+			out.Warnings = append(out.Warnings, fmt.Sprintf("local executePrefs.highRiskAutoApprove has wrong type %T; expected bool; using default", rawHraa))
 			out.HighRiskAutoApprove = false
 			out.Sources["highRiskAutoApprove"] = "default"
 		}
