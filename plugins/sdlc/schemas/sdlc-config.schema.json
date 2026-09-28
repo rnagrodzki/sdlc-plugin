@@ -22,15 +22,15 @@
         "method": {
           "type": "string",
           "enum": ["push", "pr", "push-with-secret"],
-          "description": "How the versionFile and changelog paths deliver their writes when enabled: \"push\" (default) commits and pushes directly to main; \"pr\" opens a release PR instead; \"push-with-secret\" pushes directly but scaffolded CI authenticates with the repo secret named in pushAuth.secretName instead of GITHUB_TOKEN."
+          "description": "How the versionFile and changelog paths deliver their writes when enabled: \"push\" (default) commits and pushes directly to main; \"pr\" opens a release PR instead; \"push-with-secret\" is a deprecated alias for \"push\" (release-on-main.cjs and promote-release.cjs normalize it before running). The pushAuth.secretName rewrite is independent of this value — see pushAuth below."
         },
         "pushAuth": {
           "type": "object",
-          "description": "Alternate CI authentication for the push-with-secret method. Ignored when method is not \"push-with-secret\".",
+          "description": "Alternate CI push-authentication secret, used regardless of which method value is configured (not gated on method being \"push-with-secret\").",
           "properties": {
             "secretName": {
               "type": "string",
-              "description": "Name of the repo secret holding a GitHub App installation token (or PAT) with Contents:write permission and bypass privileges on branch-protection rulesets."
+              "description": "Name of the repo secret holding a GitHub App-issued token (or PAT) with Contents:write permission and bypass privileges on branch-protection rulesets. When set to a value other than the default RELEASE_TOKEN, scaffold_ci rewrites the scaffolded workflows' secrets.RELEASE_TOKEN reference to this name."
             }
           },
           "additionalProperties": false

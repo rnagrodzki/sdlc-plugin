@@ -207,129 +207,185 @@ Controls how the `versionFile` and `changelog` paths deliver their writes when e
 |---|---|
 | `"push"` (default) | Direct commit and push to main. Simple, but blocked by branch protection. |
 | `"pr"` | Writes land on a single `release/<tag>` branch carrying both file writes, opened as a PR with auto-merge enabled. Works with branch protection. |
-| `"push-with-secret"` | Same direct-push behavior as `"push"`, but the scaffolded `release-on-main.yml`/`promote-release.yml` workflows authenticate with the repo secret named in `[version.pushAuth]` instead of the default `GITHUB_TOKEN` — for rulesets that block the default token but bypass-list a GitHub App identity. See "The `push-with-secret` method" below. |
+| `"push-with-secret"` (deprecated) | Alias for `"push"` — `release-on-main.cjs` and `promote-release.cjs` normalize it to `"push"` before running. The secret-name rewrite it used to gate is now independent of `method`; see "`push-with-secret` (deprecated)" below. |
 
 There is no `"skip"` value — to skip a path entirely, disable it (`versionFile.enabled: false` / `changelog.enabled: false`) rather than routing its delivery through a no-op method.
 
-Delivery runs after the tag and GitHub Release already exist (phase 3 above, when `tag.enabled`) and is always best-effort for the file-writing paths: a delivery failure is logged and reported in the final exit status, but never undoes a tag or release already created. See "Branch Protection & Release Workflow" below for how `"push"` and `"pr"` behave on a protected `main`.
+Delivery runs after the tag and GitHub Release already exist (phase 3 above, when `tag.enabled`) and is always best-effort for the file-writing paths: a delivery failure is logged and reported in the final exit status, but never undoes a tag or release already created. See "Protected branches and rulesets" below for how `"push"` and `"pr"` behave under branch protection/rulesets, and for the token chain every scaffolded workflow uses.
 
-### Branch Protection & Release Workflow
+## Protected branches and rulesets
 
-GitHub branch protection (classic) and rulesets can block direct pushes to
-the default branch, including from `github-actions[bot]`. Adding the bot to
-a bypass list is often not possible: GitHub rejects `github-actions[bot]` in
-a ruleset bypass actor list (HTTP 422), and the bot cannot be granted an
-admin-override bypass on classic protection either. This affects
-`method: "push"` specifically: a workflow step that runs
-`git push origin HEAD:main` (the versionFile/changelog commit) fails outright on
-a protected `main`. `"pr"` delivers the same commit through a PR
-instead, which is unaffected because it never pushes to the protected
-branch directly.
+### Why the default token fails
 
-**Why the tag path is unaffected:** the release tag and GitHub Release are created
-via the GitHub API (`gh release create`) and a tag ref push (`refs/tags/...`),
-neither of which touches the protected branch — `tag.enabled` releases land
-regardless of `method`. Only a `git push` of a commit directly to `main` — the
-`"push"` method's file-writing commit — is blocked.
+Every scaffolded release workflow (`release-on-main.yml`, `promote-release.yml`,
+`retag-release.yml`) ends by pushing a release commit and/or a tag. On an
+unprotected `main` that needs nothing special — the workflow's default
+`secrets.GITHUB_TOKEN` pushes directly.
 
-**The `"pr"` method:** instead of pushing the versionFile/changelog update straight to
-`main`, after the tag and release are already created, it:
+A GitHub ruleset or classic branch protection rule on `main` — or a tag
+ruleset covering the release tag pattern — changes that. The default token
+has no path around either kind of rule: it cannot receive an admin-override
+on classic protection, and it cannot be added as a bypass actor on a
+ruleset. Any push it makes to a protected ref is rejected with `GH013:
+Repository rule violations` (classic protection instead returns a plain
+permission error) — regardless of `version.method`, since even `"pr"` still
+pushes the release tag directly when `tag.enabled` is true.
 
-1. Creates a branch `release/<tag>` off the tip of `main` and pushes the local commit made during phase 2.
-2. Opens a PR (`gh pr create --base main --head release/<tag>`) labeled
-   `no-release`.
-3. Enables auto-merge on the PR (`gh pr merge --auto --squash --delete-branch`).
+### How the workflows pick a token
 
-The release PR does not trigger a duplicate release when it merges — see
-"The `no-release` label" below for why.
+`release-on-main.yml`, `promote-release.yml`, and `retag-release.yml` all
+resolve their push/`gh` credential through the same 3-way fallback chain,
+tried in this order:
 
-File delivery — for both `"push"` and `"pr"` — is **best-effort and
-non-blocking relative to the tag path**: the tag and GitHub Release from phase 3 of the release flow
-above are created first (when `tag.enabled`) and are never rolled back if delivery fails for any
-reason (missing `gh` auth, no push access, a protected `main` with
-`method: "push"`, auto-merge not enabled on the repo, etc.) — though the overall
-script still exits 1 to surface the failure. The
-failure is logged to the workflow output.
+| Order | Source | Used when |
+|---|---|---|
+| 1 | App token (`steps.release-token.outputs.token`) | Repo variable `RELEASE_APP_CLIENT_ID` is set — a short-lived token is minted via `actions/create-github-app-token`, authenticated with secret `RELEASE_APP_PRIVATE_KEY` |
+| 2 | `secrets.RELEASE_TOKEN` | No App token was minted, and repo secret `RELEASE_TOKEN` exists |
+| 3 | `secrets.GITHUB_TOKEN` | Neither of the above — the workflow's own default token |
 
-**Auto-merge setup (`"pr"` only):** the target repo must have "Allow
-auto-merge" enabled in Settings → General, and `main` must not require a
-status check that never runs (auto-merge waits indefinitely for required
-checks). If auto-merge cannot be enabled (e.g. required reviews with no
-eligible reviewer), the release PR is still created — merge it manually.
+The same expression appears wherever a token is needed — the `checkout`
+step's `token:` input and the release script's `GH_TOKEN` env var:
 
-**The `no-release` label:** applied to the automated release PR (`"pr"`
-method) as a human-facing signal (it is not read by any script).
-`verify-release-intent.cjs` independently skips any PR lacking a
-`release:<level>` label — the release PR has no such label, so it is a
-no-op there regardless.
+```yaml
+token: ${{ steps.release-token.outputs.token || secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+```
 
-### The `push-with-secret` method
+The App-token step (`id: release-token`) only runs when
+`vars.RELEASE_APP_CLIENT_ID != ''`; with no App configured, the chain falls
+straight from step 1 to step 2.
 
-`push-with-secret` is a third option alongside `"push"`/`"pr"` for repos
-where branch-protection rulesets block the default `GITHUB_TOKEN` outright
-but bypass-list a GitHub App identity (a ruleset cannot bypass-list
-`github-actions[bot]` itself — see "Branch Protection & Release Workflow"
-above). It behaves exactly like `"push"` — a direct commit and push to
-`main` — except that `scaffold_ci` rewrites the `checkout` step's token in
-the scaffolded `release-on-main.yml` and `promote-release.yml` workflows
-from `secrets.GITHUB_TOKEN` to `secrets.<pushAuth.secretName>`, so the
-workflow's git operations (and `gh` CLI calls) authenticate as the bypass-
-listed App instead.
+### Per-repo setup checklist
 
-Configure it with:
+1. Check whether a ruleset or classic branch protection rule already covers
+   `main`, and whether a tag ruleset covers your release tag pattern (e.g.
+   `v*`). If neither exists, skip the rest of this checklist — the default
+   token works as-is.
+2. Choose one identity to authenticate release pushes: a GitHub App
+   installed on this repo, or a fine-grained personal access token (PAT)
+   belonging to a user whose role is exempt from the rule.
+3. For a GitHub App: grant it `Contents`, `Pull requests`, and `Actions`
+   read/write, install it on this repository, then set repo variable
+   `RELEASE_APP_CLIENT_ID` and repo secret `RELEASE_APP_PRIVATE_KEY`. For a
+   PAT: create a fine-grained PAT with the same scopes and store it as repo
+   secret `RELEASE_TOKEN` (or another name, configured under
+   `[version.pushAuth]` — see the deprecated section below).
+4. Add that App, or the PAT-owning user, as a bypass actor on every ruleset
+   that covers `main` and on every ruleset that covers your release tag
+   pattern. Classic branch protection instead needs the automation identity
+   exempted from the rule directly (an admin-override alone may not cover
+   it).
+5. Run `scaffold_ci` (or `/setup`) to install/refresh the workflows and
+   their token chain, and check its `protection` report for what it still
+   sees configured.
+6. Trigger a real release, or dispatch **SDLC Promote Release**, and confirm
+   the push and tag steps actually succeed in the run log — not just that
+   the job finished.
+
+### Recommended ruleset
+
+Scope the ruleset to the default branch specifically, require the
+release-relevant status check, and add your chosen bypass actor:
+
+```json
+{
+  "name": "protect-main",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": { "include": ["~DEFAULT_BRANCH"], "exclude": [] }
+  },
+  "rules": [
+    { "type": "deletion" },
+    { "type": "non_fast_forward" },
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "required_status_checks": [{ "context": "verify-release-intent" }],
+        "strict_required_status_checks_policy": false
+      }
+    }
+  ],
+  "bypass_actors": [
+    { "actor_type": "Integration", "actor_id": 123456, "bypass_mode": "always" }
+  ]
+}
+```
+
+Replace `actor_id` with your GitHub App's ID (or use
+`actor_type: "RepositoryRole"` / `"Team"` for a PAT-based bypass). Add a
+second ruleset with `"target": "tag"` and a matching `ref_name` pattern
+(e.g. `v*`) if `tag.enabled` is true, with the same `bypass_actors` entry.
+
+### Do not
+
+- Do not scope `required_status_checks` to `~ALL` branches. Require them on
+  `~DEFAULT_BRANCH` only — the release commit and tag both land on `main`
+  itself, and scoping to every branch adds required checks unrelated to
+  release pushes.
+- Do not assume classic branch protection's admin-override covers your
+  automation identity. Verify the App or PAT-owning user is actually exempt
+  from the rule you added — an admin-override that excludes them still
+  rejects the push.
+- Do not protect `main` without also covering release tags. A branch
+  ruleset alone stops the file-writing commit; if `tag.enabled` is true, the
+  tag push (`refs/tags/...`) needs the same bypass actor on a matching tag
+  ruleset, or it fails on its own.
+
+### Using `method = "pr"` under rulesets
+
+`method = "pr"` writes the release commit to a `release/<tag>` branch and
+opens a PR into `main` labeled `no-release`, with auto-merge requested — it
+never pushes to `main` directly, so a branch ruleset does not block it. It
+does not exempt you from the setup checklist above: with `tag.enabled` true,
+the tag is still pushed directly (`git push origin refs/tags/<tag>`, then
+`gh release create`), so a tag ruleset still needs a bypass identity.
+`promote-release.cjs`'s promotion bump follows the same rule: `deliverBump`
+pushes to `release/<targetTag>` and opens a PR (`gh pr create --label
+no-release --base <branch>`) when `method` is `"pr"`, with auto-merge
+failures treated as a non-fatal warning.
+
+Auto-merge itself needs "Allow auto-merge" enabled in Settings → General,
+and no required check that never runs against the release PR — otherwise the
+PR sits open and must be merged by hand; the tag and release from phase 3,
+when `tag.enabled` is true, are created independently and do not wait on
+that PR.
+
+### `push-with-secret` (deprecated)
+
+`push-with-secret` is a deprecated alias for `"push"`. `release-on-main.cjs`
+and `promote-release.cjs` — the two scripts that read `method` — normalize
+it before running:
+
+```js
+const method = config.method === 'push-with-secret' ? 'push' : (config.method || 'push');
+```
+
+`retag-release.cjs` does not read `method` at all, so this alias makes no
+difference to it — it is a deprecated legacy safety net.
+
+What `push-with-secret` used to gate — rewriting the scaffolded workflows'
+`secrets.RELEASE_TOKEN` reference to a custom secret name — no longer
+depends on `method` at all: `scaffold_ci` rewrites `secrets.RELEASE_TOKEN`
+to `secrets.<pushAuth.secretName>` in `release-on-main.yml`,
+`promote-release.yml`, and `retag-release.yml` (the workflow files, not the
+`method` value) whenever `[version.pushAuth] secretName` is set to something
+other than the default `RELEASE_TOKEN` — for any `method` value, including
+`"push"` and `"pr"`.
+
+If your config still has `method = "push-with-secret"`, it keeps working (as
+`"push"`), but migrate it to `method = "push"` when convenient — the value
+only exists for config files written before this change. If you're only
+setting a custom push-auth secret name, configure `[version.pushAuth]`
+directly; `method` no longer needs to be `"push-with-secret"` to activate
+the rewrite:
 
 ```toml
 [version]
-method = "push-with-secret"
+method = "push"
 
 [version.pushAuth]
 secretName = "RELEASE_TOKEN"
 ```
-
-Setup (also printed by `scaffold_ci`'s `next` guidance when this method is
-configured):
-
-1. Create a GitHub App with the `Contents: write` repository permission.
-2. Install the App on this repository.
-3. Generate an installation access token for the App and add it as a repo
-   secret named `pushAuth.secretName` (e.g. `RELEASE_TOKEN`).
-4. Add the App as a bypass actor in your branch-protection rulesets
-   (Settings → Rules → Rulesets → select ruleset → Bypass list → Add
-   bypass → select the GitHub App).
-
-**Note:** `version.method` and `version.pushAuth` are validated both by
-the JSON schema (`sdlc-config.schema.json`) and by the Go config parser
-at runtime. The schema's `method` enum includes `"push-with-secret"` and
-the `pushAuth` object with its `secretName` field.
-
-**Troubleshooting:**
-
-- **Release PR not created at all (`"pr"` method)** — check the
-  `release-on-main` workflow run logs for a caught error near "Phase 4
-  (PR delivery) failed"; the tag/release step above it succeeded regardless
-  (if `tag.enabled`).
-  Common causes: `gh` not authenticated in the workflow, or the workflow's
-  `GITHUB_TOKEN` permissions don't include `contents: write` /
-  `pull-requests: write`.
-- **File-write commit rejected (`"push"` method)** — the branch is
-  protected. Switch `method` to `"pr"` (works around protection), or to
-  `"push-with-secret"` if you have (or can set up) a bypass-listed GitHub
-  App, or remove the protection rule for the automation actor.
-- **File-write commit rejected (`"push-with-secret"` method)** — the
-  configured secret is missing, expired, or belongs to an identity not on
-  the ruleset's bypass list. Re-check `pushAuth.secretName` matches an
-  actual repo secret, and that the App backing it is listed as a bypass
-  actor.
-- **Release PR created but not merging (`"pr"` method)** — auto-merge is
-  likely disabled repo-wide, or a required check on `main` is not
-  configured to run on this PR. Merge it manually; this does not affect the
-  already-published release.
-- **`scaffold_ci` reports "branch protection detected"** — informational,
-  and only actionable if `method` is `"push"`: that method's
-  direct push will be blocked, so switch to `"pr"` or `"push-with-secret"`.
-  With either configured, no bypass or rule change to the default token is
-  required. Disabling `versionFile`/`changelog` entirely sidesteps this
-  too, since only those two paths use `method`.
 
 ## Controlling Version Bumps via PRs
 
@@ -460,7 +516,7 @@ Full `.sdlc-v2/config.toml` `version` section:
 |---|---|---|---|
 | `preRelease` | No | — | Default pre-release label (e.g., `"rc"`). Overrides the resolved bump when the bump did not come from a CLI `--bump` flag (i.e., overrides config `ship.bump` and the built-in default, but not an explicit CLI flag). |
 | `preReleasePolicy` | No | `"continue-rc"` | Controls RC suggestion and enforcement. `"always-rc"`: enforces RC bumps in `/ship` (overrides resolved bump to `"rc"` regardless of source, including an explicit CLI `--bump`); standalone `/pr` only suggests RC, it does not enforce. `"default-rc"`: suggests RC in `/pr` and makes `/ship` resolve the bump to `"rc"` by default, but an explicit CLI `--bump` overrides it to a final release. `"continue-rc"`: suggests RC only when existing RC tags are found (no ship-time enforcement). `"never"`: never suggests RC. |
-| `method` | No | `"push"` | How the `versionFile` and `changelog` paths deliver their writes: `"push"` (direct commit to the default branch), `"pr"` (via a single `release/<tag>` PR — works with branch protection), or `"push-with-secret"` (direct push like `"push"`, but scaffolded CI authenticates with `pushAuth.secretName` instead of `GITHUB_TOKEN` — see "The `push-with-secret` method" above). Does not affect `tag`, which always pushes directly. Note: the JSON schema's `method` enum does not list `"push-with-secret"` yet — it is validated by the Go config parser at runtime instead. |
+| `method` | No | `"push"` | How the `versionFile` and `changelog` paths deliver their writes: `"push"` (direct commit to the default branch), `"pr"` (via a single `release/<tag>` PR — works with branch protection), or `"push-with-secret"` (deprecated alias for `"push"` — see "`push-with-secret` (deprecated)" under [Protected branches and rulesets](#protected-branches-and-rulesets)). Does not affect `tag`, which always pushes directly. |
 | `tag.enabled` | No | `false` | Whether the tag path is active: creates a git tag and GitHub Release on every bump. |
 | `tag.prefix` | No | auto-detected from existing tags; `/setup` writes `"v"` explicitly for new tag-only projects | Prefix for git tags (e.g., `v` for `v1.2.3`). |
 | `versionFile.enabled` | No | `false` | Whether the version-file path is active. Also determines whether the current version is read from this file (`true`) or derived from git tags (`false`), independent of `tag.enabled`. |
@@ -468,7 +524,7 @@ Full `.sdlc-v2/config.toml` `version` section:
 | `versionFile.fileType` | Required if `versionFile.enabled` | inferred | Parser to use for the version file: `package.json`, `cargo.toml`, `pyproject.toml`, `pubspec.yaml`, `plugin.json`, or `version-file`. |
 | `changelog.enabled` | No | `false` | Whether the changelog path is active: prepends a release entry on every bump. |
 | `changelog.file` | No | `"CHANGELOG.md"` (used only when `changelog.enabled`) | Path to changelog file. |
-| `pushAuth.secretName` | Required if `method` is `"push-with-secret"` | `""` | Name of the repo secret holding a GitHub App installation token (or PAT) with `Contents: write` permission and bypass privileges on branch-protection rulesets. Ignored for every other `method` value. |
+| `pushAuth.secretName` | No | `""` (effectively `RELEASE_TOKEN`) | Name of the repo secret holding the App or PAT token used in place of the default `RELEASE_TOKEN` fallback for release pushes. When set to a value other than `RELEASE_TOKEN`, `scaffold_ci` rewrites the scaffolded workflows' `secrets.RELEASE_TOKEN` reference to this name, for any `method`. See [Protected branches and rulesets](#protected-branches-and-rulesets). |
 
 At least one of `tag.enabled` or `versionFile.enabled` must be `true` — a config with both false (or absent) is rejected by `pr_prepare`, `pr_apply`, and every CI script.
 
@@ -500,6 +556,35 @@ The workflow resolves the final release tag on HEAD by:
 This ensures only actual releases (not RCs) trigger downstream automation like binary builds or deployments. RC tags are created by `release-on-main.cjs` but are intentionally skipped by `release-dispatch.yml`.
 
 ## Troubleshooting
+
+### "GH013: Repository rule violations" on a release push
+
+A branch or tag ruleset rejected the push — the release commit, the release
+tag, or both — because it came from a token that isn't on the ruleset's
+bypass list. `release-on-main.cjs` and `promote-release.cjs` each recognize
+this failure (`GH013`, "Repository rule violations", or "protected branch"
+in the git error) through their own push helper, and both prepend the same
+hint to the workflow log:
+
+```
+Push rejected by a branch/tag ruleset. GITHUB_TOKEN cannot bypass rulesets.
+Fix one of:
+  1. Set repo variable RELEASE_APP_CLIENT_ID + secret RELEASE_APP_PRIVATE_KEY for a GitHub App
+     that is on the ruleset bypass list.
+  2. Set secret RELEASE_TOKEN to a fine-grained PAT of a user on the bypass list.
+  3. Use version.method = "pr" (release commits go through a PR).
+Docs: docs/versioning.md#protected-branches-and-rulesets
+```
+
+`retag-release.cjs` also pushes a tag (`git push origin refs/tags/<tag>`)
+and can hit the same rejection, but it has no classifier — the raw git error
+surfaces in its workflow log without the hint above.
+
+Follow the "Per-repo setup checklist" under [Protected branches and
+rulesets](#protected-branches-and-rulesets) to configure one of the first
+two options, or switch to `method = "pr"` — remembering that `"pr"` still
+needs a bypass identity for the tag push when `tag.enabled` is true and a
+tag ruleset covers it.
 
 ### "config: version section uses the old flat shape"
 

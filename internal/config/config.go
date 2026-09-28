@@ -205,12 +205,11 @@ func (a *AutomationSection) StepMode(step string) string {
 // writes when enabled. One of:
 //   - "push" (default): commit and push directly to main.
 //   - "pr": open a release PR instead of pushing directly to main.
-//   - "push-with-secret": commit and push directly to main like "push", but
-//     scaffolded CI (release-on-main.yml, promote-release.yml) authenticates
-//     with the repo secret named in PushAuth.SecretName instead of the
-//     default GITHUB_TOKEN — for repos whose branch-protection rulesets
-//     block direct pushes from the default token but allow a bypass-listed
-//     GitHub App identity (R10).
+//   - "push-with-secret": deprecated alias for "push". release-on-main.cjs
+//     and promote-release.cjs (the scripts that read Method) normalize it
+//     to "push" before running; it no longer selects distinct behavior.
+//     See PushAuth for the secret-name rewrite it used to gate, which is
+//     now independent of Method (R10).
 //
 // PreRelease is the default pre-release label applied when no explicit
 // base bump or --pre is given.
@@ -268,12 +267,14 @@ type VersionChangelogConfig struct {
 	File    string `json:"file" toml:"file"`
 }
 
-// PushAuth configures the alternate CI authentication used when Method is
-// "push-with-secret" (R10). SecretName names the repo secret — holding a
-// GitHub App installation token (or PAT) with Contents:write permission and
-// bypass privileges on the repo's branch-protection rulesets — that
-// scaffolded release-on-main.yml/promote-release.yml reference instead of
-// the default GITHUB_TOKEN. Ignored for every other Method value.
+// PushAuth configures an alternate CI push-authentication secret (R10).
+// SecretName names the repo secret — holding a GitHub App-issued token (or
+// PAT) with Contents:write permission and bypass privileges on the repo's
+// branch-protection rulesets — that scaffold_ci substitutes for the default
+// RELEASE_TOKEN fallback in release-on-main.yml, promote-release.yml, and
+// retag-release.yml. The rewrite fires whenever SecretName is set to
+// anything other than the default "RELEASE_TOKEN", for any Method value —
+// it is not gated on Method being "push-with-secret".
 type PushAuth struct {
 	SecretName string `json:"secretName" toml:"secretName"`
 }

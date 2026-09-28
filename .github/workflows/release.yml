@@ -1,17 +1,21 @@
 name: SDLC Release
 
-# Triggered two ways:
-# - push: tags "v*" — fires for a tag pushed with real user credentials (e.g.
-#   a manual `git push --tags`).
-# - workflow_dispatch — fires from release-dispatch.yml. release-on-main.cjs
-#   (in release-on-main.yml) pushes its tag using the default GITHUB_TOKEN,
-#   and GitHub Actions does not cascade-trigger other workflows (including
-#   this one's tag-push trigger) from GITHUB_TOKEN-authored pushes. This is a
-#   repo-local workaround for that limitation — see release-dispatch.yml.
+# Dispatch-only. There is no "push: tags: v*" trigger.
+#
+# Release tags can be pushed with any of several credentials, depending on
+# what's configured (a GitHub App installation token, a RELEASE_TOKEN PAT, or
+# the default GITHUB_TOKEN — see the token chain in release-on-main.cjs /
+# promote-release.cjs). Those credentials behave differently for workflow
+# triggers: a PAT- or App-token-authored push DOES trigger "push: tags", but
+# a GITHUB_TOKEN-authored push never triggers any other workflow. A push
+# trigger here would therefore double-run this workflow for PAT/App-pushed
+# tags (once from the push trigger, once from release-dispatch.yml) while
+# never firing at all for GITHUB_TOKEN-pushed tags. Dispatch-only avoids both
+# failure modes: release-dispatch.yml watches "Release on Main" for
+# completion and explicitly calls workflow_dispatch on this workflow exactly
+# once per tag, regardless of which credential pushed it. See
+# release-dispatch.yml for the mechanics.
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch: {}
 
 permissions:

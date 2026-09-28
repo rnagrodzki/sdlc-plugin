@@ -32,5 +32,5 @@ jobs:
         with:
           node-version: 20
 
-      - name: Test promote-release scripts
-        run: node --test .github/scripts/__tests__/promote-release-aggregate.test.cjs
+      - name: Test release scripts
+        run: node --test .github/scripts/__tests__/
