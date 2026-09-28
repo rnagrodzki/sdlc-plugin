@@ -34,7 +34,10 @@
  *      already-built RC rather than rebuilding at HEAD.
  *   7. Commit + push the bump BEFORE creating the tag/release, so a push
  *      failure (branch protection, non-fast-forward) aborts before the
- *      irreversible tag + GitHub Release are created.
+ *      irreversible tag + GitHub Release are created. With version.method
+ *      = "pr" the bump goes to release/<tag> and a no-release PR is opened
+ *      (auto-merge requested, best-effort) instead of pushing the branch.
+ *      A ruleset (GH013) rejection fails with RULESET_PUSH_HINT.
  *   8. Create the final annotated tag at the RC's SHA, push it, and create
  *      a non-pre-release GitHub Release.
  *
@@ -67,8 +70,8 @@
 
 'use strict';
 
-/** @version 7 — promote-release script version. Bump when behavior changes. */
-const PROMOTE_RELEASE_SCRIPT_VERSION = 7;
+/** @version 8 — promote-release script version. Bump when behavior changes. */
+const PROMOTE_RELEASE_SCRIPT_VERSION = 8;
 
 const fs   = require('node:fs');
 const path = require('node:path');
@@ -89,6 +92,71 @@ function exec(cmd, opts = {}) {
 
 function execOrThrow(cmd, opts = {}) {
   return execSync(cmd, { encoding: 'utf8', stdio: 'pipe', ...opts }).trim();
+}
+
+/**
+ * Hint shown when a push is rejected by a branch/tag ruleset that
+ * GITHUB_TOKEN cannot bypass. Kept byte-for-byte identical (copy-pasted,
+ * not imported — payloads are standalone scripts) with release-on-main.cjs.
+ */
+const RULESET_PUSH_HINT =
+  'Push rejected by a branch/tag ruleset. GITHUB_TOKEN cannot bypass rulesets.\n' +
+  'Fix one of:\n' +
+  '  1. Set repo variable RELEASE_APP_CLIENT_ID + secret RELEASE_APP_PRIVATE_KEY for a GitHub App\n' +
+  '     that is on the ruleset bypass list.\n' +
+  '  2. Set secret RELEASE_TOKEN to a fine-grained PAT of a user on the bypass list.\n' +
+  '  3. Use version.method = "pr" (release commits go through a PR).\n' +
+  'Docs: docs/versioning.md#protected-branches-and-rulesets';
+
+/** @returns {string|null} hint when stderr is a ruleset rejection, else null */
+function classifyPushError(stderr) {
+  return /GH013|Repository rule violations|protected branch/i.test(String(stderr || ''))
+    ? RULESET_PUSH_HINT : null;
+}
+
+/**
+ * Run a `git push` command in repoRoot. On a ruleset rejection, rethrow
+ * with RULESET_PUSH_HINT leading the message; otherwise rethrow as-is.
+ */
+function pushOrExplain(cmd, repoRoot) {
+  try {
+    return execOrThrow(cmd, { cwd: repoRoot });
+  } catch (err) {
+    const hint = classifyPushError(err.stderr);
+    if (hint) throw new Error(`${hint}\n\n${String(err.stderr).trim()}`);
+    throw err;
+  }
+}
+
+/**
+ * Deliver the promote bump commit (already committed on HEAD).
+ * method 'pr': push to release/<targetTag>, open a PR into `branch` labeled
+ * no-release, and request auto-merge (non-fatal when unavailable).
+ * Any other method: push HEAD straight to `branch`.
+ * @param {{repoRoot:string, method:string, branch:string, targetTag:string}} opts
+ * @returns {{delivered:'push'|'pr', prUrl?:string}}
+ */
+function deliverBump({ repoRoot, method, branch, targetTag }) {
+  if (method === 'pr') {
+    const prBranch = `release/${targetTag}`;
+    pushOrExplain(`git push origin HEAD:refs/heads/${prBranch}`, repoRoot);
+    const prUrl = execOrThrow(
+      `gh pr create --base "${branch}" --head "${prBranch}" ` +
+      `--title "chore(release): promote ${targetTag}" ` +
+      `--body "Automated version bump for ${targetTag}." --label "no-release"`,
+      { cwd: repoRoot });
+    const prRef = prUrl || prBranch;
+    console.log(`Release PR opened: ${prRef} (${prBranch} -> ${branch})`);
+    try {
+      execOrThrow(`gh pr merge "${prRef}" --auto --squash --delete-branch`, { cwd: repoRoot });
+      console.log(`Auto-merge enabled for ${prRef}.`);
+    } catch (err) {
+      console.log(`WARNING: auto-merge not enabled for ${prRef}: ${err.message}. Merge it manually.`);
+    }
+    return { delivered: 'pr', prUrl };
+  }
+  pushOrExplain(`git push origin HEAD:${branch}`, repoRoot);
+  return { delivered: 'push' };
 }
 
 /**
@@ -650,8 +718,11 @@ function main() {
       });
 
       const branch = process.env.GITHUB_REF_NAME || 'main';
-      execOrThrow(`git push origin HEAD:${branch}`, { cwd: repoRoot });
-      console.log(`Committed and pushed version bump to ${branch}.`);
+      const method = config.method === 'push-with-secret' ? 'push' : (config.method || 'push');
+      const result = deliverBump({ repoRoot, method, branch, targetTag });
+      if (result.delivered === 'push') {
+        console.log(`Committed and pushed version bump to ${branch}.`);
+      }
     } else {
       console.log('No staged changes after version write — files already at target.');
     }
@@ -662,7 +733,14 @@ function main() {
   withTmpFile(notes, (tmpPath) => {
     execOrThrow(`git tag -a "${targetTag}" -F "${tmpPath}" "${rcSha}"`, { cwd: repoRoot });
   });
-  execOrThrow(`git push origin "refs/tags/${targetTag}"`, { cwd: repoRoot });
+  try {
+    pushOrExplain(`git push origin "refs/tags/${targetTag}"`, repoRoot);
+  } catch (err) {
+    // Drop the local tag so a re-run does not trip on a tag that never
+    // reached the remote.
+    exec(`git tag -d "${targetTag}"`, { cwd: repoRoot, stdio: 'pipe' });
+    throw err;
+  }
   console.log(`Tag ${targetTag} created at ${rcSha} and pushed.`);
 
   // Step 12: Create the final (non-pre-release) GitHub Release.
@@ -725,4 +803,7 @@ module.exports = {
   findLatestStableTag,
   bumpSemver,
   parseSemver,
+  deliverBump,
+  classifyPushError,
+  RULESET_PUSH_HINT,
 };
