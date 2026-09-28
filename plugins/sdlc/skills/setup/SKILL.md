@@ -87,7 +87,9 @@ field that does not exist. Deviations, one line each:
   `internal/setupmeta.Sections()` (includes `plan-style` and `plan-tasks`, added after the
   original port to expose `/plan`'s narrative-style and task-contract config, and
   `automation`, added to expose per-step pipeline automation mode, the execution report
-  toggle, plan-drift halting thresholds, and feature-branch push auto-approval).
+  toggle, plan-drift halting thresholds, and feature-branch push auto-approval, and `github`,
+  added to hold the personal `expectedAccount` for `/pr`'s active-account check in
+  `.sdlc-v2/local.toml`).
 - **Delete-legacy-files prompt retained.** `migrate({ action: "config" })`'s `Result` string
   names every ingested legacy path inline (e.g. `"...legacy ingested: [.claude/sdlc.json
   .claude/version.json]"`) — `MigrateOut` has no dedicated array field for them, so Step 2
@@ -230,7 +232,7 @@ branches — see Port Notes):
    `section.configPath` as a dot-path into `projectConfig` (e.g. `plan.guardrails`,
    `pr.labels`). If the resolved value is an array, `set` requires `length > 0`; any other
    non-null resolved value is `set`. Unresolved (any segment missing) → `not-set`.
-3. **`.sdlc-v2/local.toml` sections** (`ship`, `review`, `received-review`, `plan-style`, `github`): `set`
+3. **`.sdlc-v2/local.toml` sections** (`ship`, `review`, `received-review`, `plan-style`, `github`, `automation`): `set`
    when `localConfig[section.configPath]` (e.g. `localConfig.receivedReview`,
    `localConfig.planStyle`) is non-null, else `not-set`.
 
@@ -466,8 +468,7 @@ config files" sub-section at the end of Step 3.
 #### 3.G. Generic field loop (`delegatedTo` empty)
 
 For sections with no `delegatedTo` (`version`, `ship`, `jira`, `review`, `received-review`,
-`github`, `plan-style`, `plan-tasks`, `automation`). For `github.expectedAccount`, use
-`remoteOwner` from `setup_prepare` as the default instead of `field.default`:
+`github`, `plan-style`, `plan-tasks`, `automation`):
 
 If `section.confirmDetected === true` (currently only `version`), dispatch a meta-prompt
 FIRST using AskUserQuestion:
@@ -489,7 +490,8 @@ For each entry `field` in `section.fields` (when iterating), dispatch one AskUse
 - **Question prompt:** `field.label`
 - **Helper text:** `field.description` (verbatim from the manifest)
 - **Choices:** `field.options` (or free-text input when `options` is empty)
-- **Default:** `field.default`
+- **Default:** `field.default` — except `github.expectedAccount`, whose default is
+  `remoteOwner` from `setup_prepare`
 - **Skip gate:** if `field.whenStepInActiveSteps` is set, skip this field entirely (do not
   ask, do not write a value) unless that step name is present in the `ship.steps` value the
   user already chose earlier in this same field loop.
@@ -640,6 +642,10 @@ On **skip**: Do not write a `pr` section.
 
 The expected GitHub account is not part of `pr`. The `github` section (3.G) collects it
 into `.sdlc-v2/local.toml`.
+
+`pr` no longer collects `defaultBranch`. It is not a property of the config schema and no
+tool reads it: `/pr` detects the base branch at runtime. The `defaultBranch` value that
+`setup_prepare` returns is informational only.
 
 Store the assembled `pr` config for use in the "Writing config files" step. **`pr` is shared
 with `pr-labels`** — see "Writing config files" below for the required read-preserve-write

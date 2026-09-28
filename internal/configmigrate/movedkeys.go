@@ -16,14 +16,19 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
+// moveTarget is the local.toml section and key a moved key lands in.
+type moveTarget struct {
+	section, key string
+}
+
 // movedLocalKeys maps project-section keys that moved to local.toml to their
 // new local section and key.
-var movedLocalKeys = map[string]map[string][2]string{
-	"pr": {"expectedAccount": {"github", "expectedAccount"}},
+var movedLocalKeys = map[string]map[string]moveTarget{
+	"pr": {"expectedAccount": {section: "github", key: "expectedAccount"}},
 	"execute": {
-		"auto":                {"executePrefs", "auto"},
-		"quality":             {"executePrefs", "quality"},
-		"highRiskAutoApprove": {"executePrefs", "highRiskAutoApprove"},
+		"auto":                {section: "executePrefs", key: "auto"},
+		"quality":             {section: "executePrefs", key: "quality"},
+		"highRiskAutoApprove": {section: "executePrefs", key: "highRiskAutoApprove"},
 	},
 }
 
@@ -56,8 +61,8 @@ func (e *MovedKeysErr) Error() string {
 // Suggestion tells the user how to fix the config by hand.
 func (e *MovedKeysErr) Suggestion() string { return movedKeysSuggestion }
 
-// MovedKeysWarning renders the user-facing warning for a successful move
-// (text in "Final Shape"). Shared by pr_prepare and resolve-config.
+// MovedKeysWarning renders the user-facing warning for a successful move.
+// Shared by pr_prepare and resolve-config.
 func MovedKeysWarning(moved []string) string {
 	var b strings.Builder
 	b.WriteString("Moved personal settings from " + movedKeysConfigRel + " to " + movedKeysLocalRel + ":\n")
@@ -107,10 +112,9 @@ func tableHeader(line string) (name string, isHeader bool) {
 // written unless both checks pass. local.toml is written before config.toml,
 // so a failure between the two writes never loses a value. No backup is made.
 //
-// Callers must compare the returned *MovedKeysErr to nil directly. Never
-// assign it to an `error` variable first: a nil *MovedKeysErr stored in an
-// error interface is not == nil.
-func MigrateMovedKeys(mainRoot string) (moved []string, err *MovedKeysErr) {
+// A non-nil err is always a *MovedKeysErr; use errors.As to reach its
+// Suggestion.
+func MigrateMovedKeys(mainRoot string) (moved []string, err error) {
 	cfgPath := filepath.Join(mainRoot, paths.DataDir, "config.toml")
 	localPath := filepath.Join(mainRoot, paths.DataDir, "local.toml")
 
@@ -136,7 +140,7 @@ func MigrateMovedKeys(mainRoot string) (moved []string, err *MovedKeysErr) {
 			if !ok {
 				continue
 			}
-			keys = append(keys, movedKey{oldSect: sect, oldKey: key, newSect: dst[0], newKey: dst[1], value: v})
+			keys = append(keys, movedKey{oldSect: sect, oldKey: key, newSect: dst.section, newKey: dst.key, value: v})
 		}
 	}
 	if len(keys) == 0 {
@@ -159,7 +163,7 @@ func MigrateMovedKeys(mainRoot string) (moved []string, err *MovedKeysErr) {
 	localOld := map[string]any{}
 	if rerr == nil {
 		if toml.Unmarshal(localText, &localOld) != nil {
-			return nil, fail("local.toml is not valid TOML")
+			return nil, fail(movedKeysLocalRel + " is not valid TOML")
 		}
 	}
 
@@ -185,14 +189,14 @@ func MigrateMovedKeys(mainRoot string) (moved []string, err *MovedKeysErr) {
 	// Step 6: the edited config must equal the original minus the moved keys.
 	var cfgB, cfgWant map[string]any
 	if toml.Unmarshal([]byte(newCfg), &cfgB) != nil {
-		return nil, fail("config.toml layout not supported for automatic edit")
+		return nil, fail(movedKeysConfigRel + " layout not supported for automatic edit")
 	}
 	_ = toml.Unmarshal(cfgText, &cfgWant) // fresh copy of A; parsed fine above
 	for _, k := range keys {
 		delete(cfgWant[k.oldSect].(map[string]any), k.oldKey)
 	}
 	if !reflect.DeepEqual(cfgB, cfgWant) {
-		return nil, fail("config.toml layout not supported for automatic edit")
+		return nil, fail(movedKeysConfigRel + " layout not supported for automatic edit")
 	}
 
 	// Step 7: add missing keys to local.toml.
@@ -227,7 +231,7 @@ func MigrateMovedKeys(mainRoot string) (moved []string, err *MovedKeysErr) {
 	// Step 8: the edited local must equal the old local plus the new keys.
 	var localB map[string]any
 	if toml.Unmarshal([]byte(newLocal), &localB) != nil {
-		return nil, fail("local.toml layout not supported for automatic edit")
+		return nil, fail(movedKeysLocalRel + " layout not supported for automatic edit")
 	}
 	localWant := map[string]any{}
 	if len(localText) > 0 {
@@ -240,7 +244,7 @@ func MigrateMovedKeys(mainRoot string) (moved []string, err *MovedKeysErr) {
 		tbl, ok := localWant[k.newSect].(map[string]any)
 		if !ok {
 			if _, exists := localWant[k.newSect]; exists {
-				return nil, fail("local.toml layout not supported for automatic edit")
+				return nil, fail(movedKeysLocalRel + " layout not supported for automatic edit")
 			}
 			tbl = map[string]any{}
 			localWant[k.newSect] = tbl
@@ -248,7 +252,7 @@ func MigrateMovedKeys(mainRoot string) (moved []string, err *MovedKeysErr) {
 		tbl[k.newKey] = k.value
 	}
 	if !reflect.DeepEqual(localB, localWant) {
-		return nil, fail("local.toml layout not supported for automatic edit")
+		return nil, fail(movedKeysLocalRel + " layout not supported for automatic edit")
 	}
 
 	// Step 9: write local.toml first, then config.toml.
@@ -261,7 +265,6 @@ func MigrateMovedKeys(mainRoot string) (moved []string, err *MovedKeysErr) {
 		return nil, fail(werr.Error())
 	}
 
-	// Step 10.
 	return lines, nil
 }
 
@@ -285,7 +288,7 @@ func dropMovedLines(text string) string {
 }
 
 // isKeyLine reports whether line assigns one of the keys in inner.
-func isKeyLine(line string, inner map[string][2]string) bool {
+func isKeyLine(line string, inner map[string]moveTarget) bool {
 	trimmed := strings.TrimLeft(line, " \t")
 	for key := range inner {
 		rest, ok := strings.CutPrefix(trimmed, key)

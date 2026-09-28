@@ -1,6 +1,7 @@
 package configmigrate
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -55,6 +56,16 @@ func setupProject(t *testing.T, config, local string) (root, cfgPath, localPath 
 		}
 	}
 	return root, cfgPath, localPath
+}
+
+// asMovedKeysErr fails the test unless err is a *MovedKeysErr.
+func asMovedKeysErr(t *testing.T, err error) *MovedKeysErr {
+	t.Helper()
+	var mk *MovedKeysErr
+	if !errors.As(err, &mk) {
+		t.Fatalf("want *MovedKeysErr, got %v", err)
+	}
+	return mk
 }
 
 func readFile(t *testing.T, path string) string {
@@ -209,10 +220,11 @@ func TestMigrateMovedKeys_DifferentValueConflict(t *testing.T) {
 	local := "[github]\nexpectedAccount = \"bob\"\n"
 	root, cfgPath, localPath := setupProject(t, cfg, local)
 
-	moved, err := MigrateMovedKeys(root)
-	if err == nil {
+	moved, merr := MigrateMovedKeys(root)
+	if merr == nil {
 		t.Fatalf("expected *MovedKeysErr, got moved=%v", moved)
 	}
+	err := asMovedKeysErr(t, merr)
 	want := "Cannot move personal settings from .sdlc-v2/config.toml to .sdlc-v2/local.toml automatically: " +
 		".sdlc-v2/local.toml already has a different value for [github] expectedAccount\n" +
 		"  pr.expectedAccount -> [github] expectedAccount"
@@ -231,11 +243,11 @@ func TestMigrateMovedKeys_InlineTableLayoutError(t *testing.T) {
 	cfg := "pr = { expectedAccount = \"a\" }\n"
 	root, cfgPath, localPath := setupProject(t, cfg, "")
 
-	_, err := MigrateMovedKeys(root)
-	if err == nil {
+	_, merr := MigrateMovedKeys(root)
+	if merr == nil {
 		t.Fatalf("expected *MovedKeysErr for inline table")
 	}
-	if err.Reason != "config.toml layout not supported for automatic edit" {
+	if err := asMovedKeysErr(t, merr); err.Reason != ".sdlc-v2/config.toml layout not supported for automatic edit" {
 		t.Fatalf("Reason = %q", err.Reason)
 	}
 	if readFile(t, cfgPath) != cfg {
@@ -251,12 +263,87 @@ func TestMigrateMovedKeys_InvalidLocal(t *testing.T) {
 	local := "[github\n"
 	root, cfgPath, localPath := setupProject(t, cfg, local)
 
-	_, err := MigrateMovedKeys(root)
-	if err == nil || err.Reason != "local.toml is not valid TOML" {
-		t.Fatalf("want invalid-local error, got %v", err)
+	_, merr := MigrateMovedKeys(root)
+	if merr == nil {
+		t.Fatalf("want invalid-local error, got nil")
+	}
+	if err := asMovedKeysErr(t, merr); err.Reason != ".sdlc-v2/local.toml is not valid TOML" {
+		t.Fatalf("Reason = %q", err.Reason)
 	}
 	if readFile(t, cfgPath) != cfg || readFile(t, localPath) != local {
 		t.Fatalf("files changed")
+	}
+}
+
+func TestMigrateMovedKeys_QualityMoves(t *testing.T) {
+	cfg := "[execute]\n# Skip the tier prompt.\nquality = \"balanced\"\ncommitWaves = true\n"
+	root, cfgPath, localPath := setupProject(t, cfg, "")
+
+	moved, err := MigrateMovedKeys(root)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := []string{"execute.quality -> [executePrefs] quality"}; !reflect.DeepEqual(moved, want) {
+		t.Fatalf("moved = %v, want %v", moved, want)
+	}
+	if got, want := readFile(t, cfgPath), removeLine(t, cfg, `quality = "balanced"`); got != want {
+		t.Fatalf("config.toml:\n got: %q\nwant: %q", got, want)
+	}
+	if got, want := readFile(t, localPath), "[executePrefs]\nquality = 'balanced'\n"; got != want {
+		t.Fatalf("local.toml:\n got: %q\nwant: %q", got, want)
+	}
+}
+
+// readOnlyDataDir makes the .sdlc-v2 dir read-only so AtomicWriteBytes
+// cannot create its temp file there. Skips when running as root, which
+// ignores directory permissions.
+func readOnlyDataDir(t *testing.T, root string) {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	dir := filepath.Join(root, paths.DataDir)
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+}
+
+// A failed local.toml write happens before config.toml is touched, so the
+// value is still in config.toml and nothing is lost.
+func TestMigrateMovedKeys_LocalWriteFailureLeavesConfig(t *testing.T) {
+	cfg := "[pr]\nexpectedAccount = \"alice\"\n"
+	root, cfgPath, localPath := setupProject(t, cfg, "")
+	readOnlyDataDir(t, root)
+
+	moved, err := MigrateMovedKeys(root)
+	if err == nil {
+		t.Fatalf("expected a write error, got moved=%v", moved)
+	}
+	asMovedKeysErr(t, err)
+	if readFile(t, cfgPath) != cfg {
+		t.Fatalf("config.toml changed after a failed local.toml write")
+	}
+	if _, statErr := os.Stat(localPath); !os.IsNotExist(statErr) {
+		t.Fatalf("local.toml must not exist, stat err = %v", statErr)
+	}
+}
+
+// When local.toml already holds the value, only config.toml is written; a
+// failure there leaves both files as they were.
+func TestMigrateMovedKeys_ConfigWriteFailureLeavesBoth(t *testing.T) {
+	cfg := "[pr]\nexpectedAccount = \"alice\"\n"
+	local := "[github]\nexpectedAccount = \"alice\"\n"
+	root, cfgPath, localPath := setupProject(t, cfg, local)
+	readOnlyDataDir(t, root)
+
+	moved, err := MigrateMovedKeys(root)
+	if err == nil {
+		t.Fatalf("expected a write error, got moved=%v", moved)
+	}
+	asMovedKeysErr(t, err)
+	if readFile(t, cfgPath) != cfg || readFile(t, localPath) != local {
+		t.Fatalf("files changed after a failed config.toml write")
 	}
 }
 

@@ -179,7 +179,7 @@ type ExecuteResolveConfigOut struct {
 	CommitWaves         bool              `json:"commitWaves" jsonschema_description:"Effective commit-waves setting: whether execute commits each wave separately. Resolution order CLI > config execute.commitWaves > default true; sources.commitWaves reports which one won."`
 	HighRiskAutoApprove bool              `json:"highRiskAutoApprove" jsonschema_description:"Effective high-risk auto-approval, from executePrefs.highRiskAutoApprove in .sdlc-v2/local.toml (a personal setting) and false otherwise. No plan-approval state is consulted; sources.highRiskAutoApprove reports whether the value came from config or the built-in default."`
 	Sources             map[string]string `json:"sources" jsonschema_description:"Per-key provenance: cli, pipeline, config, default, or unset."`
-	Warnings            []string          `json:"warnings,omitempty" jsonschema_description:"Non-fatal problems: an unreadable ship state, or a config value of the wrong type or outside the allowed enum (the built-in default is used instead)."`
+	Warnings            []string          `json:"warnings,omitempty" jsonschema_description:"Non-fatal problems: an unreadable ship state, or a config value of the wrong type or outside the allowed enum (the built-in default is used instead). Also carries a notice (not a problem) when personal keys were moved from config.toml [execute] to local.toml [executePrefs]."`
 }
 
 // ExecutionReportOut is the read-only end-of-run report returned by the
@@ -538,7 +538,7 @@ func RegisterExecuteStateTools(s *mcpserver.Server) {
 Pass "action" to select an operation. Each action uses a subset of the input fields (unlisted fields are ignored):
 
 - wave-compute: Stateless — parses the plan file at planPath and computes the wave schedule (no state file read/write). Requires planPath. Optional: extraDepsJson (JSON array of {task, dependsOn, reason} merged with each task's explicit "Depends on" field). Returns {route, preWave, waves[{number, tasks[], expectedFiles[], verificationHint}]}.
-- resolve-config: Stateless — resolves this run's effective auto mode, quality tier and high-risk auto-approval from CLI flags, this branch's ship state, local.toml [executePrefs] (auto, quality, highRiskAutoApprove) and config.toml [execute] (commitWaves) (no state file read/write). First moves auto, quality or highRiskAutoApprove from config.toml [execute] to local.toml [executePrefs] (reported in warnings); fails with a data error (message plus suggestion) when that move is not safe. Optional: branch (enables the ship-state auto cross-read), quality (--quality), auto (--auto). An out-of-enum quality warns and falls through to config, then the auto default, rather than failing. Returns {auto, quality (always present; empty means "ask the user for a tier"), highRiskAutoApprove, sources, warnings?}.
+- resolve-config: resolves this run's effective auto mode, quality tier and high-risk auto-approval from CLI flags, this branch's ship state, local.toml [executePrefs] (auto, quality, highRiskAutoApprove) and config.toml [execute] (commitWaves). Reads and writes no run state file, but is not side-effect-free: it first moves auto, quality or highRiskAutoApprove from config.toml [execute] to local.toml [executePrefs] (reported in warnings); fails with a data error (message plus suggestion) when that move is not safe. Optional: branch (enables the ship-state auto cross-read), quality (--quality), auto (--auto). An out-of-enum quality warns and falls through to config, then the auto default, rather than failing. Returns {auto, quality (always present; empty means "ask the user for a tier"), highRiskAutoApprove, sources, warnings?}.
 - init: Create execution state. Runs the same config auto-migration gate as ship_prepare first (migrates and backs up an outdated config, or fails with a /setup pointer if none exists); result may include a "migration" report. Returns {filePath, pipelineAuto (true when this branch's ship state has flags.auto=true — reported for diagnostics only; the execute SKILL.md high-risk gate no longer reads it, because resolve-config performs the same ship-state cross-read at Step 0 and folds the result into its effective auto value), warnings? (e.g. this branch's ship state exists but is unreadable), migration?}. Requires branch, quality. Optional: totalTasks, plannedTaskIds, planPath, planHash.
 - wave-start: Begin a wave. Returns narration (summary, display with task list + ETA, next). Requires wave. Optional: branch, tasksJson, runId (for fact sheets), detail ("concise"|"full"). If the run recorded a planHash at init, the plan file's current sha256 is compared against it first; a mismatch returns {halt:true, reason:"plan hash mismatch"} instead of narration and does not start the wave. An unreadable/missing plan file does not halt — it proceeds with a warning in the response's "warnings" field. Seeds server-owned dispatch state (dispatchedAt, workerName, batchId/batchIndex, attempt:1) for every valid tasksJson entry that doesn't already have one — a task that already has server state (wave-start called again on resume) is left untouched. Seeding failure is non-fatal and appends to "warnings".
 - wave-done: Complete a wave. Returns narration (summary, display with outcomes, timing, next wave preview + ETA). Records wave duration to TimingsStore. Requires wave. Optional: branch, decisions, status, detail ("concise"|"full").
@@ -2025,9 +2025,13 @@ func execActionResolveConfig(root string, in ExecuteStateIn) (any, error) {
 	// local.toml) is a data problem, not a resolution warning — it is
 	// reported the same way execActionInit reports its config-version gate
 	// (execute_state.go's KD5 gate above).
-	moved, mk := configmigrate.MigrateMovedKeys(root)
-	if mk != nil {
-		return nil, &mcpserver.DataError{Msg: mk.Error(), Suggestion: mk.Suggestion(), Cause: mk}
+	moved, mkErr := configmigrate.MigrateMovedKeys(root)
+	if mkErr != nil {
+		var mk *configmigrate.MovedKeysErr
+		if errors.As(mkErr, &mk) {
+			return nil, &mcpserver.DataError{Msg: mk.Error(), Suggestion: mk.Suggestion(), Cause: mk}
+		}
+		return nil, &mcpserver.DataError{Msg: mkErr.Error(), Cause: mkErr}
 	}
 	if len(moved) > 0 {
 		out.Warnings = append(out.Warnings, configmigrate.MovedKeysWarning(moved))

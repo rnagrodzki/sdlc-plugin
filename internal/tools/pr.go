@@ -17,6 +17,7 @@
 package tools
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -49,7 +50,7 @@ import (
 // branch.ValidateExpectedBranch is dead code without something to compare
 // the current branch against — this mirrors pr.js's --expected-branch flag.
 type PRPrepareIn struct {
-	SkipConfigCheck bool   `json:"skipConfigCheck" jsonschema_description:"Skips the config-version auto-migration gate normally run before preflight checks. Set only when the caller has already verified or migrated the config."`
+	SkipConfigCheck bool   `json:"skipConfigCheck" jsonschema_description:"Skips the config-version auto-migration gate normally run before preflight checks, and the move of personal keys (such as pr.expectedAccount) from config.toml to local.toml that runs with it. Set only when the caller has already verified or migrated the config."`
 	ExpectedBranch  string `json:"expectedBranch,omitempty" jsonschema_description:"Branch the caller expects to be on. When set, the current branch is validated against it and the branch-guard hard gate rejects a mismatch."`
 }
 
@@ -212,7 +213,7 @@ type prRuntime struct {
 	configReadSection   func(root, section string) (map[string]any, error)
 	versionDetect       func(root, path, fileType string) (*version.VersionFile, error)
 	configMigrateVerify func(root string) error
-	configMoveKeys      func(root string) ([]string, *configmigrate.MovedKeysErr)
+	configMoveKeys      func(root string) ([]string, error)
 	branchValidate      func(current, expected string) branch.BranchGuardResult
 	jiraExtract         func(branchName string) string
 	templateResolve     func(root string) (*prtemplate.Template, error)
@@ -587,9 +588,13 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 			errs = append(errs, fmt.Sprintf("config-version: %s", err.Error()))
 			return PRPrepareOut{Errors: errs, NeedsMigration: true, Next: "Fix the errors above, then call pr_prepare again."}, nil
 		}
-		moved, mk := rt.configMoveKeys(mainRoot)
-		if mk != nil {
-			errs = append(errs, mk.Error()+"\n"+mk.Suggestion())
+		moved, mkErr := rt.configMoveKeys(mainRoot)
+		if mkErr != nil {
+			errs = append(errs, mkErr.Error())
+			var mk *configmigrate.MovedKeysErr
+			if errors.As(mkErr, &mk) {
+				errs = append(errs, mk.Suggestion())
+			}
 			return PRPrepareOut{Errors: errs, NeedsMigration: true, Next: "Fix the errors above, then call pr_prepare again."}, nil
 		}
 		if len(moved) > 0 {
@@ -604,7 +609,13 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 		ActiveAccount:   authProbe.ActiveAccount,
 	}
 
-	githubSection, _ := rt.configReadSection(mainRoot, "github")
+	// An absent local.toml or [github] section means "not configured"; any
+	// other read failure (malformed TOML, permission error) is reported so it
+	// is not mistaken for "not configured".
+	githubSection, ghErr := rt.configReadSection(mainRoot, "github")
+	if ghErr != nil && !errors.Is(ghErr, config.ErrNotFound) {
+		warnings = append(warnings, fmt.Sprintf("local.toml [github] section unreadable: %s; skipping expected-account check", ghErr.Error()))
+	}
 	expectedAccount := ""
 	if v, ok := githubSection["expectedAccount"].(string); ok {
 		if trimmed := strings.TrimSpace(v); trimmed != "" {

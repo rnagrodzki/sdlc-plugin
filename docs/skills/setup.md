@@ -54,6 +54,7 @@ templates, plan templates, guardrails, and more.
 | `plan-guardrails` | Plan guardrail rules |
 | `execution-guardrails` | Execution guardrail rules |
 | `openspec-block` | OpenSpec configuration |
+| `automation` | Unattended-run behavior for /ship and /execute (local.toml) |
 
 ## Examples
 

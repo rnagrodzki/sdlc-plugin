@@ -260,7 +260,7 @@ func TestPrPrepare_ConfigNeedsMigration_ShortCircuits(t *testing.T) {
 func TestPrPrepare_ConfigMoveKeysFails_ShortCircuits(t *testing.T) {
 	rt := prRuntime{
 		configMigrateVerify: func(root string) error { return nil },
-		configMoveKeys: func(root string) ([]string, *configmigrate.MovedKeysErr) {
+		configMoveKeys: func(root string) ([]string, error) {
 			return nil, &configmigrate.MovedKeysErr{
 				Reason: "local.toml already has a different value for [github] expectedAccount",
 				Lines:  []string{"pr.expectedAccount -> [github] expectedAccount"},
@@ -281,6 +281,10 @@ func TestPrPrepare_ConfigMoveKeysFails_ShortCircuits(t *testing.T) {
 	if !strings.Contains(strings.Join(out.Errors, " "), "[github] expectedAccount") {
 		t.Errorf("expected an error mentioning [github] expectedAccount, got %v", out.Errors)
 	}
+	// Error and suggestion are separate entries, not one spliced string.
+	if len(out.Errors) != 2 || !strings.HasPrefix(out.Errors[1], "Move each listed key") {
+		t.Errorf("expected [error, suggestion], got %q", out.Errors)
+	}
 	if out.Next != "Fix the errors above, then call pr_prepare again." {
 		t.Errorf("Next: got %q", out.Next)
 	}
@@ -289,7 +293,7 @@ func TestPrPrepare_ConfigMoveKeysFails_ShortCircuits(t *testing.T) {
 func TestPrPrepare_ConfigMoveKeysMoved_WarnsAndContinues(t *testing.T) {
 	rt := prRuntime{
 		configMigrateVerify: func(root string) error { return nil },
-		configMoveKeys: func(root string) ([]string, *configmigrate.MovedKeysErr) {
+		configMoveKeys: func(root string) ([]string, error) {
 			return []string{"pr.expectedAccount -> [github] expectedAccount"}, nil
 		},
 		ghAuthProbe: func(dir, host string) ghx.AuthProbeResult {
@@ -319,6 +323,103 @@ func TestPrPrepare_ConfigMoveKeysMoved_WarnsAndContinues(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(out.Warnings, " "), "Moved personal settings") {
 		t.Errorf("expected a warning mentioning \"Moved personal settings\", got %v", out.Warnings)
+	}
+}
+
+// expectedAccountRuntime is an authenticated, clean-tree runtime whose
+// [github] section read and origin remote are supplied by the caller.
+func expectedAccountRuntime(readSection func(root, section string) (map[string]any, error), originURL string) prRuntime {
+	return prRuntime{
+		ghAuthProbe: func(dir, host string) ghx.AuthProbeResult {
+			return ghx.AuthProbeResult{Authenticated: true, ActiveAccount: "someone"}
+		},
+		ghRepoAccessProbe: func(dir, owner, repo, host string) ghx.RepoAccessResult {
+			ok := true
+			return ghx.RepoAccessResult{Accessible: &ok}
+		},
+		configReadSection: readSection,
+		configRead:        func(root string) (*config.Config, error) { return nil, nil },
+		execRun: func(name string, args []string, opts execx.Options) (string, error) {
+			if originURL == "" {
+				return "", errors.New("fatal: no such remote 'origin'")
+			}
+			return originURL, nil
+		},
+		gitCurrentBranch: func(dir string) (string, error) { return "feat/thing", nil },
+		gitStatus:        func(dir string) (string, error) { return "", nil },
+		gitDefaultBranch: func(dir string) (string, error) { return "main", nil },
+		gitHasUpstream:   func(dir string) (bool, error) { return true, nil },
+		gitCommitsAhead:  func(dir string) (int, error) { return 0, nil },
+		branchValidate:   branch.ValidateExpectedBranch,
+		jiraExtract:      func(branchName string) string { return "" },
+		templateResolve:  func(root string) (*prtemplate.Template, error) { return nil, nil },
+	}
+}
+
+func notFoundSection(root, section string) (map[string]any, error) {
+	return nil, fmt.Errorf("config: section %q: %w", section, config.ErrNotFound)
+}
+
+func TestPrPrepare_NoExpectedAccount_NoRemote_Warns(t *testing.T) {
+	rt := expectedAccountRuntime(notFoundSection, "")
+	out, err := prPrepareCoreWith("/mock/root", "/mock/work", PRPrepareIn{SkipConfigCheck: true}, rt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "Could not resolve expected gh account (no [github] expectedAccount in .sdlc-v2/local.toml, no origin remote). Skipping active-account check."
+	if !slices.Contains(out.Warnings, want) {
+		t.Errorf("expected warning %q, got %v", want, out.Warnings)
+	}
+	if out.RepoAccessProbed {
+		t.Errorf("repo access must not be probed without a remote")
+	}
+}
+
+func TestPrPrepare_NoExpectedAccount_WithRemote_ProbesRepoAccess(t *testing.T) {
+	rt := expectedAccountRuntime(notFoundSection, "git@github.com:acme/widgets.git")
+	out, err := prPrepareCoreWith("/mock/root", "/mock/work", PRPrepareIn{SkipConfigCheck: true}, rt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !out.RepoAccessProbed {
+		t.Errorf("expected the repo access probe to run when a remote exists")
+	}
+	for _, w := range out.Warnings {
+		if strings.Contains(w, "Could not resolve expected gh account") {
+			t.Errorf("unexpected no-remote warning with a remote: %q", w)
+		}
+	}
+}
+
+func TestPrPrepare_GithubSectionUnreadable_Warns(t *testing.T) {
+	rt := expectedAccountRuntime(func(root, section string) (map[string]any, error) {
+		return nil, errors.New("config: toml: expected newline")
+	}, "")
+	out, err := prPrepareCoreWith("/mock/root", "/mock/work", PRPrepareIn{SkipConfigCheck: true}, rt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	found := false
+	for _, w := range out.Warnings {
+		if strings.Contains(w, "local.toml [github] section unreadable") && strings.Contains(w, "expected newline") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected an unreadable-section warning, got %v", out.Warnings)
+	}
+}
+
+func TestPrPrepare_GithubSectionNotFound_NoUnreadableWarning(t *testing.T) {
+	rt := expectedAccountRuntime(notFoundSection, "")
+	out, err := prPrepareCoreWith("/mock/root", "/mock/work", PRPrepareIn{SkipConfigCheck: true}, rt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, w := range out.Warnings {
+		if strings.Contains(w, "unreadable") {
+			t.Errorf("ErrNotFound must not produce an unreadable warning: %q", w)
+		}
 	}
 }
 

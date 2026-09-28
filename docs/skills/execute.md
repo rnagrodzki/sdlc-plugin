@@ -30,6 +30,7 @@ verification after each wave and automatic recovery from failures.
 | `--auto` | Skip all interactive prompts. | off — unless `executePrefs.auto` is set, or a dispatching `/ship` run is itself in auto mode; the three sources are OR-combined. See [Configuration](#configuration). |
 | `--branch <name>` | Create and check out this branch before executing. | auto-derived |
 | `--wave-timeout <s>` | Max seconds a single wave can run. Also used as each task's total-runtime ceiling when the server classifies still-open tasks. | `1800` |
+| `--commit-waves <true\|false>` | Commit each wave separately. Forwarded by `/ship` only when `ship.execute.commitWaves` is set. | `execute.commitWaves` in `config.toml`, else `true` |
 | `--wave-interval <s>` | Seconds between wave-await liveness polls. Also sets a heartbeat-staleness threshold of 10x this value (default 600s) before a worker is considered stalled, and a reclaim grace of max(5x this value, 300s) (default 300s) before a worker that never answers the reclaim is failed. See [Execute wave supervision](../execute-wave-supervision.md). | `60` |
 
 ### Quality tiers
@@ -110,8 +111,9 @@ file — you do not need to pass it again.
 - **Runtime config is resolved second, and always.** Immediately after loading
   state, the skill calls `execute_state({action: "resolve-config"})` to merge
   `--quality` / `--auto`, a dispatching `/ship` run's auto mode, and the
-  `execute.*` config keys into one effective answer. It is that call — not a
-  direct read of `config.toml` — that decides the tier, whether prompts are
+  `executePrefs.*` keys in `.sdlc-v2/local.toml` (plus `execute.commitWaves`
+  from `config.toml`) into one effective answer. It is that call — not a
+  direct read of either config file — that decides the tier, whether prompts are
   suppressed, and whether a high-risk wave needs a second approval. The skill
   prints each value with its source, so you can always see which of the three
   tiers supplied it.
