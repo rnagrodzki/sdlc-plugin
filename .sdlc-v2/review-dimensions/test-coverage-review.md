@@ -69,3 +69,7 @@ new changes to that same bar:
   have each failure point tested: first write succeeds/second fails, first
   write fails, and both succeed. Assert the on-disk state after each
   failure to verify partial writes do not corrupt state.
+- When a refactor removes or widens a guard (e.g. drops a `method ==`
+  check so more inputs reach a rewrite or splice), every newly admitted
+  input combination needs its own test case. Removing a guard is the same
+  as adding a branch: apply the same coverage bar.

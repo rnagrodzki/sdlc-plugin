@@ -64,7 +64,8 @@ test file, not just that the test file exists. When adding new conditional \
 branches, error paths, or alternative flows to a tool handler, each new branch \
 must have an explicit test case that exercises it. A task that adds a new \
 warning/error branch to a handler without a test case exercising that branch \
-is incomplete."""
+is incomplete. When a refactor removes or widens a guard (e.g. drops a method \
+check), every newly admitted input combination needs its own test case."""
 
 [plan.guardrails.plan-verification-scope-completeness]
 severity = "error"
@@ -154,7 +155,10 @@ multiple files or templates. When a codebase contains two or more \
 near-identical code paths (e.g. two polling loops, two error-classification \
 switches), a fix applied to one path must either be mirrored to the other \
 immediately or the paths must be consolidated — a divergent fix is worse \
-than not fixing at all."""
+than not fixing at all. For the copy-pasted CI payloads \
+(internal/tools/payloads/*.cjs), grep every sibling that shares the same push \
+helper, workflow input or error classifier before scoping a cross-cutting \
+change, and list each sibling in the task's file scope."""
 
 [plan.guardrails.kiss]
 severity = "warning"
@@ -303,7 +307,10 @@ never render as a blank line, a heading with nothing under it, or the word \
 interpretation. Handlers must also validate input parameter shapes (required \
 fields present, types correct) and reject invalid inputs with actionable \
 errors BEFORE processing -- do not silently accept malformed input and \
-produce corrupted downstream state."""
+produce corrupted downstream state. Values read from config or state files \
+and spliced into generated artifacts (workflow YAML, templated code, shell \
+scripts) must be validated against the destination syntax first; a bad value \
+fails as a DomainError with a recovery step."""
 
 [plan.guardrails.no-real-fs-git-in-tests]
 severity = "error"
@@ -452,7 +459,9 @@ added to an *In struct as part of a sub-feature, the task must also verify: \
 (1) each new input field is validated (not silently coerced) in the \
 handler; (2) each new output value generated (e.g. an id) is echoed in the \
 response; (3) all new *In fields carry jsonschema_description tags and \
-appropriate enum tags for closed sets."""
+appropriate enum tags for closed sets. Also check that description prose \
+(permissions, defaults) matches the code, and each prose default is a \
+structured schema default keyword."""
 
 [plan.guardrails.refactoring-includes-doc-sweep]
 severity = "warning"
@@ -752,12 +761,27 @@ normalize between a bare numeral and a prefixed form (e.g. "1" vs \
 erroring."""
 
 [execute.guardrails.shell-command-error-handling]
-severity = "warning"
+severity = "error"
 description = """
 Shell commands executed by tooling/scripts must check and propagate exit \
 codes (e.g. an execOrThrow-equivalent, not a bare exec that swallows \
 non-zero status) -- a silently-ignored non-zero exit produces a false \
-success signal to the caller."""
+success signal to the caller. The same holds for a false negative: when an \
+error-swallowing helper returns null or empty, that value must not flow into \
+a condition where it reads as a real negative answer (e.g. "not a \
+release-bump commit"). Use the throwing helper when the command is expected \
+to succeed."""
+
+[execute.guardrails.sibling-payload-fix-parity]
+severity = "error"
+description = """
+Before marking done a task that modifies the copy-pasted CI payloads \
+(internal/tools/payloads/release-on-main.cjs, promote-release.cjs, \
+retag-release.cjs), check the git diff: every cross-cutting fix, classifier, \
+hint or error branch must reach every sibling that shares the same push \
+helper or token chain, not just one or two. Also confirm each \
+.github/scripts/*.cjs mirror is byte-identical to its \
+internal/tools/payloads/ source."""
 
 [execute.guardrails.test-body-execution-verified]
 severity = "error"
@@ -766,7 +790,10 @@ A test that passes without exercising the target code (e.g. an empty body, \
 a body that never calls the function under test, or a mocked-away real \
 boundary) does not count as coverage. Before marking a test task done, \
 verify the test body actually invokes the code path it claims to cover and \
-would fail if that code were broken."""
+would fail if that code were broken. A test in the same diff whose specific \
+assertion was removed or weakened (e.g. a content check replaced by a bare \
+non-empty check) without an intended change to the code under test is a \
+masked regression: restore the assertion or justify the behavior change."""
 
 [execute.guardrails.preflight-covers-actual-operations]
 severity = "error"
@@ -843,7 +870,13 @@ independently verify that all three stay synchronized: grep template comments \
 and field names against schema enums and keys, and validate the template TOML \
 against the JSON schema. A passing TestConfigTemplateRoundTrip indicates parser \
 acceptance only, not schema parity -- both must be verified. Do not defer \
-template sync as a 'documentation-only gap'."""
+template sync as a 'documentation-only gap'. Also grep \
+internal/tools/payloads/*.cjs for hardcoded config values (secret names, \
+method values, permission claims) and confirm each is read from config at \
+runtime or matches what scaffold_ci writes; confirm the .github/scripts/ \
+mirrors stay byte-identical. Confirm schema description prose (permission \
+scope, defaults) matches what the code needs, and each prose default is a \
+structured default keyword."""
 
 [execute.guardrails.mcp-error-suggestion-coverage]
 severity = "error"

@@ -14,3 +14,8 @@ severity: high
   shared path.
 - Do not assume behavioral equivalence from the refactor's stated intent
   alone — verify it by running the tests.
+- When the diff removes or weakens a specific test assertion (e.g. replaces
+  `strings.Contains(out.Next, "expected")` with a bare `out.Next != ""`
+  check) without a matching intentional change to the function under test,
+  treat it as a masked regression. Require the original assertion to be
+  restored, or the behavior change to be stated and justified.

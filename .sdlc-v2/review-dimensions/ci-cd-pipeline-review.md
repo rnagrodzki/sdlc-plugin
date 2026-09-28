@@ -33,3 +33,13 @@ hook — keep them in sync." Check:
   by tests.
 - New test suites (e.g. `__tests__/**`) introduced alongside a script must be
   wired into the corresponding CI workflow (`test.yml`) in the same task.
+- Version-specific tool behavior: a workflow command must work across the
+  tool versions a routine bump would reach, not only the pinned one. For
+  example, `node --test <dir>/` works on Node 20 but fails on Node >=21 with
+  MODULE_NOT_FOUND; pass an explicit glob (`<dir>/*.test.cjs`) instead. When
+  a command depends on one version's behavior, say so in a comment next to
+  the pinned version.
+- CI/local-hook parity gaps: when a workflow step is deliberately not
+  mirrored in `lefthook.yml`'s pre-push hook (e.g. Node tests that run only
+  in CI), a comment in the workflow must say the gap is intentional. An
+  unexplained gap reads as an accidental omission.
