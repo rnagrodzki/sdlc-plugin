@@ -32,9 +32,7 @@ var AllowedProjectKeys = map[string]bool{
 // .sdlc-v2/config.toml, so they are deliberately excluded from
 // AllowedProjectKeys. TestSchemaSync checks schema top-level properties
 // against the union of AllowedProjectKeys and this map.
-var allowedLocalOnlyKeys = map[string]bool{
-	"planStyle": true,
-}
+var allowedLocalOnlyKeys = map[string]bool{}
 
 // validateProjectKeys checks that every top-level key in raw belongs to
 // AllowedProjectKeys. Returns an error listing any unknown keys.

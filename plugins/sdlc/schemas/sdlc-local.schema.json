@@ -58,6 +58,39 @@
       },
       "additionalProperties": false
     },
+    "githubSection": {
+      "type": "object",
+      "description": "User-local GitHub account preferences for the pr skill.",
+      "properties": {
+        "expectedAccount": {
+          "type": "string",
+          "description": "Expected gh account login for PR creation. Cascades to git remote origin owner if unset."
+        }
+      },
+      "additionalProperties": false
+    },
+    "executePrefsSection": {
+      "type": "object",
+      "description": "User-local preferences for the execute skill.",
+      "properties": {
+        "auto": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether /execute runs unattended: interactive prompts are suppressed, a feature branch is auto-created when starting on the default branch, and high-risk waves proceed without a second approval. Error-severity guardrail violations still halt execution and are never auto-overridden. Combined by OR with the --auto flag and with a dispatching /ship run's auto mode."
+        },
+        "quality": {
+          "type": "string",
+          "enum": ["full", "balanced", "minimal"],
+          "description": "Execution quality tier (model preset) applied without presenting /execute's tier-selection prompt. full = Speed (fastest, lightest models, skips the spec-compliance review); balanced = Balanced; minimal = Quality (strongest models, maximum correctness). The --quality flag overrides this. When unset and auto is false, /execute presents the prompt; when unset and auto is true, balanced is used."
+        },
+        "highRiskAutoApprove": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether a wave containing a High-risk task proceeds without an approval prompt, on the grounds that the plan was already approved at plan time. Independent of auto: set this alone to keep every other prompt while skipping just the high-risk gate."
+        }
+      },
+      "additionalProperties": false
+    },
     "shipSection": {
       "type": "object",
       "description": "Controls the ship skill behaviour.",
@@ -306,6 +339,12 @@
     },
     "receivedReview": {
       "$ref": "#/$defs/receivedReviewSection"
+    },
+    "github": {
+      "$ref": "#/$defs/githubSection"
+    },
+    "executePrefs": {
+      "$ref": "#/$defs/executePrefsSection"
     },
     "workspace": {
       "$ref": "#/$defs/workspaceSection"

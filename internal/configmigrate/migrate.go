@@ -3,6 +3,12 @@
 // of schema v1 (TOML era); there is no automated migration from the legacy
 // JSON-era config.json/local.json format (schema v0). A project stuck on v0
 // must re-run /setup — see Migrate and MigrateWithBackup below.
+//
+// The package also moves personal keys (pr.expectedAccount and the
+// execute.auto/quality/highRiskAutoApprove preferences) from the committed
+// config.toml to the gitignored local.toml — see MigrateMovedKeys in
+// movedkeys.go. That is a key move inside the TOML era, not a JSON-to-TOML
+// migration.
 package configmigrate
 
 import (
