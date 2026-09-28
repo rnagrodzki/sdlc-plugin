@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
@@ -267,22 +268,38 @@ var pushAuthWorkflowKeys = map[string]bool{
 	"retag-release.yml":   true,
 }
 
+// secretNamePattern is GitHub's secret-name syntax: letters, digits and
+// underscores, no leading digit. The GITHUB_ prefix is reserved and checked
+// separately (Go regexp has no lookahead).
+var secretNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// validateSecretName rejects a pushAuth.secretName that is not a legal
+// GitHub Actions secret name. scaffoldCI splices the name verbatim into
+// generated workflow YAML, so a bad value must fail loudly here instead of
+// producing a broken workflow that only fails later in GitHub Actions.
+func validateSecretName(name string) error {
+	if !secretNamePattern.MatchString(name) || strings.HasPrefix(strings.ToUpper(name), "GITHUB_") {
+		return &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("version.pushAuth.secretName %q is not a valid GitHub Actions secret name", name),
+			Suggestion: "Use only letters, digits and underscores, do not start with a digit or GITHUB_ (for example RELEASE_TOKEN). Fix it in .sdlc-v2/config.toml, then run scaffold_ci again.",
+		}
+	}
+	return nil
+}
+
 // scaffoldCI is the core logic, separated for testability.
 func scaffoldCI(root string, force bool) (ScaffoldCIOut, error) {
 	payloads := Payloads()
 
-	// version.method/pushAuth.secretName are read tolerantly (raw section,
-	// not the fully-validated VersionSection) so scaffold_ci keeps working
-	// even when version config is absent or fails validation for reasons
-	// unrelated to CI auth (e.g. neither tag nor versionFile enabled yet).
+	// pushAuth.secretName is read tolerantly (raw section, not the
+	// fully-validated VersionSection) so scaffold_ci keeps working even when
+	// version config is absent or fails validation for reasons unrelated to
+	// CI auth (e.g. neither tag nor versionFile enabled yet).
 	var warnings []string
-	var versionMethod, pushAuthSecret string
+	var pushAuthSecret string
 	if versionRaw, err := config.ReadSection(root, "version"); err != nil && !errors.Is(err, config.ErrNotFound) {
 		warnings = append(warnings, fmt.Sprintf("reading version config: %s", err.Error()))
 	} else if versionRaw != nil {
-		if s, ok := versionRaw["method"].(string); ok {
-			versionMethod = s
-		}
 		if pa, ok := versionRaw["pushAuth"].(map[string]any); ok {
 			if s, ok := pa["secretName"].(string); ok {
 				pushAuthSecret = s
@@ -294,6 +311,11 @@ func scaffoldCI(root string, force bool) (ScaffoldCIOut, error) {
 	// defaultReleaseSecret, leaves the payload's own RELEASE_TOKEN fallback
 	// untouched.
 	rewriteSecret := pushAuthSecret != "" && pushAuthSecret != defaultReleaseSecret
+	if rewriteSecret {
+		if err := validateSecretName(pushAuthSecret); err != nil {
+			return ScaffoldCIOut{}, err
+		}
+	}
 	var files []ScaffoldFileReport
 
 	for _, entry := range scaffoldManifest {
@@ -386,7 +408,7 @@ func scaffoldCI(root string, force bool) (ScaffoldCIOut, error) {
 		Warnings:   warnings,
 		Files:      files,
 		Protection: protection,
-		Next:       scaffoldNextGuidance(protection, versionMethod, pushAuthSecret),
+		Next:       scaffoldNextGuidance(protection, pushAuthSecret),
 	}, nil
 }
 
@@ -397,13 +419,20 @@ func scaffoldCI(root string, force bool) (ScaffoldCIOut, error) {
 // the same three mitigations — a GitHub App token, an admin PAT stored
 // under the configured pushAuth.secretName (or defaultReleaseSecret when
 // unset), or switching to version.method = "pr" — rather than branching on
-// which method is currently configured. method is accepted for signature
-// stability but no longer changes which text is returned.
-func scaffoldNextGuidance(protection RulesetCheckResult, method, secretName string) string {
+// which method is currently configured. With no protection detected, a
+// configured non-default secretName still gets a note naming the secret the
+// release workflows read, so its setup is not silently dropped.
+func scaffoldNextGuidance(protection RulesetCheckResult, secretName string) string {
 	const promoteNote = "promote-release.yml was also scaffolded — use Actions > SDLC Promote Release to promote an RC to a final release without creating a PR."
 
 	if !protection.HasRulesets && !protection.HasClassicProt {
-		return "No branch protection detected. CI scripts are installed and both \"push\" and \"pr\" delivery methods will work. " + promoteNote
+		next := "No branch protection detected. CI scripts are installed and both \"push\" and \"pr\" delivery methods will work. "
+		if secretName != "" && secretName != defaultReleaseSecret {
+			next += fmt.Sprintf("The release workflows read secret %s first (then fall back to GITHUB_TOKEN): "+
+				"store a GitHub App token or fine-grained PAT (Contents, Pull requests, Actions: read/write) under that name, "+
+				"and add its identity to the bypass list if you add rulesets later. ", secretName)
+		}
+		return next + promoteNote
 	}
 
 	secretRef := secretName
@@ -425,7 +454,7 @@ func scaffoldNextGuidance(protection RulesetCheckResult, method, secretName stri
 			"  3. method = \"pr\": release commits go through a PR. Works only if release PRs can\n"+
 			"     merge without a human approval, or a human merges them.\n"+
 			"Do not require status checks on all branches (~ALL); require them on ~DEFAULT_BRANCH only.\n"+
-			"See docs/versioning.md#protected-branches-and-rulesets. "+
+			"See https://github.com/rnagrodzki/sdlc-plugin/blob/main/docs/versioning.md#protected-branches-and-rulesets. "+
 			promoteNote,
 		protection.DefaultBranch, protection.DefaultBranch, secretRef)
 }

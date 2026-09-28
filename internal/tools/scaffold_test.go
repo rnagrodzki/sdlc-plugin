@@ -2,6 +2,7 @@ package tools
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
+	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
@@ -451,7 +453,7 @@ func TestScaffoldNextGuidance_ProtectionDetected(t *testing.T) {
 	next := scaffoldNextGuidance(RulesetCheckResult{
 		HasRulesets:   true,
 		DefaultBranch: "main",
-	}, "", "")
+	}, "")
 
 	required := []string{
 		`Branch protection/rulesets detected on "main"`,
@@ -487,7 +489,7 @@ func TestScaffoldNextGuidance_ProtectionDetected(t *testing.T) {
 	next = scaffoldNextGuidance(RulesetCheckResult{
 		HasClassicProt: true,
 		DefaultBranch:  "main",
-	}, "", "")
+	}, "")
 	if !strings.Contains(next, "Pick one:") {
 		t.Errorf("expected Next to mention the mitigation options for classic protection, got: %s", next)
 	}
@@ -496,7 +498,7 @@ func TestScaffoldNextGuidance_ProtectionDetected(t *testing.T) {
 // TestScaffoldNextGuidance_NoProtection verifies that when no branch
 // protection is detected, Next confirms both push and pr methods will work.
 func TestScaffoldNextGuidance_NoProtection(t *testing.T) {
-	next := scaffoldNextGuidance(RulesetCheckResult{}, "", "")
+	next := scaffoldNextGuidance(RulesetCheckResult{}, "")
 
 	for _, want := range []string{`"push"`, `"pr"`} {
 		if !strings.Contains(next, want) {
@@ -506,28 +508,45 @@ func TestScaffoldNextGuidance_NoProtection(t *testing.T) {
 	if strings.Contains(next, "three options") {
 		t.Errorf("expected no-protection Next to omit protection guidance, got: %s", next)
 	}
+	if strings.Contains(next, "read secret") {
+		t.Errorf("expected no secret note when secretName is unset, got: %s", next)
+	}
 }
 
-// TestScaffoldNextGuidance_PushWithSecret verifies that scaffoldNextGuidance
-// no longer branches on version.method (R10 follow-up): the guidance text is
-// identical for "push-with-secret" and any other method, and it names
-// whatever secretName is configured — falling back to defaultReleaseSecret,
-// not a placeholder, when secretName is unset.
+// TestScaffoldNextGuidance_NoProtection_CustomSecret pins the combination the
+// method-keyed branch used to cover: a configured non-default secretName with
+// no branch protection detected must still name that secret and its setup,
+// not fall into the bare "no protection" text.
+func TestScaffoldNextGuidance_NoProtection_CustomSecret(t *testing.T) {
+	next := scaffoldNextGuidance(RulesetCheckResult{}, "RELEASE_APP_TOKEN")
+	for _, want := range []string{"No branch protection detected", "read secret RELEASE_APP_TOKEN", "Contents, Pull requests, Actions", "bypass list"} {
+		if !strings.Contains(next, want) {
+			t.Errorf("expected Next to mention %q, got: %s", want, next)
+		}
+	}
+
+	// The default secret needs no extra note.
+	if def := scaffoldNextGuidance(RulesetCheckResult{}, defaultReleaseSecret); strings.Contains(def, "read secret") {
+		t.Errorf("expected no secret note for the default secret, got: %s", def)
+	}
+}
+
+// TestScaffoldNextGuidance_PushWithSecret verifies that, with protection
+// detected, the guidance names whatever secretName is configured — falling
+// back to defaultReleaseSecret, not a placeholder, when secretName is unset.
+// (scaffoldNextGuidance takes no method argument: the text never depends on
+// version.method.)
 func TestScaffoldNextGuidance_PushWithSecret(t *testing.T) {
 	protection := RulesetCheckResult{HasRulesets: true, DefaultBranch: "main"}
 
-	withSecretMethod := scaffoldNextGuidance(protection, "push-with-secret", "RELEASE_APP_TOKEN")
-	withPushMethod := scaffoldNextGuidance(protection, "push", "RELEASE_APP_TOKEN")
-	if withSecretMethod != withPushMethod {
-		t.Errorf("expected method to have no effect on guidance text:\npush-with-secret: %s\npush: %s", withSecretMethod, withPushMethod)
-	}
-	if !strings.Contains(withSecretMethod, "secret RELEASE_APP_TOKEN") {
-		t.Errorf("expected Next to name the configured secret, got: %s", withSecretMethod)
+	withSecret := scaffoldNextGuidance(protection, "RELEASE_APP_TOKEN")
+	if !strings.Contains(withSecret, "secret RELEASE_APP_TOKEN") {
+		t.Errorf("expected Next to name the configured secret, got: %s", withSecret)
 	}
 
 	// Falls back to defaultReleaseSecret (not a placeholder) when secretName
 	// is unset.
-	next := scaffoldNextGuidance(RulesetCheckResult{DefaultBranch: "main", HasRulesets: true}, "push-with-secret", "")
+	next := scaffoldNextGuidance(RulesetCheckResult{DefaultBranch: "main", HasRulesets: true}, "")
 	if !strings.Contains(next, "secret "+defaultReleaseSecret) {
 		t.Errorf("expected Next to fall back to secret %s when secretName is unset, got: %s", defaultReleaseSecret, next)
 	}
@@ -613,24 +632,35 @@ secretName = "RELEASE_APP_TOKEN"
 		t.Errorf("expected verify-release-intent.yml to keep secrets.GITHUB_TOKEN, got:\n%s", string(viContent))
 	}
 
-	if out.Next == "" {
-		t.Error("expected Next to be populated")
+	// No remote in the temp root, so no protection is detected: Next must
+	// still name the configured secret and its setup.
+	if !strings.Contains(out.Next, "read secret RELEASE_APP_TOKEN") {
+		t.Errorf("expected Next to name the configured secret RELEASE_APP_TOKEN, got: %s", out.Next)
 	}
 }
 
 // TestScaffoldCI_SecretName_AnyMethod verifies that the RELEASE_TOKEN
 // rewrite is keyed off a configured pushAuth.secretName alone, not gated on
-// version.method == "push-with-secret": method = "push" with a non-default
-// secretName still rewrites all three token-chain workflows.
+// version.method == "push-with-secret": every method value with a
+// non-default secretName rewrites all three token-chain workflows.
 func TestScaffoldCI_SecretName_AnyMethod(t *testing.T) {
+	for _, method := range []string{"push", "pr", "push-with-secret"} {
+		t.Run(method, func(t *testing.T) {
+			assertSecretRewritten(t, method)
+		})
+	}
+}
+
+func assertSecretRewritten(t *testing.T, method string) {
+	t.Helper()
 	root := t.TempDir()
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), `
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), fmt.Sprintf(`
 [version]
-method = "push"
+method = %q
 
 [version.pushAuth]
 secretName = "MY_BOT"
-`)
+`, method))
 
 	if _, err := scaffoldCI(root, false); err != nil {
 		t.Fatalf("scaffoldCI: %v", err)
@@ -655,6 +685,33 @@ secretName = "MY_BOT"
 		if !strings.Contains(s, "secrets.GITHUB_TOKEN") {
 			t.Errorf("%s: expected the secrets.GITHUB_TOKEN fallback to survive, got:\n%s", dest, s)
 		}
+	}
+}
+
+// TestScaffoldCI_InvalidSecretName verifies that a pushAuth.secretName that
+// is not a legal GitHub Actions secret name fails scaffold_ci with a
+// DomainError and writes no workflow file, instead of splicing it into YAML.
+func TestScaffoldCI_InvalidSecretName(t *testing.T) {
+	for _, bad := range []string{"1BAD", "MY-BOT", "MY BOT", "GITHUB_BOT", "a.b", "x'y"} {
+		t.Run(bad, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), fmt.Sprintf(`
+[version]
+method = "push"
+
+[version.pushAuth]
+secretName = %q
+`, bad))
+
+			_, err := scaffoldCI(root, false)
+			var de *mcpserver.DomainError
+			if !errors.As(err, &de) {
+				t.Fatalf("expected a DomainError for secretName %q, got: %v", bad, err)
+			}
+			if _, statErr := os.Stat(filepath.Join(root, ".github", "workflows", "release-on-main.yml")); !os.IsNotExist(statErr) {
+				t.Errorf("expected no workflow written for invalid secretName %q", bad)
+			}
+		})
 	}
 }
 

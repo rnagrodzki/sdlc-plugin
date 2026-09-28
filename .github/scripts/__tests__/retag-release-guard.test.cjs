@@ -143,3 +143,52 @@ describe('retag-release.cjs skips retagging on a release-bump HEAD commit', () =
     assert.match(result.stdout, /No existing tags found \(tag path\)\. Skipping retag\./);
   });
 });
+
+describe('retag-release.cjs surfaces a failing `git log` instead of retagging', () => {
+  test('a repo with no commits exits non-zero rather than reading as "not a bump commit"', () => {
+    const dir = mkTmpDir('retag-release-no-commits-');
+    initRepo(dir);
+    writeConfig(dir);
+
+    const result = spawnSync('node', [SCRIPT_PATH], { cwd: dir, encoding: 'utf8' });
+
+    assert.notEqual(result.status, 0, result.stdout);
+    assert.doesNotMatch(result.stdout, /Skipping retag/);
+  });
+});
+
+describe('retag-release.cjs tag push — GH013 ruleset rejection', () => {
+  test('a rejected tag push carries the ruleset hint, names the configured secret, and omits method = "pr"', () => {
+    const { execPushOrThrow } = require(SCRIPT_PATH);
+    const base = mkTmpDir('retag-release-ruleset-');
+    const bareDir = path.join(base, 'origin.git');
+    execSync(`git init --bare -q "${bareDir}"`);
+    const hookPath = path.join(bareDir, 'hooks', 'pre-receive');
+    fs.mkdirSync(path.dirname(hookPath), { recursive: true });
+    fs.writeFileSync(hookPath,
+      '#!/bin/sh\necho "remote: error: GH013: Repository rule violations found for refs/tags/v1.0.0." >&2\nexit 1\n',
+      'utf8');
+    fs.chmodSync(hookPath, 0o755);
+
+    const dir = path.join(base, 'work');
+    fs.mkdirSync(dir);
+    initRepo(dir);
+    execSync(`git remote add origin "${bareDir}"`, { cwd: dir });
+    commit(dir, 'initial');
+    execSync('git tag -a v1.0.0 -m "Release v1.0.0"', { cwd: dir });
+    fs.mkdirSync(path.join(dir, '.sdlc-v2'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.sdlc-v2', 'config.toml'),
+      '[version]\n\n[version.pushAuth]\nsecretName = "MY_BOT"\n', 'utf8');
+
+    assert.throws(
+      () => execPushOrThrow('git push origin "refs/tags/v1.0.0"', { cwd: dir }),
+      (err) => {
+        assert.match(err.message, /Push rejected by a branch\/tag ruleset/);
+        assert.match(err.message, /Set secret MY_BOT/);
+        assert.doesNotMatch(err.message, /method = "pr"/);
+        assert.match(err.message, /GH013/);
+        return true;
+      }
+    );
+  });
+});

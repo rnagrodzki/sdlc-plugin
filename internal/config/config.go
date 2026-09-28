@@ -269,7 +269,8 @@ type VersionChangelogConfig struct {
 
 // PushAuth configures an alternate CI push-authentication secret (R10).
 // SecretName names the repo secret — holding a GitHub App-issued token (or
-// PAT) with Contents:write permission and bypass privileges on the repo's
+// PAT) with Contents, Pull requests and Actions read/write permissions and
+// bypass privileges on the repo's
 // branch-protection rulesets — that scaffold_ci substitutes for the default
 // RELEASE_TOKEN fallback in release-on-main.yml, promote-release.yml, and
 // retag-release.yml. The rewrite fires whenever SecretName is set to

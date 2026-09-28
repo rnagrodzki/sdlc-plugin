@@ -2,6 +2,8 @@ name: Test
 
 # These two commands (vet, test) are mirrored in lefthook.yml's pre-push hook —
 # keep them in sync so local and CI never diverge on what green means.
+# The Node "Test release scripts" step is intentionally CI-only: lefthook
+# does not run it, so run it by hand when touching .github/scripts/.
 
 on:
   pull_request:
@@ -33,4 +35,4 @@ jobs:
           node-version: 20
 
       - name: Test release scripts
-        run: node --test .github/scripts/__tests__/
+        run: node --test .github/scripts/__tests__/*.test.cjs

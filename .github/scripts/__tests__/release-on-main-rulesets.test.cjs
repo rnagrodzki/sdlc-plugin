@@ -293,6 +293,38 @@ describe('runRelease — ruleset-rejected tag push', () => {
     assert.equal(pathStatus.tag, 'failed', 'tag push is blocked by the ruleset hook');
     assert.match(captured, /Push rejected by a branch\/tag ruleset/);
     assert.match(captured, /docs\/versioning\.md#protected-branches-and-rulesets/);
+    // method = "pr" only reroutes the bump commit — never a remedy for a tag push.
+    assert.doesNotMatch(captured, /method = "pr"/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The hint names the secret the scaffolded workflow actually reads.
+// ---------------------------------------------------------------------------
+
+describe('ruleset hint — configured pushAuth.secretName', () => {
+  test('a rejected branch push names the configured secret, not RELEASE_TOKEN', () => {
+    const baseDir = mkTmpDir('release-ruleset-secret-');
+    const bareDir = createBareWithRulesetHook(baseDir, 'refs/heads/*');
+    const { repoDir } = cloneAndSeed(baseDir, bareDir);
+    writeConfig(repoDir, { method: 'push', pushAuth: { secretName: 'MY_BOT' } });
+
+    const logPath = path.join(mkTmpDir('release-ruleset-secret-log-'), 'gh.log');
+
+    assert.throws(
+      () => {
+        withFakeGh(logPath, () => {
+          pushFilesViaPR(repoDir, 'main', 'release/v1.2.3', 'chore(release): 1.2.3');
+        });
+      },
+      (err) => {
+        assert.match(err.message, /Set secret MY_BOT to a fine-grained PAT/);
+        assert.doesNotMatch(err.message, /secret RELEASE_TOKEN/);
+        assert.match(err.message, /already configured/);
+        assert.match(err.message, /method = "pr"/, 'branch push still offers the PR route');
+        return true;
+      }
+    );
   });
 });
 

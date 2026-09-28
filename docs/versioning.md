@@ -561,24 +561,28 @@ This ensures only actual releases (not RCs) trigger downstream automation like b
 
 A branch or tag ruleset rejected the push — the release commit, the release
 tag, or both — because it came from a token that isn't on the ruleset's
-bypass list. `release-on-main.cjs` and `promote-release.cjs` each recognize
-this failure (`GH013`, "Repository rule violations", or "protected branch"
-in the git error) through their own push helper, and both prepend the same
-hint to the workflow log:
+bypass list. `release-on-main.cjs`, `promote-release.cjs` and
+`retag-release.cjs` each recognize this failure (`GH013`, "Repository rule
+violations", or "protected branch" in the git error) through their own push
+helper, and all three prepend the same hint to the workflow log:
 
 ```
-Push rejected by a branch/tag ruleset. GITHUB_TOKEN cannot bypass rulesets.
-Fix one of:
+Push rejected by a branch/tag ruleset: the pushing identity is not on its bypass list
+(GITHUB_TOKEN can never bypass rulesets).
+If a GitHub App or PAT is already configured: add that App or user to the bypass list of
+every ruleset covering this ref, and check that the PAT has not expired.
+Otherwise fix one of:
   1. Set repo variable RELEASE_APP_CLIENT_ID + secret RELEASE_APP_PRIVATE_KEY for a GitHub App
      that is on the ruleset bypass list.
   2. Set secret RELEASE_TOKEN to a fine-grained PAT of a user on the bypass list.
   3. Use version.method = "pr" (release commits go through a PR).
-Docs: docs/versioning.md#protected-branches-and-rulesets
+Docs: https://github.com/rnagrodzki/sdlc-plugin/blob/main/docs/versioning.md#protected-branches-and-rulesets
 ```
 
-`retag-release.cjs` also pushes a tag (`git push origin refs/tags/<tag>`)
-and can hit the same rejection, but it has no classifier — the raw git error
-surfaces in its workflow log without the hint above.
+Option 2 names the configured `version.pushAuth.secretName` when one is set
+(the secret the scaffolded workflow actually reads). Option 3 is left out
+when the rejected ref is a tag — `method = "pr"` only reroutes the version
+bump commit, never the tag push.
 
 Follow the "Per-repo setup checklist" under [Protected branches and
 rulesets](#protected-branches-and-rulesets) to configure one of the first

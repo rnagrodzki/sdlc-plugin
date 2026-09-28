@@ -27,10 +27,11 @@ method = "push"
 
 # Optional, for any method above (not only push-with-secret): a custom
 # push-auth secret. Uncomment and set secretName to a repo secret holding a
-# GitHub App-issued token (or PAT) with Contents:write permission and bypass
-# privileges on branch-protection rulesets — scaffold_ci then rewrites the
-# scaffolded workflows to authenticate with it instead of the default
-# RELEASE_TOKEN fallback. Default when unset: RELEASE_TOKEN.
+# GitHub App-issued token (or PAT) with Contents, Pull requests and Actions
+# read/write permissions and bypass privileges on branch-protection
+# rulesets — scaffold_ci then rewrites the scaffolded workflows to
+# authenticate with it instead of the default RELEASE_TOKEN fallback.
+# Default when unset: RELEASE_TOKEN.
 # [version.pushAuth]
 # secretName = "RELEASE_TOKEN"
 

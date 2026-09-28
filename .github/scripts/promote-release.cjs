@@ -95,34 +95,67 @@ function execOrThrow(cmd, opts = {}) {
 }
 
 /**
- * Hint shown when a push is rejected by a branch/tag ruleset that
- * GITHUB_TOKEN cannot bypass. Kept byte-for-byte identical (copy-pasted,
- * not imported — payloads are standalone scripts) with release-on-main.cjs.
+ * Build the hint shown when a push is rejected by a branch/tag ruleset.
+ * Kept byte-for-byte identical (copy-pasted, not imported — payloads are
+ * standalone scripts) in release-on-main.cjs and retag-release.cjs.
+ *   secretName — configured version.pushAuth.secretName, i.e. the secret the
+ *                scaffolded workflow actually reads (default RELEASE_TOKEN).
+ *   tagPush    — true when the rejected ref is a tag. method = "pr" only
+ *                reroutes the version-bump commit, so it is not offered then.
  */
-const RULESET_PUSH_HINT =
-  'Push rejected by a branch/tag ruleset. GITHUB_TOKEN cannot bypass rulesets.\n' +
-  'Fix one of:\n' +
-  '  1. Set repo variable RELEASE_APP_CLIENT_ID + secret RELEASE_APP_PRIVATE_KEY for a GitHub App\n' +
-  '     that is on the ruleset bypass list.\n' +
-  '  2. Set secret RELEASE_TOKEN to a fine-grained PAT of a user on the bypass list.\n' +
-  '  3. Use version.method = "pr" (release commits go through a PR).\n' +
-  'Docs: docs/versioning.md#protected-branches-and-rulesets';
+function rulesetPushHint({ secretName, tagPush } = {}) {
+  const secret = secretName || 'RELEASE_TOKEN';
+  const lines = [
+    'Push rejected by a branch/tag ruleset: the pushing identity is not on its bypass list',
+    '(GITHUB_TOKEN can never bypass rulesets).',
+    'If a GitHub App or PAT is already configured: add that App or user to the bypass list of',
+    'every ruleset covering this ref, and check that the PAT has not expired.',
+    'Otherwise fix one of:',
+    '  1. Set repo variable RELEASE_APP_CLIENT_ID + secret RELEASE_APP_PRIVATE_KEY for a GitHub App',
+    '     that is on the ruleset bypass list.',
+    `  2. Set secret ${secret} to a fine-grained PAT of a user on the bypass list.`,
+  ];
+  if (!tagPush) lines.push('  3. Use version.method = "pr" (release commits go through a PR).');
+  lines.push('Docs: https://github.com/rnagrodzki/sdlc-plugin/blob/main/docs/versioning.md#protected-branches-and-rulesets');
+  return lines.join('\n');
+}
+
+/** Hint for a branch push with the default RELEASE_TOKEN secret. */
+const RULESET_PUSH_HINT = rulesetPushHint();
 
 /** @returns {string|null} hint when stderr is a ruleset rejection, else null */
-function classifyPushError(stderr) {
+function classifyPushError(stderr, hintOpts) {
   return /GH013|Repository rule violations|protected branch/i.test(String(stderr || ''))
-    ? RULESET_PUSH_HINT : null;
+    ? rulesetPushHint(hintOpts) : null;
+}
+
+/**
+ * Tolerant read of version.pushAuth.secretName from .sdlc-v2/config.toml.
+ * Returns '' on any failure — it only words an error hint, so it must never
+ * throw or exit on the error path.
+ */
+function readPushAuthSecretName(repoRoot) {
+  try {
+    const raw = parseSimpleToml(fs.readFileSync(path.join(repoRoot, '.sdlc-v2', 'config.toml'), 'utf8'));
+    const s = raw.version && raw.version.pushAuth && raw.version.pushAuth.secretName;
+    return typeof s === 'string' ? s : '';
+  } catch (_) {
+    return '';
+  }
 }
 
 /**
  * Run a `git push` command in repoRoot. On a ruleset rejection, rethrow
- * with RULESET_PUSH_HINT leading the message; otherwise rethrow as-is.
+ * with the ruleset hint leading the message; otherwise rethrow as-is.
  */
 function pushOrExplain(cmd, repoRoot) {
   try {
     return execOrThrow(cmd, { cwd: repoRoot });
   } catch (err) {
-    const hint = classifyPushError(err.stderr);
+    const hint = classifyPushError(err.stderr, {
+      secretName: readPushAuthSecretName(repoRoot),
+      tagPush: /refs\/tags\//.test(cmd),
+    });
     if (hint) throw new Error(`${hint}\n\n${String(err.stderr).trim()}`);
     throw err;
   }
@@ -738,7 +771,9 @@ function main() {
   } catch (err) {
     // Drop the local tag so a re-run does not trip on a tag that never
     // reached the remote.
-    exec(`git tag -d "${targetTag}"`, { cwd: repoRoot, stdio: 'pipe' });
+    if (exec(`git tag -d "${targetTag}"`, { cwd: repoRoot, stdio: 'pipe' }) === null) {
+      console.log(`WARNING: could not delete local tag ${targetTag} after the failed push. Delete it by hand before a re-run.`);
+    }
     throw err;
   }
   console.log(`Tag ${targetTag} created at ${rcSha} and pushed.`);
@@ -805,5 +840,6 @@ module.exports = {
   parseSemver,
   deliverBump,
   classifyPushError,
+  rulesetPushHint,
   RULESET_PUSH_HINT,
 };

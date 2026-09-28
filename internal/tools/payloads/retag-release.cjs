@@ -48,6 +48,70 @@ function execOrThrow(cmd, opts = {}) {
   return execSync(cmd, { encoding: 'utf8', stdio: 'pipe', ...opts }).trim();
 }
 
+/**
+ * Build the hint shown when a push is rejected by a branch/tag ruleset.
+ * Kept byte-for-byte identical (copy-pasted, not imported — payloads are
+ * standalone scripts) in promote-release.cjs and release-on-main.cjs.
+ *   secretName — configured version.pushAuth.secretName, i.e. the secret the
+ *                scaffolded workflow actually reads (default RELEASE_TOKEN).
+ *   tagPush    — true when the rejected ref is a tag. method = "pr" only
+ *                reroutes the version-bump commit, so it is not offered then.
+ */
+function rulesetPushHint({ secretName, tagPush } = {}) {
+  const secret = secretName || 'RELEASE_TOKEN';
+  const lines = [
+    'Push rejected by a branch/tag ruleset: the pushing identity is not on its bypass list',
+    '(GITHUB_TOKEN can never bypass rulesets).',
+    'If a GitHub App or PAT is already configured: add that App or user to the bypass list of',
+    'every ruleset covering this ref, and check that the PAT has not expired.',
+    'Otherwise fix one of:',
+    '  1. Set repo variable RELEASE_APP_CLIENT_ID + secret RELEASE_APP_PRIVATE_KEY for a GitHub App',
+    '     that is on the ruleset bypass list.',
+    `  2. Set secret ${secret} to a fine-grained PAT of a user on the bypass list.`,
+  ];
+  if (!tagPush) lines.push('  3. Use version.method = "pr" (release commits go through a PR).');
+  lines.push('Docs: https://github.com/rnagrodzki/sdlc-plugin/blob/main/docs/versioning.md#protected-branches-and-rulesets');
+  return lines.join('\n');
+}
+
+/** @returns {string|null} hint when stderr is a ruleset rejection, else null */
+function classifyPushError(stderr, hintOpts) {
+  return /GH013|Repository rule violations|protected branch/i.test(String(stderr || ''))
+    ? rulesetPushHint(hintOpts) : null;
+}
+
+/**
+ * Tolerant read of version.pushAuth.secretName from .sdlc-v2/config.toml.
+ * Returns '' on any failure — it only words an error hint, so it must never
+ * throw or exit on the error path.
+ */
+function readPushAuthSecretName(repoRoot) {
+  try {
+    const raw = parseSimpleToml(fs.readFileSync(path.join(repoRoot, '.sdlc-v2', 'config.toml'), 'utf8'));
+    const s = raw.version && raw.version.pushAuth && raw.version.pushAuth.secretName;
+    return typeof s === 'string' ? s : '';
+  } catch (_) {
+    return '';
+  }
+}
+
+/**
+ * Like execOrThrow, but for `git push` calls: rewrites a ruleset-rejected
+ * push's error message to lead with the ruleset hint before rethrowing.
+ */
+function execPushOrThrow(cmd, opts = {}) {
+  try {
+    return execOrThrow(cmd, opts);
+  } catch (err) {
+    const hint = classifyPushError(err.stderr, {
+      secretName: readPushAuthSecretName(opts.cwd || process.cwd()),
+      tagPush: /refs\/tags\//.test(cmd),
+    });
+    if (hint) throw new Error(`${hint}\n\n${String(err.stderr).trim()}`);
+    throw err;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Config (self-contained — no external lib dependency)
 // ---------------------------------------------------------------------------
@@ -256,7 +320,7 @@ function retagOnHead(tag, repoRoot) {
     try { fs.unlinkSync(tmpFile); } catch (_) {}
   }
 
-  execOrThrow(`git push origin "refs/tags/${tag}"`, { cwd: repoRoot });
+  execPushOrThrow(`git push origin "refs/tags/${tag}"`, { cwd: repoRoot });
 
   const headSha = exec('git rev-parse --short HEAD', { cwd: repoRoot });
   console.log(`Tag ${tag} now points to HEAD (${headSha}).`);
@@ -286,7 +350,9 @@ function main() {
     process.exit(0);
   }
 
-  const subject = exec('git log -1 --format=%s', { cwd: repoRoot });
+  // execOrThrow, not exec: a git failure here must surface, not read as
+  // "not a release-bump commit" and fall through to retagging.
+  const subject = execOrThrow('git log -1 --format=%s', { cwd: repoRoot });
   if (isReleaseBumpCommit(subject)) {
     console.log(`HEAD is a release-bump commit ("${subject}"). Skipping retag.`);
     process.exit(0);
@@ -339,4 +405,4 @@ function main() {
 // this file as a module (e.g. from tests) must not trigger a live CI run.
 if (require.main === module) { main(); }
 
-module.exports = { RETAG_SCRIPT_VERSION, isReleaseBumpCommit };
+module.exports = { RETAG_SCRIPT_VERSION, isReleaseBumpCommit, classifyPushError, execPushOrThrow };

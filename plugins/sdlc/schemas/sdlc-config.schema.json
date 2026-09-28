@@ -30,7 +30,9 @@
           "properties": {
             "secretName": {
               "type": "string",
-              "description": "Name of the repo secret holding a GitHub App-issued token (or PAT) with Contents:write permission and bypass privileges on branch-protection rulesets. When set to a value other than the default RELEASE_TOKEN, scaffold_ci rewrites the scaffolded workflows' secrets.RELEASE_TOKEN reference to this name."
+              "default": "RELEASE_TOKEN",
+              "pattern": "^([A-Za-z_][A-Za-z0-9_]*)?$",
+              "description": "Name of the repo secret holding a GitHub App-issued token (or PAT) with Contents, Pull requests and Actions read/write permissions and bypass privileges on branch-protection rulesets. Must be a valid GitHub Actions secret name (letters, digits, underscores; no leading digit; no GITHUB_ prefix). When set to a value other than the default RELEASE_TOKEN, scaffold_ci rewrites the scaffolded workflows' secrets.RELEASE_TOKEN reference to this name. See docs/versioning.md#protected-branches-and-rulesets."
             }
           },
           "additionalProperties": false
