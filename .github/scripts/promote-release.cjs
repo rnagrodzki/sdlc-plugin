@@ -245,7 +245,7 @@ function bumpSemver(version, level) {
  * Returns the full tag string (with prefix), or null if none exists.
  */
 function findLatestStableTag(repoRoot, tagPrefix) {
-  const out = exec('git tag --list --sort=-v:refname', { cwd: repoRoot });
+  const out = execOrThrow('git tag --list --sort=-v:refname', { cwd: repoRoot });
   if (!out) return null;
   for (const t of out.split('\n')) {
     if (!t.trim() || t.includes('-rc')) continue;
@@ -267,7 +267,7 @@ function findLatestStableTag(repoRoot, tagPrefix) {
  * null if no RC tags exist at all.
  */
 function findActiveRCSeries(repoRoot, tagPrefix) {
-  const out = exec('git tag --list', { cwd: repoRoot });
+  const out = execOrThrow('git tag --list', { cwd: repoRoot });
   if (!out) return null;
   const rcPattern = /-rc(\d+)$/;
   const series = {};  // baseVersion -> [{tag, num}]
@@ -561,11 +561,12 @@ function main() {
   // the active RC series is already a minor/major ahead).
   const rcSv = parseSemver(series.baseVersion);
   const tgtSv = parseSemver(targetBase);
-  if (tgtSv && rcSv && (
+  if (!rcSv || !tgtSv) fail(`Internal error: unparseable versions rc=${series.baseVersion} tgt=${targetBase}`);
+  if (
     tgtSv.major < rcSv.major ||
     (tgtSv.major === rcSv.major && tgtSv.minor < rcSv.minor) ||
     (tgtSv.major === rcSv.major && tgtSv.minor === rcSv.minor && tgtSv.patch < rcSv.patch)
-  )) {
+  ) {
     fail(`Chosen level "${level}" produces ${targetTag}, which is lower than the active RC series ${series.baseVersion}. Use a higher bump level.`);
   }
 
