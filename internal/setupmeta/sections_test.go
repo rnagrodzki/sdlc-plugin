@@ -112,11 +112,11 @@ func TestShipFields_StepsOptionsMatchCanonicalSteps(t *testing.T) {
 	}
 }
 
-// TestSections_Count pins the total number of setup sections (17, after the
-// "automation" section was added).
+// TestSections_Count pins the total number of setup sections (18, after the
+// "github" section was added).
 func TestSections_Count(t *testing.T) {
-	if got := len(Sections()); got != 17 {
-		t.Errorf("Sections() returned %d sections, want 17", got)
+	if got := len(Sections()); got != 18 {
+		t.Errorf("Sections() returned %d sections, want 18", got)
 	}
 }
 

@@ -89,6 +89,50 @@ error with an empty or missing `## Do this` section is a defect. Both live in
   against that set and reject unknown values with a `DomainError`, not
   silently fall back to a default.
 
+## Output field conventions for []string
+
+- A `[]string` output field carrying message content holds one message per
+  array element. When a handler populates such a field with both an error
+  message and a recovery suggestion from the same condition, each goes in a
+  separate array element — do not splice them into one string. Example:
+  `Errors: {mkErr.Error(), mk.Suggestion()}` for two elements, not
+  `Errors: {mkErr.Error() + "\n" + mk.Suggestion()}` for one.
+
+## Parameter contract versioning
+
+- When an existing `*In` struct parameter gains a second effect or behavior
+  (e.g., a `SkipConfigCheck` flag that previously only skipped preflight
+  checks now also skips a new moved-keys migration), its
+  `jsonschema_description` tag MUST be updated to document all effects. A
+  parameter whose description is stale relative to its handler code is a
+  contract violation because the LLM cannot determine when to set the flag
+  based on incomplete documentation.
+- Handlers must re-verify that all callers of the updated parameter
+  understand its new behavior, and that code paths using the flag account
+  for both effects.
+
+## Output field contract versioning
+
+- When an existing `*Out` struct field gains a second source or case (e.g.,
+  an `Errors` field populated by a new code path, or a `Sources` map that
+  now includes a value from a new config file), its `jsonschema_description`
+  tag MUST be updated to document all sources/cases. An output field whose
+  description is stale relative to the handler code is a contract violation
+  because the LLM cannot determine the field's reliability or provenance.
+- When a handler gains a new filesystem side effect or reads a new config
+  source, the handler's registered tool/action description (passed to
+  `RegisterTools` in `internal/mcpserver`) MUST be re-read and audited for
+  claims now falsified by the new behavior. Example: a handler description
+  claiming 'Stateless' or 'read-only' must be revised if the handler now
+  writes files or reads a new config source.
+- When an output field holds provenance/source labels (e.g., a `Sources` map
+  whose values indicate where a setting came from), and a handler now reads
+  from a new file or location, the provenance enum must be re-verified:
+  (1) the label still accurately names the source;
+  (2) any SKILL.md or sibling tool that gates behavior on the label
+     (`if sources.X == "config"`) is checked to confirm the new behavior is
+     semantically compatible with the gate.
+
 ## Review procedure for closed-set enum tags and error-field coverage
 
 When reviewing changes to MCP handler code, perform these concrete checks:

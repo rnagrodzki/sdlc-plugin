@@ -1,11 +1,14 @@
 package tools
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/config"
+	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 )
@@ -56,16 +59,17 @@ func TestExecActionResolveConfig_Defaults(t *testing.T) {
 	}
 }
 
-// TestExecActionResolveConfig_FromConfig tests reading all three keys from config.
+// TestExecActionResolveConfig_FromConfig tests reading all three keys from
+// local [executePrefs].
 func TestExecActionResolveConfig_FromConfig(t *testing.T) {
 	root := t.TempDir()
-	configTOML := `[execute]
+	localTOML := `[executePrefs]
 auto = true
 quality = "minimal"
 highRiskAutoApprove = true
 `
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), configTOML)
-	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), localTOML)
 
 	out, err := execActionResolveConfig(root, ExecuteStateIn{})
 	if err != nil {
@@ -96,12 +100,12 @@ highRiskAutoApprove = true
 // TestExecActionResolveConfig_FlagWinsOverConfig tests that CLI flags override config.
 func TestExecActionResolveConfig_FlagWinsOverConfig(t *testing.T) {
 	root := t.TempDir()
-	configTOML := `[execute]
+	localTOML := `[executePrefs]
 auto = false
 quality = "minimal"
 `
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), configTOML)
-	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), localTOML)
 
 	out, err := execActionResolveConfig(root, ExecuteStateIn{
 		Auto:    true,
@@ -160,11 +164,11 @@ func TestExecActionResolveConfig_PipelineAutoFromShipState(t *testing.T) {
 // defaults to "balanced" when auto=true and no quality is supplied.
 func TestExecActionResolveConfig_AutoDefaultsQualityToBalanced(t *testing.T) {
 	root := t.TempDir()
-	configTOML := `[execute]
+	localTOML := `[executePrefs]
 auto = true
 `
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), configTOML)
-	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), localTOML)
 
 	out, err := execActionResolveConfig(root, ExecuteStateIn{})
 	if err != nil {
@@ -207,11 +211,11 @@ func TestExecActionResolveConfig_NoAutoLeavesQualityUnset(t *testing.T) {
 // value in config triggers a warning and quality ends up unset.
 func TestExecActionResolveConfig_InvalidQualityWarns(t *testing.T) {
 	root := t.TempDir()
-	configTOML := `[execute]
+	localTOML := `[executePrefs]
 quality = "turbo"
 `
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), configTOML)
-	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), localTOML)
 
 	out, err := execActionResolveConfig(root, ExecuteStateIn{})
 	if err != nil {
@@ -229,8 +233,8 @@ quality = "turbo"
 	if len(result.Warnings) != 1 {
 		t.Fatalf("expected 1 warning, got %d: %v", len(result.Warnings), result.Warnings)
 	}
-	if !strings.Contains(result.Warnings[0], "execute.quality") || !strings.Contains(result.Warnings[0], "turbo") {
-		t.Errorf("warning does not mention execute.quality or turbo: %s", result.Warnings[0])
+	if !strings.Contains(result.Warnings[0], "executePrefs.quality") || !strings.Contains(result.Warnings[0], "turbo") {
+		t.Errorf("warning does not mention executePrefs.quality or turbo: %s", result.Warnings[0])
 	}
 }
 
@@ -238,11 +242,11 @@ quality = "turbo"
 // for highRiskAutoApprove in config triggers a warning and falls back to default.
 func TestExecActionResolveConfig_WrongTypeWarns(t *testing.T) {
 	root := t.TempDir()
-	configTOML := `[execute]
+	localTOML := `[executePrefs]
 highRiskAutoApprove = "yes"
 `
-	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), configTOML)
-	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), localTOML)
 
 	out, err := execActionResolveConfig(root, ExecuteStateIn{})
 	if err != nil {
@@ -355,8 +359,8 @@ func TestExecActionResolveConfig_InvalidCLIQualityWarnsAndFallsThrough(t *testin
 
 	t.Run("falls through to config", func(t *testing.T) {
 		root := t.TempDir()
-		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "[execute]\nquality = \"minimal\"\n")
-		writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+		writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "[executePrefs]\nquality = \"minimal\"\n")
 
 		out, err := execActionResolveConfig(root, ExecuteStateIn{Quality: "turbo-bogus"})
 		if err != nil {
@@ -439,5 +443,143 @@ func TestExecActionResolveConfig_NoBranchSkipsShipCrossRead(t *testing.T) {
 	}
 	if result.Sources["auto"] != "default" {
 		t.Errorf("sources[auto] = %q, want default", result.Sources["auto"])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// executePrefs migration tests
+// ---------------------------------------------------------------------------
+
+// TestExecActionResolveConfig_MigratesStaleHighRiskAutoApprove tests that a
+// stale execute.highRiskAutoApprove left in config.toml is moved to local
+// executePrefs before resolution reads it: the moved value is used, a
+// "Moved personal settings" warning is reported, and config.toml no longer
+// has the key afterward.
+func TestExecActionResolveConfig_MigratesStaleHighRiskAutoApprove(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "[execute]\nhighRiskAutoApprove = true\n")
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
+
+	out, err := execActionResolveConfig(root, ExecuteStateIn{})
+	if err != nil {
+		t.Fatalf("execActionResolveConfig: %v", err)
+	}
+
+	result := out.(ExecuteResolveConfigOut)
+	if !result.HighRiskAutoApprove {
+		t.Errorf("highRiskAutoApprove = %v, want true (migrated from config.toml)", result.HighRiskAutoApprove)
+	}
+	if len(result.Warnings) == 0 || !strings.Contains(result.Warnings[0], "Moved personal settings") {
+		t.Fatalf("expected a \"Moved personal settings\" warning, got: %v", result.Warnings)
+	}
+
+	execSect, rerr := config.ReadSection(root, "execute")
+	if rerr != nil && !errors.Is(rerr, config.ErrNotFound) {
+		t.Fatalf("re-read config execute section: %v", rerr)
+	}
+	if _, ok := execSect["highRiskAutoApprove"]; ok {
+		t.Errorf("config.toml still has execute.highRiskAutoApprove after migration")
+	}
+
+	prefsSect, rerr := config.ReadSection(root, "executePrefs")
+	if rerr != nil {
+		t.Fatalf("re-read local executePrefs section: %v", rerr)
+	}
+	if hraa, ok := prefsSect["highRiskAutoApprove"].(bool); !ok || !hraa {
+		t.Errorf("local.toml executePrefs.highRiskAutoApprove = %v, want true", prefsSect["highRiskAutoApprove"])
+	}
+}
+
+// TestExecActionResolveConfig_ConflictingMoveReturnsDataError tests that a
+// stale execute.auto in config.toml conflicting with a different
+// executePrefs.auto already in local.toml fails the automatic move instead
+// of picking a winner: a *mcpserver.DataError with a non-empty Suggestion,
+// and neither file is touched.
+func TestExecActionResolveConfig_ConflictingMoveReturnsDataError(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, paths.DataDir, "config.toml")
+	localPath := filepath.Join(root, paths.DataDir, "local.toml")
+	configBefore := "[execute]\nauto = true\n"
+	localBefore := "[executePrefs]\nauto = false\n"
+	writeFile(t, configPath, configBefore)
+	writeFile(t, localPath, localBefore)
+
+	out, err := execActionResolveConfig(root, ExecuteStateIn{})
+	if out != nil {
+		t.Errorf("out = %v, want nil on error", out)
+	}
+	var dataErr *mcpserver.DataError
+	if !errors.As(err, &dataErr) {
+		t.Fatalf("err = %v (%T), want *mcpserver.DataError", err, err)
+	}
+	if dataErr.Suggestion == "" {
+		t.Errorf("dataErr.Suggestion is empty, want a non-empty fix-it suggestion")
+	}
+
+	configAfter, rerr := os.ReadFile(configPath)
+	if rerr != nil {
+		t.Fatalf("read config.toml: %v", rerr)
+	}
+	if string(configAfter) != configBefore {
+		t.Errorf("config.toml changed:\n got: %q\nwant: %q", configAfter, configBefore)
+	}
+	localAfter, rerr := os.ReadFile(localPath)
+	if rerr != nil {
+		t.Fatalf("read local.toml: %v", rerr)
+	}
+	if string(localAfter) != localBefore {
+		t.Errorf("local.toml changed:\n got: %q\nwant: %q", localAfter, localBefore)
+	}
+}
+
+// TestExecActionResolveConfig_CommitWavesFromConfigWithExecutePrefs tests
+// that commitWaves still resolves from config.toml [execute] even when
+// local [executePrefs] also exists and supplies other keys.
+func TestExecActionResolveConfig_CommitWavesFromConfigWithExecutePrefs(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "[execute]\ncommitWaves = false\n")
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "[executePrefs]\nauto = true\n")
+
+	out, err := execActionResolveConfig(root, ExecuteStateIn{})
+	if err != nil {
+		t.Fatalf("execActionResolveConfig: %v", err)
+	}
+
+	result := out.(ExecuteResolveConfigOut)
+	if result.CommitWaves {
+		t.Errorf("commitWaves = %v, want false (from config.toml)", result.CommitWaves)
+	}
+	if result.Sources["commitWaves"] != "config" {
+		t.Errorf("sources[commitWaves] = %q, want config", result.Sources["commitWaves"])
+	}
+	if !result.Auto {
+		t.Errorf("auto = %v, want true (from local executePrefs)", result.Auto)
+	}
+}
+
+// TestExecActionResolveConfig_MalformedExecutePrefsWarns tests that a
+// malformed executePrefs value (wrong Go type, not an invalid enum value)
+// is a warning, not an error -- pinning the quality-specific wrong-type
+// branch that TestExecActionResolveConfig_WrongTypeWarns does not cover
+// (that one exercises highRiskAutoApprove).
+func TestExecActionResolveConfig_MalformedExecutePrefsWarns(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "[executePrefs]\nquality = 123\n")
+
+	out, err := execActionResolveConfig(root, ExecuteStateIn{})
+	if err != nil {
+		t.Fatalf("execActionResolveConfig: %v", err)
+	}
+
+	result := out.(ExecuteResolveConfigOut)
+	if result.Quality != "" {
+		t.Errorf("quality = %q, want empty string (wrong type falls back to default/unset)", result.Quality)
+	}
+	if len(result.Warnings) != 1 {
+		t.Fatalf("expected 1 warning, got %d: %v", len(result.Warnings), result.Warnings)
+	}
+	if !strings.Contains(result.Warnings[0], "wrong type") || !strings.Contains(result.Warnings[0], "executePrefs.quality") {
+		t.Errorf("warning does not mention wrong type or executePrefs.quality: %s", result.Warnings[0])
 	}
 }

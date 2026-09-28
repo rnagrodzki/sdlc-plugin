@@ -11,6 +11,7 @@ import (
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/branch"
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
+	"github.com/rnagrodzki/sdlc-plugin/internal/configmigrate"
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
@@ -256,6 +257,172 @@ func TestPrPrepare_ConfigNeedsMigration_ShortCircuits(t *testing.T) {
 	}
 }
 
+func TestPrPrepare_ConfigMoveKeysFails_ShortCircuits(t *testing.T) {
+	rt := prRuntime{
+		configMigrateVerify: func(root string) error { return nil },
+		configMoveKeys: func(root string) ([]string, error) {
+			return nil, &configmigrate.MovedKeysErr{
+				Reason: "local.toml already has a different value for [github] expectedAccount",
+				Lines:  []string{"pr.expectedAccount -> [github] expectedAccount"},
+			}
+		},
+	}
+
+	out, err := prPrepareCoreWith("/mock/root", "/mock/root", PRPrepareIn{}, rt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.OK {
+		t.Fatalf("expected OK=false when configMoveKeys fails, got %+v", out)
+	}
+	if !out.NeedsMigration {
+		t.Fatalf("expected NeedsMigration=true, got %+v", out)
+	}
+	if !strings.Contains(strings.Join(out.Errors, " "), "[github] expectedAccount") {
+		t.Errorf("expected an error mentioning [github] expectedAccount, got %v", out.Errors)
+	}
+	// Error and suggestion are separate entries, not one spliced string.
+	if len(out.Errors) != 2 || !strings.HasPrefix(out.Errors[1], "Move each listed key") {
+		t.Errorf("expected [error, suggestion], got %q", out.Errors)
+	}
+	if out.Next != "Fix the errors above, then call pr_prepare again." {
+		t.Errorf("Next: got %q", out.Next)
+	}
+}
+
+func TestPrPrepare_ConfigMoveKeysMoved_WarnsAndContinues(t *testing.T) {
+	rt := prRuntime{
+		configMigrateVerify: func(root string) error { return nil },
+		configMoveKeys: func(root string) ([]string, error) {
+			return []string{"pr.expectedAccount -> [github] expectedAccount"}, nil
+		},
+		ghAuthProbe: func(dir, host string) ghx.AuthProbeResult {
+			return ghx.AuthProbeResult{Authenticated: true, ActiveAccount: "someone"}
+		},
+		configReadSection: func(root, section string) (map[string]any, error) { return nil, nil },
+		configRead:        func(root string) (*config.Config, error) { return nil, nil },
+		execRun: func(name string, args []string, opts execx.Options) (string, error) {
+			return "", errors.New("fatal: no such remote 'origin'")
+		},
+		gitCurrentBranch: func(dir string) (string, error) { return "feat/thing", nil },
+		gitStatus:        func(dir string) (string, error) { return "", nil },
+		gitDefaultBranch: func(dir string) (string, error) { return "main", nil },
+		gitHasUpstream:   func(dir string) (bool, error) { return true, nil },
+		gitCommitsAhead:  func(dir string) (int, error) { return 0, nil },
+		branchValidate:   branch.ValidateExpectedBranch,
+		jiraExtract:      func(branchName string) string { return "" },
+		templateResolve:  func(root string) (*prtemplate.Template, error) { return nil, nil },
+	}
+
+	out, err := prPrepareCoreWith("/mock/root", "/mock/work", PRPrepareIn{}, rt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !out.OK {
+		t.Fatalf("expected OK=true, got %+v", out)
+	}
+	if !strings.Contains(strings.Join(out.Warnings, " "), "Moved personal settings") {
+		t.Errorf("expected a warning mentioning \"Moved personal settings\", got %v", out.Warnings)
+	}
+}
+
+// expectedAccountRuntime is an authenticated, clean-tree runtime whose
+// [github] section read and origin remote are supplied by the caller.
+func expectedAccountRuntime(readSection func(root, section string) (map[string]any, error), originURL string) prRuntime {
+	return prRuntime{
+		ghAuthProbe: func(dir, host string) ghx.AuthProbeResult {
+			return ghx.AuthProbeResult{Authenticated: true, ActiveAccount: "someone"}
+		},
+		ghRepoAccessProbe: func(dir, owner, repo, host string) ghx.RepoAccessResult {
+			ok := true
+			return ghx.RepoAccessResult{Accessible: &ok}
+		},
+		configReadSection: readSection,
+		configRead:        func(root string) (*config.Config, error) { return nil, nil },
+		execRun: func(name string, args []string, opts execx.Options) (string, error) {
+			if originURL == "" {
+				return "", errors.New("fatal: no such remote 'origin'")
+			}
+			return originURL, nil
+		},
+		gitCurrentBranch: func(dir string) (string, error) { return "feat/thing", nil },
+		gitStatus:        func(dir string) (string, error) { return "", nil },
+		gitDefaultBranch: func(dir string) (string, error) { return "main", nil },
+		gitHasUpstream:   func(dir string) (bool, error) { return true, nil },
+		gitCommitsAhead:  func(dir string) (int, error) { return 0, nil },
+		branchValidate:   branch.ValidateExpectedBranch,
+		jiraExtract:      func(branchName string) string { return "" },
+		templateResolve:  func(root string) (*prtemplate.Template, error) { return nil, nil },
+	}
+}
+
+func notFoundSection(root, section string) (map[string]any, error) {
+	return nil, fmt.Errorf("config: section %q: %w", section, config.ErrNotFound)
+}
+
+func TestPrPrepare_NoExpectedAccount_NoRemote_Warns(t *testing.T) {
+	rt := expectedAccountRuntime(notFoundSection, "")
+	out, err := prPrepareCoreWith("/mock/root", "/mock/work", PRPrepareIn{SkipConfigCheck: true}, rt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "Could not resolve expected gh account (no [github] expectedAccount in .sdlc-v2/local.toml, no origin remote). Skipping active-account check."
+	if !slices.Contains(out.Warnings, want) {
+		t.Errorf("expected warning %q, got %v", want, out.Warnings)
+	}
+	if out.RepoAccessProbed {
+		t.Errorf("repo access must not be probed without a remote")
+	}
+}
+
+func TestPrPrepare_NoExpectedAccount_WithRemote_ProbesRepoAccess(t *testing.T) {
+	rt := expectedAccountRuntime(notFoundSection, "git@github.com:acme/widgets.git")
+	out, err := prPrepareCoreWith("/mock/root", "/mock/work", PRPrepareIn{SkipConfigCheck: true}, rt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !out.RepoAccessProbed {
+		t.Errorf("expected the repo access probe to run when a remote exists")
+	}
+	for _, w := range out.Warnings {
+		if strings.Contains(w, "Could not resolve expected gh account") {
+			t.Errorf("unexpected no-remote warning with a remote: %q", w)
+		}
+	}
+}
+
+func TestPrPrepare_GithubSectionUnreadable_Warns(t *testing.T) {
+	rt := expectedAccountRuntime(func(root, section string) (map[string]any, error) {
+		return nil, errors.New("config: toml: expected newline")
+	}, "")
+	out, err := prPrepareCoreWith("/mock/root", "/mock/work", PRPrepareIn{SkipConfigCheck: true}, rt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	found := false
+	for _, w := range out.Warnings {
+		if strings.Contains(w, "local.toml [github] section unreadable") && strings.Contains(w, "expected newline") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected an unreadable-section warning, got %v", out.Warnings)
+	}
+}
+
+func TestPrPrepare_GithubSectionNotFound_NoUnreadableWarning(t *testing.T) {
+	rt := expectedAccountRuntime(notFoundSection, "")
+	out, err := prPrepareCoreWith("/mock/root", "/mock/work", PRPrepareIn{SkipConfigCheck: true}, rt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, w := range out.Warnings {
+		if strings.Contains(w, "unreadable") {
+			t.Errorf("ErrNotFound must not produce an unreadable warning: %q", w)
+		}
+	}
+}
+
 func TestPrPrepare_BrokenAuth_EmbedsLoginDiagnostics(t *testing.T) {
 	// gh api user (the AuthProbe command) fails — simulates "not logged in".
 	rt := prRuntime{
@@ -291,15 +458,20 @@ func TestPrPrepare_BrokenAuth_EmbedsLoginDiagnostics(t *testing.T) {
 }
 
 func TestPrPrepare_AccountMismatch_EmbedsAccountDiagnostics(t *testing.T) {
-	// Active account ("wronguser") differs from pr.expectedAccount
-	// ("correctuser"), which is itself among the locally logged-in
-	// accounts — this is exactly the scenario
-	// pr-recover-gh-account.js's standalone diagnostics target.
+	// Active account ("wronguser") differs from local.toml's [github]
+	// expectedAccount ("correctuser"), which is itself among the locally
+	// logged-in accounts — this is exactly the scenario
+	// pr-recover-gh-account.js's standalone diagnostics target. The stub
+	// below only answers for section=="github", proving expectedAccount is
+	// read from [github], not the old [pr] section.
 	rt := prRuntime{
 		ghAuthProbe: func(dir, host string) ghx.AuthProbeResult {
 			return ghx.AuthProbeResult{Authenticated: true, ActiveAccount: "wronguser"}
 		},
 		configReadSection: func(root, section string) (map[string]any, error) {
+			if section != "github" {
+				return nil, nil
+			}
 			return map[string]any{"expectedAccount": "correctuser"}, nil
 		},
 		ghGetAccounts: func(dir, host string) ([]ghx.Account, error) {

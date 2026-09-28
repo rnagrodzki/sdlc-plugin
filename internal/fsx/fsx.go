@@ -22,20 +22,13 @@ var ErrNotFound = errors.New("fsx: not found")
 // the target file's contents are not valid JSON/TOML.
 var ErrParse = errors.New("fsx: parse error")
 
-// AtomicWriteJSON marshals v as indented JSON and writes it to path
-// atomically: the encoded bytes are written to a temporary sibling file
-// (<path>.tmp-<rand>) in the same directory, the sibling is closed and
-// flushed, and only then renamed into place with os.Rename. Because rename
-// replaces the destination in a single filesystem operation, a reader of
-// path never observes a partially written file, and a failure at any step
-// leaves any pre-existing path untouched.
-func AtomicWriteJSON(path string, v any) error {
-	data, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return fmt.Errorf("fsx: marshal %s: %w", path, err)
-	}
-	data = append(data, '\n')
-
+// AtomicWriteBytes writes data to path atomically: the bytes are written to
+// a temporary sibling file (<path>.tmp-<rand>) in the same directory, the
+// sibling is closed and flushed, and only then renamed into place with
+// os.Rename. Because rename replaces the destination in a single filesystem
+// operation, a reader of path never observes a partially written file, and a
+// failure at any step leaves any pre-existing path untouched.
+func AtomicWriteBytes(path string, data []byte) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
 	if err != nil {
@@ -57,6 +50,20 @@ func AtomicWriteJSON(path string, v any) error {
 		return fmt.Errorf("fsx: rename temp file into place for %s: %w", path, err)
 	}
 	return nil
+}
+
+// AtomicWriteJSON marshals v as indented JSON and writes it to path
+// atomically via AtomicWriteBytes: a reader of path never observes a
+// partially written file, and a failure at any step (including marshaling)
+// leaves any pre-existing path untouched.
+func AtomicWriteJSON(path string, v any) error {
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return fmt.Errorf("fsx: marshal %s: %w", path, err)
+	}
+	data = append(data, '\n')
+
+	return AtomicWriteBytes(path, data)
 }
 
 // ReadJSON reads path and unmarshals its JSON contents into out. The
@@ -78,37 +85,17 @@ func ReadJSON(path string, out any) error {
 	return nil
 }
 
-// AtomicWriteTOML marshals v as TOML and writes it to path atomically,
-// using the same temp-file-plus-rename sequence as AtomicWriteJSON: a
-// reader of path never observes a partially written file, and a failure at
-// any step leaves any pre-existing path untouched.
+// AtomicWriteTOML marshals v as TOML and writes it to path atomically via
+// AtomicWriteBytes, the same sequence AtomicWriteJSON uses: a reader of path
+// never observes a partially written file, and a failure at any step leaves
+// any pre-existing path untouched.
 func AtomicWriteTOML(path string, v any) error {
 	data, err := toml.Marshal(v)
 	if err != nil {
 		return fmt.Errorf("fsx: marshal %s: %w", path, err)
 	}
 
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return fmt.Errorf("fsx: create temp file for %s: %w", path, err)
-	}
-	tmpName := tmp.Name()
-
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return fmt.Errorf("fsx: write temp file for %s: %w", path, err)
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("fsx: close temp file for %s: %w", path, err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("fsx: rename temp file into place for %s: %w", path, err)
-	}
-	return nil
+	return AtomicWriteBytes(path, data)
 }
 
 // ReadTOML reads path and unmarshals its TOML contents into out. The

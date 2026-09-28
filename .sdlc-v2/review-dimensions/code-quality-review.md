@@ -72,3 +72,15 @@ Review Go source changes for baseline code quality in this module
   cases when only two execute, is a finding. Exported identifiers with zero
   module-wide callers are dead code, regardless of presence of a doc
   comment.
+- Error types must use the `error` interface, never a concrete pointer type
+  (`*MovedKeysErr`). Callers use `errors.As` to extract values. The
+  nil-pointer-in-interface footgun occurs when a concrete type `nil` is
+  stored in an `error` interface and later compared to `nil` — it does not
+  equal `nil`. Use `error` at function boundaries.
+- Inline and doc comments must not carry references to planning artifacts:
+  step numbers (`// Step 10.`), task IDs, or plan section names
+  (`"Final Shape"`). These are authoring leftovers introduced during initial
+  development and must be cleaned before shipping.
+- Records passed as parameters or returned should use named structs, not
+  positional tuples via arrays (`[2]string`). Positional syntax is fragile
+  and does not scale when the record gains a fifth field.

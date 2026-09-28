@@ -26,6 +26,7 @@ func TestSectionsSnapshot(t *testing.T) {
 		"received-review",
 		"commit",
 		"pr",
+		"github",
 		"pr-labels",
 		"review-dimensions",
 		"pr-template",
@@ -86,29 +87,49 @@ func TestShipFieldsReferenceIdentity(t *testing.T) {
 	}
 }
 
-// TestPrSectionHasFields verifies that the 'pr' section carries fields
-// despite also having a delegatedTo value (unlike 'commit' which has
-// delegatedTo + empty fields).
-func TestPrSectionHasFields(t *testing.T) {
+// TestPrAndGithubSectionFields verifies that the 'pr' section carries no
+// fields (despite having a delegatedTo value) now that its GitHub-account
+// field moved to the standalone 'github' section, which carries exactly one
+// field and no delegatedTo.
+func TestPrAndGithubSectionFields(t *testing.T) {
 	sections := setupmeta.Sections()
-	for _, s := range sections {
-		if s.ID == "pr" {
-			if len(s.Fields) != 2 {
-				t.Errorf("pr section has %d fields, want 2", len(s.Fields))
-			}
-			if s.DelegatedTo == "" {
-				t.Error("pr section should have a non-empty DelegatedTo")
-			}
-			return
+	var pr, github *setupmeta.Section
+	for i := range sections {
+		switch sections[i].ID {
+		case "pr":
+			pr = &sections[i]
+		case "github":
+			github = &sections[i]
 		}
 	}
-	t.Fatal("no section with id 'pr' found")
+	if pr == nil {
+		t.Fatal("no section with id 'pr' found")
+	}
+	if len(pr.Fields) != 0 {
+		t.Errorf("pr section has %d fields, want 0", len(pr.Fields))
+	}
+	if pr.DelegatedTo == "" {
+		t.Error("pr section should have a non-empty DelegatedTo")
+	}
+
+	if github == nil {
+		t.Fatal("no section with id 'github' found")
+	}
+	if len(github.Fields) != 1 {
+		t.Fatalf("github section has %d fields, want 1", len(github.Fields))
+	}
+	if github.Fields[0].Name != "expectedAccount" {
+		t.Errorf("github section field[0].Name = %q, want %q", github.Fields[0].Name, "expectedAccount")
+	}
+	if github.DelegatedTo != "" {
+		t.Errorf("github section DelegatedTo = %q, want empty", github.DelegatedTo)
+	}
 }
 
-// TestSectionCount verifies the total number of sections (17).
+// TestSectionCount verifies the total number of sections (18).
 func TestSectionCount(t *testing.T) {
-	if got := len(setupmeta.Sections()); got != 17 {
-		t.Errorf("Sections() returned %d sections, want 17", got)
+	if got := len(setupmeta.Sections()); got != 18 {
+		t.Errorf("Sections() returned %d sections, want 18", got)
 	}
 }
 

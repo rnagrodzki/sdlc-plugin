@@ -24,12 +24,13 @@ verification after each wave and automatic recovery from failures.
 |------|-------------|---------|
 | `<plan-file-path>` | Path to the plan file. Required unless resuming. | none |
 | `--plan <path>` | Alternative way to specify the plan file path. | none |
-| `--quality <level>` | Quality tier: `full`, `balanced`, or `minimal` (see table below). | interactive prompt — unless `execute.quality` is set, which fixes the tier and skips the prompt without this flag. See [Configuration](#configuration). |
+| `--quality <level>` | Quality tier: `full`, `balanced`, or `minimal` (see table below). | interactive prompt — unless `executePrefs.quality` is set, which fixes the tier and skips the prompt without this flag. See [Configuration](#configuration). |
 | `--resume` | Resume from saved progress after an interruption. | off |
 | `--rebase <mode>` | Rebase strategy: `auto`, `skip`, or `prompt`. | `skip` |
-| `--auto` | Skip all interactive prompts. | off — unless `execute.auto` is set, or a dispatching `/ship` run is itself in auto mode; the three sources are OR-combined. See [Configuration](#configuration). |
+| `--auto` | Skip all interactive prompts. | off — unless `executePrefs.auto` is set, or a dispatching `/ship` run is itself in auto mode; the three sources are OR-combined. See [Configuration](#configuration). |
 | `--branch <name>` | Create and check out this branch before executing. | auto-derived |
 | `--wave-timeout <s>` | Max seconds a single wave can run. Also used as each task's total-runtime ceiling when the server classifies still-open tasks. | `1800` |
+| `--commit-waves <true\|false>` | Commit each wave separately. Forwarded by `/ship` only when `ship.execute.commitWaves` is set. | `execute.commitWaves` in `config.toml`, else `true` |
 | `--wave-interval <s>` | Seconds between wave-await liveness polls. Also sets a heartbeat-staleness threshold of 10x this value (default 600s) before a worker is considered stalled, and a reclaim grace of max(5x this value, 300s) (default 300s) before a worker that never answers the reclaim is failed. See [Execute wave supervision](../execute-wave-supervision.md). | `60` |
 
 ### Quality tiers
@@ -42,17 +43,19 @@ verification after each wave and automatic recovery from failures.
 
 ## Configuration
 
-`.sdlc-v2/config.toml` (project-level, committed):
+`.sdlc-v2/local.toml` (personal, gitignored), section `[executePrefs]`:
 
 | Key | Type | Default | Effect |
 |---|---|---|---|
-| `execute.auto` | boolean | `false` | Run unattended. Suppresses the branch, tier, resume and high-risk prompts. Never overrides an error-severity guardrail failure. |
-| `execute.quality` | `"full"` \| `"balanced"` \| `"minimal"` | unset | Fixes the model preset and skips the tier-selection prompt. `--quality` overrides it. Unset plus `auto = true` resolves to `balanced`. A value outside the three allowed tiers — from this key or from `--quality` — is not fatal: it is reported as a warning and resolution falls through to the next source. |
-| `execute.highRiskAutoApprove` | boolean | `false` | A wave with a High-risk task proceeds without a second approval. Read from this key alone — no plan-approval state is consulted. When a high-risk wave auto-proceeds because of this key (or `execute.auto`) rather than a per-run `--auto`, `/execute` prints a warning at wave start naming the config source. |
+| `executePrefs.auto` | boolean | `false` | Run unattended. Suppresses the branch, tier, resume and high-risk prompts. Never overrides an error-severity guardrail failure. |
+| `executePrefs.quality` | `"full"` \| `"balanced"` \| `"minimal"` | unset | Fixes the model preset and skips the tier-selection prompt. `--quality` overrides it. Unset plus `auto = true` resolves to `balanced`. A value outside the three allowed tiers — from this key or from `--quality` — is not fatal: it is reported as a warning and resolution falls through to the next source. |
+| `executePrefs.highRiskAutoApprove` | boolean | `false` | A wave with a High-risk task proceeds without a second approval. Read from this key alone — no plan-approval state is consulted. When a high-risk wave auto-proceeds because of this key (or `executePrefs.auto`) rather than a per-run `--auto`, `/execute` prints a warning at wave start naming the config source. |
 
 Resolution order is `--quality` / `--auto` flag, then a dispatching `/ship` run's auto mode, then these keys, then the built-in default. The `execute_state` tool's `resolve-config` action performs the merge and reports each value's source.
 
-`execute.quality` is distinct from `automation.mode` in `.sdlc-v2/local.toml`: `automation` gates whether `/ship` hands control to `/execute`, while these keys govern prompts inside `/execute` once it has control.
+`.sdlc-v2/config.toml` (project-level, committed) keeps `execute.commitWaves`. If `auto`, `quality` or `highRiskAutoApprove` is still under `[execute]` in config.toml, `/execute` moves it to `[executePrefs]` in local.toml, keeps all comments, and warns you to commit the config.toml change. If local.toml already has a different value, or the file layout is unusual, `/execute` stops and tells you what to move by hand.
+
+`executePrefs` and `automation` both live in `.sdlc-v2/local.toml` but do different jobs: `automation.mode` gates whether `/ship` hands control to `/execute`, while `executePrefs` governs prompts inside `/execute` once it has control.
 
 ## Examples
 
@@ -108,8 +111,9 @@ file — you do not need to pass it again.
 - **Runtime config is resolved second, and always.** Immediately after loading
   state, the skill calls `execute_state({action: "resolve-config"})` to merge
   `--quality` / `--auto`, a dispatching `/ship` run's auto mode, and the
-  `execute.*` config keys into one effective answer. It is that call — not a
-  direct read of `config.toml` — that decides the tier, whether prompts are
+  `executePrefs.*` keys in `.sdlc-v2/local.toml` (plus `execute.commitWaves`
+  from `config.toml`) into one effective answer. It is that call — not a
+  direct read of either config file — that decides the tier, whether prompts are
   suppressed, and whether a high-risk wave needs a second approval. The skill
   prints each value with its source, so you can always see which of the three
   tiers supplied it.

@@ -73,3 +73,29 @@ narrativeRules = [
 # [automation.steps]
 # execute = "confirm"
 # review = "auto"
+
+# ─── GitHub account ─────────────────────────────────────────────
+# [github]
+# GitHub login expected to be active when /pr creates a PR. /pr halts if
+# the active gh account differs. Leave unset to use the origin owner.
+# expectedAccount = "my-gh-login"
+
+# ─── Execute preferences ────────────────────────────────────────
+# [executePrefs]
+# Run unattended: no prompts, auto-create a feature branch when starting
+# on the default branch, auto-approve high-risk waves. Error-severity
+# guardrail violations still halt execution.
+# auto = false
+
+# Skip the quality-tier prompt by fixing the model preset.
+# Valid: "full" | "balanced" | "minimal"
+#   full      -- Speed: lightest models, skips the spec compliance review
+#   balanced  -- Balanced: the interactive default
+#   minimal   -- Quality: strongest models, max correctness
+# Commented out on purpose: the tier prompt doubles as the execution-plan
+# approval gate, so uncommenting this removes that confirmation step.
+# quality = "balanced"
+
+# Auto-approve waves containing a High-risk task, because the plan was
+# already approved at plan time.
+# highRiskAutoApprove = false

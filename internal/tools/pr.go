@@ -17,6 +17,7 @@
 package tools
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -49,7 +50,7 @@ import (
 // branch.ValidateExpectedBranch is dead code without something to compare
 // the current branch against — this mirrors pr.js's --expected-branch flag.
 type PRPrepareIn struct {
-	SkipConfigCheck bool   `json:"skipConfigCheck" jsonschema_description:"Skips the config-version auto-migration gate normally run before preflight checks. Set only when the caller has already verified or migrated the config."`
+	SkipConfigCheck bool   `json:"skipConfigCheck" jsonschema_description:"Skips the config-version auto-migration gate normally run before preflight checks, and the move of personal keys (such as pr.expectedAccount) from config.toml to local.toml that runs with it. Set only when the caller has already verified or migrated the config."`
 	ExpectedBranch  string `json:"expectedBranch,omitempty" jsonschema_description:"Branch the caller expects to be on. When set, the current branch is validated against it and the branch-guard hard gate rejects a mismatch."`
 }
 
@@ -212,6 +213,7 @@ type prRuntime struct {
 	configReadSection   func(root, section string) (map[string]any, error)
 	versionDetect       func(root, path, fileType string) (*version.VersionFile, error)
 	configMigrateVerify func(root string) error
+	configMoveKeys      func(root string) ([]string, error)
 	branchValidate      func(current, expected string) branch.BranchGuardResult
 	jiraExtract         func(branchName string) string
 	templateResolve     func(root string) (*prtemplate.Template, error)
@@ -244,6 +246,7 @@ var defaultPRRuntime = prRuntime{
 	configReadSection:   config.ReadSection,
 	versionDetect:       version.DetectAt,
 	configMigrateVerify: configmigrate.Verify,
+	configMoveKeys:      configmigrate.MigrateMovedKeys,
 	branchValidate:      branch.ValidateExpectedBranch,
 	jiraExtract: func(branchName string) string {
 		return detectJiraTicket(branchName, nil)
@@ -585,6 +588,18 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 			errs = append(errs, fmt.Sprintf("config-version: %s", err.Error()))
 			return PRPrepareOut{Errors: errs, NeedsMigration: true, Next: "Fix the errors above, then call pr_prepare again."}, nil
 		}
+		moved, mkErr := rt.configMoveKeys(mainRoot)
+		if mkErr != nil {
+			errs = append(errs, mkErr.Error())
+			var mk *configmigrate.MovedKeysErr
+			if errors.As(mkErr, &mk) {
+				errs = append(errs, mk.Suggestion())
+			}
+			return PRPrepareOut{Errors: errs, NeedsMigration: true, Next: "Fix the errors above, then call pr_prepare again."}, nil
+		}
+		if len(moved) > 0 {
+			warnings = append(warnings, configmigrate.MovedKeysWarning(moved))
+		}
 	}
 
 	// gh-auth + active-account preflight (pr.js issues #234/#380).
@@ -594,9 +609,15 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 		ActiveAccount:   authProbe.ActiveAccount,
 	}
 
-	prSection, _ := rt.configReadSection(mainRoot, "pr")
+	// An absent local.toml or [github] section means "not configured"; any
+	// other read failure (malformed TOML, permission error) is reported so it
+	// is not mistaken for "not configured".
+	githubSection, ghErr := rt.configReadSection(mainRoot, "github")
+	if ghErr != nil && !errors.Is(ghErr, config.ErrNotFound) {
+		warnings = append(warnings, fmt.Sprintf("local.toml [github] section unreadable: %s; skipping expected-account check", ghErr.Error()))
+	}
 	expectedAccount := ""
-	if v, ok := prSection["expectedAccount"].(string); ok {
+	if v, ok := githubSection["expectedAccount"].(string); ok {
 		if trimmed := strings.TrimSpace(v); trimmed != "" {
 			expectedAccount = trimmed
 		}
@@ -657,7 +678,7 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 			warnings = append(warnings, fmt.Sprintf("Repo access probe failed (%s) — proceeding without access verification.", msg))
 		}
 	case expectedAccount == "" && !hasRemote:
-		warnings = append(warnings, "Could not resolve expected gh account (no pr.expectedAccount, no origin remote). Skipping active-account check.")
+		warnings = append(warnings, "Could not resolve expected gh account (no [github] expectedAccount in .sdlc-v2/local.toml, no origin remote). Skipping active-account check.")
 	}
 
 	// Git state: current branch + uncommitted-changes, mirroring
@@ -1618,7 +1639,7 @@ func prReleaseAddLabelWith(rt prRuntime, workDir, label string) error {
 // responsibility.
 func RegisterPRTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "pr_prepare",
-		"Preflight checks for pr: config-version gate, gh-auth + active-account probe (with recovery-shaped diagnostics on failure), branch-guard hard gate, protected-branch rejection, JIRA ticket detection from the branch name, PR template resolution, upstream/push status (needsPush), and version diagnostics (bump options, tags, commits since tag, conventional commit summary, existing RCs) when a version config exists.",
+		"Preflight checks for pr: config-version gate (also moves personal keys such as pr.expectedAccount from config.toml to local.toml, with a warning; fails with manual steps when the move is not safe), gh-auth + active-account probe (expected account from local.toml [github] expectedAccount; recovery-shaped diagnostics on failure), branch-guard hard gate, protected-branch rejection, JIRA ticket detection from the branch name, PR template resolution, upstream/push status (needsPush), and version diagnostics (bump options, tags, commits since tag, conventional commit summary, existing RCs) when a version config exists.",
 		mcpserver.Annotations{
 			Title:       "Prepare pull request context",
 			ReadOnly:    false,

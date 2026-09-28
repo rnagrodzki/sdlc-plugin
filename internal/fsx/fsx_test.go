@@ -502,3 +502,32 @@ func TestNormalizeTOMLTypes_HandlesPointerToMap(t *testing.T) {
 		t.Fatalf("c.d: expected float64(4), got %#v (%T)", c["d"], c["d"])
 	}
 }
+
+func TestAtomicWriteBytes_WritesExactBytesAndNoTempFiles(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "raw.toml")
+	if err := os.WriteFile(path, []byte("old\n"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	want := []byte("# comment kept\n[github]\nexpectedAccount = 'a'\n")
+	if err := AtomicWriteBytes(path, want); err != nil {
+		t.Fatalf("AtomicWriteBytes: unexpected error: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("content mismatch:\n got: %q\nwant: %q", got, want)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected only the destination file, found %d entries", len(entries))
+	}
+}

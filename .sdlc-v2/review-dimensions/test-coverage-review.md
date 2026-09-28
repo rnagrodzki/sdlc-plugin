@@ -60,3 +60,12 @@ new changes to that same bar:
   operation will succeed (permission requirements can differ). Tests that
   validate preflight behavior must be distinguished from tests that
   validate the write operation itself.
+- When code dispatches over a static table or enum (e.g. four moved keys:
+  pr.expectedAccount, execute.auto, execute.quality,
+  execute.highRiskAutoApprove), tests must exercise every entry. Count the
+  table entries and verify the test case count matches; a gap means
+  unreachable code under normal operation.
+- Multi-step file writes (e.g. atomic writes to two files in sequence) must
+  have each failure point tested: first write succeeds/second fails, first
+  write fails, and both succeed. Assert the on-disk state after each
+  failure to verify partial writes do not corrupt state.
