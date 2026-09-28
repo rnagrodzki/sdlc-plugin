@@ -24,8 +24,8 @@
 
 'use strict';
 
-/** @version 8 — retag script version. Bump when behavior changes. */
-const RETAG_SCRIPT_VERSION = 8;
+/** @version 9 — retag script version. Bump when behavior changes. */
+const RETAG_SCRIPT_VERSION = 9;
 
 const fs   = require('node:fs');
 const path = require('node:path');
@@ -190,6 +190,11 @@ function resolveTagFromTags(config, repoRoot) {
   return tags.length > 0 ? tags[0] : null;
 }
 
+/** True when HEAD is a release-bump commit made by release-on-main/promote-release. */
+function isReleaseBumpCommit(subject) {
+  return /^chore\(release\):\s/.test(String(subject || ''));
+}
+
 // ---------------------------------------------------------------------------
 // Tag operations
 // ---------------------------------------------------------------------------
@@ -281,6 +286,12 @@ function main() {
     process.exit(0);
   }
 
+  const subject = exec('git log -1 --format=%s', { cwd: repoRoot });
+  if (isReleaseBumpCommit(subject)) {
+    console.log(`HEAD is a release-bump commit ("${subject}"). Skipping retag.`);
+    process.exit(0);
+  }
+
   let tag;
   if (!config.versionFile?.enabled) {
     tag = resolveTagFromTags(config, repoRoot);
@@ -324,6 +335,8 @@ function main() {
   }
 }
 
-main();
+// Only run when executed directly (`node retag-release.cjs`) — requiring
+// this file as a module (e.g. from tests) must not trigger a live CI run.
+if (require.main === module) { main(); }
 
-module.exports = { RETAG_SCRIPT_VERSION };
+module.exports = { RETAG_SCRIPT_VERSION, isReleaseBumpCommit };

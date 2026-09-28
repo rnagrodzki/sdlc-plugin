@@ -38,8 +38,8 @@
 
 'use strict';
 
-/** @version 8 — release-on-main script version. Bump when behavior changes. */
-const RELEASE_ON_MAIN_SCRIPT_VERSION = 8;
+/** @version 9 — release-on-main script version. Bump when behavior changes. */
+const RELEASE_ON_MAIN_SCRIPT_VERSION = 9;
 
 const fs   = require('node:fs');
 const path = require('node:path');
@@ -60,6 +60,40 @@ function exec(cmd, opts = {}) {
 
 function execOrThrow(cmd, opts = {}) {
   return execSync(cmd, { encoding: 'utf8', stdio: 'pipe', ...opts }).trim();
+}
+
+/**
+ * Hint shown when a push is rejected by a branch/tag ruleset that
+ * GITHUB_TOKEN cannot bypass. Kept byte-for-byte identical (copy-pasted,
+ * not imported — payloads are standalone scripts) in promote-release.cjs.
+ */
+const RULESET_PUSH_HINT =
+  'Push rejected by a branch/tag ruleset. GITHUB_TOKEN cannot bypass rulesets.\n' +
+  'Fix one of:\n' +
+  '  1. Set repo variable RELEASE_APP_CLIENT_ID + secret RELEASE_APP_PRIVATE_KEY for a GitHub App\n' +
+  '     that is on the ruleset bypass list.\n' +
+  '  2. Set secret RELEASE_TOKEN to a fine-grained PAT of a user on the bypass list.\n' +
+  '  3. Use version.method = "pr" (release commits go through a PR).\n' +
+  'Docs: docs/versioning.md#protected-branches-and-rulesets';
+
+/** @returns {string|null} hint when stderr is a ruleset rejection, else null */
+function classifyPushError(stderr) {
+  return /GH013|Repository rule violations|protected branch/i.test(String(stderr || ''))
+    ? RULESET_PUSH_HINT : null;
+}
+
+/**
+ * Like execOrThrow, but for `git push` calls: rewrites a ruleset-rejected
+ * push's error message to lead with RULESET_PUSH_HINT before rethrowing.
+ */
+function execPushOrThrow(cmd, opts = {}) {
+  try {
+    return execOrThrow(cmd, opts);
+  } catch (err) {
+    const hint = classifyPushError(err.stderr);
+    if (hint) throw new Error(`${hint}\n\n${String(err.stderr).trim()}`);
+    throw err;
+  }
 }
 
 /**
@@ -196,7 +230,7 @@ function readVersionConfig(repoRoot) {
     process.exit(1);
   }
 
-  const method = config.method || 'push';
+  const method = config.method === 'push-with-secret' ? 'push' : (config.method || 'push');
 
   return {
     preRelease: config.preRelease || '',
@@ -657,7 +691,7 @@ function aggregateNotesByCategory(notesList) {
  * the given title. Auto-merge is requested; non-fatal if unavailable.
  */
 function pushFilesViaPR(repoRoot, baseBranch, prBranch, prTitle) {
-  execOrThrow(`git push origin HEAD:${prBranch}`, { cwd: repoRoot });
+  execPushOrThrow(`git push origin HEAD:${prBranch}`, { cwd: repoRoot });
 
   const body = `Auto-generated file updates for ${prTitle}.\n\nThis PR was created by the release workflow.`;
   withTmpFile(body, (tmpPath) => {
@@ -855,7 +889,7 @@ function runRelease({ repoRoot, config, newVersion, newTag, isRCRelease, notes, 
         withTmpFile(commitMsg, (tmpPath) => {
           execOrThrow(`git commit -F "${tmpPath}"`, { cwd: repoRoot });
         });
-        execOrThrow(`git push origin HEAD:${branch}`, { cwd: repoRoot });
+        execPushOrThrow(`git push origin HEAD:${branch}`, { cwd: repoRoot });
         bumpCommitSHA = exec('git rev-parse HEAD', { cwd: repoRoot });
         console.log(`Committed and pushed release commit to ${branch}.`);
       } else {
@@ -935,7 +969,7 @@ function runRelease({ repoRoot, config, newVersion, newTag, isRCRelease, notes, 
         withTmpFile(tagMessage, (tmpPath) => {
           execOrThrow(`git tag -a "${newTag}" -F "${tmpPath}" "${tagTarget}"`, { cwd: repoRoot });
         });
-        execOrThrow(`git push origin "refs/tags/${newTag}"`, { cwd: repoRoot });
+        execPushOrThrow(`git push origin "refs/tags/${newTag}"`, { cwd: repoRoot });
         console.log(`Tag ${newTag} created at ${tagTarget.slice(0, 8)} and pushed.`);
 
         if (!isRCRelease) {
@@ -1110,4 +1144,6 @@ module.exports = {
   findLastFinalTag,
   collectNotesSinceTag,
   aggregateNotesByCategory,
+  classifyPushError,
+  RULESET_PUSH_HINT,
 };
