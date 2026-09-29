@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -1455,6 +1456,309 @@ func TestPlanMark_ExistingIntegrityMarkers_IgnoreData(t *testing.T) {
 	}
 	if _, ok := doc["results"]; ok {
 		t.Errorf("Data leaked into a top-level %q key: %v", "results", doc["results"])
+	}
+}
+
+// readSoleStateFileBytes reads the single surviving plan-<slug>-*.json
+// state file's raw bytes (unparsed), for exact before/after comparisons
+// that a JSON round-trip through readSoleStateDoc could mask.
+func readSoleStateFileBytes(t *testing.T, root string) []byte {
+	t.Helper()
+	files := listStateFiles(t, root)
+	if len(files) != 1 {
+		t.Fatalf("state files = %v, want exactly 1", files)
+	}
+	raw, err := os.ReadFile(filepath.Join(root, paths.DataDir, paths.RunsSubdir, files[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+// ---------------------------------------------------------------------------
+// plan_mark "checkpoint" marker tests
+// ---------------------------------------------------------------------------
+
+// TestPlanMark_Checkpoint_ReplaceNotAppend verifies a "checkpoint" marker
+// call stores a single PlanCheckpoint object (with updatedAt) at
+// st.Data["checkpoint"], that a second call REPLACES it rather than
+// appending (unlike guardrailResults/criticalDecisions, which append), that
+// Next follows the "Checkpoint saved at step N. Continue step N." template,
+// and that a non-checkpoint marker returns no Next.
+func TestPlanMark_Checkpoint_ReplaceNotAppend(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	if _, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+		t.Fatalf("planPrepareCore (seed): %v", err)
+	}
+
+	out1, err := planMark(dir, dir, PlanMarkIn{
+		Marker: "checkpoint",
+		Data:   map[string]any{"step": "2", "iteration": float64(0), "expectedWriters": []any{}},
+	})
+	if err != nil {
+		t.Fatalf("planMark(checkpoint) #1: %v", err)
+	}
+	if !out1.OK {
+		t.Error("planMark(checkpoint) #1 .OK = false, want true")
+	}
+	if want := "Checkpoint saved at step 2. Continue step 2."; out1.Next != want {
+		t.Errorf("Next #1 = %q, want %q", out1.Next, want)
+	}
+
+	doc := readSoleStateDoc(t, dir)
+	cp1, ok := doc["checkpoint"].(map[string]any)
+	if !ok {
+		t.Fatalf("checkpoint missing or wrong type: %v", doc["checkpoint"])
+	}
+	if cp1["step"] != "2" {
+		t.Errorf(`checkpoint.step = %v, want "2"`, cp1["step"])
+	}
+	if s, ok := cp1["updatedAt"].(string); !ok || s == "" {
+		t.Errorf("checkpoint.updatedAt = %v, want a non-empty timestamp string", cp1["updatedAt"])
+	}
+
+	out2, err := planMark(dir, dir, PlanMarkIn{
+		Marker: "checkpoint",
+		Data: map[string]any{
+			"step": "3", "iteration": float64(1),
+			"expectedWriters": []any{"lane-static-structural-r1", "lane-content-coverage-r1"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("planMark(checkpoint) #2: %v", err)
+	}
+	if want := "Checkpoint saved at step 3. Continue step 3."; out2.Next != want {
+		t.Errorf("Next #2 = %q, want %q", out2.Next, want)
+	}
+
+	doc = readSoleStateDoc(t, dir)
+	if _, isArray := doc["checkpoint"].([]any); isArray {
+		t.Fatal("checkpoint stored as an array; want a single replaced object (no append)")
+	}
+	cp2, ok := doc["checkpoint"].(map[string]any)
+	if !ok {
+		t.Fatalf("checkpoint missing or wrong type after 2nd call: %v", doc["checkpoint"])
+	}
+	if cp2["step"] != "3" {
+		t.Errorf(`checkpoint.step = %v, want "3" (replaced, not appended)`, cp2["step"])
+	}
+	wantWriters := []any{"lane-static-structural-r1", "lane-content-coverage-r1"}
+	if !reflect.DeepEqual(cp2["expectedWriters"], wantWriters) {
+		t.Errorf("checkpoint.expectedWriters = %v, want %v", cp2["expectedWriters"], wantWriters)
+	}
+
+	out3, err := planMark(dir, dir, PlanMarkIn{Marker: "critiqueRan"})
+	if err != nil {
+		t.Fatalf("planMark(critiqueRan): %v", err)
+	}
+	if out3.Next != "" {
+		t.Errorf("Next for critiqueRan = %q, want empty (only checkpoint returns next)", out3.Next)
+	}
+}
+
+// TestPlanMark_Checkpoint_NextIncludesStyleInstructions_ReadFresh verifies
+// Next gains a " Follow the N custom plan instructions (style.instructions)."
+// suffix once [planStyle].instructions is non-empty, and that the style is
+// read fresh on every call (KD9): writing local.toml AFTER the first call
+// still changes the very next call's Next.
+func TestPlanMark_Checkpoint_NextIncludesStyleInstructions_ReadFresh(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	if _, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+		t.Fatalf("planPrepareCore (seed): %v", err)
+	}
+
+	data := map[string]any{"step": "3", "iteration": float64(0)}
+
+	out1, err := planMark(dir, dir, PlanMarkIn{Marker: "checkpoint", Data: data})
+	if err != nil {
+		t.Fatalf("planMark(checkpoint) #1: %v", err)
+	}
+	if strings.Contains(out1.Next, "custom plan instructions") {
+		t.Errorf("Next #1 = %q, want no custom-instructions suffix (no [planStyle] section yet)", out1.Next)
+	}
+
+	writeFile(t, filepath.Join(dir, paths.DataDir, "local.toml"), ""+
+		"[planStyle]\n"+
+		"instructions = [\"Cite file:line for every claim.\", \"State the delta, not the plan.\"]\n")
+
+	out2, err := planMark(dir, dir, PlanMarkIn{Marker: "checkpoint", Data: data})
+	if err != nil {
+		t.Fatalf("planMark(checkpoint) #2: %v", err)
+	}
+	if want := " Follow the 2 custom plan instructions (style.instructions)."; !strings.HasSuffix(out2.Next, want) {
+		t.Errorf("Next #2 = %q, want suffix %q", out2.Next, want)
+	}
+}
+
+// TestPlanMark_Checkpoint_DataErrors table-drives every row of the
+// "checkpoint" marker's data-validation error table: each case must return
+// a *mcpserver.DomainError with a non-empty Suggestion, matching Msg
+// substring, and must write nothing to the plan state file.
+func TestPlanMark_Checkpoint_DataErrors(t *testing.T) {
+	manyWriters := make([]any, 33)
+	for i := range manyWriters {
+		manyWriters[i] = fmt.Sprintf("writer-%d", i)
+	}
+
+	tests := []struct {
+		name    string
+		data    map[string]any
+		wantMsg string
+	}{
+		{
+			name:    "data missing",
+			data:    nil,
+			wantMsg: `checkpoint needs data {step, iteration, expectedWriters}`,
+		},
+		{
+			name:    "step missing",
+			data:    map[string]any{"iteration": float64(0)},
+			wantMsg: `checkpoint step "" is not valid`,
+		},
+		{
+			name:    "step not in validCheckpointSteps",
+			data:    map[string]any{"step": "9"},
+			wantMsg: `checkpoint step "9" is not valid`,
+		},
+		{
+			name:    "iteration not whole",
+			data:    map[string]any{"step": "3", "iteration": float64(1.5)},
+			wantMsg: `checkpoint iteration must be an integer >= 0`,
+		},
+		{
+			name:    "iteration negative",
+			data:    map[string]any{"step": "3", "iteration": float64(-1)},
+			wantMsg: `checkpoint iteration must be an integer >= 0`,
+		},
+		{
+			name:    "unknown key",
+			data:    map[string]any{"step": "3", "bogus": "x"},
+			wantMsg: `checkpoint data has unknown key "bogus"`,
+		},
+		{
+			name:    "expectedWriters entry fails writerIDRe",
+			data:    map[string]any{"step": "3", "expectedWriters": []any{"bad id!"}},
+			wantMsg: `checkpoint expectedWriters[0] "bad id!" is not a valid writer ID`,
+		},
+		{
+			name:    "expectedWriters over max",
+			data:    map[string]any{"step": "3", "expectedWriters": manyWriters},
+			wantMsg: `checkpoint expectedWriters has 33 entries, max 32`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			initGitFixture(t, dir)
+			gitCommit(t, dir, "initial")
+
+			if _, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+				t.Fatalf("planPrepareCore (seed): %v", err)
+			}
+			before := readSoleStateFileBytes(t, dir)
+
+			_, err := planMark(dir, dir, PlanMarkIn{Marker: "checkpoint", Data: tt.data})
+			if err == nil {
+				t.Fatal("planMark(checkpoint) = nil error, want an error")
+			}
+			var domainErr *mcpserver.DomainError
+			if !errors.As(err, &domainErr) {
+				t.Fatalf("error type = %T, want *mcpserver.DomainError: %v", err, err)
+			}
+			if !strings.Contains(domainErr.Msg, tt.wantMsg) {
+				t.Errorf("Msg = %q, want substring %q", domainErr.Msg, tt.wantMsg)
+			}
+			if domainErr.Suggestion == "" {
+				t.Error("Suggestion is empty, want non-empty")
+			}
+
+			after := readSoleStateFileBytes(t, dir)
+			if string(before) != string(after) {
+				t.Errorf("state file changed after a rejected checkpoint call:\nbefore: %s\nafter:  %s", before, after)
+			}
+		})
+	}
+}
+
+// TestPlanMark_Checkpoint_UsesLatestPlanRunExactSlug verifies planMark's
+// state lookup now goes through state.LatestPlanRun (exact slug match) for
+// every marker, not state.Find's mtime-based, non-delimited prefix match: a
+// checkpoint call on branch "feat" must resolve to the exact-slug
+// plan-feat-*.json run and leave a newer plan-feat-x-*.json file (a
+// different branch, "feat-x") byte-identical, even though Find's prefix
+// match would have picked the newer, wrong file.
+func TestPlanMark_Checkpoint_UsesLatestPlanRunExactSlug(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	cmd := exec.Command("git", "checkout", "-b", "feat")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git checkout -b feat: %s: %v", out, err)
+	}
+
+	runsDir := filepath.Join(dir, paths.DataDir, paths.RunsSubdir)
+	if err := os.MkdirAll(runsDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	const (
+		newerSuperstring = "plan-feat-x-20260929T120000Z.json"
+		olderExact       = "plan-feat-20260929T110000Z.json"
+	)
+	superstringContent := `{"marker":"must-not-change"}`
+	if err := os.WriteFile(filepath.Join(runsDir, newerSuperstring), []byte(superstringContent), 0o644); err != nil {
+		t.Fatalf("WriteFile %s: %v", newerSuperstring, err)
+	}
+	if err := os.WriteFile(filepath.Join(runsDir, olderExact), []byte(`{}`), 0o644); err != nil {
+		t.Fatalf("WriteFile %s: %v", olderExact, err)
+	}
+
+	out, err := planMark(dir, dir, PlanMarkIn{
+		Marker: "checkpoint",
+		Data:   map[string]any{"step": "3", "iteration": float64(1), "expectedWriters": []any{"lane-static-structural-r1"}},
+	})
+	if err != nil {
+		t.Fatalf("planMark(checkpoint): %v", err)
+	}
+	if got := filepath.Base(out.Path); got != olderExact {
+		t.Fatalf("planMark wrote %q, want %q (exact slug match, not Find's prefix match)", got, olderExact)
+	}
+
+	got, err := os.ReadFile(filepath.Join(runsDir, newerSuperstring))
+	if err != nil {
+		t.Fatalf("ReadFile %s: %v", newerSuperstring, err)
+	}
+	if string(got) != superstringContent {
+		t.Errorf("plan-feat-x file changed: got %s, want %s (different branch, must stay untouched)", got, superstringContent)
+	}
+}
+
+// TestPlanMark_InputSchema_ListsCheckpointEnum verifies the plan_mark input
+// schema's "marker" field declares all of validMarkers (8 entries,
+// including the new "checkpoint") as a jsonschema enum, keeping the MCP
+// tool schema in sync with the marker set planMark actually accepts.
+func TestPlanMark_InputSchema_ListsCheckpointEnum(t *testing.T) {
+	f, ok := reflect.TypeOf(PlanMarkIn{}).FieldByName("Marker")
+	if !ok {
+		t.Fatal("PlanMarkIn has no Marker field")
+	}
+	tag := f.Tag.Get("jsonschema")
+	for marker := range validMarkers {
+		if !strings.Contains(tag, "enum="+marker) {
+			t.Errorf("PlanMarkIn.Marker jsonschema tag missing enum=%s: %q", marker, tag)
+		}
+	}
+	if want := 8; len(validMarkers) != want {
+		t.Fatalf("len(validMarkers) = %d, want %d (update this test if the marker set intentionally grows)", len(validMarkers), want)
 	}
 }
 

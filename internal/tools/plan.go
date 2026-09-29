@@ -6,10 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -1677,6 +1679,12 @@ func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepar
 // structured-data markers (see PlanMarkIn.Data) that append to their own
 // top-level st.Data key instead of stamping a timestamp into planIntegrity —
 // they never participate in the requiredPlanMarkers check.
+//
+// "checkpoint" is an eighth kind: it also owns its own top-level st.Data
+// key ("checkpoint"), but unlike guardrailResults/criticalDecisions it
+// REPLACES that key's value on every call rather than appending to it — see
+// PlanCheckpoint. It is deliberately absent from structuredDataMarkers below
+// (that map is append-only) and is handled by its own branch in planMark.
 var validMarkers = map[string]bool{
 	"plan-file":           true,
 	"skillInvoked":        true,
@@ -1685,6 +1693,7 @@ var validMarkers = map[string]bool{
 	"done":                true,
 	"guardrailResults":    true,
 	"criticalDecisions":   true,
+	"checkpoint":          true,
 }
 
 // structuredDataMarkers maps a plan_mark structured-data marker name to the
@@ -1705,11 +1714,117 @@ func markerKey(marker string) string {
 	return marker
 }
 
+// PlanCheckpoint is the "checkpoint" marker's payload: the plan run's
+// current SKILL.md step, its retry/iteration counter within that step, and
+// the writer IDs the current fan-out is waiting on. Stored whole at
+// st.Data["checkpoint"], replacing any previous value (see validMarkers).
+type PlanCheckpoint struct {
+	Step            string   `json:"step"`
+	Iteration       int      `json:"iteration"`
+	ExpectedWriters []string `json:"expectedWriters"`
+	UpdatedAt       string   `json:"updatedAt"`
+}
+
+// writerIDRe validates a single PlanCheckpoint.ExpectedWriters entry: it
+// must start with a letter or digit, followed by up to 63 more letters,
+// digits, dots, underscores or hyphens (max 64 total). Also reused by the
+// evidence-directory writer bookkeeping (Task 6).
+var writerIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+
+// validCheckpointSteps lists the plan SKILL.md step identifiers a
+// "checkpoint" marker may record, including the two review sub-steps 6.5
+// (lane fan-out) and 6.6 (lens reviewers).
+var validCheckpointSteps = []string{"0", "1", "2", "3", "4", "5", "6", "6.5", "6.6", "7"}
+
+// validateCheckpointData validates and parses the "checkpoint" marker's
+// data payload into a PlanCheckpoint (UpdatedAt is left zero; the caller
+// stamps it at write time). Every failure is a DomainError with a non-empty
+// Suggestion; nothing is written to state by this function.
+func validateCheckpointData(data map[string]any) (PlanCheckpoint, error) {
+	if len(data) == 0 {
+		return PlanCheckpoint{}, &mcpserver.DomainError{
+			Msg:        `checkpoint needs data {step, iteration, expectedWriters}`,
+			Suggestion: `call plan_mark with data {step:"3", iteration:1}`,
+		}
+	}
+
+	for k := range data {
+		switch k {
+		case "step", "iteration", "expectedWriters":
+		default:
+			return PlanCheckpoint{}, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("checkpoint data has unknown key %q", k),
+				Suggestion: fmt.Sprintf("remove %q; allowed keys: step, iteration, expectedWriters", k),
+			}
+		}
+	}
+
+	step, _ := data["step"].(string)
+	if !slices.Contains(validCheckpointSteps, step) {
+		return PlanCheckpoint{}, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("checkpoint step %q is not valid — valid steps: %s", step, strings.Join(validCheckpointSteps, ", ")),
+			Suggestion: `pass step as one of these strings, e.g. data {step:"3"}`,
+		}
+	}
+
+	iteration := 0
+	if raw, present := data["iteration"]; present {
+		// JSON numbers always decode to float64 (matching intField's
+		// convention elsewhere in this package); anything else, or a
+		// non-whole or negative value, is rejected.
+		f, ok := raw.(float64)
+		if !ok || f < 0 || f != math.Trunc(f) {
+			return PlanCheckpoint{}, &mcpserver.DomainError{
+				Msg:        "checkpoint iteration must be an integer >= 0",
+				Suggestion: `pass iteration as a whole number, e.g. data {step:"3", iteration:1}`,
+			}
+		}
+		iteration = int(f)
+	}
+
+	var expectedWriters []string
+	if raw, present := data["expectedWriters"]; present {
+		arr, _ := raw.([]any)
+		if len(arr) > 32 {
+			return PlanCheckpoint{}, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("checkpoint expectedWriters has %d entries, max 32", len(arr)),
+				Suggestion: "pass only the writers of the current fan-out",
+			}
+		}
+		expectedWriters = make([]string, 0, len(arr))
+		for i, el := range arr {
+			s, _ := el.(string)
+			if !writerIDRe.MatchString(s) {
+				return PlanCheckpoint{}, &mcpserver.DomainError{
+					Msg:        fmt.Sprintf("checkpoint expectedWriters[%d] %q is not a valid writer ID", i, s),
+					Suggestion: "use letters, digits, '.', '_' or '-' (max 64), e.g. lane-static-structural-r1",
+				}
+			}
+			expectedWriters = append(expectedWriters, s)
+		}
+	}
+
+	return PlanCheckpoint{Step: step, Iteration: iteration, ExpectedWriters: expectedWriters}, nil
+}
+
+// checkpointNext builds the "checkpoint" marker's Next instruction: the
+// step-continuation sentence, plus a custom-instructions reminder when the
+// "planStyle" config section (read fresh on every call, never cached —
+// KD9) has any. Mirrors the phrasing loadPlanStyle's doc comment describes
+// for style.instructions.
+func checkpointNext(mainRoot string, cp PlanCheckpoint) string {
+	next := fmt.Sprintf("Checkpoint saved at step %s. Continue step %s.", cp.Step, cp.Step)
+	if n := len(loadPlanStyle(mainRoot).Instructions); n > 0 {
+		next += fmt.Sprintf(" Follow the %d custom plan instructions (style.instructions).", n)
+	}
+	return next
+}
+
 // PlanMarkIn is the input for the plan_mark tool.
 type PlanMarkIn struct {
-	Marker string         `json:"marker" jsonschema_description:"Checkpoint marker: \"plan-file\", \"skillInvoked\", \"guardrailsEvaluated\", \"critiqueRan\", or the terminal \"done\" marker stamp the current timestamp into planIntegrity; \"guardrailResults\" and \"criticalDecisions\" instead append data's array payload to their own state key."`
+	Marker string         `json:"marker" jsonschema:"enum=plan-file,enum=skillInvoked,enum=guardrailsEvaluated,enum=critiqueRan,enum=done,enum=guardrailResults,enum=criticalDecisions,enum=checkpoint" jsonschema_description:"Checkpoint marker: \"plan-file\", \"skillInvoked\", \"guardrailsEvaluated\", \"critiqueRan\", or the terminal \"done\" marker stamp the current timestamp into planIntegrity; \"guardrailResults\" and \"criticalDecisions\" instead append data's array payload to their own state key. \"checkpoint\" replaces the progress checkpoint (requires data)."`
 	Path   string         `json:"path" jsonschema_description:"Plan file path to record. Only used (and required) when marker is \"plan-file\"."`
-	Data   map[string]any `json:"data,omitempty" jsonschema_description:"Structured payload for the \"guardrailResults\" marker ({results:[{id,status,detail}]}) or the \"criticalDecisions\" marker ({decisions:[{key,choice,reason}]}). Ignored for every other marker."`
+	Data   map[string]any `json:"data,omitempty" jsonschema_description:"Structured payload for the \"guardrailResults\" marker ({results:[{id,status,detail}]}) or the \"criticalDecisions\" marker ({decisions:[{key,choice,reason}]}). For \"checkpoint\": JSON object {step: string, iteration: integer >= 0, expectedWriters: JSON array of writer IDs (max 32)}. Example: {\"step\":\"3\",\"iteration\":1,\"expectedWriters\":[\"lane-static-structural-r1\"]}. Replaced, not appended. Ignored for every other marker."`
 }
 
 // PlanMarkOut is the output for the plan_mark tool.
@@ -1717,6 +1832,7 @@ type PlanMarkOut struct {
 	OK     bool   `json:"ok"`
 	Marker string `json:"marker"`
 	Path   string `json:"path"`
+	Next   string `json:"next,omitempty"` // checkpoint only
 }
 
 // planMark is the core logic, separated from the handler for testability.
@@ -1744,6 +1860,17 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 		}
 	}
 
+	// "checkpoint" data is validated up front, before any state lookup, so
+	// a malformed payload fails fast without needing a plan state file.
+	var checkpoint PlanCheckpoint
+	if in.Marker == "checkpoint" {
+		cp, verr := validateCheckpointData(in.Data)
+		if verr != nil {
+			return PlanMarkOut{}, verr
+		}
+		checkpoint = cp
+	}
+
 	branch, err := gitx.CurrentBranch(contentRoot)
 	if err != nil || branch == "" {
 		return PlanMarkOut{}, &mcpserver.InfraError{
@@ -1753,7 +1880,13 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 		}
 	}
 
-	st, err := state.Find(mainRoot, "plan", branch)
+	// Every marker's lookup resolves the branch's most recent plan run by
+	// filename timestamp (KD17), not state.Find's mtime-based, prefix-only
+	// match — state.Find("plan", "feat") would also match a
+	// plan-feat-x-*.json file belonging to a different branch ("feat-x")
+	// because its prefix match is not slug-delimited beyond the leading
+	// hyphen. LatestPlanRun requires an exact slug match.
+	st, err := state.LatestPlanRun(mainRoot, branch)
 	if err != nil {
 		return PlanMarkOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("find plan state file: %s", err.Error()),
@@ -1766,6 +1899,23 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 			Msg:        fmt.Sprintf("no plan state file found for branch %q; run plan_prepare first", branch),
 			Suggestion: "Confirm this is the same branch plan_prepare was run on — the plan state file is looked up by branch name, so switching branches loses it.",
 		}
+	}
+
+	// "checkpoint" replaces its own top-level state key on every call (no
+	// append, unlike the structured-data markers below) and is the only
+	// marker that returns a non-empty Next.
+	if in.Marker == "checkpoint" {
+		checkpoint.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		st.Data["checkpoint"] = checkpoint
+
+		if err := state.Write(st); err != nil {
+			return PlanMarkOut{}, &mcpserver.InfraError{
+				Msg:        fmt.Sprintf("write plan state file: %s", err.Error()),
+				Suggestion: "Check write permission on the plan state file path above and free disk space on the project root, then retry plan_mark with the same marker and data.",
+				Cause:      err,
+			}
+		}
+		return PlanMarkOut{OK: true, Marker: in.Marker, Path: st.Path, Next: checkpointNext(mainRoot, checkpoint)}, nil
 	}
 
 	// Structured-data markers append to their own top-level state key and
@@ -1854,7 +2004,9 @@ func RegisterPlanTools(s *mcpserver.Server) {
 	)
 
 	mcpserver.Register(s, "plan_mark",
-		"INTERNAL — called by sdlc skills only. Write a plan-integrity checkpoint marker (plan-file, skillInvoked, guardrailsEvaluated, critiqueRan, done) into the current branch's plan state file, or append structured data (guardrailResults, criticalDecisions) to it.",
+		"INTERNAL — called by sdlc skills only. Write a plan-integrity checkpoint marker (plan-file, skillInvoked, guardrailsEvaluated, critiqueRan, done) into the current branch's plan state file, append structured data (guardrailResults, criticalDecisions) to it, or replace the progress checkpoint (checkpoint). "+
+			"checkpoint: replace the progress checkpoint. Requires data.step. Optional: data.iteration, data.expectedWriters. Returns next. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError. "+
+			"Markers other than checkpoint return no next: the call only records state; continue the current SKILL.md step.",
 		mcpserver.Annotations{
 			Title:      "Record plan progress marker",
 			ReadOnly:   true,

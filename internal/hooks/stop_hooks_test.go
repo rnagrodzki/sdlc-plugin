@@ -558,6 +558,199 @@ func TestStopPlanIntegrity_BranchDoesNotResolve_SkipsEvenTranscriptFallback(t *t
 }
 
 // ---------------------------------------------------------------------------
+// stopPlanIntegrity: evidence directory cleanup (findPlanState now uses
+// state.LatestPlanRun; planIntegrityFromState also removes the run's
+// state.EvidenceDir alongside its state file)
+// ---------------------------------------------------------------------------
+
+// newPlanStateWithEvidence behaves like newPlanState but additionally
+// creates the run's evidence directory (state.EvidenceDir, keyed off
+// state.RunID(st)) with a sentinel file inside, so tests can assert whether
+// stopPlanIntegrity removed it.
+func newPlanStateWithEvidence(t *testing.T, root, branch string, planIntegrity map[string]any) (st *state.State, evidenceDir string) {
+	t.Helper()
+	st = newPlanState(t, root, branch, planIntegrity, "")
+	evidenceDir = state.EvidenceDir(root, state.RunID(st))
+	mustMkdirAll(t, evidenceDir)
+	mustWriteFile(t, filepath.Join(evidenceDir, "sentinel.txt"), "evidence")
+	return st, evidenceDir
+}
+
+func TestStopPlanIntegrity_Done_RemovesStateFileAndEvidenceDir(t *testing.T) {
+	root := gitFixture(t, "feat/plan-evidence-done")
+	branch := "feat/plan-evidence-done"
+
+	st, evidenceDir := newPlanStateWithEvidence(t, root, branch, allPlanMarkers())
+
+	out, err := stopPlanIntegrity(HookCtx{}, Event{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSilent(t, out)
+
+	if _, statErr := os.Stat(st.Path); !os.IsNotExist(statErr) {
+		t.Fatalf("plan state file should have been removed, stat err = %v", statErr)
+	}
+	if _, statErr := os.Stat(evidenceDir); !os.IsNotExist(statErr) {
+		t.Fatalf("evidence dir should have been removed alongside the state file, stat err = %v", statErr)
+	}
+}
+
+func TestStopPlanIntegrity_NotDone_KeepsStateFileAndEvidenceDir(t *testing.T) {
+	root := gitFixture(t, "feat/plan-evidence-notdone")
+	branch := "feat/plan-evidence-notdone"
+
+	markers := allPlanMarkers()
+	delete(markers, "done")
+	st, evidenceDir := newPlanStateWithEvidence(t, root, branch, markers)
+
+	out, err := stopPlanIntegrity(HookCtx{}, Event{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSilent(t, out)
+
+	if _, statErr := os.Stat(st.Path); statErr != nil {
+		t.Fatalf("plan state file should still exist (no %q marker — plan still running), stat err = %v", "done", statErr)
+	}
+	if _, statErr := os.Stat(evidenceDir); statErr != nil {
+		t.Fatalf("evidence dir should still exist (no %q marker — plan still running), stat err = %v", "done", statErr)
+	}
+}
+
+// TestPlanIntegrityFromState_EmptyRoot_SkipsEvidenceRemoval proves the
+// st.Root == "" guard in planIntegrityFromState. Without it,
+// state.EvidenceDir("", runID) resolves to a path relative to the process's
+// current directory — which gitFixture has already chdir'd to this test's
+// repo root — so a missing guard would delete this real directory too.
+func TestPlanIntegrityFromState_EmptyRoot_SkipsEvidenceRemoval(t *testing.T) {
+	root := gitFixture(t, "feat/plan-empty-root")
+	branch := "feat/plan-empty-root"
+
+	st := newPlanState(t, root, branch, allPlanMarkers(), "")
+	runID := state.RunID(st)
+
+	relEvidenceDir := state.EvidenceDir("", runID)
+	sentinel := filepath.Join(relEvidenceDir, "sentinel.txt")
+	mustMkdirAll(t, relEvidenceDir)
+	mustWriteFile(t, sentinel, "keep me")
+
+	st.Root = ""
+	out := planIntegrityFromState(st)
+	assertSilent(t, out)
+
+	if _, statErr := os.Stat(st.Path); !os.IsNotExist(statErr) {
+		t.Fatalf("plan state file should still be removed even when st.Root is empty, stat err = %v", statErr)
+	}
+	if _, statErr := os.Stat(sentinel); statErr != nil {
+		t.Fatalf("evidence dir must survive an empty st.Root (no relative-path RemoveAll), stat err = %v", statErr)
+	}
+}
+
+// TestPlanIntegrityFromState_EmptyRunID_SkipsEvidenceRemoval proves the
+// state.RunID(st) == "" guard in planIntegrityFromState, isolated from the
+// st.Root guard covered above. RunID trims ".json" from the path's
+// basename, so pointing Path at a bare ".json" file forces RunID(st) == "".
+func TestPlanIntegrityFromState_EmptyRunID_SkipsEvidenceRemoval(t *testing.T) {
+	root := gitFixture(t, "feat/plan-empty-runid")
+	branch := "feat/plan-empty-runid"
+
+	st := newPlanState(t, root, branch, allPlanMarkers(), "")
+	st.Path = filepath.Join(root, paths.DataDir, paths.RunsSubdir, ".json")
+	mustWriteFile(t, st.Path, "{}")
+
+	evidenceDir := state.EvidenceDir(root, "") // what a missing guard would remove
+	sentinel := filepath.Join(evidenceDir, "sentinel.txt")
+	mustMkdirAll(t, evidenceDir)
+	mustWriteFile(t, sentinel, "keep me")
+
+	out := planIntegrityFromState(st)
+	assertSilent(t, out)
+
+	if _, statErr := os.Stat(st.Path); !os.IsNotExist(statErr) {
+		t.Fatalf("plan state file should still be removed even when the run ID is empty, stat err = %v", statErr)
+	}
+	if _, statErr := os.Stat(sentinel); statErr != nil {
+		t.Fatalf("evidence dir must survive an empty run ID (no relative-path RemoveAll), stat err = %v", statErr)
+	}
+}
+
+// TestStopPlanIntegrity_ExactSlugMatch_IgnoresSuperstringSlugRun proves
+// findPlanState's switch from state.Find (prefix match — "plan-feat-" would
+// also match a "plan-feat-x-..." filename) to state.LatestPlanRun (exact
+// slug match). Branch "feat" has an older, done, exact-slug run; a
+// "feat-x" run — a different branch's — is newer but must never be touched.
+func TestStopPlanIntegrity_ExactSlugMatch_IgnoresSuperstringSlugRun(t *testing.T) {
+	root := gitFixture(t, "feat")
+
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+	mustMkdirAll(t, dir)
+
+	writeRun := func(name string) (path, evidenceDir string) {
+		t.Helper()
+		path = filepath.Join(dir, name)
+		raw, err := json.Marshal(map[string]any{"planIntegrity": allPlanMarkers()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustWriteFile(t, path, string(raw))
+		runID := strings.TrimSuffix(name, ".json")
+		evidenceDir = filepath.Join(dir, runID+".evidence")
+		mustMkdirAll(t, evidenceDir)
+		mustWriteFile(t, filepath.Join(evidenceDir, "sentinel.txt"), "evidence")
+		return path, evidenceDir
+	}
+
+	// Exact match for branch "feat", older timestamp.
+	featPath, featEvidence := writeRun("plan-feat-20260929T110000Z.json")
+	// A different branch's run ("feat-x"), newer timestamp — state.Find's old
+	// prefix-matching bug would have picked this one instead.
+	featXPath, featXEvidence := writeRun("plan-feat-x-20260929T120000Z.json")
+
+	out, err := stopPlanIntegrity(HookCtx{}, Event{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSilent(t, out)
+
+	if _, statErr := os.Stat(featPath); !os.IsNotExist(statErr) {
+		t.Fatalf("exact-slug-match run's state file should have been removed, stat err = %v", statErr)
+	}
+	if _, statErr := os.Stat(featEvidence); !os.IsNotExist(statErr) {
+		t.Fatalf("exact-slug-match run's evidence dir should have been removed, stat err = %v", statErr)
+	}
+	if _, statErr := os.Stat(featXPath); statErr != nil {
+		t.Fatalf("superstring-slug run's state file must be left untouched, stat err = %v", statErr)
+	}
+	if _, statErr := os.Stat(featXEvidence); statErr != nil {
+		t.Fatalf("superstring-slug run's evidence dir must be left untouched, stat err = %v", statErr)
+	}
+}
+
+// TestFindPlanState_CorruptStateFile_ReturnsNil proves a corrupt plan state
+// file (state.LatestPlanRun's LoadRun call fails to decode it) still
+// degrades to findPlanState returning nil, never propagating an error to
+// stopPlanIntegrity's caller.
+func TestFindPlanState_CorruptStateFile_ReturnsNil(t *testing.T) {
+	root := gitFixture(t, "feat/plan-corrupt")
+	branch := "feat/plan-corrupt"
+
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+	mustMkdirAll(t, dir)
+	mustWriteFile(t, filepath.Join(dir, "plan-feat-plan-corrupt-20260929T110000Z.json"), "{not json")
+
+	if st := findPlanState(branch); st != nil {
+		t.Fatalf("findPlanState = %+v, want nil for a corrupt state file", st)
+	}
+
+	out, err := stopPlanIntegrity(HookCtx{}, Event{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSilent(t, out)
+}
+
+// ---------------------------------------------------------------------------
 // stopPipelineContinue
 // ---------------------------------------------------------------------------
 
