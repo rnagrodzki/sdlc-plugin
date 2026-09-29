@@ -523,7 +523,7 @@ reordering. A flow that reads correctly line-by-line but contains an \
 unreachable branch or a dead end is still a plan defect."""
 
 [plan.guardrails.skill-resume-safety]
-severity = "warning"
+severity = "error"
 description = """
 When a plan task adds or modifies a multi-step SKILL.md workflow, the plan \
 must document how that skill behaves if interrupted mid-flow and re-invoked \
@@ -531,7 +531,11 @@ must document how that skill behaves if interrupted mid-flow and re-invoked \
 duplicate side effect on a step that partially succeeded). A skill with no \
 documented resume behavior is assumed unsafe to re-enter after an \
 interruption -- the plan must either add that documentation or explicitly \
-justify why the skill is single-shot and re-entry is not a concern."""
+justify why the skill is single-shot and re-entry is not a concern. For \
+skills using context-compaction recovery, every step that must carry a \
+checkpoint marker for safe resume must have an inline plan_mark or \
+evidence_record call; a blanket rule stating checkpoints occur at 'steps N \
+through M' is insufficient if the actual step bodies lack the inline calls."""
 
 # ─── Execute guardrails ──────────────────────────────────────────
 # Constraints enforced during task execution (by the execute skill's
@@ -908,3 +912,30 @@ companion sub-flow it dispatches) match the post-edit numbering. Do not \
 rely on the plan's own flow narration as evidence -- re-derive reachability \
 and gate consistency from the current file content, since the edit itself \
 may have introduced the defect the plan's narration predates."""
+
+[execute.guardrails.mcp-handler-error-propagation]
+severity = "error"
+description = """
+Before marking a task done that modifies MCP tool handlers in internal/tools/, \
+audit all code paths where operations can fail (config reads, type \
+assertions, json.Unmarshal, external calls, file operations). Verify errors \
+are propagated as structured responses (DomainError/InfraError/DataError with \
+Suggestion), not silently dropped or treated as absent/default. Use grep to \
+find config.Read, json.Unmarshal, type assertions, and similar fallible \
+operations in modified handlers; for each, verify the error is either \
+propagated to the caller or the handler explicitly documents why silencing it \
+is safe. Flag any code that treats errors as 'not configured' or zero-values \
+instead of surfacing them with actionable recovery guidance."""
+
+[execute.guardrails.multi-step-persistence-failure-coverage]
+severity = "error"
+description = """
+When a task modifies a handler that performs multiple sequential persistent \
+writes (file, state, config), verify each "step k fails after steps 1 \
+through k-1 succeeded" scenario has an explicit test case exercising it. \
+Example: evidenceRecord writes the writer JSON file and then brief.md; if \
+the JSON write succeeds but the brief.md write fails, the next call sees the \
+writer record but not the brief. For each handler with N>=2 sequential \
+writes, add one test per write failure point and assert the observable \
+state afterward (what persisted, what did not, what the caller sees). Do \
+not assume single-write tests cover multi-step partial-failure behavior."""

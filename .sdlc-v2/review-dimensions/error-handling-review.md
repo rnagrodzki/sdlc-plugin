@@ -90,3 +90,16 @@ When handler code reads configuration via `config.Read`, `config.ReadSection`, o
 
 - Use `errors.Is(err, config.ErrNotFound)` to distinguish "section does not exist" (benign) from "actual read/parse/permission error" (requires propagation or explicit handling).
 - A handler that maps a config-not-found result to a benign zero-value (e.g., "not configured") must check `errors.Is(err, config.ErrNotFound)` first and distinguish it from parse errors (`TOML syntax error`), permission errors (`access denied`), or other real failures. Never collapse these conditions — a malformed `.sdlc-v2/local.toml` or `.sdlc-v2/config.toml` must surface to the caller as an error, not silently treated as "not configured". Code that silently downgrades config parse/permission errors to "value not set" masks misconfiguration that the user should fix.
+
+## Type assertion error handling in critical paths
+
+When handler code performs a type assertion on a value that could be of the wrong type, use the two-result form: `value, ok := interfaceValue.(ConcreteType)`. Never drop the `ok` result in code paths where the type matters. If `ok` is false, the operation has failed and must be propagated as an error (DomainError, InfraError, or DataError with actionable Suggestion), not silently treated as a zero-value or absent result. Example: `validateCheckpointData` incorrectly dropped the `ok` result from a type assertion, causing incorrect behavior to pass undetected. Every type assertion in MCP handler logic must check and handle the false case explicitly.
+
+## Error-swallowing pattern in MCP handler operations
+
+MCP tool handlers must not silently treat operation errors as absent or default:
+- When a code path can fail (config reads, type assertions, parsing, external calls), the error must be propagated as a structured response (DomainError, InfraError, DataError with Suggestion), not dropped or converted to "not configured" or empty.
+- Pattern to catch: `loadPlanStyle` discarded config-read errors without distinguishing ErrNotFound from parse/permission errors, causing misconfiguration to be silently treated as "not configured". Always use `errors.Is(err, config.ErrNotFound)` to distinguish benign absence from actual read/permission/parse errors, then propagate non-benign errors.
+- Every error-returning operation in a handler has a caller who needs to know if it failed. Swallowing the error removes the caller's ability to recover or inform the user.
+- Three-outcome load contracts must stay three outcomes: when a callee returns found / not-found / error (e.g. `(nil, nil)` for not-found and `(nil, err)` for a read or decode failure), the caller must keep all three distinct. Never map the error outcome to the same "not found" response, because the caller then gets the wrong recovery suggestion. Example: `evidenceLoadRun` discarded the error from `state.LoadRun` and reported a corrupt or permission-denied run file as "plan run not found".
+- Decode failures are not benign absence: never map a `json.Unmarshal`, `json.Marshal`, or TOML/YAML parse error to nil or a zero value as if the data were never written. Propagate it as a structured error with an actionable Suggestion. Example: `evidenceCheckpoint` returned nil on a decode failure, so a corrupt checkpoint looked the same as "never checkpointed".
