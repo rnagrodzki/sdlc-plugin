@@ -11,7 +11,7 @@ Use this template in plan Step 5 (CRITIQUE) when dispatching the plan review sub
 - `{PLAN_FILE_PATH}` — path to the written plan document
 - `{REQUIREMENTS_CHECKLIST}` — numbered list from Step 1 (CONSUME)
 - `{SOURCE_REQUIREMENTS}` — file path or inline text of the original spec/requirements (if available)
-- `{BRIEF_FILE}` — absolute path to `discovery-brief.md` produced by `plan-explore-orchestrator`, or `"none — orchestrator skipped"` when the lightweight path or fallback ran
+- `{BRIEF_FILE}` — absolute path to `brief.md` in the run's evidence directory (`<runId>.evidence/brief.md`), or `"none — orchestrator skipped"` when the lightweight path or fallback ran
 - `{OPENSPEC_TASKS}` — serialized JSON array from `openspecContext.tasks[]` when `--from-openspec` was active; `"none — plan not from OpenSpec"` otherwise
 - `{REQUIREMENTS_JSON}` — JSON array of `{ reqId, capability, type, name, scenarioCount }` from the delta-spec inventory, or `"null"` when unavailable (CLI absent or non-OpenSpec plan). When `{LENS}=all` (single-reviewer, <5 tasks), include this for traceability matrix building if present.
 - `{LENS}` — reviewer lens: one of `architecture`, `requirements`, `risk`, or `all`. When `{LENS}=all`, the reviewer evaluates all categories (status quo for plans <5 tasks). When `{LENS}` is one of the three specific values, the reviewer filters evaluation to the categories listed in `{LENS_FOCUS}`.
@@ -36,8 +36,8 @@ Task tool (general-purpose):
     **Source requirements:** {SOURCE_REQUIREMENTS — file path or inline text, or "not provided"}
     **Requirements checklist:**
     {REQUIREMENTS_CHECKLIST}
-    **Plan guardrails:** {GUARDRAILS — one per line, or "none configured"}
-    **Discovery brief:** {BRIEF_FILE — absolute path to discovery-brief.md, or "none — orchestrator skipped"}
+    **Plan guardrails:** read `{GUARDRAILS_FILE}` (one `## <id> (<severity>)` heading per guardrail; `(0)` in the title means none)
+    **Discovery brief:** {BRIEF_FILE — absolute path to <runId>.evidence/brief.md, or "none — orchestrator skipped"}
     **openspecContext.tasks:** {OPENSPEC_TASKS — serialized JSON array from prepare output, or "none — plan not from OpenSpec"}
     **Requirement inventory:** {REQUIREMENTS_JSON — JSON array from openspec show --json --deltas-only, or "null"}
 

@@ -187,3 +187,50 @@ func TestAutomationSection(t *testing.T) {
 		t.Errorf("automation mode.Default = %v, want %q", mode.Default, "supervised")
 	}
 }
+
+// TestPlanStyleFields_InstructionsMatchesSchema keeps the setup wizard's
+// planStyleFields "instructions" entry in step with the "instructions"
+// property on $defs.planStyleSection in sdlc-local.schema.json: the schema
+// property must exist and be a JSON array, and the wizard field must be a
+// "list" field with no default.
+func TestPlanStyleFields_InstructionsMatchesSchema(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "plugins", "sdlc", "schemas", "sdlc-local.schema.json"))
+	if err != nil {
+		t.Fatalf("read schema: %v", err)
+	}
+	var schema struct {
+		Defs struct {
+			PlanStyleSection struct {
+				Properties struct {
+					Instructions struct {
+						Type string `json:"type"`
+					} `json:"instructions"`
+				} `json:"properties"`
+			} `json:"planStyleSection"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(data, &schema); err != nil {
+		t.Fatalf("parse schema: %v", err)
+	}
+	wantType := schema.Defs.PlanStyleSection.Properties.Instructions.Type
+	if wantType != "array" {
+		t.Fatalf("schema $defs.planStyleSection.properties.instructions.type = %q, want %q", wantType, "array")
+	}
+
+	var field *Field
+	for i := range planStyleFields {
+		if planStyleFields[i].Name == "instructions" {
+			field = &planStyleFields[i]
+			break
+		}
+	}
+	if field == nil {
+		t.Fatal(`planStyleFields has no "instructions" field`)
+	}
+	if field.Type != "list" {
+		t.Errorf("instructions Type = %q, want %q", field.Type, "list")
+	}
+	if field.Default != nil {
+		t.Errorf("instructions Default = %v, want nil", field.Default)
+	}
+}

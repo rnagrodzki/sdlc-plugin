@@ -15,8 +15,8 @@ You receive:
 - `{REQUIREMENTS_CHECKLIST}` — numbered requirements list from Step 1
 - `{LENS}` — `risk` (this is your lens identifier)
 - `{LENS_FOCUS}` — File paths, Verification strategy, Scope discipline, Guardrail compliance
-- `{GUARDRAILS}` — active guardrails, one per line (`- [id] (severity): description`), or `"none configured"`
-- `{BRIEF_FILE}` — absolute path to discovery-brief.md, or `"none — orchestrator skipped"` (for context)
+- `{GUARDRAILS_FILE}` — absolute path to `guardrails.md`: one `## <id> (<severity>)` heading per guardrail, `> ` description lines below; title `# Active plan guardrails (0)` means none
+- `{BRIEF_FILE}` — absolute path to `brief.md` in the run's evidence directory (`<runId>.evidence/brief.md`), or `"none — orchestrator skipped"` (for context)
 - `{REQUIREMENTS_JSON}` — JSON array of `{ reqId, capability, type, name, scenarioCount }` from the delta-spec inventory, or `"null"` when unavailable. Reference for context — risk lens does not produce traceability rows.
 
 Read the plan file at `{PLAN_FILE_PATH}` before evaluating.
@@ -33,7 +33,7 @@ Skip `## OpenSpec Appendix` content when evaluating any gate.
 
 **Scope discipline:** No tasks implement functionality beyond what the stated requirements ask for. No gold-plating, no "while we're at it" refactors, no speculative features. Any task implementing unrequested work is advisory.
 
-**Guardrail compliance:** When `{GUARDRAILS}` is not `"none configured"`: evaluate whether the plan (as written) satisfies each guardrail's `description`. Error-severity (`severity: error`) violations are blocking. Warning-severity (`severity: warning`) violations are advisory. Report each as PASS or FAIL with a one-line rationale. Skip this check when `{GUARDRAILS}` is `"none configured"`.
+**Guardrail compliance:** Read `{GUARDRAILS_FILE}`. When it lists at least one guardrail: evaluate whether the plan (as written) satisfies each guardrail's `description`. Error-severity (`severity: error`) violations are blocking. Warning-severity (`severity: warning`) violations are advisory. Report each as PASS or FAIL with a one-line rationale. Skip this check when `{GUARDRAILS_FILE}` lists 0 guardrails.
 
 ---
 

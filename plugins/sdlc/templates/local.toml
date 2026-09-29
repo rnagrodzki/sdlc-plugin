@@ -1,4 +1,4 @@
-# ─── SDLC Local Configuration (v1) ───────────────────────────────
+# ─── SDLC Local Configuration ────────────────────────────────────
 # Personal preferences — gitignored, not shared with the team.
 # Edit this file directly, then run the validate tool to check.
 
@@ -9,7 +9,7 @@
 auto = true
 
 # Default version bump.
-# Valid: "major" | "minor" | "patch"
+# Valid: "major" | "minor" | "patch", or a pre-release label such as "rc", "beta", "alpha"
 bump = "patch"
 
 # Create PR as draft.
@@ -60,6 +60,10 @@ narrativeRules = [
   "Give enough background so someone without prior context can judge the change.",
   "Use plain, simple English suited for non-native speakers.",
 ]
+# Custom process instructions /plan follows in every step and subagent.
+# instructions = [
+#   "Cite file:line for every claim about existing code.",
+# ]
 
 # ─── Automation (optional — delete if not using) ──────────────────
 

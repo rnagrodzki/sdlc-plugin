@@ -22,7 +22,7 @@ import (
 // PlanSupportIn carries the merged input for the plan_support tool's 4
 // actions. Each field is consumed by one or more actions (noted in comments).
 type PlanSupportIn struct {
-	Action string `json:"action" jsonschema:"enum=merge_results,enum=material_snapshot,enum=material_compare,enum=openspec_appendix" jsonschema_description:"Selects the operation: \"merge_results\", \"material_snapshot\", \"material_compare\", or \"openspec_appendix\". Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."` // "merge_results"|"material_snapshot"|"material_compare"|"openspec_appendix"
+	Action string `json:"action" jsonschema:"enum=merge_results,enum=material_snapshot,enum=material_compare,enum=openspec_appendix,enum=evidence_record,enum=evidence_digest,enum=evidence_get" jsonschema_description:"Selects the operation: \"merge_results\", \"material_snapshot\", \"material_compare\", \"openspec_appendix\", \"evidence_record\", \"evidence_digest\", or \"evidence_get\". Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
 
 	// merge_results
 	LaneResults   []LaneResult `json:"laneResults,omitempty" jsonschema_description:"merge_results only: outcomes from each review lane to merge. At least one of laneResults or lensResults is required."`
@@ -40,6 +40,66 @@ type PlanSupportIn struct {
 	DesignPath   string   `json:"designPath,omitempty" jsonschema_description:"openspec_appendix only: path to the change's design.md, included in the generated appendix."`
 	SpecPaths    []string `json:"specPaths,omitempty" jsonschema_description:"openspec_appendix only: paths to the change's spec files, included in the generated appendix."`
 	PlanTasks    []string `json:"planTasks,omitempty" jsonschema_description:"openspec_appendix only: plan task identifiers to cross-reference in the generated appendix."`
+
+	// evidence_record / evidence_digest / evidence_get
+	RunID           string         `json:"runId,omitempty" jsonschema_description:"Plain text. evidence_* only (required): plan run ID from plan_prepare's runId output. Example: plan-main-20260929T114125Z."`
+	WriterID        string         `json:"writerId,omitempty" jsonschema_description:"Plain text. evidence_record only (required): writer that owns the evidence file; letters, digits, '.', '_', '-', max 64. Examples: explore-auth-flow, lane-static-structural-r1, lens-risk-r2, reviewer-r1, gate-a, main."`
+	Status          string         `json:"status,omitempty" jsonschema:"enum=running,enum=done" jsonschema_description:"Plain text, one of running or done. evidence_record only. Omit to keep the stored status; a new writer starts as running. Example: done when the writer has finished."`
+	Items           []EvidenceItem `json:"items,omitempty" jsonschema_description:"JSON array, max 200. evidence_record only: items to upsert by id. Example: [{\"id\":\"F-auth-1\",\"summary\":\"token check skips expiry\",\"ref\":\"internal/auth.go:42\",\"body\":\"…\"}]."`
+	Brief           string         `json:"brief,omitempty" jsonschema_description:"Markdown text, max 65536 bytes. evidence_record with writerId main only: the discovery brief, stored as brief.md. Example: \"# Discovery Brief\\n\\n## Findings\\n\\nF-auth-1: internal/auth.go:42 — token check skips expiry\"."`
+	IDs             []string       `json:"ids,omitempty" jsonschema_description:"JSON array of item IDs, max 200. evidence_get only. Example: [\"F-auth-1\",\"R3\"]."`
+	WriterIDs       []string       `json:"writerIds,omitempty" jsonschema_description:"JSON array of writer IDs, max 32. evidence_get only: return every item of these writers. Example: [\"main\",\"explore-auth-flow\"]."`
+	ExpectedWriters []string       `json:"expectedWriters,omitempty" jsonschema_description:"JSON array of writer IDs, max 32. evidence_digest only: writers the caller dispatched. Default: the checkpoint's expectedWriters. Example: [\"lane-static-structural-r1\"]."`
+	TimeoutSeconds  int            `json:"timeoutSeconds,omitempty" jsonschema_description:"Integer 60-86400. evidence_digest only: seconds since the last update after which a running writer counts as stalled. 0 or absent = 1800. Example: 1800."`
+	StatusOnly      bool           `json:"statusOnly,omitempty" jsonschema_description:"Boolean. evidence_digest only: true returns only the writers section (poll mode). Example: true in the Step 1 POLL loop."`
+}
+
+// EvidenceItem is one evidence entry of a writer, stored in
+// <runId>.evidence/<writerId>.json and upserted by id.
+type EvidenceItem struct {
+	ID      string `json:"id" jsonschema_description:"Plain text, unique within its writer; letters, digits, '.', '_', '-', max 128. Example: F-auth-1, R3, lane-content-coverage-r1-result."`
+	Summary string `json:"summary" jsonschema_description:"Plain text, one line, max 200 characters. Shown in the digest index. Example: token check skips expiry."`
+	Ref     string `json:"ref,omitempty" jsonschema_description:"Plain text, one line, max 500 characters: path:line or URL of the evidence. Example: internal/tools/plan.go:1185-1200."`
+	Body    string `json:"body,omitempty" jsonschema_description:"Markdown text. Full content; returned only by evidence_get. Example: \"validateToken returns early before the exp claim is read.\"."`
+}
+
+// EvidenceRecordOut is evidence_record's result.
+type EvidenceRecordOut struct {
+	WriterID  string `json:"writerId"`
+	Status    string `json:"status"`
+	ItemCount int    `json:"itemCount"`
+	FileBytes int    `json:"fileBytes"`
+	BriefPath string `json:"briefPath"` // empty (renders "(none)") unless this call stored a brief
+}
+
+// EvidenceWritersOut is evidence_digest's writer status section.
+type EvidenceWritersOut struct {
+	Table          string   `json:"table" render:"raw"` // | writer | status | items | updatedAt | stalled |
+	MissingWriters []string `json:"missingWriters"`
+	StalledWriters []string `json:"stalledWriters"`
+	// UnreadableWriters lists every writer whose evidence file is corrupt or
+	// unreadable, expected or not; re-dispatch them or accept the loss.
+	UnreadableWriters []string `json:"unreadableWriters"`
+}
+
+// EvidenceDigestOut is evidence_digest's run summary (omitted when
+// statusOnly). It never carries item bodies.
+type EvidenceDigestOut struct {
+	RunID          string          `json:"runId"`
+	PlanFilePath   string          `json:"planFilePath"`
+	UserPrompt     string          `json:"userPrompt"`
+	GuardrailsFile string          `json:"guardrailsFile"`
+	BriefPath      string          `json:"briefPath"`
+	Instructions   []string        `json:"instructions"`
+	Checkpoint     *PlanCheckpoint `json:"checkpoint"`
+	Index          string          `json:"index" render:"raw"` // | id | writer | ref | summary |
+}
+
+// EvidenceGetOut is evidence_get's result: rendered item bodies plus the
+// requested ids or writers that were not found.
+type EvidenceGetOut struct {
+	Evidence string   `json:"evidence" render:"raw"`
+	NotFound []string `json:"notFound"`
 }
 
 // PlanSupportOut is the unified output for the plan_support tool.
@@ -70,6 +130,12 @@ type PlanSupportOut struct {
 
 	// openspec_appendix
 	AppendixMarkdown string `json:"appendixMarkdown,omitempty"`
+
+	// evidence_* (nil and omitted for every other action)
+	Record  *EvidenceRecordOut  `json:"record,omitempty"`  // evidence_record
+	Writers *EvidenceWritersOut `json:"writers,omitempty"` // evidence_digest (always)
+	Digest  *EvidenceDigestOut  `json:"digest,omitempty"`  // evidence_digest unless statusOnly
+	Get     *EvidenceGetOut     `json:"get,omitempty"`     // evidence_get
 }
 
 // LaneResult represents the outcome of a single review lane.
@@ -164,9 +230,12 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - merge_results: Merge lane/lens review results. Requires at least one of laneResults or lensResults. Optional: expectedGates, isRedispatch.
 - material_snapshot: Snapshot plan material for change detection. Requires filePath. Returns snapshotPath.
 - material_compare: Compare current plan material against a snapshot. Requires filePath, snapshotPath (from material_snapshot).
-- openspec_appendix: Generate an openspec appendix. Requires changeName. Optional: proposalPath, designPath, specPaths, planTasks.`,
+- openspec_appendix: Generate an openspec appendix. Requires changeName. Optional: proposalPath, designPath, specPaths, planTasks.
+- evidence_record: Store a writer's status and items (upsert by id) in the plan run's evidence directory. Requires runId, writerId. Optional: status, items, brief (writerId main only). Returns record. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
+- evidence_digest: Compact run summary for resume and polling; never returns item bodies. Requires runId. Optional: expectedWriters, timeoutSeconds, statusOnly. Returns writers, plus digest unless statusOnly. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
+- evidence_get: Full item bodies. Requires runId and at least one of ids or writerIds. Returns get. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.`,
 		mcpserver.Annotations{
-			Title:      "Read plan support data",
+			Title:      "Plan support and evidence store",
 			ReadOnly:   true,
 			Idempotent: true,
 			OpenWorld:  false,
@@ -209,10 +278,16 @@ func planSupportCore(mainRoot, contentRoot string, in PlanSupportIn) (PlanSuppor
 		return materialCompare(in)
 	case "openspec_appendix":
 		return openspecAppendix(mainRoot, in)
+	case "evidence_record":
+		return evidenceRecord(mainRoot, in)
+	case "evidence_digest":
+		return evidenceDigest(mainRoot, in)
+	case "evidence_get":
+		return evidenceGet(mainRoot, in)
 	default:
 		return PlanSupportOut{}, unknownActionError("action", in.Action,
-			" — valid actions: merge_results, material_snapshot, material_compare, openspec_appendix",
-			"call plan_support again with action set to exactly one of merge_results, material_snapshot, material_compare or openspec_appendix")
+			" — valid actions: merge_results, material_snapshot, material_compare, openspec_appendix, evidence_record, evidence_digest, evidence_get",
+			"call plan_support again with action set to exactly one of merge_results, material_snapshot, material_compare, openspec_appendix, evidence_record, evidence_digest or evidence_get")
 	}
 }
 

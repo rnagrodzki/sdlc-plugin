@@ -29,6 +29,14 @@ severity: high
 - **Approval-gate reachability.** An `AskUserQuestion` step must be
   reachable on every path that needs it. Verify no earlier branch can
   silently skip past a mandatory approval gate.
+- **Per-step rule wiring.** When a skill's prose defines a general rule
+  that applies to multiple steps (e.g. "each checkpoint step calls
+  `plan_mark`", "every lane/lens/reviewer that records evidence has a
+  fallback when `evidence_record` fails"), grep each named step body to
+  verify the inline call or fallback is actually present. A blanket
+  paragraph stating the rule does not satisfy a contract that names
+  per-step behavior; every named step must carry its own inline
+  instruction.
 - **AskUserQuestion option quality.** Options offered to the user must be
   mutually exclusive, phrased without a leading/loaded framing, and (per
   this project's own tool convention) carry a real, statable default —

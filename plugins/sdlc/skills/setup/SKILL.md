@@ -262,7 +262,7 @@ otherwise):
 | `review-dimensions` | `<count> installed` or empty. |
 | `pr-template` | `installed` or empty. |
 | `plan-template` | `installed` or empty. |
-| `plan-style` | Join non-empty (two spaces) of `verbosity: <verbosity>`, `audience: <audience>`, `rules: <narrativeRules.length>` (only when > 0). |
+| `plan-style` | Join non-empty (two spaces) of `verbosity: <verbosity>`, `audience: <audience>`, `rules: <narrativeRules.length>` (only when > 0), `instructions: <instructions.length>` (only when > 0). |
 | `plan-tasks` | Join non-empty (two spaces) of `contract: <contractShape>` and `required: <requiredFields.length>` (only when > 0). |
 | `plan-guardrails` | `<N> configured` (array length) or empty. |
 | `execution-guardrails` | `<N> configured` (array length) or empty. |
@@ -537,10 +537,10 @@ After all `version` section fields are collected and BEFORE storing the section 
 - `number` fields → coerce to an integer; validate against `field.min`/`field.max` when
   present; re-prompt on invalid input, citing the violated bound
 - `list` fields → accept comma-separated input; split on `,` and trim each element to
-  produce a string array (exception: `narrativeRules` — see below)
-- `narrativeRules` (a `list` field on `plan-style`) → individual rules may themselves contain
+  produce a string array (exception: `narrativeRules` and `instructions` — see below)
+- `narrativeRules` and `instructions` (`list` fields on `plan-style`) → individual entries may themselves contain
   commas (e.g. "avoid idioms, jargon, and complex sentence structures"), so comma-splitting is
-  unsafe. Prompt for free text with one rule per line; split on newline instead, trim each
+  unsafe. Prompt for free text with one entry per line; split on newline instead, trim each
   line, and drop empty lines.
 
 You MUST issue exactly one AskUserQuestion per `section.fields[]` entry that survives the

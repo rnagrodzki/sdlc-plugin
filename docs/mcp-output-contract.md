@@ -45,7 +45,7 @@ the struct (or sorted-key order for a map).
 ````markdown
 # plan_prepare — ok
 
-**Next:** call plan_mark with marker="skillInvoked"
+**Next:** Write template.headerMarkdown + template.skeletonMarkdown to the plan file, then call plan_mark with marker "plan-file" and the plan path.
 
 ## Summary
 Template resolved. 44 guardrails loaded.
@@ -54,6 +54,8 @@ Template resolved. 44 guardrails loaded.
 - config.toml uses a legacy key: plan.reviewers
 
 ## Fields
+- runId: plan-fix-my-bug-20260509T140000Z
+- guardrailsFile: /Users/rafal/repositories/sdlc-plugin/.sdlc-v2/runs/plan-fix-my-bug-20260509T140000Z.evidence/guardrails.md
 - activeTemplatePath: /Users/rafal/.../plan-template-default.md
 - fromOpenspec: (none)
 

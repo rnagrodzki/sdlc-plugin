@@ -78,9 +78,13 @@ Review Go source changes for baseline code quality in this module
   stored in an `error` interface and later compared to `nil` — it does not
   equal `nil`. Use `error` at function boundaries.
 - Inline and doc comments must not carry references to planning artifacts:
-  step numbers (`// Step 10.`), task IDs, or plan section names
-  (`"Final Shape"`). These are authoring leftovers introduced during initial
-  development and must be cleaned before shipping.
+  step numbers (`// Step 10.`), Key Decision ids (`KD9`, or parenthetical
+  citations like `(KD15)`), task IDs, or plan section names (`"Final Shape"`,
+  `(Deviations)`). These are authoring leftovers introduced during initial
+  development and must be cleaned before shipping. The plan file is not
+  committed with the code, so these references mean nothing to a later
+  reader. Run `grep -nE '\bKD[0-9]+\b|\((Deviations|Final Shape)\)|"Final Shape"|// Step [0-9]'`
+  on modified `.go` files to catch these patterns.
 - Records passed as parameters or returned should use named structs, not
   positional tuples via arrays (`[2]string`). Positional syntax is fragile
   and does not scale when the record gains a fifth field.

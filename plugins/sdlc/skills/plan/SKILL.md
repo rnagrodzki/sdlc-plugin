@@ -84,13 +84,33 @@ Example — OpenSpec gate check:
 
 **TodoWrite setup (full pipeline only):** Create TodoWrite items for Steps 1–7. Skip TodoWrite for lightweight plans.
 
-**Session recovery (full pipeline only):** When the designated plan file already has content, restart and overwrite — do NOT prompt (implements R23 single-touchpoint default for Step 0). Clear the file in-place and begin fresh. If the user wants to preserve the prior draft, they can `cp` the file before invoking the skill.
+**Session recovery:** If the session context has an `Active plan (post-compact):` line whose plan file path (the text after the last `; plan file: `) equals the designated plan file, follow **Post-compact resume** below and do not clear the file. Otherwise, when the designated plan file already has content, restart and overwrite — do NOT prompt (implements R23 single-touchpoint default for Step 0). Clear the file in-place and begin fresh. If the user wants to preserve the prior draft, they can `cp` the file before invoking the skill.
 
 **Load State (mandatory) — Context detection and guardrail loading:**
 
 This is plan's mandatory state/config load. Call `plan_prepare({ skipConfigCheck: <bool>, fromOpenspec: <name or omit>, userPrompt: USER_PROMPT })` before any other planning action below this point. The only things that may legitimately precede it are the unavoidable prerequisites above it in this same step — mode detection, gathering `userPrompt` via AskUserQuestion, and OpenSpec change-name detection (`fromOpenspec` is an *input* to this call, not something it produces). Do NOT read `.sdlc-v2/config.toml`/`local.toml` or any other project state/config file directly to determine guardrails or plan-integrity state — this call's returned payload is the only sanctioned source. Note: `plan_prepare` has no `action` parameter — unlike `execute_state`/`ship_state`'s `{action:"read"}`, it is a single-purpose call whose full input schema (`skipConfigCheck`, `fromOpenspec`, `userPrompt`, plus the template/routing flags added by the second call below) doubles as its "load state" contract.
 
 Pass `fromOpenspec` only when `--from-openspec <name>` was passed to plan. The tool call returns the prepare payload directly — there is no output file to read and no cleanup trap to install for this step (that differs from the `explorePack` tempdir, handled separately in Step 1). The tool has already written the `skillInvoked` planIntegrity marker as a side effect; do not call `plan_mark({marker:"skillInvoked"})` — that would be a redundant fourth explicit call, since the marker enum's fourth value is written for free inside `plan_prepare`.
+
+**Post-compact resume:** Use this path only when Session recovery selected it and the hook line says step 1 or later (step 0: see the resume table). The hook's second line brings this skill back after compaction when its instructions are no longer in context. At step 1, keep the explorers that show `done` and force-progress past the others after one poll cycle (resume table).
+1. Call `plan_prepare({ resume: true, resolveTemplate: true, skipConfigCheck: true })`. It reuses the active run and reloads the user prompt and routing flags. Write `template.headerMarkdown` + `template.skeletonMarkdown` only if the plan file is empty. Store `runId`, `guardrailsFile`, `lanes`, `lensReviewers`, `style` and `template.activeTemplatePath` as in a fresh run. On `no active plan run`, print "No active plan run to resume — starting a new plan." and run Step 0 normally.
+2. Call `plan_support({ action: "evidence_digest", runId: "<runId>" })`. Print its custom instructions. Store `digest.briefPath` as `briefPath` for `{BRIEF_FILE}` (`(none)` maps to `"none — orchestrator skipped"`). On error, print it, stop, and tell the user to re-invoke `/sdlc:plan`.
+3. Read the plan file. Re-create TodoWrite items (full pipeline) and mark the steps before `checkpoint.step` as done. New decision items continue the `D<n>` numbering after the highest `D` id in the digest index.
+4. Continue at `checkpoint.step` and `checkpoint.iteration`. Background agents started before compaction still deliver their results. If `writers.missingWriters` or `writers.stalledWriters` is not empty, wait one poll cycle (`evidence_digest` with `statusOnly: true`). Then re-dispatch or force-progress past each writer that is still listed (the POLL rule). Fetch bodies with `evidence_get` only when the current step needs them.
+5. If a resume call fails in a way this block does not name, start a new run: follow Step 0 without `resume` and ignore the `Active plan (post-compact):` line for the rest of the session.
+
+Resume table (the **Session recovery** rule selects one row):
+
+| Condition | Action |
+|---|---|
+| no `Active plan (post-compact):` line | normal Step 0 (Session recovery overwrite rule) |
+| line present, plan file path ≠ designated plan file | normal Step 0 |
+| match, `step 0` | skip the first `plan_prepare` call; redo the gate check and complexity routing; call `plan_prepare({ resume: true, resolveTemplate: true, … })`; write the template only if the plan file is empty; continue Step 0 at the `plan-file` marker |
+| match, `step 1` | **Post-compact resume** block above. Keep every explorer that shows `done` in the writers table and use its recorded items. For a listed missing or stalled explorer, wait one poll cycle, then force-progress past it: the SCOPE dimension list is not stored, so it is not re-dispatched. Then continue CRITIQUE and CONSOLIDATE |
+| match, step ≥ 2 | **Post-compact resume** block above |
+| resume `plan_prepare` returns `no active plan run` | print `No active plan run to resume — starting a new plan.`; normal Step 0 |
+| `evidence_digest` returns an error | print the error; stop; tell the user to re-invoke `/sdlc:plan` to start fresh |
+| `runId` empty or `(none)` | stop: `plan needs a git repository to track its run` |
 
 If the call errors, print the errors and stop. Otherwise print the context detection summary from the returned payload:
 ```
@@ -100,6 +120,38 @@ Context detection (from plan_prepare):
   --from-openspec:   [valid, N delta specs, tasks.md present | not passed | invalid: <error>]
   Guardrails:        N loaded (N error, N warning)
 ```
+
+Store `runId` and `guardrailsFile`. If `runId` is empty or `(none)`, stop: "plan needs a git repository to track its run". Print the **Custom plan instructions** block.
+
+**Custom plan instructions** (printed in Step 0 and on resume, from `style.instructions`):
+```text
+Custom plan instructions (local.toml [planStyle] instructions — follow them in every step):
+  1. Cite file:line for every claim about existing code.
+  2. Ask before adding a dependency.
+```
+Empty case: `Custom plan instructions: none configured.`
+
+**Run-context footer** (appended verbatim to every subagent prompt — explorers, lanes, lenses, reviewer, Gate A; explorers take only the first part, the instructions, because their Coordination block already records evidence):
+```text
+---
+Plan run context
+Custom plan instructions (follow them in your work):
+{PLAN_INSTRUCTIONS}
+Evidence store: when you start, call
+plan_support({ action: "evidence_record", runId: "{RUN_ID}", writerId: "{WRITER_ID}", status: "running" })
+When you finish, call
+plan_support({ action: "evidence_record", runId: "{RUN_ID}", writerId: "{WRITER_ID}", status: "done", items: [{ id: "{WRITER_ID}-result", summary: "<one line, max 200 chars>", body: "<your full returned result>" }] })
+If a call fails or the tool is not available, ignore the failure and still return your result.
+```
+`{PLAN_INSTRUCTIONS}` = `style.instructions` as `- <instruction>` lines, or `- none configured`. `{RUN_ID}` = `runId`. `{WRITER_ID}` is set per dispatch (writer IDs: `explore-<dim>`, `lane-<name>-r<n>`, `lens-<name>-r<n>`, `reviewer-r<n>`, `gate-a`; the orchestrator itself writes as `main`).
+
+When a lane, lens, reviewer, or Gate A writer has no `done` evidence file (its `evidence_record` failed), use the result text from its Agent return value instead, the same as for explorers in Step 1 CRITIQUE. Record that text right away as a `main` item (`id: "<writerId>-result"`, `summary`, `body`) so it survives a compaction.
+
+**Decision records:** After each AskUserQuestion answer, once `runId` exists (answers given before the first `plan_prepare` call are recorded right after it), record the decision: `plan_support({ action: "evidence_record", runId: "<runId>", writerId: "main", items: [{ id: "D<n>", summary: "<question → chosen option>" }] })`.
+
+Every `main` `evidence_record` call (brief, R-items, `F-main-<n>`, `D<n>`) runs alone, never in parallel with another `main` call: two parallel upserts of `main.json` would lose one write.
+
+**Step checkpoints:** At the start of each step (1, 2, 3, 4, 5, 6, 6.5, 6.6, 7), call `plan_mark({ marker: "checkpoint", path: "", data: { step: "<n>", iteration: <i>, expectedWriters: [<writer ids of this fan-out>] } })`. Pass `expectedWriters` only at fan-outs (Step 1 explorers, Step 3 lanes, Step 5 lenses or reviewer); `<i>` follows the **Iteration counter** rule in Step 5. Make one `plan_mark` call at a time.
 
 Extract `guardrails` from the output → store as `activeGuardrails`. If the array is non-empty, print: "Loaded N plan guardrails." If empty: "No plan guardrails configured."
 
@@ -135,14 +187,17 @@ Naming convention: `YYYY-MM-DD-<feature-name>.md`. Create the directory if neede
 
 **planFile marker (implements R20; consumed by `internal/hooks/stop_hooks.go` per R21):** After path resolution, record the resolved plan path in the plan integrity state. Run in both plan-mode and normal-mode branches. Errors are swallowed — marker writes must not block plan creation.
 
-**State-file lifecycle (R20 Lifecycle, fixes #334):** The plan state file follows three rules that callers do NOT need to implement directly — they are enforced inside `plan_prepare`/`plan_mark` (backed by the `internal/state` package) and `internal/hooks/stop_hooks.go` (dispatched via `sdlc-launcher.sh hook stop-plan-integrity`):
-- **Prune-on-write** — `plan_prepare` prunes pre-existing `plan-<branchSlug>-*.json` files for the current branch before writing the new state file, so at most one marker per branch exists between plan invocations. `plan_mark` does NOT prune (it would unlink its own target).
+**State-file lifecycle (R20 Lifecycle, fixes #334):** The plan state file follows four rules that callers do NOT need to implement directly — they are enforced inside `plan_prepare`/`plan_mark` (backed by the `internal/state` package) and `internal/hooks/stop_hooks.go` (dispatched via `sdlc-launcher.sh hook stop-plan-integrity`):
+- **Prune-on-write** — every state write (`plan_prepare` and `plan_mark`) prunes other `plan-<branchSlug>-*.json` files for the current branch, so at most one state file per branch exists. A new run (the first `plan_prepare` call) also removes older `<main-worktree>/.sdlc-v2/runs/plan-<branchSlug>-*.evidence/` directories.
 - **Consume-then-delete** — the Stop hook reads `planIntegrity` markers, evaluates the gates, then unlinks the marker regardless of outcome (single-shot semantics). Subsequent Stop events on the same branch fall through to the transcript-fallback path — this is correct R21 behavior.
 - **GC orphan sweep** — `ship --gc` and `execute --gc` sweep stale `plan-*` markers (TTL-expired or branch-deleted) alongside `ship-*` and `execute-*` files; the JSON output includes a `plan` bucket alongside `ship` and `execute`.
+- **Evidence cleanup** — the Stop hook removes `<main-worktree>/.sdlc-v2/runs/<runId>.evidence/` together with the state file after `done`; `execute_state` gc reaps abandoned `runs/` subdirectories after the TTL.
 
 Call `plan_mark({ marker: "plan-file", path: <resolved-plan-path> })` — writes the `planIntegrity` marker consumed by the `stop-plan-integrity` Stop hook.
 
 Replace `<resolved-plan-path>` with the actual absolute path: in plan mode it is the designated plan file path extracted at the top of Step 0; in normal mode it is the path resolved above (from `plansDirectory` or the default fallback). Errors from this call are swallowed — marker writes must not block plan creation.
+
+Call `plan_mark({ marker: "checkpoint", path: "", data: { step: "0", iteration: 0 } })`.
 
 ## Step 1 (CONSUME): Requirements Discovery and Exploration
 
@@ -187,18 +242,19 @@ After the `fromOpenspecDirect` enrichment block, determine which exploration pat
 
      **Files array:** populated from `scopeHintFiles` plus your own judgment of relevance per dimension. Empty array is valid for exploratory (web) dimensions.
 
-  3. **FAN-OUT.** Mint this run's ledger namespace, then dispatch every dimension in a single message:
+  3. **FAN-OUT.** Use the plan run's `runId`, then dispatch every dimension in a single message:
 
      ```
-     runId := "plan-explore-" + sanitize(manifest.timestamp)
+     runId := <runId from plan_prepare>
      ```
-     `sanitize` replaces every character outside `[A-Za-z0-9_-]` with `-` (the manifest timestamp is RFC3339 and contains `:`, unsafe for a ledger path segment).
 
      For each dimension:
      ```
-     workerId := slugify(dimension.name)
+     writerId := "explore-" + slugify(dimension.name)
      ```
-     `slugify` lowercases the name, then collapses every run of characters outside `[A-Za-z0-9_-]` to a single `-`. Append this `workerId` to an `expectedWorkers` list accumulated across every dimension — the POLL step below passes the full list to `ledger_status`.
+     `slugify` lowercases the name, collapses every run of characters outside `[A-Za-z0-9_-]` to a single `-`, and cuts the result to 56 characters, so `explore-<name>` fits the 64-character writer ID limit. Append this `writerId` to an `expectedWriters` list accumulated across every dimension — the POLL step below passes the full list to `evidence_digest`.
+
+     Before the dispatch, call the Step 1 checkpoint with this list: `plan_mark({ marker: "checkpoint", path: "", data: { step: "1", iteration: 0, expectedWriters: [<explorer writer ids>] } })`.
 
      Build each dimension's agent prompt from the matching per-mode body below, with the Coordination block appended to every mode:
 
@@ -214,10 +270,10 @@ After the `fromOpenspecDirect` enrichment block, determine which exploration pat
      Do NOT use WebSearch or WebFetch.
 
      For each finding, cite the specific file:line location.
-     Report findings under your assigned ID prefix: F-{dimension.name}-<n>
+     Report findings under your assigned ID prefix: F-{DIM_SLUG}-<n>
 
-     F-{dimension.name}-1: path/to/file.ts:42 — <observation>
-     F-{dimension.name}-2: path/to/other.ts:88 — <observation>
+     F-{DIM_SLUG}-1: path/to/file.ts:42 — <observation>
+     F-{DIM_SLUG}-2: path/to/other.ts:88 — <observation>
      ...
 
      If no findings, return: ZERO_FINDINGS
@@ -236,8 +292,8 @@ After the `fromOpenspecDirect` enrichment block, determine which exploration pat
      Tools available: WebSearch, WebFetch
      Do NOT use Read, Glob, Grep, or Bash.
 
-     Report findings under your assigned ID prefix: F-{dimension.name}-<n>
-     Format: F-{dimension.name}-n: <url> — <observation> (recency: YYYY, source-type: RFC|OWASP|MDN|vendor|blog)
+     Report findings under your assigned ID prefix: F-{DIM_SLUG}-<n>
+     Format: F-{DIM_SLUG}-n: <url> — <observation> (recency: YYYY, source-type: RFC|OWASP|MDN|vendor|blog)
 
      If no useful findings, return: ZERO_FINDINGS
      ```
@@ -258,38 +314,42 @@ After the `fromOpenspecDirect` enrichment block, determine which exploration pat
      - [verified-in-codebase] — external finding confirmed by codebase evidence
      - [conflicts-with-codebase] — external recommendation contradicts current codebase approach
 
-     Report findings under your assigned ID prefix: F-{dimension.name}-<n>
-     Code finding format: F-{dimension.name}-n: path/to/file.ts:42 — <observation>
-     Web finding format: F-{dimension.name}-n: <url> — <observation> (recency: YYYY, source-type: RFC|OWASP|...) [tag]
+     Report findings under your assigned ID prefix: F-{DIM_SLUG}-<n>
+     Code finding format: F-{DIM_SLUG}-n: path/to/file.ts:42 — <observation>
+     Web finding format: F-{DIM_SLUG}-n: <url> — <observation> (recency: YYYY, source-type: RFC|OWASP|...) [tag]
 
      If no findings, return: ZERO_FINDINGS
      ```
 
      **Coordination (append to every mode's prompt — do this in this order):**
      ```
-     1. Call execute_state({ action: "ledger_checkin", runId: "{runId}", workerId: "{workerId}" }) BEFORE starting exploration.
+     1. Call plan_support({ action: "evidence_record", runId: "{RUN_ID}", writerId: "{WRITER_ID}", status: "running" }) BEFORE starting exploration.
      2. Explore per the instructions above.
-     3. Call execute_state({ action: "ledger_checkout", runId: "{runId}", workerId: "{workerId}", findings: "<raw F-{dimension.name}-n text block above, or the literal text ZERO_FINDINGS>" }) LAST — this single call both records your checkout and persists your findings.
+     3. Call plan_support({ action: "evidence_record", runId: "{RUN_ID}", writerId: "{WRITER_ID}", status: "done", items: [{ id: "F-{DIM_SLUG}-1", summary: "<one line>", ref: "<path:line or URL>", body: "<full finding>" }, …] }) LAST. Zero findings: status "done" with no items.
+     4. If a call fails, still return your findings as text.
+     Then append the instructions part of the run-context footer.
      ```
+
+     Explorer fills: `{WRITER_ID}` = the `writerId` above (`"explore-" + slugify(dimension.name)`); `{DIM_SLUG}` = `slugify(dimension.name)`, so item ids are `F-<slug>-<n>` and pass the item id pattern (`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`) even when the dimension name has spaces. `{RUN_ID}` = `runId`.
 
      Dispatch one Agent per dimension, **all in a single message**, with `run_in_background: true`, `subagent_type: general-purpose`, `model: dimension.model`. **Do NOT pass `isolation: "worktree"` or any `isolation` value** (forbidden per issues #370/#372).
 
-     **Workflow variant:** Prefer the Workflow tool's native fan-out when available; otherwise use the flat background-dispatch + ledger path described above.
+     **Workflow variant:** Prefer the Workflow tool's native fan-out when available; otherwise use the flat background-dispatch + evidence-store path described above.
 
-  4. **POLL.** Loop calling `execute_state({ action: "ledger_status", runId, expectedWorkers: [ids], timeoutSeconds: 1800 })`, passing the `expectedWorkers` list accumulated above, roughly every 60 seconds until every dispatched `workerId` shows `status: "done"`.
+  4. **POLL.** Loop calling `plan_support({ action: "evidence_digest", runId: "<runId>", expectedWriters: [ids], timeoutSeconds: 1800, statusOnly: true })`, passing the `expectedWriters` list accumulated above, roughly every 60 seconds until every dispatched `writerId` shows `done` in the writers table.
 
-     **Stall handling (fail-partial-open, disclosed):** a `workerId` appearing in `stalledWorkers` is not yet failed — wait one more poll cycle. If it is **still** stalled on the next poll, stop waiting on it: proceed to CRITIQUE with the results collected so far, and explicitly name the skipped dimension(s) in `discovery-brief.md`'s `## Zero-Finding Dimensions` section with the note "skipped — worker stalled twice; no findings collected" — a disclosed degraded mode, not a silent drop.
+     **Stall handling (fail-partial-open, disclosed):** a `writerId` appearing in `writers.stalledWriters` is not yet failed — wait one more poll cycle. If it is **still** stalled on the next poll, stop waiting on it: proceed to CRITIQUE with the results collected so far, and explicitly name the skipped dimension(s) in the brief's `## Zero-Finding Dimensions` section with the note "skipped — writer stalled twice; no findings collected" — a disclosed degraded mode, not a silent drop.
 
-     **Missing-worker handling (same escalation pattern as stalls):** a `workerId` appearing in `missingWorkers` (dispatched but never checked in) is not yet failed — wait one more poll cycle. If it is **still** present in `missingWorkers` on the next poll, force-progress past it: proceed to CRITIQUE with the results collected so far, log a warning, and explicitly name the skipped dimension(s) in `discovery-brief.md`'s `## Zero-Finding Dimensions` section with the note "skipped — worker never checked in; no findings collected" — a disclosed degraded mode, not a silent drop.
+     **Missing-writer handling (same escalation pattern as stalls):** a `writerId` appearing in `writers.missingWriters` (dispatched but never recorded) is not yet failed — wait one more poll cycle. If it is **still** present in `writers.missingWriters` on the next poll, force-progress past it: proceed to CRITIQUE with the results collected so far, log a warning, and explicitly name the skipped dimension(s) in the brief's `## Zero-Finding Dimensions` section with the note "skipped — writer never recorded; no findings collected" — a disclosed degraded mode, not a silent drop.
 
-  5. **CRITIQUE.** Once every dispatched worker is `done` (or force-progressed past a stall above), read each worker's `findings` field from `execute_state({ action: "ledger_status", runId, expectedWorkers: [ids] })`'s `workers[]` response (collected during the poll in step 4):
+  5. **CRITIQUE.** Once every dispatched writer is `done` (or force-progressed past a stall above), read each writer's items with `plan_support({ action: "evidence_get", runId: "<runId>", writerIds: [ids] })`. When an explorer has no evidence file (its `evidence_record` failed), use the findings text from its Agent return value instead. Then:
      - **Deduplicate** — same file:line or same URL; keep the most specific observation.
      - **Severity consolidation** — same issue at different severities; keep the highest.
      - **Zero-finding dimensions** — list honestly; never fabricate findings for these.
      - **Contradiction detection** — flag findings that recommend different approaches for the same location.
      - **Web-vs-codebase conflicts** — for hybrid dimensions, flag every `[conflicts-with-codebase]` finding as a high-priority Key Decision candidate.
 
-  6. **CONSOLIDATE.** `Write` `discovery-brief.md` to `{outDir}/discovery-brief.md`:
+  6. **CONSOLIDATE.** Build the brief in memory and run the step 8 validation on it first. Only a valid brief is stored: `plan_support({ action: "evidence_record", runId: "<runId>", writerId: "main", brief: "<brief markdown>" })`; keep `record.briefPath` as `briefPath`. A brief that fails validation is never stored, so `briefPath` stays `"none — orchestrator skipped"`. The brief format:
 
      ```markdown
      # Discovery Brief
@@ -336,11 +396,11 @@ After the `fromOpenspecDirect` enrichment block, determine which exploration pat
      - F-<dim>-<n>: RECOMMENDATION — <one-sentence actionable recommendation>
      ```
 
-  7. **Read the brief** (`{outDir}/discovery-brief.md`) into context. It is the source of truth for Step 2 task provenance.
+  7. **Use the brief** you recorded in step 6 (it is already in context). It is the source of truth for Step 2 task provenance.
 
-  8. **Brief validation:** grep the brief's content for the pattern `F-[A-Z0-9_-]+-[0-9]+`. If zero matches are found, treat discovery as if it had failed: call `learnings_log({action:"append", entry:"## <YYYY-MM-DD> — plan discovery returned brief without F-DIM-N findings; using fallback inline exploration"})`, delete the tempdir and clean up the ledger (`rm -rf "<outDir>"`, `execute_state({ action: "ledger_cleanup", runId: "<runId>" })`), then proceed via the **Error fallback** path below. Rationale: a brief with no findings cannot satisfy G15 (Brief citation coverage) and would force every task into "out-of-scope addition" — better to fall back cleanly.
+  8. **Brief validation:** grep the brief's content for the pattern `F-[A-Za-z0-9_-]+-[0-9]+`. If zero matches are found, treat discovery as if it had failed: call `learnings_log({action:"append", entry:"## <YYYY-MM-DD> — plan discovery returned brief without F-DIM-N findings; using fallback inline exploration"})`, delete the tempdir (`rm -rf "<outDir>"`), then proceed via the **Error fallback** path below. Rationale: a brief with no findings cannot satisfy G15 (Brief citation coverage) and would force every task into "out-of-scope addition" — better to fall back cleanly.
 
-  9. **Cleanup.** On successful brief validation, `rm -rf "<outDir>"` and `execute_state({ action: "ledger_cleanup", runId: "<runId>" })` — the brief content is already loaded into context (step 7); nothing further reads the tempdir or the ledger directory.
+  9. **Cleanup.** On successful brief validation, `rm -rf "<outDir>"`. Keep the evidence directory; the Stop hook removes it after `done`.
 
   **Brief consumption (when brief is present AND validation passed):**
   - Step 2 tasks MUST cite at least one `F-<DIM>-<n>` finding ID from the brief OR be explicitly marked "out-of-scope addition" with rationale (implements R27)
@@ -386,6 +446,7 @@ Identify constraints: language, framework, existing conventions, testing approac
 - Write the `## Context` section — answers to the Discovery Questions in plain language (R62)
 - Write the `## Research Findings` section — captures exploration output: file patterns, existing modules, naming conventions, testing patterns, and build/lint/test commands discovered during codebase exploration. This section persists in the final plan (template-required, narrative).
 - Append a `## Requirements` section with numbered checklist (one bullet per requirement) — this is temporary scaffolding, removed in Step 2 post-write cleanup
+- Record the requirements: `plan_support({ action: "evidence_record", runId: "<runId>", writerId: "main", items: [{ id: "R1", summary: "<one line>", body: "<full requirement>" }, …] })`. Also record `F-main-<n>` items for findings from inline exploration (lightweight or fallback path), in a separate call: `items: [{ id: "F-main-1", summary: "<one line>", ref: "<path:line or URL>", body: "<full finding>" }, …]`. `ref` is required for every `F-main-<n>` item, the same as for explorer findings.
 
 **Re-anchor:** Before leaving Step 1, re-read the plan file's Requirements section. This counters attention drift after many exploration calls.
 
@@ -395,7 +456,7 @@ When `openspecContext.requirements` is present (non-null) in the prepare output:
 
 1. Dispatch one Gate A audit Agent using `intakeAuditDispatch` parameters from the prepare output (P20). Source `subagentType`, `model`, and `promptTemplatePath` verbatim from `intakeAuditDispatch` — do NOT hardcode model or template path (`agent-dispatch-script-driven` guardrail). If `intakeAuditDispatch.promptTemplatePath` is null, skip Gate A and emit one note: `Gate A skipped — intake-verify-prompt.md not found.`
 
-   Read the file at `intakeAuditDispatch.promptTemplatePath`; fill the following template variables before dispatching.
+   Read the file at `intakeAuditDispatch.promptTemplatePath`; fill the following template variables before dispatching. Append the run-context footer with `{WRITER_ID}` = `gate-a`.
 
 2. Fill the prompt template variables:
    - `{PROPOSAL}` — content of `openspec/changes/<name>/proposal.md` (already read in Step 0), or `"[artifact missing]"` if absent
@@ -414,6 +475,8 @@ When `openspecContext.requirements` is present (non-null) in the prepare output:
 5. When `openspecContext` is absent (non-OpenSpec plan), skip Gate A entirely. Emit one note: `Gate A skipped — plan is not OpenSpec-sourced.`
 
 ## Step 2 (PLAN): Decompose Into Tasks
+
+**Checkpoint:** First, call `plan_mark({ marker: "checkpoint", path: "", data: { step: "2", iteration: 0 } })`.
 
 **Scope check:** If requirements span independent subsystems with no shared state, use AskUserQuestion:
 > These requirements cover independent subsystems. Recommend splitting into N plans. Proceed as one plan or split?
@@ -563,6 +626,8 @@ R62 is a writing-quality convention judged by the Step 5 lens reviewers (R36) al
 
 **Re-anchor:** Re-read the plan file before dispatching lanes. The file — not your memory of it — is the source of truth.
 
+**Checkpoint:** Before the dispatch, call `plan_mark({ marker: "checkpoint", path: "", data: { step: "3", iteration: <iteration>, expectedWriters: [<every dispatched lane writer, lane-<lanes[i].name>-r<iteration> for i = 0..4, Lane 4 included>] } })`.
+
 **Fan-out dispatch: Dispatch ALL FIVE Step 3 lanes from `lanes[]` (P16) in a SINGLE message as parallel Agent tool calls. Do not dispatch them sequentially.**
 
 All 21 quality gates (G1–G21) are partitioned across five lanes — each gate belongs to exactly one lane. G20 and G21 are owned by the content-coverage lane (lanes[1]). Lane dispatch parameters (`subagent_type`, `model`, and prompt body read from `promptTemplatePath`) MUST be sourced verbatim from the corresponding `lanes[i]` entry in the prepare output (`agent-dispatch-script-driven` guardrail — do NOT hardcode these values).
@@ -572,8 +637,8 @@ For each `lanes[i]` entry (i = 0..4):
 - `subagent_type`: `lanes[i].subagentType`
 - `model`: `lanes[i].model`
 - prompt body: Read `lanes[i].promptTemplatePath` and fill template variables:
-  - All lanes: `{PLAN_FILE_PATH}` (absolute path to plan file), `{PROJECT_ROOT}` (cwd)
-  - Lanes 0–3 non-G17: `{REQUIREMENTS_SUMMARY}` (the numbered requirements list from Step 1 CONSUME — same content as `{REQUIREMENTS_CHECKLIST}` in Step 5; retained in memory from Step 1), `{ACTIVE_GUARDRAILS}` (from `guardrails[]` P7), `{OPENSPEC_TASKS}` (from `openspecContext.tasks` P13, null when not OpenSpec-sourced), `{BRIEF_FINDING_IDS}` (from `explorePack.manifestPath` context, null when no brief)
+  - All lanes: `{PLAN_FILE_PATH}` (absolute path to plan file), `{PROJECT_ROOT}` (cwd). Append the run-context footer to every lane prompt, Lane 4 included, with `{WRITER_ID}` = `lane-<lanes[i].name>-r<iteration>`.
+  - Lanes 0–3 non-G17: `{REQUIREMENTS_SUMMARY}` (the R-items from `plan_support({ action: "evidence_get", runId: "<runId>", writerIds: ["main"] })`, one `R<n>: <body or summary>` line each), `{GUARDRAILS_FILE}` (`guardrailsFile` from `plan_prepare`), `{OPENSPEC_TASKS}` (from `openspecContext.tasks` P13, null when not OpenSpec-sourced), `{BRIEF_FINDING_IDS}` (fresh run: the `F-…` ids in the brief in context; resume: the ids of the `explore-*` rows of the `evidence_digest` index — when the index ends with the `… more` row, call `plan_support({ action: "evidence_get", runId: "<runId>", writerIds: [<explore writers>] })` and keep only the ids; null when `briefPath` is none)
   - Lane 1 (content-coverage) additionally: `{FORMAT_REFERENCE_PATH}` — absolute path to plan-format-reference.md (sibling of lane-content-coverage-prompt.md in the same skill directory; resolve as `dirname(lanes[1].promptTemplatePath)/plan-format-reference.md`), `{PLAN_TEMPLATE_PATH}` — `activeTemplatePath` resolved in Step 0 (the absolute path to the active plan template — project override or shipped default)
   - Lane 4 (G17/dimension-coverage): `{DIMENSIONS_DIR}` (`.sdlc-v2/review-dimensions/`), `{COPILOT_DIR}` (`.github/instructions/`), `{GITHUB_HOSTING_DETECTED}` (`githubHosting.detected` from P14), `{LEARNINGS_LOG_PATH}` (`.sdlc-v2/learnings/log.md`), `{PR_COMMIT_WINDOW}` (best-effort "last 14 days" if unknown)
 
@@ -608,6 +673,8 @@ Note every issue from `allIssues`. Do NOT write to the plan file in this step.
 **Once-per-run checkpoints:** `guardrailsEvaluated` and `critiqueRan` are written exactly once — during the initial Step 3 pass. When Step 3 lanes are re-dispatched via the merged dispatch in Step 5 (see "Material change detection and merged re-dispatch" below), these markers are NOT re-written. The Stop hook already holds the integrity proof from the first pass; re-marking would reset the timestamp without adding information.
 
 ## Step 4 (IMPROVE): Revise Plan and Present for Approval
+
+**Checkpoint:** First, call `plan_mark({ marker: "checkpoint", path: "", data: { step: "4", iteration: <iteration> } })`.
 
 Fix all issues from Step 3. Rewrite the plan file with fixes applied (edit the existing file, don't append). If any revision changes the scope or approach from what was originally recorded, update the `## Deviations & assumptions` table accordingly.
 
@@ -660,6 +727,8 @@ Step 4 is autonomous (implements R22 single-touchpoint handoff). After fixes are
 
 Skip for lightweight plans (2–3 file scope from Step 0 routing).
 
+**Checkpoint:** Before each Step 5 dispatch (normal path or merged re-dispatch), call `plan_mark({ marker: "checkpoint", path: "", data: { step: "5", iteration: <iteration>, expectedWriters: [<every writer of this dispatch: lens-<lens>-r<iteration> for each lens, or reviewer-r<iteration> for <5-task plans; on a merged re-dispatch also lane-<lanes[i].name>-r<iteration> for each lane>] } })`.
+
 **Material change detection and merged re-dispatch (implements R64):**
 
 When `materialChangeDetected` is true (set by the Step 6 IMPROVE pass — see below), dispatch Step 3 lanes AND Step 5 lens reviewers in a SINGLE message as parallel Agent tool calls (`run_in_background: false` on each). This merged dispatch counts as **one** iteration of the existing review loop — the iteration counter increments by 1, not 2, and the max-3 cap (R8, R-c1) fires normally.
@@ -686,11 +755,12 @@ For each `lensReviewers[i]` entry (i = 0..2):
   - `{PLAN_FILE_PATH}` — absolute path to the plan file
   - `{LENS}` — `lensReviewers[i].lens` (one of `architecture`, `requirements`, `risk`)
   - `{LENS_FOCUS}` — `lensReviewers[i].focusCategories` rendered as a bullet list
-  - `{REQUIREMENTS_CHECKLIST}` — numbered list from Step 1 (CONSUME)
+  - `{REQUIREMENTS_CHECKLIST}` — the `main` R-items (same call as Step 3)
   - `{SOURCE_REQUIREMENTS}` — file path or inline text of spec (if available)
-  - `{BRIEF_FILE}` — absolute path to `discovery-brief.md`, or `"none — orchestrator skipped"`
+  - `{BRIEF_FILE}` — `briefPath` (the recorded `brief.md`), or `"none — orchestrator skipped"`
   - `{OPENSPEC_TASKS}` — serialized JSON from `openspecContext.tasks[]`, or `"none — plan not from OpenSpec"`
-  - `{GUARDRAILS}` — one guardrail per line (`- [id] (severity): description`), or `"none configured"`
+  - `{GUARDRAILS_FILE}` — `guardrailsFile` from `plan_prepare`
+  - Footer `{WRITER_ID}`: `lens-<lens>-r<iteration>`; reviewer `reviewer-r<n>`; Gate A `gate-a`
   - `{REQUIREMENTS_JSON}` — `JSON.stringify(openspecContext.requirements)` when present, or `"null"` (null-safe; lens prompts render `"null"` as `"none — inventory unavailable, use checklist"`)
   - `{NARRATIVE_RULES}` — `style.narrativeRules` from the `plan_prepare` output, joined as a newline-separated list, or `"none configured"` when the array is empty. Threads the project's narrative writing rules into lens reviewer evaluation.
 
@@ -700,9 +770,9 @@ When `lensReviewers[i].promptTemplatePath` is null, skip that lens and call `lea
 
 **Merge lens reviewer results (per iteration):** Collect each lens reviewer's result into a `lensResults` array. Call `plan_support({action: "merge_results", lensResults: [...]})`. Process the returned `mergedStatus` (`Approved` / `Issues Found`), `allIssues`, and `recommendations` — the tool handles status derivation, issue dedup by `(taskRef, message-normalized-prefix)`, and recommendation dedup by string prefix. For the merged re-dispatch path (when `materialChangeDetected` is true), combine both in one call: `plan_support({action: "merge_results", laneResults: [...], lensResults: [...], expectedGates: ["G1".."G21"], isRedispatch: true})` — `isRedispatch` makes G17 findings advisory-only and applies cross-source deduplication.
 
-**Iteration counter**: increment by 1 only after the await barrier above is satisfied (exactly N lens results collected, N = lenses dispatched); never increment on partial or zero returns (R-orchestrator-await, R-c1, #487).
+**Iteration counter**: increment by 1 only after the await barrier above is satisfied (exactly N lens results collected, N = lenses dispatched); never increment on partial or zero returns (R-orchestrator-await, R-c1, #487). The counter starts at 0 and counts completed Step 5 rounds. Writer IDs and checkpoints use the round in progress, `<iteration>` = counter + 1: the first Step 3 lanes and the first Step 5 lenses are `r1`; the first merged re-dispatch is `r2`. Checkpoints in Steps 0–2 use `iteration: 0`. On resume, set the counter to `checkpoint.iteration - 1` (never below 0).
 
-**For plans with <5 tasks — Single reviewer (status quo):** Dispatch one reviewer with `{LENS}=all` using `./plan-reviewer-prompt.md` directly (same model acceptable). Status quo behavior preserved.
+**For plans with <5 tasks — Single reviewer (status quo):** Dispatch one reviewer with `{LENS}=all` using `./plan-reviewer-prompt.md` directly (same model acceptable). Status quo behavior preserved. Append the run-context footer with `{WRITER_ID}` = `reviewer-r<n>` (`<n>` = the Step 5 iteration).
 
 **Gate B — Verification Scorecard (implements R40, R42, R44 — Fixes #445):**
 
@@ -730,6 +800,8 @@ After the merge step, assemble the `## Verification Scorecard` section in the pl
 
 ## Step 6 (IMPROVE): Apply Review Fixes
 
+**Checkpoint:** First, call `plan_mark({ marker: "checkpoint", path: "", data: { step: "6", iteration: <iteration> } })`.
+
 Fix each blocking issue identified by the reviewer. Rewrite the plan file with fixes applied. If any revision changes the scope or approach from what was originally recorded, update the `## Deviations & assumptions` table accordingly.
 
 **Gate B verdict wiring (implements R41 — Fixes #445):** The Gate B Verification Scorecard verdict is treated as an additional blocking-issue source using the same `Issues Found` path. This avoids divergent gate phrasing (`no-opposite-logical-vectors` guardrail) — the CRITICAL verdict does not have a separate code path; it injects findings into the same blocking-issue set that the `Issues Found` path already processes.
@@ -748,6 +820,8 @@ If this is the 3rd iteration, use AskUserQuestion to surface remaining issues in
 
 ## Step 6.5 (LINK VERIFICATION): Validate URLs in plan content (R18) — HARD GATE
 
+**Checkpoint:** First, call `plan_mark({ marker: "checkpoint", path: "", data: { step: "6.5", iteration: <iteration> } })`.
+
 After the reviewer loop converges (or the user resolves remaining issues), validate every URL embedded in the finalized plan file:
 
 ```
@@ -765,6 +839,8 @@ If any `results[]` entry has a non-`ok` `status`:
 On all-clear, proceed to Step 7. Pass `offline: true` (replacing the old `SDLC_LINKS_OFFLINE=1` env var) to skip network reachability while keeping context-aware checks (GitHub identity match, Atlassian host match) — use in sandboxed CI.
 
 ## Step 6.6 (FORMAT VALIDATION): Validate plan structure — HARD GATE
+
+**Checkpoint:** First, call `plan_mark({ marker: "checkpoint", path: "", data: { step: "6.6", iteration: <iteration> } })`.
 
 After link verification passes, run the deterministic plan format validator. PF9 (Verification Scorecard presence) is applied only when this run executed Step 5 (the multi-lens review).
 
@@ -793,11 +869,21 @@ If `findings` is empty, the plan passed every applicable PF check — proceed to
 
 ## Step 7: Handoff
 
+**Checkpoint:** First, call `plan_mark({ marker: "checkpoint", path: "", data: { step: "7", iteration: <iteration> } })`.
+
 **Gate B scorecard pointer (implements R41 — Fixes #445):** Before the plan-mode or normal-mode branch below, when a `## Verification Scorecard` section exists in the plan file (i.e., Gate B ran during Step 5), surface a one-line verdict reference above the `ship` / `execute` / `done` menu:
 
 > Verification Scorecard: `<verdict line>` — see `## Verification Scorecard` in the plan for details.
 
 Where `<verdict line>` is the verbatim verdict label from the scorecard: *"All checks passed. Ready for archive."*, *"…Ready for archive (with noted improvements)."*, or *"…Fix before archiving."*. When no scorecard is present (non-OpenSpec plan or scorecard was not generated), omit this line entirely.
+
+If `style.instructions` is not empty, print the instruction self-check table and fix any "no" row before continuing. Check each instruction against the plan file, not from memory. The "Where" column must hold evidence you checked: the plan file's `path:line` for each place that shows the instruction was followed, or a grep command over the plan file plus a one-line result you read. A section name alone is not evidence; mark such a row "no":
+
+```markdown
+| # | Instruction | Followed? | Where |
+|---|---|---|---|
+| 1 | Cite file:line for every claim about existing code. | yes | `grep -c "\.go:[0-9]" <plan>` → 14 hits, all in Research Findings (plan.md:40-71) and Tasks 3-8 (plan.md:120-188) |
+```
 
 Call `plan_mark({ marker: "done" })` before either branch below — writes the terminal `planIntegrity` marker the `stop-plan-integrity` Stop hook gates on: without it, the hook keeps the plan state file indefinitely instead of evaluating and deleting it.
 
@@ -852,7 +938,7 @@ Do NOT report the plan as "validated" on format-floor PASS alone. Format floor =
 
 **Plan-execution format mismatch.** The plan MUST include Complexity, Risk, Depends on, and Verify fields per task — execute consumes these for wave building. Missing metadata forces inference, which is slower and less accurate.
 
-**Plan file is the single source of truth.** All working state lives in the plan file. Do not create temporary files, scratchpads, or side documents. Exploration findings belong in the `## Research Findings` section (template-required, persists in the final plan). The `## Requirements` section is temporary scaffolding removed in Step 2 post-write cleanup.
+**Plan file is the single source of truth for plan content.** Working state that must survive compaction (requirements, findings, brief, lane and lens results, step checkpoint) lives only in the run's evidence store (`plan_support` evidence actions) and `plan_mark({ marker: "checkpoint" })`. Do not create other temporary files, scratchpads, or side documents. Exploration findings belong in the `## Research Findings` section (template-required, persists in the final plan). The `## Requirements` section is temporary scaffolding removed in Step 2 post-write cleanup.
 
 ## Learning Capture
 
