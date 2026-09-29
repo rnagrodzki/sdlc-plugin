@@ -60,10 +60,11 @@ Loads the proposal, delta specs, and task list from
 - **Plan files are saved to disk.** The plan is written to a file. You pass
   that file path to `/execute` or `/ship` later — they do not pick it up
   automatically.
-- **State is loaded before anything else.** The skill's first action is
-  always a `plan_prepare(...)` call, which reads any saved plan-run state
-  before starting exploration or decomposition — this happens unconditionally,
-  not only when resuming a prior run.
+- **`plan_prepare` always runs first, but it only resumes state when asked.**
+  The skill's first action is always a `plan_prepare(...)` call. By default it
+  starts a fresh run. Pass `resume: true` to reuse the active run instead —
+  the skill does this automatically after a compaction (see
+  [Recovery after compaction](#recovery-after-compaction) below).
 - **Complexity routing matters.** If your change touches only 1 file, the skill
   tells you no plan is needed (or writes a lightweight plan in plan mode). Full
   planning with multi-agent exploration kicks in for 4+ files or unclear scope.
@@ -72,3 +73,14 @@ Loads the proposal, delta specs, and task list from
 - **Plan mode vs. normal mode.** In plan mode, the skill writes to the
   designated plan file path. In normal mode, it creates a file and tells you
   where it is.
+
+## Recovery after compaction
+
+- What you see: `Active plan (post-compact): step <n>, branch <b>; plan file: <path>` in the session context, followed by a line that tells Claude to invoke the sdlc:plan skill first when the skill instructions are not in context, and a `Resume with:` line.
+- What the skill does: reloads the run with `plan_prepare` (resume mode), reads the evidence digest, then resumes at the saved step; it does not clear the plan file.
+- Where evidence lives: <main-worktree>/.sdlc-v2/runs/<runId>.evidence/ (deleted after the plan is done).
+
+## Custom plan instructions
+
+- Key: `[planStyle] instructions` in `.sdlc-v2/local.toml` (one instruction per array entry).
+- Where they apply: printed at plan start, passed to every subagent, repeated after compaction, checked in Step 7.

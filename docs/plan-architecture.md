@@ -18,12 +18,12 @@ Seven MCP tools are called directly by the plan skill pipeline.
 | Tool | Registration | Purpose |
 |------|-------------|---------|
 | `plan_prepare` | `internal/tools/plan.go` `RegisterPlanTools` | Context detection, template resolution, OpenSpec validation, guardrail loading, lane/lens construction, complexity routing. Computes pending OpenSpec tasks.md ref stamps but never writes them — see [OpenSpec tasks.md Ref Stamping](#openspec-tasksmd-ref-stamping) |
-| `plan_mark` | `internal/tools/plan.go` `RegisterPlanTools` | Write planIntegrity markers (`skillInvoked`, `plan-file`, `guardrailsEvaluated`, `critiqueRan`) |
+| `plan_mark` | `internal/tools/plan.go` `RegisterPlanTools` | Write planIntegrity markers (`skillInvoked`, `plan-file`, `guardrailsEvaluated`, `critiqueRan`, `done`), append `guardrailResults`/`criticalDecisions`, or replace the `checkpoint` progress marker |
 | `plan_explore_prepare` | `internal/tools/plan_explore.go` `RegisterPlanExploreTools` | Build standalone explore pack (git scope, OpenSpec paths, keyword grep, web-research signal, skill registry sample, recent plans) |
-| `plan_support` | `internal/tools/plan_support.go` `RegisterPlanSupportTools` | Four actions: `merge_results`, `material_snapshot`, `material_compare`, `openspec_appendix` |
+| `plan_support` | `internal/tools/plan_support.go` `RegisterPlanSupportTools` | Seven actions: `merge_results`, `material_snapshot`, `material_compare`, `openspec_appendix`, `evidence_record`, `evidence_digest`, `evidence_get` |
 | `validate` | `internal/tools/validators.go` `RegisterValidateTools` | Seven actions; plan pipeline uses `plan_format` (PF1-PF12) |
 | `links_validate` | `internal/tools/links.go` `RegisterLinksTools` | URL extraction + HTTP validation with line tracking |
-| `execute_state` | `internal/tools/execute_state.go` `RegisterExecuteStateTools` | Ledger operations: `ledger_checkin`, `ledger_checkout`, `ledger_status` |
+| `execute_state` | `internal/tools/execute_state.go` `RegisterExecuteStateTools` | Ledger operations (review skill; plan uses the evidence store instead — see [Evidence store and compaction recovery](#evidence-store-and-compaction-recovery)) |
 
 Subagents dispatched by the plan skill may call additional tools (e.g., `Glob`,
 `Read`, `Grep`) during their evaluation runs.
@@ -61,8 +61,8 @@ Fourteen files in `plugins/sdlc/skills/plan/`:
 | Plans directory | `.claude/settings.json` `plansDirectory` | Claude Code native setting |
 
 `PlanStyle` fields: `verbosity` (default `"standard"`), `audience` (default
-`"technical"`), `narrativeRules` (default `nil`). Loaded by `loadPlanStyle` in
-`plan.go` with benign-absence fallback.
+`"technical"`), `narrativeRules` (default `nil`), `instructions` (default
+`nil`). Loaded by `loadPlanStyle` in `plan.go` with benign-absence fallback.
 
 `PlanTasks` fields: `requiredFields` (default `[]`), `contractShape` (default
 `"full"`). Loaded from `plan` config section's `tasks` sub-key.
@@ -183,10 +183,13 @@ When the plan attaches to an OpenSpec change, each task line in
 | Execute | `execute_state({action: "init"})` | `stampTaskRefs` writes the ref comments for real, once the plan is approved. |
 
 The split exists because `tasks.md` is git-tracked and the plan skill runs
-under Claude Code plan mode, which must not modify tracked files. Keeping
-`plan_prepare` write-free is also what lets it stay `ReadOnly:true` in its MCP
-annotations (see docs/mcp-tool-annotations.md) and therefore callable in plan
-mode at all.
+under Claude Code plan mode, which must not modify tracked files.
+`plan_prepare` does write — the plan state file and `<runId>.evidence/guardrails.md`,
+both under gitignored `.sdlc-v2/runs/` — but never a tracked file, which is
+what lets it stay `ReadOnly:true` in its MCP annotations (see
+docs/mcp-tool-annotations.md) and therefore callable in plan mode at all. A
+call without `resume` or `resolveTemplate` also starts a new run and
+best-effort deletes older runs' evidence directories for the branch.
 
 Two consequences worth knowing:
 
@@ -209,10 +212,10 @@ nothing is pending writes no file at all.
 
 | Aspect | Detail |
 |--------|--------|
-| **Tools called** | `plan_explore_prepare` (or inline `explorePack` from `plan_prepare`), `execute_state({action: "ledger_checkin"})` |
+| **Tools called** | `plan_explore_prepare` (or inline `explorePack` from `plan_prepare`), `plan_support({action: "evidence_record"})` per dimension writer (running, then done), `plan_support({action: "evidence_digest"})` (poll) |
 | **Subagents** | 3-7 dimension exploration subagents (parallel fan-out, one per dimension), then 1 intake-audit subagent (prompt: `intake-verify-prompt.md`, model from `intakeAuditDispatch`) |
 | **Plan sections written** | None (discovery data feeds Step 2) |
-| **Failure modes** | Intake audit returns CRITICAL findings: pipeline blocks, surfaces to user. Explore pack errors: degraded mode with partial context. Brief has zero `F-DIM-N` findings: falls back to inline exploration. Dimension worker stalls twice: skipped with disclosure. Missing workers detected via `execute_state({action: "ledger_status", expectedWorkers: [...]})`: any IDs in `expectedWorkers` not found in the ledger are returned as `missingWorkers`. |
+| **Failure modes** | Intake audit returns CRITICAL findings: pipeline blocks, surfaces to user. Explore pack errors: degraded mode with partial context. Brief has zero `F-DIM-N` findings: falls back to inline exploration. Dimension writer stalled twice, or missing (dispatched but never recorded) twice, in `plan_support({action: "evidence_digest", expectedWriters: [...]})`'s `stalledWriters`/`missingWriters`: skipped with disclosure ("skipped — writer stalled twice" / "skipped — writer never recorded") in the brief's `## Zero-Finding Dimensions` section, and the pipeline force-progresses to CRITIQUE. |
 
 The explore pack gathers: git scope (diff stats, branch info), OpenSpec paths,
 keyword grep results, web-research signal, skill registry sample, and recent
@@ -221,15 +224,19 @@ plan files.
 **Dimension fan-out:** The orchestrator derives 3-7 task-specific dimensions
 (code, web, or hybrid) from the user prompt, scope hints, and OpenSpec
 context. One `Agent` subagent is dispatched per dimension, all in a single
-message with `run_in_background: true`. Each dimension worker writes its
-findings to `.sdlc-v2/runs/ledger/{runId}/{workerId}.findings.md` using
-the `F-{dimension.name}-<n>` ID format. The orchestrator polls via
-`execute_state({action: "ledger_status"})` until all workers complete, then
-compiles a discovery brief. Stalled workers are given one extra poll cycle
-before being skipped with disclosure.
+message with `run_in_background: true`. Each dimension writer records its
+findings with `plan_support({action: "evidence_record", writerId: "explore-<slugified-dimension-name>", items: [{id: "F-<slug>-<n>", summary, ref, body}, ...]})`,
+written to `<runId>.evidence/<writerId>.json` (see
+[Evidence store and compaction recovery](#evidence-store-and-compaction-recovery)).
+The orchestrator polls via `plan_support({action: "evidence_digest", statusOnly: true})`,
+passing the accumulated `expectedWriters` list, roughly every 60 seconds until
+every dispatched writer shows `done`, then compiles a discovery brief.
+Stalled or missing writers are given one extra poll cycle before the
+orchestrator force-progresses past them with disclosure.
 
-`execute_state` ledger operations (`ledger_checkin`, `ledger_checkout`,
-`ledger_status`) track dimension worker lifecycle.
+`plan_support`'s evidence actions (`evidence_record`, `evidence_digest`,
+`evidence_get`) track dimension writer lifecycle and let the orchestrator
+recover in-progress findings after a context compaction.
 
 ### Step 2: Decompose Into Tasks
 
@@ -352,15 +359,20 @@ OpenSpec context. Each dimension has a type (`code`, `web`, or `hybrid`) and a
 model assignment. One `Agent` subagent is dispatched per dimension in a single
 message, all with `run_in_background: true`.
 
-Each worker explores its dimension independently (codebase reads for `code`,
-web research for `web`, both for `hybrid`) and writes findings to
-`.sdlc-v2/runs/ledger/{runId}/{workerId}.findings.md`. The orchestrator
-polls `execute_state({action: "ledger_status"})` until all workers complete or
-stall. Results are compiled into a discovery brief (`discovery-brief.md`) that
-feeds Step 2's decomposition.
+Each writer explores its dimension independently (codebase reads for `code`,
+web research for `web`, both for `hybrid`) and records findings with
+`plan_support({action: "evidence_record", writerId: "explore-<slug>", items: [...]})`,
+written to `<runId>.evidence/<writerId>.json`. The orchestrator polls
+`plan_support({action: "evidence_digest", statusOnly: true})` until all
+writers complete or stall. Results are compiled into a discovery brief that,
+once it passes validation, is stored with
+`plan_support({action: "evidence_record", writerId: "main", brief: "<markdown>"})`
+at `<runId>.evidence/brief.md` and feeds Step 2's decomposition.
 
 A brief that contains zero `F-DIM-N` finding IDs triggers a fallback to inline
-exploration (the brief is discarded and the ledger directory cleaned up).
+exploration; the brief is never stored (only a brief that passes validation
+is written), and the writer evidence files stay in `<runId>.evidence/` until
+the Stop hook removes the whole directory after the `done` marker.
 
 ### Step 3: Five-Lane Gate
 
@@ -402,7 +414,7 @@ sequenceDiagram
 
 Lane prompt templates are filled with variables from the `plan_prepare`
 payload. Each lane receives the plan file path, format reference path, and
-lane-specific context (e.g., `{ACTIVE_GUARDRAILS}` for Lane 3,
+lane-specific context (e.g., `{GUARDRAILS_FILE}` for lanes 0, 1, and 3,
 `{DIMENSIONS_DIR}` and `{COPILOT_DIR}` for Lane 4).
 
 ### Step 5: Three-Lens Review
@@ -477,6 +489,94 @@ shifted.
 
 ---
 
+## Evidence store and compaction recovery
+
+Each plan run owns a per-run evidence directory that holds every dispatched
+writer's recorded findings, the discovery brief, and the guardrails
+snapshot. It is what lets a run resume after a context compaction without
+re-doing its research. It is written and read only through `plan_support`'s
+`evidence_record`, `evidence_digest`, and `evidence_get` actions
+(`internal/tools/plan_evidence.go`).
+
+### Layout
+
+```
+<main-worktree>/.sdlc-v2/runs/<runId>.evidence/
+├── main.json          # the orchestrator's own recorded items, if any
+├── <writerId>.json     # one file per dispatched writer (explorer, lane, lens, reviewer)
+├── brief.md            # optional: the discovery brief, recorded by writerId "main" only
+└── guardrails.md       # the guardrails snapshot, written by plan_prepare (not evidence_record)
+```
+
+`<runId>` is `state.RunID(st)` — the state file's stem (e.g.
+`plan-fix-my-bug-20260509T140000Z`), not just the timestamp. `guardrailsFile`,
+one of `plan_prepare`'s output fields, is this directory's `guardrails.md`
+path.
+
+### Writers
+
+| `writerId` pattern | Writer | Recorded at |
+|---|---|---|
+| `main` | The orchestrator session itself | Brief (Step 1 CONSOLIDATE), R-items, `F-main-<n>` inline findings, `D<n>` decision records |
+| `explore-<dim>` | Step 1 dimension-exploration subagent | One dimension's findings; `<dim>` = `slugify(dimension.name)` |
+| `gate-a` | Step 1 intake-audit subagent | Gate A result |
+| `lane-<name>-r<n>` | Step 3 lane subagent | One lane's result; `<n>` = review iteration |
+| `lens-<name>-r<n>` | Step 5 lens subagent | One lens's result; `<n>` = review iteration |
+| `reviewer-r<n>` | Step 5 single-reviewer path (plans with <5 tasks) | Reviewer result |
+
+Every writer records `status: "running"` before starting and `status: "done"`
+with `items` when finished, via the run-context footer appended to its
+prompt. Every `main` write (brief, R-items, `F-main-<n>`, `D<n>`) runs alone,
+never in parallel with another `main` write, since two parallel upserts of
+`main.json` would lose one.
+
+### Tools
+
+| Call | Purpose |
+|---|---|
+| `plan_support({action: "evidence_record", runId, writerId, status, items?, brief?})` | A writer registers itself running, then done with its items. `writerId: "main"` also records the brief (only when it passes validation) and decision records. |
+| `plan_support({action: "evidence_digest", runId, expectedWriters?, timeoutSeconds?, statusOnly?})` | Returns the `writers` status table always, plus a `digest` (run summary including `briefPath`) unless `statusOnly`; never returns item bodies. `expectedWriters` defaults to the checkpoint's `expectedWriters` when omitted. |
+| `plan_support({action: "evidence_get", runId, writerIds})` | Fetches recorded item bodies for CRITIQUE, or for template fills like `{REQUIREMENTS_SUMMARY}` / `{BRIEF_FINDING_IDS}`. |
+| `plan_mark({marker: "checkpoint", data: {step, iteration, expectedWriters?}})` | Replaces (not appends) `st.Data["checkpoint"]`. Called at the start of every step (`1, 2, 3, 4, 5, 6, 6.5, 6.6, 7`); `expectedWriters` is passed only at a fan-out step (Step 1 explorers, Step 3 lanes, Step 5 lenses or reviewer). |
+| `plan_prepare({resume: true, resolveTemplate: true, skipConfigCheck: true})` | Reuses the active run without resetting it. Restores `runId`, `guardrailsFile`, `lanes`, `lensReviewers`, `style`, and `template.activeTemplatePath` as a fresh run would set them. Returns a `no active plan run` domain error when there is none. |
+
+### Resume flow
+
+1. The SessionStart hook (post-compact) prints `Active plan (post-compact):
+   step <n>, branch <b>; plan file: <path>` plus a `Resume with:` line
+   (`internal/hooks/session_start.go`, `planResumeLines`).
+2. The skill's Session recovery rule matches the plan file path and calls
+   `plan_prepare({resume: true, resolveTemplate: true, skipConfigCheck:
+   true})`.
+3. `plan_support({action: "evidence_digest", runId})` returns the writer
+   status table plus `briefPath`. On error, the skill prints it, stops, and
+   tells the user to re-invoke `/sdlc:plan`.
+4. Execution continues at `checkpoint.step` and `checkpoint.iteration`. Any
+   writer still listed in `missingWriters` or `stalledWriters` gets one more
+   poll cycle, then is force-progressed past (skipped, and disclosed in the
+   brief's `## Zero-Finding Dimensions` section) — the same fail-partial-open
+   rule a fresh POLL uses.
+5. If the resume call returns `no active plan run`, the skill prints "No
+   active plan run to resume — starting a new plan." and runs Step 0
+   normally.
+
+### Lifecycle
+
+- A new (non-resume) run calls `state.PruneEvidenceDirs(st)`
+  (`internal/tools/plan.go`, inside `newPlanRun`), which best-effort deletes
+  sibling `<runId>.evidence/` directories that share the same state-file
+  prefix and branch slug, skipping its own run's directory. This is not
+  TTL-based — it only fires when a new run starts on the same branch.
+- After `plan_mark({marker: "done"})`, the Stop hook
+  (`internal/hooks/stop_hooks.go`, `planIntegrityFromState`) deletes both the
+  state file and `state.EvidenceDir(st.Root, runId)`.
+- `execute`/`ship`'s TTL garbage collection (`gcStateFiles`) only prunes
+  stale plan/execute/ship state files; it never references `EvidenceDir` and
+  does not clean up evidence directories. The two paths above are the only
+  cleanup for `.evidence/` directories.
+
+---
+
 ## Data Flow
 
 ### plan_prepare Payload Map
@@ -485,11 +585,14 @@ Every field of `PlanPrepareOut` and its consuming step:
 
 | Field | Type | Consumer |
 |-------|------|----------|
+| `next` | `string` | Step 0 (the literal next instruction — see [MCP Output Contract](mcp-output-contract.md)) |
+| `runId` | `string` | Steps 0-7 (the run ID passed to every `plan_support` evidence call and every subagent's `{RUN_ID}` template var) |
+| `guardrailsFile` | `string` | Step 3 lanes 0, 1, 3, Step 5 lenses and reviewer (`{GUARDRAILS_FILE}` template var) |
 | `openspec` | `OpenspecInfo` | Step 0 (banner), Step 1 (explore context) |
 | `fromOpenspec` | `*FromOpenspecResult` | Step 0 (validation gate) |
 | `openspecContext` | `OpenspecContext` | Steps 2, 4 (task mapping, appendix generation) |
-| `guardrails` | `[]map[string]any` | Step 3 Lane 3 (`{ACTIVE_GUARDRAILS}` template var) |
-| `style` | `PlanStyle` | Steps 0-7 (verbosity, audience, narrative rules) |
+| `guardrails` | `[]map[string]any` | Step 0 (`activeGuardrails` banner print), Step 4 (gates whether `## Guardrail Compliance` is written); the same data is persisted to `guardrails.md` (path in `guardrailsFile`) for lane/lens/reviewer subagents |
+| `style` | `PlanStyle` | Steps 0-7 (verbosity, audience, narrative rules, custom instructions) |
 | `tasks` | `PlanTasks` | Step 6.6 (PF11 requiredFields, PF12 contractShape) |
 | `explorePack` | `ExplorePack` | Step 1 (git scope, OpenSpec paths, keywords) |
 | `planTemplate` | `PlanTemplate` | Step 0 (template path detection) |
@@ -510,7 +613,10 @@ Lane and lens prompt templates use `{PLACEHOLDER}` variables filled from the
 |----------|--------|---------|
 | `{PLAN_FILE_PATH}` | Plan file path on disk | All lanes, all lenses |
 | `{FORMAT_REFERENCE_PATH}` | `plan-format-reference.md` path | Lanes 0, 1 |
-| `{ACTIVE_GUARDRAILS}` | `guardrails` array (JSON) | Lane 3 |
+| `{GUARDRAILS_FILE}` | `guardrailsFile` (path to `<runId>.evidence/guardrails.md`) | Lanes 0, 1, 3; all lenses; reviewer template |
+| `{RUN_ID}` | `runId` | Every dispatched writer (explorer, lane, lens, reviewer, gate-a subagent) |
+| `{WRITER_ID}` | Computed per dispatch (e.g. `"explore-" + slugify(dimension.name)`, or a lane/lens/reviewer name) | Every dispatched writer, for its own `evidence_record` calls |
+| `{PLAN_INSTRUCTIONS}` | `style.instructions` (from `[planStyle] instructions`) | All lanes, all lenses (custom-instruction compliance check) |
 | `{DIMENSIONS_DIR}` | `.sdlc-v2/review-dimensions/` | Lane 4 |
 | `{COPILOT_DIR}` | `.github/instructions/` | Lane 4 |
 | `{GITHUB_HOSTING_DETECTED}` | `githubHosting.detected` (boolean) | Lane 4 |
@@ -518,7 +624,7 @@ Lane and lens prompt templates use `{PLACEHOLDER}` variables filled from the
 
 ### F-DIM-N Finding Provenance Chain
 
-Step 1 dimension exploration workers produce findings with structured IDs:
+Step 1 dimension exploration writers produce findings with structured IDs:
 
 ```
 F-{dimension.name}-{n}
@@ -530,7 +636,7 @@ both for `hybrid`).
 
 **Provenance flow:**
 
-1. **Step 1** -- Dimension workers write `F-DIM-N` findings to ledger files.
+1. **Step 1** -- Dimension writers record `F-DIM-N` findings with `plan_support({action: "evidence_record"})`.
 2. **Step 1** -- Orchestrator compiles findings into a discovery brief.
 3. **Step 2** -- Tasks cite `F-DIM-N` IDs in their descriptions to trace
    requirements back to discovery evidence.
@@ -725,6 +831,7 @@ stateDiagram-v2
 | Verbosity | Yes | `.sdlc-v2/local.toml` `planStyle.verbosity` | Per-developer (gitignored) |
 | Audience | Yes | `.sdlc-v2/local.toml` `planStyle.audience` | Per-developer (gitignored) |
 | Narrative rules | Yes | `.sdlc-v2/local.toml` `planStyle.narrativeRules` | Per-developer (gitignored) |
+| Custom instructions | Yes | `.sdlc-v2/local.toml` `planStyle.instructions` | Per-developer (gitignored); one instruction per array entry |
 | Lane count (5) | No | `plan.go` `buildLanes()` | Hard-coded |
 | Lane-to-gate assignment | No | `plan.go` `buildLanes()` | Hard-coded |
 | Lane models (haiku/sonnet) | No | `plan.go` `buildLanes()` | Hard-coded |
@@ -740,13 +847,14 @@ stateDiagram-v2
 
 ### Config Knob Connectivity Chains
 
-Full source-to-enforcement chain for the 5 `planStyle`/`plan.tasks` config fields: schema definition, Go struct field, the loader function that reads it, where the SKILL.md workflow consumes it, and what enforces it.
+Full source-to-enforcement chain for the 6 `planStyle`/`plan.tasks` config fields: schema definition, Go struct field, the loader function that reads it, where the SKILL.md workflow consumes it, and what enforces it.
 
 | Config Field | File | Schema Location | Go Struct | Loaded By | SKILL.md Step | Enforced By |
 |---|---|---|---|---|---|---|
 | `planStyle.verbosity` | `.sdlc-v2/local.toml` (personal) | `planStyleSection.verbosity` | `PlanStyle.Verbosity` | `loadPlanStyle` | Step 2 | LLM judgment |
 | `planStyle.audience` | `.sdlc-v2/local.toml` (personal) | `planStyleSection.audience` | `PlanStyle.Audience` | `loadPlanStyle` | Step 2 | LLM judgment |
 | `planStyle.narrativeRules` | `.sdlc-v2/local.toml` (personal) | `planStyleSection.narrativeRules` | `PlanStyle.NarrativeRules` | `loadPlanStyle` | Step 5 | Lens prompts (`{NARRATIVE_RULES}`) |
+| `planStyle.instructions` | `.sdlc-v2/local.toml` (personal) | `planStyleSection.instructions` | `PlanStyle.Instructions` | `loadPlanStyle` | Printed at Step 0; passed as `{PLAN_INSTRUCTIONS}` to every lane/lens; re-printed after compaction; self-checked at Step 7 | Step 7 self-check table (LLM judgment) |
 | `plan.tasks.requiredFields` | `.sdlc-v2/config.toml` (team) | `planSection.tasks.requiredFields` | `PlanTasks.RequiredFields` | `loadPlanTasks` | Step 2 (authored), Step 4 (revised) | PF11 (`checkPF11`) |
 | `plan.tasks.contractShape` | `.sdlc-v2/config.toml` (team) | `planSection.tasks.contractShape` | `PlanTasks.ContractShape` | `loadPlanTasks` | Step 2 (authored), Step 4 (revised) | PF12 (`checkPF12`) |
 
