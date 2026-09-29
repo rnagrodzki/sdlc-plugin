@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.8] - 2026-09-29
+
+- Add scheduled weekly workflow that deletes old GitHub Releases and their binary assets, keeping the 10 most recent releases (git tags are preserved).
+- Added GH013 (ruleset rejection) error classification with secret-name-aware remediation hints
+- CI trigger is dispatch-only (dropped tag-push) and now runs the full Node test suite
+- Documented protected-branches-and-rulesets behavior in the versioning docs
+- Fixed 15 code-review findings: secret-name validation for generated CI files, restored push-with-secret guidance text, corrected schema permission description, added default/pattern validation for the secret-name field, fixed Node 21+ test glob
+- Hardened review checklists and execute/plan guardrails based on review findings
+- Moved personal per-developer config keys to local.toml; execute step now resolves auto/quality/highRiskAutoApprove from config
+- Release pipeline now falls back through a GitHub App token, then RELEASE_TOKEN, then GITHUB_TOKEN, so releases keep working under GitHub rulesets that block direct pushes
+- promote-release can now deliver its commit via a pull request instead of requiring a direct push
+- retag-release now guards against retagging non-release commits or running outside main
+
 ## [0.1.7] - 2026-09-28
 
 ### RC 1
