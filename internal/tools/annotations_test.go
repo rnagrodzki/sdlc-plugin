@@ -37,11 +37,11 @@ var toolAnnotations = map[string]annotationPolicy{
 		reason:     "pure validation; no os.WriteFile/AtomicWrite/telemetry",
 	},
 	"plan_support": {
-		title:      "Read plan support data",
+		title:      "Plan support and evidence store",
 		readOnly:   true,
 		idempotent: true,
 		openWorld:  false,
-		reason:     "os.ReadFile/os.Stat plus os.MkdirTemp(\"\", \"sdlc-plan-snapshot-\") for material_snapshot's snapshotPath output",
+		reason:     "os.ReadFile/os.Stat plus os.MkdirTemp(\"\", \"sdlc-plan-snapshot-\") for material_snapshot's snapshotPath output, plus fsx.AtomicWrite* under gitignored .sdlc-v2/runs/<runId>.evidence/ for evidence_record",
 	},
 	"verify_pipeline_classify": {
 		title:      "Classify CI failure logs",
@@ -437,6 +437,21 @@ func TestReadOnlyToolsWriteNothingTracked(t *testing.T) {
 					Action:      "merge_results",
 					LensResults: []LensResult{{Name: "lens-1", Status: "approved"}},
 				})
+				// evidence_record really writes: seed a plan run first so
+				// the call succeeds, then check the write stays untracked.
+				prep, err := planPrepareCore(root, root, PlanPrepareIn{SkipConfigCheck: true})
+				if err != nil || prep.RunID == "" {
+					t.Fatalf("planPrepareCore seed: runId=%q err=%v", prep.RunID, err)
+				}
+				if _, err := planSupportCore(root, root, PlanSupportIn{
+					Action:   "evidence_record",
+					RunID:    prep.RunID,
+					WriterID: "main",
+					Items:    []EvidenceItem{{ID: "F-1", Summary: "seed item", Body: "body"}},
+					Brief:    "# Brief\n",
+				}); err != nil {
+					t.Fatalf("evidence_record: %v", err)
+				}
 			case "verify_pipeline_classify":
 				_ = ClassifyLogs("error: build failed")
 			case "verify_tag_ancestry":
