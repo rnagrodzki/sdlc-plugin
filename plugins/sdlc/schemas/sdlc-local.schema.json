@@ -37,6 +37,13 @@
             "type": "string"
           },
           "description": "Free-form writing rules /plan enforces on narrative sections."
+        },
+        "instructions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Custom process instructions /plan shows at start and forwards to every step and subagent, including after context compaction. Default: none."
         }
       },
       "additionalProperties": false

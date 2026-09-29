@@ -14,7 +14,7 @@ This lane triggers the `guardrailsEvaluated` marker in the planIntegrity chain (
 
 You receive:
 - `{PLAN_FILE_PATH}` — absolute path to the finalized plan file
-- `{ACTIVE_GUARDRAILS}` — array of active guardrails: `[{ id, description, severity }]`. May be empty.
+- `{GUARDRAILS_FILE}` — absolute path to guardrails.md. Read it first. Each "## <id> (<severity>)" heading is one guardrail; the "> " lines below it are its description. The title "# Active plan guardrails (0)" means no guardrails.
 
 Read the plan file at `{PLAN_FILE_PATH}` before evaluating.
 
@@ -24,7 +24,7 @@ Skip `## OpenSpec Appendix` content when evaluating any gate.
 
 ## Gate to Evaluate
 
-**G14 — Guardrail compliance:** Evaluate each guardrail in `{ACTIVE_GUARDRAILS}` against the plan. For each guardrail:
+**G14 — Guardrail compliance:** Evaluate each guardrail in `{GUARDRAILS_FILE}` against the plan. For each guardrail:
 - Read the guardrail's `description` (natural language rule)
 - Assess whether the plan (its tasks, approach, key decisions) violates the guardrail
 - `error` severity → blocking violation; `warning` severity → advisory
@@ -60,9 +60,9 @@ Produce the `## Guardrail Compliance` table with per-guardrail Status (PASS/FAIL
 - `issues` — one entry per failing guardrail (error or warning), empty array when all pass
 - `passes` — `["G14"]` when no guardrails fail; `[]` when any guardrail fails
 - `laneStatus` — `"ok"` when evaluation completed; `"failed"` when plan unreadable
-- `guardrailCompliancePayload` — the full markdown table string for the `## Guardrail Compliance` section; present regardless of whether issues exist. When `{ACTIVE_GUARDRAILS}` is empty, set to `"No active guardrails configured."`.
+- `guardrailCompliancePayload` — the full markdown table string for the `## Guardrail Compliance` section; present regardless of whether issues exist. When `{GUARDRAILS_FILE}` lists 0 guardrails, set to `"No active guardrails configured."`.
 
-**When `{ACTIVE_GUARDRAILS}` is empty:** Issues = `[]`, passes = `["G14"]`, laneStatus = `"ok"`, guardrailCompliancePayload = `"No active guardrails configured."`.
+**When `{GUARDRAILS_FILE}` lists 0 guardrails:** Issues = `[]`, passes = `["G14"]`, laneStatus = `"ok"`, guardrailCompliancePayload = `"No active guardrails configured."`.
 
 **Do not evaluate G1–G13, G15–G21 — those belong to other lanes.**
 

@@ -2,6 +2,7 @@ package state
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -898,5 +899,545 @@ func TestFindAny_MixedPrefixesDoesNotCrossMatch(t *testing.T) {
 	wantExec := "execute-feat-login-20260105T100000Z.json"
 	if filepath.Base(found.Path) != wantExec {
 		t.Fatalf("FindAny execute picked %q, want %q", filepath.Base(found.Path), wantExec)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RunID / EvidenceDir
+// ---------------------------------------------------------------------------
+
+func TestRunID_And_EvidenceDir(t *testing.T) {
+	root := "/proj"
+	id := "plan-main-20260929T114125Z"
+	st := &State{Path: filepath.Join(root, paths.DataDir, paths.RunsSubdir, id+".json"), Root: root}
+
+	if got := RunID(st); got != id {
+		t.Fatalf("RunID = %q, want %q", got, id)
+	}
+
+	want := filepath.Join(root, paths.DataDir, paths.RunsSubdir, id+".evidence")
+	if got := EvidenceDir(root, id); got != want {
+		t.Fatalf("EvidenceDir = %q, want %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// LoadRun
+// ---------------------------------------------------------------------------
+
+func TestLoadRun_MissingFile_ReturnsNilNil(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	st, err := LoadRun(root, "plan-main-20260929T114125Z")
+	if err != nil {
+		t.Fatalf("LoadRun: unexpected error %v", err)
+	}
+	if st != nil {
+		t.Fatalf("LoadRun returned non-nil for missing file: %+v", st)
+	}
+}
+
+func TestLoadRun_MissingRunsDir_ReturnsNilNil(t *testing.T) {
+	root := t.TempDir() // runs/ never created
+
+	st, err := LoadRun(root, "plan-main-20260929T114125Z")
+	if err != nil {
+		t.Fatalf("LoadRun: unexpected error %v", err)
+	}
+	if st != nil {
+		t.Fatalf("LoadRun returned non-nil for missing runs dir: %+v", st)
+	}
+}
+
+func TestLoadRun_RejectsInvalidRunIDs(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		runID string
+	}{
+		{"path traversal via ..", "../x"},
+		{"deep path traversal", "plan-a/../../../../tmp/x-20260929T114125Z"},
+		{"no timestamp", "plan-main"},
+		{"wrong prefix", "execute-main-20260929T114125Z"},
+		{"slug fails runSlugRe", "plan-a..b-20260929T114125Z"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			st, err := LoadRun(root, tt.runID)
+			if err == nil {
+				t.Fatalf("LoadRun(%q): expected error, got nil (st=%+v)", tt.runID, st)
+			}
+			if st != nil {
+				t.Fatalf("LoadRun(%q): expected nil state on error, got %+v", tt.runID, st)
+			}
+		})
+	}
+
+	// Confirm the traversal case never touched the filesystem outside runs/:
+	// no file should exist wherever the naive (unchecked) join would have
+	// pointed.
+	escaped := filepath.Join(dir, "plan-a", "..", "..", "..", "..", "tmp", "x-20260929T114125Z.json")
+	if _, err := os.Stat(escaped); !os.IsNotExist(err) {
+		t.Fatalf("LoadRun appears to have touched a path outside runs/: %s", escaped)
+	}
+}
+
+func TestLoadRun_CorruptJSON_ReturnsError(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	runID := "plan-main-20260929T114125Z"
+	if err := os.WriteFile(filepath.Join(dir, runID+".json"), []byte("{not json"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	st, err := LoadRun(root, runID)
+	if err == nil {
+		t.Fatalf("LoadRun: expected error for corrupt JSON, got nil (st=%+v)", st)
+	}
+	if st != nil {
+		t.Fatalf("LoadRun: expected nil state on error, got %+v", st)
+	}
+}
+
+func TestLoadRun_ExistingFile_ReturnsFilledState(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	runID := "plan-main-20260929T114125Z"
+	if err := os.WriteFile(filepath.Join(dir, runID+".json"), []byte(`{"sessionId":"sess-1"}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	st, err := LoadRun(root, runID)
+	if err != nil {
+		t.Fatalf("LoadRun: %v", err)
+	}
+	if st == nil {
+		t.Fatalf("LoadRun returned nil, want a filled state")
+	}
+	if st.Path != filepath.Join(dir, runID+".json") {
+		t.Fatalf("Path = %q, want %q", st.Path, filepath.Join(dir, runID+".json"))
+	}
+	if st.Root != root {
+		t.Fatalf("Root = %q, want %q", st.Root, root)
+	}
+	if st.Prefix != "plan" {
+		t.Fatalf("Prefix = %q, want %q", st.Prefix, "plan")
+	}
+	if st.BranchSlug != "main" {
+		t.Fatalf("BranchSlug = %q, want %q", st.BranchSlug, "main")
+	}
+	if st.Data["sessionId"] != "sess-1" {
+		t.Fatalf("Data[sessionId] = %v, want %q", st.Data["sessionId"], "sess-1")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// LatestPlanRun
+// ---------------------------------------------------------------------------
+
+func TestLatestPlanRun_ExactSlugNotSuperstring(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	// Newer file but slug "feat-x" is a superstring of the queried "feat" —
+	// must NOT be picked (this is exactly what Find's prefix match would get
+	// wrong).
+	newerSuperstring := "plan-feat-x-20260929T120000Z.json"
+	// Older file with the exact slug "feat" — must be picked despite being
+	// older, because it's the only exact match.
+	olderExact := "plan-feat-20260929T110000Z.json"
+
+	for _, name := range []string{newerSuperstring, olderExact} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(`{}`), 0o644); err != nil {
+			t.Fatalf("WriteFile %s: %v", name, err)
+		}
+	}
+
+	st, err := LatestPlanRun(root, "feat")
+	if err != nil {
+		t.Fatalf("LatestPlanRun: %v", err)
+	}
+	if st == nil {
+		t.Fatalf("LatestPlanRun returned nil, want a match")
+	}
+	if filepath.Base(st.Path) != olderExact {
+		t.Fatalf("LatestPlanRun picked %q, want %q", filepath.Base(st.Path), olderExact)
+	}
+}
+
+func TestLatestPlanRun_PicksExactSlugEvenWhenDone(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	newerSuperstring := "plan-feat-x-20260929T120000Z.json"
+	olderExact := "plan-feat-20260929T110000Z.json"
+
+	if err := os.WriteFile(filepath.Join(dir, newerSuperstring), []byte(`{}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	doneData := `{"planIntegrity":{"skillInvoked":"2026-09-29T11:00:00Z","done":"2026-09-29T11:05:00Z"}}`
+	if err := os.WriteFile(filepath.Join(dir, olderExact), []byte(doneData), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	st, err := LatestPlanRun(root, "feat")
+	if err != nil {
+		t.Fatalf("LatestPlanRun: %v", err)
+	}
+	if st == nil {
+		t.Fatalf("LatestPlanRun returned nil, want a match")
+	}
+	if filepath.Base(st.Path) != olderExact {
+		t.Fatalf("LatestPlanRun picked %q, want %q (no marker filter)", filepath.Base(st.Path), olderExact)
+	}
+}
+
+func TestLatestPlanRun_MissingRunsDir_ReturnsNilNil(t *testing.T) {
+	root := t.TempDir() // runs/ never created
+
+	st, err := LatestPlanRun(root, "feat")
+	if err != nil {
+		t.Fatalf("LatestPlanRun: unexpected error %v", err)
+	}
+	if st != nil {
+		t.Fatalf("LatestPlanRun returned non-nil for missing runs dir: %+v", st)
+	}
+}
+
+func TestLatestPlanRun_NoExactMatch_ReturnsNilNil(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	// Only a superstring-slug file exists; no exact "feat" match.
+	if err := os.WriteFile(filepath.Join(dir, "plan-feat-x-20260929T120000Z.json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	st, err := LatestPlanRun(root, "feat")
+	if err != nil {
+		t.Fatalf("LatestPlanRun: unexpected error %v", err)
+	}
+	if st != nil {
+		t.Fatalf("LatestPlanRun returned non-nil, want nil (no exact slug match): %+v", st)
+	}
+}
+
+func TestLatestPlanRun_RunsDirIsRegularFile_ReturnsError(t *testing.T) {
+	root := t.TempDir()
+	dataDir := filepath.Join(root, paths.DataDir)
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	// runs/ exists as a regular file, not a directory (ENOTDIR on ReadDir).
+	if err := os.WriteFile(filepath.Join(dataDir, paths.RunsSubdir), []byte("not a dir"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	st, err := LatestPlanRun(root, "feat")
+	if err == nil {
+		t.Fatalf("LatestPlanRun: expected error when runs/ is a regular file, got nil (st=%+v)", st)
+	}
+	if st != nil {
+		t.Fatalf("LatestPlanRun: expected nil state on error, got %+v", st)
+	}
+}
+
+func TestLatestPlanRun_WinningFileCorrupt_ReturnsError(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "plan-feat-20260929T110000Z.json"), []byte("{not json"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	st, err := LatestPlanRun(root, "feat")
+	if err == nil {
+		t.Fatalf("LatestPlanRun: expected error for corrupt winning file, got nil (st=%+v)", st)
+	}
+	if st != nil {
+		t.Fatalf("LatestPlanRun: expected nil state on error, got %+v", st)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ActivePlanRun
+// ---------------------------------------------------------------------------
+
+func TestActivePlanRun_MidFlight_ReturnsRun(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	newerSuperstring := "plan-feat-x-20260929T120000Z.json"
+	olderExact := "plan-feat-20260929T110000Z.json"
+	if err := os.WriteFile(filepath.Join(dir, newerSuperstring), []byte(`{}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	midFlight := `{"planIntegrity":{"skillInvoked":"2026-09-29T11:00:00Z"}}`
+	if err := os.WriteFile(filepath.Join(dir, olderExact), []byte(midFlight), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	st, err := ActivePlanRun(root, "feat")
+	if err != nil {
+		t.Fatalf("ActivePlanRun: %v", err)
+	}
+	if st == nil {
+		t.Fatalf("ActivePlanRun returned nil, want the mid-flight run")
+	}
+	if filepath.Base(st.Path) != olderExact {
+		t.Fatalf("ActivePlanRun picked %q, want %q", filepath.Base(st.Path), olderExact)
+	}
+}
+
+func TestActivePlanRun_MissingRunsDir_ReturnsNilNil(t *testing.T) {
+	root := t.TempDir()
+
+	st, err := ActivePlanRun(root, "feat")
+	if err != nil {
+		t.Fatalf("ActivePlanRun: unexpected error %v", err)
+	}
+	if st != nil {
+		t.Fatalf("ActivePlanRun returned non-nil for missing runs dir: %+v", st)
+	}
+}
+
+func TestActivePlanRun_Done_ReturnsNilNil(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	doneData := `{"planIntegrity":{"skillInvoked":"2026-09-29T11:00:00Z","done":"2026-09-29T11:05:00Z"}}`
+	if err := os.WriteFile(filepath.Join(dir, "plan-feat-20260929T110000Z.json"), []byte(doneData), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	st, err := ActivePlanRun(root, "feat")
+	if err != nil {
+		t.Fatalf("ActivePlanRun: unexpected error %v", err)
+	}
+	if st != nil {
+		t.Fatalf("ActivePlanRun returned non-nil for a done run: %+v", st)
+	}
+}
+
+func TestActivePlanRun_NoSkillInvoked_ReturnsNilNil(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "plan-feat-20260929T110000Z.json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	st, err := ActivePlanRun(root, "feat")
+	if err != nil {
+		t.Fatalf("ActivePlanRun: unexpected error %v", err)
+	}
+	if st != nil {
+		t.Fatalf("ActivePlanRun returned non-nil for a run with no skillInvoked: %+v", st)
+	}
+}
+
+func TestActivePlanRun_PropagatesLatestPlanRunError(t *testing.T) {
+	root := t.TempDir()
+	dataDir := filepath.Join(root, paths.DataDir)
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, paths.RunsSubdir), []byte("not a dir"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	st, err := ActivePlanRun(root, "feat")
+	if err == nil {
+		t.Fatalf("ActivePlanRun: expected the underlying LatestPlanRun error, got nil (st=%+v)", st)
+	}
+	if st != nil {
+		t.Fatalf("ActivePlanRun: expected nil state on error, got %+v", st)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PruneEvidenceDirs
+// ---------------------------------------------------------------------------
+
+func TestPruneEvidenceDirs_BehaviorTable(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	own := "plan-feat-20260929T120000Z"
+	sameSlugOlder := "plan-feat-20260929T110000Z"
+	diffSlug := "plan-feat-other-20260929T110000Z"
+	diffPrefix := "execute-feat-20260929T110000Z"
+	siblingJSON := "plan-feat-20260929T110000Z.json" // must stay untouched too
+
+	mustMkdir := func(name string) {
+		if err := os.MkdirAll(filepath.Join(dir, name+evidenceDirSuffix), 0o755); err != nil {
+			t.Fatalf("MkdirAll %s: %v", name, err)
+		}
+	}
+	mustMkdir(own)
+	mustMkdir(sameSlugOlder)
+	mustMkdir(diffSlug)
+	mustMkdir(diffPrefix)
+	if err := os.WriteFile(filepath.Join(dir, siblingJSON), []byte(`{}`), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	st := &State{
+		Path:       filepath.Join(dir, own+".json"),
+		Root:       root,
+		Prefix:     "plan",
+		BranchSlug: "feat",
+	}
+
+	PruneEvidenceDirs(st)
+
+	assertExists := func(name string, wantExist bool) {
+		t.Helper()
+		p := filepath.Join(dir, name)
+		_, err := os.Stat(p)
+		exists := err == nil
+		if exists != wantExist {
+			t.Fatalf("exists(%s) = %v, want %v (err=%v)", name, exists, wantExist, err)
+		}
+	}
+
+	assertExists(own+evidenceDirSuffix, true)
+	assertExists(sameSlugOlder+evidenceDirSuffix, false)
+	assertExists(diffSlug+evidenceDirSuffix, true)
+	assertExists(diffPrefix+evidenceDirSuffix, true)
+	assertExists(siblingJSON, true)
+}
+
+func TestPruneEvidenceDirs_MissingRunsDir_NoPanic(t *testing.T) {
+	root := t.TempDir() // runs/ never created
+
+	st := &State{
+		Path:       filepath.Join(root, paths.DataDir, paths.RunsSubdir, "plan-feat-20260929T120000Z.json"),
+		Root:       root,
+		Prefix:     "plan",
+		BranchSlug: "feat",
+	}
+
+	PruneEvidenceDirs(st) // must not panic
+}
+
+func TestPruneEvidenceDirs_RemoveFailureDoesNotStopOthers(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	own := "plan-feat-20260929T120000Z"
+	failing := "plan-feat-20260929T105000Z"  // removeAll for this one fails
+	succeeding := "plan-feat-20260929T110000Z" // removeAll for this one succeeds
+
+	mustMkdir := func(name string) {
+		if err := os.MkdirAll(filepath.Join(dir, name+evidenceDirSuffix), 0o755); err != nil {
+			t.Fatalf("MkdirAll %s: %v", name, err)
+		}
+	}
+	mustMkdir(own)
+	mustMkdir(failing)
+	mustMkdir(succeeding)
+
+	failingPath := filepath.Join(dir, failing+evidenceDirSuffix)
+	orig := removeAll
+	removeAll = func(path string) error {
+		if path == failingPath {
+			return fmt.Errorf("simulated remove failure for %s", path)
+		}
+		return orig(path)
+	}
+	t.Cleanup(func() { removeAll = orig })
+
+	st := &State{
+		Path:       filepath.Join(dir, own+".json"),
+		Root:       root,
+		Prefix:     "plan",
+		BranchSlug: "feat",
+	}
+
+	PruneEvidenceDirs(st)
+
+	if _, err := os.Stat(failingPath); err != nil {
+		t.Fatalf("expected %s to survive the simulated remove failure, stat error: %v", failingPath, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, succeeding+evidenceDirSuffix)); !os.IsNotExist(err) {
+		t.Fatalf("expected %s to be removed despite the other directory's failure", succeeding)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Write — leaves .evidence directories alone
+// ---------------------------------------------------------------------------
+
+func TestWrite_DoesNotTouchEvidenceDirs(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	// A same-prefix, same-slug evidence directory that Write's own
+	// filename-based prune (fixed to .json files) must not remove.
+	staleEvidence := "plan-main-20260101T100000Z.evidence"
+	if err := os.MkdirAll(filepath.Join(dir, staleEvidence), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	current := "plan-main-20260103T100000Z.json"
+	currentPath := filepath.Join(dir, current)
+	st := &State{
+		Path:       currentPath,
+		Root:       root,
+		Prefix:     "plan",
+		BranchSlug: "main",
+		Data:       map[string]any{"written": true},
+	}
+
+	if err := Write(st); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, staleEvidence)); err != nil {
+		t.Fatalf("expected .evidence dir to survive Write's prune, stat error: %v", err)
 	}
 }

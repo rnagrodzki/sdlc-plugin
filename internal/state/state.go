@@ -13,6 +13,7 @@
 package state
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -365,4 +366,187 @@ func Write(st *State) error {
 	}
 
 	return fsx.AtomicWriteJSON(st.Path, st.Data)
+}
+
+// ---------------------------------------------------------------------------
+// Run helpers: run ID, evidence directory, run lookup by ID/branch, prune
+// ---------------------------------------------------------------------------
+
+// evidenceDirSuffix marks a plan run's evidence directory.
+const evidenceDirSuffix = ".evidence"
+
+// runSlugRe is the allowed form of the slug inside a runID (SlugifyBranch
+// output): alphanumerics and hyphens only. LoadRun rejects any runID whose
+// slug fails this check, closing off "." (e.g. "..") and other characters
+// SlugifyBranch never itself produces.
+var runSlugRe = regexp.MustCompile(`^[A-Za-z0-9-]+$`)
+
+// removeAll is os.RemoveAll; tests replace it to simulate a failed remove.
+var removeAll = os.RemoveAll
+
+// RunID returns the run identifier of st: the state file basename without
+// the ".json" extension (e.g. "plan-main-20260929T114125Z").
+func RunID(st *State) string {
+	return strings.TrimSuffix(filepath.Base(st.Path), ".json")
+}
+
+// EvidenceDir returns the per-run evidence directory for runID:
+// <root>/.sdlc-v2/runs/<runID>.evidence.
+func EvidenceDir(root, runID string) string {
+	return filepath.Join(stateDir(root), runID+evidenceDirSuffix)
+}
+
+// LoadRun loads <root>/.sdlc-v2/runs/<runID>.json by its exact run ID.
+//
+// Before any path is joined or any file is read, LoadRun validates runID in
+// three steps: filepath.Base(runID) must equal runID (rejecting any "/" or
+// ".." path-traversal attempt), parseStateFilename(runID+".json") must match
+// the state filename grammar with Prefix == "plan", and the parsed Slug must
+// match runSlugRe. Any failing check returns a non-nil error without
+// touching the filesystem.
+//
+// LoadRun returns (nil, nil) when the (validated) file does not exist, and a
+// non-nil error for a rejected runID, an unreadable file, or corrupt JSON.
+func LoadRun(root, runID string) (*State, error) {
+	if filepath.Base(runID) != runID {
+		return nil, fmt.Errorf("state: invalid run ID %q: must be a bare filename component", runID)
+	}
+
+	name := runID + ".json"
+	parsed := parseStateFilename(name)
+	if parsed == nil {
+		return nil, fmt.Errorf("state: invalid run ID %q: does not match the state filename grammar", runID)
+	}
+	if parsed.Prefix != "plan" {
+		return nil, fmt.Errorf("state: invalid run ID %q: prefix %q, want %q", runID, parsed.Prefix, "plan")
+	}
+	if !runSlugRe.MatchString(parsed.Slug) {
+		return nil, fmt.Errorf("state: invalid run ID %q: slug %q contains disallowed characters", runID, parsed.Slug)
+	}
+
+	path := filepath.Join(stateDir(root), name)
+	var data map[string]any
+	if err := fsx.ReadJSON(path, &data); err != nil {
+		if errors.Is(err, fsx.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("state: read %s: %w", path, err)
+	}
+
+	return &State{
+		Path:       path,
+		Root:       root,
+		Prefix:     parsed.Prefix,
+		BranchSlug: parsed.Slug,
+		Data:       data,
+	}, nil
+}
+
+// LatestPlanRun scans <root>/.sdlc-v2/runs/ for plan files whose parsed Slug
+// equals SlugifyBranch(branch) exactly (not a prefix match — see Find, which
+// would also match a superstring slug like "feat-x" when querying "feat" and
+// so could return the wrong plan run), and loads the newest one by parsed
+// timestamp. It applies no marker filter — see ActivePlanRun for that.
+//
+// The winning file is loaded through LoadRun, so there is a single decode
+// path and a single runID validation for every plan run this package reads.
+//
+// Returns (nil, nil) when runs/ does not exist or no plan file has an exact
+// slug match. Returns a non-nil error for another ReadDir failure (e.g.
+// runs/ exists as a regular file) or when the winning file fails to load
+// (e.g. corrupt JSON).
+func LatestPlanRun(root, branch string) (*State, error) {
+	dir := stateDir(root)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("state: readdir %s: %w", dir, err)
+	}
+
+	slug := SlugifyBranch(branch)
+
+	var bestName, bestTimestamp string
+	for _, e := range entries {
+		parsed := parseStateFilename(e.Name())
+		if parsed == nil || parsed.Prefix != "plan" || parsed.Slug != slug {
+			continue
+		}
+		if bestName == "" || parsed.Timestamp > bestTimestamp {
+			bestName = e.Name()
+			bestTimestamp = parsed.Timestamp
+		}
+	}
+	if bestName == "" {
+		return nil, nil
+	}
+
+	return LoadRun(root, strings.TrimSuffix(bestName, ".json"))
+}
+
+// ActivePlanRun returns LatestPlanRun's run for branch only when it is
+// mid-flight: planIntegrity.skillInvoked is set and planIntegrity.done is
+// absent (the plan SKILL.md stamps "done" right before ExitPlanMode; see
+// plan.go's validMarkers and stop_hooks.go's planIntegrityFromState for the
+// same convention). Otherwise it returns (nil, nil) — including when
+// LatestPlanRun itself returns (nil, nil). A LatestPlanRun error passes
+// through unchanged.
+func ActivePlanRun(root, branch string) (*State, error) {
+	st, err := LatestPlanRun(root, branch)
+	if err != nil {
+		return nil, err
+	}
+	if st == nil {
+		return nil, nil
+	}
+
+	integrity, _ := st.Data["planIntegrity"].(map[string]any)
+	if _, hasSkillInvoked := integrity["skillInvoked"]; !hasSkillInvoked {
+		return nil, nil
+	}
+	if _, hasDone := integrity["done"]; hasDone {
+		return nil, nil
+	}
+
+	return st, nil
+}
+
+// PruneEvidenceDirs removes sibling <prefix>-<slug>-<ts>.evidence directories
+// that share st's exact Prefix and Slug, keeping st's own evidence
+// directory. It mirrors Write's prune-on-write loop but over directories
+// instead of files, so it never touches the sibling .json state files that
+// Write's own prune already owns.
+//
+// Best-effort, like the Write prune: a ReadDir failure (including runs/ not
+// existing) or a removeAll failure for one directory is ignored, and
+// PruneEvidenceDirs still attempts every other matching directory. It has no
+// error return.
+func PruneEvidenceDirs(st *State) {
+	dir := stateDir(st.Root)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+
+	ownRunID := RunID(st)
+
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, evidenceDirSuffix) {
+			continue
+		}
+		runID := strings.TrimSuffix(name, evidenceDirSuffix)
+		if runID == ownRunID {
+			continue
+		}
+		parsed := parseStateFilename(runID + ".json")
+		if parsed == nil || parsed.Prefix != st.Prefix || parsed.Slug != st.BranchSlug {
+			continue
+		}
+		_ = removeAll(filepath.Join(dir, name)) // best-effort
+	}
 }

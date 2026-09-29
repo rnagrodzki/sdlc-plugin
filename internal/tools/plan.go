@@ -561,13 +561,15 @@ func loadGuardrails(mainRoot string) ([]map[string]any, string) {
 // ---------------------------------------------------------------------------
 
 // PlanStyle configures personal plan narrative preferences: verbosity,
-// audience, and custom narrative rules. Loaded from the "planStyle" config
-// section, which is not a config.ProjectSections member and therefore
-// routes to .sdlc-v2/local.toml (per-developer, gitignored).
+// audience, custom narrative rules, and custom process instructions. Loaded
+// from the "planStyle" config section, which is not a config.ProjectSections
+// member and therefore routes to .sdlc-v2/local.toml (per-developer,
+// gitignored).
 type PlanStyle struct {
 	Verbosity      string   `json:"verbosity"`
 	Audience       string   `json:"audience"`
 	NarrativeRules []string `json:"narrativeRules"`
+	Instructions   []string `json:"instructions"`
 }
 
 // PlanTasks is the team contract for plan task deliverables: which fields
@@ -585,7 +587,7 @@ type PlanTasks struct {
 // config.ReadSection (missing file, missing section, or malformed JSON)
 // falls back to defaults rather than surfacing an error, since PlanStyle
 // has no error-string return channel. Defaults are "standard" verbosity,
-// "technical" audience, and a nil NarrativeRules.
+// "technical" audience, a nil NarrativeRules, and a nil Instructions.
 func loadPlanStyle(mainRoot string) PlanStyle {
 	style := PlanStyle{Verbosity: "standard", Audience: "technical"}
 
@@ -608,6 +610,15 @@ func loadPlanStyle(mainRoot string) PlanStyle {
 			}
 		}
 		style.NarrativeRules = rules
+	}
+	if raw, ok := section["instructions"].([]any); ok {
+		list := make([]string, 0, len(raw))
+		for _, el := range raw {
+			if s, ok := el.(string); ok && strings.TrimSpace(s) != "" {
+				list = append(list, strings.TrimSpace(s))
+			}
+		}
+		style.Instructions = list
 	}
 
 	return style

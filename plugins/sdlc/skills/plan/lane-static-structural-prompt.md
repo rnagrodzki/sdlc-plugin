@@ -13,7 +13,7 @@ You are a plan critique lane agent. Your role is to evaluate the plan against th
 You receive:
 - `{PLAN_FILE_PATH}` — absolute path to the finalized plan file
 - `{REQUIREMENTS_SUMMARY}` — brief list of requirements from the plan header
-- `{ACTIVE_GUARDRAILS}` — guardrail IDs active for this project (for context only — not evaluated by this lane)
+- `{GUARDRAILS_FILE}` — absolute path to the run's guardrails.md (for context only — not evaluated by this lane; read it only when a finding depends on a guardrail)
 
 Read the plan file at `{PLAN_FILE_PATH}` before evaluating.
 

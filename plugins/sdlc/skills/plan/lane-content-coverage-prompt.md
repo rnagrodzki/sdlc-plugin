@@ -14,7 +14,7 @@ You receive:
 - `{PLAN_FILE_PATH}` — absolute path to the finalized plan file
 - `{REQUIREMENTS_SUMMARY}` — brief list of requirements from the plan header
 - `{OPENSPEC_TASKS}` — OpenSpec tasks from tasks.md (null when not an OpenSpec-sourced plan)
-- `{ACTIVE_GUARDRAILS}` — guardrail IDs active for this project (for context)
+- `{GUARDRAILS_FILE}` — absolute path to the run's guardrails.md (for context; read it only when a finding depends on a guardrail)
 - `{BRIEF_FINDING_IDS}` — F-<DIM>-<n> finding IDs from the discovery brief (null when no brief produced)
 - `{FORMAT_REFERENCE_PATH}` — absolute path to plan-format-reference.md (the worked-example catalog: Contract shape, the render-trigger catalog, code-ref anchoring)
 - `{PLAN_TEMPLATE_PATH}` — absolute path to the active plan template (project override or shipped default), or empty when not provided

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pelletier/go-toml/v2"
+
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
@@ -253,6 +255,9 @@ func TestPlanPrepare_StyleAndTasksDefaults(t *testing.T) {
 	if len(out.Style.NarrativeRules) != 0 {
 		t.Errorf("Style.NarrativeRules = %v, want empty", out.Style.NarrativeRules)
 	}
+	if len(out.Style.Instructions) != 0 {
+		t.Errorf("Style.Instructions = %v, want empty", out.Style.Instructions)
+	}
 	if len(out.Tasks.RequiredFields) != 0 {
 		t.Errorf("Tasks.RequiredFields = %v, want empty", out.Tasks.RequiredFields)
 	}
@@ -273,7 +278,8 @@ func TestPlanPrepare_StyleAndTasksPopulated(t *testing.T) {
 		"[planStyle]\n"+
 		"verbosity = \"detailed\"\n"+
 		"audience = \"business\"\n"+
-		"narrativeRules = [\"Lead with impact\", \"Avoid jargon\"]\n")
+		"narrativeRules = [\"Lead with impact\", \"Avoid jargon\"]\n"+
+		"instructions = [\"Cite file:line for every claim about existing code.\"]\n")
 
 	writeFile(t, filepath.Join(dir, paths.DataDir, "config.toml"), ""+
 		"[plan.tasks]\n"+
@@ -294,12 +300,87 @@ func TestPlanPrepare_StyleAndTasksPopulated(t *testing.T) {
 	if !reflect.DeepEqual(out.Style.NarrativeRules, wantRules) {
 		t.Errorf("Style.NarrativeRules = %v, want %v", out.Style.NarrativeRules, wantRules)
 	}
+	wantInstructions := []string{"Cite file:line for every claim about existing code."}
+	if !reflect.DeepEqual(out.Style.Instructions, wantInstructions) {
+		t.Errorf("Style.Instructions = %v, want %v", out.Style.Instructions, wantInstructions)
+	}
 	wantFields := []string{"Owner", "Rollback"}
 	if !reflect.DeepEqual(out.Tasks.RequiredFields, wantFields) {
 		t.Errorf("Tasks.RequiredFields = %v, want %v", out.Tasks.RequiredFields, wantFields)
 	}
 	if out.Tasks.ContractShape != "minimal" {
 		t.Errorf("Tasks.ContractShape = %q, want minimal", out.Tasks.ContractShape)
+	}
+}
+
+// TestPlanPrepare_StyleInstructionsFiltering verifies loadPlanStyle drops
+// non-string and blank instructions entries and trims the survivors, mirroring
+// how narrativeRules is filtered but with the added trim/blank-drop step.
+func TestPlanPrepare_StyleInstructionsFiltering(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	writeFile(t, filepath.Join(dir, paths.DataDir, "local.toml"), ""+
+		"[planStyle]\n"+
+		"instructions = [\"A\", \"  \", 3, \" B \"]\n")
+
+	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("planPrepareCore: %v", err)
+	}
+	want := []string{"A", "B"}
+	if !reflect.DeepEqual(out.Style.Instructions, want) {
+		t.Errorf("Style.Instructions = %v, want %v (non-strings and blank entries dropped, survivors trimmed)", out.Style.Instructions, want)
+	}
+}
+
+// TestLocalTemplatePlanStyleKeysMatchSchema verifies every active [planStyle]
+// key shipped in localTemplate is declared as a property of
+// $defs.planStyleSection in the local-config JSON Schema, and that the
+// schema declares "instructions" even though the template only ships it as a
+// commented-out example (so it would not otherwise be caught by the
+// key-parity loop below).
+func TestLocalTemplatePlanStyleKeysMatchSchema(t *testing.T) {
+	var local map[string]any
+	if err := toml.Unmarshal([]byte(localTemplate), &local); err != nil {
+		t.Fatalf("localTemplate is not valid TOML: %v", err)
+	}
+	planStyle, ok := local["planStyle"].(map[string]any)
+	if !ok {
+		t.Fatal("localTemplate has no [planStyle] table")
+	}
+
+	schemaPath := "../../plugins/sdlc/schemas/sdlc-local.schema.json"
+	data, err := os.ReadFile(schemaPath)
+	if err != nil {
+		t.Fatalf("os.ReadFile(%s): %v", schemaPath, err)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(data, &schema); err != nil {
+		t.Fatalf("schema is not valid JSON: %v", err)
+	}
+	defs, ok := schema["$defs"].(map[string]any)
+	if !ok {
+		t.Fatal("schema has no $defs")
+	}
+	section, ok := defs["planStyleSection"].(map[string]any)
+	if !ok {
+		t.Fatal("schema has no $defs.planStyleSection")
+	}
+	properties, ok := section["properties"].(map[string]any)
+	if !ok {
+		t.Fatal("schema has no $defs.planStyleSection.properties")
+	}
+
+	for key := range planStyle {
+		if _, ok := properties[key]; !ok {
+			t.Errorf("[planStyle] key %q in localTemplate is not a property of $defs.planStyleSection in the schema", key)
+		}
+	}
+
+	if _, ok := properties["instructions"]; !ok {
+		t.Error(`$defs.planStyleSection.properties has no "instructions" property`)
 	}
 }
 
