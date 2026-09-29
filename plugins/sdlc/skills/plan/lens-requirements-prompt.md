@@ -17,7 +17,7 @@ You receive:
 - `{LENS_FOCUS}` — Requirements coverage, Metadata completeness, Plan completeness, OpenSpec G16, Exploration provenance, Best-practice traceability
 - `{BRIEF_FILE}` — absolute path to discovery-brief.md, or `"none — orchestrator skipped"`
 - `{OPENSPEC_TASKS}` — serialized JSON array from `openspecContext.tasks[]`, or `"none — plan not from OpenSpec"`
-- `{GUARDRAILS}` — active guardrails (for context only — not your responsibility)
+- `{GUARDRAILS_FILE}` — absolute path to the run's `guardrails.md` (for context only — not your responsibility)
 - `{REQUIREMENTS_JSON}` — JSON array of `{ reqId, capability, type, name, scenarioCount }` from the delta-spec inventory, or `"null"` when the inventory is unavailable (CLI absent or non-OpenSpec plan)
 
 Read the plan file at `{PLAN_FILE_PATH}` before evaluating.

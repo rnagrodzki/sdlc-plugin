@@ -1471,6 +1471,280 @@ func TestPipelineResumePhase_ShipBackwardCompat_FailedStepTreatedAsTerminal(t *t
 }
 
 // ---------------------------------------------------------------------------
+// Plan resume banner (Task 7)
+// ---------------------------------------------------------------------------
+
+// activePlanState creates and writes an "active" plan state file (skillInvoked
+// set, done absent) for branch, applying overrides to Data after the base
+// fields are set. Returns the written *state.State so callers can read back
+// its Path/RunID.
+func activePlanState(t *testing.T, root, branch string, overrides map[string]any) *state.State {
+	t.Helper()
+	st, err := state.Init(root, "plan", branch, "sess-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Data["planIntegrity"] = map[string]any{"skillInvoked": "2026-09-29T11:41:25Z"}
+	for k, v := range overrides {
+		st.Data[k] = v
+	}
+	if err := state.Write(st); err != nil {
+		t.Fatal(err)
+	}
+	return st
+}
+
+func TestPipelineResumePhase_PlanPostCompact(t *testing.T) {
+	branch := "feat/plan-post-compact"
+	root := gitFixture(t, branch)
+
+	st := activePlanState(t, root, branch, map[string]any{
+		"checkpoint":   map[string]any{"step": "3"},
+		"planFilePath": "/abs/path/plans/x.md",
+	})
+
+	assertLines(t, pipelineResumePhase("compact"), []string{
+		"Active plan (post-compact): step 3, branch " + branch + "; plan file: /abs/path/plans/x.md",
+		"  If the sdlc:plan skill instructions are not in context, invoke the sdlc:plan skill first; its Session recovery rule selects the resume path.",
+		"  Resume with: plan_prepare({resume:true, resolveTemplate:true}) then plan_support({action:\"evidence_digest\", runId:\"" + state.RunID(st) + "\"})",
+	})
+}
+
+func TestPipelineResumePhase_PlanSuppressedOnStartup(t *testing.T) {
+	branch := "feat/plan-startup"
+	root := gitFixture(t, branch)
+	activePlanState(t, root, branch, nil)
+
+	if got := pipelineResumePhase("startup"); got != nil {
+		t.Errorf("pipelineResumePhase(startup) = %v, want nil", got)
+	}
+}
+
+func TestPipelineResumePhase_PlanSuppressedOnClear(t *testing.T) {
+	branch := "feat/plan-clear"
+	root := gitFixture(t, branch)
+	activePlanState(t, root, branch, nil)
+
+	if got := pipelineResumePhase("clear"); got != nil {
+		t.Errorf("pipelineResumePhase(clear) = %v, want nil", got)
+	}
+}
+
+func TestPipelineResumePhase_PlanSuppressedWhenDone(t *testing.T) {
+	branch := "feat/plan-done"
+	root := gitFixture(t, branch)
+
+	st, err := state.Init(root, "plan", branch, "sess-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Data["planIntegrity"] = map[string]any{
+		"skillInvoked": "2026-09-29T11:41:25Z",
+		"done":         "2026-09-29T12:00:00Z",
+	}
+	if err := state.Write(st); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := pipelineResumePhase("compact"); got != nil {
+		t.Errorf("pipelineResumePhase(compact) with done run = %v, want nil", got)
+	}
+}
+
+func TestPipelineResumePhase_PlanSuppressedWithoutSkillInvoked(t *testing.T) {
+	branch := "feat/plan-no-skill-invoked"
+	root := gitFixture(t, branch)
+
+	st, err := state.Init(root, "plan", branch, "sess-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Data["planIntegrity"] = map[string]any{}
+	if err := state.Write(st); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := pipelineResumePhase("compact"); got != nil {
+		t.Errorf("pipelineResumePhase(compact) without skillInvoked = %v, want nil", got)
+	}
+}
+
+func TestPipelineResumePhase_PlanSuppressedWhenStale(t *testing.T) {
+	branch := "feat/plan-stale"
+	root := gitFixture(t, branch)
+
+	st := activePlanState(t, root, branch, nil)
+	old := time.Now().Add(-25 * time.Hour)
+	if err := os.Chtimes(st.Path, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := pipelineResumePhase("compact"); got != nil {
+		t.Errorf("pipelineResumePhase(compact) with a stale plan state file = %v, want nil", got)
+	}
+}
+
+func TestPipelineResumePhase_PlanSuppressedBranchMismatch(t *testing.T) {
+	branch := "feat"
+	root := gitFixture(t, branch)
+	// A run recorded for "feat/x" slugifies to "feat-x", which is a
+	// different (longer) slug than plain "feat" — LatestPlanRun's exact-slug
+	// match must not treat it as a superstring match.
+	activePlanState(t, root, "feat/x", nil)
+
+	if got := pipelineResumePhase("compact"); got != nil {
+		t.Errorf("pipelineResumePhase(compact) with a plan-feat-x-* run on branch %q = %v, want nil", branch, got)
+	}
+}
+
+func TestPipelineResumePhase_PlanCheckpointStepFixture(t *testing.T) {
+	branch := "feat/plan-checkpoint-fixture"
+	root := gitFixture(t, branch)
+
+	activePlanState(t, root, branch, map[string]any{
+		"checkpoint": map[string]any{
+			"step":            "6.5",
+			"iteration":       float64(1),
+			"expectedWriters": []any{},
+			"updatedAt":       "2026-09-29T12:05:00Z",
+		},
+	})
+
+	got := pipelineResumePhase("compact")
+	if len(got) == 0 || !strings.Contains(got[0], "step 6.5,") {
+		t.Fatalf("pipelineResumePhase(compact)[0] = %q, want it to contain %q", firstOrEmpty(got), "step 6.5,")
+	}
+}
+
+func TestPipelineResumePhase_PlanMissingCheckpointPrintsStepZero(t *testing.T) {
+	branch := "feat/plan-missing-checkpoint"
+	root := gitFixture(t, branch)
+	activePlanState(t, root, branch, nil)
+
+	got := pipelineResumePhase("compact")
+	if len(got) == 0 || !strings.Contains(got[0], "step 0,") {
+		t.Fatalf("pipelineResumePhase(compact)[0] = %q, want it to contain %q", firstOrEmpty(got), "step 0,")
+	}
+}
+
+func TestPipelineResumePhase_PlanCheckpointNotObjectPrintsStepZero(t *testing.T) {
+	branch := "feat/plan-checkpoint-not-object"
+	root := gitFixture(t, branch)
+	activePlanState(t, root, branch, map[string]any{"checkpoint": "not-an-object"})
+
+	got := pipelineResumePhase("compact")
+	if len(got) == 0 || !strings.Contains(got[0], "step 0,") {
+		t.Fatalf("pipelineResumePhase(compact)[0] = %q, want it to contain %q", firstOrEmpty(got), "step 0,")
+	}
+}
+
+func TestPipelineResumePhase_PlanStepNotStringPrintsStepZero(t *testing.T) {
+	branch := "feat/plan-step-not-string"
+	root := gitFixture(t, branch)
+	activePlanState(t, root, branch, map[string]any{
+		"checkpoint": map[string]any{"step": float64(3)},
+	})
+
+	got := pipelineResumePhase("compact")
+	if len(got) == 0 || !strings.Contains(got[0], "step 0,") {
+		t.Fatalf("pipelineResumePhase(compact)[0] = %q, want it to contain %q", firstOrEmpty(got), "step 0,")
+	}
+}
+
+func TestPipelineResumePhase_PlanMissingPlanFilePathPrintsNone(t *testing.T) {
+	branch := "feat/plan-missing-file-path"
+	root := gitFixture(t, branch)
+	activePlanState(t, root, branch, nil)
+
+	got := pipelineResumePhase("compact")
+	if len(got) == 0 || !strings.HasSuffix(got[0], "; plan file: none") {
+		t.Fatalf("pipelineResumePhase(compact)[0] = %q, want suffix %q", firstOrEmpty(got), "; plan file: none")
+	}
+}
+
+func TestPipelineResumePhase_PlanFilePathWithSpecialCharsPrintedUnchanged(t *testing.T) {
+	branch := "feat/plan-special-chars"
+	root := gitFixture(t, branch)
+	weird := "/abs/path/plans/x (draft).md"
+	activePlanState(t, root, branch, map[string]any{"planFilePath": weird})
+
+	got := pipelineResumePhase("compact")
+	if len(got) == 0 || !strings.HasSuffix(got[0], "; plan file: "+weird) {
+		t.Fatalf("pipelineResumePhase(compact)[0] = %q, want suffix %q", firstOrEmpty(got), "; plan file: "+weird)
+	}
+}
+
+func TestPipelineResumePhase_PlanCorruptStateFileSilent(t *testing.T) {
+	branch := "feat/plan-corrupt"
+	root := gitFixture(t, branch)
+	slug := state.SlugifyBranch(branch)
+
+	runsDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+	if err := os.MkdirAll(runsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	corrupt := filepath.Join(runsDir, "plan-"+slug+"-20260929T114125Z.json")
+	if err := os.WriteFile(corrupt, []byte("{not valid json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := pipelineResumePhase("compact"); got != nil {
+		t.Errorf("pipelineResumePhase(compact) with a corrupt plan state file = %v, want nil", got)
+	}
+}
+
+func TestPipelineResumePhase_PlanLinesFollowShipAndExecute(t *testing.T) {
+	branch := "feat/plan-all-three"
+	root := gitFixture(t, branch)
+
+	shipSt, err := state.Init(root, "ship", branch, "sess-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shipSt.Data["steps"] = []any{
+		map[string]any{"name": "commit", "status": "in_progress"},
+	}
+	if err := state.Write(shipSt); err != nil {
+		t.Fatal(err)
+	}
+
+	execSt, err := state.Init(root, "execute", branch, "sess-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	execSt.Data["waves"] = []any{
+		map[string]any{"number": float64(1), "status": "in_progress"},
+	}
+	if err := state.Write(execSt); err != nil {
+		t.Fatal(err)
+	}
+
+	planSt := activePlanState(t, root, branch, map[string]any{
+		"checkpoint":   map[string]any{"step": "1"},
+		"planFilePath": "/abs/path/plans/x.md",
+	})
+
+	assertLines(t, pipelineResumePhase("compact"), []string{
+		"Active pipeline: ship on " + branch + " (paused at step 1: commit)",
+		"  Resume with: /ship --resume",
+		"Active execution (post-compact): execute on " + branch + " (wave 0 of 1 complete)",
+		"  Resume with: /execute --resume",
+		"Active plan (post-compact): step 1, branch " + branch + "; plan file: /abs/path/plans/x.md",
+		"  If the sdlc:plan skill instructions are not in context, invoke the sdlc:plan skill first; its Session recovery rule selects the resume path.",
+		"  Resume with: plan_prepare({resume:true, resolveTemplate:true}) then plan_support({action:\"evidence_digest\", runId:\"" + state.RunID(planSt) + "\"})",
+	})
+}
+
+// firstOrEmpty returns lines[0], or "" when lines is empty — a small helper
+// to keep the Fatalf calls above single-expression.
+func firstOrEmpty(lines []string) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	return lines[0]
+}
+
+// ---------------------------------------------------------------------------
 // Compact recovery phase
 // ---------------------------------------------------------------------------
 

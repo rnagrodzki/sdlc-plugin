@@ -20,6 +20,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/configmigrate"
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
+	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/openspec"
@@ -61,6 +62,7 @@ type PlanPrepareIn struct {
 	Lightweight            bool   `json:"lightweight" jsonschema_description:"Requests the lightweight complexity-routing path regardless of file count, adjusting dispatch metadata accordingly."`
 	FileCount              int    `json:"fileCount" jsonschema_description:"Number of files the change is expected to touch, used with lightweight to compute complexity routing (pipeline mode)."`
 	UserPrompt             string `json:"userPrompt" jsonschema_description:"User's plan request text, forwarded to buildExplorePack for keyword-scope and web-research-signal detection. Empty behaves identically to prior versions."`
+	Resume                 bool   `json:"resume,omitempty" jsonschema_description:"Boolean. Post-compact recovery: true reuses the active plan run of this branch without resetting it, and always resolves the template (as if resolveTemplate were true). The saved userPrompt and routing flags replace the input values. Fails when no active run exists. Example: true after the session context shows 'Active plan (post-compact):'."`
 }
 
 // OpenspecChangeInfo, OpenspecAuthoritative, and OpenspecInfo used to be
@@ -189,7 +191,14 @@ type ComplexityRouting struct {
 
 // PlanPrepareOut is the output for the plan_prepare tool, mirroring
 // plan.js's main() output object field-for-field (see line ~630).
+//
+// Next is hoisted to the rendered "**Next:**" line. RunID is the plan state
+// file stem and GuardrailsFile is <runId>.evidence/guardrails.md; both are
+// empty (rendered "(none)") outside git, where no plan run is tracked.
 type PlanPrepareOut struct {
+	Next                string              `json:"next,omitempty"`
+	RunID               string              `json:"runId"`
+	GuardrailsFile      string              `json:"guardrailsFile"`
 	Openspec            OpenspecInfo        `json:"openspec"`
 	FromOpenspec        *FromOpenspecResult `json:"fromOpenspec"`
 	OpenspecContext     OpenspecContext     `json:"openspecContext"`
@@ -1183,64 +1192,293 @@ func buildTemplateResolution(mainRoot string, in PlanPrepareIn, planTemplatePath
 }
 
 // ---------------------------------------------------------------------------
-// skillInvoked marker (R20) — written eagerly at the start of plan_prepare
+// Plan run selection — stable run ID, resume mode, guardrails file
 // ---------------------------------------------------------------------------
 
-// writeSkillInvokedMarker mirrors plan.js's eager pruneStateFiles+initState
-// call: state.Init creates a fresh plan-<slug>-<timestamp>.json, and the
-// subsequent state.Write prunes all other plan-<slug>-*.json files (except
-// the one just created), matching JS's explicit prune-then-init two-step
-// with a single net effect: exactly one surviving file per branch. Failures
-// are swallowed (non-fatal), mirroring plan.js's blanket try/catch — marker
-// write failures must not block prepare output.
-func writeSkillInvokedMarker(mainRoot, contentRoot string) {
-	branch, err := gitx.CurrentBranch(contentRoot)
-	if err != nil || branch == "" {
-		return
+// Root "next" hints returned by plan_prepare, one per run-selection row.
+const (
+	planPrepareNextFirst = "Print the context detection summary. Then run the gate check and complexity routing, and call plan_prepare again with resolveTemplate:true and the same userPrompt."
+	planPrepareNextTmpl  = "Write template.headerMarkdown + template.skeletonMarkdown to the plan file, then call plan_mark with marker \"plan-file\" and the plan path."
+)
+
+// planPrepareResumeNext is the root next (and template.next) of a resume call.
+func planPrepareResumeNext(runID string) string {
+	return fmt.Sprintf("Resume mode: run %s reused. Write template.headerMarkdown + template.skeletonMarkdown to the plan file only if the plan file is empty. Then call plan_support with action \"evidence_digest\" and runId \"%s\".", runID, runID)
+}
+
+// planRun is the plan run selected for this plan_prepare call. st is nil
+// outside git (no branch), where no run is tracked.
+type planRun struct {
+	st   *state.State
+	next string
+}
+
+// selectPlanRun applies plan_prepare's run-selection table:
+//
+//	first call (no resolveTemplate, no resume) -> new run: skillInvoked +
+//	    creationIntent {userPrompt, timestamp}; older evidence dirs pruned.
+//	resolveTemplate, active run                -> reuse it; full creationIntent.
+//	resolveTemplate, no active run             -> new run; full creationIntent.
+//	resume, active run                         -> reuse it; no state write.
+//	resume, no active run                      -> DomainError.
+//
+// It returns the effective input: on resume, the saved userPrompt (when not
+// empty) and saved flags (when present) replace the input values, and
+// ResolveTemplate is forced on. Outside git a resume call fails like a
+// branch with no run; the other calls return a nil run.
+func selectPlanRun(mainRoot, contentRoot string, in PlanPrepareIn) (planRun, PlanPrepareIn, error) {
+	if in.Resume {
+		in.ResolveTemplate = true
 	}
+
+	branch, err := gitx.CurrentBranch(contentRoot)
+	if err != nil {
+		branch = ""
+	}
+	if branch == "" {
+		if in.Resume {
+			return planRun{}, in, noActivePlanRunError("(unknown)")
+		}
+		next := planPrepareNextFirst
+		if in.ResolveTemplate {
+			next = planPrepareNextTmpl
+		}
+		return planRun{next: next}, in, nil
+	}
+
+	runsDir := filepath.Join(mainRoot, paths.DataDir, paths.RunsSubdir)
+
+	// First call: always a new run, no read of the old one.
+	if !in.ResolveTemplate {
+		st, err := newPlanRun(mainRoot, branch, runsDir, map[string]any{
+			"userPrompt": in.UserPrompt,
+			"timestamp":  time.Now().UTC().Format(time.RFC3339),
+		})
+		if err != nil {
+			return planRun{}, in, err
+		}
+		return planRun{st: st, next: planPrepareNextFirst}, in, nil
+	}
+
+	active, err := state.ActivePlanRun(mainRoot, branch)
+	if err != nil {
+		p := planStateReadPath(runsDir, branch)
+		return planRun{}, in, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("plan state read failed: %s", p),
+			Suggestion: fmt.Sprintf("if %s is a file, delete it (the plan state file is corrupt); if it is the runs directory, make it a readable directory; then call plan_prepare again", p),
+			Cause:      err,
+		}
+	}
+
+	if in.Resume {
+		if active == nil {
+			return planRun{}, in, noActivePlanRunError(branch)
+		}
+		in = applySavedIntent(active, in)
+		return planRun{st: active, next: planPrepareResumeNext(state.RunID(active))}, in, nil
+	}
+
+	if active == nil {
+		st, err := newPlanRun(mainRoot, branch, runsDir, fullCreationIntent(in))
+		if err != nil {
+			return planRun{}, in, err
+		}
+		return planRun{st: st, next: planPrepareNextTmpl}, in, nil
+	}
+
+	writeCreationIntent(active, in)
+	if err := state.Write(active); err != nil {
+		return planRun{}, in, planStateWriteError(active.Path, runsDir, err)
+	}
+	return planRun{st: active, next: planPrepareNextTmpl}, in, nil
+}
+
+// newPlanRun creates a fresh plan run for branch: state.Init, then
+// skillInvoked and creationIntent, then state.Write (which prunes the older
+// state files of the branch), then a best-effort prune of older evidence
+// directories.
+func newPlanRun(mainRoot, branch, runsDir string, intent map[string]any) (*state.State, error) {
 	st, err := state.Init(mainRoot, "plan", branch, "")
 	if err != nil {
-		return
+		return nil, planStateWriteError(runsDir, runsDir, err)
 	}
 	st.Data["planIntegrity"] = map[string]any{
 		"skillInvoked": time.Now().UTC().Format(time.RFC3339),
 	}
+	st.Data["creationIntent"] = intent
 	if err := state.Write(st); err != nil {
-		fmt.Fprintf(os.Stderr, "[plan] writeSkillInvokedMarker: state write failed: %v\n", err)
+		return nil, planStateWriteError(st.Path, runsDir, err)
 	}
+	state.PruneEvidenceDirs(st)
+	return st, nil
 }
 
-// writeCreationIntent records the plan's creation intent — the originating
-// user prompt plus the computed complexity routing — into the SAME plan
-// state file writeSkillInvokedMarker just (re)created earlier in this same
-// planPrepareCore call. Only called when in.ResolveTemplate is true (the
-// call that actually resolves the template and computes routing); an
-// earlier plan_prepare call without resolveTemplate writes skillInvoked
-// only, no creationIntent.
-//
-// Uses state.Find + state.Write rather than state.Init: Init would create
-// yet another fresh (prune-pending) file and lose the skillInvoked
-// timestamp just stamped; Find retrieves the file that is already the sole
-// survivor for this branch, so the Write below has nothing left to prune.
-func writeCreationIntent(mainRoot, contentRoot string, in PlanPrepareIn) {
-	branch, err := gitx.CurrentBranch(contentRoot)
-	if err != nil || branch == "" {
-		return
-	}
-	st, err := state.Find(mainRoot, "plan", branch)
-	if err != nil || st == nil {
-		return
-	}
+// writeCreationIntent records the full creation intent — the originating
+// user prompt, the computed complexity routing and the routing flags — into
+// st.Data. The caller writes st.
+func writeCreationIntent(st *state.State, in PlanPrepareIn) {
+	st.Data["creationIntent"] = fullCreationIntent(in)
+}
+
+// fullCreationIntent builds the creationIntent written by a resolveTemplate
+// call. flags is what a later resume call restores.
+func fullCreationIntent(in PlanPrepareIn) map[string]any {
 	routing := computeComplexityRouting(in.FileCount, in.Lightweight)
-	st.Data["creationIntent"] = map[string]any{
+	return map[string]any{
 		"userPrompt": in.UserPrompt,
 		"scope":      routing.PipelineMode,
 		"routing":    routing.Reason,
 		"timestamp":  time.Now().UTC().Format(time.RFC3339),
+		"flags": map[string]any{
+			"fromOpenspec":           in.FromOpenspec,
+			"fromOpenspecDirect":     in.FromOpenspecDirect,
+			"openspecInlineGenerate": in.OpenspecInlineGenerate,
+			"lightweight":            in.Lightweight,
+			"fileCount":              in.FileCount,
+		},
 	}
-	if err := state.Write(st); err != nil {
-		fmt.Fprintf(os.Stderr, "[plan] writeCreationIntent: state write failed: %v\n", err)
+}
+
+// applySavedIntent replaces input values with the ones saved in st's
+// creationIntent: userPrompt when not empty, and each flag when present.
+// Missing values leave the input unchanged.
+func applySavedIntent(st *state.State, in PlanPrepareIn) PlanPrepareIn {
+	intent, ok := st.Data["creationIntent"].(map[string]any)
+	if !ok {
+		return in
 	}
+	if p, ok := intent["userPrompt"].(string); ok && p != "" {
+		in.UserPrompt = p
+	}
+	flags, ok := intent["flags"].(map[string]any)
+	if !ok {
+		return in
+	}
+	if v, ok := flags["fromOpenspec"].(string); ok {
+		in.FromOpenspec = v
+	}
+	if v, ok := flags["fromOpenspecDirect"].(bool); ok {
+		in.FromOpenspecDirect = v
+	}
+	if v, ok := flags["openspecInlineGenerate"].(bool); ok {
+		in.OpenspecInlineGenerate = v
+	}
+	if v, ok := flags["lightweight"].(bool); ok {
+		in.Lightweight = v
+	}
+	if v, ok := flags["fileCount"].(float64); ok {
+		in.FileCount = int(v)
+	}
+	return in
+}
+
+func noActivePlanRunError(branch string) error {
+	return &mcpserver.DomainError{
+		Msg:        fmt.Sprintf("no active plan run on branch %s", branch),
+		Suggestion: "call plan_prepare without resume to start a new plan run",
+	}
+}
+
+// planStateWriteError reports a failed state.Init or state.Write. path is
+// the file (or runs directory) that failed; runsDir is
+// <main-worktree>/.sdlc-v2/runs.
+func planStateWriteError(path, runsDir string, cause error) error {
+	return &mcpserver.InfraError{
+		Msg:        fmt.Sprintf("plan state write failed: %s", path),
+		Suggestion: fmt.Sprintf("make sure %s/ is a writable directory, then call plan_prepare again", runsDir),
+		Cause:      cause,
+	}
+}
+
+// planStateTimestampRe is the timestamp part of a state file name.
+var planStateTimestampRe = regexp.MustCompile(`^\d{8}T\d{6}Z$`)
+
+// planStateReadPath names the path behind a failed state.ActivePlanRun: the
+// runs directory when it is not a directory, else the newest plan state file
+// of the branch (exact slug match), else the runs directory.
+func planStateReadPath(runsDir, branch string) string {
+	info, err := os.Stat(runsDir)
+	if err != nil || !info.IsDir() {
+		return runsDir
+	}
+	entries, err := os.ReadDir(runsDir)
+	if err != nil {
+		return runsDir
+	}
+	prefix := "plan-" + state.SlugifyBranch(branch) + "-"
+	best := ""
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		ts := strings.TrimSuffix(strings.TrimPrefix(name, prefix), ".json")
+		if !planStateTimestampRe.MatchString(ts) {
+			continue
+		}
+		if name > best {
+			best = name
+		}
+	}
+	if best == "" {
+		return runsDir
+	}
+	return filepath.Join(runsDir, best)
+}
+
+// renderGuardrailsMarkdown renders guardrails as the guardrails.md body.
+// Newlines in id and severity become spaces; every description line is
+// prefixed with "> ".
+func renderGuardrailsMarkdown(guardrails []map[string]any) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Active plan guardrails (%d)\n", len(guardrails))
+	if len(guardrails) == 0 {
+		b.WriteString("\nNo plan guardrails configured.\n")
+		return b.String()
+	}
+	for _, g := range guardrails {
+		fmt.Fprintf(&b, "\n## %s (%s)\n", guardrailLine(g["id"]), guardrailLine(g["severity"]))
+		desc := strings.ReplaceAll(guardrailString(g["description"]), "\r\n", "\n")
+		for _, line := range strings.Split(strings.TrimRight(desc, "\n"), "\n") {
+			b.WriteString("> " + line + "\n")
+		}
+	}
+	return b.String()
+}
+
+func guardrailString(v any) string {
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return fmt.Sprint(v)
+}
+
+func guardrailLine(v any) string {
+	s := strings.ReplaceAll(guardrailString(v), "\r\n", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	return strings.ReplaceAll(s, "\r", " ")
+}
+
+// writeGuardrailsFile writes <runId>.evidence/guardrails.md for st and
+// returns its path.
+func writeGuardrailsFile(st *state.State, guardrails []map[string]any) (string, error) {
+	dir := state.EvidenceDir(st.Root, state.RunID(st))
+	path := filepath.Join(dir, "guardrails.md")
+	werr := os.MkdirAll(dir, 0o755)
+	if werr == nil {
+		werr = fsx.AtomicWriteBytes(path, []byte(renderGuardrailsMarkdown(guardrails)))
+	}
+	if werr != nil {
+		return "", &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("guardrails file write failed: %s", path),
+			Suggestion: fmt.Sprintf("make sure %s.evidence/ is a writable directory and guardrails.md is a file, then call plan_prepare again", state.RunID(st)),
+			Cause:      werr,
+		}
+	}
+	return path, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1267,9 +1505,11 @@ func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepar
 		}
 	}
 
-	writeSkillInvokedMarker(mainRoot, contentRoot)
-	if in.ResolveTemplate {
-		writeCreationIntent(mainRoot, contentRoot, in)
+	// Run selection: stable run ID, resume mode. On resume, in now carries
+	// the saved userPrompt/flags and ResolveTemplate is forced on.
+	run, in, err := selectPlanRun(mainRoot, contentRoot, in)
+	if err != nil {
+		return PlanPrepareOut{}, err
 	}
 
 	// 1. OpenSpec detection.
@@ -1353,8 +1593,24 @@ func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepar
 	planStyle := loadPlanStyle(mainRoot)
 	planTasks := loadPlanTasks(mainRoot)
 
+	// 3c. guardrails.md in the run's evidence directory.
+	runID, guardrailsFile := "", ""
+	if run.st != nil {
+		runID = state.RunID(run.st)
+		p, err := writeGuardrailsFile(run.st, guardrails)
+		if err != nil {
+			return PlanPrepareOut{}, err
+		}
+		guardrailsFile = p
+	}
+
 	// 4. plan-explore discovery pack (KD4: in-process call, not subprocess).
-	explorePack := buildExplorePack(mainRoot, contentRoot, in.FromOpenspec, in.UserPrompt)
+	// A resume call keeps the zero value: the run's research already exists,
+	// so no new explore tempdir is created.
+	var explorePack ExplorePack
+	if !in.Resume {
+		explorePack = buildExplorePack(mainRoot, contentRoot, in.FromOpenspec, in.UserPrompt)
+	}
 
 	// 5. G17 dispatch + githubHosting signals.
 	githubHosting := buildGithubHosting(mainRoot)
@@ -1375,9 +1631,15 @@ func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepar
 			errs = append(errs, tmplErrs...)
 		}
 		templateResolution = tmpl
+		if in.Resume && templateResolution != nil {
+			templateResolution.Next = run.next
+		}
 	}
 
 	return PlanPrepareOut{
+		Next:                run.next,
+		RunID:               runID,
+		GuardrailsFile:      guardrailsFile,
 		Openspec:            openspecInfo,
 		FromOpenspec:        fromOpenspecResult,
 		OpenspecContext:     openspecContext,
@@ -1562,11 +1824,12 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 // later task.
 func RegisterPlanTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "plan_prepare",
-		"Prepare OpenSpec detection, guardrails, explore-pack discovery, and G17/lane/lens dispatch metadata for plan.",
+		"Prepare OpenSpec detection, guardrails, explore-pack discovery, and G17/lane/lens dispatch metadata for plan. "+
+			"Writes the plan state file and <runId>.evidence/guardrails.md under gitignored .sdlc-v2/runs/. A call without resume or resolveTemplate starts a new run and deletes older runs' evidence for the branch. Optional: resume (post-compact recovery; reuses the active run, implies resolveTemplate, and fails when none exists). Returns runId, guardrailsFile and next. A failed state read, state write or guardrails write returns an infrastructure error; the evidence cleanup is best-effort.",
 		mcpserver.Annotations{
 			Title:      "Prepare plan state and template",
 			ReadOnly:   true,
-			Idempotent: true,
+			Idempotent: false,
 			OpenWorld:  false,
 		},
 		func(_ mcpserver.Ctx, in PlanPrepareIn) (PlanPrepareOut, error) {

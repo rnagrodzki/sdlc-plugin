@@ -36,7 +36,7 @@ Task tool (general-purpose):
     **Source requirements:** {SOURCE_REQUIREMENTS — file path or inline text, or "not provided"}
     **Requirements checklist:**
     {REQUIREMENTS_CHECKLIST}
-    **Plan guardrails:** {GUARDRAILS — one per line, or "none configured"}
+    **Plan guardrails:** read `{GUARDRAILS_FILE}` (one `## <id> (<severity>)` heading per guardrail; `(0)` in the title means none)
     **Discovery brief:** {BRIEF_FILE — absolute path to discovery-brief.md, or "none — orchestrator skipped"}
     **openspecContext.tasks:** {OPENSPEC_TASKS — serialized JSON array from prepare output, or "none — plan not from OpenSpec"}
     **Requirement inventory:** {REQUIREMENTS_JSON — JSON array from openspec show --json --deltas-only, or "null"}

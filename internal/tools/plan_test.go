@@ -2,16 +2,19 @@ package tools
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
 	"github.com/pelletier/go-toml/v2"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
@@ -839,37 +842,56 @@ func readSoleStateDoc(t *testing.T, root string) map[string]any {
 	return doc
 }
 
-// TestPlanPrepare_CreationIntent_WrittenOnResolveTemplateOnly verifies
-// creationIntent is absent after a plain plan_prepare call (skillInvoked
-// only) and present — with the documented {userPrompt, scope, routing,
-// timestamp} shape — after a resolveTemplate:true call, without spawning a
-// second surviving state file (state.Find + state.Write append, not
-// state.Init).
-func TestPlanPrepare_CreationIntent_WrittenOnResolveTemplateOnly(t *testing.T) {
+// TestPlanPrepare_CreationIntent_FirstCallThenResolveTemplate verifies the
+// first plan_prepare call writes creationIntent {userPrompt, timestamp}
+// only, and a following resolveTemplate:true call reuses the same run (same
+// runId, one state file) and adds scope, routing and flags.
+func TestPlanPrepare_CreationIntent_FirstCallThenResolveTemplate(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
-	if _, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+	const prompt = "fix the login bug"
+	first, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, UserPrompt: prompt})
+	if err != nil {
 		t.Fatalf("planPrepareCore (first call): %v", err)
 	}
+	if first.RunID == "" {
+		t.Fatal("RunID empty after first call")
+	}
+	if first.Next != planPrepareNextFirst {
+		t.Errorf("Next = %q, want %q", first.Next, planPrepareNextFirst)
+	}
 	doc := readSoleStateDoc(t, dir)
-	if _, ok := doc["creationIntent"]; ok {
-		t.Errorf("creationIntent present after first (resolveTemplate=false) call: %v", doc["creationIntent"])
+	firstIntent, ok := doc["creationIntent"].(map[string]any)
+	if !ok {
+		t.Fatalf("creationIntent missing after first call: %v", doc)
+	}
+	if got := planTestKeys(firstIntent); !reflect.DeepEqual(got, []string{"timestamp", "userPrompt"}) {
+		t.Errorf("first-call creationIntent keys = %v, want [timestamp userPrompt]", got)
+	}
+	if firstIntent["userPrompt"] != prompt {
+		t.Errorf("first-call creationIntent.userPrompt = %v, want %q", firstIntent["userPrompt"], prompt)
 	}
 	integrity, _ := doc["planIntegrity"].(map[string]any)
 	if _, ok := integrity["skillInvoked"]; !ok {
 		t.Fatalf("planIntegrity.skillInvoked missing after first call: %v", doc)
 	}
 
-	const prompt = "fix the login bug"
-	if _, err := planPrepareCore(dir, dir, PlanPrepareIn{
+	second, err := planPrepareCore(dir, dir, PlanPrepareIn{
 		SkipConfigCheck: true, ResolveTemplate: true, UserPrompt: prompt, FileCount: 2,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("planPrepareCore (resolveTemplate call): %v", err)
 	}
+	if second.RunID != first.RunID {
+		t.Errorf("resolveTemplate RunID = %q, want %q (same run)", second.RunID, first.RunID)
+	}
+	if second.Next != planPrepareNextTmpl {
+		t.Errorf("Next = %q, want %q", second.Next, planPrepareNextTmpl)
+	}
 
-	doc = readSoleStateDoc(t, dir) // still exactly one file — no re-pruning artifact
+	doc = readSoleStateDoc(t, dir) // still exactly one file
 	integrity, _ = doc["planIntegrity"].(map[string]any)
 	if _, ok := integrity["skillInvoked"]; !ok {
 		t.Errorf("planIntegrity.skillInvoked missing after resolveTemplate call: %v", doc)
@@ -890,6 +912,407 @@ func TestPlanPrepare_CreationIntent_WrittenOnResolveTemplateOnly(t *testing.T) {
 	}
 	if s, ok := intent["timestamp"].(string); !ok || s == "" {
 		t.Errorf("creationIntent.timestamp = %v, want a non-empty string", intent["timestamp"])
+	}
+	flags, ok := intent["flags"].(map[string]any)
+	if !ok {
+		t.Fatalf("creationIntent.flags missing: %v", intent)
+	}
+	wantFlags := map[string]any{
+		"fromOpenspec": "", "fromOpenspecDirect": false, "openspecInlineGenerate": false,
+		"lightweight": false, "fileCount": float64(2),
+	}
+	if !reflect.DeepEqual(flags, wantFlags) {
+		t.Errorf("creationIntent.flags = %v, want %v", flags, wantFlags)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// plan_prepare run selection, resume mode, guardrails file
+// ---------------------------------------------------------------------------
+
+func planTestKeys(m map[string]any) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func planTestRunsDir(root string) string {
+	return filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+}
+
+// planTestSeedRun writes a plan state file <runID>.json with data, and an
+// evidence directory holding one file.
+func planTestSeedRun(t *testing.T, root, runID string, data map[string]any) {
+	t.Helper()
+	raw, err := json.Marshal(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(planTestRunsDir(root), runID+".json"), string(raw))
+	writeFile(t, filepath.Join(planTestRunsDir(root), runID+".evidence", "note.md"), "old evidence")
+}
+
+func planTestActiveData() map[string]any {
+	return map[string]any{"planIntegrity": map[string]any{"skillInvoked": "2020-01-01T00:00:00Z"}}
+}
+
+func planTestGitRepo(t *testing.T, branch string) string {
+	t.Helper()
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	if branch != "main" {
+		runGit(t, dir, "checkout", "-b", branch)
+	}
+	return dir
+}
+
+// planTestTemplateRepo is planTestGitRepo on main with a project plan
+// template, so template resolution does not depend on the shipped default.
+func planTestTemplateRepo(t *testing.T) string {
+	t.Helper()
+	dir := planTestGitRepo(t, "main")
+	writeProjectPlanTemplate(t, dir, planTemplateResolveFixture)
+	return dir
+}
+
+// TestPlanPrepare_FirstCallStartsNewRunAndPrunesOld verifies a first call
+// with an older run on the branch returns a new runId, and removes the
+// older run's state file and .evidence/ directory.
+func TestPlanPrepare_FirstCallStartsNewRunAndPrunesOld(t *testing.T) {
+	dir := planTestGitRepo(t, "main")
+	const oldRun = "plan-main-20200101T000000Z"
+	planTestSeedRun(t, dir, oldRun, planTestActiveData())
+
+	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("planPrepareCore: %v", err)
+	}
+	if out.RunID == "" || out.RunID == oldRun {
+		t.Fatalf("RunID = %q, want a new run ID", out.RunID)
+	}
+	if _, err := os.Stat(filepath.Join(planTestRunsDir(dir), oldRun+".evidence")); !os.IsNotExist(err) {
+		t.Errorf("old evidence dir still exists (stat err = %v)", err)
+	}
+	if files := listStateFiles(t, dir); !reflect.DeepEqual(files, []string{out.RunID + ".json"}) {
+		t.Errorf("state files = %v, want only %s.json", files, out.RunID)
+	}
+	if _, err := os.Stat(out.GuardrailsFile); err != nil {
+		t.Errorf("guardrails file not written: %v", err)
+	}
+}
+
+// TestPlanPrepare_ResolveTemplateWithoutRunCreatesRun verifies a
+// resolveTemplate:true call with no active run creates the run itself.
+func TestPlanPrepare_ResolveTemplateWithoutRunCreatesRun(t *testing.T) {
+	dir := planTestGitRepo(t, "main")
+
+	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true, UserPrompt: "p", FileCount: 12})
+	if err != nil {
+		t.Fatalf("planPrepareCore: %v", err)
+	}
+	if out.RunID == "" {
+		t.Fatal("RunID empty")
+	}
+	doc := readSoleStateDoc(t, dir)
+	integrity, _ := doc["planIntegrity"].(map[string]any)
+	if _, ok := integrity["skillInvoked"]; !ok {
+		t.Errorf("planIntegrity.skillInvoked missing: %v", doc)
+	}
+	intent, _ := doc["creationIntent"].(map[string]any)
+	if _, ok := intent["flags"]; !ok {
+		t.Errorf("creationIntent.flags missing: %v", doc)
+	}
+	want := filepath.Join(planTestRunsDir(dir), out.RunID+".evidence", "guardrails.md")
+	if out.GuardrailsFile != want {
+		t.Errorf("GuardrailsFile = %q, want %q", out.GuardrailsFile, want)
+	}
+	if _, err := os.Stat(want); err != nil {
+		t.Errorf("guardrails.md missing: %v", err)
+	}
+}
+
+// TestPlanPrepare_ExactSlugRunSelection verifies that on branch feat an
+// active plan-feat-x-* run is reused by neither resolveTemplate nor resume.
+func TestPlanPrepare_ExactSlugRunSelection(t *testing.T) {
+	dir := planTestGitRepo(t, "feat")
+	const other = "plan-feat-x-20200101T000000Z"
+	planTestSeedRun(t, dir, other, planTestActiveData())
+
+	_, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, Resume: true})
+	var de *mcpserver.DomainError
+	if !errors.As(err, &de) {
+		t.Fatalf("resume err = %T %v, want *mcpserver.DomainError", err, err)
+	}
+
+	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
+	if err != nil {
+		t.Fatalf("planPrepareCore: %v", err)
+	}
+	if out.RunID == other || !strings.HasPrefix(out.RunID, "plan-feat-2") {
+		t.Errorf("RunID = %q, want a new plan-feat-<ts> run", out.RunID)
+	}
+	if _, err := os.Stat(filepath.Join(planTestRunsDir(dir), other+".json")); err != nil {
+		t.Errorf("other branch's run was touched: %v", err)
+	}
+}
+
+// TestPlanPrepare_ResumeReusesActiveRun verifies resume:true reuses the
+// active run without a state write, applies the saved userPrompt and flags
+// over the input, skips the explore pack, and returns the resume next text.
+func TestPlanPrepare_ResumeReusesActiveRun(t *testing.T) {
+	dir := planTestTemplateRepo(t)
+	const prompt = "saved prompt"
+
+	if _, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, UserPrompt: prompt}); err != nil {
+		t.Fatal(err)
+	}
+	prev, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true, UserPrompt: prompt, FileCount: 12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(planTestRunsDir(dir), prev.RunID+".json")
+	before, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	in := PlanPrepareIn{SkipConfigCheck: true, Resume: true, UserPrompt: "different", FileCount: 1, Lightweight: true}
+	out, err := planPrepareCore(dir, dir, in)
+	if err != nil {
+		t.Fatalf("planPrepareCore (resume): %v", err)
+	}
+	if out.RunID != prev.RunID {
+		t.Errorf("RunID = %q, want %q", out.RunID, prev.RunID)
+	}
+	after, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Errorf("state file changed on resume:\nbefore=%s\nafter=%s", before, after)
+	}
+	if out.Template == nil {
+		t.Fatal("Template nil on resume")
+	}
+	if out.Template.Routing.FileCount != 12 || out.Template.PipelineMode != "full" {
+		t.Errorf("routing = %+v, want saved fileCount 12 / full", out.Template.Routing)
+	}
+	wantNext := planPrepareResumeNext(prev.RunID)
+	if out.Next != wantNext || out.Template.Next != wantNext {
+		t.Errorf("Next = %q, Template.Next = %q, want %q", out.Next, out.Template.Next, wantNext)
+	}
+	if out.ExplorePack != (ExplorePack{}) {
+		t.Errorf("ExplorePack = %+v, want zero value", out.ExplorePack)
+	}
+
+	_, eff, err := selectPlanRun(dir, dir, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if eff.UserPrompt != prompt || eff.FileCount != 12 || eff.Lightweight || !eff.ResolveTemplate {
+		t.Errorf("effective input = %+v, want saved prompt/flags and resolveTemplate", eff)
+	}
+}
+
+// TestPlanPrepare_ResumeWithoutCreationIntentUsesInput verifies resume on
+// an active run with no creationIntent keeps the input values.
+func TestPlanPrepare_ResumeWithoutCreationIntentUsesInput(t *testing.T) {
+	dir := planTestTemplateRepo(t)
+	planTestSeedRun(t, dir, "plan-main-20200101T000000Z", planTestActiveData())
+
+	in := PlanPrepareIn{SkipConfigCheck: true, Resume: true, UserPrompt: "input prompt", FileCount: 12}
+	out, err := planPrepareCore(dir, dir, in)
+	if err != nil {
+		t.Fatalf("planPrepareCore: %v", err)
+	}
+	if out.RunID != "plan-main-20200101T000000Z" {
+		t.Errorf("RunID = %q", out.RunID)
+	}
+	if out.Template == nil || out.Template.Routing.FileCount != 12 {
+		t.Errorf("Template = %+v, want input fileCount 12", out.Template)
+	}
+	_, eff, err := selectPlanRun(dir, dir, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if eff.UserPrompt != "input prompt" {
+		t.Errorf("UserPrompt = %q, want input value", eff.UserPrompt)
+	}
+}
+
+// TestPlanPrepare_ResumeImpliesResolveTemplate verifies resume:true alone
+// returns the same template fields as resume:true, resolveTemplate:true.
+func TestPlanPrepare_ResumeImpliesResolveTemplate(t *testing.T) {
+	dir := planTestTemplateRepo(t)
+	planTestSeedRun(t, dir, "plan-main-20200101T000000Z", planTestActiveData())
+
+	a, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, Resume: true, FileCount: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, Resume: true, ResolveTemplate: true, FileCount: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Template == nil || !reflect.DeepEqual(a.Template, b.Template) {
+		t.Errorf("templates differ:\nresume=%+v\nresume+resolveTemplate=%+v", a.Template, b.Template)
+	}
+}
+
+// TestPlanPrepare_ResumeNoActiveRun verifies resume:true fails with a
+// DomainError when there is no run, or the latest run is done.
+func TestPlanPrepare_ResumeNoActiveRun(t *testing.T) {
+	cases := map[string]func(t *testing.T, dir string){
+		"no run": func(t *testing.T, dir string) {},
+		"done run": func(t *testing.T, dir string) {
+			planTestSeedRun(t, dir, "plan-main-20200101T000000Z", map[string]any{
+				"planIntegrity": map[string]any{"skillInvoked": "x", "done": "y"},
+			})
+		},
+	}
+	for name, seed := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := planTestGitRepo(t, "main")
+			seed(t, dir)
+			_, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, Resume: true})
+			var de *mcpserver.DomainError
+			if !errors.As(err, &de) {
+				t.Fatalf("err = %T %v, want *mcpserver.DomainError", err, err)
+			}
+			if de.Msg != "no active plan run on branch main" {
+				t.Errorf("Msg = %q", de.Msg)
+			}
+			if de.Suggestion != "call plan_prepare without resume to start a new plan run" {
+				t.Errorf("Suggestion = %q", de.Suggestion)
+			}
+		})
+	}
+}
+
+// TestPlanPrepare_GuardrailsFileFormat verifies guardrails.md for configured
+// guardrails (multi-line description, a line starting with #) and for none.
+func TestPlanPrepare_GuardrailsFileFormat(t *testing.T) {
+	t.Run("configured", func(t *testing.T) {
+		dir := planTestGitRepo(t, "main")
+		writeFile(t, filepath.Join(dir, paths.DataDir, "config.toml"), ""+
+			"[plan.guardrails.no-new-deps]\n"+
+			"severity = \"error\"\n"+
+			"description = \"Ask before adding a third-party dependency.\"\n"+
+			"\n"+
+			"[plan.guardrails.prefer-existing-helpers]\n"+
+			"severity = \"warning\"\n"+
+			"description = \"Reuse helpers in internal/fsx and internal/state\\nbefore adding new ones.\\n# not a heading\"\n")
+
+		out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(out.GuardrailsFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "# Active plan guardrails (2)\n\n" +
+			"## no-new-deps (error)\n" +
+			"> Ask before adding a third-party dependency.\n\n" +
+			"## prefer-existing-helpers (warning)\n" +
+			"> Reuse helpers in internal/fsx and internal/state\n" +
+			"> before adding new ones.\n" +
+			"> # not a heading\n"
+		if string(got) != want {
+			t.Errorf("guardrails.md =\n%s\nwant\n%s", got, want)
+		}
+	})
+	t.Run("empty", func(t *testing.T) {
+		dir := planTestGitRepo(t, "main")
+		out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(out.GuardrailsFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := "# Active plan guardrails (0)\n\nNo plan guardrails configured.\n"; string(got) != want {
+			t.Errorf("guardrails.md = %q, want %q", got, want)
+		}
+	})
+	t.Run("newlines in id and severity", func(t *testing.T) {
+		got := renderGuardrailsMarkdown([]map[string]any{{"id": "a\nb", "severity": "err\r\nor", "description": "d"}})
+		if want := "# Active plan guardrails (1)\n\n## a b (err or)\n> d\n"; got != want {
+			t.Errorf("render = %q, want %q", got, want)
+		}
+	})
+}
+
+// TestPlanPrepare_ErrorSites verifies the InfraError paths of run selection
+// and the guardrails write.
+func TestPlanPrepare_ErrorSites(t *testing.T) {
+	infra := func(t *testing.T, err error, msgPrefix string) {
+		t.Helper()
+		var ie *mcpserver.InfraError
+		if !errors.As(err, &ie) {
+			t.Fatalf("err = %T %v, want *mcpserver.InfraError", err, err)
+		}
+		if !strings.HasPrefix(ie.Msg, msgPrefix) {
+			t.Errorf("Msg = %q, want prefix %q", ie.Msg, msgPrefix)
+		}
+		if ie.Suggestion == "" {
+			t.Error("Suggestion empty")
+		}
+		if ie.Cause == nil {
+			t.Error("Cause nil")
+		}
+	}
+	blockRuns := func(t *testing.T) string {
+		dir := planTestGitRepo(t, "main")
+		writeFile(t, planTestRunsDir(dir), "blocker")
+		return dir
+	}
+
+	t.Run("ENOTDIR first call", func(t *testing.T) {
+		dir := blockRuns(t)
+		_, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+		infra(t, err, "plan state write failed: ")
+	})
+	t.Run("ENOTDIR resolveTemplate", func(t *testing.T) {
+		dir := blockRuns(t)
+		_, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
+		infra(t, err, "plan state read failed: ")
+	})
+	t.Run("EISDIR guardrails.md", func(t *testing.T) {
+		dir := planTestGitRepo(t, "main")
+		const run = "plan-main-20200101T000000Z"
+		planTestSeedRun(t, dir, run, planTestActiveData())
+		writeFile(t, filepath.Join(planTestRunsDir(dir), run+".evidence", "guardrails.md", "x"), "x")
+		_, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
+		infra(t, err, "guardrails file write failed: ")
+	})
+	t.Run("corrupt JSON", func(t *testing.T) {
+		dir := planTestGitRepo(t, "main")
+		p := filepath.Join(planTestRunsDir(dir), "plan-main-20200101T000000Z.json")
+		writeFile(t, p, "{not json")
+		_, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
+		infra(t, err, "plan state read failed: "+p)
+	})
+}
+
+// TestPlanPrepare_OutsideGitNoRun verifies that outside git no run is
+// tracked: runId and guardrailsFile are empty (rendered "(none)").
+func TestPlanPrepare_OutsideGitNoRun(t *testing.T) {
+	dir := t.TempDir()
+	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
+	if err != nil {
+		t.Fatalf("planPrepareCore: %v", err)
+	}
+	if out.RunID != "" || out.GuardrailsFile != "" {
+		t.Errorf("RunID = %q, GuardrailsFile = %q, want both empty", out.RunID, out.GuardrailsFile)
+	}
+	if _, err := os.Stat(planTestRunsDir(dir)); !os.IsNotExist(err) {
+		t.Errorf("runs dir created outside git (stat err = %v)", err)
 	}
 }
 

@@ -458,6 +458,7 @@ func pipelineResumePhase(source string) []string {
 	var lines []string
 	lines = append(lines, shipResumeLines(root, branch)...)
 	lines = append(lines, executeResumeLines(root, branch, source)...)
+	lines = append(lines, planResumeLines(root, branch, source)...)
 	return lines
 }
 
@@ -633,6 +634,59 @@ func executeResumeLines(root, branch, source string) []string {
 		line = fmt.Sprintf("Active execution: execute on %s (wave %d of %d complete)", branch, completed, total)
 	}
 	return []string{line, "  Resume with: /execute --resume"}
+}
+
+// planResumeMaxAge bounds how stale an active plan run's state file may be
+// before its resume banner is suppressed, mirroring compactRecoveryTTL and
+// staleSidecarThreshold's own age-gate convention elsewhere in this file. A
+// plan run left mid-flight for longer than this was most likely abandoned,
+// not merely compacted, so resurfacing it would be misleading.
+const planResumeMaxAge = 24 * time.Hour
+
+// planResumeLines returns the post-compact banner for an active plan run, or
+// nil. Unlike shipResumeLines/executeResumeLines, this banner only ever
+// fires on source == "compact": a plan run in progress at ordinary session
+// startup is the normal, expected state (the developer is mid-conversation
+// with the plan skill already in context), so only compaction — which drops
+// that in-context skill knowledge — needs a printed reminder (Deviations).
+//
+// state.ActivePlanRun already restricts the match to the exact branch slug
+// (LatestPlanRun) and to a run that has skillInvoked but not done
+// (planIntegrity), so a stale, completed, or wrong-branch run never reaches
+// here. Any ActivePlanRun error (e.g. corrupt state JSON) is treated the
+// same as "no active run" — this phase must degrade silently, not fail the
+// hook (KD15).
+func planResumeLines(root, branch, source string) []string {
+	if source != "compact" {
+		return nil
+	}
+	st, err := state.ActivePlanRun(root, branch)
+	if err != nil || st == nil {
+		return nil
+	}
+
+	info, err := os.Stat(st.Path)
+	if err != nil || time.Since(info.ModTime()) > planResumeMaxAge {
+		return nil
+	}
+
+	step := "0"
+	if checkpoint, ok := st.Data["checkpoint"].(map[string]any); ok {
+		if s, ok := checkpoint["step"].(string); ok {
+			step = s
+		}
+	}
+
+	planFile := "none"
+	if p, ok := st.Data["planFilePath"].(string); ok {
+		planFile = p
+	}
+
+	return []string{
+		fmt.Sprintf("Active plan (post-compact): step %s, branch %s; plan file: %s", step, branch, planFile),
+		"  If the sdlc:plan skill instructions are not in context, invoke the sdlc:plan skill first; its Session recovery rule selects the resume path.",
+		fmt.Sprintf("  Resume with: plan_prepare({resume:true, resolveTemplate:true}) then plan_support({action:\"evidence_digest\", runId:\"%s\"})", state.RunID(st)),
+	}
 }
 
 // ---------------------------------------------------------------------------

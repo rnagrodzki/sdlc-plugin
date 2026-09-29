@@ -123,9 +123,9 @@ var toolAnnotations = map[string]annotationPolicy{
 	"plan_prepare": {
 		title:      "Prepare plan state and template",
 		readOnly:   true,
-		idempotent: true,
+		idempotent: false,
 		openWorld:  false,
-		reason:     "Task 3 relocated its one tracked-file write (openspec tasks.md ref stamp) into execute_state's init handler; plan_prepare itself now only reads",
+		reason:     "only writes are state.Write and guardrails.md under gitignored .sdlc-v2/runs/; a call without resume starts a new run and prunes the old one, so it is not idempotent",
 	},
 	"review_prepare": {
 		title:      "Prepare code review payload",

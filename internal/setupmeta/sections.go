@@ -359,6 +359,14 @@ var planStyleFields = []Field{
 		Default:     nil,
 		Description: "Free-form writing rules /plan enforces on narrative sections (e.g., plain-English phrasing for non-native readers, always state assumptions). One rule per line — rules may contain commas, so this field splits on newline, not comma.",
 	},
+	{
+		Name:        "instructions",
+		Label:       "Custom plan instructions",
+		Type:        "list",
+		Options:     nil,
+		Default:     nil,
+		Description: "Process instructions /plan shows at start and forwards to every step and subagent (e.g., cite file:line for every claim about existing code). One instruction per line — instructions may contain commas, so this field splits on newline, not comma.",
+	},
 }
 
 var planTasksFields = []Field{
