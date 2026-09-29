@@ -1,0 +1,34 @@
+# Deletes old GitHub Releases (and their binary assets) to reclaim storage,
+# keeping the 10 most recent. Never passes --cleanup-tag, so git tags are
+# never removed — see release-cleanup.cjs.
+#
+# Release deletion is not a branch-ref operation, so it is unaffected by the
+# "Main" ruleset (see docs on release-on-main.cjs / promote-release.cjs's
+# token chain) — the default GITHUB_TOKEN with contents: write is enough,
+# no RELEASE_TOKEN needed.
+#
+# Repo-local, not part of the sdlc scaffold template (see
+# internal/tools/payloads/ — this file is intentionally absent from there).
+# Other projects scaffolded from this plugin don't publish binary releases
+# and don't need this cleanup.
+name: SDLC Release Cleanup
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # every Monday 06:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Delete old releases
+        run: node .github/scripts/release-cleanup.cjs 10
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
