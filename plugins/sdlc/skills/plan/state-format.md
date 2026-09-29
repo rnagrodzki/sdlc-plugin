@@ -40,7 +40,8 @@ State files are always written to the **main working tree's** `.sdlc-v2/runs/`, 
     "skillInvoked":        "2026-05-09T14:00:00.000Z",
     "planFile":            "2026-05-09T14:02:10.000Z",
     "guardrailsEvaluated": "2026-05-09T14:05:30.000Z",
-    "critiqueRan":         "2026-05-09T14:06:00.000Z"
+    "critiqueRan":         "2026-05-09T14:06:00.000Z",
+    "done":                "2026-05-09T14:12:00.000Z"
   },
   "planFilePath": "/Users/dev/.claude/plans/2026-05-09-fix-auth.md",
   "creationIntent": {
@@ -84,6 +85,7 @@ Each field inside `planIntegrity` is an ISO 8601 timestamp string. Absence of a 
 | `planFile`            | `plan_mark({ marker: "plan-file", path: <abs> })` after Step 0 path resolution    |
 | `guardrailsEvaluated` | `plan_mark({ marker: "guardrailsEvaluated" })` at end of Step 3 guardrail gate    |
 | `critiqueRan`         | `plan_mark({ marker: "critiqueRan" })` as final action of Step 3                  |
+| `done`                | `plan_mark({ marker: "done" })` right before the plan is presented (terminal marker). The Stop hook evaluates and deletes the state file only once this key is present; it is not one of the four checked markers. |
 
 ---
 
@@ -164,12 +166,12 @@ Each `<writerId>.json` holds one writer's recorded findings:
 
 | Field       | Type   | Description                                                                    |
 |-------------|--------|-----------------------------------------------------------------------------------|
-| `writerId`  | string | The writer's own ID. `"main"` is reserved for the orchestrator session.           |
+| `writerId`  | string | The writer's own ID. Must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` (max 64 chars). `"main"` is reserved for the orchestrator session. |
 | `status`    | string | `running` or `done`.                                                              |
 | `updatedAt` | string | ISO 8601 UTC timestamp of the last `evidence_record` call for this writer.        |
-| `items`     | array  | Up to 200 items, max 64 KiB total file size. Each item: `id` (unique per writer, e.g. `F-auth-1`), `summary` (one line, max 200 chars), `ref` (optional, one line, max 500 chars — `path:line` or URL), `body` (optional Markdown, returned only by `evidence_get`). |
+| `items`     | array  | Up to 200 items, max 64 KiB total file size. Each item: `id` (unique per writer, e.g. `F-auth-1`; must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`), `summary` (one line, max 200 chars), `ref` (optional, one line, max 500 chars — `path:line` or URL), `body` (optional Markdown, returned only by `evidence_get`). |
 
-Writer files are capped at 32 per run (`evidenceMaxWriters`). `evidence_digest` reads every writer file's `status`/`updatedAt`/item summaries to report which writers are still `running`, which have gone stale (`stalledWriters`), and which expected writers never wrote a file at all (`missingWriters`).
+Writer files are capped at 32 per run (`evidenceMaxWriters`). `evidence_digest` reads every writer file's `status`/`updatedAt`/item summaries to report which writers are still `running`, which have gone stale (`stalledWriters`), and which expected writers never wrote a file at all (`missingWriters`). A writer file that exists but cannot be parsed is listed in `unreadableWriters`; when that writer is expected it is also listed in `stalledWriters`, because it can never report `done`. All three lists sit under the output's `writers` object. The next `evidence_record` call for that writer replaces the unreadable file.
 
 ---
 
@@ -180,7 +182,7 @@ Writer files are capped at 32 per run (`evidenceMaxWriters`). `evidence_digest` 
 1. On a genuinely new run (no active run for the branch, and not a `resume: true` call), `plan_prepare(...)` calls the `internal/state` package's prune helper to remove all prior `plan-<branchSlug>-*.json` files for the same branch (at most one plan marker per branch exists between invocations), then writes the new marker atomically with `planIntegrity: { skillInvoked: <ISO-ts> }` and `creationIntent: { userPrompt, timestamp }`. It then best-effort prunes stale `<runId>.evidence/` directories left by earlier runs.
 2. The first `resolveTemplate: true` call for that run overwrites `creationIntent` with the full shape (`fullCreationIntent`: userPrompt, scope, routing, timestamp, flags).
 3. A `resume: true` call does not create or prune anything; it reads the branch's active run back (`state.ActivePlanRun`) and restores `creationIntent` into the caller's input (`applySavedIntent`) instead of overwriting it.
-4. Subsequent `plan_mark({ marker, path })` calls update the `planIntegrity` keys and `planFilePath` in-place, atomically; `plan_mark({ marker: "checkpoint", data })` replaces `checkpoint` in-place, atomically.
+4. Subsequent `plan_mark({ marker, path })` calls update the `planIntegrity` keys and `planFilePath` in-place, atomically; `plan_mark({ marker: "checkpoint", data })` replaces `checkpoint` in-place, atomically. Every `plan_mark` write goes through `state.Write`, which also prunes any other `plan-<branchSlug>-*.json` file for the branch, so at most one plan state file per branch survives each write.
 
 ### Consume-then-Delete
 
@@ -190,14 +192,14 @@ The stop hook runs at session end:
 2. Reads the marker via `readState`.
 3. If the `done` marker is absent, the plan is still running (e.g. a Stop fired mid-plan across a compaction): returns silently, with no evaluation and no deletion.
 4. Once `done` is present: deletes the state file **and** its per-run evidence directory (`state.EvidenceDir(st.Root, state.RunID(st))`), regardless of integrity outcome — both are single-use.
-5. Evaluates all five `planIntegrity` keys and stats `planFilePath`; any missing or failing marker produces one aggregated warning, never a block.
+5. Evaluates the four required `planIntegrity` keys (`skillInvoked`, `planFile`, `guardrailsEvaluated`, `critiqueRan`) and stats `planFilePath`; any missing or failing marker produces one aggregated warning, never a block.
 6. Subsequent Stop events on the same branch engage the transcript-fallback path (R21) because no marker exists.
 
 Both removals are wrapped so a failure cannot break the hook's advisory-only exit-0 contract.
 
 ### GC Orphan Sweep
 
-Stale plan markers (abandoned sessions, branch-deleted, TTL-expired) are removed by `ship --gc` and `execute --gc` via `gcStateFiles({ prefix: 'plan', ttlDays, knownBranches })`. The sweep reports plan-prefix files in a `plan` bucket alongside the existing `ship` and `execute` buckets in the JSON output. `gcStateFiles` does not touch evidence directories — those are cleaned only by the Stop hook (on `done`) and by `state.PruneEvidenceDirs` (on the next new run for the same branch).
+Stale plan markers (abandoned sessions, branch-deleted, TTL-expired) are removed by `ship --gc` and `execute --gc` via `gcStateFiles({ prefix: 'plan', ttlDays, knownBranches })`. The sweep reports plan-prefix files in a `plan` bucket alongside the existing `ship` and `execute` buckets in the JSON output. `execute_state` gc also reaps `runs/` subdirectories older than the TTL that do not belong to a live execute run (`execReapRunDirectories` in `internal/tools/execute_state.go`); this includes abandoned `<runId>.evidence/` directories. Evidence directories are therefore cleaned by three paths: the Stop hook (on `done`), `state.PruneEvidenceDirs` (on the next new run for the same branch), and this TTL reap.
 
 ### Atomic Write
 
@@ -213,7 +215,8 @@ All writes use the `internal/state` package's atomic-write helper. No partial-fi
     "skillInvoked":        "2026-05-09T14:00:05.123Z",
     "planFile":            "2026-05-09T14:02:11.456Z",
     "guardrailsEvaluated": "2026-05-09T14:05:33.789Z",
-    "critiqueRan":         "2026-05-09T14:06:01.012Z"
+    "critiqueRan":         "2026-05-09T14:06:01.012Z",
+    "done":                "2026-05-09T14:12:40.345Z"
   },
   "planFilePath": "/Users/dev/.claude/plans/2026-05-09-fix-auth.md",
   "creationIntent": {

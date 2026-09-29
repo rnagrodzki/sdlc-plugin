@@ -1,7 +1,9 @@
 // Package state provides execution-state file utilities ported from the Node.js
 // state.js shared library: filename grammar, branch slug helpers, file lookup
 // (delimiter-aware mtime-newest), init/write with prune-on-write, and session
-// stamping.
+// stamping. The "Run helpers" section adds plan-run selection by exact run ID
+// (RunID, LoadRun, LatestPlanRun, ActivePlanRun) and per-run evidence
+// directories (EvidenceDir, PruneEvidenceDirs).
 //
 // The canonical state directory lives at <root>/.sdlc-v2/runs/. Root is
 // injected by callers so that no environment or git lookup is needed here.
@@ -381,6 +383,10 @@ const evidenceDirSuffix = ".evidence"
 // SlugifyBranch never itself produces.
 var runSlugRe = regexp.MustCompile(`^[A-Za-z0-9-]+$`)
 
+// ErrInvalidRunID is wrapped by LoadRun's error when runID fails validation
+// (as opposed to a read or decode failure of a valid run's file).
+var ErrInvalidRunID = errors.New("state: invalid run ID")
+
 // removeAll is os.RemoveAll; tests replace it to simulate a failed remove.
 var removeAll = os.RemoveAll
 
@@ -406,22 +412,23 @@ func EvidenceDir(root, runID string) string {
 // touching the filesystem.
 //
 // LoadRun returns (nil, nil) when the (validated) file does not exist, and a
-// non-nil error for a rejected runID, an unreadable file, or corrupt JSON.
+// non-nil error for a rejected runID (wrapping ErrInvalidRunID), an
+// unreadable file, or corrupt JSON.
 func LoadRun(root, runID string) (*State, error) {
 	if filepath.Base(runID) != runID {
-		return nil, fmt.Errorf("state: invalid run ID %q: must be a bare filename component", runID)
+		return nil, fmt.Errorf("state: invalid run ID %q: must be a bare filename component: %w", runID, ErrInvalidRunID)
 	}
 
 	name := runID + ".json"
 	parsed := parseStateFilename(name)
 	if parsed == nil {
-		return nil, fmt.Errorf("state: invalid run ID %q: does not match the state filename grammar", runID)
+		return nil, fmt.Errorf("state: invalid run ID %q: does not match the state filename grammar: %w", runID, ErrInvalidRunID)
 	}
 	if parsed.Prefix != "plan" {
-		return nil, fmt.Errorf("state: invalid run ID %q: prefix %q, want %q", runID, parsed.Prefix, "plan")
+		return nil, fmt.Errorf("state: invalid run ID %q: prefix %q, want %q: %w", runID, parsed.Prefix, "plan", ErrInvalidRunID)
 	}
 	if !runSlugRe.MatchString(parsed.Slug) {
-		return nil, fmt.Errorf("state: invalid run ID %q: slug %q contains disallowed characters", runID, parsed.Slug)
+		return nil, fmt.Errorf("state: invalid run ID %q: slug %q contains disallowed characters: %w", runID, parsed.Slug, ErrInvalidRunID)
 	}
 
 	path := filepath.Join(stateDir(root), name)

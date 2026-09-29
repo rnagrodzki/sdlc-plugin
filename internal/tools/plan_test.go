@@ -339,6 +339,57 @@ func TestPlanPrepare_StyleInstructionsFiltering(t *testing.T) {
 	}
 }
 
+// TestPlanStyle_MalformedConfigSurfacesError verifies a local.toml that does
+// not parse is not silently treated as "no planStyle": plan_prepare lists the
+// read error in Errors, and a checkpoint's Next carries a warning.
+func TestPlanStyle_MalformedConfigSurfacesError(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	if _, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+		t.Fatalf("planPrepareCore (seed): %v", err)
+	}
+
+	writeFile(t, filepath.Join(dir, paths.DataDir, "local.toml"), "[planStyle\ninstructions = [\n")
+
+	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
+	if err != nil {
+		t.Fatalf("planPrepareCore: %v", err)
+	}
+	found := false
+	for _, e := range out.Errors {
+		if strings.HasPrefix(e, "Failed to read planStyle config: ") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("Errors = %v, want a \"Failed to read planStyle config: \" entry", out.Errors)
+	}
+
+	mk, err := planMark(dir, dir, PlanMarkIn{Marker: "checkpoint", Data: map[string]any{"step": "3"}})
+	if err != nil {
+		t.Fatalf("planMark(checkpoint): %v", err)
+	}
+	if !strings.Contains(mk.Next, "Warning: Failed to read planStyle config: ") {
+		t.Errorf("Next = %q, want a planStyle read warning", mk.Next)
+	}
+}
+
+// TestPlanPrepare_ResumeOutsideGit_InfraError verifies a resume whose branch
+// lookup fails returns an InfraError carrying the git error, not the
+// "no active plan run" DomainError that would tell the caller to start over.
+func TestPlanPrepare_ResumeOutsideGit_InfraError(t *testing.T) {
+	dir := t.TempDir()
+	_, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, Resume: true})
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) {
+		t.Fatalf("err = %T %v, want *mcpserver.InfraError", err, err)
+	}
+	if ie.Cause == nil {
+		t.Error("InfraError.Cause is nil, want the git error")
+	}
+}
+
 // TestLocalTemplatePlanStyleKeysMatchSchema verifies every active [planStyle]
 // key shipped in localTemplate is declared as a property of
 // $defs.planStyleSection in the local-config JSON Schema, and that the
@@ -1562,7 +1613,7 @@ func TestPlanMark_Checkpoint_ReplaceNotAppend(t *testing.T) {
 // TestPlanMark_Checkpoint_NextIncludesStyleInstructions_ReadFresh verifies
 // Next gains a " Follow the N custom plan instructions (style.instructions)."
 // suffix once [planStyle].instructions is non-empty, and that the style is
-// read fresh on every call (KD9): writing local.toml AFTER the first call
+// read fresh on every call: writing local.toml AFTER the first call
 // still changes the very next call's Next.
 func TestPlanMark_Checkpoint_NextIncludesStyleInstructions_ReadFresh(t *testing.T) {
 	dir := t.TempDir()
@@ -1645,6 +1696,11 @@ func TestPlanMark_Checkpoint_DataErrors(t *testing.T) {
 			name:    "expectedWriters entry fails writerIDRe",
 			data:    map[string]any{"step": "3", "expectedWriters": []any{"bad id!"}},
 			wantMsg: `checkpoint expectedWriters[0] "bad id!" is not a valid writer ID`,
+		},
+		{
+			name:    "expectedWriters not an array",
+			data:    map[string]any{"step": "3", "expectedWriters": "lane-a"},
+			wantMsg: `checkpoint expectedWriters must be a JSON array of writer IDs`,
 		},
 		{
 			name:    "expectedWriters over max",

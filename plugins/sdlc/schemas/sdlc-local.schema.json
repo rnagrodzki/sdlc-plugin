@@ -43,6 +43,7 @@
           "items": {
             "type": "string"
           },
+          "default": [],
           "description": "Custom process instructions /plan shows at start and forwards to every step and subagent, including after context compaction. Default: none."
         }
       },

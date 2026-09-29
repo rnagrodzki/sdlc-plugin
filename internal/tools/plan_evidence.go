@@ -108,9 +108,18 @@ func evidenceRequireRunID(action, runID string) error {
 
 // evidenceLoadRun resolves runID to its evidence directory. state.LoadRun
 // is the only runID check (it rejects any path-traversal form before
-// touching the filesystem); a rejected or missing run is "not found".
+// touching the filesystem); a rejected or missing run is "not found". A
+// valid run whose state file cannot be read or decoded is an InfraError, so a
+// corrupt file is not misreported as a missing run.
 func evidenceLoadRun(mainRoot, runID string) (*state.State, string, error) {
 	st, err := state.LoadRun(mainRoot, runID)
+	if err != nil && !errors.Is(err, state.ErrInvalidRunID) {
+		return nil, "", &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("plan run %s state read failed", runID),
+			Suggestion: "the plan state file is unreadable or corrupt: fix its permissions or delete it, then call plan_prepare again",
+			Cause:      err,
+		}
+	}
 	if err != nil || st == nil {
 		return nil, "", evidenceDomainErr(fmt.Sprintf("plan run %s not found", runID),
 			"call plan_prepare({resume:true, resolveTemplate:true}) and use its runId")
@@ -269,29 +278,100 @@ func evidenceList(list []string) string {
 	return strings.Join(list, ", ")
 }
 
-func evidenceFileIfExists(path string) string {
-	if info, err := os.Stat(path); err == nil && !info.IsDir() {
-		return path
+// evidenceFileIfExists returns path when it is a regular file and "" when
+// it does not exist (or is a directory). Any other stat failure is an
+// InfraError, so an unreadable file is not reported as "never recorded".
+func evidenceFileIfExists(path, runID string) (string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", nil
+		}
+		return "", evidenceInfraErr("read", path, runID, err)
 	}
-	return ""
+	if info.IsDir() {
+		return "", nil
+	}
+	return path, nil
 }
 
 // evidenceCheckpoint converts st.Data["checkpoint"] (a decoded JSON map)
-// into a PlanCheckpoint. A missing or malformed value returns nil.
-func evidenceCheckpoint(st *state.State) *PlanCheckpoint {
+// into a PlanCheckpoint. A missing value returns (nil, nil). A value that
+// does not decode into a PlanCheckpoint is an InfraError: treating it as
+// "never checkpointed" would silently resume from step 0.
+func evidenceCheckpoint(st *state.State) (*PlanCheckpoint, error) {
 	raw, ok := st.Data["checkpoint"]
 	if !ok || raw == nil {
-		return nil
+		return nil, nil
 	}
 	data, err := json.Marshal(raw)
-	if err != nil {
-		return nil
+	if err == nil {
+		var cp PlanCheckpoint
+		if err = json.Unmarshal(data, &cp); err == nil {
+			return &cp, nil
+		}
 	}
-	var cp PlanCheckpoint
-	if err := json.Unmarshal(data, &cp); err != nil {
-		return nil
+	return nil, &mcpserver.InfraError{
+		Msg:        fmt.Sprintf("plan run %s has a malformed checkpoint in %s", state.RunID(st), st.Path),
+		Suggestion: `call plan_mark({marker:"checkpoint", data:{step:"<current step>"}}) to replace it, then retry evidence_digest`,
+		Cause:      err,
 	}
-	return &cp
+}
+
+// evidenceTable renders a markdown table from pre-rendered row lines.
+func evidenceTable(headers []string, rows []string) string {
+	sep := make([]string, len(headers))
+	for i := range sep {
+		sep[i] = "---"
+	}
+	return "| " + strings.Join(headers, " | ") + " |\n|" + strings.Join(sep, "|") + "|\n" + strings.Join(rows, "\n")
+}
+
+// evidenceWriterTally is the per-writer classification evidence_digest
+// reports: table rows plus the done/running/stalled/unreadable breakdown.
+type evidenceWriterTally struct {
+	rows       []string
+	stalled    []string
+	unreadable []string
+	present    map[string]evidenceWriter
+	nDone      int
+	nRunning   int
+	nItems     int
+}
+
+// evidenceClassifyWriters classifies each writer file. An expected writer is
+// stalled when its file is unreadable (it can never report done) or when it
+// is still running and its updatedAt is older than timeout seconds (or does
+// not parse).
+func evidenceClassifyWriters(writers []evidenceWriter, expectedSet map[string]bool, now time.Time, timeout int) evidenceWriterTally {
+	t := evidenceWriterTally{present: make(map[string]evidenceWriter, len(writers))}
+	for _, w := range writers {
+		t.present[w.id] = w
+		isStalled := false
+		if w.unreadable {
+			t.unreadable = append(t.unreadable, w.id)
+			isStalled = expectedSet[w.id]
+			t.rows = append(t.rows, fmt.Sprintf("| %s | %s | — | — | %s |", evidenceCell(w.id), evidenceStatusUnreadable, evidenceYesNo(isStalled)))
+		} else {
+			switch w.file.Status {
+			case evidenceStatusDone:
+				t.nDone++
+			case evidenceStatusRunning:
+				t.nRunning++
+				if expectedSet[w.id] {
+					updated, perr := time.Parse(time.RFC3339, w.file.UpdatedAt)
+					isStalled = perr != nil || now.Sub(updated) > time.Duration(timeout)*time.Second
+				}
+			}
+			t.nItems += len(w.file.Items)
+			t.rows = append(t.rows, fmt.Sprintf("| %s | %s | %d | %s | %s |",
+				evidenceCell(w.id), evidenceCell(w.file.Status), len(w.file.Items), evidenceCell(w.file.UpdatedAt), evidenceYesNo(isStalled)))
+		}
+		if isStalled {
+			t.stalled = append(t.stalled, w.id)
+		}
+	}
+	return t
 }
 
 // ---------------------------------------------------------------------------
@@ -439,7 +519,10 @@ func evidenceDigest(mainRoot string, in PlanSupportIn) (PlanSupportOut, error) {
 		timeout = evidenceDefaultTimeout
 	}
 
-	checkpoint := evidenceCheckpoint(st)
+	checkpoint, err := evidenceCheckpoint(st)
+	if err != nil {
+		return PlanSupportOut{}, err
+	}
 	expected := in.ExpectedWriters
 	if len(expected) == 0 && checkpoint != nil {
 		expected = checkpoint.ExpectedWriters
@@ -454,38 +537,8 @@ func evidenceDigest(mainRoot string, in PlanSupportIn) (PlanSupportOut, error) {
 		return PlanSupportOut{}, err
 	}
 
-	now := evidenceNow()
-	present := make(map[string]evidenceWriter, len(writers))
-	var rows []string
-	var stalled []string
-	nDone, nRunning, nUnreadable, nItems := 0, 0, 0, 0
-	for _, w := range writers {
-		present[w.id] = w
-		isStalled := false
-		if w.unreadable {
-			nUnreadable++
-			// An unreadable expected writer can never report done.
-			isStalled = expectedSet[w.id]
-			rows = append(rows, fmt.Sprintf("| %s | %s | — | — | %s |", evidenceCell(w.id), evidenceStatusUnreadable, evidenceYesNo(isStalled)))
-		} else {
-			switch w.file.Status {
-			case evidenceStatusDone:
-				nDone++
-			case evidenceStatusRunning:
-				nRunning++
-				if expectedSet[w.id] {
-					updated, perr := time.Parse(time.RFC3339, w.file.UpdatedAt)
-					isStalled = perr != nil || now.Sub(updated) > time.Duration(timeout)*time.Second
-				}
-			}
-			nItems += len(w.file.Items)
-			rows = append(rows, fmt.Sprintf("| %s | %s | %d | %s | %s |",
-				evidenceCell(w.id), evidenceCell(w.file.Status), len(w.file.Items), evidenceCell(w.file.UpdatedAt), evidenceYesNo(isStalled)))
-		}
-		if isStalled {
-			stalled = append(stalled, w.id)
-		}
-	}
+	tally := evidenceClassifyWriters(writers, expectedSet, evidenceNow(), timeout)
+	present, stalled := tally.present, tally.stalled
 	var missing []string
 	for _, w := range expected {
 		if _, ok := present[w]; !ok {
@@ -494,11 +547,11 @@ func evidenceDigest(mainRoot string, in PlanSupportIn) (PlanSupportOut, error) {
 	}
 
 	table := evidenceNoWriters
-	if len(rows) > 0 {
-		table = "| writer | status | items | updatedAt | stalled |\n|---|---|---|---|---|\n" + strings.Join(rows, "\n")
+	if len(tally.rows) > 0 {
+		table = evidenceTable([]string{"writer", "status", "items", "updatedAt", "stalled"}, tally.rows)
 	}
 
-	style := loadPlanStyle(mainRoot)
+	style, styleErr := loadPlanStyle(mainRoot)
 	step, iteration := "0", 0
 	if checkpoint != nil {
 		if checkpoint.Step != "" {
@@ -508,18 +561,22 @@ func evidenceDigest(mainRoot string, in PlanSupportIn) (PlanSupportOut, error) {
 	}
 
 	unreadablePart := ""
-	if nUnreadable > 0 {
-		unreadablePart = fmt.Sprintf(", %d unreadable", nUnreadable)
+	if len(tally.unreadable) > 0 {
+		unreadablePart = fmt.Sprintf(", %d unreadable", len(tally.unreadable))
 	}
 	summary := fmt.Sprintf("%s — step %s, iteration %d; writers: %d done, %d running, %d missing, %d stalled%s; %d items; %d custom instructions.",
-		in.RunID, step, iteration, nDone, nRunning, len(missing), len(stalled), unreadablePart, nItems, len(style.Instructions))
+		in.RunID, step, iteration, tally.nDone, tally.nRunning, len(missing), len(stalled), unreadablePart, tally.nItems, len(style.Instructions))
+	if styleErr != "" {
+		summary += fmt.Sprintf(" Warning: %s — custom plan instructions could not be loaded; fix local.toml.", styleErr)
+	}
 
 	out := PlanSupportOut{
 		Summary: summary,
 		Writers: &EvidenceWritersOut{
-			Table:          table,
-			MissingWriters: missing,
-			StalledWriters: stalled,
+			Table:             table,
+			MissingWriters:    missing,
+			StalledWriters:    stalled,
+			UnreadableWriters: tally.unreadable,
 		},
 	}
 	lagging := len(missing) > 0 || len(stalled) > 0
@@ -548,13 +605,21 @@ func evidenceDigest(mainRoot string, in PlanSupportIn) (PlanSupportOut, error) {
 		userPrompt, _ = intent["userPrompt"].(string)
 	}
 	planFilePath, _ := st.Data["planFilePath"].(string)
+	guardrailsFile, err := evidenceFileIfExists(filepath.Join(dir, evidenceGuardrails), in.RunID)
+	if err != nil {
+		return PlanSupportOut{}, err
+	}
+	briefPath, err := evidenceFileIfExists(filepath.Join(dir, evidenceBriefFile), in.RunID)
+	if err != nil {
+		return PlanSupportOut{}, err
+	}
 
 	out.Digest = &EvidenceDigestOut{
 		RunID:          in.RunID,
 		PlanFilePath:   planFilePath,
 		UserPrompt:     userPrompt,
-		GuardrailsFile: evidenceFileIfExists(filepath.Join(dir, evidenceGuardrails)),
-		BriefPath:      evidenceFileIfExists(filepath.Join(dir, evidenceBriefFile)),
+		GuardrailsFile: guardrailsFile,
+		BriefPath:      briefPath,
 		Instructions:   style.Instructions,
 		Checkpoint:     checkpoint,
 		Index:          evidenceIndex(writers),
@@ -605,7 +670,7 @@ func evidenceIndex(writers []evidenceWriter) string {
 	if total > evidenceIndexMaxRows {
 		rows = append(rows, fmt.Sprintf("| … | — | — | %d more; use evidence_get writerIds |", total-evidenceIndexMaxRows))
 	}
-	return "| id | writer | ref | summary |\n|---|---|---|---|\n" + strings.Join(rows, "\n")
+	return evidenceTable([]string{"id", "writer", "ref", "summary"}, rows)
 }
 
 // ---------------------------------------------------------------------------

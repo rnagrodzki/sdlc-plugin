@@ -16,7 +16,7 @@ You receive:
 - `{LENS}` — `risk` (this is your lens identifier)
 - `{LENS_FOCUS}` — File paths, Verification strategy, Scope discipline, Guardrail compliance
 - `{GUARDRAILS_FILE}` — absolute path to `guardrails.md`: one `## <id> (<severity>)` heading per guardrail, `> ` description lines below; title `# Active plan guardrails (0)` means none
-- `{BRIEF_FILE}` — absolute path to discovery-brief.md, or `"none — orchestrator skipped"` (for context)
+- `{BRIEF_FILE}` — absolute path to `brief.md` in the run's evidence directory (`<runId>.evidence/brief.md`), or `"none — orchestrator skipped"` (for context)
 - `{REQUIREMENTS_JSON}` — JSON array of `{ reqId, capability, type, name, scenarioCount }` from the delta-spec inventory, or `"null"` when unavailable. Reference for context — risk lens does not produce traceability rows.
 
 Read the plan file at `{PLAN_FILE_PATH}` before evaluating.

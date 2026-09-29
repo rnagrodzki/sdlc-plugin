@@ -77,6 +77,9 @@ type EvidenceWritersOut struct {
 	Table          string   `json:"table" render:"raw"` // | writer | status | items | updatedAt | stalled |
 	MissingWriters []string `json:"missingWriters"`
 	StalledWriters []string `json:"stalledWriters"`
+	// UnreadableWriters lists every writer whose evidence file is corrupt or
+	// unreadable, expected or not; re-dispatch them or accept the loss.
+	UnreadableWriters []string `json:"unreadableWriters"`
 }
 
 // EvidenceDigestOut is evidence_digest's run summary (omitted when

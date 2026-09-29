@@ -570,10 +570,12 @@ never in parallel with another `main` write, since two parallel upserts of
 - After `plan_mark({marker: "done"})`, the Stop hook
   (`internal/hooks/stop_hooks.go`, `planIntegrityFromState`) deletes both the
   state file and `state.EvidenceDir(st.Root, runId)`.
-- `execute`/`ship`'s TTL garbage collection (`gcStateFiles`) only prunes
-  stale plan/execute/ship state files; it never references `EvidenceDir` and
-  does not clean up evidence directories. The two paths above are the only
-  cleanup for `.evidence/` directories.
+- `execute_state` gc (`execReapRunDirectories` in
+  `internal/tools/execute_state.go`) removes `runs/` subdirectories older
+  than the TTL that do not belong to a live execute run. This includes
+  abandoned `<runId>.evidence/` directories. It is the TTL backstop for runs
+  that never reached `done` and were never followed by a new run on the same
+  branch.
 
 ---
 

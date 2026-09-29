@@ -1,4 +1,4 @@
-# ─── SDLC Local Configuration (v1) ───────────────────────────────
+# ─── SDLC Local Configuration ────────────────────────────────────
 # Personal preferences — gitignored, not shared with the team.
 # Edit this file directly, then run the validate tool to check.
 
@@ -9,7 +9,7 @@
 auto = true
 
 # Default version bump.
-# Valid: "major" | "minor" | "patch"
+# Valid: "major" | "minor" | "patch", or a pre-release label such as "rc", "beta", "alpha"
 bump = "patch"
 
 # Create PR as draft.

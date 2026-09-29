@@ -594,17 +594,22 @@ type PlanTasks struct {
 }
 
 // loadPlanStyle reads the "planStyle" config section, mirroring
-// loadGuardrails' readSection + benign-absence handling: any error from
-// config.ReadSection (missing file, missing section, or malformed JSON)
-// falls back to defaults rather than surfacing an error, since PlanStyle
-// has no error-string return channel. Defaults are "standard" verbosity,
-// "technical" audience, a nil NarrativeRules, and a nil Instructions.
-func loadPlanStyle(mainRoot string) PlanStyle {
+// loadGuardrails: a missing file or section (config.ErrNotFound) is benign
+// and returns the defaults with no error string. Any other ReadSection error
+// (malformed TOML, unreadable file) also returns the defaults, plus an error
+// string the caller must surface — otherwise a broken local.toml would
+// silently drop the custom plan instructions. Defaults are "standard"
+// verbosity, "technical" audience, a nil NarrativeRules, and a nil
+// Instructions.
+func loadPlanStyle(mainRoot string) (PlanStyle, string) {
 	style := PlanStyle{Verbosity: "standard", Audience: "technical"}
 
 	section, err := config.ReadSection(mainRoot, "planStyle")
 	if err != nil {
-		return style
+		if errors.Is(err, config.ErrNotFound) {
+			return style, ""
+		}
+		return style, fmt.Sprintf("Failed to read planStyle config: %s", err.Error())
 	}
 
 	if v, ok := section["verbosity"].(string); ok && v != "" {
@@ -632,7 +637,7 @@ func loadPlanStyle(mainRoot string) PlanStyle {
 		style.Instructions = list
 	}
 
-	return style
+	return style, ""
 }
 
 // loadPlanTasks reads the "plan" config section's "tasks" sub-key,
@@ -1226,8 +1231,9 @@ type planRun struct {
 //
 // It returns the effective input: on resume, the saved userPrompt (when not
 // empty) and saved flags (when present) replace the input values, and
-// ResolveTemplate is forced on. Outside git a resume call fails like a
-// branch with no run; the other calls return a nil run.
+// ResolveTemplate is forced on. When the current branch cannot be read
+// (outside git, or a failed git call) a resume call returns an InfraError
+// carrying the git error; the other calls return a nil run.
 func selectPlanRun(mainRoot, contentRoot string, in PlanPrepareIn) (planRun, PlanPrepareIn, error) {
 	if in.Resume {
 		in.ResolveTemplate = true
@@ -1235,12 +1241,18 @@ func selectPlanRun(mainRoot, contentRoot string, in PlanPrepareIn) (planRun, Pla
 
 	branch, err := gitx.CurrentBranch(contentRoot)
 	if err != nil {
+		if in.Resume {
+			// A resume must not tell the caller to start a new run when the
+			// real problem is a failed git call: surface it with its cause.
+			return planRun{}, in, &mcpserver.InfraError{
+				Msg:        "could not determine current branch for resume",
+				Suggestion: "Run plan_prepare from a git worktree on a named branch; if git itself failed, fix that and retry the resume.",
+				Cause:      err,
+			}
+		}
 		branch = ""
 	}
 	if branch == "" {
-		if in.Resume {
-			return planRun{}, in, noActivePlanRunError("(unknown)")
-		}
 		next := planPrepareNextFirst
 		if in.ResolveTemplate {
 			next = planPrepareNextTmpl
@@ -1468,7 +1480,7 @@ func guardrailLine(v any) string {
 // returns its path.
 func writeGuardrailsFile(st *state.State, guardrails []map[string]any) (string, error) {
 	dir := state.EvidenceDir(st.Root, state.RunID(st))
-	path := filepath.Join(dir, "guardrails.md")
+	path := filepath.Join(dir, evidenceGuardrails)
 	werr := os.MkdirAll(dir, 0o755)
 	if werr == nil {
 		werr = fsx.AtomicWriteBytes(path, []byte(renderGuardrailsMarkdown(guardrails)))
@@ -1592,7 +1604,10 @@ func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepar
 	}
 
 	// 3b. Plan style (personal preference) and plan tasks (team contract).
-	planStyle := loadPlanStyle(mainRoot)
+	planStyle, styleErr := loadPlanStyle(mainRoot)
+	if styleErr != "" {
+		errs = append(errs, styleErr)
+	}
 	planTasks := loadPlanTasks(mainRoot)
 
 	// 3c. guardrails.md in the run's evidence directory.
@@ -1727,8 +1742,8 @@ type PlanCheckpoint struct {
 
 // writerIDRe validates a single PlanCheckpoint.ExpectedWriters entry: it
 // must start with a letter or digit, followed by up to 63 more letters,
-// digits, dots, underscores or hyphens (max 64 total). Also reused by the
-// evidence-directory writer bookkeeping (Task 6).
+// digits, dots, underscores or hyphens (max 64 total). The evidence store
+// (plan_support evidence_* actions) validates writer IDs with it too.
 var writerIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
 // validCheckpointSteps lists the plan SKILL.md step identifiers a
@@ -1784,7 +1799,13 @@ func validateCheckpointData(data map[string]any) (PlanCheckpoint, error) {
 
 	var expectedWriters []string
 	if raw, present := data["expectedWriters"]; present {
-		arr, _ := raw.([]any)
+		arr, ok := raw.([]any)
+		if !ok {
+			return PlanCheckpoint{}, &mcpserver.DomainError{
+				Msg:        "checkpoint expectedWriters must be a JSON array of writer IDs",
+				Suggestion: `pass expectedWriters as an array, e.g. data {step:"3", expectedWriters:["lane-static-structural-r1"]}`,
+			}
+		}
 		if len(arr) > 32 {
 			return PlanCheckpoint{}, &mcpserver.DomainError{
 				Msg:        fmt.Sprintf("checkpoint expectedWriters has %d entries, max 32", len(arr)),
@@ -1809,13 +1830,18 @@ func validateCheckpointData(data map[string]any) (PlanCheckpoint, error) {
 
 // checkpointNext builds the "checkpoint" marker's Next instruction: the
 // step-continuation sentence, plus a custom-instructions reminder when the
-// "planStyle" config section (read fresh on every call, never cached —
-// KD9) has any. Mirrors the phrasing loadPlanStyle's doc comment describes
+// "planStyle" config section has any. The section is read fresh on every
+// call, never cached, so an edit to local.toml takes effect at the next
+// checkpoint without restarting the MCP server. Mirrors the phrasing loadPlanStyle's doc comment describes
 // for style.instructions.
 func checkpointNext(mainRoot string, cp PlanCheckpoint) string {
 	next := fmt.Sprintf("Checkpoint saved at step %s. Continue step %s.", cp.Step, cp.Step)
-	if n := len(loadPlanStyle(mainRoot).Instructions); n > 0 {
+	style, styleErr := loadPlanStyle(mainRoot)
+	if n := len(style.Instructions); n > 0 {
 		next += fmt.Sprintf(" Follow the %d custom plan instructions (style.instructions).", n)
+	}
+	if styleErr != "" {
+		next += fmt.Sprintf(" Warning: %s — custom plan instructions could not be loaded; fix local.toml.", styleErr)
 	}
 	return next
 }
@@ -1824,7 +1850,7 @@ func checkpointNext(mainRoot string, cp PlanCheckpoint) string {
 type PlanMarkIn struct {
 	Marker string         `json:"marker" jsonschema:"enum=plan-file,enum=skillInvoked,enum=guardrailsEvaluated,enum=critiqueRan,enum=done,enum=guardrailResults,enum=criticalDecisions,enum=checkpoint" jsonschema_description:"Checkpoint marker: \"plan-file\", \"skillInvoked\", \"guardrailsEvaluated\", \"critiqueRan\", or the terminal \"done\" marker stamp the current timestamp into planIntegrity; \"guardrailResults\" and \"criticalDecisions\" instead append data's array payload to their own state key. \"checkpoint\" replaces the progress checkpoint (requires data)."`
 	Path   string         `json:"path" jsonschema_description:"Plan file path to record. Only used (and required) when marker is \"plan-file\"."`
-	Data   map[string]any `json:"data,omitempty" jsonschema_description:"Structured payload for the \"guardrailResults\" marker ({results:[{id,status,detail}]}) or the \"criticalDecisions\" marker ({decisions:[{key,choice,reason}]}). For \"checkpoint\": JSON object {step: string, iteration: integer >= 0, expectedWriters: JSON array of writer IDs (max 32)}. Example: {\"step\":\"3\",\"iteration\":1,\"expectedWriters\":[\"lane-static-structural-r1\"]}. Replaced, not appended. Ignored for every other marker."`
+	Data   map[string]any `json:"data,omitempty" jsonschema_description:"Structured payload for the \"guardrailResults\" marker ({results:[{id,status,detail}]}) or the \"criticalDecisions\" marker ({decisions:[{key,choice,reason}]}). For \"checkpoint\": JSON object {step: string, one of \"0\", \"1\", \"2\", \"3\", \"4\", \"5\", \"6\", \"6.5\", \"6.6\", \"7\"; iteration: integer >= 0; expectedWriters: JSON array of writer IDs (max 32)}. Example: {\"step\":\"3\",\"iteration\":1,\"expectedWriters\":[\"lane-static-structural-r1\"]}. Replaced, not appended. Ignored for every other marker."`
 }
 
 // PlanMarkOut is the output for the plan_mark tool.
@@ -1881,7 +1907,7 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 	}
 
 	// Every marker's lookup resolves the branch's most recent plan run by
-	// filename timestamp (KD17), not state.Find's mtime-based, prefix-only
+	// filename timestamp, not state.Find's mtime-based, prefix-only
 	// match — state.Find("plan", "feat") would also match a
 	// plan-feat-x-*.json file belonging to a different branch ("feat-x")
 	// because its prefix match is not slug-delimited beyond the leading
@@ -2005,7 +2031,7 @@ func RegisterPlanTools(s *mcpserver.Server) {
 
 	mcpserver.Register(s, "plan_mark",
 		"INTERNAL — called by sdlc skills only. Write a plan-integrity checkpoint marker (plan-file, skillInvoked, guardrailsEvaluated, critiqueRan, done) into the current branch's plan state file, append structured data (guardrailResults, criticalDecisions) to it, or replace the progress checkpoint (checkpoint). "+
-			"checkpoint: replace the progress checkpoint. Requires data.step. Optional: data.iteration, data.expectedWriters. Returns next. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError. "+
+			"checkpoint: replace the progress checkpoint. Requires data.step (one of \"0\", \"1\", \"2\", \"3\", \"4\", \"5\", \"6\", \"6.5\", \"6.6\", \"7\"). Optional: data.iteration, data.expectedWriters. Returns next. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError. "+
 			"Markers other than checkpoint return no next: the call only records state; continue the current SKILL.md step.",
 		mcpserver.Annotations{
 			Title:      "Record plan progress marker",

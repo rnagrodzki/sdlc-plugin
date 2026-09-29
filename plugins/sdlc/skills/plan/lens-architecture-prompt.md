@@ -15,7 +15,7 @@ You receive:
 - `{REQUIREMENTS_CHECKLIST}` — numbered requirements list from Step 1
 - `{LENS}` — `architecture` (this is your lens identifier)
 - `{LENS_FOCUS}` — Buildability, Task descriptions, Decision documentation, Dependency accuracy
-- `{BRIEF_FILE}` — absolute path to discovery-brief.md, or `"none — orchestrator skipped"`
+- `{BRIEF_FILE}` — absolute path to `brief.md` in the run's evidence directory (`<runId>.evidence/brief.md`), or `"none — orchestrator skipped"`
 - `{GUARDRAILS_FILE}` — absolute path to the run's `guardrails.md` (for context only — not your responsibility)
 - `{REQUIREMENTS_JSON}` — JSON array of `{ reqId, capability, type, name, scenarioCount }` from the delta-spec inventory, or `"null"` when unavailable. Reference for context — architecture lens does not produce traceability rows.
 

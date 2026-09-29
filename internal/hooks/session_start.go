@@ -648,14 +648,14 @@ const planResumeMaxAge = 24 * time.Hour
 // fires on source == "compact": a plan run in progress at ordinary session
 // startup is the normal, expected state (the developer is mid-conversation
 // with the plan skill already in context), so only compaction — which drops
-// that in-context skill knowledge — needs a printed reminder (Deviations).
+// that in-context skill knowledge — needs a printed reminder.
 //
 // state.ActivePlanRun already restricts the match to the exact branch slug
 // (LatestPlanRun) and to a run that has skillInvoked but not done
 // (planIntegrity), so a stale, completed, or wrong-branch run never reaches
 // here. Any ActivePlanRun error (e.g. corrupt state JSON) is treated the
 // same as "no active run" — this phase must degrade silently, not fail the
-// hook (KD15).
+// hook.
 func planResumeLines(root, branch, source string) []string {
 	if source != "compact" {
 		return nil

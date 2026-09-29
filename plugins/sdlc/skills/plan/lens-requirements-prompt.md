@@ -15,7 +15,7 @@ You receive:
 - `{REQUIREMENTS_CHECKLIST}` — numbered requirements list from Step 1
 - `{LENS}` — `requirements` (this is your lens identifier)
 - `{LENS_FOCUS}` — Requirements coverage, Metadata completeness, Plan completeness, OpenSpec G16, Exploration provenance, Best-practice traceability
-- `{BRIEF_FILE}` — absolute path to discovery-brief.md, or `"none — orchestrator skipped"`
+- `{BRIEF_FILE}` — absolute path to `brief.md` in the run's evidence directory (`<runId>.evidence/brief.md`), or `"none — orchestrator skipped"`
 - `{OPENSPEC_TASKS}` — serialized JSON array from `openspecContext.tasks[]`, or `"none — plan not from OpenSpec"`
 - `{GUARDRAILS_FILE}` — absolute path to the run's `guardrails.md` (for context only — not your responsibility)
 - `{REQUIREMENTS_JSON}` — JSON array of `{ reqId, capability, type, name, scenarioCount }` from the delta-spec inventory, or `"null"` when the inventory is unavailable (CLI absent or non-OpenSpec plan)

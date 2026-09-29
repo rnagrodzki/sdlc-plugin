@@ -2,6 +2,7 @@ package state
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -979,6 +980,9 @@ func TestLoadRun_RejectsInvalidRunIDs(t *testing.T) {
 			if st != nil {
 				t.Fatalf("LoadRun(%q): expected nil state on error, got %+v", tt.runID, st)
 			}
+			if !errors.Is(err, ErrInvalidRunID) {
+				t.Errorf("LoadRun(%q) err = %v, want it to wrap ErrInvalidRunID", tt.runID, err)
+			}
 		})
 	}
 
@@ -1009,6 +1013,9 @@ func TestLoadRun_CorruptJSON_ReturnsError(t *testing.T) {
 	}
 	if st != nil {
 		t.Fatalf("LoadRun: expected nil state on error, got %+v", st)
+	}
+	if errors.Is(err, ErrInvalidRunID) {
+		t.Errorf("LoadRun: corrupt-file err = %v wraps ErrInvalidRunID, want a read/decode error", err)
 	}
 }
 

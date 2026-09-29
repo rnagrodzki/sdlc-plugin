@@ -572,12 +572,55 @@ func TestEvidence_CorruptWriterFile_UnreadableThenReplaced(t *testing.T) {
 	if !strings.Contains(out.Writers.Table, "| w1 | unreadable |") {
 		t.Errorf("table missing unreadable row:\n%s", out.Writers.Table)
 	}
+	// w1 is not expected, so it is neither missing nor stalled — the
+	// structured unreadableWriters field is the only signal for it.
+	if got := out.Writers.UnreadableWriters; len(got) != 1 || got[0] != "w1" {
+		t.Errorf("UnreadableWriters = %v, want [w1]", got)
+	}
+	if len(out.Writers.StalledWriters) != 0 || len(out.Writers.MissingWriters) != 0 {
+		t.Errorf("stalled = %v, missing = %v, want both empty", out.Writers.StalledWriters, out.Writers.MissingWriters)
+	}
 	rec := evidenceMustCall(t, root, PlanSupportIn{Action: "evidence_record", RunID: runID, WriterID: "w1", Items: []EvidenceItem{{ID: "F-1", Summary: "s"}}})
 	if !strings.Contains(rec.Summary, "Replaced the unreadable writer file "+path) {
 		t.Errorf("summary does not report the replacement: %q", rec.Summary)
 	}
 	if got := evidenceReadFile(t, root, runID, "w1"); len(got.Items) != 1 || got.Status != "running" {
 		t.Errorf("replaced file = %+v", got)
+	}
+}
+
+// TestEvidence_Brief_WriteFailsAfterWriterFile isolates the second write of
+// evidence_record: the writer file is written, then brief.md fails (it is a
+// directory). The call returns an InfraError, the writer file already holds
+// the new items, and a retry after the fault is cleared stores the brief
+// without duplicating items (upsert by id).
+func TestEvidence_Brief_WriteFailsAfterWriterFile(t *testing.T) {
+	root, runID := evidenceTestFixture(t)
+	briefPath := filepath.Join(state.EvidenceDir(root, runID), "brief.md")
+	if err := os.MkdirAll(briefPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	in := PlanSupportIn{Action: "evidence_record", RunID: runID, WriterID: "main", Brief: "# brief",
+		Items: []EvidenceItem{{ID: "F-main-1", Summary: "s", Ref: "a.go:1"}}}
+
+	_, err := planSupportCore(root, root, in)
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) {
+		t.Fatalf("err = %T %v, want *mcpserver.InfraError", err, err)
+	}
+	if want := "evidence write failed: " + briefPath; ie.Msg != want {
+		t.Errorf("msg = %q, want %q", ie.Msg, want)
+	}
+	if got := evidenceReadFile(t, root, runID, "main"); len(got.Items) != 1 || got.Items[0].ID != "F-main-1" {
+		t.Errorf("writer file after failed brief write = %+v, want the new item", got)
+	}
+
+	if err := os.Remove(briefPath); err != nil {
+		t.Fatal(err)
+	}
+	rec := evidenceMustCall(t, root, in)
+	if rec.Record.BriefPath != briefPath || rec.Record.ItemCount != 1 {
+		t.Errorf("retry record = %+v, want briefPath %s and 1 item", rec.Record, briefPath)
 	}
 }
 
@@ -611,6 +654,36 @@ func TestEvidence_ErrorMatrix(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	runStatePath := func(root, runID string) string {
+		return filepath.Join(planTestRunsDir(root), runID+".json")
+	}
+	// corruptRun overwrites the run's own state file with invalid JSON.
+	corruptRun := func(t *testing.T, root, runID string) {
+		if err := os.WriteFile(runStatePath(root, runID), []byte("{broken"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// badCheckpoint stores a checkpoint value that is not an object.
+	badCheckpoint := func(t *testing.T, root, runID string) {
+		p := runStatePath(root, runID)
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var data map[string]any
+		if err := json.Unmarshal(raw, &data); err != nil {
+			t.Fatal(err)
+		}
+		data["checkpoint"] = "not-an-object"
+		raw, err = json.Marshal(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, raw, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	corruptMsg := func(_, runID string) string { return "plan run " + runID + " state read failed" }
 	seedMain := func(t *testing.T, root, runID string) {
 		evidenceMustCall(t, root, PlanSupportIn{Action: "evidence_record", RunID: runID, WriterID: "main", Items: []EvidenceItem{{ID: "F-0", Summary: "seed"}}})
 	}
@@ -673,6 +746,9 @@ func TestEvidence_ErrorMatrix(t *testing.T) {
 		{name: "record/OS error", setup: enotdir, infra: true, in: func(r string) PlanSupportIn {
 			return PlanSupportIn{Action: "evidence_record", RunID: r, WriterID: "w1"}
 		}, msgPrefix: func(root, runID string) string { return "evidence read failed: " + state.EvidenceDir(root, runID) }},
+		{name: "record/run state corrupt", setup: corruptRun, infra: true, in: func(r string) PlanSupportIn {
+			return PlanSupportIn{Action: "evidence_record", RunID: r, WriterID: "w1"}
+		}, msg: corruptMsg},
 
 		// evidence_digest
 		{name: "digest/runId empty", in: func(string) PlanSupportIn { return PlanSupportIn{Action: "evidence_digest"} },
@@ -693,6 +769,12 @@ func TestEvidence_ErrorMatrix(t *testing.T) {
 		{name: "digest/OS error", setup: enotdir, infra: true, in: func(r string) PlanSupportIn {
 			return PlanSupportIn{Action: "evidence_digest", RunID: r}
 		}, msg: func(root, runID string) string { return "evidence read failed: " + state.EvidenceDir(root, runID) }},
+		{name: "digest/run state corrupt", setup: corruptRun, infra: true, in: func(r string) PlanSupportIn {
+			return PlanSupportIn{Action: "evidence_digest", RunID: r}
+		}, msg: corruptMsg},
+		{name: "digest/checkpoint malformed", setup: badCheckpoint, infra: true, in: func(r string) PlanSupportIn {
+			return PlanSupportIn{Action: "evidence_digest", RunID: r}
+		}, msgPrefix: func(_, runID string) string { return "plan run " + runID + " has a malformed checkpoint in " }},
 
 		// evidence_get
 		{name: "get/runId empty", in: func(string) PlanSupportIn { return PlanSupportIn{Action: "evidence_get", IDs: []string{"F-1"}} },
@@ -720,6 +802,9 @@ func TestEvidence_ErrorMatrix(t *testing.T) {
 		{name: "get/OS error", setup: enotdir, infra: true, in: func(r string) PlanSupportIn {
 			return PlanSupportIn{Action: "evidence_get", RunID: r, IDs: []string{"F-1"}}
 		}, msg: func(root, runID string) string { return "evidence read failed: " + state.EvidenceDir(root, runID) }},
+		{name: "get/run state corrupt", setup: corruptRun, infra: true, in: func(r string) PlanSupportIn {
+			return PlanSupportIn{Action: "evidence_get", RunID: r, IDs: []string{"F-1"}}
+		}, msg: corruptMsg},
 	}
 
 	for _, c := range cases {
