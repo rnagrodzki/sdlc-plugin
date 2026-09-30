@@ -499,6 +499,10 @@ const evidenceDigestNextBase = "If the sdlc:plan skill instructions are not in c
 	"If lanes and lensReviewers are not in context, call plan_prepare({resume:true, resolveTemplate:true}) first. " +
 	"Re-read the plan file, then continue at step %s (iteration %d). Fetch bodies with evidence_get only when the step needs them."
 
+// evidenceNoExpectedWritersNext is the statusOnly next step when neither
+// the input nor the run checkpoint names any expected writer.
+const evidenceNoExpectedWritersNext = "No expected writers: expectedWriters is empty and the run checkpoint lists none. Pass expectedWriters with the writer IDs you dispatched, then poll again."
+
 func evidenceDigest(mainRoot string, in PlanSupportIn) (PlanSupportOut, error) {
 	if err := evidenceRequireRunID("evidence_digest", in.RunID); err != nil {
 		return PlanSupportOut{}, err
@@ -586,6 +590,10 @@ func evidenceDigest(mainRoot string, in PlanSupportIn) (PlanSupportOut, error) {
 		case lagging:
 			out.Next = fmt.Sprintf("Missing: %s. Stalled: %s. Wait one more poll cycle; if a writer is still listed, force-progress past it (SKILL.md POLL step).",
 				evidenceList(missing), evidenceList(stalled))
+		case len(expected) == 0:
+			// evidenceAllDone is vacuously true for an empty list; do not
+			// report "all done" when nothing was expected.
+			out.Next = evidenceNoExpectedWritersNext
 		case evidenceAllDone(expected, present):
 			out.Next = "All expected writers are done. Fetch their results with evidence_get writerIds."
 		default:

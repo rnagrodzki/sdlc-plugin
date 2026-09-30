@@ -481,6 +481,7 @@ With `statusOnly: true` the `evidence_digest` action SHALL return only the write
 | Condition | `next` |
 |---|---|
 | Any missing or stalled writer | `Missing: <list or (none)>. Stalled: <list or (none)>. Wait one more poll cycle; if a writer is still listed, force-progress past it (SKILL.md POLL step).` |
+| No expected writers (none in the input and none in the run checkpoint) | `No expected writers: expectedWriters is empty and the run checkpoint lists none. Pass expectedWriters with the writer IDs you dispatched, then poll again.` |
 | Every expected writer has a readable file with status `done` | `All expected writers are done. Fetch their results with evidence_get writerIds.` |
 | Otherwise | `Poll again in about 60 seconds.` |
 
@@ -488,6 +489,11 @@ With `statusOnly: true` the `evidence_digest` action SHALL return only the write
 - **WHEN** `statusOnly` is `true` and the only expected writer `lane-a` has status `done`
 - **THEN** `digest` is absent
 - **AND** `next` is `All expected writers are done. Fetch their results with evidence_get writerIds.`
+
+#### Scenario: No expected writers while polling
+- **WHEN** `statusOnly` is `true`, `expectedWriters` is omitted, and the run checkpoint lists no expected writers
+- **THEN** `next` is `No expected writers: expectedWriters is empty and the run checkpoint lists none. Pass expectedWriters with the writer IDs you dispatched, then poll again.`
+- **AND** `next` does not say that all expected writers are done
 
 #### Scenario: Stalled writer while polling
 - **WHEN** `statusOnly` is `true` and expected writer `lane-b` is stalled
