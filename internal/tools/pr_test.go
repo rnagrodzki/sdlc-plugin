@@ -441,6 +441,26 @@ func TestPrPrepare_NoExpectedAccount_WithRemote_ProbesRepoAccess(t *testing.T) {
 	}
 }
 
+// TestPrPrepare_DirtyFiles_FirstEntryUnstaged pins dirtyFiles parsing when
+// the first porcelain entry starts with a space (an unstaged change).
+// gitx.Status keeps that space (see TestStatus_KeepsLeadingSpaceOfFirstEntry),
+// so every line has its path at column 3.
+func TestPrPrepare_DirtyFiles_FirstEntryUnstaged(t *testing.T) {
+	rt := expectedAccountRuntime(notFoundSection, "")
+	rt.gitStatus = func(dir string) (string, error) { return " M a.go\n M b.go", nil }
+
+	out, err := prPrepareCoreWith("/mock/root", "/mock/work", PRPrepareIn{SkipConfigCheck: true}, rt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if want := []string{"a.go", "b.go"}; !slices.Equal(out.DirtyFiles, want) {
+		t.Errorf("DirtyFiles: got %q, want %q", out.DirtyFiles, want)
+	}
+	if !slices.Contains(out.Warnings, "Uncommitted changes detected (2 file(s)). They will NOT be included in the PR.") {
+		t.Errorf("expected the uncommitted-changes warning, got %v", out.Warnings)
+	}
+}
+
 func TestPrPrepare_GithubSectionUnreadable_Warns(t *testing.T) {
 	rt := expectedAccountRuntime(func(root, section string) (map[string]any, error) {
 		return nil, errors.New("config: toml: expected newline")

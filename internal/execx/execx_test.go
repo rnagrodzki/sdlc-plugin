@@ -28,6 +28,16 @@ func TestRun_TrimsTrailingNewline(t *testing.T) {
 	}
 }
 
+func TestRun_KeepLeadingSpace(t *testing.T) {
+	got, err := Run("sh", []string{"-c", `printf ' M a.go\n M b.go\n\n'`}, Options{KeepLeadingSpace: true})
+	if err != nil {
+		t.Fatalf("Run: unexpected error: %v", err)
+	}
+	if want := " M a.go\n M b.go"; got != want {
+		t.Fatalf("Run: got %q, want %q", got, want)
+	}
+}
+
 func TestRun_Stdin(t *testing.T) {
 	got, err := Run("cat", nil, Options{Stdin: strings.NewReader("piped-input")})
 	if err != nil {

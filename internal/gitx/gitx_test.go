@@ -362,6 +362,27 @@ func TestStatus_DirtyTree(t *testing.T) {
 	}
 }
 
+// TestStatus_KeepsLeadingSpaceOfFirstEntry pins that the first porcelain
+// entry keeps its leading status column. For a modified, unstaged file the
+// line is " M <path>"; trimming it shifts the path by one character for
+// every caller that reads the path from column 3.
+func TestStatus_KeepsLeadingSpaceOfFirstEntry(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	if err := os.WriteFile(filepath.Join(dir, "init.txt"), []byte("changed\n"), 0644); err != nil {
+		t.Fatalf("write init.txt: %v", err)
+	}
+
+	got, err := Status(dir)
+	if err != nil {
+		t.Fatalf("Status: unexpected error: %v", err)
+	}
+	if want := " M init.txt"; got != want {
+		t.Fatalf("Status: got %q, want %q", got, want)
+	}
+}
+
 func TestDiff_BranchContribution(t *testing.T) {
 	dir := t.TempDir()
 	initGitRepo(t, dir)

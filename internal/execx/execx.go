@@ -28,6 +28,7 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // ErrOutputCap is returned by Run when a command's stdout would exceed
@@ -50,6 +51,11 @@ type Options struct {
 	MaxBytes int64
 	// Stdin, when non-nil, is piped to the command's standard input.
 	Stdin io.Reader
+	// KeepLeadingSpace makes Run trim only trailing whitespace from
+	// stdout. Use it for output whose leading spaces carry meaning, such
+	// as `git status --porcelain`, where " M a.go" starts with a status
+	// column that is a space.
+	KeepLeadingSpace bool
 }
 
 // Run executes cmd with args and returns its trimmed stdout.
@@ -95,6 +101,9 @@ func Run(cmd string, args []string, opt Options) (string, error) {
 		return "", fmt.Errorf("execx: %s %s: %w", cmd, strings.Join(args, " "), runErr)
 	}
 
+	if opt.KeepLeadingSpace {
+		return strings.TrimRightFunc(out.buf.String(), unicode.IsSpace), nil
+	}
 	return strings.TrimSpace(out.buf.String()), nil
 }
 

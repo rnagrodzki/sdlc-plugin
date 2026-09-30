@@ -59,9 +59,11 @@ func DefaultBranch(dir string) (string, error) {
 }
 
 // Status returns the porcelain status output of the working tree.
-// An empty string with a nil error means a clean working tree.
+// An empty string with a nil error means a clean working tree. Only
+// trailing whitespace is trimmed: the first entry keeps its leading status
+// column (e.g. " M a.go"), so every line has the path at column 3.
 func Status(dir string) (string, error) {
-	out, err := execx.Run("git", []string{"status", "--porcelain"}, execx.Options{Dir: dir})
+	out, err := execx.Run("git", []string{"status", "--porcelain"}, execx.Options{Dir: dir, KeepLeadingSpace: true})
 	if err != nil {
 		return "", fmt.Errorf("gitx: status: %w", err)
 	}

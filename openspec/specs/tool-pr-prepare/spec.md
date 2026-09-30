@@ -164,7 +164,7 @@ The tool SHALL probe repository access only when no `expectedAccount` is configu
 The tool SHALL report the current branch and uncommitted files from `git status --porcelain`.
 
 - `currentBranch`: the checked-out branch.
-- `dirtyFiles`: the `git status --porcelain` output is whitespace-trimmed, then each non-empty line longer than 3 characters adds the text after its first 3 characters; `uncommittedChanges` is `true` when the list is not empty.
+- `dirtyFiles`: only trailing whitespace is trimmed from the `git status --porcelain` output, so the first line keeps a leading status space (e.g. ` M a.go`); each non-empty line longer than 3 characters then adds the text after its first 3 characters; `uncommittedChanges` is `true` when the list is not empty.
 - A failed `git status` leaves both fields empty and adds no warning.
 - A failed current-branch read stops the call with the git error in `errors`.
 - Uncommitted files add the warning `Uncommitted changes detected (<N> file(s)). They will NOT be included in the PR.` (only after the branch guard and protected-branch checks pass).
@@ -173,6 +173,10 @@ The tool SHALL report the current branch and uncommitted files from `git status 
 - **WHEN** two files are modified and not committed
 - **THEN** `uncommittedChanges` is `true` and `dirtyFiles` has 2 entries
 - **AND** `warnings` contains `Uncommitted changes detected (2 file(s)).`
+
+#### Scenario: First entry is an unstaged change
+- **WHEN** `git status --porcelain` prints ` M a.go` then ` M b.go`
+- **THEN** `dirtyFiles` is `a.go`, `b.go`, with no path character lost from the first entry
 
 ### Requirement: Branch guard
 The tool SHALL reject the call when `expectedBranch` is set and differs from the current branch, before the protected-branch check.
