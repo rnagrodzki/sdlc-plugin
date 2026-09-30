@@ -73,3 +73,10 @@ new changes to that same bar:
   check so more inputs reach a rewrite or splice), every newly admitted
   input combination needs its own test case. Removing a guard is the same
   as adding a branch: apply the same coverage bar.
+- When a function has two or more discriminating inputs (e.g. a bool
+  parameter combined with an enum, intent value, or configuration flag),
+  every reachable combination's output must be asserted directly in a test
+  case. A test exercising only one leg of a bool parameter or one value of
+  an enum/intent discriminator is partial coverage; verify each combination
+  named by the function's branch structure is invoked and its output state
+  asserted.

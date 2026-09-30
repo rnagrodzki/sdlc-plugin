@@ -794,7 +794,10 @@ A test that passes without exercising the target code (e.g. an empty body, \
 a body that never calls the function under test, or a mocked-away real \
 boundary) does not count as coverage. Before marking a test task done, \
 verify the test body actually invokes the code path it claims to cover and \
-would fail if that code were broken. A test in the same diff whose specific \
+would fail if that code were broken. Partial coverage where a test calls the \
+function for only one leg of a bool/enum parameter is insufficient; verify \
+each combination named by the function's branch structure is actually \
+exercised and its output asserted. A test in the same diff whose specific \
 assertion was removed or weakened (e.g. a content check replaced by a bare \
 non-empty check) without an intended change to the code under test is a \
 masked regression: restore the assertion or justify the behavior change."""
@@ -898,6 +901,21 @@ must encode a recovery instruction for the caller, not a generic message. Scope 
 handler function, including branches not touched by this task's diff -- a \
 gap can pre-exist in code adjacent to the change. Document the grep result \
 and verified instances in task verification section before marking done."""
+
+[execute.guardrails.gh-error-enrichment-parity]
+severity = "error"
+description = """
+Before marking a task done that modifies an MCP handler with two or more \
+`gh` invocation call sites, grep the handler for each `gh` call and verify \
+that every failure path calls the same permission-error enrichment helper. \
+If the tool's description promises uniform enrichment for a class of `gh` \
+failures (e.g., "account-switch guidance for any gh permission error"), \
+then every `gh` call site that can fail with that error class must call the \
+same helper. Do not allow one call site to enrich while another does not. \
+When adding a new `gh` call site, trace how existing call sites handle \
+permission errors and use the same enrichment routine. Document each call \
+site and the enrichment routing in the task verification before marking \
+done."""
 
 [execute.guardrails.skill-flow-soundness]
 severity = "error"
