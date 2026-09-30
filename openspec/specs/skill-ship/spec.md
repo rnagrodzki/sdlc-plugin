@@ -163,6 +163,7 @@ sequenceDiagram
     participant Skill
     participant ship_state
     participant ship_prepare
+    participant verify as ship_verify_side_effect
     participant gh
     participant Sub as Subagent step
     User->>Skill: invoke ship with flags
@@ -178,6 +179,9 @@ sequenceDiagram
         alt Agent-dispatched step
             Skill->>Sub: dispatch sub-skill
             Sub-->>Skill: structured result
+            opt commit or pr succeeded
+                Skill->>verify: record the side effect in sideEffects
+            end
         else inline step
             Skill->>Skill: inline work
         end
@@ -192,6 +196,7 @@ sequenceDiagram
 
 - Per step: announce `→ <step>`; `begin-step`; `TodoWrite(todos)`; print `display`; do the work; `complete-step` with `detail:{outcome:"success", result}`.
 - `alreadyDone:true` on `begin-step` skips the work and goes straight to `complete-step`.
+- After the `commit` or `pr` sub-skill reports success, and before `complete-step`, the skill records the side effect: `commit` calls `ship_verify_side_effect({step:"commit", expected:<full HEAD sha>})`; `pr` calls `ship_verify_side_effect({step:"pr"})`. This is the only writer of the `sideEffects` journal that `alreadyDone` reads. `landed:false` is logged as one warning line and is not a step failure.
 - A step legitimately bypassed at runtime gets `skip` with a `detail.reason` instead of work plus `complete-step`.
 - A name absent from `flags.steps` gets no `ship_state` call at all.
 - On failure: `fail` with `detail:{reason, error, severity:"error", category:"ship-fail"}`, then stop and print `Step <N> (<name>) failed: <summary>`, `State saved to: <path>`, `To resume: /ship --resume`.
@@ -202,6 +207,16 @@ sequenceDiagram
 - **WHEN** `begin-step` for `pr` returns `alreadyDone:true`
 - **THEN** the skill does not dispatch the `pr` sub-skill
 - **AND** calls `complete-step` for `pr`
+
+#### Scenario: Side effect recorded after commit
+- **WHEN** the `commit` sub-skill reports success
+- **THEN** the skill calls `ship_verify_side_effect` with `step:"commit"` and the full HEAD sha as `expected`
+- **AND** then calls `complete-step` for `commit`
+
+#### Scenario: PR side effect not found
+- **WHEN** the `pr` sub-skill reports success and `ship_verify_side_effect({step:"pr"})` returns `landed:false`
+- **THEN** the skill logs one warning line
+- **AND** still calls `complete-step` for `pr`
 
 #### Scenario: Sub-skill failure
 - **WHEN** the `review` dispatch fails

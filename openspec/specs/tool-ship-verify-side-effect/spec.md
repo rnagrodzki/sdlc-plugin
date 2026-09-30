@@ -1,7 +1,7 @@
 # tool-ship-verify-side-effect Specification
 
 ## Purpose
-MCP tool `ship_verify_side_effect` checks that a ship pipeline step's side effect (a PR or a commit sha) really landed, and records a confirmed one in the ship state's `sideEffects` journal so a resumed run can skip that step. It is meant for use after `commit_apply` or `pr_apply`; no skill prompt under `plugins/sdlc/skills/` calls it today. Output follows docs/mcp-output-contract.md.
+MCP tool `ship_verify_side_effect` checks that a ship pipeline step's side effect (a PR or a commit sha) really landed, and records a confirmed one in the ship state's `sideEffects` journal so a resumed run can skip that step. The ship skill calls it after its `commit` and `pr` steps succeed. Output follows docs/mcp-output-contract.md.
 
 ## Requirements
 
