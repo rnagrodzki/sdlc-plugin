@@ -37,6 +37,7 @@ The tool SHALL return the fields below.
 | `dryRun` | Echo of the input flag; `false` on the layout stat-warning result. |
 | `result` | One-line outcome text (see each action). Lists render as `[a b c]`. |
 | `changed` | Repo-relative paths written, or that would be written on dry run. Directories end in `/`. |
+| `skippedKeys` | `import` only: legacy keys left out, as `<dest path>: <key>`, sorted. Omitted when empty. |
 | `errors` | Omitted in all current paths. |
 
 #### Scenario: Import with nothing to do
@@ -96,6 +97,19 @@ For `action: "import"` the tool SHALL merge `.sdlc/config.*` into `.sdlc-v2/conf
 - A destination that already exists (including the `setup_init` scaffold) still receives missing keys.
 - `changed` gets `.sdlc-v2/config.toml` or `.sdlc-v2/local.toml` only when at least one key was added.
 - The source files are never changed or deleted.
+- `.sdlc-v2/config.toml` receives only its allowed top-level keys: `version`, `jira`, `commit`, `pr`, `plan`, `execute`. Any other legacy key (e.g. `schemaVersion`, `ship`) is not merged and is listed in `skippedKeys`.
+- `.sdlc-v2/local.toml` has no key filter.
+
+#### Scenario: Key not allowed in config.toml
+- **WHEN** `.sdlc/config.json` has `schemaVersion`, `ship`, and `jira`
+- **THEN** `.sdlc-v2/config.toml` has `jira` and has no `schemaVersion` or `ship`
+- **AND** `skippedKeys` is `[".sdlc-v2/config.toml: schemaVersion", ".sdlc-v2/config.toml: ship"]`
+- **AND** the project config stays readable
+
+#### Scenario: Only disallowed keys
+- **WHEN** `.sdlc/config.json` has only `schemaVersion`
+- **THEN** `.sdlc-v2/config.toml` is not written
+- **AND** `changed` is empty
 
 #### Scenario: Merge into scaffolded file
 - **WHEN** `.sdlc-v2/local.toml` exists without `ship`

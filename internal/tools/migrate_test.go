@@ -3,8 +3,10 @@ package tools
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
@@ -16,7 +18,7 @@ func TestMigrateImportCopiesFreshFiles(t *testing.T) {
 	if err := os.MkdirAll(oldDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(oldDir, "config.json"), []byte(`{"a":1}`), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(oldDir, "config.json"), []byte(`{"jira":{"defaultProject":"A"}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	jiraDir := filepath.Join(oldDir, "jira-templates")
@@ -43,8 +45,8 @@ func TestMigrateImportCopiesFreshFiles(t *testing.T) {
 	if err := fsx.ReadTOML(newConfig, &got); err != nil {
 		t.Fatalf("expected config.toml merged, got err=%v", err)
 	}
-	if got["a"] != float64(1) {
-		t.Fatalf("expected config.toml to contain merged key a=1, got %v", got)
+	if jira, ok := got["jira"].(map[string]any); !ok || jira["defaultProject"] != "A" {
+		t.Fatalf("expected config.toml to contain merged jira.defaultProject=A, got %v", got)
 	}
 	newTemplate := filepath.Join(root, paths.DataDir, "jira-templates", "template.md")
 	if data, err := os.ReadFile(newTemplate); err != nil || string(data) != "template" {
@@ -62,6 +64,78 @@ func TestMigrateImportCopiesFreshFiles(t *testing.T) {
 	wantChanged := []string{paths.DataDir + "/config.toml", paths.DataDir + "/jira-templates/"}
 	if len(out.Changed) != len(wantChanged) {
 		t.Fatalf("expected Changed=%v, got %v", wantChanged, out.Changed)
+	}
+}
+
+// TestMigrateImportSkipsKeysNotAllowedInProjectConfig pins that import only
+// merges keys config.toml allows. A legacy key such as schemaVersion (the
+// pre-v5 marker) or a local-only section such as ship makes every later
+// config read fail, so it is left out and reported in skippedKeys.
+func TestMigrateImportSkipsKeysNotAllowedInProjectConfig(t *testing.T) {
+	root := t.TempDir()
+
+	oldDir := filepath.Join(root, paths.LegacyDataDir)
+	if err := os.MkdirAll(oldDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{"schemaVersion":4,"ship":{"bump":"patch"},"jira":{"defaultProject":"OLD"}}`
+	if err := os.WriteFile(filepath.Join(oldDir, "config.json"), []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := migrate(root, MigrateIn{Action: "import"})
+	if err != nil {
+		t.Fatalf("migrate import: %v", err)
+	}
+
+	var got map[string]any
+	if err := fsx.ReadTOML(filepath.Join(root, paths.DataDir, "config.toml"), &got); err != nil {
+		t.Fatalf("read merged config.toml: %v", err)
+	}
+	if _, ok := got["jira"]; !ok {
+		t.Errorf("expected allowed key jira merged, got %v", got)
+	}
+	for _, k := range []string{"schemaVersion", "ship"} {
+		if _, ok := got[k]; ok {
+			t.Errorf("config.toml holds %q, which config.toml does not allow: %v", k, got)
+		}
+	}
+	if _, err := config.Read(root); err != nil {
+		t.Errorf("config.Read after import: %v (imported config must stay readable)", err)
+	}
+
+	wantSkipped := []string{paths.DataDir + "/config.toml: schemaVersion", paths.DataDir + "/config.toml: ship"}
+	if strings.Join(out.SkippedKeys, ",") != strings.Join(wantSkipped, ",") {
+		t.Errorf("SkippedKeys = %v, want %v", out.SkippedKeys, wantSkipped)
+	}
+}
+
+// TestMigrateImportOnlyDisallowedKeysChangesNothing pins that a legacy
+// config holding only keys config.toml does not allow neither writes nor
+// reports config.toml as changed.
+func TestMigrateImportOnlyDisallowedKeysChangesNothing(t *testing.T) {
+	root := t.TempDir()
+
+	oldDir := filepath.Join(root, paths.LegacyDataDir)
+	if err := os.MkdirAll(oldDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(oldDir, "config.json"), []byte(`{"schemaVersion":4}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := migrate(root, MigrateIn{Action: "import"})
+	if err != nil {
+		t.Fatalf("migrate import: %v", err)
+	}
+	if len(out.Changed) != 0 {
+		t.Errorf("Changed = %v, want none", out.Changed)
+	}
+	if _, err := os.Stat(filepath.Join(root, paths.DataDir, "config.toml")); !os.IsNotExist(err) {
+		t.Errorf("config.toml must not be written, stat err=%v", err)
+	}
+	if len(out.SkippedKeys) != 1 || out.SkippedKeys[0] != paths.DataDir+"/config.toml: schemaVersion" {
+		t.Errorf("SkippedKeys = %v, want [%s/config.toml: schemaVersion]", out.SkippedKeys, paths.DataDir)
 	}
 }
 

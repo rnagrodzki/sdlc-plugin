@@ -7,8 +7,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/configmigrate"
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
@@ -35,7 +37,10 @@ type MigrateOut struct {
 	DryRun  bool     `json:"dryRun"`
 	Result  string   `json:"result"`
 	Changed []string `json:"changed"`
-	Errors  []string `json:"errors,omitempty"`
+	// SkippedKeys lists legacy top-level keys the import left out because
+	// the destination file does not allow them, as "<dest path>: <key>".
+	SkippedKeys []string `json:"skippedKeys,omitempty"`
+	Errors      []string `json:"errors,omitempty"`
 }
 
 // migrate is the core logic, separated from the handler for testability.
@@ -146,7 +151,7 @@ var legacyImportDirs = []string{"jira-templates", "learnings", "review-dimension
 // source, and never overwrites a destination key/path that already carries
 // real content.
 func importFromOld(root string, dryRun bool) (MigrateOut, error) {
-	var changed []string
+	var changed, skippedKeys []string
 
 	handledConfig := make(map[string]bool, 2)
 	for _, name := range legacyImportConfigFiles {
@@ -162,13 +167,20 @@ func importFromOld(root string, dryRun bool) (MigrateOut, error) {
 		}
 		handledConfig[base] = true
 
-		rel, didChange, err := importConfigFileMerge(root, name, base+".toml", dryRun)
+		// config.toml rejects every top-level key outside
+		// config.AllowedProjectKeys; local.toml has no such check.
+		var allowed map[string]bool
+		if base == "config" {
+			allowed = config.AllowedProjectKeys
+		}
+		rel, didChange, skipped, err := importConfigFileMerge(root, name, base+".toml", allowed, dryRun)
 		if err != nil {
 			return MigrateOut{}, err
 		}
 		if didChange {
 			changed = append(changed, rel)
 		}
+		skippedKeys = append(skippedKeys, skipped...)
 	}
 
 	for _, name := range legacyImportFiles {
@@ -230,11 +242,12 @@ func importFromOld(root string, dryRun bool) (MigrateOut, error) {
 	}
 
 	return MigrateOut{
-		OK:      true,
-		Action:  "import",
-		DryRun:  dryRun,
-		Result:  result,
-		Changed: changed,
+		OK:          true,
+		Action:      "import",
+		DryRun:      dryRun,
+		Result:      result,
+		Changed:     changed,
+		SkippedKeys: skippedKeys,
 	}, nil
 }
 
@@ -247,18 +260,21 @@ func importFromOld(root string, dryRun bool) (MigrateOut, error) {
 // selects the source decoder (TOML or JSON, via readLegacyConfigFile);
 // destName is always the .toml counterpart — .sdlc-v2 config reads are
 // TOML-only, so merging into a .json destination would be invisible to
-// every other reader. Returns the changed relative path and whether
-// anything changed. A missing source, or a source with no keys the
-// destination lacks, is a no-op.
-func importConfigFileMerge(root, srcName, destName string, dryRun bool) (string, bool, error) {
+// every other reader. When allowed is non-nil, a source key outside it is
+// never merged: it is returned in skipped as "<dest path>: <key>", sorted.
+// Returns the changed relative path and whether anything changed. A missing
+// source, or a source with no mergeable keys the destination lacks, is a
+// no-op.
+func importConfigFileMerge(root, srcName, destName string, allowed map[string]bool, dryRun bool) (rel string, changed bool, skipped []string, err error) {
 	src := filepath.Join(root, paths.LegacyDataDir, srcName)
 	if !migrateFileExists(src) {
-		return "", false, nil
+		return "", false, nil, nil
 	}
+	rel = paths.DataDir + "/" + destName
 
 	var srcMap map[string]any
 	if err := readLegacyConfigFile(src, &srcMap); err != nil {
-		return "", false, &mcpserver.InfraError{
+		return "", false, nil, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("read legacy %s: %s", srcName, err.Error()),
 			Suggestion: "Fix the syntax of " + paths.LegacyDataDir + "/" + srcName + ", or delete it to skip that legacy source, then retry migrate with action \"import\".",
 			Cause:      err,
@@ -268,7 +284,7 @@ func importConfigFileMerge(root, srcName, destName string, dryRun bool) (string,
 	dst := filepath.Join(root, paths.DataDir, destName)
 	var dstMap map[string]any
 	if err := fsx.ReadTOML(dst, &dstMap); err != nil && !errors.Is(err, fsx.ErrNotFound) {
-		return "", false, &mcpserver.InfraError{
+		return "", false, nil, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("read %s: %s", destName, err.Error()),
 			Suggestion: "Fix the TOML syntax in " + paths.DataDir + "/" + destName + ", or delete it and re-run setup_init to regenerate it, then retry migrate with action \"import\".",
 			Cause:      err,
@@ -280,36 +296,40 @@ func importConfigFileMerge(root, srcName, destName string, dryRun bool) (string,
 
 	added := false
 	for k, v := range srcMap {
+		if allowed != nil && !allowed[k] {
+			skipped = append(skipped, rel+": "+k)
+			continue
+		}
 		if _, exists := dstMap[k]; exists {
 			continue
 		}
 		dstMap[k] = v
 		added = true
 	}
+	sort.Strings(skipped)
 	if !added {
-		return "", false, nil
+		return "", false, skipped, nil
 	}
 
-	rel := paths.DataDir + "/" + destName
 	if dryRun {
-		return rel, true, nil
+		return rel, true, skipped, nil
 	}
 
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return "", false, &mcpserver.InfraError{
+		return "", false, nil, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("create %s directory: %s", paths.DataDir, err.Error()),
 			Suggestion: "Check write permission on the project root so " + paths.DataDir + " can be created, then retry migrate with action \"import\".",
 			Cause:      err,
 		}
 	}
 	if err := fsx.AtomicWriteTOML(dst, dstMap); err != nil {
-		return "", false, &mcpserver.InfraError{
+		return "", false, nil, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("merge %s: %s", destName, err.Error()),
 			Suggestion: "Check write permission and free disk space on " + paths.DataDir + ", then retry migrate with action \"import\".",
 			Cause:      err,
 		}
 	}
-	return rel, true, nil
+	return rel, true, skipped, nil
 }
 
 // readLegacyConfigFile decodes path into out, selecting the TOML or JSON
