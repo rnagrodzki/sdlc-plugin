@@ -185,11 +185,13 @@ The tool SHALL classify each gh failure into one class from the table below, mat
 | `forbidden` | false | `http 403` |
 | `not-found` | false | `http 404`, `could not resolve to a pullrequest`, or `no pull requests found` |
 | `network` | true | `could not resolve host`, `no such host`, `connection refused`, `connection reset`, `network is unreachable`, `i/o timeout`, or `tls handshake timeout` |
-| `unexpected-exit` | false | `pipeline` only: `gh pr checks` exit code other than `0`, `1`, `8`; message `gh pr checks: unexpected exit code <N>` |
+| `unexpected-exit` | false | `pipeline` only: `gh pr checks` exit code other than `0`, `1`, `4`, `8` whose stderr matches no row above |
 | `unknown` | true | any other failure |
 
-- For `target: pipeline`, exit codes `0`, `1`, and `8` are read as check rows, and any other exit code is `unexpected-exit`.
-- For `target: pipeline`, an exit `1` or `8` with no failed and no pending row is gh's own error, not a check result. It is classified from gh's stderr, with message `gh pr checks: exit <N>: <stderr>`.
+- For `target: pipeline`, exit codes `0`, `1`, and `8` are read as check rows.
+- For `target: pipeline`, an exit `1` or `8` with no failed and no pending row is gh's own error, not a check result. It is classified from gh's stderr.
+- For `target: pipeline`, any other exit code is classified from gh's stderr first. When the stderr matches no row, exit `4` (gh's auth-required code) is `auth` and every other code is `unexpected-exit`; neither is `unknown`.
+- For `target: pipeline`, a failed `gh pr checks` message is `gh pr checks: exit <N>: <stderr>`, or `gh pr checks: exit <N>` when stderr is empty.
 
 #### Scenario: Rate limit is retryable
 - **WHEN** gh fails with `API rate limit exceeded (HTTP 403)`
@@ -200,8 +202,18 @@ The tool SHALL classify each gh failure into one class from the table below, mat
 - **THEN** the class is `auth` and retryable is `false`
 
 #### Scenario: Unexpected pipeline exit code
-- **WHEN** the deadline has passed and `gh pr checks` exits `2`
+- **WHEN** the deadline has passed and `gh pr checks` exits `2` with empty stderr
 - **THEN** `ext.verdict` is `timeout` and `ext.probe_error_class` is `unexpected-exit`
+
+#### Scenario: Pipeline gh not logged in
+- **WHEN** `gh pr checks` writes `To get started with GitHub CLI, please run:  gh auth login` to stderr and exits `4`
+- **AND** the deadline has not passed
+- **THEN** `status` is `error`, `ext.error_class` is `auth`, and `ext.retryable` is `false`
+
+#### Scenario: Pipeline not found on an unusual exit code
+- **WHEN** `gh pr checks` writes `gh: Not Found (HTTP 404)` to stderr and exits `2`
+- **AND** the deadline has not passed
+- **THEN** `status` is `error`, `ext.error_class` is `not-found`, and `ext.retryable` is `false`
 
 #### Scenario: Pipeline PR not found
 - **WHEN** `gh pr checks` prints no rows, writes `GraphQL: Could not resolve to a PullRequest with the number of 9.` to stderr, and exits `1`

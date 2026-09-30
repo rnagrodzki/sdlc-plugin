@@ -92,7 +92,8 @@ var ghStderrClasses = []struct {
 //
 // The pipeline probe reaches this classifier too: gh pr checks exits 1 both
 // for failed checks and for its own errors, so verifyPipelineAwait builds an
-// error from gh's stderr when an exit 1 or 8 comes with no check rows.
+// error from gh's stderr when an exit 1 or 8 comes with no check rows, and
+// for any other exit code (see classifyChecksExit).
 func classifyGHError(err error) ghFailure {
 	switch {
 	case errors.Is(err, ghx.ErrGHNotFound):
@@ -355,6 +356,35 @@ func evaluateChecksText(text string) (failed, pending []checkResult) {
 	return failed, pending
 }
 
+// ghExitAuthRequired is the exit code gh documents for "authentication
+// required" (gh help exit-codes).
+const ghExitAuthRequired = 4
+
+// checksExitError builds the error for a failed gh pr checks run from its
+// exit code and stderr, so classifyGHError can read gh's own message.
+func checksExitError(exitCode int, stderr string) error {
+	if stderr == "" {
+		return fmt.Errorf("gh pr checks: exit %d", exitCode)
+	}
+	return fmt.Errorf("gh pr checks: exit %d: %s", exitCode, stderr)
+}
+
+// classifyChecksExit classifies a gh pr checks exit code other than 0, 1 or
+// 8. gh's stderr is classified first, so an auth or not-found message keeps
+// its own class. Exit 4 is gh's auth-required code and is auth even with no
+// stderr. Anything else unrecognized is unexpected-exit, not unknown: an
+// exit code gh does not document for pr checks is not worth re-probing.
+func classifyChecksExit(exitCode int, stderr string) ghFailure {
+	f := classifyGHError(checksExitError(exitCode, stderr))
+	if f.Class != ghClassUnknown {
+		return f
+	}
+	if exitCode == ghExitAuthRequired {
+		return ghFailure{Message: f.Message, Class: ghClassAuth}
+	}
+	return ghFailure{Message: f.Message, Class: ghClassUnexpectedExit}
+}
+
 // verifyPipelineAwait implements one KD8 probe of verify_pipeline_await.
 func verifyPipelineAwait(activeRoot string, in VerifyPipelineAwaitIn) (stepper.Envelope, error) {
 	if in.PR <= 0 {
@@ -399,10 +429,7 @@ func verifyPipelineAwait(activeRoot string, in VerifyPipelineAwaitIn) (stepper.E
 		})
 	}
 	if exitCode != 0 && exitCode != 1 && exitCode != 8 {
-		return probeFailureEnvelope(stateFile, st, timedOut, ghFailure{
-			Message: fmt.Sprintf("gh pr checks: unexpected exit code %d", exitCode),
-			Class:   ghClassUnexpectedExit,
-		}, map[string]any{
+		return probeFailureEnvelope(stateFile, st, timedOut, classifyChecksExit(exitCode, checksStderr), map[string]any{
 			"pr_number": in.PR,
 		})
 	}
@@ -413,9 +440,7 @@ func verifyPipelineAwait(activeRoot string, in VerifyPipelineAwaitIn) (stepper.E
 	// error (PR not found, auth, "no checks reported"), with the reason on
 	// stderr. Reading it as green would report a pass that never happened.
 	if exitCode != 0 && len(failed) == 0 && len(pending) == 0 {
-		return probeFailureEnvelope(stateFile, st, timedOut, classifyGHError(
-			fmt.Errorf("gh pr checks: exit %d: %s", exitCode, checksStderr),
-		), map[string]any{
+		return probeFailureEnvelope(stateFile, st, timedOut, classifyGHError(checksExitError(exitCode, checksStderr)), map[string]any{
 			"pr_number": in.PR,
 		})
 	}

@@ -722,6 +722,76 @@ func TestVerifyPipelineAwait_TimedOutPersistentProbeErrorEndsPoll(t *testing.T) 
 	}
 }
 
+// TestPollAwait_PipelineOtherExitCodeClassifiedFromStderr pins that a gh pr
+// checks exit outside 0/1/8 is classified like any other gh failure before
+// falling back to unexpected-exit. gh exits 4 when it needs authentication,
+// which is permanent (not retryable) and must read as "auth" so the caller
+// stops re-probing and tells the user to log in.
+func TestPollAwait_PipelineOtherExitCodeClassifiedFromStderr(t *testing.T) {
+	tests := []struct {
+		name          string
+		script        string
+		wantClass     string
+		wantRetryable bool
+		wantInMessage string
+	}{
+		{
+			name:          "exit 4 auth required",
+			script:        "#!/bin/sh\necho 'To get started with GitHub CLI, please run:  gh auth login' >&2\nexit 4\n",
+			wantClass:     ghClassAuth,
+			wantRetryable: false,
+			wantInMessage: "gh auth login",
+		},
+		{
+			name:          "exit 4 without stderr",
+			script:        "#!/bin/sh\nexit 4\n",
+			wantClass:     ghClassAuth,
+			wantRetryable: false,
+			wantInMessage: "gh pr checks: exit 4",
+		},
+		{
+			name:          "exit 2 with HTTP 404",
+			script:        "#!/bin/sh\necho 'gh: Not Found (HTTP 404)' >&2\nexit 2\n",
+			wantClass:     ghClassNotFound,
+			wantRetryable: false,
+			wantInMessage: "HTTP 404",
+		},
+		{
+			name:          "exit 2 unknown stderr",
+			script:        "#!/bin/sh\necho 'something odd' >&2\nexit 2\n",
+			wantClass:     ghClassUnexpectedExit,
+			wantRetryable: false,
+			wantInMessage: "something odd",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cleanup := stubGH(t, tt.script)
+			defer cleanup()
+
+			env, err := pollAwait(".", PollAwaitIn{Target: "pipeline", PR: 5})
+			if err != nil {
+				t.Fatalf("unexpected Go error: %v", err)
+			}
+			if env.StateFile != nil {
+				defer os.Remove(*env.StateFile)
+			}
+			if env.Status != "error" {
+				t.Fatalf("got status %q, want error", env.Status)
+			}
+			if env.Ext["error_class"] != tt.wantClass {
+				t.Errorf("ext.error_class = %v, want %q", env.Ext["error_class"], tt.wantClass)
+			}
+			if env.Ext["retryable"] != tt.wantRetryable {
+				t.Errorf("ext.retryable = %v, want %v", env.Ext["retryable"], tt.wantRetryable)
+			}
+			if !strings.Contains(env.Error, tt.wantInMessage) {
+				t.Errorf("error = %q, want it to contain %q", env.Error, tt.wantInMessage)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // poll_await dispatch
 // ---------------------------------------------------------------------------
