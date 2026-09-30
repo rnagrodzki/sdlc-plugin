@@ -40,12 +40,21 @@ default. Optionally verify CI and wait for automated reviewer feedback.
 **execute → commit → review → archive-openspec → pr → learnings-commit**
 
 A rebase onto the default branch happens automatically between review and the
-next step (skip it with the `rebase` setting in `/setup`). A final cleanup
-always runs after the last configured step.
+next step (skip it with the `rebase` setting in `/setup`). The rebase runs
+after any review-fix commits and before `harden` (when configured), so the
+harden commit lands on the rebased branch. A final cleanup always runs after the last configured step.
 
 Opt-in steps — add them to your project's step list with `/setup` (or pass
 them via `--steps`):
 
+- `harden` — Groups the review findings into clusters and runs `/harden` on
+  each one. It commits the guardrail, review-dimension, and Copilot-instruction
+  edits as a separate commit before the PR. Outside `--auto`, it asks before
+  each cluster. It skips when there are no review findings, when no cluster
+  qualifies, or when the harden files already have uncommitted edits before
+  the step starts. On `--resume`, a cluster already hardened is not run
+  again. When `harden` is configured,
+  `received-review` gets `--no-harden`, so hardening runs only once.
 - `verify-openspec` — Validates the current implementation against an active
   OpenSpec change before archiving. Skipped automatically if there is no
   active change, even when configured.
@@ -58,7 +67,7 @@ Conditional steps — triggered automatically, not part of the step list you
 configure:
 
 - `received-review` — Runs when review findings meet or exceed the configured
-  severity threshold.
+  severity threshold. Ship passes it every such finding verbatim.
 - `commit-fixes` — Commits the fixes `received-review` made, as a separate
   commit from your feature commit.
 

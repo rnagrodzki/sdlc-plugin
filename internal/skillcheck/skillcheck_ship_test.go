@@ -215,7 +215,7 @@ func TestShipSkillsRegistryContainsExpectedTools(t *testing.T) {
 	}
 }
 
-// shipSkillsStepHeaders maps each of shipmeta's 12 canonical/lifecycle ship
+// shipSkillsStepHeaders maps each of shipmeta's 13 canonical/lifecycle ship
 // pipeline step names to the exact "### ..." (or "## ...") section heading
 // that documents that step's execution in skills/ship/SKILL.md. Used
 // by TestShipSkillsStepActionCrossCheck (AC1) to isolate each step's own
@@ -226,6 +226,7 @@ var shipSkillsStepHeaders = map[string]string{
 	"review":              "### review",
 	"received-review":     "### received-review (conditional)",
 	"commit-fixes":        "### commit-fixes (conditional)",
+	"harden":              "### harden (inline, opt-in)",
 	"verify-openspec":     "### verify-openspec (inline, opt-in)",
 	"archive-openspec":    "### archive-openspec (inline)",
 	"pr":                  "### pr",
@@ -254,12 +255,18 @@ var shipSkillsStepHeaders = map[string]string{
 //
 // The terminal "cleanup" step is a shipmeta.ReservedSteps entry driven by
 // the dedicated "cleanup-pipeline" action rather than a per-step one.
+//
+// harden is an inline step (kind "inline", not a TrackedShipSteps member).
+// Its section drives its own configured steps[] entry directly: it opens
+// with begin-step and ends with complete-step or skip, instead of recording
+// through decide like the other inline steps.
 var shipSkillsStepExpectedActions = map[string][]string{
 	"execute":             {"begin-step", "complete-step"},
 	"commit":              {"begin-step", "complete-step"},
 	"review":              {"begin-step", "complete-step"},
 	"received-review":     {"decide"},
 	"commit-fixes":        {"decide"},
+	"harden":              {"begin-step", "skip"},
 	"verify-openspec":     {"decide"},
 	"archive-openspec":    {"decide"},
 	"pr":                  {"begin-step", "complete-step"},
@@ -298,22 +305,23 @@ func shipSkillsSection(content, heading string) (string, bool) {
 }
 
 // TestShipSkillsStepActionCrossCheck is the Files-note / Acceptance
-// Criterion 1 check: every one of shipmeta's 12 canonical ship pipeline
+// Criterion 1 check: every one of shipmeta's 13 canonical ship pipeline
 // step names must have its own documented section in ship/SKILL.md,
 // and that section must reference the ship_state action(s) that step's
 // lifecycle actually uses (begin-step/complete-step for the six
-// scaffolded steps, decide for the five non-scaffolded inline steps, and
+// scaffolded steps, begin-step/skip for harden, decide for the five
+// non-scaffolded inline steps, and
 // cleanup-pipeline for the terminal cleanup step) -- guarding against a
 // step's prose silently drifting onto the wrong generic action.
 func TestShipSkillsStepActionCrossCheck(t *testing.T) {
 	repoRoot := shipSkillsRepoRoot(t)
 	content := shipSkillsReadFile(t, repoRoot, "skills/ship/SKILL.md")
 
-	if len(shipSkillsStepHeaders) != 12 {
-		t.Fatalf("shipSkillsStepHeaders has %d entries, want 12 (shipmeta's canonical step count)", len(shipSkillsStepHeaders))
+	if len(shipSkillsStepHeaders) != 13 {
+		t.Fatalf("shipSkillsStepHeaders has %d entries, want 13 (shipmeta's canonical step count)", len(shipSkillsStepHeaders))
 	}
-	if len(shipSkillsStepExpectedActions) != 12 {
-		t.Fatalf("shipSkillsStepExpectedActions has %d entries, want 12", len(shipSkillsStepExpectedActions))
+	if len(shipSkillsStepExpectedActions) != 13 {
+		t.Fatalf("shipSkillsStepExpectedActions has %d entries, want 13", len(shipSkillsStepExpectedActions))
 	}
 
 	for step, heading := range shipSkillsStepHeaders {
