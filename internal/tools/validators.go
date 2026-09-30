@@ -6,7 +6,7 @@
 //   - plan_format  -- scripts/ci/validate-plan-format.js  (PF1-PF7, PF9, PF10)
 //   - discovery    -- internal/discovery.ValidateAll       (PD1-PD16, reused as-is)
 //   - pr_template  -- scripts/ci/validate-pr-template.js   (V1-V5)
-//   - cost_tiers   -- scripts/ci/validate-cost-tiers.js    (DRIFT/MISSING_DOC/STALE_DOC/INHERITED)
+//   - cost_tiers   -- scripts/ci/validate-cost-tiers.js    (DRIFT/MISSING_DOC/STALE_DOC/INHERITED, NO_COST_DOC)
 //   - guardrails    -- scripts/ci/validate-guardrails.js    (per-guardrail id/description/severity)
 //   - dimensions   -- internal/dimensions.Validate, plus a net-new D10
 //     cross-file duplicate-name check (dimensions.Validate only checks one
@@ -121,7 +121,7 @@ Pass "action" to select the validator. Each action uses a subset of the input fi
 - plan_format: Check a plan .md against PF1-PF7, PF11 and PF12, plus PF9 and PF10 when final is true. Requires file. Optional: final (adds the scorecard check PF9 and, with template, the section check PF10), template (plan template path for PF10; omit it to skip PF10).
 - discovery: Check the project's discovery artifacts (PD1-PD16). No inputs.
 - pr_template: Check the PR template file itself (V1-V5) at its canonical or legacy path. No inputs.
-- cost_tiers: Compare skill/agent model tiers against the cost-tier doc tables. Optional: strict (true reports the INHERITED finding kind as severity "error" instead of "warning").
+- cost_tiers: Compare skill/agent model tiers against the cost-tier doc tables in docs/cost-tiers.md. Optional: strict (true reports the INHERITED finding kind as severity "error" instead of "warning"). When docs/cost-tiers.md does not exist, the check is skipped and one NO_COST_DOC warning is returned.
 - guardrails: Check the guardrails list in a config section for per-guardrail id/description/severity. Optional: section (defaults to "plan"), activeWorktree (true reads the active worktree instead of the main worktree; an unresolvable active worktree is an infrastructure error, never a silent fallback). A section that does not exist returns no findings.
 - dimensions: Check the review-dimension files, including a cross-file duplicate-name check (D10). Reads the ACTIVE worktree, unlike every other action. No inputs.
 - pr_body: Check a PR body against the PR template's required sections. Requires body — an empty body is not rejected, it simply reports every required section as missing.
@@ -1418,7 +1418,7 @@ func isDir(p string) bool {
 }
 
 func resolveSkillsDir(root string) string {
-	real := filepath.Join(root, "plugins", "sdlc-utilities", "skills")
+	real := filepath.Join(root, "plugins", "sdlc", "skills")
 	if isDir(real) {
 		return real
 	}
@@ -1430,7 +1430,7 @@ func resolveSkillsDir(root string) string {
 }
 
 func resolveAgentsDir(root string) string {
-	real := filepath.Join(root, "plugins", "sdlc-utilities", "agents")
+	real := filepath.Join(root, "plugins", "sdlc", "agents")
 	if isDir(real) {
 		return real
 	}
@@ -1674,17 +1674,25 @@ func diffCostTier(actuals []costTierEntry, docRows []docRow, kind string, strict
 }
 
 func validateCostTiers(root string, in ValidateIn) ([]discovery.Finding, error) {
-	skills := scanSkills(root)
-	agents := scanAgents(root)
-
 	docSkills, docAgents, err := parseCostTierDocTables(root)
+	if errors.Is(err, fs.ErrNotExist) {
+		// A project without a cost-tier doc has nothing to compare against.
+		// That is not a failure: report one warning so the caller sees the
+		// check was skipped, rather than an empty (all-passed) list.
+		return []discovery.Finding{{
+			ID:       "NO_COST_DOC",
+			Severity: "warning",
+			Message:  "NO_COST_DOC: no cost-tier doc exists, so the cost_tiers check was skipped",
+			Path:     filepath.Join("docs", "cost-tiers.md"),
+		}}, nil
+	}
 	if err != nil {
 		// The error text already carries the file path, so the Msg must not
-		// repeat it, and a missing file needs different advice than a
+		// repeat it, and an unreadable file needs different advice than a
 		// malformed table.
 		suggestion := fmt.Sprintf("Fix the %q and %q headings and the row format below them, then retry.", costTierSkillHeading, costTierAgentHeading)
 		if errors.Is(err, errCostTierDocRead) {
-			suggestion = "Create the cost-tier doc at the path named above, or check read permission on it, then retry."
+			suggestion = "The cost-tier doc at the path named above exists but could not be read; check read permission on it (it must be a regular file), then retry."
 		}
 		return nil, &mcpserver.DataError{
 			Msg:        fmt.Sprintf("cost-tier tables: %s", err.Error()),
@@ -1694,8 +1702,8 @@ func validateCostTiers(root string, in ValidateIn) ([]discovery.Finding, error) 
 	}
 
 	var findings []discovery.Finding
-	findings = append(findings, diffCostTier(skills, docSkills, "skill", in.Strict)...)
-	findings = append(findings, diffCostTier(agents, docAgents, "agent", in.Strict)...)
+	findings = append(findings, diffCostTier(scanSkills(root), docSkills, "skill", in.Strict)...)
+	findings = append(findings, diffCostTier(scanAgents(root), docAgents, "agent", in.Strict)...)
 	return findings, nil
 }
 

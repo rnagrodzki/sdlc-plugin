@@ -604,12 +604,50 @@ func TestValidateCostTiersAllKinds(t *testing.T) {
 	}
 }
 
+// TestValidateCostTiersPluginLayout pins the scan to this repo's real plugin
+// layout (plugins/sdlc/skills, plugins/sdlc/agents), not the flat fallback.
+func TestValidateCostTiersPluginLayout(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "plugins", "sdlc", "skills", "plan", "SKILL.md"),
+		"---\nname: plan\ndescription: a skill\nmodel: haiku\n---\nBody.\n")
+	writeFile(t, filepath.Join(root, "plugins", "sdlc", "agents", "helper.md"),
+		"---\nname: helper\ndescription: an agent\nmodel: sonnet\n---\nBody.\n")
+	writeCostTiersDoc(t, root,
+		[][2]string{{"plan", "opus"}},
+		[][2]string{{"helper", "sonnet"}},
+	)
+
+	out, err := validate(root, ValidateIn{Action: "cost_tiers"})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	drift := findingsByID(out.Findings, "DRIFT")
+	if len(drift) != 1 || !strings.Contains(drift[0].Message, "plan") {
+		t.Errorf("expected 1 DRIFT finding for skill plan, got %+v", out.Findings)
+	}
+	if stale := findingsByID(out.Findings, "STALE_DOC"); len(stale) != 0 {
+		t.Errorf("expected no STALE_DOC findings (skill and agent were found), got %+v", stale)
+	}
+}
+
+// TestValidateCostTiersDocMissing: a project without docs/cost-tiers.md gets
+// one warning saying the check was skipped, not an error.
 func TestValidateCostTiersDocMissing(t *testing.T) {
 	root := t.TempDir()
 	writeSkill(t, root, "some-skill", "opus")
-	_, err := validate(root, ValidateIn{Action: "cost_tiers"})
-	if err == nil {
-		t.Fatal("expected error when docs/cost-tiers.md is missing")
+	out, err := validate(root, ValidateIn{Action: "cost_tiers"})
+	if err != nil {
+		t.Fatalf("missing docs/cost-tiers.md must not be an error, got %v", err)
+	}
+	if len(out.Findings) != 1 {
+		t.Fatalf("expected exactly 1 finding, got %+v", out.Findings)
+	}
+	f := out.Findings[0]
+	if f.ID != "NO_COST_DOC" || f.Severity != "warning" || f.Path != filepath.Join("docs", "cost-tiers.md") {
+		t.Errorf("unexpected finding: %+v", f)
+	}
+	if !strings.Contains(f.Message, "skipped") {
+		t.Errorf("message should say the check was skipped, got %q", f.Message)
 	}
 }
 
@@ -1362,18 +1400,18 @@ func TestFindStrayStateEntries_MissingStateDirIsNotAnError(t *testing.T) {
 }
 
 // TestValidateCostTiers_ErrorsByCause pins the two recovery paths of
-// validateCostTiers: a missing or unreadable docs/cost-tiers.md must not be
+// validateCostTiers: an unreadable docs/cost-tiers.md must not be
 // reported as a heading problem, and neither message may print the file path
 // twice.
 func TestValidateCostTiers_ErrorsByCause(t *testing.T) {
 	cases := []struct {
 		name        string
-		doc         string // "" means: do not create the file
+		doc         string // "" means: put a directory where the file should be (unreadable)
 		wantHint    string
 		notWantHint string
 	}{
 		{
-			name:        "missing file",
+			name:        "unreadable file",
 			doc:         "",
 			wantHint:    "check read permission",
 			notWantHint: "headings",
@@ -1391,6 +1429,8 @@ func TestValidateCostTiers_ErrorsByCause(t *testing.T) {
 			root := t.TempDir()
 			if tc.doc != "" {
 				writeFile(t, filepath.Join(root, "docs", "cost-tiers.md"), tc.doc)
+			} else if err := os.MkdirAll(filepath.Join(root, "docs", "cost-tiers.md"), 0o755); err != nil {
+				t.Fatal(err)
 			}
 
 			_, err := validateCostTiers(root, ValidateIn{})

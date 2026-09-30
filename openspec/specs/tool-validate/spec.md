@@ -24,7 +24,7 @@ The tool SHALL run the validator named by `action` and SHALL use only the input 
 | `plan_format` | `file`, `final`, `template` | main | `PF1`–`PF7`, `PF9`, `PF10`, `PF11`, `PF12` |
 | `discovery` | none | main | `PD1`–`PD16` |
 | `pr_template` | none | main | `V1`–`V5` |
-| `cost_tiers` | `strict` | main | `INHERITED`, `MISSING_DOC`, `DRIFT`, `STALE_DOC` |
+| `cost_tiers` | `strict` | main | `INHERITED`, `MISSING_DOC`, `DRIFT`, `STALE_DOC`, `NO_COST_DOC` |
 | `guardrails` | `section`, `activeWorktree` | main; active with `activeWorktree: true` | the guardrail id |
 | `dimensions` | none | active, else main | `D0`–`D13`, `UNKNOWN` |
 | `pr_body` | `body` | main | `PR_BODY` |
@@ -252,8 +252,8 @@ The `pr_body` action SHALL report one `PR_BODY` finding, severity `error`, messa
 ### Requirement: cost_tiers action
 The `cost_tiers` action SHALL compare each skill's and agent's frontmatter `model` with the tables in `docs/cost-tiers.md`.
 
-- Skills: `plugins/sdlc-utilities/skills/<dir>/SKILL.md`, else `skills/<dir>/SKILL.md`.
-- Agents: `plugins/sdlc-utilities/agents/<name>.md`, else `agents/<name>.md`.
+- Skills: `plugins/sdlc/skills/<dir>/SKILL.md`, else `skills/<dir>/SKILL.md`.
+- Agents: `plugins/sdlc/agents/<name>.md`, else `agents/<name>.md`.
 - Name comes from frontmatter `name`, else the folder or file name.
 - Doc tables: the first table under `## 3. Skill Table` and under `## 4. Agent Table`; column 1 is the name, column 2 the model.
 
@@ -273,17 +273,34 @@ The `cost_tiers` action SHALL compare each skill's and agent's frontmatter `mode
 - **WHEN** the same project is checked with `strict: true`
 - **THEN** the `INHERITED` finding has severity `error`
 
+#### Scenario: Plugin layout
+- **WHEN** `plugins/sdlc/skills/plan/SKILL.md` has `model: haiku`, `plugins/sdlc/agents/helper.md` has `model: sonnet`, and the doc lists `plan` as `opus` and `helper` as `sonnet`
+- **THEN** there is one `DRIFT` finding for `plan`
+- **AND** there is no `STALE_DOC` finding
+
+### Requirement: cost_tiers missing doc
+The `cost_tiers` action SHALL skip the comparison when `docs/cost-tiers.md` does not exist and SHALL return exactly one finding that says so, not an error.
+
+| ID | Severity | Message | `path` |
+|---|---|---|---|
+| `NO_COST_DOC` | `warning` | `NO_COST_DOC: no cost-tier doc exists, so the cost_tiers check was skipped` | `docs/cost-tiers.md` |
+
+#### Scenario: Missing doc
+- **WHEN** `docs/cost-tiers.md` does not exist and a skill with `model: opus` exists
+- **THEN** the result is not an error
+- **AND** `findings` has exactly one finding with `id: NO_COST_DOC` and `severity: warning`
+
 ### Requirement: cost_tiers doc errors
-The `cost_tiers` action SHALL return a `DataError` when `docs/cost-tiers.md` is missing, unreadable, or its tables are malformed. The message SHALL name the file once.
+The `cost_tiers` action SHALL return a `DataError` when `docs/cost-tiers.md` exists but is unreadable, or its tables are malformed. The message SHALL name the file once.
 
 | Condition | Class | Message / Suggestion (short) |
 |---|---|---|
-| Doc missing or unreadable | `DataError` | `cost-tier tables: read cost-tier doc: <cause>` / create the doc or check read permission |
+| Doc exists but is unreadable (e.g. a directory, no read permission) | `DataError` | `cost-tier tables: read cost-tier doc: <cause>` / check read permission |
 | Heading or table missing or empty | `DataError` | `cost-tier tables: cost-tiers.md: table not found or empty (heading "## 3. Skill Table")` (or Agent) / fix the two headings and the rows below them |
 | Row pipe count differs from the header | `DataError` | `cost-tier tables: docs/cost-tiers.md: row <N> has <P> pipes, expected <Q>: <line>` / same as above |
 
-#### Scenario: Missing doc
-- **WHEN** `docs/cost-tiers.md` does not exist
+#### Scenario: Unreadable doc
+- **WHEN** `docs/cost-tiers.md` is a directory
 - **THEN** the result is a `DataError` whose suggestion contains `check read permission` and not `headings`
 
 #### Scenario: Doc without tables
