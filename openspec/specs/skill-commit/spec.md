@@ -10,8 +10,8 @@ The skill SHALL accept the arguments `[--scope <scope>] [--type <type>] [--auto]
 
 | Flag | Effect |
 |---|---|
-| `--scope <scope>` | Drafting hint for the commit scope. No tool validates or enforces it. When set, the OpenSpec trailer lookup is skipped. |
-| `--type <type>` | Drafting hint for the commit type. No tool validates or enforces it. |
+| `--scope <scope>` | Drafting hint for the commit scope, sent as the `SCOPE_HINT:` prompt line. No tool validates or enforces it. When set, the OpenSpec trailer lookup is skipped. |
+| `--type <type>` | Drafting hint for the commit type, sent as the `TYPE_HINT:` prompt line. No tool validates or enforces it. |
 | `--auto` | Skips the commit-plan approval prompt (implied `yes`). Suppresses the `harden` option at the subject-pattern gate. |
 | `--force-default-branch` | No-op. There is no default-branch block to override. |
 | `--no-stash`, `--amend` (legacy, not in `argument-hint`) | Ignored. The skill never stashes and always creates a new commit. |
@@ -20,6 +20,12 @@ The skill SHALL accept the arguments `[--scope <scope>] [--type <type>] [--auto]
 - **WHEN** the user runs `/commit --amend`
 - **THEN** the skill creates a new commit
 - **AND** it does not change the previous commit
+
+#### Scenario: Type flag reaches drafting
+- **WHEN** the user runs `/commit --type fix`
+- **AND** `commitConfig` is `null`
+- **THEN** the orchestrator prompt has the line `TYPE_HINT: fix`
+- **AND** the returned subject uses the type `fix`
 
 #### Scenario: Force default branch flag
 - **WHEN** the user runs `/commit --force-default-branch`
@@ -50,7 +56,7 @@ sequenceDiagram
     Skill->>CP: skipConfigCheck false, sessionID empty
     CP->>FS: write manifest JSON
     CP-->>Skill: context plus manifestPath
-    Skill->>O: MANIFEST_FILE and PROJECT_ROOT
+    Skill->>O: MANIFEST_FILE, PROJECT_ROOT, optional TYPE_HINT and SCOPE_HINT
     O->>FS: read manifest
     O-->>Skill: commit message string
     Skill->>User: commit plan, then ask Commit as shown?
@@ -105,12 +111,22 @@ The skill SHALL report WIP commits listed in `wipSquash.commits` and SHALL NOT s
 - **AND** the WIP commits stay in history unchanged
 
 ### Requirement: Orchestrator dispatch
-The skill SHALL dispatch `sdlc:commit-orchestrator` with `model: haiku` and a prompt of exactly two lines, and SHALL NOT dispatch it when `manifestPath` is empty or `(none)`.
+The skill SHALL dispatch `sdlc:commit-orchestrator` with `model: haiku` and a prompt of two required lines plus at most the two optional hint lines, and SHALL NOT dispatch it when `manifestPath` is empty or `(none)`.
 
 ```text
 MANIFEST_FILE: <manifestPath from commit_prepare>
 PROJECT_ROOT: <cwd>
+TYPE_HINT: <--type value>
+SCOPE_HINT: <--scope value>
 ```
+
+| Hint line | Sent when |
+|---|---|
+| `TYPE_HINT:` | `--type` was passed, and `commitConfig.allowedTypes` is absent or contains the value |
+| `SCOPE_HINT:` | `--scope` was passed, and `commitConfig.allowedScopes` is absent or contains the value |
+
+- When a flag value is not allowed by `commitConfig`, the skill drops the hint and tells the user it was ignored.
+- `commit_prepare` takes no scope, type or auto input: its `flags.scope` and `flags.type` are always `null` and `flags.auto` is always `false`. The hint lines are the only path for `--scope` and `--type`.
 
 | Condition | Skill action |
 |---|---|
@@ -120,6 +136,12 @@ PROJECT_ROOT: <cwd>
 
 - The skill forwards `manifestPath` as given; it writes no manifest itself.
 - The orchestrator has only the Read tool: it calls no git, no `gh`, no MCP tool, and writes no file.
+
+#### Scenario: Type not in allowed types
+- **WHEN** the user runs `/commit --type docs`
+- **AND** `commitConfig.allowedTypes` is `["feat", "fix"]`
+- **THEN** the prompt has no `TYPE_HINT:` line
+- **AND** the skill tells the user that `--type docs` was ignored
 
 #### Scenario: Manifest not written
 - **WHEN** `commit_prepare` returns `manifestPath` as `(none)` and a `manifestPath:` warning
@@ -135,6 +157,7 @@ The orchestrator SHALL return only one raw commit message string, with no preamb
 | Subject | 72 characters or less, imperative mood, no trailing period, no file paths |
 | Body | Only when the change is non-trivial; blank line after the subject |
 | Accuracy | Every claim traceable to `staged.diff`, or to `staged.diffStat` and `staged.truncatedFiles` when `staged.diffTruncated` is `true` |
+| `TYPE_HINT` / `SCOPE_HINT` | Used as the type / scope when the prompt has the line |
 | `commitConfig.allowedTypes` | Type chosen only from this list |
 | `commitConfig.allowedScopes` | Scope chosen only from this list, or omitted |
 | `commitConfig.subjectPattern` | Subject must match this regex |

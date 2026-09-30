@@ -22,12 +22,15 @@ Concretely:
 - `--no-stash` and `--amend` are legacy flags from the script-driven skill. They are no
   longer in the argument-hint; ignore them if a user still types them. This port never
   stashes anything (see Step 5) and always creates a new commit.
-- `--scope <scope>` / `--type <type>` are forwarded to the orchestrator only as drafting
-  hints in its prompt text; no tool validates or enforces them.
+- `--scope <scope>` / `--type <type>` reach drafting only as the optional `SCOPE_HINT:` /
+  `TYPE_HINT:` lines of the orchestrator prompt (Step 2). `commit_prepare` takes no such
+  input: its `flags.scope` / `flags.type` are always `null`. No tool validates or enforces
+  the hints; Step 2 drops a hint that `commitConfig` does not allow.
 - `--force-default-branch` is a no-op. There is no automatic block on committing to the
   default branch in this port to override — see Step 0's default-branch note.
 - `--auto` still works, but purely as your own interpretation of the skill's invocation
-  arguments — `commit_prepare`'s output carries no `flags.auto` field in this port.
+  arguments. `commit_prepare` takes no auto input and always returns `flags.auto: false`
+  in this port — ignore that field.
 
 ## When to Use This Skill
 
@@ -130,16 +133,24 @@ catch it.
 
 - `subagent_type`: `sdlc:commit-orchestrator`
 - `model`: `haiku`
-- `prompt` (exactly two lines, no other content):
+- `prompt` (the two required lines, then at most the two optional hint lines, no other
+  content):
 
   ```text
   MANIFEST_FILE: <the manifestPath value from commit_prepare>
   PROJECT_ROOT: <cwd>
+  TYPE_HINT: <the --type value>
+  SCOPE_HINT: <the --scope value>
   ```
 
-The orchestrator reads the manifest, applies every `commitConfig` constraint
-(`subjectPattern`, `allowedTypes`, `allowedScopes`, `requireBodyFor`, `requiredTrailers`),
-detects style from `recentCommits`, runs its own self-critique loop, and returns ONLY the
+  Add `TYPE_HINT:` only when `--type` was passed, and `SCOPE_HINT:` only when `--scope` was
+  passed. Drop a hint, and tell the user it was ignored, when `commitConfig.allowedTypes`
+  (for `--type`) or `commitConfig.allowedScopes` (for `--scope`) is set and does not
+  contain the value. `commitConfig` rules win over the flags.
+
+The orchestrator reads the manifest, uses `TYPE_HINT` / `SCOPE_HINT` when present, applies
+every `commitConfig` constraint (`subjectPattern`, `allowedTypes`, `allowedScopes`,
+`requireBodyFor`, `requiredTrailers`), detects style from `recentCommits`, runs its own self-critique loop, and returns ONLY the
 final commit message string. It does not call `git`, does not write files, does not invoke
 `gh`, and cannot call MCP tools.
 
