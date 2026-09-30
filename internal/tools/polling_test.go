@@ -790,6 +790,52 @@ func TestPollAwait_UnknownTarget(t *testing.T) {
 	}
 }
 
+// TestPollAwait_StateFileFromOtherTargetRejected pins that a state file is
+// bound to the target that created it. Resuming a remote_review poll's
+// state_file under target "pipeline" (or the reverse) would reuse the other
+// poll's budget and exhausted marker, so it is a DomainError and gh never
+// runs. The stub gh writes a marker file to prove it was not called.
+func TestPollAwait_StateFileFromOtherTargetRejected(t *testing.T) {
+	tests := []struct {
+		target      string
+		storedSkill string
+	}{
+		{"pipeline", "await-remote-review"},
+		{"remote_review", "verify-pipeline"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.target, func(t *testing.T) {
+			marker := filepath.Join(t.TempDir(), "gh-ran")
+			cleanup := stubGH(t, fmt.Sprintf("#!/bin/sh\ntouch %q\nexit 3\n", marker))
+			defer cleanup()
+
+			stateFile, err := stepper.NewStateFilePath(tt.storedSkill)
+			if err != nil {
+				t.Fatalf("NewStateFilePath: %v", err)
+			}
+			t.Cleanup(func() { os.Remove(stateFile) })
+			if err := stepper.SavePollState(stateFile, stepper.NewPollState(tt.storedSkill, 600, 60)); err != nil {
+				t.Fatalf("SavePollState: %v", err)
+			}
+
+			env, err := pollAwait(".", PollAwaitIn{Target: tt.target, PR: 5, StateFile: stateFile})
+			var domainErr *mcpserver.DomainError
+			if !errors.As(err, &domainErr) {
+				t.Fatalf("expected *mcpserver.DomainError, got err=%v env=%+v", err, env)
+			}
+			if !strings.Contains(domainErr.Msg, tt.storedSkill) {
+				t.Errorf("Msg = %q, want it to name the stored skill %q", domainErr.Msg, tt.storedSkill)
+			}
+			if domainErr.Suggestion == "" {
+				t.Error("Suggestion must not be empty")
+			}
+			if _, err := os.Stat(marker); err == nil {
+				t.Error("gh ran; a mismatched state file must be rejected before probing")
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // verify_pipeline_classify / ClassifyLogs
 // ---------------------------------------------------------------------------

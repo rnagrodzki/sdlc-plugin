@@ -33,12 +33,13 @@ The tool SHALL accept the input fields below and run the probe selected by `targ
 - **AND** `progress.timeout_seconds` is `1200`
 
 ### Requirement: Input errors
-The tool SHALL reject an unknown `target` or a non-positive `pr` with a `DomainError` and SHALL NOT run gh.
+The tool SHALL reject an unknown `target`, a non-positive `pr`, or a `state_file` written by the other target with a `DomainError` and SHALL NOT run gh.
 
 | Condition | Class | Message / Suggestion (short) |
 |---|---|---|
 | `target` is not `remote_review` or `pipeline` | `DomainError` | `target must be "remote_review" or "pipeline", got "<target>"` / pass one of the two targets |
 | `pr` is zero or negative | `DomainError` | `pr must be a positive integer` / pass the PR number |
+| `state_file` loads but its stored `skill` is not this target's name | `DomainError` | `state_file <path> belongs to a "<stored skill>" poll, not "<skill>"` / pass a state file from the same target, or omit it |
 
 #### Scenario: Unknown target
 - **WHEN** the tool is called with `target: "bogus"`
@@ -100,12 +101,18 @@ The tool SHALL keep the poll budget in a JSON state file under the OS temp direc
 - A new poll creates the path `<os temp dir>/<name>-<12 hex chars>.json` (name per target, see the target table).
 - The file stores `skill`, `started_at`, `timeout_seconds`, `interval_seconds`, `iteration`, `exhausted`.
 - A `state_file` that is empty, missing, or not valid JSON starts a new poll with a new path.
+- A `state_file` that loads but whose stored `skill` is not the name for this call's `target` (`await-remote-review` for `remote_review`, `verify-pipeline` for `pipeline`) is rejected with a `DomainError`, not restarted. An empty stored `skill` is also a mismatch.
 - On resume, the stored `timeout_seconds` and `interval_seconds` apply; the new call's values are not used.
 
 #### Scenario: Unloadable state file starts fresh
 - **WHEN** `state_file` points to a file that does not exist
 - **THEN** the tool starts a new poll
 - **AND** the envelope's `state_file` is a new path, not the one passed in
+
+#### Scenario: State file from the other target
+- **WHEN** a `state_file` written by a `remote_review` poll (stored `skill` is `await-remote-review`) is passed with `target: "pipeline"`
+- **THEN** the result is a `DomainError` whose message names `await-remote-review`
+- **AND** gh is not run
 
 #### Scenario: Stored budget wins on resume
 - **WHEN** a poll started with `timeout_seconds: 1` is resumed with `timeout_seconds: 600`

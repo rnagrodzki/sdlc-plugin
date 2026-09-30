@@ -516,10 +516,21 @@ func pollAwait(activeRoot string, in PollAwaitIn) (stepper.Envelope, error) {
 // readStateFile, which fails open on any read/parse error and starts over),
 // a fresh PollState and a new state file path are created. *stateFile is
 // updated in place to the resolved path either way.
+//
+// A state file that loads but was written by the other target (its stored
+// skill differs from skill) is a DomainError, not a fresh start: resuming it
+// would reuse the other poll's budget and exhausted marker, and silently
+// starting over would hide the caller's mix-up.
 func loadOrInitPollState(stateFile, skill string, timeoutSeconds, intervalSeconds int, out *string) (stepper.PollState, error) {
 	if stateFile != "" {
 		st, err := stepper.LoadPollState(stateFile)
 		if err == nil {
+			if st.Skill != skill {
+				return stepper.PollState{}, &mcpserver.DomainError{
+					Msg:        fmt.Sprintf("state_file %s belongs to a %q poll, not %q", stateFile, st.Skill, skill),
+					Suggestion: "Pass the state_file returned by a prior poll_await call with the same target, or omit state_file to start a new poll, then call the tool again.",
+				}
+			}
 			return st, nil
 		}
 	}
