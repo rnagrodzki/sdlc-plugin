@@ -36,7 +36,7 @@ The tool SHALL accept the fields below and SHALL ignore fields that belong to th
 | `argsString` | string | no | plain text, e.g. `--flag` | Raw invocation arguments |
 | `failureText` | string | harden, unless `fromIssue` | plain text | Raw failure text to analyze |
 | `exitCode` | string | no (harden) | plain text, e.g. `1` | Exit code at failure |
-| `fromIssue` | string | no (harden) | digits only, e.g. `123` | GitHub issue whose body is the failure text |
+| `fromIssue` | string | no (harden) | positive integer, digits only, e.g. `123` (`0` is refused) | GitHub issue whose body is the failure text |
 | `skipConfigCheck` | bool | no (harden) | `true` / `false` | Skip the config-version gate |
 | `historyPath` | string | no (harden) | path, e.g. `.sdlc-v2/history` | History store to read run and deferred records from |
 | `errorText` | string | yes in `error_report` | plain text | Raw error text to report |
@@ -158,7 +158,7 @@ stateDiagram-v2
 | Condition | Class | Message / Suggestion (short) |
 |---|---|---|
 | Both `failureText` and `fromIssue` set | DomainError | `--failure-text and --from-issue are mutually exclusive — provide one or the other, not both` |
-| `fromIssue` is not digits only (after trim) | DomainError | `--from-issue: invalid issue number "<n>" — must be a positive integer` / pass only the digits |
+| `fromIssue` is not digits only, or is zero (after trim) | DomainError | `--from-issue: invalid issue number "<n>" — must be a positive integer` / pass only the digits |
 | `gh issue view <n> --json body,labels,title` fails | InfraError | `--from-issue <n>: gh issue view failed: <err>` / check the issue exists and `gh auth status` |
 | `gh` output is not valid JSON | InfraError | `--from-issue <n>: gh issue view returned invalid JSON: <err>` |
 | Failure text or `skill` blank | DomainError | `Missing required field: failureText` and/or `Missing required field: skill`, joined with `; ` |
@@ -174,6 +174,11 @@ stateDiagram-v2
 #### Scenario: Issue number with a hash
 - **WHEN** `fromIssue` is `#42`
 - **THEN** the tool returns a DomainError with message `--from-issue: invalid issue number "#42" — must be a positive integer`
+
+#### Scenario: Issue number zero
+- **WHEN** `fromIssue` is `0`
+- **THEN** the tool returns a DomainError with message `--from-issue: invalid issue number "0" — must be a positive integer`
+- **AND** no `gh` command runs
 
 #### Scenario: mcp-failure label sets the hint
 - **WHEN** `fromIssue` names an issue labelled `mcp-failure`

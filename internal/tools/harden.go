@@ -30,10 +30,11 @@ import (
 // sheet); the Go port preserves that separation.
 const hardenPluginRepoURL = "https://github.com/rnagrodzki/sdlc-plugin"
 
-// hardenIssueNumberRe validates --from-issue as a bare positive integer,
-// mirroring source's defense-in-depth regex check (the argv-array gh call
-// below already avoids shell metacharacter parsing on its own).
-var hardenIssueNumberRe = regexp.MustCompile(`^\d+$`)
+// hardenIssueNumberRe validates --from-issue as a bare positive integer
+// (digits only, not all zeros), mirroring source's defense-in-depth regex
+// check (the argv-array gh call below already avoids shell metacharacter
+// parsing on its own).
+var hardenIssueNumberRe = regexp.MustCompile(`^0*[1-9]\d*$`)
 
 // ---------------------------------------------------------------------------
 // Input / Output

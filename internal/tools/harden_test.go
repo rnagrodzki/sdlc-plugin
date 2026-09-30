@@ -118,6 +118,27 @@ func TestHardenPrepare_FromIssueInvalidNumber(t *testing.T) {
 	}
 }
 
+// TestHardenPrepare_FromIssueZeroRejected pins that fromIssue must be a
+// positive integer, as its error message says: 0 is refused before any
+// gh call.
+func TestHardenPrepare_FromIssueZeroRejected(t *testing.T) {
+	for _, n := range []string{"0", "00", " 0 "} {
+		root := t.TempDir()
+		_, err := hardenPrepare(root, root, HardenPrepareIn{
+			FromIssue:       n,
+			Skill:           "ship",
+			SkipConfigCheck: true,
+		})
+		var domainErr *mcpserver.DomainError
+		if !errorsAsDomainError(err, &domainErr) {
+			t.Fatalf("fromIssue %q: expected *mcpserver.DomainError, got %T: %v", n, err, err)
+		}
+		if !containsSubstr(domainErr.Msg, "must be a positive integer") {
+			t.Errorf("fromIssue %q: message = %q, want it to say positive integer", n, domainErr.Msg)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Required fields
 // ---------------------------------------------------------------------------
