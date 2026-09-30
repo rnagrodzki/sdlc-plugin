@@ -198,6 +198,11 @@ var psFilesBlockStartRe = regexp.MustCompile(`(?m)^\*\*Files:\*\*`)
 // psContractBlockStartRe matches the **Contract:** field marker.
 var psContractBlockStartRe = regexp.MustCompile(`(?m)^\*\*Contract:\*\*`)
 
+// psNextFieldLineRe matches the start of the next "**<Field>:**" line. It
+// ends a **Contract:** block, whose body may hold bold text but never a
+// field marker at the start of a line.
+var psNextFieldLineRe = regexp.MustCompile(`\n\*\*[^*\n]+:\*\*`)
+
 // psOpenspecTaskStartRe matches the **openspec-task:** block marker.
 var psOpenspecTaskStartRe = regexp.MustCompile(`(?m)^\*\*openspec-task:\*\*`)
 
@@ -557,9 +562,13 @@ func snapshotPlan(content string) PlanSnapshot {
 			snap.FilesSet[taskRef] = paths
 		}
 
-		// Contract: verbatim text after **Contract:** marker.
+		// Contract: verbatim text after **Contract:** marker, up to the next
+		// **<Field>:** line or task boundary.
 		contractBlock, contractFound := extractDelimitedBlock(t.Body, psContractBlockStartRe, []string{"\n### ", "\n---", "\n## "})
 		if contractFound {
+			if loc := psNextFieldLineRe.FindStringIndex(contractBlock); loc != nil {
+				contractBlock = contractBlock[:loc[0]]
+			}
 			snap.Contracts[taskRef] = strings.TrimSpace(contractBlock)
 		}
 

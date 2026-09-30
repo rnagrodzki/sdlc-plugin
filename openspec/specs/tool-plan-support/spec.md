@@ -178,7 +178,7 @@ The `material_snapshot` action SHALL read the plan file at `filePath`, extract s
 | `taskCount` | Number of `### Task N:` headings |
 | `deviationsRows` | First cell of each table row under `## Deviations & assumptions` (header row dropped) |
 | `filesSet` | Per task, the bullet lines under `**Files:**` |
-| `contracts` | Per task, all text after `**Contract:**` up to the next `### `, `## `, or `---` line; later `**<field>:**` blocks of the same task are included |
+| `contracts` | Per task, all text after `**Contract:**` up to the next `**<Field>:**` line, `### `, `## `, or `---` line |
 | `dependsOn` | Per task, the value of `**Depends on:**` |
 | `keyDecisions` | Under `## Key Decisions`: first table cell per row, or the leading phrase of each bullet |
 | `openspecTaskMapping` | Per task, the `- ref:` value inside the `**openspec-task:**` block |
@@ -249,6 +249,11 @@ sequenceDiagram
 - **WHEN** only prose outside the seven dimensions changes (for example a task's notes)
 - **THEN** `material` is `false`
 - **AND** `triggers` is empty
+
+#### Scenario: Field after the contract edited
+- **WHEN** Task 1 has a `**Notes:**` field after its `**Contract:**` block and only the notes text changes
+- **THEN** `material` is `false`
+- **AND** the snapshot's `contracts` entry for `Task 1` holds only the contract text
 
 #### Scenario: OpenSpec ref changed
 - **WHEN** the `- ref:` value inside Task 1's `**openspec-task:**` block changes

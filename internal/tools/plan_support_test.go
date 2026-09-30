@@ -377,15 +377,10 @@ func TestPlanMergeResults_Redispatch(t *testing.T) {
 // fixture plan into installFakeFS's in-memory map rather than the real
 // filesystem, and rather than calling a pure in-memory function directly.
 //
-// Fixture construction note: snapshotPlan's **Contract:** extraction
-// (extractDelimitedBlock in plan_support.go) captures everything from right
-// after the "**Contract:**" marker forward to the next "### "/"---"/"## "
-// boundary — it has no "**" boundary, unlike **Files:** and
-// **openspec-task:**. So any field placed AFTER **Contract:** within the
-// same task body would bleed into the Contracts map on edit. To keep each
-// trigger dimension independently testable, every task fixture below places
-// **Contract:** as the LAST field in its body, with **openspec-task:** and
-// **Notes:** placed BEFORE it.
+// Fixture construction note: every task fixture below places **Contract:**
+// as the LAST field in its body. snapshotPlan ends a **Contract:** block at
+// the next "**<Field>:**" line, so field order does not matter;
+// TestPlanMaterialChange_FieldAfterContract pins that.
 // ---------------------------------------------------------------------------
 
 const materialHeader = `**Goal:** Build the thing
@@ -786,6 +781,47 @@ func TestPlanMaterialChange_WordingOnly(t *testing.T) {
 	after := materialHeader + materialTask1 + changedTask2 + materialTask3 + materialTask4 + materialTail
 	out := materialCompareCheck(t, materialBasePlan(), after)
 	assertNoMaterialChange(t, out)
+}
+
+// materialTaskContractFirst is a task whose **Contract:** comes before its
+// **Notes:** and **Files:** fields, as plan-format-reference.md allows.
+const materialTaskContractFirst = `### Task 1: Contract first
+**Complexity:** Standard
+**Risk:** Low
+**Verify:** tests
+
+**Contract:**
+- shape: does X
+- names: Foo
+
+**Notes:**
+- first rationale line
+
+**Files:**
+- internal/tools/foo.go
+
+**Acceptance criteria:**
+- [ ] it works
+
+`
+
+// TestPlanMaterialChange_FieldAfterContract verifies the **Contract:** block
+// ends at the next **<Field>:** line: edits to fields placed after it do not
+// count as a contract change.
+func TestPlanMaterialChange_FieldAfterContract(t *testing.T) {
+	before := materialHeader + materialTaskContractFirst + materialTail
+
+	fake := installFakeFS(t)
+	snap := readSnapshotFile(t, snapshotPathOf(t, fake, "contract-first.md", before))
+	if got := snap.Contracts["Task 1"]; got != "- shape: does X\n- names: Foo" {
+		t.Errorf("Contracts[Task 1] = %q, want only the contract bullets", got)
+	}
+
+	notesEdited := strings.Replace(before, "- first rationale line\n", "- reworded rationale line\n", 1)
+	assertNoMaterialChange(t, materialCompareCheck(t, before, notesEdited))
+
+	filesEdited := strings.Replace(before, "- internal/tools/foo.go\n", "- internal/tools/bar.go\n", 1)
+	assertSingleTrigger(t, materialCompareCheck(t, before, filesEdited), "Files changed in: Task 1")
 }
 
 // TestPlanMaterialChange_DeviationsRowChanged verifies adding a new row to
