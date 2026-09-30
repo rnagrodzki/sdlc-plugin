@@ -2370,8 +2370,10 @@ var historyWriter = func(root string) history.Writer {
 //
 // The store itself stays append-only with no dedup — deferred_add's
 // contract depends on that. The skip lives here instead, for a caller that
-// re-sends the same id directly (deferred_add is idempotent per id; so is a
-// direct persistDeferred call in a test).
+// re-sends the same id directly (a direct persistDeferred call in a test).
+// deferred_add does NOT go through this function: it calls AddDeferred
+// directly and appends with no id check, so sending it the same id twice
+// stores two entries.
 //
 // It does NOT protect shipStateDefer or execActionIssueDraft against their
 // own retries: both mint id from timestamp+count at call time (fresh state

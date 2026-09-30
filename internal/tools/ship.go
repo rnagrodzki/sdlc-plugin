@@ -272,13 +272,15 @@ type ShipVerifySideEffectOut struct {
 //     itself never initializes state on its normal path (only the
 //     plan-mode-blocked branch does) — SKILL.md orchestrates a separate init
 //     call after a clean ship-prepare. This tool consolidates both steps.
-//   - Flags/Sources additionally carry "hookActivePipeline" and
+//   - Flags (not Sources) additionally carries "hookActivePipeline" and
 //     "skipConfigCheck" (mirroring the corresponding ShipPrepareIn fields),
-//     which ship.js's mergeFlags does not include in its {merged, sources}
-//     return value at all. Additive only — every key JS's mergeFlags does
-//     produce is still present with the same value and source — so this is
-//     not a contract break, just a previously-undisclosed extra pair of keys
-//     any strict-shape consumer should tolerate.
+//     which ship.js's mergeFlags does not include in its merged return
+//     value at all. Neither key gets a Sources entry: both are pure
+//     passthrough inputs with no config/default tier. Additive only — every
+//     key JS's mergeFlags does produce is still present with the same value
+//     and source — so this is not a contract break, just a previously-
+//     undisclosed extra pair of keys any strict-shape consumer should
+//     tolerate.
 func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, error) {
 	// KD5 gate: config version check. An outdated config is auto-migrated
 	// in place (configmigrate.MigrateWithBackup writes a .bak backup before
