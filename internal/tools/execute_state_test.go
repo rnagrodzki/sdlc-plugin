@@ -1496,8 +1496,24 @@ func TestExecState_WaveCommit_DivergedConflict(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for diverged committedSha")
 	}
-	if _, ok := err.(*mcpserver.DomainError); !ok {
-		t.Errorf("expected DomainError, got %T", err)
+	de, ok := err.(*mcpserver.DomainError)
+	if !ok {
+		t.Fatalf("expected DomainError, got %T", err)
+	}
+	// wave-committed never overwrites a different recorded sha, so the
+	// suggestion must not point there. It must name the state file the
+	// caller has to edit and the reflog route to restore the history.
+	if strings.Contains(de.Suggestion, "wave-committed") {
+		t.Errorf("Suggestion = %q, must not suggest wave-committed (it refuses to overwrite a recorded sha)", de.Suggestion)
+	}
+	st, ferr := state.Find(dir, "execute", "feat/test")
+	if ferr != nil || st == nil {
+		t.Fatalf("find state: %v", ferr)
+	}
+	for _, want := range []string{st.Path, "committedSha", "git reflog", "retry wave-commit"} {
+		if !strings.Contains(de.Suggestion, want) {
+			t.Errorf("Suggestion = %q, want it to mention %q", de.Suggestion, want)
+		}
 	}
 }
 

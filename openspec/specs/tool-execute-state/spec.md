@@ -536,7 +536,7 @@ sequenceDiagram
 | `message` empty or blank | DomainError | `message is required for wave-commit` |
 | wave not recorded | DomainError | `wave <n> not found in state` |
 | wave not `completed` | DomainError | `wave <n> status is "<s>", expected "completed"` |
-| recorded sha not an ancestor of HEAD | DomainError | `wave <n> already has committedSha "<sha>" which is not an ancestor of HEAD — refusing to commit again automatically` |
+| recorded sha not an ancestor of HEAD | DomainError | `wave <n> already has committedSha "<sha>" which is not an ancestor of HEAD — refusing to commit again automatically` / restore the history (git reflog) or edit the wave's `committedSha` in the state file, then retry `wave-commit` |
 | git merge-base / add / diff / commit / rev-parse fails | InfraError | `git add: <err>` etc. / inspect `git status` or commit hooks |
 
 #### Scenario: Successful commit
@@ -559,7 +559,9 @@ sequenceDiagram
 
 #### Scenario: Diverged history
 - **WHEN** the recorded `committedSha` is not an ancestor of HEAD
-- **THEN** the tool fails with a DomainError and suggests calling `wave-committed` with the correct sha
+- **THEN** the tool fails with a DomainError
+- **AND** the suggestion names the state file path and says to either restore the history so the recorded sha is an ancestor of HEAD again (via `git reflog`) or edit the wave's `committedSha` there, then retry `wave-commit`
+- **AND** the suggestion does not point to `wave-committed`, which never overwrites a different recorded sha
 
 ### Requirement: Task row lifecycle
 The tool SHALL keep one row per task id in a wave's `tasks[]`, replacing the row on every `task-done`, `task-fail`, and `task-redispatch` for that id.

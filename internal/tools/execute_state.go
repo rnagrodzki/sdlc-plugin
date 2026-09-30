@@ -3047,9 +3047,15 @@ func execActionWaveCommit(root, workDir string, in ExecuteStateIn) (any, error) 
 				}
 			}
 			if !isAncestor {
+				// wave-committed never overwrites a different recorded
+				// sha, so it cannot repair this; name the two routes that
+				// do.
 				return nil, &mcpserver.DomainError{
-					Msg:        fmt.Sprintf("wave %d already has committedSha %q which is not an ancestor of HEAD — refusing to commit again automatically", *in.Wave, existingSha),
-					Suggestion: "The wave's git history has diverged from the recorded sha (e.g. after a rebase or force-push). Call wave-committed manually with the correct sha, or investigate the divergence before retrying wave-commit.",
+					Msg: fmt.Sprintf("wave %d already has committedSha %q which is not an ancestor of HEAD — refusing to commit again automatically", *in.Wave, existingSha),
+					Suggestion: fmt.Sprintf("The branch history no longer contains %s (e.g. after a rebase, reset, or force-push). Resolve it by hand, then retry wave-commit: "+
+						"either restore the history so %s is an ancestor of HEAD again (find it with git reflog), "+
+						"or edit wave %d's committedSha in %s to the commit that now holds this wave's changes.",
+						shortSHA(existingSha), shortSHA(existingSha), *in.Wave, st.Path),
 				}
 			}
 
