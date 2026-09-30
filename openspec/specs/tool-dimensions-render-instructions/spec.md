@@ -146,7 +146,7 @@ The mirror file SHALL contain the parts below, in this order, and SHALL end with
 - **THEN** the mirror contains `Default severity: medium`
 
 ### Requirement: Render mode errors
-In render mode the tool SHALL fail without writing the mirror when `file` is missing, unreadable, has broken frontmatter, or lacks a `name` or a non-empty `triggers` list.
+In render mode the tool SHALL fail without writing the mirror when `file` is missing, unreadable, has broken frontmatter, lacks a `name` or a non-empty `triggers` list, or has a `name` that could leave `.github/instructions/`.
 
 | Condition | Class | Message / Suggestion (short) |
 |---|---|---|
@@ -154,8 +154,14 @@ In render mode the tool SHALL fail without writing the mirror when `file` is mis
 | `file` cannot be read | `DomainError` | `dimensions_render_instructions: cannot read <path>: <cause>` / check the path; relative paths resolve against the root |
 | Frontmatter cannot be parsed | `DomainError` | `dimensions_render_instructions: <path>: <cause>` / fix the `---` frontmatter block, or run validate with action `dimensions` |
 | No usable `name` or no string in `triggers` | `DomainError` | `dimensions_render_instructions: <path> lacks a usable name or a non-empty triggers list; cannot render` / add name and a trigger |
+| Trimmed `name` contains `/`, `\`, or `..` | `DomainError` | `dimensions_render_instructions: <path>: invalid name "<name>": must not contain a path separator or ".."` / set name to a bare stem such as `security` |
 | `.github/instructions/` cannot be created | `InfraError` | `create <dir>: <cause>` / check write permission |
 | Mirror file cannot be written | `InfraError` | `write <path>: <cause>` / check write permission and disk space |
+
+#### Scenario: Name escapes the mirror directory
+- **WHEN** the dimension frontmatter has `name: "../../escaped"`
+- **THEN** the tool returns `DomainError` containing `invalid name`
+- **AND** no file is written outside `.github/instructions/`
 
 #### Scenario: Missing file field
 - **WHEN** render mode is called with an empty `file`

@@ -214,6 +214,12 @@ func dimensionsRenderInstructions(root string, in DimensionsRenderInstructionsIn
 	// name with spaces in it.
 	name, _ := meta["name"].(string)
 	name = strings.TrimSpace(name)
+	if strings.ContainsAny(name, `/\`) || strings.Contains(name, "..") {
+		return DimensionsRenderInstructionsOut{}, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("dimensions_render_instructions: %s: invalid name %q: must not contain a path separator or \"..\"", filePath, name),
+			Suggestion: "Set the frontmatter name to a bare lowercase-hyphen stem such as \"security\", then retry.",
+		}
+	}
 	outPath := filepath.Join(root, ".github", "instructions", name+".instructions.md")
 
 	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {

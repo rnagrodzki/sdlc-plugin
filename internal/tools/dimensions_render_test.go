@@ -72,6 +72,25 @@ func TestDimensionsRender_MirrorPathUsesTrimmedName(t *testing.T) {
 	}
 }
 
+func TestDimensionsRender_RenderPathTraversalName_Errors(t *testing.T) {
+	for _, name := range []string{"../../escaped", "a/b", `a\\b`} {
+		t.Run(name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "project")
+			writeFile(t, filepath.Join(root, "dim.md"),
+				"---\nname: \""+name+"\"\ndescription: Security review\ntriggers:\n  - \"**/*.go\"\n---\n# Security\n\nCheck input validation.\n")
+
+			_, err := dimensionsRenderInstructions(root, DimensionsRenderInstructionsIn{File: "dim.md"})
+			var de *mcpserver.DomainError
+			if !errors.As(err, &de) {
+				t.Fatalf("err = %v, want *mcpserver.DomainError", err)
+			}
+			if _, statErr := os.Stat(filepath.Join(filepath.Dir(root), "escaped.instructions.md")); statErr == nil {
+				t.Error("mirror file was written outside .github/instructions/")
+			}
+		})
+	}
+}
+
 func TestDimensionsRender_ListDimensions_UnreadableDirIsInfraError(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, paths.DataDir, "review-dimensions"), "not a directory")
