@@ -1012,6 +1012,37 @@ func TestLinksValidateExtractsAndZipsLines(t *testing.T) {
 	}
 }
 
+func TestLinksValidateParentheses(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		want string
+	}{
+		{"wikipedia-style balanced parens", "See https://en.wikipedia.org/wiki/Foo_(bar) here.", "https://en.wikipedia.org/wiki/Foo_(bar)"},
+		{"markdown link", "Read [the docs](https://a.b/c).", "https://a.b/c"},
+		{"balanced parens inside a markdown link", "Read [x](https://en.wikipedia.org/wiki/Foo_(bar)).", "https://en.wikipedia.org/wiki/Foo_(bar)"},
+		{"balanced parens inside plain parens", "(see https://en.wikipedia.org/wiki/Foo_(bar)).", "https://en.wikipedia.org/wiki/Foo_(bar)"},
+		{"adjacent markdown links", "[a](https://x.y/1),[b](https://x.y/2)", "https://x.y/1"},
+		{"unbalanced open paren", "https://x.y/a(b", "https://x.y/a(b"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, "doc.md"), tc.line+"\n")
+			out, err := linksValidate(root, LinksValidateIn{File: "doc.md", Offline: true})
+			if err != nil {
+				t.Fatalf("linksValidate: %v", err)
+			}
+			if len(out.Results) == 0 {
+				t.Fatalf("no URL extracted from %q", tc.line)
+			}
+			if got := out.Results[0].URL; got != tc.want {
+				t.Errorf("URL = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestLinksValidateFileNotFound(t *testing.T) {
 	root := t.TempDir()
 	_, err := linksValidate(root, LinksValidateIn{File: "missing.md"})

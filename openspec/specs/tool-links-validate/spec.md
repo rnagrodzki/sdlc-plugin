@@ -33,9 +33,9 @@ The tool SHALL resolve a relative `file` against the main worktree root and SHAL
 ### Requirement: URL extraction
 The tool SHALL extract URLs line by line, clean them, and keep each distinct URL once with the 1-based line of its first occurrence, in order of first occurrence.
 
-- Match pattern: `https?://` followed by characters other than whitespace, `)`, `]`, `>`, `"`, `'`.
+- Match pattern: `https?://`, then characters other than whitespace, `)`, `]`, `>`, `"`, `'`; a balanced `(...)` group (one level) is kept whole.
+- A `)` that closes no `(` in the URL ends the match: `[x](https://a.b/c)` yields `https://a.b/c`.
 - Trailing `.`, `,`, `;`, `:`, `!`, `?` are stripped.
-- A URL never holds `)`: the match ends before the first `)`, even when the URL holds a `(`.
 - A trailing `\r` on a line is ignored.
 
 #### Scenario: Duplicates, punctuation and parentheses
@@ -45,6 +45,13 @@ The tool SHALL extract URLs line by line, clean them, and keep each distinct URL
   line 3 `Line3 https://example.com/baz.`
 - **THEN** `results` holds exactly 3 entries, in this order
 - **AND** they are `https://example.com/foo` at line `1`, `https://example.com/bar` at line `2`, `https://example.com/baz` at line `3`
+
+#### Scenario: Balanced parentheses and markdown links
+- **WHEN** the file holds these lines, with `offline: true`:
+  line 1 `See https://en.wikipedia.org/wiki/Foo_(bar) here.`,
+  line 2 `Read [the docs](https://a.b/c).`
+- **THEN** `results` holds exactly 2 entries, in this order
+- **AND** they are `https://en.wikipedia.org/wiki/Foo_(bar)` at line `1` and `https://a.b/c` at line `2`
 
 #### Scenario: No URL in the file
 - **WHEN** the file holds no `http://` or `https://` URL
