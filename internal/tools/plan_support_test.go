@@ -244,6 +244,24 @@ func TestPlanMergeResults_RedispatchFailedG17Lane(t *testing.T) {
 	}
 }
 
+// TestPlanMergeResults_RejectedLensWithLanes verifies a rejected lens yields
+// Issues Found in the mixed call (laneResults and lensResults together, the
+// redispatch path), not only in a lens-only call.
+func TestPlanMergeResults_RejectedLensWithLanes(t *testing.T) {
+	out := mergeCall(t, PlanSupportIn{
+		LaneResults: []LaneResult{{Name: "lane-1", Status: "pass", GateIDs: []string{"G1"}}},
+		LensResults: []LensResult{
+			{Name: "lens-risk", Status: "rejected"},
+			{Name: "lens-architecture", Status: "approved"},
+		},
+		ExpectedGates: []string{"G1"},
+		IsRedispatch:  true,
+	})
+	if out.MergedStatus != "Issues Found" {
+		t.Errorf("MergedStatus = %q, want %q", out.MergedStatus, "Issues Found")
+	}
+}
+
 // TestPlanMergeResults_IssueDedup verifies AllIssues dedups by
 // (gateId, lowercased-trimmed summary) — including across sources: two lanes
 // and one lens each report the same (gateId, summary) pair with differing

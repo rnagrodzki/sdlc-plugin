@@ -422,8 +422,9 @@ func mergeResults(in PlanSupportIn) (PlanSupportOut, error) {
 		}
 	}
 
-	// For lenses-only: Approved iff all lens statuses are "approved" (SKILL.md:690).
-	if len(in.LaneResults) == 0 && len(in.LensResults) > 0 {
+	// Approved iff all lens statuses are "approved" (plan-reviewer-prompt.md),
+	// whether or not laneResults are sent in the same call.
+	if len(in.LensResults) > 0 {
 		for _, lens := range in.LensResults {
 			if lens.Status != "approved" {
 				mergedStatus = "Issues Found"

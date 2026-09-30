@@ -135,7 +135,7 @@ The `merge_results` action SHALL set `mergedStatus` to `Issues Found` when any r
 | Rule | Applies when |
 |---|---|
 | Any issue in `allIssues` has `severity: blocking` | always |
-| Any lens `status` is not `approved` | only `lensResults` given (no `laneResults`) |
+| Any lens `status` is not `approved` | `lensResults` given, with or without `laneResults` |
 | `laneFailures` is not empty (a failed lane that is not G17-only, with or without issues) | `laneResults` given |
 
 `next` is chosen by the first matching row:
@@ -155,6 +155,10 @@ The `merge_results` action SHALL set `mergedStatus` to `Issues Found` when any r
 
 #### Scenario: One lens rejected
 - **WHEN** only `lensResults` is given and one lens has `status: rejected`
+- **THEN** `mergedStatus` is `Issues Found`
+
+#### Scenario: Rejected lens alongside lanes
+- **WHEN** `laneResults` holds one passing lane that covers every `expectedGates` entry and `lensResults` holds one lens with `status: rejected` and no issues
 - **THEN** `mergedStatus` is `Issues Found`
 
 #### Scenario: Failed lane without issues
