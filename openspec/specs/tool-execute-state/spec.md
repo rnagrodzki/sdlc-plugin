@@ -1073,9 +1073,14 @@ Order of checks per subject (first match wins):
 | Condition | Class | Message / Suggestion (short) |
 |---|---|---|
 | `runId` empty | DomainError | `wave-await requires runId` |
+| `runId` has characters outside `[A-Za-z0-9_-]` | DomainError | `runId contains invalid characters (expected only [A-Za-z0-9_-]): "<runId>"` |
 | `wave` missing | DomainError | `wave-await requires wave` |
 | wave not recorded | DataError | `wave <n> not found for branch "<b>"` / call `wave-start` first |
 | server state or progress unreadable | InfraError | `load server state for task <id>: <err>` / `read progress: <err>` |
+
+#### Scenario: Unsafe runId
+- **WHEN** `runId` is `../x`
+- **THEN** the tool fails with a DomainError before it reads any server state or progress file
 
 #### Scenario: Healthy task
 - **WHEN** an open task has a fresh heartbeat
@@ -1282,7 +1287,7 @@ The `issue-draft` action SHALL append a GitHub issue draft to the state's `pendi
 ### Requirement: decide action
 The `decide` action SHALL append `{decideType, id, decision?, reason?}` to the state's `guardrailDecisions` list and never overwrite earlier entries.
 
-- `decideType` is `guardrail`; `decideDecision` is one of `override`, `harden`, `cancel`, `fix` per the input schema.
+- `decideType` is `guardrail`; `decideDecision`, when set, must be one of `override`, `harden`, `cancel`, `fix`. The tool checks this at runtime.
 - Result: `{ok: true, action: "decide", next}`.
 - `next`: `Guardrail <id> recorded as <decision>. Continue wave execution.`, or `Guardrail <id> recorded. Continue wave execution.` without a decision.
 
@@ -1290,10 +1295,16 @@ The `decide` action SHALL append `{decideType, id, decision?, reason?}` to the s
 |---|---|---|
 | blank `decideType` | DomainError | `decideType is required` |
 | blank `decideId` | DomainError | `decideId is required` |
+| `decideDecision` not empty and not in the enum | DomainError | `decideDecision must be one of override, harden, cancel, fix; got "<value>"` |
 
 #### Scenario: Decisions accumulate
 - **WHEN** `decide` is called twice with different ids
 - **THEN** `guardrailDecisions` holds both entries in call order
+
+#### Scenario: Unknown decision rejected
+- **WHEN** `decideDecision` is `approve`
+- **THEN** the tool fails with a DomainError naming the four allowed values
+- **AND** nothing is appended to `guardrailDecisions`
 
 ### Requirement: report action
 The `report` action SHALL assemble the end-of-run execution report without writing anything unless `write` is true, and SHALL return `{skipped: true, written: false}` when config `automation.report.enabled` is false.

@@ -129,6 +129,11 @@ func execActionWaveAwait(root, workDir string, in ExecuteStateIn, now func() tim
 			Suggestion: `Pass runId, e.g. execute_state {action:"wave-await", runId:"<runId>", wave:<n>}.`,
 		}
 	}
+	// Reject an unsafe runId as a caller error before any path is built;
+	// otherwise it surfaces later as an InfraError from the wave package.
+	if err := execValidateSafeID(in.RunID, "runId"); err != nil {
+		return WaveAwaitOut{}, err
+	}
 	if in.Wave == nil {
 		return WaveAwaitOut{}, &mcpserver.DomainError{
 			Msg:        "wave-await requires wave",

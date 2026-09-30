@@ -183,6 +183,33 @@ func TestExecState_WaveAwait_OmittedBranchUsesActiveWorktree(t *testing.T) {
 	}
 }
 
+// TestExecState_WaveAwait_UnsafeRunIDIsDomainError pins that a runId with
+// path characters is rejected as a caller error (DomainError), not reported
+// as an infrastructure failure when the server-state path is built.
+func TestExecState_WaveAwait_UnsafeRunIDIsDomainError(t *testing.T) {
+	root := t.TempDir()
+	createExecState(t, root, "feat/test", map[string]any{
+		"waves": []any{waveAwaitManifest(1, []map[string]any{waveAwaitPlannedEntry("1")}, nil)},
+	})
+
+	_, err := executeState(root, root, ExecuteStateIn{
+		Action: "wave-await",
+		Branch: "feat/test",
+		RunID:  "../x",
+		Wave:   intPtr(1),
+	}, fixedClock(testNow))
+	if err == nil {
+		t.Fatal("expected error for unsafe runId")
+	}
+	domainErr, ok := err.(*mcpserver.DomainError)
+	if !ok {
+		t.Fatalf("expected DomainError, got %T: %v", err, err)
+	}
+	if !strings.Contains(domainErr.Msg, `runId contains invalid characters`) {
+		t.Errorf("Msg = %q, want the invalid-characters message", domainErr.Msg)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Healthy / queued / recorded bucketing
 // ---------------------------------------------------------------------------

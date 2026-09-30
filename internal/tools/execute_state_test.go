@@ -6103,6 +6103,45 @@ func TestExecState_Decide_MissingID(t *testing.T) {
 	}
 }
 
+// TestExecState_Decide_RejectsUnknownDecision pins the runtime enum check on
+// decideDecision: a value outside override|harden|cancel|fix is a
+// DomainError and nothing is appended to guardrailDecisions.
+func TestExecState_Decide_RejectsUnknownDecision(t *testing.T) {
+	root := t.TempDir()
+	createExecState(t, root, "feat/decide", map[string]any{
+		"branch": "feat/decide",
+	})
+
+	_, err := executeState(root, root, ExecuteStateIn{
+		Action:         "decide",
+		Branch:         "feat/decide",
+		DecideType:     "guardrail",
+		DecideID:       "no-real-fs-git-in-tests",
+		DecideDecision: "approve",
+	}, fixedClock(testNow))
+	if err == nil {
+		t.Fatal("expected error for unknown decideDecision")
+	}
+	domainErr, ok := err.(*mcpserver.DomainError)
+	if !ok {
+		t.Fatalf("expected DomainError, got %T: %v", err, err)
+	}
+	if !strings.Contains(domainErr.Msg, `decideDecision must be one of override, harden, cancel, fix; got "approve"`) {
+		t.Errorf("Msg = %q, want the enum and the bad value", domainErr.Msg)
+	}
+	if domainErr.Suggestion == "" {
+		t.Error("expected a Suggestion on the DomainError")
+	}
+
+	st, findErr := state.Find(root, "execute", "feat/decide")
+	if findErr != nil || st == nil {
+		t.Fatalf("find state: %v", findErr)
+	}
+	if got, ok := st.Data["guardrailDecisions"]; ok {
+		t.Errorf("guardrailDecisions = %v, want absent after a rejected decide", got)
+	}
+}
+
 func TestExecState_Decide_SingleCall(t *testing.T) {
 	root := t.TempDir()
 	createExecState(t, root, "feat/decide", map[string]any{
