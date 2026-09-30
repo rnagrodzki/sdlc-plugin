@@ -78,13 +78,37 @@ func TestInitialShipStepsFromConfig_AllCanonicalSteps(t *testing.T) {
 // TestInitialShipStepsFromConfig_UnknownNameIsInline verifies a
 // config-sourced name outside ValidSteps (reaches here only as a
 // ship_prepare warning, never an error — see ship.go's step-name
-// validation) still gets seeded, classified "inline" rather than rejected
-// or dropped.
+// validation; the conditional steps are the exception and are rejected)
+// still gets seeded, classified "inline" rather than rejected or dropped.
 func TestInitialShipStepsFromConfig_UnknownNameIsInline(t *testing.T) {
 	got := InitialShipStepsFromConfig([]string{"totally-unknown-step"})
 	want := []ShipStateStep{{Name: "totally-unknown-step", Status: "pending", Kind: "inline"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("InitialShipStepsFromConfig = %#v, want %#v", got, want)
+	}
+}
+
+// TestIsConditionalShipStep pins the derived conditional-step set to exactly
+// "received-review" and "commit-fixes": both tracked, neither configurable.
+// No CanonicalSteps entry may be conditional.
+func TestIsConditionalShipStep(t *testing.T) {
+	var got []string
+	for _, name := range TrackedShipSteps {
+		if IsConditionalShipStep(name) {
+			got = append(got, name)
+		}
+	}
+	want := []string{"received-review", "commit-fixes"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("conditional steps = %v, want %v", got, want)
+	}
+	for _, name := range CanonicalSteps {
+		if IsConditionalShipStep(name) {
+			t.Errorf("IsConditionalShipStep(%q) = true, want false for a CanonicalSteps entry", name)
+		}
+	}
+	if IsConditionalShipStep("totally-unknown-step") {
+		t.Error(`IsConditionalShipStep("totally-unknown-step") = true, want false`)
 	}
 }
 

@@ -690,6 +690,102 @@ func TestShipPrepare_InvalidStep(t *testing.T) {
 	}
 }
 
+// TestShipPrepare_ConditionalStepRejected verifies that the conditional
+// steps "received-review" and "commit-fixes" are a hard error from every
+// source — config ship.steps[], config ship.quick[] and --steps — and never
+// a warning. Before the fix a config-sourced conditional step only warned,
+// and ship_prepare seeded it as a "tracked" state entry that nothing ever
+// dispatches.
+func TestShipPrepare_ConditionalStepRejected(t *testing.T) {
+	cases := []struct {
+		name    string
+		step    string
+		config  string // local.toml body
+		in      ShipPrepareIn
+		wantSrc string
+		label   string
+	}{
+		{
+			name:    "config steps received-review",
+			step:    "received-review",
+			config:  "[ship]\nsteps = [\"commit\", \"received-review\"]\n",
+			wantSrc: "config",
+			label:   "steps[]",
+		},
+		{
+			name:    "config steps commit-fixes",
+			step:    "commit-fixes",
+			config:  "[ship]\nsteps = [\"commit\", \"commit-fixes\"]\n",
+			wantSrc: "config",
+			label:   "steps[]",
+		},
+		{
+			name:    "config quick received-review",
+			step:    "received-review",
+			config:  "[ship]\nquick = [\"commit\", \"received-review\"]\n",
+			in:      ShipPrepareIn{Quick: true},
+			wantSrc: "quick",
+			label:   "steps[]",
+		},
+		{
+			name:    "cli commit-fixes",
+			step:    "commit-fixes",
+			in:      ShipPrepareIn{Steps: []string{"commit", "commit-fixes"}},
+			wantSrc: "cli",
+			label:   "--steps",
+		},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			initGitFixture(t, dir)
+			gitCommit(t, dir, "initial")
+			checkoutBranch(t, dir, fmt.Sprintf("feat/conditional-step-%d", i))
+			if tc.config != "" {
+				writeFile(t, filepath.Join(dir, paths.DataDir, "local.toml"), tc.config)
+			}
+
+			in := tc.in
+			in.SkipConfigCheck = true
+			out, err := shipPrepare(dir, dir, in)
+			if err != nil {
+				t.Fatalf("shipPrepare: %v", err)
+			}
+			if got := out.Sources["steps"]; got != tc.wantSrc {
+				t.Fatalf("Sources[steps] = %q, want %q", got, tc.wantSrc)
+			}
+
+			var stepErrs []string
+			for _, e := range out.Errors {
+				if strings.Contains(e, `"`+tc.step+`"`) {
+					stepErrs = append(stepErrs, e)
+				}
+			}
+			if len(stepErrs) != 1 {
+				t.Fatalf("Errors = %v, want exactly one entry naming %q", out.Errors, tc.step)
+			}
+			if !strings.Contains(stepErrs[0], "conditional step") || !strings.Contains(stepErrs[0], "in "+tc.label) {
+				t.Errorf("error %q, want it to call %q a conditional step in %s", stepErrs[0], tc.step, tc.label)
+			}
+			if !strings.Contains(stepErrs[0], "Valid values: "+strings.Join(shipmeta.ValidSteps, ", ")) {
+				t.Errorf("error %q does not name the allowed steps", stepErrs[0])
+			}
+			for _, w := range out.Warnings {
+				if strings.Contains(w, tc.step) {
+					t.Errorf("Warnings contains %q, want it only in Errors", w)
+				}
+			}
+			if out.StateFile != "" {
+				t.Errorf("StateFile = %q, want empty (validation errors block state init)", out.StateFile)
+			}
+			matches, _ := filepath.Glob(filepath.Join(dir, paths.DataDir, paths.RunsSubdir, "ship-*.json"))
+			if len(matches) != 0 {
+				t.Errorf("ship state files = %v, want none", matches)
+			}
+		})
+	}
+}
+
 // TestShipPrepare_BumpWithoutPRStep verifies that a CLI-supplied --bump is
 // rejected when the "pr" step is skipped: version diagnostics now run inside
 // pr_prepare (the standalone "version" step no longer exists), so --bump has

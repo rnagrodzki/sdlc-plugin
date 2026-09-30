@@ -344,12 +344,21 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 
 	stepsList, _ := merged["steps"].([]string)
 
-	// Step-name validity (RESERVED_STEPS always errors; unrecognized names
-	// error when the CLI supplied --steps, warn when they came from config).
+	// Step-name validity (RESERVED_STEPS and the conditional steps always
+	// error, whatever the source; other unrecognized names error when the
+	// CLI supplied --steps, warn when they came from config). A conditional
+	// step accepted from config would be seeded as a tracked state entry
+	// that nothing ever dispatches.
 	for _, st := range stepsList {
 		if sliceContainsStr(shipmeta.ReservedSteps, st) {
 			errors = append(errors, fmt.Sprintf(
 				"%q is a reserved terminal step appended automatically by the pipeline. Remove it from --steps and ship.steps[].", st))
+			continue
+		}
+		if shipmeta.IsConditionalShipStep(st) {
+			errors = append(errors, fmt.Sprintf(
+				"%q in %s is a conditional step the pipeline dispatches itself when review findings need fixing — remove it. Valid values: %s",
+				st, stepsFieldLabel(sources["steps"]), strings.Join(shipmeta.ValidSteps, ", ")))
 			continue
 		}
 		if !sliceContainsStr(shipmeta.ValidSteps, st) {

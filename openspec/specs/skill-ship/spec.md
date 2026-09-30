@@ -291,6 +291,7 @@ After `review` completes, the skill SHALL route each `#### [<SEVERITY>] <title>`
 The skill SHALL dispatch `received-review` only when at least one finding was collected, SHALL dispatch `commit-fixes` only when `received-review` made changes, and SHALL record both with `decide` only.
 
 - `received-review` and `commit-fixes` have no `steps[]` entry; the skill never calls `begin-step`, `complete-step`, `start`, `complete`, `skip`, or `fail` for them.
+- They are not configurable: `ship_prepare` rejects either name in `ship.steps[]`, `ship.quick[]`, or `--steps` with an error, so neither is ever seeded into the state `steps[]`.
 - The `received-review` payload is `Review findings to address (from /review, <K> of <M>):` followed by each collected finding's heading, `**File:**` line, and body verbatim.
 - `received-review` pauses for the user unless `flags.auto`.
 - `commit-fixes` is a separate commit, never squashed into the feature commit.

@@ -145,6 +145,7 @@ The tool SHALL collect validation problems into `errors` and `warnings`, and SHA
 | Condition | Goes to | Text (short) |
 |---|---|---|
 | `cleanup` in the step list | error | `"cleanup" is a reserved terminal step appended automatically by the pipeline. ...` |
+| `received-review` or `commit-fixes` in the step list, from any tier | error | `"<s>" in --steps is a conditional step the pipeline dispatches itself when review findings need fixing — remove it. Valid values: ...` (`steps[]` in place of `--steps` when not from input) |
 | Unknown step name, `sources.steps` is `cli` | error | `Unrecognized step "<s>" in --steps. Valid values: execute, commit, review, harden, verify-openspec, archive-openspec, pr, verify-pipeline, await-remote-review, learnings-commit` |
 | Unknown step name from any other tier | warning | same text, with `steps[]` in place of `--steps` |
 | `quality` not `full`/`balanced`/`minimal` | error | `Invalid --quality "<q>". Valid values: full, balanced, minimal` |
@@ -172,6 +173,16 @@ The tool SHALL collect validation problems into `errors` and `warnings`, and SHA
 #### Scenario: Reserved step
 - **WHEN** the call passes `steps:["commit","cleanup"]`
 - **THEN** `errors` is non-empty
+
+#### Scenario: Conditional step in config
+- **WHEN** config `[ship]` sets `steps = ["commit", "received-review"]` and the input has no `steps`
+- **THEN** `errors` has one entry naming `"received-review"` as a conditional step and listing every valid step
+- **AND** `warnings` has no entry naming `received-review`
+- **AND** no `ship-*.json` file exists under `.sdlc-v2/runs/`
+
+#### Scenario: Conditional step in input
+- **WHEN** the call passes `steps:["commit","commit-fixes"]`
+- **THEN** `errors` has one entry naming `"commit-fixes"` as a conditional step in `--steps`
 
 #### Scenario: Bump without pr step
 - **WHEN** the call passes `steps:["commit"]` and `bump:"minor"`
@@ -206,7 +217,7 @@ On a clean validation the tool SHALL write a new ship state file at `.sdlc-v2/ru
 - Seeded keys: `version:1`, `startedAt`, `branch`, `worktree`, `sessionId`, `flags`, `sources`, `versionCfg`, `binaryVersion`, `steps`, `decisions:[]`, `deferredFindings:[]`.
 - `sideEffects` and `healing` are not seeded.
 - `steps` has one `{name, status:"pending", kind}` entry per resolved step, in order.
-- `kind` is `"tracked"` for `execute`, `commit`, `review`, `received-review`, `commit-fixes`, `pr`; `"inline"` for every other name.
+- `kind` is `"tracked"` for `execute`, `commit`, `review`, `pr`; `"inline"` for every other name. `received-review` and `commit-fixes` are never seeded: Pipeline validation rejects them.
 - Deleted files are listed in `prunedOrphans`; files of other branch slugs are kept.
 - `pipelineDisplay` renders the seeded steps as a table with one description per step.
 
