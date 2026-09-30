@@ -242,12 +242,12 @@ In `harden` mode the tool SHALL load each surface from the source below and SHAL
 - **THEN** it appears in `surfaces.copilotInstructions` with `name: go` and empty `applyTo`
 
 ### Requirement: harden pipeline state and CLI evidence
-In `harden` mode the tool SHALL read the newest ship and execute state files from the main root on any branch, and the last 20 CLI evidence entries filtered to the active branch.
+In `harden` mode the tool SHALL read the newest ship and execute state files from the main root on any branch, and the last 20 CLI evidence entries of the active branch.
 
 - `pipeline.shipState`: `paused`, `currentStep`, `lastFailedStep`.
 - `pipeline.executeState`: `failedTask`, `failedWave`.
 - `pipeline.issues` merges the `issues` of both state files.
-- CLI evidence comes from `<main>/.sdlc-v2/evidence/cli-executions.jsonl`; the tool takes the last 20 entries of the file, then drops entries from other branches (all kept when the branch is unknown).
+- CLI evidence comes from `<main>/.sdlc-v2/evidence/cli-executions.jsonl`; the tool first drops entries from other branches (all kept when the branch is unknown), then keeps the last 20 of what is left.
 
 #### Scenario: State from another branch
 - **WHEN** the only ship state file belongs to a different branch
@@ -260,6 +260,10 @@ In `harden` mode the tool SHALL read the newest ship and execute state files fro
 #### Scenario: CLI evidence is branch-filtered
 - **WHEN** the evidence file has entries for `main` and for another branch, and the active branch is `main`
 - **THEN** `cliEvidence` holds only the `main` entries, in file order
+
+#### Scenario: Other-branch noise does not crowd out the active branch
+- **WHEN** the evidence file has 25 `main` entries followed by 25 entries for another branch, and the active branch is `main`
+- **THEN** `cliEvidence` holds the last 20 `main` entries, in file order
 
 ### Requirement: harden history context
 In `harden` mode the tool SHALL add a `history` section with the last 10 run records (`recentRuns`) and open deferred items (`openDeferred`) read from `historyPath`, or from `<main>/.sdlc-v2/history` when `historyPath` is empty.

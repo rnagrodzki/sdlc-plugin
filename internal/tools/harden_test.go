@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -804,6 +805,46 @@ func TestHardenPrepare_CLIEvidence(t *testing.T) {
 			if m["branch"] == "feature-x" {
 				t.Errorf("cliEvidence leaked a non-matching-branch entry: %+v", m)
 			}
+		}
+	})
+
+	t.Run("FiltersBranchBeforeTakingLast20", func(t *testing.T) {
+		// 25 main-branch entries followed by 25 other-branch entries: the
+		// last 20 file entries are all other-branch, but the manifest must
+		// still carry the last 20 main-branch ones.
+		root := t.TempDir()
+		initGitFixture(t, root)
+		gitCommit(t, root, "c1")
+
+		for _, br := range []string{"main", "feature-x"} {
+			for i := 0; i < 25; i++ {
+				e := CLIEvidenceEntry{
+					Timestamp: fmt.Sprintf("2026-09-11T00:%02d:00Z", i), Pipeline: "ship",
+					Branch: br, Command: fmt.Sprintf("%s-%02d", br, i),
+				}
+				if err := appendCLIEvidence(root, e); err != nil {
+					t.Fatalf("appendCLIEvidence: %v", err)
+				}
+			}
+		}
+
+		out, err := hardenPrepare(root, root, HardenPrepareIn{
+			FailureText:     "boom",
+			Skill:           "ship",
+			SkipConfigCheck: true,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		manifest := readHardenManifest(t, out.ManifestPath)
+		list, _ := manifest["cliEvidence"].([]any)
+		if len(list) != 20 {
+			t.Fatalf("expected 20 main-branch entries, got %d: %+v", len(list), list)
+		}
+		first := list[0].(map[string]any)
+		last := list[19].(map[string]any)
+		if first["command"] != "main-05" || last["command"] != "main-24" {
+			t.Errorf("cliEvidence = %v .. %v, want main-05 .. main-24", first["command"], last["command"])
 		}
 	})
 

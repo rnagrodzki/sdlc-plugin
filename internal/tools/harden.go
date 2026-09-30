@@ -413,6 +413,10 @@ func resolveErrorReportSkill(errs *[]surfaceLoadError) string {
 	return resolved
 }
 
+// hardenCLIEvidenceLimit caps how many active-branch CLI evidence entries
+// the harden manifest carries.
+const hardenCLIEvidenceLimit = 20
+
 // skillRecommendationMinCount is the minimum recurrence count a mined
 // learnings pattern (learningsStats' TopPatterns) must reach before it is
 // surfaced as a skill/agent recommendation — a one-off lesson is not yet a
@@ -775,7 +779,9 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 	branch, _ := gitx.CurrentBranch(contentRoot)
 	recentDiffSummary, _ := execx.Run("git", []string{"diff", "--shortstat", "HEAD~1..HEAD"}, execx.Options{Dir: contentRoot})
 
-	cliEvidence, cliEvidenceErr := readRecentCLIEvidence(root, 20)
+	// Filter to the active branch first, then keep the last 20, so noise
+	// from other branches in the shared log cannot crowd out this branch.
+	cliEvidence, cliEvidenceErr := readAllCLIEvidence(root)
 	if cliEvidenceErr != nil {
 		loadErrs = append(loadErrs, surfaceLoadError{
 			Surface: "cli-evidence",
@@ -787,6 +793,9 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 		if branch == "" || e.Branch == branch {
 			branchCLIEvidence = append(branchCLIEvidence, e)
 		}
+	}
+	if len(branchCLIEvidence) > hardenCLIEvidenceLimit {
+		branchCLIEvidence = branchCLIEvidence[len(branchCLIEvidence)-hardenCLIEvidenceLimit:]
 	}
 
 	var exitCode *string
