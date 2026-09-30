@@ -327,6 +327,55 @@ func TestPrPrepare_ConfigMoveKeysMoved_WarnsAndContinues(t *testing.T) {
 	}
 }
 
+// TestPrPrepare_EarlyAuthExits_KeepWarnings checks that a warning collected
+// before the gh-auth checks (here, the personal-key move) survives the
+// not-logged-in, account-mismatch, and repo-access-denied exits.
+func TestPrPrepare_EarlyAuthExits_KeepWarnings(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(rt *prRuntime)
+	}{
+		{"not logged in", func(rt *prRuntime) {
+			rt.ghAuthProbe = func(dir, host string) ghx.AuthProbeResult {
+				return ghx.AuthProbeResult{ErrorMessage: "Not logged in to github.com. Run: gh auth login --hostname github.com"}
+			}
+		}},
+		{"account mismatch", func(rt *prRuntime) {
+			rt.configReadSection = func(root, section string) (map[string]any, error) {
+				return map[string]any{"expectedAccount": "correctuser"}, nil
+			}
+		}},
+		{"repo access denied", func(rt *prRuntime) {
+			rt.ghRepoAccessProbe = func(dir, owner, repo, host string) ghx.RepoAccessResult {
+				denied, code := false, 404
+				return ghx.RepoAccessResult{Accessible: &denied, StatusCode: &code}
+			}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := expectedAccountRuntime(notFoundSection, "git@github.com:acme/widgets.git")
+			rt.configMigrateVerify = func(root string) error { return nil }
+			rt.configMoveKeys = func(root string) ([]string, error) {
+				return []string{"pr.expectedAccount -> [github] expectedAccount"}, nil
+			}
+			rt.ghGetAccounts = func(dir, host string) ([]ghx.Account, error) { return nil, nil }
+			tc.mutate(&rt)
+
+			out, err := prPrepareCoreWith("/mock/root", "/mock/work", PRPrepareIn{}, rt)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if out.OK || len(out.Errors) == 0 {
+				t.Fatalf("expected a failed preflight, got %+v", out)
+			}
+			if !strings.Contains(strings.Join(out.Warnings, " "), "Moved personal settings") {
+				t.Errorf("expected the moved-keys warning to survive, got %v", out.Warnings)
+			}
+		})
+	}
+}
+
 // expectedAccountRuntime is an authenticated, clean-tree runtime whose
 // [github] section read and origin remote are supplied by the caller.
 func expectedAccountRuntime(readSection func(root, section string) (map[string]any, error), originURL string) prRuntime {

@@ -50,7 +50,7 @@ flowchart TD
 ```
 
 - `ok` is `true` only when every check passed and `errors` is empty.
-- The not-logged-in, account-mismatch, and repo-access-denied exits return no `warnings`, even warnings collected earlier in the call.
+- Every exit after the config check, including the not-logged-in, account-mismatch, and repo-access-denied exits, returns the `warnings` collected before it.
 - Only two conditions return a tool error instead of a result: a template with a release marker (`DomainError`) and an unresolvable project root (`InfraError`).
 
 #### Scenario: Failure is a payload
@@ -58,10 +58,10 @@ flowchart TD
 - **THEN** the tool returns a result, not a tool error
 - **AND** `ok` is `false` and `errors` explains the failure
 
-#### Scenario: Warnings dropped on auth failure
+#### Scenario: Warnings kept on auth failure
 - **WHEN** the personal-key move produced a warning
-- **AND** the gh auth check then fails
-- **THEN** the result has no `warnings`
+- **AND** the gh auth check, the expected-account check, or the repo access probe then fails
+- **THEN** `warnings` still contains the `Moved personal settings` line
 
 ### Requirement: Config-version check and personal-key move
 The tool SHALL check the project config version and move personal keys from `.sdlc-v2/config.toml` to `.sdlc-v2/local.toml` unless `skipConfigCheck` is `true`.

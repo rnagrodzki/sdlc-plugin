@@ -628,6 +628,7 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 	if !authProbe.Authenticated {
 		errs = append(errs, authProbe.ErrorMessage)
 		out.Errors = errs
+		out.Warnings = warnings
 		// AC2 asks for the same account diagnostics the standalone recover
 		// script produced; build them here too (not just on mismatch) so an
 		// unauthenticated failure still surfaces any configured candidates.
@@ -644,6 +645,7 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 	if accountMismatch {
 		errs = append(errs, ghx.FormatAccountMismatch(expectedAccount, authProbe.ActiveAccount))
 		out.Errors = errs
+		out.Warnings = warnings
 		out.Diagnostics = buildAuthDiagnosticsWith(rt, workDir, expectedAccount, "", nil)
 		out.Next = prPrepareNext(out)
 		return out, nil
@@ -667,6 +669,7 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 		if probe.Accessible != nil && !*probe.Accessible {
 			errs = append(errs, ghx.FormatAccessDenied(authProbe.ActiveAccount, owner, repo, probe.SuggestedAccounts))
 			out.Errors = errs
+			out.Warnings = warnings
 			out.Diagnostics = buildAuthDiagnosticsWith(rt, workDir, "", owner, probe.SuggestedAccounts)
 			out.Next = prPrepareNext(out)
 			return out, nil
