@@ -379,6 +379,10 @@ The `harden_clusters` action SHALL group `detail.findings` into at most 5 cluste
 - **WHEN** `git status --porcelain` fails
 - **THEN** the tool returns a `DomainError`, never an empty `dirtySurfaces`
 
+#### Scenario: First status line keeps its status column
+- **WHEN** the only change in the active worktree is an unstaged edit to tracked `.sdlc-v2/config.toml`, so `git status --porcelain` prints ` M .sdlc-v2/config.toml` as its first line
+- **THEN** `dirtySurfaces` is `[".sdlc-v2/config.toml"]`
+
 ### Requirement: read returns state and report data
 The `read` action SHALL return the full state object plus a computed `reportData` object, and SHALL NOT modify the state file.
 
