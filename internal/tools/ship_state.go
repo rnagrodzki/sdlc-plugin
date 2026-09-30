@@ -2173,11 +2173,12 @@ func shipStateGC(root, workDir string, in ShipStateIn, now func() time.Time) (an
 	}, nil
 }
 
-// shipGCDryRun enumerates the state directory without deleting anything,
-// mirroring cmdGc's --dry-run branch: only ship/execute/plan are classified
-// — a commit-prefixed file's bucket lookup misses and is silently skipped,
-// matching JS's `if (!bucket) continue`. Each entry is tagged with one of
-// "ttl-fresh" / "branch-exists" / "stale+branch-gone".
+// shipGCDryRun enumerates the state directory without deleting anything.
+// Only ship/execute/plan are classified — a commit-prefixed file's bucket
+// lookup misses and is silently skipped, matching JS's `if (!bucket)
+// continue`. Each entry is classified by state.ClassifyGCFile, the same rule
+// state.GC applies on a real run, so wouldDelete lists exactly what a real
+// run deletes. Its reason is that function's reason string.
 func shipGCDryRun(stateDir string, ttlDays int, branchExists func(string) bool, now func() time.Time) (any, error) {
 	buckets := map[string]map[string]any{
 		"ship":    {"wouldDelete": []any{}, "wouldKeep": []any{}},
@@ -2197,6 +2198,15 @@ func shipGCDryRun(stateDir string, ttlDays int, branchExists func(string) bool, 
 	nowMs := now().UnixMilli()
 	ttlMs := int64(ttlDays) * 86400000
 
+	// First pass: stat every classified file and find the newest mtime of
+	// each prefix+branch group; the rule needs it to spare a live branch's
+	// newest file.
+	type gcFile struct {
+		name, prefix, slug string
+		mtimeMs            int64
+	}
+	var files []gcFile
+	newestMs := map[string]int64{}
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || !strings.HasSuffix(name, ".json") {
@@ -2207,28 +2217,34 @@ func shipGCDryRun(stateDir string, ttlDays int, branchExists func(string) bool, 
 			continue
 		}
 		prefix, slug := m[1], m[2]
-		bucket, ok := buckets[prefix]
-		if !ok {
+		if _, ok := buckets[prefix]; !ok {
 			continue // "commit" (and anything unrecognized) is silently skipped, matching cmdGc's dry-run.
 		}
 		info, infoErr := e.Info()
 		if infoErr != nil {
 			continue
 		}
+		f := gcFile{name: name, prefix: prefix, slug: slug, mtimeMs: info.ModTime().UnixMilli()}
+		files = append(files, f)
+		key := prefix + "\x00" + slug
+		if cur, seen := newestMs[key]; !seen || f.mtimeMs > cur {
+			newestMs[key] = f.mtimeMs
+		}
+	}
 
-		fresh := (nowMs - info.ModTime().UnixMilli()) < ttlMs
-		branchLive := branchExists != nil && branchExists(slug)
-		entry := map[string]any{"file": name, "branch": slug}
-		switch {
-		case fresh:
-			entry["reason"] = "ttl-fresh"
-			bucket["wouldKeep"] = append(bucket["wouldKeep"].([]any), entry)
-		case branchLive:
-			entry["reason"] = "branch-exists"
-			bucket["wouldKeep"] = append(bucket["wouldKeep"].([]any), entry)
-		default:
-			entry["reason"] = "stale+branch-gone"
+	// Second pass: classify with the rule state.GC applies on a real run.
+	// fresh uses <= to match state.GC's cutoff (mtime not before now-TTL).
+	for _, f := range files {
+		fresh := (nowMs - f.mtimeMs) <= ttlMs
+		branchLive := branchExists != nil && branchExists(f.slug)
+		newest := f.mtimeMs == newestMs[f.prefix+"\x00"+f.slug]
+		del, reason := state.ClassifyGCFile(branchLive, newest, fresh)
+		entry := map[string]any{"file": f.name, "branch": f.slug, "reason": reason}
+		bucket := buckets[f.prefix]
+		if del {
 			bucket["wouldDelete"] = append(bucket["wouldDelete"].([]any), entry)
+		} else {
+			bucket["wouldKeep"] = append(bucket["wouldKeep"].([]any), entry)
 		}
 	}
 

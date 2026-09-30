@@ -526,18 +526,32 @@ The `cleanup-pipeline` action SHALL settle the current run, then run a GC sweep 
 - **THEN** the response has no `issueSummary`
 
 ### Requirement: gc
-The `gc` action SHALL prune stale state files, or with `detail.dryRun:true` only classify them.
+The `gc` action SHALL prune stale state files, or with `detail.dryRun:true` only classify them, and a dry run SHALL list in `wouldDelete` exactly the files a real run with the same inputs deletes.
 
 - TTL: `detail.ttlDays` > config `state.gc.ttlDays` (integer ≥ 0) > `7`; `0` is literal.
 - Real run returns `{ttlDays, ship, execute, plan, commit}`, each `{deleted, kept}`; explore tempdirs are also swept but not reported.
 - Dry run returns `{dryRun:true, ttlDays, ship, execute, plan}`, each `{wouldDelete, wouldKeep}` of `{file, branch, reason}`; `commit` files are not classified.
-- Dry-run reason: `ttl-fresh` (file mtime within TTL) → keep; else `branch-exists` (local branch exists) → keep; else `stale+branch-gone` → would delete.
+- Both runs use one rule per file. Every file of a gone branch is deleted, whatever its age. A live branch keeps its newest file (per prefix) and every file within the TTL; its older files past the TTL are deleted.
+
+| Branch | File | Result | Dry-run `reason` |
+|---|---|---|---|
+| gone | within TTL | delete | `branch-gone` |
+| gone | past TTL | delete | `stale+branch-gone` |
+| live | within TTL | keep | `ttl-fresh` |
+| live | newest, past TTL | keep | `branch-exists` |
+| live | older, past TTL | delete | `stale+superseded` |
+
 - When `git branch --list` fails, or lists no branch at all, every branch counts as live (real run and dry run).
 - `detail.dryRun` that is not a boolean returns a `DomainError` (`gc: detail.dryRun must be a boolean, got <type>`); a top-level `dryRun` is ignored.
 
 #### Scenario: Mistyped dryRun
 - **WHEN** the call passes `detail.dryRun:"true"`
 - **THEN** the tool returns a `DomainError` and deletes nothing
+
+#### Scenario: Dry run matches the real run
+- **WHEN** a gone branch has a state file within the TTL and a live branch has an older state file past the TTL next to a newer one
+- **THEN** a dry run lists both files in `wouldDelete`, with reasons `branch-gone` and `stale+superseded`
+- **AND** the real run that follows deletes exactly the files the dry run listed
 
 #### Scenario: Dry run skips commit files
 - **WHEN** a stale `commit-*.json` file exists and the call passes `detail.dryRun:true`
