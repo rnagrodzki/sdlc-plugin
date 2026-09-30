@@ -112,6 +112,7 @@ func TestShipState_HistoryActions_MissingFields(t *testing.T) {
 		want string
 	}{
 		{"history_record without outcome", ShipStateIn{Action: "history_record", Detail: map[string]any{"skill": "ship"}}, "detail.outcome"},
+		{"history_record with an outcome outside the enum", ShipStateIn{Action: "history_record", Detail: map[string]any{"skill": "ship", "outcome": "done"}}, `detail.outcome must be "success", "failure" or "partial", got "done"`},
 		{"deferred_add without detail", ShipStateIn{Action: "deferred_add"}, "detail.id"},
 		{"deferred_resolve without detail", ShipStateIn{Action: "deferred_resolve"}, "detail.id"},
 		{"deferred_resolve with empty id", ShipStateIn{Action: "deferred_resolve", Detail: map[string]any{"id": ""}}, "detail.id"},

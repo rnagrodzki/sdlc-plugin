@@ -2465,7 +2465,15 @@ func shipStateHistoryRecord(root string, in ShipStateIn) (any, error) {
 	if rec.Outcome == "" {
 		return nil, &mcpserver.DomainError{
 			Msg:        "history_record: detail.outcome is required",
-			Suggestion: "Pass detail.outcome naming the run's result (e.g. \"success\" or \"failure\"), then retry history_record.",
+			Suggestion: "Pass detail.outcome as one of \"success\", \"failure\" or \"partial\", then retry history_record.",
+		}
+	}
+	switch rec.Outcome {
+	case "success", "failure", "partial":
+	default:
+		return nil, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf(`history_record: detail.outcome must be "success", "failure" or "partial", got %q`, rec.Outcome),
+			Suggestion: "Pass detail.outcome as one of \"success\", \"failure\" or \"partial\", then retry history_record.",
 		}
 	}
 

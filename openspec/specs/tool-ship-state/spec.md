@@ -631,18 +631,24 @@ The `history_record` action SHALL append one run record to `.sdlc-v2/history/run
 | Field | Type | Required | Encoding | Meaning |
 |---|---|---|---|---|
 | `detail.skill` | string | yes | plain text, e.g. `"ship"` | Skill that ran. |
-| `detail.outcome` | string | yes | plain text, e.g. `"success"` | Run result; any non-empty string is accepted. |
+| `detail.outcome` | string | yes | enum: `"success"`, `"failure"`, `"partial"` | Run result. |
 | `detail.ts` | string | no | RFC3339 | Defaults to now. |
 | `detail.branch`, `detail.version` | string | no | plain text | Stored as given. |
 | `detail.duration_ms` | int | no | JSON number | Run duration. |
 | `detail.steps`, `detail.guardrail_hits`, `detail.deferred_issues` | string[] | no | JSON array of strings | Non-string items are dropped. |
 
 - Missing `detail`, `skill`, or `outcome` returns a `DomainError` before the history directory is touched.
+- An `outcome` outside the enum returns a `DomainError` before the history directory is touched: `history_record: detail.outcome must be "success", "failure" or "partial", got "<value>"`.
 - An append failure returns an `InfraError` naming the `runs.jsonl` path.
 
 #### Scenario: Missing outcome
 - **WHEN** the call passes `detail:{skill:"ship"}`
 - **THEN** the tool returns a `DomainError` naming `detail.outcome`
+
+#### Scenario: Outcome outside the enum
+- **WHEN** the call passes `detail:{skill:"ship", outcome:"done"}`
+- **THEN** the tool returns a `DomainError` whose message ends `got "done"`
+- **AND** `runs.jsonl` is not written
 
 ### Requirement: Deferred store actions
 The `deferred_add`, `deferred_list`, `deferred_propose_followups`, and `deferred_resolve` actions SHALL read and write `.sdlc-v2/history/deferred.json` without needing ship state.
