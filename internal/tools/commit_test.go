@@ -371,6 +371,62 @@ func TestCommitPrepare_NoStagedFiles(t *testing.T) {
 	}
 }
 
+// TestCommitPrepare_UnstagedExcludesStagedOnly pins that unstaged.files lists
+// only paths whose working tree differs from the index. A staged-only change
+// must not appear there, or the commit plan shows it under "Also staged by
+// commit_apply" and disagrees with what commit_apply actually stages.
+func TestCommitPrepare_UnstagedExcludesStagedOnly(t *testing.T) {
+	redirectTempManifests(t)
+	dir := newCommitApplyRepo(t)
+
+	// new.txt: new file, staged only.
+	writeRepoFile(t, dir, "new.txt", "new")
+	runGit(t, dir, "add", "new.txt")
+	// keep.txt: staged edit, then a further working-tree edit.
+	writeRepoFile(t, dir, "keep.txt", "staged edit")
+	runGit(t, dir, "add", "keep.txt")
+	writeRepoFile(t, dir, "keep.txt", "staged edit plus worktree edit")
+	// initial.txt: working-tree edit only.
+	writeRepoFile(t, dir, "initial.txt", "worktree edit")
+
+	out, err := commitPrepare(dir, dir, CommitPrepareIn{SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("commitPrepare: %v", err)
+	}
+
+	want := []string{"initial.txt", "keep.txt"}
+	if strings.Join(out.Unstaged.Files, ",") != strings.Join(want, ",") {
+		t.Errorf("unstaged.files: got %v, want %v", out.Unstaged.Files, want)
+	}
+	if out.Unstaged.FileCount != 2 || !out.Unstaged.HasChanges {
+		t.Errorf("unstaged: fileCount=%d hasChanges=%v, want 2 true", out.Unstaged.FileCount, out.Unstaged.HasChanges)
+	}
+	wantStaged := []string{"keep.txt", "new.txt"}
+	if strings.Join(out.Staged.Files, ",") != strings.Join(wantStaged, ",") {
+		t.Errorf("staged.files: got %v, want %v", out.Staged.Files, wantStaged)
+	}
+}
+
+// TestCommitPrepare_UnstagedEmptyWhenAllStaged pins that a fully staged tree
+// reports no unstaged changes.
+func TestCommitPrepare_UnstagedEmptyWhenAllStaged(t *testing.T) {
+	redirectTempManifests(t)
+	dir := newCommitApplyRepo(t)
+
+	writeRepoFile(t, dir, "new.txt", "new")
+	writeRepoFile(t, dir, "keep.txt", "edited")
+	runGit(t, dir, "add", "new.txt", "keep.txt")
+
+	out, err := commitPrepare(dir, dir, CommitPrepareIn{SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("commitPrepare: %v", err)
+	}
+
+	if len(out.Unstaged.Files) != 0 || out.Unstaged.FileCount != 0 || out.Unstaged.HasChanges {
+		t.Errorf("unstaged: files=%v fileCount=%d hasChanges=%v, want empty", out.Unstaged.Files, out.Unstaged.FileCount, out.Unstaged.HasChanges)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // commit_apply tests
 // ---------------------------------------------------------------------------

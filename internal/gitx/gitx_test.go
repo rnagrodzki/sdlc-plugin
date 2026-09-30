@@ -407,6 +407,33 @@ func TestDiff_NameOnly(t *testing.T) {
 	}
 }
 
+// TestDiff_DefaultIsIndexVsWorktree pins that Diff with neither Base nor
+// Cached compares the index to the working tree (plain `git diff`), so a
+// staged-only change is not reported. Comparing against HEAD would also list
+// staged changes as unstaged.
+func TestDiff_DefaultIsIndexVsWorktree(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	// staged.txt: new file, staged only.
+	if err := os.WriteFile(filepath.Join(dir, "staged.txt"), []byte("staged\n"), 0644); err != nil {
+		t.Fatalf("write staged.txt: %v", err)
+	}
+	gitRun(t, dir, "add", "staged.txt")
+	// init.txt: tracked file with an unstaged edit.
+	if err := os.WriteFile(filepath.Join(dir, "init.txt"), []byte("edited\n"), 0644); err != nil {
+		t.Fatalf("write init.txt: %v", err)
+	}
+
+	got, err := Diff(dir, DiffOpts{NameOnly: true})
+	if err != nil {
+		t.Fatalf("Diff: unexpected error: %v", err)
+	}
+	if got != "init.txt" {
+		t.Fatalf("Diff --name-only: got %q, want %q", got, "init.txt")
+	}
+}
+
 func TestCommitLog_InRepo(t *testing.T) {
 	dir := t.TempDir()
 	initGitRepo(t, dir)

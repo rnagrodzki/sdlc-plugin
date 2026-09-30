@@ -100,7 +100,9 @@ type DiffOpts struct {
 //
 // When Base is set, a three-dot range (base...HEAD) is used.
 // When Cached is true, staged changes are shown.
-// When neither Base nor Cached is set, working-tree changes vs HEAD are shown.
+// When neither Base nor Cached is set, unstaged changes are shown: the
+// working tree compared to the index (plain `git diff`), so staged-only
+// changes are excluded.
 func Diff(dir string, opts DiffOpts) (string, error) {
 	args := []string{"diff"}
 
@@ -118,8 +120,6 @@ func Diff(dir string, opts DiffOpts) (string, error) {
 			return "", err
 		}
 		args = append(args, opts.Base+"...HEAD")
-	} else {
-		args = append(args, "HEAD")
 	}
 
 	out, err := execx.Run("git", args, execx.Options{Dir: dir})

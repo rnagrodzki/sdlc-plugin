@@ -51,7 +51,7 @@ The tool SHALL NOT return a tool error for a failed git read, config read or man
 | `staged files:` | `git diff --cached --name-only` fails |
 | `staged diff:` | `git diff --cached` fails |
 | `staged diffStat:` | `git diff --cached --stat` fails |
-| `unstaged files:` | `git diff --name-only HEAD` fails |
+| `unstaged files:` | `git diff --name-only` fails |
 | `status:` | `git status --porcelain` fails |
 | `recentCommits:` | `git log --oneline -15` fails |
 | `manifestPath:` | Manifest directory or file cannot be written |
@@ -119,20 +119,30 @@ The tool SHALL cap `staged.diff` at an 8000-byte budget by keeping whole per-fil
 - **AND** `staged.truncatedFiles` names each file whose diff is not in `staged.diff`
 
 ### Requirement: Unstaged and untracked files
-The tool SHALL list in `unstaged` every tracked path whose working tree differs from `HEAD`, staged or not, and SHALL list untracked entries in `untracked`.
+The tool SHALL list in `unstaged` every tracked path whose working tree differs from the index, and SHALL list untracked entries in `untracked`. A staged-only change SHALL NOT appear in `unstaged`.
 
 | Field | Meaning |
 |---|---|
-| `unstaged.files` | Paths from `git diff --name-only HEAD`; this includes staged paths, not only unstaged ones |
+| `unstaged.files` | Paths from `git diff --name-only` (working tree vs index); the same comparison `commit_apply` uses to pick extra tracked paths |
 | `unstaged.fileCount` | Length of `unstaged.files` |
 | `unstaged.hasChanges` | `true` when `unstaged.fileCount` > 0 |
 | `untracked.files` | `??` entries from `git status --porcelain`; a wholly untracked directory is one entry with a trailing `/` |
 | `untracked.fileCount` | Length of `untracked.files` |
 
-#### Scenario: Staged file also listed as unstaged
+#### Scenario: Staged-only file not listed as unstaged
 - **WHEN** `a.ts` is staged and has no later working-tree edit
 - **THEN** `staged.files` holds `a.ts`
-- **AND** `unstaged.files` also holds `a.ts`
+- **AND** `unstaged.files` does not hold `a.ts`
+
+#### Scenario: Staged file with a later working-tree edit
+- **WHEN** `a.ts` is staged and then edited again in the working tree
+- **THEN** `staged.files` holds `a.ts`
+- **AND** `unstaged.files` holds `a.ts`
+
+#### Scenario: Everything staged
+- **WHEN** every change in the working tree is staged
+- **THEN** `unstaged.files` is empty
+- **AND** `unstaged.hasChanges` is `false`
 
 #### Scenario: Untracked directory
 - **WHEN** the directory `.sdlc-v2/runs/` holds only untracked files
