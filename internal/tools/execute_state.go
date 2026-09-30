@@ -643,7 +643,7 @@ func executeState(root, workDir string, in ExecuteStateIn, now func() time.Time)
 	case "wave-progress":
 		return execActionWaveProgress(root, in, now)
 	case "wave-await":
-		return execActionWaveAwait(root, in, now)
+		return execActionWaveAwait(root, workDir, in, now)
 	case "task-redispatch":
 		return execActionTaskRedispatch(root, workDir, in, now)
 	case "resume-reset":

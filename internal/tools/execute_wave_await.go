@@ -122,7 +122,7 @@ type waveAwaitPollState struct {
 // wave has no task row still blocking progress (see the blocking-count
 // computation below), never on a wall-clock deadline. Every open row is
 // independently bounded by totalTimeout from its own dispatchedAt (KD10).
-func execActionWaveAwait(root string, in ExecuteStateIn, now func() time.Time) (WaveAwaitOut, error) {
+func execActionWaveAwait(root, workDir string, in ExecuteStateIn, now func() time.Time) (WaveAwaitOut, error) {
 	if in.RunID == "" {
 		return WaveAwaitOut{}, &mcpserver.DomainError{
 			Msg:        "wave-await requires runId",
@@ -137,7 +137,7 @@ func execActionWaveAwait(root string, in ExecuteStateIn, now func() time.Time) (
 	}
 	waveNum := *in.Wave
 
-	branch, err := execResolveBranch(in.Branch, root)
+	branch, err := execResolveBranch(in.Branch, workDir)
 	if err != nil {
 		return WaveAwaitOut{}, err
 	}

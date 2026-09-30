@@ -100,11 +100,16 @@ Actions that do not need an existing execute state file: `wave-compute`, `resolv
 | recorded branch differs | DomainError | `branch changed mid-session: init recorded "<a>", current is "<b>"` / switch back or start a new run |
 | state write fails | InfraError | `write state: <err>` / check `.sdlc-v2/runs/` is writable |
 
-- `wave-await` resolves an omitted `branch` from the main worktree root, not the active worktree.
+- Every action, `wave-await` included, resolves an omitted `branch` from the active worktree, not the main worktree root.
 
 #### Scenario: Branch falls back to the current branch
 - **WHEN** a state-reading action is called without `branch`
 - **THEN** the tool uses the current git branch to find the state file
+
+#### Scenario: wave-await uses the active worktree branch
+- **WHEN** `wave-await` is called without `branch` from a linked worktree on `feat/wt` while the main worktree is on `main`
+- **THEN** the tool finds the state file for `feat/wt`
+- **AND** it does not fail with `no state file found for branch "main"`
 
 #### Scenario: Missing state file
 - **WHEN** `wave-start` is called for a branch with no execute state file
