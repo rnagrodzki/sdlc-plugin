@@ -32,10 +32,12 @@ import (
 // ---------------------------------------------------------------------------
 
 // mockAddLabelExec returns an execRun stub that succeeds only for the exact
-// `gh pr edit --add-label <wantLabel>` invocation prReleaseAddLabelWith
-// issues, and fails (surfacing as an InfraError) for anything else — the
-// mock-based equivalent of the old stubGHDispatch fixtures' narrow
-// prefix-matched rules ("wrong label = no match = exit 1").
+// `gh pr edit --add-label <wantLabel>` invocation prReleaseApplyLabelWith
+// issues when there are no stale labels to remove (the create path, and any
+// existing-PR case with no other release:* labels present), and fails
+// (surfacing as an InfraError) for anything else — the mock-based equivalent
+// of the old stubGHDispatch fixtures' narrow prefix-matched rules ("wrong
+// label = no match = exit 1").
 func mockAddLabelExec(wantLabel string) func(name string, args []string, opts execx.Options) (string, error) {
 	return func(name string, args []string, opts execx.Options) (string, error) {
 		if name == "gh" && len(args) == 4 && args[0] == "pr" && args[1] == "edit" && args[2] == "--add-label" && args[3] == wantLabel {
@@ -1896,7 +1898,7 @@ func TestPRReleaseIntent(t *testing.T) {
 }
 
 func TestPRApply_WithoutRelease_Unchanged(t *testing.T) {
-	// No releaseLevel: intent stays nil, so prReleaseAddLabelWith (and thus
+	// No releaseLevel: intent stays nil, so prReleaseApplyLabelWith (and thus
 	// execRun) must never be invoked — the mock fails the test if it is.
 	rt := prRuntime{
 		ghPRForBranch: func(dir string) ghx.PRMetadata { return ghx.PRMetadata{Exists: false} },
@@ -2311,5 +2313,250 @@ func TestPrPrepare_ReleaseMarkerTemplateConflict(t *testing.T) {
 	}
 	if domainErr.Cause == nil {
 		t.Error("Cause must carry the ValidateReleaseCompat error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// prReleaseStaleLabels / prReleaseApplyLabelWith (task 2, issue #66) — a
+// re-apply on an existing PR must replace stale release:* labels instead of
+// accumulating them.
+// ---------------------------------------------------------------------------
+
+func TestPRReleaseStaleLabels(t *testing.T) {
+	tests := []struct {
+		name     string
+		existing []string
+		keep     string
+		want     []string
+	}{
+		{"nil existing returns empty non-nil", nil, "release:minor-rc", []string{}},
+		{"no release labels present", []string{"bug", "enhancement"}, "release:minor-rc", []string{}},
+		{"keep label excluded", []string{"release:minor-rc", "bug"}, "release:minor-rc", []string{}},
+		{"single stale label", []string{"release:patch-rc", "bug"}, "release:minor-rc", []string{"release:patch-rc"}},
+		{"multiple stale labels sorted", []string{"release:patch-rc", "release:major", "bug"}, "release:minor-rc", []string{"release:major", "release:patch-rc"}},
+		{"non-release label release:foo is never removed", []string{"release:foo", "bug"}, "release:minor-rc", []string{}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := prReleaseStaleLabels(tc.existing, tc.keep)
+			if got == nil {
+				t.Fatal("expected a non-nil slice")
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPRApply_ExistingPR_ReplacesStaleReleaseLabel(t *testing.T) {
+	t.Run("single stale label removed", func(t *testing.T) {
+		var gotArgs []string
+		rt := releaseTestRuntime("1.0.0")
+		rt.ghPRForBranch = func(dir string) ghx.PRMetadata {
+			return ghx.PRMetadata{Exists: true, Number: 9, URL: "https://github.com/o/r/pull/9", Labels: []string{"release:patch-rc", "bug"}}
+		}
+		rt.ghPREdit = func(dir string, num int, title, body string) (string, error) {
+			return "https://github.com/o/r/pull/9", nil
+		}
+		rt.execRun = func(name string, args []string, opts execx.Options) (string, error) {
+			gotArgs = args
+			return "", nil
+		}
+
+		out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
+			Title: "T", Body: "B", ReleaseLevel: "minor", ReleasePreRelease: "rc", ReleaseNotes: "n", ReleaseSource: "user",
+		}, rt)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := []string{"pr", "edit", "--add-label", "release:minor-rc", "--remove-label", "release:patch-rc"}
+		if !slices.Equal(gotArgs, want) {
+			t.Errorf("exec args: got %v, want %v", gotArgs, want)
+		}
+		if out.ReleaseIntent == nil {
+			t.Fatal("expected ReleaseIntent to be populated")
+		}
+		if !slices.Equal(out.ReleaseIntent.LabelsRemoved, []string{"release:patch-rc"}) {
+			t.Errorf("LabelsRemoved: got %v, want [release:patch-rc]", out.ReleaseIntent.LabelsRemoved)
+		}
+	})
+
+	t.Run("two stale labels removed in one call, sorted", func(t *testing.T) {
+		var gotArgs []string
+		rt := releaseTestRuntime("1.0.0")
+		rt.ghPRForBranch = func(dir string) ghx.PRMetadata {
+			return ghx.PRMetadata{Exists: true, Number: 9, URL: "https://github.com/o/r/pull/9", Labels: []string{"release:patch-rc", "release:minor", "bug"}}
+		}
+		rt.ghPREdit = func(dir string, num int, title, body string) (string, error) {
+			return "https://github.com/o/r/pull/9", nil
+		}
+		rt.execRun = func(name string, args []string, opts execx.Options) (string, error) {
+			gotArgs = args
+			return "", nil
+		}
+
+		out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
+			Title: "T", Body: "B", ReleaseLevel: "major", ReleaseNotes: "n", ReleaseSource: "user",
+		}, rt)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := []string{"pr", "edit", "--add-label", "release:major", "--remove-label", "release:minor,release:patch-rc"}
+		if !slices.Equal(gotArgs, want) {
+			t.Errorf("exec args: got %v, want %v", gotArgs, want)
+		}
+		if !slices.Equal(out.ReleaseIntent.LabelsRemoved, []string{"release:minor", "release:patch-rc"}) {
+			t.Errorf("LabelsRemoved: got %v, want [release:minor release:patch-rc]", out.ReleaseIntent.LabelsRemoved)
+		}
+	})
+}
+
+func TestPRApply_ExistingPR_SameReleaseLabel_NoRemove(t *testing.T) {
+	rt := releaseTestRuntime("1.0.0")
+	rt.ghPRForBranch = func(dir string) ghx.PRMetadata {
+		return ghx.PRMetadata{Exists: true, Number: 9, URL: "https://github.com/o/r/pull/9", Labels: []string{"release:minor-rc", "bug"}}
+	}
+	rt.ghPREdit = func(dir string, num int, title, body string) (string, error) {
+		return "https://github.com/o/r/pull/9", nil
+	}
+	// mockAddLabelExec fails the test if a --remove-label flag is sent.
+	rt.execRun = mockAddLabelExec("release:minor-rc")
+
+	out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
+		Title: "T", Body: "B", ReleaseLevel: "minor", ReleasePreRelease: "rc", ReleaseNotes: "n", ReleaseSource: "user",
+	}, rt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.ReleaseIntent == nil {
+		t.Fatal("expected ReleaseIntent to be populated")
+	}
+	if out.ReleaseIntent.LabelsRemoved == nil {
+		t.Fatal("LabelsRemoved must be non-nil")
+	}
+	if len(out.ReleaseIntent.LabelsRemoved) != 0 {
+		t.Errorf("LabelsRemoved: got %v, want empty", out.ReleaseIntent.LabelsRemoved)
+	}
+}
+
+func TestPRApply_CreatePath_LabelsRemovedEmpty(t *testing.T) {
+	rt := releaseTestRuntime("1.0.0")
+	rt.ghPRCreate = func(dir, title, body string) (string, error) {
+		return "https://github.com/o/r/pull/40", nil
+	}
+	// mockAddLabelExec fails the test if a --remove-label flag is sent — the
+	// create path never has stale labels to remove.
+	rt.execRun = mockAddLabelExec("release:patch")
+
+	out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
+		Title: "T", Body: "B", ReleaseLevel: "patch", ReleaseNotes: "n", ReleaseSource: "user",
+	}, rt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.ReleaseIntent == nil {
+		t.Fatal("expected ReleaseIntent to be populated")
+	}
+	if out.ReleaseIntent.LabelsRemoved == nil {
+		t.Fatal("LabelsRemoved must be non-nil")
+	}
+	if len(out.ReleaseIntent.LabelsRemoved) != 0 {
+		t.Errorf("LabelsRemoved: got %v, want empty", out.ReleaseIntent.LabelsRemoved)
+	}
+}
+
+func TestPRApply_LabelEditError_SuggestionNamesLabels(t *testing.T) {
+	rt := releaseTestRuntime("1.0.0")
+	rt.ghPRForBranch = func(dir string) ghx.PRMetadata {
+		return ghx.PRMetadata{Exists: true, Number: 9, URL: "https://github.com/o/r/pull/9", Labels: []string{"release:patch-rc", "bug"}}
+	}
+	rt.ghPREdit = func(dir string, num int, title, body string) (string, error) {
+		return "https://github.com/o/r/pull/9", nil
+	}
+	rt.execRun = func(name string, args []string, opts execx.Options) (string, error) {
+		return "", errors.New("HTTP 422: Label does not exist")
+	}
+
+	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
+		Title: "T", Body: "B", ReleaseLevel: "minor", ReleasePreRelease: "rc", ReleaseNotes: "n", ReleaseSource: "user",
+	}, rt)
+
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) {
+		t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
+	}
+	if !strings.Contains(ie.Suggestion, "--add-label release:minor-rc") {
+		t.Errorf("Suggestion missing add-label hint: %q", ie.Suggestion)
+	}
+	if !strings.Contains(ie.Suggestion, "--remove-label release:patch-rc") {
+		t.Errorf("Suggestion missing remove-label hint: %q", ie.Suggestion)
+	}
+}
+
+// TestPRApply_ReapplyChangedIntent_SingleReleaseLabel proves the fix for
+// issue #66 end to end: two sequential pr_apply calls against one fake PR
+// (first patch+rc, then minor+rc) leave exactly one release:* label on the
+// PR, instead of accumulating both.
+func TestPRApply_ReapplyChangedIntent_SingleReleaseLabel(t *testing.T) {
+	labels := map[string]bool{}
+	rt := releaseTestRuntime("1.0.0")
+	rt.ghPRForBranch = func(dir string) ghx.PRMetadata {
+		ls := make([]string, 0, len(labels))
+		for l := range labels {
+			ls = append(ls, l)
+		}
+		slices.Sort(ls)
+		return ghx.PRMetadata{Exists: true, Number: 9, URL: "https://github.com/o/r/pull/9", Labels: ls}
+	}
+	rt.ghPREdit = func(dir string, num int, title, body string) (string, error) {
+		return "https://github.com/o/r/pull/9", nil
+	}
+	rt.execRun = func(name string, args []string, opts execx.Options) (string, error) {
+		if name != "gh" || len(args) < 4 || args[0] != "pr" || args[1] != "edit" || args[2] != "--add-label" {
+			return "", fmt.Errorf("unexpected exec call: %s %v", name, args)
+		}
+		labels[args[3]] = true
+		switch len(args) {
+		case 4:
+			// add-label only
+		case 6:
+			if args[4] != "--remove-label" {
+				return "", fmt.Errorf("unexpected exec call: %s %v", name, args)
+			}
+			for _, l := range strings.Split(args[5], ",") {
+				delete(labels, l)
+			}
+		default:
+			return "", fmt.Errorf("unexpected exec call: %s %v", name, args)
+		}
+		return "", nil
+	}
+
+	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
+		Title: "T", Body: "B", ReleaseLevel: "patch", ReleasePreRelease: "rc", ReleaseNotes: "n", ReleaseSource: "user",
+	}, rt)
+	if err != nil {
+		t.Fatalf("first apply: unexpected error: %v", err)
+	}
+
+	out2, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
+		Title: "T", Body: "B", ReleaseLevel: "minor", ReleasePreRelease: "rc", ReleaseNotes: "n", ReleaseSource: "user",
+	}, rt)
+	if err != nil {
+		t.Fatalf("second apply: unexpected error: %v", err)
+	}
+
+	var releaseLabelsLeft []string
+	for l := range labels {
+		if isReleaseLabel(l) {
+			releaseLabelsLeft = append(releaseLabelsLeft, l)
+		}
+	}
+	if !slices.Equal(releaseLabelsLeft, []string{"release:minor-rc"}) {
+		t.Errorf("release:* labels left on the PR: got %v, want [release:minor-rc]", releaseLabelsLeft)
+	}
+	if out2.ReleaseIntent == nil || !slices.Equal(out2.ReleaseIntent.LabelsRemoved, []string{"release:patch-rc"}) {
+		t.Errorf("second apply LabelsRemoved: got %v, want [release:patch-rc]", out2.ReleaseIntent.LabelsRemoved)
 	}
 }

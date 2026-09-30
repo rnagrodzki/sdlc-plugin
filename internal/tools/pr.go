@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -918,7 +919,12 @@ type ReleaseIntentInfo struct {
 	Level        string `json:"level"`
 	PreRelease   string `json:"preRelease,omitempty"`
 	LabelApplied string `json:"labelApplied"`
-	NotesInBody  bool   `json:"notesInBody"`
+	// LabelsRemoved lists the stale release:* labels removed from the PR in
+	// the same gh pr edit call that applied LabelApplied (existing-PR path
+	// only; the create path always leaves this empty). Never nil —
+	// prReleaseIntent sets it to an empty slice.
+	LabelsRemoved []string `json:"labelsRemoved" jsonschema_description:"Stale release:* labels removed from the PR in the same gh pr edit call that applied labelApplied. Empty on the create path (a new PR has no prior labels to remove)."`
+	NotesInBody   bool     `json:"notesInBody"`
 }
 
 // prApplyCore creates a PR for the current branch, or edits the existing
@@ -930,7 +936,8 @@ type ReleaseIntentInfo struct {
 //
 // When releaseLevel is set, release intent is built (no version number) and:
 //   - release markers are injected into the PR body,
-//   - a "release:<level>[-rc]" label is applied via gh pr edit --add-label,
+//   - a "release:<level>[-rc]" label is applied via gh pr edit --add-label;
+//     on an existing PR every other release:* label is removed in the same call,
 //   - ReleaseIntent is populated on the output.
 //
 // DECISIONS:
@@ -1063,7 +1070,7 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 		intent.NotesInBody = in.ReleaseNotes != ""
 
 		// Best-effort: make sure every release:* label exists before
-		// prReleaseAddLabelWith below applies one via --add-label. Its
+		// prReleaseApplyLabelWith below applies one via --add-label. Its
 		// return is intentionally discarded — see ensureReleaseLabels' doc
 		// comment for why label-creation failure must never block the PR.
 		_ = ensureReleaseLabels(rt, workDir)
@@ -1123,7 +1130,8 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 			url = meta.URL
 		}
 		if intent != nil {
-			if err := prReleaseAddLabelWith(rt, workDir, intent.LabelApplied); err != nil {
+			intent.LabelsRemoved = prReleaseStaleLabels(meta.Labels, intent.LabelApplied)
+			if err := prReleaseApplyLabelWith(rt, workDir, intent.LabelApplied, intent.LabelsRemoved); err != nil {
 				return PRApplyOut{}, err
 			}
 		}
@@ -1141,7 +1149,7 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 		}
 	}
 	if intent != nil {
-		if err := prReleaseAddLabelWith(rt, workDir, intent.LabelApplied); err != nil {
+		if err := prReleaseApplyLabelWith(rt, workDir, intent.LabelApplied, nil); err != nil {
 			return PRApplyOut{}, err
 		}
 	}
@@ -1314,9 +1322,10 @@ func prReleaseIntent(level, preRelease string) *ReleaseIntentInfo {
 		label += "-rc"
 	}
 	return &ReleaseIntentInfo{
-		Level:        level,
-		PreRelease:   preRelease,
-		LabelApplied: label,
+		Level:         level,
+		PreRelease:    preRelease,
+		LabelApplied:  label,
+		LabelsRemoved: []string{},
 	}
 }
 
@@ -1504,7 +1513,7 @@ var releaseLabels = []struct {
 // not stop the rest of the loop from being attempted, but is returned to
 // the caller for test observability — production callers (prApplyCoreWith) discard it
 // unconditionally: a missing label here is not fatal because
-// prReleaseAddLabelWith's own --add-label call fails loud (InfraError) if
+// prReleaseApplyLabelWith's own --add-label call fails loud (InfraError) if
 // the label genuinely doesn't exist, which is the actual point where a
 // missing label must block the PR.
 func ensureReleaseLabels(rt prRuntime, workDir string) error {
@@ -1530,14 +1539,56 @@ func ensureReleaseLabels(rt prRuntime, workDir string) error {
 	return firstErr
 }
 
-// prReleaseAddLabelWith applies a label to the current branch's PR via
-// gh pr edit --add-label. Uses rt.execRun for the gh CLI call.
-func prReleaseAddLabelWith(rt prRuntime, workDir, label string) error {
-	_, err := rt.execRun("gh", []string{"pr", "edit", "--add-label", label}, execx.Options{Dir: workDir})
+// isReleaseLabel reports whether name is one of the releaseLabels names
+// (e.g. "release:minor-rc").
+func isReleaseLabel(name string) bool {
+	for _, l := range releaseLabels {
+		if l.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// prReleaseStaleLabels returns the release:* labels in existing other than
+// keep, sorted. Always returns an empty, non-nil slice when there are none
+// (including when existing is nil) — callers (ReleaseIntentInfo.LabelsRemoved)
+// depend on it never being nil.
+func prReleaseStaleLabels(existing []string, keep string) []string {
+	stale := make([]string, 0, len(existing))
+	for _, name := range existing {
+		if name == keep {
+			continue
+		}
+		if isReleaseLabel(name) {
+			stale = append(stale, name)
+		}
+	}
+	slices.Sort(stale)
+	return stale
+}
+
+// prReleaseApplyLabelWith adds label to the current branch's PR via
+// gh pr edit --add-label and, in the same call, removes every label in
+// stale via --remove-label (comma-joined). When stale is empty, no
+// --remove-label flag is sent — the same 4-arg call this function's
+// predecessor used to issue, preserved for the create path and for a
+// re-apply of the same label. Uses rt.execRun for the gh CLI call.
+func prReleaseApplyLabelWith(rt prRuntime, workDir, label string, stale []string) error {
+	args := []string{"pr", "edit", "--add-label", label}
+	if len(stale) > 0 {
+		args = append(args, "--remove-label", strings.Join(stale, ","))
+	}
+	_, err := rt.execRun("gh", args, execx.Options{Dir: workDir})
 	if err != nil {
+		suggestion := fmt.Sprintf("Create the %s label (gh label create %s) if it is missing, or confirm the PR is still open; the PR itself was already created/updated — gh pr view shows it. To fix labels by hand: gh pr edit --add-label %s", label, label, label)
+		if len(stale) > 0 {
+			suggestion += fmt.Sprintf(" --remove-label %s", strings.Join(stale, ","))
+		}
+		suggestion += ". Then retry pr_apply."
 		return &mcpserver.InfraError{
-			Msg:        "gh pr edit --add-label: " + err.Error(),
-			Suggestion: fmt.Sprintf("Create the %s label (gh label create %s) if it is missing, or confirm the PR is still open; the PR itself was already created/updated — gh pr view shows it. Then retry pr_apply.", label, label),
+			Msg:        "gh pr edit --add-label/--remove-label: " + err.Error(),
+			Suggestion: suggestion,
 			Cause:      err,
 		}
 	}
@@ -1598,6 +1649,8 @@ func RegisterPRTools(s *mcpserver.Server) {
 			"When releaseLevel is set, the PR records release intent only: a release:<level>[-rc] label, <!-- release-level --> / "+
 			"<!-- release-pre --> markers, and notes under a version-agnostic \"Unreleased\" heading. No version number is written to the PR or "+
 			"returned; CI (release-on-main) computes it at merge time from the tags present then. "+
+			"On an existing PR, any other release:* label is removed in the same gh pr edit call and listed in releaseIntent.labelsRemoved, "+
+			"so a PR never carries two release labels. "+
 			"A gh CLI permission error (not a collaborator, 403, Resource not accessible) is enriched with account-switch guidance "+
 			"(active account, target owner/repo, candidate accounts to switch to) in the error's suggestion field.",
 		mcpserver.Annotations{
