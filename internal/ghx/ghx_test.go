@@ -236,6 +236,70 @@ func TestMissingGH_YieldsErrGHNotFound(t *testing.T) {
 	}
 }
 
+// ── PRForBranch failure classification ──────────────────────────────────
+
+// TestPRForBranch_NoPRLeavesErrorMessageEmpty pins that gh's plain "no PR
+// for this branch" answer is not reported as a failure.
+func TestPRForBranch_NoPRLeavesErrorMessageEmpty(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\necho 'no pull requests found for branch \"feature\"' >&2\nexit 1\n")
+	defer cleanup()
+
+	meta := PRForBranch(".")
+	if meta.Exists {
+		t.Error("Exists = true, want false")
+	}
+	if meta.ErrorMessage != "" {
+		t.Errorf("ErrorMessage = %q, want empty for a branch without a PR", meta.ErrorMessage)
+	}
+}
+
+// TestPRForBranch_GHFailureSetsErrorMessage pins that any other gh failure
+// sets ErrorMessage, so callers can tell "no PR" from "could not check".
+func TestPRForBranch_GHFailureSetsErrorMessage(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\necho 'HTTP 401: Bad credentials' >&2\nexit 1\n")
+	defer cleanup()
+
+	meta := PRForBranch(".")
+	if meta.Exists {
+		t.Error("Exists = true, want false")
+	}
+	if !strings.Contains(meta.ErrorMessage, "Bad credentials") {
+		t.Errorf("ErrorMessage = %q, want gh's error text", meta.ErrorMessage)
+	}
+}
+
+// TestPRForBranch_MissingGHSetsErrorMessage pins that a missing gh binary
+// sets ErrorMessage instead of looking like "no PR".
+func TestPRForBranch_MissingGHSetsErrorMessage(t *testing.T) {
+	emptyDir := t.TempDir()
+	origPath := os.Getenv("PATH")
+	os.Setenv("PATH", emptyDir)
+	defer os.Setenv("PATH", origPath)
+
+	meta := PRForBranch(".")
+	if meta.Exists {
+		t.Error("Exists = true, want false")
+	}
+	if meta.ErrorMessage == "" {
+		t.Error("ErrorMessage is empty, want a gh-not-found message")
+	}
+}
+
+// TestPRForBranch_MalformedJSONSetsErrorMessage pins that unparseable gh
+// output is reported as a failure.
+func TestPRForBranch_MalformedJSONSetsErrorMessage(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\necho 'not json'\n")
+	defer cleanup()
+
+	meta := PRForBranch(".")
+	if meta.Exists {
+		t.Error("Exists = true, want false")
+	}
+	if meta.ErrorMessage == "" {
+		t.Error("ErrorMessage is empty, want a parse error")
+	}
+}
+
 func TestPRReviewComments_EmptyPR(t *testing.T) {
 	// `gh api ... --paginate --jq '...'` prints nothing when the comments
 	// list is empty (no matches for the jq filter, not even "[]").

@@ -51,6 +51,10 @@ diff_file, slice_file` (exactly `reviewDimIndexEntry`'s JSON tags), plus root-le
 inside it** — those paths are forwarded to each dispatched worker in Step 2, and the worker
 reads them itself. This session's context must scale with dimension count, not diff content.
 
+**Show `manifest.warnings`.** If the array is non-empty, show every entry to the user before
+continuing. A PR-lookup warning means `gh` could not check for a PR, so `manifest.pr.exists`
+is `false` and Step 7 offers the no-PR options even if a PR may exist.
+
 **No bash trap spans this skill run.** `manifestPath` is a plain return value from an MCP
 tool call, not a subshell result — there is nothing to attach a `trap` to. Delete it
 explicitly with `rm -f "<manifestPath>"` at every stop point: the dry-run stop below (Step
@@ -350,6 +354,9 @@ This step runs entirely in the main context. The comment body at
 `{manifest.diff_dir}/review-comment.md` is authoritative.
 
 ### PR exists (`manifest.pr.exists == true`)
+
+`review_prepare` sets `manifest.pr.exists` only for an **open** PR on the current branch, and
+fills `manifest.pr.number`, `manifest.pr.owner`, and `manifest.pr.repo` for the post command.
 
 Prompt in the main context:
 

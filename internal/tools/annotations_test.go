@@ -131,8 +131,8 @@ var toolAnnotations = map[string]annotationPolicy{
 		title:      "Prepare code review payload",
 		readOnly:   true,
 		idempotent: true,
-		openWorld:  false,
-		reason:     "every write lands in os.MkdirTemp(\"\", \"sdlc-review-\") — per-dimension .diff/.slice.json and manifest.json; no input field redirects that path; diffs come from local git diff; saveReview mode writes only to gitignored .sdlc-v2/reviews/",
+		openWorld:  true,
+		reason:     "every write lands in os.MkdirTemp(\"\", \"sdlc-review-\") — per-dimension .diff/.slice.json and manifest.json; no input field redirects that path; diffs come from local git diff; saveReview mode writes only to gitignored .sdlc-v2/reviews/; open-PR lookup calls ghx.PRForBranch (GitHub API)",
 	},
 	"setup_prepare": {
 		title:      "Prepare SDLC setup context",

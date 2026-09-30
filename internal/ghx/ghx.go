@@ -511,19 +511,26 @@ type PRMetadata struct {
 	ErrorMessage string // Non-empty when the probe failed for a reason other than "no PR exists".
 }
 
+// ghNoPRForBranch is the text gh prints on stderr when the current branch
+// has no PR at all ("no pull requests found for branch <name>").
+const ghNoPRForBranch = "no pull requests found"
+
 // PRForBranch reports the PR for the current branch (no PR number needed),
 // mirroring lib/git.js's fetchPrMetadata. It never returns a Go error: any
-// failure — no PR found for the branch, not authenticated, network error,
-// or malformed JSON — collapses to PRMetadata{Exists: false}, matching the
-// source's own `if (!prJson) return { exists: false }` / catch-all
-// behavior verbatim.
+// failure — no PR found for the branch, gh missing, not authenticated,
+// network error, or malformed JSON — collapses to Exists: false. Only the
+// plain "no PR for this branch" case leaves ErrorMessage empty; every other
+// failure sets it, so callers can tell "no PR" apart from "could not check".
 func PRForBranch(dir string) PRMetadata {
 	raw, err := run(dir, "pr", "view", "--json", "number,title,url,state,labels")
 	if err != nil {
 		if errors.Is(err, execx.ErrOutputCap) {
 			return PRMetadata{Exists: false, ErrorMessage: fmt.Sprintf("gh pr view output exceeded cap: %s", err.Error())}
 		}
-		return PRMetadata{Exists: false}
+		if strings.Contains(err.Error(), ghNoPRForBranch) {
+			return PRMetadata{Exists: false}
+		}
+		return PRMetadata{Exists: false, ErrorMessage: fmt.Sprintf("gh pr view failed: %s", err.Error())}
 	}
 	if raw == "" {
 		return PRMetadata{Exists: false}
@@ -539,7 +546,7 @@ func PRForBranch(dir string) PRMetadata {
 		} `json:"labels"`
 	}
 	if jsonErr := json.Unmarshal([]byte(raw), &parsed); jsonErr != nil {
-		return PRMetadata{Exists: false}
+		return PRMetadata{Exists: false, ErrorMessage: fmt.Sprintf("parse gh pr view output: %s", jsonErr.Error())}
 	}
 
 	labels := make([]string, 0, len(parsed.Labels))

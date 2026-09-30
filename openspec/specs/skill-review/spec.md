@@ -40,11 +40,17 @@ The skill SHALL read the manifest at `manifestPath` into the main session and SH
 
 - Each `dimensions[]` entry carries only `name`, `description`, `severity`, `model`, `status`, `requires_full_diff`, `truncated`, `matched_count`, `diff_file`, `slice_file`.
 - The skill passes `slice_file` and `diff_file` paths to each reviewer agent; the agent reads them.
+- When `manifest.warnings` is non-empty, the skill shows every entry to the user before it continues.
 
 #### Scenario: Paths only
 - **WHEN** the skill builds a reviewer prompt
 - **THEN** the prompt contains the `slice_file` and `diff_file` paths
 - **AND** the main session has not read either file
+
+#### Scenario: PR lookup warning
+- **WHEN** `manifest.warnings` holds a failed-PR-lookup entry
+- **THEN** the skill shows that warning to the user
+- **AND** the posting step uses the no-PR options, because `manifest.pr.exists` is `false`
 
 ### Requirement: Dry run
 When `--dry-run` is passed the skill SHALL print the review plan from the manifest, delete `manifestPath`, and stop without dispatching any agent.
@@ -245,10 +251,16 @@ The skill SHALL choose the posting prompt from the manifest and SHALL wait for t
 | No PR, `manifest.scope` is `all`, `committed`, or `worktree` | 1. Create a draft PR and attach the review; 2. Save; 3. Terminal only |
 | No PR, `manifest.scope` is `staged` or `working` | 1. Save; 2. Terminal only |
 
-- Post: `gh api repos/{owner}/{repo}/issues/{number}/comments -F body=@{manifest.diff_dir}/review-comment.md`.
+- `manifest.pr.exists` is `true` only when `review_prepare` found an open PR for the current branch; see the `tool-review-prepare` PR lookup requirement.
+- Post: `gh api repos/{owner}/{repo}/issues/{number}/comments -F body=@{manifest.diff_dir}/review-comment.md`, with `owner`, `repo`, and `number` from `manifest.pr`.
 - Create-draft-PR option: the skill invokes `pr` in draft mode, waits, then posts to the new PR.
 - Save: the skill passes the comment text to `review_prepare({saveReview: true, content})`; the tool writes `.sdlc-v2/reviews/<branch>-<YYYY-MM-DD>.md`.
 - Cancel or terminal only: no action.
+
+#### Scenario: Open PR exists
+- **WHEN** `manifest.pr` is `{exists: true, number: 42, owner: "acme", repo: "widgets"}`
+- **THEN** the prompt offers `yes` (post to PR #42), `save`, and `cancel`
+- **AND** it does not offer to create a draft PR
 
 #### Scenario: Local scope without PR
 - **WHEN** there is no PR and `manifest.scope` is `staged`

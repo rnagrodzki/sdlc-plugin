@@ -12,11 +12,11 @@ The tool SHALL be registered as `review_prepare` with the title "Prepare code re
 |---|---|
 | `ReadOnly` | `true` |
 | `Idempotent` | `true` |
-| `OpenWorld` | `false` |
+| `OpenWorld` | `true` (the PR lookup calls the GitHub API through `gh`) |
 
 #### Scenario: Client lists tools
 - **WHEN** an MCP client lists the server's tools
-- **THEN** `review_prepare` is present with `ReadOnly: true`, `Idempotent: true`, `OpenWorld: false`
+- **THEN** `review_prepare` is present with `ReadOnly: true`, `Idempotent: true`, `OpenWorld: true`
 
 ### Requirement: Input fields and modes
 The tool SHALL run in manifest mode by default and in save mode when `saveReview` is `true`.
@@ -330,11 +330,12 @@ In manifest mode the tool SHALL write `manifest.json` into the same temp directo
 | `uncommitted_changes` | `true` when `git status --porcelain` output is not empty. |
 | `git.commit_count` | Same value as `summary.commitCount`. |
 | `git.changed_files_count` | Number of changed files. |
-| `pr` | Always `{"exists": false}`. The tool does no PR lookup. |
+| `pr` | Open PR of the current branch; see PR lookup. |
 | `dimensions[]` | One index entry per loaded dimension (table below). |
 | `plan_critique` | See plan critique. |
 | `summary` | Same object as the returned `summary`. |
 | `diff_dir` | The temp directory path. |
+| `warnings` | Non-fatal problems, e.g. a failed PR lookup. Always an array; `[]` when there are none. |
 
 Each `dimensions[]` entry holds only these keys: `name`, `description`, `severity`, `model`, `status`, `requires_full_diff`, `truncated`, `matched_count`, `diff_file`, `slice_file`.
 
@@ -346,10 +347,34 @@ Each `dimensions[]` entry holds only these keys: `name`, `description`, `severit
 - **THEN** the manifest has `version: 1`, `scope: "all"`, and one `dimensions[]` entry with `status: "ACTIVE"` and `matched_count: 2`
 - **AND** its `diff_file` and `slice_file` are non-null paths
 
-#### Scenario: PR lookup is not done
-- **WHEN** the current branch has an open PR
-- **THEN** the manifest `pr.exists` is still `false`
-- **AND** `summary.hasPR` is `false`
+### Requirement: PR lookup
+In manifest mode the tool SHALL look up the current branch's PR with `gh pr view --json number,title,url,state,labels` in the active worktree, and SHALL set `pr.exists: true` only when that PR's state is `OPEN`.
+
+| `gh pr view` result | `pr` | `summary.hasPR` | `warnings` |
+|---|---|---|---|
+| PR with state `OPEN` | `{exists: true, number, title, url, state, owner, repo}` | `true` | none |
+| PR with state `CLOSED` or `MERGED` | `{exists: false}` | `false` | none |
+| `no pull requests found` | `{exists: false}` | `false` | none |
+| Any other failure (gh missing, auth, network, bad JSON) | `{exists: false}` | `false` | one entry with gh's error text |
+| Open PR whose URL has no readable owner/repo | `{exists: false}` | `false` | one entry naming the URL |
+
+- `owner` and `repo` are read from the PR URL (`https://github.com/<owner>/<repo>/pull/<n>`).
+- A failed lookup never fails the tool.
+- With no open PR, `gh pr view` returns the branch's newest closed or merged PR; that PR does not count.
+
+#### Scenario: Open PR
+- **WHEN** the current branch has open PR #42 at `https://github.com/acme/widgets/pull/42`
+- **THEN** the manifest `pr` is `{exists: true, number: 42, owner: "acme", repo: "widgets", state: "OPEN", ...}`
+- **AND** `summary.hasPR` is `true`
+
+#### Scenario: Only a merged PR
+- **WHEN** the current branch's only PR is `MERGED`
+- **THEN** `pr.exists` is `false` and `summary.hasPR` is `false`
+
+#### Scenario: gh fails
+- **WHEN** `gh pr view` fails with `HTTP 401: Bad credentials`
+- **THEN** the call still succeeds with `pr.exists: false`
+- **AND** `warnings` holds one entry that contains `Bad credentials`
 
 ### Requirement: Manifest-mode output
 In manifest mode the tool SHALL return `manifestPath`, a `summary` object, and an empty `next`.
@@ -370,7 +395,7 @@ In manifest mode the tool SHALL return `manifestPath`, a `summary` object, and a
 | `summary.commitCount` | `git rev-list --count <base>..HEAD`; `0` for `staged`/`working` or on failure. |
 | `summary.linesChanged` | Lines starting with `+` or `-` in the full scope diff, not counting lines starting with `+++` or `---`. |
 | `summary.scope` | Resolved scope. |
-| `summary.hasPR` | Always `false`. |
+| `summary.hasPR` | Same as manifest `pr.exists`: `true` only for an open PR. |
 | `next` | Empty string. |
 
 #### Scenario: Summary counts

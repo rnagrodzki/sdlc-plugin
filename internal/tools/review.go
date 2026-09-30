@@ -17,6 +17,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/dimensions"
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
+	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
@@ -125,6 +126,9 @@ type reviewManifest struct {
 	PlanCritique       reviewPlanCritique    `json:"plan_critique"`
 	Summary            ReviewPrepareSummary  `json:"summary"`
 	DiffDir            string                `json:"diff_dir"`
+	// Warnings lists non-fatal problems met while preparing the manifest
+	// (e.g. a failed PR lookup). Always an array, never null.
+	Warnings []string `json:"warnings"`
 }
 
 type reviewManifestGit struct {
@@ -935,8 +939,8 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 		}
 	}
 
-	// PR metadata (best effort).
-	pr := reviewManifestPR{Exists: false}
+	// PR metadata (best effort: a failed lookup becomes a warning).
+	pr, warnings := lookupReviewPR(activeRoot)
 
 	// Build index entries.
 	var indexEntries []reviewDimIndexEntry
@@ -1014,6 +1018,7 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 		PlanCritique: critique,
 		Summary:      summary,
 		DiffDir:      tmpDir,
+		Warnings:     emptyIfNil(warnings),
 	}
 
 	manifestPath := filepath.Join(tmpDir, "manifest.json")
@@ -1029,6 +1034,39 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 		ManifestPath: manifestPath,
 		Summary:      summary,
 	}, nil
+}
+
+// lookupReviewPR finds the PR of the active worktree's branch. Only an OPEN
+// PR counts: with no open PR, gh pr view falls back to the branch's newest
+// closed or merged PR, which cannot take a review comment usefully. A failed
+// lookup (gh missing, not authenticated, network error) never fails the
+// tool: it yields exists:false plus a warning.
+func lookupReviewPR(dir string) (reviewManifestPR, []string) {
+	meta := ghx.PRForBranch(dir)
+	var warnings []string
+	if meta.ErrorMessage != "" {
+		warnings = append(warnings, "PR lookup failed, so pr.exists is false: "+meta.ErrorMessage)
+	}
+	if !meta.Exists || meta.State != "OPEN" {
+		return reviewManifestPR{Exists: false}, warnings
+	}
+
+	owner, repo, err := ghx.ParseRemoteOwner(meta.URL)
+	if err != nil {
+		warnings = append(warnings, fmt.Sprintf("open PR #%d found, but its owner/repo cannot be read from URL %q, so pr.exists is false: %s", meta.Number, meta.URL, err.Error()))
+		return reviewManifestPR{Exists: false}, warnings
+	}
+
+	number, title, url, state := meta.Number, meta.Title, meta.URL, meta.State
+	return reviewManifestPR{
+		Exists: true,
+		Number: &number,
+		Title:  &title,
+		URL:    &url,
+		State:  &state,
+		Owner:  &owner,
+		Repo:   &repo,
+	}, warnings
 }
 
 // ---------------------------------------------------------------------------
@@ -1175,12 +1213,12 @@ func saveReviewComment(projectRoot, activeRoot string, in ReviewPrepareIn) (Revi
 // RegisterReviewTools registers review_prepare on the server.
 func RegisterReviewTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "review_prepare",
-		"Pre-compute review manifest: git state, dimension matching, diff slicing, commit context. Writes manifest + per-dimension .diff and .slice.json files to a temp directory. With saveReview:true, persists content verbatim to .sdlc-v2/reviews/<branch>-<date>.md instead.",
+		"Pre-compute review manifest: git state, dimension matching, diff slicing, commit context, open-PR lookup via gh. Writes manifest + per-dimension .diff and .slice.json files to a temp directory. With saveReview:true, persists content verbatim to .sdlc-v2/reviews/<branch>-<date>.md instead.",
 		mcpserver.Annotations{
 			Title:      "Prepare code review payload",
 			ReadOnly:   true,
 			Idempotent: true,
-			OpenWorld:  false,
+			OpenWorld:  true,
 		},
 		func(ctx mcpserver.Ctx, in ReviewPrepareIn) (ReviewPrepareOut, error) {
 			root, err := worktree.MainRoot()

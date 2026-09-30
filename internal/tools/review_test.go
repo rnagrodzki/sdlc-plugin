@@ -352,7 +352,8 @@ and adherence to best practices. Check for potential bugs and edge cases.
 	sdlcDir := filepath.Join(root, paths.DataDir)
 	writeFile(t, filepath.Join(sdlcDir, "config.toml"), "")
 
-	// Run reviewPrepare.
+	// Run reviewPrepare. The branch has no PR (hermetic fake gh).
+	stubReviewGH(t, reviewGHNoPR)
 	out, err := reviewPrepare(root, root, ReviewPrepareIn{
 		SkipConfigCheck: true, // Skip config check since we have minimal config.
 		Target:          "main",
@@ -486,6 +487,7 @@ Review the code for quality issues.
 	sdlcDir := filepath.Join(root, paths.DataDir)
 	writeFile(t, filepath.Join(sdlcDir, "config.toml"), "")
 
+	stubReviewGH(t, reviewGHNoPR)
 	out, err := reviewPrepare(root, root, ReviewPrepareIn{
 		SkipConfigCheck: true,
 		Target:          "main",
@@ -558,7 +560,31 @@ func newReviewFixture(t *testing.T, files, dims map[string]string) string {
 	for name, content := range dims {
 		writeFile(t, filepath.Join(dimDir, name), content)
 	}
+	// Keep the PR lookup hermetic: by default the branch has no PR. A test
+	// that needs a PR installs its own fake gh afterwards; it goes first on
+	// PATH and wins.
+	stubReviewGH(t, reviewGHNoPR)
 	return root
+}
+
+// Fake gh scripts for review_prepare's PR lookup (gh pr view --json ...).
+const (
+	reviewGHNoPR = "#!/bin/sh\necho 'no pull requests found for branch \"feature\"' >&2\nexit 1\n"
+	reviewGHAuth = "#!/bin/sh\necho 'HTTP 401: Bad credentials (https://api.github.com/graphql)' >&2\nexit 1\n"
+)
+
+// reviewGHPR returns a fake gh script that reports PR 42 of acme/widgets in
+// the given state, and fails on any command other than `gh pr view`.
+func reviewGHPR(state string) string {
+	return "#!/bin/sh\n" +
+		"[ \"$1 $2\" = \"pr view\" ] || { echo \"unexpected gh args: $*\" >&2; exit 3; }\n" +
+		"printf '%s\\n' '{\"number\":42,\"title\":\"Add widgets\",\"url\":\"https://github.com/acme/widgets/pull/42\",\"state\":\"" + state + "\",\"labels\":[]}'\n"
+}
+
+// stubReviewGH installs a fake gh on PATH for the rest of the test.
+func stubReviewGH(t *testing.T, script string) {
+	t.Helper()
+	t.Cleanup(stubGH(t, script))
 }
 
 // readReviewManifest runs reviewPrepare against root with target main and
@@ -759,6 +785,95 @@ Review.
 	}
 	if strings.Contains(diff, "diff --git a/src/c.go") {
 		t.Errorf("dropped file src/c.go still has hunks in the diff")
+	}
+}
+
+// reviewPRFixture builds a one-dimension fixture for the PR lookup tests.
+func reviewPRFixture(t *testing.T) string {
+	t.Helper()
+	return newReviewFixture(t, map[string]string{"src/a.go": "package main\n"}, map[string]string{
+		"code-quality.md": "---\nname: code-quality\ndescription: Code quality\ntriggers:\n  - \"**/*.go\"\n---\nReview.\n",
+	})
+}
+
+// TestReviewPrepareOpenPR pins that an open PR on the branch is detected,
+// with the owner/repo/number the review skill needs to post a comment.
+func TestReviewPrepareOpenPR(t *testing.T) {
+	root := reviewPRFixture(t)
+	stubReviewGH(t, reviewGHPR("OPEN"))
+
+	out, m := readReviewManifest(t, root)
+
+	if !m.PR.Exists {
+		t.Fatal("pr.exists = false, want true for an open PR")
+	}
+	if m.PR.Number == nil || *m.PR.Number != 42 {
+		t.Errorf("pr.number = %v, want 42", m.PR.Number)
+	}
+	if m.PR.Owner == nil || *m.PR.Owner != "acme" || m.PR.Repo == nil || *m.PR.Repo != "widgets" {
+		t.Errorf("pr.owner/repo = %v/%v, want acme/widgets", m.PR.Owner, m.PR.Repo)
+	}
+	if m.PR.State == nil || *m.PR.State != "OPEN" {
+		t.Errorf("pr.state = %v, want OPEN", m.PR.State)
+	}
+	if !out.Summary.HasPR || !m.Summary.HasPR {
+		t.Error("summary.hasPR = false, want true")
+	}
+	if len(m.Warnings) != 0 {
+		t.Errorf("warnings = %v, want none", m.Warnings)
+	}
+}
+
+// TestReviewPrepareClosedOrMergedPRIgnored pins that only an OPEN PR counts.
+// With no open PR, gh pr view returns the branch's newest closed or merged
+// PR; that one must not make the skill post to it.
+func TestReviewPrepareClosedOrMergedPRIgnored(t *testing.T) {
+	for _, state := range []string{"CLOSED", "MERGED"} {
+		t.Run(state, func(t *testing.T) {
+			root := reviewPRFixture(t)
+			stubReviewGH(t, reviewGHPR(state))
+
+			out, m := readReviewManifest(t, root)
+
+			if m.PR.Exists || out.Summary.HasPR {
+				t.Errorf("pr.exists/hasPR = %v/%v for a %s PR, want false/false", m.PR.Exists, out.Summary.HasPR, state)
+			}
+			if len(m.Warnings) != 0 {
+				t.Errorf("warnings = %v, want none", m.Warnings)
+			}
+		})
+	}
+}
+
+// TestReviewPrepareNoPR pins that a branch without any PR gives
+// pr.exists false and no warning.
+func TestReviewPrepareNoPR(t *testing.T) {
+	root := reviewPRFixture(t)
+
+	_, m := readReviewManifest(t, root)
+
+	if m.PR.Exists {
+		t.Error("pr.exists = true, want false")
+	}
+	if m.Warnings == nil || len(m.Warnings) != 0 {
+		t.Errorf("warnings = %#v, want empty array", m.Warnings)
+	}
+}
+
+// TestReviewPrepareGHFailureWarns pins that a failing gh (here: bad
+// credentials) does not fail the tool; it keeps pr.exists false and adds a
+// warning that carries gh's message.
+func TestReviewPrepareGHFailureWarns(t *testing.T) {
+	root := reviewPRFixture(t)
+	stubReviewGH(t, reviewGHAuth)
+
+	_, m := readReviewManifest(t, root)
+
+	if m.PR.Exists {
+		t.Error("pr.exists = true, want false")
+	}
+	if len(m.Warnings) != 1 || !strings.Contains(m.Warnings[0], "Bad credentials") {
+		t.Errorf("warnings = %v, want one warning carrying gh's error", m.Warnings)
 	}
 }
 
