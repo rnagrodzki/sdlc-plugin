@@ -521,6 +521,7 @@ The `gc` action SHALL prune stale state files, or with `detail.dryRun:true` only
 - Real run returns `{ttlDays, ship, execute, plan, commit}`, each `{deleted, kept}`; explore tempdirs are also swept but not reported.
 - Dry run returns `{dryRun:true, ttlDays, ship, execute, plan}`, each `{wouldDelete, wouldKeep}` of `{file, branch, reason}`; `commit` files are not classified.
 - Dry-run reason: `ttl-fresh` (file mtime within TTL) → keep; else `branch-exists` (local branch exists) → keep; else `stale+branch-gone` → would delete.
+- When `git branch --list` fails, or lists no branch at all, every branch counts as live (real run and dry run).
 - `detail.dryRun` that is not a boolean returns a `DomainError` (`gc: detail.dryRun must be a boolean, got <type>`); a top-level `dryRun` is ignored.
 
 #### Scenario: Mistyped dryRun

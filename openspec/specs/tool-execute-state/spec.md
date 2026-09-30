@@ -885,7 +885,7 @@ The `cleanup` action SHALL stamp the run terminal instead of deleting the state 
 The `gc` action SHALL delete stale state files and stale per-run directories under `.sdlc-v2/runs/`, and SHALL only report without deleting when `dryRun` is true.
 
 - TTL: `ttlDays` input (0 means immediate cutoff) > config `state.gc.ttlDays` > 7 days.
-- A branch is live when `git branch --list` in the active worktree has a branch with the same slug.
+- A branch is live when `git branch --list` in the active worktree has a branch with the same slug. If that command fails, or lists no branch at all, every branch counts as live.
 - Real run on state files (all prefixes): every file of a gone branch is deleted; for a live branch the newest file is kept and older TTL-expired files are deleted.
 - Directories: a per-run directory is deleted when it is older than the TTL and no execute state file's `startedAt` maps to it; `ledger/` children are judged one by one and `ledger/` itself is never removed.
 
@@ -908,6 +908,10 @@ The `gc` action SHALL delete stale state files and stale per-run directories und
 #### Scenario: Dry run
 - **WHEN** `dryRun` is true
 - **THEN** nothing is deleted and the response has `dryRun: true`
+
+#### Scenario: Branch list unavailable
+- **WHEN** `git branch --list` fails in the active worktree
+- **THEN** no state file is deleted for branch reasons
 
 #### Scenario: Ledger kept as a unit
 - **WHEN** `.sdlc-v2/runs/ledger/` is old but holds one live run's subdirectory

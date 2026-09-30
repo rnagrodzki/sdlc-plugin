@@ -251,7 +251,7 @@ The tool SHALL compute `flags.executeDispatchArgs` as the argument string for th
 When `gc` is `true`, the tool SHALL skip flag merge, validation, and state init, and SHALL prune stale state files and explore tempdirs instead.
 
 - TTL: `ttlDays` input > config `state.gc.ttlDays` (integer ≥ 0) > `7`. `0` means no grace period.
-- A branch is live when `git branch --list` shows it locally. If that command fails, every branch counts as gone.
+- A branch is live when `git branch --list` shows it locally. If that command fails, or lists no branch at all (unborn HEAD), every branch counts as live, so no file is deleted for branch reasons.
 - Every state file for a branch that no longer exists locally is deleted, whatever its age.
 - For a live branch, the newest file is always kept; an older file is deleted once its age exceeds the TTL.
 - Explore tempdirs (`sdlc-explore-*`) are swept from the system temp dir, or from `SDLC_EXPLORE_TMPDIR_OVERRIDE` when set.
@@ -276,6 +276,12 @@ When `gc` is `true`, the tool SHALL skip flag merge, validation, and state init,
 #### Scenario: Local branch not checked out
 - **WHEN** a stale state file belongs to a branch that exists locally but is not checked out
 - **THEN** it is in `report.ship.kept`
+
+#### Scenario: Branch list unavailable
+- **WHEN** `git branch --list` fails in the active worktree
+- **AND** a stale state file exists
+- **THEN** the file is not deleted
+- **AND** `report.ship.deleted` is empty
 
 #### Scenario: GC sweep fails
 - **WHEN** the sweep itself fails

@@ -943,12 +943,15 @@ func resolveGCTTLDays(cfgRoot string, cliTTL *int) int {
 }
 
 // gcBranchExistsFunc builds a state.GCOptions.BranchExists closure over the
-// repo's current local branches, matching ship.js's knownBranches (`git
-// branch --list --format='%(refname:short)'`) + slugifyBranch/liveSlugs
-// convention. Branch listing is soft-fail: if the shell-out fails, every
-// branch is treated as non-existent (nil is NOT used here, since nil means
-// "no liveness information, assume live" — the opposite of source's
-// behavior when knownBranches ends up empty).
+// repo's current local branches (`git branch --list
+// --format='%(refname:short)'`), compared by slug.
+//
+// When no branch list is available — the shell-out fails, or it lists no
+// branch at all (an unborn HEAD) — every branch is treated as live. GC then
+// deletes nothing for branch reasons; TTL pruning of older files for a live
+// branch still applies. Treating unknown liveness as "gone" would delete
+// every state file on a single git failure. The returned func is never nil,
+// because the dry-run callers read a nil func as "branch gone".
 func gcBranchExistsFunc(activeRoot string) func(slug string) bool {
 	out, err := execx.Run("git", []string{"branch", "--list", "--format=%(refname:short)"}, execx.Options{Dir: activeRoot})
 	live := map[string]bool{}
@@ -960,6 +963,9 @@ func gcBranchExistsFunc(activeRoot string) func(slug string) bool {
 			}
 			live[state.SlugifyBranch(line)] = true
 		}
+	}
+	if len(live) == 0 {
+		return func(string) bool { return true }
 	}
 	return func(slug string) bool {
 		return live[slug]

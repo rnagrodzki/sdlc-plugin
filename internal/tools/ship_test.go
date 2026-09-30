@@ -970,6 +970,60 @@ func TestShipGC_KnownBranchesFromGit(t *testing.T) {
 	}
 }
 
+// TestGCBranchExistsFunc_GitFailureAssumesLive pins that a failed
+// `git branch --list` (here: not a git repository) yields "every branch is
+// live", not "every branch is gone". Otherwise one git failure makes gc
+// delete every state file.
+func TestGCBranchExistsFunc_GitFailureAssumesLive(t *testing.T) {
+	dir := t.TempDir() // not a git repository: git branch --list fails
+
+	branchExists := gcBranchExistsFunc(dir)
+	if branchExists == nil {
+		t.Fatal("gcBranchExistsFunc returned nil, want a non-nil func")
+	}
+	if !branchExists("any-branch") {
+		t.Error(`branchExists("any-branch") = false after git failure, want true (unknown liveness must not delete state)`)
+	}
+}
+
+// TestGCBranchExistsFunc_UnbornHeadAssumesLive pins that an empty branch
+// list (a repository with no commits yet lists no branches) is treated as
+// unknown liveness, not as "every branch is gone".
+func TestGCBranchExistsFunc_UnbornHeadAssumesLive(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir) // no commit: HEAD is unborn, git branch --list prints nothing
+
+	if !gcBranchExistsFunc(dir)("main") {
+		t.Error(`branchExists("main") = false on an unborn HEAD, want true`)
+	}
+}
+
+// TestShipGC_BranchListFailureKeepsStateFiles is the end-to-end guard for
+// gcBranchExistsFunc's failure path: a stale state file must survive gc when
+// branch liveness cannot be read.
+func TestShipGC_BranchListFailureKeepsStateFiles(t *testing.T) {
+	dir := t.TempDir() // not a git repository
+
+	execDir := filepath.Join(dir, paths.DataDir, paths.RunsSubdir)
+	f := filepath.Join(execDir, "ship-some-branch-20200101T000000Z.json")
+	writeFile(t, f, `{"sessionId": null}`)
+	setStateFileMtime(t, f, 30*24*time.Hour)
+
+	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true, Gc: true})
+	if err != nil {
+		t.Fatalf("shipPrepare: %v", err)
+	}
+	if out.Report == nil {
+		t.Fatalf("Report is nil; errors: %v", out.Errors)
+	}
+	if len(out.Report.Ship.Deleted) != 0 {
+		t.Errorf("Ship.Deleted = %v, want none (branch liveness unknown)", out.Report.Ship.Deleted)
+	}
+	if _, err := os.Stat(f); err != nil {
+		t.Errorf("state file %s should still exist: %v", f, err)
+	}
+}
+
 // TestShipGC_BucketsByPrefix verifies stale, dead-branch files across all
 // four state prefixes are each routed into their own report bucket.
 func TestShipGC_BucketsByPrefix(t *testing.T) {
