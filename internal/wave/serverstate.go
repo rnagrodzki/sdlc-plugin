@@ -33,10 +33,15 @@ type ServerTaskState struct {
 	Attempt            int    `json:"attempt"`
 }
 
+// serverStateSuffix is the file-name suffix of a server-state file. These
+// files share the progress directory with the worker files (<taskID>.json),
+// so ReadProgress uses this suffix to skip them.
+const serverStateSuffix = ".server.json"
+
 // serverStatePath returns the absolute path of one task's server-state
 // file: <root>/.sdlc-v2/runs/<runID>/progress/<taskID>.server.json.
 func serverStatePath(root, runID, taskID string) string {
-	return filepath.Join(progressDir(root, runID), taskID+".server.json")
+	return filepath.Join(progressDir(root, runID), taskID+serverStateSuffix)
 }
 
 // LoadServerState reads one task's server-state file. A missing file is not

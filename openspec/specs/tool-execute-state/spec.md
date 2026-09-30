@@ -1000,6 +1000,7 @@ The `wave-progress` action SHALL write one task's heartbeat to its progress file
 - `lastCompletedTask`, `acceptanceDone`, `filesTouched`, and `blocker` replace the stored value only when passed.
 - Write success returns an empty result.
 - Read returns `{tasks: {<taskId>: {phase, updatedAt, startedAt, lastCompletedTask, acceptanceDone, filesTouched, blocker}}}`; corrupt files are skipped.
+- Read skips the server-owned `<taskId>.server.json` files in the same directory; they never appear as tasks.
 
 | Condition | Class | Message / Suggestion (short) |
 |---|---|---|
@@ -1015,6 +1016,11 @@ The `wave-progress` action SHALL write one task's heartbeat to its progress file
 #### Scenario: Bad phase
 - **WHEN** `phase` is `napping`
 - **THEN** the tool fails with a DomainError
+
+#### Scenario: Server state files are not tasks
+- **WHEN** the progress directory holds `T1.json` and `T1.server.json` and `wave-progress` is called with `readProgress: true`
+- **THEN** `tasks` holds only `T1`
+- **AND** no `T1.server` entry is returned
 
 ### Requirement: wave-await classification
 The `wave-await` action SHALL, in one non-blocking call, classify every still-open planned task of a wave from its server dispatch state and worker heartbeats, and SHALL stamp or clear reclaim requests as it goes.

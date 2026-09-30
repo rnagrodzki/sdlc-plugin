@@ -3911,6 +3911,51 @@ func TestExecState_WaveProgress_Read(t *testing.T) {
 	}
 }
 
+// TestExecState_WaveProgress_ReadSkipsServerStateFiles pins that the
+// server-owned <taskId>.server.json sibling of a worker progress file is
+// not reported as a task of its own ("T1.server") by readProgress.
+func TestExecState_WaveProgress_ReadSkipsServerStateFiles(t *testing.T) {
+	root := t.TempDir()
+
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action: "wave-progress",
+		RunID:  "test-run",
+		TaskID: "T1",
+		Phase:  "editing",
+	}, fixedClock(testNow)); err != nil {
+		t.Fatalf("wave-progress write: %v", err)
+	}
+	if err := wave.StoreServerState(root, "test-run", "T1", wave.ServerTaskState{
+		DispatchedAt: "2026-01-01T00:00:00.000Z",
+		WorkerName:   "worker-T1",
+		Attempt:      1,
+	}); err != nil {
+		t.Fatalf("store server state: %v", err)
+	}
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action:       "wave-progress",
+		RunID:        "test-run",
+		ReadProgress: true,
+	}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("wave-progress read: %v", err)
+	}
+	out, ok := result.(ReadProgressOut)
+	if !ok {
+		t.Fatalf("result type = %T, want ReadProgressOut", result)
+	}
+	if _, ok := out.Tasks["T1"]; !ok {
+		t.Errorf("tasks = %v, want T1 present", out.Tasks)
+	}
+	if _, ok := out.Tasks["T1.server"]; ok {
+		t.Errorf("tasks = %v, want no fake T1.server task from the server-state file", out.Tasks)
+	}
+	if len(out.Tasks) != 1 {
+		t.Errorf("len(tasks) = %d, want 1", len(out.Tasks))
+	}
+}
+
 // ---------------------------------------------------------------------------
 // resume-reset
 // ---------------------------------------------------------------------------
