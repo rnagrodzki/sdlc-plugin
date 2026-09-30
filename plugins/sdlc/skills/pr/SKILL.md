@@ -24,7 +24,10 @@ this port's tool surface (`pr_prepare`, `pr_apply`) actually supports:
   report it.** `pr_apply` accepts `title` and `body`, plus optional `releaseLevel` /
   `releasePreRelease` / `releaseNotes` (forwarded from `/ship`'s resolved bump config — see
   "Release intent" below): when `releaseLevel` is set, `pr_apply` injects release markers into
-  the body and auto-applies a `release:<level>[-rc]` label via `gh pr edit --add-label`. There
+  the body and auto-applies a `release:<level>[-rc]` label via `gh pr edit --add-label`, removing
+  any other `release:*` label on the PR in the same call. The PR records intent only: notes sit
+  under a `## [Unreleased]` heading and no version number is written to the PR or returned; CI
+  computes the version at merge time from the tags present then. There
   is still no field for `--draft`, an arbitrary `--label`, or a target base branch, and no recovery helper
   runs after a failure.
 - `pr_prepare` supplies `commitsSinceBase` (this branch's own commit subjects, oldest first,
@@ -182,7 +185,7 @@ in Step 1b"):
 | Field | Description |
 | ----- | ----------- |
 | `versionSource` | `{ path, type, version }` — where the current version was read from |
-| `bumpOptions` | Array of `{ level, result, current, rcNext?, suggestedPreRelease? }` — one entry per possible bump target (major/minor/patch), each with the resulting version string and whether an RC pre-release is suggested |
+| `bumpOptions` | Array of `{ level, result, current, rcNext?, suggestedPreRelease? }` — one entry per possible bump target (major/minor/patch), each with the resulting version string and whether an RC pre-release is suggested. `result` / `rcNext` are a preview from the tags present now; CI computes the final number at merge time |
 | `tags` | `{ all, atHead, latest, tagPrefix }` — tag inventory |
 | `commitsSinceTag` | Array of commit subject lines since the last tag |
 | `conventionalSummary` | `{ breaking, feat, fix, other, total, suggest }` — conventional-commit counts and a suggested bump level derived from them |
@@ -244,9 +247,11 @@ level or relabel it `"user"` to get past this.
   `other` counts and its `suggest` field (the derived recommendation) — so the user has evidence
   to decide with. Then ask a second AskUserQuestion built from `bumpOptions[]`: one option per
   entry, labeled with that entry's `level` and `result` (the target version string, e.g.
-  "minor → 1.4.0"), pre-highlighting/defaulting the option whose `level` matches
+  "minor → 1.4.0 (preview)"), pre-highlighting/defaulting the option whose `level` matches
   `conventionalSummary.suggest`. When an entry's `suggestedPreRelease` is set, also offer its RC
-  variant (e.g. "minor (RC) → 1.4.0-rc1", using that entry's `rcNext` as the RC target version).
+  variant (e.g. "minor (RC) → 1.4.0-rc1 (preview)", using that entry's `rcNext` as the RC target
+  version). Tell the user these numbers are a preview: the PR records only the level and RC
+  choice, and CI picks the final number at merge time, so a release that lands first can change it.
   Hold the chosen `level` as `releaseLevel` and `releaseSource: "user"` for Step 6; hold
   `releasePreRelease: "rc"` only if an RC variant was chosen.
 - **`bumpOptions` absent or empty** (no version config on this project): fall back to today's

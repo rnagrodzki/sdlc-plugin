@@ -145,9 +145,9 @@ This check validates any combination of enabled paths. When `versionFile.enabled
 2. PR skill analyzes conventional commits since last tag
 3. PR skill suggests bump level (major/minor/patch)
 4. PR skill creates PR with:
-   - release:<level> label (e.g., release:minor)
+   - release:<level> label (e.g., release:minor); re-running pr_apply replaces any earlier release:* label
    - <!-- release-level:minor --> marker in PR body
-   - <!-- release-notes-start/end --> markers with drafted notes
+   - <!-- release-notes-start/end --> markers with drafted notes under "## [Unreleased]" (no version number)
 5. CI runs verify-release-intent.cjs on PR (pre-merge check)
 6. PR is reviewed and merged
 7. CI runs release-on-main.cjs on push to main (post-merge)
@@ -415,18 +415,24 @@ When the PR skill creates a PR with release intent, it adds:
 The label is what CI reads to decide whether to create a release. No label = no release. You can:
 - **Add a label manually** to trigger a release on an existing PR
 - **Remove the label** to prevent a release
-- **Change the label** to change the bump level (e.g., `release:minor` → `release:major`)
+- **Re-run `/pr`** (or `pr_apply`) with a new level: it removes the old `release:*` label and adds the new one, so the PR never has two
 
 **PR body markers** (injected automatically, validated by CI):
 ```html
 <!-- release-level:minor -->
 <!-- release-notes-start -->
+## [Unreleased]
 ### Added
 - New feature X
 ### Fixed
 - Bug Y
 <!-- release-notes-end -->
 ```
+
+The PR never contains a version number. At merge time, `release-on-main.cjs` computes it from
+the tags present at that moment: the next `<level>` bump over the current version, and for an RC
+the next free `-rcN`. A release that lands on the default branch while the PR is open does not
+make the PR stale.
 
 The `verify-release-intent.cjs` CI check validates that:
 - Markers exist when a `release:*` label is present

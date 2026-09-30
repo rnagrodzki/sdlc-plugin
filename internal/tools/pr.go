@@ -205,7 +205,6 @@ type prRuntime struct {
 	gitFetchTags        func(dir string) error
 	gitTagList          func(dir string) ([]string, error)
 	gitAllSemverTags    func(dir string) ([]string, error)
-	gitTagExists        func(dir, name string) (bool, error)
 	gitDefaultBranch    func(dir string) (string, error)
 	gitTagsAtHead       func(dir string) ([]string, error)
 	execRun             func(name string, args []string, opts execx.Options) (string, error)
@@ -238,7 +237,6 @@ var defaultPRRuntime = prRuntime{
 	gitFetchTags:        gitx.FetchTags,
 	gitTagList:          gitx.TagList,
 	gitAllSemverTags:    gitx.AllSemverTags,
-	gitTagExists:        gitx.TagExists,
 	gitDefaultBranch:    gitx.DefaultBranch,
 	gitTagsAtHead:       gitx.TagsAtHead,
 	execRun:             execx.Run,
@@ -913,15 +911,14 @@ type PRApplyOut struct {
 	Next          string             `json:"next"`
 }
 
-// ReleaseIntentInfo carries version metadata computed when releaseLevel is set.
+// ReleaseIntentInfo carries the release intent (level + pre-release) recorded
+// when releaseLevel is set. It holds no version number: CI computes that at
+// merge time.
 type ReleaseIntentInfo struct {
-	Level           string `json:"level"`
-	PreRelease      string `json:"preRelease,omitempty"`
-	PreviousVersion string `json:"previousVersion"`
-	ComputedVersion string `json:"computedVersion"`
-	TagName         string `json:"tagName"`
-	LabelApplied    string `json:"labelApplied"`
-	NotesInBody     bool   `json:"notesInBody"`
+	Level        string `json:"level"`
+	PreRelease   string `json:"preRelease,omitempty"`
+	LabelApplied string `json:"labelApplied"`
+	NotesInBody  bool   `json:"notesInBody"`
 }
 
 // prApplyCore creates a PR for the current branch, or edits the existing
@@ -931,24 +928,17 @@ type ReleaseIntentInfo struct {
 // force-update-without-an-existing-PR and always-create modes are not
 // reachable — a disclosed narrowing of detectPrMode's full mode matrix.
 //
-// When releaseLevel is set, version metadata is computed and:
+// When releaseLevel is set, release intent is built (no version number) and:
 //   - release markers are injected into the PR body,
 //   - a "release:<level>[-rc]" label is applied via gh pr edit --add-label,
 //   - ReleaseIntent is populated on the output.
 //
 // DECISIONS:
-//   - FetchTags error is discarded (best-effort): tests have no remote, and
-//     stale local tags could yield a wrong version in multi-dev setups.
 //   - Label-add failure after PR exists returns InfraError (URL is lost).
 //     A missing release:* label would silently break downstream release, so
 //     failing loud is correct.
-//   - tagPrefix defaults to "v" when config absent or empty — no default
-//     exists in config.applyVersionDefaults, so this is our call.
-//   - RC suffix uses "-rc%d" (no dot), per fact sheet. Pre-existing "-rc.N"
-//     tags (dotted) are not counted.
-//   - TagList/AllSemverTags are prefix-blind: for custom tagPrefix, the
-//     "remote tag" half of max() silently degrades to file-version-only.
-//     Not fixable here (gitx.go out of scope).
+//   - No version is computed here. CI (release-on-main) computes it at merge
+//     time from the tags present then, so nothing in the PR goes stale.
 func prApplyCore(mainRoot, workDir string, in PRApplyIn) (PRApplyOut, error) {
 	return prApplyCoreWith(mainRoot, workDir, in, defaultPRRuntime)
 }
@@ -1063,17 +1053,13 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 		}
 	}
 
-	// Compute release intent before creating/editing PR, so version errors
-	// surface before we touch the remote.
+	// Build release intent before creating/editing the PR. Intent only —
+	// the concrete version is computed at merge time by CI.
 	var intent *ReleaseIntentInfo
 	body := stripAttribution(in.Body)
 	if in.ReleaseLevel != "" {
-		var err error
-		intent, err = prReleaseComputeIntentWith(rt, mainRoot, workDir, in.ReleaseLevel, in.ReleasePreRelease)
-		if err != nil {
-			return PRApplyOut{}, err // already wrapped as Domain/Infra
-		}
-		body = prReleaseInjectMarkers(body, intent.ComputedVersion, intent.Level, intent.PreRelease, in.ReleaseNotes)
+		intent = prReleaseIntent(in.ReleaseLevel, in.ReleasePreRelease)
+		body = prReleaseInjectMarkers(body, intent.Level, intent.PreRelease, in.ReleaseNotes)
 		intent.NotesInBody = in.ReleaseNotes != ""
 
 		// Best-effort: make sure every release:* label exists before
@@ -1089,8 +1075,8 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 	// otherwise create/edit against a stale or missing remote branch; an
 	// upstream already caught up (0 commits ahead) skips the push entirely
 	// so a heavy pre-push hook isn't fired for no reason. Placed after
-	// release-intent computation, matching the existing "surface version
-	// errors before we touch the remote" ordering above.
+	// release-intent building, so input errors surface before we touch the
+	// remote.
 	hasUpstream, upErr := rt.gitHasUpstream(workDir)
 	if upErr != nil {
 		return PRApplyOut{}, &mcpserver.InfraError{
@@ -1141,7 +1127,7 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 				return PRApplyOut{}, err
 			}
 		}
-		return PRApplyOut{URL: url, Created: false, ReleaseIntent: intent, Next: "PR updated. If verify-pipeline is configured, call verify_pipeline_classify next."}, nil
+		return PRApplyOut{URL: url, Created: false, ReleaseIntent: intent, Next: prApplyNext(false, intent)}, nil
 	}
 
 	url, err := rt.ghPRCreate(workDir, in.Title, body)
@@ -1159,7 +1145,25 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 			return PRApplyOut{}, err
 		}
 	}
-	return PRApplyOut{URL: url, Created: true, ReleaseIntent: intent, Next: "PR created. If verify-pipeline is configured, call verify_pipeline_classify next."}, nil
+	return PRApplyOut{URL: url, Created: true, ReleaseIntent: intent, Next: prApplyNext(true, intent)}, nil
+}
+
+// prApplyNext builds pr_apply's next-step hint: which verb (created/updated)
+// applies, plus — when releaseLevel was set — a reminder that the concrete
+// version is resolved by CI at merge time, not by pr_apply, so the caller
+// must not report a version number for this PR.
+func prApplyNext(created bool, intent *ReleaseIntentInfo) string {
+	verb := "PR updated."
+	if created {
+		verb = "PR created."
+	}
+	if intent == nil {
+		return verb + " If verify-pipeline is configured, call verify_pipeline_classify next."
+	}
+	return fmt.Sprintf(
+		"%s Release intent recorded as %s; CI computes the concrete version at merge time from the tags present then, so do not report a version number for this PR. If verify-pipeline is configured, call verify_pipeline_classify next.",
+		verb, intent.LabelApplied,
+	)
 }
 
 // prCommitGroups buckets one-line commit log entries ("<sha> <subject>")
@@ -1293,114 +1297,27 @@ func prEnrichPermissionError(rt prRuntime, workDir, verb string, originalErr err
 // Release intent helpers
 // ---------------------------------------------------------------------------
 
-// prReleaseComputeIntentWith resolves version metadata from the project's
-// version file and git tags. Returns a fully populated ReleaseIntentInfo.
-// All external calls go through rt.
-func prReleaseComputeIntentWith(rt prRuntime, mainRoot, workDir, level, preRelease string) (*ReleaseIntentInfo, error) {
-	// Read config for version section.
-	cfg, _ := rt.configRead(mainRoot) // nil config is handled below.
+// releaseNotesHeading is the version-agnostic heading placed above release
+// notes in the PR body. Bracketed so the CI strip regex
+// /^##\s*\[[^\]]+\]\s*\n*/ (release-on-main.cjs, verify-release-intent.cjs)
+// removes it before CI substitutes the concrete version it computes at
+// merge time.
+const releaseNotesHeading = "## [Unreleased]"
 
-	var tagPrefix string
-	var versionFilePath string
-	var fileType string
-	var isTagMode bool
-	var tagEnabled bool
-	if cfg != nil && cfg.Version != nil {
-		tagPrefix = cfg.Version.Tag.Prefix
-		versionFilePath = cfg.Version.VersionFile.Path
-		fileType = cfg.Version.VersionFile.FileType
-		isTagMode = !cfg.Version.VersionFile.Enabled
-		tagEnabled = cfg.Version.Tag.Enabled
-	}
-	if tagPrefix == "" {
-		tagPrefix = "v"
-	}
-
-	// Best-effort fetch tags (no remote in tests, CI may time out).
-	_ = rt.gitFetchTags(workDir)
-
-	// Find highest released tag to use as bump base.
-	tags, err := rt.gitTagList(workDir)
-	if err != nil {
-		tags = nil // degrade gracefully
-	}
-	highestTag := prReleaseHighestTagVersion(tags, tagPrefix)
-
-	// Version source: tag mode derives the current version from the
-	// highest semver git tag (no version file to detect), mirroring
-	// versionPrepareCore's isTagMode handling.
-	var fileVersion string
-	if isTagMode {
-		fileVersion = highestTag
-		if fileVersion == "" {
-			fileVersion = "0.0.0"
-		}
-	} else {
-		vf, err := rt.versionDetect(mainRoot, versionFilePath, fileType)
-		if err != nil {
-			return nil, &mcpserver.DomainError{
-				Msg:        "version detection: " + err.Error(),
-				Suggestion: "Check the version file path and fileType configured in the project's version config point to an existing, parseable file, then retry pr_apply.",
-			}
-		}
-		fileVersion = vf.Version
-	}
-
-	// Bump base = max(fileVersion, highestTag), but only when the tag path
-	// is enabled — a project not using tags shouldn't have its bump base
-	// skewed by stale/irrelevant tag history.
-	bumpBase := fileVersion
-	if tagEnabled && highestTag != "" && prReleaseSemverGreater(highestTag, bumpBase) {
-		bumpBase = highestTag
-	}
-
-	// Compute bumped version.
-	syntheticVF := &version.VersionFile{Version: bumpBase}
-	bumped, err := version.Bump(syntheticVF, level)
-	if err != nil {
-		return nil, &mcpserver.DomainError{
-			Msg:        "version bump: " + err.Error(),
-			Suggestion: "Check that the current version string is valid semver before bumping; fix the version file or git tag it was derived from, then retry pr_apply.",
-		}
-	}
-
-	computedVersion := bumped
-	tagName := tagPrefix + bumped
-
-	// RC handling: scan existing RC tags, pick next number.
-	if preRelease == "rc" {
-		allTags, err := rt.gitAllSemverTags(workDir)
-		if err != nil {
-			allTags = nil
-		}
-		rcNum := prReleaseFindNextRC(allTags, tagPrefix, bumped)
-		computedVersion = bumped + "-rc" + strconv.Itoa(rcNum)
-		tagName = tagPrefix + computedVersion
-	}
-
-	// Check tag collision.
-	exists, err := rt.gitTagExists(workDir, tagName)
-	if err == nil && exists {
-		return nil, &mcpserver.DomainError{
-			Msg:        fmt.Sprintf("tag %q already exists — version collision", tagName),
-			Suggestion: "The computed version is already tagged. Raise releaseLevel (for example patch to minor), or delete the stale tag if it was created by mistake, then retry pr_apply.",
-		}
-	}
-
-	// Build label.
+// prReleaseIntent builds release intent from already-validated input
+// (prApplyCoreWith checks level and preRelease first). Pure: no git, gh, or
+// config reads — the concrete version is computed at merge time by CI, not
+// here.
+func prReleaseIntent(level, preRelease string) *ReleaseIntentInfo {
 	label := "release:" + level
 	if preRelease == "rc" {
 		label += "-rc"
 	}
-
 	return &ReleaseIntentInfo{
-		Level:           level,
-		PreRelease:      preRelease,
-		PreviousVersion: fileVersion,
-		ComputedVersion: computedVersion,
-		TagName:         tagName,
-		LabelApplied:    label,
-	}, nil
+		Level:        level,
+		PreRelease:   preRelease,
+		LabelApplied: label,
+	}
 }
 
 // prReleaseHighestTagVersion extracts the highest semver core from a sorted
@@ -1520,7 +1437,7 @@ func stripAttribution(body string) string {
 // prReleaseInjectMarkers injects release metadata markers into the PR body.
 // The markers use HTML comments so they survive rendering and can be parsed
 // by downstream CI tasks.
-func prReleaseInjectMarkers(body, computedVersion, level, preRelease, notes string) string {
+func prReleaseInjectMarkers(body, level, preRelease, notes string) string {
 	// Strip any previous release markers.
 	body = prReleaseStripMarkers(body)
 
@@ -1536,7 +1453,7 @@ func prReleaseInjectMarkers(body, computedVersion, level, preRelease, notes stri
 	}
 	sb.WriteString("<!-- release-notes-start -->\n")
 	if notes != "" {
-		sb.WriteString("## [" + computedVersion + "]\n\n")
+		sb.WriteString(releaseNotesHeading + "\n\n")
 		sb.WriteString(notes + "\n")
 	}
 	sb.WriteString("<!-- release-notes-end -->\n")
@@ -1582,11 +1499,10 @@ var releaseLabels = []struct {
 // repo (idempotent — labels gh already lists are skipped, not recreated).
 //
 // It is best-effort end to end: a failure listing labels (no gh, no auth,
-// network) is swallowed and reported as nil, matching the shape of the
-// existing FetchTags-is-best-effort precedent in prReleaseComputeIntentWith
-// above. A failure creating an individual label does not stop the rest of
-// the loop from being attempted, but is returned to the caller for test
-// observability — production callers (prApplyCoreWith) discard it
+// network) is swallowed and reported as nil — a missing or uncreatable
+// label must never block a PR. A failure creating an individual label does
+// not stop the rest of the loop from being attempted, but is returned to
+// the caller for test observability — production callers (prApplyCoreWith) discard it
 // unconditionally: a missing label here is not fatal because
 // prReleaseAddLabelWith's own --add-label call fails loud (InfraError) if
 // the label genuinely doesn't exist, which is the actual point where a
@@ -1679,6 +1595,9 @@ func RegisterPRTools(s *mcpserver.Server) {
 			"required: \"user\" (explicit interactive choice) or \"config\" (project/ship-config default). In autoMode, releaseSource=\"user\" is "+
 			"always rejected — an unattended caller must resolve to \"config\"; never invent a release level yourself and label it \"user\" to "+
 			"bypass this. "+
+			"When releaseLevel is set, the PR records release intent only: a release:<level>[-rc] label, <!-- release-level --> / "+
+			"<!-- release-pre --> markers, and notes under a version-agnostic \"Unreleased\" heading. No version number is written to the PR or "+
+			"returned; CI (release-on-main) computes it at merge time from the tags present then. "+
 			"A gh CLI permission error (not a collaborator, 403, Resource not accessible) is enriched with account-switch guidance "+
 			"(active account, target owner/repo, candidate accounts to switch to) in the error's suggestion field.",
 		mcpserver.Annotations{
