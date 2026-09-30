@@ -444,11 +444,13 @@ func critiquePlan(dims []reviewDimWork, changedFiles []string) reviewPlanCritiqu
 		}
 	}
 
+	// Over-broad and overlap checks cover every dispatched dimension
+	// (ACTIVE or TRUNCATED): a TRUNCATED dimension gets an agent too.
 	totalCount := len(changedFiles)
 	var overBroad []string
 	var active []reviewDimWork
 	for _, d := range dims {
-		if d.status == "ACTIVE" {
+		if isDispatched(d.status) {
 			active = append(active, d)
 			if totalCount > 0 && float64(len(d.matchedFiles))/float64(totalCount) > 0.8 {
 				overBroad = append(overBroad, d.name)

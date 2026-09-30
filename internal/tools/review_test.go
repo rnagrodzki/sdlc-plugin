@@ -674,6 +674,46 @@ Review.
 	}
 }
 
+// TestReviewPrepareCritiqueCoversTruncated pins that over_broad_dimensions
+// and overlapping_pairs check TRUNCATED dimensions too. Two dimensions match
+// every changed file, and the diff byte cap makes both TRUNCATED.
+func TestReviewPrepareCritiqueCoversTruncated(t *testing.T) {
+	bigBody := strings.Repeat("x", 4000)
+	files := map[string]string{}
+	for _, name := range []string{"a.go", "b.go", "c.go"} {
+		files["src/"+name] = fmt.Sprintf("package main\n// %s\n", bigBody)
+	}
+	dims := map[string]string{}
+	for _, name := range []string{"alpha", "beta"} {
+		dims[name+".md"] = fmt.Sprintf(`---
+name: %s
+description: %s review
+triggers:
+  - "**/*.go"
+severity: medium
+---
+Review.
+`, name, name)
+	}
+	root := newReviewFixture(t, files, dims)
+
+	_, m := readReviewManifest(t, root)
+
+	for _, d := range m.Dimensions {
+		if d.Status != "TRUNCATED" {
+			t.Fatalf("%s: status = %s, want TRUNCATED (fixture must trip the byte cap)", d.Name, d.Status)
+		}
+	}
+	over := m.PlanCritique.OverBroadDimensions
+	if len(over) != 2 {
+		t.Errorf("over_broad_dimensions = %v, want [alpha beta]", over)
+	}
+	pairs := m.PlanCritique.OverlappingPairs
+	if len(pairs) != 1 || len(pairs[0]) != 2 || pairs[0][0] != "alpha" || pairs[0][1] != "beta" {
+		t.Errorf("overlapping_pairs = %v, want [[alpha beta]]", pairs)
+	}
+}
+
 func TestReviewPrepareNoChangedFiles(t *testing.T) {
 	root := t.TempDir()
 

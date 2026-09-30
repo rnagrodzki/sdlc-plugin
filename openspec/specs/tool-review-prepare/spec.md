@@ -268,8 +268,8 @@ The tool SHALL write a `plan_critique` object into the manifest that describes c
 | `uncovered_files` | Changed files matched by no dimension. |
 | `uncovered_suggestions` | `[{dimension, files, reason}]` from the catalog below. |
 | `still_uncovered` | Uncovered files that match no catalog entry. |
-| `over_broad_dimensions` | `ACTIVE` dimensions matching more than 80% of changed files. |
-| `overlapping_pairs` | Pairs of `ACTIVE` dimensions with identical matched-file sets. |
+| `over_broad_dimensions` | Dispatched (`ACTIVE` or `TRUNCATED`) dimensions matching more than 80% of changed files. |
+| `overlapping_pairs` | Pairs of dispatched (`ACTIVE` or `TRUNCATED`) dimensions with identical matched-file sets. |
 | `dimension_cap_applied` | See dimension cap. |
 | `queued_dimensions` | See dimension cap. |
 
@@ -306,6 +306,12 @@ Uncovered-file catalog. The first matching row wins. Matches marked (i) ignore c
 #### Scenario: Over-broad dimension
 - **WHEN** an `ACTIVE` dimension matches 5 of 6 changed files
 - **THEN** its name is in `over_broad_dimensions`
+
+#### Scenario: Truncated dimensions are checked too
+- **WHEN** two dimensions both match all 3 changed files and the diff byte cap makes both `TRUNCATED`
+- **THEN** both names are in `over_broad_dimensions`
+- **AND** `overlapping_pairs` holds that pair
+- **AND** `QUEUED` and `SKIPPED` dimensions are never checked
 
 ### Requirement: Manifest file
 In manifest mode the tool SHALL write `manifest.json` into the same temp directory and SHALL return its path as `manifestPath`.
