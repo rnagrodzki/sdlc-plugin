@@ -119,11 +119,17 @@ The tool SHALL load review dimensions from every `*.md` file in `.sdlc-v2/review
 - `model` is copied to the index entry when it is a non-empty string; otherwise it is `null`.
 - `requires-full-diff` and `max-files` are read from frontmatter (see status and truncation requirements).
 - Frontmatter fields are documented in `plugins/sdlc/schemas/review-dimension.schema.json`.
+- A missing folder counts as no dimensions. A folder that exists but cannot be listed fails the call with an `InfraError` `list <dir>: <cause>`; it is never reported as `No review dimensions found`.
 
 #### Scenario: No usable dimension
 - **WHEN** `.sdlc-v2/review-dimensions/` is missing or holds no usable dimension file
 - **THEN** the call fails with a `DomainError` `No review dimensions found in .sdlc-v2/review-dimensions/`
 - **AND** the suggestion points to `migrate` action `import` or to adding dimension files
+
+#### Scenario: Dimensions folder cannot be listed
+- **WHEN** `.sdlc-v2/review-dimensions` is a regular file, not a directory
+- **THEN** the call fails with an `InfraError` whose message starts with `list `
+- **AND** the message is not `No review dimensions found in .sdlc-v2/review-dimensions/`
 
 #### Scenario: Dimension without triggers
 - **WHEN** a dimension file has `name: docs` and no `triggers`
@@ -431,6 +437,7 @@ The tool SHALL report each failure below with the listed error class.
 | No default branch and no `target` | `InfraError` | `detect base branch: ...` / pass `target` or use scope `staged`/`working` |
 | No changed files | `DomainError` | `No changed files found` / check changes for the scope |
 | Changed-files git command fails (e.g. bad `target`) | `DomainError` | `git diff against base ref "<base>" failed: ...` or `git diff for scope <scope> failed: ...` / check the ref or the scope |
+| `.sdlc-v2/review-dimensions` exists but cannot be listed | `InfraError` | `list <dir>: ...` / make it a readable directory |
 | No usable dimension | `DomainError` | `No review dimensions found in .sdlc-v2/review-dimensions/` / `migrate` action `import` or add files |
 | Temp directory cannot be created | `InfraError` | `create temp dir: ...` / check disk space and permissions |
 | `.diff` write fails | `InfraError` | `write diff <path>: ...` |

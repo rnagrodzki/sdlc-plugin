@@ -643,11 +643,17 @@ func countChangedLines(diff string) int {
 // Dimension loading and matching
 // ---------------------------------------------------------------------------
 
-func loadAndMatchDimensions(projectRoot string, changedFiles []string) []reviewDimWork {
+// loadAndMatchDimensions loads the dimensions under projectRoot and matches
+// them against changedFiles. A missing folder yields no dimensions and no
+// error; a folder that exists but cannot be listed returns the read error.
+func loadAndMatchDimensions(projectRoot string, changedFiles []string) ([]reviewDimWork, error) {
 	dimDir := filepath.Join(projectRoot, paths.DataDir, "review-dimensions")
 	loaded, err := dimensions.Load(dimDir)
-	if err != nil || len(loaded) == 0 {
-		return nil
+	if err != nil {
+		return nil, fmt.Errorf("list %s: %w", dimDir, err)
+	}
+	if len(loaded) == 0 {
+		return nil, nil
 	}
 
 	var result []reviewDimWork
@@ -706,7 +712,7 @@ func loadAndMatchDimensions(projectRoot string, changedFiles []string) []reviewD
 		})
 	}
 
-	return result
+	return result, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -795,7 +801,14 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 	// per the root rule they load from the ACTIVE worktree, not projectRoot
 	// (MainRoot) -- a branch-local dimension file must be visible even inside
 	// a linked worktree.
-	dims := loadAndMatchDimensions(activeRoot, changedFiles)
+	dims, err := loadAndMatchDimensions(activeRoot, changedFiles)
+	if err != nil {
+		return ReviewPrepareOut{}, &mcpserver.InfraError{
+			Msg:        err.Error(),
+			Suggestion: "Check that " + paths.DataDir + "/review-dimensions is a readable directory (fix its permissions, or remove it if it is a file), then retry review_prepare.",
+			Cause:      err,
+		}
+	}
 	if len(dims) == 0 {
 		return ReviewPrepareOut{}, &mcpserver.DomainError{
 			Msg:        "No review dimensions found in " + paths.DataDir + "/review-dimensions/",

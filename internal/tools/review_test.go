@@ -967,6 +967,26 @@ func TestReviewPrepareNoDimensions(t *testing.T) {
 	}
 }
 
+// TestReviewPrepareUnreadableDimensionsDirIsInfraError pins that a
+// review-dimensions folder that exists but cannot be listed is reported as
+// an InfraError, not folded into "No review dimensions found".
+func TestReviewPrepareUnreadableDimensionsDirIsInfraError(t *testing.T) {
+	root := newReviewFixture(t, map[string]string{"src/a.go": "package main\n"}, nil)
+	writeFile(t, filepath.Join(root, paths.DataDir, "review-dimensions"), "not a directory")
+
+	_, err := reviewPrepare(root, root, ReviewPrepareIn{SkipConfigCheck: true, Target: "main"})
+	var infra *mcpserver.InfraError
+	if !errors.As(err, &infra) {
+		t.Fatalf("err = %v (%T), want *mcpserver.InfraError", err, err)
+	}
+	if !strings.HasPrefix(infra.Msg, "list ") {
+		t.Errorf("Msg = %q, want it to start with \"list \"", infra.Msg)
+	}
+	if strings.Contains(err.Error(), "No review dimensions") {
+		t.Errorf("error hides the read failure: %s", err.Error())
+	}
+}
+
 // ---------------------------------------------------------------------------
 // saveReviewComment
 // ---------------------------------------------------------------------------
