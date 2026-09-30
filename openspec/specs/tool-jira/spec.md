@@ -401,7 +401,6 @@ When `markdownBody` is non-empty, the `validate-body` action SHALL return its At
 
 - Supported: headings h1–h3, paragraphs, bold, italic, inline code, fenced code blocks, bullet and ordered lists, links, tables, blockquotes, horizontal rules.
 - Unrecognized markdown becomes plain-text paragraph nodes; it does not fail.
-- A converter failure returns `InfraError` `convert markdown to ADF: <cause>`.
 
 #### Scenario: ADF returned with violations
 - **WHEN** `markdownBody` is non-empty and has a link violation

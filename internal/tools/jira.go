@@ -1299,15 +1299,7 @@ func jiraValidateBody(mainRoot string, in JiraIn, offline bool) (any, error) {
 	}
 
 	if in.MarkdownBody != "" {
-		adfDoc, err := adf.Convert(in.MarkdownBody)
-		if err != nil {
-			return nil, &mcpserver.InfraError{
-				Msg:        "convert markdown to ADF: " + err.Error(),
-				Suggestion: "Simplify or fix the markdown in markdownBody — the ADF converter rejected it — and call validate-body again.",
-				Cause:      err,
-			}
-		}
-		out.ADF = adfDoc
+		out.ADF = adf.Convert(in.MarkdownBody)
 	}
 
 	return out, nil
