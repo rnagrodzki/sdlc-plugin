@@ -204,6 +204,22 @@ func learningsRead(path, rel string, tailLines int) (LearningsLogOut, error) {
 	}, nil
 }
 
+// learningsSplitEntries splits log content into its header and its entries.
+// Entries are blocks separated by a blank line ("\n\n"); the first block is
+// the header and is never an entry. A block holding only whitespace (left by
+// three or more newlines in a row) is not an entry either. remove and stats
+// both use this, so entry number N means the same entry in both.
+func learningsSplitEntries(content string) (header string, entries []string) {
+	blocks := strings.Split(content, "\n\n")
+	entries = make([]string, 0, len(blocks)-1)
+	for _, b := range blocks[1:] {
+		if strings.TrimSpace(b) != "" {
+			entries = append(entries, b)
+		}
+	}
+	return blocks[0], entries
+}
+
 func learningsRemove(path, rel string, indices []int) (LearningsLogOut, error) {
 	if len(indices) == 0 {
 		return LearningsLogOut{}, &mcpserver.DomainError{
@@ -227,11 +243,7 @@ func learningsRemove(path, rel string, indices []int) (LearningsLogOut, error) {
 		}
 	}
 
-	// Entries are blocks separated by a blank line ("\n\n"); the first block
-	// is the header and is not a removable entry.
-	blocks := strings.Split(string(data), "\n\n")
-	header := blocks[0]
-	entries := blocks[1:]
+	header, entries := learningsSplitEntries(string(data))
 	if len(entries) == 0 {
 		return LearningsLogOut{}, &mcpserver.DomainError{
 			Msg:        "learnings log has no entries to remove",
@@ -299,7 +311,11 @@ const learningsTopPatternsLimit = 10
 var (
 	// learningsRunTagRe matches the "<!-- sdlc:run=X branch=Y -->" comment
 	// learningsAppend prepends to a tagged entry, capturing the branch name.
-	learningsRunTagRe = regexp.MustCompile(`^<!--\s*sdlc:run=\S+\s+branch=(\S*)\s*-->`)
+	// The tag is a line of its own, so it is matched at the start of any line
+	// of the entry, not only the first (for example when a hand-edited line
+	// ends up above it in the same entry). This matches how execute_state
+	// counts linked learnings, which searches every line of the log.
+	learningsRunTagRe = regexp.MustCompile(`(?m)^<!--[ \t]*sdlc:run=\S+[ \t]+branch=(\S*)[ \t]*-->`)
 	// learningsSkillHeadingRe matches a "## <date> — <skill>: <title>" entry
 	// heading and captures the skill segment.
 	learningsSkillHeadingRe = regexp.MustCompile(`(?m)^##\s.*—\s*([A-Za-z][A-Za-z0-9_-]*)\s*:`)
@@ -386,13 +402,7 @@ func learningsStats(path, rel string) (LearningsLogOut, error) {
 		}
 	}
 
-	// Entries are blocks separated by a blank line ("\n\n"); the first block
-	// is the header and is not a real entry.
-	blocks := strings.Split(string(data), "\n\n")
-	var entries []string
-	if len(blocks) > 1 {
-		entries = blocks[1:]
-	}
+	_, entries := learningsSplitEntries(string(data))
 
 	recentStart := 0
 	if len(entries) > learningsRecentWindow {
@@ -404,9 +414,6 @@ func learningsStats(path, rel string) (LearningsLogOut, error) {
 
 	for i, raw := range entries {
 		entry := strings.TrimSpace(raw)
-		if entry == "" {
-			continue
-		}
 		stats.TotalEntries++
 
 		category := learningsEntryCategory(entry)

@@ -138,6 +138,7 @@ The `read` action SHALL return the log text in `content`, limited to the last `t
 The `remove` action SHALL delete the entries at `indices` and rewrite the file as the header block plus the kept entries, separated by blank lines.
 
 - Entries are the blank-line-separated blocks after the first block; the first block is the header and is always kept.
+- A block holding only whitespace (left by three or more newlines in a row) is not an entry and is not counted. `remove` and `stats` number entries the same way, and the rewrite drops such blocks.
 - Index order does not matter: `[1, 3]` and `[3, 1]` remove the same entries.
 - `content` returns the removed entries joined by one blank line.
 - When every entry is removed, the file is the header line only: `# SDLC Execution Learnings\n`.
@@ -153,6 +154,12 @@ The `remove` action SHALL delete the entries at `indices` and rewrite the file a
 - **WHEN** `remove` is called with `indices` `[1, 3]` on `"## entry-alpha"`, `"## entry-beta"`, `"## entry-gamma"`
 - **THEN** `content` contains `## entry-alpha` and `## entry-gamma`
 - **AND** `content` does not contain `## entry-beta`
+
+#### Scenario: Extra blank lines between entries
+- **WHEN** the log is `# SDLC Execution Learnings\n\n## one\n\n\n\n## two\n\n## three\n`
+- **AND** `remove` is called with `indices` `[2]`
+- **THEN** `content` is `## two`
+- **AND** the file is `# SDLC Execution Learnings\n\n## one\n\n## three\n`
 
 #### Scenario: Append after removing everything
 - **WHEN** all entries were removed
@@ -189,8 +196,8 @@ The `stats` action SHALL return a `stats` object that counts non-empty entries b
 
 | `stats` field | Meaning |
 |---|---|
-| `totalEntries` | Number of non-empty entries (header excluded) |
-| `byCategory` | Count per category. Category = run-tag branch text before the first `/` (whole branch when no `/`). No tag or empty branch = `uncategorized`. |
+| `totalEntries` | Number of non-empty entries (header excluded), counted the same way as for `remove` |
+| `byCategory` | Count per category. Category = run-tag branch text before the first `/` (whole branch when no `/`). The run tag is found at the start of any line of the entry, not only the first. No tag or empty branch = `uncategorized`. |
 | `bySkill` | Count per skill. Skill = lowercased name from a `## <date> — <skill>: <title>` heading. No such heading = `unspecified`. |
 | `topPatterns` | Recurring `Rule:` lessons; see "Stats top patterns" |
 | `recentFailures` | Entries with category `fix` among the last 20 entries |
@@ -202,6 +209,10 @@ The `stats` action SHALL return a `stats` object that counts non-empty entries b
 - **AND** `byCategory` is `fix: 1`, `feat: 1`, `uncategorized: 1`
 - **AND** `bySkill` is `execute: 1`, `plan: 1`, `unspecified: 1`
 - **AND** `lastUpdated` is set
+
+#### Scenario: Run tag below the first line
+- **WHEN** an entry's first line is `note added by hand` and its second line is `<!-- sdlc:run=r1 branch=fix/tag-late -->`
+- **THEN** `byCategory` is `fix: 1`
 
 #### Scenario: Log does not exist
 - **WHEN** `stats` is called and the log file does not exist
