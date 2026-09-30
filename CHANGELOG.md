@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.2.0] - 2026-09-30
+
+### RC 1
+
+- Add checkpoint-based session recovery for the /plan skill, including a new evidence store (replacing the earlier "ledger" naming)
+- Add resume mode to plan preparation with post-compact detection, plan-style instructions, and file-path guardrails in lane/lens/reviewer prompts
+- Add evidence store actions and checkpoint markers, with evidence-directory cleanup when a plan session stops
+- Document the evidence store, resume, checkpoint, and custom plan instructions concepts
+- Add a reference documentation accuracy review dimension
+
+### RC 2
+
+- Add checkpoint-based recovery for context compaction during plan execution (#58)
+- Add a new ship "harden" step: review-driven hardening applied and committed separately, before PR creation
+- Make received-review --auto account for every review finding (fix or explicit defer); add --no-harden opt-out
+- Add shared review-cluster rules for grouping related findings consistently
+- Add ship_state MCP actions (healing_record, harden_clusters, report) for self-healing tracking and MCP-composed run reports with plan-duration timing
+- Wire the harden step into the ship pipeline docs; default review threshold to "info" and validate it
+- Fix review findings raised against the harden step and run report implementation
+
 ## [0.1.8] - 2026-09-29
 
 - Add scheduled weekly workflow that deletes old GitHub Releases and their binary assets, keeping the 10 most recent releases (git tags are preserved).
