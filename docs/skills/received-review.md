@@ -51,8 +51,17 @@ allowed to close a finding down to one verdict:
 - **`agree — will fix`** — the only outcome that ends a finding. The fix is
   made and the review thread gets a reply saying so.
 - **Everything else becomes `needs-direction`** — recorded, not closed.
-  "Agree, won't fix", "disagree" and "cannot verify" all land here. The thread
-  gets a reply naming the open question, and the finding goes to the backlog.
+  "Agree, won't fix", "disagree", "cannot verify", and comments too unclear to
+  evaluate all land here. Without `--auto`, an unclear comment stops the whole
+  run to ask you; under `--auto` there is no one to ask, so it is recorded
+  instead — with a note on what's unclear — and the run keeps going with the
+  rest of the comments. The thread gets a reply naming the open question, and
+  the finding goes to the backlog.
+
+**A fix that fails its own check is reverted, not retried blindly.** If a
+change doesn't compile or doesn't pass its tests, `--auto` undoes just that
+change and records it as `needs-direction` with the failure noted, instead of
+guessing at a second approach with no one watching.
 
 Either way the thread itself is only replied to, never resolved: this port
 does not resolve review threads programmatically, so close them yourself in
@@ -80,6 +89,11 @@ finding to the current `/ship` run. When there is no ship state for the branch
 — a standalone run, for instance — or the write cannot be persisted, the skill
 falls back to writing straight to the deferred file instead. Only if both fail
 is the finding named `UNACCOUNTED` in the ledger. It is never silently dropped.
+
+**No PR yet? No reply step.** When there's no PR number — for example when
+`/ship` dispatches this skill on its fix loop before ever opening one — there
+are no review threads to reply to. The reply-posting and reply-verification
+steps are skipped outright; only the run's summary and ledger are shown.
 
 **It also reaches `/harden`.** Step 11.6 clusters the findings by file and
 dispatches [`/harden --auto`](harden.md) for each cluster (capped at 5), which
