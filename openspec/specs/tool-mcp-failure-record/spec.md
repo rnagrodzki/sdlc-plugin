@@ -65,10 +65,10 @@ The tool SHALL map the failure signal to exactly one class from the closed set `
 ### Requirement: Log entry written to the main worktree
 The tool SHALL append one block to `<main worktree root>/.sdlc-v2/learnings/log.md`, creating the file and its parent directories when missing.
 
-Block layout (heading uses an em dash and the literal text `jira mcp-failure` for every tool):
+Block layout (heading uses an em dash, then `mcp-failure[<class>]: <tool>`; it names no skill or service, because any skill can record a failure for any tool):
 
 ```text
-## <YYYY-MM-DD UTC> — jira mcp-failure[<class>]: <tool>
+## <YYYY-MM-DD UTC> — mcp-failure[<class>]: <tool>
 tool: <tool>
 site: <site>
 project: <project>
@@ -79,7 +79,8 @@ recovered: <recovered, default "no">
 #### Scenario: First failure creates the log
 - **WHEN** `.sdlc-v2/learnings/` does not exist and the tool is called with `tool: "test_tool"`, `httpStatus: 401`, `errorMessage: "unauthorized access"`
 - **THEN** `.sdlc-v2/learnings/log.md` is created
-- **AND** it contains a heading ending in `mcp-failure[auth]: test_tool`
+- **AND** it contains the heading `## <today UTC> — mcp-failure[auth]: test_tool`
+- **AND** the heading does not contain `jira`
 
 #### Scenario: Recovered defaults to no
 - **WHEN** the tool is called without `recovered`

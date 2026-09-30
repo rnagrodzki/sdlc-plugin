@@ -790,7 +790,7 @@ user lookup disambiguation patterns, and transition required fields not captured
 workflow sampling.
 
 **MCP failures use the structured R27 form** (written by `mcp_failure_record`). It writes a
-block under a `## YYYY-MM-DD — jira mcp-failure[<class>]: <tool>` heading. Non-MCP
+block under a `## YYYY-MM-DD — mcp-failure[<class>]: <tool>` heading. Non-MCP
 discoveries continue to use the free-form prose style above.
 
 ## What's Next

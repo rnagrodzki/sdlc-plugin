@@ -186,8 +186,10 @@ func Record(root string, f Failure) error {
 		return fmt.Errorf("telemetry: mkdir %s: %w", dir, err)
 	}
 
-	// Heading uses the em dash (U+2014) matching JS source.
-	heading := fmt.Sprintf("## %s — jira mcp-failure[%s]: %s", today, cls, tool)
+	// Heading uses the em dash (U+2014) matching JS source. It names only the
+	// failing tool: any skill records failures here, not just the jira skill,
+	// so the heading must not hard-code a source.
+	heading := fmt.Sprintf("## %s — mcp-failure[%s]: %s", today, cls, tool)
 
 	// Idempotency: skip if heading line already present.
 	existing, _ := os.ReadFile(logPath)

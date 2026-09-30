@@ -1092,8 +1092,11 @@ func TestMcpFailureRecordClassifiesAndRecords(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read log.md: %v", err)
 	}
-	if !strings.Contains(string(data), "mcp-failure[auth]: test_tool") {
+	if !strings.Contains(string(data), " — mcp-failure[auth]: test_tool\n") {
 		t.Errorf("log.md missing expected heading, got: %s", data)
+	}
+	if strings.Contains(string(data), "jira") {
+		t.Errorf("heading for the non-Jira tool test_tool must not mention jira, got: %s", data)
 	}
 
 	firstLen := len(data)

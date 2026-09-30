@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
@@ -99,6 +100,28 @@ func TestRecord_CreatesParentDirs(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "mcp-failure[auth]: test-tool") {
 		t.Fatalf("unexpected content: %s", data)
+	}
+}
+
+// TestRecord_HeadingNamesOnlyTheTool pins the heading format: it names the
+// failing tool and class, and does not claim the failure came from Jira when
+// the tool has nothing to do with Jira.
+func TestRecord_HeadingNamesOnlyTheTool(t *testing.T) {
+	root := t.TempDir()
+	if err := Record(root, Failure{Class: "transport", Tool: "mcp__github__create_pull_request"}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, paths.DataDir, "learnings", "log.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	heading, _, _ := strings.Cut(string(data), "\n")
+	want := "## " + time.Now().UTC().Format("2006-01-02") + " — mcp-failure[transport]: mcp__github__create_pull_request"
+	if heading != want {
+		t.Errorf("heading = %q, want %q", heading, want)
+	}
+	if strings.Contains(strings.ToLower(heading), "jira") {
+		t.Errorf("heading for a non-Jira tool must not mention jira: %q", heading)
 	}
 }
 
