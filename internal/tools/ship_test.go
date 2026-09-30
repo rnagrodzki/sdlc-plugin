@@ -1831,3 +1831,98 @@ func TestShipStateSchema_SideEffectsKindEnum(t *testing.T) {
 		}
 	})
 }
+
+// TestShipBuildReportData_ReviewLedger pins the review ledger arithmetic:
+// fixed counts only local-review records, deferred counts every
+// deferredFindings entry by reason (a missing reason is below-threshold),
+// and unaccounted is total - fixed - deferred without clamping.
+func TestShipBuildReportData_ReviewLedger(t *testing.T) {
+	now := time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC)
+
+	t.Run("no review total", func(t *testing.T) {
+		for name, data := range map[string]map[string]any{
+			"no healing":            {},
+			"healing without total": {"healing": map[string]any{"fixed": []any{map[string]any{"origin": "local-review"}}}},
+			"non-integer total":     {"healing": map[string]any{"reviewTotal": map[string]any{"total": "7"}}},
+		} {
+			rd := shipBuildReportData(data, now)
+			if rd.ReviewLedger != nil {
+				t.Errorf("%s: ReviewLedger = %+v, want nil", name, rd.ReviewLedger)
+			}
+			if rd.ReviewLedgerNote != "review did not run or its total was not recorded" {
+				t.Errorf("%s: ReviewLedgerNote = %q", name, rd.ReviewLedgerNote)
+			}
+			if rd.Healing == nil {
+				t.Errorf("%s: Healing is nil, want a non-nil map", name)
+			}
+		}
+		raw, err := json.Marshal(shipBuildReportData(map[string]any{}, now))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{`"reviewLedger":null`, `"healing":{}`, `"reviewLedgerNote":"review did not run or its total was not recorded"`} {
+			if !strings.Contains(string(raw), want) {
+				t.Errorf("JSON %s does not contain %s", raw, want)
+			}
+		}
+	})
+
+	t.Run("counts", func(t *testing.T) {
+		healing := map[string]any{
+			"reviewTotal": map[string]any{"total": float64(10), "dimensions": float64(4)},
+			"fixed": []any{
+				map[string]any{"origin": "local-review", "title": "a"},
+				map[string]any{"origin": "local-review", "title": "b"},
+				map[string]any{"origin": "pr-comment", "title": "c"},
+			},
+		}
+		data := map[string]any{
+			"healing": healing,
+			"deferredFindings": []any{
+				map[string]any{"title": "d", "reason": "needs-direction"},
+				map[string]any{"title": "e", "reason": "wont-fix"},
+				map[string]any{"title": "f", "reason": "wont-fix"},
+				map[string]any{"title": "g"}, // recorded before the reason field
+			},
+		}
+		rd := shipBuildReportData(data, now)
+		want := &ShipReviewLedger{
+			Total: 10, Fixed: 2,
+			DeferredByReason: map[string]int{"needs-direction": 1, "wont-fix": 2, "below-threshold": 1},
+			Unaccounted:      4,
+		}
+		if rd.ReviewLedger == nil || rd.ReviewLedger.Total != want.Total || rd.ReviewLedger.Fixed != want.Fixed ||
+			rd.ReviewLedger.Unaccounted != want.Unaccounted || fmt.Sprint(rd.ReviewLedger.DeferredByReason) != fmt.Sprint(want.DeferredByReason) {
+			t.Errorf("ReviewLedger = %+v, want %+v", rd.ReviewLedger, want)
+		}
+		if rd.ReviewLedgerNote != "" {
+			t.Errorf("ReviewLedgerNote = %q, want empty", rd.ReviewLedgerNote)
+		}
+		if fixed, _ := rd.Healing["fixed"].([]any); len(fixed) != 3 {
+			t.Errorf("Healing = %v, want data.healing verbatim", rd.Healing)
+		}
+	})
+
+	t.Run("negative unaccounted is not clamped", func(t *testing.T) {
+		data := map[string]any{
+			"healing": map[string]any{
+				"reviewTotal": map[string]any{"total": 1},
+				"fixed":       []any{map[string]any{"origin": "local-review"}, map[string]any{"origin": "local-review"}},
+			},
+			"deferredFindings": []any{map[string]any{"reason": "disagree"}},
+		}
+		rd := shipBuildReportData(data, now)
+		if rd.ReviewLedger == nil || rd.ReviewLedger.Unaccounted != -2 {
+			t.Errorf("ReviewLedger = %+v, want Unaccounted -2", rd.ReviewLedger)
+		}
+	})
+
+	t.Run("zero total with nothing deferred", func(t *testing.T) {
+		rd := shipBuildReportData(map[string]any{"healing": map[string]any{"reviewTotal": map[string]any{"total": float64(0)}}}, now)
+		want := ShipReviewLedger{DeferredByReason: map[string]int{}}
+		if rd.ReviewLedger == nil || rd.ReviewLedger.Total != 0 || rd.ReviewLedger.Unaccounted != 0 ||
+			rd.ReviewLedger.DeferredByReason == nil || len(rd.ReviewLedger.DeferredByReason) != 0 {
+			t.Errorf("ReviewLedger = %+v, want %+v", rd.ReviewLedger, want)
+		}
+	})
+}

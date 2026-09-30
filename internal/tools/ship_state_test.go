@@ -3281,3 +3281,487 @@ func TestShipStateGCRejectsMistypedDryRun(t *testing.T) {
 		t.Errorf("stale state file was deleted despite the rejected dryRun: %v", statErr)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// healing_record
+// ---------------------------------------------------------------------------
+
+// healingCall runs one healing_record call on branch with detail and returns
+// the narration summary.
+func healingCall(t *testing.T, dir, branch string, detail map[string]any) string {
+	t.Helper()
+	d := map[string]any{"branch": branch}
+	for k, v := range detail {
+		d[k] = v
+	}
+	out, err := shipState(dir, dir, ShipStateIn{Action: "healing_record", Detail: d},
+		fixedNow(time.Date(2026, 9, 30, 1, 2, 3, 0, time.UTC)))
+	if err != nil {
+		t.Fatalf("healing_record %v: %v", detail, err)
+	}
+	n, ok := out.(ShipStepNarrationOut)
+	if !ok {
+		t.Fatalf("healing_record output = %T, want ShipStepNarrationOut", out)
+	}
+	return n.Summary
+}
+
+// healingData reads data.healing back from the state file.
+func healingData(t *testing.T, path string) map[string]any {
+	t.Helper()
+	h, _ := readStateData(t, path)["healing"].(map[string]any)
+	return h
+}
+
+func healingFixedDetail(overrides map[string]any) map[string]any {
+	d := map[string]any{
+		"kind": "fixed", "origin": "local-review", "severity": "high",
+		"file": "a.go", "line": float64(42), "title": "unchecked error",
+	}
+	for k, v := range overrides {
+		d[k] = v
+	}
+	return d
+}
+
+func healingHardenedDetail(overrides map[string]any) map[string]any {
+	d := map[string]any{
+		"kind": "hardened", "phase": "done", "trigger": "review cluster: unchecked errors",
+		"classification": "user-code",
+		"applied": []any{map[string]any{
+			"surface": "plan-guardrails", "action": "add", "targetFile": "/wt/.sdlc-v2/config.toml",
+		}},
+		"skipped": float64(1),
+	}
+	for k, v := range overrides {
+		d[k] = v
+	}
+	return d
+}
+
+func TestShipStateHealingRecord_ReviewTotalSetsAndReplaces(t *testing.T) {
+	branch := "feat/heal-total"
+	dir, path := deferFixture(t, branch)
+
+	summary := healingCall(t, dir, branch, map[string]any{"kind": "review-total", "total": float64(14), "dimensions": float64(5)})
+	if !strings.Contains(summary, "recorded") {
+		t.Errorf("summary = %q, want it to say recorded", summary)
+	}
+	rt, _ := healingData(t, path)["reviewTotal"].(map[string]any)
+	if rt["total"] != float64(14) || rt["dimensions"] != float64(5) || rt["recordedAt"] != "2026-09-30T01:02:03Z" {
+		t.Fatalf("reviewTotal = %v, want total 14, dimensions 5, recordedAt 2026-09-30T01:02:03Z", rt)
+	}
+
+	// A second call replaces the value; zero is a valid total.
+	healingCall(t, dir, branch, map[string]any{"kind": "review-total", "total": float64(0), "dimensions": float64(3)})
+	rt, _ = healingData(t, path)["reviewTotal"].(map[string]any)
+	if rt["total"] != float64(0) || rt["dimensions"] != float64(3) {
+		t.Errorf("reviewTotal after second call = %v, want total 0, dimensions 3", rt)
+	}
+}
+
+func TestShipStateHealingRecord_FixedAppendsAndDedupes(t *testing.T) {
+	branch := "feat/heal-fixed"
+	dir, path := deferFixture(t, branch)
+
+	if s := healingCall(t, dir, branch, healingFixedDetail(map[string]any{"severity": "HIGH"})); !strings.HasSuffix(s, ": recorded") {
+		t.Errorf("first fixed summary = %q, want suffix %q", s, ": recorded")
+	}
+	// Same (origin, file, line, title) with a different severity is a duplicate.
+	if s := healingCall(t, dir, branch, healingFixedDetail(map[string]any{"severity": "low"})); !strings.Contains(s, "already recorded — no change") {
+		t.Errorf("duplicate fixed summary = %q, want %q", s, "already recorded — no change")
+	}
+	// Any change to the natural key is a new record.
+	healingCall(t, dir, branch, healingFixedDetail(map[string]any{"line": float64(43)}))
+	healingCall(t, dir, branch, healingFixedDetail(map[string]any{"origin": "pr-comment"}))
+	healingCall(t, dir, branch, healingFixedDetail(map[string]any{"file": "b.go"}))
+	healingCall(t, dir, branch, healingFixedDetail(map[string]any{"title": "other"}))
+	// An absent line is its own key, and repeating it is a duplicate after the
+	// JSON round trip stores it as null.
+	healingCall(t, dir, branch, healingFixedDetail(map[string]any{"line": nil}))
+	if s := healingCall(t, dir, branch, healingFixedDetail(map[string]any{"line": nil})); !strings.Contains(s, "already recorded — no change") {
+		t.Errorf("duplicate no-line fixed summary = %q, want %q", s, "already recorded — no change")
+	}
+
+	fixed, _ := healingData(t, path)["fixed"].([]any)
+	if len(fixed) != 6 {
+		t.Fatalf("fixed has %d records, want 6: %v", len(fixed), fixed)
+	}
+	first, _ := fixed[0].(map[string]any)
+	want := map[string]any{
+		"origin": "local-review", "severity": "high", "file": "a.go", "line": float64(42),
+		"title": "unchecked error", "recordedAt": "2026-09-30T01:02:03Z",
+	}
+	if !reflect.DeepEqual(first, want) {
+		t.Errorf("first fixed record = %v, want %v (severity lowercased, duplicate did not overwrite it)", first, want)
+	}
+	last, _ := fixed[5].(map[string]any)
+	if v, ok := last["line"]; !ok || v != nil {
+		t.Errorf("no-line record line = %v (present %v), want stored null", v, ok)
+	}
+}
+
+// TestShipStateHealingRecord_HardenedTransitions walks every row of the
+// hardened upsert table: stored record for the trigger x incoming phase.
+func TestShipStateHealingRecord_HardenedTransitions(t *testing.T) {
+	cases := []struct {
+		name      string
+		stored    string // "" = no stored record
+		incoming  string
+		wantPhase string
+		wantNarr  string
+	}{
+		{"none+started", "", "started", "started", ": recorded"},
+		{"none+done", "", "done", "done", ": recorded"},
+		{"started+done", "started", "done", "done", "replaced started record"},
+		{"started+started", "started", "started", "started", "already recorded — no change"},
+		{"done+started", "done", "started", "done", "already recorded — no change"},
+		{"done+done", "done", "done", "done", "already recorded — no change"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			branch := "feat/heal-hardened"
+			dir, path := deferFixture(t, branch)
+			// An unrelated trigger stays untouched in every case.
+			healingCall(t, dir, branch, healingHardenedDetail(map[string]any{"trigger": "other trigger", "phase": "started"}))
+			if tc.stored != "" {
+				healingCall(t, dir, branch, healingHardenedDetail(map[string]any{
+					"phase": tc.stored, "applied": []any{}, "skipped": float64(0),
+				}))
+			}
+			summary := healingCall(t, dir, branch, healingHardenedDetail(map[string]any{"phase": tc.incoming}))
+			if !strings.HasSuffix(summary, tc.wantNarr) {
+				t.Errorf("summary = %q, want suffix %q", summary, tc.wantNarr)
+			}
+
+			hardened, _ := healingData(t, path)["hardened"].([]any)
+			if len(hardened) != 2 {
+				t.Fatalf("hardened has %d records, want 2 (one per trigger): %v", len(hardened), hardened)
+			}
+			other, _ := hardened[0].(map[string]any)
+			if other["trigger"] != "other trigger" || other["phase"] != "started" {
+				t.Errorf("unrelated record = %v, want trigger %q phase started", other, "other trigger")
+			}
+			rec, _ := hardened[1].(map[string]any)
+			if rec["phase"] != tc.wantPhase {
+				t.Errorf("stored phase = %v, want %s", rec["phase"], tc.wantPhase)
+			}
+			// Which record survived: the stored one (applied empty, skipped 0)
+			// unless the incoming one was appended or replaced it.
+			incomingKept := tc.stored == "" || tc.wantNarr == "replaced started record"
+			applied, _ := rec["applied"].([]any)
+			if incomingKept && (len(applied) != 1 || rec["skipped"] != float64(1)) {
+				t.Errorf("record = %v, want the incoming record (1 applied, skipped 1)", rec)
+			}
+			if !incomingKept && (len(applied) != 0 || rec["skipped"] != float64(0)) {
+				t.Errorf("record = %v, want the stored record unchanged (0 applied, skipped 0)", rec)
+			}
+		})
+	}
+}
+
+// TestShipStateHealingRecord_EmptyAppliedRecorded pins that a harden run that
+// changed nothing is still recorded.
+func TestShipStateHealingRecord_EmptyAppliedRecorded(t *testing.T) {
+	branch := "feat/heal-empty-applied"
+	dir, path := deferFixture(t, branch)
+	healingCall(t, dir, branch, healingHardenedDetail(map[string]any{"applied": []any{}, "skipped": float64(0)}))
+	hardened, _ := healingData(t, path)["hardened"].([]any)
+	if len(hardened) != 1 {
+		t.Fatalf("hardened = %v, want one record", hardened)
+	}
+	rec, _ := hardened[0].(map[string]any)
+	if applied, ok := rec["applied"].([]any); !ok || len(applied) != 0 {
+		t.Errorf("applied = %#v, want an empty array", rec["applied"])
+	}
+}
+
+func TestShipStateHealingRecord_Rejections(t *testing.T) {
+	surfaceIDs := healingSurfaceIDs()
+	cases := []struct {
+		name      string
+		detail    map[string]any
+		msgWants  []string
+		suggWants []string
+	}{
+		{"missing kind", map[string]any{}, []string{"detail.kind"}, healingKinds},
+		{"unknown kind", map[string]any{"kind": "patched"}, []string{"patched"}, healingKinds},
+		{"wrong-typed kind", map[string]any{"kind": float64(1)}, []string{"detail.kind"}, healingKinds},
+
+		{"review-total missing total", map[string]any{"kind": "review-total", "dimensions": float64(1)}, []string{"detail.total"}, nil},
+		{"review-total missing dimensions", map[string]any{"kind": "review-total", "total": float64(1)}, []string{"detail.dimensions"}, nil},
+		{"review-total negative total", map[string]any{"kind": "review-total", "total": float64(-1), "dimensions": float64(1)}, []string{"detail.total"}, nil},
+		{"review-total fractional total", map[string]any{"kind": "review-total", "total": 1.5, "dimensions": float64(1)}, []string{"detail.total"}, nil},
+		{"review-total string dimensions", map[string]any{"kind": "review-total", "total": float64(1), "dimensions": "5"}, []string{"detail.dimensions"}, nil},
+
+		{"fixed missing origin", healingFixedDetail(map[string]any{"origin": nil}), []string{"detail.origin"}, nil},
+		{"fixed missing severity", healingFixedDetail(map[string]any{"severity": nil}), []string{"detail.severity"}, nil},
+		{"fixed missing file", healingFixedDetail(map[string]any{"file": nil}), []string{"detail.file"}, nil},
+		{"fixed empty title", healingFixedDetail(map[string]any{"title": ""}), []string{"detail.title"}, nil},
+		{"fixed unknown origin", healingFixedDetail(map[string]any{"origin": "ci"}), []string{"ci"}, healingOrigins},
+		{"fixed unknown severity", healingFixedDetail(map[string]any{"severity": "blocker"}), []string{"blocker"}, dimensions.ValidSeverities},
+		{"fixed non-integer line", healingFixedDetail(map[string]any{"line": "42"}), []string{"detail.line"}, nil},
+
+		{"hardened missing phase", healingHardenedDetail(map[string]any{"phase": nil}), []string{"detail.phase"}, nil},
+		{"hardened unknown phase", healingHardenedDetail(map[string]any{"phase": "finished"}), []string{"finished"}, healingPhases},
+		{"hardened missing trigger", healingHardenedDetail(map[string]any{"trigger": nil}), []string{"detail.trigger"}, nil},
+		{"hardened missing classification", healingHardenedDetail(map[string]any{"classification": nil}), []string{"detail.classification"}, nil},
+		{"hardened missing applied", healingHardenedDetail(map[string]any{"applied": nil}), []string{"detail.applied"}, nil},
+		{"hardened applied not array", healingHardenedDetail(map[string]any{"applied": "none"}), []string{"detail.applied"}, nil},
+		{"hardened applied entry not object", healingHardenedDetail(map[string]any{"applied": []any{"x"}}), []string{"detail.applied[0]"}, nil},
+		{
+			"hardened applied missing targetFile",
+			healingHardenedDetail(map[string]any{"applied": []any{map[string]any{"surface": "plan-guardrails", "action": "add"}}}),
+			[]string{"detail.applied[0].targetFile"}, nil,
+		},
+		{
+			"hardened unknown surface",
+			healingHardenedDetail(map[string]any{"applied": []any{map[string]any{"surface": "readme", "action": "add", "targetFile": "/x"}}}),
+			[]string{"readme"}, surfaceIDs,
+		},
+		{"hardened missing skipped", healingHardenedDetail(map[string]any{"skipped": nil}), []string{"detail.skipped"}, nil},
+		{"hardened negative skipped", healingHardenedDetail(map[string]any{"skipped": float64(-2)}), []string{"detail.skipped"}, nil},
+	}
+
+	branch := "feat/heal-reject"
+	dir, path := deferFixture(t, branch)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := map[string]any{"branch": branch}
+			for k, v := range tc.detail {
+				if v == nil {
+					continue // nil in the table means "omit the key"
+				}
+				d[k] = v
+			}
+			_, err := shipState(dir, dir, ShipStateIn{Action: "healing_record", Detail: d}, fixedNow(time.Now()))
+			if err == nil {
+				t.Fatal("want DomainError, got nil")
+			}
+			if !isDomainError(err) {
+				t.Fatalf("error = %v (%T), want DomainError", err, err)
+			}
+			msg := err.Error()
+			if !strings.HasPrefix(msg, "healing_record: ") {
+				t.Errorf("message %q does not start with the action name", msg)
+			}
+			for _, w := range tc.msgWants {
+				if !strings.Contains(msg, w) {
+					t.Errorf("message %q does not name %q", msg, w)
+				}
+			}
+			sugg := suggestionOf(err)
+			for _, w := range tc.suggWants {
+				if !strings.Contains(sugg, w) {
+					t.Errorf("suggestion %q does not list accepted value %q", sugg, w)
+				}
+			}
+		})
+	}
+	if h, ok := readStateData(t, path)["healing"]; ok {
+		t.Errorf("data.healing = %v, want absent — rejected calls must not write", h)
+	}
+}
+
+func TestShipStateHealingRecord_NoLiveRun(t *testing.T) {
+	t.Run("no ship state", func(t *testing.T) {
+		dir := t.TempDir()
+		initGitFixture(t, dir)
+		gitCommit(t, dir, "initial")
+		checkoutBranch(t, dir, "feat/heal-none")
+		for _, detail := range []map[string]any{
+			{"kind": "review-total", "total": float64(3), "dimensions": float64(2)},
+			healingFixedDetail(nil),
+			healingHardenedDetail(nil),
+		} {
+			s := healingCall(t, dir, "feat/heal-none", detail)
+			if !strings.Contains(s, "no live ship run on this branch — healing not recorded") {
+				t.Errorf("summary = %q, want the no-live-run narration", s)
+			}
+		}
+		if st, err := state.Find(dir, "ship", "feat/heal-none"); err != nil || st != nil {
+			t.Errorf("state.Find = %v, %v — want no ship state created", st, err)
+		}
+	})
+
+	t.Run("pipelineCompletedAt set", func(t *testing.T) {
+		branch := "feat/heal-done"
+		dir, path := deferFixture(t, branch)
+		data := readStateData(t, path)
+		data["pipelineCompletedAt"] = "2026-09-30T00:00:00Z"
+		raw, err := json.Marshal(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, raw, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		before, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := healingCall(t, dir, branch, healingFixedDetail(nil))
+		if !strings.Contains(s, "no live ship run on this branch — healing not recorded") {
+			t.Errorf("summary = %q, want the no-live-run narration", s)
+		}
+		after, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(before) != string(after) {
+			t.Error("state file changed — a completed run must not be written")
+		}
+	})
+}
+
+// TestShipStateHealingRecord_SchemaAcceptsWrittenRecords validates the
+// data.healing the handler actually wrote against ship-state.schema.json,
+// and checks that the schema's enums match the Go sets the handler checks.
+func TestShipStateHealingRecord_SchemaAcceptsWrittenRecords(t *testing.T) {
+	branch := "feat/heal-schema"
+	dir, path := deferFixture(t, branch)
+	healingCall(t, dir, branch, map[string]any{"kind": "review-total", "total": float64(4), "dimensions": float64(2)})
+	healingCall(t, dir, branch, healingFixedDetail(nil))
+	healingCall(t, dir, branch, healingFixedDetail(map[string]any{"line": nil, "origin": "pr-comment"}))
+	healingCall(t, dir, branch, healingHardenedDetail(map[string]any{"phase": "started", "applied": []any{}, "skipped": float64(0)}))
+	var applied []any
+	for _, id := range healingSurfaceIDs() {
+		applied = append(applied, map[string]any{"surface": id, "action": "add", "targetFile": "/x"})
+	}
+	healingCall(t, dir, branch, healingHardenedDetail(map[string]any{"trigger": "every surface", "applied": applied}))
+	healing := healingData(t, path)
+
+	schemaPath, err := filepath.Abs(filepath.Join("..", "..", "plugins", "sdlc", "schemas", "ship-state.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sch, err := jsonschema.NewCompiler().Compile(schemaPath)
+	if err != nil {
+		t.Fatalf("compile schema: %v", err)
+	}
+	validate := func(h any) error {
+		raw, err := json.Marshal(map[string]any{
+			"version": float64(1), "startedAt": "2026-03-01T12:00:00Z", "branch": branch,
+			"flags": map[string]any{}, "steps": []any{map[string]any{"name": "review", "status": "completed"}},
+			"healing": h,
+		})
+		if err != nil {
+			t.Fatalf("marshal doc: %v", err)
+		}
+		inst, err := jsonschema.UnmarshalJSON(strings.NewReader(string(raw)))
+		if err != nil {
+			t.Fatalf("unmarshal doc: %v", err)
+		}
+		return sch.Validate(inst)
+	}
+	if err := validate(healing); err != nil {
+		t.Errorf("schema rejected data.healing written by healing_record: %v", err)
+	}
+	bad := map[string]any{"fixed": []any{map[string]any{
+		"origin": "ci", "severity": "high", "file": "a.go", "title": "t", "recordedAt": "2026-09-30T01:02:03Z",
+	}}}
+	if err := validate(bad); err == nil {
+		t.Error(`origin "ci": want schema rejection, got nil`)
+	}
+
+	// Enum sync: the schema's enums must equal the Go sets.
+	raw, err := os.ReadFile(schemaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Properties struct {
+			Healing struct {
+				Properties struct {
+					Fixed struct {
+						Items struct {
+							Properties struct {
+								Origin   struct{ Enum []string } `json:"origin"`
+								Severity struct{ Enum []string } `json:"severity"`
+							} `json:"properties"`
+						} `json:"items"`
+					} `json:"fixed"`
+					Hardened struct {
+						Items struct {
+							Properties struct {
+								Phase   struct{ Enum []string } `json:"phase"`
+								Applied struct {
+									Items struct {
+										Properties struct {
+											Surface struct{ Enum []string } `json:"surface"`
+										} `json:"properties"`
+									} `json:"items"`
+								} `json:"applied"`
+							} `json:"properties"`
+						} `json:"items"`
+					} `json:"hardened"`
+				} `json:"properties"`
+			} `json:"healing"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	fp := doc.Properties.Healing.Properties.Fixed.Items.Properties
+	hp := doc.Properties.Healing.Properties.Hardened.Items.Properties
+	for name, pair := range map[string][2][]string{
+		"fixed.origin":    {fp.Origin.Enum, healingOrigins},
+		"fixed.severity":  {fp.Severity.Enum, dimensions.ValidSeverities},
+		"hardened.phase":  {hp.Phase.Enum, healingPhases},
+		"applied.surface": {hp.Applied.Items.Properties.Surface.Enum, healingSurfaceIDs()},
+	} {
+		if !reflect.DeepEqual(pair[0], pair[1]) {
+			t.Errorf("schema enum %s = %v, want %v (the Go set the handler checks)", name, pair[0], pair[1])
+		}
+	}
+}
+
+// TestShipStateHealingRecord_ReadReportsLedger drives the whole path: healing
+// records and deferrals written through the tool, then read's reportData.
+func TestShipStateHealingRecord_ReadReportsLedger(t *testing.T) {
+	branch := "feat/heal-read"
+	dir, _ := deferFixture(t, branch)
+	useMemHistory(t)
+
+	read := func() ShipReportData {
+		t.Helper()
+		out, err := shipState(dir, dir, ShipStateIn{Action: "read", Detail: map[string]any{"branch": branch}}, fixedNow(time.Now()))
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		rd, ok := out.(map[string]any)["reportData"].(ShipReportData)
+		if !ok {
+			t.Fatalf("reportData missing or wrong type: %#v", out)
+		}
+		return rd
+	}
+
+	rd := read()
+	if rd.ReviewLedger != nil || rd.ReviewLedgerNote != "review did not run or its total was not recorded" {
+		t.Errorf("before review-total: ledger = %v, note = %q; want nil and the not-recorded note", rd.ReviewLedger, rd.ReviewLedgerNote)
+	}
+	if rd.Healing == nil || len(rd.Healing) != 0 {
+		t.Errorf("Healing = %#v, want an empty non-nil map", rd.Healing)
+	}
+
+	healingCall(t, dir, branch, map[string]any{"kind": "review-total", "total": float64(5), "dimensions": float64(3)})
+	healingCall(t, dir, branch, healingFixedDetail(nil))
+	healingCall(t, dir, branch, healingFixedDetail(map[string]any{"origin": "pr-comment"}))
+	if _, err := shipState(dir, dir, ShipStateIn{Action: "defer", Detail: map[string]any{
+		"branch": branch, "severity": "low", "file": "c.go", "title": "later", "reason": "needs-direction",
+	}}, fixedNow(time.Now())); err != nil {
+		t.Fatalf("defer: %v", err)
+	}
+
+	rd = read()
+	want := &ShipReviewLedger{Total: 5, Fixed: 1, DeferredByReason: map[string]int{"needs-direction": 1}, Unaccounted: 3}
+	if !reflect.DeepEqual(rd.ReviewLedger, want) {
+		t.Errorf("ReviewLedger = %+v, want %+v", rd.ReviewLedger, want)
+	}
+	if rd.ReviewLedgerNote != "" {
+		t.Errorf("ReviewLedgerNote = %q, want empty once a total is recorded", rd.ReviewLedgerNote)
+	}
+	if fixed, _ := rd.Healing["fixed"].([]any); len(fixed) != 2 {
+		t.Errorf("Healing.fixed = %v, want both records verbatim", rd.Healing["fixed"])
+	}
+}

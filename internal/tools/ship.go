@@ -16,6 +16,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
+	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/pipeline"
@@ -1220,6 +1221,69 @@ type ShipReportData struct {
 	Decisions        []string          `json:"decisions"`
 	DeferredFindings int               `json:"deferredFindings"`
 	BinaryVersion    map[string]string `json:"binaryVersion"`
+	// ReviewLedger accounts for every review finding: total is the review's
+	// own count, and each finding should be either fixed or deferred. It is
+	// nil (JSON null) when no review total was recorded; ReviewLedgerNote
+	// then says why.
+	ReviewLedger     *ShipReviewLedger `json:"reviewLedger"`
+	ReviewLedgerNote string            `json:"reviewLedgerNote,omitempty"`
+	// Healing is data.healing verbatim, or an empty map when absent.
+	Healing map[string]any `json:"healing"`
+}
+
+// ShipReviewLedger is the review-finding account built from data.healing
+// and data.deferredFindings. Fixed counts only data.healing.fixed records
+// with origin "local-review", because PR-comment fixes are not part of the
+// review's total. Deferred counts every data.deferredFindings entry, grouped
+// by reason. Unaccounted is Total - Fixed - deferred and is never clamped:
+// a negative value is reported as is, since it means records disagree.
+type ShipReviewLedger struct {
+	Total            int            `json:"total"`
+	Fixed            int            `json:"fixed"`
+	DeferredByReason map[string]int `json:"deferredByReason"`
+	Unaccounted      int            `json:"unaccounted"`
+}
+
+// shipReviewLedgerNote explains a null reviewLedger in reportData.
+const shipReviewLedgerNote = "review did not run or its total was not recorded"
+
+// shipBuildReviewLedger computes the review ledger from a ship state's Data
+// map. It returns nil when data.healing.reviewTotal holds no integer total.
+// A deferredFindings entry without a reason predates the reason field; such
+// entries were all below-threshold deferrals, so they are counted there.
+func shipBuildReviewLedger(healing map[string]any, deferredFindings []any) *ShipReviewLedger {
+	reviewTotal, _ := healing["reviewTotal"].(map[string]any)
+	total, ok := healingInt(reviewTotal["total"])
+	if !ok {
+		return nil
+	}
+	fixedRecords, _ := healing["fixed"].([]any)
+	fixed := 0
+	for _, f := range fixedRecords {
+		if m, ok := f.(map[string]any); ok && m["origin"] == "local-review" {
+			fixed++
+		}
+	}
+	byReason := map[string]int{}
+	deferred := 0
+	for _, entry := range deferredFindings {
+		m, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		reason, _ := m["reason"].(string)
+		if reason == "" {
+			reason = history.ReasonBelowThreshold
+		}
+		byReason[reason]++
+		deferred++
+	}
+	return &ShipReviewLedger{
+		Total:            total,
+		Fixed:            fixed,
+		DeferredByReason: byReason,
+		Unaccounted:      total - fixed - deferred,
+	}
 }
 
 // shipBuildReportData computes ShipReportData from a ship state's raw Data
@@ -1294,6 +1358,16 @@ func shipBuildReportData(data map[string]any, now time.Time) ShipReportData {
 		}
 	}
 
+	healing, _ := data["healing"].(map[string]any)
+	if healing == nil {
+		healing = map[string]any{}
+	}
+	ledger := shipBuildReviewLedger(healing, deferredFindings)
+	ledgerNote := ""
+	if ledger == nil {
+		ledgerNote = shipReviewLedgerNote
+	}
+
 	return ShipReportData{
 		Bump:             bump,
 		BumpSource:       bumpSource,
@@ -1308,6 +1382,9 @@ func shipBuildReportData(data map[string]any, now time.Time) ShipReportData {
 		Decisions:        decisions,
 		DeferredFindings: len(deferredFindings),
 		BinaryVersion:    binaryVersion,
+		ReviewLedger:     ledger,
+		ReviewLedgerNote: ledgerNote,
+		Healing:          healing,
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/dimensions"
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
+	"github.com/rnagrodzki/sdlc-plugin/internal/hardensurfaces"
 	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
@@ -41,9 +42,9 @@ import (
 // empty-string distinction for reason/error/result, are preserved without
 // literal typed struct fields (see detailIntPtr below).
 type ShipStateIn struct {
-	Action    string         `json:"action" jsonschema:"enum=init,enum=begin-step,enum=complete-step,enum=start,enum=complete,enum=skip,enum=fail,enum=decide,enum=defer,enum=read,enum=next,enum=todos,enum=cleanup,enum=cleanup-pipeline,enum=gc,enum=migrate,enum=history_record,enum=deferred_add,enum=deferred_list,enum=deferred_propose_followups,enum=deferred_resolve,enum=log-cli" jsonschema_description:"Operation to perform: init, begin-step, complete-step, start (legacy), complete (legacy), skip, fail, decide, defer, read, next, todos, cleanup, cleanup-pipeline, gc, migrate, history_record, deferred_add, deferred_list, deferred_propose_followups, deferred_resolve, or log-cli. Each action uses a subset of the other fields (unlisted fields are ignored)."`
+	Action    string         `json:"action" jsonschema:"enum=init,enum=begin-step,enum=complete-step,enum=start,enum=complete,enum=skip,enum=fail,enum=decide,enum=defer,enum=read,enum=next,enum=todos,enum=cleanup,enum=cleanup-pipeline,enum=gc,enum=migrate,enum=history_record,enum=deferred_add,enum=deferred_list,enum=deferred_propose_followups,enum=deferred_resolve,enum=log-cli,enum=healing_record" jsonschema_description:"Operation to perform: init, begin-step, complete-step, start (legacy), complete (legacy), skip, fail, decide, defer, healing_record, read, next, todos, cleanup, cleanup-pipeline, gc, migrate, history_record, deferred_add, deferred_list, deferred_propose_followups, deferred_resolve, or log-cli. Each action uses a subset of the other fields (unlisted fields are ignored)."`
 	Step      string         `json:"step,omitempty" jsonschema_description:"Pipeline step name. Required by begin-step, complete-step, start, complete, skip, fail, decide; ignored by other actions."`
-	Detail    map[string]any `json:"detail,omitempty" jsonschema_description:"Action-specific extra fields (e.g. branch, flags, outcome, result, reason, description, error, text, severity, file, title, line, force, ttlDays, dryRun, from, to, detail; log-cli reads branch, command, exitCode, outputHead, step). See the action list for which sub-fields each action reads."`
+	Detail    map[string]any `json:"detail,omitempty" jsonschema_description:"Action-specific extra fields (e.g. branch, flags, outcome, result, reason, description, error, text, severity, file, title, line, force, ttlDays, dryRun, from, to, detail; log-cli reads branch, command, exitCode, outputHead, step; healing_record reads kind, total, dimensions, origin, severity, file, line, title, phase, trigger, classification, applied, skipped, branch). See the action list for which sub-fields each action reads."`
 	SessionID string         `json:"sessionId,omitempty" jsonschema_description:"Session identifier used by init to stamp the created state's sessionId field, for correlating this run with the calling session."`
 }
 
@@ -597,9 +598,13 @@ func shipState(root, workDir string, in ShipStateIn, now func() time.Time) (any,
 	case "log-cli":
 		return shipStateLogCLI(root, workDir, in)
 
+	// Self-healing ledger — review total, fixed findings, harden results.
+	case "healing_record":
+		return shipStateHealingRecord(root, workDir, in, now)
+
 	default:
 		return nil, unknownActionError("ship_state action", in.Action, "",
-			"pass one of: init, begin-step, complete-step, start, complete, skip, fail, decide, defer, read, next, todos, cleanup, cleanup-pipeline, gc, migrate, history_record, deferred_add, deferred_list, deferred_propose_followups, deferred_resolve, log-cli (start and complete are legacy aliases of begin-step and complete-step)")
+			"pass one of: init, begin-step, complete-step, start, complete, skip, fail, decide, defer, read, next, todos, cleanup, cleanup-pipeline, gc, migrate, history_record, deferred_add, deferred_list, deferred_propose_followups, deferred_resolve, log-cli, healing_record (start and complete are legacy aliases of begin-step and complete-step)")
 	}
 }
 
@@ -1274,6 +1279,406 @@ func shipStateDefer(root, workDir string, in ShipStateIn, now func() time.Time) 
 		out.Display = pipeline.StepProgressBlock(shipBuildStepRows(st.Data), ts)
 	}
 	return out, nil
+}
+
+// ---------------------------------------------------------------------------
+// Action: healing_record
+// ---------------------------------------------------------------------------
+
+// healingKinds, healingOrigins and healingPhases are the accepted values for
+// healing_record's detail.kind, detail.origin (kind "fixed") and detail.phase
+// (kind "hardened"). ship-state.schema.json carries the same sets.
+var (
+	healingKinds   = []string{"review-total", "fixed", "hardened"}
+	healingOrigins = []string{"local-review", "pr-comment"}
+	healingPhases  = []string{"started", "done"}
+)
+
+// Narrations returned by healing_record. Callers and tests match on them.
+const (
+	healingNarrRecorded  = "recorded"
+	healingNarrReplaced  = "replaced started record"
+	healingNarrDuplicate = "already recorded — no change"
+	healingNarrNoLiveRun = "no live ship run on this branch — healing not recorded"
+)
+
+// healingSurfaceIDs returns the ids of hardensurfaces.List(), the only
+// values an applied[].surface may take.
+func healingSurfaceIDs() []string {
+	surfaces := hardensurfaces.List()
+	ids := make([]string, 0, len(surfaces))
+	for _, s := range surfaces {
+		ids = append(ids, s.ID)
+	}
+	return ids
+}
+
+// healingRequiredString reads a required string field out of d. A missing,
+// null or empty value and a wrong-typed value are both rejected, and the
+// error names the field.
+func healingRequiredString(d map[string]any, field, kind string) (string, error) {
+	v, ok := d[field]
+	if !ok || v == nil {
+		return "", &mcpserver.DomainError{
+			Msg: fmt.Sprintf("healing_record: detail.%s is required for kind %q", field, kind),
+			Suggestion: fmt.Sprintf("Pass detail.%s as a non-empty string — kind %q needs it — then retry ship_state healing_record.",
+				field, kind),
+		}
+	}
+	s, isStr := v.(string)
+	if !isStr || strings.TrimSpace(s) == "" {
+		return "", &mcpserver.DomainError{
+			Msg: fmt.Sprintf("healing_record: detail.%s must be a non-empty string, got %T %v", field, v, v),
+			Suggestion: fmt.Sprintf("Pass detail.%s as a non-empty JSON string — kind %q needs it — then retry ship_state healing_record.",
+				field, kind),
+		}
+	}
+	return s, nil
+}
+
+// healingNonNegInt reads a required non-negative integer field out of d.
+// JSON numbers arrive as float64, so a fractional value is rejected here
+// rather than truncated the way detailIntPtr would. A bare int is accepted
+// for in-process callers.
+func healingNonNegInt(d map[string]any, field, kind string) (int, error) {
+	v, ok := d[field]
+	if !ok || v == nil {
+		return 0, &mcpserver.DomainError{
+			Msg: fmt.Sprintf("healing_record: detail.%s is required for kind %q", field, kind),
+			Suggestion: fmt.Sprintf("Pass detail.%s as a non-negative JSON integer — kind %q needs it — then retry ship_state healing_record.",
+				field, kind),
+		}
+	}
+	n, isInt := healingInt(v)
+	if !isInt || n < 0 {
+		return 0, &mcpserver.DomainError{
+			Msg: fmt.Sprintf("healing_record: detail.%s must be a non-negative integer, got %T %v", field, v, v),
+			Suggestion: fmt.Sprintf("Pass detail.%s as a whole number of 0 or more (for example 0 or 14), then retry ship_state healing_record.",
+				field),
+		}
+	}
+	return n, nil
+}
+
+// healingInt converts a decoded JSON number (float64) or a Go int to an int.
+// It reports false for any other type and for a float64 with a fraction.
+func healingInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case float64:
+		if n != float64(int(n)) {
+			return 0, false
+		}
+		return int(n), true
+	case int:
+		return n, true
+	}
+	return 0, false
+}
+
+// healingLineKey returns a stored or incoming line value in a form that
+// compares equal across a JSON round trip: nil when absent, else the int.
+func healingLineKey(v any) any {
+	if n, ok := healingInt(v); ok {
+		return n
+	}
+	return nil
+}
+
+// shipStateHealingRecord records one self-healing change in the live ship
+// run's data.healing. Three kinds exist:
+//
+//   - review-total sets data.healing.reviewTotal, replacing any earlier value.
+//   - fixed appends to data.healing.fixed; a record with the same
+//     (origin, file, line, title) is a duplicate and is not written again.
+//   - hardened upserts data.healing.hardened by trigger: a "done" record
+//     replaces a "started" one in place, and every other repeat is a
+//     duplicate.
+//
+// Input is validated before the state lookup, so a bad call fails even when
+// no run is live. With no ship state for the branch, or a state stamped
+// pipelineCompletedAt, the call succeeds and writes nothing, so standalone
+// /harden and /received-review keep working outside /ship.
+func shipStateHealingRecord(root, workDir string, in ShipStateIn, now func() time.Time) (any, error) {
+	kinds := strings.Join(healingKinds, " | ")
+	kind, err := shipDetailString(in.Detail, "healing_record", "kind",
+		"Accepted kinds: "+kinds+".")
+	if err != nil {
+		return nil, err
+	}
+	if kind == "" {
+		return nil, &mcpserver.DomainError{
+			Msg:        "healing_record: detail.kind is required — accepted values are " + kinds,
+			Suggestion: "Pass detail.kind as one of " + kinds + " with that kind's fields, then retry ship_state healing_record.",
+		}
+	}
+	if !slices.Contains(healingKinds, kind) {
+		return nil, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("healing_record: detail.kind %q is not a recognised healing kind — accepted values are %s", kind, kinds),
+			Suggestion: "Pass detail.kind as one of " + kinds + " with that kind's fields, then retry ship_state healing_record.",
+		}
+	}
+
+	timestamp := now().UTC().Format(time.RFC3339)
+	var record map[string]any
+	switch kind {
+	case "review-total":
+		record, err = healingReviewTotal(in.Detail, timestamp)
+	case "fixed":
+		record, err = healingFixed(in.Detail, timestamp)
+	case "hardened":
+		record, err = healingHardened(in.Detail, timestamp)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	st, err := shipResolveAndFind(detailStr(in.Detail, "branch"), workDir, root)
+	if errors.Is(err, errNoShipState) {
+		return healingNarration(kind, healingNarrNoLiveRun), nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if completedAt, _ := st.Data["pipelineCompletedAt"].(string); completedAt != "" {
+		return healingNarration(kind, healingNarrNoLiveRun), nil
+	}
+
+	healing, _ := st.Data["healing"].(map[string]any)
+	if healing == nil {
+		healing = map[string]any{}
+	}
+	narration := healingNarrRecorded
+	switch kind {
+	case "review-total":
+		healing["reviewTotal"] = record
+	case "fixed":
+		fixed, _ := healing["fixed"].([]any)
+		if healingHasFixed(fixed, record) {
+			return healingNarration(kind, healingNarrDuplicate), nil
+		}
+		healing["fixed"] = append(fixed, record)
+	case "hardened":
+		hardened, _ := healing["hardened"].([]any)
+		var changed bool
+		hardened, narration, changed = healingUpsertHardened(hardened, record)
+		if !changed {
+			return healingNarration(kind, narration), nil
+		}
+		healing["hardened"] = hardened
+	}
+	st.Data["healing"] = healing
+	if err := state.Write(st); err != nil {
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("write ship state to %s: %s", st.Path, err.Error()),
+			Suggestion: "Check write permission on the ship state file path above and free disk space on the project root, then retry ship_state healing_record.",
+			Cause:      err,
+		}
+	}
+	return healingNarration(kind, narration), nil
+}
+
+// healingNarration builds the narrated response for a healing_record call.
+func healingNarration(kind, narration string) ShipStepNarrationOut {
+	return ShipStepNarrationOut{
+		Narration: pipeline.Narration{
+			Summary: fmt.Sprintf("healing_record %s: %s", kind, narration),
+		},
+	}
+}
+
+// healingReviewTotal validates a review-total record and returns it as it
+// is persisted.
+func healingReviewTotal(d map[string]any, timestamp string) (map[string]any, error) {
+	total, err := healingNonNegInt(d, "total", "review-total")
+	if err != nil {
+		return nil, err
+	}
+	dims, err := healingNonNegInt(d, "dimensions", "review-total")
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"total": total, "dimensions": dims, "recordedAt": timestamp}, nil
+}
+
+// healingFixed validates a fixed record and returns it as it is persisted.
+// severity is lowercased, as defer does.
+func healingFixed(d map[string]any, timestamp string) (map[string]any, error) {
+	origin, err := healingRequiredString(d, "origin", "fixed")
+	if err != nil {
+		return nil, err
+	}
+	origins := strings.Join(healingOrigins, " | ")
+	if !slices.Contains(healingOrigins, origin) {
+		return nil, &mcpserver.DomainError{
+			Msg: fmt.Sprintf("healing_record: detail.origin %q is not a recognised finding origin — accepted values are %s",
+				origin, origins),
+			Suggestion: "Pass detail.origin as one of " + origins +
+				" (local-review for a finding from the local review, pr-comment for one from a PR comment), then retry ship_state healing_record.",
+		}
+	}
+	rawSeverity, err := healingRequiredString(d, "severity", "fixed")
+	if err != nil {
+		return nil, err
+	}
+	severity := strings.ToLower(strings.TrimSpace(rawSeverity))
+	severities := strings.Join(dimensions.ValidSeverities, " | ")
+	if !slices.Contains(dimensions.ValidSeverities, severity) {
+		return nil, &mcpserver.DomainError{
+			Msg: fmt.Sprintf("healing_record: detail.severity %q is not a recognised review severity — accepted values are %s",
+				rawSeverity, severities),
+			Suggestion: "Pass detail.severity as one of " + severities +
+				" (case-insensitive — the lowercase form is what gets recorded), then retry ship_state healing_record.",
+		}
+	}
+	file, err := healingRequiredString(d, "file", "fixed")
+	if err != nil {
+		return nil, err
+	}
+	title, err := healingRequiredString(d, "title", "fixed")
+	if err != nil {
+		return nil, err
+	}
+	var line any
+	if v, ok := d["line"]; ok && v != nil {
+		n, isInt := healingInt(v)
+		if !isInt {
+			return nil, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("healing_record: detail.line must be an integer, got %T %v", v, v),
+				Suggestion: "Pass detail.line as a JSON integer naming the line of the finding, or omit it entirely, then retry ship_state healing_record.",
+			}
+		}
+		line = n
+	}
+	return map[string]any{
+		"origin":     origin,
+		"severity":   severity,
+		"file":       file,
+		"line":       line,
+		"title":      title,
+		"recordedAt": timestamp,
+	}, nil
+}
+
+// healingHardened validates a hardened record and returns it as it is
+// persisted. An empty applied list is valid: harden ran and changed nothing.
+func healingHardened(d map[string]any, timestamp string) (map[string]any, error) {
+	phase, err := healingRequiredString(d, "phase", "hardened")
+	if err != nil {
+		return nil, err
+	}
+	phases := strings.Join(healingPhases, " | ")
+	if !slices.Contains(healingPhases, phase) {
+		return nil, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("healing_record: detail.phase %q is not a recognised harden phase — accepted values are %s", phase, phases),
+			Suggestion: "Pass detail.phase as one of " + phases + " (started before harden writes, done after), then retry ship_state healing_record.",
+		}
+	}
+	trigger, err := healingRequiredString(d, "trigger", "hardened")
+	if err != nil {
+		return nil, err
+	}
+	classification, err := healingRequiredString(d, "classification", "hardened")
+	if err != nil {
+		return nil, err
+	}
+	rawApplied, ok := d["applied"]
+	if !ok || rawApplied == nil {
+		return nil, &mcpserver.DomainError{
+			Msg:        `healing_record: detail.applied is required for kind "hardened"`,
+			Suggestion: "Pass detail.applied as a JSON array of {surface, action, targetFile} objects (an empty array when harden applied nothing), then retry ship_state healing_record.",
+		}
+	}
+	items, isList := rawApplied.([]any)
+	if !isList {
+		return nil, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("healing_record: detail.applied must be an array, got %T", rawApplied),
+			Suggestion: "Pass detail.applied as a JSON array of {surface, action, targetFile} objects (an empty array when harden applied nothing), then retry ship_state healing_record.",
+		}
+	}
+	surfaceIDs := healingSurfaceIDs()
+	surfaces := strings.Join(surfaceIDs, " | ")
+	applied := make([]any, 0, len(items))
+	for i, item := range items {
+		m, isObj := item.(map[string]any)
+		if !isObj {
+			return nil, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("healing_record: detail.applied[%d] must be an object, got %T", i, item),
+				Suggestion: "Pass every detail.applied entry as a {surface, action, targetFile} object, then retry ship_state healing_record.",
+			}
+		}
+		entry := map[string]any{}
+		for _, field := range []string{"surface", "action", "targetFile"} {
+			s, isStr := m[field].(string)
+			if !isStr || strings.TrimSpace(s) == "" {
+				return nil, &mcpserver.DomainError{
+					Msg: fmt.Sprintf("healing_record: detail.applied[%d].%s is required and must be a non-empty string", i, field),
+					Suggestion: fmt.Sprintf("Set detail.applied[%d].%s to a non-empty string — every applied entry needs surface, action and targetFile — then retry ship_state healing_record.",
+						i, field),
+				}
+			}
+			entry[field] = s
+		}
+		if !slices.Contains(surfaceIDs, entry["surface"].(string)) {
+			return nil, &mcpserver.DomainError{
+				Msg: fmt.Sprintf("healing_record: detail.applied[%d].surface %q is not a harden surface id — accepted values are %s",
+					i, entry["surface"], surfaces),
+				Suggestion: "Set detail.applied[].surface to one of " + surfaces + ", then retry ship_state healing_record.",
+			}
+		}
+		applied = append(applied, entry)
+	}
+	skipped, err := healingNonNegInt(d, "skipped", "hardened")
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"phase":          phase,
+		"trigger":        trigger,
+		"classification": classification,
+		"applied":        applied,
+		"skipped":        skipped,
+		"recordedAt":     timestamp,
+	}, nil
+}
+
+// healingHasFixed reports whether fixed already holds a record with the same
+// (origin, file, line, title) as rec. An absent line and a stored null line
+// compare equal.
+func healingHasFixed(fixed []any, rec map[string]any) bool {
+	for _, f := range fixed {
+		m, ok := f.(map[string]any)
+		if !ok {
+			continue
+		}
+		if m["origin"] == rec["origin"] && m["file"] == rec["file"] && m["title"] == rec["title"] &&
+			healingLineKey(m["line"]) == healingLineKey(rec["line"]) {
+			return true
+		}
+	}
+	return false
+}
+
+// healingUpsertHardened applies rec to hardened by trigger and returns the
+// new list, the narration and whether anything changed:
+//
+//	stored     incoming  result
+//	none       any       appended          recorded
+//	started    done      replaced in place replaced started record
+//	started    started   unchanged         already recorded — no change
+//	done       any       unchanged         already recorded — no change
+func healingUpsertHardened(hardened []any, rec map[string]any) ([]any, string, bool) {
+	for i, h := range hardened {
+		m, ok := h.(map[string]any)
+		if !ok || m["trigger"] != rec["trigger"] {
+			continue
+		}
+		if m["phase"] == "started" && rec["phase"] == "done" {
+			hardened[i] = rec
+			return hardened, healingNarrReplaced, true
+		}
+		return hardened, healingNarrDuplicate, false
+	}
+	return append(hardened, rec), healingNarrRecorded, true
 }
 
 // ---------------------------------------------------------------------------
@@ -2244,7 +2649,8 @@ Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide
 - fail: Fail a step. Requires step. Returns narration. Optional: detail.branch, detail.error (recorded as issue), detail.detail.
 - decide: Record a decision. Requires step. Returns narration. Optional: detail.branch, detail.text, detail.detail.
 - defer: Record a deferred finding. Writes it both to the run-scoped ship state file and durably to .sdlc-v2/history/deferred.json (source "`+history.SourceReviewBelowThreshold+`"), so it survives state-file GC — no follow-up deferred_add is needed. Returns narration naming the generated deferred id (review-deferred-<timestamp>-<N>) and the file it was written to; a failed deferred.json write does not fail the call but is named in the summary, with the deferred_add call that recovers it. Requires detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`, case-insensitive; the lowercase form is recorded), detail.file, detail.title. Optional: detail.branch, detail.line (integer), detail.detail, detail.description (the deferring agent's own reasoning; defaults to detail.title), detail.reason (one of `+strings.Join(history.DeferredReasons(), " | ")+`; an omitted reason records `+history.ReasonBelowThreshold+`).
-- read: Return the full ship state. Optional: detail.branch. When the pipeline is in flight (some step still blocks proceed and at least one step has been started), the state also carries a "resumeBriefing" (resumable, lastStep, lastStepStatus, sideEffects, summary, display, timing{stepSeconds,pipelineSeconds,idleSeconds,human}, next). A step left "failed" is still reported resumable:true, never as an error.
+- healing_record: Record one self-healing change in the live ship run's data.healing. Requires detail.kind: "review-total" (Requires detail.total, detail.dimensions — non-negative integers; replaces the previous value) | "fixed" (Requires detail.origin "local-review"|"pr-comment", detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`), detail.file, detail.title; Optional detail.line) | "hardened" (Requires detail.phase "started"|"done", detail.trigger, detail.classification, detail.applied [{surface (one of `+strings.Join(healingSurfaceIDs(), " | ")+`), action, targetFile}], detail.skipped (non-negative integer); a "done" record replaces a "started" record with the same trigger). Optional: detail.branch. Duplicates are ignored (narration "already recorded — no change"). With no live ship run (no state, or pipelineCompletedAt set) it returns ok and records nothing. Returns narration: summary only.
+- read: Return the full ship state. Optional: detail.branch. The response also carries "reportData": report-ready aggregates, including healing (data.healing verbatim, {} when absent) and reviewLedger {total, fixed (local-review only), deferredByReason, unaccounted = total - fixed - deferred, never clamped} — reviewLedger is null, with reviewLedgerNote, when no review total was recorded. When the pipeline is in flight (some step still blocks proceed and at least one step has been started), the state also carries a "resumeBriefing" (resumable, lastStep, lastStepStatus, sideEffects, summary, display, timing{stepSeconds,pipelineSeconds,idleSeconds,human}, next). A step left "failed" is still reported resumable:true, never as an error.
 - cleanup: Stamp a branch's ship state terminal (pipelineStatus:"completed", pipelineCompletedAt) instead of deleting it, after validating every step is in a terminal state — the state survives for later reads until GC's TTL prunes it. Optional: detail.branch.
 - cleanup-pipeline: Same stamp-instead-of-delete for the current branch's ship state (force/no-state-file skip the contract check), followed by an unconditional GC + per-run-directory sweep. Optional: detail.branch, detail.force, detail.ttlDays.
 - gc: Garbage-collect stale state files. Optional: detail.ttlDays, detail.dryRun.
