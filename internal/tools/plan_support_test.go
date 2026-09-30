@@ -182,6 +182,35 @@ func TestPlanMergeResults_LaneFailBlocking(t *testing.T) {
 	}
 }
 
+// mergeCall runs merge_results through planSupportCore, the dispatcher the
+// registered plan_support handler calls.
+func mergeCall(t *testing.T, in PlanSupportIn) PlanSupportOut {
+	t.Helper()
+	in.Action = "merge_results"
+	out, err := planSupportCore("", "", in)
+	if err != nil {
+		t.Fatalf("merge_results: %v", err)
+	}
+	return out
+}
+
+// TestPlanMergeResults_FailedLaneNoGates verifies a failed lane with empty
+// gateIds is a lane failure. "Every gate is G17" is vacuously true for an
+// empty list, so such a lane must not be treated as G17-only.
+func TestPlanMergeResults_FailedLaneNoGates(t *testing.T) {
+	out := mergeCall(t, PlanSupportIn{
+		LaneResults: []LaneResult{{Name: "broken-lane", Status: "fail"}},
+	})
+	if len(out.LaneFailures) != 1 || out.LaneFailures[0] != "broken-lane" {
+		t.Errorf("LaneFailures = %v, want [broken-lane]", out.LaneFailures)
+	}
+	for _, iss := range out.AllIssues {
+		if strings.Contains(iss.Summary, "covers only G17") {
+			t.Errorf("AllIssues has G17-only advisory %+v for a lane with no gates", iss)
+		}
+	}
+}
+
 // TestPlanMergeResults_IssueDedup verifies AllIssues dedups by
 // (gateId, lowercased-trimmed summary) — including across sources: two lanes
 // and one lens each report the same (gateId, summary) pair with differing

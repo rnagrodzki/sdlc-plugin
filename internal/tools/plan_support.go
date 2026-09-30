@@ -338,12 +338,13 @@ func mergeResults(in PlanSupportIn) (PlanSupportOut, error) {
 	// G17 lane failure is always advisory: a failed lane whose only gate
 	// coverage is G17 does not reject the merge. Remove G17-only failures
 	// from the laneFailures list and synthesize advisory issues for them.
+	// A lane with no gateIds covers no gate at all, so it is not G17-only.
 	var filteredLaneFailures []string
 	for _, lane := range in.LaneResults {
 		if lane.Status != "fail" {
 			continue
 		}
-		isG17Only := true
+		isG17Only := len(lane.GateIDs) > 0
 		for _, gid := range lane.GateIDs {
 			if gid != "G17" {
 				isG17Only = false

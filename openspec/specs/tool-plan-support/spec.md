@@ -83,7 +83,7 @@ The `merge_results` action SHALL require at least one non-empty list among `lane
 The `merge_results` action SHALL collect issues from lanes first, then lenses, set each issue's `source` to its lane or lens name, and keep only the first issue per (`gateId`, lower-cased trimmed `summary`) pair.
 
 - Lens `recommendations` are merged into `recommendations`: trimmed, blanks dropped, duplicates dropped.
-- `laneFailures` lists every lane with `status: fail`, except G17-only lanes (see G17 requirement).
+- `laneFailures` lists every lane with `status: fail`, except G17-only lanes (see G17 requirement). A failed lane with empty `gateIds` is always listed.
 
 #### Scenario: Duplicate issues across lanes and lenses
 - **WHEN** lane `lane-a`, lane `lane-b`, and lens `lens-a` each report gate `G5` with summary `Missing acceptance criteria for G5` in different letter case and spacing
@@ -110,7 +110,7 @@ The `merge_results` action SHALL report every `expectedGates` entry that no lane
 - **THEN** `coverageGaps` is empty
 
 ### Requirement: merge_results G17 advisory gate
-The `merge_results` action SHALL treat gate `G17` as advisory: a failed lane whose `gateIds` contain no gate other than `G17` does not count as a lane failure, and with `isRedispatch: true` every lane issue for `G17` is downgraded to `advisory`.
+The `merge_results` action SHALL treat gate `G17` as advisory: a failed lane whose `gateIds` is non-empty and holds only `G17` does not count as a lane failure, and with `isRedispatch: true` every lane issue for `G17` is downgraded to `advisory`.
 
 - A G17-only failed lane adds an advisory issue: `Lane "<name>" failed but covers only G17 (advisory gate)`, `gateId: G17`, `source: <lane name>`.
 
@@ -118,6 +118,11 @@ The `merge_results` action SHALL treat gate `G17` as advisory: a failed lane who
 - **WHEN** lane `g17-lane` has `status: fail` and `gateIds: ["G17"]`
 - **THEN** `laneFailures` is empty
 - **AND** `mergedStatus` is `Approved`
+
+#### Scenario: Failed lane with no gates
+- **WHEN** lane `broken-lane` has `status: fail` and empty `gateIds`
+- **THEN** `laneFailures` is `["broken-lane"]`
+- **AND** `allIssues` has no `covers only G17` advisory issue
 
 #### Scenario: Redispatch downgrades G17 findings
 - **WHEN** `isRedispatch` is `true` and a passing lane reports a `blocking` issue for `G17`
