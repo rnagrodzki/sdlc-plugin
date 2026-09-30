@@ -103,3 +103,11 @@ MCP tool handlers must not silently treat operation errors as absent or default:
 - Every error-returning operation in a handler has a caller who needs to know if it failed. Swallowing the error removes the caller's ability to recover or inform the user.
 - Three-outcome load contracts must stay three outcomes: when a callee returns found / not-found / error (e.g. `(nil, nil)` for not-found and `(nil, err)` for a read or decode failure), the caller must keep all three distinct. Never map the error outcome to the same "not found" response, because the caller then gets the wrong recovery suggestion. Example: `evidenceLoadRun` discarded the error from `state.LoadRun` and reported a corrupt or permission-denied run file as "plan run not found".
 - Decode failures are not benign absence: never map a `json.Unmarshal`, `json.Marshal`, or TOML/YAML parse error to nil or a zero value as if the data were never written. Propagate it as a structured error with an actionable Suggestion. Example: `evidenceCheckpoint` returned nil on a decode failure, so a corrupt checkpoint looked the same as "never checkpointed".
+
+## Error-message accuracy in InfraError Msg
+
+When wrapping a shell command failure into an `InfraError`, the `Msg` field must name only the subcommand and flags that were actually invoked on that code path. Do not hardcode a message listing all possible flags (e.g., `'gh pr edit --add-label/--remove-label'`) when the conditional branch only appended one of them. Derive the message from the args slice actually sent: if `--remove-label` was not appended on this branch, omit it from Msg. This ensures the error message accurately describes the command that was attempted.
+
+## Uniform error enrichment across gh call sites
+
+When a tool's description promises uniform enrichment for a class of `gh` failures (e.g., "account-switch guidance for any gh permission error"), verify that every `gh` invocation site in the handler that can produce that failure calls the same enrichment helper. Grep the handler for each `gh` call and trace its error path — if one site calls `prEnrichPermissionError` and another does not, a code branch is not delivering the promised behavior. When adding a new `gh` call site, trace the failure to the enrichment helper used elsewhere and use the same one consistently.

@@ -32,10 +32,12 @@ import (
 // ---------------------------------------------------------------------------
 
 // mockAddLabelExec returns an execRun stub that succeeds only for the exact
-// `gh pr edit --add-label <wantLabel>` invocation prReleaseAddLabelWith
-// issues, and fails (surfacing as an InfraError) for anything else — the
-// mock-based equivalent of the old stubGHDispatch fixtures' narrow
-// prefix-matched rules ("wrong label = no match = exit 1").
+// `gh pr edit --add-label <wantLabel>` invocation prReleaseApplyLabelWith
+// issues when there are no stale labels to remove (the create path, and any
+// existing-PR case with no other release:* labels present), and fails
+// (surfacing as an InfraError) for anything else — the mock-based equivalent
+// of the old stubGHDispatch fixtures' narrow prefix-matched rules ("wrong
+// label = no match = exit 1").
 func mockAddLabelExec(wantLabel string) func(name string, args []string, opts execx.Options) (string, error) {
 	return func(name string, args []string, opts execx.Options) (string, error) {
 		if name == "gh" && len(args) == 4 && args[0] == "pr" && args[1] == "edit" && args[2] == "--add-label" && args[3] == wantLabel {
@@ -54,8 +56,8 @@ func constVersionDetect(ver string) func(root, path, fileType string) (*version.
 }
 
 // releaseTestRuntime builds a prRuntime covering every field
-// prReleaseComputeIntentWith/ensureReleaseLabels/prApplyCoreWith's release
-// path can reach, with deterministic no-op defaults: no config overrides
+// ensureReleaseLabels/prApplyCoreWith's release path can reach, with
+// deterministic no-op defaults: no config overrides
 // (tagPrefix defaults to "v"), fileVersion as given, no existing tags, no
 // tag collision, all release labels already present, and no existing PR.
 // Callers override individual fields per scenario (tags, config, exec,
@@ -67,7 +69,6 @@ func releaseTestRuntime(fileVersion string) prRuntime {
 		gitFetchTags:     func(dir string) error { return nil },
 		gitTagList:       func(dir string) ([]string, error) { return nil, nil },
 		gitAllSemverTags: func(dir string) ([]string, error) { return nil, nil },
-		gitTagExists:     func(dir, name string) (bool, error) { return false, nil },
 		ghLabelList:      func(dir string) ([]string, error) { return nil, nil },
 		ghLabelCreate:    func(dir, name, color, desc string) error { return nil },
 		ghPRForBranch:    func(dir string) ghx.PRMetadata { return ghx.PRMetadata{Exists: false} },
@@ -663,7 +664,6 @@ func TestPrPrepare_IncludesVersionDiagnostics(t *testing.T) {
 		gitFetchTags:     func(dir string) error { return nil },
 		gitTagList:       func(dir string) ([]string, error) { return []string{"v1.2.0"}, nil },
 		gitAllSemverTags: func(dir string) ([]string, error) { return []string{"v1.3.0-rc1", "v1.2.0"}, nil },
-		gitTagExists:     func(dir, name string) (bool, error) { return false, nil },
 		gitDefaultBranch: func(dir string) (string, error) { return "main", nil },
 		gitTagsAtHead:    func(dir string) ([]string, error) { return nil, nil },
 	}
@@ -863,7 +863,6 @@ func TestPrPrepare_VersionDetectionFails_WarningNotError(t *testing.T) {
 		gitFetchTags:     func(dir string) error { return nil },
 		gitTagList:       func(dir string) ([]string, error) { return nil, nil },
 		gitAllSemverTags: func(dir string) ([]string, error) { return nil, nil },
-		gitTagExists:     func(dir, name string) (bool, error) { return false, nil },
 		gitDefaultBranch: func(dir string) (string, error) { return "main", nil },
 		gitTagsAtHead:    func(dir string) ([]string, error) { return nil, nil },
 	}
@@ -1442,11 +1441,40 @@ func TestPrApply_NonPermissionError_PassesThroughUnenriched(t *testing.T) {
 	if !errors.As(err, &ie) {
 		t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
 	}
-	if ie.Suggestion != "" {
-		t.Errorf("expected no Suggestion for a non-permission error, got %q", ie.Suggestion)
+	if ie.Suggestion != prGHRetrySuggestion {
+		t.Errorf("Suggestion: got %q, want the generic retry hint (no account-switch guidance)", ie.Suggestion)
 	}
 	if !strings.Contains(ie.Msg, "connection reset by peer") {
 		t.Errorf("Msg: got %q, want original error text preserved", ie.Msg)
+	}
+}
+
+func TestPrApply_NonPermissionError_FromEdit_GenericSuggestion(t *testing.T) {
+	rt := prRuntime{
+		ghPRForBranch: func(dir string) ghx.PRMetadata {
+			return ghx.PRMetadata{Exists: true, Number: 9, URL: "https://github.com/acme/widgets/pull/9"}
+		},
+		ghPREdit: func(dir string, num int, title, body string) (string, error) {
+			return "", errors.New("connection reset by peer")
+		},
+		// execRun/ghGetAccounts/ghAuthProbe left nil on purpose — see
+		// TestPrApply_NonPermissionError_PassesThroughUnenriched.
+		gitLogSinceTag:     func(dir string) ([]string, error) { return nil, nil },
+		gitHasUpstream:     func(dir string) (bool, error) { return true, nil },
+		gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
+		gitPushSetUpstream: func(dir, remote string) error { return nil },
+	}
+
+	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "T", Body: "B", SkipReleaseCheck: true}, rt)
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) {
+		t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
+	}
+	if !strings.HasPrefix(ie.Msg, "gh pr edit: ") {
+		t.Errorf("Msg: got %q, want it to start with gh pr edit", ie.Msg)
+	}
+	if ie.Suggestion != prGHRetrySuggestion {
+		t.Errorf("Suggestion: got %q, want the generic retry hint", ie.Suggestion)
 	}
 }
 
@@ -1473,8 +1501,8 @@ func TestPrApply_PermissionError_NoOriginRemote_FallsBackToGeneric(t *testing.T)
 	if !errors.As(err, &ie) {
 		t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
 	}
-	if ie.Suggestion != "" {
-		t.Errorf("expected no Suggestion when enrichment cannot resolve a remote, got %q", ie.Suggestion)
+	if ie.Suggestion != prGHRetrySuggestion {
+		t.Errorf("Suggestion: got %q, want the generic retry hint when enrichment cannot resolve a remote", ie.Suggestion)
 	}
 }
 
@@ -1504,7 +1532,6 @@ func fakeReleasePRRuntime() prRuntime {
 		gitFetchTags:     func(dir string) error { return nil },
 		gitTagList:       func(dir string) ([]string, error) { return nil, nil },
 		gitAllSemverTags: func(dir string) ([]string, error) { return nil, nil },
-		gitTagExists:     func(dir, name string) (bool, error) { return false, nil },
 		ghLabelList:      func(dir string) ([]string, error) { return nil, nil },
 		ghLabelCreate:    func(dir, name, color, desc string) error { return nil },
 		ghPRForBranch:    func(dir string) ghx.PRMetadata { return ghx.PRMetadata{Exists: false} },
@@ -1752,9 +1779,6 @@ func TestPRApply_WithRelease_NotesInBody(t *testing.T) {
 	if out.ReleaseIntent == nil || !out.ReleaseIntent.NotesInBody {
 		t.Fatal("expected NotesInBody=true")
 	}
-	if out.ReleaseIntent.ComputedVersion != "2.0.1" {
-		t.Errorf("ComputedVersion: got %q, want %q", out.ReleaseIntent.ComputedVersion, "2.0.1")
-	}
 	// Verify release markers are present in the body passed to gh pr create.
 	if !strings.Contains(capturedBody, "<!-- release-notes-start -->") {
 		t.Errorf("body missing release-notes-start marker")
@@ -1765,35 +1789,35 @@ func TestPRApply_WithRelease_NotesInBody(t *testing.T) {
 	if !strings.Contains(capturedBody, "Fixed the bug in auth module.") {
 		t.Errorf("body missing release notes text")
 	}
-	if !strings.Contains(capturedBody, "## [2.0.1]") {
-		t.Errorf("body missing version header, got: %s", capturedBody)
+	if !strings.Contains(capturedBody, "## [Unreleased]") {
+		t.Errorf("body missing version-agnostic header, got: %s", capturedBody)
+	}
+	if strings.Contains(capturedBody, "2.0.1") {
+		t.Errorf("body must not pin a version, got: %s", capturedBody)
 	}
 }
 
-func TestPRApply_WithRelease_VersionComputed(t *testing.T) {
-	rt := releaseTestRuntime("1.5.3")
-	// Tag higher than the file version — bump base should be the tag, but
-	// only because tag.enabled is true; that's what makes max() consult it.
-	// versionFile.enabled must also be true, so PreviousVersion still comes
-	// from the file (not from the tag via isTagMode).
-	rt.configRead = func(root string) (*config.Config, error) {
-		return &config.Config{Version: &config.VersionSection{
-			Tag:         config.VersionTagConfig{Enabled: true},
-			VersionFile: config.VersionFileConfig{Enabled: true},
-		}}, nil
-	}
-	rt.gitTagList = func(dir string) ([]string, error) { return []string{"v1.6.0"}, nil }
+// TestPRApply_WithRelease_NoVersionInBody proves pr_apply no longer computes
+// or pins a version number in the PR body even when tags exist that a
+// version-computing implementation would have bumped from/collided with.
+func TestPRApply_WithRelease_NoVersionInBody(t *testing.T) {
+	var capturedBody string
+	rt := releaseTestRuntime("1.4.9")
+	rt.gitTagList = func(dir string) ([]string, error) { return []string{"v1.4.9"}, nil }
+	rt.gitAllSemverTags = func(dir string) ([]string, error) { return []string{"v1.4.10-rc1", "v1.4.9"}, nil }
 	rt.ghPRCreate = func(dir, title, body string) (string, error) {
+		capturedBody = body
 		return "https://github.com/o/r/pull/12", nil
 	}
-	rt.execRun = mockAddLabelExec("release:major")
+	rt.execRun = mockAddLabelExec("release:patch-rc")
 
 	out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
-		Title:         "Version compute test",
-		Body:          "body",
-		ReleaseLevel:  "major",
-		ReleaseNotes:  "Version compute release notes.",
-		ReleaseSource: "user",
+		Title:             "No version in body test",
+		Body:              "body",
+		ReleaseLevel:      "patch",
+		ReleaseNotes:      "No version in body release notes.",
+		ReleasePreRelease: "rc",
+		ReleaseSource:     "user",
 	}, rt)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -1801,22 +1825,22 @@ func TestPRApply_WithRelease_VersionComputed(t *testing.T) {
 	if out.ReleaseIntent == nil {
 		t.Fatal("expected ReleaseIntent")
 	}
-	// max(file=1.5.3, tag=1.6.0) = 1.6.0, major bump = 2.0.0
-	if out.ReleaseIntent.ComputedVersion != "2.0.0" {
-		t.Errorf("ComputedVersion: got %q, want %q", out.ReleaseIntent.ComputedVersion, "2.0.0")
+	if !strings.Contains(capturedBody, "## [Unreleased]") {
+		t.Errorf("body missing version-agnostic header, got: %s", capturedBody)
 	}
-	if out.ReleaseIntent.PreviousVersion != "1.5.3" {
-		t.Errorf("PreviousVersion: got %q, want %q", out.ReleaseIntent.PreviousVersion, "1.5.3")
+	if strings.Contains(capturedBody, "1.4.10") {
+		t.Errorf("body must not pin a version, got: %s", capturedBody)
 	}
-	if out.ReleaseIntent.TagName != "v2.0.0" {
-		t.Errorf("TagName: got %q, want %q", out.ReleaseIntent.TagName, "v2.0.0")
+	if strings.Contains(capturedBody, "-rc2") {
+		t.Errorf("body must not pin an RC number, got: %s", capturedBody)
 	}
 }
 
-func TestPRApply_WithRelease_CollisionError(t *testing.T) {
-	// Custom tagPrefix ("rel-") — gitTagList (prefix-blind) returns nothing,
-	// so bumpBase = fileVersion, and gitTagExists reports a collision on the
-	// exact tag the minor bump would produce.
+// TestPRApply_WithRelease_ExistingTagDoesNotBlock proves an existing tag for
+// the old would-be computed version no longer blocks pr_apply: prReleaseIntent
+// is pure and never reads tags. Version-collision detection now happens in CI
+// (verify-release-intent.cjs) at merge time, not here.
+func TestPRApply_WithRelease_ExistingTagDoesNotBlock(t *testing.T) {
 	rt := releaseTestRuntime("1.2.0")
 	rt.configRead = func(root string) (*config.Config, error) {
 		return &config.Config{Version: &config.VersionSection{
@@ -1824,143 +1848,86 @@ func TestPRApply_WithRelease_CollisionError(t *testing.T) {
 			VersionFile: config.VersionFileConfig{Enabled: true},
 		}}, nil
 	}
-	rt.gitTagExists = func(dir, name string) (bool, error) { return name == "rel-1.3.0", nil }
+	rt.gitTagList = func(dir string) ([]string, error) { return []string{"rel-1.3.0"}, nil }
+	rt.ghPRCreate = func(dir, title, body string) (string, error) {
+		return "https://github.com/o/r/pull/13", nil
+	}
+	rt.execRun = mockAddLabelExec("release:minor")
 
 	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
-		Title:         "Collision test",
+		Title:         "Existing tag test",
 		Body:          "body",
 		ReleaseLevel:  "minor",
-		ReleaseNotes:  "Collision test release notes.",
+		ReleaseNotes:  "Existing tag test release notes.",
 		ReleaseSource: "user",
 	}, rt)
-	if err == nil {
-		t.Fatal("expected collision error")
-	}
-	if !strings.Contains(err.Error(), "already exists") {
-		t.Errorf("error should mention collision, got: %v", err)
+	if err != nil {
+		t.Fatalf("expected no error despite an existing tag, got: %v", err)
 	}
 }
 
-func TestPRReleaseComputeIntent_TagMode(t *testing.T) {
-	t.Run("derives version from highest semver tag", func(t *testing.T) {
-		rt := releaseTestRuntime("")
-		rt.configRead = func(root string) (*config.Config, error) {
-			return &config.Config{Version: &config.VersionSection{
-				Tag: config.VersionTagConfig{Enabled: true},
-			}}, nil
-		}
-		rt.versionDetect = func(root, path, fileType string) (*version.VersionFile, error) {
-			t.Fatal("versionDetect must not be called in tag mode")
-			return nil, nil
-		}
-		rt.gitTagList = func(dir string) ([]string, error) { return []string{"v1.4.0", "v1.2.0"}, nil }
+// TestPRApply_WithRelease_VersionDetectErrorDoesNotBlock proves a broken or
+// missing version file no longer blocks pr_apply: prReleaseIntent never
+// reads the version file. Version resolution now happens in CI at merge
+// time, not here.
+func TestPRApply_WithRelease_VersionDetectErrorDoesNotBlock(t *testing.T) {
+	rt := releaseTestRuntime("")
+	rt.configRead = func(root string) (*config.Config, error) {
+		return &config.Config{Version: &config.VersionSection{
+			VersionFile: config.VersionFileConfig{Enabled: true, Path: "version.txt", FileType: "text"},
+		}}, nil
+	}
+	rt.versionDetect = func(root, path, fileType string) (*version.VersionFile, error) {
+		return nil, errors.New("version file not found")
+	}
+	rt.ghPRCreate = func(dir, title, body string) (string, error) {
+		return "https://github.com/o/r/pull/14", nil
+	}
+	rt.execRun = mockAddLabelExec("release:patch")
 
-		intent, err := prReleaseComputeIntentWith(rt, "/mock/root", "/mock/work", "minor", "")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if intent.PreviousVersion != "1.4.0" {
-			t.Errorf("PreviousVersion: got %q, want %q", intent.PreviousVersion, "1.4.0")
-		}
-		if intent.ComputedVersion != "1.5.0" {
-			t.Errorf("ComputedVersion: got %q, want %q", intent.ComputedVersion, "1.5.0")
-		}
-		if intent.TagName != "v1.5.0" {
-			t.Errorf("TagName: got %q, want %q", intent.TagName, "v1.5.0")
-		}
-	})
+	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
+		Title:         "Version detect error test",
+		Body:          "body",
+		ReleaseLevel:  "patch",
+		ReleaseNotes:  "Version detect error test release notes.",
+		ReleaseSource: "user",
+	}, rt)
+	if err != nil {
+		t.Fatalf("expected no error despite a version-detect failure, got: %v", err)
+	}
+}
 
-	t.Run("falls back to 0.0.0 when no semver tags exist", func(t *testing.T) {
-		rt := releaseTestRuntime("")
-		rt.configRead = func(root string) (*config.Config, error) {
-			return &config.Config{Version: &config.VersionSection{
-				Tag: config.VersionTagConfig{Enabled: true},
-			}}, nil
-		}
-		rt.versionDetect = func(root, path, fileType string) (*version.VersionFile, error) {
-			t.Fatal("versionDetect must not be called in tag mode")
-			return nil, nil
-		}
-		rt.gitTagList = func(dir string) ([]string, error) { return nil, nil }
-
-		intent, err := prReleaseComputeIntentWith(rt, "/mock/root", "/mock/work", "patch", "")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if intent.PreviousVersion != "0.0.0" {
-			t.Errorf("PreviousVersion: got %q, want %q", intent.PreviousVersion, "0.0.0")
-		}
-		if intent.ComputedVersion != "0.0.1" {
-			t.Errorf("ComputedVersion: got %q, want %q", intent.ComputedVersion, "0.0.1")
-		}
-	})
-
-	t.Run("file mode unchanged: version still derived from version file", func(t *testing.T) {
-		rt := releaseTestRuntime("2.3.1")
-		rt.configRead = func(root string) (*config.Config, error) {
-			return &config.Config{Version: &config.VersionSection{
-				VersionFile: config.VersionFileConfig{Enabled: true},
-			}}, nil
-		}
-		rt.gitTagList = func(dir string) ([]string, error) { return nil, nil }
-
-		intent, err := prReleaseComputeIntentWith(rt, "/mock/root", "/mock/work", "patch", "")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if intent.PreviousVersion != "2.3.1" {
-			t.Errorf("PreviousVersion: got %q, want %q", intent.PreviousVersion, "2.3.1")
-		}
-		if intent.ComputedVersion != "2.3.2" {
-			t.Errorf("ComputedVersion: got %q, want %q", intent.ComputedVersion, "2.3.2")
-		}
-	})
-
-	t.Run("tag.enabled=false: bump base ignores higher tag", func(t *testing.T) {
-		rt := releaseTestRuntime("1.5.3")
-		rt.configRead = func(root string) (*config.Config, error) {
-			return &config.Config{Version: &config.VersionSection{
-				VersionFile: config.VersionFileConfig{Enabled: true},
-				Tag:         config.VersionTagConfig{Enabled: false},
-			}}, nil
-		}
-		// Tag is higher than file version, but tag path disabled: max()
-		// must not consult it. Bump base stays the file version.
-		rt.gitTagList = func(dir string) ([]string, error) { return []string{"v1.6.0"}, nil }
-
-		intent, err := prReleaseComputeIntentWith(rt, "/mock/root", "/mock/work", "minor", "")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if intent.ComputedVersion != "1.6.0" {
-			t.Errorf("ComputedVersion: got %q, want %q (bump base should be file version 1.5.3, not tag 1.6.0)", intent.ComputedVersion, "1.6.0")
-		}
-	})
-
-	t.Run("tag.enabled=true: bump base consults higher tag", func(t *testing.T) {
-		rt := releaseTestRuntime("1.5.3")
-		rt.configRead = func(root string) (*config.Config, error) {
-			return &config.Config{Version: &config.VersionSection{
-				VersionFile: config.VersionFileConfig{Enabled: true},
-				Tag:         config.VersionTagConfig{Enabled: true},
-			}}, nil
-		}
-		// Same inputs as above, tag path enabled this time: max() must
-		// pick the higher tag as the bump base.
-		rt.gitTagList = func(dir string) ([]string, error) { return []string{"v1.6.0"}, nil }
-
-		intent, err := prReleaseComputeIntentWith(rt, "/mock/root", "/mock/work", "minor", "")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if intent.ComputedVersion != "1.7.0" {
-			t.Errorf("ComputedVersion: got %q, want %q (bump base should be tag 1.6.0, not file version 1.5.3)", intent.ComputedVersion, "1.7.0")
-		}
-	})
+// TestPRReleaseIntent covers prReleaseIntent directly: a pure function that
+// builds release intent (level, pre-release, label) with no rt calls.
+func TestPRReleaseIntent(t *testing.T) {
+	cases := []struct {
+		name       string
+		level      string
+		preRelease string
+		wantLabel  string
+	}{
+		{"patch, no pre-release", "patch", "", "release:patch"},
+		{"minor, rc", "minor", "rc", "release:minor-rc"},
+		{"major, no pre-release", "major", "", "release:major"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			intent := prReleaseIntent(tc.level, tc.preRelease)
+			if intent.Level != tc.level {
+				t.Errorf("Level: got %q, want %q", intent.Level, tc.level)
+			}
+			if intent.PreRelease != tc.preRelease {
+				t.Errorf("PreRelease: got %q, want %q", intent.PreRelease, tc.preRelease)
+			}
+			if intent.LabelApplied != tc.wantLabel {
+				t.Errorf("LabelApplied: got %q, want %q", intent.LabelApplied, tc.wantLabel)
+			}
+		})
+	}
 }
 
 func TestPRApply_WithoutRelease_Unchanged(t *testing.T) {
-	// No releaseLevel: intent stays nil, so prReleaseAddLabelWith (and thus
+	// No releaseLevel: intent stays nil, so prReleaseApplyLabelWith (and thus
 	// execRun) must never be invoked — the mock fails the test if it is.
 	rt := prRuntime{
 		ghPRForBranch: func(dir string) ghx.PRMetadata { return ghx.PRMetadata{Exists: false} },
@@ -1992,13 +1959,20 @@ func TestPRApply_WithoutRelease_Unchanged(t *testing.T) {
 	}
 }
 
-func TestPRApply_WithRC_NextRCComputed(t *testing.T) {
+// TestPRApply_WithRC_NoRCNumberPinned proves pr_apply no longer computes or
+// pins an RC number in the PR body, even with existing RC tags present that
+// a version-computing implementation would have scanned to pick the next
+// one. RC-number sequencing now happens in CI at merge time.
+func TestPRApply_WithRC_NoRCNumberPinned(t *testing.T) {
+	var capturedBody string
 	rt := releaseTestRuntime("3.0.0")
-	// Existing RC tags on the bumped base (minor bump of 3.0.0 = 3.1.0).
+	// Existing RC tags on what a bumped base (minor bump of 3.0.0 = 3.1.0)
+	// would have been.
 	rt.gitAllSemverTags = func(dir string) ([]string, error) {
 		return []string{"v3.1.0-rc1", "v3.1.0-rc2"}, nil
 	}
 	rt.ghPRCreate = func(dir, title, body string) (string, error) {
+		capturedBody = body
 		return "https://github.com/o/r/pull/14", nil
 	}
 	rt.execRun = mockAddLabelExec("release:minor-rc")
@@ -2017,12 +1991,14 @@ func TestPRApply_WithRC_NextRCComputed(t *testing.T) {
 	if out.ReleaseIntent == nil {
 		t.Fatal("expected ReleaseIntent")
 	}
-	// Next RC after rc1 and rc2 should be rc3.
-	if out.ReleaseIntent.ComputedVersion != "3.1.0-rc3" {
-		t.Errorf("ComputedVersion: got %q, want %q", out.ReleaseIntent.ComputedVersion, "3.1.0-rc3")
+	if strings.Contains(capturedBody, "3.1.0") {
+		t.Errorf("body must not pin a version, got: %s", capturedBody)
 	}
-	if out.ReleaseIntent.TagName != "v3.1.0-rc3" {
-		t.Errorf("TagName: got %q, want %q", out.ReleaseIntent.TagName, "v3.1.0-rc3")
+	if strings.Contains(capturedBody, "rc3") {
+		t.Errorf("body must not pin an RC number, got: %s", capturedBody)
+	}
+	if out.ReleaseIntent.LabelApplied != "release:minor-rc" {
+		t.Errorf("LabelApplied: got %q, want %q", out.ReleaseIntent.LabelApplied, "release:minor-rc")
 	}
 }
 
@@ -2078,9 +2054,6 @@ func TestPRApply_WithRC_PreReleaseMarker(t *testing.T) {
 	if out.ReleaseIntent.PreRelease != "rc" {
 		t.Errorf("PreRelease: got %q, want %q", out.ReleaseIntent.PreRelease, "rc")
 	}
-	if !strings.Contains(out.ReleaseIntent.ComputedVersion, "-rc") {
-		t.Errorf("ComputedVersion should contain -rc, got %q", out.ReleaseIntent.ComputedVersion)
-	}
 	// Verify release-pre marker is present in the body passed to gh.
 	if !strings.Contains(capturedBody, "<!-- release-pre:rc -->") {
 		t.Errorf("body missing release-pre:rc marker")
@@ -2088,6 +2061,51 @@ func TestPRApply_WithRC_PreReleaseMarker(t *testing.T) {
 	if !strings.Contains(capturedBody, "<!-- release-level:minor -->") {
 		t.Errorf("body missing release-level:minor marker")
 	}
+}
+
+// TestPRApply_Next_MergeTimeVersionHint covers prApplyNext directly: with
+// release intent set, the hint must mention merge-time version resolution
+// so the caller does not report a version number for this PR; with no
+// intent, the hint is unchanged from the pre-existing text.
+func TestPRApply_Next_MergeTimeVersionHint(t *testing.T) {
+	t.Run("no intent: unchanged (created)", func(t *testing.T) {
+		got := prApplyNext(true, nil)
+		want := "PR created. If verify-pipeline is configured, call verify_pipeline_classify next."
+		if got != want {
+			t.Errorf("prApplyNext = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("no intent: unchanged (updated)", func(t *testing.T) {
+		got := prApplyNext(false, nil)
+		want := "PR updated. If verify-pipeline is configured, call verify_pipeline_classify next."
+		if got != want {
+			t.Errorf("prApplyNext = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("intent set: mentions merge time", func(t *testing.T) {
+		intent := &ReleaseIntentInfo{Level: "minor", PreRelease: "rc", LabelApplied: "release:minor-rc"}
+		got := prApplyNext(true, intent)
+		if !strings.Contains(got, "merge time") {
+			t.Errorf("prApplyNext = %q, want it to mention merge time", got)
+		}
+		if !strings.Contains(got, "release:minor-rc") {
+			t.Errorf("prApplyNext = %q, want it to mention the applied label", got)
+		}
+		if !strings.Contains(got, "do not report a version number") {
+			t.Errorf("prApplyNext = %q, want it to warn against reporting a version number", got)
+		}
+	})
+
+	t.Run("intent set: updated", func(t *testing.T) {
+		intent := &ReleaseIntentInfo{Level: "patch", LabelApplied: "release:patch"}
+		got := prApplyNext(false, intent)
+		want := "PR updated. Release intent recorded as release:patch; CI computes the concrete version at merge time from the tags present then, so do not report a version number for this PR. If verify-pipeline is configured, call verify_pipeline_classify next."
+		if got != want {
+			t.Errorf("prApplyNext = %q, want %q", got, want)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -2333,5 +2351,324 @@ func TestPrPrepare_ReleaseMarkerTemplateConflict(t *testing.T) {
 	}
 	if domainErr.Cause == nil {
 		t.Error("Cause must carry the ValidateReleaseCompat error")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// prReleaseStaleLabels / prReleaseApplyLabelWith (task 2, issue #66) — a
+// re-apply on an existing PR must replace stale release:* labels instead of
+// accumulating them.
+// ---------------------------------------------------------------------------
+
+func TestPRReleaseStaleLabels(t *testing.T) {
+	tests := []struct {
+		name     string
+		existing []string
+		keep     string
+		want     []string
+	}{
+		{"nil existing returns empty non-nil", nil, "release:minor-rc", []string{}},
+		{"no release labels present", []string{"bug", "enhancement"}, "release:minor-rc", []string{}},
+		{"keep label excluded", []string{"release:minor-rc", "bug"}, "release:minor-rc", []string{}},
+		{"single stale label", []string{"release:patch-rc", "bug"}, "release:minor-rc", []string{"release:patch-rc"}},
+		{"multiple stale labels sorted", []string{"release:patch-rc", "release:major", "bug"}, "release:minor-rc", []string{"release:major", "release:patch-rc"}},
+		{"non-release label release:foo is never removed", []string{"release:foo", "bug"}, "release:minor-rc", []string{}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := prReleaseStaleLabels(tc.existing, tc.keep)
+			if got == nil {
+				t.Fatal("expected a non-nil slice")
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPRApply_ExistingPR_ReplacesStaleReleaseLabel(t *testing.T) {
+	t.Run("single stale label removed", func(t *testing.T) {
+		var gotArgs []string
+		rt := releaseTestRuntime("1.0.0")
+		rt.ghPRForBranch = func(dir string) ghx.PRMetadata {
+			return ghx.PRMetadata{Exists: true, Number: 9, URL: "https://github.com/o/r/pull/9", Labels: []string{"release:patch-rc", "bug"}}
+		}
+		rt.ghPREdit = func(dir string, num int, title, body string) (string, error) {
+			return "https://github.com/o/r/pull/9", nil
+		}
+		rt.execRun = func(name string, args []string, opts execx.Options) (string, error) {
+			gotArgs = args
+			return "", nil
+		}
+
+		out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
+			Title: "T", Body: "B", ReleaseLevel: "minor", ReleasePreRelease: "rc", ReleaseNotes: "n", ReleaseSource: "user",
+		}, rt)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := []string{"pr", "edit", "--add-label", "release:minor-rc", "--remove-label", "release:patch-rc"}
+		if !slices.Equal(gotArgs, want) {
+			t.Errorf("exec args: got %v, want %v", gotArgs, want)
+		}
+		if out.ReleaseIntent == nil {
+			t.Fatal("expected ReleaseIntent to be populated")
+		}
+		if !slices.Equal(out.ReleaseIntent.LabelsRemoved, []string{"release:patch-rc"}) {
+			t.Errorf("LabelsRemoved: got %v, want [release:patch-rc]", out.ReleaseIntent.LabelsRemoved)
+		}
+	})
+
+	t.Run("two stale labels removed in one call, sorted", func(t *testing.T) {
+		var gotArgs []string
+		rt := releaseTestRuntime("1.0.0")
+		rt.ghPRForBranch = func(dir string) ghx.PRMetadata {
+			return ghx.PRMetadata{Exists: true, Number: 9, URL: "https://github.com/o/r/pull/9", Labels: []string{"release:patch-rc", "release:minor", "bug"}}
+		}
+		rt.ghPREdit = func(dir string, num int, title, body string) (string, error) {
+			return "https://github.com/o/r/pull/9", nil
+		}
+		rt.execRun = func(name string, args []string, opts execx.Options) (string, error) {
+			gotArgs = args
+			return "", nil
+		}
+
+		out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
+			Title: "T", Body: "B", ReleaseLevel: "major", ReleaseNotes: "n", ReleaseSource: "user",
+		}, rt)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := []string{"pr", "edit", "--add-label", "release:major", "--remove-label", "release:minor,release:patch-rc"}
+		if !slices.Equal(gotArgs, want) {
+			t.Errorf("exec args: got %v, want %v", gotArgs, want)
+		}
+		if !slices.Equal(out.ReleaseIntent.LabelsRemoved, []string{"release:minor", "release:patch-rc"}) {
+			t.Errorf("LabelsRemoved: got %v, want [release:minor release:patch-rc]", out.ReleaseIntent.LabelsRemoved)
+		}
+	})
+}
+
+func TestPRApply_ExistingPR_SameReleaseLabel_NoRemove(t *testing.T) {
+	rt := releaseTestRuntime("1.0.0")
+	rt.ghPRForBranch = func(dir string) ghx.PRMetadata {
+		return ghx.PRMetadata{Exists: true, Number: 9, URL: "https://github.com/o/r/pull/9", Labels: []string{"release:minor-rc", "bug"}}
+	}
+	rt.ghPREdit = func(dir string, num int, title, body string) (string, error) {
+		return "https://github.com/o/r/pull/9", nil
+	}
+	// mockAddLabelExec fails the test if a --remove-label flag is sent.
+	rt.execRun = mockAddLabelExec("release:minor-rc")
+
+	out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
+		Title: "T", Body: "B", ReleaseLevel: "minor", ReleasePreRelease: "rc", ReleaseNotes: "n", ReleaseSource: "user",
+	}, rt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.ReleaseIntent == nil {
+		t.Fatal("expected ReleaseIntent to be populated")
+	}
+	if out.ReleaseIntent.LabelsRemoved == nil {
+		t.Fatal("LabelsRemoved must be non-nil")
+	}
+	if len(out.ReleaseIntent.LabelsRemoved) != 0 {
+		t.Errorf("LabelsRemoved: got %v, want empty", out.ReleaseIntent.LabelsRemoved)
+	}
+}
+
+func TestPRApply_CreatePath_LabelsRemovedEmpty(t *testing.T) {
+	rt := releaseTestRuntime("1.0.0")
+	rt.ghPRCreate = func(dir, title, body string) (string, error) {
+		return "https://github.com/o/r/pull/40", nil
+	}
+	// mockAddLabelExec fails the test if a --remove-label flag is sent — the
+	// create path never has stale labels to remove.
+	rt.execRun = mockAddLabelExec("release:patch")
+
+	out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
+		Title: "T", Body: "B", ReleaseLevel: "patch", ReleaseNotes: "n", ReleaseSource: "user",
+	}, rt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.ReleaseIntent == nil {
+		t.Fatal("expected ReleaseIntent to be populated")
+	}
+	if out.ReleaseIntent.LabelsRemoved == nil {
+		t.Fatal("LabelsRemoved must be non-nil")
+	}
+	if len(out.ReleaseIntent.LabelsRemoved) != 0 {
+		t.Errorf("LabelsRemoved: got %v, want empty", out.ReleaseIntent.LabelsRemoved)
+	}
+}
+
+func TestPRApply_LabelEditError_SuggestionNamesLabels(t *testing.T) {
+	rt := releaseTestRuntime("1.0.0")
+	rt.ghPRForBranch = func(dir string) ghx.PRMetadata {
+		return ghx.PRMetadata{Exists: true, Number: 9, URL: "https://github.com/o/r/pull/9", Labels: []string{"release:patch-rc", "bug"}}
+	}
+	rt.ghPREdit = func(dir string, num int, title, body string) (string, error) {
+		return "https://github.com/o/r/pull/9", nil
+	}
+	rt.execRun = func(name string, args []string, opts execx.Options) (string, error) {
+		return "", errors.New("HTTP 422: Label does not exist")
+	}
+
+	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
+		Title: "T", Body: "B", ReleaseLevel: "minor", ReleasePreRelease: "rc", ReleaseNotes: "n", ReleaseSource: "user",
+	}, rt)
+
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) {
+		t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
+	}
+	if !strings.Contains(ie.Suggestion, "--add-label release:minor-rc") {
+		t.Errorf("Suggestion missing add-label hint: %q", ie.Suggestion)
+	}
+	if !strings.Contains(ie.Suggestion, "--remove-label release:patch-rc") {
+		t.Errorf("Suggestion missing remove-label hint: %q", ie.Suggestion)
+	}
+	if !strings.HasPrefix(ie.Msg, "gh pr edit --add-label --remove-label: ") {
+		t.Errorf("Msg: got %q, want it to name both flags that were sent", ie.Msg)
+	}
+}
+
+// TestPRApply_LabelEditError_PermissionError_Enriched pins that a gh
+// permission error on the label call gets the same account-switch guidance
+// as a permission error from gh pr create/edit.
+func TestPRApply_LabelEditError_PermissionError_Enriched(t *testing.T) {
+	rt := releaseTestRuntime("1.0.0")
+	rt.ghPRForBranch = func(dir string) ghx.PRMetadata {
+		return ghx.PRMetadata{Exists: true, Number: 9, URL: "https://github.com/acme/widgets/pull/9", Labels: []string{"release:patch-rc"}}
+	}
+	rt.ghPREdit = func(dir string, num int, title, body string) (string, error) {
+		return "https://github.com/acme/widgets/pull/9", nil
+	}
+	rt.execRun = func(name string, args []string, opts execx.Options) (string, error) {
+		if name == "git" && slices.Equal(args, []string{"remote", "get-url", "origin"}) {
+			return "https://github.com/acme/widgets.git", nil
+		}
+		if name == "gh" && len(args) >= 2 && args[0] == "pr" && args[1] == "edit" {
+			return "", errors.New("HTTP 403: Resource not accessible by integration")
+		}
+		return "", fmt.Errorf("unexpected exec call: %s %v", name, args)
+	}
+	rt.ghGetAccounts = func(dir, host string) ([]ghx.Account, error) {
+		return []ghx.Account{{Login: "other-user", Active: false}}, nil
+	}
+	rt.ghAuthProbe = func(dir, host string) ghx.AuthProbeResult {
+		return ghx.AuthProbeResult{Authenticated: true, ActiveAccount: "me"}
+	}
+
+	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
+		Title: "T", Body: "B", ReleaseLevel: "minor", ReleasePreRelease: "rc", ReleaseNotes: "n", ReleaseSource: "user",
+	}, rt)
+
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) {
+		t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
+	}
+	if !strings.HasPrefix(ie.Msg, "gh pr edit --add-label --remove-label: ") {
+		t.Errorf("Msg: got %q, want it to name the label command", ie.Msg)
+	}
+	if !strings.Contains(ie.Suggestion, "gh auth switch --user other-user") {
+		t.Errorf("Suggestion missing switch hint: %q", ie.Suggestion)
+	}
+	if !strings.Contains(ie.Suggestion, "acme/widgets") {
+		t.Errorf("Suggestion missing owner/repo: %q", ie.Suggestion)
+	}
+}
+
+// TestPRApply_LabelEditError_CreatePath_MsgOmitsRemoveLabel pins that the
+// error Msg names only the flags actually sent: the create path never sends
+// --remove-label, so the Msg must not claim it did.
+func TestPRApply_LabelEditError_CreatePath_MsgOmitsRemoveLabel(t *testing.T) {
+	rt := releaseTestRuntime("1.0.0")
+	rt.execRun = func(name string, args []string, opts execx.Options) (string, error) {
+		return "", errors.New("HTTP 422: Label does not exist")
+	}
+
+	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
+		Title: "T", Body: "B", ReleaseLevel: "patch", ReleaseNotes: "n", ReleaseSource: "user",
+	}, rt)
+
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) {
+		t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
+	}
+	if !strings.HasPrefix(ie.Msg, "gh pr edit --add-label: ") {
+		t.Errorf("Msg: got %q, want it to start with gh pr edit --add-label", ie.Msg)
+	}
+	if strings.Contains(ie.Msg, "--remove-label") || strings.Contains(ie.Suggestion, "--remove-label") {
+		t.Errorf("no --remove-label was sent, but the error names it: Msg=%q Suggestion=%q", ie.Msg, ie.Suggestion)
+	}
+}
+
+// TestPRApply_ReapplyChangedIntent_SingleReleaseLabel proves the fix for
+// issue #66 end to end: two sequential pr_apply calls against one fake PR
+// (first patch+rc, then minor+rc) leave exactly one release:* label on the
+// PR, instead of accumulating both.
+func TestPRApply_ReapplyChangedIntent_SingleReleaseLabel(t *testing.T) {
+	labels := map[string]bool{}
+	rt := releaseTestRuntime("1.0.0")
+	rt.ghPRForBranch = func(dir string) ghx.PRMetadata {
+		ls := make([]string, 0, len(labels))
+		for l := range labels {
+			ls = append(ls, l)
+		}
+		slices.Sort(ls)
+		return ghx.PRMetadata{Exists: true, Number: 9, URL: "https://github.com/o/r/pull/9", Labels: ls}
+	}
+	rt.ghPREdit = func(dir string, num int, title, body string) (string, error) {
+		return "https://github.com/o/r/pull/9", nil
+	}
+	rt.execRun = func(name string, args []string, opts execx.Options) (string, error) {
+		if name != "gh" || len(args) < 4 || args[0] != "pr" || args[1] != "edit" || args[2] != "--add-label" {
+			return "", fmt.Errorf("unexpected exec call: %s %v", name, args)
+		}
+		labels[args[3]] = true
+		switch len(args) {
+		case 4:
+			// add-label only
+		case 6:
+			if args[4] != "--remove-label" {
+				return "", fmt.Errorf("unexpected exec call: %s %v", name, args)
+			}
+			for _, l := range strings.Split(args[5], ",") {
+				delete(labels, l)
+			}
+		default:
+			return "", fmt.Errorf("unexpected exec call: %s %v", name, args)
+		}
+		return "", nil
+	}
+
+	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
+		Title: "T", Body: "B", ReleaseLevel: "patch", ReleasePreRelease: "rc", ReleaseNotes: "n", ReleaseSource: "user",
+	}, rt)
+	if err != nil {
+		t.Fatalf("first apply: unexpected error: %v", err)
+	}
+
+	out2, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
+		Title: "T", Body: "B", ReleaseLevel: "minor", ReleasePreRelease: "rc", ReleaseNotes: "n", ReleaseSource: "user",
+	}, rt)
+	if err != nil {
+		t.Fatalf("second apply: unexpected error: %v", err)
+	}
+
+	var releaseLabelsLeft []string
+	for l := range labels {
+		if isReleaseLabel(l) {
+			releaseLabelsLeft = append(releaseLabelsLeft, l)
+		}
+	}
+	if !slices.Equal(releaseLabelsLeft, []string{"release:minor-rc"}) {
+		t.Errorf("release:* labels left on the PR: got %v, want [release:minor-rc]", releaseLabelsLeft)
+	}
+	if out2.ReleaseIntent == nil || !slices.Equal(out2.ReleaseIntent.LabelsRemoved, []string{"release:patch-rc"}) {
+		t.Errorf("second apply LabelsRemoved: got %v, want [release:patch-rc]", out2.ReleaseIntent.LabelsRemoved)
 	}
 }
