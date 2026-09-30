@@ -105,6 +105,7 @@ Each reviewer agent prompt requires this order:
 - `findings` is a raw JSON array of `{severity, file, line, rationale}`, or `[]` when there are none.
 - The default severity for findings is the dimension's `severity`.
 - When `truncated` is `true`, the skill treats that dimension's `diff_file` as partial; findings outside it may exist.
+- Every reviewer prompt carries the dimension's `truncated` value in a "Diff Completeness" section. When it is `true`, the prompt tells the agent its diff is partial, that a footer starting with `# --- Truncated` lists the omitted files, and that it must not call the omitted files clean.
 
 Main review flow from prepare to cleanup.
 
@@ -145,6 +146,11 @@ sequenceDiagram
 #### Scenario: Skipped dimension
 - **WHEN** a dimension has `status: "SKIPPED"`
 - **THEN** no agent is dispatched for it
+
+#### Scenario: Truncated dimension prompt
+- **WHEN** a dimension has `truncated: true`
+- **THEN** its reviewer prompt contains `truncated: true`
+- **AND** the prompt says the diff file is partial and names the `# --- Truncated` footer
 
 ### Requirement: Ledger polling
 The skill SHALL poll `execute_state({action: "ledger_status", runId, expectedWorkers, timeoutSeconds: 1800})` about every 60 seconds until every dispatched `workerId` has `status: "done"`.

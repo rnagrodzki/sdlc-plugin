@@ -147,6 +147,13 @@ For each dimension entry with `status: "ACTIVE"` or `status: "TRUNCATED"`:
    5. Read({dimension.diff_file}) for the diff to review.
    6. Surface any `warnings` entries that affect your review.
 
+   ## Diff Completeness
+   truncated: {dimension.truncated}
+   When `truncated` is `true`, your diff file is partial: some matched files or hunks were
+   left out to fit a cap. A footer starting with `# --- Truncated` at the end of the diff file
+   lists the omitted files. Review what you have, state in your findings that the diff was
+   partial, and do not claim the omitted files are clean.
+
    ## Default Severity
    Unless the review instructions specify otherwise, classify findings as: {dimension.severity}
 
@@ -172,10 +179,13 @@ For each dimension entry with `status: "ACTIVE"` or `status: "TRUNCATED"`:
    prepared file already reflects the right scope.
 
    `truncated` scoping: `dimension.truncated` is `true` if EITHER the matched-file count
-   was capped (100 files max) OR the concatenated diff exceeded the 8000-byte
+   was capped (`max-files`, default 100) OR the concatenated diff exceeded the 8000-byte
    (`difftrunc.DefaultDiffMaxBytes`) content cap and had whole files dropped (largest-first).
-   When `true`, treat `diff_file` as partial — findings outside it may exist. A
-   `# --- Truncated ---` footer in `diff_file` lists the dropped files.
+   When `true`, treat `diff_file` as partial — findings outside it may exist. Always fill
+   `{dimension.truncated}` in the prompt's "Diff Completeness" section with the manifest
+   value (`true` or `false`) so the agent knows. `diff_file` ends with a footer per cap that
+   fired: `# --- Truncated ---` (byte cap) and/or `# --- Truncated (max-files) ---`
+   (file-count cap), each listing the dropped files.
 
 5. Dispatch one Agent per ACTIVE/TRUNCATED dimension, **all in a single message**, with
    **`run_in_background: true`** — the inversion of the previous mandatory `false`. Use

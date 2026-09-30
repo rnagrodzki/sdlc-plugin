@@ -177,12 +177,14 @@ stateDiagram-v2
 
 - `max-files` defaults to `100`; only a positive integer overrides it.
 - When more than `max-files` files match, only the first `max-files` are kept and `truncated` is `true`.
+- For a dispatched dimension cut by `max-files`, the `.diff` file ends with a footer: first line `# --- Truncated (max-files) ---`, then one `# - <path>` line per dropped file. It comes after any diff byte cap footer.
 - `QUEUED` is applied before any diff or slice file is written; see the dimension cap requirement. Only dimensions still `ACTIVE` after the cap can become `TRUNCATED` by the diff byte cap.
 
 #### Scenario: max-files cap
 - **WHEN** 4 changed files match and `max-files` is `3`
 - **THEN** `matched_count` is `3`
 - **AND** `truncated` is `true` and status is `TRUNCATED`
+- **AND** the `.diff` file ends with a `# --- Truncated (max-files) ---` footer that lists the 4th file as `# - <path>`
 
 #### Scenario: No matched file
 - **WHEN** no changed file matches a dimension's triggers

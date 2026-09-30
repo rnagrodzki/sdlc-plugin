@@ -714,6 +714,54 @@ Review.
 	}
 }
 
+// TestReviewPrepareMaxFilesFooter pins that a dimension truncated by
+// max-files gets a footer in its .diff file listing the dropped files, so
+// the reviewer agent can tell its diff is partial.
+func TestReviewPrepareMaxFilesFooter(t *testing.T) {
+	root := newReviewFixture(t, map[string]string{
+		"src/a.go": "package main\n",
+		"src/b.go": "package main\n",
+		"src/c.go": "package main\n",
+	}, map[string]string{
+		"code-quality.md": `---
+name: code-quality
+description: General code quality review
+triggers:
+  - "**/*.go"
+severity: medium
+max-files: 2
+---
+Review.
+`,
+	})
+
+	_, m := readReviewManifest(t, root)
+	if len(m.Dimensions) != 1 {
+		t.Fatalf("dimensions = %d, want 1", len(m.Dimensions))
+	}
+	d := m.Dimensions[0]
+	if d.Status != "TRUNCATED" || !d.Truncated || d.MatchedCount != 2 {
+		t.Fatalf("status/truncated/matched = %s/%v/%d, want TRUNCATED/true/2", d.Status, d.Truncated, d.MatchedCount)
+	}
+	if d.DiffFile == nil {
+		t.Fatal("diff_file is null")
+	}
+	raw, err := os.ReadFile(*d.DiffFile)
+	if err != nil {
+		t.Fatalf("read diff: %v", err)
+	}
+	diff := string(raw)
+	if !strings.Contains(diff, "# --- Truncated (max-files) ---") {
+		t.Errorf("diff has no max-files footer:\n%s", diff)
+	}
+	if !strings.Contains(diff, "# - src/c.go") {
+		t.Errorf("footer does not list the dropped file src/c.go:\n%s", diff)
+	}
+	if strings.Contains(diff, "diff --git a/src/c.go") {
+		t.Errorf("dropped file src/c.go still has hunks in the diff")
+	}
+}
+
 func TestReviewPrepareNoChangedFiles(t *testing.T) {
 	root := t.TempDir()
 

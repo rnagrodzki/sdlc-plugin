@@ -180,6 +180,7 @@ type reviewDimWork struct {
 	model            *string
 	status           string
 	matchedFiles     []string
+	droppedFiles     []string // matched files cut by the max-files cap
 	matchedCount     int
 	truncated        bool
 	diffFile         *string
@@ -258,9 +259,11 @@ func globToRegex(pattern string) string {
 }
 
 // matchFilesResult holds the matched files and whether the list was truncated.
+// dropped lists the matched files cut by the max-files cap, in match order.
 type matchFilesResult struct {
 	matched   []string
 	truncated bool
+	dropped   []string
 }
 
 // matchFiles filters changedFiles against a dimension's trigger/skip-when globs.
@@ -315,11 +318,28 @@ func matchFiles(meta map[string]any, changedFiles []string) matchFilesResult {
 	}
 
 	truncated := len(matched) > maxFiles
+	var dropped []string
 	if truncated {
+		dropped = matched[maxFiles:]
 		matched = matched[:maxFiles]
 	}
 
-	return matchFilesResult{matched: matched, truncated: truncated}
+	return matchFilesResult{matched: matched, truncated: truncated, dropped: dropped}
+}
+
+// maxFilesFooter returns the footer appended to a dimension's .diff file
+// when the max-files cap dropped matched files, so the reviewer agent can
+// see its diff is partial. Its first line starts with "# --- Truncated",
+// like difftrunc's byte-cap footer.
+func maxFilesFooter(kept int, dropped []string) string {
+	lines := []string{
+		"# --- Truncated (max-files) ---",
+		fmt.Sprintf("# The max-files cap kept the first %d matched file(s). The following %d matched file(s) were omitted:", kept, len(dropped)),
+	}
+	for _, f := range dropped {
+		lines = append(lines, "# - "+f)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // ---------------------------------------------------------------------------
@@ -673,6 +693,7 @@ func loadAndMatchDimensions(projectRoot string, changedFiles []string) []reviewD
 			model:            model,
 			status:           status,
 			matchedFiles:     mf.matched,
+			droppedFiles:     mf.dropped,
 			matchedCount:     len(mf.matched),
 			truncated:        mf.truncated,
 			body:             d.Body,
@@ -847,6 +868,13 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 					d.status = "TRUNCATED"
 				}
 			}
+		}
+
+		// The max-files cap dropped whole matched files before the diff was
+		// built. Say so in the diff itself, after any byte-cap footer, so the
+		// reviewer agent knows its diff is partial.
+		if len(d.droppedFiles) > 0 {
+			dimDiff += "\n" + maxFilesFooter(len(d.matchedFiles), d.droppedFiles)
 		}
 
 		// Write .diff file.
