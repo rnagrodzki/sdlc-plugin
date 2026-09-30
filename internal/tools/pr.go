@@ -870,7 +870,7 @@ func prValidateBodyCore(root string, in PRValidateBodyIn) (PRValidateBodyOut, er
 type PRApplyIn struct {
 	Title             string `json:"title" jsonschema_description:"PR title, used for gh pr create/edit."`
 	Body              string `json:"body" jsonschema_description:"PR body text, used for gh pr create/edit."`
-	ReleaseLevel      string `json:"releaseLevel,omitempty" jsonschema:"enum=major,enum=minor,enum=patch" jsonschema_description:"Release bump level for this PR (e.g. \"patch\"/\"minor\"/\"major\"). Required unless skipReleaseCheck is true AND the commits since the last tag are release-worthy (feat/fix/breaking) — see skipReleaseCheck. An empty value without skipReleaseCheck is rejected so release intent is never skipped by omission; pass skipReleaseCheck: true to explicitly acknowledge no release."`
+	ReleaseLevel      string `json:"releaseLevel,omitempty" jsonschema:"enum=major,enum=minor,enum=patch" jsonschema_description:"Release bump level for this PR (e.g. \"patch\"/\"minor\"/\"major\"). Required unless skipReleaseCheck is true. An empty value without skipReleaseCheck is rejected so release intent is never skipped by omission; pass skipReleaseCheck: true to explicitly acknowledge no release. Whether that skip is allowed depends on the commits since the last tag — see skipReleaseCheck: release-worthy (feat/fix/breaking) commits make the skip fail in autoMode and require skipReleaseReason interactively."`
 	ReleasePreRelease string `json:"releasePreRelease,omitempty" jsonschema:"enum=rc" jsonschema_description:"Pre-release identifier to attach to the release, when releaseLevel is set and this is a pre-release."`
 	ReleaseNotes      string `json:"releaseNotes,omitempty" jsonschema_description:"Release notes text associated with releaseLevel. When releaseLevel is set and this is left empty, notes are auto-generated from commits since the last release tag — no longer rejected as missing."`
 	// ReleaseSource records who decided ReleaseLevel: "user" (explicit
@@ -961,7 +961,7 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 	if strings.TrimSpace(in.Title) == "" {
 		return PRApplyOut{}, &mcpserver.DomainError{
 			Msg:        "title is required",
-			Suggestion: "Pass a non-empty title: use the prTitle value from pr_prepare, or draft one from the branch's commits.",
+			Suggestion: "Pass a non-empty title: draft one from the branch's commits (commitsSinceBase in the pr_prepare output).",
 		}
 	}
 
@@ -972,7 +972,7 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 	if in.ReleaseLevel == "" && !in.SkipReleaseCheck {
 		return PRApplyOut{}, &mcpserver.DomainError{
 			Msg:        "releaseLevel is empty and skipReleaseCheck is false",
-			Suggestion: "Set releaseLevel (Step 1b of the pr skill, or --releaseLevel on this call) to declare release intent, or pass skipReleaseCheck: true to acknowledge no release.",
+			Suggestion: "Set releaseLevel on this pr_apply call (Step 1b of the pr skill) to declare release intent, or pass skipReleaseCheck: true to acknowledge no release.",
 		}
 	}
 
@@ -1016,7 +1016,7 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 		default:
 			return PRApplyOut{}, &mcpserver.DomainError{
 				Msg:        fmt.Sprintf("releaseLevel must be major, minor, or patch, got %q", in.ReleaseLevel),
-				Suggestion: "Set releaseLevel to exactly one of major, minor or patch, or omit it and set releaseSkipReason instead.",
+				Suggestion: "Set releaseLevel to exactly one of major, minor or patch, or omit it and pass skipReleaseCheck: true instead (with skipReleaseReason when commits since the last tag are feat/fix/breaking).",
 			}
 		}
 		if strings.TrimSpace(in.ReleaseNotes) == "" {

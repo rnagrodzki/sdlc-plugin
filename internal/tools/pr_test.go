@@ -1265,6 +1265,40 @@ func TestPrApply_MissingTitle_DomainError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error for empty title")
 	}
+	var de *mcpserver.DomainError
+	if !errors.As(err, &de) {
+		t.Fatalf("expected *mcpserver.DomainError, got %T: %v", err, err)
+	}
+	// pr_prepare has no prTitle field; the hint must point at a real one.
+	if strings.Contains(de.Suggestion, "prTitle") {
+		t.Errorf("Suggestion names a field pr_prepare does not return: %q", de.Suggestion)
+	}
+	if !strings.Contains(de.Suggestion, "commitsSinceBase") {
+		t.Errorf("Suggestion should point at pr_prepare's commitsSinceBase: %q", de.Suggestion)
+	}
+}
+
+// TestPrApply_InvalidReleaseLevel_SuggestionNamesRealFields — the invalid
+// level check runs before any rt.* call. Its suggestion must name the real
+// opt-out inputs (skipReleaseCheck / skipReleaseReason), not a made-up
+// releaseSkipReason field.
+func TestPrApply_InvalidReleaseLevel_SuggestionNamesRealFields(t *testing.T) {
+	_, err := prApplyCore("/mock/root", "/mock/work", PRApplyIn{Title: "T", Body: "B", ReleaseLevel: "huge", ReleaseSource: "user"})
+	var de *mcpserver.DomainError
+	if !errors.As(err, &de) {
+		t.Fatalf("expected *mcpserver.DomainError, got %T: %v", err, err)
+	}
+	if !strings.Contains(de.Msg, `got "huge"`) {
+		t.Errorf("Msg: got %q", de.Msg)
+	}
+	if strings.Contains(de.Suggestion, "releaseSkipReason") {
+		t.Errorf("Suggestion names a field pr_apply does not accept: %q", de.Suggestion)
+	}
+	for _, want := range []string{"skipReleaseCheck: true", "skipReleaseReason"} {
+		if !strings.Contains(de.Suggestion, want) {
+			t.Errorf("Suggestion missing %q: %q", want, de.Suggestion)
+		}
+	}
 }
 
 // TestPrApply_NoReleaseLevel_NoSkip_DomainError (task 2) — the release-intent
@@ -1288,6 +1322,10 @@ func TestPrApply_NoReleaseLevel_NoSkip_DomainError(t *testing.T) {
 	}
 	if !strings.Contains(de.Suggestion, "skipReleaseCheck: true") {
 		t.Errorf("Suggestion missing skipReleaseCheck hint: %q", de.Suggestion)
+	}
+	// releaseLevel is a pr_apply input, not a CLI flag.
+	if strings.Contains(de.Suggestion, "--releaseLevel") {
+		t.Errorf("Suggestion names a non-existent --releaseLevel flag: %q", de.Suggestion)
 	}
 }
 

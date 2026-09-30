@@ -12,7 +12,7 @@ The tool SHALL accept the input fields below and check every value in the handle
 |---|---|---|---|---|
 | `title` | string | yes; blank is rejected | plain text, e.g. `feat: add login` | PR title |
 | `body` | string | optional at call time; may be empty | Markdown text | PR body |
-| `releaseLevel` | string, enum `major` / `minor` / `patch` | no | plain text, e.g. `patch` | Release bump level to record |
+| `releaseLevel` | string, enum `major` / `minor` / `patch` | yes, unless `skipReleaseCheck` is `true` | plain text, e.g. `patch` | Release bump level to record |
 | `releasePreRelease` | string, enum `rc` | no | plain text, e.g. `rc` | Mark the release as a release candidate |
 | `releaseNotes` | string | no | Markdown text | Notes placed in the body; auto-generated when blank |
 | `releaseSource` | string, enum `user` / `config` | when `releaseLevel` is set | plain text, e.g. `config` | Who decided `releaseLevel` |
@@ -82,11 +82,12 @@ The tool SHALL reject a blank or whitespace-only `title`.
 
 | Condition | Class | Message / Suggestion (short) |
 |---|---|---|
-| `title` blank | `DomainError` | `title is required` / `Pass a non-empty title: use the prTitle value from pr_prepare, or draft one from the branch's commits.` |
+| `title` blank | `DomainError` | `title is required` / `Pass a non-empty title: draft one from the branch's commits (commitsSinceBase in the pr_prepare output).` |
 
 #### Scenario: Whitespace title
 - **WHEN** `title` is `"  "`
 - **THEN** the tool returns a `DomainError` with message `title is required`
+- **AND** the suggestion names `commitsSinceBase` and does not name a `prTitle` field
 
 ### Requirement: Release intent is never skipped by omission
 The tool SHALL reject a call where `releaseLevel` is empty and `skipReleaseCheck` is `false`.
@@ -99,6 +100,7 @@ The tool SHALL reject a call where `releaseLevel` is empty and `skipReleaseCheck
 - **WHEN** `pr_apply` is called with only `title` and `body`
 - **THEN** the tool returns a `DomainError` whose message contains `releaseLevel is empty`
 - **AND** the suggestion mentions `skipReleaseCheck: true`
+- **AND** the suggestion does not name a `--releaseLevel` flag
 
 ### Requirement: skipReleaseCheck verification
 The tool SHALL verify `skipReleaseCheck` against commits since the last release tag when `releaseLevel` is empty.
@@ -140,13 +142,18 @@ The tool SHALL validate `releaseLevel`, `releasePreRelease`, and `releaseSource`
 
 | Condition | Class | Message / Suggestion (short) |
 |---|---|---|
-| `releaseLevel` not `major` / `minor` / `patch` | `DomainError` | `releaseLevel must be major, minor, or patch, got "<value>"` / `Set releaseLevel to exactly one of major, minor or patch, or omit it and set releaseSkipReason instead.` |
+| `releaseLevel` not `major` / `minor` / `patch` | `DomainError` | `releaseLevel must be major, minor, or patch, got "<value>"` / `Set releaseLevel to exactly one of major, minor or patch, or omit it and pass skipReleaseCheck: true instead (with skipReleaseReason when commits since the last tag are feat/fix/breaking).` |
 | `releasePreRelease` not empty and not `rc` (checked even without `releaseLevel`) | `DomainError` | `releasePreRelease must be "rc" or empty, got "<value>"` |
 | `releaseLevel` set, `releaseSource` empty | `DomainError` | `releaseSource is required when releaseLevel is set (must be "user" or "config")` |
 | `releaseLevel` set, `releaseSource` other value | `DomainError` | `releaseSource must be "user" or "config", got "<value>"` |
 | `releaseLevel` set, `autoMode` `true`, `releaseSource` `user` | `DomainError` | `releaseLevel in auto mode must come from config, not LLM` / use `releaseSource: "config"` |
 
 - `releaseSource` is not checked when `releaseLevel` is empty.
+
+#### Scenario: Invalid level
+- **WHEN** `releaseLevel` is `huge`
+- **THEN** the tool returns a `DomainError` whose message contains `got "huge"`
+- **AND** the suggestion names `skipReleaseCheck: true` and `skipReleaseReason`, not `releaseSkipReason`
 
 #### Scenario: Invalid source
 - **WHEN** `releaseLevel` is `major` and `releaseSource` is `pipeline`
