@@ -457,6 +457,20 @@ func TestLoad_MissingDir(t *testing.T) {
 	}
 }
 
+// TestLoad_UnreadableDirIsError confirms only a missing directory maps to
+// "zero dimensions". A path that exists but cannot be listed (here a regular
+// file) must surface as an error so callers can report it.
+func TestLoad_UnreadableDirIsError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "review-dimensions")
+	if err := os.WriteFile(path, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dims, err := Load(path)
+	if err == nil {
+		t.Fatalf("Load: got nil error and %d dimensions, want an error", len(dims))
+	}
+}
+
 func fileNames(dims []Dimension) []string {
 	names := make([]string, len(dims))
 	for i, d := range dims {

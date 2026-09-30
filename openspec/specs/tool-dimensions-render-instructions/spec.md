@@ -197,6 +197,7 @@ In list mode the tool SHALL return the sorted file stems of every `*.md` file di
 
 - `path` is the scanned directory.
 - Subdirectories and non-`.md` files are skipped.
+- A directory that exists but cannot be listed returns `InfraError` `list <dir>: <cause>` / check filesystem permissions on the project root, then retry.
 
 #### Scenario: Mixed directory content
 - **WHEN** `.sdlc-v2/review-dimensions/` holds `security.md`, `a11y.md`, `_common.md`, and `notes.txt`
@@ -207,3 +208,7 @@ In list mode the tool SHALL return the sorted file stems of every `*.md` file di
 - **WHEN** `.sdlc-v2/review-dimensions/` does not exist
 - **THEN** `ok` is `true`, `dimensions` is `[]`, and `count` is 0
 - **AND** `next` is `No review dimensions installed yet under .sdlc-v2/review-dimensions/.`
+
+#### Scenario: Directory cannot be listed
+- **WHEN** `.sdlc-v2/review-dimensions` is a regular file, not a directory
+- **THEN** the tool returns `InfraError` starting with `list `

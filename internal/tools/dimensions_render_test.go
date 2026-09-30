@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -46,6 +47,17 @@ func TestDimensionsRender_ListDimensions_MissingDir(t *testing.T) {
 	}
 	if !jsonHasEmptyArrayField(t, b, "dimensions") {
 		t.Errorf(`expected "dimensions":[] in JSON, got %s`, string(b))
+	}
+}
+
+func TestDimensionsRender_ListDimensions_UnreadableDirIsInfraError(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "review-dimensions"), "not a directory")
+
+	_, err := dimensionsRenderInstructions(root, DimensionsRenderInstructionsIn{ListDimensions: true})
+	var infra *mcpserver.InfraError
+	if !errors.As(err, &infra) {
+		t.Fatalf("err = %v, want *mcpserver.InfraError", err)
 	}
 }
 

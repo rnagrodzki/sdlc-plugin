@@ -344,7 +344,8 @@ The `dimensions` action SHALL validate every review-dimension file in `.sdlc-v2/
 | `D13` | warning | `model` not a non-empty string |
 | `UNKNOWN` | error | Any other problem text |
 
-- A missing or unreadable `.sdlc-v2/review-dimensions/` folder gives no findings.
+- A missing `.sdlc-v2/review-dimensions/` folder gives no findings.
+- A folder that exists but cannot be listed returns `InfraError` `load review dimensions: <cause>` / check filesystem permissions on `.sdlc-v2/review-dimensions/`, then retry.
 
 #### Scenario: Valid dimension
 - **WHEN** one file has a valid `name`, `description`, `triggers`, and a long enough body
@@ -359,6 +360,10 @@ The `dimensions` action SHALL validate every review-dimension file in `.sdlc-v2/
 - **WHEN** `a-dim.md` and `b-dim.md` both use name `security-review`
 - **THEN** there is one `D10` finding with `path: b-dim.md`
 - **AND** message `Duplicate dimension name "security-review" — also used in a-dim.md`
+
+#### Scenario: Dimensions folder cannot be listed
+- **WHEN** `.sdlc-v2/review-dimensions` is a regular file, not a directory
+- **THEN** the tool returns `InfraError` starting with `load review dimensions:`
 
 ### Requirement: ci_script_drift action
 The `ci_script_drift` action SHALL compare each CI file installed by `scaffold_ci` with the version `scaffold_ci` would install and report non-current files as `warning` findings. It SHALL NOT write files.
