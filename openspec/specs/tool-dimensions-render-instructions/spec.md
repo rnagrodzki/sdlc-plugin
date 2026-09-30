@@ -96,12 +96,18 @@ sequenceDiagram
 ```
 
 - A missing or unreadable `commonFile` is not an error; the Common Review Instructions section is left out.
+- `<name>` in the file name is the frontmatter `name` with surrounding whitespace trimmed, the same value the mirror heading uses.
 - `next` is `Rendered to <path>.`
 
 #### Scenario: Render without common file
 - **WHEN** `file` is a valid dimension named `security` and `commonFile` does not exist
 - **THEN** the tool writes `.github/instructions/security.instructions.md`
 - **AND** the file has no `## Common Review Instructions` section
+- **AND** `path` is that file's path
+
+#### Scenario: Frontmatter name with surrounding spaces
+- **WHEN** `file` has the quoted frontmatter name `"  security "`
+- **THEN** the tool writes `.github/instructions/security.instructions.md`
 - **AND** `path` is that file's path
 
 #### Scenario: Existing mirror is replaced

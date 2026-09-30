@@ -50,6 +50,28 @@ func TestDimensionsRender_ListDimensions_MissingDir(t *testing.T) {
 	}
 }
 
+// TestDimensionsRender_MirrorPathUsesTrimmedName pins that the mirror file
+// name uses the same trimmed frontmatter name as the rendered heading. A
+// quoted YAML name keeps its spaces, so this fails if the path is built from
+// the raw value.
+func TestDimensionsRender_MirrorPathUsesTrimmedName(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "dim.md"),
+		"---\nname: \"  security \"\ndescription: Security review\ntriggers:\n  - \"**/*.go\"\n---\n# Security\n\nCheck input validation.\n")
+
+	out, err := dimensionsRenderInstructions(root, DimensionsRenderInstructionsIn{File: "dim.md"})
+	if err != nil {
+		t.Fatalf("dimensionsRenderInstructions: %v", err)
+	}
+	want := filepath.Join(root, ".github", "instructions", "security.instructions.md")
+	if out.Path != want {
+		t.Errorf("Path = %q, want %q", out.Path, want)
+	}
+	if _, err := os.Stat(want); err != nil {
+		t.Errorf("mirror file not written at the trimmed name: %v", err)
+	}
+}
+
 func TestDimensionsRender_ListDimensions_UnreadableDirIsInfraError(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, paths.DataDir, "review-dimensions"), "not a directory")

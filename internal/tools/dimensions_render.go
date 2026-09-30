@@ -209,7 +209,11 @@ func dimensionsRenderInstructions(root string, in DimensionsRenderInstructionsIn
 		}
 	}
 
+	// Trim the same way dimensions.ToInstructions does for the heading, so a
+	// quoted name with stray spaces ("security ") does not produce a file
+	// name with spaces in it.
 	name, _ := meta["name"].(string)
+	name = strings.TrimSpace(name)
 	outPath := filepath.Join(root, ".github", "instructions", name+".instructions.md")
 
 	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
