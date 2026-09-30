@@ -79,6 +79,13 @@ import (
 var sdlcBinPath string
 
 func TestMain(m *testing.M) {
+	os.Exit(runTests(m))
+}
+
+// runTests builds the binary into a temp dir, runs the tests, and removes the
+// dir. It is split out of TestMain because os.Exit skips deferred calls, so a
+// defer in TestMain itself would never remove the dir.
+func runTests(m *testing.M) int {
 	tmpDir, err := os.MkdirTemp("", "sdlc-integration-bin-*")
 	if err != nil {
 		panic("mkdtemp: " + err.Error())
@@ -98,7 +105,7 @@ func TestMain(m *testing.M) {
 		panic("go build ./cmd/sdlc failed: " + err.Error() + "\n" + string(out))
 	}
 
-	os.Exit(m.Run())
+	return m.Run()
 }
 
 // ---------------------------------------------------------------------------
