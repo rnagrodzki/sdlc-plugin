@@ -882,11 +882,47 @@ func TestDimensionsPreflight_PassesWithNoDir(t *testing.T) {
 	}
 }
 
+// TestHardenPrepare_ErrorReportSurfaceResolvesShippedFile pins that the
+// error-report-skill surface points at a file the plugin actually ships
+// (skills/error-report/SKILL.md) under CLAUDE_PLUGIN_ROOT, so an installed
+// plugin gets a path and no load error. The binary itself runs from
+// ~/.sdlc-cache/bin, so walking up from the executable cannot find it.
+func TestHardenPrepare_ErrorReportSurfaceResolvesShippedFile(t *testing.T) {
+	pluginRoot, err := filepath.Abs(filepath.Join("..", "..", "plugins", "sdlc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_PLUGIN_ROOT", pluginRoot)
+
+	root := t.TempDir()
+	out, err := hardenPrepare(root, root, HardenPrepareIn{
+		FailureText:     "boom",
+		Skill:           "ship",
+		SkipConfigCheck: true,
+	})
+	if err != nil {
+		t.Fatalf("hardenPrepare: %v", err)
+	}
+	manifest := readHardenManifest(t, out.ManifestPath)
+
+	surfaces := manifest["surfaces"].(map[string]any)
+	want := filepath.Join(pluginRoot, "skills", "error-report", "SKILL.md")
+	if surfaces["errorReportSkillPath"] != want {
+		t.Errorf("errorReportSkillPath = %v, want %q", surfaces["errorReportSkillPath"], want)
+	}
+	errs, _ := manifest["errors"].([]any)
+	if len(errs) != len(filterOutSurface(errs, "error-report-skill")) {
+		t.Errorf("expected no error-report-skill load error, got %+v", errs)
+	}
+}
+
 func TestResolveErrorReportSkill_SoftFailsWhenAbsent(t *testing.T) {
+	// An empty CLAUDE_PLUGIN_ROOT (no plugin files) and a test binary far
+	// from any plugin tree: nothing to resolve.
+	t.Setenv("CLAUDE_PLUGIN_ROOT", t.TempDir())
 	var errs []surfaceLoadError
 	got := resolveErrorReportSkill(&errs)
-	// This repo has no skills/ directory yet (confirmed during investigation),
-	// so this must soft-fail: empty string, one recorded error, no panic.
+	// Must soft-fail: empty string, one recorded error, no panic.
 	if got != "" {
 		t.Errorf("resolveErrorReportSkill = %q, want empty string when the target file does not exist", got)
 	}

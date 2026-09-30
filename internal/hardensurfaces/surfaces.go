@@ -41,7 +41,7 @@ func List() []Surface {
 		{
 			ID:          "error-report-skill",
 			Label:       "Error report skill",
-			Description: "Sibling error-report skill REFERENCE.md template",
+			Description: "The plugin's shipped error-report skill (skills/error-report/SKILL.md)",
 		},
 		{
 			ID:          "skill-recommendation",

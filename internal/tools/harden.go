@@ -353,17 +353,28 @@ func findPluginRootFrom(start string) (string, bool) {
 }
 
 // resolveErrorReportSkill is the Go port of harden-surfaces.js's
-// resolveErrorReportSkill(projectRoot, errors). Source's own implementation
-// ignores its projectRoot parameter entirely — it resolves the sibling
-// skills/error-report/REFERENCE.md path via __dirname (the plugin's
-// own lib/ directory), not via the caller-supplied project root. There is
-// no __dirname in a compiled Go binary, so this walks up from the running
-// executable's directory (falling back to the working directory) looking
-// for the plugin's own .claude-plugin/plugin.json, mirroring source's
-// "resolve sibling of the plugin's own installation" intent as closely as
-// a compiled binary allows.
+// resolveErrorReportSkill(projectRoot, errors). It resolves the plugin's own
+// shipped skills/error-report/SKILL.md, never a path in the caller's
+// project. (The JS source pointed at a REFERENCE.md that the plugin does
+// not ship, which made this surface always record a load error.)
+//
+// It checks CLAUDE_PLUGIN_ROOT first: Claude Code sets it for plugin MCP
+// servers, and the installed binary runs from ~/.sdlc-cache/bin, far from
+// the plugin tree. Without it, this walks up from the running executable's
+// directory (falling back to the working directory) looking for the
+// plugin's own .claude-plugin/plugin.json.
 func resolveErrorReportSkill(errs *[]surfaceLoadError) string {
-	const relPath = "skills/error-report/REFERENCE.md"
+	const relPath = "skills/error-report/SKILL.md"
+
+	if pluginRoot := os.Getenv("CLAUDE_PLUGIN_ROOT"); pluginRoot != "" {
+		candidate := filepath.Join(pluginRoot, filepath.FromSlash(relPath))
+		if _, err := os.Stat(candidate); err == nil {
+			if abs, err := filepath.Abs(candidate); err == nil {
+				return abs
+			}
+			return candidate
+		}
+	}
 
 	start := ""
 	if exe, err := os.Executable(); err == nil {
@@ -388,7 +399,7 @@ func resolveErrorReportSkill(errs *[]surfaceLoadError) string {
 		return ""
 	}
 
-	resolved := filepath.Join(root, "skills", "error-report", "REFERENCE.md")
+	resolved := filepath.Join(root, filepath.FromSlash(relPath))
 	if _, err := os.Stat(resolved); err != nil {
 		*errs = append(*errs, surfaceLoadError{
 			Surface: "error-report-skill",

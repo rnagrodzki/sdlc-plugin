@@ -32,10 +32,10 @@ rather than left implicit:
 - **No `manifest.errorReportSkillPath` dependency.** This port dispatches
   `error-report` the same way every other ported skill does — "invoke
   error-report, provide: Skill/Step/Operation/Error/Suggested
-  investigation" — rather than resolving and following a `REFERENCE.md` path.
-  `prepare_orchestrator`'s (mode `"harden"`) manifest still carries an `errorReportSkillPath` field (and
-  will typically log a load error for it, since `error-report/REFERENCE.md`
-  is not shipped in this port); this skill does not read either.
+  investigation" — rather than resolving and following a file path.
+  `prepare_orchestrator`'s (mode `"harden"`) manifest still carries an
+  `errorReportSkillPath` field (the plugin's `skills/error-report/SKILL.md`);
+  this skill does not read it.
 - Copilot-mirror generation uses the `dimensions_render_instructions` MCP tool.
   Pass `projectRoot: <CONTENT_ROOT>` explicitly (see Step 5b) so the mirror is
   written under the active worktree, not the main one.

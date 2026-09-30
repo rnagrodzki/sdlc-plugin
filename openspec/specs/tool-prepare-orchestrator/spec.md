@@ -224,11 +224,16 @@ In `harden` mode the tool SHALL load each surface from the source below and SHAL
 | `execute-guardrails` | `execute` guardrails in the same file | Empty when the section is missing |
 | `review-dimensions` | `<active>/.sdlc-v2/review-dimensions/*.md` | Metadata only: `name`, `severity`, `description`, `triggers`, `model`, `path` |
 | `copilot-instructions` | `<active>/.github/instructions/*.instructions.md` | `applyTo`, `name`, `path`; a file without front matter is still listed |
-| `error-report-skill` | `skills/error-report/REFERENCE.md` under the plugin root | Empty path plus one load error when the file is absent |
+| `error-report-skill` | The shipped `skills/error-report/SKILL.md` under the plugin root: `CLAUDE_PLUGIN_ROOT` first, then the nearest ancestor of the executable that has `.claude-plugin/plugin.json` | Empty path plus one load error when the file is absent |
 | `skill-recommendation` | Learnings log patterns seen 3 or more times | `priority`: `high` at 6+, `medium` at 4-5, `low` at 3 |
 
-#### Scenario: Missing error-report reference
-- **WHEN** the plugin root has no `skills/error-report/REFERENCE.md`
+#### Scenario: Installed plugin resolves the error-report skill
+- **WHEN** `CLAUDE_PLUGIN_ROOT` points at the installed plugin
+- **THEN** `surfaces.errorReportSkillPath` is the absolute path of `<CLAUDE_PLUGIN_ROOT>/skills/error-report/SKILL.md`
+- **AND** `errors[]` has no entry with `surface: error-report-skill`
+
+#### Scenario: Plugin root not found
+- **WHEN** neither `CLAUDE_PLUGIN_ROOT` nor an ancestor of the executable holds `skills/error-report/SKILL.md`
 - **THEN** `surfaces.errorReportSkillPath` is empty
 - **AND** `errors[]` has one entry with `surface: error-report-skill`
 

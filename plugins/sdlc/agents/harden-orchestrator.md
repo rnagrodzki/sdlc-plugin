@@ -33,7 +33,7 @@ Read the manifest JSON from `MANIFEST_FILE`. The manifest contains:
 | `surfaces.executeGuardrails[]` | `{id, severity, description}` — config.toml execute.guardrails |
 | `surfaces.reviewDimensions[]` | `{name, severity, description, triggers, model, path}` |
 | `surfaces.copilotInstructions[]` | `{applyTo, name, path}` |
-| `surfaces.errorReportSkillPath` | Resolved REFERENCE.md path for `error-report` |
+| `surfaces.errorReportSkillPath` | Absolute path of the plugin's shipped `skills/error-report/SKILL.md`, or empty when the plugin root cannot be found |
 | `pipeline.shipState` / `pipeline.executeState` | Optional paused-pipeline state, or `null` |
 | `repository.root` | MAIN worktree — pipeline state and learnings root only |
 | `repository.contentRoot` | ACTIVE worktree — root of `reviewDimensions[].path` / `copilotInstructions[].path` AND the `.sdlc-v2/config.toml` guardrail config; use to build the `.sdlc-v2/config.toml` targetFile for guardrail proposals; equals `PROJECT_ROOT` |
