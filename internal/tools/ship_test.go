@@ -12,6 +12,7 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/dimensions"
 	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
@@ -133,8 +134,8 @@ func TestShipPrepare_StateInit(t *testing.T) {
 // TestShipPrepare_StepScaffold_AllCanonicalSteps verifies that ship_prepare
 // seeds one step entry per configured step, in configured order, correctly
 // classified tracked/inline, and renders a matching PipelineDisplay table —
-// exercising all 9 shipmeta.CanonicalSteps names at once (4 tracked, 5
-// inline; "received-review"/"commit-fixes" are conditional-only and never
+// exercising all 10 shipmeta.CanonicalSteps names at once (4 tracked, 6
+// inline, harden included; "received-review"/"commit-fixes" are conditional-only and never
 // appear in ship.steps[]/CanonicalSteps, so they cannot be exercised via
 // config here).
 func TestShipPrepare_StepScaffold_AllCanonicalSteps(t *testing.T) {
@@ -201,8 +202,8 @@ func TestShipPrepare_StepScaffold_AllCanonicalSteps(t *testing.T) {
 			inlineCount++
 		}
 	}
-	if trackedCount != 4 || inlineCount != 5 {
-		t.Errorf("tracked/inline split = %d/%d, want 4/5", trackedCount, inlineCount)
+	if trackedCount != 4 || inlineCount != 6 {
+		t.Errorf("tracked/inline split = %d/%d, want 4/6", trackedCount, inlineCount)
 	}
 
 	wantTable := pipeline.PipelineTable(configStepsFromScaffold(shipmeta.InitialShipStepsFromConfig(shipmeta.CanonicalSteps)))
@@ -596,6 +597,75 @@ func TestShipPrepare_ExecuteWithoutPlan(t *testing.T) {
 	}
 	if out.StateFile != "" {
 		t.Errorf("StateFile = %q, want empty (validation errors block state init)", out.StateFile)
+	}
+}
+
+// TestShipPrepare_InvalidReviewThreshold verifies that a ship.reviewThreshold
+// outside dimensions.ValidSeverities is a hard error that blocks state init,
+// while every valid severity — "info" included — is accepted, and an unset
+// value resolves to the "info" default.
+func TestShipPrepare_InvalidReviewThreshold(t *testing.T) {
+	cases := []struct {
+		name      string
+		config    string // [ship] body; empty means no reviewThreshold key
+		wantErr   bool
+		wantValue string
+		wantSrc   string
+	}{
+		{name: "invalid", config: `reviewThreshold = "severe"`, wantErr: true},
+		{name: "uppercase", config: `reviewThreshold = "LOW"`, wantErr: true},
+		{name: "info", config: `reviewThreshold = "info"`, wantValue: "info", wantSrc: "config"},
+		{name: "low", config: `reviewThreshold = "low"`, wantValue: "low", wantSrc: "config"},
+		{name: "unset", config: "", wantValue: "info", wantSrc: "default"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			initGitFixture(t, dir)
+			gitCommit(t, dir, "initial")
+			checkoutBranch(t, dir, "feat/threshold-"+tc.name)
+			writeFile(t, filepath.Join(dir, ".sdlc-v2", "local.toml"),
+				"[ship]\nsteps = [\"commit\", \"pr\"]\n"+tc.config+"\n")
+
+			out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true})
+			if err != nil {
+				t.Fatalf("shipPrepare: %v", err)
+			}
+
+			var thresholdErrs []string
+			for _, e := range out.Errors {
+				if strings.Contains(e, "reviewThreshold") {
+					thresholdErrs = append(thresholdErrs, e)
+				}
+			}
+			if !tc.wantErr {
+				if len(thresholdErrs) != 0 {
+					t.Fatalf("Errors = %v, want no reviewThreshold error", out.Errors)
+				}
+				if got := out.Flags["reviewThreshold"]; got != tc.wantValue {
+					t.Errorf("Flags[reviewThreshold] = %v, want %q", got, tc.wantValue)
+				}
+				if got := out.Sources["reviewThreshold"]; got != tc.wantSrc {
+					t.Errorf("Sources[reviewThreshold] = %q, want %q", got, tc.wantSrc)
+				}
+				return
+			}
+			if len(thresholdErrs) == 0 {
+				t.Fatalf("Errors = %v, want a reviewThreshold error", out.Errors)
+			}
+			for _, sev := range dimensions.ValidSeverities {
+				if !strings.Contains(thresholdErrs[0], sev) {
+					t.Errorf("error %q does not list valid severity %q", thresholdErrs[0], sev)
+				}
+			}
+			if out.StateFile != "" {
+				t.Errorf("StateFile = %q, want empty (validation errors block state init)", out.StateFile)
+			}
+			matches, _ := filepath.Glob(filepath.Join(dir, paths.DataDir, paths.RunsSubdir, "ship-*.json"))
+			if len(matches) != 0 {
+				t.Errorf("ship state files = %v, want none", matches)
+			}
+		})
 	}
 }
 

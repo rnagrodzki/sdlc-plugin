@@ -20,8 +20,9 @@ draft = false
 rebase = true
 
 # Minimum severity that triggers the review fix loop (lower findings are deferred, not dropped).
-# Valid: "low" | "medium" | "high" | "critical"
-reviewThreshold = "low"
+# Valid: "info" | "low" | "medium" | "high" | "critical"
+# Default "info" sends every finding into the fix loop; "low" defers Info findings.
+reviewThreshold = "info"
 
 # Pipeline steps to execute during /ship (in order).
 # Valid steps: "execute" | "commit" | "review" | "harden" | "verify-openspec" |

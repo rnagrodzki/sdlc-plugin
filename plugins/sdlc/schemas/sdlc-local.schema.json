@@ -136,7 +136,8 @@
         },
         "reviewThreshold": {
           "type": "string",
-          "enum": ["critical", "high", "medium", "low"],
+          "enum": ["critical", "high", "medium", "low", "info"],
+          "default": "info",
           "description": "Minimum severity level that triggers the review fix loop. Findings below it are deferred, not dropped -- see /sdlc:deferred."
         },
         "rebase": {

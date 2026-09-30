@@ -5,6 +5,7 @@ triggers:
   - "plugins/sdlc/skills/**"
   - "internal/tools/**"
   - "internal/mcpserver/**"
+  - "plugins/sdlc/agents/**"
 severity: high
 ---
 

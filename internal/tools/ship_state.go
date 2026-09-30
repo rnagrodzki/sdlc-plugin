@@ -1108,9 +1108,10 @@ func shipStateDefer(root, workDir string, in ShipStateIn, now func() time.Time) 
 	// priorityFromSeverity quietly bucketed the unknown value as medium —
 	// a silent degraded write. The accepted set is dimensions.ValidSeverities
 	// (the same vocabulary review findings are emitted with), not a literal
-	// restated here; "info" is in it deliberately, since the default
-	// reviewThreshold is "low" and info is exactly what a default run
-	// defers. The normalized lowercase form is what both stores record.
+	// restated here; "info" is in it deliberately: the default
+	// reviewThreshold is "info", so a default run defers nothing as
+	// below-threshold, but a project on "low" defers exactly its info
+	// findings. The normalized lowercase form is what both stores record.
 	severity := strings.ToLower(strings.TrimSpace(rawSeverity))
 	acceptedSeverities := strings.Join(dimensions.ValidSeverities, " | ")
 	if !slices.Contains(dimensions.ValidSeverities, severity) {

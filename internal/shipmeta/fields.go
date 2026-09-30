@@ -76,7 +76,7 @@ var ShipBuiltInDefaults = shipBuiltInDefaultsT{
 	Bump:                        "patch",
 	Draft:                       false,
 	Auto:                        false,
-	ReviewThreshold:             "low",
+	ReviewThreshold:             "info",
 	Rebase:                      true,
 	VerifyPipelineTimeout:       1200,
 	VerifyPipelineInterval:      60,

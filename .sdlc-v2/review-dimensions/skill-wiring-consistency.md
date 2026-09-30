@@ -5,6 +5,8 @@ triggers:
   - "plugins/sdlc/skills/**"
   - "internal/tools/**"
   - "internal/skillcheck/**"
+  - "internal/shipmeta/**/*.go"
+  - "internal/setupmeta/**/*.go"
 severity: high
 ---
 

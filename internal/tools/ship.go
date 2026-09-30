@@ -6,11 +6,13 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/configmigrate"
+	"github.com/rnagrodzki/sdlc-plugin/internal/dimensions"
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
@@ -366,6 +368,14 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 			errors = append(errors, fmt.Sprintf(
 				"Invalid --quality %q. Valid values: %s", q, strings.Join(validQuality, ", ")))
 		}
+	}
+
+	// reviewThreshold validity. The accepted set is the review severity
+	// vocabulary itself (dimensions.ValidSeverities), not a restated list.
+	if t, _ := merged["reviewThreshold"].(string); !slices.Contains(dimensions.ValidSeverities, t) {
+		errors = append(errors, fmt.Sprintf(
+			"invalid reviewThreshold %q: use one of %s in [ship] of .sdlc-v2/local.toml",
+			t, strings.Join(dimensions.ValidSeverities, ", ")))
 	}
 
 	// At least one step must run.

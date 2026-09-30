@@ -162,7 +162,7 @@ var worktreeSkillsDescriptiveNoAction = map[string]worktreeSkillsException{
 		contains: "hook records",
 		reason:   `narrates the automatic "pipeline-continue" PostToolUse hook recording CLI evidence -- no LLM Read/Write/Glob call on this line`,
 	},
-	"skills/ship/config-format.md:123": {
+	"skills/ship/config-format.md:124": {
 		contains: "a per-step automation policy read independently",
 		reason:   `schema doc describing what ship_state{action:"next"} reads internally -- not an LLM instruction`,
 	},

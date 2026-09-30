@@ -247,9 +247,9 @@ var ShipFields = []Field{
 		Name:        "reviewThreshold",
 		Label:       "Minimum severity that triggers the review fix loop",
 		Type:        "enum",
-		Options:     []string{"critical", "high", "medium", "low"},
-		Default:     "low",
-		Description: "Review findings at or above this severity are fixed before the pipeline continues. Findings below it are not dropped — they are deferred to the backlog and listed by /sdlc:deferred. At the default \"low\" that means every finding except Info is fixed in-line.",
+		Options:     []string{"critical", "high", "medium", "low", "info"},
+		Default:     "info",
+		Description: "Review findings at or above this severity are fixed before the pipeline continues. Findings below it are not dropped — they are deferred to the backlog and listed by /sdlc:deferred. At the default \"info\" every finding, Info included, is fixed in-line; \"low\" defers Info findings.",
 	},
 	{
 		Name:                  "verifyPipelineTimeout",
