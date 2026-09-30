@@ -250,7 +250,8 @@ The tool SHALL always return every top-level output field, with list fields as a
 The tool SHALL write the whole result as JSON to `manifest.json` in a new `sdlc-commit-manifest-*` directory under the system temp directory, and SHALL return that path in `manifestPath`.
 
 - The manifest's own `manifestPath` field equals the returned path.
-- On success the file and directory stay on disk; the tool never removes them.
+- On success the file and directory stay on disk; the tool never removes the directory it just wrote.
+- After a successful write, the tool removes every other `sdlc-commit-manifest-*` directory in the same temp root whose modification time is more than 24 hours old. Younger ones and other directories are kept. Errors during this cleanup are ignored and add no warning.
 - On a directory-create or file-write failure: `manifestPath` is empty and a `manifestPath:` warning is added. After a file-write failure the new directory is removed.
 - The file-write warning text contains `write manifest file`.
 
@@ -264,6 +265,12 @@ The tool SHALL write the whole result as JSON to `manifest.json` in a new `sdlc-
 - **THEN** `manifestPath` is empty
 - **AND** `warnings` holds an entry containing `manifestPath` and `write manifest file`
 - **AND** no `sdlc-commit-manifest-*` directory is left in the temp root
+
+#### Scenario: Stale manifest directories removed
+- **WHEN** the temp root holds an `sdlc-commit-manifest-*` directory 48 hours old, one 1 hour old, and an unrelated directory 48 hours old
+- **AND** `commit_prepare` writes a new manifest
+- **THEN** the 48-hour-old manifest directory is removed
+- **AND** the 1-hour-old manifest directory, the unrelated directory and the new manifest directory remain
 
 ### Requirement: Tool annotations
 The tool SHALL declare the annotations below.

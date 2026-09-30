@@ -62,7 +62,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		readOnly:   true,
 		idempotent: true,
 		openWorld:  false,
-		reason:     "local git reads plus os.MkdirTemp(\"\", \"sdlc-commit-manifest-\") for the manifestPath output",
+		reason:     "local git reads plus os.MkdirTemp(\"\", \"sdlc-commit-manifest-\") for the manifestPath output, and os.RemoveAll of sibling sdlc-commit-manifest-* dirs older than 24h under os.TempDir()",
 	},
 	"links_validate": {
 		title:      "Check documentation links",

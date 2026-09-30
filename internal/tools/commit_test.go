@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
@@ -23,9 +24,11 @@ import (
 // redirectTempManifests points the fsseam's mkdirTempFunc at a t.TempDir()
 // root for the duration of t. commitPrepare always ends by writing its
 // manifest through mkdirTempFunc("", "sdlc-commit-manifest-"); without this
-// redirect the directory lands in os.TempDir(), nothing removes it, and every
+// redirect the directory lands in os.TempDir() and stays there for a day
+// (commitPrepare only removes manifest dirs older than 24h), so every
 // `go test` run leaks one sdlc-commit-manifest-* directory per test that calls
-// commitPrepare with the real fsseam installed.
+// commitPrepare with the real fsseam installed. The stale-dir sweep scans the
+// manifest's parent directory, so it also stays inside root.
 //
 // Unlike installFakeFS this keeps real file I/O, so tests that assert on
 // git-driven behaviour are unaffected — only the manifest's destination moves.
@@ -306,6 +309,56 @@ func TestCommitPrepare_ManifestFileWriteFailureRemovesTempDir(t *testing.T) {
 	}
 	if left := tempEntries(t, root); len(left) != 0 {
 		t.Errorf("temp root still holds %v after a failed manifest write, want it empty", left)
+	}
+}
+
+// TestCommitPrepare_RemovesStaleManifestDirs pins the manifest cleanup: each
+// call removes sdlc-commit-manifest-* directories older than 24h, keeps
+// younger ones and the one it just wrote, and leaves other directories alone.
+func TestCommitPrepare_RemovesStaleManifestDirs(t *testing.T) {
+	root := redirectTempManifests(t)
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	prepare := func() string {
+		t.Helper()
+		out, err := commitPrepare(dir, dir, CommitPrepareIn{SkipConfigCheck: true})
+		if err != nil || out.ManifestPath == "" {
+			t.Fatalf("commitPrepare: manifestPath=%q err=%v", out.ManifestPath, err)
+		}
+		return filepath.Dir(out.ManifestPath)
+	}
+	age := func(path string, d time.Duration) {
+		t.Helper()
+		old := time.Now().Add(-d)
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stale := prepare()
+	age(stale, 48*time.Hour)
+	recent := prepare()
+	age(recent, time.Hour)
+	other := filepath.Join(root, "unrelated-dir")
+	if err := os.Mkdir(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	age(other, 48*time.Hour)
+
+	current := prepare()
+
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("manifest dir older than 24h should be removed, stat err = %v", err)
+	}
+	for _, keep := range []string{recent, current, other} {
+		if _, err := os.Stat(keep); err != nil {
+			t.Errorf("%s should be kept: %v", filepath.Base(keep), err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(current, "manifest.json")); err != nil {
+		t.Errorf("current manifest must stay readable: %v", err)
 	}
 }
 
