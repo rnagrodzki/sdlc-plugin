@@ -1549,6 +1549,49 @@ func TestShipState_Read_InFlight_FailedStepNeverReportsFailure(t *testing.T) {
 	}
 }
 
+// A run that cleanup stamped completed is finished, even when one of its
+// steps ended "failed" (failed is terminal for the cleanup contract). read
+// must not offer to resume it.
+func TestShipState_Read_CompletedRunWithFailedStepHasNoBriefing(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, "feat/done-failed")
+	path := shipStateInitFixture(t, dir, "feat/done-failed")
+
+	for _, s := range readStateData(t, path)["steps"].([]any) {
+		name, _ := s.(map[string]any)["name"].(string)
+		if name == "execute" {
+			setStepStatus(t, path, name, "failed", map[string]any{"startedAt": "2026-01-01T00:05:00Z"})
+			continue
+		}
+		setStepStatus(t, path, name, "skipped", nil)
+	}
+
+	now := fixedNow(time.Date(2026, 1, 1, 0, 10, 0, 0, time.UTC))
+	if _, err := shipState(dir, dir, ShipStateIn{
+		Action: "cleanup",
+		Detail: map[string]any{"branch": "feat/done-failed"},
+	}, now); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	if got := readStateData(t, path)["pipelineStatus"]; got != "completed" {
+		t.Fatalf("pipelineStatus = %v, want completed (cleanup should have stamped the run)", got)
+	}
+
+	out, err := shipState(dir, dir, ShipStateIn{
+		Action: "read",
+		Detail: map[string]any{"branch": "feat/done-failed"},
+	}, now)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	data, _ := out.(map[string]any)
+	if b, ok := data["resumeBriefing"]; ok {
+		t.Errorf("resumeBriefing = %#v, want absent on a completed run", b)
+	}
+}
+
 func TestShipState_Read_InFlight_InProgressStep(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)

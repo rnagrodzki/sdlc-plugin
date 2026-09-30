@@ -412,12 +412,13 @@ The `read` action SHALL return the full state object plus a computed `reportData
 - **AND** `reportData.reviewLedgerNote` is `review did not run or its total was not recorded`
 
 ### Requirement: read attaches a resume briefing
-The `read` action SHALL attach `resumeBriefing` when some step blocks progress and at least one step has started.
+The `read` action SHALL attach `resumeBriefing` when the run is not stamped `pipelineStatus:"completed"`, some step blocks progress, and at least one step has started.
 
 - "Blocks" uses the proceed-gate rule: `pending` without `condition`, `in_progress`, or `failed`.
 - The last step is the `in_progress` entry, else the last entry with `startedAt`.
 - A `failed` last step still reports `resumable:true`; `read` never errors for it.
 - A freshly initialized run (nothing started) has no `resumeBriefing`.
+- A run stamped `pipelineStatus:"completed"` has no `resumeBriefing`, even when a step ended `failed`.
 
 | Field | Meaning |
 |---|---|
@@ -437,6 +438,10 @@ The `read` action SHALL attach `resumeBriefing` when some step blocks progress a
 
 #### Scenario: Fresh run has no briefing
 - **WHEN** every step is `pending` with no `startedAt`
+- **THEN** the response has no `resumeBriefing`
+
+#### Scenario: Completed run has no briefing
+- **WHEN** `execute` is `failed` with a `startedAt`, every other step is `skipped`, and `cleanup` stamped the run `pipelineStatus:"completed"`
 - **THEN** the response has no `resumeBriefing`
 
 ### Requirement: next
