@@ -36,7 +36,7 @@ The tool SHALL return the fields below.
 | `written` | Section keys written, in sorted order. |
 | `errors` | One `section <key>: <cause>` entry per failed section; omitted when none. |
 | `scaffold` | CI file reports from the `version` auto-scaffold; omitted when it did not run. |
-| `warnings` | Scaffold warnings; omitted when none. |
+| `warnings` | Full-rewrite fallback warnings (see "File text kept outside the written section") and scaffold warnings; omitted when none. |
 
 #### Scenario: Single section written
 - **WHEN** `sectionsJson` is `{"commit":{"style":"conventional"}}`
@@ -96,6 +96,43 @@ The tool SHALL replace the table at the named key wholesale and SHALL leave ever
 #### Scenario: Null clears a leaf
 - **WHEN** the call writes `{"plan.tasks":null}`
 - **THEN** `plan.tasks` becomes an empty table
+
+### Requirement: File text kept outside the written section
+The tool SHALL change only the text of the written section in the target file and SHALL keep every other byte, including comments, blank lines and other sections, unchanged.
+
+- The section's text is every table header at or below the key (`[x]`, `[x.y]`, `[[x.y]]`), from the header line through its last key/value line, plus any key/value line outside those tables whose full key is at or below the key (e.g. `y.z = 1` under `[x]` when the key is `x.y`).
+- The new section text is encoded with go-toml. It goes where the first of those tables was. The other tables are deleted, together with the blank lines right after them.
+- When the file has no table for the key, the new text is appended at the end of the file after exactly one blank line.
+- Comment rule: comment and blank lines above a table header stay, and comment and blank lines after a table's last key/value stay. Comment lines between a replaced header and its last key/value are lost.
+- Headers are found with the go-toml parser, so `[` inside a multi-line string, a multi-line array or a comment is never taken for a header.
+- New text uses `\n` line endings, even in a file that uses `\r\n`.
+- Safety check: the spliced text must decode to exactly the data a full rewrite of the merged file would decode to. When it does not, or when the key lives inside an inline table, a dotted key that defines a parent, or an array of tables, the tool rewrites the whole file from parsed data (all comments in that file are lost) and adds a `warnings` entry `section <key>: could not edit <file> in place, so the whole file was rewritten and its comments were removed`.
+- `config.toml` and `local.toml` use the same writer.
+
+#### Scenario: Template comments survive a write
+- **WHEN** `.sdlc-v2/config.toml` holds the shipped commented template
+- **AND** the call writes `{"commit":{"allowedTypes":["feat","fix"],"allowedScopes":["api"]}}`
+- **THEN** the file equals the template with only the `[commit]` table text replaced
+- **AND** `warnings` is omitted
+
+#### Scenario: Absent section appended
+- **WHEN** `config.toml` has no `jira` table
+- **AND** the call writes `{"jira":{"defaultProject":"PROJ"}}`
+- **THEN** `[jira]` is appended at the end of the file after one blank line
+- **AND** all earlier text is unchanged
+
+#### Scenario: Sub-tables replaced as one unit
+- **WHEN** `config.toml` has `[plan.guardrails.a]` and `[plan.guardrails.b]`, with a `[jira]` table between them
+- **AND** the call writes `{"plan.guardrails":{"c":{"severity":"error"}}}`
+- **THEN** `[plan.guardrails.c]` takes the place of `[plan.guardrails.a]`
+- **AND** `[plan.guardrails.b]` is deleted
+- **AND** the `[jira]` table and its comments are unchanged
+
+#### Scenario: Layout that cannot be spliced
+- **WHEN** `config.toml` defines `plan = { tasks = { note = "old" } }`
+- **AND** the call writes `{"plan.tasks":{"note":"new"}}`
+- **THEN** `plan.tasks.note` is `new`
+- **AND** `warnings` has an entry starting `section plan.tasks: could not edit .sdlc-v2/config.toml in place`
 
 ### Requirement: Dotted field names expanded
 The tool SHALL expand dotted field names inside a section value into nested tables before writing. Keys that share a prefix SHALL merge into one nested table.

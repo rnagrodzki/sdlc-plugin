@@ -109,6 +109,15 @@ func expandDottedKeys(flat map[string]any) map[string]any {
 	return out
 }
 
+// sectionFile names the config file a section id is written to.
+func sectionFile(id string) string {
+	top, _, _ := strings.Cut(id, ".")
+	if config.ProjectSections[top] {
+		return ".sdlc-v2/config.toml"
+	}
+	return ".sdlc-v2/local.toml"
+}
+
 // setupWriteSections is the core logic, separated from the handler for
 // testability.
 func setupWriteSections(root string, in SetupWriteSectionsIn) (SetupWriteSectionsOut, error) {
@@ -169,20 +178,27 @@ func setupWriteSections(root string, in SetupWriteSectionsIn) (SetupWriteSection
 
 	var written []string
 	var errs []string
+	var rewroteWarnings []string
 	for _, id := range ids {
 		value := sections[id]
 		if value == nil {
 			value = map[string]any{}
 		}
 		value = expandDottedKeys(value)
-		if err := config.WriteSection(root, id, value); err != nil {
+		rewrote, err := config.WriteSectionReport(root, id, value)
+		if err != nil {
 			errs = append(errs, fmt.Sprintf("section %s: %s", id, err.Error()))
 			continue
+		}
+		if rewrote {
+			rewroteWarnings = append(rewroteWarnings, fmt.Sprintf(
+				"section %s: could not edit %s in place, so the whole file was rewritten and its comments were removed",
+				id, sectionFile(id)))
 		}
 		written = append(written, id)
 	}
 
-	out := SetupWriteSectionsOut{OK: len(errs) == 0, Written: written}
+	out := SetupWriteSectionsOut{OK: len(errs) == 0, Written: written, Warnings: rewroteWarnings}
 	if len(errs) > 0 {
 		out.Errors = errs
 	}

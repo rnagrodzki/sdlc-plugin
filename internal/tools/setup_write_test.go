@@ -21,6 +21,14 @@ import (
 func callRegisteredSetupWriteSections(t *testing.T, sectionsJSON string) (*mcp.CallToolResult, string, string) {
 	t.Helper()
 	dir := t.TempDir()
+	res, text := callRegisteredSetupWriteSectionsIn(t, dir, sectionsJSON)
+	return res, text, dir
+}
+
+// callRegisteredSetupWriteSectionsIn is callRegisteredSetupWriteSections run
+// from a caller-made (and possibly pre-seeded) non-git directory.
+func callRegisteredSetupWriteSectionsIn(t *testing.T, dir, sectionsJSON string) (*mcp.CallToolResult, string) {
+	t.Helper()
 	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(dir))
 	t.Chdir(dir)
 
@@ -52,7 +60,110 @@ func callRegisteredSetupWriteSections(t *testing.T, sectionsJSON string) (*mcp.C
 	if !ok {
 		t.Fatalf("content[0] is %T, want *mcp.TextContent", res.Content[0])
 	}
-	return res, text.Text, dir
+	return res, text.Text
+}
+
+// TestSetupWriteSections_FallbackWarns verifies that a layout the splicer
+// cannot edit in place (the section inside an inline table) is still written
+// correctly, and that the tool warns that the file's comments were removed.
+func TestSetupWriteSections_FallbackWarns(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".sdlc-v2", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("# doc\nplan = { tasks = { note = \"old\" } }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, text := callRegisteredSetupWriteSectionsIn(t, dir, `{"plan.tasks":{"note":"new"}}`)
+	if res.IsError {
+		t.Fatalf("expected success, got tool error:\n%s", text)
+	}
+	if !strings.Contains(text, "section plan.tasks: could not edit .sdlc-v2/config.toml in place") {
+		t.Errorf("missing full-rewrite warning:\n%s", text)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "note = 'new'") {
+		t.Errorf("plan.tasks.note not written:\n%s", got)
+	}
+}
+
+// TestSetupWriteSections_KeepsTemplateComments verifies that writing one
+// section into the commented config.toml/local.toml templates replaces only
+// that section's text: every comment and every other section stays
+// byte-for-byte, and the file decodes to the written values.
+func TestSetupWriteSections_KeepsTemplateComments(t *testing.T) {
+	cases := []struct {
+		name     string
+		file     string
+		template string
+		json     string
+		oldBlock string // exact template text of the replaced section
+		newBlock string // exact spliced text
+	}{
+		{
+			name:     "config.toml commit",
+			file:     "config.toml",
+			template: configTemplate,
+			json:     `{"commit":{"allowedTypes":["feat","fix"],"allowedScopes":["api"]}}`,
+			oldBlock: "[commit]\n" +
+				"# Allowed commit types (conventional-commit prefix before the colon).\n" +
+				"allowedTypes = [\"feat\", \"fix\", \"chore\", \"docs\", \"refactor\", \"test\", \"ci\", \"perf\"]\n" +
+				"# Allowed scopes (empty = any scope accepted).\n" +
+				"allowedScopes = []\n",
+			newBlock: "[commit]\nallowedScopes = ['api']\nallowedTypes = ['feat', 'fix']\n",
+		},
+		{
+			name:     "config.toml dotted plan.guardrails",
+			file:     "config.toml",
+			template: configTemplate,
+			json:     `{"plan.guardrails":{"only-one":{"severity":"warning","description":"d"}}}`,
+			oldBlock: "[plan.guardrails.test-coverage-required]\n" +
+				"severity = \"error\"\n" +
+				"description = \"\"\"\n" +
+				"Every task that creates or modifies source code \\\n" +
+				"must include corresponding test cases.\"\"\"\n" +
+				"\n" +
+				"[plan.guardrails.no-ci-bypass]\n" +
+				"severity = \"error\"\n" +
+				"description = \"Plans must not include steps that skip or disable CI checks.\"\n",
+			newBlock: "[plan.guardrails.only-one]\ndescription = 'd'\nseverity = 'warning'\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if !strings.Contains(tc.template, tc.oldBlock) {
+				t.Fatalf("template no longer contains the expected block:\n%s", tc.oldBlock)
+			}
+			dir := t.TempDir()
+			path := filepath.Join(dir, ".sdlc-v2", tc.file)
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(tc.template), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			res, text := callRegisteredSetupWriteSectionsIn(t, dir, tc.json)
+			if res.IsError {
+				t.Fatalf("expected success, got tool error:\n%s", text)
+			}
+			if strings.Contains(text, "comments were removed") {
+				t.Errorf("tool fell back to a full rewrite:\n%s", text)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := strings.Replace(tc.template, tc.oldBlock, tc.newBlock, 1)
+			if string(got) != want {
+				t.Errorf("file is not the template with only the section replaced.\n--- got ---\n%s\n--- want ---\n%s", got, want)
+			}
+		})
+	}
 }
 
 // TestSetupWriteSections_UnknownTopLevelKeyRejected verifies that a section

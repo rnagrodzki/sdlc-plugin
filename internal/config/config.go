@@ -825,47 +825,58 @@ func ReadSection(mainRoot, name string) (map[string]any, error) {
 // .sdlc-v2/config.toml, never local.toml.
 //
 // For project sections, validates the merged result against the v5 schema
-// before writing. Writes use fsx.AtomicWriteTOML for crash safety.
+// before writing. Writes are atomic (fsx.AtomicWriteBytes) for crash safety.
+//
+// The write edits the file text in place (see splice.go): only the text of
+// the named section changes, so comments and every other section stay
+// byte-for-byte. When the file's layout cannot be spliced, or the spliced
+// text would not decode to the intended data, WriteSection falls back to
+// rewriting the whole file from parsed data, which drops its comments.
 func WriteSection(mainRoot, name string, v map[string]any) error {
+	_, err := WriteSectionReport(mainRoot, name, v)
+	return err
+}
+
+// WriteSectionReport is WriteSection that also reports rewrote=true when it
+// had to fall back to rewriting the whole file from parsed data (all comments
+// in that file are then gone).
+func WriteSectionReport(mainRoot, name string, v map[string]any) (rewrote bool, err error) {
 	if err := validateSectionName(name); err != nil {
-		return err
+		return false, err
 	}
 	top, _, _ := strings.Cut(name, ".")
 
 	sdlcDir := filepath.Join(mainRoot, paths.DataDir)
 	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
-		return fmt.Errorf("config: create .sdlc-v2 dir: %w", err)
+		return false, fmt.Errorf("config: create .sdlc-v2 dir: %w", err)
 	}
 
 	if ProjectSections[top] {
-		configPath := filepath.Join(sdlcDir, "config.toml")
-		var existing map[string]any
-		if err := fsx.ReadTOML(configPath, &existing); err != nil {
-			if errors.Is(err, fsx.ErrNotFound) {
-				existing = make(map[string]any)
-			} else {
-				return fmt.Errorf("config: %w", err)
-			}
-		}
-		setSectionPath(existing, name, v)
-		if err := validateProjectKeys(existing); err != nil {
-			return err
-		}
-		traceRead(configPath, "write")
-		return fsx.AtomicWriteTOML(configPath, existing)
+		return writeSectionFile(filepath.Join(sdlcDir, "config.toml"), name, v, validateProjectKeys)
 	}
+	return writeSectionFile(filepath.Join(sdlcDir, "local.toml"), name, v, nil)
+}
 
-	// Local section.
-	localPath := filepath.Join(sdlcDir, "local.toml")
+// writeSectionFile is the shared read-merge-write for config.toml and
+// local.toml. validate (optional) checks the merged document before any
+// write.
+func writeSectionFile(path, name string, v map[string]any, validate func(map[string]any) error) (bool, error) {
 	var existing map[string]any
-	if err := fsx.ReadTOML(localPath, &existing); err != nil {
-		if errors.Is(err, fsx.ErrNotFound) {
-			existing = make(map[string]any)
-		} else {
-			return fmt.Errorf("config: %w", err)
+	if err := fsx.ReadTOML(path, &existing); err != nil {
+		if !errors.Is(err, fsx.ErrNotFound) {
+			return false, fmt.Errorf("config: %w", err)
 		}
+		existing = make(map[string]any)
 	}
 	setSectionPath(existing, name, v)
-	traceRead(localPath, "write")
-	return fsx.AtomicWriteTOML(localPath, existing)
+	if validate != nil {
+		if err := validate(existing); err != nil {
+			return false, err
+		}
+	}
+	traceRead(path, "write")
+	if out, ok := spliceFile(path, name, v, existing); ok {
+		return false, fsx.AtomicWriteBytes(path, out)
+	}
+	return true, fsx.AtomicWriteTOML(path, existing)
 }
