@@ -1809,7 +1809,11 @@ func validateGuardrailsAction(root string, in ValidateIn) ([]discovery.Finding, 
 	// the TOML named-table form ([plan.guardrails.<id>]) into this same
 	// array-of-objects shape (with "id" injected from the table key) before
 	// ReadSection ever extracts the section. There is no call path that
-	// hands this function the raw map[string]any table shape.
+	// hands this function the raw map[string]any table shape. An array form
+	// ([[plan.guardrails]] or an inline array) is not normalized and arrives
+	// as written, so entries can lack an id or repeat one; a quoted empty
+	// table key ([plan.guardrails.""]) injects id "". validateOneGuardrail's
+	// missing-id and duplicate-id checks catch those cases.
 	raw, ok := data["guardrails"].([]any)
 	if !ok {
 		return nil, nil

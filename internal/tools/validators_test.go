@@ -618,25 +618,11 @@ func TestValidateCostTiersDocMissing(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestValidateGuardrailsAllChecks exercises validateOneGuardrail's checks via
-// a real config.toml. Guardrails are keyed named tables
-// ([plan.guardrails.<id>]); config.ReadSection always injects "id" from the
-// table key (see normalizeGuardrailTables/guardrailsTableToSlice in
-// internal/config/config.go), which makes two of the original JSON fixture's
-// cases structurally unrepresentable here and they are intentionally
-// dropped:
-//   - a guardrail with no "id" at all: every table key becomes a non-empty
-//     id, so the id-is-missing branch of validateOneGuardrail can no longer
-//     be reached through a config file.
-//   - two guardrails sharing one "id" (duplicate detection): TOML tables
-//     cannot repeat the same key ([plan.guardrails.dup-id] twice is a parse
-//     error), so the duplicate-id branch can no longer be reached through a
-//     config file either.
-//
-// Both branches are still reachable in principle if validateOneGuardrail is
-// ever called directly or fed a hand-rolled []any (e.g. a non-canonical
-// [[plan.guardrails]] array-of-tables with an explicit "id" field, which
-// normalizeGuardrailTables does not touch), but no test exercises that path
-// post-migration. Flagged as a coverage reduction, not fixed here.
+// a real config.toml in the canonical named-table form
+// ([plan.guardrails.<id>]), where config.ReadSection injects "id" from the
+// table key. The "id is missing" and "id is duplicated" checks are covered
+// by TestValidateGuardrailsIDChecksReachable, which uses the config shapes
+// that skip that injection.
 func TestValidateGuardrailsAllChecks(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), ""+
@@ -681,6 +667,69 @@ func TestValidateGuardrailsAllChecks(t *testing.T) {
 	}
 	if byID["good-guardrail"] != 0 {
 		t.Errorf("expected 0 findings for good-guardrail, got %d", byID["good-guardrail"])
+	}
+}
+
+// TestValidateGuardrailsIDChecksReachable proves the "id is missing" and
+// "id is duplicated across guardrails" checks are reachable from a real
+// config.toml. normalizeGuardrailTables only rewrites the named-table form
+// (a map); an array form ([[plan.guardrails]] or an inline array) reaches
+// the validator as-is, with no id injected and no key uniqueness. A quoted
+// empty table key ([plan.guardrails.""]) is valid TOML and injects id "".
+func TestValidateGuardrailsIDChecksReachable(t *testing.T) {
+	cases := []struct {
+		name   string
+		config string
+		want   []string // expected finding messages, in order
+	}{
+		{
+			name: "array of tables: missing id and duplicate id",
+			config: "" +
+				"[[plan.guardrails]]\n" +
+				"description = \"no id here\"\n" +
+				"\n" +
+				"[[plan.guardrails]]\n" +
+				"id = \"dup-id\"\n" +
+				"description = \"first\"\n" +
+				"\n" +
+				"[[plan.guardrails]]\n" +
+				"id = \"dup-id\"\n" +
+				"description = \"second\"\n",
+			want: []string{
+				"(missing): id is missing",
+				"dup-id: id is duplicated across guardrails",
+			},
+		},
+		{
+			name:   "inline array: missing id",
+			config: "[plan]\nguardrails = [ { description = \"x\" } ]\n",
+			want:   []string{"(missing): id is missing"},
+		},
+		{
+			name:   "empty quoted table key: missing id",
+			config: "[plan.guardrails.\"\"]\ndescription = \"d\"\n",
+			want:   []string{"(missing): id is missing"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), tc.config)
+			out, err := validate(root, ValidateIn{Action: "guardrails"})
+			if err != nil {
+				t.Fatalf("validate: %v", err)
+			}
+			var got []string
+			for _, f := range out.Findings {
+				if f.Severity != "error" {
+					t.Errorf("finding severity = %q, want error: %+v", f.Severity, f)
+				}
+				got = append(got, f.Message)
+			}
+			if strings.Join(got, "\n") != strings.Join(tc.want, "\n") {
+				t.Fatalf("findings = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

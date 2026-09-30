@@ -295,9 +295,9 @@ The `guardrails` action SHALL check each guardrail in `[<section>.guardrails.<id
 
 | Problem text | Trigger |
 |---|---|
-| `id is missing` / `id must be a string` | No usable id (id shown as `(missing)`) |
+| `id is missing` / `id must be a string` | No usable id (id shown as `(missing)`): an array-form entry with no `id`, a non-string `id`, or an empty table key `[<section>.guardrails.""]` |
 | `id must match kebab-case pattern: /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/` | Id is not kebab-case |
-| `id is duplicated across guardrails` | Same id seen twice |
+| `id is duplicated across guardrails` | Same id seen twice (only possible in the array form) |
 | `description is missing` | No description, or an empty string |
 | `description must be a string` | Description is not a string |
 | `description cannot be empty` | Description is only whitespace |
@@ -314,6 +314,14 @@ The `guardrails` action SHALL check each guardrail in `[<section>.guardrails.<id
 #### Scenario: Custom section
 - **WHEN** `section` is `execute` and `[execute.guardrails.exec-guardrail]` has `description = ""`
 - **THEN** there is exactly one finding
+
+#### Scenario: Array form with missing and duplicate ids
+- **WHEN** the `plan` section uses `[[plan.guardrails]]` with one entry that has no `id` and two entries with `id = "dup-id"`
+- **THEN** there are 2 findings: `(missing): id is missing` and `dup-id: id is duplicated across guardrails`
+
+#### Scenario: Empty table key
+- **WHEN** the `plan` section has `[plan.guardrails.""]` with a description
+- **THEN** there is exactly one finding, `(missing): id is missing`
 
 ### Requirement: dimensions action
 The `dimensions` action SHALL validate every review-dimension file in `.sdlc-v2/review-dimensions/` of the active worktree and map each problem to an id and severity. `path` is the dimension file name.
