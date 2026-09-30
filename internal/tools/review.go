@@ -752,11 +752,15 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 
 	isLocalScope := scope == "staged" || scope == "working"
 
-	// Resolve base branch.
+	// Resolve base branch. The local scopes diff against no base ref, so
+	// target is ignored for them and base_branch stays null.
 	var base string
-	if in.Target != "" {
+	switch {
+	case isLocalScope:
+		// No base ref.
+	case in.Target != "":
 		base = in.Target
-	} else if !isLocalScope {
+	default:
 		b, err := gitx.DefaultBranch(activeRoot)
 		if err != nil {
 			return ReviewPrepareOut{}, &mcpserver.InfraError{
@@ -952,8 +956,15 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 		}
 	}
 
-	// PR metadata (best effort: a failed lookup becomes a warning).
-	pr, warnings := lookupReviewPR(activeRoot)
+	// PR metadata (best effort: a failed lookup becomes a warning). The
+	// local scopes review uncommitted changes, which are not part of any PR,
+	// so they skip the lookup: the skill must not offer to post such a
+	// review to the branch's PR.
+	pr := reviewManifestPR{Exists: false}
+	var warnings []string
+	if !isLocalScope {
+		pr, warnings = lookupReviewPR(activeRoot)
+	}
 
 	// Build index entries.
 	var indexEntries []reviewDimIndexEntry

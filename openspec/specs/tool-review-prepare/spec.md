@@ -23,7 +23,7 @@ The tool SHALL run in manifest mode by default and in save mode when `saveReview
 
 | Field | Type | Required | Encoding | Meaning |
 |---|---|---|---|---|
-| `target` | string | no | plain text, e.g. `main` | Base branch/ref to diff against. Overrides the detected default branch. |
+| `target` | string | no | plain text, e.g. `main` | Base branch/ref to diff against. Overrides the detected default branch. Ignored for scopes `staged` and `working`. |
 | `skipConfigCheck` | bool | no | JSON boolean | Skips the config-version gate. |
 | `saveReview` | bool | no | JSON boolean | Selects save mode. All other fields except `content` are ignored. |
 | `content` | string | when `saveReview` is `true` | plain text (Markdown) | Review comment body to save verbatim. |
@@ -74,7 +74,7 @@ The tool SHALL read the review scope from key `scope` of the `[review]` section 
 - **THEN** the tool uses scope `all`
 
 ### Requirement: Base branch resolution
-The tool SHALL use `target` as the base ref when it is non-empty; otherwise, for scopes `all`, `committed` and `worktree`, it SHALL detect the default branch from `refs/remotes/origin/HEAD`, then a local `main`, then a local `master`.
+For scopes `all`, `committed` and `worktree` the tool SHALL use `target` as the base ref when it is non-empty, and otherwise SHALL detect the default branch from `refs/remotes/origin/HEAD`, then a local `main`, then a local `master`. For scopes `staged` and `working` the tool SHALL use no base ref and SHALL ignore `target`.
 
 #### Scenario: Explicit target
 - **WHEN** `target` is `main`
@@ -89,6 +89,11 @@ The tool SHALL use `target` as the base ref when it is non-empty; otherwise, for
 #### Scenario: Local scope needs no base
 - **WHEN** scope is `staged` and `target` is empty
 - **THEN** no default-branch detection runs
+- **AND** the manifest `base_branch` is `null`
+
+#### Scenario: Local scope ignores target
+- **WHEN** scope is `working` and `target` is `main`
+- **THEN** the changed files come from `git diff --name-only HEAD`
 - **AND** the manifest `base_branch` is `null`
 
 ### Requirement: No changed files
@@ -336,7 +341,7 @@ In manifest mode the tool SHALL write `manifest.json` into the same temp directo
 | `uncommitted_changes` | `true` when `git status --porcelain` output is not empty. |
 | `git.commit_count` | Same value as `summary.commitCount`. |
 | `git.changed_files_count` | Number of changed files. |
-| `pr` | Open PR of the current branch; see PR lookup. |
+| `pr` | Open PR of the current branch; `{exists: false}` for scopes `staged` and `working`. See PR lookup. |
 | `dimensions[]` | One index entry per loaded dimension (table below). |
 | `plan_critique` | See plan critique. |
 | `summary` | Same object as the returned `summary`. |
@@ -354,7 +359,7 @@ Each `dimensions[]` entry holds only these keys: `name`, `description`, `severit
 - **AND** its `diff_file` and `slice_file` are non-null paths
 
 ### Requirement: PR lookup
-In manifest mode the tool SHALL look up the current branch's PR with `gh pr view --json number,title,url,state,labels` in the active worktree, and SHALL set `pr.exists: true` only when that PR's state is `OPEN`.
+In manifest mode, for scopes `all`, `committed` and `worktree`, the tool SHALL look up the current branch's PR with `gh pr view --json number,title,url,state,labels` in the active worktree, and SHALL set `pr.exists: true` only when that PR's state is `OPEN`. For scopes `staged` and `working` the tool SHALL NOT run the lookup.
 
 | `gh pr view` result | `pr` | `summary.hasPR` | `warnings` |
 |---|---|---|---|
@@ -367,6 +372,12 @@ In manifest mode the tool SHALL look up the current branch's PR with `gh pr view
 - `owner` and `repo` are read from the PR URL (`https://github.com/<owner>/<repo>/pull/<n>`).
 - A failed lookup never fails the tool.
 - With no open PR, `gh pr view` returns the branch's newest closed or merged PR; that PR does not count.
+- Scopes `staged` and `working` review uncommitted changes, which are not part of any PR. They get `pr: {exists: false}`, `summary.hasPR: false`, and no PR warning, so the skill never offers to post such a review to the branch's PR.
+
+#### Scenario: Local scope skips the lookup
+- **WHEN** scope is `staged` and the current branch has an open PR
+- **THEN** `gh` is not run
+- **AND** `pr.exists` is `false`, `summary.hasPR` is `false`, and `warnings` is `[]`
 
 #### Scenario: Open PR
 - **WHEN** the current branch has open PR #42 at `https://github.com/acme/widgets/pull/42`

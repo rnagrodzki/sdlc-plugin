@@ -967,6 +967,82 @@ func TestReviewPrepareNoDimensions(t *testing.T) {
 	}
 }
 
+// reviewLocalScopeFixture builds a one-dimension fixture whose review scope
+// is set to scope in .sdlc-v2/local.toml, with one staged, uncommitted file.
+func reviewLocalScopeFixture(t *testing.T, scope string) string {
+	t.Helper()
+	root := reviewPRFixture(t)
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "[review]\nscope = \""+scope+"\"\n")
+	writeFile(t, filepath.Join(root, "src/b.go"), "package main\n")
+	mustRun(t, root, "git", "add", "src/b.go")
+	return root
+}
+
+// readReviewManifestIn runs reviewPrepare against root with in and returns
+// the decoded manifest.
+func readReviewManifestIn(t *testing.T, root string, in ReviewPrepareIn) reviewManifest {
+	t.Helper()
+	out, err := reviewPrepare(root, root, in)
+	if err != nil {
+		t.Fatalf("reviewPrepare failed: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(filepath.Dir(out.ManifestPath)) })
+	raw, err := os.ReadFile(out.ManifestPath)
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	var m reviewManifest
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("unmarshal manifest: %v", err)
+	}
+	return m
+}
+
+// TestReviewPrepareLocalScopeSkipsPRLookup pins that the staged and working
+// scopes do not look up a PR: a review of uncommitted changes must not be
+// offered for posting to the branch's PR. The fake gh fails on every call,
+// so a lookup that ran would leave a warning.
+func TestReviewPrepareLocalScopeSkipsPRLookup(t *testing.T) {
+	for _, scope := range []string{"staged", "working"} {
+		t.Run(scope, func(t *testing.T) {
+			root := reviewLocalScopeFixture(t, scope)
+			stubReviewGH(t, "#!/bin/sh\necho \"gh must not run: $*\" >&2\nexit 3\n")
+
+			m := readReviewManifestIn(t, root, ReviewPrepareIn{SkipConfigCheck: true})
+
+			if m.Scope != scope {
+				t.Fatalf("scope = %q, want %q", m.Scope, scope)
+			}
+			if m.PR.Exists || m.Summary.HasPR {
+				t.Errorf("pr.exists/hasPR = %v/%v, want false/false", m.PR.Exists, m.Summary.HasPR)
+			}
+			if len(m.Warnings) != 0 {
+				t.Errorf("warnings = %v, want none (gh must not run for scope %s)", m.Warnings, scope)
+			}
+		})
+	}
+}
+
+// TestReviewPrepareLocalScopeIgnoresTarget pins that target is ignored for
+// the staged and working scopes: those scopes diff against no base ref, so
+// the manifest must not claim one was used.
+func TestReviewPrepareLocalScopeIgnoresTarget(t *testing.T) {
+	for _, scope := range []string{"staged", "working"} {
+		t.Run(scope, func(t *testing.T) {
+			root := reviewLocalScopeFixture(t, scope)
+
+			m := readReviewManifestIn(t, root, ReviewPrepareIn{SkipConfigCheck: true, Target: "main"})
+
+			if m.BaseBranch != nil {
+				t.Errorf("base_branch = %q, want null for scope %s", *m.BaseBranch, scope)
+			}
+			if m.Git.ChangedFilesCount != 1 {
+				t.Errorf("changed_files_count = %d, want 1 (the staged src/b.go only)", m.Git.ChangedFilesCount)
+			}
+		})
+	}
+}
+
 // TestReviewPrepareUnreadableDimensionsDirIsInfraError pins that a
 // review-dimensions folder that exists but cannot be listed is reported as
 // an InfraError, not folded into "No review dimensions found".
