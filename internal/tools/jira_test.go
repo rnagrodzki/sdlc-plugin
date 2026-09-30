@@ -153,8 +153,17 @@ func TestJiraKeyRequiredExceptValidateBody(t *testing.T) {
 	if _, err := jiraCore(root, JiraIn{Action: "check"}, true); err == nil {
 		t.Fatal("expected error for missing key on check")
 	}
-	if _, err := jiraCore(root, JiraIn{Action: "copy-template", TemplateType: "Bug", TemplateFrom: "Task", TemplatesDir: t.TempDir()}, true); err == nil {
-		t.Fatal("expected error for missing key on copy-template (JS parity quirk)")
+	// copy-template never reads key, so it must not require it.
+	copyTemplatesDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(copyTemplatesDir, "Task.md"), []byte("# Task"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := jiraCore(root, JiraIn{Action: "copy-template", TemplateType: "Bug", TemplateFrom: "Task", TemplatesDir: copyTemplatesDir}, true)
+	if err != nil {
+		t.Fatalf("copy-template should not require key: %v", err)
+	}
+	if m := out.(map[string]any); m["copied"] != true {
+		t.Fatalf("expected copied=true without key, got %#v", m)
 	}
 	// validate-body must NOT require key.
 	if _, err := jiraCore(root, JiraIn{Action: "validate-body", MarkdownBody: "no urls here"}, true); err != nil {

@@ -105,12 +105,10 @@ type JiraIn struct {
 
 	// Key is the Jira project key (jira.js's --project). Uppercased on use.
 	// Required for every action except validate-body, check-default-project,
-	// write-critique, and write-approval (mirrors jira.js's parseArgs, which
-	// enforces --project for every subcommand but validate-body — including
-	// copy-template, which does not actually use it; that quirk is preserved
-	// for fidelity — plus check-default-project/write-critique/write-approval,
-	// none of which read Key at all).
-	Key string `json:"key,omitempty" jsonschema_description:"Jira issue key (e.g. \"PROJ-123\"). Uppercased on use. Required for every action except validate-body, check-default-project, write-critique, and write-approval."`
+	// copy-template, write-critique, and write-approval — none of which read
+	// Key at all. (jira.js's parseArgs also demanded --project for
+	// copy-template even though it never used it; that quirk is dropped.)
+	Key string `json:"key,omitempty" jsonschema_description:"Jira project key (e.g. \"PROJ\"), not an issue key. Uppercased on use; names the project's cache file. Required for every action except validate-body, check-default-project, copy-template, write-critique, and write-approval."`
 
 	// MarkdownBody is the Jira description/comment body for validate-body.
 	MarkdownBody string `json:"markdownBody,omitempty" jsonschema_description:"validate-body only: Jira description/comment markdown body to validate for Jira-flavor compatibility."`
@@ -141,8 +139,9 @@ type JiraIn struct {
 	TemplatesDir string `json:"templatesDir,omitempty" jsonschema_description:"Overrides plugin-tree discovery of the shipped jira templates/ directory."`
 
 	// Data carries the JSON payload for save/save-field (jira.js reads this
-	// from stdin). See deviation #3.
-	Data map[string]any `json:"data,omitempty" jsonschema_description:"save/save-field only: JSON payload to write to the cache. For save, must contain version, cloudId, project, siteUrl."`
+	// from stdin; see deviation #3) and the critique payload for
+	// write-critique.
+	Data map[string]any `json:"data,omitempty" jsonschema_description:"save, save-field, and write-critique only: JSON payload to write. For save, must contain version, cloudId, project, siteUrl. For write-critique, the {initial, findings, final} critique."`
 
 	SkipConfigCheck bool `json:"skipConfigCheck,omitempty" jsonschema_description:"Skips the config-version auto-migration gate normally run before the action executes. Set only when the caller has already verified or migrated the config."`
 
@@ -1427,15 +1426,15 @@ func jiraCore(mainRoot string, in JiraIn, offline bool) (any, error) {
 	}
 
 	switch in.Action {
-	case "validate-body", "check-default-project", "write-critique", "write-approval":
-		// These actions never read in.Key (write-critique/write-approval
-		// address their artifact by hash, not by issue key) — exempt from
-		// the key-required gate below.
+	case "validate-body", "check-default-project", "copy-template", "write-critique", "write-approval":
+		// These actions never read in.Key (copy-template addresses its
+		// files by template name; write-critique/write-approval address
+		// their artifact by hash) — exempt from the key-required gate below.
 	default:
 		if strings.TrimSpace(in.Key) == "" {
 			return nil, &mcpserver.DomainError{
 				Msg:        "key is required",
-				Suggestion: "Pass key set to the Jira project key (e.g. \"PROJ\") — every action except validate-body, check-default-project, write-critique, and write-approval requires it.",
+				Suggestion: "Pass key set to the Jira project key (e.g. \"PROJ\") — every action except validate-body, check-default-project, copy-template, write-critique, and write-approval requires it.",
 			}
 		}
 	}
@@ -1479,18 +1478,18 @@ func RegisterJiraTools(s *mcpserver.Server) {
 
 Pass "action" to select an operation. Each action uses a subset of the input fields (unlisted fields are ignored):
 
-- check: Check Jira issue cache and templates. Requires key. Optional: cacheDir, site, templatesDir, skipConfigCheck.
+- check: Check the project's Jira metadata cache and template status. Requires key. Optional: cacheDir, site, templatesDir, skipConfigCheck.
 - check-default-project: Look up jira.defaultProject from config (empty string if unset). No required fields. Optional: skipConfigCheck.
-- load: Load cached Jira issue data. Requires key. Optional: cacheDir, site, skipConfigCheck.
-- save: Save Jira issue data to cache. Requires key, data (must contain version, cloudId, project, siteUrl). Optional: cacheDir, site, skipConfigCheck.
-- save-field: Save a single field to cached issue data. Requires key, fieldName, data. Optional: cacheDir, site, skipConfigCheck.
-- templates: List available templates for an issue type. Requires key. Optional: cacheDir, site, templatesDir, skipConfigCheck.
+- load: Load the project's cached Jira metadata. Requires key. Optional: cacheDir, site, skipConfigCheck.
+- save: Save the project's Jira metadata to the cache. Requires key, data (must contain version, cloudId, project, siteUrl). Optional: cacheDir, site, skipConfigCheck.
+- save-field: Save one top-level field of the project's cache. Requires key, fieldName, data. Optional: cacheDir, site, skipConfigCheck.
+- templates: Report template status for every issue type in the project's cache (custom, default, fallback, or none) plus the default template names. Requires key. Optional: cacheDir, site, templatesDir, skipConfigCheck.
 - init-templates: Initialize default templates. Requires key. Optional: cacheDir, site, templatesDir, skipConfigCheck.
-- clear: Clear cached data for an issue. Requires key. Optional: cacheDir, site, skipConfigCheck.
-- copy-template: Copy a template between types. Requires key, templateType, templateFrom. Optional: templatesDir, skipConfigCheck.
+- clear: Clear the project's cached metadata. Requires key. Optional: cacheDir, site, skipConfigCheck.
+- copy-template: Copy a default template to a custom template for another issue type. Requires templateType, templateFrom. Optional: templatesDir, skipConfigCheck.
 - validate-body: Validate markdown body for Jira compatibility. Optional: markdownBody, cacheDir, skipConfigCheck.
-- write-critique: Write the {initial, findings, final} critique artifact to .sdlc-v2/state/artifacts/critique-<hash>.json. Requires key, hash, data. Optional: skipConfigCheck.
-- write-approval: Write the approval token to .sdlc-v2/state/artifacts/approval-<hash>.token. Requires key, hash. Optional: skipConfigCheck.`,
+- write-critique: Write the {initial, findings, final} critique artifact to .sdlc-v2/state/artifacts/critique-<hash>.json. Requires hash, data. Optional: skipConfigCheck.
+- write-approval: Write the approval token to .sdlc-v2/state/artifacts/approval-<hash>.token. Requires hash. Optional: skipConfigCheck.`,
 		mcpserver.Annotations{
 			Title:       "Manage local Jira cache",
 			ReadOnly:    false,

@@ -18,7 +18,7 @@ The tool SHALL select its operation from the `action` input and SHALL reject any
 | `templates` | `key` | `cacheDir`, `site`, `templatesDir`, `skipConfigCheck` | `cacheDir` (created) |
 | `init-templates` | `key` | `cacheDir`, `site`, `templatesDir`, `skipConfigCheck` | `.sdlc-v2/jira-templates/<Type>.md` |
 | `clear` | `key` | `cacheDir`, `site`, `skipConfigCheck` | deletes cache file(s) |
-| `copy-template` | `key`, `templateType`, `templateFrom` | `templatesDir`, `skipConfigCheck` | `.sdlc-v2/jira-templates/<templateType>.md` |
+| `copy-template` | `templateType`, `templateFrom` | `templatesDir`, `skipConfigCheck` | `.sdlc-v2/jira-templates/<templateType>.md` |
 | `validate-body` | — | `markdownBody`, `cacheDir`, `skipConfigCheck` | — |
 | `write-critique` | `hash`, `data` | `skipConfigCheck` | `.sdlc-v2/state/artifacts/critique-<hash>.json` |
 | `write-approval` | `hash` | `skipConfigCheck` | `.sdlc-v2/state/artifacts/approval-<hash>.token` |
@@ -44,18 +44,19 @@ The tool SHALL select its operation from the `action` input and SHALL reject any
 - **AND** the suggestion says to pass a listed action or update the sdlc plugin
 
 ### Requirement: Key required for cache and template actions
-The tool SHALL return a `DomainError` `key is required` when `key` is empty or whitespace for every action except `validate-body`, `check-default-project`, `write-critique`, and `write-approval`.
+The tool SHALL return a `DomainError` `key is required` when `key` is empty or whitespace for every action except `validate-body`, `check-default-project`, `copy-template`, `write-critique`, and `write-approval`.
 
-- `copy-template` requires `key` even though it does not use it.
+- `key` is a Jira project key (e.g. `PROJ`), not an issue key.
+- The exempt actions never read `key`.
 - The key is trimmed and uppercased before use (`foo` becomes `FOO`).
 
 #### Scenario: Missing key on check
 - **WHEN** `action` is `check` and `key` is empty
 - **THEN** the tool returns `DomainError` `key is required`
 
-#### Scenario: Missing key on copy-template
-- **WHEN** `action` is `copy-template` with `templateType` and `templateFrom` set and `key` empty
-- **THEN** the tool returns `DomainError` `key is required`
+#### Scenario: Key not needed for copy-template
+- **WHEN** `action` is `copy-template` with `templateType` and `templateFrom` set, `key` empty, and the source template present
+- **THEN** the tool copies the template and returns `copied: true`
 
 #### Scenario: Key not needed for validate-body
 - **WHEN** `action` is `validate-body` and `key` is empty
