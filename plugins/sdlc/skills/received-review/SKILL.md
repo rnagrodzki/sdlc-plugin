@@ -24,7 +24,7 @@ Thread classification (outstanding/replied/self-replied) is available via the
 (post-reply verification). Automatic per-thread resolution is still not supported.
 
 Concretely: the `received_review_prepare` tool returns only
-`{version, timestamp, pr:{number,owner,repo}, view, checks, plugin_version}` — a PR overview
+`{version, timestamp, pr:{number,owner,repo}, view, checks, plugin_version, warnings?}` — a PR overview
 (`gh pr view`) and CI status (`gh pr checks`), nothing more; it does not classify threads.
 Classification comes from the separate `received_review_verify` tool instead, which returns
 `{version, timestamp, pr, threads, outstanding, replied, total}` — each entry in `threads`
@@ -65,13 +65,15 @@ Parse `--auto` from this invocation's own `$ARGUMENTS` now; store it as a boolea
 
 ```
 received_review_prepare({ pr: <PR_NUMBER> })
-→ { version, timestamp, pr: { number, owner, repo }, view, checks, plugin_version }
+→ { version, timestamp, pr: { number, owner, repo }, view, checks, plugin_version, warnings? }
 ```
 
 **On success:** `view` is the plain-text output of `gh pr view <PR_NUMBER>` (title, branch,
 labels, additions/deletions — no comments); `checks` is the plain-text output of
-`gh pr checks <PR_NUMBER>`. Use both for overview context and to confirm the PR is the one
-the user means. Report any failing checks alongside the analysis in Step 10.
+`gh pr checks <PR_NUMBER>`, including failing and pending checks. Use both for overview
+context and to confirm the PR is the one the user means. Report any failing checks alongside
+the analysis in Step 10. When `warnings` is present, `gh pr checks` itself failed and `checks`
+is empty: say that CI status is unknown and show the warning.
 
 **On tool error** (bad PR number, no `gh` auth, no git remote): show the error to the user.
 If no PR number was supplied at all, this step is simply skipped — proceed to Step 1b for a

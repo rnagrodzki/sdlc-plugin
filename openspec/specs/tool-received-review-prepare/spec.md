@@ -62,8 +62,16 @@ The tool SHALL read the `origin` URL with `git remote get-url origin` in the act
 The tool SHALL run `gh pr view <pr>` and `gh pr checks <pr>` in the active worktree and return their text output.
 
 - A `gh pr view` failure fails the call.
-- `gh pr checks` is best effort: when it exits non-zero, `checks` is an empty string and the call still succeeds.
-- `gh pr checks` exits non-zero when any check failed or is pending, so `checks` is empty in those cases.
+- `gh pr checks` is best effort: its failure never fails the call.
+- `gh pr checks` exits `1` when a check failed and `8` when a check is pending. Both are normal results, not failures.
+
+| `gh pr checks` result | `checks` | `warnings` |
+|---|---|---|
+| Exit `0` | stdout | absent |
+| Exit `1` or `8` with non-empty stdout | stdout | absent |
+| Exit `1` or `8` with empty stdout (gh's own error, e.g. PR not found, auth, no checks reported) | empty | `gh pr checks <pr>: exit <N>: <stderr>` |
+| Any other exit code | empty | `gh pr checks <pr>: exit <N>: <stderr>` |
+| gh cannot be run (e.g. not on `PATH`) | empty | `gh pr checks <pr>: <error>` |
 
 #### Scenario: PR does not exist
 - **WHEN** `gh pr view 9999` fails
@@ -71,8 +79,18 @@ The tool SHALL run `gh pr view <pr>` and `gh pr checks <pr>` in the active workt
 - **AND** the suggestion says to confirm the PR number and `gh auth status`
 
 #### Scenario: A check is failing
-- **WHEN** `gh pr view 42` succeeds and `gh pr checks 42` exits non-zero
+- **WHEN** `gh pr view 42` succeeds and `gh pr checks 42` prints `lint\tfail\t30s\thttps://x` and exits `1`
+- **THEN** the call succeeds and `checks` is `lint\tfail\t30s\thttps://x`
+- **AND** `warnings` is absent
+
+#### Scenario: A check is pending
+- **WHEN** `gh pr view 42` succeeds and `gh pr checks 42` prints `build\tpending\t1m\thttps://x` and exits `8`
+- **THEN** the call succeeds and `checks` is `build\tpending\t1m\thttps://x`
+
+#### Scenario: gh pr checks fails without rows
+- **WHEN** `gh pr view 42` succeeds and `gh pr checks 42` prints nothing, writes `no checks reported on the 'feat' branch` to stderr, and exits `1`
 - **THEN** the call succeeds with `checks` as an empty string
+- **AND** `warnings` is `["gh pr checks 42: exit 1: no checks reported on the 'feat' branch"]`
 
 ### Requirement: Output fields
 The tool SHALL return the fields below and SHALL NOT return review comments, thread status, or reply metadata.
@@ -85,8 +103,9 @@ The tool SHALL return the fields below and SHALL NOT return review comments, thr
 | `pr.owner` | Owner parsed from `origin`. |
 | `pr.repo` | Repository parsed from `origin`. |
 | `view` | Trimmed stdout of `gh pr view <pr>`. |
-| `checks` | Trimmed stdout of `gh pr checks <pr>`, or empty. |
+| `checks` | Trimmed stdout of `gh pr checks <pr>`, or empty when gh failed. |
 | `plugin_version` | Plugin version of the running binary. |
+| `warnings` | Present only when `gh pr checks` failed: one message with gh's exit code and stderr. |
 
 #### Scenario: Successful call
 - **WHEN** `origin` is `git@github.com:owner/repo.git` and both `gh` commands succeed for `pr: 7`

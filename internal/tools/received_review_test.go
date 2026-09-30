@@ -298,3 +298,71 @@ func TestReceivedReviewVerify_CurrentLoginFailure_Suggestion(t *testing.T) {
 		t.Errorf("got Suggestion=%q, want it to mention the login input field as a bypass", infraErr.Suggestion)
 	}
 }
+
+// TestReceivedReviewPrepare_ChecksExitCodes drives received_review_prepare
+// against a stubbed gh whose `gh pr checks` exits with each code gh uses.
+// gh pr checks exits 1 when a check failed and 8 when one is pending, so the
+// rows it printed must reach the caller: those are exactly the cases the
+// received-review skill has to report. Only a non-zero exit with no rows is
+// gh's own failure, and it becomes a warning while the call still succeeds.
+func TestReceivedReviewPrepare_ChecksExitCodes(t *testing.T) {
+	tests := []struct {
+		name         string
+		checks       string // body of the `checks)` case in the stub
+		wantChecks   string
+		wantWarnings []string // substrings, one per expected warning
+	}{
+		{
+			name:       "failed check exit 1",
+			checks:     `printf 'lint\tfail\t30s\thttps://x\n'; exit 1`,
+			wantChecks: "lint\tfail\t30s\thttps://x",
+		},
+		{
+			name:       "pending check exit 8",
+			checks:     `printf 'build\tpending\t1m\thttps://x\n'; exit 8`,
+			wantChecks: "build\tpending\t1m\thttps://x",
+		},
+		{
+			name:       "all pass exit 0",
+			checks:     `printf 'build\tpass\t1m\thttps://x\n'`,
+			wantChecks: "build\tpass\t1m\thttps://x",
+		},
+		{
+			name:         "gh error exit 1 no rows",
+			checks:       `echo "no checks reported on the 'feat' branch" >&2; exit 1`,
+			wantWarnings: []string{"gh pr checks 42: exit 1: no checks reported on the 'feat' branch"},
+		},
+		{
+			name:         "unexpected exit code",
+			checks:       `printf 'build\tpass\t1m\thttps://x\n'; echo boom >&2; exit 2`,
+			wantWarnings: []string{"gh pr checks 42: exit 2: boom"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := setupGitRepoWithRemote(t, "https://github.com/owner/repo.git")
+			script := "#!/bin/sh\ncase \"$2\" in\n  view)\n    echo 'title: T'\n    ;;\n  checks)\n    " + tt.checks + "\n    ;;\nesac\n"
+			cleanup := stubGH(t, script)
+			defer cleanup()
+
+			out, err := receivedReviewPrepare(dir, dir, ReceivedReviewIn{PR: 42})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if out.View != "title: T" {
+				t.Errorf("View = %q, want %q", out.View, "title: T")
+			}
+			if out.Checks != tt.wantChecks {
+				t.Errorf("Checks = %q, want %q", out.Checks, tt.wantChecks)
+			}
+			if len(out.Warnings) != len(tt.wantWarnings) {
+				t.Fatalf("Warnings = %q, want %d warning(s) matching %q", out.Warnings, len(tt.wantWarnings), tt.wantWarnings)
+			}
+			for i, w := range tt.wantWarnings {
+				if !strings.Contains(out.Warnings[i], w) {
+					t.Errorf("Warnings[%d] = %q, want it to contain %q", i, out.Warnings[i], w)
+				}
+			}
+		})
+	}
+}
