@@ -530,9 +530,11 @@ func prVersionDiagnosticsWith(rt prRuntime, mainRoot, workDir, currentBranch str
 // auto-generation path in prApplyCoreWith, neither of which has diagnostic
 // warnings to accumulate into.
 func prGitLogSinceTag(dir string) ([]string, error) {
+	// Errors go back unwrapped: both callers add the "gitLogSinceTag: "
+	// prefix, and gitx/execx already name the failing git command.
 	tags, err := gitx.TagList(dir)
 	if err != nil {
-		return nil, fmt.Errorf("gitLogSinceTag: tag list: %w", err)
+		return nil, err
 	}
 	args := []string{"log", "--oneline"}
 	if len(tags) > 0 {
@@ -540,7 +542,7 @@ func prGitLogSinceTag(dir string) ([]string, error) {
 	}
 	out, err := execx.Run("git", args, execx.Options{Dir: dir})
 	if err != nil {
-		return nil, fmt.Errorf("gitLogSinceTag: %w", err)
+		return nil, err
 	}
 	return nonEmptyLines(out), nil
 }

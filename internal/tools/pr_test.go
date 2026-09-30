@@ -1207,6 +1207,40 @@ func TestPrApply_SkipReleaseCheck_Verification(t *testing.T) {
 	})
 }
 
+// TestPrApply_GitLogSinceTagError_SinglePrefix runs the production
+// prGitLogSinceTag against a directory that does not exist, so git fails
+// before touching any repository. Both callers in prApplyCoreWith add the
+// "gitLogSinceTag: " prefix, so the helper's own error must not carry it
+// again.
+func TestPrApply_GitLogSinceTagError_SinglePrefix(t *testing.T) {
+	missingDir := filepath.Join(t.TempDir(), "does-not-exist")
+	cases := []struct {
+		name string
+		in   PRApplyIn
+	}{
+		{"skipReleaseCheck verification", PRApplyIn{Title: "T", Body: "B", SkipReleaseCheck: true}},
+		{"release notes auto-generation", PRApplyIn{Title: "T", Body: "B", ReleaseLevel: "patch", ReleaseSource: "user"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := releaseTestRuntime("1.0.0")
+			rt.gitLogSinceTag = prGitLogSinceTag
+
+			_, err := prApplyCoreWith("/mock/root", missingDir, tc.in, rt)
+			var ie *mcpserver.InfraError
+			if !errors.As(err, &ie) {
+				t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
+			}
+			if n := strings.Count(ie.Msg, "gitLogSinceTag:"); n != 1 {
+				t.Errorf("Msg carries the gitLogSinceTag prefix %d times, want 1: %q", n, ie.Msg)
+			}
+			if n := strings.Count(ie.Msg, "tag list:"); n != 1 {
+				t.Errorf("Msg carries the tag list prefix %d times, want 1: %q", n, ie.Msg)
+			}
+		})
+	}
+}
+
 // TestPrApply_Push covers the push-decision block: pr_apply pushes the
 // current branch before create/edit when there is no upstream, or when the
 // upstream exists but HEAD has moved ahead of it; it skips the push when the
