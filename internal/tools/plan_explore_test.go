@@ -59,3 +59,21 @@ func TestPlanExplorePrepare_ScopeHintsFromCapabilitySpecs(t *testing.T) {
 		t.Errorf("scopeHintFiles = %v, should not read specs nested below <capability>/", m.ScopeHintFiles)
 	}
 }
+
+// TestPlanExplorePrepare_RelativePlansDirectoryResolvesFromWorkspaceRoot pins
+// that a relative plansDirectory in the project settings resolves against the
+// workspace (main worktree) root, not the process working directory.
+func TestPlanExplorePrepare_RelativePlansDirectoryResolvesFromWorkspaceRoot(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // no ~/.claude: no global setting, no fallback dir
+	root := t.TempDir()
+	writeRepoFile(t, root, ".claude/settings.json", `{"plansDirectory": "docs/plans"}`)
+	writeRepoFile(t, root, "docs/plans/2026-10-01-widget.md", "# plan\n")
+	// Run from a different directory, so a cwd-relative lookup finds nothing.
+	t.Chdir(t.TempDir())
+
+	m := readExploreManifest(t, root, root, "")
+
+	if len(m.RecentPlans) != 1 || m.RecentPlans[0] != "2026-10-01-widget.md" {
+		t.Errorf("recentPlans = %v, want [2026-10-01-widget.md]", m.RecentPlans)
+	}
+}

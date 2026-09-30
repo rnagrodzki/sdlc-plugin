@@ -388,25 +388,35 @@ type planSettingsFile struct {
 // by mtime descending, mirroring plan-explore.js's sampleRecentPlans.
 // Directories are not merged: the function returns on the first candidate
 // directory that exists, even if it yields zero files.
+//
+// A relative plansDirectory resolves against mainRoot (the workspace root),
+// as the plan skill documents, never against the server's working directory.
+// The same rule applies to the global setting.
 func sampleRecentPlans(mainRoot string) []string {
 	var candidateDirs []string
 
 	home, homeErr := os.UserHomeDir()
 
-	if data, err := os.ReadFile(filepath.Join(mainRoot, ".claude", "settings.json")); err == nil {
-		var s planSettingsFile
-		if json.Unmarshal(data, &s) == nil && s.PlansDirectory != "" {
-			candidateDirs = append(candidateDirs, s.PlansDirectory)
+	plansDirFrom := func(settingsPath string) {
+		data, err := os.ReadFile(settingsPath)
+		if err != nil {
+			return
 		}
+		var s planSettingsFile
+		if json.Unmarshal(data, &s) != nil || s.PlansDirectory == "" {
+			return
+		}
+		dir := s.PlansDirectory
+		if !filepath.IsAbs(dir) {
+			dir = filepath.Join(mainRoot, dir)
+		}
+		candidateDirs = append(candidateDirs, dir)
 	}
 
+	plansDirFrom(filepath.Join(mainRoot, ".claude", "settings.json"))
+
 	if homeErr == nil {
-		if data, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json")); err == nil {
-			var s planSettingsFile
-			if json.Unmarshal(data, &s) == nil && s.PlansDirectory != "" {
-				candidateDirs = append(candidateDirs, s.PlansDirectory)
-			}
-		}
+		plansDirFrom(filepath.Join(home, ".claude", "settings.json"))
 		candidateDirs = append(candidateDirs, filepath.Join(home, ".claude", "plans"))
 	}
 

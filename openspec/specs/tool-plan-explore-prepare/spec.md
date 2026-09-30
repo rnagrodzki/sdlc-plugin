@@ -142,7 +142,14 @@ The tool SHALL sample context from the user's machine without failing the call w
 - `skillRegistry`: front-matter blocks of `~/.claude/plugins/<plugin>/skills/<skill>/SKILL.md`, max 12.
 - `recentPlans`: `.md` file names, newest modification time first, max 20.
 - Plans directory order: project `.claude/settings.json` `plansDirectory`, then `~/.claude/settings.json` `plansDirectory`, then `~/.claude/plans`.
+- A relative `plansDirectory` (project or global) resolves against the main worktree root, never against the server's working directory.
 - The first plans directory that can be listed wins, even when it holds no `.md` files.
+
+#### Scenario: Relative plans directory
+- **WHEN** the project `.claude/settings.json` sets `plansDirectory` to `docs/plans`
+- **AND** `<main worktree root>/docs/plans/2026-10-01-widget.md` exists
+- **AND** the server's working directory is a different directory
+- **THEN** `recentPlans` is `["2026-10-01-widget.md"]`
 
 #### Scenario: No plugins and no plans directory
 - **WHEN** `~/.claude/plugins` and every plans directory candidate are absent
