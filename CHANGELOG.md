@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.1] - 2026-09-30
+
+### RC 1
+
+- pr_apply now records release intent (level + optional pre-release) only, no pinned version number, writing notes under an "## [Unreleased]" heading
+- pr_apply replaces any stale release:* label with the new one on re-apply instead of accumulating labels
+- Added error recovery around gh label add/remove operations
+- Added config guardrails for error enrichment and test coverage
+
 ## [0.2.0] - 2026-09-30
 
 ### RC 1
