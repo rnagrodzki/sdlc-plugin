@@ -291,7 +291,7 @@ The tool SHALL run `git push -u origin HEAD` when the branch has no upstream or 
 - **THEN** no push runs
 
 ### Requirement: Create or update the PR
-The tool SHALL edit the current branch's PR when `gh pr view` finds one, and create a new PR otherwise.
+The tool SHALL edit the current branch's PR when `gh pr view` finds one with state `OPEN`, and create a new PR otherwise.
 
 Remote interaction after input checks pass:
 
@@ -306,13 +306,13 @@ sequenceDiagram
         T->>git: git push -u origin HEAD
     end
     T->>gh: gh pr view --json number,title,url,state,labels
-    alt PR exists
+    alt open PR exists
         T->>gh: gh pr edit {number} --title --body
         opt releaseLevel set
             T->>gh: gh pr edit --add-label L [--remove-label stale]
         end
         T-->>Skill: created false
-    else no PR, or view failed
+    else no PR, closed or merged PR, or view failed
         T->>gh: gh pr create --title --body
         opt releaseLevel set
             T->>gh: gh pr edit --add-label L
@@ -324,6 +324,7 @@ sequenceDiagram
 - Edit path: `url` is `gh pr edit` output, or the PR's known URL when that output is empty.
 - Create path: `url` is `gh pr create` output.
 - Any `gh pr view` failure is treated as "no PR", so the create path runs.
+- A `CLOSED` or `MERGED` PR is also treated as "no PR". With no open PR, `gh pr view` returns the branch's newest closed or merged PR.
 - `gh pr create` / `gh pr edit` failures return `InfraError` `gh pr create: <error>` / `gh pr edit: <error>` with suggestion `Run gh auth status to confirm gh is logged in, check network access to GitHub, then call pr_apply again with the same arguments.` (permission errors differ, see below).
 
 #### Scenario: No existing PR
@@ -332,9 +333,14 @@ sequenceDiagram
 - **AND** `next` contains `PR created`
 
 #### Scenario: Existing PR
-- **WHEN** PR 9 exists for the branch
+- **WHEN** open PR 9 exists for the branch
 - **THEN** `created` is `false`
 - **AND** `next` contains `PR updated`
+
+#### Scenario: Closed or merged PR on a reused branch
+- **WHEN** `gh pr view` returns PR 9 with state `CLOSED` or `MERGED`
+- **THEN** the tool runs `gh pr create`, not `gh pr edit`
+- **AND** `created` is `true` and `url` is the new PR URL
 
 #### Scenario: Network error
 - **WHEN** `gh pr create` fails with `connection reset by peer`

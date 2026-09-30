@@ -1116,8 +1116,11 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 		}
 	}
 
+	// Only an open PR is edited. With no open PR, gh pr view falls back to
+	// the branch's newest closed or merged PR, which an earlier run on a
+	// reused branch may have left behind; that case opens a new PR.
 	meta := rt.ghPRForBranch(workDir)
-	if meta.Exists {
+	if meta.Exists && meta.State == "OPEN" {
 		url, err := rt.ghPREdit(workDir, meta.Number, in.Title, body)
 		if err != nil {
 			if enriched := prEnrichPermissionError(rt, workDir, "gh pr edit", err); enriched != nil {

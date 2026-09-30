@@ -1083,6 +1083,44 @@ func TestPrApply_ExistingPR_Updates(t *testing.T) {
 	}
 }
 
+// TestPrApply_ClosedOrMergedPR_CreatesNew covers a reused branch: with no
+// open PR, gh pr view returns the branch's newest closed or merged PR.
+// pr_apply must open a new PR instead of editing that one.
+func TestPrApply_ClosedOrMergedPR_CreatesNew(t *testing.T) {
+	for _, state := range []string{"CLOSED", "MERGED"} {
+		t.Run(state, func(t *testing.T) {
+			edited := false
+			rt := prRuntime{
+				ghPRForBranch: func(dir string) ghx.PRMetadata {
+					return ghx.PRMetadata{Exists: true, State: state, Number: 9, URL: "https://github.com/o/r/pull/9"}
+				},
+				ghPREdit: func(dir string, num int, title, body string) (string, error) {
+					edited = true
+					return "https://github.com/o/r/pull/9", nil
+				},
+				ghPRCreate: func(dir, title, body string) (string, error) {
+					return "https://github.com/o/r/pull/10", nil
+				},
+				gitLogSinceTag:     func(dir string) ([]string, error) { return nil, nil },
+				gitHasUpstream:     func(dir string) (bool, error) { return true, nil },
+				gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
+				gitPushSetUpstream: func(dir, remote string) error { return nil },
+			}
+
+			out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Add thing", Body: "Body text", SkipReleaseCheck: true}, rt)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if edited {
+				t.Errorf("gh pr edit ran on a %s PR", state)
+			}
+			if !out.Created || out.URL != "https://github.com/o/r/pull/10" {
+				t.Errorf("expected a new PR (Created=true, pull/10), got %+v", out)
+			}
+		})
+	}
+}
+
 func TestPrApply_MissingTitle_DomainError(t *testing.T) {
 	// The empty-title check is the very first thing prApplyCoreWith does —
 	// no rt field is ever invoked, so defaultPRRuntime (via prApplyCore) is
@@ -1417,7 +1455,7 @@ func TestPrApply_PermissionError_EnrichedWithAuthHints(t *testing.T) {
 func TestPrApply_PermissionError_FromEdit_EnrichedSameWay(t *testing.T) {
 	rt := prRuntime{
 		ghPRForBranch: func(dir string) ghx.PRMetadata {
-			return ghx.PRMetadata{Exists: true, Number: 9, URL: "https://github.com/acme/widgets/pull/9"}
+			return ghx.PRMetadata{Exists: true, State: "OPEN", Number: 9, URL: "https://github.com/acme/widgets/pull/9"}
 		},
 		ghPREdit: func(dir string, num int, title, body string) (string, error) {
 			return "", errors.New("HTTP 403: Resource not accessible by integration")
@@ -1486,7 +1524,7 @@ func TestPrApply_NonPermissionError_PassesThroughUnenriched(t *testing.T) {
 func TestPrApply_NonPermissionError_FromEdit_GenericSuggestion(t *testing.T) {
 	rt := prRuntime{
 		ghPRForBranch: func(dir string) ghx.PRMetadata {
-			return ghx.PRMetadata{Exists: true, Number: 9, URL: "https://github.com/acme/widgets/pull/9"}
+			return ghx.PRMetadata{Exists: true, State: "OPEN", Number: 9, URL: "https://github.com/acme/widgets/pull/9"}
 		},
 		ghPREdit: func(dir string, num int, title, body string) (string, error) {
 			return "", errors.New("connection reset by peer")
@@ -2426,7 +2464,7 @@ func TestPRApply_ExistingPR_ReplacesStaleReleaseLabel(t *testing.T) {
 		var gotArgs []string
 		rt := releaseTestRuntime("1.0.0")
 		rt.ghPRForBranch = func(dir string) ghx.PRMetadata {
-			return ghx.PRMetadata{Exists: true, Number: 9, URL: "https://github.com/o/r/pull/9", Labels: []string{"release:patch-rc", "bug"}}
+			return ghx.PRMetadata{Exists: true, State: "OPEN", Number: 9, URL: "https://github.com/o/r/pull/9", Labels: []string{"release:patch-rc", "bug"}}
 		}
 		rt.ghPREdit = func(dir string, num int, title, body string) (string, error) {
 			return "https://github.com/o/r/pull/9", nil
@@ -2458,7 +2496,7 @@ func TestPRApply_ExistingPR_ReplacesStaleReleaseLabel(t *testing.T) {
 		var gotArgs []string
 		rt := releaseTestRuntime("1.0.0")
 		rt.ghPRForBranch = func(dir string) ghx.PRMetadata {
-			return ghx.PRMetadata{Exists: true, Number: 9, URL: "https://github.com/o/r/pull/9", Labels: []string{"release:patch-rc", "release:minor", "bug"}}
+			return ghx.PRMetadata{Exists: true, State: "OPEN", Number: 9, URL: "https://github.com/o/r/pull/9", Labels: []string{"release:patch-rc", "release:minor", "bug"}}
 		}
 		rt.ghPREdit = func(dir string, num int, title, body string) (string, error) {
 			return "https://github.com/o/r/pull/9", nil
@@ -2487,7 +2525,7 @@ func TestPRApply_ExistingPR_ReplacesStaleReleaseLabel(t *testing.T) {
 func TestPRApply_ExistingPR_SameReleaseLabel_NoRemove(t *testing.T) {
 	rt := releaseTestRuntime("1.0.0")
 	rt.ghPRForBranch = func(dir string) ghx.PRMetadata {
-		return ghx.PRMetadata{Exists: true, Number: 9, URL: "https://github.com/o/r/pull/9", Labels: []string{"release:minor-rc", "bug"}}
+		return ghx.PRMetadata{Exists: true, State: "OPEN", Number: 9, URL: "https://github.com/o/r/pull/9", Labels: []string{"release:minor-rc", "bug"}}
 	}
 	rt.ghPREdit = func(dir string, num int, title, body string) (string, error) {
 		return "https://github.com/o/r/pull/9", nil
@@ -2541,7 +2579,7 @@ func TestPRApply_CreatePath_LabelsRemovedEmpty(t *testing.T) {
 func TestPRApply_LabelEditError_SuggestionNamesLabels(t *testing.T) {
 	rt := releaseTestRuntime("1.0.0")
 	rt.ghPRForBranch = func(dir string) ghx.PRMetadata {
-		return ghx.PRMetadata{Exists: true, Number: 9, URL: "https://github.com/o/r/pull/9", Labels: []string{"release:patch-rc", "bug"}}
+		return ghx.PRMetadata{Exists: true, State: "OPEN", Number: 9, URL: "https://github.com/o/r/pull/9", Labels: []string{"release:patch-rc", "bug"}}
 	}
 	rt.ghPREdit = func(dir string, num int, title, body string) (string, error) {
 		return "https://github.com/o/r/pull/9", nil
@@ -2575,7 +2613,7 @@ func TestPRApply_LabelEditError_SuggestionNamesLabels(t *testing.T) {
 func TestPRApply_LabelEditError_PermissionError_Enriched(t *testing.T) {
 	rt := releaseTestRuntime("1.0.0")
 	rt.ghPRForBranch = func(dir string) ghx.PRMetadata {
-		return ghx.PRMetadata{Exists: true, Number: 9, URL: "https://github.com/acme/widgets/pull/9", Labels: []string{"release:patch-rc"}}
+		return ghx.PRMetadata{Exists: true, State: "OPEN", Number: 9, URL: "https://github.com/acme/widgets/pull/9", Labels: []string{"release:patch-rc"}}
 	}
 	rt.ghPREdit = func(dir string, num int, title, body string) (string, error) {
 		return "https://github.com/acme/widgets/pull/9", nil
@@ -2653,7 +2691,7 @@ func TestPRApply_ReapplyChangedIntent_SingleReleaseLabel(t *testing.T) {
 			ls = append(ls, l)
 		}
 		slices.Sort(ls)
-		return ghx.PRMetadata{Exists: true, Number: 9, URL: "https://github.com/o/r/pull/9", Labels: ls}
+		return ghx.PRMetadata{Exists: true, State: "OPEN", Number: 9, URL: "https://github.com/o/r/pull/9", Labels: ls}
 	}
 	rt.ghPREdit = func(dir string, num int, title, body string) (string, error) {
 		return "https://github.com/o/r/pull/9", nil
