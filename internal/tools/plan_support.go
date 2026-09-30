@@ -432,19 +432,12 @@ func mergeResults(in PlanSupportIn) (PlanSupportOut, error) {
 		}
 	}
 
-	// For lanes-only or mixed: any lane failure that isn't G17-only means issues found.
-	if len(in.LaneResults) > 0 {
-		for _, lane := range in.LaneResults {
-			if lane.Status == "fail" {
-				// Check if lane has non-advisory issues.
-				for _, iss := range lane.Issues {
-					if iss.Severity == "blocking" {
-						mergedStatus = "Issues Found"
-						break
-					}
-				}
-			}
-		}
+	// For lanes-only or mixed: any lane failure that isn't G17-only means
+	// issues found, with or without issues. laneFailures already excludes
+	// G17-only lanes, and blocking issues are covered by allIssues above
+	// (after any isRedispatch downgrade), so lane.Issues is not read here.
+	if len(laneFailures) > 0 {
+		mergedStatus = "Issues Found"
 	}
 
 	// Build summary and next hint.

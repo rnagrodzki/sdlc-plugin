@@ -136,7 +136,7 @@ The `merge_results` action SHALL set `mergedStatus` to `Issues Found` when any r
 |---|---|
 | Any issue in `allIssues` has `severity: blocking` | always |
 | Any lens `status` is not `approved` | only `lensResults` given (no `laneResults`) |
-| A lane with `status: fail` submitted a `blocking` issue | `laneResults` given |
+| `laneFailures` is not empty (a failed lane that is not G17-only, with or without issues) | `laneResults` given |
 
 `next` is chosen by the first matching row:
 
@@ -156,6 +156,15 @@ The `merge_results` action SHALL set `mergedStatus` to `Issues Found` when any r
 #### Scenario: One lens rejected
 - **WHEN** only `lensResults` is given and one lens has `status: rejected`
 - **THEN** `mergedStatus` is `Issues Found`
+
+#### Scenario: Failed lane without issues
+- **WHEN** lane `static-structural` has `status: fail`, `gateIds: ["G1"]`, and no issues
+- **THEN** `mergedStatus` is `Issues Found`
+
+#### Scenario: Redispatch with a failed G17-only lane
+- **WHEN** `isRedispatch` is `true` and failed lane `g17-lane` has `gateIds: ["G17"]` and a `blocking` issue for `G17`
+- **THEN** that issue appears in `allIssues` with `severity: advisory`
+- **AND** `mergedStatus` is `Approved`
 
 ### Requirement: material_snapshot
 The `material_snapshot` action SHALL read the plan file at `filePath`, extract seven structural dimensions, write them as JSON to a new file `<OS temp dir>/sdlc-plan-snapshot-*/snapshot.json`, and return that file's path as `snapshotPath`.

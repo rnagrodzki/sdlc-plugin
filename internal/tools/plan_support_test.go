@@ -211,6 +211,39 @@ func TestPlanMergeResults_FailedLaneNoGates(t *testing.T) {
 	}
 }
 
+// TestPlanMergeResults_FailedLaneWithoutIssues verifies a failed non-G17 lane
+// yields Issues Found even when it reports no issues: a lane that could not
+// evaluate its gates must not approve the plan.
+func TestPlanMergeResults_FailedLaneWithoutIssues(t *testing.T) {
+	out := mergeCall(t, PlanSupportIn{
+		LaneResults: []LaneResult{{Name: "static-structural", Status: "fail", GateIDs: []string{"G1"}}},
+	})
+	if out.MergedStatus != "Issues Found" {
+		t.Errorf("MergedStatus = %q, want %q", out.MergedStatus, "Issues Found")
+	}
+}
+
+// TestPlanMergeResults_RedispatchFailedG17Lane verifies the status agrees
+// with allIssues on a redispatch: a failed G17-only lane whose G17 issue was
+// submitted as blocking shows that issue as advisory, so the merge is
+// Approved. The status must not read the pre-downgrade severity.
+func TestPlanMergeResults_RedispatchFailedG17Lane(t *testing.T) {
+	out := mergeCall(t, PlanSupportIn{
+		LaneResults: []LaneResult{{Name: "g17-lane", Status: "fail", GateIDs: []string{"G17"}, Issues: []Issue{
+			{GateID: "G17", Severity: "blocking", Summary: "dimension gap"},
+		}}},
+		IsRedispatch: true,
+	})
+	for _, iss := range out.AllIssues {
+		if iss.Severity == "blocking" {
+			t.Errorf("AllIssues has blocking issue %+v, want every G17 issue advisory", iss)
+		}
+	}
+	if out.MergedStatus != "Approved" {
+		t.Errorf("MergedStatus = %q, want %q (no blocking issue and no non-G17 lane failure)", out.MergedStatus, "Approved")
+	}
+}
+
 // TestPlanMergeResults_IssueDedup verifies AllIssues dedups by
 // (gateId, lowercased-trimmed summary) — including across sources: two lanes
 // and one lens each report the same (gateId, summary) pair with differing
