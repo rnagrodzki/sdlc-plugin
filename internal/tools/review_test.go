@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -552,6 +553,43 @@ func TestReviewPrepareNoChangedFiles(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "No changed files") {
 		t.Errorf("expected 'No changed files' error, got: %s", err.Error())
+	}
+}
+
+// TestReviewPrepareBadTargetRef pins that a target ref git cannot resolve
+// surfaces git's own failure, naming the ref, instead of the misleading
+// "No changed files found".
+func TestReviewPrepareBadTargetRef(t *testing.T) {
+	root := t.TempDir()
+
+	mustRun(t, root, "git", "init")
+	mustRun(t, root, "git", "config", "user.email", "test@test.com")
+	mustRun(t, root, "git", "config", "user.name", "Test")
+	writeFile(t, filepath.Join(root, "README.md"), "# test\n")
+	mustRun(t, root, "git", "add", ".")
+	mustRun(t, root, "git", "commit", "-m", "init")
+	mustRun(t, root, "git", "branch", "-M", "main")
+
+	_, err := reviewPrepare(root, root, ReviewPrepareIn{
+		SkipConfigCheck: true,
+		Target:          "no-such-ref",
+	})
+	if err == nil {
+		t.Fatal("expected error for an unresolvable target ref")
+	}
+	var domErr *mcpserver.DomainError
+	if !errors.As(err, &domErr) {
+		t.Fatalf("error type = %T, want *mcpserver.DomainError", err)
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "No changed files") {
+		t.Errorf("error hides the git failure: %s", msg)
+	}
+	if !strings.Contains(msg, `"no-such-ref"`) {
+		t.Errorf("error does not name the bad ref: %s", msg)
+	}
+	if !strings.Contains(msg, "unknown revision") {
+		t.Errorf("error does not carry git's message: %s", msg)
 	}
 }
 

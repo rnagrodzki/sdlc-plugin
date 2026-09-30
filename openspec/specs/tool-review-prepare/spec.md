@@ -92,13 +92,23 @@ The tool SHALL use `target` as the base ref when it is non-empty; otherwise, for
 - **AND** the manifest `base_branch` is `null`
 
 ### Requirement: No changed files
-The tool SHALL fail with a `DomainError` with message `No changed files found` when the changed-files command for the resolved scope returns no files or the git command fails.
-
-- A `target` ref that git cannot resolve also ends in this error.
+The tool SHALL fail with a `DomainError` with message `No changed files found` when the changed-files command for the resolved scope succeeds and returns no files.
 
 #### Scenario: Branch equal to base
 - **WHEN** HEAD has no changes relative to `target: main`
 - **THEN** the call fails with a `DomainError` `No changed files found`
+
+### Requirement: Changed-files git failure
+The tool SHALL fail with a `DomainError` that carries git's error text when the changed-files git command fails, and SHALL NOT report `No changed files found` in that case.
+
+- With a base ref, the message is `git diff against base ref "<base>" failed: <git error>`. The suggestion says to check the ref with `git rev-parse --verify` or fetch it.
+- Without a base ref (scopes `staged` and `working`), the message is `git diff for scope <scope> failed: <git error>`.
+
+#### Scenario: Unresolvable target ref
+- **WHEN** `target` is `no-such-ref` and git cannot resolve it
+- **THEN** the call fails with a `DomainError` whose message names `"no-such-ref"`
+- **AND** the message contains git's own error text, for example `unknown revision`
+- **AND** the message is not `No changed files found`
 
 ### Requirement: Dimension loading
 The tool SHALL load review dimensions from every `*.md` file in `.sdlc-v2/review-dimensions/` of the active worktree, except `_common.md`, in filename order.
@@ -374,7 +384,8 @@ The tool SHALL report each failure below with the listed error class.
 | Main worktree root cannot be resolved | `InfraError` | `resolve project root: ...` / run inside a git repository |
 | `.sdlc-v2/` without `config.toml`, gate on | `DataError` | `config-version: ...` / run `migrate` action `config` |
 | No default branch and no `target` | `InfraError` | `detect base branch: ...` / pass `target` or use scope `staged`/`working` |
-| No changed files, or the changed-files git command fails | `DomainError` | `No changed files found` / check changes for the scope |
+| No changed files | `DomainError` | `No changed files found` / check changes for the scope |
+| Changed-files git command fails (e.g. bad `target`) | `DomainError` | `git diff against base ref "<base>" failed: ...` or `git diff for scope <scope> failed: ...` / check the ref or the scope |
 | No usable dimension | `DomainError` | `No review dimensions found in .sdlc-v2/review-dimensions/` / `migrate` action `import` or add files |
 | Temp directory cannot be created | `InfraError` | `create temp dir: ...` / check disk space and permissions |
 | `.diff` write fails | `InfraError` | `write diff <path>: ...` |

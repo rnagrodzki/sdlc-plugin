@@ -729,8 +729,23 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 	statusOut, _ := gitx.Status(activeRoot)
 	uncommittedChanges := statusOut != ""
 
-	// Changed files.
-	changedFiles := getChangedFilesList(base, activeRoot, scope)
+	// Changed files. A failing git command (e.g. a target ref git cannot
+	// resolve) is reported as such, not folded into "No changed files".
+	changedFiles, err := getChangedFilesList(base, activeRoot, scope)
+	if err != nil {
+		if base != "" {
+			return ReviewPrepareOut{}, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("git diff against base ref %q failed: %s", base, err.Error()),
+				Suggestion: "Check that " + base + " names an existing branch, tag, or commit (git rev-parse --verify " + base + "), fetch it if it exists only on the remote, then retry review_prepare with a valid target.",
+				Cause:      err,
+			}
+		}
+		return ReviewPrepareOut{}, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("git diff for scope %s failed: %s", scope, err.Error()),
+			Suggestion: "Check that the repository has a valid HEAD commit for the configured scope (" + scope + "), or adjust review.scope, then retry review_prepare.",
+			Cause:      err,
+		}
+	}
 	if len(changedFiles) == 0 {
 		return ReviewPrepareOut{}, &mcpserver.DomainError{
 			Msg:        "No changed files found",
@@ -975,7 +990,10 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 // Git helpers
 // ---------------------------------------------------------------------------
 
-func getChangedFilesList(base, dir, scope string) []string {
+// getChangedFilesList returns the changed files for scope. A failing git
+// command is returned as an error (its message carries git's stderr), so a
+// bad base ref is not mistaken for an empty change set.
+func getChangedFilesList(base, dir, scope string) ([]string, error) {
 	var args []string
 	switch scope {
 	case "committed":
@@ -991,8 +1009,8 @@ func getChangedFilesList(base, dir, scope string) []string {
 	}
 
 	raw, err := execx.Run("git", args, execx.Options{Dir: dir})
-	if err != nil || raw == "" {
-		return nil
+	if err != nil {
+		return nil, err
 	}
 
 	var files []string
@@ -1001,7 +1019,7 @@ func getChangedFilesList(base, dir, scope string) []string {
 			files = append(files, trimmed)
 		}
 	}
-	return files
+	return files, nil
 }
 
 func isValidScope(s string) bool {
