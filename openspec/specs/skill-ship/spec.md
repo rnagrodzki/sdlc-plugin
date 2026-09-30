@@ -235,7 +235,7 @@ The skill SHALL dispatch each sub-skill as the table says, always with a fixed `
 | `commit-fixes` | Agent → `commit` | haiku | `--auto` | `decide` only |
 | `harden` | `Skill` tool → `harden` (never Agent) | — | see the harden requirement | `begin-step` / `complete-step` or `skip` |
 | `pr` | Agent → `pr` | sonnet | `[--draft] [--base <branch>] --skip-approval [--auto]` | `begin-step` / `complete-step` |
-| `verify-pipeline` fix | Agent → `verify-pipeline` | sonnet | `--pr <N> --auto`, with `--logs "<ext.checks_raw>"` | inside `verify-pipeline` |
+| `verify-pipeline` fix | Agent → `verify-pipeline` | sonnet | `--pr <N> --logs "<ext.checks_raw>" --auto` | inside `verify-pipeline` |
 | `await-remote-review` fix | Agent → `received-review` | opus | `--pr <N> [--auto]` | inside `await-remote-review` |
 
 - `--auto` comes from `flags.auto`, except `commit-fixes`, the harden commit, and the `verify-pipeline` fix dispatch, which always pass `--auto`.
