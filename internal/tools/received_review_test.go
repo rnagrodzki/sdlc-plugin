@@ -366,3 +366,152 @@ func TestReceivedReviewPrepare_ChecksExitCodes(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// receivedReviewPrepare — main paths
+// ---------------------------------------------------------------------------
+
+// failingGH is a fake gh that fails on every call. A test that expects an
+// error raised before gh runs installs it, so a gh call would change the
+// error class or message.
+const failingGH = "#!/bin/sh\necho \"gh must not run: $*\" >&2\nexit 3\n"
+
+// TestReceivedReviewPrepare_Success pins the output of a call where both gh
+// commands succeed: PR identity parsed from origin, gh's text, and no
+// warnings.
+func TestReceivedReviewPrepare_Success(t *testing.T) {
+	dir := setupGitRepoWithRemote(t, "git@github.com:owner/repo.git")
+	script := "#!/bin/sh\n" +
+		"[ \"$3\" = \"7\" ] || { echo \"unexpected pr: $*\" >&2; exit 3; }\n" +
+		"case \"$2\" in\n" +
+		"  view) printf 'title:\\tAdd widgets\\nstate:\\tOPEN\\n' ;;\n" +
+		"  checks) printf 'build\\tpass\\t1m\\thttps://x\\n' ;;\n" +
+		"  *) echo \"unexpected gh args: $*\" >&2; exit 3 ;;\n" +
+		"esac\n"
+	cleanup := stubGH(t, script)
+	defer cleanup()
+
+	out, err := receivedReviewPrepare(dir, dir, ReceivedReviewIn{PR: 7})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.PR != (receivedReviewPR{Number: 7, Owner: "owner", Repo: "repo"}) {
+		t.Errorf("PR = %+v, want {7 owner repo}", out.PR)
+	}
+	if out.Version != 1 {
+		t.Errorf("Version = %d, want 1", out.Version)
+	}
+	if out.PluginVersion == "" {
+		t.Error("PluginVersion is empty")
+	}
+	if out.Timestamp == "" {
+		t.Error("Timestamp is empty")
+	}
+	if out.View != "title:\tAdd widgets\nstate:\tOPEN" {
+		t.Errorf("View = %q, want gh pr view's trimmed output", out.View)
+	}
+	if out.Checks != "build\tpass\t1m\thttps://x" {
+		t.Errorf("Checks = %q, want gh pr checks' trimmed output", out.Checks)
+	}
+	if out.Warnings != nil {
+		t.Errorf("Warnings = %q, want nil", out.Warnings)
+	}
+}
+
+// TestReceivedReviewPrepare_ConfigGate pins that a JSON-era config.json
+// without config.toml fails with a DataError before any gh command runs.
+func TestReceivedReviewPrepare_ConfigGate(t *testing.T) {
+	dir := setupGitRepoWithRemote(t, "https://github.com/owner/repo.git")
+	writeFile(t, filepath.Join(dir, paths.DataDir, "config.json"), `{"schemaVersion": 4}`)
+	cleanup := stubGH(t, failingGH)
+	defer cleanup()
+
+	_, err := receivedReviewPrepare(dir, dir, ReceivedReviewIn{PR: 42})
+	var dataErr *mcpserver.DataError
+	if !errors.As(err, &dataErr) {
+		t.Fatalf("err = %v (%T), want *mcpserver.DataError", err, err)
+	}
+	if !strings.HasPrefix(dataErr.Msg, "config-version:") {
+		t.Errorf("Msg = %q, want it to start with config-version:", dataErr.Msg)
+	}
+	if !strings.Contains(dataErr.Suggestion, "/setup") {
+		t.Errorf("Suggestion = %q, want it to name /setup", dataErr.Suggestion)
+	}
+}
+
+// TestReceivedReviewPrepare_InvalidPR pins that pr 0 or negative fails with a
+// DomainError before any git or gh command runs.
+func TestReceivedReviewPrepare_InvalidPR(t *testing.T) {
+	for _, pr := range []int{0, -3} {
+		dir := t.TempDir() // not a git repo: git must not run either
+		_, err := receivedReviewPrepare(dir, dir, ReceivedReviewIn{PR: pr})
+		var domErr *mcpserver.DomainError
+		if !errors.As(err, &domErr) {
+			t.Fatalf("pr %d: err = %v (%T), want *mcpserver.DomainError", pr, err, err)
+		}
+		if domErr.Msg != "pr must be a positive integer" {
+			t.Errorf("pr %d: Msg = %q, want %q", pr, domErr.Msg, "pr must be a positive integer")
+		}
+	}
+}
+
+// TestReceivedReviewPrepare_RemoteErrors pins the two InfraErrors raised
+// while reading owner/repo from origin: no origin remote, and an origin URL
+// with no owner/repo path. Neither runs gh.
+func TestReceivedReviewPrepare_RemoteErrors(t *testing.T) {
+	tests := []struct {
+		name      string
+		remoteURL string // empty: no origin remote
+		wantMsg   string
+	}{
+		{name: "no origin remote", wantMsg: "get git remote URL:"},
+		{name: "unparsable remote", remoteURL: "https://example.com/", wantMsg: "parse remote owner/repo:"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var dir string
+			if tt.remoteURL == "" {
+				dir = t.TempDir()
+				mustRun(t, dir, "git", "init")
+			} else {
+				dir = setupGitRepoWithRemote(t, tt.remoteURL)
+			}
+			cleanup := stubGH(t, failingGH)
+			defer cleanup()
+
+			_, err := receivedReviewPrepare(dir, dir, ReceivedReviewIn{PR: 42})
+			var infra *mcpserver.InfraError
+			if !errors.As(err, &infra) {
+				t.Fatalf("err = %v (%T), want *mcpserver.InfraError", err, err)
+			}
+			if !strings.HasPrefix(infra.Msg, tt.wantMsg) {
+				t.Errorf("Msg = %q, want it to start with %q", infra.Msg, tt.wantMsg)
+			}
+		})
+	}
+}
+
+// TestReceivedReviewPrepare_ViewFailure pins that a failing gh pr view fails
+// the whole call with an InfraError naming the PR, unlike gh pr checks.
+func TestReceivedReviewPrepare_ViewFailure(t *testing.T) {
+	dir := setupGitRepoWithRemote(t, "https://github.com/owner/repo.git")
+	script := "#!/bin/sh\n" +
+		"case \"$2\" in\n" +
+		"  view) echo 'GraphQL: Could not resolve to a PullRequest with the number of 9999.' >&2; exit 1 ;;\n" +
+		"  *) printf 'build\\tpass\\t1m\\thttps://x\\n' ;;\n" +
+		"esac\n"
+	cleanup := stubGH(t, script)
+	defer cleanup()
+
+	_, err := receivedReviewPrepare(dir, dir, ReceivedReviewIn{PR: 9999})
+	var infra *mcpserver.InfraError
+	if !errors.As(err, &infra) {
+		t.Fatalf("err = %v (%T), want *mcpserver.InfraError", err, err)
+	}
+	if !strings.HasPrefix(infra.Msg, "gh pr view 9999:") {
+		t.Errorf("Msg = %q, want it to start with \"gh pr view 9999:\"", infra.Msg)
+	}
+	if !strings.Contains(infra.Suggestion, "gh auth status") {
+		t.Errorf("Suggestion = %q, want it to mention gh auth status", infra.Suggestion)
+	}
+}
