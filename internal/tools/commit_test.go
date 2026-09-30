@@ -1019,8 +1019,55 @@ func TestCommitApply_PathNamesAreTakenLiterally(t *testing.T) {
 	if got := gitOutTrim(t, dir, "-c", "core.quotepath=false", "show", "--name-only", "--format=", "HEAD"); got != "[x] notes é.txt" {
 		t.Errorf("commit should hold only the literal file, got:\n%s", got)
 	}
-	if len(out.SkippedUntrackedPaths) != 1 || !strings.Contains(out.SkippedUntrackedPaths[0], "x notes") {
-		t.Errorf("lookalike should be reported as skipped, got %#v", out.SkippedUntrackedPaths)
+	if len(out.SkippedUntrackedPaths) != 1 || out.SkippedUntrackedPaths[0] != "x notes é.txt" {
+		t.Errorf("lookalike should be reported as skipped under its raw name, got %#v", out.SkippedUntrackedPaths)
+	}
+}
+
+// TestCommit_NonASCIIUntrackedNamesAreRaw pins that untracked names with
+// non-ASCII bytes come back as the real file name, not git's C-quoted form
+// ("\303\251t\303\251.txt"). A quoted name cannot be pasted into git add.
+func TestCommit_NonASCIIUntrackedNamesAreRaw(t *testing.T) {
+	const name = "été notes.txt"
+
+	t.Run("commit_prepare untracked.files", func(t *testing.T) {
+		redirectTempManifests(t)
+		dir := newCommitApplyRepo(t)
+		writeRepoFile(t, dir, name, "x")
+
+		out, err := commitPrepare(dir, dir, CommitPrepareIn{SkipConfigCheck: true})
+		if err != nil {
+			t.Fatalf("commitPrepare: %v", err)
+		}
+		if len(out.Untracked.Files) != 1 || out.Untracked.Files[0] != name {
+			t.Errorf("Untracked.Files = %#v, want [%q]", out.Untracked.Files, name)
+		}
+	})
+
+	t.Run("commit_apply skippedUntrackedPaths and next", func(t *testing.T) {
+		dir := newCommitApplyRepo(t)
+		writeRepoFile(t, dir, "initial.txt", "changed")
+		writeRepoFile(t, dir, name, "x")
+
+		out := applyCommit(t, dir)
+
+		if len(out.SkippedUntrackedPaths) != 1 || out.SkippedUntrackedPaths[0] != name {
+			t.Errorf("SkippedUntrackedPaths = %#v, want [%q]", out.SkippedUntrackedPaths, name)
+		}
+		if !strings.Contains(out.Next, name) {
+			t.Errorf("Next should name %q raw, got %q", name, out.Next)
+		}
+	})
+}
+
+// TestUntrackedPaths_SkipsRenameSourceRecord pins the -z parser: a rename
+// record is followed by the original path as its own record, and that record
+// must not be read as a status line even when it starts with "?? ".
+func TestUntrackedPaths_SkipsRenameSourceRecord(t *testing.T) {
+	out := "R  new.txt\x00?? old.txt\x00 M kept.txt\x00?? stray dir/\x00"
+	got := untrackedPaths(out)
+	if len(got) != 1 || got[0] != "stray dir/" {
+		t.Errorf("untrackedPaths = %#v, want [\"stray dir/\"]", got)
 	}
 }
 

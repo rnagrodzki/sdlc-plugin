@@ -198,11 +198,11 @@ func commitPrepare(cfgRoot, gitRoot string, in CommitPrepareIn) (CommitPrepareOu
 	out.Unstaged.HasChanges = out.Unstaged.FileCount > 0
 
 	// Untracked files.
-	statusOut, err := gitx.Status(gitRoot)
+	untracked, err := untrackedStatus(gitRoot)
 	if err != nil {
 		out.Warnings = append(out.Warnings, fmt.Sprintf("status: %s", err.Error()))
 	}
-	out.Untracked.Files = untrackedPaths(statusOut)
+	out.Untracked.Files = untracked
 	out.Untracked.FileCount = len(out.Untracked.Files)
 
 	// Recent commits (last 15, oneline).
@@ -343,14 +343,39 @@ func computeTruncatedFiles(original, truncated string) []string {
 	return omitted
 }
 
+// untrackedStatus runs `git status --porcelain -z` in gitRoot and returns its
+// untracked entries. -z keeps names with spaces, quotes, or non-ASCII bytes
+// raw; without it git C-quotes them ("\303\251.txt"), and the quoted form is
+// useless in a git add hint.
+func untrackedStatus(gitRoot string) ([]string, error) {
+	out, err := execx.Run("git", []string{"status", "--porcelain", "-z"}, execx.Options{Dir: gitRoot})
+	if err != nil {
+		return []string{}, fmt.Errorf("gitx: status: %w", err)
+	}
+	return untrackedPaths(out), nil
+}
+
 // untrackedPaths returns the untracked entries ("?? <path>") from
-// `git status --porcelain` output. A wholly untracked directory is one entry
-// with a trailing slash, as git prints it. Never returns nil.
+// `git status --porcelain -z` output. A wholly untracked directory is one
+// entry with a trailing slash, as git prints it. Never returns nil.
+//
+// Records are NUL-terminated. A rename or copy record (R or C in either
+// status column) is followed by one extra record holding the original path;
+// that record is skipped so it is never read as a status line.
 func untrackedPaths(statusOut string) []string {
 	files := []string{}
-	for _, line := range strings.Split(statusOut, "\n") {
-		if strings.HasPrefix(line, "?? ") {
-			files = append(files, strings.TrimPrefix(line, "?? "))
+	records := strings.Split(statusOut, "\x00")
+	for i := 0; i < len(records); i++ {
+		rec := records[i]
+		if len(rec) < 3 {
+			continue
+		}
+		if strings.HasPrefix(rec, "?? ") {
+			files = append(files, rec[3:])
+			continue
+		}
+		if strings.ContainsAny(rec[:2], "RC") {
+			i++ // skip the original-path record
 		}
 	}
 	return files
@@ -517,7 +542,7 @@ func commitApply(cfgRoot, gitRoot string, in CommitApplyIn) (CommitApplyOut, err
 			Cause:      err,
 		}
 	}
-	statusOut, err := gitx.Status(gitRoot)
+	skipped, err := untrackedStatus(gitRoot)
 	if err != nil {
 		return CommitApplyOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("git status: %s", err.Error()),
@@ -525,7 +550,6 @@ func commitApply(cfgRoot, gitRoot string, in CommitApplyIn) (CommitApplyOut, err
 			Cause:      err,
 		}
 	}
-	skipped := untrackedPaths(statusOut)
 
 	// Stage the explicit path list, never the whole tree. --literal-pathspecs
 	// stops a file name with glob characters or a leading ':' from being read as

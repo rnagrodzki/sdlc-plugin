@@ -52,7 +52,7 @@ The tool SHALL NOT return a tool error for a failed git read, config read or man
 | `staged diff:` | `git diff --cached` fails |
 | `staged diffStat:` | `git diff --cached --stat` fails |
 | `unstaged files:` | `git diff --name-only` fails |
-| `status:` | `git status --porcelain` fails |
+| `status:` | `git status --porcelain -z` fails |
 | `recentCommits:` | `git log --oneline -15` fails |
 | `manifestPath:` | Manifest directory or file cannot be written |
 
@@ -126,7 +126,7 @@ The tool SHALL list in `unstaged` every tracked path whose working tree differs 
 | `unstaged.files` | Paths from `git diff --name-only` (working tree vs index); the same comparison `commit_apply` uses to pick extra tracked paths |
 | `unstaged.fileCount` | Length of `unstaged.files` |
 | `unstaged.hasChanges` | `true` when `unstaged.fileCount` > 0 |
-| `untracked.files` | `??` entries from `git status --porcelain`; a wholly untracked directory is one entry with a trailing `/` |
+| `untracked.files` | `??` entries from `git status --porcelain -z`, as raw names (never C-quoted); a wholly untracked directory is one entry with a trailing `/` |
 | `untracked.fileCount` | Length of `untracked.files` |
 
 #### Scenario: Staged-only file not listed as unstaged
@@ -147,6 +147,10 @@ The tool SHALL list in `unstaged` every tracked path whose working tree differs 
 #### Scenario: Untracked directory
 - **WHEN** the directory `.sdlc-v2/runs/` holds only untracked files
 - **THEN** `untracked.files` holds one entry for the directory, ending in `/`
+
+#### Scenario: Untracked non-ASCII name
+- **WHEN** the untracked file `été notes.txt` exists
+- **THEN** `untracked.files` is `["été notes.txt"]`
 
 ### Requirement: Branch information
 The tool SHALL report `currentBranch`, `defaultBranch` and `onDefaultBranch`. `onDefaultBranch` SHALL be `true` only when `currentBranch` is non-empty and equals `defaultBranch`.

@@ -32,7 +32,7 @@ sequenceDiagram
     T->>T: reject empty message
     T->>T: config-version check, unless skipConfigCheck
     T->>git: git diff --name-only -z
-    T->>git: git status --porcelain
+    T->>git: git status --porcelain -z
     T->>git: git --literal-pathspecs add -- PATHS, only when PATHS is non-empty
     T->>git: git diff --cached --name-only
     T->>git: git commit -m MESSAGE
@@ -76,10 +76,11 @@ The tool SHALL stage only tracked files whose working-tree state differs from th
 |---|---|---|
 | Tracked, modified or deleted, outside `.sdlc-v2/` | Yes | — |
 | Tracked, changed, under `.sdlc-v2/` (or `.sdlc-v2` itself) | No | `skippedTrackedPaths` |
-| Untracked (`??` in `git status --porcelain`) | No | `skippedUntrackedPaths` |
+| Untracked (`??` in `git status --porcelain -z`) | No | `skippedUntrackedPaths` |
 | Already staged, with no later working-tree edit | Not re-added; committed as staged | — |
 
 - Paths come from `git diff --name-only -z`, so names with spaces, quotes or non-ASCII bytes stay intact.
+- Untracked paths come from `git status --porcelain -z`, so `skippedUntrackedPaths`, `summary` and `next` hold raw names, never git's C-quoted form.
 - A wholly untracked directory is one entry with a trailing `/`.
 
 #### Scenario: Untracked runtime file left alone
@@ -111,7 +112,12 @@ The tool SHALL stage paths with `git --literal-pathspecs add -- <paths>`, so eac
 - **WHEN** the tracked file `[x] notes é.txt` is modified
 - **AND** an untracked file `x notes é.txt` exists
 - **THEN** the commit holds only `[x] notes é.txt`
-- **AND** `skippedUntrackedPaths` holds one entry containing `x notes`
+- **AND** `skippedUntrackedPaths` is `["x notes é.txt"]`
+
+#### Scenario: Untracked non-ASCII name
+- **WHEN** `initial.txt` is modified and the untracked file `été notes.txt` exists
+- **THEN** `skippedUntrackedPaths` is `["été notes.txt"]`
+- **AND** `next` names `été notes.txt` as written on disk
 
 ### Requirement: Nothing to commit
 The tool SHALL return a `DataError` and SHALL NOT create a commit when the index holds no staged change after staging.
@@ -143,7 +149,7 @@ The tool SHALL report each failing git step as an `InfraError` that names the gi
 | Main worktree root cannot be resolved | `InfraError` | `resolve main root: <err>` / run from inside a git repository or worktree |
 | Active worktree root cannot be resolved | `InfraError` | `resolve active root: <err>` / change into the repository |
 | `git diff --name-only -z` fails | `InfraError` | `git diff --name-only: <err>` / index may be locked or corrupt |
-| `git status --porcelain` fails | `InfraError` | `git status: <err>` / index may be locked or corrupt |
+| `git status --porcelain -z` fails | `InfraError` | `git status: <err>` / index may be locked or corrupt |
 | `git add` fails | `InfraError` | `git add: <err>` / merge conflict, lock file or permission problem |
 | `git diff --cached --name-only` fails | `InfraError` | `git diff --cached: <err>` / index may be locked or corrupt |
 | `git commit` fails | `InfraError` | `git commit: <err>` / failing commit hook or missing `user.name`/`user.email`; retry with the same message |
