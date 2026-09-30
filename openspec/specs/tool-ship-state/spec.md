@@ -66,6 +66,12 @@ The tool SHALL resolve the ship state file for `detail.branch`, or for the curre
 
 - Every input-validation message starts with the action name.
 - A failed `step` lookup leaves the state file unchanged.
+- The branch slug must match exactly: a file for a branch whose slug only starts with this slug (e.g. `feat-x-2` for `feat-x`) is never used.
+
+#### Scenario: Other branch with a longer slug
+- **WHEN** only `ship-feat-errs-2-20260101T000000Z.json` exists
+- **AND** the call passes `action:"read"` with `detail.branch:"feat/errs"`
+- **THEN** the tool returns a `DataError` `no ship state found for branch "feat/errs"`
 
 #### Scenario: Step missing
 - **WHEN** the call passes `action:"skip"` with no `step`

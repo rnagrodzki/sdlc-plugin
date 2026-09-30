@@ -88,6 +88,8 @@ The tool SHALL anchor every `.sdlc-v2/` path at the main worktree root and SHALL
 ### Requirement: Branch and state file resolution
 The tool SHALL locate the execute state file from `branch`, or from the current git branch when `branch` is omitted, and SHALL reject a call whose branch differs from the branch recorded by `init`.
 
+The branch slug must match exactly: a file for a branch whose slug only starts with this slug (e.g. `feat-x-2` for `feat-x`) is never used.
+
 Actions that do not need an existing execute state file: `wave-compute`, `resolve-config`, `init`, `gc`, `wave-progress`, all `ledger_*`, `log-cli`, `wave-split`, `cleanup`, `resume-reset`, `verify-completeness` with `stateFile`, and `report` when reporting is disabled.
 
 | Condition | Class | Message / Suggestion (short) |

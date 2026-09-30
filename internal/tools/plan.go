@@ -2028,11 +2028,7 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 	}
 
 	// Every marker's lookup resolves the branch's most recent plan run by
-	// filename timestamp, not state.Find's mtime-based, prefix-only
-	// match — state.Find("plan", "feat") would also match a
-	// plan-feat-x-*.json file belonging to a different branch ("feat-x")
-	// because its prefix match is not slug-delimited beyond the leading
-	// hyphen. LatestPlanRun requires an exact slug match.
+	// filename timestamp (LatestPlanRun), not by state.Find's file mtime.
 	st, err := state.LatestPlanRun(mainRoot, branch)
 	if err != nil {
 		return PlanMarkOut{}, &mcpserver.InfraError{

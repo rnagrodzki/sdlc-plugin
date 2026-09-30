@@ -184,6 +184,21 @@ func TestShipState_NoStateForBranch(t *testing.T) {
 	}
 }
 
+// TestShipState_OtherBranchWithSlugPrefixIsNotLoaded pins that a ship state
+// file for a branch whose slug only starts with this branch's slug
+// ("feat-errs-2" for "feat/errs") is not loaded as this branch's state.
+func TestShipState_OtherBranchWithSlugPrefixIsNotLoaded(t *testing.T) {
+	dir := t.TempDir()
+	other := filepath.Join(dir, paths.DataDir, paths.RunsSubdir, "ship-feat-errs-2-20260101T000000Z.json")
+	writeFile(t, other, `{"branch": "feat/errs-2", "steps": []}`)
+
+	_, err := shipState(dir, dir, ShipStateIn{Action: "read", Detail: shipErrWithBranch(nil)}, shipErrNow)
+	text, _ := requireShipErr(t, err, shipErrData)
+	if !strings.Contains(text, "no ship state found") {
+		t.Errorf("error text = %q, want no ship state found", text)
+	}
+}
+
 // TestShipState_Defer_NoStateForBranch pins the one deliberate exception to
 // the no-state-means-data-error rule above: defer falls back to a
 // history-only record (see TestShipState_Defer_StatelessFallback) instead of
