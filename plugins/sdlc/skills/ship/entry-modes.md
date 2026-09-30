@@ -70,7 +70,7 @@ If `errors` is non-empty, display them. Then stop. Do not proceed to step 1b. Th
 
 ## Dry-run mode (R15, R59)
 
-If `--dry-run`, display the full pipeline table and stop. The steps shown below reflect `ShipBuiltInDefaults` (patch bump, threshold low, rebase on) — substitute the actual merged `flags.steps`/`flags.auto`/`flags.draft` from `ship_prepare`'s output when they differ:
+If `--dry-run`, display the full pipeline table and stop. The steps shown below reflect `ShipBuiltInDefaults` (patch bump, threshold info, rebase on) — substitute the actual merged `flags.steps`/`flags.auto`/`flags.draft` from `ship_prepare`'s output when they differ:
 
 ```
 Ship Pipeline (dry run)
@@ -84,7 +84,7 @@ Step  Skill                 Status       Args              Pause?
 5     commit (fixes)   conditional  --auto            no
 6     pr               will run     --draft            no
 ────────────────────────────────────────────────────────────────
-Review threshold: every finding (low and above) triggers fix loop
+Review threshold: every finding (info and above) triggers fix loop
 Interactive pauses: received-review (if triggered)
 ```
 

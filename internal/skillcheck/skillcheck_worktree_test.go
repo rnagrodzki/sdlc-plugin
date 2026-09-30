@@ -162,7 +162,7 @@ var worktreeSkillsDescriptiveNoAction = map[string]worktreeSkillsException{
 		contains: "hook records",
 		reason:   `narrates the automatic "pipeline-continue" PostToolUse hook recording CLI evidence -- no LLM Read/Write/Glob call on this line`,
 	},
-	"skills/ship/config-format.md:123": {
+	"skills/ship/config-format.md:124": {
 		contains: "a per-step automation policy read independently",
 		reason:   `schema doc describing what ship_state{action:"next"} reads internally -- not an LLM instruction`,
 	},
@@ -198,10 +198,6 @@ var worktreeSkillsProhibitionMisses = map[string]worktreeSkillsException{
 	"skills/setup/setup-guardrails.md:215": {
 		contains: "a bare Read of `.sdlc-v2/config.toml` is not",
 		reason:   `negation word is "not" ("... is not available to this sub-flow" on the next line), which is not in the (do not|don't|never|no) alternation`,
-	},
-	"skills/ship/SKILL.md:94": {
-		contains: "Never construct a",
-		reason:   `"(read-only) -> ... Never construct a .sdlc-v2/ path" -- "read" appears earlier in the same line, before "Never", and the prohibited verb is "construct" (not in the read|write|glob alternation)`,
 	},
 }
 
@@ -403,18 +399,21 @@ func TestSkillsProhibitionProseSurvivesDetection(t *testing.T) {
 	}
 }
 
-// worktreeSkillsExecuteStateReportWriteRe matches an execute_state call
-// that reports and persists via the tool (action:"report", write:true),
-// the fix this task requires ship/SKILL.md to use instead of a bare Write
-// to a .sdlc-v2/reports/... path.
-var worktreeSkillsExecuteStateReportWriteRe = regexp.MustCompile(`execute_state\(\{action:"report",\s*write:true`)
+// worktreeSkillsShipStateReportWriteRe matches the ship_state call that
+// composes, renders and persists the end-of-run report in one shot
+// (action:"report", detail:{write:true}) -- the single call ship/SKILL.md's
+// Step 10c must use instead of a bare Write to a .sdlc-v2/reports/... path,
+// or the old two-call execute_state({action:"report", write:true, ...})
+// pattern (one read-only call plus one write-with-body call per format).
+var worktreeSkillsShipStateReportWriteRe = regexp.MustCompile(`ship_state\(\{action:"report",\s*detail:\{write:true`)
 
-// TestSkillsShipUsesExecuteStateReportWrite is the spec's required positive
-// assertion: ship/SKILL.md must persist its execution report through
-// execute_state({action:"report", write:true, ...}) -- once per supported
-// format (json, md) -- rather than a bare Write to a .sdlc-v2/reports/...
-// path.
-func TestSkillsShipUsesExecuteStateReportWrite(t *testing.T) {
+// TestSkillsShipUsesShipStateReportWrite is the spec's required positive
+// assertion: ship/SKILL.md must persist its end-of-run report through
+// exactly one ship_state({action:"report", detail:{write:true}}) call --
+// the tool renders and writes the report itself -- rather than a bare
+// Write to a .sdlc-v2/reports/... path, or the old per-format execute_state
+// two-call pattern.
+func TestSkillsShipUsesShipStateReportWrite(t *testing.T) {
 	repoRoot := worktreeSkillsRepoRoot(t)
 	path := filepath.Join(repoRoot, "skills", "ship", "SKILL.md")
 	data, err := os.ReadFile(path)
@@ -422,8 +421,8 @@ func TestSkillsShipUsesExecuteStateReportWrite(t *testing.T) {
 		t.Fatalf("read %s: %v", path, err)
 	}
 
-	matches := worktreeSkillsExecuteStateReportWriteRe.FindAllString(string(data), -1)
-	if len(matches) < 2 {
-		t.Errorf(`ship/SKILL.md: expected at least 2 calls matching execute_state({action:"report", write:true, ...}) (one per report format: json, md), found %d`, len(matches))
+	matches := worktreeSkillsShipStateReportWriteRe.FindAllString(string(data), -1)
+	if len(matches) != 1 {
+		t.Errorf(`ship/SKILL.md: expected exactly 1 call matching ship_state({action:"report", detail:{write:true}, ...}) (one call, for every format), found %d`, len(matches))
 	}
 }

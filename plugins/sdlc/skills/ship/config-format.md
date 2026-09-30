@@ -33,12 +33,12 @@ Only one case still hard-fails after this gate: **too new** — a `schemaVersion
 ```json
 {
   "ship": {
-    "steps": ["execute", "commit", "review", "verify-openspec", "archive-openspec", "pr", "verify-pipeline", "await-remote-review", "learnings-commit"],
+    "steps": ["execute", "commit", "review", "harden", "verify-openspec", "archive-openspec", "pr", "verify-pipeline", "await-remote-review", "learnings-commit"],
     "quick": ["execute", "commit", "pr"],
     "bump": "patch",
     "draft": false,
     "auto": false,
-    "reviewThreshold": "low",
+    "reviewThreshold": "info",
     "rebase": "auto",
     "verifyPipelineTimeout": 1200,
     "verifyPipelineInterval": 60,
@@ -59,7 +59,7 @@ Only one case still hard-fails after this gate: **too new** — a `schemaVersion
 }
 ```
 
-`verify-pipeline` and `await-remote-review` are opt-in members of `ship.steps[]`. Add them only when you want post-PR CI verification or to await an automated reviewer's verdict. `verify-openspec` is an OpenSpec-gated opt-in — add it between `review` and `archive-openspec` when you want the pipeline to validate implementation completeness against the spec before archiving.
+`verify-pipeline` and `await-remote-review` are opt-in members of `ship.steps[]`. Add them only when you want post-PR CI verification or to await an automated reviewer's verdict. `verify-openspec` is an OpenSpec-gated opt-in — add it between `review` and `archive-openspec` when you want the pipeline to validate implementation completeness against the spec before archiving. `harden` is an opt-in too — add it right after `review` when you want review findings turned into guardrail/dimension edits committed before the PR; with it configured, `received-review` gets `--no-harden` so hardening runs once.
 
 ---
 
@@ -67,13 +67,13 @@ Only one case still hard-fails after this gate: **too new** — a `schemaVersion
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `steps` | `string[]` | `["execute","commit","review","archive-openspec","pr","learnings-commit"]` | Pipeline steps to run. Allowed values: `execute`, `commit`, `review`, `verify-openspec` (opt-in), `archive-openspec`, `pr`, `verify-pipeline` (opt-in), `await-remote-review` (opt-in), `learnings-commit`. `received-review` and `commit-fixes` are conditional sub-steps, not `steps[]` members — see the main skill. There is no standalone `version` step in this port — see `reference.md`'s Gotchas. |
+| `steps` | `string[]` | `["execute","commit","review","archive-openspec","pr","learnings-commit"]` | Pipeline steps to run. Allowed values: `execute`, `commit`, `review`, `harden` (opt-in — clusters review findings after rebase, invokes `/harden` on each, and commits its edits as a separate commit before `pr`. `/harden` has six surfaces: `plan-guardrails`, `execute-guardrails`, `review-dimensions`, `copilot-instructions`, `error-report-skill`, `skill-recommendation`. Only the first four are edited, so the commit covers the project's `config.toml`, its `review-dimensions/` directory and `.github/instructions/` (the three harden paths the main skill's `harden` step lists); `error-report-skill` and `skill-recommendation` are read-only context for the orchestrator), `verify-openspec` (opt-in), `archive-openspec`, `pr`, `verify-pipeline` (opt-in), `await-remote-review` (opt-in), `learnings-commit`. `received-review` and `commit-fixes` are conditional sub-steps, not `steps[]` members — see the main skill. There is no standalone `version` step in this port — see `reference.md`'s Gotchas. |
 | `quick` | `string[]` | unset | Shortened step list used when `ship_prepare` is called with `quick: true`. Unset means quick mode resolves to an empty step list — do not offer `--quick` on a project without a configured `quick` array. |
 | `bump` | `"patch"` \| `"minor"` \| `"major"` \| pre-release label | `"patch"` | Default release bump, read at the main skill's step 6b and forwarded (as `releaseLevel`/`releasePreRelease`) to the `pr` step's `pr_apply` call — not applied by any standalone step. Overridden by an explicit `bump` on `ship_prepare`'s input. A configured `version.preRelease` label (a separate, top-level config section) overrides this default too, but never overrides an explicit CLI/tool-input bump. |
 | `draft` | `boolean` | `false` | When `true`, PRs are created as drafts. |
 | `auto` | `boolean` | `false` | Legacy pipeline-wide auto flag: when `true`, `ship_prepare` resolves `auto: true` and this pipeline suppresses its own confirmation prompts. Distinct from the `automation` section below — see "Two automation mechanisms." |
-| `reviewThreshold` | `"critical"` \| `"high"` \| `"medium"` \| `"low"` | `"low"` | Minimum review-finding severity that triggers the received-review fix loop. The default `"low"` sends every Critical, High, Medium and Low finding into the fix loop. Info is not an allowed value here, so an Info finding is below every threshold and is always deferred (reason `below-threshold`). See table below. |
-| `rebase` | `boolean` \| `"auto"` \| `"skip"` \| any string | `"auto"` | A JSON `true`/`false` is coerced to `"auto"`/`"skip"`; any other string is passed through as-is. `"auto"` rebases onto the default branch after all commits, before the next configured main-loop step; `"skip"` never rebases. There is no `"prompt"` mode in this port — treat any unrecognized string as informational only, not as a request to ask the user. |
+| `reviewThreshold` | `"critical"` \| `"high"` \| `"medium"` \| `"low"` \| `"info"` | `"info"` | Minimum review-finding severity that triggers the received-review fix loop. The default `"info"` sends every finding, Info included, into the fix loop. `"low"` keeps the old behavior: Info findings are deferred (reason `below-threshold`). Any other value makes `ship_prepare` return an error. See table below. |
+| `rebase` | `boolean` \| `"auto"` \| `"skip"` \| any string | `"auto"` | A JSON `true`/`false` is coerced to `"auto"`/`"skip"`; any other string is passed through as-is. `"auto"` rebases onto the default branch after the feature and review-fix commits, before the next configured main-loop step (the `harden` commit, when configured, lands after it); `"skip"` never rebases. There is no `"prompt"` mode in this port — treat any unrecognized string as informational only, not as a request to ask the user. |
 | `verifyPipelineTimeout` | `integer` (≥30) | `1200` | Maximum seconds `verify-pipeline` polls CI checks before giving up. |
 | `verifyPipelineInterval` | `integer` (≥10) | `60` | Seconds between `verify-pipeline` poll probes. |
 | `verifyPipelineMaxIterations` | `integer` (1–10) | `3` | Maximum analyze-fix-recheck iterations before `verify-pipeline` gives up. |
@@ -93,9 +93,10 @@ There is no `workspace` field in this port. `ship_prepare` reads no such config 
 | `"critical"` | Critical only |
 | `"high"` | Critical + High |
 | `"medium"` | Critical + High + Medium |
-| `"low"` | Critical + High + Medium + Low (every finding) |
+| `"low"` | Critical + High + Medium + Low |
+| `"info"` | Critical + High + Medium + Low + Info (every finding) |
 
-At `"low"` (the default), every Critical, High, Medium and Low finding enters the `received-review` fix loop. Info is not one of the four allowed values, so an Info finding is below every threshold and never enters the loop. Findings below the threshold are not dropped: `ship` records each one through `ship_state` `defer` (reason `below-threshold`) in `<MAIN_ROOT>/.sdlc-v2/history/deferred.json`, and Step 10 points to `/sdlc:deferred` for acting on them. That write is best-effort — when the `defer` narration carries `WARNING: could not persist`, retry with `ship_state` `deferred_add` or name the finding as UNACCOUNTED in the summary.
+At `"info"` (the default), every finding enters the `received-review` fix loop. At `"low"`, Info findings stay below the threshold. Findings below the threshold are not dropped: `ship` records each one through `ship_state` `defer` (reason `below-threshold`) in `<MAIN_ROOT>/.sdlc-v2/history/deferred.json`, and Step 10 points to `/sdlc:deferred` for acting on them. That write is best-effort — when the `defer` narration carries `WARNING: could not persist`, retry with `ship_state` `deferred_add` or name the finding as UNACCOUNTED in the summary.
 
 ### Legacy CLI sugar — not supported
 

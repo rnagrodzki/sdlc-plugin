@@ -91,6 +91,12 @@ type ValidateIn struct {
 	// Section is the config section guardrails reads its guardrails list
 	// from. Defaults to "plan" when empty, matching the JS default.
 	Section string `json:"section,omitempty" jsonschema_description:"Config section the guardrails action reads its guardrails list from. Defaults to \"plan\" when empty."`
+	// ActiveWorktree, for the guardrails action only, swaps the main-root
+	// anchor for worktree.ActiveRoot() so harden -- which writes guardrails
+	// to the active worktree, not the main one -- can validate what it just
+	// wrote. When the active root cannot be resolved the call fails instead
+	// of falling back to the main root. Ignored by every other action.
+	ActiveWorktree bool `json:"activeWorktree,omitempty" jsonschema_description:"guardrails action only: true reads the section from the ACTIVE worktree's .sdlc-v2/config.toml instead of the main worktree's. Used by harden, which writes guardrails to the active worktree. Ignored by other actions."`
 	// Body is the PR body text to validate for the pr_body action, matching
 	// the former standalone pr_validate_body tool's input.
 	Body string `json:"body,omitempty" jsonschema_description:"PR body text to validate. Used by the pr_body action."`
@@ -116,7 +122,7 @@ Pass "action" to select the validator. Each action uses a subset of the input fi
 - discovery: Check the project's discovery artifacts (PD1-PD16). No inputs.
 - pr_template: Check the PR template file itself (V1-V5) at its canonical or legacy path. No inputs.
 - cost_tiers: Compare skill/agent model tiers against the cost-tier doc tables. Optional: strict (true reports the INHERITED finding kind as severity "error" instead of "warning").
-- guardrails: Check the guardrails list in a config section for per-guardrail id/description/severity. Optional: section (defaults to "plan"). A section that does not exist returns no findings.
+- guardrails: Check the guardrails list in a config section for per-guardrail id/description/severity. Optional: section (defaults to "plan"), activeWorktree (true reads the active worktree instead of the main worktree; an unresolvable active worktree is an infrastructure error, never a silent fallback). A section that does not exist returns no findings.
 - dimensions: Check the review-dimension files, including a cross-file duplicate-name check (D10). Reads the ACTIVE worktree, unlike every other action. No inputs.
 - pr_body: Check a PR body against the PR template's required sections. Requires body — an empty body is not rejected, it simply reports every required section as missing.
 - ci_script_drift: Check the generated CI scripts against their current sources. No inputs.
@@ -132,20 +138,44 @@ Pass "action" to select the validator. Each action uses a subset of the input fi
 			if err != nil {
 				return ValidateOut{}, &mcpserver.InfraError{Msg: fmt.Sprintf("resolve project root: %s", err.Error()), Suggestion: "Run validate from inside a git working tree (or a linked worktree) of this project; no git repository could be found from the current directory.", Cause: err}
 			}
-			// dimensions is the one action whose target files are git-tracked
-			// content that must be read from the ACTIVE worktree (root rule),
-			// not the main worktree every other action anchors to. Swap the
-			// root passed into validate() for this action only; fail open to
-			// the already-resolved main root so a resolution error here never
-			// blocks the other eight actions.
-			if in.Action == "dimensions" {
-				if activeRoot, aerr := worktree.ActiveRoot(); aerr == nil {
-					root = activeRoot
-				}
+			root, err = validateRoot(root, in, worktree.ActiveRoot)
+			if err != nil {
+				return ValidateOut{}, err
 			}
 			return validate(root, in)
 		},
 	)
+}
+
+// validateRoot picks the root an action reads from. dimensions is the one
+// action whose target files are git-tracked content that must be read from
+// the ACTIVE worktree (root rule), not the main worktree every other action
+// anchors to; it fails open to mainRoot when the active root cannot be
+// resolved, so a resolution error never blocks it. guardrails reads the
+// active worktree only when the caller opts in via ActiveWorktree (harden,
+// which writes guardrails to the active worktree and validates what it just
+// wrote). That opt-in fails loud instead: silently validating the main
+// worktree would report a clean result for a file nobody checked.
+func validateRoot(mainRoot string, in ValidateIn, activeRoot func() (string, error)) (string, error) {
+	switch {
+	case in.Action == "dimensions":
+		if r, err := activeRoot(); err == nil {
+			return r, nil
+		}
+		return mainRoot, nil
+	case in.Action == "guardrails" && in.ActiveWorktree:
+		r, err := activeRoot()
+		if err != nil {
+			return "", &mcpserver.InfraError{
+				Msg:        fmt.Sprintf("resolve active worktree for guardrails activeWorktree:true: %s", err.Error()),
+				Suggestion: "Run validate from inside the active git working tree (not its .git directory), or omit activeWorktree to validate the main worktree's config, then retry.",
+				Cause:      err,
+			}
+		}
+		return r, nil
+	default:
+		return mainRoot, nil
+	}
 }
 
 func validate(root string, in ValidateIn) (ValidateOut, error) {

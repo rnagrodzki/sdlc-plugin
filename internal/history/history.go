@@ -21,6 +21,14 @@ import (
 // ---------------------------------------------------------------------------
 
 // RunRecord is one pipeline-completion entry appended to runs.jsonl.
+//
+// PlanFile, StartedAt and LastModifiedAt are written only by the plan
+// skill's "done" marker (internal/tools/plan.go's appendPlanRunRecord): the
+// plan run's resolved plan file path, and its timing window (run start to
+// the plan file's last edit — never the "done" call time). All three are
+// omitempty so every other producer's records, and every record written
+// before these fields existed, keep parsing and serializing exactly as
+// before.
 type RunRecord struct {
 	Timestamp      string   `json:"ts"`
 	Skill          string   `json:"skill"`
@@ -31,6 +39,9 @@ type RunRecord struct {
 	GuardrailHits  []string `json:"guardrail_hits,omitempty"`
 	DeferredIssues []string `json:"deferred_issues,omitempty"`
 	Version        string   `json:"version,omitempty"`
+	PlanFile       string   `json:"plan_file,omitempty"`
+	StartedAt      string   `json:"started_at,omitempty"`
+	LastModifiedAt string   `json:"last_modified_at,omitempty"`
 }
 
 // DeferredIssue is a problem deferred from a pipeline run for later triage.

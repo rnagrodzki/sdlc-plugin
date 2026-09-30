@@ -26,11 +26,37 @@ To resume: /ship --resume
 
 Each sub-skill has its own error recovery. ship does not duplicate their recovery logic — it catches pipeline-level failures (sequencing, state, context) and delegates skill-level failures to the skill itself.
 
+## Dispatch protocol
+
+Every Agent dispatch from `ship/SKILL.md` uses the same prompt shape: the slash command with the step's fixed args on the first line, then any payload the step's entry names, and nothing else. The Agent call itself carries the `model:` fixed in that step's entry and never an `isolation` value. The dispatched skill loads its own SKILL.md — do not paste instructions, summaries or ship state into the prompt.
+
+```text
+/sdlc:<skill> <args from the step's entry>
+
+<payload, only when the step's entry names one>
+```
+
+`harden` is not Agent-dispatched: ship invokes it with the `Skill` tool from its own context (see the `### harden` entry).
+
+**received-review** carries the collected review findings as its payload. Include every finding the review routing collected at or above `flags.reviewThreshold`, each copied verbatim from review's output — heading, `**File:**` line and body, unchanged. `<K>` is the number of collected findings and `<M>` is review's own total. Pass `--pr <N>` only when a PR already exists, `--auto` under `flags.auto`, and `--no-harden` when `harden` is in `flags.steps`:
+
+```text
+/sdlc:received-review [--pr <N>] [--auto] [--no-harden]
+
+Review findings to address (from /review, <K> of <M>):
+#### [<SEVERITY>] <title>
+**File:** <path>:<line>
+<body verbatim>
+...
+```
+
+Before a PR exists, this payload is the only place received-review can find the findings (its Step 1b "Findings passed in the dispatch prompt"). A dispatch with an empty payload leaves every finding unaccounted.
+
 ## DO NOT (R-progressive-disclosure)
 
-- Deviate from the fixed per-step dispatch rules in the Steps section. Unlike the source skill, `ship_prepare`'s output carries no computed `dispatchMode`/`model`/`isolation`/`invocation` per step — this port's SKILL.md itself is the single source of truth for which steps are Agent-dispatched, at which model, and with which args. Do not invent a `dispatchMode` value or dispatch an Agent-dispatched step (execute, commit, review, received-review, commit-fixes, pr) via the Skill tool — always the Agent tool, always with the model fixed in that section.
-- Forward `--auto` to sub-skills that do not support it — see each step's own entry in the Steps section of the main skill for exactly which steps accept it (`commit`, `received-review`, `commit-fixes`, `pr`, plus the conditional `verify-pipeline`/`received-review` dispatches inside the `verify-pipeline` and `await-remote-review` inline steps; not `execute`, `review`, `verify-openspec`, `archive-openspec`, `learnings-commit`).
-- Automatically resolve review findings — received-review is always interactive unless `--auto`/`automation.mode: unattended` was explicitly forwarded.
+- Deviate from the fixed per-step dispatch rules in the Steps section. Unlike the source skill, `ship_prepare`'s output carries no computed `dispatchMode`/`model`/`isolation`/`invocation` per step — this port's SKILL.md itself is the single source of truth for which steps are Agent-dispatched, at which model, and with which args. Do not invent a `dispatchMode` value or dispatch an Agent-dispatched step (execute, commit, review, received-review, commit-fixes, pr) via the Skill tool — always the Agent tool, always with the model fixed in that section. The one inverse case is `harden`: invoke it with the Skill tool from ship's own context, never through an Agent — harden dispatches its own orchestrator Agent and needs `AskUserQuestion` outside `--auto`, and a ship-dispatched Agent has neither reliably.
+- Forward `--auto` to sub-skills that do not support it — see each step's own entry in the Steps section of the main skill for exactly which steps accept it (`commit`, `received-review`, `commit-fixes`, `pr`, `harden` (forwarded on each Skill invocation, plus to the commit Agent that commits its edits), plus the conditional `verify-pipeline`/`received-review` dispatches inside the `verify-pipeline` and `await-remote-review` inline steps; not `execute`, `review`, `verify-openspec`, `archive-openspec`, `learnings-commit`).
+- Automatically resolve review findings on your own judgment. received-review and harden are interactive unless `--auto` (`flags.auto`, from the user's own invocation or config) was forwarded. Under `--auto`, received-review addresses every collected finding — each one is fixed or deferred with a reason, never dropped — and the `harden` step dispatches every cluster with `alreadyHardened:false`.
 - Run pipeline steps in parallel — the pipeline is strictly sequential.
 - Delete the state file on failure — it is needed for `--resume`.
 - Proceed past a failed sub-skill — stop, save state, inform the user.
@@ -47,7 +73,7 @@ Each sub-skill has its own error recovery. ship does not duplicate their recover
 - Interpret a tool-call result as a natural stopping point. Processing a `ship_state`/Bash/TodoWrite result is not the end of the pipeline — it is one action in a multi-action step. Continue to the next action immediately.
 - Treat the `PostToolUse` hook's `additionalContext` reminder as optional or advisory. When a step is `in_progress`, `pipeline-continue` emits a mandatory continuation signal — this is a directive you MUST act on, not an FYI. Complete the stated next action (dispatch the step's Agent / record its result) before ending your response turn. The `stop-pipeline-continue` Stop hook enforces this for `in_progress` steps regardless of `--auto`.
 - Call `ship_state{action:"begin-step"|"complete-step"|"start"|"complete"|"skip"|"fail"}` with `step:"received-review"` or `step:"commit-fixes"`. Those two names are never members of `flags.steps` (they are review-verdict-triggered conditionals — see `config-format.md`), so `ship_prepare`'s scaffold never creates a `steps[]` entry for them, and the tool returns `step %q not found in state`. Record their progress with `ship_state{action:"decide", step, detail:{text}}` instead — this is the **only** exception to the rule below.
-- Skip a configured inline step's `begin-step`/`complete-step` pair (`verify-openspec`, `archive-openspec`, `verify-pipeline`, `await-remote-review`, `learnings-commit`, when present in `flags.steps`). Despite the `kind:"inline"` label (meaning "no sub-skill Agent — do the work in this skill's own prose"), these names get a real `pending` `steps[]` entry exactly like tracked steps, and `decide` never changes that entry's status. Skipping the lifecycle calls leaves the entry `pending` forever, which blocks a later tracked step's `begin-step` (R-b1) and the terminal cleanup contract check. Treat `kind` as a dispatch-style signal only, never as a lifecycle exemption.
+- Skip a configured inline step's `begin-step`/`complete-step` pair (`harden`, `verify-openspec`, `archive-openspec`, `verify-pipeline`, `await-remote-review`, `learnings-commit`, when present in `flags.steps`). Despite the `kind:"inline"` label (meaning "no sub-skill Agent — do the work in this skill's own prose"), these names get a real `pending` `steps[]` entry exactly like tracked steps, and `decide` never changes that entry's status. Skipping the lifecycle calls leaves the entry `pending` forever, which blocks a later tracked step's `begin-step` (R-b1) and the terminal cleanup contract check. Treat `kind` as a dispatch-style signal only, never as a lifecycle exemption.
 
 ## Gotchas (R-progressive-disclosure)
 
@@ -55,9 +81,9 @@ Each sub-skill has its own error recovery. ship does not duplicate their recover
 
 **Finding detection is text-based and per finding.** Parse the conversation for each `#### [{SEVERITY}] {title}` heading the review orchestrator emits (the file and line come from the `**File:**` line under it) and route every finding on its own severity, passing that severity lowercased to `ship_state{action:"defer"}` — see `SKILL.md` Decisions & gates. The `Verdict: <VERDICT>` line is a summary for the log, not a router. If the conversation is compacted between review and finding parsing, the headings may be lost — which is why the parsed count is cross-checked against review's own `{M}` total before the review is called finding-free. Fewer headings than `M` is a shortfall to report, not a clean run.
 
-**received-review supports `--auto`.** When forwarded, both its consent prompt and its reply/resolve prompt are skipped. "Will fix" items are auto-implemented and their threads auto-resolved via in-thread replies. Every other outcome ("won't fix", "disagree", "cannot verify", "needs direction") becomes `needs-direction`: it is displayed, not auto-implemented, recorded through `ship_state{action:"defer"}`, and its thread is replied to but left open for the reviewer. Critique gates and verification still run. Without `--auto`, the pipeline pauses for human approval at both gates.
+**received-review supports `--auto` and `--no-harden`.** `--no-harden` (forwarded when `harden` is in `flags.steps`) skips its Step 11.6 harden dispatch, so hardening runs once, in ship's own `harden` step. When `--auto` is forwarded, both its consent prompt and its reply/resolve prompt are skipped. "Will fix" items are auto-implemented and their threads auto-resolved via in-thread replies. Every other outcome ("won't fix", "disagree", "cannot verify", "needs direction") becomes `needs-direction`: it is displayed, not auto-implemented, recorded through `ship_state{action:"defer"}`, and its thread is replied to but left open for the reviewer. Critique gates and verification still run. Without `--auto`, the pipeline pauses for human approval at both gates.
 
-**Double commit is intentional.** The feature commit (step 2) and the review-fix commit (step 5) are separate `commit_apply` calls. This keeps feature work and review fixes distinct in git history. Do not squash them.
+**Double commit is intentional.** The feature commit (step 2) and the review-fix commit (step 5) are separate `commit_apply` calls. This keeps feature work and review fixes distinct in git history. Do not squash them. The `harden` step's commit (guardrail, review-dimension and Copilot-instruction edits only) is a third, separate commit for the same reason.
 
 **No standalone version step, and no tool in this pipeline ever creates or pushes a tag, or bumps the version file, or writes the changelog.** ship resolves release intent itself — step 6b reads `flags.bump`/`sources.bump` (already resolved by `ship_prepare`: cli > config > `version.preRelease` override > built-in default `"patch"`) and, under interactive mode, confirms or lets the user override it — then the `### pr` step translates that into `releaseLevel`/`releasePreRelease` and forwards it, plus a freshly drafted `releaseNotes`, to the pr step's own `pr_apply` call. The real version bump, tag, and CHANGELOG write happen post-merge, driven by CI (`release-on-main.yml` computes and applies the bump; `verify-release-intent.yml` and `promote-release.yml` handle RC promotion) — not by this pipeline at all. This is a deliberate architecture change from an earlier version of this port, which ran a dedicated version step and paused for the user to create and push a tag by hand — see the main skill's Decisions & gates, "Release-intent enforcement."
 
@@ -75,7 +101,7 @@ Each sub-skill has its own error recovery. ship does not duplicate their recover
 
 **No Agent SDK worktrees.** ship isolates the `execute` step with a plain `git checkout -b <branch>` run by this skill itself, then dispatches `execute` without `--branch` so its own Step 1 sees a non-default current branch and yields `continue`. There is no `EnterWorktree`/`ExitWorktree` tool use anywhere in this pipeline, and no `isolation: "worktree"` on any Agent dispatch.
 
-**Rebase happens after all commits, before the next configured main-loop step** (`verify-openspec` / `archive-openspec` / `pr`). This ensures the branch (and, once merged and tagged post-merge by CI, the eventual release) is built on a commit that can merge cleanly. If rebase conflicts, the pipeline pauses — the user resolves in place and resumes.
+**Rebase happens after the feature and review-fix commits, before the next configured main-loop step** (`harden` / `verify-openspec` / `archive-openspec` / `pr`). The `harden` step's own commit comes after rebase, so it lands on the rebased branch and needs no second rebase. This ensures the branch (and, once merged and tagged post-merge by CI, the eventual release) is built on a commit that can merge cleanly. If rebase conflicts, the pipeline pauses — the user resolves in place and resumes.
 
 **Rebase is skipped when the default branch is already an ancestor.** `git merge-base --is-ancestor` is a fast check; no fetch/rebase overhead when the branch is already up to date.
 

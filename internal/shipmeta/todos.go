@@ -25,6 +25,7 @@ var SubstepMap = map[string][]string{
 	"execute":             {"execute plan"},
 	"commit":              {"stash unstaged", "generate message", "commit", "restore stash"},
 	"review":              {"dispatch review dimensions", "collect verdicts"},
+	"harden":              {"cluster findings", "run harden", "stage surfaces", "commit hardening"},
 	"received-review":     {"fetch comments", "classify findings", "apply auto-fixes", "surface remaining"},
 	"commit-fixes":        {"re-stage", "commit fixes"},
 	"verify-openspec":     {"openspec validate --strict", "check result"},

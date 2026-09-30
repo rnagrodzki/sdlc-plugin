@@ -7,6 +7,7 @@ triggers:
   - 'internal/**/config*.go'
   - 'plugins/sdlc/schemas/**'
   - 'plugins/sdlc/templates/**'
+  - 'internal/history/**/*.go'
 ---
 
 ## Scope

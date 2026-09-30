@@ -4,6 +4,9 @@ description: When enum values, schema definitions, or config properties are adde
 triggers:
   - "plugins/sdlc/schemas/**"
   - "**/*_test.go"
+  - "internal/shipmeta/**/*.go"
+  - "internal/setupmeta/**/*.go"
+  - "internal/tools/ship.go"
 severity: medium
 ---
 

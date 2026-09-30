@@ -1733,14 +1733,15 @@ func extractFencedJSON(t *testing.T, doc, heading string) string {
 // truth: the template that setup copies, the setup wizard, the built-in
 // fallback that ship_prepare uses when a project sets no ship.reviewThreshold,
 // and the default column of ship/config-format.md's Field Reference table.
-// Five more restate the same value for a reader and are pinned here too:
+// Six more restate the same value and are pinned here too:
 // config-format.md's "Full Example" JSON block and its "(the default)"
-// prose sentence, entry-modes.md's dry-run text (two spots), and
-// docs/skills/ship.md's Review threshold bullet. When one moves without the
+// prose sentence, entry-modes.md's dry-run text (two spots),
+// docs/skills/ship.md's Review threshold bullet, and the "default" keyword of
+// ship.reviewThreshold in sdlc-local.schema.json. When one moves without the
 // others, a project gets a different fix-loop depth depending on how it was
 // set up, or a doc describes a default that no longer exists.
 func TestShippedReviewThresholdDefaultsAgree(t *testing.T) {
-	const want = "low"
+	const want = "info"
 	repo := filepath.Join("..", "..")
 
 	// Template: [ship].reviewThreshold in plugins/sdlc/templates/local.toml.
@@ -1836,16 +1837,49 @@ func TestShippedReviewThresholdDefaultsAgree(t *testing.T) {
 		t.Fatal(`docs/skills/ship.md has no "Review threshold." Default bullet`)
 	}
 
+	// 10th pin: the "default" keyword of ship.reviewThreshold in
+	// sdlc-local.schema.json. properties.ship is a $ref to
+	// $defs.shipSection, so the value lives there; the $ref is checked so a
+	// rename cannot leave this pin reading a section nothing uses.
+	schemaPath := filepath.Join(repo, "plugins", "sdlc", "schemas", "sdlc-local.schema.json")
+	schemaRaw, err := os.ReadFile(schemaPath)
+	if err != nil {
+		t.Fatalf("read sdlc-local.schema.json: %v", err)
+	}
+	var schema struct {
+		Properties struct {
+			Ship struct {
+				Ref string `json:"$ref"`
+			} `json:"ship"`
+		} `json:"properties"`
+		Defs struct {
+			ShipSection struct {
+				Properties struct {
+					ReviewThreshold struct {
+						Default string `json:"default"`
+					} `json:"reviewThreshold"`
+				} `json:"properties"`
+			} `json:"shipSection"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(schemaRaw, &schema); err != nil {
+		t.Fatalf("parse sdlc-local.schema.json: %v", err)
+	}
+	if schema.Properties.Ship.Ref != "#/$defs/shipSection" {
+		t.Fatalf("sdlc-local.schema.json properties.ship.$ref = %q, want %q", schema.Properties.Ship.Ref, "#/$defs/shipSection")
+	}
+
 	got := map[string]string{
-		"plugins/sdlc/templates/local.toml [ship].reviewThreshold":              tmpl.Ship.ReviewThreshold,
-		"setupmeta.ShipFields reviewThreshold Default":                          wizard,
-		"shipmeta.ShipBuiltInDefaults.ReviewThreshold":                          shipmeta.ShipBuiltInDefaults.ReviewThreshold,
-		"plugins/sdlc/skills/ship/config-format.md reviewThreshold default":     docDefault,
-		"plugins/sdlc/skills/ship/config-format.md Full Example JSON":           example.Ship.ReviewThreshold,
-		`plugins/sdlc/skills/ship/config-format.md "(the default)" prose`:       proseMatch[1],
-		`plugins/sdlc/skills/ship/entry-modes.md dry-run "threshold X," text`:   dryRunMatch[1],
-		`plugins/sdlc/skills/ship/entry-modes.md "every finding (X and above)"`: aboveMatch[1],
-		"docs/skills/ship.md Review threshold bullet":                           bulletMatch[1],
+		"plugins/sdlc/templates/local.toml [ship].reviewThreshold":                 tmpl.Ship.ReviewThreshold,
+		"setupmeta.ShipFields reviewThreshold Default":                             wizard,
+		"shipmeta.ShipBuiltInDefaults.ReviewThreshold":                             shipmeta.ShipBuiltInDefaults.ReviewThreshold,
+		"plugins/sdlc/skills/ship/config-format.md reviewThreshold default":        docDefault,
+		"plugins/sdlc/skills/ship/config-format.md Full Example JSON":              example.Ship.ReviewThreshold,
+		`plugins/sdlc/skills/ship/config-format.md "(the default)" prose`:          proseMatch[1],
+		`plugins/sdlc/skills/ship/entry-modes.md dry-run "threshold X," text`:      dryRunMatch[1],
+		`plugins/sdlc/skills/ship/entry-modes.md "every finding (X and above)"`:    aboveMatch[1],
+		"docs/skills/ship.md Review threshold bullet":                              bulletMatch[1],
+		"plugins/sdlc/schemas/sdlc-local.schema.json ship.reviewThreshold.default": schema.Defs.ShipSection.Properties.ReviewThreshold.Default,
 	}
 	for source, value := range got {
 		if value != want {

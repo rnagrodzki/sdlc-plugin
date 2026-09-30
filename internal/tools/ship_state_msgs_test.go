@@ -46,6 +46,11 @@ func TestShipState_InputErrorMsgsStartWithAction(t *testing.T) {
 			"gc: detail.dryRun must be a boolean",
 		},
 		{
+			"cleanup-pipeline bad force",
+			ShipStateIn{Action: "cleanup-pipeline", Detail: map[string]any{"branch": "feat/x", "force": "true"}},
+			"cleanup-pipeline: detail.force must be a boolean",
+		},
+		{
 			"begin-step bad detail level",
 			ShipStateIn{Action: "begin-step", Step: "execute", Detail: map[string]any{"detail": "loud"}},
 			`begin-step: detail must be "concise" or "full"`,

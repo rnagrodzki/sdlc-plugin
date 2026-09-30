@@ -107,7 +107,7 @@
           "type": "array",
           "items": {
             "type": "string",
-            "enum": ["execute", "commit", "review", "verify-openspec", "archive-openspec", "pr", "verify-pipeline", "await-remote-review", "learnings-commit"]
+            "enum": ["execute", "commit", "review", "harden", "verify-openspec", "archive-openspec", "pr", "verify-pipeline", "await-remote-review", "learnings-commit"]
           },
           "uniqueItems": true,
           "description": "Pipeline steps to run. Replaces legacy preset/skip fields."
@@ -116,7 +116,7 @@
           "type": "array",
           "items": {
             "type": "string",
-            "enum": ["execute", "commit", "review", "verify-openspec", "archive-openspec", "pr", "verify-pipeline", "await-remote-review", "learnings-commit"]
+            "enum": ["execute", "commit", "review", "harden", "verify-openspec", "archive-openspec", "pr", "verify-pipeline", "await-remote-review", "learnings-commit"]
           },
           "uniqueItems": true,
           "description": "Optional shortened step list activated by --quick. When set, /ship --quick uses this list instead of steps[]. Unset means --quick is not available for this project. See R-quick-1."
@@ -136,7 +136,8 @@
         },
         "reviewThreshold": {
           "type": "string",
-          "enum": ["critical", "high", "medium", "low"],
+          "enum": ["critical", "high", "medium", "low", "info"],
+          "default": "info",
           "description": "Minimum severity level that triggers the review fix loop. Findings below it are deferred, not dropped -- see /sdlc:deferred."
         },
         "rebase": {

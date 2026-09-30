@@ -655,8 +655,8 @@ func issueLabelNames(raw []any) []string {
 // ---------------------------------------------------------------------------
 
 // hardenPrepare is the Go port of harden-prepare.js's main(). root is the
-// main worktree (config/guardrails, #360 R-projectroot); contentRoot is the
-// active worktree (branch-tracked dimensions/copilot instructions, #474).
+// main worktree (pipeline state, skill recommendations); contentRoot is the
+// active worktree (guardrails, dimensions, copilot instructions — #474).
 func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareOut, error) {
 	// KD5 — param-first config-version gate.
 	if !in.SkipConfigCheck {
@@ -741,7 +741,7 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 	// R16 — pre-flight validation. Any error aborts before the manifest is
 	// ever assembled; no manifest file is written.
 	var preflightErrors []string
-	preflightErrors = append(preflightErrors, guardrailsPreflight(root)...)
+	preflightErrors = append(preflightErrors, guardrailsPreflight(contentRoot)...)
 	preflightErrors = append(preflightErrors, dimensionsPreflight(contentRoot)...)
 	if len(preflightErrors) > 0 {
 		return HardenPrepareOut{}, &mcpserver.DomainError{
@@ -752,8 +752,8 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 
 	// Load all five surfaces deterministically (R4).
 	loadErrs := []surfaceLoadError{}
-	planGuardrails := loadSurfaceGuardrails(root, "plan", &loadErrs)
-	executeGuardrails := loadSurfaceGuardrails(root, "execute", &loadErrs)
+	planGuardrails := loadSurfaceGuardrails(contentRoot, "plan", &loadErrs)
+	executeGuardrails := loadSurfaceGuardrails(contentRoot, "execute", &loadErrs)
 	reviewDimensions := loadReviewDimensions(contentRoot, &loadErrs)
 	copilotInstructions := loadCopilotInstructions(contentRoot, &loadErrs)
 	errorReportSkillPath := resolveErrorReportSkill(&loadErrs)

@@ -20,14 +20,15 @@ draft = false
 rebase = true
 
 # Minimum severity that triggers the review fix loop (lower findings are deferred, not dropped).
-# Valid: "low" | "medium" | "high" | "critical"
-reviewThreshold = "low"
+# Valid: "info" | "low" | "medium" | "high" | "critical"
+# Default "info" sends every finding into the fix loop; "low" defers Info findings.
+reviewThreshold = "info"
 
 # Pipeline steps to execute during /ship (in order).
-# Valid steps: "execute" | "commit" | "review" | "verify-openspec" |
+# Valid steps: "execute" | "commit" | "review" | "harden" | "verify-openspec" |
 #   "archive-openspec" | "pr" | "verify-pipeline" |
 #   "await-remote-review" | "learnings-commit"
-steps = ["execute", "commit", "review", "pr", "verify-pipeline"]
+steps = ["execute", "commit", "review", "harden", "pr", "verify-pipeline"]
 
 # Quick mode steps (subset of steps, for /ship --quick).
 quick = ["execute", "commit", "review"]

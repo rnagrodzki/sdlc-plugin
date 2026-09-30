@@ -1,6 +1,6 @@
 # Pipeline State File Format
 
-`ship` persists pipeline progress through the `ship_state` MCP tool (`internal/tools/ship_state.go`), a single tool with a 16-value `action` parameter. This document describes the on-disk JSON shape that tool reads and writes, so pipeline prose can be verified against the real contract instead of assumed from the JS source this skill was ported from.
+`ship` persists pipeline progress through the `ship_state` MCP tool (`internal/tools/ship_state.go`), a single tool with a many-valued `action` parameter (the enum on `ShipStateIn.Action` is the authoritative list). This document describes the on-disk JSON shape that tool reads and writes, so pipeline prose can be verified against the real contract instead of assumed from the JS source this skill was ported from.
 
 Every `ship_state` call takes `{action, step?, detail?, sessionId?}`. Action-specific parameters (`result`, `reason`, `error`, `text`, `severity`, `file`, `title`, `line`, `from`, `to`, `force`, `ttlDays`, `branch`, `outcome`, ...) always travel inside `detail` as a nested object — never as top-level fields alongside `action`.
 
@@ -32,6 +32,7 @@ Managed by the shared `internal/state` package (the same one `execute_state`, `p
   "issues": [ ... ],
   "lastFailedStep": null,
   "sideEffects": { ... },
+  "healing": { ... },
   "pipelineStatus": "completed",
   "pipelineCompletedAt": "2026-03-27T15:10:00Z"
 }
@@ -51,6 +52,7 @@ Managed by the shared `internal/state` package (the same one `execute_state`, `p
 | `issues` | array | Structured issue accumulator, appended by `ship_state{action:"fail"}`. See "Issues and `lastFailedStep`" below. |
 | `lastFailedStep` | string \| null | Name of the most recent step passed to `fail`. |
 | `sideEffects` | object | Idempotency journal keyed by step name. Written by `ship_verify_side_effect`; consulted by `begin-step`'s `alreadyDone` flag. See below. |
+| `healing` | object | Absent until the first `ship_state{action:"healing_record"}` call. Self-healing ledger (`reviewTotal`, `fixed[]`, `hardened[]`). See "`data.healing`" below. |
 | `pipelineStatus` | string | Absent until the pipeline is stamped terminal. Set to `"completed"` by `cleanup`/`cleanup-pipeline` — see "Lifecycle: Cleanup." |
 | `pipelineCompletedAt` | string | Paired timestamp, set alongside `pipelineStatus`. |
 
@@ -80,7 +82,7 @@ There is no `nextPendingStep` field written into the file. The closest equivalen
 
 (This example reflects `steps: ["execute","commit","review","archive-openspec","pr"]`; substitute the project's actual configured list.)
 
-Every entry carries a `kind`: `"tracked"` for the four step names with a purpose-built dispatch shape in this skill (`execute`, `commit`, `review`, `pr`), `"inline"` for everything else that can appear in `ship.steps[]` (`verify-openspec`, `archive-openspec`, `verify-pipeline`, `await-remote-review`, `learnings-commit`). **`kind` only signals which dispatch style the skill's own prose uses for that step — Agent-dispatched sub-skill for `tracked`, done in this skill's own prose for `inline` — it does NOT mean "no `steps[]` entry" or "no lifecycle."** Both kinds get a real entry and both require the same `begin-step` → `complete-step`/`skip`/`fail` lifecycle calls, or the entry sits at `pending` forever and blocks `next` and the cleanup contract check (see below).
+Every entry carries a `kind`: `"tracked"` for the four step names with a purpose-built dispatch shape in this skill (`execute`, `commit`, `review`, `pr`), `"inline"` for everything else that can appear in `ship.steps[]` (`harden`, `verify-openspec`, `archive-openspec`, `verify-pipeline`, `await-remote-review`, `learnings-commit`). **`kind` only signals which dispatch style the skill's own prose uses for that step — Agent-dispatched sub-skill for `tracked`, done in this skill's own prose for `inline` — it does NOT mean "no `steps[]` entry" or "no lifecycle."** Both kinds get a real entry and both require the same `begin-step` → `complete-step`/`skip`/`fail` lifecycle calls, or the entry sits at `pending` forever and blocks `next` and the cleanup contract check (see below).
 
 > **Known divergence:** the schema's own doc comment for `kind` describes `"inline"` as "recorded via the generic decide action" — this reads as if `decide` replaces the lifecycle calls for inline steps. It does not. `decide` only appends a free-text note to `decisions[]`; it never looks up or mutates a `steps[]` entry (confirmed by reading `shipStateDecide`'s full body — it has no step-lookup at all). An inline step still needs `begin-step`/`complete-step` (or `skip`/`fail`) exactly like a tracked step. Treat the schema comment's phrasing as legacy/misleading, not as the operative contract; this document and `reference.md` describe the actual behavior.
 
@@ -103,13 +105,13 @@ The raw `ship_state{action:"init"}` action (distinct from `ship_prepare`, which 
 ]
 ```
 
-This scaffold's entries carry no `kind` field at all (omitted) and — uniquely — give `received-review`/`commit-fixes` a `condition` key, which is what let them rest at `pending` without blocking R-b1 below. **This skill never calls raw `init` — it always starts a run via `ship_prepare`.** Do not describe this fixed scaffold as what a real run looks like; it is documented here only so a reader who encounters an old state file (or a test fixture) is not confused by the difference.
+This scaffold's entries carry no `kind` field at all (omitted) and — uniquely — give `received-review`/`commit-fixes` a `condition` key, which is what let them rest at `pending` without blocking R-b1 below. The `"if critical/high findings"` string is a stale label kept byte-for-byte from `shipmeta.InitialShipSteps()`; it is not the trigger rule. Ship routes each finding on its own severity against `flags.reviewThreshold` (default `"info"`, so every finding). **This skill never calls raw `init` — it always starts a run via `ship_prepare`.** Do not describe this fixed scaffold as what a real run looks like; it is documented here only so a reader who encounters an old state file (or a test fixture) is not confused by the difference.
 
 ### Step Fields
 
 | Field | Type | Present when | Description |
 |---|---|---|---|
-| `name` | string | always | One of the 11 known step names. |
+| `name` | string | always | One of the configurable step names in `shipmeta.CanonicalSteps` (`harden` included), or — on the legacy raw-`init` scaffold only — `received-review`/`commit-fixes`. |
 | `status` | string | always | See Status Values below. |
 | `kind` | string | `ship_prepare`-driven runs only | `"tracked"` or `"inline"` — dispatch-style hint, not a lifecycle exemption (see above). |
 | `startedAt` | string | status is `in_progress` | Set by `begin-step`. |
@@ -137,13 +139,13 @@ This scaffold's entries carry no `kind` field at all (omitted) and — uniquely 
 
 `ship_state{action:"next"}` renders `step` and `automation` as bullet fields: it walks `steps[]` **in the order the entries were scaffolded** (i.e. the order the pipeline was configured in), setting `step` to the name of the first entry where R-b1 says progress is blocked. `step` is declared `omitempty` (`ShipNextOut` in `internal/tools/ship_state.go`), so once every entry is terminal it drops out of the rendered output entirely and only `automation` still renders. An `omitempty` field with an empty value is omitted, never shown as `(none)` — see rule 14 in `docs/mcp-output-contract.md`. `automation` resolves via the project's `automation.mode`/`automation.steps` config (see `config-format.md`), defaulting to `"confirm"` on any config-read failure.
 
-Because `steps[]` is now config-driven (see above), `next` walks **every** configured step in order — `verify-openspec`, `archive-openspec`, `verify-pipeline`, `await-remote-review`, and `learnings-commit` are all visible to it when configured, not skipped. The one caveat carried over from the scaffold gap: `received-review` and `commit-fixes` are never in `steps[]` at all, so `next` never names them — they are conditional sub-steps this skill's own prose dispatches directly (based on the review verdict), not something to wait on `next` for. A `next` result with no `step` bullet (only `automation`) means every *configured* step is terminal; it does not by itself distinguish "pipeline actually done" from "conditional review-fix loop still pending a verdict" — that judgment stays with the skill's own review-verdict handling.
+Because `steps[]` is now config-driven (see above), `next` walks **every** configured step in order — `harden`, `verify-openspec`, `archive-openspec`, `verify-pipeline`, `await-remote-review`, and `learnings-commit` are all visible to it when configured, not skipped. The one caveat carried over from the scaffold gap: `received-review` and `commit-fixes` are never in `steps[]` at all, so `next` never names them — they are conditional sub-steps this skill's own prose dispatches directly (based on each finding's severity, not the review verdict), not something to wait on `next` for. A `next` result with no `step` bullet (only `automation`) means every *configured* step is terminal; it does not by itself distinguish "pipeline actually done" from "conditional review-fix loop still pending a verdict" — that judgment stays with the skill's own review-verdict handling.
 
 ---
 
 ## `ship_state{action:"todos"}`
 
-Renders one `todos[N]` section per entry — each with `content`, `activeForm`, and `status` bullets — built from `flags.steps` (plus an always-appended synthetic `"cleanup"` entry) joined with whatever status each name has in `steps[]`. Since every configured name now gets a real `steps[]` entry (see above), a configured inline step (`verify-openspec`, `archive-openspec`, `verify-pipeline`, `await-remote-review`, `learnings-commit`) renders its **real, current** status here — not a permanent `"pending"`. The only names that always render `"pending"` regardless of what actually happened are `received-review` and `commit-fixes`, since they never have a `steps[]` entry to join against. Use `todos` for the task-tray checklist; do not use it to gate pipeline logic for `received-review`/`commit-fixes` — check `decisions[]` for those instead.
+Renders one `todos[N]` section per entry — each with `content`, `activeForm`, and `status` bullets — built from `flags.steps` (plus an always-appended synthetic `"cleanup"` entry) joined with whatever status each name has in `steps[]`. Since every configured name now gets a real `steps[]` entry (see above), a configured inline step (`harden`, `verify-openspec`, `archive-openspec`, `verify-pipeline`, `await-remote-review`, `learnings-commit`) renders its **real, current** status here — not a permanent `"pending"`. The only names that always render `"pending"` regardless of what actually happened are `received-review` and `commit-fixes`, since they never have a `steps[]` entry to join against. Use `todos` for the task-tray checklist; do not use it to gate pipeline logic for `received-review`/`commit-fixes` — check `decisions[]` for those instead.
 
 ---
 
@@ -164,10 +166,10 @@ Appended by `ship_state{action:"decide", step, detail:{text}}`. Never overwritte
 
 ## `deferredFindings` Array
 
-Appended by `ship_state{action:"defer", detail:{severity, file, title, line?, reason?, description?, source?}}`. `severity`, `file`, and `title` are required by the tool (a `DomainError` otherwise); `line` is passed through as-is (including `null`). `reason` is optional: one of `below-threshold`, `needs-direction`, `disagree`, `wont-fix` (any other value is a `DomainError` that names the accepted set). An omitted `reason` records `below-threshold`. `description` is optional and defaults to `title`. `source` is optional and defaults to `review-below-threshold`; `/received-review` passes `source: "received-review"` to name itself as the item's origin. When the branch has no ship state file, the call skips this run-scoped record and only records the finding to `.sdlc-v2/history/deferred.json`. Otherwise the same call also writes the finding there, which `/sdlc:deferred` reads.
+Appended by `ship_state{action:"defer", detail:{severity, file, title, line?, reason?, description?, source?}}`. Each entry stores `{severity, file, line, title, reason, description}`. `severity`, `file`, and `title` are required by the tool (a `DomainError` otherwise); `line` is passed through as-is (including `null`). `reason` is optional: one of `below-threshold`, `needs-direction`, `disagree`, `wont-fix` (any other value is a `DomainError` that names the accepted set). An omitted `reason` records `below-threshold`. `description` is optional and defaults to `title`; it is stored on the run-scoped entry as well as in `deferred.json` (entries written before this field existed have none). `source` is optional and defaults to `review-below-threshold`; `/received-review` passes `source: "received-review"` to name itself as the item's origin. When the branch has no ship state file, the call skips this run-scoped record and only records the finding to `.sdlc-v2/history/deferred.json`. Otherwise the same call also writes the finding there, which `/sdlc:deferred` reads.
 
 ```json
-{ "severity": "medium", "file": "src/auth.ts", "line": 42, "title": "Extract token validation", "reason": "below-threshold" }
+{ "severity": "medium", "file": "src/auth.ts", "line": 42, "title": "Extract token validation", "reason": "below-threshold", "description": "Extract token validation" }
 ```
 
 Ship's review routing defers each finding below `flags.reviewThreshold` this way, with `reason: "below-threshold"`. `received-review` defers the findings it does not fix (`needs-direction`, `disagree`, `wont-fix`) at any severity.
@@ -206,6 +208,51 @@ Idempotency journal keyed by step name, recording each step's verified git/PR si
 ```
 
 `kind` is one of `"pr"` or `"sha"` — there is no `"release-intent"` kind. Written by `ship_verify_side_effect`; consulted by `begin-step`'s `alreadyDone` flag (surfaced in `ShipStepNarrationOut.AlreadyDone`) so a resumed pipeline doesn't, say, re-dispatch the pr step once its PR (`ref` = `"#<number>"`) is already journaled. Release-intent correctness (bump level, pre-release label, notes) has no journal entry of its own — it is enforced synchronously by `pr_apply` itself at call time, not tracked as a separate side effect here.
+
+---
+
+## `data.healing`
+
+Self-healing ledger, written only by `ship_state{action:"healing_record", step?, detail:{kind, ...}}` while the run is live — no other action ever writes it, and `ship_prepare` never seeds it, so the key is absent until the first such call.
+
+```json
+{
+  "reviewTotal": { "total": 14, "dimensions": 6, "recordedAt": "2026-03-27T14:50:00Z" },
+  "fixed": [
+    { "origin": "local-review", "severity": "high", "file": "src/auth.ts", "line": 42, "title": "Extract token validation", "recordedAt": "2026-03-27T15:00:00Z" }
+  ],
+  "hardened": [
+    { "phase": "done", "trigger": "cluster:src/auth.ts", "classification": "plugin-defect", "applied": [{ "surface": "review-dimensions", "action": "strengthen", "targetFile": ".sdlc-v2/review-dimensions/auth-checks.md" }], "skipped": 0, "recordedAt": "2026-03-27T15:05:00Z" }
+  ]
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `reviewTotal` | object | `{total, dimensions, recordedAt}` — the review step's own finding and dimension count. `kind:"review-total"` (`detail.total`, `detail.dimensions`). A later `review-total` record replaces it; there is only ever one. |
+| `fixed` | array | One entry per fixed-and-verified finding: `{origin, severity, file, line, title, recordedAt}`. `kind:"fixed"` (`detail.origin`, `detail.severity`, `detail.file`, `detail.line`, `detail.title`). `origin` is `"local-review"` or `"pr-comment"`. Deduplicated on `(origin, file, line, title)` — a repeat record with the same key is not appended twice. |
+| `hardened` | array | One entry per harden run: `{phase, trigger, classification, applied[], skipped, recordedAt}`. `kind:"hardened"` (`detail.phase`, `detail.trigger`, `detail.classification`, `detail.applied`, `detail.skipped`). `phase` is `"started"` or `"done"`; a `"done"` record replaces the `"started"` record with the same `trigger` — a `"started"` record with no matching `"done"` marks an interrupted run. Each `applied[]` entry is `{surface, action, targetFile}`, `surface` one of `plan-guardrails`, `execute-guardrails`, `review-dimensions`, `copilot-instructions`, `error-report-skill`, `skill-recommendation`. |
+
+`step` travels with a `healing_record` call by convention — the caller passes its own step name (`"review"`, `"received-review"`, `"harden"`) — but the handler itself never reads it; only `detail` drives the write.
+
+---
+
+## `reportData` (attached by `read`, never persisted)
+
+`ship_state{action:"read"}` computes `reportData` from `data` on every call and attaches it to the response — it is never written back to the state file. Besides the step counts, duration, and bump provenance already summarized in docs/skills/ship.md's "State and Resolution Trace" section, it carries the review ledger built from `data.healing` and `data.deferredFindings`:
+
+| Field | Type | Description |
+|---|---|---|
+| `reviewLedger` | object \| null | `{total, fixed, deferredByReason, unaccounted}`. `null` when `data.healing.reviewTotal` was never recorded — review didn't run, or its `review-total` call was skipped because `{M}` was unreadable. |
+| `reviewLedgerNote` | string | Present only when `reviewLedger` is `null`: `"review did not run or its total was not recorded"`. |
+| `deferredFindings` | number | Count of `data.deferredFindings` entries — a plain, already-computed count. Do not re-derive it by summing `reviewLedger.deferredByReason`'s values yourself; read this field instead. Not the same thing as the top-level `deferredFindings` array on the `read` response, which holds the entries themselves. |
+| `healing` | object | `data.healing` verbatim (`{reviewTotal?, fixed?, hardened?}` — see `data.healing` above), or `{}` when no `healing_record` call has been made. Ship's harden step reads `reportData.healing.fixed` from here. |
+
+`reviewLedger`'s own fields, computed server-side, never by the calling skill:
+- `total` is `data.healing.reviewTotal.total` verbatim.
+- `fixed` counts only `data.healing.fixed` records with `origin:"local-review"` — a PR-comment fix is not part of the review's own total, so it is never counted here.
+- `deferredByReason` groups every `data.deferredFindings` entry by its `reason` (a missing `reason` is grouped under `"below-threshold"`, since that field predates the `reason` key).
+- `unaccounted` is `total - fixed - deferred`, **never clamped** — a negative value means the records disagree, and is reported as-is rather than hidden.
 
 ---
 

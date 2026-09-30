@@ -18,7 +18,7 @@ Seven MCP tools are called directly by the plan skill pipeline.
 | Tool | Registration | Purpose |
 |------|-------------|---------|
 | `plan_prepare` | `internal/tools/plan.go` `RegisterPlanTools` | Context detection, template resolution, OpenSpec validation, guardrail loading, lane/lens construction, complexity routing. Computes pending OpenSpec tasks.md ref stamps but never writes them — see [OpenSpec tasks.md Ref Stamping](#openspec-tasksmd-ref-stamping) |
-| `plan_mark` | `internal/tools/plan.go` `RegisterPlanTools` | Write planIntegrity markers (`skillInvoked`, `plan-file`, `guardrailsEvaluated`, `critiqueRan`, `done`), append `guardrailResults`/`criticalDecisions`, or replace the `checkpoint` progress marker |
+| `plan_mark` | `internal/tools/plan.go` `RegisterPlanTools` | Write planIntegrity markers (`skillInvoked`, `plan-file`, `guardrailsEvaluated`, `critiqueRan`, `done`), append `guardrailResults`/`criticalDecisions`, or replace the `checkpoint` progress marker. Every call also refreshes `data.planTiming` (run start to the plan file's last edit); `done` additionally appends a `history.RunRecord` to `.sdlc-v2/history/runs.jsonl` |
 | `plan_explore_prepare` | `internal/tools/plan_explore.go` `RegisterPlanExploreTools` | Build standalone explore pack (git scope, OpenSpec paths, keyword grep, web-research signal, skill registry sample, recent plans) |
 | `plan_support` | `internal/tools/plan_support.go` `RegisterPlanSupportTools` | Seven actions: `merge_results`, `material_snapshot`, `material_compare`, `openspec_appendix`, `evidence_record`, `evidence_digest`, `evidence_get` |
 | `validate` | `internal/tools/validators.go` `RegisterValidateTools` | Seven actions; plan pipeline uses `plan_format` (PF1-PF12) |
@@ -567,9 +567,26 @@ never in parallel with another `main` write, since two parallel upserts of
   sibling `<runId>.evidence/` directories that share the same state-file
   prefix and branch slug, skipping its own run's directory. This is not
   TTL-based — it only fires when a new run starts on the same branch.
+- Every `plan_mark` call refreshes `st.Data["planTiming"]`
+  (`refreshPlanTiming` in `internal/tools/plan.go`) from
+  `planIntegrity.skillInvoked` and the plan file's own mtime — the run's
+  timing window is start to last plan-file edit, never the `done` or
+  acceptance time. This is best-effort: a missing `planFilePath`, or a plan
+  file that cannot be stat'ed, leaves `planTiming` (and `planFilePath`) at
+  their previous value and does not fail the marker call.
 - After `plan_mark({marker: "done"})`, the Stop hook
   (`internal/hooks/stop_hooks.go`, `planIntegrityFromState`) deletes both the
-  state file and `state.EvidenceDir(st.Root, runId)`.
+  state file and `state.EvidenceDir(st.Root, runId)`. Before that happens,
+  the `done` marker itself appends one `history.RunRecord` (skill `"plan"`,
+  outcome `"done"`, `plan_file`, `started_at`, `last_modified_at`,
+  `duration_ms`) to `.sdlc-v2/history/runs.jsonl`
+  (`appendPlanRunRecord` in `internal/tools/plan.go`) — this file lives
+  outside `runs/` under `.sdlc-v2/history/`, so it survives both the Stop
+  hook's deletion and the TTL reaper below. A revised plan (a second `done`
+  after a rejected ExitPlanMode) appends a newer record rather than
+  replacing the first; readers take the latest `skill:"plan"` record for the
+  branch. A failed append is non-fatal: the call still returns `ok: true`,
+  with the error named in `warning`.
 - `execute_state` gc (`execReapRunDirectories` in
   `internal/tools/execute_state.go`) removes `runs/` subdirectories older
   than the TTL that do not belong to a live execute run. This includes

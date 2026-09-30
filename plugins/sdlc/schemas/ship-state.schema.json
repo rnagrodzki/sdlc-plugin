@@ -37,7 +37,7 @@
           "type": "array",
           "items": {
             "type": "string",
-            "enum": ["execute", "commit", "review", "received-review", "commit-fixes", "pr", "verify-pipeline", "await-remote-review"]
+            "enum": ["execute", "commit", "review", "harden", "received-review", "commit-fixes", "pr", "verify-pipeline", "await-remote-review"]
           }
         },
         "preset": {
@@ -74,7 +74,7 @@
         "properties": {
           "name": {
             "type": "string",
-            "enum": ["execute", "commit", "review", "received-review", "commit-fixes", "verify-openspec", "archive-openspec", "pr", "verify-pipeline", "await-remote-review", "learnings-commit"]
+            "enum": ["execute", "commit", "review", "harden", "received-review", "commit-fixes", "verify-openspec", "archive-openspec", "pr", "verify-pipeline", "await-remote-review", "learnings-commit"]
           },
           "status": {
             "type": "string",
@@ -131,7 +131,7 @@
         "properties": {
           "severity": {
             "type": "string",
-            "description": "Review severity of the finding, lowercased by the defer action. info is included: the default reviewThreshold is low, so info findings are exactly what a default run defers.",
+            "description": "Review severity of the finding, lowercased by the defer action. info is included: the default reviewThreshold is info, so a default run defers nothing as below-threshold, but a project on low defers exactly its info findings.",
             "enum": ["critical", "high", "medium", "low", "info"]
           },
           "file": {
@@ -154,6 +154,10 @@
             "type": "string",
             "description": "Why the finding was deferred instead of fixed. Written by defer since the deferred-reason change; absent on entries recorded before it, so not required.",
             "enum": ["below-threshold", "needs-direction", "disagree", "wont-fix"]
+          },
+          "description": {
+            "type": "string",
+            "description": "The deferring agent's own reasoning (detail.description; defaults to title). Written by defer since the harden step started reading it; absent on older entries, so not required."
           }
         },
         "required": ["severity", "file", "title"]
@@ -250,6 +254,120 @@
         },
         "buildTime": {
           "type": "string"
+        }
+      }
+    },
+    "healing": {
+      "type": "object",
+      "description": "Self-healing ledger of the ship run, written only by ship_state healing_record while the run is live. Read verbatim into read's reportData.healing and used for reportData.reviewLedger.",
+      "properties": {
+        "reviewTotal": {
+          "type": "object",
+          "description": "The review step's own finding count. A later review-total record replaces it.",
+          "properties": {
+            "total": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "dimensions": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "recordedAt": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "required": ["total", "dimensions", "recordedAt"],
+          "additionalProperties": false
+        },
+        "fixed": {
+          "type": "array",
+          "description": "Findings fixed and verified by received-review. Deduplicated on (origin, file, line, title).",
+          "items": {
+            "type": "object",
+            "properties": {
+              "origin": {
+                "type": "string",
+                "enum": ["local-review", "pr-comment"]
+              },
+              "severity": {
+                "type": "string",
+                "enum": ["critical", "high", "medium", "low", "info"]
+              },
+              "file": {
+                "type": "string"
+              },
+              "line": {
+                "oneOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "title": {
+                "type": "string"
+              },
+              "recordedAt": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": ["origin", "severity", "file", "title", "recordedAt"],
+            "additionalProperties": false
+          }
+        },
+        "hardened": {
+          "type": "array",
+          "description": "Harden runs, one per trigger. A done record replaces a started record with the same trigger; a started record with no done record marks an interrupted run.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "phase": {
+                "type": "string",
+                "enum": ["started", "done"]
+              },
+              "trigger": {
+                "type": "string"
+              },
+              "classification": {
+                "type": "string"
+              },
+              "applied": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "surface": {
+                      "type": "string",
+                      "enum": ["plan-guardrails", "execute-guardrails", "review-dimensions", "copilot-instructions", "error-report-skill", "skill-recommendation"]
+                    },
+                    "action": {
+                      "type": "string"
+                    },
+                    "targetFile": {
+                      "type": "string"
+                    }
+                  },
+                  "required": ["surface", "action", "targetFile"],
+                  "additionalProperties": false
+                }
+              },
+              "skipped": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "recordedAt": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": ["phase", "trigger", "classification", "applied", "skipped", "recordedAt"],
+            "additionalProperties": false
+          }
         }
       }
     }

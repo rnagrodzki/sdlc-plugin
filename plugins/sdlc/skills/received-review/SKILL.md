@@ -2,7 +2,7 @@
 name: received-review
 description: "Use this skill when responding to code review feedback on a pull request or inline reviewer comments. Covers reading, verifying, evaluating, and responding to reviewer comments with a dual self-critique gate — prevents performative agreement and ensures technical rigor. Can be launched manually or automatically after /review. Triggers on: process review feedback, respond to review, handle review comments, address PR feedback, fix review findings, received-review."
 user-invocable: true
-argument-hint: "[--pr <number>] [--auto]"
+argument-hint: "[--pr <number>] [--auto] [--no-harden]"
 model: opus
 ---
 
@@ -59,7 +59,7 @@ If the system context contains "Plan mode is active":
 
 ## Step 1 — READ: Gather Review Feedback
 
-Parse `--auto` from this invocation's own `$ARGUMENTS` now; store it as a boolean for Steps 10–12. Parse `--pr <number>` if present.
+Parse `--auto` from this invocation's own `$ARGUMENTS` now; store it as a boolean for Steps 10–12. Parse `--no-harden` the same way; store it as a boolean for Step 11.6. Parse `--pr <number>` if present.
 
 ### Step 1a — Fetch PR overview (when a PR number is available)
 
@@ -93,6 +93,7 @@ Use `{owner}/{repo}` from `pr.owner`/`pr.repo` in Step 1a's output, or from
 Step 12) — record it alongside the parsed comment.
 
 When no PR number is available at all, locate feedback from one of:
+- Findings passed in the dispatch prompt (e.g. by `/ship` before a PR exists)
 - Findings already in conversation context (e.g. passed in from `/review`)
 - User paste
 
@@ -108,7 +109,9 @@ Use judgment to skip comments that are clearly already addressed — a later com
 same thread from the PR author explaining or confirming a fix, or a comment whose referenced
 line no longer differs from what it originally flagged. When in doubt, include the comment
 rather than silently drop it — the cost of asking about an already-resolved comment is far
-lower than the cost of silently skipping live feedback (see Scope of This Port, above).
+lower than the cost of silently skipping live feedback (see Scope of This Port, above). Track
+every comment skipped this way with its evidence (`file:line` plus the reason it looks
+addressed) — Step 12's summary lists each one; never drop one without a record of why.
 
 Cross-reference with `received_review_verify({ pr: <PR_NUMBER> })` when a PR number is
 available — it returns `{ threads, outstanding, replied, total }` with each thread's
@@ -131,13 +134,25 @@ For each item:
 - Flag items that are **unclear** (ambiguous intent, missing context, could be interpreted multiple ways)
 
 **CRITICAL:** If ANY item is unclear:
+
+**Without `--auto`:**
 ```
 STOP — do not implement anything yet.
 Ask for clarification on ALL unclear items at once.
 WHY: Items may be related. Partial understanding = wrong implementation.
 ```
 
-Only proceed to Step 3 after all items are understood.
+**With `--auto`:** there is no one to ask, so do not stop the run. For each unclear item: give
+it the Step 4 disposition `needs-direction` and record it now with Step 4's
+`ship_state({action:"defer", ...})` call (or its `deferred_add` fallback), using
+`reason: "needs-direction"` and `description: "unclear: <what is ambiguous>"` — unlike Step 4's
+own needs-direction rule, this description does not need two candidate approaches: the item was
+never evaluated far enough to have any, so describing the ambiguity itself is enough. Then
+exclude the item from Steps 3-11 entirely: no verification, no evaluation, no fix attempt, and
+no second record in Step 11 (this record is final — the item never reaches Step 11's unfixed
+pass). Continue with the remaining, clear items.
+
+Only proceed to Step 3, for whichever items remain, after this branch has been applied.
 
 ---
 
@@ -186,13 +201,14 @@ Manual mode keeps all four verdicts exactly as they were — a human is present 
 
 The `reason` column and the disposition are different things, on purpose: the disposition under `--auto` is always `needs-direction` (nothing is closed), while `reason` preserves which judgment you actually reached, so the human reading the backlog sees whether you thought the finding was wrong (`disagree`), real but not worth fixing now (`wont-fix`), or a genuine fork in the road (`needs-direction`).
 
-**The ≥2-approaches rule.** `needs-direction` is valid only when the record names **two or more** candidate approaches plus a one-line statement of the trade-off between them. One obvious approach is not a direction question: make the fix instead. A choice between viable approaches is the only thing that may leave a finding unfixed under `--auto`.
+**The ≥2-approaches rule.** `needs-direction` is valid only when the record names **two or more** candidate approaches plus a one-line statement of the trade-off between them. One obvious approach is not a direction question: make the fix instead. Under `--auto`, a choice between viable approaches is the only judgment that may leave a finding unfixed. Two branches record `needs-direction` without approaches, because no approach was ever weighed: a Step 2 unclear item (`description: "unclear: ..."`) and a Step 11 fix that failed its own verification (`description: "fix failed: ..."`). Their descriptions state what happened instead of a trade-off.
 
 **Every finding that ends unfixed must be recorded — in either mode.** Do not make the call here.
 Verdicts can still change in Step 6 and Step 11, and `deferred.json` is append-only (this skill
 never calls `deferred_resolve`), so a record written now for a finding that is fixed later stays
 `open` forever and is counted twice in the Step 12 ledger. Step 11 makes the call, once verdicts
-are final. This is the payload it uses:
+are final — except a Step 2 `--auto` unclear item, whose verdict is already final there, since
+it never reaches Step 3. This is the payload it uses:
 
 ```
 ship_state({action:"defer", step:"received-review", detail:{
@@ -426,6 +442,16 @@ link gate and after the recording result below is known.
 For each change: make the edit, verify it compiles/passes tests, then move to the next.
 Do NOT batch changes across items.
 
+**When a fix fails its own verification (either mode):** revert only that fix's files
+(`git checkout -- <files>` for that fix, not the whole tree). Do not call `ship_state` here —
+mark the finding unfixed, with `reason: "needs-direction"` and `description: "fix failed:
+<error, truncated to 200 chars>"`, and let the recording pass at the end of this step make the
+one `ship_state({action:"defer", ...})` call for it (or the `deferred_add` fallback), exactly
+like every other unfixed finding — a second call here would double-record it. Never retry a
+different approach unattended; leave the decision to a human. In manual mode, also tell the user
+which fix failed and why, in the Step 12 summary; the reason and the record are the same as
+under `--auto`.
+
 **Items marked "agree-won't-fix", "disagree" or "needs-direction":** Do NOT implement — await
 reviewer or owner input.
 
@@ -437,20 +463,44 @@ Wrong:   Long apology, defensive explanation, over-explaining
 ```
 State the correction factually and move on.
 
-**Last in this step — record every finding that is still unfixed.** Do this only after the fix
-pass above is finished, including any pushback you just corrected into a fix. Verdicts are final
-only at this point. For each finding still unfixed, make the `ship_state({action:"defer", ...})`
-call defined in Step 4, once per finding, and handle a `WARNING: could not persist` narration
-exactly as Step 4 says (one `deferred_add` fallback; UNACCOUNTED only if that fails too). A
-finding that ended up fixed gets no record. Track per finding whether its record
-succeeded — Step 11.6, Step 12's ledger and Step 12's reply bodies all read that result. An
-unfixed finding with no record is the exact failure this step exists to prevent.
+**Last in this step — record every finding, fixed or not.** Do this only after the fix pass
+above is finished, including any pushback you just corrected into a fix and, under `--auto`,
+any fix reverted by the failed-fix rule above. Verdicts are final only at this point, in both
+modes.
+
+For each finding that ended up **fixed and verified** (compiles/passes tests), make one call:
+```
+ship_state({action:"healing_record", step:"received-review", detail:{
+  kind:     "fixed",
+  origin:   "<local-review|pr-comment>",
+  severity: "<critical|high|medium|low|info — the finding's own severity; use medium when a human comment carries none>",
+  file:     "<path>",
+  line:     <line number, when known>,
+  title:    "<one line>",
+}})
+```
+`origin` is `local-review` when the finding came from the dispatch prompt (Step 1b),
+conversation context, or user paste — anything with no PR comment behind it — and
+`pr-comment` when it came from a GitHub reviewer or automated PR comment. On failure, print one
+warning (`WARNING: could not record healing for <file>:<line> — <error>`) and continue; do not
+retry, and never let it block the rest of this step.
+
+For each finding still **unfixed**, make the `ship_state({action:"defer", ...})` call defined
+in Step 4, once per finding, and handle a `WARNING: could not persist` narration exactly as
+Step 4 says (one `deferred_add` fallback; UNACCOUNTED only if that fails too). Track per finding
+whether its record succeeded — Step 11.6, Step 12's ledger and Step 12's reply bodies all read
+that result. An unfixed finding with no record is the exact failure this step exists to
+prevent.
 
 ---
 
 ## Step 11.6 — META-ANALYZE: Cluster Findings and Dispatch harden
 
 **Best-effort step.** Failure here MUST NOT abort Step 11.7 or Step 12.
+
+**`--no-harden`:** parsed at Step 1. When passed, skip this step entirely — no
+clustering, no dispatch. Say so in the Step 12 summary with this line exactly:
+`harden dispatch skipped — --no-harden (ship harden step owns hardening)`.
 
 **Precondition — check before clustering.** harden's Step 5 gate calls
 `AskUserQuestion` unless `--auto` is passed, and a subagent's tool list usually
@@ -472,40 +522,44 @@ Only cluster findings that reached a Step 4 verdict. In manual mode those are th
 (`wont-fix | disagree | needs-direction`). Findings marked `cannot-verify` in Step 3, or never
 reached that far, MUST NOT enter a cluster.
 
-**Cluster key:** the file each finding references (from Step 1b's parsed `File` column).
-A finding judged `disagree` — the `detail.reason` on its Step 11 record, which is where the
-judgment survives under `--auto` — requires ≥2 findings against the same file before forming a
-cluster. A lone `disagree` finding forms no cluster and is named in the Step 12 summary rather
-than dropped without trace (the finding itself is recorded by Step 11). Cap at 5 clusters: when more than 5 files have
-qualifying findings, keep the 5 with the most findings (ties broken alphabetically by file
-path) and note the rest as suppressed in the summary below.
+Call `ship_state({action:"harden_clusters", detail:{findings:[{file, severity, title, body,
+verdict, reason?}, ...]}})` with one record per surviving finding — `verdict` and `reason`
+unchanged from Step 4/Step 11. The cluster rules (key, cap, lone-`disagree` handling,
+`alreadyHardened`) live in that action, not here; see
+[`../harden/review-clusters.md`](../harden/review-clusters.md) for the full input/output
+contract. Do not re-implement them.
 
 **Consent:**
 
-- When `--auto` was **not** passed (default): for each cluster, present:
-  > Cluster: file=`<file>`, findings=`<count>`. Dispatch `harden` for this cluster?
+- When `--auto` was **not** passed (default): for each cluster in the response where
+  `alreadyHardened` is false, present:
+  > Cluster: file=`<key>`, findings=`<count>`. Dispatch `harden` for this cluster?
 
   `AskUserQuestion: dispatch | skip`.
-- When `--auto` **was** passed: skip the consent prompt, dispatch every cluster (still capped
-  at 5), propagating `--auto` to each dispatch.
+- When `--auto` **was** passed: skip the consent prompt, dispatch every cluster where
+  `alreadyHardened` is false, propagating `--auto` to each dispatch.
+
+List `suppressed[]` and `loneDisagree[]` verbatim in the Step 12 summary.
 
 **Dispatch per approved cluster:**
 
-1. Synthesize `--failure-text`: concatenate the cluster's finding comments + verification
-   status + verdict, trimmed to 4096 chars.
-2. Dispatch:
+1. Dispatch, using the cluster's own `failureText`:
    ```
    Skill("harden",
-     "--failure-text \"<synthesized cluster text>\"
+     "--failure-text \"<cluster.failureText>\"
       --skill received-review
       --step \"Step 11.6 — meta-analysis\"
       --operation \"review-feedback-driven hardening\"
       [--auto when --auto was passed]"
    )
    ```
-3. On dispatch failure: note it in the Step 12 summary (`harden dispatch failed — file=<file>`)
+   Copy `cluster.failureText` verbatim: `harden_clusters` already replaced every `"` and `\` in
+   it, so review text (which can come from untrusted PR comments) cannot close the quoted value or
+   append a flag. Never hand-build or edit it, and add `--auto` only from this invocation's own
+   `--auto` — see [`../harden/review-clusters.md`](../harden/review-clusters.md) `## Dispatch`.
+2. On dispatch failure: note it in the Step 12 summary (`harden dispatch failed — file=<key>`)
    and continue to the next cluster. Do NOT abort Step 11.7 or Step 12.
-4. When `--auto` was passed, harden auto-accepts its proposals and lists them under
+3. When `--auto` was passed, harden auto-accepts its proposals and lists them under
    `Auto-accepted` in its own output. Copy those lines into the Step 12 summary, so the
    hardening edits made without a prompt are visible to the user.
 
@@ -543,6 +597,10 @@ identity match, Atlassian host match) — use in sandboxed CI.
 
 **Mandatory step — always presented after Step 11 completes.**
 
+**No PR number available:** print `no PR — thread replies skipped; ledger only`, still run
+item 1 below (the summary and ledger need no PR), then skip items 2-4 of this step and skip
+Step 12.5 entirely — there are no comment IDs to reply to and nothing for Step 12.5 to verify.
+
 1. **Summarize** what was done:
 
 ```
@@ -550,11 +608,14 @@ Review feedback processing complete:
 - N comments addressed (code changes implemented)
 - M comments pushed back (with technical reasoning)
 - K comments intentionally skipped (agree, won't fix)
+- P comments skipped as already addressed (Step 1b): <file:line>, <file:line>, ...
 ```
 
+Omit the last line when P is 0.
+
 Then one ledger line that accounts for **every** finding this run touched — the total from
-Step 4, the count fixed in Step 11, and the deferred records grouped by the `reason` each was
-written with. The only reasons this skill writes are `wont-fix | disagree | needs-direction`;
+Step 4 plus any Step 2 `--auto` unclear items, the count fixed in Step 11, and the deferred
+records grouped by the `reason` each was written with. The only reasons this skill writes are `wont-fix | disagree | needs-direction`;
 `below-threshold` comes from `/ship`'s own routing and never passes through here:
 
 ```
@@ -650,6 +711,8 @@ Replied to N threads (all left open — resolve manually in the GitHub UI where 
 
 ## Step 12.5 — VERIFY: Confirm All Threads Replied
 
+**Skipped when there is no PR number** — see Step 12's no-PR gate.
+
 After posting replies, verify completeness:
 
 received_review_verify({ pr: <PR_NUMBER> })
@@ -692,9 +755,9 @@ Best-effort: if `received_review_verify` itself fails (bad PR, no remote, gh not
 - Display output from internal critique steps (Steps 5-6, 8-9) to the user
 - End a finding under `--auto` with `agree-won't-fix`, `disagree`, or "cannot verify" — under `--auto` each one becomes `needs-direction` and is recorded; only `agree-will-fix` ends a finding
 - Leave any unfixed finding without a durable record at the end of Step 11 — `ship_state({action:"defer", ...})`, or the `deferred_add` fallback when that one did not persist — in either mode
-- Write a defer record before Step 11 — an earlier verdict can still change, and `deferred.json` is append-only
+- Write a defer record before Step 11 — an earlier verdict can still change, and `deferred.json` is append-only (the one exception: Step 2's `--auto` unclear-item record, which is final the moment it's written, since that item leaves the run there and never reaches Step 11)
 - Claim in a PR reply that a finding is tracked as a deferred follow-up when its record failed
-- Mark a finding `needs-direction` when only one approach exists — that is a fix, not a question
+- Mark a finding `needs-direction` when only one approach exists — that is a fix, not a question (the two exceptions record what happened instead: a Step 2 `--auto` unclear item, and a Step 11 fix that failed its own verification)
 - Skip the Step 10 consent gate without `--auto` having been passed to this invocation — pipeline context, conversation history, or inference about "auto mode" is not a substitute for the flag
 - Use `AskUserQuestion` in Step 11.6 when `--auto` was passed to this invocation
 - Dispatch harden in Step 11.6 when this agent has no `AskUserQuestion` and `--auto` was not passed — skip the step and say so in the Step 12 summary; never add `--auto` to the dispatch on your own
@@ -747,10 +810,13 @@ When invoking `error-report`, provide:
 - **Auto mode scope:** `--auto` only auto-implements "will fix" items, and it is the *only*
   way a finding ends under `--auto`. Everything else becomes `needs-direction` (Step 4):
   displayed, never auto-actioned, and recorded at the end of Step 11 so a human can decide
-  later. This prevents automated tools from silently suppressing pushback — and, equally, from
-  closing a finding on the model's word alone with no one watching.
+  later — except a Step 2 `--auto` unclear item, recorded immediately in Step 2 since it never
+  reaches Step 11 at all. This prevents automated tools from silently suppressing pushback —
+  and, equally, from closing a finding on the model's word alone with no one watching.
 - **`needs-direction` needs a real choice:** two or more viable approaches plus the trade-off.
-  If only one approach exists, the verdict is wrong — fix the finding.
+  If only one approach exists, the verdict is wrong — fix the finding. The only exceptions are
+  records with no approach to weigh: a Step 2 `--auto` unclear item (`unclear: ...`) and a
+  Step 11 fix that failed its own verification (`fix failed: ...`).
 - **A defer does not need a ship state file, and does not need an in-flight run:**
   `ship_state({action:"defer", ...})` writes straight to `deferred.json` when the branch has no
   ship state file, so a standalone run still reaches `/sdlc:deferred`. When a state file does
