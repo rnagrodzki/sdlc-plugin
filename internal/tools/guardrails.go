@@ -11,7 +11,7 @@ import (
 // Guardrail surface loader (harden-surfaces.js::loadGuardrails port)
 // ---------------------------------------------------------------------------
 
-// surfaceGuardrail is one guardrail entry as exposed on harden_prepare's
+// surfaceGuardrail is one guardrail entry as exposed on the harden manifest's
 // planGuardrails/executeGuardrails manifest surfaces.
 //
 // Named distinctly (and typed as a struct rather than plan.go's

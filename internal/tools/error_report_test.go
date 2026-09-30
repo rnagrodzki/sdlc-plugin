@@ -29,6 +29,11 @@ func TestErrorReportPrepare_MissingRequiredFields(t *testing.T) {
 			t.Errorf("expected message to mention missing field %q, got: %s", field, domainErr.Msg)
 		}
 	}
+	// The suggestion must name the live tool, not the retired
+	// error_report_prepare.
+	if !containsSubstr(domainErr.Suggestion, "prepare_orchestrator") || containsSubstr(domainErr.Suggestion, "error_report_prepare") {
+		t.Errorf("suggestion should point at prepare_orchestrator, got: %s", domainErr.Suggestion)
+	}
 }
 
 func TestErrorReportPrepare_PartialFieldsStillReportsRemainingMissing(t *testing.T) {

@@ -105,7 +105,7 @@ consumption gap is closed.
 ## Tips and gotchas
 
 - **Load State is mandatory.** `/harden` always starts by calling
-  `harden_prepare` to load the failure context and surface manifest. This
+  `prepare_orchestrator` (mode `harden`) to load the failure context and surface manifest. This
   must happen before any other tool call (unless invoked with
   `--from-learnings`, which uses `learnings_log` stats instead).
 - **Strengthen-only.** `/harden` never proposes relaxing or removing an

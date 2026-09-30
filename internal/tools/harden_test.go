@@ -156,6 +156,10 @@ func TestHardenPrepare_MissingRequiredFields(t *testing.T) {
 	if !containsSubstr(domainErr.Msg, "failureText") || !containsSubstr(domainErr.Msg, "skill") {
 		t.Fatalf("expected message to mention both missing fields, got: %s", domainErr.Msg)
 	}
+	// The suggestion must name the live tool, not the retired harden_prepare.
+	if !containsSubstr(domainErr.Suggestion, "prepare_orchestrator") || containsSubstr(domainErr.Suggestion, "harden_prepare") {
+		t.Errorf("suggestion should point at prepare_orchestrator, got: %s", domainErr.Suggestion)
+	}
 }
 
 // ---------------------------------------------------------------------------

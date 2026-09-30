@@ -40,10 +40,10 @@ var hardenIssueNumberRe = regexp.MustCompile(`^0*[1-9]\d*$`)
 // Input / Output
 // ---------------------------------------------------------------------------
 
-// HardenPrepareIn is harden_prepare's input. FailureText/Skill are required
-// (checked after --from-issue processing, since an issue body can supply
-// FailureText); all other string fields are optional with empty-string
-// defaults, matching source's `!= null` checks.
+// HardenPrepareIn is prepare_orchestrator's harden-mode input.
+// FailureText/Skill are required (checked after --from-issue processing,
+// since an issue body can supply FailureText); all other string fields are
+// optional with empty-string defaults, matching source's `!= null` checks.
 type HardenPrepareIn struct {
 	FailureText string `json:"failureText"`
 	Skill       string `json:"skill"`
@@ -64,7 +64,7 @@ type HardenPrepareIn struct {
 	SkipConfigCheck bool `json:"skipConfigCheck,omitempty"`
 }
 
-// HardenPrepareOut is harden_prepare's output: the path to the written
+// HardenPrepareOut is hardenPrepare's result: the path to the written
 // manifest (KD4 file handoff) plus a set of the manifest's top-level fields
 // mirrored inline (R7), so callers that only need small/cheap fields (the
 // failure preview, surface/guardrail/dimension counts, branch) can read them
@@ -679,7 +679,7 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 		if err := configmigrate.Verify(root); err != nil {
 			return HardenPrepareOut{}, &mcpserver.DataError{
 				Msg:        fmt.Sprintf("config-version: %s", err.Error()),
-				Suggestion: "Run the migrate tool to bring the project's config up to date, or pass skipConfigCheck: true once it's already verified, then retry harden_prepare.",
+				Suggestion: "Run the migrate tool to bring the project's config up to date, or pass skipConfigCheck: true once it's already verified, then retry prepare_orchestrator with mode harden.",
 				Cause:      err,
 			}
 		}
@@ -713,7 +713,7 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 		if err != nil {
 			return HardenPrepareOut{}, &mcpserver.InfraError{
 				Msg:        fmt.Sprintf("--from-issue %s: gh issue view failed: %s", issueNum, err.Error()),
-				Suggestion: fmt.Sprintf("Verify issue #%s exists in this repo and that gh auth status shows an authenticated account, then retry harden_prepare with fromIssue.", issueNum),
+				Suggestion: fmt.Sprintf("Verify issue #%s exists in this repo and that gh auth status shows an authenticated account, then retry prepare_orchestrator (mode harden) with fromIssue.", issueNum),
 				Cause:      err,
 			}
 		}
@@ -750,7 +750,7 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 		}
 		return HardenPrepareOut{}, &mcpserver.DomainError{
 			Msg:        strings.Join(msgs, "; "),
-			Suggestion: fmt.Sprintf("Supply %s in the harden_prepare call; failureText may come from fromIssue's issue body instead.", strings.Join(missing, " and ")),
+			Suggestion: fmt.Sprintf("Supply %s in the prepare_orchestrator call (mode harden); failureText may come from fromIssue's issue body instead.", strings.Join(missing, " and ")),
 		}
 	}
 
@@ -762,7 +762,7 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 	if len(preflightErrors) > 0 {
 		return HardenPrepareOut{}, &mcpserver.DomainError{
 			Msg:        fmt.Sprintf("pre-flight validation failed: %s", strings.Join(preflightErrors, "; ")),
-			Suggestion: "Fix the guardrail or review-dimension file named in each error above under .sdlc-v2, then retry harden_prepare.",
+			Suggestion: "Fix the guardrail or review-dimension file named in each error above under .sdlc-v2, then retry prepare_orchestrator with mode harden.",
 		}
 	}
 
@@ -846,7 +846,7 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 	if err != nil {
 		return HardenPrepareOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("create temp dir: %s", err.Error()),
-			Suggestion: "Check available disk space and write permission on the OS temp directory, then retry harden_prepare.",
+			Suggestion: "Check available disk space and write permission on the OS temp directory, then retry prepare_orchestrator with mode harden.",
 			Cause:      err,
 		}
 	}
@@ -854,7 +854,7 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 	if err := fsx.AtomicWriteJSON(manifestPath, manifest); err != nil {
 		return HardenPrepareOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("write manifest: %s", err.Error()),
-			Suggestion: "Check write permission on the temp directory named in the error above and that disk space isn't exhausted, then retry harden_prepare.",
+			Suggestion: "Check write permission on the temp directory named in the error above and that disk space isn't exhausted, then retry prepare_orchestrator with mode harden.",
 			Cause:      err,
 		}
 	}

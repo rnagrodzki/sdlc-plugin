@@ -24,7 +24,7 @@ const errorReportTargetRepo = "rnagrodzki/sdlc-plugin"
 // Input / Output
 // ---------------------------------------------------------------------------
 
-// ErrorReportPrepareIn is error_report_prepare's input. Skill/Step/
+// ErrorReportPrepareIn is prepare_orchestrator's error_report-mode input. Skill/Step/
 // Operation/Error are required; the rest are optional with empty-string
 // defaults, matching source's `!= null` checks.
 //
@@ -47,7 +47,7 @@ type ErrorReportPrepareIn struct {
 	SuggestedInvestigation string `json:"suggestedInvestigation,omitempty"`
 }
 
-// ErrorReportPrepareOut is error_report_prepare's output: the path to the
+// ErrorReportPrepareOut is errorReportPrepare's result: the path to the
 // written manifest (KD4 file handoff — still required, the isolated
 // error-report-orchestrator subagent reads the manifest file itself), plus
 // the manifest's top-level fields mirrored inline so the caller (SKILL.md /
@@ -103,7 +103,7 @@ type errorReportManifest struct {
 
 // errorReportPrepare is the Go port of error-report-prepare.js's main().
 // Self-contained: no dependency on guardrails.go/harden.go, and (unlike
-// harden_prepare) no KD5 config-version gate.
+// harden mode) no KD5 config-version gate.
 //
 // Source's detectRepository/detectCurrentBranch (safeExec with no explicit
 // cwd) inherit whatever directory the script process was launched from.
@@ -132,7 +132,7 @@ func errorReportPrepare(root string, in ErrorReportPrepareIn) (ErrorReportPrepar
 		}
 		return ErrorReportPrepareOut{}, &mcpserver.DomainError{
 			Msg:        strings.Join(msgs, "; "),
-			Suggestion: "Set skill, step, operation, and errorText in the input, then call error_report_prepare again.",
+			Suggestion: "Set skill, step, operation, and errorText in the input, then call prepare_orchestrator with mode error_report again.",
 		}
 	}
 
@@ -163,7 +163,7 @@ func errorReportPrepare(root string, in ErrorReportPrepareIn) (ErrorReportPrepar
 	if err != nil {
 		return ErrorReportPrepareOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("create temp dir: %s", err.Error()),
-			Suggestion: "Check that the OS temp directory allows creating new directories, then retry error_report_prepare.",
+			Suggestion: "Check that the OS temp directory allows creating new directories, then retry prepare_orchestrator with mode error_report.",
 			Cause:      err,
 		}
 	}
@@ -171,7 +171,7 @@ func errorReportPrepare(root string, in ErrorReportPrepareIn) (ErrorReportPrepar
 	if err := fsx.AtomicWriteJSON(manifestPath, manifest); err != nil {
 		return ErrorReportPrepareOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("write manifest: %s", err.Error()),
-			Suggestion: "Check available disk space and write permission on the temp directory created just before this step, then retry error_report_prepare — it creates a fresh one each call.",
+			Suggestion: "Check available disk space and write permission on the temp directory created just before this step, then retry prepare_orchestrator with mode error_report — it creates a fresh one each call.",
 			Cause:      err,
 		}
 	}
