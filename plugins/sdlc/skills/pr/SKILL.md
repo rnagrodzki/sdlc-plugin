@@ -190,7 +190,7 @@ in Step 1b"):
 | `commitsSinceTag` | Array of commit subject lines since the last tag |
 | `conventionalSummary` | `{ breaking, feat, fix, other, total, suggest }` — conventional-commit counts and a suggested bump level derived from them |
 | `changelogExists` | Boolean |
-| `idempotency` | `{ alreadyBumped, tagAtHead? }` — true when the current HEAD is already tagged at the target version (avoid double-bumping) |
+| `idempotency` | `{ alreadyBumped, tagAtHead? }` — true when the current HEAD already carries a release tag (`tagAtHead` names it); avoid double-bumping |
 | `versionDivergence` | `{ fileVersion, tagVersion, message }`, present only when the version file and the highest tag disagree |
 | `existingRCs` | Map of level → existing RC tag list |
 | `versionConfig` | `{ preRelease?, preReleasePolicy, method, tag, versionFile, changelog }` — resolved version config section |
@@ -501,8 +501,10 @@ When invoking `error-report`, provide:
 
 ## Gotchas
 
-- **No draft PRs, labels, or base-branch override**: this port's `pr_apply` only accepts
-  `title` and `body` — none of `--draft`, `--label`, or `--base` can be honored.
+- **No draft PRs, labels, or base-branch override**: `pr_apply` has no field for a draft flag,
+  an arbitrary label, or a base branch — none of `--draft`, `--label`, or `--base` can be
+  honored. The only label it applies is the `release:*` label derived from `releaseLevel`
+  (see Port Notes for its full input list).
 - **`--skip-approval` is not `--auto`**: `--skip-approval` only skips the Step 5
   AskUserQuestion; it never sets `autoMode: true` on `pr_apply` and never changes how
   `releaseSource` is forwarded. Only `--auto` drives `autoMode`.

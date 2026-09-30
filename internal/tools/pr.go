@@ -866,7 +866,7 @@ type PRApplyIn struct {
 	Title             string `json:"title" jsonschema_description:"PR title, used for gh pr create/edit."`
 	Body              string `json:"body" jsonschema_description:"PR body text, used for gh pr create/edit."`
 	ReleaseLevel      string `json:"releaseLevel,omitempty" jsonschema:"enum=major,enum=minor,enum=patch" jsonschema_description:"Release bump level for this PR (e.g. \"patch\"/\"minor\"/\"major\"). Required unless skipReleaseCheck is true AND the commits since the last tag are release-worthy (feat/fix/breaking) — see skipReleaseCheck. An empty value without skipReleaseCheck is rejected so release intent is never skipped by omission; pass skipReleaseCheck: true to explicitly acknowledge no release."`
-	ReleasePreRelease string `json:"releasePreRelease,omitempty" jsonschema_description:"Pre-release identifier to attach to the release, when releaseLevel is set and this is a pre-release."`
+	ReleasePreRelease string `json:"releasePreRelease,omitempty" jsonschema:"enum=rc" jsonschema_description:"Pre-release identifier to attach to the release, when releaseLevel is set and this is a pre-release."`
 	ReleaseNotes      string `json:"releaseNotes,omitempty" jsonschema_description:"Release notes text associated with releaseLevel. When releaseLevel is set and this is left empty, notes are auto-generated from commits since the last release tag — no longer rejected as missing."`
 	// ReleaseSource records who decided ReleaseLevel: "user" (explicit
 	// interactive choice) or "config" (a project/ship-config default).
@@ -923,7 +923,7 @@ type ReleaseIntentInfo struct {
 	// the same gh pr edit call that applied LabelApplied (existing-PR path
 	// only; the create path always leaves this empty). Never nil —
 	// prReleaseIntent sets it to an empty slice.
-	LabelsRemoved []string `json:"labelsRemoved" jsonschema_description:"Stale release:* labels removed from the PR in the same gh pr edit call that applied labelApplied. Empty on the create path (a new PR has no prior labels to remove)."`
+	LabelsRemoved []string `json:"labelsRemoved"`
 	NotesInBody   bool     `json:"notesInBody"`
 }
 
@@ -1122,8 +1122,9 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 				return PRApplyOut{}, enriched
 			}
 			return PRApplyOut{}, &mcpserver.InfraError{
-				Msg:   "gh pr edit: " + err.Error(),
-				Cause: err,
+				Msg:        "gh pr edit: " + err.Error(),
+				Cause:      err,
+				Suggestion: prGHRetrySuggestion,
 			}
 		}
 		if url == "" {
@@ -1144,8 +1145,9 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 			return PRApplyOut{}, enriched
 		}
 		return PRApplyOut{}, &mcpserver.InfraError{
-			Msg:   "gh pr create: " + err.Error(),
-			Cause: err,
+			Msg:        "gh pr create: " + err.Error(),
+			Cause:      err,
+			Suggestion: prGHRetrySuggestion,
 		}
 	}
 	if intent != nil {
@@ -1155,6 +1157,12 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 	}
 	return PRApplyOut{URL: url, Created: true, ReleaseIntent: intent, Next: prApplyNext(true, intent)}, nil
 }
+
+// prGHRetrySuggestion is the recovery hint for a gh pr create/edit failure
+// that is not a permission error (network, expired auth, rate limit). A
+// permission error gets account-switch guidance from prEnrichPermissionError
+// instead.
+const prGHRetrySuggestion = "Run gh auth status to confirm gh is logged in, check network access to GitHub, then call pr_apply again with the same arguments."
 
 // prApplyNext builds pr_apply's next-step hint: which verb (created/updated)
 // applies, plus — when releaseLevel was set — a reminder that the concrete
@@ -1250,7 +1258,8 @@ func isPermissionError(err error) bool {
 }
 
 // prEnrichPermissionError inspects originalErr for a gh CLI permission
-// failure from ghPRCreate/ghPREdit and, when found, returns an
+// failure from ghPRCreate/ghPREdit, or from prReleaseApplyLabelWith's
+// gh pr edit --add-label call, and, when found, returns an
 // *mcpserver.InfraError carrying account-switch guidance in its Suggestion
 // field — the same diagnostics buildAuthDiagnosticsWith/ghx.FormatAccessDenied
 // produce for pr_prepare's preflight, now surfaced at the point pr_apply
@@ -1511,11 +1520,11 @@ var releaseLabels = []struct {
 // network) is swallowed and reported as nil — a missing or uncreatable
 // label must never block a PR. A failure creating an individual label does
 // not stop the rest of the loop from being attempted, but is returned to
-// the caller for test observability — production callers (prApplyCoreWith) discard it
-// unconditionally: a missing label here is not fatal because
-// prReleaseApplyLabelWith's own --add-label call fails loud (InfraError) if
-// the label genuinely doesn't exist, which is the actual point where a
-// missing label must block the PR.
+// the caller for test observability — production callers
+// (prApplyCoreWith) discard it unconditionally: a missing label here is
+// not fatal because prReleaseApplyLabelWith's own --add-label call fails
+// loud (InfraError) if the label genuinely doesn't exist, which is the
+// actual point where a missing label must block the PR.
 func ensureReleaseLabels(rt prRuntime, workDir string) error {
 	existing, err := rt.ghLabelList(workDir)
 	if err != nil {
@@ -1571,23 +1580,29 @@ func prReleaseStaleLabels(existing []string, keep string) []string {
 // prReleaseApplyLabelWith adds label to the current branch's PR via
 // gh pr edit --add-label and, in the same call, removes every label in
 // stale via --remove-label (comma-joined). When stale is empty, no
-// --remove-label flag is sent — the same 4-arg call this function's
-// predecessor used to issue, preserved for the create path and for a
-// re-apply of the same label. Uses rt.execRun for the gh CLI call.
+// --remove-label flag is sent: the call is just
+// gh pr edit --add-label <label> (the create path, and a re-apply of the
+// same label). Uses rt.execRun for the gh CLI call. A gh permission error
+// is enriched with account-switch guidance via prEnrichPermissionError.
 func prReleaseApplyLabelWith(rt prRuntime, workDir, label string, stale []string) error {
 	args := []string{"pr", "edit", "--add-label", label}
+	cmdName := "gh pr edit --add-label"
 	if len(stale) > 0 {
 		args = append(args, "--remove-label", strings.Join(stale, ","))
+		cmdName += " --remove-label"
 	}
 	_, err := rt.execRun("gh", args, execx.Options{Dir: workDir})
 	if err != nil {
+		if enriched := prEnrichPermissionError(rt, workDir, cmdName, err); enriched != nil {
+			return enriched
+		}
 		suggestion := fmt.Sprintf("Create the %s label (gh label create %s) if it is missing, or confirm the PR is still open; the PR itself was already created/updated — gh pr view shows it. To fix labels by hand: gh pr edit --add-label %s", label, label, label)
 		if len(stale) > 0 {
 			suggestion += fmt.Sprintf(" --remove-label %s", strings.Join(stale, ","))
 		}
 		suggestion += ". Then retry pr_apply."
 		return &mcpserver.InfraError{
-			Msg:        "gh pr edit --add-label/--remove-label: " + err.Error(),
+			Msg:        cmdName + ": " + err.Error(),
 			Suggestion: suggestion,
 			Cause:      err,
 		}

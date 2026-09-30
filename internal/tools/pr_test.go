@@ -1441,11 +1441,40 @@ func TestPrApply_NonPermissionError_PassesThroughUnenriched(t *testing.T) {
 	if !errors.As(err, &ie) {
 		t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
 	}
-	if ie.Suggestion != "" {
-		t.Errorf("expected no Suggestion for a non-permission error, got %q", ie.Suggestion)
+	if ie.Suggestion != prGHRetrySuggestion {
+		t.Errorf("Suggestion: got %q, want the generic retry hint (no account-switch guidance)", ie.Suggestion)
 	}
 	if !strings.Contains(ie.Msg, "connection reset by peer") {
 		t.Errorf("Msg: got %q, want original error text preserved", ie.Msg)
+	}
+}
+
+func TestPrApply_NonPermissionError_FromEdit_GenericSuggestion(t *testing.T) {
+	rt := prRuntime{
+		ghPRForBranch: func(dir string) ghx.PRMetadata {
+			return ghx.PRMetadata{Exists: true, Number: 9, URL: "https://github.com/acme/widgets/pull/9"}
+		},
+		ghPREdit: func(dir string, num int, title, body string) (string, error) {
+			return "", errors.New("connection reset by peer")
+		},
+		// execRun/ghGetAccounts/ghAuthProbe left nil on purpose — see
+		// TestPrApply_NonPermissionError_PassesThroughUnenriched.
+		gitLogSinceTag:     func(dir string) ([]string, error) { return nil, nil },
+		gitHasUpstream:     func(dir string) (bool, error) { return true, nil },
+		gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
+		gitPushSetUpstream: func(dir, remote string) error { return nil },
+	}
+
+	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "T", Body: "B", SkipReleaseCheck: true}, rt)
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) {
+		t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
+	}
+	if !strings.HasPrefix(ie.Msg, "gh pr edit: ") {
+		t.Errorf("Msg: got %q, want it to start with gh pr edit", ie.Msg)
+	}
+	if ie.Suggestion != prGHRetrySuggestion {
+		t.Errorf("Suggestion: got %q, want the generic retry hint", ie.Suggestion)
 	}
 }
 
@@ -1472,8 +1501,8 @@ func TestPrApply_PermissionError_NoOriginRemote_FallsBackToGeneric(t *testing.T)
 	if !errors.As(err, &ie) {
 		t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
 	}
-	if ie.Suggestion != "" {
-		t.Errorf("expected no Suggestion when enrichment cannot resolve a remote, got %q", ie.Suggestion)
+	if ie.Suggestion != prGHRetrySuggestion {
+		t.Errorf("Suggestion: got %q, want the generic retry hint when enrichment cannot resolve a remote", ie.Suggestion)
 	}
 }
 
@@ -2068,6 +2097,15 @@ func TestPRApply_Next_MergeTimeVersionHint(t *testing.T) {
 			t.Errorf("prApplyNext = %q, want it to warn against reporting a version number", got)
 		}
 	})
+
+	t.Run("intent set: updated", func(t *testing.T) {
+		intent := &ReleaseIntentInfo{Level: "patch", LabelApplied: "release:patch"}
+		got := prApplyNext(false, intent)
+		want := "PR updated. Release intent recorded as release:patch; CI computes the concrete version at merge time from the tags present then, so do not report a version number for this PR. If verify-pipeline is configured, call verify_pipeline_classify next."
+		if got != want {
+			t.Errorf("prApplyNext = %q, want %q", got, want)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -2491,6 +2529,80 @@ func TestPRApply_LabelEditError_SuggestionNamesLabels(t *testing.T) {
 	}
 	if !strings.Contains(ie.Suggestion, "--remove-label release:patch-rc") {
 		t.Errorf("Suggestion missing remove-label hint: %q", ie.Suggestion)
+	}
+	if !strings.HasPrefix(ie.Msg, "gh pr edit --add-label --remove-label: ") {
+		t.Errorf("Msg: got %q, want it to name both flags that were sent", ie.Msg)
+	}
+}
+
+// TestPRApply_LabelEditError_PermissionError_Enriched pins that a gh
+// permission error on the label call gets the same account-switch guidance
+// as a permission error from gh pr create/edit.
+func TestPRApply_LabelEditError_PermissionError_Enriched(t *testing.T) {
+	rt := releaseTestRuntime("1.0.0")
+	rt.ghPRForBranch = func(dir string) ghx.PRMetadata {
+		return ghx.PRMetadata{Exists: true, Number: 9, URL: "https://github.com/acme/widgets/pull/9", Labels: []string{"release:patch-rc"}}
+	}
+	rt.ghPREdit = func(dir string, num int, title, body string) (string, error) {
+		return "https://github.com/acme/widgets/pull/9", nil
+	}
+	rt.execRun = func(name string, args []string, opts execx.Options) (string, error) {
+		if name == "git" && slices.Equal(args, []string{"remote", "get-url", "origin"}) {
+			return "https://github.com/acme/widgets.git", nil
+		}
+		if name == "gh" && len(args) >= 2 && args[0] == "pr" && args[1] == "edit" {
+			return "", errors.New("HTTP 403: Resource not accessible by integration")
+		}
+		return "", fmt.Errorf("unexpected exec call: %s %v", name, args)
+	}
+	rt.ghGetAccounts = func(dir, host string) ([]ghx.Account, error) {
+		return []ghx.Account{{Login: "other-user", Active: false}}, nil
+	}
+	rt.ghAuthProbe = func(dir, host string) ghx.AuthProbeResult {
+		return ghx.AuthProbeResult{Authenticated: true, ActiveAccount: "me"}
+	}
+
+	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
+		Title: "T", Body: "B", ReleaseLevel: "minor", ReleasePreRelease: "rc", ReleaseNotes: "n", ReleaseSource: "user",
+	}, rt)
+
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) {
+		t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
+	}
+	if !strings.HasPrefix(ie.Msg, "gh pr edit --add-label --remove-label: ") {
+		t.Errorf("Msg: got %q, want it to name the label command", ie.Msg)
+	}
+	if !strings.Contains(ie.Suggestion, "gh auth switch --user other-user") {
+		t.Errorf("Suggestion missing switch hint: %q", ie.Suggestion)
+	}
+	if !strings.Contains(ie.Suggestion, "acme/widgets") {
+		t.Errorf("Suggestion missing owner/repo: %q", ie.Suggestion)
+	}
+}
+
+// TestPRApply_LabelEditError_CreatePath_MsgOmitsRemoveLabel pins that the
+// error Msg names only the flags actually sent: the create path never sends
+// --remove-label, so the Msg must not claim it did.
+func TestPRApply_LabelEditError_CreatePath_MsgOmitsRemoveLabel(t *testing.T) {
+	rt := releaseTestRuntime("1.0.0")
+	rt.execRun = func(name string, args []string, opts execx.Options) (string, error) {
+		return "", errors.New("HTTP 422: Label does not exist")
+	}
+
+	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
+		Title: "T", Body: "B", ReleaseLevel: "patch", ReleaseNotes: "n", ReleaseSource: "user",
+	}, rt)
+
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) {
+		t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
+	}
+	if !strings.HasPrefix(ie.Msg, "gh pr edit --add-label: ") {
+		t.Errorf("Msg: got %q, want it to start with gh pr edit --add-label", ie.Msg)
+	}
+	if strings.Contains(ie.Msg, "--remove-label") || strings.Contains(ie.Suggestion, "--remove-label") {
+		t.Errorf("no --remove-label was sent, but the error names it: Msg=%q Suggestion=%q", ie.Msg, ie.Suggestion)
 	}
 }
 
