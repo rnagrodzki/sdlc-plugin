@@ -432,9 +432,22 @@ func jiraFindPluginTemplateInstalls() []string {
 	return jiraTemplateInstalls
 }
 
+// jiraResolveTemplatesDir picks the shipped default templates directory:
+// the override, else this plugin's own skills/jira/templates under
+// CLAUDE_PLUGIN_ROOT (only when that directory exists), else the
+// ~/.claude/plugins walk, else <cwd>/plugins/sdlc/skills/jira/templates.
+// CLAUDE_PLUGIN_ROOT goes before the walk for the reason plan.go gives: a
+// dev/path install is never copied into ~/.claude/plugins. A missing
+// directory is fine; callers treat it as "no default templates".
 func jiraResolveTemplatesDir(override string) string {
 	if override != "" {
 		return override
+	}
+	if pluginRoot := os.Getenv("CLAUDE_PLUGIN_ROOT"); pluginRoot != "" {
+		candidate := filepath.Join(pluginRoot, "skills", "jira", "templates")
+		if isDir(candidate) {
+			return candidate
+		}
 	}
 	if installs := jiraFindPluginTemplateInstalls(); len(installs) > 0 {
 		return installs[0]
@@ -443,7 +456,7 @@ func jiraResolveTemplatesDir(override string) string {
 	if err != nil {
 		cwd = "."
 	}
-	return filepath.Join(cwd, "plugins", "sdlc-utilities", "skills", "jira", "templates")
+	return filepath.Join(cwd, "plugins", "sdlc", "skills", "jira", "templates")
 }
 
 // ---------------------------------------------------------------------------

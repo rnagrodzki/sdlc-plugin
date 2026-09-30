@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -558,6 +559,78 @@ func TestJiraTemplatesResolution(t *testing.T) {
 	}
 	if resolved["Epic"] != "custom" {
 		t.Errorf("expected Epic=custom, got %#v", resolved["Epic"])
+	}
+}
+
+// resetJiraTemplateInstalls clears the process-wide ~/.claude/plugins walk
+// cache so a test can point HOME at an empty dir and get a fresh walk.
+func resetJiraTemplateInstalls(t *testing.T) {
+	t.Helper()
+	jiraTemplateInstallsOnce = sync.Once{}
+	jiraTemplateInstalls = nil
+	t.Cleanup(func() {
+		jiraTemplateInstallsOnce = sync.Once{}
+		jiraTemplateInstalls = nil
+	})
+}
+
+// TestJiraTemplatesDefaultDirDiscovery runs the templates action with no
+// templatesDir and checks that the default templates are found in this
+// plugin's own layout: under CLAUDE_PLUGIN_ROOT first, else under
+// <cwd>/plugins/sdlc/skills/jira/templates.
+func TestJiraTemplatesDefaultDirDiscovery(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(t *testing.T) // creates Task.md where discovery should find it
+	}{
+		{
+			name: "CLAUDE_PLUGIN_ROOT",
+			setup: func(t *testing.T) {
+				pluginRoot := t.TempDir()
+				writeFile(t, filepath.Join(pluginRoot, "skills", "jira", "templates", "Task.md"), "# Task")
+				t.Setenv("CLAUDE_PLUGIN_ROOT", pluginRoot)
+			},
+		},
+		{
+			name: "cwd fallback",
+			setup: func(t *testing.T) {
+				cwd := t.TempDir()
+				writeFile(t, filepath.Join(cwd, "plugins", "sdlc", "skills", "jira", "templates", "Task.md"), "# Task")
+				t.Setenv("CLAUDE_PLUGIN_ROOT", "")
+				t.Chdir(cwd)
+			},
+		},
+		{
+			name: "CLAUDE_PLUGIN_ROOT without templates falls through to cwd",
+			setup: func(t *testing.T) {
+				t.Setenv("CLAUDE_PLUGIN_ROOT", t.TempDir())
+				cwd := t.TempDir()
+				writeFile(t, filepath.Join(cwd, "plugins", "sdlc", "skills", "jira", "templates", "Task.md"), "# Task")
+				t.Chdir(cwd)
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetJiraTemplateInstalls(t)
+			t.Setenv("HOME", t.TempDir()) // empty ~/.claude/plugins: the walk finds nothing
+			tc.setup(t)
+
+			root := jiraTestRoot(t)
+			cacheDir := t.TempDir()
+			writeJSONFile(t, filepath.Join(cacheDir, "FOO.json"), map[string]any{
+				"issueTypes": map[string]any{"Task": map[string]any{}},
+			})
+
+			out, err := jiraCore(root, JiraIn{Action: "templates", Key: "FOO", CacheDir: cacheDir}, true)
+			if err != nil {
+				t.Fatalf("templates failed: %v", err)
+			}
+			resolved := out.(map[string]any)["resolved"].(map[string]any)
+			if resolved["Task"] != "default" {
+				t.Errorf("expected Task=default, got %#v", resolved["Task"])
+			}
+		})
 	}
 }
 

@@ -273,11 +273,32 @@ The `save-field` action SHALL require `fieldName` and `data`, then SHALL shallow
 - **THEN** the tool returns `DomainError` `data is required for save-field`
 
 ### Requirement: Default templates directory discovery
-The tool SHALL resolve the default templates directory as the `templatesDir` input, else the first directory named `templates` whose parent is named `jira` under `~/.claude/plugins` (searched up to 6 levels deep, once per server process), else `<cwd>/plugins/sdlc-utilities/skills/jira/templates`.
+The tool SHALL resolve the default templates directory as the first match in this order:
+
+| # | Source | Used when |
+|---|---|---|
+| 1 | `templatesDir` input | set |
+| 2 | `$CLAUDE_PLUGIN_ROOT/skills/jira/templates` | `CLAUDE_PLUGIN_ROOT` is set and the directory exists |
+| 3 | first directory named `templates` whose parent is named `jira` under `~/.claude/plugins` (searched up to 6 levels deep, once per server process) | one is found |
+| 4 | `<cwd>/plugins/sdlc/skills/jira/templates` | always (last resort) |
+
+- A missing directory is not an error: it means no default templates.
 
 #### Scenario: Override
 - **WHEN** `templatesDir` is set
 - **THEN** default templates are read only from that directory
+
+#### Scenario: Plugin root
+- **WHEN** `templatesDir` is empty and `CLAUDE_PLUGIN_ROOT` points at a directory with `skills/jira/templates/Task.md`
+- **THEN** `templates` resolves `Task` to `default`
+
+#### Scenario: Working-directory fallback
+- **WHEN** `templatesDir` and `CLAUDE_PLUGIN_ROOT` are empty, `~/.claude/plugins` has no `jira/templates`, and the working directory has `plugins/sdlc/skills/jira/templates/Task.md`
+- **THEN** `templates` resolves `Task` to `default`
+
+#### Scenario: Plugin root without templates
+- **WHEN** `CLAUDE_PLUGIN_ROOT` is set but has no `skills/jira/templates` directory
+- **THEN** discovery continues with the `~/.claude/plugins` search and then the working-directory fallback
 
 ### Requirement: templates reports per-type template resolution
 The `templates` action SHALL resolve a template source for every issue type in the cached `issueTypes`, in the order custom, default, default-fallback, none.
