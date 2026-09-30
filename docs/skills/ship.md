@@ -125,8 +125,9 @@ records, alongside the resolved pipeline flags:
   commit, build time), so a state file can be traced back to the binary
   that produced it.
 - **`reportData`** — step counts (total/completed/pending/skipped/failed),
-  duration, decisions, deferred-finding count, bump provenance, and the
-  review ledger (below), computed on the fly each time state is read (not
+  duration, decisions, deferred-finding count, bump provenance, the
+  self-healing record (`healing`: fixed findings and harden runs, `{}` when
+  none were recorded), and the review ledger (below), computed on the fly each time state is read (not
   persisted to disk). This lets the final pipeline report be rendered from
   already-computed values instead of re-deriving them from raw step/decision
   arrays.
@@ -194,6 +195,8 @@ step silently — nothing is written.
 - [/execute](execute.md) — First step of the pipeline (when a plan is given).
 - [/commit](commit.md) — Commit step.
 - [/review](review.md) — Review step.
+- [/harden](harden.md) — Opt-in `harden` step: turns clustered review
+  findings into guardrail, review-dimension and Copilot-instruction edits.
 - [/pr](pr.md) — PR creation step.
 - [/verify-pipeline](verify-pipeline.md) — Optional post-PR CI verification.
 - [/deferred](deferred.md) — Triage the findings and issue drafts a run left

@@ -1,6 +1,6 @@
 # Pipeline State File Format
 
-`ship` persists pipeline progress through the `ship_state` MCP tool (`internal/tools/ship_state.go`), a single tool with a 16-value `action` parameter. This document describes the on-disk JSON shape that tool reads and writes, so pipeline prose can be verified against the real contract instead of assumed from the JS source this skill was ported from.
+`ship` persists pipeline progress through the `ship_state` MCP tool (`internal/tools/ship_state.go`), a single tool with a many-valued `action` parameter (the enum on `ShipStateIn.Action` is the authoritative list). This document describes the on-disk JSON shape that tool reads and writes, so pipeline prose can be verified against the real contract instead of assumed from the JS source this skill was ported from.
 
 Every `ship_state` call takes `{action, step?, detail?, sessionId?}`. Action-specific parameters (`result`, `reason`, `error`, `text`, `severity`, `file`, `title`, `line`, `from`, `to`, `force`, `ttlDays`, `branch`, `outcome`, ...) always travel inside `detail` as a nested object — never as top-level fields alongside `action`.
 
@@ -166,10 +166,10 @@ Appended by `ship_state{action:"decide", step, detail:{text}}`. Never overwritte
 
 ## `deferredFindings` Array
 
-Appended by `ship_state{action:"defer", detail:{severity, file, title, line?, reason?, description?, source?}}`. `severity`, `file`, and `title` are required by the tool (a `DomainError` otherwise); `line` is passed through as-is (including `null`). `reason` is optional: one of `below-threshold`, `needs-direction`, `disagree`, `wont-fix` (any other value is a `DomainError` that names the accepted set). An omitted `reason` records `below-threshold`. `description` is optional and defaults to `title`. `source` is optional and defaults to `review-below-threshold`; `/received-review` passes `source: "received-review"` to name itself as the item's origin. When the branch has no ship state file, the call skips this run-scoped record and only records the finding to `.sdlc-v2/history/deferred.json`. Otherwise the same call also writes the finding there, which `/sdlc:deferred` reads.
+Appended by `ship_state{action:"defer", detail:{severity, file, title, line?, reason?, description?, source?}}`. Each entry stores `{severity, file, line, title, reason, description}`. `severity`, `file`, and `title` are required by the tool (a `DomainError` otherwise); `line` is passed through as-is (including `null`). `reason` is optional: one of `below-threshold`, `needs-direction`, `disagree`, `wont-fix` (any other value is a `DomainError` that names the accepted set). An omitted `reason` records `below-threshold`. `description` is optional and defaults to `title`; it is stored on the run-scoped entry as well as in `deferred.json` (entries written before this field existed have none). `source` is optional and defaults to `review-below-threshold`; `/received-review` passes `source: "received-review"` to name itself as the item's origin. When the branch has no ship state file, the call skips this run-scoped record and only records the finding to `.sdlc-v2/history/deferred.json`. Otherwise the same call also writes the finding there, which `/sdlc:deferred` reads.
 
 ```json
-{ "severity": "medium", "file": "src/auth.ts", "line": 42, "title": "Extract token validation", "reason": "below-threshold" }
+{ "severity": "medium", "file": "src/auth.ts", "line": 42, "title": "Extract token validation", "reason": "below-threshold", "description": "Extract token validation" }
 ```
 
 Ship's review routing defers each finding below `flags.reviewThreshold` this way, with `reason: "below-threshold"`. `received-review` defers the findings it does not fix (`needs-direction`, `disagree`, `wont-fix`) at any severity.
@@ -222,7 +222,7 @@ Self-healing ledger, written only by `ship_state{action:"healing_record", step?,
     { "origin": "local-review", "severity": "high", "file": "src/auth.ts", "line": 42, "title": "Extract token validation", "recordedAt": "2026-03-27T15:00:00Z" }
   ],
   "hardened": [
-    { "phase": "done", "trigger": "cluster:src/auth.ts", "classification": "plugin-defect", "applied": [{ "surface": "review-dimensions", "action": "strengthened", "targetFile": ".sdlc-v2/review-dimensions/auth-checks.md" }], "skipped": 0, "recordedAt": "2026-03-27T15:05:00Z" }
+    { "phase": "done", "trigger": "cluster:src/auth.ts", "classification": "plugin-defect", "applied": [{ "surface": "review-dimensions", "action": "strengthen", "targetFile": ".sdlc-v2/review-dimensions/auth-checks.md" }], "skipped": 0, "recordedAt": "2026-03-27T15:05:00Z" }
   ]
 }
 ```
@@ -245,7 +245,8 @@ Self-healing ledger, written only by `ship_state{action:"healing_record", step?,
 |---|---|---|
 | `reviewLedger` | object \| null | `{total, fixed, deferredByReason, unaccounted}`. `null` when `data.healing.reviewTotal` was never recorded — review didn't run, or its `review-total` call was skipped because `{M}` was unreadable. |
 | `reviewLedgerNote` | string | Present only when `reviewLedger` is `null`: `"review did not run or its total was not recorded"`. |
-| `deferredFindings` | number | Count of `data.deferredFindings` entries — a plain, already-computed count. Do not re-derive it by summing `reviewLedger.deferredByReason`'s values yourself; read this field instead. |
+| `deferredFindings` | number | Count of `data.deferredFindings` entries — a plain, already-computed count. Do not re-derive it by summing `reviewLedger.deferredByReason`'s values yourself; read this field instead. Not the same thing as the top-level `deferredFindings` array on the `read` response, which holds the entries themselves. |
+| `healing` | object | `data.healing` verbatim (`{reviewTotal?, fixed?, hardened?}` — see `data.healing` above), or `{}` when no `healing_record` call has been made. Ship's harden step reads `reportData.healing.fixed` from here. |
 
 `reviewLedger`'s own fields, computed server-side, never by the calling skill:
 - `total` is `data.healing.reviewTotal.total` verbatim.

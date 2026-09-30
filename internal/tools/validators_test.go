@@ -711,10 +711,9 @@ func TestValidateGuardrailsEmptySectionIsPass(t *testing.T) {
 
 // TestValidateGuardrailsActiveWorktreeFlag pins ValidateIn.ActiveWorktree's
 // two contract points: it does not change what validateGuardrailsAction
-// computes once a root has been chosen (the actual main-vs-active swap lives
-// in RegisterValidateTools' handler closure, which picks the root before
-// calling validate -- not exercised here), and every action other than
-// guardrails ignores it outright.
+// computes once a root has been chosen (the main-vs-active swap itself is
+// validateRoot's job, covered in validators_worktree_test.go), and every
+// action other than guardrails ignores it outright.
 func TestValidateGuardrailsActiveWorktreeFlag(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), ""+

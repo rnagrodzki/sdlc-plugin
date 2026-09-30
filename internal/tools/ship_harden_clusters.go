@@ -278,13 +278,25 @@ func hardenBuildClusters(findings []HardenClusterFinding) (clusters []HardenClus
 // harden's fix step: "[<severity>] <title> — <verdict>\n<body>" per
 // finding, findings separated by a blank line, the whole text capped at
 // hardenFailureTextCap characters.
+//
+// Titles and bodies can come from untrusted PR review comments, and callers
+// pass this text inside a double-quoted --failure-text "..." argument. A
+// double quote in it could close that argument early and smuggle in a flag
+// such as --auto, which would switch off harden's approval gate. So every
+// double quote becomes a single quote, and every backslash (which could
+// escape the closing quote) becomes a slash — the text can then never leave
+// the quoted argument.
 func hardenFailureText(findings []HardenClusterFinding) string {
 	parts := make([]string, 0, len(findings))
 	for _, f := range findings {
 		parts = append(parts, fmt.Sprintf("[%s] %s — %s\n%s", f.Severity, f.Title, f.Verdict, f.Body))
 	}
-	return hardenCapRunes(strings.Join(parts, "\n\n"), hardenFailureTextCap)
+	return hardenCapRunes(hardenQuoteSafe.Replace(strings.Join(parts, "\n\n")), hardenFailureTextCap)
 }
+
+// hardenQuoteSafe neutralizes the two characters that can end a
+// double-quoted argument: " and \.
+var hardenQuoteSafe = strings.NewReplacer(`"`, `'`, `\`, `/`)
 
 // hardenCapRunes returns the first n runes of s unchanged when s already
 // has n or fewer — a plain byte slice could cut a multi-byte rune in half.

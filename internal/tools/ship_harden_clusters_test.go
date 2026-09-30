@@ -276,6 +276,30 @@ func TestShipStateHardenClusters_FailureTextFormat(t *testing.T) {
 	}
 }
 
+// TestShipStateHardenClusters_FailureTextQuoteSafe pins the injection guard:
+// a finding whose text tries to close the quoted --failure-text argument and
+// append --auto comes back with no double quote and no backslash, so it
+// cannot leave the quoted value.
+func TestShipStateHardenClusters_FailureTextQuoteSafe(t *testing.T) {
+	stubCleanSurfaceStatus(t)
+	dir, _ := hardenClustersFixture(t, "feat/hc-quote")
+
+	hc, err := hardenClustersCall(t, dir, "feat/hc-quote", []any{
+		hcFinding("a.go", "high", `bad "title"`, `foo\" --auto --skill x "`, "agree-will-fix"),
+	})
+	if err != nil {
+		t.Fatalf("harden_clusters: %v", err)
+	}
+	got := hc.Clusters[0].FailureText
+	if strings.ContainsAny(got, "\"\\") {
+		t.Errorf("failureText = %q, want no double quote and no backslash", got)
+	}
+	want := "[high] bad 'title' — agree-will-fix\nfoo/' --auto --skill x '"
+	if got != want {
+		t.Errorf("failureText = %q, want %q", got, want)
+	}
+}
+
 func TestShipStateHardenClusters_FailureTextCapped(t *testing.T) {
 	stubCleanSurfaceStatus(t)
 	dir, _ := hardenClustersFixture(t, "feat/hc-cap-text")

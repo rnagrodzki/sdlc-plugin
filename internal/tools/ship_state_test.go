@@ -1224,7 +1224,7 @@ func TestShipState_Defer_OmittedReasonRecordsBelowThreshold(t *testing.T) {
 // the trade-off) is what a human reads later, so it must survive the write
 // instead of being replaced by the finding title.
 func TestShipState_Defer_DescriptionCarriesReasoning(t *testing.T) {
-	dir, _ := deferFixture(t, "feat/defer-description")
+	dir, path := deferFixture(t, "feat/defer-description")
 	mem := useMemHistory(t)
 	const reasoning = "either widen the interface or add an adapter; trade-off: churn vs one more layer"
 
@@ -1246,6 +1246,15 @@ func TestShipState_Defer_DescriptionCarriesReasoning(t *testing.T) {
 	}
 	if got := mem.Deferred[0].Reason; got != history.ReasonNeedsDirection {
 		t.Errorf("reason = %q, want %q", got, history.ReasonNeedsDirection)
+	}
+	// The run-scoped entry carries it too: ship's harden step reads each
+	// deferred finding's body from there, not from deferred.json.
+	findings, _ := readStateData(t, path)["deferredFindings"].([]any)
+	if len(findings) != 1 {
+		t.Fatalf("deferredFindings = %v, want 1 entry", findings)
+	}
+	if entry, _ := findings[0].(map[string]any); entry["description"] != reasoning {
+		t.Errorf("run-scoped description = %v, want %q", entry["description"], reasoning)
 	}
 }
 
@@ -3299,11 +3308,61 @@ func healingCall(t *testing.T, dir, branch string, detail map[string]any) string
 	if err != nil {
 		t.Fatalf("healing_record %v: %v", detail, err)
 	}
-	n, ok := out.(ShipStepNarrationOut)
+	n, ok := out.(ShipHealingRecordOut)
 	if !ok {
-		t.Fatalf("healing_record output = %T, want ShipStepNarrationOut", out)
+		t.Fatalf("healing_record output = %T, want ShipHealingRecordOut", out)
 	}
 	return n.Summary
+}
+
+// TestShipStateHealingRecord_EchoesRecord pins the response fields a caller
+// uses to check what was stored: kind, written, and the record itself with
+// its generated recordedAt. A duplicate echoes the incoming record with
+// written:false.
+func TestShipStateHealingRecord_EchoesRecord(t *testing.T) {
+	branch := "feat/heal-echo"
+	dir, path := deferFixture(t, branch)
+	call := func() ShipHealingRecordOut {
+		t.Helper()
+		d := healingFixedDetail(map[string]any{"branch": branch})
+		out, err := shipState(dir, dir, ShipStateIn{Action: "healing_record", Detail: d},
+			fixedNow(time.Date(2026, 9, 30, 1, 2, 3, 0, time.UTC)))
+		if err != nil {
+			t.Fatalf("healing_record: %v", err)
+		}
+		n, ok := out.(ShipHealingRecordOut)
+		if !ok {
+			t.Fatalf("healing_record output = %T, want ShipHealingRecordOut", out)
+		}
+		return n
+	}
+
+	first := call()
+	if first.Kind != "fixed" || !first.Written {
+		t.Errorf("first call kind=%q written=%v, want fixed/true", first.Kind, first.Written)
+	}
+	want := map[string]any{
+		"origin": "local-review", "severity": "high", "file": "a.go", "line": 42,
+		"title": "unchecked error", "recordedAt": "2026-09-30T01:02:03Z",
+	}
+	if !reflect.DeepEqual(first.Record, want) {
+		t.Errorf("record = %#v, want %#v", first.Record, want)
+	}
+	stored, _ := healingData(t, path)["fixed"].([]any)
+	if len(stored) != 1 {
+		t.Fatalf("fixed has %d records, want 1", len(stored))
+	}
+	if s, _ := stored[0].(map[string]any); s["recordedAt"] != first.Record["recordedAt"] {
+		t.Errorf("stored recordedAt = %v, echoed %v — want equal", s["recordedAt"], first.Record["recordedAt"])
+	}
+
+	dup := call()
+	if dup.Written {
+		t.Error("duplicate call written = true, want false")
+	}
+	if dup.Record["title"] != "unchecked error" {
+		t.Errorf("duplicate record = %v, want the incoming record echoed", dup.Record)
+	}
 }
 
 // healingData reads data.healing back from the state file.

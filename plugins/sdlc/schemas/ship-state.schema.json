@@ -154,6 +154,10 @@
             "type": "string",
             "description": "Why the finding was deferred instead of fixed. Written by defer since the deferred-reason change; absent on entries recorded before it, so not required.",
             "enum": ["below-threshold", "needs-direction", "disagree", "wont-fix"]
+          },
+          "description": {
+            "type": "string",
+            "description": "The deferring agent's own reasoning (detail.description; defaults to title). Written by defer since the harden step started reading it; absent on older entries, so not required."
           }
         },
         "required": ["severity", "file", "title"]

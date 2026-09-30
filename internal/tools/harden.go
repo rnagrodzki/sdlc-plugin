@@ -656,7 +656,7 @@ func issueLabelNames(raw []any) []string {
 
 // hardenPrepare is the Go port of harden-prepare.js's main(). root is the
 // main worktree (pipeline state, skill recommendations); contentRoot is the
-// active worktree (guardrails, dimensions, copilot instructions — #474, D3).
+// active worktree (guardrails, dimensions, copilot instructions — #474).
 func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareOut, error) {
 	// KD5 — param-first config-version gate.
 	if !in.SkipConfigCheck {

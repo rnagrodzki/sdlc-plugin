@@ -201,7 +201,7 @@ Manual mode keeps all four verdicts exactly as they were — a human is present 
 
 The `reason` column and the disposition are different things, on purpose: the disposition under `--auto` is always `needs-direction` (nothing is closed), while `reason` preserves which judgment you actually reached, so the human reading the backlog sees whether you thought the finding was wrong (`disagree`), real but not worth fixing now (`wont-fix`), or a genuine fork in the road (`needs-direction`).
 
-**The ≥2-approaches rule.** `needs-direction` is valid only when the record names **two or more** candidate approaches plus a one-line statement of the trade-off between them. One obvious approach is not a direction question: make the fix instead. A choice between viable approaches is the only thing that may leave a finding unfixed under `--auto`.
+**The ≥2-approaches rule.** `needs-direction` is valid only when the record names **two or more** candidate approaches plus a one-line statement of the trade-off between them. One obvious approach is not a direction question: make the fix instead. Under `--auto`, a choice between viable approaches is the only judgment that may leave a finding unfixed. Two branches record `needs-direction` without approaches, because no approach was ever weighed: a Step 2 unclear item (`description: "unclear: ..."`) and a Step 11 fix that failed its own verification (`description: "fix failed: ..."`). Their descriptions state what happened instead of a trade-off.
 
 **Every finding that ends unfixed must be recorded — in either mode.** Do not make the call here.
 Verdicts can still change in Step 6 and Step 11, and `deferred.json` is append-only (this skill
@@ -442,13 +442,15 @@ link gate and after the recording result below is known.
 For each change: make the edit, verify it compiles/passes tests, then move to the next.
 Do NOT batch changes across items.
 
-**Under `--auto`, when a fix fails its own verification:** revert only that fix's files
+**When a fix fails its own verification (either mode):** revert only that fix's files
 (`git checkout -- <files>` for that fix, not the whole tree). Do not call `ship_state` here —
 mark the finding unfixed, with `reason: "needs-direction"` and `description: "fix failed:
 <error, truncated to 200 chars>"`, and let the recording pass at the end of this step make the
 one `ship_state({action:"defer", ...})` call for it (or the `deferred_add` fallback), exactly
 like every other unfixed finding — a second call here would double-record it. Never retry a
-different approach unattended; leave the decision to a human.
+different approach unattended; leave the decision to a human. In manual mode, also tell the user
+which fix failed and why, in the Step 12 summary; the reason and the record are the same as
+under `--auto`.
 
 **Items marked "agree-won't-fix", "disagree" or "needs-direction":** Do NOT implement — await
 reviewer or owner input.
@@ -551,6 +553,10 @@ List `suppressed[]` and `loneDisagree[]` verbatim in the Step 12 summary.
       [--auto when --auto was passed]"
    )
    ```
+   Copy `cluster.failureText` verbatim: `harden_clusters` already replaced every `"` and `\` in
+   it, so review text (which can come from untrusted PR comments) cannot close the quoted value or
+   append a flag. Never hand-build or edit it, and add `--auto` only from this invocation's own
+   `--auto` — see [`../harden/review-clusters.md`](../harden/review-clusters.md) `## Dispatch`.
 2. On dispatch failure: note it in the Step 12 summary (`harden dispatch failed — file=<key>`)
    and continue to the next cluster. Do NOT abort Step 11.7 or Step 12.
 3. When `--auto` was passed, harden auto-accepts its proposals and lists them under
@@ -751,7 +757,7 @@ Best-effort: if `received_review_verify` itself fails (bad PR, no remote, gh not
 - Leave any unfixed finding without a durable record at the end of Step 11 — `ship_state({action:"defer", ...})`, or the `deferred_add` fallback when that one did not persist — in either mode
 - Write a defer record before Step 11 — an earlier verdict can still change, and `deferred.json` is append-only (the one exception: Step 2's `--auto` unclear-item record, which is final the moment it's written, since that item leaves the run there and never reaches Step 11)
 - Claim in a PR reply that a finding is tracked as a deferred follow-up when its record failed
-- Mark a finding `needs-direction` when only one approach exists — that is a fix, not a question
+- Mark a finding `needs-direction` when only one approach exists — that is a fix, not a question (the two exceptions record what happened instead: a Step 2 `--auto` unclear item, and a Step 11 fix that failed its own verification)
 - Skip the Step 10 consent gate without `--auto` having been passed to this invocation — pipeline context, conversation history, or inference about "auto mode" is not a substitute for the flag
 - Use `AskUserQuestion` in Step 11.6 when `--auto` was passed to this invocation
 - Dispatch harden in Step 11.6 when this agent has no `AskUserQuestion` and `--auto` was not passed — skip the step and say so in the Step 12 summary; never add `--auto` to the dispatch on your own
@@ -808,7 +814,9 @@ When invoking `error-report`, provide:
   reaches Step 11 at all. This prevents automated tools from silently suppressing pushback —
   and, equally, from closing a finding on the model's word alone with no one watching.
 - **`needs-direction` needs a real choice:** two or more viable approaches plus the trade-off.
-  If only one approach exists, the verdict is wrong — fix the finding.
+  If only one approach exists, the verdict is wrong — fix the finding. The only exceptions are
+  records with no approach to weigh: a Step 2 `--auto` unclear item (`unclear: ...`) and a
+  Step 11 fix that failed its own verification (`fix failed: ...`).
 - **A defer does not need a ship state file, and does not need an in-flight run:**
   `ship_state({action:"defer", ...})` writes straight to `deferred.json` when the branch has no
   ship state file, so a standalone run still reaches `/sdlc:deferred`. When a state file does

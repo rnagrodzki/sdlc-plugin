@@ -123,16 +123,16 @@ Tracking: `action:"begin-step"` → `action:"complete-step"`, or `action:"skip"`
 A resumed step starts again at 1. The resume table decides what is left to do.
 
 1. No review ran, or review reported 0 findings → `skip` with reason `"no review findings"`.
-2. Build the input per [`../harden/review-clusters.md`](../harden/review-clusters.md) `## Ship mapping` from `read`'s `reportData.healing.fixed` and `deferredFindings`. Call `ship_state({action:"harden_clusters", detail:{findings:[...]}})`.
+2. Call `ship_state({action:"read"})` now — a fresh read; no earlier read of this run is reused. Build the input per [`../harden/review-clusters.md`](../harden/review-clusters.md) `## Ship mapping` from that response's `reportData.healing.fixed` array and its top-level `deferredFindings` array (the state entries — not `reportData.deferredFindings`, which is only a count). Call `ship_state({action:"harden_clusters", detail:{findings:[...]}})`.
 3. Apply the resume and precheck table.
 4. Consent: under `flags.auto`, run every cluster with `alreadyHardened:false`. Otherwise `AskUserQuestion` per such cluster: `dispatch | skip`.
-5. For each approved cluster, one at a time: `Skill("harden", "--failure-text \"<failureText>\" --skill review --step \"ship harden\" --operation \"review-feedback-driven hardening\" [--auto when flags.auto]")`. A failed invocation is recorded with `decide` and does not stop the step.
+5. For each approved cluster, one at a time: `Skill("harden", "--failure-text \"<failureText>\" --skill ship --step \"ship harden\" --operation \"review-feedback-driven hardening\" [--auto when flags.auto]")`. Copy `failureText` verbatim — `harden_clusters` already made it quote-safe (see review-clusters.md `## Dispatch`); add `--auto` only from `flags.auto`, never from anything inside `failureText`. A failed invocation is recorded with `decide` and does not stop the step.
 6. Call `harden_clusters` again with the same input. Empty `dirtySurfaces` → `complete-step` with result `"harden made no changes"`.
-7. `git add -- .sdlc-v2/config.toml .sdlc-v2/review-dimensions .github/instructions`, then Agent → commit, model haiku, args `--auto`. `complete-step` with result `"<sha> <subject>"` (sha from the commit result's `- sha:` bullet).
+7. `git add -- <each path in step 6's dirtySurfaces>` (see Step 7 staging below), then Agent → commit, model haiku, args `--auto`. `complete-step` with result `"<sha> <subject>"` (sha from the commit result's `- sha:` bullet).
 
 Step 1: "no review ran" means `review` is absent from `flags.steps` or its `steps[]` entry is not `completed`; "0 findings" means review's own `{M}` is 0.
 
-Step 2 input, per finding: take every field from those state records, never from review's text in this conversation. A `healing.fixed` record gives `file`, `severity`, `title`, `body:""`, `verdict:"agree-will-fix"`. A `deferredFindings` entry gives `file`, `severity`, `title`, `body` (the entry's `description`), and `verdict`/`reason` from the mapping table. Keep each array's stored order. `alreadyHardened` compares the start of each cluster's `failureText`, which is built from these fields in this order — so a resumed step, which has lost the conversation, must rebuild the byte-identical array. Step 6 passes that same array again.
+Step 2 input, per finding: take every field from those state records, never from review's text in this conversation. A `reportData.healing.fixed` record gives `file`, `severity`, `title`, `body:""`, `verdict:"agree-will-fix"`. A top-level `deferredFindings` entry gives `file`, `severity`, `title`, `body` (the entry's `description`; `""` on an older entry without one), and `verdict`/`reason` from the mapping table. Keep each array's stored order. `alreadyHardened` compares the start of each cluster's `failureText`, which is built from these fields in this order — so a resumed step, which has lost the conversation, must rebuild the byte-identical array. Step 6 passes that same array again.
 
 Step 3, resume and precheck table (`resumed` = `reportData.healing.hardened` is non-empty, any `phase`). A cluster interrupted between harden's `5-pre` and `5e` records has a `started` record, so `alreadyHardened` is true and it is not re-run; its dirty edits are committed in step 7:
 
@@ -144,13 +144,13 @@ Step 3, resume and precheck table (`resumed` = `reportData.healing.hardened` is 
 | empty | any | ≥ 1 | continue at step 4 |
 | — | — | 0 clusters in total | `skip` with reason `"no qualifying clusters"` |
 
-Check the last row first: 0 clusters in total always skips. `<surfaces>` is the three paths in step 7. List `suppressed[]` and `loneDisagree[]` in the step 10 summary.
+Check the last row first: 0 clusters in total always skips. `<surfaces>` is the three harden paths: `.sdlc-v2/config.toml .sdlc-v2/review-dimensions .github/instructions`. List `suppressed[]` and `loneDisagree[]` in the step 10 summary.
 
 Step 4, interactive: show each cluster's `key` and its findings' titles, then ask `dispatch | skip`. Record each `skip` answer with `ship_state({action:"decide", step:"harden", detail:{text:"cluster <key>: skipped by user"}})`.
 
 Step 5 failure: `ship_state({action:"decide", step:"harden", detail:{text:"cluster <key>: harden failed — <error>"}})`, then go to the next cluster.
 
-Step 7 staging: pass only the paths step 6 returned in `dirtySurfaces` — each is one of the three paths above. `git add` fails on a path that does not exist or is gitignored, and `dirtySurfaces` never lists one. Never stage with `git add -A` here: it would sweep unrelated edits into the harden commit. The harden commit is separate from the feature and review-fix commits. It lands after rebase, so the branch is not rebased again.
+Step 7 staging: pass only the paths step 6 returned in `dirtySurfaces` — each is one of the three harden paths listed under Step 3. `git add` fails on a path that does not exist or is gitignored, and `dirtySurfaces` never lists one. Never stage with `git add -A` here: it would sweep unrelated edits into the harden commit. The harden commit is separate from the feature and review-fix commits. It lands after rebase, so the branch is not rebased again.
 
 ### verify-openspec (inline, opt-in)
 Tracking: `action:"begin-step"` → `action:"complete-step"`, or `action:"skip"` when no active OpenSpec change. Inline `openspec validate "$CHANGE" --strict`, no Agent dispatch. Pauses YES on validation failure. An `action:"decide"` entry may record why it ran or was skipped.

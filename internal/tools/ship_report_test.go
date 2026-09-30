@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
@@ -434,5 +435,139 @@ func TestShipStateReport_PlanTiming(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestShipStateReport_WriteMustBeBool(t *testing.T) {
+	root := shipReportRoot(t)
+	createShipReportState(t, root, nil)
+	for _, v := range []any{"true", float64(1)} {
+		_, err := shipState(root, root, ShipStateIn{Action: "report", Detail: map[string]any{"branch": shipReportBranch, "write": v}}, fixedClock(testNow))
+		msg, _ := requireShipErr(t, err, shipErrDomain)
+		if !strings.Contains(msg, "report: detail.write must be a boolean") {
+			t.Errorf("write=%#v: message = %q, want the boolean type error", v, msg)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, paths.DataDir, "reports")); !os.IsNotExist(err) {
+		t.Errorf("a rejected call must write nothing, reports dir stat err = %v", err)
+	}
+}
+
+func TestShipStateReport_PlanHistoryUnreadable(t *testing.T) {
+	root := shipReportRoot(t)
+	createExecState(t, root, shipReportBranch, map[string]any{
+		"branch": shipReportBranch, "planPath": "/work/tree/plans/feature.md", "worktree": "/work/tree",
+	})
+	createShipReportState(t, root, map[string]any{"steps": shipReportSteps("completed")})
+	// A directory where runs.jsonl should be makes the history read fail
+	// with an I/O error, not "no history yet".
+	if err := os.MkdirAll(history.NewFileWriter(historyDir(root)).RunsPath(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	out := runShipReport(t, root, nil)
+	if out.Plan != nil || out.PlanNote != shipPlanNoteReadFailed {
+		t.Fatalf("plan=%+v note=%q, want nil plan with note %q", out.Plan, out.PlanNote, shipPlanNoteReadFailed)
+	}
+	if !strings.Contains(out.Display, "_Plan timing not available — "+shipPlanNoteReadFailed+"._") {
+		t.Errorf("display must name the read failure, not 'no plan linked':\n%s", out.Display)
+	}
+	found := false
+	for _, raw := range out.Issues {
+		m, _ := raw.(map[string]any)
+		if s, _ := m["summary"].(string); strings.HasPrefix(s, "Plan history read failed: ") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("issues = %v, want a 'Plan history read failed' warning", out.Issues)
+	}
+}
+
+func TestShipStateReport_ConfigReadErrorSurfaced(t *testing.T) {
+	configIssue := func(out ShipRunReportOut) bool {
+		for _, raw := range out.Issues {
+			m, _ := raw.(map[string]any)
+			if s, _ := m["summary"].(string); strings.HasPrefix(s, "Config read failed") {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("valid config adds no issue", func(t *testing.T) {
+		root := shipReportRoot(t)
+		createShipReportState(t, root, nil)
+		if out := runShipReport(t, root, nil); configIssue(out) {
+			t.Errorf("issues = %v, want no config issue", out.Issues)
+		}
+	})
+	t.Run("missing config adds no issue", func(t *testing.T) {
+		root := t.TempDir()
+		createShipReportState(t, root, nil)
+		if out := runShipReport(t, root, nil); configIssue(out) {
+			t.Errorf("issues = %v, want no config issue when config.toml is absent", out.Issues)
+		}
+	})
+	t.Run("malformed config is surfaced and defaults apply", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "[[[not toml\n")
+		createShipReportState(t, root, nil)
+		out := runShipReport(t, root, nil)
+		if !configIssue(out) {
+			t.Errorf("issues = %v, want a 'Config read failed' warning", out.Issues)
+		}
+		if out.Format != "md" || out.Skipped {
+			t.Errorf("format=%q skipped=%v, want the md default and a rendered report", out.Format, out.Skipped)
+		}
+	})
+}
+
+// TestShipStateReport_WriteFailure pins the I/O failure path of detail.write:
+// a file named reports/ blocks the reports directory, so the write fails and
+// the call returns an infrastructure error instead of a report.
+func TestShipStateReport_WriteFailure(t *testing.T) {
+	for _, format := range []string{"md", "json"} {
+		t.Run(format, func(t *testing.T) {
+			root := shipReportRoot(t)
+			createShipReportState(t, root, nil)
+			writeFile(t, filepath.Join(root, paths.DataDir, "reports"), "not a directory")
+			_, err := shipState(root, root, ShipStateIn{Action: "report", Detail: map[string]any{
+				"branch": shipReportBranch, "write": true, "format": format,
+			}}, fixedClock(testNow))
+			msg, _ := requireShipErr(t, err, shipErrInfra)
+			if !strings.Contains(msg, "mkdir reports dir") {
+				t.Errorf("message = %q, want the reports-dir failure named", msg)
+			}
+		})
+	}
+}
+
+// TestShipStateReport_DisplayRenderedRaw calls report through the registered
+// tool, so the result passes the real Markdown renderer: the pre-rendered
+// display must appear verbatim (its own "# Ship run report" heading at
+// column 0), not wrapped in a code fence.
+func TestShipStateReport_DisplayRenderedRaw(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, "feat/raw-report")
+	t.Chdir(dir)
+
+	if res, head := callRegisteredShipState(t, map[string]any{"action": "init"}); res.IsError {
+		t.Fatalf("init failed: %s", head)
+	}
+	res, _ := callRegisteredShipState(t, map[string]any{"action": "report"})
+	if res.IsError {
+		t.Fatalf("report returned an error result")
+	}
+	text := res.Content[0].(*mcp.TextContent).Text
+	const heading = "# Ship run report — feat/raw-report"
+	idx := strings.Index(text, "\n"+heading+"\n")
+	if idx < 0 {
+		t.Fatalf("rendered result has no column-0 %q line:\n%s", heading, text)
+	}
+	if before := text[:idx]; strings.HasSuffix(strings.TrimRight(before, "\n"), "```") {
+		t.Errorf("display is fenced, want it emitted raw:\n%s", text)
 	}
 }

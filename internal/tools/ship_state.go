@@ -151,6 +151,29 @@ func shipDetailString(d map[string]any, action, key, suggestion string) (string,
 	return s, nil
 }
 
+// shipDetailBool reads an optional boolean out of Detail and fails loud on
+// a wrong-typed value, for the same reason shipDetailString does: detailBool
+// yields false for any non-bool (the string "true" or the number 1
+// included), which is indistinguishable from "omitted" — so `detail.write:
+// "true"` would quietly skip the write while the caller believes it asked
+// for one. A JSON null is treated as omitted.
+func shipDetailBool(d map[string]any, action, key, suggestion string) (bool, error) {
+	v, ok := d[key]
+	if !ok || v == nil {
+		return false, nil
+	}
+	b, isBool := v.(bool)
+	if !isBool {
+		return false, &mcpserver.DomainError{
+			Msg: fmt.Sprintf("%s: detail.%s must be a boolean, got %T", action, key, v),
+			// Literal prefix inline, caller's suggestion appended — same
+			// shape as shipDetailString (mcp-error-suggestion-coverage).
+			Suggestion: fmt.Sprintf("Pass detail.%s as the JSON boolean true or false (not a string or number), or omit the key entirely. %s", key, suggestion),
+		}
+	}
+	return b, nil
+}
+
 // detailIntPtr extracts an optional integer from Detail, distinguishing
 // "absent" (nil) from "explicitly present, including zero" (non-nil) — the
 // *int-equivalent shape the ttlDays contract requires (pitfall #2: this is
@@ -1231,12 +1254,16 @@ func shipStateDefer(root, workDir string, in ShipStateIn, now func() time.Time) 
 		findingsCount = len(existing) + 1
 	} else {
 		findings, _ := st.Data["deferredFindings"].([]any)
+		// description rides along so a later reader of the run-scoped
+		// entry (ship's harden step builds each finding's body from it)
+		// sees the deferring agent's reasoning, not just the title.
 		findings = append(findings, map[string]any{
-			"severity": severity,
-			"file":     file,
-			"line":     lineValue,
-			"title":    title,
-			"reason":   reason,
+			"severity":    severity,
+			"file":        file,
+			"line":        lineValue,
+			"title":       title,
+			"reason":      reason,
+			"description": description,
 		})
 		st.Data["deferredFindings"] = findings
 		if err := state.Write(st); err != nil {
@@ -1442,13 +1469,13 @@ func shipStateHealingRecord(root, workDir string, in ShipStateIn, now func() tim
 
 	st, err := shipResolveAndFind(detailStr(in.Detail, "branch"), workDir, root)
 	if errors.Is(err, errNoShipState) {
-		return healingNarration(kind, healingNarrNoLiveRun), nil
+		return healingNarration(kind, healingNarrNoLiveRun, record, false), nil
 	}
 	if err != nil {
 		return nil, err
 	}
 	if completedAt, _ := st.Data["pipelineCompletedAt"].(string); completedAt != "" {
-		return healingNarration(kind, healingNarrNoLiveRun), nil
+		return healingNarration(kind, healingNarrNoLiveRun, record, false), nil
 	}
 
 	healing, _ := st.Data["healing"].(map[string]any)
@@ -1462,7 +1489,7 @@ func shipStateHealingRecord(root, workDir string, in ShipStateIn, now func() tim
 	case "fixed":
 		fixed, _ := healing["fixed"].([]any)
 		if healingHasFixed(fixed, record) {
-			return healingNarration(kind, healingNarrDuplicate), nil
+			return healingNarration(kind, healingNarrDuplicate, record, false), nil
 		}
 		healing["fixed"] = append(fixed, record)
 	case "hardened":
@@ -1470,7 +1497,7 @@ func shipStateHealingRecord(root, workDir string, in ShipStateIn, now func() tim
 		var changed bool
 		hardened, narration, changed = healingUpsertHardened(hardened, record)
 		if !changed {
-			return healingNarration(kind, narration), nil
+			return healingNarration(kind, narration, record, false), nil
 		}
 		healing["hardened"] = hardened
 	}
@@ -1482,15 +1509,31 @@ func shipStateHealingRecord(root, workDir string, in ShipStateIn, now func() tim
 			Cause:      err,
 		}
 	}
-	return healingNarration(kind, narration), nil
+	return healingNarration(kind, narration, record, true), nil
 }
 
-// healingNarration builds the narrated response for a healing_record call.
-func healingNarration(kind, narration string) ShipStepNarrationOut {
-	return ShipStepNarrationOut{
+// ShipHealingRecordOut is the response of a healing_record call. Record
+// echoes the validated record exactly as it is (or would have been)
+// persisted, recordedAt included, so a caller can check what was stored and
+// match it against a later read's data.healing. Written is true only when
+// this call changed the state file; a duplicate, or a call with no live
+// run, leaves it false.
+type ShipHealingRecordOut struct {
+	pipeline.Narration
+	Kind    string         `json:"kind"`
+	Written bool           `json:"written"`
+	Record  map[string]any `json:"record"`
+}
+
+// healingNarration builds the response for a healing_record call.
+func healingNarration(kind, narration string, record map[string]any, written bool) ShipHealingRecordOut {
+	return ShipHealingRecordOut{
 		Narration: pipeline.Narration{
 			Summary: fmt.Sprintf("healing_record %s: %s", kind, narration),
 		},
+		Kind:    kind,
+		Written: written,
+		Record:  record,
 	}
 }
 
@@ -1989,7 +2032,11 @@ func shipStateCleanupPipeline(root, workDir string, in ShipStateIn, now func() t
 		}
 	}
 
-	force := detailBool(in.Detail, "force")
+	force, err := shipDetailBool(in.Detail, "cleanup-pipeline", "force",
+		"force:true skips the contract check and the stamp; omit it for a normal cleanup.")
+	if err != nil {
+		return nil, err
+	}
 	ttlDays := resolveGCTTLDays(root, detailIntPtr(in.Detail, "ttlDays"))
 
 	var currentRun map[string]any
@@ -2086,16 +2133,13 @@ func shipStateGC(root, workDir string, in ShipStateIn, now func() time.Time) (an
 	// sweep: detailBool reports false for any non-bool value (the string
 	// "true" included), and a top-level dryRun argument never reaches Detail
 	// at all.
-	if v, ok := in.Detail["dryRun"]; ok {
-		if _, isBool := v.(bool); !isBool {
-			return nil, &mcpserver.DomainError{
-				Msg:        fmt.Sprintf("gc: detail.dryRun must be a boolean, got %T", v),
-				Suggestion: "Pass detail.dryRun as the JSON boolean true (not the string \"true\"), or omit it to run the real sweep. dryRun is read from detail, never from the top level of the arguments.",
-			}
-		}
+	dryRun, err := shipDetailBool(in.Detail, "gc", "dryRun",
+		"Omit it to run the real sweep. dryRun is read from detail, never from the top level of the arguments.")
+	if err != nil {
+		return nil, err
 	}
 
-	if detailBool(in.Detail, "dryRun") {
+	if dryRun {
 		return shipGCDryRun(filepath.Join(root, paths.DataDir, paths.RunsSubdir), ttlDays, gcBranchExistsFunc(workDir), now)
 	}
 
@@ -2657,8 +2701,8 @@ Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide
 - fail: Fail a step. Requires step. Returns narration. Optional: detail.branch, detail.error (recorded as issue), detail.detail.
 - decide: Record a decision. Requires step. Returns narration. Optional: detail.branch, detail.text, detail.detail.
 - defer: Record a deferred finding. Writes it both to the run-scoped ship state file and durably to .sdlc-v2/history/deferred.json (source "`+history.SourceReviewBelowThreshold+`"), so it survives state-file GC — no follow-up deferred_add is needed. Returns narration naming the generated deferred id (review-deferred-<timestamp>-<N>) and the file it was written to; a failed deferred.json write does not fail the call but is named in the summary, with the deferred_add call that recovers it. Requires detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`, case-insensitive; the lowercase form is recorded), detail.file, detail.title. Optional: detail.branch, detail.line (integer), detail.detail, detail.description (the deferring agent's own reasoning; defaults to detail.title), detail.reason (one of `+strings.Join(history.DeferredReasons(), " | ")+`; an omitted reason records `+history.ReasonBelowThreshold+`).
-- healing_record: Record one self-healing change in the live ship run's data.healing. Requires detail.kind: "review-total" (Requires detail.total, detail.dimensions — non-negative integers; replaces the previous value) | "fixed" (Requires detail.origin "local-review"|"pr-comment", detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`), detail.file, detail.title; Optional detail.line) | "hardened" (Requires detail.phase "started"|"done", detail.trigger, detail.classification, detail.applied [{surface (one of `+strings.Join(healingSurfaceIDs(), " | ")+`), action, targetFile}], detail.skipped (non-negative integer); a "done" record replaces a "started" record with the same trigger). Optional: detail.branch. Duplicates are ignored (narration "already recorded — no change"). With no live ship run (no state, or pipelineCompletedAt set) it returns ok and records nothing. Returns narration: summary only.
-- harden_clusters: Group review findings into harden clusters (key = file; lone-disagree files dropped; cap 5). Requires detail.findings [{file, severity, title, body, verdict: "agree-will-fix"|"agree-won't-fix"|"disagree"|"needs-direction", reason?}]. Returns clusters with failureText and alreadyHardened, suppressed, loneDisagree, and dirtySurfaces (harden surfaces with uncommitted edits in the active worktree). Works without ship state.
+- healing_record: Record one self-healing change in the live ship run's data.healing. Requires detail.kind: "review-total" (Requires detail.total, detail.dimensions — non-negative integers; replaces the previous value) | "fixed" (Requires detail.origin "local-review"|"pr-comment", detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`), detail.file, detail.title; Optional detail.line) | "hardened" (Requires detail.phase "started"|"done", detail.trigger, detail.classification, detail.applied [{surface (one of `+strings.Join(healingSurfaceIDs(), " | ")+`), action, targetFile}], detail.skipped (non-negative integer); a "done" record replaces a "started" record with the same trigger). Optional: detail.branch. Duplicates are ignored (narration "already recorded — no change"). With no live ship run (no state, or pipelineCompletedAt set) it returns ok and records nothing. Returns summary, kind, written (true only when this call changed the state file) and record (the validated record as persisted, recordedAt included).
+- harden_clusters: Group review findings into harden clusters (key = file; lone-disagree files dropped; cap 5). Requires detail.findings [{file, severity, title, body, verdict: "agree-will-fix"|"agree-won't-fix"|"disagree"|"needs-direction", reason? (one of `+strings.Join(history.DeferredReasons(), " | ")+`)}]. Optional: detail.branch (the ship run whose healing.hardened triggers set alreadyHardened). failureText has every double quote replaced by a single quote and every backslash by a slash, so it is safe inside a quoted --failure-text argument. Returns clusters with failureText and alreadyHardened, suppressed, loneDisagree, and dirtySurfaces (harden surfaces with uncommitted edits in the active worktree). Works without ship state.
 - read: Return the full ship state. Optional: detail.branch. The response also carries "reportData": report-ready aggregates, including healing (data.healing verbatim, {} when absent) and reviewLedger {total, fixed (local-review only), deferredByReason, unaccounted = total - fixed - deferred, never clamped} — reviewLedger is null, with reviewLedgerNote, when no review total was recorded. When the pipeline is in flight (some step still blocks proceed and at least one step has been started), the state also carries a "resumeBriefing" (resumable, lastStep, lastStepStatus, sideEffects, summary, display, timing{stepSeconds,pipelineSeconds,idleSeconds,human}, next). A step left "failed" is still reported resumable:true, never as an error.
 - report: Compose the end-of-run report from ship state, this run's execute state (only when the execute step completed), CLI evidence and learnings, and render it. Optional: detail.write (true persists it under <main worktree>/.sdlc-v2/reports/), detail.format ("md"|"json", default from automation.report.format), detail.branch. Returns {skipped:true} when automation.report.enabled is false.
 - cleanup: Stamp a branch's ship state terminal (pipelineStatus:"completed", pipelineCompletedAt) instead of deleting it, after validating every step is in a terminal state — the state survives for later reads until GC's TTL prunes it. Optional: detail.branch.

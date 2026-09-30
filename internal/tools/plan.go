@@ -1864,8 +1864,8 @@ func checkpointNext(mainRoot string, cp PlanCheckpoint) string {
 // lastModifiedAt, durationMs}) from st.Data["planIntegrity"]["skillInvoked"]
 // and the plan file's mtime. A relative st.Data["planFilePath"] is resolved
 // against contentRoot and normalized in place (filepath.Join + Clean) so
-// every later reader — this run's own history record, and Task 7's plan_file
-// comparison — sees an absolute, cleaned path.
+// every later reader — this run's own history record, and ship_report.go's
+// shipPlanTimingFor plan_file comparison — sees an absolute, cleaned path.
 //
 // Any missing or unusable input (no skillInvoked, no planFilePath, or a
 // plan file that cannot be stat'ed) leaves planTiming and planFilePath
@@ -1925,8 +1925,9 @@ func planTimingInt64(timing map[string]any, key string) int64 {
 
 // appendPlanRunRecord appends one history.RunRecord for this plan run's
 // "done" marker: skill "plan", outcome "done", branch, and the
-// duration_ms/started_at/last_modified_at/plan_file fields Task 7 reads back
-// from the latest skill:"plan" record. It mirrors ship_state.go's
+// duration_ms/started_at/last_modified_at/plan_file fields that
+// shipPlanTimingFor (ship_report.go) reads back from the latest skill:"plan"
+// record. It mirrors ship_state.go's
 // shipStateHistoryRecord (same history.NewFileWriter(historyDir(...)).AppendRun
 // call), scoped to plan's own fixed field set.
 //
@@ -1974,11 +1975,11 @@ type PlanMarkIn struct {
 
 // PlanMarkOut is the output for the plan_mark tool.
 type PlanMarkOut struct {
-	OK      bool   `json:"ok"`
-	Marker  string `json:"marker"`
-	Path    string `json:"path"`
-	Next    string `json:"next,omitempty"`    // checkpoint only
-	Warning string `json:"warning,omitempty"` // done only: history write failed; the marker itself was saved
+	OK       bool     `json:"ok"`
+	Marker   string   `json:"marker"`
+	Path     string   `json:"path"`
+	Next     string   `json:"next,omitempty"`     // checkpoint only
+	Warnings []string `json:"warnings,omitempty"` // done only: history write failed; the marker itself was saved
 }
 
 // planMark is the core logic, separated from the handler for testability.
@@ -2113,7 +2114,7 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 	out := PlanMarkOut{OK: true, Marker: in.Marker, Path: st.Path}
 	if in.Marker == "done" {
 		if herr := appendPlanRunRecord(mainRoot, branch, st); herr != nil {
-			out.Warning = "plan timing not saved to history: " + herr.Error()
+			out.Warnings = append(out.Warnings, "plan timing not saved to history: "+herr.Error())
 		}
 	}
 	return out, nil
@@ -2162,11 +2163,11 @@ func RegisterPlanTools(s *mcpserver.Server) {
 		"INTERNAL — called by sdlc skills only. Write a plan-integrity checkpoint marker (plan-file, skillInvoked, guardrailsEvaluated, critiqueRan, done) into the current branch's plan state file, append structured data (guardrailResults, criticalDecisions) to it, or replace the progress checkpoint (checkpoint). "+
 			"checkpoint: replace the progress checkpoint. Requires data.step (one of \"0\", \"1\", \"2\", \"3\", \"4\", \"5\", \"6\", \"6.5\", \"6.6\", \"7\"). Optional: data.iteration, data.expectedWriters. Returns next. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError. "+
 			"Markers other than checkpoint return no next: the call only records state; continue the current SKILL.md step. "+
-			"The done marker also appends the plan's timing (start to last plan-file edit) to .sdlc-v2/history/runs.jsonl; a failed append returns ok with warning set.",
+			"The done marker also appends the plan's timing (start to last plan-file edit) to .sdlc-v2/history/runs.jsonl; a failed append returns ok with warnings set. Repeating done appends another history record.",
 		mcpserver.Annotations{
 			Title:      "Record plan progress marker",
 			ReadOnly:   true,
-			Idempotent: true,
+			Idempotent: false,
 			OpenWorld:  false,
 		},
 		func(_ mcpserver.Ctx, in PlanMarkIn) (PlanMarkOut, error) {

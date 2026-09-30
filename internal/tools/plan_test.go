@@ -1075,8 +1075,8 @@ func TestPlanMark_PlanTiming_DoneAppendsHistoryRecord(t *testing.T) {
 	if !out.OK {
 		t.Error("planMark(done).OK = false, want true")
 	}
-	if out.Warning != "" {
-		t.Errorf("planMark(done).Warning = %q, want empty", out.Warning)
+	if len(out.Warnings) != 0 {
+		t.Errorf("planMark(done).Warnings = %q, want empty", out.Warnings)
 	}
 
 	runs, err := history.NewFileWriter(historyDir(dir)).ReadRecentRuns(10)
@@ -1109,7 +1109,7 @@ func TestPlanMark_PlanTiming_DoneAppendsHistoryRecord(t *testing.T) {
 
 // TestPlanMark_PlanTiming_DoneHistoryWriteFailure_ReturnsWarning verifies
 // that when the history append fails, "done" still returns ok:true and
-// names the error in Warning, rather than failing the call.
+// names the error in Warnings, rather than failing the call.
 func TestPlanMark_PlanTiming_DoneHistoryWriteFailure_ReturnsWarning(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
@@ -1147,8 +1147,8 @@ func TestPlanMark_PlanTiming_DoneHistoryWriteFailure_ReturnsWarning(t *testing.T
 	if !out.OK {
 		t.Error("planMark(done).OK = false, want true even when the history write fails")
 	}
-	if out.Warning == "" {
-		t.Error("planMark(done).Warning = empty, want an error naming the history write failure")
+	if len(out.Warnings) == 0 {
+		t.Error("planMark(done).Warnings = empty, want an error naming the history write failure")
 	}
 }
 

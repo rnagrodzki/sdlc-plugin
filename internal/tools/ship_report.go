@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -47,7 +48,7 @@ type ShipRunReportOut struct {
 	CLIEvidence      []CLIEvidenceEntry  `json:"cliEvidence"`
 	Decisions        []string            `json:"decisions"`
 	LinkedLearnings  int                 `json:"linkedLearnings"`
-	Display          string              `json:"display"`
+	Display          string              `json:"display" render:"raw"` // pre-rendered report; emitted verbatim, never fenced
 	Path             string              `json:"path,omitempty"`
 	Written          bool                `json:"written"`
 	Skipped          bool                `json:"skipped,omitempty"`
@@ -65,6 +66,11 @@ type ShipPlanTiming struct {
 
 // shipPlanNote explains a null plan on the report.
 const shipPlanNote = "no plan linked to this run"
+
+// shipPlanNoteReadFailed explains a null plan when the history store could
+// not be read — distinct from shipPlanNote, so an unreadable runs.jsonl is
+// never reported as "no plan".
+const shipPlanNoteReadFailed = "plan history could not be read"
 
 // shipPlanHistoryWindow is how many recent history records the plan-timing
 // lookup scans.
@@ -87,12 +93,21 @@ const (
 // (pipelineCompletedAt set), since ship renders the report after cleanup.
 // It never writes state; with detail.write it writes only the report file,
 // <root>/.sdlc-v2/reports/ship-<runId>-report.<md|json>.
+//
+// A missing config uses the defaults (enabled, md) silently. Any other
+// config read error also uses the defaults, but is surfaced as a warning in
+// the report's issues, so a malformed config.toml is visible instead of
+// indistinguishable from "no config".
 func shipStateReport(root, workDir string, in ShipStateIn, now func() time.Time) (any, error) {
 	enabled := true
 	format := "md"
-	if cfg, err := config.Read(root); err == nil && cfg.Automation != nil && cfg.Automation.Report != nil {
+	cfg, cfgErr := config.Read(root)
+	if cfgErr == nil && cfg.Automation != nil && cfg.Automation.Report != nil {
 		enabled = cfg.Automation.Report.Enabled
 		format = cfg.Automation.Report.Format
+	}
+	if errors.Is(cfgErr, config.ErrNotFound) {
+		cfgErr = nil
 	}
 	override, err := shipDetailString(in.Detail, "report", "format", `Accepted values: "md" | "json".`)
 	if err != nil {
@@ -123,8 +138,20 @@ func shipStateReport(root, workDir string, in ShipStateIn, now func() time.Time)
 		return nil, err
 	}
 
+	write, err := shipDetailBool(in.Detail, "report", "write",
+		"write:true persists the report under .sdlc-v2/reports/; omit it to only render.")
+	if err != nil {
+		return nil, err
+	}
+
 	out := buildShipRunReport(root, branch, shipSt, format, now)
-	write := detailBool(in.Detail, "write")
+	if cfgErr != nil {
+		out.Issues = append(out.Issues, map[string]any{
+			"severity": "warning",
+			"category": "cross-read",
+			"summary":  "Config read failed, report used defaults (enabled, md): " + cfgErr.Error(),
+		})
+	}
 	out.Next = shipReportNextRead
 	if write {
 		out.Next = shipReportNextWritten
@@ -190,7 +217,16 @@ func buildShipRunReport(root, branch string, shipSt *state.State, format string,
 			rep := buildExecutionReport(root, branch, execSt, format, execDeriveRunID(execSt.Data, 0), now)
 			out.Execution = &rep
 			out.GuardrailHits = extractGuardrailHits(execSt.Data)
-			if plan := shipPlanTimingFor(root, execSt.Data); plan != nil {
+			plan, perr := shipPlanTimingFor(root, execSt.Data)
+			switch {
+			case perr != nil:
+				out.PlanNote = shipPlanNoteReadFailed
+				out.Issues = append(out.Issues, map[string]any{
+					"severity": "warning",
+					"category": "cross-read",
+					"summary":  "Plan history read failed: " + perr.Error(),
+				})
+			case plan != nil:
 				out.Plan = plan
 				out.PlanNote = ""
 			}
@@ -225,11 +261,12 @@ func buildShipRunReport(root, branch string, shipSt *state.State, format string,
 // the execute state's planPath. A relative planPath is joined to the
 // execute state's worktree first, and both sides are cleaned, because
 // execute stores the path as given while plan stores it absolute. It
-// returns nil when there is no planPath, no match, or the history read fails.
-func shipPlanTimingFor(root string, execData map[string]any) *ShipPlanTiming {
+// returns (nil, nil) when there is no planPath, no history yet, or no match,
+// and a non-nil error only when the history store exists but cannot be read.
+func shipPlanTimingFor(root string, execData map[string]any) (*ShipPlanTiming, error) {
 	planPath, _ := execData["planPath"].(string)
 	if planPath == "" {
-		return nil
+		return nil, nil
 	}
 	if !filepath.IsAbs(planPath) {
 		worktree, _ := execData["worktree"].(string)
@@ -239,7 +276,7 @@ func shipPlanTimingFor(root string, execData map[string]any) *ShipPlanTiming {
 
 	runs, err := history.NewFileWriter(historyDir(root)).ReadRecentRuns(shipPlanHistoryWindow)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	var match *history.RunRecord
 	for i := range runs {
@@ -252,14 +289,14 @@ func shipPlanTimingFor(root string, execData map[string]any) *ShipPlanTiming {
 		}
 	}
 	if match == nil {
-		return nil
+		return nil, nil
 	}
 	return &ShipPlanTiming{
 		PlanFile:       match.PlanFile,
 		StartedAt:      match.StartedAt,
 		LastModifiedAt: match.LastModifiedAt,
 		DurationMs:     match.DurationMs,
-	}
+	}, nil
 }
 
 // shipReportSummaryLine is the one-line display for a json-format report.
@@ -279,42 +316,74 @@ func shipReportSummaryLine(out ShipRunReportOut) string {
 // a fixed order: header, Plan, Steps, Review ledger, Self-healing (Fixed,
 // Hardened, Harden commit), Deferred, Execution (only when included),
 // Guardrail hits, CLI evidence, Decisions, Learnings, Next. Every empty list
-// renders an explicit line, never an empty heading.
+// renders an explicit line, never an empty heading. Each section has its own
+// render helper; this function only fixes their order.
 func renderShipReportMarkdown(out ShipRunReportOut) string {
-	var b strings.Builder
-	line := func(format string, args ...any) {
-		fmt.Fprintf(&b, format+"\n", args...)
-	}
+	w := &shipReportWriter{}
+	renderShipReportHeader(w, out)
+	renderShipReportPlan(w, out)
+	renderShipReportSteps(w, out)
+	renderShipReportReviewLedger(w, out)
+	renderShipReportHealing(w, out)
+	renderShipReportDeferred(w, out)
+	renderShipReportExecution(w, out.Execution)
+	renderShipReportGuardrailHits(w, out.GuardrailHits)
+	renderShipReportCLIEvidence(w, out.CLIEvidence)
+	renderShipReportDecisions(w, out.Decisions)
+	renderShipReportLearnings(w, out.LinkedLearnings)
+	renderShipReportNext(w, out.Next)
+	return w.b.String()
+}
 
-	// Header
-	line("# Ship run report — %s", out.Branch)
-	line("")
-	line("- Run: %s", out.RunID)
+// shipReportWriter accumulates the markdown report one line at a time.
+type shipReportWriter struct {
+	b strings.Builder
+}
+
+// line writes one formatted line followed by a newline.
+func (w *shipReportWriter) line(format string, args ...any) {
+	fmt.Fprintf(&w.b, format+"\n", args...)
+}
+
+// heading writes a blank line, a "## title" heading and another blank line —
+// the opening every section after the header shares.
+func (w *shipReportWriter) heading(title string) {
+	w.line("")
+	w.line("## %s", title)
+	w.line("")
+}
+
+func renderShipReportHeader(w *shipReportWriter, out ShipRunReportOut) {
+	w.line("# Ship run report — %s", out.Branch)
+	w.line("")
+	w.line("- Run: %s", out.RunID)
 	if out.Bump != "" {
-		line("- Bump: %s", out.Bump)
+		w.line("- Bump: %s", out.Bump)
 	}
 	if out.Duration != "" {
-		line("- Duration: %s", out.Duration)
+		w.line("- Duration: %s", out.Duration)
 	}
+}
 
-	// Plan
-	line("")
-	line("## Plan")
-	line("")
+func renderShipReportPlan(w *shipReportWriter, out ShipRunReportOut) {
+	w.heading("Plan")
 	if out.Plan != nil {
-		line("- File: %s", out.Plan.PlanFile)
+		w.line("- File: %s", out.Plan.PlanFile)
 		dur := pipeline.Humanize(time.Duration(out.Plan.DurationMs) * time.Millisecond)
-		line("- Planning time: %s (%s → last edit %s)", dur, out.Plan.StartedAt, out.Plan.LastModifiedAt)
-	} else {
-		line("_Plan timing not available — %s._", shipPlanNote)
+		w.line("- Planning time: %s (%s → last edit %s)", dur, out.Plan.StartedAt, out.Plan.LastModifiedAt)
+		return
 	}
+	note := out.PlanNote
+	if note == "" {
+		note = shipPlanNote
+	}
+	w.line("_Plan timing not available — %s._", note)
+}
 
-	// Steps
-	line("")
-	line("## Steps")
-	line("")
+func renderShipReportSteps(w *shipReportWriter, out ShipRunReportOut) {
+	w.heading("Steps")
 	if len(out.Steps) == 0 {
-		line("_No steps recorded._")
+		w.line("_No steps recorded._")
 	}
 	for _, s := range out.Steps {
 		text := fmt.Sprintf("- %s: %s", s.Name, s.Status)
@@ -324,102 +393,109 @@ func renderShipReportMarkdown(out ShipRunReportOut) string {
 		if s.HumanWait {
 			text += " — human wait"
 		}
-		line("%s", text)
+		w.line("%s", text)
 	}
 	if len(out.Issues) > 0 {
-		line("")
-		line("Issues:")
+		w.line("")
+		w.line("Issues:")
 		for _, raw := range out.Issues {
 			m, _ := raw.(map[string]any)
 			severity, _ := m["severity"].(string)
 			summary, _ := m["summary"].(string)
-			line("- [%s] %s", severity, summary)
+			w.line("- [%s] %s", severity, summary)
 		}
 	}
+}
 
-	// Review ledger
-	line("")
-	line("## Review ledger")
-	line("")
-	if l := out.ReviewLedger; l != nil {
-		line("- Total: %d", l.Total)
-		line("- Fixed: %d", l.Fixed)
-		if len(l.DeferredByReason) == 0 {
-			line("- Deferred: 0")
-		}
-		reasons := make([]string, 0, len(l.DeferredByReason))
-		for reason := range l.DeferredByReason {
-			reasons = append(reasons, reason)
-		}
-		sort.Strings(reasons)
-		for _, reason := range reasons {
-			line("- Deferred (%s): %d", reason, l.DeferredByReason[reason])
-		}
-		line("- Unaccounted: %d", l.Unaccounted)
-	} else {
+func renderShipReportReviewLedger(w *shipReportWriter, out ShipRunReportOut) {
+	w.heading("Review ledger")
+	l := out.ReviewLedger
+	if l == nil {
 		note := out.ReviewLedgerNote
 		if note == "" {
 			note = shipReviewLedgerNote
 		}
-		line("_Review ledger not available — %s._", note)
+		w.line("_Review ledger not available — %s._", note)
+		return
 	}
+	w.line("- Total: %d", l.Total)
+	w.line("- Fixed: %d", l.Fixed)
+	if len(l.DeferredByReason) == 0 {
+		w.line("- Deferred: 0")
+	}
+	reasons := make([]string, 0, len(l.DeferredByReason))
+	for reason := range l.DeferredByReason {
+		reasons = append(reasons, reason)
+	}
+	sort.Strings(reasons)
+	for _, reason := range reasons {
+		w.line("- Deferred (%s): %d", reason, l.DeferredByReason[reason])
+	}
+	w.line("- Unaccounted: %d", l.Unaccounted)
+}
 
-	// Self-healing
-	line("")
-	line("## Self-healing")
-	line("")
-	line("### Fixed")
-	line("")
+func renderShipReportHealing(w *shipReportWriter, out ShipRunReportOut) {
+	w.heading("Self-healing")
+	w.line("### Fixed")
+	w.line("")
 	fixed, _ := out.Healing["fixed"].([]any)
 	if len(fixed) == 0 {
-		line("_No findings fixed._")
+		w.line("_No findings fixed._")
 	}
 	for _, raw := range fixed {
 		m, _ := raw.(map[string]any)
 		origin, _ := m["origin"].(string)
-		line("- [%s] %s — %s (%s)", shipReportStr(m["severity"]), shipReportLocation(m), shipReportStr(m["title"]), origin)
+		w.line("- [%s] %s — %s (%s)", shipReportStr(m["severity"]), shipReportLocation(m), shipReportStr(m["title"]), origin)
 	}
-	line("")
-	line("### Hardened")
-	line("")
+
+	w.line("")
+	w.line("### Hardened")
+	w.line("")
 	hardened, _ := out.Healing["hardened"].([]any)
 	if len(hardened) == 0 {
-		line("_No harden runs recorded._")
+		w.line("_No harden runs recorded._")
 	}
 	for _, raw := range hardened {
 		m, _ := raw.(map[string]any)
-		head := fmt.Sprintf("- %s (%s)", shipReportStr(m["trigger"]), shipReportStr(m["classification"]))
-		if m["phase"] != "done" {
-			line("%s: %s", head, shipHardenInterrupted)
-			continue
-		}
-		applied, _ := m["applied"].([]any)
-		skipped, _ := healingInt(m["skipped"])
-		if len(applied) == 0 {
-			line("%s: no changes applied, %d skipped", head, skipped)
-			continue
-		}
-		line("%s: %d applied, %d skipped", head, len(applied), skipped)
-		for _, a := range applied {
-			am, _ := a.(map[string]any)
-			line("  - %s: %s → %s", shipReportStr(am["surface"]), shipReportStr(am["action"]), shipReportStr(am["targetFile"]))
-		}
-	}
-	line("")
-	line("### Harden commit")
-	line("")
-	if out.HardenCommit != "" {
-		line("- %s", out.HardenCommit)
-	} else {
-		line("_No harden commit._")
+		renderShipReportHardenedRun(w, m)
 	}
 
-	// Deferred
-	line("")
-	line("## Deferred")
-	line("")
+	w.line("")
+	w.line("### Harden commit")
+	w.line("")
+	if out.HardenCommit != "" {
+		w.line("- %s", out.HardenCommit)
+	} else {
+		w.line("_No harden commit._")
+	}
+}
+
+// renderShipReportHardenedRun renders one data.healing.hardened record: an
+// interrupted run (phase not "done"), a run that applied nothing, or a run
+// with its applied edits listed underneath.
+func renderShipReportHardenedRun(w *shipReportWriter, m map[string]any) {
+	head := fmt.Sprintf("- %s (%s)", shipReportStr(m["trigger"]), shipReportStr(m["classification"]))
+	if m["phase"] != "done" {
+		w.line("%s: %s", head, shipHardenInterrupted)
+		return
+	}
+	applied, _ := m["applied"].([]any)
+	skipped, _ := healingInt(m["skipped"])
+	if len(applied) == 0 {
+		w.line("%s: no changes applied, %d skipped", head, skipped)
+		return
+	}
+	w.line("%s: %d applied, %d skipped", head, len(applied), skipped)
+	for _, a := range applied {
+		am, _ := a.(map[string]any)
+		w.line("  - %s: %s → %s", shipReportStr(am["surface"]), shipReportStr(am["action"]), shipReportStr(am["targetFile"]))
+	}
+}
+
+func renderShipReportDeferred(w *shipReportWriter, out ShipRunReportOut) {
+	w.heading("Deferred")
 	if len(out.Deferred) == 0 {
-		line("_No findings deferred._")
+		w.line("_No findings deferred._")
 	}
 	for _, raw := range out.Deferred {
 		m, _ := raw.(map[string]any)
@@ -427,91 +503,87 @@ func renderShipReportMarkdown(out ShipRunReportOut) string {
 		if reason == "" {
 			reason = history.ReasonBelowThreshold
 		}
-		line("- [%s] %s — %s (%s)", shipReportStr(m["severity"]), shipReportLocation(m), shipReportStr(m["title"]), reason)
+		w.line("- [%s] %s — %s (%s)", shipReportStr(m["severity"]), shipReportLocation(m), shipReportStr(m["title"]), reason)
 	}
+}
 
-	// Execution (only when included)
-	if e := out.Execution; e != nil {
-		line("")
-		line("## Execution")
-		line("")
-		line("- Tasks: %d completed, %d failed, %d skipped of %d", e.CompletedTasks, e.FailedTasks, e.SkippedTasks, e.TotalTasks)
-		if e.Duration != "" {
-			line("- Duration: %s", e.Duration)
-		}
-		if len(e.Waves) == 0 {
-			line("- _No waves recorded._")
-		}
-		for _, w := range e.Waves {
-			text := fmt.Sprintf("- Wave %d: %s, %d tasks", w.Number, w.Status, len(w.Tasks))
-			if w.Duration != "" {
-				text += " (" + w.Duration + ")"
-			}
-			if w.CommittedSHA != "" {
-				text += " — " + w.CommittedSHA
-			}
-			line("%s", text)
-		}
-		line("- Issues: %d drifts, %d errors, %d warnings, %d concerns", len(e.Drifts), len(e.Errors), len(e.Warnings), len(e.Concerns))
+// renderShipReportExecution renders the Execution section only when this
+// run's execute step completed; e is nil otherwise and nothing is written.
+func renderShipReportExecution(w *shipReportWriter, e *ExecutionReportOut) {
+	if e == nil {
+		return
 	}
+	w.heading("Execution")
+	w.line("- Tasks: %d completed, %d failed, %d skipped of %d", e.CompletedTasks, e.FailedTasks, e.SkippedTasks, e.TotalTasks)
+	if e.Duration != "" {
+		w.line("- Duration: %s", e.Duration)
+	}
+	if len(e.Waves) == 0 {
+		w.line("- _No waves recorded._")
+	}
+	for _, wave := range e.Waves {
+		text := fmt.Sprintf("- Wave %d: %s, %d tasks", wave.Number, wave.Status, len(wave.Tasks))
+		if wave.Duration != "" {
+			text += " (" + wave.Duration + ")"
+		}
+		if wave.CommittedSHA != "" {
+			text += " — " + wave.CommittedSHA
+		}
+		w.line("%s", text)
+	}
+	w.line("- Issues: %d drifts, %d errors, %d warnings, %d concerns", len(e.Drifts), len(e.Errors), len(e.Warnings), len(e.Concerns))
+}
 
-	// Guardrail hits
-	line("")
-	line("## Guardrail hits")
-	line("")
-	if len(out.GuardrailHits) == 0 {
-		line("_No guardrail hits._")
+func renderShipReportGuardrailHits(w *shipReportWriter, hits []string) {
+	w.heading("Guardrail hits")
+	if len(hits) == 0 {
+		w.line("_No guardrail hits._")
 	}
-	for _, id := range out.GuardrailHits {
-		line("- %s", id)
+	for _, id := range hits {
+		w.line("- %s", id)
 	}
+}
 
-	// CLI evidence
-	line("")
-	line("## CLI evidence")
-	line("")
-	if len(out.CLIEvidence) == 0 {
-		line("_No CLI evidence recorded._")
+func renderShipReportCLIEvidence(w *shipReportWriter, evidence []CLIEvidenceEntry) {
+	w.heading("CLI evidence")
+	if len(evidence) == 0 {
+		w.line("_No CLI evidence recorded._")
 	}
-	for _, c := range out.CLIEvidence {
+	for _, c := range evidence {
 		where := c.Step
 		if where == "" {
 			where = c.Pipeline
 		}
-		line("- `%s` — exit %d (%s)", c.Command, c.ExitCode, where)
+		w.line("- `%s` — exit %d (%s)", c.Command, c.ExitCode, where)
 	}
+}
 
-	// Decisions
-	line("")
-	line("## Decisions")
-	line("")
-	if len(out.Decisions) == 0 {
-		line("_No decisions recorded._")
+func renderShipReportDecisions(w *shipReportWriter, decisions []string) {
+	w.heading("Decisions")
+	if len(decisions) == 0 {
+		w.line("_No decisions recorded._")
 	}
-	for _, d := range out.Decisions {
-		line("- %s", d)
+	for _, d := range decisions {
+		w.line("- %s", d)
 	}
+}
 
-	// Learnings
-	line("")
-	line("## Learnings")
-	line("")
-	if out.LinkedLearnings == 0 {
-		line("_No learnings linked to this run._")
+func renderShipReportLearnings(w *shipReportWriter, linked int) {
+	w.heading("Learnings")
+	if linked == 0 {
+		w.line("_No learnings linked to this run._")
 	} else {
-		line("- Linked learnings: %d", out.LinkedLearnings)
+		w.line("- Linked learnings: %d", linked)
 	}
+}
 
-	// Next
-	line("")
-	line("## Next")
-	line("")
-	if out.Next != "" {
-		line("%s", out.Next)
+func renderShipReportNext(w *shipReportWriter, next string) {
+	w.heading("Next")
+	if next != "" {
+		w.line("%s", next)
 	} else {
-		line("_No next step._")
+		w.line("_No next step._")
 	}
-	return b.String()
 }
 
 // shipReportStr returns v when it is a string, else "".

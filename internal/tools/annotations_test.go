@@ -88,9 +88,9 @@ var toolAnnotations = map[string]annotationPolicy{
 	"plan_mark": {
 		title:      "Record plan progress marker",
 		readOnly:   true,
-		idempotent: true,
+		idempotent: false,
 		openWorld:  false,
-		reason:     "state.Write → .sdlc-v2/runs/ (gitignored)",
+		reason:     "state.Write → .sdlc-v2/runs/ (gitignored); done appends to gitignored .sdlc-v2/history/runs.jsonl with no dedup, so not idempotent",
 	},
 	"plan_explore_prepare": {
 		title:      "Prepare plan exploration pack",
