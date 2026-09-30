@@ -32,6 +32,7 @@ Managed by the shared `internal/state` package (the same one `execute_state`, `p
   "issues": [ ... ],
   "lastFailedStep": null,
   "sideEffects": { ... },
+  "healing": { ... },
   "pipelineStatus": "completed",
   "pipelineCompletedAt": "2026-03-27T15:10:00Z"
 }
@@ -51,6 +52,7 @@ Managed by the shared `internal/state` package (the same one `execute_state`, `p
 | `issues` | array | Structured issue accumulator, appended by `ship_state{action:"fail"}`. See "Issues and `lastFailedStep`" below. |
 | `lastFailedStep` | string \| null | Name of the most recent step passed to `fail`. |
 | `sideEffects` | object | Idempotency journal keyed by step name. Written by `ship_verify_side_effect`; consulted by `begin-step`'s `alreadyDone` flag. See below. |
+| `healing` | object | Absent until the first `ship_state{action:"healing_record"}` call. Self-healing ledger (`reviewTotal`, `fixed[]`, `hardened[]`). See "`data.healing`" below. |
 | `pipelineStatus` | string | Absent until the pipeline is stamped terminal. Set to `"completed"` by `cleanup`/`cleanup-pipeline` — see "Lifecycle: Cleanup." |
 | `pipelineCompletedAt` | string | Paired timestamp, set alongside `pipelineStatus`. |
 
@@ -206,6 +208,50 @@ Idempotency journal keyed by step name, recording each step's verified git/PR si
 ```
 
 `kind` is one of `"pr"` or `"sha"` — there is no `"release-intent"` kind. Written by `ship_verify_side_effect`; consulted by `begin-step`'s `alreadyDone` flag (surfaced in `ShipStepNarrationOut.AlreadyDone`) so a resumed pipeline doesn't, say, re-dispatch the pr step once its PR (`ref` = `"#<number>"`) is already journaled. Release-intent correctness (bump level, pre-release label, notes) has no journal entry of its own — it is enforced synchronously by `pr_apply` itself at call time, not tracked as a separate side effect here.
+
+---
+
+## `data.healing`
+
+Self-healing ledger, written only by `ship_state{action:"healing_record", step?, detail:{kind, ...}}` while the run is live — no other action ever writes it, and `ship_prepare` never seeds it, so the key is absent until the first such call.
+
+```json
+{
+  "reviewTotal": { "total": 14, "dimensions": 6, "recordedAt": "2026-03-27T14:50:00Z" },
+  "fixed": [
+    { "origin": "local-review", "severity": "high", "file": "src/auth.ts", "line": 42, "title": "Extract token validation", "recordedAt": "2026-03-27T15:00:00Z" }
+  ],
+  "hardened": [
+    { "phase": "done", "trigger": "cluster:src/auth.ts", "classification": "plugin-defect", "applied": [{ "surface": "review-dimensions", "action": "strengthened", "targetFile": ".sdlc-v2/review-dimensions/auth-checks.md" }], "skipped": 0, "recordedAt": "2026-03-27T15:05:00Z" }
+  ]
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `reviewTotal` | object | `{total, dimensions, recordedAt}` — the review step's own finding and dimension count. `kind:"review-total"` (`detail.total`, `detail.dimensions`). A later `review-total` record replaces it; there is only ever one. |
+| `fixed` | array | One entry per fixed-and-verified finding: `{origin, severity, file, line, title, recordedAt}`. `kind:"fixed"` (`detail.origin`, `detail.severity`, `detail.file`, `detail.line`, `detail.title`). `origin` is `"local-review"` or `"pr-comment"`. Deduplicated on `(origin, file, line, title)` — a repeat record with the same key is not appended twice. |
+| `hardened` | array | One entry per harden run: `{phase, trigger, classification, applied[], skipped, recordedAt}`. `kind:"hardened"` (`detail.phase`, `detail.trigger`, `detail.classification`, `detail.applied`, `detail.skipped`). `phase` is `"started"` or `"done"`; a `"done"` record replaces the `"started"` record with the same `trigger` — a `"started"` record with no matching `"done"` marks an interrupted run. Each `applied[]` entry is `{surface, action, targetFile}`, `surface` one of `plan-guardrails`, `execute-guardrails`, `review-dimensions`, `copilot-instructions`, `error-report-skill`, `skill-recommendation`. |
+
+`step` travels with a `healing_record` call by convention — the caller passes its own step name (`"review"`, `"received-review"`, `"harden"`) — but the handler itself never reads it; only `detail` drives the write.
+
+---
+
+## `reportData` (attached by `read`, never persisted)
+
+`ship_state{action:"read"}` computes `reportData` from `data` on every call and attaches it to the response — it is never written back to the state file. Besides the step counts, duration, and bump provenance already summarized in docs/skills/ship.md's "State and Resolution Trace" section, it carries the review ledger built from `data.healing` and `data.deferredFindings`:
+
+| Field | Type | Description |
+|---|---|---|
+| `reviewLedger` | object \| null | `{total, fixed, deferredByReason, unaccounted}`. `null` when `data.healing.reviewTotal` was never recorded — review didn't run, or its `review-total` call was skipped because `{M}` was unreadable. |
+| `reviewLedgerNote` | string | Present only when `reviewLedger` is `null`: `"review did not run or its total was not recorded"`. |
+| `deferredFindings` | number | Count of `data.deferredFindings` entries — a plain, already-computed count. Do not re-derive it by summing `reviewLedger.deferredByReason`'s values yourself; read this field instead. |
+
+`reviewLedger`'s own fields, computed server-side, never by the calling skill:
+- `total` is `data.healing.reviewTotal.total` verbatim.
+- `fixed` counts only `data.healing.fixed` records with `origin:"local-review"` — a PR-comment fix is not part of the review's own total, so it is never counted here.
+- `deferredByReason` groups every `data.deferredFindings` entry by its `reason` (a missing `reason` is grouped under `"below-threshold"`, since that field predates the `reason` key).
+- `unaccounted` is `total - fixed - deferred`, **never clamped** — a negative value means the records disagree, and is reported as-is rather than hidden.
 
 ---
 
