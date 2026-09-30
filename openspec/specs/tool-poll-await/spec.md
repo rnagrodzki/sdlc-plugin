@@ -62,7 +62,7 @@ stateDiagram-v2
     Probe --> ErrorEnv : gh failed, before deadline
     Probe --> DoneVerdict : verdict found
     Probe --> DoneTimeout : no verdict or gh failed, after deadline
-    Probe --> DoneSkipped : state file already exhausted
+    Probe --> DoneSkipped : state file already exhausted, or pipeline has no CI
     Pending --> Probe : next call with state_file
     ErrorEnv --> Probe : next call with state_file
     DoneTimeout --> DoneSkipped : next call with state_file
@@ -139,6 +139,7 @@ The tool SHALL end the poll with `ext.verdict: timeout` when the deadline has pa
 | Timeout, `pipeline` | `verdict: timeout`, `waited_seconds`, `pr_number`, `pending_checks` |
 | Timeout after a failed probe | `verdict: timeout`, `waited_seconds`, `pr_number`, `probe_error`, `probe_error_class` (plus `reviewers` for `remote_review`) |
 | Exhausted state file | `verdict: skipped`, `reason: exhausted`, `pr_number` |
+| `pipeline` with no CI (see Pipeline verdict) | `verdict: skipped`, `reason: no-ci`, `pr_number` |
 
 #### Scenario: Timeout with checks still pending
 - **WHEN** the deadline has passed and `gh pr checks` still lists a `pending` check
@@ -189,7 +190,7 @@ The tool SHALL classify each gh failure into one class from the table below, mat
 | `unknown` | true | any other failure |
 
 - For `target: pipeline`, exit codes `0`, `1`, and `8` are read as check rows.
-- For `target: pipeline`, an exit `1` or `8` with no failed and no pending row is gh's own error, not a check result. It is classified from gh's stderr.
+- For `target: pipeline`, an exit `1` or `8` with no failed and no pending row is gh's own error, not a check result. It is classified from gh's stderr. The one exception is the no-CI case in Pipeline verdict, which ends the poll instead.
 - For `target: pipeline`, any other exit code is classified from gh's stderr first. When the stderr matches no row, exit `4` (gh's auth-required code) is `auth` and every other code is `unexpected-exit`; neither is `unknown`.
 - For `target: pipeline`, a failed `gh pr checks` message is `gh pr checks: exit <N>: <stderr>`, or `gh pr checks: exit <N>` when stderr is empty.
 
@@ -222,6 +223,7 @@ The tool SHALL classify each gh failure into one class from the table below, mat
 
 #### Scenario: No checks reported yet
 - **WHEN** `gh pr checks` prints no rows, writes `no checks reported on the 'feat' branch` to stderr, and exits `1`
+- **AND** the repo has `.github/workflows/ci.yml`
 - **AND** the deadline has not passed
 - **THEN** `status` is `error`, `ext.error_class` is `unknown`, and `ext.retryable` is `true`
 - **AND** `ext.verdict` is not `green`
@@ -276,10 +278,14 @@ For `target: pipeline` the tool SHALL read the tab-separated rows of `gh pr chec
 |---|---|---|
 | Any failed row | `done`, `verdict: failed` | `pr_number`, `failed_checks` (list of `name`, `state`), `checks_raw` (the raw gh text) |
 | No failed and no pending row | `done`, `verdict: green` | `pr_number` |
+| No rows, non-zero exit, stderr contains `no checks reported`, and no CI config | `done`, `verdict: skipped`, `reason: no-ci` | `pr_number` |
 | Pending rows, before deadline | `pending` | `pr_number`, `pending_checks` (list of `name`, `state`) |
 
 - Exit codes `0`, `1`, and `8` are all normal when rows are printed; exit `8` (checks pending) is not an error.
-- An exit `1` or `8` with no failed and no pending row is a probe failure, never `green` (see gh failure classes).
+- An exit `1` or `8` with no failed and no pending row is a probe failure, never `green` (see gh failure classes), except the no-CI case below.
+- An exit `0` with no rows at all is `green`.
+- No CI config means none of these exist in the active worktree root: a `.yml` or `.yaml` file in `.github/workflows/`, a `.circleci` path, a `Jenkinsfile`. A stat or read error other than "does not exist" counts as a CI config.
+- The CI config is checked only after gh reports `no checks reported`, so checks from an app with no config file in the repo are still read. With a CI config, `no checks reported` stays a retryable probe failure, because the checks may not have started yet.
 - Rows with fewer than two tab-separated columns are ignored.
 - A failed row wins over pending rows.
 
@@ -294,6 +300,16 @@ For `target: pipeline` the tool SHALL read the tab-separated rows of `gh pr chec
 #### Scenario: All checks pass
 - **WHEN** every row has state `pass`
 - **THEN** `status` is `done` and `ext.verdict` is `green`
+
+#### Scenario: Empty output with exit 0
+- **WHEN** `gh pr checks` prints nothing and exits `0`
+- **THEN** `status` is `done` and `ext.verdict` is `green`
+
+#### Scenario: No CI config ends the poll
+- **WHEN** `gh pr checks` prints no rows, writes `no checks reported on the 'feat' branch` to stderr, and exits `1`
+- **AND** the repo has no `.github/workflows/*.yml|*.yaml`, no `.circleci`, and no `Jenkinsfile`
+- **THEN** `status` is `done`, `ext.verdict` is `skipped`, and `ext.reason` is `no-ci`
+- **AND** `ext.verdict` is not `green`
 
 ### Requirement: Infrastructure errors
 The tool SHALL return an `InfraError` result, not an envelope, when it cannot resolve the project or cannot name or write the state file.

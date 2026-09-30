@@ -568,14 +568,17 @@ func TestVerifyPipelineAwait_Exit1NoRowsAfterDeadline(t *testing.T) {
 
 // TestVerifyPipelineAwait_NoChecksReportedIsNotGreen pins that gh's "no
 // checks reported" error (exit 1, stderr only) is not read as green: right
-// after a push, GitHub may not have registered any check yet. It is an
-// unknown, retryable probe failure, so the caller re-probes until checks
-// appear or the deadline passes.
+// after a push, GitHub may not have registered any check yet. In a repo
+// with a CI config it is an unknown, retryable probe failure, so the caller
+// re-probes until checks appear or the deadline passes.
 func TestVerifyPipelineAwait_NoChecksReportedIsNotGreen(t *testing.T) {
 	cleanup := stubGH(t, "#!/bin/sh\necho \"no checks reported on the 'feat' branch\" >&2\nexit 1\n")
 	defer cleanup()
 
-	env, err := verifyPipelineAwait(".", VerifyPipelineAwaitIn{PR: 9, TimeoutSeconds: 1200, IntervalSeconds: 60})
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, ".github", "workflows", "ci.yml"), "on: push\n")
+
+	env, err := verifyPipelineAwait(root, VerifyPipelineAwaitIn{PR: 9, TimeoutSeconds: 1200, IntervalSeconds: 60})
 	if err != nil {
 		t.Fatalf("unexpected Go error: %v", err)
 	}
@@ -587,6 +590,91 @@ func TestVerifyPipelineAwait_NoChecksReportedIsNotGreen(t *testing.T) {
 	}
 	if env.Ext["error_class"] != ghClassUnknown || env.Ext["retryable"] != true {
 		t.Errorf("error_class=%v retryable=%v, want %q true", env.Ext["error_class"], env.Ext["retryable"], ghClassUnknown)
+	}
+}
+
+// TestVerifyPipelineAwait_NoChecksReportedWithoutCIConfigIsSkipped pins the
+// no-CI fast path: gh reports no checks and the repo has no CI config, so no
+// check will ever start. The poll ends at once as skipped with reason no-ci
+// instead of re-probing until the deadline — and never reads as green.
+func TestVerifyPipelineAwait_NoChecksReportedWithoutCIConfigIsSkipped(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\necho \"no checks reported on the 'feat' branch\" >&2\nexit 1\n")
+	defer cleanup()
+
+	root := t.TempDir()
+	// Files that are not a CI config must not count as one.
+	writeFile(t, filepath.Join(root, ".github", "workflows", "README.md"), "no workflows yet\n")
+	writeFile(t, filepath.Join(root, ".github", "CODEOWNERS"), "* @me\n")
+
+	env, err := pollAwait(root, PollAwaitIn{Target: "pipeline", PR: 9})
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if env.StateFile != nil {
+		defer os.Remove(*env.StateFile)
+	}
+	if env.Status != "done" {
+		t.Fatalf("got status=%q error=%q, want done", env.Status, env.Error)
+	}
+	if env.Ext["verdict"] != "skipped" || env.Ext["reason"] != "no-ci" {
+		t.Errorf("verdict=%v reason=%v, want skipped/no-ci", env.Ext["verdict"], env.Ext["reason"])
+	}
+	if env.Ext["pr_number"] != 9 {
+		t.Errorf("pr_number = %v, want 9", env.Ext["pr_number"])
+	}
+}
+
+// TestVerifyPipelineAwait_NoChecksReportedKeepsPollingPerCISystem pins that
+// every CI system the tool knows about keeps the poll going when gh reports
+// no checks yet: its checks may simply not have started.
+func TestVerifyPipelineAwait_NoChecksReportedKeepsPollingPerCISystem(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\necho \"no checks reported on the 'feat' branch\" >&2\nexit 1\n")
+	defer cleanup()
+
+	tests := []struct {
+		name string
+		file string
+	}{
+		{"github actions yaml", filepath.Join(".github", "workflows", "build.yaml")},
+		{"circleci", filepath.Join(".circleci", "config.yml")},
+		{"jenkins", "Jenkinsfile"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, tt.file), "x\n")
+
+			env, err := pollAwait(root, PollAwaitIn{Target: "pipeline", PR: 9})
+			if err != nil {
+				t.Fatalf("unexpected Go error: %v", err)
+			}
+			if env.StateFile != nil {
+				defer os.Remove(*env.StateFile)
+			}
+			if env.Status != "error" || env.Ext["retryable"] != true {
+				t.Errorf("got status=%q retryable=%v verdict=%v, want a retryable error", env.Status, env.Ext["retryable"], env.Ext["verdict"])
+			}
+		})
+	}
+}
+
+// TestVerifyPipelineAwait_EmptyOutputExit0IsGreen pins the spec's "no
+// failed and no pending row" outcome for gh pr checks printing nothing and
+// exiting 0: a successful gh run lists no failing or pending check, so the
+// verdict is green. Only a non-zero exit with no rows is a probe failure.
+func TestVerifyPipelineAwait_EmptyOutputExit0IsGreen(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\nexit 0\n")
+	defer cleanup()
+
+	env, err := pollAwait(t.TempDir(), PollAwaitIn{Target: "pipeline", PR: 3})
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if env.StateFile != nil {
+		defer os.Remove(*env.StateFile)
+	}
+	if env.Status != "done" || env.Ext["verdict"] != "green" {
+		t.Fatalf("got status=%q verdict=%v error=%q, want done/green", env.Status, env.Ext["verdict"], env.Error)
 	}
 }
 

@@ -3,6 +3,9 @@ package tools
 import (
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -385,6 +388,38 @@ func classifyChecksExit(exitCode int, stderr string) ghFailure {
 	return ghFailure{Message: f.Message, Class: ghClassUnexpectedExit}
 }
 
+// isNoChecksReported reports whether gh pr checks' stderr is its "no checks
+// reported on the '<branch>' branch" message.
+func isNoChecksReported(stderr string) bool {
+	return strings.Contains(strings.ToLower(stderr), "no checks reported")
+}
+
+// hasCIConfig reports whether root holds a config for a CI system that
+// reports checks on a GitHub PR. The set is the one review.go's uncovered-
+// file catalog already treats as CI: GitHub Actions workflows
+// (.github/workflows/*.yml|*.yaml), CircleCI (.circleci/) and Jenkins
+// (Jenkinsfile). Any stat or read error other than "does not exist" counts
+// as "CI config may exist", so an unreadable tree keeps the poll going
+// rather than ending it early.
+func hasCIConfig(root string) bool {
+	entries, err := os.ReadDir(filepath.Join(root, ".github", "workflows"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return true
+	}
+	for _, e := range entries {
+		ext := strings.ToLower(filepath.Ext(e.Name()))
+		if !e.IsDir() && (ext == ".yml" || ext == ".yaml") {
+			return true
+		}
+	}
+	for _, p := range []string{".circleci", "Jenkinsfile"} {
+		if _, err := os.Stat(filepath.Join(root, p)); !errors.Is(err, fs.ErrNotExist) {
+			return true
+		}
+	}
+	return false
+}
+
 // verifyPipelineAwait implements one KD8 probe of verify_pipeline_await.
 func verifyPipelineAwait(activeRoot string, in VerifyPipelineAwaitIn) (stepper.Envelope, error) {
 	if in.PR <= 0 {
@@ -440,6 +475,18 @@ func verifyPipelineAwait(activeRoot string, in VerifyPipelineAwaitIn) (stepper.E
 	// error (PR not found, auth, "no checks reported"), with the reason on
 	// stderr. Reading it as green would report a pass that never happened.
 	if exitCode != 0 && len(failed) == 0 && len(pending) == 0 {
+		// "No checks reported" in a repo with no CI config will never turn
+		// into a verdict: nothing is going to start a check. End the poll
+		// as skipped (the verdict the skill already proceeds on) instead of
+		// re-probing until the deadline. With a CI config present the checks
+		// may simply not have started yet, so that case keeps polling.
+		if isNoChecksReported(checksStderr) && !hasCIConfig(activeRoot) {
+			return stepper.Done(stateFile, "", map[string]any{
+				"verdict":   "skipped",
+				"reason":    "no-ci",
+				"pr_number": in.PR,
+			}), nil
+		}
 		return probeFailureEnvelope(stateFile, st, timedOut, classifyGHError(checksExitError(exitCode, checksStderr)), map[string]any{
 			"pr_number": in.PR,
 		})
@@ -587,12 +634,11 @@ func loadOrInitPollState(stateFile, skill string, timeoutSeconds, intervalSecond
 // error envelope that leaves the state unexhausted, so the next call probes
 // again and can still find the verdict.
 //
-// The timed-out branch is what bounds the poll. The ship skill treats an
-// error envelope as transient and re-probes with no cap (ship/SKILL.md's
-// poll-loop entries, ship/reference.md's error table), so returning an error
-// envelope for a gh failure that keeps happening after the deadline —
-// expired credentials, a deleted PR, an uninstalled gh — left the poll with
-// no end at all.
+// The timed-out branch is what bounds the poll. The ship skill re-probes an
+// error envelope with ext.retryable true with no cap, and stops on
+// retryable false (ship/SKILL.md's poll-loop entries, ship/reference.md's
+// error table). A retryable failure that keeps happening after the
+// deadline would otherwise leave the poll with no end at all.
 func probeFailureEnvelope(stateFile string, st stepper.PollState, timedOut bool, f ghFailure, ext map[string]any) (stepper.Envelope, error) {
 	if timedOut {
 		ext["probe_error"] = f.Message
@@ -827,7 +873,7 @@ func ClassifyLogs(text string) VerifyPipelineClassifyOut {
 // registered so far.
 func RegisterPollingTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "poll_await",
-		`INTERNAL — called by sdlc skills only. Run one bounded KD8 probe for a polling target: target: "remote_review" polls gh for a remote reviewer's verdict on a PR; target: "pipeline" polls gh PR checks. One non-blocking probe per call. Returns a stepper envelope: status "pending" means no verdict yet — wait interval_seconds and call again with the returned state_file; status "error" means the gh probe failed before the deadline (ext.retryable says whether re-probing can help); status "done" carries a terminal ext.verdict. For target "remote_review" ext.verdict is one of "approved-clean" (reviewer approved), "actionable" (reviewer commented or requested changes), "timeout" (deadline passed with no verdict) or "skipped" (this state_file already timed out). For target "pipeline" it is "green" (all checks passed), "failed" (a check failed; ext.checks_raw holds the raw check list), "timeout" or "skipped". Every "done" verdict ends the poll.`,
+		`INTERNAL — called by sdlc skills only. Run one bounded KD8 probe for a polling target: target: "remote_review" polls gh for a remote reviewer's verdict on a PR; target: "pipeline" polls gh PR checks. One non-blocking probe per call. Returns a stepper envelope: status "pending" means no verdict yet — wait interval_seconds and call again with the returned state_file; status "error" means the gh probe failed before the deadline (ext.retryable says whether re-probing can help); status "done" carries a terminal ext.verdict. For target "remote_review" ext.verdict is one of "approved-clean" (reviewer approved), "actionable" (reviewer commented or requested changes), "timeout" (deadline passed with no verdict) or "skipped" (this state_file already timed out; ext.reason "exhausted"). For target "pipeline" it is "green" (all checks passed), "failed" (a check failed; ext.checks_raw holds the raw check list), "timeout" or "skipped" (ext.reason "exhausted", or "no-ci" when gh reports no checks and the repo has no CI config: no .github/workflows/*.yml|*.yaml, no .circleci/, no Jenkinsfile). Every "done" verdict ends the poll.`,
 		mcpserver.Annotations{
 			Title:       "Await CI or PR completion",
 			ReadOnly:    false,
