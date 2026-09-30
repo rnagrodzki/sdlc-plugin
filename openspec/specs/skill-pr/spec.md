@@ -6,12 +6,12 @@ The `pr` skill (`/pr`) drafts a pull request title and description from `pr_prep
 ## Requirements
 
 ### Requirement: Flags and invocation inputs
-The skill SHALL accept the flags `--draft`, `--update`, `--base <branch>`, `--auto`, `--skip-approval`, and `--label <name>`, and SHALL honor only `--auto` and `--skip-approval`.
+The skill SHALL accept the flags `--draft`, `--base <branch>`, `--auto`, `--skip-approval`, and `--label <name>`, and SHALL honor only `--auto` and `--skip-approval`.
 
 | Flag | Effect |
 |---|---|
 | `--draft` | Not supported; `pr_apply` has no draft field |
-| `--update` | No separate behavior; `pr_apply` decides create vs update itself |
+| `--update` (removed, not in `argument-hint`) | Ignored; updating is the default because `pr_apply` edits the open PR for the branch when one exists |
 | `--base <branch>` | Not supported; `pr_apply` has no base-branch field |
 | `--auto` | Skips the publish prompt; sets `autoMode: true` on `pr_apply`; stops a standalone call that has no release intent |
 | `--skip-approval` | Skips the publish prompt only; `autoMode` stays driven by `--auto` |
@@ -27,6 +27,11 @@ Inputs an orchestrating caller may pass (no CLI flag exists for them):
 #### Scenario: Unsupported flag
 - **WHEN** `/pr --draft` is invoked
 - **THEN** the PR is published through `pr_apply` without a draft setting
+
+#### Scenario: Legacy update flag
+- **WHEN** `/pr --update` is invoked on a branch with an open PR
+- **THEN** the skill behaves as if the flag were not passed
+- **AND** `pr_apply` edits that PR
 
 ### Requirement: Main flow and tool order
 The skill SHALL call `pr_prepare` first, `links_validate` next, and `pr_apply` last, and SHALL NOT run git or gh commands itself.
@@ -157,6 +162,7 @@ flowchart TD
 The skill SHALL draft `releaseNotes` whenever a `releaseLevel` is held and `releaseNotes` is empty, whether the level came from the gate or the caller.
 
 - Source: `PR_CONTEXT.commitsSinceTag` when present, else `PR_CONTEXT.commitsSinceBase`, plus conversation context.
+- Both lists hold `<sha> <subject>` lines: `commitsSinceBase` oldest first, `commitsSinceTag` newest first.
 - The notes cover every commit in the chosen list, not only the latest one.
 - In the interactive gate, the skill shows the draft and lets the user amend it.
 
@@ -331,8 +337,10 @@ The skill SHALL record PR-related discoveries with `learnings_log` and SHALL sug
 
 - Learning call: `learnings_log({action: "append", entry: "## YYYY-MM-DD — pr: <summary>\n<details>"})`.
 - Topics: PR conventions, branch naming, CI requirements, template preferences, Jira key patterns, review quirks.
-- Follow-up: `/review`; after OpenSpec enrichment also `openspec validate --strict <change>` and `openspec archive <change> --yes`.
+- Follow-up: `/review`; after OpenSpec enrichment also `openspec validate --strict <change>`.
+- The skill never suggests `openspec archive`; `/sdlc:ship` archives the change after validation passes.
 
 #### Scenario: Enriched PR published
 - **WHEN** the PR was enriched from change `add-login`
 - **THEN** the follow-ups include `openspec validate --strict add-login`
+- **AND** they do not include `openspec archive`

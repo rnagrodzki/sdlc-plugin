@@ -1,8 +1,8 @@
 ---
 name: pr
-description: "Use this skill when creating or updating a pull request, updating a PR description, or generating PR content from commits and diffs. Handles the full PR workflow: consumes pre-computed context from the `pr_prepare` MCP tool, generates description with plan-critique-improve-do-critique-improve, user review, and gh CLI execution. Auto-labels PRs based on context signals (branch, commits, diff, Jira) with mandatory approval. Arguments: [--draft] [--update] [--base <branch>] [--auto] [--skip-approval] [--label <name>]. Use --auto to skip interactive approval and to mark pr_apply as running unattended. Use --skip-approval to skip only the Step 5 publish-confirmation prompt (e.g. when dispatched by ship, which already resolved release intent) without affecting autoMode. Triggers on: create PR, open pull request, update PR, write PR description, PR summary, describe changes for a pull request."
+description: "Use this skill when creating or updating a pull request, updating a PR description, or generating PR content from the branch's commits. Handles the full PR workflow: consumes pre-computed context from the `pr_prepare` MCP tool, generates description with plan-critique-improve-do-critique-improve, user review, and publishes through the `pr_apply` MCP tool (the skill runs no git or gh commands itself). Creates a new PR, or updates the open PR for the branch when one exists. Applies no labels of its own: the only label is the release:<level> label that pr_apply derives from release intent. Arguments: [--draft] [--base <branch>] [--auto] [--skip-approval] [--label <name>]. Use --auto to skip interactive approval and to mark pr_apply as running unattended. Use --skip-approval to skip only the Step 5 publish-confirmation prompt (e.g. when dispatched by ship, which already resolved release intent) without affecting autoMode. Triggers on: create PR, open pull request, update PR, write PR description, PR summary, describe changes for a pull request."
 user-invocable: true
-argument-hint: "[--draft] [--update] [--base <branch>] [--auto] [--skip-approval] [--label <name>]"
+argument-hint: "[--draft] [--base <branch>] [--auto] [--skip-approval] [--label <name>]"
 model: sonnet
 ---
 
@@ -30,8 +30,10 @@ this port's tool surface (`pr_prepare`, `pr_apply`) actually supports:
   computes the version at merge time from the tags present then. There
   is still no field for `--draft`, an arbitrary `--label`, or a target base branch, and no recovery helper
   runs after a failure.
-- `pr_prepare` supplies `commitsSinceBase` (this branch's own commit subjects, oldest first,
-  since it diverged from the default branch) but no diff stat/content, remote state, changed
+- `--update` is gone: updating is the default. `pr_apply` edits the open PR for the branch
+  when one exists and creates a new PR otherwise. If a user still types `--update`, ignore it.
+- `pr_prepare` supplies `commitsSinceBase` (this branch's own commits as `<sha> <subject>`
+  lines, oldest first, since it diverged from the default branch) but no diff stat/content, remote state, changed
   files, repository labels, or a pre-detected create-vs-update mode. Draft the title and body
   from `PR_CONTEXT.commitsSinceBase` plus context already available in this conversation
   (files you edited, what the user has told you) — do not run commands to gather diffs. When
@@ -175,7 +177,7 @@ of the PR). Do not ask for confirmation — the Step 5 approval gate is the cons
 | `uncommittedChanges` / `dirtyFiles` | Uncommitted files that will NOT be part of the PR |
 | `jiraTicket` | Detected ticket reference from the branch name, or empty |
 | `template` | `{ path, legacy, headings, content }` or `null` — see PR Template above |
-| `commitsSinceBase` | This branch's own commit subjects (oldest first), since it diverged from the default branch — always present when the branch has commits ahead of the default branch. Use this, not conversation memory alone, to cover every commit when drafting the body. |
+| `commitsSinceBase` | This branch's own commits as `<sha> <subject>` lines (oldest first), since it diverged from the default branch — always present when the branch has commits ahead of the default branch. Use this, not conversation memory alone, to cover every commit when drafting the body. |
 
 **Version diagnostics** (present only when the project has a version config section; every
 field below is `omitempty` and absent entirely otherwise — treat their absence as "this project
@@ -187,7 +189,7 @@ in Step 1b"):
 | `versionSource` | `{ path, type, version }` — where the current version was read from |
 | `bumpOptions` | Array of `{ level, result, current, rcNext?, suggestedPreRelease? }` — one entry per possible bump target (major/minor/patch), each with the resulting version string and whether an RC pre-release is suggested. `result` / `rcNext` are a preview from the tags present now; CI computes the final number at merge time |
 | `tags` | `{ all, atHead, latest, tagPrefix }` — tag inventory |
-| `commitsSinceTag` | Array of commit subject lines since the last tag |
+| `commitsSinceTag` | Commits since the last tag as `<sha> <subject>` lines (newest first) |
 | `conventionalSummary` | `{ breaking, feat, fix, other, total, suggest }` — conventional-commit counts and a suggested bump level derived from them |
 | `changelogExists` | Boolean |
 | `idempotency` | `{ alreadyBumped, tagAtHead? }` — true when the current HEAD already carries a release tag (`tagAtHead` names it); avoid double-bumping |
@@ -532,7 +534,9 @@ After creating or updating the PR, common follow-ups include:
 
 If OpenSpec enrichment was applied in Step 2 (an active change was detected), also suggest:
 - `openspec validate --strict <change>` — validate change spec files structurally (after merge)
-- `openspec archive <change> --yes` — archive the OpenSpec change and merge delta specs (after validation passes)
+
+Never suggest running `openspec archive` directly: `/sdlc:ship` archives the change as a
+pipeline step after validation passes.
 
 ## See Also
 

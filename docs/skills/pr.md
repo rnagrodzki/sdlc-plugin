@@ -21,7 +21,6 @@ release bump as part of opening the PR.
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--auto` | Skip the approval prompt and publish immediately. Standalone use requires a release decision to already be resolved — see Tips. | off |
-| `--update` | Signals you're updating an existing PR. Has no practical effect: the skill auto-detects create vs. update either way. | off |
 | `--draft` | Create the PR as a draft. **Not yet functional.** | off |
 | `--base <branch>` | Target base branch. **Not yet functional.** | auto-detected |
 | `--skip-approval` | Skip only the Step 5 publish-confirmation prompt (e.g. when dispatched by ship, which already resolved release intent). Not equivalent to `--auto`. | off |
@@ -48,9 +47,11 @@ pipeline behind it, stops with an error telling you to use `/ship` instead.
 
 **Update an existing PR's description:**
 
-    /pr --update
+    /pr
 
-Regenerates the description. Useful after pushing additional commits.
+Run it again on the same branch. When the branch already has an open PR, the
+skill regenerates its title and description and edits that PR. Useful after
+pushing additional commits.
 
 ## Related skills
 
@@ -64,7 +65,7 @@ Regenerates the description. Useful after pushing additional commits.
 
 - **Requires the `gh` CLI.** Make sure `gh auth login` is done before running.
 - **Create vs. update is automatic.** The skill detects whether a PR exists for
-  the current branch. You do not need `--update` explicitly.
+  the current branch. There is no `--update` flag.
 - **Must be on a feature branch.** The skill refuses to run on `main`/`master`.
 - **Some flags are not yet functional.** `--draft`, `--base`, and `--label` are
   listed but not yet supported. Use GitHub's UI or `gh` directly for these.
