@@ -2,7 +2,7 @@
 name: received-review
 description: "Use this skill when responding to code review feedback on a pull request or inline reviewer comments. Covers reading, verifying, evaluating, and responding to reviewer comments with a dual self-critique gate — prevents performative agreement and ensures technical rigor. Can be launched manually or automatically after /review. Triggers on: process review feedback, respond to review, handle review comments, address PR feedback, fix review findings, received-review."
 user-invocable: true
-argument-hint: "[--pr <number>] [--auto]"
+argument-hint: "[--pr <number>] [--auto] [--no-harden]"
 model: opus
 ---
 
@@ -59,7 +59,7 @@ If the system context contains "Plan mode is active":
 
 ## Step 1 — READ: Gather Review Feedback
 
-Parse `--auto` from this invocation's own `$ARGUMENTS` now; store it as a boolean for Steps 10–12. Parse `--pr <number>` if present.
+Parse `--auto` from this invocation's own `$ARGUMENTS` now; store it as a boolean for Steps 10–12. Parse `--no-harden` the same way; store it as a boolean for Step 11.6. Parse `--pr <number>` if present.
 
 ### Step 1a — Fetch PR overview (when a PR number is available)
 
@@ -452,6 +452,10 @@ unfixed finding with no record is the exact failure this step exists to prevent.
 
 **Best-effort step.** Failure here MUST NOT abort Step 11.7 or Step 12.
 
+**`--no-harden`:** parsed at Step 1. When passed, skip this step entirely — no
+clustering, no dispatch. Say so in the Step 12 summary with this line exactly:
+`harden dispatch skipped — --no-harden (ship harden step owns hardening)`.
+
 **Precondition — check before clustering.** harden's Step 5 gate calls
 `AskUserQuestion` unless `--auto` is passed, and a subagent's tool list usually
 lacks `AskUserQuestion`. Before dispatching harden from a subagent, confirm that
@@ -472,40 +476,40 @@ Only cluster findings that reached a Step 4 verdict. In manual mode those are th
 (`wont-fix | disagree | needs-direction`). Findings marked `cannot-verify` in Step 3, or never
 reached that far, MUST NOT enter a cluster.
 
-**Cluster key:** the file each finding references (from Step 1b's parsed `File` column).
-A finding judged `disagree` — the `detail.reason` on its Step 11 record, which is where the
-judgment survives under `--auto` — requires ≥2 findings against the same file before forming a
-cluster. A lone `disagree` finding forms no cluster and is named in the Step 12 summary rather
-than dropped without trace (the finding itself is recorded by Step 11). Cap at 5 clusters: when more than 5 files have
-qualifying findings, keep the 5 with the most findings (ties broken alphabetically by file
-path) and note the rest as suppressed in the summary below.
+Call `ship_state({action:"harden_clusters", detail:{findings:[{file, severity, title, body,
+verdict, reason?}, ...]}})` with one record per surviving finding — `verdict` and `reason`
+unchanged from Step 4/Step 11. The cluster rules (key, cap, lone-`disagree` handling,
+`alreadyHardened`) live in that action, not here; see
+[`../harden/review-clusters.md`](../harden/review-clusters.md) for the full input/output
+contract. Do not re-implement them.
 
 **Consent:**
 
-- When `--auto` was **not** passed (default): for each cluster, present:
-  > Cluster: file=`<file>`, findings=`<count>`. Dispatch `harden` for this cluster?
+- When `--auto` was **not** passed (default): for each cluster in the response where
+  `alreadyHardened` is false, present:
+  > Cluster: file=`<key>`, findings=`<count>`. Dispatch `harden` for this cluster?
 
   `AskUserQuestion: dispatch | skip`.
-- When `--auto` **was** passed: skip the consent prompt, dispatch every cluster (still capped
-  at 5), propagating `--auto` to each dispatch.
+- When `--auto` **was** passed: skip the consent prompt, dispatch every cluster where
+  `alreadyHardened` is false, propagating `--auto` to each dispatch.
+
+List `suppressed[]` and `loneDisagree[]` verbatim in the Step 12 summary.
 
 **Dispatch per approved cluster:**
 
-1. Synthesize `--failure-text`: concatenate the cluster's finding comments + verification
-   status + verdict, trimmed to 4096 chars.
-2. Dispatch:
+1. Dispatch, using the cluster's own `failureText`:
    ```
    Skill("harden",
-     "--failure-text \"<synthesized cluster text>\"
+     "--failure-text \"<cluster.failureText>\"
       --skill received-review
       --step \"Step 11.6 — meta-analysis\"
       --operation \"review-feedback-driven hardening\"
       [--auto when --auto was passed]"
    )
    ```
-3. On dispatch failure: note it in the Step 12 summary (`harden dispatch failed — file=<file>`)
+2. On dispatch failure: note it in the Step 12 summary (`harden dispatch failed — file=<key>`)
    and continue to the next cluster. Do NOT abort Step 11.7 or Step 12.
-4. When `--auto` was passed, harden auto-accepts its proposals and lists them under
+3. When `--auto` was passed, harden auto-accepts its proposals and lists them under
    `Auto-accepted` in its own output. Copy those lines into the Step 12 summary, so the
    hardening edits made without a prompt are visible to the user.
 

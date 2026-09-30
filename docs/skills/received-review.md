@@ -23,6 +23,7 @@ technical justification.
 |------|-------------|---------|
 | `--pr <number>` | PR number to process feedback for. | auto-detected from branch |
 | `--auto` | Run without prompts. Only "agree — will fix" ends a finding; every other outcome is recorded as a `needs-direction` follow-up instead of being closed. See [Auto mode](#auto-mode). | off |
+| `--no-harden` | Skip the harden dispatch in Step 11.6. Use when a caller (e.g. `/ship`'s own `harden` step) already owns hardening for this run. | off |
 
 ## Examples
 
@@ -84,7 +85,8 @@ is the finding named `UNACCOUNTED` in the ledger. It is never silently dropped.
 dispatches [`/harden --auto`](harden.md) for each cluster (capped at 5), which
 applies strengthen-only guardrail and review-dimension edits to your project
 without a confirmation prompt. Each edit is listed under "Auto-accepted" in the
-summary this skill relays back.
+summary this skill relays back. Pass `--no-harden` to skip this dispatch — for
+example when `/ship`'s own `harden` step already owns hardening for the run.
 
 ## Related skills
 
