@@ -809,10 +809,14 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 		}
 	}
 
-	// Write .diff and .slice.json files for active/truncated dimensions.
+	// Apply the dimension cap before writing files, so QUEUED dimensions
+	// (never dispatched) get no .diff or .slice.json file.
+	queued := refinePlan(dims)
+
+	// Write .diff and .slice.json files for dispatched dimensions only.
 	for i := range dims {
 		d := &dims[i]
-		if d.status != "ACTIVE" && d.status != "TRUNCATED" {
+		if !isDispatched(d.status) {
 			continue
 		}
 
@@ -888,9 +892,8 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 		d.sliceFile = &sp
 	}
 
-	// Plan critique and refinement.
+	// Plan critique (the cap was applied above, before writing files).
 	critique := critiquePlan(dims, changedFiles)
-	queued := refinePlan(dims)
 	critique.QueuedDimensions = emptyIfNil(queued)
 	critique.DimensionCapApplied = len(queued) > 0
 

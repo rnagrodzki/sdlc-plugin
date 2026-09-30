@@ -170,14 +170,14 @@ stateDiagram-v2
     [*] --> SKIPPED: "0 matched files"
     [*] --> ACTIVE: "1..max-files matched"
     [*] --> TRUNCATED: "more than max-files matched"
-    ACTIVE --> TRUNCATED: "diff over 8000 bytes (requires-full-diff false)"
     ACTIVE --> QUEUED: "not in top 8 dispatched dimensions"
     TRUNCATED --> QUEUED: "not in top 8 dispatched dimensions"
+    ACTIVE --> TRUNCATED: "diff over 8000 bytes (requires-full-diff false)"
 ```
 
 - `max-files` defaults to `100`; only a positive integer overrides it.
 - When more than `max-files` files match, only the first `max-files` are kept and `truncated` is `true`.
-- `QUEUED` is applied last, after diff truncation; see the dimension cap requirement.
+- `QUEUED` is applied before any diff or slice file is written; see the dimension cap requirement. Only dimensions still `ACTIVE` after the cap can become `TRUNCATED` by the diff byte cap.
 
 #### Scenario: max-files cap
 - **WHEN** 4 changed files match and `max-files` is `3`
@@ -190,7 +190,7 @@ stateDiagram-v2
 - **AND** its `diff_file` and `slice_file` are `null`
 
 ### Requirement: Per-dimension diff and slice files
-For every `ACTIVE` or `TRUNCATED` dimension the tool SHALL write `<name>.diff` and `<name>.slice.json` into a new temp directory named `sdlc-review-*` under the system temp directory.
+For every `ACTIVE` or `TRUNCATED` dimension the tool SHALL write `<name>.diff` and `<name>.slice.json` into a new temp directory named `sdlc-review-*` under the system temp directory, and SHALL write neither file for a `SKIPPED` or `QUEUED` dimension.
 
 - `<name>.diff` holds the diff hunks of the dimension's matched files only, joined in matched-file order.
 - `<name>.slice.json` is a JSON object with the fields below.
@@ -211,6 +211,11 @@ For every `ACTIVE` or `TRUNCATED` dimension the tool SHALL write `<name>.diff` a
 - **WHEN** dimension `code-quality` matches `src/app.go` and `src/util.go`
 - **THEN** `code-quality.diff` contains `diff --git` headers for those files
 - **AND** `code-quality.slice.json` has a non-empty `body` and 2 `matched_files`
+
+#### Scenario: Queued dimension gets no files
+- **WHEN** a dimension is `QUEUED` by the dimension cap
+- **THEN** no `<name>.diff` or `<name>.slice.json` file exists for it in `diff_dir`
+- **AND** its `diff_file` and `slice_file` are `null`
 
 ### Requirement: Diff byte cap
 The tool SHALL cap each dimension's diff at 8000 bytes unless the dimension sets `requires-full-diff: true`, and SHALL mark a capped dimension `truncated: true` with status `TRUNCATED`.
@@ -236,7 +241,7 @@ The tool SHALL keep at most 8 dispatched dimensions (status `ACTIVE` or `TRUNCAT
 - `ACTIVE` and `TRUNCATED` dimensions both count toward the cap, because both get a reviewer agent.
 - Kept first: higher severity (`critical` > `high` > `medium` > `low` > `info`; unknown ranks as `medium`).
 - Tie-break: fewer matched files first.
-- A `QUEUED` dimension has `slice_file: null`.
+- A `QUEUED` dimension has `diff_file: null` and `slice_file: null`, and no files are written for it.
 - Queued names are listed in `plan_critique.queued_dimensions`.
 - `plan_critique.dimension_cap_applied` is `true` when more than 8 dimensions were `ACTIVE` or `TRUNCATED`.
 
@@ -325,7 +330,7 @@ In manifest mode the tool SHALL write `manifest.json` into the same temp directo
 
 Each `dimensions[]` entry holds only these keys: `name`, `description`, `severity`, `model`, `status`, `requires_full_diff`, `truncated`, `matched_count`, `diff_file`, `slice_file`.
 
-- `slice_file` is set only when `status` is `ACTIVE` or `TRUNCATED`.
+- `diff_file` and `slice_file` are set only when `status` is `ACTIVE` or `TRUNCATED`.
 - The manifest holds file paths, never diff or slice content.
 
 #### Scenario: One active dimension

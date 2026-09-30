@@ -631,6 +631,49 @@ Review.
 	}
 }
 
+// TestReviewPrepareQueuedGetsNoFiles pins that a QUEUED dimension is never
+// dispatched, so it gets no .diff or .slice.json file and a null diff_file.
+func TestReviewPrepareQueuedGetsNoFiles(t *testing.T) {
+	dims := map[string]string{}
+	for i := 0; i < 10; i++ {
+		dims[fmt.Sprintf("dim-%02d.md", i)] = fmt.Sprintf(`---
+name: dim-%02d
+description: Dimension %d
+triggers:
+  - "**/*.go"
+severity: medium
+---
+Review.
+`, i, i)
+	}
+	root := newReviewFixture(t, map[string]string{"src/a.go": "package main\n"}, dims)
+
+	_, m := readReviewManifest(t, root)
+
+	queued := 0
+	for _, d := range m.Dimensions {
+		if d.Status != "QUEUED" {
+			continue
+		}
+		queued++
+		if d.DiffFile != nil {
+			t.Errorf("%s: diff_file = %q, want null", d.Name, *d.DiffFile)
+		}
+		if d.SliceFile != nil {
+			t.Errorf("%s: slice_file = %q, want null", d.Name, *d.SliceFile)
+		}
+		for _, ext := range []string{".diff", ".slice.json"} {
+			p := filepath.Join(m.DiffDir, d.Name+ext)
+			if _, err := os.Stat(p); err == nil {
+				t.Errorf("%s: %s written for a QUEUED dimension", d.Name, p)
+			}
+		}
+	}
+	if queued != 2 {
+		t.Fatalf("queued dimensions = %d, want 2", queued)
+	}
+}
+
 func TestReviewPrepareNoChangedFiles(t *testing.T) {
 	root := t.TempDir()
 
