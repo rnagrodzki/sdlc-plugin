@@ -459,3 +459,98 @@ func TestCurrentLogin_GHCommandError(t *testing.T) {
 		t.Fatal("expected error from failing gh command")
 	}
 }
+
+// ── RepoAccessProbe ─────────────────────────────────────────────────────
+
+// repoAccessStub builds a gh stub for RepoAccessProbe: `gh auth status`
+// reports one logged-in account (alice); `gh api` runs apiBody, which
+// mimics what real `gh api repos/o/r -i --silent` prints. On a 4xx/5xx
+// response real gh prints the status line and headers to stdout, prints
+// "gh: <reason> (HTTP <code>)" to stderr, and exits 1.
+func repoAccessStub(apiBody string) string {
+	return "#!/bin/sh\n" +
+		"if [ \"$1\" = auth ]; then\n" +
+		"  echo '{\"hosts\":{\"github.com\":[{\"state\":\"success\",\"login\":\"alice\",\"active\":true}]}}'\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		apiBody
+}
+
+func TestRepoAccessProbe(t *testing.T) {
+	boolPtr := func(b bool) *bool { return &b }
+	intPtr := func(i int) *int { return &i }
+	cases := []struct {
+		name       string
+		apiBody    string
+		wantAccess *bool
+		wantStatus *int
+		wantErrSub string
+	}{
+		{
+			name:       "200 is accessible",
+			apiBody:    "printf 'HTTP/2.0 200 OK\\nContent-Type: application/json\\n\\n'\n",
+			wantAccess: boolPtr(true),
+			wantStatus: intPtr(200),
+		},
+		{
+			name:       "404 is denied",
+			apiBody:    "printf 'HTTP/2.0 404 Not Found\\nContent-Type: application/json\\n\\n'\necho 'gh: Not Found (HTTP 404)' >&2\nexit 1\n",
+			wantAccess: boolPtr(false),
+			wantStatus: intPtr(404),
+		},
+		{
+			name:       "403 is denied",
+			apiBody:    "printf 'HTTP/2.0 403 Forbidden\\n\\n'\necho 'gh: Resource not accessible by integration (HTTP 403)' >&2\nexit 1\n",
+			wantAccess: boolPtr(false),
+			wantStatus: intPtr(403),
+		},
+		{
+			name:       "404 reported on stderr only is denied",
+			apiBody:    "echo 'gh: Not Found (HTTP 404)' >&2\nexit 1\n",
+			wantAccess: boolPtr(false),
+			wantStatus: intPtr(404),
+		},
+		{
+			name:       "network failure is unknown",
+			apiBody:    "echo 'error connecting to api.github.com' >&2\necho 'check your internet connection or https://githubstatus.com' >&2\nexit 1\n",
+			wantErrSub: "error connecting to api.github.com",
+		},
+		{
+			name:       "server error is unknown",
+			apiBody:    "printf 'HTTP/2.0 502 Bad Gateway\\n\\n'\necho 'gh: Bad Gateway (HTTP 502)' >&2\nexit 1\n",
+			wantStatus: intPtr(502),
+			wantErrSub: "HTTP 502",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cleanup := stubGH(t, repoAccessStub(tc.apiBody))
+			defer cleanup()
+
+			got := RepoAccessProbe(".", "acme", "widgets", "")
+
+			switch {
+			case tc.wantAccess == nil && got.Accessible != nil:
+				t.Errorf("Accessible: got %v, want nil (unknown)", *got.Accessible)
+			case tc.wantAccess != nil && got.Accessible == nil:
+				t.Errorf("Accessible: got nil, want %v (ErrorMessage %q)", *tc.wantAccess, got.ErrorMessage)
+			case tc.wantAccess != nil && *got.Accessible != *tc.wantAccess:
+				t.Errorf("Accessible: got %v, want %v", *got.Accessible, *tc.wantAccess)
+			}
+			switch {
+			case tc.wantStatus == nil && got.StatusCode != nil:
+				t.Errorf("StatusCode: got %d, want nil", *got.StatusCode)
+			case tc.wantStatus != nil && got.StatusCode == nil:
+				t.Errorf("StatusCode: got nil, want %d", *tc.wantStatus)
+			case tc.wantStatus != nil && *got.StatusCode != *tc.wantStatus:
+				t.Errorf("StatusCode: got %d, want %d", *got.StatusCode, *tc.wantStatus)
+			}
+			if !strings.Contains(got.ErrorMessage, tc.wantErrSub) {
+				t.Errorf("ErrorMessage: got %q, want it to contain %q", got.ErrorMessage, tc.wantErrSub)
+			}
+			if len(got.SuggestedAccounts) != 1 || got.SuggestedAccounts[0] != "alice" {
+				t.Errorf("SuggestedAccounts: got %v, want [alice]", got.SuggestedAccounts)
+			}
+		})
+	}
+}

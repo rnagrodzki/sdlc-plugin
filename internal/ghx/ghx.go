@@ -248,8 +248,9 @@ func ParseRemoteOwner(rawURL string) (owner, repo string, err error) {
 // by using `gh api user --jq .login` (a data command, not a human-status
 // command) to determine authentication, at the cost of not being able to
 // distinguish an expired token from "never logged in". RepoAccessProbe
-// cannot sidestep it: a 403/404 response is indistinguishable from a
-// network failure and both surface as an unknown (nil) result below.
+// sidesteps it by calling execx.RunAllowExit, which keeps stdout and stderr
+// on a non-zero exit, so a 403/404 response is told apart from a network
+// failure.
 
 // Account is one gh CLI account entry for a host, as reported by
 // `gh auth status --json hosts`.
@@ -370,8 +371,9 @@ func AuthProbe(dir, host string) AuthProbeResult {
 var httpStatusLineRe = regexp.MustCompile(`HTTP/[\d.]+ (\d{3})`)
 
 // RepoAccessResult reports whether the active gh account can access a repo.
-// Accessible/StatusCode are nil when the probe could not determine an
-// answer (see fidelity-gap note above) — never guessed.
+// Accessible is nil when the probe could not determine an answer (network
+// failure, or an HTTP status other than 200/403/404) — never guessed.
+// StatusCode is nil only when no HTTP response was received.
 type RepoAccessResult struct {
 	Accessible        *bool
 	StatusCode        *int
@@ -380,11 +382,10 @@ type RepoAccessResult struct {
 }
 
 // RepoAccessProbe probes whether the active gh account can access
-// owner/repo on host, mirroring lib/git.js's probeRepoAccess for the
-// success (200) case. Because run() discards output on any non-zero exit
-// (see fidelity-gap note above) and `gh api` exits non-zero for 403/404
-// responses, a denied-access response is indistinguishable here from a
-// network failure: both report Accessible:nil, not Accessible:false.
+// owner/repo on host, mirroring lib/git.js's probeRepoAccess. HTTP 200
+// reports Accessible:true; HTTP 403 or 404 reports Accessible:false (access
+// denied); a network failure or any other status reports Accessible:nil
+// with the reason in ErrorMessage.
 func RepoAccessProbe(dir, owner, repo, host string) RepoAccessResult {
 	if host == "" {
 		host = "github.com"
@@ -405,38 +406,71 @@ func RepoAccessProbe(dir, owner, repo, host string) RepoAccessResult {
 		logins = append(logins, a.Login)
 	}
 
-	raw, err := run(dir, "api", fmt.Sprintf("repos/%s/%s", owner, repo), "--hostname", host, "-i", "--silent")
+	// RunAllowExit, not run(): gh api exits 1 on a 4xx/5xx response, and
+	// the status line (stdout, from -i) or "(HTTP <code>)" (stderr) is the
+	// only way to tell a denied request from a network failure.
+	args := []string{"api", fmt.Sprintf("repos/%s/%s", owner, repo), "--hostname", host, "-i", "--silent"}
+	stdout, stderr, _, err := execx.RunAllowExit(ghCmd, args, execx.Options{Dir: dir})
 	if err != nil {
-		if errors.Is(err, execx.ErrOutputCap) {
-			return RepoAccessResult{
-				ErrorMessage:      fmt.Sprintf("gh api output exceeded cap: %s", err.Error()),
-				SuggestedAccounts: logins,
-			}
+		msg := err.Error()
+		switch {
+		case errors.Is(err, execx.ErrOutputCap):
+			msg = fmt.Sprintf("gh api output exceeded cap: %s", err.Error())
+		case isBinaryNotFound(err):
+			msg = ErrGHNotFound.Error()
 		}
-		return RepoAccessResult{
-			ErrorMessage:      "gh api returned no output",
-			SuggestedAccounts: logins,
-		}
-	}
-	if raw == "" {
-		return RepoAccessResult{
-			ErrorMessage:      "gh api returned no output",
-			SuggestedAccounts: logins,
-		}
+		return RepoAccessResult{ErrorMessage: msg, SuggestedAccounts: logins}
 	}
 
-	firstLine := strings.SplitN(raw, "\n", 2)[0]
-	m := httpStatusLineRe.FindStringSubmatch(firstLine)
-	if m == nil {
+	code, ok := repoAccessStatus(stdout, stderr)
+	if !ok {
+		msg := "gh api returned no output"
+		switch {
+		case stderr != "":
+			msg = strings.SplitN(stderr, "\n", 2)[0]
+		case stdout != "":
+			msg = fmt.Sprintf("unexpected gh api output: %s", strings.SplitN(stdout, "\n", 2)[0])
+		}
+		return RepoAccessResult{ErrorMessage: msg, SuggestedAccounts: logins}
+	}
+
+	switch code {
+	case 200:
+		accessible := true
+		return RepoAccessResult{Accessible: &accessible, StatusCode: &code, SuggestedAccounts: logins}
+	case 403, 404:
+		// GitHub answers 404 (private repo) or 403 when the active account
+		// cannot see the repo.
+		accessible := false
+		return RepoAccessResult{Accessible: &accessible, StatusCode: &code, SuggestedAccounts: logins}
+	default:
+		// Any other status (5xx, rate limit, ...) says nothing about access.
 		return RepoAccessResult{
-			ErrorMessage:      fmt.Sprintf("unexpected gh api output: %s", firstLine),
+			StatusCode:        &code,
+			ErrorMessage:      fmt.Sprintf("unexpected HTTP %d from gh api", code),
 			SuggestedAccounts: logins,
 		}
 	}
+}
 
-	code, _ := strconv.Atoi(m[1])
-	accessible := code == 200
-	return RepoAccessResult{Accessible: &accessible, StatusCode: &code, SuggestedAccounts: logins}
+// ghHTTPErrorRe matches the status gh prints to stderr on a failed API
+// call, e.g. "gh: Not Found (HTTP 404)".
+var ghHTTPErrorRe = regexp.MustCompile(`\(HTTP (\d{3})\)`)
+
+// repoAccessStatus extracts the HTTP status of a `gh api -i` call: first
+// from the status line gh prints to stdout, then from the "(HTTP <code>)"
+// suffix of its stderr error. ok is false when neither is present, which
+// means the request never got an HTTP response (e.g. a network failure).
+func repoAccessStatus(stdout, stderr string) (code int, ok bool) {
+	if m := httpStatusLineRe.FindStringSubmatch(strings.SplitN(stdout, "\n", 2)[0]); m != nil {
+		code, _ = strconv.Atoi(m[1])
+		return code, true
+	}
+	if m := ghHTTPErrorRe.FindStringSubmatch(stderr); m != nil {
+		code, _ = strconv.Atoi(m[1])
+		return code, true
+	}
+	return 0, false
 }
 
 // FormatAccountMismatch renders the canonical 3-line account-mismatch

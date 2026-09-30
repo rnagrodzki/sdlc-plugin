@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -28,7 +29,10 @@ import (
 // Only two exceptions remain, both because the function under test has no
 // prRuntime (or any other) dependency-injection seam to mock through — see
 // their doc comments for why real FS is unavoidable without a pr.go change,
-// which is out of scope for a pr_test.go-only task.
+// which is out of scope for a pr_test.go-only task. Two more tests run a
+// subprocess on purpose, because the behavior they pin lives below
+// prRuntime: TestPrPrepare_RepoAccessProbe_RealGHStub (a stub gh on PATH)
+// and TestPrApply_GitLogSinceTagError_SinglePrefix (git in a missing dir).
 // ---------------------------------------------------------------------------
 
 // mockAddLabelExec returns an execRun stub that succeeds only for the exact
@@ -458,6 +462,69 @@ func TestPrPrepare_DirtyFiles_FirstEntryUnstaged(t *testing.T) {
 	}
 	if !slices.Contains(out.Warnings, "Uncommitted changes detected (2 file(s)). They will NOT be included in the PR.") {
 		t.Errorf("expected the uncommitted-changes warning, got %v", out.Warnings)
+	}
+}
+
+// TestPrPrepare_RepoAccessProbe_RealGHStub wires the production
+// ghx.RepoAccessProbe to a stub gh on PATH that prints what real
+// `gh api repos/o/r -i --silent` prints. It is the one pr_prepare test that
+// runs a gh subprocess: the bug it pins (a 404 read as "unknown") lived in
+// how ghx read gh's output, which a prRuntime mock cannot reach.
+func TestPrPrepare_RepoAccessProbe_RealGHStub(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stub gh is a POSIX shell script")
+	}
+	cases := []struct {
+		name      string
+		apiScript string
+		wantOK    bool
+		wantError string
+		wantWarn  string
+	}{
+		{
+			name:      "HTTP 404 stops with access denied",
+			apiScript: "printf 'HTTP/2.0 404 Not Found\\n\\n'\necho 'gh: Not Found (HTTP 404)' >&2\nexit 1\n",
+			wantError: "Cannot access: acme/widgets",
+		},
+		{
+			name:      "network failure warns and continues",
+			apiScript: "echo 'error connecting to api.github.com' >&2\nexit 1\n",
+			wantOK:    true,
+			wantWarn:  "Repo access probe failed (error connecting to api.github.com)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			binDir := t.TempDir()
+			script := "#!/bin/sh\nif [ \"$1\" = auth ]; then echo '{\"hosts\":{}}'; exit 0; fi\n" + tc.apiScript
+			if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(script), 0o755); err != nil {
+				t.Fatalf("write stub gh: %v", err)
+			}
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			rt := expectedAccountRuntime(notFoundSection, "git@github.com:acme/widgets.git")
+			rt.ghRepoAccessProbe = ghx.RepoAccessProbe
+			rt.ghGetAccounts = func(dir, host string) ([]ghx.Account, error) { return nil, nil }
+
+			out, err := prPrepareCoreWith("/mock/root", t.TempDir(), PRPrepareIn{SkipConfigCheck: true}, rt)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if out.OK != tc.wantOK {
+				t.Fatalf("OK: got %v, want %v (errors %v, warnings %v)", out.OK, tc.wantOK, out.Errors, out.Warnings)
+			}
+			if tc.wantError != "" {
+				if !strings.Contains(strings.Join(out.Errors, "\n"), tc.wantError) {
+					t.Errorf("errors: got %v, want one containing %q", out.Errors, tc.wantError)
+				}
+				if out.RepoAccessible == nil || *out.RepoAccessible {
+					t.Errorf("RepoAccessible: got %v, want false", out.RepoAccessible)
+				}
+			}
+			if tc.wantWarn != "" && !strings.Contains(strings.Join(out.Warnings, "\n"), tc.wantWarn) {
+				t.Errorf("warnings: got %v, want one containing %q", out.Warnings, tc.wantWarn)
+			}
+		})
 	}
 }
 

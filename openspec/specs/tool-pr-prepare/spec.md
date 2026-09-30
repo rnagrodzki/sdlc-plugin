@@ -146,14 +146,25 @@ The tool SHALL probe repository access only when no `expectedAccount` is configu
 
 | Condition | Result |
 |---|---|
-| Probe runs | `repoAccessProbed: true`; `repoAccessible` and `repoAccessStatus` set when known |
-| Access denied | stop; error lists `Active gh account: <a>`, `Cannot access: <owner>/<repo>`, then `Try: gh auth switch --user <login>` per account or `Run: gh auth login --hostname github.com`; `diagnostics.owner` set |
-| Result unknown | warning `Repo access probe failed (<reason>) — proceeding without access verification.` (`<reason>` defaults to `network error`) |
+| Probe runs | `gh api repos/<owner>/<repo> --hostname github.com -i --silent`; `repoAccessProbed: true`; `repoAccessible` set when known; `repoAccessStatus` set whenever an HTTP status was received |
+| HTTP 200 | `repoAccessible: true`; the call continues |
+| Access denied (HTTP 403 or 404, read from the stdout status line or from gh's `(HTTP <code>)` stderr error) | stop; `repoAccessible: false`; error lists `Active gh account: <a>`, `Cannot access: <owner>/<repo>`, then `Try: gh auth switch --user <login>` per account or `Run: gh auth login --hostname github.com`; `diagnostics.owner` set |
+| Result unknown (no HTTP response, e.g. a network failure, or any other HTTP status) | `repoAccessible` unset; warning `Repo access probe failed (<reason>) — proceeding without access verification.`; `<reason>` is gh's first stderr line or `unexpected HTTP <code> from gh api`, and defaults to `network error` |
 | No `expectedAccount` and no parsable `origin` | warning `Could not resolve expected gh account (no [github] expectedAccount in .sdlc-v2/local.toml, no origin remote). Skipping active-account check.`; no probe |
 
 #### Scenario: Remote present
 - **WHEN** `expectedAccount` is unset and `origin` is `git@github.com:acme/widgets.git`
 - **THEN** `repoAccessProbed` is `true`
+
+#### Scenario: Repository not visible to the active account
+- **WHEN** `gh api repos/acme/widgets` answers HTTP 404 and exits 1
+- **THEN** `ok` is `false`, `repoAccessible` is `false`, and `repoAccessStatus` is `404`
+- **AND** `errors` contains `Cannot access: acme/widgets`
+
+#### Scenario: Network failure during the probe
+- **WHEN** `gh api repos/acme/widgets` fails with `error connecting to api.github.com` and no HTTP response
+- **THEN** `repoAccessible` is unset and the remaining checks run
+- **AND** `warnings` contains `Repo access probe failed (error connecting to api.github.com)`
 
 #### Scenario: No remote
 - **WHEN** `expectedAccount` is unset and there is no `origin` remote
