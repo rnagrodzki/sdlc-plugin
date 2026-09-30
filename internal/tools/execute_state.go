@@ -1442,6 +1442,30 @@ func execActionReport(root, workDir string, in ExecuteStateIn, now func() time.T
 		}, nil
 	}
 
+	out := buildExecutionReport(root, branch, st, format, runID, now)
+
+	// Write mode with format=json: the tool has just recomputed the full
+	// report struct above, so persist that same struct verbatim rather than
+	// asking the caller to write it (and risk it landing in a linked
+	// worktree instead of the main one — see execWriteReportFile).
+	if in.Write && format == "json" {
+		path, werr := execWriteReportFile(root, runID, "json", out)
+		if werr != nil {
+			return nil, werr
+		}
+		out.Path = path
+		out.Written = true
+		out.Next = "Report persisted. Show the path to the user; do not write it yourself."
+	}
+
+	return out, nil
+}
+
+// buildExecutionReport is the read-only report build shared by
+// execute_state report and ship_state report (see shipStateReport). It
+// reads the execute run's own state st plus best-effort cross-reads of ship
+// state, CLI evidence and the learnings log; it never writes anything.
+func buildExecutionReport(root, branch string, st *state.State, format, runID string, now func() time.Time) ExecutionReportOut {
 	out := ExecutionReportOut{
 		Branch: branch,
 		Format: format,
@@ -1573,21 +1597,7 @@ func execActionReport(root, workDir string, in ExecuteStateIn, now func() time.T
 		}
 	}
 
-	// Write mode with format=json: the tool has just recomputed the full
-	// report struct above, so persist that same struct verbatim rather than
-	// asking the caller to write it (and risk it landing in a linked
-	// worktree instead of the main one — see execWriteReportFile).
-	if in.Write && format == "json" {
-		path, werr := execWriteReportFile(root, runID, "json", out)
-		if werr != nil {
-			return nil, werr
-		}
-		out.Path = path
-		out.Written = true
-		out.Next = "Report persisted. Show the path to the user; do not write it yourself."
-	}
-
-	return out, nil
+	return out
 }
 
 // execWriteReportFile persists an execution report under <root>/.sdlc-v2/
