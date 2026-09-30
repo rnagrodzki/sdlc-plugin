@@ -61,7 +61,7 @@ Snapshot contents:
 | Installed dimension count and names | `dimensions_render_instructions({ listDimensions: true })` |
 | PR template exists | `setup_init({ checkPRTemplate: true })` |
 | Plan template exists | `setup_init({ checkPlanTemplate: true })` |
-| Managed-block version | Line `# BEGIN MANAGED BY sdlc-utilities (v<N>)` in `openspec/config.yaml` |
+| Managed-block version | Line `# BEGIN MANAGED BY sdlc-v2 (v<N>)` in `openspec/config.yaml` — the same begin marker `openspec_enrich` writes |
 
 Version detection for the `version` section:
 
@@ -142,6 +142,12 @@ The skill SHALL compute each row's state itself from the snapshot; no tool retur
 #### Scenario: Empty guardrails array
 - **WHEN** `plan.guardrails` resolves to an empty array
 - **THEN** the `plan-guardrails` row is `not-set`
+
+#### Scenario: Managed block written by openspec_enrich
+- **WHEN** `openspec_enrich` has written its block into `openspec/config.yaml`
+- **AND** the file holds the line `# BEGIN MANAGED BY sdlc-v2 (v2)`
+- **THEN** the `openspec-block` row is `set`
+- **AND** the snapshot's managed-block version is `2`
 
 ### Requirement: Menu reply parsing
 The skill SHALL resolve the reply to a set of section ids as below, and SHALL allow at most 3 retries on invalid input.

@@ -179,7 +179,7 @@ If the system context contains "Plan mode is active":
      `setup_init({ checkPlanTemplate: true })` → `{ ok, exists }` for the pr-template.md /
      plan-template.md existence booleans.
    - If `openspec/config.yaml` exists, Read it and search for a line matching
-     `# BEGIN MANAGED BY sdlc-utilities (v<N>)`; capture `<N>` as the managed-block version
+     `# BEGIN MANAGED BY sdlc-v2 (v<N>)` (the exact marker `openspec_enrich` writes); capture `<N>` as the managed-block version
      (no match, or file absent → no managed block).
 
 4. **Version detection** (source's `detected.versionFile`/`fileType`/`tagPrefix` — no Go

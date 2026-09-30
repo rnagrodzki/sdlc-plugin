@@ -17,6 +17,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -545,5 +546,85 @@ func TestSetupSkillsOnlySkipIdsMatchManifest(t *testing.T) {
 			t.Errorf("skills/setup/SKILL.md: --skip/--only Arguments-table rows still list "+
 				"dropped id %s as a valid value (Ruling Q1)", dropped)
 		}
+	}
+}
+
+// setupSkillsManagedBeginRe matches the begin line of an openspec managed
+// block, whatever owner name it carries. Submatch 1 is the owner name.
+var setupSkillsManagedBeginRe = regexp.MustCompile(`# BEGIN MANAGED BY (\S+) \(v`)
+
+// TestSetupSkillsOpenspecMarkerMatchesTool runs the real openspec_enrich
+// tool against a fixture repo, reads the begin marker it wrote, and asserts
+// that every managed-block marker the setup skill files search for names
+// the same owner. A mismatch makes Step 0 miss the block, so the
+// openspec-block menu row always shows "not set".
+func TestSetupSkillsOpenspecMarkerMatchesTool(t *testing.T) {
+	fixture := t.TempDir()
+	if out, err := exec.Command("git", "-C", fixture, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, out)
+	}
+	cfgPath := filepath.Join(fixture, "openspec", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfgPath, []byte("schema: spec-driven\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Resolve the skill directory before changing the working directory.
+	skillFiles, err := filepath.Glob(filepath.Join(setupSkillsRepoRoot(t), "skills", "setup", "*.md"))
+	if err != nil || len(skillFiles) == 0 {
+		t.Fatalf("glob setup skill files: %v (found %d)", err, len(skillFiles))
+	}
+	t.Chdir(fixture)
+
+	srv := mcpserver.New("skillcheck-setup-marker-test", "0.0.0-test")
+	tools.RegisterOpenspecTools(srv)
+	ctx := context.Background()
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	if _, err := srv.MCPServer().Connect(ctx, serverTransport, nil); err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+	client := mcp.NewClient(&mcp.Implementation{Name: "skillcheck-setup-marker-test", Version: "0.0.0"}, nil)
+	c, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("client Connect: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+
+	res, err := c.CallTool(ctx, &mcp.CallToolParams{Name: "openspec_enrich", Arguments: map[string]any{}})
+	if err != nil {
+		t.Fatalf("CallTool openspec_enrich: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("openspec_enrich returned a tool error: %v", res.Content)
+	}
+	written, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read enriched config: %v", err)
+	}
+	m := setupSkillsManagedBeginRe.FindStringSubmatch(string(written))
+	if m == nil {
+		t.Fatalf("openspec_enrich wrote no managed-block begin line:\n%s", written)
+	}
+	toolOwner := m[1]
+
+	foundInSkill := false
+	for _, path := range skillFiles {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		for _, sm := range setupSkillsManagedBeginRe.FindAllStringSubmatch(string(data), -1) {
+			if filepath.Base(path) == "SKILL.md" {
+				foundInSkill = true
+			}
+			if sm[1] != toolOwner {
+				t.Errorf("%s: searches for marker owner %q, but openspec_enrich writes %q",
+					filepath.Base(path), sm[1], toolOwner)
+			}
+		}
+	}
+	if !foundInSkill {
+		t.Error("skills/setup/SKILL.md names no managed-block begin marker for Step 0 detection")
 	}
 }
