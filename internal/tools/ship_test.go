@@ -1600,7 +1600,7 @@ func TestShipVerifySideEffect_PRLanded(t *testing.T) {
 	gitCommit(t, dir, "initial")
 	checkoutBranch(t, dir, "feat/pr-landed")
 	statePath := shipStateInitFixture(t, dir, "feat/pr-landed")
-	stubPRForBranch(t, ghx.PRMetadata{Exists: true, Number: 141})
+	stubPRForBranch(t, ghx.PRMetadata{Exists: true, Number: 141, State: "OPEN"})
 
 	fixedAt := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 	out, err := shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "pr"}, fixedNow(fixedAt))
@@ -1658,6 +1658,38 @@ func TestShipVerifySideEffect_PRNotFound(t *testing.T) {
 		if _, ok := journal["pr"]; ok {
 			t.Errorf(`sideEffects["pr"] present, want no entry: %#v`, journal["pr"])
 		}
+	}
+}
+
+// TestShipVerifySideEffect_PRClosedOrMergedNotLanded pins that only an open
+// PR counts as the pr step's side effect. With no open PR, gh pr view falls
+// back to the branch's newest closed or merged PR; an older PR on a reused
+// branch must not make a resumed pipeline skip opening a new one.
+func TestShipVerifySideEffect_PRClosedOrMergedNotLanded(t *testing.T) {
+	for _, prState := range []string{"CLOSED", "MERGED"} {
+		t.Run(prState, func(t *testing.T) {
+			dir := t.TempDir()
+			initGitFixture(t, dir)
+			gitCommit(t, dir, "initial")
+			checkoutBranch(t, dir, "feat/pr-old")
+			statePath := shipStateInitFixture(t, dir, "feat/pr-old")
+			stubPRForBranch(t, ghx.PRMetadata{Exists: true, Number: 7, State: prState})
+
+			out, err := shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "pr"}, fixedNow(time.Now()))
+			if err != nil {
+				t.Fatalf("shipVerifySideEffect: %v", err)
+			}
+			if out.Landed {
+				t.Errorf("Landed = true for a %s PR, want false", prState)
+			}
+
+			data := readStateData(t, statePath)
+			if journal, ok := data["sideEffects"].(map[string]any); ok {
+				if _, ok := journal["pr"]; ok {
+					t.Errorf(`sideEffects["pr"] present, want no entry: %#v`, journal["pr"])
+				}
+			}
+		})
 	}
 }
 

@@ -26,7 +26,7 @@ The tool SHALL map `pr` to kind `pr` and `commit` to kind `sha`, and SHALL repor
 
 | `step` | `sideEffect` kind | What proves it landed |
 |---|---|---|
-| `pr` | `pr` | `gh pr view` finds a PR for the current branch; the PR state is not checked. |
+| `pr` | `pr` | `gh pr view` finds an open PR (state `OPEN`) for the current branch. |
 | `commit` | `sha` | `git rev-parse HEAD` equals the comparison sha. |
 | any other name (e.g. `review`, `version`) | none | Nothing to check. |
 
@@ -42,10 +42,12 @@ The tool SHALL map `pr` to kind `pr` and `commit` to kind `sha`, and SHALL repor
 - **THEN** `landed` is `true` with `reason:"no-side-effect"`
 
 ### Requirement: PR side effect
-For kind `pr`, the tool SHALL report `landed:true` when `gh pr view` finds a PR for the current branch, in any state, and SHALL use `#<number>` as the journal ref.
+For kind `pr`, the tool SHALL report `landed:true` only when `gh pr view` finds a PR in state `OPEN` for the current branch, and SHALL use `#<number>` as the journal ref.
+
+- With no open PR, `gh pr view` returns the branch's newest closed or merged PR. That PR does not count as landed.
 
 #### Scenario: PR exists
-- **WHEN** the call passes `step:"pr"` and the branch has PR 42
+- **WHEN** the call passes `step:"pr"` and the branch has open PR 42
 - **THEN** `landed` is `true`
 - **AND** the ship state's `sideEffects.pr` is `{kind:"pr", ref:"#42", verifiedAt:<RFC3339 UTC>}`
 
@@ -53,6 +55,11 @@ For kind `pr`, the tool SHALL report `landed:true` when `gh pr view` finds a PR 
 - **WHEN** the call passes `step:"pr"` and `gh pr view` finds no PR for the branch
 - **THEN** `landed` is `false`
 - **AND** `next` is `"Side effect not yet landed. Retry or investigate."`
+
+#### Scenario: Only a closed or merged PR
+- **WHEN** the call passes `step:"pr"` and the branch's only PR is `CLOSED` or `MERGED`
+- **THEN** `landed` is `false`
+- **AND** no `sideEffects.pr` entry is written
 
 ### Requirement: Commit sha side effect
 For kind `sha`, the tool SHALL compare `HEAD` against `expected` when given, else against the sha already in the journal, else report not landed.

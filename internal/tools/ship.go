@@ -1140,8 +1140,11 @@ func shipVerifySideEffect(root, activeRoot string, in ShipVerifySideEffectIn, no
 
 	switch kind {
 	case "pr":
+		// Only an open PR counts. With no open PR, gh pr view falls back to
+		// the branch's newest closed or merged PR, which an earlier run on a
+		// reused branch may have left behind.
 		meta := shipPRForBranch(activeRoot)
-		if meta.Exists {
+		if meta.Exists && meta.State == "OPEN" {
 			landed = true
 			ref = fmt.Sprintf("#%d", meta.Number)
 		}
