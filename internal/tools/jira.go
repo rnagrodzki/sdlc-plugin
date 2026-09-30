@@ -1483,7 +1483,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 			ReadOnly:    false,
 			Destructive: true,
 			Idempotent:  false,
-			OpenWorld:   false,
+			OpenWorld:   true,
 		},
 		func(_ mcpserver.Ctx, in JiraIn) (any, error) {
 			mainRoot, err := worktree.MainRoot()

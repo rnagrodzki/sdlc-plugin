@@ -448,7 +448,7 @@ The `write-approval` action SHALL validate `hash` like `write-critique` and writ
 - **THEN** the tool returns a `DomainError` and writes no file
 
 ### Requirement: Tool annotations
-The tool SHALL register with title `Manage local Jira cache` and annotations `ReadOnly` `false`, `Destructive` `true`, `Idempotent` `false`, `OpenWorld` `false`.
+The tool SHALL register with title `Manage local Jira cache` and annotations `ReadOnly` `false`, `Destructive` `true`, `Idempotent` `false`, `OpenWorld` `true`. `OpenWorld` is `true` because `validate-body` sends HTTP requests to URLs in the body and runs `gh issue view` / `gh pr view` unless `SDLC_LINKS_OFFLINE=1`.
 
 #### Scenario: Registration
 - **WHEN** the MCP server lists its tools

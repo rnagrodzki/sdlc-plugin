@@ -19,7 +19,7 @@ The tool SHALL accept one input field and return the output fields below.
 | `protection` | Branch protection report: `hasRulesets`, `hasClassicProtection`, `defaultBranch`, `rulesetNames`, `notes` |
 | `next` | Next-step guidance (see the guidance requirement) |
 
-- Annotations: `Title: "Scaffold CI workflow files"`, `ReadOnly: false`, `Destructive: true`, `Idempotent: true`, `OpenWorld: false`.
+- Annotations: `Title: "Scaffold CI workflow files"`, `ReadOnly: false`, `Destructive: true`, `Idempotent: true`, `OpenWorld: true`. `OpenWorld` is `true` because the branch protection check runs `gh api`.
 
 #### Scenario: Fresh project
 - **WHEN** the tool runs with `force: false` in a project with no `.github/` files

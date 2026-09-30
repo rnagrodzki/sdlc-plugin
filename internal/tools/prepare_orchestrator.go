@@ -257,8 +257,8 @@ func RegisterPrepareOrchestratorTools(s *mcpserver.Server) {
 			Title:       "Write orchestrator manifest",
 			ReadOnly:    false,
 			Destructive: true,
-			Idempotent:  true,
-			OpenWorld:   false,
+			Idempotent:  false,
+			OpenWorld:   true,
 		},
 		func(ctx mcpserver.Ctx, in PrepareOrchestratorIn) (PrepareOrchestratorOut, error) {
 			return prepareOrchestrator(in)

@@ -273,10 +273,10 @@ The tool SHALL return an InfraError when the temp directory or manifest file can
 - **THEN** the tool returns an InfraError with message starting `create temp dir:`
 
 ### Requirement: Tool annotations
-The tool SHALL register with title `Write orchestrator manifest` and annotations `ReadOnly: false`, `Destructive: true`, `Idempotent: true`, `OpenWorld: false`.
+The tool SHALL register with title `Write orchestrator manifest` and annotations `ReadOnly: false`, `Destructive: true`, `Idempotent: false`, `OpenWorld: true`. `Idempotent` is `false` because every call writes the manifest into a new temp directory. `OpenWorld` is `true` because harden mode with `fromIssue` runs `gh issue view`.
 
 - Its description marks it `INTERNAL — called by sdlc skills only.`
 
 #### Scenario: Registered annotations
 - **WHEN** a client lists the server tools
-- **THEN** `prepare_orchestrator` reports `Destructive: true` and `OpenWorld: false`
+- **THEN** `prepare_orchestrator` reports `Destructive: true`, `Idempotent: false`, and `OpenWorld: true`

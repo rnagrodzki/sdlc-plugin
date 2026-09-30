@@ -606,7 +606,7 @@ func RegisterScaffoldTools(s *mcpserver.Server) {
 			ReadOnly:    false,
 			Destructive: true,
 			Idempotent:  true,
-			OpenWorld:   false,
+			OpenWorld:   true,
 		},
 		func(ctx mcpserver.Ctx, in ScaffoldCIIn) (ScaffoldCIOut, error) {
 			root, err := worktree.MainRoot()
