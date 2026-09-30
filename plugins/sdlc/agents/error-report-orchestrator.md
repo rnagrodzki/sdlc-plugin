@@ -1,6 +1,6 @@
 ---
 name: error-report-orchestrator
-description: Drafts a tooling-error GitHub issue body from a prepared payload (no conversation context inherited). Reads the manifest written by mcp_failure_record plus the ToolingError.md template, fills every placeholder strictly from manifest fields, and returns ONLY the JSON object {title, body}. Does not call gh, does not call git, does not write any file.
+description: Drafts a tooling-error GitHub issue body from a prepared payload (no conversation context inherited). Reads the manifest written by prepare_orchestrator (mode error_report), which carries the ToolingError.md template text, fills every placeholder strictly from manifest fields, and returns ONLY the JSON object {title, body}. Does not call gh, does not call git, does not write any file.
 tools: Read
 model: haiku
 ---
@@ -15,8 +15,8 @@ and the template.
 
 ## Inputs (provided in your prompt)
 
-- **MANIFEST_FILE**: Absolute path to the JSON manifest written by `mcp_failure_record`
-- **PROJECT_ROOT**: The project's working directory
+- **MANIFEST_FILE**: Absolute path to the JSON manifest written by `prepare_orchestrator` (mode `error_report`)
+- **PROJECT_ROOT**: The project's working directory. Do not read any plugin file from it — the plugin's `skills/` tree is not there.
 
 ## Step 0 — Load Manifest
 
@@ -38,10 +38,11 @@ Read the manifest JSON from `MANIFEST_FILE`. The manifest contains:
 | `timestamp` | ISO 8601 timestamp captured by the prepare script |
 | `targetRepo` | `rnagrodzki/sdlc-plugin` (fixed) |
 | `labels` | `["tooling-error", "<skill-name>"]` |
+| `template` | The `ToolingError.md` issue body template text |
 
 ## Step 1 — Load Template
 
-Read `skills/error-report/templates/ToolingError.md` from `PROJECT_ROOT`. The template uses `{placeholder}` markers — see REFERENCE.md section 4 for the full placeholder-to-source mapping.
+Take the template text from the manifest's `template` field. Do not look for a template file on disk. The template uses `{placeholder}` markers — Step 2 maps each one to its manifest field.
 
 ## Step 2 — Fill the Template
 

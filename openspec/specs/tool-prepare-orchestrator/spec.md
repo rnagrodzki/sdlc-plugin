@@ -105,6 +105,7 @@ In `error_report` mode the tool SHALL write a manifest with the fields below.
 | `timestamp` | UTC time, RFC 3339 |
 | `targetRepo` | Always `rnagrodzki/sdlc-plugin` |
 | `labels` | `["tooling-error", "<trimmed skill>"]` |
+| `template` | Full text of the shipped `skills/error-report/templates/ToolingError.md`, embedded in the binary |
 
 - A failing git command does not fail the call.
 - There is no config-version gate in this mode.
@@ -117,6 +118,10 @@ In `error_report` mode the tool SHALL write a manifest with the fields below.
 #### Scenario: Optional fields default to empty
 - **WHEN** only the four required fields are set
 - **THEN** `exitOrHttpCode`, `errorType`, `userIntent`, `argsString` and `suggestedInvestigation` are empty strings in the manifest
+
+#### Scenario: Template travels in the manifest
+- **WHEN** the tool runs in `error_report` mode from a project that has no `skills/error-report/` directory
+- **THEN** the manifest `template` field equals the shipped `ToolingError.md` text
 
 ### Requirement: harden config-version gate
 In `harden` mode, unless `skipConfigCheck` is `true`, the tool SHALL fail with a DataError when the main root has a JSON-era `.sdlc-v2/config.json` but no `config.toml`.

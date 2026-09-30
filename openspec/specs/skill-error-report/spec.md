@@ -107,7 +107,7 @@ The skill SHALL dispatch `sdlc:error-report-orchestrator` with model `haiku` and
 
 The subagent:
 
-- Reads the manifest and the `ToolingError.md` template.
+- Reads the manifest and takes the `ToolingError.md` template text from its `template` field; it reads no template file from `PROJECT_ROOT`.
 - Fills every `{placeholder}` only from manifest fields and removes a section whose field is empty.
 - Builds the title `[<skill>] <one-line error summary>`, at most 72 characters.
 - Calls no `gh` or `git`, writes no file, and returns only the JSON object.
@@ -122,6 +122,11 @@ Priority shown at gate 2:
 #### Scenario: Unparseable response
 - **WHEN** the subagent response is not valid JSON
 - **THEN** the skill removes the manifest file and stops
+
+#### Scenario: User project without the plugin tree
+- **WHEN** the skill runs in a user project that has no `skills/error-report/templates/ToolingError.md`
+- **THEN** the subagent builds the body from the manifest `template` field
+- **AND** it does not try to read a template path under `PROJECT_ROOT`
 
 ### Requirement: Issue body template
 The issue body SHALL follow the `ToolingError.md` section layout with no raw `{placeholder}` text left.

@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -203,4 +204,33 @@ func readErrorReportManifest(t *testing.T, path string) map[string]any {
 		t.Fatalf("unmarshal manifest: %v", err)
 	}
 	return m
+}
+
+// TestPrepareOrchestrator_ErrorReportManifestCarriesTemplate pins that the
+// error_report manifest carries the ToolingError.md template text itself.
+// The error-report-orchestrator agent runs with the user's project as its
+// working directory, where the plugin's skills/ tree does not exist, so it
+// must get the template from the manifest, not from a project-relative path.
+func TestPrepareOrchestrator_ErrorReportManifestCarriesTemplate(t *testing.T) {
+	out, err := prepareOrchestrator(PrepareOrchestratorIn{
+		Mode:      "error_report",
+		Skill:     "ship",
+		Step:      "step-1",
+		Operation: "do-thing",
+		Error:     "boom",
+	})
+	if err != nil {
+		t.Fatalf("prepareOrchestrator: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(out.ManifestPath)) })
+
+	want, err := os.ReadFile(filepath.Join("..", "..", "plugins", "sdlc", "skills", "error-report", "templates", "ToolingError.md"))
+	if err != nil {
+		t.Fatalf("read shipped template: %v", err)
+	}
+	manifest := readErrorReportManifest(t, out.ManifestPath)
+	got, _ := manifest["template"].(string)
+	if got != string(want) {
+		t.Fatalf("manifest template = %q, want the shipped ToolingError.md content", got)
+	}
 }

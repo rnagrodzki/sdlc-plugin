@@ -185,8 +185,10 @@ Use the `Agent` tool with:
   Substitute `<manifestPath>` with the path returned in Step 4. Substitute `<cwd>`
   with the current working directory.
 
-The orchestrator reads the manifest, reads
-`skills/error-report/templates/ToolingError.md`, fills every `{placeholder}`
+The orchestrator reads the manifest, takes the `ToolingError.md` template text
+from the manifest's `template` field (the `prepare_orchestrator` binary embeds
+it, so nothing is read from `<cwd>`, where the plugin's `skills/` tree does not
+exist), fills every `{placeholder}`
 strictly from manifest fields, removes sections whose manifest fields are empty,
 determines priority (**High**: prepare-tool crash or infra error, build failure
 blocking waves; **Medium**: CLI failure, persistent API error, escalated task

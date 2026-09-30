@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	version "github.com/rnagrodzki/sdlc-plugin"
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
@@ -89,6 +90,11 @@ type errorReportManifest struct {
 	Timestamp              string   `json:"timestamp"`
 	TargetRepo             string   `json:"targetRepo"`
 	Labels                 []string `json:"labels"`
+	// Template is the ToolingError.md issue body template text, embedded
+	// in the binary. The orchestrator agent fills it from this field
+	// because its working directory is the user's project, which has no
+	// skills/error-report/ tree.
+	Template string `json:"template"`
 }
 
 // ---------------------------------------------------------------------------
@@ -150,6 +156,7 @@ func errorReportPrepare(root string, in ErrorReportPrepareIn) (ErrorReportPrepar
 		Timestamp:              time.Now().UTC().Format(time.RFC3339),
 		TargetRepo:             errorReportTargetRepo,
 		Labels:                 []string{"tooling-error", skill},
+		Template:               version.ToolingErrorTemplate,
 	}
 
 	tmpDir, err := os.MkdirTemp("", "sdlc-error-report-")
