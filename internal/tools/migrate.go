@@ -63,8 +63,10 @@ func migrate(root string, in MigrateIn) (MigrateOut, error) {
 func migrateConfig(root string, dryRun bool) (MigrateOut, error) {
 	if dryRun {
 		// DryRun was removed from configmigrate.Options (Task 8 decision).
-		// Resolve at the tool layer: report would-migrate based on Verify.
-		err := configmigrate.Verify(root)
+		// Migrate never writes, so the dry run runs the same stale check as
+		// the real run (project AND local files). Verify checks only the
+		// project file and would call a stale local.json "up-to-date".
+		_, err := configmigrate.Migrate(root, configmigrate.Options{})
 		if err == nil {
 			return MigrateOut{
 				OK:      true,

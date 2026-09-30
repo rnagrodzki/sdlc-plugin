@@ -851,6 +851,26 @@ func TestMigrate_ConfigAction_StaleProjectRefused(t *testing.T) {
 	}
 }
 
+func TestMigrate_ConfigAction_StaleLocalOnly_DryRunMatchesRealRun(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	writeTestJSON(t, filepath.Join(root, paths.DataDir, "local.json"), map[string]any{
+		"ship": map[string]any{"bump": "patch"},
+	})
+
+	out, err := migrate(root, MigrateIn{Action: "config", DryRun: true})
+	if err != nil {
+		t.Fatalf("migrate config dry-run: %v", err)
+	}
+	if !strings.Contains(out.Result, "would-migrate") {
+		t.Errorf("dry run result = %q, want it to contain would-migrate", out.Result)
+	}
+
+	if _, err := migrate(root, MigrateIn{Action: "config", DryRun: false}); !errors.Is(err, configmigrate.ErrVersionStale) {
+		t.Errorf("real run err = %v, want ErrVersionStale", err)
+	}
+}
+
 func TestMigrate_ConfigAction_DryRun(t *testing.T) {
 	root := t.TempDir()
 

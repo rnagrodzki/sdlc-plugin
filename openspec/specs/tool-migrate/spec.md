@@ -50,12 +50,10 @@ The tool SHALL return the fields below.
 ### Requirement: Config action
 For `action: "config"` the tool SHALL NOT write any file. It SHALL return `result: "up-to-date"` for a current or never-set-up project and SHALL refuse a stale project.
 
-Stale conditions per mode:
+Dry run and live run SHALL use the same stale check. A project is stale when:
 
-| Mode | Stale when |
-|---|---|
-| `dryRun: true` | `.sdlc-v2/config.json` exists without `config.toml` |
-| `dryRun: false` | `.sdlc-v2/config.json` exists without `config.toml`, OR `.sdlc-v2/local.json` exists without `.sdlc-v2/local.toml` |
+- `.sdlc-v2/config.json` exists without `.sdlc-v2/config.toml`, OR
+- `.sdlc-v2/local.json` exists without `.sdlc-v2/local.toml`.
 
 | Mode | Current project | Stale project |
 |---|---|---|
@@ -82,7 +80,7 @@ Stale conditions per mode:
 - **WHEN** `.sdlc-v2/config.toml` exists
 - **AND** `.sdlc-v2/local.json` exists
 - **AND** `.sdlc-v2/local.toml` does not exist
-- **THEN** a dry run returns `result: "up-to-date"`
+- **THEN** a dry run returns a `result` containing `would-migrate`
 - **AND** a live run returns an `InfraError` containing `version stale`
 
 #### Scenario: Only legacy file outside .sdlc-v2
