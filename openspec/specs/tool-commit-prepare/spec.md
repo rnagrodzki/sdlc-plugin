@@ -65,7 +65,7 @@ The tool SHALL NOT return a tool error for a failed git read, config read or man
 ### Requirement: Config-version check
 The tool SHALL run the config-version check unless `skipConfigCheck` is `true`. A failed check SHALL add an entry to `errors`, not a tool error.
 
-- The check fails when `.sdlc-v2/` exists in the main worktree root but has no `config.toml`.
+- The check fails when `.sdlc-v2/config.json` exists in the main worktree root without `config.toml`.
 - The check passes when `.sdlc-v2/config.toml` exists or `.sdlc-v2/` does not exist.
 - Error entry text: `config check failed: <reason>`; the reason includes `TOML config required. Run /setup to initialize.`
 

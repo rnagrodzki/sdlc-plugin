@@ -54,8 +54,8 @@ Stale conditions per mode:
 
 | Mode | Stale when |
 |---|---|
-| `dryRun: true` | `.sdlc-v2/` exists without `config.toml` |
-| `dryRun: false` | `.sdlc-v2/` exists without `config.toml`, OR `.sdlc-v2/local.json` exists without `.sdlc-v2/local.toml` |
+| `dryRun: true` | `.sdlc-v2/config.json` exists without `config.toml` |
+| `dryRun: false` | `.sdlc-v2/config.json` exists without `config.toml`, OR `.sdlc-v2/local.json` exists without `.sdlc-v2/local.toml` |
 
 | Mode | Current project | Stale project |
 |---|---|---|

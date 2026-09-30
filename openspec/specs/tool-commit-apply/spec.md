@@ -59,12 +59,12 @@ The tool SHALL return a `DataError` with message `commit message must not be emp
 ### Requirement: Config-version check
 The tool SHALL run the config-version check unless `skipConfigCheck` is `true`, and SHALL return a `DataError` when it fails.
 
-- The check fails when `.sdlc-v2/` exists in the main worktree root but has no `config.toml`.
+- The check fails when `.sdlc-v2/config.json` exists in the main worktree root without `config.toml`.
 - Error message: `config check failed: <reason>`.
 - Suggestion: run `/setup` to write the config, then retry; pass `skipConfigCheck` only when the mismatch is known and intentional.
 
 #### Scenario: Stale config
-- **WHEN** `.sdlc-v2/` exists without `config.toml`
+- **WHEN** `.sdlc-v2/config.json` exists without `config.toml`
 - **AND** `skipConfigCheck` is `false`
 - **THEN** the tool returns a `DataError` whose message starts with `config check failed:`
 - **AND** no git command that changes the index runs

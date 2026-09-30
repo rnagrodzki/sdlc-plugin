@@ -53,12 +53,14 @@ func TestDetectProjectVersion(t *testing.T) {
 		}
 	})
 
-	t.Run("empty sdlc dir -> v0 stale", func(t *testing.T) {
+	t.Run("data-only sdlc dir -> missing, not stale", func(t *testing.T) {
+		// Tools (jira templates, state artifacts) write into .sdlc-v2 in
+		// projects without a config; that directory alone is not a config.
 		root := t.TempDir()
-		mkSdlcDir(t, root)
+		writeFile(t, filepath.Join(root, paths.DataDir, "state", "artifacts", "approval-x.token"), "t")
 		ver, exists := detectProjectVersion(root)
-		if !exists || ver != 0 {
-			t.Errorf("detectProjectVersion() = (%d, %v), want (0, true)", ver, exists)
+		if exists || ver != 0 {
+			t.Errorf("detectProjectVersion() = (%d, %v), want (0, false)", ver, exists)
 		}
 	})
 
@@ -99,7 +101,6 @@ func TestDetectLocalVersion(t *testing.T) {
 	})
 
 	t.Run("sdlc dir exists, no local file -> missing (optional)", func(t *testing.T) {
-		// Unlike detectProjectVersion's "empty sdlc dir -> v0 stale" case,
 		// local.toml/local.json is documented as optional: a project with a
 		// current config.toml but no local override ever created must not be
 		// reported as stale merely because .sdlc-v2 exists.
@@ -127,6 +128,14 @@ func TestVerify(t *testing.T) {
 	t.Run("toml current -> nil", func(t *testing.T) {
 		root := t.TempDir()
 		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+		if err := Verify(root); err != nil {
+			t.Errorf("Verify() = %v, want nil", err)
+		}
+	})
+
+	t.Run("data-only sdlc dir -> nil", func(t *testing.T) {
+		root := t.TempDir()
+		mkSdlcDir(t, root)
 		if err := Verify(root); err != nil {
 			t.Errorf("Verify() = %v, want nil", err)
 		}

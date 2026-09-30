@@ -38,7 +38,7 @@ The tool SHALL run in classify mode by default and in write mode when `writeRepl
 - **THEN** the call succeeds and writes the file
 
 ### Requirement: Config-version gate
-In classify mode the tool SHALL fail with a `DataError` whose message starts with `config-version:` when `.sdlc-v2/` exists in the main worktree root but `.sdlc-v2/config.toml` does not.
+In classify mode the tool SHALL fail with a `DataError` whose message starts with `config-version:` when `.sdlc-v2/config.json` exists in the main worktree root but `.sdlc-v2/config.toml` does not.
 
 - The suggestion says to run `/setup`, then retry with the same `pr`.
 - There is no input field to skip this gate.
@@ -187,7 +187,7 @@ The tool SHALL report each failure below with the listed error class.
 | Condition | Class | Message / Suggestion (short) |
 |---|---|---|
 | Main worktree root cannot be resolved | `InfraError` | `resolve project root: ...` / run inside a git repository or worktree |
-| `.sdlc-v2/` without `config.toml` (classify mode) | `DataError` | `config-version: ...` / run `/setup` |
+| `.sdlc-v2/config.json` without `config.toml` (classify mode) | `DataError` | `config-version: ...` / run `/setup` |
 | `pr` is `0` or negative (classify mode) | `DomainError` | `pr must be a positive integer` / look up the PR number |
 | `git remote get-url origin` fails | `InfraError` | `get git remote URL: ...` / add an `origin` remote |
 | `origin` URL cannot be parsed | `InfraError` | `parse remote owner/repo: ...` / use an owner/repo URL |

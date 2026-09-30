@@ -68,18 +68,28 @@ The tool SHALL return a `DomainError` `key is required` when `key` is empty or w
 ### Requirement: Config-version gate
 Unless `skipConfigCheck` is `true`, the tool SHALL check the project config version before any action and, when the config is stale, SHALL return a non-error result that holds only an `errors` list and SHALL NOT run the action.
 
-- Stale means `.sdlc-v2/` exists under the main root but `.sdlc-v2/config.toml` does not.
+- Stale means a JSON-era `.sdlc-v2/config.json` exists under the main root but `.sdlc-v2/config.toml` does not.
+- A `.sdlc-v2/` directory that holds only tool data (no `config.toml`, no `config.json`) is not stale.
 - The `errors` entry starts with `config-version: ` and contains `TOML config required. Run /setup to initialize.`
 - The gate runs before the key check.
 
 #### Scenario: Stale config
-- **WHEN** `.sdlc-v2/` exists without `.sdlc-v2/config.toml` and `skipConfigCheck` is `false`
+- **WHEN** `.sdlc-v2/config.json` exists without `.sdlc-v2/config.toml` and `skipConfigCheck` is `false`
 - **THEN** the result has only an `errors` list with one `config-version: ...` entry
 - **AND** no action runs and no file is written
 
 #### Scenario: Gate skipped
 - **WHEN** the same project is called with `skipConfigCheck` `true`
 - **THEN** the action runs and returns its normal result
+
+### Requirement: Data writes do not make the config stale
+The tool's own writes under `.sdlc-v2/` (`copy-template`, `init-templates`, `write-critique`, `write-approval`) SHALL NOT make a later config-version gate, in this tool or any other tool, report the project as stale.
+
+#### Scenario: Writes in a project without config
+- **WHEN** a project has no `.sdlc-v2/config.toml` and no `.sdlc-v2/config.json`
+- **AND** `write-critique`, `write-approval`, and `init-templates` run and create `.sdlc-v2/`
+- **THEN** a later `check` call with `skipConfigCheck` `false` returns its normal result with no `config-version:` error
+- **AND** no `config.toml` is written
 
 ### Requirement: Project-relative paths use the main worktree root
 The tool SHALL resolve every project-relative path (`.sdlc-v2/config.toml`, `.sdlc-v2/jira-templates/`, `.sdlc-v2/state/artifacts/`) against the main worktree root, also when called from a linked worktree.

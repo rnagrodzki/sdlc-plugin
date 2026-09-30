@@ -39,7 +39,7 @@ The tool SHALL run in manifest mode by default and in save mode when `saveReview
 - **AND** the config-version gate does not run
 
 ### Requirement: Config-version gate
-In manifest mode the tool SHALL fail with a `DataError` whose message starts with `config-version:` when `.sdlc-v2/` exists in the main worktree root but `.sdlc-v2/config.toml` does not, unless `skipConfigCheck` is `true`.
+In manifest mode the tool SHALL fail with a `DataError` whose message starts with `config-version:` when `.sdlc-v2/config.json` exists in the main worktree root but `.sdlc-v2/config.toml` does not, unless `skipConfigCheck` is `true`.
 
 #### Scenario: JSON-era project without config.toml
 - **WHEN** the main worktree root has a `.sdlc-v2/` directory and no `.sdlc-v2/config.toml`
@@ -427,7 +427,7 @@ The tool SHALL report each failure below with the listed error class.
 | Condition | Class | Message / Suggestion (short) |
 |---|---|---|
 | Main worktree root cannot be resolved | `InfraError` | `resolve project root: ...` / run inside a git repository |
-| `.sdlc-v2/` without `config.toml`, gate on | `DataError` | `config-version: ...` / run `migrate` action `config` |
+| `.sdlc-v2/config.json` without `config.toml`, gate on | `DataError` | `config-version: ...` / run `migrate` action `config` |
 | No default branch and no `target` | `InfraError` | `detect base branch: ...` / pass `target` or use scope `staged`/`working` |
 | No changed files | `DomainError` | `No changed files found` / check changes for the scope |
 | Changed-files git command fails (e.g. bad `target`) | `DomainError` | `git diff against base ref "<base>" failed: ...` or `git diff for scope <scope> failed: ...` / check the ref or the scope |

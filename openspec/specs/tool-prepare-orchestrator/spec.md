@@ -119,12 +119,13 @@ In `error_report` mode the tool SHALL write a manifest with the fields below.
 - **THEN** `exitOrHttpCode`, `errorType`, `userIntent`, `argsString` and `suggestedInvestigation` are empty strings in the manifest
 
 ### Requirement: harden config-version gate
-In `harden` mode, unless `skipConfigCheck` is `true`, the tool SHALL fail with a DataError when the main root has a `.sdlc-v2` directory but no `config.toml`.
+In `harden` mode, unless `skipConfigCheck` is `true`, the tool SHALL fail with a DataError when the main root has a JSON-era `.sdlc-v2/config.json` but no `config.toml`.
 
 - A project with no `.sdlc-v2` directory passes the gate.
+- A `.sdlc-v2` directory that holds only tool data (no `config.toml`, no `config.json`) passes the gate.
 
 #### Scenario: Stale config blocks the run
-- **WHEN** `.sdlc-v2/` exists without `config.toml` and `skipConfigCheck` is `false`
+- **WHEN** `.sdlc-v2/config.json` exists without `config.toml` and `skipConfigCheck` is `false`
 - **THEN** the tool returns a DataError with message starting `config-version:`
 - **AND** the suggestion says to run the migrate tool or pass `skipConfigCheck: true`
 

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/configmigrate"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
@@ -81,6 +82,63 @@ func TestJiraConfigVersionGate(t *testing.T) {
 	}
 	if _, hasErrorsOnly := m2["exists"]; !hasErrorsOnly {
 		t.Fatalf("expected full check payload when config check skipped, got %#v", m2)
+	}
+}
+
+// TestJiraDataWrites_DoNotTripConfigGate pins that jira's own data writes
+// (write-critique, write-approval, init-templates) in a project with no
+// config.toml leave a .sdlc-v2/ that the config-version gate does not
+// treat as stale — neither for a later jira call nor for any other tool
+// that runs configmigrate.Verify.
+func TestJiraDataWrites_DoNotTripConfigGate(t *testing.T) {
+	root := jiraTestRoot(t)
+	cacheDir := t.TempDir()
+	templatesDir := t.TempDir()
+	writeJSONFile(t, filepath.Join(cacheDir, "FOO.json"), map[string]any{
+		"issueTypes": map[string]any{"Task": map[string]any{}},
+	})
+	if err := os.WriteFile(filepath.Join(templatesDir, "Task.md"), []byte("# Task"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	writes := []JiraIn{
+		{Action: "write-critique", Hash: "abc123", Data: map[string]any{"initial": "a", "findings": "b", "final": "c"}},
+		{Action: "write-approval", Hash: "abc123"},
+		{Action: "init-templates", Key: "FOO", CacheDir: cacheDir, TemplatesDir: templatesDir},
+	}
+	for _, in := range writes {
+		out, err := jiraCore(root, in, true)
+		if err != nil {
+			t.Fatalf("%s: %v", in.Action, err)
+		}
+		if m, ok := out.(map[string]any); ok {
+			if errs, ok := m["errors"].([]string); ok && len(errs) > 0 {
+				t.Fatalf("%s: unexpected errors %v", in.Action, errs)
+			}
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, paths.DataDir, "config.toml")); !os.IsNotExist(err) {
+		t.Fatalf("expected no config.toml to be written, stat err = %v", err)
+	}
+
+	out, err := jiraCore(root, JiraIn{Action: "check", Key: "FOO", CacheDir: cacheDir}, true)
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	m := out.(map[string]any)
+	if errs, ok := m["errors"].([]string); ok {
+		for _, e := range errs {
+			if strings.HasPrefix(e, "config-version:") {
+				t.Fatalf("check after data writes hit the config-version gate: %v", errs)
+			}
+		}
+	}
+	if _, ok := m["exists"]; !ok {
+		t.Fatalf("expected full check payload, got %#v", m)
+	}
+
+	if err := configmigrate.Verify(root); err != nil {
+		t.Fatalf("configmigrate.Verify after jira data writes = %v, want nil", err)
 	}
 }
 
@@ -483,11 +541,9 @@ func TestJiraTemplatesResolution(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// SkipConfigCheck: true — the MkdirAll above creates .sdlc-v2 as a side
-	// effect with no config.toml ever written, so without this the KD5 gate
-	// (configmigrate.Verify) sees a bare .sdlc-v2 dir and reports it stale,
-	// returning the soft errors-only payload with no "resolved" key.
-	out, err := jiraCore(root, JiraIn{Action: "templates", Key: "FOO", CacheDir: cacheDir, TemplatesDir: templatesDir, SkipConfigCheck: true}, true)
+	// No SkipConfigCheck: a .sdlc-v2 holding only jira-templates (no
+	// config.toml, no config.json) is not a stale config.
+	out, err := jiraCore(root, JiraIn{Action: "templates", Key: "FOO", CacheDir: cacheDir, TemplatesDir: templatesDir}, true)
 	if err != nil {
 		t.Fatalf("templates failed: %v", err)
 	}

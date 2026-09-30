@@ -30,7 +30,7 @@ The tool SHALL accept one input field, `pr`.
 - **THEN** the tool fetches the view and checks of PR 42
 
 ### Requirement: Config-version gate
-The tool SHALL fail with a `DataError` whose message starts with `config-version:` when `.sdlc-v2/` exists in the main worktree root but `.sdlc-v2/config.toml` does not.
+The tool SHALL fail with a `DataError` whose message starts with `config-version:` when `.sdlc-v2/config.json` exists in the main worktree root but `.sdlc-v2/config.toml` does not.
 
 - The gate runs on every call; there is no input field to skip it.
 - The suggestion says to run `/setup`, then retry with the same `pr`.
@@ -118,7 +118,7 @@ The tool SHALL report each failure below with the listed error class.
 | Condition | Class | Message / Suggestion (short) |
 |---|---|---|
 | Main worktree root cannot be resolved | `InfraError` | `resolve project root: ...` / run inside a git repository or worktree |
-| `.sdlc-v2/` without `config.toml` | `DataError` | `config-version: ...` / run `/setup` |
+| `.sdlc-v2/config.json` without `config.toml` | `DataError` | `config-version: ...` / run `/setup` |
 | `pr` is `0` or negative | `DomainError` | `pr must be a positive integer` / look up the PR number |
 | `git remote get-url origin` fails | `InfraError` | `get git remote URL: ...` / add an `origin` remote |
 | `origin` URL cannot be parsed | `InfraError` | `parse remote owner/repo: ...` / use an owner/repo URL |

@@ -33,7 +33,8 @@ var (
 	ErrVersionStale = errors.New("configmigrate: version stale")
 
 	// ErrConfigMissing indicates the project has no SDLC config at all —
-	// no .sdlc-v2 directory of any kind. Returned only by
+	// no config.toml, config.json, local.toml, or local.json (the .sdlc-v2
+	// directory may still exist holding tool data). Returned only by
 	// MigrateWithBackup, which distinguishes "never set up" from "stale"
 	// so callers can point the user at /setup instead of silently
 	// proceeding on bare defaults.
@@ -65,10 +66,11 @@ type Report struct {
 // ---------------------------------------------------------------------------
 
 // Verify checks if the project config at mainRoot is current. Returns nil
-// if config.toml exists (v1) or the project has no .sdlc-v2 directory at
-// all (nothing to verify yet — /setup handles that case). Returns
-// ErrVersionStale if a .sdlc-v2 directory exists without a config.toml
-// (JSON-era v0, or an empty scaffold).
+// if config.toml exists (v1) or the project has no project config at all
+// (nothing to verify yet — /setup handles that case). A .sdlc-v2 directory
+// that holds only tool data (state, caches, jira templates) and no config
+// file is "no config", not stale. Returns ErrVersionStale only if a JSON-era
+// .sdlc-v2/config.json exists without a config.toml.
 func Verify(mainRoot string) error {
 	ver, exists := detectProjectVersion(mainRoot)
 	if !exists || ver == CurrentSchemaVersion {
@@ -84,7 +86,7 @@ func Verify(mainRoot string) error {
 // Migrate is the only migration entry point. There is no JSON→TOML
 // migration path (clean break, per the TOML config migration plan): a
 // v0 (JSON-era) project or local config makes Migrate fail outright rather
-// than attempt a conversion. A fresh project (no .sdlc-v2 directory) is a
+// than attempt a conversion. A fresh project (no config file) is a
 // no-op — /setup is responsible for creating the initial TOML config, not
 // Migrate.
 func Migrate(mainRoot string, opt Options) (*Report, error) {
@@ -108,15 +110,15 @@ func Migrate(mainRoot string, opt Options) (*Report, error) {
 // execute_state's "init" action in place of a hard Verify failure. It
 // three-way classifies projectRoot's config:
 //
-//   - No .sdlc-v2 directory at all: the project was never set up. Returns
+//   - No project or local config file at all (no .sdlc-v2 directory, or
+//     one holding only tool data): the project was never set up. Returns
 //     ErrConfigMissing (wrapped with an actionable message naming /setup)
 //     rather than fabricating a config from nothing.
 //   - Current (config.toml and local.toml, wherever present, are both at
 //     CurrentSchemaVersion): a no-op. Returns (nil, "", nil) without
 //     touching the filesystem.
-//   - Stale (a .sdlc-v2 directory exists but config.toml and/or
-//     local.toml is missing — the JSON-era v0 layout, or an incomplete
-//     scaffold): there is no automated JSON→TOML migration, so this
+//   - Stale (a JSON-era config.json or local.json exists without its
+//     TOML replacement): there is no automated JSON→TOML migration, so this
 //     returns the same ErrVersionStale error as Migrate. No backup is
 //     written and no file is touched — callers must treat a non-nil error
 //     here as a hard stop pointing the user at /setup.
@@ -146,17 +148,19 @@ func MigrateWithBackup(projectRoot string) (changes []string, backupPath string,
 
 // detectProjectVersion determines the schema version of the project config.
 // Returns (1, true) if config.toml exists (current, TOML era). Returns
-// (0, true) if the .sdlc-v2 directory exists but config.toml does not
-// (JSON-era v0, or an incomplete scaffold — needs /setup). Returns
-// (0, false) if there is no .sdlc-v2 directory at all (never set up).
+// (0, true) if a JSON-era config.json exists without config.toml (v0 —
+// needs /setup). Returns (0, false) if neither file exists (never set up).
+// The .sdlc-v2 directory alone is not a config: tools such as jira write
+// data there (templates, state artifacts) in projects that have no config,
+// and that must not make every later call fail the config-version gate.
 func detectProjectVersion(mainRoot string) (int, bool) {
 	tomlPath := filepath.Join(mainRoot, paths.DataDir, "config.toml")
 	if _, err := os.Stat(tomlPath); err == nil {
 		return CurrentSchemaVersion, true
 	}
 
-	sdlcDir := filepath.Join(mainRoot, paths.DataDir)
-	if _, err := os.Stat(sdlcDir); err == nil {
+	jsonPath := filepath.Join(mainRoot, paths.DataDir, "config.json")
+	if _, err := os.Stat(jsonPath); err == nil {
 		return 0, true
 	}
 
@@ -164,9 +168,9 @@ func detectProjectVersion(mainRoot string) (int, bool) {
 }
 
 // detectLocalVersion determines the schema version of the local config.
-// Unlike detectProjectVersion, mere existence of the .sdlc-v2 directory does
-// NOT imply staleness here: local.toml/local.json is documented as optional,
-// so a project with a current config.toml but no local override ever created
+// As with detectProjectVersion, mere existence of the .sdlc-v2 directory does
+// NOT imply staleness: local.toml/local.json is documented as optional, so a
+// project with a current config.toml but no local override ever created
 // must not be reported as stale. Returns (1, true) if local.toml exists.
 // Returns (0, true) if a legacy local.json exists (JSON-era v0, genuinely
 // stale). Returns (0, false) if neither file exists, regardless of whether

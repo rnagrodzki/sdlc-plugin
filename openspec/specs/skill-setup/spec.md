@@ -69,7 +69,7 @@ Version detection for the `version` section:
 - `tagPrefix` is the common leading non-digit part of recent `git tag --list` tags; default `v` when there are no tags or no common prefix.
 
 #### Scenario: Migration flag read before scaffold
-- **WHEN** `.sdlc-v2/` exists without `config.toml`
+- **WHEN** `.sdlc-v2/config.json` exists without `config.toml`
 - **THEN** the skill receives `needsMigration: true` from `setup_prepare`
 - **AND** only then calls `setup_init({})`
 

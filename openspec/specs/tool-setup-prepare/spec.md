@@ -95,13 +95,14 @@ Each `fields[]` entry:
 - **AND** no PascalCase key such as `ConfigFile` appears
 
 ### Requirement: Config-migration flag
-The tool SHALL set `needsMigration: true` when `skipConfigCheck` is `false` and `.sdlc-v2/` exists in the project root without `.sdlc-v2/config.toml`. In every other case it SHALL set `needsMigration: false`.
+The tool SHALL set `needsMigration: true` when `skipConfigCheck` is `false` and a JSON-era `.sdlc-v2/config.json` exists in the project root without `.sdlc-v2/config.toml`. In every other case it SHALL set `needsMigration: false`.
 
 | Project state | `skipConfigCheck` | `needsMigration` |
 |---|---|---|
 | No `.sdlc-v2/` directory | `false` | `false` |
+| `.sdlc-v2/` holds only tool data (no `config.toml`, no `config.json`) | `false` | `false` |
 | `.sdlc-v2/config.toml` exists | `false` | `false` |
-| `.sdlc-v2/` exists, no `config.toml` (empty dir, or JSON-era `config.json`) | `false` | `true` |
+| `.sdlc-v2/config.json` exists, no `config.toml` | `false` | `true` |
 | Any | `true` | `false` |
 
 - The check never produces a tool error.

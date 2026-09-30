@@ -78,7 +78,7 @@ The tool SHALL check the project config version and move personal keys from `.sd
 
 | Condition | `errors` | Other fields |
 |---|---|---|
-| `.sdlc-v2` exists without `config.toml` | `config-version: <reason>` | `needsMigration: true` |
+| `.sdlc-v2/config.json` exists without `config.toml` | `config-version: <reason>` | `needsMigration: true` |
 | Key move is not safe | `Cannot move personal settings from .sdlc-v2/config.toml to .sdlc-v2/local.toml automatically: <reason>` (plus one line per key), then `Move each listed key into .sdlc-v2/local.toml under the new section by hand, delete it from .sdlc-v2/config.toml, then run the command again.` | `needsMigration: true` |
 | Keys moved | none | warning starting `Moved personal settings from .sdlc-v2/config.toml to .sdlc-v2/local.toml:` |
 
