@@ -532,6 +532,105 @@ Review the code for quality issues.
 	}
 }
 
+// newReviewFixture builds a git repo with a main branch and a feature
+// branch that adds files, then writes the given review dimensions (file
+// name -> content) into the active worktree. It returns the repo root.
+func newReviewFixture(t *testing.T, files, dims map[string]string) string {
+	t.Helper()
+	root := t.TempDir()
+
+	mustRun(t, root, "git", "init")
+	mustRun(t, root, "git", "config", "user.email", "test@test.com")
+	mustRun(t, root, "git", "config", "user.name", "Test")
+	writeFile(t, filepath.Join(root, "README.md"), "# test\n")
+	mustRun(t, root, "git", "add", ".")
+	mustRun(t, root, "git", "commit", "-m", "init")
+	mustRun(t, root, "git", "branch", "-M", "main")
+	mustRun(t, root, "git", "checkout", "-b", "feature")
+
+	for name, content := range files {
+		writeFile(t, filepath.Join(root, name), content)
+	}
+	mustRun(t, root, "git", "add", ".")
+	mustRun(t, root, "git", "commit", "-m", "add files")
+
+	dimDir := filepath.Join(root, paths.DataDir, "review-dimensions")
+	for name, content := range dims {
+		writeFile(t, filepath.Join(dimDir, name), content)
+	}
+	return root
+}
+
+// readReviewManifest runs reviewPrepare against root with target main and
+// returns the decoded manifest.
+func readReviewManifest(t *testing.T, root string) (ReviewPrepareOut, reviewManifest) {
+	t.Helper()
+	out, err := reviewPrepare(root, root, ReviewPrepareIn{SkipConfigCheck: true, Target: "main"})
+	if err != nil {
+		t.Fatalf("reviewPrepare failed: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(filepath.Dir(out.ManifestPath)) })
+	raw, err := os.ReadFile(out.ManifestPath)
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	var m reviewManifest
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("unmarshal manifest: %v", err)
+	}
+	return out, m
+}
+
+// TestReviewPrepareCapCountsTruncated pins that the 8-dimension cap counts
+// every dispatched dimension, TRUNCATED included. Ten dimensions that are
+// all TRUNCATED by max-files must still leave only 8 to dispatch.
+func TestReviewPrepareCapCountsTruncated(t *testing.T) {
+	dims := map[string]string{}
+	for i := 0; i < 10; i++ {
+		dims[fmt.Sprintf("dim-%02d.md", i)] = fmt.Sprintf(`---
+name: dim-%02d
+description: Dimension %d
+triggers:
+  - "**/*.go"
+severity: medium
+max-files: 1
+---
+Review.
+`, i, i)
+	}
+	root := newReviewFixture(t, map[string]string{
+		"src/a.go": "package main\n",
+		"src/b.go": "package main\n",
+	}, dims)
+
+	out, m := readReviewManifest(t, root)
+
+	dispatched, queued := 0, 0
+	for _, d := range m.Dimensions {
+		switch d.Status {
+		case "ACTIVE", "TRUNCATED":
+			dispatched++
+		case "QUEUED":
+			queued++
+		}
+	}
+	if dispatched != 8 {
+		t.Errorf("dispatched dimensions = %d, want 8", dispatched)
+	}
+	if queued != 2 {
+		t.Errorf("queued dimensions = %d, want 2", queued)
+	}
+	if out.Summary.ActiveDimensions != 8 || out.Summary.QueuedDimensions != 2 {
+		t.Errorf("summary active/queued = %d/%d, want 8/2", out.Summary.ActiveDimensions, out.Summary.QueuedDimensions)
+	}
+	if !m.PlanCritique.DimensionCapApplied {
+		t.Error("plan_critique.dimension_cap_applied = false, want true")
+	}
+	if len(m.PlanCritique.QueuedDimensions) != 2 {
+		t.Errorf("plan_critique.queued_dimensions = %v, want 2 names", m.PlanCritique.QueuedDimensions)
+	}
+}
+
 func TestReviewPrepareNoChangedFiles(t *testing.T) {
 	root := t.TempDir()
 

@@ -171,7 +171,8 @@ stateDiagram-v2
     [*] --> ACTIVE: "1..max-files matched"
     [*] --> TRUNCATED: "more than max-files matched"
     ACTIVE --> TRUNCATED: "diff over 8000 bytes (requires-full-diff false)"
-    ACTIVE --> QUEUED: "not in top 8 ACTIVE dimensions"
+    ACTIVE --> QUEUED: "not in top 8 dispatched dimensions"
+    TRUNCATED --> QUEUED: "not in top 8 dispatched dimensions"
 ```
 
 - `max-files` defaults to `100`; only a positive integer overrides it.
@@ -230,19 +231,25 @@ The tool SHALL cap each dimension's diff at 8000 bytes unless the dimension sets
 - **THEN** its `.diff` file holds the full diff for its matched files, with no byte cap
 
 ### Requirement: Dimension cap
-The tool SHALL keep at most 8 dimensions with status `ACTIVE`, and SHALL change the rest to `QUEUED`.
+The tool SHALL keep at most 8 dispatched dimensions (status `ACTIVE` or `TRUNCATED`), and SHALL change the rest to `QUEUED`.
 
-- Only `ACTIVE` dimensions count toward the cap; `TRUNCATED` dimensions do not.
+- `ACTIVE` and `TRUNCATED` dimensions both count toward the cap, because both get a reviewer agent.
 - Kept first: higher severity (`critical` > `high` > `medium` > `low` > `info`; unknown ranks as `medium`).
 - Tie-break: fewer matched files first.
 - A `QUEUED` dimension has `slice_file: null`.
 - Queued names are listed in `plan_critique.queued_dimensions`.
-- `plan_critique.dimension_cap_applied` is `true` when more than 8 dimensions were `ACTIVE`.
+- `plan_critique.dimension_cap_applied` is `true` when more than 8 dimensions were `ACTIVE` or `TRUNCATED`.
 
 #### Scenario: Ten active dimensions
 - **WHEN** 10 dimensions are `ACTIVE` before the cap
 - **THEN** 8 stay `ACTIVE` and 2 become `QUEUED`
 - **AND** `summary.queued_dimensions` is `2`
+
+#### Scenario: Ten truncated dimensions
+- **WHEN** 10 dimensions are `TRUNCATED` by `max-files` before the cap
+- **THEN** 8 stay `TRUNCATED` and 2 become `QUEUED`
+- **AND** `summary.active_dimensions` is `8`
+- **AND** `plan_critique.dimension_cap_applied` is `true`
 
 #### Scenario: Five active dimensions
 - **WHEN** 5 dimensions are `ACTIVE`

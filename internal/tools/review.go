@@ -475,14 +475,25 @@ func critiquePlan(dims []reviewDimWork, changedFiles []string) reviewPlanCritiqu
 		StillUncovered:       emptyIfNil(still),
 		OverBroadDimensions:  emptyIfNil(overBroad),
 		OverlappingPairs:     emptyPairsIfNil(overlappingPairs),
-		DimensionCapApplied:  len(active) > maxActiveDimensions,
+		// DimensionCapApplied and QueuedDimensions are set by the caller
+		// from refinePlan's result.
 	}
 }
 
+// isDispatched reports whether a dimension status gets a reviewer agent.
+// Both ACTIVE and TRUNCATED dimensions are dispatched; TRUNCATED only means
+// the dimension's diff is partial.
+func isDispatched(status string) bool {
+	return status == "ACTIVE" || status == "TRUNCATED"
+}
+
+// refinePlan applies the dimension cap: at most maxActiveDimensions
+// dispatched (ACTIVE or TRUNCATED) dimensions are kept; the rest become
+// QUEUED. It returns the queued names.
 func refinePlan(dims []reviewDimWork) []string {
 	var active []*reviewDimWork
 	for i := range dims {
-		if dims[i].status == "ACTIVE" {
+		if isDispatched(dims[i].status) {
 			active = append(active, &dims[i])
 		}
 	}
@@ -513,7 +524,7 @@ func refinePlan(dims []reviewDimWork) []string {
 
 	var queued []string
 	for i := range dims {
-		if dims[i].status == "ACTIVE" && !keep[dims[i].name] {
+		if isDispatched(dims[i].status) && !keep[dims[i].name] {
 			dims[i].status = "QUEUED"
 			queued = append(queued, dims[i].name)
 		}
@@ -881,6 +892,7 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 	critique := critiquePlan(dims, changedFiles)
 	queued := refinePlan(dims)
 	critique.QueuedDimensions = emptyIfNil(queued)
+	critique.DimensionCapApplied = len(queued) > 0
 
 	// Commit count (branch-based scopes).
 	commitCount := 0
