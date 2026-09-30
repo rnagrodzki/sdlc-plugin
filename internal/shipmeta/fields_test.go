@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -30,9 +31,19 @@ func TestInitialShipStepsFromConfig_OrderAndKind(t *testing.T) {
 	}
 }
 
+// TestInitialShipStepsFromConfig_HardenIsInline verifies the opt-in "harden"
+// step is seeded as an inline step (no dedicated begin/complete lifecycle).
+func TestInitialShipStepsFromConfig_HardenIsInline(t *testing.T) {
+	got := InitialShipStepsFromConfig([]string{"execute", "commit", "review", "harden", "pr"})
+	want := ShipStateStep{Name: "harden", Status: "pending", Kind: "inline"}
+	if len(got) != 5 || !reflect.DeepEqual(got[3], want) {
+		t.Errorf("InitialShipStepsFromConfig(...harden...) = %#v, want got[3] = %#v", got, want)
+	}
+}
+
 // TestInitialShipStepsFromConfig_AllCanonicalSteps exercises the full
-// 9-name CanonicalSteps list (the F-ship-3 "N-step pipeline shows N rows"
-// scenario): 9 entries in, 9 out, in the same order, split 4 tracked / 5
+// 10-name CanonicalSteps list (the F-ship-3 "N-step pipeline shows N rows"
+// scenario): 10 entries in, 10 out, in the same order, split 4 tracked / 6
 // inline (received-review/commit-fixes are conditional-only and never
 // appear in CanonicalSteps, so the tracked set present here is exactly
 // execute/commit/review/pr).
@@ -59,8 +70,8 @@ func TestInitialShipStepsFromConfig_AllCanonicalSteps(t *testing.T) {
 			t.Errorf("got[%d].Kind = %q, want %q or %q", i, step.Kind, "tracked", "inline")
 		}
 	}
-	if tracked != 4 || inline != 5 {
-		t.Errorf("tracked/inline split = %d/%d, want 4/5", tracked, inline)
+	if tracked != 4 || inline != 6 {
+		t.Errorf("tracked/inline split = %d/%d, want 4/6", tracked, inline)
 	}
 }
 
@@ -174,4 +185,86 @@ func TestShipStepNameEnum_CoversCanonicalSteps(t *testing.T) {
 			t.Errorf("CanonicalSteps %q missing from ship-state.schema.json's steps[].name enum: %v", name, enumRaw)
 		}
 	}
+}
+
+// TestShipStateSkipEnum_HasHarden pins "harden" in ship-state.schema.json's
+// flags.skip enum, alongside the other inline opt-in steps.
+func TestShipStateSkipEnum_HasHarden(t *testing.T) {
+	doc := readSchema(t, "ship-state.schema.json")
+	props, _ := doc["properties"].(map[string]any)
+	flags, _ := props["flags"].(map[string]any)
+	flagProps, _ := flags["properties"].(map[string]any)
+	enum := itemsEnum(t, flagProps["skip"], "flags.skip")
+	if !enum["harden"] {
+		t.Errorf("ship-state.schema.json flags.skip enum is missing %q", "harden")
+	}
+}
+
+// TestLocalSchemaStepEnums_MatchCanonicalSteps proves the ship.steps and
+// ship.quick item enums in sdlc-local.schema.json hold exactly the
+// CanonicalSteps names — a step missing from either side fails here.
+func TestLocalSchemaStepEnums_MatchCanonicalSteps(t *testing.T) {
+	doc := readSchema(t, "sdlc-local.schema.json")
+	defs, _ := doc["$defs"].(map[string]any)
+	ship, _ := defs["shipSection"].(map[string]any)
+	shipProps, _ := ship["properties"].(map[string]any)
+
+	want := make(map[string]bool, len(CanonicalSteps))
+	for _, s := range CanonicalSteps {
+		want[s] = true
+	}
+	for _, field := range []string{"steps", "quick"} {
+		got := itemsEnum(t, shipProps[field], "ship."+field)
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("sdlc-local.schema.json ship.%s enum = %v, want CanonicalSteps %v", field, got, CanonicalSteps)
+		}
+	}
+}
+
+// TestLocalTemplate_DefaultStepsIncludeHarden pins the steps line new
+// projects receive from plugins/sdlc/templates/local.toml.
+func TestLocalTemplate_DefaultStepsIncludeHarden(t *testing.T) {
+	path := filepath.Join("..", "..", "plugins", "sdlc", "templates", "local.toml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	const want = `steps = ["execute", "commit", "review", "harden", "pr", "verify-pipeline"]`
+	if !strings.Contains(string(raw), "\n"+want+"\n") {
+		t.Errorf("%s: missing default steps line %s", path, want)
+	}
+}
+
+// readSchema parses plugins/sdlc/schemas/<name> into a generic map.
+func readSchema(t *testing.T, name string) map[string]any {
+	t.Helper()
+	path := filepath.Join("..", "..", "plugins", "sdlc", "schemas", name)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parsing %s: %v", path, err)
+	}
+	return doc
+}
+
+// itemsEnum returns the set of string values in prop.items.enum, failing the
+// test when the enum cannot be located.
+func itemsEnum(t *testing.T, prop any, label string) map[string]bool {
+	t.Helper()
+	p, _ := prop.(map[string]any)
+	items, _ := p["items"].(map[string]any)
+	enumRaw, _ := items["enum"].([]any)
+	if len(enumRaw) == 0 {
+		t.Fatalf("could not locate %s items.enum", label)
+	}
+	out := make(map[string]bool, len(enumRaw))
+	for _, v := range enumRaw {
+		if s, ok := v.(string); ok {
+			out[s] = true
+		}
+	}
+	return out
 }

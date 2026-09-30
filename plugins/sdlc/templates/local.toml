@@ -24,10 +24,10 @@ rebase = true
 reviewThreshold = "low"
 
 # Pipeline steps to execute during /ship (in order).
-# Valid steps: "execute" | "commit" | "review" | "verify-openspec" |
+# Valid steps: "execute" | "commit" | "review" | "harden" | "verify-openspec" |
 #   "archive-openspec" | "pr" | "verify-pipeline" |
 #   "await-remote-review" | "learnings-commit"
-steps = ["execute", "commit", "review", "pr", "verify-pipeline"]
+steps = ["execute", "commit", "review", "harden", "pr", "verify-pipeline"]
 
 # Quick mode steps (subset of steps, for /ship --quick).
 quick = ["execute", "commit", "review"]

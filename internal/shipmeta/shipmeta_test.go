@@ -69,6 +69,7 @@ func TestMaxWaveTimeoutSecondsMatchesSchema(t *testing.T) {
 //     the version diagnostics that used to run as their own step. The pr
 //     step's SubstepMap entry below is unchanged — the merge is inside
 //     pr_prepare's implementation, not a new listed substep.
+//   - "harden": Go-only step with no JS source; added after "review".
 func TestSubstepMapMatchesSource(t *testing.T) {
 	tests := []struct {
 		step string
@@ -77,6 +78,7 @@ func TestSubstepMapMatchesSource(t *testing.T) {
 		{"execute", []string{"execute plan"}},
 		{"commit", []string{"stash unstaged", "generate message", "commit", "restore stash"}},
 		{"review", []string{"dispatch review dimensions", "collect verdicts"}},
+		{"harden", []string{"cluster findings", "run harden", "stage surfaces", "commit hardening"}},
 		{"received-review", []string{"fetch comments", "classify findings", "apply auto-fixes", "surface remaining"}},
 		{"commit-fixes", []string{"re-stage", "commit fixes"}},
 		{"verify-openspec", []string{"openspec validate --strict", "check result"}},

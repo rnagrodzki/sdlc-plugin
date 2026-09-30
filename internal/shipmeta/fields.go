@@ -14,12 +14,13 @@ package shipmeta
 const MaxWaveTimeoutSeconds = 3600
 
 // CanonicalSteps lists the pipeline step names that may appear in
-// ship.steps[] / --steps, in canonical order. Mirrors CANONICAL_STEPS in
-// scripts/lib/ship-fields.js. "cleanup" is a synthetic terminal step
-// appended unconditionally by the pipeline and is never user-configurable —
-// see ReservedSteps.
+// ship.steps[] / --steps, in canonical order. Restated (and pinned by test)
+// in internal/setupmeta.CanonicalSteps and the step enums of
+// plugins/sdlc/schemas/sdlc-local.schema.json and ship-state.schema.json.
+// "cleanup" is a synthetic terminal step appended unconditionally by the
+// pipeline and is never user-configurable — see ReservedSteps.
 var CanonicalSteps = []string{
-	"execute", "commit", "review", "verify-openspec",
+	"execute", "commit", "review", "harden", "verify-openspec",
 	"archive-openspec", "pr", "verify-pipeline", "await-remote-review",
 	"learnings-commit",
 }

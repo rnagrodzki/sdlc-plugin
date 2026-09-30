@@ -91,6 +91,11 @@ type ValidateIn struct {
 	// Section is the config section guardrails reads its guardrails list
 	// from. Defaults to "plan" when empty, matching the JS default.
 	Section string `json:"section,omitempty" jsonschema_description:"Config section the guardrails action reads its guardrails list from. Defaults to \"plan\" when empty."`
+	// ActiveWorktree, for the guardrails action only, swaps the main-root
+	// anchor for worktree.ActiveRoot() so harden -- which writes guardrails
+	// to the active worktree, not the main one -- can validate what it just
+	// wrote. Ignored by every other action.
+	ActiveWorktree bool `json:"activeWorktree,omitempty" jsonschema_description:"guardrails action only: true reads the section from the ACTIVE worktree's .sdlc-v2/config.toml instead of the main worktree's. Used by harden, which writes guardrails to the active worktree. Ignored by other actions."`
 	// Body is the PR body text to validate for the pr_body action, matching
 	// the former standalone pr_validate_body tool's input.
 	Body string `json:"body,omitempty" jsonschema_description:"PR body text to validate. Used by the pr_body action."`
@@ -116,7 +121,7 @@ Pass "action" to select the validator. Each action uses a subset of the input fi
 - discovery: Check the project's discovery artifacts (PD1-PD16). No inputs.
 - pr_template: Check the PR template file itself (V1-V5) at its canonical or legacy path. No inputs.
 - cost_tiers: Compare skill/agent model tiers against the cost-tier doc tables. Optional: strict (true reports the INHERITED finding kind as severity "error" instead of "warning").
-- guardrails: Check the guardrails list in a config section for per-guardrail id/description/severity. Optional: section (defaults to "plan"). A section that does not exist returns no findings.
+- guardrails: Check the guardrails list in a config section for per-guardrail id/description/severity. Optional: section (defaults to "plan"), activeWorktree (true reads the active worktree instead of the main worktree). A section that does not exist returns no findings.
 - dimensions: Check the review-dimension files, including a cross-file duplicate-name check (D10). Reads the ACTIVE worktree, unlike every other action. No inputs.
 - pr_body: Check a PR body against the PR template's required sections. Requires body — an empty body is not rejected, it simply reports every required section as missing.
 - ci_script_drift: Check the generated CI scripts against their current sources. No inputs.
@@ -134,11 +139,14 @@ Pass "action" to select the validator. Each action uses a subset of the input fi
 			}
 			// dimensions is the one action whose target files are git-tracked
 			// content that must be read from the ACTIVE worktree (root rule),
-			// not the main worktree every other action anchors to. Swap the
-			// root passed into validate() for this action only; fail open to
-			// the already-resolved main root so a resolution error here never
-			// blocks the other eight actions.
-			if in.Action == "dimensions" {
+			// not the main worktree every other action anchors to. guardrails
+			// joins it only when the caller opts in via ActiveWorktree (used
+			// by harden, which writes guardrails to the active worktree and
+			// needs to validate what it just wrote there). Swap the root
+			// passed into validate() for these cases only; fail open to the
+			// already-resolved main root so a resolution error here never
+			// blocks the other actions.
+			if in.Action == "dimensions" || (in.Action == "guardrails" && in.ActiveWorktree) {
 				if activeRoot, aerr := worktree.ActiveRoot(); aerr == nil {
 					root = activeRoot
 				}

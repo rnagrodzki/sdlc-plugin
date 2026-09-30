@@ -24,6 +24,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
+	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/openspec"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
@@ -1846,6 +1847,124 @@ func checkpointNext(mainRoot string, cp PlanCheckpoint) string {
 	return next
 }
 
+// ---------------------------------------------------------------------------
+// Plan timing (start to last plan-file edit)
+//
+// Every plan_mark call refreshes st.Data["planTiming"] from the run's
+// skillInvoked timestamp and the plan file's current mtime, so the run's
+// duration always reflects the last edit to the plan document — never the
+// time of the marker call itself (a "done" call minutes after the last edit
+// still reports the edit time). The "done" marker additionally appends a
+// durable history record, since the Stop hook deletes the plan state file
+// once "done" is observed (see docs/plan-architecture.md's Lifecycle
+// section) — without this, the timing would be lost the moment the run ends.
+// ---------------------------------------------------------------------------
+
+// refreshPlanTiming updates st.Data["planTiming"] ({startedAt,
+// lastModifiedAt, durationMs}) from st.Data["planIntegrity"]["skillInvoked"]
+// and the plan file's mtime. A relative st.Data["planFilePath"] is resolved
+// against contentRoot and normalized in place (filepath.Join + Clean) so
+// every later reader — this run's own history record, and Task 7's plan_file
+// comparison — sees an absolute, cleaned path.
+//
+// Any missing or unusable input (no skillInvoked, no planFilePath, or a
+// plan file that cannot be stat'ed) leaves planTiming and planFilePath
+// exactly as they were — absent on a fresh run, or the previous value on a
+// later call whose plan file momentarily disappeared. The caller's marker
+// write still proceeds either way; timing is best-effort, never a reason to
+// fail plan_mark.
+func refreshPlanTiming(st *state.State, contentRoot string) {
+	integrity, _ := st.Data["planIntegrity"].(map[string]any)
+	skillInvoked, _ := integrity["skillInvoked"].(string)
+	if skillInvoked == "" {
+		return
+	}
+	startedAt, err := time.Parse(time.RFC3339, skillInvoked)
+	if err != nil {
+		return
+	}
+
+	planFilePath, _ := st.Data["planFilePath"].(string)
+	if strings.TrimSpace(planFilePath) == "" {
+		return
+	}
+	resolved := planFilePath
+	if !filepath.IsAbs(resolved) {
+		resolved = filepath.Join(contentRoot, resolved)
+	}
+	resolved = filepath.Clean(resolved)
+
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return
+	}
+
+	lastModifiedAt := info.ModTime().UTC()
+	st.Data["planFilePath"] = resolved
+	st.Data["planTiming"] = map[string]any{
+		"startedAt":      startedAt.UTC().Format(time.RFC3339),
+		"lastModifiedAt": lastModifiedAt.Format(time.RFC3339),
+		"durationMs":     lastModifiedAt.Sub(startedAt.UTC()).Milliseconds(),
+	}
+}
+
+// planTimingInt64 reads an integer field out of a planTiming map that may
+// hold either an int64 (set in-process by refreshPlanTiming earlier in the
+// same call) or a float64 (decoded from a plan state file previously read
+// back off disk, where every JSON number is a float64).
+func planTimingInt64(timing map[string]any, key string) int64 {
+	switch v := timing[key].(type) {
+	case int64:
+		return v
+	case float64:
+		return int64(v)
+	default:
+		return 0
+	}
+}
+
+// appendPlanRunRecord appends one history.RunRecord for this plan run's
+// "done" marker: skill "plan", outcome "done", branch, and the
+// duration_ms/started_at/last_modified_at/plan_file fields Task 7 reads back
+// from the latest skill:"plan" record. It mirrors ship_state.go's
+// shipStateHistoryRecord (same history.NewFileWriter(historyDir(...)).AppendRun
+// call), scoped to plan's own fixed field set.
+//
+// Returns nil without writing when there is nothing meaningful to record:
+// planFilePath was never set, or planTiming was never successfully computed
+// (the plan file was never stat-able during this run). Otherwise, any
+// AppendRun error is returned to the caller, which reports it as a
+// non-fatal warning — the marker write itself already succeeded.
+func appendPlanRunRecord(mainRoot, branch string, st *state.State) error {
+	planFilePath, _ := st.Data["planFilePath"].(string)
+	if strings.TrimSpace(planFilePath) == "" {
+		return nil
+	}
+	timing, ok := st.Data["planTiming"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	startedAt, _ := timing["startedAt"].(string)
+	lastModifiedAt, _ := timing["lastModifiedAt"].(string)
+	if startedAt == "" || lastModifiedAt == "" {
+		return nil
+	}
+
+	rec := history.RunRecord{
+		Timestamp:      time.Now().UTC().Format(time.RFC3339),
+		Skill:          "plan",
+		Branch:         branch,
+		Outcome:        "done",
+		DurationMs:     planTimingInt64(timing, "durationMs"),
+		PlanFile:       planFilePath,
+		StartedAt:      startedAt,
+		LastModifiedAt: lastModifiedAt,
+	}
+
+	w := history.NewFileWriter(historyDir(mainRoot))
+	return w.AppendRun(rec)
+}
+
 // PlanMarkIn is the input for the plan_mark tool.
 type PlanMarkIn struct {
 	Marker string         `json:"marker" jsonschema:"enum=plan-file,enum=skillInvoked,enum=guardrailsEvaluated,enum=critiqueRan,enum=done,enum=guardrailResults,enum=criticalDecisions,enum=checkpoint" jsonschema_description:"Checkpoint marker: \"plan-file\", \"skillInvoked\", \"guardrailsEvaluated\", \"critiqueRan\", or the terminal \"done\" marker stamp the current timestamp into planIntegrity; \"guardrailResults\" and \"criticalDecisions\" instead append data's array payload to their own state key. \"checkpoint\" replaces the progress checkpoint (requires data)."`
@@ -1855,10 +1974,11 @@ type PlanMarkIn struct {
 
 // PlanMarkOut is the output for the plan_mark tool.
 type PlanMarkOut struct {
-	OK     bool   `json:"ok"`
-	Marker string `json:"marker"`
-	Path   string `json:"path"`
-	Next   string `json:"next,omitempty"` // checkpoint only
+	OK      bool   `json:"ok"`
+	Marker  string `json:"marker"`
+	Path    string `json:"path"`
+	Next    string `json:"next,omitempty"`    // checkpoint only
+	Warning string `json:"warning,omitempty"` // done only: history write failed; the marker itself was saved
 }
 
 // planMark is the core logic, separated from the handler for testability.
@@ -1934,6 +2054,7 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 		checkpoint.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 		st.Data["checkpoint"] = checkpoint
 
+		refreshPlanTiming(st, contentRoot)
 		if err := state.Write(st); err != nil {
 			return PlanMarkOut{}, &mcpserver.InfraError{
 				Msg:        fmt.Sprintf("write plan state file: %s", err.Error()),
@@ -1957,6 +2078,7 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 		existing, _ := st.Data[in.Marker].([]any)
 		st.Data[in.Marker] = append(existing, newEntries...)
 
+		refreshPlanTiming(st, contentRoot)
 		if err := state.Write(st); err != nil {
 			return PlanMarkOut{}, &mcpserver.InfraError{
 				Msg:        fmt.Sprintf("write plan state file: %s", err.Error()),
@@ -1979,6 +2101,7 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 		st.Data["planFilePath"] = in.Path
 	}
 
+	refreshPlanTiming(st, contentRoot)
 	if err := state.Write(st); err != nil {
 		return PlanMarkOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("write plan state file: %s", err.Error()),
@@ -1987,7 +2110,13 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 		}
 	}
 
-	return PlanMarkOut{OK: true, Marker: in.Marker, Path: st.Path}, nil
+	out := PlanMarkOut{OK: true, Marker: in.Marker, Path: st.Path}
+	if in.Marker == "done" {
+		if herr := appendPlanRunRecord(mainRoot, branch, st); herr != nil {
+			out.Warning = "plan timing not saved to history: " + herr.Error()
+		}
+	}
+	return out, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -2032,7 +2161,8 @@ func RegisterPlanTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "plan_mark",
 		"INTERNAL — called by sdlc skills only. Write a plan-integrity checkpoint marker (plan-file, skillInvoked, guardrailsEvaluated, critiqueRan, done) into the current branch's plan state file, append structured data (guardrailResults, criticalDecisions) to it, or replace the progress checkpoint (checkpoint). "+
 			"checkpoint: replace the progress checkpoint. Requires data.step (one of \"0\", \"1\", \"2\", \"3\", \"4\", \"5\", \"6\", \"6.5\", \"6.6\", \"7\"). Optional: data.iteration, data.expectedWriters. Returns next. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError. "+
-			"Markers other than checkpoint return no next: the call only records state; continue the current SKILL.md step.",
+			"Markers other than checkpoint return no next: the call only records state; continue the current SKILL.md step. "+
+			"The done marker also appends the plan's timing (start to last plan-file edit) to .sdlc-v2/history/runs.jsonl; a failed append returns ok with warning set.",
 		mcpserver.Annotations{
 			Title:      "Record plan progress marker",
 			ReadOnly:   true,

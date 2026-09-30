@@ -186,7 +186,7 @@ func intPtr(v int) *int { return &v }
 // Order matters — it is the default ordering and iteration order.
 // Mirrors CANONICAL_STEPS from scripts/lib/ship-fields.js.
 var CanonicalSteps = []string{
-	"execute", "commit", "review", "verify-openspec",
+	"execute", "commit", "review", "harden", "verify-openspec",
 	"archive-openspec", "pr", "verify-pipeline", "await-remote-review",
 	"learnings-commit",
 }
@@ -201,7 +201,7 @@ var ShipFields = []Field{
 		Type:        "multi-select",
 		Options:     append([]string{}, CanonicalSteps...),
 		Default:     append([]string{}, CanonicalSteps...),
-		Description: "Pipeline steps to run by default. received-review and commit-fixes run conditionally based on review verdict and are not configurable here. verify-pipeline and await-remote-review are opt-in entries — add them explicitly to enable post-PR CI verification and remote-reviewer awaiting. verify-openspec is an OpenSpec-gated opt-in — add it explicitly to run `openspec validate --strict <change>` between version and archive-openspec.",
+		Description: "Pipeline steps to run by default. received-review and commit-fixes run conditionally based on review verdict and are not configurable here. harden (right after review) clusters review findings and commits guardrail/dimension hardening before the PR. verify-pipeline and await-remote-review are opt-in entries — add them explicitly to enable post-PR CI verification and remote-reviewer awaiting. verify-openspec is an OpenSpec-gated opt-in — add it explicitly to run `openspec validate --strict <change>` between version and archive-openspec.",
 	},
 	{
 		Name:        "quick",

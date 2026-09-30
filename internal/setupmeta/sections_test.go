@@ -71,7 +71,7 @@ func TestVersionFields_PreReleasePolicyMatchesSchema(t *testing.T) {
 // (folded into other steps) and must not resurface as a selectable step.
 func TestCanonicalSteps_Contents(t *testing.T) {
 	want := []string{
-		"execute", "commit", "review", "verify-openspec",
+		"execute", "commit", "review", "harden", "verify-openspec",
 		"archive-openspec", "pr", "verify-pipeline", "await-remote-review",
 		"learnings-commit",
 	}

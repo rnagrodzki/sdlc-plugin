@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -474,5 +475,77 @@ func TestDeferredReasons_MatchesValidator(t *testing.T) {
 		if !ValidDeferredReason(got[i]) {
 			t.Errorf("DeferredReasons() lists %q, which ValidDeferredReason rejects", got[i])
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RunRecord plan-fields tests
+// ---------------------------------------------------------------------------
+
+// TestRunRecord_PlanFieldsRoundTrip verifies PlanFile, StartedAt and
+// LastModifiedAt survive a marshal/unmarshal round trip alongside the
+// pre-existing fields, matching the shape plan.go's appendPlanRunRecord
+// writes for the "done" marker.
+func TestRunRecord_PlanFieldsRoundTrip(t *testing.T) {
+	want := RunRecord{
+		Timestamp:      "2026-09-30T12:00:00Z",
+		Skill:          "plan",
+		Branch:         "feat-x",
+		Outcome:        "done",
+		DurationMs:     300000,
+		PlanFile:       "/repo/plans/my-plan.md",
+		StartedAt:      "2026-09-30T11:55:00Z",
+		LastModifiedAt: "2026-09-30T12:00:00Z",
+	}
+	b, err := json.Marshal(want)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got RunRecord
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("round trip = %+v, want %+v", got, want)
+	}
+}
+
+// TestRunRecord_PlanFieldsOmittedWhenEmpty verifies the three new fields are
+// omitempty, so a record that never sets them (every non-plan producer)
+// serializes exactly as it did before the fields existed.
+func TestRunRecord_PlanFieldsOmittedWhenEmpty(t *testing.T) {
+	b, err := json.Marshal(RunRecord{
+		Timestamp:  "2026-01-01T00:00:00Z",
+		Skill:      "ship",
+		Branch:     "main",
+		Outcome:    "success",
+		DurationMs: 1234,
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, key := range []string{"plan_file", "started_at", "last_modified_at"} {
+		if strings.Contains(string(b), `"`+key+`"`) {
+			t.Errorf("marshalled record %s contains empty optional key %q", b, key)
+		}
+	}
+}
+
+// TestRunRecord_LegacyLineWithoutPlanFieldsParses verifies a runs.jsonl line
+// written before PlanFile/StartedAt/LastModifiedAt existed still parses,
+// leaving the new fields at their zero value — existing readers of
+// runs.jsonl (e.g. ship's history summary) must keep working unchanged.
+func TestRunRecord_LegacyLineWithoutPlanFieldsParses(t *testing.T) {
+	legacy := `{"ts":"2026-01-01T00:00:00Z","skill":"ship","branch":"main","outcome":"success","duration_ms":100}`
+
+	var got RunRecord
+	if err := json.Unmarshal([]byte(legacy), &got); err != nil {
+		t.Fatalf("unmarshal legacy runs.jsonl line: %v", err)
+	}
+	if got.Skill != "ship" || got.Branch != "main" || got.Outcome != "success" || got.DurationMs != 100 {
+		t.Errorf("existing fields lost: %+v", got)
+	}
+	if got.PlanFile != "" || got.StartedAt != "" || got.LastModifiedAt != "" {
+		t.Errorf("new fields = %q/%q/%q, want all empty", got.PlanFile, got.StartedAt, got.LastModifiedAt)
 	}
 }

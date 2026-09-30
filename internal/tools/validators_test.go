@@ -709,6 +709,48 @@ func TestValidateGuardrailsEmptySectionIsPass(t *testing.T) {
 	}
 }
 
+// TestValidateGuardrailsActiveWorktreeFlag pins ValidateIn.ActiveWorktree's
+// two contract points: it does not change what validateGuardrailsAction
+// computes once a root has been chosen (the actual main-vs-active swap lives
+// in RegisterValidateTools' handler closure, which picks the root before
+// calling validate -- not exercised here), and every action other than
+// guardrails ignores it outright.
+func TestValidateGuardrailsActiveWorktreeFlag(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), ""+
+		"[plan.guardrails.good-guardrail]\n"+
+		"description = \"A valid guardrail description.\"\n"+
+		"\n"+
+		"[plan.guardrails.Bad_ID]\n"+
+		"description = \"desc\"\n")
+
+	withFlag, err := validate(root, ValidateIn{Action: "guardrails", ActiveWorktree: true})
+	if err != nil {
+		t.Fatalf("validate(guardrails, activeWorktree=true): %v", err)
+	}
+	withoutFlag, err := validate(root, ValidateIn{Action: "guardrails"})
+	if err != nil {
+		t.Fatalf("validate(guardrails): %v", err)
+	}
+	if len(withFlag.Findings) != len(withoutFlag.Findings) || len(withFlag.Findings) != 1 {
+		t.Fatalf("activeWorktree flag changed guardrails findings: with=%+v without=%+v", withFlag.Findings, withoutFlag.Findings)
+	}
+
+	for _, action := range []string{"discovery", "dimensions"} {
+		ignoring, err := validate(root, ValidateIn{Action: action})
+		if err != nil {
+			t.Fatalf("validate(%s): %v", action, err)
+		}
+		respecting, err := validate(root, ValidateIn{Action: action, ActiveWorktree: true})
+		if err != nil {
+			t.Fatalf("validate(%s, activeWorktree=true): %v", action, err)
+		}
+		if len(ignoring.Findings) != len(respecting.Findings) {
+			t.Errorf("%s: activeWorktree flag changed findings, want it ignored: without=%+v with=%+v", action, ignoring.Findings, respecting.Findings)
+		}
+	}
+}
+
 func TestValidateGuardrailsCustomSection(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), ""+

@@ -152,6 +152,8 @@ func prepareOrchestrator(in PrepareOrchestratorIn) (PrepareOrchestratorOut, erro
 				Cause:      err,
 			}
 		}
+		// root is used for pipeline state and skill recommendations;
+		// guardrails come from contentRoot (the active worktree).
 		contentRoot := activeWorktreeRootSafe()
 		if contentRoot == "" {
 			contentRoot = root

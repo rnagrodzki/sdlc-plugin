@@ -12,9 +12,11 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pelletier/go-toml/v2"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
@@ -874,6 +876,398 @@ func TestPlanMark_WriteAndUpdate(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// plan_mark plan-timing tests
+// ---------------------------------------------------------------------------
+
+// seedPlanTimingRun seeds a plan state file via planPrepareCore and returns
+// the run's skillInvoked timestamp, parsed. Every plan-timing test starts
+// from this same fixture.
+func seedPlanTimingRun(t *testing.T, dir string) time.Time {
+	t.Helper()
+	if _, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+		t.Fatalf("planPrepareCore (seed): %v", err)
+	}
+	doc := readSoleStateDoc(t, dir)
+	integrity, ok := doc["planIntegrity"].(map[string]any)
+	if !ok {
+		t.Fatalf("planIntegrity missing or wrong type: %v", doc["planIntegrity"])
+	}
+	skillInvoked, _ := integrity["skillInvoked"].(string)
+	startedAt, err := time.Parse(time.RFC3339, skillInvoked)
+	if err != nil {
+		t.Fatalf("parse seeded skillInvoked %q: %v", skillInvoked, err)
+	}
+	return startedAt
+}
+
+// TestPlanMark_PlanTiming_ComputedFromMtimeAndSkillInvoked verifies that a
+// plan_mark call with planFilePath set stamps data.planTiming from
+// planIntegrity.skillInvoked and the plan file's own mtime — not from the
+// time of the plan_mark call — and normalizes a relative planFilePath to an
+// absolute, cleaned path.
+func TestPlanMark_PlanTiming_ComputedFromMtimeAndSkillInvoked(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	startedAt := seedPlanTimingRun(t, dir)
+
+	relPath := filepath.Join("docs", "plan.md")
+	absPath := filepath.Join(dir, relPath)
+	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(absPath, []byte("# plan\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Set an mtime clearly later than startedAt but well before "now", so a
+	// regression that used time.Now() instead of the file's mtime would be
+	// caught by the exact-value assertions below.
+	wantModTime := startedAt.Add(5 * time.Minute)
+	if err := os.Chtimes(absPath, wantModTime, wantModTime); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := planMark(dir, dir, PlanMarkIn{Marker: "plan-file", Path: relPath})
+	if err != nil {
+		t.Fatalf("planMark(plan-file): %v", err)
+	}
+	if !out.OK {
+		t.Error("planMark(plan-file).OK = false, want true")
+	}
+
+	doc := readSoleStateDoc(t, dir)
+	if doc["planFilePath"] != absPath {
+		t.Errorf("planFilePath = %v, want absolute+cleaned %q", doc["planFilePath"], absPath)
+	}
+	timing, ok := doc["planTiming"].(map[string]any)
+	if !ok {
+		t.Fatalf("planTiming missing or wrong type: %v", doc["planTiming"])
+	}
+	wantStartedAt := startedAt.UTC().Format(time.RFC3339)
+	if timing["startedAt"] != wantStartedAt {
+		t.Errorf("planTiming.startedAt = %v, want %q", timing["startedAt"], wantStartedAt)
+	}
+	wantLastModified := wantModTime.UTC().Format(time.RFC3339)
+	if timing["lastModifiedAt"] != wantLastModified {
+		t.Errorf("planTiming.lastModifiedAt = %v, want %q", timing["lastModifiedAt"], wantLastModified)
+	}
+	wantDurationMs := float64(5 * time.Minute / time.Millisecond)
+	if timing["durationMs"] != wantDurationMs {
+		t.Errorf("planTiming.durationMs = %v, want %v", timing["durationMs"], wantDurationMs)
+	}
+}
+
+// TestPlanMark_PlanTiming_NoPlanFilePath_LeavesUnchanged verifies a
+// plan_mark call before any "plan-file" marker leaves planTiming absent and
+// still succeeds.
+func TestPlanMark_PlanTiming_NoPlanFilePath_LeavesUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	seedPlanTimingRun(t, dir)
+
+	out, err := planMark(dir, dir, PlanMarkIn{Marker: "guardrailsEvaluated"})
+	if err != nil {
+		t.Fatalf("planMark(guardrailsEvaluated): %v", err)
+	}
+	if !out.OK {
+		t.Error("planMark(guardrailsEvaluated).OK = false, want true")
+	}
+
+	doc := readSoleStateDoc(t, dir)
+	if _, present := doc["planTiming"]; present {
+		t.Errorf("planTiming = %v, want absent (no planFilePath set)", doc["planTiming"])
+	}
+}
+
+// TestPlanMark_PlanTiming_UnstatableFile_LeavesPreviousValue verifies that
+// once planTiming has been computed, a later call whose plan file can no
+// longer be stat'ed leaves planTiming (and planFilePath) at their previous
+// values, and the marker call still succeeds.
+func TestPlanMark_PlanTiming_UnstatableFile_LeavesPreviousValue(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	startedAt := seedPlanTimingRun(t, dir)
+
+	relPath := filepath.Join("docs", "plan.md")
+	absPath := filepath.Join(dir, relPath)
+	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(absPath, []byte("# plan\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wantModTime := startedAt.Add(2 * time.Minute)
+	if err := os.Chtimes(absPath, wantModTime, wantModTime); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := planMark(dir, dir, PlanMarkIn{Marker: "plan-file", Path: relPath}); err != nil {
+		t.Fatalf("planMark(plan-file): %v", err)
+	}
+	before := readSoleStateDoc(t, dir)
+	timingBefore, ok := before["planTiming"].(map[string]any)
+	if !ok {
+		t.Fatalf("planTiming missing or wrong type after plan-file: %v", before["planTiming"])
+	}
+
+	// The plan file disappears before the next marker call.
+	if err := os.Remove(absPath); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := planMark(dir, dir, PlanMarkIn{Marker: "critiqueRan"})
+	if err != nil {
+		t.Fatalf("planMark(critiqueRan): %v", err)
+	}
+	if !out.OK {
+		t.Error("planMark(critiqueRan).OK = false, want true")
+	}
+
+	after := readSoleStateDoc(t, dir)
+	if after["planFilePath"] != before["planFilePath"] {
+		t.Errorf("planFilePath = %v, want unchanged %v", after["planFilePath"], before["planFilePath"])
+	}
+	timingAfter, ok := after["planTiming"].(map[string]any)
+	if !ok {
+		t.Fatalf("planTiming missing or wrong type after critiqueRan: %v", after["planTiming"])
+	}
+	if !reflect.DeepEqual(timingAfter, timingBefore) {
+		t.Errorf("planTiming = %v, want unchanged %v", timingAfter, timingBefore)
+	}
+}
+
+// TestPlanMark_PlanTiming_DoneAppendsHistoryRecord verifies the "done"
+// marker appends one history.RunRecord to .sdlc-v2/history/runs.jsonl with
+// skill "plan", outcome "done", the resolved absolute plan_file, and timing
+// fields that match the plan file's last edit — not the time of the "done"
+// call itself, even when "done" is marked well after the last edit.
+func TestPlanMark_PlanTiming_DoneAppendsHistoryRecord(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	startedAt := seedPlanTimingRun(t, dir)
+
+	relPath := filepath.Join("docs", "plan.md")
+	absPath := filepath.Join(dir, relPath)
+	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(absPath, []byte("# plan\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wantModTime := startedAt.Add(3 * time.Minute)
+	if err := os.Chtimes(absPath, wantModTime, wantModTime); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := planMark(dir, dir, PlanMarkIn{Marker: "plan-file", Path: relPath}); err != nil {
+		t.Fatalf("planMark(plan-file): %v", err)
+	}
+
+	// "done" is marked without touching the plan file again — simulates a
+	// done call made well after the last edit.
+	out, err := planMark(dir, dir, PlanMarkIn{Marker: "done"})
+	if err != nil {
+		t.Fatalf("planMark(done): %v", err)
+	}
+	if !out.OK {
+		t.Error("planMark(done).OK = false, want true")
+	}
+	if out.Warning != "" {
+		t.Errorf("planMark(done).Warning = %q, want empty", out.Warning)
+	}
+
+	runs, err := history.NewFileWriter(historyDir(dir)).ReadRecentRuns(10)
+	if err != nil {
+		t.Fatalf("ReadRecentRuns: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("history runs = %v, want exactly 1", runs)
+	}
+	rec := runs[0]
+	if rec.Skill != "plan" || rec.Outcome != "done" || rec.Branch != "main" {
+		t.Errorf("record skill/outcome/branch = %q/%q/%q, want plan/done/main", rec.Skill, rec.Outcome, rec.Branch)
+	}
+	if rec.PlanFile != absPath {
+		t.Errorf("record.PlanFile = %q, want absolute+cleaned %q", rec.PlanFile, absPath)
+	}
+	wantStartedAt := startedAt.UTC().Format(time.RFC3339)
+	if rec.StartedAt != wantStartedAt {
+		t.Errorf("record.StartedAt = %q, want %q", rec.StartedAt, wantStartedAt)
+	}
+	wantLastModified := wantModTime.UTC().Format(time.RFC3339)
+	if rec.LastModifiedAt != wantLastModified {
+		t.Errorf("record.LastModifiedAt = %q, want %q (the plan file's mtime, not the done-call time)", rec.LastModifiedAt, wantLastModified)
+	}
+	wantDurationMs := int64(3 * time.Minute / time.Millisecond)
+	if rec.DurationMs != wantDurationMs {
+		t.Errorf("record.DurationMs = %d, want %d", rec.DurationMs, wantDurationMs)
+	}
+}
+
+// TestPlanMark_PlanTiming_DoneHistoryWriteFailure_ReturnsWarning verifies
+// that when the history append fails, "done" still returns ok:true and
+// names the error in Warning, rather than failing the call.
+func TestPlanMark_PlanTiming_DoneHistoryWriteFailure_ReturnsWarning(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	startedAt := seedPlanTimingRun(t, dir)
+
+	relPath := filepath.Join("docs", "plan.md")
+	absPath := filepath.Join(dir, relPath)
+	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(absPath, []byte("# plan\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wantModTime := startedAt.Add(time.Minute)
+	if err := os.Chtimes(absPath, wantModTime, wantModTime); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := planMark(dir, dir, PlanMarkIn{Marker: "plan-file", Path: relPath}); err != nil {
+		t.Fatalf("planMark(plan-file): %v", err)
+	}
+
+	// Force AppendRun to fail: pre-create a directory where runs.jsonl
+	// should be a regular file. Not chmod — running as root ignores
+	// permission bits, so a chmod-based failure would not reproduce in CI.
+	hDir := historyDir(dir)
+	if err := os.MkdirAll(filepath.Join(hDir, "runs.jsonl"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := planMark(dir, dir, PlanMarkIn{Marker: "done"})
+	if err != nil {
+		t.Fatalf("planMark(done): %v", err)
+	}
+	if !out.OK {
+		t.Error("planMark(done).OK = false, want true even when the history write fails")
+	}
+	if out.Warning == "" {
+		t.Error("planMark(done).Warning = empty, want an error naming the history write failure")
+	}
+}
+
+// TestPlanMark_PlanTiming_SecondDoneAppendsNewerRecord verifies a second
+// "done" call for the same run (e.g. a revision after a rejected
+// ExitPlanMode) appends a newer record rather than replacing the first, so
+// readers take the latest one.
+func TestPlanMark_PlanTiming_SecondDoneAppendsNewerRecord(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	startedAt := seedPlanTimingRun(t, dir)
+
+	relPath := filepath.Join("docs", "plan.md")
+	absPath := filepath.Join(dir, relPath)
+	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(absPath, []byte("# plan\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	firstModTime := startedAt.Add(time.Minute)
+	if err := os.Chtimes(absPath, firstModTime, firstModTime); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := planMark(dir, dir, PlanMarkIn{Marker: "plan-file", Path: relPath}); err != nil {
+		t.Fatalf("planMark(plan-file): %v", err)
+	}
+	if _, err := planMark(dir, dir, PlanMarkIn{Marker: "done"}); err != nil {
+		t.Fatalf("planMark(done) #1: %v", err)
+	}
+
+	// The plan is revised after a rejected ExitPlanMode: the file is edited
+	// again, later than the first "done".
+	if err := os.WriteFile(absPath, []byte("# plan\n\nrevised\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	secondModTime := startedAt.Add(10 * time.Minute)
+	if err := os.Chtimes(absPath, secondModTime, secondModTime); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := planMark(dir, dir, PlanMarkIn{Marker: "plan-file", Path: relPath}); err != nil {
+		t.Fatalf("planMark(plan-file) #2: %v", err)
+	}
+	if _, err := planMark(dir, dir, PlanMarkIn{Marker: "done"}); err != nil {
+		t.Fatalf("planMark(done) #2: %v", err)
+	}
+
+	runs, err := history.NewFileWriter(historyDir(dir)).ReadRecentRuns(10)
+	if err != nil {
+		t.Fatalf("ReadRecentRuns: %v", err)
+	}
+	if len(runs) != 2 {
+		t.Fatalf("history runs = %v, want exactly 2", runs)
+	}
+	latest := runs[len(runs)-1]
+	wantLastModified := secondModTime.UTC().Format(time.RFC3339)
+	if latest.LastModifiedAt != wantLastModified {
+		t.Errorf("latest record.LastModifiedAt = %q, want %q", latest.LastModifiedAt, wantLastModified)
+	}
+	wantDurationMs := int64(10 * time.Minute / time.Millisecond)
+	if latest.DurationMs != wantDurationMs {
+		t.Errorf("latest record.DurationMs = %d, want %d", latest.DurationMs, wantDurationMs)
+	}
+}
+
+// TestPlanMark_PlanTiming_CheckpointBranchAlsoRefreshesTiming verifies the
+// "checkpoint" marker branch also refreshes planTiming, not just the
+// generic timestamp-marker branch.
+func TestPlanMark_PlanTiming_CheckpointBranchAlsoRefreshesTiming(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	startedAt := seedPlanTimingRun(t, dir)
+
+	relPath := filepath.Join("docs", "plan.md")
+	absPath := filepath.Join(dir, relPath)
+	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(absPath, []byte("# plan\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wantModTime := startedAt.Add(4 * time.Minute)
+	if err := os.Chtimes(absPath, wantModTime, wantModTime); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := planMark(dir, dir, PlanMarkIn{Marker: "plan-file", Path: relPath}); err != nil {
+		t.Fatalf("planMark(plan-file): %v", err)
+	}
+
+	// Edit the file again, then mark a checkpoint — the checkpoint branch
+	// must pick up the new mtime too.
+	laterModTime := startedAt.Add(6 * time.Minute)
+	if err := os.Chtimes(absPath, laterModTime, laterModTime); err != nil {
+		t.Fatal(err)
+	}
+	out, err := planMark(dir, dir, PlanMarkIn{
+		Marker: "checkpoint",
+		Data:   map[string]any{"step": "3"},
+	})
+	if err != nil {
+		t.Fatalf("planMark(checkpoint): %v", err)
+	}
+	if !out.OK {
+		t.Error("planMark(checkpoint).OK = false, want true")
+	}
+
+	doc := readSoleStateDoc(t, dir)
+	timing, ok := doc["planTiming"].(map[string]any)
+	if !ok {
+		t.Fatalf("planTiming missing or wrong type after checkpoint: %v", doc["planTiming"])
+	}
+	wantLastModified := laterModTime.UTC().Format(time.RFC3339)
+	if timing["lastModifiedAt"] != wantLastModified {
+		t.Errorf("planTiming.lastModifiedAt = %v, want %q", timing["lastModifiedAt"], wantLastModified)
+	}
+}
+
 // readSoleStateDoc reads the single surviving plan-<slug>-*.json state file
 // under root and unmarshals it, failing the test if zero or more than one
 // file exists.
@@ -1471,6 +1865,56 @@ func TestPlanMark_CriticalDecisions_AppendOnly(t *testing.T) {
 	}
 	if len(decisions) != 2 {
 		t.Fatalf("len(criticalDecisions) = %d, want 2 (append-only across both calls)", len(decisions))
+	}
+}
+
+// TestPlanMark_PlanTiming_StructuredDataBranchAlsoRefreshesTiming verifies
+// the structured-data marker branch ("guardrailResults"/"criticalDecisions")
+// also refreshes planTiming, not just the generic timestamp-marker branch
+// and the checkpoint branch.
+func TestPlanMark_PlanTiming_StructuredDataBranchAlsoRefreshesTiming(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	startedAt := seedPlanTimingRun(t, dir)
+
+	relPath := filepath.Join("docs", "plan.md")
+	absPath := filepath.Join(dir, relPath)
+	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(absPath, []byte("# plan\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wantModTime := startedAt.Add(7 * time.Minute)
+	if err := os.Chtimes(absPath, wantModTime, wantModTime); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := planMark(dir, dir, PlanMarkIn{Marker: "plan-file", Path: relPath}); err != nil {
+		t.Fatalf("planMark(plan-file): %v", err)
+	}
+
+	out, err := planMark(dir, dir, PlanMarkIn{
+		Marker: "guardrailResults",
+		Data: map[string]any{"results": []any{
+			map[string]any{"id": "G1", "status": "pass", "detail": "ok"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("planMark(guardrailResults): %v", err)
+	}
+	if !out.OK {
+		t.Error("planMark(guardrailResults).OK = false, want true")
+	}
+
+	doc := readSoleStateDoc(t, dir)
+	timing, ok := doc["planTiming"].(map[string]any)
+	if !ok {
+		t.Fatalf("planTiming missing or wrong type after guardrailResults: %v", doc["planTiming"])
+	}
+	wantLastModified := wantModTime.UTC().Format(time.RFC3339)
+	if timing["lastModifiedAt"] != wantLastModified {
+		t.Errorf("planTiming.lastModifiedAt = %v, want %q", timing["lastModifiedAt"], wantLastModified)
 	}
 }
 

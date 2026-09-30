@@ -166,6 +166,54 @@ func TestHardenPrepare_PreflightGuardrailFailureAbortsNoManifest(t *testing.T) {
 	}
 }
 
+// TestHardenPrepare_PreflightUsesContentRoot pins Task 1's contract: the R16
+// guardrail pre-flight (guardrailsPreflight) reads from contentRoot (the
+// active worktree), not root (the main worktree). An invalid guardrail that
+// exists only in root must NOT abort the run; the same invalid guardrail
+// placed in contentRoot instead must.
+func TestHardenPrepare_PreflightUsesContentRoot(t *testing.T) {
+	badConfig := "" +
+		"[plan.guardrails.Bad_ID]\n" +
+		"description = \"desc\"\n"
+
+	t.Run("invalid guardrail only in root is ignored", func(t *testing.T) {
+		root := t.TempDir()
+		contentRoot := t.TempDir()
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), badConfig)
+
+		_, err := hardenPrepare(root, contentRoot, HardenPrepareIn{
+			FailureText:     "boom",
+			Skill:           "ship",
+			SkipConfigCheck: true,
+		})
+		if err != nil {
+			t.Fatalf("expected no pre-flight error for a root-only invalid guardrail, got: %v", err)
+		}
+	})
+
+	t.Run("invalid guardrail in contentRoot aborts", func(t *testing.T) {
+		root := t.TempDir()
+		contentRoot := t.TempDir()
+		writeFile(t, filepath.Join(contentRoot, paths.DataDir, "config.toml"), badConfig)
+
+		_, err := hardenPrepare(root, contentRoot, HardenPrepareIn{
+			FailureText:     "boom",
+			Skill:           "ship",
+			SkipConfigCheck: true,
+		})
+		if err == nil {
+			t.Fatal("expected a pre-flight validation error for a contentRoot invalid guardrail, got nil")
+		}
+		var domainErr *mcpserver.DomainError
+		if !errorsAsDomainError(err, &domainErr) {
+			t.Fatalf("expected *mcpserver.DomainError, got %T: %v", err, err)
+		}
+		if !containsSubstr(domainErr.Msg, "existing-plan-guardrails") {
+			t.Fatalf("expected existing-plan-guardrails prefix in message, got: %s", domainErr.Msg)
+		}
+	})
+}
+
 func TestHardenPrepare_PreflightDimensionFailureAbortsNoManifest(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, paths.DataDir, "review-dimensions", "bad.md"), "no frontmatter here\n")
@@ -327,6 +375,43 @@ func TestHardenPrepare_LoadsGuardrailSurfaces(t *testing.T) {
 	eg := exec[0].(map[string]any)
 	if eg["id"] != "no-severity-guardrail" || eg["severity"] != "error" {
 		t.Errorf("expected id passed through and severity defaulted to 'error', got %+v", eg)
+	}
+}
+
+// TestHardenPrepare_GuardrailsFromContentRoot pins Task 1's contract: both
+// guardrail surfaces (loadSurfaceGuardrails for "plan" and "execute") load
+// from contentRoot (the active worktree), not root (the main worktree). A
+// guardrail defined only in root must not appear in the manifest; a
+// guardrail defined only in contentRoot must.
+func TestHardenPrepare_GuardrailsFromContentRoot(t *testing.T) {
+	root := t.TempDir()
+	contentRoot := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), ""+
+		"[plan.guardrails.root-only-guardrail]\n"+
+		"description = \"Should not appear — root is not the guardrail source.\"\n")
+	writeFile(t, filepath.Join(contentRoot, paths.DataDir, "config.toml"), ""+
+		"[plan.guardrails.content-root-guardrail]\n"+
+		"severity = \"warning\"\n"+
+		"description = \"Should appear — contentRoot is the guardrail source.\"\n")
+
+	out, err := hardenPrepare(root, contentRoot, HardenPrepareIn{
+		FailureText:     "boom",
+		Skill:           "ship",
+		SkipConfigCheck: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	manifest := readHardenManifest(t, out.ManifestPath)
+	surfaces := manifest["surfaces"].(map[string]any)
+
+	plan := surfaces["planGuardrails"].([]any)
+	if len(plan) != 1 {
+		t.Fatalf("expected 1 plan guardrail (from contentRoot only), got %+v", plan)
+	}
+	g := plan[0].(map[string]any)
+	if g["id"] != "content-root-guardrail" {
+		t.Errorf("expected the contentRoot guardrail, got %+v", g)
 	}
 }
 
