@@ -140,7 +140,7 @@ The tool SHALL compare an Atlassian browse URL's host with the single Jira site 
 
 | Situation | `status` | `reason` | `detail` |
 |---|---|---|---|
-| More than one cached site directory | `violation` | `atlassian-site-ambiguous` | Multiple sites cached |
+| More than one cached site directory | `violation` | `atlassian-site-ambiguous` | `Multiple Jira sites are cached in the Jira cache directory (~/.sdlc-cache/jira/ by default), so the expected host is unknown; check this URL's host by hand.` |
 | No cache directory or no site directory | `violation` | `atlassian-site-mismatch` | `observed <host>, expected <none>` |
 | Host differs from cached site | `violation` | `atlassian-site-mismatch` | `observed <host>, expected <site>` |
 | Host equals cached site | `ok` | — | — |
@@ -158,6 +158,7 @@ The tool SHALL compare an Atlassian browse URL's host with the single Jira site 
 #### Scenario: Two cached sites
 - **WHEN** `~/.sdlc-cache/jira/` holds `acme_atlassian_net` and `other_atlassian_net`
 - **THEN** an Atlassian browse URL gets `reason` `atlassian-site-ambiguous`
+- **AND** `detail` names no input the tool does not accept
 
 ### Requirement: Generic URL check
 The tool SHALL skip skip-list hosts first, then skip all generic URLs when `offline` is `true`, and otherwise SHALL probe the URL over HTTP.

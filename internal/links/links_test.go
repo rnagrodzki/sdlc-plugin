@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -396,6 +397,10 @@ func TestValidate_AtlassianAmbiguous(t *testing.T) {
 	}
 	if results[0].Reason != "atlassian-site-ambiguous" {
 		t.Errorf("Reason: got %q, want 'atlassian-site-ambiguous'", results[0].Reason)
+	}
+	// The detail must not point at an input no tool exposes.
+	if strings.Contains(results[0].Detail, "JiraCacheDir") {
+		t.Errorf("Detail names the internal JiraCacheDir field: %q", results[0].Detail)
 	}
 }
 
