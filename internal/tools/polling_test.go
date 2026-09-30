@@ -516,6 +516,80 @@ func TestVerifyPipelineAwait_ExitCode8_PendingNotError(t *testing.T) {
 	defer os.Remove(*env.StateFile)
 }
 
+// TestVerifyPipelineAwait_Exit1NoRowsIsProbeFailure pins that a gh failure
+// that exits 1 with no check rows (here: PR not found) is a classified probe
+// failure, not a "green" verdict. gh pr checks exits 1 both for failed
+// checks and for its own errors; only the rows tell them apart.
+func TestVerifyPipelineAwait_Exit1NoRowsIsProbeFailure(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\necho 'GraphQL: Could not resolve to a PullRequest with the number of 9. (repository.pullRequest)' >&2\nexit 1\n")
+	defer cleanup()
+
+	env, err := verifyPipelineAwait(".", VerifyPipelineAwaitIn{PR: 9, TimeoutSeconds: 1200, IntervalSeconds: 60})
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if env.StateFile != nil {
+		defer os.Remove(*env.StateFile)
+	}
+	if env.Status != "error" {
+		t.Fatalf("got status=%q verdict=%v, want error (a gh failure must not read as green)", env.Status, env.Ext["verdict"])
+	}
+	if env.Ext["error_class"] != ghClassNotFound {
+		t.Errorf("error_class = %v, want %q", env.Ext["error_class"], ghClassNotFound)
+	}
+	if env.Ext["retryable"] != false {
+		t.Errorf("retryable = %v, want false", env.Ext["retryable"])
+	}
+	if !strings.Contains(env.Error, "Could not resolve to a PullRequest") {
+		t.Errorf("error = %q, want it to carry gh's stderr", env.Error)
+	}
+}
+
+// TestVerifyPipelineAwait_Exit1NoRowsAfterDeadline pins that the same gh
+// failure after the deadline ends the poll as a timeout that names the
+// probe failure class.
+func TestVerifyPipelineAwait_Exit1NoRowsAfterDeadline(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\necho 'GraphQL: Could not resolve to a PullRequest with the number of 9. (repository.pullRequest)' >&2\nexit 1\n")
+	defer cleanup()
+
+	stateFile := newTimedOutPollState(t, "verify-pipeline")
+
+	env, err := verifyPipelineAwait(".", VerifyPipelineAwaitIn{PR: 9, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if env.Status != "done" || env.Ext["verdict"] != "timeout" {
+		t.Fatalf("got status=%q verdict=%v, want done/timeout", env.Status, env.Ext["verdict"])
+	}
+	if env.Ext["probe_error_class"] != ghClassNotFound {
+		t.Errorf("probe_error_class = %v, want %q", env.Ext["probe_error_class"], ghClassNotFound)
+	}
+}
+
+// TestVerifyPipelineAwait_NoChecksReportedIsNotGreen pins that gh's "no
+// checks reported" error (exit 1, stderr only) is not read as green: right
+// after a push, GitHub may not have registered any check yet. It is an
+// unknown, retryable probe failure, so the caller re-probes until checks
+// appear or the deadline passes.
+func TestVerifyPipelineAwait_NoChecksReportedIsNotGreen(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\necho \"no checks reported on the 'feat' branch\" >&2\nexit 1\n")
+	defer cleanup()
+
+	env, err := verifyPipelineAwait(".", VerifyPipelineAwaitIn{PR: 9, TimeoutSeconds: 1200, IntervalSeconds: 60})
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if env.StateFile != nil {
+		defer os.Remove(*env.StateFile)
+	}
+	if env.Status != "error" {
+		t.Fatalf("got status=%q verdict=%v, want error", env.Status, env.Ext["verdict"])
+	}
+	if env.Ext["error_class"] != ghClassUnknown || env.Ext["retryable"] != true {
+		t.Errorf("error_class=%v retryable=%v, want %q true", env.Ext["error_class"], env.Ext["retryable"], ghClassUnknown)
+	}
+}
+
 func TestVerifyPipelineAwait_MissingGHBinary(t *testing.T) {
 	origPath := os.Getenv("PATH")
 	os.Setenv("PATH", "")

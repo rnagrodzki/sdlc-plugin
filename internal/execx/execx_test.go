@@ -217,7 +217,7 @@ func TestRetry_ExhaustsAllAttempts(t *testing.T) {
 // TestRunAllowExit_Success checks that a clean exit returns the trimmed
 // stdout, exit code 0, and a nil error.
 func TestRunAllowExit_Success(t *testing.T) {
-	got, exitCode, err := RunAllowExit("sh", []string{"-c", "printf hello"}, Options{})
+	got, _, exitCode, err := RunAllowExit("sh", []string{"-c", "printf hello"}, Options{})
 	if err != nil {
 		t.Fatalf("RunAllowExit: unexpected error: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestRunAllowExit_Success(t *testing.T) {
 // be returned, alongside the real exit code, with a nil error — the exit
 // code itself is the signal, not a failure to be masked.
 func TestRunAllowExit_PreservesStdoutOnNonZeroExit(t *testing.T) {
-	got, exitCode, err := RunAllowExit("sh", []string{"-c", "printf out; exit 1"}, Options{})
+	got, _, exitCode, err := RunAllowExit("sh", []string{"-c", "printf out; exit 1"}, Options{})
 	if err != nil {
 		t.Fatalf("RunAllowExit: unexpected error: %v", err)
 	}
@@ -246,11 +246,30 @@ func TestRunAllowExit_PreservesStdoutOnNonZeroExit(t *testing.T) {
 	}
 }
 
+// TestRunAllowExit_ReturnsStderrOnNonZeroExit checks that stderr is
+// returned on a plain non-zero exit, so a caller can read the reason for a
+// failure that printed nothing to stdout.
+func TestRunAllowExit_ReturnsStderrOnNonZeroExit(t *testing.T) {
+	got, stderr, exitCode, err := RunAllowExit("sh", []string{"-c", "echo boom >&2; exit 1"}, Options{})
+	if err != nil {
+		t.Fatalf("RunAllowExit: unexpected error: %v", err)
+	}
+	if exitCode != 1 {
+		t.Fatalf("RunAllowExit: got exitCode %d, want 1", exitCode)
+	}
+	if got != "" {
+		t.Fatalf("RunAllowExit: got stdout %q, want empty", got)
+	}
+	if stderr != "boom" {
+		t.Fatalf("RunAllowExit: got stderr %q, want %q", stderr, "boom")
+	}
+}
+
 // TestRunAllowExit_MissingBinaryErrors checks that a genuine execution
 // failure (binary not found) still surfaces as a non-nil error, since that
 // is not a "process ran and exited" case the exit-code contract covers.
 func TestRunAllowExit_MissingBinaryErrors(t *testing.T) {
-	_, _, err := RunAllowExit("definitely-not-a-real-binary-xyz", nil, Options{})
+	_, _, _, err := RunAllowExit("definitely-not-a-real-binary-xyz", nil, Options{})
 	if err == nil {
 		t.Fatalf("RunAllowExit: expected error for missing binary, got nil")
 	}

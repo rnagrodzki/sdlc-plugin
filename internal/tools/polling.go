@@ -90,12 +90,9 @@ var ghStderrClasses = []struct {
 // stays retryable, so a gh message this table does not know about keeps the
 // pre-existing re-probe behavior rather than silently ending a poll.
 //
-// Known limitation: only the remote_review probe reaches this classifier
-// with gh's stderr attached. The pipeline probe goes through
-// execx.RunAllowExit, which turns any plain process exit into
-// (stdout, exitCode, nil) and discards stderr — so a gh auth or 404 failure
-// on that path arrives as an unexpected exit code, not as one of the classes
-// above.
+// The pipeline probe reaches this classifier too: gh pr checks exits 1 both
+// for failed checks and for its own errors, so verifyPipelineAwait builds an
+// error from gh's stderr when an exit 1 or 8 comes with no check rows.
 func classifyGHError(err error) ghFailure {
 	switch {
 	case errors.Is(err, ghx.ErrGHNotFound):
@@ -395,7 +392,7 @@ func verifyPipelineAwait(activeRoot string, in VerifyPipelineAwaitIn) (stepper.E
 	// interval must resolve as a verdict, not as a false timeout.
 	timedOut := st.TimedOut()
 
-	checksText, exitCode, err := ghx.PRChecksWithExitCode(activeRoot, in.PR)
+	checksText, checksStderr, exitCode, err := ghx.PRChecksWithExitCode(activeRoot, in.PR)
 	if err != nil {
 		return probeFailureEnvelope(stateFile, st, timedOut, classifyGHError(err), map[string]any{
 			"pr_number": in.PR,
@@ -411,6 +408,17 @@ func verifyPipelineAwait(activeRoot string, in VerifyPipelineAwaitIn) (stepper.E
 	}
 
 	failed, pending := evaluateChecksText(checksText)
+	// gh exits 1 for failed checks and 8 for pending ones, so a non-zero exit
+	// with no failed or pending row is not a checks listing: it is gh's own
+	// error (PR not found, auth, "no checks reported"), with the reason on
+	// stderr. Reading it as green would report a pass that never happened.
+	if exitCode != 0 && len(failed) == 0 && len(pending) == 0 {
+		return probeFailureEnvelope(stateFile, st, timedOut, classifyGHError(
+			fmt.Errorf("gh pr checks: exit %d: %s", exitCode, checksStderr),
+		), map[string]any{
+			"pr_number": in.PR,
+		})
+	}
 	if len(failed) > 0 {
 		return stepper.Done(stateFile, "", map[string]any{
 			"verdict":       "failed",

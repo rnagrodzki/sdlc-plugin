@@ -169,7 +169,7 @@ func TestPRChecksWithExitCode_PreservesStdoutOnFailure(t *testing.T) {
 	cleanup := stubGH(t, "#!/bin/sh\nprintf 'lint\\tfail\\t30s\\thttps://x\\n'\nexit 1\n")
 	defer cleanup()
 
-	out, exitCode, err := PRChecksWithExitCode(".", 7)
+	out, _, exitCode, err := PRChecksWithExitCode(".", 7)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

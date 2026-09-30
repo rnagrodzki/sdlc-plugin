@@ -181,7 +181,8 @@ The tool SHALL classify each gh failure into one class from the table below, mat
 | `unexpected-exit` | false | `pipeline` only: `gh pr checks` exit code other than `0`, `1`, `8`; message `gh pr checks: unexpected exit code <N>` |
 | `unknown` | true | any other failure |
 
-- For `target: pipeline`, gh's error text is not read when gh exits: exit codes `0`, `1`, and `8` are read as check rows, and any other exit code is `unexpected-exit`.
+- For `target: pipeline`, exit codes `0`, `1`, and `8` are read as check rows, and any other exit code is `unexpected-exit`.
+- For `target: pipeline`, an exit `1` or `8` with no failed and no pending row is gh's own error, not a check result. It is classified from gh's stderr, with message `gh pr checks: exit <N>: <stderr>`.
 
 #### Scenario: Rate limit is retryable
 - **WHEN** gh fails with `API rate limit exceeded (HTTP 403)`
@@ -194,6 +195,17 @@ The tool SHALL classify each gh failure into one class from the table below, mat
 #### Scenario: Unexpected pipeline exit code
 - **WHEN** the deadline has passed and `gh pr checks` exits `2`
 - **THEN** `ext.verdict` is `timeout` and `ext.probe_error_class` is `unexpected-exit`
+
+#### Scenario: Pipeline PR not found
+- **WHEN** `gh pr checks` prints no rows, writes `GraphQL: Could not resolve to a PullRequest with the number of 9.` to stderr, and exits `1`
+- **AND** the deadline has not passed
+- **THEN** `status` is `error`, `ext.error_class` is `not-found`, and `ext.retryable` is `false`
+
+#### Scenario: No checks reported yet
+- **WHEN** `gh pr checks` prints no rows, writes `no checks reported on the 'feat' branch` to stderr, and exits `1`
+- **AND** the deadline has not passed
+- **THEN** `status` is `error`, `ext.error_class` is `unknown`, and `ext.retryable` is `true`
+- **AND** `ext.verdict` is not `green`
 
 ### Requirement: Remote review verdict
 For `target: remote_review` the tool SHALL read the PR's reviews and return a verdict for the first configured reviewer, in `reviewers` order, whose latest submitted review maps to a verdict.
@@ -247,7 +259,8 @@ For `target: pipeline` the tool SHALL read the tab-separated rows of `gh pr chec
 | No failed and no pending row | `done`, `verdict: green` | `pr_number` |
 | Pending rows, before deadline | `pending` | `pr_number`, `pending_checks` (list of `name`, `state`) |
 
-- Exit codes `0`, `1`, and `8` are all normal; exit `8` (checks pending) is not an error.
+- Exit codes `0`, `1`, and `8` are all normal when rows are printed; exit `8` (checks pending) is not an error.
+- An exit `1` or `8` with no failed and no pending row is a probe failure, never `green` (see gh failure classes).
 - Rows with fewer than two tab-separated columns are ignored.
 - A failed row wins over pending rows.
 
