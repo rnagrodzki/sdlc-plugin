@@ -44,9 +44,19 @@ The tool SHALL return the fields below.
 - **AND** `written` is `["commit"]`
 
 ### Requirement: File routing
-The tool SHALL route each section key by its first dotted segment: `version`, `jira`, `commit`, `pr`, `plan`, `execute` go to `.sdlc-v2/config.toml`; every other first segment goes to `.sdlc-v2/local.toml`.
+The tool SHALL route each section key by its first dotted segment and SHALL reject the whole call, before writing anything, when any key has a non-empty first segment outside both sets below.
 
-- Unknown first segments are not rejected; they land in `local.toml`.
+| First segment | Target file |
+|---|---|
+| `version`, `jira`, `commit`, `pr`, `plan`, `execute` | `.sdlc-v2/config.toml` |
+| `review`, `planStyle`, `ship`, `receivedReview`, `github`, `executePrefs`, `workspace`, `automation` | `.sdlc-v2/local.toml` |
+
+| Condition | Class | Message / Suggestion (short) |
+|---|---|---|
+| One or more keys have an unknown first segment | `DomainError` | `setup_write_sections: unknown section keys [<keys>]; allowed top-level keys: [<sorted allowed keys>]` / fix each key to an allowed first segment (the section's `configPath` from `setup_prepare`); nothing was written |
+
+- The local set is the top-level properties of `plugins/sdlc/schemas/sdlc-local.schema.json`, minus its integer `version` property.
+- An empty first segment (e.g. `.guardrails`) is not an unknown key; it fails per section as described under "Wholesale write at the named key".
 - The tool creates `.sdlc-v2/` and the target file when absent.
 - Writes are atomic per file.
 
@@ -59,12 +69,18 @@ The tool SHALL route each section key by its first dotted segment: `version`, `j
 - **WHEN** `sectionsJson` is `{"ship":{"draft":true}}`
 - **THEN** `.sdlc-v2/local.toml` gets the `ship` table
 
+#### Scenario: Misspelled key rejected
+- **WHEN** `sectionsJson` is `{"commit":{"style":"conventional"},"shp":{"draft":true}}`
+- **THEN** the tool returns a `DomainError` starting `setup_write_sections: unknown section keys [shp]`
+- **AND** the message lists the allowed top-level keys
+- **AND** neither `.sdlc-v2/config.toml` nor `.sdlc-v2/local.toml` is written
+
 ### Requirement: Wholesale write at the named key
 The tool SHALL replace the table at the named key wholesale and SHALL leave every other key in the file unchanged. For a dotted key it SHALL replace only the leaf table, keep siblings under the same parent, and create missing parent tables.
 
 - A `null` value writes an empty table at that key, which clears it.
 - Callers pass the complete object for the key; the tool does not patch individual fields.
-- A key with an empty dotted segment (e.g. `plan.`, `.guardrails`, `a..b`) fails with `config: invalid section name "<key>"` in `errors`.
+- A key with an empty dotted segment (e.g. `plan.`, `.guardrails`, `plan..tasks`) fails with `config: invalid section name "<key>"` in `errors`.
 
 #### Scenario: Other sections kept
 - **WHEN** `config.toml` has a `version` table

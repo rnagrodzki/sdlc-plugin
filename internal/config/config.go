@@ -41,6 +41,23 @@ var ProjectSections = map[string]bool{
 	"execute": true,
 }
 
+// LocalSections is the set of section names that live in the local config
+// (.sdlc-v2/local.toml), taken from the top-level properties of
+// plugins/sdlc/schemas/sdlc-local.schema.json. The schema's integer
+// "version" property is left out: it is the file's schema version, not a
+// section, and the "version" section routes to config.toml.
+// TestLocalSchemaSync keeps this set in sync with the schema file.
+var LocalSections = map[string]bool{
+	"review":         true,
+	"planStyle":      true,
+	"ship":           true,
+	"receivedReview": true,
+	"github":         true,
+	"executePrefs":   true,
+	"workspace":      true,
+	"automation":     true,
+}
+
 // Quiet suppresses config-read tracing to stderr when set to true.
 // Safe to set before the first Read/ReadSection call. Tracing never
 // writes to stdout — this binary is an MCP stdio server, and one stray
