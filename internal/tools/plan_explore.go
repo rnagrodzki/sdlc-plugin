@@ -182,8 +182,9 @@ func getGitScopeFiles(contentRoot string) []string {
 // backtickPathRe matches inline-code file paths in markdown, e.g. `src/foo.go`.
 var backtickPathRe = regexp.MustCompile("`([a-zA-Z0-9_\\-./]+\\.[a-zA-Z]{1,10})`")
 
-// getOpenSpecPaths scans an OpenSpec change's proposal.md and specs/*.md for
-// backtick-quoted, relative-looking file paths, mirroring
+// getOpenSpecPaths scans an OpenSpec change's proposal.md, its delta specs
+// (specs/<capability>/spec.md, the OpenSpec layout) and any top-level
+// specs/*.md for backtick-quoted, relative-looking file paths, mirroring
 // plan-explore.js's getOpenSpecPaths.
 func getOpenSpecPaths(contentRoot, changeName string) []string {
 	if changeName == "" || !isSafeChangeName(changeName) {
@@ -203,7 +204,12 @@ func getOpenSpecPaths(contentRoot, changeName string) []string {
 	specsDir := filepath.Join(changeDir, "specs")
 	if entries, err := os.ReadDir(specsDir); err == nil {
 		for _, e := range entries {
-			if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
+			switch {
+			case e.IsDir():
+				if spec := filepath.Join(specsDir, e.Name(), "spec.md"); fileExists(spec) {
+					filesToScan = append(filesToScan, spec)
+				}
+			case strings.HasSuffix(e.Name(), ".md"):
 				filesToScan = append(filesToScan, filepath.Join(specsDir, e.Name()))
 			}
 		}

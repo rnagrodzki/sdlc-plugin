@@ -92,7 +92,7 @@ sequenceDiagram
     participant git
     participant FS
     T->>git: diff --name-only against the default branch
-    T->>FS: read openspec change proposal.md and specs/*.md
+    T->>FS: read openspec change proposal.md, specs/<capability>/spec.md and specs/*.md
     T->>git: grep -l -i per prompt keyword
     T->>FS: read installed SKILL.md front-matter
     T->>FS: list recent plan files
@@ -102,13 +102,18 @@ sequenceDiagram
 | Order | Source | Rule |
 |---|---|---|
 | 1 | git scope | `git diff --name-only <default>...HEAD`. Default branch is `origin/HEAD`, else `main`, else `master`. No default branch or a failed diff gives no files. |
-| 2 | OpenSpec paths | Backtick-quoted relative paths with a 1–10 letter extension in `openspec/changes/<fromOpenspec>/proposal.md` and `specs/*.md`. Paths starting with `/` are skipped. |
+| 2 | OpenSpec paths | Backtick-quoted relative paths with a 1–10 letter extension in `openspec/changes/<fromOpenspec>/proposal.md`, in each `specs/<capability>/spec.md` (one directory level only), and in any top-level `specs/*.md`. Paths starting with `/` are skipped. |
 | 3 | keyword grep | `git grep -l -i <token>` per token. Tokens are lowercase alphanumeric runs longer than 2 characters, not stopwords, unique, max 8. A non-zero `git grep` exit means "no matches". |
 
 #### Scenario: Unsafe or missing change name
 - **WHEN** `fromOpenspec` is an unsafe change name (for example `..`) or its change directory does not exist
 - **THEN** the OpenSpec source contributes no files
 - **AND** the call still succeeds
+
+#### Scenario: Paths from a capability spec
+- **WHEN** `fromOpenspec` is `add-widget` and `openspec/changes/add-widget/specs/widget/spec.md` mentions `` `internal/widget/render.go` ``
+- **THEN** `scopeHintFiles` holds `internal/widget/render.go`
+- **AND** a path mentioned only in `specs/deep/nested/spec.md` is not in `scopeHintFiles`
 
 #### Scenario: Scope hints are capped
 - **WHEN** the three sources together yield more than 30 distinct files
