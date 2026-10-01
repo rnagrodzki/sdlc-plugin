@@ -91,6 +91,35 @@ func TestSetupWriteSections_FallbackWarns(t *testing.T) {
 	}
 }
 
+// TestSetupWriteSections_FallbackKeepsIntegers verifies that the full-rewrite
+// fallback writes whole numbers in the other sections as integers, not as
+// floats such as "60.0".
+func TestSetupWriteSections_FallbackKeepsIntegers(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".sdlc-v2", "local.toml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "workspace = { tasks = { note = \"old\" } }\n\n[ship]\nexecuteWaveInterval = 60\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, text := callRegisteredSetupWriteSectionsIn(t, dir, `{"workspace.tasks":{"note":"new"}}`)
+	if res.IsError {
+		t.Fatalf("expected success, got tool error:\n%s", text)
+	}
+	if !strings.Contains(text, "section workspace.tasks: could not edit .sdlc-v2/local.toml in place") {
+		t.Errorf("missing full-rewrite warning:\n%s", text)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "executeWaveInterval = 60\n") || strings.Contains(string(got), "60.0") {
+		t.Errorf("fallback rewrite turned the [ship] integer into a float:\n%s", got)
+	}
+}
+
 // TestSetupWriteSections_KeepsTemplateComments verifies that writing one
 // section into the commented config.toml/local.toml templates replaces only
 // that section's text: every comment and every other section stays

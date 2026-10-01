@@ -227,3 +227,18 @@ func TestWriteSection_SpliceFallsBack(t *testing.T) {
 		t.Errorf("full rewrite unexpectedly kept comments:\n%s", got)
 	}
 }
+
+// TestWriteSection_FallbackKeepsIntegers pins that the full-rewrite fallback
+// writes whole numbers in the other sections as TOML integers. fsx.ReadTOML
+// decodes every number as float64, so without a conversion "60" became
+// "60.0" in every section the write did not touch.
+func TestWriteSection_FallbackKeepsIntegers(t *testing.T) {
+	content := "workspace = { tasks = { note = \"old\" } }\n\n[ship]\nexecuteWaveInterval = 60\nsteps = [\"execute\"]\n"
+	got, rewrote := writeSpliceFixture(t, "local.toml", content, "workspace.tasks", map[string]any{"note": "new"})
+	if !rewrote {
+		t.Fatalf("rewrote = false, want true for an inline-table layout")
+	}
+	if !strings.Contains(got, "executeWaveInterval = 60\n") || strings.Contains(got, "60.0") {
+		t.Errorf("fallback rewrite changed the [ship] integer into a float:\n%s", got)
+	}
+}

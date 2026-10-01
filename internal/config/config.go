@@ -17,6 +17,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -879,5 +880,32 @@ func writeSectionFile(path, name string, v map[string]any, validate func(map[str
 	if out, ok := spliceFile(path, name, v, existing); ok {
 		return false, fsx.AtomicWriteBytes(path, out)
 	}
-	return true, fsx.AtomicWriteTOML(path, existing)
+	// fsx.ReadTOML decodes every number as float64, so a plain rewrite would
+	// turn every integer in the other sections into a float ("60" -> "60.0").
+	return true, fsx.AtomicWriteTOML(path, WholeNumbersToInt(existing))
+}
+
+// WholeNumbersToInt returns v with every float64 that holds a whole number
+// replaced by an int64, recursing into maps and slices (maps and slices are
+// changed in place). JSON decoding and fsx.ReadTOML both produce float64 for
+// every number, and go-toml writes a float64 such as 60 as "60.0", while
+// hand-written config files use "60" for integers. A number with a fraction
+// (e.g. 0.5) stays a float64. A whole-number float such as "1.0" becomes
+// "1"; readers decode both to the same float64.
+func WholeNumbersToInt(v any) any {
+	switch val := v.(type) {
+	case float64:
+		if val == math.Trunc(val) && val >= math.MinInt64 && val < math.MaxInt64 {
+			return int64(val)
+		}
+	case map[string]any:
+		for k, e := range val {
+			val[k] = WholeNumbersToInt(e)
+		}
+	case []any:
+		for i, e := range val {
+			val[i] = WholeNumbersToInt(e)
+		}
+	}
+	return v
 }

@@ -158,13 +158,19 @@ The tool SHALL write every JSON number that has no fraction as a TOML integer, a
 | `0.5` | `0.5` |
 | `[1, 2.5]` | `[1, 2.5]` |
 
-- This applies only to the section being written. On the full-rewrite fallback, other sections are re-encoded from the parsed file, which holds every number as a float, so a whole number there is written as e.g. `60.0`.
+- On the full-rewrite fallback, the same rule applies to every section of the file, not only the one being written. The parsed file holds every number as a float, so each whole number is converted back to an integer before the file is written.
 
 #### Scenario: Nested integer fields
 - **WHEN** `sectionsJson` is `{"automation":{"reviewFixIterations":3,"drift":{"maxErrorRate":0.5,"minErrorFloor":2}}}`
 - **THEN** `local.toml` holds `reviewFixIterations = 3`
 - **AND** `local.toml` holds `minErrorFloor = 2`
 - **AND** `local.toml` holds `maxErrorRate = 0.5`
+
+#### Scenario: Full-rewrite fallback keeps other integers
+- **WHEN** `local.toml` defines `workspace = { tasks = { note = "old" } }` and a `[ship]` table with `executeWaveInterval = 60`
+- **AND** the call writes `{"workspace.tasks":{"note":"new"}}`
+- **THEN** the whole file is rewritten and `warnings` has an entry starting `section workspace.tasks: could not edit .sdlc-v2/local.toml in place`
+- **AND** `local.toml` holds `executeWaveInterval = 60`, not `60.0`
 
 ### Requirement: Per-section failures do not stop the batch
 The tool SHALL process section keys in sorted order and SHALL continue after a section fails. A failed section SHALL add an `errors` entry and set `ok: false`; it SHALL NOT produce a tool error.
