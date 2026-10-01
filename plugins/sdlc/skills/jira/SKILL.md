@@ -41,8 +41,13 @@ pre-v5 caches** — if a legacy `.sdlc-v2/jira-cache/<KEY>.json` or `.claude/jir
 file exists from an earlier install, it is not read or moved; either copy it to the home
 layout above manually or run cache initialization fresh.
 
-Each issue type has a description template (shipped in the skill's `templates/` directory
-and customizable per project at `.sdlc-v2/jira-templates/<Type>.md`). Templates are filled
+Each issue type needs a description template. A custom template at
+`.sdlc-v2/jira-templates/<Type>.md` wins. Otherwise the `jira` tool looks for a default
+`<Type>.md` in the first of these directories: the `templatesDir` input;
+`$CLAUDE_PLUGIN_ROOT/skills/jira/templates` (only when it exists); the first
+`jira/templates` directory under `~/.claude/plugins`; `<cwd>/plugins/sdlc/skills/jira/templates`.
+This plugin currently ships no default templates, so unless one of those directories
+has them, only custom templates resolve, and `--init-templates` has nothing to copy. Templates are filled
 from user context before the MCP call, producing well-structured descriptions on the first
 attempt. All `{placeholder}` markers must be replaced with real content or the section
 removed entirely — the API call is never made with raw placeholder text.
@@ -57,7 +62,7 @@ removed entirely — the API call is never made with raw placeholder text.
 |----------|-------------|---------|
 | `--project <KEY>` | Jira project key (e.g., PROJ). When `jira.projects` is set, values outside the list are rejected. | Auto-detected |
 | `--force-refresh` | Rebuild cache even if fresh | false |
-| `--init-templates` | Copy default templates to `.sdlc-v2/jira-templates/` | false |
+| `--init-templates` | Copy default templates (if any are found — see above) to `.sdlc-v2/jira-templates/` | false |
 | `--site <host>` | Sanitized site host (e.g., `acme_atlassian_net`). Disambiguates `check`/`load` when the same project key is cached under multiple sites. | Unset |
 | `--skip-workflow-discovery` | Bypass Phase 5; cache `workflows[type] = { unsampled: true }` per non-subtask type. Transitions fall back to live `getTransitionsForJiraIssue` per issue. Use in CI. | false |
 
@@ -711,7 +716,7 @@ is always incorrect.
 | User disambiguation | `lookupJiraAccountId` results always disambiguated if multiple matches |
 | No fabricated values | All field values derived from cache `allowedValues` or user input |
 | Approval gate (G9) | No write MCP call dispatched without an `approve` from the R17 prompt in this turn |
-| Template enforced (G10) | No `description` field built without a resolved template — `.sdlc-v2/jira-templates/<Type>.md` (override) or shipped `templates/<Type>.md` (R18) |
+| Template enforced (G10) | No `description` field built without a resolved template — `.sdlc-v2/jira-templates/<Type>.md` (override) or a default `<Type>.md` the `jira` tool found (R18) |
 | Placeholders resolved (G11) | No `low`-confidence `{name}` or `[prose]` marker dispatched without explicit user resolution (R19) |
 | Critique surfaced (G12) | No proposal presented to the user without a preceding `Initial:` / `Critique:` / `Final:` block (R20) |
 | Cooperative approval (G13) | Write dispatch relies on the Step 2.6 `AskUserQuestion` answer alone — this port has no automated hook that re-verifies the payload hash before dispatch. Treat the approval step as a hard behavioral rule, not a technically enforced one |
@@ -723,7 +728,7 @@ is always incorrect.
 ## DO
 
 - Present the full final payload before any write MCP call (R17)
-- Resolve a description template — override or shipped — before building `description` (R18)
+- Resolve a description template — override or default — before building `description` (R18)
 - Escalate every low-confidence placeholder marker via `AskUserQuestion` (R19)
 - Run a critique pass before the approval gate; surface findings to the user (R20)
 - Write the critique and approval-token artifacts via `jira({ action: "write-critique"/"write-approval", ... })`, and compute the canonical content hash via `sha256sum`/`shasum` (through Bash) over the canonicalized payload (R21)

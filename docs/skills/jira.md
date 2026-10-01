@@ -22,7 +22,7 @@ After invoking `/jira`, describe what you want in natural language.
 |------|-------------|---------|
 | `--project <KEY>` | Jira project key (e.g., `PROJ`). | auto-detected from branch, else configured default |
 | `--force-refresh` | Rebuild the cached project metadata. | off |
-| `--init-templates` | Copy the skill's default issue templates to `.sdlc-v2/jira-templates/` for per-project customization. | off |
+| `--init-templates` | Copy default issue templates, when any are found, to `.sdlc-v2/jira-templates/` for per-project customization. The plugin ships none today. | off |
 | `--site <host>` | Jira site hostname (e.g., `mycompany.atlassian.net`). Disambiguates cached projects that exist under more than one site. | unset |
 | `--skip-workflow-discovery` | Skip loading workflows and transitions (faster startup; useful in CI). | off |
 
@@ -70,5 +70,7 @@ After invoking `/jira`, describe what you want in natural language.
 - **Multi-project repos.** Add a `projects` array under the `jira` section of
   `.sdlc-v2/config.toml` to restrict which project keys are accepted, then
   use `--project <KEY>` to pick the active one per invocation.
-- **Templates.** Run `--init-templates` to copy default issue-type templates
-  you can then customize per project.
+- **Templates.** Every issue type needs a description template. The plugin
+  ships no default templates today, so write your own at
+  `.sdlc-v2/jira-templates/<Type>.md`. `--init-templates` copies defaults
+  only when it finds a templates directory (see the skill for the lookup order).

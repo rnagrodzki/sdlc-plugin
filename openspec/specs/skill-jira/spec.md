@@ -171,7 +171,8 @@ The skill SHALL classify the request as one of `create`, `edit`, `search`, `tran
 ### Requirement: Description template resolution
 Before building any `description` (every `create`; `edit` only when `description` changes), the skill SHALL call `jira` `templates` and use the resolved template; free-form descriptions are not allowed.
 
-- A custom template at `.sdlc-v2/jira-templates/<Type>.md` wins over the shipped default.
+- A custom template at `.sdlc-v2/jira-templates/<Type>.md` wins over a default template.
+- Default templates come from the directory the `jira` tool resolves (see tool-jira); the plugin ships none, so without one only custom templates resolve.
 - For each `fallbacks` entry, print `Using <fallbackTo> template for <type> — override at .sdlc-v2/jira-templates/<type>.md`.
 - The skill does not re-derive the fallback map; the tool owns it.
 
