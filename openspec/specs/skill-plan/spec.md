@@ -103,7 +103,7 @@ When `openspec/config.yaml` exists and neither `--spec` nor a path into `openspe
 - **THEN** the skill stops without writing a plan
 
 ### Requirement: From-OpenSpec mode
-When `fromOpenspec.valid` is true, the skill SHALL read the change's `proposal.md`, `design.md` (optional), `specs/*.md`, and `tasks.md` (optional), set `fromOpenspecDirect = true`, and skip the gate check and complexity routing.
+When `fromOpenspec.valid` is true, the skill SHALL read the change's `proposal.md`, `design.md` (optional), delta specs (`specs/*.md` and `specs/<capability>/spec.md`, one level deep), and `tasks.md` (optional), set `fromOpenspecDirect = true`, and skip the gate check and complexity routing.
 
 - The plan header gets `**Source:** openspec/changes/<name>/` verbatim; `execute_state` init reads it later.
 - `tasks.md` is the primary decomposition skeleton; structured discovery is skipped.

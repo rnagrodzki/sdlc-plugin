@@ -69,7 +69,7 @@ Example — OpenSpec gate check:
 5. Once the active change is identified, Read in parallel:
    - `openspec/changes/<name>/proposal.md` — intent and scope
    - `openspec/changes/<name>/design.md` — technical approach (may not exist yet; skip if absent)
-   - All files matching `openspec/changes/<name>/specs/*.md` — delta specs (the requirements)
+   - All files matching `openspec/changes/<name>/specs/*.md` and `openspec/changes/<name>/specs/<capability>/spec.md` (one level deep) — delta specs (the requirements)
    - `openspec/changes/<name>/tasks.md` — OpenSpec's task checklist (may not exist; skip if absent)
 6. Store these as `openspecContext` for use in Steps 1–5. Update the plan file header `**Source:**` to `openspec/changes/<name>/` — required verbatim: `execute_state({action:"init"})` reads this exact header to ref-stamp `tasks.md` later. Do NOT report `openspecContext.tasksUpdated` as tasks updated — it is a pending count, not a write. Rationale: `docs/plan-architecture.md` § "OpenSpec tasks.md Ref Stamping".
 
@@ -166,7 +166,7 @@ Then continue the flow. If the contradictory phrase is absent, emit nothing.
 **`--from-openspec` handling (after prepare output, before gate check):**
 
 If `fromOpenspec.valid` is true in the prepare output:
-1. Read in parallel: `openspec/changes/<name>/proposal.md`, `openspec/changes/<name>/design.md` (optional), all `openspec/changes/<name>/specs/*.md`, `openspec/changes/<name>/tasks.md` (optional)
+1. Read in parallel: `openspec/changes/<name>/proposal.md`, `openspec/changes/<name>/design.md` (optional), all `openspec/changes/<name>/specs/*.md` and `openspec/changes/<name>/specs/<capability>/spec.md` (one level deep), `openspec/changes/<name>/tasks.md` (optional)
 2. Store as `openspecContext`. Set `fromOpenspecDirect = true`
 3. Skip the gate check and complexity routing; still perform the template-resolution `plan_prepare` call above (passing `fromOpenspecDirect: true`) before proceeding to Step 1
 
@@ -436,7 +436,7 @@ Identify constraints: language, framework, existing conventions, testing approac
 
 **OpenSpec enrichment (when `openspecContext` is available):**
 - Use `proposal.md` for goal and scope understanding (what's in, what's out)
-- Use delta specs (`specs/*.md`) with their ADDED/MODIFIED/REMOVED sections as the authoritative requirements — each delta entry is a requirement
+- Use delta specs (`specs/*.md` and `specs/<capability>/spec.md`) with their ADDED/MODIFIED/REMOVED sections as the authoritative requirements — each delta entry is a requirement
 - Use `design.md` for architecture constraints and technical approach decisions
 - Use `tasks.md` as a coarse reference for decomposition — OpenSpec tasks are higher-level than plan tasks, so decompose further rather than copying verbatim
 - When the OpenSpec artifacts provide sufficient scope, integration, and success criteria, skip the "Structured discovery" AskUserQuestion — the proposal and delta specs already answer those questions
@@ -460,7 +460,7 @@ When `openspecContext.requirements` is present (non-null) in the prepare output:
 
 2. Fill the prompt template variables:
    - `{PROPOSAL}` — content of `openspec/changes/<name>/proposal.md` (already read in Step 0), or `"[artifact missing]"` if absent
-   - `{DELTA_SPECS}` — concatenated content of all `openspec/changes/<name>/specs/*.md` files (already read in Step 0), or `"[artifact missing]"` if none found
+   - `{DELTA_SPECS}` — concatenated content of all delta spec files (`openspec/changes/<name>/specs/*.md` and `specs/<capability>/spec.md`) (already read in Step 0), or `"[artifact missing]"` if none found
    - `{TASKS_MD}` — content of `openspec/changes/<name>/tasks.md` (already read in Step 0), or `"[artifact missing]"` if absent
    - `{DESIGN}` — content of `openspec/changes/<name>/design.md` if present, or `"[artifact missing]"`
    - `{REQUIREMENTS_JSON}` — `JSON.stringify(openspecContext.requirements)` from prepare output, or `"null"` if null
@@ -728,7 +728,7 @@ Write the returned `appendixMarkdown` into the `## OpenSpec Appendix` section. T
 **(b)** When `openspecInlineGenerate` is true (inline generate path from gate check Option 2, implements R63), populate the `## OpenSpec Appendix` section with an **OpenSpec Artifacts (Draft)** label and author fresh artifacts from exploration and decomposition data:
 
 1. **`### Proposal Summary`** — author a proposal summary from the user's request and exploration findings. Wrap with `<!-- openspec-target: proposal.md -->`.
-2. **`### Delta Specs`** — author spec deltas with ADDED/MODIFIED/REMOVED sections derived from exploration and decomposition. Wrap with `<!-- openspec-target: specs/<feature-name>.md -->`.
+2. **`### Delta Specs`** — author spec deltas with ADDED/MODIFIED/REMOVED sections derived from exploration and decomposition. Wrap with `<!-- openspec-target: specs/<capability>/spec.md -->` (one file per capability — the OpenSpec layout, as in plan-format-reference.md).
 3. **`### Tasks List`** — author a tasks checklist derived from the plan's task decomposition. Wrap with `<!-- openspec-target: tasks.md -->`.
 
 Each fragment MUST be wrapped with `<!-- openspec-target: <path> -->` annotations as shown above. The appendix MUST be complete enough that `openspec create`/`openspec validate` can run directly off it after handoff, with no further interactive authoring step. **Nested-fence safety (N+1 backticks):** Before fencing a fragment, count the longest consecutive backtick run (N) inside its content and wrap in max(N+1, 4) backticks — CommonMark closes a fence only on a run at least as long as the opening. Each fragment is fenced independently.
