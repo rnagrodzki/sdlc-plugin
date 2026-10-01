@@ -48,10 +48,10 @@ The tool SHALL NOT return a tool error for a failed git read, config read or man
 | `currentBranch:` | Current branch cannot be read |
 | `defaultBranch:` | Default branch cannot be read |
 | `commitConfig:` | `commit` config section missing or unreadable |
-| `staged files:` | `git diff --cached --name-only` fails |
+| `staged files:` | `git diff --name-only -z --cached` fails |
 | `staged diff:` | `git diff --cached` fails |
 | `staged diffStat:` | `git diff --cached --stat` fails |
-| `unstaged files:` | `git diff --name-only` fails |
+| `unstaged files:` | `git diff --name-only -z` fails |
 | `status:` | `git status --porcelain -z` fails |
 | `recentCommits:` | `git log --oneline -15` fails |
 | `manifestPath:` | Manifest directory or file cannot be written |
@@ -84,7 +84,7 @@ The tool SHALL describe the staged changes in `staged` and SHALL add `no files s
 
 | Field | Meaning |
 |---|---|
-| `staged.files` | Paths from `git diff --cached --name-only` |
+| `staged.files` | Paths from `git diff --name-only -z --cached`, as raw names (never C-quoted) |
 | `staged.fileCount` | Length of `staged.files` |
 | `staged.diff` | Output of `git diff --cached`, truncated when over budget |
 | `staged.diffStat` | Output of `git diff --cached --stat` |
@@ -123,7 +123,7 @@ The tool SHALL list in `unstaged` every tracked path whose working tree differs 
 
 | Field | Meaning |
 |---|---|
-| `unstaged.files` | Paths from `git diff --name-only` (working tree vs index); the same comparison `commit_apply` uses to pick extra tracked paths |
+| `unstaged.files` | Paths from `git diff --name-only -z` (working tree vs index), as raw names (never C-quoted); the same comparison `commit_apply` uses to pick extra tracked paths |
 | `unstaged.fileCount` | Length of `unstaged.files` |
 | `unstaged.hasChanges` | `true` when `unstaged.fileCount` > 0 |
 | `untracked.files` | `??` entries from `git status --porcelain -z`, as raw names (never C-quoted); a wholly untracked directory is one entry with a trailing `/` |
@@ -151,6 +151,11 @@ The tool SHALL list in `unstaged` every tracked path whose working tree differs 
 #### Scenario: Untracked non-ASCII name
 - **WHEN** the untracked file `été notes.txt` exists
 - **THEN** `untracked.files` is `["été notes.txt"]`
+
+#### Scenario: Staged and unstaged non-ASCII names
+- **WHEN** the new file `été staged.txt` is staged and the tracked file `naïve notes.txt` is edited but not staged
+- **THEN** `staged.files` is `["été staged.txt"]`
+- **AND** `unstaged.files` is `["naïve notes.txt"]`
 
 ### Requirement: Branch information
 The tool SHALL report `currentBranch`, `defaultBranch` and `onDefaultBranch`. `onDefaultBranch` SHALL be `true` only when `currentBranch` is non-empty and equals `defaultBranch`.

@@ -152,13 +152,11 @@ func commitPrepare(cfgRoot, gitRoot string, in CommitPrepareIn) (CommitPrepareOu
 	}
 
 	// Staged files (cached diff, name-only).
-	stagedNames, err := gitx.Diff(gitRoot, gitx.DiffOpts{Cached: true, NameOnly: true})
+	stagedFiles, err := diffNames(gitRoot, true)
 	if err != nil {
 		out.Warnings = append(out.Warnings, fmt.Sprintf("staged files: %s", err.Error()))
 	}
-	if stagedNames != "" {
-		out.Staged.Files = nonEmptyLines(stagedNames)
-	}
+	out.Staged.Files = stagedFiles
 	out.Staged.FileCount = len(out.Staged.Files)
 
 	// Staged diff (full).
@@ -190,13 +188,11 @@ func commitPrepare(cfgRoot, gitRoot string, in CommitPrepareIn) (CommitPrepareOu
 	}
 
 	// Unstaged files.
-	unstagedNames, err := gitx.Diff(gitRoot, gitx.DiffOpts{NameOnly: true})
+	unstagedFiles, err := diffNames(gitRoot, false)
 	if err != nil {
 		out.Warnings = append(out.Warnings, fmt.Sprintf("unstaged files: %s", err.Error()))
 	}
-	if unstagedNames != "" {
-		out.Unstaged.Files = nonEmptyLines(unstagedNames)
-	}
+	out.Unstaged.Files = unstagedFiles
 	out.Unstaged.FileCount = len(out.Unstaged.Files)
 	out.Unstaged.HasChanges = out.Unstaged.FileCount > 0
 
@@ -379,6 +375,28 @@ func computeTruncatedFiles(original, truncated string) []string {
 		omitted = []string{}
 	}
 	return omitted
+}
+
+// diffNames runs `git diff --name-only -z` in gitRoot (with --cached when
+// cached is true) and returns the changed paths. -z keeps names with spaces,
+// quotes, or non-ASCII bytes raw; without it git C-quotes them
+// ("\303\251.txt"). Never returns nil.
+func diffNames(gitRoot string, cached bool) ([]string, error) {
+	args := []string{"diff", "--name-only", "-z"}
+	if cached {
+		args = append(args, "--cached")
+	}
+	out, err := execx.Run("git", args, execx.Options{Dir: gitRoot})
+	if err != nil {
+		return []string{}, fmt.Errorf("gitx: diff: %w", err)
+	}
+	files := []string{}
+	for _, p := range strings.Split(out, "\x00") {
+		if p != "" {
+			files = append(files, p)
+		}
+	}
+	return files, nil
 }
 
 // untrackedStatus runs `git status --porcelain -z` in gitRoot and returns its

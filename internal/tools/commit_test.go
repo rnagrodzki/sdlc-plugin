@@ -1113,6 +1113,34 @@ func TestCommit_NonASCIIUntrackedNamesAreRaw(t *testing.T) {
 	})
 }
 
+// TestCommitPrepare_NonASCIIStagedAndUnstagedNamesAreRaw pins that
+// staged.files and unstaged.files hold the real file names, not git's
+// C-quoted form ("\303\251t\303\251 staged.txt"), like untracked.files.
+func TestCommitPrepare_NonASCIIStagedAndUnstagedNamesAreRaw(t *testing.T) {
+	const staged = "été staged.txt"
+	const unstaged = "naïve notes.txt"
+
+	redirectTempManifests(t)
+	dir := newCommitApplyRepo(t)
+	writeRepoFile(t, dir, unstaged, "v1")
+	runGit(t, dir, "add", unstaged)
+	runGit(t, dir, "commit", "-m", "add "+unstaged)
+	writeRepoFile(t, dir, unstaged, "v2")
+	writeRepoFile(t, dir, staged, "x")
+	runGit(t, dir, "add", staged)
+
+	out, err := commitPrepare(dir, dir, CommitPrepareIn{SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("commitPrepare: %v", err)
+	}
+	if len(out.Staged.Files) != 1 || out.Staged.Files[0] != staged {
+		t.Errorf("Staged.Files = %#v, want [%q]", out.Staged.Files, staged)
+	}
+	if len(out.Unstaged.Files) != 1 || out.Unstaged.Files[0] != unstaged {
+		t.Errorf("Unstaged.Files = %#v, want [%q]", out.Unstaged.Files, unstaged)
+	}
+}
+
 // TestUntrackedPaths_SkipsRenameSourceRecord pins the -z parser: a rename
 // record is followed by the original path as its own record, and that record
 // must not be read as a status line even when it starts with "?? ".
