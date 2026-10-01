@@ -89,6 +89,16 @@ Each `fields[]` entry:
 - **AND** the first field has `name: "tag.enabled"`
 - **AND** that field has `type: "boolean"`
 
+#### Scenario: Review scope field matches review_prepare
+- **WHEN** the caller reads the `scope` field of the `review` row
+- **THEN** its `default` is `all`, the scope `review_prepare` uses when the key is missing
+- **AND** its `description` names no `/review` flag, because `/review` has no scope flag
+
+#### Scenario: openspec-block purpose names this plugin
+- **WHEN** the caller reads the `purpose` of the `openspec-block` row
+- **THEN** it names `sdlc-v2`
+- **AND** it does not name `sdlc-utilities`
+
 #### Scenario: camelCase keys
 - **WHEN** the output is serialized
 - **THEN** keys use camelCase, e.g. `configFile` and `needsMigration`
