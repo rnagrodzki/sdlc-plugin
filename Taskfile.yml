@@ -41,6 +41,10 @@ tasks:
         xattr -d com.apple.provenance '{{.BIN_PATH}}' 2>/dev/null || true
         codesign --force --deep --sign - '{{.BIN_PATH}}' 2>/dev/null && touch '{{.BIN_PATH}}.signed' || true
         {{end}}
+      # Drop older cached binaries for this OS/arch now that the new one is
+      # in place and signed — the launcher must never see a window with no
+      # binary for this OS/arch in the cache, so this runs last.
+      - bash ./scripts/prune-cache-bin.sh '{{.CACHE_DIR}}/bin' '{{.BIN_PATH}}' '{{OS}}' '{{ARCH}}'
       - 'echo "installed {{.BIN_PATH}} — reload the Claude Code session (or /reload-plugins) to pick it up"'
 
   dev:

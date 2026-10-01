@@ -450,17 +450,17 @@ func TestPlanSkillsNoOrchestratorReferences(t *testing.T) {
 // content fix) must update its pinned hash here in the same commit.
 var planSkillsReferenceFileHashes = map[string]string{
 	"skills/plan/g17-dimension-coverage-prompt.md":    "d70ec0452c98aa899231c7dace16c1cc643e6bf534df7b89b34b8c85e202e88c",
-	"skills/plan/intake-verify-prompt.md":             "73aa43e016c3cca1bcebb21659ab61b62a20b87404c1cc3fc1eb720e0cd167d7",
-	"skills/plan/lane-content-coverage-prompt.md":     "caca596155dd770004797deae2576a89254bba51538e98a321a05817942776b1",
+	"skills/plan/intake-verify-prompt.md":             "eeae004f3a04a9382988fbf160b9e15d038300c50abb9c60ff2d168b6906b724",
+	"skills/plan/lane-content-coverage-prompt.md":     "fd6501e86f22cd58ad307682320c9c0c0c95e586fb02ebaf71e1804b4762d6fb",
 	"skills/plan/lane-file-existence-prompt.md":       "ee76f039f92f757a3fc8a85122e3e217f73a4a63c41f2164ca688acf4ba68f35",
 	"skills/plan/lane-guardrail-compliance-prompt.md": "247fe8da5a7c8d3c2df295d98a2f617350b7f3b759f3bca3865afab45c40ea9c",
 	"skills/plan/lane-static-structural-prompt.md":    "1465b7c432da770e7f8271afe8cc63372b9da68a161afc63688362fffe306f53",
 	"skills/plan/lens-architecture-prompt.md":         "fe2315f0cc6b1a1f06224f37f2b8c0c7348364d67db0e0b490c6c9fd13e825a0",
 	"skills/plan/lens-requirements-prompt.md":         "82b555e796446c9236bc8abc99c9dd524edb8c79b55f6fe6d4333dfbae50560b",
 	"skills/plan/lens-risk-prompt.md":                 "eb14f4b2797e7cf09dbda52f08f20eee30cd25537ae13e87320b35ab4d3ef9a6",
-	"skills/plan/plan-reviewer-prompt.md":             "902bf877710cffc39a6b3caa983a0d7c110c0bae3d376535dc019833b07f59df",
-	"skills/plan/plan-format-reference.md":            "f5e0d00529c0b4743ec2c747df9d3f07467e5a5828bc985dd834982811e01f51",
-	"skills/plan/plan-template-default.md":            "195a4f84b5de1dc7e2b48feed053a8a0977b1016e07c14b7959e59ab60cfa62a",
+	"skills/plan/plan-reviewer-prompt.md":             "36a6bc2ed156848243f7aa028f3690949f2dbbee5e50c0c8d5bd1be78938c577",
+	"skills/plan/plan-format-reference.md":            "05ca411037fbf0e7509cb0388a79bf1ebb2a8f5947c819639efb1a01574299a3",
+	"skills/plan/plan-template-default.md":            "455ac3bb5683ae8f4f9acf90754f267aa6a9464d87b3d5a200267357c414ae6b",
 	"skills/execute/spec-compliance-reviewer.md":      "b163b798f92a9247eda48763c08c8f4ec43872fae31201427f204ebb4c99af1e",
 }
 

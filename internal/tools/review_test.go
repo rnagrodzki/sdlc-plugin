@@ -1146,6 +1146,157 @@ func TestSaveReviewComment_EmptyContent_Errors(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Base branch resolution ([git] baseBranch in config.toml)
+// ---------------------------------------------------------------------------
+
+// newReviewBaseBranchFixture builds a repo where "develop" diverges from
+// "main" by one file (src/dev.go), and "feature" branches off "develop"
+// and adds a second file (src/app.go). Both main and develop are pushed to
+// a bare "origin" remote; feature is never pushed. Because feature...HEAD
+// is a three-dot (merge-base) diff, diffing against develop yields 1
+// changed file (src/app.go) and diffing against main yields 2 (src/dev.go
+// and src/app.go) -- the file count discriminates which base was actually
+// used, not just the label recorded in the manifest. It returns the repo
+// root.
+func newReviewBaseBranchFixture(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+
+	mustRun(t, root, "git", "init")
+	mustRun(t, root, "git", "config", "user.email", "test@test.com")
+	mustRun(t, root, "git", "config", "user.name", "Test")
+	writeFile(t, filepath.Join(root, "README.md"), "# test\n")
+	mustRun(t, root, "git", "add", ".")
+	mustRun(t, root, "git", "commit", "-m", "init")
+	mustRun(t, root, "git", "branch", "-M", "main")
+
+	mustRun(t, root, "git", "checkout", "-b", "develop")
+	writeFile(t, filepath.Join(root, "src", "dev.go"), "package main\nfunc dev() {}\n")
+	mustRun(t, root, "git", "add", ".")
+	mustRun(t, root, "git", "commit", "-m", "add dev.go")
+
+	// Bare "origin" carrying both main and develop, but not feature. Its
+	// HEAD is repointed at main (the bare clone's HEAD otherwise follows
+	// whatever branch was checked out in root at clone time, i.e. develop,
+	// and a bare repo refuses to delete its own current branch -- which the
+	// "missing on origin" subtest below needs to do to develop).
+	bareOrigin := t.TempDir()
+	mustRun(t, bareOrigin, "git", "clone", "--bare", root, ".")
+	mustRun(t, bareOrigin, "git", "symbolic-ref", "HEAD", "refs/heads/main")
+	mustRun(t, root, "git", "remote", "add", "origin", bareOrigin)
+
+	mustRun(t, root, "git", "checkout", "-b", "feature")
+	writeFile(t, filepath.Join(root, "src", "app.go"), "package main\nfunc main() {}\n")
+	mustRun(t, root, "git", "add", ".")
+	mustRun(t, root, "git", "commit", "-m", "add app.go")
+
+	dimDir := filepath.Join(root, paths.DataDir, "review-dimensions")
+	writeFile(t, filepath.Join(dimDir, "code-quality.md"), `---
+name: code-quality
+description: General code quality review
+triggers:
+  - "**/*.go"
+severity: medium
+---
+Review the code for quality issues.
+`)
+	stubReviewGH(t, reviewGHNoPR)
+	return root
+}
+
+// writeReviewConfigGitSection writes a .sdlc-v2/config.toml with a single
+// [git] baseBranch key, the minimal config reviewPrepare's
+// config.GitBaseBranch lookup needs.
+func writeReviewConfigGitSection(t *testing.T, root, baseBranch string) {
+	t.Helper()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"),
+		fmt.Sprintf("[git]\nbaseBranch = %q\n", baseBranch))
+}
+
+// TestReviewBaseBranchConfig covers reviewPrepare's default-base-branch
+// resolution: [git] baseBranch from config.toml wins over the repository
+// default branch, an explicit target still wins over config, and a
+// configured branch missing on origin fails loudly instead of silently
+// falling back to the repository default.
+func TestReviewBaseBranchConfig(t *testing.T) {
+	t.Run("configured baseBranch used when no target", func(t *testing.T) {
+		root := newReviewBaseBranchFixture(t)
+		writeReviewConfigGitSection(t, root, "develop")
+
+		out, err := reviewPrepare(root, root, ReviewPrepareIn{SkipConfigCheck: true})
+		if err != nil {
+			t.Fatalf("reviewPrepare failed: %v", err)
+		}
+		raw, err := os.ReadFile(out.ManifestPath)
+		if err != nil {
+			t.Fatalf("read manifest: %v", err)
+		}
+		var manifest reviewManifest
+		if err := json.Unmarshal(raw, &manifest); err != nil {
+			t.Fatalf("unmarshal manifest: %v", err)
+		}
+		if manifest.BaseBranch == nil || *manifest.BaseBranch != "develop" {
+			t.Errorf("manifest base_branch = %v, want \"develop\"", manifest.BaseBranch)
+		}
+		// Diffing against develop sees only src/app.go (feature's own commit).
+		if manifest.Summary.TotalChangedFiles != 1 {
+			t.Errorf("TotalChangedFiles = %d, want 1 (diff against develop)", manifest.Summary.TotalChangedFiles)
+		}
+	})
+
+	t.Run("explicit target wins over config", func(t *testing.T) {
+		root := newReviewBaseBranchFixture(t)
+		writeReviewConfigGitSection(t, root, "develop")
+
+		out, err := reviewPrepare(root, root, ReviewPrepareIn{SkipConfigCheck: true, Target: "main"})
+		if err != nil {
+			t.Fatalf("reviewPrepare failed: %v", err)
+		}
+		raw, err := os.ReadFile(out.ManifestPath)
+		if err != nil {
+			t.Fatalf("read manifest: %v", err)
+		}
+		var manifest reviewManifest
+		if err := json.Unmarshal(raw, &manifest); err != nil {
+			t.Fatalf("unmarshal manifest: %v", err)
+		}
+		if manifest.BaseBranch == nil || *manifest.BaseBranch != "main" {
+			t.Errorf("manifest base_branch = %v, want \"main\" (explicit target)", manifest.BaseBranch)
+		}
+		// Diffing against main sees both src/dev.go and src/app.go.
+		if manifest.Summary.TotalChangedFiles != 2 {
+			t.Errorf("TotalChangedFiles = %d, want 2 (diff against main)", manifest.Summary.TotalChangedFiles)
+		}
+	})
+
+	t.Run("configured branch missing on origin fails loudly", func(t *testing.T) {
+		root := newReviewBaseBranchFixture(t)
+		// "develop" exists locally but is removed from origin below, so a
+		// silent fallback to the local branch -- rather than the required
+		// loud failure -- would make this diff silently succeed.
+		writeReviewConfigGitSection(t, root, "develop")
+		mustRun(t, root, "git", "push", "origin", "--delete", "develop")
+
+		_, err := reviewPrepare(root, root, ReviewPrepareIn{SkipConfigCheck: true})
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		domainErr, ok := err.(*mcpserver.DomainError)
+		if !ok {
+			t.Fatalf("expected *mcpserver.DomainError, got %T: %v", err, err)
+		}
+		wantMsg := `base branch "develop" not found on origin`
+		if domainErr.Msg != wantMsg {
+			t.Errorf("error message = %q, want %q", domainErr.Msg, wantMsg)
+		}
+		wantSuggestion := "Push the branch, fix [git] baseBranch in .sdlc-v2/config.toml, or pass target explicitly."
+		if domainErr.Suggestion != wantSuggestion {
+			t.Errorf("suggestion = %q, want %q", domainErr.Suggestion, wantSuggestion)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
 

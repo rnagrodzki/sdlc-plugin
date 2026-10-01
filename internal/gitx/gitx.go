@@ -58,6 +58,24 @@ func DefaultBranch(dir string) (string, error) {
 	return "", fmt.Errorf("gitx: cannot auto-detect default branch")
 }
 
+// BaseBranch returns configured, trimmed of surrounding whitespace, when it
+// is non-empty. Otherwise it falls back to DefaultBranch(dir) to
+// auto-detect the repository's base branch. It performs no I/O itself in
+// the configured case — the trimmed value is returned without verifying
+// that it names a real branch. A configured value that looks like a flag
+// (starts with "-") is rejected with validateRef's error, so callers that
+// pass the result straight to git cannot have it parsed as an option.
+func BaseBranch(dir, configured string) (string, error) {
+	trimmed := strings.TrimSpace(configured)
+	if trimmed != "" {
+		if err := validateRef(trimmed, "BaseBranch"); err != nil {
+			return "", err
+		}
+		return trimmed, nil
+	}
+	return DefaultBranch(dir)
+}
+
 // Status returns the porcelain status output of the working tree.
 // An empty string with a nil error means a clean working tree. Only
 // trailing whitespace is trimmed: the first entry keeps its leading status
@@ -174,6 +192,23 @@ func CommitCount(dir, base string) (int, error) {
 	var count int
 	if _, err := fmt.Sscanf(out, "%d", &count); err != nil {
 		return 0, fmt.Errorf("gitx: commit count: could not parse %q: %w", out, err)
+	}
+	return count, nil
+}
+
+// BehindCount returns the number of commits HEAD is behind ref — the
+// reverse of CommitCount's base..HEAD direction (HEAD..ref here).
+func BehindCount(dir, ref string) (int, error) {
+	if err := validateRef(ref, "behind count"); err != nil {
+		return 0, err
+	}
+	out, err := execx.Run("git", []string{"rev-list", "--count", "HEAD.." + ref}, execx.Options{Dir: dir})
+	if err != nil {
+		return 0, fmt.Errorf("gitx: behind count: %w", err)
+	}
+	var count int
+	if _, err := fmt.Sscanf(out, "%d", &count); err != nil {
+		return 0, fmt.Errorf("gitx: behind count: could not parse %q: %w", out, err)
 	}
 	return count, nil
 }
@@ -352,4 +387,98 @@ func CommitsAhead(dir string) (int, error) {
 		return 0, fmt.Errorf("gitx: commits ahead: could not parse %q: %w", out, err)
 	}
 	return count, nil
+}
+
+// FetchBranch fetches branch from remote (git fetch <remote> <branch>).
+// Returns an error naming the branch when it does not exist on remote.
+func FetchBranch(dir, remote, branch string) error {
+	if err := validateRef(remote, "fetch branch"); err != nil {
+		return err
+	}
+	if err := validateRef(branch, "fetch branch"); err != nil {
+		return err
+	}
+	if _, err := execx.Run("git", []string{"fetch", remote, branch}, execx.Options{Dir: dir}); err != nil {
+		return fmt.Errorf("gitx: fetch branch %q from %q: %w", branch, remote, err)
+	}
+	return nil
+}
+
+// Merge merges ref into the current branch (git merge --no-edit <ref>).
+//
+// It uses execx.RunAllowExit rather than execx.Run because a merge conflict
+// is expected, meaningful data (exit 1), not a process failure: discarding
+// it the way Run does for any non-zero exit would make conflict detection
+// indistinguishable from an unrelated git error. Exit 0 means the merge
+// completed; exit 1 means it stopped on conflicts and left the merge in
+// progress (conflict=true, err=nil) — the caller is expected to inspect
+// UnmergedFiles and either resolve and commit, or call MergeAbort. Any other
+// exit code is a genuine failure (e.g. an unknown ref) and is returned as an
+// error instead.
+func Merge(dir, ref string) (conflict bool, err error) {
+	if err := validateRef(ref, "merge"); err != nil {
+		return false, err
+	}
+	_, stderrText, exitCode, runErr := execx.RunAllowExit("git", []string{"merge", "--no-edit", ref}, execx.Options{Dir: dir})
+	if runErr != nil {
+		return false, fmt.Errorf("gitx: merge %q: %w", ref, runErr)
+	}
+	switch exitCode {
+	case 0:
+		return false, nil
+	case 1:
+		return true, nil
+	default:
+		if stderrText != "" {
+			return false, fmt.Errorf("gitx: merge %q: exit %d: %s", ref, exitCode, stderrText)
+		}
+		return false, fmt.Errorf("gitx: merge %q: exit %d", ref, exitCode)
+	}
+}
+
+// MergeAbort aborts an in-progress merge (git merge --abort), restoring the
+// working tree to its pre-merge HEAD.
+func MergeAbort(dir string) error {
+	if _, err := execx.Run("git", []string{"merge", "--abort"}, execx.Options{Dir: dir}); err != nil {
+		return fmt.Errorf("gitx: merge abort: %w", err)
+	}
+	return nil
+}
+
+// MergeInProgress reports whether a merge is currently in progress, via
+// "git rev-parse -q --verify MERGE_HEAD". Returns (false, nil) when no merge
+// is in progress — the expected, non-error outcome, signaled by git exiting
+// 1. Returns (false, err) for any other failure, including when dir is not
+// a git repository (exit 128).
+func MergeInProgress(dir string) (bool, error) {
+	_, err := execx.Run("git", []string{"rev-parse", "-q", "--verify", "MERGE_HEAD"}, execx.Options{Dir: dir})
+	if err == nil {
+		return true, nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("gitx: merge in progress: %w", err)
+}
+
+// UnmergedFiles returns the paths with unresolved merge conflicts, via
+// "git diff --name-only --diff-filter=U". Returns nil when there are none.
+func UnmergedFiles(dir string) ([]string, error) {
+	out, err := execx.Run("git", []string{"diff", "--name-only", "--diff-filter=U"}, execx.Options{Dir: dir})
+	if err != nil {
+		return nil, fmt.Errorf("gitx: unmerged files: %w", err)
+	}
+	if out == "" {
+		return nil, nil
+	}
+	lines := strings.Split(out, "\n")
+	files := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			files = append(files, line)
+		}
+	}
+	return files, nil
 }

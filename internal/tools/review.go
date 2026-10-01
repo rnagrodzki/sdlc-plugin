@@ -647,7 +647,7 @@ func countChangedLines(diff string) int {
 // them against changedFiles. A missing folder yields no dimensions and no
 // error; a folder that exists but cannot be listed returns the read error.
 func loadAndMatchDimensions(projectRoot string, changedFiles []string) ([]reviewDimWork, error) {
-	dimDir := filepath.Join(projectRoot, paths.DataDir, "review-dimensions")
+	dimDir := filepath.Join(projectRoot, paths.DataDir, paths.ReviewDimensionsSubdir)
 	loaded, err := dimensions.Load(dimDir)
 	if err != nil {
 		return nil, fmt.Errorf("list %s: %w", dimDir, err)
@@ -761,7 +761,17 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 	case in.Target != "":
 		base = in.Target
 	default:
-		b, err := gitx.DefaultBranch(activeRoot)
+		configured := config.GitBaseBranch(projectRoot)
+		if configured != "" {
+			if err := gitx.FetchBranch(activeRoot, "origin", configured); err != nil {
+				return ReviewPrepareOut{}, &mcpserver.DomainError{
+					Msg:        fmt.Sprintf("base branch %q not found on origin", configured),
+					Suggestion: "Push the branch, fix [git] baseBranch in .sdlc-v2/config.toml, or pass target explicitly.",
+					Cause:      err,
+				}
+			}
+		}
+		b, err := gitx.BaseBranch(activeRoot, configured)
 		if err != nil {
 			return ReviewPrepareOut{}, &mcpserver.InfraError{
 				Msg:        fmt.Sprintf("detect base branch: %s", err.Error()),
@@ -1211,7 +1221,7 @@ func saveReviewComment(projectRoot, activeRoot string, in ReviewPrepareIn) (Revi
 	}
 	branchSafe := reviewBranchUnsafeRe.ReplaceAllString(branch, "-")
 
-	dir := filepath.Join(projectRoot, paths.DataDir, "reviews")
+	dir := filepath.Join(projectRoot, paths.DataDir, paths.ReviewsSubdir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return ReviewPrepareOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("create %s: %s", dir, err.Error()),

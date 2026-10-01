@@ -247,9 +247,9 @@ type CommittableStateEntry struct {
 // (findStrayStateEntries in validators.go) derive their allowlists from
 // this single source so the two cannot drift apart.
 var CommittableStateDirEntries = []CommittableStateEntry{
-	{Name: ".gitignore"},
-	{Name: "config.toml"},
-	{Name: "review-dimensions", IsDir: true},
+	{Name: paths.GitignoreFile},
+	{Name: paths.ConfigFile},
+	{Name: paths.ReviewDimensionsSubdir, IsDir: true},
 }
 
 // sdlcGitignorePatterns are the deny-all + allowlist patterns inside
@@ -447,10 +447,10 @@ func setupInit(root string, in SetupInitIn) (SetupInitOut, error) {
 		return setupWritePRTemplate(root, in)
 	}
 	if in.CheckPlanTemplate {
-		return setupCheckTemplateExists(root, "plan-template.md")
+		return setupCheckTemplateExists(root, paths.PlanTemplateFile)
 	}
 	if in.CheckPRTemplate {
-		return setupCheckTemplateExists(root, "pr-template.md")
+		return setupCheckTemplateExists(root, paths.PRTemplateFile)
 	}
 	if in.ReadPlanTemplate {
 		return setupReadPlanTemplate(root)
@@ -484,7 +484,7 @@ func setupInit(root string, in SetupInitIn) (SetupInitOut, error) {
 	}
 
 	// 2. Ensure .sdlc-v2/.gitignore with managed block.
-	sdlcGitignorePath := filepath.Join(sdlcDir, ".gitignore")
+	sdlcGitignorePath := filepath.Join(sdlcDir, paths.GitignoreFile)
 	action, err := ensureManagedBlock(
 		sdlcGitignorePath,
 		sdlcGitignoreBegin,
@@ -504,7 +504,7 @@ func setupInit(root string, in SetupInitIn) (SetupInitOut, error) {
 	}
 
 	// 3. Ensure root .gitignore with managed block.
-	rootGitignorePath := filepath.Join(root, ".gitignore")
+	rootGitignorePath := filepath.Join(root, ".gitignore") // project-root .gitignore, not a paths.* DataDir entry
 	action, err = ensureManagedBlock(
 		rootGitignorePath,
 		rootGitignoreBegin,
@@ -517,9 +517,9 @@ func setupInit(root string, in SetupInitIn) (SetupInitOut, error) {
 	} else {
 		switch action {
 		case "created":
-			created = append(created, ".gitignore")
+			created = append(created, ".gitignore") // project-root .gitignore, not a paths.* DataDir entry
 		case "updated":
-			changed = append(changed, ".gitignore")
+			changed = append(changed, ".gitignore") // project-root .gitignore, not a paths.* DataDir entry
 		}
 	}
 
@@ -529,7 +529,7 @@ func setupInit(root string, in SetupInitIn) (SetupInitOut, error) {
 	//    per-section interactive seeding. Idempotent: an existing file is
 	//    left untouched so a re-run of /setup never clobbers a user's
 	//    edits.
-	configPath := filepath.Join(sdlcDir, "config.toml")
+	configPath := filepath.Join(sdlcDir, paths.ConfigFile)
 	if _, statErr := os.Stat(configPath); statErr != nil {
 		if err := os.WriteFile(configPath, []byte(configTemplate), 0o644); err != nil {
 			errs = append(errs, fmt.Sprintf("config.toml: %s", err.Error()))
@@ -538,7 +538,7 @@ func setupInit(root string, in SetupInitIn) (SetupInitOut, error) {
 		}
 	}
 
-	localPath := filepath.Join(sdlcDir, "local.toml")
+	localPath := filepath.Join(sdlcDir, paths.LocalConfigFile)
 	if _, statErr := os.Stat(localPath); statErr != nil {
 		if err := os.WriteFile(localPath, []byte(localTemplate), 0o644); err != nil {
 			errs = append(errs, fmt.Sprintf("local.toml: %s", err.Error()))
@@ -622,7 +622,7 @@ func setupWritePlanTemplate(root string) (SetupInitOut, error) {
 		}
 	}
 
-	outPath := filepath.Join(sdlcDir, "plan-template.md")
+	outPath := filepath.Join(sdlcDir, paths.PlanTemplateFile)
 	if err := os.WriteFile(outPath, content, 0o644); err != nil {
 		return SetupInitOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("write %s: %s", outPath, err.Error()),
@@ -659,7 +659,7 @@ func setupWritePRTemplate(root string, in SetupInitIn) (SetupInitOut, error) {
 		}
 	}
 
-	outPath := filepath.Join(sdlcDir, "pr-template.md")
+	outPath := filepath.Join(sdlcDir, paths.PRTemplateFile)
 	if err := os.WriteFile(outPath, []byte(in.Content), 0o644); err != nil {
 		return SetupInitOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("write %s: %s", outPath, err.Error()),
@@ -711,7 +711,7 @@ func setupCheckTemplateExists(root, name string) (SetupInitOut, error) {
 // Steps 1 and 3 can show the file's content through this tool instead of a
 // bare Read on a .sdlc-v2/ path.
 func setupReadPlanTemplate(root string) (SetupInitOut, error) {
-	path := filepath.Join(root, paths.DataDir, "plan-template.md")
+	path := filepath.Join(root, paths.DataDir, paths.PlanTemplateFile)
 	content, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {

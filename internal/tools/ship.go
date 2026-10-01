@@ -18,6 +18,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/openspec"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/pipeline"
 	"github.com/rnagrodzki/sdlc-plugin/internal/shipmeta"
@@ -144,7 +145,8 @@ type ShipPrepareOut struct {
 	// "config", "config (version.preRelease)",
 	// "config (version.preReleasePolicy)",
 	// "config (version.preReleasePolicy enforced over cli)",
-	// "quick", or "default").
+	// "quick", "plan" (openspecChange from the plan's **Source:** header),
+	// or "default").
 	Sources map[string]string `json:"sources"`
 	// VersionCfg is the raw [version] config section as read at resolve
 	// time (config.ReadSection), snapshotted for diagnosability (R6).
@@ -167,7 +169,21 @@ type ShipPrepareOut struct {
 	// once state init actually happens (empty on the --gc or errors path).
 	PipelineDisplay string `json:"pipelineDisplay,omitempty"`
 
+	// Openspec reports the plan's staged OpenSpec change, materialized into
+	// openspec/changes/<change>/ before state init. Nil (field omitted) when
+	// the plan has no **OpenSpec-Staging:** header, mirroring execute_state
+	// init's "openspec" result field.
+	Openspec *ShipOpenspecOut `json:"openspec,omitempty"`
+
 	Next string `json:"next"`
+}
+
+// ShipOpenspecOut is ShipPrepareOut.Openspec: the staged change's name and
+// how ship_prepare handled it. Materialized is "created" or "already" (see
+// openspec.MaterializeResult), or "dry-run" when dryRun skipped Materialize.
+type ShipOpenspecOut struct {
+	Change       string `json:"change"`
+	Materialized string `json:"materialized"` // created | already | dry-run
 }
 
 // MigrationReport describes an inline config auto-migration reported in
@@ -324,6 +340,21 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 	errors := []string{}
 	warnings := []string{}
 
+	// Read the plan once: its **Source:** header can supply openspecChange,
+	// and its **OpenSpec-Staging:** header drives Materialize below. An
+	// unreadable plan is a warning, matching execute_state init: both uses
+	// are then skipped.
+	var planContent string
+	if in.PlanFile != "" {
+		content, readErr := os.ReadFile(in.PlanFile)
+		if readErr != nil {
+			warnings = append(warnings, fmt.Sprintf("plan unreadable, openspec change detection and materialize skipped: %v", readErr))
+		} else {
+			planContent = string(content)
+		}
+	}
+	warnings = append(warnings, resolveShipOpenspecChange(merged, sources, in.OpenspecChange, planContent)...)
+
 	// Surface non-benign version config read errors (corrupted file, I/O).
 	// A missing section is expected and already handled by the nil default above.
 	if versionCfgErr != nil && !stderrors.Is(versionCfgErr, config.ErrNotFound) {
@@ -438,15 +469,18 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 			"You are on the default branch %q. Ship pipelines should run on feature branches.", defaultBranch))
 	}
 
-	// KD-1 hard gate: pushing to a default branch (main/master) is never
-	// allowed, regardless of automation.push config. Unlike the warning
-	// above (informational, fires for any step config, driven by actual git
-	// config via gitx.DefaultBranch), this blocks outright — but only when
-	// the resolved steps actually include "pr" (the step that pushes the
-	// branch); a run with no "pr" step never pushes, so there is nothing to
-	// gate. isDefaultBranch is intentionally independent of git config
-	// (hardcoded main/master), per the task contract.
-	if isDefaultBranch(currentBranch) && sliceContainsStr(stepsList, "pr") {
+	// KD-1 hard gate: pushing to a default branch (main/master) or the
+	// configured [git] baseBranch is never allowed, regardless of
+	// automation.push config. Unlike the warning above (informational, fires
+	// for any step config, driven by actual git config via
+	// gitx.DefaultBranch), this blocks outright — but only when the resolved
+	// steps actually include "pr" (the step that pushes the branch); a run
+	// with no "pr" step never pushes, so there is nothing to gate.
+	// isDefaultBranch is intentionally independent of git config (hardcoded
+	// main/master), per the task contract; base extends the gate to cover a
+	// configured baseBranch (e.g. "develop") that isn't main/master.
+	base, _ := gitx.BaseBranch(activeRoot, config.GitBaseBranch(cfgRoot))
+	if (isDefaultBranch(currentBranch) || (base != "" && currentBranch == base)) && sliceContainsStr(stepsList, "pr") {
 		return ShipPrepareOut{}, &mcpserver.DomainError{
 			Msg:        fmt.Sprintf("ship cannot run the \"pr\" step on default branch %q — pushing to main/master is never auto-approved", currentBranch),
 			Suggestion: "Switch to a feature branch, or remove \"pr\" from --steps/ship.steps[] if you don't intend to push.",
@@ -470,6 +504,26 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 	if len(errors) > 0 {
 		out.Next = shipPrepareNext(out)
 		return out, nil
+	}
+
+	// Materialize the plan's staged OpenSpec change before state.Init, so a
+	// failure leaves no ship-state file behind. dryRun never touches disk
+	// here: it only reports which change would be materialized.
+	if change, ok := openspec.StagedChangeFromPlan(planContent); ok {
+		if in.DryRun {
+			out.Openspec = &ShipOpenspecOut{Change: change, Materialized: "dry-run"}
+		} else {
+			res, mErr := openspec.Materialize(activeRoot, planContent)
+			if mErr != nil {
+				// mapMaterializeError is shared with execute_state init, whose
+				// messages carry an "init: " prefix; drop it here. The mapped
+				// error's Suggestion has no slot in the []string errors list.
+				out.Errors = append(out.Errors, strings.TrimPrefix(mapMaterializeError(mErr).Error(), "init: "))
+				out.Next = shipPrepareNext(out)
+				return out, nil
+			}
+			out.Openspec = &ShipOpenspecOut{Change: res.Change, Materialized: res.Materialized}
+		}
 	}
 
 	branchSlug := state.SlugifyBranch(currentBranch)
@@ -571,6 +625,34 @@ func stepsFieldLabel(source string) string {
 		return "--steps"
 	}
 	return "steps[]"
+}
+
+// resolveShipOpenspecChange sets merged["openspecChange"] and
+// sources["openspecChange"]: an explicit input wins ("cli"), else the plan's
+// **Source:** openspec/changes/<name>/ header ("plan"), else nil with no
+// source entry. A plan-derived name that is not a safe change name is
+// ignored, since the ship skill interpolates flags.openspecChange into
+// shell commands. Returns warnings for a cli/plan mismatch or an ignored
+// plan name.
+func resolveShipOpenspecChange(merged map[string]any, sources map[string]string, input, planContent string) []string {
+	var warnings []string
+	planChange := openspecSourceChangeFromPlan(planContent)
+	if planChange != "" && !isSafeChangeName(planChange) {
+		warnings = append(warnings, fmt.Sprintf("plan Source names an invalid openspec change %q; ignored", planChange))
+		planChange = ""
+	}
+	switch {
+	case input != "":
+		merged["openspecChange"], sources["openspecChange"] = input, "cli"
+		if planChange != "" && planChange != input {
+			warnings = append(warnings, fmt.Sprintf("openspecChange %q differs from plan Source %q; using %q", input, planChange, input))
+		}
+	case planChange != "":
+		merged["openspecChange"], sources["openspecChange"] = planChange, "plan"
+	default:
+		merged["openspecChange"] = nil
+	}
+	return warnings
 }
 
 // mergeShipFlags ports mergeFlags(cli, config) from scripts/skill/ship.js:
@@ -741,11 +823,9 @@ func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]
 	merged["planModeBlocked"] = in.PlanModeBlocked
 	merged["hookActivePipeline"] = in.HookActivePipeline
 	merged["skipConfigCheck"] = in.SkipConfigCheck
-	if in.OpenspecChange != "" {
-		merged["openspecChange"] = in.OpenspecChange
-	} else {
-		merged["openspecChange"] = nil
-	}
+	// openspecChange is not set here: it also depends on the plan's
+	// **Source:** header, so shipPrepare resolves it after reading the plan
+	// (see resolveShipOpenspecChange).
 
 	// executeDispatchArgs: the CLI argument string the ship skill passes to
 	// the execute dispatch (Agent → execute), computed once here so the

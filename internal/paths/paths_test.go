@@ -23,3 +23,63 @@ func TestHistoryDir(t *testing.T) {
 		t.Errorf("HistoryDir must sit under ProjectDir: got %q, want %q", got, want)
 	}
 }
+
+// stateEntrySpecNames is the full 21-name spec set: every DataDir entry the
+// MCP server or hooks write to, from the worktree-state-links spec's
+// Link / Never-link table. BakSuffix is deliberately excluded: it is a
+// suffix pattern ("*.bak"), not a named entry.
+func stateEntrySpecNames() []string {
+	return []string{
+		RunsSubdir, ReportsSubdir, HistorySubdir, EvidenceSubdir,
+		LearningsSubdir, ReviewsSubdir, StateArtifactsSubdir, TimingsFile,
+		ConfigFile, GitignoreFile, ReviewDimensionsSubdir, LocalConfigFile,
+		LegacyLocalJSONFile, LegacyConfigJSONFile, JiraTemplatesSubdir, LegacyExecutionSubdir,
+		OpenspecStagingSubdir, PlanTemplateFile, PRTemplateFile, ScratchSubdir, BackupsSubdir,
+	}
+}
+
+// TestStateEntryListsCoverEveryEntry pins LinkedStateEntries and
+// UnlinkedStateEntries to the worktree-state-links spec's 21-name set: every
+// entry must appear in exactly one of the two lists (never both, never
+// neither), so a future DataDir addition that forgets to classify itself as
+// linked or unlinked fails this test instead of silently falling through.
+func TestStateEntryListsCoverEveryEntry(t *testing.T) {
+	want := stateEntrySpecNames()
+	if len(want) != 21 {
+		t.Fatalf("stateEntrySpecNames() has %d names, want 21", len(want))
+	}
+
+	seen := make(map[string]int, len(want))
+	for _, name := range LinkedStateEntries {
+		seen[name]++
+	}
+	for _, name := range UnlinkedStateEntries {
+		seen[name]++
+	}
+
+	for _, name := range want {
+		switch seen[name] {
+		case 0:
+			t.Errorf("entry %q is in neither LinkedStateEntries nor UnlinkedStateEntries", name)
+		case 1:
+			// exactly one list — correct.
+		default:
+			t.Errorf("entry %q is in both LinkedStateEntries and UnlinkedStateEntries", name)
+		}
+	}
+
+	if got := len(LinkedStateEntries) + len(UnlinkedStateEntries); got != len(want) {
+		t.Errorf("LinkedStateEntries + UnlinkedStateEntries has %d entries, want %d (disjoint union of the spec set)", got, len(want))
+	}
+
+	for _, name := range LinkedStateEntries {
+		if name == BakSuffix {
+			t.Errorf("BakSuffix must not appear in LinkedStateEntries (it is a suffix pattern, not a named entry)")
+		}
+	}
+	for _, name := range UnlinkedStateEntries {
+		if name == BakSuffix {
+			t.Errorf("BakSuffix must not appear in UnlinkedStateEntries (it is a suffix pattern, not a named entry)")
+		}
+	}
+}

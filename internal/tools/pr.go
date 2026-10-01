@@ -207,6 +207,7 @@ type prRuntime struct {
 	gitTagList          func(dir string) ([]string, error)
 	gitAllSemverTags    func(dir string) ([]string, error)
 	gitDefaultBranch    func(dir string) (string, error)
+	gitBaseBranch       func(dir, configured string) (string, error)
 	gitTagsAtHead       func(dir string) ([]string, error)
 	execRun             func(name string, args []string, opts execx.Options) (string, error)
 	configRead          func(root string) (*config.Config, error)
@@ -239,6 +240,7 @@ var defaultPRRuntime = prRuntime{
 	gitTagList:          gitx.TagList,
 	gitAllSemverTags:    gitx.AllSemverTags,
 	gitDefaultBranch:    gitx.DefaultBranch,
+	gitBaseBranch:       gitx.BaseBranch,
 	gitTagsAtHead:       gitx.TagsAtHead,
 	execRun:             execx.Run,
 	configRead:          config.Read,
@@ -763,11 +765,14 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 	// Commits since base branch — always computed (no version-config gate),
 	// so PR body drafting always has a ground-truth commit list to work
 	// from instead of relying solely on the drafting agent's own memory.
-	if defaultBranch, dbErr := rt.gitDefaultBranch(workDir); dbErr != nil {
-		warnings = append(warnings, fmt.Sprintf("commitsSinceBase: %s", dbErr.Error()))
-	} else if defaultBranch != "" && defaultBranch != currentBranch {
+	// Uses the configured base branch (falling back to the repo's default
+	// branch when none is configured), not the plain default branch, since
+	// the base branch is what the PR will actually target.
+	if baseBranch, bbErr := rt.gitBaseBranch(workDir, config.GitBaseBranch(mainRoot)); bbErr != nil {
+		warnings = append(warnings, fmt.Sprintf("commitsSinceBase: %s", bbErr.Error()))
+	} else if baseBranch != "" && baseBranch != currentBranch {
 		logOut, logErr := rt.execRun("git", []string{
-			"log", "--oneline", "--reverse", defaultBranch + "..HEAD",
+			"log", "--oneline", "--reverse", baseBranch + "..HEAD",
 		}, execx.Options{Dir: workDir})
 		if logErr != nil {
 			warnings = append(warnings, fmt.Sprintf("commitsSinceBase: %s", logErr.Error()))
@@ -1176,6 +1181,21 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 		return PRApplyOut{URL: url, Created: false, ReleaseIntent: intent, Warnings: warnings, Next: prApplyNext(false, intent)}, nil
 	}
 
+	// A new PR always gets an explicit base: the caller's explicit input
+	// wins, otherwise fall back to the configured base branch (which itself
+	// falls back to the repo's default branch when nothing is configured).
+	// This always passes --base explicitly to gh pr create, rather than
+	// omitting it and letting GitHub choose.
+	var createWarnings []string
+	if base == "" {
+		resolvedBase, baseErr := rt.gitBaseBranch(workDir, config.GitBaseBranch(mainRoot))
+		if baseErr != nil {
+			createWarnings = append(createWarnings, fmt.Sprintf("base branch resolution failed: %s; letting gh choose the repository default", baseErr.Error()))
+		} else {
+			base = resolvedBase
+		}
+	}
+
 	url, err := rt.ghPRCreate(workDir, in.Title, body, prCreateOpts{Draft: in.Draft, Base: base})
 	if err != nil {
 		if enriched := prEnrichPermissionError(rt, workDir, "gh pr create", err); enriched != nil {
@@ -1192,7 +1212,7 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 			return PRApplyOut{}, err
 		}
 	}
-	return PRApplyOut{URL: url, Created: true, ReleaseIntent: intent, Next: prApplyNext(true, intent)}, nil
+	return PRApplyOut{URL: url, Created: true, ReleaseIntent: intent, Warnings: createWarnings, Next: prApplyNext(true, intent)}, nil
 }
 
 // prGHRetrySuggestion is the recovery hint for a gh pr create/edit failure

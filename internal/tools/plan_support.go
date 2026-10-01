@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/openspec"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
 
@@ -19,10 +20,10 @@ import (
 // Input / Output types
 // ---------------------------------------------------------------------------
 
-// PlanSupportIn carries the merged input for the plan_support tool's 4
+// PlanSupportIn carries the merged input for the plan_support tool's 9
 // actions. Each field is consumed by one or more actions (noted in comments).
 type PlanSupportIn struct {
-	Action string `json:"action" jsonschema:"enum=merge_results,enum=material_snapshot,enum=material_compare,enum=openspec_appendix,enum=evidence_record,enum=evidence_digest,enum=evidence_get" jsonschema_description:"Selects the operation: \"merge_results\", \"material_snapshot\", \"material_compare\", \"openspec_appendix\", \"evidence_record\", \"evidence_digest\", or \"evidence_get\". Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
+	Action string `json:"action" jsonschema:"enum=merge_results,enum=material_snapshot,enum=material_compare,enum=openspec_appendix,enum=openspec_instructions,enum=openspec_stage,enum=evidence_record,enum=evidence_digest,enum=evidence_get" jsonschema_description:"Selects the operation: \"merge_results\", \"material_snapshot\", \"material_compare\", \"openspec_appendix\", \"openspec_instructions\", \"openspec_stage\", \"evidence_record\", \"evidence_digest\", or \"evidence_get\". Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
 
 	// merge_results
 	LaneResults   []LaneResult `json:"laneResults,omitempty" jsonschema_description:"merge_results only: outcomes from each review lane to merge. At least one of laneResults or lensResults is required."`
@@ -34,12 +35,16 @@ type PlanSupportIn struct {
 	FilePath     string `json:"filePath,omitempty" jsonschema_description:"material_snapshot / material_compare only: path to the plan file to snapshot or compare."`
 	SnapshotPath string `json:"snapshotPath,omitempty" jsonschema_description:"material_compare only: path to the snapshot file returned by material_snapshot's snapshotPath field, to compare the current plan file against."`
 
-	// openspec_appendix
-	ChangeName   string   `json:"changeName,omitempty" jsonschema_description:"openspec_appendix only: name of the openspec change to generate the appendix for. Required."`
+	// openspec_appendix / openspec_instructions / openspec_stage
+	ChangeName   string   `json:"changeName,omitempty" jsonschema_description:"openspec_appendix, openspec_instructions, openspec_stage (required): name of the openspec change. openspec_instructions and openspec_stage accept only lowercase letters, digits and single hyphens. Example: add-widget"`
 	ProposalPath string   `json:"proposalPath,omitempty" jsonschema_description:"openspec_appendix only: path to the change's proposal.md, included in the generated appendix."`
 	DesignPath   string   `json:"designPath,omitempty" jsonschema_description:"openspec_appendix only: path to the change's design.md, included in the generated appendix."`
 	SpecPaths    []string `json:"specPaths,omitempty" jsonschema_description:"openspec_appendix only: paths to the change's spec files, included in the generated appendix."`
 	PlanTasks    []string `json:"planTasks,omitempty" jsonschema_description:"openspec_appendix only: plan task identifiers to cross-reference in the generated appendix."`
+
+	// openspec_stage
+	Files    []openspec.StageFile `json:"files,omitempty" jsonschema_description:"openspec_stage only: JSON array of {path, content}; path relative to the change dir. Example: [{\"path\":\"proposal.md\",\"content\":\"# Proposal\"}]"`
+	PlanPath string               `json:"planPath,omitempty" jsonschema_description:"openspec_stage only: absolute plan file path, saved in stage.json. Example: /Users/me/.claude/plans/add-widget.md"`
 
 	// evidence_record / evidence_digest / evidence_get
 	RunID           string         `json:"runId,omitempty" jsonschema_description:"Plain text. evidence_* only (required): plan run ID from plan_prepare's runId output. Example: plan-main-20260929T114125Z."`
@@ -130,6 +135,20 @@ type PlanSupportOut struct {
 
 	// openspec_appendix
 	AppendixMarkdown string `json:"appendixMarkdown,omitempty"`
+
+	// openspec_stage
+	StagingDir     string                `json:"stagingDir,omitempty"`
+	StagedFiles    []openspec.StagedFile `json:"files,omitempty"`
+	Valid          *bool                 `json:"valid,omitempty"` // pointer so false still renders
+	ValidateOutput string                `json:"validateOutput,omitempty"`
+
+	// openspec_instructions
+	SchemaName string                   `json:"schemaName,omitempty"`
+	Artifacts  []openspec.ArtifactGuide `json:"artifacts,omitempty"`
+	// Guardrails is loadGuardrails(mainRoot): the same list plan_prepare
+	// returns. Empty (never nil) when none are configured; omitempty drops it
+	// from the rendered output then, so Summary states the count.
+	Guardrails []map[string]any `json:"guardrails,omitempty"`
 
 	// evidence_* (nil and omitted for every other action)
 	Record  *EvidenceRecordOut  `json:"record,omitempty"`  // evidence_record
@@ -236,6 +255,8 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - material_snapshot: Snapshot plan material for change detection. Requires filePath. Returns snapshotPath.
 - material_compare: Compare current plan material against a snapshot. Requires filePath, snapshotPath (from material_snapshot).
 - openspec_appendix: Generate an openspec appendix. Requires changeName. Optional: proposalPath, designPath, specPaths, planTasks.
+- openspec_instructions: Return the artifact templates, instructions, rules and the active plan guardrails for a new OpenSpec change, from a temp copy of openspec/config.yaml. Requires changeName. Returns schemaName, artifacts, guardrails. Writes nothing in the repository; a missing openspec CLI returns InfraError.
+- openspec_stage: Write the authored artifacts to <active-worktree>/.sdlc-v2/openspec-staging/<changeName>/ (replaces the whole directory) and validate them in a temp copy. Requires changeName, files. Optional: planPath. Returns stagingDir, files, valid, validateOutput. A bad name or path returns DomainError and writes nothing.
 - evidence_record: Store a writer's status and items (upsert by id) in the plan run's evidence directory. Requires runId, writerId. Optional: status, items, brief (writerId main only). Returns record. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
 - evidence_digest: Compact run summary for resume and polling; never returns item bodies. Requires runId. Optional: expectedWriters, timeoutSeconds, statusOnly. Returns writers, plus digest unless statusOnly. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
 - evidence_get: Full item bodies. Requires runId and at least one of ids or writerIds. Returns get. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.`,
@@ -258,9 +279,12 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 				}
 				root = cwd
 			}
+			// An unresolved active worktree stays empty: the openspec_*
+			// actions that write under it refuse instead of falling back to
+			// the main worktree.
 			contentRoot, err := worktree.ActiveRoot()
 			if err != nil {
-				contentRoot = root
+				contentRoot = ""
 			}
 			return planSupportCore(root, contentRoot, in)
 		},
@@ -272,7 +296,8 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 // ---------------------------------------------------------------------------
 
 // planSupportCore dispatches to the correct action handler. mainRoot anchors
-// filesystem lookups; contentRoot anchors worktree-relative operations.
+// filesystem lookups; contentRoot anchors worktree-relative operations and is
+// empty when the active worktree could not be resolved.
 func planSupportCore(mainRoot, contentRoot string, in PlanSupportIn) (PlanSupportOut, error) {
 	switch in.Action {
 	case "merge_results":
@@ -283,6 +308,10 @@ func planSupportCore(mainRoot, contentRoot string, in PlanSupportIn) (PlanSuppor
 		return materialCompare(in)
 	case "openspec_appendix":
 		return openspecAppendix(mainRoot, in)
+	case "openspec_instructions":
+		return openspecInstructions(mainRoot, contentRoot, in)
+	case "openspec_stage":
+		return openspecStage(contentRoot, in)
 	case "evidence_record":
 		return evidenceRecord(mainRoot, in)
 	case "evidence_digest":
@@ -291,8 +320,8 @@ func planSupportCore(mainRoot, contentRoot string, in PlanSupportIn) (PlanSuppor
 		return evidenceGet(mainRoot, in)
 	default:
 		return PlanSupportOut{}, unknownActionError("action", in.Action,
-			" — valid actions: merge_results, material_snapshot, material_compare, openspec_appendix, evidence_record, evidence_digest, evidence_get",
-			"call plan_support again with action set to exactly one of merge_results, material_snapshot, material_compare, openspec_appendix, evidence_record, evidence_digest or evidence_get")
+			" — valid actions: merge_results, material_snapshot, material_compare, openspec_appendix, openspec_instructions, openspec_stage, evidence_record, evidence_digest, evidence_get",
+			"call plan_support again with action set to exactly one of merge_results, material_snapshot, material_compare, openspec_appendix, openspec_instructions, openspec_stage, evidence_record, evidence_digest or evidence_get")
 	}
 }
 
@@ -1019,6 +1048,133 @@ func openspecAppendix(mainRoot string, in PlanSupportIn) (PlanSupportOut, error)
 		Next:             "Append this markdown to the plan file's OpenSpec Appendix section.",
 		AppendixMarkdown: appendix,
 	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Actions: openspec_instructions / openspec_stage
+// ---------------------------------------------------------------------------
+
+// Suggestion texts for the openspec_* action errors.
+const (
+	openspecNameSuggestion     = "Use lowercase letters, digits and single hyphens, for example add-widget."
+	openspecPathSuggestion     = "Use a path relative to the change dir that matches an outputPath from openspec_instructions, for example specs/<capability>/spec.md."
+	openspecCLISuggestion      = "Install the OpenSpec CLI (npm i -g @fission-ai/openspec) and retry, or choose Skip OpenSpec."
+	openspecWorktreeSuggestion = "Run the call from inside the git worktree that holds the plan."
+)
+
+// requireActiveRoot refuses an openspec_* action when the active worktree
+// could not be resolved, rather than writing into the main worktree.
+func requireActiveRoot(action, contentRoot string) error {
+	if contentRoot != "" {
+		return nil
+	}
+	return &mcpserver.DomainError{
+		Msg:        action + ": active worktree not resolved",
+		Suggestion: openspecWorktreeSuggestion,
+	}
+}
+
+// mapOpenspecError turns an internal/openspec error from action into the
+// matching DomainError or InfraError.
+func mapOpenspecError(action string, in PlanSupportIn, err error) error {
+	switch {
+	case errors.Is(err, openspec.ErrInvalidChangeName):
+		return &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("%s: invalid changeName %q", action, in.ChangeName),
+			Suggestion: openspecNameSuggestion,
+			Cause:      err,
+		}
+	case errors.Is(err, openspec.ErrPathNotAllowed):
+		// The openspec error quotes the offending path with %q; find it
+		// among the inputs so the message names it exactly.
+		bad := ""
+		for _, f := range in.Files {
+			if strings.Contains(err.Error(), strconv.Quote(f.Path)) {
+				bad = f.Path
+				break
+			}
+		}
+		return &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("%s: path %q not allowed", action, bad),
+			Suggestion: openspecPathSuggestion,
+			Cause:      err,
+		}
+	case errors.Is(err, openspec.ErrCLINotFound):
+		return &mcpserver.InfraError{
+			Msg:        openspec.ErrCLINotFound.Error(),
+			Suggestion: openspecCLISuggestion,
+			Cause:      err,
+		}
+	default:
+		return &mcpserver.InfraError{
+			Msg:        action + ": " + err.Error(),
+			Suggestion: "Check that openspec/config.yaml exists in the active worktree and that the openspec CLI runs there, then retry.",
+			Cause:      err,
+		}
+	}
+}
+
+// openspecInstructions returns the schema name, the ordered artifact
+// guidance for a new change, and the plan guardrails from the main worktree's
+// config. It writes nothing in the repository.
+func openspecInstructions(mainRoot, contentRoot string, in PlanSupportIn) (PlanSupportOut, error) {
+	const action = "openspec_instructions"
+	if err := requireActiveRoot(action, contentRoot); err != nil {
+		return PlanSupportOut{}, err
+	}
+	schema, guides, err := openspec.PrepareInstructions(contentRoot, in.ChangeName)
+	if err != nil {
+		return PlanSupportOut{}, mapOpenspecError(action, in, err)
+	}
+	guardrails, warning := loadGuardrails(mainRoot)
+	summary := fmt.Sprintf("OpenSpec change %q uses schema %q with %d artifact(s) and %d guardrail(s).", in.ChangeName, schema, len(guides), len(guardrails))
+	if warning != "" {
+		summary += " Warning: " + warning
+	}
+	return PlanSupportOut{
+		Summary:    summary,
+		Next:       "Author each artifact in order from template, instruction, context and rules; follow guardrails in design and tasks; then call openspec_stage.",
+		SchemaName: schema,
+		Artifacts:  guides,
+		Guardrails: guardrails,
+	}, nil
+}
+
+// openspecStage writes the authored artifacts to the active worktree's
+// staging dir and validates a temp copy of them.
+func openspecStage(contentRoot string, in PlanSupportIn) (PlanSupportOut, error) {
+	const action = "openspec_stage"
+	if err := requireActiveRoot(action, contentRoot); err != nil {
+		return PlanSupportOut{}, err
+	}
+	if !openspec.ValidChangeName(in.ChangeName) {
+		return PlanSupportOut{}, mapOpenspecError(action, in, openspec.ErrInvalidChangeName)
+	}
+	if len(in.Files) == 0 {
+		return PlanSupportOut{}, &mcpserver.DomainError{
+			Msg:        action + ": files is required",
+			Suggestion: "Pass files as a JSON array of {path, content}, one entry per artifact file from openspec_instructions.",
+		}
+	}
+	res, err := openspec.Stage(contentRoot, in.ChangeName, in.Files, in.PlanPath, nil)
+	if err != nil {
+		return PlanSupportOut{}, mapOpenspecError(action, in, err)
+	}
+	valid := res.Valid
+	out := PlanSupportOut{
+		StagingDir:     res.StagingDir,
+		StagedFiles:    res.Files,
+		Valid:          &valid,
+		ValidateOutput: res.ValidateOutput,
+	}
+	if valid {
+		out.Summary = fmt.Sprintf("Staged %d file(s) for OpenSpec change %q in %s; validation passed.", len(res.Files), in.ChangeName, res.StagingDir)
+		out.Next = "Staged and valid. Add the **OpenSpec-Staging:** header to the plan."
+	} else {
+		out.Summary = fmt.Sprintf("Staged %d file(s) for OpenSpec change %q in %s; validation failed.", len(res.Files), in.ChangeName, res.StagingDir)
+		out.Next = "Fix the artifacts using validateOutput and call openspec_stage again."
+	}
+	return out, nil
 }
 
 // extractLeadParagraph returns the first non-empty, non-heading paragraph from

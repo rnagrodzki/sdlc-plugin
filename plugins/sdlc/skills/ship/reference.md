@@ -15,6 +15,7 @@ On-demand companion for `ship/SKILL.md` (implements R-progressive-disclosure). R
 | `ship_state` write fails (`InfraError`) | Warn and continue where safe; if it happens inside `begin-step`/`complete-step`, stop and surface the error — state persistence is not optional for resume correctness | No |
 | Resume state file corrupt or missing | `ship_state{action:"read"}` will report the failure; treat as "no prior run" and start fresh | No |
 | Review result has fewer parsable `#### [SEVERITY]` finding headings than its own `{M}` total | Only `M == 0` is finding-free. On a shortfall, warn, record the mismatch (`parsed X of M heading(s)`) with `ship_state{action:"decide", step:"review"}` instead of `bypassed 0`, carry the gap into the Step 10 ledger as UNACCOUNTED, and interactively offer to re-run `/review`. Never fall back to the `Verdict:` line. | No |
+| `verify-openspec`/`archive-openspec`: `flags.openspecChange` names a change missing from both `openspec/changes/<n>/` and `openspec/changes/archive/*-<n>/` | `fail` the step with the verbatim missing-on-disk message from the main skill's `### verify-openspec` entry and stop the pipeline. Never `skip` it: a skip would ship without the change the plan names | No — user action needed (re-run with `--plan` so `ship_prepare` materializes it, or drop the plan's `**Source:**` line) |
 | Sub-skill Agent times out | Stop the pipeline, save state, inform the user to `--resume` | No — transient |
 
 **Resume instruction format** (printed on step failure after retries exhausted or on any unrecoverable step error):
@@ -103,7 +104,7 @@ Before a PR exists, this payload is the only place received-review can find the 
 
 **Rebase happens after the feature and review-fix commits, before the next configured main-loop step** (`harden` / `verify-openspec` / `archive-openspec` / `pr`). The `harden` step's own commit comes after rebase, so it lands on the rebased branch and needs no second rebase. This ensures the branch (and, once merged and tagged post-merge by CI, the eventual release) is built on a commit that can merge cleanly. If rebase conflicts, the pipeline pauses — the user resolves in place and resumes.
 
-**Rebase is skipped when the default branch is already an ancestor.** `git merge-base --is-ancestor` is a fast check; no fetch/rebase overhead when the branch is already up to date.
+**Rebase targets the base branch** (`[git] baseBranch`, else the repository default branch) and **is skipped when `origin/<base>` is already an ancestor.** `git merge-base --is-ancestor` is a fast check; no fetch/rebase overhead when the branch is already up to date.
 
 **Auto mode does not auto-resume without `--resume`.** When `auto` is set but `resume` is not, the pipeline does not continue a prior run on its own. This prevents accidental continuation from stale state. It does not start fresh silently either: starting fresh calls `ship_prepare`, whose init sequence deletes any other same-branch `ship-*.json` file as a side effect — if that prior file was still resumable (a real `resumeBriefing`, not a stamped-complete run), starting fresh destroys it. So when `read` returns a `resumeBriefing`, the pipeline asks the user to resume or start fresh, even under `--auto` (see SKILL.md's Step loop, item 2). With no `resumeBriefing` it starts fresh without asking.
 

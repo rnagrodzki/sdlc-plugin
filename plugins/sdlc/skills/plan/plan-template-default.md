@@ -13,7 +13,7 @@ reads for section presence, and the source the Step 2 planner follows when writi
 - Final Shape <!-- narrative: true -->
 - Tasks
 - Verification Scorecard
-- OpenSpec Appendix <!-- conditional: source matches openspec/changes/ or openspecInlineGenerate -->
+- OpenSpec Appendix <!-- conditional: source matches openspec/changes/ -->
 - Contract Examples
 
 ## Discovery Questions

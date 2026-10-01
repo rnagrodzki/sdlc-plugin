@@ -38,6 +38,7 @@ var ProjectSections = map[string]bool{
 	"jira":    true,
 	"commit":  true,
 	"pr":      true,
+	"git":     true,
 	"plan":    true,
 	"execute": true,
 }
@@ -100,7 +101,7 @@ var legacyMarkers = []string{
 	// left behind in the CURRENT data dir by the pre-TOML layout. Without
 	// this marker, a project stuck on config.json (config.toml absent) is
 	// indistinguishable from a fresh project with no config at all.
-	filepath.Join(paths.DataDir, "config.json"),
+	filepath.Join(paths.DataDir, paths.LegacyConfigJSONFile),
 }
 
 // detectLegacy checks for pre-v5 config files. Returns an error naming
@@ -186,8 +187,9 @@ type ReportConfig struct {
 
 // PushConfig controls whether a feature-branch git push during ship is
 // auto-approved without a manual confirmation pause (KD-1). A default-branch
-// (main/master) push is never auto-approved by this setting — ship.go's
-// isDefaultBranch hard gate rejects it server-side regardless of config.
+// (main/master) or [git] baseBranch push is never auto-approved by this
+// setting — ship.go's push gate rejects it server-side; only the base branch
+// name comes from config.
 //
 // Known limitation shared with DriftConfig.MaxWarningRate: FeatureBranchAutoApprove
 // is a plain bool, so its zero value can't distinguish an explicit "false"
@@ -427,6 +429,7 @@ type Config struct {
 	Jira    map[string]any
 	Commit  map[string]any
 	PR      map[string]any
+	Git     map[string]any
 	Plan    map[string]any
 	Execute map[string]any
 
@@ -616,7 +619,7 @@ func applyAutomationDefaults(a *AutomationSection) {
 // ErrNotFound. When config.toml exists with a schemaVersion field (the v4
 // marker), returns a legacy-refusal error.
 func readProjectRaw(mainRoot string) (map[string]any, error) {
-	projectPath := filepath.Join(mainRoot, paths.DataDir, "config.toml")
+	projectPath := filepath.Join(mainRoot, paths.DataDir, paths.ConfigFile)
 	var raw map[string]any
 	err := fsx.ReadTOML(projectPath, &raw)
 	if err != nil {
@@ -647,7 +650,7 @@ func readProjectRaw(mainRoot string) (map[string]any, error) {
 // map. Returns (nil, nil) when the file does not exist — missing local
 // config is not an error.
 func readLocalRaw(mainRoot string) (map[string]any, error) {
-	localPath := filepath.Join(mainRoot, paths.DataDir, "local.toml")
+	localPath := filepath.Join(mainRoot, paths.DataDir, paths.LocalConfigFile)
 	var raw map[string]any
 	err := fsx.ReadTOML(localPath, &raw)
 	if err != nil {
@@ -738,6 +741,7 @@ func Read(mainRoot string) (*Config, error) {
 		Jira:    extractSection(projectRaw, "jira"),
 		Commit:  extractSection(projectRaw, "commit"),
 		PR:      extractSection(projectRaw, "pr"),
+		Git:     extractSection(projectRaw, "git"),
 		Plan:    extractSection(projectRaw, "plan"),
 		Execute: extractSection(projectRaw, "execute"),
 
@@ -756,6 +760,22 @@ func Read(mainRoot string) (*Config, error) {
 	applyAutomationDefaults(cfg.Automation)
 
 	return cfg, nil
+}
+
+// GitBaseBranch returns the trimmed [git] baseBranch from .sdlc-v2/config.toml,
+// or "" when the section or key is absent, empty, or the config cannot be
+// read. Callers that need a usable branch name should fall back to
+// gitx.DefaultBranch (e.g. via gitx.BaseBranch) when this returns "".
+func GitBaseBranch(mainRoot string) string {
+	cfg, err := Read(mainRoot)
+	if err != nil {
+		return ""
+	}
+	s, ok := cfg.Git["baseBranch"].(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(s)
 }
 
 // ReadSection reads a single config section by name, routing to the
@@ -798,7 +818,7 @@ func ReadSection(mainRoot, name string) (map[string]any, error) {
 	}
 
 	// Local section.
-	localPath := filepath.Join(mainRoot, paths.DataDir, "local.toml")
+	localPath := filepath.Join(mainRoot, paths.DataDir, paths.LocalConfigFile)
 	var localRaw map[string]any
 	if err := fsx.ReadTOML(localPath, &localRaw); err != nil {
 		if errors.Is(err, fsx.ErrNotFound) {
@@ -854,9 +874,9 @@ func WriteSectionReport(mainRoot, name string, v map[string]any) (rewrote bool, 
 	}
 
 	if ProjectSections[top] {
-		return writeSectionFile(filepath.Join(sdlcDir, "config.toml"), name, v, validateProjectKeys)
+		return writeSectionFile(filepath.Join(sdlcDir, paths.ConfigFile), name, v, validateProjectKeys)
 	}
-	return writeSectionFile(filepath.Join(sdlcDir, "local.toml"), name, v, nil)
+	return writeSectionFile(filepath.Join(sdlcDir, paths.LocalConfigFile), name, v, nil)
 }
 
 // WriteFileSection writes section name into the TOML file at path, which is

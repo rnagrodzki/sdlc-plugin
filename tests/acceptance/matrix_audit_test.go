@@ -222,7 +222,7 @@ var datasetRows = []datasetRow{
 		dataset:   "harvest-learnings-exec.yaml",
 		cutReason: "repo-maintenance script (harvest-learnings.js) with zero references anywhere in this plugin's runtime tool/hook surface — it operates on the marketplace repo's own contributor workflow, not shipped plugin behavior.",
 	},
-	{dataset: "hook-stop-plan-integrity-exec.yaml", testRef: "TestStopPlanIntegrity_AllMarkersPresent_ConsumesDeletesSilently"},
+	{dataset: "hook-stop-plan-integrity-exec.yaml", testRef: "TestStopPlanIntegrity_AllMarkersPresent_KeepsStateSilently"},
 	{dataset: "jira-exec.yaml", testRef: "TestJiraSaveThenLoadRoundTrip"},
 	{
 		dataset: "jira-guardrail-exec.yaml",

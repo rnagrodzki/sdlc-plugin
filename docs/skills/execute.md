@@ -57,14 +57,24 @@ Resolution order is `--quality` / `--auto` flag, then a dispatching `/ship` run'
 
 `executePrefs` and `automation` both live in `.sdlc-v2/local.toml` but do different jobs: `automation.mode` gates whether `/ship` hands control to `/execute`, while `executePrefs` governs prompts inside `/execute` once it has control.
 
+## Base sync between waves
+
+After each wave except the last, `/execute` merges `origin/<base>` into the
+branch — `<base>` is `[git] baseBranch` in `.sdlc-v2/config.toml`, or the
+repository default branch when that key is absent or empty.
+
+- On conflict, one sub-agent resolves it; if it fails, the merge is aborted
+  and the run continues on the previous base.
+- Turn this off with `[execute] baseSync = false`.
+
 ## Examples
 
 **Execute a plan with default settings:**
 
     /execute ~/.claude/plans/auth-redesign.md
 
-Creates a feature branch (if on the default branch), classifies tasks, builds
-waves, and starts executing. Asks you to pick a quality tier.
+Creates a feature branch (if on the default or base branch), classifies
+tasks, builds waves, and starts executing. Asks you to pick a quality tier.
 
 **Execute at full speed without prompts:**
 
@@ -95,9 +105,10 @@ file — you do not need to pass it again.
 
 - **The plan file path is required.** The skill never guesses which plan to
   execute. Always pass it explicitly (except when resuming).
-- **Branch handling.** If you are on the default branch (e.g., `main`), the
-  skill creates a feature branch automatically. If you are already on a feature
-  branch, it runs in place.
+- **Branch handling.** If you are on the default branch (e.g., `main`) or the
+  configured base branch (`[git] baseBranch`), the skill creates a feature
+  branch automatically. If you are already on a feature branch, it runs in
+  place.
 - **Wave structure.** Tasks are grouped into waves based on their dependencies.
   Independent tasks run in parallel within a wave. The skill pauses between
   waves flagged as high-risk to let you inspect the results.

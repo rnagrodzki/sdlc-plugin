@@ -84,8 +84,10 @@ func TestPlanExplorePrepare_RemovesStaleExploreDirs(t *testing.T) {
 }
 
 // TestPlanExplorePrepare_ScopeHintsFromCapabilitySpecs pins that OpenSpec
-// scope hints come from the change's specs/<capability>/spec.md files (the
-// OpenSpec layout) as well as from proposal.md and any top-level specs/*.md.
+// scope hints come from the change's proposal.md and every delta spec the
+// openspec CLI reports for the change, including ones nested below
+// <capability>/ (at any depth — the CLI is the enumeration source, not a
+// one-level directory walk).
 func TestPlanExplorePrepare_ScopeHintsFromCapabilitySpecs(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
@@ -95,7 +97,18 @@ func TestPlanExplorePrepare_ScopeHintsFromCapabilitySpecs(t *testing.T) {
 	writeRepoFile(t, change, "proposal.md", "Touches `internal/proposal/a.go`.\n")
 	writeRepoFile(t, change, "specs/widget/spec.md", "Change `internal/widget/render.go`.\n")
 	writeRepoFile(t, change, "specs/notes.md", "See `internal/notes/n.go`.\n")
-	writeRepoFile(t, change, "specs/deep/nested/spec.md", "Not read: `internal/deep/x.go`.\n")
+	writeRepoFile(t, change, "specs/deep/nested/spec.md", "Now read: `internal/deep/x.go`.\n")
+	proposal := filepath.Join(change, "proposal.md")
+	widgetSpec := filepath.Join(change, "specs", "widget", "spec.md")
+	notesSpec := filepath.Join(change, "specs", "notes.md")
+	deepSpec := filepath.Join(change, "specs", "deep", "nested", "spec.md")
+
+	stubOpenspecCLI(t, map[string]openspecCLIStub{
+		"status --change add-widget --json": {stdout: openspecStatusStubJSON(t, "add-widget", map[string][]string{
+			"proposal": {proposal},
+			"specs":    {widgetSpec, notesSpec, deepSpec},
+		})},
+	})
 
 	m := readExploreManifest(t, dir, dir, "add-widget")
 
@@ -103,14 +116,59 @@ func TestPlanExplorePrepare_ScopeHintsFromCapabilitySpecs(t *testing.T) {
 	for _, f := range m.ScopeHintFiles {
 		got[f] = true
 	}
-	for _, want := range []string{"internal/proposal/a.go", "internal/widget/render.go", "internal/notes/n.go"} {
+	for _, want := range []string{"internal/proposal/a.go", "internal/widget/render.go", "internal/notes/n.go", "internal/deep/x.go"} {
 		if !got[want] {
 			t.Errorf("scopeHintFiles = %v, missing %q", m.ScopeHintFiles, want)
 		}
 	}
-	if got["internal/deep/x.go"] {
-		t.Errorf("scopeHintFiles = %v, should not read specs nested below <capability>/", m.ScopeHintFiles)
-	}
+}
+
+// TestNestedDeltaSpecs verifies getOpenSpecPaths reads a delta spec nested
+// arbitrarily deep under specs/ (e.g. specs/identity/user-auth/spec.md), and
+// that a missing openspec CLI yields no OpenSpec hints without erroring.
+func TestNestedDeltaSpecs(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	change := filepath.Join(dir, "openspec", "changes", "add-auth")
+	writeRepoFile(t, change, "proposal.md", "# Proposal\n")
+	writeRepoFile(t, change, "specs/identity/user-auth/spec.md", "Touches `internal/auth/login.go`.\n")
+	proposal := filepath.Join(change, "proposal.md")
+	authSpec := filepath.Join(change, "specs", "identity", "user-auth", "spec.md")
+
+	statusJSON := openspecStatusStubJSON(t, "add-auth", map[string][]string{
+		"proposal": {proposal},
+		"specs":    {authSpec},
+	})
+
+	t.Run("CLI available", func(t *testing.T) {
+		stubOpenspecCLI(t, map[string]openspecCLIStub{
+			"status --change add-auth --json": {stdout: statusJSON},
+		})
+
+		m := readExploreManifest(t, dir, dir, "add-auth")
+
+		got := map[string]bool{}
+		for _, f := range m.ScopeHintFiles {
+			got[f] = true
+		}
+		if !got["internal/auth/login.go"] {
+			t.Errorf("scopeHintFiles = %v, missing nested delta spec hint %q", m.ScopeHintFiles, "internal/auth/login.go")
+		}
+	})
+
+	t.Run("CLI unavailable", func(t *testing.T) {
+		pathWithoutOpenspec(t)
+
+		m := readExploreManifest(t, dir, dir, "add-auth")
+
+		for _, f := range m.ScopeHintFiles {
+			if f == "internal/auth/login.go" {
+				t.Errorf("scopeHintFiles = %v, should have no OpenSpec hints when the CLI is unavailable", m.ScopeHintFiles)
+			}
+		}
+	})
 }
 
 // TestPlanExplorePrepare_RelativePlansDirectoryResolvesFromWorkspaceRoot pins

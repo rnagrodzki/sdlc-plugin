@@ -1275,6 +1275,60 @@ func TestCommitPrepare_WipSquashDetection(t *testing.T) {
 	}
 }
 
+// TestCommitRangeBaseBranch pins detectWipSquash's fork-point calculation to
+// the configured [git] baseBranch instead of always diffing against the
+// repo's actual default branch ("main" here). A feature branch forked from
+// "develop" carries one WIP commit that was already landed on develop before
+// the fork, plus one WIP commit of its own. Fork-pointing against "develop"
+// (the configured base) must isolate just the branch's own commit; forking
+// against "main" (the old, base-branch-unaware behavior) would also pick up
+// develop's own WIP commit, which does not belong to this branch.
+func TestCommitRangeBaseBranch(t *testing.T) {
+	redirectTempManifests(t)
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	// develop branch carries its own WIP commit, already landed there.
+	runGit(t, dir, "checkout", "-b", "develop")
+	if err := os.WriteFile(filepath.Join(dir, "develop-wip.txt"), []byte("develop wip"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, dir, "add", ".")
+	runGit(t, dir, "commit", "-m", "wip(develop): already landed on develop")
+
+	// Configure "develop" as the base branch, so detectWipSquash's fork
+	// point is computed against it instead of the repo's default branch.
+	writeFile(t, filepath.Join(dir, paths.DataDir, "config.toml"), "[git]\nbaseBranch = \"develop\"\n")
+
+	// Feature branch forked from develop (no upstream configured), with its
+	// own WIP commit.
+	runGit(t, dir, "checkout", "-b", "feat/from-develop")
+	if err := os.WriteFile(filepath.Join(dir, "feature-wip.txt"), []byte("feature wip"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, dir, "add", ".")
+	runGit(t, dir, "commit", "-m", "wip(feature): new work in progress")
+
+	// Stage something for prepare.
+	if err := os.WriteFile(filepath.Join(dir, "more.txt"), []byte("more"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, dir, "add", "more.txt")
+
+	out, err := commitPrepare(dir, dir, CommitPrepareIn{SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("commitPrepare: %v", err)
+	}
+
+	if len(out.WipSquash.Commits) != 1 {
+		t.Fatalf("expected exactly 1 WIP commit (develop's own commit must not be re-flagged), got %d: %v", len(out.WipSquash.Commits), out.WipSquash.Commits)
+	}
+	if !strings.Contains(out.WipSquash.Commits[0], "wip(feature): new work in progress") {
+		t.Errorf("WipSquash.Commits[0]: got %q, want it to be the feature branch's own WIP commit", out.WipSquash.Commits[0])
+	}
+}
+
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------

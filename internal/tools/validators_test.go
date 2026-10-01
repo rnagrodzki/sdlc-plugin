@@ -1469,6 +1469,99 @@ func TestFindStrayStateEntries_MissingStateDirIsNotAnError(t *testing.T) {
 	}
 }
 
+// TestStrayStateAcceptsLinks pins F-worktree-state-links-7: a linked-state
+// entry (paths.LinkedStateEntries) that is a real symlink into the main
+// worktree's .sdlc-v2/ is not stray -- it is the mechanism by which a linked
+// worktree is meant to see run state.
+func TestStrayStateAcceptsLinks(t *testing.T) {
+	mainRoot := t.TempDir()
+	activeRoot := t.TempDir()
+
+	mainDataDir := filepath.Join(mainRoot, paths.DataDir)
+	if err := os.MkdirAll(filepath.Join(mainDataDir, paths.RunsSubdir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	activeDataDir := filepath.Join(activeRoot, paths.DataDir)
+	if err := os.MkdirAll(activeDataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(mainDataDir, paths.RunsSubdir), filepath.Join(activeDataDir, paths.RunsSubdir)); err != nil {
+		t.Fatal(err)
+	}
+
+	findings, err := findStrayStateEntries(mainRoot, activeRoot)
+	if err != nil {
+		t.Fatalf("findStrayStateEntries: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected no findings for a correctly-targeted symlink, got %+v", findings)
+	}
+}
+
+// TestStrayStateWrongLinkTarget pins F-worktree-state-links-8: a
+// linked-state-named entry that is a symlink, but points somewhere other
+// than the main worktree's .sdlc-v2/<name>, is still reported stray --
+// naming the entry in the finding -- because it is not the link the
+// mechanism is supposed to create.
+func TestStrayStateWrongLinkTarget(t *testing.T) {
+	mainRoot := t.TempDir()
+	activeRoot := t.TempDir()
+	elsewhere := t.TempDir()
+
+	if err := os.MkdirAll(filepath.Join(mainRoot, paths.DataDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	activeDataDir := filepath.Join(activeRoot, paths.DataDir)
+	if err := os.MkdirAll(activeDataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, filepath.Join(activeDataDir, paths.RunsSubdir)); err != nil {
+		t.Fatal(err)
+	}
+
+	findings, err := findStrayStateEntries(mainRoot, activeRoot)
+	if err != nil {
+		t.Fatalf("findStrayStateEntries: %v", err)
+	}
+	strayFindings := findingsByID(findings, "WORKTREE_ANCHOR_STRAY_STATE")
+	if len(strayFindings) != 1 {
+		t.Fatalf("expected 1 WORKTREE_ANCHOR_STRAY_STATE finding for a symlink pointing elsewhere, got %d: %+v", len(strayFindings), findings)
+	}
+	if !strings.Contains(strayFindings[0].Message, paths.RunsSubdir) {
+		t.Errorf("message = %q, want mention of the stray entry name %q", strayFindings[0].Message, paths.RunsSubdir)
+	}
+}
+
+// TestStrayStateAcceptsDanglingLink pins the worktree-state-links spec's
+// "Link creation trigger" requirement: SessionStart creates a linked-state
+// symlink even when its main-worktree target does not exist yet (dangling
+// until the first write), so the stray-state check must not flag that link
+// as stray just because the target is missing.
+func TestStrayStateAcceptsDanglingLink(t *testing.T) {
+	mainRoot := t.TempDir()
+	activeRoot := t.TempDir()
+
+	// mainRoot/.sdlc-v2/ is never created here -- the symlink's target,
+	// mainRoot/.sdlc-v2/runs, does not exist at all yet.
+	activeDataDir := filepath.Join(activeRoot, paths.DataDir)
+	if err := os.MkdirAll(activeDataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(mainRoot, paths.DataDir, paths.RunsSubdir)
+	if err := os.Symlink(target, filepath.Join(activeDataDir, paths.RunsSubdir)); err != nil {
+		t.Fatal(err)
+	}
+
+	findings, err := findStrayStateEntries(mainRoot, activeRoot)
+	if err != nil {
+		t.Fatalf("findStrayStateEntries: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected no findings for a dangling but correctly-targeted symlink, got %+v", findings)
+	}
+}
+
 // TestValidateCostTiers_ErrorsByCause pins the two recovery paths of
 // validateCostTiers: an unreadable docs/cost-tiers.md must not be
 // reported as a heading problem, and neither message may print the file path

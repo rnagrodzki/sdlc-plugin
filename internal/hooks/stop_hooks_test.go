@@ -226,7 +226,7 @@ func newPlanState(t *testing.T, root, branch string, planIntegrity map[string]an
 	return st
 }
 
-func TestStopPlanIntegrity_AllMarkersPresent_ConsumesDeletesSilently(t *testing.T) {
+func TestStopPlanIntegrity_AllMarkersPresent_KeepsStateSilently(t *testing.T) {
 	root := gitFixture(t, "feat/plan-pass")
 	branch := "feat/plan-pass"
 
@@ -242,20 +242,23 @@ func TestStopPlanIntegrity_AllMarkersPresent_ConsumesDeletesSilently(t *testing.
 	}
 	assertSilent(t, out)
 
-	if _, statErr := os.Stat(st.Path); !os.IsNotExist(statErr) {
-		t.Fatalf("plan state file should have been deleted, stat err = %v", statErr)
+	if _, statErr := os.Stat(st.Path); statErr != nil {
+		t.Fatalf("plan state file should survive a done Stop (deletion is owned elsewhere), stat err = %v", statErr)
 	}
 
-	// Second consecutive invocation: state is gone, falls through to the
-	// transcript-fallback path; no transcript_path in this event, so silent.
+	// Second consecutive invocation: the state file is still there and still
+	// done, so the same silent, no-op path is taken again.
 	out2, err2 := stopPlanIntegrity(HookCtx{}, Event{})
 	if err2 != nil {
 		t.Fatal(err2)
 	}
 	assertSilent(t, out2)
+	if _, statErr := os.Stat(st.Path); statErr != nil {
+		t.Fatalf("plan state file should still exist after a second Stop, stat err = %v", statErr)
+	}
 }
 
-func TestStopPlanIntegrity_MissingMarker_WarnsDeletesNeverBlocks(t *testing.T) {
+func TestStopPlanIntegrity_MissingMarker_WarnsKeepsNeverBlocks(t *testing.T) {
 	root := gitFixture(t, "feat/plan-missing")
 	branch := "feat/plan-missing"
 
@@ -277,8 +280,8 @@ func TestStopPlanIntegrity_MissingMarker_WarnsDeletesNeverBlocks(t *testing.T) {
 	})
 	assertSilent(t, out)
 
-	if _, statErr := os.Stat(st.Path); !os.IsNotExist(statErr) {
-		t.Fatalf("plan state file should have been deleted even on failure, stat err = %v", statErr)
+	if _, statErr := os.Stat(st.Path); statErr != nil {
+		t.Fatalf("plan state file should survive a done Stop even with missing markers, stat err = %v", statErr)
 	}
 	if !strings.Contains(stderrText, "Missing checkpoints: critiqueRan") {
 		t.Errorf("stderr = %q, want it to list critiqueRan as missing", stderrText)
@@ -386,8 +389,8 @@ func TestStopPlanIntegrity_EmptyPlanFileOnDisk_FlagsPlanFileWithPath(t *testing.
 	})
 	assertSilent(t, out)
 
-	if _, statErr := os.Stat(st.Path); !os.IsNotExist(statErr) {
-		t.Fatalf("plan state file should have been deleted, stat err = %v", statErr)
+	if _, statErr := os.Stat(st.Path); statErr != nil {
+		t.Fatalf("plan state file should survive a done Stop, stat err = %v", statErr)
 	}
 	if !strings.Contains(stderrText, "Missing checkpoints: planFile") {
 		t.Errorf("stderr = %q, want planFile flagged despite the marker string being present", stderrText)
@@ -558,15 +561,15 @@ func TestStopPlanIntegrity_BranchDoesNotResolve_SkipsEvenTranscriptFallback(t *t
 }
 
 // ---------------------------------------------------------------------------
-// stopPlanIntegrity: evidence directory cleanup (findPlanState now uses
-// state.LatestPlanRun; planIntegrityFromState also removes the run's
-// state.EvidenceDir alongside its state file)
+// stopPlanIntegrity: evidence directory survival (findPlanState uses
+// state.LatestPlanRun; planIntegrityFromState never deletes a done run's
+// state file or its state.EvidenceDir — see that function's doc comment)
 // ---------------------------------------------------------------------------
 
 // newPlanStateWithEvidence behaves like newPlanState but additionally
 // creates the run's evidence directory (state.EvidenceDir, keyed off
 // state.RunID(st)) with a sentinel file inside, so tests can assert whether
-// stopPlanIntegrity removed it.
+// stopPlanIntegrity left it alone.
 func newPlanStateWithEvidence(t *testing.T, root, branch string, planIntegrity map[string]any) (st *state.State, evidenceDir string) {
 	t.Helper()
 	st = newPlanState(t, root, branch, planIntegrity, "")
@@ -576,7 +579,10 @@ func newPlanStateWithEvidence(t *testing.T, root, branch string, planIntegrity m
 	return st, evidenceDir
 }
 
-func TestStopPlanIntegrity_Done_RemovesStateFileAndEvidenceDir(t *testing.T) {
+// TestStopPlanIntegrityKeepsDoneRun verifies a done plan run's state file and
+// evidence directory both survive the Stop hook — planIntegrityFromState no
+// longer deletes either; ship's cleanup-pipeline step or GC owns that later.
+func TestStopPlanIntegrityKeepsDoneRun(t *testing.T) {
 	root := gitFixture(t, "feat/plan-evidence-done")
 	branch := "feat/plan-evidence-done"
 
@@ -588,11 +594,11 @@ func TestStopPlanIntegrity_Done_RemovesStateFileAndEvidenceDir(t *testing.T) {
 	}
 	assertSilent(t, out)
 
-	if _, statErr := os.Stat(st.Path); !os.IsNotExist(statErr) {
-		t.Fatalf("plan state file should have been removed, stat err = %v", statErr)
+	if _, statErr := os.Stat(st.Path); statErr != nil {
+		t.Fatalf("plan state file should survive a done Stop, stat err = %v", statErr)
 	}
-	if _, statErr := os.Stat(evidenceDir); !os.IsNotExist(statErr) {
-		t.Fatalf("evidence dir should have been removed alongside the state file, stat err = %v", statErr)
+	if _, statErr := os.Stat(evidenceDir); statErr != nil {
+		t.Fatalf("evidence dir should survive a done Stop alongside the state file, stat err = %v", statErr)
 	}
 }
 
@@ -618,68 +624,14 @@ func TestStopPlanIntegrity_NotDone_KeepsStateFileAndEvidenceDir(t *testing.T) {
 	}
 }
 
-// TestPlanIntegrityFromState_EmptyRoot_SkipsEvidenceRemoval proves the
-// st.Root == "" guard in planIntegrityFromState. Without it,
-// state.EvidenceDir("", runID) resolves to a path relative to the process's
-// current directory — which gitFixture has already chdir'd to this test's
-// repo root — so a missing guard would delete this real directory too.
-func TestPlanIntegrityFromState_EmptyRoot_SkipsEvidenceRemoval(t *testing.T) {
-	root := gitFixture(t, "feat/plan-empty-root")
-	branch := "feat/plan-empty-root"
-
-	st := newPlanState(t, root, branch, allPlanMarkers(), "")
-	runID := state.RunID(st)
-
-	relEvidenceDir := state.EvidenceDir("", runID)
-	sentinel := filepath.Join(relEvidenceDir, "sentinel.txt")
-	mustMkdirAll(t, relEvidenceDir)
-	mustWriteFile(t, sentinel, "keep me")
-
-	st.Root = ""
-	out := planIntegrityFromState(st)
-	assertSilent(t, out)
-
-	if _, statErr := os.Stat(st.Path); !os.IsNotExist(statErr) {
-		t.Fatalf("plan state file should still be removed even when st.Root is empty, stat err = %v", statErr)
-	}
-	if _, statErr := os.Stat(sentinel); statErr != nil {
-		t.Fatalf("evidence dir must survive an empty st.Root (no relative-path RemoveAll), stat err = %v", statErr)
-	}
-}
-
-// TestPlanIntegrityFromState_EmptyRunID_SkipsEvidenceRemoval proves the
-// state.RunID(st) == "" guard in planIntegrityFromState, isolated from the
-// st.Root guard covered above. RunID trims ".json" from the path's
-// basename, so pointing Path at a bare ".json" file forces RunID(st) == "".
-func TestPlanIntegrityFromState_EmptyRunID_SkipsEvidenceRemoval(t *testing.T) {
-	root := gitFixture(t, "feat/plan-empty-runid")
-	branch := "feat/plan-empty-runid"
-
-	st := newPlanState(t, root, branch, allPlanMarkers(), "")
-	st.Path = filepath.Join(root, paths.DataDir, paths.RunsSubdir, ".json")
-	mustWriteFile(t, st.Path, "{}")
-
-	evidenceDir := state.EvidenceDir(root, "") // what a missing guard would remove
-	sentinel := filepath.Join(evidenceDir, "sentinel.txt")
-	mustMkdirAll(t, evidenceDir)
-	mustWriteFile(t, sentinel, "keep me")
-
-	out := planIntegrityFromState(st)
-	assertSilent(t, out)
-
-	if _, statErr := os.Stat(st.Path); !os.IsNotExist(statErr) {
-		t.Fatalf("plan state file should still be removed even when the run ID is empty, stat err = %v", statErr)
-	}
-	if _, statErr := os.Stat(sentinel); statErr != nil {
-		t.Fatalf("evidence dir must survive an empty run ID (no relative-path RemoveAll), stat err = %v", statErr)
-	}
-}
-
 // TestStopPlanIntegrity_ExactSlugMatch_IgnoresSuperstringSlugRun proves
 // findPlanState's switch from state.Find (prefix match — "plan-feat-" would
 // also match a "plan-feat-x-..." filename) to state.LatestPlanRun (exact
 // slug match). Branch "feat" has an older, done, exact-slug run; a
-// "feat-x" run — a different branch's — is newer but must never be touched.
+// "feat-x" run — a different branch's — is newer but must never be selected.
+// Selection is asserted directly via findPlanState (rather than via
+// deletion, which planIntegrityFromState no longer performs for a done run);
+// both runs' files are then confirmed to survive the Stop hook untouched.
 func TestStopPlanIntegrity_ExactSlugMatch_IgnoresSuperstringSlugRun(t *testing.T) {
 	root := gitFixture(t, "feat")
 
@@ -707,23 +659,20 @@ func TestStopPlanIntegrity_ExactSlugMatch_IgnoresSuperstringSlugRun(t *testing.T
 	// prefix-matching bug would have picked this one instead.
 	featXPath, featXEvidence := writeRun("plan-feat-x-20260929T120000Z.json")
 
+	if st := findPlanState("feat"); st == nil || st.Path != featPath {
+		t.Fatalf("findPlanState(%q).Path = %+v, want %q", "feat", st, featPath)
+	}
+
 	out, err := stopPlanIntegrity(HookCtx{}, Event{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertSilent(t, out)
 
-	if _, statErr := os.Stat(featPath); !os.IsNotExist(statErr) {
-		t.Fatalf("exact-slug-match run's state file should have been removed, stat err = %v", statErr)
-	}
-	if _, statErr := os.Stat(featEvidence); !os.IsNotExist(statErr) {
-		t.Fatalf("exact-slug-match run's evidence dir should have been removed, stat err = %v", statErr)
-	}
-	if _, statErr := os.Stat(featXPath); statErr != nil {
-		t.Fatalf("superstring-slug run's state file must be left untouched, stat err = %v", statErr)
-	}
-	if _, statErr := os.Stat(featXEvidence); statErr != nil {
-		t.Fatalf("superstring-slug run's evidence dir must be left untouched, stat err = %v", statErr)
+	for _, p := range []string{featPath, featEvidence, featXPath, featXEvidence} {
+		if _, statErr := os.Stat(p); statErr != nil {
+			t.Fatalf("%s must survive a done Stop untouched, stat err = %v", p, statErr)
+		}
 	}
 }
 

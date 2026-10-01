@@ -39,7 +39,16 @@ default. Optionally verify CI and wait for automated reviewer feedback.
 
 **execute → commit → review → archive-openspec → pr → learnings-commit**
 
-A rebase onto the default branch happens automatically between review and the
+`archive-openspec` archives the OpenSpec change named by `--openspec-change`
+or the plan's `**Source:**` header (or an auto-detected active change). It
+skips when no change is named or detected, and when the change is already
+archived. It fails and stops the pipeline when the named change is missing on
+disk (in both `openspec/changes/<name>/` and the archive) — the same check as
+`verify-openspec`. Outside `--auto`, it asks before archiving a change whose
+`tasks.md` still has unchecked boxes.
+
+A rebase onto the base branch (`[git] baseBranch`, else the repository default
+branch) happens automatically between review and the
 next step (skip it with the `rebase` setting in `/setup`). The rebase runs
 after any review-fix commits and before `harden` (when configured), so the
 harden commit lands on the rebased branch. A final cleanup always runs after the last configured step.
@@ -57,7 +66,8 @@ them via `--steps`):
   `received-review` gets `--no-harden`, so hardening runs only once.
 - `verify-openspec` — Validates the current implementation against an active
   OpenSpec change before archiving. Skipped automatically if there is no
-  active change, even when configured.
+  active change, even when configured. Fails and stops the pipeline when the
+  plan names a change that is missing on disk.
 - `verify-pipeline` — Polls CI after the PR is created and analyzes or fixes
   failures.
 - `await-remote-review` — Waits for an automated reviewer (e.g. Copilot) to
@@ -184,7 +194,9 @@ deferred findings. Two parts of that summary are worth knowing about:
 
 Near the end of a run, `/ship` calls the tool for a run report — one call
 composes it from ship state, self-healing records, this run's execute
-state, CLI evidence, and learnings, then renders and writes it. It covers
+state, CLI evidence, and learnings, then renders and writes it. This write
+happens before the terminal cleanup step runs, because cleanup deletes the
+linked plan run that the report still needs to read. It covers
 per-wave task outcomes, step timings, CLI evidence, drift/error/warning
 counts, guardrail hits, any deferred findings or pending issue drafts, the
 review ledger, self-healing changes (fixes and hardening this run recorded,
@@ -196,7 +208,8 @@ time actually spent on the plan). It is gated by the project's
 default `"md"`). When enabled, the tool
 persists it under `.sdlc-v2/reports/ship-<runId>-report.{json,md}` in the
 main worktree (not wherever the session happens to be running from, e.g. a
-linked worktree) and `/ship` prints that path as the last line of the run.
+linked worktree) and `/ship` prints that path as the last line of that
+step's output.
 `/ship` never renders or writes the report itself — the tool always does
 both. Disabled reporting (`automation.report.enabled = false`) skips this
 step silently — nothing is written.

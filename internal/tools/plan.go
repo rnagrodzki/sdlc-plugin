@@ -57,15 +57,15 @@ import (
 // to no-ops without a prompt. plan_explore_prepare's separate UserPrompt
 // field remains the primary way to exercise them explicitly.
 type PlanPrepareIn struct {
-	SkipConfigCheck        bool   `json:"skipConfigCheck" jsonschema_description:"Skips the config-version auto-migration gate normally run before preparing plan metadata. Set only when the caller has already verified or migrated the config."`
-	FromOpenspec           string `json:"fromOpenspec" jsonschema_description:"Name of the openspec change to prepare plan metadata from (change validation, tasks inventory, explore-pack discovery). Empty when not planning from an openspec change."`
-	ResolveTemplate        bool   `json:"resolveTemplate" jsonschema_description:"When true, resolves the active plan template (project override, else shipped default) and includes the full template resolution in the output."`
-	FromOpenspecDirect     bool   `json:"fromOpenspecDirect" jsonschema_description:"True when the plan is being generated directly from an openspec change (no inline generation step). Combined with openspecInlineGenerate to determine whether openspec routing is active."`
-	OpenspecInlineGenerate bool   `json:"openspecInlineGenerate" jsonschema_description:"True when the openspec change proposal is being inline-generated as part of this plan run. Combined with fromOpenspecDirect to determine whether openspec routing is active."`
-	Lightweight            bool   `json:"lightweight" jsonschema_description:"Requests the lightweight complexity-routing path regardless of file count, adjusting dispatch metadata accordingly."`
-	FileCount              int    `json:"fileCount" jsonschema_description:"Number of files the change is expected to touch, used with lightweight to compute complexity routing (pipeline mode)."`
-	UserPrompt             string `json:"userPrompt" jsonschema_description:"User's plan request text, forwarded to buildExplorePack for keyword-scope and web-research-signal detection. Empty behaves identically to prior versions."`
-	Resume                 bool   `json:"resume,omitempty" jsonschema_description:"Boolean. Post-compact recovery: true reuses the active plan run of this branch without resetting it, and always resolves the template (as if resolveTemplate were true). The saved userPrompt and routing flags replace the input values. Fails when no active run exists. Example: true after the session context shows 'Active plan (post-compact):'."`
+	SkipConfigCheck    bool   `json:"skipConfigCheck" jsonschema_description:"Skips the config-version auto-migration gate normally run before preparing plan metadata. Set only when the caller has already verified or migrated the config."`
+	FromOpenspec       string `json:"fromOpenspec" jsonschema_description:"Name of the openspec change to prepare plan metadata from (change validation, tasks inventory, explore-pack discovery). Empty when not planning from an openspec change."`
+	ResolveTemplate    bool   `json:"resolveTemplate" jsonschema_description:"When true, resolves the active plan template (project override, else shipped default) and includes the full template resolution in the output."`
+	FromOpenspecDirect bool   `json:"fromOpenspecDirect" jsonschema_description:"True when the plan is being generated directly from an openspec change (no inline generation step). Combined with openspecStage to determine whether openspec routing is active."`
+	OpenspecStage      bool   `json:"openspecStage,omitempty" jsonschema_description:"Plain JSON bool. True when the plan authors a new OpenSpec change and stages it. Example: true"`
+	Lightweight        bool   `json:"lightweight" jsonschema_description:"Requests the lightweight complexity-routing path regardless of file count, adjusting dispatch metadata accordingly."`
+	FileCount          int    `json:"fileCount" jsonschema_description:"Number of files the change is expected to touch, used with lightweight to compute complexity routing (pipeline mode)."`
+	UserPrompt         string `json:"userPrompt" jsonschema_description:"User's plan request text, forwarded to buildExplorePack for keyword-scope and web-research-signal detection. Empty behaves identically to prior versions."`
+	Resume             bool   `json:"resume,omitempty" jsonschema_description:"Boolean. Post-compact recovery: true reuses the active plan run of this branch without resetting it, and always resolves the template (as if resolveTemplate were true). The saved userPrompt and routing flags replace the input values. Fails when no active run exists. Example: true after the session context shows 'Active plan (post-compact):'."`
 }
 
 // OpenspecChangeInfo, OpenspecAuthoritative, and OpenspecInfo used to be
@@ -92,6 +92,10 @@ type FromOpenspecResult struct {
 	TasksDone      int     `json:"tasksDone"`
 	TasksTotal     int     `json:"tasksTotal"`
 	Stage          *string `json:"stage"`
+	// DeltaSpecPaths lists every delta spec file of the change at any depth
+	// under specs/, repo-relative (e.g. openspec/changes/x/specs/a/b/spec.md),
+	// as reported by `openspec status`. Empty when validation failed.
+	DeltaSpecPaths []string `json:"deltaSpecPaths"`
 }
 
 // TaskEntry mirrors lib/openspec.js's parseTasks() entry shape.
@@ -240,39 +244,53 @@ func isSafeChangeName(name string) bool {
 // AnalyzeChange/BranchPrefixRe/DetectActiveChanges/slugBoundaryMatch in
 // internal/openspec/openspec.go. Call sites below were updated in place.
 
-// validateChange mirrors lib/openspec.js's validateChange.
-func validateChange(contentRoot, changeName string) struct {
-	Valid  bool
-	Errors []string
+// changeValidation is validateChange's result: the change's artifact info
+// plus its repo-relative delta spec paths, validity, and error/warning texts
+// (warnings carry a "Warning:" prefix and never make Valid false).
+type changeValidation struct {
+	Valid          bool
+	Errors         []string
+	DeltaSpecPaths []string
 	OpenspecChangeInfo
-} {
-	changeDir := filepath.Join(contentRoot, "openspec", "changes", changeName)
+}
 
-	if !migrateDirExists(changeDir) {
-		return struct {
-			Valid  bool
-			Errors []string
-			OpenspecChangeInfo
-		}{
-			Valid:  false,
-			Errors: []string{fmt.Sprintf("Change directory not found: openspec/changes/%s/", changeName)},
-			OpenspecChangeInfo: OpenspecChangeInfo{
-				Name: changeName,
-			},
+// openspecCLIUnavailablePrefix starts the error plan_prepare reports when an
+// `openspec` CLI call fails (binary missing, or the CLI itself errors).
+const openspecCLIUnavailablePrefix = "openspec CLI unavailable: "
+
+// validateChange validates a --from-openspec change name through `openspec
+// status --change <name> --json` (never by globbing the change directory).
+// A grouped name ("grp/demo") is rejected before the CLI runs: OpenSpec does
+// not support grouped changes (design.md D4).
+func validateChange(contentRoot, changeName string) changeValidation {
+	invalid := func(msg string) changeValidation {
+		return changeValidation{
+			Valid:              false,
+			Errors:             []string{msg},
+			DeltaSpecPaths:     []string{},
+			OpenspecChangeInfo: OpenspecChangeInfo{Name: changeName},
 		}
 	}
 
+	if strings.ContainsAny(changeName, `/\`) {
+		return invalid(fmt.Sprintf("Invalid change name '%s': grouped changes are not supported — rename to a flat name", changeName))
+	}
+
+	info, deltaSpecPaths, err := openspec.StatusChange(contentRoot, changeName)
+	if err != nil {
+		if isOpenspecChangeNotFound(err) {
+			return invalid(fmt.Sprintf("Change directory not found: openspec/changes/%s/", changeName))
+		}
+		return invalid(openspecCLIUnavailablePrefix + err.Error())
+	}
+
 	errs := []string{}
-	if !fileExists(filepath.Join(changeDir, "proposal.md")) {
+	if !info.HasProposal {
 		errs = append(errs, fmt.Sprintf("Missing required file: openspec/changes/%s/proposal.md", changeName))
 	}
-
-	specsDir := filepath.Join(changeDir, "specs")
-	if !migrateDirExists(specsDir) || openspec.CountMdFiles(specsDir) == 0 {
+	if len(deltaSpecPaths) == 0 {
 		errs = append(errs, fmt.Sprintf("Warning: openspec/changes/%s/specs/ is empty or missing", changeName))
 	}
-
-	info := openspec.AnalyzeChange(changeDir, changeName)
 
 	valid := true
 	for _, e := range errs {
@@ -282,15 +300,34 @@ func validateChange(contentRoot, changeName string) struct {
 		}
 	}
 
-	return struct {
-		Valid  bool
-		Errors []string
-		OpenspecChangeInfo
-	}{
+	return changeValidation{
 		Valid:              valid,
 		Errors:             errs,
+		DeltaSpecPaths:     deltaSpecPaths,
 		OpenspecChangeInfo: info,
 	}
+}
+
+// isOpenspecChangeNotFound reports whether err is `openspec status`'s
+// "Change '<name>' not found" failure. The CLI reports it as an error-severity
+// status entry with code change_error, which openspec.Status embeds in the
+// error text (there is no typed sentinel for it).
+func isOpenspecChangeNotFound(err error) bool {
+	if errors.Is(err, openspec.ErrCLINotFound) {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "change_error") && strings.Contains(msg, "not found")
+}
+
+// appendUnique appends s to list unless list already holds it.
+func appendUnique(list []string, s string) []string {
+	for _, existing := range list {
+		if existing == s {
+			return list
+		}
+	}
+	return append(list, s)
 }
 
 // ---------------------------------------------------------------------------
@@ -987,9 +1024,14 @@ var step5OwnedSections = map[string]bool{
 }
 
 // openspecConditionPrefix is the prefix that identifies an OpenSpec-conditional
-// section. Both the legacy condition ("source matches openspec/changes/") and
-// the current form ("source matches openspec/changes/ or openspecInlineGenerate")
-// start with this prefix, so a HasPrefix check covers both.
+// section. A HasPrefix check (not an exact match) is used deliberately: the
+// condition text after the prefix is never parsed — only openspecActive
+// (fromOpenspecDirect || openspecStage) decides the section body. This lets
+// the prefix match the bare form ("source matches openspec/changes/", used
+// in tests) and any suffixed form, including the legacy "... or
+// openspecInlineGenerate" that may still appear in project template
+// overrides and in the shipped default template on disk until a later task
+// renames it to "... or openspecStage".
 const openspecConditionPrefix = "source matches openspec/changes/"
 
 // computeComplexityRouting maps a file count to a pipeline mode.
@@ -1110,7 +1152,7 @@ func buildHeaderMarkdown() string {
 func buildTemplateResolution(mainRoot string, in PlanPrepareIn, planTemplatePath *string) (*TemplateResolution, []string) {
 	warnings := []string{}
 
-	openspecActive := in.FromOpenspecDirect || in.OpenspecInlineGenerate
+	openspecActive := in.FromOpenspecDirect || in.OpenspecStage
 	routing := computeComplexityRouting(in.FileCount, in.Lightweight)
 
 	// Resolve the active template path: project override -> shipped default.
@@ -1345,11 +1387,11 @@ func fullCreationIntent(in PlanPrepareIn) map[string]any {
 		"routing":    routing.Reason,
 		"timestamp":  time.Now().UTC().Format(time.RFC3339),
 		"flags": map[string]any{
-			"fromOpenspec":           in.FromOpenspec,
-			"fromOpenspecDirect":     in.FromOpenspecDirect,
-			"openspecInlineGenerate": in.OpenspecInlineGenerate,
-			"lightweight":            in.Lightweight,
-			"fileCount":              in.FileCount,
+			"fromOpenspec":       in.FromOpenspec,
+			"fromOpenspecDirect": in.FromOpenspecDirect,
+			"openspecStage":      in.OpenspecStage,
+			"lightweight":        in.Lightweight,
+			"fileCount":          in.FileCount,
 		},
 	}
 }
@@ -1375,8 +1417,8 @@ func applySavedIntent(st *state.State, in PlanPrepareIn) PlanPrepareIn {
 	if v, ok := flags["fromOpenspecDirect"].(bool); ok {
 		in.FromOpenspecDirect = v
 	}
-	if v, ok := flags["openspecInlineGenerate"].(bool); ok {
-		in.OpenspecInlineGenerate = v
+	if v, ok := flags["openspecStage"].(bool); ok {
+		in.OpenspecStage = v
 	}
 	if v, ok := flags["lightweight"].(bool); ok {
 		in.Lightweight = v
@@ -1528,7 +1570,10 @@ func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepar
 	}
 
 	// 1. OpenSpec detection.
-	openspecInfo := openspec.DetectActiveChanges(contentRoot)
+	openspecInfo, cliErr := openspec.DetectActiveChangesCLI(contentRoot)
+	if cliErr != nil {
+		errs = append(errs, openspecCLIUnavailablePrefix+cliErr.Error())
+	}
 	if openspecInfo.Present {
 		openspecInfo.Authoritative = &OpenspecAuthoritative{
 			Path:       "openspec/config.yaml",
@@ -1538,7 +1583,7 @@ func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepar
 
 	// 1a. Plan template detection.
 	planTemplate := PlanTemplate{}
-	planTemplatePath := filepath.Join(mainRoot, paths.DataDir, "plan-template.md")
+	planTemplatePath := filepath.Join(mainRoot, paths.DataDir, paths.PlanTemplateFile)
 	if fileExists(planTemplatePath) {
 		p := planTemplatePath
 		planTemplate.Path = &p
@@ -1559,12 +1604,15 @@ func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepar
 			TasksDone:      validation.TasksDone,
 			TasksTotal:     validation.TasksTotal,
 			Stage:          validation.Stage,
+			DeltaSpecPaths: validation.DeltaSpecPaths,
 		}
 
 		if !validation.Valid {
 			for _, e := range validation.Errors {
 				if !strings.HasPrefix(e, "Warning:") {
-					errs = append(errs, e)
+					// appendUnique: a missing CLI fails both detection
+					// and validation with the same text.
+					errs = appendUnique(errs, e)
 				}
 			}
 		}
@@ -1719,6 +1767,35 @@ var validMarkers = map[string]bool{
 var structuredDataMarkers = map[string]string{
 	"guardrailResults":  "results",
 	"criticalDecisions": "decisions",
+}
+
+// normalizeCriticalDecisions stamps the call-time "at" timestamp onto every
+// "criticalDecisions" entry — overwriting any caller-supplied "at" — and
+// defaults a missing "rejected" field to an empty list. An entry that
+// already carries "rejected" (expected shape [{option,why}]) is otherwise
+// stored unchanged. It never touches "guardrailResults", which appends its
+// raw payload as-is (byte-identical to input) via the caller's separate
+// branch. A non-object entry (not map[string]any) passes through unchanged,
+// since it has no "at"/"rejected" fields to normalize.
+func normalizeCriticalDecisions(entries []any, at string) []any {
+	normalized := make([]any, len(entries))
+	for i, e := range entries {
+		m, ok := e.(map[string]any)
+		if !ok {
+			normalized[i] = e
+			continue
+		}
+		copied := make(map[string]any, len(m)+2)
+		for k, v := range m {
+			copied[k] = v
+		}
+		if _, hasRejected := copied["rejected"]; !hasRejected {
+			copied["rejected"] = []any{}
+		}
+		copied["at"] = at
+		normalized[i] = copied
+	}
+	return normalized
 }
 
 // markerKey maps a marker name to its planIntegrity JSON key, mirroring
@@ -1970,7 +2047,7 @@ func appendPlanRunRecord(mainRoot, branch string, st *state.State) error {
 type PlanMarkIn struct {
 	Marker string         `json:"marker" jsonschema:"enum=plan-file,enum=skillInvoked,enum=guardrailsEvaluated,enum=critiqueRan,enum=done,enum=guardrailResults,enum=criticalDecisions,enum=checkpoint" jsonschema_description:"Checkpoint marker: \"plan-file\", \"skillInvoked\", \"guardrailsEvaluated\", \"critiqueRan\", or the terminal \"done\" marker stamp the current timestamp into planIntegrity; \"guardrailResults\" and \"criticalDecisions\" instead append data's array payload to their own state key. \"checkpoint\" replaces the progress checkpoint (requires data)."`
 	Path   string         `json:"path" jsonschema_description:"Plan file path to record. Only used (and required) when marker is \"plan-file\"."`
-	Data   map[string]any `json:"data,omitempty" jsonschema_description:"Structured payload for the \"guardrailResults\" marker ({results:[{id,status,detail}]}) or the \"criticalDecisions\" marker ({decisions:[{key,choice,reason}]}). For \"checkpoint\": JSON object {step: string, one of \"0\", \"1\", \"2\", \"3\", \"4\", \"5\", \"6\", \"6.5\", \"6.6\", \"7\"; iteration: integer >= 0; expectedWriters: JSON array of writer IDs (max 32)}. Example: {\"step\":\"3\",\"iteration\":1,\"expectedWriters\":[\"lane-static-structural-r1\"]}. Replaced, not appended. Ignored for every other marker."`
+	Data   map[string]any `json:"data,omitempty" jsonschema_description:"Structured payload for the \"guardrailResults\" marker ({results:[{id,status,detail}]}) or the \"criticalDecisions\" marker ({decisions:[{key,choice,rejected,reason}]}; rejected is [{option,why}], defaults to [] when omitted; the tool always sets at to the call time, overwriting any caller-supplied value). For \"checkpoint\": JSON object {step: string, one of \"0\", \"1\", \"2\", \"3\", \"4\", \"5\", \"6\", \"6.5\", \"6.6\", \"7\"; iteration: integer >= 0; expectedWriters: JSON array of writer IDs (max 32)}. Example: {\"step\":\"3\",\"iteration\":1,\"expectedWriters\":[\"lane-static-structural-r1\"]}. Replaced, not appended. Ignored for every other marker."`
 }
 
 // PlanMarkOut is the output for the plan_mark tool.
@@ -2071,6 +2148,9 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 			if arr, ok := in.Data[dataKey].([]any); ok {
 				newEntries = arr
 			}
+		}
+		if in.Marker == "criticalDecisions" {
+			newEntries = normalizeCriticalDecisions(newEntries, time.Now().UTC().Format(time.RFC3339))
 		}
 		existing, _ := st.Data[in.Marker].([]any)
 		st.Data[in.Marker] = append(existing, newEntries...)

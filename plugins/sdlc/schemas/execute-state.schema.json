@@ -279,6 +279,16 @@
       "type": "boolean",
       "description": "True when this branch's ship state has flags.auto=true at init time. Diagnostic only: the execute skill takes auto from resolve-config, not from this field."
     },
+    "openspec": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Set by init when the plan has an **OpenSpec-Staging:** header: the result of materializing that staged change (see openspec.Materialize) before the state file was written.",
+      "properties": {
+        "change": { "type": "string" },
+        "materialized": { "type": "string", "enum": ["created", "already"] }
+      },
+      "required": ["change"]
+    },
     "issues": {
       "type": "array",
       "description": "Structured issue accumulator appended by task-fail, wave-fail, and DONE_WITH_CONCERNS task-done calls (R-TASK-17). Mirrors deferredFindings in ship-state.schema.json.",
@@ -342,6 +352,45 @@
       "description": "Append-only list of pending GH issue drafts recorded by the issue-draft action.",
       "items": {
         "type": "object"
+      }
+    },
+    "baseSyncs": {
+      "type": "array",
+      "description": "One entry per base-sync call (merge of origin/<base> into the branch between waves). base-sync-resolve moves a conflict entry to resolved or aborted.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "wave": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "status": {
+            "type": "string",
+            "enum": ["disabled", "skipped", "up-to-date", "merged", "conflict", "resolved", "aborted"]
+          },
+          "base": {
+            "type": "string"
+          },
+          "behind": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "sha": {
+            "type": "string"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "conflictedFiles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": ["wave", "status", "base", "at"],
+        "additionalProperties": false
       }
     },
     "waveTimeoutSeconds": {

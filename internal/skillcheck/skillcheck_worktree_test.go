@@ -76,7 +76,7 @@ var worktreeSkillsVerbRe = regexp.MustCompile(`(?i)\b(Write|Read|Glob|Bash|cp|ca
 // worktreeSkillsProhibitionRe recognizes the "do not <verb> a bare path"
 // prohibition idiom, which legitimately pairs a filesystem verb with a
 // ".sdlc-v2/" path on the same line without instructing the LLM to perform
-// that operation (e.g. plan/SKILL.md:91, execute/SKILL.md:25). It is
+// that operation (e.g. plan/SKILL.md:71, execute/SKILL.md:25). It is
 // deliberately narrow -- same line, verb within 40 chars after the negation
 // -- because broadening it to also swallow every phrasing that
 // worktreeSkillsProhibitionMisses documents individually below would risk
@@ -142,7 +142,7 @@ type worktreeSkillsException struct {
 // individually against this repo's current file content (not assumed from
 // a prior report) before being added here. Keyed by "relative/path:line".
 var worktreeSkillsDescriptiveNoAction = map[string]worktreeSkillsException{
-	"skills/execute/SKILL.md:185": {
+	"skills/execute/SKILL.md:187": {
 		contains: "pipeline-continue",
 		reason:   `narrates the automatic "pipeline-continue" PostToolUse hook writing CLI evidence -- no LLM Read/Write/Glob call on this line`,
 	},
@@ -179,7 +179,7 @@ var worktreeSkillsDescriptiveNoAction = map[string]worktreeSkillsException{
 // instruction elsewhere. Each entry was verified individually against this
 // repo's current file content. Keyed by "relative/path:line".
 var worktreeSkillsProhibitionMisses = map[string]worktreeSkillsException{
-	"skills/execute/SKILL.md:311": {
+	"skills/execute/SKILL.md:338": {
 		contains: "never append to",
 		reason:   `"never append to .sdlc-v2/learnings/log.md directly" -- prohibited verb is "append" (not in the read|write|glob alternation), and "write" appears earlier in the same line (in "a later write would land outside it"), before "never"`,
 	},
@@ -362,7 +362,7 @@ var worktreeSkillsProhibitionSurvivors = []struct {
 	rel  string
 	line int
 }{
-	{"skills/plan/SKILL.md", 93},
+	{"skills/plan/SKILL.md", 71},
 	{"skills/execute/SKILL.md", 25},
 }
 
@@ -402,7 +402,7 @@ func TestSkillsProhibitionProseSurvivesDetection(t *testing.T) {
 // worktreeSkillsShipStateReportWriteRe matches the ship_state call that
 // composes, renders and persists the end-of-run report in one shot
 // (action:"report", detail:{write:true}) -- the single call ship/SKILL.md's
-// Step 10c must use instead of a bare Write to a .sdlc-v2/reports/... path,
+// Step 9a must use instead of a bare Write to a .sdlc-v2/reports/... path,
 // or the old two-call execute_state({action:"report", write:true, ...})
 // pattern (one read-only call plus one write-with-body call per format).
 var worktreeSkillsShipStateReportWriteRe = regexp.MustCompile(`ship_state\(\{action:"report",\s*detail:\{write:true`)

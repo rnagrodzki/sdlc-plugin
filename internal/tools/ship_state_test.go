@@ -751,6 +751,66 @@ func TestShipState_Decide(t *testing.T) {
 	}
 }
 
+// TestShipStateDecideAt confirms decide stamps each appended decision with
+// "at", the injected clock's time formatted as RFC 3339 UTC — mirroring the
+// clock-seam pattern shipStateDefer already follows.
+func TestShipStateDecideAt(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, "feat/decide-at")
+	path := shipStateInitFixture(t, dir, "feat/decide-at")
+
+	fixedTime := time.Date(2026, 3, 1, 12, 30, 0, 0, time.UTC)
+	if _, err := shipState(dir, dir, ShipStateIn{
+		Action: "decide",
+		Step:   "review",
+		Detail: map[string]any{"branch": "feat/decide-at", "text": "skip perf pass, low risk"},
+	}, fixedNow(fixedTime)); err != nil {
+		t.Fatalf("decide: %v", err)
+	}
+	data := readStateData(t, path)
+	decisions, _ := data["decisions"].([]any)
+	if len(decisions) != 1 {
+		t.Fatalf("decisions = %v, want 1 entry", decisions)
+	}
+	d, _ := decisions[0].(map[string]any)
+	wantAt := fixedTime.UTC().Format(time.RFC3339)
+	if d["at"] != wantAt {
+		t.Errorf("decision at = %v, want %q", d["at"], wantAt)
+	}
+
+	schemaPath, err := filepath.Abs(filepath.Join("..", "..", "plugins", "sdlc", "schemas", "ship-state.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sch, err := jsonschema.NewCompiler().Compile(schemaPath)
+	if err != nil {
+		t.Fatalf("compile schema: %v", err)
+	}
+	minimalDoc := map[string]any{
+		"version":   float64(1),
+		"startedAt": "2026-03-01T12:00:00Z",
+		"branch":    "feat/decide-at",
+		"flags":     map[string]any{},
+		"steps": []any{
+			map[string]any{"name": "review", "status": "completed"},
+		},
+		"decisions": decisions,
+	}
+	raw, err := json.Marshal(minimalDoc)
+	if err != nil {
+		t.Fatalf("marshal minimal doc: %v", err)
+	}
+	inst, err := jsonschema.UnmarshalJSON(strings.NewReader(string(raw)))
+	if err != nil {
+		t.Fatalf("unmarshal minimal doc for schema validation: %v", err)
+	}
+	if err := sch.Validate(inst); err != nil {
+		t.Errorf("ship state with decide-recorded 'at' failed schema validation: %v", err)
+	}
+}
+
 func TestShipState_Defer(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
@@ -2042,6 +2102,238 @@ func TestShipState_CleanupPipeline_ViolationBlocksBeforeGC(t *testing.T) {
 	if err == nil {
 		t.Fatal("cleanup-pipeline on a fresh (all-pending) pipeline: want a contract-violation error, got nil")
 	}
+}
+
+// planRunCleanupFixture is one cleanup-pipeline plan-run deletion fixture on
+// disk: a ship state, a plan run with a populated .evidence directory, and
+// (optionally) an execute state whose planPath links the plan run.
+type planRunCleanupFixture struct {
+	dir, branch, planRunPath, evidenceDir, runID string
+}
+
+// newPlanRunCleanupFixture builds the fixture. terminal stamps every ship
+// step terminal (so cleanup-pipeline stamps instead of failing the
+// contract); execPlanPath is the execute state's planPath ("" = no execute
+// state at all; the linked plan file is <dir>/plans/feature.md).
+func newPlanRunCleanupFixture(t *testing.T, branch string, terminal bool, execPlanPath func(dir string) string) planRunCleanupFixture {
+	t.Helper()
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, branch)
+	shipPath := shipStateInitFixture(t, dir, branch)
+	if terminal {
+		for name, status := range map[string]string{
+			"execute": "completed", "commit": "completed", "review": "completed",
+			"received-review": "skipped", "commit-fixes": "skipped",
+			"version": "completed", "pr": "completed",
+		} {
+			setStepStatus(t, shipPath, name, status, map[string]any{"completedAt": "2026-01-01T00:00:00Z"})
+		}
+	}
+
+	planFile := filepath.Join(dir, "plans", "feature.md")
+	planSt, err := state.Init(dir, "plan", branch, "")
+	if err != nil {
+		t.Fatalf("init plan run: %v", err)
+	}
+	planSt.Data["planFilePath"] = planFile
+	if err := state.Write(planSt); err != nil {
+		t.Fatalf("write plan run: %v", err)
+	}
+	runID := state.RunID(planSt)
+	evidenceDir := state.EvidenceDir(dir, runID)
+	writeFile(t, filepath.Join(evidenceDir, "critique.md"), "evidence")
+
+	if execPlanPath != nil {
+		createExecState(t, dir, branch, map[string]any{"branch": branch, "planPath": execPlanPath(dir)})
+	}
+	return planRunCleanupFixture{dir: dir, branch: branch, planRunPath: planSt.Path, evidenceDir: evidenceDir, runID: runID}
+}
+
+// linkedPlanFile is the execPlanPath that links the fixture's plan run.
+func linkedPlanFile(dir string) string { return filepath.Join(dir, "plans", "feature.md") }
+
+// writeShipReport writes this ship run's report through the real report
+// action and returns its path.
+func (f planRunCleanupFixture) writeShipReport(t *testing.T, format string) string {
+	t.Helper()
+	out, err := shipState(f.dir, f.dir, ShipStateIn{
+		Action: "report",
+		Detail: map[string]any{"branch": f.branch, "write": true, "format": format},
+	}, fixedNow(time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)))
+	if err != nil {
+		t.Fatalf("report write: %v", err)
+	}
+	rep, ok := out.(ShipRunReportOut)
+	if !ok || !rep.Written || rep.Path == "" {
+		t.Fatalf("report output = %#v, want a written report with a path", out)
+	}
+	return rep.Path
+}
+
+func (f planRunCleanupFixture) cleanupPipeline(t *testing.T, detail map[string]any) (ShipPlanRunCleanup, error) {
+	t.Helper()
+	d := map[string]any{"branch": f.branch}
+	for k, v := range detail {
+		d[k] = v
+	}
+	out, err := shipState(f.dir, f.dir, ShipStateIn{Action: "cleanup-pipeline", Detail: d},
+		fixedNow(time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC)))
+	if err != nil {
+		return ShipPlanRunCleanup{}, err
+	}
+	m, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("output = %#v, want map[string]any", out)
+	}
+	pr, ok := m["planRun"].(ShipPlanRunCleanup)
+	if !ok {
+		t.Fatalf("planRun = %#v (%T), want ShipPlanRunCleanup", m["planRun"], m["planRun"])
+	}
+	return pr, nil
+}
+
+func (f planRunCleanupFixture) assertKept(t *testing.T) {
+	t.Helper()
+	if _, err := os.Stat(f.planRunPath); err != nil {
+		t.Errorf("plan run file %s must be kept: %v", f.planRunPath, err)
+	}
+	if _, err := os.Stat(filepath.Join(f.evidenceDir, "critique.md")); err != nil {
+		t.Errorf("evidence dir %s must be kept: %v", f.evidenceDir, err)
+	}
+}
+
+func (f planRunCleanupFixture) assertDeleted(t *testing.T) {
+	t.Helper()
+	if _, err := os.Stat(f.planRunPath); !os.IsNotExist(err) {
+		t.Errorf("plan run file %s must be deleted, stat err = %v", f.planRunPath, err)
+	}
+	if _, err := os.Stat(f.evidenceDir); !os.IsNotExist(err) {
+		t.Errorf("evidence dir %s must be deleted, stat err = %v", f.evidenceDir, err)
+	}
+}
+
+// TestCleanupPipelineDeletesReportedPlanRun covers cleanup-pipeline's
+// plan-run deletion step: it runs only after the stamp, only for the plan
+// run linked through the execute state, and only once the ship report for
+// this ship run is on disk. force and contract violations delete nothing.
+func TestCleanupPipelineDeletesReportedPlanRun(t *testing.T) {
+	for _, format := range []string{"md", "json"} {
+		t.Run("report written ("+format+") deletes plan run and evidence", func(t *testing.T) {
+			f := newPlanRunCleanupFixture(t, "feat/planrun-reported-"+format, true, linkedPlanFile)
+			reportPath := f.writeShipReport(t, format)
+			if want := "ship-20260101T000000-report." + format; filepath.Base(reportPath) != want {
+				t.Fatalf("report file = %s, want %s", filepath.Base(reportPath), want)
+			}
+
+			pr, err := f.cleanupPipeline(t, nil)
+			if err != nil {
+				t.Fatalf("cleanup-pipeline: %v", err)
+			}
+			if want := (ShipPlanRunCleanup{Deleted: true, RunID: f.runID}); pr != want {
+				t.Errorf("planRun = %#v, want %#v", pr, want)
+			}
+			f.assertDeleted(t)
+			if _, err := os.Stat(reportPath); err != nil {
+				t.Errorf("report %s must survive cleanup-pipeline: %v", reportPath, err)
+			}
+			st, _ := state.Find(f.dir, "ship", f.branch)
+			if st == nil || st.Data["pipelineStatus"] != "completed" {
+				t.Errorf("ship state must be stamped completed, got %#v", st)
+			}
+		})
+	}
+
+	t.Run("report not written keeps plan run", func(t *testing.T) {
+		f := newPlanRunCleanupFixture(t, "feat/planrun-noreport", true, linkedPlanFile)
+
+		pr, err := f.cleanupPipeline(t, nil)
+		if err != nil {
+			t.Fatalf("cleanup-pipeline: %v", err)
+		}
+		if want := (ShipPlanRunCleanup{Reason: "report not written"}); pr != want {
+			t.Errorf("planRun = %#v, want %#v", pr, want)
+		}
+		f.assertKept(t)
+	})
+
+	t.Run("no execute state is no linked plan run", func(t *testing.T) {
+		f := newPlanRunCleanupFixture(t, "feat/planrun-noexec", true, nil)
+		f.writeShipReport(t, "md")
+
+		pr, err := f.cleanupPipeline(t, nil)
+		if err != nil {
+			t.Fatalf("cleanup-pipeline: %v", err)
+		}
+		if want := (ShipPlanRunCleanup{Reason: "no linked plan run"}); pr != want {
+			t.Errorf("planRun = %#v, want %#v", pr, want)
+		}
+		f.assertKept(t)
+	})
+
+	t.Run("execute planPath matching no plan run is no linked plan run", func(t *testing.T) {
+		f := newPlanRunCleanupFixture(t, "feat/planrun-unlinked", true, func(dir string) string {
+			return filepath.Join(dir, "plans", "other.md")
+		})
+		f.writeShipReport(t, "md")
+
+		pr, err := f.cleanupPipeline(t, nil)
+		if err != nil {
+			t.Fatalf("cleanup-pipeline: %v", err)
+		}
+		if want := (ShipPlanRunCleanup{Reason: "no linked plan run"}); pr != want {
+			t.Errorf("planRun = %#v, want %#v", pr, want)
+		}
+		f.assertKept(t)
+	})
+
+	t.Run("force does not bypass the gate and deletes nothing", func(t *testing.T) {
+		f := newPlanRunCleanupFixture(t, "feat/planrun-force", true, linkedPlanFile)
+		f.writeShipReport(t, "md")
+
+		pr, err := f.cleanupPipeline(t, map[string]any{"force": true})
+		if err != nil {
+			t.Fatalf("cleanup-pipeline force: %v", err)
+		}
+		if want := (ShipPlanRunCleanup{Reason: "run not stamped"}); pr != want {
+			t.Errorf("planRun = %#v, want %#v", pr, want)
+		}
+		f.assertKept(t)
+	})
+
+	t.Run("contract violation deletes nothing", func(t *testing.T) {
+		f := newPlanRunCleanupFixture(t, "feat/planrun-violation", false, linkedPlanFile)
+		f.writeShipReport(t, "md")
+
+		if _, err := f.cleanupPipeline(t, nil); err == nil {
+			t.Fatal("cleanup-pipeline on an all-pending pipeline: want a contract-violation error, got nil")
+		}
+		f.assertKept(t)
+	})
+
+	t.Run("ship state without startedAt deletes nothing", func(t *testing.T) {
+		f := newPlanRunCleanupFixture(t, "feat/planrun-nostart", true, linkedPlanFile)
+		// A report named with the "wave-0" fallback id must not count.
+		writeFile(t, filepath.Join(f.dir, paths.DataDir, "reports", "ship-wave-0-report.md"), "report")
+		st, err := state.Find(f.dir, "ship", f.branch)
+		if err != nil || st == nil {
+			t.Fatalf("find ship state: st=%v err=%v", st, err)
+		}
+		delete(st.Data, "startedAt")
+		if err := state.Write(st); err != nil {
+			t.Fatalf("write ship state: %v", err)
+		}
+
+		pr, err := f.cleanupPipeline(t, nil)
+		if err != nil {
+			t.Fatalf("cleanup-pipeline: %v", err)
+		}
+		if want := (ShipPlanRunCleanup{Reason: "report not written"}); pr != want {
+			t.Errorf("planRun = %#v, want %#v", pr, want)
+		}
+		f.assertKept(t)
+	})
 }
 
 // ---------------------------------------------------------------------------

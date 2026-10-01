@@ -23,7 +23,7 @@ const learningsLogHeader = "# SDLC Execution Learnings\n"
 
 // learningsLogPath returns the absolute path to the learnings log file.
 func learningsLogPath(root string) string {
-	return filepath.Join(root, paths.DataDir, "learnings", "log.md")
+	return filepath.Join(root, paths.DataDir, paths.LearningsSubdir, "log.md")
 }
 
 // LearningsLogIn is the input for the learnings_log tool.

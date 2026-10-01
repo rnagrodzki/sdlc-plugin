@@ -18,6 +18,12 @@
 # Local sdlc cache lives under $HOME/.sdlc-cache; never in-repo
 .sdlc-cache/
 
+# macOS Finder metadata
+.DS_Store
+
+# Local assistant scratch notes (not project content)
+/tasks/
+
 # Test binary, built with `go test -c`
 *.test
 

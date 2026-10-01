@@ -2,7 +2,8 @@
 // state.js shared library: filename grammar, branch slug helpers, file lookup
 // (delimiter-aware mtime-newest), init/write with prune-on-write, and session
 // stamping. The "Run helpers" section adds plan-run selection by exact run ID
-// (RunID, LoadRun, LatestPlanRun, ActivePlanRun) and per-run evidence
+// (RunID, LoadRun, LatestPlanRun, ActivePlanRun), plan-run lookup by plan
+// file (FindPlanRunByPlanFile) and per-run evidence
 // directories (EvidenceDir, PruneEvidenceDirs).
 //
 // The canonical state directory lives at <root>/.sdlc-v2/runs/. Root is
@@ -107,7 +108,7 @@ func stateDir(root string) string {
 // files that haven't been moved to stateDir yet (see the "layout" action on
 // the migrate tool).
 func legacyStateDir(root string) string {
-	return filepath.Join(root, paths.DataDir, "execution")
+	return filepath.Join(root, paths.DataDir, paths.LegacyExecutionSubdir)
 }
 
 // ---------------------------------------------------------------------------
@@ -342,7 +343,12 @@ func findAnyInDir(dir, root, prefix string) (*State, error) {
 // state files for the same prefix+branchSlug (except st.Path itself).
 //
 // Pruning uses parseStateFilename for exact slug equality, the same rule
-// Find uses.
+// Find uses. One exception: a sibling "plan" run whose planIntegrity.done
+// marker is set (isDonePlanRun) is kept rather than pruned, so a finished
+// plan run survives a later /sdlc:plan on the same branch long enough for
+// ship's report to read it. It is removed later by ship's cleanup-pipeline
+// step or by GC's TTL sweep — Write and PruneEvidenceDirs no longer own its
+// deletion. exec-* and ship-* siblings are unaffected.
 func Write(st *State) error {
 	dir := stateDir(st.Root)
 
@@ -370,10 +376,27 @@ func Write(st *State) error {
 		if fp == st.Path {
 			continue // don't prune ourselves
 		}
+		if parsed.Prefix == "plan" && isDonePlanRun(fp) {
+			continue // kept for the ship report; cleanup-pipeline or GC removes it
+		}
 		_ = os.Remove(fp) // best-effort
 	}
 
 	return fsx.AtomicWriteJSON(st.Path, st.Data)
+}
+
+// isDonePlanRun reports whether the state file at path is a "plan" run whose
+// data.planIntegrity.done marker is set. A missing file, an unreadable file,
+// or corrupt JSON all return false, preserving today's prune behavior for
+// anything that isn't verifiably a done plan run.
+func isDonePlanRun(path string) bool {
+	var data map[string]any
+	if err := fsx.ReadJSON(path, &data); err != nil {
+		return false
+	}
+	pi, _ := data["planIntegrity"].(map[string]any)
+	_, hasDone := pi["done"]
+	return hasDone
 }
 
 // ---------------------------------------------------------------------------
@@ -525,11 +548,74 @@ func ActivePlanRun(root, branch string) (*State, error) {
 	return st, nil
 }
 
+// FindPlanRunByPlanFile returns the newest plan run in <root>/.sdlc-v2/runs/
+// whose data.planFilePath, cleaned, equals planPath, cleaned. It looks up by
+// plan file and not by branch, because the plan run linked to an execute run
+// is not always the branch's newest plan run. A relative planFilePath is
+// joined to root before the compare (plan_mark normally stores it absolute).
+//
+// Every plan file is loaded through LoadRun, newest timestamp first. A file
+// that fails to load is skipped: it cannot be confirmed as the match, and one
+// corrupt unrelated run must not hide the right one.
+//
+// Returns (nil, nil) when planPath is empty, runs/ does not exist, or no plan
+// run matches. Returns a non-nil error only for another ReadDir failure.
+func FindPlanRunByPlanFile(root, planPath string) (*State, error) {
+	if strings.TrimSpace(planPath) == "" {
+		return nil, nil
+	}
+	want := filepath.Clean(planPath)
+
+	dir := stateDir(root)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("state: readdir %s: %w", dir, err)
+	}
+
+	type candidate struct{ runID, timestamp string }
+	var candidates []candidate
+	for _, e := range entries {
+		parsed := parseStateFilename(e.Name())
+		if parsed == nil || parsed.Prefix != "plan" {
+			continue
+		}
+		candidates = append(candidates, candidate{strings.TrimSuffix(e.Name(), ".json"), parsed.Timestamp})
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].timestamp > candidates[j].timestamp
+	})
+
+	for _, c := range candidates {
+		st, err := LoadRun(root, c.runID)
+		if err != nil || st == nil {
+			continue
+		}
+		got, _ := st.Data["planFilePath"].(string)
+		if strings.TrimSpace(got) == "" {
+			continue
+		}
+		if !filepath.IsAbs(got) {
+			got = filepath.Join(root, got)
+		}
+		if filepath.Clean(got) == want {
+			return st, nil
+		}
+	}
+	return nil, nil
+}
+
 // PruneEvidenceDirs removes sibling <prefix>-<slug>-<ts>.evidence directories
 // that share st's exact Prefix and Slug, keeping st's own evidence
 // directory. It mirrors Write's prune-on-write loop but over directories
 // instead of files, so it never touches the sibling .json state files that
 // Write's own prune already owns.
+//
+// Like Write's own prune, a sibling "plan" run's evidence directory is kept
+// rather than removed when its state file is a done run (isDonePlanRun) —
+// see Write's doc comment for why.
 //
 // Best-effort, like the Write prune: a ReadDir failure (including runs/ not
 // existing) or a removeAll failure for one directory is ignored, and
@@ -559,6 +645,9 @@ func PruneEvidenceDirs(st *State) {
 		parsed := parseStateFilename(runID + ".json")
 		if parsed == nil || parsed.Prefix != st.Prefix || parsed.Slug != st.BranchSlug {
 			continue
+		}
+		if parsed.Prefix == "plan" && isDonePlanRun(filepath.Join(dir, runID+".json")) {
+			continue // evidence of a done plan run stays with its state file
 		}
 		_ = removeAll(filepath.Join(dir, name)) // best-effort
 	}

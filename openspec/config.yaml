@@ -64,7 +64,7 @@ context: |
     - Never switch git branches without explicit user approval (AGENTS.md).
 
   Contributor workflow for OpenSpec changes:
-    1. /sdlc:plan --from-openspec <change-name>  — create an implementation plan
+    1. /sdlc:plan --spec <change-name>            — create an implementation plan
     2. /sdlc:execute <plan-file>                  — execute the plan in waves
     3. /sdlc:ship                                 — commit, review, version, open a PR
   Do not run `openspec archive` directly — /sdlc:ship archives the change as a

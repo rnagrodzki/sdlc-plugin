@@ -269,13 +269,26 @@ type OpenspecAuthoritative struct {
 	SpecsCount int    `json:"specsCount"`
 }
 
+// GroupedChange is one grouped change directory (openspec/changes/<name>/
+// wrapping nested change directories) that `openspec list --json` reports as
+// a nested_change_directory warning. OpenSpec never loads such a directory
+// as a change, so it is reported here instead of in ActiveChanges.
+type GroupedChange struct {
+	Name    string   `json:"name"`
+	Nested  []string `json:"nested"`
+	Message string   `json:"message"`
+}
+
 // OpenspecInfo mirrors lib/openspec.js's detectActiveChanges() result shape.
+// GroupedChanges is filled only by DetectActiveChangesCLI; the filesystem
+// scan (DetectActiveChanges) leaves it nil.
 type OpenspecInfo struct {
-	Present       bool                   `json:"present"`
-	SpecsCount    int                    `json:"specsCount"`
-	ActiveChanges []OpenspecChangeInfo   `json:"activeChanges"`
-	BranchMatch   *string                `json:"branchMatch"`
-	Authoritative *OpenspecAuthoritative `json:"authoritative,omitempty"`
+	Present        bool                   `json:"present"`
+	SpecsCount     int                    `json:"specsCount"`
+	ActiveChanges  []OpenspecChangeInfo   `json:"activeChanges"`
+	GroupedChanges []GroupedChange        `json:"groupedChanges"`
+	BranchMatch    *string                `json:"branchMatch"`
+	Authoritative  *OpenspecAuthoritative `json:"authoritative,omitempty"`
 }
 
 // IsSafeChangeName rejects path-traversal-unsafe OpenSpec change names,
@@ -439,6 +452,21 @@ func DetectActiveChanges(contentRoot string) OpenspecInfo {
 		}
 	}
 
+	return OpenspecInfo{
+		Present:       true,
+		SpecsCount:    specsCount,
+		ActiveChanges: activeChanges,
+		BranchMatch:   branchMatchChange(contentRoot, activeChanges),
+	}
+}
+
+// branchMatchChange returns the name of the active change that matches the
+// current branch, or nil. It first tries the branch name (after removing a
+// feat/fix/chore/refactor/docs prefix) at a '/' or '-' boundary; on a branch
+// other than the default branch it then falls back to the single change
+// whose files the branch diff touches. Shared by DetectActiveChanges and
+// DetectActiveChangesCLI so both report the same branchMatch.
+func branchMatchChange(contentRoot string, activeChanges []OpenspecChangeInfo) *string {
 	var branchMatch *string
 	branch, branchErr := gitx.CurrentBranch(contentRoot)
 	if branchErr == nil && branch != "" && len(activeChanges) > 0 {
@@ -473,11 +501,137 @@ func DetectActiveChanges(contentRoot string) OpenspecInfo {
 			}
 		}
 	}
+	return branchMatch
+}
+
+// nestedChangeWarningCode is the `openspec list --json` warning code for a
+// grouped change directory (see design.md D4).
+const nestedChangeWarningCode = "nested_change_directory"
+
+// DetectActiveChangesCLI is the CLI-backed counterpart of
+// DetectActiveChanges, used by plan_prepare. The change list comes from
+// `openspec list --json`, the spec count from `openspec list --specs
+// --json`, and each change's artifacts from `openspec status --change <name>
+// --json`; it never globs openspec/changes/ itself.
+//
+// Present reflects openspec/config.yaml only. Without it the CLI is never
+// called (the CLI searches parent directories for an OpenSpec root, so an
+// unguarded call could report a parent project). When any CLI call fails,
+// the result keeps Present=true with empty ActiveChanges/GroupedChanges and
+// the error is returned so the caller can report "openspec CLI unavailable".
+//
+// Grouped change directories (nested_change_directory warnings) go to
+// GroupedChanges and never into ActiveChanges, even though the CLI also
+// lists the wrapping directory in changes[]. Changes without proposal.md are
+// skipped, matching DetectActiveChanges.
+func DetectActiveChangesCLI(contentRoot string) (OpenspecInfo, error) {
+	if !fsFileExists(filepath.Join(contentRoot, "openspec", "config.yaml")) {
+		return OpenspecInfo{ActiveChanges: []OpenspecChangeInfo{}, GroupedChanges: []GroupedChange{}}, nil
+	}
+	unavailable := OpenspecInfo{Present: true, ActiveChanges: []OpenspecChangeInfo{}, GroupedChanges: []GroupedChange{}}
+
+	listed, err := List(contentRoot)
+	if err != nil {
+		return unavailable, err
+	}
+	specs, err := ListSpecs(contentRoot)
+	if err != nil {
+		return unavailable, err
+	}
+
+	grouped := []GroupedChange{}
+	groupedNames := map[string]bool{}
+	for _, w := range listed.Warnings {
+		if w.Code != nestedChangeWarningCode {
+			continue
+		}
+		nested := w.Nested
+		if nested == nil {
+			nested = []string{}
+		}
+		grouped = append(grouped, GroupedChange{Name: w.Name, Nested: nested, Message: w.Message})
+		groupedNames[w.Name] = true
+	}
+
+	activeChanges := []OpenspecChangeInfo{}
+	for _, c := range listed.Changes {
+		if groupedNames[c.Name] {
+			continue
+		}
+		info, _, err := StatusChange(contentRoot, c.Name)
+		if err != nil {
+			return unavailable, err
+		}
+		if !info.HasProposal {
+			continue
+		}
+		activeChanges = append(activeChanges, info)
+	}
 
 	return OpenspecInfo{
-		Present:       true,
-		SpecsCount:    specsCount,
-		ActiveChanges: activeChanges,
-		BranchMatch:   branchMatch,
+		Present:        true,
+		SpecsCount:     len(specs),
+		ActiveChanges:  activeChanges,
+		GroupedChanges: grouped,
+		BranchMatch:    branchMatchChange(contentRoot, activeChanges),
+	}, nil
+}
+
+// StatusChange runs `openspec status --change <name> --json` and builds the
+// change's OpenspecChangeInfo from the artifact files the CLI reports as
+// existing: hasProposal/hasDesign/hasTasks from the proposal/design/tasks
+// artifacts, deltaSpecCount from every file of the specs artifact (any depth
+// under specs/), and task progress from the tasks file the CLI reports. It
+// also returns the delta spec files as repo-relative paths (see
+// repoRelativeChangePath). The error is the CLI error, unchanged.
+func StatusChange(contentRoot, name string) (OpenspecChangeInfo, []string, error) {
+	st, err := Status(contentRoot, name)
+	if err != nil {
+		return OpenspecChangeInfo{Name: name}, nil, err
 	}
+
+	existing := map[string][]string{}
+	for _, a := range st.Artifacts {
+		existing[a.ID] = a.ExistingOutputPaths
+	}
+
+	deltaSpecPaths := []string{}
+	for _, p := range existing["specs"] {
+		deltaSpecPaths = append(deltaSpecPaths, repoRelativeChangePath(name, p))
+	}
+
+	hasTasks := len(existing["tasks"]) > 0
+	tasksDone, tasksTotal := 0, 0
+	if hasTasks {
+		if content, err := os.ReadFile(existing["tasks"][0]); err == nil {
+			tasksDone, tasksTotal = countTasks(string(content))
+		}
+	}
+
+	stage := DeriveStage(hasTasks, tasksDone, tasksTotal)
+	return OpenspecChangeInfo{
+		Name:           name,
+		Stage:          &stage,
+		DeltaSpecCount: len(deltaSpecPaths),
+		HasProposal:    len(existing["proposal"]) > 0,
+		HasDesign:      len(existing["design"]) > 0,
+		HasTasks:       hasTasks,
+		TasksDone:      tasksDone,
+		TasksTotal:     tasksTotal,
+	}, deltaSpecPaths, nil
+}
+
+// repoRelativeChangePath turns an absolute artifact path reported by the CLI
+// into a repo-relative one ("openspec/changes/<name>/..."). The CLI reports
+// symlink-resolved absolute paths (e.g. /private/var/... on macOS for a
+// /var/... root), so filepath.Rel against the caller's root is unreliable;
+// cutting at the change's own directory marker is not. A path without the
+// marker is returned unchanged.
+func repoRelativeChangePath(name, absPath string) string {
+	p := filepath.ToSlash(absPath)
+	marker := "openspec/changes/" + name + "/"
+	if i := strings.Index(p, marker); i >= 0 {
+		return p[i:]
+	}
+	return p
 }

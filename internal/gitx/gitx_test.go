@@ -52,6 +52,391 @@ func initGitRepo(t *testing.T, dir string) {
 	gitRun(t, dir, "commit", "-m", "initial commit")
 }
 
+// newRepoWithBareOrigin creates a seed repo, clones it into a bare "origin",
+// then clones that bare repo into a working directory with a usable
+// identity configured. It centralizes the origin-bare-clone three-step
+// scaffold (previously inlined per-test, e.g. TestHasUpstream_True) that
+// several tests need to exercise behavior against a real remote. Returns the
+// working clone's directory and the bare origin's directory.
+func newRepoWithBareOrigin(t *testing.T) (clone, bareOrigin string) {
+	t.Helper()
+	seed := t.TempDir()
+	initGitRepo(t, seed)
+
+	bareOrigin = t.TempDir()
+	gitRun(t, bareOrigin, "clone", "--bare", seed, ".")
+
+	clone = t.TempDir()
+	gitRun(t, clone, "clone", bareOrigin, ".")
+	gitRun(t, clone, "config", "user.email", "test@test.com")
+	gitRun(t, clone, "config", "user.name", "Test")
+	return clone, bareOrigin
+}
+
+// newConflictingMerge creates a repo with two branches ("main" and
+// otherBranch) that each modify the same line of the same file differently.
+// It leaves "main" checked out; merging otherBranch into it is guaranteed to
+// conflict.
+func newConflictingMerge(t *testing.T) (dir, otherBranch string) {
+	t.Helper()
+	dir = t.TempDir()
+	initGitRepo(t, dir)
+
+	otherBranch = "feature"
+	gitRun(t, dir, "checkout", "-b", otherBranch)
+	if err := os.WriteFile(filepath.Join(dir, "init.txt"), []byte("feature change\n"), 0644); err != nil {
+		t.Fatalf("write init.txt: %v", err)
+	}
+	gitRun(t, dir, "add", "init.txt")
+	gitRun(t, dir, "commit", "-m", "feature change")
+
+	gitRun(t, dir, "checkout", "main")
+	if err := os.WriteFile(filepath.Join(dir, "init.txt"), []byte("main change\n"), 0644); err != nil {
+		t.Fatalf("write init.txt: %v", err)
+	}
+	gitRun(t, dir, "add", "init.txt")
+	gitRun(t, dir, "commit", "-m", "main change")
+
+	return dir, otherBranch
+}
+
+// ---------------------------------------------------------------------------
+// BaseBranch
+// ---------------------------------------------------------------------------
+
+func TestBaseBranch_Configured(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	got, err := BaseBranch(dir, "develop")
+	if err != nil {
+		t.Fatalf("BaseBranch: unexpected error: %v", err)
+	}
+	if got != "develop" {
+		t.Fatalf("BaseBranch: got %q, want %q", got, "develop")
+	}
+}
+
+func TestBaseBranch_ConfiguredIsTrimmed(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	got, err := BaseBranch(dir, "  develop  ")
+	if err != nil {
+		t.Fatalf("BaseBranch: unexpected error: %v", err)
+	}
+	if got != "develop" {
+		t.Fatalf("BaseBranch: got %q, want %q", got, "develop")
+	}
+}
+
+func TestBaseBranch_ConfiguredFlagShapeRejected(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	got, err := BaseBranch(dir, "  --upload-pack=evil  ")
+	if err == nil {
+		t.Fatalf("BaseBranch: got %q, nil error; want a flag-shape error", got)
+	}
+	if got != "" {
+		t.Fatalf("BaseBranch: got %q on error, want empty string", got)
+	}
+	if !strings.Contains(err.Error(), "looks like a flag") {
+		t.Fatalf("BaseBranch: error %q does not mention the flag shape", err.Error())
+	}
+}
+
+func TestBaseBranch_EmptyFallsBackToDefaultBranch(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	got, err := BaseBranch(dir, "")
+	if err != nil {
+		t.Fatalf("BaseBranch: unexpected error: %v", err)
+	}
+	want, err := DefaultBranch(dir)
+	if err != nil {
+		t.Fatalf("DefaultBranch: unexpected error: %v", err)
+	}
+	if got != want {
+		t.Fatalf("BaseBranch: got %q, want %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FetchBranch
+// ---------------------------------------------------------------------------
+
+func TestFetchBranch_Success(t *testing.T) {
+	clone, bareOrigin := newRepoWithBareOrigin(t)
+
+	// Push a branch to the bare origin from a throwaway worktree clone, so
+	// "clone" (which only fetched at clone time) doesn't have it yet.
+	tmp := t.TempDir()
+	gitRun(t, tmp, "clone", bareOrigin, ".")
+	gitRun(t, tmp, "config", "user.email", "test@test.com")
+	gitRun(t, tmp, "config", "user.name", "Test")
+	gitRun(t, tmp, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(tmp, "feature.txt"), []byte("feature\n"), 0644); err != nil {
+		t.Fatalf("write feature.txt: %v", err)
+	}
+	gitRun(t, tmp, "add", "feature.txt")
+	gitRun(t, tmp, "commit", "-m", "feature commit")
+	gitRun(t, tmp, "push", "origin", "feature")
+
+	if err := FetchBranch(clone, "origin", "feature"); err != nil {
+		t.Fatalf("FetchBranch: unexpected error: %v", err)
+	}
+
+	// The clone's configured refspec updates the remote-tracking ref on a
+	// targeted fetch; a failed/missing fetch would leave this unresolvable.
+	gitRun(t, clone, "rev-parse", "--verify", "refs/remotes/origin/feature")
+}
+
+func TestFetchBranch_MissingBranch(t *testing.T) {
+	clone, _ := newRepoWithBareOrigin(t)
+
+	err := FetchBranch(clone, "origin", "does-not-exist")
+	if err == nil {
+		t.Fatal("FetchBranch(missing branch): expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "does-not-exist") {
+		t.Fatalf("FetchBranch(missing branch): error = %q, want mention of %q", err.Error(), "does-not-exist")
+	}
+}
+
+func TestFetchBranch_InvalidRemote(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	err := FetchBranch(dir, "--upload-pack=x", "main")
+	if err == nil {
+		t.Fatal("FetchBranch(invalid remote): expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "looks like a flag") {
+		t.Fatalf("FetchBranch(invalid remote): error = %q, want mention of %q", err.Error(), "looks like a flag")
+	}
+}
+
+func TestFetchBranch_InvalidBranch(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	err := FetchBranch(dir, "origin", "--upload-pack=x")
+	if err == nil {
+		t.Fatal("FetchBranch(invalid branch): expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "looks like a flag") {
+		t.Fatalf("FetchBranch(invalid branch): error = %q, want mention of %q", err.Error(), "looks like a flag")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// BehindCount
+// ---------------------------------------------------------------------------
+
+func TestBehindCount_CountsCommitsOnRef(t *testing.T) {
+	clone, bareOrigin := newRepoWithBareOrigin(t)
+
+	// Advance the bare origin's main branch by 2 commits via a throwaway
+	// worktree clone, so "clone" (still at the seed commit) is behind it.
+	tmp := t.TempDir()
+	gitRun(t, tmp, "clone", bareOrigin, ".")
+	gitRun(t, tmp, "config", "user.email", "test@test.com")
+	gitRun(t, tmp, "config", "user.name", "Test")
+	for i := 0; i < 2; i++ {
+		name := filepath.Join(tmp, "behind"+strings.Repeat("x", i)+".txt")
+		if err := os.WriteFile(name, []byte("x\n"), 0644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+		gitRun(t, tmp, "add", ".")
+		gitRun(t, tmp, "commit", "-m", "advance commit")
+	}
+	gitRun(t, tmp, "push", "origin", "main")
+
+	if err := FetchBranch(clone, "origin", "main"); err != nil {
+		t.Fatalf("FetchBranch: unexpected error: %v", err)
+	}
+
+	got, err := BehindCount(clone, "FETCH_HEAD")
+	if err != nil {
+		t.Fatalf("BehindCount: unexpected error: %v", err)
+	}
+	if got != 2 {
+		t.Fatalf("BehindCount: got %d, want 2", got)
+	}
+}
+
+func TestBehindCount_Zero(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	got, err := BehindCount(dir, "HEAD")
+	if err != nil {
+		t.Fatalf("BehindCount: unexpected error: %v", err)
+	}
+	if got != 0 {
+		t.Fatalf("BehindCount: got %d, want 0", got)
+	}
+}
+
+func TestBehindCount_InvalidRef(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	_, err := BehindCount(dir, "--upload-pack=x")
+	if err == nil {
+		t.Fatal("BehindCount(invalid ref): expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "looks like a flag") {
+		t.Fatalf("BehindCount(invalid ref): error = %q, want mention of %q", err.Error(), "looks like a flag")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Merge / MergeAbort / MergeInProgress / UnmergedFiles
+// ---------------------------------------------------------------------------
+
+func TestMerge_Conflict(t *testing.T) {
+	dir, other := newConflictingMerge(t)
+
+	conflict, err := Merge(dir, other)
+	if err != nil {
+		t.Fatalf("Merge: unexpected error: %v", err)
+	}
+	if !conflict {
+		t.Fatal("Merge: got conflict=false, want true")
+	}
+
+	inProgress, err := MergeInProgress(dir)
+	if err != nil {
+		t.Fatalf("MergeInProgress: unexpected error: %v", err)
+	}
+	if !inProgress {
+		t.Fatal("Merge: expected the conflicting merge to be left in progress")
+	}
+}
+
+func TestMerge_CleanMerge(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	gitRun(t, dir, "checkout", "-b", "feature")
+	if err := os.WriteFile(filepath.Join(dir, "feature.txt"), []byte("feature\n"), 0644); err != nil {
+		t.Fatalf("write feature.txt: %v", err)
+	}
+	gitRun(t, dir, "add", "feature.txt")
+	gitRun(t, dir, "commit", "-m", "feature commit")
+	gitRun(t, dir, "checkout", "main")
+
+	conflict, err := Merge(dir, "feature")
+	if err != nil {
+		t.Fatalf("Merge: unexpected error: %v", err)
+	}
+	if conflict {
+		t.Fatal("Merge: got conflict=true, want false for a clean merge")
+	}
+}
+
+func TestMerge_InvalidRef(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	_, err := Merge(dir, "--upload-pack=x")
+	if err == nil {
+		t.Fatal("Merge(invalid ref): expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "looks like a flag") {
+		t.Fatalf("Merge(invalid ref): error = %q, want mention of %q", err.Error(), "looks like a flag")
+	}
+}
+
+func TestMergeAbort_RestoresPreviousHEAD(t *testing.T) {
+	dir, other := newConflictingMerge(t)
+
+	beforeHead := gitRun(t, dir, "rev-parse", "HEAD")
+
+	conflict, err := Merge(dir, other)
+	if err != nil {
+		t.Fatalf("Merge: unexpected error: %v", err)
+	}
+	if !conflict {
+		t.Fatal("Merge: expected a conflict to set up this test")
+	}
+
+	if err := MergeAbort(dir); err != nil {
+		t.Fatalf("MergeAbort: unexpected error: %v", err)
+	}
+
+	afterHead := gitRun(t, dir, "rev-parse", "HEAD")
+	if afterHead != beforeHead {
+		t.Fatalf("MergeAbort: HEAD = %q, want unchanged %q", afterHead, beforeHead)
+	}
+
+	inProgress, err := MergeInProgress(dir)
+	if err != nil {
+		t.Fatalf("MergeInProgress: unexpected error: %v", err)
+	}
+	if inProgress {
+		t.Fatal("MergeAbort: merge still in progress after abort")
+	}
+}
+
+func TestMergeInProgress_FalseWithoutMerge(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	got, err := MergeInProgress(dir)
+	if err != nil {
+		t.Fatalf("MergeInProgress: unexpected error: %v", err)
+	}
+	if got {
+		t.Fatal("MergeInProgress: got true, want false with no merge in progress")
+	}
+}
+
+func TestMergeInProgress_NotARepo(t *testing.T) {
+	dir := t.TempDir()
+
+	_, err := MergeInProgress(dir)
+	if err == nil {
+		t.Fatal("MergeInProgress outside repo: expected error, got nil")
+	}
+}
+
+func TestUnmergedFiles_ListsConflictingPaths(t *testing.T) {
+	dir, other := newConflictingMerge(t)
+
+	conflict, err := Merge(dir, other)
+	if err != nil {
+		t.Fatalf("Merge: unexpected error: %v", err)
+	}
+	if !conflict {
+		t.Fatal("Merge: expected a conflict to set up this test")
+	}
+
+	got, err := UnmergedFiles(dir)
+	if err != nil {
+		t.Fatalf("UnmergedFiles: unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0] != "init.txt" {
+		t.Fatalf("UnmergedFiles: got %v, want [init.txt]", got)
+	}
+}
+
+func TestUnmergedFiles_EmptyWithoutConflict(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	got, err := UnmergedFiles(dir)
+	if err != nil {
+		t.Fatalf("UnmergedFiles: unexpected error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("UnmergedFiles: got %v, want empty", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // SplitDiffByFile — golden test (AC: identical file-slice boundaries)
 // ---------------------------------------------------------------------------

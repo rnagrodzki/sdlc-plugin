@@ -281,6 +281,18 @@
       },
       "additionalProperties": false
     },
+    "gitSection": {
+      "type": "object",
+      "description": "Controls the integration branch used across execute, ship, pr, review, and commit.",
+      "properties": {
+        "baseBranch": {
+          "type": "string",
+          "default": "",
+          "description": "Integration branch for execute, ship, pr, review, commit. Empty = repository default branch."
+        }
+      },
+      "additionalProperties": false
+    },
     "guardrailItem": {
       "type": "object",
       "properties": {
@@ -342,6 +354,11 @@
           "type": "boolean",
           "default": true,
           "description": "Whether execute_state's wave-commit action stages and commits each completed wave's changes itself (git add -A + git commit). When false, wave-commit does not touch git and instead returns an instruction to commit the wave manually and record the sha via wave-committed."
+        },
+        "baseSync": {
+          "type": "boolean",
+          "default": true,
+          "description": "Merge origin/<base> into the branch between execute waves."
         }
       },
       "additionalProperties": false
@@ -359,6 +376,9 @@
     },
     "pr": {
       "$ref": "#/$defs/prSection"
+    },
+    "git": {
+      "$ref": "#/$defs/gitSection"
     },
     "plan": {
       "$ref": "#/$defs/planSection"

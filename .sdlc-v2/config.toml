@@ -957,3 +957,15 @@ writer record but not the brief. For each handler with N>=2 sequential \
 writes, add one test per write failure point and assert the observable \
 state afterward (what persisted, what did not, what the caller sees). Do \
 not assume single-write tests cover multi-step partial-failure behavior."""
+
+[execute.guardrails.skill-step-behavior-doc-coverage]
+severity = "error"
+description = """
+Before marking a task done that modifies a SKILL.md step's behavior \
+(fail-fast condition, skip condition, blocking gate), grep the corresponding \
+`docs/skills/<skill>.md` file for every step whose behavior is changed and \
+confirm that behavior is documented for each step. When the same behavior \
+change applies to sibling steps (e.g. both verify-openspec and \
+archive-openspec gaining fail-fast-on-missing), both steps must be \
+documented; a doc update covering only the first sibling is a verification \
+gap."""

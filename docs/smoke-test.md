@@ -71,9 +71,23 @@ If nothing appears on the very first session after install: expected on a
 cold cache (see README → "First-run binary fetch"). Do step 3 first, then
 retry this step with `/clear`.
 
+## 6. OpenSpec plan → ship
+
+- [ ] `/sdlc:plan` in plan mode → **Create OpenSpec change** → approve
+- [ ] only the plan file and `.sdlc-v2/openspec-staging/<name>/` exist; `git status` clean
+- [ ] `/sdlc:ship --plan <file>` → `openspec/changes/<name>/` committed, validated, archived
+- [ ] `.sdlc-v2/reports/ship-<runId>-report.md` has `## Planning` and `## Timeline`
+- [ ] `.sdlc-v2/runs/plan-*.json` for this plan is gone after ship
+
+## 7. Linked worktree state
+
+- [ ] `git worktree add ../wt -b smoke` → start a session in `../wt`
+- [ ] `.sdlc-v2/runs` is a symlink to the main worktree; live run files visible
+- [ ] `git status --porcelain` empty
+
 ## Pass criteria
 
-All five steps produce their expected result with no unhandled error. A
+All seven steps produce their expected result with no unhandled error. A
 step failing with a `sdlc-launcher: ...` fail-open diagnostic on stderr is a
 launcher/release problem, not a hook or tool-registration bug — resolve it
 per `README.md` → Troubleshooting before treating any later step as a real

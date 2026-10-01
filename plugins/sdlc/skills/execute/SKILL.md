@@ -57,15 +57,17 @@ STOP here. Do NOT use AskUserQuestion to request a path interactively, and do NO
 
 **Workspace auto-detection (no flag):** After plan validation, derive the workspace — it is not user-selectable. The only prompt here is the branch-name confirmation in the `branch` outcome below, and only when EXECUTE_AUTO is false.
 
+**Base branch (`<base>`):** Read `<main-worktree>/.sdlc-v2/config.toml`'s `[git] baseBranch` (the same file Step 1's guardrail loading reads; this key is not one of the four values `resolve-config` owns). Absent file or key, or an empty value → the default branch (`git symbolic-ref refs/remotes/origin/HEAD`, fallback `main`). Resolve `<base>` even when `--branch` was passed — Pre-execution rebase uses it.
+
 If `--branch` was passed, skip straight to Pre-execution rebase. Otherwise:
 1. Linked worktree? Compare `git worktree list --porcelain`'s first `worktree <path>` line against `git rev-parse --show-toplevel`.
-2. Current branch (`git branch --show-current` — never the cached `gitStatus` conversation snapshot, which is frozen at session start) vs. default branch (`git symbolic-ref refs/remotes/origin/HEAD`, fallback `main`).
+2. Current branch (`git branch --show-current` — never the cached `gitStatus` conversation snapshot, which is frozen at session start) vs. default branch (`git symbolic-ref refs/remotes/origin/HEAD`, fallback `main`) and `<base>`.
 3. Derive:
-   - **`continue`** — linked worktree, or current branch ≠ default. Run in place; `EXECUTE_NEW_BRANCH` stays unset. No worktree is created.
-   - **`branch`** — main worktree AND on the default branch. Read `<main-worktree>/.sdlc-v2/local.toml`'s `workspace.branch` overrides (`template` default `"{type}/{slug}"`, `slugMaxLength` default `50`, `typeMap` default `{feature:'feat', bugfix:'fix', chore:'chore', docs:'docs', refactor:'refactor'}`); infer the logical type from the plan; derive a slug from the plan title (lowercase, collapse non-`[a-z0-9]` runs to `-`, trim, truncate to `slugMaxLength`); substitute into `template`. Then:
+   - **`continue`** — linked worktree, or current branch is neither the default branch nor `<base>`. Run in place; `EXECUTE_NEW_BRANCH` stays unset. No worktree is created.
+   - **`branch`** — main worktree AND on the default branch or `<base>`. Read `<main-worktree>/.sdlc-v2/local.toml`'s `workspace.branch` overrides (`template` default `"{type}/{slug}"`, `slugMaxLength` default `50`, `typeMap` default `{feature:'feat', bugfix:'fix', chore:'chore', docs:'docs', refactor:'refactor'}`); infer the logical type from the plan; derive a slug from the plan title (lowercase, collapse non-`[a-z0-9]` runs to `-`, trim, truncate to `slugMaxLength`); substitute into `template`. Then:
      - When EXECUTE_AUTO is true: `git checkout -b "$EXECUTE_NEW_BRANCH"` with a log line.
      - Otherwise (EXECUTE_AUTO false): AskUserQuestion before branch creation:
-       > On the default branch. A feature branch is needed.
+       > On the default or base branch. A feature branch is needed.
        > Derived name: `$EXECUTE_NEW_BRANCH`
        >
        > Options:
@@ -76,7 +78,7 @@ If `--branch` was passed, skip straight to Pre-execution rebase. Otherwise:
 
 There is no `WORKTREE_PATH` — execute never creates a worktree.
 
-**Pre-execution rebase:** `--rebase auto` → `git fetch origin <defaultBranch>`; if `git merge-base --is-ancestor origin/<defaultBranch> HEAD` fails, attempt `git rebase origin/<defaultBranch>` (on conflict: `git rebase --abort`, warn, continue on the current base). `--rebase prompt` → AskUserQuestion. `--rebase skip` or absent → skip entirely.
+**Pre-execution rebase:** `--rebase auto` → `git fetch origin <base>`; if `git merge-base --is-ancestor origin/<base> HEAD` fails, attempt `git rebase origin/<base>` (on conflict: `git rebase --abort`, warn, continue on the current base). `--rebase prompt` → AskUserQuestion. `--rebase skip` or absent → skip entirely.
 
 ## Step 1 (LOAD): Load and Validate Plan
 
@@ -129,7 +131,7 @@ Stateless (reads only the plan file); mechanically guarantees dependency orderin
 
 ## Step 2b (ROUTE): Small-Plan Direct Execution
 
-**`route == "direct"`:** Print `Small plan — executing directly without wave orchestration.` Execute each task sequentially in main context, no agent dispatch, verify after each. After all tasks, if `activeGuardrails` is non-empty, run one guardrail evaluation against the cumulative `git diff --stat`. Skip Steps 3–4. Apply the 2-retry budget and Step 6 recovery on failure. **No state file is written** — small plans are fast enough to re-run from scratch.
+**`route == "direct"`:** Print `Small plan — executing directly without wave orchestration.` Execute each task sequentially in main context, no agent dispatch, verify after each. After all tasks, if `activeGuardrails` is non-empty, run one guardrail evaluation against the cumulative `git diff --stat`. Skip Steps 3–4. Apply the 2-retry budget and Step 6 recovery on failure. **No state file is written** — small plans are fast enough to re-run from scratch. No base sync runs either: there are no waves, and `base-sync` needs a state file.
 
 **`route == "waves"`:** Standard wave execution using `preWave`/`waves`, with state persistence after every wave (mandatory for plans of 9+ tasks) — proceed to Step 3.
 
@@ -189,7 +191,7 @@ One `execute_state` bootstrap, before wave 1 (`wave-start` requires the state fi
 execute_state({ action: "init", branch: "<branch>", quality: "<X>", totalTasks: N, plannedTaskIds: [<every task id from the plan>], planPath: "<PLAN_FILE>", planHash: "<sha256 of PLAN_FILE bytes>", waveTimeoutSeconds: WAVE_TIMEOUT, waveIntervalSeconds: WAVE_INTERVAL, commitWaves: "<EXECUTE_COMMIT_WAVES>" })
 execute_state({ action: "context", data: "{\"planSummary\": \"<2-3 sentence goal of the plan>\"}" })
 ```
-Compute `planHash` yourself (`shasum -a 256 "$PLAN_FILE" | cut -d' ' -f1`) — the tool stores it verbatim and compares it against the plan file's current hash server-side at `wave-start` (mismatch halts, see stage 1). `plannedTaskIds` seeds the completeness gate below. EXECUTE_AUTO is already folded into the effective auto state by resolve-config — including a dispatching `/ship` run's approved auto, which resolve-config picks up through its own ship-state cross-read when `branch` is passed at Step 0, so `init`'s `pipelineAuto` response field is no longer read here. Stage 1's high-risk gate is what reads EXECUTE_AUTO; the completeness gate does not.
+Compute `planHash` yourself (`shasum -a 256 "$PLAN_FILE" | cut -d' ' -f1`) — the tool stores it verbatim and compares it against the plan file's current hash server-side at `wave-start` (mismatch halts, see stage 1). `plannedTaskIds` seeds the completeness gate below. EXECUTE_AUTO is already folded into the effective auto state by resolve-config — including a dispatching `/ship` run's approved auto, which resolve-config picks up through its own ship-state cross-read when `branch` is passed at Step 0, so `init`'s `pipelineAuto` response field is no longer read here. Stage 1's high-risk gate is what reads EXECUTE_AUTO; the completeness gate does not. Start `abortedSyncWaves` (stage 7, Step 9) empty here; a resumed run seeds it in `## Resume` step 5 instead.
 
 **Pre-wave:** 1 trivial task → execute inline. 2+ trivial tasks → one batch Agent (haiku) via `## Worker dispatch prompt` below. Direct dispatch from main context, same as every wave below — there is no wave-runner middle agent.
 
@@ -216,7 +218,29 @@ A per-run source (`sources.* == "cli"` or `"pipeline"`) needs no warning — the
 
 5. **ACT ON `next`.** It orders exactly one of: `TaskStop` a failed worker then `execute_state({ action: "task-fail", ... })` (a nested-agent ownership/authorization error from `TaskStop` is an expected fallback here, not a blocker — proceed anyway); `SendMessage` a reclaim request verbatim to the named `workerName`; `execute_state({ action: "task-redispatch", ... })` followed by re-dispatching that task, which loops back to stage 4 — **the wave is NOT over**; dispatch a not-yet-dispatched task; or simply call `wave-await` again after the given interval. Never skip ahead to stage 6 while any task is still outstanding. **Divergence from spike:** Task 1's spike (`.sdlc-v2/learnings/log.md`) found the `TaskStop` ownership-error fallback above, and separately recommended gating any redispatch on explicit operator confirmation under nested `/ship` execution — that confirmation gate is not implemented; this stage's `task-redispatch` step runs automatically. Tracked as a known gap, not a spike-endorsed design.
 
-6. **GATES — only once `wave-await` returns `status:"done"`.** A wave holding one re-dispatched task is still `"pending"`, not `"done"`, even though every other row is recorded. In order: spec-compliance review (Standard/Complex tasks, skip for all-trivial waves or the Speed tier — `./spec-compliance-reviewer.md`, re-dispatch major gaps with fix instructions, counts toward the retry budget) → post-wave guardrail check (all severities against the full diff, same AskUserQuestion handling as stage 1, plus `fix` which attempts one inline fix and re-evaluates) → OpenSpec task flip (skip if `refToTaskIds` is empty — built in Step 1; flip `- [ ]` → `- [x]` in `openspec/changes/<change>/tasks.md` for each ref whose siblings are now all completed) → `execute_state({ action: "wave-done", wave: N, decisions: "<json-array>" })` (or `wave-fail` with `timedOut: true` if a task exhausted its retries) → `## Commits`' `wave-commit` → progress report and TodoWrite close-out (mark this wave's entries `completed`) → `execute_state({ action: "summarize-prior-wave-context" })` to seed bounded context for the next wave's dispatch. Record any follow-up finding worth a future GitHub issue via `execute_state({ action: "issue-draft", branch: "<branch>", taskId: "<id>", issueDraftTitle: "<title>", issueDraftBody: "<body>" })` — ship step 10b batches these for approval.
+6. **GATES — only once `wave-await` returns `status:"done"`.** A wave holding one re-dispatched task is still `"pending"`, not `"done"`, even though every other row is recorded. In order: spec-compliance review (Standard/Complex tasks, skip for all-trivial waves or the Speed tier — `./spec-compliance-reviewer.md`, re-dispatch major gaps with fix instructions, counts toward the retry budget) → post-wave guardrail check (all severities against the full diff, same AskUserQuestion handling as stage 1, plus `fix` which attempts one inline fix and re-evaluates) → OpenSpec task flip (skip if `refToTaskIds` is empty — built in Step 1; flip `- [ ]` → `- [x]` in `openspec/changes/<change>/tasks.md` for each ref whose siblings are now all completed) → `execute_state({ action: "wave-done", wave: N, decisions: "<json-array>" })` (or `wave-fail` with `timedOut: true` if a task exhausted its retries) → `## Commits`' `wave-commit` → progress report and TodoWrite close-out (mark this wave's entries `completed`) → `execute_state({ action: "summarize-prior-wave-context" })` to seed bounded context for the next wave's dispatch → stage 7's `base-sync` (only when another wave follows). Record any follow-up finding worth a future GitHub issue via `execute_state({ action: "issue-draft", branch: "<branch>", taskId: "<id>", issueDraftTitle: "<title>", issueDraftBody: "<body>" })` — ship step 10b batches these for approval.
+
+7. **BASE SYNC — only when another wave follows.** Wave N is the last wave `wave-compute` returned → skip this stage and go to the completeness gate below. Otherwise call `execute_state({ action: "base-sync", wave: N })`, which merges `origin/<base>` into the branch (config `[execute] baseSync = false` turns it off). Print the response's `summary` as one progress line, then its `warnings` verbatim. Branch on the result:
+   - `status` `disabled`, `skipped`, `up-to-date`, or `merged` → continue with the next wave's stage 1.
+   - `status:"conflict"` → the merge stays in progress (a real `MERGE_HEAD` on disk). Run the conflict flow below, then continue with the next wave's stage 1. A conflict never stops the run.
+   - An error instead of a status (a DomainError `base-sync: merge in progress`, or an InfraError) → print the error as the progress line, call `execute_state({ action: "base-sync-resolve", wave: N, abort: true })` so no merge is left behind, then continue with the next wave's stage 1.
+
+   **Conflict flow:**
+   1. In main context, run `git log --oneline HEAD..MERGE_HEAD` — the incoming `origin/<base>` commits that caused the conflict. `base-sync` does not return them; this command is read-only.
+   2. Dispatch exactly ONE Agent: `name: "base-sync-resolver-wave-<N>"`, `model: "opus"`, `mode: "bypassPermissions"`, `run_in_background: false` (the next step waits on its result). It is not a wave worker: no `workerName` in `tasksJson`, no `task-done`/`task-fail`, no `wave-await`. Its prompt gives it:
+      - the `conflictedFiles` from the `base-sync` response (the same list its `baseSyncs[]` entry holds);
+      - the plan's goal: the `planSummary` sent in the `context` call after `init`;
+      - the incoming commits from step 1, and which side is which: "ours" is this branch's wave work, "theirs" is the incoming `origin/<base>`;
+      - the job: edit only the listed files, remove every conflict marker, and keep the intent of both sides — never take one side wholesale (`git checkout --ours`/`--theirs`);
+      - the limits: no state-changing git command (`commit`, `add`, `merge`, `rebase`, `reset`, `checkout`, `stash`) and no `execute_state` call; read-only git (`log`, `show`, `diff`) is fine;
+      - the reply contract: its final line is exactly `RESOLVED`, or `UNRESOLVED: <reason>`.
+   3. Final line `RESOLVED` → call `execute_state({ action: "base-sync-resolve", wave: N })`. The tool refuses while unmerged files or conflict markers remain; otherwise it makes the merge commit and returns `status:"resolved"`. An error instead (DomainError `base-sync-resolve: conflicts remain in ...`, or an InfraError) → step 4.
+   4. Final line `UNRESOLVED: ...`, any other reply, an agent failure, or an error from step 3 → call `execute_state({ action: "base-sync-resolve", wave: N, abort: true })`. It runs `git merge --abort` and returns `status:"aborted"`; the next wave starts on the previous base, and the conflict is left for ship's rebase step.
+   5. Print the outcome's `summary` (`resolved` or `aborted`) as one progress line.
+
+   Whenever `base-sync-resolve` with `abort: true` returns `status:"aborted"` without the `no merge in progress` warning, add N to `abortedSyncWaves` (reported in Step 9). The warning marks a no-op: no merge was in progress, so nothing was aborted.
+
+   **An abort that fails is the one hard stop.** If `base-sync-resolve` with `abort: true` returns an error, the merge is still on disk: workers dispatched now would build on a half-merge, and `wave-commit` would commit it. Print the error and stop the run as a hard failure — no `cleanup`, the state stays resumable — and print the "Execution state preserved at ..." line from Step 9. `## Resume` retries the abort.
 
 **After the final wave**, before Steps 6–8, the completeness invariant gate:
 ```
@@ -240,6 +264,8 @@ execute_state({ action: "wave-commit", wave: N, message: "<author this — see b
 ```
 `commitWaves` resolves the same way `quality` does — `--commit-waves` (forwarded by ship only when `ship.execute.commitWaves` is set) > top-level `execute.commitWaves` config > default `true` — resolved once at `resolve-config` and stamped at `init`. The tool stages (`git add -A`) and commits when enabled. **The LLM authors `message`; the tool does the committing.** Never run `git commit` directly for a wave's changes — with one exception: when `wave-commit` returns `reason:"execute.commitWaves is false"`, its instruction orders a manual commit (see the outcome below), and you then record it with `wave-committed`.
 
+The only other commits in a run are merge commits made by the tool itself in `## Wave loop` stage 7: `base-sync` on a clean merge of `origin/<base>`, and `base-sync-resolve` after a resolved conflict. Never make or amend these by hand.
+
 **You author the message** — a real commit subject describing the wave's actual changes (not a template string), following the repository's commit style. Four outcomes:
 - **Committed** — `{committed:true, sha, idempotent:false}`. Normal path.
 - **Nothing to commit** — `{committed:false, reason:"nothing to commit"}`. Soft success (wave was a no-op, or a hook reverted everything) — not an error.
@@ -258,8 +284,9 @@ execute_state({ action: "wave-commit", wave: N, message: "<author this — see b
    execute_state({ action: "resume-reset" })
    ```
    A wave that never reached `completed` has task rows main context wrote in a batch after dispatch returned — a wave interrupted mid-write leaves a partial set the completeness gate would wrongly count as accounted. Surface `resetWaves`/`clearedTaskIds` in one line. A `partial` (timed-out) wave's row is untouched by this (only `in_progress` waves are cleared) — its unfinished tasks go through Step 6 recovery scoped to just those task IDs, never merged into the next wave's dispatch set (would violate that wave's same-file/size-cap invariants, fixed statically at `wave-compute` time).
-5. Load `context` (`completedTaskIds`, `filesAdded`/`filesModified`, `interfacesCreated`, `decisionsFromPriorWaves`) into the resumed session's understanding. Load `quality` from state with explicit three-way branching: if `sources.quality == "cli"` (an explicit `--quality` was passed), use EXECUTE_QUALITY; else if `state.quality` is non-empty (the tier stamped when this run was initialized), use `state.quality`; else use EXECUTE_QUALITY (config or auto default), which is empty only when EXECUTE_AUTO is false and no config set a tier — prompt for the tier in that one case.
-6. Resume from the first wave with status `in_progress` or `pending`, per `willRedo`/`willSkip` on the briefing.
+5. **Unfinished base-sync merge.** When the `read` result's LAST `baseSyncs[]` entry has `status:"conflict"`, a previous session crashed mid-conflict and a real git `MERGE_HEAD` may still be on disk. Call `execute_state({ action: "base-sync-resolve", wave: W, abort: true })`, where W is that entry's `wave`, BEFORE the next `wave-start`. It is safe to call repeatedly: with no merge in progress it is a no-op that returns a `no merge in progress` warning. Record the wave in `abortedSyncWaves` per `## Wave loop` stage 7's rule; an error from this call is stage 7's hard stop. Also seed `abortedSyncWaves` with the `wave` of every `baseSyncs[]` entry already at `status:"aborted"` — those aborts happened in earlier sessions of this run. A fresh (non-resumed) run starts with an empty `abortedSyncWaves`.
+6. Load `context` (`completedTaskIds`, `filesAdded`/`filesModified`, `interfacesCreated`, `decisionsFromPriorWaves`) into the resumed session's understanding. Load `quality` from state with explicit three-way branching: if `sources.quality == "cli"` (an explicit `--quality` was passed), use EXECUTE_QUALITY; else if `state.quality` is non-empty (the tier stamped when this run was initialized), use `state.quality`; else use EXECUTE_QUALITY (config or auto default), which is empty only when EXECUTE_AUTO is false and no config set a tier — prompt for the tier in that one case.
+7. Resume from the first wave with status `in_progress` or `pending`, per `willRedo`/`willSkip` on the briefing.
 
 The small-plan direct-execution path (Step 2b) never writes a state file or commits per-wave, so it never produces a `committedSha` to reconcile here.
 
@@ -333,7 +360,10 @@ Append when applicable: `Guardrails: N/N passed (M warnings, K overridden)` (if 
 OpenSpec sync warnings:
   - change=<change> ref=<ref> reason=<not-found|io-error>
 ```
-`Branch: <EXECUTE_NEW_BRANCH>` when set — no `Worktree:` line, execute never creates one.
+`Branch: <EXECUTE_NEW_BRANCH>` when set — no `Worktree:` line, execute never creates one. One line per wave in `abortedSyncWaves` (`## Wave loop` stage 7, `## Resume` step 5):
+```
+Base sync aborted at wave <N>: conflicts left for ship rebase
+```
 
 **Issue summary.** `wave-start`/`wave-done`/`wave-fail` each already return a rolling `issueCount`/`issueHighlights` as the run progresses. The completion action below (`cleanup`) additionally returns a full `issueSummary` — `total`, `byCategory` counts, `items`, a pre-rendered `display` block, and `hardenSuggestion` — whenever `issues[]` is non-empty. Render `issueSummary.display` verbatim, then append `issueSummary.hardenSuggestion` when present (set only when at least one `severity:"error"` issue exists). When `issueSummary` is absent from the response (empty `issues[]`), render nothing — no "0 issues" noise.
 
@@ -375,9 +405,9 @@ On failure or interruption (not all tasks completed), `cleanup` is not called at
 - Skip final verification
 - Rely on the dispatch prompt for task detail — the worker calls `task-context` itself for the fact sheet; don't paste the full task text into the prompt as a substitute
 - Execute more than 2 retries on any single task
-- Commit or push outside `## Commits` — the only commits are `wave-commit`'s, plus the manual commit `wave-commit` itself orders when `execute.commitWaves` is false; workspace derivation is automatic (`branch`/`continue`), not an ad-hoc decision
+- Commit or push outside `## Commits` — the only commits are `wave-commit`'s, the manual commit `wave-commit` itself orders when `execute.commitWaves` is false, and the merge commits made by `base-sync` / `base-sync-resolve`; workspace derivation is automatic (`branch`/`continue`), not an ad-hoc decision
 - Hand any part of plan execution to another skill, or call any other skill through the Skill tool — this skill runs the plan itself. The only allowed Skill-tool calls are these two plugin skills, each only after the user picks it: `Skill("harden", ...)` when the user chooses `harden` at a guardrail check (wave-loop stage 1 or 6) or at a Step 6 escalation, and the `error-report` skill when the user accepts the GitHub-issue offer at a Step 6 escalation (`./recovering-from-failures.md`). Neither is needed to run a plan. Naming skills as pointers for the user (`## What's Next`, `## See Also`) is fine
-- Split a wave's Agent fan-out across more than one message, or dispatch with `run_in_background: false`
+- Split a wave's Agent fan-out across more than one message, or dispatch a wave worker with `run_in_background: false` (stage 7's single base-sync conflict agent is not a wave worker and runs in the foreground)
 - Assume `cleanup` deletes the state file — it stamps `runStatus`; only `gc`'s TTL sweep removes the file
 - Write state files for small-plan direct execution (≤ 3 tasks)
 - Auto-override error-severity guardrail violations in auto mode (--auto, pipeline auto, or executePrefs.auto)

@@ -24,6 +24,12 @@ Check:
   concatenation/interpolation of user- or repo-derived content (branch
   names, commit messages, PR titles, Jira issue text) — they must be passed
   as separate argv elements, never through a shell.
+- Configured values and user-supplied strings (branch names, tag names,
+  commit refs) must be validated before they reach a git/gh command, even
+  as separate argv elements: a value starting with `-` is parsed as a flag.
+  Route them through `gitx`'s `validateRef` (or an equivalent check) at the
+  function that returns them, so every caller is covered — not only the
+  callers that happen to validate first.
 - `internal/jirakeys` never logs, echoes, or writes an API key/token to a
   file or MCP tool response body. Check any new code path that reads a key
   from this package for accidental inclusion in error messages or debug

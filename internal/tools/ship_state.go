@@ -587,7 +587,7 @@ func shipState(root, workDir string, in ShipStateIn, now func() time.Time) (any,
 	case "fail":
 		return shipStateFail(root, workDir, in, now)
 	case "decide":
-		return shipStateDecide(root, workDir, in)
+		return shipStateDecide(root, workDir, in, now)
 	case "defer":
 		return shipStateDefer(root, workDir, in, now)
 	case "read":
@@ -1086,7 +1086,7 @@ func shipStateFail(root, workDir string, in ShipStateIn, now func() time.Time) (
 	return out, nil
 }
 
-func shipStateDecide(root, workDir string, in ShipStateIn) (any, error) {
+func shipStateDecide(root, workDir string, in ShipStateIn, now func() time.Time) (any, error) {
 	if in.Step == "" {
 		return nil, &mcpserver.DomainError{
 			Msg:        "decide: step is required",
@@ -1101,6 +1101,7 @@ func shipStateDecide(root, workDir string, in ShipStateIn) (any, error) {
 	decisions = append(decisions, map[string]any{
 		"step":     in.Step,
 		"decision": detailStr(in.Detail, "text"),
+		"at":       now().UTC().Format(time.RFC3339),
 	})
 	st.Data["decisions"] = decisions
 	if err := state.Write(st); err != nil {
@@ -2017,6 +2018,79 @@ func shipStateCleanup(root, workDir string, in ShipStateIn, now func() time.Time
 // failure: state.GC fails only on a read error that Find and Write hit first.
 var shipGCFunc = state.GC
 
+// ShipPlanRunCleanup is cleanup-pipeline's "planRun" output: whether the
+// plan run linked to this ship run was deleted, and if not, why.
+type ShipPlanRunCleanup struct {
+	Deleted bool   `json:"deleted"`
+	RunID   string `json:"runId,omitempty"`
+	Reason  string `json:"reason,omitempty"`
+}
+
+// planRun.reason values. A failed remove reports "remove failed: <error>".
+const (
+	shipPlanRunReasonNotStamped   = "run not stamped"
+	shipPlanRunReasonNoLinked     = "no linked plan run"
+	shipPlanRunReasonNoReport     = "report not written"
+	shipPlanRunReasonRemoveFailed = "remove failed: "
+)
+
+// shipDeleteReportedPlanRun deletes the plan run linked to this ship run —
+// its plan-<slug>-<ts>.json state file and its .evidence directory — once
+// the ship report for this ship run is on disk. The link is the one the
+// ship report itself follows: the branch's execute state's planPath, looked
+// up with state.FindPlanRunByPlanFile. The report gate is
+// <root>/.sdlc-v2/reports/ship-<ship runId>-report.<md|json>, where the
+// runId is derived from the ship state's startedAt exactly as the report
+// action derives it.
+//
+// It fails safe: any lookup error, a missing startedAt, or a stat error
+// other than not-exist deletes nothing. It never returns an error, so the
+// gc sweep after it still runs on a run that is already stamped. The
+// evidence directory is removed before the state file; if that remove
+// fails, the state file stays so a retry can find the run again.
+func shipDeleteReportedPlanRun(root, branch string, shipData map[string]any) ShipPlanRunCleanup {
+	execSt, err := state.Find(root, "execute", branch)
+	if err != nil || execSt == nil {
+		return ShipPlanRunCleanup{Reason: shipPlanRunReasonNoLinked}
+	}
+	planRun, err := state.FindPlanRunByPlanFile(root, shipExecPlanPath(execSt.Data))
+	if err != nil || planRun == nil {
+		return ShipPlanRunCleanup{Reason: shipPlanRunReasonNoLinked}
+	}
+
+	if !shipReportWritten(root, shipData) {
+		return ShipPlanRunCleanup{Reason: shipPlanRunReasonNoReport}
+	}
+
+	runID := state.RunID(planRun)
+	if err := os.RemoveAll(state.EvidenceDir(root, runID)); err != nil {
+		return ShipPlanRunCleanup{Reason: shipPlanRunReasonRemoveFailed + err.Error()}
+	}
+	if err := os.Remove(planRun.Path); err != nil && !os.IsNotExist(err) {
+		return ShipPlanRunCleanup{Reason: shipPlanRunReasonRemoveFailed + err.Error()}
+	}
+	return ShipPlanRunCleanup{Deleted: true, RunID: runID}
+}
+
+// shipReportWritten reports whether the ship report for the ship run in
+// shipData exists as a regular file, in either format. A ship state with no
+// startedAt has no real runId (execDeriveRunID falls back to "wave-0"), so
+// it never counts as reported.
+func shipReportWritten(root string, shipData map[string]any) bool {
+	if startedAt, _ := shipData["startedAt"].(string); startedAt == "" {
+		return false
+	}
+	runID := execDeriveRunID(shipData, 0)
+	dir := filepath.Join(root, paths.DataDir, paths.ReportsSubdir)
+	for _, ext := range []string{"md", "json"} {
+		fi, err := os.Stat(filepath.Join(dir, "ship-"+runID+"-report."+ext))
+		if err == nil && fi.Mode().IsRegular() {
+			return true
+		}
+	}
+	return false
+}
+
 // shipStateCleanupPipeline ports cmdCleanupPipeline: force and no-state-file
 // both skip the contract check but still fall through to the GC sweep; only
 // an actual contract violation returns early before the sweep runs. Both the
@@ -2026,6 +2100,9 @@ var shipGCFunc = state.GC
 // object with only {ship,execute,plan} but always executes a further section
 // after the branch that adds a 4th "commit" bucket on every non-violation
 // path.
+//
+// Flow: stamp -> plan-run deletion (shipDeleteReportedPlanRun, only when the
+// stamp landed) -> gc sweep -> reap run directories.
 func shipStateCleanupPipeline(root, workDir string, in ShipStateIn, now func() time.Time) (any, error) {
 	branch, err := execResolveBranch(detailStr(in.Detail, "branch"), workDir)
 	if err != nil {
@@ -2085,6 +2162,14 @@ func shipStateCleanupPipeline(root, workDir string, in ShipStateIn, now func() t
 		issueSummary = execIssueSummaryFull(st.Data)
 	}
 
+	// Plan-run deletion runs only after a successful stamp: force and
+	// no-state-file never stamp, and a contract violation or a failed stamp
+	// write has already returned above.
+	planRun := ShipPlanRunCleanup{Reason: shipPlanRunReasonNotStamped}
+	if runStamped {
+		planRun = shipDeleteReportedPlanRun(root, branch, st.Data)
+	}
+
 	stateDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
 	rpt, err := shipGCFunc(root, state.GCOptions{
 		TTL:          time.Duration(ttlDays) * 24 * time.Hour,
@@ -2116,6 +2201,7 @@ func shipStateCleanupPipeline(root, workDir string, in ShipStateIn, now func() t
 		"directories": reapResult,
 		"force":       force,
 		"ttlDays":     ttlDays,
+		"planRun":     planRun,
 	}
 	if issueSummary != nil {
 		out["issueSummary"] = issueSummary
@@ -2740,7 +2826,7 @@ Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide
 - read: Return the full ship state. Optional: detail.branch. The response also carries "reportData": report-ready aggregates, including healing (data.healing verbatim, {} when absent) and reviewLedger {total, fixed (local-review only), deferredByReason, unaccounted = total - fixed - deferred, never clamped} — reviewLedger is null, with reviewLedgerNote, when no review total was recorded. When the pipeline is in flight (not stamped pipelineStatus:"completed", some step still blocks proceed, and at least one step has been started), the state also carries a "resumeBriefing" (resumable, lastStep, lastStepStatus, sideEffects, summary, display, timing{stepSeconds,pipelineSeconds,idleSeconds,human}, next). A step left "failed" is still reported resumable:true, never as an error.
 - report: Compose the end-of-run report from ship state, this run's execute state (only when the execute step completed), CLI evidence and learnings, and render it. Optional: detail.write (true persists it under <main worktree>/.sdlc-v2/reports/), detail.format ("md"|"json", default from automation.report.format), detail.branch. Returns {skipped:true} when automation.report.enabled is false.
 - cleanup: Stamp a branch's ship state terminal (pipelineStatus:"completed", pipelineCompletedAt) instead of deleting it, after validating every step is in a terminal state — the state survives for later reads until GC's TTL prunes it. Optional: detail.branch.
-- cleanup-pipeline: Same stamp-instead-of-delete for the current branch's ship state (force/no-state-file skip the contract check), followed by an unconditional GC + per-run-directory sweep. Optional: detail.branch, detail.force, detail.ttlDays.
+- cleanup-pipeline: Same stamp-instead-of-delete for the current branch's ship state (force/no-state-file skip the contract check). Only after a successful stamp, it deletes the plan run linked through this branch's execute state (its plan-<slug>-<ts>.json and .evidence directory) when the ship report ship-<runId>-report.<md|json> exists; force and no-state-file never delete it. The result's planRun is {deleted, runId?, reason?} with reason "run not stamped" | "no linked plan run" | "report not written" | "remove failed: <error>". Then an unconditional GC + per-run-directory sweep. Optional: detail.branch, detail.force, detail.ttlDays.
 - gc: Garbage-collect stale state files. Optional: detail.ttlDays, detail.dryRun.
 - migrate: Migrate state between branches. Requires detail.from, detail.to.
 - next: Return the next pending step. Optional: detail.branch, detail.stateFile.

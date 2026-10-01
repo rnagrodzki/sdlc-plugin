@@ -82,8 +82,8 @@ type Template struct {
 //  1. <root>/.sdlc-v2/pr-template.md   (canonical)
 //  2. <root>/.claude/pr-template.md  (deprecated)
 func Resolve(root string) (*Template, error) {
-	canonical := filepath.Join(root, paths.DataDir, "pr-template.md")
-	legacy := filepath.Join(root, ".claude", "pr-template.md")
+	canonical := filepath.Join(root, paths.DataDir, paths.PRTemplateFile)
+	legacy := filepath.Join(root, ".claude", "pr-template.md") // deprecated fallback location, not a paths.* constant
 
 	// Try canonical first. An empty file still counts as found
 	// (matches Node.js fs.existsSync behavior).

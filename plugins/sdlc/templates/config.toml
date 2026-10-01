@@ -81,6 +81,13 @@ allowedScopes = []
 # [pr.labels]
 # mode = "off"
 
+# ─── Git ──────────────────────────────────────────────────────────
+
+[git]
+# Integration branch for execute, ship, pr, review, commit.
+# Empty = use the repository's default branch.
+baseBranch = ""
+
 # ─── Plan guardrails ─────────────────────────────────────────────
 # Constraints enforced during plan creation.
 # ID is the table key — TOML enforces uniqueness, no duplicates possible.
@@ -109,6 +116,8 @@ description = "Plans must not include steps that skip or disable CI checks."
 # .sdlc-v2/local.toml under [executePrefs].
 
 [execute]
+# Merge origin/<base> into the branch between execute waves.
+baseSync = true
 
 # ─── Execute guardrails ──────────────────────────────────────────
 # Constraints enforced during task execution.

@@ -256,7 +256,7 @@ func dimensionsRenderInstructions(root string, in DimensionsRenderInstructionsIn
 // result, and tolerates a missing directory (returns nil, nil rather than an
 // error) instead of requiring setup to have run first.
 func listDimensionFiles(root string) (DimensionsRenderInstructionsOut, error) {
-	dir := filepath.Join(root, paths.DataDir, "review-dimensions")
+	dir := filepath.Join(root, paths.DataDir, paths.ReviewDimensionsSubdir)
 	loaded, err := dimensions.Load(dir)
 	if err != nil {
 		return DimensionsRenderInstructionsOut{}, &mcpserver.InfraError{
@@ -310,7 +310,7 @@ func writeDimensionFile(root string, in DimensionsRenderInstructionsIn) (Dimensi
 		}
 	}
 
-	dir := filepath.Join(root, paths.DataDir, "review-dimensions")
+	dir := filepath.Join(root, paths.DataDir, paths.ReviewDimensionsSubdir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return DimensionsRenderInstructionsOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("create %s: %s", dir, err.Error()),

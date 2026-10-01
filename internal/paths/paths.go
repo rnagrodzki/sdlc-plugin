@@ -26,6 +26,50 @@ const RunsSubdir = "runs"
 // join it through HistoryDir rather than repeating the literal.
 const HistorySubdir = "history"
 
+// Remaining DataDir entries. Each constant names one file or subdirectory
+// directly under DataDir. Every entry the MCP server or hooks write to
+// DataDir must appear in exactly one of LinkedStateEntries or
+// UnlinkedStateEntries below — see TestStateEntryListsCoverEveryEntry.
+const (
+	ReportsSubdir          = "reports"
+	EvidenceSubdir         = "evidence"
+	LearningsSubdir        = "learnings"
+	ReviewsSubdir          = "reviews"
+	StateArtifactsSubdir   = "state"
+	TimingsFile            = "timings.json"
+	ConfigFile             = "config.toml"
+	GitignoreFile          = ".gitignore"
+	ReviewDimensionsSubdir = "review-dimensions"
+	LocalConfigFile        = "local.toml"
+	LegacyLocalJSONFile    = "local.json"
+	LegacyConfigJSONFile   = "config.json"
+	JiraTemplatesSubdir    = "jira-templates"
+	LegacyExecutionSubdir  = "execution"
+	OpenspecStagingSubdir  = "openspec-staging"
+	PlanTemplateFile       = "plan-template.md"
+	PRTemplateFile         = "pr-template.md"
+	ScratchSubdir          = "scratch"
+	BackupsSubdir          = "backups"
+	// BakSuffix is a suffix pattern (matches "*.bak"), not a named entry, so
+	// it is never a list member — see UnlinkedStateEntries.
+	BakSuffix = ".bak"
+)
+
+// LinkedStateEntries are the run-generated DataDir entries that a linked
+// worktree symlinks to the same entry under the main worktree's DataDir.
+var LinkedStateEntries = []string{
+	RunsSubdir, ReportsSubdir, HistorySubdir, EvidenceSubdir,
+	LearningsSubdir, ReviewsSubdir, StateArtifactsSubdir, TimingsFile,
+}
+
+// UnlinkedStateEntries are the DataDir entries that are never linked: tracked
+// config, user-written templates, legacy locations, and branch-local state.
+var UnlinkedStateEntries = []string{
+	ConfigFile, GitignoreFile, ReviewDimensionsSubdir, LocalConfigFile,
+	LegacyLocalJSONFile, LegacyConfigJSONFile, JiraTemplatesSubdir, LegacyExecutionSubdir,
+	OpenspecStagingSubdir, PlanTemplateFile, PRTemplateFile, ScratchSubdir, BackupsSubdir,
+}
+
 // ProjectDir returns the absolute path to the SDLC data directory for a
 // given project root.
 func ProjectDir(root string) string {

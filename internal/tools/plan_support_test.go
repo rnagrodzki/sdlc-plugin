@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/openspec"
 )
 
 // errorClassOf returns "domain", "infra" or "data" for the three mcpserver
@@ -1669,4 +1671,348 @@ func TestPlanOpenspecAppendix_TaskMapping(t *testing.T) {
 	if firstIdx < mappingIdx || lastIdx < firstIdx {
 		t.Errorf("task mapping bullets out of expected order: %s", out.AppendixMarkdown)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// plan_support openspec_instructions / openspec_stage tests
+// ---------------------------------------------------------------------------
+
+// psStageStatusJSON is the `openspec status --change add-widget --json`
+// payload the stub prints, in the spec-driven schema's artifact order.
+const psStageStatusJSON = `{"changeName":"add-widget","schemaName":"spec-driven","artifactPaths":{` +
+	`"proposal":{"outputPath":"proposal.md","existingOutputPaths":[]},` +
+	`"specs":{"outputPath":"specs/**/*.md","existingOutputPaths":[]},` +
+	`"design":{"outputPath":"design.md","existingOutputPaths":[]},` +
+	`"tasks":{"outputPath":"tasks.md","existingOutputPaths":[]}},` +
+	`"artifacts":[` +
+	`{"id":"proposal","outputPath":"proposal.md","status":"ready","requires":[]},` +
+	`{"id":"specs","outputPath":"specs/**/*.md","status":"blocked","requires":["proposal"]},` +
+	`{"id":"design","outputPath":"design.md","status":"blocked","requires":["proposal"]},` +
+	`{"id":"tasks","outputPath":"tasks.md","status":"blocked","requires":["specs","design"]}]}`
+
+// stubOpenspecForStage installs an `openspec` PATH stub answering every call
+// openspec_instructions and openspec_stage make for change add-widget.
+// validateExit is the exit code of `openspec validate add-widget --strict`.
+func stubOpenspecForStage(t *testing.T, validateExit int) {
+	t.Helper()
+	cases := map[string]openspecCLIStub{
+		"new change add-widget":             {stdout: "Created change 'add-widget'"},
+		"status --change add-widget --json": {stdout: psStageStatusJSON},
+	}
+	for _, id := range []string{"proposal", "specs", "design", "tasks"} {
+		cases["instructions "+id+" --change add-widget --json"] = openspecCLIStub{
+			stdout: fmt.Sprintf(`{"artifactId":"%s","outputPath":"x","template":"T-%s","instruction":"I-%s","context":"ctx","rules":["r-%s"]}`, id, id, id, id),
+		}
+	}
+	if validateExit == 0 {
+		cases["validate add-widget --strict"] = openspecCLIStub{stdout: "Change 'add-widget' is valid"}
+	} else {
+		cases["validate add-widget --strict"] = openspecCLIStub{stdout: "Change 'add-widget' has issues: proposal.md missing Why section", exit: validateExit}
+	}
+	stubOpenspecCLI(t, cases)
+}
+
+// newOpenspecStageFixture creates a git repo seeded by setup_init (the
+// managed .gitignore blocks), with openspec/config.yaml, all committed.
+// Optional configToml replaces .sdlc-v2/config.toml before the commit.
+func newOpenspecStageFixture(t *testing.T, configToml string) string {
+	t.Helper()
+	root := t.TempDir()
+	initGitFixture(t, root)
+	if _, err := setupInit(root, SetupInitIn{}); err != nil {
+		t.Fatalf("setupInit: %v", err)
+	}
+	if configToml != "" {
+		writeFile(t, filepath.Join(root, ".sdlc-v2", "config.toml"), configToml)
+	}
+	writeFile(t, filepath.Join(root, "openspec", "config.yaml"), "schema: spec-driven\n")
+	runGit(t, root, "add", "-A")
+	runGit(t, root, "commit", "-m", "baseline")
+	return root
+}
+
+// gitStatusPorcelain returns `git status --porcelain` for root.
+func gitStatusPorcelain(t *testing.T, root string) string {
+	t.Helper()
+	cmd := exec.Command("git", "status", "--porcelain")
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git status: %v", err)
+	}
+	return string(out)
+}
+
+// TestPlanSupportOpenspecInstructions verifies openspec_instructions returns
+// the schema, the artifacts in status order with their CLI guidance, and the
+// same guardrails plan_prepare returns, without touching the repository.
+func TestPlanSupportOpenspecInstructions(t *testing.T) {
+	t.Run("artifacts and guardrails", func(t *testing.T) {
+		stubOpenspecForStage(t, 0)
+		root := newOpenspecStageFixture(t, ""+
+			"[plan.guardrails.no-secrets]\n"+
+			"description = \"Never commit secrets\"\n"+
+			"\n"+
+			"[plan.guardrails.test-coverage]\n"+
+			"description = \"Cover new branches\"\n")
+
+		out, err := planSupportCore(root, root, PlanSupportIn{Action: "openspec_instructions", ChangeName: "add-widget"})
+		if err != nil {
+			t.Fatalf("openspec_instructions: %v", err)
+		}
+		if out.SchemaName != "spec-driven" {
+			t.Errorf("SchemaName = %q, want spec-driven", out.SchemaName)
+		}
+		var ids []string
+		for _, a := range out.Artifacts {
+			ids = append(ids, a.ID)
+		}
+		if want := []string{"proposal", "specs", "design", "tasks"}; !reflect.DeepEqual(ids, want) {
+			t.Errorf("artifact ids = %v, want %v", ids, want)
+		}
+		if a := out.Artifacts[1]; a.OutputPath != "specs/**/*.md" || a.Template != "T-specs" || a.Instruction != "I-specs" ||
+			a.Context != "ctx" || !reflect.DeepEqual(a.Rules, []string{"r-specs"}) || !reflect.DeepEqual(a.Requires, []string{"proposal"}) {
+			t.Errorf("Artifacts[1] = %+v, want merged status+instructions for specs", a)
+		}
+		wantNext := "Author each artifact in order from template, instruction, context and rules; follow guardrails in design and tasks; then call openspec_stage."
+		if out.Next != wantNext {
+			t.Errorf("Next = %q, want %q", out.Next, wantNext)
+		}
+
+		// Regression guard: ArtifactGuide must carry json tags, or the wire
+		// response uses Go's capitalized field names (ID, OutputPath, ...)
+		// instead of the documented lowerCamelCase keys (id, outputPath,
+		// ...) that the plan skill and the delta spec both depend on.
+		raw, err := json.Marshal(out.Artifacts[0])
+		if err != nil {
+			t.Fatalf("marshal artifact: %v", err)
+		}
+		var asMap map[string]any
+		if err := json.Unmarshal(raw, &asMap); err != nil {
+			t.Fatalf("unmarshal artifact: %v", err)
+		}
+		for _, key := range []string{"id", "outputPath", "requires", "template", "instruction", "context", "rules"} {
+			if _, ok := asMap[key]; !ok {
+				t.Errorf("artifact JSON missing lowerCamelCase key %q; got keys %v", key, raw)
+			}
+		}
+
+		prep, err := runPlanPrepare(t, root, root, PlanPrepareIn{SkipConfigCheck: true})
+		if err != nil {
+			t.Fatalf("plan_prepare: %v", err)
+		}
+		if len(out.Guardrails) != 2 || !reflect.DeepEqual(out.Guardrails, prep.Guardrails) {
+			t.Errorf("Guardrails = %+v, want plan_prepare's %+v (2 entries)", out.Guardrails, prep.Guardrails)
+		}
+		if !strings.Contains(out.Summary, "2 guardrail(s)") {
+			t.Errorf("Summary = %q, want the guardrail count", out.Summary)
+		}
+	})
+
+	t.Run("no guardrails and repo unchanged", func(t *testing.T) {
+		stubOpenspecForStage(t, 0)
+		// Replace setup_init's seeded guardrails with a config that has none.
+		root := newOpenspecStageFixture(t, "# no plan guardrails\n")
+
+		out, err := planSupportCore(root, root, PlanSupportIn{Action: "openspec_instructions", ChangeName: "add-widget"})
+		if err != nil {
+			t.Fatalf("openspec_instructions: %v", err)
+		}
+		if out.Guardrails == nil || len(out.Guardrails) != 0 {
+			t.Errorf("Guardrails = %#v, want empty non-nil slice", out.Guardrails)
+		}
+		if s := gitStatusPorcelain(t, root); s != "" {
+			t.Errorf("repo changed after openspec_instructions:\n%s", s)
+		}
+		if _, err := os.Stat(filepath.Join(root, ".sdlc-v2", "openspec-staging")); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("openspec_instructions created the staging dir (stat err %v)", err)
+		}
+		if _, err := os.Stat(filepath.Join(root, "openspec", "changes")); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("openspec_instructions created openspec/changes (stat err %v)", err)
+		}
+	})
+}
+
+// TestPlanSupportOpenspecStage verifies openspec_stage writes the files from
+// openspec_instructions' outputPaths into the staging dir, reports the
+// validation result with the matching next text, and maps every error in the
+// contract table to its kind and suggestion.
+func TestPlanSupportOpenspecStage(t *testing.T) {
+	// filesFor turns openspec_instructions' outputPaths into concrete files;
+	// a glob pattern gets a capability path.
+	filesFor := func(guides []openspec.ArtifactGuide) []openspec.StageFile {
+		var files []openspec.StageFile
+		for _, g := range guides {
+			p := g.OutputPath
+			if strings.Contains(p, "*") {
+				p = "specs/widget/spec.md"
+			}
+			files = append(files, openspec.StageFile{Path: p, Content: "# " + g.ID + "\n"})
+		}
+		return files
+	}
+
+	for _, tc := range []struct {
+		name         string
+		validateExit int
+		wantValid    bool
+		wantNext     string
+		wantOutput   string
+	}{
+		{"valid", 0, true, "Staged and valid. Add the **OpenSpec-Staging:** header to the plan.", "is valid"},
+		{"invalid", 1, false, "Fix the artifacts using validateOutput and call openspec_stage again.", "missing Why section"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubOpenspecForStage(t, tc.validateExit)
+			root := newOpenspecStageFixture(t, "")
+
+			ins, err := planSupportCore(root, root, PlanSupportIn{Action: "openspec_instructions", ChangeName: "add-widget"})
+			if err != nil {
+				t.Fatalf("openspec_instructions: %v", err)
+			}
+			files := filesFor(ins.Artifacts)
+			out, err := planSupportCore(root, root, PlanSupportIn{
+				Action:     "openspec_stage",
+				ChangeName: "add-widget",
+				Files:      files,
+				PlanPath:   "/tmp/plans/add-widget.md",
+			})
+			if err != nil {
+				t.Fatalf("openspec_stage: %v", err)
+			}
+			if out.StagingDir != ".sdlc-v2/openspec-staging/add-widget/" {
+				t.Errorf("StagingDir = %q", out.StagingDir)
+			}
+			if out.Valid == nil || *out.Valid != tc.wantValid {
+				t.Errorf("Valid = %v, want %v", out.Valid, tc.wantValid)
+			}
+			if !strings.Contains(out.ValidateOutput, tc.wantOutput) {
+				t.Errorf("ValidateOutput = %q, want it to contain %q", out.ValidateOutput, tc.wantOutput)
+			}
+			if out.Next != tc.wantNext {
+				t.Errorf("Next = %q, want %q", out.Next, tc.wantNext)
+			}
+			if len(out.StagedFiles) != len(files) {
+				t.Fatalf("StagedFiles = %+v, want %d entries", out.StagedFiles, len(files))
+			}
+			for i, f := range files {
+				if out.StagedFiles[i].Path != f.Path || out.StagedFiles[i].SHA256 == "" {
+					t.Errorf("StagedFiles[%d] = %+v, want path %q with a sha256", i, out.StagedFiles[i], f.Path)
+				}
+				got, err := os.ReadFile(filepath.Join(root, ".sdlc-v2", "openspec-staging", "add-widget", filepath.FromSlash(f.Path)))
+				if err != nil || string(got) != f.Content {
+					t.Errorf("staged %s = %q (err %v), want %q", f.Path, got, err, f.Content)
+				}
+			}
+			raw, err := os.ReadFile(filepath.Join(root, ".sdlc-v2", "openspec-staging", "add-widget", openspec.StageManifestFile))
+			if err != nil {
+				t.Fatalf("read stage.json: %v", err)
+			}
+			var manifest openspec.StageManifest
+			if err := json.Unmarshal(raw, &manifest); err != nil {
+				t.Fatalf("decode stage.json: %v", err)
+			}
+			if manifest.PlanPath != "/tmp/plans/add-widget.md" || (manifest.ValidatedAt != "") != tc.wantValid {
+				t.Errorf("stage.json = %+v, want planPath set and validatedAt only when valid", manifest)
+			}
+			if s := gitStatusPorcelain(t, root); s != "" {
+				t.Errorf("openspec_stage left tracked changes:\n%s", s)
+			}
+		})
+	}
+
+	t.Run("errors", func(t *testing.T) {
+		proposal := []openspec.StageFile{{Path: "proposal.md", Content: "# P\n"}}
+		for _, tc := range []struct {
+			name           string
+			noCLI          bool
+			unresolved     bool // the active worktree could not be resolved
+			in             PlanSupportIn
+			wantClass      string
+			wantMsg        string
+			wantSuggestion string
+		}{
+			{
+				name:           "invalid changeName",
+				in:             PlanSupportIn{Action: "openspec_stage", ChangeName: "Add_Widget", Files: proposal},
+				wantClass:      "domain",
+				wantMsg:        `openspec_stage: invalid changeName "Add_Widget"`,
+				wantSuggestion: "Use lowercase letters, digits and single hyphens, for example add-widget.",
+			},
+			{
+				name:           "path escapes change dir",
+				in:             PlanSupportIn{Action: "openspec_stage", ChangeName: "add-widget", Files: []openspec.StageFile{{Path: "../evil.md", Content: "x"}}},
+				wantClass:      "domain",
+				wantMsg:        `openspec_stage: path "../evil.md" not allowed`,
+				wantSuggestion: "Use a path relative to the change dir that matches an outputPath from openspec_instructions, for example specs/<capability>/spec.md.",
+			},
+			{
+				name:           "path matches no outputPath",
+				in:             PlanSupportIn{Action: "openspec_stage", ChangeName: "add-widget", Files: []openspec.StageFile{{Path: "notes.txt", Content: "x"}}},
+				wantClass:      "domain",
+				wantMsg:        `openspec_stage: path "notes.txt" not allowed`,
+				wantSuggestion: "Use a path relative to the change dir that matches an outputPath from openspec_instructions, for example specs/<capability>/spec.md.",
+			},
+			{
+				name:           "openspec CLI missing (stage)",
+				noCLI:          true,
+				in:             PlanSupportIn{Action: "openspec_stage", ChangeName: "add-widget", Files: proposal},
+				wantClass:      "infra",
+				wantMsg:        "openspec CLI not found on PATH",
+				wantSuggestion: "Install the OpenSpec CLI (npm i -g @fission-ai/openspec) and retry, or choose Skip OpenSpec.",
+			},
+			{
+				name:           "openspec CLI missing (instructions)",
+				noCLI:          true,
+				in:             PlanSupportIn{Action: "openspec_instructions", ChangeName: "add-widget"},
+				wantClass:      "infra",
+				wantMsg:        "openspec CLI not found on PATH",
+				wantSuggestion: "Install the OpenSpec CLI (npm i -g @fission-ai/openspec) and retry, or choose Skip OpenSpec.",
+			},
+			{
+				name:           "active worktree unresolved (stage)",
+				unresolved:     true,
+				in:             PlanSupportIn{Action: "openspec_stage", ChangeName: "add-widget", Files: proposal},
+				wantClass:      "domain",
+				wantMsg:        "openspec_stage: active worktree not resolved",
+				wantSuggestion: "Run the call from inside the git worktree that holds the plan.",
+			},
+			{
+				name:           "active worktree unresolved (instructions)",
+				unresolved:     true,
+				in:             PlanSupportIn{Action: "openspec_instructions", ChangeName: "add-widget"},
+				wantClass:      "domain",
+				wantMsg:        "openspec_instructions: active worktree not resolved",
+				wantSuggestion: "Run the call from inside the git worktree that holds the plan.",
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				stubOpenspecForStage(t, 0)
+				root := newOpenspecStageFixture(t, "")
+				if tc.noCLI {
+					pathWithoutOpenspec(t)
+				}
+				contentRoot := root
+				if tc.unresolved {
+					contentRoot = ""
+				}
+				_, err := planSupportCore(root, contentRoot, tc.in)
+				if err == nil {
+					t.Fatal("expected an error, got nil")
+				}
+				if got := errorClassOf(err); got != tc.wantClass {
+					t.Errorf("error class = %q, want %q (err %v)", got, tc.wantClass, err)
+				}
+				if err.Error() != tc.wantMsg {
+					t.Errorf("err.Error() = %q, want %q", err.Error(), tc.wantMsg)
+				}
+				if got := suggestionOf(err); got != tc.wantSuggestion {
+					t.Errorf("Suggestion = %q, want %q", got, tc.wantSuggestion)
+				}
+				if _, err := os.Stat(filepath.Join(root, ".sdlc-v2", "openspec-staging")); !errors.Is(err, fs.ErrNotExist) {
+					t.Errorf("a refused call created the staging dir (stat err %v)", err)
+				}
+			})
+		}
+	})
 }

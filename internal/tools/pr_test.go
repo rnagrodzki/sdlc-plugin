@@ -90,6 +90,9 @@ func releaseTestRuntime(fileVersion string) prRuntime {
 		gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
 		gitPushSetUpstream: func(dir, remote string) error { return nil },
 		gitLogSinceTag:     func(dir string) ([]string, error) { return nil, nil },
+		// Base-branch resolution for a new PR (create path): idle default,
+		// same reasoning as the other fields in this block.
+		gitBaseBranch: func(dir, configured string) (string, error) { return "main", nil },
 	}
 }
 
@@ -314,6 +317,7 @@ func TestPrPrepare_ConfigMoveKeysMoved_WarnsAndContinues(t *testing.T) {
 		gitCurrentBranch: func(dir string) (string, error) { return "feat/thing", nil },
 		gitStatus:        func(dir string) (string, error) { return "", nil },
 		gitDefaultBranch: func(dir string) (string, error) { return "main", nil },
+		gitBaseBranch:    func(dir, configured string) (string, error) { return "main", nil },
 		gitHasUpstream:   func(dir string) (bool, error) { return true, nil },
 		gitCommitsAhead:  func(dir string) (int, error) { return 0, nil },
 		branchValidate:   branch.ValidateExpectedBranch,
@@ -404,6 +408,7 @@ func expectedAccountRuntime(readSection func(root, section string) (map[string]a
 		gitCurrentBranch: func(dir string) (string, error) { return "feat/thing", nil },
 		gitStatus:        func(dir string) (string, error) { return "", nil },
 		gitDefaultBranch: func(dir string) (string, error) { return "main", nil },
+		gitBaseBranch:    func(dir, configured string) (string, error) { return "main", nil },
 		gitHasUpstream:   func(dir string) (bool, error) { return true, nil },
 		gitCommitsAhead:  func(dir string) (int, error) { return 0, nil },
 		branchValidate:   branch.ValidateExpectedBranch,
@@ -696,6 +701,7 @@ func TestPrPrepare_HappyPath_JiraAndTemplate(t *testing.T) {
 		gitCurrentBranch: func(dir string) (string, error) { return "feat/PROJ-123-add-thing", nil },
 		gitStatus:        func(dir string) (string, error) { return "", nil },
 		gitDefaultBranch: func(dir string) (string, error) { return "main", nil },
+		gitBaseBranch:    func(dir, configured string) (string, error) { return "main", nil },
 		// Idle upstream: already caught up, so NeedsPush computation resolves
 		// without either field's error path.
 		gitHasUpstream:  func(dir string) (bool, error) { return true, nil },
@@ -803,6 +809,7 @@ func TestPrPrepare_IncludesVersionDiagnostics(t *testing.T) {
 		gitTagList:       func(dir string) ([]string, error) { return []string{"v1.2.0"}, nil },
 		gitAllSemverTags: func(dir string) ([]string, error) { return []string{"v1.3.0-rc1", "v1.2.0"}, nil },
 		gitDefaultBranch: func(dir string) (string, error) { return "main", nil },
+		gitBaseBranch:    func(dir, configured string) (string, error) { return "main", nil },
 		gitTagsAtHead:    func(dir string) ([]string, error) { return nil, nil },
 	}
 
@@ -889,6 +896,7 @@ func TestPrPrepare_CommitsSinceBase_Populated(t *testing.T) {
 		gitCurrentBranch: func(dir string) (string, error) { return "feat/multi-commit", nil },
 		gitStatus:        func(dir string) (string, error) { return "", nil },
 		gitDefaultBranch: func(dir string) (string, error) { return "main", nil },
+		gitBaseBranch:    func(dir, configured string) (string, error) { return "main", nil },
 		gitHasUpstream:   func(dir string) (bool, error) { return true, nil },
 		gitCommitsAhead:  func(dir string) (int, error) { return 0, nil },
 		branchValidate:   branch.ValidateExpectedBranch,
@@ -931,6 +939,7 @@ func TestPrPrepare_NoVersionConfig_OmitsVersionFields(t *testing.T) {
 		gitCurrentBranch: func(dir string) (string, error) { return "feat/no-version", nil },
 		gitStatus:        func(dir string) (string, error) { return "", nil },
 		gitDefaultBranch: func(dir string) (string, error) { return "main", nil },
+		gitBaseBranch:    func(dir, configured string) (string, error) { return "main", nil },
 		gitHasUpstream:   func(dir string) (bool, error) { return true, nil },
 		gitCommitsAhead:  func(dir string) (int, error) { return 0, nil },
 		branchValidate:   branch.ValidateExpectedBranch,
@@ -1011,6 +1020,7 @@ func TestPrPrepare_BadVersionConfig_Warns(t *testing.T) {
 				gitCurrentBranch: func(dir string) (string, error) { return "feat/bad-version", nil },
 				gitStatus:        func(dir string) (string, error) { return "", nil },
 				gitDefaultBranch: func(dir string) (string, error) { return "main", nil },
+				gitBaseBranch:    func(dir, configured string) (string, error) { return "main", nil },
 				gitHasUpstream:   func(dir string) (bool, error) { return true, nil },
 				gitCommitsAhead:  func(dir string) (int, error) { return 0, nil },
 				branchValidate:   branch.ValidateExpectedBranch,
@@ -1079,6 +1089,7 @@ func TestPrPrepare_VersionDetectionFails_WarningNotError(t *testing.T) {
 		gitTagList:       func(dir string) ([]string, error) { return nil, nil },
 		gitAllSemverTags: func(dir string) ([]string, error) { return nil, nil },
 		gitDefaultBranch: func(dir string) (string, error) { return "main", nil },
+		gitBaseBranch:    func(dir, configured string) (string, error) { return "main", nil },
 		gitTagsAtHead:    func(dir string) ([]string, error) { return nil, nil },
 	}
 
@@ -1146,6 +1157,7 @@ func prepareNeedsPushRuntime(hasUpstream func(dir string) (bool, error), commits
 		gitCurrentBranch: func(dir string) (string, error) { return "feat/x", nil },
 		gitStatus:        func(dir string) (string, error) { return "", nil },
 		gitDefaultBranch: func(dir string) (string, error) { return "main", nil },
+		gitBaseBranch:    func(dir, configured string) (string, error) { return "main", nil },
 		gitHasUpstream:   hasUpstream,
 		gitCommitsAhead:  commitsAhead,
 		branchValidate:   branch.ValidateExpectedBranch,
@@ -1252,6 +1264,7 @@ func TestPrApply_NoExistingPR_Creates(t *testing.T) {
 		gitHasUpstream:     func(dir string) (bool, error) { return true, nil },
 		gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
 		gitPushSetUpstream: func(dir, remote string) error { return nil },
+		gitBaseBranch:      func(dir, configured string) (string, error) { return "main", nil },
 	}
 
 	out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Add thing", Body: "Body text", SkipReleaseCheck: true}, rt)
@@ -1267,6 +1280,133 @@ func TestPrApply_NoExistingPR_Creates(t *testing.T) {
 	if !strings.Contains(out.Next, "PR created") {
 		t.Errorf("Next: got %q", out.Next)
 	}
+}
+
+// TestPrBaseBranchConfig covers the configured [git] baseBranch end to end:
+// a real .sdlc-v2/config.toml is read through the production
+// config.GitBaseBranch, and the resolved "configured" argument is handed to
+// rt.gitBaseBranch exactly as gitx.BaseBranch's contract promises (trimmed
+// configured value, or "" when nothing is configured). Only gitBaseBranch's
+// own resolution logic is mocked — matching this file's existing
+// no-subprocess convention — not the config read.
+func TestPrBaseBranchConfig(t *testing.T) {
+	t.Run("configured base branch used for a new PR", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "[git]\nbaseBranch = \"develop\"\n")
+
+		var gotBase string
+		rt := releaseTestRuntime("1.0.0")
+		rt.gitBaseBranch = func(dir, configured string) (string, error) { return configured, nil }
+		rt.ghPRCreate = func(dir, title, body string, opts prCreateOpts) (string, error) {
+			gotBase = opts.Base
+			return "https://github.com/o/r/pull/50", nil
+		}
+
+		_, err := prApplyCoreWith(root, "/mock/work", PRApplyIn{Title: "T", Body: "B", SkipReleaseCheck: true}, rt)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if gotBase != "develop" {
+			t.Errorf("gh pr create base: got %q, want %q", gotBase, "develop")
+		}
+	})
+
+	t.Run("explicit base input wins over the configured base branch", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "[git]\nbaseBranch = \"develop\"\n")
+
+		var gotBase string
+		rt := releaseTestRuntime("1.0.0")
+		rt.gitBaseBranch = func(dir, configured string) (string, error) {
+			t.Fatal("gitBaseBranch must not be called when an explicit base input is given")
+			return "", nil
+		}
+		rt.ghPRCreate = func(dir, title, body string, opts prCreateOpts) (string, error) {
+			gotBase = opts.Base
+			return "https://github.com/o/r/pull/51", nil
+		}
+
+		_, err := prApplyCoreWith(root, "/mock/work", PRApplyIn{
+			Title: "T", Body: "B", SkipReleaseCheck: true, Base: "release/1.x",
+		}, rt)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if gotBase != "release/1.x" {
+			t.Errorf("gh pr create base: got %q, want the explicit input %q", gotBase, "release/1.x")
+		}
+	})
+
+	t.Run("no configured base branch falls back to the default branch, passed explicitly", func(t *testing.T) {
+		root := t.TempDir() // no config.toml: config.GitBaseBranch returns "".
+
+		var gotBase string
+		rt := releaseTestRuntime("1.0.0")
+		rt.gitBaseBranch = func(dir, configured string) (string, error) {
+			if configured != "" {
+				t.Errorf("configured: got %q, want empty (no [git] baseBranch set)", configured)
+			}
+			return "main", nil // simulates gitx.BaseBranch falling back to DefaultBranch.
+		}
+		rt.ghPRCreate = func(dir, title, body string, opts prCreateOpts) (string, error) {
+			gotBase = opts.Base
+			return "https://github.com/o/r/pull/52", nil
+		}
+
+		_, err := prApplyCoreWith(root, "/mock/work", PRApplyIn{Title: "T", Body: "B", SkipReleaseCheck: true}, rt)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// The repo's default branch is now passed explicitly via --base,
+		// instead of omitting the flag and letting gh choose.
+		if gotBase != "main" {
+			t.Errorf("gh pr create base: got %q, want the resolved default %q", gotBase, "main")
+		}
+	})
+
+	t.Run("commitsSinceBase uses the configured base branch", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "[git]\nbaseBranch = \"develop\"\n")
+
+		rt := prRuntime{
+			ghAuthProbe: func(dir, host string) ghx.AuthProbeResult {
+				return ghx.AuthProbeResult{Authenticated: true, ActiveAccount: "someone"}
+			},
+			configReadSection: func(root, section string) (map[string]any, error) { return nil, nil },
+			configRead:        func(root string) (*config.Config, error) { return nil, nil },
+			execRun: func(name string, args []string, opts execx.Options) (string, error) {
+				if name == "git" && len(args) > 0 && args[0] == "log" && slices.Contains(args, "develop..HEAD") {
+					return "aaa1111 feat: against develop", nil
+				}
+				return "", errors.New("fatal: no such remote 'origin'")
+			},
+			gitCurrentBranch: func(dir string) (string, error) { return "feat/x", nil },
+			gitStatus:        func(dir string) (string, error) { return "", nil },
+			gitBaseBranch: func(dir, configured string) (string, error) {
+				if configured != "develop" {
+					t.Errorf("configured: got %q, want %q", configured, "develop")
+				}
+				return configured, nil
+			},
+			gitHasUpstream:  func(dir string) (bool, error) { return true, nil },
+			gitCommitsAhead: func(dir string) (int, error) { return 0, nil },
+			branchValidate:  branch.ValidateExpectedBranch,
+			jiraExtract:     func(branchName string) string { return "" },
+			templateResolve: func(root string) (*prtemplate.Template, error) { return nil, nil },
+		}
+
+		out, err := prPrepareCoreWith(root, root, PRPrepareIn{SkipConfigCheck: true}, rt)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !out.OK {
+			t.Fatalf("expected OK=true, got errors: %v", out.Errors)
+		}
+		want := []string{"aaa1111 feat: against develop"}
+		if !slices.Equal(out.CommitsSinceBase, want) {
+			t.Errorf("CommitsSinceBase: got %v, want %v", out.CommitsSinceBase, want)
+		}
+	})
 }
 
 func TestPrApply_ExistingPR_Updates(t *testing.T) {
@@ -1320,6 +1460,7 @@ func TestPrApply_ClosedOrMergedPR_CreatesNew(t *testing.T) {
 				gitHasUpstream:     func(dir string) (bool, error) { return true, nil },
 				gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
 				gitPushSetUpstream: func(dir, remote string) error { return nil },
+				gitBaseBranch:      func(dir, configured string) (string, error) { return "main", nil },
 			}
 
 			out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Add thing", Body: "Body text", SkipReleaseCheck: true}, rt)
@@ -1350,8 +1491,12 @@ func TestPrApply_DraftAndBase_RealGHStub(t *testing.T) {
 		base      string
 		wantFlags []string // argv after "--body <body>"
 	}{
-		{name: "neither set", wantFlags: []string{}},
-		{name: "draft only", draft: true, wantFlags: []string{"--draft"}},
+		// With no explicit base, pr_apply now resolves one (the configured
+		// base branch, or the repo's default branch when nothing is
+		// configured — "main" here) and always passes it via --base,
+		// instead of omitting the flag and letting gh choose.
+		{name: "neither set", wantFlags: []string{"--base", "main"}},
+		{name: "draft only", draft: true, wantFlags: []string{"--draft", "--base", "main"}},
 		{name: "base only, trimmed", base: " develop ", wantFlags: []string{"--base", "develop"}},
 		{name: "draft and base", draft: true, base: "release/1.x", wantFlags: []string{"--draft", "--base", "release/1.x"}},
 	}
@@ -1373,6 +1518,7 @@ func TestPrApply_DraftAndBase_RealGHStub(t *testing.T) {
 				gitHasUpstream:     func(dir string) (bool, error) { return true, nil },
 				gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
 				gitPushSetUpstream: func(dir, remote string) error { return nil },
+				gitBaseBranch:      func(dir, configured string) (string, error) { return "main", nil },
 			}
 			in := PRApplyIn{Title: "Add thing", Body: "Body text", SkipReleaseCheck: true, Draft: tc.draft, Base: tc.base}
 			out, err := prApplyCoreWith("/mock/root", t.TempDir(), in, rt)
@@ -1785,6 +1931,7 @@ func TestPrApply_PermissionError_EnrichedWithAuthHints(t *testing.T) {
 		gitHasUpstream:     func(dir string) (bool, error) { return true, nil },
 		gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
 		gitPushSetUpstream: func(dir, remote string) error { return nil },
+		gitBaseBranch:      func(dir, configured string) (string, error) { return "main", nil },
 	}
 
 	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Add thing", Body: "Body text", SkipReleaseCheck: true}, rt)
@@ -1860,6 +2007,7 @@ func TestPrApply_NonPermissionError_PassesThroughUnenriched(t *testing.T) {
 		gitHasUpstream:     func(dir string) (bool, error) { return true, nil },
 		gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
 		gitPushSetUpstream: func(dir, remote string) error { return nil },
+		gitBaseBranch:      func(dir, configured string) (string, error) { return "main", nil },
 	}
 
 	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Add thing", Body: "Body text", SkipReleaseCheck: true}, rt)
@@ -1920,6 +2068,7 @@ func TestPrApply_PermissionError_NoOriginRemote_FallsBackToGeneric(t *testing.T)
 		gitHasUpstream:     func(dir string) (bool, error) { return true, nil },
 		gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
 		gitPushSetUpstream: func(dir, remote string) error { return nil },
+		gitBaseBranch:      func(dir, configured string) (string, error) { return "main", nil },
 	}
 
 	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Add thing", Body: "Body text", SkipReleaseCheck: true}, rt)
@@ -1973,6 +2122,7 @@ func fakeReleasePRRuntime() prRuntime {
 		gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
 		gitPushSetUpstream: func(dir, remote string) error { return nil },
 		gitLogSinceTag:     func(dir string) ([]string, error) { return nil, nil },
+		gitBaseBranch:      func(dir, configured string) (string, error) { return "main", nil },
 	}
 }
 
@@ -2375,6 +2525,7 @@ func TestPRApply_WithoutRelease_Unchanged(t *testing.T) {
 		gitLogSinceTag:  func(dir string) ([]string, error) { return nil, nil },
 		gitHasUpstream:  func(dir string) (bool, error) { return true, nil },
 		gitCommitsAhead: func(dir string) (int, error) { return 0, nil },
+		gitBaseBranch:   func(dir, configured string) (string, error) { return "main", nil },
 	}
 
 	out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{
@@ -2749,6 +2900,7 @@ func TestPrPrepare_ReleaseMarkerTemplateConflict(t *testing.T) {
 		gitCurrentBranch: func(dir string) (string, error) { return "feat/add-thing", nil },
 		gitStatus:        func(dir string) (string, error) { return "", nil },
 		gitDefaultBranch: func(dir string) (string, error) { return "main", nil },
+		gitBaseBranch:    func(dir, configured string) (string, error) { return "main", nil },
 		gitHasUpstream:   func(dir string) (bool, error) { return true, nil },
 		gitCommitsAhead:  func(dir string) (int, error) { return 0, nil },
 		branchValidate:   branch.ValidateExpectedBranch,

@@ -88,3 +88,14 @@ Review Go source changes for baseline code quality in this module
 - Records passed as parameters or returned should use named structs, not
   positional tuples via arrays (`[2]string`). Positional syntax is fragile
   and does not scale when the record gains a fifth field.
+- Doc comments must be complete, not only accurate: when the code handles a
+  case the doc comment does not mention (a second action that returns the
+  same type with extra status values, a field populated on more paths than
+  stated, or an additional DomainError failure mode), that omission is a
+  finding, the same as a claim the code does not back. Check MCP tool
+  description strings the same way.
+- Functions or types with near-identical names (differing only by a package
+  prefix or a single token, e.g. `openspec.StagedChangeFromPlan` vs a local
+  `openspecChangeFromPlan`) that extract different things from the same
+  input are a finding: rename one so the name states what it reads, or
+  distinguish them clearly in each doc comment.
