@@ -21,10 +21,9 @@ release bump as part of opening the PR.
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--auto` | Skip the approval prompt and publish immediately. Standalone use requires a release decision to already be resolved — see Tips. | off |
-| `--draft` | Create the PR as a draft. **Not yet functional.** | off |
-| `--base <branch>` | Target base branch. **Not yet functional.** | auto-detected |
+| `--draft` | Create the PR as a draft. Applies only when a new PR is created. | off |
+| `--base <branch>` | Target base branch for a new PR. Applies only when a new PR is created. | the repository's default branch |
 | `--skip-approval` | Skip only the Step 5 publish-confirmation prompt (e.g. when dispatched by ship, which already resolved release intent). Not equivalent to `--auto`. | off |
-| `--label <name>` | Add a label to the PR. **Not yet functional.** | none |
 
 ## Examples
 
@@ -67,8 +66,13 @@ pushing additional commits.
 - **Create vs. update is automatic.** The skill detects whether a PR exists for
   the current branch. There is no `--update` flag.
 - **Must be on a feature branch.** The skill refuses to run on `main`/`master`.
-- **Some flags are not yet functional.** `--draft`, `--base`, and `--label` are
-  listed but not yet supported. Use GitHub's UI or `gh` directly for these.
+- **`--draft` and `--base` only affect a new PR.** When the branch already has
+  an open PR, the skill updates it and tells you each of these flags was
+  ignored: `gh pr edit` cannot make a PR a draft or change its base. Use
+  `gh pr ready --undo` or GitHub's UI for that.
+- **No custom labels.** The only label the skill applies is the `release:*`
+  label that records the release decision. Use `gh pr edit --add-label` for
+  any other label.
 - **You may be asked about a release bump.** If your project tracks a version
   and no release decision was made upstream (e.g. by `/ship`), the skill asks
   whether to bump the version (patch/minor/major, optionally as a release

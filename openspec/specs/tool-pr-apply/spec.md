@@ -19,6 +19,8 @@ The tool SHALL accept the input fields below and check every value in the handle
 | `autoMode` | boolean | optional at call time; missing = `false` | JSON boolean | Unattended call; no human can confirm |
 | `skipReleaseCheck` | boolean | no | JSON boolean | Acknowledge no release intent; ignored when `releaseLevel` is set |
 | `skipReleaseReason` | string | see skip-check verification | plain text | Why release-worthy commits ship without a release |
+| `draft` | boolean | no | JSON boolean | Create the PR as a draft; create path only |
+| `base` | string | no | plain text branch name, e.g. `develop`; trimmed | Base branch for a new PR; empty uses gh's default; create path only |
 
 - The advertised schema, including enums, is not enforced at call time; the handler checks the values.
 
@@ -28,7 +30,7 @@ The tool SHALL accept the input fields below and check every value in the handle
 - **THEN** the PR is created or updated with no release label
 
 ### Requirement: Output fields and next hint
-The tool SHALL return `url`, `created`, `releaseIntent` (only when `releaseLevel` is set), and `next`.
+The tool SHALL return `url`, `created`, `releaseIntent` (only when `releaseLevel` is set), `warnings` (only when `draft` or `base` was ignored on the edit path), and `next`.
 
 | Field | Meaning |
 |---|---|
@@ -39,6 +41,7 @@ The tool SHALL return `url`, `created`, `releaseIntent` (only when `releaseLevel
 | `releaseIntent.labelApplied` | `release:<level>` or `release:<level>-rc` |
 | `releaseIntent.labelsRemoved` | Stale `release:*` labels removed; empty list, never null |
 | `releaseIntent.notesInBody` | Release notes are in the body; always `true` when `releaseLevel` is set, because blank notes are auto-generated |
+| `warnings` | Inputs the call ignored; present only on the edit path when `draft` or a non-blank `base` was passed |
 
 | Case | `next` |
 |---|---|
@@ -308,7 +311,7 @@ sequenceDiagram
     participant T as pr_apply
     participant git
     participant gh
-    Skill->>T: title, body, release fields
+    Skill->>T: title, body, release fields, draft, base
     opt no upstream, or HEAD ahead
         T->>git: git push -u origin HEAD
     end
@@ -320,7 +323,7 @@ sequenceDiagram
         end
         T-->>Skill: created false
     else no PR, closed or merged PR, or view failed
-        T->>gh: gh pr create --title --body
+        T->>gh: gh pr create --title --body [--draft] [--base B]
         opt releaseLevel set
             T->>gh: gh pr edit --add-label L
         end
@@ -329,7 +332,8 @@ sequenceDiagram
 ```
 
 - Edit path: `url` is `gh pr edit` output, or the PR's known URL when that output is empty.
-- Create path: `url` is `gh pr create` output.
+- Create path: `url` is `gh pr create` output. `--draft` is added when `draft` is `true`; `--base <base>` is added when the trimmed `base` is not empty.
+- Edit path: `gh pr edit` cannot make a PR a draft or change its base, so `draft` and `base` are not sent. Each one passed adds a `warnings` entry: `draft ignored: PR #<n> already exists and was updated, not created; gh pr edit cannot make it a draft (run gh pr ready --undo <n> to do that by hand).` and `base "<base>" ignored: PR #<n> already exists and was updated, not created; its base branch is unchanged.`
 - Any `gh pr view` failure is treated as "no PR", so the create path runs.
 - A `CLOSED` or `MERGED` PR is also treated as "no PR". With no open PR, `gh pr view` returns the branch's newest closed or merged PR.
 - `gh pr create` / `gh pr edit` failures return `InfraError` `gh pr create: <error>` / `gh pr edit: <error>` with suggestion `Run gh auth status to confirm gh is logged in, check network access to GitHub, then call pr_apply again with the same arguments.` (permission errors differ, see below).
@@ -343,6 +347,16 @@ sequenceDiagram
 - **WHEN** open PR 9 exists for the branch
 - **THEN** `created` is `false`
 - **AND** `next` contains `PR updated`
+
+#### Scenario: Draft PR with a base branch
+- **WHEN** no PR exists for the branch and the call passes `draft: true` and `base: " develop "`
+- **THEN** the tool runs `gh pr create --title <title> --body <body> --draft --base develop`
+- **AND** `warnings` is absent
+
+#### Scenario: Draft and base on an open PR
+- **WHEN** open PR 9 exists and the call passes `draft: true` and `base: "develop"`
+- **THEN** the tool runs `gh pr edit`, not `gh pr create`, and `created` is `false`
+- **AND** `warnings` holds one `draft ignored` entry and one `base "develop" ignored` entry
 
 #### Scenario: Closed or merged PR on a reused branch
 - **WHEN** `gh pr view` returns PR 9 with state `CLOSED` or `MERGED`

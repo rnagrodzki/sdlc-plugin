@@ -76,7 +76,9 @@ func releaseTestRuntime(fileVersion string) prRuntime {
 		ghLabelList:      func(dir string) ([]string, error) { return nil, nil },
 		ghLabelCreate:    func(dir, name, color, desc string) error { return nil },
 		ghPRForBranch:    func(dir string) ghx.PRMetadata { return ghx.PRMetadata{Exists: false} },
-		ghPRCreate:       func(dir, title, body string) (string, error) { return "https://example.com/pull/0", nil },
+		ghPRCreate: func(dir, title, body string, _ prCreateOpts) (string, error) {
+			return "https://example.com/pull/0", nil
+		},
 		// Idle defaults for the push-decision block prApplyCoreWith always
 		// runs after release-intent computation: upstream already exists
 		// with 0 commits ahead, so no push is attempted and gitPushSetUpstream
@@ -1163,7 +1165,7 @@ func TestPrPrepare_NeedsPush(t *testing.T) {
 func TestPrApply_NoExistingPR_Creates(t *testing.T) {
 	rt := prRuntime{
 		ghPRForBranch: func(dir string) ghx.PRMetadata { return ghx.PRMetadata{Exists: false} },
-		ghPRCreate: func(dir, title, body string) (string, error) {
+		ghPRCreate: func(dir, title, body string, _ prCreateOpts) (string, error) {
 			return "https://github.com/o/r/pull/9", nil
 		},
 		// SkipReleaseCheck triggers the verification gate (gitLogSinceTag);
@@ -1234,7 +1236,7 @@ func TestPrApply_ClosedOrMergedPR_CreatesNew(t *testing.T) {
 					edited = true
 					return "https://github.com/o/r/pull/9", nil
 				},
-				ghPRCreate: func(dir, title, body string) (string, error) {
+				ghPRCreate: func(dir, title, body string, _ prCreateOpts) (string, error) {
 					return "https://github.com/o/r/pull/10", nil
 				},
 				gitLogSinceTag:     func(dir string) ([]string, error) { return nil, nil },
@@ -1254,6 +1256,110 @@ func TestPrApply_ClosedOrMergedPR_CreatesNew(t *testing.T) {
 				t.Errorf("expected a new PR (Created=true, pull/10), got %+v", out)
 			}
 		})
+	}
+}
+
+// TestPrApply_DraftAndBase_RealGHStub runs the production gh pr create path
+// (prGHCreate) against a stub gh on PATH that records its argv, so the test
+// sees the exact flags pr_apply hands to gh. --draft and --base must appear
+// only when the matching input is set.
+func TestPrApply_DraftAndBase_RealGHStub(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("stub gh is a POSIX shell script")
+	}
+	cases := []struct {
+		name      string
+		draft     bool
+		base      string
+		wantFlags []string // argv after "--body <body>"
+	}{
+		{name: "neither set", wantFlags: []string{}},
+		{name: "draft only", draft: true, wantFlags: []string{"--draft"}},
+		{name: "base only, trimmed", base: " develop ", wantFlags: []string{"--base", "develop"}},
+		{name: "draft and base", draft: true, base: "release/1.x", wantFlags: []string{"--draft", "--base", "release/1.x"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			binDir := t.TempDir()
+			argsFile := filepath.Join(binDir, "args")
+			// NUL-separated, so a multi-line --body stays one argument.
+			script := "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\000' \"$a\" >> '" + argsFile + "'; done\necho https://github.com/o/r/pull/11\n"
+			if err := os.WriteFile(filepath.Join(binDir, "gh"), []byte(script), 0o755); err != nil {
+				t.Fatalf("write stub gh: %v", err)
+			}
+			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+			rt := prRuntime{
+				ghPRForBranch:      func(dir string) ghx.PRMetadata { return ghx.PRMetadata{Exists: false} },
+				ghPRCreate:         defaultPRRuntime.ghPRCreate,
+				gitLogSinceTag:     func(dir string) ([]string, error) { return nil, nil },
+				gitHasUpstream:     func(dir string) (bool, error) { return true, nil },
+				gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
+				gitPushSetUpstream: func(dir, remote string) error { return nil },
+			}
+			in := PRApplyIn{Title: "Add thing", Body: "Body text", SkipReleaseCheck: true, Draft: tc.draft, Base: tc.base}
+			out, err := prApplyCoreWith("/mock/root", t.TempDir(), in, rt)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !out.Created || out.URL != "https://github.com/o/r/pull/11" {
+				t.Errorf("expected Created=true and pull/11, got %+v", out)
+			}
+			if len(out.Warnings) != 0 {
+				t.Errorf("Warnings: got %v, want none on the create path", out.Warnings)
+			}
+			raw, err := os.ReadFile(argsFile)
+			if err != nil {
+				t.Fatalf("read recorded args: %v", err)
+			}
+			got := strings.Split(strings.TrimSuffix(string(raw), "\x00"), "\x00")
+			if len(got) < 6 || !slices.Equal(got[:5], []string{"pr", "create", "--title", "Add thing", "--body"}) {
+				t.Fatalf("gh argv: got %q, want it to start with pr create --title <title> --body <body>", got)
+			}
+			if !strings.Contains(got[5], "Body text") {
+				t.Errorf("--body: got %q, want it to hold the PR body", got[5])
+			}
+			if !slices.Equal(got[6:], tc.wantFlags) {
+				t.Errorf("gh flags after --body: got %q, want %q", got[6:], tc.wantFlags)
+			}
+		})
+	}
+}
+
+// TestPrApply_DraftAndBase_IgnoredOnUpdate pins the update path: gh pr edit
+// cannot make a PR a draft or change its base, so pr_apply still edits the
+// open PR and names each ignored input in Warnings.
+func TestPrApply_DraftAndBase_IgnoredOnUpdate(t *testing.T) {
+	edited := false
+	rt := prRuntime{
+		ghPRForBranch: func(dir string) ghx.PRMetadata {
+			return ghx.PRMetadata{Number: 9, URL: "https://github.com/o/r/pull/9", State: "OPEN", Exists: true}
+		},
+		ghPREdit: func(dir string, num int, title, body string) (string, error) {
+			edited = true
+			return "https://github.com/o/r/pull/9", nil
+		},
+		ghPRCreate: func(dir, title, body string, _ prCreateOpts) (string, error) {
+			t.Fatal("gh pr create must not run when an open PR exists")
+			return "", nil
+		},
+		gitLogSinceTag:     func(dir string) ([]string, error) { return nil, nil },
+		gitHasUpstream:     func(dir string) (bool, error) { return true, nil },
+		gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
+		gitPushSetUpstream: func(dir, remote string) error { return nil },
+	}
+
+	in := PRApplyIn{Title: "Updated", Body: "Body text", SkipReleaseCheck: true, Draft: true, Base: "develop"}
+	out, err := prApplyCoreWith("/mock/root", "/mock/work", in, rt)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !edited || out.Created {
+		t.Fatalf("expected the open PR to be edited (Created=false), got edited=%v out=%+v", edited, out)
+	}
+	joined := strings.Join(out.Warnings, "\n")
+	if len(out.Warnings) != 2 || !strings.Contains(joined, "draft ignored") || !strings.Contains(joined, `base "develop" ignored`) {
+		t.Errorf("Warnings: got %v, want one draft and one base warning", out.Warnings)
 	}
 }
 
@@ -1375,7 +1481,7 @@ func TestPrApply_SkipReleaseCheck_Verification(t *testing.T) {
 		rt.gitLogSinceTag = func(dir string) ([]string, error) {
 			return []string{"aaa1111 feat: add widget"}, nil
 		}
-		rt.ghPRCreate = func(dir, title, body string) (string, error) {
+		rt.ghPRCreate = func(dir, title, body string, _ prCreateOpts) (string, error) {
 			return "https://github.com/o/r/pull/30", nil
 		}
 
@@ -1393,7 +1499,7 @@ func TestPrApply_SkipReleaseCheck_Verification(t *testing.T) {
 		rt.gitLogSinceTag = func(dir string) ([]string, error) {
 			return []string{"aaa1111 chore: tidy up"}, nil
 		}
-		rt.ghPRCreate = func(dir, title, body string) (string, error) {
+		rt.ghPRCreate = func(dir, title, body string, _ prCreateOpts) (string, error) {
 			return "https://github.com/o/r/pull/31", nil
 		}
 
@@ -1588,7 +1694,7 @@ func originRemoteExec(remoteURL string) func(name string, args []string, opts ex
 func TestPrApply_PermissionError_EnrichedWithAuthHints(t *testing.T) {
 	rt := prRuntime{
 		ghPRForBranch: func(dir string) ghx.PRMetadata { return ghx.PRMetadata{Exists: false} },
-		ghPRCreate: func(dir, title, body string) (string, error) {
+		ghPRCreate: func(dir, title, body string, _ prCreateOpts) (string, error) {
 			return "", errors.New("HTTP 403: Must be a collaborator to create pull requests")
 		},
 		execRun: originRemoteExec("https://github.com/acme/widgets.git"),
@@ -1666,7 +1772,7 @@ func TestPrApply_PermissionError_FromEdit_EnrichedSameWay(t *testing.T) {
 func TestPrApply_NonPermissionError_PassesThroughUnenriched(t *testing.T) {
 	rt := prRuntime{
 		ghPRForBranch: func(dir string) ghx.PRMetadata { return ghx.PRMetadata{Exists: false} },
-		ghPRCreate: func(dir, title, body string) (string, error) {
+		ghPRCreate: func(dir, title, body string, _ prCreateOpts) (string, error) {
 			return "", errors.New("connection reset by peer")
 		},
 		// execRun/ghGetAccounts/ghAuthProbe are deliberately left nil: since
@@ -1727,7 +1833,7 @@ func TestPrApply_NonPermissionError_FromEdit_GenericSuggestion(t *testing.T) {
 func TestPrApply_PermissionError_NoOriginRemote_FallsBackToGeneric(t *testing.T) {
 	rt := prRuntime{
 		ghPRForBranch: func(dir string) ghx.PRMetadata { return ghx.PRMetadata{Exists: false} },
-		ghPRCreate: func(dir, title, body string) (string, error) {
+		ghPRCreate: func(dir, title, body string, _ prCreateOpts) (string, error) {
 			return "", errors.New("HTTP 403: must be a collaborator")
 		},
 		execRun: func(name string, args []string, opts execx.Options) (string, error) {
@@ -1781,8 +1887,10 @@ func fakeReleasePRRuntime() prRuntime {
 		ghLabelList:      func(dir string) ([]string, error) { return nil, nil },
 		ghLabelCreate:    func(dir, name, color, desc string) error { return nil },
 		ghPRForBranch:    func(dir string) ghx.PRMetadata { return ghx.PRMetadata{Exists: false} },
-		ghPRCreate:       func(dir, title, body string) (string, error) { return "https://example.com/pull/1", nil },
-		execRun:          func(name string, args []string, opts execx.Options) (string, error) { return "", nil },
+		ghPRCreate: func(dir, title, body string, _ prCreateOpts) (string, error) {
+			return "https://example.com/pull/1", nil
+		},
+		execRun: func(name string, args []string, opts execx.Options) (string, error) { return "", nil },
 		// Same idle defaults as releaseTestRuntime — see its comment.
 		gitHasUpstream:     func(dir string) (bool, error) { return true, nil },
 		gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
@@ -1892,7 +2000,7 @@ func TestPrApply_EmptyReleaseNotes_AutoGenerated(t *testing.T) {
 				"bbb2222 fix: correct bug",
 			}, nil
 		}
-		rt.ghPRCreate = func(dir, title, body string) (string, error) {
+		rt.ghPRCreate = func(dir, title, body string, _ prCreateOpts) (string, error) {
 			capturedBody = body
 			return "https://github.com/o/r/pull/20", nil
 		}
@@ -1915,7 +2023,7 @@ func TestPrApply_EmptyReleaseNotes_AutoGenerated(t *testing.T) {
 	t.Run("whitespace-only releaseNotes is treated as empty and auto-generated", func(t *testing.T) {
 		rt := releaseTestRuntime("1.0.0")
 		rt.gitLogSinceTag = func(dir string) ([]string, error) { return nil, nil }
-		rt.ghPRCreate = func(dir, title, body string) (string, error) {
+		rt.ghPRCreate = func(dir, title, body string, _ prCreateOpts) (string, error) {
 			return "https://github.com/o/r/pull/21", nil
 		}
 		rt.execRun = mockAddLabelExec("release:patch")
@@ -1980,7 +2088,7 @@ func TestPRApply_WithRelease_LabelAdded(t *testing.T) {
 	// mockAddLabelExec fails the test (via a returned error surfacing as an
 	// InfraError) if any other label/args combination is issued.
 	rt := releaseTestRuntime("1.2.0")
-	rt.ghPRCreate = func(dir, title, body string) (string, error) {
+	rt.ghPRCreate = func(dir, title, body string, _ prCreateOpts) (string, error) {
 		return "https://github.com/o/r/pull/10", nil
 	}
 	rt.execRun = mockAddLabelExec("release:minor")
@@ -2006,7 +2114,7 @@ func TestPRApply_WithRelease_LabelAdded(t *testing.T) {
 func TestPRApply_WithRelease_NotesInBody(t *testing.T) {
 	var capturedBody string
 	rt := releaseTestRuntime("2.0.0")
-	rt.ghPRCreate = func(dir, title, body string) (string, error) {
+	rt.ghPRCreate = func(dir, title, body string, _ prCreateOpts) (string, error) {
 		capturedBody = body
 		return "https://github.com/o/r/pull/11", nil
 	}
@@ -2051,7 +2159,7 @@ func TestPRApply_WithRelease_NoVersionInBody(t *testing.T) {
 	rt := releaseTestRuntime("1.4.9")
 	rt.gitTagList = func(dir string) ([]string, error) { return []string{"v1.4.9"}, nil }
 	rt.gitAllSemverTags = func(dir string) ([]string, error) { return []string{"v1.4.10-rc1", "v1.4.9"}, nil }
-	rt.ghPRCreate = func(dir, title, body string) (string, error) {
+	rt.ghPRCreate = func(dir, title, body string, _ prCreateOpts) (string, error) {
 		capturedBody = body
 		return "https://github.com/o/r/pull/12", nil
 	}
@@ -2095,7 +2203,7 @@ func TestPRApply_WithRelease_ExistingTagDoesNotBlock(t *testing.T) {
 		}}, nil
 	}
 	rt.gitTagList = func(dir string) ([]string, error) { return []string{"rel-1.3.0"}, nil }
-	rt.ghPRCreate = func(dir, title, body string) (string, error) {
+	rt.ghPRCreate = func(dir, title, body string, _ prCreateOpts) (string, error) {
 		return "https://github.com/o/r/pull/13", nil
 	}
 	rt.execRun = mockAddLabelExec("release:minor")
@@ -2126,7 +2234,7 @@ func TestPRApply_WithRelease_VersionDetectErrorDoesNotBlock(t *testing.T) {
 	rt.versionDetect = func(root, path, fileType string) (*version.VersionFile, error) {
 		return nil, errors.New("version file not found")
 	}
-	rt.ghPRCreate = func(dir, title, body string) (string, error) {
+	rt.ghPRCreate = func(dir, title, body string, _ prCreateOpts) (string, error) {
 		return "https://github.com/o/r/pull/14", nil
 	}
 	rt.execRun = mockAddLabelExec("release:patch")
@@ -2177,7 +2285,7 @@ func TestPRApply_WithoutRelease_Unchanged(t *testing.T) {
 	// execRun) must never be invoked — the mock fails the test if it is.
 	rt := prRuntime{
 		ghPRForBranch: func(dir string) ghx.PRMetadata { return ghx.PRMetadata{Exists: false} },
-		ghPRCreate: func(dir, title, body string) (string, error) {
+		ghPRCreate: func(dir, title, body string, _ prCreateOpts) (string, error) {
 			return "https://github.com/o/r/pull/13", nil
 		},
 		execRun: func(name string, args []string, opts execx.Options) (string, error) {
@@ -2217,7 +2325,7 @@ func TestPRApply_WithRC_NoRCNumberPinned(t *testing.T) {
 	rt.gitAllSemverTags = func(dir string) ([]string, error) {
 		return []string{"v3.1.0-rc1", "v3.1.0-rc2"}, nil
 	}
-	rt.ghPRCreate = func(dir, title, body string) (string, error) {
+	rt.ghPRCreate = func(dir, title, body string, _ prCreateOpts) (string, error) {
 		capturedBody = body
 		return "https://github.com/o/r/pull/14", nil
 	}
@@ -2250,7 +2358,7 @@ func TestPRApply_WithRC_NoRCNumberPinned(t *testing.T) {
 
 func TestPRApply_WithRC_LabelFormat(t *testing.T) {
 	rt := releaseTestRuntime("1.0.0")
-	rt.ghPRCreate = func(dir, title, body string) (string, error) {
+	rt.ghPRCreate = func(dir, title, body string, _ prCreateOpts) (string, error) {
 		return "https://github.com/o/r/pull/15", nil
 	}
 	rt.execRun = mockAddLabelExec("release:patch-rc")
@@ -2277,7 +2385,7 @@ func TestPRApply_WithRC_LabelFormat(t *testing.T) {
 func TestPRApply_WithRC_PreReleaseMarker(t *testing.T) {
 	var capturedBody string
 	rt := releaseTestRuntime("2.0.0")
-	rt.ghPRCreate = func(dir, title, body string) (string, error) {
+	rt.ghPRCreate = func(dir, title, body string, _ prCreateOpts) (string, error) {
 		capturedBody = body
 		return "https://github.com/o/r/pull/16", nil
 	}
@@ -2726,7 +2834,7 @@ func TestPRApply_ExistingPR_SameReleaseLabel_NoRemove(t *testing.T) {
 
 func TestPRApply_CreatePath_LabelsRemovedEmpty(t *testing.T) {
 	rt := releaseTestRuntime("1.0.0")
-	rt.ghPRCreate = func(dir, title, body string) (string, error) {
+	rt.ghPRCreate = func(dir, title, body string, _ prCreateOpts) (string, error) {
 		return "https://github.com/o/r/pull/40", nil
 	}
 	// mockAddLabelExec fails the test if a --remove-label flag is sent — the

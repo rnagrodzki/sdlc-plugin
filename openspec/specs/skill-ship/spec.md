@@ -248,6 +248,7 @@ The skill SHALL dispatch each sub-skill as the table says, always with a fixed `
 - `--auto` comes from `flags.auto`, except `commit-fixes`, the harden commit, and the `verify-pipeline` fix dispatch, which always pass `--auto`.
 - `--no-harden` is added when `harden` is in `flags.steps`.
 - `--skip-approval` is always passed to `pr`; it does not imply `--auto`.
+- `--draft` is passed to `pr` when `flags.draft` is `true`. The `pr` skill forwards it to `pr_apply` as `draft: true`, so a newly created PR is a draft; an already-open PR is updated, not converted.
 - The skill never calls a sub-skill's own MCP tools, for example `pr_apply`.
 
 #### Scenario: pr dispatch under auto

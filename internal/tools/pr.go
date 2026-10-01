@@ -194,7 +194,7 @@ func prPrepareNext(out PRPrepareOut) string {
 // prRuntime; production code uses defaultPRRuntime.
 type prRuntime struct {
 	ghPRForBranch       func(dir string) ghx.PRMetadata
-	ghPRCreate          func(dir, title, body string) (string, error)
+	ghPRCreate          func(dir, title, body string, opts prCreateOpts) (string, error)
 	ghPREdit            func(dir string, num int, title, body string) (string, error)
 	ghLabelList         func(dir string) ([]string, error)
 	ghLabelCreate       func(dir, name, color, desc string) error
@@ -226,7 +226,7 @@ type prRuntime struct {
 // defaultPRRuntime wires prRuntime to the real package-level implementations.
 var defaultPRRuntime = prRuntime{
 	ghPRForBranch:       ghx.PRForBranch,
-	ghPRCreate:          ghx.PRCreate,
+	ghPRCreate:          prGHCreate,
 	ghPREdit:            ghx.PREdit,
 	ghLabelList:         ghx.LabelList,
 	ghLabelCreate:       ghx.LabelCreate,
@@ -907,6 +907,11 @@ type PRApplyIn struct {
 	// only in interactive mode — AutoMode never allows the skip regardless
 	// of any reason given. Ignored otherwise.
 	SkipReleaseReason string `json:"skipReleaseReason,omitempty" jsonschema_description:"Explains why this PR intentionally skips the release check despite release-worthy (feat/fix/breaking) commits since the last tag. Required (non-empty) when skipReleaseCheck is true, releaseLevel is empty, autoMode is false, and such commits are present. Ignored otherwise."`
+	// Draft and Base apply only when pr_apply creates a new PR. gh pr edit
+	// cannot change either one, so on the update path they are ignored and
+	// named in Warnings instead.
+	Draft bool   `json:"draft,omitempty" jsonschema_description:"Create the PR as a draft (gh pr create --draft). Applies only when a new PR is created; ignored with a warning when an open PR is updated."`
+	Base  string `json:"base,omitempty" jsonschema_description:"Base branch for a new PR (gh pr create --base <branch>). Empty uses gh's default (the repository's default branch). Applies only when a new PR is created; ignored with a warning when an open PR is updated."`
 }
 
 // PRApplyOut is the output for pr_apply.
@@ -914,7 +919,30 @@ type PRApplyOut struct {
 	URL           string             `json:"url"`
 	Created       bool               `json:"created"`
 	ReleaseIntent *ReleaseIntentInfo `json:"releaseIntent,omitempty"`
-	Next          string             `json:"next"`
+	// Warnings names inputs the call ignored, e.g. draft/base on the update
+	// path. Absent when nothing was ignored.
+	Warnings []string `json:"warnings,omitempty"`
+	Next     string   `json:"next"`
+}
+
+// prCreateOpts carries the gh pr create flags beyond title and body.
+type prCreateOpts struct {
+	Draft bool
+	Base  string
+}
+
+// prGHCreate runs `gh pr create --title <title> --body <body>`, plus
+// --draft and --base <branch> when set, and returns the created PR's URL
+// (gh's stdout). It replaces ghx.PRCreate, which takes no extra flags.
+func prGHCreate(dir, title, body string, opts prCreateOpts) (string, error) {
+	args := []string{"pr", "create", "--title", title, "--body", body}
+	if opts.Draft {
+		args = append(args, "--draft")
+	}
+	if opts.Base != "" {
+		args = append(args, "--base", opts.Base)
+	}
+	return execx.Run("gh", args, execx.Options{Dir: dir})
 }
 
 // ReleaseIntentInfo carries the release intent (level + pre-release) recorded
@@ -1122,8 +1150,18 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 	// Only an open PR is edited. With no open PR, gh pr view falls back to
 	// the branch's newest closed or merged PR, which an earlier run on a
 	// reused branch may have left behind; that case opens a new PR.
+	base := strings.TrimSpace(in.Base)
 	meta := rt.ghPRForBranch(workDir)
 	if meta.Exists && meta.State == "OPEN" {
+		// gh pr edit cannot turn a PR into a draft or change its base, so
+		// draft/base are create-only. Say so rather than drop them silently.
+		var warnings []string
+		if in.Draft {
+			warnings = append(warnings, fmt.Sprintf("draft ignored: PR #%d already exists and was updated, not created; gh pr edit cannot make it a draft (run gh pr ready --undo %d to do that by hand).", meta.Number, meta.Number))
+		}
+		if base != "" {
+			warnings = append(warnings, fmt.Sprintf("base %q ignored: PR #%d already exists and was updated, not created; its base branch is unchanged.", base, meta.Number))
+		}
 		url, err := rt.ghPREdit(workDir, meta.Number, in.Title, body)
 		if err != nil {
 			if enriched := prEnrichPermissionError(rt, workDir, "gh pr edit", err); enriched != nil {
@@ -1144,10 +1182,10 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 				return PRApplyOut{}, err
 			}
 		}
-		return PRApplyOut{URL: url, Created: false, ReleaseIntent: intent, Next: prApplyNext(false, intent)}, nil
+		return PRApplyOut{URL: url, Created: false, ReleaseIntent: intent, Warnings: warnings, Next: prApplyNext(false, intent)}, nil
 	}
 
-	url, err := rt.ghPRCreate(workDir, in.Title, body)
+	url, err := rt.ghPRCreate(workDir, in.Title, body, prCreateOpts{Draft: in.Draft, Base: base})
 	if err != nil {
 		if enriched := prEnrichPermissionError(rt, workDir, "gh pr create", err); enriched != nil {
 			return PRApplyOut{}, enriched
@@ -1661,6 +1699,8 @@ func RegisterPRTools(s *mcpserver.Server) {
 		"Creates a PR for the current branch, or edits the existing one, via gh pr create/gh pr edit (KD14 executor tool). Pushes the branch "+
 			"first when needed (no upstream, or upstream behind HEAD); skips the push when upstream is already caught up, to avoid firing "+
 			"heavy pre-push hooks unnecessarily. "+
+			"draft and base apply only when a new PR is created (gh pr create --draft / --base <branch>); when an open PR is "+
+			"updated instead, gh pr edit cannot change either one, so they are ignored and named in warnings. "+
 			"releaseLevel is required unless skipReleaseCheck is true — an empty releaseLevel without skipReleaseCheck is rejected so release "+
 			"intent is never skipped by omission; pass skipReleaseCheck: true to explicitly acknowledge no release. skipReleaseCheck is verified "+
 			"against commits since the last tag: if any are feat/fix/breaking, the skip is release-worthy and is hard-rejected in autoMode, or "+

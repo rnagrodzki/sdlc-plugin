@@ -6,16 +6,18 @@ The `pr` skill (`/pr`) drafts a pull request title and description from `pr_prep
 ## Requirements
 
 ### Requirement: Flags and invocation inputs
-The skill SHALL accept the flags `--draft`, `--base <branch>`, `--auto`, `--skip-approval`, and `--label <name>`, and SHALL honor only `--auto` and `--skip-approval`.
+The skill SHALL accept the flags `--draft`, `--base <branch>`, `--auto`, and `--skip-approval`, and SHALL forward `--draft` and `--base` to `pr_apply` as `draft` and `base`.
 
 | Flag | Effect |
 |---|---|
-| `--draft` | Not supported; `pr_apply` has no draft field |
+| `--draft` | Passes `draft: true` to `pr_apply`; a newly created PR is a draft |
 | `--update` (removed, not in `argument-hint`) | Ignored; updating is the default because `pr_apply` edits the open PR for the branch when one exists |
-| `--base <branch>` | Not supported; `pr_apply` has no base-branch field |
+| `--base <branch>` | Passes `base: <branch>` to `pr_apply`; a newly created PR targets that branch. `pr_prepare` still measures `commitsSinceBase` against the default branch |
 | `--auto` | Skips the publish prompt; sets `autoMode: true` on `pr_apply`; stops a standalone call that has no release intent |
 | `--skip-approval` | Skips the publish prompt only; `autoMode` stays driven by `--auto` |
-| `--label <name>` | Not supported; the only label applied is the `release:*` label from `releaseLevel` |
+| `--label` (removed, not in `argument-hint`) | Ignored; the only label applied is the `release:*` label from `releaseLevel` |
+
+- `draft` and `base` act only when `pr_apply` creates a PR. On an open PR, `pr_apply` returns a `warnings` entry for each one it ignored, and the skill prints each warning after the result line.
 
 Inputs an orchestrating caller may pass (no CLI flag exists for them):
 
@@ -24,9 +26,15 @@ Inputs an orchestrating caller may pass (no CLI flag exists for them):
 | `expectedBranch` | Forwarded to `pr_prepare` |
 | `releaseLevel`, `releaseNotes`, `releasePreRelease`, `releaseSource` | Release intent, forwarded to `pr_apply` |
 
-#### Scenario: Unsupported flag
-- **WHEN** `/pr --draft` is invoked
-- **THEN** the PR is published through `pr_apply` without a draft setting
+#### Scenario: Draft PR on a new branch
+- **WHEN** `/pr --draft --base develop` is invoked on a branch with no open PR
+- **THEN** the skill calls `pr_apply` with `draft: true` and `base: "develop"`
+- **AND** the new PR is a draft that targets `develop`
+
+#### Scenario: Draft flag on an open PR
+- **WHEN** `/pr --draft` is invoked on a branch with an open PR
+- **THEN** `pr_apply` updates that PR and returns a `draft ignored` warning
+- **AND** the skill prints the warning after the result line
 
 #### Scenario: Legacy update flag
 - **WHEN** `/pr --update` is invoked on a branch with an open PR
