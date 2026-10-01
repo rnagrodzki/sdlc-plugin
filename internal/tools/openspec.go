@@ -70,7 +70,7 @@ type OpenspecEnrichOut struct {
 // RegisterOpenspecTools registers openspec-related tools on the server.
 func RegisterOpenspecTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "openspec_enrich",
-		"INTERNAL — called by sdlc skills only. Idempotent enrichment of openspec/config.yaml with a managed block pointing contributors to sdlc-utilities skills.",
+		"INTERNAL — called by sdlc skills only. Idempotent enrichment of openspec/config.yaml with an sdlc-v2 managed block that points contributors to the sdlc plugin skills /plan, /execute, and /ship.",
 		mcpserver.Annotations{
 			Title:       "Write OpenSpec config block",
 			ReadOnly:    false,
