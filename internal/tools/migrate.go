@@ -27,7 +27,7 @@ type MigrateIn struct {
 	// Action selects the migration to run: "config", "import", or "layout".
 	Action string `json:"action" jsonschema:"enum=config,enum=import,enum=layout" jsonschema_description:"Selects the migration to run: \"config\" (schema migration via configmigrate engine), \"import\" (non-destructively imports config, templates, jira-templates, learnings, and review-dimensions from the legacy plugin directory), or \"layout\" (moves this plugin's own old state layout, execution/, into the current runs/ layout)."`
 	// DryRun, when true, reports what would change without writing.
-	DryRun bool `json:"dryRun" jsonschema_description:"When true, reports what would change without writing anything."`
+	DryRun bool `json:"dryRun,omitempty" jsonschema_description:"When true, reports what would change without writing anything."`
 }
 
 // MigrateOut is the output for the migrate tool.

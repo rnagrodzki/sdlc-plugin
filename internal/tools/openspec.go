@@ -47,9 +47,9 @@ type OpenspecEnrichIn struct {
 	// Change optionally names an openspec change to match against. When
 	// non-empty, Detect() is called to resolve the change and include its
 	// status in the output.
-	Change string `json:"change" jsonschema_description:"Optional openspec change name to match against. When non-empty, the change is resolved and its status is included in the output."`
+	Change string `json:"change,omitempty" jsonschema_description:"Optional openspec change name to match against. When non-empty, the change is resolved and its status is included in the output."`
 	// Remove, when true, removes the managed block instead of adding it.
-	Remove bool `json:"remove" jsonschema_description:"When true, removes the managed block from openspec/config.yaml instead of adding/updating it."`
+	Remove bool `json:"remove,omitempty" jsonschema_description:"When true, removes the managed block from openspec/config.yaml instead of adding/updating it."`
 }
 
 // OpenspecEnrichOut is the output for the openspec_enrich tool.

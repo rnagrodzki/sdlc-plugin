@@ -10,7 +10,7 @@ The tool SHALL accept one input field and return the output fields below.
 
 | Field | Type | Required | Encoding | Meaning |
 |---|---|---|---|---|
-| `force` | boolean | yes | `true` or `false` | Overwrite files that already exist and migrate legacy `.js` files |
+| `force` | boolean | optional at call time; missing = `false` | `true` or `false` | Overwrite files that already exist and migrate legacy `.js` files |
 
 | Field | Meaning |
 |---|---|
@@ -20,6 +20,11 @@ The tool SHALL accept one input field and return the output fields below.
 | `next` | Next-step guidance (see the guidance requirement) |
 
 - Annotations: `Title: "Scaffold CI workflow files"`, `ReadOnly: false`, `Destructive: true`, `Idempotent: true`, `OpenWorld: true`. `OpenWorld` is `true` because the branch protection check runs `gh api`.
+
+#### Scenario: Force omitted
+- **WHEN** the caller passes `{}`
+- **THEN** the tool runs with `force: false`
+- **AND** the advertised input schema does not list `force` as required
 
 #### Scenario: Fresh project
 - **WHEN** the tool runs with `force: false` in a project with no `.github/` files

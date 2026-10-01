@@ -24,7 +24,7 @@ import (
 
 // SetupPrepareIn is the input for the setup_prepare tool.
 type SetupPrepareIn struct {
-	SkipConfigCheck bool `json:"skipConfigCheck" jsonschema_description:"Skips the config-version auto-migration gate normally run before preflight checks. Set only when the caller has already verified or migrated the config."`
+	SkipConfigCheck bool `json:"skipConfigCheck,omitempty" jsonschema_description:"Skips the config-version auto-migration gate normally run before preflight checks. Set only when the caller has already verified or migrated the config."`
 }
 
 // sectionRow is a JSON-friendly projection of setupmeta.Section with
