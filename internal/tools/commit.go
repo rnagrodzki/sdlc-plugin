@@ -159,8 +159,8 @@ func commitPrepare(cfgRoot, gitRoot string, in CommitPrepareIn) (CommitPrepareOu
 	out.Staged.Files = stagedFiles
 	out.Staged.FileCount = len(out.Staged.Files)
 
-	// Staged diff (full).
-	stagedDiff, err := gitx.Diff(gitRoot, gitx.DiffOpts{Cached: true})
+	// Staged diff (full), with raw non-ASCII names in the file headers.
+	stagedDiff, err := stagedDiffRaw(gitRoot)
 	if err != nil {
 		out.Warnings = append(out.Warnings, fmt.Sprintf("staged diff: %s", err.Error()))
 	}
@@ -172,7 +172,7 @@ func commitPrepare(cfgRoot, gitRoot string, in CommitPrepareIn) (CommitPrepareOu
 
 	// Compute truncated files list.
 	if out.Staged.DiffTruncated {
-		out.Staged.TruncatedFiles = computeTruncatedFiles(stagedDiff, truncatedDiff)
+		out.Staged.TruncatedFiles = computeTruncatedFiles(stagedFiles, truncatedDiff)
 	}
 
 	// Staged diff stat.
@@ -355,27 +355,38 @@ func detectWipSquash(gitRoot string) CommitWipSquash {
 	return result
 }
 
-// computeTruncatedFiles derives the list of files that were omitted by
-// truncation, by comparing original and truncated diffs.
-func computeTruncatedFiles(original, truncated string) []string {
-	origChunks := gitx.SplitDiffByFile(original)
-	truncChunks := gitx.SplitDiffByFile(truncated)
-
+// computeTruncatedFiles returns the staged files whose diff chunk is not in
+// the truncated diff. stagedFiles is the raw `git diff --name-only -z` list,
+// so names come out as real file names, never C-quoted, even for a name git
+// still quotes in diff headers (one holding `"`, `\`, or a control
+// character): that chunk cannot be parsed, so it is not in the truncated
+// diff and is listed here. Never returns nil.
+func computeTruncatedFiles(stagedFiles []string, truncated string) []string {
 	included := make(map[string]bool)
-	for _, fd := range truncChunks {
+	for _, fd := range gitx.SplitDiffByFile(truncated) {
 		included[fd.Path] = true
 	}
 
-	var omitted []string
-	for _, fd := range origChunks {
-		if !included[fd.Path] {
-			omitted = append(omitted, fd.Path)
+	omitted := []string{}
+	for _, name := range stagedFiles {
+		if !included[name] {
+			omitted = append(omitted, name)
 		}
 	}
-	if omitted == nil {
-		omitted = []string{}
-	}
 	return omitted
+}
+
+// stagedDiffRaw runs `git -c core.quotePath=false diff --cached` in gitRoot.
+// With git's default core.quotePath, a non-ASCII name is C-quoted in the
+// file header (`diff --git "a/\303\251.txt" "b/\303\251.txt"`), which
+// gitx.SplitDiffByFile does not parse, so truncation would drop that file's
+// chunk without listing it.
+func stagedDiffRaw(gitRoot string) (string, error) {
+	out, err := execx.Run("git", []string{"-c", "core.quotePath=false", "diff", "--cached"}, execx.Options{Dir: gitRoot})
+	if err != nil {
+		return "", fmt.Errorf("gitx: diff: %w", err)
+	}
+	return out, nil
 }
 
 // diffNames runs `git diff --name-only -z` in gitRoot (with --cached when

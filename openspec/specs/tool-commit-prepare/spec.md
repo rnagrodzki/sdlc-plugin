@@ -86,10 +86,10 @@ The tool SHALL describe the staged changes in `staged` and SHALL add `no files s
 |---|---|
 | `staged.files` | Paths from `git diff --name-only -z --cached`, as raw names (never C-quoted) |
 | `staged.fileCount` | Length of `staged.files` |
-| `staged.diff` | Output of `git diff --cached`, truncated when over budget |
+| `staged.diff` | Output of `git -c core.quotePath=false diff --cached` (non-ASCII names raw in the file headers), truncated when over budget |
 | `staged.diffStat` | Output of `git diff --cached --stat` |
 | `staged.diffTruncated` | `true` when the full staged diff is over 8000 bytes |
-| `staged.truncatedFiles` | Files whose diff was left out of `staged.diff` |
+| `staged.truncatedFiles` | Entries of `staged.files` whose diff was left out of `staged.diff`, as raw names (never C-quoted), in `staged.files` order |
 
 #### Scenario: Nothing staged
 - **WHEN** the index has no staged changes
@@ -117,6 +117,11 @@ The tool SHALL cap `staged.diff` at an 8000-byte budget by keeping whole per-fil
 - **WHEN** the full staged diff is over 8000 bytes
 - **THEN** `staged.diffTruncated` is `true`
 - **AND** `staged.truncatedFiles` names each file whose diff is not in `staged.diff`
+
+#### Scenario: Non-ASCII name left out of an over-budget diff
+- **WHEN** a large `big.txt` and a small `été small.txt` are staged and the full staged diff is over 8000 bytes
+- **THEN** `staged.truncatedFiles` holds `été small.txt` as the raw name, not `"\303\251t\303\251 small.txt"`
+- **AND** the footer in `staged.diff` lists `été small.txt`
 
 ### Requirement: Unstaged and untracked files
 The tool SHALL list in `unstaged` every tracked path whose working tree differs from the index, and SHALL list untracked entries in `untracked`. A staged-only change SHALL NOT appear in `unstaged`.

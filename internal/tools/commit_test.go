@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1138,6 +1139,39 @@ func TestCommitPrepare_NonASCIIStagedAndUnstagedNamesAreRaw(t *testing.T) {
 	}
 	if len(out.Unstaged.Files) != 1 || out.Unstaged.Files[0] != unstaged {
 		t.Errorf("Unstaged.Files = %#v, want [%q]", out.Unstaged.Files, unstaged)
+	}
+}
+
+// TestCommitPrepare_NonASCIITruncatedFilesAreRaw pins staged.truncatedFiles
+// for a non-ASCII name. With git's default core.quotePath the diff header is
+// `diff --git "a/\303\251t\303\251 small.txt" ...`, which the per-file split
+// does not parse, so the file vanished from both the truncated diff and
+// truncatedFiles. A big first file pushes the diff over the byte budget, so
+// the two small files are omitted and must be listed by their real names.
+func TestCommitPrepare_NonASCIITruncatedFilesAreRaw(t *testing.T) {
+	const nonASCII = "été small.txt"
+	const plain = "plain small.txt"
+
+	redirectTempManifests(t)
+	dir := newCommitApplyRepo(t)
+	writeRepoFile(t, dir, "big.txt", strings.Repeat("line of text here\n", 1000))
+	writeRepoFile(t, dir, nonASCII, strings.Repeat("y\n", 10))
+	writeRepoFile(t, dir, plain, strings.Repeat("y\n", 10))
+	runGit(t, dir, "add", ".")
+
+	out, err := commitPrepare(dir, dir, CommitPrepareIn{SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("commitPrepare: %v", err)
+	}
+	if !out.Staged.DiffTruncated {
+		t.Fatal("DiffTruncated = false, want true (big.txt exceeds the diff byte budget)")
+	}
+	want := []string{plain, nonASCII}
+	if !slices.Equal(out.Staged.TruncatedFiles, want) {
+		t.Errorf("TruncatedFiles = %#v, want %#v", out.Staged.TruncatedFiles, want)
+	}
+	if !strings.Contains(out.Staged.Diff, "# - "+nonASCII) {
+		t.Errorf("truncated diff footer should name %q raw, got tail %q", nonASCII, out.Staged.Diff[max(0, len(out.Staged.Diff)-300):])
 	}
 }
 
