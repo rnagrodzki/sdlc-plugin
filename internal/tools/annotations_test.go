@@ -100,7 +100,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		reason:     "os.MkdirTemp(os.TempDir(), …)",
 	},
 	"learnings_log": {
-		title:      "Append to learnings log",
+		title:      "Manage learnings log",
 		readOnly:   true,
 		idempotent: false,
 		openWorld:  false,
