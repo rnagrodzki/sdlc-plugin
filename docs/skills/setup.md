@@ -20,9 +20,8 @@ templates, plan templates, guardrails, and more.
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--migrate` | Migrate legacy config files. | off |
-| `--skip <section>` | Skip a config section (use section IDs from the table below). | none |
 | `--force` | Reconfigure all sections, including ones already set. | off |
-| `--only <ids>` | Comma-separated section IDs to configure directly. | none |
+| `--only <ids>` | Comma-separated section IDs to configure directly (use section IDs from the table below). | none |
 | `--dimensions` | Jump to review dimensions setup. | off |
 | `--pr-template` | Jump to PR template setup. | off |
 | `--guardrails` | Jump to plan guardrails setup. | off |

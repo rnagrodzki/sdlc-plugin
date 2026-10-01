@@ -80,14 +80,13 @@ Version detection for the `version` section:
 - **AND** `tagPrefix` is `v`
 
 ### Requirement: Flags
-The skill SHALL accept the flags below. A direct-entry flag SHALL be translated to `--only <id>` unless `--only` is also passed, and `--only` SHALL skip the menu.
+The skill SHALL accept the flags below. A direct-entry flag SHALL be translated to `--only <id>` unless `--only` is also passed, and `--only` SHALL skip the menu. `--force` alone SHALL skip the menu and select all 18 ids; with `--only` or a direct-entry flag it SHALL be ignored.
 
 | Flag | Effect |
 |---|---|
 | `--migrate` | Run the migration step even when `needsMigration` is `false`. |
-| `--skip <section>` | Skip a section. Accepts any of the 18 canonical section ids. |
-| `--force` | Pre-check every menu row instead of only `not-set` rows. |
-| `--only <ids>` | Comma-separated section ids to configure; menu skipped. Same 18 ids. |
+| `--force` | Menu skipped; all 18 ids selected, including `set` sections. Ignored with `--only` or a direct-entry flag. |
+| `--only <ids>` | Comma-separated section ids to configure; menu skipped. Accepts any of the 18 canonical ids. |
 | `--dimensions` | Same as `--only review-dimensions`. |
 | `--pr-template` | Same as `--only pr-template`. |
 | `--guardrails` | Same as `--only plan-guardrails`. |
@@ -95,11 +94,12 @@ The skill SHALL accept the flags below. A direct-entry flag SHALL be translated 
 | `--openspec-enrich` | Same as `--only openspec-block`. |
 | `--plan-template` | Same as `--only plan-template`. |
 | `--remove-openspec` | Passed to the OpenSpec sub-flow as `--remove`. |
-| `--add` | Passed to `setup-dimensions`, `setup-pr-template`, `setup-guardrails`, `setup-execution-guardrails`. |
+| `--add` | Passed to `setup-dimensions`, `setup-guardrails`, `setup-execution-guardrails`. Not passed to `setup-pr-template`, which takes no arguments. |
 | `--no-copilot` | Passed to `setup-dimensions`; skips GitHub Copilot instruction files. |
 
 - Canonical ids: `version`, `ship`, `jira`, `review`, `received-review`, `commit`, `pr`, `github`, `pr-labels`, `review-dimensions`, `pr-template`, `plan-template`, `plan-style`, `plan-tasks`, `plan-guardrails`, `execution-guardrails`, `openspec-block`, `automation`.
 - `workspace` and `hooks` are not valid ids.
+- There is no `--skip` flag.
 
 #### Scenario: Direct entry
 - **WHEN** the user runs `/setup --guardrails`
@@ -110,6 +110,15 @@ The skill SHALL accept the flags below. A direct-entry flag SHALL be translated 
 - **WHEN** the user runs `/setup --only jira,commit`
 - **THEN** the skill prints no menu
 - **AND** configures `jira` then `commit`
+
+#### Scenario: Force reconfigures everything
+- **WHEN** the user runs `/setup --force`
+- **THEN** the skill prints no menu
+- **AND** configures all 18 sections in canonical order, including sections already `set`
+
+#### Scenario: Force with an id list
+- **WHEN** the user runs `/setup --force --only jira`
+- **THEN** the skill configures only `jira`
 
 ### Requirement: Menu is plain chat
 Without `--only` or a direct-entry flag, the skill SHALL print a status block and a numbered menu as plain chat, then end its turn. It SHALL NOT use AskUserQuestion for the menu.
@@ -134,14 +143,19 @@ The skill SHALL compute each row's state itself from the snapshot; no tool retur
 | `review-dimensions` | Installed dimension count > 0 |
 | `pr-template`, `plan-template` | The template file exists |
 | `openspec-block` | A managed-block line was found |
-| `configFile` is `.sdlc-v2/config.toml` | `configPath` resolves in `projectConfig`; an array must be non-empty |
+| `configFile` is `.sdlc-v2/config.toml` | `configPath` resolves in `projectConfig`; an array or a table must have at least one entry |
 | `configFile` is `.sdlc-v2/local.toml` (`ship`, `review`, `received-review`, `plan-style`, `github`, `automation`) | `localConfig[configPath]` is non-null |
 
 - Every other case is `not-set`.
 
-#### Scenario: Empty guardrails array
-- **WHEN** `plan.guardrails` resolves to an empty array
+#### Scenario: Empty guardrails table
+- **WHEN** `plan.guardrails` resolves to a table with no named guardrail tables
 - **THEN** the `plan-guardrails` row is `not-set`
+
+#### Scenario: Guardrail count in the summary
+- **WHEN** `config.toml` has `[plan.guardrails.test-coverage-required]` and `[plan.guardrails.no-ci-bypass]`
+- **THEN** the `plan-guardrails` row is `set`
+- **AND** its summary is `2 configured`
 
 #### Scenario: Managed block written by openspec_enrich
 - **WHEN** `openspec_enrich` has written its block into `openspec/config.yaml`
@@ -178,6 +192,8 @@ The skill SHALL run the migration step only when `needsMigration` is `true` or `
 - AskUserQuestion: `Legacy or outdated config files detected. Migrate to the current config format before proceeding?` Options `yes`, `no`.
 - On `yes`: call `migrate` three times, in order, each with `dryRun: false`: `action: "import"`, then `action: "config"`, then `action: "layout"`.
 - All three `result` values are shown to the user verbatim.
+- When the `import` result has `skippedKeys`, the skill shows each entry on its own line under `Legacy keys not imported (not allowed in the destination file):`.
+- The `config` action only checks the schema version; its `result` is `up-to-date`. If it fails, the skill shows the error and stops.
 - On `no`: skip migration; legacy files are left untouched.
 - After migration, the skill re-calls `setup_prepare` and re-reads both TOML files.
 
@@ -189,17 +205,11 @@ The skill SHALL run the migration step only when `needsMigration` is `true` or `
 #### Scenario: User accepts migration
 - **WHEN** the user answers `yes`
 - **THEN** the skill calls `migrate` with `import`, `config`, `layout` in that order
+- **AND** the skill does not offer to delete legacy files
 
-### Requirement: Delete legacy files prompt
-The skill SHALL offer to delete legacy files only when the `config` migration `result` starts with `migrated` and names a non-empty `legacy ingested: [...]` list, and SHALL delete nothing without a `yes`.
-
-- Paths are parsed from the bracketed, space-separated list in `result`.
-- AskUserQuestion: `Delete the legacy config files that were just migrated? (<comma-joined list>)` Options `yes`, `no`.
-- On `yes`: each path is removed with `rm -f`.
-
-#### Scenario: Up-to-date result
-- **WHEN** the `config` action returns `result: "up-to-date"`
-- **THEN** the skill does not ask to delete legacy files
+#### Scenario: Import skipped keys shown
+- **WHEN** the `import` action returns `skippedKeys: [".sdlc-v2/config.toml: workspace"]`
+- **THEN** the skill shows `.sdlc-v2/config.toml: workspace` under `Legacy keys not imported (not allowed in the destination file):`
 
 ### Requirement: Section dispatch loop
 For each selected id, in canonical order, the skill SHALL print a section header and then run the dispatcher named by the section's `delegatedTo`.

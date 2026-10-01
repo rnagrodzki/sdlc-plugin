@@ -499,15 +499,16 @@ func TestSetupSkillsNoWorkspaceHooksDispatchRows(t *testing.T) {
 	}
 }
 
-// TestSetupSkillsOnlySkipIdsMatchManifest asserts that every one of the 14
-// canonical section ids from internal/setupmeta.Sections() is documented as
-// a valid --only/--skip value in the main SKILL.md's Arguments table, and
-// that the two dropped legacy ids ("workspace", "hooks") are not listed
-// there as valid values -- guarding the corrected id-list call out in Port
-// Notes. The check is scoped to the two Arguments-table rows themselves
-// (identified by their "--skip <section>" / "--only <ids>" flag cell)
-// rather than the whole file, since Port Notes prose elsewhere must
-// legitimately name "workspace"/"hooks" to explain why they were dropped.
+// TestSetupSkillsOnlySkipIdsMatchManifest asserts that every canonical
+// section id from internal/setupmeta.Sections() is documented as a valid
+// --only value in the main SKILL.md's Arguments table, and that the two
+// dropped legacy ids ("workspace", "hooks") are not listed there as valid
+// values -- guarding the corrected id-list call out in Port Notes. The check
+// is scoped to the Arguments-table row itself (identified by its
+// "--only <ids>" flag cell) rather than the whole file, since Port Notes
+// prose elsewhere must legitimately name "workspace"/"hooks" to explain why
+// they were dropped. The --skip flag had no behavior and was removed, so it
+// must not come back as an Arguments-table row.
 func TestSetupSkillsOnlySkipIdsMatchManifest(t *testing.T) {
 	repoRoot := setupSkillsRepoRoot(t)
 	path := filepath.Join(repoRoot, "skills/setup/SKILL.md")
@@ -519,12 +520,15 @@ func TestSetupSkillsOnlySkipIdsMatchManifest(t *testing.T) {
 	var idListLines []string
 	for _, line := range strings.Split(string(data), "\n") {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "| `--skip <section>`") || strings.HasPrefix(trimmed, "| `--only <ids>`") {
+		if strings.HasPrefix(trimmed, "| `--skip") {
+			t.Errorf("skills/setup/SKILL.md: Arguments table lists the removed --skip flag: %s", trimmed)
+		}
+		if strings.HasPrefix(trimmed, "| `--only <ids>`") {
 			idListLines = append(idListLines, line)
 		}
 	}
-	if len(idListLines) != 2 {
-		t.Fatalf("expected exactly 2 Arguments-table rows for --skip/--only, found %d -- "+
+	if len(idListLines) != 1 {
+		t.Fatalf("expected exactly 1 Arguments-table row for --only, found %d -- "+
 			"the Arguments table format may have changed", len(idListLines))
 	}
 	joined := strings.Join(idListLines, "\n")
@@ -537,13 +541,13 @@ func TestSetupSkillsOnlySkipIdsMatchManifest(t *testing.T) {
 	for _, id := range canonicalIDs {
 		if !strings.Contains(joined, "`"+id+"`") {
 			t.Errorf("skills/setup/SKILL.md: canonical section id %q is not listed in the "+
-				"--skip/--only Arguments-table rows", id)
+				"--only Arguments-table row", id)
 		}
 	}
 
 	for _, dropped := range []string{"`workspace`", "`hooks`"} {
 		if strings.Contains(joined, dropped) {
-			t.Errorf("skills/setup/SKILL.md: --skip/--only Arguments-table rows still list "+
+			t.Errorf("skills/setup/SKILL.md: --only Arguments-table row still lists "+
 				"dropped id %s as a valid value (Ruling Q1)", dropped)
 		}
 	}
