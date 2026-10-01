@@ -2,12 +2,15 @@ package tools
 
 import (
 	"context"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/openspec"
 )
 
 // annotationPolicy captures the expected annotation values for a tool.
@@ -41,7 +44,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		readOnly:   true,
 		idempotent: true,
 		openWorld:  false,
-		reason:     "os.ReadFile/os.Stat plus os.MkdirTemp(\"\", \"sdlc-plan-snapshot-\") for material_snapshot's snapshotPath output, plus fsx.AtomicWrite* under gitignored .sdlc-v2/runs/<runId>.evidence/ for evidence_record",
+		reason:     "os.ReadFile/os.Stat plus os.MkdirTemp(\"\", \"sdlc-plan-snapshot-\") for material_snapshot's snapshotPath output, plus fsx.AtomicWrite* under gitignored .sdlc-v2/runs/<runId>.evidence/ for evidence_record, plus gitignored .sdlc-v2/openspec-staging/<changeName>/ (name and paths checked before any join) and os.MkdirTemp(\"\", \"sdlc-openspec-*\") for openspec_instructions/openspec_stage",
 	},
 	"verify_pipeline_classify": {
 		title:      "Classify CI failure logs",
@@ -451,6 +454,22 @@ func TestReadOnlyToolsWriteNothingTracked(t *testing.T) {
 					Brief:    "# Brief\n",
 				}); err != nil {
 					t.Fatalf("evidence_record: %v", err)
+				}
+				// openspec_stage really writes the staging dir: stub the
+				// CLI on PATH and check the write stays untracked.
+				stubOpenspecForStage(t, 0)
+				writeFile(t, filepath.Join(root, "openspec", "config.yaml"), "schema: spec-driven\n")
+				runGit(t, root, "add", "-A")
+				runGit(t, root, "commit", "-m", "openspec config")
+				if _, err := planSupportCore(root, root, PlanSupportIn{
+					Action:     "openspec_stage",
+					ChangeName: "add-widget",
+					Files:      []openspec.StageFile{{Path: "proposal.md", Content: "# Proposal\n"}},
+				}); err != nil {
+					t.Fatalf("openspec_stage: %v", err)
+				}
+				if _, err := os.Stat(filepath.Join(root, ".sdlc-v2", "openspec-staging", "add-widget", "proposal.md")); err != nil {
+					t.Fatalf("openspec_stage did not write the staging dir: %v", err)
 				}
 			case "verify_pipeline_classify":
 				_ = ClassifyLogs("error: build failed")

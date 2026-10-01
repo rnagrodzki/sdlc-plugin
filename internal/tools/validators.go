@@ -437,7 +437,7 @@ func ValidatePlanFormatForHook(root, file string) (blocking, willFailAtFinal []d
 // whole plugin cache the first time it runs, and the hook is a fresh process
 // after every plan edit, so the walk would be paid on every edit.
 func hookPlanTemplateCandidates(root string) []string {
-	candidates := []string{filepath.Join(root, paths.DataDir, "plan-template.md")}
+	candidates := []string{filepath.Join(root, paths.DataDir, paths.PlanTemplateFile)}
 	if pluginRoot := os.Getenv("CLAUDE_PLUGIN_ROOT"); pluginRoot != "" {
 		candidates = append(candidates, filepath.Join(pluginRoot, "skills", "plan", "plan-template-default.md"))
 	}
@@ -1324,7 +1324,7 @@ func validatePRTemplate(root string) ([]discovery.Finding, error) {
 	if tmpl != nil {
 		templatePath = tmpl.Path
 	} else {
-		templatePath = filepath.Join(root, paths.DataDir, "pr-template.md")
+		templatePath = filepath.Join(root, paths.DataDir, paths.PRTemplateFile)
 	}
 	relPath, relErr := filepath.Rel(root, templatePath)
 	if relErr != nil || relPath == "" {
@@ -1928,7 +1928,7 @@ func ValidateDimensionsAction(root string) ([]discovery.Finding, error) {
 }
 
 func validateDimensionsAction(root string) ([]discovery.Finding, error) {
-	dir := filepath.Join(root, paths.DataDir, "review-dimensions")
+	dir := filepath.Join(root, paths.DataDir, paths.ReviewDimensionsSubdir)
 	dims, err := dimensions.Load(dir)
 	if err != nil {
 		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("load review dimensions: %s", err.Error()), Suggestion: "Check filesystem permissions on " + paths.DataDir + "/review-dimensions/, then retry validate with action=\"dimensions\".", Cause: err}
@@ -2017,11 +2017,21 @@ func sameWorktreePath(a, b string) bool {
 }
 
 // isCorrectStateLink reports whether name is one of paths.LinkedStateEntries
-// and the corresponding entry under <activeRoot>/.sdlc-v2/ is a symlink that
-// resolves to the same real path as <mainRoot>/.sdlc-v2/<name>. Entries that
-// are never linked (paths.UnlinkedStateEntries) always return false here, so
-// they keep today's stray-detection behavior unchanged
-// (F-worktree-state-links-8).
+// and the corresponding entry under <activeRoot>/.sdlc-v2/ is a symlink whose
+// target is <mainRoot>/.sdlc-v2/<name>. Entries that are never linked
+// (paths.UnlinkedStateEntries) always return false here, so they keep
+// today's stray-detection behavior unchanged (F-worktree-state-links-8).
+//
+// The comparison below must accept a dangling link: the worktree-state-links
+// spec's "Link creation trigger" requirement has SessionStart create a
+// symlink to a main-worktree entry that may not exist yet (nothing has
+// written run state there), so filepath.EvalSymlinks — which requires its
+// argument to resolve through to an existing file — cannot be used on either
+// side here, unlike sameWorktreePath above. Instead, resolveBestEffort
+// resolves symlinks in whatever prefix of each path actually exists (at
+// least mainRoot/activeRoot themselves, which are real worktree roots) and
+// leaves the rest of the path unresolved but Clean-normalized, then the two
+// results are compared as plain strings.
 func isCorrectStateLink(mainRoot, activeRoot, name string) bool {
 	linked := false
 	for _, n := range paths.LinkedStateEntries {
@@ -2040,15 +2050,33 @@ func isCorrectStateLink(mainRoot, activeRoot, name string) bool {
 		return false
 	}
 
-	resolvedLink, err := filepath.EvalSymlinks(linkPath)
+	target, err := os.Readlink(linkPath)
 	if err != nil {
 		return false
 	}
-	resolvedTarget, err := filepath.EvalSymlinks(filepath.Join(mainRoot, paths.DataDir, name))
-	if err != nil {
-		return false
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(linkPath), target)
 	}
-	return resolvedLink == resolvedTarget
+
+	wantTarget := filepath.Join(mainRoot, paths.DataDir, name)
+	return resolveBestEffort(target) == resolveBestEffort(wantTarget)
+}
+
+// resolveBestEffort resolves symlinks in whatever leading prefix of path
+// actually exists on disk, then rejoins the remaining (possibly
+// nonexistent) suffix unresolved. filepath.EvalSymlinks fails outright when
+// any part of path does not exist, which is too strict for comparing a
+// dangling state-link target against its expected location: the ancestor
+// worktree root exists, but the .sdlc-v2/<entry> leaf may not, yet.
+func resolveBestEffort(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	parent := filepath.Dir(path)
+	if parent == path {
+		return filepath.Clean(path)
+	}
+	return filepath.Join(resolveBestEffort(parent), filepath.Base(path))
 }
 
 // findStrayStateEntries reports every top-level entry inside

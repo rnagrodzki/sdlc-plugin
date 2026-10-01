@@ -38,6 +38,10 @@ The `openspec_instructions` action SHALL copy `openspec/config.yaml` into a new 
 return `schemaName` and `artifacts[]` `{id, outputPath, requires, template, instruction, context, rules}`
 in status order, plus `guardrails` — the same list `plan_prepare` returns. It writes nothing in the repository.
 
+| Condition | Class | Message (short) |
+|---|---|---|
+| Active worktree cannot be resolved | `DomainError` | `openspec_instructions: active worktree not resolved` |
+
 #### Scenario: New change
 - **WHEN** `openspec_instructions` is called with `changeName:"add-widget"` and no such change exists
 - **THEN** `artifacts` lists `proposal`, `specs`, `design`, `tasks` with their templates
@@ -68,6 +72,7 @@ The `openspec_stage` action SHALL replace the staging dir for `changeName` with 
 | `changeName` empty or not bare kebab-case | `DomainError` | `openspec_stage: invalid changeName "<name>"` |
 | A `files[].path` fails the path check | `DomainError` | `openspec_stage: path "<path>" not allowed` |
 | `openspec` CLI not on PATH | `InfraError` | `openspec CLI not found on PATH` |
+| Active worktree cannot be resolved | `DomainError` | `openspec_stage: active worktree not resolved` |
 
 #### Scenario: Stage and validate
 - **WHEN** `openspec_stage` is called with `changeName:"add-widget"` and valid proposal, spec, design, and tasks files

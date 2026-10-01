@@ -1533,6 +1533,35 @@ func TestStrayStateWrongLinkTarget(t *testing.T) {
 	}
 }
 
+// TestStrayStateAcceptsDanglingLink pins the worktree-state-links spec's
+// "Link creation trigger" requirement: SessionStart creates a linked-state
+// symlink even when its main-worktree target does not exist yet (dangling
+// until the first write), so the stray-state check must not flag that link
+// as stray just because the target is missing.
+func TestStrayStateAcceptsDanglingLink(t *testing.T) {
+	mainRoot := t.TempDir()
+	activeRoot := t.TempDir()
+
+	// mainRoot/.sdlc-v2/ is never created here -- the symlink's target,
+	// mainRoot/.sdlc-v2/runs, does not exist at all yet.
+	activeDataDir := filepath.Join(activeRoot, paths.DataDir)
+	if err := os.MkdirAll(activeDataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(mainRoot, paths.DataDir, paths.RunsSubdir)
+	if err := os.Symlink(target, filepath.Join(activeDataDir, paths.RunsSubdir)); err != nil {
+		t.Fatal(err)
+	}
+
+	findings, err := findStrayStateEntries(mainRoot, activeRoot)
+	if err != nil {
+		t.Fatalf("findStrayStateEntries: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected no findings for a dangling but correctly-targeted symlink, got %+v", findings)
+	}
+}
+
 // TestValidateCostTiers_ErrorsByCause pins the two recovery paths of
 // validateCostTiers: an unreadable docs/cost-tiers.md must not be
 // reported as a heading problem, and neither message may print the file path

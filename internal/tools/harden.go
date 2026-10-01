@@ -237,7 +237,7 @@ type hardenManifest struct {
 // reported per file and that file is skipped (source: try/catch per
 // iteration, loop continues).
 func loadReviewDimensions(contentRoot string, errs *[]surfaceLoadError) []reviewDimensionMeta {
-	dir := filepath.Join(contentRoot, paths.DataDir, "review-dimensions")
+	dir := filepath.Join(contentRoot, paths.DataDir, paths.ReviewDimensionsSubdir)
 	dims, err := dimensions.Load(dir)
 	if err != nil {
 		*errs = append(*errs, surfaceLoadError{
@@ -513,7 +513,7 @@ func anySliceToStrings(v any) []string {
 // convention already mirrors source's `if (fs.existsSync(dimDir))` guard,
 // so a missing directory yields no errors here, matching source.
 func dimensionsPreflight(contentRoot string) []string {
-	dir := filepath.Join(contentRoot, paths.DataDir, "review-dimensions")
+	dir := filepath.Join(contentRoot, paths.DataDir, paths.ReviewDimensionsSubdir)
 	dims, err := dimensions.Load(dir)
 	if err != nil {
 		return []string{fmt.Sprintf("review-dimensions: readdir failed: %s", err.Error())}

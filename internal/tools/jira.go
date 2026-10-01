@@ -498,7 +498,7 @@ func jiraResolveTemplateStatus(mainRoot, cachePath, templatesDir string) map[str
 		}
 	}
 
-	customDir := filepath.Join(mainRoot, paths.DataDir, "jira-templates")
+	customDir := filepath.Join(mainRoot, paths.DataDir, paths.JiraTemplatesSubdir)
 
 	defaultTemplateNames := []string{}
 	if entries, err := os.ReadDir(templatesDir); err == nil {
@@ -1088,7 +1088,7 @@ func jiraInitTemplates(mainRoot string, in JiraIn) (any, error) {
 	}
 
 	templatesDir := jiraResolveTemplatesDir(in.TemplatesDir)
-	customDir := filepath.Join(mainRoot, paths.DataDir, "jira-templates")
+	customDir := filepath.Join(mainRoot, paths.DataDir, paths.JiraTemplatesSubdir)
 	if err := os.MkdirAll(customDir, 0o755); err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        "create custom templates dir: " + err.Error(),
@@ -1186,7 +1186,7 @@ func jiraCopyTemplate(mainRoot string, in JiraIn) (any, error) {
 		}
 	}
 
-	dst := filepath.Join(mainRoot, paths.DataDir, "jira-templates", in.TemplateType+".md")
+	dst := filepath.Join(mainRoot, paths.DataDir, paths.JiraTemplatesSubdir, in.TemplateType+".md")
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        "create custom templates dir: " + err.Error(),
@@ -1358,7 +1358,7 @@ func jiraWriteCritique(mainRoot string, in JiraIn) (any, error) {
 		}
 	}
 
-	dir := filepath.Join(mainRoot, paths.DataDir, "state", "artifacts")
+	dir := filepath.Join(mainRoot, paths.DataDir, paths.StateArtifactsSubdir, "artifacts")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        "create artifacts dir: " + err.Error(),
@@ -1389,7 +1389,7 @@ func jiraWriteApproval(mainRoot string, in JiraIn) (any, error) {
 		return nil, err
 	}
 
-	dir := filepath.Join(mainRoot, paths.DataDir, "state", "artifacts")
+	dir := filepath.Join(mainRoot, paths.DataDir, paths.StateArtifactsSubdir, "artifacts")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        "create artifacts dir: " + err.Error(),

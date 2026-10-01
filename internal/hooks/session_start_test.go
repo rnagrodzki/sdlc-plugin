@@ -1842,6 +1842,194 @@ func TestCompactRecoveryPhase_LegacyCleanup_KeepsFresh(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Worktree state links phase
+//
+// The sub-cases below fake mainRootFunc/activeRootFunc with two plain temp
+// dirs (withMainRoot / withActiveRoot) — no real git involved — because the
+// behavior under test (which entries get linked, dangling targets, existing
+// entries, symlink failures) does not depend on git at all. The one
+// exception, TestWorktreeLinksGitClean, builds a real repository and a real
+// `git worktree add` linked worktree, mirroring binarySkewPhase's own
+// real-git test convention, because "git status --porcelain stays empty" can
+// only be verified against real git.
+// ---------------------------------------------------------------------------
+
+// withActiveRoot points activeRootFunc at root for the test's duration,
+// mirroring withMainRoot above.
+func withActiveRoot(t *testing.T, root string) {
+	t.Helper()
+	orig := activeRootFunc
+	activeRootFunc = func() (string, error) { return root, nil }
+	t.Cleanup(func() { activeRootFunc = orig })
+}
+
+func TestSessionStartWorktreeLinks(t *testing.T) {
+	t.Run("main worktree produces no output and creates nothing", func(t *testing.T) {
+		root := realPath(t, t.TempDir())
+		withMainRoot(t, root)
+		withActiveRoot(t, root)
+
+		if got := worktreeLinkPhase(); got != nil {
+			t.Errorf("worktreeLinkPhase() = %q, want nil in the main worktree", got)
+		}
+		if _, err := os.Stat(filepath.Join(root, paths.DataDir)); !os.IsNotExist(err) {
+			t.Errorf(".sdlc-v2/ should not be created when active root == main root")
+		}
+	})
+
+	t.Run("linked worktree links every missing entry, dangling target allowed", func(t *testing.T) {
+		mainRoot := realPath(t, t.TempDir())
+		activeRoot := realPath(t, t.TempDir())
+		withMainRoot(t, mainRoot)
+		withActiveRoot(t, activeRoot)
+
+		if got := worktreeLinkPhase(); got != nil {
+			t.Errorf("worktreeLinkPhase() = %q, want nil when every entry is freshly linked", got)
+		}
+		for _, entry := range paths.LinkedStateEntries {
+			linkPath := filepath.Join(activeRoot, paths.DataDir, entry)
+			info, err := os.Lstat(linkPath)
+			if err != nil {
+				t.Fatalf("Lstat(%s): %v", entry, err)
+			}
+			if info.Mode()&os.ModeSymlink == 0 {
+				t.Errorf("%s was not created as a symlink", entry)
+			}
+			target, err := os.Readlink(linkPath)
+			if err != nil {
+				t.Fatalf("Readlink(%s): %v", entry, err)
+			}
+			if want := filepath.Join(mainRoot, paths.DataDir, entry); target != want {
+				t.Errorf("%s target = %q, want %q", entry, target, want)
+			}
+			// Dangling allowed: nothing wrote this entry under the main
+			// worktree, so its target must not exist yet.
+			if _, err := os.Stat(filepath.Join(mainRoot, paths.DataDir, entry)); !os.IsNotExist(err) {
+				t.Fatalf("test setup invariant broken: main target for %s unexpectedly exists", entry)
+			}
+		}
+		if _, err := os.Lstat(filepath.Join(activeRoot, paths.DataDir, paths.ConfigFile)); !os.IsNotExist(err) {
+			t.Error("config.toml must never be created by worktreeLinkPhase")
+		}
+	})
+
+	t.Run("existing real entry is kept, not replaced", func(t *testing.T) {
+		mainRoot := realPath(t, t.TempDir())
+		activeRoot := realPath(t, t.TempDir())
+		withMainRoot(t, mainRoot)
+		withActiveRoot(t, activeRoot)
+
+		realDir := filepath.Join(activeRoot, paths.DataDir, paths.ReportsSubdir)
+		mustMkdirAll(t, realDir)
+		mustWriteFile(t, filepath.Join(realDir, "x.md"), "keep me")
+
+		want := "sdlc: .sdlc-v2/" + paths.ReportsSubdir + " exists in this worktree — not linked to the main worktree"
+		assertLines(t, worktreeLinkPhase(), []string{want})
+
+		info, err := os.Lstat(realDir)
+		if err != nil {
+			t.Fatalf("Lstat: %v", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			t.Error("existing real entry was replaced by a symlink")
+		}
+		if _, err := os.Stat(filepath.Join(realDir, "x.md")); err != nil {
+			t.Errorf("file inside the existing real entry was lost: %v", err)
+		}
+	})
+
+	t.Run("symlink error produces one line per entry and does not block the rest", func(t *testing.T) {
+		mainRoot := realPath(t, t.TempDir())
+		activeRoot := realPath(t, t.TempDir())
+		withMainRoot(t, mainRoot)
+		withActiveRoot(t, activeRoot)
+
+		failing := paths.LinkedStateEntries[0]
+		origSymlink := symlinkFunc
+		symlinkFunc = func(oldname, newname string) error {
+			if filepath.Base(newname) == failing {
+				return errors.New("permission denied")
+			}
+			return origSymlink(oldname, newname)
+		}
+		t.Cleanup(func() { symlinkFunc = origSymlink })
+
+		want := "sdlc: could not link .sdlc-v2/" + failing + ": permission denied"
+		assertLines(t, worktreeLinkPhase(), []string{want})
+
+		if _, err := os.Lstat(filepath.Join(activeRoot, paths.DataDir, failing)); !os.IsNotExist(err) {
+			t.Error("an entry whose symlink creation failed must not exist on disk")
+		}
+		other := paths.LinkedStateEntries[1]
+		info, err := os.Lstat(filepath.Join(activeRoot, paths.DataDir, other))
+		if err != nil || info.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("entry after the failing one was not linked (session must continue): err=%v info=%v", err, info)
+		}
+	})
+
+	t.Run("second run creates nothing and prints nothing", func(t *testing.T) {
+		mainRoot := realPath(t, t.TempDir())
+		activeRoot := realPath(t, t.TempDir())
+		withMainRoot(t, mainRoot)
+		withActiveRoot(t, activeRoot)
+
+		if got := worktreeLinkPhase(); got != nil {
+			t.Fatalf("first run: got %q, want nil", got)
+		}
+		if got := worktreeLinkPhase(); got != nil {
+			t.Errorf("second run: got %q, want nil (idempotent)", got)
+		}
+	})
+}
+
+// TestWorktreeLinksGitClean pins the worktree-state-links spec's "Git status
+// stays clean" requirement against a real `git worktree add` linked
+// worktree — mainRootFunc/activeRootFunc are left at their real
+// worktree.MainRoot/worktree.ActiveRoot defaults, which resolve via actual
+// git subprocess calls keyed off the process cwd, so only a real repository
+// exercises this path.
+func TestWorktreeLinksGitClean(t *testing.T) {
+	branch := "feat/worktree-links-clean"
+	mainDir := gitFixture(t, branch)
+
+	// Track the same .sdlc-v2/.gitignore wildcard-ignore convention
+	// internal/tools/setup.go writes for a real project (and
+	// internal/openspec/stage_test.go already duplicates as a test
+	// literal), so the symlinks worktreeLinkPhase creates are ignored the
+	// same way a real checkout would ignore them.
+	mustMkdirAll(t, filepath.Join(mainDir, paths.DataDir))
+	mustWriteFile(t, filepath.Join(mainDir, paths.DataDir, paths.GitignoreFile),
+		"# >>> sdlc-v2 managed (do not edit) — selective ignores\n*\n!.gitignore\n!config.toml\n!review-dimensions/\n!review-dimensions/**\n# <<< sdlc-v2 managed\n")
+	mustWriteFile(t, filepath.Join(mainDir, paths.DataDir, paths.ConfigFile), "")
+	runGit(t, mainDir, "add",
+		filepath.Join(paths.DataDir, paths.GitignoreFile),
+		filepath.Join(paths.DataDir, paths.ConfigFile))
+	runGit(t, mainDir, "-c", "user.email=hooks-test@example.com", "-c", "user.name=hooks-test",
+		"commit", "-q", "-m", "track sdlc-v2 gitignore and config")
+
+	linkedDir := filepath.Join(t.TempDir(), "linked")
+	runGit(t, mainDir, "worktree", "add", "-b", "feat/worktree-links-clean-linked", linkedDir)
+	linkedDir = realPath(t, linkedDir)
+	chdir(t, linkedDir)
+
+	if got := worktreeLinkPhase(); got != nil {
+		t.Fatalf("worktreeLinkPhase() = %q, want nil (every entry freshly linked)", got)
+	}
+
+	if status := runGit(t, linkedDir, "status", "--porcelain"); status != "" {
+		t.Errorf("git status --porcelain not clean after linking:\n%s", status)
+	}
+
+	info, err := os.Lstat(filepath.Join(linkedDir, paths.DataDir, paths.ConfigFile))
+	if err != nil {
+		t.Fatalf("Lstat(config.toml): %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Error("config.toml must never become a symlink")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // OpenSpec phase
 // ---------------------------------------------------------------------------
 

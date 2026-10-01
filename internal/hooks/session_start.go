@@ -71,6 +71,7 @@ func sessionStart(_ HookCtx, event Event) (Output, error) {
 	var resume []string
 	resume = append(resume, safeStringsPhase("pipeline-resume", func() []string { return pipelineResumePhase(event.Source) })...)
 	resume = append(resume, safeStringsPhase("compact-recovery", compactRecoveryPhase)...)
+	resume = append(resume, safeStringsPhase("worktree-links", worktreeLinkPhase)...)
 	resume = append(resume, safeStringsPhase("openspec", openSpecPhase)...)
 	resume = append(resume, safeStringsPhase("git", gitContextPhase)...)
 	resume = append(resume, safeStringsPhase("jira-cache", jiraCachePhase)...)
@@ -821,6 +822,81 @@ func cleanupLegacySidecar(dir string) {
 // a JSON number: no trailing ".0" for whole numbers, no exponent notation.
 func formatNumber(v float64) string {
 	return strconv.FormatFloat(v, 'f', -1, 64)
+}
+
+// ---------------------------------------------------------------------------
+// Phase: worktree state links
+// ---------------------------------------------------------------------------
+
+// symlinkFunc creates a symlink; test seam so a creation failure (e.g. the
+// spec's "Permission denied" scenario) can be simulated deterministically
+// instead of relying on real OS permission behavior, which varies across CI
+// platforms (notably Windows without developer mode).
+var symlinkFunc = os.Symlink
+
+// worktreeLinkPhase makes the main worktree's run-generated .sdlc-v2/ state
+// (paths.LinkedStateEntries) visible, live, from a linked worktree, per the
+// worktree-state-links spec. In the main worktree (active root == main
+// root) it does nothing: there is nothing to link to, and nothing is
+// printed. In a linked worktree, each missing linked entry becomes a
+// symlink to <main-worktree>/.sdlc-v2/<entry> — created even when that
+// target does not exist yet, so later writes there appear without a new
+// session (the spec's "Link creation trigger" requirement). An entry that
+// already exists as a real file or directory is left untouched, with one
+// advisory line; a failed symlink creation is reported the same way, one
+// line per failed entry, and never aborts the hook. Every failure path
+// (root resolution, .sdlc-v2/ creation) degrades silently to no output,
+// matching this file's other phases.
+func worktreeLinkPhase() []string {
+	mainRoot, err := mainRootFunc()
+	if err != nil || mainRoot == "" {
+		return nil
+	}
+	activeRoot := resolveActiveWorktreeSafe()
+	if activeRoot == "" || sameRootPath(mainRoot, activeRoot) {
+		return nil
+	}
+
+	activeDataDir := filepath.Join(activeRoot, paths.DataDir)
+	if err := os.MkdirAll(activeDataDir, 0o755); err != nil {
+		return nil
+	}
+
+	var lines []string
+	for _, entry := range paths.LinkedStateEntries {
+		linkPath := filepath.Join(activeDataDir, entry)
+		info, statErr := os.Lstat(linkPath)
+		switch {
+		case statErr == nil && info.Mode()&os.ModeSymlink != 0:
+			// Already linked (an earlier session) — nothing to do, nothing to
+			// print (the spec's "Idempotent" scenario).
+		case statErr == nil:
+			lines = append(lines, fmt.Sprintf("sdlc: .sdlc-v2/%s exists in this worktree — not linked to the main worktree", entry))
+		case os.IsNotExist(statErr):
+			target := filepath.Join(mainRoot, paths.DataDir, entry)
+			if err := symlinkFunc(target, linkPath); err != nil {
+				lines = append(lines, fmt.Sprintf("sdlc: could not link .sdlc-v2/%s: %v", entry, err))
+			}
+		default:
+			// Any other Lstat error (e.g. a permission failure reading the
+			// parent directory) is skipped silently — same fail-open
+			// convention as every other branch in this phase.
+		}
+	}
+	return lines
+}
+
+// sameRootPath reports whether a and b resolve to the same real directory,
+// falling back to a plain string comparison if either fails to resolve
+// (e.g. a path that no longer exists). Mirrors internal/tools's own
+// sameWorktreePath convention for the same main-vs-active root comparison.
+func sameRootPath(a, b string) bool {
+	ra, errA := filepath.EvalSymlinks(a)
+	rb, errB := filepath.EvalSymlinks(b)
+	if errA != nil || errB != nil {
+		return a == b
+	}
+	return ra == rb
 }
 
 // ---------------------------------------------------------------------------

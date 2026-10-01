@@ -13,6 +13,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/openspec"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
@@ -190,10 +191,14 @@ func getGitScopeFiles(contentRoot string) []string {
 // backtickPathRe matches inline-code file paths in markdown, e.g. `src/foo.go`.
 var backtickPathRe = regexp.MustCompile("`([a-zA-Z0-9_\\-./]+\\.[a-zA-Z]{1,10})`")
 
-// getOpenSpecPaths scans an OpenSpec change's proposal.md, its delta specs
-// (specs/<capability>/spec.md, the OpenSpec layout) and any top-level
-// specs/*.md for backtick-quoted, relative-looking file paths, mirroring
-// plan-explore.js's getOpenSpecPaths.
+// getOpenSpecPaths scans an OpenSpec change's proposal.md and every delta
+// spec the openspec CLI reports for the change (specs/**/*.md, at any
+// depth — not just the one-level specs/<capability>/spec.md layout) for
+// backtick-quoted, relative-looking file paths, mirroring plan-explore.js's
+// getOpenSpecPaths. The CLI is the source of truth for which files count as
+// delta specs; if it fails (e.g. openspec missing on PATH) this returns no
+// hints at all rather than guessing from the filesystem, since these are
+// hints, not requirements.
 func getOpenSpecPaths(contentRoot, changeName string) []string {
 	if changeName == "" || !isSafeChangeName(changeName) {
 		return []string{}
@@ -204,23 +209,21 @@ func getOpenSpecPaths(contentRoot, changeName string) []string {
 		return []string{}
 	}
 
+	st, err := openspec.Status(contentRoot, changeName)
+	if err != nil {
+		return []string{}
+	}
+
 	var filesToScan []string
 	proposalPath := filepath.Join(changeDir, "proposal.md")
 	if fileExists(proposalPath) {
 		filesToScan = append(filesToScan, proposalPath)
 	}
-	specsDir := filepath.Join(changeDir, "specs")
-	if entries, err := os.ReadDir(specsDir); err == nil {
-		for _, e := range entries {
-			switch {
-			case e.IsDir():
-				if spec := filepath.Join(specsDir, e.Name(), "spec.md"); fileExists(spec) {
-					filesToScan = append(filesToScan, spec)
-				}
-			case strings.HasSuffix(e.Name(), ".md"):
-				filesToScan = append(filesToScan, filepath.Join(specsDir, e.Name()))
-			}
+	for _, a := range st.Artifacts {
+		if a.ID != "specs" {
+			continue
 		}
+		filesToScan = append(filesToScan, a.ExistingOutputPaths...)
 	}
 
 	seen := make(map[string]bool)
