@@ -372,8 +372,8 @@ var hardenSurfaceRoots = []string{
 // to hardenSurfaceRoots so unrelated dirty files elsewhere in the worktree
 // never make a surface look dirty. KeepLeadingSpace keeps the first line's
 // status column (" M path"), which hardenSurfacePath reads by position.
-// Tests swap this var out instead of exercising real git
-// (no-real-fs-git-in-tests guardrail).
+// Most tests swap this var out instead of exercising real git; one test
+// runs the real command to pin the status-column behavior.
 var hardenSurfaceStatus = func(dir string) (string, error) {
 	args := append([]string{"status", "--porcelain", "--"}, hardenSurfaceRoots...)
 	out, err := execx.Run("git", args, execx.Options{Dir: dir, KeepLeadingSpace: true})
