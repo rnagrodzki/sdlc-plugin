@@ -105,7 +105,7 @@ The tool SHALL change only the text of the written section in the target file an
 - When the file has no table for the key, the new text is appended at the end of the file after exactly one blank line.
 - Comment rule: comment and blank lines above a table header stay, and comment and blank lines after a table's last key/value stay. Comment lines between a replaced header and its last key/value are lost.
 - Headers are found with the go-toml parser, so `[` inside a multi-line string, a multi-line array or a comment is never taken for a header.
-- New text uses `\n` line endings, even in a file that uses `\r\n`.
+- Line endings: when the file's first line ends in `\r\n`, the new text and the blank-line separator before an appended section use `\r\n`; otherwise they use `\n`.
 - Safety check: the spliced text must decode to exactly the data a full rewrite of the merged file would decode to. When it does not, or when the key lives inside an inline table, a dotted key that defines a parent, or an array of tables, the tool rewrites the whole file from parsed data (all comments in that file are lost) and adds a `warnings` entry `section <key>: could not edit <file> in place, so the whole file was rewritten and its comments were removed`.
 - `config.toml` and `local.toml` use the same writer.
 
@@ -127,6 +127,12 @@ The tool SHALL change only the text of the written section in the target file an
 - **THEN** `[plan.guardrails.c]` takes the place of `[plan.guardrails.a]`
 - **AND** `[plan.guardrails.b]` is deleted
 - **AND** the `[jira]` table and its comments are unchanged
+
+#### Scenario: CRLF file keeps CRLF
+- **WHEN** `config.toml` uses `\r\n` line endings and has a `[commit]` table and no `[jira]` table
+- **AND** the call writes `{"commit":{"allowedTypes":["fix"]},"jira":{"defaultProject":"PROJ"}}`
+- **THEN** every line of the file, including the new `[commit]` and `[jira]` text, ends in `\r\n`
+- **AND** `warnings` is omitted
 
 #### Scenario: Layout that cannot be spliced
 - **WHEN** `config.toml` defines `plan = { tasks = { note = "old" } }`

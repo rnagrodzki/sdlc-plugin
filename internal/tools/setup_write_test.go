@@ -358,6 +358,38 @@ func TestSetupWriteSections_WholeNumbersWrittenAsIntegers(t *testing.T) {
 	}
 }
 
+// TestSetupWriteSections_KeepsCRLFLineEndings verifies that a file with
+// CRLF line endings keeps them after a replaced section and an appended
+// section are written, so the file never ends up with mixed line endings.
+func TestSetupWriteSections_KeepsCRLFLineEndings(t *testing.T) {
+	dir := t.TempDir()
+	orig := "# project settings\r\n[commit]\r\n# old comment\r\nallowedTypes = [\"feat\"]\r\n\r\n# tail comment\r\n"
+	path := writeSDLCFile(t, dir, "config.toml", orig)
+
+	res, text := callRegisteredSetupWriteSectionsIn(t, dir,
+		`{"commit":{"allowedTypes":["fix"],"subjectPatternError":"line one\nline two"},"jira":{"defaultProject":"PROJ"}}`)
+	if res.IsError {
+		t.Fatalf("expected success, got tool error:\n%s", text)
+	}
+	if strings.Contains(text, "comments were removed") {
+		t.Fatalf("tool fell back to a full rewrite:\n%s", text)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "# project settings\r\n" +
+		"[commit]\r\nallowedTypes = ['fix']\r\nsubjectPatternError = \"line one\\nline two\"\r\n" +
+		"\r\n# tail comment\r\n" +
+		"\r\n[jira]\r\ndefaultProject = 'PROJ'\r\n"
+	if string(got) != want {
+		t.Errorf("unexpected file.\n--- got ---\n%q\n--- want ---\n%q", got, want)
+	}
+	if n := strings.Count(string(got), "\n"); n != strings.Count(string(got), "\r\n") {
+		t.Errorf("file has LF line endings without CR:\n%q", got)
+	}
+}
+
 // TestSetupWriteSections_NullClearsLeaf verifies the spec'd null handling:
 // a null section value writes an empty table at that key, which clears its
 // fields, while sibling tables and the comments around them stay.

@@ -169,10 +169,17 @@ func sectionFragment(path []string, v map[string]any) ([]byte, error) {
 //     exactly one blank line.
 //   - Returns errNoSplice when path lives inside a value (an inline table or
 //     a dotted key that defines an ancestor) or inside an array of tables.
+//   - When data uses CRLF line endings (see usesCRLF), the fragment and the
+//     blank-line separator are written with CRLF too.
 func spliceSection(data []byte, path []string, fragment []byte) ([]byte, error) {
 	items, err := scanTOML(data)
 	if err != nil {
 		return nil, err
+	}
+	eol := []byte("\n")
+	if usesCRLF(data) {
+		eol = []byte("\r\n")
+		fragment = bytes.ReplaceAll(fragment, []byte("\n"), eol)
 	}
 	lines := bytes.SplitAfter(data, []byte("\n"))
 	remove := make([]bool, len(lines))
@@ -230,9 +237,19 @@ func spliceSection(data []byte, path []string, fragment []byte) ([]byte, error) 
 	body := bytes.TrimRight(out.Bytes(), "\r\n")
 	res := append([]byte{}, body...)
 	if len(body) > 0 {
-		res = append(res, "\n\n"...)
+		res = append(res, eol...)
+		res = append(res, eol...)
 	}
 	return append(res, fragment...), nil
+}
+
+// usesCRLF reports whether data uses CRLF line endings, judged by its first
+// line ending. go-toml writes the fragment with LF only; a string value
+// never holds a raw newline in that output (it is escaped), so converting
+// every LF in the fragment to CRLF does not change any value.
+func usesCRLF(data []byte) bool {
+	i := bytes.IndexByte(data, '\n')
+	return i > 0 && data[i-1] == '\r'
 }
 
 // spliceFile returns the new contents of the TOML file at path with section
