@@ -192,7 +192,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		destructive: true,
 		idempotent:  false,
 		openWorld:   true,
-		reason:      "MigrateWithBackup, state.Init, state.Write, shipGC",
+		reason:      "MigrateWithBackup, state.Init, state.Write, shipGC; openspec.Materialize (openspec/changes/<c>/, git add)",
 	},
 	"poll_await": {
 		title:       "Await CI or PR completion",

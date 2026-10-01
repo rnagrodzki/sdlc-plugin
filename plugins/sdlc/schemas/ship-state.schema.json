@@ -237,7 +237,7 @@
     },
     "sources": {
       "type": "object",
-      "description": "Per-flag precedence trace (R6): records which tier won for each key in flags (\"cli\", \"config\", \"config (version.preRelease)\", \"config (version.preReleasePolicy)\", \"config (version.preReleasePolicy enforced over cli)\", \"quick\", or \"default\"). Written by ship_prepare alongside flags.",
+      "description": "Per-flag precedence trace (R6): records which tier won for each key in flags (\"cli\", \"config\", \"config (version.preRelease)\", \"config (version.preReleasePolicy)\", \"config (version.preReleasePolicy enforced over cli)\", \"quick\", \"plan\" (openspecChange read from the plan's **Source:** openspec/changes/<name>/ header), or \"default\"). Written by ship_prepare alongside flags.",
       "additionalProperties": {
         "type": "string"
       }

@@ -2095,3 +2095,187 @@ func TestShipBuildReportData_ReviewLedger(t *testing.T) {
 		}
 	})
 }
+
+// ---------------------------------------------------------------------------
+// ship_prepare: openspec change from the plan, and materialize
+//
+// These reuse execute_state_test.go's materialize fixtures
+// (writeMaterializeStaging, stubOpenspecForMaterialize, matPlanHeaders).
+// ---------------------------------------------------------------------------
+
+// shipMaterializeFixture returns a git repo on a feature branch with a plan
+// file holding planContent, plus the plan's path.
+func shipMaterializeFixture(t *testing.T, planContent string) (dir, planPath string) {
+	t.Helper()
+	dir = t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, "feat/openspec")
+	planPath = filepath.Join(dir, "plan.md")
+	writeFile(t, planPath, planContent)
+	return dir, planPath
+}
+
+// TestShipPrepareMaterialize_Created: a staged plan, not dry-run, creates
+// openspec/changes/<c>/, stages it in git, reports materialized:"created",
+// and still initializes ship state.
+func TestShipPrepareMaterialize_Created(t *testing.T) {
+	dir, planPath := shipMaterializeFixture(t, matPlanHeaders("add-widget"))
+	stubOpenspecForMaterialize(t)
+	writeMaterializeStaging(t, dir, "add-widget", map[string]string{"tasks.md": "- [ ] First task\n"})
+
+	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true, PlanFile: planPath})
+	if err != nil {
+		t.Fatalf("shipPrepare: %v", err)
+	}
+	if len(out.Errors) != 0 {
+		t.Fatalf("Errors = %v, want empty", out.Errors)
+	}
+	if out.Openspec == nil || *out.Openspec != (ShipOpenspecOut{Change: "add-widget", Materialized: "created"}) {
+		t.Fatalf("Openspec = %+v, want {add-widget created}", out.Openspec)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "openspec", "changes", "add-widget", "tasks.md")); err != nil {
+		t.Errorf("materialized tasks.md missing: %v", err)
+	}
+	cmd := exec.Command("git", "diff", "--cached", "--name-only")
+	cmd.Dir = dir
+	staged, gitErr := cmd.Output()
+	if gitErr != nil {
+		t.Fatalf("git diff --cached: %v", gitErr)
+	}
+	if !strings.Contains(string(staged), "openspec/changes/add-widget/tasks.md") {
+		t.Errorf("git index = %q, want openspec/changes/add-widget/tasks.md staged", staged)
+	}
+	if out.StateFile == "" {
+		t.Error("StateFile is empty, want ship state initialized after materialize")
+	}
+}
+
+// TestShipPrepareMaterialize_TargetDiffers: a Materialize failure (rule 5,
+// target exists and differs from staging) lands in errors and no ship-state
+// file is written.
+func TestShipPrepareMaterialize_TargetDiffers(t *testing.T) {
+	dir, planPath := shipMaterializeFixture(t, matPlanHeaders("add-widget"))
+	targetDir := filepath.Join(dir, "openspec", "changes", "add-widget")
+	writeFile(t, filepath.Join(targetDir, ".openspec.yaml"), "schema: spec-driven\n")
+	writeFile(t, filepath.Join(targetDir, "tasks.md"), "- [ ] Different\n")
+	writeMaterializeStaging(t, dir, "add-widget", map[string]string{"tasks.md": "- [ ] First task\n"})
+
+	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true, PlanFile: planPath})
+	if err != nil {
+		t.Fatalf("shipPrepare: %v", err)
+	}
+	if len(out.Errors) != 1 || !strings.Contains(out.Errors[0], "already exists and differs from staging") {
+		t.Fatalf("Errors = %v, want one materialize target-differs error", out.Errors)
+	}
+	if strings.HasPrefix(out.Errors[0], "init: ") {
+		t.Errorf("Errors[0] = %q, want no execute_state \"init: \" prefix", out.Errors[0])
+	}
+	if out.StateFile != "" || out.Openspec != nil {
+		t.Errorf("StateFile = %q, Openspec = %+v, want both empty", out.StateFile, out.Openspec)
+	}
+	st, findErr := state.Find(dir, "ship", "feat/openspec")
+	if findErr != nil {
+		t.Fatalf("state.Find: %v", findErr)
+	}
+	if st != nil {
+		t.Fatalf("ship state file exists at %s after materialize error; want none", st.Path)
+	}
+}
+
+// TestShipPrepareMaterialize_DryRun: dryRun reports materialized:"dry-run"
+// and Materialize writes nothing — the target dir does not exist and the
+// staging dir is untouched.
+func TestShipPrepareMaterialize_DryRun(t *testing.T) {
+	dir, planPath := shipMaterializeFixture(t, matPlanHeaders("add-widget"))
+	writeMaterializeStaging(t, dir, "add-widget", map[string]string{"tasks.md": "- [ ] First task\n"})
+
+	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true, PlanFile: planPath, DryRun: true})
+	if err != nil {
+		t.Fatalf("shipPrepare: %v", err)
+	}
+	if len(out.Errors) != 0 {
+		t.Fatalf("Errors = %v, want empty", out.Errors)
+	}
+	if out.Openspec == nil || *out.Openspec != (ShipOpenspecOut{Change: "add-widget", Materialized: "dry-run"}) {
+		t.Fatalf("Openspec = %+v, want {add-widget dry-run}", out.Openspec)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "openspec", "changes", "add-widget")); !os.IsNotExist(err) {
+		t.Errorf("openspec/changes/add-widget stat err = %v, want not-exist (dry-run must not materialize)", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".sdlc-v2", "openspec-staging", "add-widget", "tasks.md")); err != nil {
+		t.Errorf("staging tasks.md stat err = %v, want it kept", err)
+	}
+}
+
+// TestShipPrepareMaterialize_NoStagingHeader: a plan without an
+// **OpenSpec-Staging:** header leaves Openspec nil, so the JSON output has
+// no "openspec" key.
+func TestShipPrepareMaterialize_NoStagingHeader(t *testing.T) {
+	dir, planPath := shipMaterializeFixture(t, "# Plan\n\n**Source:** conversation context\n")
+
+	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true, PlanFile: planPath})
+	if err != nil {
+		t.Fatalf("shipPrepare: %v", err)
+	}
+	if out.Openspec != nil {
+		t.Fatalf("Openspec = %+v, want nil", out.Openspec)
+	}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(raw), `"openspec"`) {
+		t.Errorf("JSON output has an \"openspec\" key; want it omitted: %s", raw)
+	}
+}
+
+// TestShipPrepareOpenspecChangeFromPlan covers openspecChange resolution:
+// plan Source fills it when no input is given; an explicit input wins and
+// warns when it differs; no input and no Source leaves it nil.
+func TestShipPrepareOpenspecChangeFromPlan(t *testing.T) {
+	sourceOnly := "# Plan\n\n**Source:** openspec/changes/add-widget/\n"
+	mismatchWarning := `openspecChange "other-change" differs from plan Source "add-widget"; using "other-change"`
+
+	cases := []struct {
+		name        string
+		plan        string
+		input       string
+		wantChange  any
+		wantSource  string // "" means no sources entry
+		wantWarning bool
+	}{
+		{name: "plan source", plan: sourceOnly, wantChange: "add-widget", wantSource: "plan"},
+		{name: "input wins and warns", plan: sourceOnly, input: "other-change", wantChange: "other-change", wantSource: "cli", wantWarning: true},
+		{name: "input matches plan", plan: sourceOnly, input: "add-widget", wantChange: "add-widget", wantSource: "cli"},
+		{name: "no input no source", plan: "# Plan\n", wantChange: nil},
+		{name: "unsafe plan source ignored", plan: "# Plan\n\n**Source:** openspec/changes/../\n", wantChange: nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, planPath := shipMaterializeFixture(t, tc.plan)
+			out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true, PlanFile: planPath, OpenspecChange: tc.input})
+			if err != nil {
+				t.Fatalf("shipPrepare: %v", err)
+			}
+			if len(out.Errors) != 0 {
+				t.Fatalf("Errors = %v, want empty", out.Errors)
+			}
+			if v, present := out.Flags["openspecChange"]; !present || v != tc.wantChange {
+				t.Errorf("Flags[openspecChange] = %v (present %v), want %v", v, present, tc.wantChange)
+			}
+			if got := out.Sources["openspecChange"]; got != tc.wantSource {
+				t.Errorf("Sources[openspecChange] = %q, want %q", got, tc.wantSource)
+			}
+			hasWarning := false
+			for _, w := range out.Warnings {
+				if w == mismatchWarning {
+					hasWarning = true
+				}
+			}
+			if hasWarning != tc.wantWarning {
+				t.Errorf("mismatch warning present = %v, want %v; warnings = %v", hasWarning, tc.wantWarning, out.Warnings)
+			}
+		})
+	}
+}
