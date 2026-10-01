@@ -316,17 +316,7 @@ func TestPlanMergeResults_LensMergeApproved(t *testing.T) {
 
 // TestPlanMergeResults_LensMergeMixed verifies the lenses-only call pattern:
 // when any lens does not report Status "approved", MergedStatus is
-// "Issues Found" — plugins/sdlc/skills/plan/SKILL.md Step 5 (line 690):
-// "Status: Approved iff ALL lens reviewers returned Approved; otherwise
-// Issues Found".
-//
-// KNOWN FAILING: internal/tools/plan_support.go's mergeResults currently
-// sets mergedStatus = "Rejected" for this branch instead of "Issues Found",
-// diverging from the SKILL.md spec this test's Contract is pinned to (see
-// task fact sheet Contract row `_LensMergeMixed`). This test intentionally
-// asserts the spec-correct value and is expected to fail (red) until
-// plan_support.go's mergeResults is fixed — that fix is out of scope for
-// this test-only task (Files You May Touch = plan_support_test.go only).
+// "Issues Found" (SKILL.md Step 5: Approved only when every lens approved).
 func TestPlanMergeResults_LensMergeMixed(t *testing.T) {
 	out, err := mergeResults(PlanSupportIn{
 		LensResults: []LensResult{
