@@ -1252,6 +1252,140 @@ func TestLatestPlanRun_WinningFileCorrupt_ReturnsError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// FindPlanRunByPlanFile
+// ---------------------------------------------------------------------------
+
+func TestFindPlanRunByPlanFile(t *testing.T) {
+	const plan = "/work/tree/plans/feature.md"
+	cases := []struct {
+		name     string
+		files    map[string]string // runs/ filename -> JSON body; nil map = no runs/ dir
+		planPath string
+		want     string // expected winning filename; "" = nil result
+	}{
+		{
+			name:     "no runs dir",
+			planPath: plan,
+		},
+		{
+			name:     "empty planPath",
+			files:    map[string]string{"plan-feat-20260929T110000Z.json": `{"planFilePath":"` + plan + `"}`},
+			planPath: "",
+		},
+		{
+			name: "match on another branch than the newest plan run",
+			files: map[string]string{
+				"plan-feat-20260929T110000Z.json":  `{"planFilePath":"` + plan + `"}`,
+				"plan-feat-20260929T120000Z.json":  `{"planFilePath":"/work/tree/plans/newer.md"}`,
+				"plan-other-20260929T130000Z.json": `{"planFilePath":"/work/tree/plans/x.md"}`,
+			},
+			planPath: plan,
+			want:     "plan-feat-20260929T110000Z.json",
+		},
+		{
+			name: "newest of two matches wins",
+			files: map[string]string{
+				"plan-feat-20260929T110000Z.json": `{"planFilePath":"` + plan + `"}`,
+				"plan-feat-20260929T120000Z.json": `{"planFilePath":"/work/tree/plans/../plans/feature.md"}`,
+			},
+			planPath: plan,
+			want:     "plan-feat-20260929T120000Z.json",
+		},
+		{
+			name: "uncleaned planPath matches",
+			files: map[string]string{
+				"plan-feat-20260929T110000Z.json": `{"planFilePath":"` + plan + `"}`,
+			},
+			planPath: "/work/tree/./plans/feature.md",
+			want:     "plan-feat-20260929T110000Z.json",
+		},
+		{
+			name: "corrupt newer run skipped",
+			files: map[string]string{
+				"plan-feat-20260929T110000Z.json": `{"planFilePath":"` + plan + `"}`,
+				"plan-feat-20260929T120000Z.json": `{not json`,
+			},
+			planPath: plan,
+			want:     "plan-feat-20260929T110000Z.json",
+		},
+		{
+			name: "execute and ship runs ignored",
+			files: map[string]string{
+				"execute-feat-20260929T110000Z.json": `{"planFilePath":"` + plan + `"}`,
+				"ship-feat-20260929T110000Z.json":    `{"planFilePath":"` + plan + `"}`,
+			},
+			planPath: plan,
+		},
+		{
+			name: "no match",
+			files: map[string]string{
+				"plan-feat-20260929T110000Z.json": `{"planFilePath":"/work/tree/plans/other.md"}`,
+				"plan-feat-20260929T120000Z.json": `{}`,
+			},
+			planPath: plan,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			if tc.files != nil {
+				dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatalf("MkdirAll: %v", err)
+				}
+				for name, body := range tc.files {
+					if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+						t.Fatalf("WriteFile %s: %v", name, err)
+					}
+				}
+			}
+			st, err := FindPlanRunByPlanFile(root, tc.planPath)
+			if err != nil {
+				t.Fatalf("FindPlanRunByPlanFile: %v", err)
+			}
+			if tc.want == "" {
+				if st != nil {
+					t.Fatalf("expected nil, got %s", st.Path)
+				}
+				return
+			}
+			if st == nil || filepath.Base(st.Path) != tc.want {
+				t.Fatalf("expected %s, got %+v", tc.want, st)
+			}
+		})
+	}
+
+	t.Run("relative planFilePath joined to root", func(t *testing.T) {
+		root := t.TempDir()
+		dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		name := "plan-feat-20260929T110000Z.json"
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(`{"planFilePath":"plans/feature.md"}`), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		st, err := FindPlanRunByPlanFile(root, filepath.Join(root, "plans", "feature.md"))
+		if err != nil || st == nil || filepath.Base(st.Path) != name {
+			t.Fatalf("expected %s, got st=%+v err=%v", name, st, err)
+		}
+	})
+
+	t.Run("runs dir is a regular file", func(t *testing.T) {
+		root := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(root, paths.DataDir), 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(root, paths.DataDir, paths.RunsSubdir), []byte("x"), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		if _, err := FindPlanRunByPlanFile(root, plan); err == nil {
+			t.Fatal("expected error when runs/ is a regular file")
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
 // ActivePlanRun
 // ---------------------------------------------------------------------------
 

@@ -18,6 +18,7 @@ import (
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/openspec"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
@@ -517,10 +518,22 @@ func TestPlanPrepare_OpenspecDetection(t *testing.T) {
 	}
 	runGit(t, dir, "add", ".")
 	runGit(t, dir, "commit", "-m", "add openspec change")
+	stubOpenspecCLI(t, map[string]openspecCLIStub{
+		"list --json":         {stdout: openspecListStubJSON(t, "add-widget")},
+		"list --specs --json": {stdout: `{"specs":[]}`},
+		"status --change add-widget --json": {stdout: openspecStatusStubJSON(t, "add-widget", map[string][]string{
+			"proposal": {filepath.Join(changeDir, "proposal.md")},
+			"specs":    {filepath.Join(changeDir, "specs", "widget.md")},
+			"tasks":    {filepath.Join(changeDir, "tasks.md")},
+		})},
+	})
 
 	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true})
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
+	}
+	if len(out.Errors) != 0 {
+		t.Fatalf("Errors = %v, want empty", out.Errors)
 	}
 	if !out.Openspec.Present {
 		t.Fatal("Openspec.Present = false, want true")
@@ -565,6 +578,13 @@ func TestPlanPrepare_FromOpenspec_ValidChange(t *testing.T) {
 	changeDir := filepath.Join(dir, "openspec", "changes", "add-widget")
 	tasksContent := "- [ ] First task\n- [x] Second task <!-- ref:existing-ref -->\n"
 	writeOpenspecFixtureChange(t, changeDir, tasksContent)
+	stubOpenspecCLI(t, map[string]openspecCLIStub{
+		"status --change add-widget --json": {stdout: openspecStatusStubJSON(t, "add-widget", map[string][]string{
+			"proposal": {filepath.Join(changeDir, "proposal.md")},
+			"specs":    {filepath.Join(changeDir, "specs", "widget.md")},
+			"tasks":    {filepath.Join(changeDir, "tasks.md")},
+		})},
+	})
 
 	// Step 1: planPrepareCore computes the pending ref stamps but writes
 	// nothing to disk.
@@ -590,6 +610,9 @@ func TestPlanPrepare_FromOpenspec_ValidChange(t *testing.T) {
 	}
 	if fo.TasksTotal != 2 || fo.TasksDone != 1 {
 		t.Errorf("FromOpenspec tasks = done=%d total=%d, want done=1 total=2", fo.TasksDone, fo.TasksTotal)
+	}
+	if len(fo.DeltaSpecPaths) != 1 || fo.DeltaSpecPaths[0] != "openspec/changes/add-widget/specs/widget.md" {
+		t.Errorf("FromOpenspec.DeltaSpecPaths = %v, want [openspec/changes/add-widget/specs/widget.md]", fo.DeltaSpecPaths)
 	}
 
 	// The first task line has no ref comment (1 pending); the second
@@ -659,6 +682,7 @@ func TestPlanPrepare_FromOpenspec_MissingChange(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
+	stubOpenspecCLI(t, nil) // every call answers "change not found"
 
 	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, FromOpenspec: "does-not-exist"})
 	if err != nil {
@@ -667,8 +691,170 @@ func TestPlanPrepare_FromOpenspec_MissingChange(t *testing.T) {
 	if out.FromOpenspec == nil || out.FromOpenspec.Valid {
 		t.Fatalf("FromOpenspec = %+v, want non-nil with Valid=false", out.FromOpenspec)
 	}
-	if len(out.Errors) == 0 {
-		t.Error("Errors is empty, want a change-directory-not-found error")
+	want := []string{"Change directory not found: openspec/changes/does-not-exist/"}
+	if !reflect.DeepEqual(out.Errors, want) {
+		t.Errorf("Errors = %v, want %v", out.Errors, want)
+	}
+}
+
+// TestPlanPrepare_FromOpenspec_GroupedName verifies a grouped change name is
+// rejected before the CLI runs, with the flat-name error text.
+func TestPlanPrepare_FromOpenspec_GroupedName(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	stubOpenspecCLI(t, nil)
+
+	for _, name := range []string{"grp/demo", `grp\demo`} {
+		out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, FromOpenspec: name})
+		if err != nil {
+			t.Fatalf("planPrepareCore(%q): %v", name, err)
+		}
+		if out.FromOpenspec == nil || out.FromOpenspec.Valid {
+			t.Fatalf("FromOpenspec(%q) = %+v, want Valid=false", name, out.FromOpenspec)
+		}
+		want := []string{"Invalid change name '" + name + "': grouped changes are not supported — rename to a flat name"}
+		if !reflect.DeepEqual(out.Errors, want) {
+			t.Errorf("Errors(%q) = %v, want %v", name, out.Errors, want)
+		}
+	}
+}
+
+// TestPlanPrepare_FromOpenspec_MissingProposal verifies a change the CLI
+// knows but without proposal.md keeps the existing missing-file error text.
+func TestPlanPrepare_FromOpenspec_MissingProposal(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	changeDir := filepath.Join(dir, "openspec", "changes", "no-proposal")
+	writeFile(t, filepath.Join(changeDir, "design.md"), "# Design\n")
+	stubOpenspecCLI(t, map[string]openspecCLIStub{
+		"status --change no-proposal --json": {stdout: openspecStatusStubJSON(t, "no-proposal", map[string][]string{
+			"design": {filepath.Join(changeDir, "design.md")},
+		})},
+	})
+
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, FromOpenspec: "no-proposal"})
+	if err != nil {
+		t.Fatalf("planPrepareCore: %v", err)
+	}
+	if out.FromOpenspec == nil || out.FromOpenspec.Valid {
+		t.Fatalf("FromOpenspec = %+v, want Valid=false", out.FromOpenspec)
+	}
+	want := []string{"Missing required file: openspec/changes/no-proposal/proposal.md"}
+	if !reflect.DeepEqual(out.Errors, want) {
+		t.Errorf("Errors = %v, want %v", out.Errors, want)
+	}
+}
+
+// TestPlanPrepareOpenspec_NestedSpecsAndGrouped verifies CLI-backed
+// detection: nested delta specs are counted, a grouped directory is reported
+// in groupedChanges (never in activeChanges), and fromOpenspec returns
+// repo-relative deltaSpecPaths at any depth.
+func TestPlanPrepareOpenspec_NestedSpecsAndGrouped(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	writeFile(t, filepath.Join(dir, "openspec", "config.yaml"), "schema: spec-driven\n")
+	changeDir := filepath.Join(dir, "openspec", "changes", "add-widget")
+	writeFile(t, filepath.Join(changeDir, "proposal.md"), "# Proposal\n")
+	writeFile(t, filepath.Join(changeDir, "tasks.md"), "- [ ] 1.1 todo\n")
+	specA := filepath.Join(changeDir, "specs", "a", "spec.md")
+	specB := filepath.Join(changeDir, "specs", "identity", "b", "spec.md")
+	writeFile(t, specA, "# A\n")
+	writeFile(t, specB, "# B\n")
+	writeFile(t, filepath.Join(dir, "openspec", "changes", "grp", "demo", "proposal.md"), "# P\n")
+
+	const groupedMsg = `"grp" is not a change: it is a folder wrapping openspec/changes/grp/demo/.`
+	listJSON, err := json.Marshal(map[string]any{
+		"changes": []map[string]any{
+			{"name": "add-widget", "completedTasks": 0, "totalTasks": 1, "status": "in-progress"},
+			{"name": "grp", "completedTasks": 0, "totalTasks": 0, "status": "no-tasks", "nested": []string{"grp/demo"}},
+		},
+		"warnings": []map[string]any{
+			{"code": "nested_change_directory", "name": "grp", "nested": []string{"grp/demo"}, "message": groupedMsg},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stubOpenspecCLI(t, map[string]openspecCLIStub{
+		"list --json":         {stdout: string(listJSON)},
+		"list --specs --json": {stdout: `{"specs":[{"id":"core","requirementCount":1}]}`},
+		"status --change add-widget --json": {stdout: openspecStatusStubJSON(t, "add-widget", map[string][]string{
+			"proposal": {filepath.Join(changeDir, "proposal.md")},
+			"specs":    {specA, specB},
+			"tasks":    {filepath.Join(changeDir, "tasks.md")},
+		})},
+	})
+
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, FromOpenspec: "add-widget"})
+	if err != nil {
+		t.Fatalf("planPrepareCore: %v", err)
+	}
+	if len(out.Errors) != 0 {
+		t.Fatalf("Errors = %v, want empty", out.Errors)
+	}
+	if out.Openspec.Authoritative == nil || out.Openspec.Authoritative.SpecsCount != 1 {
+		t.Errorf("Authoritative = %+v, want specsCount 1 from list --specs", out.Openspec.Authoritative)
+	}
+	if len(out.Openspec.ActiveChanges) != 1 || out.Openspec.ActiveChanges[0].Name != "add-widget" {
+		t.Fatalf("ActiveChanges = %+v, want only add-widget", out.Openspec.ActiveChanges)
+	}
+	if got := out.Openspec.ActiveChanges[0].DeltaSpecCount; got != 2 {
+		t.Errorf("DeltaSpecCount = %d, want 2 (nested specs)", got)
+	}
+	wantGrouped := []openspec.GroupedChange{{Name: "grp", Nested: []string{"grp/demo"}, Message: groupedMsg}}
+	if !reflect.DeepEqual(out.Openspec.GroupedChanges, wantGrouped) {
+		t.Errorf("GroupedChanges = %+v, want %+v", out.Openspec.GroupedChanges, wantGrouped)
+	}
+	wantPaths := []string{
+		"openspec/changes/add-widget/specs/a/spec.md",
+		"openspec/changes/add-widget/specs/identity/b/spec.md",
+	}
+	if out.FromOpenspec == nil || !reflect.DeepEqual(out.FromOpenspec.DeltaSpecPaths, wantPaths) {
+		t.Errorf("FromOpenspec.DeltaSpecPaths = %v, want %v", out.FromOpenspec, wantPaths)
+	}
+	if out.FromOpenspec != nil && out.FromOpenspec.DeltaSpecCount != 2 {
+		t.Errorf("FromOpenspec.DeltaSpecCount = %d, want 2", out.FromOpenspec.DeltaSpecCount)
+	}
+
+	raw, err := json.Marshal(out.Openspec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"groupedChanges":[{"name":"grp","nested":["grp/demo"]`) {
+		t.Errorf("openspec JSON = %s, want groupedChanges key with the grp entry", raw)
+	}
+}
+
+// TestPlanPrepareOpenspec_CLIUnavailable verifies a missing openspec CLI
+// leaves present=true (from config.yaml) with no active changes and reports
+// "openspec CLI unavailable: <cause>" once, even when fromOpenspec also needs
+// the CLI.
+func TestPlanPrepareOpenspec_CLIUnavailable(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	writeFile(t, filepath.Join(dir, "openspec", "config.yaml"), "schema: spec-driven\n")
+	pathWithoutOpenspec(t)
+
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, FromOpenspec: "add-widget"})
+	if err != nil {
+		t.Fatalf("planPrepareCore: %v", err)
+	}
+	if !out.Openspec.Present || out.Openspec.Authoritative == nil {
+		t.Errorf("Openspec = %+v, want present with authoritative block", out.Openspec)
+	}
+	if out.Openspec.ActiveChanges == nil || len(out.Openspec.ActiveChanges) != 0 {
+		t.Errorf("ActiveChanges = %v, want empty", out.Openspec.ActiveChanges)
+	}
+	want := []string{"openspec CLI unavailable: openspec CLI not found on PATH"}
+	if !reflect.DeepEqual(out.Errors, want) {
+		t.Errorf("Errors = %v, want %v", out.Errors, want)
+	}
+	if out.FromOpenspec == nil || out.FromOpenspec.Valid {
+		t.Errorf("FromOpenspec = %+v, want Valid=false", out.FromOpenspec)
 	}
 }
 
@@ -2829,6 +3015,92 @@ func writeOpenspecFixtureChange(t *testing.T, changeDir, tasksContent string) {
 	if err := os.WriteFile(filepath.Join(changeDir, "tasks.md"), []byte(tasksContent), 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// openspecCLIStub is one canned `openspec` stub reply: stdout and exit code.
+type openspecCLIStub struct {
+	stdout string
+	exit   int
+}
+
+// stubOpenspecCLI installs an `openspec` stub ahead of the real PATH (git
+// must stay reachable for the fixtures), so plan_prepare tests never depend
+// on whether the openspec CLI is installed. Replies are keyed by the
+// space-joined argument list (e.g. "status --change add-widget --json"). Any
+// other call answers the CLI's "change not found" error envelope with exit 1.
+func stubOpenspecCLI(t *testing.T, cases map[string]openspecCLIStub) {
+	t.Helper()
+	binDir := t.TempDir()
+	var b strings.Builder
+	b.WriteString("#!/bin/sh\nargs=\"$*\"\ncase \"$args\" in\n")
+	for pattern, stub := range cases {
+		escaped := strings.ReplaceAll(stub.stdout, "'", `'\''`)
+		fmt.Fprintf(&b, "  '%s') printf '%%s\\n' '%s'; exit %d ;;\n", pattern, escaped, stub.exit)
+	}
+	b.WriteString(`  *) printf '%s\n' '{"status":[{"severity":"error","code":"change_error","message":"Change not found"}]}'; exit 1 ;;` + "\n")
+	b.WriteString("esac\n")
+	if err := os.WriteFile(filepath.Join(binDir, "openspec"), []byte(b.String()), 0o755); err != nil {
+		t.Fatalf("write openspec stub: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// pathWithoutOpenspec replaces PATH with a directory holding only a git
+// symlink, so `openspec` cannot resolve while git-based fixtures still work.
+func pathWithoutOpenspec(t *testing.T) {
+	t.Helper()
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("look up git: %v", err)
+	}
+	binDir := t.TempDir()
+	if err := os.Symlink(gitPath, filepath.Join(binDir, "git")); err != nil {
+		t.Fatalf("symlink git: %v", err)
+	}
+	t.Setenv("PATH", binDir)
+}
+
+// openspecListStubJSON renders `openspec list --json` output listing names
+// as changes (no warnings).
+func openspecListStubJSON(t *testing.T, names ...string) string {
+	t.Helper()
+	changes := []map[string]any{}
+	for _, n := range names {
+		changes = append(changes, map[string]any{"name": n, "completedTasks": 0, "totalTasks": 0, "status": "no-tasks"})
+	}
+	b, err := json.Marshal(map[string]any{"changes": changes, "warnings": []any{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// openspecStatusStubJSON renders `openspec status --change <name> --json`
+// output (CLI 1.13.2 shape) for the spec-driven artifacts, with existing[id]
+// as each artifact's absolute existingOutputPaths.
+func openspecStatusStubJSON(t *testing.T, name string, existing map[string][]string) string {
+	t.Helper()
+	outputs := map[string]string{"proposal": "proposal.md", "specs": "specs/**/*.md", "design": "design.md", "tasks": "tasks.md"}
+	artifactPaths := map[string]any{}
+	artifacts := []map[string]any{}
+	for _, id := range []string{"proposal", "specs", "design", "tasks"} {
+		paths := existing[id]
+		if paths == nil {
+			paths = []string{}
+		}
+		artifactPaths[id] = map[string]any{"outputPath": outputs[id], "existingOutputPaths": paths}
+		artifacts = append(artifacts, map[string]any{"id": id, "outputPath": outputs[id], "requires": []string{}})
+	}
+	b, err := json.Marshal(map[string]any{
+		"changeName":    name,
+		"schemaName":    "spec-driven",
+		"artifactPaths": artifactPaths,
+		"artifacts":     artifacts,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }
 
 // writeProjectPlanTemplate writes content as the project-override plan

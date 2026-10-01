@@ -34,9 +34,12 @@ type ShipRunReportOut struct {
 	Format           string              `json:"format"`
 	Bump             string              `json:"bump,omitempty"`
 	Duration         string              `json:"duration,omitempty"`
-	Plan             *ShipPlanTiming     `json:"plan"`               // null when no plan is linked
-	PlanNote         string              `json:"planNote,omitempty"` // why plan is null
+	Plan             *ShipPlanTiming     `json:"plan"`                   // null when no plan is linked
+	PlanNote         string              `json:"planNote,omitempty"`     // why plan is null
+	Planning         *ShipPlanning       `json:"planning"`               // null when no plan run state is found
+	PlanningNote     string              `json:"planningNote,omitempty"` // why planning is null
 	Steps            []StepTiming        `json:"steps"`
+	Timeline         []TimelineEvent     `json:"timeline"` // never null; sorted by at
 	Issues           []any               `json:"issues"`
 	ReviewLedger     *ShipReviewLedger   `json:"reviewLedger"`
 	ReviewLedgerNote string              `json:"reviewLedgerNote,omitempty"`
@@ -64,6 +67,35 @@ type ShipPlanTiming struct {
 	DurationMs     int64  `json:"durationMs"`
 }
 
+// ShipPlanning is the linked plan run's decisions and milestones, read from
+// the plan run state file whose planFilePath equals the execute run's
+// planPath.
+type ShipPlanning struct {
+	PlanFile   string           `json:"planFile"`
+	Decisions  []map[string]any `json:"decisions"`  // criticalDecisions entries: {key, choice, rejected, reason, at}
+	Milestones []PlanMilestone  `json:"milestones"` // planIntegrity markers, time order
+}
+
+// PlanMilestone is one planIntegrity marker and the time it was stamped.
+type PlanMilestone struct {
+	Name string `json:"name"`
+	At   string `json:"at"`
+}
+
+// TimelineEvent is one timed event of the plan → execute → ship run.
+type TimelineEvent struct {
+	At    string `json:"at"`
+	Phase string `json:"phase"` // plan | execute | ship
+	Event string `json:"event"` // e.g. "wave 1 started", "base-sync wave 1: merged", "pr completed"
+}
+
+// shipPlanningNote explains a null planning on the report.
+const shipPlanningNote = "plan run state not found"
+
+// shipPlanningNoteReadFailed explains a null planning when the runs
+// directory could not be read — distinct from shipPlanningNote.
+const shipPlanningNoteReadFailed = "plan run state could not be read"
+
 // shipPlanNote explains a null plan on the report.
 const shipPlanNote = "no plan linked to this run"
 
@@ -90,7 +122,8 @@ const (
 // ship report. It mirrors execActionReport's config gate: detail.format is
 // validated first, then automation.report.enabled=false returns
 // ReportSkippedOut before any state is read. It works on a stamped state
-// (pipelineCompletedAt set), since ship renders the report after cleanup.
+// or an unstamped one: ship writes the report before cleanup-pipeline, so
+// the linked plan run still exists and feeds Planning and Timeline.
 // It never writes state; with detail.write it writes only the report file,
 // <root>/.sdlc-v2/reports/ship-<runId>-report.<md|json>.
 //
@@ -192,6 +225,7 @@ func buildShipRunReport(root, branch string, shipSt *state.State, format string,
 		Bump:             rd.Bump,
 		Duration:         rd.Duration,
 		PlanNote:         shipPlanNote,
+		PlanningNote:     shipPlanningNote,
 		Steps:            extractStepTimings(data),
 		Issues:           []any{},
 		ReviewLedger:     rd.ReviewLedger,
@@ -212,8 +246,24 @@ func buildShipRunReport(root, branch string, shipSt *state.State, format string,
 		out.HardenCommit, _ = step["result"].(string)
 	}
 
+	var events []TimelineEvent
 	if step := shipFindStepEntry(data, "execute"); step != nil && step["status"] == "completed" {
 		if execSt, _ := state.Find(root, "execute", branch); execSt != nil {
+			planRun, prErr := state.FindPlanRunByPlanFile(root, shipExecPlanPath(execSt.Data))
+			switch {
+			case prErr != nil:
+				out.PlanningNote = shipPlanningNoteReadFailed
+				out.Issues = append(out.Issues, map[string]any{
+					"severity": "warning",
+					"category": "cross-read",
+					"summary":  "Plan run state read failed: " + prErr.Error(),
+				})
+			case planRun != nil:
+				out.Planning = shipPlanningFrom(planRun.Data)
+				out.PlanningNote = ""
+				events = append(events, shipPlanEvents(out.Planning)...)
+			}
+			events = append(events, shipExecuteEvents(execSt.Data)...)
 			rep := buildExecutionReport(root, branch, execSt, format, execDeriveRunID(execSt.Data, 0), now)
 			out.Execution = &rep
 			out.GuardrailHits = extractGuardrailHits(execSt.Data)
@@ -232,6 +282,8 @@ func buildShipRunReport(root, branch string, shipSt *state.State, format string,
 			}
 		}
 	}
+	events = append(events, shipShipEvents(data)...)
+	out.Timeline = sortTimeline(events)
 
 	since, _ := data["startedAt"].(string)
 	if evidence, err := readCLIEvidenceInWindow(root, branch, since, maxCLIEvidenceInWindow); err != nil {
@@ -264,15 +316,10 @@ func buildShipRunReport(root, branch string, shipSt *state.State, format string,
 // returns (nil, nil) when there is no planPath, no history yet, or no match,
 // and a non-nil error only when the history store exists but cannot be read.
 func shipPlanTimingFor(root string, execData map[string]any) (*ShipPlanTiming, error) {
-	planPath, _ := execData["planPath"].(string)
+	planPath := shipExecPlanPath(execData)
 	if planPath == "" {
 		return nil, nil
 	}
-	if !filepath.IsAbs(planPath) {
-		worktree, _ := execData["worktree"].(string)
-		planPath = filepath.Join(worktree, planPath)
-	}
-	planPath = filepath.Clean(planPath)
 
 	runs, err := history.NewFileWriter(historyDir(root)).ReadRecentRuns(shipPlanHistoryWindow)
 	if err != nil {
@@ -299,6 +346,145 @@ func shipPlanTimingFor(root string, execData map[string]any) (*ShipPlanTiming, e
 	}, nil
 }
 
+// shipExecPlanPath returns the execute state's planPath, absolute and
+// cleaned: a relative planPath is joined to the execute state's worktree,
+// because execute stores the path as given while plan stores it absolute.
+// It returns "" when the execute state has no planPath.
+func shipExecPlanPath(execData map[string]any) string {
+	planPath, _ := execData["planPath"].(string)
+	if planPath == "" {
+		return ""
+	}
+	if !filepath.IsAbs(planPath) {
+		worktree, _ := execData["worktree"].(string)
+		planPath = filepath.Join(worktree, planPath)
+	}
+	return filepath.Clean(planPath)
+}
+
+// shipPlanningFrom builds the Planning part from a plan run's state data:
+// its planFilePath, its criticalDecisions entries (maps only) and its
+// planIntegrity markers that carry a string timestamp, in time order.
+// Decisions and Milestones are never nil.
+func shipPlanningFrom(planData map[string]any) *ShipPlanning {
+	p := &ShipPlanning{Decisions: []map[string]any{}, Milestones: []PlanMilestone{}}
+	p.PlanFile, _ = planData["planFilePath"].(string)
+	if raw, ok := planData["criticalDecisions"].([]any); ok {
+		for _, d := range raw {
+			if m, ok := d.(map[string]any); ok {
+				p.Decisions = append(p.Decisions, m)
+			}
+		}
+	}
+	integrity, _ := planData["planIntegrity"].(map[string]any)
+	for name, v := range integrity {
+		if at, ok := v.(string); ok && at != "" {
+			p.Milestones = append(p.Milestones, PlanMilestone{Name: name, At: at})
+		}
+	}
+	sort.Slice(p.Milestones, func(i, j int) bool {
+		a, b := p.Milestones[i], p.Milestones[j]
+		if a.At != b.At {
+			return timelineLess(a.At, b.At)
+		}
+		return a.Name < b.Name // map order is random; keep ties stable
+	})
+	return p
+}
+
+// shipPlanEvents turns the plan milestones and decisions into plan-phase
+// timeline events.
+func shipPlanEvents(p *ShipPlanning) []TimelineEvent {
+	var events []TimelineEvent
+	for _, m := range p.Milestones {
+		events = append(events, TimelineEvent{At: m.At, Phase: "plan", Event: m.Name})
+	}
+	for _, d := range p.Decisions {
+		events = append(events, TimelineEvent{
+			At:    shipReportStr(d["at"]),
+			Phase: "plan",
+			Event: fmt.Sprintf("decision %s: %s", shipReportStr(d["key"]), shipReportStr(d["choice"])),
+		})
+	}
+	return events
+}
+
+// shipExecuteEvents turns the execute state's wave start/complete times and
+// baseSyncs[] entries ({wave, status, base, behind, sha, at}) into
+// execute-phase timeline events.
+func shipExecuteEvents(execData map[string]any) []TimelineEvent {
+	var events []TimelineEvent
+	waves, _ := execData["waves"].([]any)
+	for _, raw := range waves {
+		w, _ := raw.(map[string]any)
+		n, _ := healingInt(w["number"])
+		events = append(events, TimelineEvent{At: shipReportStr(w["startedAt"]), Phase: "execute", Event: fmt.Sprintf("wave %d started", n)})
+		status := shipReportStr(w["status"])
+		if status == "" {
+			status = "completed"
+		}
+		events = append(events, TimelineEvent{At: shipReportStr(w["completedAt"]), Phase: "execute", Event: fmt.Sprintf("wave %d %s", n, status)})
+	}
+	syncs, _ := execData["baseSyncs"].([]any)
+	for _, raw := range syncs {
+		s, _ := raw.(map[string]any)
+		n, _ := healingInt(s["wave"])
+		events = append(events, TimelineEvent{At: shipReportStr(s["at"]), Phase: "execute", Event: fmt.Sprintf("base-sync wave %d: %s", n, shipReportStr(s["status"]))})
+	}
+	return events
+}
+
+// shipShipEvents turns the ship state's step start/end times and
+// decisions[] entries ({step, decision, at}) into ship-phase timeline events.
+func shipShipEvents(data map[string]any) []TimelineEvent {
+	var events []TimelineEvent
+	for _, raw := range shipStepsSlice(data) {
+		s, _ := raw.(map[string]any)
+		name := shipReportStr(s["name"])
+		events = append(events, TimelineEvent{At: shipReportStr(s["startedAt"]), Phase: "ship", Event: name + " started"})
+		status := shipReportStr(s["status"])
+		if status == "" {
+			status = "completed"
+		}
+		events = append(events, TimelineEvent{At: shipReportStr(s["completedAt"]), Phase: "ship", Event: name + " " + status})
+	}
+	decisions, _ := data["decisions"].([]any)
+	for _, raw := range decisions {
+		d, _ := raw.(map[string]any)
+		events = append(events, TimelineEvent{
+			At:    shipReportStr(d["at"]),
+			Phase: "ship",
+			Event: fmt.Sprintf("decision %s: %s", shipReportStr(d["step"]), shipReportStr(d["decision"])),
+		})
+	}
+	return events
+}
+
+// sortTimeline drops events without a timestamp and sorts the rest by at,
+// keeping the input order (plan, execute, ship) for equal times. It never
+// returns nil.
+func sortTimeline(events []TimelineEvent) []TimelineEvent {
+	out := []TimelineEvent{}
+	for _, e := range events {
+		if strings.TrimSpace(e.At) != "" {
+			out = append(out, e)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return timelineLess(out[i].At, out[j].At) })
+	return out
+}
+
+// timelineLess orders two timestamps: by time when both parse as RFC 3339,
+// else by string.
+func timelineLess(a, b string) bool {
+	ta, errA := time.Parse(time.RFC3339, a)
+	tb, errB := time.Parse(time.RFC3339, b)
+	if errA == nil && errB == nil {
+		return ta.Before(tb)
+	}
+	return a < b
+}
+
 // shipReportSummaryLine is the one-line display for a json-format report.
 func shipReportSummaryLine(out ShipRunReportOut) string {
 	completed := 0
@@ -313,16 +499,19 @@ func shipReportSummaryLine(out ShipRunReportOut) string {
 }
 
 // renderShipReportMarkdown renders the report as markdown. Sections come in
-// a fixed order: header, Plan, Steps, Review ledger, Self-healing (Fixed,
-// Hardened, Harden commit), Deferred, Execution (only when included),
-// Guardrail hits, CLI evidence, Decisions, Learnings, Next. Every empty list
-// renders an explicit line, never an empty heading. Each section has its own
-// render helper; this function only fixes their order.
+// a fixed order: header, Plan, Planning, Steps, Timeline, Review ledger,
+// Self-healing (Fixed, Hardened, Harden commit), Deferred, Execution (only
+// when included), Guardrail hits, CLI evidence, Decisions, Learnings, Next.
+// Every empty list renders an explicit line, never an empty heading or a
+// header-only table. Each section has its own render helper; this function
+// only fixes their order.
 func renderShipReportMarkdown(out ShipRunReportOut) string {
 	w := &shipReportWriter{}
 	renderShipReportHeader(w, out)
 	renderShipReportPlan(w, out)
+	renderShipReportPlanning(w, out)
 	renderShipReportSteps(w, out)
+	renderShipReportTimeline(w, out.Timeline)
 	renderShipReportReviewLedger(w, out)
 	renderShipReportHealing(w, out)
 	renderShipReportDeferred(w, out)
@@ -378,6 +567,89 @@ func renderShipReportPlan(w *shipReportWriter, out ShipRunReportOut) {
 		note = shipPlanNote
 	}
 	w.line("_Plan timing not available — %s._", note)
+}
+
+// renderShipReportPlanning renders the plan file, the plan milestones and
+// the critical-decision table. A null planning renders one explanatory
+// line; zero decisions render "_No critical decisions recorded._" in place
+// of the table.
+func renderShipReportPlanning(w *shipReportWriter, out ShipRunReportOut) {
+	w.heading("Planning")
+	p := out.Planning
+	if p == nil {
+		if out.PlanningNote == shipPlanningNoteReadFailed {
+			w.line("_Plan run state could not be read — no planning data._")
+		} else {
+			w.line("_Plan run state not found — no planning data._")
+		}
+		return
+	}
+	w.line("- File: %s", p.PlanFile)
+	if len(p.Milestones) == 0 {
+		w.line("- Milestones: none recorded")
+	}
+	for _, m := range p.Milestones {
+		w.line("- %s: %s", m.Name, m.At)
+	}
+	w.line("")
+	if len(p.Decisions) == 0 {
+		w.line("_No critical decisions recorded._")
+		return
+	}
+	w.line("| Decision | Chosen | Rejected | Reason |")
+	w.line("|---|---|---|---|")
+	for _, d := range p.Decisions {
+		w.line("| %s | %s | %s | %s |",
+			shipReportCell(shipReportStr(d["key"])),
+			shipReportCell(shipReportStr(d["choice"])),
+			shipReportCell(shipReportRejected(d["rejected"])),
+			shipReportCell(shipReportStr(d["reason"])))
+	}
+}
+
+// shipReportRejected renders a decision's rejected list ([{option, why}])
+// as "option: why" entries joined by "; ", or "—" when the list is empty.
+func shipReportRejected(v any) string {
+	raw, _ := v.([]any)
+	parts := make([]string, 0, len(raw))
+	for _, r := range raw {
+		m, _ := r.(map[string]any)
+		option, why := shipReportStr(m["option"]), shipReportStr(m["why"])
+		switch {
+		case option != "" && why != "":
+			parts = append(parts, option+": "+why)
+		case option != "":
+			parts = append(parts, option)
+		case why != "":
+			parts = append(parts, why)
+		}
+	}
+	if len(parts) == 0 {
+		return "—"
+	}
+	return strings.Join(parts, "; ")
+}
+
+// shipReportCell makes s safe inside a markdown table cell: pipes are
+// escaped and line breaks become spaces.
+func shipReportCell(s string) string {
+	s = strings.ReplaceAll(s, "|", `\|`)
+	return strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ").Replace(s)
+}
+
+// renderShipReportTimeline renders the merged plan → execute → ship events
+// as a table, or "_No timed events._" when there are none.
+func renderShipReportTimeline(w *shipReportWriter, events []TimelineEvent) {
+	w.heading("Timeline")
+	if len(events) == 0 {
+		w.line("_No timed events._")
+		return
+	}
+	w.line("| At | Phase | Event |")
+	w.line("|---|---|---|")
+	for _, e := range events {
+		w.line("| %s | %s | %s |", shipReportCell(e.At), e.Phase, shipReportCell(e.Event))
+	}
 }
 
 func renderShipReportSteps(w *shipReportWriter, out ShipRunReportOut) {

@@ -92,6 +92,10 @@ type FromOpenspecResult struct {
 	TasksDone      int     `json:"tasksDone"`
 	TasksTotal     int     `json:"tasksTotal"`
 	Stage          *string `json:"stage"`
+	// DeltaSpecPaths lists every delta spec file of the change at any depth
+	// under specs/, repo-relative (e.g. openspec/changes/x/specs/a/b/spec.md),
+	// as reported by `openspec status`. Empty when validation failed.
+	DeltaSpecPaths []string `json:"deltaSpecPaths"`
 }
 
 // TaskEntry mirrors lib/openspec.js's parseTasks() entry shape.
@@ -240,39 +244,53 @@ func isSafeChangeName(name string) bool {
 // AnalyzeChange/BranchPrefixRe/DetectActiveChanges/slugBoundaryMatch in
 // internal/openspec/openspec.go. Call sites below were updated in place.
 
-// validateChange mirrors lib/openspec.js's validateChange.
-func validateChange(contentRoot, changeName string) struct {
-	Valid  bool
-	Errors []string
+// changeValidation is validateChange's result: the change's artifact info
+// plus its repo-relative delta spec paths, validity, and error/warning texts
+// (warnings carry a "Warning:" prefix and never make Valid false).
+type changeValidation struct {
+	Valid          bool
+	Errors         []string
+	DeltaSpecPaths []string
 	OpenspecChangeInfo
-} {
-	changeDir := filepath.Join(contentRoot, "openspec", "changes", changeName)
+}
 
-	if !migrateDirExists(changeDir) {
-		return struct {
-			Valid  bool
-			Errors []string
-			OpenspecChangeInfo
-		}{
-			Valid:  false,
-			Errors: []string{fmt.Sprintf("Change directory not found: openspec/changes/%s/", changeName)},
-			OpenspecChangeInfo: OpenspecChangeInfo{
-				Name: changeName,
-			},
+// openspecCLIUnavailablePrefix starts the error plan_prepare reports when an
+// `openspec` CLI call fails (binary missing, or the CLI itself errors).
+const openspecCLIUnavailablePrefix = "openspec CLI unavailable: "
+
+// validateChange validates a --from-openspec change name through `openspec
+// status --change <name> --json` (never by globbing the change directory).
+// A grouped name ("grp/demo") is rejected before the CLI runs: OpenSpec does
+// not support grouped changes (design.md D4).
+func validateChange(contentRoot, changeName string) changeValidation {
+	invalid := func(msg string) changeValidation {
+		return changeValidation{
+			Valid:              false,
+			Errors:             []string{msg},
+			DeltaSpecPaths:     []string{},
+			OpenspecChangeInfo: OpenspecChangeInfo{Name: changeName},
 		}
 	}
 
+	if strings.ContainsAny(changeName, `/\`) {
+		return invalid(fmt.Sprintf("Invalid change name '%s': grouped changes are not supported — rename to a flat name", changeName))
+	}
+
+	info, deltaSpecPaths, err := openspec.StatusChange(contentRoot, changeName)
+	if err != nil {
+		if isOpenspecChangeNotFound(err) {
+			return invalid(fmt.Sprintf("Change directory not found: openspec/changes/%s/", changeName))
+		}
+		return invalid(openspecCLIUnavailablePrefix + err.Error())
+	}
+
 	errs := []string{}
-	if !fileExists(filepath.Join(changeDir, "proposal.md")) {
+	if !info.HasProposal {
 		errs = append(errs, fmt.Sprintf("Missing required file: openspec/changes/%s/proposal.md", changeName))
 	}
-
-	specsDir := filepath.Join(changeDir, "specs")
-	if !migrateDirExists(specsDir) || openspec.CountMdFiles(specsDir) == 0 {
+	if len(deltaSpecPaths) == 0 {
 		errs = append(errs, fmt.Sprintf("Warning: openspec/changes/%s/specs/ is empty or missing", changeName))
 	}
-
-	info := openspec.AnalyzeChange(changeDir, changeName)
 
 	valid := true
 	for _, e := range errs {
@@ -282,15 +300,34 @@ func validateChange(contentRoot, changeName string) struct {
 		}
 	}
 
-	return struct {
-		Valid  bool
-		Errors []string
-		OpenspecChangeInfo
-	}{
+	return changeValidation{
 		Valid:              valid,
 		Errors:             errs,
+		DeltaSpecPaths:     deltaSpecPaths,
 		OpenspecChangeInfo: info,
 	}
+}
+
+// isOpenspecChangeNotFound reports whether err is `openspec status`'s
+// "Change '<name>' not found" failure. The CLI reports it as an error-severity
+// status entry with code change_error, which openspec.Status embeds in the
+// error text (there is no typed sentinel for it).
+func isOpenspecChangeNotFound(err error) bool {
+	if errors.Is(err, openspec.ErrCLINotFound) {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "change_error") && strings.Contains(msg, "not found")
+}
+
+// appendUnique appends s to list unless list already holds it.
+func appendUnique(list []string, s string) []string {
+	for _, existing := range list {
+		if existing == s {
+			return list
+		}
+	}
+	return append(list, s)
 }
 
 // ---------------------------------------------------------------------------
@@ -1528,7 +1565,10 @@ func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepar
 	}
 
 	// 1. OpenSpec detection.
-	openspecInfo := openspec.DetectActiveChanges(contentRoot)
+	openspecInfo, cliErr := openspec.DetectActiveChangesCLI(contentRoot)
+	if cliErr != nil {
+		errs = append(errs, openspecCLIUnavailablePrefix+cliErr.Error())
+	}
 	if openspecInfo.Present {
 		openspecInfo.Authoritative = &OpenspecAuthoritative{
 			Path:       "openspec/config.yaml",
@@ -1559,12 +1599,15 @@ func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepar
 			TasksDone:      validation.TasksDone,
 			TasksTotal:     validation.TasksTotal,
 			Stage:          validation.Stage,
+			DeltaSpecPaths: validation.DeltaSpecPaths,
 		}
 
 		if !validation.Valid {
 			for _, e := range validation.Errors {
 				if !strings.HasPrefix(e, "Warning:") {
-					errs = append(errs, e)
+					// appendUnique: a missing CLI fails both detection
+					// and validation with the same text.
+					errs = appendUnique(errs, e)
 				}
 			}
 		}

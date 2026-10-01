@@ -2,7 +2,8 @@
 // state.js shared library: filename grammar, branch slug helpers, file lookup
 // (delimiter-aware mtime-newest), init/write with prune-on-write, and session
 // stamping. The "Run helpers" section adds plan-run selection by exact run ID
-// (RunID, LoadRun, LatestPlanRun, ActivePlanRun) and per-run evidence
+// (RunID, LoadRun, LatestPlanRun, ActivePlanRun), plan-run lookup by plan
+// file (FindPlanRunByPlanFile) and per-run evidence
 // directories (EvidenceDir, PruneEvidenceDirs).
 //
 // The canonical state directory lives at <root>/.sdlc-v2/runs/. Root is
@@ -545,6 +546,65 @@ func ActivePlanRun(root, branch string) (*State, error) {
 	}
 
 	return st, nil
+}
+
+// FindPlanRunByPlanFile returns the newest plan run in <root>/.sdlc-v2/runs/
+// whose data.planFilePath, cleaned, equals planPath, cleaned. It looks up by
+// plan file and not by branch, because the plan run linked to an execute run
+// is not always the branch's newest plan run. A relative planFilePath is
+// joined to root before the compare (plan_mark normally stores it absolute).
+//
+// Every plan file is loaded through LoadRun, newest timestamp first. A file
+// that fails to load is skipped: it cannot be confirmed as the match, and one
+// corrupt unrelated run must not hide the right one.
+//
+// Returns (nil, nil) when planPath is empty, runs/ does not exist, or no plan
+// run matches. Returns a non-nil error only for another ReadDir failure.
+func FindPlanRunByPlanFile(root, planPath string) (*State, error) {
+	if strings.TrimSpace(planPath) == "" {
+		return nil, nil
+	}
+	want := filepath.Clean(planPath)
+
+	dir := stateDir(root)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("state: readdir %s: %w", dir, err)
+	}
+
+	type candidate struct{ runID, timestamp string }
+	var candidates []candidate
+	for _, e := range entries {
+		parsed := parseStateFilename(e.Name())
+		if parsed == nil || parsed.Prefix != "plan" {
+			continue
+		}
+		candidates = append(candidates, candidate{strings.TrimSuffix(e.Name(), ".json"), parsed.Timestamp})
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].timestamp > candidates[j].timestamp
+	})
+
+	for _, c := range candidates {
+		st, err := LoadRun(root, c.runID)
+		if err != nil || st == nil {
+			continue
+		}
+		got, _ := st.Data["planFilePath"].(string)
+		if strings.TrimSpace(got) == "" {
+			continue
+		}
+		if !filepath.IsAbs(got) {
+			got = filepath.Join(root, got)
+		}
+		if filepath.Clean(got) == want {
+			return st, nil
+		}
+	}
+	return nil, nil
 }
 
 // PruneEvidenceDirs removes sibling <prefix>-<slug>-<ts>.evidence directories

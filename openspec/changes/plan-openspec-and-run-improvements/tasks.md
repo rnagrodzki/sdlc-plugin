@@ -37,7 +37,7 @@ flowchart LR
 
 ## 3. Plan tools
 
-- [ ] 3.1 Switch `plan_prepare` OpenSpec detection to `List`/`Status`, add `groupedChanges`, `deltaSpecPaths`, grouped-name error, `openspec CLI unavailable` error in `internal/tools/plan.go` — verify: `go test ./internal/tools/ -run 'TestPlanPrepareOpenspec'` <!-- ref:3-1-switch-plan-prepare-openspec-detecti-b2f547 -->
+- [x] 3.1 Switch `plan_prepare` OpenSpec detection to `List`/`Status`, add `groupedChanges`, `deltaSpecPaths`, grouped-name error, `openspec CLI unavailable` error in `internal/tools/plan.go` — verify: `go test ./internal/tools/ -run 'TestPlanPrepareOpenspec'` <!-- ref:3-1-switch-plan-prepare-openspec-detecti-b2f547 -->
 - [ ] 3.2 Replace `openspecInlineGenerate` with `openspecStage` in `PlanPrepareIn` and skeleton-body rules in `internal/tools/plan.go` — verify: `go test ./internal/tools/ -run TestPlanPrepareSkeletonOpenspecStage` <!-- ref:3-2-replace-openspecinlinegenerate-with-22ea32 -->
 - [ ] 3.3 Add `openspec_stage` action (inputs, outputs, `next`, errors) to `internal/tools/plan_support.go`, keeping `ReadOnly:true` — verify: `go test ./internal/tools/ -run 'TestPlanSupportOpenspecStage|TestReadOnlyToolsWriteNothingTracked'` <!-- ref:3-3-add-openspec-stage-action-inputs-out-457f63 -->
 - [x] 3.4 Add `rejected` (default `[]`) and server-set `at` to `criticalDecisions` entries in `internal/tools/plan.go` (`plan_mark`) — verify: `go test ./internal/tools/ -run TestPlanMarkCriticalDecisionsRejected` <!-- ref:3-4-add-rejected-default-and-server-set-7fa708 -->
@@ -57,7 +57,7 @@ flowchart LR
 - [ ] 5.1 Call `Materialize` in `ship_prepare` after validation and before state write, honor `dryRun`, add `openspec` output in `internal/tools/ship.go` — verify: `go test ./internal/tools/ -run 'TestShipPrepareMaterialize'` <!-- ref:5-1-call-materialize-in-ship-prepare-aft-0a04e5 -->
 - [ ] 5.2 Derive `flags.openspecChange` from the plan `**Source:**` header with `sources.openspecChange` and the mismatch warning in `internal/tools/ship.go` — verify: `go test ./internal/tools/ -run TestShipPrepareOpenspecChangeFromPlan` <!-- ref:5-2-derive-flags-openspecchange-from-the-f227c8 -->
 - [x] 5.3 Add `at` to `decide` entries in `internal/tools/ship_state.go` — verify: `go test ./internal/tools/ -run TestShipStateDecideAt` <!-- ref:5-3-add-at-to-decide-entries-in-internal-9224fc -->
-- [ ] 5.4 Add `planning` (from the linked plan run) and merged `timeline` to the report, plus `## Planning` and `## Timeline` Markdown sections in `internal/tools/ship_report.go` — verify: `go test ./internal/tools/ -run 'TestShipReportPlanning|TestShipReportTimeline'` <!-- ref:5-4-add-planning-from-the-linked-plan-ru-a04863 -->
+- [x] 5.4 Add `planning` (from the linked plan run) and merged `timeline` to the report, plus `## Planning` and `## Timeline` Markdown sections in `internal/tools/ship_report.go` — verify: `go test ./internal/tools/ -run 'TestShipReportPlanning|TestShipReportTimeline'` <!-- ref:5-4-add-planning-from-the-linked-plan-ru-a04863 -->
 - [ ] 5.5 Delete the linked plan run and `.evidence/` in `cleanup-pipeline` only after the stamp and when the report file exists; add `planRun` output in `internal/tools/ship_state.go` — verify: `go test ./internal/tools/ -run TestCleanupPipelineDeletesReportedPlanRun` <!-- ref:5-5-delete-the-linked-plan-run-and-evide-273019 -->
 
 ## 6. Base branch adoption

@@ -11,6 +11,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
+	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 )
 
 const shipReportBranch = "feat/ship-report"
@@ -570,4 +571,276 @@ func TestShipStateReport_DisplayRenderedRaw(t *testing.T) {
 	if before := text[:idx]; strings.HasSuffix(strings.TrimRight(before, "\n"), "```") {
 		t.Errorf("display is fenced, want it emitted raw:\n%s", text)
 	}
+}
+
+// shipReportPlanFile is the plan file the planning/timeline fixtures link.
+const shipReportPlanFile = "/work/tree/plans/feature.md"
+
+// createPlanRunState writes a plan run state file with data.
+func createPlanRunState(t *testing.T, root string, data map[string]any) {
+	t.Helper()
+	st, err := state.Init(root, "plan", shipReportBranch, "")
+	if err != nil {
+		t.Fatalf("create plan state: %v", err)
+	}
+	for k, v := range data {
+		st.Data[k] = v
+	}
+	if err := state.Write(st); err != nil {
+		t.Fatalf("write plan state: %v", err)
+	}
+}
+
+// createLinkedExecState writes an execute state whose planPath is
+// shipReportPlanFile, plus extra.
+func createLinkedExecState(t *testing.T, root string, extra map[string]any) {
+	t.Helper()
+	data := map[string]any{"branch": shipReportBranch, "planPath": shipReportPlanFile}
+	for k, v := range extra {
+		data[k] = v
+	}
+	createExecState(t, root, shipReportBranch, data)
+}
+
+func TestShipReportPlanning(t *testing.T) {
+	baseSync := map[string]any{
+		"key": "base-sync-method", "choice": "merge", "reason": "keeps wave SHAs",
+		"rejected": []any{map[string]any{"option": "rebase", "why": "rewrites SHAs"}},
+		"at":       "2026-10-01T09:50:00Z",
+	}
+	integrity := map[string]any{"done": "2026-10-01T10:00:00Z", "skillInvoked": "2026-10-01T09:00:00Z"}
+	cases := []struct {
+		name         string
+		planRun      map[string]any // nil = no plan run state
+		wantNil      bool
+		wantNote     string
+		wantDecision int
+		wantLines    []string
+		notLines     []string
+	}{
+		{
+			name:     "no plan run state",
+			wantNil:  true,
+			wantNote: "plan run state not found",
+			wantLines: []string{
+				"## Planning\n\n_Plan run state not found — no planning data._\n",
+			},
+			notLines: []string{"| Decision |"},
+		},
+		{
+			name: "decision with rejected alternative",
+			planRun: map[string]any{
+				"planFilePath":      shipReportPlanFile,
+				"planIntegrity":     integrity,
+				"criticalDecisions": []any{baseSync},
+			},
+			wantDecision: 1,
+			wantLines: []string{
+				"- File: " + shipReportPlanFile,
+				"- skillInvoked: 2026-10-01T09:00:00Z\n- done: 2026-10-01T10:00:00Z\n",
+				"| Decision | Chosen | Rejected | Reason |\n|---|---|---|---|\n",
+				"| base-sync-method | merge | rebase: rewrites SHAs | keeps wave SHAs |",
+			},
+		},
+		{
+			name: "several rejected joined, empty rejected renders dash",
+			planRun: map[string]any{
+				"planFilePath": shipReportPlanFile,
+				"criticalDecisions": []any{
+					map[string]any{"key": "store", "choice": "sqlite", "reason": "local", "rejected": []any{
+						map[string]any{"option": "postgres", "why": "needs a server"},
+						map[string]any{"option": "files", "why": "no a|b queries"},
+					}},
+					map[string]any{"key": "lang", "choice": "go", "reason": "repo", "rejected": []any{}},
+				},
+			},
+			wantDecision: 2,
+			wantLines: []string{
+				"- Milestones: none recorded",
+				`| store | sqlite | postgres: needs a server; files: no a\|b queries | local |`,
+				"| lang | go | — | repo |",
+			},
+		},
+		{
+			name:         "zero decisions keeps milestones",
+			planRun:      map[string]any{"planFilePath": shipReportPlanFile, "planIntegrity": integrity},
+			wantDecision: 0,
+			wantLines: []string{
+				"- done: 2026-10-01T10:00:00Z",
+				"_No critical decisions recorded._",
+			},
+			notLines: []string{"| Decision |"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := shipReportRoot(t)
+			createLinkedExecState(t, root, nil)
+			if tc.planRun != nil {
+				createPlanRunState(t, root, tc.planRun)
+			}
+			createShipReportState(t, root, map[string]any{"steps": shipReportSteps("completed")})
+
+			out := runShipReport(t, root, nil)
+			if tc.wantNil {
+				if out.Planning != nil || out.PlanningNote != tc.wantNote {
+					t.Fatalf("expected null planning with note %q, got planning=%+v note=%q", tc.wantNote, out.Planning, out.PlanningNote)
+				}
+				raw, err := json.Marshal(out)
+				if err != nil {
+					t.Fatalf("marshal: %v", err)
+				}
+				if !strings.Contains(string(raw), `"planning":null`) {
+					t.Errorf("marshaled report missing \"planning\":null: %s", raw)
+				}
+			} else {
+				if out.Planning == nil || out.PlanningNote != "" {
+					t.Fatalf("expected planning with no note, got planning=%+v note=%q", out.Planning, out.PlanningNote)
+				}
+				if out.Planning.PlanFile != shipReportPlanFile || len(out.Planning.Decisions) != tc.wantDecision {
+					t.Errorf("unexpected planning: %+v", out.Planning)
+				}
+				if out.Planning.Decisions == nil || out.Planning.Milestones == nil {
+					t.Errorf("decisions and milestones must be non-nil: %+v", out.Planning)
+				}
+			}
+			for _, line := range tc.wantLines {
+				if !strings.Contains(out.Display, line) {
+					t.Errorf("display missing %q:\n%s", line, out.Display)
+				}
+			}
+			for _, line := range tc.notLines {
+				if strings.Contains(out.Display, line) {
+					t.Errorf("display must not contain %q:\n%s", line, out.Display)
+				}
+			}
+			if p, s := strings.Index(out.Display, "## Plan\n"), strings.Index(out.Display, "## Planning"); p < 0 || s < p {
+				t.Errorf("## Planning must follow ## Plan:\n%s", out.Display)
+			}
+		})
+	}
+
+	t.Run("planning null when execute step not completed", func(t *testing.T) {
+		root := shipReportRoot(t)
+		createLinkedExecState(t, root, nil)
+		createPlanRunState(t, root, map[string]any{"planFilePath": shipReportPlanFile, "criticalDecisions": []any{baseSync}})
+		createShipReportState(t, root, map[string]any{"steps": shipReportSteps("skipped")})
+		if out := runShipReport(t, root, nil); out.Planning != nil || out.PlanningNote != "plan run state not found" {
+			t.Errorf("expected null planning, got planning=%+v note=%q", out.Planning, out.PlanningNote)
+		}
+	})
+}
+
+func TestShipReportTimeline(t *testing.T) {
+	t.Run("spec scenario: timeline order", func(t *testing.T) {
+		root := shipReportRoot(t)
+		createPlanRunState(t, root, map[string]any{
+			"planFilePath":  shipReportPlanFile,
+			"planIntegrity": map[string]any{"done": "2026-10-01T10:00:00Z"},
+		})
+		createLinkedExecState(t, root, map[string]any{"waves": []any{
+			map[string]any{"number": float64(1), "status": "running", "startedAt": "2026-10-01T10:05:00Z"},
+		}})
+		createShipReportState(t, root, map[string]any{"steps": []any{
+			map[string]any{"name": "execute", "status": "completed"},
+			map[string]any{"name": "pr", "status": "in_progress", "startedAt": "2026-10-01T10:30:00Z"},
+		}})
+
+		out := runShipReport(t, root, nil)
+		want := []TimelineEvent{
+			{At: "2026-10-01T10:00:00Z", Phase: "plan", Event: "done"},
+			{At: "2026-10-01T10:05:00Z", Phase: "execute", Event: "wave 1 started"},
+			{At: "2026-10-01T10:30:00Z", Phase: "ship", Event: "pr started"},
+		}
+		if len(out.Timeline) != len(want) {
+			t.Fatalf("timeline = %+v, want %+v", out.Timeline, want)
+		}
+		for i := range want {
+			if out.Timeline[i] != want[i] {
+				t.Errorf("timeline[%d] = %+v, want %+v", i, out.Timeline[i], want[i])
+			}
+		}
+		if !strings.Contains(out.Display, "## Timeline\n\n| At | Phase | Event |\n|---|---|---|\n| 2026-10-01T10:00:00Z | plan | done |\n") {
+			t.Errorf("display missing timeline table:\n%s", out.Display)
+		}
+		if st, tl := strings.Index(out.Display, "## Steps"), strings.Index(out.Display, "## Timeline"); st < 0 || tl < st {
+			t.Errorf("## Timeline must follow ## Steps:\n%s", out.Display)
+		}
+	})
+
+	t.Run("merges every source sorted by at", func(t *testing.T) {
+		root := shipReportRoot(t)
+		createPlanRunState(t, root, map[string]any{
+			"planFilePath":  shipReportPlanFile,
+			"planIntegrity": map[string]any{"skillInvoked": "2026-10-01T09:00:00Z", "done": "2026-10-01T10:00:00Z"},
+			"criticalDecisions": []any{
+				map[string]any{"key": "base-sync-method", "choice": "merge", "at": "2026-10-01T09:30:00Z"},
+				map[string]any{"key": "untimed", "choice": "x"},
+			},
+		})
+		createLinkedExecState(t, root, map[string]any{
+			"waves": []any{
+				map[string]any{"number": float64(1), "status": "completed", "startedAt": "2026-10-01T10:05:00Z", "completedAt": "2026-10-01T10:15:00Z"},
+			},
+			"baseSyncs": []any{
+				map[string]any{"wave": float64(1), "status": "merged", "base": "main", "behind": float64(2), "sha": "ab12", "at": "2026-10-01T10:16:00Z"},
+			},
+		})
+		createShipReportState(t, root, map[string]any{
+			"steps": []any{
+				map[string]any{"name": "execute", "status": "completed", "startedAt": "2026-10-01T10:04:00Z", "completedAt": "2026-10-01T10:20:00Z"},
+				map[string]any{"name": "pr", "status": "completed", "startedAt": "2026-10-01T10:30:00Z", "completedAt": "2026-10-01T10:32:00Z"},
+			},
+			"decisions": []any{
+				map[string]any{"step": "review", "decision": "defer nits", "at": "2026-10-01T10:25:00Z"},
+			},
+		})
+
+		out := runShipReport(t, root, nil)
+		want := []string{
+			"2026-10-01T09:00:00Z plan skillInvoked",
+			"2026-10-01T09:30:00Z plan decision base-sync-method: merge",
+			"2026-10-01T10:00:00Z plan done",
+			"2026-10-01T10:04:00Z ship execute started",
+			"2026-10-01T10:05:00Z execute wave 1 started",
+			"2026-10-01T10:15:00Z execute wave 1 completed",
+			"2026-10-01T10:16:00Z execute base-sync wave 1: merged",
+			"2026-10-01T10:20:00Z ship execute completed",
+			"2026-10-01T10:25:00Z ship decision review: defer nits",
+			"2026-10-01T10:30:00Z ship pr started",
+			"2026-10-01T10:32:00Z ship pr completed",
+		}
+		got := make([]string, len(out.Timeline))
+		for i, e := range out.Timeline {
+			got[i] = e.At + " " + e.Phase + " " + e.Event
+		}
+		if strings.Join(got, "\n") != strings.Join(want, "\n") {
+			t.Errorf("timeline:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
+	})
+
+	t.Run("no timed events", func(t *testing.T) {
+		root := shipReportRoot(t)
+		createShipReportState(t, root, map[string]any{"steps": []any{
+			map[string]any{"name": "execute", "status": "skipped"},
+		}})
+
+		out := runShipReport(t, root, nil)
+		if out.Timeline == nil || len(out.Timeline) != 0 {
+			t.Fatalf("timeline must be an empty non-nil slice, got %#v", out.Timeline)
+		}
+		if !strings.Contains(out.Display, "## Timeline\n\n_No timed events._\n") {
+			t.Errorf("display missing empty timeline line:\n%s", out.Display)
+		}
+		if strings.Contains(out.Display, "| At | Phase | Event |") {
+			t.Errorf("display must not render a header-only timeline table:\n%s", out.Display)
+		}
+		raw, err := json.Marshal(out)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if !strings.Contains(string(raw), `"timeline":[]`) {
+			t.Errorf("marshaled report missing \"timeline\":[]: %s", raw)
+		}
+	})
 }
