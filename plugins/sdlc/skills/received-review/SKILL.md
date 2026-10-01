@@ -586,7 +586,7 @@ similar).
    links_validate({ file: ".sdlc-v2/state/artifacts/received-review-reply-bodies.md", offline: false })
    → { results: [{ url, line, status, reason, detail }] }
    ```
-3. If any `results[]` entry has `status !== "ok"`:
+3. If any `results[]` entry has a status other than `ok` or `skipped`:
    - Do NOT post any replies. Do NOT proceed to Step 12.
    - Surface the violation list (url, line, reason, detail) verbatim to the user.
    - Stop. Do not retry. Do not edit URLs without user input. Do not bypass.
@@ -775,7 +775,7 @@ Best-effort: if `received_review_verify` itself fails (bad PR, no remote, gh not
 | Error | Recovery | Invoke error-report? |
 |-------|----------|---------------------------|
 | `received_review_prepare` fails (bad PR, no remote, gh not authed) | Show the error; if no PR number was given, fall back to Step 1b's non-PR sources | No — user-facing input/auth issue |
-| `gh pr view`/`gh api` fails to fetch comments in Step 1b | Check `gh auth status`; show error; ask user to supply feedback directly | No — auth or permissions issue |
+| `gh pr view`/`gh api` fails to fetch comments in Step 1b (persistent: auth error, repo not found) | Show the error; ask the user to verify `gh auth status` and the PR number/access; stop (Step 1b) | No — auth or permissions issue |
 | Comment references file/line that no longer exists | Note the discrepancy; verify against current HEAD diff | No — expected with rebased PRs |
 | Cannot verify reviewer's claim (no runtime data/external context) | State limitation explicitly; ask user for direction, or under `--auto` give it the `needs-direction` verdict (Step 4) and record it in Step 11 | No — expected limitation |
 | `ship_state({action:"defer"})` narration contains `WARNING: could not persist this item` | The finding was not written to `deferred.json`. Do not retry `defer`; call the `deferred_add` fallback from Step 4 once. Only if that also fails, name the finding as UNACCOUNTED in the Step 12 ledger and drop the tracking sentence from its reply | No — best-effort write, disclosed |
@@ -784,7 +784,7 @@ Best-effort: if `received_review_verify` itself fails (bad PR, no remote, gh not
 
 When invoking `error-report`, provide:
 - **Skill**: received-review
-- **Step**: Step 11 — IMPLEMENT (posting GitHub thread replies, only after user consent in Step 10)
+- **Step**: Step 12 — REPLY (posting GitHub thread replies, only after user consent in Step 10)
 - **Operation**: `gh api` call to post comment reply
 - **Error**: HTTP status + error message from above
 - **Suggested investigation**: Check `gh auth status`; verify PR number is correct and accessible; confirm repo permissions
