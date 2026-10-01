@@ -534,8 +534,10 @@ func checkPF1(content string) pfCheck {
 		}
 	}
 	if len(missing) > 0 {
-		// The message names the fields. The fix adds what it does not say: a
-		// field only counts when its value is on the same line as the label.
+		// The message names the fields. The fix adds the shape to write: a
+		// bold label with its value on the same line. extractField also
+		// accepts the value on a later line (its \s* skips newlines), but
+		// the same-line form is the documented one.
 		fix := []string{"write each as a bold label with its value on the same line, above the first task:"}
 		for _, f := range missing {
 			fix = append(fix, fmt.Sprintf("  **%s:** <%s>", f, pf1FieldHints[f]))
