@@ -80,3 +80,16 @@ new changes to that same bar:
   an enum/intent discriminator is partial coverage; verify each combination
   named by the function's branch structure is invoked and its output state
   asserted.
+- Every rejection branch of an input check needs its own test: a test for
+  a nil `wave` does not cover the separate `wave < 1` branch. For an
+  error-classification switch (e.g. a helper mapping sentinel errors to
+  DomainError/InfraError), count its cases and verify one test case per
+  case, asserting the error class, Msg and Suggestion, not just the Go type
+  of one branch. An error branch that needs an unusual external condition
+  (e.g. a git command exiting non-zero without leaving state behind) still
+  needs a test when a PATH stub can reach it.
+- When a task adds new config keys (e.g. `[execute] baseSync`,
+  `[git] baseBranch`), each key must be named literally in a test case or
+  assertion, not only exercised by a generic map-based walker, so a reviewer
+  can see its coverage without reverse-engineering the test's iteration
+  logic.
