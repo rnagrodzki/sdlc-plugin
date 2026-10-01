@@ -1378,7 +1378,7 @@ func TestPruneEvidenceDirs_RemoveFailureDoesNotStopOthers(t *testing.T) {
 	}
 
 	own := "plan-feat-20260929T120000Z"
-	failing := "plan-feat-20260929T105000Z"  // removeAll for this one fails
+	failing := "plan-feat-20260929T105000Z"    // removeAll for this one fails
 	succeeding := "plan-feat-20260929T110000Z" // removeAll for this one succeeds
 
 	mustMkdir := func(name string) {
