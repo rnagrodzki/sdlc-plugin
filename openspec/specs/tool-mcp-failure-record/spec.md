@@ -76,11 +76,18 @@ error: <errorMessage, one line, max 300 bytes>
 recovered: <recovered, default "no">
 ```
 
+- Exactly one blank line separates the block from the content before it, so the block stays its own `learnings_log` entry. An empty file gets no leading blank line, and a file that already ends in a blank line gets no extra one.
+
 #### Scenario: First failure creates the log
 - **WHEN** `.sdlc-v2/learnings/` does not exist and the tool is called with `tool: "test_tool"`, `httpStatus: 401`, `errorMessage: "unauthorized access"`
 - **THEN** `.sdlc-v2/learnings/log.md` is created
 - **AND** it contains the heading `## <today UTC> — mcp-failure[auth]: test_tool`
 - **AND** the heading does not contain `jira`
+
+#### Scenario: Block after an existing entry
+- **WHEN** the log holds one `learnings_log` entry ending in a single newline and the tool records a failure
+- **THEN** one blank line separates that entry from the new heading
+- **AND** `learnings_log` action `stats` reports `totalEntries` `2`
 
 #### Scenario: Recovered defaults to no
 - **WHEN** the tool is called without `recovered`

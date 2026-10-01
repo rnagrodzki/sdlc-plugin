@@ -34,6 +34,30 @@ func TestLearningsAppendCreatesFileWithHeader(t *testing.T) {
 	}
 }
 
+// TestLearningsFailureRecordIsItsOwnEntry pins that a block written by
+// mcp_failure_record after a learnings_log entry stays a separate entry: the
+// log keeps one blank line between them, so read-side actions count two
+// entries, not one merged block.
+func TestLearningsFailureRecordIsItsOwnEntry(t *testing.T) {
+	root := t.TempDir()
+
+	if _, err := learningsLog(root, LearningsLogIn{Action: "append", Entry: "## 2026-09-07 — setup: first entry"}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if _, err := mcpFailureRecord(root, MCPFailureRecordIn{Tool: "test_tool", HTTPStatus: 401, ErrorMessage: "unauthorized access"}); err != nil {
+		t.Fatalf("mcp_failure_record: %v", err)
+	}
+
+	out, err := learningsLog(root, LearningsLogIn{Action: "stats"})
+	if err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	if out.Stats == nil || out.Stats.TotalEntries != 2 {
+		data, _ := os.ReadFile(filepath.Join(root, paths.DataDir, "learnings", "log.md"))
+		t.Fatalf("stats = %+v, want totalEntries 2; log:\n%s", out.Stats, data)
+	}
+}
+
 func TestLearningsAppendAddsSecondEntryWithBlankLineSeparator(t *testing.T) {
 	root := t.TempDir()
 

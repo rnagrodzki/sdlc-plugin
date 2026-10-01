@@ -213,10 +213,27 @@ func Record(root string, f Failure) error {
 	}
 	defer file.Close()
 
-	if _, err := file.WriteString(block); err != nil {
+	if _, err := file.WriteString(blockSeparator(existing) + block); err != nil {
 		return fmt.Errorf("telemetry: write %s: %w", logPath, err)
 	}
 	return nil
+}
+
+// blockSeparator returns what must go between the existing log content and a
+// new block so that exactly one blank line separates them. learnings_log
+// splits entries on blank lines, so without it the block would merge into the
+// previous entry. An empty log needs nothing, and a log that already ends in
+// a blank line needs nothing more.
+func blockSeparator(existing []byte) string {
+	s := string(existing)
+	switch {
+	case s == "", strings.HasSuffix(s, "\n\n"):
+		return ""
+	case strings.HasSuffix(s, "\n"):
+		return "\n"
+	default:
+		return "\n\n"
+	}
 }
 
 // ---------------------------------------------------------------------------
