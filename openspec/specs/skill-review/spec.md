@@ -13,7 +13,7 @@ The skill SHALL accept only the flags `--base <branch>` and `--dry-run`.
 | `--base <branch>` | Forwarded to `review_prepare` as `target`. |
 | `--dry-run` | Prints the review plan and stops before any agent is dispatched. Not forwarded to the tool. |
 
-- Review scope (`all`, `committed`, `staged`, `working`, `worktree`) comes from the `review.scope` config key, read by `review_prepare`.
+- Review scope (`all`, `committed`, `staged`, `working`, `worktree`) comes from the `scope` key of the `[review]` section in `.sdlc-v2/local.toml`, read by `review_prepare` (default `all`). It is changed with `/setup` or by editing that file.
 - The skill does not support `--committed`, `--staged`, `--working`, `--worktree`, `--set-default`, or `--dimensions`.
 
 #### Scenario: Base branch override
@@ -53,7 +53,7 @@ The skill SHALL read the manifest at `manifestPath` into the main session and SH
 - **AND** the posting step uses the no-PR options, because `manifest.pr.exists` is `false`
 
 ### Requirement: Dry run
-When `--dry-run` is passed the skill SHALL print the review plan from the manifest, delete `manifestPath`, and stop without dispatching any agent.
+When `--dry-run` is passed the skill SHALL print the review plan from the manifest, delete `manifestPath` and `manifest.diff_dir`, and stop without dispatching any agent.
 
 The printed plan has this shape:
 
@@ -79,7 +79,8 @@ To execute the full review, run /review (without --dry-run).
 #### Scenario: Dry run stops early
 - **WHEN** the user runs `/review --dry-run`
 - **THEN** the skill prints `Review Plan (dry run — no agents dispatched)` and the dimension table
-- **AND** runs `rm -f "<manifestPath>"` and stops
+- **AND** runs `rm -f "<manifestPath>"` and `rm -rf "{manifest.diff_dir}"`, and stops
+- **AND** does not call `ledger_cleanup`, because no `runId` exists yet
 
 ### Requirement: Run and worker identifiers
 The skill SHALL derive one ledger `runId` per run and one `workerId` per dispatched dimension.
@@ -251,9 +252,9 @@ The skill SHALL choose the posting prompt from the manifest and SHALL wait for t
 | No PR, `manifest.scope` is `all`, `committed`, or `worktree` | 1. Create a draft PR and attach the review; 2. Save; 3. Terminal only |
 | No PR, `manifest.scope` is `staged` or `working` | 1. Save; 2. Terminal only |
 
-- `manifest.pr.exists` is `true` only when `review_prepare` found an open PR for the current branch; see the `tool-review-prepare` PR lookup requirement.
+- `manifest.pr.exists` is `true` only when `review_prepare` found an open PR for the current branch; see the `tool-review-prepare` PR lookup requirement. It is always `false` for scopes `staged` and `working`, so a review of uncommitted changes is never offered for posting to a PR.
 - Post: `gh api repos/{owner}/{repo}/issues/{number}/comments -F body=@{manifest.diff_dir}/review-comment.md`, with `owner`, `repo`, and `number` from `manifest.pr`.
-- Create-draft-PR option: the skill invokes `pr` in draft mode, waits, then posts to the new PR.
+- Create-draft-PR option: the skill runs the link verification gate first, and only on all-clear invokes `pr` in draft mode, waits, then posts to the new PR.
 - Save: the skill passes the comment text to `review_prepare({saveReview: true, content})`; the tool writes `.sdlc-v2/reviews/<branch>-<YYYY-MM-DD>.md`.
 - Cancel or terminal only: no action.
 
@@ -271,15 +272,26 @@ The skill SHALL choose the posting prompt from the manifest and SHALL wait for t
 - **THEN** the skill calls `review_prepare` with `saveReview: true` and the content of `review-comment.md`
 
 ### Requirement: Link verification gate before posting
-When the user answers `yes` to post to an existing PR, the skill SHALL first call `links_validate({file: "{manifest.diff_dir}/review-comment.md", offline: false})` and SHALL NOT post when any result has a status other than `ok`.
+Before every post of the review comment (answer `yes` to post to an existing PR, or the create-draft-PR option) the skill SHALL first call `links_validate({file: "{manifest.diff_dir}/review-comment.md", offline: false})` and SHALL NOT post when any result has a status other than `ok` or `skipped`.
 
 - On a violation the skill shows the violation list verbatim and stops.
 - It does not retry, does not edit URLs without user input, and does not bypass the gate.
+- `skipped` (skip-list host, or `offline: true`) counts as all-clear, like `ok`.
 - `offline: true` skips network reachability checks and keeps context checks (for sandboxed CI).
+- For the create-draft-PR option the gate runs before `pr` is invoked, so a violation creates no PR.
 
 #### Scenario: Broken link
-- **WHEN** `links_validate` returns one result with `status` other than `ok`
+- **WHEN** `links_validate` returns one result with `status` `violation`
 - **THEN** the comment is not posted
+- **AND** the user sees the violation list
+
+#### Scenario: Skipped link
+- **WHEN** every `links_validate` result is `ok` or `skipped`
+- **THEN** the skill posts the comment
+
+#### Scenario: Broken link on the draft-PR path
+- **WHEN** there is no PR, the user picks "Create a draft PR and attach this review", and `links_validate` reports a violation
+- **THEN** the skill does not invoke `pr` and posts nothing
 - **AND** the user sees the violation list
 
 ### Requirement: Self-fix offer
@@ -308,7 +320,7 @@ The skill SHALL remove everything the run created on dry-run stop, error stop, a
 
 - `rm -f "<manifestPath>"`
 - `rm -rf "{manifest.diff_dir}"`
-- `execute_state({action: "ledger_cleanup", runId})`
+- `execute_state({action: "ledger_cleanup", runId})`, only when the reviewer dispatch step minted a `runId`. The dry-run stop and an error stop before dispatch have no `runId` and no ledger.
 
 #### Scenario: Normal completion
 - **WHEN** the posting and self-fix steps finish

@@ -26,10 +26,13 @@ Parse `$ARGUMENTS`:
 - `--dry-run` → handled entirely by Step 1 below; not forwarded to the tool.
 
 **Scope note:** `review_prepare`'s only inputs are `target` and `skipConfigCheck` — scope
-(`all` / `committed` / `staged` / `working` / `worktree`) is read by the tool from
-`.sdlc-v2/config.toml`'s `review.scope` (default `all`), not from a CLI flag. This port does
-not expose `--committed` / `--staged` / `--working` / `--worktree` / `--set-default` /
-`--dimensions` flags; change scope by editing project config (`/setup`) instead.
+(`all` / `committed` / `staged` / `working` / `worktree`) is read by the tool from the
+`scope` key of the `[review]` section in `.sdlc-v2/local.toml` (default `all`), not from a CLI
+flag. This port does not expose `--committed` / `--staged` / `--working` / `--worktree` /
+`--set-default` / `--dimensions` flags; change scope with `/setup` or by editing
+`.sdlc-v2/local.toml` instead. For `staged` and `working`, `review_prepare` ignores `target`
+(`manifest.base_branch` is `null`) and does not look up a PR (`manifest.pr.exists` is
+`false`).
 
 ```
 review_prepare({ target: "<branch from --base, or empty>", skipConfigCheck: false })
@@ -56,9 +59,9 @@ continuing. A PR-lookup warning means `gh` could not check for a PR, so `manifes
 is `false` and Step 7 offers the no-PR options even if a PR may exist.
 
 **No bash trap spans this skill run.** `manifestPath` is a plain return value from an MCP
-tool call, not a subshell result — there is nothing to attach a `trap` to. Delete it
-explicitly with `rm -f "<manifestPath>"` at every stop point: the dry-run stop below (Step
-1), any error stop, and Step 9 (Cleanup) on normal completion.
+tool call, not a subshell result — there is nothing to attach a `trap` to. Clean up
+explicitly at every stop point — the dry-run stop below (Step 1), any error stop, and normal
+completion — with the Step 9 (Cleanup) commands.
 
 ---
 
@@ -87,7 +90,8 @@ Plan critique:
 To execute the full review, run /review (without --dry-run).
 ```
 
-`rm -f "<manifestPath>"`. Stop here.
+Run the Step 9 file cleanup (`rm -f "<manifestPath>"` and `rm -rf "{manifest.diff_dir}"`).
+No `runId` exists yet, so there is no ledger to clean up. Stop here.
 
 ---
 
@@ -353,10 +357,30 @@ every terminal branch.
 This step runs entirely in the main context. The comment body at
 `{manifest.diff_dir}/review-comment.md` is authoritative.
 
+### Link verification gate (R14) — HARD GATE
+
+Every path that posts the comment runs this gate first. Validate every URL embedded in the
+consolidated review comment body:
+
+```
+links_validate({ file: "{manifest.diff_dir}/review-comment.md", offline: false })
+→ { results: [{ url, line, status, reason, detail }] }
+```
+
+If any `results[]` entry has a status other than `ok` or `skipped` (a `violation`), do NOT
+post. Surface the violation list verbatim to the user. Stop. Do not retry. Do not edit URLs
+without user input. Do not bypass. On all-clear (every result `ok` or `skipped`), continue
+with the posting path that called the gate.
+
+Pass `offline: true` to `links_validate` (replacing the old `SDLC_LINKS_OFFLINE=1` env var)
+to skip network reachability while keeping context-aware checks — use in sandboxed CI.
+
 ### PR exists (`manifest.pr.exists == true`)
 
 `review_prepare` sets `manifest.pr.exists` only for an **open** PR on the current branch, and
 fills `manifest.pr.number`, `manifest.pr.owner`, and `manifest.pr.repo` for the post command.
+It is always `false` for the `staged` and `working` scopes, so a review of uncommitted changes
+is never offered for posting to a PR.
 
 Prompt in the main context:
 
@@ -369,28 +393,13 @@ Post this review comment to PR #{manifest.pr.number}? (yes / save / cancel)
 
 Wait for the user's reply.
 
-- `yes` → **link verification (R14) — HARD GATE.** Before posting, validate
-  every URL embedded in the consolidated review comment body:
-
-  ```
-  links_validate({ file: "{manifest.diff_dir}/review-comment.md", offline: false })
-  → { results: [{ url, line, status, reason, detail }] }
-  ```
-
-  If any `results[]` entry has a non-`ok` `status`, do NOT post. Surface the violation list
-  verbatim to the user. Stop. Do not retry. Do not edit URLs without user input. Do not
-  bypass.
-
-  The comment body must never include an AI-tool attribution line ("Generated with Claude
-  Code" or similar). On all-clear, post the comment via `gh api` using the file body form
-  (safe for large markdown, backticks, quotes):
+- `yes` → run the link verification gate above. The comment body must never include an
+  AI-tool attribution line ("Generated with Claude Code" or similar). On all-clear, post the
+  comment via `gh api` using the file body form (safe for large markdown, backticks, quotes):
 
   ```bash
   gh api repos/{manifest.pr.owner}/{manifest.pr.repo}/issues/{manifest.pr.number}/comments -F body=@{manifest.diff_dir}/review-comment.md
   ```
-
-  Pass `offline: true` to `links_validate` (replacing the old `SDLC_LINKS_OFFLINE=1` env
-  var) to skip network reachability while keeping context-aware checks — use in sandboxed CI.
 
 - `save` → (implements `R-reviews-path` — canonical save target is `.sdlc-v2/reviews/`)
 
@@ -414,9 +423,10 @@ No PR found. Options:
   3. Keep in terminal only
 ```
 
-- Option 1 → invoke `pr` from the main context in draft mode, wait for PR creation,
-  then post via the `gh api … -F body=@...` command above using the newly created PR's
-  owner/repo/number.
+- Option 1 → run the link verification gate above **before** creating the PR, so a
+  violation never leaves a draft PR behind without its review. On all-clear, invoke `pr`
+  from the main context in draft mode, wait for PR creation, then post via the
+  `gh api … -F body=@...` command above using the newly created PR's owner/repo/number.
 - Option 2 → same `save` command as above.
 - Option 3 → no action.
 
@@ -445,7 +455,7 @@ If the verdict is **CHANGES REQUESTED** or **APPROVED WITH NOTES**, offer to fix
 - **harden** — run `/harden` to analyze why this failed and propose stronger guardrails
   / dimensions / instructions that would catch it earlier next time. Opt-in — no surface is
   edited without your approval. (Offered only when verdict is **CHANGES REQUESTED** with at
-  least one dimension blocker; suppressed when `--auto` is set.)
+  least one dimension blocker.)
 - **no** — done
 
 When the user selects **harden**, dispatch `Skill(harden)` with
@@ -460,12 +470,16 @@ If verdict is **APPROVED**: skip — nothing to fix.
 ## Step 9 — Cleanup
 
 Remove everything this run created, on every terminal path (dry-run stop, error stop, and
-normal completion):
+normal completion). Always remove the manifest and its temp directory (skip a path the run
+never received, e.g. when `review_prepare` itself failed):
 
 ```bash
 rm -f "<manifestPath>"
 rm -rf "{manifest.diff_dir}"
 ```
+
+Only when Step 2 minted a `runId` (so never on the Step 1 dry-run stop, or on an error stop
+before Step 2), also remove the run's ledger:
 
 ```
 execute_state({ action: "ledger_cleanup", runId: "<runId>" })
