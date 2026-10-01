@@ -265,7 +265,7 @@ When `openspecContext.requirements` is not null, the skill SHALL dispatch one au
 - **THEN** the skill does not start Step 2 until the user chooses fix or override
 
 ### Requirement: Task format
-The skill SHALL write every section in the active template's `## Required Sections` in the order of `plan-format-reference.md` `## Section Order`, and SHALL give every task the metadata `execute` needs.
+The skill SHALL write every section in the active template's `## Required Sections` in template order (the order of the `template.skeletonMarkdown` skeleton, filled in place), and SHALL give every task the metadata `execute` needs. `plan-format-reference.md` `## Section Order` places only sections the template does not list; where the two disagree, the template order wins.
 
 - Per task: `**Complexity:**`, `**Risk:**`, `**Depends on:**`, `**Verify:**`, `**Files:**`, `**Acceptance criteria:**`, `**Contract:**`, plus any `tasks.requiredFields`.
 - Each task touches 1–5 files; a plan has at least 2 tasks.

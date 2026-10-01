@@ -601,7 +601,7 @@ runs once at the wave boundary as the gate check regardless of any per-task scop
 `./plan-format-reference.md`'s `## Verify Field — Scoped Hints` and `## Isolation` sections for the
 full syntax and when to use it.
 
-**Write to plan file — template-required sections and tasks:** Write ALL sections declared in the active template's `## Required Sections` list, in the order defined by `./plan-format-reference.md`'s `## Section Order`. Do NOT hardcode section names — the template is the single source of truth. For each template-required section:
+**Write to plan file — template-required sections and tasks:** Write ALL sections declared in the active template's `## Required Sections` list, in template order — fill the skeleton `plan_prepare` wrote (`template.skeletonMarkdown`) in place and do not move its sections. The template order wins over `./plan-format-reference.md`'s `## Section Order`, which places only sections the template does not list. Do NOT hardcode section names — the template is the single source of truth. For each template-required section:
 
 - `## Context` — already written in Step 1 (answers to Discovery Questions); update if Step 2 research expanded the picture
 - `## Research Findings` — already written in Step 1 (exploration output); update if needed

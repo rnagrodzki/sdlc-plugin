@@ -23,11 +23,17 @@ All four fields are required. `execute` uses `Verification` as the default test 
 
 ## Section Order
 
-A plan document assembles its sections top to bottom in this order. Sections marked "required" must
-appear in every plan; "optional"/"conditional" sections appear only when their trigger applies. This
-is the order `plan` writes; it is a convention documented here, not something PF10 enforces —
-PF10 (the active template's `## Required Sections` list, see `## Plan Template` below) checks
-presence only, not order.
+A plan document assembles its sections top to bottom. **The active template's order wins.**
+`plan_prepare` writes `template.skeletonMarkdown` with one `## <name>` block per bullet of the active
+template's `## Required Sections`, in template order, and `plan` fills that skeleton in place without
+moving sections. The list below is the conventional reading order. It places only the sections the
+active template does not list (the document header, `## Guardrail Compliance`, `## Out-of-scope
+OpenSpec tasks`, and any section a project template leaves out). Where it disagrees with the
+template — the shipped default puts `## Final Shape` before the tasks and `## Contract Examples`
+last — follow the template. Sections marked "required" must appear in every plan;
+"optional"/"conditional" sections appear only when their trigger applies. PF10 (the active
+template's `## Required Sections` list, see `## Plan Template` below) checks presence only, not
+order.
 
 1. **Document Header** — Goal / Architecture / Source / Verification (required)
 2. **Context** — problem, prompt, success definition (required, narrative)
@@ -112,7 +118,7 @@ When a plan introduces no divergences or assumptions, render the header with a s
 
 ## Key Decisions (optional)
 
-Capture architecture and design decisions made during planning that executing agents need to understand. Place this section after `## Deviations & assumptions`, before `## Contract Examples` and the first task block (see `## Section Order`). Narrative (R62): the bullet-per-decision shape below already satisfies "structured goals as bullet lists" — keep each bullet to short sentences with the rationale inline.
+Capture architecture and design decisions made during planning that executing agents need to understand. Place this section where the active template lists it (the shipped default: after `## Deviations & assumptions`, before `## Final Shape` and the task blocks — see `## Section Order`). Narrative (R62): the bullet-per-decision shape below already satisfies "structured goals as bullet lists" — keep each bullet to short sentences with the rationale inline.
 
 ```markdown
 ## Key Decisions
