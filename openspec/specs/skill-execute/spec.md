@@ -110,11 +110,12 @@ The skill SHALL derive the workspace from git state without a flag, and SHALL ne
 | Condition | Outcome |
 |---|---|
 | `--branch` passed | Skip detection. Trust caller branch and cwd. |
-| Linked worktree, or current branch is not the default branch | `continue`: run in place. |
-| Main worktree and on the default branch | `branch`: derive a branch name and create it. |
+| Linked worktree, or current branch is neither the default branch nor the base branch | `continue`: run in place. |
+| Main worktree and on the default branch or the base branch | `branch`: derive a branch name and create it. |
 
 - Current branch comes from `git branch --show-current`, never the session-start `gitStatus` snapshot.
 - Default branch comes from `git symbolic-ref refs/remotes/origin/HEAD`, fallback `main`.
+- Base branch is the resolved base branch (`[git] baseBranch`, else the default branch).
 - Branch name uses `workspace.branch` in `.sdlc-v2/local.toml`: `template` (default `"{type}/{slug}"`), `slugMaxLength` (default `50`), `typeMap`.
 - The only prompt in workspace derivation is the branch-name confirmation in the `branch` outcome, and only when effective auto is false.
 
@@ -131,8 +132,8 @@ The skill SHALL derive the workspace from git state without a flag, and SHALL ne
 
 #### Scenario: Rebase auto with a behind branch
 - **WHEN** `--rebase auto` is passed
-- **AND** `git merge-base --is-ancestor origin/<defaultBranch> HEAD` fails after `git fetch origin <defaultBranch>`
-- **THEN** the skill runs `git rebase origin/<defaultBranch>`
+- **AND** `git merge-base --is-ancestor origin/<base> HEAD` fails after `git fetch origin <base>`
+- **THEN** the skill runs `git rebase origin/<base>`
 - **AND** on conflict it runs `git rebase --abort`, warns, and continues on the current base
 
 #### Scenario: Rebase prompt
@@ -217,9 +218,9 @@ The skill SHALL skip the quality-tier prompt when the resolved `quality` is non-
 - **THEN** the skill opens per-task model editing before execution
 
 ### Requirement: Wave loop order
-The skill SHALL bootstrap run state once with `init` and `context`, then run each wave in this fixed order: wave-start, dispatch, record on return, await, act on `next`, gates.
+The skill SHALL bootstrap run state once with `init` and `context`, then run each wave in this fixed order: wave-start, dispatch, record on return, await, act on `next`, gates, base sync.
 
-Main wave loop:
+Main wave loop (new step marked):
 
 ```mermaid
 sequenceDiagram
@@ -243,6 +244,9 @@ sequenceDiagram
         Skill->>ES: wave-commit wave N with message
         ES->>git: git add -A, git commit
         Skill->>ES: summarize-prior-wave-context
+        Note over Skill,ES: NEW base sync, only when another wave follows
+        Skill->>ES: base-sync wave N
+        ES->>git: git fetch, git merge origin base
     end
     Skill->>ES: verify-completeness
 ```
@@ -252,7 +256,7 @@ sequenceDiagram
 - `context` call: `data` = `{"planSummary": "<2-3 sentence goal>"}`.
 - Batching and worker names are fixed before `wave-start` and sent in `tasksJson` as `workerName`, `batchId`, `batchIndex`.
 - Pre-wave: 1 trivial task runs inline; 2+ trivial tasks go to one haiku batch agent.
-- Gates run in this order: spec-compliance review, post-wave guardrail check, OpenSpec task flip, `wave-done` (or `wave-fail` with `timedOut: true`), `wave-commit`, progress report, `summarize-prior-wave-context`.
+- Gates run in this order: spec-compliance review, post-wave guardrail check, OpenSpec task flip, `wave-done` (or `wave-fail` with `timedOut: true`), `wave-commit`, progress report, `summarize-prior-wave-context`, then `base-sync` when another wave follows.
 - Follow-up findings go to `execute_state` `action: "issue-draft"` with `branch`, `taskId`, `issueDraftTitle`, `issueDraftBody`.
 
 #### Scenario: Plan changed since init
@@ -268,6 +272,10 @@ sequenceDiagram
 #### Scenario: Wave still pending after a re-dispatch
 - **WHEN** `wave-await` returns `status` `"pending"`
 - **THEN** the skill does not start the gates
+
+#### Scenario: Last wave
+- **WHEN** wave N is the last wave of the plan
+- **THEN** the skill does not call `base-sync` after it
 
 ### Requirement: Worker dispatch
 The skill SHALL dispatch every task or batch of a wave directly from the main session, all in one message, with a fixed two-line prompt.
@@ -623,3 +631,32 @@ The skill SHALL resume from the `resumeBriefing` returned by `execute_state` `re
 - **AND** effective auto is false
 - **THEN** the skill asks with AskUserQuestion "An unfinished execute run exists for this branch (wave N) — resume it?"
 - **AND** on `no` it starts a fresh run and prints that the unfinished run will be replaced
+
+
+### Requirement: Base sync conflict resolution
+When `base-sync` returns `status: "conflict"`, the skill SHALL dispatch one sub-agent with the `conflictedFiles`, the plan's goal, and the incoming base commits, and SHALL then call `base-sync-resolve`; when the sub-agent reports failure or `base-sync-resolve` fails, the skill SHALL call `base-sync-resolve` with `abort: true` and continue with the next wave.
+
+- A conflict never stops the run — EXCEPT when the recovery call itself fails (see "Scenario: Abort call fails" below), since the merge is then still on disk and would otherwise silently corrupt the next wave's work.
+- On resume, when the last `baseSyncs` entry has `status: "conflict"`, the skill calls `base-sync-resolve` with `abort: true` before the next `wave-start`.
+- Each outcome (`merged`, `resolved`, `aborted`, `skipped`) is one line in the progress report.
+- The end-of-run report lists every `aborted` sync as `Base sync aborted at wave <N>: conflicts left for ship rebase`.
+
+#### Scenario: Conflict resolved
+- **WHEN** `base-sync` returns `conflict` and the sub-agent resolves every file
+- **THEN** the skill calls `base-sync-resolve` and gets `status: "resolved"`
+- **AND** the next wave starts
+
+#### Scenario: Conflict not resolvable
+- **WHEN** `base-sync-resolve` fails because conflict markers remain
+- **THEN** the skill calls `base-sync-resolve` with `abort: true`
+- **AND** the next wave starts on the previous base
+
+#### Scenario: Resume after an unresolved conflict
+- **WHEN** execute resumes and the last `baseSyncs` entry has `status: "conflict"`
+- **THEN** the skill calls `base-sync-resolve` with `abort: true` before the next `wave-start`
+
+#### Scenario: Abort call fails
+- **WHEN** `base-sync-resolve` with `abort: true` itself returns an error (not a resolved conflict — a genuine failure of the recovery path, e.g. `git merge --abort` fails)
+- **THEN** the skill prints the error and stops the run as a hard failure, without calling `cleanup`
+- **AND** the state stays resumable — `## Resume` retries the abort on the next run
+

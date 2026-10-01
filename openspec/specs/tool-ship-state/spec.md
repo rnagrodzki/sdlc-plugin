@@ -243,11 +243,11 @@ For `begin-step`, `complete-step`, `start`, `complete`, `skip`, `fail`, `decide`
 - **THEN** the tool returns a `DomainError`
 
 ### Requirement: decide
-The `decide` action SHALL append `{step, decision}` to `decisions[]`, with `decision` taken from `detail.text`, without checking `step` against `steps[]`.
+The `decide` action SHALL append `{step, decision, at}` to `decisions[]`, with `decision` taken from `detail.text` and `at` set to the call time (RFC 3339 UTC), without checking `step` against `steps[]`.
 
 #### Scenario: Decision for a step with no entry
 - **WHEN** the call passes `action:"decide"`, `step:"received-review"`, `detail.text:"fixed 3"`
-- **THEN** `decisions[]` ends with `{step:"received-review", decision:"fixed 3"}`
+- **THEN** `decisions[]` ends with `{step:"received-review", decision:"fixed 3", at:<now>}`
 
 ### Requirement: defer
 The `defer` action SHALL record one deferred finding in the run's `deferredFindings[]` and in `.sdlc-v2/history/deferred.json`, and SHALL name the generated id in `summary`.
@@ -493,7 +493,7 @@ The `cleanup` action SHALL validate that no `steps[]` entry is `in_progress` or 
 - **THEN** the tool returns a `DataError` and the file is unchanged
 
 ### Requirement: cleanup-pipeline
-The `cleanup-pipeline` action SHALL settle the current run, then run a GC sweep and a per-run-directory reap, unless the contract check fails.
+The `cleanup-pipeline` action SHALL settle the current run, delete the plan run linked to this ship run, then run a GC sweep and a per-run-directory reap, unless the contract check fails.
 
 | Path | `currentRun` |
 |---|---|
@@ -505,10 +505,14 @@ The `cleanup-pipeline` action SHALL settle the current run, then run a GC sweep 
 | Output field | Meaning |
 |---|---|
 | `currentRun` | See the table above. |
+| `planRun` | `{deleted: true, runId}` when the linked plan run and its `.evidence/` dir were deleted; `{deleted: false, reason}` otherwise (`run not stamped`, `no linked plan run`, `report not written`, `remove failed: <error>`). |
 | `gc` | `{ship, execute, plan, commit}`, each `{deleted, kept}`. |
 | `directories` | Reap result for stale per-run directories under `.sdlc-v2/runs/`. |
 | `force`, `ttlDays` | Resolved inputs. TTL: `detail.ttlDays` > config `state.gc.ttlDays` > `7`. |
 | `issueSummary` | `{total, byCategory, items, display, hardenSuggestion?}`; only after a stamp, and only when `issues[]` is non-empty. |
+
+- The linked plan run is the plan run whose `planFilePath` equals the execute state's `planPath`.
+- The linked plan run is deleted only after the stamp and only when this run's report file `.sdlc-v2/reports/ship-<runId>-report.<md|json>` exists; otherwise it is left for GC.
 
 | Condition | Class | Message (short) |
 |---|---|---|
@@ -520,6 +524,7 @@ The `cleanup-pipeline` action SHALL settle the current run, then run a GC sweep 
 - **WHEN** the call passes `detail.force:true` with an `in_progress` step
 - **THEN** `currentRun` is `{cleaned:false, preservedReason:"force"}`
 - **AND** the state file is not stamped
+- **AND** `planRun` is `{deleted:false, reason:"run not stamped"}` — force never stamps, so the linked plan run is always left for GC
 
 #### Scenario: Issue summary after stamp
 - **WHEN** the run stamps and `issues[]` has entries
@@ -528,6 +533,16 @@ The `cleanup-pipeline` action SHALL settle the current run, then run a GC sweep 
 #### Scenario: No issues
 - **WHEN** the run stamps and `issues[]` is empty
 - **THEN** the response has no `issueSummary`
+
+#### Scenario: Plan run deleted after the report
+- **WHEN** the report was written and the run stamps
+- **THEN** the linked `plan-<slug>-<ts>.json` and its `.evidence/` dir are deleted
+- **AND** `planRun.deleted` is `true`
+
+#### Scenario: Report not written
+- **WHEN** the run stamps but no report was written
+- **THEN** the linked plan run is kept
+- **AND** `planRun` is `{deleted:false, reason:"report not written"}`
 
 ### Requirement: gc
 The `gc` action SHALL prune stale state files, or with `detail.dryRun:true` only classify them, and a dry run SHALL list in `wouldDelete` exactly the files a real run with the same inputs deletes.
@@ -592,6 +607,8 @@ The `report` action SHALL compose the end-of-run report for the branch's ship ru
 - `runId` is the run's `startedAt` with every character except digits and `T` removed (e.g. `20260327T143000`).
 - `execution` and `guardrailHits` come from the branch's execute state, only when the `execute` step is `completed`.
 - `plan` is the latest `plan` record in `.sdlc-v2/history/runs.jsonl` (last 100) whose plan file equals the execute state's plan path; else `null` with `planNote` `no plan linked to this run`, or `plan history could not be read`.
+- `planning` comes from the linked plan run state file (same plan path): `{planFile, decisions[], milestones[]}`. `decisions[]` are its `criticalDecisions` `{key, choice, rejected, reason, at}`; `milestones[]` are its `planIntegrity` timestamps as `{name, at}` in time order. When no plan run file exists, `planning` is `null` with `planningNote` `plan run state not found`.
+- `timeline` is one list of `{at, phase, event}` sorted by `at`, merged from: plan milestones and decisions (`phase:"plan"`), execute wave starts, completions, and base syncs (`phase:"execute"`), ship step begins and ends and `decisions[]` (`phase:"ship"`).
 - `cliEvidence` is the branch's `.sdlc-v2/evidence/cli-executions.jsonl` entries since the run's `startedAt`.
 - It works on a stamped state and never writes the state file.
 
@@ -599,12 +616,14 @@ The `report` action SHALL compose the end-of-run report for the branch's ship ru
 |---|---|
 | `branch`, `runId`, `format`, `bump`, `duration` | Run identity and summary. |
 | `plan`, `planNote` | Plan timing `{planFile, startedAt, lastModifiedAt, durationMs}` or `null` with a note. |
+| `planning`, `planningNote` | Plan decisions with rejected alternatives, and plan milestones; or `null` with a note. |
+| `timeline` | Merged plan → execute → ship event list. |
 | `steps`, `issues`, `decisions` | Step timings, state issues plus cross-read warnings, decision lines. |
 | `reviewLedger`, `reviewLedgerNote`, `healing` | As in `read`'s `reportData`. |
 | `deferredFindings` | The state's `deferredFindings[]` entries. |
 | `hardenCommit` | The `harden` step's `result` when that step is `completed`. |
 | `execution`, `guardrailHits`, `cliEvidence`, `linkedLearnings` | Cross-read data. |
-| `display` | `md`: the full Markdown report, emitted raw. `json`: one line `Ship run <runId> on <branch>: <c>/<n> steps completed, <f> findings fixed, <d> deferred, <g> guardrail hits.` |
+| `display` | `md`: the full Markdown report, emitted raw; it has a `## Planning` section (decision table `Decision \| Chosen \| Rejected \| Reason`) and a `## Timeline` section. `json`: one line `Ship run <runId> on <branch>: <c>/<n> steps completed, <f> findings fixed, <d> deferred, <g> guardrail hits.` |
 | `path`, `written` | Report file path and `true` after a write. |
 | `skipped` | `true` only when reports are disabled. |
 | `next` | `Report persisted. Show the path to the user; do not write it yourself.` after a write; else `Show display to the user. Pass detail.write:true to persist the report.` |
@@ -628,6 +647,14 @@ The `report` action SHALL compose the end-of-run report for the branch's ship ru
 #### Scenario: Stale execute state excluded
 - **WHEN** an execute state exists for the branch but this run's `execute` step is not `completed`
 - **THEN** the report has no `execution`
+
+#### Scenario: Planning section
+- **WHEN** the linked plan run has a `criticalDecisions` entry `{key:"base-sync-method", choice:"merge", rejected:[{option:"rebase", why:"rewrites SHAs"}]}`
+- **THEN** `display` has a `## Planning` row `base-sync-method | merge | rebase: rewrites SHAs | ...`
+
+#### Scenario: Timeline order
+- **WHEN** the plan was done at 10:00, wave 1 started at 10:05, and ship `pr` began at 10:30
+- **THEN** `timeline` lists those three events in that order with phases `plan`, `execute`, `ship`
 
 ### Requirement: history_record
 The `history_record` action SHALL append one run record to `.sdlc-v2/history/runs.jsonl` and return `{ok:true, ts}`.
