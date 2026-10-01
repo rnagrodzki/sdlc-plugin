@@ -121,7 +121,7 @@ The skill SHALL accept the flags below. A direct-entry flag SHALL be translated 
 - **THEN** the skill configures only `jira`
 
 ### Requirement: Menu is plain chat
-Without `--only` or a direct-entry flag, the skill SHALL print a status block and a numbered menu as plain chat, then end its turn. It SHALL NOT use AskUserQuestion for the menu.
+Without `--only`, `--force`, or a direct-entry flag, the skill SHALL print a status block and a numbered menu as plain chat, then end its turn. It SHALL NOT use AskUserQuestion for the menu.
 
 - Status rows: `[set]` or `[not set]`, the section id, and the row summary (or `—`).
 - Menu line: `<N>. [<state>] <label> — <first sentence of purpose>`, `<state>` is `set` or `not-set`.
