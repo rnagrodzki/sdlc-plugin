@@ -362,7 +362,7 @@ var worktreeSkillsProhibitionSurvivors = []struct {
 	rel  string
 	line int
 }{
-	{"skills/plan/SKILL.md", 91},
+	{"skills/plan/SKILL.md", 93},
 	{"skills/execute/SKILL.md", 25},
 }
 
