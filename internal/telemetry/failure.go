@@ -39,6 +39,14 @@ import (
 // Constants
 // ---------------------------------------------------------------------------
 
+// LearningsLogHeader is the first line of .sdlc-v2/learnings/log.md. It is a
+// copy of the learnings_log tool's header (internal/tools imports this
+// package, so it cannot be imported from there); a test in internal/tools
+// pins that the two stay equal. learnings_log reads the file's first
+// blank-line-separated block as the header, so Record writes this header
+// when it is the first writer of the file.
+const LearningsLogHeader = "# SDLC Execution Learnings\n"
+
 // Classes is the closed set of failure classes (R26).
 var Classes = []string{
 	"transport", "auth", "schema", "workflow",
@@ -154,7 +162,8 @@ func redact(s string) string {
 }
 
 // Record appends a structured failure block to .sdlc-v2/learnings/log.md under
-// root.  It creates parent directories as needed.
+// root.  It creates parent directories as needed, and writes
+// LearningsLogHeader before the block when the log is missing or empty.
 //
 // Idempotency (KD6): if a heading line with the same date, class, and tool
 // already exists in the log, the call is a no-op and returns nil.  Two
@@ -222,12 +231,16 @@ func Record(root string, f Failure) error {
 // blockSeparator returns what must go between the existing log content and a
 // new block so that exactly one blank line separates them. learnings_log
 // splits entries on blank lines, so without it the block would merge into the
-// previous entry. An empty log needs nothing, and a log that already ends in
-// a blank line needs nothing more.
+// previous entry. A missing or empty log gets the learnings_log header and a
+// blank line first — otherwise learnings_log would read the block itself as
+// the header and never count it. A log that already ends in a blank line
+// needs nothing more.
 func blockSeparator(existing []byte) string {
 	s := string(existing)
 	switch {
-	case s == "", strings.HasSuffix(s, "\n\n"):
+	case s == "":
+		return LearningsLogHeader + "\n"
+	case strings.HasSuffix(s, "\n\n"):
 		return ""
 	case strings.HasSuffix(s, "\n"):
 		return "\n"

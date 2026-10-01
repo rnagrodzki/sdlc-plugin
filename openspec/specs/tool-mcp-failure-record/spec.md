@@ -76,13 +76,20 @@ error: <errorMessage, one line, max 300 bytes>
 recovered: <recovered, default "no">
 ```
 
-- Exactly one blank line separates the block from the content before it, so the block stays its own `learnings_log` entry. An empty file gets no leading blank line, and a file that already ends in a blank line gets no extra one.
+- Exactly one blank line separates the block from the content before it, so the block stays its own `learnings_log` entry. A file that already ends in a blank line gets no extra one.
+- A missing or empty file first gets the `learnings_log` header `# SDLC Execution Learnings`, then a blank line, then the block. `learnings_log` reads the file's first block as the header, so without it the block would not count as an entry.
 
 #### Scenario: First failure creates the log
 - **WHEN** `.sdlc-v2/learnings/` does not exist and the tool is called with `tool: "test_tool"`, `httpStatus: 401`, `errorMessage: "unauthorized access"`
-- **THEN** `.sdlc-v2/learnings/log.md` is created
+- **THEN** `.sdlc-v2/learnings/log.md` is created and starts with `# SDLC Execution Learnings` and a blank line
 - **AND** it contains the heading `## <today UTC> — mcp-failure[auth]: test_tool`
 - **AND** the heading does not contain `jira`
+- **AND** `learnings_log` action `stats` reports `totalEntries` `1`
+
+#### Scenario: First failure into an empty log
+- **WHEN** `.sdlc-v2/learnings/log.md` exists but is empty and the tool records a failure
+- **THEN** the file starts with `# SDLC Execution Learnings` and a blank line, followed by the block
+- **AND** `learnings_log` action `stats` reports `totalEntries` `1`
 
 #### Scenario: Block after an existing entry
 - **WHEN** the log holds one `learnings_log` entry ending in a single newline and the tool records a failure

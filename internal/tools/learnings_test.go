@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
+	"github.com/rnagrodzki/sdlc-plugin/internal/telemetry"
 )
 
 func TestLearningsAppendCreatesFileWithHeader(t *testing.T) {
@@ -55,6 +56,58 @@ func TestLearningsFailureRecordIsItsOwnEntry(t *testing.T) {
 	if out.Stats == nil || out.Stats.TotalEntries != 2 {
 		data, _ := os.ReadFile(filepath.Join(root, paths.DataDir, "learnings", "log.md"))
 		t.Fatalf("stats = %+v, want totalEntries 2; log:\n%s", out.Stats, data)
+	}
+}
+
+// TestLearningsFailureRecordFirstWriteAddsHeader pins that when
+// mcp_failure_record is the first writer of the log (missing or empty
+// file), it writes the learnings_log header first. Without it the failure
+// block is the file's first block, which learnings_log reads as the header,
+// so the entry is not counted.
+func TestLearningsFailureRecordFirstWriteAddsHeader(t *testing.T) {
+	if telemetry.LearningsLogHeader != learningsLogHeader {
+		t.Fatalf("telemetry.LearningsLogHeader = %q, want learnings_log's header %q", telemetry.LearningsLogHeader, learningsLogHeader)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, logPath string)
+	}{
+		{"missing file", func(*testing.T, string) {}},
+		{"empty file", func(t *testing.T, logPath string) {
+			if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(logPath, nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			logPath := filepath.Join(root, paths.DataDir, "learnings", "log.md")
+			tc.setup(t, logPath)
+
+			if _, err := mcpFailureRecord(root, MCPFailureRecordIn{Tool: "test_tool", HTTPStatus: 401, ErrorMessage: "unauthorized access"}); err != nil {
+				t.Fatalf("mcp_failure_record: %v", err)
+			}
+
+			data, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatalf("read log: %v", err)
+			}
+			if !strings.HasPrefix(string(data), learningsLogHeader+"\n## ") {
+				t.Errorf("log should start with the header, a blank line, then the block; got %q", data)
+			}
+
+			out, err := learningsLog(root, LearningsLogIn{Action: "stats"})
+			if err != nil {
+				t.Fatalf("stats: %v", err)
+			}
+			if out.Stats == nil || out.Stats.TotalEntries != 1 {
+				t.Fatalf("stats = %+v, want totalEntries 1; log:\n%s", out.Stats, data)
+			}
+		})
 	}
 }
 

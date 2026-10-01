@@ -115,7 +115,11 @@ func TestRecord_HeadingNamesOnlyTheTool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	heading, _, _ := strings.Cut(string(data), "\n")
+	body, ok := strings.CutPrefix(string(data), LearningsLogHeader+"\n")
+	if !ok {
+		t.Fatalf("log should start with the header and a blank line, got %q", data)
+	}
+	heading, _, _ := strings.Cut(body, "\n")
 	want := "## " + time.Now().UTC().Format("2006-01-02") + " — mcp-failure[transport]: mcp__github__create_pull_request"
 	if heading != want {
 		t.Errorf("heading = %q, want %q", heading, want)
@@ -239,7 +243,8 @@ func TestRecord_TruncatesLongError(t *testing.T) {
 // TestRecord_OneBlankLineBeforeBlock pins that a new block is separated from
 // the existing log by exactly one blank line, whatever the log ends with.
 // learnings_log splits entries on blank lines, so a missing blank line would
-// merge the failure block into the previous entry.
+// merge the failure block into the previous entry. A missing or empty log gets
+// the learnings_log header first, so the block is not read as the header.
 func TestRecord_OneBlankLineBeforeBlock(t *testing.T) {
 	heading := "## " + time.Now().UTC().Format("2006-01-02") + " — mcp-failure[auth]: test-tool"
 	block := heading + "\ntool: test-tool\nsite: \nproject: \nerror: fail\nrecovered: no\n"
@@ -251,17 +256,20 @@ func TestRecord_OneBlankLineBeforeBlock(t *testing.T) {
 		{"no trailing newline", "## prev entry", "## prev entry\n\n" + block},
 		{"one trailing newline", "## prev entry\n", "## prev entry\n\n" + block},
 		{"already ends in a blank line", "## prev entry\n\n", "## prev entry\n\n" + block},
-		{"empty file", "", block},
+		{"empty file", "", LearningsLogHeader + "\n" + block},
+		{"missing file", "<missing>", LearningsLogHeader + "\n" + block},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
 			logPath := filepath.Join(root, paths.DataDir, "learnings", "log.md")
-			if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(logPath, []byte(tc.existing), 0o644); err != nil {
-				t.Fatal(err)
+			if tc.existing != "<missing>" {
+				if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(logPath, []byte(tc.existing), 0o644); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if err := Record(root, Failure{Class: "auth", Tool: "test-tool", Error: "fail"}); err != nil {
 				t.Fatal(err)
