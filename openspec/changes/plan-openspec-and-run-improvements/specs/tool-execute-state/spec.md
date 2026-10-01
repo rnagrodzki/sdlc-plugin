@@ -128,11 +128,14 @@ The `base-sync` action SHALL bring new commits from `origin/<base>` into the cur
 | # | Condition | `status` | Effect |
 |---|---|---|---|
 | 1 | Config `[execute] baseSync = false` | `disabled` | nothing |
-| 2 | Worktree has uncommitted changes | `skipped` | warning `base-sync skipped: uncommitted changes` |
-| 3 | `git fetch origin <base>` fails | `skipped` | warning `base-sync skipped: <cause>` |
-| 4 | `HEAD..origin/<base>` has 0 commits | `up-to-date` | nothing |
-| 5 | `git merge --no-edit origin/<base>` succeeds | `merged` | merge commit; `behind` = commit count brought in; `sha` = new `HEAD` |
-| 6 | Merge stops on conflicts | `conflict` | merge left in progress; `conflictedFiles[]` returned |
+| 2 | A merge is already in progress (`MERGE_HEAD` exists) | — DomainError `base-sync: merge in progress` | Suggestion `Call base-sync-resolve (abort:true to drop it), then base-sync again.`; no `baseSyncs[]` entry |
+| 3 | Worktree has uncommitted changes | `skipped` | warning `base-sync skipped: working tree has uncommitted changes`; no fetch attempted |
+| 4 | `git fetch origin <base>` fails, or `<base>` does not exist on origin | `skipped` | warning `base-sync skipped: base branch "<b>" not found on origin — push it or fix [git] baseBranch` (missing) or `base-sync skipped: fetch failed: <cause>` (other fetch failure) |
+| 5 | `HEAD..origin/<base>` has 0 commits | `up-to-date` | nothing |
+| 6 | `git merge --no-edit origin/<base>` succeeds | `merged` | merge commit; `behind` = commit count brought in; `sha` = new `HEAD` |
+| 7 | Merge stops on conflicts | `conflict` | merge left in progress; `conflictedFiles[]` returned |
+
+Every row except row 2 appends one `baseSyncs[]` entry.
 
 - `[execute] baseSync` defaults to `true`.
 - Merge, not rebase: already committed wave SHAs stay ancestors of `HEAD`.

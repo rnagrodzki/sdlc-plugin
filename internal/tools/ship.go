@@ -469,15 +469,18 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 			"You are on the default branch %q. Ship pipelines should run on feature branches.", defaultBranch))
 	}
 
-	// KD-1 hard gate: pushing to a default branch (main/master) is never
-	// allowed, regardless of automation.push config. Unlike the warning
-	// above (informational, fires for any step config, driven by actual git
-	// config via gitx.DefaultBranch), this blocks outright — but only when
-	// the resolved steps actually include "pr" (the step that pushes the
-	// branch); a run with no "pr" step never pushes, so there is nothing to
-	// gate. isDefaultBranch is intentionally independent of git config
-	// (hardcoded main/master), per the task contract.
-	if isDefaultBranch(currentBranch) && sliceContainsStr(stepsList, "pr") {
+	// KD-1 hard gate: pushing to a default branch (main/master) or the
+	// configured [git] baseBranch is never allowed, regardless of
+	// automation.push config. Unlike the warning above (informational, fires
+	// for any step config, driven by actual git config via
+	// gitx.DefaultBranch), this blocks outright — but only when the resolved
+	// steps actually include "pr" (the step that pushes the branch); a run
+	// with no "pr" step never pushes, so there is nothing to gate.
+	// isDefaultBranch is intentionally independent of git config (hardcoded
+	// main/master), per the task contract; base extends the gate to cover a
+	// configured baseBranch (e.g. "develop") that isn't main/master.
+	base, _ := gitx.BaseBranch(activeRoot, config.GitBaseBranch(cfgRoot))
+	if (isDefaultBranch(currentBranch) || (base != "" && currentBranch == base)) && sliceContainsStr(stepsList, "pr") {
 		return ShipPrepareOut{}, &mcpserver.DomainError{
 			Msg:        fmt.Sprintf("ship cannot run the \"pr\" step on default branch %q — pushing to main/master is never auto-approved", currentBranch),
 			Suggestion: "Switch to a feature branch, or remove \"pr\" from --steps/ship.steps[] if you don't intend to push.",

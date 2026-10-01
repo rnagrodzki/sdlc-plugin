@@ -421,6 +421,66 @@ func TestShipPrepare_FeatureBranchPushAllowed(t *testing.T) {
 	}
 }
 
+// TestShipPushGateBaseBranch covers the KD-1 push gate's extension to a
+// configured [git] baseBranch, alongside the existing hardcoded main/master
+// coverage: the gate must fire the same *mcpserver.DomainError, with the
+// same message/suggestion shape, whether it's triggered by main/master or by
+// a configured baseBranch — and must NOT fire merely because a baseBranch is
+// configured while the current branch is something else.
+func TestShipPushGateBaseBranch(t *testing.T) {
+	wantDomainErr := func(t *testing.T, err error, branch string) {
+		t.Helper()
+		if err == nil {
+			t.Fatalf("shipPrepare: want DomainError for pr step on branch %q, got nil error", branch)
+		}
+		domainErr, ok := err.(*mcpserver.DomainError)
+		if !ok {
+			t.Fatalf("expected DomainError, got %T: %v", err, err)
+		}
+		wantMsg := fmt.Sprintf("ship cannot run the \"pr\" step on default branch %q — pushing to main/master is never auto-approved", branch)
+		if domainErr.Msg != wantMsg {
+			t.Errorf("Msg = %q, want %q", domainErr.Msg, wantMsg)
+		}
+		wantSuggestion := "Switch to a feature branch, or remove \"pr\" from --steps/ship.steps[] if you don't intend to push."
+		if domainErr.Suggestion != wantSuggestion {
+			t.Errorf("Suggestion = %q, want %q", domainErr.Suggestion, wantSuggestion)
+		}
+	}
+
+	t.Run("configured baseBranch matching current branch fires the gate", func(t *testing.T) {
+		dir := t.TempDir()
+		initGitFixture(t, dir)
+		gitCommit(t, dir, "initial")
+		checkoutBranch(t, dir, "develop")
+		writeFile(t, filepath.Join(dir, paths.DataDir, "config.toml"), "[git]\nbaseBranch = \"develop\"\n")
+
+		_, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true})
+		wantDomainErr(t, err, "develop")
+	})
+
+	t.Run("main still blocked with no baseBranch configured", func(t *testing.T) {
+		dir := t.TempDir()
+		initGitFixture(t, dir)
+		gitCommit(t, dir, "initial")
+
+		_, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true})
+		wantDomainErr(t, err, "main")
+	})
+
+	t.Run("configured baseBranch not matching current branch does not fire", func(t *testing.T) {
+		dir := t.TempDir()
+		initGitFixture(t, dir)
+		gitCommit(t, dir, "initial")
+		checkoutBranch(t, dir, "feature/x")
+		writeFile(t, filepath.Join(dir, paths.DataDir, "config.toml"), "[git]\nbaseBranch = \"develop\"\n")
+
+		_, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true})
+		if err != nil {
+			t.Fatalf("shipPrepare: %v", err)
+		}
+	})
+}
+
 func TestIsDefaultBranch(t *testing.T) {
 	cases := map[string]bool{
 		"main":          true,

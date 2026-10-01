@@ -354,6 +354,45 @@
         "type": "object"
       }
     },
+    "baseSyncs": {
+      "type": "array",
+      "description": "One entry per base-sync call (merge of origin/<base> into the branch between waves). base-sync-resolve moves a conflict entry to resolved or aborted.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "wave": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "status": {
+            "type": "string",
+            "enum": ["disabled", "skipped", "up-to-date", "merged", "conflict", "resolved", "aborted"]
+          },
+          "base": {
+            "type": "string"
+          },
+          "behind": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "sha": {
+            "type": "string"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "conflictedFiles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": ["wave", "status", "base", "at"],
+        "additionalProperties": false
+      }
+    },
     "waveTimeoutSeconds": {
       "type": "integer",
       "minimum": 1,

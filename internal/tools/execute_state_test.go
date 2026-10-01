@@ -8287,3 +8287,363 @@ func TestExecuteStateActionEnumCoversDispatcher(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// base-sync (real git, bare origin in t.TempDir)
+// ---------------------------------------------------------------------------
+
+// baseSyncFixture is a repo on branch "feature" (one commit ahead of main)
+// with a bare "origin" carrying main, an execute run initialized for
+// "feature", and a second clone ("other") used to push new commits to
+// origin/main the way another developer would.
+type baseSyncFixture struct {
+	root      string
+	origin    string
+	other     string
+	statePath string
+}
+
+// newBaseSyncFixture builds a baseSyncFixture whose .sdlc-v2/config.toml
+// holds configTOML. The managed .sdlc-v2/.gitignore (deny-all plus the
+// committable allowlist) keeps the run's state file and local.toml out of
+// git status, and config.toml is committed, so the tree is clean after
+// setup — otherwise base-sync's dirty check would trip on the fixture
+// itself.
+func newBaseSyncFixture(t *testing.T, configTOML string) baseSyncFixture {
+	t.Helper()
+	gitSetup := func(dir string) {
+		mustRun(t, dir, "git", "config", "user.email", "test@test.com")
+		mustRun(t, dir, "git", "config", "user.name", "Test")
+		mustRun(t, dir, "git", "config", "commit.gpgsign", "false")
+	}
+
+	root := t.TempDir()
+	mustRun(t, root, "git", "init")
+	gitSetup(root)
+	writeFile(t, filepath.Join(root, "README.md"), "# test\n")
+	mustRun(t, root, "git", "add", ".")
+	mustRun(t, root, "git", "commit", "-m", "init")
+	mustRun(t, root, "git", "branch", "-M", "main")
+
+	origin := t.TempDir()
+	mustRun(t, origin, "git", "clone", "--bare", root, ".")
+	mustRun(t, root, "git", "remote", "add", "origin", origin)
+	mustRun(t, root, "git", "fetch", "origin")
+
+	mustRun(t, root, "git", "checkout", "-b", "feature")
+	writeFile(t, filepath.Join(root, "feature.go"), "package main\n")
+	mustRun(t, root, "git", "add", ".")
+	mustRun(t, root, "git", "commit", "-m", "feature work")
+
+	dataDir := filepath.Join(root, paths.DataDir)
+	writeFile(t, filepath.Join(dataDir, paths.GitignoreFile), strings.Join(sdlcGitignorePatterns, "\n")+"\n")
+	writeFile(t, filepath.Join(dataDir, "config.toml"), configTOML)
+	writeFile(t, filepath.Join(dataDir, "local.toml"), "")
+
+	out, err := executeState(root, root, ExecuteStateIn{Action: "init", Branch: "feature", Quality: "balanced"}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	statePath := out.(map[string]any)["filePath"].(string)
+
+	// Commit whatever init left in the tracked set (config.toml, .gitignore).
+	mustRun(t, root, "git", "add", "-A")
+	mustRun(t, root, "git", "commit", "-m", "sdlc config")
+	if st := gitOutTrim(t, root, "status", "--porcelain"); st != "" {
+		t.Fatalf("fixture tree is dirty after setup:\n%s", st)
+	}
+
+	other := t.TempDir()
+	mustRun(t, other, "git", "clone", origin, ".")
+	gitSetup(other)
+
+	return baseSyncFixture{root: root, origin: origin, other: other, statePath: statePath}
+}
+
+// pushToOriginMain commits file=content in the other clone and pushes it to
+// origin/main.
+func (fx baseSyncFixture) pushToOriginMain(t *testing.T, file, content string) {
+	t.Helper()
+	writeFile(t, filepath.Join(fx.other, file), content)
+	mustRun(t, fx.other, "git", "add", ".")
+	mustRun(t, fx.other, "git", "commit", "-m", "base: "+file)
+	mustRun(t, fx.other, "git", "push", "origin", "HEAD:main")
+}
+
+func (fx baseSyncFixture) baseSync(t *testing.T, wave int) (ExecBaseSyncOut, error) {
+	t.Helper()
+	out, err := executeState(fx.root, fx.root, ExecuteStateIn{Action: "base-sync", Branch: "feature", Wave: intPtr(wave)}, fixedClock(testNow))
+	if err != nil {
+		return ExecBaseSyncOut{}, err
+	}
+	res, ok := out.(ExecBaseSyncOut)
+	if !ok {
+		t.Fatalf("base-sync result = %T, want ExecBaseSyncOut", out)
+	}
+	return res, nil
+}
+
+// baseSyncs returns the state file's baseSyncs[] entries (nil when absent).
+func (fx baseSyncFixture) baseSyncs(t *testing.T) []map[string]any {
+	t.Helper()
+	raw, err := os.ReadFile(fx.statePath)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("decode state: %v", err)
+	}
+	if _, present := doc["baseSyncs"]; !present {
+		return nil
+	}
+	list, ok := doc["baseSyncs"].([]any)
+	if !ok {
+		t.Fatalf("baseSyncs = %T, want array", doc["baseSyncs"])
+	}
+	entries := make([]map[string]any, 0, len(list))
+	for _, e := range list {
+		entries = append(entries, e.(map[string]any))
+	}
+	return entries
+}
+
+// assertOneBaseSyncEntry checks the state holds exactly one baseSyncs[]
+// entry matching want (wave 2, at = testNow), that sha/conflictedFiles are
+// present only when expected, and that the state still matches the schema.
+func (fx baseSyncFixture) assertOneBaseSyncEntry(t *testing.T, res ExecBaseSyncOut) {
+	t.Helper()
+	entries := fx.baseSyncs(t)
+	if len(entries) != 1 {
+		t.Fatalf("baseSyncs has %d entries, want 1: %v", len(entries), entries)
+	}
+	e := entries[0]
+	if e["wave"] != float64(2) || e["status"] != res.Status || e["base"] != res.Base || e["behind"] != float64(res.Behind) {
+		t.Errorf("entry = %v, want wave 2, status %q, base %q, behind %d", e, res.Status, res.Base, res.Behind)
+	}
+	if e["at"] != testNow.UTC().Format(time.RFC3339) {
+		t.Errorf("entry at = %v, want %s", e["at"], testNow.UTC().Format(time.RFC3339))
+	}
+	sha, hasSHA := e["sha"]
+	if res.SHA == "" && hasSHA {
+		t.Errorf("entry has sha %v, want none for status %q", sha, res.Status)
+	}
+	if res.SHA != "" && sha != res.SHA {
+		t.Errorf("entry sha = %v, want %s", sha, res.SHA)
+	}
+	files, hasFiles := e["conflictedFiles"]
+	if res.Status != "conflict" && hasFiles {
+		t.Errorf("entry has conflictedFiles %v, want none for status %q", files, res.Status)
+	}
+	if res.Status == "conflict" && fmt.Sprint(files) != fmt.Sprint(res.ConflictedFiles) {
+		t.Errorf("entry conflictedFiles = %v, want %v", files, res.ConflictedFiles)
+	}
+	assertStateMatchesSchema(t, fx.statePath)
+}
+
+func assertNextWaveStart(t *testing.T, res ExecBaseSyncOut) {
+	t.Helper()
+	if res.Next == nil || res.Next.Instruction != "Call wave-start for wave 3." {
+		t.Errorf("next = %+v, want \"Call wave-start for wave 3.\"", res.Next)
+	}
+}
+
+// TestExecuteBaseSync drives base-sync through every status with real git:
+// disabled, merge-in-progress DomainError, skipped (dirty tree, base missing
+// on origin, fetch failure), up-to-date, merged, and conflict.
+func TestExecuteBaseSync(t *testing.T) {
+	t.Run("disabled", func(t *testing.T) {
+		fx := newBaseSyncFixture(t, "[execute]\nbaseSync = false\n")
+		fx.pushToOriginMain(t, "base.txt", "new\n")
+		headBefore := gitOutTrim(t, fx.root, "rev-parse", "HEAD")
+		originBefore := gitOutTrim(t, fx.root, "rev-parse", "refs/remotes/origin/main")
+
+		res, err := fx.baseSync(t, 2)
+		if err != nil {
+			t.Fatalf("base-sync: %v", err)
+		}
+		if res.Status != "disabled" || res.Base != "main" || res.Behind != 0 || res.SHA != "" || len(res.Warnings) != 0 {
+			t.Errorf("result = %+v, want disabled on main with no git effect", res)
+		}
+		assertNextWaveStart(t, res)
+		if got := gitOutTrim(t, fx.root, "rev-parse", "HEAD"); got != headBefore {
+			t.Errorf("HEAD moved: %s -> %s", headBefore, got)
+		}
+		if got := gitOutTrim(t, fx.root, "rev-parse", "refs/remotes/origin/main"); got != originBefore {
+			t.Errorf("origin/main was fetched (%s -> %s); disabled must not touch git", originBefore, got)
+		}
+		fx.assertOneBaseSyncEntry(t, res)
+	})
+
+	t.Run("merge in progress is a DomainError and records nothing", func(t *testing.T) {
+		fx := newBaseSyncFixture(t, "")
+		fx.pushToOriginMain(t, "README.md", "# base change\n")
+		writeFile(t, filepath.Join(fx.root, "README.md"), "# feature change\n")
+		mustRun(t, fx.root, "git", "commit", "-am", "feature readme")
+		mustRun(t, fx.root, "git", "fetch", "origin", "main")
+		if _, err := execRun(fx.root, "git", "merge", "--no-edit", "origin/main"); err == nil {
+			t.Fatal("setup: expected git merge to stop on a conflict")
+		}
+
+		_, err := fx.baseSync(t, 2)
+		var de *mcpserver.DomainError
+		if !errors.As(err, &de) {
+			t.Fatalf("err = %v (%T), want *mcpserver.DomainError", err, err)
+		}
+		if de.Msg != "base-sync: merge in progress" {
+			t.Errorf("Msg = %q", de.Msg)
+		}
+		if de.Suggestion != "Call base-sync-resolve (abort:true to drop it), then base-sync again." {
+			t.Errorf("Suggestion = %q", de.Suggestion)
+		}
+		if entries := fx.baseSyncs(t); entries != nil {
+			t.Errorf("baseSyncs = %v, want absent", entries)
+		}
+	})
+
+	t.Run("dirty tree skips without fetching", func(t *testing.T) {
+		fx := newBaseSyncFixture(t, "")
+		fx.pushToOriginMain(t, "base.txt", "new\n")
+		originBefore := gitOutTrim(t, fx.root, "rev-parse", "refs/remotes/origin/main")
+		writeFile(t, filepath.Join(fx.root, "scratch.txt"), "uncommitted\n")
+
+		res, err := fx.baseSync(t, 2)
+		if err != nil {
+			t.Fatalf("base-sync: %v", err)
+		}
+		if res.Status != "skipped" || res.Base != "main" {
+			t.Errorf("result = %+v, want skipped on main", res)
+		}
+		if len(res.Warnings) != 1 || res.Warnings[0] != "base-sync skipped: working tree has uncommitted changes" {
+			t.Errorf("warnings = %q", res.Warnings)
+		}
+		assertNextWaveStart(t, res)
+		if got := gitOutTrim(t, fx.root, "rev-parse", "refs/remotes/origin/main"); got != originBefore {
+			t.Errorf("origin/main was fetched (%s -> %s); a dirty tree must skip before the fetch", originBefore, got)
+		}
+		fx.assertOneBaseSyncEntry(t, res)
+	})
+
+	t.Run("configured base missing on origin skips", func(t *testing.T) {
+		fx := newBaseSyncFixture(t, "[git]\nbaseBranch = \"develop\"\n")
+
+		res, err := fx.baseSync(t, 2)
+		if err != nil {
+			t.Fatalf("base-sync: %v", err)
+		}
+		if res.Status != "skipped" || res.Base != "develop" {
+			t.Errorf("result = %+v, want skipped on develop", res)
+		}
+		want := `base-sync skipped: base branch "develop" not found on origin — push it or fix [git] baseBranch`
+		if len(res.Warnings) != 1 || res.Warnings[0] != want {
+			t.Errorf("warnings = %q, want [%q]", res.Warnings, want)
+		}
+		assertNextWaveStart(t, res)
+		fx.assertOneBaseSyncEntry(t, res)
+	})
+
+	t.Run("fetch failure skips", func(t *testing.T) {
+		fx := newBaseSyncFixture(t, "")
+		mustRun(t, fx.root, "git", "remote", "set-url", "origin", filepath.Join(t.TempDir(), "missing-remote"))
+
+		res, err := fx.baseSync(t, 2)
+		if err != nil {
+			t.Fatalf("base-sync: %v", err)
+		}
+		if res.Status != "skipped" || res.Base != "main" {
+			t.Errorf("result = %+v, want skipped on main", res)
+		}
+		if len(res.Warnings) != 1 || !strings.HasPrefix(res.Warnings[0], "base-sync skipped: fetch failed: ") {
+			t.Errorf("warnings = %q, want one \"base-sync skipped: fetch failed: <cause>\"", res.Warnings)
+		}
+		assertNextWaveStart(t, res)
+		fx.assertOneBaseSyncEntry(t, res)
+	})
+
+	t.Run("up-to-date", func(t *testing.T) {
+		fx := newBaseSyncFixture(t, "")
+		headBefore := gitOutTrim(t, fx.root, "rev-parse", "HEAD")
+
+		res, err := fx.baseSync(t, 2)
+		if err != nil {
+			t.Fatalf("base-sync: %v", err)
+		}
+		if res.Status != "up-to-date" || res.Base != "main" || res.Behind != 0 || res.SHA != "" || len(res.Warnings) != 0 {
+			t.Errorf("result = %+v, want up-to-date on main", res)
+		}
+		assertNextWaveStart(t, res)
+		if got := gitOutTrim(t, fx.root, "rev-parse", "HEAD"); got != headBefore {
+			t.Errorf("HEAD moved: %s -> %s", headBefore, got)
+		}
+		fx.assertOneBaseSyncEntry(t, res)
+	})
+
+	t.Run("merged", func(t *testing.T) {
+		fx := newBaseSyncFixture(t, "")
+		for i := 1; i <= 3; i++ {
+			fx.pushToOriginMain(t, fmt.Sprintf("base%d.txt", i), "new\n")
+		}
+		waveSHA := gitOutTrim(t, fx.root, "rev-parse", "HEAD")
+
+		res, err := fx.baseSync(t, 2)
+		if err != nil {
+			t.Fatalf("base-sync: %v", err)
+		}
+		if res.Status != "merged" || res.Base != "main" || res.Behind != 3 {
+			t.Errorf("result = %+v, want merged on main with behind 3", res)
+		}
+		assertNextWaveStart(t, res)
+		head := gitOutTrim(t, fx.root, "rev-parse", "HEAD")
+		if res.SHA != head || head == waveSHA {
+			t.Errorf("sha = %q, HEAD = %q (before %q); want sha = new HEAD", res.SHA, head, waveSHA)
+		}
+		if parents := strings.Fields(gitOutTrim(t, fx.root, "rev-list", "--parents", "-n", "1", "HEAD")); len(parents) != 3 {
+			t.Errorf("HEAD is not a merge commit: rev-list --parents = %v", parents)
+		}
+		if _, err := execRun(fx.root, "git", "merge-base", "--is-ancestor", waveSHA, "HEAD"); err != nil {
+			t.Errorf("earlier wave commit %s is no longer an ancestor of HEAD: %v", waveSHA, err)
+		}
+		if st := gitOutTrim(t, fx.root, "status", "--porcelain"); st != "" {
+			t.Errorf("tree dirty after merge:\n%s", st)
+		}
+		fx.assertOneBaseSyncEntry(t, res)
+	})
+
+	t.Run("conflict leaves the merge in progress", func(t *testing.T) {
+		fx := newBaseSyncFixture(t, "")
+		fx.pushToOriginMain(t, "README.md", "# base change\n")
+		writeFile(t, filepath.Join(fx.root, "README.md"), "# feature change\n")
+		mustRun(t, fx.root, "git", "commit", "-am", "feature readme")
+
+		res, err := fx.baseSync(t, 2)
+		if err != nil {
+			t.Fatalf("base-sync: %v", err)
+		}
+		if res.Status != "conflict" || res.Base != "main" || res.Behind != 1 || res.SHA != "" {
+			t.Errorf("result = %+v, want conflict on main with behind 1", res)
+		}
+		if len(res.ConflictedFiles) != 1 || res.ConflictedFiles[0] != "README.md" {
+			t.Errorf("conflictedFiles = %q, want [README.md]", res.ConflictedFiles)
+		}
+		wantNext := "Resolve the conflicts in conflictedFiles, then call base-sync-resolve. Call base-sync-resolve with abort:true if they cannot be resolved."
+		if res.Next == nil || res.Next.Instruction != wantNext {
+			t.Errorf("next = %+v, want %q", res.Next, wantNext)
+		}
+		if _, err := execRun(fx.root, "git", "rev-parse", "-q", "--verify", "MERGE_HEAD"); err != nil {
+			t.Errorf("no merge in progress after conflict (MERGE_HEAD missing): %v", err)
+		}
+		fx.assertOneBaseSyncEntry(t, res)
+	})
+
+	t.Run("wave is required", func(t *testing.T) {
+		fx := newBaseSyncFixture(t, "")
+		_, err := executeState(fx.root, fx.root, ExecuteStateIn{Action: "base-sync", Branch: "feature"}, fixedClock(testNow))
+		var de *mcpserver.DomainError
+		if !errors.As(err, &de) {
+			t.Fatalf("err = %v (%T), want *mcpserver.DomainError", err, err)
+		}
+		if entries := fx.baseSyncs(t); entries != nil {
+			t.Errorf("baseSyncs = %v, want absent", entries)
+		}
+	})
+}

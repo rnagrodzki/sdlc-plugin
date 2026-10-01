@@ -187,8 +187,9 @@ type ReportConfig struct {
 
 // PushConfig controls whether a feature-branch git push during ship is
 // auto-approved without a manual confirmation pause (KD-1). A default-branch
-// (main/master) push is never auto-approved by this setting — ship.go's
-// isDefaultBranch hard gate rejects it server-side regardless of config.
+// (main/master) or [git] baseBranch push is never auto-approved by this
+// setting — ship.go's push gate rejects it server-side; only the base branch
+// name comes from config.
 //
 // Known limitation shared with DriftConfig.MaxWarningRate: FeatureBranchAutoApprove
 // is a plain bool, so its zero value can't distinguish an explicit "false"

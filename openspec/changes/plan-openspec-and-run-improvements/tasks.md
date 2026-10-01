@@ -47,7 +47,7 @@ flowchart LR
 ## 4. Execute state
 
 - [x] 4.1 Call `Materialize` at the start of `init` before ref stamping, persist `openspec`, return `materialized` in `internal/tools/execute_state.go` — verify: `go test ./internal/tools/ -run 'TestExecuteInitMaterialize'` <!-- ref:4-1-call-materialize-at-the-start-of-ini-9c4646 -->
-- [ ] 4.2 Add `base-sync` action (disabled, skipped dirty, skipped fetch, up-to-date, merged, conflict; `baseSyncs[]` record) in `internal/tools/execute_state.go` — verify: `go test ./internal/tools/ -run TestExecuteBaseSync` (real git, remote in `t.TempDir`) <!-- ref:4-2-add-base-sync-action-disabled-skippe-65f7a1 -->
+- [x] 4.2 Add `base-sync` action (disabled, skipped dirty, skipped fetch, up-to-date, merged, conflict; `baseSyncs[]` record) in `internal/tools/execute_state.go` — verify: `go test ./internal/tools/ -run TestExecuteBaseSync` (real git, remote in `t.TempDir`) <!-- ref:4-2-add-base-sync-action-disabled-skippe-65f7a1 -->
 - [ ] 4.3 Add `base-sync-resolve` action (`abort`, unmerged check, marker scan, commit) and the `Abort` input field in `internal/tools/execute_state.go` — verify: `go test ./internal/tools/ -run TestExecuteBaseSyncResolve` <!-- ref:4-3-add-base-sync-resolve-action-abort-u-137962 -->
 - [ ] 4.4 Update the action list, unknown-action message, and annotations entry for the 2 new actions in `internal/tools/execute_state.go` and `internal/tools/annotations_test.go` — verify: `go test ./internal/tools/ -run 'TestExecuteStateUnknownAction|TestAnnotations'` <!-- ref:4-4-update-the-action-list-unknown-actio-58e6d2 -->
 - [ ] 4.5 Assert every earlier `committedSha` stays an ancestor after a `merged` sync and that resume cross-check passes in `internal/tools/execute_state_test.go` — verify: `go test ./internal/tools/ -run TestBaseSyncKeepsWaveAncestry` <!-- ref:4-5-assert-every-earlier-committedsha-st-4b9a5d -->
@@ -63,7 +63,7 @@ flowchart LR
 ## 6. Base branch adoption
 
 - [x] 6.1 Use `gitx.BaseBranch` instead of `DefaultBranch` for commit-list ranges and new-PR base in `internal/tools/commit.go`, `internal/tools/pr.go` (explicit `--base` still wins) — verify: `go test ./internal/tools/ -run 'TestPrBaseBranchConfig|TestCommitRangeBaseBranch'` <!-- ref:6-1-use-gitx-basebranch-instead-of-defau-5d0e30 -->
-- [ ] 6.2 Use `gitx.BaseBranch` for the review diff base and for the default-branch push gate in `internal/tools/review.go`, `internal/tools/ship.go` — verify: `go test ./internal/tools/ -run 'TestReviewBaseBranchConfig|TestShipPushGateBaseBranch'` <!-- ref:6-2-use-gitx-basebranch-for-the-review-d-6c991b -->
+- [x] 6.2 Use `gitx.BaseBranch` for the review diff base and for the default-branch push gate in `internal/tools/review.go`, `internal/tools/ship.go` — verify: `go test ./internal/tools/ -run 'TestReviewBaseBranchConfig|TestShipPushGateBaseBranch'` <!-- ref:6-2-use-gitx-basebranch-for-the-review-d-6c991b -->
 - [x] 6.3 Document `[git] baseBranch` in `docs/getting-started.md` and the setup config section — verify: `links_validate` on the changed docs <!-- ref:6-3-document-git-basebranch-in-docs-gett-2c127b -->
 
 ## 7. Worktree state links
