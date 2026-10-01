@@ -1,6 +1,8 @@
 package tools
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,11 +20,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/santhosh-tekuri/jsonschema/v6"
+
 	version "github.com/rnagrodzki/sdlc-plugin"
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/configmigrate"
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/openspec"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/shipmeta"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
@@ -516,6 +521,231 @@ func TestExecState_Init_PipelineAuto(t *testing.T) {
 			t.Errorf("expected non-empty warnings for corrupt ship state, got %v", m["warnings"])
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// init: openspec materialize
+//
+// init materializes a plan's staged OpenSpec change (openspec.Materialize)
+// before state.Init writes the run's state file, so a materialize failure
+// leaves no execute-state file behind. These tests cover: the create path
+// (and that it runs before the ref-stamp step, against the same freshly
+// created tasks.md), the idempotent "already" path, and a materialize error
+// aborting init before any state file is written.
+// ---------------------------------------------------------------------------
+
+// matPlanHeaders returns a plan with both the **Source:** header (consumed by
+// the ref-stamp step) and the **OpenSpec-Staging:** header (consumed by
+// openspec.Materialize), naming the same change — the shape a real staged
+// plan has after openspec_instructions then openspec_stage.
+func matPlanHeaders(change string) string {
+	return "# Plan\n\n**Source:** openspec/changes/" + change + "/\n" +
+		"**OpenSpec-Staging:** .sdlc-v2/openspec-staging/" + change + "/\n\n## Tasks\n"
+}
+
+// writeMaterializeStaging writes files into
+// <root>/.sdlc-v2/openspec-staging/<change>/ plus a stage.json recording each
+// file's correct SHA-256, mirroring what openspec.Stage leaves behind.
+func writeMaterializeStaging(t *testing.T, root, change string, files map[string]string) {
+	t.Helper()
+	dir := filepath.Join(root, ".sdlc-v2", "openspec-staging", change)
+	m := openspec.StageManifest{Change: change, Schema: "spec-driven"}
+	for path, content := range files {
+		writeFile(t, filepath.Join(dir, filepath.FromSlash(path)), content)
+		sum := sha256.Sum256([]byte(content))
+		m.Files = append(m.Files, openspec.StagedFile{Path: path, SHA256: hex.EncodeToString(sum[:])})
+	}
+	if err := fsx.AtomicWriteJSON(filepath.Join(dir, openspec.StageManifestFile), m); err != nil {
+		t.Fatalf("write stage.json: %v", err)
+	}
+}
+
+// stubOpenspecForMaterialize installs an `openspec` PATH stub for the two CLI
+// calls Materialize's rule 8 (createChange) makes: `new change <c>` (creates
+// openspec/changes/<c>/.openspec.yaml, mirroring the real CLI) and `validate
+// <c> --strict`.
+func stubOpenspecForMaterialize(t *testing.T) {
+	t.Helper()
+	binDir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"case \"$1 $2\" in\n" +
+		"  \"new change\")\n" +
+		"    mkdir -p \"openspec/changes/$3\" && : > \"openspec/changes/$3/.openspec.yaml\"\n" +
+		"    echo \"Created change '$3'\"\n" +
+		"    exit 0 ;;\n" +
+		"esac\n" +
+		"case \"$1\" in\n" +
+		"  validate)\n" +
+		"    echo \"Change '$2' is valid\"\n" +
+		"    exit 0 ;;\n" +
+		"esac\n" +
+		"exit 1\n"
+	if err := os.WriteFile(filepath.Join(binDir, "openspec"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write openspec stub: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// TestExecuteInitMaterialize_Created covers the create path end to end: a
+// staged plan with no existing target directory materializes
+// openspec/changes/<change>/ before state.Init runs, the result and the
+// persisted state both carry openspec:{change, materialized:"created"}, and
+// the ref-stamp step (which runs after materialize) stamps the freshly
+// created tasks.md -- proof materialize ran first.
+func TestExecuteInitMaterialize_Created(t *testing.T) {
+	root := t.TempDir()
+	initGitFixture(t, root)
+	seedInitConfig(t, root)
+	stubOpenspecForMaterialize(t)
+	writeMaterializeStaging(t, root, "add-widget", map[string]string{"tasks.md": "- [ ] First task\n"})
+	planPath := filepath.Join(root, "plan.md")
+	writeFile(t, planPath, matPlanHeaders("add-widget"))
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action:   "init",
+		Branch:   "feat/test",
+		Quality:  "standard",
+		PlanPath: planPath,
+	}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	m, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("result = %T, want map[string]any", result)
+	}
+	osp, ok := m["openspec"].(map[string]any)
+	if !ok {
+		t.Fatalf("result[\"openspec\"] = %v (%T), want map[string]any", m["openspec"], m["openspec"])
+	}
+	if osp["change"] != "add-widget" || osp["materialized"] != "created" {
+		t.Errorf("result openspec = %v, want {change:add-widget materialized:created}", osp)
+	}
+	assertNoWarning(t, initResultWarnings(t, result), "openspec ref stamp skipped")
+
+	// Ordering proof: materialize creates tasks.md; the ref-stamp step then
+	// finds and stamps that same freshly created file.
+	tasksPath := filepath.Join(root, "openspec", "changes", "add-widget", "tasks.md")
+	stamped, readErr := os.ReadFile(tasksPath)
+	if readErr != nil {
+		t.Fatalf("read stamped tasks.md: %v", readErr)
+	}
+	if !strings.Contains(string(stamped), "<!-- ref:") {
+		t.Errorf("tasks.md gained no ref comment; got %q", string(stamped))
+	}
+
+	// The persisted state file carries the same openspec field, and it
+	// validates against the updated schema.
+	data := readExecState(t, root, "feat/test")
+	dataOsp, ok := data["openspec"].(map[string]any)
+	if !ok || dataOsp["change"] != "add-widget" || dataOsp["materialized"] != "created" {
+		t.Fatalf("persisted openspec = %v, want {change:add-widget materialized:created}", data["openspec"])
+	}
+	assertStateMatchesSchema(t, m["filePath"].(string))
+}
+
+// TestExecuteInitMaterialize_Already covers the idempotent path: a second
+// init against an already-materialized change reports materialized:"already"
+// and does not re-run the CLI or change the target directory.
+func TestExecuteInitMaterialize_Already(t *testing.T) {
+	root := t.TempDir()
+	initGitFixture(t, root)
+	seedInitConfig(t, root)
+	stubOpenspecForMaterialize(t)
+	writeMaterializeStaging(t, root, "add-widget", map[string]string{"tasks.md": "- [ ] First task\n"})
+	planPath := filepath.Join(root, "plan.md")
+	writeFile(t, planPath, matPlanHeaders("add-widget"))
+
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action:   "init",
+		Branch:   "feat/test",
+		Quality:  "standard",
+		PlanPath: planPath,
+	}, fixedClock(testNow)); err != nil {
+		t.Fatalf("first init: %v", err)
+	}
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action:   "init",
+		Branch:   "feat/test2",
+		Quality:  "standard",
+		PlanPath: planPath,
+	}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("second init: %v", err)
+	}
+	m := result.(map[string]any)
+	osp, ok := m["openspec"].(map[string]any)
+	if !ok {
+		t.Fatalf("result[\"openspec\"] = %v, want map[string]any", m["openspec"])
+	}
+	if osp["materialized"] != "already" {
+		t.Errorf("materialized = %v, want already", osp["materialized"])
+	}
+}
+
+// TestExecuteInitMaterialize_TargetDiffers covers a Materialize error (rule
+// 5: target and staging both exist and differ): init must return a
+// DomainError and must NOT call state.Init -- no execute-state file is
+// written.
+func TestExecuteInitMaterialize_TargetDiffers(t *testing.T) {
+	root := t.TempDir()
+	initGitFixture(t, root)
+	seedInitConfig(t, root)
+
+	targetDir := filepath.Join(root, "openspec", "changes", "add-widget")
+	writeFile(t, filepath.Join(targetDir, ".openspec.yaml"), "schema: spec-driven\n")
+	writeFile(t, filepath.Join(targetDir, "tasks.md"), "- [ ] Different\n")
+	writeMaterializeStaging(t, root, "add-widget", map[string]string{"tasks.md": "- [ ] First task\n"})
+	planPath := filepath.Join(root, "plan.md")
+	writeFile(t, planPath, matPlanHeaders("add-widget"))
+
+	_, err := executeState(root, root, ExecuteStateIn{
+		Action:   "init",
+		Branch:   "feat/test",
+		Quality:  "standard",
+		PlanPath: planPath,
+	}, fixedClock(testNow))
+	if err == nil {
+		t.Fatal("expected error for materialize target-differs conflict")
+	}
+	if _, ok := err.(*mcpserver.DomainError); !ok {
+		t.Fatalf("err = %T (%v), want *mcpserver.DomainError", err, err)
+	}
+
+	st, findErr := state.Find(root, "execute", "feat/test")
+	if findErr != nil {
+		t.Fatalf("state.Find: %v", findErr)
+	}
+	if st != nil {
+		t.Fatalf("execute state file exists at %s after materialize error; want none written", st.Path)
+	}
+}
+
+// assertStateMatchesSchema validates the state file at filePath against
+// plugins/sdlc/schemas/execute-state.schema.json.
+func assertStateMatchesSchema(t *testing.T, filePath string) {
+	t.Helper()
+	schemaPath, err := filepath.Abs(filepath.Join("..", "..", "plugins", "sdlc", "schemas", "execute-state.schema.json"))
+	if err != nil {
+		t.Fatalf("abs schema path: %v", err)
+	}
+	sch, err := jsonschema.NewCompiler().Compile(schemaPath)
+	if err != nil {
+		t.Fatalf("compile schema: %v", err)
+	}
+	raw, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("read state file: %v", err)
+	}
+	inst, err := jsonschema.UnmarshalJSON(strings.NewReader(string(raw)))
+	if err != nil {
+		t.Fatalf("unmarshal state: %v", err)
+	}
+	if err := sch.Validate(inst); err != nil {
+		t.Errorf("state file does not match execute-state.schema.json: %v\nstate: %s", err, raw)
+	}
 }
 
 // ---------------------------------------------------------------------------

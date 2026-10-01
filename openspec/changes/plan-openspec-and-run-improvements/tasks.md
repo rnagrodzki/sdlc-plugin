@@ -46,7 +46,7 @@ flowchart LR
 
 ## 4. Execute state
 
-- [ ] 4.1 Call `Materialize` at the start of `init` before ref stamping, persist `openspec`, return `materialized` in `internal/tools/execute_state.go` — verify: `go test ./internal/tools/ -run 'TestExecuteInitMaterialize'` <!-- ref:4-1-call-materialize-at-the-start-of-ini-9c4646 -->
+- [x] 4.1 Call `Materialize` at the start of `init` before ref stamping, persist `openspec`, return `materialized` in `internal/tools/execute_state.go` — verify: `go test ./internal/tools/ -run 'TestExecuteInitMaterialize'` <!-- ref:4-1-call-materialize-at-the-start-of-ini-9c4646 -->
 - [ ] 4.2 Add `base-sync` action (disabled, skipped dirty, skipped fetch, up-to-date, merged, conflict; `baseSyncs[]` record) in `internal/tools/execute_state.go` — verify: `go test ./internal/tools/ -run TestExecuteBaseSync` (real git, remote in `t.TempDir`) <!-- ref:4-2-add-base-sync-action-disabled-skippe-65f7a1 -->
 - [ ] 4.3 Add `base-sync-resolve` action (`abort`, unmerged check, marker scan, commit) and the `Abort` input field in `internal/tools/execute_state.go` — verify: `go test ./internal/tools/ -run TestExecuteBaseSyncResolve` <!-- ref:4-3-add-base-sync-resolve-action-abort-u-137962 -->
 - [ ] 4.4 Update the action list, unknown-action message, and annotations entry for the 2 new actions in `internal/tools/execute_state.go` and `internal/tools/annotations_test.go` — verify: `go test ./internal/tools/ -run 'TestExecuteStateUnknownAction|TestAnnotations'` <!-- ref:4-4-update-the-action-list-unknown-actio-58e6d2 -->

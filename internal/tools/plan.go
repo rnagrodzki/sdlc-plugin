@@ -1583,7 +1583,7 @@ func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepar
 
 	// 1a. Plan template detection.
 	planTemplate := PlanTemplate{}
-	planTemplatePath := filepath.Join(mainRoot, paths.DataDir, "plan-template.md")
+	planTemplatePath := filepath.Join(mainRoot, paths.DataDir, paths.PlanTemplateFile)
 	if fileExists(planTemplatePath) {
 		p := planTemplatePath
 		planTemplate.Path = &p

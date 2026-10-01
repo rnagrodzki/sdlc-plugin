@@ -24,6 +24,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/openspec"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/pipeline"
 	"github.com/rnagrodzki/sdlc-plugin/internal/shipmeta"
@@ -539,7 +540,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 
 - wave-compute: Stateless — parses the plan file at planPath and computes the wave schedule (no state file read/write). Requires planPath. Optional: extraDepsJson (JSON array of {task, dependsOn, reason} merged with each task's explicit "Depends on" field). Returns {route, preWave, waves[{number, tasks[], expectedFiles[], verificationHint}]}.
 - resolve-config: resolves this run's effective auto mode, quality tier, commit-waves setting and high-risk auto-approval from CLI flags, this branch's ship state, local.toml [executePrefs] (auto, quality, highRiskAutoApprove) and config.toml [execute] (commitWaves). Reads and writes no run state file, but is not side-effect-free: it first moves auto, quality or highRiskAutoApprove from config.toml [execute] to local.toml [executePrefs] (reported in warnings); fails with a data error (message plus suggestion) when that move is not safe. Optional: branch (enables the ship-state auto cross-read), quality (--quality), auto (--auto), commitWaves (--commit-waves, "true"|"false"). An out-of-enum quality warns and falls through to config, then the auto default, rather than failing. Returns {auto, quality (always present; empty means "ask the user for a tier"), commitWaves (bool; CLI > config execute.commitWaves > default true), highRiskAutoApprove, sources, warnings?}.
-- init: Create execution state. Runs the same config auto-migration gate as ship_prepare first (migrates and backs up an outdated config, or fails with a /setup pointer if none exists); result may include a "migration" report. Returns {filePath, pipelineAuto (true when this branch's ship state has flags.auto=true — reported for diagnostics only; the execute SKILL.md high-risk gate no longer reads it, because resolve-config performs the same ship-state cross-read at Step 0 and folds the result into its effective auto value), warnings? (e.g. this branch's ship state exists but is unreadable), migration?}. Requires branch, quality. Optional: totalTasks, plannedTaskIds, planPath, planHash, commitWaves ("true"|"false"; any other value is stored as "true"), sessionId (Claude Code session ID stamped on the state), waveTimeoutSeconds and waveIntervalSeconds (this run's wave deadline and heartbeat cadence; when omitted or 0 they fall back to this branch's ship state flags.executeWaveTimeout/executeWaveInterval, then 1800s/60s).
+- init: Create execution state. Runs the same config auto-migration gate as ship_prepare first (migrates and backs up an outdated config, or fails with a /setup pointer if none exists); result may include a "migration" report. When the plan has an **OpenSpec-Staging:** header, first creates and git-adds openspec/changes/<name>/ (see openspec.Materialize) before the state file is written at all — a materialize failure aborts init with no state file created. Returns {filePath, pipelineAuto (true when this branch's ship state has flags.auto=true — reported for diagnostics only; the execute SKILL.md high-risk gate no longer reads it, because resolve-config performs the same ship-state cross-read at Step 0 and folds the result into its effective auto value), openspec? ({change, materialized: "created"|"already"}; present only when the plan staged a change), warnings? (e.g. this branch's ship state exists but is unreadable), migration?}. Requires branch, quality. Optional: totalTasks, plannedTaskIds, planPath, planHash, commitWaves ("true"|"false"; any other value is stored as "true"), sessionId (Claude Code session ID stamped on the state), waveTimeoutSeconds and waveIntervalSeconds (this run's wave deadline and heartbeat cadence; when omitted or 0 they fall back to this branch's ship state flags.executeWaveTimeout/executeWaveInterval, then 1800s/60s).
 - wave-start: Begin a wave. Returns narration (summary, display with task list + ETA, next). Requires wave. Optional: branch, tasksJson, runId (for fact sheets), detail ("concise"|"full"). If the run recorded a planHash at init, the plan file's current sha256 is compared against it first; a mismatch returns {halt:true, reason:"plan hash mismatch"} instead of narration and does not start the wave. An unreadable/missing plan file does not halt — it proceeds with a warning in the response's "warnings" field. Seeds server-owned dispatch state (dispatchedAt, workerName, batchId/batchIndex, attempt:1) for every valid tasksJson entry that doesn't already have one — a task that already has server state (wave-start called again on resume) is left untouched. Seeding failure is non-fatal and appends to "warnings".
 - wave-done: Complete a wave. Returns narration (summary, display with outcomes, timing, next wave preview + ETA). Records wave duration to TimingsStore. Requires wave. Optional: branch, decisions, status ("completed" default, or "partial"), timedOut (stamps timedOut:true on the wave), detail ("concise"|"full").
 - wave-fail: Fail a wave. Returns narration (summary, display with failure cause). Requires wave. Optional: branch, timedOut, error (failure cause, recorded as an issue and in failedWave), detail ("concise"|"full").
@@ -2229,6 +2230,48 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 		migrationReport = &MigrationReport{Changes: changes, BackupPath: backupPath}
 	}
 
+	// Read the plan once, before state.Init, so a staged OpenSpec change
+	// (see openspec.Materialize) can be created before the run state file is
+	// written — a materialize failure must leave no execute-state file
+	// behind — and the same content is reused below for the ref-stamp step
+	// instead of reading the file twice. An unreadable plan is warning-only,
+	// exactly as it always was for the ref-stamp step alone: collected into
+	// earlyWarnings here and merged into initWarnings once execPipelineAuto
+	// below returns its own slice.
+	var planContent string
+	var earlyWarnings []string
+	if in.PlanPath != "" {
+		content, readErr := os.ReadFile(in.PlanPath)
+		if readErr != nil {
+			// A caller-supplied planPath that cannot be read is worth
+			// surfacing: both the materialize check and the ref stamp are
+			// silently skipped, and without a warning the caller has no way
+			// to tell that from "the plan is not an openspec plan". Still
+			// non-fatal — init must succeed.
+			earlyWarnings = append(earlyWarnings,
+				fmt.Sprintf("init: openspec ref stamp skipped: plan unreadable: %v", readErr))
+		} else {
+			planContent = string(content)
+		}
+	}
+
+	// Materialize a plan's staged OpenSpec change before state.Init writes
+	// the execute-state file: a failure here must abort init entirely,
+	// rather than leave a run started against a change that never
+	// materialized. A plan with no **OpenSpec-Staging:** header (ok false)
+	// leaves materializeResult nil and the later result/state omit the
+	// "openspec" field entirely.
+	var materializeResult *openspec.MaterializeResult
+	if planContent != "" {
+		if _, ok := openspec.StagedChangeFromPlan(planContent); ok {
+			res, mErr := openspec.Materialize(workDir, planContent)
+			if mErr != nil {
+				return nil, mapMaterializeError(mErr)
+			}
+			materializeResult = &res
+		}
+	}
+
 	st, err := state.Init(root, "execute", in.Branch, in.SessionID)
 	if err != nil {
 		return nil, &mcpserver.InfraError{Msg: "init state: " + err.Error(), Cause: err, Suggestion: "Check write permission on " + paths.DataDir + "/" + paths.RunsSubdir + "/ and available disk space on the project root, then retry execute_state init."}
@@ -2254,6 +2297,12 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 	}
 	st.Data["waves"] = []any{}
 	st.Data["context"] = map[string]any{}
+	if materializeResult != nil {
+		st.Data["openspec"] = map[string]any{
+			"change":       materializeResult.Change,
+			"materialized": materializeResult.Materialized,
+		}
+	}
 
 	// Cross-read ship state for pipeline auto-mode: when execute was
 	// dispatched from /ship and the user already approved --auto there,
@@ -2263,23 +2312,19 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 	// exact same cross-read logic instead of duplicating it.
 	shipSt, pipelineAuto, initWarnings := execPipelineAuto(root, in.Branch)
 	st.Data["pipelineAuto"] = pipelineAuto
+	initWarnings = append(initWarnings, earlyWarnings...)
 
 	// Apply the openspec ref stamps plan_prepare deferred (see plan.go's
 	// pendingTaskRefs/stampTaskRefs): plan_prepare runs inside plan mode and
 	// must not touch git-tracked files, so it only computed which tasks.md
 	// lines were pending a ref comment. Now that the plan is approved, write
 	// them for real. Warning-only: a standalone execute has no plan file,
-	// and a missing or non-openspec plan is not an error.
-	if in.PlanPath != "" {
-		content, readErr := os.ReadFile(in.PlanPath)
-		if readErr != nil {
-			// A caller-supplied planPath that cannot be read is worth
-			// surfacing: the ref stamp is silently skipped, and without a
-			// warning the caller has no way to tell that from "the plan was
-			// not an openspec plan". Still non-fatal — init must succeed.
-			initWarnings = append(initWarnings,
-				fmt.Sprintf("init: openspec ref stamp skipped: plan unreadable: %v", readErr))
-		} else if change := openspecChangeFromPlan(string(content)); change != "" && isSafeChangeName(change) {
+	// and a missing or non-openspec plan is not an error. planContent was
+	// read once above (also used for the materialize check); a read failure
+	// already produced the "plan unreadable" warning merged in above, so
+	// this step is simply skipped when planContent is empty.
+	if planContent != "" {
+		if change := openspecChangeFromPlan(planContent); change != "" && isSafeChangeName(change) {
 			tasksPath := filepath.Join(workDir, "openspec", "changes", change, "tasks.md")
 			if _, stampErr := stampTaskRefs(tasksPath); stampErr != nil {
 				initWarnings = append(initWarnings,
@@ -2321,6 +2366,9 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 	}
 
 	result := map[string]any{"filePath": st.Path, "pipelineAuto": st.Data["pipelineAuto"]}
+	if materializeResult != nil {
+		result["openspec"] = st.Data["openspec"]
+	}
 	if len(initWarnings) > 0 {
 		result["warnings"] = initWarnings
 	}
@@ -2328,6 +2376,48 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 		result["migration"] = migrationReport
 	}
 	return result, nil
+}
+
+// mapMaterializeError maps an openspec.Materialize failure (init's
+// pre-state.Init staging check) to an MCP tool error. It mirrors
+// mapOpenspecError's split in plan_support.go, adapted to Materialize's own
+// error cases (openspec/materialize.go's ErrMaterialize doc comment): every
+// rule failure — an invalid change name, a target that differs from staging,
+// a missing target and staging dir, a staged file that changed after
+// validation, an unsafe stage.json path, or a failed `openspec validate
+// --strict` — wraps ErrMaterialize and becomes a DomainError. The invalid-
+// change-name case (rule 2, which also wraps ErrInvalidChangeName) gets its
+// own case so its suggestion names the actual fix instead of the generic
+// "fix the staged change" wording that fits the other rules. ErrCLINotFound
+// and any other infrastructure failure (filesystem errors, a failed `git
+// add`) do not wrap ErrMaterialize and become an InfraError instead.
+func mapMaterializeError(err error) error {
+	switch {
+	case errors.Is(err, openspec.ErrCLINotFound):
+		return &mcpserver.InfraError{
+			Msg:        openspec.ErrCLINotFound.Error(),
+			Suggestion: openspecCLISuggestion,
+			Cause:      err,
+		}
+	case errors.Is(err, openspec.ErrInvalidChangeName):
+		return &mcpserver.DomainError{
+			Msg:        "init: " + err.Error(),
+			Suggestion: openspecNameSuggestion,
+			Cause:      err,
+		}
+	case errors.Is(err, openspec.ErrMaterialize):
+		return &mcpserver.DomainError{
+			Msg:        "init: " + err.Error(),
+			Suggestion: "Fix the staged change as the message describes — a conflicting openspec/changes/<change>/, a missing staging dir, a staged file edited after validation, or the validate output — then retry execute_state init.",
+			Cause:      err,
+		}
+	default:
+		return &mcpserver.InfraError{
+			Msg:        "init: openspec materialize: " + err.Error(),
+			Suggestion: "Check that openspec/config.yaml exists in the active worktree and that the openspec CLI runs there, then retry.",
+			Cause:      err,
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------

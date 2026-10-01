@@ -78,7 +78,7 @@ The `init` action SHALL create a new execute state file for `branch`, after pass
 |---|---|
 | `filePath` | path of the new state file |
 | `pipelineAuto` | diagnostic copy of the persisted value |
-| `materialized` | `"created"`, `"already"`, or absent when the plan has no `**OpenSpec-Staging:**` header |
+| `openspec` | `{change, materialized}` where `materialized` is `"created"` or `"already"`; the whole field is absent when the plan has no `**OpenSpec-Staging:**` header |
 | `warnings` | non-fatal problems (ship state unreadable, OpenSpec ref stamp skipped) |
 | `migration` | `{changes[], backupPath}` when the config was migrated |
 
@@ -118,7 +118,7 @@ The `init` action SHALL create a new execute state file for `branch`, after pass
 #### Scenario: Staged OpenSpec plan
 - **WHEN** the plan has `**OpenSpec-Staging:** .sdlc-v2/openspec-staging/add-widget/` and `openspec/changes/add-widget/` does not exist
 - **THEN** init creates `openspec/changes/add-widget/` from the staged files before stamping refs
-- **AND** the response has `materialized: "created"`
+- **AND** the response has `openspec: {change: "add-widget", materialized: "created"}`
 
 ## ADDED Requirements
 

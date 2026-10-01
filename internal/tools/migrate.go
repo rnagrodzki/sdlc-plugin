@@ -102,7 +102,7 @@ func migrateConfig(root string, dryRun bool) (MigrateOut, error) {
 	if report.Migrated {
 		changed = append(changed, paths.DataDir+"/config.json")
 		// local.json may also have been written.
-		localPath := filepath.Join(root, paths.DataDir, "local.json")
+		localPath := filepath.Join(root, paths.DataDir, paths.LegacyLocalJSONFile)
 		if _, err := os.Stat(localPath); err == nil {
 			changed = append(changed, paths.DataDir+"/local.json")
 		}
@@ -141,16 +141,16 @@ func migrateConfig(root string, dryRun bool) (MigrateOut, error) {
 // always written as TOML — .sdlc-v2 config reads are TOML-only (see
 // internal/config), so a merge that wrote JSON here would be silently
 // invisible to every other reader.
-var legacyImportConfigFiles = []string{"config.toml", "local.toml", "config.json", "local.json"}
+var legacyImportConfigFiles = []string{paths.ConfigFile, paths.LocalConfigFile, paths.LegacyConfigJSONFile, paths.LegacyLocalJSONFile}
 
 // legacyImportFiles are non-JSON files copied verbatim from
 // paths.LegacyDataDir into paths.DataDir by the "import" action, skipped
 // whole-file when the destination already exists.
-var legacyImportFiles = []string{"pr-template.md", "plan-template.md"}
+var legacyImportFiles = []string{paths.PRTemplateFile, paths.PlanTemplateFile}
 
 // legacyImportDirs are directories copied recursively from
 // paths.LegacyDataDir into paths.DataDir by the "import" action.
-var legacyImportDirs = []string{"jira-templates", "learnings", "review-dimensions"}
+var legacyImportDirs = []string{"jira-templates", "learnings", paths.ReviewDimensionsSubdir}
 
 // importFromOld non-destructively copies plugin data from the old plugin's
 // data directory (paths.LegacyDataDir, ".sdlc") into the new plugin's data

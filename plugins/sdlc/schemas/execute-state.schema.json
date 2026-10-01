@@ -279,6 +279,16 @@
       "type": "boolean",
       "description": "True when this branch's ship state has flags.auto=true at init time. Diagnostic only: the execute skill takes auto from resolve-config, not from this field."
     },
+    "openspec": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Set by init when the plan has an **OpenSpec-Staging:** header: the result of materializing that staged change (see openspec.Materialize) before the state file was written.",
+      "properties": {
+        "change": { "type": "string" },
+        "materialized": { "type": "string", "enum": ["created", "already"] }
+      },
+      "required": ["change"]
+    },
     "issues": {
       "type": "array",
       "description": "Structured issue accumulator appended by task-fail, wave-fail, and DONE_WITH_CONCERNS task-done calls (R-TASK-17). Mirrors deferredFindings in ship-state.schema.json.",

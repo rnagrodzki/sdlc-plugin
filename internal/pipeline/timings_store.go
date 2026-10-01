@@ -11,10 +11,6 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
-// timingsFileName is the name of the rolling-timing-history file, stored
-// under the project's SDLC data directory.
-const timingsFileName = "timings.json"
-
 // maxSamples is the size of the rolling window of durations retained per
 // step key.
 const maxSamples = 10
@@ -34,7 +30,7 @@ type TimingsStore struct {
 // <projectRoot>/.sdlc-v2/timings.json.
 func NewTimingsStore(projectRoot string) *TimingsStore {
 	return &TimingsStore{
-		path: filepath.Join(paths.ProjectDir(projectRoot), timingsFileName),
+		path: filepath.Join(paths.ProjectDir(projectRoot), paths.TimingsFile),
 	}
 }
 
@@ -71,7 +67,7 @@ func (s *TimingsStore) save(data timingsData) error {
 		return fmt.Errorf("pipeline: marshal timings: %w", err)
 	}
 
-	tmp, err := os.CreateTemp(dir, timingsFileName+".*.tmp")
+	tmp, err := os.CreateTemp(dir, paths.TimingsFile+".*.tmp")
 	if err != nil {
 		return fmt.Errorf("pipeline: create temp file: %w", err)
 	}
