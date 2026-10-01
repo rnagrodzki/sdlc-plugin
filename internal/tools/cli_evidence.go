@@ -24,7 +24,7 @@ type CLIEvidenceEntry struct {
 
 // cliEvidencePath returns the path to the CLI evidence JSONL file.
 func cliEvidencePath(root string) string {
-	return filepath.Join(root, paths.DataDir, "evidence", "cli-executions.jsonl")
+	return filepath.Join(root, paths.DataDir, paths.EvidenceSubdir, "cli-executions.jsonl")
 }
 
 // maxCLIEvidenceInWindow is the default cap for readCLIEvidenceInWindow,

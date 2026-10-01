@@ -21,10 +21,10 @@ or a plain description.
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `[spec-file-path]` | Path to a requirements or spec file to plan from. | none |
+| `[spec-file-path]` | Path to a requirements or spec file to plan from. A path into `openspec/changes/<name>/` selects that change, same as `--spec <name>`. | none |
 | `--auto` | Skip all interactive prompts. Picks conservative defaults. | off |
-| `--spec` | Enable OpenSpec integration. Loads spec context from the project's OpenSpec directory. | off |
-| `--from-openspec <name>` | Load a specific OpenSpec change by name (directory name under `openspec/changes/`). | none |
+| `--spec [<change-name>]` | Opts into OpenSpec and skips the gate-check question. With a name: plan from that existing change (`openspec/changes/<change-name>/`). Without one: use the branch-matched change, else ask which active change to use, or offer to create a new one. | off |
+| `--from-openspec <name>` | Deprecated alias of `--spec <name>`, kept for one release. Prints a deprecation notice. | none |
 
 ## Examples
 
@@ -43,10 +43,12 @@ Reads the spec file and uses it as input for planning.
 
 **Plan from an OpenSpec change:**
 
-    /plan --from-openspec user-onboarding
+    /plan --spec user-onboarding
 
 Loads the proposal, delta specs, and task list from
 `openspec/changes/user-onboarding/` and builds a plan around them.
+(`--from-openspec user-onboarding` still works but is deprecated — use
+`--spec user-onboarding` instead.)
 
 ## Related skills
 
@@ -68,8 +70,14 @@ Loads the proposal, delta specs, and task list from
 - **Complexity routing matters.** If your change touches only 1 file, the skill
   tells you no plan is needed (or writes a lightweight plan in plan mode). Full
   planning with multi-agent exploration kicks in for 4+ files or unclear scope.
-- **OpenSpec is opt-in.** Even if your project has OpenSpec configured, the
-  skill only loads spec context when you pass `--spec` or `--from-openspec`.
+- **OpenSpec is opt-in, but a feature-shaped request without `--spec` may
+  still get asked.** `--spec <name>` (or a spec path into
+  `openspec/changes/<name>/`, or the deprecated `--from-openspec <name>`)
+  opts in directly and skips the question. Without it: a non-functional
+  request (refactor, config, docs, etc.) just gets a one-line hint; a
+  feature-shaped request uses the branch-matched change silently if one
+  exists, otherwise it triggers a gate question — **Create OpenSpec change**
+  / **Use existing change** / **Skip OpenSpec**.
 - **Plan mode vs. normal mode.** In plan mode, the skill writes to the
   designated plan file path. In normal mode, it creates a file and tells you
   where it is.

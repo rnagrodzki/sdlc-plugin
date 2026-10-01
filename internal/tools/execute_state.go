@@ -1651,7 +1651,7 @@ func buildExecutionReport(root, branch string, st *state.State, format, runID st
 // fsx.AtomicWriteJSON) or raw markdown bytes (ext "md", written as-is).
 // Returns the absolute path written.
 func execWriteReportFile(root, runID, ext string, content any) (string, error) {
-	dir := filepath.Join(root, paths.DataDir, "reports")
+	dir := filepath.Join(root, paths.DataDir, paths.ReportsSubdir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", &mcpserver.InfraError{Msg: "mkdir reports dir: " + err.Error(), Cause: err, Suggestion: "Check that " + paths.DataDir + "/ is writable and there is no file named reports/ blocking directory creation."}
 	}

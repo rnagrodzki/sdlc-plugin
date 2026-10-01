@@ -19,7 +19,7 @@ type MCPEvidenceEntry struct {
 
 // mcpEvidencePath returns the path to the MCP invocation evidence JSONL file.
 func mcpEvidencePath(root string) string {
-	return filepath.Join(root, paths.DataDir, "evidence", "mcp-invocations.jsonl")
+	return filepath.Join(root, paths.DataDir, paths.EvidenceSubdir, "mcp-invocations.jsonl")
 }
 
 // appendMCPEvidence appends one JSONL line to

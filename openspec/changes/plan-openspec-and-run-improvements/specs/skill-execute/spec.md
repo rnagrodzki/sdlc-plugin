@@ -103,7 +103,7 @@ The skill SHALL derive the workspace from git state without a flag, and SHALL ne
 ### Requirement: Base sync conflict resolution
 When `base-sync` returns `status: "conflict"`, the skill SHALL dispatch one sub-agent with the `conflictedFiles`, the plan's goal, and the incoming base commits, and SHALL then call `base-sync-resolve`; when the sub-agent reports failure or `base-sync-resolve` fails, the skill SHALL call `base-sync-resolve` with `abort: true` and continue with the next wave.
 
-- A conflict never stops the run.
+- A conflict never stops the run — EXCEPT when the recovery call itself fails (see "Scenario: Abort call fails" below), since the merge is then still on disk and would otherwise silently corrupt the next wave's work.
 - On resume, when the last `baseSyncs` entry has `status: "conflict"`, the skill calls `base-sync-resolve` with `abort: true` before the next `wave-start`.
 - Each outcome (`merged`, `resolved`, `aborted`, `skipped`) is one line in the progress report.
 - The end-of-run report lists every `aborted` sync as `Base sync aborted at wave <N>: conflicts left for ship rebase`.
@@ -121,3 +121,8 @@ When `base-sync` returns `status: "conflict"`, the skill SHALL dispatch one sub-
 #### Scenario: Resume after an unresolved conflict
 - **WHEN** execute resumes and the last `baseSyncs` entry has `status: "conflict"`
 - **THEN** the skill calls `base-sync-resolve` with `abort: true` before the next `wave-start`
+
+#### Scenario: Abort call fails
+- **WHEN** `base-sync-resolve` with `abort: true` itself returns an error (not a resolved conflict — a genuine failure of the recovery path, e.g. `git merge --abort` fails)
+- **THEN** the skill prints the error and stops the run as a hard failure, without calling `cleanup`
+- **AND** the state stays resumable — `## Resume` retries the abort on the next run

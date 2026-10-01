@@ -343,7 +343,7 @@ func writeReplyBodies(root string, in ReceivedReviewVerifyIn) (ReceivedReviewVer
 		}
 	}
 
-	dir := filepath.Join(root, paths.DataDir, "state", "artifacts")
+	dir := filepath.Join(root, paths.DataDir, paths.StateArtifactsSubdir, "artifacts")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return ReceivedReviewVerifyOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("create %s: %s", dir, err.Error()),
