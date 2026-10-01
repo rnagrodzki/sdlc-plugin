@@ -1686,6 +1686,41 @@ func TestPlanPrepare_ResumeNoActiveRun(t *testing.T) {
 	}
 }
 
+// TestPlanPrepareDoneRunNotResumed verifies plan_prepare({resolveTemplate:
+// true}) does not resume a "done" run: state.ActivePlanRun excludes any run
+// whose planIntegrity.done is set, so selectPlanRun's "no active run" branch
+// fires and a fresh run replaces it — mirroring
+// TestPlanPrepare_ResumeNoActiveRun's done-run case, but for the plain
+// resolveTemplate:true path (no resume, so it must not error).
+func TestPlanPrepareDoneRunNotResumed(t *testing.T) {
+	dir := planTestGitRepo(t, "main")
+	const doneRun = "plan-main-20200101T000000Z"
+	planTestSeedRun(t, dir, doneRun, map[string]any{
+		"planIntegrity":  map[string]any{"skillInvoked": "2020-01-01T00:00:00Z", "done": "2020-01-01T01:00:00Z"},
+		"creationIntent": map[string]any{"userPrompt": "first run"},
+	})
+
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true, UserPrompt: "second run"})
+	if err != nil {
+		t.Fatalf("planPrepareCore: %v", err)
+	}
+	if out.RunID == "" || out.RunID == doneRun {
+		t.Fatalf("RunID = %q, want a new run ID distinct from the done run %q", out.RunID, doneRun)
+	}
+
+	// readSoleStateDoc also asserts the done run's own state file was pruned
+	// (exactly one state file survives the new run's write).
+	doc := readSoleStateDoc(t, dir)
+	integrity, _ := doc["planIntegrity"].(map[string]any)
+	if _, hasDone := integrity["done"]; hasDone {
+		t.Error("surviving run's planIntegrity already has \"done\" — the done run was resumed instead of starting a new one")
+	}
+	intent, _ := doc["creationIntent"].(map[string]any)
+	if intent["userPrompt"] != "second run" {
+		t.Errorf("creationIntent.userPrompt = %v, want %q (a resumed run would keep the done run's prompt)", intent["userPrompt"], "second run")
+	}
+}
+
 // TestPlanPrepare_GuardrailsFileFormat verifies guardrails.md for configured
 // guardrails (multi-line description, a line starting with #) and for none.
 func TestPlanPrepare_GuardrailsFileFormat(t *testing.T) {
@@ -1944,6 +1979,90 @@ func TestPlanMark_CriticalDecisions_AppendOnly(t *testing.T) {
 	}
 	if len(decisions) != 2 {
 		t.Fatalf("len(criticalDecisions) = %d, want 2 (append-only across both calls)", len(decisions))
+	}
+}
+
+// TestPlanMarkCriticalDecisionsRejected verifies plan_mark normalizes every
+// "criticalDecisions" entry: a caller-supplied "rejected" list of
+// {option,why} is stored unchanged, a missing "rejected" defaults to an
+// empty list, and "at" is always the call's own time (RFC 3339 UTC) — even
+// when the caller supplied its own "at" value.
+func TestPlanMarkCriticalDecisionsRejected(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	if _, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+		t.Fatalf("planPrepareCore (seed): %v", err)
+	}
+
+	before := time.Now().UTC()
+	out, err := planMark(dir, dir, PlanMarkIn{
+		Marker: "criticalDecisions",
+		Data: map[string]any{"decisions": []any{
+			map[string]any{
+				"key":    "template",
+				"choice": "shipped-default",
+				"reason": "no project override",
+				"rejected": []any{
+					map[string]any{"option": "custom-template", "why": "no project config found"},
+				},
+				"at": "2000-01-01T00:00:00Z", // caller-supplied — must be overwritten
+			},
+			map[string]any{
+				"key":    "routing",
+				"choice": "lightweight",
+				"reason": "2 files",
+				// no "rejected" — must default to []
+			},
+		}},
+	})
+	after := time.Now().UTC()
+	if err != nil {
+		t.Fatalf("planMark(criticalDecisions): %v", err)
+	}
+	if !out.OK {
+		t.Error("planMark(criticalDecisions).OK = false, want true")
+	}
+
+	doc := readSoleStateDoc(t, dir)
+	decisions, ok := doc["criticalDecisions"].([]any)
+	if !ok || len(decisions) != 2 {
+		t.Fatalf("criticalDecisions = %v, want a 2-entry array", doc["criticalDecisions"])
+	}
+
+	first, _ := decisions[0].(map[string]any)
+	rejected, ok := first["rejected"].([]any)
+	if !ok || len(rejected) != 1 {
+		t.Fatalf("decisions[0].rejected = %v, want the caller-supplied 1-entry list unchanged", first["rejected"])
+	}
+	rejectedEntry, _ := rejected[0].(map[string]any)
+	if rejectedEntry["option"] != "custom-template" || rejectedEntry["why"] != "no project config found" {
+		t.Errorf("decisions[0].rejected[0] = %v, want {option:custom-template, why:no project config found}", rejectedEntry)
+	}
+	if first["key"] != "template" || first["choice"] != "shipped-default" || first["reason"] != "no project override" {
+		t.Errorf("decisions[0] lost its original fields: %v", first)
+	}
+
+	second, _ := decisions[1].(map[string]any)
+	secondRejected, ok := second["rejected"].([]any)
+	if !ok || len(secondRejected) != 0 {
+		t.Errorf("decisions[1].rejected = %v, want an empty list (defaulted)", second["rejected"])
+	}
+
+	for i, entry := range []map[string]any{first, second} {
+		atStr, ok := entry["at"].(string)
+		if !ok {
+			t.Fatalf("decisions[%d].at missing or wrong type: %v", i, entry["at"])
+		}
+		at, perr := time.Parse(time.RFC3339, atStr)
+		if perr != nil {
+			t.Fatalf("decisions[%d].at = %q is not RFC3339: %v", i, atStr, perr)
+		}
+		at = at.UTC()
+		if at.Before(before.Add(-time.Second)) || at.After(after.Add(time.Second)) {
+			t.Errorf("decisions[%d].at = %s, want between %s and %s (call time, not the caller-supplied value)", i, at, before, after)
+		}
 	}
 }
 

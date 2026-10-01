@@ -1721,6 +1721,35 @@ var structuredDataMarkers = map[string]string{
 	"criticalDecisions": "decisions",
 }
 
+// normalizeCriticalDecisions stamps the call-time "at" timestamp onto every
+// "criticalDecisions" entry — overwriting any caller-supplied "at" — and
+// defaults a missing "rejected" field to an empty list. An entry that
+// already carries "rejected" (expected shape [{option,why}]) is otherwise
+// stored unchanged. It never touches "guardrailResults", which appends its
+// raw payload as-is (byte-identical to input) via the caller's separate
+// branch. A non-object entry (not map[string]any) passes through unchanged,
+// since it has no "at"/"rejected" fields to normalize.
+func normalizeCriticalDecisions(entries []any, at string) []any {
+	normalized := make([]any, len(entries))
+	for i, e := range entries {
+		m, ok := e.(map[string]any)
+		if !ok {
+			normalized[i] = e
+			continue
+		}
+		copied := make(map[string]any, len(m)+2)
+		for k, v := range m {
+			copied[k] = v
+		}
+		if _, hasRejected := copied["rejected"]; !hasRejected {
+			copied["rejected"] = []any{}
+		}
+		copied["at"] = at
+		normalized[i] = copied
+	}
+	return normalized
+}
+
 // markerKey maps a marker name to its planIntegrity JSON key, mirroring
 // plan.js's markerKey ('plan-file' -> 'planFile'; others map identity).
 func markerKey(marker string) string {
@@ -1970,7 +1999,7 @@ func appendPlanRunRecord(mainRoot, branch string, st *state.State) error {
 type PlanMarkIn struct {
 	Marker string         `json:"marker" jsonschema:"enum=plan-file,enum=skillInvoked,enum=guardrailsEvaluated,enum=critiqueRan,enum=done,enum=guardrailResults,enum=criticalDecisions,enum=checkpoint" jsonschema_description:"Checkpoint marker: \"plan-file\", \"skillInvoked\", \"guardrailsEvaluated\", \"critiqueRan\", or the terminal \"done\" marker stamp the current timestamp into planIntegrity; \"guardrailResults\" and \"criticalDecisions\" instead append data's array payload to their own state key. \"checkpoint\" replaces the progress checkpoint (requires data)."`
 	Path   string         `json:"path" jsonschema_description:"Plan file path to record. Only used (and required) when marker is \"plan-file\"."`
-	Data   map[string]any `json:"data,omitempty" jsonschema_description:"Structured payload for the \"guardrailResults\" marker ({results:[{id,status,detail}]}) or the \"criticalDecisions\" marker ({decisions:[{key,choice,reason}]}). For \"checkpoint\": JSON object {step: string, one of \"0\", \"1\", \"2\", \"3\", \"4\", \"5\", \"6\", \"6.5\", \"6.6\", \"7\"; iteration: integer >= 0; expectedWriters: JSON array of writer IDs (max 32)}. Example: {\"step\":\"3\",\"iteration\":1,\"expectedWriters\":[\"lane-static-structural-r1\"]}. Replaced, not appended. Ignored for every other marker."`
+	Data   map[string]any `json:"data,omitempty" jsonschema_description:"Structured payload for the \"guardrailResults\" marker ({results:[{id,status,detail}]}) or the \"criticalDecisions\" marker ({decisions:[{key,choice,rejected,reason}]}; rejected is [{option,why}], defaults to [] when omitted; the tool always sets at to the call time, overwriting any caller-supplied value). For \"checkpoint\": JSON object {step: string, one of \"0\", \"1\", \"2\", \"3\", \"4\", \"5\", \"6\", \"6.5\", \"6.6\", \"7\"; iteration: integer >= 0; expectedWriters: JSON array of writer IDs (max 32)}. Example: {\"step\":\"3\",\"iteration\":1,\"expectedWriters\":[\"lane-static-structural-r1\"]}. Replaced, not appended. Ignored for every other marker."`
 }
 
 // PlanMarkOut is the output for the plan_mark tool.
@@ -2071,6 +2100,9 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 			if arr, ok := in.Data[dataKey].([]any); ok {
 				newEntries = arr
 			}
+		}
+		if in.Marker == "criticalDecisions" {
+			newEntries = normalizeCriticalDecisions(newEntries, time.Now().UTC().Format(time.RFC3339))
 		}
 		existing, _ := st.Data[in.Marker].([]any)
 		st.Data[in.Marker] = append(existing, newEntries...)
