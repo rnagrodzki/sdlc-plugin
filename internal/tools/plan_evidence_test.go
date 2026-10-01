@@ -30,7 +30,7 @@ func evidenceTestFixture(t *testing.T) (string, string) {
 	root := t.TempDir()
 	initGitFixture(t, root)
 	gitCommit(t, root, "initial")
-	out, err := planPrepareCore(root, root, PlanPrepareIn{SkipConfigCheck: true, UserPrompt: "add evidence"})
+	out, err := runPlanPrepare(t, root, root, PlanPrepareIn{SkipConfigCheck: true, UserPrompt: "add evidence"})
 	if err != nil {
 		t.Fatalf("planPrepareCore (seed): %v", err)
 	}

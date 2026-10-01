@@ -439,7 +439,7 @@ func TestReadOnlyToolsWriteNothingTracked(t *testing.T) {
 				})
 				// evidence_record really writes: seed a plan run first so
 				// the call succeeds, then check the write stays untracked.
-				prep, err := planPrepareCore(root, root, PlanPrepareIn{SkipConfigCheck: true})
+				prep, err := runPlanPrepare(t, root, root, PlanPrepareIn{SkipConfigCheck: true})
 				if err != nil || prep.RunID == "" {
 					t.Fatalf("planPrepareCore seed: runId=%q err=%v", prep.RunID, err)
 				}
@@ -477,7 +477,7 @@ func TestReadOnlyToolsWriteNothingTracked(t *testing.T) {
 			case "ship_verify_side_effect":
 				_, _ = shipVerifySideEffect(root, root, ShipVerifySideEffectIn{Step: "review"}, time.Now)
 			case "plan_prepare":
-				_, _ = planPrepareCore(root, root, PlanPrepareIn{SkipConfigCheck: true})
+				_, _ = runPlanPrepare(t, root, root, PlanPrepareIn{SkipConfigCheck: true})
 			case "setup_prepare":
 				_, _ = setupPrepare(root, SetupPrepareIn{})
 			case "review_prepare":
