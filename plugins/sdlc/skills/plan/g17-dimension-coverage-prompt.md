@@ -29,10 +29,10 @@ Task tool (general-purpose):
     ## Inputs
 
     - Plan file path: {PLAN_FILE_PATH}
-    - Dimensions directory: {DIMENSIONS_DIR} (`.sdlc/review-dimensions/`)
+    - Dimensions directory: {DIMENSIONS_DIR} (`.sdlc-v2/review-dimensions/`)
     - Copilot instructions directory: {COPILOT_DIR} (`.github/instructions/`)
     - GitHub hosting detected: {GITHUB_HOSTING_DETECTED} (boolean from P14 — do NOT re-derive)
-    - Learnings log path: {LEARNINGS_LOG_PATH} (`.sdlc/learnings/log.md`)
+    - Learnings log path: {LEARNINGS_LOG_PATH} (`.sdlc-v2/learnings/log.md`)
     - PR commit window: {PR_COMMIT_WINDOW} (e.g., "last 14 days" — best-effort)
 
     Skip `## OpenSpec Appendix` content when evaluating any gate.
@@ -202,7 +202,7 @@ After the subagent returns, in main context:
 
 1. Parse the `WAVE_SUMMARY`-style JSON from the subagent's response (or the `findings` JSON block directly).
 2. Store the parsed result as `g17Findings` in memory.
-3. **On dispatch failure, timeout, or malformed JSON:** treat `g17Findings` as `{ findings: [], rendering: "", suppressed_count: 0 }`. Log the failure to `.sdlc/learnings/log.md`:
+3. **On dispatch failure, timeout, or malformed JSON:** treat `g17Findings` as `{ findings: [], rendering: "", suppressed_count: 0 }`. Log the failure to `.sdlc-v2/learnings/log.md`:
    ```
    ## YYYY-MM-DD — plan: G17 dispatch failed — <error summary>
    ```
@@ -214,8 +214,8 @@ After the subagent returns, in main context:
 | Variable | Source | Notes |
 |---|---|---|
 | `{PLAN_FILE_PATH}` | Plan file path resolved in Step 0/3 | Absolute path |
-| `{DIMENSIONS_DIR}` | `.sdlc/review-dimensions/` | Relative to project root |
+| `{DIMENSIONS_DIR}` | `.sdlc-v2/review-dimensions/` | Relative to project root |
 | `{COPILOT_DIR}` | `.github/instructions/` | Relative to project root |
 | `{GITHUB_HOSTING_DETECTED}` | `githubHosting.detected` from P14 | Boolean — never re-derive |
-| `{LEARNINGS_LOG_PATH}` | `.sdlc/learnings/log.md` | May not exist; handle gracefully |
+| `{LEARNINGS_LOG_PATH}` | `.sdlc-v2/learnings/log.md` | May not exist; handle gracefully |
 | `{PR_COMMIT_WINDOW}` | Best-effort — "last 14 days" if unknown | String for context only |
