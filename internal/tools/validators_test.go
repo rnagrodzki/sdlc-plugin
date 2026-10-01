@@ -133,6 +133,52 @@ func TestValidatePlanFormatPF1MissingHeaderField(t *testing.T) {
 	}
 }
 
+// TestValidatePlanFormatPF1EmptyFieldBeforeLabel verifies an empty
+// "**Goal:**" does not take the next "**Architecture:** ..." line as its
+// value, while a plain value on the next line still counts.
+func TestValidatePlanFormatPF1EmptyFieldBeforeLabel(t *testing.T) {
+	cases := []struct {
+		name    string
+		goal    string
+		wantPF1 bool
+	}{
+		{"next line is a label", "**Goal:**\n", true},
+		{"next line is a label after blank lines", "**Goal:**\n\n", true},
+		{"next line is a plain value", "**Goal:**\nDo the thing\n", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			plan := strings.Replace(goodPlan, "**Goal:** Do the thing\n", tc.goal, 1)
+			if plan == goodPlan {
+				t.Fatal("fixture replace did not change goodPlan")
+			}
+			writeFile(t, filepath.Join(root, "plan.md"), plan)
+
+			findingsOut, err := validate(root, ValidateIn{Action: "plan_format", File: "plan.md"})
+			if err != nil {
+				t.Fatalf("validate: %v", err)
+			}
+			pf1 := findingsByID(findingsOut.Findings, "PF1")
+			if !tc.wantPF1 {
+				if len(pf1) != 0 {
+					t.Fatalf("expected no PF1 finding, got %+v", pf1)
+				}
+				return
+			}
+			if len(pf1) != 1 {
+				t.Fatalf("expected 1 PF1 finding, got %d: %+v", len(pf1), findingsOut.Findings)
+			}
+			if !strings.Contains(pf1[0].Message, "Goal") {
+				t.Errorf("PF1 message %q should mention Goal", pf1[0].Message)
+			}
+			if strings.Contains(pf1[0].Message, "Architecture") {
+				t.Errorf("PF1 message %q should not mention Architecture: it has a value", pf1[0].Message)
+			}
+		})
+	}
+}
+
 func TestValidatePlanFormatPF2NumberingGap(t *testing.T) {
 	root := t.TempDir()
 	plan := strings.Replace(goodPlan, "### Task 2:", "### Task 3:", 1)

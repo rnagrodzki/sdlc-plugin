@@ -122,6 +122,16 @@ The `plan_format` action SHALL always run PF1–PF7, PF11, and PF12, and report 
 - A cycle is reported as `Circular dependency: Task 1 -> Task 2 -> Task 1`.
 - When PF2, PF3, PF4, PF5, PF11, or PF12 lists issues, the message is a headline followed by one `- ` line per issue. PF1 and PF7 join the names with `, `.
 - Task headings inside code fences are ignored.
+- PF1 SHALL accept a header field's value on the same line or on the next non-blank line, and SHALL count the field as empty when that value is itself a `**Label:**` line (any line starting with `**…:**`).
+
+#### Scenario: Empty header field followed by another label
+- **WHEN** a plan has `**Goal:**` with nothing after it, and the next line is `**Architecture:** Some arch`
+- **THEN** a `PF1` finding names `Goal`
+- **AND** the finding does not name `Architecture`
+
+#### Scenario: Header value on the next line
+- **WHEN** a plan has `**Goal:**` with nothing after it, and the next line is `Do the thing`
+- **THEN** there is no `PF1` finding
 
 #### Scenario: Numbering gap
 - **WHEN** a plan has `### Task 1:` and `### Task 4:` only

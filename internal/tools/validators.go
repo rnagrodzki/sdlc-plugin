@@ -524,20 +524,29 @@ var pf1FieldHints = map[string]string{
 	"Verification": "primary verification command, e.g. go test ./...",
 }
 
+// pf1LabelRe matches a value that is itself a bold label line such as
+// "**Architecture:** x".
+var pf1LabelRe = regexp.MustCompile(`^\*\*[^*\n]+:\*\*`)
+
 func checkPF1(content string) pfCheck {
 	fields := []string{"Goal", "Architecture", "Source", "Verification"}
 	var missing []string
 	for _, f := range fields {
 		v, ok := extractField(content, f)
-		if !ok || v == "" {
+		// extractField's \s* skips newlines, so an empty "**Goal:**" takes
+		// the next non-blank line as its value. That line being another
+		// "**Label:**" line means the field is empty; a plain next-line value
+		// still counts. A same-line value that starts with "**X:**" is
+		// treated as empty too.
+		if !ok || v == "" || pf1LabelRe.MatchString(v) {
 			missing = append(missing, f)
 		}
 	}
 	if len(missing) > 0 {
 		// The message names the fields. The fix adds the shape to write: a
-		// bold label with its value on the same line. extractField also
-		// accepts the value on a later line (its \s* skips newlines), but
-		// the same-line form is the documented one.
+		// bold label with its value on the same line. A plain value on a
+		// later line is also accepted, but the same-line form is the
+		// documented one.
 		fix := []string{"write each as a bold label with its value on the same line, above the first task:"}
 		for _, f := range missing {
 			fix = append(fix, fmt.Sprintf("  **%s:** <%s>", f, pf1FieldHints[f]))
