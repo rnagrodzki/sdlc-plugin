@@ -8,6 +8,7 @@
     "version": {
       "const": 1
     },
+    "sessionId": {"type": ["string", "null"], "description": "Claude Code session ID passed to init; null when init got none."},
     "startedAt": {
       "type": "string",
       "format": "date-time"

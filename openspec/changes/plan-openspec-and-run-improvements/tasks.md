@@ -96,10 +96,10 @@ flowchart LR
 
 ## 11. Integration checks
 
-- [ ] 11.1 Run the full suite — verify: `task check` <!-- ref:11-1-run-the-full-suite-verify-task-chec-ea85af -->
-- [ ] 11.2 Smoke: in a scratch repo with OpenSpec, `/sdlc:plan` in plan mode → Create → approve → `/sdlc:ship --plan <file>`; confirm change committed, validated, archived, report has `## Planning` and `## Timeline`, plan run deleted after report — verify: manual checklist in `docs/smoke-test.md` <!-- ref:11-2-smoke-in-a-scratch-repo-with-opensp-5144f8 -->
-- [ ] 11.3 Smoke: linked worktree session shows `.sdlc-v2/runs` symlink and live run files; `git status` clean — verify: manual checklist in `docs/smoke-test.md` <!-- ref:11-3-smoke-linked-worktree-session-shows-89629b -->
-- [ ] 11.4 Validate the change itself — verify: `openspec validate plan-openspec-and-run-improvements --strict` <!-- ref:11-4-validate-the-change-itself-verify-o-6a4bcb -->
+- [x] 11.1 Run the full suite — verify: `task check` <!-- ref:11-1-run-the-full-suite-verify-task-chec-ea85af -->
+- [x] 11.2 Smoke: in a scratch repo with OpenSpec, `/sdlc:plan` in plan mode → Create → approve → `/sdlc:ship --plan <file>`; confirm change committed, validated, archived, report has `## Planning` and `## Timeline`, plan run deleted after report — verify: manual checklist in `docs/smoke-test.md` <!-- ref:11-2-smoke-in-a-scratch-repo-with-opensp-5144f8 -->
+- [x] 11.3 Smoke: linked worktree session shows `.sdlc-v2/runs` symlink and live run files; `git status` clean — verify: manual checklist in `docs/smoke-test.md` <!-- ref:11-3-smoke-linked-worktree-session-shows-89629b -->
+- [x] 11.4 Validate the change itself — verify: `openspec validate plan-openspec-and-run-improvements --strict` <!-- ref:11-4-validate-the-change-itself-verify-o-6a4bcb -->
 
 ## 12. Guardrail coherence
 
