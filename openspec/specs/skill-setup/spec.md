@@ -192,7 +192,8 @@ The skill SHALL run the migration step only when `needsMigration` is `true` or `
 - AskUserQuestion: `Legacy or outdated config files detected. Migrate to the current config format before proceeding?` Options `yes`, `no`.
 - On `yes`: call `migrate` three times, in order, each with `dryRun: false`: `action: "import"`, then `action: "config"`, then `action: "layout"`.
 - All three `result` values are shown to the user verbatim.
-- When the `import` result has `skippedKeys`, the skill shows each entry on its own line under `Legacy keys not imported (not allowed in the destination file):`.
+- The `import` action writes a legacy value when the destination key is missing or still holds the template default that `setup_init` wrote; a key the user changed is kept. The skill text says so and does not claim that legacy values are never imported.
+- When the `import` result has `skippedKeys`, the skill shows each entry on its own line under `Legacy keys not imported:`.
 - The `config` action only checks the schema version; its `result` is `up-to-date`. If it fails, the skill shows the error and stops.
 - On `no`: skip migration; legacy files are left untouched.
 - After migration, the skill re-calls `setup_prepare` and re-reads both TOML files.
@@ -208,8 +209,8 @@ The skill SHALL run the migration step only when `needsMigration` is `true` or `
 - **AND** the skill does not offer to delete legacy files
 
 #### Scenario: Import skipped keys shown
-- **WHEN** the `import` action returns `skippedKeys: [".sdlc-v2/config.toml: workspace"]`
-- **THEN** the skill shows `.sdlc-v2/config.toml: workspace` under `Legacy keys not imported (not allowed in the destination file):`
+- **WHEN** the `import` action returns `skippedKeys: [".sdlc-v2/config.toml: workspace", ".sdlc-v2/config.toml: jira (already set)"]`
+- **THEN** the skill shows both entries, one per line, under `Legacy keys not imported:`
 
 ### Requirement: Section dispatch loop
 For each selected id, in canonical order, the skill SHALL print a section header and then run the dispatcher named by the section's `delegatedTo`.

@@ -256,6 +256,10 @@ func TestMigrateImportNeverOverwritesExistingDestinationKey(t *testing.T) {
 	if !ok || jira["defaultProject"] != "OLD" {
 		t.Fatalf("expected jira key merged in from legacy source, got %v", got)
 	}
+	wantSkipped := paths.DataDir + "/config.toml: version (already set)"
+	if len(out.SkippedKeys) != 1 || out.SkippedKeys[0] != wantSkipped {
+		t.Errorf("SkippedKeys = %v, want [%s]", out.SkippedKeys, wantSkipped)
+	}
 }
 
 // TestMigrateImportTOMLSource covers importing a legacy source file that is
@@ -375,5 +379,123 @@ func TestMigrateUnknownActionRejected(t *testing.T) {
 	}
 	if _, err := migrate(root, MigrateIn{Action: "learnings_log"}); err == nil {
 		t.Fatal("expected error for removed learnings_log action, got nil")
+	}
+}
+
+// writeLegacyFile writes name under the legacy data directory.
+func writeLegacyFile(t *testing.T, root, name, content string) {
+	t.Helper()
+	dir := filepath.Join(root, paths.LegacyDataDir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// readDataFile returns the text of name under the data directory.
+func readDataFile(t *testing.T, root, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root, paths.DataDir, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+// TestMigrateImportReplacesUntouchedTemplateDefaults pins the normal /setup
+// flow: setup_init writes the full templates first, then import runs. A
+// legacy value replaces a key that still holds the template default, only
+// that table's text changes (comments elsewhere survive), and whole numbers
+// stay TOML integers.
+func TestMigrateImportReplacesUntouchedTemplateDefaults(t *testing.T) {
+	root := t.TempDir()
+	if _, err := setupInit(root, SetupInitIn{}); err != nil {
+		t.Fatalf("setupInit: %v", err)
+	}
+	writeLegacyFile(t, root, "config.json",
+		`{"jira":{"defaultProject":"OLD"},"plan":{"guardrails":[{"id":"legacy-rule","severity":"warning","description":"Keep it small."}]}}`)
+	writeLegacyFile(t, root, "local.json",
+		`{"ship":{"bump":"minor","executeWaveInterval":90}}`)
+
+	out, err := migrate(root, MigrateIn{Action: "import"})
+	if err != nil {
+		t.Fatalf("migrate import: %v", err)
+	}
+	wantChanged := []string{paths.DataDir + "/config.toml", paths.DataDir + "/local.toml"}
+	if strings.Join(out.Changed, ",") != strings.Join(wantChanged, ",") {
+		t.Errorf("Changed = %v, want %v", out.Changed, wantChanged)
+	}
+	if len(out.SkippedKeys) != 0 {
+		t.Errorf("SkippedKeys = %v, want none", out.SkippedKeys)
+	}
+
+	cfg := readDataFile(t, root, "config.toml")
+	if !strings.Contains(cfg, "[jira]\ndefaultProject = 'OLD'\n") {
+		t.Errorf("jira.defaultProject not replaced in place:\n%s", cfg)
+	}
+	if !strings.Contains(cfg, "id = 'legacy-rule'") || strings.Contains(cfg, "test-coverage-required") {
+		t.Errorf("plan not replaced by the legacy value:\n%s", cfg)
+	}
+	// Text outside the replaced tables is byte-for-byte the template.
+	tmplHead := configTemplate[:strings.Index(configTemplate, "[jira]\n")]
+	if !strings.HasPrefix(cfg, tmplHead) {
+		t.Errorf("text before [jira] changed:\n%s", cfg)
+	}
+	commitToPR := configTemplate[strings.Index(configTemplate, "# Allowed Jira project keys"):strings.Index(configTemplate, "[plan.guardrails.test-coverage-required]")]
+	if !strings.Contains(cfg, commitToPR) {
+		t.Errorf("text between [jira] and [plan] changed:\n%s", cfg)
+	}
+	tmplTail := configTemplate[strings.Index(configTemplate, "[execute]\n"):]
+	if !strings.HasSuffix(cfg, tmplTail) {
+		t.Errorf("text from [execute] on changed:\n%s", cfg)
+	}
+	if _, err := config.Read(root); err != nil {
+		t.Errorf("config.Read after import: %v", err)
+	}
+
+	local := readDataFile(t, root, "local.toml")
+	if !strings.Contains(local, "bump = 'minor'") || !strings.Contains(local, "executeWaveInterval = 90\n") {
+		t.Errorf("ship not replaced, or 90 not written as an integer:\n%s", local)
+	}
+	planStyle := localTemplate[strings.Index(localTemplate, "[planStyle]"):]
+	if !strings.HasSuffix(local, planStyle) {
+		t.Errorf("[planStyle] text changed:\n%s", local)
+	}
+}
+
+// TestMigrateImportKeepsUserChangedKey pins that a key the user changed from
+// the template default is never replaced, and is reported in skippedKeys.
+func TestMigrateImportKeepsUserChangedKey(t *testing.T) {
+	root := t.TempDir()
+	if _, err := setupInit(root, SetupInitIn{}); err != nil {
+		t.Fatalf("setupInit: %v", err)
+	}
+	cfgPath := filepath.Join(root, paths.DataDir, "config.toml")
+	edited := strings.Replace(configTemplate, "defaultProject = \"\"", "defaultProject = \"MINE\"", 1)
+	if edited == configTemplate {
+		t.Fatal("template has no defaultProject = \"\" line to edit")
+	}
+	if err := os.WriteFile(cfgPath, []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeLegacyFile(t, root, "config.json", `{"jira":{"defaultProject":"OLD"}}`)
+
+	for _, dryRun := range []bool{true, false} {
+		out, err := migrate(root, MigrateIn{Action: "import", DryRun: dryRun})
+		if err != nil {
+			t.Fatalf("migrate import (dryRun=%v): %v", dryRun, err)
+		}
+		if len(out.Changed) != 0 {
+			t.Errorf("dryRun=%v: Changed = %v, want none", dryRun, out.Changed)
+		}
+		want := paths.DataDir + "/config.toml: jira (already set)"
+		if len(out.SkippedKeys) != 1 || out.SkippedKeys[0] != want {
+			t.Errorf("dryRun=%v: SkippedKeys = %v, want [%s]", dryRun, out.SkippedKeys, want)
+		}
+	}
+	if got := readDataFile(t, root, "config.toml"); got != edited {
+		t.Errorf("config.toml changed:\n%s", got)
 	}
 }

@@ -37,7 +37,7 @@ The tool SHALL return the fields below.
 | `dryRun` | Echo of the input flag; `false` on the layout stat-warning result. |
 | `result` | One-line outcome text (see each action). Lists render as `[a b c]`. |
 | `changed` | Repo-relative paths written, or that would be written on dry run. Directories end in `/`. |
-| `skippedKeys` | `import` only: legacy keys left out, as `<dest path>: <key>`, sorted. Omitted when empty. |
+| `skippedKeys` | `import` only: legacy keys left out, sorted. A key the destination does not allow is `<dest path>: <key>`; a key the user changed is `<dest path>: <key> (already set)`. Omitted when empty. |
 | `errors` | Omitted in all current paths. |
 
 #### Scenario: Import with nothing to do
@@ -88,12 +88,24 @@ Dry run and live run SHALL use the same stale check. A project is stale when:
 - **THEN** a live run returns `result: "up-to-date"`
 
 ### Requirement: Import config files merge per key
-For `action: "import"` the tool SHALL merge `.sdlc/config.*` into `.sdlc-v2/config.toml` and `.sdlc/local.*` into `.sdlc-v2/local.toml` by top-level key. It SHALL add only keys the destination lacks and SHALL NOT overwrite an existing destination key.
+For `action: "import"` the tool SHALL merge `.sdlc/config.*` into `.sdlc-v2/config.toml` and `.sdlc/local.*` into `.sdlc-v2/local.toml` by top-level key. A legacy key SHALL replace a destination key only while the destination value still equals the shipped template's default for that key; the tool SHALL NOT overwrite a key the user changed.
 
+Per legacy top-level key, in this order:
+
+| Destination state | Action | Reported in |
+|---|---|---|
+| key not allowed in the destination file | not written | `skippedKeys`: `<dest path>: <key>` |
+| value equals the legacy value | nothing to do | nothing |
+| key missing | legacy value written | `changed` |
+| value equals the template default (decoded values compared) | legacy value written | `changed` |
+| any other value (user changed it, or the template has no such key) | kept | `skippedKeys`: `<dest path>: <key> (already set)` |
+
+- The template defaults are the shipped `config.toml` / `local.toml` templates that `setup_init` writes, embedded in the binary.
 - Source preference per logical file: `.toml` first; `.json` only when no `.toml` source exists.
 - The destination is always the `.toml` file, even for a `.json` source.
-- A destination that already exists (including the `setup_init` scaffold) still receives missing keys.
-- `changed` gets `.sdlc-v2/config.toml` or `.sdlc-v2/local.toml` only when at least one key was added.
+- `changed` gets `.sdlc-v2/config.toml` or `.sdlc-v2/local.toml` only when at least one key was written (or would be, on dry run).
+- A table value is written by splicing only that table's text, so comments outside the replaced table stay byte-for-byte (same rule as `setup_write_sections`). A non-table value, or a key holding a `.`, is set by one whole-file rewrite, which drops the file's comments.
+- A whole number is written as a TOML integer (`90`, not `90.0`).
 - The source files are never changed or deleted.
 - `.sdlc-v2/config.toml` receives only its allowed top-level keys: `version`, `jira`, `commit`, `pr`, `plan`, `execute`. Any other legacy key (e.g. `schemaVersion`, `ship`) is not merged and is listed in `skippedKeys`.
 - `.sdlc-v2/local.toml` has no key filter.
@@ -120,6 +132,24 @@ For `action: "import"` the tool SHALL merge `.sdlc/config.*` into `.sdlc-v2/conf
 - **AND** `.sdlc/config.json` has a different `version` and a `jira` key
 - **THEN** `version.tagPrefix` stays `current`
 - **AND** `jira` is added
+- **AND** `skippedKeys` is `[".sdlc-v2/config.toml: version (already set)"]`
+
+#### Scenario: Template default replaced after setup_init
+- **WHEN** `setup_init` wrote both templates unchanged
+- **AND** `.sdlc/config.json` has `jira.defaultProject = "OLD"` and a `plan` table
+- **AND** `.sdlc/local.json` has `ship.bump = "minor"` and `ship.executeWaveInterval = 90`
+- **THEN** `changed` is `[".sdlc-v2/config.toml", ".sdlc-v2/local.toml"]`
+- **AND** `skippedKeys` is omitted
+- **AND** `.sdlc-v2/config.toml` holds the legacy `jira` and `plan` tables
+- **AND** `.sdlc-v2/local.toml` holds `executeWaveInterval = 90`
+- **AND** every comment and table outside `[jira]`, `[plan.*]`, and `[ship]` is unchanged
+
+#### Scenario: User-changed key kept
+- **WHEN** `setup_init` wrote the `config.toml` template and the user changed `jira.defaultProject` to `MINE`
+- **AND** `.sdlc/config.json` has `jira.defaultProject = "OLD"`
+- **THEN** `.sdlc-v2/config.toml` is unchanged, on dry run and on a live run
+- **AND** `changed` is empty
+- **AND** `skippedKeys` is `[".sdlc-v2/config.toml: jira (already set)"]`
 
 #### Scenario: TOML source preferred
 - **WHEN** `.sdlc/` has both `config.toml` and `config.json`

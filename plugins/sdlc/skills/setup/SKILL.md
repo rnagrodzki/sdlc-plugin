@@ -378,16 +378,16 @@ migrate({ action: "import", dryRun: false }) → { ok, result, changed[], skippe
 This non-destructively imports config (`config.toml`/`local.toml`, or `config.json`/
 `local.json` when no TOML source exists), templates, jira-templates, learnings, and
 review-dimensions from the old data directory into `.sdlc-v2/`. `config.toml` and
-`local.toml` merge per top-level key — a key the new file already holds is never overwritten,
-but a key present only in the legacy file is added even when the new file already exists.
-Note: the template `setup_init` wrote in Step 0 already defines every `config.toml` top-level
-key, and `ship` and `planStyle` in `local.toml`, so legacy values for those keys are not
-imported. Everything else (`pr-template.md`, `plan-template.md`, `jira-templates/`,
-`learnings/`, `review-dimensions/`) is skipped whole-file/whole-dir when the destination
-already exists. `result` is either `"up-to-date: nothing to import"` or
-`"imported: [<path> <path> ...]"` (or `"would-import: [...]"` when `dryRun` is true).
-`skippedKeys` (omitted when empty) lists legacy top-level keys left out because the
-destination file does not allow them, each as `<dest path>: <key>`.
+`local.toml` merge per top-level key. A legacy value is written when the new file lacks the
+key, or when the key still holds the default from the template `setup_init` wrote in Step 0.
+A key the user already changed is never overwritten. Only the replaced table's text changes,
+so the template comments elsewhere stay. Everything else (`pr-template.md`,
+`plan-template.md`, `jira-templates/`, `learnings/`, `review-dimensions/`) is skipped
+whole-file/whole-dir when the destination already exists. `result` is either
+`"up-to-date: nothing to import"` or `"imported: [<path> <path> ...]"` (or
+`"would-import: [...]"` when `dryRun` is true). `skippedKeys` (omitted when empty) lists
+legacy top-level keys left out: `<dest path>: <key>` when the destination file does not allow
+the key, and `<dest path>: <key> (already set)` when the user already changed it.
 
 Then run the config check:
 
@@ -411,8 +411,8 @@ migrate({ action: "layout", dryRun: false }) → { ok, action, result, changed[]
 ```
 
 Report all three results to the user verbatim. When the import returned `skippedKeys`, also
-show each entry on its own line under the heading
-`Legacy keys not imported (not allowed in the destination file):`.
+show each entry on its own line under the heading `Legacy keys not imported:` (an entry
+ending in `(already set)` is a key the user changed, so the import kept the current value).
 
 On **no** (top-level choice: configure from scratch): proceed directly to Step 3 without
 migrating.

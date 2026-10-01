@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -37,8 +38,10 @@ type MigrateOut struct {
 	DryRun  bool     `json:"dryRun"`
 	Result  string   `json:"result"`
 	Changed []string `json:"changed"`
-	// SkippedKeys lists legacy top-level keys the import left out because
-	// the destination file does not allow them, as "<dest path>: <key>".
+	// SkippedKeys lists legacy top-level keys the import left out: a key the
+	// destination file does not allow, as "<dest path>: <key>", and a key the
+	// user already changed from the template default, as
+	// "<dest path>: <key> (already set)".
 	SkippedKeys []string `json:"skippedKeys,omitempty"`
 	Errors      []string `json:"errors,omitempty"`
 }
@@ -122,12 +125,13 @@ func migrateConfig(root string, dryRun bool) (MigrateOut, error) {
 // legacyImportConfigFiles are candidate config source files imported from
 // paths.LegacyDataDir into paths.DataDir by the "import" action using a
 // top-level key merge rather than a whole-file skip. setup's own scaffolding
-// (setup_init) always creates an empty config.toml and local.toml before
-// migrate ever runs, so a whole-file "skip if destination exists" check made
-// these two entries permanently unreachable in practice. Merging per key
-// lets each already-scaffolded file still receive the legacy sections
-// (ship, version, plan.guardrails, ...), while never overwriting a key the
-// new config already holds a real value for.
+// (setup_init) always writes the full commented config.toml and local.toml
+// templates before migrate ever runs, so a whole-file "skip if destination
+// exists" check made these two entries permanently unreachable in practice.
+// Merging per key lets each already-scaffolded file still receive the legacy
+// sections (ship, version, plan, ...): a legacy value replaces a key that is
+// missing or still holds the template default, and never a key the user
+// changed (see importConfigFileMerge).
 //
 // Entries are tried in order per logical file ("config" / "local"): the
 // .toml candidate is preferred, falling back to the old plugin generation's
@@ -150,8 +154,9 @@ var legacyImportDirs = []string{"jira-templates", "learnings", "review-dimension
 // importFromOld non-destructively copies plugin data from the old plugin's
 // data directory (paths.LegacyDataDir, ".sdlc") into the new plugin's data
 // directory (paths.DataDir, ".sdlc-v2"). It never deletes or modifies the
-// source, and never overwrites a destination key/path that already carries
-// real content.
+// source. It never overwrites a destination file, directory, or config key
+// that carries the user's own content; a config key that still holds the
+// shipped template default is replaced (see importConfigFileMerge).
 func importFromOld(root string, dryRun bool) (MigrateOut, error) {
 	var changed, skippedKeys []string
 
@@ -175,7 +180,15 @@ func importFromOld(root string, dryRun bool) (MigrateOut, error) {
 		if base == "config" {
 			allowed = config.AllowedProjectKeys
 		}
-		rel, didChange, skipped, err := importConfigFileMerge(root, name, base+".toml", allowed, dryRun)
+		defaults, err := templateDefaults(base)
+		if err != nil {
+			return MigrateOut{}, &mcpserver.InfraError{
+				Msg:        fmt.Sprintf("decode the shipped %s.toml template: %s", base, err.Error()),
+				Suggestion: "The plugin binary is broken; reinstall the sdlc plugin, then retry migrate with action \"import\".",
+				Cause:      err,
+			}
+		}
+		rel, didChange, skipped, err := importConfigFileMerge(root, name, base+".toml", allowed, defaults, dryRun)
 		if err != nil {
 			return MigrateOut{}, err
 		}
@@ -255,19 +268,32 @@ func importFromOld(root string, dryRun bool) (MigrateOut, error) {
 
 // importConfigFileMerge imports one config source file (config.toml,
 // local.toml, or their legacy config.json/local.json counterparts) from
-// paths.LegacyDataDir into destName under paths.DataDir by merging
-// top-level keys: any key present in the legacy source but absent from the
-// destination is added; any key already present in the destination (even in
-// an otherwise-empty-looking file) is left untouched. srcName's extension
-// selects the source decoder (TOML or JSON, via readLegacyConfigFile);
-// destName is always the .toml counterpart — .sdlc-v2 config reads are
-// TOML-only, so merging into a .json destination would be invisible to
-// every other reader. When allowed is non-nil, a source key outside it is
-// never merged: it is returned in skipped as "<dest path>: <key>", sorted.
-// Returns the changed relative path and whether anything changed. A missing
-// source, or a source with no mergeable keys the destination lacks, is a
+// paths.LegacyDataDir into destName under paths.DataDir, one top-level key at
+// a time. srcName's extension selects the source decoder (TOML or JSON, via
+// readLegacyConfigFile); destName is always the .toml counterpart — .sdlc-v2
+// config reads are TOML-only, so merging into a .json destination would be
+// invisible to every other reader.
+//
+// Per legacy key:
+//   - allowed is non-nil and the key is not in it: not imported, reported in
+//     skipped as "<dest path>: <key>".
+//   - the destination value already equals the legacy value: nothing to do.
+//   - the destination lacks the key, or still holds the shipped template's
+//     default for it (defaults, compared as decoded values): the legacy value
+//     is written. setup_init writes the full template before migrate runs,
+//     so without this rule no legacy value would ever be imported.
+//   - otherwise the user changed the key: it stays untouched and is reported
+//     in skipped as "<dest path>: <key> (already set)".
+//
+// skipped is sorted. A table value is written with config.WriteFileSection,
+// which splices only that table's text, so the template comments survive.
+// A non-table value (or a key holding a "."), which cannot be spliced, is
+// set by one whole-file rewrite after the table writes; that rewrite drops
+// the file's comments. Whole numbers are written as TOML integers. Returns
+// the changed relative path and whether anything changed (or would change,
+// on a dry run). A missing source, or a source with nothing to import, is a
 // no-op.
-func importConfigFileMerge(root, srcName, destName string, allowed map[string]bool, dryRun bool) (rel string, changed bool, skipped []string, err error) {
+func importConfigFileMerge(root, srcName, destName string, allowed map[string]bool, defaults map[string]any, dryRun bool) (rel string, changed bool, skipped []string, err error) {
 	src := filepath.Join(root, paths.LegacyDataDir, srcName)
 	if !migrateFileExists(src) {
 		return "", false, nil, nil
@@ -292,46 +318,93 @@ func importConfigFileMerge(root, srcName, destName string, allowed map[string]bo
 			Cause:      err,
 		}
 	}
-	if dstMap == nil {
-		dstMap = make(map[string]any)
-	}
 
-	added := false
-	for k, v := range srcMap {
+	keys := make([]string, 0, len(srcMap))
+	for k := range srcMap {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var tables []string
+	others := map[string]any{}
+	for _, k := range keys {
+		v := srcMap[k]
 		if allowed != nil && !allowed[k] {
 			skipped = append(skipped, rel+": "+k)
 			continue
 		}
-		if _, exists := dstMap[k]; exists {
-			continue
+		if cur, exists := dstMap[k]; exists {
+			if reflect.DeepEqual(cur, v) {
+				continue
+			}
+			if def, ok := defaults[k]; !ok || !reflect.DeepEqual(cur, def) {
+				skipped = append(skipped, rel+": "+k+" (already set)")
+				continue
+			}
 		}
-		dstMap[k] = v
-		added = true
+		if _, ok := v.(map[string]any); ok && !strings.Contains(k, ".") {
+			tables = append(tables, k)
+		} else {
+			others[k] = v
+		}
 	}
 	sort.Strings(skipped)
-	if !added {
+	if len(tables) == 0 && len(others) == 0 {
 		return "", false, skipped, nil
 	}
-
 	if dryRun {
 		return rel, true, skipped, nil
 	}
 
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return "", false, nil, &mcpserver.InfraError{
-			Msg:        fmt.Sprintf("create %s directory: %s", paths.DataDir, err.Error()),
-			Suggestion: "Check write permission on the project root so " + paths.DataDir + " can be created, then retry migrate with action \"import\".",
-			Cause:      err,
-		}
-	}
-	if err := fsx.AtomicWriteTOML(dst, dstMap); err != nil {
-		return "", false, nil, &mcpserver.InfraError{
+	writeErr := func(err error) error {
+		return &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("merge %s: %s", destName, err.Error()),
 			Suggestion: "Check write permission and free disk space on " + paths.DataDir + ", then retry migrate with action \"import\".",
 			Cause:      err,
 		}
 	}
+	for _, k := range tables {
+		v := config.WholeNumbersToInt(srcMap[k]).(map[string]any)
+		if _, err := config.WriteFileSection(dst, k, v); err != nil {
+			return "", false, nil, writeErr(err)
+		}
+	}
+	if len(others) > 0 {
+		var cur map[string]any
+		if err := fsx.ReadTOML(dst, &cur); err != nil {
+			if !errors.Is(err, fsx.ErrNotFound) {
+				return "", false, nil, writeErr(err)
+			}
+			cur = map[string]any{}
+		}
+		for k, v := range others {
+			cur[k] = v
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return "", false, nil, writeErr(err)
+		}
+		if err := fsx.AtomicWriteTOML(dst, config.WholeNumbersToInt(cur)); err != nil {
+			return "", false, nil, writeErr(err)
+		}
+	}
 	return rel, true, skipped, nil
+}
+
+// templateDefaults returns the decoded shipped template for a config file
+// base name ("config" or "local"), the reference importConfigFileMerge uses
+// to tell an untouched template default from a value the user changed. It
+// decodes with fsx.DecodeTOML, the same decoder used for the destination,
+// so both sides hold numbers as float64.
+func templateDefaults(base string) (map[string]any, error) {
+	tmpl := localTemplate
+	if base == "config" {
+		tmpl = configTemplate
+	}
+	var out map[string]any
+	if err := fsx.DecodeTOML([]byte(tmpl), &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // readLegacyConfigFile decodes path into out, selecting the TOML or JSON
@@ -632,7 +705,7 @@ func copyFile(src, dst string) error {
 // RegisterMigrateTools registers the migrate tool on the server.
 func RegisterMigrateTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "migrate",
-		"Runs a legacy migration. Actions: config (schema migration via configmigrate engine), import (non-destructively imports config, templates, jira-templates, learnings, and review-dimensions from the old plugin's "+paths.LegacyDataDir+"/ directory into "+paths.DataDir+"/ — config.toml and local.toml merge per top-level key, accepting either a TOML or legacy JSON source file, so already-scaffolded files still receive legacy sections and everything else is skipped whole-file when the destination already exists), layout (moves this plugin's own old state layout, "+paths.DataDir+"/execution/, into the current "+paths.DataDir+"/"+paths.RunsSubdir+"/ layout — state files, per-run directories, and ledger/ entries are each moved independently; a name conflict at the destination is skipped and reported rather than overwritten).",
+		"Runs a legacy migration. Actions: config (schema migration via configmigrate engine), import (non-destructively imports config, templates, jira-templates, learnings, and review-dimensions from the old plugin's "+paths.LegacyDataDir+"/ directory into "+paths.DataDir+"/ — config.toml and local.toml merge per top-level key, accepting either a TOML or legacy JSON source file: a legacy key is written when the destination lacks it or still holds the shipped template default, a key the user changed is kept and listed in skippedKeys, and comments are kept; everything else is skipped whole-file when the destination already exists), layout (moves this plugin's own old state layout, "+paths.DataDir+"/execution/, into the current "+paths.DataDir+"/"+paths.RunsSubdir+"/ layout — state files, per-run directories, and ledger/ entries are each moved independently; a name conflict at the destination is skipped and reported rather than overwritten).",
 		mcpserver.Annotations{
 			Title:       "Migrate SDLC config",
 			ReadOnly:    false,

@@ -859,6 +859,22 @@ func WriteSectionReport(mainRoot, name string, v map[string]any) (rewrote bool, 
 	return writeSectionFile(filepath.Join(sdlcDir, "local.toml"), name, v, nil)
 }
 
+// WriteFileSection writes section name into the TOML file at path, which is
+// created with its directory if needed. It works like WriteSectionReport but
+// does not route by section name and does not validate top-level keys, so a
+// caller can write into a file it chose itself (e.g. a local.toml key that
+// shares its name with a project section). The same in-place splice and
+// full-rewrite fallback apply; rewrote reports the fallback.
+func WriteFileSection(path, name string, v map[string]any) (rewrote bool, err error) {
+	if err := validateSectionName(name); err != nil {
+		return false, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return false, fmt.Errorf("config: create %s: %w", filepath.Dir(path), err)
+	}
+	return writeSectionFile(path, name, v, nil)
+}
+
 // writeSectionFile is the shared read-merge-write for config.toml and
 // local.toml. validate (optional) checks the merged document before any
 // write.
