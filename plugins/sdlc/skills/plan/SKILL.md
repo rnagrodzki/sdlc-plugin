@@ -642,11 +642,11 @@ For each `lanes[i]` entry (i = 0..4):
   - Lane 1 (content-coverage) additionally: `{FORMAT_REFERENCE_PATH}` — absolute path to plan-format-reference.md (sibling of lane-content-coverage-prompt.md in the same skill directory; resolve as `dirname(lanes[1].promptTemplatePath)/plan-format-reference.md`), `{PLAN_TEMPLATE_PATH}` — `activeTemplatePath` resolved in Step 0 (the absolute path to the active plan template — project override or shipped default)
   - Lane 4 (G17/dimension-coverage): `{DIMENSIONS_DIR}` (`.sdlc-v2/review-dimensions/`), `{COPILOT_DIR}` (`.github/instructions/`), `{GITHUB_HOSTING_DETECTED}` (`githubHosting.detected` from P14), `{LEARNINGS_LOG_PATH}` (`.sdlc-v2/learnings/log.md`), `{PR_COMMIT_WINDOW}` (best-effort "last 14 days" if unknown)
 
-**Null `promptTemplatePath` handling:** When `lanes[i].promptTemplatePath` is null (prepare script reported it could not find the template), skip that lane's dispatch and immediately add a synthetic blocking issue:
+**Null `promptTemplatePath` handling:** When `lanes[i].promptTemplatePath` is null (prepare script reported it could not find the template), skip that lane's dispatch and immediately add this synthetic `laneResults` entry (already in the `merge_results` shape — see "Map lane results" below):
 ```
-{ laneStatus: "failed", gateIds: lanes[i].gateIds, issues: [{ gateId: lanes[i].gateIds[0], severity: "error", message: "Lane <name> skipped — promptTemplatePath null (template not found at prepare time)", blocking: true }], passes: [] }
+{ name: lanes[i].name, status: "fail", gateIds: lanes[i].gateIds, issues: [{ gateId: lanes[i].gateIds[0], severity: "blocking", summary: "Lane <name> skipped — promptTemplatePath null (template not found at prepare time)" }], passes: [] }
 ```
-Exception: lane 4 (G17/dimension-coverage) — when `lanes[4].promptTemplatePath` is null, treat as empty findings (advisory per R31 dispatch-failure fallback) and continue. Call:
+Exception: lane 4 (G17/dimension-coverage) — when `lanes[4].promptTemplatePath` is null, treat as empty findings (`g17Findings` = `{ findings: [], rendering: "", suppressed_count: 0 }`, advisory per R31 dispatch-failure fallback), add the lane 4 `status: "fail"` entry from "Map lane results" below, and continue. Call:
 ```
 learnings_log({action:"append", entry:"## YYYY-MM-DD — plan: G17 skipped — promptTemplatePath null (template not found at prepare time)"})
 ```
@@ -662,7 +662,21 @@ Each lane returns a JSON object with schema:
 Lane 3 (guardrail-compliance) additionally returns `guardrailCompliancePayload` in the JSON object — store this for Step 4's `## Guardrail Compliance` section.
 Lane 4 (dimension-coverage/G17) returns the G17 findings JSON — parse the `findings` object and persist as `g17Findings` for Step 4.
 
-**Merge algorithm:** Collect each lane's result (including synthetic `laneStatus: "failed"` entries for null-`promptTemplatePath` lanes) into a `laneResults` array. Call `plan_support({action: "merge_results", laneResults: [...], expectedGates: ["G1".."G21"]})`. Process the returned `allIssues`, `coverageGaps`, and `laneFailures` — the tool handles issue/pass union, gate-coverage checks, lane-failure injection (G17 advisory per R31), and deduplication.
+**Map lane results to the `merge_results` shape:** The lane prompts' field names differ from the ones `plan_support` reads. Build one `laneResults[]` entry per lane (lanes 0–4) with this mapping — never pass a lane's raw JSON:
+
+| `laneResults[]` field | Lanes 0–3 | Lane 4 (G17) |
+|---|---|---|
+| `name` | `lanes[i].name` | `lanes[4].name` |
+| `status` | `"pass"` when `laneStatus` is `"ok"`; `"fail"` when `laneStatus` is `"failed"` or `"timeout"`, or the lane returned no parseable JSON | `"pass"` when the G17 JSON parsed; `"fail"` on dispatch failure, timeout, malformed JSON, or null `promptTemplatePath` |
+| `gateIds` | the lane's `gateIds` (`lanes[i].gateIds` when no parseable JSON) | `["G17"]` |
+| `passes` | the lane's `passes` (`[]` when no parseable JSON) | `[]` |
+| `issues[].gateId` | the issue's `gateId` | — (`issues` is `[]`; G17 findings go to `g17Findings`, not the merge) |
+| `issues[].severity` | `"blocking"` when the issue has `blocking: true` or `severity: "error"`; otherwise `"advisory"` | — |
+| `issues[].summary` | `"<taskRef>: <message>"`, or just `message` when `taskRef` is null | — |
+
+The tool compares these values exactly: a lane counts as failed only with `status: "fail"`, and an issue counts as blocking only with `severity: "blocking"`. A lane sent with `laneStatus` or an issue sent with `severity: "error"` is silently treated as passed or advisory. A failed lane 4 (gateIds `["G17"]` only) becomes an advisory note, never a blocker (R31). Lane 4 must be in `laneResults` even when it failed — otherwise G17 shows up as a blocking coverage gap.
+
+**Merge algorithm:** Collect the mapped entries (including the synthetic entries for null-`promptTemplatePath` lanes) into a `laneResults` array. Call `plan_support({action: "merge_results", laneResults: [...], expectedGates: ["G1".."G21"]})`. Process the returned `allIssues`, `coverageGaps`, and `laneFailures` — the tool handles issue/pass union, gate-coverage checks, lane-failure injection (G17 advisory per R31), and deduplication by (`gateId`, lower-cased trimmed `summary`).
 
 Note every issue from `allIssues`. Do NOT write to the plan file in this step.
 
@@ -735,7 +749,7 @@ When `materialChangeDetected` is true (set by the Step 6 IMPROVE pass — see be
 
 - **Dispatch contents:** all five `lanes[]` (P16) + all `lensReviewers[]` (P17, or the single reviewer for <5-task plans). Each agent uses the same dispatch parameters, template variables, and model rules defined in Step 3 (lanes) and Step 5 (lenses) respectively.
 - **Await barrier:** do not consolidate or advance until exactly N = (5 lanes + M lenses) results are collected. Never consolidate on partial or zero returns.
-- **Merge:** use the combined `plan_support({action: "merge_results", laneResults, lensResults, expectedGates, isRedispatch: true})` call described in the Step 5 merge section below. The tool handles lane/lens merging, gate coverage, G17 advisory demotion, and cross-source deduplication in one call.
+- **Merge:** map lane results as in Step 3 ("Map lane results to the `merge_results` shape") and lens results as in the Step 5 merge section below, then use the combined `plan_support({action: "merge_results", laneResults, lensResults, expectedGates, isRedispatch: true})` call. The tool handles lane/lens merging, gate coverage, and deduplication in one call; `isRedispatch: true` additionally demotes every G17 finding to advisory.
 - **G17 on re-dispatch (advisory only):** lanes[4]/G17 findings from the re-dispatch merge as advisory only. Step 4 has already run, so there is no `## Suggested Review Dimensions` consumer — do not re-splice G17 findings into the plan file. Persist updated `g17Findings` in memory for scorecard reference only.
 - **Guardrail-block gate preservation (R19):** lanes[3] (guardrail-compliance) findings from the re-dispatch are scanned the same way Step 4 scans them. If any error-severity guardrail violation is present in the re-dispatch merge, do NOT route it silently into Step 6's blocking-issue set — surface the same guardrail-block harden offer described in Step 4 (offer **harden** alongside the user-revision options; dispatch `Skill(harden)` with `--failure-text "Plan blocked by error-severity guardrail <id>: <description> — <rationale>"`, `--skill plan`, `--step "Step 5 — merged re-dispatch"`, `--operation "error-severity guardrail block"` only if the user selects harden, suppressed when `--auto` is set) before proceeding with Step 6 fixes. This preserves R19 across the merged re-dispatch path.
 - **`guardrailsEvaluated` / `critiqueRan`:** NOT re-written (once-per-run checkpoints — see Step 3).
@@ -768,7 +782,16 @@ When `lensReviewers[i].promptTemplatePath` is null, skip that lens and call `lea
 
 **No `isolation: "worktree"` on any lens reviewer dispatch** (forbidden per issues #370/#372).
 
-**Merge lens reviewer results (per iteration):** Collect each lens reviewer's result into a `lensResults` array. Call `plan_support({action: "merge_results", lensResults: [...]})`. Process the returned `mergedStatus` (`Approved` / `Issues Found`), `allIssues`, and `recommendations` — the tool handles status derivation, issue dedup by `(taskRef, message-normalized-prefix)`, and recommendation dedup by string prefix. For the merged re-dispatch path (when `materialChangeDetected` is true), combine both in one call: `plan_support({action: "merge_results", laneResults: [...], lensResults: [...], expectedGates: ["G1".."G21"], isRedispatch: true})` — `isRedispatch` makes G17 findings advisory-only and applies cross-source deduplication.
+**Merge lens reviewer results (per iteration):** Build one `lensResults[]` entry per lens reviewer from its markdown output:
+
+| `lensResults[]` field | Source in the lens output |
+|---|---|
+| `name` | `lensReviewers[i].lens` |
+| `status` | the `**Status:**` value as written (`Approved` or `Issues Found`); the tool ignores letter case and outer spaces, and anything other than approved counts as not approved |
+| `issues` | one `{ severity: "blocking", summary: "<bullet text>" }` per bullet under `**Issues**` (lenses list only execution blockers); no `gateId` |
+| `recommendations` | one string per bullet under `**Recommendations**` |
+
+Call `plan_support({action: "merge_results", lensResults: [...]})`. Process the returned `mergedStatus` (`Approved` / `Issues Found`), `allIssues`, and `recommendations` — the tool handles status derivation, issue dedup by (`gateId`, lower-cased trimmed `summary`), and recommendation dedup by exact trimmed text. For the merged re-dispatch path (when `materialChangeDetected` is true), combine both in one call: `plan_support({action: "merge_results", laneResults: [...], lensResults: [...], expectedGates: ["G1".."G21"], isRedispatch: true})` — deduplication runs across lanes and lenses as always; `isRedispatch` only makes G17 findings advisory.
 
 **Iteration counter**: increment by 1 only after the await barrier above is satisfied (exactly N lens results collected, N = lenses dispatched); never increment on partial or zero returns (R-orchestrator-await, R-c1, #487). The counter starts at 0 and counts completed Step 5 rounds. Writer IDs and checkpoints use the round in progress, `<iteration>` = counter + 1: the first Step 3 lanes and the first Step 5 lenses are `r1`; the first merged re-dispatch is `r2`. Checkpoints in Steps 0–2 use `iteration: 0`. On resume, set the counter to `checkpoint.iteration - 1` (never below 0).
 

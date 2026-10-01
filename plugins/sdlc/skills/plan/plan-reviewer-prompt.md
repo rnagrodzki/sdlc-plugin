@@ -95,6 +95,6 @@ Task tool (general-purpose):
 - Issues Found → Fix each blocking issue in the plan document; re-dispatch the reviewer; maximum 3 reviewer iterations — if still unresolved, surface to user
 
 **Multi-lens reviewer (plans ≥5 tasks — merge in Step 5):**
-- Main agent merges lens results: Status = `Approved` iff ALL lenses approved; Issues = union of blocking issues (dedup by taskRef + message-prefix); Recommendations = prefix-dedup
+- Main agent merges lens results with `plan_support({action: "merge_results", lensResults})` (SKILL.md Step 5 maps each lens output to the tool's fields): Status = `Approved` iff ALL lenses approved; Issues = union of blocking issues (dedup by gate ID + lower-cased trimmed summary); Recommendations = exact-text dedup
 - Merged Approved → Proceed to Step 7
 - Merged Issues Found → Fix blocking issues; re-dispatch all lenses in next iteration; maximum 3 iterations total

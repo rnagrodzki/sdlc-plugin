@@ -270,13 +270,29 @@ The skill SHALL write every section in the active template's `## Required Sectio
 ### Requirement: Step 3 lane critique
 The skill SHALL dispatch all five `lanes[]` entries in one message, using `subagentType`, `model`, and `promptTemplatePath` from `plan_prepare` verbatim and no `isolation` value. It SHALL merge results with `plan_support({action: "merge_results", laneResults, expectedGates: ["G1".."G21"]})`.
 
-- A lane with null `promptTemplatePath` is not dispatched and becomes a synthetic `laneStatus: "failed"` blocking issue.
+- Before the merge, the skill maps each lane's JSON to the tool's lane shape; it never passes the raw lane JSON.
+
+| `laneResults[]` field | Lanes 0–3 | Lane 4 (G17) |
+|---|---|---|
+| `name` | `lanes[i].name` | `lanes[4].name` |
+| `status` | `pass` when `laneStatus` is `ok`; `fail` when `failed`, `timeout`, or no parseable JSON | `pass` when the G17 JSON parsed; `fail` on dispatch failure, timeout, malformed JSON, or null template |
+| `gateIds` | the lane's `gateIds` | `["G17"]` |
+| `issues[].severity` | `blocking` when the issue has `blocking: true` or `severity: "error"`; otherwise `advisory` | no issues |
+| `issues[].summary` | `<taskRef>: <message>`, or `message` when `taskRef` is null | no issues |
+
+- Lane 4 is always in `laneResults`, so G17 is never a coverage gap; a failed lane 4 becomes an advisory note.
+- A lane with null `promptTemplatePath` is not dispatched and becomes a synthetic entry with `status: "fail"` and one `blocking` issue.
 - Exception: a null `lanes[4]` (G17) template counts as empty advisory findings and is logged with `learnings_log`.
 - Step 3 does not edit the plan file.
 
 #### Scenario: Missing lane template
 - **WHEN** `lanes[0].promptTemplatePath` is null
-- **THEN** the merged issues include a blocking error `Lane static-structural skipped — promptTemplatePath null (template not found at prepare time)`
+- **THEN** the merged issues include a blocking issue `Lane static-structural skipped — promptTemplatePath null (template not found at prepare time)`
+
+#### Scenario: Lane reports an error-severity issue
+- **WHEN** the static-structural lane returns `laneStatus: "ok"` and an issue with `severity: "error"`, `blocking: true`, `taskRef: "Task 3"`, and `message: "Depends on missing Task 9"`
+- **THEN** the skill sends that lane with `status: "pass"` and an issue with `severity: "blocking"` and `summary: "Task 3: Depends on missing Task 9"`
+- **AND** `merge_results` returns `mergedStatus: Issues Found`
 
 ### Requirement: Step 4 improve without a user touchpoint
 The skill SHALL fix all Step 3 issues in the plan file without showing the plan to the user, then continue to Step 5.
@@ -299,6 +315,7 @@ Except for lightweight plans, the skill SHALL review the plan and loop through S
 | Fewer than 5 tasks | One reviewer from `plan-reviewer-prompt.md` with `{LENS}=all` |
 
 - The skill waits for every dispatched result before merging with `plan_support({action: "merge_results", lensResults})`; the iteration counter moves only then.
+- Each lens result is sent as `name` = the lens, `status` = the `**Status:**` value as written (`Approved` or `Issues Found`; the tool ignores letter case), one `blocking` issue per `**Issues**` bullet, and one recommendation per `**Recommendations**` bullet.
 - It regenerates `## Verification Scorecard` each round: dimension counts, traceability matrix, and a verdict.
 - `Approved` ends the loop; Step 6 is a no-op. `Issues Found` goes to Step 6.
 - After 3 rounds with open blocking issues it summarizes them, asks with AskUserQuestion, and offers **harden** unless `--auto` is set.

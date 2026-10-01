@@ -150,7 +150,7 @@ type LaneResult struct {
 // LensResult represents the outcome of a single review lens.
 type LensResult struct {
 	Name            string   `json:"name" jsonschema_description:"Name of the review lens that produced this result."`
-	Status          string   `json:"status" jsonschema_description:"Outcome of the lens: \"approved\", \"rejected\", or \"conditional\"."` // "approved"|"rejected"|"conditional"
+	Status          string   `json:"status" jsonschema_description:"Outcome of the lens, as the lens wrote it: \"Approved\" or \"Issues Found\". Letter case and outer spaces are ignored; any value other than approved counts as not approved."`
 	Issues          []Issue  `json:"issues,omitempty" jsonschema_description:"Findings raised by this lens."`
 	Recommendations []string `json:"recommendations,omitempty" jsonschema_description:"Recommendations raised by this lens."`
 }
@@ -427,11 +427,13 @@ func mergeResults(in PlanSupportIn) (PlanSupportOut, error) {
 		}
 	}
 
-	// Approved iff all lens statuses are "approved" (plan-reviewer-prompt.md),
-	// whether or not laneResults are sent in the same call.
+	// Approved iff all lens statuses are "approved", whether or not
+	// laneResults are sent in the same call. The lens prompts write
+	// "**Status:** Approved" or "Issues Found", so letter case and outer
+	// spaces are ignored.
 	if len(in.LensResults) > 0 {
 		for _, lens := range in.LensResults {
-			if lens.Status != "approved" {
+			if !strings.EqualFold(strings.TrimSpace(lens.Status), "approved") {
 				mergedStatus = "Issues Found"
 				break
 			}

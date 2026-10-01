@@ -343,6 +343,38 @@ func TestPlanMergeResults_LensMergeMixed(t *testing.T) {
 	}
 }
 
+// TestPlanMergeResults_LensStatusAsWritten verifies merge_results reads the
+// lens status the way the lens prompts write it: "**Status:** Approved" or
+// "**Status:** Issues Found". The compare ignores letter case and outer
+// spaces, so "Approved" counts as approved.
+func TestPlanMergeResults_LensStatusAsWritten(t *testing.T) {
+	t.Run("all Approved", func(t *testing.T) {
+		out := mergeCall(t, PlanSupportIn{
+			LensResults: []LensResult{
+				{Name: "architecture", Status: "Approved"},
+				{Name: "requirements", Status: " APPROVED "},
+				{Name: "risk", Status: "approved"},
+			},
+		})
+		if out.MergedStatus != "Approved" {
+			t.Errorf("MergedStatus = %q, want %q", out.MergedStatus, "Approved")
+		}
+	})
+	t.Run("one Issues Found", func(t *testing.T) {
+		out := mergeCall(t, PlanSupportIn{
+			LensResults: []LensResult{
+				{Name: "architecture", Status: "Approved"},
+				{Name: "risk", Status: "Issues Found", Issues: []Issue{
+					{Severity: "blocking", Summary: "Task 2: wrong file path"},
+				}},
+			},
+		})
+		if out.MergedStatus != "Issues Found" {
+			t.Errorf("MergedStatus = %q, want %q", out.MergedStatus, "Issues Found")
+		}
+	})
+}
+
 // TestPlanMergeResults_Redispatch verifies isRedispatch=true downgrades G17
 // findings to advisory-only, even when submitted as blocking.
 func TestPlanMergeResults_Redispatch(t *testing.T) {

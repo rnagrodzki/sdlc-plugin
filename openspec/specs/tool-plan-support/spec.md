@@ -65,11 +65,13 @@ The `merge_results` action SHALL require at least one non-empty list among `lane
 | Field | Type | Required | Encoding | Meaning |
 |---|---|---|---|---|
 | `laneResults` | array of lane result | one of the two | JSON array | Lane outcomes: `name`, `status` (`pass` or `fail`), `issues`, `passes`, `gateIds` |
-| `lensResults` | array of lens result | one of the two | JSON array | Lens outcomes: `name`, `status` (`approved`, `rejected`, `conditional`), `issues`, `recommendations` |
+| `lensResults` | array of lens result | one of the two | JSON array | Lens outcomes: `name`, `status` (as the lens wrote it, e.g. `Approved` or `Issues Found`), `issues`, `recommendations` |
 | `expectedGates` | string array | no | JSON array | Gate IDs that lanes must cover |
 | `isRedispatch` | boolean | no | JSON boolean | `true` when the results come from a re-run of lanes or lenses |
 
 - Each issue has `gateId`, `severity` (`blocking` or `advisory`), `summary`, and `source`.
+- Lane `status` and issue `severity` are compared exactly: a lane counts as failed only when `status` is `fail`, and an issue counts as blocking only when `severity` is `blocking`. Any other value counts as passed or advisory.
+- Lens `status` is compared ignoring letter case and outer spaces: `Approved`, `approved`, and ` APPROVED ` all count as approved.
 
 | Condition | Class | Message / Suggestion (short) |
 |---|---|---|
@@ -135,7 +137,7 @@ The `merge_results` action SHALL set `mergedStatus` to `Issues Found` when any r
 | Rule | Applies when |
 |---|---|
 | Any issue in `allIssues` has `severity: blocking` | always |
-| Any lens `status` is not `approved` | `lensResults` given, with or without `laneResults` |
+| Any lens `status` is not `approved` (ignoring letter case and outer spaces) | `lensResults` given, with or without `laneResults` |
 | `laneFailures` is not empty (a failed lane that is not G17-only, with or without issues) | `laneResults` given |
 
 `next` is chosen by the first matching row:
@@ -155,6 +157,14 @@ The `merge_results` action SHALL set `mergedStatus` to `Issues Found` when any r
 
 #### Scenario: One lens rejected
 - **WHEN** only `lensResults` is given and one lens has `status: rejected`
+- **THEN** `mergedStatus` is `Issues Found`
+
+#### Scenario: Lens status as the lens prompt writes it
+- **WHEN** only `lensResults` is given and the lenses have `status` values `Approved`, ` APPROVED `, and `approved`
+- **THEN** `mergedStatus` is `Approved`
+
+#### Scenario: One lens reports Issues Found
+- **WHEN** only `lensResults` is given, one lens has `status: Approved`, and one has `status: Issues Found`
 - **THEN** `mergedStatus` is `Issues Found`
 
 #### Scenario: Rejected lens alongside lanes

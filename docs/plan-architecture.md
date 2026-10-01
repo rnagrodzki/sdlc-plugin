@@ -664,8 +664,11 @@ both for `hybrid`).
    must be marked "out-of-scope addition" with rationale.
 
 The `merge_results` action in `plan_support` deduplicates gate findings by
-matching `(taskRef, message-normalized-prefix)` and reports coverage gaps for
-any expected gate IDs not returned by lane subagents.
+matching `(gateId, lower-cased trimmed summary)` and reports coverage gaps for
+any expected gate IDs not returned by lane subagents. The skill maps each
+lane's and lens's output to the tool's field names first (`status`
+`pass`/`fail`, `severity` `blocking`/`advisory`, `summary`) — see SKILL.md
+Step 3 and Step 5.
 
 ### Plan File Section Lifecycle
 
