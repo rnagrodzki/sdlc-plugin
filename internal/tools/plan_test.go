@@ -2338,6 +2338,7 @@ func TestPlanMark_InputSchema_ListsCheckpointEnum(t *testing.T) {
 // GC sweep in internal/state matches on), and that the manifest is valid
 // JSON with a non-negative scope-hint count.
 func TestPlanExplorePrepare_TempdirPattern(t *testing.T) {
+	redirectTempManifests(t) // keep the sdlc-explore-* dir out of the OS temp dir
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
@@ -2374,6 +2375,7 @@ func TestPlanExplorePrepare_TempdirPattern(t *testing.T) {
 // TestPlanExplorePrepare_Handler verifies the plan_explore_prepare tool
 // handler surfaces exactly {manifestPath} and that the file exists on disk.
 func TestPlanExplorePrepare_Handler(t *testing.T) {
+	redirectTempManifests(t) // keep the sdlc-explore-* dir out of the OS temp dir
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")

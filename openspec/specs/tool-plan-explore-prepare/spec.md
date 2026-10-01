@@ -50,11 +50,19 @@ Each call SHALL create a new directory under the OS temp directory named `sdlc-e
 
 - `<branch-slug>` is the current branch with every character outside `[a-zA-Z0-9-]` replaced by `-`.
 - `<branch-slug>` is `unknown` when the current branch cannot be read.
+- After a successful manifest write, the tool removes every other `sdlc-explore-*` directory in the same temp root whose modification time is more than 24 hours old. Younger ones and other directories are kept. Errors during this cleanup are ignored and do not fail the call.
+- `plan_prepare`'s `explorePack` runs the same pass, so it does the same cleanup.
 
 #### Scenario: Temp directory naming on branch main
 - **WHEN** the tool runs on branch `main`
 - **THEN** the manifest's parent directory basename matches `^sdlc-explore-main-[A-Za-z0-9]+$`
 - **AND** `manifestPath` is inside `outDir`
+
+#### Scenario: Stale explore directories removed
+- **WHEN** the temp root holds an `sdlc-explore-*` directory 48 hours old, one 1 hour old, and an `sdlc-commit-manifest-*` directory 48 hours old
+- **AND** the tool writes a new manifest
+- **THEN** the 48-hour-old `sdlc-explore-*` directory is removed
+- **AND** the 1-hour-old `sdlc-explore-*` directory, the `sdlc-commit-manifest-*` directory and the new directory remain
 
 ### Requirement: Manifest content
 The tool SHALL write `manifest.json` as indented JSON with the fields below.

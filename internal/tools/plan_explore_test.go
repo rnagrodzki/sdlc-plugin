@@ -5,12 +5,14 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // readExploreManifest runs buildExplorePack, removes its temp dir when the
 // test ends, and returns the decoded manifest.
 func readExploreManifest(t *testing.T, mainRoot, contentRoot, fromOpenspec string) exploreManifest {
 	t.Helper()
+	redirectTempManifests(t)
 	pack := buildExplorePack(mainRoot, contentRoot, fromOpenspec, "")
 	if pack.OutDir != nil {
 		outDir := *pack.OutDir
@@ -28,6 +30,57 @@ func readExploreManifest(t *testing.T, mainRoot, contentRoot, fromOpenspec strin
 		t.Fatalf("decode manifest: %v", err)
 	}
 	return m
+}
+
+// TestPlanExplorePrepare_RemovesStaleExploreDirs pins the explore-dir
+// cleanup: each call removes sdlc-explore-* directories older than 24h, keeps
+// younger ones and the one it just wrote, and leaves other directories alone,
+// including an old sdlc-commit-manifest-* one.
+func TestPlanExplorePrepare_RemovesStaleExploreDirs(t *testing.T) {
+	root := redirectTempManifests(t)
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	build := func() string {
+		t.Helper()
+		pack := buildExplorePack(dir, dir, "", "")
+		if pack.Error != nil || pack.OutDir == nil || pack.ManifestPath == nil {
+			t.Fatalf("buildExplorePack: pack = %+v", pack)
+		}
+		return *pack.OutDir
+	}
+	age := func(path string, d time.Duration) {
+		t.Helper()
+		old := time.Now().Add(-d)
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stale := build()
+	age(stale, 48*time.Hour)
+	recent := build()
+	age(recent, time.Hour)
+	other := filepath.Join(root, commitManifestPrefix+"old")
+	if err := os.Mkdir(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	age(other, 48*time.Hour)
+
+	current := build()
+
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("explore dir older than 24h should be removed, stat err = %v", err)
+	}
+	for _, keep := range []string{recent, current, other} {
+		if _, err := os.Stat(keep); err != nil {
+			t.Errorf("%s should be kept: %v", filepath.Base(keep), err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(current, "manifest.json")); err != nil {
+		t.Errorf("current manifest must stay readable: %v", err)
+	}
 }
 
 // TestPlanExplorePrepare_ScopeHintsFromCapabilitySpecs pins that OpenSpec

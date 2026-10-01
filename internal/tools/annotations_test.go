@@ -97,7 +97,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		readOnly:   true,
 		idempotent: true,
 		openWorld:  false,
-		reason:     "os.MkdirTemp(os.TempDir(), …)",
+		reason:     "mkdirTempFunc(\"\", \"sdlc-explore-<slug>-\") for the manifest, and os.RemoveAll of sibling sdlc-explore-* dirs older than 24h under os.TempDir()",
 	},
 	"learnings_log": {
 		title:      "Manage learnings log",
@@ -466,6 +466,9 @@ func TestReadOnlyToolsWriteNothingTracked(t *testing.T) {
 			case "plan_mark":
 				_, _ = planMark(root, root, PlanMarkIn{Marker: "guardrailsEvaluated"})
 			case "plan_explore_prepare":
+				// Same mkdirTempFunc redirect as commit_prepare, so no
+				// sdlc-explore-* directory leaks into the OS temp dir.
+				redirectTempManifests(t)
 				_ = buildExplorePack(root, root, "", "investigate the widget rendering pipeline")
 			case "learnings_log":
 				_, _ = learningsLog(root, LearningsLogIn{Action: "append", Entry: "## test entry\nsingle line body, no blank lines"})

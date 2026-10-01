@@ -243,7 +243,7 @@ func commitPrepare(cfgRoot, gitRoot string, in CommitPrepareIn) (CommitPrepareOu
 	} else {
 		out.ManifestPath = manifestPath
 		manifestDir := filepath.Dir(manifestPath)
-		removeStaleCommitManifests(filepath.Dir(manifestDir), filepath.Base(manifestDir), time.Now())
+		removeStaleTempDirs(filepath.Dir(manifestDir), commitManifestPrefix, filepath.Base(manifestDir), time.Now())
 	}
 
 	return out, nil
@@ -252,30 +252,31 @@ func commitPrepare(cfgRoot, gitRoot string, in CommitPrepareIn) (CommitPrepareOu
 // commitManifestPrefix names every commit_prepare manifest directory.
 const commitManifestPrefix = "sdlc-commit-manifest-"
 
-// staleCommitManifestAge is how old an sdlc-commit-manifest-* directory must
-// be before commit_prepare removes it. A day is far longer than any commit
-// flow that still needs to read its manifest.
-const staleCommitManifestAge = 24 * time.Hour
+// staleTempDirAge is how old a per-call temp directory (an
+// sdlc-commit-manifest-* or sdlc-explore-* dir) must be before the tool that
+// creates that kind of dir removes it. A day is far longer than any flow that
+// still needs to read a manifest from it.
+const staleTempDirAge = 24 * time.Hour
 
-// removeStaleCommitManifests deletes the sdlc-commit-manifest-* directories in
-// tempRoot whose modification time is older than staleCommitManifestAge.
-// keep is the directory this call just wrote; it is never removed, because
-// the caller hands its manifest to the commit orchestrator after this tool
-// returns. Only direct children of tempRoot are checked. Best effort: every
-// read or remove error is ignored, since a leftover directory is harmless and
-// must not fail the commit flow.
-func removeStaleCommitManifests(tempRoot, keep string, now time.Time) {
+// removeStaleTempDirs deletes the directories in tempRoot whose name starts
+// with prefix and whose modification time is older than staleTempDirAge.
+// keep is the directory the calling tool just wrote; it is never removed,
+// because the caller hands its manifest to an agent after the tool returns.
+// Only direct children of tempRoot are checked. Best effort: every read or
+// remove error is ignored, since a leftover directory is harmless and must not
+// fail the calling tool.
+func removeStaleTempDirs(tempRoot, prefix, keep string, now time.Time) {
 	entries, err := os.ReadDir(tempRoot)
 	if err != nil {
 		return
 	}
 	for _, e := range entries {
 		name := e.Name()
-		if name == keep || !e.IsDir() || !strings.HasPrefix(name, commitManifestPrefix) {
+		if name == keep || !e.IsDir() || !strings.HasPrefix(name, prefix) {
 			continue
 		}
 		info, err := e.Info()
-		if err != nil || now.Sub(info.ModTime()) <= staleCommitManifestAge {
+		if err != nil || now.Sub(info.ModTime()) <= staleTempDirAge {
 			continue
 		}
 		_ = os.RemoveAll(filepath.Join(tempRoot, name))
