@@ -110,8 +110,8 @@ flowchart TD
 ### Requirement: Existing context key is never duplicated
 The tool SHALL NOT append or update the block when the file has a line starting with `context` followed by optional spaces and `:` outside the managed block. It SHALL return `action: "skipped-existing-context"`, `changed: false`, and a warning.
 
-- Warning when no block exists: `Top-level context: key already present in openspec/config.yaml. Refusing to inject a duplicate. Manually fold sdlc-utilities guidance into your existing context: value, then re-run --openspec-enrich.`
-- Warning when an older block exists: `Top-level context: key already present outside the managed block in openspec/config.yaml. Refusing to update — a duplicate context: key would result. Manually fold sdlc-utilities guidance into your existing context: value, then re-run --openspec-enrich.`
+- Warning when no block exists: `Top-level context: key already present in openspec/config.yaml. Refusing to inject a duplicate. Manually fold the sdlc-v2 workflow guidance into your existing context: value, then re-run --openspec-enrich.`
+- Warning when an older block exists: `Top-level context: key already present outside the managed block in openspec/config.yaml. Refusing to update — a duplicate context: key would result. Manually fold the sdlc-v2 workflow guidance into your existing context: value, then re-run --openspec-enrich.`
 - This repo's own `openspec/config.yaml` has a hand-written `context:` key, so the tool returns this action here.
 
 #### Scenario: Hand-written context key

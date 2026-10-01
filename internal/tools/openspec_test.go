@@ -129,7 +129,27 @@ func TestOpenspecEnrich_OlderBlockWithOutsideContextSkipped(t *testing.T) {
 		"- action: skipped-existing-context\n",
 		"- version: 1\n",
 		"- changed: false\n",
-		"Top-level context: key already present outside the managed block in openspec/config.yaml. Refusing to update",
+		"Top-level context: key already present outside the managed block in openspec/config.yaml. Refusing to update — a duplicate context: key would result. Manually fold the sdlc-v2 workflow guidance into your existing context: value, then re-run --openspec-enrich.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("result missing %q:\n%s", want, text)
+		}
+	}
+	if got != orig {
+		t.Errorf("file changed.\n--- got ---\n%s\n--- want ---\n%s", got, orig)
+	}
+}
+
+// TestOpenspecEnrich_ContextWithoutBlockSkipped verifies the no-block
+// variant of skipped-existing-context and its exact warning text.
+func TestOpenspecEnrich_ContextWithoutBlockSkipped(t *testing.T) {
+	orig := "name: test-project\ncontext: hand written\n"
+	text, got := callRegisteredOpenspecEnrich(t, orig, nil)
+
+	for _, want := range []string{
+		"- action: skipped-existing-context\n",
+		"- version: 2\n",
+		"Top-level context: key already present in openspec/config.yaml. Refusing to inject a duplicate. Manually fold the sdlc-v2 workflow guidance into your existing context: value, then re-run --openspec-enrich.",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("result missing %q:\n%s", want, text)

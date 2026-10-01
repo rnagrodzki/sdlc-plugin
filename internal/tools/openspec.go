@@ -178,7 +178,7 @@ func enrichConfig(root string, in OpenspecEnrichIn) (OpenspecEnrichOut, error) {
 				Version:       enrichVersion,
 				Path:          configPath,
 				Changed:       false,
-				Warning:       "Top-level context: key already present in openspec/config.yaml. Refusing to inject a duplicate. Manually fold sdlc-utilities guidance into your existing context: value, then re-run --openspec-enrich.",
+				Warning:       "Top-level context: key already present in openspec/config.yaml. Refusing to inject a duplicate. Manually fold the sdlc-v2 workflow guidance into your existing context: value, then re-run --openspec-enrich.",
 				MatchedChange: matchedChange,
 			}, nil
 		}
@@ -237,7 +237,7 @@ func enrichConfig(root string, in OpenspecEnrichIn) (OpenspecEnrichOut, error) {
 			Version:       block.version,
 			Path:          configPath,
 			Changed:       false,
-			Warning:       "Top-level context: key already present outside the managed block in openspec/config.yaml. Refusing to update — a duplicate context: key would result. Manually fold sdlc-utilities guidance into your existing context: value, then re-run --openspec-enrich.",
+			Warning:       "Top-level context: key already present outside the managed block in openspec/config.yaml. Refusing to update — a duplicate context: key would result. Manually fold the sdlc-v2 workflow guidance into your existing context: value, then re-run --openspec-enrich.",
 			MatchedChange: matchedChange,
 		}, nil
 	}
