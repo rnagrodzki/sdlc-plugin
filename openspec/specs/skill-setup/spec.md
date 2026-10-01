@@ -412,8 +412,18 @@ After writing, the skill SHALL re-call `setup_prepare`, re-read both TOML files,
 The skill SHALL end with a `Setup complete` summary that lists only the config files, content, and migrations that were created, updated, or migrated, and SHALL log a learning with `learnings_log({ action: "append", entry })`.
 
 - Learning entry heading: `## YYYY-MM-DD — setup: <brief summary>`.
+- The summary SHALL also show a `CI scripts needing an update:` block built from `ciScriptDrift` of the latest `setup_prepare` call: one line per entry whose `action` is not `current`, as `<script> — <action> (installed v<installedVersion>, current v<currentVersion>)`, followed by the fix `scaffold_ci({ force: true })`. The block is omitted when `ciScriptDrift` is empty or every entry is `current`.
 
 #### Scenario: Only jira configured
 - **WHEN** only `jira` was written
 - **THEN** the summary lists `.sdlc-v2/config.toml`
 - **AND** omits the content and migration groups
+
+#### Scenario: Outdated CI script shown
+- **WHEN** the latest `setup_prepare` returns `ciScriptDrift` with one `outdated` entry and one `current` entry
+- **THEN** the summary has a `CI scripts needing an update:` block with one line, for the `outdated` script
+- **AND** the block names `scaffold_ci({ force: true })` as the fix
+
+#### Scenario: All CI scripts current
+- **WHEN** every `ciScriptDrift` entry has `action: "current"`
+- **THEN** the summary has no `CI scripts needing an update:` block

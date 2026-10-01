@@ -139,7 +139,7 @@ If the system context contains "Plan mode is active":
 1. Call the `setup_prepare` MCP tool:
 
    ```
-   setup_prepare({ skipConfigCheck: false }) → { ok, needsMigration, sections[], defaultBranch, remoteOwner }
+   setup_prepare({ skipConfigCheck: false }) → { ok, needsMigration, sections[], defaultBranch, remoteOwner, ciScriptDrift[] }
    ```
 
    `sections[]` is the static 18-row descriptor list, always in canonical
@@ -838,10 +838,21 @@ Content:
 Migrated:
   .sdlc-v2/review-dimensions/  — imported from .sdlc/ (one line per migrate `changed[]` entry)
   ...
+
+CI scripts needing an update:
+  <script> — <action> (installed v<installedVersion>, current v<currentVersion>)
+  ...
+  Fix: run scaffold_ci({ force: true }), or re-confirm the version section in /setup.
 ```
 
 Only show sections that were actually created, updated, or migrated. Omit sections that were
 skipped or unchanged.
+
+The `CI scripts needing an update` block comes from `ciScriptDrift[]` of the latest
+`setup_prepare` call (Step 3b's, else Step 0's). Each entry is
+`{ script, installedVersion, currentVersion, action }`, with `action` one of `current`,
+`outdated`, `missing`. Show one line per entry whose `action` is not `current`. Omit the block
+when `ciScriptDrift` is empty or every entry is `current`.
 
 ---
 
