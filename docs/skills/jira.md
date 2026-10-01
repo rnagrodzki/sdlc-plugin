@@ -22,7 +22,7 @@ After invoking `/jira`, describe what you want in natural language.
 |------|-------------|---------|
 | `--project <KEY>` | Jira project key (e.g., `PROJ`). | auto-detected from branch, else configured default |
 | `--force-refresh` | Rebuild the cached project metadata. | off |
-| `--init-templates` | Copy default issue templates, when any are found, to `.sdlc-v2/jira-templates/` for per-project customization. The plugin ships none today. | off |
+| `--init-templates` | Copy default issue templates to `.sdlc-v2/jira-templates/` for per-project customization. The plugin ships no default templates today, so this copies nothing and says so. | off |
 | `--site <host>` | Jira site hostname (e.g., `mycompany.atlassian.net`). Disambiguates cached projects that exist under more than one site. | unset |
 | `--skip-workflow-discovery` | Skip loading workflows and transitions (faster startup; useful in CI). | off |
 
@@ -70,7 +70,11 @@ After invoking `/jira`, describe what you want in natural language.
 - **Multi-project repos.** Add a `projects` array under the `jira` section of
   `.sdlc-v2/config.toml` to restrict which project keys are accepted, then
   use `--project <KEY>` to pick the active one per invocation.
-- **Templates.** Every issue type needs a description template. The plugin
-  ships no default templates today, so write your own at
-  `.sdlc-v2/jira-templates/<Type>.md`. `--init-templates` copies defaults
-  only when it finds a templates directory (see the skill for the lookup order).
+- **Templates.** A description template per issue type is optional. With a
+  template at `.sdlc-v2/jira-templates/<Type>.md`, `/jira` fills it. Without
+  one, `/jira` tells you no template was found and drafts the description
+  from a base structure: `## Summary`, `## Context`, `## Acceptance Criteria`.
+  You still review the critique and approve the payload before anything is
+  sent to Jira. The plugin ships no default templates today, so
+  `--init-templates` copies nothing unless it finds a templates directory
+  (see the skill for the lookup order).

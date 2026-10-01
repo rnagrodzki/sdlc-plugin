@@ -41,13 +41,16 @@ pre-v5 caches** — if a legacy `.sdlc-v2/jira-cache/<KEY>.json` or `.claude/jir
 file exists from an earlier install, it is not read or moved; either copy it to the home
 layout above manually or run cache initialization fresh.
 
-Each issue type needs a description template. A custom template at
+Each issue type should have a description template. A custom template at
 `.sdlc-v2/jira-templates/<Type>.md` wins. Otherwise the `jira` tool looks for a default
 `<Type>.md` in the first of these directories: the `templatesDir` input;
 `$CLAUDE_PLUGIN_ROOT/skills/jira/templates` (only when it exists); the first
 `jira/templates` directory under `~/.claude/plugins`; `<cwd>/plugins/sdlc/skills/jira/templates`.
 This plugin currently ships no default templates, so unless one of those directories
-has them, only custom templates resolve, and `--init-templates` has nothing to copy. Templates are filled
+has them, only custom templates resolve, and `--init-templates` copies nothing. When no
+template resolves for an issue type, the skill does not stop: it drafts the description
+from the fixed **base structure** (Step 2.5) and tells the user how to add a template.
+Templates (and the base structure) are filled
 from user context before the MCP call, producing well-structured descriptions on the first
 attempt. All `{placeholder}` markers must be replaced with real content or the section
 removed entirely — the API call is never made with raw placeholder text.
@@ -62,7 +65,7 @@ removed entirely — the API call is never made with raw placeholder text.
 |----------|-------------|---------|
 | `--project <KEY>` | Jira project key (e.g., PROJ). When `jira.projects` is set, values outside the list are rejected. | Auto-detected |
 | `--force-refresh` | Rebuild cache even if fresh | false |
-| `--init-templates` | Copy default templates (if any are found — see above) to `.sdlc-v2/jira-templates/` | false |
+| `--init-templates` | Copy default templates to `.sdlc-v2/jira-templates/`, then stop. Copies nothing when no default templates are found (the plugin ships none — see above) | false |
 | `--site <host>` | Sanitized site host (e.g., `acme_atlassian_net`). Disambiguates `check`/`load` when the same project key is cached under multiple sites. | Unset |
 | `--skip-workflow-discovery` | Bypass Phase 5; cache `workflows[type] = { unsampled: true }` per non-subtask type. Transitions fall back to live `getTransitionsForJiraIssue` per issue. Use in CI. | false |
 
@@ -122,7 +125,16 @@ If `--init-templates` flag is present:
 
 2. Report: "N templates initialized (exact match), N skipped (already exist)." — `N` from `initialized.length` / `skipped.length`.
 
-3. If `unavailable` is non-empty AND the cache is loaded:
+3. Get the list of default templates:
+   ```
+   jira({ action: "templates", key: "<PROJECT_KEY>", templatesDir? })
+   → { ..., defaultTemplates: [...], ... }
+   ```
+   If `defaultTemplates` is empty, no default templates were found, so nothing was copied. Report:
+   "No default templates found — nothing copied. Add your own at `.sdlc-v2/jira-templates/<Type>.md`. Until then, `/jira` create drafts descriptions from the base structure (Step 2.5)."
+   Skip step 4 (there is no template to offer) and go to step 5.
+
+4. If `unavailable` is non-empty, `defaultTemplates` is non-empty, AND the cache is loaded:
    - Announce: "Found N issue types with no matching default template. I'll suggest a template for each based on its Jira hierarchy level."
    - For each unavailable type, look up its metadata in `cache.issueTypes[typeName]`:
      - Determine suggestion based on `hierarchyLevel`:
@@ -134,7 +146,7 @@ If `--init-templates` flag is present:
        > Issue type "[typeName]" (hierarchy level: [N]) has no matching template.
        > Which default template should I use?
 
-       Options: [Suggested template (Recommended)], [other available default templates], [Skip — no template for this type]
+       Options: [Suggested template (Recommended)], [other entries of `defaultTemplates`], [Skip — no template for this type]. Offer a suggestion only when it is in `defaultTemplates`.
    - For each user selection (not "Skip"), copy the template:
      ```
      jira({ action: "copy-template", key: "<PROJECT_KEY>", templateType: "<typeName>", templateFrom: "<selectedTemplate>" })
@@ -142,9 +154,9 @@ If `--init-templates` flag is present:
      ```
    - Report final results: "N additional templates created from user selections."
 
-4. No cleanup needed — tool calls return structured data directly; there are no temp files to remove.
+5. No cleanup needed — tool calls return structured data directly; there are no temp files to remove.
 
-5. Stop. Do not proceed with any Jira operation.
+6. Stop. Do not proceed with any Jira operation.
 
 ---
 
@@ -346,11 +358,24 @@ Skip this step for read operations (`search`, `view`). For every write operation
      ```
      For each entry in `fallbacks`, print a one-line notice before building the payload:
      `Using <fallbackTo> template for <type> — override at .sdlc-v2/jira-templates/<type>.md`
-     For each entry in `noneTypes`, print a one-line warning and stop the operation:
-     `No template for <type>. Run /jira --init-templates or create .sdlc-v2/jira-templates/<type>.md`
      Sub-bug, Sub-task, and Subtask types resolve via a fixed fallback map inside the `jira` tool (Sub-bug → Bug, Sub-task → Task, Subtask → Task) — the skill never re-derives this mapping.
+   - **No template — base structure fallback (R18):** when the issue type is in `noneTypes`, do not stop. Print this one-line notice before building the payload:
+     `No template for <type> — drafting the description from the base structure (Summary / Context / Acceptance Criteria). To use your own, create .sdlc-v2/jira-templates/<type>.md`
+     When `defaultTemplates` is non-empty, append ` or run /jira --init-templates` to the notice; when it is empty, leave that out (`--init-templates` would copy nothing).
+     Then use the base structure below as the resolved template for this payload:
+     ```markdown
+     ## Summary
+     - {what_and_why}
+
+     ## Context
+     - {background}
+
+     ## Acceptance Criteria
+     - [ ] {criterion}
+     ```
+     Fill it exactly like a template: repeat bullets as needed, resolve every `{placeholder}` per R19 (escalate `low`-confidence markers), and remove `## Context` when there is nothing real to put in it. Add no other `## ` sections. Every later gate still runs unchanged — critique (this step), approval (Step 2.6), and link verification (Step 2.7). No gate is skipped because no template was found.
 2. Run the critique checklist:
-   - **Template completeness** (create / description-touching edit) — every `## ` heading in the payload description belongs to the resolved template; no invented sections.
+   - **Template completeness** (create / description-touching edit) — every `## ` heading in the payload description belongs to the resolved template (for a `noneTypes` type, the base structure); no invented sections.
    - **Field correctness** — issue type / project key / parent / components / labels match cached `allowedValues`.
    - **Workflow validity** — for `transition`, the target status is reachable per the cached workflow graph (R6).
    - **Terminology consistency** — summary vocabulary matches description vocabulary (no contradictions).
@@ -438,7 +463,7 @@ After Step 2 classifies the operation type, follow the matching procedure below.
 ### 3.1 — Create Operation
 
 1. Determine issue type from user request — map user language ("bug", "feature", "task") to the exact type name from `cache.issueTypes`. If ambiguous, ask. Read `cache.fieldSchemas[issueTypeName]`; ask before proceeding for every required field the user didn't provide.
-2. Resolve the description template (R18) — see Step 2.5. Free-form descriptions are prohibited.
+2. Resolve the description template (R18) — see Step 2.5. When the type has a template, use it. When it has none (`noneTypes`), print the notice and use the base structure from Step 2.5 — do not stop, and do not invent other sections.
 3. Detect placeholders via the C13 regex (R19) — `\{[a-zA-Z_][a-zA-Z0-9_-]*\}|\[[^\]\n]{3,}\]`. Classify each marker `high` (explicit user input or definitive cache value) or `low`; escalate every `low` marker via AskUserQuestion. Never leave a raw placeholder in the final description.
 4. Build the payload: `issueTypeName` exact string from cache (e.g., `"Task"` not `"task"`); `priority: { name: "..." }`; `labels` flat string array; `components` array of `{ name: "..." }`; custom fields by `fieldId` key (e.g. `customfield_10016`) with the correct shape (see Field Format Quick Reference, below); for Sub-task, include `parent: "PROJ-123"` as a top-level parameter.
 5. Run Steps 2.5–2.7 (critique, approval, link verification).
@@ -448,7 +473,7 @@ After Step 2 classifies the operation type, follow the matching procedure below.
 ### 3.2 — Edit Operation
 
 1. Parse which issue key, which field(s), what new value(s).
-2. Resolve the description template (R18) ONLY when `description` is being touched — look up the issue's `issueTypeName` via cache or `getJiraIssue`.
+2. Resolve the description template (R18) ONLY when `description` is being touched — look up the issue's `issueTypeName` via cache or `getJiraIssue`. A type with no template uses the Step 2.5 base structure, as on create.
 3. Detect placeholders (R19) across every string-valued field, not only description; traverse ADF text nodes recursively when editing an ADF field.
 4. Build `fields` — **flat object, not nested under `fields.fields`**: `priority: { name: "..." }`; `labels` flat string array (**REPLACES** existing labels entirely, not a merge); `components` array of `{ name: "..." }`; custom select `{ value: "..." }`; `assignee: { accountId: "..." }` from `cache.userMappings`.
 5. Run Steps 2.5–2.7.
@@ -716,7 +741,7 @@ is always incorrect.
 | User disambiguation | `lookupJiraAccountId` results always disambiguated if multiple matches |
 | No fabricated values | All field values derived from cache `allowedValues` or user input |
 | Approval gate (G9) | No write MCP call dispatched without an `approve` from the R17 prompt in this turn |
-| Template enforced (G10) | No `description` field built without a resolved template — `.sdlc-v2/jira-templates/<Type>.md` (override) or a default `<Type>.md` the `jira` tool found (R18) |
+| Template enforced (G10) | No `description` field built without a structure — `.sdlc-v2/jira-templates/<Type>.md` (override), a default `<Type>.md` the `jira` tool found, or, for a `noneTypes` type, the Step 2.5 base structure (R18) |
 | Placeholders resolved (G11) | No `low`-confidence `{name}` or `[prose]` marker dispatched without explicit user resolution (R19) |
 | Critique surfaced (G12) | No proposal presented to the user without a preceding `Initial:` / `Critique:` / `Final:` block (R20) |
 | Cooperative approval (G13) | Write dispatch relies on the Step 2.6 `AskUserQuestion` answer alone — this port has no automated hook that re-verifies the payload hash before dispatch. Treat the approval step as a hard behavioral rule, not a technically enforced one |
@@ -728,7 +753,7 @@ is always incorrect.
 ## DO
 
 - Present the full final payload before any write MCP call (R17)
-- Resolve a description template — override or default — before building `description` (R18)
+- Resolve a description template — override or default — before building `description`; when none resolves, print the no-template notice and use the Step 2.5 base structure (R18)
 - Escalate every low-confidence placeholder marker via `AskUserQuestion` (R19)
 - Run a critique pass before the approval gate; surface findings to the user (R20)
 - Write the critique and approval-token artifacts via `jira({ action: "write-critique"/"write-approval", ... })`, and compute the canonical content hash via `sha256sum`/`shasum` (through Bash) over the canonicalized payload (R21)
@@ -750,7 +775,9 @@ is always incorrect.
 - Ignore custom templates at `.sdlc-v2/jira-templates/<Type>.md` when they exist
 - Generate unstructured descriptions when a template is available
 - Dispatch a write MCP without an `approve` answer to the R17 prompt in this turn (R17)
-- Use a free-form description on `createJiraIssue` or `editJiraIssue` (R18)
+- Use a description on `createJiraIssue` or `editJiraIssue` with sections outside the resolved template — or outside the base structure when no template resolves (R18)
+- Stop a create or edit only because the issue type has no template — fall back to the base structure (R18)
+- Skip critique, approval, or link verification for a base-structure description — every gate still runs (R18)
 - Fill `[bracketed prose]` or `{name}` placeholders from inference — every `low`-confidence marker requires explicit user resolution (R19)
 - Apply critique deltas silently — always surface the `Initial:` / `Critique:` / `Final:` block (R20)
 - Compute the canonical hash by any means other than `sha256sum`/`shasum` over the canonicalized payload, or skip writing the critique/approval-token artifacts — the hash is what the Step 2.6 approval binds to, even though nothing re-verifies it mechanically (R21)

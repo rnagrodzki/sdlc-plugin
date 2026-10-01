@@ -12,7 +12,7 @@ The skill SHALL accept exactly the flags in this table.
 |---|---|---|
 | `--project <KEY>` | Jira project key; first step of key resolution | auto-detected |
 | `--force-refresh` | Rebuild the cache even when it is fresh | off |
-| `--init-templates` | Copy default templates to `.sdlc-v2/jira-templates/`, then stop | off |
+| `--init-templates` | Copy default templates to `.sdlc-v2/jira-templates/`, then stop; copies nothing when no default templates are found | off |
 | `--site <host>` | Sanitized site host (e.g. `acme_atlassian_net`) passed as `site` to `jira` `check` / `load` | unset |
 | `--skip-workflow-discovery` | Skip workflow sampling during cache init; for CI | off |
 
@@ -148,6 +148,8 @@ With `--init-templates`, the skill SHALL call `jira` `init-templates`, offer a t
 - For each type in `unavailable` (when the cache is loaded), AskUserQuestion offers the suggested default (Recommended), the other defaults, and `Skip`.
 - Suggestion: `hierarchyLevel` `1` gives `Epic`; `hierarchyLevel` `0` and not subtask gives `Task`; subtask gives `Skip (subtask)`; no `hierarchyLevel` gives no suggestion.
 - Each non-Skip answer calls `jira` `copy-template` with `templateType` = the type and `templateFrom` = the answer.
+- After the report, the skill calls `jira` `templates` to get `defaultTemplates`. When it is empty, the skill reports `No default templates found — nothing copied.`, points to `.sdlc-v2/jira-templates/<Type>.md`, says that create uses the base structure until then, and asks no per-type question.
+- A suggestion is offered only when it is in `defaultTemplates`.
 
 #### Scenario: Unavailable epic-level type
 - **WHEN** `init-templates` returns `unavailable` `["Initiative"]` and its `hierarchyLevel` is `1`
@@ -157,6 +159,11 @@ With `--init-templates`, the skill SHALL call `jira` `init-templates`, offer a t
 #### Scenario: Stop after templates
 - **WHEN** `--init-templates` finishes
 - **THEN** the skill runs no Jira operation
+
+#### Scenario: No default templates
+- **WHEN** `--init-templates` runs and `jira` `templates` returns an empty `defaultTemplates`
+- **THEN** the skill reports `No default templates found — nothing copied.` and names `.sdlc-v2/jira-templates/<Type>.md`
+- **AND** asks no per-type template question and calls no `copy-template`
 
 ### Requirement: Operation classification
 The skill SHALL classify the request as one of `create`, `edit`, `search`, `transition`, `comment`, `link`, `assign`, `worklog`, `view`, or `bulk`, and SHALL ask one clarifying question via AskUserQuestion when the request is ambiguous.
@@ -169,17 +176,42 @@ The skill SHALL classify the request as one of `create`, `edit`, `search`, `tran
 - **THEN** the skill classifies it as `view` and calls `getJiraIssue` with no approval prompt
 
 ### Requirement: Description template resolution
-Before building any `description` (every `create`; `edit` only when `description` changes), the skill SHALL call `jira` `templates` and use the resolved template; free-form descriptions are not allowed.
+Before building any `description` (every `create`; `edit` only when `description` changes), the skill SHALL call `jira` `templates` and use the resolved template, or, when the issue type is in `noneTypes`, the fixed base structure; the skill SHALL NOT stop because no template exists.
 
 - A custom template at `.sdlc-v2/jira-templates/<Type>.md` wins over a default template.
 - Default templates come from the directory the `jira` tool resolves (see tool-jira); the plugin ships none, so without one only custom templates resolve.
 - For each `fallbacks` entry, print `Using <fallbackTo> template for <type> — override at .sdlc-v2/jira-templates/<type>.md`.
 - The skill does not re-derive the fallback map; the tool owns it.
+- Base structure, used only for a `noneTypes` type:
+
+```markdown
+## Summary
+- {what_and_why}
+
+## Context
+- {background}
+
+## Acceptance Criteria
+- [ ] {criterion}
+```
+
+- The base structure is filled like a template: placeholders resolve per the placeholder rules, `## Context` may be removed when empty, and no other `## ` section is added.
+- For a `noneTypes` type, the skill prints `No template for <type> — drafting the description from the base structure (Summary / Context / Acceptance Criteria). To use your own, create .sdlc-v2/jira-templates/<type>.md`, and appends ` or run /jira --init-templates` only when `defaultTemplates` is non-empty.
+- Critique, approval, and link verification run unchanged for a base-structure description.
+
+#### Scenario: Template exists
+- **WHEN** the issue type resolves to a custom or default template
+- **THEN** the skill builds the description from that template and prints no no-template notice
 
 #### Scenario: No template
 - **WHEN** the issue type is in `noneTypes`
-- **THEN** the skill prints `No template for <type>. Run /jira --init-templates or create .sdlc-v2/jira-templates/<type>.md`
-- **AND** stops the operation
+- **THEN** the skill prints the no-template notice naming `.sdlc-v2/jira-templates/<type>.md`
+- **AND** builds the description from the base structure instead of stopping
+- **AND** runs critique, approval, and link verification before any dispatch
+
+#### Scenario: No template and no defaults
+- **WHEN** the issue type is in `noneTypes` and `defaultTemplates` is empty
+- **THEN** the no-template notice does not mention `/jira --init-templates`
 
 ### Requirement: Placeholder resolution
 The skill SHALL detect placeholders with the regex `\{[a-zA-Z_][a-zA-Z0-9_-]*\}|\[[^\]\n]{3,}\]`, SHALL ask the user via AskUserQuestion for every low-confidence marker, and SHALL never dispatch a payload that still holds a raw placeholder.
@@ -197,7 +229,7 @@ For every write operation, the skill SHALL run a critique of the payload, write 
 
 | Check | Rule |
 |---|---|
-| Template completeness | Every `## ` heading in the description belongs to the resolved template |
+| Template completeness | Every `## ` heading in the description belongs to the resolved template (the base structure for a `noneTypes` type) |
 | Field correctness | Issue type, project key, parent, components, labels match cached `allowedValues` |
 | Workflow validity | For `transition`, the target status is reachable in the cached workflow |
 | Terminology | Summary and description do not contradict |
