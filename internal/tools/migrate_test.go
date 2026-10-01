@@ -465,6 +465,46 @@ func TestMigrateImportReplacesUntouchedTemplateDefaults(t *testing.T) {
 	}
 }
 
+// TestMigrateImportSkipsNonSectionKeys pins that a legacy top-level key whose
+// value is not a table (e.g. the old local.json schema marker "version": 2)
+// is not imported and is reported, so the import never needs a whole-file
+// rewrite that would drop the template comments.
+func TestMigrateImportSkipsNonSectionKeys(t *testing.T) {
+	root := t.TempDir()
+	if _, err := setupInit(root, SetupInitIn{}); err != nil {
+		t.Fatalf("setupInit: %v", err)
+	}
+	writeLegacyFile(t, root, "local.json", `{"version":2,"ship":{"bump":"minor"}}`)
+
+	out, err := migrate(root, MigrateIn{Action: "import"})
+	if err != nil {
+		t.Fatalf("migrate import: %v", err)
+	}
+	if len(out.Changed) != 1 || out.Changed[0] != paths.DataDir+"/local.toml" {
+		t.Errorf("Changed = %v, want [%s/local.toml]", out.Changed, paths.DataDir)
+	}
+	want := paths.DataDir + "/local.toml: version (not a section)"
+	if len(out.SkippedKeys) != 1 || out.SkippedKeys[0] != want {
+		t.Errorf("SkippedKeys = %v, want [%s]", out.SkippedKeys, want)
+	}
+	local := readDataFile(t, root, "local.toml")
+	if !strings.Contains(local, "bump = 'minor'") {
+		t.Errorf("ship not replaced:\n%s", local)
+	}
+	head := localTemplate[:strings.Index(localTemplate, "[ship]\n")]
+	tail := localTemplate[strings.Index(localTemplate, "[planStyle]"):]
+	if !strings.HasPrefix(local, head) || !strings.HasSuffix(local, tail) {
+		t.Errorf("comments outside [ship] changed:\n%s", local)
+	}
+	var got map[string]any
+	if err := fsx.ReadTOML(filepath.Join(root, paths.DataDir, "local.toml"), &got); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["version"]; ok {
+		t.Errorf("local.toml holds the legacy version marker: %v", got)
+	}
+}
+
 // TestMigrateImportKeepsUserChangedKey pins that a key the user changed from
 // the template default is never replaced, and is reported in skippedKeys.
 func TestMigrateImportKeepsUserChangedKey(t *testing.T) {

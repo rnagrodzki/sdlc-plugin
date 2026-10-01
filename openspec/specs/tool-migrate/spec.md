@@ -37,7 +37,7 @@ The tool SHALL return the fields below.
 | `dryRun` | Echo of the input flag; `false` on the layout stat-warning result. |
 | `result` | One-line outcome text (see each action). Lists render as `[a b c]`. |
 | `changed` | Repo-relative paths written, or that would be written on dry run. Directories end in `/`. |
-| `skippedKeys` | `import` only: legacy keys left out, sorted. A key the destination does not allow is `<dest path>: <key>`; a key the user changed is `<dest path>: <key> (already set)`. Omitted when empty. |
+| `skippedKeys` | `import` only: legacy keys left out, sorted. A key the destination does not allow is `<dest path>: <key>`; a key whose value is not a table is `<dest path>: <key> (not a section)`; a key the user changed is `<dest path>: <key> (already set)`. Omitted when empty. |
 | `errors` | Omitted in all current paths. |
 
 #### Scenario: Import with nothing to do
@@ -95,6 +95,7 @@ Per legacy top-level key, in this order:
 | Destination state | Action | Reported in |
 |---|---|---|
 | key not allowed in the destination file | not written | `skippedKeys`: `<dest path>: <key>` |
+| legacy value is not a table, or the key holds a `.` | not written | `skippedKeys`: `<dest path>: <key> (not a section)` |
 | value equals the legacy value | nothing to do | nothing |
 | key missing | legacy value written | `changed` |
 | value equals the template default (decoded values compared) | legacy value written | `changed` |
@@ -104,7 +105,7 @@ Per legacy top-level key, in this order:
 - Source preference per logical file: `.toml` first; `.json` only when no `.toml` source exists.
 - The destination is always the `.toml` file, even for a `.json` source.
 - `changed` gets `.sdlc-v2/config.toml` or `.sdlc-v2/local.toml` only when at least one key was written (or would be, on dry run).
-- A table value is written by splicing only that table's text, so comments outside the replaced table stay byte-for-byte (same rule as `setup_write_sections`). A non-table value, or a key holding a `.`, is set by one whole-file rewrite, which drops the file's comments.
+- Each value is written by splicing only that table's text, so comments outside the replaced table stay byte-for-byte (same rule as `setup_write_sections`). Only a destination layout that cannot be spliced falls back to a whole-file rewrite; that fallback is not reported.
 - A whole number is written as a TOML integer (`90`, not `90.0`).
 - The source files are never changed or deleted.
 - `.sdlc-v2/config.toml` receives only its allowed top-level keys: `version`, `jira`, `commit`, `pr`, `plan`, `execute`. Any other legacy key (e.g. `schemaVersion`, `ship`) is not merged and is listed in `skippedKeys`.
@@ -143,6 +144,13 @@ Per legacy top-level key, in this order:
 - **AND** `.sdlc-v2/config.toml` holds the legacy `jira` and `plan` tables
 - **AND** `.sdlc-v2/local.toml` holds `executeWaveInterval = 90`
 - **AND** every comment and table outside `[jira]`, `[plan.*]`, and `[ship]` is unchanged
+
+#### Scenario: Non-section legacy key skipped
+- **WHEN** `setup_init` wrote the `local.toml` template unchanged
+- **AND** `.sdlc/local.json` is `{"version":2,"ship":{"bump":"minor"}}`
+- **THEN** `.sdlc-v2/local.toml` holds `ship.bump = "minor"` and no top-level `version`
+- **AND** `skippedKeys` is `[".sdlc-v2/local.toml: version (not a section)"]`
+- **AND** every comment outside `[ship]` is unchanged
 
 #### Scenario: User-changed key kept
 - **WHEN** `setup_init` wrote the `config.toml` template and the user changed `jira.defaultProject` to `MINE`

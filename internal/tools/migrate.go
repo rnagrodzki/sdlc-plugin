@@ -39,8 +39,9 @@ type MigrateOut struct {
 	Result  string   `json:"result"`
 	Changed []string `json:"changed"`
 	// SkippedKeys lists legacy top-level keys the import left out: a key the
-	// destination file does not allow, as "<dest path>: <key>", and a key the
-	// user already changed from the template default, as
+	// destination file does not allow, as "<dest path>: <key>"; a key whose
+	// value is not a table, as "<dest path>: <key> (not a section)"; and a key
+	// the user already changed from the template default, as
 	// "<dest path>: <key> (already set)".
 	SkippedKeys []string `json:"skippedKeys,omitempty"`
 	Errors      []string `json:"errors,omitempty"`
@@ -277,6 +278,10 @@ func importFromOld(root string, dryRun bool) (MigrateOut, error) {
 // Per legacy key:
 //   - allowed is non-nil and the key is not in it: not imported, reported in
 //     skipped as "<dest path>: <key>".
+//   - the value is not a table, or the key holds a ".": not a config section
+//     (e.g. a legacy schemaVersion marker), so not imported, reported in
+//     skipped as "<dest path>: <key> (not a section)". Every config section
+//     is a table; skipping these keeps every write a comment-safe splice.
 //   - the destination value already equals the legacy value: nothing to do.
 //   - the destination lacks the key, or still holds the shipped template's
 //     default for it (defaults, compared as decoded values): the legacy value
@@ -285,11 +290,11 @@ func importFromOld(root string, dryRun bool) (MigrateOut, error) {
 //   - otherwise the user changed the key: it stays untouched and is reported
 //     in skipped as "<dest path>: <key> (already set)".
 //
-// skipped is sorted. A table value is written with config.WriteFileSection,
-// which splices only that table's text, so the template comments survive.
-// A non-table value (or a key holding a "."), which cannot be spliced, is
-// set by one whole-file rewrite after the table writes; that rewrite drops
-// the file's comments. Whole numbers are written as TOML integers. Returns
+// skipped is sorted. Each value is written with config.WriteFileSection,
+// which splices only that table's text, so the template comments survive
+// (a layout it cannot splice falls back to a whole-file rewrite; MigrateOut
+// has no warnings field, so that fallback is not reported). Whole numbers
+// are written as TOML integers. Returns
 // the changed relative path and whether anything changed (or would change,
 // on a dry run). A missing source, or a source with nothing to import, is a
 // no-op.
@@ -326,11 +331,14 @@ func importConfigFileMerge(root, srcName, destName string, allowed map[string]bo
 	sort.Strings(keys)
 
 	var tables []string
-	others := map[string]any{}
 	for _, k := range keys {
 		v := srcMap[k]
 		if allowed != nil && !allowed[k] {
 			skipped = append(skipped, rel+": "+k)
+			continue
+		}
+		if _, ok := v.(map[string]any); !ok || strings.Contains(k, ".") {
+			skipped = append(skipped, rel+": "+k+" (not a section)")
 			continue
 		}
 		if cur, exists := dstMap[k]; exists {
@@ -342,14 +350,10 @@ func importConfigFileMerge(root, srcName, destName string, allowed map[string]bo
 				continue
 			}
 		}
-		if _, ok := v.(map[string]any); ok && !strings.Contains(k, ".") {
-			tables = append(tables, k)
-		} else {
-			others[k] = v
-		}
+		tables = append(tables, k)
 	}
 	sort.Strings(skipped)
-	if len(tables) == 0 && len(others) == 0 {
+	if len(tables) == 0 {
 		return "", false, skipped, nil
 	}
 	if dryRun {
@@ -366,24 +370,6 @@ func importConfigFileMerge(root, srcName, destName string, allowed map[string]bo
 	for _, k := range tables {
 		v := config.WholeNumbersToInt(srcMap[k]).(map[string]any)
 		if _, err := config.WriteFileSection(dst, k, v); err != nil {
-			return "", false, nil, writeErr(err)
-		}
-	}
-	if len(others) > 0 {
-		var cur map[string]any
-		if err := fsx.ReadTOML(dst, &cur); err != nil {
-			if !errors.Is(err, fsx.ErrNotFound) {
-				return "", false, nil, writeErr(err)
-			}
-			cur = map[string]any{}
-		}
-		for k, v := range others {
-			cur[k] = v
-		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			return "", false, nil, writeErr(err)
-		}
-		if err := fsx.AtomicWriteTOML(dst, config.WholeNumbersToInt(cur)); err != nil {
 			return "", false, nil, writeErr(err)
 		}
 	}

@@ -387,7 +387,7 @@ whole-file/whole-dir when the destination already exists. `result` is either
 `"up-to-date: nothing to import"` or `"imported: [<path> <path> ...]"` (or
 `"would-import: [...]"` when `dryRun` is true). `skippedKeys` (omitted when empty) lists
 legacy top-level keys left out: `<dest path>: <key>` when the destination file does not allow
-the key, and `<dest path>: <key> (already set)` when the user already changed it.
+the key, `(not a section)` after a key that is not a table, `(already set)` after a user change.
 
 Then run the config check:
 

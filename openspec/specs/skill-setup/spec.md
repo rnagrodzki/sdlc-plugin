@@ -209,8 +209,8 @@ The skill SHALL run the migration step only when `needsMigration` is `true` or `
 - **AND** the skill does not offer to delete legacy files
 
 #### Scenario: Import skipped keys shown
-- **WHEN** the `import` action returns `skippedKeys: [".sdlc-v2/config.toml: workspace", ".sdlc-v2/config.toml: jira (already set)"]`
-- **THEN** the skill shows both entries, one per line, under `Legacy keys not imported:`
+- **WHEN** the `import` action returns `skippedKeys: [".sdlc-v2/config.toml: jira (already set)", ".sdlc-v2/config.toml: workspace", ".sdlc-v2/local.toml: version (not a section)"]`
+- **THEN** the skill shows all three entries, one per line, under `Legacy keys not imported:`
 
 ### Requirement: Section dispatch loop
 For each selected id, in canonical order, the skill SHALL print a section header and then run the dispatcher named by the section's `delegatedTo`.
