@@ -88,7 +88,7 @@ flowchart LR
 - [x] 9.2 Use the base branch in execute's pre-execution rebase and workspace derivation in `plugins/sdlc/skills/execute/SKILL.md` — verify: `grep -n 'origin/<defaultBranch>' plugins/sdlc/skills/execute/SKILL.md` returns nothing <!-- ref:9-2-use-the-base-branch-in-execute-s-pre-95ae0d -->
 - [x] 9.3 Make OpenSpec steps fail on a named-but-missing change and read the change from `flags.openspecChange` in `plugins/sdlc/skills/ship/SKILL.md` — verify: read-through against `specs/skill-ship/spec.md` "OpenSpec steps" <!-- ref:9-3-make-openspec-steps-fail-on-a-named-b500e7 -->
 - [x] 9.4 Move `report` (write) before `cleanup-pipeline`, drop 10c from end-of-run records, use base branch in the rebase step in `plugins/sdlc/skills/ship/SKILL.md` and `reference.md` — verify: `grep -n 'cleanup-pipeline\|action:"report"' plugins/sdlc/skills/ship/SKILL.md` shows report first <!-- ref:9-4-move-report-write-before-cleanup-pip-551379 -->
-- [ ] 9.5 Sync `docs/skills/execute.md` and `docs/skills/ship.md` — verify: step lists match the SKILL.md files <!-- ref:9-5-sync-docs-skills-execute-md-and-docs-8c768f -->
+- [x] 9.5 Sync `docs/skills/execute.md` and `docs/skills/ship.md` — verify: step lists match the SKILL.md files <!-- ref:9-5-sync-docs-skills-execute-md-and-docs-8c768f -->
 
 ## 10. task deploy pruning
 
