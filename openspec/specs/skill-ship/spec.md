@@ -10,7 +10,7 @@ The skill SHALL accept the flags below and map each one to a `ship_prepare` inpu
 
 | Flag | Listed in | Effect |
 |---|---|---|
-| `--auto` | `argument-hint` | `auto:true` on `ship_prepare`; skips the skill's own prompts except the manual-push pause; forwarded as `--auto` to the sub-skills that accept it. |
+| `--auto` | `argument-hint` | `auto:true` on `ship_prepare`; skips the skill's own prompts except the manual-push pause and the in-flight-run prompt (see State read before ship_prepare); forwarded as `--auto` to the sub-skills that accept it. |
 | `--steps <csv>` | `argument-hint` | `steps` on `ship_prepare`. |
 | `--quick` | `argument-hint` | `quick:true` on `ship_prepare`. |
 | `--quality full\|balanced\|minimal` | `argument-hint` | `quality` on `ship_prepare`; reaches `execute` through `flags.executeDispatchArgs`. |

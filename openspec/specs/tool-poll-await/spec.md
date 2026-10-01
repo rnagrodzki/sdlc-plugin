@@ -278,7 +278,7 @@ For `target: pipeline` the tool SHALL read the tab-separated rows of `gh pr chec
 |---|---|---|
 | Any failed row | `done`, `verdict: failed` | `pr_number`, `failed_checks` (list of `name`, `state`), `checks_raw` (the raw gh text) |
 | No failed and no pending row | `done`, `verdict: green` | `pr_number` |
-| No rows, non-zero exit, stderr contains `no checks reported`, and no CI config | `done`, `verdict: skipped`, `reason: no-ci` | `pr_number` |
+| No rows, exit `1` or `8`, stderr contains `no checks reported`, and no CI config | `done`, `verdict: skipped`, `reason: no-ci` | `pr_number` |
 | Pending rows, before deadline | `pending` | `pr_number`, `pending_checks` (list of `name`, `state`) |
 
 - Exit codes `0`, `1`, and `8` are all normal when rows are printed; exit `8` (checks pending) is not an error.

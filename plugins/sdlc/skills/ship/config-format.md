@@ -14,17 +14,17 @@ Create it manually or run `/setup` to walk through an interactive setup. There i
 
 ---
 
-## Config version auto-migrates — you never hand-edit it
+## Config version check — nothing is migrated, you never hand-edit it
 
-`.sdlc-v2/config.toml` carries a `schemaVersion` (current: `5`). Before `ship_prepare` does anything else, it runs an auto-migrate gate (`configmigrate.MigrateWithBackup`) that classifies the project's config into exactly one of three outcomes:
+Before `ship_prepare` does anything else, it runs a config-version check (`configmigrate.MigrateWithBackup`). Despite the name, it migrates nothing and writes no backup. The version is read from which files exist under `.sdlc-v2/`, not from a `schemaVersion` field:
 
-- **Missing** (no `config.toml` and no legacy marker at all) — hard-fails with an actionable error pointing at `/setup`. There is nothing to migrate from.
-- **Current** (`schemaVersion` already `5`) — no-op. No file is touched, no backup written, no change reported.
-- **Stale** (legacy layout, or an older `schemaVersion`) — backs up the existing `config.toml` to `config.toml.bak`, then migrates it (and `local.toml`, if also stale) up to schema version 5 in place. The applied migration steps are reported back to the caller.
+- **Missing** (no `config.toml`, `config.json`, `local.toml` or `local.json`) — fails with one `errors` entry prefixed `config-version:` that points at `/setup`.
+- **Stale** (a JSON-era `config.json` with no `config.toml`, or a `local.json` with no `local.toml`) — fails the same way: `config-version: ... TOML config required. Run /setup to initialize.` There is no automated JSON-to-TOML path.
+- **Current** (the TOML files are present) — no-op.
 
-Only one case still hard-fails after this gate: **too new** — a `schemaVersion` newer than this plugin build understands. That is a genuine version mismatch (upgrade the plugin), not something auto-migration can fix.
+On either failure `ship_prepare` creates no state; the skill prints the error verbatim and stops.
 
-**Do not instruct a user to manually edit `schemaVersion` or hand-migrate `.sdlc-v2/config.toml` for a version bump.** The gate already does this on every `ship_prepare` call — the only user-facing action ever needed is running `/setup` when no config exists at all, or upgrading the plugin when the config is too new.
+**Do not instruct a user to manually edit `schemaVersion` or hand-migrate `.sdlc-v2/config.toml`.** The only user-facing action ever needed is running `/setup`.
 
 ---
 
@@ -120,7 +120,7 @@ explicit steps input  >  quick (resolves ship.quick)  >  .sdlc-v2/local.toml (sh
 
 This port has **two independent knobs**, both of which end up controlling how much the pipeline pauses:
 
-1. **`ship.auto`** (this document's `auto` field, legacy-shaped) — a single pipeline-wide boolean. When `true`, this skill suppresses its own confirmation prompts (the Step loop's dispatch confirmation, the archive-openspec consent gate, etc.) throughout the run.
+1. **`ship.auto`** (this document's `auto` field, legacy-shaped) — a single pipeline-wide boolean. When `true`, this skill suppresses its own confirmation prompts (the Step loop's dispatch confirmation, the archive-openspec consent gate, etc.) throughout the run — except the in-flight-run prompt at SKILL.md's Step loop item 2, which guards a resumable run that `ship_prepare` would delete, and the manual-push pause.
 2. **`automation` section** (new, separate top-level section of `.sdlc-v2/local.toml` — sibling of `ship`, not nested under it) — a per-step automation policy read independently by `ship_state{action:"next"}`:
    ```json
    {
