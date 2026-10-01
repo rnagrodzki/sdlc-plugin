@@ -3,6 +3,9 @@ package tools
 import (
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -90,12 +93,10 @@ var ghStderrClasses = []struct {
 // stays retryable, so a gh message this table does not know about keeps the
 // pre-existing re-probe behavior rather than silently ending a poll.
 //
-// Known limitation: only the remote_review probe reaches this classifier
-// with gh's stderr attached. The pipeline probe goes through
-// execx.RunAllowExit, which turns any plain process exit into
-// (stdout, exitCode, nil) and discards stderr — so a gh auth or 404 failure
-// on that path arrives as an unexpected exit code, not as one of the classes
-// above.
+// The pipeline probe reaches this classifier too: gh pr checks exits 1 both
+// for failed checks and for its own errors, so verifyPipelineAwait builds an
+// error from gh's stderr when an exit 1 or 8 comes with no check rows, and
+// for any other exit code (see classifyChecksExit).
 func classifyGHError(err error) ghFailure {
 	switch {
 	case errors.Is(err, ghx.ErrGHNotFound):
@@ -303,9 +304,9 @@ func awaitRemoteReview(activeRoot string, in AwaitRemoteReviewIn) (stepper.Envel
 // evaluateChecksText below buckets on the tab-separated state column
 // instead of the JS source's structured `bucket` field. gh pr checks exits
 // 0/1/8 for pass/some-failed/some-pending respectively, so this tool uses
-// PRChecksWithExitCode (which preserves stdout across all three) rather than
-// PRChecks (which discards stdout on any non-zero exit, masking the
-// failed/pending cases behind a generic error). RULING: the JS source's
+// PRChecksWithExitCode, which keeps stdout across all three. A helper that
+// discarded stdout on any non-zero exit would mask the failed/pending cases
+// behind a generic error. RULING: the JS source's
 // fetchFailedCheckLogs (`gh run view <runId> --log-failed`) is NOT ported —
 // like received_review.go's documented non-port of fetchPrReviewThreads,
 // this is a gh capability ghx does not expose beyond the raw checks text.
@@ -324,14 +325,14 @@ type VerifyPipelineAwaitIn struct {
 	StateFile       string `json:"state_file,omitempty"`
 }
 
-// checkResult is one row of ghx.PRChecks' plain-text output, bucketed into
-// failed/pending by evaluateChecksText.
+// checkResult is one row of ghx.PRChecksWithExitCode's plain-text output,
+// bucketed into failed/pending by evaluateChecksText.
 type checkResult struct {
 	Name  string `json:"name"`
 	State string `json:"state"`
 }
 
-// evaluateChecksText buckets ghx.PRChecks' tab-separated
+// evaluateChecksText buckets ghx.PRChecksWithExitCode's tab-separated
 // "<name>\t<state>\t<elapsed>\t<link>" lines into failed/pending, mirroring
 // evaluateChecks' fail/pending/else-green priority (JS source) over gh's
 // plain-text state column instead of its structured `bucket` field (see
@@ -356,6 +357,67 @@ func evaluateChecksText(text string) (failed, pending []checkResult) {
 		}
 	}
 	return failed, pending
+}
+
+// ghExitAuthRequired is the exit code gh documents for "authentication
+// required" (gh help exit-codes).
+const ghExitAuthRequired = 4
+
+// checksExitError builds the error for a failed gh pr checks run from its
+// exit code and stderr, so classifyGHError can read gh's own message.
+func checksExitError(exitCode int, stderr string) error {
+	if stderr == "" {
+		return fmt.Errorf("gh pr checks: exit %d", exitCode)
+	}
+	return fmt.Errorf("gh pr checks: exit %d: %s", exitCode, stderr)
+}
+
+// classifyChecksExit classifies a gh pr checks exit code other than 0, 1 or
+// 8. gh's stderr is classified first, so an auth or not-found message keeps
+// its own class. Exit 4 is gh's auth-required code and is auth even with no
+// stderr. Anything else unrecognized is unexpected-exit, not unknown: an
+// exit code gh does not document for pr checks is not worth re-probing.
+func classifyChecksExit(exitCode int, stderr string) ghFailure {
+	f := classifyGHError(checksExitError(exitCode, stderr))
+	if f.Class != ghClassUnknown {
+		return f
+	}
+	if exitCode == ghExitAuthRequired {
+		return ghFailure{Message: f.Message, Class: ghClassAuth}
+	}
+	return ghFailure{Message: f.Message, Class: ghClassUnexpectedExit}
+}
+
+// isNoChecksReported reports whether gh pr checks' stderr is its "no checks
+// reported on the '<branch>' branch" message.
+func isNoChecksReported(stderr string) bool {
+	return strings.Contains(strings.ToLower(stderr), "no checks reported")
+}
+
+// hasCIConfig reports whether root holds a config for a CI system that
+// reports checks on a GitHub PR. The set is the one review.go's uncovered-
+// file catalog already treats as CI: GitHub Actions workflows
+// (.github/workflows/*.yml|*.yaml), CircleCI (.circleci/) and Jenkins
+// (Jenkinsfile). Any stat or read error other than "does not exist" counts
+// as "CI config may exist", so an unreadable tree keeps the poll going
+// rather than ending it early.
+func hasCIConfig(root string) bool {
+	entries, err := os.ReadDir(filepath.Join(root, ".github", "workflows"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return true
+	}
+	for _, e := range entries {
+		ext := strings.ToLower(filepath.Ext(e.Name()))
+		if !e.IsDir() && (ext == ".yml" || ext == ".yaml") {
+			return true
+		}
+	}
+	for _, p := range []string{".circleci", "Jenkinsfile"} {
+		if _, err := os.Stat(filepath.Join(root, p)); !errors.Is(err, fs.ErrNotExist) {
+			return true
+		}
+	}
+	return false
 }
 
 // verifyPipelineAwait implements one KD8 probe of verify_pipeline_await.
@@ -395,22 +457,40 @@ func verifyPipelineAwait(activeRoot string, in VerifyPipelineAwaitIn) (stepper.E
 	// interval must resolve as a verdict, not as a false timeout.
 	timedOut := st.TimedOut()
 
-	checksText, exitCode, err := ghx.PRChecksWithExitCode(activeRoot, in.PR)
+	checksText, checksStderr, exitCode, err := ghx.PRChecksWithExitCode(activeRoot, in.PR)
 	if err != nil {
 		return probeFailureEnvelope(stateFile, st, timedOut, classifyGHError(err), map[string]any{
 			"pr_number": in.PR,
 		})
 	}
 	if exitCode != 0 && exitCode != 1 && exitCode != 8 {
-		return probeFailureEnvelope(stateFile, st, timedOut, ghFailure{
-			Message: fmt.Sprintf("gh pr checks: unexpected exit code %d", exitCode),
-			Class:   ghClassUnexpectedExit,
-		}, map[string]any{
+		return probeFailureEnvelope(stateFile, st, timedOut, classifyChecksExit(exitCode, checksStderr), map[string]any{
 			"pr_number": in.PR,
 		})
 	}
 
 	failed, pending := evaluateChecksText(checksText)
+	// gh exits 1 for failed checks and 8 for pending ones, so a non-zero exit
+	// with no failed or pending row is not a checks listing: it is gh's own
+	// error (PR not found, auth, "no checks reported"), with the reason on
+	// stderr. Reading it as green would report a pass that never happened.
+	if exitCode != 0 && len(failed) == 0 && len(pending) == 0 {
+		// "No checks reported" in a repo with no CI config will never turn
+		// into a verdict: nothing is going to start a check. End the poll
+		// as skipped (the verdict the skill already proceeds on) instead of
+		// re-probing until the deadline. With a CI config present the checks
+		// may simply not have started yet, so that case keeps polling.
+		if isNoChecksReported(checksStderr) && !hasCIConfig(activeRoot) {
+			return stepper.Done(stateFile, "", map[string]any{
+				"verdict":   "skipped",
+				"reason":    "no-ci",
+				"pr_number": in.PR,
+			}), nil
+		}
+		return probeFailureEnvelope(stateFile, st, timedOut, classifyGHError(checksExitError(exitCode, checksStderr)), map[string]any{
+			"pr_number": in.PR,
+		})
+	}
 	if len(failed) > 0 {
 		return stepper.Done(stateFile, "", map[string]any{
 			"verdict":       "failed",
@@ -508,10 +588,21 @@ func pollAwait(activeRoot string, in PollAwaitIn) (stepper.Envelope, error) {
 // readStateFile, which fails open on any read/parse error and starts over),
 // a fresh PollState and a new state file path are created. *stateFile is
 // updated in place to the resolved path either way.
+//
+// A state file that loads but was written by the other target (its stored
+// skill differs from skill) is a DomainError, not a fresh start: resuming it
+// would reuse the other poll's budget and exhausted marker, and silently
+// starting over would hide the caller's mix-up.
 func loadOrInitPollState(stateFile, skill string, timeoutSeconds, intervalSeconds int, out *string) (stepper.PollState, error) {
 	if stateFile != "" {
 		st, err := stepper.LoadPollState(stateFile)
 		if err == nil {
+			if st.Skill != skill {
+				return stepper.PollState{}, &mcpserver.DomainError{
+					Msg:        fmt.Sprintf("state_file %s belongs to a %q poll, not %q", stateFile, st.Skill, skill),
+					Suggestion: "Pass the state_file returned by a prior poll_await call with the same target, or omit state_file to start a new poll, then call the tool again.",
+				}
+			}
 			return st, nil
 		}
 	}
@@ -543,12 +634,11 @@ func loadOrInitPollState(stateFile, skill string, timeoutSeconds, intervalSecond
 // error envelope that leaves the state unexhausted, so the next call probes
 // again and can still find the verdict.
 //
-// The timed-out branch is what bounds the poll. The ship skill treats an
-// error envelope as transient and re-probes with no cap (ship/SKILL.md's
-// poll-loop entries, ship/reference.md's error table), so returning an error
-// envelope for a gh failure that keeps happening after the deadline —
-// expired credentials, a deleted PR, an uninstalled gh — left the poll with
-// no end at all.
+// The timed-out branch is what bounds the poll. The ship skill re-probes an
+// error envelope with ext.retryable true with no cap, and stops on
+// retryable false (ship/SKILL.md's poll-loop entries, ship/reference.md's
+// error table). A retryable failure that keeps happening after the
+// deadline would otherwise leave the poll with no end at all.
 func probeFailureEnvelope(stateFile string, st stepper.PollState, timedOut bool, f ghFailure, ext map[string]any) (stepper.Envelope, error) {
 	if timedOut {
 		ext["probe_error"] = f.Message
@@ -783,7 +873,7 @@ func ClassifyLogs(text string) VerifyPipelineClassifyOut {
 // registered so far.
 func RegisterPollingTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "poll_await",
-		`INTERNAL — called by sdlc skills only. Run one bounded KD8 probe for a polling target: target: "remote_review" polls gh for a remote reviewer's verdict on a PR; target: "pipeline" polls gh PR checks. One non-blocking probe per call. Returns a stepper envelope: status "pending" means no verdict yet — wait interval_seconds and call again with the returned state_file; status "error" means the gh probe failed before the deadline (ext.retryable says whether re-probing can help); status "done" carries a terminal ext.verdict. For target "remote_review" ext.verdict is one of "approved-clean" (reviewer approved), "actionable" (reviewer commented or requested changes), "timeout" (deadline passed with no verdict) or "skipped" (this state_file already timed out). For target "pipeline" it is "green" (all checks passed), "failed" (a check failed; ext.checks_raw holds the raw check list), "timeout" or "skipped". Every "done" verdict ends the poll.`,
+		`INTERNAL — called by sdlc skills only. Run one bounded KD8 probe for a polling target: target: "remote_review" polls gh for a remote reviewer's verdict on a PR; target: "pipeline" polls gh PR checks. One non-blocking probe per call. Returns a stepper envelope: status "pending" means no verdict yet — wait interval_seconds and call again with the returned state_file; status "error" means the gh probe failed before the deadline (ext.retryable says whether re-probing can help); status "done" carries a terminal ext.verdict. For target "remote_review" ext.verdict is one of "approved-clean" (reviewer approved), "actionable" (reviewer commented or requested changes), "timeout" (deadline passed with no verdict) or "skipped" (this state_file already timed out; ext.reason "exhausted"). For target "pipeline" it is "green" (all checks passed), "failed" (a check failed; ext.checks_raw holds the raw check list), "timeout" or "skipped" (ext.reason "exhausted", or "no-ci" when gh reports no checks and the repo has no CI config: no .github/workflows/*.yml|*.yaml, no .circleci/, no Jenkinsfile). Every "done" verdict ends the poll.`,
 		mcpserver.Annotations{
 			Title:       "Await CI or PR completion",
 			ReadOnly:    false,

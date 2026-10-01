@@ -52,6 +52,10 @@ var filenameRe = regexp.MustCompile(
 	`^(ship|execute|plan|commit)-(.+)-(\d{8}T\d{6}Z)\.json$`,
 )
 
+// timestampSuffixRe matches what follows "<prefix>-<slug>-" in a canonical
+// state file basename. Find uses it to match the slug exactly.
+var timestampSuffixRe = regexp.MustCompile(`^\d{8}T\d{6}Z\.json$`)
+
 // parsedFilename holds the components extracted from a state file basename.
 type parsedFilename struct {
 	Prefix    string
@@ -160,8 +164,10 @@ func Init(root, prefix, branch, sessionID string) (*State, error) {
 // Returns (nil, nil) when no matching file exists (mirrors the JS null
 // return). Returns a non-nil error only on I/O or JSON-parse failures.
 //
-// Matching uses delimiter-aware prefix: strings.HasPrefix(name, prefix+"-"+slug+"-")
-// to mirror the JS findStateFile behaviour exactly.
+// Matching is exact on the slug: the name must be <prefix>-<slug>- followed
+// only by the canonical timestamp and ".json". A plain prefix match would
+// also accept another branch whose slug starts with this one ("feat-x-2"
+// for "feat-x") and hand back that branch's state.
 //
 // Find checks stateDir (runs/) first; if no match is found there, it falls
 // back to legacyStateDir (execution/) so runs created before the runs/
@@ -200,7 +206,7 @@ func findInDir(dir, root, prefix, branch string) (*State, error) {
 
 	for _, e := range entries {
 		name := e.Name()
-		if !strings.HasPrefix(name, pat) || !strings.HasSuffix(name, ".json") {
+		if !strings.HasPrefix(name, pat) || !timestampSuffixRe.MatchString(name[len(pat):]) {
 			continue
 		}
 		fp := filepath.Join(dir, name)
@@ -335,8 +341,8 @@ func findAnyInDir(dir, root, prefix string) (*State, error) {
 // Write writes st.Data to st.Path atomically, after pruning all pre-existing
 // state files for the same prefix+branchSlug (except st.Path itself).
 //
-// Pruning uses parseStateFilename for exact slug equality (matching the JS
-// pruneStateFiles behaviour), which is stricter than Find's prefix match.
+// Pruning uses parseStateFilename for exact slug equality, the same rule
+// Find uses.
 func Write(st *State) error {
 	dir := stateDir(st.Root)
 

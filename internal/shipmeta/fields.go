@@ -3,6 +3,8 @@
 // (sdlc-utilities plugin) for reuse by Go-native SDLC tooling.
 package shipmeta
 
+import "slices"
+
 // MaxWaveTimeoutSeconds is the hard ceiling for ship.executeWaveTimeout
 // (R57, R-WAVE-DEADLINE). It is the single enforcement point restated by the
 // `maximum` on ship.executeWaveTimeout in schemas/sdlc-local.schema.json —
@@ -122,6 +124,15 @@ func IsTrackedShipStep(name string) bool {
 	return false
 }
 
+// IsConditionalShipStep reports whether name is a tracked step that is not
+// user-configurable ("received-review", "commit-fixes"): the pipeline
+// dispatches it itself when review findings need fixing, so it must never
+// appear in ship.steps[] / ship.quick[] / --steps. Derived from
+// TrackedShipSteps and ValidSteps so the set cannot drift from either.
+func IsConditionalShipStep(name string) bool {
+	return IsTrackedShipStep(name) && !slices.Contains(ValidSteps, name)
+}
+
 // InitialShipSteps returns the fixed 6-entry step scaffold used to
 // initialize ship state, in source order. Every entry starts at status
 // "pending". Independent of ship.steps[]/flags.steps (the pipeline
@@ -145,7 +156,9 @@ func InitialShipSteps() []ShipStateStep {
 // in the given order, each starting at status "pending" and classified via
 // Kind ("tracked" for TrackedShipSteps members, "inline" otherwise —
 // including any config-sourced name outside ValidSteps, which reaches here
-// only as a warning, not an error; see ship_prepare's step-name validation).
+// only as a warning, not an error; see ship_prepare's step-name validation.
+// The conditional steps — IsConditionalShipStep — never reach here: they
+// are rejected with an error from every source).
 // Unlike InitialShipSteps, this scaffold tracks exactly the configured
 // steps — nothing more, nothing less — so a pipeline with N configured
 // steps seeds N entries.

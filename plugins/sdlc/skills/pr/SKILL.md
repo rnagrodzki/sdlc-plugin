@@ -1,8 +1,8 @@
 ---
 name: pr
-description: "Use this skill when creating or updating a pull request, updating a PR description, or generating PR content from commits and diffs. Handles the full PR workflow: consumes pre-computed context from the `pr_prepare` MCP tool, generates description with plan-critique-improve-do-critique-improve, user review, and gh CLI execution. Auto-labels PRs based on context signals (branch, commits, diff, Jira) with mandatory approval. Arguments: [--draft] [--update] [--base <branch>] [--auto] [--skip-approval] [--label <name>]. Use --auto to skip interactive approval and to mark pr_apply as running unattended. Use --skip-approval to skip only the Step 5 publish-confirmation prompt (e.g. when dispatched by ship, which already resolved release intent) without affecting autoMode. Triggers on: create PR, open pull request, update PR, write PR description, PR summary, describe changes for a pull request."
+description: "Use this skill when creating or updating a pull request, updating a PR description, or generating PR content from the branch's commits. Handles the full PR workflow: consumes pre-computed context from the `pr_prepare` MCP tool, generates description with plan-critique-improve-do-critique-improve, user review, and publishes through the `pr_apply` MCP tool (the skill runs no git or gh commands itself). Creates a new PR, or updates the open PR for the branch when one exists. Applies no labels of its own: the only label is the release:<level> label that pr_apply derives from release intent. Arguments: [--draft] [--base <branch>] [--auto] [--skip-approval]. Use --draft to open the new PR as a draft and --base <branch> to target a branch other than the repository default; both apply only when a new PR is created. Use --auto to skip interactive approval and to mark pr_apply as running unattended. Use --skip-approval to skip only the Step 5 publish-confirmation prompt (e.g. when dispatched by ship, which already resolved release intent) without affecting autoMode. Triggers on: create PR, open pull request, update PR, write PR description, PR summary, describe changes for a pull request."
 user-invocable: true
-argument-hint: "[--draft] [--update] [--base <branch>] [--auto] [--skip-approval] [--label <name>]"
+argument-hint: "[--draft] [--base <branch>] [--auto] [--skip-approval]"
 model: sonnet
 ---
 
@@ -19,19 +19,27 @@ approval, then call `pr_apply` to create or update the PR.
 This is a Go/MCP port. The frontmatter's argument-hint describes a richer feature set than
 this port's tool surface (`pr_prepare`, `pr_apply`) actually supports:
 
-- **This port does not support draft PRs, arbitrary label management, explicit base-branch
-  override, or automatic account-switch retry on gh failure; if gh reports an error, stop and
-  report it.** `pr_apply` accepts `title` and `body`, plus optional `releaseLevel` /
+- **This port does not support arbitrary label management or automatic account-switch retry
+  on gh failure; if gh reports an error, stop and report it.** `pr_apply` accepts `title` and
+  `body`, plus optional `draft` / `base` (from `--draft` / `--base <branch>`) and `releaseLevel` /
   `releasePreRelease` / `releaseNotes` (forwarded from `/ship`'s resolved bump config — see
   "Release intent" below): when `releaseLevel` is set, `pr_apply` injects release markers into
   the body and auto-applies a `release:<level>[-rc]` label via `gh pr edit --add-label`, removing
   any other `release:*` label on the PR in the same call. The PR records intent only: notes sit
   under a `## [Unreleased]` heading and no version number is written to the PR or returned; CI
   computes the version at merge time from the tags present then. There
-  is still no field for `--draft`, an arbitrary `--label`, or a target base branch, and no recovery helper
-  runs after a failure.
-- `pr_prepare` supplies `commitsSinceBase` (this branch's own commit subjects, oldest first,
-  since it diverged from the default branch) but no diff stat/content, remote state, changed
+  is no field for an arbitrary label, and no recovery helper runs after a failure.
+- `--draft` and `--base <branch>` act only when `pr_apply` creates a new PR (`gh pr create
+  --draft` / `--base`). When the branch already has an open PR, `pr_apply` updates it and
+  returns a `warnings` entry for each one it ignored: `gh pr edit` cannot make a PR a draft or
+  change its base. Show those warnings to the user. `pr_prepare` does not read `--base`: its
+  `commitsSinceBase` is always measured against the default branch.
+- `--label` is gone: the only label is the `release:*` label `pr_apply` derives from
+  `releaseLevel`. If a user still types `--label`, ignore it.
+- `--update` is gone: updating is the default. `pr_apply` edits the open PR for the branch
+  when one exists and creates a new PR otherwise. If a user still types `--update`, ignore it.
+- `pr_prepare` supplies `commitsSinceBase` (this branch's own commits as `<sha> <subject>`
+  lines, oldest first, since it diverged from the default branch) but no diff stat/content, remote state, changed
   files, repository labels, or a pre-detected create-vs-update mode. Draft the title and body
   from `PR_CONTEXT.commitsSinceBase` plus context already available in this conversation
   (files you edited, what the user has told you) — do not run commands to gather diffs. When
@@ -175,7 +183,7 @@ of the PR). Do not ask for confirmation — the Step 5 approval gate is the cons
 | `uncommittedChanges` / `dirtyFiles` | Uncommitted files that will NOT be part of the PR |
 | `jiraTicket` | Detected ticket reference from the branch name, or empty |
 | `template` | `{ path, legacy, headings, content }` or `null` — see PR Template above |
-| `commitsSinceBase` | This branch's own commit subjects (oldest first), since it diverged from the default branch — always present when the branch has commits ahead of the default branch. Use this, not conversation memory alone, to cover every commit when drafting the body. |
+| `commitsSinceBase` | This branch's own commits as `<sha> <subject>` lines (oldest first), since it diverged from the default branch — always present when the branch has commits ahead of the default branch. Use this, not conversation memory alone, to cover every commit when drafting the body. |
 
 **Version diagnostics** (present only when the project has a version config section; every
 field below is `omitempty` and absent entirely otherwise — treat their absence as "this project
@@ -187,7 +195,7 @@ in Step 1b"):
 | `versionSource` | `{ path, type, version }` — where the current version was read from |
 | `bumpOptions` | Array of `{ level, result, current, rcNext?, suggestedPreRelease? }` — one entry per possible bump target (major/minor/patch), each with the resulting version string and whether an RC pre-release is suggested. `result` / `rcNext` are a preview from the tags present now; CI computes the final number at merge time |
 | `tags` | `{ all, atHead, latest, tagPrefix }` — tag inventory |
-| `commitsSinceTag` | Array of commit subject lines since the last tag |
+| `commitsSinceTag` | Commits since the last tag as `<sha> <subject>` lines (newest first) |
 | `conventionalSummary` | `{ breaking, feat, fix, other, total, suggest }` — conventional-commit counts and a suggested bump level derived from them |
 | `changelogExists` | Boolean |
 | `idempotency` | `{ alreadyBumped, tagAtHead? }` — true when the current HEAD already carries a release tag (`tagAtHead` names it); avoid double-bumping |
@@ -441,9 +449,11 @@ pr_apply({
   releasePreRelease: <if set>,
   releaseSource: <if releaseLevel set — "user" | "config">,
   skipReleaseCheck: <true — only when no releaseLevel and Step 1b option 2 was chosen>,
+  draft: <true — only when --draft was passed>,
+  base: <the branch — only when --base <branch> was passed>,
   autoMode: <true | false — whether --auto (not --skip-approval) was passed to this skill invocation>
 })
-# the result carries `- url:` and `- created:` bullets
+# the result carries `- url:` and `- created:` bullets, plus `warnings` when draft/base were ignored
 ```
 
 **On tool error:** show the error to the user and stop — this port does not retry or attempt
@@ -460,6 +470,8 @@ Pull request created: <url>
 # created === false:
 Pull request updated: <url>
 ```
+
+If the result has `warnings`, print each one after that line.
 
 ---
 
@@ -501,10 +513,9 @@ When invoking `error-report`, provide:
 
 ## Gotchas
 
-- **No draft PRs, labels, or base-branch override**: `pr_apply` has no field for a draft flag,
-  an arbitrary label, or a base branch — none of `--draft`, `--label`, or `--base` can be
-  honored. The only label it applies is the `release:*` label derived from `releaseLevel`
-  (see Port Notes for its full input list).
+- **`--draft` and `--base` only shape a new PR**: on an existing open PR, `pr_apply` ignores
+  them and says so in `warnings`. It applies no labels of its own; the only label is the
+  `release:*` label derived from `releaseLevel` (see Port Notes for its full input list).
 - **`--skip-approval` is not `--auto`**: `--skip-approval` only skips the Step 5
   AskUserQuestion; it never sets `autoMode: true` on `pr_apply` and never changes how
   `releaseSource` is forwarded. Only `--auto` drives `autoMode`.
@@ -532,7 +543,9 @@ After creating or updating the PR, common follow-ups include:
 
 If OpenSpec enrichment was applied in Step 2 (an active change was detected), also suggest:
 - `openspec validate --strict <change>` — validate change spec files structurally (after merge)
-- `openspec archive <change> --yes` — archive the OpenSpec change and merge delta specs (after validation passes)
+
+Never suggest running `openspec archive` directly: `/sdlc:ship` archives the change as a
+pipeline step after validation passes.
 
 ## See Also
 

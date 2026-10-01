@@ -146,6 +146,43 @@ func TestSetupPrepare_SectionsHaveFields(t *testing.T) {
 	}
 }
 
+// TestSetupPrepare_ReviewScopeAndOpenspecText pins two texts setup shows the
+// user: the review scope field names the default review_prepare really uses
+// when the key is missing ("all") and no /review flags (there are none), and
+// the openspec-block purpose names this plugin, not the old sdlc-utilities.
+func TestSetupPrepare_ReviewScopeAndOpenspecText(t *testing.T) {
+	out, err := setupPrepare(t.TempDir(), SetupPrepareIn{})
+	if err != nil {
+		t.Fatalf("setupPrepare: %v", err)
+	}
+	var sawScope, sawOpenspec bool
+	for _, sec := range out.Sections {
+		switch sec.ID {
+		case "review":
+			for _, f := range sec.Fields {
+				if f.Name != "scope" {
+					continue
+				}
+				sawScope = true
+				if f.Default != "all" {
+					t.Errorf("review.scope default = %v, want all (review_prepare's default)", f.Default)
+				}
+				if strings.Contains(f.Description, "--") {
+					t.Errorf("review.scope description names a /review flag, but /review has none: %s", f.Description)
+				}
+			}
+		case "openspec-block":
+			sawOpenspec = true
+			if strings.Contains(sec.Purpose, "sdlc-utilities") || !strings.Contains(sec.Purpose, "sdlc-v2") {
+				t.Errorf("openspec-block purpose must name sdlc-v2, not sdlc-utilities: %s", sec.Purpose)
+			}
+		}
+	}
+	if !sawScope || !sawOpenspec {
+		t.Fatalf("missing review.scope field (%v) or openspec-block section (%v)", sawScope, sawOpenspec)
+	}
+}
+
 func TestSetupPrepare_JSONSerializationCamelCase(t *testing.T) {
 	root := t.TempDir()
 
@@ -848,6 +885,26 @@ func TestMigrate_ConfigAction_StaleProjectRefused(t *testing.T) {
 	}
 	if !errors.Is(err, configmigrate.ErrVersionStale) {
 		t.Errorf("expected error wrapping configmigrate.ErrVersionStale, got: %v", err)
+	}
+}
+
+func TestMigrate_ConfigAction_StaleLocalOnly_DryRunMatchesRealRun(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	writeTestJSON(t, filepath.Join(root, paths.DataDir, "local.json"), map[string]any{
+		"ship": map[string]any{"bump": "patch"},
+	})
+
+	out, err := migrate(root, MigrateIn{Action: "config", DryRun: true})
+	if err != nil {
+		t.Fatalf("migrate config dry-run: %v", err)
+	}
+	if !strings.Contains(out.Result, "would-migrate") {
+		t.Errorf("dry run result = %q, want it to contain would-migrate", out.Result)
+	}
+
+	if _, err := migrate(root, MigrateIn{Action: "config", DryRun: false}); !errors.Is(err, configmigrate.ErrVersionStale) {
+		t.Errorf("real run err = %v, want ErrVersionStale", err)
 	}
 }
 

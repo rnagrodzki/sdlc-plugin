@@ -2,7 +2,10 @@ package tools
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/configmigrate"
@@ -149,17 +152,15 @@ func commitPrepare(cfgRoot, gitRoot string, in CommitPrepareIn) (CommitPrepareOu
 	}
 
 	// Staged files (cached diff, name-only).
-	stagedNames, err := gitx.Diff(gitRoot, gitx.DiffOpts{Cached: true, NameOnly: true})
+	stagedFiles, err := diffNames(gitRoot, true)
 	if err != nil {
 		out.Warnings = append(out.Warnings, fmt.Sprintf("staged files: %s", err.Error()))
 	}
-	if stagedNames != "" {
-		out.Staged.Files = nonEmptyLines(stagedNames)
-	}
+	out.Staged.Files = stagedFiles
 	out.Staged.FileCount = len(out.Staged.Files)
 
-	// Staged diff (full).
-	stagedDiff, err := gitx.Diff(gitRoot, gitx.DiffOpts{Cached: true})
+	// Staged diff (full), with raw non-ASCII names in the file headers.
+	stagedDiff, err := stagedDiffRaw(gitRoot)
 	if err != nil {
 		out.Warnings = append(out.Warnings, fmt.Sprintf("staged diff: %s", err.Error()))
 	}
@@ -171,7 +172,7 @@ func commitPrepare(cfgRoot, gitRoot string, in CommitPrepareIn) (CommitPrepareOu
 
 	// Compute truncated files list.
 	if out.Staged.DiffTruncated {
-		out.Staged.TruncatedFiles = computeTruncatedFiles(stagedDiff, truncatedDiff)
+		out.Staged.TruncatedFiles = computeTruncatedFiles(stagedFiles, truncatedDiff)
 	}
 
 	// Staged diff stat.
@@ -187,22 +188,20 @@ func commitPrepare(cfgRoot, gitRoot string, in CommitPrepareIn) (CommitPrepareOu
 	}
 
 	// Unstaged files.
-	unstagedNames, err := gitx.Diff(gitRoot, gitx.DiffOpts{NameOnly: true})
+	unstagedFiles, err := diffNames(gitRoot, false)
 	if err != nil {
 		out.Warnings = append(out.Warnings, fmt.Sprintf("unstaged files: %s", err.Error()))
 	}
-	if unstagedNames != "" {
-		out.Unstaged.Files = nonEmptyLines(unstagedNames)
-	}
+	out.Unstaged.Files = unstagedFiles
 	out.Unstaged.FileCount = len(out.Unstaged.Files)
 	out.Unstaged.HasChanges = out.Unstaged.FileCount > 0
 
 	// Untracked files.
-	statusOut, err := gitx.Status(gitRoot)
+	untracked, err := untrackedStatus(gitRoot)
 	if err != nil {
 		out.Warnings = append(out.Warnings, fmt.Sprintf("status: %s", err.Error()))
 	}
-	out.Untracked.Files = untrackedPaths(statusOut)
+	out.Untracked.Files = untracked
 	out.Untracked.FileCount = len(out.Untracked.Files)
 
 	// Recent commits (last 15, oneline).
@@ -243,16 +242,52 @@ func commitPrepare(cfgRoot, gitRoot string, in CommitPrepareIn) (CommitPrepareOu
 		out.Warnings = append(out.Warnings, fmt.Sprintf("manifestPath: %s", err.Error()))
 	} else {
 		out.ManifestPath = manifestPath
+		manifestDir := filepath.Dir(manifestPath)
+		removeStaleTempDirs(filepath.Dir(manifestDir), commitManifestPrefix, filepath.Base(manifestDir), time.Now())
 	}
 
 	return out, nil
+}
+
+// commitManifestPrefix names every commit_prepare manifest directory.
+const commitManifestPrefix = "sdlc-commit-manifest-"
+
+// staleTempDirAge is how old a per-call temp directory (an
+// sdlc-commit-manifest-* or sdlc-explore-* dir) must be before the tool that
+// creates that kind of dir removes it. A day is far longer than any flow that
+// still needs to read a manifest from it.
+const staleTempDirAge = 24 * time.Hour
+
+// removeStaleTempDirs deletes the directories in tempRoot whose name starts
+// with prefix and whose modification time is older than staleTempDirAge.
+// keep is the directory the calling tool just wrote; it is never removed,
+// because the caller hands its manifest to an agent after the tool returns.
+// Only direct children of tempRoot are checked. Best effort: every read or
+// remove error is ignored, since a leftover directory is harmless and must not
+// fail the calling tool.
+func removeStaleTempDirs(tempRoot, prefix, keep string, now time.Time) {
+	entries, err := os.ReadDir(tempRoot)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if name == keep || !e.IsDir() || !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || now.Sub(info.ModTime()) <= staleTempDirAge {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(tempRoot, name))
+	}
 }
 
 // writeCommitManifest marshals out (with ManifestPath already pointed at the
 // file it is about to write) to JSON and writes it via the fsseam, returning
 // the path.
 func writeCommitManifest(out CommitPrepareOut) (string, error) {
-	return writeTempJSON("sdlc-commit-manifest-", "manifest", func(path string) any {
+	return writeTempJSON(commitManifestPrefix, "manifest", func(path string) any {
 		out.ManifestPath = path
 		return out
 	})
@@ -320,37 +355,95 @@ func detectWipSquash(gitRoot string) CommitWipSquash {
 	return result
 }
 
-// computeTruncatedFiles derives the list of files that were omitted by
-// truncation, by comparing original and truncated diffs.
-func computeTruncatedFiles(original, truncated string) []string {
-	origChunks := gitx.SplitDiffByFile(original)
-	truncChunks := gitx.SplitDiffByFile(truncated)
-
+// computeTruncatedFiles returns the staged files whose diff chunk is not in
+// the truncated diff. stagedFiles is the raw `git diff --name-only -z` list,
+// so names come out as real file names, never C-quoted, even for a name git
+// still quotes in diff headers (one holding `"`, `\`, or a control
+// character): that chunk cannot be parsed, so it is not in the truncated
+// diff and is listed here. Never returns nil.
+func computeTruncatedFiles(stagedFiles []string, truncated string) []string {
 	included := make(map[string]bool)
-	for _, fd := range truncChunks {
+	for _, fd := range gitx.SplitDiffByFile(truncated) {
 		included[fd.Path] = true
 	}
 
-	var omitted []string
-	for _, fd := range origChunks {
-		if !included[fd.Path] {
-			omitted = append(omitted, fd.Path)
+	omitted := []string{}
+	for _, name := range stagedFiles {
+		if !included[name] {
+			omitted = append(omitted, name)
 		}
-	}
-	if omitted == nil {
-		omitted = []string{}
 	}
 	return omitted
 }
 
+// stagedDiffRaw runs `git -c core.quotePath=false diff --cached` in gitRoot.
+// With git's default core.quotePath, a non-ASCII name is C-quoted in the
+// file header (`diff --git "a/\303\251.txt" "b/\303\251.txt"`), which
+// gitx.SplitDiffByFile does not parse, so truncation would drop that file's
+// chunk without listing it.
+func stagedDiffRaw(gitRoot string) (string, error) {
+	out, err := execx.Run("git", []string{"-c", "core.quotePath=false", "diff", "--cached"}, execx.Options{Dir: gitRoot})
+	if err != nil {
+		return "", fmt.Errorf("gitx: diff: %w", err)
+	}
+	return out, nil
+}
+
+// diffNames runs `git diff --name-only -z` in gitRoot (with --cached when
+// cached is true) and returns the changed paths. -z keeps names with spaces,
+// quotes, or non-ASCII bytes raw; without it git C-quotes them
+// ("\303\251.txt"). Never returns nil.
+func diffNames(gitRoot string, cached bool) ([]string, error) {
+	args := []string{"diff", "--name-only", "-z"}
+	if cached {
+		args = append(args, "--cached")
+	}
+	out, err := execx.Run("git", args, execx.Options{Dir: gitRoot})
+	if err != nil {
+		return []string{}, fmt.Errorf("gitx: diff: %w", err)
+	}
+	files := []string{}
+	for _, p := range strings.Split(out, "\x00") {
+		if p != "" {
+			files = append(files, p)
+		}
+	}
+	return files, nil
+}
+
+// untrackedStatus runs `git status --porcelain -z` in gitRoot and returns its
+// untracked entries. -z keeps names with spaces, quotes, or non-ASCII bytes
+// raw; without it git C-quotes them ("\303\251.txt"), and the quoted form is
+// useless in a git add hint.
+func untrackedStatus(gitRoot string) ([]string, error) {
+	out, err := execx.Run("git", []string{"status", "--porcelain", "-z"}, execx.Options{Dir: gitRoot})
+	if err != nil {
+		return []string{}, fmt.Errorf("gitx: status: %w", err)
+	}
+	return untrackedPaths(out), nil
+}
+
 // untrackedPaths returns the untracked entries ("?? <path>") from
-// `git status --porcelain` output. A wholly untracked directory is one entry
-// with a trailing slash, as git prints it. Never returns nil.
+// `git status --porcelain -z` output. A wholly untracked directory is one
+// entry with a trailing slash, as git prints it. Never returns nil.
+//
+// Records are NUL-terminated. A rename or copy record (R or C in either
+// status column) is followed by one extra record holding the original path;
+// that record is skipped so it is never read as a status line.
 func untrackedPaths(statusOut string) []string {
 	files := []string{}
-	for _, line := range strings.Split(statusOut, "\n") {
-		if strings.HasPrefix(line, "?? ") {
-			files = append(files, strings.TrimPrefix(line, "?? "))
+	records := strings.Split(statusOut, "\x00")
+	for i := 0; i < len(records); i++ {
+		rec := records[i]
+		if len(rec) < 3 {
+			continue
+		}
+		if strings.HasPrefix(rec, "?? ") {
+			files = append(files, rec[3:])
+			continue
+		}
+		if strings.ContainsAny(rec[:2], "RC") {
+			i++ // skip the original-path record
 		}
 	}
 	return files
@@ -517,7 +610,7 @@ func commitApply(cfgRoot, gitRoot string, in CommitApplyIn) (CommitApplyOut, err
 			Cause:      err,
 		}
 	}
-	statusOut, err := gitx.Status(gitRoot)
+	skipped, err := untrackedStatus(gitRoot)
 	if err != nil {
 		return CommitApplyOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("git status: %s", err.Error()),
@@ -525,7 +618,6 @@ func commitApply(cfgRoot, gitRoot string, in CommitApplyIn) (CommitApplyOut, err
 			Cause:      err,
 		}
 	}
-	skipped := untrackedPaths(statusOut)
 
 	// Stage the explicit path list, never the whole tree. --literal-pathspecs
 	// stops a file name with glob characters or a leading ':' from being read as
@@ -597,7 +689,7 @@ func commitApply(cfgRoot, gitRoot string, in CommitApplyIn) (CommitApplyOut, err
 // RegisterCommitTools registers commit_prepare and commit_apply on the server.
 func RegisterCommitTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "commit_prepare",
-		"Gather commit context: staged/unstaged/untracked files, diffs, recent commits, commit config, and branch information. Also writes the full result as a JSON manifest into a new temp directory and returns its path as manifestPath (hand that path to sdlc:commit-orchestrator instead of the payload); if the write fails, manifestPath is empty and the reason is appended to warnings.",
+		"Gather commit context: staged/unstaged/untracked files, diffs, recent commits, commit config, and branch information. Also writes the full result as a JSON manifest into a new temp directory and returns its path as manifestPath (hand that path to sdlc:commit-orchestrator instead of the payload); if the write fails, manifestPath is empty and the reason is appended to warnings. Each call also removes older sdlc-commit-manifest-* temp directories last modified more than 24 hours ago.",
 		mcpserver.Annotations{
 			Title:      "Prepare commit context",
 			ReadOnly:   true,

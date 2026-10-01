@@ -194,7 +194,7 @@ func prPrepareNext(out PRPrepareOut) string {
 // prRuntime; production code uses defaultPRRuntime.
 type prRuntime struct {
 	ghPRForBranch       func(dir string) ghx.PRMetadata
-	ghPRCreate          func(dir, title, body string) (string, error)
+	ghPRCreate          func(dir, title, body string, opts prCreateOpts) (string, error)
 	ghPREdit            func(dir string, num int, title, body string) (string, error)
 	ghLabelList         func(dir string) ([]string, error)
 	ghLabelCreate       func(dir, name, color, desc string) error
@@ -530,9 +530,11 @@ func prVersionDiagnosticsWith(rt prRuntime, mainRoot, workDir, currentBranch str
 // auto-generation path in prApplyCoreWith, neither of which has diagnostic
 // warnings to accumulate into.
 func prGitLogSinceTag(dir string) ([]string, error) {
+	// Errors go back unwrapped: both callers add the "gitLogSinceTag: "
+	// prefix, and gitx/execx already name the failing git command.
 	tags, err := gitx.TagList(dir)
 	if err != nil {
-		return nil, fmt.Errorf("gitLogSinceTag: tag list: %w", err)
+		return nil, err
 	}
 	args := []string{"log", "--oneline"}
 	if len(tags) > 0 {
@@ -540,7 +542,7 @@ func prGitLogSinceTag(dir string) ([]string, error) {
 	}
 	out, err := execx.Run("git", args, execx.Options{Dir: dir})
 	if err != nil {
-		return nil, fmt.Errorf("gitLogSinceTag: %w", err)
+		return nil, err
 	}
 	return nonEmptyLines(out), nil
 }
@@ -626,6 +628,7 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 	if !authProbe.Authenticated {
 		errs = append(errs, authProbe.ErrorMessage)
 		out.Errors = errs
+		out.Warnings = warnings
 		// AC2 asks for the same account diagnostics the standalone recover
 		// script produced; build them here too (not just on mismatch) so an
 		// unauthenticated failure still surfaces any configured candidates.
@@ -642,6 +645,7 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 	if accountMismatch {
 		errs = append(errs, ghx.FormatAccountMismatch(expectedAccount, authProbe.ActiveAccount))
 		out.Errors = errs
+		out.Warnings = warnings
 		out.Diagnostics = buildAuthDiagnosticsWith(rt, workDir, expectedAccount, "", nil)
 		out.Next = prPrepareNext(out)
 		return out, nil
@@ -665,6 +669,7 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 		if probe.Accessible != nil && !*probe.Accessible {
 			errs = append(errs, ghx.FormatAccessDenied(authProbe.ActiveAccount, owner, repo, probe.SuggestedAccounts))
 			out.Errors = errs
+			out.Warnings = warnings
 			out.Diagnostics = buildAuthDiagnosticsWith(rt, workDir, "", owner, probe.SuggestedAccounts)
 			out.Next = prPrepareNext(out)
 			return out, nil
@@ -797,7 +802,15 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 
 	// Version diagnostics — gated on version config presence. Failures
 	// degrade to warnings, never errors, so they don't block the PR flow.
-	if cfg, cfgErr := rt.configRead(mainRoot); cfgErr == nil && cfg != nil && cfg.Version != nil {
+	// A missing config.toml means "no version config" and stays silent. Any
+	// other read error (a malformed [version] section, unknown keys, bad
+	// TOML) also skips diagnostics, but names the error in a warning so it
+	// does not look like a project that tracks no version.
+	cfg, cfgErr := rt.configRead(mainRoot)
+	if cfgErr != nil && !errors.Is(cfgErr, config.ErrNotFound) {
+		warnings = append(warnings, fmt.Sprintf("version config unreadable, version diagnostics skipped: %s", cfgErr.Error()))
+	}
+	if cfgErr == nil && cfg != nil && cfg.Version != nil {
 		vd, vdWarnings := prVersionDiagnosticsWith(rt, mainRoot, workDir, currentBranch, cfg)
 		warnings = append(warnings, vdWarnings...)
 		out.VersionSource = vd.VersionSource
@@ -865,7 +878,7 @@ func prValidateBodyCore(root string, in PRValidateBodyIn) (PRValidateBodyOut, er
 type PRApplyIn struct {
 	Title             string `json:"title" jsonschema_description:"PR title, used for gh pr create/edit."`
 	Body              string `json:"body" jsonschema_description:"PR body text, used for gh pr create/edit."`
-	ReleaseLevel      string `json:"releaseLevel,omitempty" jsonschema:"enum=major,enum=minor,enum=patch" jsonschema_description:"Release bump level for this PR (e.g. \"patch\"/\"minor\"/\"major\"). Required unless skipReleaseCheck is true AND the commits since the last tag are release-worthy (feat/fix/breaking) — see skipReleaseCheck. An empty value without skipReleaseCheck is rejected so release intent is never skipped by omission; pass skipReleaseCheck: true to explicitly acknowledge no release."`
+	ReleaseLevel      string `json:"releaseLevel,omitempty" jsonschema:"enum=major,enum=minor,enum=patch" jsonschema_description:"Release bump level for this PR (e.g. \"patch\"/\"minor\"/\"major\"). Required unless skipReleaseCheck is true. An empty value without skipReleaseCheck is rejected so release intent is never skipped by omission; pass skipReleaseCheck: true to explicitly acknowledge no release. Whether that skip is allowed depends on the commits since the last tag — see skipReleaseCheck: release-worthy (feat/fix/breaking) commits make the skip fail in autoMode and require skipReleaseReason interactively."`
 	ReleasePreRelease string `json:"releasePreRelease,omitempty" jsonschema:"enum=rc" jsonschema_description:"Pre-release identifier to attach to the release, when releaseLevel is set and this is a pre-release."`
 	ReleaseNotes      string `json:"releaseNotes,omitempty" jsonschema_description:"Release notes text associated with releaseLevel. When releaseLevel is set and this is left empty, notes are auto-generated from commits since the last release tag — no longer rejected as missing."`
 	// ReleaseSource records who decided ReleaseLevel: "user" (explicit
@@ -902,6 +915,11 @@ type PRApplyIn struct {
 	// only in interactive mode — AutoMode never allows the skip regardless
 	// of any reason given. Ignored otherwise.
 	SkipReleaseReason string `json:"skipReleaseReason,omitempty" jsonschema_description:"Explains why this PR intentionally skips the release check despite release-worthy (feat/fix/breaking) commits since the last tag. Required (non-empty) when skipReleaseCheck is true, releaseLevel is empty, autoMode is false, and such commits are present. Ignored otherwise."`
+	// Draft and Base apply only when pr_apply creates a new PR. gh pr edit
+	// cannot change either one, so on the update path they are ignored and
+	// named in Warnings instead.
+	Draft bool   `json:"draft,omitempty" jsonschema_description:"Create the PR as a draft (gh pr create --draft). Applies only when a new PR is created; ignored with a warning when an open PR is updated."`
+	Base  string `json:"base,omitempty" jsonschema_description:"Base branch for a new PR (gh pr create --base <branch>). Empty uses gh's default (the repository's default branch). Applies only when a new PR is created; ignored with a warning when an open PR is updated."`
 }
 
 // PRApplyOut is the output for pr_apply.
@@ -909,8 +927,14 @@ type PRApplyOut struct {
 	URL           string             `json:"url"`
 	Created       bool               `json:"created"`
 	ReleaseIntent *ReleaseIntentInfo `json:"releaseIntent,omitempty"`
-	Next          string             `json:"next"`
+	// Warnings names inputs the call ignored, e.g. draft/base on the update
+	// path. Absent when nothing was ignored.
+	Warnings []string `json:"warnings,omitempty"`
+	Next     string   `json:"next"`
 }
+
+// prCreateOpts carries the gh pr create flags beyond title and body.
+type prCreateOpts = ghx.PRCreateOpts
 
 // ReleaseIntentInfo carries the release intent (level + pre-release) recorded
 // when releaseLevel is set. It holds no version number: CI computes that at
@@ -956,7 +980,7 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 	if strings.TrimSpace(in.Title) == "" {
 		return PRApplyOut{}, &mcpserver.DomainError{
 			Msg:        "title is required",
-			Suggestion: "Pass a non-empty title: use the prTitle value from pr_prepare, or draft one from the branch's commits.",
+			Suggestion: "Pass a non-empty title: draft one from the branch's commits (commitsSinceBase in the pr_prepare output).",
 		}
 	}
 
@@ -967,7 +991,7 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 	if in.ReleaseLevel == "" && !in.SkipReleaseCheck {
 		return PRApplyOut{}, &mcpserver.DomainError{
 			Msg:        "releaseLevel is empty and skipReleaseCheck is false",
-			Suggestion: "Set releaseLevel (Step 1b of the pr skill, or --releaseLevel on this call) to declare release intent, or pass skipReleaseCheck: true to acknowledge no release.",
+			Suggestion: "Set releaseLevel on this pr_apply call (Step 1b of the pr skill) to declare release intent, or pass skipReleaseCheck: true to acknowledge no release.",
 		}
 	}
 
@@ -1011,7 +1035,7 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 		default:
 			return PRApplyOut{}, &mcpserver.DomainError{
 				Msg:        fmt.Sprintf("releaseLevel must be major, minor, or patch, got %q", in.ReleaseLevel),
-				Suggestion: "Set releaseLevel to exactly one of major, minor or patch, or omit it and set releaseSkipReason instead.",
+				Suggestion: "Set releaseLevel to exactly one of major, minor or patch, or omit it and pass skipReleaseCheck: true instead (with skipReleaseReason when commits since the last tag are feat/fix/breaking).",
 			}
 		}
 		if strings.TrimSpace(in.ReleaseNotes) == "" {
@@ -1114,8 +1138,21 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 		}
 	}
 
+	// Only an open PR is edited. With no open PR, gh pr view falls back to
+	// the branch's newest closed or merged PR, which an earlier run on a
+	// reused branch may have left behind; that case opens a new PR.
+	base := strings.TrimSpace(in.Base)
 	meta := rt.ghPRForBranch(workDir)
-	if meta.Exists {
+	if meta.Exists && meta.State == "OPEN" {
+		// gh pr edit cannot turn a PR into a draft or change its base, so
+		// draft/base are create-only. Say so rather than drop them silently.
+		var warnings []string
+		if in.Draft {
+			warnings = append(warnings, fmt.Sprintf("draft ignored: PR #%d already exists and was updated, not created; gh pr edit cannot make it a draft (run gh pr ready --undo %d to do that by hand).", meta.Number, meta.Number))
+		}
+		if base != "" {
+			warnings = append(warnings, fmt.Sprintf("base %q ignored: PR #%d already exists and was updated, not created; its base branch is unchanged.", base, meta.Number))
+		}
 		url, err := rt.ghPREdit(workDir, meta.Number, in.Title, body)
 		if err != nil {
 			if enriched := prEnrichPermissionError(rt, workDir, "gh pr edit", err); enriched != nil {
@@ -1136,10 +1173,10 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 				return PRApplyOut{}, err
 			}
 		}
-		return PRApplyOut{URL: url, Created: false, ReleaseIntent: intent, Next: prApplyNext(false, intent)}, nil
+		return PRApplyOut{URL: url, Created: false, ReleaseIntent: intent, Warnings: warnings, Next: prApplyNext(false, intent)}, nil
 	}
 
-	url, err := rt.ghPRCreate(workDir, in.Title, body)
+	url, err := rt.ghPRCreate(workDir, in.Title, body, prCreateOpts{Draft: in.Draft, Base: base})
 	if err != nil {
 		if enriched := prEnrichPermissionError(rt, workDir, "gh pr create", err); enriched != nil {
 			return PRApplyOut{}, enriched
@@ -1621,7 +1658,7 @@ func prReleaseApplyLabelWith(rt prRuntime, workDir, label string, stale []string
 // responsibility.
 func RegisterPRTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "pr_prepare",
-		"Preflight checks for pr: config-version gate (also moves personal keys such as pr.expectedAccount from config.toml to local.toml, with a warning; fails with manual steps when the move is not safe), gh-auth + active-account probe (expected account from local.toml [github] expectedAccount; recovery-shaped diagnostics on failure), branch-guard hard gate, protected-branch rejection, JIRA ticket detection from the branch name, PR template resolution, upstream/push status (needsPush), and version diagnostics (bump options, tags, commits since tag, conventional commit summary, existing RCs) when a version config exists.",
+		"Preflight checks for pr: config-version gate (also moves personal keys such as pr.expectedAccount from config.toml to local.toml, with a warning; fails with manual steps when the move is not safe), gh-auth + active-account probe (expected account from local.toml [github] expectedAccount; recovery-shaped diagnostics on failure), branch-guard hard gate, protected-branch rejection, JIRA ticket detection from the branch name, PR template resolution, upstream/push status (needsPush), and version diagnostics (bump options, tags, commits since tag, conventional commit summary, existing RCs) when a version config exists. A config.toml that fails to read skips those diagnostics with a warning naming the error.",
 		mcpserver.Annotations{
 			Title:       "Prepare pull request context",
 			ReadOnly:    false,
@@ -1653,6 +1690,8 @@ func RegisterPRTools(s *mcpserver.Server) {
 		"Creates a PR for the current branch, or edits the existing one, via gh pr create/gh pr edit (KD14 executor tool). Pushes the branch "+
 			"first when needed (no upstream, or upstream behind HEAD); skips the push when upstream is already caught up, to avoid firing "+
 			"heavy pre-push hooks unnecessarily. "+
+			"draft and base apply only when a new PR is created (gh pr create --draft / --base <branch>); when an open PR is "+
+			"updated instead, gh pr edit cannot change either one, so they are ignored and named in warnings. "+
 			"releaseLevel is required unless skipReleaseCheck is true — an empty releaseLevel without skipReleaseCheck is rejected so release "+
 			"intent is never skipped by omission; pass skipReleaseCheck: true to explicitly acknowledge no release. skipReleaseCheck is verified "+
 			"against commits since the last tag: if any are feat/fix/breaking, the skip is release-worthy and is hard-rejected in autoMode, or "+

@@ -465,9 +465,6 @@ func TestShipPrepare_KD5Gate(t *testing.T) {
 	if out.StateFile != "" {
 		t.Errorf("StateFile = %q, want empty (KD5 gate must not init state)", out.StateFile)
 	}
-	if out.Migration != nil {
-		t.Errorf("Migration = %v, want nil on a failed migration attempt", out.Migration)
-	}
 
 	entries, _ := os.ReadDir(filepath.Join(dir, paths.DataDir, paths.RunsSubdir))
 	if len(entries) != 0 {
@@ -508,9 +505,6 @@ func TestShipPrepare_StaleConfigRequiresSetup(t *testing.T) {
 	if out.StateFile != "" {
 		t.Errorf("StateFile = %q, want empty (stale config must not init state)", out.StateFile)
 	}
-	if out.Migration != nil {
-		t.Errorf("Migration = %v, want nil; JSON->TOML auto-migration no longer exists", out.Migration)
-	}
 }
 
 // TestShipPrepare_MissingConfig verifies the KD5 gate's missing-config case:
@@ -535,8 +529,7 @@ func TestShipPrepare_MissingConfig(t *testing.T) {
 }
 
 // TestShipPrepare_CurrentConfig_NoExtraIO verifies the KD5 gate's no-op
-// case: an already-current config is not touched at all — no .bak backup
-// and no Migration in the response.
+// case: an already-current config is not touched at all — no .bak backup.
 func TestShipPrepare_CurrentConfig_NoExtraIO(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
@@ -557,9 +550,6 @@ func TestShipPrepare_CurrentConfig_NoExtraIO(t *testing.T) {
 	}
 	if len(out.Errors) != 0 {
 		t.Fatalf("Errors = %v, want empty", out.Errors)
-	}
-	if out.Migration != nil {
-		t.Errorf("Migration = %v, want nil for an already-current config", out.Migration)
 	}
 	if _, statErr := os.Stat(configPath + ".bak"); statErr == nil {
 		t.Error("config.toml.bak written for an already-current config; want zero extra I/O")
@@ -687,6 +677,102 @@ func TestShipPrepare_InvalidStep(t *testing.T) {
 	}
 	if len(out.Errors) == 0 {
 		t.Fatal("Errors is empty, want a reserved-step error for \"cleanup\"")
+	}
+}
+
+// TestShipPrepare_ConditionalStepRejected verifies that the conditional
+// steps "received-review" and "commit-fixes" are a hard error from every
+// source — config ship.steps[], config ship.quick[] and --steps — and never
+// a warning. Before the fix a config-sourced conditional step only warned,
+// and ship_prepare seeded it as a "tracked" state entry that nothing ever
+// dispatches.
+func TestShipPrepare_ConditionalStepRejected(t *testing.T) {
+	cases := []struct {
+		name    string
+		step    string
+		config  string // local.toml body
+		in      ShipPrepareIn
+		wantSrc string
+		label   string
+	}{
+		{
+			name:    "config steps received-review",
+			step:    "received-review",
+			config:  "[ship]\nsteps = [\"commit\", \"received-review\"]\n",
+			wantSrc: "config",
+			label:   "steps[]",
+		},
+		{
+			name:    "config steps commit-fixes",
+			step:    "commit-fixes",
+			config:  "[ship]\nsteps = [\"commit\", \"commit-fixes\"]\n",
+			wantSrc: "config",
+			label:   "steps[]",
+		},
+		{
+			name:    "config quick received-review",
+			step:    "received-review",
+			config:  "[ship]\nquick = [\"commit\", \"received-review\"]\n",
+			in:      ShipPrepareIn{Quick: true},
+			wantSrc: "quick",
+			label:   "steps[]",
+		},
+		{
+			name:    "cli commit-fixes",
+			step:    "commit-fixes",
+			in:      ShipPrepareIn{Steps: []string{"commit", "commit-fixes"}},
+			wantSrc: "cli",
+			label:   "--steps",
+		},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			initGitFixture(t, dir)
+			gitCommit(t, dir, "initial")
+			checkoutBranch(t, dir, fmt.Sprintf("feat/conditional-step-%d", i))
+			if tc.config != "" {
+				writeFile(t, filepath.Join(dir, paths.DataDir, "local.toml"), tc.config)
+			}
+
+			in := tc.in
+			in.SkipConfigCheck = true
+			out, err := shipPrepare(dir, dir, in)
+			if err != nil {
+				t.Fatalf("shipPrepare: %v", err)
+			}
+			if got := out.Sources["steps"]; got != tc.wantSrc {
+				t.Fatalf("Sources[steps] = %q, want %q", got, tc.wantSrc)
+			}
+
+			var stepErrs []string
+			for _, e := range out.Errors {
+				if strings.Contains(e, `"`+tc.step+`"`) {
+					stepErrs = append(stepErrs, e)
+				}
+			}
+			if len(stepErrs) != 1 {
+				t.Fatalf("Errors = %v, want exactly one entry naming %q", out.Errors, tc.step)
+			}
+			if !strings.Contains(stepErrs[0], "conditional step") || !strings.Contains(stepErrs[0], "in "+tc.label) {
+				t.Errorf("error %q, want it to call %q a conditional step in %s", stepErrs[0], tc.step, tc.label)
+			}
+			if !strings.Contains(stepErrs[0], "Valid values: "+strings.Join(shipmeta.ValidSteps, ", ")) {
+				t.Errorf("error %q does not name the allowed steps", stepErrs[0])
+			}
+			for _, w := range out.Warnings {
+				if strings.Contains(w, tc.step) {
+					t.Errorf("Warnings contains %q, want it only in Errors", w)
+				}
+			}
+			if out.StateFile != "" {
+				t.Errorf("StateFile = %q, want empty (validation errors block state init)", out.StateFile)
+			}
+			matches, _ := filepath.Glob(filepath.Join(dir, paths.DataDir, paths.RunsSubdir, "ship-*.json"))
+			if len(matches) != 0 {
+				t.Errorf("ship state files = %v, want none", matches)
+			}
+		})
 	}
 }
 
@@ -970,6 +1056,60 @@ func TestShipGC_KnownBranchesFromGit(t *testing.T) {
 	}
 }
 
+// TestGCBranchExistsFunc_GitFailureAssumesLive pins that a failed
+// `git branch --list` (here: not a git repository) yields "every branch is
+// live", not "every branch is gone". Otherwise one git failure makes gc
+// delete every state file.
+func TestGCBranchExistsFunc_GitFailureAssumesLive(t *testing.T) {
+	dir := t.TempDir() // not a git repository: git branch --list fails
+
+	branchExists := gcBranchExistsFunc(dir)
+	if branchExists == nil {
+		t.Fatal("gcBranchExistsFunc returned nil, want a non-nil func")
+	}
+	if !branchExists("any-branch") {
+		t.Error(`branchExists("any-branch") = false after git failure, want true (unknown liveness must not delete state)`)
+	}
+}
+
+// TestGCBranchExistsFunc_UnbornHeadAssumesLive pins that an empty branch
+// list (a repository with no commits yet lists no branches) is treated as
+// unknown liveness, not as "every branch is gone".
+func TestGCBranchExistsFunc_UnbornHeadAssumesLive(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir) // no commit: HEAD is unborn, git branch --list prints nothing
+
+	if !gcBranchExistsFunc(dir)("main") {
+		t.Error(`branchExists("main") = false on an unborn HEAD, want true`)
+	}
+}
+
+// TestShipGC_BranchListFailureKeepsStateFiles is the end-to-end guard for
+// gcBranchExistsFunc's failure path: a stale state file must survive gc when
+// branch liveness cannot be read.
+func TestShipGC_BranchListFailureKeepsStateFiles(t *testing.T) {
+	dir := t.TempDir() // not a git repository
+
+	execDir := filepath.Join(dir, paths.DataDir, paths.RunsSubdir)
+	f := filepath.Join(execDir, "ship-some-branch-20200101T000000Z.json")
+	writeFile(t, f, `{"sessionId": null}`)
+	setStateFileMtime(t, f, 30*24*time.Hour)
+
+	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true, Gc: true})
+	if err != nil {
+		t.Fatalf("shipPrepare: %v", err)
+	}
+	if out.Report == nil {
+		t.Fatalf("Report is nil; errors: %v", out.Errors)
+	}
+	if len(out.Report.Ship.Deleted) != 0 {
+		t.Errorf("Ship.Deleted = %v, want none (branch liveness unknown)", out.Report.Ship.Deleted)
+	}
+	if _, err := os.Stat(f); err != nil {
+		t.Errorf("state file %s should still exist: %v", f, err)
+	}
+}
+
 // TestShipGC_BucketsByPrefix verifies stale, dead-branch files across all
 // four state prefixes are each routed into their own report bucket.
 func TestShipGC_BucketsByPrefix(t *testing.T) {
@@ -1140,7 +1280,7 @@ func TestShipGC_RespectsKD5Gate(t *testing.T) {
 // KD5 gate's /setup error: a JSON-era config.json with no config.toml is
 // stale by definition (JSON->TOML auto-migration no longer exists), so gc
 // must report the error via the gc-shaped ShipPrepareOut with Action still
-// empty and Migration nil, rather than proceeding.
+// empty, rather than proceeding.
 //
 // This replaces the former TestShipGC_AutoMigratesStaleConfig, which
 // asserted the pre-TOML auto-migrate-with-backup behavior threaded through
@@ -1164,9 +1304,6 @@ func TestShipGC_StaleConfigRequiresSetup(t *testing.T) {
 	}
 	if out.Action == "gc" {
 		t.Errorf("Action = %q, want empty (KD5 gate must short-circuit before gc runs)", out.Action)
-	}
-	if out.Migration != nil {
-		t.Errorf("Migration = %v, want nil; JSON->TOML auto-migration no longer exists", out.Migration)
 	}
 }
 
@@ -1546,7 +1683,7 @@ func TestShipVerifySideEffect_PRLanded(t *testing.T) {
 	gitCommit(t, dir, "initial")
 	checkoutBranch(t, dir, "feat/pr-landed")
 	statePath := shipStateInitFixture(t, dir, "feat/pr-landed")
-	stubPRForBranch(t, ghx.PRMetadata{Exists: true, Number: 141})
+	stubPRForBranch(t, ghx.PRMetadata{Exists: true, Number: 141, State: "OPEN"})
 
 	fixedAt := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 	out, err := shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "pr"}, fixedNow(fixedAt))
@@ -1604,6 +1741,38 @@ func TestShipVerifySideEffect_PRNotFound(t *testing.T) {
 		if _, ok := journal["pr"]; ok {
 			t.Errorf(`sideEffects["pr"] present, want no entry: %#v`, journal["pr"])
 		}
+	}
+}
+
+// TestShipVerifySideEffect_PRClosedOrMergedNotLanded pins that only an open
+// PR counts as the pr step's side effect. With no open PR, gh pr view falls
+// back to the branch's newest closed or merged PR; an older PR on a reused
+// branch must not make a resumed pipeline skip opening a new one.
+func TestShipVerifySideEffect_PRClosedOrMergedNotLanded(t *testing.T) {
+	for _, prState := range []string{"CLOSED", "MERGED"} {
+		t.Run(prState, func(t *testing.T) {
+			dir := t.TempDir()
+			initGitFixture(t, dir)
+			gitCommit(t, dir, "initial")
+			checkoutBranch(t, dir, "feat/pr-old")
+			statePath := shipStateInitFixture(t, dir, "feat/pr-old")
+			stubPRForBranch(t, ghx.PRMetadata{Exists: true, Number: 7, State: prState})
+
+			out, err := shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "pr"}, fixedNow(time.Now()))
+			if err != nil {
+				t.Fatalf("shipVerifySideEffect: %v", err)
+			}
+			if out.Landed {
+				t.Errorf("Landed = true for a %s PR, want false", prState)
+			}
+
+			data := readStateData(t, statePath)
+			if journal, ok := data["sideEffects"].(map[string]any); ok {
+				if _, ok := journal["pr"]; ok {
+					t.Errorf(`sideEffects["pr"] present, want no entry: %#v`, journal["pr"])
+				}
+			}
+		})
 	}
 }
 

@@ -368,14 +368,15 @@ var hardenSurfaceRoots = []string{
 }
 
 // hardenSurfaceStatus is a seam over `git status --porcelain -- <surfaces>`
-// — the same execx.Run call gitx.Status makes (internal/gitx/gitx.go:64),
-// plus a pathspec limiting it to hardenSurfaceRoots so unrelated dirty
-// files elsewhere in the worktree never make a surface look dirty. Tests
-// swap this var out instead of exercising real git (no-real-fs-git-in-tests
-// guardrail).
+// — the same execx.Run call gitx.Status makes, plus a pathspec limiting it
+// to hardenSurfaceRoots so unrelated dirty files elsewhere in the worktree
+// never make a surface look dirty. KeepLeadingSpace keeps the first line's
+// status column (" M path"), which hardenSurfacePath reads by position.
+// Most tests swap this var out instead of exercising real git; one test
+// runs the real command to pin the status-column behavior.
 var hardenSurfaceStatus = func(dir string) (string, error) {
 	args := append([]string{"status", "--porcelain", "--"}, hardenSurfaceRoots...)
-	out, err := execx.Run("git", args, execx.Options{Dir: dir})
+	out, err := execx.Run("git", args, execx.Options{Dir: dir, KeepLeadingSpace: true})
 	if err != nil {
 		return "", fmt.Errorf("gitx: status: %w", err)
 	}

@@ -97,7 +97,7 @@ type PRReview struct {
 // verdict yet".
 //
 // The name describes what it returns, not how it asks gh for it — matching
-// its PRView/PRChecks siblings, so swapping the underlying gh query (REST
+// its PRView/PRChecksWithExitCode siblings, so swapping the underlying gh query (REST
 // vs --json) would not force a rename on every caller.
 func PRReviews(dir string, n int) ([]PRReview, error) {
 	if n <= 0 {
@@ -135,28 +135,22 @@ func PRReviews(dir string, n int) ([]PRReview, error) {
 	return reviews, nil
 }
 
-// PRChecks returns the output of `gh pr checks <n>` run inside dir.
-func PRChecks(dir string, n int) (string, error) {
+// PRChecksWithExitCode runs `gh pr checks <n>` inside dir. Unlike the other
+// helpers here, it preserves stdout and stderr and reports the process exit
+// code even on a non-zero exit, since gh pr checks' exit code is itself
+// meaningful (0 pass, 1 some failed, 8 some pending). gh also exits 1 for its own errors (PR not found, auth,
+// "no checks reported"), with the reason on stderr only — see
+// internal/tools/polling.go's verifyPipelineAwait for how the two are told
+// apart.
+func PRChecksWithExitCode(dir string, n int) (stdout, stderr string, exitCode int, err error) {
 	if n <= 0 {
-		return "", fmt.Errorf("ghx: PRChecks: invalid PR number %d", n)
+		return "", "", 0, fmt.Errorf("ghx: PRChecksWithExitCode: invalid PR number %d", n)
 	}
-	return run(dir, "pr", "checks", fmt.Sprint(n))
-}
-
-// PRChecksWithExitCode behaves like PRChecks but preserves stdout and
-// reports the process exit code even on a non-zero exit, since gh pr
-// checks' exit code is itself meaningful (0 pass, 1 some failed, 8 some
-// pending) — see internal/tools/polling.go's verifyPipelineAwait for why
-// that data must not be discarded the way PRChecks discards it.
-func PRChecksWithExitCode(dir string, n int) (stdout string, exitCode int, err error) {
-	if n <= 0 {
-		return "", 0, fmt.Errorf("ghx: PRChecksWithExitCode: invalid PR number %d", n)
-	}
-	stdout, exitCode, err = execx.RunAllowExit(ghCmd, []string{"pr", "checks", fmt.Sprint(n)}, execx.Options{Dir: dir})
+	stdout, stderr, exitCode, err = execx.RunAllowExit(ghCmd, []string{"pr", "checks", fmt.Sprint(n)}, execx.Options{Dir: dir})
 	if err != nil && isBinaryNotFound(err) {
-		return "", 0, fmt.Errorf("%w: %w", ErrGHNotFound, err)
+		return "", "", 0, fmt.Errorf("%w: %w", ErrGHNotFound, err)
 	}
-	return stdout, exitCode, err
+	return stdout, stderr, exitCode, err
 }
 
 // IssueView returns the output of `gh issue view <key>` run inside dir.
@@ -246,8 +240,9 @@ func ParseRemoteOwner(rawURL string) (owner, repo string, err error) {
 // by using `gh api user --jq .login` (a data command, not a human-status
 // command) to determine authentication, at the cost of not being able to
 // distinguish an expired token from "never logged in". RepoAccessProbe
-// cannot sidestep it: a 403/404 response is indistinguishable from a
-// network failure and both surface as an unknown (nil) result below.
+// sidesteps it by calling execx.RunAllowExit, which keeps stdout and stderr
+// on a non-zero exit, so a 403/404 response is told apart from a network
+// failure.
 
 // Account is one gh CLI account entry for a host, as reported by
 // `gh auth status --json hosts`.
@@ -368,8 +363,9 @@ func AuthProbe(dir, host string) AuthProbeResult {
 var httpStatusLineRe = regexp.MustCompile(`HTTP/[\d.]+ (\d{3})`)
 
 // RepoAccessResult reports whether the active gh account can access a repo.
-// Accessible/StatusCode are nil when the probe could not determine an
-// answer (see fidelity-gap note above) — never guessed.
+// Accessible is nil when the probe could not determine an answer (network
+// failure, or an HTTP status other than 200/403/404) — never guessed.
+// StatusCode is nil only when no HTTP response was received.
 type RepoAccessResult struct {
 	Accessible        *bool
 	StatusCode        *int
@@ -378,11 +374,10 @@ type RepoAccessResult struct {
 }
 
 // RepoAccessProbe probes whether the active gh account can access
-// owner/repo on host, mirroring lib/git.js's probeRepoAccess for the
-// success (200) case. Because run() discards output on any non-zero exit
-// (see fidelity-gap note above) and `gh api` exits non-zero for 403/404
-// responses, a denied-access response is indistinguishable here from a
-// network failure: both report Accessible:nil, not Accessible:false.
+// owner/repo on host, mirroring lib/git.js's probeRepoAccess. HTTP 200
+// reports Accessible:true; HTTP 403 or 404 reports Accessible:false (access
+// denied); a network failure or any other status reports Accessible:nil
+// with the reason in ErrorMessage.
 func RepoAccessProbe(dir, owner, repo, host string) RepoAccessResult {
 	if host == "" {
 		host = "github.com"
@@ -403,38 +398,71 @@ func RepoAccessProbe(dir, owner, repo, host string) RepoAccessResult {
 		logins = append(logins, a.Login)
 	}
 
-	raw, err := run(dir, "api", fmt.Sprintf("repos/%s/%s", owner, repo), "--hostname", host, "-i", "--silent")
+	// RunAllowExit, not run(): gh api exits 1 on a 4xx/5xx response, and
+	// the status line (stdout, from -i) or "(HTTP <code>)" (stderr) is the
+	// only way to tell a denied request from a network failure.
+	args := []string{"api", fmt.Sprintf("repos/%s/%s", owner, repo), "--hostname", host, "-i", "--silent"}
+	stdout, stderr, _, err := execx.RunAllowExit(ghCmd, args, execx.Options{Dir: dir})
 	if err != nil {
-		if errors.Is(err, execx.ErrOutputCap) {
-			return RepoAccessResult{
-				ErrorMessage:      fmt.Sprintf("gh api output exceeded cap: %s", err.Error()),
-				SuggestedAccounts: logins,
-			}
+		msg := err.Error()
+		switch {
+		case errors.Is(err, execx.ErrOutputCap):
+			msg = fmt.Sprintf("gh api output exceeded cap: %s", err.Error())
+		case isBinaryNotFound(err):
+			msg = ErrGHNotFound.Error()
 		}
-		return RepoAccessResult{
-			ErrorMessage:      "gh api returned no output",
-			SuggestedAccounts: logins,
-		}
-	}
-	if raw == "" {
-		return RepoAccessResult{
-			ErrorMessage:      "gh api returned no output",
-			SuggestedAccounts: logins,
-		}
+		return RepoAccessResult{ErrorMessage: msg, SuggestedAccounts: logins}
 	}
 
-	firstLine := strings.SplitN(raw, "\n", 2)[0]
-	m := httpStatusLineRe.FindStringSubmatch(firstLine)
-	if m == nil {
+	code, ok := repoAccessStatus(stdout, stderr)
+	if !ok {
+		msg := "gh api returned no output"
+		switch {
+		case stderr != "":
+			msg = strings.SplitN(stderr, "\n", 2)[0]
+		case stdout != "":
+			msg = fmt.Sprintf("unexpected gh api output: %s", strings.SplitN(stdout, "\n", 2)[0])
+		}
+		return RepoAccessResult{ErrorMessage: msg, SuggestedAccounts: logins}
+	}
+
+	switch code {
+	case 200:
+		accessible := true
+		return RepoAccessResult{Accessible: &accessible, StatusCode: &code, SuggestedAccounts: logins}
+	case 403, 404:
+		// GitHub answers 404 (private repo) or 403 when the active account
+		// cannot see the repo.
+		accessible := false
+		return RepoAccessResult{Accessible: &accessible, StatusCode: &code, SuggestedAccounts: logins}
+	default:
+		// Any other status (5xx, rate limit, ...) says nothing about access.
 		return RepoAccessResult{
-			ErrorMessage:      fmt.Sprintf("unexpected gh api output: %s", firstLine),
+			StatusCode:        &code,
+			ErrorMessage:      fmt.Sprintf("unexpected HTTP %d from gh api", code),
 			SuggestedAccounts: logins,
 		}
 	}
+}
 
-	code, _ := strconv.Atoi(m[1])
-	accessible := code == 200
-	return RepoAccessResult{Accessible: &accessible, StatusCode: &code, SuggestedAccounts: logins}
+// ghHTTPErrorRe matches the status gh prints to stderr on a failed API
+// call, e.g. "gh: Not Found (HTTP 404)".
+var ghHTTPErrorRe = regexp.MustCompile(`\(HTTP (\d{3})\)`)
+
+// repoAccessStatus extracts the HTTP status of a `gh api -i` call: first
+// from the status line gh prints to stdout, then from the "(HTTP <code>)"
+// suffix of its stderr error. ok is false when neither is present, which
+// means the request never got an HTTP response (e.g. a network failure).
+func repoAccessStatus(stdout, stderr string) (code int, ok bool) {
+	if m := httpStatusLineRe.FindStringSubmatch(strings.SplitN(stdout, "\n", 2)[0]); m != nil {
+		code, _ = strconv.Atoi(m[1])
+		return code, true
+	}
+	if m := ghHTTPErrorRe.FindStringSubmatch(stderr); m != nil {
+		code, _ = strconv.Atoi(m[1])
+		return code, true
+	}
+	return 0, false
 }
 
 // FormatAccountMismatch renders the canonical 3-line account-mismatch
@@ -475,19 +503,26 @@ type PRMetadata struct {
 	ErrorMessage string // Non-empty when the probe failed for a reason other than "no PR exists".
 }
 
+// ghNoPRForBranch is the text gh prints on stderr when the current branch
+// has no PR at all ("no pull requests found for branch <name>").
+const ghNoPRForBranch = "no pull requests found"
+
 // PRForBranch reports the PR for the current branch (no PR number needed),
 // mirroring lib/git.js's fetchPrMetadata. It never returns a Go error: any
-// failure — no PR found for the branch, not authenticated, network error,
-// or malformed JSON — collapses to PRMetadata{Exists: false}, matching the
-// source's own `if (!prJson) return { exists: false }` / catch-all
-// behavior verbatim.
+// failure — no PR found for the branch, gh missing, not authenticated,
+// network error, or malformed JSON — collapses to Exists: false. Only the
+// plain "no PR for this branch" case leaves ErrorMessage empty; every other
+// failure sets it, so callers can tell "no PR" apart from "could not check".
 func PRForBranch(dir string) PRMetadata {
 	raw, err := run(dir, "pr", "view", "--json", "number,title,url,state,labels")
 	if err != nil {
 		if errors.Is(err, execx.ErrOutputCap) {
 			return PRMetadata{Exists: false, ErrorMessage: fmt.Sprintf("gh pr view output exceeded cap: %s", err.Error())}
 		}
-		return PRMetadata{Exists: false}
+		if strings.Contains(err.Error(), ghNoPRForBranch) {
+			return PRMetadata{Exists: false}
+		}
+		return PRMetadata{Exists: false, ErrorMessage: fmt.Sprintf("gh pr view failed: %s", err.Error())}
 	}
 	if raw == "" {
 		return PRMetadata{Exists: false}
@@ -503,7 +538,7 @@ func PRForBranch(dir string) PRMetadata {
 		} `json:"labels"`
 	}
 	if jsonErr := json.Unmarshal([]byte(raw), &parsed); jsonErr != nil {
-		return PRMetadata{Exists: false}
+		return PRMetadata{Exists: false, ErrorMessage: fmt.Sprintf("parse gh pr view output: %s", jsonErr.Error())}
 	}
 
 	labels := make([]string, 0, len(parsed.Labels))
@@ -520,10 +555,24 @@ func PRForBranch(dir string) PRMetadata {
 	}
 }
 
-// PRCreate runs `gh pr create --title <title> --body <body>` and returns
-// the created PR's URL (gh's stdout on success).
-func PRCreate(dir, title, body string) (string, error) {
-	return run(dir, "pr", "create", "--title", title, "--body", body)
+// PRCreateOpts carries the gh pr create flags beyond title and body.
+type PRCreateOpts struct {
+	Draft bool
+	Base  string
+}
+
+// PRCreate runs `gh pr create --title <title> --body <body>`, plus --draft
+// and --base <branch> when set in opts, and returns the created PR's URL
+// (gh's stdout).
+func PRCreate(dir, title, body string, opts PRCreateOpts) (string, error) {
+	args := []string{"pr", "create", "--title", title, "--body", body}
+	if opts.Draft {
+		args = append(args, "--draft")
+	}
+	if opts.Base != "" {
+		args = append(args, "--base", opts.Base)
+	}
+	return run(dir, args...)
 }
 
 // LabelList returns the names of every label defined on the repo, via

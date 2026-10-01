@@ -47,9 +47,9 @@ type OpenspecEnrichIn struct {
 	// Change optionally names an openspec change to match against. When
 	// non-empty, Detect() is called to resolve the change and include its
 	// status in the output.
-	Change string `json:"change" jsonschema_description:"Optional openspec change name to match against. When non-empty, the change is resolved and its status is included in the output."`
+	Change string `json:"change,omitempty" jsonschema_description:"Optional openspec change name to match against. When non-empty, the change is resolved and its status is included in the output."`
 	// Remove, when true, removes the managed block instead of adding it.
-	Remove bool `json:"remove" jsonschema_description:"When true, removes the managed block from openspec/config.yaml instead of adding/updating it."`
+	Remove bool `json:"remove,omitempty" jsonschema_description:"When true, removes the managed block from openspec/config.yaml instead of adding/updating it."`
 }
 
 // OpenspecEnrichOut is the output for the openspec_enrich tool.
@@ -70,7 +70,7 @@ type OpenspecEnrichOut struct {
 // RegisterOpenspecTools registers openspec-related tools on the server.
 func RegisterOpenspecTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "openspec_enrich",
-		"INTERNAL — called by sdlc skills only. Idempotent enrichment of openspec/config.yaml with a managed block pointing contributors to sdlc-utilities skills.",
+		"INTERNAL — called by sdlc skills only. Idempotent enrichment of openspec/config.yaml with an sdlc-v2 managed block that points contributors to the sdlc plugin skills /plan, /execute, and /ship.",
 		mcpserver.Annotations{
 			Title:       "Write OpenSpec config block",
 			ReadOnly:    false,
@@ -178,7 +178,7 @@ func enrichConfig(root string, in OpenspecEnrichIn) (OpenspecEnrichOut, error) {
 				Version:       enrichVersion,
 				Path:          configPath,
 				Changed:       false,
-				Warning:       "Top-level context: key already present in openspec/config.yaml. Refusing to inject a duplicate. Manually fold sdlc-utilities guidance into your existing context: value, then re-run --openspec-enrich.",
+				Warning:       "Top-level context: key already present in openspec/config.yaml. Refusing to inject a duplicate. Manually fold the sdlc-v2 workflow guidance into your existing context: value, then re-run --openspec-enrich.",
 				MatchedChange: matchedChange,
 			}, nil
 		}
@@ -237,7 +237,7 @@ func enrichConfig(root string, in OpenspecEnrichIn) (OpenspecEnrichOut, error) {
 			Version:       block.version,
 			Path:          configPath,
 			Changed:       false,
-			Warning:       "Top-level context: key already present outside the managed block in openspec/config.yaml. Refusing to update — a duplicate context: key would result. Manually fold sdlc-utilities guidance into your existing context: value, then re-run --openspec-enrich.",
+			Warning:       "Top-level context: key already present outside the managed block in openspec/config.yaml. Refusing to update — a duplicate context: key would result. Manually fold the sdlc-v2 workflow guidance into your existing context: value, then re-run --openspec-enrich.",
 			MatchedChange: matchedChange,
 		}, nil
 	}

@@ -1549,6 +1549,49 @@ func TestShipState_Read_InFlight_FailedStepNeverReportsFailure(t *testing.T) {
 	}
 }
 
+// A run that cleanup stamped completed is finished, even when one of its
+// steps ended "failed" (failed is terminal for the cleanup contract). read
+// must not offer to resume it.
+func TestShipState_Read_CompletedRunWithFailedStepHasNoBriefing(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, "feat/done-failed")
+	path := shipStateInitFixture(t, dir, "feat/done-failed")
+
+	for _, s := range readStateData(t, path)["steps"].([]any) {
+		name, _ := s.(map[string]any)["name"].(string)
+		if name == "execute" {
+			setStepStatus(t, path, name, "failed", map[string]any{"startedAt": "2026-01-01T00:05:00Z"})
+			continue
+		}
+		setStepStatus(t, path, name, "skipped", nil)
+	}
+
+	now := fixedNow(time.Date(2026, 1, 1, 0, 10, 0, 0, time.UTC))
+	if _, err := shipState(dir, dir, ShipStateIn{
+		Action: "cleanup",
+		Detail: map[string]any{"branch": "feat/done-failed"},
+	}, now); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	if got := readStateData(t, path)["pipelineStatus"]; got != "completed" {
+		t.Fatalf("pipelineStatus = %v, want completed (cleanup should have stamped the run)", got)
+	}
+
+	out, err := shipState(dir, dir, ShipStateIn{
+		Action: "read",
+		Detail: map[string]any{"branch": "feat/done-failed"},
+	}, now)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	data, _ := out.(map[string]any)
+	if b, ok := data["resumeBriefing"]; ok {
+		t.Errorf("resumeBriefing = %#v, want absent on a completed run", b)
+	}
+}
+
 func TestShipState_Read_InFlight_InProgressStep(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
@@ -2107,6 +2150,85 @@ func TestShipState_GC_TTLDaysZeroIsLiteral(t *testing.T) {
 	}
 	if !sliceContainsStr(rpt.Ship.Deleted, f) {
 		t.Errorf("Ship.Deleted = %v, want it to include %s (ttlDays=0 means nothing is ttl-fresh)", rpt.Ship.Deleted, f)
+	}
+}
+
+// A dry run must predict exactly what the real run then deletes. Two cases
+// used to differ: a TTL-fresh file of a gone branch (the real run deletes
+// it) and a stale, non-newest file of a live branch (the real run deletes
+// it too).
+func TestShipState_GC_DryRunMatchesRealRun(t *testing.T) {
+	t.Setenv("SDLC_EXPLORE_TMPDIR_OVERRIDE", t.TempDir())
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, "feat/live")
+
+	runs := filepath.Join(dir, paths.DataDir, paths.RunsSubdir)
+	fixture := []struct {
+		name string
+		age  time.Duration
+	}{
+		{"ship-dead-branch-20260901T000000Z.json", 1 * time.Hour},        // gone branch, fresh
+		{"ship-dead-branch-20200101T000000Z.json", 30 * 24 * time.Hour},  // gone branch, stale
+		{"execute-feat-live-20200101T000000Z.json", 30 * 24 * time.Hour}, // live branch, stale, older
+		{"execute-feat-live-20200201T000000Z.json", 20 * 24 * time.Hour}, // live branch, stale, newest
+		{"plan-feat-live-20260901T000000Z.json", 1 * time.Hour},          // live branch, fresh
+	}
+	for _, f := range fixture {
+		p := filepath.Join(runs, f.name)
+		writeFile(t, p, `{}`)
+		setStateFileMtime(t, p, f.age)
+	}
+
+	dry, err := shipState(dir, dir, ShipStateIn{
+		Action: "gc",
+		Detail: map[string]any{"dryRun": true},
+	}, fixedNow(time.Now()))
+	if err != nil {
+		t.Fatalf("gc dry-run: %v", err)
+	}
+	dm, _ := dry.(map[string]any)
+	wouldDelete := map[string]string{} // file -> reason
+	for _, prefix := range []string{"ship", "execute", "plan"} {
+		b, _ := dm[prefix].(map[string]any)
+		list, _ := b["wouldDelete"].([]any)
+		for _, e := range list {
+			em, _ := e.(map[string]any)
+			wouldDelete[em["file"].(string)] = em["reason"].(string)
+		}
+	}
+
+	realOut, err := shipState(dir, dir, ShipStateIn{Action: "gc"}, fixedNow(time.Now()))
+	if err != nil {
+		t.Fatalf("gc: %v", err)
+	}
+	rpt := realOut.(ShipStateGCReport)
+	deleted := map[string]bool{}
+	for _, b := range []ShipGCBucket{rpt.Ship, rpt.Execute, rpt.Plan} {
+		for _, p := range b.Deleted {
+			deleted[filepath.Base(p)] = true
+		}
+	}
+
+	want := map[string]string{
+		"ship-dead-branch-20260901T000000Z.json":  "branch-gone",
+		"ship-dead-branch-20200101T000000Z.json":  "stale+branch-gone",
+		"execute-feat-live-20200101T000000Z.json": "stale+superseded",
+	}
+	if len(deleted) != len(want) {
+		t.Errorf("real run deleted %v, want exactly %v", deleted, want)
+	}
+	for name, reason := range want {
+		if !deleted[name] {
+			t.Errorf("real run did not delete %s", name)
+		}
+		if got, ok := wouldDelete[name]; !ok || got != reason {
+			t.Errorf("dry run wouldDelete[%s] = %q (listed: %v), want reason %q", name, got, ok, reason)
+		}
+	}
+	if len(wouldDelete) != len(deleted) {
+		t.Errorf("dry run wouldDelete = %v, real run deleted = %v; they must match", wouldDelete, deleted)
 	}
 }
 

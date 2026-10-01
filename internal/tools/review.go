@@ -17,6 +17,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/dimensions"
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
+	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
@@ -125,6 +126,9 @@ type reviewManifest struct {
 	PlanCritique       reviewPlanCritique    `json:"plan_critique"`
 	Summary            ReviewPrepareSummary  `json:"summary"`
 	DiffDir            string                `json:"diff_dir"`
+	// Warnings lists non-fatal problems met while preparing the manifest
+	// (e.g. a failed PR lookup). Always an array, never null.
+	Warnings []string `json:"warnings"`
 }
 
 type reviewManifestGit struct {
@@ -180,6 +184,7 @@ type reviewDimWork struct {
 	model            *string
 	status           string
 	matchedFiles     []string
+	droppedFiles     []string // matched files cut by the max-files cap
 	matchedCount     int
 	truncated        bool
 	diffFile         *string
@@ -258,9 +263,11 @@ func globToRegex(pattern string) string {
 }
 
 // matchFilesResult holds the matched files and whether the list was truncated.
+// dropped lists the matched files cut by the max-files cap, in match order.
 type matchFilesResult struct {
 	matched   []string
 	truncated bool
+	dropped   []string
 }
 
 // matchFiles filters changedFiles against a dimension's trigger/skip-when globs.
@@ -315,11 +322,28 @@ func matchFiles(meta map[string]any, changedFiles []string) matchFilesResult {
 	}
 
 	truncated := len(matched) > maxFiles
+	var dropped []string
 	if truncated {
+		dropped = matched[maxFiles:]
 		matched = matched[:maxFiles]
 	}
 
-	return matchFilesResult{matched: matched, truncated: truncated}
+	return matchFilesResult{matched: matched, truncated: truncated, dropped: dropped}
+}
+
+// maxFilesFooter returns the footer appended to a dimension's .diff file
+// when the max-files cap dropped matched files, so the reviewer agent can
+// see its diff is partial. Its first line starts with "# --- Truncated",
+// like difftrunc's byte-cap footer.
+func maxFilesFooter(kept int, dropped []string) string {
+	lines := []string{
+		"# --- Truncated (max-files) ---",
+		fmt.Sprintf("# The max-files cap kept the first %d matched file(s). The following %d matched file(s) were omitted:", kept, len(dropped)),
+	}
+	for _, f := range dropped {
+		lines = append(lines, "# - "+f)
+	}
+	return strings.Join(lines, "\n")
 }
 
 // ---------------------------------------------------------------------------
@@ -444,11 +468,13 @@ func critiquePlan(dims []reviewDimWork, changedFiles []string) reviewPlanCritiqu
 		}
 	}
 
+	// Over-broad and overlap checks cover every dispatched dimension
+	// (ACTIVE or TRUNCATED): a TRUNCATED dimension gets an agent too.
 	totalCount := len(changedFiles)
 	var overBroad []string
 	var active []reviewDimWork
 	for _, d := range dims {
-		if d.status == "ACTIVE" {
+		if isDispatched(d.status) {
 			active = append(active, d)
 			if totalCount > 0 && float64(len(d.matchedFiles))/float64(totalCount) > 0.8 {
 				overBroad = append(overBroad, d.name)
@@ -475,14 +501,25 @@ func critiquePlan(dims []reviewDimWork, changedFiles []string) reviewPlanCritiqu
 		StillUncovered:       emptyIfNil(still),
 		OverBroadDimensions:  emptyIfNil(overBroad),
 		OverlappingPairs:     emptyPairsIfNil(overlappingPairs),
-		DimensionCapApplied:  len(active) > maxActiveDimensions,
+		// DimensionCapApplied and QueuedDimensions are set by the caller
+		// from refinePlan's result.
 	}
 }
 
+// isDispatched reports whether a dimension status gets a reviewer agent.
+// Both ACTIVE and TRUNCATED dimensions are dispatched; TRUNCATED only means
+// the dimension's diff is partial.
+func isDispatched(status string) bool {
+	return status == "ACTIVE" || status == "TRUNCATED"
+}
+
+// refinePlan applies the dimension cap: at most maxActiveDimensions
+// dispatched (ACTIVE or TRUNCATED) dimensions are kept; the rest become
+// QUEUED. It returns the queued names.
 func refinePlan(dims []reviewDimWork) []string {
 	var active []*reviewDimWork
 	for i := range dims {
-		if dims[i].status == "ACTIVE" {
+		if isDispatched(dims[i].status) {
 			active = append(active, &dims[i])
 		}
 	}
@@ -513,7 +550,7 @@ func refinePlan(dims []reviewDimWork) []string {
 
 	var queued []string
 	for i := range dims {
-		if dims[i].status == "ACTIVE" && !keep[dims[i].name] {
+		if isDispatched(dims[i].status) && !keep[dims[i].name] {
 			dims[i].status = "QUEUED"
 			queued = append(queued, dims[i].name)
 		}
@@ -606,11 +643,17 @@ func countChangedLines(diff string) int {
 // Dimension loading and matching
 // ---------------------------------------------------------------------------
 
-func loadAndMatchDimensions(projectRoot string, changedFiles []string) []reviewDimWork {
+// loadAndMatchDimensions loads the dimensions under projectRoot and matches
+// them against changedFiles. A missing folder yields no dimensions and no
+// error; a folder that exists but cannot be listed returns the read error.
+func loadAndMatchDimensions(projectRoot string, changedFiles []string) ([]reviewDimWork, error) {
 	dimDir := filepath.Join(projectRoot, paths.DataDir, "review-dimensions")
 	loaded, err := dimensions.Load(dimDir)
-	if err != nil || len(loaded) == 0 {
-		return nil
+	if err != nil {
+		return nil, fmt.Errorf("list %s: %w", dimDir, err)
+	}
+	if len(loaded) == 0 {
+		return nil, nil
 	}
 
 	var result []reviewDimWork
@@ -660,6 +703,7 @@ func loadAndMatchDimensions(projectRoot string, changedFiles []string) []reviewD
 			model:            model,
 			status:           status,
 			matchedFiles:     mf.matched,
+			droppedFiles:     mf.dropped,
 			matchedCount:     len(mf.matched),
 			truncated:        mf.truncated,
 			body:             d.Body,
@@ -668,7 +712,7 @@ func loadAndMatchDimensions(projectRoot string, changedFiles []string) []reviewD
 		})
 	}
 
-	return result
+	return result, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -708,11 +752,15 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 
 	isLocalScope := scope == "staged" || scope == "working"
 
-	// Resolve base branch.
+	// Resolve base branch. The local scopes diff against no base ref, so
+	// target is ignored for them and base_branch stays null.
 	var base string
-	if in.Target != "" {
+	switch {
+	case isLocalScope:
+		// No base ref.
+	case in.Target != "":
 		base = in.Target
-	} else if !isLocalScope {
+	default:
 		b, err := gitx.DefaultBranch(activeRoot)
 		if err != nil {
 			return ReviewPrepareOut{}, &mcpserver.InfraError{
@@ -729,8 +777,23 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 	statusOut, _ := gitx.Status(activeRoot)
 	uncommittedChanges := statusOut != ""
 
-	// Changed files.
-	changedFiles := getChangedFilesList(base, activeRoot, scope)
+	// Changed files. A failing git command (e.g. a target ref git cannot
+	// resolve) is reported as such, not folded into "No changed files".
+	changedFiles, err := getChangedFilesList(base, activeRoot, scope)
+	if err != nil {
+		if base != "" {
+			return ReviewPrepareOut{}, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("git diff against base ref %q failed: %s", base, err.Error()),
+				Suggestion: "Check that " + base + " names an existing branch, tag, or commit (git rev-parse --verify " + base + "), fetch it if it exists only on the remote, then retry review_prepare with a valid target.",
+				Cause:      err,
+			}
+		}
+		return ReviewPrepareOut{}, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("git diff for scope %s failed: %s", scope, err.Error()),
+			Suggestion: "Check that the repository has a valid HEAD commit for the configured scope (" + scope + "), or adjust review.scope, then retry review_prepare.",
+			Cause:      err,
+		}
+	}
 	if len(changedFiles) == 0 {
 		return ReviewPrepareOut{}, &mcpserver.DomainError{
 			Msg:        "No changed files found",
@@ -742,7 +805,14 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 	// per the root rule they load from the ACTIVE worktree, not projectRoot
 	// (MainRoot) -- a branch-local dimension file must be visible even inside
 	// a linked worktree.
-	dims := loadAndMatchDimensions(activeRoot, changedFiles)
+	dims, err := loadAndMatchDimensions(activeRoot, changedFiles)
+	if err != nil {
+		return ReviewPrepareOut{}, &mcpserver.InfraError{
+			Msg:        err.Error(),
+			Suggestion: "Check that " + paths.DataDir + "/review-dimensions is a readable directory (fix its permissions, or remove it if it is a file), then retry review_prepare.",
+			Cause:      err,
+		}
+	}
 	if len(dims) == 0 {
 		return ReviewPrepareOut{}, &mcpserver.DomainError{
 			Msg:        "No review dimensions found in " + paths.DataDir + "/review-dimensions/",
@@ -783,10 +853,14 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 		}
 	}
 
-	// Write .diff and .slice.json files for active/truncated dimensions.
+	// Apply the dimension cap before writing files, so QUEUED dimensions
+	// (never dispatched) get no .diff or .slice.json file.
+	queued := refinePlan(dims)
+
+	// Write .diff and .slice.json files for dispatched dimensions only.
 	for i := range dims {
 		d := &dims[i]
-		if d.status != "ACTIVE" && d.status != "TRUNCATED" {
+		if !isDispatched(d.status) {
 			continue
 		}
 
@@ -815,6 +889,13 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 					d.status = "TRUNCATED"
 				}
 			}
+		}
+
+		// The max-files cap dropped whole matched files before the diff was
+		// built. Say so in the diff itself, after any byte-cap footer, so the
+		// reviewer agent knows its diff is partial.
+		if len(d.droppedFiles) > 0 {
+			dimDiff += "\n" + maxFilesFooter(len(d.matchedFiles), d.droppedFiles)
 		}
 
 		// Write .diff file.
@@ -862,10 +943,10 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 		d.sliceFile = &sp
 	}
 
-	// Plan critique and refinement.
+	// Plan critique (the cap was applied above, before writing files).
 	critique := critiquePlan(dims, changedFiles)
-	queued := refinePlan(dims)
 	critique.QueuedDimensions = emptyIfNil(queued)
+	critique.DimensionCapApplied = len(queued) > 0
 
 	// Commit count (branch-based scopes).
 	commitCount := 0
@@ -875,8 +956,17 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 		}
 	}
 
-	// PR metadata (best effort).
+	// PR metadata (best effort: a failed lookup becomes a warning). The
+	// local scopes and the worktree scope (git diff <base>, which compares
+	// the base to the working tree) review uncommitted changes, which are
+	// not part of any PR, so they skip the lookup: the skill must not offer
+	// to post such a review to the branch's PR.
+	reviewsUncommitted := isLocalScope || scope == "worktree"
 	pr := reviewManifestPR{Exists: false}
+	var warnings []string
+	if !reviewsUncommitted {
+		pr, warnings = lookupReviewPR(activeRoot)
+	}
 
 	// Build index entries.
 	var indexEntries []reviewDimIndexEntry
@@ -954,6 +1044,7 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 		PlanCritique: critique,
 		Summary:      summary,
 		DiffDir:      tmpDir,
+		Warnings:     emptyIfNil(warnings),
 	}
 
 	manifestPath := filepath.Join(tmpDir, "manifest.json")
@@ -971,11 +1062,47 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 	}, nil
 }
 
+// lookupReviewPR finds the PR of the active worktree's branch. Only an OPEN
+// PR counts: with no open PR, gh pr view falls back to the branch's newest
+// closed or merged PR, which cannot take a review comment usefully. A failed
+// lookup (gh missing, not authenticated, network error) never fails the
+// tool: it yields exists:false plus a warning.
+func lookupReviewPR(dir string) (reviewManifestPR, []string) {
+	meta := ghx.PRForBranch(dir)
+	var warnings []string
+	if meta.ErrorMessage != "" {
+		warnings = append(warnings, "PR lookup failed, so pr.exists is false: "+meta.ErrorMessage)
+	}
+	if !meta.Exists || meta.State != "OPEN" {
+		return reviewManifestPR{Exists: false}, warnings
+	}
+
+	owner, repo, err := ghx.ParseRemoteOwner(meta.URL)
+	if err != nil {
+		warnings = append(warnings, fmt.Sprintf("open PR #%d found, but its owner/repo cannot be read from URL %q, so pr.exists is false: %s", meta.Number, meta.URL, err.Error()))
+		return reviewManifestPR{Exists: false}, warnings
+	}
+
+	number, title, url, state := meta.Number, meta.Title, meta.URL, meta.State
+	return reviewManifestPR{
+		Exists: true,
+		Number: &number,
+		Title:  &title,
+		URL:    &url,
+		State:  &state,
+		Owner:  &owner,
+		Repo:   &repo,
+	}, warnings
+}
+
 // ---------------------------------------------------------------------------
 // Git helpers
 // ---------------------------------------------------------------------------
 
-func getChangedFilesList(base, dir, scope string) []string {
+// getChangedFilesList returns the changed files for scope. A failing git
+// command is returned as an error (its message carries git's stderr), so a
+// bad base ref is not mistaken for an empty change set.
+func getChangedFilesList(base, dir, scope string) ([]string, error) {
 	var args []string
 	switch scope {
 	case "committed":
@@ -991,8 +1118,8 @@ func getChangedFilesList(base, dir, scope string) []string {
 	}
 
 	raw, err := execx.Run("git", args, execx.Options{Dir: dir})
-	if err != nil || raw == "" {
-		return nil
+	if err != nil {
+		return nil, err
 	}
 
 	var files []string
@@ -1001,7 +1128,7 @@ func getChangedFilesList(base, dir, scope string) []string {
 			files = append(files, trimmed)
 		}
 	}
-	return files
+	return files, nil
 }
 
 func isValidScope(s string) bool {
@@ -1112,12 +1239,12 @@ func saveReviewComment(projectRoot, activeRoot string, in ReviewPrepareIn) (Revi
 // RegisterReviewTools registers review_prepare on the server.
 func RegisterReviewTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "review_prepare",
-		"Pre-compute review manifest: git state, dimension matching, diff slicing, commit context. Writes manifest + per-dimension .diff and .slice.json files to a temp directory. With saveReview:true, persists content verbatim to .sdlc-v2/reviews/<branch>-<date>.md instead.",
+		"Pre-compute review manifest: git state, dimension matching, diff slicing, commit context, open-PR lookup via gh. Writes manifest + per-dimension .diff and .slice.json files to a temp directory. With saveReview:true, persists content verbatim to .sdlc-v2/reviews/<branch>-<date>.md instead.",
 		mcpserver.Annotations{
 			Title:      "Prepare code review payload",
 			ReadOnly:   true,
 			Idempotent: true,
-			OpenWorld:  false,
+			OpenWorld:  true,
 		},
 		func(ctx mcpserver.Ctx, in ReviewPrepareIn) (ReviewPrepareOut, error) {
 			root, err := worktree.MainRoot()

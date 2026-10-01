@@ -163,8 +163,8 @@ var reviewFields = []Field{
 		Label:       "Default review scope",
 		Type:        "enum",
 		Options:     []string{"all", "committed", "staged", "working", "worktree"},
-		Default:     "committed",
-		Description: "Default scope for /review when no `--committed`/`--staged`/`--working`/`--worktree` flag is passed. `committed` (default) reviews commits on the current branch vs the default branch; `working` reviews staged + unstaged; `all` includes untracked.",
+		Default:     "all",
+		Description: "Which changes /review reviews; /review has no scope flag, so this key is the only way to set it. `all` (default when the key is missing) and `committed` both review the commits on the current branch vs the base branch; `staged` reviews staged changes only; `working` reviews staged + unstaged changes vs HEAD; `worktree` reviews the working tree (commits plus uncommitted changes to tracked files) vs the base branch. No scope includes untracked files.",
 	},
 }
 
@@ -515,7 +515,7 @@ func Sections() []Section {
 		{
 			ID:              "review",
 			Label:           "review",
-			Purpose:         "Default scope for /review (committed/staged/working/worktree/all). Each developer typically prefers a different default — committed for PR-style review, working for in-progress feedback. Stored in .sdlc-v2/local.toml.",
+			Purpose:         "Default scope for /review (all/committed/staged/working/worktree). Each developer typically prefers a different default — committed for PR-style review, working for in-progress feedback. Stored in .sdlc-v2/local.toml.",
 			ConfigFile:      ".sdlc-v2/local.toml",
 			ConfigPath:      "review",
 			ConsumedBy:      []string{"review"},
@@ -684,7 +684,7 @@ func Sections() []Section {
 		{
 			ID:              "openspec-block",
 			Label:           "openspec-block",
-			Purpose:         "Managed block injected into openspec/config.yaml that supplies sdlc-utilities workflow guidance to OpenSpec-aware skills (/plan, /execute, /ship). Idempotent: re-running at the same plugin version is a no-op; version bumps update the block in place.",
+			Purpose:         "Managed block injected into openspec/config.yaml that supplies sdlc plugin (sdlc-v2) workflow guidance to OpenSpec-aware skills (/plan, /execute, /ship). Idempotent: re-running at the same plugin version is a no-op; version bumps update the block in place.",
 			ConfigFile:      "openspec/config.yaml",
 			ConfigPath:      "<managed-block>",
 			ConsumedBy:      []string{"plan", "execute", "ship"},

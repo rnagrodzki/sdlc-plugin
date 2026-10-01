@@ -110,7 +110,7 @@ Print one line with three counts: items filed, items resolved without filing, an
 
 `Location` drops `:{line}` when `line` is 0 or unset.
 
-The body carries no `Source` line. `source` is `review-below-threshold` on every `ship_state defer` record, so printing it would contradict a `Reason deferred` of `disagree`, `needs-direction` or `wont-fix`. `Reason deferred` says why the item was deferred, and the `Deferred item id` prefix says which tool recorded it.
+The body carries no `Source` line. `source` names the recording tool, not the reason: a `ship_state defer` record carries the caller's `source`, or `review-below-threshold` when the caller omits it, which would contradict a `Reason deferred` of `disagree`, `needs-direction` or `wont-fix`. `Reason deferred` says why the item was deferred, and the `Deferred item id` prefix says which tool recorded it.
 
 A caller that holds a fuller draft passes it in. Ship's execute-drift drafts carry their own `title` and `body`. Use those as the issue text instead of the template. They go through the same show and approve steps.
 

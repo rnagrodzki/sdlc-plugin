@@ -6,7 +6,7 @@
 //   - plan_format  -- scripts/ci/validate-plan-format.js  (PF1-PF7, PF9, PF10)
 //   - discovery    -- internal/discovery.ValidateAll       (PD1-PD16, reused as-is)
 //   - pr_template  -- scripts/ci/validate-pr-template.js   (V1-V5)
-//   - cost_tiers   -- scripts/ci/validate-cost-tiers.js    (DRIFT/MISSING_DOC/STALE_DOC/INHERITED)
+//   - cost_tiers   -- scripts/ci/validate-cost-tiers.js    (DRIFT/MISSING_DOC/STALE_DOC/INHERITED, NO_COST_DOC)
 //   - guardrails    -- scripts/ci/validate-guardrails.js    (per-guardrail id/description/severity)
 //   - dimensions   -- internal/dimensions.Validate, plus a net-new D10
 //     cross-file duplicate-name check (dimensions.Validate only checks one
@@ -121,7 +121,7 @@ Pass "action" to select the validator. Each action uses a subset of the input fi
 - plan_format: Check a plan .md against PF1-PF7, PF11 and PF12, plus PF9 and PF10 when final is true. Requires file. Optional: final (adds the scorecard check PF9 and, with template, the section check PF10), template (plan template path for PF10; omit it to skip PF10).
 - discovery: Check the project's discovery artifacts (PD1-PD16). No inputs.
 - pr_template: Check the PR template file itself (V1-V5) at its canonical or legacy path. No inputs.
-- cost_tiers: Compare skill/agent model tiers against the cost-tier doc tables. Optional: strict (true reports the INHERITED finding kind as severity "error" instead of "warning").
+- cost_tiers: Compare skill/agent model tiers against the cost-tier doc tables in docs/cost-tiers.md. Optional: strict (true reports the INHERITED finding kind as severity "error" instead of "warning"). When docs/cost-tiers.md does not exist, the check is skipped and one NO_COST_DOC warning is returned.
 - guardrails: Check the guardrails list in a config section for per-guardrail id/description/severity. Optional: section (defaults to "plan"), activeWorktree (true reads the active worktree instead of the main worktree; an unresolvable active worktree is an infrastructure error, never a silent fallback). A section that does not exist returns no findings.
 - dimensions: Check the review-dimension files, including a cross-file duplicate-name check (D10). Reads the ACTIVE worktree, unlike every other action. No inputs.
 - pr_body: Check a PR body against the PR template's required sections. Requires body — an empty body is not rejected, it simply reports every required section as missing.
@@ -457,7 +457,15 @@ func extractField(content, fieldName string) (string, bool) {
 	if m == nil {
 		return "", false
 	}
-	return strings.TrimSpace(m[1]), true
+	v := strings.TrimSpace(m[1])
+	// The \s* above skips newlines, so an empty "**Complexity:**" takes the
+	// next non-blank line as its value. When that line is itself a
+	// "**Label:**" line, the field is present but empty. A plain value on
+	// the next line still counts.
+	if fieldLabelRe.MatchString(v) {
+		return "", true
+	}
+	return v, true
 }
 
 var fenceOpenRe = regexp.MustCompile("^(`{3,})")
@@ -524,18 +532,26 @@ var pf1FieldHints = map[string]string{
 	"Verification": "primary verification command, e.g. go test ./...",
 }
 
+// fieldLabelRe matches a value that is itself a bold label line such as
+// "**Architecture:** x".
+var fieldLabelRe = regexp.MustCompile(`^\*\*[^*\n]+:\*\*`)
+
 func checkPF1(content string) pfCheck {
 	fields := []string{"Goal", "Architecture", "Source", "Verification"}
 	var missing []string
 	for _, f := range fields {
+		// extractField returns "" when the value would be the next
+		// "**Label:**" line, so an empty field is caught here.
 		v, ok := extractField(content, f)
 		if !ok || v == "" {
 			missing = append(missing, f)
 		}
 	}
 	if len(missing) > 0 {
-		// The message names the fields. The fix adds what it does not say: a
-		// field only counts when its value is on the same line as the label.
+		// The message names the fields. The fix adds the shape to write: a
+		// bold label with its value on the same line. A plain value on a
+		// later line is also accepted, but the same-line form is the
+		// documented one.
 		fix := []string{"write each as a bold label with its value on the same line, above the first task:"}
 		for _, f := range missing {
 			fix = append(fix, fmt.Sprintf("  **%s:** <%s>", f, pf1FieldHints[f]))
@@ -1418,7 +1434,7 @@ func isDir(p string) bool {
 }
 
 func resolveSkillsDir(root string) string {
-	real := filepath.Join(root, "plugins", "sdlc-utilities", "skills")
+	real := filepath.Join(root, "plugins", "sdlc", "skills")
 	if isDir(real) {
 		return real
 	}
@@ -1430,7 +1446,7 @@ func resolveSkillsDir(root string) string {
 }
 
 func resolveAgentsDir(root string) string {
-	real := filepath.Join(root, "plugins", "sdlc-utilities", "agents")
+	real := filepath.Join(root, "plugins", "sdlc", "agents")
 	if isDir(real) {
 		return real
 	}
@@ -1674,17 +1690,25 @@ func diffCostTier(actuals []costTierEntry, docRows []docRow, kind string, strict
 }
 
 func validateCostTiers(root string, in ValidateIn) ([]discovery.Finding, error) {
-	skills := scanSkills(root)
-	agents := scanAgents(root)
-
 	docSkills, docAgents, err := parseCostTierDocTables(root)
+	if errors.Is(err, fs.ErrNotExist) {
+		// A project without a cost-tier doc has nothing to compare against.
+		// That is not a failure: report one warning so the caller sees the
+		// check was skipped, rather than an empty (all-passed) list.
+		return []discovery.Finding{{
+			ID:       "NO_COST_DOC",
+			Severity: "warning",
+			Message:  "NO_COST_DOC: no cost-tier doc exists, so the cost_tiers check was skipped",
+			Path:     filepath.Join("docs", "cost-tiers.md"),
+		}}, nil
+	}
 	if err != nil {
 		// The error text already carries the file path, so the Msg must not
-		// repeat it, and a missing file needs different advice than a
+		// repeat it, and an unreadable file needs different advice than a
 		// malformed table.
 		suggestion := fmt.Sprintf("Fix the %q and %q headings and the row format below them, then retry.", costTierSkillHeading, costTierAgentHeading)
 		if errors.Is(err, errCostTierDocRead) {
-			suggestion = "Create the cost-tier doc at the path named above, or check read permission on it, then retry."
+			suggestion = "The cost-tier doc at the path named above exists but could not be read; check read permission on it (it must be a regular file), then retry."
 		}
 		return nil, &mcpserver.DataError{
 			Msg:        fmt.Sprintf("cost-tier tables: %s", err.Error()),
@@ -1694,8 +1718,8 @@ func validateCostTiers(root string, in ValidateIn) ([]discovery.Finding, error) 
 	}
 
 	var findings []discovery.Finding
-	findings = append(findings, diffCostTier(skills, docSkills, "skill", in.Strict)...)
-	findings = append(findings, diffCostTier(agents, docAgents, "agent", in.Strict)...)
+	findings = append(findings, diffCostTier(scanSkills(root), docSkills, "skill", in.Strict)...)
+	findings = append(findings, diffCostTier(scanAgents(root), docAgents, "agent", in.Strict)...)
 	return findings, nil
 }
 
@@ -1809,7 +1833,11 @@ func validateGuardrailsAction(root string, in ValidateIn) ([]discovery.Finding, 
 	// the TOML named-table form ([plan.guardrails.<id>]) into this same
 	// array-of-objects shape (with "id" injected from the table key) before
 	// ReadSection ever extracts the section. There is no call path that
-	// hands this function the raw map[string]any table shape.
+	// hands this function the raw map[string]any table shape. An array form
+	// ([[plan.guardrails]] or an inline array) is not normalized and arrives
+	// as written, so entries can lack an id or repeat one; a quoted empty
+	// table key ([plan.guardrails.""]) injects id "". validateOneGuardrail's
+	// missing-id and duplicate-id checks catch those cases.
 	raw, ok := data["guardrails"].([]any)
 	if !ok {
 		return nil, nil

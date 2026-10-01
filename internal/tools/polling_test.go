@@ -516,6 +516,168 @@ func TestVerifyPipelineAwait_ExitCode8_PendingNotError(t *testing.T) {
 	defer os.Remove(*env.StateFile)
 }
 
+// TestVerifyPipelineAwait_Exit1NoRowsIsProbeFailure pins that a gh failure
+// that exits 1 with no check rows (here: PR not found) is a classified probe
+// failure, not a "green" verdict. gh pr checks exits 1 both for failed
+// checks and for its own errors; only the rows tell them apart.
+func TestVerifyPipelineAwait_Exit1NoRowsIsProbeFailure(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\necho 'GraphQL: Could not resolve to a PullRequest with the number of 9. (repository.pullRequest)' >&2\nexit 1\n")
+	defer cleanup()
+
+	env, err := verifyPipelineAwait(".", VerifyPipelineAwaitIn{PR: 9, TimeoutSeconds: 1200, IntervalSeconds: 60})
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if env.StateFile != nil {
+		defer os.Remove(*env.StateFile)
+	}
+	if env.Status != "error" {
+		t.Fatalf("got status=%q verdict=%v, want error (a gh failure must not read as green)", env.Status, env.Ext["verdict"])
+	}
+	if env.Ext["error_class"] != ghClassNotFound {
+		t.Errorf("error_class = %v, want %q", env.Ext["error_class"], ghClassNotFound)
+	}
+	if env.Ext["retryable"] != false {
+		t.Errorf("retryable = %v, want false", env.Ext["retryable"])
+	}
+	if !strings.Contains(env.Error, "Could not resolve to a PullRequest") {
+		t.Errorf("error = %q, want it to carry gh's stderr", env.Error)
+	}
+}
+
+// TestVerifyPipelineAwait_Exit1NoRowsAfterDeadline pins that the same gh
+// failure after the deadline ends the poll as a timeout that names the
+// probe failure class.
+func TestVerifyPipelineAwait_Exit1NoRowsAfterDeadline(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\necho 'GraphQL: Could not resolve to a PullRequest with the number of 9. (repository.pullRequest)' >&2\nexit 1\n")
+	defer cleanup()
+
+	stateFile := newTimedOutPollState(t, "verify-pipeline")
+
+	env, err := verifyPipelineAwait(".", VerifyPipelineAwaitIn{PR: 9, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if env.Status != "done" || env.Ext["verdict"] != "timeout" {
+		t.Fatalf("got status=%q verdict=%v, want done/timeout", env.Status, env.Ext["verdict"])
+	}
+	if env.Ext["probe_error_class"] != ghClassNotFound {
+		t.Errorf("probe_error_class = %v, want %q", env.Ext["probe_error_class"], ghClassNotFound)
+	}
+}
+
+// TestVerifyPipelineAwait_NoChecksReportedIsNotGreen pins that gh's "no
+// checks reported" error (exit 1, stderr only) is not read as green: right
+// after a push, GitHub may not have registered any check yet. In a repo
+// with a CI config it is an unknown, retryable probe failure, so the caller
+// re-probes until checks appear or the deadline passes.
+func TestVerifyPipelineAwait_NoChecksReportedIsNotGreen(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\necho \"no checks reported on the 'feat' branch\" >&2\nexit 1\n")
+	defer cleanup()
+
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, ".github", "workflows", "ci.yml"), "on: push\n")
+
+	env, err := verifyPipelineAwait(root, VerifyPipelineAwaitIn{PR: 9, TimeoutSeconds: 1200, IntervalSeconds: 60})
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if env.StateFile != nil {
+		defer os.Remove(*env.StateFile)
+	}
+	if env.Status != "error" {
+		t.Fatalf("got status=%q verdict=%v, want error", env.Status, env.Ext["verdict"])
+	}
+	if env.Ext["error_class"] != ghClassUnknown || env.Ext["retryable"] != true {
+		t.Errorf("error_class=%v retryable=%v, want %q true", env.Ext["error_class"], env.Ext["retryable"], ghClassUnknown)
+	}
+}
+
+// TestVerifyPipelineAwait_NoChecksReportedWithoutCIConfigIsSkipped pins the
+// no-CI fast path: gh reports no checks and the repo has no CI config, so no
+// check will ever start. The poll ends at once as skipped with reason no-ci
+// instead of re-probing until the deadline — and never reads as green.
+func TestVerifyPipelineAwait_NoChecksReportedWithoutCIConfigIsSkipped(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\necho \"no checks reported on the 'feat' branch\" >&2\nexit 1\n")
+	defer cleanup()
+
+	root := t.TempDir()
+	// Files that are not a CI config must not count as one.
+	writeFile(t, filepath.Join(root, ".github", "workflows", "README.md"), "no workflows yet\n")
+	writeFile(t, filepath.Join(root, ".github", "CODEOWNERS"), "* @me\n")
+
+	env, err := pollAwait(root, PollAwaitIn{Target: "pipeline", PR: 9})
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if env.StateFile != nil {
+		defer os.Remove(*env.StateFile)
+	}
+	if env.Status != "done" {
+		t.Fatalf("got status=%q error=%q, want done", env.Status, env.Error)
+	}
+	if env.Ext["verdict"] != "skipped" || env.Ext["reason"] != "no-ci" {
+		t.Errorf("verdict=%v reason=%v, want skipped/no-ci", env.Ext["verdict"], env.Ext["reason"])
+	}
+	if env.Ext["pr_number"] != 9 {
+		t.Errorf("pr_number = %v, want 9", env.Ext["pr_number"])
+	}
+}
+
+// TestVerifyPipelineAwait_NoChecksReportedKeepsPollingPerCISystem pins that
+// every CI system the tool knows about keeps the poll going when gh reports
+// no checks yet: its checks may simply not have started.
+func TestVerifyPipelineAwait_NoChecksReportedKeepsPollingPerCISystem(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\necho \"no checks reported on the 'feat' branch\" >&2\nexit 1\n")
+	defer cleanup()
+
+	tests := []struct {
+		name string
+		file string
+	}{
+		{"github actions yaml", filepath.Join(".github", "workflows", "build.yaml")},
+		{"circleci", filepath.Join(".circleci", "config.yml")},
+		{"jenkins", "Jenkinsfile"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, tt.file), "x\n")
+
+			env, err := pollAwait(root, PollAwaitIn{Target: "pipeline", PR: 9})
+			if err != nil {
+				t.Fatalf("unexpected Go error: %v", err)
+			}
+			if env.StateFile != nil {
+				defer os.Remove(*env.StateFile)
+			}
+			if env.Status != "error" || env.Ext["retryable"] != true {
+				t.Errorf("got status=%q retryable=%v verdict=%v, want a retryable error", env.Status, env.Ext["retryable"], env.Ext["verdict"])
+			}
+		})
+	}
+}
+
+// TestVerifyPipelineAwait_EmptyOutputExit0IsGreen pins the spec's "no
+// failed and no pending row" outcome for gh pr checks printing nothing and
+// exiting 0: a successful gh run lists no failing or pending check, so the
+// verdict is green. Only a non-zero exit with no rows is a probe failure.
+func TestVerifyPipelineAwait_EmptyOutputExit0IsGreen(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\nexit 0\n")
+	defer cleanup()
+
+	env, err := pollAwait(t.TempDir(), PollAwaitIn{Target: "pipeline", PR: 3})
+	if err != nil {
+		t.Fatalf("unexpected Go error: %v", err)
+	}
+	if env.StateFile != nil {
+		defer os.Remove(*env.StateFile)
+	}
+	if env.Status != "done" || env.Ext["verdict"] != "green" {
+		t.Fatalf("got status=%q verdict=%v error=%q, want done/green", env.Status, env.Ext["verdict"], env.Error)
+	}
+}
+
 func TestVerifyPipelineAwait_MissingGHBinary(t *testing.T) {
 	origPath := os.Getenv("PATH")
 	os.Setenv("PATH", "")
@@ -648,6 +810,76 @@ func TestVerifyPipelineAwait_TimedOutPersistentProbeErrorEndsPoll(t *testing.T) 
 	}
 }
 
+// TestPollAwait_PipelineOtherExitCodeClassifiedFromStderr pins that a gh pr
+// checks exit outside 0/1/8 is classified like any other gh failure before
+// falling back to unexpected-exit. gh exits 4 when it needs authentication,
+// which is permanent (not retryable) and must read as "auth" so the caller
+// stops re-probing and tells the user to log in.
+func TestPollAwait_PipelineOtherExitCodeClassifiedFromStderr(t *testing.T) {
+	tests := []struct {
+		name          string
+		script        string
+		wantClass     string
+		wantRetryable bool
+		wantInMessage string
+	}{
+		{
+			name:          "exit 4 auth required",
+			script:        "#!/bin/sh\necho 'To get started with GitHub CLI, please run:  gh auth login' >&2\nexit 4\n",
+			wantClass:     ghClassAuth,
+			wantRetryable: false,
+			wantInMessage: "gh auth login",
+		},
+		{
+			name:          "exit 4 without stderr",
+			script:        "#!/bin/sh\nexit 4\n",
+			wantClass:     ghClassAuth,
+			wantRetryable: false,
+			wantInMessage: "gh pr checks: exit 4",
+		},
+		{
+			name:          "exit 2 with HTTP 404",
+			script:        "#!/bin/sh\necho 'gh: Not Found (HTTP 404)' >&2\nexit 2\n",
+			wantClass:     ghClassNotFound,
+			wantRetryable: false,
+			wantInMessage: "HTTP 404",
+		},
+		{
+			name:          "exit 2 unknown stderr",
+			script:        "#!/bin/sh\necho 'something odd' >&2\nexit 2\n",
+			wantClass:     ghClassUnexpectedExit,
+			wantRetryable: false,
+			wantInMessage: "something odd",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cleanup := stubGH(t, tt.script)
+			defer cleanup()
+
+			env, err := pollAwait(".", PollAwaitIn{Target: "pipeline", PR: 5})
+			if err != nil {
+				t.Fatalf("unexpected Go error: %v", err)
+			}
+			if env.StateFile != nil {
+				defer os.Remove(*env.StateFile)
+			}
+			if env.Status != "error" {
+				t.Fatalf("got status %q, want error", env.Status)
+			}
+			if env.Ext["error_class"] != tt.wantClass {
+				t.Errorf("ext.error_class = %v, want %q", env.Ext["error_class"], tt.wantClass)
+			}
+			if env.Ext["retryable"] != tt.wantRetryable {
+				t.Errorf("ext.retryable = %v, want %v", env.Ext["retryable"], tt.wantRetryable)
+			}
+			if !strings.Contains(env.Error, tt.wantInMessage) {
+				t.Errorf("error = %q, want it to contain %q", env.Error, tt.wantInMessage)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // poll_await dispatch
 // ---------------------------------------------------------------------------
@@ -713,6 +945,52 @@ func TestPollAwait_UnknownTarget(t *testing.T) {
 	var domainErr *mcpserver.DomainError
 	if !errors.As(err, &domainErr) {
 		t.Fatalf("expected *mcpserver.DomainError, got %T: %v", err, err)
+	}
+}
+
+// TestPollAwait_StateFileFromOtherTargetRejected pins that a state file is
+// bound to the target that created it. Resuming a remote_review poll's
+// state_file under target "pipeline" (or the reverse) would reuse the other
+// poll's budget and exhausted marker, so it is a DomainError and gh never
+// runs. The stub gh writes a marker file to prove it was not called.
+func TestPollAwait_StateFileFromOtherTargetRejected(t *testing.T) {
+	tests := []struct {
+		target      string
+		storedSkill string
+	}{
+		{"pipeline", "await-remote-review"},
+		{"remote_review", "verify-pipeline"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.target, func(t *testing.T) {
+			marker := filepath.Join(t.TempDir(), "gh-ran")
+			cleanup := stubGH(t, fmt.Sprintf("#!/bin/sh\ntouch %q\nexit 3\n", marker))
+			defer cleanup()
+
+			stateFile, err := stepper.NewStateFilePath(tt.storedSkill)
+			if err != nil {
+				t.Fatalf("NewStateFilePath: %v", err)
+			}
+			t.Cleanup(func() { os.Remove(stateFile) })
+			if err := stepper.SavePollState(stateFile, stepper.NewPollState(tt.storedSkill, 600, 60)); err != nil {
+				t.Fatalf("SavePollState: %v", err)
+			}
+
+			env, err := pollAwait(".", PollAwaitIn{Target: tt.target, PR: 5, StateFile: stateFile})
+			var domainErr *mcpserver.DomainError
+			if !errors.As(err, &domainErr) {
+				t.Fatalf("expected *mcpserver.DomainError, got err=%v env=%+v", err, env)
+			}
+			if !strings.Contains(domainErr.Msg, tt.storedSkill) {
+				t.Errorf("Msg = %q, want it to name the stored skill %q", domainErr.Msg, tt.storedSkill)
+			}
+			if domainErr.Suggestion == "" {
+				t.Error("Suggestion must not be empty")
+			}
+			if _, err := os.Stat(marker); err == nil {
+				t.Error("gh ran; a mismatched state file must be rejected before probing")
+			}
+		})
 	}
 }
 

@@ -172,9 +172,9 @@ func buildListItem(text string) node {
 // bullet and ordered lists, fenced code blocks, links, tables, blockquotes,
 // horizontal rules, bold/italic/inline-code spans) and returns an Atlassian
 // Document Format (ADF) v1 document as a JSON-serializable map. Convert
-// never returns a non-nil error: markdown it does not recognize degrades to
-// plain-text paragraph nodes rather than failing.
-func Convert(md string) (map[string]any, error) {
+// has no failure path, so it returns no error: markdown it does not
+// recognize degrades to plain-text paragraph nodes.
+func Convert(md string) map[string]any {
 	lines := strings.Split(md, "\n")
 	content := make([]node, 0)
 
@@ -294,5 +294,5 @@ func Convert(md string) (map[string]any, error) {
 		content = append(content, node{"type": "paragraph", "content": []node{{"type": "text", "text": ""}}})
 	}
 
-	return node{"version": 1, "type": "doc", "content": content}, nil
+	return node{"version": 1, "type": "doc", "content": content}
 }

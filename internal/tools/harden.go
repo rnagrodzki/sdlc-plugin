@@ -30,19 +30,20 @@ import (
 // sheet); the Go port preserves that separation.
 const hardenPluginRepoURL = "https://github.com/rnagrodzki/sdlc-plugin"
 
-// hardenIssueNumberRe validates --from-issue as a bare positive integer,
-// mirroring source's defense-in-depth regex check (the argv-array gh call
-// below already avoids shell metacharacter parsing on its own).
-var hardenIssueNumberRe = regexp.MustCompile(`^\d+$`)
+// hardenIssueNumberRe validates --from-issue as a bare positive integer
+// (digits only, not all zeros), mirroring source's defense-in-depth regex
+// check (the argv-array gh call below already avoids shell metacharacter
+// parsing on its own).
+var hardenIssueNumberRe = regexp.MustCompile(`^0*[1-9]\d*$`)
 
 // ---------------------------------------------------------------------------
 // Input / Output
 // ---------------------------------------------------------------------------
 
-// HardenPrepareIn is harden_prepare's input. FailureText/Skill are required
-// (checked after --from-issue processing, since an issue body can supply
-// FailureText); all other string fields are optional with empty-string
-// defaults, matching source's `!= null` checks.
+// HardenPrepareIn is prepare_orchestrator's harden-mode input.
+// FailureText/Skill are required (checked after --from-issue processing,
+// since an issue body can supply FailureText); all other string fields are
+// optional with empty-string defaults, matching source's `!= null` checks.
 type HardenPrepareIn struct {
 	FailureText string `json:"failureText"`
 	Skill       string `json:"skill"`
@@ -63,7 +64,7 @@ type HardenPrepareIn struct {
 	SkipConfigCheck bool `json:"skipConfigCheck,omitempty"`
 }
 
-// HardenPrepareOut is harden_prepare's output: the path to the written
+// HardenPrepareOut is hardenPrepare's result: the path to the written
 // manifest (KD4 file handoff) plus a set of the manifest's top-level fields
 // mirrored inline (R7), so callers that only need small/cheap fields (the
 // failure preview, surface/guardrail/dimension counts, branch) can read them
@@ -353,17 +354,28 @@ func findPluginRootFrom(start string) (string, bool) {
 }
 
 // resolveErrorReportSkill is the Go port of harden-surfaces.js's
-// resolveErrorReportSkill(projectRoot, errors). Source's own implementation
-// ignores its projectRoot parameter entirely — it resolves the sibling
-// skills/error-report/REFERENCE.md path via __dirname (the plugin's
-// own lib/ directory), not via the caller-supplied project root. There is
-// no __dirname in a compiled Go binary, so this walks up from the running
-// executable's directory (falling back to the working directory) looking
-// for the plugin's own .claude-plugin/plugin.json, mirroring source's
-// "resolve sibling of the plugin's own installation" intent as closely as
-// a compiled binary allows.
+// resolveErrorReportSkill(projectRoot, errors). It resolves the plugin's own
+// shipped skills/error-report/SKILL.md, never a path in the caller's
+// project. (The JS source pointed at a REFERENCE.md that the plugin does
+// not ship, which made this surface always record a load error.)
+//
+// It checks CLAUDE_PLUGIN_ROOT first: Claude Code sets it for plugin MCP
+// servers, and the installed binary runs from ~/.sdlc-cache/bin, far from
+// the plugin tree. Without it, this walks up from the running executable's
+// directory (falling back to the working directory) looking for the
+// plugin's own .claude-plugin/plugin.json.
 func resolveErrorReportSkill(errs *[]surfaceLoadError) string {
-	const relPath = "skills/error-report/REFERENCE.md"
+	const relPath = "skills/error-report/SKILL.md"
+
+	if pluginRoot := os.Getenv("CLAUDE_PLUGIN_ROOT"); pluginRoot != "" {
+		candidate := filepath.Join(pluginRoot, filepath.FromSlash(relPath))
+		if _, err := os.Stat(candidate); err == nil {
+			if abs, err := filepath.Abs(candidate); err == nil {
+				return abs
+			}
+			return candidate
+		}
+	}
 
 	start := ""
 	if exe, err := os.Executable(); err == nil {
@@ -388,7 +400,7 @@ func resolveErrorReportSkill(errs *[]surfaceLoadError) string {
 		return ""
 	}
 
-	resolved := filepath.Join(root, "skills", "error-report", "REFERENCE.md")
+	resolved := filepath.Join(root, filepath.FromSlash(relPath))
 	if _, err := os.Stat(resolved); err != nil {
 		*errs = append(*errs, surfaceLoadError{
 			Surface: "error-report-skill",
@@ -401,6 +413,10 @@ func resolveErrorReportSkill(errs *[]surfaceLoadError) string {
 	}
 	return resolved
 }
+
+// hardenCLIEvidenceLimit caps how many active-branch CLI evidence entries
+// the harden manifest carries.
+const hardenCLIEvidenceLimit = 20
 
 // skillRecommendationMinCount is the minimum recurrence count a mined
 // learnings pattern (learningsStats' TopPatterns) must reach before it is
@@ -663,7 +679,7 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 		if err := configmigrate.Verify(root); err != nil {
 			return HardenPrepareOut{}, &mcpserver.DataError{
 				Msg:        fmt.Sprintf("config-version: %s", err.Error()),
-				Suggestion: "Run the migrate tool to bring the project's config up to date, or pass skipConfigCheck: true once it's already verified, then retry harden_prepare.",
+				Suggestion: "Run the migrate tool to bring the project's config up to date, or pass skipConfigCheck: true once it's already verified, then retry prepare_orchestrator with mode harden.",
 				Cause:      err,
 			}
 		}
@@ -697,7 +713,7 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 		if err != nil {
 			return HardenPrepareOut{}, &mcpserver.InfraError{
 				Msg:        fmt.Sprintf("--from-issue %s: gh issue view failed: %s", issueNum, err.Error()),
-				Suggestion: fmt.Sprintf("Verify issue #%s exists in this repo and that gh auth status shows an authenticated account, then retry harden_prepare with fromIssue.", issueNum),
+				Suggestion: fmt.Sprintf("Verify issue #%s exists in this repo and that gh auth status shows an authenticated account, then retry prepare_orchestrator (mode harden) with fromIssue.", issueNum),
 				Cause:      err,
 			}
 		}
@@ -734,7 +750,7 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 		}
 		return HardenPrepareOut{}, &mcpserver.DomainError{
 			Msg:        strings.Join(msgs, "; "),
-			Suggestion: fmt.Sprintf("Supply %s in the harden_prepare call; failureText may come from fromIssue's issue body instead.", strings.Join(missing, " and ")),
+			Suggestion: fmt.Sprintf("Supply %s in the prepare_orchestrator call (mode harden); failureText may come from fromIssue's issue body instead.", strings.Join(missing, " and ")),
 		}
 	}
 
@@ -746,7 +762,7 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 	if len(preflightErrors) > 0 {
 		return HardenPrepareOut{}, &mcpserver.DomainError{
 			Msg:        fmt.Sprintf("pre-flight validation failed: %s", strings.Join(preflightErrors, "; ")),
-			Suggestion: "Fix the guardrail or review-dimension file named in each error above under .sdlc-v2, then retry harden_prepare.",
+			Suggestion: "Fix the guardrail or review-dimension file named in each error above under .sdlc-v2, then retry prepare_orchestrator with mode harden.",
 		}
 	}
 
@@ -764,7 +780,9 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 	branch, _ := gitx.CurrentBranch(contentRoot)
 	recentDiffSummary, _ := execx.Run("git", []string{"diff", "--shortstat", "HEAD~1..HEAD"}, execx.Options{Dir: contentRoot})
 
-	cliEvidence, cliEvidenceErr := readRecentCLIEvidence(root, 20)
+	// Filter to the active branch first, then keep the last 20, so noise
+	// from other branches in the shared log cannot crowd out this branch.
+	cliEvidence, cliEvidenceErr := readAllCLIEvidence(root)
 	if cliEvidenceErr != nil {
 		loadErrs = append(loadErrs, surfaceLoadError{
 			Surface: "cli-evidence",
@@ -776,6 +794,9 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 		if branch == "" || e.Branch == branch {
 			branchCLIEvidence = append(branchCLIEvidence, e)
 		}
+	}
+	if len(branchCLIEvidence) > hardenCLIEvidenceLimit {
+		branchCLIEvidence = branchCLIEvidence[len(branchCLIEvidence)-hardenCLIEvidenceLimit:]
 	}
 
 	var exitCode *string
@@ -825,7 +846,7 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 	if err != nil {
 		return HardenPrepareOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("create temp dir: %s", err.Error()),
-			Suggestion: "Check available disk space and write permission on the OS temp directory, then retry harden_prepare.",
+			Suggestion: "Check available disk space and write permission on the OS temp directory, then retry prepare_orchestrator with mode harden.",
 			Cause:      err,
 		}
 	}
@@ -833,7 +854,7 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 	if err := fsx.AtomicWriteJSON(manifestPath, manifest); err != nil {
 		return HardenPrepareOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("write manifest: %s", err.Error()),
-			Suggestion: "Check write permission on the temp directory named in the error above and that disk space isn't exhausted, then retry harden_prepare.",
+			Suggestion: "Check write permission on the temp directory named in the error above and that disk space isn't exhausted, then retry prepare_orchestrator with mode harden.",
 			Cause:      err,
 		}
 	}

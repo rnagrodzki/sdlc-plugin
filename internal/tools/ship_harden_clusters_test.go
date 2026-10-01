@@ -468,6 +468,29 @@ func TestShipStateHardenClusters_DirtySurfaces(t *testing.T) {
 	}
 }
 
+// TestHardenDirtySurfaces_RealGitFirstEntryModified runs the real
+// hardenSurfaceStatus (no seam) against a repo whose only change is an
+// unstaged edit to a tracked surface. `git status --porcelain` prints it as
+// " M .sdlc-v2/config.toml" — the first line starts with a space, which
+// must survive so the path is still read from column 3.
+func TestHardenDirtySurfaces_RealGitFirstEntryModified(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	runGit(t, dir, "config", "commit.gpgsign", "false")
+	writeRepoFile(t, dir, ".sdlc-v2/config.toml", "schemaVersion = 1\n")
+	runGit(t, dir, "add", ".")
+	runGit(t, dir, "commit", "-m", "initial")
+	writeRepoFile(t, dir, ".sdlc-v2/config.toml", "schemaVersion = 2\n")
+
+	dirty, err := hardenDirtySurfaces(dir)
+	if err != nil {
+		t.Fatalf("hardenDirtySurfaces: %v", err)
+	}
+	if strings.Join(dirty, ",") != ".sdlc-v2/config.toml" {
+		t.Errorf("dirtySurfaces = %v, want [.sdlc-v2/config.toml]", dirty)
+	}
+}
+
 func TestShipStateHardenClusters_DirtySurfacesClean(t *testing.T) {
 	stubCleanSurfaceStatus(t)
 	dir, _ := hardenClustersFixture(t, "feat/hc-clean")

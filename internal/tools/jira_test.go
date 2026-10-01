@@ -6,9 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/configmigrate"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
@@ -84,6 +86,63 @@ func TestJiraConfigVersionGate(t *testing.T) {
 	}
 }
 
+// TestJiraDataWrites_DoNotTripConfigGate pins that jira's own data writes
+// (write-critique, write-approval, init-templates) in a project with no
+// config.toml leave a .sdlc-v2/ that the config-version gate does not
+// treat as stale — neither for a later jira call nor for any other tool
+// that runs configmigrate.Verify.
+func TestJiraDataWrites_DoNotTripConfigGate(t *testing.T) {
+	root := jiraTestRoot(t)
+	cacheDir := t.TempDir()
+	templatesDir := t.TempDir()
+	writeJSONFile(t, filepath.Join(cacheDir, "FOO.json"), map[string]any{
+		"issueTypes": map[string]any{"Task": map[string]any{}},
+	})
+	if err := os.WriteFile(filepath.Join(templatesDir, "Task.md"), []byte("# Task"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	writes := []JiraIn{
+		{Action: "write-critique", Hash: "abc123", Data: map[string]any{"initial": "a", "findings": "b", "final": "c"}},
+		{Action: "write-approval", Hash: "abc123"},
+		{Action: "init-templates", Key: "FOO", CacheDir: cacheDir, TemplatesDir: templatesDir},
+	}
+	for _, in := range writes {
+		out, err := jiraCore(root, in, true)
+		if err != nil {
+			t.Fatalf("%s: %v", in.Action, err)
+		}
+		if m, ok := out.(map[string]any); ok {
+			if errs, ok := m["errors"].([]string); ok && len(errs) > 0 {
+				t.Fatalf("%s: unexpected errors %v", in.Action, errs)
+			}
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, paths.DataDir, "config.toml")); !os.IsNotExist(err) {
+		t.Fatalf("expected no config.toml to be written, stat err = %v", err)
+	}
+
+	out, err := jiraCore(root, JiraIn{Action: "check", Key: "FOO", CacheDir: cacheDir}, true)
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	m := out.(map[string]any)
+	if errs, ok := m["errors"].([]string); ok {
+		for _, e := range errs {
+			if strings.HasPrefix(e, "config-version:") {
+				t.Fatalf("check after data writes hit the config-version gate: %v", errs)
+			}
+		}
+	}
+	if _, ok := m["exists"]; !ok {
+		t.Fatalf("expected full check payload, got %#v", m)
+	}
+
+	if err := configmigrate.Verify(root); err != nil {
+		t.Fatalf("configmigrate.Verify after jira data writes = %v, want nil", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Key-required validation
 // ---------------------------------------------------------------------------
@@ -94,8 +153,17 @@ func TestJiraKeyRequiredExceptValidateBody(t *testing.T) {
 	if _, err := jiraCore(root, JiraIn{Action: "check"}, true); err == nil {
 		t.Fatal("expected error for missing key on check")
 	}
-	if _, err := jiraCore(root, JiraIn{Action: "copy-template", TemplateType: "Bug", TemplateFrom: "Task", TemplatesDir: t.TempDir()}, true); err == nil {
-		t.Fatal("expected error for missing key on copy-template (JS parity quirk)")
+	// copy-template never reads key, so it must not require it.
+	copyTemplatesDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(copyTemplatesDir, "Task.md"), []byte("# Task"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := jiraCore(root, JiraIn{Action: "copy-template", TemplateType: "Bug", TemplateFrom: "Task", TemplatesDir: copyTemplatesDir}, true)
+	if err != nil {
+		t.Fatalf("copy-template should not require key: %v", err)
+	}
+	if m := out.(map[string]any); m["copied"] != true {
+		t.Fatalf("expected copied=true without key, got %#v", m)
 	}
 	// validate-body must NOT require key.
 	if _, err := jiraCore(root, JiraIn{Action: "validate-body", MarkdownBody: "no urls here"}, true); err != nil {
@@ -483,11 +551,9 @@ func TestJiraTemplatesResolution(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// SkipConfigCheck: true — the MkdirAll above creates .sdlc-v2 as a side
-	// effect with no config.toml ever written, so without this the KD5 gate
-	// (configmigrate.Verify) sees a bare .sdlc-v2 dir and reports it stale,
-	// returning the soft errors-only payload with no "resolved" key.
-	out, err := jiraCore(root, JiraIn{Action: "templates", Key: "FOO", CacheDir: cacheDir, TemplatesDir: templatesDir, SkipConfigCheck: true}, true)
+	// No SkipConfigCheck: a .sdlc-v2 holding only jira-templates (no
+	// config.toml, no config.json) is not a stale config.
+	out, err := jiraCore(root, JiraIn{Action: "templates", Key: "FOO", CacheDir: cacheDir, TemplatesDir: templatesDir}, true)
 	if err != nil {
 		t.Fatalf("templates failed: %v", err)
 	}
@@ -502,6 +568,78 @@ func TestJiraTemplatesResolution(t *testing.T) {
 	}
 	if resolved["Epic"] != "custom" {
 		t.Errorf("expected Epic=custom, got %#v", resolved["Epic"])
+	}
+}
+
+// resetJiraTemplateInstalls clears the process-wide ~/.claude/plugins walk
+// cache so a test can point HOME at an empty dir and get a fresh walk.
+func resetJiraTemplateInstalls(t *testing.T) {
+	t.Helper()
+	jiraTemplateInstallsOnce = sync.Once{}
+	jiraTemplateInstalls = nil
+	t.Cleanup(func() {
+		jiraTemplateInstallsOnce = sync.Once{}
+		jiraTemplateInstalls = nil
+	})
+}
+
+// TestJiraTemplatesDefaultDirDiscovery runs the templates action with no
+// templatesDir and checks that the default templates are found in this
+// plugin's own layout: under CLAUDE_PLUGIN_ROOT first, else under
+// <cwd>/plugins/sdlc/skills/jira/templates.
+func TestJiraTemplatesDefaultDirDiscovery(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(t *testing.T) // creates Task.md where discovery should find it
+	}{
+		{
+			name: "CLAUDE_PLUGIN_ROOT",
+			setup: func(t *testing.T) {
+				pluginRoot := t.TempDir()
+				writeFile(t, filepath.Join(pluginRoot, "skills", "jira", "templates", "Task.md"), "# Task")
+				t.Setenv("CLAUDE_PLUGIN_ROOT", pluginRoot)
+			},
+		},
+		{
+			name: "cwd fallback",
+			setup: func(t *testing.T) {
+				cwd := t.TempDir()
+				writeFile(t, filepath.Join(cwd, "plugins", "sdlc", "skills", "jira", "templates", "Task.md"), "# Task")
+				t.Setenv("CLAUDE_PLUGIN_ROOT", "")
+				t.Chdir(cwd)
+			},
+		},
+		{
+			name: "CLAUDE_PLUGIN_ROOT without templates falls through to cwd",
+			setup: func(t *testing.T) {
+				t.Setenv("CLAUDE_PLUGIN_ROOT", t.TempDir())
+				cwd := t.TempDir()
+				writeFile(t, filepath.Join(cwd, "plugins", "sdlc", "skills", "jira", "templates", "Task.md"), "# Task")
+				t.Chdir(cwd)
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetJiraTemplateInstalls(t)
+			t.Setenv("HOME", t.TempDir()) // empty ~/.claude/plugins: the walk finds nothing
+			tc.setup(t)
+
+			root := jiraTestRoot(t)
+			cacheDir := t.TempDir()
+			writeJSONFile(t, filepath.Join(cacheDir, "FOO.json"), map[string]any{
+				"issueTypes": map[string]any{"Task": map[string]any{}},
+			})
+
+			out, err := jiraCore(root, JiraIn{Action: "templates", Key: "FOO", CacheDir: cacheDir}, true)
+			if err != nil {
+				t.Fatalf("templates failed: %v", err)
+			}
+			resolved := out.(map[string]any)["resolved"].(map[string]any)
+			if resolved["Task"] != "default" {
+				t.Errorf("expected Task=default, got %#v", resolved["Task"])
+			}
+		})
 	}
 }
 

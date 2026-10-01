@@ -179,7 +179,7 @@ var worktreeSkillsDescriptiveNoAction = map[string]worktreeSkillsException{
 // instruction elsewhere. Each entry was verified individually against this
 // repo's current file content. Keyed by "relative/path:line".
 var worktreeSkillsProhibitionMisses = map[string]worktreeSkillsException{
-	"skills/execute/SKILL.md:302": {
+	"skills/execute/SKILL.md:311": {
 		contains: "never append to",
 		reason:   `"never append to .sdlc-v2/learnings/log.md directly" -- prohibited verb is "append" (not in the read|write|glob alternation), and "write" appears earlier in the same line (in "a later write would land outside it"), before "never"`,
 	},
@@ -213,23 +213,23 @@ var worktreeSkillsProhibitionMisses = map[string]worktreeSkillsException{
 // exception (a real, intentional bare Read, not a missed prohibition).
 // Keyed by "relative/path:line".
 var worktreeSkillsDisclosedGapExceptions = map[string]worktreeSkillsException{
-	"skills/setup/SKILL.md:164": {
+	"skills/setup/SKILL.md:166": {
 		contains: "projectConfig",
-		reason:   `Read of config.toml; lines 165-171 immediately below carry an explicit "Disclosed gap: ... no other MCP tool returns full .sdlc-v2/config.toml / local.toml contents ... has no tool-backed alternative" comment`,
+		reason:   `Read of config.toml; lines 169-175 immediately below carry an explicit "Disclosed gap: ... no other MCP tool returns full .sdlc-v2/config.toml / local.toml contents ... has no tool-backed alternative" comment`,
 	},
-	"skills/setup/SKILL.md:165": {
+	"skills/setup/SKILL.md:167": {
 		contains: "localConfig",
-		reason:   `Read of local.toml; same disclosed-gap comment (lines 165-171) as line 162`,
+		reason:   `Read of local.toml; same disclosed-gap comment (lines 169-175) as line 166`,
 	},
-	"skills/setup/SKILL.md:416": {
+	"skills/setup/SKILL.md:421": {
 		contains: "re-call `setup_prepare` and re-Read",
 		reason:   `re-Read of config.toml/local.toml; the continuation line immediately below reads "same disclosed gap as Step 0, no tool-backed alternative"`,
 	},
-	"skills/setup/SKILL.md:759": {
+	"skills/setup/SKILL.md:764": {
 		contains: "Read the current",
 		reason:   `Read of config.toml; the line immediately below reads "No MCP tool returns this value, so this Read is a deliberate, disclosed exception"`,
 	},
-	"skills/setup/SKILL.md:806": {
+	"skills/setup/SKILL.md:811": {
 		contains: "Re-run Step 0's snapshot",
 		reason:   `re-Read of config.toml/local.toml; the continuation line immediately below reads "same disclosed gap as Step 0, no tool-backed alternative"`,
 	},
@@ -362,7 +362,7 @@ var worktreeSkillsProhibitionSurvivors = []struct {
 	rel  string
 	line int
 }{
-	{"skills/plan/SKILL.md", 91},
+	{"skills/plan/SKILL.md", 93},
 	{"skills/execute/SKILL.md", 25},
 }
 

@@ -362,6 +362,27 @@ func TestStatus_DirtyTree(t *testing.T) {
 	}
 }
 
+// TestStatus_KeepsLeadingSpaceOfFirstEntry pins that the first porcelain
+// entry keeps its leading status column. For a modified, unstaged file the
+// line is " M <path>"; trimming it shifts the path by one character for
+// every caller that reads the path from column 3.
+func TestStatus_KeepsLeadingSpaceOfFirstEntry(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	if err := os.WriteFile(filepath.Join(dir, "init.txt"), []byte("changed\n"), 0644); err != nil {
+		t.Fatalf("write init.txt: %v", err)
+	}
+
+	got, err := Status(dir)
+	if err != nil {
+		t.Fatalf("Status: unexpected error: %v", err)
+	}
+	if want := " M init.txt"; got != want {
+		t.Fatalf("Status: got %q, want %q", got, want)
+	}
+}
+
 func TestDiff_BranchContribution(t *testing.T) {
 	dir := t.TempDir()
 	initGitRepo(t, dir)
@@ -404,6 +425,33 @@ func TestDiff_NameOnly(t *testing.T) {
 	lines := strings.Split(got, "\n")
 	if len(lines) != 2 {
 		t.Fatalf("Diff --name-only: got %d lines, want 2:\n%s", len(lines), got)
+	}
+}
+
+// TestDiff_DefaultIsIndexVsWorktree pins that Diff with neither Base nor
+// Cached compares the index to the working tree (plain `git diff`), so a
+// staged-only change is not reported. Comparing against HEAD would also list
+// staged changes as unstaged.
+func TestDiff_DefaultIsIndexVsWorktree(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	// staged.txt: new file, staged only.
+	if err := os.WriteFile(filepath.Join(dir, "staged.txt"), []byte("staged\n"), 0644); err != nil {
+		t.Fatalf("write staged.txt: %v", err)
+	}
+	gitRun(t, dir, "add", "staged.txt")
+	// init.txt: tracked file with an unstaged edit.
+	if err := os.WriteFile(filepath.Join(dir, "init.txt"), []byte("edited\n"), 0644); err != nil {
+		t.Fatalf("write init.txt: %v", err)
+	}
+
+	got, err := Diff(dir, DiffOpts{NameOnly: true})
+	if err != nil {
+		t.Fatalf("Diff: unexpected error: %v", err)
+	}
+	if got != "init.txt" {
+		t.Fatalf("Diff --name-only: got %q, want %q", got, "init.txt")
 	}
 }
 

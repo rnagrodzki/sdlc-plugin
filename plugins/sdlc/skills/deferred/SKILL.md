@@ -34,7 +34,7 @@ Stop with a one-line usage message, `/sdlc:deferred [--list | --resolve <id>]`, 
 
 1. Call `ship_state({action:"deferred_list"})`. It returns `{issues, openCount}`. `issues` includes resolved items and has no `display`, so this mode formats its own output.
 2. If `openCount` is 0, print exactly `No deferred items open.` and stop. Print no table.
-3. Otherwise print a markdown table of the items whose `status` is `open`, with the columns `ID`, `Priority`, `Reason`, `Created` and `Description`. Fill `Reason` from the item's `reason`, falling back to its `source` when `reason` is unset — `source` is `review-below-threshold` on every `ship_state defer` record, so it is not the reason on its own. Put high priority first, and the oldest first within one priority. When an item has `file`, add ` (file:line)` after its description, and drop `:line` when `line` is 0. Do not print resolved items.
+3. Otherwise print a markdown table of the items whose `status` is `open`, with the columns `ID`, `Priority`, `Reason`, `Created` and `Description`. Fill `Reason` from the item's `reason`, falling back to its `source` when `reason` is unset — `source` names the tool that recorded the item, not why it was deferred (`ship_state defer` takes it from the caller and defaults to `review-below-threshold`; `/received-review` passes `received-review`). Put high priority first, and the oldest first within one priority. When an item has `file`, add ` (file:line)` after its description, and drop `:line` when `line` is 0. Do not print resolved items.
 4. Stop. Ask nothing and change nothing.
 
 ### 2b. `--resolve <id>`

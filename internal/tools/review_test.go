@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -351,7 +352,8 @@ and adherence to best practices. Check for potential bugs and edge cases.
 	sdlcDir := filepath.Join(root, paths.DataDir)
 	writeFile(t, filepath.Join(sdlcDir, "config.toml"), "")
 
-	// Run reviewPrepare.
+	// Run reviewPrepare. The branch has no PR (hermetic fake gh).
+	stubReviewGH(t, reviewGHNoPR)
 	out, err := reviewPrepare(root, root, ReviewPrepareIn{
 		SkipConfigCheck: true, // Skip config check since we have minimal config.
 		Target:          "main",
@@ -485,6 +487,7 @@ Review the code for quality issues.
 	sdlcDir := filepath.Join(root, paths.DataDir)
 	writeFile(t, filepath.Join(sdlcDir, "config.toml"), "")
 
+	stubReviewGH(t, reviewGHNoPR)
 	out, err := reviewPrepare(root, root, ReviewPrepareIn{
 		SkipConfigCheck: true,
 		Target:          "main",
@@ -531,6 +534,349 @@ Review the code for quality issues.
 	}
 }
 
+// newReviewFixture builds a git repo with a main branch and a feature
+// branch that adds files, then writes the given review dimensions (file
+// name -> content) into the active worktree. It returns the repo root.
+func newReviewFixture(t *testing.T, files, dims map[string]string) string {
+	t.Helper()
+	root := t.TempDir()
+
+	mustRun(t, root, "git", "init")
+	mustRun(t, root, "git", "config", "user.email", "test@test.com")
+	mustRun(t, root, "git", "config", "user.name", "Test")
+	writeFile(t, filepath.Join(root, "README.md"), "# test\n")
+	mustRun(t, root, "git", "add", ".")
+	mustRun(t, root, "git", "commit", "-m", "init")
+	mustRun(t, root, "git", "branch", "-M", "main")
+	mustRun(t, root, "git", "checkout", "-b", "feature")
+
+	for name, content := range files {
+		writeFile(t, filepath.Join(root, name), content)
+	}
+	mustRun(t, root, "git", "add", ".")
+	mustRun(t, root, "git", "commit", "-m", "add files")
+
+	dimDir := filepath.Join(root, paths.DataDir, "review-dimensions")
+	for name, content := range dims {
+		writeFile(t, filepath.Join(dimDir, name), content)
+	}
+	// Keep the PR lookup hermetic: by default the branch has no PR. A test
+	// that needs a PR installs its own fake gh afterwards; it goes first on
+	// PATH and wins.
+	stubReviewGH(t, reviewGHNoPR)
+	return root
+}
+
+// Fake gh scripts for review_prepare's PR lookup (gh pr view --json ...).
+const (
+	reviewGHNoPR = "#!/bin/sh\necho 'no pull requests found for branch \"feature\"' >&2\nexit 1\n"
+	reviewGHAuth = "#!/bin/sh\necho 'HTTP 401: Bad credentials (https://api.github.com/graphql)' >&2\nexit 1\n"
+)
+
+// reviewGHPR returns a fake gh script that reports PR 42 of acme/widgets in
+// the given state, and fails on any command other than `gh pr view`.
+func reviewGHPR(state string) string {
+	return "#!/bin/sh\n" +
+		"[ \"$1 $2\" = \"pr view\" ] || { echo \"unexpected gh args: $*\" >&2; exit 3; }\n" +
+		"printf '%s\\n' '{\"number\":42,\"title\":\"Add widgets\",\"url\":\"https://github.com/acme/widgets/pull/42\",\"state\":\"" + state + "\",\"labels\":[]}'\n"
+}
+
+// stubReviewGH installs a fake gh on PATH for the rest of the test.
+func stubReviewGH(t *testing.T, script string) {
+	t.Helper()
+	t.Cleanup(stubGH(t, script))
+}
+
+// readReviewManifest runs reviewPrepare against root with target main and
+// returns the decoded manifest.
+func readReviewManifest(t *testing.T, root string) (ReviewPrepareOut, reviewManifest) {
+	t.Helper()
+	out, err := reviewPrepare(root, root, ReviewPrepareIn{SkipConfigCheck: true, Target: "main"})
+	if err != nil {
+		t.Fatalf("reviewPrepare failed: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(filepath.Dir(out.ManifestPath)) })
+	raw, err := os.ReadFile(out.ManifestPath)
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	var m reviewManifest
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("unmarshal manifest: %v", err)
+	}
+	return out, m
+}
+
+// TestReviewPrepareCapCountsTruncated pins that the 8-dimension cap counts
+// every dispatched dimension, TRUNCATED included. Ten dimensions that are
+// all TRUNCATED by max-files must still leave only 8 to dispatch.
+func TestReviewPrepareCapCountsTruncated(t *testing.T) {
+	dims := map[string]string{}
+	for i := 0; i < 10; i++ {
+		dims[fmt.Sprintf("dim-%02d.md", i)] = fmt.Sprintf(`---
+name: dim-%02d
+description: Dimension %d
+triggers:
+  - "**/*.go"
+severity: medium
+max-files: 1
+---
+Review.
+`, i, i)
+	}
+	root := newReviewFixture(t, map[string]string{
+		"src/a.go": "package main\n",
+		"src/b.go": "package main\n",
+	}, dims)
+
+	out, m := readReviewManifest(t, root)
+
+	dispatched, queued := 0, 0
+	for _, d := range m.Dimensions {
+		switch d.Status {
+		case "ACTIVE", "TRUNCATED":
+			dispatched++
+		case "QUEUED":
+			queued++
+		}
+	}
+	if dispatched != 8 {
+		t.Errorf("dispatched dimensions = %d, want 8", dispatched)
+	}
+	if queued != 2 {
+		t.Errorf("queued dimensions = %d, want 2", queued)
+	}
+	if out.Summary.ActiveDimensions != 8 || out.Summary.QueuedDimensions != 2 {
+		t.Errorf("summary active/queued = %d/%d, want 8/2", out.Summary.ActiveDimensions, out.Summary.QueuedDimensions)
+	}
+	if !m.PlanCritique.DimensionCapApplied {
+		t.Error("plan_critique.dimension_cap_applied = false, want true")
+	}
+	if len(m.PlanCritique.QueuedDimensions) != 2 {
+		t.Errorf("plan_critique.queued_dimensions = %v, want 2 names", m.PlanCritique.QueuedDimensions)
+	}
+}
+
+// TestReviewPrepareQueuedGetsNoFiles pins that a QUEUED dimension is never
+// dispatched, so it gets no .diff or .slice.json file and a null diff_file.
+func TestReviewPrepareQueuedGetsNoFiles(t *testing.T) {
+	dims := map[string]string{}
+	for i := 0; i < 10; i++ {
+		dims[fmt.Sprintf("dim-%02d.md", i)] = fmt.Sprintf(`---
+name: dim-%02d
+description: Dimension %d
+triggers:
+  - "**/*.go"
+severity: medium
+---
+Review.
+`, i, i)
+	}
+	root := newReviewFixture(t, map[string]string{"src/a.go": "package main\n"}, dims)
+
+	_, m := readReviewManifest(t, root)
+
+	queued := 0
+	for _, d := range m.Dimensions {
+		if d.Status != "QUEUED" {
+			continue
+		}
+		queued++
+		if d.DiffFile != nil {
+			t.Errorf("%s: diff_file = %q, want null", d.Name, *d.DiffFile)
+		}
+		if d.SliceFile != nil {
+			t.Errorf("%s: slice_file = %q, want null", d.Name, *d.SliceFile)
+		}
+		for _, ext := range []string{".diff", ".slice.json"} {
+			p := filepath.Join(m.DiffDir, d.Name+ext)
+			if _, err := os.Stat(p); err == nil {
+				t.Errorf("%s: %s written for a QUEUED dimension", d.Name, p)
+			}
+		}
+	}
+	if queued != 2 {
+		t.Fatalf("queued dimensions = %d, want 2", queued)
+	}
+}
+
+// TestReviewPrepareCritiqueCoversTruncated pins that over_broad_dimensions
+// and overlapping_pairs check TRUNCATED dimensions too. Two dimensions match
+// every changed file, and the diff byte cap makes both TRUNCATED.
+func TestReviewPrepareCritiqueCoversTruncated(t *testing.T) {
+	bigBody := strings.Repeat("x", 4000)
+	files := map[string]string{}
+	for _, name := range []string{"a.go", "b.go", "c.go"} {
+		files["src/"+name] = fmt.Sprintf("package main\n// %s\n", bigBody)
+	}
+	dims := map[string]string{}
+	for _, name := range []string{"alpha", "beta"} {
+		dims[name+".md"] = fmt.Sprintf(`---
+name: %s
+description: %s review
+triggers:
+  - "**/*.go"
+severity: medium
+---
+Review.
+`, name, name)
+	}
+	root := newReviewFixture(t, files, dims)
+
+	_, m := readReviewManifest(t, root)
+
+	for _, d := range m.Dimensions {
+		if d.Status != "TRUNCATED" {
+			t.Fatalf("%s: status = %s, want TRUNCATED (fixture must trip the byte cap)", d.Name, d.Status)
+		}
+	}
+	over := m.PlanCritique.OverBroadDimensions
+	if len(over) != 2 {
+		t.Errorf("over_broad_dimensions = %v, want [alpha beta]", over)
+	}
+	pairs := m.PlanCritique.OverlappingPairs
+	if len(pairs) != 1 || len(pairs[0]) != 2 || pairs[0][0] != "alpha" || pairs[0][1] != "beta" {
+		t.Errorf("overlapping_pairs = %v, want [[alpha beta]]", pairs)
+	}
+}
+
+// TestReviewPrepareMaxFilesFooter pins that a dimension truncated by
+// max-files gets a footer in its .diff file listing the dropped files, so
+// the reviewer agent can tell its diff is partial.
+func TestReviewPrepareMaxFilesFooter(t *testing.T) {
+	root := newReviewFixture(t, map[string]string{
+		"src/a.go": "package main\n",
+		"src/b.go": "package main\n",
+		"src/c.go": "package main\n",
+	}, map[string]string{
+		"code-quality.md": `---
+name: code-quality
+description: General code quality review
+triggers:
+  - "**/*.go"
+severity: medium
+max-files: 2
+---
+Review.
+`,
+	})
+
+	_, m := readReviewManifest(t, root)
+	if len(m.Dimensions) != 1 {
+		t.Fatalf("dimensions = %d, want 1", len(m.Dimensions))
+	}
+	d := m.Dimensions[0]
+	if d.Status != "TRUNCATED" || !d.Truncated || d.MatchedCount != 2 {
+		t.Fatalf("status/truncated/matched = %s/%v/%d, want TRUNCATED/true/2", d.Status, d.Truncated, d.MatchedCount)
+	}
+	if d.DiffFile == nil {
+		t.Fatal("diff_file is null")
+	}
+	raw, err := os.ReadFile(*d.DiffFile)
+	if err != nil {
+		t.Fatalf("read diff: %v", err)
+	}
+	diff := string(raw)
+	if !strings.Contains(diff, "# --- Truncated (max-files) ---") {
+		t.Errorf("diff has no max-files footer:\n%s", diff)
+	}
+	if !strings.Contains(diff, "# - src/c.go") {
+		t.Errorf("footer does not list the dropped file src/c.go:\n%s", diff)
+	}
+	if strings.Contains(diff, "diff --git a/src/c.go") {
+		t.Errorf("dropped file src/c.go still has hunks in the diff")
+	}
+}
+
+// reviewPRFixture builds a one-dimension fixture for the PR lookup tests.
+func reviewPRFixture(t *testing.T) string {
+	t.Helper()
+	return newReviewFixture(t, map[string]string{"src/a.go": "package main\n"}, map[string]string{
+		"code-quality.md": "---\nname: code-quality\ndescription: Code quality\ntriggers:\n  - \"**/*.go\"\n---\nReview.\n",
+	})
+}
+
+// TestReviewPrepareOpenPR pins that an open PR on the branch is detected,
+// with the owner/repo/number the review skill needs to post a comment.
+func TestReviewPrepareOpenPR(t *testing.T) {
+	root := reviewPRFixture(t)
+	stubReviewGH(t, reviewGHPR("OPEN"))
+
+	out, m := readReviewManifest(t, root)
+
+	if !m.PR.Exists {
+		t.Fatal("pr.exists = false, want true for an open PR")
+	}
+	if m.PR.Number == nil || *m.PR.Number != 42 {
+		t.Errorf("pr.number = %v, want 42", m.PR.Number)
+	}
+	if m.PR.Owner == nil || *m.PR.Owner != "acme" || m.PR.Repo == nil || *m.PR.Repo != "widgets" {
+		t.Errorf("pr.owner/repo = %v/%v, want acme/widgets", m.PR.Owner, m.PR.Repo)
+	}
+	if m.PR.State == nil || *m.PR.State != "OPEN" {
+		t.Errorf("pr.state = %v, want OPEN", m.PR.State)
+	}
+	if !out.Summary.HasPR || !m.Summary.HasPR {
+		t.Error("summary.hasPR = false, want true")
+	}
+	if len(m.Warnings) != 0 {
+		t.Errorf("warnings = %v, want none", m.Warnings)
+	}
+}
+
+// TestReviewPrepareClosedOrMergedPRIgnored pins that only an OPEN PR counts.
+// With no open PR, gh pr view returns the branch's newest closed or merged
+// PR; that one must not make the skill post to it.
+func TestReviewPrepareClosedOrMergedPRIgnored(t *testing.T) {
+	for _, state := range []string{"CLOSED", "MERGED"} {
+		t.Run(state, func(t *testing.T) {
+			root := reviewPRFixture(t)
+			stubReviewGH(t, reviewGHPR(state))
+
+			out, m := readReviewManifest(t, root)
+
+			if m.PR.Exists || out.Summary.HasPR {
+				t.Errorf("pr.exists/hasPR = %v/%v for a %s PR, want false/false", m.PR.Exists, out.Summary.HasPR, state)
+			}
+			if len(m.Warnings) != 0 {
+				t.Errorf("warnings = %v, want none", m.Warnings)
+			}
+		})
+	}
+}
+
+// TestReviewPrepareNoPR pins that a branch without any PR gives
+// pr.exists false and no warning.
+func TestReviewPrepareNoPR(t *testing.T) {
+	root := reviewPRFixture(t)
+
+	_, m := readReviewManifest(t, root)
+
+	if m.PR.Exists {
+		t.Error("pr.exists = true, want false")
+	}
+	if m.Warnings == nil || len(m.Warnings) != 0 {
+		t.Errorf("warnings = %#v, want empty array", m.Warnings)
+	}
+}
+
+// TestReviewPrepareGHFailureWarns pins that a failing gh (here: bad
+// credentials) does not fail the tool; it keeps pr.exists false and adds a
+// warning that carries gh's message.
+func TestReviewPrepareGHFailureWarns(t *testing.T) {
+	root := reviewPRFixture(t)
+	stubReviewGH(t, reviewGHAuth)
+
+	_, m := readReviewManifest(t, root)
+
+	if m.PR.Exists {
+		t.Error("pr.exists = true, want false")
+	}
+	if len(m.Warnings) != 1 || !strings.Contains(m.Warnings[0], "Bad credentials") {
+		t.Errorf("warnings = %v, want one warning carrying gh's error", m.Warnings)
+	}
+}
+
 func TestReviewPrepareNoChangedFiles(t *testing.T) {
 	root := t.TempDir()
 
@@ -552,6 +898,43 @@ func TestReviewPrepareNoChangedFiles(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "No changed files") {
 		t.Errorf("expected 'No changed files' error, got: %s", err.Error())
+	}
+}
+
+// TestReviewPrepareBadTargetRef pins that a target ref git cannot resolve
+// surfaces git's own failure, naming the ref, instead of the misleading
+// "No changed files found".
+func TestReviewPrepareBadTargetRef(t *testing.T) {
+	root := t.TempDir()
+
+	mustRun(t, root, "git", "init")
+	mustRun(t, root, "git", "config", "user.email", "test@test.com")
+	mustRun(t, root, "git", "config", "user.name", "Test")
+	writeFile(t, filepath.Join(root, "README.md"), "# test\n")
+	mustRun(t, root, "git", "add", ".")
+	mustRun(t, root, "git", "commit", "-m", "init")
+	mustRun(t, root, "git", "branch", "-M", "main")
+
+	_, err := reviewPrepare(root, root, ReviewPrepareIn{
+		SkipConfigCheck: true,
+		Target:          "no-such-ref",
+	})
+	if err == nil {
+		t.Fatal("expected error for an unresolvable target ref")
+	}
+	var domErr *mcpserver.DomainError
+	if !errors.As(err, &domErr) {
+		t.Fatalf("error type = %T, want *mcpserver.DomainError", err)
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "No changed files") {
+		t.Errorf("error hides the git failure: %s", msg)
+	}
+	if !strings.Contains(msg, `"no-such-ref"`) {
+		t.Errorf("error does not name the bad ref: %s", msg)
+	}
+	if !strings.Contains(msg, "unknown revision") {
+		t.Errorf("error does not carry git's message: %s", msg)
 	}
 }
 
@@ -581,6 +964,130 @@ func TestReviewPrepareNoDimensions(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "No review dimensions") {
 		t.Errorf("expected 'No review dimensions' error, got: %s", err.Error())
+	}
+}
+
+// reviewLocalScopeFixture builds a one-dimension fixture whose review scope
+// is set to scope in .sdlc-v2/local.toml, with one staged, uncommitted file.
+func reviewLocalScopeFixture(t *testing.T, scope string) string {
+	t.Helper()
+	root := reviewPRFixture(t)
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "[review]\nscope = \""+scope+"\"\n")
+	writeFile(t, filepath.Join(root, "src/b.go"), "package main\n")
+	mustRun(t, root, "git", "add", "src/b.go")
+	return root
+}
+
+// readReviewManifestIn runs reviewPrepare against root with in and returns
+// the decoded manifest.
+func readReviewManifestIn(t *testing.T, root string, in ReviewPrepareIn) reviewManifest {
+	t.Helper()
+	out, err := reviewPrepare(root, root, in)
+	if err != nil {
+		t.Fatalf("reviewPrepare failed: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(filepath.Dir(out.ManifestPath)) })
+	raw, err := os.ReadFile(out.ManifestPath)
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	var m reviewManifest
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("unmarshal manifest: %v", err)
+	}
+	return m
+}
+
+// TestReviewPrepareLocalScopeSkipsPRLookup pins that the staged and working
+// scopes do not look up a PR: a review of uncommitted changes must not be
+// offered for posting to the branch's PR. The fake gh fails on every call,
+// so a lookup that ran would leave a warning.
+func TestReviewPrepareLocalScopeSkipsPRLookup(t *testing.T) {
+	for _, scope := range []string{"staged", "working"} {
+		t.Run(scope, func(t *testing.T) {
+			root := reviewLocalScopeFixture(t, scope)
+			stubReviewGH(t, "#!/bin/sh\necho \"gh must not run: $*\" >&2\nexit 3\n")
+
+			m := readReviewManifestIn(t, root, ReviewPrepareIn{SkipConfigCheck: true})
+
+			if m.Scope != scope {
+				t.Fatalf("scope = %q, want %q", m.Scope, scope)
+			}
+			if m.PR.Exists || m.Summary.HasPR {
+				t.Errorf("pr.exists/hasPR = %v/%v, want false/false", m.PR.Exists, m.Summary.HasPR)
+			}
+			if len(m.Warnings) != 0 {
+				t.Errorf("warnings = %v, want none (gh must not run for scope %s)", m.Warnings, scope)
+			}
+		})
+	}
+}
+
+// TestReviewPrepareWorktreeScopeSkipsPRLookup pins that the worktree scope,
+// which diffs the base ref against the working tree and so includes
+// uncommitted changes, does not look up a PR either. It still keeps its base
+// ref. The fake gh fails on every call, so a lookup that ran would leave a
+// warning.
+func TestReviewPrepareWorktreeScopeSkipsPRLookup(t *testing.T) {
+	root := reviewLocalScopeFixture(t, "worktree")
+	stubReviewGH(t, "#!/bin/sh\necho \"gh must not run: $*\" >&2\nexit 3\n")
+
+	m := readReviewManifestIn(t, root, ReviewPrepareIn{SkipConfigCheck: true, Target: "main"})
+
+	if m.Scope != "worktree" {
+		t.Fatalf("scope = %q, want worktree", m.Scope)
+	}
+	if m.BaseBranch == nil || *m.BaseBranch != "main" {
+		t.Errorf("base_branch = %v, want main", m.BaseBranch)
+	}
+	if m.Git.ChangedFilesCount < 2 {
+		t.Errorf("changed_files_count = %d, want the committed file plus the staged src/b.go", m.Git.ChangedFilesCount)
+	}
+	if m.PR.Exists || m.Summary.HasPR {
+		t.Errorf("pr.exists/hasPR = %v/%v, want false/false", m.PR.Exists, m.Summary.HasPR)
+	}
+	if len(m.Warnings) != 0 {
+		t.Errorf("warnings = %v, want none (gh must not run for scope worktree)", m.Warnings)
+	}
+}
+
+// TestReviewPrepareLocalScopeIgnoresTarget pins that target is ignored for
+// the staged and working scopes: those scopes diff against no base ref, so
+// the manifest must not claim one was used.
+func TestReviewPrepareLocalScopeIgnoresTarget(t *testing.T) {
+	for _, scope := range []string{"staged", "working"} {
+		t.Run(scope, func(t *testing.T) {
+			root := reviewLocalScopeFixture(t, scope)
+
+			m := readReviewManifestIn(t, root, ReviewPrepareIn{SkipConfigCheck: true, Target: "main"})
+
+			if m.BaseBranch != nil {
+				t.Errorf("base_branch = %q, want null for scope %s", *m.BaseBranch, scope)
+			}
+			if m.Git.ChangedFilesCount != 1 {
+				t.Errorf("changed_files_count = %d, want 1 (the staged src/b.go only)", m.Git.ChangedFilesCount)
+			}
+		})
+	}
+}
+
+// TestReviewPrepareUnreadableDimensionsDirIsInfraError pins that a
+// review-dimensions folder that exists but cannot be listed is reported as
+// an InfraError, not folded into "No review dimensions found".
+func TestReviewPrepareUnreadableDimensionsDirIsInfraError(t *testing.T) {
+	root := newReviewFixture(t, map[string]string{"src/a.go": "package main\n"}, nil)
+	writeFile(t, filepath.Join(root, paths.DataDir, "review-dimensions"), "not a directory")
+
+	_, err := reviewPrepare(root, root, ReviewPrepareIn{SkipConfigCheck: true, Target: "main"})
+	var infra *mcpserver.InfraError
+	if !errors.As(err, &infra) {
+		t.Fatalf("err = %v (%T), want *mcpserver.InfraError", err, err)
+	}
+	if !strings.HasPrefix(infra.Msg, "list ") {
+		t.Errorf("Msg = %q, want it to start with \"list \"", infra.Msg)
+	}
+	if strings.Contains(err.Error(), "No review dimensions") {
+		t.Errorf("error hides the read failure: %s", err.Error())
 	}
 }
 

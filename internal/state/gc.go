@@ -118,27 +118,18 @@ func GC(root string, opt GCOptions) (*GCReport, error) {
 		slug := files[0].parsed.Slug
 		prefix := files[0].parsed.Prefix
 
-		// If BranchExists is provided and returns false, delete ALL files.
-		branchDeleted := opt.BranchExists != nil && !opt.BranchExists(slug)
+		// A nil BranchExists treats every branch as live.
+		branchLive := opt.BranchExists == nil || opt.BranchExists(slug)
 
 		for i, f := range files {
-			switch {
-			case branchDeleted:
+			if del, _ := ClassifyGCFile(branchLive, i == 0, !f.mtime.Before(cutoff)); del {
 				if err := os.Remove(f.path); err == nil {
 					report.Deleted = append(report.Deleted, f.path)
 				}
-			case i == 0:
-				// Always keep the newest file for a live branch.
-				report.Kept = append(report.Kept, f.path)
-				report.Buckets[prefix]++
-			case f.mtime.Before(cutoff):
-				if err := os.Remove(f.path); err == nil {
-					report.Deleted = append(report.Deleted, f.path)
-				}
-			default:
-				report.Kept = append(report.Kept, f.path)
-				report.Buckets[prefix]++
+				continue
 			}
+			report.Kept = append(report.Kept, f.path)
+			report.Buckets[prefix]++
 		}
 	}
 
@@ -152,6 +143,36 @@ func GC(root string, opt GCOptions) (*GCReport, error) {
 	report.TempdirsDeleted, report.TempdirsKept = gcTempdirs(tempDir, opt.TTL, opt.BranchExists)
 
 	return report, nil
+}
+
+// GC retention reasons returned by ClassifyGCFile.
+const (
+	GCReasonTTLFresh        = "ttl-fresh"         // live branch, file within the TTL: keep
+	GCReasonBranchExists    = "branch-exists"     // live branch, newest file past the TTL: keep
+	GCReasonStaleSuperseded = "stale+superseded"  // live branch, older file past the TTL: delete
+	GCReasonBranchGone      = "branch-gone"       // gone branch, file within the TTL: delete
+	GCReasonStaleBranchGone = "stale+branch-gone" // gone branch, file past the TTL: delete
+)
+
+// ClassifyGCFile is the retention rule GC applies to one state file.
+// branchLive: the file's branch still exists. newest: the file is the newest
+// of its prefix+branch group. fresh: the file's mtime is within the TTL.
+// Dry-run callers use it too, so a dry run predicts exactly what a real run
+// deletes. Every file of a gone branch is deleted, whatever its age; a live
+// branch keeps its newest file and every file within the TTL.
+func ClassifyGCFile(branchLive, newest, fresh bool) (del bool, reason string) {
+	switch {
+	case !branchLive && fresh:
+		return true, GCReasonBranchGone
+	case !branchLive:
+		return true, GCReasonStaleBranchGone
+	case fresh:
+		return false, GCReasonTTLFresh
+	case newest:
+		return false, GCReasonBranchExists
+	default:
+		return true, GCReasonStaleSuperseded
+	}
 }
 
 // exploreTempdirPrefix is the mkdtempSync-style prefix plan-explore.js uses

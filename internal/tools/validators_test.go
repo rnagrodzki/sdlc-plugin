@@ -133,6 +133,52 @@ func TestValidatePlanFormatPF1MissingHeaderField(t *testing.T) {
 	}
 }
 
+// TestValidatePlanFormatPF1EmptyFieldBeforeLabel verifies an empty
+// "**Goal:**" does not take the next "**Architecture:** ..." line as its
+// value, while a plain value on the next line still counts.
+func TestValidatePlanFormatPF1EmptyFieldBeforeLabel(t *testing.T) {
+	cases := []struct {
+		name    string
+		goal    string
+		wantPF1 bool
+	}{
+		{"next line is a label", "**Goal:**\n", true},
+		{"next line is a label after blank lines", "**Goal:**\n\n", true},
+		{"next line is a plain value", "**Goal:**\nDo the thing\n", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			plan := strings.Replace(goodPlan, "**Goal:** Do the thing\n", tc.goal, 1)
+			if plan == goodPlan {
+				t.Fatal("fixture replace did not change goodPlan")
+			}
+			writeFile(t, filepath.Join(root, "plan.md"), plan)
+
+			findingsOut, err := validate(root, ValidateIn{Action: "plan_format", File: "plan.md"})
+			if err != nil {
+				t.Fatalf("validate: %v", err)
+			}
+			pf1 := findingsByID(findingsOut.Findings, "PF1")
+			if !tc.wantPF1 {
+				if len(pf1) != 0 {
+					t.Fatalf("expected no PF1 finding, got %+v", pf1)
+				}
+				return
+			}
+			if len(pf1) != 1 {
+				t.Fatalf("expected 1 PF1 finding, got %d: %+v", len(pf1), findingsOut.Findings)
+			}
+			if !strings.Contains(pf1[0].Message, "Goal") {
+				t.Errorf("PF1 message %q should mention Goal", pf1[0].Message)
+			}
+			if strings.Contains(pf1[0].Message, "Architecture") {
+				t.Errorf("PF1 message %q should not mention Architecture: it has a value", pf1[0].Message)
+			}
+		})
+	}
+}
+
 func TestValidatePlanFormatPF2NumberingGap(t *testing.T) {
 	root := t.TempDir()
 	plan := strings.Replace(goodPlan, "### Task 2:", "### Task 3:", 1)
@@ -169,6 +215,30 @@ func TestValidatePlanFormatPF3InvalidComplexity(t *testing.T) {
 	}
 	if !strings.Contains(pf3[0].Message, `invalid Complexity "Bogus"`) {
 		t.Errorf("PF3 message = %q, want invalid Complexity mention", pf3[0].Message)
+	}
+}
+
+func TestValidatePlanFormatPF3EmptyFieldBeforeLabel(t *testing.T) {
+	root := t.TempDir()
+	plan := strings.Replace(goodPlan, "**Complexity:** Standard\n", "**Complexity:**\n", 1)
+	if plan == goodPlan {
+		t.Fatal("fixture replace did not change goodPlan")
+	}
+	writeFile(t, filepath.Join(root, "plan.md"), plan)
+
+	findingsOut, err := validate(root, ValidateIn{Action: "plan_format", File: "plan.md"})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	pf3 := findingsByID(findingsOut.Findings, "PF3")
+	if len(pf3) != 1 {
+		t.Fatalf("expected 1 PF3 finding, got %d: %+v", len(pf3), findingsOut.Findings)
+	}
+	if !strings.Contains(pf3[0].Message, "Complexity") {
+		t.Errorf("PF3 message %q should name the empty Complexity field", pf3[0].Message)
+	}
+	if strings.Contains(pf3[0].Message, "Risk") {
+		t.Errorf("PF3 message %q should not mention Risk: it has a value", pf3[0].Message)
 	}
 }
 
@@ -604,12 +674,50 @@ func TestValidateCostTiersAllKinds(t *testing.T) {
 	}
 }
 
+// TestValidateCostTiersPluginLayout pins the scan to this repo's real plugin
+// layout (plugins/sdlc/skills, plugins/sdlc/agents), not the flat fallback.
+func TestValidateCostTiersPluginLayout(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "plugins", "sdlc", "skills", "plan", "SKILL.md"),
+		"---\nname: plan\ndescription: a skill\nmodel: haiku\n---\nBody.\n")
+	writeFile(t, filepath.Join(root, "plugins", "sdlc", "agents", "helper.md"),
+		"---\nname: helper\ndescription: an agent\nmodel: sonnet\n---\nBody.\n")
+	writeCostTiersDoc(t, root,
+		[][2]string{{"plan", "opus"}},
+		[][2]string{{"helper", "sonnet"}},
+	)
+
+	out, err := validate(root, ValidateIn{Action: "cost_tiers"})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	drift := findingsByID(out.Findings, "DRIFT")
+	if len(drift) != 1 || !strings.Contains(drift[0].Message, "plan") {
+		t.Errorf("expected 1 DRIFT finding for skill plan, got %+v", out.Findings)
+	}
+	if stale := findingsByID(out.Findings, "STALE_DOC"); len(stale) != 0 {
+		t.Errorf("expected no STALE_DOC findings (skill and agent were found), got %+v", stale)
+	}
+}
+
+// TestValidateCostTiersDocMissing: a project without docs/cost-tiers.md gets
+// one warning saying the check was skipped, not an error.
 func TestValidateCostTiersDocMissing(t *testing.T) {
 	root := t.TempDir()
 	writeSkill(t, root, "some-skill", "opus")
-	_, err := validate(root, ValidateIn{Action: "cost_tiers"})
-	if err == nil {
-		t.Fatal("expected error when docs/cost-tiers.md is missing")
+	out, err := validate(root, ValidateIn{Action: "cost_tiers"})
+	if err != nil {
+		t.Fatalf("missing docs/cost-tiers.md must not be an error, got %v", err)
+	}
+	if len(out.Findings) != 1 {
+		t.Fatalf("expected exactly 1 finding, got %+v", out.Findings)
+	}
+	f := out.Findings[0]
+	if f.ID != "NO_COST_DOC" || f.Severity != "warning" || f.Path != filepath.Join("docs", "cost-tiers.md") {
+		t.Errorf("unexpected finding: %+v", f)
+	}
+	if !strings.Contains(f.Message, "skipped") {
+		t.Errorf("message should say the check was skipped, got %q", f.Message)
 	}
 }
 
@@ -618,25 +726,11 @@ func TestValidateCostTiersDocMissing(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // TestValidateGuardrailsAllChecks exercises validateOneGuardrail's checks via
-// a real config.toml. Guardrails are keyed named tables
-// ([plan.guardrails.<id>]); config.ReadSection always injects "id" from the
-// table key (see normalizeGuardrailTables/guardrailsTableToSlice in
-// internal/config/config.go), which makes two of the original JSON fixture's
-// cases structurally unrepresentable here and they are intentionally
-// dropped:
-//   - a guardrail with no "id" at all: every table key becomes a non-empty
-//     id, so the id-is-missing branch of validateOneGuardrail can no longer
-//     be reached through a config file.
-//   - two guardrails sharing one "id" (duplicate detection): TOML tables
-//     cannot repeat the same key ([plan.guardrails.dup-id] twice is a parse
-//     error), so the duplicate-id branch can no longer be reached through a
-//     config file either.
-//
-// Both branches are still reachable in principle if validateOneGuardrail is
-// ever called directly or fed a hand-rolled []any (e.g. a non-canonical
-// [[plan.guardrails]] array-of-tables with an explicit "id" field, which
-// normalizeGuardrailTables does not touch), but no test exercises that path
-// post-migration. Flagged as a coverage reduction, not fixed here.
+// a real config.toml in the canonical named-table form
+// ([plan.guardrails.<id>]), where config.ReadSection injects "id" from the
+// table key. The "id is missing" and "id is duplicated" checks are covered
+// by TestValidateGuardrailsIDChecksReachable, which uses the config shapes
+// that skip that injection.
 func TestValidateGuardrailsAllChecks(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), ""+
@@ -681,6 +775,69 @@ func TestValidateGuardrailsAllChecks(t *testing.T) {
 	}
 	if byID["good-guardrail"] != 0 {
 		t.Errorf("expected 0 findings for good-guardrail, got %d", byID["good-guardrail"])
+	}
+}
+
+// TestValidateGuardrailsIDChecksReachable proves the "id is missing" and
+// "id is duplicated across guardrails" checks are reachable from a real
+// config.toml. normalizeGuardrailTables only rewrites the named-table form
+// (a map); an array form ([[plan.guardrails]] or an inline array) reaches
+// the validator as-is, with no id injected and no key uniqueness. A quoted
+// empty table key ([plan.guardrails.""]) is valid TOML and injects id "".
+func TestValidateGuardrailsIDChecksReachable(t *testing.T) {
+	cases := []struct {
+		name   string
+		config string
+		want   []string // expected finding messages, in order
+	}{
+		{
+			name: "array of tables: missing id and duplicate id",
+			config: "" +
+				"[[plan.guardrails]]\n" +
+				"description = \"no id here\"\n" +
+				"\n" +
+				"[[plan.guardrails]]\n" +
+				"id = \"dup-id\"\n" +
+				"description = \"first\"\n" +
+				"\n" +
+				"[[plan.guardrails]]\n" +
+				"id = \"dup-id\"\n" +
+				"description = \"second\"\n",
+			want: []string{
+				"(missing): id is missing",
+				"dup-id: id is duplicated across guardrails",
+			},
+		},
+		{
+			name:   "inline array: missing id",
+			config: "[plan]\nguardrails = [ { description = \"x\" } ]\n",
+			want:   []string{"(missing): id is missing"},
+		},
+		{
+			name:   "empty quoted table key: missing id",
+			config: "[plan.guardrails.\"\"]\ndescription = \"d\"\n",
+			want:   []string{"(missing): id is missing"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), tc.config)
+			out, err := validate(root, ValidateIn{Action: "guardrails"})
+			if err != nil {
+				t.Fatalf("validate: %v", err)
+			}
+			var got []string
+			for _, f := range out.Findings {
+				if f.Severity != "error" {
+					t.Errorf("finding severity = %q, want error: %+v", f.Severity, f)
+				}
+				got = append(got, f.Message)
+			}
+			if strings.Join(got, "\n") != strings.Join(tc.want, "\n") {
+				t.Fatalf("findings = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -768,6 +925,17 @@ func TestValidateGuardrailsCustomSection(t *testing.T) {
 // ---------------------------------------------------------------------------
 // dimensions
 // ---------------------------------------------------------------------------
+
+func TestValidateDimensionsUnreadableDirIsInfraError(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "review-dimensions"), "not a directory")
+
+	_, err := validate(root, ValidateIn{Action: "dimensions"})
+	var infra *mcpserver.InfraError
+	if !errors.As(err, &infra) {
+		t.Fatalf("err = %v, want *mcpserver.InfraError", err)
+	}
+}
 
 func TestValidateDimensionsValidFileHasNoFindings(t *testing.T) {
 	root := t.TempDir()
@@ -963,6 +1131,37 @@ func TestLinksValidateExtractsAndZipsLines(t *testing.T) {
 	}
 }
 
+func TestLinksValidateParentheses(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		want string
+	}{
+		{"wikipedia-style balanced parens", "See https://en.wikipedia.org/wiki/Foo_(bar) here.", "https://en.wikipedia.org/wiki/Foo_(bar)"},
+		{"markdown link", "Read [the docs](https://a.b/c).", "https://a.b/c"},
+		{"balanced parens inside a markdown link", "Read [x](https://en.wikipedia.org/wiki/Foo_(bar)).", "https://en.wikipedia.org/wiki/Foo_(bar)"},
+		{"balanced parens inside plain parens", "(see https://en.wikipedia.org/wiki/Foo_(bar)).", "https://en.wikipedia.org/wiki/Foo_(bar)"},
+		{"adjacent markdown links", "[a](https://x.y/1),[b](https://x.y/2)", "https://x.y/1"},
+		{"unbalanced open paren", "https://x.y/a(b", "https://x.y/a(b"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, "doc.md"), tc.line+"\n")
+			out, err := linksValidate(root, LinksValidateIn{File: "doc.md", Offline: true})
+			if err != nil {
+				t.Fatalf("linksValidate: %v", err)
+			}
+			if len(out.Results) == 0 {
+				t.Fatalf("no URL extracted from %q", tc.line)
+			}
+			if got := out.Results[0].URL; got != tc.want {
+				t.Errorf("URL = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestLinksValidateFileNotFound(t *testing.T) {
 	root := t.TempDir()
 	_, err := linksValidate(root, LinksValidateIn{File: "missing.md"})
@@ -1001,8 +1200,11 @@ func TestMcpFailureRecordClassifiesAndRecords(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read log.md: %v", err)
 	}
-	if !strings.Contains(string(data), "mcp-failure[auth]: test_tool") {
+	if !strings.Contains(string(data), " — mcp-failure[auth]: test_tool\n") {
 		t.Errorf("log.md missing expected heading, got: %s", data)
+	}
+	if strings.Contains(string(data), "jira") {
+		t.Errorf("heading for the non-Jira tool test_tool must not mention jira, got: %s", data)
 	}
 
 	firstLen := len(data)
@@ -1268,18 +1470,18 @@ func TestFindStrayStateEntries_MissingStateDirIsNotAnError(t *testing.T) {
 }
 
 // TestValidateCostTiers_ErrorsByCause pins the two recovery paths of
-// validateCostTiers: a missing or unreadable docs/cost-tiers.md must not be
+// validateCostTiers: an unreadable docs/cost-tiers.md must not be
 // reported as a heading problem, and neither message may print the file path
 // twice.
 func TestValidateCostTiers_ErrorsByCause(t *testing.T) {
 	cases := []struct {
 		name        string
-		doc         string // "" means: do not create the file
+		doc         string // "" means: put a directory where the file should be (unreadable)
 		wantHint    string
 		notWantHint string
 	}{
 		{
-			name:        "missing file",
+			name:        "unreadable file",
 			doc:         "",
 			wantHint:    "check read permission",
 			notWantHint: "headings",
@@ -1297,6 +1499,8 @@ func TestValidateCostTiers_ErrorsByCause(t *testing.T) {
 			root := t.TempDir()
 			if tc.doc != "" {
 				writeFile(t, filepath.Join(root, "docs", "cost-tiers.md"), tc.doc)
+			} else if err := os.MkdirAll(filepath.Join(root, "docs", "cost-tiers.md"), 0o755); err != nil {
+				t.Fatal(err)
 			}
 
 			_, err := validateCostTiers(root, ValidateIn{})

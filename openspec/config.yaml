@@ -1,0 +1,119 @@
+schema: spec-driven
+githubCopilot:
+  cloudAgent: false
+
+# Project context
+# This is shown to AI when creating artifacts.
+# Note: this hand-written context: key makes `/sdlc:setup --openspec-enrich`
+# skip (skipped-existing-context). The sdlc workflow guidance that the
+# managed block would add is folded in below instead.
+context: |
+  Product: sdlc-plugin — a Claude Code plugin that automates SDLC workflows
+  (plan, execute, commit, review, PR, version, ship, Jira) through an MCP
+  server plus session/tool-use hooks. The repo is also its own marketplace
+  (.claude-plugin/marketplace.json) listing one plugin, `sdlc`, at plugins/sdlc/.
+
+  Architecture:
+    - All logic is one Go binary `sdlc` (module github.com/rnagrodzki/sdlc-plugin,
+      Go version from go.mod). plugins/sdlc/bin/sdlc-launcher.sh downloads it
+      from the matching GitHub Release, verifies the checksum, caches it, and
+      execs it. The launcher fails open: it must never block a Claude session.
+    - cmd/sdlc — entry point (mcp server mode and `hook <name>` mode).
+    - internal/tools — one file per MCP tool plus *_test.go; internal/mcpserver —
+      shared register/render/errors; internal/hooks — hook handlers; other
+      internal/* packages are focused helpers (gitx, ghx, config, state, wave, ...).
+    - plugins/sdlc/skills/<name>/SKILL.md — runtime skill prompts;
+      plugins/sdlc/agents — subagent prompts; plugins/sdlc/hooks/hooks.json;
+      plugins/sdlc/schemas (JSON schema) and plugins/sdlc/templates (TOML).
+    - .sdlc-v2/config.toml — project config for this repo, including plan
+      guardrails. Read the guardrails there; specs must not contradict them.
+    - .github/scripts — Node release scripts (tested in CI only).
+
+  Hard contracts (read the doc before specifying tool changes):
+    - MCP output: Markdown text only, no JSON envelope. Root `Next` field renders
+      as the `**Next:**` line. Errors are DomainError / InfraError / DataError
+      with a Suggestion. See docs/mcp-output-contract.md.
+    - Every tool declares mcpserver.Annotations; a new tool adds its entry to
+      internal/tools/annotations_test.go. See docs/mcp-tool-annotations.md.
+    - Every exported field on an *In struct has a jsonschema_description that
+      states the encoding (plain text or JSON) and gives an example value.
+      Closed sets also get a jsonschema enum tag.
+    - Deterministic work (git, file IO, parsing, validation) belongs in the Go
+      tool; the skill prompt handles judgment and user interaction.
+
+  Documentation rules:
+    - SKILL.md is the source of truth; docs/skills/<name>.md must stay in sync
+      with it (steps, flags, tool names, fields).
+    - plugins/sdlc/templates/*.toml must match plugins/sdlc/schemas/*.json.
+    - Contributor and architecture docs go under docs/, never under skills/.
+      plugins/sdlc/skills/ holds runtime content only.
+
+  Testing and verification:
+    - `task check` runs `go vet ./...` then `go test -tags integration ./...`.
+      CI (.github/workflows/test.yml) and the lefthook pre-push hook run the
+      same two commands.
+    - Tests write only inside t.TempDir. Real git is allowed in a temp repo.
+      Never call real gh or the network; use injected fakes.
+    - New or changed behavior needs a test that pins it down.
+
+  Conventions:
+    - Conventional commits: type(scope): summary (feat, fix, refactor, chore, ...).
+    - Version lives in plugins/sdlc/.claude-plugin/plugin.json; tags use a `v`
+      prefix; releases default to an rc pre-release. CHANGELOG.md release notes
+      are written by the pr skill (pr_apply) under `## [Unreleased]`.
+    - Never switch git branches without explicit user approval (AGENTS.md).
+
+  Contributor workflow for OpenSpec changes:
+    1. /sdlc:plan --from-openspec <change-name>  — create an implementation plan
+    2. /sdlc:execute <plan-file>                  — execute the plan in waves
+    3. /sdlc:ship                                 — commit, review, version, open a PR
+  Do not run `openspec archive` directly — /sdlc:ship archives the change as a
+  conditional pipeline step after validation passes.
+
+# Per-artifact rules
+# Shared rules are defined once in `proposal` with a YAML anchor (&name)
+# and reused in the other artifacts with an alias (*name).
+rules:
+  proposal:
+    - &scannable "Write scannable facts, not prose. Use headings, bullet lists, and tables. One fact per bullet. No paragraph longer than 2 sentences. Link to other artifacts instead of restating them."
+    - &mermaid-first "Diagrams: use Mermaid in a ```mermaid fence (flowchart, sequenceDiagram, stateDiagram-v2, classDiagram, erDiagram). Use an ASCII diagram in a ```text fence only when Mermaid cannot express the picture (directory trees, field or byte layouts, column layouts)."
+    - &diagram-style "Every diagram has a one-line caption above it that says what it shows. Node names match real names (skill, MCP tool, file path, state). When a diagram shows existing structure, mark new elements with Mermaid `classDef new` and changed elements with `classDef changed`; in ASCII use [NEW] and [CHG]. Quote Mermaid labels that contain ( ) / : or other special characters. Skip a required diagram only when it would be empty, and say so in one line."
+    - "Why: max 3 bullets: problem, evidence (issue number, file path, exact error text), why now."
+    - "What Changes: a table with columns Area | Before | After. Prefix breaking rows with **BREAKING**."
+    - "Required diagram: the affected user or pipeline flow after the change (flowchart or sequenceDiagram), with new and changed steps marked."
+    - "Impact: a table with columns Path | Kind (skill, MCP tool, hook, schema, template, doc, CI) | Change. Use repo-relative paths."
+  specs:
+    - *scannable
+    - *mermaid-first
+    - *diagram-style
+    - "Keep the SHALL/MUST sentence as the first line under each `### Requirement:` heading."
+    - "Add a diagram under the requirement text, before its scenarios, when the requirement has 3 or more states (stateDiagram-v2) or an ordered interaction between actors (sequenceDiagram). Show observable behavior only: actors are user, skill, MCP tool, git, gh, filesystem. No internal function or type names."
+    - "Scenarios: one condition per WHEN bullet, one outcome per THEN bullet. Use exact values: flag names, tool names, error strings, file paths."
+  design:
+    - *scannable
+    - *mermaid-first
+    - *diagram-style
+    - "Required diagram: architecture of the touched parts as a flowchart with subgraphs (skills, MCP tools, internal packages, external: git / gh / filesystem)."
+    - "Required diagram: sequenceDiagram of the main runtime flow (user -> skill -> MCP tool -> git / gh / filesystem -> Markdown result)."
+    - "Required diagram when the change adds or alters persisted state (state files, config keys, ship or execute state): stateDiagram-v2 of the state transitions."
+    - "Show data contracts visually: changed *In/*Out structs as a Go code block or a table Field | Type | Encoding | Example. Show config changes as a before/after TOML diff block."
+    - "Decisions: a table with columns Decision | Chosen | Rejected alternatives | Reason."
+    - "Risks / Trade-offs: a table with columns Risk | Impact | Mitigation."
+  tasks:
+    - *scannable
+    - *mermaid-first
+    - *diagram-style
+    - "When there are 2 or more task groups, start with a Mermaid flowchart of group dependencies above the first `##` group. Nodes are group numbers and names (e.g. G1[\"1. Config schema\"] --> G2). Groups with no path between them can run in parallel."
+    - "One line per task: `- [ ] X.Y <verb> <what> in <repo-relative path> — verify: <command or test name>`. No prose between tasks."
+
+# Per-operation guidance (optional)
+# Add advisory guidance for how apply and archive work should be conducted.
+# This is separate from artifact rules above.
+# Example:
+#   operations:
+#     apply:
+#       guidance:
+#         - Keep test summaries concise
+#     archive:
+#       guidance:
+#         - Summarize the archive outcome before finishing

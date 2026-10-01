@@ -32,13 +32,13 @@ rather than left implicit:
 - **No `manifest.errorReportSkillPath` dependency.** This port dispatches
   `error-report` the same way every other ported skill does — "invoke
   error-report, provide: Skill/Step/Operation/Error/Suggested
-  investigation" — rather than resolving and following a `REFERENCE.md` path.
-  `prepare_orchestrator`'s (mode `"harden"`) manifest still carries an `errorReportSkillPath` field (and
-  will typically log a load error for it, since `error-report/REFERENCE.md`
-  is not shipped in this port); this skill does not read either.
+  investigation" — rather than resolving and following a file path.
+  `prepare_orchestrator`'s (mode `"harden"`) manifest still carries an
+  `errorReportSkillPath` field (the plugin's `skills/error-report/SKILL.md`);
+  this skill does not read it.
 - Copilot-mirror generation uses the `dimensions_render_instructions` MCP tool.
   Pass `projectRoot: <CONTENT_ROOT>` explicitly (see Step 5b) so the mirror is
-  written under the active worktree, not the main one.
+  written under the same active worktree as the dimension file.
 
 ## Step 0 — Parse Arguments (R1, R2, R19)
 
@@ -87,8 +87,9 @@ proposed.
 **When `--from-issue <num>` is used:** `prepare_orchestrator` (mode `"harden"`) fetches the GitHub issue
 body automatically (via `gh issue view`). When the issue carries the
 `mcp-failure` label, the tool pre-sets `classification_hint: "plugin-defect"`
-in the manifest. In that case, skip Step 3 — proceed directly to Step 4, which
-will route to Step 6 (PLUGIN-DEFECT ROUTE) without dispatching the orchestrator.
+in the manifest. In that case, Step 2 builds `RESULT` itself and skips Step 3 —
+Step 4 then routes to Step 6 (PLUGIN-DEFECT ROUTE) without dispatching the
+orchestrator.
 Pass `fromIssue: "<num>"` to the Step 1 tool call.
 
 ## Step 1 — CONSUME (mandatory Load State): Call `prepare_orchestrator` (mode: `"harden"`) (R4, R13)
@@ -205,16 +206,23 @@ For each candidate entry, in order:
      mode: "harden",
      failureText: "<full entry text>",
      skill: "<parsed_skill>",
-     skipConfigCheck: true,
+     skipConfigCheck: false,
    }) → { manifestPath }
    ```
-   `skipConfigCheck: true` — config validation does not need to re-run per
-   entry. Store the `manifestPath` in a side table alongside the entry's
-   original 1-indexed position.
+   `skipConfigCheck: false` — the config-version check is read-only and cheap,
+   so it runs on every call, as in the normal path's Step 1. Store the
+   `manifestPath` in a side table alongside the entry's original 1-indexed
+   position.
 
-   **On tool error for a single entry:** log the error, record the entry as
-   errored in the side table, and continue to the next. Do not abort the entire
-   triage run for one entry's prepare failure.
+   **On a config-version error** (message starts with `config-version:`): the
+   error is about the project config, not this entry, so every later entry
+   would fail the same way. Show the error to the user and stop the triage run
+   — do not dispatch more entries, do not remove any learnings entry, and do
+   not run Step 7. `rm -f` the manifests already in the side table first.
+
+   **On any other tool error for a single entry:** log the error, record the
+   entry as errored in the side table, and continue to the next. Do not abort
+   the entire triage run for one entry's prepare failure.
 
 2. Read `repository.contentRoot` from the manifest. Dispatch the
    harden-orchestrator agent exactly as in Step 3:
@@ -281,8 +289,9 @@ entries. If no entries were addressed, skip the remove call.
 #### 1-FL.7 — Cleanup
 
 `rm -f` every `manifestPath` in the side table on every exit path — including
-cancel mid-loop, zero-candidate exit, and normal completion. Then proceed to
-Step 7 (Learning Capture) as usual.
+cancel mid-loop, zero-candidate exit, a config-version stop, and normal
+completion. Then proceed to Step 7 (Learning Capture) as usual — except after
+a config-version stop, which ends the run here.
 
 ## Step 2 — CLASSIFY: Surface the Failure Classification (R5, R9)
 
@@ -303,15 +312,38 @@ harden: failure context loaded
 ```
 
 When `classification_hint == "plugin-defect"` (set by `prepare_orchestrator` when
-`fromIssue` fetches an issue with the `mcp-failure` label), skip Step 3 —
-proceed directly to Step 4, which will route to Step 6 (PLUGIN-DEFECT ROUTE)
-without dispatching the orchestrator. The manifest already carries the pre-set
-classification; the orchestrator agent is not needed.
+`fromIssue` fetches an issue with the `mcp-failure` label), the orchestrator
+agent is not needed. Skip Step 3, but first build `RESULT` here — Steps 4, 5d,
+5e and 6 read it, and on this path no orchestrator produces it. Use the
+orchestrator's own plugin-defect shape, filled from the `failure.*` fields
+already read for the preview:
+
+```json
+{
+  "classification": "plugin-defect",
+  "classificationRationale": "Issue #<fromIssue> carries the mcp-failure label (classification_hint: plugin-defect).",
+  "routeToErrorReport": true,
+  "errorReportPayload": {
+    "skill": "<failure.skill>",
+    "step": "<failure.step>",
+    "operation": "<failure.operation>",
+    "errorText": "<failure.text>",
+    "exitOrHttpCode": "<failure.exitCode or empty>",
+    "errorType": "<failure.errorType or \"script crash\">"
+  },
+  "proposals": []
+}
+```
+
+Then go to Step 4, which routes to Step 6 (PLUGIN-DEFECT ROUTE).
 
 The orchestrator (Step 3) is responsible for the authoritative classification
 in all other cases. Continue to Step 3.
 
 ## Step 3 — ANALYZE: Dispatch the harden-orchestrator Agent (R6)
+
+Skip this step when Step 2 already built `RESULT` from a `plugin-defect`
+`classification_hint`.
 
 Read `repository.contentRoot` and `repository.root` from the manifest JSON at
 `manifestPath` (a plain Read + JSON parse — no shell one-liner needed):
@@ -540,9 +572,9 @@ When it holds:
 
    Pass `commonFile` unconditionally — the tool silently omits the "Common
    Review Instructions" section when that file does not exist, so no
-   existence check is needed first. `projectRoot` is required here (defaults
-   to the main worktree otherwise) so the mirror lands under the active
-   worktree, matching source's #474 requirement.
+   existence check is needed first. `projectRoot` already defaults to the
+   active worktree; pass it anyway so the mirror root is explicit and always
+   equals `CONTENT_ROOT`, matching source's #474 requirement.
 
 2. **On tool error:** do NOT silently advance to the next proposal (halt per
    R-iteration-write rule 4). Surface the partial state explicitly:

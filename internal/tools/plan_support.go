@@ -150,7 +150,7 @@ type LaneResult struct {
 // LensResult represents the outcome of a single review lens.
 type LensResult struct {
 	Name            string   `json:"name" jsonschema_description:"Name of the review lens that produced this result."`
-	Status          string   `json:"status" jsonschema_description:"Outcome of the lens: \"approved\", \"rejected\", or \"conditional\"."` // "approved"|"rejected"|"conditional"
+	Status          string   `json:"status" jsonschema_description:"Outcome of the lens, as the lens wrote it: \"Approved\" or \"Issues Found\". Letter case and outer spaces are ignored; any value other than approved counts as not approved."`
 	Issues          []Issue  `json:"issues,omitempty" jsonschema_description:"Findings raised by this lens."`
 	Recommendations []string `json:"recommendations,omitempty" jsonschema_description:"Recommendations raised by this lens."`
 }
@@ -198,6 +198,11 @@ var psFilesBlockStartRe = regexp.MustCompile(`(?m)^\*\*Files:\*\*`)
 // psContractBlockStartRe matches the **Contract:** field marker.
 var psContractBlockStartRe = regexp.MustCompile(`(?m)^\*\*Contract:\*\*`)
 
+// psNextFieldLineRe matches the start of the next "**<Field>:**" line. It
+// ends a **Contract:** block, whose body may hold bold text but never a
+// field marker at the start of a line.
+var psNextFieldLineRe = regexp.MustCompile(`\n\*\*[^*\n]+:\*\*`)
+
 // psOpenspecTaskStartRe matches the **openspec-task:** block marker.
 var psOpenspecTaskStartRe = regexp.MustCompile(`(?m)^\*\*openspec-task:\*\*`)
 
@@ -227,7 +232,7 @@ func RegisterPlanSupportTools(s *mcpserver.Server) {
 
 Pass "action" to select an operation. Each action uses a subset of the input fields (unlisted fields are ignored):
 
-- merge_results: Merge lane/lens review results. Requires at least one of laneResults or lensResults. Optional: expectedGates, isRedispatch.
+- merge_results: Merge lane/lens review results. Requires at least one of laneResults or lensResults. Optional: expectedGates, isRedispatch. Lane status must be pass or fail, and every issue severity must be blocking or advisory; any other value fails with a DomainError and nothing is merged.
 - material_snapshot: Snapshot plan material for change detection. Requires filePath. Returns snapshotPath.
 - material_compare: Compare current plan material against a snapshot. Requires filePath, snapshotPath (from material_snapshot).
 - openspec_appendix: Generate an openspec appendix. Requires changeName. Optional: proposalPath, designPath, specPaths, planTasks.
@@ -300,12 +305,49 @@ func issueKey(iss Issue) string {
 	return iss.GateID + "|" + strings.ToLower(strings.TrimSpace(iss.Summary))
 }
 
+// validateMergeEnums rejects a lane status other than "pass"/"fail" and an
+// issue severity other than "blocking"/"advisory". The merge compares these
+// values exactly, so an unmapped value ("ok", "error", "") would otherwise
+// count as a pass or as advisory and hide the finding. Lens status stays
+// free-form: anything other than approved already counts as not approved.
+func validateMergeEnums(in PlanSupportIn) error {
+	var bad []string
+	checkIssues := func(where string, issues []Issue) {
+		for j, iss := range issues {
+			if iss.Severity != "blocking" && iss.Severity != "advisory" {
+				bad = append(bad, fmt.Sprintf("%s.issues[%d] (%q): severity %q", where, j, iss.Summary, iss.Severity))
+			}
+		}
+	}
+	for i, lane := range in.LaneResults {
+		where := fmt.Sprintf("laneResults[%d] (%q)", i, lane.Name)
+		if lane.Status != "pass" && lane.Status != "fail" {
+			bad = append(bad, fmt.Sprintf("%s: status %q", where, lane.Status))
+		}
+		checkIssues(fmt.Sprintf("laneResults[%d]", i), lane.Issues)
+	}
+	for i, lens := range in.LensResults {
+		checkIssues(fmt.Sprintf("lensResults[%d]", i), lens.Issues)
+	}
+	if len(bad) == 0 {
+		return nil
+	}
+	return &mcpserver.DomainError{
+		Msg: "merge_results: lane status must be \"pass\" or \"fail\" and issue severity must be \"blocking\" or \"advisory\"; got " +
+			strings.Join(bad, "; "),
+		Suggestion: "Map each value before the call: lane status to \"pass\" or \"fail\", issue severity to \"blocking\" or \"advisory\" (plan SKILL.md \"Map lane results to the merge_results shape\"), then call merge_results again.",
+	}
+}
+
 func mergeResults(in PlanSupportIn) (PlanSupportOut, error) {
 	if len(in.LaneResults) == 0 && len(in.LensResults) == 0 {
 		return PlanSupportOut{}, &mcpserver.DomainError{
 			Msg:        "merge_results requires at least one of laneResults or lensResults to be non-empty",
 			Suggestion: "Collect the lane and/or lens reviewer results first, then call merge_results with laneResults, lensResults, or both populated.",
 		}
+	}
+	if err := validateMergeEnums(in); err != nil {
+		return PlanSupportOut{}, err
 	}
 
 	seen := map[string]bool{}
@@ -338,12 +380,13 @@ func mergeResults(in PlanSupportIn) (PlanSupportOut, error) {
 	// G17 lane failure is always advisory: a failed lane whose only gate
 	// coverage is G17 does not reject the merge. Remove G17-only failures
 	// from the laneFailures list and synthesize advisory issues for them.
+	// A lane with no gateIds covers no gate at all, so it is not G17-only.
 	var filteredLaneFailures []string
 	for _, lane := range in.LaneResults {
 		if lane.Status != "fail" {
 			continue
 		}
-		isG17Only := true
+		isG17Only := len(lane.GateIDs) > 0
 		for _, gid := range lane.GateIDs {
 			if gid != "G17" {
 				isG17Only = false
@@ -421,29 +464,25 @@ func mergeResults(in PlanSupportIn) (PlanSupportOut, error) {
 		}
 	}
 
-	// For lenses-only: Approved iff all lens statuses are "approved" (SKILL.md:690).
-	if len(in.LaneResults) == 0 && len(in.LensResults) > 0 {
+	// Approved iff all lens statuses are "approved", whether or not
+	// laneResults are sent in the same call. The lens prompts write
+	// "**Status:** Approved" or "Issues Found", so letter case and outer
+	// spaces are ignored.
+	if len(in.LensResults) > 0 {
 		for _, lens := range in.LensResults {
-			if lens.Status != "approved" {
+			if !strings.EqualFold(strings.TrimSpace(lens.Status), "approved") {
 				mergedStatus = "Issues Found"
 				break
 			}
 		}
 	}
 
-	// For lanes-only or mixed: any lane failure that isn't G17-only means issues found.
-	if len(in.LaneResults) > 0 {
-		for _, lane := range in.LaneResults {
-			if lane.Status == "fail" {
-				// Check if lane has non-advisory issues.
-				for _, iss := range lane.Issues {
-					if iss.Severity == "blocking" {
-						mergedStatus = "Issues Found"
-						break
-					}
-				}
-			}
-		}
+	// For lanes-only or mixed: any lane failure that isn't G17-only means
+	// issues found, with or without issues. laneFailures already excludes
+	// G17-only lanes, and blocking issues are covered by allIssues above
+	// (after any isRedispatch downgrade), so lane.Issues is not read here.
+	if len(laneFailures) > 0 {
+		mergedStatus = "Issues Found"
 	}
 
 	// Build summary and next hint.
@@ -562,9 +601,13 @@ func snapshotPlan(content string) PlanSnapshot {
 			snap.FilesSet[taskRef] = paths
 		}
 
-		// Contract: verbatim text after **Contract:** marker.
+		// Contract: verbatim text after **Contract:** marker, up to the next
+		// **<Field>:** line or task boundary.
 		contractBlock, contractFound := extractDelimitedBlock(t.Body, psContractBlockStartRe, []string{"\n### ", "\n---", "\n## "})
 		if contractFound {
+			if loc := psNextFieldLineRe.FindStringIndex(contractBlock); loc != nil {
+				contractBlock = contractBlock[:loc[0]]
+			}
 			snap.Contracts[taskRef] = strings.TrimSpace(contractBlock)
 		}
 

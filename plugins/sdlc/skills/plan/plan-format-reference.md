@@ -23,11 +23,17 @@ All four fields are required. `execute` uses `Verification` as the default test 
 
 ## Section Order
 
-A plan document assembles its sections top to bottom in this order. Sections marked "required" must
-appear in every plan; "optional"/"conditional" sections appear only when their trigger applies. This
-is the order `plan` writes; it is a convention documented here, not something PF10 enforces —
-PF10 (the active template's `## Required Sections` list, see `## Plan Template` below) checks
-presence only, not order.
+A plan document assembles its sections top to bottom. **The active template's order wins.**
+`plan_prepare` writes `template.skeletonMarkdown` with one `## <name>` block per bullet of the active
+template's `## Required Sections`, in template order, and `plan` fills that skeleton in place without
+moving sections. The list below is the conventional reading order. It places only the sections the
+active template does not list (the document header, `## Guardrail Compliance`, `## Out-of-scope
+OpenSpec tasks`, and any section a project template leaves out). Where it disagrees with the
+template — the shipped default puts `## Final Shape` before the tasks and `## Contract Examples`
+last — follow the template. Sections marked "required" must appear in every plan;
+"optional"/"conditional" sections appear only when their trigger applies. PF10 (the active
+template's `## Required Sections` list, see `## Plan Template` below) checks presence only, not
+order.
 
 1. **Document Header** — Goal / Architecture / Source / Verification (required)
 2. **Context** — problem, prompt, success definition (required, narrative)
@@ -54,7 +60,7 @@ reaching a single task:
 3. **What does success look like?**
 
 These three questions are the `## Discovery Questions` declared in the active plan template
-(`plan-template-default.md`, or a project's `.sdlc/plan-template.md` override — see `## Plan
+(`plan-template-default.md`, or a project's `.sdlc-v2/plan-template.md` override — see `## Plan
 Template` below). Step 1 exploration answers them; Step 2 writes the answers into this section.
 Presence is enforced deterministically by PF10 via the active template (R61).
 
@@ -112,7 +118,7 @@ When a plan introduces no divergences or assumptions, render the header with a s
 
 ## Key Decisions (optional)
 
-Capture architecture and design decisions made during planning that executing agents need to understand. Place this section after `## Deviations & assumptions`, before `## Contract Examples` and the first task block (see `## Section Order`). Narrative (R62): the bullet-per-decision shape below already satisfies "structured goals as bullet lists" — keep each bullet to short sentences with the rationale inline.
+Capture architecture and design decisions made during planning that executing agents need to understand. Place this section where the active template lists it (the shipped default: after `## Deviations & assumptions`, before `## Final Shape` and the task blocks — see `## Section Order`). Narrative (R62): the bullet-per-decision shape below already satisfies "structured goals as bullet lists" — keep each bullet to short sentences with the rationale inline.
 
 ```markdown
 ## Key Decisions
@@ -651,7 +657,7 @@ wave; one authoritative full-suite run gates the wave before it is accepted.
 entry's HTML-comment metadata means (`narrative: true`, `conditional: ...`). Two sources, checked in
 this order:
 
-1. **Project override** — `.sdlc/plan-template.md`. `plan.js` reports its absolute path as
+1. **Project override** — `.sdlc-v2/plan-template.md`. `plan_prepare` reports its absolute path as
    `planTemplate.path` when the file exists.
 2. **Shipped default** — `plan-template-default.md`, a sibling of this file in the skill directory.
    Used when no project override exists (`planTemplate.path` is `null`, R61).
@@ -660,7 +666,7 @@ Whichever file is active is the single source of truth for both the PF10 determi
 the bullet list under the template's `## Required Sections` heading, and checks each one is present
 as a `## <heading>` in the plan) and the Step 2 planner (follows the same list, plus the template's
 `## Discovery Questions` and `## Verification Patterns`, when writing plan sections). A project that
-ships its own `.sdlc/plan-template.md` can drop a section, add one, or change its `narrative:` /
+ships its own `.sdlc-v2/plan-template.md` can drop a section, add one, or change its `narrative:` /
 `conditional:` annotations — PF10 follows whatever the active template declares, not this reference
 document.
 

@@ -78,7 +78,9 @@ If there is only one worktree entry (no linked worktrees), the main working tree
 | `planPath`   | string \| null | Absolute path to the plan file, resolved once in Step 1 (LOAD) from `--plan <path>` or the positional plan-file-path argument (implements R40). Populated on every run — the standalone plan-argument gate (R41) and ship's own plan-file validation both require an explicit plan file before execution starts, so this field is no longer left unconditionally `null`. `null` only appears in state files written before #505. |
 | `planHash`   | string        | SHA-256 hash of the plan file's bytes at execution start, computed by the skill via `shasum -a 256` (implements R40) and passed straight through to the `execute_state({action:"init"})` tool call — the Go tool does not compute or validate it. Populated whenever `planPath` is populated, per the schema (`schemas/execute-state.schema.json`), which types this field as a required non-null string. |
 | `quality`    | string \| null | Execution quality level (`"full"`, `"balanced"`, or `"minimal"`), or `null` if none was applied. Legacy `"A"`/`"B"`/`"C"` values may appear in older state files. |
-| `totalTasks` | number        | Total number of tasks across all waves.                                              |
+| `totalTasks` | number        | Total number of tasks across all waves, as passed to `init`. `0` when `init` got none. |
+| `sessionId`  | string \| null | Claude Code session ID passed to `init`. `null` when `init` got none. |
+| `commitWaves` | string       | `"true"` or `"false"`: whether `wave-commit` commits each wave. Stamped by `init`; any other input is stored as `"true"`. |
 | `plannedTaskIds` | string[] \| absent | Every task ID the plan declares, passed as an optional `plannedTaskIds` array on `init`. Absent on state files from a run that didn't supply it (including all pre-this-field state files). Two consumers depend on it: `execRunInFlight` (an ID here with no matching entry in `context.completedTaskIds` means the run is still in flight, triggering `resumeBriefing` on `read`) and `verify-completeness` (cross-checks this list against what actually got recorded; without it, `verify-completeness` fails outright with `"verify-completeness cannot find plannedTaskIds in state — invariant check cannot run"` rather than silently skipping the check). |
 | `waves`      | array         | Ordered list of wave records (see below).                                            |
 | `worktree`   | string \| absent | Absolute realpath of the active worktree at init. Optional, absent on pre-#501 state files. Display/diagnostic metadata only—does not affect state file location keying or resume behavior. Used to scope the session-start banner to the active worktree. |
@@ -130,7 +132,8 @@ Each element represents one execution wave in order. Wave `0` is the pre-wave (s
 | `startedAt`   | string  | status is `in_progress` or later         | ISO 8601 UTC timestamp when the wave began. Set once on the first `wave-start` and never overwritten on resume — a wave re-entered via `--resume` keeps its original `startedAt`, so wall-clock deadline enforcement (`executeWaveTimeout`) measures from the true start, not the resume time. |
 | `completedAt` | string  | status is `completed`, `partial`, or `failed` | ISO 8601 UTC timestamp when the wave finished — successfully, partially (timed out), or with an error. |
 | `timedOut`    | boolean | present only on a wave whose deadline elapsed | `true` when `execute_state({action:"wave-done", wave:<n>, status:"partial", timedOut:true})` recorded that the wave's wall-clock deadline (`executeWaveTimeout`) elapsed before every in-wave task finished. Written only by that call — main context reads this field but never writes it. Absent on waves that never timed out. |
-| `committedSha` | string \| absent | present only after a commit was recorded for this wave | The git commit SHA covering this wave's changes. Written by `wave-commit` or the legacy `wave-committed` (see below). Absent until the wave has been committed. |
+| `committedSha` | string \| null \| absent | present only after a commit was recorded for this wave | The git commit SHA covering this wave's changes. Written by `wave-commit` or the legacy `wave-committed` (see below). `null` when `wave-committed` was called without a `sha` (empty diff). Absent until the wave has been committed. |
+| `splitTree`   | object  | present only after `wave-split` ran for this wave | `{splitDepth, maxSplitDepth, dispatched, missingIds, halves: [{tasks, depth}], computedAt}` — the last split `wave-split` computed. |
 | `runId`       | string  | present once the wave has been started via `wave-start` | The run identifier for this wave's fact sheets and progress directory (`<stateDir>/<runId>/`). Written once, by `wave-start`; never re-derived afterward. The wave-liveness `PostToolUse` hook (see [Progress Markers](#progress-markers-in-flight-wave-liveness) below) reads this field to find the run's progress directory — it has no `runId` input of its own and must not guess one from `startedAt`. |
 | `planned`     | array   | present once the wave has been started via `wave-start` | The wave's validated task manifest (`{id, name, files}` per task), written once by `wave-start`. Read by `task-context` for sibling lookup, by `wave-await` to detect still-open tasks, and by the wave-liveness hook to map an edited file back to its owning task. |
 | `tasks`       | array   | always                                   | Per-task records for this wave (see below).                          |
@@ -196,6 +199,10 @@ Each element represents one task within its wave.
 | `risk`         | string   | Task risk classification: `"Low"`, `"Medium"`, or `"High"`.                         |
 | `status`       | string   | Task outcome: `"completed"`, `"failed"`, or `"skipped"`.                            |
 | `filesChanged` | string[] | Repository-relative paths of files this task modified, derived from `git diff` after task completion. Empty array if the task produced no file changes. |
+| `verifyTokens` | array \| absent | Written by `task-done`: the `verifyToken` input as a list. Empty when none was passed. |
+| `error`        | string \| absent | Written by `task-fail`: the failure detail. |
+| `attempt`      | number \| absent | Written by `task-fail`: the dispatch attempt that failed. |
+| `resumeFrom`   | object \| absent | Written by `task-fail` when the worker had reported progress: `{acceptanceDone, filesTouched, lastCompletedTask?, blocker?}`. `task-context` hands it to the next attempt. |
 | `completedAt`  | string   | ISO 8601 UTC timestamp when `task-done`/`task-fail` recorded this task's outcome. Task rows never carry a `startedAt`: `task-done`/`task-fail` run after the task has already finished, so there is no truthful start time to record. Per-task liveness while a task is still in flight comes from the progress marker instead (see [Progress Markers](#progress-markers-in-flight-wave-liveness) below), not from a field on this row. |
 
 ---
@@ -269,10 +276,13 @@ and `wave-fail` each return a rolling `issueCount`/`issueHighlights` summary of 
 narration so the skill doesn't need to read the full array to report on it mid-run — see
 `execute/SKILL.md`'s `## Wave loop` section.
 
-A fuller grouped summary (counts by category, plus a suggested hardening action) is planned as an
-`issueSummary`/`hardenSuggestion` shape but has not landed in `execute_state.go` as of this
-writing — `execute/SKILL.md`'s Step 9 report references the shape it is expected to take once it
-does; treat that reference as forward-looking, not as documentation of an action that exists today.
+The `cleanup` action returns a fuller grouped summary as `issueSummary` whenever this array is
+non-empty: `{total, byCategory, items, display, hardenSuggestion?}`. `display` is one
+`[severity] summary` line per issue, rendered server-side for verbatim printing.
+`hardenSuggestion` is set only when at least one issue has `severity:"error"`; it is advisory text
+(`Run /harden --failure-text '<up to 3 error summaries>' to strengthen guardrails.`), not an
+automatic `/harden` run. `issueSummary` is response-only — it is never written to the state file.
+`execute/SKILL.md`'s Step 9 report renders it.
 
 ---
 

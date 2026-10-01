@@ -204,6 +204,22 @@ func learningsRead(path, rel string, tailLines int) (LearningsLogOut, error) {
 	}, nil
 }
 
+// learningsSplitEntries splits log content into its header and its entries.
+// Entries are blocks separated by a blank line ("\n\n"); the first block is
+// the header and is never an entry. A block holding only whitespace (left by
+// three or more newlines in a row) is not an entry either. remove and stats
+// both use this, so entry number N means the same entry in both.
+func learningsSplitEntries(content string) (header string, entries []string) {
+	blocks := strings.Split(content, "\n\n")
+	entries = make([]string, 0, len(blocks)-1)
+	for _, b := range blocks[1:] {
+		if strings.TrimSpace(b) != "" {
+			entries = append(entries, b)
+		}
+	}
+	return blocks[0], entries
+}
+
 func learningsRemove(path, rel string, indices []int) (LearningsLogOut, error) {
 	if len(indices) == 0 {
 		return LearningsLogOut{}, &mcpserver.DomainError{
@@ -227,11 +243,7 @@ func learningsRemove(path, rel string, indices []int) (LearningsLogOut, error) {
 		}
 	}
 
-	// Entries are blocks separated by a blank line ("\n\n"); the first block
-	// is the header and is not a removable entry.
-	blocks := strings.Split(string(data), "\n\n")
-	header := blocks[0]
-	entries := blocks[1:]
+	header, entries := learningsSplitEntries(string(data))
 	if len(entries) == 0 {
 		return LearningsLogOut{}, &mcpserver.DomainError{
 			Msg:        "learnings log has no entries to remove",
@@ -299,7 +311,11 @@ const learningsTopPatternsLimit = 10
 var (
 	// learningsRunTagRe matches the "<!-- sdlc:run=X branch=Y -->" comment
 	// learningsAppend prepends to a tagged entry, capturing the branch name.
-	learningsRunTagRe = regexp.MustCompile(`^<!--\s*sdlc:run=\S+\s+branch=(\S*)\s*-->`)
+	// The tag is a line of its own, so it is matched at the start of any line
+	// of the entry, not only the first (for example when a hand-edited line
+	// ends up above it in the same entry). This matches how execute_state
+	// counts linked learnings, which searches every line of the log.
+	learningsRunTagRe = regexp.MustCompile(`(?m)^<!--[ \t]*sdlc:run=\S+[ \t]+branch=(\S*)[ \t]*-->`)
 	// learningsSkillHeadingRe matches a "## <date> — <skill>: <title>" entry
 	// heading and captures the skill segment.
 	learningsSkillHeadingRe = regexp.MustCompile(`(?m)^##\s.*—\s*([A-Za-z][A-Za-z0-9_-]*)\s*:`)
@@ -386,13 +402,7 @@ func learningsStats(path, rel string) (LearningsLogOut, error) {
 		}
 	}
 
-	// Entries are blocks separated by a blank line ("\n\n"); the first block
-	// is the header and is not a real entry.
-	blocks := strings.Split(string(data), "\n\n")
-	var entries []string
-	if len(blocks) > 1 {
-		entries = blocks[1:]
-	}
+	_, entries := learningsSplitEntries(string(data))
 
 	recentStart := 0
 	if len(entries) > learningsRecentWindow {
@@ -404,9 +414,6 @@ func learningsStats(path, rel string) (LearningsLogOut, error) {
 
 	for i, raw := range entries {
 		entry := strings.TrimSpace(raw)
-		if entry == "" {
-			continue
-		}
 		stats.TotalEntries++
 
 		category := learningsEntryCategory(entry)
@@ -464,11 +471,13 @@ func learningsStats(path, rel string) (LearningsLogOut, error) {
 // RegisterLearningsTools registers the learnings_log tool on the server.
 func RegisterLearningsTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "learnings_log",
-		"Appends to, reads, removes, or summarizes entries in "+paths.DataDir+"/learnings/log.md. Always resolves the MAIN git worktree root first (worktree.MainRoot, falling back to cwd) — a feature worktree's own copy of this file is never git-tracked and is lost when that worktree is removed, so every skill must go through this tool instead of Read/Edit-ing the file directly at the current worktree's path. action=\"append\" (entry: markdown block, no leading/trailing blank line, must not contain a blank line — that is the entry delimiter; optional runId and branch tag the entry for later linkage to an execution run — the end-of-run report counts entries matching a given runId) adds it as a new entry separated by one blank line, creating the file with its standard header on first use. action=\"read\" (optional tailLines) returns the current content, or exists=false when nothing has been logged yet. action=\"remove\" (indices: 1-indexed list of entry numbers, header excluded) deletes the specified entries, echoes the removed content in the response, and rewrites the file. action=\"stats\" (no additional input) returns aggregated counts in the response's \"stats\" field: totalEntries; byCategory, inferred from each entry's optional run-tag branch prefix (e.g. \"feat/x\"/\"fix/y\" -> \"feat\"/\"fix\", matching this repo's branch convention — entries with no run tag count as \"uncategorized\"); bySkill, parsed from a \"## <date> — <skill>: <title>\" entry heading when present (else \"unspecified\"); topPatterns, the most-repeated trailing \"Rule: ...\" lessons mined from entry text (deduplicated case-insensitively, sorted by count then recency, capped at 10); and recentFailures, how many of the most recent 20 entries were tagged with a \"fix\" category. Never errors on a missing or empty log — every count simply comes back zero.",
+		"Appends to, reads, removes, or summarizes entries in "+paths.DataDir+"/learnings/log.md. Always resolves the MAIN git worktree root first (worktree.MainRoot, falling back to cwd) — a feature worktree's own copy of this file is never git-tracked and is lost when that worktree is removed, so every skill must go through this tool instead of Read/Edit-ing the file directly at the current worktree's path. action=\"append\" (entry: markdown block, no leading/trailing blank line, must not contain a blank line — that is the entry delimiter; optional runId and branch tag the entry for later linkage to an execution run — execute_state's end-of-run report (linkedLearnings) counts entries tagged with its runId; this tool does not) adds it as a new entry separated by one blank line, creating the file with its standard header on first use. action=\"read\" (optional tailLines) returns the current content, or exists=false when nothing has been logged yet. action=\"remove\" (indices: 1-indexed list of entry numbers, header excluded) deletes the specified entries, echoes the removed content in the response, and rewrites the file. action=\"stats\" (no additional input) returns aggregated counts in the response's \"stats\" field: totalEntries; byCategory, inferred from each entry's optional run-tag branch prefix (e.g. \"feat/x\"/\"fix/y\" -> \"feat\"/\"fix\", matching this repo's branch convention — entries with no run tag count as \"uncategorized\"); bySkill, parsed from a \"## <date> — <skill>: <title>\" entry heading when present (else \"unspecified\"); topPatterns, the most-repeated trailing \"Rule: ...\" lessons mined from entry text (deduplicated case-insensitively, sorted by count then recency, capped at 10); and recentFailures, how many of the most recent 20 entries were tagged with a \"fix\" category. Never errors on a missing or empty log — every count simply comes back zero.",
 		mcpserver.Annotations{
-			Title:      "Append to learnings log",
-			ReadOnly:   true,
-			Idempotent: true,
+			Title:    "Manage learnings log",
+			ReadOnly: true,
+			// append adds a new entry on every call and remove works by
+			// entry position, so repeating a call changes the log again.
+			Idempotent: false,
 			OpenWorld:  false,
 		},
 		func(ctx mcpserver.Ctx, in LearningsLogIn) (LearningsLogOut, error) {

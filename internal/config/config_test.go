@@ -1407,6 +1407,42 @@ func TestSchemaSync(t *testing.T) {
 	}
 }
 
+// TestLocalSchemaSync verifies that LocalSections matches the top-level
+// properties declared in plugins/sdlc/schemas/sdlc-local.schema.json, apart
+// from the integer "version" schema-version property, which is not a
+// section.
+func TestLocalSchemaSync(t *testing.T) {
+	schemaPath := filepath.Join("..", "..", "plugins", "sdlc", "schemas", "sdlc-local.schema.json")
+	data, err := os.ReadFile(schemaPath)
+	if err != nil {
+		t.Fatalf("could not read schema file: %v", err)
+	}
+	var schema struct {
+		Properties map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal(data, &schema); err != nil {
+		t.Fatalf("could not parse schema: %v", err)
+	}
+
+	notSections := map[string]bool{"$schema": true, "version": true}
+	for key := range schema.Properties {
+		if notSections[key] {
+			continue
+		}
+		if !LocalSections[key] {
+			t.Errorf("local schema property %q missing from LocalSections", key)
+		}
+	}
+	for key := range LocalSections {
+		if _, ok := schema.Properties[key]; !ok {
+			t.Errorf("LocalSections key %q missing from local schema properties", key)
+		}
+		if ProjectSections[key] {
+			t.Errorf("LocalSections key %q is also a project section", key)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Named-table guardrail conversion
 // ---------------------------------------------------------------------------

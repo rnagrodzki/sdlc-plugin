@@ -26,8 +26,8 @@ type ReceivedReviewIn struct {
 // ReceivedReviewOut is the inline payload returned by received_review_prepare.
 // Thread classification (outstanding/resolved/self-replied/stale) is not
 // ported: the JS source relies on fetchPrReviewThreads (GraphQL), which has
-// no ghx counterpart. Instead, this tool returns PRView and PRChecks output
-// for downstream consumers.
+// no ghx counterpart. Instead, this tool returns PRView and
+// PRChecksWithExitCode output for downstream consumers.
 type ReceivedReviewOut struct {
 	Version       int              `json:"version"`
 	Timestamp     string           `json:"timestamp"`
@@ -35,6 +35,9 @@ type ReceivedReviewOut struct {
 	View          string           `json:"view"`
 	Checks        string           `json:"checks"`
 	PluginVersion string           `json:"plugin_version"`
+	// Warnings reports a `gh pr checks` failure that left Checks empty. The
+	// call still succeeds: checks are best effort, the view is not.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 type receivedReviewPR struct {
@@ -94,7 +97,11 @@ func receivedReviewPrepare(projectRoot, activeRoot string, in ReceivedReviewIn) 
 		}
 	}
 
-	checks, _ := ghx.PRChecks(activeRoot, in.PR)
+	checks, warning := receivedReviewChecks(activeRoot, in.PR)
+	var warnings []string
+	if warning != "" {
+		warnings = []string{warning}
+	}
 
 	return ReceivedReviewOut{
 		Version:       1,
@@ -103,7 +110,30 @@ func receivedReviewPrepare(projectRoot, activeRoot string, in ReceivedReviewIn) 
 		View:          view,
 		Checks:        checks,
 		PluginVersion: pluginVersion,
+		Warnings:      warnings,
 	}, nil
+}
+
+// receivedReviewChecks runs `gh pr checks <pr>` best effort and returns its
+// rows, or an empty string and a warning when gh itself failed.
+//
+// gh pr checks exits 1 when a check failed and 8 when one is pending, and
+// prints the rows in both cases. Those rows are exactly what the skill has
+// to report, so exits 0, 1 and 8 with output are success. A non-zero exit
+// with no rows (PR not found, auth, "no checks reported"), any other exit
+// code, or a failure to run gh at all is a warning carrying gh's stderr.
+func receivedReviewChecks(activeRoot string, pr int) (checks, warning string) {
+	stdout, stderr, exitCode, err := ghx.PRChecksWithExitCode(activeRoot, pr)
+	if err != nil {
+		return "", fmt.Sprintf("gh pr checks %d: %s", pr, err.Error())
+	}
+	switch {
+	case exitCode == 0:
+		return stdout, ""
+	case (exitCode == 1 || exitCode == 8) && stdout != "":
+		return stdout, ""
+	}
+	return "", fmt.Sprintf("gh pr checks %d: exit %d: %s", pr, exitCode, stderr)
 }
 
 // ReceivedReviewVerifyIn is the input for the received_review_verify tool.

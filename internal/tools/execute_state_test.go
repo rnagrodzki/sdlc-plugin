@@ -1496,8 +1496,24 @@ func TestExecState_WaveCommit_DivergedConflict(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for diverged committedSha")
 	}
-	if _, ok := err.(*mcpserver.DomainError); !ok {
-		t.Errorf("expected DomainError, got %T", err)
+	de, ok := err.(*mcpserver.DomainError)
+	if !ok {
+		t.Fatalf("expected DomainError, got %T", err)
+	}
+	// wave-committed never overwrites a different recorded sha, so the
+	// suggestion must not point there. It must name the state file the
+	// caller has to edit and the reflog route to restore the history.
+	if strings.Contains(de.Suggestion, "wave-committed") {
+		t.Errorf("Suggestion = %q, must not suggest wave-committed (it refuses to overwrite a recorded sha)", de.Suggestion)
+	}
+	st, ferr := state.Find(dir, "execute", "feat/test")
+	if ferr != nil || st == nil {
+		t.Fatalf("find state: %v", ferr)
+	}
+	for _, want := range []string{st.Path, "committedSha", "git reflog", "retry wave-commit"} {
+		if !strings.Contains(de.Suggestion, want) {
+			t.Errorf("Suggestion = %q, want it to mention %q", de.Suggestion, want)
+		}
 	}
 }
 
@@ -3911,6 +3927,51 @@ func TestExecState_WaveProgress_Read(t *testing.T) {
 	}
 }
 
+// TestExecState_WaveProgress_ReadSkipsServerStateFiles pins that the
+// server-owned <taskId>.server.json sibling of a worker progress file is
+// not reported as a task of its own ("T1.server") by readProgress.
+func TestExecState_WaveProgress_ReadSkipsServerStateFiles(t *testing.T) {
+	root := t.TempDir()
+
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action: "wave-progress",
+		RunID:  "test-run",
+		TaskID: "T1",
+		Phase:  "editing",
+	}, fixedClock(testNow)); err != nil {
+		t.Fatalf("wave-progress write: %v", err)
+	}
+	if err := wave.StoreServerState(root, "test-run", "T1", wave.ServerTaskState{
+		DispatchedAt: "2026-01-01T00:00:00.000Z",
+		WorkerName:   "worker-T1",
+		Attempt:      1,
+	}); err != nil {
+		t.Fatalf("store server state: %v", err)
+	}
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action:       "wave-progress",
+		RunID:        "test-run",
+		ReadProgress: true,
+	}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("wave-progress read: %v", err)
+	}
+	out, ok := result.(ReadProgressOut)
+	if !ok {
+		t.Fatalf("result type = %T, want ReadProgressOut", result)
+	}
+	if _, ok := out.Tasks["T1"]; !ok {
+		t.Errorf("tasks = %v, want T1 present", out.Tasks)
+	}
+	if _, ok := out.Tasks["T1.server"]; ok {
+		t.Errorf("tasks = %v, want no fake T1.server task from the server-state file", out.Tasks)
+	}
+	if len(out.Tasks) != 1 {
+		t.Errorf("len(tasks) = %d, want 1", len(out.Tasks))
+	}
+}
+
 // ---------------------------------------------------------------------------
 // resume-reset
 // ---------------------------------------------------------------------------
@@ -5055,6 +5116,136 @@ func TestExecState_GC_TTLDaysZeroPassthrough(t *testing.T) {
 	}
 }
 
+// gcBucketFiles returns the "file" (dry run) or base name (real run) of
+// every entry in one execute/plan bucket list, sorted.
+func gcBucketFiles(t *testing.T, list any) []string {
+	t.Helper()
+	var out []string
+	switch v := list.(type) {
+	case []any:
+		for _, e := range v {
+			out = append(out, e.(map[string]any)["file"].(string))
+		}
+	case []string:
+		for _, p := range v {
+			out = append(out, filepath.Base(p))
+		}
+	default:
+		t.Fatalf("unexpected bucket list type %T", list)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// TestExecState_GC_DryRunMatchesRealRun pins that gc's dry run predicts
+// exactly what the real run deletes. A live branch with two TTL-expired
+// execute files keeps only its newest one; before the shared
+// state.ClassifyGCFile rule, the dry run kept both ("branch-exists").
+func TestExecState_GC_DryRunMatchesRealRun(t *testing.T) {
+	root := t.TempDir()
+	runsDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+	if err := os.MkdirAll(runsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	files := map[string]time.Duration{
+		"execute-feat-x-20260101T000000Z.json": 20 * 24 * time.Hour, // older, past TTL
+		"execute-feat-x-20260102T000000Z.json": 10 * 24 * time.Hour, // newest, past TTL
+		"plan-feat-x-20260103T000000Z.json":    1 * time.Hour,       // fresh
+	}
+	for name, age := range files {
+		p := filepath.Join(runsDir, name)
+		if err := os.WriteFile(p, []byte(`{"branch":"feat/x"}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		mt := now.Add(-age)
+		if err := os.Chtimes(p, mt, mt); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// root is not a git repo, so every branch counts as live.
+	dry, err := executeState(root, root, ExecuteStateIn{Action: "gc", TTLDays: intPtr(7), DryRun: true}, time.Now)
+	if err != nil {
+		t.Fatalf("gc dry run: %v", err)
+	}
+	dm := dry.(map[string]any)
+	dryExec := dm["execute"].(map[string]any)
+	dryPlan := dm["plan"].(map[string]any)
+
+	wantReasons := map[string]string{
+		"execute-feat-x-20260101T000000Z.json": state.GCReasonStaleSuperseded,
+		"execute-feat-x-20260102T000000Z.json": state.GCReasonBranchExists,
+		"plan-feat-x-20260103T000000Z.json":    state.GCReasonTTLFresh,
+	}
+	for _, bucket := range []map[string]any{dryExec, dryPlan} {
+		for _, key := range []string{"deleted", "kept"} {
+			for _, e := range bucket[key].([]any) {
+				m := e.(map[string]any)
+				if want := wantReasons[m["file"].(string)]; m["reason"] != want {
+					t.Errorf("dry run %s reason = %v, want %s", m["file"], m["reason"], want)
+				}
+			}
+		}
+	}
+	for name := range files {
+		if _, err := os.Stat(filepath.Join(runsDir, name)); err != nil {
+			t.Fatalf("dry run removed %s: %v", name, err)
+		}
+	}
+
+	realRun, err := executeState(root, root, ExecuteStateIn{Action: "gc", TTLDays: intPtr(7)}, time.Now)
+	if err != nil {
+		t.Fatalf("gc real run: %v", err)
+	}
+	rm := realRun.(map[string]any)
+	realExec := rm["execute"].(map[string]any)
+	realPlan := rm["plan"].(map[string]any)
+
+	for _, c := range []struct {
+		label     string
+		dry, real any
+	}{
+		{"execute deleted", dryExec["deleted"], realExec["deleted"]},
+		{"execute kept", dryExec["kept"], realExec["kept"]},
+		{"plan deleted", dryPlan["deleted"], realPlan["deleted"]},
+		{"plan kept", dryPlan["kept"], realPlan["kept"]},
+	} {
+		d, r := gcBucketFiles(t, c.dry), gcBucketFiles(t, c.real)
+		if strings.Join(d, ",") != strings.Join(r, ",") {
+			t.Errorf("%s: dry run %v, real run %v", c.label, d, r)
+		}
+	}
+}
+
+// TestExecGCDryRun_GoneBranchFreshFileDeleted pins the gone-branch case the
+// old dry run got wrong: a TTL-fresh file of a deleted branch is deleted by
+// the real run, so the dry run must predict it with reason branch-gone.
+func TestExecGCDryRun_GoneBranchFreshFileDeleted(t *testing.T) {
+	stateDir := t.TempDir()
+	name := "execute-gone-20260101T000000Z.json"
+	p := filepath.Join(stateDir, name)
+	if err := os.WriteFile(p, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mt := testNow.Add(-time.Hour)
+	if err := os.Chtimes(p, mt, mt); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := execGCDryRun(stateDir, 7, func(string) bool { return false }, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	deleted := res.(map[string]any)["execute"].(map[string]any)["deleted"].([]any)
+	if len(deleted) != 1 {
+		t.Fatalf("deleted = %v, want the one fresh file of the gone branch", deleted)
+	}
+	if got := deleted[0].(map[string]any)["reason"]; got != state.GCReasonBranchGone {
+		t.Errorf("reason = %v, want %s", got, state.GCReasonBranchGone)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // execReapRunDirectories: ledger/ subdirectories swept individually (F-rerun-3)
 // ---------------------------------------------------------------------------
@@ -6039,6 +6230,89 @@ func TestExecState_Decide_MissingID(t *testing.T) {
 	}
 	if domainErr.Suggestion == "" {
 		t.Error("expected a Suggestion on the DomainError")
+	}
+}
+
+// TestExecState_Decide_RejectsUnknownType pins the runtime enum check on
+// decideType: any value other than "guardrail" is a DomainError and nothing
+// is appended to guardrailDecisions. The report only reads entries whose
+// decideType is "guardrail", so a typo would be stored and then ignored.
+func TestExecState_Decide_RejectsUnknownType(t *testing.T) {
+	for _, bad := range []string{"guardrails", "Guardrail", " guardrail"} {
+		t.Run(bad, func(t *testing.T) {
+			root := t.TempDir()
+			createExecState(t, root, "feat/decide", map[string]any{
+				"branch": "feat/decide",
+			})
+
+			_, err := executeState(root, root, ExecuteStateIn{
+				Action:         "decide",
+				Branch:         "feat/decide",
+				DecideType:     bad,
+				DecideID:       "no-real-fs-git-in-tests",
+				DecideDecision: "override",
+			}, fixedClock(testNow))
+			if err == nil {
+				t.Fatal("expected error for unknown decideType")
+			}
+			domainErr, ok := err.(*mcpserver.DomainError)
+			if !ok {
+				t.Fatalf("expected DomainError, got %T: %v", err, err)
+			}
+			if want := fmt.Sprintf(`decideType must be "guardrail"; got %q`, bad); !strings.Contains(domainErr.Msg, want) {
+				t.Errorf("Msg = %q, want it to contain %q", domainErr.Msg, want)
+			}
+			if domainErr.Suggestion == "" {
+				t.Error("expected a Suggestion on the DomainError")
+			}
+
+			st, findErr := state.Find(root, "execute", "feat/decide")
+			if findErr != nil || st == nil {
+				t.Fatalf("find state: %v", findErr)
+			}
+			if got, ok := st.Data["guardrailDecisions"]; ok {
+				t.Errorf("guardrailDecisions = %v, want absent after a rejected decide", got)
+			}
+		})
+	}
+}
+
+// TestExecState_Decide_RejectsUnknownDecision pins the runtime enum check on
+// decideDecision: a value outside override|harden|cancel|fix is a
+// DomainError and nothing is appended to guardrailDecisions.
+func TestExecState_Decide_RejectsUnknownDecision(t *testing.T) {
+	root := t.TempDir()
+	createExecState(t, root, "feat/decide", map[string]any{
+		"branch": "feat/decide",
+	})
+
+	_, err := executeState(root, root, ExecuteStateIn{
+		Action:         "decide",
+		Branch:         "feat/decide",
+		DecideType:     "guardrail",
+		DecideID:       "no-real-fs-git-in-tests",
+		DecideDecision: "approve",
+	}, fixedClock(testNow))
+	if err == nil {
+		t.Fatal("expected error for unknown decideDecision")
+	}
+	domainErr, ok := err.(*mcpserver.DomainError)
+	if !ok {
+		t.Fatalf("expected DomainError, got %T: %v", err, err)
+	}
+	if !strings.Contains(domainErr.Msg, `decideDecision must be one of override, harden, cancel, fix; got "approve"`) {
+		t.Errorf("Msg = %q, want the enum and the bad value", domainErr.Msg)
+	}
+	if domainErr.Suggestion == "" {
+		t.Error("expected a Suggestion on the DomainError")
+	}
+
+	st, findErr := state.Find(root, "execute", "feat/decide")
+	if findErr != nil || st == nil {
+		t.Fatalf("find state: %v", findErr)
+	}
+	if got, ok := st.Data["guardrailDecisions"]; ok {
+		t.Errorf("guardrailDecisions = %v, want absent after a rejected decide", got)
 	}
 }
 

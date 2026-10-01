@@ -80,10 +80,16 @@ type exploreManifest struct {
 	OutDir            string        `json:"outDir"`
 }
 
+// exploreDirPrefix starts the name of every explore manifest directory:
+// sdlc-explore-<branch slug>-<random suffix>.
+const exploreDirPrefix = "sdlc-explore-"
+
 // buildExplorePack runs the full discovery pass (git scope, OpenSpec paths,
 // keyword grep, web-research signal, skill registry sample, recent plans
 // sample), writes a manifest.json into a fresh sdlc-explore-<slug>-XXXXXX
-// tempdir, and returns a summary. Never returns an error to the caller;
+// tempdir, and returns a summary. After a successful write it removes other
+// sdlc-explore-* dirs older than staleTempDirAge, so the dirs do not pile up
+// when a caller never deletes them. Never returns an error to the caller;
 // failures degrade into ExplorePack.Error (mirrors plan-explore.js's R28
 // fallback contract: always exits 0, errors surface via output.error only).
 func buildExplorePack(mainRoot, contentRoot, fromOpenspec, userPrompt string) ExplorePack {
@@ -92,7 +98,7 @@ func buildExplorePack(mainRoot, contentRoot, fromOpenspec, userPrompt string) Ex
 		branchSlug = state.SlugifyBranch(branch)
 	}
 
-	outDir, err := os.MkdirTemp(os.TempDir(), fmt.Sprintf("sdlc-explore-%s-", branchSlug))
+	outDir, err := mkdirTempFunc("", fmt.Sprintf("%s%s-", exploreDirPrefix, branchSlug))
 	if err != nil {
 		msg := err.Error()
 		return ExplorePack{Error: &msg}
@@ -132,6 +138,8 @@ func buildExplorePack(mainRoot, contentRoot, fromOpenspec, userPrompt string) Ex
 		msg := err.Error()
 		return ExplorePack{OutDir: &outDir, Error: &msg}
 	}
+
+	removeStaleTempDirs(filepath.Dir(outDir), exploreDirPrefix, filepath.Base(outDir), time.Now())
 
 	return ExplorePack{
 		ManifestPath:      &manifestPath,
@@ -182,8 +190,9 @@ func getGitScopeFiles(contentRoot string) []string {
 // backtickPathRe matches inline-code file paths in markdown, e.g. `src/foo.go`.
 var backtickPathRe = regexp.MustCompile("`([a-zA-Z0-9_\\-./]+\\.[a-zA-Z]{1,10})`")
 
-// getOpenSpecPaths scans an OpenSpec change's proposal.md and specs/*.md for
-// backtick-quoted, relative-looking file paths, mirroring
+// getOpenSpecPaths scans an OpenSpec change's proposal.md, its delta specs
+// (specs/<capability>/spec.md, the OpenSpec layout) and any top-level
+// specs/*.md for backtick-quoted, relative-looking file paths, mirroring
 // plan-explore.js's getOpenSpecPaths.
 func getOpenSpecPaths(contentRoot, changeName string) []string {
 	if changeName == "" || !isSafeChangeName(changeName) {
@@ -203,7 +212,12 @@ func getOpenSpecPaths(contentRoot, changeName string) []string {
 	specsDir := filepath.Join(changeDir, "specs")
 	if entries, err := os.ReadDir(specsDir); err == nil {
 		for _, e := range entries {
-			if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
+			switch {
+			case e.IsDir():
+				if spec := filepath.Join(specsDir, e.Name(), "spec.md"); fileExists(spec) {
+					filesToScan = append(filesToScan, spec)
+				}
+			case strings.HasSuffix(e.Name(), ".md"):
 				filesToScan = append(filesToScan, filepath.Join(specsDir, e.Name()))
 			}
 		}
@@ -382,25 +396,35 @@ type planSettingsFile struct {
 // by mtime descending, mirroring plan-explore.js's sampleRecentPlans.
 // Directories are not merged: the function returns on the first candidate
 // directory that exists, even if it yields zero files.
+//
+// A relative plansDirectory resolves against mainRoot (the workspace root),
+// as the plan skill documents, never against the server's working directory.
+// The same rule applies to the global setting.
 func sampleRecentPlans(mainRoot string) []string {
 	var candidateDirs []string
 
 	home, homeErr := os.UserHomeDir()
 
-	if data, err := os.ReadFile(filepath.Join(mainRoot, ".claude", "settings.json")); err == nil {
-		var s planSettingsFile
-		if json.Unmarshal(data, &s) == nil && s.PlansDirectory != "" {
-			candidateDirs = append(candidateDirs, s.PlansDirectory)
+	plansDirFrom := func(settingsPath string) {
+		data, err := os.ReadFile(settingsPath)
+		if err != nil {
+			return
 		}
+		var s planSettingsFile
+		if json.Unmarshal(data, &s) != nil || s.PlansDirectory == "" {
+			return
+		}
+		dir := s.PlansDirectory
+		if !filepath.IsAbs(dir) {
+			dir = filepath.Join(mainRoot, dir)
+		}
+		candidateDirs = append(candidateDirs, dir)
 	}
 
+	plansDirFrom(filepath.Join(mainRoot, ".claude", "settings.json"))
+
 	if homeErr == nil {
-		if data, err := os.ReadFile(filepath.Join(home, ".claude", "settings.json")); err == nil {
-			var s planSettingsFile
-			if json.Unmarshal(data, &s) == nil && s.PlansDirectory != "" {
-				candidateDirs = append(candidateDirs, s.PlansDirectory)
-			}
-		}
+		plansDirFrom(filepath.Join(home, ".claude", "settings.json"))
 		candidateDirs = append(candidateDirs, filepath.Join(home, ".claude", "plans"))
 	}
 
@@ -448,7 +472,7 @@ func sampleRecentPlans(mainRoot string) []string {
 // plan_prepare and plan_mark are registered by RegisterPlanTools in plan.go.
 func RegisterPlanExploreTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "plan_explore_prepare",
-		"INTERNAL — called by sdlc skills only. Run dynamic-dimension discovery (git scope, OpenSpec paths, keyword grep, web-research signal, skill registry, recent plans) and write a manifest.json into a fresh tempdir for plan's explore orchestrator.",
+		"INTERNAL — called by sdlc skills only. Run dynamic-dimension discovery (git scope, OpenSpec paths, keyword grep, web-research signal, skill registry, recent plans) and write a manifest.json into a fresh tempdir for plan's explore orchestrator. Each call also removes older sdlc-explore-* temp directories last modified more than 24 hours ago.",
 		mcpserver.Annotations{
 			Title:      "Prepare plan exploration pack",
 			ReadOnly:   true,

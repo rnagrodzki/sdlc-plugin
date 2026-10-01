@@ -59,7 +59,7 @@ type ProgressFields struct {
 }
 
 // Progress is the aggregated view of a run's progress markers, assembled by
-// ReadProgress from every file under <root>/.sdlc-v2/runs/<runID>/progress/
+// ReadProgress from every worker file under <root>/.sdlc-v2/runs/<runID>/progress/
 // plus (at lower priority) the legacy single-file marker,
 // <root>/.sdlc-v2/runs/<runID>/progress.json. The exported shape is
 // unchanged from the single-file era so MCP callers (execute_state's
@@ -138,8 +138,9 @@ func (realProgressStore) mkdirAll(dir string) error {
 // restoring it); production code must never reassign it.
 var progressStoreImpl progressStore = realProgressStore{}
 
-// ReadProgress aggregates every per-task file under
-// <root>/.sdlc-v2/runs/<runID>/progress/ into a single Progress, merging
+// ReadProgress aggregates every worker-owned per-task file under
+// <root>/.sdlc-v2/runs/<runID>/progress/ into a single Progress (the
+// server-owned <taskID>.server.json files there are skipped), merging
 // in the legacy single-file marker (if any) at lower priority — a taskID
 // present in both is resolved in favor of the per-task file. Missing or
 // unreadable files (legacy marker absent, progress/ directory absent, a
@@ -170,6 +171,11 @@ func ReadProgress(root, runID string) (*Progress, error) {
 			}
 			name := e.Name()
 			if !strings.HasSuffix(name, ".json") {
+				continue
+			}
+			// <taskID>.server.json is the server-owned sibling of a
+			// worker file (see serverstate.go), not a task of its own.
+			if strings.HasSuffix(name, serverStateSuffix) {
 				continue
 			}
 			taskID := strings.TrimSuffix(name, ".json")

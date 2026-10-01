@@ -70,7 +70,8 @@ type DimensionsRenderInstructionsIn struct {
 	// worktree, not the main one, so a dimension added on a branch inside a
 	// linked worktree is visible in the same session. harden's
 	// Copilot-mirror step (R-copilot-mirror, #474) passes this explicitly
-	// from harden_prepare's manifest (repository.contentRoot); that is now
+	// from prepare_orchestrator's harden-mode manifest
+	// (repository.contentRoot); that is now
 	// redundant with the default but kept as an explicit param.
 	ProjectRoot string `json:"projectRoot,omitempty" jsonschema_description:"Overrides the root all modes resolve against (write mode's .sdlc-v2/review-dimensions/ destination, list mode's scan directory, or render mode's .github/instructions/ output path and file/commonFile inputs). Defaults to the active worktree root when empty."`
 	// WriteDimension selects write mode: persist Content to
@@ -209,7 +210,17 @@ func dimensionsRenderInstructions(root string, in DimensionsRenderInstructionsIn
 		}
 	}
 
+	// Trim the same way dimensions.ToInstructions does for the heading, so a
+	// quoted name with stray spaces ("security ") does not produce a file
+	// name with spaces in it.
 	name, _ := meta["name"].(string)
+	name = strings.TrimSpace(name)
+	if strings.ContainsAny(name, `/\`) || strings.Contains(name, "..") {
+		return DimensionsRenderInstructionsOut{}, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("dimensions_render_instructions: %s: invalid name %q: must not contain a path separator or \"..\"", filePath, name),
+			Suggestion: "Set the frontmatter name to a bare lowercase-hyphen stem such as \"security\", then retry.",
+		}
+	}
 	outPath := filepath.Join(root, ".github", "instructions", name+".instructions.md")
 
 	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {

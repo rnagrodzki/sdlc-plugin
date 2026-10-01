@@ -4,7 +4,7 @@ This guide explains how the SDLC plugin manages project versions, automates rele
 
 ## Three Independent Release Paths
 
-Versioning is configured in `.sdlc-v2/config.toml` under the `version` key. This is the config location the Go-side tools `pr_prepare` and `pr_apply` read, along with the CI scripts (`scaffold_ci` scaffolds those CI workflow files and does not itself read or write this config).
+Versioning is configured in `.sdlc-v2/config.toml` under the `version` key. This is the config location the Go-side tool `pr_prepare` reads for its version diagnostics, along with the CI scripts (`scaffold_ci` scaffolds those CI workflow files and does not itself read or write this config). `pr_apply` does not read the version config.
 
 A release is made of three independently toggleable paths, each carrying its own `enabled` flag:
 
@@ -112,7 +112,7 @@ diagnosis.
 
 ## Breaking Config Change
 
-The pre-redesign flat shape (top-level `mode`, string `versionFile`, `changelogMethod`, boolean `changelog`, `rcAutoContinue`, `ticketPrefix`) is **rejected outright** by every reader (`pr_prepare`, `pr_apply`, and every CI script) — there is no backward-compatible parsing and no automatic migration. A project still on the old shape gets a hard error naming `/setup --only version` as the fix. `ticketPrefix` in particular is dropped entirely — no CI script ever read it, and there is no replacement field.
+The pre-redesign flat shape (top-level `mode`, string `versionFile`, `changelogMethod`, boolean `changelog`, `rcAutoContinue`, `ticketPrefix`) is not parsed — there is no backward-compatible parsing and no automatic migration. `release-on-main.cjs` fails with a hard error naming `/setup --only version` as the fix. The Go config reader also fails on it, but `pr_prepare` treats that failure as "no version config": it returns no version diagnostics (no `versionConfig`, `bumpOptions`, or `conventionalSummary`) and raises no error or warning. `pr_apply` does not read the version config, so it neither rejects nor detects the old shape. Run `/setup --only version` to migrate. `ticketPrefix` in particular is dropped entirely — no CI script ever read it, and there is no replacement field.
 
 ## How Releases Work
 
@@ -532,7 +532,7 @@ Full `.sdlc-v2/config.toml` `version` section:
 | `changelog.file` | No | `"CHANGELOG.md"` (used only when `changelog.enabled`) | Path to changelog file. |
 | `pushAuth.secretName` | No | `""` (effectively `RELEASE_TOKEN`) | Name of the repo secret holding the App or PAT token used in place of the default `RELEASE_TOKEN` fallback for release pushes. When set to a value other than `RELEASE_TOKEN`, `scaffold_ci` rewrites the scaffolded workflows' `secrets.RELEASE_TOKEN` reference to this name, for any `method`. See [Protected branches and rulesets](#protected-branches-and-rulesets). |
 
-At least one of `tag.enabled` or `versionFile.enabled` must be `true` — a config with both false (or absent) is rejected by `pr_prepare`, `pr_apply`, and every CI script.
+At least one of `tag.enabled` or `versionFile.enabled` must be `true` — a config with both false (or absent) is rejected by `release-on-main.cjs`. `pr_prepare` treats it as "no version config" and returns no version diagnostics; `pr_apply` does not read the version config.
 
 ## Release Workflow Automation
 
@@ -636,7 +636,7 @@ Not an issue in the current flow. `release-on-main.cjs` runs on push to main (af
 
 ### verify-release-intent fails with "No version config found"
 
-The scaffolded CI scripts (`release-on-main.cjs`, `retag-release.cjs`, `verify-release-intent.cjs`, `promote-release.cjs`, `check-changelog.cjs`) read version config exclusively from `.sdlc-v2/config.toml`, matching the Go-side tools `pr_prepare` and `pr_apply`. There is no legacy fallback — a project still on the old `.sdlc/config.json` (or `.claude/sdlc.json` / `.claude/version.json`) layout must run the `migrate` tool first.
+The scaffolded CI scripts (`release-on-main.cjs`, `retag-release.cjs`, `verify-release-intent.cjs`, `promote-release.cjs`, `check-changelog.cjs`) read version config exclusively from `.sdlc-v2/config.toml`, matching the Go-side tool `pr_prepare`. There is no legacy fallback — a project still on the old `.sdlc/config.json` (or `.claude/sdlc.json` / `.claude/version.json`) layout must run the `migrate` tool first.
 
 If `.sdlc-v2/config.toml` is missing or has no `.version` section, release automation fails with:
 

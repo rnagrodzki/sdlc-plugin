@@ -109,6 +109,15 @@ func expandDottedKeys(flat map[string]any) map[string]any {
 	return out
 }
 
+// sectionFile names the config file a section id is written to.
+func sectionFile(id string) string {
+	top, _, _ := strings.Cut(id, ".")
+	if config.ProjectSections[top] {
+		return ".sdlc-v2/config.toml"
+	}
+	return ".sdlc-v2/local.toml"
+}
+
 // setupWriteSections is the core logic, separated from the handler for
 // testability.
 func setupWriteSections(root string, in SetupWriteSectionsIn) (SetupWriteSectionsOut, error) {
@@ -141,22 +150,55 @@ func setupWriteSections(root string, in SetupWriteSectionsIn) (SetupWriteSection
 	}
 	sort.Strings(ids)
 
+	// Reject unknown top-level keys before writing anything. Without this,
+	// config.WriteSection routes every non-project key to local.toml, so a
+	// typo such as "shp" is written silently. An empty first segment is left
+	// to config.WriteSection, which reports it as an invalid section name.
+	var unknown []string
+	for _, id := range ids {
+		top, _, _ := strings.Cut(id, ".")
+		if top != "" && !config.ProjectSections[top] && !config.LocalSections[top] {
+			unknown = append(unknown, id)
+		}
+	}
+	if len(unknown) > 0 {
+		allowed := make([]string, 0, len(config.ProjectSections)+len(config.LocalSections))
+		for k := range config.ProjectSections {
+			allowed = append(allowed, k)
+		}
+		for k := range config.LocalSections {
+			allowed = append(allowed, k)
+		}
+		sort.Strings(allowed)
+		return SetupWriteSectionsOut{}, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("setup_write_sections: unknown section keys %v; allowed top-level keys: %v", unknown, allowed),
+			Suggestion: "Fix each unknown key so its first segment is one of the allowed top-level keys (use the section's configPath from setup_prepare), then retry. Nothing was written.",
+		}
+	}
+
 	var written []string
 	var errs []string
+	var rewroteWarnings []string
 	for _, id := range ids {
 		value := sections[id]
 		if value == nil {
 			value = map[string]any{}
 		}
-		value = expandDottedKeys(value)
-		if err := config.WriteSection(root, id, value); err != nil {
+		value = config.WholeNumbersToInt(expandDottedKeys(value)).(map[string]any)
+		rewrote, err := config.WriteSectionReport(root, id, value)
+		if err != nil {
 			errs = append(errs, fmt.Sprintf("section %s: %s", id, err.Error()))
 			continue
+		}
+		if rewrote {
+			rewroteWarnings = append(rewroteWarnings, fmt.Sprintf(
+				"section %s: could not edit %s in place, so the whole file was rewritten and its comments were removed",
+				id, sectionFile(id)))
 		}
 		written = append(written, id)
 	}
 
-	out := SetupWriteSectionsOut{OK: len(errs) == 0, Written: written}
+	out := SetupWriteSectionsOut{OK: len(errs) == 0, Written: written, Warnings: rewroteWarnings}
 	if len(errs) > 0 {
 		out.Errors = errs
 	}

@@ -103,7 +103,7 @@ var scaffoldManifest = []scaffoldManifestEntry{
 
 // ScaffoldCIIn is the input for the scaffold_ci tool.
 type ScaffoldCIIn struct {
-	Force bool `json:"force" jsonschema_description:"Overwrite existing CI scripts and workflow files that already exist in the project, instead of skipping them."`
+	Force bool `json:"force,omitempty" jsonschema_description:"Overwrite existing CI scripts and workflow files that already exist in the project, instead of skipping them."`
 }
 
 // ScaffoldFileReport describes the result for a single manifest entry.
@@ -606,7 +606,7 @@ func RegisterScaffoldTools(s *mcpserver.Server) {
 			ReadOnly:    false,
 			Destructive: true,
 			Idempotent:  true,
-			OpenWorld:   false,
+			OpenWorld:   true,
 		},
 		func(ctx mcpserver.Ctx, in ScaffoldCIIn) (ScaffoldCIOut, error) {
 			root, err := worktree.MainRoot()

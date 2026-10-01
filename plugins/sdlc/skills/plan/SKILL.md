@@ -62,14 +62,16 @@ Example — OpenSpec gate check:
       - On **1**: Stop plan. Tell the user to use the openspec CLI directly to create a change (run `openspec --help` for available commands). In plan mode, call ExitPlanMode first.
       - On **2** (recommended default — implements R63): Do NOT prompt the user further at this gate (R22 single-touchpoint). Set `openspecInlineGenerate = true`. `openspecContext` stays empty, so OpenSpec enrichment, Gate A, and openspec-task annotations do not activate — artifact authoring is deferred to Step 4 (OpenSpec Appendix generation), where exploration and decomposition data are available. Skip the rest of the OpenSpec block (steps 3–6 — there is no on-disk change to load). Continue with standard planning.
       - On **3**: Re-run the OpenSpec loading logic (steps 3–6) to resolve and load the active change.
+      - **`--auto`:** do not ask. Take option **2** (the recommended default) and follow its branch above. Record the choice in `## Key Decisions` and add a `## Deviations & assumptions` row with `asked=no`.
 3. If the user provided a spec file path pointing into `openspec/changes/<name>/`, extract `<name>` as the active change.
 4. Otherwise, Glob `openspec/changes/*/proposal.md` (exclude `archive/`). If exactly one non-archived change exists, use it. If multiple, try matching change directory names against the current git branch name. If still ambiguous, use AskUserQuestion. Context: this plan needs to attach to exactly one OpenSpec change's proposal/specs/tasks — picking the wrong one plans against the wrong requirements.
    > Multiple active OpenSpec changes found. Which one are you working on?
    List each change as an option labeled with its directory name plus a one-sentence description drawn from that change's `proposal.md` (its title or opening summary line) — not the bare name alone, so the user can tell them apart without opening each file.
+   **`--auto` does not suppress this question.** No choice is safe without the user: a wrong pick plans against the wrong requirements. Ask even under `--auto`; when AskUserQuestion is unavailable, stop and report the candidate changes instead of picking one.
 5. Once the active change is identified, Read in parallel:
    - `openspec/changes/<name>/proposal.md` — intent and scope
    - `openspec/changes/<name>/design.md` — technical approach (may not exist yet; skip if absent)
-   - All files matching `openspec/changes/<name>/specs/*.md` — delta specs (the requirements)
+   - All files matching `openspec/changes/<name>/specs/*.md` and `openspec/changes/<name>/specs/<capability>/spec.md` (one level deep) — delta specs (the requirements)
    - `openspec/changes/<name>/tasks.md` — OpenSpec's task checklist (may not exist; skip if absent)
 6. Store these as `openspecContext` for use in Steps 1–5. Update the plan file header `**Source:**` to `openspec/changes/<name>/` — required verbatim: `execute_state({action:"init"})` reads this exact header to ref-stamp `tasks.md` later. Do NOT report `openspecContext.tasksUpdated` as tasks updated — it is a pending count, not a write. Rationale: `docs/plan-architecture.md` § "OpenSpec tasks.md Ref Stamping".
 
@@ -166,7 +168,7 @@ Then continue the flow. If the contradictory phrase is absent, emit nothing.
 **`--from-openspec` handling (after prepare output, before gate check):**
 
 If `fromOpenspec.valid` is true in the prepare output:
-1. Read in parallel: `openspec/changes/<name>/proposal.md`, `openspec/changes/<name>/design.md` (optional), all `openspec/changes/<name>/specs/*.md`, `openspec/changes/<name>/tasks.md` (optional)
+1. Read in parallel: `openspec/changes/<name>/proposal.md`, `openspec/changes/<name>/design.md` (optional), all `openspec/changes/<name>/specs/*.md` and `openspec/changes/<name>/specs/<capability>/spec.md` (one level deep), `openspec/changes/<name>/tasks.md` (optional)
 2. Store as `openspecContext`. Set `fromOpenspecDirect = true`
 3. Skip the gate check and complexity routing; still perform the template-resolution `plan_prepare` call above (passing `fromOpenspecDirect: true`) before proceeding to Step 1
 
@@ -436,7 +438,7 @@ Identify constraints: language, framework, existing conventions, testing approac
 
 **OpenSpec enrichment (when `openspecContext` is available):**
 - Use `proposal.md` for goal and scope understanding (what's in, what's out)
-- Use delta specs (`specs/*.md`) with their ADDED/MODIFIED/REMOVED sections as the authoritative requirements — each delta entry is a requirement
+- Use delta specs (`specs/*.md` and `specs/<capability>/spec.md`) with their ADDED/MODIFIED/REMOVED sections as the authoritative requirements — each delta entry is a requirement
 - Use `design.md` for architecture constraints and technical approach decisions
 - Use `tasks.md` as a coarse reference for decomposition — OpenSpec tasks are higher-level than plan tasks, so decompose further rather than copying verbatim
 - When the OpenSpec artifacts provide sufficient scope, integration, and success criteria, skip the "Structured discovery" AskUserQuestion — the proposal and delta specs already answer those questions
@@ -460,7 +462,7 @@ When `openspecContext.requirements` is present (non-null) in the prepare output:
 
 2. Fill the prompt template variables:
    - `{PROPOSAL}` — content of `openspec/changes/<name>/proposal.md` (already read in Step 0), or `"[artifact missing]"` if absent
-   - `{DELTA_SPECS}` — concatenated content of all `openspec/changes/<name>/specs/*.md` files (already read in Step 0), or `"[artifact missing]"` if none found
+   - `{DELTA_SPECS}` — concatenated content of all delta spec files (`openspec/changes/<name>/specs/*.md` and `specs/<capability>/spec.md`) (already read in Step 0), or `"[artifact missing]"` if none found
    - `{TASKS_MD}` — content of `openspec/changes/<name>/tasks.md` (already read in Step 0), or `"[artifact missing]"` if absent
    - `{DESIGN}` — content of `openspec/changes/<name>/design.md` if present, or `"[artifact missing]"`
    - `{REQUIREMENTS_JSON}` — `JSON.stringify(openspecContext.requirements)` from prepare output, or `"null"` if null
@@ -481,13 +483,13 @@ When `openspecContext.requirements` is present (non-null) in the prepare output:
 **Scope check:** If requirements span independent subsystems with no shared state, use AskUserQuestion:
 > These requirements cover independent subsystems. Recommend splitting into N plans. Proceed as one plan or split?
 
-Wait for answer.
+Wait for answer. **`--auto` does not suppress this question** — the split changes how many plans exist and what each hands off, so it is not a choice to make silently. Ask even under `--auto`; when AskUserQuestion is unavailable, stop and report the proposed split instead of choosing.
 
 **Approach check:** If decomposition reveals multiple viable approaches for a component (e.g., sync vs. async, library vs. hand-rolled), use AskUserQuestion presenting the trade-offs of each option. **Dedup against Step 1:** if this ambiguity was already resolved by a Structured discovery question (or its `--auto` fallback) in Step 1, skip — do not re-ask. Only surface approach questions that are newly revealed by the decomposition breakdown.
 
 Wait for answer.
 
-**`--auto` suppression (R65):** When `--auto` is set, suppress the AskUserQuestion above. Pick the most conservative approach autonomously, using the option that most closely matches existing codebase patterns as a tiebreaker between equally-conservative choices. Record the choice in `## Key Decisions` with rationale, and add a `## Deviations & assumptions` row with `asked=no`.
+**`--auto` suppression (R65):** When `--auto` is set, suppress the Approach check AskUserQuestion above (not the Scope check). Pick the most conservative approach autonomously, using the option that most closely matches existing codebase patterns as a tiebreaker between equally-conservative choices. Record the choice in `## Key Decisions` with rationale, and add a `## Deviations & assumptions` row with `asked=no`.
 
 **File structure mapping** — before writing tasks, map out:
 - Files to create (path + one-line responsibility)
@@ -599,7 +601,7 @@ runs once at the wave boundary as the gate check regardless of any per-task scop
 `./plan-format-reference.md`'s `## Verify Field — Scoped Hints` and `## Isolation` sections for the
 full syntax and when to use it.
 
-**Write to plan file — template-required sections and tasks:** Write ALL sections declared in the active template's `## Required Sections` list, in the order defined by `./plan-format-reference.md`'s `## Section Order`. Do NOT hardcode section names — the template is the single source of truth. For each template-required section:
+**Write to plan file — template-required sections and tasks:** Write ALL sections declared in the active template's `## Required Sections` list, in template order — fill the skeleton `plan_prepare` wrote (`template.skeletonMarkdown`) in place and do not move its sections. The template order wins over `./plan-format-reference.md`'s `## Section Order`, which places only sections the template does not list. Do NOT hardcode section names — the template is the single source of truth. For each template-required section:
 
 - `## Context` — already written in Step 1 (answers to Discovery Questions); update if Step 2 research expanded the picture
 - `## Research Findings` — already written in Step 1 (exploration output); update if needed
@@ -642,11 +644,11 @@ For each `lanes[i]` entry (i = 0..4):
   - Lane 1 (content-coverage) additionally: `{FORMAT_REFERENCE_PATH}` — absolute path to plan-format-reference.md (sibling of lane-content-coverage-prompt.md in the same skill directory; resolve as `dirname(lanes[1].promptTemplatePath)/plan-format-reference.md`), `{PLAN_TEMPLATE_PATH}` — `activeTemplatePath` resolved in Step 0 (the absolute path to the active plan template — project override or shipped default)
   - Lane 4 (G17/dimension-coverage): `{DIMENSIONS_DIR}` (`.sdlc-v2/review-dimensions/`), `{COPILOT_DIR}` (`.github/instructions/`), `{GITHUB_HOSTING_DETECTED}` (`githubHosting.detected` from P14), `{LEARNINGS_LOG_PATH}` (`.sdlc-v2/learnings/log.md`), `{PR_COMMIT_WINDOW}` (best-effort "last 14 days" if unknown)
 
-**Null `promptTemplatePath` handling:** When `lanes[i].promptTemplatePath` is null (prepare script reported it could not find the template), skip that lane's dispatch and immediately add a synthetic blocking issue:
+**Null `promptTemplatePath` handling:** When `lanes[i].promptTemplatePath` is null (prepare script reported it could not find the template), skip that lane's dispatch and immediately add this synthetic `laneResults` entry (already in the `merge_results` shape — see "Map lane results" below):
 ```
-{ laneStatus: "failed", gateIds: lanes[i].gateIds, issues: [{ gateId: lanes[i].gateIds[0], severity: "error", message: "Lane <name> skipped — promptTemplatePath null (template not found at prepare time)", blocking: true }], passes: [] }
+{ name: lanes[i].name, status: "fail", gateIds: lanes[i].gateIds, issues: [{ gateId: lanes[i].gateIds[0], severity: "blocking", summary: "Lane <name> skipped — promptTemplatePath null (template not found at prepare time)" }], passes: [] }
 ```
-Exception: lane 4 (G17/dimension-coverage) — when `lanes[4].promptTemplatePath` is null, treat as empty findings (advisory per R31 dispatch-failure fallback) and continue. Call:
+Exception: lane 4 (G17/dimension-coverage) — when `lanes[4].promptTemplatePath` is null, treat as empty findings (`g17Findings` = `{ findings: [], rendering: "", suppressed_count: 0 }`, advisory per R31 dispatch-failure fallback), add the lane 4 `status: "fail"` entry from "Map lane results" below, and continue. Call:
 ```
 learnings_log({action:"append", entry:"## YYYY-MM-DD — plan: G17 skipped — promptTemplatePath null (template not found at prepare time)"})
 ```
@@ -662,7 +664,21 @@ Each lane returns a JSON object with schema:
 Lane 3 (guardrail-compliance) additionally returns `guardrailCompliancePayload` in the JSON object — store this for Step 4's `## Guardrail Compliance` section.
 Lane 4 (dimension-coverage/G17) returns the G17 findings JSON — parse the `findings` object and persist as `g17Findings` for Step 4.
 
-**Merge algorithm:** Collect each lane's result (including synthetic `laneStatus: "failed"` entries for null-`promptTemplatePath` lanes) into a `laneResults` array. Call `plan_support({action: "merge_results", laneResults: [...], expectedGates: ["G1".."G21"]})`. Process the returned `allIssues`, `coverageGaps`, and `laneFailures` — the tool handles issue/pass union, gate-coverage checks, lane-failure injection (G17 advisory per R31), and deduplication.
+**Map lane results to the `merge_results` shape:** The lane prompts' field names differ from the ones `plan_support` reads. Build one `laneResults[]` entry per lane (lanes 0–4) with this mapping — never pass a lane's raw JSON:
+
+| `laneResults[]` field | Lanes 0–3 | Lane 4 (G17) |
+|---|---|---|
+| `name` | `lanes[i].name` | `lanes[4].name` |
+| `status` | `"pass"` when `laneStatus` is `"ok"`; `"fail"` when `laneStatus` is `"failed"` or `"timeout"`, or the lane returned no parseable JSON | `"pass"` when the G17 JSON parsed; `"fail"` on dispatch failure, timeout, malformed JSON, or null `promptTemplatePath` |
+| `gateIds` | the lane's `gateIds` (`lanes[i].gateIds` when no parseable JSON) | `["G17"]` |
+| `passes` | the lane's `passes` (`[]` when no parseable JSON) | `[]` |
+| `issues[].gateId` | the issue's `gateId` | — (`issues` is `[]`; G17 findings go to `g17Findings`, not the merge) |
+| `issues[].severity` | `"blocking"` when the issue has `blocking: true` or `severity: "error"`; otherwise `"advisory"` | — |
+| `issues[].summary` | `"<taskRef>: <message>"`, or just `message` when `taskRef` is null | — |
+
+The tool accepts only lane `status` `"pass"` or `"fail"` and issue `severity` `"blocking"` or `"advisory"`, compared exactly. Any other value (for example `"ok"`, `"error"`, or a missing value) makes `merge_results` return a DomainError and merge nothing, so map every value first. A failed lane 4 (gateIds `["G17"]` only) becomes an advisory note, never a blocker (R31). Lane 4 must be in `laneResults` even when it failed — otherwise G17 shows up as a blocking coverage gap.
+
+**Merge algorithm:** Collect the mapped entries (including the synthetic entries for null-`promptTemplatePath` lanes) into a `laneResults` array. Call `plan_support({action: "merge_results", laneResults: [...], expectedGates: ["G1".."G21"]})`. Process the returned `allIssues`, `coverageGaps`, and `laneFailures` — the tool handles issue/pass union, gate-coverage checks, lane-failure injection (G17 advisory per R31), and deduplication by (`gateId`, lower-cased trimmed `summary`).
 
 Note every issue from `allIssues`. Do NOT write to the plan file in this step.
 
@@ -714,7 +730,7 @@ Write the returned `appendixMarkdown` into the `## OpenSpec Appendix` section. T
 **(b)** When `openspecInlineGenerate` is true (inline generate path from gate check Option 2, implements R63), populate the `## OpenSpec Appendix` section with an **OpenSpec Artifacts (Draft)** label and author fresh artifacts from exploration and decomposition data:
 
 1. **`### Proposal Summary`** — author a proposal summary from the user's request and exploration findings. Wrap with `<!-- openspec-target: proposal.md -->`.
-2. **`### Delta Specs`** — author spec deltas with ADDED/MODIFIED/REMOVED sections derived from exploration and decomposition. Wrap with `<!-- openspec-target: specs/<feature-name>.md -->`.
+2. **`### Delta Specs`** — author spec deltas with ADDED/MODIFIED/REMOVED sections derived from exploration and decomposition. Wrap with `<!-- openspec-target: specs/<capability>/spec.md -->` (one file per capability — the OpenSpec layout, as in plan-format-reference.md).
 3. **`### Tasks List`** — author a tasks checklist derived from the plan's task decomposition. Wrap with `<!-- openspec-target: tasks.md -->`.
 
 Each fragment MUST be wrapped with `<!-- openspec-target: <path> -->` annotations as shown above. The appendix MUST be complete enough that `openspec create`/`openspec validate` can run directly off it after handoff, with no further interactive authoring step. **Nested-fence safety (N+1 backticks):** Before fencing a fragment, count the longest consecutive backtick run (N) inside its content and wrap in max(N+1, 4) backticks — CommonMark closes a fence only on a run at least as long as the opening. Each fragment is fenced independently.
@@ -735,7 +751,7 @@ When `materialChangeDetected` is true (set by the Step 6 IMPROVE pass — see be
 
 - **Dispatch contents:** all five `lanes[]` (P16) + all `lensReviewers[]` (P17, or the single reviewer for <5-task plans). Each agent uses the same dispatch parameters, template variables, and model rules defined in Step 3 (lanes) and Step 5 (lenses) respectively.
 - **Await barrier:** do not consolidate or advance until exactly N = (5 lanes + M lenses) results are collected. Never consolidate on partial or zero returns.
-- **Merge:** use the combined `plan_support({action: "merge_results", laneResults, lensResults, expectedGates, isRedispatch: true})` call described in the Step 5 merge section below. The tool handles lane/lens merging, gate coverage, G17 advisory demotion, and cross-source deduplication in one call.
+- **Merge:** map lane results as in Step 3 ("Map lane results to the `merge_results` shape") and lens results as in the Step 5 merge section below, then use the combined `plan_support({action: "merge_results", laneResults, lensResults, expectedGates, isRedispatch: true})` call. The tool handles lane/lens merging, gate coverage, and deduplication in one call; `isRedispatch: true` additionally demotes every G17 finding to advisory.
 - **G17 on re-dispatch (advisory only):** lanes[4]/G17 findings from the re-dispatch merge as advisory only. Step 4 has already run, so there is no `## Suggested Review Dimensions` consumer — do not re-splice G17 findings into the plan file. Persist updated `g17Findings` in memory for scorecard reference only.
 - **Guardrail-block gate preservation (R19):** lanes[3] (guardrail-compliance) findings from the re-dispatch are scanned the same way Step 4 scans them. If any error-severity guardrail violation is present in the re-dispatch merge, do NOT route it silently into Step 6's blocking-issue set — surface the same guardrail-block harden offer described in Step 4 (offer **harden** alongside the user-revision options; dispatch `Skill(harden)` with `--failure-text "Plan blocked by error-severity guardrail <id>: <description> — <rationale>"`, `--skill plan`, `--step "Step 5 — merged re-dispatch"`, `--operation "error-severity guardrail block"` only if the user selects harden, suppressed when `--auto` is set) before proceeding with Step 6 fixes. This preserves R19 across the merged re-dispatch path.
 - **`guardrailsEvaluated` / `critiqueRan`:** NOT re-written (once-per-run checkpoints — see Step 3).
@@ -768,7 +784,16 @@ When `lensReviewers[i].promptTemplatePath` is null, skip that lens and call `lea
 
 **No `isolation: "worktree"` on any lens reviewer dispatch** (forbidden per issues #370/#372).
 
-**Merge lens reviewer results (per iteration):** Collect each lens reviewer's result into a `lensResults` array. Call `plan_support({action: "merge_results", lensResults: [...]})`. Process the returned `mergedStatus` (`Approved` / `Issues Found`), `allIssues`, and `recommendations` — the tool handles status derivation, issue dedup by `(taskRef, message-normalized-prefix)`, and recommendation dedup by string prefix. For the merged re-dispatch path (when `materialChangeDetected` is true), combine both in one call: `plan_support({action: "merge_results", laneResults: [...], lensResults: [...], expectedGates: ["G1".."G21"], isRedispatch: true})` — `isRedispatch` makes G17 findings advisory-only and applies cross-source deduplication.
+**Merge lens reviewer results (per iteration):** Build one `lensResults[]` entry per lens reviewer from its markdown output:
+
+| `lensResults[]` field | Source in the lens output |
+|---|---|
+| `name` | `lensReviewers[i].lens` |
+| `status` | the `**Status:**` value as written (`Approved` or `Issues Found`); the tool ignores letter case and outer spaces, and anything other than approved counts as not approved |
+| `issues` | one `{ severity: "blocking", summary: "<bullet text>" }` per bullet under `**Issues**` (lenses list only execution blockers); no `gateId` |
+| `recommendations` | one string per bullet under `**Recommendations**` |
+
+Call `plan_support({action: "merge_results", lensResults: [...]})`. Process the returned `mergedStatus` (`Approved` / `Issues Found`), `allIssues`, and `recommendations` — the tool handles status derivation, issue dedup by (`gateId`, lower-cased trimmed `summary`), and recommendation dedup by exact trimmed text. For the merged re-dispatch path (when `materialChangeDetected` is true), combine both in one call: `plan_support({action: "merge_results", laneResults: [...], lensResults: [...], expectedGates: ["G1".."G21"], isRedispatch: true})` — deduplication runs across lanes and lenses as always; `isRedispatch` only makes G17 findings advisory.
 
 **Iteration counter**: increment by 1 only after the await barrier above is satisfied (exactly N lens results collected, N = lenses dispatched); never increment on partial or zero returns (R-orchestrator-await, R-c1, #487). The counter starts at 0 and counts completed Step 5 rounds. Writer IDs and checkpoints use the round in progress, `<iteration>` = counter + 1: the first Step 3 lanes and the first Step 5 lenses are `r1`; the first merged re-dispatch is `r2`. Checkpoints in Steps 0–2 use `iteration: 0`. On resume, set the counter to `checkpoint.iteration - 1` (never below 0).
 
@@ -796,7 +821,7 @@ After the merge step, assemble the `## Verification Scorecard` section in the pl
 **Review loop:**
 - Approved → Step 6 is a no-op, proceed to Step 7
 - Issues found → go to Step 6
-- Max 3 iterations → use AskUserQuestion to surface unresolved issues to user. Context: the review loop ran 3 fix/re-review passes and still has open blocking issues — before asking, summarize what failed (the union of blocking findings across all lenses), scaled to `style.audience`, so the user isn't choosing blind. Offer **harden** (run `/harden` to analyze why this failed and propose stronger guardrails / dimensions / instructions that would catch it earlier next time — opt-in, no surface is edited without your approval; consequence: proposes preventive changes only, nothing is edited without a separate approval) alongside the existing escalation options. When the user selects **harden** (interactive mode only — suppressed when `--auto` is set), dispatch `Skill(harden)` with `--failure-text "Plan reviewer loop did not converge after 3 iterations. Outstanding issues: <union-of-blocking-issues-across-all-lenses>"`, `--skill plan`, `--step "Step 5 — review loop"`, `--operation "reviewer-loop max iterations"`. Implements R19.
+- Max 3 iterations → use AskUserQuestion to surface unresolved issues to user. Context: the review loop ran 3 fix/re-review passes and still has open blocking issues — before asking, summarize what failed (the union of blocking findings across all lenses), scaled to `style.audience`, so the user isn't choosing blind. Offer **harden** (run `/harden` to analyze why this failed and propose stronger guardrails / dimensions / instructions that would catch it earlier next time — opt-in, no surface is edited without your approval; consequence: proposes preventive changes only, nothing is edited without a separate approval) alongside the existing escalation options. When the user selects **harden** (interactive mode only — suppressed when `--auto` is set), dispatch `Skill(harden)` with `--failure-text "Plan reviewer loop did not converge after 3 iterations. Outstanding issues: <union-of-blocking-issues-across-all-lenses>"`, `--skill plan`, `--step "Step 5 — review loop"`, `--operation "reviewer-loop max iterations"`. Implements R19. **`--auto` does not suppress this question** — only the **harden** option is left out. The plan is never handed off with open blocking issues; when AskUserQuestion is unavailable, stop and report the open blocking issues.
 
 ## Step 6 (IMPROVE): Apply Review Fixes
 

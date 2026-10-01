@@ -122,12 +122,17 @@ type waveAwaitPollState struct {
 // wave has no task row still blocking progress (see the blocking-count
 // computation below), never on a wall-clock deadline. Every open row is
 // independently bounded by totalTimeout from its own dispatchedAt (KD10).
-func execActionWaveAwait(root string, in ExecuteStateIn, now func() time.Time) (WaveAwaitOut, error) {
+func execActionWaveAwait(root, workDir string, in ExecuteStateIn, now func() time.Time) (WaveAwaitOut, error) {
 	if in.RunID == "" {
 		return WaveAwaitOut{}, &mcpserver.DomainError{
 			Msg:        "wave-await requires runId",
 			Suggestion: `Pass runId, e.g. execute_state {action:"wave-await", runId:"<runId>", wave:<n>}.`,
 		}
+	}
+	// Reject an unsafe runId as a caller error before any path is built;
+	// otherwise it surfaces later as an InfraError from the wave package.
+	if err := execValidateSafeID(in.RunID, "runId"); err != nil {
+		return WaveAwaitOut{}, err
 	}
 	if in.Wave == nil {
 		return WaveAwaitOut{}, &mcpserver.DomainError{
@@ -137,7 +142,7 @@ func execActionWaveAwait(root string, in ExecuteStateIn, now func() time.Time) (
 	}
 	waveNum := *in.Wave
 
-	branch, err := execResolveBranch(in.Branch, root)
+	branch, err := execResolveBranch(in.Branch, workDir)
 	if err != nil {
 		return WaveAwaitOut{}, err
 	}

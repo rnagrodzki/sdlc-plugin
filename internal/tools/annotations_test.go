@@ -62,7 +62,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		readOnly:   true,
 		idempotent: true,
 		openWorld:  false,
-		reason:     "local git reads plus os.MkdirTemp(\"\", \"sdlc-commit-manifest-\") for the manifestPath output",
+		reason:     "local git reads plus os.MkdirTemp(\"\", \"sdlc-commit-manifest-\") for the manifestPath output, and os.RemoveAll of sibling sdlc-commit-manifest-* dirs older than 24h under os.TempDir()",
 	},
 	"links_validate": {
 		title:      "Check documentation links",
@@ -76,7 +76,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		readOnly:   true,
 		idempotent: true,
 		openWorld:  true,
-		reason:     "ghx.PRView + ghx.PRChecks",
+		reason:     "ghx.PRView + ghx.PRChecksWithExitCode",
 	},
 	"received_review_verify": {
 		title:      "Verify review replies posted",
@@ -97,14 +97,14 @@ var toolAnnotations = map[string]annotationPolicy{
 		readOnly:   true,
 		idempotent: true,
 		openWorld:  false,
-		reason:     "os.MkdirTemp(os.TempDir(), …)",
+		reason:     "mkdirTempFunc(\"\", \"sdlc-explore-<slug>-\") for the manifest, and os.RemoveAll of sibling sdlc-explore-* dirs older than 24h under os.TempDir()",
 	},
 	"learnings_log": {
-		title:      "Append to learnings log",
+		title:      "Manage learnings log",
 		readOnly:   true,
-		idempotent: true,
+		idempotent: false,
 		openWorld:  false,
-		reason:     ".sdlc-v2/learnings/log.md (gitignored); append",
+		reason:     ".sdlc-v2/learnings/log.md (gitignored, fixed path); not idempotent: append adds a new entry on every call with no duplicate check, and remove deletes by entry position",
 	},
 	"mcp_failure_record": {
 		title:      "Record MCP tool failure",
@@ -131,8 +131,8 @@ var toolAnnotations = map[string]annotationPolicy{
 		title:      "Prepare code review payload",
 		readOnly:   true,
 		idempotent: true,
-		openWorld:  false,
-		reason:     "every write lands in os.MkdirTemp(\"\", \"sdlc-review-\") — per-dimension .diff/.slice.json and manifest.json; no input field redirects that path; diffs come from local git diff; saveReview mode writes only to gitignored .sdlc-v2/reviews/",
+		openWorld:  true,
+		reason:     "every write lands in os.MkdirTemp(\"\", \"sdlc-review-\") — per-dimension .diff/.slice.json and manifest.json; no input field redirects that path; diffs come from local git diff; saveReview mode writes only to gitignored .sdlc-v2/reviews/; open-PR lookup calls ghx.PRForBranch (GitHub API)",
 	},
 	"setup_prepare": {
 		title:      "Prepare SDLC setup context",
@@ -212,8 +212,8 @@ var toolAnnotations = map[string]annotationPolicy{
 		readOnly:    false,
 		destructive: true,
 		idempotent:  false,
-		openWorld:   false,
-		reason:      "os.WriteFile, AtomicWriteJSON, os.Remove; write-critique/write-approval add critique-<hash>.json / approval-<hash>.token under .sdlc-v2/state/artifacts/. No network — Atlassian calls go through the Atlassian MCP server, not this tool",
+		openWorld:   true,
+		reason:      "os.WriteFile, AtomicWriteJSON, os.Remove; write-critique/write-approval add critique-<hash>.json / approval-<hash>.token under .sdlc-v2/state/artifacts/. validate-body calls internal/links.Validate, which sends HTTP HEAD/GET to URLs in the body and runs gh issue view / gh pr view, unless SDLC_LINKS_OFFLINE=1. Atlassian calls still go through the Atlassian MCP server, not this tool",
 	},
 	"migrate": {
 		title:       "Migrate SDLC config",
@@ -228,16 +228,16 @@ var toolAnnotations = map[string]annotationPolicy{
 		readOnly:    false,
 		destructive: true,
 		idempotent:  true,
-		openWorld:   false,
-		reason:      "os.Remove, os.WriteFile; ghx.ParseRemoteOwner is a pure string parse",
+		openWorld:   true,
+		reason:      "os.Remove, os.WriteFile; checkBranchProtection runs gh api for the repo, its rulesets and branch protection (read-only GitHub calls, so repeating the call is still idempotent)",
 	},
 	"prepare_orchestrator": {
 		title:       "Write orchestrator manifest",
 		readOnly:    false,
 		destructive: true,
-		idempotent:  true,
-		openWorld:   false,
-		reason:      "os.WriteFile manifest",
+		idempotent:  false,
+		openWorld:   true,
+		reason:      "os.WriteFile manifest into a new os.MkdirTemp dir on every call (sdlc-harden- / sdlc-error-report-), so not idempotent; harden mode with fromIssue runs gh issue view",
 	},
 	"dimensions_render_instructions": {
 		title:       "Render review dimension files",
@@ -439,7 +439,7 @@ func TestReadOnlyToolsWriteNothingTracked(t *testing.T) {
 				})
 				// evidence_record really writes: seed a plan run first so
 				// the call succeeds, then check the write stays untracked.
-				prep, err := planPrepareCore(root, root, PlanPrepareIn{SkipConfigCheck: true})
+				prep, err := runPlanPrepare(t, root, root, PlanPrepareIn{SkipConfigCheck: true})
 				if err != nil || prep.RunID == "" {
 					t.Fatalf("planPrepareCore seed: runId=%q err=%v", prep.RunID, err)
 				}
@@ -466,6 +466,9 @@ func TestReadOnlyToolsWriteNothingTracked(t *testing.T) {
 			case "plan_mark":
 				_, _ = planMark(root, root, PlanMarkIn{Marker: "guardrailsEvaluated"})
 			case "plan_explore_prepare":
+				// Same mkdirTempFunc redirect as commit_prepare, so no
+				// sdlc-explore-* directory leaks into the OS temp dir.
+				redirectTempManifests(t)
 				_ = buildExplorePack(root, root, "", "investigate the widget rendering pipeline")
 			case "learnings_log":
 				_, _ = learningsLog(root, LearningsLogIn{Action: "append", Entry: "## test entry\nsingle line body, no blank lines"})
@@ -474,7 +477,7 @@ func TestReadOnlyToolsWriteNothingTracked(t *testing.T) {
 			case "ship_verify_side_effect":
 				_, _ = shipVerifySideEffect(root, root, ShipVerifySideEffectIn{Step: "review"}, time.Now)
 			case "plan_prepare":
-				_, _ = planPrepareCore(root, root, PlanPrepareIn{SkipConfigCheck: true})
+				_, _ = runPlanPrepare(t, root, root, PlanPrepareIn{SkipConfigCheck: true})
 			case "setup_prepare":
 				_, _ = setupPrepare(root, SetupPrepareIn{})
 			case "review_prepare":

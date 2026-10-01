@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -81,11 +82,15 @@ type Dimension struct {
 //
 // A missing dir is not an error: Load returns an empty slice, matching the
 // source's resolveDimensionsDir/validateAll behavior where a nonexistent
-// dimensions directory yields zero results rather than failing.
+// dimensions directory yields zero results rather than failing. Any other
+// directory-read failure (permission denied, path is a file) is returned.
 func Load(dir string) ([]Dimension, error) {
 	entries, err := os.ReadDir(dir)
-	if err != nil {
+	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
+	}
+	if err != nil {
+		return nil, err
 	}
 
 	var names []string

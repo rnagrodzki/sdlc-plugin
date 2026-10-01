@@ -30,7 +30,7 @@ func evidenceTestFixture(t *testing.T) (string, string) {
 	root := t.TempDir()
 	initGitFixture(t, root)
 	gitCommit(t, root, "initial")
-	out, err := planPrepareCore(root, root, PlanPrepareIn{SkipConfigCheck: true, UserPrompt: "add evidence"})
+	out, err := runPlanPrepare(t, root, root, PlanPrepareIn{SkipConfigCheck: true, UserPrompt: "add evidence"})
 	if err != nil {
 		t.Fatalf("planPrepareCore (seed): %v", err)
 	}
@@ -462,6 +462,18 @@ func TestEvidence_StatusOnly_WritersSectionOnly(t *testing.T) {
 	}
 	if strings.Contains(out.Next, "re-dispatch") {
 		t.Errorf("statusOnly next must not name re-dispatch: %q", out.Next)
+	}
+}
+
+// TestEvidence_StatusOnly_NoExpectedWriters verifies poll mode does not say
+// "All expected writers are done" when no writer was expected at all.
+func TestEvidence_StatusOnly_NoExpectedWriters(t *testing.T) {
+	root, runID := evidenceTestFixture(t)
+	evidenceMustCall(t, root, PlanSupportIn{Action: "evidence_record", RunID: runID, WriterID: "lane-a", Status: "done"})
+
+	out := evidenceMustCall(t, root, PlanSupportIn{Action: "evidence_digest", RunID: runID, StatusOnly: true})
+	if want := "No expected writers: expectedWriters is empty and the run checkpoint lists none. Pass expectedWriters with the writer IDs you dispatched, then poll again."; out.Next != want {
+		t.Errorf("next = %q, want %q", out.Next, want)
 	}
 }
 

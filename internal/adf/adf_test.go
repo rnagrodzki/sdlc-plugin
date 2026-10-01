@@ -271,10 +271,7 @@ func TestConvert_GoldenCorpus(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := Convert(tc.md)
-			if err != nil {
-				t.Fatalf("Convert: unexpected error: %v", err)
-			}
+			got := Convert(tc.md)
 
 			var want any
 			if err := json.Unmarshal([]byte(tc.golden), &want); err != nil {
@@ -291,15 +288,12 @@ func TestConvert_GoldenCorpus(t *testing.T) {
 }
 
 // TestConvert_UnsupportedMarkdownDegradesToPlainText checks that markdown
-// constructs Convert does not recognize (strikethrough, raw HTML) never
-// produce an error and instead pass through as plain paragraph text.
+// constructs Convert does not recognize (strikethrough, raw HTML) pass
+// through as plain paragraph text.
 func TestConvert_UnsupportedMarkdownDegradesToPlainText(t *testing.T) {
 	md := "Some ~~strikethrough~~ and a <div>html</div> tag."
 
-	doc, err := Convert(md)
-	if err != nil {
-		t.Fatalf("Convert: unexpected error: %v", err)
-	}
+	doc := Convert(md)
 
 	want := map[string]any{
 		"version": 1,
@@ -320,9 +314,10 @@ func TestConvert_UnsupportedMarkdownDegradesToPlainText(t *testing.T) {
 	}
 }
 
-// TestConvert_NeverErrors sanity-checks a handful of malformed or edge-case
-// inputs to confirm Convert's error return is always nil, per its contract.
-func TestConvert_NeverErrors(t *testing.T) {
+// TestConvert_MalformedInputStillYieldsDoc sanity-checks a handful of
+// malformed or edge-case inputs: Convert has no failure path, so each one
+// must still produce an ADF v1 doc.
+func TestConvert_MalformedInputStillYieldsDoc(t *testing.T) {
 	inputs := []string{
 		"",
 		"\n\n\n",
@@ -333,8 +328,9 @@ func TestConvert_NeverErrors(t *testing.T) {
 		"random \x00 control byte",
 	}
 	for _, in := range inputs {
-		if _, err := Convert(in); err != nil {
-			t.Errorf("Convert(%q): expected nil error, got %v", in, err)
+		doc := Convert(in)
+		if doc == nil || doc["type"] != "doc" || doc["version"] != 1 {
+			t.Errorf("Convert(%q): expected an ADF v1 doc, got %v", in, doc)
 		}
 	}
 }

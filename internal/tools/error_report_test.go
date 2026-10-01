@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -27,6 +28,11 @@ func TestErrorReportPrepare_MissingRequiredFields(t *testing.T) {
 		if !containsSubstr(domainErr.Msg, field) {
 			t.Errorf("expected message to mention missing field %q, got: %s", field, domainErr.Msg)
 		}
+	}
+	// The suggestion must name the live tool, not the retired
+	// error_report_prepare.
+	if !containsSubstr(domainErr.Suggestion, "prepare_orchestrator") || containsSubstr(domainErr.Suggestion, "error_report_prepare") {
+		t.Errorf("suggestion should point at prepare_orchestrator, got: %s", domainErr.Suggestion)
 	}
 }
 
@@ -122,6 +128,36 @@ func TestErrorReportPrepare_ManifestFieldFidelity(t *testing.T) {
 	}
 }
 
+// TestErrorReportPrepare_ResultIsManifestPathOnly pins errorReportPrepare's
+// result to the manifest path. prepare_orchestrator forwards only
+// manifestPath (plus its own mode), and the orchestrator agent reads every
+// other value from the manifest file, so mirrored fields would be dead.
+func TestErrorReportPrepare_ResultIsManifestPathOnly(t *testing.T) {
+	out, err := errorReportPrepare(t.TempDir(), ErrorReportPrepareIn{
+		Skill:     "ship",
+		Step:      "step-1",
+		Operation: "do-thing",
+		Error:     "boom",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// errorReportPrepare writes its manifest dir with os.MkdirTemp directly
+	// (not the fsseam), so remove it here.
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(out.ManifestPath)) })
+	data, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
+	if len(m) != 1 || m["manifestPath"] == nil || m["manifestPath"] == "" {
+		t.Errorf("result = %v, want only a non-empty manifestPath", m)
+	}
+}
+
 func TestErrorReportPrepare_OptionalFieldsDefaultToEmptyString(t *testing.T) {
 	root := t.TempDir()
 	out, err := errorReportPrepare(root, ErrorReportPrepareIn{
@@ -203,4 +239,33 @@ func readErrorReportManifest(t *testing.T, path string) map[string]any {
 		t.Fatalf("unmarshal manifest: %v", err)
 	}
 	return m
+}
+
+// TestPrepareOrchestrator_ErrorReportManifestCarriesTemplate pins that the
+// error_report manifest carries the ToolingError.md template text itself.
+// The error-report-orchestrator agent runs with the user's project as its
+// working directory, where the plugin's skills/ tree does not exist, so it
+// must get the template from the manifest, not from a project-relative path.
+func TestPrepareOrchestrator_ErrorReportManifestCarriesTemplate(t *testing.T) {
+	out, err := prepareOrchestrator(PrepareOrchestratorIn{
+		Mode:      "error_report",
+		Skill:     "ship",
+		Step:      "step-1",
+		Operation: "do-thing",
+		Error:     "boom",
+	})
+	if err != nil {
+		t.Fatalf("prepareOrchestrator: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(out.ManifestPath)) })
+
+	want, err := os.ReadFile(filepath.Join("..", "..", "plugins", "sdlc", "skills", "error-report", "templates", "ToolingError.md"))
+	if err != nil {
+		t.Fatalf("read shipped template: %v", err)
+	}
+	manifest := readErrorReportManifest(t, out.ManifestPath)
+	got, _ := manifest["template"].(string)
+	if got != string(want) {
+		t.Fatalf("manifest template = %q, want the shipped ToolingError.md content", got)
+	}
 }

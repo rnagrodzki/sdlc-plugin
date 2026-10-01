@@ -598,16 +598,15 @@ func TestHookEnforcementAllowed(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Find — prefix match includes slug superstrings (Node parity)
+// Find — exact slug match
 // ---------------------------------------------------------------------------
 
-// TestFind_PrefixMatchIncludesSlugSuperstrings verifies that Find's prefix
-// match (HasPrefix(name, "ship-main-")) also picks up files whose slug is a
-// superstring of the query slug (e.g. "main-extra" when searching for "main"),
-// provided that superstring file has the newest mtime. This mirrors the JS
-// findStateFile behaviour exactly — confirmed by running the same fixture
-// through SDLC_STATE_DIR_OVERRIDE + node findStateFile.
-func TestFind_PrefixMatchIncludesSlugSuperstrings(t *testing.T) {
+// TestFind_ExactSlugIgnoresSlugSuperstrings pins that Find matches the branch
+// slug exactly. A file whose slug only starts with the query slug (branch
+// "main-extra" when searching for "main", or "feat-x-2" for "feat-x") must
+// never be loaded, even when it has the newest mtime — otherwise one branch
+// reads and writes another branch's state.
+func TestFind_ExactSlugIgnoresSlugSuperstrings(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -618,6 +617,7 @@ func TestFind_PrefixMatchIncludesSlugSuperstrings(t *testing.T) {
 		"ship-main-20260101T100000Z.json":       time.Date(2026, 1, 1, 10, 0, 0, 0, time.UTC),
 		"ship-main-20260102T100000Z.json":       time.Date(2026, 1, 2, 10, 0, 0, 0, time.UTC),
 		"ship-main-extra-20260103T100000Z.json": time.Date(2026, 1, 3, 10, 0, 0, 0, time.UTC),
+		"ship-feat-x-2-20260105T100000Z.json":   time.Date(2026, 1, 5, 10, 0, 0, 0, time.UTC),
 		"execute-main-20260104T100000Z.json":    time.Date(2026, 1, 4, 10, 0, 0, 0, time.UTC),
 	}
 	for name, mtime := range files {
@@ -630,9 +630,6 @@ func TestFind_PrefixMatchIncludesSlugSuperstrings(t *testing.T) {
 		}
 	}
 
-	// Find ship+main should pick ship-main-extra because it has the newest
-	// mtime and its filename starts with "ship-main-" (the prefix match
-	// pattern). This is the JS parity behaviour.
 	found, err := Find(root, "ship", "main")
 	if err != nil {
 		t.Fatalf("Find: %v", err)
@@ -640,9 +637,17 @@ func TestFind_PrefixMatchIncludesSlugSuperstrings(t *testing.T) {
 	if found == nil {
 		t.Fatalf("Find returned nil")
 	}
-	want := "ship-main-extra-20260103T100000Z.json"
-	if filepath.Base(found.Path) != want {
-		t.Fatalf("Find picked %q, want %q (Node parity)", filepath.Base(found.Path), want)
+	if want := "ship-main-20260102T100000Z.json"; filepath.Base(found.Path) != want {
+		t.Fatalf("Find(ship, main) picked %q, want %q", filepath.Base(found.Path), want)
+	}
+
+	// feat-x has no file of its own; feat-x-2's file must not stand in for it.
+	found2, err := Find(root, "ship", "feat-x")
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	if found2 != nil {
+		t.Fatalf("Find(ship, feat-x) picked %q, want nil", filepath.Base(found2.Path))
 	}
 }
 
@@ -1373,7 +1378,7 @@ func TestPruneEvidenceDirs_RemoveFailureDoesNotStopOthers(t *testing.T) {
 	}
 
 	own := "plan-feat-20260929T120000Z"
-	failing := "plan-feat-20260929T105000Z"  // removeAll for this one fails
+	failing := "plan-feat-20260929T105000Z"    // removeAll for this one fails
 	succeeding := "plan-feat-20260929T110000Z" // removeAll for this one succeeds
 
 	mustMkdir := func(name string) {

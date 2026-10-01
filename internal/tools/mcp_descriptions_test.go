@@ -308,3 +308,83 @@ func TestCheckSchemaPropertyDescriptionsSuffixConsistency(t *testing.T) {
 		}
 	}
 }
+
+// TestOptionalInputFieldsNotRequired verifies that input fields the server
+// treats as optional are not listed in the advertised input schema's
+// "required" array. The schema generator marks every field without
+// omitempty/omitzero as required, so a missing omitempty tag makes clients
+// send a value the tool does not need.
+func TestOptionalInputFieldsNotRequired(t *testing.T) {
+	s := mcpserver.New("test", "0.0.0-test")
+	RegisterSetupTools(s)
+	RegisterOpenspecTools(s)
+	RegisterMigrateTools(s)
+	RegisterScaffoldTools(s)
+
+	ctx := context.Background()
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	if _, err := s.MCPServer().Connect(ctx, serverTransport, nil); err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0.0.0"}, nil)
+	c, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("client Connect: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+
+	resp, err := c.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	required := map[string]map[string]bool{}
+	for _, tool := range resp.Tools {
+		raw, err := json.Marshal(tool.InputSchema)
+		if err != nil {
+			t.Fatalf("%s: marshal input schema: %v", tool.Name, err)
+		}
+		var schema struct {
+			Properties map[string]any `json:"properties"`
+			Required   []string       `json:"required"`
+		}
+		if err := json.Unmarshal(raw, &schema); err != nil {
+			t.Fatalf("%s: unmarshal input schema: %v", tool.Name, err)
+		}
+		set := map[string]bool{}
+		for _, name := range schema.Required {
+			set[name] = true
+		}
+		for name := range schema.Properties {
+			if _, ok := set[name]; !ok {
+				set[name] = false
+			}
+		}
+		required[tool.Name] = set
+	}
+
+	cases := []struct{ tool, field string }{
+		{"setup_prepare", "skipConfigCheck"},
+		{"openspec_enrich", "change"},
+		{"openspec_enrich", "remove"},
+		{"migrate", "dryRun"},
+		{"scaffold_ci", "force"},
+	}
+	for _, tc := range cases {
+		fields, ok := required[tc.tool]
+		if !ok {
+			t.Errorf("tool %s is not registered", tc.tool)
+			continue
+		}
+		isRequired, present := fields[tc.field]
+		if !present {
+			t.Errorf("%s: input schema has no property %q", tc.tool, tc.field)
+			continue
+		}
+		if isRequired {
+			t.Errorf("%s: field %q is listed in the input schema's required array; the tool treats it as optional", tc.tool, tc.field)
+		}
+	}
+	if !required["migrate"]["action"] {
+		t.Errorf("migrate: field \"action\" should stay required")
+	}
+}

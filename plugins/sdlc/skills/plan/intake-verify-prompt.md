@@ -22,7 +22,7 @@ The caller fills these variables before dispatching you:
 | Variable | Type | Description |
 |---|---|---|
 | `{PROPOSAL}` | string | Full content of `proposal.md`, or `"[artifact missing]"` |
-| `{DELTA_SPECS}` | string | Concatenated content of all `specs/*.md` files, or `"[artifact missing]"` |
+| `{DELTA_SPECS}` | string | Concatenated content of all delta spec files (`specs/*.md` and `specs/<capability>/spec.md`), or `"[artifact missing]"` |
 | `{TASKS_MD}` | string | Full content of `tasks.md`, or `"[artifact missing]"` |
 | `{DESIGN}` | string | Full content of `design.md` if present, or `"[artifact missing]"` |
 | `{REQUIREMENTS_JSON}` | string | JSON array of `{ reqId, capability, type, name, scenarioCount }` from the inventory, or `"null"` when inventory is unavailable |

@@ -182,6 +182,86 @@ func TestPlanMergeResults_LaneFailBlocking(t *testing.T) {
 	}
 }
 
+// mergeCall runs merge_results through planSupportCore, the dispatcher the
+// registered plan_support handler calls.
+func mergeCall(t *testing.T, in PlanSupportIn) PlanSupportOut {
+	t.Helper()
+	in.Action = "merge_results"
+	out, err := planSupportCore("", "", in)
+	if err != nil {
+		t.Fatalf("merge_results: %v", err)
+	}
+	return out
+}
+
+// TestPlanMergeResults_FailedLaneNoGates verifies a failed lane with empty
+// gateIds is a lane failure. "Every gate is G17" is vacuously true for an
+// empty list, so such a lane must not be treated as G17-only.
+func TestPlanMergeResults_FailedLaneNoGates(t *testing.T) {
+	out := mergeCall(t, PlanSupportIn{
+		LaneResults: []LaneResult{{Name: "broken-lane", Status: "fail"}},
+	})
+	if len(out.LaneFailures) != 1 || out.LaneFailures[0] != "broken-lane" {
+		t.Errorf("LaneFailures = %v, want [broken-lane]", out.LaneFailures)
+	}
+	for _, iss := range out.AllIssues {
+		if strings.Contains(iss.Summary, "covers only G17") {
+			t.Errorf("AllIssues has G17-only advisory %+v for a lane with no gates", iss)
+		}
+	}
+}
+
+// TestPlanMergeResults_FailedLaneWithoutIssues verifies a failed non-G17 lane
+// yields Issues Found even when it reports no issues: a lane that could not
+// evaluate its gates must not approve the plan.
+func TestPlanMergeResults_FailedLaneWithoutIssues(t *testing.T) {
+	out := mergeCall(t, PlanSupportIn{
+		LaneResults: []LaneResult{{Name: "static-structural", Status: "fail", GateIDs: []string{"G1"}}},
+	})
+	if out.MergedStatus != "Issues Found" {
+		t.Errorf("MergedStatus = %q, want %q", out.MergedStatus, "Issues Found")
+	}
+}
+
+// TestPlanMergeResults_RedispatchFailedG17Lane verifies the status agrees
+// with allIssues on a redispatch: a failed G17-only lane whose G17 issue was
+// submitted as blocking shows that issue as advisory, so the merge is
+// Approved. The status must not read the pre-downgrade severity.
+func TestPlanMergeResults_RedispatchFailedG17Lane(t *testing.T) {
+	out := mergeCall(t, PlanSupportIn{
+		LaneResults: []LaneResult{{Name: "g17-lane", Status: "fail", GateIDs: []string{"G17"}, Issues: []Issue{
+			{GateID: "G17", Severity: "blocking", Summary: "dimension gap"},
+		}}},
+		IsRedispatch: true,
+	})
+	for _, iss := range out.AllIssues {
+		if iss.Severity == "blocking" {
+			t.Errorf("AllIssues has blocking issue %+v, want every G17 issue advisory", iss)
+		}
+	}
+	if out.MergedStatus != "Approved" {
+		t.Errorf("MergedStatus = %q, want %q (no blocking issue and no non-G17 lane failure)", out.MergedStatus, "Approved")
+	}
+}
+
+// TestPlanMergeResults_RejectedLensWithLanes verifies a rejected lens yields
+// Issues Found in the mixed call (laneResults and lensResults together, the
+// redispatch path), not only in a lens-only call.
+func TestPlanMergeResults_RejectedLensWithLanes(t *testing.T) {
+	out := mergeCall(t, PlanSupportIn{
+		LaneResults: []LaneResult{{Name: "lane-1", Status: "pass", GateIDs: []string{"G1"}}},
+		LensResults: []LensResult{
+			{Name: "lens-risk", Status: "rejected"},
+			{Name: "lens-architecture", Status: "approved"},
+		},
+		ExpectedGates: []string{"G1"},
+		IsRedispatch:  true,
+	})
+	if out.MergedStatus != "Issues Found" {
+		t.Errorf("MergedStatus = %q, want %q", out.MergedStatus, "Issues Found")
+	}
+}
+
 // TestPlanMergeResults_IssueDedup verifies AllIssues dedups by
 // (gateId, lowercased-trimmed summary) — including across sources: two lanes
 // and one lens each report the same (gateId, summary) pair with differing
@@ -236,17 +316,7 @@ func TestPlanMergeResults_LensMergeApproved(t *testing.T) {
 
 // TestPlanMergeResults_LensMergeMixed verifies the lenses-only call pattern:
 // when any lens does not report Status "approved", MergedStatus is
-// "Issues Found" — plugins/sdlc/skills/plan/SKILL.md Step 5 (line 690):
-// "Status: Approved iff ALL lens reviewers returned Approved; otherwise
-// Issues Found".
-//
-// KNOWN FAILING: internal/tools/plan_support.go's mergeResults currently
-// sets mergedStatus = "Rejected" for this branch instead of "Issues Found",
-// diverging from the SKILL.md spec this test's Contract is pinned to (see
-// task fact sheet Contract row `_LensMergeMixed`). This test intentionally
-// asserts the spec-correct value and is expected to fail (red) until
-// plan_support.go's mergeResults is fixed — that fix is out of scope for
-// this test-only task (Files You May Touch = plan_support_test.go only).
+// "Issues Found" (SKILL.md Step 5: Approved only when every lens approved).
 func TestPlanMergeResults_LensMergeMixed(t *testing.T) {
 	out, err := mergeResults(PlanSupportIn{
 		LensResults: []LensResult{
@@ -261,6 +331,38 @@ func TestPlanMergeResults_LensMergeMixed(t *testing.T) {
 	if out.MergedStatus != "Issues Found" {
 		t.Errorf("MergedStatus = %q, want %q", out.MergedStatus, "Issues Found")
 	}
+}
+
+// TestPlanMergeResults_LensStatusAsWritten verifies merge_results reads the
+// lens status the way the lens prompts write it: "**Status:** Approved" or
+// "**Status:** Issues Found". The compare ignores letter case and outer
+// spaces, so "Approved" counts as approved.
+func TestPlanMergeResults_LensStatusAsWritten(t *testing.T) {
+	t.Run("all Approved", func(t *testing.T) {
+		out := mergeCall(t, PlanSupportIn{
+			LensResults: []LensResult{
+				{Name: "architecture", Status: "Approved"},
+				{Name: "requirements", Status: " APPROVED "},
+				{Name: "risk", Status: "approved"},
+			},
+		})
+		if out.MergedStatus != "Approved" {
+			t.Errorf("MergedStatus = %q, want %q", out.MergedStatus, "Approved")
+		}
+	})
+	t.Run("one Issues Found", func(t *testing.T) {
+		out := mergeCall(t, PlanSupportIn{
+			LensResults: []LensResult{
+				{Name: "architecture", Status: "Approved"},
+				{Name: "risk", Status: "Issues Found", Issues: []Issue{
+					{Severity: "blocking", Summary: "Task 2: wrong file path"},
+				}},
+			},
+		})
+		if out.MergedStatus != "Issues Found" {
+			t.Errorf("MergedStatus = %q, want %q", out.MergedStatus, "Issues Found")
+		}
+	})
 }
 
 // TestPlanMergeResults_Redispatch verifies isRedispatch=true downgrades G17
@@ -288,6 +390,70 @@ func TestPlanMergeResults_Redispatch(t *testing.T) {
 	}
 }
 
+// TestPlanMergeResults_RejectsUnknownEnums verifies that an unmapped lane
+// status or issue severity is a DomainError naming the item and the allowed
+// values. Before the fix, status "ok" counted as a pass and severity "error"
+// as advisory, so a caller's mapping mistake hid findings silently.
+func TestPlanMergeResults_RejectsUnknownEnums(t *testing.T) {
+	cases := []struct {
+		name string
+		in   PlanSupportIn
+		want []string // substrings the error message must contain
+	}{
+		{
+			name: "lane status",
+			in: PlanSupportIn{LaneResults: []LaneResult{
+				{Name: "static-structural", Status: "ok", GateIDs: []string{"G1"}},
+			}},
+			want: []string{`laneResults[0] ("static-structural")`, `status "ok"`, `"pass"`, `"fail"`},
+		},
+		{
+			name: "empty lane status",
+			in: PlanSupportIn{LaneResults: []LaneResult{
+				{Name: "lane-a", Status: "pass", GateIDs: []string{"G1"}},
+				{Name: "lane-b", GateIDs: []string{"G2"}},
+			}},
+			want: []string{`laneResults[1] ("lane-b")`, `status ""`},
+		},
+		{
+			name: "lane issue severity",
+			in: PlanSupportIn{LaneResults: []LaneResult{
+				{Name: "static-structural", Status: "pass", GateIDs: []string{"G1"}, Issues: []Issue{
+					{GateID: "G1", Severity: "error", Summary: "Task 3: Depends on missing Task 9"},
+				}},
+			}},
+			want: []string{`laneResults[0].issues[0] ("Task 3: Depends on missing Task 9")`, `severity "error"`, `"blocking"`, `"advisory"`},
+		},
+		{
+			name: "lens issue severity",
+			in: PlanSupportIn{LensResults: []LensResult{
+				{Name: "risk", Status: "Approved", Issues: []Issue{{Summary: "No rollback step"}}},
+			}},
+			want: []string{`lensResults[0].issues[0] ("No rollback step")`, `severity ""`},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.in.Action = "merge_results"
+			out, err := planSupportCore("", "", tc.in)
+			if err == nil {
+				t.Fatalf("merge_results succeeded with %+v, want DomainError", out)
+			}
+			if got := errorClassOf(err); got != "domain" {
+				t.Fatalf("error class = %q, want domain (err: %v)", got, err)
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(err.Error(), w) {
+					t.Errorf("error %q does not contain %q", err.Error(), w)
+				}
+			}
+			if suggestionOf(err) == "" {
+				t.Error("DomainError has an empty Suggestion")
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // plan_support material_snapshot / material_compare tests
 //
@@ -297,15 +463,10 @@ func TestPlanMergeResults_Redispatch(t *testing.T) {
 // fixture plan into installFakeFS's in-memory map rather than the real
 // filesystem, and rather than calling a pure in-memory function directly.
 //
-// Fixture construction note: snapshotPlan's **Contract:** extraction
-// (extractDelimitedBlock in plan_support.go) captures everything from right
-// after the "**Contract:**" marker forward to the next "### "/"---"/"## "
-// boundary — it has no "**" boundary, unlike **Files:** and
-// **openspec-task:**. So any field placed AFTER **Contract:** within the
-// same task body would bleed into the Contracts map on edit. To keep each
-// trigger dimension independently testable, every task fixture below places
-// **Contract:** as the LAST field in its body, with **openspec-task:** and
-// **Notes:** placed BEFORE it.
+// Fixture construction note: every task fixture below places **Contract:**
+// as the LAST field in its body. snapshotPlan ends a **Contract:** block at
+// the next "**<Field>:**" line, so field order does not matter;
+// TestPlanMaterialChange_FieldAfterContract pins that.
 // ---------------------------------------------------------------------------
 
 const materialHeader = `**Goal:** Build the thing
@@ -706,6 +867,47 @@ func TestPlanMaterialChange_WordingOnly(t *testing.T) {
 	after := materialHeader + materialTask1 + changedTask2 + materialTask3 + materialTask4 + materialTail
 	out := materialCompareCheck(t, materialBasePlan(), after)
 	assertNoMaterialChange(t, out)
+}
+
+// materialTaskContractFirst is a task whose **Contract:** comes before its
+// **Notes:** and **Files:** fields, as plan-format-reference.md allows.
+const materialTaskContractFirst = `### Task 1: Contract first
+**Complexity:** Standard
+**Risk:** Low
+**Verify:** tests
+
+**Contract:**
+- shape: does X
+- names: Foo
+
+**Notes:**
+- first rationale line
+
+**Files:**
+- internal/tools/foo.go
+
+**Acceptance criteria:**
+- [ ] it works
+
+`
+
+// TestPlanMaterialChange_FieldAfterContract verifies the **Contract:** block
+// ends at the next **<Field>:** line: edits to fields placed after it do not
+// count as a contract change.
+func TestPlanMaterialChange_FieldAfterContract(t *testing.T) {
+	before := materialHeader + materialTaskContractFirst + materialTail
+
+	fake := installFakeFS(t)
+	snap := readSnapshotFile(t, snapshotPathOf(t, fake, "contract-first.md", before))
+	if got := snap.Contracts["Task 1"]; got != "- shape: does X\n- names: Foo" {
+		t.Errorf("Contracts[Task 1] = %q, want only the contract bullets", got)
+	}
+
+	notesEdited := strings.Replace(before, "- first rationale line\n", "- reworded rationale line\n", 1)
+	assertNoMaterialChange(t, materialCompareCheck(t, before, notesEdited))
+
+	filesEdited := strings.Replace(before, "- internal/tools/foo.go\n", "- internal/tools/bar.go\n", 1)
+	assertSingleTrigger(t, materialCompareCheck(t, before, filesEdited), "Files changed in: Task 1")
 }
 
 // TestPlanMaterialChange_DeviationsRowChanged verifies adding a new row to

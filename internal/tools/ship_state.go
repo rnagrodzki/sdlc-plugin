@@ -1755,7 +1755,15 @@ type ShipResumeBriefing struct {
 // startedAt). The second condition distinguishes a freshly init'd pipeline
 // — nothing has run yet, so there is nothing to resume or report an
 // interruption for — from a genuinely interrupted one.
+//
+// A run that cleanup stamped pipelineStatus:"completed" is never in flight.
+// "failed" is terminal for the cleanup contract, so a stamped run can still
+// hold a failed step that blocks proceed; without this check read would
+// offer to resume a finished run.
 func shipRunInFlight(data map[string]any) bool {
+	if status, _ := data["pipelineStatus"].(string); status == "completed" {
+		return false
+	}
 	if shipFirstBlockingStep(data) == "" {
 		return false
 	}
@@ -2165,11 +2173,12 @@ func shipStateGC(root, workDir string, in ShipStateIn, now func() time.Time) (an
 	}, nil
 }
 
-// shipGCDryRun enumerates the state directory without deleting anything,
-// mirroring cmdGc's --dry-run branch: only ship/execute/plan are classified
-// — a commit-prefixed file's bucket lookup misses and is silently skipped,
-// matching JS's `if (!bucket) continue`. Each entry is tagged with one of
-// "ttl-fresh" / "branch-exists" / "stale+branch-gone".
+// shipGCDryRun enumerates the state directory without deleting anything.
+// Only ship/execute/plan are classified — a commit-prefixed file's bucket
+// lookup misses and is silently skipped, matching JS's `if (!bucket)
+// continue`. Each entry is classified by state.ClassifyGCFile, the same rule
+// state.GC applies on a real run, so wouldDelete lists exactly what a real
+// run deletes. Its reason is that function's reason string.
 func shipGCDryRun(stateDir string, ttlDays int, branchExists func(string) bool, now func() time.Time) (any, error) {
 	buckets := map[string]map[string]any{
 		"ship":    {"wouldDelete": []any{}, "wouldKeep": []any{}},
@@ -2189,6 +2198,15 @@ func shipGCDryRun(stateDir string, ttlDays int, branchExists func(string) bool, 
 	nowMs := now().UnixMilli()
 	ttlMs := int64(ttlDays) * 86400000
 
+	// First pass: stat every classified file and find the newest mtime of
+	// each prefix+branch group; the rule needs it to spare a live branch's
+	// newest file.
+	type gcFile struct {
+		name, prefix, slug string
+		mtimeMs            int64
+	}
+	var files []gcFile
+	newestMs := map[string]int64{}
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || !strings.HasSuffix(name, ".json") {
@@ -2199,28 +2217,34 @@ func shipGCDryRun(stateDir string, ttlDays int, branchExists func(string) bool, 
 			continue
 		}
 		prefix, slug := m[1], m[2]
-		bucket, ok := buckets[prefix]
-		if !ok {
+		if _, ok := buckets[prefix]; !ok {
 			continue // "commit" (and anything unrecognized) is silently skipped, matching cmdGc's dry-run.
 		}
 		info, infoErr := e.Info()
 		if infoErr != nil {
 			continue
 		}
+		f := gcFile{name: name, prefix: prefix, slug: slug, mtimeMs: info.ModTime().UnixMilli()}
+		files = append(files, f)
+		key := prefix + "\x00" + slug
+		if cur, seen := newestMs[key]; !seen || f.mtimeMs > cur {
+			newestMs[key] = f.mtimeMs
+		}
+	}
 
-		fresh := (nowMs - info.ModTime().UnixMilli()) < ttlMs
-		branchLive := branchExists != nil && branchExists(slug)
-		entry := map[string]any{"file": name, "branch": slug}
-		switch {
-		case fresh:
-			entry["reason"] = "ttl-fresh"
-			bucket["wouldKeep"] = append(bucket["wouldKeep"].([]any), entry)
-		case branchLive:
-			entry["reason"] = "branch-exists"
-			bucket["wouldKeep"] = append(bucket["wouldKeep"].([]any), entry)
-		default:
-			entry["reason"] = "stale+branch-gone"
+	// Second pass: classify with the rule state.GC applies on a real run.
+	// fresh uses <= to match state.GC's cutoff (mtime not before now-TTL).
+	for _, f := range files {
+		fresh := (nowMs - f.mtimeMs) <= ttlMs
+		branchLive := branchExists != nil && branchExists(f.slug)
+		newest := f.mtimeMs == newestMs[f.prefix+"\x00"+f.slug]
+		del, reason := state.ClassifyGCFile(branchLive, newest, fresh)
+		entry := map[string]any{"file": f.name, "branch": f.slug, "reason": reason}
+		bucket := buckets[f.prefix]
+		if del {
 			bucket["wouldDelete"] = append(bucket["wouldDelete"].([]any), entry)
+		} else {
+			bucket["wouldKeep"] = append(bucket["wouldKeep"].([]any), entry)
 		}
 	}
 
@@ -2346,8 +2370,10 @@ var historyWriter = func(root string) history.Writer {
 //
 // The store itself stays append-only with no dedup — deferred_add's
 // contract depends on that. The skip lives here instead, for a caller that
-// re-sends the same id directly (deferred_add is idempotent per id; so is a
-// direct persistDeferred call in a test).
+// re-sends the same id directly (a direct persistDeferred call in a test).
+// deferred_add does NOT go through this function: it calls AddDeferred
+// directly and appends with no id check, so sending it the same id twice
+// stores two entries.
 //
 // It does NOT protect shipStateDefer or execActionIssueDraft against their
 // own retries: both mint id from timestamp+count at call time (fresh state
@@ -2441,7 +2467,15 @@ func shipStateHistoryRecord(root string, in ShipStateIn) (any, error) {
 	if rec.Outcome == "" {
 		return nil, &mcpserver.DomainError{
 			Msg:        "history_record: detail.outcome is required",
-			Suggestion: "Pass detail.outcome naming the run's result (e.g. \"success\" or \"failure\"), then retry history_record.",
+			Suggestion: "Pass detail.outcome as one of \"success\", \"failure\" or \"partial\", then retry history_record.",
+		}
+	}
+	switch rec.Outcome {
+	case "success", "failure", "partial":
+	default:
+		return nil, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf(`history_record: detail.outcome must be "success", "failure" or "partial", got %q`, rec.Outcome),
+			Suggestion: "Pass detail.outcome as one of \"success\", \"failure\" or \"partial\", then retry history_record.",
 		}
 	}
 
@@ -2700,10 +2734,10 @@ Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide
 - skip: Skip a step. Requires step. Returns narration. Optional: detail.branch, detail.reason, detail.detail.
 - fail: Fail a step. Requires step. Returns narration. Optional: detail.branch, detail.error (recorded as issue), detail.detail.
 - decide: Record a decision. Requires step. Returns narration. Optional: detail.branch, detail.text, detail.detail.
-- defer: Record a deferred finding. Writes it both to the run-scoped ship state file and durably to .sdlc-v2/history/deferred.json (source "`+history.SourceReviewBelowThreshold+`"), so it survives state-file GC — no follow-up deferred_add is needed. Returns narration naming the generated deferred id (review-deferred-<timestamp>-<N>) and the file it was written to; a failed deferred.json write does not fail the call but is named in the summary, with the deferred_add call that recovers it. Requires detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`, case-insensitive; the lowercase form is recorded), detail.file, detail.title. Optional: detail.branch, detail.line (integer), detail.detail, detail.description (the deferring agent's own reasoning; defaults to detail.title), detail.reason (one of `+strings.Join(history.DeferredReasons(), " | ")+`; an omitted reason records `+history.ReasonBelowThreshold+`).
+- defer: Record a deferred finding. Writes it both to the run-scoped ship state file and durably to .sdlc-v2/history/deferred.json (with source detail.source, default "`+history.SourceReviewBelowThreshold+`"), so it survives state-file GC — no follow-up deferred_add is needed. Returns narration naming the generated deferred id (review-deferred-<timestamp>-<N>) and the file it was written to; a failed deferred.json write does not fail the call but is named in the summary, with the deferred_add call that recovers it. Requires detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`, case-insensitive; the lowercase form is recorded), detail.file, detail.title. Optional: detail.branch, detail.line (integer), detail.detail, detail.description (the deferring agent's own reasoning; defaults to detail.title), detail.reason (one of `+strings.Join(history.DeferredReasons(), " | ")+`; an omitted reason records `+history.ReasonBelowThreshold+`), detail.source (the tool recording the deferral, e.g. "received-review"; defaults to "`+history.SourceReviewBelowThreshold+`").
 - healing_record: Record one self-healing change in the live ship run's data.healing. Requires detail.kind: "review-total" (Requires detail.total, detail.dimensions — non-negative integers; replaces the previous value) | "fixed" (Requires detail.origin "local-review"|"pr-comment", detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`), detail.file, detail.title; Optional detail.line) | "hardened" (Requires detail.phase "started"|"done", detail.trigger, detail.classification, detail.applied [{surface (one of `+strings.Join(healingSurfaceIDs(), " | ")+`), action, targetFile}], detail.skipped (non-negative integer); a "done" record replaces a "started" record with the same trigger). Optional: detail.branch. Duplicates are ignored (narration "already recorded — no change"). With no live ship run (no state, or pipelineCompletedAt set) it returns ok and records nothing. Returns summary, kind, written (true only when this call changed the state file) and record (the validated record as persisted, recordedAt included).
 - harden_clusters: Group review findings into harden clusters (key = file; lone-disagree files dropped; cap 5). Requires detail.findings [{file, severity, title, body, verdict: "agree-will-fix"|"agree-won't-fix"|"disagree"|"needs-direction", reason? (one of `+strings.Join(history.DeferredReasons(), " | ")+`)}]. Optional: detail.branch (the ship run whose healing.hardened triggers set alreadyHardened). failureText has every double quote replaced by a single quote and every backslash by a slash, so it is safe inside a quoted --failure-text argument. Returns clusters with failureText and alreadyHardened, suppressed, loneDisagree, and dirtySurfaces (harden surfaces with uncommitted edits in the active worktree). Works without ship state.
-- read: Return the full ship state. Optional: detail.branch. The response also carries "reportData": report-ready aggregates, including healing (data.healing verbatim, {} when absent) and reviewLedger {total, fixed (local-review only), deferredByReason, unaccounted = total - fixed - deferred, never clamped} — reviewLedger is null, with reviewLedgerNote, when no review total was recorded. When the pipeline is in flight (some step still blocks proceed and at least one step has been started), the state also carries a "resumeBriefing" (resumable, lastStep, lastStepStatus, sideEffects, summary, display, timing{stepSeconds,pipelineSeconds,idleSeconds,human}, next). A step left "failed" is still reported resumable:true, never as an error.
+- read: Return the full ship state. Optional: detail.branch. The response also carries "reportData": report-ready aggregates, including healing (data.healing verbatim, {} when absent) and reviewLedger {total, fixed (local-review only), deferredByReason, unaccounted = total - fixed - deferred, never clamped} — reviewLedger is null, with reviewLedgerNote, when no review total was recorded. When the pipeline is in flight (not stamped pipelineStatus:"completed", some step still blocks proceed, and at least one step has been started), the state also carries a "resumeBriefing" (resumable, lastStep, lastStepStatus, sideEffects, summary, display, timing{stepSeconds,pipelineSeconds,idleSeconds,human}, next). A step left "failed" is still reported resumable:true, never as an error.
 - report: Compose the end-of-run report from ship state, this run's execute state (only when the execute step completed), CLI evidence and learnings, and render it. Optional: detail.write (true persists it under <main worktree>/.sdlc-v2/reports/), detail.format ("md"|"json", default from automation.report.format), detail.branch. Returns {skipped:true} when automation.report.enabled is false.
 - cleanup: Stamp a branch's ship state terminal (pipelineStatus:"completed", pipelineCompletedAt) instead of deleting it, after validating every step is in a terminal state — the state survives for later reads until GC's TTL prunes it. Optional: detail.branch.
 - cleanup-pipeline: Same stamp-instead-of-delete for the current branch's ship state (force/no-state-file skip the contract check), followed by an unconditional GC + per-run-directory sweep. Optional: detail.branch, detail.force, detail.ttlDays.

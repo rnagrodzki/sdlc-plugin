@@ -54,7 +54,11 @@ type LinksValidateOut struct {
 }
 
 var (
-	urlRe           = regexp.MustCompile(`https?://[^\s)\]>"']+`)
+	// A "(...)" group is consumed as one balanced unit (listed first, so it
+	// wins over the single-char branch); a lone ')' ends the match. This keeps
+	// https://en.wikipedia.org/wiki/Foo_(bar) whole while [x](https://a.b/c)
+	// still yields https://a.b/c. Only one level of nesting is supported.
+	urlRe           = regexp.MustCompile(`https?://(?:\([^\s()\]>"']*\)|[^\s)\]>"'])+`)
 	trailingPunctRe = regexp.MustCompile(`[.,;:!?]+$`)
 )
 
@@ -64,8 +68,8 @@ type extractedURL struct {
 }
 
 // extractURLs ports scripts/lib/links.js's extractUrls: scans line by
-// line, strips trailing punctuation and a lone unmatched trailing ')',
-// and tracks the 1-based line of each URL's first occurrence.
+// line, keeps balanced "(...)" groups inside a URL, strips trailing
+// punctuation, and tracks the 1-based line of each URL's first occurrence.
 func extractURLs(text string) []extractedURL {
 	lines := strings.Split(text, "\n")
 	seenLine := map[string]int{}
@@ -75,9 +79,6 @@ func extractURLs(text string) []extractedURL {
 		line := strings.TrimSuffix(rawLine, "\r")
 		for _, m := range urlRe.FindAllString(line, -1) {
 			u := trailingPunctRe.ReplaceAllString(m, "")
-			if strings.HasSuffix(u, ")") && !strings.Contains(u, "(") {
-				u = u[:len(u)-1]
-			}
 			if _, ok := seenLine[u]; !ok {
 				seenLine[u] = i + 1
 				order = append(order, u)

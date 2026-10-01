@@ -43,7 +43,7 @@ type ExecuteStateIn struct {
 	Branch              string         `json:"branch,omitempty" jsonschema_description:"Git branch the execution state belongs to. Most actions accept it to scope the state file; falls back to the current branch when omitted."`
 	Auto                bool           `json:"auto,omitempty" sdlcconfig:"executePrefs.auto" jsonschema_description:"resolve-config only: true when the caller passed --auto. Omitting it does not mean auto is off: the resolution order is CLI > pipeline > config > default, so auto also resolves to true when branch is supplied and that branch's ship state has flags.auto=true. Optional. Defaults to config executePrefs.auto. Pass only to override."`
 	Quality             string         `json:"quality,omitempty" jsonschema:"enum=full,enum=balanced,enum=minimal" jsonschema_description:"Quality tier. init: required -- the tier stamped on the newly initialized run; pass the value resolve-config returned. resolve-config: the --quality CLI value, which wins over executePrefs.quality in .sdlc-v2/local.toml when non-empty. A resolve-config value outside the enum is non-fatal: it is reported in warnings and resolution falls through to config, then the auto default, then the skill's tier prompt."`
-	CommitWaves         string         `json:"commitWaves,omitempty" jsonschema:"enum=true,enum=false" jsonschema_description:"Whether execute commits each wave separately; empty resolves from CLI/config/default true."`
+	CommitWaves         string         `json:"commitWaves,omitempty" jsonschema:"enum=true,enum=false" jsonschema_description:"Whether execute commits each wave separately. resolve-config: the --commit-waves CLI value; empty resolves from config execute.commitWaves, then default true. init: stamped on the new run; pass the value resolve-config returned, as the string \"true\" or \"false\"."`
 	TotalTasks          int            `json:"totalTasks,omitempty" jsonschema_description:"Total planned task count for a newly initialized run (init only)."`
 	WaveTimeoutSeconds  int            `json:"waveTimeoutSeconds,omitempty" jsonschema_description:"init only: this run's wave wall-clock deadline in seconds (the invoking CLI's --wave-timeout). Recorded on init and later read back by wave-await to size its reclaim/timeout window. When omitted, falls back to a ship-state cross-read of flags.executeWaveTimeout, then internal/shipmeta.ShipBuiltInDefaults.ExecuteWaveTimeout (1800s)."`
 	WaveIntervalSeconds int            `json:"waveIntervalSeconds,omitempty" jsonschema_description:"init only: this run's heartbeat liveness cadence in seconds (the invoking CLI's --wave-interval). Recorded on init and later read back by wave-await to size its heartbeat/reclaim-grace window. When omitted, falls back to a ship-state cross-read of flags.executeWaveInterval, then internal/shipmeta.ShipBuiltInDefaults.ExecuteWaveInterval (60s)."`
@@ -56,13 +56,13 @@ type ExecuteStateIn struct {
 	RunID               string         `json:"runId,omitempty" jsonschema_description:"Execution run identifier. Required by task-context, wave-await, ledger_checkin, ledger_checkout, and ledger_status; optional elsewhere (e.g. wave-start for fact sheets, task-redispatch) where it falls back to the value derived from the state's startedAt/wave."`
 	WorkerID            string         `json:"workerId,omitempty" jsonschema_description:"Identifier of the per-task worker registering or clearing its ledger entry (ledger_checkin, ledger_checkout)."`
 	Decisions           string         `json:"decisions,omitempty" jsonschema_description:"wave-done only: JSON array of decisions made while completing the wave, encoded as a string; surfaced in later summaries. Plain prose is rejected. Example: \"[\\\"Chose sqlite over postgres for the local cache\\\"]\"."`
-	Status              string         `json:"status,omitempty" jsonschema_description:"Outcome status to record: for wave-done/wave-fail, the wave's terminal status; for task-done, \"DONE_WITH_CONCERNS\" records a warning issue alongside the completion."`
-	TimedOut            bool           `json:"timedOut,omitempty" jsonschema_description:"wave-fail only: true when the wave failed because it timed out, rather than erroring outright."`
+	Status              string         `json:"status,omitempty" jsonschema_description:"Outcome status to record: for wave-done, the wave's terminal status, \"completed\" (default) or \"partial\"; for task-done, \"DONE_WITH_CONCERNS\" records a warning issue alongside the completion."`
+	TimedOut            bool           `json:"timedOut,omitempty" jsonschema_description:"wave-fail and wave-done: true when the wave timed out, rather than erroring outright; stamped on the wave as timedOut."`
 	SHA                 string         `json:"sha,omitempty" jsonschema_description:"wave-committed only: the git commit SHA to record for the completed wave."`
 	TaskID              string         `json:"taskId,omitempty" jsonschema_description:"Task identifier the action applies to (task-done, task-fail, task-context, wave-progress writes; required by task-redispatch)."`
-	TaskName            string         `json:"taskName,omitempty" jsonschema_description:"task-done only: human-readable name of the completed task, surfaced in the running-tally narration."`
-	Complexity          string         `json:"complexity,omitempty" jsonschema_description:"task-done only: complexity rating recorded for the completed task."`
-	Risk                string         `json:"risk,omitempty" jsonschema_description:"task-done only: risk rating recorded for the completed task."`
+	TaskName            string         `json:"taskName,omitempty" jsonschema_description:"task-done, task-fail: human-readable name of the task, recorded on its task row and surfaced in the running-tally narration."`
+	Complexity          string         `json:"complexity,omitempty" jsonschema_description:"task-done, task-fail: complexity rating recorded on the task row."`
+	Risk                string         `json:"risk,omitempty" jsonschema_description:"task-done, task-fail: risk rating recorded on the task row."`
 	FilesChanged        string         `json:"filesChanged,omitempty" jsonschema_description:"task-done only: JSON array of file paths the task changed, encoded as a string. Example: \"[\\\"src/auth/jwt.ts\\\",\\\"src/auth/oauth.ts\\\"]\"."`
 	FilesAdded          string         `json:"filesAdded,omitempty" jsonschema_description:"task-done only: JSON array of file paths the task created, encoded as a string. List only newly created files; each one belongs in filesChanged as well. Example: \"[\\\"src/auth/oauth.ts\\\"]\"."`
 	VerifyToken         string         `json:"verifyToken,omitempty" jsonschema_description:"task-done only: verification evidence for the completed task, encoded as a JSON string or a JSON array of strings. A bare token is rejected as invalid JSON. Example: \"[\\\"go test ./... ok\\\"]\" or \"\\\"go test ./... ok\\\"\"."`
@@ -71,15 +71,15 @@ type ExecuteStateIn struct {
 	Data                string         `json:"data,omitempty" jsonschema_description:"context action only: JSON object of shared context keys to write, encoded as a string (allowed keys: planSummary, completedTaskIds, filesAdded, filesModified, interfacesCreated, decisionsFromPriorWaves). Example: \"{\\\"planSummary\\\":\\\"Add OAuth login\\\"}\"."`
 	TTLDays             *int           `json:"ttlDays,omitempty" sdlcconfig:"state.gc.ttlDays" jsonschema_description:"gc only: age threshold in days beyond which stale state files are garbage-collected. Optional. Defaults to config state.gc.ttlDays. Pass only to override."`
 	DryRun              bool           `json:"dryRun,omitempty" jsonschema_description:"gc only: when true, reports what would be garbage-collected without deleting anything."`
-	MaxFiles            int            `json:"maxFiles,omitempty" sdlcconfig:"execute.priorWaveContextCaps.maxFiles" jsonschema_description:"Cap on the number of files summarized in prior-wave context (context, summarize-prior-wave-context). Optional. Defaults to config execute.priorWaveContextCaps.maxFiles. Pass only to override."`
-	MaxDecisions        int            `json:"maxDecisions,omitempty" sdlcconfig:"execute.priorWaveContextCaps.maxDecisions" jsonschema_description:"Cap on the number of decisions summarized in prior-wave context (context, summarize-prior-wave-context). Optional. Defaults to config execute.priorWaveContextCaps.maxDecisions. Pass only to override."`
-	MaxInterfaces       int            `json:"maxInterfaces,omitempty" sdlcconfig:"execute.priorWaveContextCaps.maxInterfaces" jsonschema_description:"Cap on the number of interfaces summarized in prior-wave context (context, summarize-prior-wave-context). Optional. Defaults to config execute.priorWaveContextCaps.maxInterfaces. Pass only to override."`
-	MaxTaskIds          int            `json:"maxTaskIds,omitempty" sdlcconfig:"execute.priorWaveContextCaps.maxTaskIds" jsonschema_description:"Cap on the number of task IDs summarized in prior-wave context (context, summarize-prior-wave-context). Optional. Defaults to config execute.priorWaveContextCaps.maxTaskIds. Pass only to override."`
+	MaxFiles            int            `json:"maxFiles,omitempty" sdlcconfig:"execute.priorWaveContextCaps.maxFiles" jsonschema_description:"Cap on the number of files summarized in prior-wave context (summarize-prior-wave-context only). Optional. Defaults to config execute.priorWaveContextCaps.maxFiles. Pass only to override."`
+	MaxDecisions        int            `json:"maxDecisions,omitempty" sdlcconfig:"execute.priorWaveContextCaps.maxDecisions" jsonschema_description:"Cap on the number of decisions summarized in prior-wave context (summarize-prior-wave-context only). Optional. Defaults to config execute.priorWaveContextCaps.maxDecisions. Pass only to override."`
+	MaxInterfaces       int            `json:"maxInterfaces,omitempty" sdlcconfig:"execute.priorWaveContextCaps.maxInterfaces" jsonschema_description:"Cap on the number of interfaces summarized in prior-wave context (summarize-prior-wave-context only). Optional. Defaults to config execute.priorWaveContextCaps.maxInterfaces. Pass only to override."`
+	MaxTaskIds          int            `json:"maxTaskIds,omitempty" sdlcconfig:"execute.priorWaveContextCaps.maxTaskIds" jsonschema_description:"Cap on the number of task IDs summarized in prior-wave context (summarize-prior-wave-context only). Optional. Defaults to config execute.priorWaveContextCaps.maxTaskIds. Pass only to override."`
 	Dispatched          string         `json:"dispatched,omitempty" jsonschema_description:"wave-split only: JSON array of task ID strings already dispatched, encoded as a string; used to compute which remaining tasks form the new wave. Required by wave-split. Example: \"[\\\"1\\\",\\\"2\\\"]\"."`
 	MissingIds          string         `json:"missingIds,omitempty" jsonschema_description:"wave-split only: JSON array of task ID strings missing from the current wave, encoded as a string; these are folded into the new split wave. Example: \"[\\\"3\\\"]\"."`
 	SplitDepth          int            `json:"splitDepth,omitempty" jsonschema_description:"wave-split only: current recursive split depth, used together with maxSplitDepth to bound repeated splitting."`
 	MaxSplitDepth       int            `json:"maxSplitDepth,omitempty" jsonschema_description:"wave-split only: maximum recursive split depth allowed before wave-split refuses to split further."`
-	StateFile           string         `json:"stateFile,omitempty" jsonschema_description:"Overrides the execution state file path to read/write, instead of the one derived from branch (wave-split, verify-completeness, resume-reset). wave-await also reads this to persist its own resume-state (iteration counter) across bounded-poll calls, keyed by runId+wave."`
+	StateFile           string         `json:"stateFile,omitempty" jsonschema_description:"Overrides the execution state file path to read/write, instead of the one derived from branch (wave-split, verify-completeness). wave-await also reads this to persist its own resume-state (iteration counter) across bounded-poll calls, keyed by runId+wave."`
 	Phase               string         `json:"phase,omitempty" jsonschema_description:"wave-progress write only: the phase name to stamp on the task's heartbeat entry."`
 	ReadProgress        bool           `json:"readProgress,omitempty" jsonschema_description:"wave-progress only: true to read the current per-task progress instead of writing a new heartbeat entry."`
 	SessionID           string         `json:"sessionId,omitempty" jsonschema_description:"init only: Claude Code session ID stamped into the newly initialized execution state."`
@@ -103,7 +103,7 @@ type ExecuteStateIn struct {
 	IssueDraftTitle     string         `json:"issueDraftTitle,omitempty" jsonschema_description:"issue-draft only: GH issue title (required)."`
 	IssueDraftBody      string         `json:"issueDraftBody,omitempty" jsonschema_description:"issue-draft only: GH issue body markdown (required)."`
 	IssueDraftLabels    []string       `json:"issueDraftLabels,omitempty" jsonschema_description:"issue-draft only: labels to apply (optional)."`
-	DecideType          string         `json:"decideType,omitempty" jsonschema:"enum=guardrail" jsonschema_description:"decide only: decision category. Currently: guardrail."`
+	DecideType          string         `json:"decideType,omitempty" jsonschema:"enum=guardrail" jsonschema_description:"decide only: decision category. Must be \"guardrail\" (the only category); any other value fails with a DomainError."`
 	DecideID            string         `json:"decideId,omitempty" jsonschema_description:"decide only: identifier of the item decided on (e.g. a guardrail slug)."`
 	DecideDecision      string         `json:"decideDecision,omitempty" jsonschema:"enum=override,enum=harden,enum=cancel,enum=fix" jsonschema_description:"decide only: choice made — override, harden, cancel, or fix."`
 	DecideReason        string         `json:"decideReason,omitempty" jsonschema_description:"decide only: optional free-text reason why this choice was made."`
@@ -538,35 +538,35 @@ func RegisterExecuteStateTools(s *mcpserver.Server) {
 Pass "action" to select an operation. Each action uses a subset of the input fields (unlisted fields are ignored):
 
 - wave-compute: Stateless — parses the plan file at planPath and computes the wave schedule (no state file read/write). Requires planPath. Optional: extraDepsJson (JSON array of {task, dependsOn, reason} merged with each task's explicit "Depends on" field). Returns {route, preWave, waves[{number, tasks[], expectedFiles[], verificationHint}]}.
-- resolve-config: resolves this run's effective auto mode, quality tier and high-risk auto-approval from CLI flags, this branch's ship state, local.toml [executePrefs] (auto, quality, highRiskAutoApprove) and config.toml [execute] (commitWaves). Reads and writes no run state file, but is not side-effect-free: it first moves auto, quality or highRiskAutoApprove from config.toml [execute] to local.toml [executePrefs] (reported in warnings); fails with a data error (message plus suggestion) when that move is not safe. Optional: branch (enables the ship-state auto cross-read), quality (--quality), auto (--auto). An out-of-enum quality warns and falls through to config, then the auto default, rather than failing. Returns {auto, quality (always present; empty means "ask the user for a tier"), highRiskAutoApprove, sources, warnings?}.
-- init: Create execution state. Runs the same config auto-migration gate as ship_prepare first (migrates and backs up an outdated config, or fails with a /setup pointer if none exists); result may include a "migration" report. Returns {filePath, pipelineAuto (true when this branch's ship state has flags.auto=true — reported for diagnostics only; the execute SKILL.md high-risk gate no longer reads it, because resolve-config performs the same ship-state cross-read at Step 0 and folds the result into its effective auto value), warnings? (e.g. this branch's ship state exists but is unreadable), migration?}. Requires branch, quality. Optional: totalTasks, plannedTaskIds, planPath, planHash.
+- resolve-config: resolves this run's effective auto mode, quality tier, commit-waves setting and high-risk auto-approval from CLI flags, this branch's ship state, local.toml [executePrefs] (auto, quality, highRiskAutoApprove) and config.toml [execute] (commitWaves). Reads and writes no run state file, but is not side-effect-free: it first moves auto, quality or highRiskAutoApprove from config.toml [execute] to local.toml [executePrefs] (reported in warnings); fails with a data error (message plus suggestion) when that move is not safe. Optional: branch (enables the ship-state auto cross-read), quality (--quality), auto (--auto), commitWaves (--commit-waves, "true"|"false"). An out-of-enum quality warns and falls through to config, then the auto default, rather than failing. Returns {auto, quality (always present; empty means "ask the user for a tier"), commitWaves (bool; CLI > config execute.commitWaves > default true), highRiskAutoApprove, sources, warnings?}.
+- init: Create execution state. Runs the same config auto-migration gate as ship_prepare first (migrates and backs up an outdated config, or fails with a /setup pointer if none exists); result may include a "migration" report. Returns {filePath, pipelineAuto (true when this branch's ship state has flags.auto=true — reported for diagnostics only; the execute SKILL.md high-risk gate no longer reads it, because resolve-config performs the same ship-state cross-read at Step 0 and folds the result into its effective auto value), warnings? (e.g. this branch's ship state exists but is unreadable), migration?}. Requires branch, quality. Optional: totalTasks, plannedTaskIds, planPath, planHash, commitWaves ("true"|"false"; any other value is stored as "true"), sessionId (Claude Code session ID stamped on the state), waveTimeoutSeconds and waveIntervalSeconds (this run's wave deadline and heartbeat cadence; when omitted or 0 they fall back to this branch's ship state flags.executeWaveTimeout/executeWaveInterval, then 1800s/60s).
 - wave-start: Begin a wave. Returns narration (summary, display with task list + ETA, next). Requires wave. Optional: branch, tasksJson, runId (for fact sheets), detail ("concise"|"full"). If the run recorded a planHash at init, the plan file's current sha256 is compared against it first; a mismatch returns {halt:true, reason:"plan hash mismatch"} instead of narration and does not start the wave. An unreadable/missing plan file does not halt — it proceeds with a warning in the response's "warnings" field. Seeds server-owned dispatch state (dispatchedAt, workerName, batchId/batchIndex, attempt:1) for every valid tasksJson entry that doesn't already have one — a task that already has server state (wave-start called again on resume) is left untouched. Seeding failure is non-fatal and appends to "warnings".
-- wave-done: Complete a wave. Returns narration (summary, display with outcomes, timing, next wave preview + ETA). Records wave duration to TimingsStore. Requires wave. Optional: branch, decisions, status, detail ("concise"|"full").
-- wave-fail: Fail a wave. Returns narration (summary, display with failure cause). Requires wave. Optional: branch, timedOut, error (failure cause, recorded as an issue and in failedWave), status, detail ("concise"|"full").
+- wave-done: Complete a wave. Returns narration (summary, display with outcomes, timing, next wave preview + ETA). Records wave duration to TimingsStore. Requires wave. Optional: branch, decisions, status ("completed" default, or "partial"), timedOut (stamps timedOut:true on the wave), detail ("concise"|"full").
+- wave-fail: Fail a wave. Returns narration (summary, display with failure cause). Requires wave. Optional: branch, timedOut, error (failure cause, recorded as an issue and in failedWave), detail ("concise"|"full").
 - wave-committed: Record a commit SHA for a completed wave. Requires wave. Optional: branch, sha.
 - wave-commit: Stage and commit a completed wave's changes (git add -A + git commit -m message) and record the resulting sha on the wave, mirroring wave-committed's SHA-recording. Requires wave, message. Optional: branch, detail ("concise"|"full"). The wave must already be "completed" (call wave-done first). Empty diff: succeeds without committing ({committed:false, reason:"nothing to commit"}). When config execute.commitWaves is false, does not commit and instead returns an instruction to commit manually and call wave-committed. Idempotent on resume: an already-recorded committedSha that is still an ancestor of HEAD is reported ({idempotent:true}) rather than committed again.
 - task-done: Record task completion. Returns narration (summary with running tally, warnings[] when phantom-success heuristics fire). Requires wave, taskId. Optional: branch, taskName, complexity, risk, filesChanged, filesAdded, verifyToken, status ("DONE_WITH_CONCERNS" records a warning issue), error (concern detail for DONE_WITH_CONCERNS). A taskId that is not in a non-empty plannedTaskIds is still recorded, with a warning that names it.
-- task-fail: Record task failure. Returns narration (summary with running tally). Requires wave, taskId. Optional: branch, error, skippedDependency (records an issue; only a non-skipped failure updates failedTask). Idempotent: a repeat call for a task already recorded as failed/skipped at the same attempt is a no-op — it does not duplicate the issue log or move completedAt forward.
+- task-fail: Record task failure. Returns narration (summary with running tally). Requires wave, taskId. Optional: branch, runId (locates the worker's progress file to harvest a resumeFrom claim; falls back the same way wave-start does), taskName, complexity, risk, error, skippedDependency (records an issue; only a non-skipped failure updates failedTask). Idempotent: a repeat call for a task already recorded as failed/skipped at the same attempt is a no-op — it does not duplicate the issue log or move completedAt forward.
 - task-redispatch: Reopen a failed task for another attempt. Requires taskId. Optional: branch, runId, wave (searches every wave for the task's closed row when omitted). Re-opens the task's wave-manifest row to "in_progress", then deletes and re-seeds the task's server state with a fresh dispatchedAt and attempt+1 — contextFetchedAt, reclaimRequestedAt, and batchId all come back empty, since a redispatch is always solo even if the failed attempt was batched. Refuses with a DomainError (Suggestion names user escalation) at the 2-retry ceiling (attempt already at 3) instead of seeding a 4th attempt.
-- task-context: Return everything a dispatched per-task worker needs in one call — fact-sheet content (embeds the plan-task's Contract/Acceptance Criteria/Files), a live prior-wave summary, verify guidance, and report-back instructions. Requires taskId. Optional: branch, runId (falls back the same way wave-start does, via startedAt/wave). The serialized payload is capped at 1 MiB; oversize content (fact sheet first, then prior-wave summary if still over cap) is truncated with truncated:true rather than erroring. Unknown taskId fails with an actionable error listing the valid IDs for that run. Stamps the task's server-state contextFetchedAt the first time it's called for that task; never overwrites it on later calls.
-- context: Read/write shared context keys. Requires data (JSON object with allowed keys: planSummary, completedTaskIds, filesAdded, filesModified, interfacesCreated, decisionsFromPriorWaves). Optional: branch, maxFiles, maxDecisions, maxInterfaces, maxTaskIds.
+- task-context: Return everything a dispatched per-task worker needs in one call — fact-sheet content (embeds the plan-task's Contract/Acceptance Criteria/Files), a live prior-wave summary, verify guidance, and report-back instructions. Requires taskId. Optional: branch, wave (defaults to the highest in_progress wave, else the highest wave), runId (falls back the same way wave-start does, via startedAt/wave). The serialized payload is capped at 1 MiB; oversize content (fact sheet first, then prior-wave summary if still over cap) is truncated with truncated:true rather than erroring. Unknown taskId fails with an actionable error listing the valid IDs for that run. Stamps the task's server-state contextFetchedAt the first time it's called for that task; never overwrites it on later calls.
+- context: Read/write shared context keys. Requires data (JSON object with allowed keys: planSummary, completedTaskIds, filesAdded, filesModified, interfacesCreated, decisionsFromPriorWaves). Optional: branch.
 - read: Return the full execution state blob. Optional: branch. When the run is in flight (some recorded wave isn't "completed", or plannedTaskIds has IDs not yet in context.completedTaskIds), the blob also carries a "resumeBriefing" (resumable, wavesDone, wavesRemaining, gitCrossCheck, gitMismatches, willRedo, willSkip, summary, display, next) — a dry-run preview of what resume-reset would do. A committedSha that no longer checks out as a git ancestor is reported via gitCrossCheck/gitMismatches, never as a read failure.
 - cleanup: Stamp a branch's execution state terminal (runStatus:"completed", runCompletedAt) instead of deleting it — the state file (and its issues[]) survives for later reads (e.g. /harden) until GC's TTL prunes it. Also removes the per-run working directory and ledger directory (working artifacts only, safe to delete) when the state carries a startedAt to derive the runID from; if startedAt is absent, directories are left untouched. Optional: branch.
-- gc: Garbage-collect stale state files. Optional: ttlDays, dryRun, branch.
+- gc: Garbage-collect stale state files. Optional: ttlDays, dryRun. Always sweeps every branch; there is no branch filter.
 - summarize-prior-wave-context: Summarize context from prior waves. Optional: branch, maxFiles, maxDecisions, maxInterfaces, maxTaskIds.
 - wave-split: Split remaining tasks into a new wave. Requires dispatched. Optional: wave, missingIds, branch, splitDepth, maxSplitDepth, stateFile.
 - verify-completeness: Verify all planned tasks are accounted for. Optional: branch, stateFile. When planned tasks are missing, the error also names any recorded task ids that are not in plannedTaskIds. Not read-only on success: it also writes this branch's ship state, clearing a stale "block-cap-exhausted" mark the stop hook left on that pipeline's execute step (status back to "pending", the reason preserved under "reconciledReason"); a block-cap mark on any other step, and any other failure reason, is left alone. Returns {ok:true, totalPlanned, totalAccounted, shipStepReconciled} where shipStepReconciled names the ship step that was reset or is "(none)" when nothing changed, plus warnings[] when that ship state could not be read or written (the verify itself still reports ok:true).
-- wave-progress: Read/write per-task progress. Requires runId. For reads: readProgress=true. For writes: taskId, phase. Optional: lastCompletedTask (recorded in the heartbeat entry).
+- wave-progress: Read/write per-task progress. Requires runId. For reads: readProgress=true. For writes: taskId, phase. Optional on writes: lastCompletedTask (recorded in the heartbeat entry), acceptanceDone, filesTouched (each replaces the recorded list), blocker.
 - wave-await: Bounded, non-blocking poll of a wave's still-open tasks, classifying each against its server-owned dispatch state (never-started/stalled/timeout/none) and returning explicit next-instructions (including the exact task-fail/task-redispatch call shape) for whatever it finds. Requires runId, wave. Optional: branch, stateFile (also used to persist wave-await's own resume-state, i.e. the iteration counter, across bounded-poll calls).
-- resume-reset: Reset in-progress waves for session resume. Optional: branch, stateFile. Returns {resetWaves, clearedTaskIds} as before; when the run is still in flight after the reset, the response also carries a "resumeBriefing" (same shape as read's) reflecting the sets it just cleared — resume-reset's willRedo always matches the task IDs in clearedTaskIds. Reseeds fresh server-owned dispatch state (attempt reset to 1) for every cleared task ID; seeding failure is non-fatal and appends to a "warnings" field.
+- resume-reset: Reset in-progress waves for session resume. Optional: branch, runId (the run whose server dispatch state is reseeded; falls back to the value derived from startedAt/wave). Returns {resetWaves, clearedTaskIds} as before; when the run is still in flight after the reset, the response also carries a "resumeBriefing" (same shape as read's) reflecting the sets it just cleared — resume-reset's willRedo always matches the task IDs in clearedTaskIds. Reseeds fresh server-owned dispatch state (attempt reset to 1) for every cleared task ID; seeding failure is non-fatal and appends to a "warnings" field.
 - ledger_checkin: Register a worker as active. Requires runId, workerId. Optional: stepId.
 - ledger_checkout: Mark a worker as done. Requires runId, workerId. Optional: findings (free-text payload — e.g. a JSON array or markdown block — persisted alongside this worker's checkout record and returned later by ledger_status).
 - ledger_status: List worker statuses for a run. Requires runId. Optional: timeoutSeconds, expectedWorkers (worker IDs expected to have checked in; any missing from the ledger are returned as missingWorkers). Each entry in the returned workers[] carries a "findings" field when that worker's ledger_checkout call set one; omitted when absent.
-- ledger_cleanup: Remove a run's entire ledger directory (all per-worker checkin/checkout/findings files). Requires runId. Returns {ok, runId, removed} where removed is false when the directory didn't exist.
+- ledger_cleanup: Remove a run's entire ledger directory (all per-worker checkin/checkout/findings files). Requires runId. Returns {ok, runId, removed, workers} where removed is false when the directory didn't exist and workers lists the sorted worker ids that had ledger files (ids only, never findings).
 - log-cli: Append a CLI-captured output block to the run's evidence log. Requires cliCommand. Optional: cliExitCode, cliOutput, branch, wave.
 - drift-log: Append a drift issue and evaluate the server-side stop condition. When accumulated error-severity drift issues exceed the threshold (max(minErrorFloor, ceil(maxErrorRate * totalTasks))), returns {halt:true}. Requires driftSeverity (error|warning|info), driftSummary. Optional: driftDetail, wave, taskId, branch.
 - issue-draft: Append a pending GH issue draft to the state file's pendingIssueDrafts list (append-only — never goes through the context action, never overwrites). The draft title is also recorded durably in .sdlc-v2/history/deferred.json (source "execute-drift", id "execute-drift-<timestamp>-<N>") so it survives state-file GC — no follow-up deferred_add is needed unless warnings is returned. Requires issueDraftTitle, issueDraftBody. Optional: issueDraftLabels, taskId, branch. Returns {added:true, totalDrafts:N, deferredId (the id just written to deferred.json), next}, plus warnings[] when the deferred.json write failed: the call still succeeds, deferredId is omitted, and next names the exact ship_state action=deferred_add recovery call. Do not retry issue-draft to recover — it appends a second draft under a new id.
-- decide: Record a guardrail decision (append-only — never goes through the context action, never overwrites; distinct from ship state's own "decide" action, which writes a differently-shaped {step, decision} entry under a different key). Appends {decideType, id, decision, reason} to the state file's guardrailDecisions list. Requires decideType, decideId. Optional: decideDecision, decideReason, branch. Returns {ok:true, action:"decide", next:"..."}.
+- decide: Record a guardrail decision (append-only — never goes through the context action, never overwrites; distinct from ship state's own "decide" action, which writes a differently-shaped {step, decision} entry under a different key). Appends {decideType, id, decision, reason} to the state file's guardrailDecisions list. Requires decideType (must be "guardrail"; any other value fails with a DomainError), decideId. Optional: decideDecision (override|harden|cancel|fix; any other value fails with a DomainError), decideReason, branch. Returns {ok:true, action:"decide", next:"..."}.
 - report: Assemble the end-of-run execution report (KD-11). With write omitted or false, this is read-only (never writes state or any file). Gated by config automation.report: {enabled:false} returns {skipped:true, written:false} immediately and nothing else — regardless of write. Otherwise returns {branch, runId, planPath, startedAt, duration, format, waves[{number, status, startedAt, completedAt, duration, tasks[{id, name, status, complexity, risk, filesChanged}], committedSha}], totalTasks, completedTasks, failedTasks, skippedTasks, drifts, errors, warnings, concerns, pendingIssueDrafts, deferredFindings, decisions, path, written, next}. format is "json" or "md" (default) from config, or overridden by the format input field. write:true persists the report under <main worktree>/.sdlc-v2/reports/<runId>-report.<ext> and sets path/written on the response instead of leaving the caller to construct that path itself. For format=json, write:true alone is enough — the tool recomputes and writes the full struct. For format=md, write:true additionally requires body (the caller's own rendered markdown) — the tool persists that exact text rather than rendering it again. Optional: branch, write, format, body.
 
 Returns Markdown: a "# execute_state — ok" heading, a **Next:** line, then the fields above. Failures return "# execute_state — error (<code>)" with a "## What happened" and a "## Do this" section.`,
@@ -643,7 +643,7 @@ func executeState(root, workDir string, in ExecuteStateIn, now func() time.Time)
 	case "wave-progress":
 		return execActionWaveProgress(root, in, now)
 	case "wave-await":
-		return execActionWaveAwait(root, in, now)
+		return execActionWaveAwait(root, workDir, in, now)
 	case "task-redispatch":
 		return execActionTaskRedispatch(root, workDir, in, now)
 	case "resume-reset":
@@ -1323,8 +1323,27 @@ func execActionDecide(root, workDir string, in ExecuteStateIn) (any, error) {
 	if strings.TrimSpace(in.DecideType) == "" {
 		return nil, &mcpserver.DomainError{Msg: "decideType is required", Suggestion: "Pass decideType (e.g. \"guardrail\")."}
 	}
+	// decideType's schema enum is not enforced at runtime either. The report
+	// only reads entries whose decideType is exactly "guardrail", so any other
+	// value would be stored and then silently ignored.
+	if in.DecideType != "guardrail" {
+		return nil, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("decideType must be \"guardrail\"; got %q", in.DecideType),
+			Suggestion: "Pass decideType as \"guardrail\" — it is the only decision category.",
+		}
+	}
 	if strings.TrimSpace(in.DecideID) == "" {
 		return nil, &mcpserver.DomainError{Msg: "decideId is required", Suggestion: "Pass the decideId of the item decided on (e.g. the guardrail slug)."}
+	}
+	// decideDecision is optional, but when set it must be one of the input
+	// schema's enum values — the schema enum alone is not enforced at runtime.
+	switch in.DecideDecision {
+	case "", "override", "harden", "cancel", "fix":
+	default:
+		return nil, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("decideDecision must be one of override, harden, cancel, fix; got %q", in.DecideDecision),
+			Suggestion: "Pass decideDecision as \"override\", \"harden\", \"cancel\", or \"fix\", or omit it to record only the id.",
+		}
 	}
 
 	branch, err := execResolveBranch(in.Branch, workDir)
@@ -3047,9 +3066,15 @@ func execActionWaveCommit(root, workDir string, in ExecuteStateIn) (any, error) 
 				}
 			}
 			if !isAncestor {
+				// wave-committed never overwrites a different recorded
+				// sha, so it cannot repair this; name the two routes that
+				// do.
 				return nil, &mcpserver.DomainError{
-					Msg:        fmt.Sprintf("wave %d already has committedSha %q which is not an ancestor of HEAD — refusing to commit again automatically", *in.Wave, existingSha),
-					Suggestion: "The wave's git history has diverged from the recorded sha (e.g. after a rebase or force-push). Call wave-committed manually with the correct sha, or investigate the divergence before retrying wave-commit.",
+					Msg: fmt.Sprintf("wave %d already has committedSha %q which is not an ancestor of HEAD — refusing to commit again automatically", *in.Wave, existingSha),
+					Suggestion: fmt.Sprintf("The branch history no longer contains %s (e.g. after a rebase, reset, or force-push). Resolve it by hand, then retry wave-commit: "+
+						"either restore the history so %s is an ancestor of HEAD again (find it with git reflog), "+
+						"or edit wave %d's committedSha in %s to the commit that now holds this wave's changes.",
+						shortSHA(existingSha), shortSHA(existingSha), *in.Wave, st.Path),
 				}
 			}
 
@@ -4270,11 +4295,9 @@ func execActionGC(root, workDir string, in ExecuteStateIn, now func() time.Time)
 	// NOTE: state.GC sweeps ALL prefixes (execute, plan, ship, scaffold, ...)
 	// and also prunes sdlc-explore-* tempdirs — broader than the JS execute GC
 	// which only touches execute+plan files. The report is filtered below to
-	// expose only execute+plan buckets. Dry-run (above) classifies per-file
-	// with the same TTL/branch-exists rule, but the real run additionally
-	// deletes non-newest files for live branches when TTL-expired — so dry-run
-	// under-predicts what a real run deletes. This asymmetry is inherited from
-	// the Go state.GC consolidation, not a bug.
+	// expose only execute+plan buckets. The dry run (above) classifies each
+	// execute/plan file with the same state.ClassifyGCFile rule, so it
+	// predicts exactly which of those files this run deletes.
 	rpt, err := state.GC(root, state.GCOptions{
 		TTL:          time.Duration(ttlDays) * 24 * time.Hour,
 		BranchExists: branchExists,
@@ -4316,7 +4339,12 @@ func execBucketGCByPrefix(rpt *state.GCReport, prefix string) map[string]any {
 	}
 }
 
-// execGCDryRun classifies state files without deleting them.
+// execGCDryRunFileRE matches the execute and plan state file basenames the
+// dry run reports, mirroring state's parseStateFilename grammar.
+var execGCDryRunFileRE = regexp.MustCompile(`^(execute|plan)-(.+)-\d{8}T\d{6}Z\.json$`)
+
+// execGCDryRun classifies execute and plan state files without deleting
+// them, using the same state.ClassifyGCFile rule as the real run.
 func execGCDryRun(stateDir string, ttlDays int, branchExists func(string) bool, now func() time.Time) (any, error) {
 	out := map[string]any{
 		"dryRun":  true,
@@ -4331,50 +4359,59 @@ func execGCDryRun(stateDir string, ttlDays int, branchExists func(string) bool, 
 		return nil, &mcpserver.InfraError{Msg: "gc readdir: " + err.Error(), Cause: err, Suggestion: "Check read permission on " + paths.DataDir + "/" + paths.RunsSubdir + "/, then retry gc with dryRun true."}
 	}
 
-	nowTime := now()
+	nowMs := now().UnixMilli()
 	ttlMs := int64(ttlDays) * 86400000
-	nowMs := nowTime.UnixMilli()
 
-	// Match the state filename regex pattern.
-	stateFileRE := regexp.MustCompile(`^(execute|plan)-(.+)-\d{8}T\d{6}Z\.json$`)
-
+	// First pass: stat every execute/plan state file and find the newest
+	// mtime of each prefix+branch group; the rule needs it to spare a live
+	// branch's newest file.
+	type gcFile struct {
+		name, prefix, slug string
+		mtimeMs            int64
+	}
+	var files []gcFile
+	newestMs := map[string]int64{}
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		m := stateFileRE.FindStringSubmatch(name)
+		m := execGCDryRunFileRE.FindStringSubmatch(name)
 		if m == nil {
 			continue
 		}
-		prefix := m[1]
-		slug := m[2]
-
-		var bucket map[string]any
-		if prefix == "execute" {
-			bucket = executeResult
-		} else {
-			bucket = planResult
-		}
-
 		info, infoErr := e.Info()
 		if infoErr != nil {
 			continue
 		}
+		f := gcFile{name: name, prefix: m[1], slug: m[2], mtimeMs: info.ModTime().UnixMilli()}
+		files = append(files, f)
+		key := f.prefix + "\x00" + f.slug
+		if cur, seen := newestMs[key]; !seen || f.mtimeMs > cur {
+			newestMs[key] = f.mtimeMs
+		}
+	}
 
-		fresh := (nowMs - info.ModTime().UnixMilli()) < ttlMs
-		branchLive := branchExists != nil && branchExists(slug)
+	// Second pass: classify with state.ClassifyGCFile, the rule state.GC
+	// applies on a real run, so the dry run predicts exactly what a real run
+	// deletes. fresh uses <= to match state.GC's cutoff (mtime not before
+	// now-TTL), and a nil branchExists treats every branch as live, as
+	// state.GC does.
+	for _, f := range files {
+		fresh := (nowMs - f.mtimeMs) <= ttlMs
+		branchLive := branchExists == nil || branchExists(f.slug)
+		newest := f.mtimeMs == newestMs[f.prefix+"\x00"+f.slug]
+		del, reason := state.ClassifyGCFile(branchLive, newest, fresh)
 
-		entry := map[string]any{"file": name, "branch": slug}
-		if fresh {
-			entry["reason"] = "ttl-fresh"
-			bucket["kept"] = append(bucket["kept"].([]any), entry)
-		} else if branchLive {
-			entry["reason"] = "branch-exists"
-			bucket["kept"] = append(bucket["kept"].([]any), entry)
-		} else {
-			entry["reason"] = "stale+branch-gone"
+		bucket := planResult
+		if f.prefix == "execute" {
+			bucket = executeResult
+		}
+		entry := map[string]any{"file": f.name, "branch": f.slug, "reason": reason}
+		if del {
 			bucket["deleted"] = append(bucket["deleted"].([]any), entry)
+		} else {
+			bucket["kept"] = append(bucket["kept"].([]any), entry)
 		}
 	}
 

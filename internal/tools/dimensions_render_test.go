@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -46,6 +47,131 @@ func TestDimensionsRender_ListDimensions_MissingDir(t *testing.T) {
 	}
 	if !jsonHasEmptyArrayField(t, b, "dimensions") {
 		t.Errorf(`expected "dimensions":[] in JSON, got %s`, string(b))
+	}
+}
+
+// TestDimensionsRender_MirrorPathUsesTrimmedName pins that the mirror file
+// name uses the same trimmed frontmatter name as the rendered heading. A
+// quoted YAML name keeps its spaces, so this fails if the path is built from
+// the raw value.
+func TestDimensionsRender_MirrorPathUsesTrimmedName(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "dim.md"),
+		"---\nname: \"  security \"\ndescription: Security review\ntriggers:\n  - \"**/*.go\"\n---\n# Security\n\nCheck input validation.\n")
+
+	out, err := dimensionsRenderInstructions(root, DimensionsRenderInstructionsIn{File: "dim.md"})
+	if err != nil {
+		t.Fatalf("dimensionsRenderInstructions: %v", err)
+	}
+	want := filepath.Join(root, ".github", "instructions", "security.instructions.md")
+	if out.Path != want {
+		t.Errorf("Path = %q, want %q", out.Path, want)
+	}
+	if _, err := os.Stat(want); err != nil {
+		t.Errorf("mirror file not written at the trimmed name: %v", err)
+	}
+}
+
+// TestDimensionsRender_RenderWritesMirrorContent pins the mirror file that
+// render mode writes, per the spec's "Render mode mirror content" table:
+// applyTo from the triggers, the heading, the description, the default
+// severity, the common text read from a relative commonFile, the Checklist
+// with checkboxes made plain, the Severity Guide (ending at the next "## "
+// heading), and the skip-when Note. An existing mirror is replaced whole. A
+// commonFile that does not exist drops only the Common section.
+func TestDimensionsRender_RenderWritesMirrorContent(t *testing.T) {
+	const dimension = "---\n" +
+		"name: security\n" +
+		"description: \"  Security review for Go code.  \"\n" +
+		"triggers:\n  - \"**/*.go\"\n  - \"cmd/**\"\n" +
+		"skip-when:\n  - \"**/*_test.go\"\n  - \"docs/**\"\n" +
+		"---\n" +
+		"# Security\n\n" +
+		"## Checklist\n\n- [ ] Validate all input.\n- [x] Escape output.\n\n" +
+		"## Severity Guide\n\n- high: exploitable\n\n" +
+		"## Examples\n\nNot part of the mirror.\n"
+	const head = "---\n" +
+		"applyTo: \"**/*.go,cmd/**\"\n" +
+		"---\n" +
+		"# security — Review Instructions\n\n" +
+		"Security review for Go code.\n\n" +
+		"Default severity: medium\n"
+	const common = "\n## Common Review Instructions\n\n" +
+		"Cite file and line for every finding.\n"
+	const tail = "\n## Checklist\n\n- Validate all input.\n- Escape output.\n" +
+		"\n## Severity Guide\n\n- high: exploitable\n" +
+		"\n## Note\n\n" +
+		"In Claude Code reviews, files matching these patterns are excluded: **/*_test.go, docs/**.\n" +
+		"Copilot path-specific instructions do not support exclusion patterns — use judgment when findings apply to these files.\n"
+
+	cases := []struct {
+		name       string
+		commonFile string
+		want       string
+	}{
+		{"with common file", paths.DataDir + "/review-dimensions/_common.md", head + common + tail},
+		{"common file missing", paths.DataDir + "/review-dimensions/absent.md", head + tail},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, paths.DataDir, "review-dimensions", "security.md"), dimension)
+			writeFile(t, filepath.Join(root, paths.DataDir, "review-dimensions", "_common.md"),
+				"\n  Cite file and line for every finding.\n\n")
+			mirror := filepath.Join(root, ".github", "instructions", "security.instructions.md")
+			writeFile(t, mirror, "stale mirror content\n")
+
+			out, err := dimensionsRenderInstructions(root, DimensionsRenderInstructionsIn{
+				File:       paths.DataDir + "/review-dimensions/security.md",
+				CommonFile: tc.commonFile,
+			})
+			if err != nil {
+				t.Fatalf("dimensionsRenderInstructions: %v", err)
+			}
+			if out.Path != mirror {
+				t.Errorf("Path = %q, want %q", out.Path, mirror)
+			}
+			if want := "Rendered to " + mirror + "."; out.Next != want {
+				t.Errorf("Next = %q, want %q", out.Next, want)
+			}
+			got, err := os.ReadFile(mirror)
+			if err != nil {
+				t.Fatalf("read mirror: %v", err)
+			}
+			if string(got) != tc.want {
+				t.Errorf("mirror content mismatch\n--- got ---\n%s\n--- want ---\n%s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDimensionsRender_RenderPathTraversalName_Errors(t *testing.T) {
+	for _, name := range []string{"../../escaped", "a/b", `a\\b`} {
+		t.Run(name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "project")
+			writeFile(t, filepath.Join(root, "dim.md"),
+				"---\nname: \""+name+"\"\ndescription: Security review\ntriggers:\n  - \"**/*.go\"\n---\n# Security\n\nCheck input validation.\n")
+
+			_, err := dimensionsRenderInstructions(root, DimensionsRenderInstructionsIn{File: "dim.md"})
+			var de *mcpserver.DomainError
+			if !errors.As(err, &de) {
+				t.Fatalf("err = %v, want *mcpserver.DomainError", err)
+			}
+			if _, statErr := os.Stat(filepath.Join(filepath.Dir(root), "escaped.instructions.md")); statErr == nil {
+				t.Error("mirror file was written outside .github/instructions/")
+			}
+		})
+	}
+}
+
+func TestDimensionsRender_ListDimensions_UnreadableDirIsInfraError(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "review-dimensions"), "not a directory")
+
+	_, err := dimensionsRenderInstructions(root, DimensionsRenderInstructionsIn{ListDimensions: true})
+	var infra *mcpserver.InfraError
+	if !errors.As(err, &infra) {
+		t.Fatalf("err = %v, want *mcpserver.InfraError", err)
 	}
 }
 

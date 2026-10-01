@@ -42,7 +42,8 @@
     },
     "model": {
       "type": "string",
-      "enum": ["haiku", "sonnet", "opus"]
+      "minLength": 1,
+      "pattern": "\\S"
     }
   },
   "required": ["name", "description", "triggers"],

@@ -118,8 +118,18 @@ func ReadTOML(path string, out any) error {
 		}
 		return fmt.Errorf("fsx: read %s: %w", path, err)
 	}
+	if err := DecodeTOML(data, out); err != nil {
+		return fmt.Errorf("fsx: %s: %w", path, err)
+	}
+	return nil
+}
+
+// DecodeTOML unmarshals TOML data into out and normalizes it in place the
+// same way ReadTOML does (int64 becomes float64). A syntax error wraps
+// ErrParse.
+func DecodeTOML(data []byte, out any) error {
 	if err := toml.Unmarshal(data, out); err != nil {
-		return fmt.Errorf("fsx: %s: %w: %v", path, ErrParse, err)
+		return fmt.Errorf("%w: %v", ErrParse, err)
 	}
 	normalizeTOMLTypes(out)
 	return nil

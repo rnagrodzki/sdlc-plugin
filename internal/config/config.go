@@ -17,6 +17,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -39,6 +40,23 @@ var ProjectSections = map[string]bool{
 	"pr":      true,
 	"plan":    true,
 	"execute": true,
+}
+
+// LocalSections is the set of section names that live in the local config
+// (.sdlc-v2/local.toml), taken from the top-level properties of
+// plugins/sdlc/schemas/sdlc-local.schema.json. The schema's integer
+// "version" property is left out: it is the file's schema version, not a
+// section, and the "version" section routes to config.toml.
+// TestLocalSchemaSync keeps this set in sync with the schema file.
+var LocalSections = map[string]bool{
+	"review":         true,
+	"planStyle":      true,
+	"ship":           true,
+	"receivedReview": true,
+	"github":         true,
+	"executePrefs":   true,
+	"workspace":      true,
+	"automation":     true,
 }
 
 // Quiet suppresses config-read tracing to stderr when set to true.
@@ -648,7 +666,8 @@ func readLocalRaw(mainRoot string) (map[string]any, error) {
 // named-table form [plan.guardrails.<id>]) into []any with each element's
 // "id" field injected from the table key. This boundary conversion keeps
 // downstream consumers that expect an array of guardrail objects working
-// unchanged.
+// unchanged. The array-of-tables form [[plan.guardrails]] already decodes
+// to []any (each entry carries its own "id") and passes through as is.
 func normalizeGuardrailTables(raw map[string]any) {
 	for _, section := range []string{"plan", "execute"} {
 		sec, ok := raw[section].(map[string]any)
@@ -808,47 +827,101 @@ func ReadSection(mainRoot, name string) (map[string]any, error) {
 // .sdlc-v2/config.toml, never local.toml.
 //
 // For project sections, validates the merged result against the v5 schema
-// before writing. Writes use fsx.AtomicWriteTOML for crash safety.
+// before writing. Writes are atomic (fsx.AtomicWriteBytes) for crash safety.
+//
+// The write edits the file text in place (see splice.go): only the text of
+// the named section changes, so comments and every other section stay
+// byte-for-byte. When the file's layout cannot be spliced, or the spliced
+// text would not decode to the intended data, WriteSection falls back to
+// rewriting the whole file from parsed data, which drops its comments.
 func WriteSection(mainRoot, name string, v map[string]any) error {
+	_, err := WriteSectionReport(mainRoot, name, v)
+	return err
+}
+
+// WriteSectionReport is WriteSection that also reports rewrote=true when it
+// had to fall back to rewriting the whole file from parsed data (all comments
+// in that file are then gone).
+func WriteSectionReport(mainRoot, name string, v map[string]any) (rewrote bool, err error) {
 	if err := validateSectionName(name); err != nil {
-		return err
+		return false, err
 	}
 	top, _, _ := strings.Cut(name, ".")
 
 	sdlcDir := filepath.Join(mainRoot, paths.DataDir)
 	if err := os.MkdirAll(sdlcDir, 0o755); err != nil {
-		return fmt.Errorf("config: create .sdlc-v2 dir: %w", err)
+		return false, fmt.Errorf("config: create .sdlc-v2 dir: %w", err)
 	}
 
 	if ProjectSections[top] {
-		configPath := filepath.Join(sdlcDir, "config.toml")
-		var existing map[string]any
-		if err := fsx.ReadTOML(configPath, &existing); err != nil {
-			if errors.Is(err, fsx.ErrNotFound) {
-				existing = make(map[string]any)
-			} else {
-				return fmt.Errorf("config: %w", err)
-			}
-		}
-		setSectionPath(existing, name, v)
-		if err := validateProjectKeys(existing); err != nil {
-			return err
-		}
-		traceRead(configPath, "write")
-		return fsx.AtomicWriteTOML(configPath, existing)
+		return writeSectionFile(filepath.Join(sdlcDir, "config.toml"), name, v, validateProjectKeys)
 	}
+	return writeSectionFile(filepath.Join(sdlcDir, "local.toml"), name, v, nil)
+}
 
-	// Local section.
-	localPath := filepath.Join(sdlcDir, "local.toml")
+// WriteFileSection writes section name into the TOML file at path, which is
+// created with its directory if needed. It works like WriteSectionReport but
+// does not route by section name and does not validate top-level keys, so a
+// caller can write into a file it chose itself (e.g. a local.toml key that
+// shares its name with a project section). The same in-place splice and
+// full-rewrite fallback apply; rewrote reports the fallback.
+func WriteFileSection(path, name string, v map[string]any) (rewrote bool, err error) {
+	if err := validateSectionName(name); err != nil {
+		return false, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return false, fmt.Errorf("config: create %s: %w", filepath.Dir(path), err)
+	}
+	return writeSectionFile(path, name, v, nil)
+}
+
+// writeSectionFile is the shared read-merge-write for config.toml and
+// local.toml. validate (optional) checks the merged document before any
+// write.
+func writeSectionFile(path, name string, v map[string]any, validate func(map[string]any) error) (bool, error) {
 	var existing map[string]any
-	if err := fsx.ReadTOML(localPath, &existing); err != nil {
-		if errors.Is(err, fsx.ErrNotFound) {
-			existing = make(map[string]any)
-		} else {
-			return fmt.Errorf("config: %w", err)
+	if err := fsx.ReadTOML(path, &existing); err != nil {
+		if !errors.Is(err, fsx.ErrNotFound) {
+			return false, fmt.Errorf("config: %w", err)
 		}
+		existing = make(map[string]any)
 	}
 	setSectionPath(existing, name, v)
-	traceRead(localPath, "write")
-	return fsx.AtomicWriteTOML(localPath, existing)
+	if validate != nil {
+		if err := validate(existing); err != nil {
+			return false, err
+		}
+	}
+	traceRead(path, "write")
+	if out, ok := spliceFile(path, name, v, existing); ok {
+		return false, fsx.AtomicWriteBytes(path, out)
+	}
+	// fsx.ReadTOML decodes every number as float64, so a plain rewrite would
+	// turn every integer in the other sections into a float ("60" -> "60.0").
+	return true, fsx.AtomicWriteTOML(path, WholeNumbersToInt(existing))
+}
+
+// WholeNumbersToInt returns v with every float64 that holds a whole number
+// replaced by an int64, recursing into maps and slices (maps and slices are
+// changed in place). JSON decoding and fsx.ReadTOML both produce float64 for
+// every number, and go-toml writes a float64 such as 60 as "60.0", while
+// hand-written config files use "60" for integers. A number with a fraction
+// (e.g. 0.5) stays a float64. A whole-number float such as "1.0" becomes
+// "1"; readers decode both to the same float64.
+func WholeNumbersToInt(v any) any {
+	switch val := v.(type) {
+	case float64:
+		if val == math.Trunc(val) && val >= math.MinInt64 && val < math.MaxInt64 {
+			return int64(val)
+		}
+	case map[string]any:
+		for k, e := range val {
+			val[k] = WholeNumbersToInt(e)
+		}
+	case []any:
+		for i, e := range val {
+			val[i] = WholeNumbersToInt(e)
+		}
+	}
+	return v
 }

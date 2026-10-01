@@ -28,6 +28,7 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // ErrOutputCap is returned by Run when a command's stdout would exceed
@@ -50,6 +51,11 @@ type Options struct {
 	MaxBytes int64
 	// Stdin, when non-nil, is piped to the command's standard input.
 	Stdin io.Reader
+	// KeepLeadingSpace makes Run trim only trailing whitespace from
+	// stdout. Use it for output whose leading spaces carry meaning, such
+	// as `git status --porcelain`, where " M a.go" starts with a status
+	// column that is a space.
+	KeepLeadingSpace bool
 }
 
 // Run executes cmd with args and returns its trimmed stdout.
@@ -95,17 +101,20 @@ func Run(cmd string, args []string, opt Options) (string, error) {
 		return "", fmt.Errorf("execx: %s %s: %w", cmd, strings.Join(args, " "), runErr)
 	}
 
+	if opt.KeepLeadingSpace {
+		return strings.TrimRightFunc(out.buf.String(), unicode.IsSpace), nil
+	}
 	return strings.TrimSpace(out.buf.String()), nil
 }
 
-// RunAllowExit behaves like Run but never discards stdout because of a
-// non-zero exit: it returns the exit code alongside the captured stdout,
-// and only returns a non-nil error for failures that aren't a plain
-// process exit (binary not found, etc). Use it for commands like
-// `gh pr checks` whose exit code is itself meaningful data, not just a
-// pass/fail signal — discarding their stdout on non-zero exit would throw
+// RunAllowExit behaves like Run but never discards output because of a
+// non-zero exit: it returns the exit code alongside the captured stdout and
+// stderr (both trimmed), and only returns a non-nil error for failures that
+// aren't a plain process exit (binary not found, etc). Use it for commands
+// like `gh pr checks` whose exit code is itself meaningful data, not just a
+// pass/fail signal — discarding their output on non-zero exit would throw
 // away the very information the caller needs to classify the failure.
-func RunAllowExit(cmd string, args []string, opt Options) (stdout string, exitCode int, err error) {
+func RunAllowExit(cmd string, args []string, opt Options) (stdout, stderrText string, exitCode int, err error) {
 	maxBytes := opt.MaxBytes
 	if maxBytes <= 0 {
 		maxBytes = defaultMaxBytes
@@ -120,19 +129,20 @@ func RunAllowExit(cmd string, args []string, opt Options) (stdout string, exitCo
 
 	runErr := c.Run()
 	if out.exceeded {
-		return "", 0, fmt.Errorf("execx: %s: %w", cmd, ErrOutputCap)
+		return "", "", 0, fmt.Errorf("execx: %s: %w", cmd, ErrOutputCap)
 	}
+	stderrText = strings.TrimSpace(stderr.String())
 	if runErr != nil {
 		var exitErr *exec.ExitError
 		if errors.As(runErr, &exitErr) {
-			return strings.TrimSpace(out.buf.String()), exitErr.ExitCode(), nil
+			return strings.TrimSpace(out.buf.String()), stderrText, exitErr.ExitCode(), nil
 		}
-		if stderrText := strings.TrimSpace(stderr.String()); stderrText != "" {
-			return "", 0, fmt.Errorf("execx: %s %s: %w: %s", cmd, strings.Join(args, " "), runErr, stderrText)
+		if stderrText != "" {
+			return "", "", 0, fmt.Errorf("execx: %s %s: %w: %s", cmd, strings.Join(args, " "), runErr, stderrText)
 		}
-		return "", 0, fmt.Errorf("execx: %s %s: %w", cmd, strings.Join(args, " "), runErr)
+		return "", "", 0, fmt.Errorf("execx: %s %s: %w", cmd, strings.Join(args, " "), runErr)
 	}
-	return strings.TrimSpace(out.buf.String()), 0, nil
+	return strings.TrimSpace(out.buf.String()), stderrText, 0, nil
 }
 
 // cappedBuffer accumulates writes up to limit bytes. Once the limit would be

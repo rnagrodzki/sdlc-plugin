@@ -418,3 +418,24 @@ func TestShipSkillsNoDirectMutation(t *testing.T) {
 		})
 	}
 }
+
+// TestShipSkillsRecordsSideEffects pins that ship/SKILL.md calls
+// ship_verify_side_effect for the two steps that have a side effect (commit
+// and pr). That call is the only writer of the sideEffects journal, and
+// begin-step's alreadyDone reads that journal on a resumed run; with no
+// caller, alreadyDone is never true.
+func TestShipSkillsRecordsSideEffects(t *testing.T) {
+	content := shipSkillsReadFile(t, shipSkillsRepoRoot(t), "skills/ship/SKILL.md")
+	loop, ok := shipSkillsSection(content, "## Step loop")
+	if !ok {
+		t.Fatal(`skills/ship/SKILL.md has no "## Step loop" section`)
+	}
+	for _, call := range []string{
+		`ship_verify_side_effect({step:"commit"`,
+		`ship_verify_side_effect({step:"pr"`,
+	} {
+		if !strings.Contains(loop, call) {
+			t.Errorf("skills/ship/SKILL.md Step loop does not call %s})", call)
+		}
+	}
+}

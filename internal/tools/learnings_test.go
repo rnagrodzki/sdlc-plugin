@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
+	"github.com/rnagrodzki/sdlc-plugin/internal/telemetry"
 )
 
 func TestLearningsAppendCreatesFileWithHeader(t *testing.T) {
@@ -31,6 +32,82 @@ func TestLearningsAppendCreatesFileWithHeader(t *testing.T) {
 	}
 	if !strings.Contains(content, "## 2026-09-07 — setup: first entry") {
 		t.Fatalf("expected entry present, got %q", content)
+	}
+}
+
+// TestLearningsFailureRecordIsItsOwnEntry pins that a block written by
+// mcp_failure_record after a learnings_log entry stays a separate entry: the
+// log keeps one blank line between them, so read-side actions count two
+// entries, not one merged block.
+func TestLearningsFailureRecordIsItsOwnEntry(t *testing.T) {
+	root := t.TempDir()
+
+	if _, err := learningsLog(root, LearningsLogIn{Action: "append", Entry: "## 2026-09-07 — setup: first entry"}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if _, err := mcpFailureRecord(root, MCPFailureRecordIn{Tool: "test_tool", HTTPStatus: 401, ErrorMessage: "unauthorized access"}); err != nil {
+		t.Fatalf("mcp_failure_record: %v", err)
+	}
+
+	out, err := learningsLog(root, LearningsLogIn{Action: "stats"})
+	if err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	if out.Stats == nil || out.Stats.TotalEntries != 2 {
+		data, _ := os.ReadFile(filepath.Join(root, paths.DataDir, "learnings", "log.md"))
+		t.Fatalf("stats = %+v, want totalEntries 2; log:\n%s", out.Stats, data)
+	}
+}
+
+// TestLearningsFailureRecordFirstWriteAddsHeader pins that when
+// mcp_failure_record is the first writer of the log (missing or empty
+// file), it writes the learnings_log header first. Without it the failure
+// block is the file's first block, which learnings_log reads as the header,
+// so the entry is not counted.
+func TestLearningsFailureRecordFirstWriteAddsHeader(t *testing.T) {
+	if telemetry.LearningsLogHeader != learningsLogHeader {
+		t.Fatalf("telemetry.LearningsLogHeader = %q, want learnings_log's header %q", telemetry.LearningsLogHeader, learningsLogHeader)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, logPath string)
+	}{
+		{"missing file", func(*testing.T, string) {}},
+		{"empty file", func(t *testing.T, logPath string) {
+			if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(logPath, nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			logPath := filepath.Join(root, paths.DataDir, "learnings", "log.md")
+			tc.setup(t, logPath)
+
+			if _, err := mcpFailureRecord(root, MCPFailureRecordIn{Tool: "test_tool", HTTPStatus: 401, ErrorMessage: "unauthorized access"}); err != nil {
+				t.Fatalf("mcp_failure_record: %v", err)
+			}
+
+			data, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatalf("read log: %v", err)
+			}
+			if !strings.HasPrefix(string(data), learningsLogHeader+"\n## ") {
+				t.Errorf("log should start with the header, a blank line, then the block; got %q", data)
+			}
+
+			out, err := learningsLog(root, LearningsLogIn{Action: "stats"})
+			if err != nil {
+				t.Fatalf("stats: %v", err)
+			}
+			if out.Stats == nil || out.Stats.TotalEntries != 1 {
+				t.Fatalf("stats = %+v, want totalEntries 1; log:\n%s", out.Stats, data)
+			}
+		})
 	}
 }
 
@@ -464,5 +541,80 @@ func TestLearningsLog_StatsUnknownActionStillRejected(t *testing.T) {
 
 	if _, err := learningsLog(root, LearningsLogIn{Action: "stat"}); err == nil {
 		t.Fatal("expected error for misspelled action, got nil")
+	}
+}
+
+// writeLearningsLog writes raw content to the learnings log, creating its
+// directory, so a test can seed layouts that append never produces.
+func writeLearningsLog(t *testing.T, root, content string) {
+	t.Helper()
+	path := filepath.Join(root, paths.DataDir, "learnings", "log.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestLearningsLog_EmptyBlocksAreNotEntries pins that remove and stats number
+// entries the same way: a run of extra blank lines leaves an empty block
+// between two entries, and that block is not an entry for either action.
+func TestLearningsLog_EmptyBlocksAreNotEntries(t *testing.T) {
+	const content = "# SDLC Execution Learnings\n\n## one\n\n\n\n## two\n\n## three\n"
+
+	t.Run("stats", func(t *testing.T) {
+		root := t.TempDir()
+		writeLearningsLog(t, root, content)
+		out, err := learningsLog(root, LearningsLogIn{Action: "stats"})
+		if err != nil {
+			t.Fatalf("stats: %v", err)
+		}
+		if out.Stats.TotalEntries != 3 {
+			t.Errorf("TotalEntries = %d, want 3", out.Stats.TotalEntries)
+		}
+	})
+
+	t.Run("remove entry 2 removes the second entry", func(t *testing.T) {
+		root := t.TempDir()
+		writeLearningsLog(t, root, content)
+		out, err := learningsLog(root, LearningsLogIn{Action: "remove", Indices: []int{2}})
+		if err != nil {
+			t.Fatalf("remove: %v", err)
+		}
+		if out.Content != "## two" {
+			t.Errorf("removed content = %q, want %q", out.Content, "## two")
+		}
+		if got, want := readLearningsLog(t, root), "# SDLC Execution Learnings\n\n## one\n\n## three\n"; got != want {
+			t.Errorf("log after remove = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("remove index past the real entries is out of range", func(t *testing.T) {
+		root := t.TempDir()
+		writeLearningsLog(t, root, content)
+		_, err := learningsLog(root, LearningsLogIn{Action: "remove", Indices: []int{4}})
+		if err == nil || !strings.Contains(err.Error(), "log has 3 entries") {
+			t.Errorf("remove [4] error = %v, want out of range naming 3 entries", err)
+		}
+	})
+}
+
+// TestLearningsLog_StatsRunTagOnLaterLine pins that the run tag is found on
+// any line of an entry, since the tag is a line of its own.
+func TestLearningsLog_StatsRunTagOnLaterLine(t *testing.T) {
+	root := t.TempDir()
+	writeLearningsLog(t, root, "# SDLC Execution Learnings\n\n"+
+		"note added by hand\n<!-- sdlc:run=r1 branch=fix/tag-late -->\n## 2026-09-13 — execute: lesson\n")
+
+	out, err := learningsLog(root, LearningsLogIn{Action: "stats"})
+	if err != nil {
+		t.Fatalf("stats: %v", err)
+	}
+	if out.Stats.ByCategory["fix"] != 1 {
+		t.Errorf("ByCategory = %v, want fix: 1", out.Stats.ByCategory)
+	}
+	if out.Stats.RecentFailures != 1 {
+		t.Errorf("RecentFailures = %d, want 1", out.Stats.RecentFailures)
 	}
 }

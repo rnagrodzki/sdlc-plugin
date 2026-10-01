@@ -8,8 +8,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
@@ -23,9 +25,11 @@ import (
 // redirectTempManifests points the fsseam's mkdirTempFunc at a t.TempDir()
 // root for the duration of t. commitPrepare always ends by writing its
 // manifest through mkdirTempFunc("", "sdlc-commit-manifest-"); without this
-// redirect the directory lands in os.TempDir(), nothing removes it, and every
+// redirect the directory lands in os.TempDir() and stays there for a day
+// (commitPrepare only removes manifest dirs older than 24h), so every
 // `go test` run leaks one sdlc-commit-manifest-* directory per test that calls
-// commitPrepare with the real fsseam installed.
+// commitPrepare with the real fsseam installed. The stale-dir sweep scans the
+// manifest's parent directory, so it also stays inside root.
 //
 // Unlike installFakeFS this keeps real file I/O, so tests that assert on
 // git-driven behaviour are unaffected — only the manifest's destination moves.
@@ -309,6 +313,56 @@ func TestCommitPrepare_ManifestFileWriteFailureRemovesTempDir(t *testing.T) {
 	}
 }
 
+// TestCommitPrepare_RemovesStaleManifestDirs pins the manifest cleanup: each
+// call removes sdlc-commit-manifest-* directories older than 24h, keeps
+// younger ones and the one it just wrote, and leaves other directories alone.
+func TestCommitPrepare_RemovesStaleManifestDirs(t *testing.T) {
+	root := redirectTempManifests(t)
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	prepare := func() string {
+		t.Helper()
+		out, err := commitPrepare(dir, dir, CommitPrepareIn{SkipConfigCheck: true})
+		if err != nil || out.ManifestPath == "" {
+			t.Fatalf("commitPrepare: manifestPath=%q err=%v", out.ManifestPath, err)
+		}
+		return filepath.Dir(out.ManifestPath)
+	}
+	age := func(path string, d time.Duration) {
+		t.Helper()
+		old := time.Now().Add(-d)
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stale := prepare()
+	age(stale, 48*time.Hour)
+	recent := prepare()
+	age(recent, time.Hour)
+	other := filepath.Join(root, "unrelated-dir")
+	if err := os.Mkdir(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	age(other, 48*time.Hour)
+
+	current := prepare()
+
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("manifest dir older than 24h should be removed, stat err = %v", err)
+	}
+	for _, keep := range []string{recent, current, other} {
+		if _, err := os.Stat(keep); err != nil {
+			t.Errorf("%s should be kept: %v", filepath.Base(keep), err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(current, "manifest.json")); err != nil {
+		t.Errorf("current manifest must stay readable: %v", err)
+	}
+}
+
 // TestCommitPrepare_NilSlicesSerializeAsArrays verifies that all slice
 // fields serialize as JSON arrays (not null).
 func TestCommitPrepare_NilSlicesSerializeAsArrays(t *testing.T) {
@@ -368,6 +422,62 @@ func TestCommitPrepare_NoStagedFiles(t *testing.T) {
 	}
 	if out.Next != "Fix the errors above, then call commit_prepare again." {
 		t.Errorf("Next: got %q", out.Next)
+	}
+}
+
+// TestCommitPrepare_UnstagedExcludesStagedOnly pins that unstaged.files lists
+// only paths whose working tree differs from the index. A staged-only change
+// must not appear there, or the commit plan shows it under "Also staged by
+// commit_apply" and disagrees with what commit_apply actually stages.
+func TestCommitPrepare_UnstagedExcludesStagedOnly(t *testing.T) {
+	redirectTempManifests(t)
+	dir := newCommitApplyRepo(t)
+
+	// new.txt: new file, staged only.
+	writeRepoFile(t, dir, "new.txt", "new")
+	runGit(t, dir, "add", "new.txt")
+	// keep.txt: staged edit, then a further working-tree edit.
+	writeRepoFile(t, dir, "keep.txt", "staged edit")
+	runGit(t, dir, "add", "keep.txt")
+	writeRepoFile(t, dir, "keep.txt", "staged edit plus worktree edit")
+	// initial.txt: working-tree edit only.
+	writeRepoFile(t, dir, "initial.txt", "worktree edit")
+
+	out, err := commitPrepare(dir, dir, CommitPrepareIn{SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("commitPrepare: %v", err)
+	}
+
+	want := []string{"initial.txt", "keep.txt"}
+	if strings.Join(out.Unstaged.Files, ",") != strings.Join(want, ",") {
+		t.Errorf("unstaged.files: got %v, want %v", out.Unstaged.Files, want)
+	}
+	if out.Unstaged.FileCount != 2 || !out.Unstaged.HasChanges {
+		t.Errorf("unstaged: fileCount=%d hasChanges=%v, want 2 true", out.Unstaged.FileCount, out.Unstaged.HasChanges)
+	}
+	wantStaged := []string{"keep.txt", "new.txt"}
+	if strings.Join(out.Staged.Files, ",") != strings.Join(wantStaged, ",") {
+		t.Errorf("staged.files: got %v, want %v", out.Staged.Files, wantStaged)
+	}
+}
+
+// TestCommitPrepare_UnstagedEmptyWhenAllStaged pins that a fully staged tree
+// reports no unstaged changes.
+func TestCommitPrepare_UnstagedEmptyWhenAllStaged(t *testing.T) {
+	redirectTempManifests(t)
+	dir := newCommitApplyRepo(t)
+
+	writeRepoFile(t, dir, "new.txt", "new")
+	writeRepoFile(t, dir, "keep.txt", "edited")
+	runGit(t, dir, "add", "new.txt", "keep.txt")
+
+	out, err := commitPrepare(dir, dir, CommitPrepareIn{SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("commitPrepare: %v", err)
+	}
+
+	if len(out.Unstaged.Files) != 0 || out.Unstaged.FileCount != 0 || out.Unstaged.HasChanges {
+		t.Errorf("unstaged: files=%v fileCount=%d hasChanges=%v, want empty", out.Unstaged.Files, out.Unstaged.FileCount, out.Unstaged.HasChanges)
 	}
 }
 
@@ -963,8 +1073,116 @@ func TestCommitApply_PathNamesAreTakenLiterally(t *testing.T) {
 	if got := gitOutTrim(t, dir, "-c", "core.quotepath=false", "show", "--name-only", "--format=", "HEAD"); got != "[x] notes é.txt" {
 		t.Errorf("commit should hold only the literal file, got:\n%s", got)
 	}
-	if len(out.SkippedUntrackedPaths) != 1 || !strings.Contains(out.SkippedUntrackedPaths[0], "x notes") {
-		t.Errorf("lookalike should be reported as skipped, got %#v", out.SkippedUntrackedPaths)
+	if len(out.SkippedUntrackedPaths) != 1 || out.SkippedUntrackedPaths[0] != "x notes é.txt" {
+		t.Errorf("lookalike should be reported as skipped under its raw name, got %#v", out.SkippedUntrackedPaths)
+	}
+}
+
+// TestCommit_NonASCIIUntrackedNamesAreRaw pins that untracked names with
+// non-ASCII bytes come back as the real file name, not git's C-quoted form
+// ("\303\251t\303\251.txt"). A quoted name cannot be pasted into git add.
+func TestCommit_NonASCIIUntrackedNamesAreRaw(t *testing.T) {
+	const name = "été notes.txt"
+
+	t.Run("commit_prepare untracked.files", func(t *testing.T) {
+		redirectTempManifests(t)
+		dir := newCommitApplyRepo(t)
+		writeRepoFile(t, dir, name, "x")
+
+		out, err := commitPrepare(dir, dir, CommitPrepareIn{SkipConfigCheck: true})
+		if err != nil {
+			t.Fatalf("commitPrepare: %v", err)
+		}
+		if len(out.Untracked.Files) != 1 || out.Untracked.Files[0] != name {
+			t.Errorf("Untracked.Files = %#v, want [%q]", out.Untracked.Files, name)
+		}
+	})
+
+	t.Run("commit_apply skippedUntrackedPaths and next", func(t *testing.T) {
+		dir := newCommitApplyRepo(t)
+		writeRepoFile(t, dir, "initial.txt", "changed")
+		writeRepoFile(t, dir, name, "x")
+
+		out := applyCommit(t, dir)
+
+		if len(out.SkippedUntrackedPaths) != 1 || out.SkippedUntrackedPaths[0] != name {
+			t.Errorf("SkippedUntrackedPaths = %#v, want [%q]", out.SkippedUntrackedPaths, name)
+		}
+		if !strings.Contains(out.Next, name) {
+			t.Errorf("Next should name %q raw, got %q", name, out.Next)
+		}
+	})
+}
+
+// TestCommitPrepare_NonASCIIStagedAndUnstagedNamesAreRaw pins that
+// staged.files and unstaged.files hold the real file names, not git's
+// C-quoted form ("\303\251t\303\251 staged.txt"), like untracked.files.
+func TestCommitPrepare_NonASCIIStagedAndUnstagedNamesAreRaw(t *testing.T) {
+	const staged = "été staged.txt"
+	const unstaged = "naïve notes.txt"
+
+	redirectTempManifests(t)
+	dir := newCommitApplyRepo(t)
+	writeRepoFile(t, dir, unstaged, "v1")
+	runGit(t, dir, "add", unstaged)
+	runGit(t, dir, "commit", "-m", "add "+unstaged)
+	writeRepoFile(t, dir, unstaged, "v2")
+	writeRepoFile(t, dir, staged, "x")
+	runGit(t, dir, "add", staged)
+
+	out, err := commitPrepare(dir, dir, CommitPrepareIn{SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("commitPrepare: %v", err)
+	}
+	if len(out.Staged.Files) != 1 || out.Staged.Files[0] != staged {
+		t.Errorf("Staged.Files = %#v, want [%q]", out.Staged.Files, staged)
+	}
+	if len(out.Unstaged.Files) != 1 || out.Unstaged.Files[0] != unstaged {
+		t.Errorf("Unstaged.Files = %#v, want [%q]", out.Unstaged.Files, unstaged)
+	}
+}
+
+// TestCommitPrepare_NonASCIITruncatedFilesAreRaw pins staged.truncatedFiles
+// for a non-ASCII name. With git's default core.quotePath the diff header is
+// `diff --git "a/\303\251t\303\251 small.txt" ...`, which the per-file split
+// does not parse, so the file vanished from both the truncated diff and
+// truncatedFiles. A big first file pushes the diff over the byte budget, so
+// the two small files are omitted and must be listed by their real names.
+func TestCommitPrepare_NonASCIITruncatedFilesAreRaw(t *testing.T) {
+	const nonASCII = "été small.txt"
+	const plain = "plain small.txt"
+
+	redirectTempManifests(t)
+	dir := newCommitApplyRepo(t)
+	writeRepoFile(t, dir, "big.txt", strings.Repeat("line of text here\n", 1000))
+	writeRepoFile(t, dir, nonASCII, strings.Repeat("y\n", 10))
+	writeRepoFile(t, dir, plain, strings.Repeat("y\n", 10))
+	runGit(t, dir, "add", ".")
+
+	out, err := commitPrepare(dir, dir, CommitPrepareIn{SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("commitPrepare: %v", err)
+	}
+	if !out.Staged.DiffTruncated {
+		t.Fatal("DiffTruncated = false, want true (big.txt exceeds the diff byte budget)")
+	}
+	want := []string{plain, nonASCII}
+	if !slices.Equal(out.Staged.TruncatedFiles, want) {
+		t.Errorf("TruncatedFiles = %#v, want %#v", out.Staged.TruncatedFiles, want)
+	}
+	if !strings.Contains(out.Staged.Diff, "# - "+nonASCII) {
+		t.Errorf("truncated diff footer should name %q raw, got tail %q", nonASCII, out.Staged.Diff[max(0, len(out.Staged.Diff)-300):])
+	}
+}
+
+// TestUntrackedPaths_SkipsRenameSourceRecord pins the -z parser: a rename
+// record is followed by the original path as its own record, and that record
+// must not be read as a status line even when it starts with "?? ".
+func TestUntrackedPaths_SkipsRenameSourceRecord(t *testing.T) {
+	out := "R  new.txt\x00?? old.txt\x00 M kept.txt\x00?? stray dir/\x00"
+	got := untrackedPaths(out)
+	if len(got) != 1 || got[0] != "stray dir/" {
+		t.Errorf("untrackedPaths = %#v, want [\"stray dir/\"]", got)
 	}
 }
 

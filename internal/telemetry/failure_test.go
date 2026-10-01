@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
@@ -99,6 +100,32 @@ func TestRecord_CreatesParentDirs(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "mcp-failure[auth]: test-tool") {
 		t.Fatalf("unexpected content: %s", data)
+	}
+}
+
+// TestRecord_HeadingNamesOnlyTheTool pins the heading format: it names the
+// failing tool and class, and does not claim the failure came from Jira when
+// the tool has nothing to do with Jira.
+func TestRecord_HeadingNamesOnlyTheTool(t *testing.T) {
+	root := t.TempDir()
+	if err := Record(root, Failure{Class: "transport", Tool: "mcp__github__create_pull_request"}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, paths.DataDir, "learnings", "log.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, ok := strings.CutPrefix(string(data), LearningsLogHeader+"\n")
+	if !ok {
+		t.Fatalf("log should start with the header and a blank line, got %q", data)
+	}
+	heading, _, _ := strings.Cut(body, "\n")
+	want := "## " + time.Now().UTC().Format("2006-01-02") + " — mcp-failure[transport]: mcp__github__create_pull_request"
+	if heading != want {
+		t.Errorf("heading = %q, want %q", heading, want)
+	}
+	if strings.Contains(strings.ToLower(heading), "jira") {
+		t.Errorf("heading for a non-Jira tool must not mention jira: %q", heading)
 	}
 }
 
@@ -210,6 +237,51 @@ func TestRecord_TruncatesLongError(t *testing.T) {
 				t.Fatalf("error field should be <=300 bytes, got %d", len(errField))
 			}
 		}
+	}
+}
+
+// TestRecord_OneBlankLineBeforeBlock pins that a new block is separated from
+// the existing log by exactly one blank line, whatever the log ends with.
+// learnings_log splits entries on blank lines, so a missing blank line would
+// merge the failure block into the previous entry. A missing or empty log gets
+// the learnings_log header first, so the block is not read as the header.
+func TestRecord_OneBlankLineBeforeBlock(t *testing.T) {
+	heading := "## " + time.Now().UTC().Format("2006-01-02") + " — mcp-failure[auth]: test-tool"
+	block := heading + "\ntool: test-tool\nsite: \nproject: \nerror: fail\nrecovered: no\n"
+	cases := []struct {
+		name     string
+		existing string
+		want     string
+	}{
+		{"no trailing newline", "## prev entry", "## prev entry\n\n" + block},
+		{"one trailing newline", "## prev entry\n", "## prev entry\n\n" + block},
+		{"already ends in a blank line", "## prev entry\n\n", "## prev entry\n\n" + block},
+		{"empty file", "", LearningsLogHeader + "\n" + block},
+		{"missing file", "<missing>", LearningsLogHeader + "\n" + block},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			logPath := filepath.Join(root, paths.DataDir, "learnings", "log.md")
+			if tc.existing != "<missing>" {
+				if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(logPath, []byte(tc.existing), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := Record(root, Failure{Class: "auth", Tool: "test-tool", Error: "fail"}); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(data) != tc.want {
+				t.Errorf("log = %q, want %q", data, tc.want)
+			}
+		})
 	}
 }
 

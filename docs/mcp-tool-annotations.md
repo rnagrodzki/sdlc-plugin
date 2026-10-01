@@ -16,6 +16,8 @@ A tool may declare ReadOnly:true only if **both** conditions hold:
 
 Both conditions must hold. If either is uncertain, set ReadOnly:false (the safe default).
 
+**Exception: plan tools.** plan_prepare, plan_mark, plan_support, and plan_explore_prepare keep ReadOnly:true, because the plan skill runs in Claude Code plan mode and needs them callable there (see docs/plan-architecture.md). Today only plan_support takes a path-selecting input: its runId picks .sdlc-v2/runs/<runId>.evidence/. That input only selects a run inside a fixed gitignored directory; it cannot change the directory. state.LoadRun rejects any runId that is not a bare filename matching the plan state-file grammar, before any path join. Condition 1 still applies in full. A plan tool keeps this exception only while every path input passes the same kind of check before any path join.
+
 ## Writer Annotation Fields
 
 For tools with ReadOnly:false, spell out all four bools explicitly. Go's zero value is false for Destructive and OpenWorld; the MCP spec's default for both is true. **Omitting them under-claims danger.** Destructive and Idempotent are meaningless under ReadOnly:true and may be left at zero there. OpenWorld must never be omitted — set it deliberately on every row, read-only or writer.

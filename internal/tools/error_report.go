@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	version "github.com/rnagrodzki/sdlc-plugin"
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
@@ -23,7 +24,7 @@ const errorReportTargetRepo = "rnagrodzki/sdlc-plugin"
 // Input / Output
 // ---------------------------------------------------------------------------
 
-// ErrorReportPrepareIn is error_report_prepare's input. Skill/Step/
+// ErrorReportPrepareIn is prepare_orchestrator's error_report-mode input. Skill/Step/
 // Operation/Error are required; the rest are optional with empty-string
 // defaults, matching source's `!= null` checks.
 //
@@ -46,28 +47,13 @@ type ErrorReportPrepareIn struct {
 	SuggestedInvestigation string `json:"suggestedInvestigation,omitempty"`
 }
 
-// ErrorReportPrepareOut is error_report_prepare's output: the path to the
-// written manifest (KD4 file handoff — still required, the isolated
-// error-report-orchestrator subagent reads the manifest file itself), plus
-// the manifest's top-level fields mirrored inline so the caller (SKILL.md /
-// prepare_orchestrator) can use structured fields directly instead of
-// re-reading the manifest file. Values are copied verbatim from the
-// errorReportManifest built in errorReportPrepare, so trim/raw semantics
-// match the manifest exactly field-for-field.
+// ErrorReportPrepareOut is errorReportPrepare's result: the path to the
+// written manifest (KD4 file handoff — the isolated
+// error-report-orchestrator subagent reads every other value from the
+// manifest file itself). prepare_orchestrator forwards only ManifestPath
+// (with its own Mode) to the skill.
 type ErrorReportPrepareOut struct {
-	ManifestPath           string   `json:"manifestPath"` // kept for orchestrator
-	Skill                  string   `json:"skill"`
-	Step                   string   `json:"step"`
-	Operation              string   `json:"operation"`
-	ErrorText              string   `json:"errorText"`
-	ExitOrHTTPCode         string   `json:"exitOrHttpCode,omitempty"`
-	ErrorType              string   `json:"errorType,omitempty"`
-	UserIntent             string   `json:"userIntent,omitempty"`
-	Repository             string   `json:"repository"`
-	CurrentBranch          string   `json:"currentBranch"`
-	Timestamp              string   `json:"timestamp"`
-	SuggestedInvestigation string   `json:"suggestedInvestigation,omitempty"`
-	Labels                 []string `json:"labels"`
+	ManifestPath string `json:"manifestPath"`
 }
 
 // ---------------------------------------------------------------------------
@@ -89,6 +75,11 @@ type errorReportManifest struct {
 	Timestamp              string   `json:"timestamp"`
 	TargetRepo             string   `json:"targetRepo"`
 	Labels                 []string `json:"labels"`
+	// Template is the ToolingError.md issue body template text, embedded
+	// in the binary. The orchestrator agent fills it from this field
+	// because its working directory is the user's project, which has no
+	// skills/error-report/ tree.
+	Template string `json:"template"`
 }
 
 // ---------------------------------------------------------------------------
@@ -97,7 +88,7 @@ type errorReportManifest struct {
 
 // errorReportPrepare is the Go port of error-report-prepare.js's main().
 // Self-contained: no dependency on guardrails.go/harden.go, and (unlike
-// harden_prepare) no KD5 config-version gate.
+// harden mode) no KD5 config-version gate.
 //
 // Source's detectRepository/detectCurrentBranch (safeExec with no explicit
 // cwd) inherit whatever directory the script process was launched from.
@@ -126,7 +117,7 @@ func errorReportPrepare(root string, in ErrorReportPrepareIn) (ErrorReportPrepar
 		}
 		return ErrorReportPrepareOut{}, &mcpserver.DomainError{
 			Msg:        strings.Join(msgs, "; "),
-			Suggestion: "Set skill, step, operation, and errorText in the input, then call error_report_prepare again.",
+			Suggestion: "Set skill, step, operation, and errorText in the input, then call prepare_orchestrator with mode error_report again.",
 		}
 	}
 
@@ -150,13 +141,14 @@ func errorReportPrepare(root string, in ErrorReportPrepareIn) (ErrorReportPrepar
 		Timestamp:              time.Now().UTC().Format(time.RFC3339),
 		TargetRepo:             errorReportTargetRepo,
 		Labels:                 []string{"tooling-error", skill},
+		Template:               version.ToolingErrorTemplate,
 	}
 
 	tmpDir, err := os.MkdirTemp("", "sdlc-error-report-")
 	if err != nil {
 		return ErrorReportPrepareOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("create temp dir: %s", err.Error()),
-			Suggestion: "Check that the OS temp directory allows creating new directories, then retry error_report_prepare.",
+			Suggestion: "Check that the OS temp directory allows creating new directories, then retry prepare_orchestrator with mode error_report.",
 			Cause:      err,
 		}
 	}
@@ -164,24 +156,10 @@ func errorReportPrepare(root string, in ErrorReportPrepareIn) (ErrorReportPrepar
 	if err := fsx.AtomicWriteJSON(manifestPath, manifest); err != nil {
 		return ErrorReportPrepareOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("write manifest: %s", err.Error()),
-			Suggestion: "Check available disk space and write permission on the temp directory created just before this step, then retry error_report_prepare — it creates a fresh one each call.",
+			Suggestion: "Check available disk space and write permission on the temp directory created just before this step, then retry prepare_orchestrator with mode error_report — it creates a fresh one each call.",
 			Cause:      err,
 		}
 	}
 
-	return ErrorReportPrepareOut{
-		ManifestPath:           manifestPath,
-		Skill:                  manifest.Skill,
-		Step:                   manifest.Step,
-		Operation:              manifest.Operation,
-		ErrorText:              manifest.ErrorText,
-		ExitOrHTTPCode:         manifest.ExitOrHTTPCode,
-		ErrorType:              manifest.ErrorType,
-		UserIntent:             manifest.UserIntent,
-		Repository:             manifest.Repository,
-		CurrentBranch:          manifest.CurrentBranch,
-		Timestamp:              manifest.Timestamp,
-		SuggestedInvestigation: manifest.SuggestedInvestigation,
-		Labels:                 manifest.Labels,
-	}, nil
+	return ErrorReportPrepareOut{ManifestPath: manifestPath}, nil
 }

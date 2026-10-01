@@ -104,7 +104,7 @@ func waveAwaitLoadServerState(t *testing.T, root, runID, taskID string) wave.Ser
 
 func TestExecActionWaveAwait_RequiresRunID(t *testing.T) {
 	root := t.TempDir()
-	_, err := execActionWaveAwait(root, ExecuteStateIn{Branch: "feat/test", Wave: intPtr(1)}, fixedClock(testNow))
+	_, err := execActionWaveAwait(root, root, ExecuteStateIn{Branch: "feat/test", Wave: intPtr(1)}, fixedClock(testNow))
 	if err == nil {
 		t.Fatal("expected error for missing runId")
 	}
@@ -119,7 +119,7 @@ func TestExecActionWaveAwait_RequiresRunID(t *testing.T) {
 
 func TestExecActionWaveAwait_RequiresWave(t *testing.T) {
 	root := t.TempDir()
-	_, err := execActionWaveAwait(root, ExecuteStateIn{Branch: "feat/test", RunID: "run1"}, fixedClock(testNow))
+	_, err := execActionWaveAwait(root, root, ExecuteStateIn{Branch: "feat/test", RunID: "run1"}, fixedClock(testNow))
 	if err == nil {
 		t.Fatal("expected error for missing wave")
 	}
@@ -136,7 +136,7 @@ func TestExecActionWaveAwait_WaveNotFound(t *testing.T) {
 	root := t.TempDir()
 	createExecState(t, root, "feat/test", map[string]any{"waves": []any{}})
 
-	_, err := execActionWaveAwait(root, ExecuteStateIn{Branch: "feat/test", RunID: "run1", Wave: intPtr(1)}, fixedClock(testNow))
+	_, err := execActionWaveAwait(root, root, ExecuteStateIn{Branch: "feat/test", RunID: "run1", Wave: intPtr(1)}, fixedClock(testNow))
 	if err == nil {
 		t.Fatal("expected error for missing wave entry")
 	}
@@ -146,6 +146,67 @@ func TestExecActionWaveAwait_WaveNotFound(t *testing.T) {
 	}
 	if de.Suggestion == "" {
 		t.Error("expected non-empty Suggestion (guardrail mcp-error-has-suggestion)")
+	}
+}
+
+// TestExecState_WaveAwait_OmittedBranchUsesActiveWorktree pins that an
+// omitted branch is resolved from the active worktree (workDir), like every
+// other state-reading action, not from the main worktree root. root sits on
+// "main"; the active worktree sits on "feat/wt", the branch the run was
+// started for.
+func TestExecState_WaveAwait_OmittedBranchUsesActiveWorktree(t *testing.T) {
+	root := t.TempDir()
+	initGitFixture(t, root)
+	gitCommit(t, root, "initial")
+
+	workDir := t.TempDir()
+	initGitFixture(t, workDir)
+	gitCommit(t, workDir, "initial")
+	runGit(t, workDir, "checkout", "-q", "-b", "feat/wt")
+
+	runID := "run1"
+	createExecState(t, root, "feat/wt", map[string]any{
+		"waves": []any{waveAwaitManifest(1, []map[string]any{waveAwaitPlannedEntry("1")}, nil)},
+	})
+
+	res, err := executeState(root, workDir, ExecuteStateIn{Action: "wave-await", RunID: runID, Wave: intPtr(1)}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("wave-await without branch: %v", err)
+	}
+	out, ok := res.(WaveAwaitOut)
+	if !ok {
+		t.Fatalf("result type = %T, want WaveAwaitOut", res)
+	}
+	prog := out.Progress.(waveAwaitProgress)
+	if !containsStr(prog.Queued, "1") {
+		t.Errorf("expected task 1 queued for the feat/wt run, got %+v", prog)
+	}
+}
+
+// TestExecState_WaveAwait_UnsafeRunIDIsDomainError pins that a runId with
+// path characters is rejected as a caller error (DomainError), not reported
+// as an infrastructure failure when the server-state path is built.
+func TestExecState_WaveAwait_UnsafeRunIDIsDomainError(t *testing.T) {
+	root := t.TempDir()
+	createExecState(t, root, "feat/test", map[string]any{
+		"waves": []any{waveAwaitManifest(1, []map[string]any{waveAwaitPlannedEntry("1")}, nil)},
+	})
+
+	_, err := executeState(root, root, ExecuteStateIn{
+		Action: "wave-await",
+		Branch: "feat/test",
+		RunID:  "../x",
+		Wave:   intPtr(1),
+	}, fixedClock(testNow))
+	if err == nil {
+		t.Fatal("expected error for unsafe runId")
+	}
+	domainErr, ok := err.(*mcpserver.DomainError)
+	if !ok {
+		t.Fatalf("expected DomainError, got %T: %v", err, err)
+	}
+	if !strings.Contains(domainErr.Msg, `runId contains invalid characters`) {
+		t.Errorf("Msg = %q, want the invalid-characters message", domainErr.Msg)
 	}
 }
 
@@ -169,7 +230,7 @@ func TestExecActionWaveAwait_HealthyOpenTaskStaysPending(t *testing.T) {
 		Phase: "editing", UpdatedAt: waveAwaitTs(-10 * time.Second),
 	})
 
-	out, err := execActionWaveAwait(root, ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}, fixedClock(testNow))
+	out, err := execActionWaveAwait(root, root, ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}, fixedClock(testNow))
 	if err != nil {
 		t.Fatalf("execActionWaveAwait: %v", err)
 	}
@@ -195,7 +256,7 @@ func TestExecActionWaveAwait_QueuedTaskNotYetDispatched(t *testing.T) {
 	})
 	// No server state at all for task 1: never dispatched.
 
-	out, err := execActionWaveAwait(root, ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}, fixedClock(testNow))
+	out, err := execActionWaveAwait(root, root, ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}, fixedClock(testNow))
 	if err != nil {
 		t.Fatalf("execActionWaveAwait: %v", err)
 	}
@@ -221,7 +282,7 @@ func TestExecActionWaveAwait_DoneWhenAllRecorded(t *testing.T) {
 		)},
 	})
 
-	out, err := execActionWaveAwait(root, ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}, fixedClock(testNow))
+	out, err := execActionWaveAwait(root, root, ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}, fixedClock(testNow))
 	if err != nil {
 		t.Fatalf("execActionWaveAwait: %v", err)
 	}
@@ -258,7 +319,7 @@ func TestExecActionWaveAwait_RedispatchedRowReopensAsOpen(t *testing.T) {
 		DispatchedAt: waveAwaitTs(-10 * time.Second), WorkerName: "worker-1", Attempt: 2,
 	})
 
-	out, err := execActionWaveAwait(root, ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}, fixedClock(testNow))
+	out, err := execActionWaveAwait(root, root, ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}, fixedClock(testNow))
 	if err != nil {
 		t.Fatalf("execActionWaveAwait: %v", err)
 	}
@@ -288,7 +349,7 @@ func TestExecActionWaveAwait_NeverStartedTriggersReclaimStamp(t *testing.T) {
 		Attempt: 1,
 	})
 
-	out, err := execActionWaveAwait(root, ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}, fixedClock(testNow))
+	out, err := execActionWaveAwait(root, root, ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}, fixedClock(testNow))
 	if err != nil {
 		t.Fatalf("execActionWaveAwait: %v", err)
 	}
@@ -328,7 +389,7 @@ func TestExecActionWaveAwait_StalledTriggersReclaimStamp(t *testing.T) {
 		Phase: "editing", UpdatedAt: waveAwaitTs(-700 * time.Second), // stale > 600s
 	})
 
-	out, err := execActionWaveAwait(root, ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}, fixedClock(testNow))
+	out, err := execActionWaveAwait(root, root, ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}, fixedClock(testNow))
 	if err != nil {
 		t.Fatalf("execActionWaveAwait: %v", err)
 	}
@@ -359,7 +420,7 @@ func TestExecActionWaveAwait_DuplicateCallsDontRestartGrace(t *testing.T) {
 	})
 
 	in := ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}
-	out1, err := execActionWaveAwait(root, in, fixedClock(testNow))
+	out1, err := execActionWaveAwait(root, root, in, fixedClock(testNow))
 	if err != nil {
 		t.Fatalf("call 1: %v", err)
 	}
@@ -371,7 +432,7 @@ func TestExecActionWaveAwait_DuplicateCallsDontRestartGrace(t *testing.T) {
 	// Call again 30s later (still well within the 120s grace window),
 	// threading the returned state_file back in like the skill would.
 	in.StateFile = *out1.StateFile
-	out2, err := execActionWaveAwait(root, in, fixedClock(testNow.Add(30*time.Second)))
+	out2, err := execActionWaveAwait(root, root, in, fixedClock(testNow.Add(30*time.Second)))
 	if err != nil {
 		t.Fatalf("call 2: %v", err)
 	}
@@ -415,7 +476,7 @@ func TestExecActionWaveAwait_ReclaimReplyIsTreatedAsProofOfLifeNotFailure(t *tes
 		LastCompletedTask: "did the thing", Blocker: "unclear next step",
 	})
 
-	out, err := execActionWaveAwait(root, ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}, fixedClock(testNow))
+	out, err := execActionWaveAwait(root, root, ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}, fixedClock(testNow))
 	if err != nil {
 		t.Fatalf("execActionWaveAwait: %v", err)
 	}
@@ -468,7 +529,7 @@ func TestExecActionWaveAwait_ReclaimNoReplyAfterGraceFailsWithoutResumeFrom(t *t
 		Phase: "editing", UpdatedAt: waveAwaitTs(-600 * time.Second),
 	})
 
-	out, err := execActionWaveAwait(root, ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}, fixedClock(testNow))
+	out, err := execActionWaveAwait(root, root, ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}, fixedClock(testNow))
 	if err != nil {
 		t.Fatalf("execActionWaveAwait: %v", err)
 	}
@@ -530,7 +591,7 @@ func TestExecActionWaveAwait_TimeoutShortCircuitsReclaim(t *testing.T) {
 		Phase: "editing", UpdatedAt: waveAwaitTs(-2 * time.Second),
 	})
 
-	out, err := execActionWaveAwait(root, ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}, fixedClock(testNow))
+	out, err := execActionWaveAwait(root, root, ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}, fixedClock(testNow))
 	if err != nil {
 		t.Fatalf("execActionWaveAwait: %v", err)
 	}
@@ -583,7 +644,7 @@ func TestExecActionWaveAwait_RetriesLeftKeepsWavePendingWithRedispatchOrdering(t
 		Phase: "editing", UpdatedAt: waveAwaitTs(-400 * time.Second), // older than the stamp: no reply
 	})
 
-	out, err := execActionWaveAwait(root, ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}, fixedClock(testNow))
+	out, err := execActionWaveAwait(root, root, ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}, fixedClock(testNow))
 	if err != nil {
 		t.Fatalf("execActionWaveAwait: %v", err)
 	}
@@ -628,7 +689,7 @@ func TestExecActionWaveAwait_TerminalFailureRunsGatesWhenNothingElseOpen(t *test
 		Attempt:          3,
 	})
 
-	out, err := execActionWaveAwait(root, ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}, fixedClock(testNow))
+	out, err := execActionWaveAwait(root, root, ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}, fixedClock(testNow))
 	if err != nil {
 		t.Fatalf("execActionWaveAwait: %v", err)
 	}
@@ -689,7 +750,7 @@ func TestExecActionWaveAwait_BatchClassifiedAsSingleSubject(t *testing.T) {
 		Phase: "editing", UpdatedAt: waveAwaitTs(-5 * time.Second),
 	})
 
-	out, err := execActionWaveAwait(root, ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}, fixedClock(testNow))
+	out, err := execActionWaveAwait(root, root, ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}, fixedClock(testNow))
 	if err != nil {
 		t.Fatalf("execActionWaveAwait: %v", err)
 	}
@@ -733,7 +794,7 @@ func TestExecActionWaveAwait_StalledBatchReclaimsAllOpenMembersTogether(t *testi
 		})
 	}
 
-	out, err := execActionWaveAwait(root, ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}, fixedClock(testNow))
+	out, err := execActionWaveAwait(root, root, ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}, fixedClock(testNow))
 	if err != nil {
 		t.Fatalf("execActionWaveAwait: %v", err)
 	}
@@ -798,7 +859,7 @@ func TestExecActionWaveAwait_ClosedBatchIndexZeroStillLoadedForLiveness(t *testi
 	})
 
 	in := ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}
-	out, err := execActionWaveAwait(root, in, fixedClock(testNow))
+	out, err := execActionWaveAwait(root, root, in, fixedClock(testNow))
 	if err != nil {
 		t.Fatalf("call 1: %v", err)
 	}
@@ -820,7 +881,7 @@ func TestExecActionWaveAwait_ClosedBatchIndexZeroStillLoadedForLiveness(t *testi
 	// Second call 30s later, threading state_file, must not re-stamp or
 	// re-emit the reclaim request while still within grace.
 	in.StateFile = *out.StateFile
-	out2, err := execActionWaveAwait(root, in, fixedClock(testNow.Add(30*time.Second)))
+	out2, err := execActionWaveAwait(root, root, in, fixedClock(testNow.Add(30*time.Second)))
 	if err != nil {
 		t.Fatalf("call 2: %v", err)
 	}
@@ -859,13 +920,13 @@ func TestExecActionWaveAwait_NoWallClockLoopBudget(t *testing.T) {
 	// own loop budget, this call would incorrectly time out even though
 	// task 1's own dispatchedAt is fresh.
 	in := ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}
-	first, err := execActionWaveAwait(root, in, fixedClock(testNow.Add(-2000*time.Second)))
+	first, err := execActionWaveAwait(root, root, in, fixedClock(testNow.Add(-2000*time.Second)))
 	if err != nil {
 		t.Fatalf("seed call: %v", err)
 	}
 	in.StateFile = *first.StateFile
 
-	out, err := execActionWaveAwait(root, in, fixedClock(testNow))
+	out, err := execActionWaveAwait(root, root, in, fixedClock(testNow))
 	if err != nil {
 		t.Fatalf("execActionWaveAwait: %v", err)
 	}
@@ -892,7 +953,7 @@ func TestExecActionWaveAwait_EmptyBucketsSerializeAsEmptyArraysNotNull(t *testin
 		"waves": []any{waveAwaitManifest(1, nil, nil)},
 	})
 
-	out, err := execActionWaveAwait(root, ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}, fixedClock(testNow))
+	out, err := execActionWaveAwait(root, root, ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}, fixedClock(testNow))
 	if err != nil {
 		t.Fatalf("execActionWaveAwait: %v", err)
 	}

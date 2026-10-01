@@ -261,7 +261,7 @@ func checkAtlassian(c classified, ctx Ctx) Result {
 			URL:    "",
 			Status: "violation",
 			Reason: "atlassian-site-ambiguous",
-			Detail: "Multiple sites cached in ~/.sdlc-cache/jira/; pass JiraCacheDir to disambiguate.",
+			Detail: "Multiple Jira sites are cached in the Jira cache directory (~/.sdlc-cache/jira/ by default), so the expected host is unknown; check this URL's host by hand.",
 		}
 	}
 	if discovered.site != "" {

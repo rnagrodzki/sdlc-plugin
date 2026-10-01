@@ -25,6 +25,18 @@ import (
 // plan_prepare tests
 // ---------------------------------------------------------------------------
 
+// runPlanPrepare calls planPrepareCore with the fsseam's mkdirTempFunc
+// redirected into a t.TempDir() (redirectTempManifests). A non-resume call
+// builds an explore pack in a fresh sdlc-explore-* dir; without the redirect
+// every test run leaves one such dir per call in the OS temp dir. Several
+// calls in one test each get their own redirect; the cleanups restore the
+// seam in reverse order.
+func runPlanPrepare(t *testing.T, mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepareOut, error) {
+	t.Helper()
+	redirectTempManifests(t)
+	return planPrepareCore(mainRoot, contentRoot, in)
+}
+
 // TestPlanPrepare_KeySetAndDefaults verifies the top-level PlanPrepareOut
 // shape (fixture parity with plan.js's main() output object) on a repo with
 // no OpenSpec, no guardrail config, and no plan template.
@@ -33,7 +45,7 @@ func TestPlanPrepare_KeySetAndDefaults(t *testing.T) {
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
-	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true})
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
 	}
@@ -130,7 +142,7 @@ func TestPlanPrepare_UserPromptForwarded(t *testing.T) {
 	gitCommit(t, dir, "initial")
 
 	const prompt = "fix the login bug"
-	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, UserPrompt: prompt})
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, UserPrompt: prompt})
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
 	}
@@ -158,7 +170,7 @@ func TestPlanPrepare_EmptyUserPromptBackwardCompatible(t *testing.T) {
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
-	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true})
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
 	}
@@ -194,7 +206,7 @@ func TestPlanPrepare_PlanTemplate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true})
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
 	}
@@ -221,7 +233,7 @@ func TestPlanPrepare_Guardrails(t *testing.T) {
 		"[plan.guardrails.test-coverage]\n"+
 		"description = \"Cover new branches\"\n")
 
-	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true})
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
 	}
@@ -248,7 +260,7 @@ func TestPlanPrepare_StyleAndTasksDefaults(t *testing.T) {
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
-	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true})
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
 	}
@@ -292,7 +304,7 @@ func TestPlanPrepare_StyleAndTasksPopulated(t *testing.T) {
 		"requiredFields = [\"Owner\", \"Rollback\"]\n"+
 		"contractShape = \"minimal\"\n")
 
-	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true})
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
 	}
@@ -331,7 +343,7 @@ func TestPlanPrepare_StyleInstructionsFiltering(t *testing.T) {
 		"[planStyle]\n"+
 		"instructions = [\"A\", \"  \", 3, \" B \"]\n")
 
-	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true})
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
 	}
@@ -348,13 +360,13 @@ func TestPlanStyle_MalformedConfigSurfacesError(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
-	if _, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+	if _, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
 		t.Fatalf("planPrepareCore (seed): %v", err)
 	}
 
 	writeFile(t, filepath.Join(dir, paths.DataDir, "local.toml"), "[planStyle\ninstructions = [\n")
 
-	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
 	}
@@ -382,7 +394,7 @@ func TestPlanStyle_MalformedConfigSurfacesError(t *testing.T) {
 // "no active plan run" DomainError that would tell the caller to start over.
 func TestPlanPrepare_ResumeOutsideGit_InfraError(t *testing.T) {
 	dir := t.TempDir()
-	_, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, Resume: true})
+	_, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, Resume: true})
 	var ie *mcpserver.InfraError
 	if !errors.As(err, &ie) {
 		t.Fatalf("err = %T %v, want *mcpserver.InfraError", err, err)
@@ -454,7 +466,7 @@ func TestPlanPrepare_TasksRequiredFieldsDedup(t *testing.T) {
 		"[plan.tasks]\n"+
 		"requiredFields = [\"Complexity\", \"Risk\", \"Files\", \"Verify\", \"Depends on\", \"Owner\", \"Rollback\"]\n")
 
-	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true})
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
 	}
@@ -477,7 +489,7 @@ func TestPlanPrepare_TasksContractShapeEnum(t *testing.T) {
 			writeFile(t, filepath.Join(dir, paths.DataDir, "config.toml"), fmt.Sprintf(
 				"[plan.tasks]\ncontractShape = %q\n", shape))
 
-			out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+			out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true})
 			if err != nil {
 				t.Fatalf("planPrepareCore: %v", err)
 			}
@@ -506,7 +518,7 @@ func TestPlanPrepare_OpenspecDetection(t *testing.T) {
 	runGit(t, dir, "add", ".")
 	runGit(t, dir, "commit", "-m", "add openspec change")
 
-	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true})
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
 	}
@@ -556,7 +568,7 @@ func TestPlanPrepare_FromOpenspec_ValidChange(t *testing.T) {
 
 	// Step 1: planPrepareCore computes the pending ref stamps but writes
 	// nothing to disk.
-	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, FromOpenspec: "add-widget"})
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, FromOpenspec: "add-widget"})
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
 	}
@@ -632,7 +644,7 @@ func TestPlanPrepare_FromOpenspec_ValidChange(t *testing.T) {
 
 	// Step 3: now that execute's init has stamped the file, a fresh
 	// planPrepareCore run must report 0 pending — genuinely idempotent.
-	out2, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, FromOpenspec: "add-widget"})
+	out2, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, FromOpenspec: "add-widget"})
 	if err != nil {
 		t.Fatalf("planPrepareCore (2nd run): %v", err)
 	}
@@ -648,7 +660,7 @@ func TestPlanPrepare_FromOpenspec_MissingChange(t *testing.T) {
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
-	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, FromOpenspec: "does-not-exist"})
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, FromOpenspec: "does-not-exist"})
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
 	}
@@ -745,7 +757,7 @@ func TestPlanPrepare_KD5Gate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: false})
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: false})
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v (KD5 gate must return nil error with Errors populated)", err)
 	}
@@ -775,6 +787,41 @@ func TestPlanMark_NoStateFile(t *testing.T) {
 	if err == nil {
 		t.Fatal("planMark = nil error, want an error (no plan state file exists yet)")
 	}
+}
+
+// TestPlanMark_BranchError verifies the branch error only fires when git
+// cannot run in the active worktree, and its suggestion says so. A detached
+// HEAD is not this error: it reads as branch "HEAD".
+func TestPlanMark_BranchError(t *testing.T) {
+	t.Run("not a git repository", func(t *testing.T) {
+		dir := t.TempDir()
+		_, err := planMark(dir, dir, PlanMarkIn{Marker: "guardrailsEvaluated"})
+		var ie *mcpserver.InfraError
+		if !errors.As(err, &ie) {
+			t.Fatalf("err = %T %v, want *mcpserver.InfraError", err, err)
+		}
+		if ie.Msg != "could not determine current branch" {
+			t.Errorf("Msg = %q", ie.Msg)
+		}
+		want := "Run plan_mark from inside a git repository or worktree (git branch --show-current must succeed there), then retry plan_mark."
+		if ie.Suggestion != want {
+			t.Errorf("Suggestion = %q, want %q", ie.Suggestion, want)
+		}
+	})
+	t.Run("detached HEAD", func(t *testing.T) {
+		dir := t.TempDir()
+		initGitFixture(t, dir)
+		gitCommit(t, dir, "initial")
+		runGit(t, dir, "checkout", "--detach")
+		_, err := planMark(dir, dir, PlanMarkIn{Marker: "guardrailsEvaluated"})
+		var de *mcpserver.DomainError
+		if !errors.As(err, &de) {
+			t.Fatalf("err = %T %v, want *mcpserver.DomainError", err, err)
+		}
+		if !strings.Contains(de.Msg, `branch "HEAD"`) {
+			t.Errorf("Msg = %q, want it to name branch \"HEAD\"", de.Msg)
+		}
+	})
 }
 
 // TestPlanMark_InvalidMarker verifies the enum rejects unknown marker names.
@@ -812,7 +859,7 @@ func TestPlanMark_WriteAndUpdate(t *testing.T) {
 	gitCommit(t, dir, "initial")
 
 	// Seed the plan state file the way plan_prepare does.
-	if _, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+	if _, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
 		t.Fatalf("planPrepareCore (seed): %v", err)
 	}
 
@@ -885,7 +932,7 @@ func TestPlanMark_WriteAndUpdate(t *testing.T) {
 // from this same fixture.
 func seedPlanTimingRun(t *testing.T, dir string) time.Time {
 	t.Helper()
-	if _, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+	if _, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
 		t.Fatalf("planPrepareCore (seed): %v", err)
 	}
 	doc := readSoleStateDoc(t, dir)
@@ -1298,7 +1345,7 @@ func TestPlanPrepare_CreationIntent_FirstCallThenResolveTemplate(t *testing.T) {
 	gitCommit(t, dir, "initial")
 
 	const prompt = "fix the login bug"
-	first, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, UserPrompt: prompt})
+	first, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, UserPrompt: prompt})
 	if err != nil {
 		t.Fatalf("planPrepareCore (first call): %v", err)
 	}
@@ -1324,7 +1371,7 @@ func TestPlanPrepare_CreationIntent_FirstCallThenResolveTemplate(t *testing.T) {
 		t.Fatalf("planIntegrity.skillInvoked missing after first call: %v", doc)
 	}
 
-	second, err := planPrepareCore(dir, dir, PlanPrepareIn{
+	second, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{
 		SkipConfigCheck: true, ResolveTemplate: true, UserPrompt: prompt, FileCount: 2,
 	})
 	if err != nil {
@@ -1433,7 +1480,7 @@ func TestPlanPrepare_FirstCallStartsNewRunAndPrunesOld(t *testing.T) {
 	const oldRun = "plan-main-20200101T000000Z"
 	planTestSeedRun(t, dir, oldRun, planTestActiveData())
 
-	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true})
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
 	}
@@ -1456,7 +1503,7 @@ func TestPlanPrepare_FirstCallStartsNewRunAndPrunesOld(t *testing.T) {
 func TestPlanPrepare_ResolveTemplateWithoutRunCreatesRun(t *testing.T) {
 	dir := planTestGitRepo(t, "main")
 
-	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true, UserPrompt: "p", FileCount: 12})
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true, UserPrompt: "p", FileCount: 12})
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
 	}
@@ -1488,13 +1535,13 @@ func TestPlanPrepare_ExactSlugRunSelection(t *testing.T) {
 	const other = "plan-feat-x-20200101T000000Z"
 	planTestSeedRun(t, dir, other, planTestActiveData())
 
-	_, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, Resume: true})
+	_, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, Resume: true})
 	var de *mcpserver.DomainError
 	if !errors.As(err, &de) {
 		t.Fatalf("resume err = %T %v, want *mcpserver.DomainError", err, err)
 	}
 
-	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
 	}
@@ -1513,10 +1560,10 @@ func TestPlanPrepare_ResumeReusesActiveRun(t *testing.T) {
 	dir := planTestTemplateRepo(t)
 	const prompt = "saved prompt"
 
-	if _, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, UserPrompt: prompt}); err != nil {
+	if _, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, UserPrompt: prompt}); err != nil {
 		t.Fatal(err)
 	}
-	prev, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true, UserPrompt: prompt, FileCount: 12})
+	prev, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true, UserPrompt: prompt, FileCount: 12})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1527,7 +1574,7 @@ func TestPlanPrepare_ResumeReusesActiveRun(t *testing.T) {
 	}
 
 	in := PlanPrepareIn{SkipConfigCheck: true, Resume: true, UserPrompt: "different", FileCount: 1, Lightweight: true}
-	out, err := planPrepareCore(dir, dir, in)
+	out, err := runPlanPrepare(t, dir, dir, in)
 	if err != nil {
 		t.Fatalf("planPrepareCore (resume): %v", err)
 	}
@@ -1571,7 +1618,7 @@ func TestPlanPrepare_ResumeWithoutCreationIntentUsesInput(t *testing.T) {
 	planTestSeedRun(t, dir, "plan-main-20200101T000000Z", planTestActiveData())
 
 	in := PlanPrepareIn{SkipConfigCheck: true, Resume: true, UserPrompt: "input prompt", FileCount: 12}
-	out, err := planPrepareCore(dir, dir, in)
+	out, err := runPlanPrepare(t, dir, dir, in)
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
 	}
@@ -1596,11 +1643,11 @@ func TestPlanPrepare_ResumeImpliesResolveTemplate(t *testing.T) {
 	dir := planTestTemplateRepo(t)
 	planTestSeedRun(t, dir, "plan-main-20200101T000000Z", planTestActiveData())
 
-	a, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, Resume: true, FileCount: 5})
+	a, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, Resume: true, FileCount: 5})
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, Resume: true, ResolveTemplate: true, FileCount: 5})
+	b, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, Resume: true, ResolveTemplate: true, FileCount: 5})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1624,7 +1671,7 @@ func TestPlanPrepare_ResumeNoActiveRun(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			dir := planTestGitRepo(t, "main")
 			seed(t, dir)
-			_, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, Resume: true})
+			_, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, Resume: true})
 			var de *mcpserver.DomainError
 			if !errors.As(err, &de) {
 				t.Fatalf("err = %T %v, want *mcpserver.DomainError", err, err)
@@ -1653,7 +1700,7 @@ func TestPlanPrepare_GuardrailsFileFormat(t *testing.T) {
 			"severity = \"warning\"\n"+
 			"description = \"Reuse helpers in internal/fsx and internal/state\\nbefore adding new ones.\\n# not a heading\"\n")
 
-		out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+		out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1672,9 +1719,41 @@ func TestPlanPrepare_GuardrailsFileFormat(t *testing.T) {
 			t.Errorf("guardrails.md =\n%s\nwant\n%s", got, want)
 		}
 	})
+	t.Run("array of tables form", func(t *testing.T) {
+		// [[plan.guardrails]] passes validate, so plan_prepare must read it
+		// too. Each entry carries its own id; file order is kept.
+		dir := planTestGitRepo(t, "main")
+		writeFile(t, filepath.Join(dir, paths.DataDir, "config.toml"), ""+
+			"[[plan.guardrails]]\n"+
+			"id = \"prefer-existing-helpers\"\n"+
+			"severity = \"warning\"\n"+
+			"description = \"Reuse existing helpers.\"\n"+
+			"\n"+
+			"[[plan.guardrails]]\n"+
+			"id = \"no-new-deps\"\n"+
+			"severity = \"error\"\n"+
+			"description = \"Ask before adding a third-party dependency.\"\n")
+
+		out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(out.GuardrailsFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "# Active plan guardrails (2)\n\n" +
+			"## prefer-existing-helpers (warning)\n" +
+			"> Reuse existing helpers.\n\n" +
+			"## no-new-deps (error)\n" +
+			"> Ask before adding a third-party dependency.\n"
+		if string(got) != want {
+			t.Errorf("guardrails.md =\n%s\nwant\n%s", got, want)
+		}
+	})
 	t.Run("empty", func(t *testing.T) {
 		dir := planTestGitRepo(t, "main")
-		out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+		out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1721,12 +1800,12 @@ func TestPlanPrepare_ErrorSites(t *testing.T) {
 
 	t.Run("ENOTDIR first call", func(t *testing.T) {
 		dir := blockRuns(t)
-		_, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+		_, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true})
 		infra(t, err, "plan state write failed: ")
 	})
 	t.Run("ENOTDIR resolveTemplate", func(t *testing.T) {
 		dir := blockRuns(t)
-		_, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
+		_, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
 		infra(t, err, "plan state read failed: ")
 	})
 	t.Run("EISDIR guardrails.md", func(t *testing.T) {
@@ -1734,14 +1813,14 @@ func TestPlanPrepare_ErrorSites(t *testing.T) {
 		const run = "plan-main-20200101T000000Z"
 		planTestSeedRun(t, dir, run, planTestActiveData())
 		writeFile(t, filepath.Join(planTestRunsDir(dir), run+".evidence", "guardrails.md", "x"), "x")
-		_, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
+		_, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
 		infra(t, err, "guardrails file write failed: ")
 	})
 	t.Run("corrupt JSON", func(t *testing.T) {
 		dir := planTestGitRepo(t, "main")
 		p := filepath.Join(planTestRunsDir(dir), "plan-main-20200101T000000Z.json")
 		writeFile(t, p, "{not json")
-		_, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
+		_, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
 		infra(t, err, "plan state read failed: "+p)
 	})
 }
@@ -1750,7 +1829,7 @@ func TestPlanPrepare_ErrorSites(t *testing.T) {
 // tracked: runId and guardrailsFile are empty (rendered "(none)").
 func TestPlanPrepare_OutsideGitNoRun(t *testing.T) {
 	dir := t.TempDir()
-	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
 	}
@@ -1774,7 +1853,7 @@ func TestPlanMark_GuardrailResults_AppendOnly(t *testing.T) {
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
-	if _, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+	if _, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
 		t.Fatalf("planPrepareCore (seed): %v", err)
 	}
 
@@ -1837,7 +1916,7 @@ func TestPlanMark_CriticalDecisions_AppendOnly(t *testing.T) {
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
-	if _, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+	if _, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
 		t.Fatalf("planPrepareCore (seed): %v", err)
 	}
 
@@ -1926,7 +2005,7 @@ func TestPlanMark_ExistingIntegrityMarkers_IgnoreData(t *testing.T) {
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
-	if _, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+	if _, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
 		t.Fatalf("planPrepareCore (seed): %v", err)
 	}
 
@@ -1985,7 +2064,7 @@ func TestPlanMark_Checkpoint_ReplaceNotAppend(t *testing.T) {
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
-	if _, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+	if _, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
 		t.Fatalf("planPrepareCore (seed): %v", err)
 	}
 
@@ -2064,7 +2143,7 @@ func TestPlanMark_Checkpoint_NextIncludesStyleInstructions_ReadFresh(t *testing.
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
-	if _, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+	if _, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
 		t.Fatalf("planPrepareCore (seed): %v", err)
 	}
 
@@ -2159,7 +2238,7 @@ func TestPlanMark_Checkpoint_DataErrors(t *testing.T) {
 			initGitFixture(t, dir)
 			gitCommit(t, dir, "initial")
 
-			if _, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+			if _, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
 				t.Fatalf("planPrepareCore (seed): %v", err)
 			}
 			before := readSoleStateFileBytes(t, dir)
@@ -2271,6 +2350,7 @@ func TestPlanMark_InputSchema_ListsCheckpointEnum(t *testing.T) {
 // GC sweep in internal/state matches on), and that the manifest is valid
 // JSON with a non-negative scope-hint count.
 func TestPlanExplorePrepare_TempdirPattern(t *testing.T) {
+	redirectTempManifests(t) // keep the sdlc-explore-* dir out of the OS temp dir
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
@@ -2307,6 +2387,7 @@ func TestPlanExplorePrepare_TempdirPattern(t *testing.T) {
 // TestPlanExplorePrepare_Handler verifies the plan_explore_prepare tool
 // handler surfaces exactly {manifestPath} and that the file exists on disk.
 func TestPlanExplorePrepare_Handler(t *testing.T) {
+	redirectTempManifests(t) // keep the sdlc-explore-* dir out of the OS temp dir
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
@@ -2378,7 +2459,7 @@ func TestPlanTemplateResolve_ProjectOverride(t *testing.T) {
 
 	templatePath := writeProjectPlanTemplate(t, dir, planTemplateResolveFixture)
 
-	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
 	}
@@ -2424,7 +2505,7 @@ func TestPlanTemplateResolve_ConditionOpenspec(t *testing.T) {
 	gitCommit(t, dir, "initial")
 	writeProjectPlanTemplate(t, dir, planTemplateResolveFixture)
 
-	outActive, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true, FromOpenspecDirect: true})
+	outActive, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true, FromOpenspecDirect: true})
 	if err != nil {
 		t.Fatalf("planPrepareCore (openspec active): %v", err)
 	}
@@ -2432,7 +2513,7 @@ func TestPlanTemplateResolve_ConditionOpenspec(t *testing.T) {
 		t.Errorf("OpenSpec Sync body (fromOpenspecDirect=true) = %q, want [TBD]", body)
 	}
 
-	outInactive, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
+	outInactive, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
 	if err != nil {
 		t.Fatalf("planPrepareCore (openspec inactive): %v", err)
 	}
@@ -2451,7 +2532,7 @@ func TestPlanTemplateResolve_ConditionUnknown(t *testing.T) {
 	gitCommit(t, dir, "initial")
 	writeProjectPlanTemplate(t, dir, planTemplateResolveFixture)
 
-	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
 	}
@@ -2470,7 +2551,7 @@ func TestPlanTemplateResolve_Lightweight(t *testing.T) {
 	gitCommit(t, dir, "initial")
 	writeProjectPlanTemplate(t, dir, planTemplateResolveFixture)
 
-	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true, Lightweight: true})
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true, Lightweight: true})
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
 	}
@@ -2543,7 +2624,7 @@ func TestPlanTemplateResolve_DefaultFallback(t *testing.T) {
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
-	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
 	}
@@ -2573,7 +2654,7 @@ func TestPlanTemplateResolve_UnreadableFallback(t *testing.T) {
 
 	writeProjectPlanTemplate(t, dir, "# Plan Template\n\nNo required sections heading here.\n")
 
-	out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
 	}

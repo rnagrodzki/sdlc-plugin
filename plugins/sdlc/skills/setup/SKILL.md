@@ -1,8 +1,8 @@
 ---
 name: setup
-description: "Use this skill when setting up the SDLC plugin for a project, initializing configuration, or when any skill reports missing config. Renders a selective-section menu so users choose which sections to configure; each selected section prints a verbose header (purpose, files-modified, consuming skills, per-option description) before any prompt. Supports direct sub-flow entry via --only, --dimensions, --pr-template, --guardrails, --execution-guardrails, --openspec-enrich, --plan-template. Arguments: [--migrate] [--skip <section>] [--force] [--only <ids>] [--dimensions] [--pr-template] [--guardrails] [--execution-guardrails] [--openspec-enrich] [--remove-openspec] [--plan-template] [--add] [--no-copilot]"
+description: "Use this skill when setting up the SDLC plugin for a project, initializing configuration, or when any skill reports missing config. Renders a selective-section menu so users choose which sections to configure; each selected section prints a verbose header (purpose, files-modified, consuming skills, per-option description) before any prompt. Supports direct sub-flow entry via --only, --dimensions, --pr-template, --guardrails, --execution-guardrails, --openspec-enrich, --plan-template. Arguments: [--migrate] [--force] [--only <ids>] [--dimensions] [--pr-template] [--guardrails] [--execution-guardrails] [--openspec-enrich] [--remove-openspec] [--plan-template] [--add] [--no-copilot]"
 user-invocable: true
-argument-hint: "[--migrate] [--skip <section>] [--force] [--only <ids>] [--dimensions] [--pr-template] [--guardrails] [--execution-guardrails] [--openspec-enrich] [--remove-openspec] [--plan-template] [--add] [--no-copilot]"
+argument-hint: "[--migrate] [--force] [--only <ids>] [--dimensions] [--pr-template] [--guardrails] [--execution-guardrails] [--openspec-enrich] [--remove-openspec] [--plan-template] [--add] [--no-copilot]"
 model: sonnet
 ---
 
@@ -32,7 +32,7 @@ field that does not exist. Deviations, one line each:
 - **Q1 (binding ruling):** the `workspace` and `hooks` menu sections (source's 3.workspace
   / 3.hooks, issues #351/#370/#372) are dropped entirely. Go's `internal/setupmeta.Sections()`
   is a frozen 18-id manifest with no `workspace`/`hooks` id — there is nothing to dispatch to.
-  `--skip`/`--only` no longer accept those ids.
+  `--only` no longer accepts those ids.
 - **State/summary/locked (Gap A):** Step 0/1 below compute `state` and `summary` per row by
   reading `.sdlc-v2/config.toml` / `.sdlc-v2/local.toml` directly and Globbing the content
   markers, reproducing `scripts/lib/setup-sections.js`'s `computeState`/`summarize*`
@@ -82,7 +82,7 @@ field that does not exist. Deviations, one line each:
   top-level key wholesale. `config.WriteSection` replaces a key wholesale, so "Writing config
   files" below still re-reads the current `pr` object immediately before writing `pr` and
   preserves any `labels` key already present.
-- **`--only`/`--skip` id list corrected.** Source's own SKILL.md listed 13 ids for `--only`
+- **`--only` id list corrected.** Source's own SKILL.md listed 13 ids for `--only`
   (missing `received-review`). The table below lists the true 18 canonical ids from
   `internal/setupmeta.Sections()` (includes `plan-style` and `plan-tasks`, added after the
   original port to expose `/plan`'s narrative-style and task-contract config, and
@@ -90,11 +90,12 @@ field that does not exist. Deviations, one line each:
   toggle, plan-drift halting thresholds, and feature-branch push auto-approval, and `github`,
   added to hold the personal `expectedAccount` for `/pr`'s active-account check in
   `.sdlc-v2/local.toml`).
-- **Delete-legacy-files prompt retained.** `migrate({ action: "config" })`'s `Result` string
-  names every ingested legacy path inline (e.g. `"...legacy ingested: [.claude/sdlc.json
-  .claude/version.json]"`) — `MigrateOut` has no dedicated array field for them, so Step 2
-  parses the bracketed list out of the `Result` string rather than reading a structured
-  field.
+- **Delete-legacy-files prompt dropped.** `migrate({ action: "config" })` only checks the
+  config schema version: it never converts or ingests legacy files, and its `result` is
+  always `"up-to-date"` (a stale JSON-era config makes the call fail instead). There is no
+  list of migrated legacy files to offer for deletion, so Step 2 has no delete prompt.
+- **`--skip` dropped.** It was listed as a flag but no step ever read it. Use `--only` or
+  the menu to choose sections.
 - **Tool map:** `setup_prepare` (Step 0 descriptors), `setup_init` (Step 0, scaffold-only),
   `migrate` (Step 2), `setup_write_sections` (Step 3 "Writing config files"). `validate` is
   called only inside the delegated companion sub-flows (`setup-dimensions.md`,
@@ -108,9 +109,8 @@ field that does not exist. Deviations, one line each:
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--migrate` | Force migration of legacy config files even if no legacy files are auto-detected | off |
-| `--skip <section>` | Skip a config section during setup. Valid values: any of the 18 canonical ids — `version`, `ship`, `jira`, `review`, `received-review`, `commit`, `pr`, `github`, `pr-labels`, `review-dimensions`, `pr-template`, `plan-template`, `plan-style`, `plan-tasks`, `plan-guardrails`, `execution-guardrails`, `openspec-block`, `automation` | none |
-| `--force` | Pre-check every menu row (reconfigure everything) instead of selecting only `not-set` rows | off |
-| `--only <ids>` | Comma-separated section ids to configure non-interactively (skips the menu). Same 18 ids as `--skip` above | none |
+| `--force` | Reconfigure every section, including sections already `set`: skip the menu and select all 18 ids. Ignored when `--only` or a direct-entry flag is also passed | off |
+| `--only <ids>` | Comma-separated section ids to configure (skips the menu). Valid values: any of the 18 canonical ids — `version`, `ship`, `jira`, `review`, `received-review`, `commit`, `pr`, `github`, `pr-labels`, `review-dimensions`, `pr-template`, `plan-template`, `plan-style`, `plan-tasks`, `plan-guardrails`, `execution-guardrails`, `openspec-block`, `automation` | none |
 | `--dimensions` | Jump directly to review dimensions sub-flow (alias for `--only review-dimensions`) | off |
 | `--pr-template` | Jump directly to PR template sub-flow (skip config builder) | off |
 | `--guardrails` | Jump directly to plan guardrails sub-flow (skip config builder) | off |
@@ -118,7 +118,7 @@ field that does not exist. Deviations, one line each:
 | `--openspec-enrich` | Jump directly to openspec config enrichment sub-flow | off |
 | `--remove-openspec` | Remove the managed block from openspec/config.yaml (with --openspec-enrich) | off |
 | `--plan-template` | Jump directly to plan template sub-flow (alias for `--only plan-template`) | off |
-| `--add` | Expansion mode (with --dimensions or --guardrails or --execution-guardrails) | off |
+| `--add` | Expansion mode (with --dimensions or --guardrails or --execution-guardrails; the PR template sub-flow takes no arguments) | off |
 | `--no-copilot` | Skip GitHub Copilot instructions (with --dimensions) | off |
 
 ---
@@ -139,7 +139,7 @@ If the system context contains "Plan mode is active":
 1. Call the `setup_prepare` MCP tool:
 
    ```
-   setup_prepare({ skipConfigCheck: false }) → { ok, needsMigration, sections[], defaultBranch, remoteOwner }
+   setup_prepare({ skipConfigCheck: false }) → { ok, needsMigration, sections[], defaultBranch, remoteOwner, ciScriptDrift[] }
    ```
 
    `sections[]` is the static 18-row descriptor list, always in canonical
@@ -156,8 +156,10 @@ If the system context contains "Plan mode is active":
    setup_init({}) → { ok, created[], changed[] }
    ```
 
-   This ensures `.sdlc-v2/.gitignore`, the root `.gitignore` managed block, and empty
-   `.sdlc-v2/config.toml` / `.sdlc-v2/local.toml` all exist before any read below.
+   This ensures `.sdlc-v2/.gitignore`, the root `.gitignore` managed block, and
+   `.sdlc-v2/config.toml` / `.sdlc-v2/local.toml` all exist before any read below. A new
+   `config.toml` / `local.toml` holds the full commented template (every field, heavily
+   commented), so users can also edit settings by hand. An existing file is left unchanged.
 
 3. **Snapshot current config** (cache for the rest of this run — do not re-read mid-run
    unless Step 2 migration or a write changes the files):
@@ -179,7 +181,7 @@ If the system context contains "Plan mode is active":
      `setup_init({ checkPlanTemplate: true })` → `{ ok, exists }` for the pr-template.md /
      plan-template.md existence booleans.
    - If `openspec/config.yaml` exists, Read it and search for a line matching
-     `# BEGIN MANAGED BY sdlc-utilities (v<N>)`; capture `<N>` as the managed-block version
+     `# BEGIN MANAGED BY sdlc-v2 (v<N>)` (the exact marker `openspec_enrich` writes); capture `<N>` as the managed-block version
      (no match, or file absent → no managed block).
 
 4. **Version detection** (source's `detected.versionFile`/`fileType`/`tagPrefix` — no Go
@@ -206,8 +208,13 @@ If the system context contains "Plan mode is active":
    Step 2 → Step 3 with `selectedIds = <ids>`. Pass through `--add`, `--no-copilot`, and
    `--remove-openspec` to the relevant sub-flow when invoked.
 
-   If none of the direct-entry flags or `--only` were passed: continue with the full
-   interactive flow (Steps 1 → 2 → 3 → 4).
+   `--force` (only when neither `--only` nor a direct-entry flag is passed): skip Step 1's
+   menu and proceed to Step 2 → Step 3 with `selectedIds` = all 18 canonical ids, including
+   sections already `set`. When `--only` or a direct-entry flag is also passed, ignore
+   `--force`; the `--only` id set wins.
+
+   If none of the direct-entry flags, `--only`, or `--force` were passed: continue with the
+   full interactive flow (Steps 1 → 2 → 3 → 4).
 
 ---
 
@@ -218,8 +225,8 @@ If the system context contains "Plan mode is active":
 **Direct-entry flag bypass (preserved):** When `--only`, `--force`, `--dimensions`,
 `--pr-template`, `--guardrails`, `--execution-guardrails`, `--openspec-enrich`, or
 `--plan-template` was passed, `selectedIds` are resolved before Step 1 by the flag-alias
-routing table in Step 0. Skip the entire menu (no numbered list, no chat prompt) and jump to
-Step 2/3 with the resolved id set.
+routing in Step 0 (`--force` alone resolves to all 18 ids). Skip the entire menu (no
+numbered list, no chat prompt) and jump to Step 2/3 with the resolved id set.
 
 **Compute `state` per row** (evaluate in this order; ported verbatim from
 `scripts/lib/setup-sections.js`'s `computeState`, minus the dropped `legacy`/misplaced-section
@@ -230,8 +237,10 @@ branches — see Port Notes):
    0 / file exists / managed block found), else `not-set`.
 2. **`.sdlc-v2/config.toml` sections** (`configFile === '.sdlc-v2/config.toml'`): walk
    `section.configPath` as a dot-path into `projectConfig` (e.g. `plan.guardrails`,
-   `pr.labels`). If the resolved value is an array, `set` requires `length > 0`; any other
-   non-null resolved value is `set`. Unresolved (any segment missing) → `not-set`.
+   `pr.labels`). If the resolved value is an array or a table, `set` requires at least one
+   entry (an array element, or a key of the table — e.g. one named guardrail table under
+   `plan.guardrails`); any other non-null resolved value is `set`. Unresolved (any segment
+   missing) → `not-set`.
 3. **`.sdlc-v2/local.toml` sections** (`ship`, `review`, `received-review`, `plan-style`, `github`, `automation`): `set`
    when `localConfig[section.configPath]` (e.g. `localConfig.receivedReview`,
    `localConfig.planStyle`) is non-null, else `not-set`.
@@ -264,8 +273,8 @@ otherwise):
 | `plan-template` | `installed` or empty. |
 | `plan-style` | Join non-empty (two spaces) of `verbosity: <verbosity>`, `audience: <audience>`, `rules: <narrativeRules.length>` (only when > 0), `instructions: <instructions.length>` (only when > 0). |
 | `plan-tasks` | Join non-empty (two spaces) of `contract: <contractShape>` and `required: <requiredFields.length>` (only when > 0). |
-| `plan-guardrails` | `<N> configured` (array length) or empty. |
-| `execution-guardrails` | `<N> configured` (array length) or empty. |
+| `plan-guardrails` | `<N> configured` (N = number of named guardrail tables under `plan.guardrails`, e.g. `[plan.guardrails.no-ci-bypass]`) or empty. |
+| `execution-guardrails` | `<N> configured` (N = number of named guardrail tables under `execute.guardrails`) or empty. |
 | `openspec-block` | `managed-block v<N>` when a block was found, else empty. |
 | `automation` | Join non-empty (two spaces) of `mode: <mode>` and `steps: <N> override(s)` (only when > 0). |
 
@@ -300,12 +309,12 @@ Detected configuration:
 - All strings MUST come from the manifest (`internal/setupmeta.Sections()` /
   `setup_prepare`'s output); do NOT hardcode labels or descriptions.
 
-Example rendering:
+Example rendering (the first four rows; each label is the section id):
 ```
-1. [set] Version — Tells /pr and /ship where the canonical version string lives.
-2. [not-set] Ship — Developer-local pipeline preferences for /ship.
-3. [not-set] Review dimensions — Review dimensions installed under .sdlc-v2/review-dimensions/*.md.
-4. [not-set] Plan template — Project-owned plan template at .sdlc-v2/plan-template.md.
+1. [set] version — Tells /pr and /ship where the canonical version string lives (a file, or only git tags) and how releases are tagged.
+2. [not-set] ship — Developer-local pipeline preferences for /ship: which steps run by default, default version bump, draft-PR mode, auto-approve, workspace isolation, rebase policy, and review-failure threshold.
+3. [not-set] jira — Default Jira project key used by /jira, /commit, and /pr when extracting or assigning ticket IDs.
+4. [set] review — Default scope for /review (committed/staged/working/worktree/all).
 ```
 
 **Phase 3 — Ask via plain chat (NOT `AskUserQuestion`).** Print the following prompt as a
@@ -347,9 +356,9 @@ Step 2 / Step 3.
 
 **Skip this step if:** `needsMigration` is `false` AND `--migrate` was NOT passed.
 
-Since this step only runs when `needsMigration` is `true` (`.sdlc-v2/config.toml`/`local.toml`
-missing or schema-stale, per `setup_prepare` in Step 0 item 1 — not a scan for legacy marker
-files) or `--migrate` was passed, use AskUserQuestion:
+Since this step only runs when `needsMigration` is `true` (a JSON-era `.sdlc-v2/config.json`
+existed without `.sdlc-v2/config.toml` when `setup_prepare` ran in Step 0 item 1 — not a scan
+for legacy marker files) or `--migrate` was passed, use AskUserQuestion:
 
 > Legacy or outdated config files detected. Migrate to the current config format before
 > proceeding?
@@ -363,30 +372,36 @@ no-ops per-file/dir when a legacy source is absent, so this is safe even when no
 `.sdlc/` content exists):
 
 ```
-migrate({ action: "import", dryRun: false }) → { ok, result, changed[] }
+migrate({ action: "import", dryRun: false }) → { ok, result, changed[], skippedKeys[] }
 ```
 
-This non-destructively copies config.json, local.json, templates, jira-templates, learnings,
-and review-dimensions from the old data directory into `.sdlc-v2/`. `config.toml` and
-`local.toml` merge per top-level key — a key the new file already holds is never overwritten,
-but a key present only in the legacy file is added even when the new file already exists
-(e.g. setup's own empty-`{}` scaffold). Everything else (`pr-template.md`, `plan-template.md`,
-`jira-templates/`, `learnings/`, `review-dimensions/`) is skipped whole-file/whole-dir when
-the destination already exists. `result` is either `"up-to-date: nothing to import"` or
-`"imported: [<path> <path> ...]"` (or `"would-import: [...]"` when `dryRun` is true).
+This non-destructively imports config (`config.toml`/`local.toml`, or `config.json`/
+`local.json` when no TOML source exists), templates, jira-templates, learnings, and
+review-dimensions from the old data directory into `.sdlc-v2/`. `config.toml` and
+`local.toml` merge per top-level key. A legacy value is written when the new file lacks the
+key, or when the key still holds the default from the template `setup_init` wrote in Step 0.
+A key the user already changed is never overwritten. Only the replaced table's text changes,
+so the template comments elsewhere stay. Everything else (`pr-template.md`,
+`plan-template.md`, `jira-templates/`, `learnings/`, `review-dimensions/`) is skipped
+whole-file/whole-dir when the destination already exists. `result` is either
+`"up-to-date: nothing to import"` or `"imported: [<path> <path> ...]"` (or
+`"would-import: [...]"` when `dryRun` is true). `skippedKeys` (omitted when empty) lists
+legacy top-level keys left out: `<dest path>: <key>` when the destination file does not allow
+the key, `(not a section)` after a key that is not a table, `(already set)` after a user change.
 
-Then run the config migration (which now also sees and migrates any v4-shaped
-`config.json`/`local.json` data that import just copied in):
+Then run the config check:
 
 ```
 migrate({ action: "config", dryRun: false }) → { ok, result, changed[] }
 ```
 
-`result` is one of: `"up-to-date"` (nothing to do), or
-`"migrated (steps: [...], legacy ingested: [<path> <path> ...])"`. This single call migrates
-both `.sdlc-v2/config.toml` and `.sdlc-v2/local.toml` schema versions and ingests any of the seven
-legacy per-section files present on disk — this call discovers them itself, they are not
-pre-enumerated in Step 0 — there is no separate project/local/`--unset-only` branch to run.
+This call only checks the config schema version for both `.sdlc-v2/config.toml` and
+`.sdlc-v2/local.toml`. It never converts or ingests legacy files, and `changed` is always
+empty. `result` is `"up-to-date"`. A stale project (`.sdlc-v2/config.json` without
+`config.toml`, or `.sdlc-v2/local.json` without `local.toml`) makes the call fail with
+`config migration failed: ... TOML config required. Run /setup to initialize.` Step 0's
+`setup_init` creates both TOML files first, so this failure is not expected here; if it
+happens, show the error to the user and stop.
 
 Then run the layout migration (moves any pre-existing `.sdlc-v2/execution/` directory
 tree into the current `.sdlc-v2/runs/` layout — idempotent, always safe to run):
@@ -395,24 +410,14 @@ tree into the current `.sdlc-v2/runs/` layout — idempotent, always safe to run
 migrate({ action: "layout", dryRun: false }) → { ok, action, result, changed[] }
 ```
 
-Report all three results to the user verbatim.
-
-**Delete legacy files (only when `migrate({action:"config"})`'s `result` started with
-`"migrated"` and named a non-empty `legacy ingested: [...]` list):** parse the
-space-separated paths out of the brackets in that string (e.g. `.claude/sdlc.json`,
-`.claude/version.json`), then use AskUserQuestion:
-
-> Delete the legacy config files that were just migrated? (`<comma-joined list>`)
-
-Options:
-- **yes** — delete the listed files (Bash `rm -f "<path>"` for each; git history keeps a
-  backup)
-- **no** — keep the legacy files alongside the migrated config
+Report all three results to the user verbatim. When the import returned `skippedKeys`, also
+show each entry on its own line under the heading `Legacy keys not imported:` (an entry
+ending in `(already set)` is a key the user changed, so the import kept the current value).
 
 On **no** (top-level choice: configure from scratch): proceed directly to Step 3 without
 migrating.
 
-After migration (or after the delete-legacy prompt resolves), re-run Step 0's snapshot
+After migration, re-run Step 0's snapshot
 (re-call `setup_prepare` and re-Read `.sdlc-v2/config.toml` / `.sdlc-v2/local.toml` — same
 disclosed gap as Step 0, no tool-backed alternative) so Step 3's
 "Current value" lines and Step 1's already-computed `state`/`summary` reflect the migrated
@@ -455,7 +460,7 @@ For each id in `selectedIds`, in canonical `internal/setupmeta.Sections()` order
    | `'inline-commit-builder'` | Inline commit-pattern builder (3.commit below). |
    | `'inline-pr-builder'` | Inline PR-pattern builder (3.pr below). |
    | `'setup-dimensions'` | Run scan phase (3.S below), then read and follow `@setup-dimensions.md`, passing scan results as "Scan Input". Pass through `--add` and `--no-copilot` if present. |
-   | `'setup-pr-template'` | Run scan phase (3.S), then read and follow `@setup-pr-template.md`, passing scan results. Pass through `--add` if present. |
+   | `'setup-pr-template'` | Run scan phase (3.S), then read and follow `@setup-pr-template.md`, passing scan results. It takes no arguments; do not pass `--add`. |
    | `'setup-pr-labels'` | Read and follow `@setup-pr-labels.md` (it runs `gh label list` itself; no scan input from parent required). |
    | `'setup-guardrails'` | Read and follow `@setup-guardrails.md` (it runs its own scan internally). Pass through `--add` if present. |
    | `'setup-execution-guardrails'` | Read and follow `@setup-execution-guardrails.md`. Pass through `--add` if present. |
@@ -831,19 +836,31 @@ Content:
   Plan guardrails         — [N configured via guardrails sub-flow | skipped]
 
 Migrated:
-  .claude/version.json    — merged into .sdlc-v2/config.toml [deleted | kept]
+  .sdlc-v2/review-dimensions/  — imported from .sdlc/ (one line per migrate `changed[]` entry)
   ...
+
+CI scripts needing an update:
+  <script> — <action> (installed v<installedVersion>, current v<currentVersion>)
+  ...
+  Fix: run scaffold_ci({ force: true }), or re-confirm the version section in /setup.
 ```
 
 Only show sections that were actually created, updated, or migrated. Omit sections that were
 skipped or unchanged.
+
+The `CI scripts needing an update` block comes from `ciScriptDrift[]` of the latest
+`setup_prepare` call (Step 3b's, else Step 0's). Each entry is
+`{ script, installedVersion, currentVersion, action }`, with `action` one of `current`,
+`outdated`, `missing`. Show one line per entry whose `action` is not `current`. Omit the block
+when `ciScriptDrift` is empty or every entry is `current`.
 
 ---
 
 ## Idempotency
 
 This skill is safe to re-run. Already-configured sections show `[set]` in Step 1 and are
-skipped by the `not-set` menu token unless `--force` is passed. `setup_write_sections` /
+skipped when the user replies `not-set` to the menu. `--force` skips the menu and selects
+every section, including `[set]` ones. `setup_write_sections` /
 `config.WriteSection` replace a section wholesale per key — writing a dotted leaf (e.g.
 `plan.guardrails`, `plan.tasks`, `pr.labels`) replaces only that leaf and preserves siblings
 automatically, no read-merge needed. `pr`'s own scalar fields are the one exception: `pr`
@@ -856,7 +873,6 @@ re-reads and merges in any existing `pr.labels` before that write.
 
 - Run full-suite or wide-subset `promptfoo eval` automatically — a single targeted test
   scoped to the change is allowed; tight-loop retries are not.
-- Delete legacy files without explicit user confirmation via AskUserQuestion.
 - Invoke a companion sub-flow via the Agent tool — use the Skill/Read-and-follow pattern
   exclusively (`@setup-dimensions.md`, `@setup-pr-template.md`, etc. are markdown files this
   skill reads and follows inline, not subagents).
@@ -902,9 +918,11 @@ sub-flows write their own dotted leaves (`pr.labels`, `plan.guardrails`/
 `plan.guardrails.<id>`, `execute.guardrails`/`execute.guardrails.<id>`) independently and need
 no merge step of their own.
 
-**Legacy review config has two possible locations.** `.sdlc-v2/review.json` and
-`.claude/review.json` are both legacy paths; `internal/configmigrate` prefers
-`.sdlc-v2/review.json` when both exist.
+**Legacy per-section files are not migrated.** No tool reads or ingests `.claude/sdlc.json`,
+`.claude/version.json`, `.claude/review.json`, or `.sdlc/*-config.json` / `.sdlc/review.json`.
+They only matter while `.sdlc-v2/config.toml` is missing (config loading then refuses with
+"legacy config layout detected"); after Step 0's `setup_init` creates `config.toml`, they are
+ignored. This skill does not delete them.
 
 **`state`/`summary` are computed by this skill, not returned by any tool.** If a future Go
 tool version adds these fields to `setup_prepare`'s output, prefer the tool's values and

@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -117,6 +118,27 @@ func TestHardenPrepare_FromIssueInvalidNumber(t *testing.T) {
 	}
 }
 
+// TestHardenPrepare_FromIssueZeroRejected pins that fromIssue must be a
+// positive integer, as its error message says: 0 is refused before any
+// gh call.
+func TestHardenPrepare_FromIssueZeroRejected(t *testing.T) {
+	for _, n := range []string{"0", "00", " 0 "} {
+		root := t.TempDir()
+		_, err := hardenPrepare(root, root, HardenPrepareIn{
+			FromIssue:       n,
+			Skill:           "ship",
+			SkipConfigCheck: true,
+		})
+		var domainErr *mcpserver.DomainError
+		if !errorsAsDomainError(err, &domainErr) {
+			t.Fatalf("fromIssue %q: expected *mcpserver.DomainError, got %T: %v", n, err, err)
+		}
+		if !containsSubstr(domainErr.Msg, "must be a positive integer") {
+			t.Errorf("fromIssue %q: message = %q, want it to say positive integer", n, domainErr.Msg)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Required fields
 // ---------------------------------------------------------------------------
@@ -133,6 +155,10 @@ func TestHardenPrepare_MissingRequiredFields(t *testing.T) {
 	}
 	if !containsSubstr(domainErr.Msg, "failureText") || !containsSubstr(domainErr.Msg, "skill") {
 		t.Fatalf("expected message to mention both missing fields, got: %s", domainErr.Msg)
+	}
+	// The suggestion must name the live tool, not the retired harden_prepare.
+	if !containsSubstr(domainErr.Suggestion, "prepare_orchestrator") || containsSubstr(domainErr.Suggestion, "harden_prepare") {
+		t.Errorf("suggestion should point at prepare_orchestrator, got: %s", domainErr.Suggestion)
 	}
 }
 
@@ -807,6 +833,46 @@ func TestHardenPrepare_CLIEvidence(t *testing.T) {
 		}
 	})
 
+	t.Run("FiltersBranchBeforeTakingLast20", func(t *testing.T) {
+		// 25 main-branch entries followed by 25 other-branch entries: the
+		// last 20 file entries are all other-branch, but the manifest must
+		// still carry the last 20 main-branch ones.
+		root := t.TempDir()
+		initGitFixture(t, root)
+		gitCommit(t, root, "c1")
+
+		for _, br := range []string{"main", "feature-x"} {
+			for i := 0; i < 25; i++ {
+				e := CLIEvidenceEntry{
+					Timestamp: fmt.Sprintf("2026-09-11T00:%02d:00Z", i), Pipeline: "ship",
+					Branch: br, Command: fmt.Sprintf("%s-%02d", br, i),
+				}
+				if err := appendCLIEvidence(root, e); err != nil {
+					t.Fatalf("appendCLIEvidence: %v", err)
+				}
+			}
+		}
+
+		out, err := hardenPrepare(root, root, HardenPrepareIn{
+			FailureText:     "boom",
+			Skill:           "ship",
+			SkipConfigCheck: true,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		manifest := readHardenManifest(t, out.ManifestPath)
+		list, _ := manifest["cliEvidence"].([]any)
+		if len(list) != 20 {
+			t.Fatalf("expected 20 main-branch entries, got %d: %+v", len(list), list)
+		}
+		first := list[0].(map[string]any)
+		last := list[19].(map[string]any)
+		if first["command"] != "main-05" || last["command"] != "main-24" {
+			t.Errorf("cliEvidence = %v .. %v, want main-05 .. main-24", first["command"], last["command"])
+		}
+	})
+
 	t.Run("MissingEvidenceFileOmitsFieldWithoutError", func(t *testing.T) {
 		root := t.TempDir()
 		initGitFixture(t, root)
@@ -882,11 +948,47 @@ func TestDimensionsPreflight_PassesWithNoDir(t *testing.T) {
 	}
 }
 
+// TestHardenPrepare_ErrorReportSurfaceResolvesShippedFile pins that the
+// error-report-skill surface points at a file the plugin actually ships
+// (skills/error-report/SKILL.md) under CLAUDE_PLUGIN_ROOT, so an installed
+// plugin gets a path and no load error. The binary itself runs from
+// ~/.sdlc-cache/bin, so walking up from the executable cannot find it.
+func TestHardenPrepare_ErrorReportSurfaceResolvesShippedFile(t *testing.T) {
+	pluginRoot, err := filepath.Abs(filepath.Join("..", "..", "plugins", "sdlc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLAUDE_PLUGIN_ROOT", pluginRoot)
+
+	root := t.TempDir()
+	out, err := hardenPrepare(root, root, HardenPrepareIn{
+		FailureText:     "boom",
+		Skill:           "ship",
+		SkipConfigCheck: true,
+	})
+	if err != nil {
+		t.Fatalf("hardenPrepare: %v", err)
+	}
+	manifest := readHardenManifest(t, out.ManifestPath)
+
+	surfaces := manifest["surfaces"].(map[string]any)
+	want := filepath.Join(pluginRoot, "skills", "error-report", "SKILL.md")
+	if surfaces["errorReportSkillPath"] != want {
+		t.Errorf("errorReportSkillPath = %v, want %q", surfaces["errorReportSkillPath"], want)
+	}
+	errs, _ := manifest["errors"].([]any)
+	if len(errs) != len(filterOutSurface(errs, "error-report-skill")) {
+		t.Errorf("expected no error-report-skill load error, got %+v", errs)
+	}
+}
+
 func TestResolveErrorReportSkill_SoftFailsWhenAbsent(t *testing.T) {
+	// An empty CLAUDE_PLUGIN_ROOT (no plugin files) and a test binary far
+	// from any plugin tree: nothing to resolve.
+	t.Setenv("CLAUDE_PLUGIN_ROOT", t.TempDir())
 	var errs []surfaceLoadError
 	got := resolveErrorReportSkill(&errs)
-	// This repo has no skills/ directory yet (confirmed during investigation),
-	// so this must soft-fail: empty string, one recorded error, no panic.
+	// Must soft-fail: empty string, one recorded error, no panic.
 	if got != "" {
 		t.Errorf("resolveErrorReportSkill = %q, want empty string when the target file does not exist", got)
 	}
