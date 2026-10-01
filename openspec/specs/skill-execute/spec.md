@@ -116,6 +116,7 @@ The skill SHALL derive the workspace from git state without a flag, and SHALL ne
 - Current branch comes from `git branch --show-current`, never the session-start `gitStatus` snapshot.
 - Default branch comes from `git symbolic-ref refs/remotes/origin/HEAD`, fallback `main`.
 - Branch name uses `workspace.branch` in `.sdlc-v2/local.toml`: `template` (default `"{type}/{slug}"`), `slugMaxLength` (default `50`), `typeMap`.
+- The only prompt in workspace derivation is the branch-name confirmation in the `branch` outcome, and only when effective auto is false.
 
 #### Scenario: On default branch in auto mode
 - **WHEN** the workspace outcome is `branch`
@@ -329,12 +330,30 @@ sequenceDiagram
 ### Requirement: High-risk wave gate
 The skill SHALL ask for approval before a high-risk wave unless effective auto or `highRiskAutoApprove` is true.
 
-- Prompt options: `yes`, `skip`, `cancel`.
+| Answer | Skill action |
+|---|---|
+| `yes` | Proceed with the wave |
+| `skip` | Do not dispatch the wave; `task-fail` each of its tasks and `wave-fail` the wave, both with error `skipped by user at the high-risk gate`; continue with the next wave |
+| `cancel` | Stop before `wave-start`; do not call `cleanup`; print the "Execution state preserved at ..." line |
+
+- After a `skip`, a later task that depends on a skipped task is recorded with `task-fail` and `skippedDependency: true` instead of being dispatched.
+- The final report lists every skipped task as not implemented.
 
 #### Scenario: High-risk wave, interactive
 - **WHEN** a wave is high-risk
 - **AND** effective auto and `highRiskAutoApprove` are both false
 - **THEN** the skill asks with AskUserQuestion (`yes`/`skip`/`cancel`) before `wave-start`
+
+#### Scenario: User skips a high-risk wave
+- **WHEN** the user answers `skip`
+- **THEN** no task of that wave is dispatched
+- **AND** each of its tasks is recorded with `task-fail` and the wave with `wave-fail`
+- **AND** the run continues with the next wave
+
+#### Scenario: User cancels at the high-risk gate
+- **WHEN** the user answers `cancel`
+- **THEN** the skill stops before `wave-start` without calling `cleanup`
+- **AND** the state file stays resumable
 
 #### Scenario: Auto-approved from a saved config file
 - **WHEN** a high-risk wave proceeds without a prompt
@@ -358,12 +377,20 @@ The skill SHALL check `severity: "error"` guardrails before each wave and all gu
 - `fix` tries one inline fix, then re-evaluates.
 - Each outcome is recorded with `execute_state` `action: "decide"`, `decideType: "guardrail"`, `decideId`, `decideDecision`.
 - Warning-severity guardrails are never evaluated pre-wave.
+- `cancel` stops the run at that point without calling `cleanup`; the state stays resumable.
+- `highRiskAutoApprove` has no effect on guardrail checks.
 
 #### Scenario: Error guardrail fails in auto mode
 - **WHEN** an error-severity guardrail fails
-- **AND** effective auto or `highRiskAutoApprove` is true
-- **THEN** the failure still blocks the wave
-- **AND** the skill does not choose `override` on its own
+- **AND** effective auto is true
+- **THEN** the skill does not ask with AskUserQuestion
+- **AND** the skill prints the failure, records `decide` with `decideDecision: "cancel"`, and stops the run
+- **AND** the skill never chooses `override` or runs `harden` on its own
+
+#### Scenario: Error guardrail fails with only highRiskAutoApprove
+- **WHEN** an error-severity guardrail fails
+- **AND** effective auto is false and `highRiskAutoApprove` is true
+- **THEN** the skill asks with AskUserQuestion as usual
 
 ### Requirement: Spec-compliance review
 The skill SHALL dispatch one sonnet `general-purpose` reviewer after each wave that contains Standard or Complex tasks, unless the `full` tier was selected.
@@ -545,8 +572,13 @@ The skill SHALL resume from the `resumeBriefing` returned by `execute_state` `re
 |---|---|
 | `Active execution (post-compact):` without `Active pipeline: ship` | `implicitResume = true`; take the resume path |
 | `Active execution (post-compact):` with `Active pipeline: ship` | Print `ship owns recovery for this session; deferring.` and stop |
-| Neither, no `--resume` | Normal routing |
+| Neither, no `--resume`, Step 0 `read` has no `resumeBriefing` | Normal routing (fresh run) |
+| Neither, no `--resume`, Step 0 `read` has a `resumeBriefing`, explicit plan differs from the state's `planPath` | Normal routing; print `Starting a new run; the unfinished run for <planPath> will be replaced.` |
+| Neither, no `--resume`, Step 0 `read` has a `resumeBriefing`, no explicit plan or the same plan | Effective auto: `implicitResume = true`. Otherwise ask "An unfinished execute run exists for this branch (wave N) — resume it?" (`yes` resumes; `no` starts a fresh run and prints the replacement line) |
 
+- The skill finds the prior run only through Step 0's `execute_state` `read`; a `DataError` there means no prior run. It never globs `.sdlc-v2/runs/`.
+- A fresh `init` replaces the branch's existing execute state file, which is why an unfinished run is never replaced without the explicit-plan signal or the user's `no`.
+- Post-compact prompt answer `no`: stop without touching state and print the "Execution state preserved at ..." line.
 - The skill renders `resumeBriefing.display` as the starting point.
 - The skill does not compare `planHash` itself; `wave-start` does.
 - The skill resumes from the first wave with status `in_progress` or `pending`, per `willRedo` / `willSkip`.
@@ -564,3 +596,11 @@ The skill SHALL resume from the `resumeBriefing` returned by `execute_state` `re
 - **WHEN** `implicitResume` is true
 - **AND** effective auto is false
 - **THEN** the skill asks with AskUserQuestion "Resuming execution from wave N — continue?" (`yes`/`no`)
+
+#### Scenario: Unfinished run found without --resume
+- **WHEN** no post-compact signal is present and `--resume` was not passed
+- **AND** Step 0's `read` returned a `resumeBriefing`
+- **AND** no explicit plan path was given, or it is the state's `planPath`
+- **AND** effective auto is false
+- **THEN** the skill asks with AskUserQuestion "An unfinished execute run exists for this branch (wave N) — resume it?"
+- **AND** on `no` it starts a fresh run and prints that the unfinished run will be replaced

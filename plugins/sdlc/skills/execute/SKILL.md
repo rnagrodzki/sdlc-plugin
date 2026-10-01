@@ -55,7 +55,7 @@ STOP here. Do NOT use AskUserQuestion to request a path interactively, and do NO
 
 **Parse `--branch <name>`:** internal flag set by ship in pipeline mode — capture as `EXECUTE_NEW_BRANCH` and skip Workspace auto-detection below entirely (the caller's branch/cwd are trusted as authoritative). Standalone invocations never pass this.
 
-**Workspace auto-detection (no flag, no prompt):** After plan validation, derive the workspace — it is not user-selectable.
+**Workspace auto-detection (no flag):** After plan validation, derive the workspace — it is not user-selectable. The only prompt here is the branch-name confirmation in the `branch` outcome below, and only when EXECUTE_AUTO is false.
 
 If `--branch` was passed, skip straight to Pre-execution rebase. Otherwise:
 1. Linked worktree? Compare `git worktree list --porcelain`'s first `worktree <path>` line against `git rev-parse --show-toplevel`.
@@ -100,7 +100,7 @@ Blocking issues → stop and ask. Warnings only → show them and proceed.
 
 **OpenSpec task-flip map:** For each task with an `openspec-task:` block, capture `{taskId, change, ref, line, title}` into `openspecTaskMap`; derive `refToTaskIds: Map<ref, Set<taskId>>`; seed an empty `flippedRefs`. No blocks in the plan → all three stay empty and `## Wave loop`'s task-flip stage is a no-op.
 
-**Hook context fast-path:** An `Active execution:` line in the session-start system-reminder means the hook already found the state file — skip the filesystem scan when informing the resume prompt.
+**Hook context:** An `Active execution:` line in the session-start system-reminder means the hook already found a state file for this branch. It is informational only — Step 0's `read` result stays authoritative for every resume decision, and no filesystem scan is ever needed.
 
 **Guardrail loading:** Read `<main-worktree>/.sdlc-v2/config.toml`'s `execute.guardrails` table (absent file or key → empty). Store as `activeGuardrails`; print "Loaded N execution guardrails." or "No execution guardrails configured." Distinct from `plan.guardrails` (planning-time critique) — independently configured.
 
@@ -195,7 +195,12 @@ Compute `planHash` yourself (`shasum -a 256 "$PLAN_FILE" | cut -d' ' -f1`) — t
 
 **Per wave, in order:**
 
-1. **WAVE-START.** TodoWrite: close the previous wave's todos `completed` (skip on wave 1), open this wave's as `in_progress`. If `activeGuardrails` is non-empty, run the error-severity pre-wave check (assess this wave's task descriptions plus the cumulative `git diff --stat` against each `severity:"error"` guardrail; FAIL → AskUserQuestion `override`/`harden`/`cancel`, `harden` dispatches `Skill("harden", "--failure-text \"<guardrail failure text>\" --skill execute --step \"pre-wave guardrail\"")` and re-evaluates, EXECUTE_AUTO and EXECUTE_HIGH_RISK_AUTO both block and never auto-override; record the outcome via `execute_state({ action: "decide", decideType: "guardrail", decideId: "<slug>", decideDecision: "<...>" })`). A high-risk wave proceeds without a prompt when EXECUTE_AUTO or EXECUTE_HIGH_RISK_AUTO is true; otherwise AskUserQuestion (`yes`/`skip`/`cancel`). When it proceeds without a prompt **and** the deciding value came from a saved config file rather than a per-run signal — Step 0 reported `sources.highRiskAutoApprove == "config"`, or `sources.auto == "config"` — print this line before dispatching, so a saved setting can never skip a high-risk approval silently:
+1. **WAVE-START.** TodoWrite: close the previous wave's todos `completed` (skip on wave 1), open this wave's as `in_progress`. If `activeGuardrails` is non-empty, run the error-severity pre-wave check (assess this wave's task descriptions plus the cumulative `git diff --stat` against each `severity:"error"` guardrail; FAIL → AskUserQuestion `override`/`harden`/`cancel`, `harden` dispatches `Skill("harden", "--failure-text \"<guardrail failure text>\" --skill execute --step \"pre-wave guardrail\"")` and re-evaluates, `cancel` stops the run at that point the same way as the high-risk `cancel` below (no `cleanup`, state stays resumable); record the outcome via `execute_state({ action: "decide", decideType: "guardrail", decideId: "<slug>", decideDecision: "<...>" })`). When EXECUTE_AUTO is true, the user is NOT asked — an unattended run has no one to answer, and AskUserQuestion would deadlock it: print the guardrail failure, record `decideDecision: "cancel"` with a `decideReason` saying auto mode cannot override, then stop as for `cancel`. Never choose `override` or run `harden` on your own. EXECUTE_HIGH_RISK_AUTO does not apply here — with EXECUTE_AUTO false the user is asked as usual. A high-risk wave proceeds without a prompt when EXECUTE_AUTO or EXECUTE_HIGH_RISK_AUTO is true; otherwise AskUserQuestion (`yes`/`skip`/`cancel`):
+   - `yes` → proceed with this wave.
+   - `skip` → do not dispatch this wave. Record each of its tasks with `execute_state({ action: "task-fail", wave: N, taskId: "<id>", error: "skipped by user at the high-risk gate" })`, then `execute_state({ action: "wave-fail", wave: N, error: "skipped by user at the high-risk gate" })`, and continue with the next wave. A later task that depends on a skipped task is not dispatched either: record it with `task-fail` and `skippedDependency: true`. Step 9 lists every skipped task as not implemented.
+   - `cancel` → stop before `wave-start`. Do not call `cleanup`; the state stays resumable. Print the "Execution state preserved at ..." line from Step 9.
+
+   When a high-risk wave proceeds without a prompt **and** the deciding value came from a saved config file rather than a per-run signal — Step 0 reported `sources.highRiskAutoApprove == "config"`, or `sources.auto == "config"` — print this line before dispatching, so a saved setting can never skip a high-risk approval silently:
 
 ```
 WARNING: high-risk wave <N> auto-approved from .sdlc-v2/local.toml (<executePrefs.highRiskAutoApprove|executePrefs.auto>), not a per-run --auto. Breaking, irreversible, credential or infra changes in this wave will proceed without confirmation.
@@ -233,7 +238,7 @@ After a wave reaches `status:"completed"` (never `partial` or `failed` — the t
 ```
 execute_state({ action: "wave-commit", wave: N, message: "<author this — see below>" })
 ```
-`commitWaves` resolves the same way `quality` does — `--commit-waves` (forwarded by ship only when `ship.execute.commitWaves` is set) > top-level `execute.commitWaves` config > default `true` — resolved once at `resolve-config` and stamped at `init`. The tool stages (`git add -A`) and commits when enabled. **The LLM authors `message`; the tool does the committing.** Never run `git commit` directly for a wave's changes.
+`commitWaves` resolves the same way `quality` does — `--commit-waves` (forwarded by ship only when `ship.execute.commitWaves` is set) > top-level `execute.commitWaves` config > default `true` — resolved once at `resolve-config` and stamped at `init`. The tool stages (`git add -A`) and commits when enabled. **The LLM authors `message`; the tool does the committing.** Never run `git commit` directly for a wave's changes — with one exception: when `wave-commit` returns `reason:"execute.commitWaves is false"`, its instruction orders a manual commit (see the outcome below), and you then record it with `wave-committed`.
 
 **You author the message** — a real commit subject describing the wave's actual changes (not a template string), following the repository's commit style. Four outcomes:
 - **Committed** — `{committed:true, sha, idempotent:false}`. Normal path.
@@ -245,8 +250,8 @@ execute_state({ action: "wave-commit", wave: N, message: "<author this — see b
 
 `--resume` (or `implicitResume`, below) does not hand-derive "what changed" from `waves[]`/`context` prose. `execute_state({action:"read"})` (and `resume-reset`) attach a `resumeBriefing` whenever the run is still in flight — render its `display` text as the starting point:
 
-1. `git worktree list --porcelain` → `<main-worktree>`; find the most recent `execute-<branch>-*.json` under `<main-worktree>/.sdlc-v2/runs/`. None found → warn and start fresh (still subject to the plan-argument gate if `EXPLICIT_PLAN_FILE` isn't set).
-2. `execute_state({action:"read"})` → `planPath`, `planHash`, `resumeBriefing`. Null/absent `planPath` (legacy file) → the plan-argument gate's halt applies, no prompting. Do not recompute or compare `planHash` here — the tool compares `planHash` server-side at `wave-start`; a mismatch halts execution there.
+1. Use Step 0's Load State `read` result — never glob or open `.sdlc-v2/runs/*.json` yourself. Its `DataError` ("no state file found for branch ...") means no prior run → warn and start fresh (still subject to the plan-argument gate if `EXPLICIT_PLAN_FILE` isn't set).
+2. From that `read` (or a fresh `execute_state({action:"read"})`): `planPath`, `planHash`, `resumeBriefing`. Null/absent `planPath` (legacy file) → the plan-argument gate's halt applies, no prompting. Do not recompute or compare `planHash` here — the tool compares `planHash` server-side at `wave-start`; a mismatch halts execution there.
 3. **`gitCrossCheck`/`gitMismatches` on the briefing is a STOP condition, not an auto-recovery target.** A `committedSha` no longer reachable from HEAD (force-push, reset) means: warn with the mismatch and refuse to auto-recover; resolve manually. `gitCrossCheck:"confirmed"` (or absent, meaning no wave has committed yet) needs no action.
 4. Clear untrusted rows before computing the resume pointer:
    ```
@@ -259,9 +264,13 @@ execute_state({ action: "wave-commit", wave: N, message: "<author this — see b
 The small-plan direct-execution path (Step 2b) never writes a state file or commits per-wave, so it never produces a `committedSha` to reconcile here.
 
 **Post-compact recovery.** In addition to explicit `--resume`, scan the session-start system-reminder for `Active execution (post-compact):`:
-- Present, and `Active pipeline: ship` **absent** → `implicitResume = true`, take the resume path above. EXECUTE_AUTO true → silent. Otherwise one AskUserQuestion: "Resuming execution from wave N — continue?" (`yes`/`no`).
+- Present, and `Active pipeline: ship` **absent** → `implicitResume = true`, take the resume path above. EXECUTE_AUTO true → silent. Otherwise one AskUserQuestion: "Resuming execution from wave N — continue?" (`yes`/`no`). `yes` → resume. `no` → stop without touching state and print the "Execution state preserved at ..." line from Step 9.
 - Present, and `Active pipeline: ship` **also present** → do not self-resume; print `ship owns recovery for this session; deferring.` and stop — ship's own implicit-resume re-dispatches execute with `--resume` as its next pipeline step; running both would double-dispatch the same wave.
-- Neither signal, no `--resume` on CLI → routing unchanged; a state file existing without `--resume` triggers the interactive-or-EXECUTE_AUTO prompt from step 1 above.
+- Neither signal, no `--resume` on CLI, and Step 0's `read` returned no `resumeBriefing` (no prior run, or the prior run is finished) → normal routing: a fresh run.
+- Neither signal, no `--resume` on CLI, but Step 0's `read` returned a `resumeBriefing` (an unfinished run exists) → a fresh `init` would replace that run's state file, so decide first:
+  - `EXPLICIT_PLAN_FILE` is set and is a different file from the state's `planPath` → normal routing (fresh run). Print `Starting a new run; the unfinished run for <planPath> will be replaced.` No prompt — the explicit plan is authoritative.
+  - Otherwise, EXECUTE_AUTO true → `implicitResume = true`, silent, same as the post-compact case.
+  - Otherwise, one AskUserQuestion: "An unfinished execute run exists for this branch (wave N) — resume it?" (`yes`/`no`). `yes` → `implicitResume = true`. `no` → normal routing (fresh run); print the same replacement line.
 
 ---
 
@@ -366,7 +375,7 @@ On failure or interruption (not all tasks completed), `cleanup` is not called at
 - Skip final verification
 - Rely on the dispatch prompt for task detail — the worker calls `task-context` itself for the fact sheet; don't paste the full task text into the prompt as a substitute
 - Execute more than 2 retries on any single task
-- Commit or push outside `## Commits`' own `wave-commit` call — workspace derivation is automatic (`branch`/`continue`), not an ad-hoc decision
+- Commit or push outside `## Commits` — the only commits are `wave-commit`'s, plus the manual commit `wave-commit` itself orders when `execute.commitWaves` is false; workspace derivation is automatic (`branch`/`continue`), not an ad-hoc decision
 - Reference external sub-skills by name — this skill is fully self-contained
 - Split a wave's Agent fan-out across more than one message, or dispatch with `run_in_background: false`
 - Assume `cleanup` deletes the state file — it stamps `runStatus`; only `gc`'s TTL sweep removes the file
