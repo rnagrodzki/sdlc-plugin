@@ -12,7 +12,7 @@ Every `ship_state` call takes `{action, step?, detail?, sessionId?}`. Action-spe
 .sdlc-v2/runs/ship-<branch-slug>-<timestamp>.json
 ```
 
-Managed by the shared `internal/state` package (the same one `execute_state`, `plan_state`, and `commit`'s state helpers use). The skill never constructs or parses this filename itself — every action resolves the file by current branch (or by an explicit `detail.branch` / `detail.stateFile`) and returns the parsed state rendered as Markdown (see `docs/mcp-output-contract.md`), never a raw file to parse.
+Managed by the shared `internal/state` package (the same one `execute_state`, `plan_state`, and `commit`'s state helpers use). The skill never constructs or parses this filename itself — every action that reads ship state resolves the file by current branch or by an explicit `detail.branch`; only `begin-step`, `complete-step`, `next`, and `todos` also honor `detail.stateFile`, which reads that file directly and returns the parsed state rendered as Markdown (see `docs/mcp-output-contract.md`), never a raw file to parse.
 
 ---
 
@@ -276,7 +276,7 @@ Two actions, both terminal, neither a `steps[]` entry. **Neither deletes the sta
     "gc": { "ship": {...}, "execute": {...}, "plan": {...}, "commit": {...} },
     "directories": { "deleted": [...], "kept": [...], "ledger": { "deleted": [...], "kept": [...] } },
     "force": false,
-    "ttlDays": 14
+    "ttlDays": 7
   }
   ```
   `directories` reaps stale per-run execute directories and their ledger subdirectory (keyed off `execute-*.json` state files' `startedAt`) — this is the run-dir/ledger cleanup that happens alongside, not instead of, the state-file stamp.
