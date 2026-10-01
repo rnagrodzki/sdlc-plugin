@@ -33,8 +33,8 @@ var movedLocalKeys = map[string]map[string]moveTarget{
 }
 
 const (
-	movedKeysConfigRel = paths.DataDir + "/config.toml"
-	movedKeysLocalRel  = paths.DataDir + "/local.toml"
+	movedKeysConfigRel = paths.DataDir + "/" + paths.ConfigFile
+	movedKeysLocalRel  = paths.DataDir + "/" + paths.LocalConfigFile
 
 	movedKeysSuggestion = "Move each listed key into " + movedKeysLocalRel +
 		" under the new section by hand, delete it from " + movedKeysConfigRel +
@@ -115,8 +115,8 @@ func tableHeader(line string) (name string, isHeader bool) {
 // A non-nil err is always a *MovedKeysErr; use errors.As to reach its
 // Suggestion.
 func MigrateMovedKeys(mainRoot string) (moved []string, err error) {
-	cfgPath := filepath.Join(mainRoot, paths.DataDir, "config.toml")
-	localPath := filepath.Join(mainRoot, paths.DataDir, "local.toml")
+	cfgPath := filepath.Join(mainRoot, paths.DataDir, paths.ConfigFile)
+	localPath := filepath.Join(mainRoot, paths.DataDir, paths.LocalConfigFile)
 
 	// Step 1: missing or unparsable config.toml is left to normal readers.
 	cfgText, rerr := os.ReadFile(cfgPath)

@@ -108,7 +108,7 @@ func stateDir(root string) string {
 // files that haven't been moved to stateDir yet (see the "layout" action on
 // the migrate tool).
 func legacyStateDir(root string) string {
-	return filepath.Join(root, paths.DataDir, "execution")
+	return filepath.Join(root, paths.DataDir, paths.LegacyExecutionSubdir)
 }
 
 // ---------------------------------------------------------------------------

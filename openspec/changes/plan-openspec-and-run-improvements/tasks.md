@@ -24,7 +24,7 @@ flowchart LR
 
 ## 1. Foundations: paths, gitx, config
 
-- [ ] 1.1 Add named constants for every `.sdlc-v2/` entry plus `LinkedStateEntries` and `UnlinkedStateEntries` lists in `internal/paths/paths.go`, and replace the string literals in `internal/tools/*.go` and `internal/hooks/*.go` — verify: `go test ./internal/paths/ -run TestStateEntryListsCoverEveryEntry` <!-- ref:1-1-add-named-constants-for-every-sdlc-v-b3537d -->
+- [x] 1.1 Add named constants for every `.sdlc-v2/` entry plus `LinkedStateEntries` and `UnlinkedStateEntries` lists in `internal/paths/paths.go`, and replace the string literals in `internal/tools/*.go` and `internal/hooks/*.go` — verify: `go test ./internal/paths/ -run TestStateEntryListsCoverEveryEntry` <!-- ref:1-1-add-named-constants-for-every-sdlc-v-b3537d -->
 - [x] 1.2 Add `BaseBranch(cfg)` (config `[git] baseBranch`, fallback `DefaultBranch`), `FetchBranch`, `BehindCount`, `Merge`, `MergeAbort`, `UnmergedFiles` in `internal/gitx/gitx.go` — verify: `go test ./internal/gitx/ -run 'TestBaseBranch|TestBehindCount|TestMerge'` (real git in `t.TempDir`) <!-- ref:1-2-add-basebranch-cfg-config-git-basebr-b50231 -->
 - [x] 1.3 Add `[git] baseBranch` and `[execute] baseSync` to `plugins/sdlc/schemas/sdlc-config.schema.json`, `plugins/sdlc/templates/config.toml`, and the config loader in `internal/config/` — verify: `go test ./internal/config/ -run TestGitBaseBranch` and the template/schema sync test <!-- ref:1-3-add-git-basebranch-and-execute-bases-be5a51 -->
 
@@ -86,8 +86,8 @@ flowchart LR
 
 - [x] 9.1 Add the `base-sync` step after `summarize-prior-wave-context` (skip after the last wave) and the conflict sub-agent + `base-sync-resolve` / abort flow in `plugins/sdlc/skills/execute/SKILL.md` — verify: read-through against `specs/skill-execute/spec.md` <!-- ref:9-1-add-the-base-sync-step-after-summari-88fb7c -->
 - [x] 9.2 Use the base branch in execute's pre-execution rebase and workspace derivation in `plugins/sdlc/skills/execute/SKILL.md` — verify: `grep -n 'origin/<defaultBranch>' plugins/sdlc/skills/execute/SKILL.md` returns nothing <!-- ref:9-2-use-the-base-branch-in-execute-s-pre-95ae0d -->
-- [ ] 9.3 Make OpenSpec steps fail on a named-but-missing change and read the change from `flags.openspecChange` in `plugins/sdlc/skills/ship/SKILL.md` — verify: read-through against `specs/skill-ship/spec.md` "OpenSpec steps" <!-- ref:9-3-make-openspec-steps-fail-on-a-named-b500e7 -->
-- [ ] 9.4 Move `report` (write) before `cleanup-pipeline`, drop 10c from end-of-run records, use base branch in the rebase step in `plugins/sdlc/skills/ship/SKILL.md` and `reference.md` — verify: `grep -n 'cleanup-pipeline\|action:"report"' plugins/sdlc/skills/ship/SKILL.md` shows report first <!-- ref:9-4-move-report-write-before-cleanup-pip-551379 -->
+- [x] 9.3 Make OpenSpec steps fail on a named-but-missing change and read the change from `flags.openspecChange` in `plugins/sdlc/skills/ship/SKILL.md` — verify: read-through against `specs/skill-ship/spec.md` "OpenSpec steps" <!-- ref:9-3-make-openspec-steps-fail-on-a-named-b500e7 -->
+- [x] 9.4 Move `report` (write) before `cleanup-pipeline`, drop 10c from end-of-run records, use base branch in the rebase step in `plugins/sdlc/skills/ship/SKILL.md` and `reference.md` — verify: `grep -n 'cleanup-pipeline\|action:"report"' plugins/sdlc/skills/ship/SKILL.md` shows report first <!-- ref:9-4-move-report-write-before-cleanup-pip-551379 -->
 - [ ] 9.5 Sync `docs/skills/execute.md` and `docs/skills/ship.md` — verify: step lists match the SKILL.md files <!-- ref:9-5-sync-docs-skills-execute-md-and-docs-8c768f -->
 
 ## 10. task deploy pruning
@@ -105,4 +105,4 @@ flowchart LR
 
 - [x] 12.1 Return the active plan guardrails as `guardrails` from the `openspec_instructions` action in `internal/tools/plan_support.go` — verify: `go test ./internal/tools/ -run TestPlanSupportOpenspecInstructions` <!-- ref:12-1-return-the-active-plan-guardrails-a-17fcff -->
 - [x] 12.2 Treat plan guardrails as authoring constraints for `design` and `tasks`, and re-stage `tasks.md` from the final plan tasks before handoff in `plugins/sdlc/skills/plan/SKILL.md` — verify: read-through against `specs/skill-plan/spec.md` "OpenSpec artifacts follow plan guardrails" <!-- ref:12-2-treat-plan-guardrails-as-authoring-310d30 -->
-- [ ] 12.3 Pass `{GUARDRAILS}` to the Gate A intake audit and report guardrail conflicts in `tasks.md` or `design.md` as caveats in `plugins/sdlc/skills/plan/intake-verify-prompt.md` and `plugins/sdlc/skills/plan/SKILL.md` — verify: `go test ./internal/skillcheck/...` <!-- ref:12-3-pass-guardrails-to-the-gate-a-intak-1f60e3 -->
+- [x] 12.3 Pass `{GUARDRAILS}` to the Gate A intake audit and report guardrail conflicts in `tasks.md` or `design.md` as caveats in `plugins/sdlc/skills/plan/intake-verify-prompt.md` and `plugins/sdlc/skills/plan/SKILL.md` — verify: `go test ./internal/skillcheck/...` <!-- ref:12-3-pass-guardrails-to-the-gate-a-intak-1f60e3 -->

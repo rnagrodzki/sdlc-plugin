@@ -101,7 +101,7 @@ var legacyMarkers = []string{
 	// left behind in the CURRENT data dir by the pre-TOML layout. Without
 	// this marker, a project stuck on config.json (config.toml absent) is
 	// indistinguishable from a fresh project with no config at all.
-	filepath.Join(paths.DataDir, "config.json"),
+	filepath.Join(paths.DataDir, paths.LegacyConfigJSONFile),
 }
 
 // detectLegacy checks for pre-v5 config files. Returns an error naming
@@ -619,7 +619,7 @@ func applyAutomationDefaults(a *AutomationSection) {
 // ErrNotFound. When config.toml exists with a schemaVersion field (the v4
 // marker), returns a legacy-refusal error.
 func readProjectRaw(mainRoot string) (map[string]any, error) {
-	projectPath := filepath.Join(mainRoot, paths.DataDir, "config.toml")
+	projectPath := filepath.Join(mainRoot, paths.DataDir, paths.ConfigFile)
 	var raw map[string]any
 	err := fsx.ReadTOML(projectPath, &raw)
 	if err != nil {
@@ -650,7 +650,7 @@ func readProjectRaw(mainRoot string) (map[string]any, error) {
 // map. Returns (nil, nil) when the file does not exist — missing local
 // config is not an error.
 func readLocalRaw(mainRoot string) (map[string]any, error) {
-	localPath := filepath.Join(mainRoot, paths.DataDir, "local.toml")
+	localPath := filepath.Join(mainRoot, paths.DataDir, paths.LocalConfigFile)
 	var raw map[string]any
 	err := fsx.ReadTOML(localPath, &raw)
 	if err != nil {
@@ -818,7 +818,7 @@ func ReadSection(mainRoot, name string) (map[string]any, error) {
 	}
 
 	// Local section.
-	localPath := filepath.Join(mainRoot, paths.DataDir, "local.toml")
+	localPath := filepath.Join(mainRoot, paths.DataDir, paths.LocalConfigFile)
 	var localRaw map[string]any
 	if err := fsx.ReadTOML(localPath, &localRaw); err != nil {
 		if errors.Is(err, fsx.ErrNotFound) {
@@ -874,9 +874,9 @@ func WriteSectionReport(mainRoot, name string, v map[string]any) (rewrote bool, 
 	}
 
 	if ProjectSections[top] {
-		return writeSectionFile(filepath.Join(sdlcDir, "config.toml"), name, v, validateProjectKeys)
+		return writeSectionFile(filepath.Join(sdlcDir, paths.ConfigFile), name, v, validateProjectKeys)
 	}
-	return writeSectionFile(filepath.Join(sdlcDir, "local.toml"), name, v, nil)
+	return writeSectionFile(filepath.Join(sdlcDir, paths.LocalConfigFile), name, v, nil)
 }
 
 // WriteFileSection writes section name into the TOML file at path, which is

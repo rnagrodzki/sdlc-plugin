@@ -503,6 +503,7 @@ When `openspecContext.requirements` is present (non-null) in the prepare output:
    - `{TASKS_MD}` — content of `openspec/changes/<name>/tasks.md` (already read in Step 0), or `"[artifact missing]"` if absent
    - `{DESIGN}` — content of `openspec/changes/<name>/design.md` if present, or `"[artifact missing]"`
    - `{REQUIREMENTS_JSON}` — `JSON.stringify(openspecContext.requirements)` from prepare output, or `"null"` if null
+   - `{GUARDRAILS}` — content of `guardrailsFile` from `plan_prepare` output, or `"none configured"` when no guardrails are loaded
 
 3. Parse the agent's JSON response `{ findings, verdict, skipped }`.
 

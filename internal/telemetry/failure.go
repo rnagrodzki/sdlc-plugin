@@ -189,7 +189,7 @@ func Record(root string, f Failure) error {
 		recovered = "no"
 	}
 
-	logPath := filepath.Join(root, paths.DataDir, "learnings", "log.md")
+	logPath := filepath.Join(root, paths.DataDir, paths.LearningsSubdir, "log.md")
 	dir := filepath.Dir(logPath)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("telemetry: mkdir %s: %w", dir, err)
@@ -267,7 +267,7 @@ func ResolveSessionID(param, root string) string {
 		return param
 	}
 
-	markerPath := filepath.Join(root, paths.DataDir, "state", "mcp-session.id")
+	markerPath := filepath.Join(root, paths.DataDir, paths.StateArtifactsSubdir, "mcp-session.id")
 	if data, err := os.ReadFile(markerPath); err == nil {
 		id := strings.TrimSpace(string(data))
 		if id != "" {

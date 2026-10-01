@@ -129,7 +129,7 @@ func MigrateWithBackup(projectRoot string) (changes []string, backupPath string,
 	if !projectExists && !localExists {
 		return nil, "", fmt.Errorf(
 			"%w: no SDLC config found at %s; run /setup to initialize this project",
-			ErrConfigMissing, filepath.Join(paths.DataDir, "config.toml"),
+			ErrConfigMissing, filepath.Join(paths.DataDir, paths.ConfigFile),
 		)
 	}
 
@@ -154,12 +154,12 @@ func MigrateWithBackup(projectRoot string) (changes []string, backupPath string,
 // data there (templates, state artifacts) in projects that have no config,
 // and that must not make every later call fail the config-version gate.
 func detectProjectVersion(mainRoot string) (int, bool) {
-	tomlPath := filepath.Join(mainRoot, paths.DataDir, "config.toml")
+	tomlPath := filepath.Join(mainRoot, paths.DataDir, paths.ConfigFile)
 	if _, err := os.Stat(tomlPath); err == nil {
 		return CurrentSchemaVersion, true
 	}
 
-	jsonPath := filepath.Join(mainRoot, paths.DataDir, "config.json")
+	jsonPath := filepath.Join(mainRoot, paths.DataDir, paths.LegacyConfigJSONFile)
 	if _, err := os.Stat(jsonPath); err == nil {
 		return 0, true
 	}
@@ -176,12 +176,12 @@ func detectProjectVersion(mainRoot string) (int, bool) {
 // stale). Returns (0, false) if neither file exists, regardless of whether
 // .sdlc-v2 itself exists -- no local override was ever created.
 func detectLocalVersion(mainRoot string) (int, bool) {
-	tomlPath := filepath.Join(mainRoot, paths.DataDir, "local.toml")
+	tomlPath := filepath.Join(mainRoot, paths.DataDir, paths.LocalConfigFile)
 	if _, err := os.Stat(tomlPath); err == nil {
 		return CurrentSchemaVersion, true
 	}
 
-	jsonPath := filepath.Join(mainRoot, paths.DataDir, "local.json")
+	jsonPath := filepath.Join(mainRoot, paths.DataDir, paths.LegacyLocalJSONFile)
 	if _, err := os.Stat(jsonPath); err == nil {
 		return 0, true
 	}

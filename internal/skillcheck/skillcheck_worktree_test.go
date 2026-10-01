@@ -402,7 +402,7 @@ func TestSkillsProhibitionProseSurvivesDetection(t *testing.T) {
 // worktreeSkillsShipStateReportWriteRe matches the ship_state call that
 // composes, renders and persists the end-of-run report in one shot
 // (action:"report", detail:{write:true}) -- the single call ship/SKILL.md's
-// Step 10c must use instead of a bare Write to a .sdlc-v2/reports/... path,
+// Step 9a must use instead of a bare Write to a .sdlc-v2/reports/... path,
 // or the old two-call execute_state({action:"report", write:true, ...})
 // pattern (one read-only call plus one write-with-body call per format).
 var worktreeSkillsShipStateReportWriteRe = regexp.MustCompile(`ship_state\(\{action:"report",\s*detail:\{write:true`)

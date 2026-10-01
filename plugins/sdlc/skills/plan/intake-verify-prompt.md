@@ -26,6 +26,7 @@ The caller fills these variables before dispatching you:
 | `{TASKS_MD}` | string | Full content of `tasks.md`, or `"[artifact missing]"` |
 | `{DESIGN}` | string | Full content of `design.md` if present, or `"[artifact missing]"` |
 | `{REQUIREMENTS_JSON}` | string | JSON array of `{ reqId, capability, type, name, scenarioCount }` from the inventory, or `"null"` when inventory is unavailable |
+| `{GUARDRAILS}` | string | Active plan guardrails (`guardrails.md` content: id, severity, description), or `"none configured"` |
 
 ---
 
@@ -51,6 +52,11 @@ The caller fills these variables before dispatching you:
 ```json
 {REQUIREMENTS_JSON}
 ```
+
+---
+
+**Active plan guardrails:**
+{GUARDRAILS}
 
 ---
 
@@ -95,6 +101,10 @@ Check design decision consistency:
 - Would a developer reading only the tasks.md understand the full scope without consulting the proposal?
 
 Skip checks that depend on missing artifacts.
+
+### Guardrail conflicts
+- When `{GUARDRAILS}` is not `"none configured"`, does any `tasks.md` line or `design.md` decision conflict with a guardrail?
+- Each conflict is one finding: `error` guardrail → `WARNING`, `warning` guardrail → `SUGGESTION`. Name the guardrail id and the line. Never `CRITICAL`.
 
 ---
 
