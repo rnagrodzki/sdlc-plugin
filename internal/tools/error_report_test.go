@@ -128,6 +128,36 @@ func TestErrorReportPrepare_ManifestFieldFidelity(t *testing.T) {
 	}
 }
 
+// TestErrorReportPrepare_ResultIsManifestPathOnly pins errorReportPrepare's
+// result to the manifest path. prepare_orchestrator forwards only
+// manifestPath (plus its own mode), and the orchestrator agent reads every
+// other value from the manifest file, so mirrored fields would be dead.
+func TestErrorReportPrepare_ResultIsManifestPathOnly(t *testing.T) {
+	out, err := errorReportPrepare(t.TempDir(), ErrorReportPrepareIn{
+		Skill:     "ship",
+		Step:      "step-1",
+		Operation: "do-thing",
+		Error:     "boom",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// errorReportPrepare writes its manifest dir with os.MkdirTemp directly
+	// (not the fsseam), so remove it here.
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(out.ManifestPath)) })
+	data, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
+	if len(m) != 1 || m["manifestPath"] == nil || m["manifestPath"] == "" {
+		t.Errorf("result = %v, want only a non-empty manifestPath", m)
+	}
+}
+
 func TestErrorReportPrepare_OptionalFieldsDefaultToEmptyString(t *testing.T) {
 	root := t.TempDir()
 	out, err := errorReportPrepare(root, ErrorReportPrepareIn{
