@@ -802,7 +802,15 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 
 	// Version diagnostics — gated on version config presence. Failures
 	// degrade to warnings, never errors, so they don't block the PR flow.
-	if cfg, cfgErr := rt.configRead(mainRoot); cfgErr == nil && cfg != nil && cfg.Version != nil {
+	// A missing config.toml means "no version config" and stays silent. Any
+	// other read error (a malformed [version] section, unknown keys, bad
+	// TOML) also skips diagnostics, but names the error in a warning so it
+	// does not look like a project that tracks no version.
+	cfg, cfgErr := rt.configRead(mainRoot)
+	if cfgErr != nil && !errors.Is(cfgErr, config.ErrNotFound) {
+		warnings = append(warnings, fmt.Sprintf("version config unreadable, version diagnostics skipped: %s", cfgErr.Error()))
+	}
+	if cfgErr == nil && cfg != nil && cfg.Version != nil {
 		vd, vdWarnings := prVersionDiagnosticsWith(rt, mainRoot, workDir, currentBranch, cfg)
 		warnings = append(warnings, vdWarnings...)
 		out.VersionSource = vd.VersionSource
@@ -1667,7 +1675,7 @@ func prReleaseApplyLabelWith(rt prRuntime, workDir, label string, stale []string
 // responsibility.
 func RegisterPRTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "pr_prepare",
-		"Preflight checks for pr: config-version gate (also moves personal keys such as pr.expectedAccount from config.toml to local.toml, with a warning; fails with manual steps when the move is not safe), gh-auth + active-account probe (expected account from local.toml [github] expectedAccount; recovery-shaped diagnostics on failure), branch-guard hard gate, protected-branch rejection, JIRA ticket detection from the branch name, PR template resolution, upstream/push status (needsPush), and version diagnostics (bump options, tags, commits since tag, conventional commit summary, existing RCs) when a version config exists.",
+		"Preflight checks for pr: config-version gate (also moves personal keys such as pr.expectedAccount from config.toml to local.toml, with a warning; fails with manual steps when the move is not safe), gh-auth + active-account probe (expected account from local.toml [github] expectedAccount; recovery-shaped diagnostics on failure), branch-guard hard gate, protected-branch rejection, JIRA ticket detection from the branch name, PR template resolution, upstream/push status (needsPush), and version diagnostics (bump options, tags, commits since tag, conventional commit summary, existing RCs) when a version config exists. A config.toml that fails to read skips those diagnostics with a warning naming the error.",
 		mcpserver.Annotations{
 			Title:       "Prepare pull request context",
 			ReadOnly:    false,

@@ -970,6 +970,83 @@ func TestPrPrepare_NoVersionConfig_OmitsVersionFields(t *testing.T) {
 	}
 }
 
+// TestPrPrepare_BadVersionConfig_Warns reads a real .sdlc-v2/config.toml
+// through config.Read. A config that fails to parse must not pass for "no
+// version config": pr_prepare still succeeds and skips version diagnostics,
+// but names the config error in a warning. A missing config.toml stays
+// silent, since that really is "no version config".
+func TestPrPrepare_BadVersionConfig_Warns(t *testing.T) {
+	cases := []struct {
+		name     string
+		config   string // empty = no config.toml at all
+		wantWarn string // empty = no "version config unreadable" warning
+	}{
+		{
+			name:     "both version paths disabled",
+			config:   "[version]\n[version.tag]\nenabled = false\n[version.versionFile]\nenabled = false\n",
+			wantWarn: "requires at least one of tag.enabled or versionFile.enabled",
+		},
+		{
+			name:     "unknown top-level key",
+			config:   "[versoin]\nmethod = \"semver\"\n",
+			wantWarn: "unknown top-level keys",
+		},
+		{name: "no config file"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			if tc.config != "" {
+				writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), tc.config)
+			}
+			rt := prRuntime{
+				ghAuthProbe: func(dir, host string) ghx.AuthProbeResult {
+					return ghx.AuthProbeResult{Authenticated: true, ActiveAccount: "someone"}
+				},
+				configReadSection: func(root, section string) (map[string]any, error) { return nil, nil },
+				configRead:        config.Read,
+				execRun: func(name string, args []string, opts execx.Options) (string, error) {
+					return "", errors.New("fatal: no such remote 'origin'")
+				},
+				gitCurrentBranch: func(dir string) (string, error) { return "feat/bad-version", nil },
+				gitStatus:        func(dir string) (string, error) { return "", nil },
+				gitDefaultBranch: func(dir string) (string, error) { return "main", nil },
+				gitHasUpstream:   func(dir string) (bool, error) { return true, nil },
+				gitCommitsAhead:  func(dir string) (int, error) { return 0, nil },
+				branchValidate:   branch.ValidateExpectedBranch,
+				jiraExtract:      func(branchName string) string { return "" },
+				templateResolve:  func(root string) (*prtemplate.Template, error) { return nil, nil },
+			}
+
+			out, err := prPrepareCoreWith(root, root, PRPrepareIn{SkipConfigCheck: true}, rt)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !out.OK {
+				t.Fatalf("expected OK=true, got errors: %v", out.Errors)
+			}
+			if out.VersionConfig != nil || out.BumpOptions != nil {
+				t.Errorf("expected no version diagnostics, got versionConfig=%+v bumpOptions=%+v", out.VersionConfig, out.BumpOptions)
+			}
+			var cfgWarn string
+			for _, w := range out.Warnings {
+				if strings.HasPrefix(w, "version config unreadable, version diagnostics skipped: ") {
+					cfgWarn = w
+				}
+			}
+			if tc.wantWarn == "" {
+				if cfgWarn != "" {
+					t.Errorf("got warning %q, want none for a missing config", cfgWarn)
+				}
+				return
+			}
+			if !strings.Contains(cfgWarn, tc.wantWarn) {
+				t.Errorf("warnings: got %v, want a version-config warning containing %q", out.Warnings, tc.wantWarn)
+			}
+		})
+	}
+}
+
 func TestPrPrepare_VersionDetectionFails_WarningNotError(t *testing.T) {
 	rt := prRuntime{
 		ghAuthProbe: func(dir, host string) ghx.AuthProbeResult {

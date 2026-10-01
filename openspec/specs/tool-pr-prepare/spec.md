@@ -309,7 +309,8 @@ The tool SHALL add version diagnostics only when `.sdlc-v2/config.toml` reads cl
 | `changelogExists` | Whether the changelog file exists |
 | `defaultBranch` / `onDefaultBranch` | Detected default branch; whether the current branch equals it |
 
-- No `version` section, or a config read error: every field above is absent (`changelogExists` and `onDefaultBranch` are `false`), with no warning.
+- No `version` section, no `.sdlc-v2/config.toml`, or a config read error: every field above is absent (`changelogExists` and `onDefaultBranch` are `false`).
+- A missing `config.toml` adds no warning. Any other config read error (for example a `version` section with both `tag.enabled` and `versionFile.enabled` false, or an unknown top-level key) adds the warning `version config unreadable, version diagnostics skipped: <error>`, and `ok` stays `true`.
 - Warning prefixes: `defaultBranch:`, `version detection failed:`, `fetchTags:`, `tags:`, `allTags:`, `tagsAtHead:`, `bump <level>:`, `commitsSinceTag:`.
 - A version-file read failure stops the diagnostics early: `bumpOptions`, `tags.all`, and `tags.atHead` are empty, and `ok` stays `true`.
 - Side effect: `git fetch --tags --force` runs in the active worktree whenever diagnostics run, unless the version-file read fails first.
@@ -318,6 +319,12 @@ The tool SHALL add version diagnostics only when `.sdlc-v2/config.toml` reads cl
 - **WHEN** the config has no `version` section
 - **THEN** `versionSource`, `bumpOptions`, `tags`, `commitsSinceTag`, `conventionalSummary`, and `versionConfig` are absent
 - **AND** `defaultBranch` is empty
+
+#### Scenario: Bad version config
+- **WHEN** `.sdlc-v2/config.toml` has a `version` section with `tag.enabled` and `versionFile.enabled` both `false`
+- **THEN** `ok` is `true` and `errors` is empty
+- **AND** `versionConfig` and `bumpOptions` are absent
+- **AND** `warnings` contains `version config unreadable, version diagnostics skipped:` followed by the config error
 
 #### Scenario: Version file missing
 - **WHEN** `version.versionFile.enabled` is `true` and the file cannot be read
