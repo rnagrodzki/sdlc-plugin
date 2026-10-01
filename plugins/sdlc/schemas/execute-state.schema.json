@@ -41,6 +41,15 @@
     "quality": {
       "type": "string"
     },
+    "sessionId": {
+      "type": ["string", "null"],
+      "description": "Claude Code session ID passed to init; null when init got none."
+    },
+    "commitWaves": {
+      "type": "string",
+      "enum": ["true", "false"],
+      "description": "Whether wave-commit commits each wave, stamped by init. Any input other than \"true\" or \"false\" is stored as \"true\"."
+    },
     "runStatus": {
       "type": "string",
       "description": "Set by the cleanup action to stamp the run terminal (instead of deleting the state file), so state — including issues[] — survives for later reads (e.g. /harden) until GC's TTL prunes it."
@@ -68,7 +77,8 @@
     },
     "totalTasks": {
       "type": "integer",
-      "minimum": 1
+      "minimum": 0,
+      "description": "The totalTasks input to init, stored as given; 0 when init got none."
     },
     "waves": {
       "type": "array",
@@ -92,6 +102,31 @@
           "timedOut": {
             "type": "boolean",
             "description": "Set by `wave-done --timed-out` (R-WAVE-DEADLINE, #506). Read on resume to skip re-waiting."
+          },
+          "committedSha": {
+            "type": ["string", "null"],
+            "description": "The SHA of the commit for this wave, written by wave-commit or wave-committed. null when wave-committed was called without a sha (empty diff)."
+          },
+          "splitTree": {
+            "type": "object",
+            "description": "Written by wave-split: the last split computed for this wave.",
+            "properties": {
+              "splitDepth": { "type": "integer" },
+              "maxSplitDepth": { "type": "integer" },
+              "dispatched": { "type": "array", "items": { "type": "string" } },
+              "missingIds": { "type": "array", "items": { "type": "string" } },
+              "halves": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "tasks": { "type": "array", "items": { "type": "string" } },
+                    "depth": { "type": "integer" }
+                  }
+                }
+              },
+              "computedAt": { "type": "string" }
+            }
           },
           "runId": {
             "type": "string",
@@ -154,9 +189,23 @@
                   "type": "string",
                   "description": "ISO-8601. Written by task-done/task-fail (R-WAVE-LIVENESS, #506). Task rows deliberately carry no startedAt."
                 },
-                "committedSha": {
-                  "type": "string",
-                  "description": "The SHA of the commit created for this wave, if committed."
+                "verifyTokens": {
+                  "type": "array",
+                  "description": "Written by task-done: the verifyToken input as a list (usually strings). Empty when none was passed."
+                },
+                "attempt": {
+                  "type": "integer",
+                  "description": "Written by task-fail: the dispatch attempt that failed, taken from the task's server dispatch state (1 when it has none)."
+                },
+                "resumeFrom": {
+                  "type": "object",
+                  "description": "Written by task-fail when the worker had reported progress: the partial work task-context hands to the next attempt.",
+                  "properties": {
+                    "acceptanceDone": { "type": "array", "items": { "type": "integer" } },
+                    "filesTouched": { "type": "array", "items": { "type": "string" } },
+                    "lastCompletedTask": { "type": "string" },
+                    "blocker": { "type": "string" }
+                  }
                 }
               },
               "required": ["id", "name", "complexity", "risk", "status", "filesChanged"]
@@ -228,7 +277,7 @@
     },
     "pipelineAuto": {
       "type": "boolean",
-      "description": "True when this branch's ship state has flags.auto=true at init time, forwarded so the execute SKILL.md high-risk gate can skip a second approval prompt."
+      "description": "True when this branch's ship state has flags.auto=true at init time. Diagnostic only: the execute skill takes auto from resolve-config, not from this field."
     },
     "issues": {
       "type": "array",
