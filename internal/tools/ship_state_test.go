@@ -751,6 +751,66 @@ func TestShipState_Decide(t *testing.T) {
 	}
 }
 
+// TestShipStateDecideAt confirms decide stamps each appended decision with
+// "at", the injected clock's time formatted as RFC 3339 UTC — mirroring the
+// clock-seam pattern shipStateDefer already follows.
+func TestShipStateDecideAt(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, "feat/decide-at")
+	path := shipStateInitFixture(t, dir, "feat/decide-at")
+
+	fixedTime := time.Date(2026, 3, 1, 12, 30, 0, 0, time.UTC)
+	if _, err := shipState(dir, dir, ShipStateIn{
+		Action: "decide",
+		Step:   "review",
+		Detail: map[string]any{"branch": "feat/decide-at", "text": "skip perf pass, low risk"},
+	}, fixedNow(fixedTime)); err != nil {
+		t.Fatalf("decide: %v", err)
+	}
+	data := readStateData(t, path)
+	decisions, _ := data["decisions"].([]any)
+	if len(decisions) != 1 {
+		t.Fatalf("decisions = %v, want 1 entry", decisions)
+	}
+	d, _ := decisions[0].(map[string]any)
+	wantAt := fixedTime.UTC().Format(time.RFC3339)
+	if d["at"] != wantAt {
+		t.Errorf("decision at = %v, want %q", d["at"], wantAt)
+	}
+
+	schemaPath, err := filepath.Abs(filepath.Join("..", "..", "plugins", "sdlc", "schemas", "ship-state.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sch, err := jsonschema.NewCompiler().Compile(schemaPath)
+	if err != nil {
+		t.Fatalf("compile schema: %v", err)
+	}
+	minimalDoc := map[string]any{
+		"version":   float64(1),
+		"startedAt": "2026-03-01T12:00:00Z",
+		"branch":    "feat/decide-at",
+		"flags":     map[string]any{},
+		"steps": []any{
+			map[string]any{"name": "review", "status": "completed"},
+		},
+		"decisions": decisions,
+	}
+	raw, err := json.Marshal(minimalDoc)
+	if err != nil {
+		t.Fatalf("marshal minimal doc: %v", err)
+	}
+	inst, err := jsonschema.UnmarshalJSON(strings.NewReader(string(raw)))
+	if err != nil {
+		t.Fatalf("unmarshal minimal doc for schema validation: %v", err)
+	}
+	if err := sch.Validate(inst); err != nil {
+		t.Errorf("ship state with decide-recorded 'at' failed schema validation: %v", err)
+	}
+}
+
 func TestShipState_Defer(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)

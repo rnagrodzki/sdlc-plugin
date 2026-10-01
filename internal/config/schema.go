@@ -22,6 +22,7 @@ var AllowedProjectKeys = map[string]bool{
 	"jira":    true,
 	"commit":  true,
 	"pr":      true,
+	"git":     true,
 	"plan":    true,
 	"execute": true,
 }

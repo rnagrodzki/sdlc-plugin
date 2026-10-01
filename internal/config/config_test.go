@@ -946,6 +946,56 @@ func TestReadSection_NotFound_MissingLocalFile(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// GitBaseBranch
+// ---------------------------------------------------------------------------
+
+func TestGitBaseBranch(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+
+	t.Run("configured value is returned trimmed", func(t *testing.T) {
+		root := t.TempDir()
+		setupProjectConfig(t, root, map[string]any{
+			"git": map[string]any{"baseBranch": "  develop  "},
+		})
+
+		if got := GitBaseBranch(root); got != "develop" {
+			t.Errorf("GitBaseBranch = %q, want %q", got, "develop")
+		}
+	})
+
+	t.Run("absent section returns empty string", func(t *testing.T) {
+		root := t.TempDir()
+		setupProjectConfig(t, root, map[string]any{})
+
+		if got := GitBaseBranch(root); got != "" {
+			t.Errorf("GitBaseBranch = %q, want \"\"", got)
+		}
+	})
+
+	t.Run("empty baseBranch returns empty string", func(t *testing.T) {
+		root := t.TempDir()
+		setupProjectConfig(t, root, map[string]any{
+			"git": map[string]any{"baseBranch": ""},
+		})
+
+		if got := GitBaseBranch(root); got != "" {
+			t.Errorf("GitBaseBranch = %q, want \"\"", got)
+		}
+	})
+
+	t.Run("unreadable config returns empty string", func(t *testing.T) {
+		root := t.TempDir()
+		// No .sdlc-v2/config.toml at all: Read returns ErrNotFound.
+
+		if got := GitBaseBranch(root); got != "" {
+			t.Errorf("GitBaseBranch = %q, want \"\"", got)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
 // WriteSection
 // ---------------------------------------------------------------------------
 

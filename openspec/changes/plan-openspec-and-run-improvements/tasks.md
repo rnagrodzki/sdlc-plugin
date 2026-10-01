@@ -26,12 +26,12 @@ flowchart LR
 
 - [ ] 1.1 Add named constants for every `.sdlc-v2/` entry plus `LinkedStateEntries` and `UnlinkedStateEntries` lists in `internal/paths/paths.go`, and replace the string literals in `internal/tools/*.go` and `internal/hooks/*.go` — verify: `go test ./internal/paths/ -run TestStateEntryListsCoverEveryEntry` <!-- ref:1-1-add-named-constants-for-every-sdlc-v-b3537d -->
 - [x] 1.2 Add `BaseBranch(cfg)` (config `[git] baseBranch`, fallback `DefaultBranch`), `FetchBranch`, `BehindCount`, `Merge`, `MergeAbort`, `UnmergedFiles` in `internal/gitx/gitx.go` — verify: `go test ./internal/gitx/ -run 'TestBaseBranch|TestBehindCount|TestMerge'` (real git in `t.TempDir`) <!-- ref:1-2-add-basebranch-cfg-config-git-basebr-b50231 -->
-- [ ] 1.3 Add `[git] baseBranch` and `[execute] baseSync` to `plugins/sdlc/schemas/sdlc-config.schema.json`, `plugins/sdlc/templates/config.toml`, and the config loader in `internal/config/` — verify: `go test ./internal/config/ -run TestGitBaseBranch` and the template/schema sync test <!-- ref:1-3-add-git-basebranch-and-execute-bases-be5a51 -->
+- [x] 1.3 Add `[git] baseBranch` and `[execute] baseSync` to `plugins/sdlc/schemas/sdlc-config.schema.json`, `plugins/sdlc/templates/config.toml`, and the config loader in `internal/config/` — verify: `go test ./internal/config/ -run TestGitBaseBranch` and the template/schema sync test <!-- ref:1-3-add-git-basebranch-and-execute-bases-be5a51 -->
 
 ## 2. OpenSpec CLI layer
 
 - [x] 2.1 Add CLI wrappers `List`, `ListSpecs`, `Status`, `Instructions` (JSON decode, `nested_change_directory` warnings) in `internal/openspec/cli.go` with an injectable runner — verify: `go test ./internal/openspec/ -run TestCLIWrappers` <!-- ref:2-1-add-cli-wrappers-list-listspecs-stat-ffaf53 -->
-- [ ] 2.2 Add `Stage(activeRoot, change, files)` with name/path checks, whole-dir replace, `stage.json` SHA-256, temp-copy `validate --strict` in `internal/openspec/stage.go` — verify: `go test ./internal/openspec/ -run TestStage` (incl. `../config.toml` rejection, git status clean) <!-- ref:2-2-add-stage-activeroot-change-files-wi-143bce -->
+- [x] 2.2 Add `Stage(activeRoot, change, files)` with name/path checks, whole-dir replace, `stage.json` SHA-256, temp-copy `validate --strict` in `internal/openspec/stage.go` — verify: `go test ./internal/openspec/ -run TestStage` (incl. `../config.toml` rejection, git status clean) <!-- ref:2-2-add-stage-activeroot-change-files-wi-143bce -->
 - [ ] 2.3 Add `Materialize(activeRoot, planContent)` implementing rules 1–7, rollback on validate failure, `git add`, staging delete in `internal/openspec/materialize.go` — verify: `go test ./internal/openspec/ -run TestMaterialize` (created, already, differs, missing, hash mismatch, rollback) <!-- ref:2-3-add-materialize-activeroot-planconte-8b898f -->
 - [ ] 2.4 Replace `specs/*.md` / one-level globs with `Status` artifact paths in `internal/openspec/openspec.go`, `internal/tools/plan.go:270`, `internal/tools/plan_explore.go:212` — verify: `go test ./internal/openspec/ ./internal/tools/ -run 'TestNestedDeltaSpecs'` <!-- ref:2-4-replace-specs-md-one-level-globs-wit-e37003 -->
 
@@ -41,7 +41,7 @@ flowchart LR
 - [ ] 3.2 Replace `openspecInlineGenerate` with `openspecStage` in `PlanPrepareIn` and skeleton-body rules in `internal/tools/plan.go` — verify: `go test ./internal/tools/ -run TestPlanPrepareSkeletonOpenspecStage` <!-- ref:3-2-replace-openspecinlinegenerate-with-22ea32 -->
 - [ ] 3.3 Add `openspec_stage` action (inputs, outputs, `next`, errors) to `internal/tools/plan_support.go`, keeping `ReadOnly:true` — verify: `go test ./internal/tools/ -run 'TestPlanSupportOpenspecStage|TestReadOnlyToolsWriteNothingTracked'` <!-- ref:3-3-add-openspec-stage-action-inputs-out-457f63 -->
 - [x] 3.4 Add `rejected` (default `[]`) and server-set `at` to `criticalDecisions` entries in `internal/tools/plan.go` (`plan_mark`) — verify: `go test ./internal/tools/ -run TestPlanMarkCriticalDecisionsRejected` <!-- ref:3-4-add-rejected-default-and-server-set-7fa708 -->
-- [ ] 3.5 Stop deleting the plan run file and `.evidence/` on `planIntegrity.done` in `internal/hooks/stop_hooks.go` — verify: `go test ./internal/hooks/ -run TestStopPlanIntegrityKeepsDoneRun` <!-- ref:3-5-stop-deleting-the-plan-run-file-and-590ecc -->
+- [x] 3.5 Stop deleting the plan run file and `.evidence/` on `planIntegrity.done` in `internal/hooks/stop_hooks.go` — verify: `go test ./internal/hooks/ -run TestStopPlanIntegrityKeepsDoneRun` <!-- ref:3-5-stop-deleting-the-plan-run-file-and-590ecc -->
 - [ ] 3.6 Update `plugins/sdlc/skills/plan/state-format.md` and `docs/plan-architecture.md` for staging, `openspecStage`, `rejected`, plan-run lifetime — verify: `links_validate` MCP tool on the changed docs <!-- ref:3-6-update-plugins-sdlc-skills-plan-stat-ae2649 -->
 
 ## 4. Execute state
@@ -56,7 +56,7 @@ flowchart LR
 
 - [ ] 5.1 Call `Materialize` in `ship_prepare` after validation and before state write, honor `dryRun`, add `openspec` output in `internal/tools/ship.go` — verify: `go test ./internal/tools/ -run 'TestShipPrepareMaterialize'` <!-- ref:5-1-call-materialize-in-ship-prepare-aft-0a04e5 -->
 - [ ] 5.2 Derive `flags.openspecChange` from the plan `**Source:**` header with `sources.openspecChange` and the mismatch warning in `internal/tools/ship.go` — verify: `go test ./internal/tools/ -run TestShipPrepareOpenspecChangeFromPlan` <!-- ref:5-2-derive-flags-openspecchange-from-the-f227c8 -->
-- [ ] 5.3 Add `at` to `decide` entries in `internal/tools/ship_state.go` — verify: `go test ./internal/tools/ -run TestShipStateDecideAt` <!-- ref:5-3-add-at-to-decide-entries-in-internal-9224fc -->
+- [x] 5.3 Add `at` to `decide` entries in `internal/tools/ship_state.go` — verify: `go test ./internal/tools/ -run TestShipStateDecideAt` <!-- ref:5-3-add-at-to-decide-entries-in-internal-9224fc -->
 - [ ] 5.4 Add `planning` (from the linked plan run) and merged `timeline` to the report, plus `## Planning` and `## Timeline` Markdown sections in `internal/tools/ship_report.go` — verify: `go test ./internal/tools/ -run 'TestShipReportPlanning|TestShipReportTimeline'` <!-- ref:5-4-add-planning-from-the-linked-plan-ru-a04863 -->
 - [ ] 5.5 Delete the linked plan run and `.evidence/` in `cleanup-pipeline` only after the stamp and when the report file exists; add `planRun` output in `internal/tools/ship_state.go` — verify: `go test ./internal/tools/ -run TestCleanupPipelineDeletesReportedPlanRun` <!-- ref:5-5-delete-the-linked-plan-run-and-evide-273019 -->
 
@@ -92,7 +92,7 @@ flowchart LR
 
 ## 10. task deploy pruning
 
-- [ ] 10.1 Delete other `sdlc-*-{{OS}}-{{ARCH}}` binaries and their `.signed` files in `{{.CACHE_DIR}}/bin` before the copy in the `deploy` task of `Taskfile.yml` — verify: run `task deploy` twice with different `VERSION` values and `ls ~/.sdlc-cache/bin` shows one binary + its `.signed` <!-- ref:10-1-delete-other-sdlc-os-arch-binaries-612af3 -->
+- [x] 10.1 Delete other `sdlc-*-{{OS}}-{{ARCH}}` binaries and their `.signed` files in `{{.CACHE_DIR}}/bin` before the copy in the `deploy` task of `Taskfile.yml` — verify: run `task deploy` twice with different `VERSION` values and `ls ~/.sdlc-cache/bin` shows one binary + its `.signed` <!-- ref:10-1-delete-other-sdlc-os-arch-binaries-612af3 -->
 
 ## 11. Integration checks
 

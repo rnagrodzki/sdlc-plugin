@@ -587,7 +587,7 @@ func shipState(root, workDir string, in ShipStateIn, now func() time.Time) (any,
 	case "fail":
 		return shipStateFail(root, workDir, in, now)
 	case "decide":
-		return shipStateDecide(root, workDir, in)
+		return shipStateDecide(root, workDir, in, now)
 	case "defer":
 		return shipStateDefer(root, workDir, in, now)
 	case "read":
@@ -1086,7 +1086,7 @@ func shipStateFail(root, workDir string, in ShipStateIn, now func() time.Time) (
 	return out, nil
 }
 
-func shipStateDecide(root, workDir string, in ShipStateIn) (any, error) {
+func shipStateDecide(root, workDir string, in ShipStateIn, now func() time.Time) (any, error) {
 	if in.Step == "" {
 		return nil, &mcpserver.DomainError{
 			Msg:        "decide: step is required",
@@ -1101,6 +1101,7 @@ func shipStateDecide(root, workDir string, in ShipStateIn) (any, error) {
 	decisions = append(decisions, map[string]any{
 		"step":     in.Step,
 		"decision": detailStr(in.Detail, "text"),
+		"at":       now().UTC().Format(time.RFC3339),
 	})
 	st.Data["decisions"] = decisions
 	if err := state.Write(st); err != nil {

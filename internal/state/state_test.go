@@ -359,6 +359,59 @@ func TestWrite_PrunesOldFiles(t *testing.T) {
 	}
 }
 
+// TestWriteKeepsDonePlanRun verifies Write's sibling-prune loop skips a
+// "plan" run whose planIntegrity.done marker is set, so a finished plan run
+// survives a later /sdlc:plan on the same branch (its state file is removed
+// later by ship's cleanup-pipeline step or GC, not by Write). An older plan
+// run without "done" is still pruned, matching today's behavior, and
+// exec-*/ship-* sibling pruning (TestWrite_PrunesOldFiles) is unaffected
+// since the done-run exception only applies to prefix "plan".
+func TestWriteKeepsDonePlanRun(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	donePath := filepath.Join(dir, "plan-feat-20260929T110000Z.json")
+	doneRaw, err := json.Marshal(map[string]any{
+		"planIntegrity": map[string]any{"done": "2026-09-29T11:00:00Z"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(donePath, doneRaw, 0o644); err != nil {
+		t.Fatalf("WriteFile done: %v", err)
+	}
+
+	notDonePath := filepath.Join(dir, "plan-feat-20260929T105000Z.json")
+	if err := os.WriteFile(notDonePath, []byte(`{}`), 0o644); err != nil {
+		t.Fatalf("WriteFile not-done: %v", err)
+	}
+
+	newSt := &State{
+		Path:       filepath.Join(dir, "plan-feat-20260929T120000Z.json"),
+		Root:       root,
+		Prefix:     "plan",
+		BranchSlug: "feat",
+		Data:       map[string]any{"planIntegrity": map[string]any{"skillInvoked": "x"}},
+	}
+
+	if err := Write(newSt); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	if _, err := os.Stat(donePath); err != nil {
+		t.Fatalf("expected done plan run to survive the prune, stat error: %v", err)
+	}
+	if _, err := os.Stat(notDonePath); !os.IsNotExist(err) {
+		t.Fatalf("expected not-done plan run to still be pruned, stat error: %v", err)
+	}
+	if _, err := os.Stat(newSt.Path); err != nil {
+		t.Fatalf("expected the new plan run to be written, stat error: %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Filename round-trip: Init → Find → parse yields same file
 // ---------------------------------------------------------------------------
@@ -1355,6 +1408,65 @@ func TestPruneEvidenceDirs_BehaviorTable(t *testing.T) {
 	assertExists(diffSlug+evidenceDirSuffix, true)
 	assertExists(diffPrefix+evidenceDirSuffix, true)
 	assertExists(siblingJSON, true)
+}
+
+// TestPruneEvidenceDirsKeepsDonePlanRun verifies PruneEvidenceDirs skips a
+// sibling "plan" run's evidence directory when that run's state file is a
+// done run (isDonePlanRun), mirroring Write's own done-run exception. A
+// sibling without "done" is still pruned (today's behavior).
+func TestPruneEvidenceDirsKeepsDonePlanRun(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	own := "plan-feat-20260929T120000Z"
+	doneOlder := "plan-feat-20260929T110000Z"
+	notDoneOlder := "plan-feat-20260929T105000Z"
+
+	mustMkdir := func(name string) {
+		if err := os.MkdirAll(filepath.Join(dir, name+evidenceDirSuffix), 0o755); err != nil {
+			t.Fatalf("MkdirAll %s: %v", name, err)
+		}
+	}
+	mustMkdir(own)
+	mustMkdir(doneOlder)
+	mustMkdir(notDoneOlder)
+
+	doneRaw, err := json.Marshal(map[string]any{"planIntegrity": map[string]any{"done": "x"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, doneOlder+".json"), doneRaw, 0o644); err != nil {
+		t.Fatalf("WriteFile done: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, notDoneOlder+".json"), []byte(`{}`), 0o644); err != nil {
+		t.Fatalf("WriteFile not-done: %v", err)
+	}
+
+	st := &State{
+		Path:       filepath.Join(dir, own+".json"),
+		Root:       root,
+		Prefix:     "plan",
+		BranchSlug: "feat",
+	}
+
+	PruneEvidenceDirs(st)
+
+	assertExists := func(name string, wantExist bool) {
+		t.Helper()
+		p := filepath.Join(dir, name)
+		_, err := os.Stat(p)
+		exists := err == nil
+		if exists != wantExist {
+			t.Fatalf("exists(%s) = %v, want %v (err=%v)", name, exists, wantExist, err)
+		}
+	}
+
+	assertExists(own+evidenceDirSuffix, true)
+	assertExists(doneOlder+evidenceDirSuffix, true)
+	assertExists(notDoneOlder+evidenceDirSuffix, false)
 }
 
 func TestPruneEvidenceDirs_MissingRunsDir_NoPanic(t *testing.T) {

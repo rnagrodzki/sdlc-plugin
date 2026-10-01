@@ -342,7 +342,12 @@ func findAnyInDir(dir, root, prefix string) (*State, error) {
 // state files for the same prefix+branchSlug (except st.Path itself).
 //
 // Pruning uses parseStateFilename for exact slug equality, the same rule
-// Find uses.
+// Find uses. One exception: a sibling "plan" run whose planIntegrity.done
+// marker is set (isDonePlanRun) is kept rather than pruned, so a finished
+// plan run survives a later /sdlc:plan on the same branch long enough for
+// ship's report to read it. It is removed later by ship's cleanup-pipeline
+// step or by GC's TTL sweep — Write and PruneEvidenceDirs no longer own its
+// deletion. exec-* and ship-* siblings are unaffected.
 func Write(st *State) error {
 	dir := stateDir(st.Root)
 
@@ -370,10 +375,27 @@ func Write(st *State) error {
 		if fp == st.Path {
 			continue // don't prune ourselves
 		}
+		if parsed.Prefix == "plan" && isDonePlanRun(fp) {
+			continue // kept for the ship report; cleanup-pipeline or GC removes it
+		}
 		_ = os.Remove(fp) // best-effort
 	}
 
 	return fsx.AtomicWriteJSON(st.Path, st.Data)
+}
+
+// isDonePlanRun reports whether the state file at path is a "plan" run whose
+// data.planIntegrity.done marker is set. A missing file, an unreadable file,
+// or corrupt JSON all return false, preserving today's prune behavior for
+// anything that isn't verifiably a done plan run.
+func isDonePlanRun(path string) bool {
+	var data map[string]any
+	if err := fsx.ReadJSON(path, &data); err != nil {
+		return false
+	}
+	pi, _ := data["planIntegrity"].(map[string]any)
+	_, hasDone := pi["done"]
+	return hasDone
 }
 
 // ---------------------------------------------------------------------------
@@ -531,6 +553,10 @@ func ActivePlanRun(root, branch string) (*State, error) {
 // instead of files, so it never touches the sibling .json state files that
 // Write's own prune already owns.
 //
+// Like Write's own prune, a sibling "plan" run's evidence directory is kept
+// rather than removed when its state file is a done run (isDonePlanRun) —
+// see Write's doc comment for why.
+//
 // Best-effort, like the Write prune: a ReadDir failure (including runs/ not
 // existing) or a removeAll failure for one directory is ignored, and
 // PruneEvidenceDirs still attempts every other matching directory. It has no
@@ -559,6 +585,9 @@ func PruneEvidenceDirs(st *State) {
 		parsed := parseStateFilename(runID + ".json")
 		if parsed == nil || parsed.Prefix != st.Prefix || parsed.Slug != st.BranchSlug {
 			continue
+		}
+		if parsed.Prefix == "plan" && isDonePlanRun(filepath.Join(dir, runID+".json")) {
+			continue // evidence of a done plan run stays with its state file
 		}
 		_ = removeAll(filepath.Join(dir, name)) // best-effort
 	}

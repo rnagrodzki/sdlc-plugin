@@ -119,6 +119,10 @@
           },
           "decision": {
             "type": "string"
+          },
+          "at": {
+            "type": "string",
+            "format": "date-time"
           }
         },
         "required": ["step", "decision"]

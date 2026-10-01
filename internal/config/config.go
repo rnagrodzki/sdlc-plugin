@@ -38,6 +38,7 @@ var ProjectSections = map[string]bool{
 	"jira":    true,
 	"commit":  true,
 	"pr":      true,
+	"git":     true,
 	"plan":    true,
 	"execute": true,
 }
@@ -427,6 +428,7 @@ type Config struct {
 	Jira    map[string]any
 	Commit  map[string]any
 	PR      map[string]any
+	Git     map[string]any
 	Plan    map[string]any
 	Execute map[string]any
 
@@ -738,6 +740,7 @@ func Read(mainRoot string) (*Config, error) {
 		Jira:    extractSection(projectRaw, "jira"),
 		Commit:  extractSection(projectRaw, "commit"),
 		PR:      extractSection(projectRaw, "pr"),
+		Git:     extractSection(projectRaw, "git"),
 		Plan:    extractSection(projectRaw, "plan"),
 		Execute: extractSection(projectRaw, "execute"),
 
@@ -756,6 +759,22 @@ func Read(mainRoot string) (*Config, error) {
 	applyAutomationDefaults(cfg.Automation)
 
 	return cfg, nil
+}
+
+// GitBaseBranch returns the trimmed [git] baseBranch from .sdlc-v2/config.toml,
+// or "" when the section or key is absent, empty, or the config cannot be
+// read. Callers that need a usable branch name should fall back to
+// gitx.DefaultBranch (e.g. via gitx.BaseBranch) when this returns "".
+func GitBaseBranch(mainRoot string) string {
+	cfg, err := Read(mainRoot)
+	if err != nil {
+		return ""
+	}
+	s, ok := cfg.Git["baseBranch"].(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(s)
 }
 
 // ReadSection reads a single config section by name, routing to the

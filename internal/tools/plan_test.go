@@ -1708,9 +1708,21 @@ func TestPlanPrepareDoneRunNotResumed(t *testing.T) {
 		t.Fatalf("RunID = %q, want a new run ID distinct from the done run %q", out.RunID, doneRun)
 	}
 
-	// readSoleStateDoc also asserts the done run's own state file was pruned
-	// (exactly one state file survives the new run's write).
-	doc := readSoleStateDoc(t, dir)
+	// The done run's state file is now kept (Task 6: done plan runs survive
+	// a re-plan, for the ship report), so both files exist: the done run and
+	// the new one. Read the new run's own file by its RunID rather than
+	// assuming sole survival.
+	if files := listStateFiles(t, dir); len(files) != 2 {
+		t.Fatalf("state files = %v, want exactly 2 (kept done run + new run)", files)
+	}
+	raw, err := os.ReadFile(filepath.Join(planTestRunsDir(dir), out.RunID+".json"))
+	if err != nil {
+		t.Fatalf("read new run's state file: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("unmarshal new run's state file: %v", err)
+	}
 	integrity, _ := doc["planIntegrity"].(map[string]any)
 	if _, hasDone := integrity["done"]; hasDone {
 		t.Error("surviving run's planIntegrity already has \"done\" — the done run was resumed instead of starting a new one")

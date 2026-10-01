@@ -95,17 +95,19 @@ func findPlanState(branch string) *state.State {
 // ExitPlanMode) that the plan is finished. Absent that marker, the plan is
 // still running — e.g. a Stop fired mid-plan across a compaction or
 // sub-turn boundary — so the state file is left untouched and this returns
-// silently, with no evaluation and no deletion.
+// silently, with no evaluation.
 //
-// Once "done" is present, the plan marker state file is ALWAYS deleted
-// (single-use, regardless of outcome), along with its per-run evidence
-// directory (state.EvidenceDir(st.Root, state.RunID(st))) — skipped only
-// when st.Root or the derived run ID is empty, so no relative-path RemoveAll
-// is ever attempted. REQUIRED_MARKERS are then checked against
+// Once "done" is present, the plan run's state file and its per-run evidence
+// directory are left on disk — this hook never deletes them, so a finished
+// plan run survives the Stop hook even when a later /sdlc:plan on the same
+// branch starts a new run (state.Write and state.PruneEvidenceDirs skip a
+// done plan run's siblings for the same reason). Deletion is owned
+// elsewhere: ship's cleanup-pipeline step once the ship report has read the
+// run, or the GC TTL sweep. REQUIRED_MARKERS are then checked against
 // data.planIntegrity (each must be present and string-valued), and
 // data.planFilePath — if set — must stat to a non-empty file. Any missing
-// or failing marker produces one aggregated warning to stderr; the hook
-// itself never blocks.
+// or failing marker produces one aggregated warning to stderr on every Stop
+// until the run is removed; the hook itself never blocks.
 func planIntegrityFromState(st *state.State) Output {
 	silent := Output{ExitCode: 0}
 
@@ -113,11 +115,6 @@ func planIntegrityFromState(st *state.State) Output {
 
 	if _, hasDone := pi["done"]; !hasDone {
 		return silent
-	}
-
-	defer func() { _ = os.Remove(st.Path) }()
-	if runID := state.RunID(st); st.Root != "" && runID != "" {
-		defer func() { _ = os.RemoveAll(state.EvidenceDir(st.Root, runID)) }()
 	}
 
 	var missing []string
