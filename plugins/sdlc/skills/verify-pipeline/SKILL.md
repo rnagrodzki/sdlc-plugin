@@ -48,7 +48,7 @@ verify_pipeline_classify({logs: LOGS[, check_name: NAME, conclusion: CONCLUSION]
 
 `check_name`/`conclusion` are optional passthrough context — pass them when known (e.g. from a `poll_await({target: "pipeline"})` `failed_checks` entry's `name`/`state`) so the tool echoes them back for correlation; they do not affect classification.
 
-Read the JSON result: `{"check_name": "...", "conclusion": "...", "category": "<one of seven>", "signals": [...]}`.
+The result is Markdown, not JSON (see `docs/mcp-output-contract.md`). Read these fields from it: `category` (one of the seven below), `signals` (every matched pattern as `<prefix>:<pattern>`; `(none)` when nothing matched), and `check_name`/`conclusion`, which appear only when you passed them.
 
 The seven categories are: `lint`, `test-failure`, `type-error`, `build-error`, `dependency`, `infra`, `unknown` (R2).
 
@@ -90,7 +90,7 @@ When `abort`: ship treats this as a skip-with-warning and proceeds to `await-rem
 ## Gotchas
 
 - **No `fetchFailedCheckLogs` port.** The source's `lib/git.js::fetchFailedCheckLogs` helper (structured GitHub Actions log fetch with line-count truncation) has no Go equivalent — there is no tool for it, and it is intentionally out of this port's scope. The standalone `--pr` path above compensates with a direct `gh run view --log-failed` shell-out. The ship-dispatched `--auto` path compensates differently: it receives `checks_raw` (the raw `gh pr checks` text ship's own poll already captured), which lists failing check *names*, not their log *content*. Classification against `checks_raw` alone is coarser than classification against real log output — expect more `unknown` verdicts on that path than the source skill produced.
-- **`verify_pipeline_classify` is not a stepper tool.** Unlike `poll_await`, it returns a plain `{category, signals}` payload on every call — there is no `pending` status to loop on here.
+- **`verify_pipeline_classify` is not a stepper tool.** Unlike `poll_await`, it returns the same Markdown fields (`category`, `signals`) on every call — there is no `pending` status to loop on here.
 
 ## See Also
 
