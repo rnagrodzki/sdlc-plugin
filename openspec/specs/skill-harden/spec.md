@@ -88,11 +88,13 @@ The skill SHALL read only `failure.*` and `classification_hint` from the manifes
 - Before dispatch it also reads `repository.contentRoot` and `repository.root`; it never loads the surface arrays.
 - `classification_hint` is `plugin-defect` when `--from-issue` fetched an issue labelled `mcp-failure`.
 - With that hint the skill goes straight to the plugin-defect route.
+- With that hint the skill builds the result itself, in the orchestrator's plugin-defect shape: `classification: "plugin-defect"`, `routeToErrorReport: true`, `proposals: []`, a rationale naming the `mcp-failure` label, and `errorReportPayload` filled from `failure.*` (`errorType` defaults to `script crash`).
 
 #### Scenario: Issue labelled mcp-failure
 - **WHEN** `--from-issue 42` fetches an issue with label `mcp-failure`
 - **THEN** the skill does not dispatch `sdlc:harden-orchestrator`
 - **AND** it follows the plugin-defect route
+- **AND** the payload it shows on that route is built from the manifest's `failure.*` fields
 
 ### Requirement: Orchestrator dispatch
 The skill SHALL dispatch `sdlc:harden-orchestrator` with model `haiku` and a prompt of exactly two lines, `MANIFEST_FILE: <manifestPath>` and `PROJECT_ROOT: <repository.contentRoot>`, and SHALL stop when the response is not valid JSON.
@@ -257,11 +259,12 @@ Dimensions: <dimension names created or modified>
 - **THEN** the entry has no `Dimensions:` line
 
 ### Requirement: Learnings triage mode
-With `--from-learnings`, the skill SHALL read the log with `learnings_log({action: "read"})`, skip entries whose first line matches `## YYYY-MM-DD — harden:`, and run `prepare_orchestrator` (`skipConfigCheck: true`) plus the orchestrator once per remaining entry.
+With `--from-learnings`, the skill SHALL read the log with `learnings_log({action: "read"})`, skip entries whose first line matches `## YYYY-MM-DD — harden:`, and run `prepare_orchestrator` (`skipConfigCheck: false`) plus the orchestrator once per remaining entry.
 
 - Entries are split on blank lines; block 0 is the header; entries keep their original 1-based index.
 - The skill name comes from `## YYYY-MM-DD — <skill>: ...`, else `unknown`.
 - A per-entry tool error or JSON parse failure marks that entry errored; the run continues.
+- A `config-version:` error is not per-entry: the skill shows it and stops the triage, removes no learnings entry, and writes no learnings entry.
 - Results are grouped: `user-code` first, then `ambiguous`, then `plugin-defect`.
 - Messages: `No learnings to triage.` when the log is missing or empty; `All learnings entries are harden-owned — nothing to triage.` when no candidate remains.
 
@@ -269,6 +272,11 @@ With `--from-learnings`, the skill SHALL read the log with `learnings_log({actio
 - **WHEN** entries 2 and 5 each had at least one applied proposal
 - **THEN** the skill calls `learnings_log({action: "remove", indices: [2, 5]})` once
 - **AND** it makes no single-index remove calls
+
+#### Scenario: Stale config stops the triage
+- **WHEN** `prepare_orchestrator` returns a `config-version:` error for the first candidate entry
+- **THEN** the skill shows the error and dispatches no further entry
+- **AND** it calls no `learnings_log` remove
 
 #### Scenario: Plugin-defect entries are kept
 - **WHEN** an entry was classified `plugin-defect`
