@@ -6233,6 +6233,50 @@ func TestExecState_Decide_MissingID(t *testing.T) {
 	}
 }
 
+// TestExecState_Decide_RejectsUnknownType pins the runtime enum check on
+// decideType: any value other than "guardrail" is a DomainError and nothing
+// is appended to guardrailDecisions. The report only reads entries whose
+// decideType is "guardrail", so a typo would be stored and then ignored.
+func TestExecState_Decide_RejectsUnknownType(t *testing.T) {
+	for _, bad := range []string{"guardrails", "Guardrail", " guardrail"} {
+		t.Run(bad, func(t *testing.T) {
+			root := t.TempDir()
+			createExecState(t, root, "feat/decide", map[string]any{
+				"branch": "feat/decide",
+			})
+
+			_, err := executeState(root, root, ExecuteStateIn{
+				Action:         "decide",
+				Branch:         "feat/decide",
+				DecideType:     bad,
+				DecideID:       "no-real-fs-git-in-tests",
+				DecideDecision: "override",
+			}, fixedClock(testNow))
+			if err == nil {
+				t.Fatal("expected error for unknown decideType")
+			}
+			domainErr, ok := err.(*mcpserver.DomainError)
+			if !ok {
+				t.Fatalf("expected DomainError, got %T: %v", err, err)
+			}
+			if want := fmt.Sprintf(`decideType must be "guardrail"; got %q`, bad); !strings.Contains(domainErr.Msg, want) {
+				t.Errorf("Msg = %q, want it to contain %q", domainErr.Msg, want)
+			}
+			if domainErr.Suggestion == "" {
+				t.Error("expected a Suggestion on the DomainError")
+			}
+
+			st, findErr := state.Find(root, "execute", "feat/decide")
+			if findErr != nil || st == nil {
+				t.Fatalf("find state: %v", findErr)
+			}
+			if got, ok := st.Data["guardrailDecisions"]; ok {
+				t.Errorf("guardrailDecisions = %v, want absent after a rejected decide", got)
+			}
+		})
+	}
+}
+
 // TestExecState_Decide_RejectsUnknownDecision pins the runtime enum check on
 // decideDecision: a value outside override|harden|cancel|fix is a
 // DomainError and nothing is appended to guardrailDecisions.

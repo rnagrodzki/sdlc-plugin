@@ -103,7 +103,7 @@ type ExecuteStateIn struct {
 	IssueDraftTitle     string         `json:"issueDraftTitle,omitempty" jsonschema_description:"issue-draft only: GH issue title (required)."`
 	IssueDraftBody      string         `json:"issueDraftBody,omitempty" jsonschema_description:"issue-draft only: GH issue body markdown (required)."`
 	IssueDraftLabels    []string       `json:"issueDraftLabels,omitempty" jsonschema_description:"issue-draft only: labels to apply (optional)."`
-	DecideType          string         `json:"decideType,omitempty" jsonschema:"enum=guardrail" jsonschema_description:"decide only: decision category. Currently: guardrail."`
+	DecideType          string         `json:"decideType,omitempty" jsonschema:"enum=guardrail" jsonschema_description:"decide only: decision category. Must be \"guardrail\" (the only category); any other value fails with a DomainError."`
 	DecideID            string         `json:"decideId,omitempty" jsonschema_description:"decide only: identifier of the item decided on (e.g. a guardrail slug)."`
 	DecideDecision      string         `json:"decideDecision,omitempty" jsonschema:"enum=override,enum=harden,enum=cancel,enum=fix" jsonschema_description:"decide only: choice made — override, harden, cancel, or fix."`
 	DecideReason        string         `json:"decideReason,omitempty" jsonschema_description:"decide only: optional free-text reason why this choice was made."`
@@ -566,7 +566,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - log-cli: Append a CLI-captured output block to the run's evidence log. Requires cliCommand. Optional: cliExitCode, cliOutput, branch, wave.
 - drift-log: Append a drift issue and evaluate the server-side stop condition. When accumulated error-severity drift issues exceed the threshold (max(minErrorFloor, ceil(maxErrorRate * totalTasks))), returns {halt:true}. Requires driftSeverity (error|warning|info), driftSummary. Optional: driftDetail, wave, taskId, branch.
 - issue-draft: Append a pending GH issue draft to the state file's pendingIssueDrafts list (append-only — never goes through the context action, never overwrites). The draft title is also recorded durably in .sdlc-v2/history/deferred.json (source "execute-drift", id "execute-drift-<timestamp>-<N>") so it survives state-file GC — no follow-up deferred_add is needed unless warnings is returned. Requires issueDraftTitle, issueDraftBody. Optional: issueDraftLabels, taskId, branch. Returns {added:true, totalDrafts:N, deferredId (the id just written to deferred.json), next}, plus warnings[] when the deferred.json write failed: the call still succeeds, deferredId is omitted, and next names the exact ship_state action=deferred_add recovery call. Do not retry issue-draft to recover — it appends a second draft under a new id.
-- decide: Record a guardrail decision (append-only — never goes through the context action, never overwrites; distinct from ship state's own "decide" action, which writes a differently-shaped {step, decision} entry under a different key). Appends {decideType, id, decision, reason} to the state file's guardrailDecisions list. Requires decideType, decideId. Optional: decideDecision (override|harden|cancel|fix; any other value fails with a DomainError), decideReason, branch. Returns {ok:true, action:"decide", next:"..."}.
+- decide: Record a guardrail decision (append-only — never goes through the context action, never overwrites; distinct from ship state's own "decide" action, which writes a differently-shaped {step, decision} entry under a different key). Appends {decideType, id, decision, reason} to the state file's guardrailDecisions list. Requires decideType (must be "guardrail"; any other value fails with a DomainError), decideId. Optional: decideDecision (override|harden|cancel|fix; any other value fails with a DomainError), decideReason, branch. Returns {ok:true, action:"decide", next:"..."}.
 - report: Assemble the end-of-run execution report (KD-11). With write omitted or false, this is read-only (never writes state or any file). Gated by config automation.report: {enabled:false} returns {skipped:true, written:false} immediately and nothing else — regardless of write. Otherwise returns {branch, runId, planPath, startedAt, duration, format, waves[{number, status, startedAt, completedAt, duration, tasks[{id, name, status, complexity, risk, filesChanged}], committedSha}], totalTasks, completedTasks, failedTasks, skippedTasks, drifts, errors, warnings, concerns, pendingIssueDrafts, deferredFindings, decisions, path, written, next}. format is "json" or "md" (default) from config, or overridden by the format input field. write:true persists the report under <main worktree>/.sdlc-v2/reports/<runId>-report.<ext> and sets path/written on the response instead of leaving the caller to construct that path itself. For format=json, write:true alone is enough — the tool recomputes and writes the full struct. For format=md, write:true additionally requires body (the caller's own rendered markdown) — the tool persists that exact text rather than rendering it again. Optional: branch, write, format, body.
 
 Returns Markdown: a "# execute_state — ok" heading, a **Next:** line, then the fields above. Failures return "# execute_state — error (<code>)" with a "## What happened" and a "## Do this" section.`,
@@ -1322,6 +1322,15 @@ func execActionIssueDraft(root, workDir string, in ExecuteStateIn, now func() ti
 func execActionDecide(root, workDir string, in ExecuteStateIn) (any, error) {
 	if strings.TrimSpace(in.DecideType) == "" {
 		return nil, &mcpserver.DomainError{Msg: "decideType is required", Suggestion: "Pass decideType (e.g. \"guardrail\")."}
+	}
+	// decideType's schema enum is not enforced at runtime either. The report
+	// only reads entries whose decideType is exactly "guardrail", so any other
+	// value would be stored and then silently ignored.
+	if in.DecideType != "guardrail" {
+		return nil, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("decideType must be \"guardrail\"; got %q", in.DecideType),
+			Suggestion: "Pass decideType as \"guardrail\" — it is the only decision category.",
+		}
 	}
 	if strings.TrimSpace(in.DecideID) == "" {
 		return nil, &mcpserver.DomainError{Msg: "decideId is required", Suggestion: "Pass the decideId of the item decided on (e.g. the guardrail slug)."}

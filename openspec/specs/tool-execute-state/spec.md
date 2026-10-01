@@ -1301,19 +1301,25 @@ The `issue-draft` action SHALL append a GitHub issue draft to the state's `pendi
 ### Requirement: decide action
 The `decide` action SHALL append `{decideType, id, decision?, reason?}` to the state's `guardrailDecisions` list and never overwrite earlier entries.
 
-- `decideType` is `guardrail`; `decideDecision`, when set, must be one of `override`, `harden`, `cancel`, `fix`. The tool checks this at runtime.
+- `decideType` must be exactly `guardrail`; `decideDecision`, when set, must be one of `override`, `harden`, `cancel`, `fix`. The tool checks both at runtime.
 - Result: `{ok: true, action: "decide", next}`.
 - `next`: `Guardrail <id> recorded as <decision>. Continue wave execution.`, or `Guardrail <id> recorded. Continue wave execution.` without a decision.
 
 | Condition | Class | Message |
 |---|---|---|
 | blank `decideType` | DomainError | `decideType is required` |
+| `decideType` not blank and not `guardrail` | DomainError | `decideType must be "guardrail"; got "<value>"` |
 | blank `decideId` | DomainError | `decideId is required` |
 | `decideDecision` not empty and not in the enum | DomainError | `decideDecision must be one of override, harden, cancel, fix; got "<value>"` |
 
 #### Scenario: Decisions accumulate
 - **WHEN** `decide` is called twice with different ids
 - **THEN** `guardrailDecisions` holds both entries in call order
+
+#### Scenario: Unknown decision type rejected
+- **WHEN** `decideType` is `guardrails`
+- **THEN** the tool fails with a DomainError naming `guardrail` as the only allowed value
+- **AND** nothing is appended to `guardrailDecisions`
 
 #### Scenario: Unknown decision rejected
 - **WHEN** `decideDecision` is `approve`
