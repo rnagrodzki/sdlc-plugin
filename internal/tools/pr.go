@@ -226,7 +226,7 @@ type prRuntime struct {
 // defaultPRRuntime wires prRuntime to the real package-level implementations.
 var defaultPRRuntime = prRuntime{
 	ghPRForBranch:       ghx.PRForBranch,
-	ghPRCreate:          prGHCreate,
+	ghPRCreate:          ghx.PRCreate,
 	ghPREdit:            ghx.PREdit,
 	ghLabelList:         ghx.LabelList,
 	ghLabelCreate:       ghx.LabelCreate,
@@ -934,24 +934,7 @@ type PRApplyOut struct {
 }
 
 // prCreateOpts carries the gh pr create flags beyond title and body.
-type prCreateOpts struct {
-	Draft bool
-	Base  string
-}
-
-// prGHCreate runs `gh pr create --title <title> --body <body>`, plus
-// --draft and --base <branch> when set, and returns the created PR's URL
-// (gh's stdout). It replaces ghx.PRCreate, which takes no extra flags.
-func prGHCreate(dir, title, body string, opts prCreateOpts) (string, error) {
-	args := []string{"pr", "create", "--title", title, "--body", body}
-	if opts.Draft {
-		args = append(args, "--draft")
-	}
-	if opts.Base != "" {
-		args = append(args, "--base", opts.Base)
-	}
-	return execx.Run("gh", args, execx.Options{Dir: dir})
-}
+type prCreateOpts = ghx.PRCreateOpts
 
 // ReleaseIntentInfo carries the release intent (level + pre-release) recorded
 // when releaseLevel is set. It holds no version number: CI computes that at

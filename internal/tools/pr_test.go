@@ -1337,7 +1337,7 @@ func TestPrApply_ClosedOrMergedPR_CreatesNew(t *testing.T) {
 }
 
 // TestPrApply_DraftAndBase_RealGHStub runs the production gh pr create path
-// (prGHCreate) against a stub gh on PATH that records its argv, so the test
+// (ghx.PRCreate) against a stub gh on PATH that records its argv, so the test
 // sees the exact flags pr_apply hands to gh. --draft and --base must appear
 // only when the matching input is set.
 func TestPrApply_DraftAndBase_RealGHStub(t *testing.T) {

@@ -555,10 +555,24 @@ func PRForBranch(dir string) PRMetadata {
 	}
 }
 
-// PRCreate runs `gh pr create --title <title> --body <body>` and returns
-// the created PR's URL (gh's stdout on success).
-func PRCreate(dir, title, body string) (string, error) {
-	return run(dir, "pr", "create", "--title", title, "--body", body)
+// PRCreateOpts carries the gh pr create flags beyond title and body.
+type PRCreateOpts struct {
+	Draft bool
+	Base  string
+}
+
+// PRCreate runs `gh pr create --title <title> --body <body>`, plus --draft
+// and --base <branch> when set in opts, and returns the created PR's URL
+// (gh's stdout).
+func PRCreate(dir, title, body string, opts PRCreateOpts) (string, error) {
+	args := []string{"pr", "create", "--title", title, "--body", body}
+	if opts.Draft {
+		args = append(args, "--draft")
+	}
+	if opts.Base != "" {
+		args = append(args, "--base", opts.Base)
+	}
+	return run(dir, args...)
 }
 
 // LabelList returns the names of every label defined on the repo, via
