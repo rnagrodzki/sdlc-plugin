@@ -219,13 +219,17 @@ The tool SHALL read guardrails, style, and task contract settings from the proje
 
 | Output | Source | Default / rule |
 |---|---|---|
-| `guardrails` | `.sdlc-v2/config.toml` `[plan.guardrails.<id>]` | `[]`; each entry carries its `id` and raw keys |
+| `guardrails` | `.sdlc-v2/config.toml` `[plan.guardrails.<id>]` or `[[plan.guardrails]]` | `[]`; each entry carries its `id` and raw keys. Named tables take `id` from the table key and are sorted by it; array entries keep their own `id` and file order |
 | `style.verbosity` | `.sdlc-v2/local.toml` `[planStyle]` | `standard` |
 | `style.audience` | `[planStyle]` | `technical` |
 | `style.narrativeRules` | `[planStyle]` | empty; non-strings dropped |
 | `style.instructions` | `[planStyle]` | empty; non-strings and blank entries dropped, the rest trimmed |
 | `tasks.contractShape` | `[plan.tasks]` | `full` |
 | `tasks.requiredFields` | `[plan.tasks]` | empty; `Complexity`, `Risk`, `Files`, `Verify`, `Depends on` are dropped |
+
+#### Scenario: Guardrails as an array of tables
+- **WHEN** `config.toml` holds two `[[plan.guardrails]]` entries with `id` `prefer-existing-helpers` then `no-new-deps`
+- **THEN** `guardrails.md` lists `## prefer-existing-helpers (warning)` before `## no-new-deps (error)`
 
 #### Scenario: Core task fields are deduplicated
 - **WHEN** `[plan.tasks] requiredFields` is `["Complexity", "Risk", "Files", "Verify", "Depends on", "Owner", "Rollback"]`

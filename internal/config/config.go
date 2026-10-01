@@ -665,7 +665,8 @@ func readLocalRaw(mainRoot string) (map[string]any, error) {
 // named-table form [plan.guardrails.<id>]) into []any with each element's
 // "id" field injected from the table key. This boundary conversion keeps
 // downstream consumers that expect an array of guardrail objects working
-// unchanged.
+// unchanged. The array-of-tables form [[plan.guardrails]] already decodes
+// to []any (each entry carries its own "id") and passes through as is.
 func normalizeGuardrailTables(raw map[string]any) {
 	for _, section := range []string{"plan", "execute"} {
 		sec, ok := raw[section].(map[string]any)

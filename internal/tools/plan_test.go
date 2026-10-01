@@ -1707,6 +1707,38 @@ func TestPlanPrepare_GuardrailsFileFormat(t *testing.T) {
 			t.Errorf("guardrails.md =\n%s\nwant\n%s", got, want)
 		}
 	})
+	t.Run("array of tables form", func(t *testing.T) {
+		// [[plan.guardrails]] passes validate, so plan_prepare must read it
+		// too. Each entry carries its own id; file order is kept.
+		dir := planTestGitRepo(t, "main")
+		writeFile(t, filepath.Join(dir, paths.DataDir, "config.toml"), ""+
+			"[[plan.guardrails]]\n"+
+			"id = \"prefer-existing-helpers\"\n"+
+			"severity = \"warning\"\n"+
+			"description = \"Reuse existing helpers.\"\n"+
+			"\n"+
+			"[[plan.guardrails]]\n"+
+			"id = \"no-new-deps\"\n"+
+			"severity = \"error\"\n"+
+			"description = \"Ask before adding a third-party dependency.\"\n")
+
+		out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(out.GuardrailsFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "# Active plan guardrails (2)\n\n" +
+			"## prefer-existing-helpers (warning)\n" +
+			"> Reuse existing helpers.\n\n" +
+			"## no-new-deps (error)\n" +
+			"> Ask before adding a third-party dependency.\n"
+		if string(got) != want {
+			t.Errorf("guardrails.md =\n%s\nwant\n%s", got, want)
+		}
+	})
 	t.Run("empty", func(t *testing.T) {
 		dir := planTestGitRepo(t, "main")
 		out, err := planPrepareCore(dir, dir, PlanPrepareIn{SkipConfigCheck: true})
