@@ -5116,6 +5116,136 @@ func TestExecState_GC_TTLDaysZeroPassthrough(t *testing.T) {
 	}
 }
 
+// gcBucketFiles returns the "file" (dry run) or base name (real run) of
+// every entry in one execute/plan bucket list, sorted.
+func gcBucketFiles(t *testing.T, list any) []string {
+	t.Helper()
+	var out []string
+	switch v := list.(type) {
+	case []any:
+		for _, e := range v {
+			out = append(out, e.(map[string]any)["file"].(string))
+		}
+	case []string:
+		for _, p := range v {
+			out = append(out, filepath.Base(p))
+		}
+	default:
+		t.Fatalf("unexpected bucket list type %T", list)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// TestExecState_GC_DryRunMatchesRealRun pins that gc's dry run predicts
+// exactly what the real run deletes. A live branch with two TTL-expired
+// execute files keeps only its newest one; before the shared
+// state.ClassifyGCFile rule, the dry run kept both ("branch-exists").
+func TestExecState_GC_DryRunMatchesRealRun(t *testing.T) {
+	root := t.TempDir()
+	runsDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+	if err := os.MkdirAll(runsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	files := map[string]time.Duration{
+		"execute-feat-x-20260101T000000Z.json": 20 * 24 * time.Hour, // older, past TTL
+		"execute-feat-x-20260102T000000Z.json": 10 * 24 * time.Hour, // newest, past TTL
+		"plan-feat-x-20260103T000000Z.json":    1 * time.Hour,       // fresh
+	}
+	for name, age := range files {
+		p := filepath.Join(runsDir, name)
+		if err := os.WriteFile(p, []byte(`{"branch":"feat/x"}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		mt := now.Add(-age)
+		if err := os.Chtimes(p, mt, mt); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// root is not a git repo, so every branch counts as live.
+	dry, err := executeState(root, root, ExecuteStateIn{Action: "gc", TTLDays: intPtr(7), DryRun: true}, time.Now)
+	if err != nil {
+		t.Fatalf("gc dry run: %v", err)
+	}
+	dm := dry.(map[string]any)
+	dryExec := dm["execute"].(map[string]any)
+	dryPlan := dm["plan"].(map[string]any)
+
+	wantReasons := map[string]string{
+		"execute-feat-x-20260101T000000Z.json": state.GCReasonStaleSuperseded,
+		"execute-feat-x-20260102T000000Z.json": state.GCReasonBranchExists,
+		"plan-feat-x-20260103T000000Z.json":    state.GCReasonTTLFresh,
+	}
+	for _, bucket := range []map[string]any{dryExec, dryPlan} {
+		for _, key := range []string{"deleted", "kept"} {
+			for _, e := range bucket[key].([]any) {
+				m := e.(map[string]any)
+				if want := wantReasons[m["file"].(string)]; m["reason"] != want {
+					t.Errorf("dry run %s reason = %v, want %s", m["file"], m["reason"], want)
+				}
+			}
+		}
+	}
+	for name := range files {
+		if _, err := os.Stat(filepath.Join(runsDir, name)); err != nil {
+			t.Fatalf("dry run removed %s: %v", name, err)
+		}
+	}
+
+	realRun, err := executeState(root, root, ExecuteStateIn{Action: "gc", TTLDays: intPtr(7)}, time.Now)
+	if err != nil {
+		t.Fatalf("gc real run: %v", err)
+	}
+	rm := realRun.(map[string]any)
+	realExec := rm["execute"].(map[string]any)
+	realPlan := rm["plan"].(map[string]any)
+
+	for _, c := range []struct {
+		label     string
+		dry, real any
+	}{
+		{"execute deleted", dryExec["deleted"], realExec["deleted"]},
+		{"execute kept", dryExec["kept"], realExec["kept"]},
+		{"plan deleted", dryPlan["deleted"], realPlan["deleted"]},
+		{"plan kept", dryPlan["kept"], realPlan["kept"]},
+	} {
+		d, r := gcBucketFiles(t, c.dry), gcBucketFiles(t, c.real)
+		if strings.Join(d, ",") != strings.Join(r, ",") {
+			t.Errorf("%s: dry run %v, real run %v", c.label, d, r)
+		}
+	}
+}
+
+// TestExecGCDryRun_GoneBranchFreshFileDeleted pins the gone-branch case the
+// old dry run got wrong: a TTL-fresh file of a deleted branch is deleted by
+// the real run, so the dry run must predict it with reason branch-gone.
+func TestExecGCDryRun_GoneBranchFreshFileDeleted(t *testing.T) {
+	stateDir := t.TempDir()
+	name := "execute-gone-20260101T000000Z.json"
+	p := filepath.Join(stateDir, name)
+	if err := os.WriteFile(p, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mt := testNow.Add(-time.Hour)
+	if err := os.Chtimes(p, mt, mt); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := execGCDryRun(stateDir, 7, func(string) bool { return false }, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	deleted := res.(map[string]any)["execute"].(map[string]any)["deleted"].([]any)
+	if len(deleted) != 1 {
+		t.Fatalf("deleted = %v, want the one fresh file of the gone branch", deleted)
+	}
+	if got := deleted[0].(map[string]any)["reason"]; got != state.GCReasonBranchGone {
+		t.Errorf("reason = %v, want %s", got, state.GCReasonBranchGone)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // execReapRunDirectories: ledger/ subdirectories swept individually (F-rerun-3)
 // ---------------------------------------------------------------------------

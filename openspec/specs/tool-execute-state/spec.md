@@ -906,8 +906,17 @@ The `gc` action SHALL delete stale state files and stale per-run directories und
 | `dryRun` | true on a dry run |
 
 - Directory reasons: `ttl-fresh`, `state-file-exists`, `stale+state-file-gone`, `rm-failed`.
-- Dry-run state entries are `{file, branch, reason}` with reasons `ttl-fresh`, `branch-exists`, `stale+branch-gone`.
-- A dry run keeps TTL-fresh files of a gone branch, so it can predict fewer deletions than a real run.
+- Dry-run state entries are `{file, branch, reason}`. Each file is classified by `state.ClassifyGCFile`, the rule the real run applies, so a dry run lists exactly the execute and plan files a real run deletes:
+
+| Branch | File | Dry-run result | Reason |
+|---|---|---|---|
+| gone | within TTL | deleted | `branch-gone` |
+| gone | past TTL | deleted | `stale+branch-gone` |
+| live | within TTL | kept | `ttl-fresh` |
+| live | newest of its prefix and branch, past TTL | kept | `branch-exists` |
+| live | older, past TTL | deleted | `stale+superseded` |
+
+- A file is within the TTL when its age is at most `ttlDays` days.
 - A failure to read the runs directory is an InfraError: `gc failed: <err>` on a real run, `gc readdir: <err>` on a dry run.
 
 #### Scenario: Zero TTL
@@ -917,6 +926,11 @@ The `gc` action SHALL delete stale state files and stale per-run directories und
 #### Scenario: Dry run
 - **WHEN** `dryRun` is true
 - **THEN** nothing is deleted and the response has `dryRun: true`
+
+#### Scenario: Dry run matches real run
+- **WHEN** a live branch has two execute state files, both past the TTL
+- **THEN** the dry run lists the older file as deleted with reason `stale+superseded` and the newest as kept with reason `branch-exists`
+- **AND** a real run then deletes exactly the files the dry run listed as deleted
 
 #### Scenario: Branch list unavailable
 - **WHEN** `git branch --list` fails in the active worktree

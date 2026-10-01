@@ -4286,11 +4286,9 @@ func execActionGC(root, workDir string, in ExecuteStateIn, now func() time.Time)
 	// NOTE: state.GC sweeps ALL prefixes (execute, plan, ship, scaffold, ...)
 	// and also prunes sdlc-explore-* tempdirs — broader than the JS execute GC
 	// which only touches execute+plan files. The report is filtered below to
-	// expose only execute+plan buckets. Dry-run (above) classifies per-file
-	// with the same TTL/branch-exists rule, but the real run additionally
-	// deletes non-newest files for live branches when TTL-expired — so dry-run
-	// under-predicts what a real run deletes. This asymmetry is inherited from
-	// the Go state.GC consolidation, not a bug.
+	// expose only execute+plan buckets. The dry run (above) classifies each
+	// execute/plan file with the same state.ClassifyGCFile rule, so it
+	// predicts exactly which of those files this run deletes.
 	rpt, err := state.GC(root, state.GCOptions{
 		TTL:          time.Duration(ttlDays) * 24 * time.Hour,
 		BranchExists: branchExists,
@@ -4332,7 +4330,12 @@ func execBucketGCByPrefix(rpt *state.GCReport, prefix string) map[string]any {
 	}
 }
 
-// execGCDryRun classifies state files without deleting them.
+// execGCDryRunFileRE matches the execute and plan state file basenames the
+// dry run reports, mirroring state's parseStateFilename grammar.
+var execGCDryRunFileRE = regexp.MustCompile(`^(execute|plan)-(.+)-\d{8}T\d{6}Z\.json$`)
+
+// execGCDryRun classifies execute and plan state files without deleting
+// them, using the same state.ClassifyGCFile rule as the real run.
 func execGCDryRun(stateDir string, ttlDays int, branchExists func(string) bool, now func() time.Time) (any, error) {
 	out := map[string]any{
 		"dryRun":  true,
@@ -4347,50 +4350,59 @@ func execGCDryRun(stateDir string, ttlDays int, branchExists func(string) bool, 
 		return nil, &mcpserver.InfraError{Msg: "gc readdir: " + err.Error(), Cause: err, Suggestion: "Check read permission on " + paths.DataDir + "/" + paths.RunsSubdir + "/, then retry gc with dryRun true."}
 	}
 
-	nowTime := now()
+	nowMs := now().UnixMilli()
 	ttlMs := int64(ttlDays) * 86400000
-	nowMs := nowTime.UnixMilli()
 
-	// Match the state filename regex pattern.
-	stateFileRE := regexp.MustCompile(`^(execute|plan)-(.+)-\d{8}T\d{6}Z\.json$`)
-
+	// First pass: stat every execute/plan state file and find the newest
+	// mtime of each prefix+branch group; the rule needs it to spare a live
+	// branch's newest file.
+	type gcFile struct {
+		name, prefix, slug string
+		mtimeMs            int64
+	}
+	var files []gcFile
+	newestMs := map[string]int64{}
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() || !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		m := stateFileRE.FindStringSubmatch(name)
+		m := execGCDryRunFileRE.FindStringSubmatch(name)
 		if m == nil {
 			continue
 		}
-		prefix := m[1]
-		slug := m[2]
-
-		var bucket map[string]any
-		if prefix == "execute" {
-			bucket = executeResult
-		} else {
-			bucket = planResult
-		}
-
 		info, infoErr := e.Info()
 		if infoErr != nil {
 			continue
 		}
+		f := gcFile{name: name, prefix: m[1], slug: m[2], mtimeMs: info.ModTime().UnixMilli()}
+		files = append(files, f)
+		key := f.prefix + "\x00" + f.slug
+		if cur, seen := newestMs[key]; !seen || f.mtimeMs > cur {
+			newestMs[key] = f.mtimeMs
+		}
+	}
 
-		fresh := (nowMs - info.ModTime().UnixMilli()) < ttlMs
-		branchLive := branchExists != nil && branchExists(slug)
+	// Second pass: classify with state.ClassifyGCFile, the rule state.GC
+	// applies on a real run, so the dry run predicts exactly what a real run
+	// deletes. fresh uses <= to match state.GC's cutoff (mtime not before
+	// now-TTL), and a nil branchExists treats every branch as live, as
+	// state.GC does.
+	for _, f := range files {
+		fresh := (nowMs - f.mtimeMs) <= ttlMs
+		branchLive := branchExists == nil || branchExists(f.slug)
+		newest := f.mtimeMs == newestMs[f.prefix+"\x00"+f.slug]
+		del, reason := state.ClassifyGCFile(branchLive, newest, fresh)
 
-		entry := map[string]any{"file": name, "branch": slug}
-		if fresh {
-			entry["reason"] = "ttl-fresh"
-			bucket["kept"] = append(bucket["kept"].([]any), entry)
-		} else if branchLive {
-			entry["reason"] = "branch-exists"
-			bucket["kept"] = append(bucket["kept"].([]any), entry)
-		} else {
-			entry["reason"] = "stale+branch-gone"
+		bucket := planResult
+		if f.prefix == "execute" {
+			bucket = executeResult
+		}
+		entry := map[string]any{"file": f.name, "branch": f.slug, "reason": reason}
+		if del {
 			bucket["deleted"] = append(bucket["deleted"].([]any), entry)
+		} else {
+			bucket["kept"] = append(bucket["kept"].([]any), entry)
 		}
 	}
 
