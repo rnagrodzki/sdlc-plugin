@@ -24,11 +24,14 @@ findings are reported with severity levels.
 | `--base <branch>` | Compare against this branch instead of the auto-detected default. | auto-detected |
 | `--dry-run` | Show the review plan (dimensions, file counts) without running it. | off |
 
-**Note:** The review scope is controlled by project configuration in
-`.sdlc-v2/config.toml`, not by command-line flags. Accepted values: `all`,
-`committed`, `staged`, `working`, and `worktree` — where `working` covers only
-unstaged edits (local scope) and `worktree` covers all tracked changes on the
-branch (branch scope). Change it with `/setup`.
+**Note:** The review scope is controlled by the `scope` key of the `[review]`
+section in `.sdlc-v2/local.toml`, not by command-line flags. Accepted values:
+`all` (the default), `committed`, `staged`, `working`, and `worktree`. `working`
+covers all uncommitted changes to tracked files, staged and unstaged
+(`git diff HEAD`). `worktree` compares the base branch with the working tree
+(`git diff <base>`), so it covers the branch's commits plus uncommitted edits.
+For `staged`, `working`, and `worktree` the review is never offered for posting
+to a PR. Change the scope with `/setup`.
 
 ## Examples
 
@@ -87,7 +90,7 @@ implementation drift caught automatically in your own project's reviews.
   `.sdlc-v2/review-dimensions/`. Run `/setup --dimensions` to add or change
   them.
 - **Scope is config-driven.** You cannot pass `--staged` or `--committed` on
-  the command line. The scope is set in `.sdlc-v2/config.toml`. Use `/setup` to
+  the command line. The scope is set in `.sdlc-v2/local.toml`. Use `/setup` to
   change it.
 - **Dry run is useful for tuning.** If reviews miss files or take too long, use
   `--dry-run` to see the plan and adjust dimensions accordingly.
