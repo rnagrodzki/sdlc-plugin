@@ -389,12 +389,24 @@ The skill SHALL run `verify-pipeline`, `await-remote-review`, and `learnings-com
 | `await-remote-review` | `poll_await({target:"remote_review"})` loop | `skipped`, `timeout`, `approved-clean` → proceed; `actionable` → dispatch `received-review`; a landed fix gets the manual-push pause |
 | `learnings-commit` | `learnings_log({action:"append", entry})` | Never touches git or `commit_apply` |
 
-- Poll `pending` → sleep `interval_seconds`, re-poll with `state_file`; `error` → treat as transient and re-probe.
+- Poll `pending` → sleep `interval_seconds`, re-poll with `state_file`.
+- Poll `error` with `ext.retryable: true` → treat as transient and re-probe with `state_file`.
+- Poll `error` with `ext.retryable` not `true` → stop polling; record `decide` with text `poll stopped: <ext.error_class>: <error>`, then `fail` the step with `detail.error` set to `<ext.error_class>: <error>`, and stop with the resume instruction.
+- `skipped` with `ext.reason: "no-ci"` (no checks and no CI config) proceeds like any other `skipped`.
 - The manual-push pause is an `AskUserQuestion`.
 
 #### Scenario: CI green
 - **WHEN** the `verify-pipeline` poll returns `done` with `ext.verdict:"green"`
 - **THEN** the skill completes the step and proceeds
+
+#### Scenario: Retryable poll error
+- **WHEN** the `verify-pipeline` poll returns `status:"error"` with `ext.error_class:"network"` and `ext.retryable:true`
+- **THEN** the skill calls `poll_await` again with the returned `state_file`
+
+#### Scenario: Non-retryable poll error stops the loop
+- **WHEN** the `await-remote-review` poll returns `status:"error"` with `ext.error_class:"auth"` and `ext.retryable:false`
+- **THEN** the skill does not call `poll_await` again
+- **AND** calls `ship_state({action:"fail", step:"await-remote-review", detail:{error:"auth: <error>"}})` and prints `To resume: /ship --resume`
 
 #### Scenario: Remote review actionable
 - **WHEN** the `await-remote-review` poll returns `actionable`
