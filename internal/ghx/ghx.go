@@ -97,7 +97,7 @@ type PRReview struct {
 // verdict yet".
 //
 // The name describes what it returns, not how it asks gh for it — matching
-// its PRView/PRChecks siblings, so swapping the underlying gh query (REST
+// its PRView/PRChecksWithExitCode siblings, so swapping the underlying gh query (REST
 // vs --json) would not force a rename on every caller.
 func PRReviews(dir string, n int) ([]PRReview, error) {
 	if n <= 0 {
@@ -135,18 +135,10 @@ func PRReviews(dir string, n int) ([]PRReview, error) {
 	return reviews, nil
 }
 
-// PRChecks returns the output of `gh pr checks <n>` run inside dir.
-func PRChecks(dir string, n int) (string, error) {
-	if n <= 0 {
-		return "", fmt.Errorf("ghx: PRChecks: invalid PR number %d", n)
-	}
-	return run(dir, "pr", "checks", fmt.Sprint(n))
-}
-
-// PRChecksWithExitCode behaves like PRChecks but preserves stdout and
-// stderr and reports the process exit code even on a non-zero exit, since
-// gh pr checks' exit code is itself meaningful (0 pass, 1 some failed, 8
-// some pending). gh also exits 1 for its own errors (PR not found, auth,
+// PRChecksWithExitCode runs `gh pr checks <n>` inside dir. Unlike the other
+// helpers here, it preserves stdout and stderr and reports the process exit
+// code even on a non-zero exit, since gh pr checks' exit code is itself
+// meaningful (0 pass, 1 some failed, 8 some pending). gh also exits 1 for its own errors (PR not found, auth,
 // "no checks reported"), with the reason on stderr only — see
 // internal/tools/polling.go's verifyPipelineAwait for how the two are told
 // apart.

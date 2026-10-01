@@ -76,7 +76,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		readOnly:   true,
 		idempotent: true,
 		openWorld:  true,
-		reason:     "ghx.PRView + ghx.PRChecks",
+		reason:     "ghx.PRView + ghx.PRChecksWithExitCode",
 	},
 	"received_review_verify": {
 		title:      "Verify review replies posted",
