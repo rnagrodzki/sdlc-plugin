@@ -390,6 +390,70 @@ func TestPlanMergeResults_Redispatch(t *testing.T) {
 	}
 }
 
+// TestPlanMergeResults_RejectsUnknownEnums verifies that an unmapped lane
+// status or issue severity is a DomainError naming the item and the allowed
+// values. Before the fix, status "ok" counted as a pass and severity "error"
+// as advisory, so a caller's mapping mistake hid findings silently.
+func TestPlanMergeResults_RejectsUnknownEnums(t *testing.T) {
+	cases := []struct {
+		name string
+		in   PlanSupportIn
+		want []string // substrings the error message must contain
+	}{
+		{
+			name: "lane status",
+			in: PlanSupportIn{LaneResults: []LaneResult{
+				{Name: "static-structural", Status: "ok", GateIDs: []string{"G1"}},
+			}},
+			want: []string{`laneResults[0] ("static-structural")`, `status "ok"`, `"pass"`, `"fail"`},
+		},
+		{
+			name: "empty lane status",
+			in: PlanSupportIn{LaneResults: []LaneResult{
+				{Name: "lane-a", Status: "pass", GateIDs: []string{"G1"}},
+				{Name: "lane-b", GateIDs: []string{"G2"}},
+			}},
+			want: []string{`laneResults[1] ("lane-b")`, `status ""`},
+		},
+		{
+			name: "lane issue severity",
+			in: PlanSupportIn{LaneResults: []LaneResult{
+				{Name: "static-structural", Status: "pass", GateIDs: []string{"G1"}, Issues: []Issue{
+					{GateID: "G1", Severity: "error", Summary: "Task 3: Depends on missing Task 9"},
+				}},
+			}},
+			want: []string{`laneResults[0].issues[0] ("Task 3: Depends on missing Task 9")`, `severity "error"`, `"blocking"`, `"advisory"`},
+		},
+		{
+			name: "lens issue severity",
+			in: PlanSupportIn{LensResults: []LensResult{
+				{Name: "risk", Status: "Approved", Issues: []Issue{{Summary: "No rollback step"}}},
+			}},
+			want: []string{`lensResults[0].issues[0] ("No rollback step")`, `severity ""`},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.in.Action = "merge_results"
+			out, err := planSupportCore("", "", tc.in)
+			if err == nil {
+				t.Fatalf("merge_results succeeded with %+v, want DomainError", out)
+			}
+			if got := errorClassOf(err); got != "domain" {
+				t.Fatalf("error class = %q, want domain (err: %v)", got, err)
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(err.Error(), w) {
+					t.Errorf("error %q does not contain %q", err.Error(), w)
+				}
+			}
+			if suggestionOf(err) == "" {
+				t.Error("DomainError has an empty Suggestion")
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // plan_support material_snapshot / material_compare tests
 //

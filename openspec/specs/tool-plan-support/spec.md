@@ -70,16 +70,28 @@ The `merge_results` action SHALL require at least one non-empty list among `lane
 | `isRedispatch` | boolean | no | JSON boolean | `true` when the results come from a re-run of lanes or lenses |
 
 - Each issue has `gateId`, `severity` (`blocking` or `advisory`), `summary`, and `source`.
-- Lane `status` and issue `severity` are compared exactly: a lane counts as failed only when `status` is `fail`, and an issue counts as blocking only when `severity` is `blocking`. Any other value counts as passed or advisory.
+- Lane `status` and issue `severity` are compared exactly: a lane counts as failed only when `status` is `fail`, and an issue counts as blocking only when `severity` is `blocking`.
+- The action SHALL reject any lane `status` other than `pass` or `fail`, and any lane or lens issue `severity` other than `blocking` or `advisory` (including an empty value), before it merges anything.
 - Lens `status` is compared ignoring letter case and outer spaces: `Approved`, `approved`, and ` APPROVED ` all count as approved.
 
 | Condition | Class | Message / Suggestion (short) |
 |---|---|---|
 | `laneResults` and `lensResults` both empty | `DomainError` | `merge_results requires at least one of laneResults or lensResults to be non-empty` / collect reviewer results first |
+| A lane `status` or an issue `severity` outside its allowed values | `DomainError` | `merge_results: lane status must be "pass" or "fail" and issue severity must be "blocking" or "advisory"; got <items>`, one `; `-joined entry per bad value, e.g. `laneResults[0] ("static-structural"): status "ok"` or `lensResults[1].issues[0] ("<summary>"): severity "error"` / map each value, then call again |
 
 #### Scenario: No results given
 - **WHEN** `merge_results` is called with neither `laneResults` nor `lensResults`
 - **THEN** the tool returns `DomainError` `merge_results requires at least one of laneResults or lensResults to be non-empty`
+
+#### Scenario: Unknown lane status
+- **WHEN** lane `static-structural` is sent with `status: ok`
+- **THEN** the tool returns `DomainError` naming `laneResults[0] ("static-structural")` and `status "ok"`
+- **AND** the message lists the allowed values `pass` and `fail`
+
+#### Scenario: Unknown issue severity
+- **WHEN** a lane or lens issue is sent with `severity: error` or with no `severity`
+- **THEN** the tool returns `DomainError` naming that issue by its index and `summary`
+- **AND** the message lists the allowed values `blocking` and `advisory`
 
 ### Requirement: merge_results issue collection
 The `merge_results` action SHALL collect issues from lanes first, then lenses, set each issue's `source` to its lane or lens name, and keep only the first issue per (`gateId`, lower-cased trimmed `summary`) pair.

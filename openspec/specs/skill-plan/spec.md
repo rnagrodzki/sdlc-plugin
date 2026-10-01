@@ -290,6 +290,7 @@ The skill SHALL dispatch all five `lanes[]` entries in one message, using `subag
 | `issues[].severity` | `blocking` when the issue has `blocking: true` or `severity: "error"`; otherwise `advisory` | no issues |
 | `issues[].summary` | `<taskRef>: <message>`, or `message` when `taskRef` is null | no issues |
 
+- The mapping produces only lane `status` `pass` or `fail` and issue `severity` `blocking` or `advisory`; `merge_results` rejects any other value with a `DomainError` and merges nothing.
 - Lane 4 is always in `laneResults`, so G17 is never a coverage gap; a failed lane 4 becomes an advisory note.
 - A lane with null `promptTemplatePath` is not dispatched and becomes a synthetic entry with `status: "fail"` and one `blocking` issue.
 - Exception: a null `lanes[4]` (G17) template counts as empty advisory findings and is logged with `learnings_log`.

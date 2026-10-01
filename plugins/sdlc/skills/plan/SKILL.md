@@ -676,7 +676,7 @@ Lane 4 (dimension-coverage/G17) returns the G17 findings JSON — parse the `fin
 | `issues[].severity` | `"blocking"` when the issue has `blocking: true` or `severity: "error"`; otherwise `"advisory"` | — |
 | `issues[].summary` | `"<taskRef>: <message>"`, or just `message` when `taskRef` is null | — |
 
-The tool compares these values exactly: a lane counts as failed only with `status: "fail"`, and an issue counts as blocking only with `severity: "blocking"`. A lane sent with `laneStatus` or an issue sent with `severity: "error"` is silently treated as passed or advisory. A failed lane 4 (gateIds `["G17"]` only) becomes an advisory note, never a blocker (R31). Lane 4 must be in `laneResults` even when it failed — otherwise G17 shows up as a blocking coverage gap.
+The tool accepts only lane `status` `"pass"` or `"fail"` and issue `severity` `"blocking"` or `"advisory"`, compared exactly. Any other value (for example `"ok"`, `"error"`, or a missing value) makes `merge_results` return a DomainError and merge nothing, so map every value first. A failed lane 4 (gateIds `["G17"]` only) becomes an advisory note, never a blocker (R31). Lane 4 must be in `laneResults` even when it failed — otherwise G17 shows up as a blocking coverage gap.
 
 **Merge algorithm:** Collect the mapped entries (including the synthetic entries for null-`promptTemplatePath` lanes) into a `laneResults` array. Call `plan_support({action: "merge_results", laneResults: [...], expectedGates: ["G1".."G21"]})`. Process the returned `allIssues`, `coverageGaps`, and `laneFailures` — the tool handles issue/pass union, gate-coverage checks, lane-failure injection (G17 advisory per R31), and deduplication by (`gateId`, lower-cased trimmed `summary`).
 

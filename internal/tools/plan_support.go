@@ -232,7 +232,7 @@ func RegisterPlanSupportTools(s *mcpserver.Server) {
 
 Pass "action" to select an operation. Each action uses a subset of the input fields (unlisted fields are ignored):
 
-- merge_results: Merge lane/lens review results. Requires at least one of laneResults or lensResults. Optional: expectedGates, isRedispatch.
+- merge_results: Merge lane/lens review results. Requires at least one of laneResults or lensResults. Optional: expectedGates, isRedispatch. Lane status must be pass or fail, and every issue severity must be blocking or advisory; any other value fails with a DomainError and nothing is merged.
 - material_snapshot: Snapshot plan material for change detection. Requires filePath. Returns snapshotPath.
 - material_compare: Compare current plan material against a snapshot. Requires filePath, snapshotPath (from material_snapshot).
 - openspec_appendix: Generate an openspec appendix. Requires changeName. Optional: proposalPath, designPath, specPaths, planTasks.
@@ -305,12 +305,49 @@ func issueKey(iss Issue) string {
 	return iss.GateID + "|" + strings.ToLower(strings.TrimSpace(iss.Summary))
 }
 
+// validateMergeEnums rejects a lane status other than "pass"/"fail" and an
+// issue severity other than "blocking"/"advisory". The merge compares these
+// values exactly, so an unmapped value ("ok", "error", "") would otherwise
+// count as a pass or as advisory and hide the finding. Lens status stays
+// free-form: anything other than approved already counts as not approved.
+func validateMergeEnums(in PlanSupportIn) error {
+	var bad []string
+	checkIssues := func(where string, issues []Issue) {
+		for j, iss := range issues {
+			if iss.Severity != "blocking" && iss.Severity != "advisory" {
+				bad = append(bad, fmt.Sprintf("%s.issues[%d] (%q): severity %q", where, j, iss.Summary, iss.Severity))
+			}
+		}
+	}
+	for i, lane := range in.LaneResults {
+		where := fmt.Sprintf("laneResults[%d] (%q)", i, lane.Name)
+		if lane.Status != "pass" && lane.Status != "fail" {
+			bad = append(bad, fmt.Sprintf("%s: status %q", where, lane.Status))
+		}
+		checkIssues(fmt.Sprintf("laneResults[%d]", i), lane.Issues)
+	}
+	for i, lens := range in.LensResults {
+		checkIssues(fmt.Sprintf("lensResults[%d]", i), lens.Issues)
+	}
+	if len(bad) == 0 {
+		return nil
+	}
+	return &mcpserver.DomainError{
+		Msg: "merge_results: lane status must be \"pass\" or \"fail\" and issue severity must be \"blocking\" or \"advisory\"; got " +
+			strings.Join(bad, "; "),
+		Suggestion: "Map each value before the call: lane status to \"pass\" or \"fail\", issue severity to \"blocking\" or \"advisory\" (plan SKILL.md \"Map lane results to the merge_results shape\"), then call merge_results again.",
+	}
+}
+
 func mergeResults(in PlanSupportIn) (PlanSupportOut, error) {
 	if len(in.LaneResults) == 0 && len(in.LensResults) == 0 {
 		return PlanSupportOut{}, &mcpserver.DomainError{
 			Msg:        "merge_results requires at least one of laneResults or lensResults to be non-empty",
 			Suggestion: "Collect the lane and/or lens reviewer results first, then call merge_results with laneResults, lensResults, or both populated.",
 		}
+	}
+	if err := validateMergeEnums(in); err != nil {
+		return PlanSupportOut{}, err
 	}
 
 	seen := map[string]bool{}
