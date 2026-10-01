@@ -8647,3 +8647,229 @@ func TestExecuteBaseSync(t *testing.T) {
 		}
 	})
 }
+
+// baseSyncResolve calls base-sync-resolve for fx's run.
+func (fx baseSyncFixture) baseSyncResolve(t *testing.T, wave int, abort bool) (ExecBaseSyncOut, error) {
+	t.Helper()
+	out, err := executeState(fx.root, fx.root, ExecuteStateIn{Action: "base-sync-resolve", Branch: "feature", Wave: intPtr(wave), Abort: abort}, fixedClock(testNow))
+	if err != nil {
+		return ExecBaseSyncOut{}, err
+	}
+	res, ok := out.(ExecBaseSyncOut)
+	if !ok {
+		t.Fatalf("base-sync-resolve result = %T, want ExecBaseSyncOut", out)
+	}
+	return res, nil
+}
+
+// mergeInProgress reports whether fx.root currently has a merge in progress.
+func (fx baseSyncFixture) mergeInProgress(t *testing.T) bool {
+	t.Helper()
+	_, err := execRun(fx.root, "git", "rev-parse", "-q", "--verify", "MERGE_HEAD")
+	return err == nil
+}
+
+// startBaseSyncConflict drives fx.baseSync into a "conflict" status by
+// pushing a conflicting README.md change to origin/main while the feature
+// branch has its own conflicting edit, and returns the pre-sync HEAD.
+func (fx baseSyncFixture) startBaseSyncConflict(t *testing.T, wave int) (headBefore string) {
+	t.Helper()
+	fx.pushToOriginMain(t, "README.md", "# base change\n")
+	writeFile(t, filepath.Join(fx.root, "README.md"), "# feature change\n")
+	mustRun(t, fx.root, "git", "commit", "-am", "feature readme")
+	headBefore = gitOutTrim(t, fx.root, "rev-parse", "HEAD")
+
+	res, err := fx.baseSync(t, wave)
+	if err != nil {
+		t.Fatalf("base-sync: %v", err)
+	}
+	if res.Status != "conflict" {
+		t.Fatalf("setup: base-sync status = %q, want conflict", res.Status)
+	}
+	if !fx.mergeInProgress(t) {
+		t.Fatal("setup: expected a merge in progress after conflict")
+	}
+	return headBefore
+}
+
+// TestExecuteBaseSyncResolve drives base-sync-resolve through every outcome
+// with real git: abort with a merge in progress, abort with none (idempotent
+// no-op), unresolved conflicts blocking resolve (both the live-unmerged case
+// and the "git add"-without-fixing-content case), and a clean resolve that
+// commits and records sha. Every case that touches the state file asserts
+// the wave's baseSyncs[] entry was updated in place, never appended.
+func TestExecuteBaseSyncResolve(t *testing.T) {
+	t.Run("abort with merge in progress runs merge --abort", func(t *testing.T) {
+		fx := newBaseSyncFixture(t, "")
+		headBefore := fx.startBaseSyncConflict(t, 2)
+
+		res, err := fx.baseSyncResolve(t, 2, true)
+		if err != nil {
+			t.Fatalf("base-sync-resolve: %v", err)
+		}
+		if res.Status != "aborted" {
+			t.Errorf("status = %q, want aborted", res.Status)
+		}
+		if len(res.Warnings) != 1 || res.Warnings[0] != "base-sync aborted: continuing on the previous base" {
+			t.Errorf("warnings = %q, want [%q]", res.Warnings, "base-sync aborted: continuing on the previous base")
+		}
+		if res.Next == nil || res.Next.Instruction != "Call wave-start for wave 3." {
+			t.Errorf("next = %+v, want \"Call wave-start for wave 3.\"", res.Next)
+		}
+		if fx.mergeInProgress(t) {
+			t.Error("merge still in progress after abort")
+		}
+		if head := gitOutTrim(t, fx.root, "rev-parse", "HEAD"); head != headBefore {
+			t.Errorf("HEAD = %s, want pre-sync HEAD %s", head, headBefore)
+		}
+
+		entries := fx.baseSyncs(t)
+		if len(entries) != 1 {
+			t.Fatalf("baseSyncs has %d entries, want 1 (updated in place): %v", len(entries), entries)
+		}
+		if entries[0]["status"] != "aborted" {
+			t.Errorf("baseSyncs[0].status = %v, want aborted", entries[0]["status"])
+		}
+		assertStateMatchesSchema(t, fx.statePath)
+	})
+
+	t.Run("abort with no merge in progress is a safe no-op", func(t *testing.T) {
+		fx := newBaseSyncFixture(t, "")
+
+		for i := 0; i < 2; i++ {
+			res, err := fx.baseSyncResolve(t, 2, true)
+			if err != nil {
+				t.Fatalf("call %d: base-sync-resolve: %v", i, err)
+			}
+			if res.Status != "aborted" {
+				t.Errorf("call %d: status = %q, want aborted", i, res.Status)
+			}
+			want := "base-sync-resolve: no merge in progress; nothing to abort"
+			if len(res.Warnings) != 1 || res.Warnings[0] != want {
+				t.Errorf("call %d: warnings = %q, want [%q]", i, res.Warnings, want)
+			}
+		}
+	})
+
+	t.Run("no merge in progress without abort is a DomainError", func(t *testing.T) {
+		fx := newBaseSyncFixture(t, "")
+
+		_, err := fx.baseSyncResolve(t, 2, false)
+		var de *mcpserver.DomainError
+		if !errors.As(err, &de) {
+			t.Fatalf("err = %v (%T), want *mcpserver.DomainError", err, err)
+		}
+		if de.Msg != "base-sync-resolve: no merge in progress" {
+			t.Errorf("Msg = %q", de.Msg)
+		}
+		if de.Suggestion != "Call wave-start for the next wave." {
+			t.Errorf("Suggestion = %q", de.Suggestion)
+		}
+	})
+
+	t.Run("unmerged files remaining blocks resolve", func(t *testing.T) {
+		fx := newBaseSyncFixture(t, "")
+		fx.startBaseSyncConflict(t, 2)
+
+		_, err := fx.baseSyncResolve(t, 2, false)
+		var de *mcpserver.DomainError
+		if !errors.As(err, &de) {
+			t.Fatalf("err = %v (%T), want *mcpserver.DomainError", err, err)
+		}
+		if !strings.Contains(de.Msg, "README.md") {
+			t.Errorf("Msg = %q, want it to list README.md", de.Msg)
+		}
+		wantSuggestion := "Resolve the listed files and call base-sync-resolve again, or call it with abort:true."
+		if de.Suggestion != wantSuggestion {
+			t.Errorf("Suggestion = %q, want %q", de.Suggestion, wantSuggestion)
+		}
+		if !fx.mergeInProgress(t) {
+			t.Error("merge no longer in progress after a blocked resolve")
+		}
+		entries := fx.baseSyncs(t)
+		if len(entries) != 1 || entries[0]["status"] != "conflict" {
+			t.Errorf("baseSyncs = %v, want 1 entry still \"conflict\"", entries)
+		}
+	})
+
+	t.Run("conflict markers surviving a premature git add block resolve", func(t *testing.T) {
+		fx := newBaseSyncFixture(t, "")
+		fx.startBaseSyncConflict(t, 2)
+
+		// Simulate a worker that ran `git add` without actually removing the
+		// conflict markers from the file's content: this clears git's
+		// "unmerged" index state but the file content is still broken.
+		mustRun(t, fx.root, "git", "add", "README.md")
+		if unmerged, err := execRun(fx.root, "git", "diff", "--name-only", "--diff-filter=U"); err != nil || strings.TrimSpace(unmerged) != "" {
+			t.Fatalf("setup: expected no unmerged files after git add, got %q (err=%v)", unmerged, err)
+		}
+
+		_, err := fx.baseSyncResolve(t, 2, false)
+		var de *mcpserver.DomainError
+		if !errors.As(err, &de) {
+			t.Fatalf("err = %v (%T), want *mcpserver.DomainError", err, err)
+		}
+		if !strings.Contains(de.Msg, "README.md") {
+			t.Errorf("Msg = %q, want it to list README.md", de.Msg)
+		}
+		if !fx.mergeInProgress(t) {
+			t.Error("merge no longer in progress after a blocked resolve")
+		}
+	})
+
+	t.Run("clean resolve commits and records sha", func(t *testing.T) {
+		fx := newBaseSyncFixture(t, "")
+		headBefore := fx.startBaseSyncConflict(t, 2)
+
+		writeFile(t, filepath.Join(fx.root, "README.md"), "# resolved change\n")
+		mustRun(t, fx.root, "git", "add", "README.md")
+
+		res, err := fx.baseSyncResolve(t, 2, false)
+		if err != nil {
+			t.Fatalf("base-sync-resolve: %v", err)
+		}
+		if res.Status != "resolved" {
+			t.Errorf("status = %q, want resolved", res.Status)
+		}
+		if res.SHA == "" {
+			t.Error("sha is empty, want the new merge commit sha")
+		}
+		if res.Next == nil || res.Next.Instruction != "Call wave-start for wave 3." {
+			t.Errorf("next = %+v, want \"Call wave-start for wave 3.\"", res.Next)
+		}
+		if fx.mergeInProgress(t) {
+			t.Error("merge still in progress after a clean resolve")
+		}
+		head := gitOutTrim(t, fx.root, "rev-parse", "HEAD")
+		if res.SHA != head || head == headBefore {
+			t.Errorf("sha = %q, HEAD = %q (before %q); want sha = new HEAD", res.SHA, head, headBefore)
+		}
+		if parents := strings.Fields(gitOutTrim(t, fx.root, "rev-list", "--parents", "-n", "1", "HEAD")); len(parents) != 3 {
+			t.Errorf("HEAD is not a merge commit: rev-list --parents = %v", parents)
+		}
+		if st := gitOutTrim(t, fx.root, "status", "--porcelain"); st != "" {
+			t.Errorf("tree dirty after resolve:\n%s", st)
+		}
+
+		entries := fx.baseSyncs(t)
+		if len(entries) != 1 {
+			t.Fatalf("baseSyncs has %d entries, want 1 (updated in place): %v", len(entries), entries)
+		}
+		if entries[0]["status"] != "resolved" {
+			t.Errorf("baseSyncs[0].status = %v, want resolved", entries[0]["status"])
+		}
+		if entries[0]["sha"] != res.SHA {
+			t.Errorf("baseSyncs[0].sha = %v, want %s", entries[0]["sha"], res.SHA)
+		}
+		assertStateMatchesSchema(t, fx.statePath)
+	})
+
+	t.Run("wave is required", func(t *testing.T) {
+		fx := newBaseSyncFixture(t, "")
+		_, err := executeState(fx.root, fx.root, ExecuteStateIn{Action: "base-sync-resolve", Branch: "feature"}, fixedClock(testNow))
+		var de *mcpserver.DomainError
+		if !errors.As(err, &de) {
+			t.Fatalf("err = %v (%T), want *mcpserver.DomainError", err, err)
+		}
+	})
+}

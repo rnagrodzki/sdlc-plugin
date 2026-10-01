@@ -40,7 +40,7 @@ import (
 // ExecuteStateIn carries the merged input for the execute_state tool's
 // actions. Each field is consumed by one or more actions (noted in comments).
 type ExecuteStateIn struct {
-	Action              string         `json:"action" jsonschema:"enum=wave-compute,enum=init,enum=wave-start,enum=wave-done,enum=wave-fail,enum=wave-committed,enum=wave-commit,enum=base-sync,enum=task-done,enum=task-fail,enum=task-context,enum=context,enum=read,enum=cleanup,enum=gc,enum=summarize-prior-wave-context,enum=wave-split,enum=verify-completeness,enum=wave-progress,enum=wave-await,enum=task-redispatch,enum=resume-reset,enum=ledger_checkin,enum=ledger_checkout,enum=ledger_status,enum=ledger_cleanup,enum=log-cli,enum=drift-log,enum=issue-draft,enum=decide,enum=resolve-config,enum=report" jsonschema_description:"Selects the operation. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
+	Action              string         `json:"action" jsonschema:"enum=wave-compute,enum=init,enum=wave-start,enum=wave-done,enum=wave-fail,enum=wave-committed,enum=wave-commit,enum=base-sync,enum=base-sync-resolve,enum=task-done,enum=task-fail,enum=task-context,enum=context,enum=read,enum=cleanup,enum=gc,enum=summarize-prior-wave-context,enum=wave-split,enum=verify-completeness,enum=wave-progress,enum=wave-await,enum=task-redispatch,enum=resume-reset,enum=ledger_checkin,enum=ledger_checkout,enum=ledger_status,enum=ledger_cleanup,enum=log-cli,enum=drift-log,enum=issue-draft,enum=decide,enum=resolve-config,enum=report" jsonschema_description:"Selects the operation. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
 	Branch              string         `json:"branch,omitempty" jsonschema_description:"Git branch the execution state belongs to. Most actions accept it to scope the state file; falls back to the current branch when omitted."`
 	Auto                bool           `json:"auto,omitempty" sdlcconfig:"executePrefs.auto" jsonschema_description:"resolve-config only: true when the caller passed --auto. Omitting it does not mean auto is off: the resolution order is CLI > pipeline > config > default, so auto also resolves to true when branch is supplied and that branch's ship state has flags.auto=true. Optional. Defaults to config executePrefs.auto. Pass only to override."`
 	Quality             string         `json:"quality,omitempty" jsonschema:"enum=full,enum=balanced,enum=minimal" jsonschema_description:"Quality tier. init: required -- the tier stamped on the newly initialized run; pass the value resolve-config returned. resolve-config: the --quality CLI value, which wins over executePrefs.quality in .sdlc-v2/local.toml when non-empty. A resolve-config value outside the enum is non-fatal: it is reported in warnings and resolution falls through to config, then the auto default, then the skill's tier prompt."`
@@ -52,7 +52,7 @@ type ExecuteStateIn struct {
 	PlanPath            string         `json:"planPath,omitempty" jsonschema_description:"Path to the plan file to parse into a wave schedule (wave-compute), or to record on a newly initialized run (init)."`
 	PlanHash            string         `json:"planHash,omitempty" jsonschema_description:"Hash of the plan file content, recorded on a newly initialized run (init only) to detect later plan drift."`
 	ExtraDepsJSON       string         `json:"extraDepsJson,omitempty" jsonschema_description:"wave-compute only: JSON array of {task, dependsOn, reason} objects merged with each task's explicit \"Depends on\" field before the wave schedule is computed."`
-	Wave                *int           `json:"wave,omitempty" jsonschema_description:"Wave number the action applies to (wave-start, wave-done, wave-fail, wave-committed, wave-commit, base-sync, task-done, task-fail, wave-split, wave-await; also task-redispatch, optional, to scope the row search to one wave instead of scanning every wave)."`
+	Wave                *int           `json:"wave,omitempty" jsonschema_description:"Wave number the action applies to (wave-start, wave-done, wave-fail, wave-committed, wave-commit, base-sync, base-sync-resolve, task-done, task-fail, wave-split, wave-await; also task-redispatch, optional, to scope the row search to one wave instead of scanning every wave)."`
 	TasksJSON           string         `json:"tasksJson,omitempty" jsonschema_description:"wave-start: JSON array of task objects. Each entry: {id: string, name: string, description: string, complexity: string (optional — Trivial|Standard|Complex), contract: string (optional), acceptanceCriteria: string[] (optional — array of strings), files: string[] (optional), workerName: string (optional — caller-supplied dispatch identity, never invented; falls back to a generated template when omitted), batchId: string (optional — shared by every task in one batch dispatch; omit for a solo task), batchIndex: number (optional — this task's 0-based position within its batch)}. Entries missing required string fields (id, name, description) are dropped with a warning; if zero valid entries remain after filtering, the call fails with an error. Seeds server-owned dispatch state (dispatchedAt, workerName, batchId/batchIndex, attempt:1) for every valid task."`
 	RunID               string         `json:"runId,omitempty" jsonschema_description:"Execution run identifier. Required by task-context, wave-await, ledger_checkin, ledger_checkout, and ledger_status; optional elsewhere (e.g. wave-start for fact sheets, task-redispatch) where it falls back to the value derived from the state's startedAt/wave."`
 	WorkerID            string         `json:"workerId,omitempty" jsonschema_description:"Identifier of the per-task worker registering or clearing its ledger entry (ledger_checkin, ledger_checkout)."`
@@ -111,6 +111,7 @@ type ExecuteStateIn struct {
 	Write               bool           `json:"write,omitempty" jsonschema_description:"report only: persist the report under <main worktree>/.sdlc-v2/reports/ instead of only returning it. Default false (read-only)."`
 	Format              string         `json:"format,omitempty" jsonschema:"enum=json,enum=md" jsonschema_description:"report only: overrides the format normally sourced from config.automation.report.format (\"json\" or \"md\"). Required alongside write=true so the caller's second (body-carrying) call and the tool agree on which file extension to persist."`
 	Body                string         `json:"body,omitempty" jsonschema_description:"report only: rendered markdown body to persist. Required when write=true and format=md (the caller renders markdown itself and hands the tool the exact text to write); ignored for format=json, where the tool recomputes and persists the report struct itself."`
+	Abort               bool           `json:"abort,omitempty" jsonschema_description:"Plain JSON bool. base-sync-resolve only: true aborts the in-progress base merge. Example: true"`
 }
 
 // ---------------------------------------------------------------------------
@@ -561,6 +562,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - wave-committed: Record a commit SHA for a completed wave. Requires wave. Optional: branch, sha.
 - wave-commit: Stage and commit a completed wave's changes (git add -A + git commit -m message) and record the resulting sha on the wave, mirroring wave-committed's SHA-recording. Requires wave, message. Optional: branch, detail ("concise"|"full"). The wave must already be "completed" (call wave-done first). Empty diff: succeeds without committing ({committed:false, reason:"nothing to commit"}). When config execute.commitWaves is false, does not commit and instead returns an instruction to commit manually and call wave-committed. Idempotent on resume: an already-recorded committedSha that is still an ancestor of HEAD is reported ({idempotent:true}) rather than committed again.
 - base-sync: Fetch origin/<base> and merge it into the current branch between waves (base = [git] baseBranch, else the default branch). Requires wave. Optional: branch. Returns status (disabled|skipped|up-to-date|merged|conflict), base, behind, sha, conflictedFiles, warnings, and appends one baseSyncs[] entry. A dirty tree or a failed fetch returns skipped without merging; a merge already in progress returns DomainError. On conflict the merge stays in progress; call base-sync-resolve next.
+- base-sync-resolve: Finish or abort the merge left by a base-sync conflict. Requires wave. Optional: branch, abort. Without abort: fails with DomainError while unmerged files or conflict markers remain in the recorded conflictedFiles, else runs git add + git commit --no-edit and returns status resolved with sha. With abort:true: runs git merge --abort and returns status aborted; a no-op with a warning when no merge is in progress. Updates the wave's last baseSyncs[] entry.
 - task-done: Record task completion. Returns narration (summary with running tally, warnings[] when phantom-success heuristics fire). Requires wave, taskId. Optional: branch, taskName, complexity, risk, filesChanged, filesAdded, verifyToken, status ("DONE_WITH_CONCERNS" records a warning issue), error (concern detail for DONE_WITH_CONCERNS). A taskId that is not in a non-empty plannedTaskIds is still recorded, with a warning that names it.
 - task-fail: Record task failure. Returns narration (summary with running tally). Requires wave, taskId. Optional: branch, runId (locates the worker's progress file to harvest a resumeFrom claim; falls back the same way wave-start does), taskName, complexity, risk, error, skippedDependency (records an issue; only a non-skipped failure updates failedTask). Idempotent: a repeat call for a task already recorded as failed/skipped at the same attempt is a no-op — it does not duplicate the issue log or move completedAt forward.
 - task-redispatch: Reopen a failed task for another attempt. Requires taskId. Optional: branch, runId, wave (searches every wave for the task's closed row when omitted). Re-opens the task's wave-manifest row to "in_progress", then deletes and re-seeds the task's server state with a fresh dispatchedAt and attempt+1 — contextFetchedAt, reclaimRequestedAt, and batchId all come back empty, since a redispatch is always solo even if the failed attempt was batched. Refuses with a DomainError (Suggestion names user escalation) at the 2-retry ceiling (attempt already at 3) instead of seeding a 4th attempt.
@@ -591,7 +593,7 @@ Returns Markdown: a "# execute_state — ok" heading, a **Next:** line, then the
 			ReadOnly:    false,
 			Destructive: true,
 			Idempotent:  false,
-			OpenWorld:   false,
+			OpenWorld:   true, // base-sync runs git fetch origin <base>
 		},
 		func(ctx mcpserver.Ctx, in ExecuteStateIn) (any, error) {
 			root, err := worktree.MainRoot()
@@ -638,6 +640,8 @@ func executeState(root, workDir string, in ExecuteStateIn, now func() time.Time)
 		return execActionWaveCommit(root, workDir, in)
 	case "base-sync":
 		return execActionBaseSync(root, workDir, in, now)
+	case "base-sync-resolve":
+		return execActionBaseSyncResolve(root, workDir, in)
 	case "task-done":
 		return execActionTaskDone(root, workDir, in, now)
 	case "task-fail":
@@ -3447,6 +3451,185 @@ func execBaseSyncFinish(st *state.State, wave int, result ExecBaseSyncOut, now f
 		next = &pipeline.NextAction{ID: fmt.Sprintf("base-sync-resolve-wave-%d", wave), Instruction: execBaseSyncConflictNext}
 	}
 	result.Next = next
+	return result, nil
+}
+
+// ---------------------------------------------------------------------------
+// Action: base-sync-resolve
+// ---------------------------------------------------------------------------
+
+// execFindLastBaseSync returns the last baseSyncs[] entry whose "wave" field
+// equals waveNumber, or nil when none is recorded. "Last" matters because a
+// wave can in principle accumulate more than one entry (a retried base-sync
+// call); base-sync-resolve always finishes the most recent one.
+func execFindLastBaseSync(data map[string]any, waveNumber int) map[string]any {
+	syncs, _ := data["baseSyncs"].([]any)
+	var found map[string]any
+	for _, s := range syncs {
+		sm, ok := s.(map[string]any)
+		if !ok {
+			continue
+		}
+		if execToInt(sm["wave"]) == waveNumber {
+			found = sm
+		}
+	}
+	return found
+}
+
+// execBaseSyncConflictFiles reads entry's conflictedFiles field (as recorded
+// by base-sync) back into a []string. Returns nil when entry is nil or the
+// field is absent/empty.
+func execBaseSyncConflictFiles(entry map[string]any) []string {
+	if entry == nil {
+		return nil
+	}
+	raw, _ := entry["conflictedFiles"].([]any)
+	files := make([]string, 0, len(raw))
+	for _, f := range raw {
+		if s, ok := f.(string); ok {
+			files = append(files, s)
+		}
+	}
+	return files
+}
+
+// execBaseSyncResolveConflictMarkers scans exactly the files named in
+// recordedFiles (never the whole repo) for "<<<<<<<" or ">>>>>>>" conflict
+// markers, catching the case where a file was `git add`-ed without its
+// markers actually being removed. A file that can no longer be read (e.g.
+// deleted) is skipped rather than treated as still-conflicted.
+func execBaseSyncResolveConflictMarkers(workDir string, recordedFiles []string) []string {
+	var marked []string
+	for _, f := range recordedFiles {
+		content, err := os.ReadFile(filepath.Join(workDir, f))
+		if err != nil {
+			continue
+		}
+		text := string(content)
+		if strings.Contains(text, "<<<<<<<") || strings.Contains(text, ">>>>>>>") {
+			marked = append(marked, f)
+		}
+	}
+	return marked
+}
+
+// execActionBaseSyncResolve finishes or aborts the merge base-sync left in
+// progress on conflict. Checks run in this fixed order: abort / no abort,
+// then (for abort) whether a merge is actually in progress, then (for a
+// non-abort finish) whether unmerged files or conflict markers remain. The
+// wave's last baseSyncs[] entry (see execFindLastBaseSync) is updated in
+// place — never appended as a new entry.
+func execActionBaseSyncResolve(root, workDir string, in ExecuteStateIn) (any, error) {
+	if in.Wave == nil {
+		return nil, &mcpserver.DomainError{Msg: "--wave is required", Suggestion: "Pass wave (the number of the wave whose base-sync conflict this resolves) in the request."}
+	}
+	if *in.Wave < 1 {
+		return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("wave must be 1 or greater, got %d", *in.Wave), Suggestion: "Pass the number of the wave whose base-sync conflict this resolves (waves start at 1)."}
+	}
+	wave := *in.Wave
+
+	branch, err := execResolveBranch(in.Branch, workDir)
+	if err != nil {
+		return nil, err
+	}
+	st, err := execFindState(root, branch)
+	if err != nil {
+		return nil, err
+	}
+	if err := execAssertBranch(st, branch); err != nil {
+		return nil, err
+	}
+
+	inProgress, err := gitx.MergeInProgress(workDir)
+	if err != nil {
+		return nil, &mcpserver.InfraError{Msg: err.Error(), Cause: err, Suggestion: "Inspect the repository with git status — the git directory may be unreadable or corrupt. Resolve it, then retry base-sync-resolve."}
+	}
+
+	nextWaveInstruction := fmt.Sprintf("Call wave-start for wave %d.", wave+1)
+	nextWave := &pipeline.NextAction{ID: fmt.Sprintf("wave-%d", wave+1), Instruction: nextWaveInstruction}
+
+	if in.Abort {
+		if !inProgress {
+			result := ExecBaseSyncOut{Status: "aborted", Warnings: []string{"base-sync-resolve: no merge in progress; nothing to abort"}}
+			result.Summary = fmt.Sprintf("Wave %d: base-sync-resolve found no merge in progress; nothing to abort.", wave)
+			result.Next = nextWave
+			return result, nil
+		}
+		if err := gitx.MergeAbort(workDir); err != nil {
+			return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("git merge --abort: %s", err.Error()), Cause: err, Suggestion: "Inspect the repository with git status — resolve whatever is blocking the abort, then retry base-sync-resolve with abort:true."}
+		}
+		if entry := execFindLastBaseSync(st.Data, wave); entry != nil {
+			entry["status"] = "aborted"
+		}
+		if err := state.Write(st); err != nil {
+			return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err, Suggestion: "Check that " + paths.DataDir + "/" + paths.RunsSubdir + "/ is writable and the disk is not full. The git side of base-sync-resolve already ran: check git status before retrying."}
+		}
+		result := ExecBaseSyncOut{Status: "aborted", Warnings: []string{"base-sync aborted: continuing on the previous base"}}
+		result.Summary = fmt.Sprintf("Wave %d: base-sync aborted; continuing on the previous base.", wave)
+		result.Next = nextWave
+		return result, nil
+	}
+
+	if !inProgress {
+		return nil, &mcpserver.DomainError{
+			Msg:        "base-sync-resolve: no merge in progress",
+			Suggestion: "Call wave-start for the next wave.",
+		}
+	}
+
+	unmerged, err := gitx.UnmergedFiles(workDir)
+	if err != nil {
+		return nil, &mcpserver.InfraError{Msg: err.Error(), Cause: err, Suggestion: "The merge is still in progress. Run git diff --name-only --diff-filter=U to list the conflicted files, or call base-sync-resolve with abort:true to drop the merge."}
+	}
+
+	entry := execFindLastBaseSync(st.Data, wave)
+	recordedFiles := execBaseSyncConflictFiles(entry)
+	markedFiles := execBaseSyncResolveConflictMarkers(workDir, recordedFiles)
+
+	remaining := append([]string{}, unmerged...)
+	for _, f := range markedFiles {
+		already := false
+		for _, u := range remaining {
+			if u == f {
+				already = true
+				break
+			}
+		}
+		if !already {
+			remaining = append(remaining, f)
+		}
+	}
+	if len(remaining) > 0 {
+		sort.Strings(remaining)
+		return nil, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("base-sync-resolve: conflicts remain in %s", strings.Join(remaining, ", ")),
+			Suggestion: "Resolve the listed files and call base-sync-resolve again, or call it with abort:true.",
+		}
+	}
+
+	if _, err := execx.Run("git", []string{"add", "-A"}, execx.Options{Dir: workDir}); err != nil {
+		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("git add: %s", err.Error()), Cause: err, Suggestion: "Inspect the repository with git status — the working tree or index may be locked or corrupt. Resolve it, then retry base-sync-resolve."}
+	}
+	if _, err := execx.Run("git", []string{"commit", "--no-edit"}, execx.Options{Dir: workDir}); err != nil {
+		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("git commit --no-edit: %s", err.Error()), Cause: err, Suggestion: "Read the git output above: a failing commit hook or a missing user.name/user.email is the usual cause. Fix it, then retry base-sync-resolve."}
+	}
+	sha, err := shipHeadSHA(workDir)
+	if err != nil {
+		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("git rev-parse HEAD: %s", err.Error()), Cause: err, Suggestion: "The commit was made but its sha could not be read back. Run git rev-parse HEAD by hand and record it on the wave's baseSyncs entry."}
+	}
+
+	if entry != nil {
+		entry["status"] = "resolved"
+		entry["sha"] = sha
+	}
+	if err := state.Write(st); err != nil {
+		return nil, &mcpserver.InfraError{Msg: "write state: " + err.Error(), Cause: err, Suggestion: "Check that " + paths.DataDir + "/" + paths.RunsSubdir + "/ is writable and the disk is not full. The git side of base-sync-resolve already ran: check git status before retrying."}
+	}
+
+	result := ExecBaseSyncOut{Status: "resolved", SHA: sha}
+	result.Summary = fmt.Sprintf("Wave %d: base-sync conflict resolved as %s.", wave, shortSHA(sha))
+	result.Next = nextWave
 	return result, nil
 }
 

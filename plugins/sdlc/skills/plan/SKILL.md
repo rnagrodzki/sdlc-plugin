@@ -177,7 +177,7 @@ Then go to **Existing change** with the chosen name.
 **Existing change:** Set `fromOpenspec` to the change name and `fromOpenspecDirect = true`. When the name came from the arguments, the context-detection call already carried it. Otherwise (branch match or **Use existing change**), pass `fromOpenspec: <name>` and `fromOpenspecDirect: true` to the template-resolution call below — never make a second context-detection call, because a `plan_prepare` call without `resolveTemplate` starts a new run. Then check `fromOpenspec` in the output of the call that carried the name:
 - `valid` is false and errors exist: display the errors and stop.
 - `valid` is true:
-  1. Read in parallel: `openspec/changes/<name>/proposal.md` (intent and scope), `openspec/changes/<name>/design.md` (technical approach; optional — skip if absent), all `openspec/changes/<name>/specs/*.md` and `openspec/changes/<name>/specs/<capability>/spec.md` (one level deep — the delta specs, i.e. the requirements), `openspec/changes/<name>/tasks.md` (OpenSpec's task checklist; optional — skip if absent).
+  1. Read in parallel: `openspec/changes/<name>/proposal.md` (intent and scope), `openspec/changes/<name>/design.md` (technical approach; optional — skip if absent), every path in `fromOpenspec.deltaSpecPaths` (the delta specs, i.e. the requirements — repo-relative paths under `openspec/changes/<name>/specs/`, already computed by the `plan_prepare` call above; do not glob the `specs/` directory yourself), `openspec/changes/<name>/tasks.md` (OpenSpec's task checklist; optional — skip if absent).
   2. Store these as `openspecContext` for use in Steps 1–5.
   3. Set the plan file header `**Source:**` to `openspec/changes/<name>/` (when the template is written later, keep this line in place of `**Source:** [TBD]`) — required verbatim: `execute_state({action:"init"})` reads this exact header to ref-stamp `tasks.md` later. Do NOT report `openspecContext.tasksUpdated` as tasks updated — it is a pending count, not a write. Rationale: `docs/plan-architecture.md` § "OpenSpec tasks.md Ref Stamping".
   4. Apply **Header cleanup** below.
@@ -475,7 +475,7 @@ Identify constraints: language, framework, existing conventions, testing approac
 
 **OpenSpec enrichment (when `openspecContext` is available):**
 - Use `proposal.md` for goal and scope understanding (what's in, what's out)
-- Use delta specs (`specs/*.md` and `specs/<capability>/spec.md`) with their ADDED/MODIFIED/REMOVED sections as the authoritative requirements — each delta entry is a requirement
+- Use the delta spec files in `openspecContext` (for an **Existing change**, the `fromOpenspec.deltaSpecPaths` files already read in Step 0; for the **Create OpenSpec change** path, the staged `specs/**` files authored in Step 0 step b) with their ADDED/MODIFIED/REMOVED sections as the authoritative requirements — each delta entry is a requirement
 - Use `design.md` for architecture constraints and technical approach decisions
 - Use `tasks.md` as a coarse reference for decomposition — OpenSpec tasks are higher-level than plan tasks, so decompose further rather than copying verbatim
 - When the OpenSpec artifacts provide sufficient scope, integration, and success criteria, skip the "Structured discovery" AskUserQuestion — the proposal and delta specs already answer those questions
@@ -499,7 +499,7 @@ When `openspecContext.requirements` is present (non-null) in the prepare output:
 
 2. Fill the prompt template variables:
    - `{PROPOSAL}` — content of `openspec/changes/<name>/proposal.md` (already read in Step 0), or `"[artifact missing]"` if absent
-   - `{DELTA_SPECS}` — concatenated content of all delta spec files (`openspec/changes/<name>/specs/*.md` and `specs/<capability>/spec.md`) (already read in Step 0), or `"[artifact missing]"` if none found
+   - `{DELTA_SPECS}` — concatenated content of the delta spec files listed in `fromOpenspec.deltaSpecPaths` (already read in Step 0), or `"[artifact missing]"` if none found
    - `{TASKS_MD}` — content of `openspec/changes/<name>/tasks.md` (already read in Step 0), or `"[artifact missing]"` if absent
    - `{DESIGN}` — content of `openspec/changes/<name>/design.md` if present, or `"[artifact missing]"`
    - `{REQUIREMENTS_JSON}` — `JSON.stringify(openspecContext.requirements)` from prepare output, or `"null"` if null
@@ -764,13 +764,17 @@ plan_support({ action: "openspec_appendix", changeName: <name>, proposalPath, de
 
 Write the returned `appendixMarkdown` into the `## OpenSpec Appendix` section. The tool builds the requirement inventory table and delta-spec fragments (with nested-fence safety) server-side.
 
-**(b)** When `openspecStage` is true (the Create OpenSpec change path — option 1 of Step 0's OpenSpec gate check, implements R63), populate the `## OpenSpec Appendix` section with an **OpenSpec Artifacts (Draft)** label and author fresh artifacts from exploration and decomposition data:
+**(b)** When `openspecStage` is true (the Create OpenSpec change path — option 1 of Step 0's OpenSpec gate check, implements R63), populate the `## OpenSpec Appendix` section with a staging-path reference and a traceability table ONLY — never authored artifact content, drafts, or per-file target annotations of any kind. The artifacts already exist as staged files under `.sdlc-v2/openspec-staging/<name>/` (authored in **Create OpenSpec change** step b and kept current by **Create-flow re-stage**), so the appendix links to them instead of re-authoring them:
 
-1. **`### Proposal Summary`** — author a proposal summary from the user's request and exploration findings. Wrap with `<!-- openspec-target: proposal.md -->`.
-2. **`### Delta Specs`** — author spec deltas with ADDED/MODIFIED/REMOVED sections derived from exploration and decomposition. Wrap with `<!-- openspec-target: specs/<capability>/spec.md -->` (one file per capability — the OpenSpec layout, as in plan-format-reference.md).
-3. **`### Tasks List`** — author a tasks checklist derived from the plan's task decomposition. Wrap with `<!-- openspec-target: tasks.md -->`.
+```markdown
+## OpenSpec Appendix
+**Staging:** `.sdlc-v2/openspec-staging/<name>/` (materialized at ship/execute start)
+| Requirement | Spec file | Covering task(s) |
+|---|---|---|
+| Base branch configuration | specs/base-branch/spec.md | Task 2, Task 3 |
+```
 
-Each fragment MUST be wrapped with `<!-- openspec-target: <path> -->` annotations as shown above. The appendix MUST be complete enough that `openspec validate` can run directly off it after handoff, with no further interactive authoring step. **Nested-fence safety (N+1 backticks):** Before fencing a fragment, count the longest consecutive backtick run (N) inside its content and wrap in max(N+1, 4) backticks — CommonMark closes a fence only on a run at least as long as the opening. Each fragment is fenced independently.
+Build one table row per requirement found in the staged delta specs (`openspecContext`'s `specs/**` content, one row per ADDED/MODIFIED/REMOVED requirement heading): the requirement name, the staged spec file's path relative to the change dir, and the plan `### Task N` block(s) that implement it.
 
 **(c)** When `fromOpenspecDirect` is false AND `openspecStage` is false, the skeleton placeholder from Step 0 already reads `Not applicable — no OpenSpec change` — leave it as-is.
 
@@ -951,6 +955,8 @@ If `style.instructions` is not empty, print the instruction self-check table and
 |---|---|---|---|
 | 1 | Cite file:line for every claim about existing code. | yes | `grep -c "\.go:[0-9]" <plan>` → 14 hits, all in Research Findings (plan.md:40-71) and Tasks 3-8 (plan.md:120-188) |
 ```
+
+**Critical decisions capture:** Before calling `plan_mark({ marker: "done" })`, call `plan_mark({ marker: "criticalDecisions", data: { decisions: [...] } })` exactly once. Build one entry per `## Key Decisions` bullet (`--auto`-suppressed choices are already recorded there per Steps 0/1's suppression rules, so they need no separate entry): `{ key: "<short decision identifier>", choice: "<what was chosen>", rejected: [{ option: "<alternative considered>", why: "<why it lost>" }], reason: "<why the chosen option won>" }`. When the section lists no decisions, call it once with `data: { decisions: [] }` — the call itself is unconditional, never skipped.
 
 Call `plan_mark({ marker: "done" })` before either branch below — writes the terminal `planIntegrity` marker the `stop-plan-integrity` Stop hook gates on: without it, the hook keeps the plan state file indefinitely instead of evaluating and deleting it.
 

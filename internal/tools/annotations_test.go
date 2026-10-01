@@ -175,8 +175,8 @@ var toolAnnotations = map[string]annotationPolicy{
 		readOnly:    false,
 		destructive: true,
 		idempotent:  false,
-		openWorld:   false,
-		reason:      "configmigrate.MigrateWithBackup → tracked .sdlc-v2/config.toml; init materializes openspec/changes/<c>/ and runs git add",
+		openWorld:   true,
+		reason:      "configmigrate.MigrateWithBackup → tracked .sdlc-v2/config.toml; init materializes openspec/changes/<c>/ and runs git add; base-sync runs git fetch origin <base>",
 	},
 	"ship_state": {
 		title:       "Read or update ship run state",

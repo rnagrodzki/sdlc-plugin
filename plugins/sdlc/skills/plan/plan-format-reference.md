@@ -43,7 +43,7 @@ order.
 6. **Contract Examples** — one worked `**Contract:**` block per column type used by the plan's tasks (required)
 7. **Guardrail Compliance** — guardrail evaluation (optional; present when `plan.guardrails` configured)
 8. **Task 1…N** — per-task blocks (required)
-9. **Out-of-scope OpenSpec tasks** — intentional exclusions (optional; `--from-openspec` only)
+9. **Out-of-scope OpenSpec tasks** — intentional exclusions (optional; `--spec <change-name>` only)
 10. **Final Shape** — aggregated end-state once all tasks are done (required, narrative)
 11. **Verification Scorecard** — dimension table + traceability matrix + verdict (full-pipeline plans only)
 12. **OpenSpec Appendix** — requirement inventory + delta-spec mapping (required heading; body conditional on OpenSpec status)
@@ -188,7 +188,7 @@ concrete artifacts are rendered per `## Concrete Artifacts (render don't narrate
 - decisions: [per-task decided choices bound to this deliverable; cite `## Key Decisions` where relevant]
 - sync: [sibling artifacts that must stay byte-consistent with this deliverable]
 
-**openspec-task:** (optional — present only when plan was generated with `--from-openspec`)
+**openspec-task:** (optional — present only when the plan was generated from an existing change with `--spec <change-name>`)
 - change: <change-name>
 - ref: <kebab-slug-6char-hash>
 - line: <1-indexed-line-number-at-plan-time>
@@ -477,7 +477,7 @@ and falsifiable rather than asserted.
 
 ## Out-of-scope OpenSpec tasks (optional)
 
-Present only when `--from-openspec` was used AND at least one OpenSpec task has no plan
+Present only when `--spec <change-name>` was used AND at least one OpenSpec task has no plan
 coverage. Documents intentional exclusions so the G16 coverage gate passes and the archive
 gate (R38) does not suppress the suggestion at execute time.
 
@@ -508,7 +508,7 @@ page; no new UI is added.
 
 ## Verification Scorecard (full-pipeline plans)
 
-Present only in full-pipeline plans (i.e., `--from-openspec` or equivalent multi-task runs). Assembled by plan at Step 5 (after the lens merge). Contains a dimension table, a traceability matrix, and a go/no-go verdict. See [`docs/skills/plan.md`](../../../docs/skills/plan.md) — Gate B section for the full format specification.
+Present only in full-pipeline plans (i.e., `--spec <change-name>` or equivalent multi-task runs). Assembled by plan at Step 5 (after the lens merge). Contains a dimension table, a traceability matrix, and a go/no-go verdict. See [`docs/skills/plan.md`](../../../docs/skills/plan.md) — Gate B section for the full format specification.
 
 Deterministically enforced by PF9 (validate-plan-format.js, --final) — the section must be present in full-pipeline plans.
 
@@ -526,9 +526,8 @@ need to open OpenSpec files separately.
   `Not applicable — no OpenSpec change`.
 - **OpenSpec change active** (source matches `openspec/changes/`): body lists each requirement from
   the inventory with the task(s) that cover it, and reproduces the relevant delta-spec fragments.
-- **OpenSpec inline generation** (`openspecInlineGenerate` true): body contains authored artifact
-  drafts with per-file `<!-- openspec-target: <path> -->` annotations consumable by `openspec
-  create`/`validate`.
+- **OpenSpec staging** (`openspecStage` true): body is the link + traceability table only; artifacts
+  live in `.sdlc-v2/openspec-staging/<name>/`.
 
 **Nested-fence safety (N+1 backticks):** delta-spec fragments reproduced here are themselves
 markdown containing fenced code blocks (scenario snippets, requirement bodies). A plain 3-backtick
@@ -554,34 +553,6 @@ runs through untouched.
 ### Requirement: Signed webhook payloads
 The system SHALL sign every outbound webhook payload with HMAC-SHA256.
 ```
-````
-
-**Inline generation example** (`openspecInlineGenerate` true — no on-disk OpenSpec change exists yet;
-the appendix authors the drafts that `openspec create`/`openspec validate` will consume). Each
-authored fragment is wrapped in a `<!-- openspec-target: <path> -->` annotation naming the file the
-fragment becomes once handed off:
-
-````markdown
-## OpenSpec Appendix
-
-**OpenSpec Artifacts (Draft)**
-
-### Proposal Summary
-<!-- openspec-target: proposal.md -->
-Adds HMAC-SHA256 signing to outbound webhook payloads so receivers can verify authenticity.
-
-### Delta Specs
-<!-- openspec-target: specs/billing/spec.md -->
-```markdown
-## ADDED Requirements
-### Requirement: Signed webhook payloads
-The system SHALL sign every outbound webhook payload with HMAC-SHA256.
-```
-
-### Tasks List
-<!-- openspec-target: tasks.md -->
-- [ ] Add HMAC signing to the webhook dispatcher
-- [ ] Reject unsigned inbound callbacks with 401
 ````
 
 ---

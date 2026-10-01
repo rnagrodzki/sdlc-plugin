@@ -174,7 +174,7 @@ The `base-sync-resolve` action SHALL finish or abort the merge that `base-sync` 
 |---|---|---|---|
 | `abort: true` | — | `aborted` | `git merge --abort`; warning `base-sync aborted: continuing on the previous base` |
 | `abort` absent | unmerged files remain, or a previously conflicted file still has a `<<<<<<<` or `>>>>>>>` line | — | DomainError listing the files; merge stays in progress |
-| `abort` absent | checks pass | `resolved` | `git add` the conflicted files, `git commit --no-edit`; `sha` = new `HEAD` |
+| `abort` absent | checks pass | `resolved` | `git add -A`, `git commit --no-edit`; `sha` = new `HEAD` |
 
 | Condition | Class | Message (short) |
 |---|---|---|
