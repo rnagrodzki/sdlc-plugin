@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.3.0] - 2026-10-01
+
+- Added config guardrails for error enrichment and test coverage
+- Added error recovery around gh label add/remove operations
+- MCP annotations and input schemas corrected; skill and docs aligned with tool behavior
+- OpenSpec initialized; strict baseline specs for all 13 skills and 31 MCP tools
+- commit: raw (also non-ASCII) file names; staged-only changes no longer listed as unstaged; stale manifest temp dirs removed
+- execute / execute_state: wave-await branch from the active worktree; working recovery for a diverged wave commit; bad decision input rejected; schema matches written state
+- harden, error-report, jira, links, learnings, telemetry: reference, parsing, numbering and labelling fixes; jira drafts from a base structure when no template exists
+- plan / plan_support: skill sends the field names the tool reads; failed lanes block the merge; lens and writer counts fixed; empty task fields detected in all field checks
+- polling: gh pr checks errors no longer read as a green pipeline; auth/404 classified; no-CI poll ends as skipped
+- pr: pr_apply edits only an open PR; --draft and --base pass through to gh pr create; pr_prepare keeps warnings on auth exits and warns on an unreadable version config
+- pr_apply now records release intent (level + optional pre-release) only, no pinned version number, writing notes under an "## [Unreleased]" heading
+- pr_apply replaces any stale release:* label with the new one on re-apply instead of accumulating labels
+- review: open PR detection; no PR lookup for local and worktree scopes; git and folder read failures reported; truncated and queued dimensions handled correctly
+- security: dimensions_render_instructions blocks path escape through the frontmatter name
+- setup / config / migrate: section writes keep comments, CRLF and integers; unknown keys rejected; legacy import only overwrites untouched template defaults; dry run uses the real stale check
+- ship / ship_state: side effects recorded during the run; only an open PR counts; non-retryable poll errors stop the loop; GC dry run matches the real run; conditional steps and bad outcomes rejected
+- tests no longer leave temp folders or integration binaries behind
+
 ## [0.2.1] - 2026-09-30
 
 ### RC 1
