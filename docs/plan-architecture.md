@@ -80,17 +80,25 @@ Branch slugs are computed by `state.SlugifyBranch`. The state package
 rules:
 
 - **Prune-on-write:** When a new `plan-<branch>-*.json` is written, older
-  state files for the same branch prefix are deleted.
-- **Consume-then-delete:** The stop hook reads the state file once, then
-  deletes it regardless of outcome (single-shot).
-- **GC orphan sweep:** `internal/state/gc.go` applies a TTL and
-  branch-liveness check to remove stale state files from dead branches.
+  state files for the same branch prefix are deleted — except a sibling
+  `plan` run already marked `done`, which is kept (see
+  [Plan run lifetime](#plan-run-lifetime)).
+- **Evaluate, don't delete:** The stop hook reads the state file once `done`
+  is set and evaluates it, but no longer deletes it — deletion is owned by
+  ship's `cleanup-pipeline` step or the GC TTL sweep below.
+- **GC orphan sweep:** `internal/state/gc.go` deletes every state file of a
+  dead branch regardless of age, and — for a live branch — a file only once
+  it is both past the TTL **and** no longer the newest of its branch; this
+  is what eventually claims a `done` plan run too, once the branch moves on
+  (see [Plan run lifetime](#plan-run-lifetime)). `ship_state({action:
+  "cleanup-pipeline"})` additionally removes a `done` plan run as soon as
+  the ship report has read it, independently of GC's TTL/newest rule.
 
 ### Hooks
 
 | Hook | Trigger | Handler | Effect |
 |------|---------|---------|--------|
-| `stop-plan-integrity` | `Stop` | `internal/hooks/stop_hooks.go` | Advisory check that all 5 planIntegrity markers were written. Gates on `done` marker before evaluating or deleting state file. Falls back to transcript scanning (last 64KB for "Plan mode is active") when no state file found. Always ExitCode 0 (advisory). |
+| `stop-plan-integrity` | `Stop` | `internal/hooks/stop_hooks.go` | Advisory check that all 5 planIntegrity markers were written. Gates on `done` marker before evaluating; never deletes the state file (see [Plan run lifetime](#plan-run-lifetime)). Falls back to transcript scanning (last 64KB for "Plan mode is active") when no state file found. Always ExitCode 0 (advisory). |
 | `post-tool-validate` | `PostToolUse` on `Edit\|Write` | `internal/hooks/post_tool_validate.go` | Runs format validation after edits to plan files |
 | `pipeline-continue` | `PostToolUse` on `Bash\|TodoWrite` | `internal/hooks/pipeline_continue.go` | Signals pipeline-aware hooks that a tool completed during an active pipeline |
 | `stop-pipeline-continue` | `Stop` | `internal/hooks/stop_hooks.go` | Counterpart to `pipeline-continue`; fires on session stop during an active pipeline |
@@ -348,6 +356,74 @@ The orchestrator logs learnings and hands off the finalized plan to the user
 or to the `/execute` skill. The Verification Scorecard was already written
 during Step 5's lens-merge iterations.
 
+### OpenSpec staging
+
+Plan mode must not write to tracked files (see **OpenSpec tasks.md Ref
+Stamping** above), but Step 0's **Create OpenSpec change** path still needs
+to author a whole change's artifacts — proposal, delta specs, tasks, design.
+`internal/openspec/stage.go` and `internal/openspec/materialize.go` split
+that into an authoring phase (plan mode, gitignored) and a materialize phase
+(the first tracked-file write, deferred to the next run's start).
+
+**Authoring — `plan_support`'s `openspec_instructions`/`openspec_stage`
+actions, both plan-mode safe:**
+
+1. `plan_support({action: "openspec_instructions", changeName})`
+   (`openspec.PrepareInstructions`) resolves the artifact list and
+   per-artifact authoring guidance (template, instruction, context, rules)
+   for `changeName`. It never touches the real repo: it copies
+   `openspec/config.yaml` into a throwaway temp directory, runs `openspec
+   new change <changeName>` there, and asks the CLI about that temp change.
+2. The skill authors each artifact's content, following the returned
+   guidance and the plan's guardrails.
+3. `plan_support({action: "openspec_stage", changeName, files, planPath})`
+   (`openspec.Stage`) validates every file's path against the artifact
+   `outputPath` glob patterns the CLI reports for a temp change (e.g.
+   `specs/**/*.md`, where `**` matches zero or more whole path segments),
+   rejecting any path that matches none of them, is absolute, contains
+   `..`/`.` segments, or repeats. On success it replaces the whole
+   `<active-worktree>/.sdlc-v2/openspec-staging/<changeName>/` directory
+   (gitignored) with the new files, writes a `stage.json` manifest
+   (`change`, `schema`, `planPath`, each file's `path` + SHA-256, and
+   `validatedAt` once validation passes), and runs `openspec validate
+   <changeName> --strict` against a temp copy of the staged change. A failed
+   validation is not an error — the result carries `valid: false` and the
+   CLI output, `stage.json` keeps no `validatedAt`, and the skill can fix
+   the artifacts and re-stage.
+4. The plan's `**OpenSpec-Staging:** .sdlc-v2/openspec-staging/<changeName>/`
+   header records the staging dir so a later run can find it
+   (`openspec.StagedChangeFromPlan` regex-matches that exact header to
+   recover the change name).
+
+**Materialize — `openspec.Materialize`, called by `execute_state`'s `init`
+action and by `ship_prepare`, before any other state is written:**
+
+Reads the plan's `**OpenSpec-Staging:**` header (a no-op, nil-error return
+when the plan has none) and applies the first matching rule:
+
+| Target `openspec/changes/<name>/` | Staging dir | Result |
+|---|---|---|
+| missing | missing | error — nothing to materialize from |
+| exists | missing | no-op — already materialized (`"already"`) |
+| exists | exists, every staged file's SHA-256 matches the target | staging dir deleted; no-op (`"already"`) |
+| exists | exists, any file differs from staging | error — the existing target is never overwritten |
+| missing | exists | `openspec new change <name>` for real, copy every staged file in, `openspec validate <name> --strict`, `git add openspec/changes/<name>/`, delete the staging dir (`"created"`) |
+
+Before that last row runs, every staged file's current SHA-256 is re-checked
+against `stage.json` — a hand-edit after validation aborts materialize
+instead of committing an unvalidated file. A validation or `git add`
+failure removes the half-created target directory and leaves the staging
+dir untouched, so the next run start can retry. `.openspec.yaml` (the
+per-change metadata file `openspec new change` itself creates) is never
+part of `stage.json` and is never overwritten by materialize.
+
+### Guardrails and OpenSpec
+
+| Path | Before | After |
+|---|---|---|
+| Guardrails vs new OpenSpec change (Create) | guardrails unseen while authoring; Step 3 lane rewrites tasks; staged `tasks.md` stays stale | `openspec_instructions` returns `guardrails`; authoring follows them; `tasks.md` re-staged from final plan tasks before Step 6.5 |
+| Guardrails vs existing change (`--spec`) | Gate A audits proposal/specs/tasks/design without guardrails | Gate A gets `{GUARDRAILS}`; conflicts become `## Intake Audit Caveats` before decomposition |
+
 ---
 
 ## Fan-Out Architecture
@@ -565,7 +641,10 @@ never in parallel with another `main` write, since two parallel upserts of
 - A new (non-resume) run calls `state.PruneEvidenceDirs(st)`
   (`internal/tools/plan.go`, inside `newPlanRun`), which best-effort deletes
   sibling `<runId>.evidence/` directories that share the same state-file
-  prefix and branch slug, skipping its own run's directory. This is not
+  prefix and branch slug, skipping its own run's directory **and** any
+  sibling whose state file is itself a finished (`done`) plan run — the same
+  exception `state.Write`'s prune-on-write applies to the `.json` files
+  themselves (see [Plan run lifetime](#plan-run-lifetime)). This is not
   TTL-based — it only fires when a new run starts on the same branch.
 - Every `plan_mark` call refreshes `st.Data["planTiming"]`
   (`refreshPlanTiming` in `internal/tools/plan.go`) from
@@ -574,25 +653,31 @@ never in parallel with another `main` write, since two parallel upserts of
   acceptance time. This is best-effort: a missing `planFilePath`, or a plan
   file that cannot be stat'ed, leaves `planTiming` (and `planFilePath`) at
   their previous value and does not fail the marker call.
-- After `plan_mark({marker: "done"})`, the Stop hook
-  (`internal/hooks/stop_hooks.go`, `planIntegrityFromState`) deletes both the
-  state file and `state.EvidenceDir(st.Root, runId)`. Before that happens,
-  the `done` marker itself appends one `history.RunRecord` (skill `"plan"`,
-  outcome `"done"`, `plan_file`, `started_at`, `last_modified_at`,
+- `plan_mark({marker: "done"})` appends one `history.RunRecord` (skill
+  `"plan"`, outcome `"done"`, `plan_file`, `started_at`, `last_modified_at`,
   `duration_ms`) to `.sdlc-v2/history/runs.jsonl`
   (`appendPlanRunRecord` in `internal/tools/plan.go`) — this file lives
-  outside `runs/` under `.sdlc-v2/history/`, so it survives both the Stop
-  hook's deletion and the TTL reaper below. A revised plan (a second `done`
-  after a rejected ExitPlanMode) appends a newer record rather than
+  outside `runs/` under `.sdlc-v2/history/`, so it survives the state file's
+  own eventual removal (ship's `cleanup-pipeline` step or the GC TTL sweep —
+  see [Plan run lifetime](#plan-run-lifetime)). A revised plan (a second
+  `done` after a rejected ExitPlanMode) appends a newer record rather than
   replacing the first; readers take the latest `skill:"plan"` record for the
   branch. A failed append is non-fatal: the call still returns `ok: true`,
-  with the error named in `warning`.
+  with the error named in `warning`. After `plan_mark({marker: "done"})`,
+  the Stop hook (`internal/hooks/stop_hooks.go`, `planIntegrityFromState`)
+  reads the state file once and evaluates the five markers, but it does
+  **not** delete the state file or `state.EvidenceDir(st.Root, runId)` —
+  both are left on disk for ship's `report` step to read, and are removed
+  only by ship's `cleanup-pipeline` step or the GC TTL reaper below.
 - `execute_state` gc (`execReapRunDirectories` in
   `internal/tools/execute_state.go`) removes `runs/` subdirectories older
   than the TTL that do not belong to a live execute run. This includes
-  abandoned `<runId>.evidence/` directories. It is the TTL backstop for runs
-  that never reached `done` and were never followed by a new run on the same
-  branch.
+  abandoned `<runId>.evidence/` directories, independently of whether the
+  matching `.json` state file has already been removed. It is the TTL
+  backstop both for runs that never reached `done` and were never followed
+  by a new run on the same branch, and for a `done` run's evidence
+  directory once the Stop hook has stopped being the thing that cleans it
+  up.
 
 ---
 
@@ -768,13 +853,14 @@ stateDiagram-v2
     PlanFileSet --> GuardrailsEvaluated: plan_mark("guardrailsEvaluated")
     GuardrailsEvaluated --> CritiqueRan: plan_mark("critiqueRan")
     CritiqueRan --> Done: plan_mark("done") (Step 7)
-    Done --> Consumed: Stop hook reads and deletes
+    Done --> Kept: Stop hook reads once, evaluates, does not delete
+    Kept --> Removed: ship cleanup-pipeline or GC TTL sweep
     CritiqueRan --> Waiting: Stop fires before "done"
     Waiting --> [*]: State file kept (no evaluation, no deletion)
 
-    note right of Created: Prune-on-write deletes older plan-branch-*.json
+    note right of Created: Prune-on-write deletes older plan-branch-*.json (done runs kept)
     note right of Done: stop-plan-integrity checks all 5 markers
-    note right of Consumed: Single-shot read then delete
+    note right of Kept: Survives so ship's report step can read Planning/Timeline
 ```
 
 ### Marker Definitions
@@ -785,7 +871,7 @@ stateDiagram-v2
 | `plan-file` | `plan_mark` (explicit) | 0 | Plan file path was written |
 | `guardrailsEvaluated` | `plan_mark` (explicit) | 3 | Gate evaluation completed |
 | `critiqueRan` | `plan_mark` (explicit) | 3 | Critique merge barrier passed |
-| `done` | `plan_mark` (explicit) | 7 | Plan completed; gates stop-hook evaluation and state-file deletion |
+| `done` | `plan_mark` (explicit) | 7 | Plan completed; gates stop-hook evaluation (the hook reads and evaluates but no longer deletes — see [Plan run lifetime](#plan-run-lifetime)) |
 
 ### Stop Hook Behavior
 
@@ -793,9 +879,22 @@ stateDiagram-v2
 
 1. Attempts to find and read `plan-<branch>-*.json` state file.
 2. Calls `planIntegrityFromState`: first checks whether the `done` marker is present. If absent, the plan is still running — returns silently without evaluation or deletion.
-3. Once `done` is present, checks all 5 markers present + `planFilePath` stat, then deletes the state file (single-use).
+3. Once `done` is present, checks all 5 markers present + `planFilePath` stat, and leaves the state file and its evidence directory on disk — this hook no longer deletes them. Deletion is owned by ship's `cleanup-pipeline` step or the GC TTL sweep; see [Plan run lifetime](#plan-run-lifetime) below.
 4. If no state file found, falls back to `planIntegrityFromTranscript`: scans last 64KB of transcript for "Plan mode is active".
 5. Advisory only (ExitCode 0 always). Missing markers produce a warning, not a failure.
+
+### Plan run lifetime
+
+A `done` plan run's state file is not deleted the moment it finishes — it is kept so a later `/sdlc:ship` run can read it for the report's Planning/Timeline sections, then removed once that has happened (or once it ages out):
+
+| Event | Plan run file + evidence |
+|---|---|
+| `plan_mark done` | kept |
+| ship `report` (write) | read for `## Planning` / `## Timeline` |
+| ship `cleanup-pipeline` | deleted when the report file exists |
+| GC (TTL, default 7 days) | deleted |
+
+`state.Write`'s prune-on-write (and `state.PruneEvidenceDirs`) both special-case a `done` plan run: a sibling state file for the same branch is pruned on every write *unless* it is itself a finished (`done`) plan run, in which case it is left alone. That is what lets the file survive from Step 7's `done` marker through the Stop hook (which only reads it) to the point ship's `report` step reads `planIntegrity`/`planTiming` from it. Actual removal then comes from whichever happens first: `ship_state({action: "cleanup-pipeline"})` removing it once the ship report has been written (the table's third row), or the standalone TTL/branch-liveness sweep (`ship --gc` / `execute --gc`, `state.GC`) once it is both past the TTL and no longer the newest file for its branch — a gone branch's files are removed regardless of age.
 
 ---
 
@@ -828,7 +927,7 @@ stateDiagram-v2
 |--------|-----------|-----------------|
 | `/setup` | `.sdlc-v2/config.toml` (plan section) | Guardrails, tasks config (requiredFields, contractShape) |
 | `/execute` | `execute_state` ledger | Ledger checkin/checkout/status for execution tracking |
-| OpenSpec CLI | `openspec/changes/<name>/` directory | Proposal, delta specs, tasks, design docs for `--from-openspec` plans |
+| OpenSpec CLI | `openspec/changes/<name>/` directory, `.sdlc-v2/openspec-staging/<name>/` | Proposal, delta specs, tasks, design docs for `--spec <change-name>` plans; staged artifacts for Create-flow plans |
 | Session start hook | OpenSpec detection banner | Signals whether OpenSpec is active in the project |
 
 ### Outbound

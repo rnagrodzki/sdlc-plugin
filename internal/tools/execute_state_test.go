@@ -8648,6 +8648,115 @@ func TestExecuteBaseSync(t *testing.T) {
 	})
 }
 
+// TestBaseSyncKeepsWaveAncestry drives a real base-sync merge (plain
+// base-sync, not base-sync-resolve) over two already-committed waves and
+// confirms the merge never drops them from history: each wave's recorded
+// committedSha must stay an ancestor of the new HEAD, execGitCrossCheckWaves
+// must report "confirmed" with no mismatches, and wave-commit called again
+// for either wave must still find its sha an ancestor and report idempotent
+// rather than erroring (the same path TestExecState_WaveCommit_IdempotentResume
+// exercises in isolation).
+//
+// Deviation from seedExecStateCommitted: that helper calls state.Init (a
+// second, independent state file) and git-commits the state file itself, to
+// isolate wave-commit's git side effects in tests built on initGitFixture.
+// newBaseSyncFixture's state file is deliberately gitignored (see its own
+// doc comment: the managed .gitignore "keeps the run's state file ... out of
+// git status"), and base-sync only reads/writes st.Data -- it never cares how
+// the file was created. Layering seedExecStateCommitted's state.Init + git
+// commit on top of newBaseSyncFixture would fight that invariant (a second
+// state file for the same branch, and a commit of a file the fixture means
+// to keep untracked). So this test reuses newBaseSyncFixture's real-git setup
+// (origin remote, "other" clone, config) and its already-initialized state
+// file, and seeds the two completed waves directly via state.Find/state.Write.
+func TestBaseSyncKeepsWaveAncestry(t *testing.T) {
+	fx := newBaseSyncFixture(t, "")
+
+	// Simulate two waves this run already committed, each its own real
+	// commit on the feature branch.
+	writeFile(t, filepath.Join(fx.root, "wave1.txt"), "wave 1 work\n")
+	mustRun(t, fx.root, "git", "add", ".")
+	mustRun(t, fx.root, "git", "commit", "-m", "wave 1 work")
+	wave1SHA := gitOutTrim(t, fx.root, "rev-parse", "HEAD")
+
+	writeFile(t, filepath.Join(fx.root, "wave2.txt"), "wave 2 work\n")
+	mustRun(t, fx.root, "git", "add", ".")
+	mustRun(t, fx.root, "git", "commit", "-m", "wave 2 work")
+	wave2SHA := gitOutTrim(t, fx.root, "rev-parse", "HEAD")
+
+	st, err := state.Find(fx.root, "execute", "feature")
+	if err != nil || st == nil {
+		t.Fatalf("find state: %v", err)
+	}
+	st.Data["waves"] = []any{
+		map[string]any{"number": 1, "status": "completed", "committedSha": wave1SHA, "tasks": []any{}},
+		map[string]any{"number": 2, "status": "completed", "committedSha": wave2SHA, "tasks": []any{}},
+	}
+	if err := state.Write(st); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	// Someone else merges to the base branch while this run is in progress.
+	// A brand-new file keeps the merge conflict-free (it touches nothing
+	// wave1/wave2 already modified).
+	fx.pushToOriginMain(t, "base-ancestry.txt", "base change\n")
+
+	res, err := fx.baseSync(t, 3)
+	if err != nil {
+		t.Fatalf("base-sync: %v", err)
+	}
+	if res.Status != "merged" || res.Behind != 1 {
+		t.Fatalf("base-sync result = %+v, want a clean merge 1 commit behind", res)
+	}
+
+	newHead := gitOutTrim(t, fx.root, "rev-parse", "HEAD")
+	if res.SHA != newHead {
+		t.Errorf("base-sync sha = %q, want new HEAD %q", res.SHA, newHead)
+	}
+
+	for _, sha := range []string{wave1SHA, wave2SHA} {
+		if _, err := execRun(fx.root, "git", "merge-base", "--is-ancestor", sha, "HEAD"); err != nil {
+			t.Errorf("wave commit %s is no longer an ancestor of HEAD after base-sync: %v", sha, err)
+		}
+	}
+
+	data := readExecState(t, fx.root, "feature")
+	cross := execGitCrossCheckWaves(fx.root, data)
+	if cross.Status != "confirmed" || len(cross.Mismatches) != 0 {
+		t.Errorf("execGitCrossCheckWaves = %+v, want confirmed with no mismatches", cross)
+	}
+
+	for _, tc := range []struct {
+		wave int
+		sha  string
+	}{
+		{1, wave1SHA},
+		{2, wave2SHA},
+	} {
+		res, err := executeState(fx.root, fx.root, ExecuteStateIn{
+			Action:  "wave-commit",
+			Branch:  "feature",
+			Wave:    intPtr(tc.wave),
+			Message: "should not be used",
+		}, fixedClock(testNow))
+		if err != nil {
+			t.Fatalf("wave-commit wave %d: %v", tc.wave, err)
+		}
+		out, ok := res.(ExecWaveCommitOut)
+		if !ok {
+			t.Fatalf("wave-commit wave %d result = %T, want ExecWaveCommitOut", tc.wave, res)
+		}
+		if !out.Idempotent {
+			t.Errorf("wave-commit wave %d Idempotent = false, want true", tc.wave)
+		}
+		if out.SHA != tc.sha {
+			t.Errorf("wave-commit wave %d SHA = %q, want %q", tc.wave, out.SHA, tc.sha)
+		}
+	}
+
+	assertStateMatchesSchema(t, fx.statePath)
+}
+
 // baseSyncResolve calls base-sync-resolve for fx's run.
 func (fx baseSyncFixture) baseSyncResolve(t *testing.T, wave int, abort bool) (ExecBaseSyncOut, error) {
 	t.Helper()

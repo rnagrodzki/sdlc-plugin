@@ -22,7 +22,7 @@ The `cleanup-pipeline` action SHALL settle the current run, delete the plan run 
 | Output field | Meaning |
 |---|---|
 | `currentRun` | See the table above. |
-| `planRun` | `{deleted: true, runId}` when the linked plan run and its `.evidence/` dir were deleted; `{deleted: false, reason}` otherwise (`no linked plan run`, `report not written`). |
+| `planRun` | `{deleted: true, runId}` when the linked plan run and its `.evidence/` dir were deleted; `{deleted: false, reason}` otherwise (`run not stamped`, `no linked plan run`, `report not written`, `remove failed: <error>`). |
 | `gc` | `{ship, execute, plan, commit}`, each `{deleted, kept}`. |
 | `directories` | Reap result for stale per-run directories under `.sdlc-v2/runs/`. |
 | `force`, `ttlDays` | Resolved inputs. TTL: `detail.ttlDays` > config `state.gc.ttlDays` > `7`. |
@@ -41,6 +41,7 @@ The `cleanup-pipeline` action SHALL settle the current run, delete the plan run 
 - **WHEN** the call passes `detail.force:true` with an `in_progress` step
 - **THEN** `currentRun` is `{cleaned:false, preservedReason:"force"}`
 - **AND** the state file is not stamped
+- **AND** `planRun` is `{deleted:false, reason:"run not stamped"}` — force never stamps, so the linked plan run is always left for GC
 
 #### Scenario: Issue summary after stamp
 - **WHEN** the run stamps and `issues[]` has entries

@@ -42,7 +42,7 @@ flowchart LR
 - [x] 3.3 Add `openspec_stage` action (inputs, outputs, `next`, errors) to `internal/tools/plan_support.go`, keeping `ReadOnly:true` — verify: `go test ./internal/tools/ -run 'TestPlanSupportOpenspecStage|TestReadOnlyToolsWriteNothingTracked'` <!-- ref:3-3-add-openspec-stage-action-inputs-out-457f63 -->
 - [x] 3.4 Add `rejected` (default `[]`) and server-set `at` to `criticalDecisions` entries in `internal/tools/plan.go` (`plan_mark`) — verify: `go test ./internal/tools/ -run TestPlanMarkCriticalDecisionsRejected` <!-- ref:3-4-add-rejected-default-and-server-set-7fa708 -->
 - [x] 3.5 Stop deleting the plan run file and `.evidence/` on `planIntegrity.done` in `internal/hooks/stop_hooks.go` — verify: `go test ./internal/hooks/ -run TestStopPlanIntegrityKeepsDoneRun` <!-- ref:3-5-stop-deleting-the-plan-run-file-and-590ecc -->
-- [ ] 3.6 Update `plugins/sdlc/skills/plan/state-format.md` and `docs/plan-architecture.md` for staging, `openspecStage`, `rejected`, plan-run lifetime — verify: `links_validate` MCP tool on the changed docs <!-- ref:3-6-update-plugins-sdlc-skills-plan-stat-ae2649 -->
+- [x] 3.6 Update `plugins/sdlc/skills/plan/state-format.md` and `docs/plan-architecture.md` for staging, `openspecStage`, `rejected`, plan-run lifetime — verify: `links_validate` MCP tool on the changed docs <!-- ref:3-6-update-plugins-sdlc-skills-plan-stat-ae2649 -->
 
 ## 4. Execute state
 
@@ -50,7 +50,7 @@ flowchart LR
 - [x] 4.2 Add `base-sync` action (disabled, skipped dirty, skipped fetch, up-to-date, merged, conflict; `baseSyncs[]` record) in `internal/tools/execute_state.go` — verify: `go test ./internal/tools/ -run TestExecuteBaseSync` (real git, remote in `t.TempDir`) <!-- ref:4-2-add-base-sync-action-disabled-skippe-65f7a1 -->
 - [x] 4.3 Add `base-sync-resolve` action (`abort`, unmerged check, marker scan, commit) and the `Abort` input field in `internal/tools/execute_state.go` — verify: `go test ./internal/tools/ -run TestExecuteBaseSyncResolve` <!-- ref:4-3-add-base-sync-resolve-action-abort-u-137962 -->
 - [x] 4.4 Update the action list, unknown-action message, and annotations entry for the 2 new actions in `internal/tools/execute_state.go` and `internal/tools/annotations_test.go` — verify: `go test ./internal/tools/ -run 'TestExecuteStateUnknownAction|TestAnnotations'` <!-- ref:4-4-update-the-action-list-unknown-actio-58e6d2 -->
-- [ ] 4.5 Assert every earlier `committedSha` stays an ancestor after a `merged` sync and that resume cross-check passes in `internal/tools/execute_state_test.go` — verify: `go test ./internal/tools/ -run TestBaseSyncKeepsWaveAncestry` <!-- ref:4-5-assert-every-earlier-committedsha-st-4b9a5d -->
+- [x] 4.5 Assert every earlier `committedSha` stays an ancestor after a `merged` sync and that resume cross-check passes in `internal/tools/execute_state_test.go` — verify: `go test ./internal/tools/ -run TestBaseSyncKeepsWaveAncestry` <!-- ref:4-5-assert-every-earlier-committedsha-st-4b9a5d -->
 
 ## 5. Ship tools and report
 
@@ -58,7 +58,7 @@ flowchart LR
 - [x] 5.2 Derive `flags.openspecChange` from the plan `**Source:**` header with `sources.openspecChange` and the mismatch warning in `internal/tools/ship.go` — verify: `go test ./internal/tools/ -run TestShipPrepareOpenspecChangeFromPlan` <!-- ref:5-2-derive-flags-openspecchange-from-the-f227c8 -->
 - [x] 5.3 Add `at` to `decide` entries in `internal/tools/ship_state.go` — verify: `go test ./internal/tools/ -run TestShipStateDecideAt` <!-- ref:5-3-add-at-to-decide-entries-in-internal-9224fc -->
 - [x] 5.4 Add `planning` (from the linked plan run) and merged `timeline` to the report, plus `## Planning` and `## Timeline` Markdown sections in `internal/tools/ship_report.go` — verify: `go test ./internal/tools/ -run 'TestShipReportPlanning|TestShipReportTimeline'` <!-- ref:5-4-add-planning-from-the-linked-plan-ru-a04863 -->
-- [ ] 5.5 Delete the linked plan run and `.evidence/` in `cleanup-pipeline` only after the stamp and when the report file exists; add `planRun` output in `internal/tools/ship_state.go` — verify: `go test ./internal/tools/ -run TestCleanupPipelineDeletesReportedPlanRun` <!-- ref:5-5-delete-the-linked-plan-run-and-evide-273019 -->
+- [x] 5.5 Delete the linked plan run and `.evidence/` in `cleanup-pipeline` only after the stamp and when the report file exists; add `planRun` output in `internal/tools/ship_state.go` — verify: `go test ./internal/tools/ -run TestCleanupPipelineDeletesReportedPlanRun` <!-- ref:5-5-delete-the-linked-plan-run-and-evide-273019 -->
 
 ## 6. Base branch adoption
 
