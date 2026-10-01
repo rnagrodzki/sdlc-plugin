@@ -50,9 +50,9 @@ type ErrorReportPrepareIn struct {
 // ErrorReportPrepareOut is errorReportPrepare's result: the path to the
 // written manifest (KD4 file handoff — still required, the isolated
 // error-report-orchestrator subagent reads the manifest file itself), plus
-// the manifest's top-level fields mirrored inline so the caller (SKILL.md /
-// prepare_orchestrator) can use structured fields directly instead of
-// re-reading the manifest file. Values are copied verbatim from the
+// the manifest's top-level fields mirrored inline. prepare_orchestrator
+// forwards only ManifestPath (with its own Mode) to the skill, so the
+// mirrored fields never reach SKILL.md. Values are copied verbatim from the
 // errorReportManifest built in errorReportPrepare, so trim/raw semantics
 // match the manifest exactly field-for-field.
 type ErrorReportPrepareOut struct {

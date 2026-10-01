@@ -96,6 +96,7 @@ After gate 1, the skill SHALL call `prepare_orchestrator` with `mode: "error_rep
 
 - `skill`, `step`, `operation` and `errorText` are required; the rest may be empty.
 - The tool returns only `manifestPath` and `mode`.
+- Later steps use the values the skill passed in (e.g. `skill`); the skill does not read the manifest back.
 - On a tool error the skill shows the error and stops; it does not dispatch `error-report` on its own failure.
 
 #### Scenario: Prepare tool fails
@@ -111,13 +112,6 @@ The subagent:
 - Fills every `{placeholder}` only from manifest fields and removes a section whose field is empty.
 - Builds the title `[<skill>] <one-line error summary>`, at most 72 characters.
 - Calls no `gh` or `git`, writes no file, and returns only the JSON object.
-
-Priority shown at gate 2:
-
-| Priority | Error kinds |
-|---|---|
-| High | Prepare-tool crash or infra error; build failure blocking waves |
-| Medium | CLI failure; persistent API error; escalated task failure |
 
 #### Scenario: Unparseable response
 - **WHEN** the subagent response is not valid JSON
@@ -146,7 +140,7 @@ The issue body SHALL follow the `ToolingError.md` section layout with no raw `{p
 - **THEN** the body has no `## Suggested Investigation` section
 
 ### Requirement: Consent gate 2
-The skill SHALL show the title, priority, labels (`tooling-error`, `<skill>`) and body, then ask **yes**, **edit** or **cancel** with `AskUserQuestion`.
+The skill SHALL show the title, labels (`tooling-error`, `<skill>`) and body, then ask **yes**, **edit** or **cancel** with `AskUserQuestion`.
 
 - **edit** applies the change in the main context, without a new dispatch, and asks again.
 - **cancel** removes the manifest and returns to the caller; nothing is created.

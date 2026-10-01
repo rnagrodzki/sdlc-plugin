@@ -147,19 +147,19 @@ rest may be empty strings — the tool tolerates empty optional fields. The retu
 value contains only `manifestPath` and `mode`; the orchestrator reads all other
 fields from the manifest file at `manifestPath`.
 
-The structured fields above mirror the manifest's top-level content inline —
-use them directly in the main context (e.g. for the duplicate-issue search's
-label list, or logging) instead of reading the manifest file back. Only Step 5
-still needs `manifestPath` itself, because the dispatched orchestrator agent
-runs in isolation with no access to this return value.
+When the main context needs a value later (e.g. `skill` for the duplicate-issue
+search's label filter in Step 6b), use the value it passed in this call — do not
+read the manifest file back. Only Step 5 needs `manifestPath` itself, because
+the dispatched orchestrator agent runs in isolation with no access to this
+return value.
 
 **On tool error:** show the error message to the user and stop. Do **not**
 recursively dispatch this skill on its own prepare-tool failure.
 
 There is no bash trap spanning this run — `manifestPath` is a plain return value
 from the tool, not a shell variable. Clean it up explicitly with `rm -f
-"<manifestPath>"` at every stop point below (Step 5's `no`, Step 6's `cancel`, and
-Step 7's end).
+"<manifestPath>"` at every stop point below (Step 5's parse failure, Step 6's
+`cancel`, Step 6b's `cancel` branches and its posted comment, and Step 7's end).
 
 ## Step 5 — Dispatch the error-report-orchestrator Agent
 
@@ -190,9 +190,7 @@ from the manifest's `template` field (the `prepare_orchestrator` binary embeds
 it, so nothing is read from `<cwd>`, where the plugin's `skills/` tree does not
 exist), fills every `{placeholder}`
 strictly from manifest fields, removes sections whose manifest fields are empty,
-determines priority (**High**: prepare-tool crash or infra error, build failure
-blocking waves; **Medium**: CLI failure, persistent API error, escalated task
-failure), builds the title as `[{skill-name}] {one-line error summary}` (max 72
+builds the title as `[{skill-name}] {one-line error summary}` (max 72
 chars), and returns ONLY a JSON object:
 
 ```json
@@ -210,14 +208,13 @@ Capture the returned object as `PROPOSAL = { title, body }`. If the parse fails,
 ## Step 6 — Consent Gate 2: Review (main context)
 
 Display `PROPOSAL.title` and `PROPOSAL.body` to the user along with the labels
-(`tooling-error` plus the calling skill's name) and the priority. Use
+(`tooling-error` plus the calling skill's name). Use
 `AskUserQuestion` for the `yes / edit / cancel` choice.
 
 ```
 Proposed GitHub Issue:
 ───────────────────────────────────────────
 Title:    {PROPOSAL.title}
-Priority: {High | Medium}
 Labels:   tooling-error, {skill-name}
 
 Description:
