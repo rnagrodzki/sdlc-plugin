@@ -2022,7 +2022,7 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 	if err != nil || branch == "" {
 		return PlanMarkOut{}, &mcpserver.InfraError{
 			Msg:        "could not determine current branch",
-			Suggestion: "Check out a named branch in the active worktree (not a detached HEAD), then retry plan_mark.",
+			Suggestion: "Run plan_mark from inside a git repository or worktree (git branch --show-current must succeed there), then retry plan_mark.",
 			Cause:      err,
 		}
 	}

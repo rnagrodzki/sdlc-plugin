@@ -223,10 +223,20 @@ The tool SHALL return these errors in addition to the checkpoint data errors.
 | Active worktree cannot be resolved | `InfraError` | `resolve active root: <cause>` / run inside a git working tree |
 | `marker` not in the enum | `DomainError` | `unknown marker "<m>"; must be one of: <sorted list>` / use the exact, case-sensitive name |
 | `plan-file` with blank `path` | `DomainError` | `marker "plan-file" requires a non-empty path` |
-| Current branch cannot be read | `InfraError` | `could not determine current branch` / check out a named branch |
+| Current branch cannot be read (git fails in the active worktree) | `InfraError` | `could not determine current branch` / run from inside a git repository or worktree |
 | State file lookup fails | `InfraError` | `find plan state file: <cause>` / check read permission |
 | No state file for the branch | `DomainError` | `no plan state file found for branch "<branch>"; run plan_prepare first` / stay on the branch `plan_prepare` ran on |
 | State file write fails | `InfraError` | `write plan state file: <cause>` / check write permission and disk space |
+
+#### Scenario: Not a git repository
+- **WHEN** `plan_mark({marker: "guardrailsEvaluated"})` runs in a directory that is not a git repository
+- **THEN** it returns `InfraError` `could not determine current branch`
+- **AND** the suggestion says to run from inside a git repository or worktree
+
+#### Scenario: Detached HEAD
+- **WHEN** `plan_mark` runs on a detached HEAD
+- **THEN** the branch reads as `HEAD`, not as a branch error
+- **AND** with no plan run for `HEAD` it returns the `no plan state file found for branch "HEAD"` error
 
 #### Scenario: Unknown marker
 - **WHEN** `plan_mark({marker: "not-a-real-marker"})` is called

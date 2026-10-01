@@ -777,6 +777,41 @@ func TestPlanMark_NoStateFile(t *testing.T) {
 	}
 }
 
+// TestPlanMark_BranchError verifies the branch error only fires when git
+// cannot run in the active worktree, and its suggestion says so. A detached
+// HEAD is not this error: it reads as branch "HEAD".
+func TestPlanMark_BranchError(t *testing.T) {
+	t.Run("not a git repository", func(t *testing.T) {
+		dir := t.TempDir()
+		_, err := planMark(dir, dir, PlanMarkIn{Marker: "guardrailsEvaluated"})
+		var ie *mcpserver.InfraError
+		if !errors.As(err, &ie) {
+			t.Fatalf("err = %T %v, want *mcpserver.InfraError", err, err)
+		}
+		if ie.Msg != "could not determine current branch" {
+			t.Errorf("Msg = %q", ie.Msg)
+		}
+		want := "Run plan_mark from inside a git repository or worktree (git branch --show-current must succeed there), then retry plan_mark."
+		if ie.Suggestion != want {
+			t.Errorf("Suggestion = %q, want %q", ie.Suggestion, want)
+		}
+	})
+	t.Run("detached HEAD", func(t *testing.T) {
+		dir := t.TempDir()
+		initGitFixture(t, dir)
+		gitCommit(t, dir, "initial")
+		runGit(t, dir, "checkout", "--detach")
+		_, err := planMark(dir, dir, PlanMarkIn{Marker: "guardrailsEvaluated"})
+		var de *mcpserver.DomainError
+		if !errors.As(err, &de) {
+			t.Fatalf("err = %T %v, want *mcpserver.DomainError", err, err)
+		}
+		if !strings.Contains(de.Msg, `branch "HEAD"`) {
+			t.Errorf("Msg = %q, want it to name branch \"HEAD\"", de.Msg)
+		}
+	})
+}
+
 // TestPlanMark_InvalidMarker verifies the enum rejects unknown marker names.
 func TestPlanMark_InvalidMarker(t *testing.T) {
 	dir := t.TempDir()
