@@ -82,13 +82,13 @@ type StageResult struct {
 // merging `openspec status` (ID, OutputPath, Requires) with `openspec
 // instructions` (Template, Instruction, Context, Rules).
 type ArtifactGuide struct {
-	ID          string
-	OutputPath  string
-	Requires    []string
-	Template    string
-	Instruction string
-	Context     string
-	Rules       []string
+	ID          string   `json:"id"`
+	OutputPath  string   `json:"outputPath"`
+	Requires    []string `json:"requires"`
+	Template    string   `json:"template"`
+	Instruction string   `json:"instruction"`
+	Context     string   `json:"context"`
+	Rules       []string `json:"rules"`
 }
 
 // StagingDirRel returns the staging directory for change, relative to the

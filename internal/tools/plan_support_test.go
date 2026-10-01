@@ -1779,6 +1779,24 @@ func TestPlanSupportOpenspecInstructions(t *testing.T) {
 			t.Errorf("Next = %q, want %q", out.Next, wantNext)
 		}
 
+		// Regression guard: ArtifactGuide must carry json tags, or the wire
+		// response uses Go's capitalized field names (ID, OutputPath, ...)
+		// instead of the documented lowerCamelCase keys (id, outputPath,
+		// ...) that the plan skill and the delta spec both depend on.
+		raw, err := json.Marshal(out.Artifacts[0])
+		if err != nil {
+			t.Fatalf("marshal artifact: %v", err)
+		}
+		var asMap map[string]any
+		if err := json.Unmarshal(raw, &asMap); err != nil {
+			t.Fatalf("unmarshal artifact: %v", err)
+		}
+		for _, key := range []string{"id", "outputPath", "requires", "template", "instruction", "context", "rules"} {
+			if _, ok := asMap[key]; !ok {
+				t.Errorf("artifact JSON missing lowerCamelCase key %q; got keys %v", key, raw)
+			}
+		}
+
 		prep, err := runPlanPrepare(t, root, root, PlanPrepareIn{SkipConfigCheck: true})
 		if err != nil {
 			t.Fatalf("plan_prepare: %v", err)
