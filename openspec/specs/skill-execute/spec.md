@@ -386,7 +386,7 @@ The skill SHALL dispatch one sonnet `general-purpose` reviewer after each wave t
 ### Requirement: OpenSpec-sourced plans
 The skill SHALL load OpenSpec delta specs and flip OpenSpec task checkboxes when the plan comes from an OpenSpec change, and SHALL never archive the change itself.
 
-- Source: the plan header `**Source:**` points to `openspec/changes/<name>/`; the skill reads `openspec/changes/<name>/specs/*.md`.
+- Source: the plan header `**Source:**` points to `openspec/changes/<name>/`; the skill reads every `.md` file under `openspec/changes/<name>/specs/` at any depth (`specs/<capability>/spec.md` and flat `specs/*.md`).
 - Tasks with an `openspec-task:` block map plan task ids to OpenSpec task refs.
 - After a wave, each ref whose plan tasks are all complete flips from `- [ ]` to `- [x]` in `openspec/changes/<change>/tasks.md`.
 
@@ -495,7 +495,7 @@ The skill SHALL retry a failed task at most 2 times, escalating the model one st
 #### Scenario: Escalation to the user
 - **WHEN** a task fails after 2 retries
 - **THEN** the skill prints an "Escalation Required" block and waits for the user
-- **AND** the skill offers `harden` and a GitHub issue via the error-report procedure when it is installed
+- **AND** the skill offers `harden` and a GitHub issue via the plugin's `error-report` skill
 
 #### Scenario: Wave output broken beyond repair
 - **WHEN** targeted fixes cannot recover a wave

@@ -96,7 +96,7 @@ Validate:
 
 Blocking issues → stop and ask. Warnings only → show them and proceed.
 
-**OpenSpec context (optional):** If the plan header's `**Source:**` points to `openspec/changes/<name>/`, Read `openspec/changes/<name>/specs/*.md` as `openspecSpecs` (used by `## Wave loop`'s spec-compliance review and Step 8-bis). Missing path → proceed without it; not an error.
+**OpenSpec context (optional):** If the plan header's `**Source:**` points to `openspec/changes/<name>/`, Read every `.md` file under `openspec/changes/<name>/specs/`, at any depth (OpenSpec's layout is `specs/<capability>/spec.md`; flat `specs/*.md` files count too), as `openspecSpecs` (used by `## Wave loop`'s spec-compliance review and Step 8-bis). Missing path → proceed without it; not an error.
 
 **OpenSpec task-flip map:** For each task with an `openspec-task:` block, capture `{taskId, change, ref, line, title}` into `openspecTaskMap`; derive `refToTaskIds: Map<ref, Set<taskId>>`; seed an empty `flippedRefs`. No blocks in the plan → all three stay empty and `## Wave loop`'s task-flip stage is a no-op.
 

@@ -331,9 +331,9 @@ Wait for the user's response before proceeding with any affected waves.
 
 **Error-to-GitHub issue proposal**:
 
-After escalating, also offer to track the failure as a GitHub issue. Locate the procedure:
-Glob for `**/error-report/REFERENCE.md` under `~/.claude/plugins`, then retry with cwd.
-If found, follow the procedure with:
+After escalating, also offer to track the failure as a GitHub issue. On a yes, invoke the
+`error-report` skill (shipped with this plugin as `skills/error-report/SKILL.md`) through the Skill
+tool, providing:
 
 - **Skill**: execute
 - **Step**: Step 6 — RECOVER (Escalation)
@@ -341,7 +341,9 @@ If found, follow the procedure with:
 - **Error**: Persistent failure after 2 retries (details from escalation output above)
 - **Suggested investigation**: Review the task description for ambiguity; check whether the task's allowed file list is complete; inspect agent error output for root cause
 
-If not found, skip — the capability is not installed.
+If the Skill tool call is refused, print the same fields as a ready-to-run
+`/sdlc:error-report skill=execute step=... operation=... error=...` line for the user, as
+`error-report`'s own SKILL.md describes.
 
 ### CONTEXT_OVERFLOW
 
