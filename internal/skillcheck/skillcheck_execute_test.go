@@ -280,3 +280,34 @@ func TestExecuteSkillsNoRemovedSymbols(t *testing.T) {
 		}
 	}
 }
+
+// executeSkillsSkillCallRe matches a Skill-tool call written as
+// Skill("<name>", ...) and captures the skill name.
+var executeSkillsSkillCallRe = regexp.MustCompile(`Skill\("([^"]+)"`)
+
+// executeSkillsAllowedSkillCalls is the set of skills the execute family may
+// call as Skill("<name>", ...), per its DO NOT rule and the skill-execute spec
+// "Self-contained execution". error-report is also allowed, but the markdown
+// describes that call in prose, not in this form.
+var executeSkillsAllowedSkillCalls = map[string]bool{"harden": true}
+
+// TestExecuteSkillsSkillCallsAreAllowlisted pins the self-contained rule: every
+// Skill("<name>", ...) call in the execute markdown names an allowed skill.
+func TestExecuteSkillsSkillCallsAreAllowlisted(t *testing.T) {
+	repoRoot := executeSkillsRepoRoot(t)
+	files := executeSkillsFiles(t, repoRoot)
+
+	calls := 0
+	for _, path := range files {
+		content := executeSkillsReadFile(t, path)
+		for _, m := range executeSkillsSkillCallRe.FindAllStringSubmatch(content, -1) {
+			calls++
+			if !executeSkillsAllowedSkillCalls[m[1]] {
+				t.Errorf("%s: calls Skill(%q), which the self-contained rule does not allow", path, m[1])
+			}
+		}
+	}
+	if calls == 0 {
+		t.Error(`found no Skill("...") call; the guardrail harden call is expected, so the regexp or the file list is wrong`)
+	}
+}

@@ -376,7 +376,7 @@ On failure or interruption (not all tasks completed), `cleanup` is not called at
 - Rely on the dispatch prompt for task detail — the worker calls `task-context` itself for the fact sheet; don't paste the full task text into the prompt as a substitute
 - Execute more than 2 retries on any single task
 - Commit or push outside `## Commits` — the only commits are `wave-commit`'s, plus the manual commit `wave-commit` itself orders when `execute.commitWaves` is false; workspace derivation is automatic (`branch`/`continue`), not an ad-hoc decision
-- Reference external sub-skills by name — this skill is fully self-contained
+- Hand any part of plan execution to another skill, or call any other skill through the Skill tool — this skill runs the plan itself. The only allowed Skill-tool calls are these two plugin skills, each only after the user picks it: `Skill("harden", ...)` when the user chooses `harden` at a guardrail check (wave-loop stage 1 or 6) or at a Step 6 escalation, and the `error-report` skill when the user accepts the GitHub-issue offer at a Step 6 escalation (`./recovering-from-failures.md`). Neither is needed to run a plan. Naming skills as pointers for the user (`## What's Next`, `## See Also`) is fine
 - Split a wave's Agent fan-out across more than one message, or dispatch with `run_in_background: false`
 - Assume `cleanup` deletes the state file — it stamps `runStatus`; only `gc`'s TTL sweep removes the file
 - Write state files for small-plan direct execution (≤ 3 tasks)

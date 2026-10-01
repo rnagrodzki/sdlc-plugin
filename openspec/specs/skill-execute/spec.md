@@ -529,6 +529,25 @@ The skill SHALL retry a failed task at most 2 times, escalating the model one st
 - **THEN** the skill runs `git stash push -m "failed-wave-N-<timestamp>"`
 - **AND** offers retry the wave, skip the wave, or abort
 
+### Requirement: Self-contained execution
+The skill SHALL run the plan itself and SHALL NOT hand any part of plan execution to another skill or call any other skill through the Skill tool, except for two optional plugin skills that run only after the user picks them.
+
+| Skill-tool call | When | Trigger |
+|---|---|---|
+| `Skill("harden", ...)` | A guardrail check fails (wave-loop stage 1 or 6), or a Step 6 escalation | The user chooses `harden` |
+| `error-report` | A Step 6 escalation | The user accepts the GitHub-issue offer |
+
+- Neither call is needed to run a plan.
+- Naming other skills as pointers for the user (`## What's Next`, `## See Also`) is not a call and is allowed.
+
+#### Scenario: Harden chosen at a guardrail check
+- **WHEN** an error-severity guardrail fails and the user chooses `harden`
+- **THEN** the skill calls `Skill("harden", ...)` and then re-evaluates the guardrail
+
+#### Scenario: No other skill runs the plan
+- **WHEN** the skill runs a plan and no guardrail fails and no task escalates
+- **THEN** the skill makes no Skill-tool call
+
 ### Requirement: Learning capture
 The skill SHALL record run lessons with `learnings_log` `action: "append"` before its final report, and SHALL NOT write `.sdlc-v2/learnings/log.md` directly.
 
