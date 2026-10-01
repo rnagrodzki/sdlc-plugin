@@ -341,7 +341,7 @@ In manifest mode the tool SHALL write `manifest.json` into the same temp directo
 | `uncommitted_changes` | `true` when `git status --porcelain` output is not empty. |
 | `git.commit_count` | Same value as `summary.commitCount`. |
 | `git.changed_files_count` | Number of changed files. |
-| `pr` | Open PR of the current branch; `{exists: false}` for scopes `staged` and `working`. See PR lookup. |
+| `pr` | Open PR of the current branch; `{exists: false}` for scopes `staged`, `working` and `worktree`. See PR lookup. |
 | `dimensions[]` | One index entry per loaded dimension (table below). |
 | `plan_critique` | See plan critique. |
 | `summary` | Same object as the returned `summary`. |
@@ -359,7 +359,7 @@ Each `dimensions[]` entry holds only these keys: `name`, `description`, `severit
 - **AND** its `diff_file` and `slice_file` are non-null paths
 
 ### Requirement: PR lookup
-In manifest mode, for scopes `all`, `committed` and `worktree`, the tool SHALL look up the current branch's PR with `gh pr view --json number,title,url,state,labels` in the active worktree, and SHALL set `pr.exists: true` only when that PR's state is `OPEN`. For scopes `staged` and `working` the tool SHALL NOT run the lookup.
+In manifest mode, for scopes `all` and `committed`, the tool SHALL look up the current branch's PR with `gh pr view --json number,title,url,state,labels` in the active worktree, and SHALL set `pr.exists: true` only when that PR's state is `OPEN`. For scopes `staged`, `working` and `worktree` the tool SHALL NOT run the lookup.
 
 | `gh pr view` result | `pr` | `summary.hasPR` | `warnings` |
 |---|---|---|---|
@@ -372,11 +372,17 @@ In manifest mode, for scopes `all`, `committed` and `worktree`, the tool SHALL l
 - `owner` and `repo` are read from the PR URL (`https://github.com/<owner>/<repo>/pull/<n>`).
 - A failed lookup never fails the tool.
 - With no open PR, `gh pr view` returns the branch's newest closed or merged PR; that PR does not count.
-- Scopes `staged` and `working` review uncommitted changes, which are not part of any PR. They get `pr: {exists: false}`, `summary.hasPR: false`, and no PR warning, so the skill never offers to post such a review to the branch's PR.
+- Scopes `staged`, `working` and `worktree` review uncommitted changes, which are not part of any PR. `worktree` runs `git diff <base>`, which compares the base to the working tree, so it includes staged and unstaged edits. These scopes get `pr: {exists: false}`, `summary.hasPR: false`, and no PR warning, so the skill never offers to post such a review to the branch's PR.
 
 #### Scenario: Local scope skips the lookup
 - **WHEN** scope is `staged` and the current branch has an open PR
 - **THEN** `gh` is not run
+- **AND** `pr.exists` is `false`, `summary.hasPR` is `false`, and `warnings` is `[]`
+
+#### Scenario: Worktree scope skips the lookup
+- **WHEN** scope is `worktree`, `target` is `main`, and the current branch has an open PR
+- **THEN** `gh` is not run
+- **AND** `base_branch` is `main`
 - **AND** `pr.exists` is `false`, `summary.hasPR` is `false`, and `warnings` is `[]`
 
 #### Scenario: Open PR

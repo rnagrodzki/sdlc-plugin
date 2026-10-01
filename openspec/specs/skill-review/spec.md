@@ -249,10 +249,10 @@ The skill SHALL choose the posting prompt from the manifest and SHALL wait for t
 | Situation | Options |
 |---|---|
 | `manifest.pr.exists` is `true` | `yes` (post to PR #n), `save`, `cancel` |
-| No PR, `manifest.scope` is `all`, `committed`, or `worktree` | 1. Create a draft PR and attach the review; 2. Save; 3. Terminal only |
-| No PR, `manifest.scope` is `staged` or `working` | 1. Save; 2. Terminal only |
+| No PR, `manifest.scope` is `all` or `committed` | 1. Create a draft PR and attach the review; 2. Save; 3. Terminal only |
+| No PR, `manifest.scope` is `staged`, `working`, or `worktree` | 1. Save; 2. Terminal only |
 
-- `manifest.pr.exists` is `true` only when `review_prepare` found an open PR for the current branch; see the `tool-review-prepare` PR lookup requirement. It is always `false` for scopes `staged` and `working`, so a review of uncommitted changes is never offered for posting to a PR.
+- `manifest.pr.exists` is `true` only when `review_prepare` found an open PR for the current branch; see the `tool-review-prepare` PR lookup requirement. It is always `false` for scopes `staged`, `working`, and `worktree`. These scopes review uncommitted changes, so such a review is never offered for posting to a PR, existing or new.
 - Post: `gh api repos/{owner}/{repo}/issues/{number}/comments -F body=@{manifest.diff_dir}/review-comment.md`, with `owner`, `repo`, and `number` from `manifest.pr`.
 - Create-draft-PR option: the skill runs the link verification gate first, and only on all-clear invokes `pr` in draft mode, waits, then posts to the new PR.
 - Save: the skill passes the comment text to `review_prepare({saveReview: true, content})`; the tool writes `.sdlc-v2/reviews/<branch>-<YYYY-MM-DD>.md`.
@@ -266,6 +266,11 @@ The skill SHALL choose the posting prompt from the manifest and SHALL wait for t
 #### Scenario: Local scope without PR
 - **WHEN** there is no PR and `manifest.scope` is `staged`
 - **THEN** the prompt offers only save and terminal-only
+
+#### Scenario: Worktree scope without PR
+- **WHEN** there is no PR and `manifest.scope` is `worktree`
+- **THEN** the prompt offers only save and terminal-only
+- **AND** it does not offer to create a draft PR
 
 #### Scenario: Save chosen
 - **WHEN** the user picks save

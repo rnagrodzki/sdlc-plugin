@@ -31,8 +31,8 @@ Parse `$ARGUMENTS`:
 flag. This port does not expose `--committed` / `--staged` / `--working` / `--worktree` /
 `--set-default` / `--dimensions` flags; change scope with `/setup` or by editing
 `.sdlc-v2/local.toml` instead. For `staged` and `working`, `review_prepare` ignores `target`
-(`manifest.base_branch` is `null`) and does not look up a PR (`manifest.pr.exists` is
-`false`).
+(`manifest.base_branch` is `null`). For `staged`, `working`, and `worktree`, which all review
+uncommitted changes, `review_prepare` does not look up a PR (`manifest.pr.exists` is `false`).
 
 ```
 review_prepare({ target: "<branch from --base, or empty>", skipConfigCheck: false })
@@ -379,8 +379,8 @@ to skip network reachability while keeping context-aware checks — use in sandb
 
 `review_prepare` sets `manifest.pr.exists` only for an **open** PR on the current branch, and
 fills `manifest.pr.number`, `manifest.pr.owner`, and `manifest.pr.repo` for the post command.
-It is always `false` for the `staged` and `working` scopes, so a review of uncommitted changes
-is never offered for posting to a PR.
+It is always `false` for the `staged`, `working`, and `worktree` scopes, so a review of
+uncommitted changes is never offered for posting to a PR.
 
 Prompt in the main context:
 
@@ -412,7 +412,7 @@ Wait for the user's reply.
 
 - `cancel` → no action. The comment is already visible in the terminal from Step 6.
 
-### No PR, branch scope (`manifest.scope` is `all`, `committed`, or `worktree`)
+### No PR, branch scope (`manifest.scope` is `all` or `committed`)
 
 Prompt:
 
@@ -430,7 +430,7 @@ No PR found. Options:
 - Option 2 → same `save` command as above.
 - Option 3 → no action.
 
-### No PR, local scope (`manifest.scope` is `staged` or `working`)
+### No PR, uncommitted changes (`manifest.scope` is `staged`, `working`, or `worktree`)
 
 Prompt:
 

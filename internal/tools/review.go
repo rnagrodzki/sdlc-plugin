@@ -957,12 +957,14 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 	}
 
 	// PR metadata (best effort: a failed lookup becomes a warning). The
-	// local scopes review uncommitted changes, which are not part of any PR,
-	// so they skip the lookup: the skill must not offer to post such a
-	// review to the branch's PR.
+	// local scopes and the worktree scope (git diff <base>, which compares
+	// the base to the working tree) review uncommitted changes, which are
+	// not part of any PR, so they skip the lookup: the skill must not offer
+	// to post such a review to the branch's PR.
+	reviewsUncommitted := isLocalScope || scope == "worktree"
 	pr := reviewManifestPR{Exists: false}
 	var warnings []string
-	if !isLocalScope {
+	if !reviewsUncommitted {
 		pr, warnings = lookupReviewPR(activeRoot)
 	}
 

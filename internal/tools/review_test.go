@@ -1023,6 +1023,34 @@ func TestReviewPrepareLocalScopeSkipsPRLookup(t *testing.T) {
 	}
 }
 
+// TestReviewPrepareWorktreeScopeSkipsPRLookup pins that the worktree scope,
+// which diffs the base ref against the working tree and so includes
+// uncommitted changes, does not look up a PR either. It still keeps its base
+// ref. The fake gh fails on every call, so a lookup that ran would leave a
+// warning.
+func TestReviewPrepareWorktreeScopeSkipsPRLookup(t *testing.T) {
+	root := reviewLocalScopeFixture(t, "worktree")
+	stubReviewGH(t, "#!/bin/sh\necho \"gh must not run: $*\" >&2\nexit 3\n")
+
+	m := readReviewManifestIn(t, root, ReviewPrepareIn{SkipConfigCheck: true, Target: "main"})
+
+	if m.Scope != "worktree" {
+		t.Fatalf("scope = %q, want worktree", m.Scope)
+	}
+	if m.BaseBranch == nil || *m.BaseBranch != "main" {
+		t.Errorf("base_branch = %v, want main", m.BaseBranch)
+	}
+	if m.Git.ChangedFilesCount < 2 {
+		t.Errorf("changed_files_count = %d, want the committed file plus the staged src/b.go", m.Git.ChangedFilesCount)
+	}
+	if m.PR.Exists || m.Summary.HasPR {
+		t.Errorf("pr.exists/hasPR = %v/%v, want false/false", m.PR.Exists, m.Summary.HasPR)
+	}
+	if len(m.Warnings) != 0 {
+		t.Errorf("warnings = %v, want none (gh must not run for scope worktree)", m.Warnings)
+	}
+}
+
 // TestReviewPrepareLocalScopeIgnoresTarget pins that target is ignored for
 // the staged and working scopes: those scopes diff against no base ref, so
 // the manifest must not claim one was used.
