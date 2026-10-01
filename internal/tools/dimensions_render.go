@@ -70,7 +70,8 @@ type DimensionsRenderInstructionsIn struct {
 	// worktree, not the main one, so a dimension added on a branch inside a
 	// linked worktree is visible in the same session. harden's
 	// Copilot-mirror step (R-copilot-mirror, #474) passes this explicitly
-	// from harden_prepare's manifest (repository.contentRoot); that is now
+	// from prepare_orchestrator's harden-mode manifest
+	// (repository.contentRoot); that is now
 	// redundant with the default but kept as an explicit param.
 	ProjectRoot string `json:"projectRoot,omitempty" jsonschema_description:"Overrides the root all modes resolve against (write mode's .sdlc-v2/review-dimensions/ destination, list mode's scan directory, or render mode's .github/instructions/ output path and file/commonFile inputs). Defaults to the active worktree root when empty."`
 	// WriteDimension selects write mode: persist Content to
