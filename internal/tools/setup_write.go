@@ -18,6 +18,7 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strings"
@@ -109,6 +110,29 @@ func expandDottedKeys(flat map[string]any) map[string]any {
 	return out
 }
 
+// wholeNumbersToInt returns v with every float64 that holds a whole number
+// replaced by an int64, recursing into maps and slices (maps and slices are
+// changed in place). JSON decodes every number as float64, and go-toml
+// writes a float64 such as 60 as "60.0", while hand-written config files use
+// "60" for integers. A number with a fraction (e.g. 0.5) stays a float64.
+func wholeNumbersToInt(v any) any {
+	switch val := v.(type) {
+	case float64:
+		if val == math.Trunc(val) && val >= math.MinInt64 && val < math.MaxInt64 {
+			return int64(val)
+		}
+	case map[string]any:
+		for k, e := range val {
+			val[k] = wholeNumbersToInt(e)
+		}
+	case []any:
+		for i, e := range val {
+			val[i] = wholeNumbersToInt(e)
+		}
+	}
+	return v
+}
+
 // sectionFile names the config file a section id is written to.
 func sectionFile(id string) string {
 	top, _, _ := strings.Cut(id, ".")
@@ -184,7 +208,7 @@ func setupWriteSections(root string, in SetupWriteSectionsIn) (SetupWriteSection
 		if value == nil {
 			value = map[string]any{}
 		}
-		value = expandDottedKeys(value)
+		value = wholeNumbersToInt(expandDottedKeys(value)).(map[string]any)
 		rewrote, err := config.WriteSectionReport(root, id, value)
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("section %s: %s", id, err.Error()))

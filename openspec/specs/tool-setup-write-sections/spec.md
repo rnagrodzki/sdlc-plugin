@@ -142,6 +142,24 @@ The tool SHALL expand dotted field names inside a section value into nested tabl
 - **THEN** `config.toml` holds `version.tag.enabled = true`
 - **AND** `config.toml` holds `version.tag.prefix = "v"`
 
+### Requirement: Whole numbers written as integers
+The tool SHALL write every JSON number that has no fraction as a TOML integer, at any depth in the section value, including inside arrays. A number with a fraction SHALL stay a TOML float.
+
+| JSON value | Written TOML |
+|---|---|
+| `60` | `60` |
+| `60.0` | `60` |
+| `0.5` | `0.5` |
+| `[1, 2.5]` | `[1, 2.5]` |
+
+- This applies only to the section being written. On the full-rewrite fallback, other sections are re-encoded from the parsed file, which holds every number as a float, so a whole number there is written as e.g. `60.0`.
+
+#### Scenario: Nested integer fields
+- **WHEN** `sectionsJson` is `{"automation":{"reviewFixIterations":3,"drift":{"maxErrorRate":0.5,"minErrorFloor":2}}}`
+- **THEN** `local.toml` holds `reviewFixIterations = 3`
+- **AND** `local.toml` holds `minErrorFloor = 2`
+- **AND** `local.toml` holds `maxErrorRate = 0.5`
+
 ### Requirement: Per-section failures do not stop the batch
 The tool SHALL process section keys in sorted order and SHALL continue after a section fails. A failed section SHALL add an `errors` entry and set `ok: false`; it SHALL NOT produce a tool error.
 

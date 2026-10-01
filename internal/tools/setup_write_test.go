@@ -318,6 +318,46 @@ func writeSDLCFile(t *testing.T, dir, name, content string) string {
 	return path
 }
 
+// TestSetupWriteSections_WholeNumbersWrittenAsIntegers verifies that whole
+// JSON numbers are written as TOML integers ("60", not "60.0") at every
+// depth, while a number with a fraction stays a float.
+func TestSetupWriteSections_WholeNumbersWrittenAsIntegers(t *testing.T) {
+	dir := t.TempDir()
+	path := writeSDLCFile(t, dir, "local.toml", "# local settings\n[review]\nscope = \"all\"\n")
+
+	// testList is not a real review key; local.toml sections are not
+	// key-checked, and it exercises numbers inside an array.
+	res, text := callRegisteredSetupWriteSectionsIn(t, dir,
+		`{"automation":{"reviewFixIterations":3,"drift":{"maxErrorRate":0.5,"minErrorFloor":2}},`+
+			`"review":{"scope":"all","testList":[1,2.5]}}`)
+	if res.IsError {
+		t.Fatalf("expected success, got tool error:\n%s", text)
+	}
+	if strings.Contains(text, "comments were removed") {
+		t.Fatalf("tool fell back to a full rewrite:\n%s", text)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"reviewFixIterations = 3\n",
+		"minErrorFloor = 2\n",
+		"maxErrorRate = 0.5\n",
+		"testList = [1, 2.5]\n",
+		"# local settings\n",
+	} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("local.toml missing %q:\n%s", want, got)
+		}
+	}
+	for _, bad := range []string{"3.0", "2.0", "1.0"} {
+		if strings.Contains(string(got), bad) {
+			t.Errorf("local.toml has whole number written as float %q:\n%s", bad, got)
+		}
+	}
+}
+
 // TestSetupWriteSections_NullClearsLeaf verifies the spec'd null handling:
 // a null section value writes an empty table at that key, which clears its
 // fields, while sibling tables and the comments around them stay.
