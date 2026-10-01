@@ -75,11 +75,12 @@ was already resolved, it says so and changes nothing.
   on the run-scoped state file and is lost when that file is cleaned up, so it
   never reaches `/deferred`. Watch for those warnings during a run.
 - **`source` is not the reason.** Every item recorded through `ship_state defer`
-  carries the source `review-below-threshold` and an id starting with
-  `review-deferred-`, including `/received-review` findings that were not below
-  any threshold. The `reason` field (`below-threshold`, `needs-direction`,
-  `disagree`, `wont-fix`) is what tells them apart. Execute drafts use the
-  source `execute-drift` and have no reason.
+  has an id starting with `review-deferred-`. Its source is whatever the caller
+  passed: `/received-review` passes `received-review`, and the source defaults
+  to `review-below-threshold` when the caller passes none. The `reason` field
+  (`below-threshold`, `needs-direction`, `disagree`, `wont-fix`) says why an
+  item was deferred. Execute drafts use the source `execute-drift` and have no
+  reason.
 - **Nothing is filed without your approval.** Before each `gh issue create`,
   the complete title and body are printed in chat. You can approve, change the
   text, or skip that item. Every issue gets the label `deferred-followup`
