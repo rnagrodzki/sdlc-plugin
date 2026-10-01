@@ -761,7 +761,17 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 	case in.Target != "":
 		base = in.Target
 	default:
-		b, err := gitx.DefaultBranch(activeRoot)
+		configured := config.GitBaseBranch(projectRoot)
+		if configured != "" {
+			if err := gitx.FetchBranch(activeRoot, "origin", configured); err != nil {
+				return ReviewPrepareOut{}, &mcpserver.DomainError{
+					Msg:        fmt.Sprintf("base branch %q not found on origin", configured),
+					Suggestion: "Push the branch, fix [git] baseBranch in .sdlc-v2/config.toml, or pass target explicitly.",
+					Cause:      err,
+				}
+			}
+		}
+		b, err := gitx.BaseBranch(activeRoot, configured)
 		if err != nil {
 			return ReviewPrepareOut{}, &mcpserver.InfraError{
 				Msg:        fmt.Sprintf("detect base branch: %s", err.Error()),

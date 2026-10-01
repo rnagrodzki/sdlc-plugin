@@ -32,7 +32,7 @@ flowchart LR
 
 - [x] 2.1 Add CLI wrappers `List`, `ListSpecs`, `Status`, `Instructions` (JSON decode, `nested_change_directory` warnings) in `internal/openspec/cli.go` with an injectable runner — verify: `go test ./internal/openspec/ -run TestCLIWrappers` <!-- ref:2-1-add-cli-wrappers-list-listspecs-stat-ffaf53 -->
 - [x] 2.2 Add `Stage(activeRoot, change, files)` with name/path checks, whole-dir replace, `stage.json` SHA-256, temp-copy `validate --strict` in `internal/openspec/stage.go` — verify: `go test ./internal/openspec/ -run TestStage` (incl. `../config.toml` rejection, git status clean) <!-- ref:2-2-add-stage-activeroot-change-files-wi-143bce -->
-- [ ] 2.3 Add `Materialize(activeRoot, planContent)` implementing rules 1–7, rollback on validate failure, `git add`, staging delete in `internal/openspec/materialize.go` — verify: `go test ./internal/openspec/ -run TestMaterialize` (created, already, differs, missing, hash mismatch, rollback) <!-- ref:2-3-add-materialize-activeroot-planconte-8b898f -->
+- [x] 2.3 Add `Materialize(activeRoot, planContent)` implementing rules 1–7, rollback on validate failure, `git add`, staging delete in `internal/openspec/materialize.go` — verify: `go test ./internal/openspec/ -run TestMaterialize` (created, already, differs, missing, hash mismatch, rollback) <!-- ref:2-3-add-materialize-activeroot-planconte-8b898f -->
 - [ ] 2.4 Replace `specs/*.md` / one-level globs with `Status` artifact paths in `internal/openspec/openspec.go`, `internal/tools/plan.go:270`, `internal/tools/plan_explore.go:212` — verify: `go test ./internal/openspec/ ./internal/tools/ -run 'TestNestedDeltaSpecs'` <!-- ref:2-4-replace-specs-md-one-level-globs-wit-e37003 -->
 
 ## 3. Plan tools
@@ -69,7 +69,7 @@ flowchart LR
 ## 7. Worktree state links
 
 - [ ] 7.1 Create missing symlinks for `LinkedStateEntries` in a linked worktree, skip existing real entries with the warning line, fail open on errors, in `internal/hooks/session_start.go` — verify: `go test ./internal/hooks/ -run 'TestSessionStartWorktreeLinks'` (main worktree no-op, idempotent, real dir kept, permission error) <!-- ref:7-1-create-missing-symlinks-for-linkedst-f4bdbd -->
-- [ ] 7.2 Exempt symlinks that resolve to the same main-worktree entry from `findStrayStateEntries` in `internal/tools/validators.go` — verify: `go test ./internal/tools/ -run 'TestStrayStateAcceptsLinks|TestStrayStateWrongLinkTarget'` <!-- ref:7-2-exempt-symlinks-that-resolve-to-the-b6ef27 -->
+- [x] 7.2 Exempt symlinks that resolve to the same main-worktree entry from `findStrayStateEntries` in `internal/tools/validators.go` — verify: `go test ./internal/tools/ -run 'TestStrayStateAcceptsLinks|TestStrayStateWrongLinkTarget'` <!-- ref:7-2-exempt-symlinks-that-resolve-to-the-b6ef27 -->
 - [ ] 7.3 Assert `git status --porcelain` is empty after linking in `internal/hooks/session_start_test.go` — verify: `go test ./internal/hooks/ -run TestWorktreeLinksGitClean` <!-- ref:7-3-assert-git-status-porcelain-is-empty-6ad091 -->
 - [ ] 7.4 Describe worktree links in `docs/getting-started.md` (or `docs/plan-architecture.md` state section) — verify: `links_validate` on the changed doc <!-- ref:7-4-describe-worktree-links-in-docs-gett-4d4b00 -->
 

@@ -2016,6 +2016,41 @@ func sameWorktreePath(a, b string) bool {
 	return ra == rb
 }
 
+// isCorrectStateLink reports whether name is one of paths.LinkedStateEntries
+// and the corresponding entry under <activeRoot>/.sdlc-v2/ is a symlink that
+// resolves to the same real path as <mainRoot>/.sdlc-v2/<name>. Entries that
+// are never linked (paths.UnlinkedStateEntries) always return false here, so
+// they keep today's stray-detection behavior unchanged
+// (F-worktree-state-links-8).
+func isCorrectStateLink(mainRoot, activeRoot, name string) bool {
+	linked := false
+	for _, n := range paths.LinkedStateEntries {
+		if n == name {
+			linked = true
+			break
+		}
+	}
+	if !linked {
+		return false
+	}
+
+	linkPath := filepath.Join(activeRoot, paths.DataDir, name)
+	info, err := os.Lstat(linkPath)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		return false
+	}
+
+	resolvedLink, err := filepath.EvalSymlinks(linkPath)
+	if err != nil {
+		return false
+	}
+	resolvedTarget, err := filepath.EvalSymlinks(filepath.Join(mainRoot, paths.DataDir, name))
+	if err != nil {
+		return false
+	}
+	return resolvedLink == resolvedTarget
+}
+
 // findStrayStateEntries reports every top-level entry inside
 // <activeRoot>/.sdlc-v2/ that is not part of the committable set (see
 // CommittableStateDirEntries in setup.go). Every linked worktree
@@ -2024,7 +2059,9 @@ func sameWorktreePath(a, b string) bool {
 // that leaked into the linked worktree instead of landing in the main
 // worktree's .sdlc-v2/ (the bug family this check exists to catch). A
 // missing directory is not an error: a linked worktree with no .sdlc-v2/ at
-// all has nothing stray to report.
+// all has nothing stray to report. A correctly-linked entry (see
+// isCorrectStateLink) is also not stray -- F-worktree-state-links-7 links
+// run-generated entries into the active worktree on purpose.
 func findStrayStateEntries(mainRoot, activeRoot string) ([]discovery.Finding, error) {
 	activeDir := filepath.Join(activeRoot, paths.DataDir)
 	entries, err := os.ReadDir(activeDir)
@@ -2043,6 +2080,9 @@ func findStrayStateEntries(mainRoot, activeRoot string) ([]discovery.Finding, er
 	var findings []discovery.Finding
 	for _, entry := range entries {
 		if allowed[entry.Name()] {
+			continue
+		}
+		if isCorrectStateLink(mainRoot, activeRoot, entry.Name()) {
 			continue
 		}
 		findings = append(findings, discovery.Finding{
