@@ -87,7 +87,7 @@ func TestPayloads_SchemaChecksums(t *testing.T) {
 		"sdlc-local.schema.json":       "0f1755fcdfa5aa46dc815662f6eacdbe73f81a2a14b1ee21bf97021b0aecfeab",
 		"execute-state.schema.json":    "2cecbd7c64efec5c1f1220a18f2573d6b3089668c7925b0c75d0ef9e8345723a",
 		"ship-state.schema.json":       "6ad4a3788b3ebb54d801d06afd477cef7794771393f4defae3beebd497ea1c16",
-		"review-dimension.schema.json": "107a3d573e0e1b45edf7e31b547c5f0b8f5c7ccca193923255ace6f93f8a559d",
+		"review-dimension.schema.json": "5b02617f32c1d1b21b16597e2799cfee795896ae4f1983812e19f65bbc1cec3b",
 		"plugin.schema.json":           "c774282b3c8c54fc7418b767c5043353e11f65138b0be010cef8d57a6270fa67",
 	}
 
