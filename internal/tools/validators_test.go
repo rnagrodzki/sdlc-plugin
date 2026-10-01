@@ -218,6 +218,30 @@ func TestValidatePlanFormatPF3InvalidComplexity(t *testing.T) {
 	}
 }
 
+func TestValidatePlanFormatPF3EmptyFieldBeforeLabel(t *testing.T) {
+	root := t.TempDir()
+	plan := strings.Replace(goodPlan, "**Complexity:** Standard\n", "**Complexity:**\n", 1)
+	if plan == goodPlan {
+		t.Fatal("fixture replace did not change goodPlan")
+	}
+	writeFile(t, filepath.Join(root, "plan.md"), plan)
+
+	findingsOut, err := validate(root, ValidateIn{Action: "plan_format", File: "plan.md"})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	pf3 := findingsByID(findingsOut.Findings, "PF3")
+	if len(pf3) != 1 {
+		t.Fatalf("expected 1 PF3 finding, got %d: %+v", len(pf3), findingsOut.Findings)
+	}
+	if !strings.Contains(pf3[0].Message, "Complexity") {
+		t.Errorf("PF3 message %q should name the empty Complexity field", pf3[0].Message)
+	}
+	if strings.Contains(pf3[0].Message, "Risk") {
+		t.Errorf("PF3 message %q should not mention Risk: it has a value", pf3[0].Message)
+	}
+}
+
 func TestValidatePlanFormatPF4CircularDependency(t *testing.T) {
 	root := t.TempDir()
 	plan := strings.Replace(goodPlan, "**Depends on:** none", "**Depends on:** Task 2", 1)

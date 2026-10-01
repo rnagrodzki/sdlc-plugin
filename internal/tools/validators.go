@@ -457,7 +457,15 @@ func extractField(content, fieldName string) (string, bool) {
 	if m == nil {
 		return "", false
 	}
-	return strings.TrimSpace(m[1]), true
+	v := strings.TrimSpace(m[1])
+	// The \s* above skips newlines, so an empty "**Complexity:**" takes the
+	// next non-blank line as its value. When that line is itself a
+	// "**Label:**" line, the field is present but empty. A plain value on
+	// the next line still counts.
+	if fieldLabelRe.MatchString(v) {
+		return "", true
+	}
+	return v, true
 }
 
 var fenceOpenRe = regexp.MustCompile("^(`{3,})")
@@ -524,21 +532,18 @@ var pf1FieldHints = map[string]string{
 	"Verification": "primary verification command, e.g. go test ./...",
 }
 
-// pf1LabelRe matches a value that is itself a bold label line such as
+// fieldLabelRe matches a value that is itself a bold label line such as
 // "**Architecture:** x".
-var pf1LabelRe = regexp.MustCompile(`^\*\*[^*\n]+:\*\*`)
+var fieldLabelRe = regexp.MustCompile(`^\*\*[^*\n]+:\*\*`)
 
 func checkPF1(content string) pfCheck {
 	fields := []string{"Goal", "Architecture", "Source", "Verification"}
 	var missing []string
 	for _, f := range fields {
+		// extractField returns "" when the value would be the next
+		// "**Label:**" line, so an empty field is caught here.
 		v, ok := extractField(content, f)
-		// extractField's \s* skips newlines, so an empty "**Goal:**" takes
-		// the next non-blank line as its value. That line being another
-		// "**Label:**" line means the field is empty; a plain next-line value
-		// still counts. A same-line value that starts with "**X:**" is
-		// treated as empty too.
-		if !ok || v == "" || pf1LabelRe.MatchString(v) {
+		if !ok || v == "" {
 			missing = append(missing, f)
 		}
 	}
