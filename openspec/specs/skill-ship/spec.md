@@ -78,7 +78,7 @@ The skill SHALL call `ship_state({action:"read"})` before any other `ship_state`
 |---|---|---|---|
 | Has `resumeBriefing` | given | any | Resume handler; no `ship_prepare`. |
 | Has `resumeBriefing` | not given | not given | Resume handler; no `ship_prepare`. |
-| Has `resumeBriefing` | not given | given | Fresh run; `ship_prepare` deletes the old same-branch file. |
+| Has `resumeBriefing` | not given | given | Print `resumeBriefing.display`, then `AskUserQuestion` (asked even under `--auto`): **Resume it** → resume handler, no `ship_prepare`; **Start fresh** → fresh run, `ship_prepare` deletes the old same-branch file. |
 | No `resumeBriefing` | any | any | Fresh run. |
 | Error: `DataError` (no state file) or `InfraError` (unreadable state file) | any | any | Treated as no prior run; fresh run. |
 
@@ -92,9 +92,10 @@ The skill SHALL call `ship_state({action:"read"})` before any other `ship_state`
 - **THEN** the skill continues to a fresh run with `ship_prepare`
 - **AND** does not call `fail` or stop
 
-#### Scenario: Auto run ignores old briefing
+#### Scenario: Auto run asks before discarding an old briefing
 - **WHEN** `read` returns a `resumeBriefing` and the user passed `--auto` without `--resume`
-- **THEN** the skill starts a fresh run with `ship_prepare`
+- **THEN** the skill asks with `AskUserQuestion` whether to resume the run or start fresh
+- **AND** calls `ship_prepare` only when the user picks **Start fresh**
 
 ### Requirement: Feature branch setup
 When the current branch is the default branch and `--plan <path>` was given, the skill SHALL create a feature branch with `git checkout -b` before calling `ship_prepare`.
@@ -116,6 +117,7 @@ The skill SHALL call `ship_prepare` at most once per run, with `skipConfigCheck:
 - Non-empty `errors`: print each string verbatim and stop; no state exists.
 - Non-empty `warnings`: print each string verbatim and continue.
 - The skill never tells the user to edit `schemaVersion` by hand.
+- `ship_prepare` migrates no config: a missing or pre-TOML config is an `errors` entry prefixed `config-version:`, printed verbatim, and the run stops.
 - A `DomainError` (for example `pr` on `main`/`master`) stops the run.
 
 #### Scenario: Validation errors
