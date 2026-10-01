@@ -37,7 +37,7 @@ Each operation below SHALL use the resolved base branch instead of the repositor
 | execute wave base sync | — | `origin/<base>` |
 | ship `rebase` step | `origin/<default>` | `origin/<base>` |
 | pr: new PR base when `--base` is not passed | repository default | `<base>` |
-| pr / commit: commit list range | `<default>...HEAD` | `<base>...HEAD` |
+| pr / commit: commit list range | `<default>..HEAD` | `<base>..HEAD` |
 | review: diff base when `--base` is not passed | repository default | `<base>` |
 
 - An explicit `--base <branch>` on pr or review still wins over config.

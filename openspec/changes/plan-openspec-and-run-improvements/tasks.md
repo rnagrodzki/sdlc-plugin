@@ -38,7 +38,7 @@ flowchart LR
 ## 3. Plan tools
 
 - [x] 3.1 Switch `plan_prepare` OpenSpec detection to `List`/`Status`, add `groupedChanges`, `deltaSpecPaths`, grouped-name error, `openspec CLI unavailable` error in `internal/tools/plan.go` — verify: `go test ./internal/tools/ -run 'TestPlanPrepareOpenspec'` <!-- ref:3-1-switch-plan-prepare-openspec-detecti-b2f547 -->
-- [ ] 3.2 Replace `openspecInlineGenerate` with `openspecStage` in `PlanPrepareIn` and skeleton-body rules in `internal/tools/plan.go` — verify: `go test ./internal/tools/ -run TestPlanPrepareSkeletonOpenspecStage` <!-- ref:3-2-replace-openspecinlinegenerate-with-22ea32 -->
+- [x] 3.2 Replace `openspecInlineGenerate` with `openspecStage` in `PlanPrepareIn` and skeleton-body rules in `internal/tools/plan.go` — verify: `go test ./internal/tools/ -run TestPlanPrepareSkeletonOpenspecStage` <!-- ref:3-2-replace-openspecinlinegenerate-with-22ea32 -->
 - [x] 3.3 Add `openspec_stage` action (inputs, outputs, `next`, errors) to `internal/tools/plan_support.go`, keeping `ReadOnly:true` — verify: `go test ./internal/tools/ -run 'TestPlanSupportOpenspecStage|TestReadOnlyToolsWriteNothingTracked'` <!-- ref:3-3-add-openspec-stage-action-inputs-out-457f63 -->
 - [x] 3.4 Add `rejected` (default `[]`) and server-set `at` to `criticalDecisions` entries in `internal/tools/plan.go` (`plan_mark`) — verify: `go test ./internal/tools/ -run TestPlanMarkCriticalDecisionsRejected` <!-- ref:3-4-add-rejected-default-and-server-set-7fa708 -->
 - [x] 3.5 Stop deleting the plan run file and `.evidence/` on `planIntegrity.done` in `internal/hooks/stop_hooks.go` — verify: `go test ./internal/hooks/ -run TestStopPlanIntegrityKeepsDoneRun` <!-- ref:3-5-stop-deleting-the-plan-run-file-and-590ecc -->
@@ -62,16 +62,16 @@ flowchart LR
 
 ## 6. Base branch adoption
 
-- [ ] 6.1 Use `gitx.BaseBranch` instead of `DefaultBranch` for commit-list ranges and new-PR base in `internal/tools/commit.go`, `internal/tools/pr.go` (explicit `--base` still wins) — verify: `go test ./internal/tools/ -run 'TestPrBaseBranchConfig|TestCommitRangeBaseBranch'` <!-- ref:6-1-use-gitx-basebranch-instead-of-defau-5d0e30 -->
+- [x] 6.1 Use `gitx.BaseBranch` instead of `DefaultBranch` for commit-list ranges and new-PR base in `internal/tools/commit.go`, `internal/tools/pr.go` (explicit `--base` still wins) — verify: `go test ./internal/tools/ -run 'TestPrBaseBranchConfig|TestCommitRangeBaseBranch'` <!-- ref:6-1-use-gitx-basebranch-instead-of-defau-5d0e30 -->
 - [ ] 6.2 Use `gitx.BaseBranch` for the review diff base and for the default-branch push gate in `internal/tools/review.go`, `internal/tools/ship.go` — verify: `go test ./internal/tools/ -run 'TestReviewBaseBranchConfig|TestShipPushGateBaseBranch'` <!-- ref:6-2-use-gitx-basebranch-for-the-review-d-6c991b -->
-- [ ] 6.3 Document `[git] baseBranch` in `docs/getting-started.md` and the setup config section — verify: `links_validate` on the changed docs <!-- ref:6-3-document-git-basebranch-in-docs-gett-2c127b -->
+- [x] 6.3 Document `[git] baseBranch` in `docs/getting-started.md` and the setup config section — verify: `links_validate` on the changed docs <!-- ref:6-3-document-git-basebranch-in-docs-gett-2c127b -->
 
 ## 7. Worktree state links
 
 - [x] 7.1 Create missing symlinks for `LinkedStateEntries` in a linked worktree, skip existing real entries with the warning line, fail open on errors, in `internal/hooks/session_start.go` — verify: `go test ./internal/hooks/ -run 'TestSessionStartWorktreeLinks'` (main worktree no-op, idempotent, real dir kept, permission error) <!-- ref:7-1-create-missing-symlinks-for-linkedst-f4bdbd -->
 - [x] 7.2 Exempt symlinks that resolve to the same main-worktree entry from `findStrayStateEntries` in `internal/tools/validators.go` — verify: `go test ./internal/tools/ -run 'TestStrayStateAcceptsLinks|TestStrayStateWrongLinkTarget'` <!-- ref:7-2-exempt-symlinks-that-resolve-to-the-b6ef27 -->
 - [x] 7.3 Assert `git status --porcelain` is empty after linking in `internal/hooks/session_start_test.go` — verify: `go test ./internal/hooks/ -run TestWorktreeLinksGitClean` <!-- ref:7-3-assert-git-status-porcelain-is-empty-6ad091 -->
-- [ ] 7.4 Describe worktree links in `docs/getting-started.md` (or `docs/plan-architecture.md` state section) — verify: `links_validate` on the changed doc <!-- ref:7-4-describe-worktree-links-in-docs-gett-4d4b00 -->
+- [x] 7.4 Describe worktree links in `docs/getting-started.md` (or `docs/plan-architecture.md` state section) — verify: `links_validate` on the changed doc <!-- ref:7-4-describe-worktree-links-in-docs-gett-4d4b00 -->
 
 ## 8. Plan skill
 

@@ -221,7 +221,7 @@ func commitPrepare(cfgRoot, gitRoot string, in CommitPrepareIn) (CommitPrepareOu
 	}
 
 	// WIP squash detection.
-	out.WipSquash = detectWipSquash(gitRoot)
+	out.WipSquash = detectWipSquash(cfgRoot, gitRoot)
 
 	// Branch guard (soft check, no config enforcement).
 	out.BranchGuard = CommitBranchGuard{OK: true}
@@ -294,8 +294,8 @@ func writeCommitManifest(out CommitPrepareOut) (string, error) {
 }
 
 // detectWipSquash detects WIP commits on the current branch since
-// divergence from upstream/default. Soft-fails to empty result.
-func detectWipSquash(gitRoot string) CommitWipSquash {
+// divergence from upstream/base. Soft-fails to empty result.
+func detectWipSquash(cfgRoot, gitRoot string) CommitWipSquash {
 	result := CommitWipSquash{
 		Commits: []string{},
 	}
@@ -305,12 +305,13 @@ func detectWipSquash(gitRoot string) CommitWipSquash {
 		"rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}",
 	}, execx.Options{Dir: gitRoot})
 	if err != nil {
-		// No upstream: try default branch.
-		defBranch, defErr := gitx.DefaultBranch(gitRoot)
-		if defErr != nil {
+		// No upstream: try the configured base branch (falls back to the
+		// repo's default branch when none is configured).
+		baseBranch, baseErr := gitx.BaseBranch(gitRoot, config.GitBaseBranch(cfgRoot))
+		if baseErr != nil {
 			return result
 		}
-		upstream = defBranch
+		upstream = baseBranch
 	}
 	upstream = strings.TrimSpace(upstream)
 	if upstream == "" {

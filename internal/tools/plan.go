@@ -57,15 +57,15 @@ import (
 // to no-ops without a prompt. plan_explore_prepare's separate UserPrompt
 // field remains the primary way to exercise them explicitly.
 type PlanPrepareIn struct {
-	SkipConfigCheck        bool   `json:"skipConfigCheck" jsonschema_description:"Skips the config-version auto-migration gate normally run before preparing plan metadata. Set only when the caller has already verified or migrated the config."`
-	FromOpenspec           string `json:"fromOpenspec" jsonschema_description:"Name of the openspec change to prepare plan metadata from (change validation, tasks inventory, explore-pack discovery). Empty when not planning from an openspec change."`
-	ResolveTemplate        bool   `json:"resolveTemplate" jsonschema_description:"When true, resolves the active plan template (project override, else shipped default) and includes the full template resolution in the output."`
-	FromOpenspecDirect     bool   `json:"fromOpenspecDirect" jsonschema_description:"True when the plan is being generated directly from an openspec change (no inline generation step). Combined with openspecInlineGenerate to determine whether openspec routing is active."`
-	OpenspecInlineGenerate bool   `json:"openspecInlineGenerate" jsonschema_description:"True when the openspec change proposal is being inline-generated as part of this plan run. Combined with fromOpenspecDirect to determine whether openspec routing is active."`
-	Lightweight            bool   `json:"lightweight" jsonschema_description:"Requests the lightweight complexity-routing path regardless of file count, adjusting dispatch metadata accordingly."`
-	FileCount              int    `json:"fileCount" jsonschema_description:"Number of files the change is expected to touch, used with lightweight to compute complexity routing (pipeline mode)."`
-	UserPrompt             string `json:"userPrompt" jsonschema_description:"User's plan request text, forwarded to buildExplorePack for keyword-scope and web-research-signal detection. Empty behaves identically to prior versions."`
-	Resume                 bool   `json:"resume,omitempty" jsonschema_description:"Boolean. Post-compact recovery: true reuses the active plan run of this branch without resetting it, and always resolves the template (as if resolveTemplate were true). The saved userPrompt and routing flags replace the input values. Fails when no active run exists. Example: true after the session context shows 'Active plan (post-compact):'."`
+	SkipConfigCheck    bool   `json:"skipConfigCheck" jsonschema_description:"Skips the config-version auto-migration gate normally run before preparing plan metadata. Set only when the caller has already verified or migrated the config."`
+	FromOpenspec       string `json:"fromOpenspec" jsonschema_description:"Name of the openspec change to prepare plan metadata from (change validation, tasks inventory, explore-pack discovery). Empty when not planning from an openspec change."`
+	ResolveTemplate    bool   `json:"resolveTemplate" jsonschema_description:"When true, resolves the active plan template (project override, else shipped default) and includes the full template resolution in the output."`
+	FromOpenspecDirect bool   `json:"fromOpenspecDirect" jsonschema_description:"True when the plan is being generated directly from an openspec change (no inline generation step). Combined with openspecStage to determine whether openspec routing is active."`
+	OpenspecStage      bool   `json:"openspecStage,omitempty" jsonschema_description:"Plain JSON bool. True when the plan authors a new OpenSpec change and stages it. Example: true"`
+	Lightweight        bool   `json:"lightweight" jsonschema_description:"Requests the lightweight complexity-routing path regardless of file count, adjusting dispatch metadata accordingly."`
+	FileCount          int    `json:"fileCount" jsonschema_description:"Number of files the change is expected to touch, used with lightweight to compute complexity routing (pipeline mode)."`
+	UserPrompt         string `json:"userPrompt" jsonschema_description:"User's plan request text, forwarded to buildExplorePack for keyword-scope and web-research-signal detection. Empty behaves identically to prior versions."`
+	Resume             bool   `json:"resume,omitempty" jsonschema_description:"Boolean. Post-compact recovery: true reuses the active plan run of this branch without resetting it, and always resolves the template (as if resolveTemplate were true). The saved userPrompt and routing flags replace the input values. Fails when no active run exists. Example: true after the session context shows 'Active plan (post-compact):'."`
 }
 
 // OpenspecChangeInfo, OpenspecAuthoritative, and OpenspecInfo used to be
@@ -1024,9 +1024,14 @@ var step5OwnedSections = map[string]bool{
 }
 
 // openspecConditionPrefix is the prefix that identifies an OpenSpec-conditional
-// section. Both the legacy condition ("source matches openspec/changes/") and
-// the current form ("source matches openspec/changes/ or openspecInlineGenerate")
-// start with this prefix, so a HasPrefix check covers both.
+// section. A HasPrefix check (not an exact match) is used deliberately: the
+// condition text after the prefix is never parsed — only openspecActive
+// (fromOpenspecDirect || openspecStage) decides the section body. This lets
+// the prefix match the bare form ("source matches openspec/changes/", used
+// in tests) and any suffixed form, including the legacy "... or
+// openspecInlineGenerate" that may still appear in project template
+// overrides and in the shipped default template on disk until a later task
+// renames it to "... or openspecStage".
 const openspecConditionPrefix = "source matches openspec/changes/"
 
 // computeComplexityRouting maps a file count to a pipeline mode.
@@ -1147,7 +1152,7 @@ func buildHeaderMarkdown() string {
 func buildTemplateResolution(mainRoot string, in PlanPrepareIn, planTemplatePath *string) (*TemplateResolution, []string) {
 	warnings := []string{}
 
-	openspecActive := in.FromOpenspecDirect || in.OpenspecInlineGenerate
+	openspecActive := in.FromOpenspecDirect || in.OpenspecStage
 	routing := computeComplexityRouting(in.FileCount, in.Lightweight)
 
 	// Resolve the active template path: project override -> shipped default.
@@ -1382,11 +1387,11 @@ func fullCreationIntent(in PlanPrepareIn) map[string]any {
 		"routing":    routing.Reason,
 		"timestamp":  time.Now().UTC().Format(time.RFC3339),
 		"flags": map[string]any{
-			"fromOpenspec":           in.FromOpenspec,
-			"fromOpenspecDirect":     in.FromOpenspecDirect,
-			"openspecInlineGenerate": in.OpenspecInlineGenerate,
-			"lightweight":            in.Lightweight,
-			"fileCount":              in.FileCount,
+			"fromOpenspec":       in.FromOpenspec,
+			"fromOpenspecDirect": in.FromOpenspecDirect,
+			"openspecStage":      in.OpenspecStage,
+			"lightweight":        in.Lightweight,
+			"fileCount":          in.FileCount,
 		},
 	}
 }
@@ -1412,8 +1417,8 @@ func applySavedIntent(st *state.State, in PlanPrepareIn) PlanPrepareIn {
 	if v, ok := flags["fromOpenspecDirect"].(bool); ok {
 		in.FromOpenspecDirect = v
 	}
-	if v, ok := flags["openspecInlineGenerate"].(bool); ok {
-		in.OpenspecInlineGenerate = v
+	if v, ok := flags["openspecStage"].(bool); ok {
+		in.OpenspecStage = v
 	}
 	if v, ok := flags["lightweight"].(bool); ok {
 		in.Lightweight = v

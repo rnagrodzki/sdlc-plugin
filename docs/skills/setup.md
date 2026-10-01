@@ -108,6 +108,16 @@ branch-protection rulesets block the default token — its
 config template and in [the versioning
 docs](../versioning.md#protected-branches-and-rulesets).
 
+The `[git]` section's `baseBranch` key (default `""`) sets the integration
+branch for `execute`, `ship`, `pr`, `review`, and `commit`. Leave it empty to
+use the repository's default branch. An explicit `--base` flag on `pr` or
+`review` still wins; `execute`, `ship`, and `commit` have no `--base` flag
+and always use the resolved value. See [Getting started → Integration
+branch](../getting-started.md#integration-branch).
+
+The `[execute]` section's `baseSync` key (default `true`) controls whether
+`execute` merges `origin/<base>` into the branch between waves.
+
 ## Related skills
 
 - Every skill depends on `/setup` for its config. "Missing config" errors point

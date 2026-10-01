@@ -114,6 +114,35 @@ pipeline, stopping for confirmation between steps by default.
 It accepts `--resume` to pick back up from a saved state file if
 interrupted.
 
+### Integration branch
+
+Set `[git] baseBranch = "develop"` in `.sdlc-v2/config.toml` when you
+integrate on a branch other than the repository default. Execute, ship, pr,
+review and commit use it. An explicit `--base` flag on `pr` or `review`
+still wins; `execute`, `ship`, and `commit` have no `--base` flag and always
+use the resolved value.
+
+Leave it unset (the default, `""`) and each of those skills falls back to the
+repository's own default branch instead.
+
+### Linked worktrees
+
+When a skill runs from a git worktree other than the main one, a
+session-start hook symlinks the run-generated parts of `.sdlc-v2/` into the
+linked worktree, so they stay visible and live without a new session:
+
+- `runs`
+- `reports`
+- `history`
+- `evidence`
+- `learnings`
+- `reviews`
+- `state`
+- `timings.json`
+
+`.sdlc-v2/config.toml` is never linked or symlinked — each worktree keeps its
+own real config file.
+
 ## 4. Supervised vs. unattended
 
 By default (`automation.mode: supervised` in `.sdlc-v2/local.toml`), every

@@ -1597,7 +1597,7 @@ func TestPlanPrepare_CreationIntent_FirstCallThenResolveTemplate(t *testing.T) {
 		t.Fatalf("creationIntent.flags missing: %v", intent)
 	}
 	wantFlags := map[string]any{
-		"fromOpenspec": "", "fromOpenspecDirect": false, "openspecInlineGenerate": false,
+		"fromOpenspec": "", "fromOpenspecDirect": false, "openspecStage": false,
 		"lightweight": false, "fileCount": float64(2),
 	}
 	if !reflect.DeepEqual(flags, wantFlags) {
@@ -1749,7 +1749,7 @@ func TestPlanPrepare_ResumeReusesActiveRun(t *testing.T) {
 	if _, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, UserPrompt: prompt}); err != nil {
 		t.Fatal(err)
 	}
-	prev, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true, UserPrompt: prompt, FileCount: 12})
+	prev, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true, UserPrompt: prompt, FileCount: 12, OpenspecStage: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1792,8 +1792,8 @@ func TestPlanPrepare_ResumeReusesActiveRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if eff.UserPrompt != prompt || eff.FileCount != 12 || eff.Lightweight || !eff.ResolveTemplate {
-		t.Errorf("effective input = %+v, want saved prompt/flags and resolveTemplate", eff)
+	if eff.UserPrompt != prompt || eff.FileCount != 12 || eff.Lightweight || !eff.ResolveTemplate || !eff.OpenspecStage {
+		t.Errorf("effective input = %+v, want saved prompt/flags, resolveTemplate, and openspecStage restored", eff)
 	}
 }
 
@@ -2837,6 +2837,26 @@ func TestPlanTemplateResolve_ConditionOpenspec(t *testing.T) {
 	want := "Not applicable — no OpenSpec change"
 	if body := sectionBody(t, outInactive.Template.SkeletonMarkdown, "OpenSpec Sync"); body != want {
 		t.Errorf("OpenSpec Sync body (no openspec flags) = %q, want %q", body, want)
+	}
+}
+
+// TestPlanPrepareSkeletonOpenspecStage verifies that OpenspecStage=true
+// alone (the plan authoring and staging a new OpenSpec change, independent
+// of FromOpenspecDirect) is enough to leave the OpenSpec-conditional section
+// as "[TBD]", mirroring TestPlanTemplateResolve_ConditionOpenspec's
+// fromOpenspecDirect case.
+func TestPlanPrepareSkeletonOpenspecStage(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	writeProjectPlanTemplate(t, dir, planTemplateResolveFixture)
+
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true, OpenspecStage: true})
+	if err != nil {
+		t.Fatalf("planPrepareCore (openspecStage active): %v", err)
+	}
+	if body := sectionBody(t, out.Template.SkeletonMarkdown, "OpenSpec Sync"); body != "[TBD]" {
+		t.Errorf("OpenSpec Sync body (openspecStage=true) = %q, want [TBD]", body)
 	}
 }
 
