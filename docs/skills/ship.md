@@ -22,7 +22,7 @@ default. Optionally verify CI and wait for automated reviewer feedback.
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--plan <path>` | Plan file to execute. Omit to skip the execute step and start from commit. | none |
-| `--auto` | Suppress all confirmation prompts for the whole run. One exception: filing a GitHub issue for an execute-step draft still asks — see [End-of-run summary](#end-of-run-summary). | off |
+| `--auto` | Suppress all confirmation prompts for the whole run. Two exceptions still ask: whether to resume or replace a run that is still in flight on this branch — see [State and Resolution Trace](#state-and-resolution-trace) — and filing a GitHub issue for an execute-step draft — see [End-of-run summary](#end-of-run-summary). | off |
 | `--steps <csv>` | Comma-separated list of steps to run, overriding the project's configured step list. | from config |
 | `--quick` | Use the project's configured shortcut step list. Does nothing if no shortcut list is configured. | off |
 | `--quality <level>` | Quality tier forwarded to the execute step: `full`, `balanced`, or `minimal`. | unset (execute decides) |
@@ -109,7 +109,19 @@ again.
 
 Every `/ship` run reads its saved state before doing anything else — even
 when `--resume` isn't passed — because a stale in-flight run can exist from
-a prior session. The saved state file (one per branch, under `.sdlc-v2/`)
+a prior session. What happens next depends on what it finds:
+
+- **No saved state for this branch** (the read reports that no state file
+  exists — this is not an error), or a finished run, or a run where no step
+  ever started: a fresh run starts.
+- **A run still in flight, with `--resume` or without `--auto`:** `/ship`
+  shows where that run stopped and continues it. A plain `/ship` resumes too.
+- **A run still in flight, with `--auto` but no `--resume`:** `/ship` shows
+  where that run stopped and asks whether to resume it or start fresh. It
+  asks even under `--auto`, because starting fresh deletes the old run's
+  state file and it cannot be recovered.
+
+The saved state file (one per branch, under `.sdlc-v2/`)
 records, alongside the resolved pipeline flags:
 
 - **`sources`** — a per-flag resolution trace: which precedence tier won for
@@ -212,8 +224,8 @@ step silently — nothing is written.
 - **Review threshold.** Default: `info` — every finding, including Info,
   triggers the fix loop. Change it via `/setup`. Findings below a higher
   threshold are saved for [/deferred](deferred.md), not dropped.
-- **Saved progress survives sessions.** Run `/ship --resume` in a new session
-  to continue an interrupted pipeline.
+- **Saved progress survives sessions.** Run `/ship --resume` (or a plain
+  `/ship`) in a new session to continue an interrupted pipeline.
 - **Two independent automation controls.** `--auto` (and its config
   equivalent) suppresses confirmation prompts for the whole run. A separate
   per-step automation setting in your project config controls whether

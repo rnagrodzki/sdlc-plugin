@@ -465,9 +465,6 @@ func TestShipPrepare_KD5Gate(t *testing.T) {
 	if out.StateFile != "" {
 		t.Errorf("StateFile = %q, want empty (KD5 gate must not init state)", out.StateFile)
 	}
-	if out.Migration != nil {
-		t.Errorf("Migration = %v, want nil on a failed migration attempt", out.Migration)
-	}
 
 	entries, _ := os.ReadDir(filepath.Join(dir, paths.DataDir, paths.RunsSubdir))
 	if len(entries) != 0 {
@@ -508,9 +505,6 @@ func TestShipPrepare_StaleConfigRequiresSetup(t *testing.T) {
 	if out.StateFile != "" {
 		t.Errorf("StateFile = %q, want empty (stale config must not init state)", out.StateFile)
 	}
-	if out.Migration != nil {
-		t.Errorf("Migration = %v, want nil; JSON->TOML auto-migration no longer exists", out.Migration)
-	}
 }
 
 // TestShipPrepare_MissingConfig verifies the KD5 gate's missing-config case:
@@ -535,8 +529,7 @@ func TestShipPrepare_MissingConfig(t *testing.T) {
 }
 
 // TestShipPrepare_CurrentConfig_NoExtraIO verifies the KD5 gate's no-op
-// case: an already-current config is not touched at all — no .bak backup
-// and no Migration in the response.
+// case: an already-current config is not touched at all — no .bak backup.
 func TestShipPrepare_CurrentConfig_NoExtraIO(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
@@ -557,9 +550,6 @@ func TestShipPrepare_CurrentConfig_NoExtraIO(t *testing.T) {
 	}
 	if len(out.Errors) != 0 {
 		t.Fatalf("Errors = %v, want empty", out.Errors)
-	}
-	if out.Migration != nil {
-		t.Errorf("Migration = %v, want nil for an already-current config", out.Migration)
 	}
 	if _, statErr := os.Stat(configPath + ".bak"); statErr == nil {
 		t.Error("config.toml.bak written for an already-current config; want zero extra I/O")
@@ -1290,7 +1280,7 @@ func TestShipGC_RespectsKD5Gate(t *testing.T) {
 // KD5 gate's /setup error: a JSON-era config.json with no config.toml is
 // stale by definition (JSON->TOML auto-migration no longer exists), so gc
 // must report the error via the gc-shaped ShipPrepareOut with Action still
-// empty and Migration nil, rather than proceeding.
+// empty, rather than proceeding.
 //
 // This replaces the former TestShipGC_AutoMigratesStaleConfig, which
 // asserted the pre-TOML auto-migrate-with-backup behavior threaded through
@@ -1314,9 +1304,6 @@ func TestShipGC_StaleConfigRequiresSetup(t *testing.T) {
 	}
 	if out.Action == "gc" {
 		t.Errorf("Action = %q, want empty (KD5 gate must short-circuit before gc runs)", out.Action)
-	}
-	if out.Migration != nil {
-		t.Errorf("Migration = %v, want nil; JSON->TOML auto-migration no longer exists", out.Migration)
 	}
 }
 

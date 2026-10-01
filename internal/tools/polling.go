@@ -304,9 +304,9 @@ func awaitRemoteReview(activeRoot string, in AwaitRemoteReviewIn) (stepper.Envel
 // evaluateChecksText below buckets on the tab-separated state column
 // instead of the JS source's structured `bucket` field. gh pr checks exits
 // 0/1/8 for pass/some-failed/some-pending respectively, so this tool uses
-// PRChecksWithExitCode (which preserves stdout across all three) rather than
-// PRChecks (which discards stdout on any non-zero exit, masking the
-// failed/pending cases behind a generic error). RULING: the JS source's
+// PRChecksWithExitCode, which keeps stdout across all three. A helper that
+// discarded stdout on any non-zero exit would mask the failed/pending cases
+// behind a generic error. RULING: the JS source's
 // fetchFailedCheckLogs (`gh run view <runId> --log-failed`) is NOT ported —
 // like received_review.go's documented non-port of fetchPrReviewThreads,
 // this is a gh capability ghx does not expose beyond the raw checks text.
@@ -325,14 +325,14 @@ type VerifyPipelineAwaitIn struct {
 	StateFile       string `json:"state_file,omitempty"`
 }
 
-// checkResult is one row of ghx.PRChecks' plain-text output, bucketed into
-// failed/pending by evaluateChecksText.
+// checkResult is one row of ghx.PRChecksWithExitCode's plain-text output,
+// bucketed into failed/pending by evaluateChecksText.
 type checkResult struct {
 	Name  string `json:"name"`
 	State string `json:"state"`
 }
 
-// evaluateChecksText buckets ghx.PRChecks' tab-separated
+// evaluateChecksText buckets ghx.PRChecksWithExitCode's tab-separated
 // "<name>\t<state>\t<elapsed>\t<link>" lines into failed/pending, mirroring
 // evaluateChecks' fail/pending/else-green priority (JS source) over gh's
 // plain-text state column instead of its structured `bucket` field (see

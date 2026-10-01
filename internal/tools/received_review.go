@@ -26,8 +26,8 @@ type ReceivedReviewIn struct {
 // ReceivedReviewOut is the inline payload returned by received_review_prepare.
 // Thread classification (outstanding/resolved/self-replied/stale) is not
 // ported: the JS source relies on fetchPrReviewThreads (GraphQL), which has
-// no ghx counterpart. Instead, this tool returns PRView and PRChecks output
-// for downstream consumers.
+// no ghx counterpart. Instead, this tool returns PRView and
+// PRChecksWithExitCode output for downstream consumers.
 type ReceivedReviewOut struct {
 	Version       int              `json:"version"`
 	Timestamp     string           `json:"timestamp"`

@@ -66,7 +66,7 @@ var shipStepSideEffects = map[string]string{
 // --verify-pipeline, --await-review — these are rejected by the CLI parser
 // and have no corresponding data field to port).
 type ShipPrepareIn struct {
-	SkipConfigCheck bool `json:"skipConfigCheck" jsonschema_description:"Skips the config-version auto-migration gate normally run before preflight checks. Set only when the caller has already verified or migrated the config."`
+	SkipConfigCheck bool `json:"skipConfigCheck" jsonschema_description:"Skips the config-version gate normally run before preflight checks. The gate migrates nothing: a missing or pre-TOML config fails it with a config-version error pointing at /setup. Set only when the caller has already verified the config."`
 
 	HasPlan            bool     `json:"hasPlan" jsonschema_description:"Whether a plan already exists for this pipeline run. When true and planFile is empty while the execute step will run, this is a validation error — a plan file must be supplied."`
 	Auto               bool     `json:"auto" sdlcconfig:"ship.auto" jsonschema_description:"Run the pipeline unattended (no human available to confirm anything right now). Optional. Defaults to config ship.auto. Pass only to override."`
@@ -167,18 +167,14 @@ type ShipPrepareOut struct {
 	// once state init actually happens (empty on the --gc or errors path).
 	PipelineDisplay string `json:"pipelineDisplay,omitempty"`
 
-	// Migration is populated when the KD5 gate found the config outdated
-	// and auto-migrated it in place (configmigrate.MigrateWithBackup). Nil
-	// when the config was already current — no backup was written and no
-	// migration ran.
-	Migration *MigrationReport `json:"migration,omitempty"`
-
 	Next string `json:"next"`
 }
 
-// MigrationReport describes an inline config auto-migration performed by
-// the KD5 gate (configmigrate.MigrateWithBackup) before ship_prepare's or
-// execute_state's "init" normal work runs.
+// MigrationReport describes an inline config auto-migration reported in
+// execute_state's "init" output. configmigrate.MigrateWithBackup no longer
+// migrates anything (it never returns a backup path), so execute_state
+// never populates it today. ship_prepare dropped its own migration field
+// for the same reason.
 type MigrationReport struct {
 	// Changes lists the migration step labels applied, combining
 	// configmigrate.Report's StepsApplied and LegacyIngested.
@@ -239,7 +235,8 @@ type ShipVerifySideEffectOut struct {
 //     {errors, warnings:[], flags:{}, sources:{}, prunedOrphans:[]} payload,
 //     matching plan.go's early-return-with-minimal-payload soft-gate style
 //     rather than ship.js's own bespoke {errors, warnings,
-//     flags:{skipConfigCheck}, migration} partial shape. commit.go's KD5 gate
+//     flags:{skipConfigCheck}, migration} partial shape (ship_prepare has no
+//     migration field at all: the gate migrates nothing). commit.go's KD5 gate
 //     takes a different control-flow shape (it appends to Errors and falls
 //     through to compute every other field rather than returning early), so
 //     it is not a second instance of this same convention — it shares only
@@ -282,18 +279,17 @@ type ShipVerifySideEffectOut struct {
 //     undisclosed extra pair of keys any strict-shape consumer should
 //     tolerate.
 func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, error) {
-	// KD5 gate: config version check. An outdated config is auto-migrated
-	// in place (configmigrate.MigrateWithBackup writes a .bak backup before
-	// rewriting config.json) rather than hard-failing. Only a genuinely
-	// missing config (project never ran /setup) or a too-new schema still
-	// short-circuits, using the same soft style as before (matches plan.go's
-	// early-return convention specifically, not commit.go's continue-past-
-	// append one — see the deviations note above): nil Go error, minimal
-	// errors-only payload, no further processing.
-	var migrationReport *MigrationReport
+	// KD5 gate: config version check. It migrates nothing:
+	// configmigrate.MigrateWithBackup only classifies the config. A missing
+	// config (project never ran /setup) or a stale JSON-era config fails
+	// with an error pointing at /setup; a current config passes untouched,
+	// with no backup written. A failure short-circuits in the soft style
+	// (matches plan.go's early-return convention specifically, not
+	// commit.go's continue-past-append one — see the deviations note
+	// above): nil Go error, minimal errors-only payload, no further
+	// processing.
 	if !in.SkipConfigCheck {
-		changes, backupPath, err := configmigrate.MigrateWithBackup(cfgRoot)
-		if err != nil {
+		if _, _, err := configmigrate.MigrateWithBackup(cfgRoot); err != nil {
 			out := ShipPrepareOut{
 				Errors:        []string{fmt.Sprintf("config-version: %s", err.Error())},
 				Warnings:      []string{},
@@ -304,9 +300,6 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 			out.Next = shipPrepareNext(out)
 			return out, nil
 		}
-		if backupPath != "" {
-			migrationReport = &MigrationReport{Changes: changes, BackupPath: backupPath}
-		}
 	}
 
 	// --gc short-circuit (R39): matches ship.js's main(), which checks
@@ -314,7 +307,7 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 	// NOT bypass config-staleness gating. Skips all normal flag-merge/
 	// step-validation/state-init below.
 	if in.Gc {
-		return shipGC(cfgRoot, activeRoot, in, migrationReport), nil
+		return shipGC(cfgRoot, activeRoot, in), nil
 	}
 
 	shipCfg, _ := config.ReadSection(cfgRoot, "ship")
@@ -472,7 +465,6 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 		Branch:        currentBranch,
 		Worktree:      activeRoot,
 		PrunedOrphans: []string{},
-		Migration:     migrationReport,
 	}
 
 	if len(errors) > 0 {
@@ -887,10 +879,7 @@ func existingShipStateFiles(root, branchSlug string) ([]string, error) {
 // corresponding input fields at all (consistent with this file's existing
 // hard-removed-flags convention). So there is nothing for this branch to
 // guard against; it is intentionally not ported, not a gap.
-// migrationReport, when non-nil, is threaded through from the KD5 gate that
-// ran (successfully) just before this short-circuit, so a gc-mode response
-// still surfaces an auto-migration the same way the normal path does.
-func shipGC(cfgRoot, activeRoot string, in ShipPrepareIn, migrationReport *MigrationReport) ShipPrepareOut {
+func shipGC(cfgRoot, activeRoot string, in ShipPrepareIn) ShipPrepareOut {
 	ttlDays := resolveGCTTLDays(cfgRoot, in.TtlDays)
 
 	branchExists := gcBranchExistsFunc(activeRoot)
@@ -902,10 +891,9 @@ func shipGC(cfgRoot, activeRoot string, in ShipPrepareIn, migrationReport *Migra
 	})
 	if err != nil {
 		out := ShipPrepareOut{
-			Action:    "gc",
-			Errors:    []string{fmt.Sprintf("gc failed: %s", err.Error())},
-			Warnings:  []string{},
-			Migration: migrationReport,
+			Action:   "gc",
+			Errors:   []string{fmt.Sprintf("gc failed: %s", err.Error())},
+			Warnings: []string{},
 		}
 		out.Next = shipPrepareNext(out)
 		return out
@@ -921,11 +909,10 @@ func shipGC(cfgRoot, activeRoot string, in ShipPrepareIn, migrationReport *Migra
 	}
 
 	out := ShipPrepareOut{
-		Action:    "gc",
-		Report:    report,
-		Errors:    []string{},
-		Warnings:  []string{},
-		Migration: migrationReport,
+		Action:   "gc",
+		Report:   report,
+		Errors:   []string{},
+		Warnings: []string{},
 	}
 	out.Next = shipPrepareNext(out)
 	return out

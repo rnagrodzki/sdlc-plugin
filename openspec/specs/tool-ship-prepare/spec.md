@@ -38,7 +38,7 @@ The tool SHALL accept these input fields; every field is optional.
 Unless `skipConfigCheck` is `true`, the tool SHALL check the project config version before any other work and SHALL return a successful call with one `errors` entry prefixed `config-version:` when the check fails.
 
 - The error path writes no state file and returns empty `flags`, `sources`, `warnings`, and `prunedOrphans`.
-- A current config is not touched: no backup file, no `migration` field.
+- The gate migrates nothing. A current config is not touched and no backup file is written.
 - The gate also runs before the `gc` branch.
 
 #### Scenario: Missing config
@@ -49,7 +49,6 @@ Unless `skipConfigCheck` is `true`, the tool SHALL check the project config vers
 #### Scenario: Legacy JSON config
 - **WHEN** the project has only `.sdlc-v2/config.json`
 - **THEN** `errors[0]` mentions `/setup`
-- **AND** `migration` is absent
 - **AND** no file is created under `.sdlc-v2/runs/`
 
 #### Scenario: Current config
@@ -314,7 +313,6 @@ The tool SHALL return these tool-specific fields.
 | `stateFile` | Path of the new state file; empty when none was written. |
 | `prunedOrphans` | Same-branch ship state files deleted. |
 | `pipelineDisplay` | Rendered step table; only after state init. |
-| `migration` | `{changes, backupPath}`; present only when the config gate migrated the config and wrote a backup. |
 | `action`, `report` | GC branch only. |
 | `next` | See the table below. |
 
