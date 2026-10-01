@@ -858,14 +858,14 @@ func TestPlanPrepareOpenspec_CLIUnavailable(t *testing.T) {
 	}
 }
 
-// TestOpenspecChangeFromPlan verifies the plan-document "**Source:**" header
+// TestOpenspecSourceChangeFromPlan verifies the plan-document "**Source:**" header
 // parser that execute_state's init handler uses to find which openspec
 // change to ref-stamp. It returns "" whenever there is nothing safe to act
 // on: no header, the unfilled "[TBD]" placeholder, or a non-openspec source.
 // A bare change-name segment (e.g. "..") is returned verbatim — traversal
 // safety is deliberately NOT duplicated here; the init call site gates the
 // result through isSafeChangeName before using it (see execActionInit).
-func TestOpenspecChangeFromPlan(t *testing.T) {
+func TestOpenspecSourceChangeFromPlan(t *testing.T) {
 	cases := []struct {
 		name    string
 		content string
@@ -880,9 +880,9 @@ func TestOpenspecChangeFromPlan(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := openspecChangeFromPlan(tc.content)
+			got := openspecSourceChangeFromPlan(tc.content)
 			if got != tc.want {
-				t.Errorf("openspecChangeFromPlan(%q) = %q, want %q", tc.content, got, tc.want)
+				t.Errorf("openspecSourceChangeFromPlan(%q) = %q, want %q", tc.content, got, tc.want)
 			}
 		})
 	}

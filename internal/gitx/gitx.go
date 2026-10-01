@@ -61,11 +61,16 @@ func DefaultBranch(dir string) (string, error) {
 // BaseBranch returns configured, trimmed of surrounding whitespace, when it
 // is non-empty. Otherwise it falls back to DefaultBranch(dir) to
 // auto-detect the repository's base branch. It performs no I/O itself in
-// the configured case — the trimmed value is returned as-is, without
-// verifying that it names a real branch.
+// the configured case — the trimmed value is returned without verifying
+// that it names a real branch. A configured value that looks like a flag
+// (starts with "-") is rejected with validateRef's error, so callers that
+// pass the result straight to git cannot have it parsed as an option.
 func BaseBranch(dir, configured string) (string, error) {
 	trimmed := strings.TrimSpace(configured)
 	if trimmed != "" {
+		if err := validateRef(trimmed, "BaseBranch"); err != nil {
+			return "", err
+		}
 		return trimmed, nil
 	}
 	return DefaultBranch(dir)

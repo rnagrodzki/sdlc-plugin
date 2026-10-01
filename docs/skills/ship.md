@@ -39,6 +39,14 @@ default. Optionally verify CI and wait for automated reviewer feedback.
 
 **execute → commit → review → archive-openspec → pr → learnings-commit**
 
+`archive-openspec` archives the OpenSpec change named by `--openspec-change`
+or the plan's `**Source:**` header (or an auto-detected active change). It
+skips when no change is named or detected, and when the change is already
+archived. It fails and stops the pipeline when the named change is missing on
+disk (in both `openspec/changes/<name>/` and the archive) — the same check as
+`verify-openspec`. Outside `--auto`, it asks before archiving a change whose
+`tasks.md` still has unchecked boxes.
+
 A rebase onto the base branch (`[git] baseBranch`, else the repository default
 branch) happens automatically between review and the
 next step (skip it with the `rebase` setting in `/setup`). The rebase runs

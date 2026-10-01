@@ -2081,7 +2081,7 @@ func shipReportWritten(root string, shipData map[string]any) bool {
 		return false
 	}
 	runID := execDeriveRunID(shipData, 0)
-	dir := filepath.Join(root, paths.DataDir, "reports")
+	dir := filepath.Join(root, paths.DataDir, paths.ReportsSubdir)
 	for _, ext := range []string{"md", "json"} {
 		fi, err := os.Stat(filepath.Join(dir, "ship-"+runID+"-report."+ext))
 		if err == nil && fi.Mode().IsRegular() {

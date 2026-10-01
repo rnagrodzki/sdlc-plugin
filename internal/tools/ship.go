@@ -636,7 +636,7 @@ func stepsFieldLabel(source string) string {
 // plan name.
 func resolveShipOpenspecChange(merged map[string]any, sources map[string]string, input, planContent string) []string {
 	var warnings []string
-	planChange := openspecChangeFromPlan(planContent)
+	planChange := openspecSourceChangeFromPlan(planContent)
 	if planChange != "" && !isSafeChangeName(planChange) {
 		warnings = append(warnings, fmt.Sprintf("plan Source names an invalid openspec change %q; ignored", planChange))
 		planChange = ""

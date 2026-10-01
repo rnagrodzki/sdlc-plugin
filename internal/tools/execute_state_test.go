@@ -586,6 +586,74 @@ func stubOpenspecForMaterialize(t *testing.T) {
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
+// TestMapMaterializeError pins every branch of mapMaterializeError: the
+// error class, Msg, Suggestion, and that Cause keeps the original error.
+func TestMapMaterializeError(t *testing.T) {
+	tests := []struct {
+		name           string
+		err            error
+		wantDomain     bool
+		wantMsg        string
+		wantSuggestion string
+	}{
+		{
+			name:           "CLI not found",
+			err:            openspec.ErrCLINotFound,
+			wantMsg:        openspec.ErrCLINotFound.Error(),
+			wantSuggestion: openspecCLISuggestion,
+		},
+		{
+			name:           "invalid change name",
+			err:            fmt.Errorf("%w: %q", openspec.ErrInvalidChangeName, "Bad_Name"),
+			wantDomain:     true,
+			wantMsg:        "init: " + fmt.Errorf("%w: %q", openspec.ErrInvalidChangeName, "Bad_Name").Error(),
+			wantSuggestion: openspecNameSuggestion,
+		},
+		{
+			name:           "materialize rule violation",
+			err:            fmt.Errorf("%w: staged file proposal.md changed after validation", openspec.ErrMaterialize),
+			wantDomain:     true,
+			wantMsg:        "init: " + fmt.Errorf("%w: staged file proposal.md changed after validation", openspec.ErrMaterialize).Error(),
+			wantSuggestion: "Fix the staged change as the message describes",
+		},
+		{
+			name:           "unknown error",
+			err:            errors.New("permission denied"),
+			wantMsg:        "init: openspec materialize: permission denied",
+			wantSuggestion: "Check that openspec/config.yaml exists in the active worktree",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mapMaterializeError(tc.err)
+			var msg, suggestion string
+			var cause error
+			if tc.wantDomain {
+				de, ok := got.(*mcpserver.DomainError)
+				if !ok {
+					t.Fatalf("got %T, want *mcpserver.DomainError", got)
+				}
+				msg, suggestion, cause = de.Msg, de.Suggestion, de.Cause
+			} else {
+				ie, ok := got.(*mcpserver.InfraError)
+				if !ok {
+					t.Fatalf("got %T, want *mcpserver.InfraError", got)
+				}
+				msg, suggestion, cause = ie.Msg, ie.Suggestion, ie.Cause
+			}
+			if msg != tc.wantMsg {
+				t.Errorf("Msg = %q, want %q", msg, tc.wantMsg)
+			}
+			if !strings.HasPrefix(suggestion, tc.wantSuggestion) {
+				t.Errorf("Suggestion = %q, want prefix %q", suggestion, tc.wantSuggestion)
+			}
+			if cause != tc.err {
+				t.Errorf("Cause = %v, want the original error %v", cause, tc.err)
+			}
+		})
+	}
+}
+
 // TestExecuteInitMaterialize_Created covers the create path end to end: a
 // staged plan with no existing target directory materializes
 // openspec/changes/<change>/ before state.Init runs, the result and the
@@ -8635,12 +8703,69 @@ func TestExecuteBaseSync(t *testing.T) {
 		fx.assertOneBaseSyncEntry(t, res)
 	})
 
+	// git merge can exit 1 without leaving a merge behind (e.g. it refuses to
+	// overwrite files). A git wrapper on PATH fakes exactly that for
+	// "merge --no-edit" and passes every other git call to the real binary.
+	t.Run("merge exits 1 with no merge in progress is an InfraError", func(t *testing.T) {
+		fx := newBaseSyncFixture(t, "")
+		fx.pushToOriginMain(t, "base.txt", "new\n")
+		realGit, err := exec.LookPath("git")
+		if err != nil {
+			t.Fatalf("look up git: %v", err)
+		}
+		binDir := t.TempDir()
+		script := "#!/bin/sh\n" +
+			"if [ \"$1\" = merge ] && [ \"$2\" = --no-edit ]; then\n" +
+			"  echo 'error: merge refused by test stub' >&2\n" +
+			"  exit 1\n" +
+			"fi\n" +
+			"exec '" + realGit + "' \"$@\"\n"
+		if err := os.WriteFile(filepath.Join(binDir, "git"), []byte(script), 0o755); err != nil {
+			t.Fatalf("write git stub: %v", err)
+		}
+		t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		headBefore := gitOutTrim(t, fx.root, "rev-parse", "HEAD")
+
+		_, err = fx.baseSync(t, 2)
+		var ie *mcpserver.InfraError
+		if !errors.As(err, &ie) {
+			t.Fatalf("err = %v (%T), want *mcpserver.InfraError", err, err)
+		}
+		if !strings.Contains(ie.Msg, "git merge stopped without leaving a merge in progress") {
+			t.Errorf("msg = %q, want it to say no merge was left in progress", ie.Msg)
+		}
+		if got := gitOutTrim(t, fx.root, "rev-parse", "HEAD"); got != headBefore {
+			t.Errorf("HEAD moved from %s to %s", headBefore, got)
+		}
+		if entries := fx.baseSyncs(t); entries != nil {
+			t.Errorf("baseSyncs = %v, want absent", entries)
+		}
+	})
+
 	t.Run("wave is required", func(t *testing.T) {
 		fx := newBaseSyncFixture(t, "")
 		_, err := executeState(fx.root, fx.root, ExecuteStateIn{Action: "base-sync", Branch: "feature"}, fixedClock(testNow))
 		var de *mcpserver.DomainError
 		if !errors.As(err, &de) {
 			t.Fatalf("err = %v (%T), want *mcpserver.DomainError", err, err)
+		}
+		if entries := fx.baseSyncs(t); entries != nil {
+			t.Errorf("baseSyncs = %v, want absent", entries)
+		}
+	})
+
+	t.Run("wave below 1 is rejected", func(t *testing.T) {
+		fx := newBaseSyncFixture(t, "")
+		for _, wave := range []int{0, -1} {
+			_, err := fx.baseSync(t, wave)
+			var de *mcpserver.DomainError
+			if !errors.As(err, &de) {
+				t.Fatalf("wave %d: err = %v (%T), want *mcpserver.DomainError", wave, err, err)
+			}
+			want := fmt.Sprintf("wave must be 1 or greater, got %d", wave)
+			if de.Msg != want {
+				t.Errorf("wave %d: msg = %q, want %q", wave, de.Msg, want)
+			}
 		}
 		if entries := fx.baseSyncs(t); entries != nil {
 			t.Errorf("baseSyncs = %v, want absent", entries)
@@ -8979,6 +9104,21 @@ func TestExecuteBaseSyncResolve(t *testing.T) {
 		var de *mcpserver.DomainError
 		if !errors.As(err, &de) {
 			t.Fatalf("err = %v (%T), want *mcpserver.DomainError", err, err)
+		}
+	})
+
+	t.Run("wave below 1 is rejected", func(t *testing.T) {
+		fx := newBaseSyncFixture(t, "")
+		for _, wave := range []int{0, -1} {
+			_, err := executeState(fx.root, fx.root, ExecuteStateIn{Action: "base-sync-resolve", Branch: "feature", Wave: intPtr(wave)}, fixedClock(testNow))
+			var de *mcpserver.DomainError
+			if !errors.As(err, &de) {
+				t.Fatalf("wave %d: err = %v (%T), want *mcpserver.DomainError", wave, err, err)
+			}
+			want := fmt.Sprintf("wave must be 1 or greater, got %d", wave)
+			if de.Msg != want {
+				t.Errorf("wave %d: msg = %q, want %q", wave, de.Msg, want)
+			}
 		}
 	})
 }

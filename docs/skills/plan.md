@@ -78,6 +78,17 @@ Loads the proposal, delta specs, and task list from
   feature-shaped request uses the branch-matched change silently if one
   exists, otherwise it triggers a gate question — **Create OpenSpec change**
   / **Use existing change** / **Skip OpenSpec**.
+- **Gate A (Intake Audit) can block decomposition.** When the plan is built
+  from an existing OpenSpec change that has a requirements inventory, an
+  audit agent checks the change's proposal, delta specs, tasks, and design
+  before tasks are written. A `CRITICAL` verdict stops the skill before
+  decomposition: you either fix the change's artifacts and re-run, or
+  override and proceed, which records the override in an
+  `## Intake Audit Caveats` section of the plan. `--auto` does not bypass a
+  `CRITICAL` verdict. `WARNING` or `SUGGESTION` findings are added to that
+  same section and planning continues. Gate A does not run for a plan
+  without OpenSpec, or for a change the skill just created and staged
+  (Create OpenSpec change).
 - **Plan mode vs. normal mode.** In plan mode, the skill writes to the
   designated plan file path. In normal mode, it creates a file and tells you
   where it is.

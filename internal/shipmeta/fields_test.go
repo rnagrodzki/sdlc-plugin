@@ -211,16 +211,28 @@ func TestShipStepNameEnum_CoversCanonicalSteps(t *testing.T) {
 	}
 }
 
-// TestShipStateSkipEnum_HasHarden pins "harden" in ship-state.schema.json's
-// flags.skip enum, alongside the other inline opt-in steps.
-func TestShipStateSkipEnum_HasHarden(t *testing.T) {
+// TestShipStateFlags_MatchPersistedKeys pins ship-state.schema.json's flags
+// object to keys ship_prepare actually persists (quick, steps, rebase,
+// openspecChange — see mergeShipFlags and resolveShipOpenspecChange in
+// internal/tools/ship.go) and keeps the hard-removed legacy skip/preset
+// keys out of it.
+func TestShipStateFlags_MatchPersistedKeys(t *testing.T) {
 	doc := readSchema(t, "ship-state.schema.json")
 	props, _ := doc["properties"].(map[string]any)
 	flags, _ := props["flags"].(map[string]any)
 	flagProps, _ := flags["properties"].(map[string]any)
-	enum := itemsEnum(t, flagProps["skip"], "flags.skip")
-	if !enum["harden"] {
-		t.Errorf("ship-state.schema.json flags.skip enum is missing %q", "harden")
+	if flagProps == nil {
+		t.Fatal("could not locate properties.flags.properties in ship-state.schema.json")
+	}
+	for _, key := range []string{"quick", "steps", "rebase", "openspecChange"} {
+		if _, ok := flagProps[key]; !ok {
+			t.Errorf("ship-state.schema.json flags is missing persisted key %q", key)
+		}
+	}
+	for _, key := range []string{"skip", "preset"} {
+		if _, ok := flagProps[key]; ok {
+			t.Errorf("ship-state.schema.json flags still declares removed key %q", key)
+		}
 	}
 }
 

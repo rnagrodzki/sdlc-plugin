@@ -130,6 +130,22 @@ func TestBaseBranch_ConfiguredIsTrimmed(t *testing.T) {
 	}
 }
 
+func TestBaseBranch_ConfiguredFlagShapeRejected(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+
+	got, err := BaseBranch(dir, "  --upload-pack=evil  ")
+	if err == nil {
+		t.Fatalf("BaseBranch: got %q, nil error; want a flag-shape error", got)
+	}
+	if got != "" {
+		t.Fatalf("BaseBranch: got %q on error, want empty string", got)
+	}
+	if !strings.Contains(err.Error(), "looks like a flag") {
+		t.Fatalf("BaseBranch: error %q does not mention the flag shape", err.Error())
+	}
+}
+
 func TestBaseBranch_EmptyFallsBackToDefaultBranch(t *testing.T) {
 	dir := t.TempDir()
 	initGitRepo(t, dir)

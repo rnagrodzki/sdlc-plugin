@@ -344,6 +344,58 @@ func TestMaterialize_Created(t *testing.T) {
 	}
 }
 
+// Rule 8, the CLI is missing from PATH: `new change` fails with
+// ErrCLINotFound, nothing is created, staging is kept.
+func TestMaterialize_CLINotFoundAtNewChange(t *testing.T) {
+	root, _ := setupStageRepo(t)
+	staging := writeStaging(t, root, "add-widget", stageFiles(true))
+	stagingBefore := snapshot(t, staging)
+	withStubPath(t) // PATH now holds only an empty dir: no openspec binary
+
+	_, err := Materialize(root, matPlan("add-widget"))
+	if !errors.Is(err, ErrCLINotFound) {
+		t.Fatalf("err = %v, want ErrCLINotFound", err)
+	}
+	assertMissing(t, filepath.Join(root, "openspec", "changes", "add-widget"))
+	if after := snapshot(t, staging); !reflect.DeepEqual(stagingBefore, after) {
+		t.Fatalf("staging changed:\nbefore %v\nafter  %v", stagingBefore, after)
+	}
+}
+
+// Rule 8, the CLI disappears between `new change` and `validate --strict`:
+// the validate step returns ErrCLINotFound and the half-made target is
+// rolled back. The stub deletes itself after `new change` to get there.
+func TestMaterialize_CLINotFoundAtValidate(t *testing.T) {
+	root, _ := setupStageRepo(t)
+	staging := writeStaging(t, root, "add-widget", stageFiles(true))
+	stagingBefore := snapshot(t, staging)
+	stub := withStubPath(t)
+	// PATH holds only the stub dir, so mkdir/rm are called by absolute path.
+	script := `#!/bin/sh
+if [ "$1" = new ]; then
+  /bin/mkdir -p "openspec/changes/$3" && : > "openspec/changes/$3/.openspec.yaml"
+  /bin/rm -f "$0"
+  exit 0
+fi
+exit 1
+`
+	if err := os.WriteFile(filepath.Join(stub, "openspec"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write openspec stub: %v", err)
+	}
+
+	_, err := Materialize(root, matPlan("add-widget"))
+	if !errors.Is(err, ErrCLINotFound) {
+		t.Fatalf("err = %v, want ErrCLINotFound", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(stub, "openspec")); !os.IsNotExist(statErr) {
+		t.Fatalf("stub still present (stat err %v): `new change` did not run, so validate was not reached", statErr)
+	}
+	assertMissing(t, filepath.Join(root, "openspec", "changes", "add-widget"))
+	if after := snapshot(t, staging); !reflect.DeepEqual(stagingBefore, after) {
+		t.Fatalf("staging changed:\nbefore %v\nafter  %v", stagingBefore, after)
+	}
+}
+
 // Rule 8, validation fails: target rolled back, staging kept.
 func TestMaterialize_ValidateFailsRollsBack(t *testing.T) {
 	root, log := setupStageRepo(t)

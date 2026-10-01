@@ -34,23 +34,31 @@
         "auto": {
           "type": "boolean"
         },
-        "skip": {
+        "quick": {
+          "type": "boolean",
+          "description": "True when ship_prepare was called with quick: steps then come from the [ship] quick profile."
+        },
+        "steps": {
           "type": "array",
+          "description": "Resolved step list for this run: CLI steps, else the quick profile, else config, else the built-in default.",
           "items": {
-            "type": "string",
-            "enum": ["execute", "commit", "review", "harden", "received-review", "commit-fixes", "pr", "verify-pipeline", "await-remote-review"]
+            "type": "string"
           }
         },
-        "preset": {
+        "rebase": {
+          "type": "string",
+          "description": "Rebase policy for this run (e.g. auto or skip): CLI value, else config (a bool becomes auto/skip), else auto."
+        },
+        "openspecChange": {
           "oneOf": [
             {
-              "type": "string",
-              "enum": ["A", "B", "C"]
+              "type": "string"
             },
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "OpenSpec change for verify-openspec/archive-openspec: the explicit input, else the plan's **Source:** openspec/changes/<name>/ header, else null."
         },
         "bump": {
           "oneOf": [
