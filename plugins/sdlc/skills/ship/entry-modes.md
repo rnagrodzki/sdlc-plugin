@@ -31,7 +31,7 @@ timing            {stepSeconds, pipelineSeconds, idleSeconds, human}
 next              string  // the step to resume from
 ```
 
-If `read` succeeds but the response carries **no** `resumeBriefing`, there is no run to resume — one of three cases: no state file exists; the only one found is already stamped terminal; or a state file exists but no step in it ever actually started (nothing was in flight to resume). All three are safe to treat identically. Fall through to the normal fresh-start path (SKILL.md's Step loop, items 3-4) — `ship_prepare`'s own orphan-pruning and `state.Write`'s prune-on-write already remove the stale file as a side effect of writing the new one.
+There is no run to resume in three cases. `read` returns a `DataError` when no ship state file exists for the branch. `read` succeeds with **no** `resumeBriefing` when the only file found is already stamped terminal, or when a state file exists but no step in it ever actually started (nothing was in flight to resume). All three are safe to treat identically. Fall through to the normal fresh-start path (SKILL.md's Step loop, items 3-4) — `ship_prepare`'s own orphan-pruning and `state.Write`'s prune-on-write already remove the stale file as a side effect of writing the new one.
 
 ## --gc handler (R39)
 

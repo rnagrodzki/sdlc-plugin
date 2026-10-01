@@ -178,7 +178,7 @@ Ship's review routing defers each finding below `flags.reviewThreshold` this way
 
 ## Issues and `lastFailedStep`
 
-`ship_state{action:"fail", step, detail:{reason?, error?, severity?, category?}}` — besides setting the target step's `status:"failed"` — also sets `st.Data["lastFailedStep"]` to the failed step's name and appends a structured entry to `issues[]`:
+`ship_state{action:"fail", step, detail:{error?}}` — `detail.error` is the only detail field `fail` reads (plus `detail.branch` and `detail.detail`); `reason`, `severity`, and `category` are ignored. Besides setting the target step's `status:"failed"` — also sets `st.Data["lastFailedStep"]` to the failed step's name and appends a structured entry to `issues[]`:
 
 ```json
 {
@@ -191,7 +191,7 @@ Ship's review routing defers each finding below `flags.reviewThreshold` this way
 }
 ```
 
-`wave`, `step`, `taskId`, and `detail` are optional; `severity`, `category`, `summary`, and `timestamp` are always present. This mirrors `execute-state.schema.json`'s own `issues[]` shape.
+`fail` always writes `severity:"error"`, `category:"ship-fail"`, and `summary:"Step <name> failed"`; `detail` is `detail.error` as text, empty when it was not passed. In the shared issue shape, `wave`, `step`, `taskId`, and `detail` are optional; `severity`, `category`, `summary`, and `timestamp` are always present. This mirrors `execute-state.schema.json`'s own `issues[]` shape.
 
 `complete-step`'s response also carries `issueCount` (total issues recorded so far) and `issueHighlights` (up to a handful of the most recent `"[severity] summary"` strings) — read those off the tool's response directly rather than re-deriving them from `issues[]` yourself.
 
@@ -304,6 +304,6 @@ next             {id, instruction, etaSeconds, etaBasis}   // id is the step to 
 
 This is a field inventory, not the wire format. In the rendered result the scalars and the `sideEffects` list appear as bullets under a `## resumeBriefing` section, `display` is emitted verbatim as a raw block at column 0, and the two object fields render as their own `### resumeBriefing.timing` and `### resumeBriefing.next` sub-sections.
 
-`resumeBriefing` is **absent** — meaning "nothing to resume, fall through to a fresh start" — in three cases: no state file exists for the branch; the only file found is already stamped terminal (`pipelineStatus:"completed"`); or a state file exists but no step has ever actually started (nothing was ever in flight to resume). All three are safe to treat identically: proceed to the normal fresh-start path (`ship_prepare`), whose own orphan-pruning removes the stale/empty file as a side effect of writing the new one.
+There is nothing to resume — fall through to a fresh start — in three cases. When no state file exists for the branch, `read` returns a `DataError` (`no ship state found for branch "<branch>"`), not a response. When the only file found is already stamped terminal (`pipelineStatus:"completed"`), or a state file exists but no step has ever actually started (nothing was ever in flight to resume), `read` succeeds with `resumeBriefing` **absent**. All three are safe to treat identically: proceed to the normal fresh-start path (`ship_prepare`), whose own orphan-pruning removes the stale/empty file as a side effect of writing the new one.
 
 A step left at `in_progress` at resume time should be retried from the beginning of that step, not assumed complete.

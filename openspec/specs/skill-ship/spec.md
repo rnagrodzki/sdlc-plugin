@@ -87,6 +87,11 @@ The skill SHALL call `ship_state({action:"read"})` before any other `ship_state`
 - **THEN** the skill resumes from `resumeBriefing.next`
 - **AND** does not call `ship_prepare`
 
+#### Scenario: No state file is not a failure
+- **WHEN** `read` returns a `DataError` `no ship state found for branch "feat/x"`
+- **THEN** the skill continues to a fresh run with `ship_prepare`
+- **AND** does not call `fail` or stop
+
 #### Scenario: Auto run ignores old briefing
 - **WHEN** `read` returns a `resumeBriefing` and the user passed `--auto` without `--resume`
 - **THEN** the skill starts a fresh run with `ship_prepare`
@@ -199,7 +204,7 @@ sequenceDiagram
 - After the `commit` or `pr` sub-skill reports success, and before `complete-step`, the skill records the side effect: `commit` calls `ship_verify_side_effect({step:"commit", expected:<full HEAD sha>})`; `pr` calls `ship_verify_side_effect({step:"pr"})`. This is the only writer of the `sideEffects` journal that `alreadyDone` reads. `landed:false` is logged as one warning line and is not a step failure.
 - A step legitimately bypassed at runtime gets `skip` with a `detail.reason` instead of work plus `complete-step`.
 - A name absent from `flags.steps` gets no `ship_state` call at all.
-- On failure: `fail` with `detail:{reason, error, severity:"error", category:"ship-fail"}`, then stop and print `Step <N> (<name>) failed: <summary>`, `State saved to: <path>`, `To resume: /ship --resume`.
+- On failure: `fail` with `detail:{error:"<error summary>"}` (the only detail field `fail` reads), then stop and print `Step <N> (<name>) failed: <summary>`, `State saved to: <path>`, `To resume: /ship --resume`.
 - The skill does not end its turn between steps.
 - The skill never creates or pushes a git tag and never uses a worktree.
 
