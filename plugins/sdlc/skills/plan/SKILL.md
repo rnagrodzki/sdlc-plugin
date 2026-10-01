@@ -62,10 +62,12 @@ Example — OpenSpec gate check:
       - On **1**: Stop plan. Tell the user to use the openspec CLI directly to create a change (run `openspec --help` for available commands). In plan mode, call ExitPlanMode first.
       - On **2** (recommended default — implements R63): Do NOT prompt the user further at this gate (R22 single-touchpoint). Set `openspecInlineGenerate = true`. `openspecContext` stays empty, so OpenSpec enrichment, Gate A, and openspec-task annotations do not activate — artifact authoring is deferred to Step 4 (OpenSpec Appendix generation), where exploration and decomposition data are available. Skip the rest of the OpenSpec block (steps 3–6 — there is no on-disk change to load). Continue with standard planning.
       - On **3**: Re-run the OpenSpec loading logic (steps 3–6) to resolve and load the active change.
+      - **`--auto`:** do not ask. Take option **2** (the recommended default) and follow its branch above. Record the choice in `## Key Decisions` and add a `## Deviations & assumptions` row with `asked=no`.
 3. If the user provided a spec file path pointing into `openspec/changes/<name>/`, extract `<name>` as the active change.
 4. Otherwise, Glob `openspec/changes/*/proposal.md` (exclude `archive/`). If exactly one non-archived change exists, use it. If multiple, try matching change directory names against the current git branch name. If still ambiguous, use AskUserQuestion. Context: this plan needs to attach to exactly one OpenSpec change's proposal/specs/tasks — picking the wrong one plans against the wrong requirements.
    > Multiple active OpenSpec changes found. Which one are you working on?
    List each change as an option labeled with its directory name plus a one-sentence description drawn from that change's `proposal.md` (its title or opening summary line) — not the bare name alone, so the user can tell them apart without opening each file.
+   **`--auto` does not suppress this question.** No choice is safe without the user: a wrong pick plans against the wrong requirements. Ask even under `--auto`; when AskUserQuestion is unavailable, stop and report the candidate changes instead of picking one.
 5. Once the active change is identified, Read in parallel:
    - `openspec/changes/<name>/proposal.md` — intent and scope
    - `openspec/changes/<name>/design.md` — technical approach (may not exist yet; skip if absent)
@@ -481,13 +483,13 @@ When `openspecContext.requirements` is present (non-null) in the prepare output:
 **Scope check:** If requirements span independent subsystems with no shared state, use AskUserQuestion:
 > These requirements cover independent subsystems. Recommend splitting into N plans. Proceed as one plan or split?
 
-Wait for answer.
+Wait for answer. **`--auto` does not suppress this question** — the split changes how many plans exist and what each hands off, so it is not a choice to make silently. Ask even under `--auto`; when AskUserQuestion is unavailable, stop and report the proposed split instead of choosing.
 
 **Approach check:** If decomposition reveals multiple viable approaches for a component (e.g., sync vs. async, library vs. hand-rolled), use AskUserQuestion presenting the trade-offs of each option. **Dedup against Step 1:** if this ambiguity was already resolved by a Structured discovery question (or its `--auto` fallback) in Step 1, skip — do not re-ask. Only surface approach questions that are newly revealed by the decomposition breakdown.
 
 Wait for answer.
 
-**`--auto` suppression (R65):** When `--auto` is set, suppress the AskUserQuestion above. Pick the most conservative approach autonomously, using the option that most closely matches existing codebase patterns as a tiebreaker between equally-conservative choices. Record the choice in `## Key Decisions` with rationale, and add a `## Deviations & assumptions` row with `asked=no`.
+**`--auto` suppression (R65):** When `--auto` is set, suppress the Approach check AskUserQuestion above (not the Scope check). Pick the most conservative approach autonomously, using the option that most closely matches existing codebase patterns as a tiebreaker between equally-conservative choices. Record the choice in `## Key Decisions` with rationale, and add a `## Deviations & assumptions` row with `asked=no`.
 
 **File structure mapping** — before writing tasks, map out:
 - Files to create (path + one-line responsibility)
@@ -819,7 +821,7 @@ After the merge step, assemble the `## Verification Scorecard` section in the pl
 **Review loop:**
 - Approved → Step 6 is a no-op, proceed to Step 7
 - Issues found → go to Step 6
-- Max 3 iterations → use AskUserQuestion to surface unresolved issues to user. Context: the review loop ran 3 fix/re-review passes and still has open blocking issues — before asking, summarize what failed (the union of blocking findings across all lenses), scaled to `style.audience`, so the user isn't choosing blind. Offer **harden** (run `/harden` to analyze why this failed and propose stronger guardrails / dimensions / instructions that would catch it earlier next time — opt-in, no surface is edited without your approval; consequence: proposes preventive changes only, nothing is edited without a separate approval) alongside the existing escalation options. When the user selects **harden** (interactive mode only — suppressed when `--auto` is set), dispatch `Skill(harden)` with `--failure-text "Plan reviewer loop did not converge after 3 iterations. Outstanding issues: <union-of-blocking-issues-across-all-lenses>"`, `--skill plan`, `--step "Step 5 — review loop"`, `--operation "reviewer-loop max iterations"`. Implements R19.
+- Max 3 iterations → use AskUserQuestion to surface unresolved issues to user. Context: the review loop ran 3 fix/re-review passes and still has open blocking issues — before asking, summarize what failed (the union of blocking findings across all lenses), scaled to `style.audience`, so the user isn't choosing blind. Offer **harden** (run `/harden` to analyze why this failed and propose stronger guardrails / dimensions / instructions that would catch it earlier next time — opt-in, no surface is edited without your approval; consequence: proposes preventive changes only, nothing is edited without a separate approval) alongside the existing escalation options. When the user selects **harden** (interactive mode only — suppressed when `--auto` is set), dispatch `Skill(harden)` with `--failure-text "Plan reviewer loop did not converge after 3 iterations. Outstanding issues: <union-of-blocking-issues-across-all-lenses>"`, `--skill plan`, `--step "Step 5 — review loop"`, `--operation "reviewer-loop max iterations"`. Implements R19. **`--auto` does not suppress this question** — only the **harden** option is left out. The plan is never handed off with open blocking issues; when AskUserQuestion is unavailable, stop and report the open blocking issues.
 
 ## Step 6 (IMPROVE): Apply Review Fixes
 

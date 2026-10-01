@@ -10,12 +10,22 @@ The skill SHALL accept the arguments in its `argument-hint`: `[--auto] [--spec] 
 
 | Flag | Effect |
 |---|---|
-| `--auto` | Suppresses the structured-discovery and approach-check questions and every **harden** offer. Choices made without asking go into `## Key Decisions` and get a `## Deviations & assumptions` row with `asked=no`. |
+| `--auto` | Suppresses the structured-discovery and approach-check questions, the OpenSpec gate-check question (option 2 is taken), and every **harden** offer. Choices made without asking go into `## Key Decisions` and get a `## Deviations & assumptions` row with `asked=no`. |
 | `--spec` | Opts into OpenSpec integration and skips the OpenSpec gate check |
 | `--from-openspec <change-name>` | Plans directly from `openspec/changes/<change-name>/`; passed to `plan_prepare` as `fromOpenspec` |
 | `[spec-file-path]` | Requirements file; a path into `openspec/changes/<name>/` selects that change |
 
 - `--auto` never bypasses a Gate A `CRITICAL` verdict.
+- `--auto` still asks three questions that have no safe default: which OpenSpec change to use when several match, whether to split into N plans, and what to do after 3 review rounds with open blocking issues. When AskUserQuestion is unavailable, the skill stops and reports instead of choosing.
+
+#### Scenario: Auto mode at the OpenSpec gate check
+- **WHEN** `--auto` is set and the gate check finds a functional request with no matching change
+- **THEN** the skill does not call AskUserQuestion
+- **AND** it takes option 2 (generate OpenSpec artifacts as plan appendix) and adds a `## Deviations & assumptions` row with `asked=no`
+
+#### Scenario: Auto mode with several OpenSpec changes
+- **WHEN** `--auto` is set and several active OpenSpec changes exist with no branch match
+- **THEN** the skill asks which change to use with AskUserQuestion
 
 #### Scenario: Auto mode resolves an approach question
 - **WHEN** `--auto` is set and decomposition reveals two viable approaches
@@ -93,7 +103,7 @@ When `openspec/config.yaml` exists and neither `--spec` nor a path into `openspe
 | Option | Effect |
 |---|---|
 | 1. Start OpenSpec flow | Stop; tell the user to author the change with the openspec CLI. In plan mode call ExitPlanMode first. |
-| 2. Generate OpenSpec artifacts as plan appendix (default) | Set `openspecInlineGenerate = true`; no further prompt; draft artifacts in `## OpenSpec Appendix` |
+| 2. Generate OpenSpec artifacts as plan appendix (default) | Set `openspecInlineGenerate = true`; no further prompt; draft artifacts in `## OpenSpec Appendix`. `--auto` takes this option without asking. |
 | 3. Use existing spec | Load the active change; with several changes and no branch match, ask which one |
 
 - When `openspec.branchMatch` names a change at stage `ready-for-plan`, option 3 tells the user to re-invoke with `/plan --from-openspec <name>`.
@@ -318,7 +328,7 @@ Except for lightweight plans, the skill SHALL review the plan and loop through S
 - Each lens result is sent as `name` = the lens, `status` = the `**Status:**` value as written (`Approved` or `Issues Found`; the tool ignores letter case), one `blocking` issue per `**Issues**` bullet, and one recommendation per `**Recommendations**` bullet.
 - It regenerates `## Verification Scorecard` each round: dimension counts, traceability matrix, and a verdict.
 - `Approved` ends the loop; Step 6 is a no-op. `Issues Found` goes to Step 6.
-- After 3 rounds with open blocking issues it summarizes them, asks with AskUserQuestion, and offers **harden** unless `--auto` is set.
+- After 3 rounds with open blocking issues it summarizes them, asks with AskUserQuestion, and offers **harden** unless `--auto` is set. `--auto` does not suppress the question itself.
 
 #### Scenario: Review does not converge
 - **WHEN** the third review round still has blocking issues
