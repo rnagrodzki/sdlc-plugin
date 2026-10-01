@@ -303,3 +303,46 @@ func TestSetupWriteSections_VersionScaffoldIdempotent(t *testing.T) {
 		}
 	}
 }
+
+// writeSDLCFile writes content to .sdlc-v2/<name> under dir and returns the
+// file path.
+func writeSDLCFile(t *testing.T, dir, name, content string) string {
+	t.Helper()
+	path := filepath.Join(dir, ".sdlc-v2", name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestSetupWriteSections_NullClearsLeaf verifies the spec'd null handling:
+// a null section value writes an empty table at that key, which clears its
+// fields, while sibling tables and the comments around them stay.
+func TestSetupWriteSections_NullClearsLeaf(t *testing.T) {
+	dir := t.TempDir()
+	path := writeSDLCFile(t, dir, "config.toml",
+		"# top\n[plan.guardrails.a]\nseverity = \"error\"\n\n"+
+			"# tasks doc\n[plan.tasks]\ncontractShape = \"strict\"\nrequiredFields = [\"x\"]\n\n"+
+			"[jira]\ndefaultProject = \"P\"\n")
+
+	res, text := callRegisteredSetupWriteSectionsIn(t, dir, `{"plan.tasks":null}`)
+	if res.IsError {
+		t.Fatalf("expected success, got tool error:\n%s", text)
+	}
+	if !strings.Contains(text, "- ok: true") || !strings.Contains(text, "  - plan.tasks") {
+		t.Errorf("result does not report plan.tasks as written:\n%s", text)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "# top\n[plan.guardrails.a]\nseverity = \"error\"\n\n" +
+		"# tasks doc\n[plan.tasks]\n\n" +
+		"[jira]\ndefaultProject = \"P\"\n"
+	if string(got) != want {
+		t.Errorf("plan.tasks not cleared to an empty table.\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+}
