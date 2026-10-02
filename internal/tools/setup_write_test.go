@@ -253,7 +253,7 @@ func TestSetupWriteSections_KnownLocalKeyWritten(t *testing.T) {
 func TestSetupWriteSections_VersionTriggersScaffold(t *testing.T) {
 	root := t.TempDir()
 
-	out, err := setupWriteSections(root, SetupWriteSectionsIn{
+	out, err := setupWriteSections(root, root, SetupWriteSectionsIn{
 		SectionsJSON: `{"version":{"tag.enabled":true,"tag.prefix":"v"}}`,
 	})
 	if err != nil {
@@ -266,8 +266,8 @@ func TestSetupWriteSections_VersionTriggersScaffold(t *testing.T) {
 		t.Fatalf("expected written=[version], got %v", out.Written)
 	}
 
-	if len(out.Scaffold) != 10 {
-		t.Fatalf("expected 10 scaffold file reports, got %d", len(out.Scaffold))
+	if len(out.Scaffold) != 8 {
+		t.Fatalf("expected 8 scaffold file reports, got %d", len(out.Scaffold))
 	}
 	for _, f := range out.Scaffold {
 		if f.Action != "created" {
@@ -286,7 +286,7 @@ func TestSetupWriteSections_VersionTriggersScaffold(t *testing.T) {
 func TestSetupWriteSections_NonVersionSkipsScaffold(t *testing.T) {
 	root := t.TempDir()
 
-	out, err := setupWriteSections(root, SetupWriteSectionsIn{
+	out, err := setupWriteSections(root, root, SetupWriteSectionsIn{
 		SectionsJSON: `{"commit":{"style":"conventional"}}`,
 	})
 	if err != nil {
@@ -311,13 +311,13 @@ func TestSetupWriteSections_NonVersionSkipsScaffold(t *testing.T) {
 func TestSetupWriteSections_VersionScaffoldIdempotent(t *testing.T) {
 	root := t.TempDir()
 
-	if _, err := setupWriteSections(root, SetupWriteSectionsIn{
+	if _, err := setupWriteSections(root, root, SetupWriteSectionsIn{
 		SectionsJSON: `{"version":{"tag.enabled":true,"tag.prefix":"v"}}`,
 	}); err != nil {
 		t.Fatalf("setupWriteSections (first): %v", err)
 	}
 
-	out, err := setupWriteSections(root, SetupWriteSectionsIn{
+	out, err := setupWriteSections(root, root, SetupWriteSectionsIn{
 		SectionsJSON: `{"version":{"tag.enabled":true,"tag.prefix":"v"}}`,
 	})
 	if err != nil {
@@ -330,6 +330,51 @@ func TestSetupWriteSections_VersionScaffoldIdempotent(t *testing.T) {
 		if f.Action != "skipped" {
 			t.Errorf("file %s: expected action 'skipped' on second run, got %q", f.Path, f.Action)
 		}
+	}
+}
+
+// TestSetupWriteSections_LinkedWorktree_SplitsRoots verifies the
+// contentRoot/stateRoot split (Task 9, R5): run from a linked worktree,
+// config.toml and the scaffolded CI files (triggered by the "version"
+// write) land under the linked worktree, while local.toml (a local
+// section, "planStyle") lands under the main worktree — and the reported
+// root matches the linked worktree.
+func TestSetupWriteSections_LinkedWorktree_SplitsRoots(t *testing.T) {
+	mainDir, linkedDir := scaffoldWorktreeFixture(t)
+
+	resolvedLinked, err := filepath.EvalSymlinks(linkedDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res, text := callRegisteredSetupWriteSectionsIn(t, linkedDir,
+		`{"version":{"tag.enabled":true,"tag.prefix":"v"},"planStyle":{"style":"compact"}}`)
+	if res.IsError {
+		t.Fatalf("setup_write_sections from a linked worktree returned an error:\n%s", text)
+	}
+	if !strings.Contains(text, "- root: "+resolvedLinked) {
+		t.Errorf("output must report root=%s:\n%s", resolvedLinked, text)
+	}
+
+	if !scaffoldFileExists(filepath.Join(linkedDir, ".sdlc-v2", "config.toml")) {
+		t.Error("config.toml not written under the linked worktree")
+	}
+	if scaffoldFileExists(filepath.Join(mainDir, ".sdlc-v2", "config.toml")) {
+		t.Error("config.toml must not be written under the main worktree")
+	}
+
+	if !scaffoldFileExists(filepath.Join(linkedDir, ".github", "workflows", "release-on-main.yml")) {
+		t.Error("release-on-main.yml not scaffolded under the linked worktree")
+	}
+	if scaffoldFileExists(filepath.Join(mainDir, ".github", "workflows", "release-on-main.yml")) {
+		t.Error("release-on-main.yml must not be scaffolded under the main worktree")
+	}
+
+	if !scaffoldFileExists(filepath.Join(mainDir, ".sdlc-v2", "local.toml")) {
+		t.Error("local.toml not written under the main worktree")
+	}
+	if scaffoldFileExists(filepath.Join(linkedDir, ".sdlc-v2", "local.toml")) {
+		t.Error("local.toml must not be written under the linked worktree")
 	}
 }
 

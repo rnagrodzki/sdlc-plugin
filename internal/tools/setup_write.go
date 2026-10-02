@@ -45,6 +45,7 @@ type SetupWriteSectionsIn struct {
 type SetupWriteSectionsOut struct {
 	OK       bool                 `json:"ok"`
 	Written  []string             `json:"written"`
+	Root     string               `json:"root" jsonschema_description:"Absolute path of the active git worktree that config.toml and scaffolded CI files were written under."`
 	Errors   []string             `json:"errors,omitempty"`
 	Scaffold []ScaffoldFileReport `json:"scaffold,omitempty"`
 	Warnings []string             `json:"warnings,omitempty"`
@@ -53,7 +54,7 @@ type SetupWriteSectionsOut struct {
 // RegisterSetupWriteTools registers setup_write_sections on the server.
 func RegisterSetupWriteTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "setup_write_sections",
-		"INTERNAL — called by sdlc skills only. Writes real field-value data into one or more sdlc-v2 config sections (config.toml for project sections, local.toml for local sections), routing and validating via the same config.WriteSection primitive setup_init uses. Unlike setup_init (which writes the full config.toml/local.toml templates verbatim for the user to hand-edit), this accepts the actual assembled values collected during setup's per-section field loop.",
+		"INTERNAL — called by sdlc skills only. Writes real field-value data into one or more sdlc-v2 config sections (config.toml for project sections, local.toml for local sections), routing and validating via the same config.WriteSection primitive setup_init uses. Unlike setup_init (which writes the full config.toml/local.toml templates verbatim for the user to hand-edit), this accepts the actual assembled values collected during setup's per-section field loop. Git-tracked files (config.toml and the CI files scaffolded after a version write) go under the active git worktree, returned as root; local.toml goes under the main worktree, shared by all worktrees.",
 		mcpserver.Annotations{
 			Title:       "Write SDLC config sections",
 			ReadOnly:    false,
@@ -62,9 +63,9 @@ func RegisterSetupWriteTools(s *mcpserver.Server) {
 			OpenWorld:   false,
 		},
 		func(ctx mcpserver.Ctx, in SetupWriteSectionsIn) (SetupWriteSectionsOut, error) {
-			root, err := worktree.MainRoot()
+			contentRoot, err := worktree.ActiveRoot()
 			if err != nil {
-				root, err = os.Getwd()
+				contentRoot, err = os.Getwd()
 				if err != nil {
 					return SetupWriteSectionsOut{}, &mcpserver.InfraError{
 						Msg:        fmt.Sprintf("resolve project root: %s", err.Error()),
@@ -73,7 +74,18 @@ func RegisterSetupWriteTools(s *mcpserver.Server) {
 					}
 				}
 			}
-			return setupWriteSections(root, in)
+			stateRoot, err := worktree.MainRoot()
+			if err != nil {
+				stateRoot, err = os.Getwd()
+				if err != nil {
+					return SetupWriteSectionsOut{}, &mcpserver.InfraError{
+						Msg:        fmt.Sprintf("resolve project root: %s", err.Error()),
+						Suggestion: "Restart the sdlc MCP server from a directory that still exists, then retry setup_write_sections.",
+						Cause:      err,
+					}
+				}
+			}
+			return setupWriteSections(contentRoot, stateRoot, in)
 		},
 	)
 }
@@ -118,9 +130,23 @@ func sectionFile(id string) string {
 	return ".sdlc-v2/local.toml"
 }
 
+// sectionRoot returns the worktree root a section id's file is written
+// under: contentRoot for project sections (config.toml, git-tracked, so it
+// belongs in the active worktree being worked on), stateRoot for local
+// sections (local.toml, gitignored and shared by all worktrees off the same
+// main repo).
+func sectionRoot(contentRoot, stateRoot, id string) string {
+	top, _, _ := strings.Cut(id, ".")
+	if config.ProjectSections[top] {
+		return contentRoot
+	}
+	return stateRoot
+}
+
 // setupWriteSections is the core logic, separated from the handler for
-// testability.
-func setupWriteSections(root string, in SetupWriteSectionsIn) (SetupWriteSectionsOut, error) {
+// testability. contentRoot holds git-tracked files (config.toml, scaffolded
+// CI files); stateRoot holds gitignored local.toml shared by all worktrees.
+func setupWriteSections(contentRoot, stateRoot string, in SetupWriteSectionsIn) (SetupWriteSectionsOut, error) {
 	if in.SectionsJSON == "" {
 		return SetupWriteSectionsOut{}, &mcpserver.DomainError{
 			Msg:        "setup_write_sections: sectionsJson is required",
@@ -185,7 +211,7 @@ func setupWriteSections(root string, in SetupWriteSectionsIn) (SetupWriteSection
 			value = map[string]any{}
 		}
 		value = config.WholeNumbersToInt(expandDottedKeys(value)).(map[string]any)
-		rewrote, err := config.WriteSectionReport(root, id, value)
+		rewrote, err := config.WriteSectionReport(sectionRoot(contentRoot, stateRoot, id), id, value)
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("section %s: %s", id, err.Error()))
 			continue
@@ -198,7 +224,7 @@ func setupWriteSections(root string, in SetupWriteSectionsIn) (SetupWriteSection
 		written = append(written, id)
 	}
 
-	out := SetupWriteSectionsOut{OK: len(errs) == 0, Written: written, Warnings: rewroteWarnings}
+	out := SetupWriteSectionsOut{OK: len(errs) == 0, Written: written, Root: contentRoot, Warnings: rewroteWarnings}
 	if len(errs) > 0 {
 		out.Errors = errs
 	}
@@ -208,7 +234,7 @@ func setupWriteSections(root string, in SetupWriteSectionsIn) (SetupWriteSection
 	// surfaced as warnings, never as failures.
 	for _, id := range written {
 		if id == "version" {
-			scaffoldOut, err := scaffoldCI(root, false)
+			scaffoldOut, err := scaffoldCI(contentRoot, false)
 			if err != nil {
 				out.Warnings = append(out.Warnings, fmt.Sprintf("scaffold_ci: %s", err.Error()))
 			} else {

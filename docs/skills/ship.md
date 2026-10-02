@@ -194,7 +194,7 @@ deferred findings. Two parts of that summary are worth knowing about:
 
 Near the end of a run, `/ship` calls the tool for a run report — one call
 composes it from ship state, self-healing records, this run's execute
-state, CLI evidence, and learnings, then renders and writes it. This write
+state, CLI evidence, user input, and learnings, then renders and writes it. This write
 happens before the terminal cleanup step runs, because cleanup deletes the
 linked plan run that the report still needs to read. It covers
 per-wave task outcomes, step timings, CLI evidence, drift/error/warning
@@ -203,7 +203,12 @@ review ledger, self-healing changes (fixes and hardening this run recorded,
 plus the harden step's own commit when it ran), and the linked plan's
 planning time (start to its last edit — this ends at the last time the plan
 file was modified, not at the moment the plan was accepted, so it reflects
-time actually spent on the plan). It is gated by the project's
+time actually spent on the plan). The Markdown report opens with a Summary
+table that holds every run metric in one place; the sections below it show
+counts instead of one line per command, and list only the findings and
+failures a person must act on. It also lists every prompt you typed while
+the run was active, so a correction made mid-run is visible after the run
+ends. It is gated by the project's
 `automation.report` config (`enabled`, and `format`: `"json"` or `"md"`,
 default `"md"`). When enabled, the tool
 persists it under `.sdlc-v2/reports/ship-<runId>-report.{json,md}` in the

@@ -43,3 +43,11 @@ hook — keep them in sync." Check:
   mirrored in `lefthook.yml`'s pre-push hook (e.g. Node tests that run only
   in CI), a comment in the workflow must say the gap is intentional. An
   unexplained gap reads as an accidental omission.
+- Sibling release workflows (`promote-release.yml`, `release.yml`,
+  `release-on-main.yml`) that push or tag the same ref (e.g., release branch)
+  must each have an explicit `concurrency:` block with a comment stating
+  whether they share one group (to serialize pushes) or use separate groups.
+  A concurrency change in one sibling must be mirrored in the other or the
+  task must document why they differ. Ensure `cancel-in-progress` is `false`
+  on any job that pushes or tags, and verify `permissions:` and trigger
+  filters are synchronized across siblings pushing the same target.

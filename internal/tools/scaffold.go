@@ -23,7 +23,7 @@ import (
 
 // scaffoldManifestEntry maps an embedded payload to its project destination.
 type scaffoldManifestEntry struct {
-	// PayloadKey is the key in Payloads() (e.g. "retag-release.cjs").
+	// PayloadKey is the key in Payloads() (e.g. "check-changelog.cjs").
 	PayloadKey string
 	// Dest is the destination relative to project root.
 	Dest string
@@ -31,25 +31,12 @@ type scaffoldManifestEntry struct {
 	LegacyDest string
 	// VersionRegex extracts the version constant from installed file content.
 	VersionRegex *regexp.Regexp
-	// Group categorizes the entry (retag, changelog, or release).
+	// Group categorizes the entry (changelog or release).
 	Group string
 }
 
 // scaffoldManifest is the file manifest mirroring scaffold-ci.js's MANIFEST.
 var scaffoldManifest = []scaffoldManifestEntry{
-	{
-		PayloadKey:   "retag-release.cjs",
-		Dest:         filepath.Join(".github", "scripts", "retag-release.cjs"),
-		LegacyDest:   filepath.Join(".github", "scripts", "retag-release.js"),
-		VersionRegex: regexp.MustCompile(`const\s+RETAG_SCRIPT_VERSION\s*=\s*(\d+)`),
-		Group:        "retag",
-	},
-	{
-		PayloadKey:   "retag-release.yml",
-		Dest:         filepath.Join(".github", "workflows", "retag-release.yml"),
-		VersionRegex: regexp.MustCompile(`(?m)^#\s*retag-release-version:\s*(\d+)`),
-		Group:        "retag",
-	},
 	{
 		PayloadKey:   "check-changelog.cjs",
 		Dest:         filepath.Join(".github", "scripts", "check-changelog.cjs"),
@@ -117,6 +104,7 @@ type ScaffoldFileReport struct {
 
 // ScaffoldCIOut is the output for the scaffold_ci tool.
 type ScaffoldCIOut struct {
+	Root       string               `json:"root" jsonschema_description:"Absolute path of the worktree the CI files were written under (the active git worktree)."`
 	Warnings   []string             `json:"warnings"`
 	Files      []ScaffoldFileReport `json:"files"`
 	Protection RulesetCheckResult   `json:"protection"`
@@ -265,7 +253,6 @@ const defaultReleaseSecret = "RELEASE_TOKEN"
 var pushAuthWorkflowKeys = map[string]bool{
 	"release-on-main.yml": true,
 	"promote-release.yml": true,
-	"retag-release.yml":   true,
 }
 
 // secretNamePattern is GitHub's secret-name syntax: letters, digits and
@@ -405,6 +392,7 @@ func scaffoldCI(root string, force bool) (ScaffoldCIOut, error) {
 	protection := checkBranchProtection(root, execx.Run)
 
 	return ScaffoldCIOut{
+		Root:       root,
 		Warnings:   warnings,
 		Files:      files,
 		Protection: protection,
@@ -600,7 +588,7 @@ func verifyTagAncestry(root, tag string) (VerifyTagAncestryOut, error) {
 // server.
 func RegisterScaffoldTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "scaffold_ci",
-		"INTERNAL — called by sdlc skills only. Deterministically copies CI scripts and workflow files into a user project from embedded payloads.",
+		"INTERNAL — called by sdlc skills only. Deterministically copies CI scripts and workflow files into a user project from embedded payloads. Writes into the active git worktree (git rev-parse --show-toplevel) and returns that path as root.",
 		mcpserver.Annotations{
 			Title:       "Scaffold CI workflow files",
 			ReadOnly:    false,
@@ -609,11 +597,11 @@ func RegisterScaffoldTools(s *mcpserver.Server) {
 			OpenWorld:   true,
 		},
 		func(ctx mcpserver.Ctx, in ScaffoldCIIn) (ScaffoldCIOut, error) {
-			root, err := worktree.MainRoot()
+			root, err := worktree.ActiveRoot()
 			if err != nil {
 				return ScaffoldCIOut{}, &mcpserver.InfraError{
 					Msg:        fmt.Sprintf("resolve project root: %s", err.Error()),
-					Suggestion: "Run `git worktree list --porcelain` in this directory to see why it failed — git may be missing or this isn't a git repository. Fix that, then retry scaffold_ci.",
+					Suggestion: "Run `git rev-parse --show-toplevel` in this directory to see why it failed — git may be missing or this isn't a git repository. Fix that, then retry scaffold_ci.",
 					Cause:      err,
 				}
 			}

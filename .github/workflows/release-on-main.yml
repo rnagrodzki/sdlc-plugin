@@ -1,9 +1,13 @@
-# release-on-main-version: 5
+# release-on-main-version: 6
 name: Release on Main
 
 on:
   push:
     branches: [main]
+
+concurrency:
+  group: release-on-main
+  cancel-in-progress: false
 
 jobs:
   release:

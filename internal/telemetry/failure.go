@@ -142,6 +142,10 @@ var (
 	emailRe   = regexp.MustCompile(`\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b`)
 )
 
+// Redact applies the failure-log redactors (bearer, JWT, cookie, cloudId,
+// email) to s. Exported for internal/tools' user-input evidence.
+func Redact(s string) string { return redact(s) }
+
 // redact applies all redactor patterns to s in source order.
 func redact(s string) string {
 	if s == "" {

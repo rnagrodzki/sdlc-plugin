@@ -16,7 +16,7 @@ import (
 
 // --- scaffold_ci tests ---
 
-// TestScaffoldCI_CreatesAllFiles verifies scaffold_ci writes all ten
+// TestScaffoldCI_CreatesAllFiles verifies scaffold_ci writes all eight
 // destination files into an empty project root.
 func TestScaffoldCI_CreatesAllFiles(t *testing.T) {
 	root := t.TempDir()
@@ -26,8 +26,8 @@ func TestScaffoldCI_CreatesAllFiles(t *testing.T) {
 		t.Fatalf("scaffoldCI: %v", err)
 	}
 
-	if len(out.Files) != 10 {
-		t.Fatalf("expected 10 file reports, got %d", len(out.Files))
+	if len(out.Files) != 8 {
+		t.Fatalf("expected 8 file reports, got %d", len(out.Files))
 	}
 
 	for _, f := range out.Files {
@@ -61,7 +61,6 @@ func TestScaffoldCI_WrittenCJS_ReadsV2ConfigOnly(t *testing.T) {
 
 	cjsNames := []string{
 		"check-changelog.cjs",
-		"retag-release.cjs",
 		"release-on-main.cjs",
 		"promote-release.cjs",
 		"verify-release-intent.cjs",
@@ -143,16 +142,15 @@ func TestScaffoldCI_OverwriteWithForce(t *testing.T) {
 func TestScaffoldCI_LegacyMigration(t *testing.T) {
 	root := t.TempDir()
 
-	// Create legacy .js files for the two entries that have LegacyDest.
+	// Create a legacy .js file for the one entry that has LegacyDest.
 	legacyPaths := []string{
-		filepath.Join(root, ".github", "scripts", "retag-release.js"),
 		filepath.Join(root, ".github", "scripts", "check-changelog.js"),
 	}
 	for _, p := range legacyPaths {
 		if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(p, []byte("// legacy\nconst RETAG_SCRIPT_VERSION = 1;\nconst CHECK_CHANGELOG_SCRIPT_VERSION = 1;\n"), 0644); err != nil {
+		if err := os.WriteFile(p, []byte("// legacy\nconst CHECK_CHANGELOG_SCRIPT_VERSION = 1;\n"), 0644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -163,8 +161,7 @@ func TestScaffoldCI_LegacyMigration(t *testing.T) {
 		t.Fatalf("scaffoldCI (no-force): %v", err)
 	}
 	for _, f := range out.Files {
-		if f.Path == filepath.Join(".github", "scripts", "retag-release.cjs") ||
-			f.Path == filepath.Join(".github", "scripts", "check-changelog.cjs") {
+		if f.Path == filepath.Join(".github", "scripts", "check-changelog.cjs") {
 			if f.Action != "outdated" {
 				t.Errorf("file %s: expected 'outdated' without force, got %q", f.Path, f.Action)
 			}
@@ -177,8 +174,7 @@ func TestScaffoldCI_LegacyMigration(t *testing.T) {
 		t.Fatalf("scaffoldCI (force): %v", err)
 	}
 	for _, f := range out.Files {
-		if f.Path == filepath.Join(".github", "scripts", "retag-release.cjs") ||
-			f.Path == filepath.Join(".github", "scripts", "check-changelog.cjs") {
+		if f.Path == filepath.Join(".github", "scripts", "check-changelog.cjs") {
 			if f.Action != "migrated" {
 				t.Errorf("file %s: expected 'migrated' with force, got %q", f.Path, f.Action)
 			}
@@ -192,12 +188,46 @@ func TestScaffoldCI_LegacyMigration(t *testing.T) {
 		}
 	}
 	for _, dest := range []string{
-		filepath.Join(root, ".github", "scripts", "retag-release.cjs"),
 		filepath.Join(root, ".github", "scripts", "check-changelog.cjs"),
 	} {
 		if !scaffoldFileExists(dest) {
 			t.Errorf("new file %s should exist after migration", dest)
 		}
+	}
+}
+
+// TestScaffoldCI_LeavesRetagReleaseUntouched verifies that a project holding
+// a retag-release.yml from before retag-release was dropped from the
+// manifest keeps that file byte-for-byte unchanged across a forced
+// scaffoldCI run: the manifest no longer owns the file, so scaffold_ci must
+// neither rewrite nor delete it.
+func TestScaffoldCI_LeavesRetagReleaseUntouched(t *testing.T) {
+	root := t.TempDir()
+	retagPath := filepath.Join(root, ".github", "workflows", "retag-release.yml")
+	if err := os.MkdirAll(filepath.Dir(retagPath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("# retag-release-version: 1\nname: retag-release\n")
+	if err := os.WriteFile(retagPath, original, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := scaffoldCI(root, true)
+	if err != nil {
+		t.Fatalf("scaffoldCI: %v", err)
+	}
+	for _, f := range out.Files {
+		if f.Path == filepath.Join(".github", "workflows", "retag-release.yml") {
+			t.Errorf("expected no file report for retag-release.yml, got action %q", f.Action)
+		}
+	}
+
+	got, err := os.ReadFile(retagPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", retagPath, err)
+	}
+	if string(got) != string(original) {
+		t.Errorf("retag-release.yml: expected unchanged content, got:\n%s", string(got))
 	}
 }
 
@@ -261,8 +291,8 @@ func TestCIScriptDrift_OutdatedDistinctFromMissing(t *testing.T) {
 	}
 
 	// Downgrade one installed script's version marker below current.
-	outdatedRel := filepath.Join(".github", "workflows", "retag-release.yml")
-	if err := os.WriteFile(filepath.Join(root, outdatedRel), []byte("# retag-release-version: 1\n"), 0644); err != nil {
+	outdatedRel := filepath.Join(".github", "workflows", "release-on-main.yml")
+	if err := os.WriteFile(filepath.Join(root, outdatedRel), []byte("# release-on-main-version: 1\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -573,8 +603,8 @@ func TestScaffoldCI_PopulatesNext(t *testing.T) {
 // TestScaffoldCI_PushWithSecret_UsesConfiguredSecret is the AC9 manual
 // verification (R10): with version.method = "push-with-secret" and a
 // version.pushAuth.secretName that differs from defaultReleaseSecret
-// (RELEASE_TOKEN), the scaffolded release-on-main.yml, promote-release.yml
-// and retag-release.yml must rewrite their secrets.RELEASE_TOKEN reference
+// (RELEASE_TOKEN), the scaffolded release-on-main.yml and promote-release.yml
+// must rewrite their secrets.RELEASE_TOKEN reference
 // — both in the checkout step's token: input (which controls the credential
 // actions/checkout persists for `git push`) and in the GH_TOKEN env var
 // (which controls `gh` CLI calls) — to the configured secret, while the
@@ -604,7 +634,6 @@ secretName = "RELEASE_APP_TOKEN"
 	for _, dest := range []string{
 		filepath.Join(".github", "workflows", "release-on-main.yml"),
 		filepath.Join(".github", "workflows", "promote-release.yml"),
-		filepath.Join(".github", "workflows", "retag-release.yml"),
 	} {
 		content, err := os.ReadFile(filepath.Join(root, dest))
 		if err != nil {
@@ -669,7 +698,6 @@ secretName = "MY_BOT"
 	for _, dest := range []string{
 		filepath.Join(".github", "workflows", "release-on-main.yml"),
 		filepath.Join(".github", "workflows", "promote-release.yml"),
-		filepath.Join(".github", "workflows", "retag-release.yml"),
 	} {
 		content, err := os.ReadFile(filepath.Join(root, dest))
 		if err != nil {
@@ -724,7 +752,6 @@ func TestScaffoldCI_DefaultSecretName_NoRewrite(t *testing.T) {
 	payloadKeys := map[string]string{
 		filepath.Join(".github", "workflows", "release-on-main.yml"): "release-on-main.yml",
 		filepath.Join(".github", "workflows", "promote-release.yml"): "promote-release.yml",
-		filepath.Join(".github", "workflows", "retag-release.yml"):   "retag-release.yml",
 	}
 	payloads := Payloads()
 

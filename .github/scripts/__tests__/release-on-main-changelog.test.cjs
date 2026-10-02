@@ -12,7 +12,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execSync } = require('node:child_process');
+const { execSync, spawnSync } = require('node:child_process');
 
 const {
   readVersionConfig,
@@ -24,6 +24,7 @@ const {
   findLastFinalTag,
   collectNotesSinceTag,
   aggregateNotesByCategory,
+  PR_NOTES_LIMIT,
 } = require('../release-on-main.cjs');
 
 function mkTmpDir(prefix) {
@@ -748,13 +749,53 @@ describe('collectNotesSinceTag', () => {
     assert.equal(result[1], '- PR Two title');
   });
 
-  test('returns empty array when the tag does not exist', () => {
+  test('throws when the tag date cannot be read', () => {
     const dir = mkTmpDir('release-collectnotes-noexist-');
     initGitRepo(dir);
     // Do NOT create the tag
+    assert.throws(() => collectNotesSinceTag(dir, 'v9.9.9-does-not-exist'), /cannot read date of tag/);
+  });
 
-    const result = collectNotesSinceTag(dir, 'v9.9.9-does-not-exist');
-    assert.deepEqual(result, []);
+  test('throws when gh pr list fails', () => {
+    const dir = mkTmpDir('release-collectnotes-ghfail-');
+    initGitRepo(dir);
+    execSync('git tag v1.0.0', { cwd: dir });
+
+    const logPath = path.join(mkTmpDir('release-collectnotes-ghfail-log-'), 'gh.log');
+    assert.throws(
+      () => withFakeGh(logPath, 'pr list', () => collectNotesSinceTag(dir, 'v1.0.0')),
+      /gh pr list failed/
+    );
+  });
+
+  test('throws when gh pr list output is not JSON', () => {
+    const dir = mkTmpDir('release-collectnotes-badjson-');
+    initGitRepo(dir);
+    execSync('git tag v1.0.0', { cwd: dir });
+
+    const logPath = path.join(mkTmpDir('release-collectnotes-badjson-log-'), 'gh.log');
+    assert.throws(
+      () => withFakeGhOutput(logPath, 'not json', () => collectNotesSinceTag(dir, 'v1.0.0')),
+      /cannot parse gh pr list output/
+    );
+  });
+
+  test('throws when gh pr list hits the PR limit', () => {
+    const dir = mkTmpDir('release-collectnotes-limit-');
+    initGitRepo(dir);
+    execSync('git tag v1.0.0', { cwd: dir });
+
+    const prData = Array.from({ length: PR_NOTES_LIMIT }, (_, i) => ({
+      number: i + 1,
+      title: `PR ${i + 1}`,
+      body: '',
+    }));
+    const logPath = path.join(mkTmpDir('release-collectnotes-limit-log-'), 'gh.log');
+    assert.throws(
+      () => withFakeGhOutput(logPath, JSON.stringify(prData), () => collectNotesSinceTag(dir, 'v1.0.0')),
+      /reached the 1000 PR limit/
+    );
+    assert.match(fs.readFileSync(logPath, 'utf8'), /--limit 1000/);
   });
 
   test('returns empty array when gh pr list returns no PRs', () => {
@@ -776,5 +817,20 @@ describe('collectNotesSinceTag', () => {
 
     assert.deepEqual(result1, []);
     assert.deepEqual(result2, []);
+  });
+});
+
+describe('main branch-name validation', () => {
+  test('exits 1 with "invalid branch name" before any release phase', () => {
+    const dir = mkTmpDir('release-main-badref-');
+    const script = path.join(__dirname, '..', 'release-on-main.cjs');
+    const res = spawnSync(process.execPath, [script], {
+      cwd: dir,
+      encoding: 'utf8',
+      env: { ...process.env, GITHUB_REF_NAME: 'main;touch pwned' },
+    });
+    assert.equal(res.status, 1);
+    assert.match(res.stderr, /invalid branch name "main;touch pwned"/);
+    assert.equal(fs.existsSync(path.join(dir, 'pwned')), false);
   });
 });

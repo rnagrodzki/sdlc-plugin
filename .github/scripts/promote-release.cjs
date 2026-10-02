@@ -8,7 +8,9 @@
  *
  * Usage (GitHub Actions — workflow_dispatch):
  *   node .github/scripts/promote-release.cjs patch
- *   (level: major | minor | patch)
+ *   (level: major | minor | patch; env LEVEL, when set, wins over the arg)
+ *   env RELEASE_BRANCH: branch the bump lands on (default "main"); the run
+ *   fails when GITHUB_REF_NAME is set and differs from it.
  *
  * Reads: .sdlc-v2/config.toml  (sdlc versioning config)
  *
@@ -50,8 +52,8 @@
  *     script follows the Acceptance Criteria (the more specific, testable
  *     requirement) and tags the RC's SHA directly.
  *   - Missing version config is treated as a hard error (exit 1), unlike
- *     sibling push-triggered scripts (retag-release.cjs,
- *     release-on-main.cjs, check-changelog.cjs) which no-op with exit 0
+ *     sibling push-triggered scripts (release-on-main.cjs,
+ *     check-changelog.cjs) which no-op with exit 0
  *     when unconfigured. Those scripts run as passive gates on every push;
  *     this one is a human-dispatched action that cannot do its job
  *     (version bump, changelog) without versionFile/tagPrefix — silently
@@ -70,8 +72,15 @@
 
 'use strict';
 
-/** @version 8 — promote-release script version. Bump when behavior changes. */
-const PROMOTE_RELEASE_SCRIPT_VERSION = 8;
+/** @version 9 — promote-release script version. Bump when behavior changes. */
+const PROMOTE_RELEASE_SCRIPT_VERSION = 9;
+
+/**
+ * Allowlist for a branch name taken from the environment (RELEASE_BRANCH).
+ * The name is interpolated into git/gh shell commands, so anything outside
+ * this set (spaces, quotes, $, `, ;, ...) is rejected before use.
+ */
+const SAFE_REF = /^[A-Za-z0-9._\/-]+$/;
 
 const fs   = require('node:fs');
 const path = require('node:path');
@@ -97,7 +106,7 @@ function execOrThrow(cmd, opts = {}) {
 /**
  * Build the hint shown when a push is rejected by a branch/tag ruleset.
  * Kept byte-for-byte identical (copy-pasted, not imported — payloads are
- * standalone scripts) in release-on-main.cjs and retag-release.cjs.
+ * standalone scripts) in release-on-main.cjs.
  *   secretName — configured version.pushAuth.secretName, i.e. the secret the
  *                scaffolded workflow actually reads (default RELEASE_TOKEN).
  *   tagPush    — true when the rejected ref is a tag. method = "pr" only
@@ -172,7 +181,7 @@ function pushOrExplain(cmd, repoRoot) {
 function deliverBump({ repoRoot, method, branch, targetTag }) {
   if (method === 'pr') {
     const prBranch = `release/${targetTag}`;
-    pushOrExplain(`git push origin HEAD:refs/heads/${prBranch}`, repoRoot);
+    pushOrExplain(`git push origin "HEAD:refs/heads/${prBranch}"`, repoRoot);
     const prUrl = execOrThrow(
       `gh pr create --base "${branch}" --head "${prBranch}" ` +
       `--title "chore(release): promote ${targetTag}" ` +
@@ -188,7 +197,7 @@ function deliverBump({ repoRoot, method, branch, targetTag }) {
     }
     return { delivered: 'pr', prUrl };
   }
-  pushOrExplain(`git push origin HEAD:${branch}`, repoRoot);
+  pushOrExplain(`git push origin "HEAD:${branch}"`, repoRoot);
   return { delivered: 'push' };
 }
 
@@ -410,6 +419,40 @@ function semverGreater(a, b) {
   return sa.patch > sb.patch;
 }
 
+/**
+ * Resolve the promotion target: bump stableVersion by level and require the
+ * result to equal the active RC series version. Promoting means shipping the
+ * tested RC, so a level that lands on any other version (lower OR higher) is
+ * an error. Pure — no side effects, never exits.
+ * @returns {{targetBase:string}|{error:string}}
+ */
+function resolvePromotionTarget(stableVersion, seriesVersion, level, tagPrefix) {
+  const levels = ['major', 'minor', 'patch'];
+  const sv = parseSemver(String(stableVersion || ''));
+  if (!sv) return { error: `Invalid semver: ${stableVersion}` };
+  const rc = parseSemver(String(seriesVersion || ''));
+  if (!rc) return { error: `Invalid RC series version: ${seriesVersion}` };
+  if (!levels.includes(level)) return { error: `Unknown bump level: ${level}` };
+
+  const bump = (lvl) => {
+    switch (lvl) {
+      case 'major': return `${sv.major + 1}.0.0`;
+      case 'minor': return `${sv.major}.${sv.minor + 1}.0`;
+      default:      return `${sv.major}.${sv.minor}.${sv.patch + 1}`;
+    }
+  };
+  const series = `${rc.major}.${rc.minor}.${rc.patch}`;
+  const targetBase = bump(level);
+  if (targetBase === series) return { targetBase };
+
+  const matchingLevel = levels.find((l) => bump(l) === series);
+  return {
+    error:
+      `Chosen level "${level}" produces ${tagPrefix || ''}${targetBase}, but the active RC series is ${seriesVersion}. ` +
+      (matchingLevel ? `use level "${matchingLevel}"` : `no level produces ${seriesVersion} from ${stableVersion}`),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Version file read/write (same pattern as sibling scripts)
 // ---------------------------------------------------------------------------
@@ -628,10 +671,20 @@ function main() {
   // KEEP: CI script invoked at repo root — do not change to resolveSdlcRoot()
   const repoRoot = process.cwd();
 
-  // Step 1: Read the bump level from the workflow input.
-  const level = (process.argv[2] || '').trim();
+  // Step 1: Read the bump level from the workflow input (env LEVEL, set by
+  // the workflow, wins over the positional argument).
+  const level = (process.env.LEVEL || process.argv[2] || '').trim();
   if (!['major', 'minor', 'patch'].includes(level)) {
     fail('Usage: node promote-release.cjs <level>  (level: major | minor | patch)');
+  }
+
+  // The bump commit lands on the release branch (the repo default branch,
+  // passed in by the workflow). Refuse a run dispatched from any other
+  // branch, and refuse a branch name that is unsafe to put in a command.
+  const releaseBranch = process.env.RELEASE_BRANCH || 'main';
+  if (!SAFE_REF.test(releaseBranch)) fail(`invalid branch name "${releaseBranch}" (allowed: A-Z a-z 0-9 . _ / -)`);
+  if (process.env.GITHUB_REF_NAME && process.env.GITHUB_REF_NAME !== releaseBranch) {
+    fail(`promote-release must run from "${releaseBranch}" (dispatched from "${process.env.GITHUB_REF_NAME}")`);
   }
 
   const config = readVersionConfig(repoRoot);
@@ -654,22 +707,14 @@ function main() {
   const stableVersion = stableTag
     ? (tagPrefix ? stableTag.slice(tagPrefix.length) : stableTag)
     : '0.0.0';
-  const targetBase = bumpSemver(stableVersion, level);
-  const targetTag = `${tagPrefix}${targetBase}`;
 
-  // Guard against a bump level that would produce a version lower than the
-  // active RC series (e.g. a stale stable tag combined with "patch" while
-  // the active RC series is already a minor/major ahead).
-  const rcSv = parseSemver(series.baseVersion);
-  const tgtSv = parseSemver(targetBase);
-  if (!rcSv || !tgtSv) fail(`Internal error: unparseable versions rc=${series.baseVersion} tgt=${targetBase}`);
-  if (
-    tgtSv.major < rcSv.major ||
-    (tgtSv.major === rcSv.major && tgtSv.minor < rcSv.minor) ||
-    (tgtSv.major === rcSv.major && tgtSv.minor === rcSv.minor && tgtSv.patch < rcSv.patch)
-  ) {
-    fail(`Chosen level "${level}" produces ${targetTag}, which is lower than the active RC series ${series.baseVersion}. Use a higher bump level.`);
-  }
+  // The target must equal the active RC series: promotion ships the tested
+  // RC commit, so a level that yields any other version (lower or higher)
+  // would tag the RC's SHA with a version it was never built as.
+  const resolved = resolvePromotionTarget(stableVersion, series.baseVersion, level, tagPrefix);
+  if (resolved.error) fail(resolved.error);
+  const targetBase = resolved.targetBase;
+  const targetTag = `${tagPrefix}${targetBase}`;
 
   console.log(`Active RC series: ${series.baseVersion} (${series.tags.length} RC(s))`);
   console.log(`Latest stable: ${stableTag || '(none)'}`);
@@ -750,11 +795,10 @@ function main() {
         execOrThrow(`git commit -F "${tmpPath}"`, { cwd: repoRoot });
       });
 
-      const branch = process.env.GITHUB_REF_NAME || 'main';
       const method = config.method === 'push-with-secret' ? 'push' : (config.method || 'push');
-      const result = deliverBump({ repoRoot, method, branch, targetTag });
+      const result = deliverBump({ repoRoot, method, branch: releaseBranch, targetTag });
       if (result.delivered === 'push') {
-        console.log(`Committed and pushed version bump to ${branch}.`);
+        console.log(`Committed and pushed version bump to ${releaseBranch}.`);
       }
     } else {
       console.log('No staged changes after version write — files already at target.');
@@ -790,29 +834,35 @@ function main() {
   // Best-effort: the tag and GitHub Release already exist at this point, so
   // a dispatch failure is not fatal — binaries can be built manually by
   // re-running the Release workflow from the Actions tab.
-  let dispatchOk = false;
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      execOrThrow(
-        `gh workflow run release.yml --ref "${targetTag}"`,
-        { cwd: repoRoot }
-      );
-      dispatchOk = true;
-      break;
-    } catch (err) {
-      if (attempt < 2) {
-        console.log(`Release workflow dispatch attempt ${attempt} failed (${err.message}), retrying...`);
-      } else {
-        console.log(
-          `WARNING: Release workflow dispatch failed after ${attempt} attempts: ${err.message}\n` +
-          `The tag ${targetTag} and GitHub Release were created successfully.\n` +
-          `To build binaries, manually run the Release workflow from Actions > SDLC Release for ref ${targetTag}.`
+  // Skipped when the repo has no release.yml (no binaries to build), so a
+  // project without one does not log a failed dispatch on every promotion.
+  if (!fs.existsSync(path.join(repoRoot, '.github', 'workflows', 'release.yml'))) {
+    console.log('release.yml not found — skipping binary build dispatch');
+  } else {
+    let dispatchOk = false;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        execOrThrow(
+          `gh workflow run release.yml --ref "${targetTag}"`,
+          { cwd: repoRoot }
         );
+        dispatchOk = true;
+        break;
+      } catch (err) {
+        if (attempt < 2) {
+          console.log(`Release workflow dispatch attempt ${attempt} failed (${err.message}), retrying...`);
+        } else {
+          console.log(
+            `WARNING: Release workflow dispatch failed after ${attempt} attempts: ${err.message}\n` +
+            `The tag ${targetTag} and GitHub Release were created successfully.\n` +
+            `To build binaries, manually run the Release workflow from Actions > SDLC Release for ref ${targetTag}.`
+          );
+        }
       }
     }
-  }
-  if (dispatchOk) {
-    console.log(`Dispatched Release workflow at ${targetTag}.`);
+    if (dispatchOk) {
+      console.log(`Dispatched Release workflow at ${targetTag}.`);
+    }
   }
 }
 
@@ -838,6 +888,8 @@ module.exports = {
   findLatestStableTag,
   bumpSemver,
   parseSemver,
+  resolvePromotionTarget,
+  SAFE_REF,
   deliverBump,
   classifyPushError,
   rulesetPushHint,

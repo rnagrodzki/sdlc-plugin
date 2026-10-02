@@ -447,7 +447,7 @@ func TestToolErrorSites_Scaffold(t *testing.T) {
 			class: toolErrInfra,
 			run: func(t *testing.T) ([]string, error) {
 				root := t.TempDir()
-				script := filepath.Join(root, ".github", "scripts", "retag-release.cjs")
+				script := filepath.Join(root, ".github", "scripts", "check-changelog.cjs")
 				toolErrSiteDir(t, script)
 				_, err := scaffoldCI(root, false)
 				return []string{script, "scaffold_ci"}, err

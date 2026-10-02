@@ -26,6 +26,12 @@ Companion files, loaded on demand: [`config-format.md`](config-format.md) (`.sdl
 hook records every Bash execution to `.sdlc-v2/evidence/cli-executions.jsonl`
 on its own; no explicit `log-cli` call is needed here.
 
+**User input collection:** automatic — the `record-user-input`
+UserPromptSubmit hook records every prompt the user types while a ship or
+execute run is active to `.sdlc-v2/evidence/user-inputs.jsonl`; the step 9a
+run report reads it for its User input section. No explicit call is needed
+here.
+
 **0. Plan-mode check.** If the system context says plan mode is active: tell the user to exit plan mode and re-invoke `/ship`, then stop.
 
 **1. Entry modes.** If `$ARGUMENTS` has `--init-config`, `--gc`, or `--resume`, read [`entry-modes.md`](entry-modes.md) and follow that handler, then stop (or continue from its resume point). Otherwise parse `--auto`, `--steps <csv>`, `--quick`, `--quality`, `--bump`, `--draft`, `--dry-run`, `--plan <path>`, `--openspec-change <name>`, `--ttl-days <N>`.
@@ -84,7 +90,7 @@ On option 2: ask which level (`major`/`minor`/`patch`, optionally with an RC pre
 
 **9a. Run report.** Resume rule first: call `ship_state({action:"read"})`. When its `pipelineCompletedAt` is set **and** `<MAIN_ROOT>/.sdlc-v2/reports/ship-<runId>-report.md` already exists (check with `test -f` in Bash; `<runId>` is that read's `startedAt` with every character that is not a digit or `T` removed, e.g. `2026-10-01T12:14:56Z` → `20261001T121456`), this run already finished — skip both 9a and 9b and go straight to step 10. Step 10 then has no 9b response: report the cleanup outcome as "already completed at `<pipelineCompletedAt>`", and render nothing for `issueSummary`. Step 10c then omits `guardrail_hits`.
 
-Otherwise call `ship_state({action:"report", detail:{write:true}})`. The tool composes the report from ship state, healing records, this run's execute state and its linked plan run, CLI evidence and learnings, renders it, and writes it — never render or write the report yourself: no LLM-rendered body, no Write tool. Gated by `automation.report.enabled` (config-owned, not a flag) — this step never prompts. It runs **before** 9b because 9b deletes the linked plan run once the report exists: written later, the report would have no plan run left to read for its `## Planning`/`## Timeline` sections. It also runs before 10c so `history_record` can forward `guardrailHits` from this call's output.
+Otherwise call `ship_state({action:"report", detail:{write:true}})`. The tool composes the report from ship state, healing records, this run's execute state and its linked plan run, CLI evidence, user input and learnings, renders it, and writes it — never render or write the report yourself: no LLM-rendered body, no Write tool. Gated by `automation.report.enabled` (config-owned, not a flag) — this step never prompts. It runs **before** 9b because 9b deletes the linked plan run once the report exists: written later, the report would have no plan run left to read for its `## Planning`/`## Timeline` sections. It also runs before 10c so `history_record` can forward `guardrailHits` from this call's output.
 - `{skipped:true}`: skip silently, no output, no further `report` calls — continue to 9b.
 - Otherwise: when `format` is `"md"`, print `display` verbatim. Either way, print `path` as the last line of this step's output.
 - Non-fatal — if the call errors, log one warning and continue to 9b.

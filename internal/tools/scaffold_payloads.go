@@ -8,7 +8,7 @@ var payloadsFS embed.FS
 
 // Payloads returns a map of filename → file content for every embedded
 // consumer-CI payload (workflow templates and scripts). Keys are bare
-// filenames such as "check-changelog.cjs", "retag-release.yml", etc.
+// filenames such as "check-changelog.cjs", "release-on-main.yml", etc.
 func Payloads() map[string][]byte {
 	entries, err := payloadsFS.ReadDir("payloads")
 	if err != nil {

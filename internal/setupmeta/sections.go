@@ -126,7 +126,7 @@ var versionFields = []Field{
 		Type:        "string",
 		Options:     nil,
 		Default:     "",
-		Description: "Name of the repo secret holding the App or PAT token used in place of the default RELEASE_TOKEN fallback for release pushes. When set to a value other than RELEASE_TOKEN, scaffold_ci rewrites the secrets.RELEASE_TOKEN reference in release-on-main.yml, promote-release.yml, and retag-release.yml to this name, for any method value, not only push-with-secret. See docs/versioning.md#protected-branches-and-rulesets.",
+		Description: "Name of the repo secret holding the App or PAT token used in place of the default RELEASE_TOKEN fallback for release pushes. When set to a value other than RELEASE_TOKEN, scaffold_ci rewrites the secrets.RELEASE_TOKEN reference in release-on-main.yml and promote-release.yml to this name, for any method value, not only push-with-secret. See docs/versioning.md#protected-branches-and-rulesets.",
 	},
 	{
 		Name:        "preRelease",
