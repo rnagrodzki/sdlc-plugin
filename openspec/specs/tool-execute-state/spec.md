@@ -1342,7 +1342,7 @@ The `report` action SHALL assemble the end-of-run execution report without writi
 
 | Output field | Meaning |
 |---|---|
-| `branch`, `runId`, `planPath`, `startedAt`, `duration` | run metadata; `runId` derived from `startedAt`; `duration` from start to now |
+| `branch`, `runId`, `planPath`, `startedAt`, `duration` | run metadata; `runId` derived from `startedAt`; `duration` from start to the run end: `runCompletedAt` when set, else the latest wave `completedAt`, else now |
 | `format` | `format` input, else config `automation.report.format`, else `md` |
 | `waves[]` | `{number, status, startedAt, completedAt, duration, tasks[], committedSha}` |
 | `waves[].tasks[]` | `{id, name, status, complexity, risk, filesChanged}`; `filesChanged` comma-joined |
@@ -1378,6 +1378,10 @@ The `report` action SHALL assemble the end-of-run execution report without writi
 - **WHEN** the log has lines tagged `sdlc:run=<runId>1`
 - **THEN** those lines are not counted for `<runId>`
 
+#### Scenario: Duration ends at run completion
+- **WHEN** the run started at 10:00, its last wave completed at 11:00, `runCompletedAt` is unset, and the report is built at 12:00
+- **THEN** `duration` is `1h 00m`
+
 ### Requirement: report write mode
 The `report` action SHALL, when `write` is true, persist the report atomically to `<main worktree>/.sdlc-v2/reports/<runId>-report.<ext>` and return that path.
 
@@ -1403,7 +1407,6 @@ The `report` action SHALL, when `write` is true, persist the report atomically t
 #### Scenario: Markdown without body
 - **WHEN** `write` is true, `format` is `md`, and `body` is empty
 - **THEN** the tool fails with a DomainError and no file is written
-
 
 ### Requirement: base-sync action
 The `base-sync` action SHALL bring new commits from `origin/<base>` into the current branch with a merge, where `<base>` is the resolved base branch, and SHALL record the outcome in the state's `baseSyncs[]` as `{wave, status, base, behind, sha, at}`, plus `conflictedFiles` when `status` is `conflict`.
@@ -1450,7 +1453,6 @@ stateDiagram-v2
 - **WHEN** the worktree has an uncommitted change
 - **THEN** `base-sync` returns `status: "skipped"` and does not fetch
 
-
 ### Requirement: base-sync-resolve action
 The `base-sync-resolve` action SHALL finish or abort the merge that `base-sync` left in progress, and SHALL update the wave's `baseSyncs[]` entry.
 
@@ -1481,4 +1483,3 @@ The `base-sync-resolve` action SHALL finish or abort the merge that `base-sync` 
 #### Scenario: Abort with no merge in progress
 - **WHEN** `base-sync-resolve` is called with `abort: true` and no merge is in progress
 - **THEN** the action changes nothing and returns `status: "aborted"` with a warning
-

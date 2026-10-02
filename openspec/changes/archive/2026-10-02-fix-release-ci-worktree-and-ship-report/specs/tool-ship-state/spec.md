@@ -14,6 +14,7 @@ The `report` action SHALL compose the end-of-run report for the branch's ship ru
 - `planning` comes from the linked plan run state file (same plan path): `{planFile, decisions[], milestones[]}`. `decisions[]` are its `criticalDecisions` `{key, choice, rejected, reason, at}`; `milestones[]` are its `planIntegrity` timestamps as `{name, at}` in time order. When no plan run file exists, `planning` is `null` with `planningNote` `plan run state not found`.
 - `timeline` is one list of `{at, phase, event}` sorted by `at`, merged from: plan milestones and decisions (`phase:"plan"`), execute wave starts, completions, and base syncs (`phase:"execute"`), ship step begins and ends and `decisions[]` (`phase:"ship"`). A plan or ship decision whose text is blank (empty or whitespace only) is not turned into an event.
 - `cliEvidence` is the branch's `.sdlc-v2/evidence/cli-executions.jsonl` entries since the run's `startedAt`.
+- `userInputs` is the branch's `.sdlc-v2/evidence/user-inputs.jsonl` entries since the run's `startedAt`, oldest first, at most the latest 100; an empty list, never `null`, when there are none. A read failure adds an `issues` warning with `category:"cross-read"`.
 - It works on a stamped state and never writes the state file.
 
 | Output field | Meaning |
@@ -27,6 +28,7 @@ The `report` action SHALL compose the end-of-run report for the branch's ship ru
 | `deferredFindings` | The state's `deferredFindings[]` entries. |
 | `hardenCommit` | The `harden` step's `result` when that step is `completed`. |
 | `execution`, `guardrailHits`, `cliEvidence`, `linkedLearnings` | Cross-read data. |
+| `userInputs` | Prompts the user typed while the run was active: `{ts, pipeline, step?, wave?, branch, text}`. |
 | `display` | `md`: the Markdown report described in "report Markdown layout", emitted raw. `json`: one line `Ship run <runId> on <branch>: <c>/<n> steps completed, <f> findings fixed, <d> deferred, <g> guardrail hits.` |
 | `path`, `written` | Report file path and `true` after a write. |
 | `skipped` | `true` only when reports are disabled. |
@@ -74,9 +76,10 @@ The `report` action SHALL render `md` `display` with the sections below, in this
 | Section | Content |
 |---|---|
 | Title | `# Ship run report — <branch>` |
-| `## Summary` | Table `Area \| Result` with rows Run, Plan, Steps, Execution, Review, Fixed by severity, Hardened, Deferred, Guardrail hits, CLI commands, Decisions, Learnings (see below) |
+| `## Summary` | Table `Area \| Result` with rows Run, Plan, Steps, User input, Execution, Review, Fixed by severity, Hardened, Deferred, Guardrail hits, CLI commands, Decisions, Learnings (see below) |
 | `## Plan` | Plan file and planning time (or the existing "not available" line), then the critical-decision table `Decision \| Chosen \| Rejected \| Reason` with short-form cells (120 characters), or the existing "no planning data" / "no critical decisions" line. No milestone lines; milestones appear in `## Timeline` |
 | `## Steps` | As before |
+| `## User input` | `<n> prompts typed during the run.` (plus `Shows the latest 100 prompts only.` when 100 were read), then table `At \| Step \| Text`, oldest first; Step is the ship step, `wave <n>` for an execute entry, or `—`; Text uses the short form |
 | `## Timeline` | Table `At \| Phase \| Event`; event text uses the short form (below) |
 | `## Review ledger` | Total, fixed, deferred by reason, unaccounted; a negative unaccounted adds `— ledger mismatch: fixes plus deferrals exceed the review total` |
 | `## Self-healing` / `### Fixed` | `<n> findings fixed.`, table `Severity \| <one column per origin> \| Total` (severities critical, high, medium, low, info, unknown; rows with 0 omitted), then `Critical, high and medium:` list `- [<sev>] <file>:<line> — <title> (<origin>)` in that severity order |
@@ -93,7 +96,7 @@ The `report` action SHALL render `md` `display` with the sections below, in this
 - Every Summary number equals the matching number in the section below it.
 - Sanitizing: no stored string reaches `display` raw. A command is rendered as one inline code span of its short form, fenced with one backtick more than the longest backtick run inside it. Free text in a list line goes through the short form; a table cell goes through the short form and has `|` escaped.
 - Short form: first non-blank line, runs of whitespace collapsed to one space, cut to 200 characters (120 for a command, trigger or plan decision cell) with `…` appended when cut or when later lines were dropped.
-- Every empty section still renders one explicit `_No ..._` line: `_No CLI evidence recorded._`, `_No failed commands._`, `_No findings fixed._`, `_No harden runs recorded._`, `_No waves recorded._`, `_No decisions recorded._`.
+- Every empty section still renders one explicit `_No ..._` line: `_No CLI evidence recorded._`, `_No failed commands._`, `_No findings fixed._`, `_No harden runs recorded._`, `_No waves recorded._`, `_No decisions recorded._`, `_No user input during the run._`.
 - A finding with an empty severity counts under `unknown`.
 
 #### Scenario: Summary matches the sections
@@ -143,3 +146,15 @@ The `report` action SHALL render `md` `display` with the sections below, in this
 #### Scenario: Commands grouped by name
 - **WHEN** the run has 73 `grep` commands, 10 `git diff` commands and 10 `git -C /repo log` commands
 - **THEN** the `Command | Runs | Failed` table has rows `grep | 73`, `git diff | 10` and `git log | 10`
+
+#### Scenario: User prompts listed
+- **WHEN** the evidence file holds, for this branch and after the run's `startedAt`, a prompt at step `review` and a 3-line prompt holding `|` at step `pr`
+- **THEN** `## User input` says `2 prompts typed during the run.` and has 2 table rows in time order
+- **AND** the `pr` row shows only the first line of the prompt followed by `…`, with `|` escaped
+- **AND** the Summary row is `User input | prompts 2`
+
+#### Scenario: No user input
+- **WHEN** no prompt was recorded during the run
+- **THEN** `## User input` shows `_No user input during the run._`
+- **AND** the Summary row is `User input | none`
+- **AND** `userInputs` is an empty list

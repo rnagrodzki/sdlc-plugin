@@ -16,6 +16,7 @@
 - Fix every payload defect in the bug report that still applies after `retag-release` is removed.
 - Make every git-tracked write by `scaffold_ci`, `setup_write_sections` and `setup_init` land in the active worktree, and every drift read look there.
 - Cut the ship report to stats for high-volume sections, put every run metric in one Summary table, and keep per-item lines only where a person must act (deferred findings, failed commands, critical/high/medium fixes).
+- Record prompts the user types during an active ship or execute run, and list them in the ship report.
 
 **Non-Goals:**
 
@@ -25,6 +26,7 @@
 - No new CLI evidence fields (duration, tool kind); stats use existing fields.
 - No cleanup of `retag-release` files already installed in user projects.
 - No change to `reportData` or the `read` action; the ledger stays unclamped in data.
+- No recording of answers to `AskUserQuestion`; no user-input list for a standalone execute run (Step 9 has no report file).
 
 ## Decisions
 
@@ -44,6 +46,10 @@
 | Hardened trigger cleanup | Short form at render time | Normalize in `healing_record` | `trigger` is the upsert key; changing stored values risks breaking `started` → `done` matching; render-time also fixes old state |
 | Report Next | Drop `## Next` from Markdown; `next` field unchanged | Strip only when writing | One code path; `display` equals the file (spec scenario "Write markdown") |
 | Execution duration end | `runCompletedAt`, else latest wave `completedAt`, else now | Always now | Report written after the run gave durations longer than the run |
+| Prompt capture | `UserPromptSubmit` hook `record-user-input`, silent and fail-open | Skill instruction to log each user message | Fires on every typed prompt with no LLM step to forget; mirrors the Bash evidence hook |
+| Prompt storage | Separate `.sdlc-v2/evidence/user-inputs.jsonl` | Rows in `cli-executions.jsonl` | CLI rows have command and exit-code fields and a 200-row window; prompts would change CLI counts |
+| Prompt redaction | `telemetry.Redact` plus a 2000-rune cap before write | Redact only in the report | A secret never lands on disk in clear form |
+| Step of a prompt typed while the run is stopped | Advancing step, else the failed step | Reuse `resolvePipelineStepContext` | That helper returns an empty step when the run stopped on a failure, when users type corrections |
 
 Architecture of the touched parts:
 
@@ -115,6 +121,7 @@ Output struct changes:
 | `ScaffoldCIOut` | `Root` (`json:"root"`) | string | absolute path | `/repos/app-feat-x` |
 | `SetupWriteSectionsOut` | `Root` (`json:"root"`) | string | absolute path | `/repos/app-feat-x` |
 | `SetupInitOut` | `Root` (`json:"root"`) | string | absolute path | `/repos/app-feat-x` |
+| `ShipRunReportOut` | `UserInputs` (`json:"userInputs"`) | array of `{ts, pipeline, step?, wave?, branch, text}` | JSON, oldest first, latest 100 | `[{"ts":"2026-09-30T14:58:02Z","pipeline":"ship","step":"review","branch":"fix/x","text":"leave the KD comments"}]` |
 
 ## Risks / Trade-offs
 
@@ -126,5 +133,7 @@ Output struct changes:
 | `--limit 1000` still caps notes | A release with more than 1000 PRs fails | Fails loudly with `reached the 1000 PR limit` instead of dropping notes |
 | Summary and sections disagree | A reader trusts a wrong number | Each summary number uses the same counting helper as its section; a test compares them |
 | Command grouping is a heuristic | A pipeline like `cd x && go test` groups as `go test`, a shell loop as `for` | Rules are fixed and table-tested; the full log path stays in the report |
+| Prompt text in reports | A pasted secret the redactors do not know (for example a plain API key) appears in the evidence file and the report | Both stay under gitignored `.sdlc-v2/`; known token shapes are redacted; text is cut to 200 characters in the report |
+| Hook adds latency to every prompt | Each prompt waits for one state lookup | Same cost as the Bash evidence hook; 3 s timeout; fail-open |
 | Tests pin report text | Many `ship_report_test.go` assertions change | Rewrite assertions per section in the same task |
 | Allowlist rejects an unusual but legal branch name | Promotion fails with `invalid branch name` | Message names the pattern; default branches are plain names |

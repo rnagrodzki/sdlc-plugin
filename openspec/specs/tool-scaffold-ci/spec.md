@@ -14,6 +14,7 @@ The tool SHALL accept one input field and return the output fields below.
 
 | Field | Meaning |
 |---|---|
+| `root` | Absolute path of the worktree the files were written under |
 | `warnings` | Warning strings; an empty list when there are none |
 | `files` | One entry per manifest file, in manifest order: `path`, `action`, `installedVersion`, `currentVersion`, `group` |
 | `protection` | Branch protection report: `hasRulesets`, `hasClassicProtection`, `defaultBranch`, `rulesetNames`, `notes` |
@@ -28,16 +29,14 @@ The tool SHALL accept one input field and return the output fields below.
 
 #### Scenario: Fresh project
 - **WHEN** the tool runs with `force: false` in a project with no `.github/` files
-- **THEN** `files` has 10 entries, each with `action: created`
+- **THEN** `files` has 8 entries, each with `action: created`
 - **AND** `warnings` is an empty list
 
 ### Requirement: File manifest
-The tool SHALL install exactly the 10 files below, under the main worktree root, in this order.
+The tool SHALL install exactly the 8 files below, under the active worktree root, in this order.
 
 | `path` | `group` | Legacy path | Version marker in the file |
 |---|---|---|---|
-| `.github/scripts/retag-release.cjs` | `retag` | `.github/scripts/retag-release.js` | `const RETAG_SCRIPT_VERSION = N` |
-| `.github/workflows/retag-release.yml` | `retag` | none | `# retag-release-version: N` |
 | `.github/scripts/check-changelog.cjs` | `changelog` | `.github/scripts/check-changelog.js` | `const CHECK_CHANGELOG_SCRIPT_VERSION = N` |
 | `.github/workflows/check-changelog.yml` | `changelog` | none | `# check-changelog-version: N` |
 | `.github/scripts/release-on-main.cjs` | `release` | none | `const RELEASE_ON_MAIN_SCRIPT_VERSION = N` |
@@ -50,10 +49,16 @@ The tool SHALL install exactly the 10 files below, under the main worktree root,
 - `currentVersion` is the marker number in the embedded file.
 - `installedVersion` is the marker number in the file on disk (the new path first, else the legacy path); `null` when neither exists.
 - A file with no marker counts as version `1`.
+- The tool never creates, reports, or deletes `.github/scripts/retag-release.cjs` or `.github/workflows/retag-release.yml`.
 
 #### Scenario: Files land on disk
 - **WHEN** the tool runs in a fresh project
-- **THEN** each of the 10 paths exists under the project root
+- **THEN** each of the 8 paths exists under the project root
+
+#### Scenario: Old retag-release install left alone
+- **WHEN** the project already has `.github/workflows/retag-release.yml`
+- **THEN** the file is unchanged after the tool runs with `force: true`
+- **AND** no `files` entry names it
 
 ### Requirement: Per-file action
 The tool SHALL choose one `action` per manifest file from the table below, and SHALL write the file only for `created`, `overwritten`, and `migrated`.
@@ -86,22 +91,22 @@ The tool SHALL choose one `action` per manifest file from the table below, and S
 - **AND** `.github/scripts/retag-release.js` is deleted and `.github/scripts/retag-release.cjs` exists
 
 ### Requirement: Push-auth secret rewrite
-The tool SHALL read `version.pushAuth.secretName` from `.sdlc-v2/config.toml`. When it is set and differs from `RELEASE_TOKEN`, the tool SHALL replace every `secrets.RELEASE_TOKEN` with `secrets.<secretName>` in `release-on-main.yml`, `promote-release.yml`, and `retag-release.yml` before writing them.
+The tool SHALL read `version.pushAuth.secretName` from `.sdlc-v2/config.toml`. When it is set and differs from `RELEASE_TOKEN`, the tool SHALL replace every `secrets.RELEASE_TOKEN` with `secrets.<secretName>` in `release-on-main.yml` and `promote-release.yml` before writing them.
 
 - The rewrite does not depend on `version.method`.
-- The `secrets.GITHUB_TOKEN` fallback stays in the three files.
+- The `secrets.GITHUB_TOKEN` fallback stays in the two files.
 - All other files are written unchanged.
 - With `secretName` unset or equal to `RELEASE_TOKEN`, all files are byte-identical to the embedded payloads.
 - A `[version]` read failure other than "not found" adds warning `reading version config: <cause>` and the run continues without a rewrite.
 
 #### Scenario: Custom secret for any method
 - **WHEN** `.sdlc-v2/config.toml` sets `version.method` to `push`, `pr`, or `push-with-secret` and `version.pushAuth.secretName = "MY_BOT"`
-- **THEN** the three workflows contain `secrets.MY_BOT` and no `secrets.RELEASE_TOKEN`
+- **THEN** the two workflows contain `secrets.MY_BOT` and no `secrets.RELEASE_TOKEN`
 - **AND** they still contain `secrets.GITHUB_TOKEN`
 
 #### Scenario: Default secret name leaves payloads unchanged
 - **WHEN** `version.pushAuth.secretName` is `RELEASE_TOKEN`
-- **THEN** the three workflows are byte-identical to the embedded payloads
+- **THEN** the two workflows are byte-identical to the embedded payloads
 
 ### Requirement: Secret name validation
 The tool SHALL reject a non-default `version.pushAuth.secretName` that is not a legal GitHub Actions secret name with a `DomainError`, before writing any file.
@@ -197,7 +202,7 @@ The tool SHALL install payloads that match this repo's own checked-in `.github/`
 
 #### Scenario: Written scripts read the TOML config only
 - **WHEN** the tool runs in a fresh project
-- **THEN** each of the 5 written `.cjs` files contains `.sdlc-v2/config.toml`
+- **THEN** each of the 4 written `.cjs` files contains `.sdlc-v2/config.toml`
 - **AND** none contains `.sdlc/config.json` or `.claude/sdlc.json`
 
 ### Requirement: Infrastructure errors
@@ -205,7 +210,7 @@ The tool SHALL stop and return an `InfraError` on the file-system failures below
 
 | Condition | Class | Message / Suggestion (short) |
 |---|---|---|
-| Project root cannot be resolved | `InfraError` | `resolve project root: <cause>` / run `git worktree list --porcelain`, fix, retry |
+| Active worktree root cannot be resolved | `InfraError` | `resolve project root: <cause>` / run `git rev-parse --show-toplevel`, fix, retry |
 | Embedded payload missing | `InfraError` | `embedded payload "<name>" not found` / update or reinstall the plugin |
 | Installed file cannot be read | `InfraError` | `check installed version of CI script <path>: read <file>: <cause>` / check read permission |
 | Legacy file cannot be deleted | `InfraError` | `remove legacy <file>: <cause>` / delete it by hand, rerun with `force: true` |
@@ -215,3 +220,12 @@ The tool SHALL stop and return an `InfraError` on the file-system failures below
 #### Scenario: Unwritable destination
 - **WHEN** a destination file cannot be written
 - **THEN** the result is an `InfraError` whose message starts with `write `
+
+### Requirement: Active worktree write root
+The tool SHALL resolve its root with `git rev-parse --show-toplevel` (the active worktree), read `.sdlc-v2/config.toml` under that root, write every manifest file under it, and return it as `root`.
+
+#### Scenario: Called from a linked worktree
+- **WHEN** the tool runs from a linked worktree of a repo whose main worktree is on another branch
+- **THEN** the 8 files are written under the linked worktree
+- **AND** no file under the main worktree's `.github/` changes
+- **AND** `root` is the linked worktree path

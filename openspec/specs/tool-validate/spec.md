@@ -65,11 +65,12 @@ The tool SHALL reject an `action` outside the enum with a `DomainError`.
 - **THEN** the result is a `DomainError` whose message starts with `unknown validate action "nonsense"`
 
 ### Requirement: Root selection
-The tool SHALL read from the main worktree root, except for `dimensions` and opted-in `guardrails`, which read the active worktree root.
+The tool SHALL read from the main worktree root, except for `dimensions`, `ci_script_drift`, and opted-in `guardrails`, which read the active worktree root.
 
 | Case | Root | Active root cannot be resolved |
 |---|---|---|
 | `dimensions` | active | falls back to main (no error) |
+| `ci_script_drift` | active | falls back to main (no error) |
 | `guardrails` with `activeWorktree: true` | active | `InfraError` `resolve active worktree for guardrails activeWorktree:true: <cause>` |
 | Every other case | main | n/a |
 | Main root cannot be resolved (any action) | n/a | `InfraError` `resolve project root: <cause>` |
@@ -83,6 +84,10 @@ The tool SHALL read from the main worktree root, except for `dimensions` and opt
 - **WHEN** the tool runs from the main repo's `.git` directory with `action: "guardrails", activeWorktree: true`
 - **THEN** the result is an `InfraError` whose message contains `resolve active worktree`
 - **AND** `action: "dimensions"` from the same place succeeds
+
+#### Scenario: CI drift from a linked worktree
+- **WHEN** CI files were scaffolded only in a linked worktree and the tool runs there with `action: "ci_script_drift"`
+- **THEN** `findings` is an empty list
 
 ### Requirement: plan_format reads the plan file
 The `plan_format` action SHALL require `file`, resolve it against the main worktree root when relative, and report read failures as a `DomainError`.
@@ -406,7 +411,7 @@ The `ci_script_drift` action SHALL compare each CI file installed by `scaffold_c
 | Installed version lower, or only the legacy `.js` file exists | `CI_SCRIPT_OUTDATED` | `<path> is outdated (installed v<I>, current v<C>) — run scaffold_ci({force:true}) to update.` |
 | Not installed | `CI_SCRIPT_MISSING` | `<path> is not installed (current v<C>) — run scaffold_ci({force:true}) to install.` |
 
-- `path` is the file path relative to the project root, e.g. `.github/workflows/retag-release.yml`.
+- `path` is the file path relative to the project root, e.g. `.github/workflows/release-on-main.yml`.
 
 | Condition | Class | Message / Suggestion (short) |
 |---|---|---|
@@ -418,7 +423,7 @@ The `ci_script_drift` action SHALL compare each CI file installed by `scaffold_c
 - **THEN** `findings` is an empty list
 
 #### Scenario: One outdated, one missing
-- **WHEN** `.github/workflows/retag-release.yml` is replaced with `# retag-release-version: 1` and `.github/workflows/check-changelog.yml` is deleted
+- **WHEN** `.github/workflows/release-on-main.yml` is replaced with `# release-on-main-version: 1` and `.github/workflows/check-changelog.yml` is deleted
 - **THEN** there is one `CI_SCRIPT_OUTDATED` and one `CI_SCRIPT_MISSING` finding
 - **AND** both messages contain `scaffold_ci({force:true})`
 
