@@ -305,7 +305,7 @@ func buildShipRunReport(root, branch string, shipSt *state.State, format string,
 		out.Issues = append(out.Issues, map[string]any{
 			"severity": "warning",
 			"category": "cross-read",
-			"summary":  "user input read failed: " + err.Error(),
+			"summary":  "User input read failed: " + err.Error(),
 		})
 	} else if inputs != nil {
 		out.UserInputs = inputs

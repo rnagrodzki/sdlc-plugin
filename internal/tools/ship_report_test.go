@@ -1403,12 +1403,12 @@ func TestShipReportUserInput(t *testing.T) {
 		found := false
 		for _, raw := range out.Issues {
 			m, _ := raw.(map[string]any)
-			if s, _ := m["summary"].(string); strings.HasPrefix(s, "user input read failed: ") {
+			if s, _ := m["summary"].(string); strings.HasPrefix(s, "User input read failed: ") {
 				found = true
 			}
 		}
 		if !found {
-			t.Errorf("issues = %v, want a 'user input read failed' warning", out.Issues)
+			t.Errorf("issues = %v, want a 'User input read failed' warning", out.Issues)
 		}
 		if len(out.UserInputs) != 0 {
 			t.Errorf("userInputs must stay empty on a read failure, got %#v", out.UserInputs)

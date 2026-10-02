@@ -1,4 +1,4 @@
-# promote-release-version: 9
+# promote-release-version: 10
 name: SDLC Promote Release
 
 on:
@@ -12,6 +12,12 @@ on:
           - patch
           - minor
           - major
+
+# Shares release-on-main.yml's group so a manual promote and a push-triggered
+# release never push to the release branch or create tags at the same time.
+concurrency:
+  group: release-on-main
+  cancel-in-progress: false
 
 jobs:
   promote:

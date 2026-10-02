@@ -7,6 +7,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
 // dirExists reports whether path exists and is a directory (scaffoldFileExists
@@ -166,5 +168,186 @@ func TestSetupInit_NonGitDir_ActiveRootFallsBackToStateRoot(t *testing.T) {
 	}
 	if !scaffoldFileExists(filepath.Join(dir, ".sdlc-v2", "local.toml")) {
 		t.Error("local.toml not written under the non-git dir")
+	}
+}
+
+// TestSetupInitRoots_ModeBranches_UseContentRoot calls setupInitRoots with
+// contentRoot != stateRoot and checks each of the five mode-select branches
+// reports out.Root == contentRoot and reads or writes its template under
+// contentRoot only. The check/read templates are seeded under contentRoot
+// alone, so a branch wired to stateRoot would report Exists=false.
+func TestSetupInitRoots_ModeBranches_UseContentRoot(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CLAUDE_PLUGIN_ROOT", filepath.Join("testdata", "plugins", "sdlc"))
+	resetSkillTemplateIndex()
+	t.Cleanup(resetSkillTemplateIndex)
+
+	cases := []struct {
+		name       string
+		in         SetupInitIn
+		seed       string // template seeded under contentRoot before the call
+		written    string // template the call must write under contentRoot
+		wantExists bool
+	}{
+		{name: "WritePlanTemplate", in: SetupInitIn{WritePlanTemplate: true}, written: "plan-template.md"},
+		{name: "WritePRTemplate", in: SetupInitIn{WritePRTemplate: true, Content: "x"}, written: "pr-template.md"},
+		{name: "CheckPlanTemplate", in: SetupInitIn{CheckPlanTemplate: true}, seed: "plan-template.md", wantExists: true},
+		{name: "CheckPRTemplate", in: SetupInitIn{CheckPRTemplate: true}, seed: "pr-template.md", wantExists: true},
+		{name: "ReadPlanTemplate", in: SetupInitIn{ReadPlanTemplate: true}, seed: "plan-template.md", wantExists: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			contentRoot, stateRoot := t.TempDir(), t.TempDir()
+			if tc.seed != "" {
+				dir := filepath.Join(contentRoot, paths.DataDir)
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, tc.seed), []byte("# T\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			out, err := setupInitRoots(contentRoot, stateRoot, tc.in)
+			if err != nil {
+				t.Fatalf("setupInitRoots: %v", err)
+			}
+			if out.Root != contentRoot {
+				t.Errorf("Root = %q, want contentRoot %q (stateRoot is %q)", out.Root, contentRoot, stateRoot)
+			}
+			if out.Exists != tc.wantExists {
+				t.Errorf("Exists = %v, want %v", out.Exists, tc.wantExists)
+			}
+			if tc.written != "" {
+				if !scaffoldFileExists(filepath.Join(contentRoot, paths.DataDir, tc.written)) {
+					t.Errorf("%s not written under contentRoot", tc.written)
+				}
+				if scaffoldFileExists(filepath.Join(stateRoot, paths.DataDir, tc.written)) {
+					t.Errorf("%s must not be written under stateRoot", tc.written)
+				}
+			}
+			if dirExists(filepath.Join(stateRoot, paths.DataDir)) {
+				t.Error("a mode-select call must not touch stateRoot")
+			}
+		})
+	}
+}
+
+// TestSetupInitRoots_LegacyJSONMigration_SplitRoots seeds a legacy
+// config.json under contentRoot and a legacy local.json under stateRoot,
+// plus a decoy of each under the other root. Each legacy file must be
+// renamed to .bak under its own root, and the decoys must stay untouched,
+// so a loop that ran either entry against the wrong root fails here.
+func TestSetupInitRoots_LegacyJSONMigration_SplitRoots(t *testing.T) {
+	contentRoot, stateRoot := t.TempDir(), t.TempDir()
+	contentDir := filepath.Join(contentRoot, paths.DataDir)
+	stateDir := filepath.Join(stateRoot, paths.DataDir)
+	seed := map[string]string{
+		filepath.Join(contentDir, "config.json"): `{"old":"config"}`,
+		filepath.Join(stateDir, "local.json"):    `{"old":"local"}`,
+		filepath.Join(contentDir, "local.json"):  `{"decoy":"local"}`,
+		filepath.Join(stateDir, "config.json"):   `{"decoy":"config"}`,
+	}
+	for p, body := range seed {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	out, err := setupInitRoots(contentRoot, stateRoot, SetupInitIn{})
+	if err != nil {
+		t.Fatalf("setupInitRoots: %v", err)
+	}
+	if !out.OK {
+		t.Errorf("expected OK=true, errors: %v", out.Errors)
+	}
+
+	wantBak := map[string]string{
+		filepath.Join(contentDir, "config.json.bak"): `{"old":"config"}`,
+		filepath.Join(stateDir, "local.json.bak"):    `{"old":"local"}`,
+	}
+	for p, body := range wantBak {
+		got, err := os.ReadFile(p)
+		if err != nil {
+			t.Errorf("%s should exist: %v", p, err)
+			continue
+		}
+		if string(got) != body {
+			t.Errorf("%s = %q, want %q", p, got, body)
+		}
+	}
+	for _, p := range []string{filepath.Join(contentDir, "config.json"), filepath.Join(stateDir, "local.json")} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("%s should be renamed away", p)
+		}
+	}
+
+	// Decoys: config.json under stateRoot and local.json under contentRoot
+	// are not migration targets and must be left exactly as seeded.
+	for _, p := range []string{filepath.Join(stateDir, "config.json"), filepath.Join(contentDir, "local.json")} {
+		got, err := os.ReadFile(p)
+		if err != nil {
+			t.Errorf("decoy %s must not be renamed: %v", p, err)
+			continue
+		}
+		if string(got) != seed[p] {
+			t.Errorf("decoy %s = %q, want %q", p, got, seed[p])
+		}
+	}
+	for _, p := range []string{filepath.Join(stateDir, "config.json.bak"), filepath.Join(contentDir, "local.json.bak")} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("%s must not be created", p)
+		}
+	}
+}
+
+// TestSetupInitRoots_StateRootMkdirFails makes stateRoot read-only so the
+// first MkdirAll (contentRoot/.sdlc-v2) succeeds and the second
+// (stateRoot/.sdlc-v2) fails. The call must return an InfraError before
+// writing any file: contentRoot/.sdlc-v2 may exist but must stay empty.
+// After permissions are restored, a re-run must complete normally.
+func TestSetupInitRoots_StateRootMkdirFails(t *testing.T) {
+	contentRoot, stateRoot := t.TempDir(), t.TempDir()
+	shipErrChmod(t, stateRoot, 0o555)
+
+	_, err := setupInitRoots(contentRoot, stateRoot, SetupInitIn{})
+	if err == nil {
+		t.Fatal("expected an error when stateRoot/.sdlc-v2 cannot be created")
+	}
+	var infra *mcpserver.InfraError
+	if !errors.As(err, &infra) {
+		t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
+	}
+	requireShipPermissionCause(t, infra.Cause)
+
+	entries, readErr := os.ReadDir(filepath.Join(contentRoot, paths.DataDir))
+	if readErr != nil && !os.IsNotExist(readErr) {
+		t.Fatalf("read contentRoot/%s: %v", paths.DataDir, readErr)
+	}
+	if len(entries) != 0 {
+		t.Errorf("contentRoot/%s must stay empty after the failure, got %d entries", paths.DataDir, len(entries))
+	}
+	if scaffoldFileExists(filepath.Join(contentRoot, ".gitignore")) {
+		t.Error("root .gitignore must not be written after the failure")
+	}
+
+	if err := os.Chmod(stateRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, err := setupInitRoots(contentRoot, stateRoot, SetupInitIn{})
+	if err != nil {
+		t.Fatalf("re-run after restoring permissions: %v", err)
+	}
+	if !out.OK {
+		t.Errorf("re-run expected OK=true, errors: %v", out.Errors)
+	}
+	if !scaffoldFileExists(filepath.Join(contentRoot, paths.DataDir, paths.ConfigFile)) {
+		t.Error("config.toml not written under contentRoot on re-run")
+	}
+	if !scaffoldFileExists(filepath.Join(stateRoot, paths.DataDir, paths.LocalConfigFile)) {
+		t.Error("local.toml not written under stateRoot on re-run")
 	}
 }
