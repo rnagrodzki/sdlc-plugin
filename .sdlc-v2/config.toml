@@ -785,7 +785,12 @@ check the git diff: every cross-cutting fix, classifier, \
 hint or error branch must reach every sibling that shares the same push \
 helper or token chain, not just one or two. Also confirm each \
 .github/scripts/*.cjs mirror is byte-identical to its \
-internal/tools/payloads/ source."""
+internal/tools/payloads/ source. The same parity rule covers the sibling \
+workflow files (release workflows in .github/workflows/): concurrency group, \
+cancel-in-progress, permissions, and trigger filters are cross-cutting \
+settings; a change in one release workflow that pushes or tags a shared ref \
+must reach every sibling with the same push target, or the task must \
+explicitly document why they differ."""
 
 [execute.guardrails.test-body-execution-verified]
 severity = "error"
@@ -948,12 +953,12 @@ instead of surfacing them with actionable recovery guidance."""
 [execute.guardrails.multi-step-persistence-failure-coverage]
 severity = "error"
 description = """
-When a task modifies a handler that performs multiple sequential persistent \
-writes (file, state, config), verify each "step k fails after steps 1 \
+When a task modifies a handler or helper function that performs multiple sequential \
+persistent writes (file, state, config), verify each "step k fails after steps 1 \
 through k-1 succeeded" scenario has an explicit test case exercising it. \
 Example: evidenceRecord writes the writer JSON file and then brief.md; if \
 the JSON write succeeds but the brief.md write fails, the next call sees the \
-writer record but not the brief. For each handler with N>=2 sequential \
+writer record but not the brief. For each handler or helper with N>=2 sequential \
 writes, add one test per write failure point and assert the observable \
 state afterward (what persisted, what did not, what the caller sees). Do \
 not assume single-write tests cover multi-step partial-failure behavior."""

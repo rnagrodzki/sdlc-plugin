@@ -99,3 +99,9 @@ Review Go source changes for baseline code quality in this module
   `openspecChangeFromPlan`) that extract different things from the same
   input are a finding: rename one so the name states what it reads, or
   distinguish them clearly in each doc comment.
+- User-facing output text (warning messages in reports, Markdown Next hints,
+  rendered logs) must use sentence case — capitalize the first letter. Do not
+  confuse this with Go error values in the `error` interface, which follow Go
+  convention and stay lowercase (`errors.New("file not found")`). Exported
+  string constants representing user-visible text must start with a capital
+  letter.
