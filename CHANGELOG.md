@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.3.1] - 2026-10-02
+
+### RC 1
+
+- Plan, execute, and ship now share one configured base branch for rebases and base-relative diffs
+- Execute merges the base branch into the working branch between waves, with automatic conflict resolution by a sub-agent
+- Plan mode stages real OpenSpec proposal/design/spec content via the OpenSpec CLI; ship and execute materialize and validate it into an actual OpenSpec change automatically
+- Ship's report now includes a Planning section and a full plan-to-ship timeline; completed plan runs are cleaned up only after the report is written
+- Gate A guardrail checks now flag conflicts between plan guardrails and OpenSpec design/tasks content
+- `task deploy` prunes stale cached binaries instead of accumulating them
+- Full code-review remediation pass (18 findings fixed) plus a guardrail-hardening pass across the pipeline
+
+### RC 2
+
+- Added a base-branch-aware pipeline with OpenSpec staging and base-sync support
+- Hardened the release pipeline: safer promote-release (env-based inputs, active-worktree-aware reads), more robust release-on-main failure/ref/concurrency handling, and changelog validation against the latest final tag
+- Removed duplicated retag-release logic, now consolidated into a single implementation
+- Fixed worktree-aware tooling for setup_init, setup_write_sections, execute-report duration, and ship-report user-input recording, with new test coverage for setup_init's root splitting
+- Added OpenSpec specs for user-input tracking and report layout, and archived the completed plan-openspec-and-run-improvements change
+- Clarified release-workflow sync wording
+
 ## [0.3.0] - 2026-10-01
 
 - Added config guardrails for error enrichment and test coverage
