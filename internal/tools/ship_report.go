@@ -52,6 +52,7 @@ type ShipRunReportOut struct {
 	Execution        *ExecutionReportOut `json:"execution,omitempty"`
 	GuardrailHits    []string            `json:"guardrailHits"`
 	CLIEvidence      []CLIEvidenceEntry  `json:"cliEvidence"`
+	UserInputs       []UserInputEntry    `json:"userInputs" jsonschema_description:"Prompts the user typed while this run was active, oldest first, redacted, latest 100. Empty array when none."`
 	Decisions        []string            `json:"decisions"`
 	LinkedLearnings  int                 `json:"linkedLearnings"`
 	Display          string              `json:"display" render:"raw"` // pre-rendered report; emitted verbatim, never fenced
@@ -237,6 +238,7 @@ func buildShipRunReport(root, branch string, shipSt *state.State, format string,
 		Deferred:         []any{},
 		GuardrailHits:    []string{},
 		CLIEvidence:      []CLIEvidenceEntry{},
+		UserInputs:       []UserInputEntry{},
 		Decisions:        rd.Decisions,
 	}
 	if raw, ok := data["issues"].([]any); ok {
@@ -297,6 +299,16 @@ func buildShipRunReport(root, branch string, shipSt *state.State, format string,
 		})
 	} else if evidence != nil {
 		out.CLIEvidence = evidence
+	}
+
+	if inputs, err := readUserInputInWindow(root, branch, since, maxUserInputInWindow); err != nil {
+		out.Issues = append(out.Issues, map[string]any{
+			"severity": "warning",
+			"category": "cross-read",
+			"summary":  "user input read failed: " + err.Error(),
+		})
+	} else if inputs != nil {
+		out.UserInputs = inputs
 	}
 
 	linked, err := countLinkedLearnings(root, runID)
@@ -524,6 +536,7 @@ func renderShipReportMarkdown(out ShipRunReportOut) string {
 	renderShipReportSummary(w, out)
 	renderShipReportPlan(w, out)
 	renderShipReportSteps(w, out)
+	renderShipReportUserInput(w, out.UserInputs)
 	renderShipReportTimeline(w, out.Timeline)
 	renderShipReportReviewLedger(w, out)
 	renderShipReportHealing(w, out)
@@ -929,6 +942,12 @@ func renderShipReportSummary(w *shipReportWriter, out ShipRunReportOut) {
 	}
 	row("Steps", steps)
 
+	if n := len(out.UserInputs); n == 0 {
+		row("User input", "none")
+	} else {
+		row("User input", fmt.Sprintf("prompts %d", n))
+	}
+
 	if e := out.Execution; e == nil {
 		row("Execution", "not run")
 	} else {
@@ -1096,6 +1115,42 @@ func renderShipReportSteps(w *shipReportWriter, out ShipRunReportOut) {
 			summary, _ := m["summary"].(string)
 			w.line("- [%s] %s", severity, shipReportShort(summary, shipReportTextMax))
 		}
+	}
+}
+
+// shipReportUserInputStep names where a user-input entry was typed: its ship
+// step name, else "wave <n>" for an execute entry, else "—" when both are
+// empty.
+func shipReportUserInputStep(e UserInputEntry) string {
+	if e.Step != "" {
+		return e.Step
+	}
+	if e.Wave != nil {
+		return fmt.Sprintf("wave %d", *e.Wave)
+	}
+	return "—"
+}
+
+// renderShipReportUserInput renders the prompts the user typed while the run
+// was active: a count line (plus the read-cap note when the window was
+// full), then a table At | Step | Text, oldest first. Zero entries render
+// "_No user input during the run._" in place of the table.
+func renderShipReportUserInput(w *shipReportWriter, inputs []UserInputEntry) {
+	w.heading("User input")
+	if len(inputs) == 0 {
+		w.line("_No user input during the run._")
+		return
+	}
+	count := fmt.Sprintf("%d prompts typed during the run.", len(inputs))
+	if len(inputs) >= maxUserInputInWindow {
+		count += " Shows the latest 100 prompts only."
+	}
+	w.line("%s", count)
+	w.line("")
+	w.line("| At | Step | Text |")
+	w.line("|---|---|---|")
+	for _, e := range inputs {
+		w.line("| %s | %s | %s |", shipReportCell(e.Timestamp), shipReportCell(shipReportUserInputStep(e)), shipReportCell(shipReportShort(e.Text, shipReportTextMax)))
 	}
 }
 

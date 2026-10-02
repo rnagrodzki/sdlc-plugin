@@ -295,6 +295,7 @@ func TestShipStateReport_EmptyHealingMarkdownLines(t *testing.T) {
 	out := runShipReport(t, root, nil)
 	for _, want := range []string{
 		"_Plan timing not available — no plan linked to this run._",
+		"_No user input during the run._",
 		"_Review ledger not available — review did not run or its total was not recorded._",
 		"_No findings fixed._",
 		"_No harden runs recorded._",
@@ -310,7 +311,7 @@ func TestShipStateReport_EmptyHealingMarkdownLines(t *testing.T) {
 		}
 	}
 
-	headings := []string{"# Ship run report — " + shipReportBranch, "## Summary", "## Plan", "## Steps", "## Review ledger", "## Self-healing",
+	headings := []string{"# Ship run report — " + shipReportBranch, "## Summary", "## Plan", "## Steps", "## User input", "## Review ledger", "## Self-healing",
 		"### Fixed", "### Hardened", "### Harden commit", "## Deferred", "## Guardrail hits",
 		"## CLI evidence", "## Decisions", "## Learnings"}
 	last := -1
@@ -945,6 +946,18 @@ func TestShipReportRelPath(t *testing.T) {
 	}
 }
 
+// shipReportUserInputEntry appends one user-input evidence entry inside the
+// report window.
+func shipReportUserInputEntry(t *testing.T, root, ts, step, pipelineName, text string, wave *int) {
+	t.Helper()
+	if err := appendUserInput(root, UserInputEntry{
+		Timestamp: ts, Pipeline: pipelineName, Step: step, Wave: wave,
+		Branch: shipReportBranch, Text: text,
+	}); err != nil {
+		t.Fatalf("append user input: %v", err)
+	}
+}
+
 // shipReportEvidence appends one CLI evidence entry inside the report window.
 func shipReportEvidence(t *testing.T, root, step, pipelineName, command string, exit int) {
 	t.Helper()
@@ -1044,7 +1057,7 @@ func TestShipReportCLIEvidence(t *testing.T) {
 				headings = append(headings, l)
 			}
 		}
-		wantHeadings := []string{"# Ship run report — " + shipReportBranch, "## Summary", "## Plan", "## Steps", "## Timeline",
+		wantHeadings := []string{"# Ship run report — " + shipReportBranch, "## Summary", "## Plan", "## Steps", "## User input", "## Timeline",
 			"## Review ledger", "## Self-healing", "### Fixed", "### Hardened", "### Harden commit", "## Deferred",
 			"## Guardrail hits", "## CLI evidence", "## Decisions", "## Learnings"}
 		if strings.Join(headings, "\n") != strings.Join(wantHeadings, "\n") {
@@ -1120,7 +1133,7 @@ func TestShipReportSummary(t *testing.T) {
 			rows[cells[0]] = cells[1]
 			order = append(order, cells[0])
 		}
-		want := []string{"Run", "Plan", "Steps", "Execution", "Review", "Fixed by severity", "Hardened",
+		want := []string{"Run", "Plan", "Steps", "User input", "Execution", "Review", "Fixed by severity", "Hardened",
 			"Deferred", "Guardrail hits", "CLI commands", "Decisions", "Learnings"}
 		if strings.Join(order, ",") != strings.Join(want, ",") {
 			t.Fatalf("summary rows %v, want %v", order, want)
@@ -1137,7 +1150,7 @@ func TestShipReportSummary(t *testing.T) {
 		out := runShipReport(t, root, nil)
 		rows := summaryRows(t, out.Display)
 		want := map[string]string{
-			"Plan": "—", "Steps": "completed 1 of 2", "Execution": "not run", "Review": "—",
+			"Plan": "—", "Steps": "completed 1 of 2", "User input": "none", "Execution": "not run", "Review": "—",
 			"Fixed by severity": "none", "Hardened": "none", "Deferred": "0", "Guardrail hits": "0",
 			"CLI commands": "total 0 · failed 0", "Decisions": "0", "Learnings": "0",
 		}
@@ -1309,4 +1322,130 @@ func TestShipReportDecisions(t *testing.T) {
 			t.Errorf("display missing %q:\n%s", line, out.Display)
 		}
 	}
+}
+
+func TestShipReportUserInput(t *testing.T) {
+	t.Run("no entries", func(t *testing.T) {
+		root := shipReportRoot(t)
+		createShipReportState(t, root, nil)
+
+		out := runShipReport(t, root, nil)
+		if out.UserInputs == nil || len(out.UserInputs) != 0 {
+			t.Fatalf("userInputs must be an empty non-nil slice, got %#v", out.UserInputs)
+		}
+		if !strings.Contains(out.Display, "## User input\n\n_No user input during the run._\n") {
+			t.Errorf("display missing empty user-input line:\n%s", out.Display)
+		}
+		if !strings.Contains(out.Display, "| User input | none |") {
+			t.Errorf("summary missing the none row:\n%s", out.Display)
+		}
+		raw, err := json.Marshal(out)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if !strings.Contains(string(raw), `"userInputs":[]`) {
+			t.Errorf("marshaled report missing \"userInputs\":[]: %s", raw)
+		}
+	})
+
+	t.Run("rendered rows, step cell forms, oldest first, multi-line truncation", func(t *testing.T) {
+		root := shipReportRoot(t)
+		wave1 := 1
+		shipReportUserInputEntry(t, root, "2025-06-15T10:05:00Z", "review", "ship", "fix the thing", nil)
+		shipReportUserInputEntry(t, root, "2025-06-15T10:06:00Z", "", "execute", "go ahead | proceed\nsecond line\nthird line", &wave1)
+		shipReportUserInputEntry(t, root, "2025-06-15T10:07:00Z", "", "ship", "no step no wave", nil)
+		createShipReportState(t, root, nil)
+
+		out := runShipReport(t, root, nil)
+		if len(out.UserInputs) != 3 {
+			t.Fatalf("expected 3 user inputs, got %d: %+v", len(out.UserInputs), out.UserInputs)
+		}
+		want := "## User input\n\n3 prompts typed during the run.\n\n" +
+			"| At | Step | Text |\n|---|---|---|\n" +
+			"| 2025-06-15T10:05:00Z | review | fix the thing |\n" +
+			`| 2025-06-15T10:06:00Z | wave 1 | go ahead \| proceed … |` + "\n" +
+			"| 2025-06-15T10:07:00Z | — | no step no wave |\n"
+		if !strings.Contains(out.Display, want) {
+			t.Errorf("display missing the User input section:\nwant:\n%s\ngot:\n%s", want, out.Display)
+		}
+		if !strings.Contains(out.Display, "| User input | prompts 3 |") {
+			t.Errorf("summary missing the prompts row:\n%s", out.Display)
+		}
+	})
+
+	t.Run("read window cap note", func(t *testing.T) {
+		root := shipReportRoot(t)
+		for i := 0; i < maxUserInputInWindow; i++ {
+			ts := fmt.Sprintf("2025-06-15T10:%02d:00Z", i%60)
+			shipReportUserInputEntry(t, root, ts, "pr", "ship", fmt.Sprintf("prompt %d", i), nil)
+		}
+		createShipReportState(t, root, nil)
+
+		out := runShipReport(t, root, nil)
+		if len(out.UserInputs) != maxUserInputInWindow {
+			t.Fatalf("expected %d user inputs, got %d", maxUserInputInWindow, len(out.UserInputs))
+		}
+		if !strings.Contains(out.Display, "100 prompts typed during the run. Shows the latest 100 prompts only.\n") {
+			t.Errorf("display missing the read-window cap note:\n%s", out.Display)
+		}
+	})
+
+	t.Run("read error surfaced as a cross-read warning", func(t *testing.T) {
+		root := shipReportRoot(t)
+		// A directory where user-inputs.jsonl should be makes the read fail
+		// with an I/O error, not "file not found".
+		if err := os.MkdirAll(userInputPath(root), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		createShipReportState(t, root, nil)
+
+		out := runShipReport(t, root, nil)
+		found := false
+		for _, raw := range out.Issues {
+			m, _ := raw.(map[string]any)
+			if s, _ := m["summary"].(string); strings.HasPrefix(s, "user input read failed: ") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("issues = %v, want a 'user input read failed' warning", out.Issues)
+		}
+		if len(out.UserInputs) != 0 {
+			t.Errorf("userInputs must stay empty on a read failure, got %#v", out.UserInputs)
+		}
+		if !strings.Contains(out.Display, "## User input\n\n_No user input during the run._\n") {
+			t.Errorf("display must still show the empty user-input line on a read failure:\n%s", out.Display)
+		}
+	})
+
+	t.Run("summary row order", func(t *testing.T) {
+		root := shipReportRoot(t)
+		createShipReportState(t, root, nil)
+
+		out := runShipReport(t, root, nil)
+		var order []string
+		for _, l := range shipReportSection(out.Display, "Summary") {
+			if !strings.HasPrefix(l, "| ") || l == "| Area | Result |" {
+				continue
+			}
+			cells := strings.SplitN(strings.Trim(l, "| "), " | ", 2)
+			order = append(order, cells[0])
+		}
+		want := []string{"Run", "Plan", "Steps", "User input", "Execution", "Review", "Fixed by severity", "Hardened",
+			"Deferred", "Guardrail hits", "CLI commands", "Decisions", "Learnings"}
+		if strings.Join(order, ",") != strings.Join(want, ",") {
+			t.Fatalf("summary rows %v, want %v (13 rows, User input right after Steps)", order, want)
+		}
+	})
+
+	t.Run("## User input follows ## Steps", func(t *testing.T) {
+		root := shipReportRoot(t)
+		createShipReportState(t, root, nil)
+
+		out := runShipReport(t, root, nil)
+		steps, ui := strings.Index(out.Display, "## Steps"), strings.Index(out.Display, "## User input")
+		if steps < 0 || ui < 0 || ui < steps {
+			t.Errorf("## User input must come right after ## Steps:\n%s", out.Display)
+		}
+	})
 }

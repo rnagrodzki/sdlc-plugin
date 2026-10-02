@@ -1520,7 +1520,8 @@ func buildExecutionReport(root, branch string, st *state.State, format, runID st
 	out.StartedAt, _ = st.Data["startedAt"].(string)
 	out.TotalTasks = execToInt(st.Data["totalTasks"])
 	if out.StartedAt != "" {
-		if d, ok := pipeline.Duration(out.StartedAt, now().UTC().Format(time.RFC3339)); ok {
+		end := execReportEnd(st.Data, now)
+		if d, ok := pipeline.Duration(out.StartedAt, end); ok {
 			out.Duration = pipeline.Humanize(d)
 		}
 	}
@@ -1642,6 +1643,30 @@ func buildExecutionReport(root, branch string, st *state.State, format, runID st
 	}
 
 	return out
+}
+
+// execReportEnd returns runCompletedAt, else the latest waves[].completedAt
+// (RFC3339 string compare), else now — the end used for the report duration.
+func execReportEnd(data map[string]any, now func() time.Time) string {
+	if completedAt, ok := data["runCompletedAt"].(string); ok && completedAt != "" {
+		return completedAt
+	}
+
+	latest := ""
+	for _, w := range execEnsureWaves(data) {
+		wm, ok := w.(map[string]any)
+		if !ok {
+			continue
+		}
+		if completedAt, _ := wm["completedAt"].(string); completedAt > latest {
+			latest = completedAt
+		}
+	}
+	if latest != "" {
+		return latest
+	}
+
+	return now().UTC().Format(time.RFC3339)
 }
 
 // execWriteReportFile persists an execution report under <root>/.sdlc-v2/

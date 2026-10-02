@@ -1066,3 +1066,104 @@ func TestExecState_Report_LearningsCountError_Warning(t *testing.T) {
 		t.Errorf("expected a warning about learnings count failure, got warnings: %+v", out.Warnings)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// report duration end (KD-11, execReportEnd)
+// ---------------------------------------------------------------------------
+
+func TestExecState_Report_Duration_UsesRunCompletedAt(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	createExecState(t, root, "feat/report", map[string]any{
+		"branch":         "feat/report",
+		"startedAt":      "2025-06-15T10:00:00Z",
+		"runCompletedAt": "2025-06-15T10:30:00Z",
+	})
+	// testNow (12:00:00Z) and any wave completedAt must both be ignored once
+	// runCompletedAt is set.
+	clock := fixedClock(testNow)
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "report",
+		Branch: "feat/report",
+	}, clock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := result.(ExecutionReportOut)
+
+	if out.Duration != "30m 00s" {
+		t.Errorf("expected duration '30m 00s' (start -> runCompletedAt), got %q", out.Duration)
+	}
+}
+
+func TestExecState_Report_Duration_FallsBackToLatestWaveCompletedAt(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	createExecState(t, root, "feat/report", map[string]any{
+		"branch":    "feat/report",
+		"startedAt": "2025-06-15T10:00:00Z",
+		"waves": []any{
+			map[string]any{
+				"number":      float64(1),
+				"status":      "completed",
+				"startedAt":   "2025-06-15T10:00:00Z",
+				"completedAt": "2025-06-15T10:30:00Z",
+			},
+			map[string]any{
+				"number":      float64(2),
+				"status":      "completed",
+				"startedAt":   "2025-06-15T10:30:00Z",
+				"completedAt": "2025-06-15T11:00:00Z",
+			},
+		},
+	})
+	// testNow is 12:00:00Z but must be ignored: the latest wave completedAt
+	// (11:00:00Z) wins once no runCompletedAt is set.
+	clock := fixedClock(testNow)
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "report",
+		Branch: "feat/report",
+	}, clock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := result.(ExecutionReportOut)
+
+	if out.Duration != "1h 00m" {
+		t.Errorf("expected duration '1h 00m' (start -> latest wave completedAt), got %q", out.Duration)
+	}
+}
+
+func TestExecState_Report_Duration_FallsBackToNowWhenNoCompletion(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	createExecState(t, root, "feat/report", map[string]any{
+		"branch":    "feat/report",
+		"startedAt": "2025-06-15T10:00:00Z",
+		"waves": []any{
+			map[string]any{
+				"number":    float64(1),
+				"status":    "in_progress",
+				"startedAt": "2025-06-15T10:00:00Z",
+			},
+		},
+	})
+	clock := fixedClock(testNow)
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action: "report",
+		Branch: "feat/report",
+	}, clock)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := result.(ExecutionReportOut)
+
+	// No runCompletedAt and no completed wave: falls back to now
+	// (testNow 12:00:00Z), unchanged from the pre-existing behavior.
+	if out.Duration != "2h 00m" {
+		t.Errorf("expected duration '2h 00m' (start -> now), got %q", out.Duration)
+	}
+}
