@@ -780,8 +780,8 @@ to succeed."""
 severity = "error"
 description = """
 Before marking done a task that modifies the copy-pasted CI payloads \
-(internal/tools/payloads/release-on-main.cjs, promote-release.cjs, \
-retag-release.cjs), check the git diff: every cross-cutting fix, classifier, \
+(internal/tools/payloads/release-on-main.cjs, promote-release.cjs), \
+check the git diff: every cross-cutting fix, classifier, \
 hint or error branch must reach every sibling that shares the same push \
 helper or token chain, not just one or two. Also confirm each \
 .github/scripts/*.cjs mirror is byte-identical to its \

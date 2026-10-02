@@ -88,9 +88,10 @@ You can also write the config manually, or run `/setup --only version` to reconf
 
 ### Config and State Location in Git Worktrees
 
-`.sdlc-v2/config.toml` (and every other `.sdlc-v2/` state/config path) is
-always resolved against the **main** git worktree root, never whichever
-worktree you happen to be running a command from. This matters for repos
+`.sdlc-v2/` state and config are read from the **main** git worktree root,
+never whichever worktree you happen to be running a command from (the one
+exception — files that setup and `scaffold_ci` write — is listed under
+"Files written to the active worktree" below). This matters for repos
 that use linked worktrees (e.g. a bare anchor repo with one or more linked
 checkouts): reading or writing `.sdlc-v2/` from the wrong worktree would
 silently split config and pipeline state across checkouts.
@@ -109,6 +110,22 @@ Two failure modes are checked for and surfaced via
 The check's output also reports `mainRoot`, `activeRoot`, `isLinked`,
 `isBare`, `stateDir`, and `stateDirOwner` (`"main"` or `"active"`) for
 diagnosis.
+
+#### Files written to the active worktree
+
+`setup_init`, `setup_write_sections` and `scaffold_ci` write git-tracked
+files into the worktree you run them from, so the change lands on your branch:
+
+| File | Written under |
+|---|---|
+| `.sdlc-v2/config.toml` | active worktree |
+| `.sdlc-v2/.gitignore`, `.gitignore` (managed blocks) | active worktree |
+| `.sdlc-v2/plan-template.md`, `.sdlc-v2/pr-template.md` | active worktree |
+| `.github/scripts/*`, `.github/workflows/*` | active worktree |
+| `.sdlc-v2/local.toml`, `.sdlc-v2/runs/` | main worktree (gitignored, shared) |
+
+Other tools still read `config.toml` from the main worktree, so a config
+change made in a linked worktree takes effect after the branch merges.
 
 ## Breaking Config Change
 
@@ -177,20 +194,15 @@ This check validates any combination of enabled paths. When `versionFile.enabled
    Exit: every enabled path is attempted regardless of the others'
    outcome. Exit code is 0 only if every enabled path succeeded or was
    idempotently skipped; 1 if any failed.
-9. retag-release.cjs also runs on push to main but is a no-op in this
-   flow: the tag from phase 3 is already at HEAD, so there is nothing
-   to move. It is deprecated (superseded by release-on-main.cjs) and
-   kept only for backward compatibility with older workflows.
 ```
 
 ### CI Workflows
 
-Five CI scripts handle the release pipeline. All live under `.github/scripts/` and are scaffolded by running `scaffold_ci`:
+Four CI scripts handle the release pipeline. All live under `.github/scripts/` and are scaffolded by running `scaffold_ci`:
 
 | Script | Trigger | Purpose |
 |---|---|---|
 | `release-on-main.cjs` | push to main | Runs the 4-phase release flow above: file writes, tag (never blocked), and PR delivery |
-| `retag-release.cjs` | push to main | **Deprecated.** Legacy safety net superseded by `release-on-main.cjs`; no-op in the current flow |
 | `verify-release-intent.cjs` | pull_request | Pre-merge check: validates release markers |
 | `promote-release.cjs` | workflow_dispatch | Promotes RC to final release |
 | `check-changelog.cjs` | push, pull_request | Push to main: fails if `changelog.enabled` and no changelog entry exists for the current version. PR: warns (never fails) if the changelog file was hand-edited on a feature branch |
@@ -217,8 +229,8 @@ Delivery runs after the tag and GitHub Release already exist (phase 3 above, whe
 
 ### Why the default token fails
 
-Every scaffolded release workflow (`release-on-main.yml`, `promote-release.yml`,
-`retag-release.yml`) ends by pushing a release commit and/or a tag. On an
+Every scaffolded release workflow (`release-on-main.yml`, `promote-release.yml`)
+ends by pushing a release commit and/or a tag. On an
 unprotected `main` that needs nothing special — the workflow's default
 `secrets.GITHUB_TOKEN` pushes directly.
 
@@ -233,7 +245,7 @@ pushes the release tag directly when `tag.enabled` is true.
 
 ### How the workflows pick a token
 
-`release-on-main.yml`, `promote-release.yml`, and `retag-release.yml` all
+`release-on-main.yml` and `promote-release.yml` both
 resolve their push/`gh` credential through the same 3-way fallback chain,
 tried in this order:
 
@@ -360,14 +372,11 @@ it before running:
 const method = config.method === 'push-with-secret' ? 'push' : (config.method || 'push');
 ```
 
-`retag-release.cjs` does not read `method` at all, so this alias makes no
-difference to it — it is a deprecated legacy safety net.
-
 What `push-with-secret` used to gate — rewriting the scaffolded workflows'
 `secrets.RELEASE_TOKEN` reference to a custom secret name — no longer
 depends on `method` at all: `scaffold_ci` rewrites `secrets.RELEASE_TOKEN`
-to `secrets.<pushAuth.secretName>` in `release-on-main.yml`,
-`promote-release.yml`, and `retag-release.yml` (the workflow files, not the
+to `secrets.<pushAuth.secretName>` in `release-on-main.yml` and
+`promote-release.yml` (the workflow files, not the
 `method` value) whenever `[version.pushAuth] secretName` is set to something
 other than the default `RELEASE_TOKEN` — for any `method` value, including
 `"push"` and `"pr"`.
@@ -567,10 +576,10 @@ This ensures only actual releases (not RCs) trigger downstream automation like b
 
 A branch or tag ruleset rejected the push — the release commit, the release
 tag, or both — because it came from a token that isn't on the ruleset's
-bypass list. `release-on-main.cjs`, `promote-release.cjs` and
-`retag-release.cjs` each recognize this failure (`GH013`, "Repository rule
-violations", or "protected branch" in the git error) through their own push
-helper, and all three prepend the same hint to the workflow log:
+bypass list. `release-on-main.cjs` and `promote-release.cjs` each recognize
+this failure (`GH013`, "Repository rule violations", or "protected branch"
+in the git error) through their own push helper, and both prepend the same
+hint to the workflow log:
 
 ```
 Push rejected by a branch/tag ruleset: the pushing identity is not on its bypass list
@@ -632,11 +641,11 @@ Without this, the check runs but a failing result does not prevent merge.
 
 ### Squash merge breaks tag reachability
 
-Not an issue in the current flow. `release-on-main.cjs` runs on push to main (after any merge, including squash merge) and creates the tag directly at HEAD (phase 3), so there is no pre-merge tag for a squash merge to orphan. `retag-release.cjs` is kept as a deprecated legacy safety net for projects still migrating from an older pre-merge-tag flow; when run, it detects the tag is already reachable from HEAD and does nothing.
+Not an issue in the current flow. `release-on-main.cjs` runs on push to main (after any merge, including squash merge) and creates the tag directly at HEAD (phase 3), so there is no pre-merge tag for a squash merge to orphan.
 
 ### verify-release-intent fails with "No version config found"
 
-The scaffolded CI scripts (`release-on-main.cjs`, `retag-release.cjs`, `verify-release-intent.cjs`, `promote-release.cjs`, `check-changelog.cjs`) read version config exclusively from `.sdlc-v2/config.toml`, matching the Go-side tool `pr_prepare`. There is no legacy fallback — a project still on the old `.sdlc/config.json` (or `.claude/sdlc.json` / `.claude/version.json`) layout must run the `migrate` tool first.
+The scaffolded CI scripts (`release-on-main.cjs`, `verify-release-intent.cjs`, `promote-release.cjs`, `check-changelog.cjs`) read version config exclusively from `.sdlc-v2/config.toml`, matching the Go-side tool `pr_prepare`. There is no legacy fallback — a project still on the old `.sdlc/config.json` (or `.claude/sdlc.json` / `.claude/version.json`) layout must run the `migrate` tool first.
 
 If `.sdlc-v2/config.toml` is missing or has no `.version` section, release automation fails with:
 

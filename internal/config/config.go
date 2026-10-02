@@ -292,8 +292,8 @@ type VersionChangelogConfig struct {
 // PAT) with Contents, Pull requests and Actions read/write permissions and
 // bypass privileges on the repo's
 // branch-protection rulesets — that scaffold_ci substitutes for the default
-// RELEASE_TOKEN fallback in release-on-main.yml, promote-release.yml, and
-// retag-release.yml. The rewrite fires whenever SecretName is set to
+// RELEASE_TOKEN fallback in release-on-main.yml and promote-release.yml.
+// The rewrite fires whenever SecretName is set to
 // anything other than the default "RELEASE_TOKEN", for any Method value —
 // it is not gated on Method being "push-with-secret".
 type PushAuth struct {

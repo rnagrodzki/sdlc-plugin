@@ -38,8 +38,14 @@
 
 'use strict';
 
-/** @version 9 — release-on-main script version. Bump when behavior changes. */
-const RELEASE_ON_MAIN_SCRIPT_VERSION = 9;
+/** @version 10 — release-on-main script version. Bump when behavior changes. */
+const RELEASE_ON_MAIN_SCRIPT_VERSION = 10;
+
+/** Max PRs fetched for release notes; hitting it means the notes may be incomplete. */
+const PR_NOTES_LIMIT = 1000;
+
+/** Allowed characters in a branch name passed to git push. */
+const SAFE_REF = /^[A-Za-z0-9._\/-]+$/;
 
 const fs   = require('node:fs');
 const path = require('node:path');
@@ -600,18 +606,17 @@ function collectNotesSinceTag(repoRoot, tag) {
   if (!tag) return [];
 
   // Get the date of the tag
-  const tagDate = exec(`git log -1 --format=%cI ${tag}`, { cwd: repoRoot });
-  if (!tagDate) return [];
+  const tagDate = exec(`git log -1 --format=%cI "${tag}"`, { cwd: repoRoot });
+  if (!tagDate) throw new Error(`collectNotesSinceTag: cannot read date of tag ${tag}`);
 
   // Find all merged PRs since this date
   const searchQuery = `merged:>=${tagDate}`;
   const out = exec(
-    `gh pr list --state merged --base main --search "${searchQuery}" --json number,title,body --limit 100`,
+    `gh pr list --state merged --base main --search "${searchQuery}" --json number,title,body --limit ${PR_NOTES_LIMIT}`,
     { cwd: repoRoot }
   );
   if (out === null) {
-    console.error('collectNotesSinceTag: gh pr list failed');
-    return [];
+    throw new Error('collectNotesSinceTag: gh pr list failed — release notes would be incomplete');
   }
   if (!out) return [];
 
@@ -619,8 +624,10 @@ function collectNotesSinceTag(repoRoot, tag) {
   try {
     prList = JSON.parse(out);
   } catch (e) {
-    console.error('Failed to parse PR list:', e.message);
-    return [];
+    throw new Error(`collectNotesSinceTag: cannot parse gh pr list output: ${e.message}`);
+  }
+  if (prList.length >= PR_NOTES_LIMIT) {
+    throw new Error(`collectNotesSinceTag: reached the ${PR_NOTES_LIMIT} PR limit — notes may be incomplete`);
   }
 
   const notes = [];
@@ -724,7 +731,7 @@ function aggregateNotesByCategory(notesList) {
  * the given title. Auto-merge is requested; non-fatal if unavailable.
  */
 function pushFilesViaPR(repoRoot, baseBranch, prBranch, prTitle) {
-  execPushOrThrow(`git push origin HEAD:${prBranch}`, { cwd: repoRoot });
+  execPushOrThrow(`git push origin "HEAD:${prBranch}"`, { cwd: repoRoot });
 
   const body = `Auto-generated file updates for ${prTitle}.\n\nThis PR was created by the release workflow.`;
   withTmpFile(body, (tmpPath) => {
@@ -922,7 +929,7 @@ function runRelease({ repoRoot, config, newVersion, newTag, isRCRelease, notes, 
         withTmpFile(commitMsg, (tmpPath) => {
           execOrThrow(`git commit -F "${tmpPath}"`, { cwd: repoRoot });
         });
-        execPushOrThrow(`git push origin HEAD:${branch}`, { cwd: repoRoot });
+        execPushOrThrow(`git push origin "HEAD:${branch}"`, { cwd: repoRoot });
         bumpCommitSHA = exec('git rev-parse HEAD', { cwd: repoRoot });
         console.log(`Committed and pushed release commit to ${branch}.`);
       } else {
@@ -1063,6 +1070,10 @@ function main() {
   // KEEP: CI script invoked at repo root — do not change to resolveSdlcRoot()
   const repoRoot = process.cwd();
   const branch = process.env.GITHUB_REF_NAME || 'main';
+  // The branch name is interpolated into git push commands in Phases 2–4.
+  if (!SAFE_REF.test(branch)) {
+    throw new Error(`invalid branch name "${branch}" (allowed: A-Z a-z 0-9 . _ / -)`);
+  }
 
   // =========================================================================
   // PHASE 1: Read-only — config, PR, label, metadata, version resolution
@@ -1168,6 +1179,8 @@ if (require.main === module) {
 
 module.exports = {
   RELEASE_ON_MAIN_SCRIPT_VERSION,
+  PR_NOTES_LIMIT,
+  SAFE_REF,
   readVersionConfig,
   runRelease,
   prependChangelog,
