@@ -71,8 +71,21 @@ type SetupPrepareOut struct {
 	CIScriptDrift []CIScriptDriftEntry `json:"ciScriptDrift"`
 }
 
-// setupPrepare is the core logic, separated from the handler for testability.
+// setupPrepare is the core logic, separated from the handler for
+// testability. It reads CI script drift from root itself — correct for
+// tests and any other caller outside a worktree. The registered handler
+// instead calls setupPrepareWithDrift so the drift comparison reads the
+// active worktree, where scaffold_ci writes (see worktree.ActiveRoot).
 func setupPrepare(root string, in SetupPrepareIn) (SetupPrepareOut, error) {
+	return setupPrepareWithDrift(root, root, in)
+}
+
+// setupPrepareWithDrift is setupPrepare with an explicit driftRoot: config,
+// sections, and git metadata are read from root, while CI script drift is
+// compared against driftRoot. Kept separate from root so the registered
+// handler can point driftRoot at the active worktree without disturbing the
+// main-worktree anchoring every other part of setup_prepare relies on.
+func setupPrepareWithDrift(root, driftRoot string, in SetupPrepareIn) (SetupPrepareOut, error) {
 	// Check migration state (best-effort, never a tool error).
 	needsMigration := false
 	if !in.SkipConfigCheck {
@@ -127,7 +140,7 @@ func setupPrepare(root string, in SetupPrepareIn) (SetupPrepareOut, error) {
 
 	// Best-effort CI script drift comparison (Task 3, R2): never fails
 	// setup_prepare, degrades to an empty list on error.
-	ciDrift, driftErr := ciScriptDrift(root)
+	ciDrift, driftErr := ciScriptDrift(driftRoot)
 	if driftErr != nil {
 		ciDrift = nil
 	}
@@ -768,7 +781,11 @@ func RegisterSetupTools(s *mcpserver.Server) {
 					}
 				}
 			}
-			return setupPrepare(root, in)
+			driftRoot := root
+			if active, err := worktree.ActiveRoot(); err == nil {
+				driftRoot = active
+			}
+			return setupPrepareWithDrift(root, driftRoot, in)
 		},
 	)
 

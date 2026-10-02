@@ -104,6 +104,7 @@ type ScaffoldFileReport struct {
 
 // ScaffoldCIOut is the output for the scaffold_ci tool.
 type ScaffoldCIOut struct {
+	Root       string               `json:"root" jsonschema_description:"Absolute path of the worktree the CI files were written under (the active git worktree)."`
 	Warnings   []string             `json:"warnings"`
 	Files      []ScaffoldFileReport `json:"files"`
 	Protection RulesetCheckResult   `json:"protection"`
@@ -391,6 +392,7 @@ func scaffoldCI(root string, force bool) (ScaffoldCIOut, error) {
 	protection := checkBranchProtection(root, execx.Run)
 
 	return ScaffoldCIOut{
+		Root:       root,
 		Warnings:   warnings,
 		Files:      files,
 		Protection: protection,
@@ -586,7 +588,7 @@ func verifyTagAncestry(root, tag string) (VerifyTagAncestryOut, error) {
 // server.
 func RegisterScaffoldTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "scaffold_ci",
-		"INTERNAL — called by sdlc skills only. Deterministically copies CI scripts and workflow files into a user project from embedded payloads.",
+		"INTERNAL — called by sdlc skills only. Deterministically copies CI scripts and workflow files into a user project from embedded payloads. Writes into the active git worktree (git rev-parse --show-toplevel) and returns that path as root.",
 		mcpserver.Annotations{
 			Title:       "Scaffold CI workflow files",
 			ReadOnly:    false,
@@ -595,11 +597,11 @@ func RegisterScaffoldTools(s *mcpserver.Server) {
 			OpenWorld:   true,
 		},
 		func(ctx mcpserver.Ctx, in ScaffoldCIIn) (ScaffoldCIOut, error) {
-			root, err := worktree.MainRoot()
+			root, err := worktree.ActiveRoot()
 			if err != nil {
 				return ScaffoldCIOut{}, &mcpserver.InfraError{
 					Msg:        fmt.Sprintf("resolve project root: %s", err.Error()),
-					Suggestion: "Run `git worktree list --porcelain` in this directory to see why it failed — git may be missing or this isn't a git repository. Fix that, then retry scaffold_ci.",
+					Suggestion: "Run `git rev-parse --show-toplevel` in this directory to see why it failed — git may be missing or this isn't a git repository. Fix that, then retry scaffold_ci.",
 					Cause:      err,
 				}
 			}

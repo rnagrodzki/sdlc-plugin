@@ -65,7 +65,7 @@ function execOrThrow(cmd, opts = {}) {
 /**
  * Build the hint shown when a push is rejected by a branch/tag ruleset.
  * Kept byte-for-byte identical (copy-pasted, not imported — payloads are
- * standalone scripts) in promote-release.cjs and retag-release.cjs.
+ * standalone scripts) in promote-release.cjs.
  *   secretName — configured version.pushAuth.secretName, i.e. the secret the
  *                scaffolded workflow actually reads (default RELEASE_TOKEN).
  *   tagPush    — true when the rejected ref is a tag. method = "pr" only

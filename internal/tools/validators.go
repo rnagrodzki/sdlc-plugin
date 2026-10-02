@@ -123,9 +123,9 @@ Pass "action" to select the validator. Each action uses a subset of the input fi
 - pr_template: Check the PR template file itself (V1-V5) at its canonical or legacy path. No inputs.
 - cost_tiers: Compare skill/agent model tiers against the cost-tier doc tables in docs/cost-tiers.md. Optional: strict (true reports the INHERITED finding kind as severity "error" instead of "warning"). When docs/cost-tiers.md does not exist, the check is skipped and one NO_COST_DOC warning is returned.
 - guardrails: Check the guardrails list in a config section for per-guardrail id/description/severity. Optional: section (defaults to "plan"), activeWorktree (true reads the active worktree instead of the main worktree; an unresolvable active worktree is an infrastructure error, never a silent fallback). A section that does not exist returns no findings.
-- dimensions: Check the review-dimension files, including a cross-file duplicate-name check (D10). Reads the ACTIVE worktree, unlike every other action. No inputs.
+- dimensions: Check the review-dimension files, including a cross-file duplicate-name check (D10). Reads the ACTIVE worktree, unlike most other actions (ci_script_drift also reads the active worktree). No inputs.
 - pr_body: Check a PR body against the PR template's required sections. Requires body — an empty body is not rejected, it simply reports every required section as missing.
-- ci_script_drift: Check the generated CI scripts against their current sources. No inputs.
+- ci_script_drift: Check the generated CI scripts against their current sources. Reads the ACTIVE worktree (falls back to main when it cannot be resolved), since scaffold_ci now writes there too. No inputs.
 - worktree_anchoring: Check which worktree the .sdlc-v2/ state directory is anchored to. No inputs. Also returns worktreeAnchoring{}.`,
 		mcpserver.Annotations{
 			Title:      "Validate SDLC artifacts",
@@ -147,18 +147,19 @@ Pass "action" to select the validator. Each action uses a subset of the input fi
 	)
 }
 
-// validateRoot picks the root an action reads from. dimensions is the one
-// action whose target files are git-tracked content that must be read from
-// the ACTIVE worktree (root rule), not the main worktree every other action
-// anchors to; it fails open to mainRoot when the active root cannot be
-// resolved, so a resolution error never blocks it. guardrails reads the
-// active worktree only when the caller opts in via ActiveWorktree (harden,
-// which writes guardrails to the active worktree and validates what it just
-// wrote). That opt-in fails loud instead: silently validating the main
-// worktree would report a clean result for a file nobody checked.
+// validateRoot picks the root an action reads from. dimensions and
+// ci_script_drift are the two actions whose target files must be read from
+// the ACTIVE worktree (root rule) — ci_script_drift because scaffold_ci now
+// writes there too (not the main worktree every other action anchors to);
+// both fail open to mainRoot when the active root cannot be resolved, so a
+// resolution error never blocks them. guardrails reads the active worktree
+// only when the caller opts in via ActiveWorktree (harden, which writes
+// guardrails to the active worktree and validates what it just wrote). That
+// opt-in fails loud instead: silently validating the main worktree would
+// report a clean result for a file nobody checked.
 func validateRoot(mainRoot string, in ValidateIn, activeRoot func() (string, error)) (string, error) {
 	switch {
-	case in.Action == "dimensions":
+	case in.Action == "dimensions", in.Action == "ci_script_drift":
 		if r, err := activeRoot(); err == nil {
 			return r, nil
 		}

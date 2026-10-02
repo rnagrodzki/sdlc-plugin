@@ -130,6 +130,8 @@ func TestValidateRoot(t *testing.T) {
 		{"guardrails opt-in fails loud", ValidateIn{Action: "guardrails", ActiveWorktree: true}, fail, "", true},
 		{"dimensions reads active", ValidateIn{Action: "dimensions"}, ok, "/active", false},
 		{"dimensions fails open", ValidateIn{Action: "dimensions"}, fail, "/main", false},
+		{"ci_script_drift reads active", ValidateIn{Action: "ci_script_drift"}, ok, "/active", false},
+		{"ci_script_drift fails open", ValidateIn{Action: "ci_script_drift"}, fail, "/main", false},
 		{"other action ignores the flag", ValidateIn{Action: "discovery", ActiveWorktree: true}, fail, "/main", false},
 	}
 	for _, tc := range cases {

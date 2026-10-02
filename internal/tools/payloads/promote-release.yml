@@ -1,4 +1,4 @@
-# promote-release-version: 8
+# promote-release-version: 9
 name: SDLC Promote Release
 
 on:
@@ -32,7 +32,7 @@ jobs:
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          ref: main
+          ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
           token: ${{ steps.release-token.outputs.token || secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
 
@@ -46,6 +46,8 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Promote RC to final release
-        run: node .github/scripts/promote-release.cjs ${{ inputs.level }}
+        run: node .github/scripts/promote-release.cjs
         env:
           GH_TOKEN: ${{ steps.release-token.outputs.token || secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          LEVEL: ${{ inputs.level }}
+          RELEASE_BRANCH: ${{ github.event.repository.default_branch }}

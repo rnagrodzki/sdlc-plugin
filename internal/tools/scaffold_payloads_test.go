@@ -11,8 +11,8 @@ import (
 // TestPayloads_MatchCheckedIn verifies every embedded payload (workflow
 // .yml and CI script .cjs alike) is byte-identical to this repo's own
 // checked-in copy under .github/. scaffold_ci's drift detection reads a
-// version comment (e.g. "# retag-release-version: N") or a version const
-// (e.g. "const RETAG_SCRIPT_VERSION = N"), not a content hash — hardening a
+// version comment (e.g. "# check-changelog-version: N") or a version const
+// (e.g. "const CHECK_CHANGELOG_SCRIPT_VERSION = N"), not a content hash — hardening a
 // checked-in file (SHA-pinning an action, adding a permissions block,
 // tightening a .cjs helper) without also bumping its payload's version
 // number desyncs the two silently: already-scaffolded projects would see
@@ -52,7 +52,6 @@ func TestPayloads_CJSReadsV2ConfigOnly(t *testing.T) {
 
 	cjsFiles := []string{
 		"check-changelog.cjs",
-		"retag-release.cjs",
 		"release-on-main.cjs",
 		"promote-release.cjs",
 		"verify-release-intent.cjs",
@@ -111,9 +110,7 @@ func TestPayloads_ContainsExpectedFiles(t *testing.T) {
 
 	expectedFiles := []string{
 		"check-changelog.cjs",
-		"retag-release.cjs",
 		"check-changelog.yml",
-		"retag-release.yml",
 		"release-on-main.cjs",
 		"promote-release.cjs",
 		"verify-release-intent.cjs",

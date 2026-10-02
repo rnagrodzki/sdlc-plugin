@@ -290,7 +290,7 @@ var datasetRows = []datasetRow{
 	{dataset: "version-prerelease-exec.yaml", testRef: "TestBump"},
 	{
 		dataset:   "version-retag-exec.yaml",
-		cutReason: "no --retag equivalent exists anywhere in internal/version or the commit/pr tools (verified: zero \"retag\" hits outside an unrelated CI payload template literally named retag-release.cjs). Not a new finding: skills/version/SKILL.md's own Port Notes already self-document --retag as a known no-op. Flagged in the task-49 report as an already-documented migration gap, not fixed here (out of this task's scope).",
+		cutReason: "no --retag equivalent exists anywhere in internal/version or the commit/pr tools (verified: zero \"retag\" hits in internal/version or the commit/pr tools). Not a new finding: skills/version/SKILL.md's own Port Notes already self-document --retag as a known no-op. Flagged in the task-49 report as an already-documented migration gap, not fixed here (out of this task's scope).",
 	},
 }
 
