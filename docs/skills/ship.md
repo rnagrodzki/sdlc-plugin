@@ -203,7 +203,10 @@ review ledger, self-healing changes (fixes and hardening this run recorded,
 plus the harden step's own commit when it ran), and the linked plan's
 planning time (start to its last edit — this ends at the last time the plan
 file was modified, not at the moment the plan was accepted, so it reflects
-time actually spent on the plan). It is gated by the project's
+time actually spent on the plan). The Markdown report opens with a Summary
+table that holds every run metric in one place; the sections below it show
+counts instead of one line per command, and list only the findings and
+failures a person must act on. It is gated by the project's
 `automation.report` config (`enabled`, and `format`: `"json"` or `"md"`,
 default `"md"`). When enabled, the tool
 persists it under `.sdlc-v2/reports/ship-<runId>-report.{json,md}` in the

@@ -23,7 +23,7 @@ import (
 
 // scaffoldManifestEntry maps an embedded payload to its project destination.
 type scaffoldManifestEntry struct {
-	// PayloadKey is the key in Payloads() (e.g. "retag-release.cjs").
+	// PayloadKey is the key in Payloads() (e.g. "check-changelog.cjs").
 	PayloadKey string
 	// Dest is the destination relative to project root.
 	Dest string
@@ -31,25 +31,12 @@ type scaffoldManifestEntry struct {
 	LegacyDest string
 	// VersionRegex extracts the version constant from installed file content.
 	VersionRegex *regexp.Regexp
-	// Group categorizes the entry (retag, changelog, or release).
+	// Group categorizes the entry (changelog or release).
 	Group string
 }
 
 // scaffoldManifest is the file manifest mirroring scaffold-ci.js's MANIFEST.
 var scaffoldManifest = []scaffoldManifestEntry{
-	{
-		PayloadKey:   "retag-release.cjs",
-		Dest:         filepath.Join(".github", "scripts", "retag-release.cjs"),
-		LegacyDest:   filepath.Join(".github", "scripts", "retag-release.js"),
-		VersionRegex: regexp.MustCompile(`const\s+RETAG_SCRIPT_VERSION\s*=\s*(\d+)`),
-		Group:        "retag",
-	},
-	{
-		PayloadKey:   "retag-release.yml",
-		Dest:         filepath.Join(".github", "workflows", "retag-release.yml"),
-		VersionRegex: regexp.MustCompile(`(?m)^#\s*retag-release-version:\s*(\d+)`),
-		Group:        "retag",
-	},
 	{
 		PayloadKey:   "check-changelog.cjs",
 		Dest:         filepath.Join(".github", "scripts", "check-changelog.cjs"),
@@ -265,7 +252,6 @@ const defaultReleaseSecret = "RELEASE_TOKEN"
 var pushAuthWorkflowKeys = map[string]bool{
 	"release-on-main.yml": true,
 	"promote-release.yml": true,
-	"retag-release.yml":   true,
 }
 
 // secretNamePattern is GitHub's secret-name syntax: letters, digits and

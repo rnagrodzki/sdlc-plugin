@@ -23,8 +23,8 @@
 
 'use strict';
 
-/** @version 8 — check-changelog script version. Bump when behavior changes. */
-const CHECK_CHANGELOG_SCRIPT_VERSION = 8;
+/** @version 9 — check-changelog script version. Bump when behavior changes. */
+const CHECK_CHANGELOG_SCRIPT_VERSION = 9;
 
 const fs   = require('node:fs');
 const path = require('node:path');
@@ -162,16 +162,21 @@ function resolveVersionFromFile(config, repoRoot) {
   }
 }
 
-function resolveVersionFromTags(repoRoot) {
+function resolveVersionFromTags(repoRoot, tagPrefix) {
   const out = exec('git tag --list --sort=-v:refname', { cwd: repoRoot });
   if (!out) return null;
 
-  const tags = out.split('\n');
-  const semverTag = tags.find(t => /^v?\d+\.\d+\.\d+/.test(t));
-  if (!semverTag) return null;
-
-  // Strip leading 'v' prefix to get a bare version number
-  return semverTag.replace(/^v/, '');
+  for (const t of out.split('\n')) {
+    let v = t;
+    if (tagPrefix && v.startsWith(tagPrefix)) {
+      v = v.slice(tagPrefix.length);
+    } else if (tagPrefix) {
+      continue; // doesn't match prefix
+    }
+    v = v.replace(/^v/, '');
+    if (/^\d+\.\d+\.\d+$/.test(v)) return v;
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -247,7 +252,8 @@ function main() {
   let version = null;
 
   if (!config.versionFile?.enabled) {
-    version = resolveVersionFromTags(repoRoot);
+    const tagPrefix = (config.tag && config.tag.prefix) || '';
+    version = resolveVersionFromTags(repoRoot, tagPrefix);
   } else {
     version = resolveVersionFromFile(config, repoRoot);
   }
@@ -285,11 +291,13 @@ function main() {
   }
 }
 
-try {
-  main();
-} catch (err) {
-  process.stderr.write(`Unexpected error in check-changelog.cjs: ${err.message}\n${err.stack}\n`);
-  process.exit(2);
+if (require.main === module) {
+  try {
+    main();
+  } catch (err) {
+    process.stderr.write(`Unexpected error in check-changelog.cjs: ${err.message}\n${err.stack}\n`);
+    process.exit(2);
+  }
 }
 
-module.exports = { CHECK_CHANGELOG_SCRIPT_VERSION };
+module.exports = { CHECK_CHANGELOG_SCRIPT_VERSION, resolveVersionFromTags };

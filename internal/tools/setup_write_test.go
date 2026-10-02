@@ -266,8 +266,8 @@ func TestSetupWriteSections_VersionTriggersScaffold(t *testing.T) {
 		t.Fatalf("expected written=[version], got %v", out.Written)
 	}
 
-	if len(out.Scaffold) != 10 {
-		t.Fatalf("expected 10 scaffold file reports, got %d", len(out.Scaffold))
+	if len(out.Scaffold) != 8 {
+		t.Fatalf("expected 8 scaffold file reports, got %d", len(out.Scaffold))
 	}
 	for _, f := range out.Scaffold {
 		if f.Action != "created" {

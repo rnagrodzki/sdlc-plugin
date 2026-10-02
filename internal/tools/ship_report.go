@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -11,6 +13,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/pipeline"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 )
@@ -393,13 +396,16 @@ func shipPlanningFrom(planData map[string]any) *ShipPlanning {
 }
 
 // shipPlanEvents turns the plan milestones and decisions into plan-phase
-// timeline events.
+// timeline events. A decision with a blank choice adds no event.
 func shipPlanEvents(p *ShipPlanning) []TimelineEvent {
 	var events []TimelineEvent
 	for _, m := range p.Milestones {
 		events = append(events, TimelineEvent{At: m.At, Phase: "plan", Event: m.Name})
 	}
 	for _, d := range p.Decisions {
+		if strings.TrimSpace(shipReportStr(d["choice"])) == "" {
+			continue
+		}
 		events = append(events, TimelineEvent{
 			At:    shipReportStr(d["at"]),
 			Phase: "plan",
@@ -436,6 +442,7 @@ func shipExecuteEvents(execData map[string]any) []TimelineEvent {
 
 // shipShipEvents turns the ship state's step start/end times and
 // decisions[] entries ({step, decision, at}) into ship-phase timeline events.
+// A decision with blank text adds no event.
 func shipShipEvents(data map[string]any) []TimelineEvent {
 	var events []TimelineEvent
 	for _, raw := range shipStepsSlice(data) {
@@ -451,6 +458,9 @@ func shipShipEvents(data map[string]any) []TimelineEvent {
 	decisions, _ := data["decisions"].([]any)
 	for _, raw := range decisions {
 		d, _ := raw.(map[string]any)
+		if strings.TrimSpace(shipReportStr(d["decision"])) == "" {
+			continue
+		}
 		events = append(events, TimelineEvent{
 			At:    shipReportStr(d["at"]),
 			Phase: "ship",
@@ -499,17 +509,20 @@ func shipReportSummaryLine(out ShipRunReportOut) string {
 }
 
 // renderShipReportMarkdown renders the report as markdown. Sections come in
-// a fixed order: header, Plan, Planning, Steps, Timeline, Review ledger,
-// Self-healing (Fixed, Hardened, Harden commit), Deferred, Execution (only
-// when included), Guardrail hits, CLI evidence, Decisions, Learnings, Next.
-// Every empty list renders an explicit line, never an empty heading or a
-// header-only table. Each section has its own render helper; this function
-// only fixes their order.
+// a fixed order: title, Summary, Plan (timing and critical decisions),
+// Steps, Timeline, Review ledger, Self-healing (Fixed, Hardened, Harden
+// commit), Deferred, Execution (only when included), Guardrail hits, CLI
+// evidence, Decisions, Learnings. Every empty list renders an explicit line,
+// never an empty heading or a header-only table. No stored string reaches
+// the display raw: list text goes through shipReportShort, table cells
+// through shipReportCell, commands through shipReportCode. The tool's next
+// instruction is not rendered; it stays in the output's next field. Each
+// section has its own render helper; this function only fixes their order.
 func renderShipReportMarkdown(out ShipRunReportOut) string {
 	w := &shipReportWriter{}
 	renderShipReportHeader(w, out)
+	renderShipReportSummary(w, out)
 	renderShipReportPlan(w, out)
-	renderShipReportPlanning(w, out)
 	renderShipReportSteps(w, out)
 	renderShipReportTimeline(w, out.Timeline)
 	renderShipReportReviewLedger(w, out)
@@ -520,9 +533,16 @@ func renderShipReportMarkdown(out ShipRunReportOut) string {
 	renderShipReportCLIEvidence(w, out.CLIEvidence)
 	renderShipReportDecisions(w, out.Decisions)
 	renderShipReportLearnings(w, out.LinkedLearnings)
-	renderShipReportNext(w, out.Next)
 	return w.b.String()
 }
+
+const (
+	shipReportTextMax    = 200 // decisions, timeline events
+	shipReportCommandMax = 120 // commands, harden triggers
+	shipReportFailedCap  = 20
+)
+
+const shipReportCommandRows = 15 // Command table rows before the "other" row
 
 // shipReportWriter accumulates the markdown report one line at a time.
 type shipReportWriter struct {
@@ -542,39 +562,453 @@ func (w *shipReportWriter) heading(title string) {
 	w.line("")
 }
 
-func renderShipReportHeader(w *shipReportWriter, out ShipRunReportOut) {
-	w.line("# Ship run report — %s", out.Branch)
-	w.line("")
-	w.line("- Run: %s", out.RunID)
-	if out.Bump != "" {
-		w.line("- Bump: %s", out.Bump)
+// ---------------------------------------------------------------------------
+// Short-form and sanitizing helpers
+// ---------------------------------------------------------------------------
+
+// shipReportShort returns the first non-blank line of s with whitespace runs
+// collapsed, cut to max runes. It appends "…" when it cut the line or
+// dropped later lines (" …" with a space for dropped lines only). Empty in →
+// "".
+func shipReportShort(s string, max int) string {
+	s = strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(s)
+	first, dropped := "", false
+	for _, l := range strings.Split(s, "\n") {
+		f := strings.Join(strings.Fields(l), " ")
+		if f == "" {
+			continue
+		}
+		if first != "" {
+			dropped = true
+			break
+		}
+		first = f
 	}
-	if out.Duration != "" {
-		w.line("- Duration: %s", out.Duration)
+	if r := []rune(first); max > 0 && len(r) > max {
+		return strings.TrimRight(string(r[:max]), " ") + "…"
 	}
+	if dropped {
+		return first + " …"
+	}
+	return first
 }
 
+// shipReportCode renders s as one safe inline code span: shipReportShort(s,
+// shipReportCommandMax), then fenced with one backtick more than the longest
+// backtick run inside it, with a space inside the fence when the text starts
+// or ends with a backtick (CommonMark code-span rule). An empty command
+// renders as `(empty)`.
+func shipReportCode(s string) string {
+	t := shipReportShort(s, shipReportCommandMax)
+	if t == "" {
+		t = "(empty)"
+	}
+	longest, run := 0, 0
+	for _, c := range t {
+		if c != '`' {
+			run = 0
+			continue
+		}
+		run++
+		if run > longest {
+			longest = run
+		}
+	}
+	fence := strings.Repeat("`", longest+1)
+	if strings.HasPrefix(t, "`") || strings.HasSuffix(t, "`") {
+		t = " " + t + " "
+	}
+	return fence + t + fence
+}
+
+// shipReportCell makes s safe inside a markdown table cell: pipes are
+// escaped and line breaks become spaces.
+func shipReportCell(s string) string {
+	s = strings.ReplaceAll(s, "|", `\|`)
+	return strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ").Replace(s)
+}
+
+// shipReportRelPath returns p from its first ".sdlc-v2/" or ".github/"
+// segment, else p unchanged.
+func shipReportRelPath(p string) string {
+	best := -1
+	for _, seg := range []string{paths.DataDir + "/", ".github/"} {
+		i := -1
+		if strings.HasPrefix(p, seg) {
+			i = 0
+		} else if j := strings.Index(p, "/"+seg); j >= 0 {
+			i = j + 1
+		}
+		if i >= 0 && (best < 0 || i < best) {
+			best = i
+		}
+	}
+	if best < 0 {
+		return p
+	}
+	return p[best:]
+}
+
+// shipReportSubcommandPrograms are the programs whose command group also
+// names the subcommand (git diff, go test, task check).
+var shipReportSubcommandPrograms = map[string]bool{
+	"git": true, "gh": true, "go": true, "task": true, "npm": true, "pnpm": true, "openspec": true,
+}
+
+var (
+	shipReportSubcommandRe = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+	shipReportEnvAssignRe  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
+)
+
+// shipReportCommandName returns the command group of one evidence command:
+// skip leading VAR=value words and leading "cd <dir> &&" pairs, take the
+// program's base name, and for git, gh, go, task, npm, pnpm and openspec add
+// the first word after the flags when it matches ^[a-z][a-z0-9-]*$ (git -C
+// <dir> skips its value). Empty command → "(empty)".
+func shipReportCommandName(cmd string) string {
+	words := strings.Fields(cmd)
+	if len(words) == 0 {
+		return "(empty)"
+	}
+	i := 0
+	for i < len(words)-1 {
+		if shipReportEnvAssignRe.MatchString(words[i]) {
+			i++
+			continue
+		}
+		if words[i] == "cd" && i+3 < len(words) && words[i+2] == "&&" {
+			i += 3
+			continue
+		}
+		break
+	}
+	prog := filepath.Base(words[i])
+	if !shipReportSubcommandPrograms[prog] {
+		return prog
+	}
+	for j := i + 1; j < len(words); j++ {
+		word := words[j]
+		if prog == "git" && word == "-C" {
+			j++ // skip the directory value
+			continue
+		}
+		if strings.HasPrefix(word, "-") {
+			continue
+		}
+		if shipReportSubcommandRe.MatchString(word) {
+			return prog + " " + word
+		}
+		break
+	}
+	return prog
+}
+
+// shipReportJoin joins the non-empty parts with " · ", or returns "—" when
+// there are none.
+func shipReportJoin(parts []string) string {
+	if len(parts) == 0 {
+		return "—"
+	}
+	return strings.Join(parts, " · ")
+}
+
+// ---------------------------------------------------------------------------
+// Counting helpers — shared by the Summary table and the sections, so the
+// two can never disagree.
+// ---------------------------------------------------------------------------
+
+// shipReportSeverities is the display order of finding severities.
+var shipReportSeverities = []string{"critical", "high", "medium", "low", "info", "unknown"}
+
+// shipReportSeverity normalizes a finding's severity to one of
+// shipReportSeverities; anything else is "unknown".
+func shipReportSeverity(v any) string {
+	s := strings.ToLower(strings.TrimSpace(shipReportStr(v)))
+	for _, known := range shipReportSeverities {
+		if s == known {
+			return s
+		}
+	}
+	return "unknown"
+}
+
+// shipReportOrigin returns a fixed finding's origin, or "unknown" when blank.
+func shipReportOrigin(m map[string]any) string {
+	if o := strings.TrimSpace(shipReportStr(m["origin"])); o != "" {
+		return shipReportShort(o, shipReportCommandMax)
+	}
+	return "unknown"
+}
+
+// shipReportFixedCounts is the severity × origin count of healing.fixed.
+type shipReportFixedCounts struct {
+	total      int
+	origins    []string                  // first-seen order
+	cells      map[string]map[string]int // severity → origin → count
+	bySeverity map[string]int
+}
+
+func shipReportCountFixed(fixed []any) shipReportFixedCounts {
+	c := shipReportFixedCounts{cells: map[string]map[string]int{}, bySeverity: map[string]int{}}
+	for _, raw := range fixed {
+		m, _ := raw.(map[string]any)
+		sev, origin := shipReportSeverity(m["severity"]), shipReportOrigin(m)
+		if c.cells[sev] == nil {
+			c.cells[sev] = map[string]int{}
+		}
+		seen := false
+		for _, o := range c.origins {
+			if o == origin {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			c.origins = append(c.origins, origin)
+		}
+		c.cells[sev][origin]++
+		c.bySeverity[sev]++
+		c.total++
+	}
+	return c
+}
+
+// shipReportHardenTotals sums healing.hardened: one run per record, every
+// applied edit, and every skipped count.
+type shipReportHardenTotals struct {
+	runs, applied, skipped int
+}
+
+func shipReportCountHardened(hardened []any) shipReportHardenTotals {
+	var t shipReportHardenTotals
+	for _, raw := range hardened {
+		m, _ := raw.(map[string]any)
+		applied, _ := m["applied"].([]any)
+		skipped, _ := healingInt(m["skipped"])
+		t.runs++
+		t.applied += len(applied)
+		t.skipped += skipped
+	}
+	return t
+}
+
+// shipReportGroup is one row of a CLI count table.
+type shipReportGroup struct {
+	name         string
+	runs, failed int
+}
+
+// shipReportGroupEvidence counts evidence entries per key, in first-seen
+// order.
+func shipReportGroupEvidence(evidence []CLIEvidenceEntry, key func(CLIEvidenceEntry) string) []shipReportGroup {
+	var groups []shipReportGroup
+	index := map[string]int{}
+	for _, c := range evidence {
+		k := key(c)
+		i, ok := index[k]
+		if !ok {
+			i = len(groups)
+			index[k] = i
+			groups = append(groups, shipReportGroup{name: k})
+		}
+		groups[i].runs++
+		if c.ExitCode != 0 {
+			groups[i].failed++
+		}
+	}
+	return groups
+}
+
+// shipReportEvidenceWhere names where an evidence entry ran: its ship step,
+// else its pipeline.
+func shipReportEvidenceWhere(c CLIEvidenceEntry) string {
+	if c.Step != "" {
+		return c.Step
+	}
+	return c.Pipeline
+}
+
+// shipReportFailedEvidence returns the entries with a non-zero exit code.
+func shipReportFailedEvidence(evidence []CLIEvidenceEntry) []CLIEvidenceEntry {
+	var failed []CLIEvidenceEntry
+	for _, c := range evidence {
+		if c.ExitCode != 0 {
+			failed = append(failed, c)
+		}
+	}
+	return failed
+}
+
+// shipReportDecisionLines renders out.Decisions ("<step>: <decision>") in
+// short form, dropping entries whose decision text is blank.
+func shipReportDecisionLines(decisions []string) []string {
+	lines := []string{}
+	for _, d := range decisions {
+		step, text, ok := strings.Cut(d, ": ")
+		if !ok {
+			if strings.TrimSpace(d) != "" {
+				lines = append(lines, shipReportShort(d, shipReportTextMax))
+			}
+			continue
+		}
+		if strings.TrimSpace(text) == "" {
+			continue
+		}
+		lines = append(lines, shipReportShort(step, shipReportCommandMax)+": "+shipReportShort(text, shipReportTextMax))
+	}
+	return lines
+}
+
+// shipReportLedgerDeferred sums the ledger's deferrals over every reason.
+func shipReportLedgerDeferred(l *ShipReviewLedger) int {
+	n := 0
+	for _, v := range l.DeferredByReason {
+		n += v
+	}
+	return n
+}
+
+// shipReportPlanDuration renders the plan's planning time.
+func shipReportPlanDuration(p *ShipPlanTiming) string {
+	return pipeline.Humanize(time.Duration(p.DurationMs) * time.Millisecond)
+}
+
+// ---------------------------------------------------------------------------
+// Section renderers
+// ---------------------------------------------------------------------------
+
+func renderShipReportHeader(w *shipReportWriter, out ShipRunReportOut) {
+	w.line("# Ship run report — %s", out.Branch)
+}
+
+// renderShipReportSummary renders the Area | Result table that holds every
+// run metric in one place. Rows always come in the same order; a row whose
+// source data is missing shows "—" (or "not run" for Execution, "none" for
+// the healing rows).
+func renderShipReportSummary(w *shipReportWriter, out ShipRunReportOut) {
+	w.heading("Summary")
+	w.line("| Area | Result |")
+	w.line("|---|---|")
+	row := func(area, result string) {
+		w.line("| %s | %s |", area, shipReportCell(result))
+	}
+
+	var run []string
+	if out.RunID != "" {
+		run = append(run, out.RunID)
+	}
+	if out.Bump != "" {
+		run = append(run, "bump "+out.Bump)
+	}
+	if out.Duration != "" {
+		run = append(run, out.Duration)
+	}
+	row("Run", shipReportJoin(run))
+
+	var plan []string
+	if out.Plan != nil {
+		plan = append(plan, "time "+shipReportPlanDuration(out.Plan))
+	}
+	if out.Planning != nil {
+		plan = append(plan, fmt.Sprintf("decisions %d", len(out.Planning.Decisions)))
+	}
+	row("Plan", shipReportJoin(plan))
+
+	completed, waits := 0, 0
+	for _, s := range out.Steps {
+		if s.Status == "completed" {
+			completed++
+		}
+		if s.HumanWait {
+			waits++
+		}
+	}
+	steps := fmt.Sprintf("completed %d of %d", completed, len(out.Steps))
+	if waits > 0 {
+		steps += fmt.Sprintf(" · human waits %d", waits)
+	}
+	row("Steps", steps)
+
+	if e := out.Execution; e == nil {
+		row("Execution", "not run")
+	} else {
+		parts := []string{fmt.Sprintf("tasks %d of %d completed", e.CompletedTasks, e.TotalTasks), fmt.Sprintf("waves %d", len(e.Waves))}
+		if e.Duration != "" {
+			parts = append(parts, e.Duration)
+		}
+		parts = append(parts, fmt.Sprintf("issues %d", len(e.Drifts)+len(e.Errors)+len(e.Warnings)+len(e.Concerns)))
+		row("Execution", shipReportJoin(parts))
+	}
+
+	if l := out.ReviewLedger; l == nil {
+		row("Review", "—")
+	} else {
+		row("Review", fmt.Sprintf("total %d · fixed %d · deferred %d · unaccounted %d", l.Total, l.Fixed, shipReportLedgerDeferred(l), l.Unaccounted))
+	}
+
+	fixedList, _ := out.Healing["fixed"].([]any)
+	if fc := shipReportCountFixed(fixedList); fc.total == 0 {
+		row("Fixed by severity", "none")
+	} else {
+		var parts []string
+		for _, sev := range shipReportSeverities {
+			n := fc.bySeverity[sev]
+			if n == 0 && (sev == "info" || sev == "unknown") {
+				continue
+			}
+			parts = append(parts, fmt.Sprintf("%s %d", sev, n))
+		}
+		row("Fixed by severity", shipReportJoin(parts))
+	}
+
+	hardened, _ := out.Healing["hardened"].([]any)
+	if ht := shipReportCountHardened(hardened); ht.runs == 0 {
+		row("Hardened", "none")
+	} else {
+		row("Hardened", fmt.Sprintf("runs %d · edits applied %d · skipped %d", ht.runs, ht.applied, ht.skipped))
+	}
+
+	row("Deferred", fmt.Sprintf("%d", len(out.Deferred)))
+	row("Guardrail hits", fmt.Sprintf("%d", len(out.GuardrailHits)))
+
+	cli := fmt.Sprintf("total %d · failed %d", len(out.CLIEvidence), len(shipReportFailedEvidence(out.CLIEvidence)))
+	if len(out.CLIEvidence) >= maxCLIEvidenceInWindow {
+		cli += fmt.Sprintf(" · latest %d only", maxCLIEvidenceInWindow)
+	}
+	row("CLI commands", cli)
+	row("Decisions", fmt.Sprintf("%d", len(shipReportDecisionLines(out.Decisions))))
+	row("Learnings", fmt.Sprintf("%d", out.LinkedLearnings))
+}
+
+// renderShipReportPlan renders the one Plan section: the plan file and its
+// planning time (or why timing is missing), then the critical-decision
+// table.
 func renderShipReportPlan(w *shipReportWriter, out ShipRunReportOut) {
 	w.heading("Plan")
 	if out.Plan != nil {
 		w.line("- File: %s", out.Plan.PlanFile)
-		dur := pipeline.Humanize(time.Duration(out.Plan.DurationMs) * time.Millisecond)
-		w.line("- Planning time: %s (%s → last edit %s)", dur, out.Plan.StartedAt, out.Plan.LastModifiedAt)
-		return
+		w.line("- Planning time: %s (%s → last edit %s)", shipReportPlanDuration(out.Plan), out.Plan.StartedAt, out.Plan.LastModifiedAt)
+	} else {
+		if out.Planning != nil && out.Planning.PlanFile != "" {
+			w.line("- File: %s", out.Planning.PlanFile)
+			w.line("")
+		}
+		note := out.PlanNote
+		if note == "" {
+			note = shipPlanNote
+		}
+		w.line("_Plan timing not available — %s._", note)
 	}
-	note := out.PlanNote
-	if note == "" {
-		note = shipPlanNote
-	}
-	w.line("_Plan timing not available — %s._", note)
+	renderShipReportPlanDecisions(w, out)
 }
 
-// renderShipReportPlanning renders the plan file, the plan milestones and
-// the critical-decision table. A null planning renders one explanatory
-// line; zero decisions render "_No critical decisions recorded._" in place
-// of the table.
-func renderShipReportPlanning(w *shipReportWriter, out ShipRunReportOut) {
-	w.heading("Planning")
+// renderShipReportPlanDecisions renders the linked plan run's
+// critical-decision table, cells in short form. A null planning renders one
+// explanatory line; zero decisions render "_No critical decisions
+// recorded._" in place of the table. Plan milestones are not listed here:
+// they appear as plan rows in the Timeline.
+func renderShipReportPlanDecisions(w *shipReportWriter, out ShipRunReportOut) {
+	w.line("")
 	p := out.Planning
 	if p == nil {
 		if out.PlanningNote == shipPlanningNoteReadFailed {
@@ -584,26 +1018,19 @@ func renderShipReportPlanning(w *shipReportWriter, out ShipRunReportOut) {
 		}
 		return
 	}
-	w.line("- File: %s", p.PlanFile)
-	if len(p.Milestones) == 0 {
-		w.line("- Milestones: none recorded")
-	}
-	for _, m := range p.Milestones {
-		w.line("- %s: %s", m.Name, m.At)
-	}
-	w.line("")
 	if len(p.Decisions) == 0 {
 		w.line("_No critical decisions recorded._")
 		return
 	}
+	cell := func(s string) string { return shipReportCell(shipReportShort(s, shipReportCommandMax)) }
 	w.line("| Decision | Chosen | Rejected | Reason |")
 	w.line("|---|---|---|---|")
 	for _, d := range p.Decisions {
 		w.line("| %s | %s | %s | %s |",
-			shipReportCell(shipReportStr(d["key"])),
-			shipReportCell(shipReportStr(d["choice"])),
-			shipReportCell(shipReportRejected(d["rejected"])),
-			shipReportCell(shipReportStr(d["reason"])))
+			cell(shipReportStr(d["key"])),
+			cell(shipReportStr(d["choice"])),
+			cell(shipReportRejected(d["rejected"])),
+			cell(shipReportStr(d["reason"])))
 	}
 }
 
@@ -630,13 +1057,6 @@ func shipReportRejected(v any) string {
 	return strings.Join(parts, "; ")
 }
 
-// shipReportCell makes s safe inside a markdown table cell: pipes are
-// escaped and line breaks become spaces.
-func shipReportCell(s string) string {
-	s = strings.ReplaceAll(s, "|", `\|`)
-	return strings.NewReplacer("\r\n", " ", "\n", " ", "\r", " ").Replace(s)
-}
-
 // renderShipReportTimeline renders the merged plan → execute → ship events
 // as a table, or "_No timed events._" when there are none.
 func renderShipReportTimeline(w *shipReportWriter, events []TimelineEvent) {
@@ -648,7 +1068,7 @@ func renderShipReportTimeline(w *shipReportWriter, events []TimelineEvent) {
 	w.line("| At | Phase | Event |")
 	w.line("|---|---|---|")
 	for _, e := range events {
-		w.line("| %s | %s | %s |", shipReportCell(e.At), e.Phase, shipReportCell(e.Event))
+		w.line("| %s | %s | %s |", shipReportCell(e.At), e.Phase, shipReportCell(shipReportShort(e.Event, shipReportTextMax)))
 	}
 }
 
@@ -674,7 +1094,7 @@ func renderShipReportSteps(w *shipReportWriter, out ShipRunReportOut) {
 			m, _ := raw.(map[string]any)
 			severity, _ := m["severity"].(string)
 			summary, _ := m["summary"].(string)
-			w.line("- [%s] %s", severity, summary)
+			w.line("- [%s] %s", severity, shipReportShort(summary, shipReportTextMax))
 		}
 	}
 }
@@ -703,7 +1123,11 @@ func renderShipReportReviewLedger(w *shipReportWriter, out ShipRunReportOut) {
 	for _, reason := range reasons {
 		w.line("- Deferred (%s): %d", reason, l.DeferredByReason[reason])
 	}
-	w.line("- Unaccounted: %d", l.Unaccounted)
+	if l.Unaccounted < 0 {
+		w.line("- Unaccounted: %d — ledger mismatch: fixes plus deferrals exceed the review total", l.Unaccounted)
+	} else {
+		w.line("- Unaccounted: %d", l.Unaccounted)
+	}
 }
 
 func renderShipReportHealing(w *shipReportWriter, out ShipRunReportOut) {
@@ -711,56 +1135,141 @@ func renderShipReportHealing(w *shipReportWriter, out ShipRunReportOut) {
 	w.line("### Fixed")
 	w.line("")
 	fixed, _ := out.Healing["fixed"].([]any)
-	if len(fixed) == 0 {
-		w.line("_No findings fixed._")
-	}
-	for _, raw := range fixed {
-		m, _ := raw.(map[string]any)
-		origin, _ := m["origin"].(string)
-		w.line("- [%s] %s — %s (%s)", shipReportStr(m["severity"]), shipReportLocation(m), shipReportStr(m["title"]), origin)
-	}
+	renderShipReportFixed(w, fixed)
 
 	w.line("")
 	w.line("### Hardened")
 	w.line("")
 	hardened, _ := out.Healing["hardened"].([]any)
-	if len(hardened) == 0 {
-		w.line("_No harden runs recorded._")
-	}
-	for _, raw := range hardened {
-		m, _ := raw.(map[string]any)
-		renderShipReportHardenedRun(w, m)
-	}
+	renderShipReportHardened(w, hardened)
 
 	w.line("")
 	w.line("### Harden commit")
 	w.line("")
 	if out.HardenCommit != "" {
-		w.line("- %s", out.HardenCommit)
+		w.line("- %s", shipReportShort(out.HardenCommit, shipReportTextMax))
 	} else {
 		w.line("_No harden commit._")
 	}
 }
 
-// renderShipReportHardenedRun renders one data.healing.hardened record: an
-// interrupted run (phase not "done"), a run that applied nothing, or a run
-// with its applied edits listed underneath.
-func renderShipReportHardenedRun(w *shipReportWriter, m map[string]any) {
-	head := fmt.Sprintf("- %s (%s)", shipReportStr(m["trigger"]), shipReportStr(m["classification"]))
-	if m["phase"] != "done" {
-		w.line("%s: %s", head, shipHardenInterrupted)
+// renderShipReportFixed renders the fixed-findings count line, the
+// Severity × origin table (zero rows omitted) and one line per critical,
+// high and medium finding — the ones a person must look at.
+func renderShipReportFixed(w *shipReportWriter, fixed []any) {
+	c := shipReportCountFixed(fixed)
+	if c.total == 0 {
+		w.line("_No findings fixed._")
 		return
 	}
-	applied, _ := m["applied"].([]any)
-	skipped, _ := healingInt(m["skipped"])
-	if len(applied) == 0 {
-		w.line("%s: no changes applied, %d skipped", head, skipped)
+	w.line("%d findings fixed.", c.total)
+	w.line("")
+	header, sep := "| Severity |", "|---|"
+	for _, o := range c.origins {
+		header += " " + shipReportCell(o) + " |"
+		sep += "---|"
+	}
+	w.line("%s Total |", header)
+	w.line("%s---|", sep)
+	for _, sev := range shipReportSeverities {
+		if c.bySeverity[sev] == 0 {
+			continue
+		}
+		text := "| " + sev + " |"
+		for _, o := range c.origins {
+			text += fmt.Sprintf(" %d |", c.cells[sev][o])
+		}
+		w.line("%s %d |", text, c.bySeverity[sev])
+	}
+
+	var urgent []string
+	for _, sev := range []string{"critical", "high", "medium"} {
+		for _, raw := range fixed {
+			m, _ := raw.(map[string]any)
+			if shipReportSeverity(m["severity"]) != sev {
+				continue
+			}
+			urgent = append(urgent, fmt.Sprintf("- [%s] %s — %s (%s)", sev,
+				shipReportShort(shipReportLocation(m), shipReportTextMax),
+				shipReportShort(shipReportStr(m["title"]), shipReportTextMax),
+				shipReportOrigin(m)))
+		}
+	}
+	if len(urgent) == 0 {
 		return
 	}
-	w.line("%s: %d applied, %d skipped", head, len(applied), skipped)
-	for _, a := range applied {
-		am, _ := a.(map[string]any)
-		w.line("  - %s: %s → %s", shipReportStr(am["surface"]), shipReportStr(am["action"]), shipReportStr(am["targetFile"]))
+	w.line("")
+	w.line("Critical, high and medium:")
+	for _, l := range urgent {
+		w.line("%s", l)
+	}
+}
+
+// renderShipReportHardened renders the harden summary line, one table row
+// per harden run, and one row per surface with its edit count and the
+// distinct files it touched. A run that stopped before its "done" record
+// shows shipHardenInterrupted in its Applied cell.
+func renderShipReportHardened(w *shipReportWriter, hardened []any) {
+	t := shipReportCountHardened(hardened)
+	if t.runs == 0 {
+		w.line("_No harden runs recorded._")
+		return
+	}
+	w.line("%d runs, %d edits applied, %d skipped.", t.runs, t.applied, t.skipped)
+	w.line("")
+	w.line("| Trigger | Class | Applied | Skipped |")
+	w.line("|---|---|---|---|")
+	type surface struct {
+		name  string
+		edits int
+		files []string
+	}
+	var surfaces []surface
+	index := map[string]int{}
+	for _, raw := range hardened {
+		m, _ := raw.(map[string]any)
+		applied, _ := m["applied"].([]any)
+		skipped, _ := healingInt(m["skipped"])
+		appliedCell := fmt.Sprintf("%d", len(applied))
+		if m["phase"] != "done" {
+			appliedCell = shipHardenInterrupted
+		}
+		w.line("| %s | %s | %s | %d |",
+			shipReportCell(shipReportShort(shipReportStr(m["trigger"]), shipReportCommandMax)),
+			shipReportCell(shipReportShort(shipReportStr(m["classification"]), shipReportCommandMax)),
+			appliedCell, skipped)
+		for _, a := range applied {
+			am, _ := a.(map[string]any)
+			name := shipReportShort(shipReportStr(am["surface"]), shipReportCommandMax)
+			if name == "" {
+				name = "unknown"
+			}
+			i, ok := index[name]
+			if !ok {
+				i = len(surfaces)
+				index[name] = i
+				surfaces = append(surfaces, surface{name: name})
+			}
+			surfaces[i].edits++
+			file := shipReportShort(shipReportRelPath(shipReportStr(am["targetFile"])), shipReportCommandMax)
+			if file != "" && !slices.Contains(surfaces[i].files, file) {
+				surfaces[i].files = append(surfaces[i].files, file)
+			}
+		}
+	}
+	if len(surfaces) == 0 {
+		return
+	}
+	sort.SliceStable(surfaces, func(i, j int) bool { return surfaces[i].edits > surfaces[j].edits })
+	w.line("")
+	w.line("| Surface | Edits | Files |")
+	w.line("|---|---|---|")
+	for _, s := range surfaces {
+		files := "—"
+		if len(s.files) > 0 {
+			files = strings.Join(s.files, ", ")
+		}
+		w.line("| %s | %d | %s |", shipReportCell(s.name), s.edits, shipReportCell(files))
 	}
 }
 
@@ -775,12 +1284,16 @@ func renderShipReportDeferred(w *shipReportWriter, out ShipRunReportOut) {
 		if reason == "" {
 			reason = history.ReasonBelowThreshold
 		}
-		w.line("- [%s] %s — %s (%s)", shipReportStr(m["severity"]), shipReportLocation(m), shipReportStr(m["title"]), reason)
+		w.line("- [%s] %s — %s (%s)", shipReportShort(shipReportStr(m["severity"]), shipReportCommandMax),
+			shipReportShort(shipReportLocation(m), shipReportTextMax),
+			shipReportShort(shipReportStr(m["title"]), shipReportTextMax),
+			shipReportShort(reason, shipReportCommandMax))
 	}
 }
 
 // renderShipReportExecution renders the Execution section only when this
 // run's execute step completed; e is nil otherwise and nothing is written.
+// Waves render as a table with a 7-character commit SHA, or "—" without one.
 func renderShipReportExecution(w *shipReportWriter, e *ExecutionReportOut) {
 	if e == nil {
 		return
@@ -790,19 +1303,26 @@ func renderShipReportExecution(w *shipReportWriter, e *ExecutionReportOut) {
 	if e.Duration != "" {
 		w.line("- Duration: %s", e.Duration)
 	}
+	w.line("")
 	if len(e.Waves) == 0 {
-		w.line("- _No waves recorded._")
-	}
-	for _, wave := range e.Waves {
-		text := fmt.Sprintf("- Wave %d: %s, %d tasks", wave.Number, wave.Status, len(wave.Tasks))
-		if wave.Duration != "" {
-			text += " (" + wave.Duration + ")"
+		w.line("_No waves recorded._")
+	} else {
+		w.line("| Wave | Status | Tasks | Duration | Commit |")
+		w.line("|---|---|---|---|---|")
+		for _, wave := range e.Waves {
+			dur, sha := wave.Duration, wave.CommittedSHA
+			if dur == "" {
+				dur = "—"
+			}
+			if sha == "" {
+				sha = "—"
+			} else if len(sha) > 7 {
+				sha = sha[:7]
+			}
+			w.line("| %d | %s | %d | %s | %s |", wave.Number, shipReportCell(wave.Status), len(wave.Tasks), dur, shipReportCell(sha))
 		}
-		if wave.CommittedSHA != "" {
-			text += " — " + wave.CommittedSHA
-		}
-		w.line("%s", text)
 	}
+	w.line("")
 	w.line("- Issues: %d drifts, %d errors, %d warnings, %d concerns", len(e.Drifts), len(e.Errors), len(e.Warnings), len(e.Concerns))
 }
 
@@ -812,31 +1332,81 @@ func renderShipReportGuardrailHits(w *shipReportWriter, hits []string) {
 		w.line("_No guardrail hits._")
 	}
 	for _, id := range hits {
-		w.line("- %s", id)
+		w.line("- %s", shipReportShort(id, shipReportCommandMax))
 	}
 }
 
+// renderShipReportCLIEvidence renders counts, not the command log: a count
+// line, a per-step table (first-seen order), a per-command-group table (most
+// runs first, top shipReportCommandRows then one "other" row), and the
+// failed commands only (at most shipReportFailedCap). Successful command
+// text never appears; the full log path closes the section.
 func renderShipReportCLIEvidence(w *shipReportWriter, evidence []CLIEvidenceEntry) {
 	w.heading("CLI evidence")
 	if len(evidence) == 0 {
 		w.line("_No CLI evidence recorded._")
+		return
 	}
-	for _, c := range evidence {
-		where := c.Step
-		if where == "" {
-			where = c.Pipeline
+	failed := shipReportFailedEvidence(evidence)
+	count := fmt.Sprintf("%d commands, %d failed.", len(evidence), len(failed))
+	if len(evidence) >= maxCLIEvidenceInWindow {
+		count += fmt.Sprintf(" Counts cover the latest %d commands only (evidence read limit).", maxCLIEvidenceInWindow)
+	}
+	w.line("%s", count)
+
+	w.line("")
+	w.line("| Step | Commands | Failed |")
+	w.line("|---|---|---|")
+	for _, g := range shipReportGroupEvidence(evidence, shipReportEvidenceWhere) {
+		w.line("| %s | %d | %d |", shipReportCell(shipReportShort(g.name, shipReportCommandMax)), g.runs, g.failed)
+	}
+
+	groups := shipReportGroupEvidence(evidence, func(c CLIEvidenceEntry) string { return shipReportCommandName(c.Command) })
+	sort.SliceStable(groups, func(i, j int) bool { return groups[i].runs > groups[j].runs })
+	w.line("")
+	w.line("| Command | Runs | Failed |")
+	w.line("|---|---|---|")
+	for i, g := range groups {
+		if i == shipReportCommandRows {
+			rest := shipReportGroup{}
+			for _, o := range groups[i:] {
+				rest.runs += o.runs
+				rest.failed += o.failed
+			}
+			w.line("| other (%d kinds) | %d | %d |", len(groups)-i, rest.runs, rest.failed)
+			break
 		}
-		w.line("- `%s` — exit %d (%s)", c.Command, c.ExitCode, where)
+		w.line("| %s | %d | %d |", shipReportCell(shipReportShort(g.name, shipReportCommandMax)), g.runs, g.failed)
 	}
+
+	w.line("")
+	if len(failed) == 0 {
+		w.line("_No failed commands._")
+	} else {
+		w.line("Failed commands:")
+		for i, c := range failed {
+			if i == shipReportFailedCap {
+				w.line("- … %d more", len(failed)-i)
+				break
+			}
+			w.line("- %s — exit %d (%s)", shipReportCode(c.Command), c.ExitCode, shipReportShort(shipReportEvidenceWhere(c), shipReportCommandMax))
+		}
+	}
+
+	w.line("")
+	w.line("Full log: %s", filepath.ToSlash(filepath.Join(paths.DataDir, paths.EvidenceSubdir, "cli-executions.jsonl")))
 }
 
+// renderShipReportDecisions renders one short-form line per decision;
+// decisions with blank text are dropped.
 func renderShipReportDecisions(w *shipReportWriter, decisions []string) {
 	w.heading("Decisions")
-	if len(decisions) == 0 {
+	lines := shipReportDecisionLines(decisions)
+	if len(lines) == 0 {
 		w.line("_No decisions recorded._")
 	}
-	for _, d := range decisions {
-		w.line("- %s", d)
+	for _, l := range lines {
+		w.line("- %s", l)
 	}
 }
 
@@ -846,15 +1416,6 @@ func renderShipReportLearnings(w *shipReportWriter, linked int) {
 		w.line("_No learnings linked to this run._")
 	} else {
 		w.line("- Linked learnings: %d", linked)
-	}
-}
-
-func renderShipReportNext(w *shipReportWriter, next string) {
-	w.heading("Next")
-	if next != "" {
-		w.line("%s", next)
-	} else {
-		w.line("_No next step._")
 	}
 }
 

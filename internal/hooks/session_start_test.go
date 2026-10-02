@@ -115,14 +115,15 @@ func TestRun_UnknownHook(t *testing.T) {
 // (pre-compact-save, stop-state-save, stop-plan-integrity,
 // stop-pipeline-continue); Task 10 (config.toml migration run) added
 // record-mcp-invocation; the execute-wave-liveness plan (Task 4) added
-// wave-liveness, bringing the registry to 10 total entries — still a
-// closed-set check, just over the current known set rather than a single
-// entry.
+// wave-liveness; the release-ci-worktree-and-ship-report plan's Task 14
+// added record-user-input, bringing the registry to 11 total entries —
+// still a closed-set check, just over the current known set rather than a
+// single entry.
 func TestRun_RegistryContainsExactlyKnownHooks(t *testing.T) {
 	want := []string{
 		"session-start", "block-askuserquestion-auto", "pipeline-continue", "post-tool-validate",
 		"pre-compact-save", "stop-state-save", "stop-plan-integrity", "stop-pipeline-continue",
-		"record-mcp-invocation", "wave-liveness",
+		"record-mcp-invocation", "wave-liveness", "record-user-input",
 	}
 	if len(registry) != len(want) {
 		t.Fatalf("registry has %d entries, want exactly %d: %v", len(registry), len(want), registryKeys())

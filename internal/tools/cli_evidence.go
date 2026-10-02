@@ -89,33 +89,40 @@ func appendCLIEvidence(root string, entry CLIEvidenceEntry) error {
 	return appendJSONLBounded(cliEvidencePath(root), entry)
 }
 
-// readAllCLIEvidence reads and parses all entries from the JSONL file.
-// Returns (nil, nil) when the file does not exist. Malformed lines are
-// silently skipped.
-func readAllCLIEvidence(root string) ([]CLIEvidenceEntry, error) {
-	path := cliEvidencePath(root)
-
+// readJSONLEntries reads every well-formed line of path as a T. Returns
+// (nil, nil) when the file does not exist. Malformed lines are silently
+// skipped. Shared by readAllCLIEvidence here and user_input_evidence.go's
+// readAllUserInput — the two evidence files differ only in entry type and
+// the label used in the wrapped read error.
+func readJSONLEntries[T any](path, label string) ([]T, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("cli evidence: read: %w", err)
+		return nil, fmt.Errorf("%s: read: %w", label, err)
 	}
 
-	var entries []CLIEvidenceEntry
+	var entries []T
 	lines := bytes.Split(b, []byte("\n"))
 	for _, line := range lines {
 		if len(line) == 0 {
 			continue
 		}
-		var entry CLIEvidenceEntry
+		var entry T
 		if err := json.Unmarshal(line, &entry); err != nil {
 			continue // skip malformed lines
 		}
 		entries = append(entries, entry)
 	}
 	return entries, nil
+}
+
+// readAllCLIEvidence reads and parses all entries from the JSONL file.
+// Returns (nil, nil) when the file does not exist. Malformed lines are
+// silently skipped.
+func readAllCLIEvidence(root string) ([]CLIEvidenceEntry, error) {
+	return readJSONLEntries[CLIEvidenceEntry](cliEvidencePath(root), "cli evidence")
 }
 
 // readRecentCLIEvidence reads the last n entries from the JSONL file.

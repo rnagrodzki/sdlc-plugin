@@ -1053,7 +1053,7 @@ func TestValidateCIScriptDrift_MissingAndOutdatedProduceDistinctFindings(t *test
 	}
 
 	// Downgrade one script, delete another entirely.
-	if err := os.WriteFile(filepath.Join(root, ".github", "workflows", "retag-release.yml"), []byte("# retag-release-version: 1\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, ".github", "workflows", "release-on-main.yml"), []byte("# release-on-main-version: 1\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Remove(filepath.Join(root, ".github", "workflows", "check-changelog.yml")); err != nil {
