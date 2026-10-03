@@ -116,6 +116,64 @@ func TestPostToolValidate_Plan_BlockReasonIsSelfContained(t *testing.T) {
 	}
 }
 
+// pastelClassDefLine has no "color:" key, so commstyle flags it as "no text
+// color" (the same shape as pf14Fix's own example).
+const pastelClassDefLine = "classDef new fill:#d4f7d4,stroke:#2a7a2a"
+
+func TestPostToolValidate_Plan_DiagramContrast_EditBlocks(t *testing.T) {
+	_, planPath := planHookFixture(t, validPlanFixtureMissingScorecard)
+
+	event := Event{Raw: map[string]any{"tool_input": map[string]any{
+		"file_path":  planPath,
+		"old_string": "## Deviations & assumptions",
+		"new_string": "```mermaid\nflowchart TD\n  A --> B\n  " + pastelClassDefLine + "\n```\n\n## Deviations & assumptions",
+	}}}
+
+	out, err := postToolValidate(HookCtx{}, event)
+	mustBlock(t, out, err, "PF14: Mermaid diagram colors are hard to read:")
+	reason := blockReason(t, out)
+	if !strings.Contains(reason, "no text color") {
+		t.Errorf("reason should name the contrast problem, got:\n%s", reason)
+	}
+	if !strings.Contains(reason, pastelClassDefLine) {
+		t.Errorf("reason should quote the offending line, got:\n%s", reason)
+	}
+}
+
+func TestPostToolValidate_Plan_DiagramContrast_UnrelatedEditPasses(t *testing.T) {
+	// The plan on disk already has an old, pastel diagram. A typo-fix edit
+	// that never touches the classDef line must not block on it.
+	planWithOldPastelDiagram := validPlanFixtureMissingScorecard +
+		"\n```mermaid\nflowchart TD\n  A --> B\n  " + pastelClassDefLine + "\n```\n"
+	_, planPath := planHookFixture(t, planWithOldPastelDiagram)
+
+	event := Event{Raw: map[string]any{"tool_input": map[string]any{
+		"file_path":  planPath,
+		"old_string": "**Verify:** tests",
+		"new_string": "**Verify:** test",
+	}}}
+
+	out, err := postToolValidate(HookCtx{}, event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSilent(t, out)
+}
+
+func TestPostToolValidate_Plan_DiagramContrast_WriteBlocks(t *testing.T) {
+	_, planPath := planHookFixture(t, validPlanFixtureMissingScorecard)
+	fullPlan := validPlanFixtureMissingScorecard +
+		"\n```mermaid\nflowchart TD\n  A --> B\n  " + pastelClassDefLine + "\n```\n"
+
+	event := Event{Raw: map[string]any{"tool_input": map[string]any{
+		"file_path": planPath,
+		"content":   fullPlan,
+	}}}
+
+	out, err := postToolValidate(HookCtx{}, event)
+	mustBlock(t, out, err, "PF14: Mermaid diagram colors are hard to read:")
+}
+
 func TestPostToolValidate_Plan_NothingBlocking_SilentEvenWithFinalOnlyFailures(t *testing.T) {
 	dir, planPath := planHookFixture(t, validPlanFixtureMissingScorecard)
 	// PF9 (no scorecard) and PF10 (template section missing) would both fail at
@@ -229,5 +287,44 @@ func TestJoinValidationFindings_NoTrailingWhitespace(t *testing.T) {
 		if line != strings.TrimRight(line, " \t") {
 			t.Errorf("line %d has trailing whitespace: %q", i, line)
 		}
+	}
+}
+
+func TestEditedText(t *testing.T) {
+	cases := []struct {
+		name string
+		in   map[string]any
+		want string
+	}{
+		{
+			name: "Edit",
+			in:   map[string]any{"file_path": "/p", "old_string": "a", "new_string": "b"},
+			want: "b",
+		},
+		{
+			name: "Write",
+			in:   map[string]any{"file_path": "/p", "content": "whole file"},
+			want: "whole file",
+		},
+		{
+			name: "MultiEdit joins every edits[].new_string with a newline",
+			in: map[string]any{"file_path": "/p", "edits": []any{
+				map[string]any{"old_string": "a", "new_string": "first"},
+				map[string]any{"old_string": "c", "new_string": "second"},
+			}},
+			want: "first\nsecond",
+		},
+		{
+			name: "other tool (e.g. Bash) has none of the expected keys",
+			in:   map[string]any{"command": "echo hi"},
+			want: "",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := editedText(c.in); got != c.want {
+				t.Errorf("editedText(%v) = %q, want %q", c.in, got, c.want)
+			}
+		})
 	}
 }

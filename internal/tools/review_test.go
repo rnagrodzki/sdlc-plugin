@@ -375,10 +375,28 @@ and adherence to best practices. Check for potential bugs and edge cases.
 		t.Errorf("expected 2 changed files, got %d", out.Summary.TotalChangedFiles)
 	}
 
+	// Task 20: the output carries the plugin-wide communication style,
+	// defaulting to "functional" with no [style]/[planStyle] config present.
+	if out.Style.Audience != "functional" {
+		t.Errorf("Style.Audience: got %q, want %q", out.Style.Audience, "functional")
+	}
+
 	// Read and verify manifest.
 	manifestBytes, err := os.ReadFile(out.ManifestPath)
 	if err != nil {
 		t.Fatalf("read manifest: %v", err)
+	}
+
+	// Task 20: style must never reach review subagents — the manifest file
+	// is built from reviewManifest, a struct with no style field, so the
+	// raw JSON on disk must carry no "style" key regardless of what the
+	// in-memory reviewManifest struct happens to unmarshal into.
+	var rawManifest map[string]any
+	if err := json.Unmarshal(manifestBytes, &rawManifest); err != nil {
+		t.Fatalf("unmarshal raw manifest: %v", err)
+	}
+	if _, present := rawManifest["style"]; present {
+		t.Error("manifest.json must not contain a \"style\" key — it must not reach review subagents")
 	}
 
 	var manifest reviewManifest

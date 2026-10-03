@@ -51,8 +51,8 @@ order.
 ## Context (required)
 
 Every plan must carry a `## Context` section, placed near the top — directly after the document
-header. It answers three guiding questions in plain language (R62: short sentences, no unexplained
-jargon) so a reader who was not in the planning conversation understands why the plan exists before
+header. It answers three guiding questions per the plan's writing guide (see `## Communication
+Style`) so a reader who was not in the planning conversation understands why the plan exists before
 reaching a single task:
 
 1. **What problem does this change solve?**
@@ -118,7 +118,7 @@ When a plan introduces no divergences or assumptions, render the header with a s
 
 ## Key Decisions (optional)
 
-Capture architecture and design decisions made during planning that executing agents need to understand. Place this section where the active template lists it (the shipped default: after `## Deviations & assumptions`, before `## Final Shape` and the task blocks — see `## Section Order`). Narrative (R62): the bullet-per-decision shape below already satisfies "structured goals as bullet lists" — keep each bullet to short sentences with the rationale inline.
+Capture architecture and design decisions made during planning that executing agents need to understand. Place this section where the active template lists it (the shipped default: after `## Deviations & assumptions`, before `## Final Shape` and the task blocks — see `## Section Order`). Narrative (see `## Communication Style`): the bullet-per-decision shape below already satisfies "structured goals as bullet lists" — keep each bullet to short sentences with the rationale inline.
 
 ```markdown
 ## Key Decisions
@@ -656,24 +656,11 @@ template.
 
 ## Communication Style
 
-Plans are read by people who did not sit in on the planning conversation — a non-expert reviewer, a
-teammate picking up the branch, an executing agent with no memory of prior turns. R62 makes plain
-language a writing-quality convention, judged by the Step 5 lens reviewers (R36) alongside their
-other checks — it is not a deterministic gate. Apply these rules throughout every narrative section
-(`Context`, `Research Findings`, `Key Decisions`, `Final Shape`):
-
-- **Short sentences.** One idea per sentence. Split anything that needs a comma to hold two clauses
-  together.
-- **Explain every technical term inline.** The first time a term appears, define it in the same
-  sentence — e.g. "webhook (an HTTP callback the payment provider calls on our server)" — don't
-  assume the reader already knows it.
-- **Structure goals as bullet lists, not prose blobs.** A paragraph listing three things the plan
-  achieves should be three bullets, not one sentence joined with "and" three times.
-- **Write decisions a non-expert can follow.** State the choice, then the one-line reason. Prefer
-  plain wording ("reuses the code that already handles duplicate requests") over jargon-laden
-  justification ("leverages the existing idempotent upsert pattern").
-- **Use visual spacing.** A blank line between bullets in a long list, a blank line before and after
-  a fenced block — dense unbroken text is harder to scan than the same content spaced out.
+Narrative sections follow the writing guide that `plan_prepare` returns as `style.writingGuide`
+(built from `[planStyle]` in `.sdlc-v2/local.toml`). The guide sets the reader level, tone,
+writing standard, and visual density. G22 (Step 3) judges the rules; PF13 (`validate`) measures
+prose share, paragraph, list, and sentence length, jargon share, and banned phrases.
+See `docs/skills/plan.md` § Plan writing style for settings and examples.
 
 ---
 

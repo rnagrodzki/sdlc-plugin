@@ -418,6 +418,29 @@ func TestReceivedReviewPrepare_Success(t *testing.T) {
 	}
 }
 
+// TestReceivedReviewPrepare_Style verifies that received_review_prepare
+// attaches the plugin-wide communication style, defaulting to a functional
+// audience when no [style] config section is present.
+func TestReceivedReviewPrepare_Style(t *testing.T) {
+	dir := setupGitRepoWithRemote(t, "git@github.com:owner/repo.git")
+	script := "#!/bin/sh\n" +
+		"case \"$2\" in\n" +
+		"  view) printf 'title:\\tAdd widgets\\nstate:\\tOPEN\\n' ;;\n" +
+		"  checks) printf 'build\\tpass\\t1m\\thttps://x\\n' ;;\n" +
+		"  *) echo \"unexpected gh args: $*\" >&2; exit 3 ;;\n" +
+		"esac\n"
+	cleanup := stubGH(t, script)
+	defer cleanup()
+
+	out, err := receivedReviewPrepare(dir, dir, ReceivedReviewIn{PR: 7})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Style.Audience != "functional" {
+		t.Errorf("Style.Audience = %q, want functional", out.Style.Audience)
+	}
+}
+
 // TestReceivedReviewPrepare_ConfigGate pins that a JSON-era config.json
 // without config.toml fails with a DataError before any gh command runs.
 func TestReceivedReviewPrepare_ConfigGate(t *testing.T) {

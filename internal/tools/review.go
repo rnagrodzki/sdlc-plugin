@@ -97,6 +97,13 @@ type ReviewPrepareSummary struct {
 type ReviewPrepareOut struct {
 	ManifestPath string               `json:"manifestPath"`
 	Summary      ReviewPrepareSummary `json:"summary"`
+	// Style carries the plugin-wide communication style (via chatStyleFor)
+	// so the review skill renders manifest-derived summaries
+	// and questions in chat consistently. Filled on every successful call,
+	// including save mode. It never reaches review subagents: the manifest
+	// written to disk is built from reviewManifest, a separate struct that
+	// has no style field.
+	Style ChatStyle `json:"style"`
 	// Saved is set in save mode: true once Content has been persisted.
 	// Omitted (zero value) in normal manifest mode.
 	Saved bool `json:"saved,omitempty"`
@@ -1069,6 +1076,7 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 	return ReviewPrepareOut{
 		ManifestPath: manifestPath,
 		Summary:      summary,
+		Style:        chatStyleFor(projectRoot),
 	}, nil
 }
 
@@ -1239,7 +1247,11 @@ func saveReviewComment(projectRoot, activeRoot string, in ReviewPrepareIn) (Revi
 		}
 	}
 
-	return ReviewPrepareOut{Saved: true, Next: "Review saved to .sdlc-v2/reviews/ — not posted to the PR."}, nil
+	return ReviewPrepareOut{
+		Saved: true,
+		Next:  "Review saved to .sdlc-v2/reviews/ — not posted to the PR.",
+		Style: chatStyleFor(projectRoot),
+	}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1249,7 +1261,7 @@ func saveReviewComment(projectRoot, activeRoot string, in ReviewPrepareIn) (Revi
 // RegisterReviewTools registers review_prepare on the server.
 func RegisterReviewTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "review_prepare",
-		"Pre-compute review manifest: git state, dimension matching, diff slicing, commit context, open-PR lookup via gh. Writes manifest + per-dimension .diff and .slice.json files to a temp directory. With saveReview:true, persists content verbatim to .sdlc-v2/reviews/<branch>-<date>.md instead.",
+		"Pre-compute review manifest: git state, dimension matching, diff slicing, commit context, open-PR lookup via gh. Writes manifest + per-dimension .diff and .slice.json files to a temp directory. With saveReview:true, persists content verbatim to .sdlc-v2/reviews/<branch>-<date>.md instead. Also returns style: the plugin-wide communication style; follow style.guide in chat and questions.",
 		mcpserver.Annotations{
 			Title:      "Prepare code review payload",
 			ReadOnly:   true,

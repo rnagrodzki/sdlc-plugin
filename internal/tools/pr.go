@@ -156,6 +156,14 @@ type PRPrepareOut struct {
 	DefaultBranch       string                      `json:"defaultBranch,omitempty"`
 	OnDefaultBranch     bool                        `json:"onDefaultBranch"`
 
+	// Style carries the plugin-wide communication style (via chatStyleFor)
+	// so the pr skill renders preflight results and questions
+	// in chat consistently. Filled on every successful call, including every
+	// early-gate return (config migration failure, auth failure, account
+	// mismatch, branch guard, protected branch) — none of those are Go
+	// errors, so they count as successful calls per the contract.
+	Style ChatStyle `json:"style"`
+
 	Next string `json:"next"`
 }
 
@@ -583,13 +591,19 @@ func prPrepareCore(mainRoot, workDir string, in PRPrepareIn) (PRPrepareOut, erro
 func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (PRPrepareOut, error) {
 	var errs, warnings []string
 
+	// Resolved once up front: every successful return (err == nil) below
+	// carries it, including every early-gate short-circuit — only the one
+	// literal Go-error return (the release-marker template conflict,
+	// further down) is an "error path" per the contract and skips it.
+	style := chatStyleFor(mainRoot)
+
 	// KD5 gate: hard-abort with a minimal errors-only payload on config
 	// migration failure, mirroring pr.js's ensureConfigVersion short-circuit
 	// (and plan.go/setup.go's own KD5 gate).
 	if !in.SkipConfigCheck {
 		if err := rt.configMigrateVerify(mainRoot); err != nil {
 			errs = append(errs, fmt.Sprintf("config-version: %s", err.Error()))
-			return PRPrepareOut{Errors: errs, NeedsMigration: true, Next: "Fix the errors above, then call pr_prepare again."}, nil
+			return PRPrepareOut{Errors: errs, NeedsMigration: true, Style: style, Next: "Fix the errors above, then call pr_prepare again."}, nil
 		}
 		moved, mkErr := rt.configMoveKeys(mainRoot)
 		if mkErr != nil {
@@ -598,7 +612,7 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 			if errors.As(mkErr, &mk) {
 				errs = append(errs, mk.Suggestion())
 			}
-			return PRPrepareOut{Errors: errs, NeedsMigration: true, Next: "Fix the errors above, then call pr_prepare again."}, nil
+			return PRPrepareOut{Errors: errs, NeedsMigration: true, Style: style, Next: "Fix the errors above, then call pr_prepare again."}, nil
 		}
 		if len(moved) > 0 {
 			warnings = append(warnings, configmigrate.MovedKeysWarning(moved))
@@ -610,6 +624,7 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 	out := PRPrepareOut{
 		GHAuthenticated: authProbe.Authenticated,
 		ActiveAccount:   authProbe.ActiveAccount,
+		Style:           style,
 	}
 
 	// An absent local.toml or [github] section means "not configured"; any
@@ -1678,7 +1693,7 @@ func prReleaseApplyLabelWith(rt prRuntime, workDir, label string, stale []string
 // responsibility.
 func RegisterPRTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "pr_prepare",
-		"Preflight checks for pr: config-version gate (also moves personal keys such as pr.expectedAccount from config.toml to local.toml, with a warning; fails with manual steps when the move is not safe), gh-auth + active-account probe (expected account from local.toml [github] expectedAccount; recovery-shaped diagnostics on failure), branch-guard hard gate, protected-branch rejection, JIRA ticket detection from the branch name, PR template resolution, upstream/push status (needsPush), and version diagnostics (bump options, tags, commits since tag, conventional commit summary, existing RCs) when a version config exists. A config.toml that fails to read skips those diagnostics with a warning naming the error.",
+		"Preflight checks for pr: config-version gate (also moves personal keys such as pr.expectedAccount from config.toml to local.toml, with a warning; fails with manual steps when the move is not safe), gh-auth + active-account probe (expected account from local.toml [github] expectedAccount; recovery-shaped diagnostics on failure), branch-guard hard gate, protected-branch rejection, JIRA ticket detection from the branch name, PR template resolution, upstream/push status (needsPush), and version diagnostics (bump options, tags, commits since tag, conventional commit summary, existing RCs) when a version config exists. A config.toml that fails to read skips those diagnostics with a warning naming the error. Also returns style: the plugin-wide communication style; follow style.guide in chat and questions.",
 		mcpserver.Annotations{
 			Title:       "Prepare pull request context",
 			ReadOnly:    false,

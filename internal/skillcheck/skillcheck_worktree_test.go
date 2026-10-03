@@ -76,7 +76,7 @@ var worktreeSkillsVerbRe = regexp.MustCompile(`(?i)\b(Write|Read|Glob|Bash|cp|ca
 // worktreeSkillsProhibitionRe recognizes the "do not <verb> a bare path"
 // prohibition idiom, which legitimately pairs a filesystem verb with a
 // ".sdlc-v2/" path on the same line without instructing the LLM to perform
-// that operation (e.g. plan/SKILL.md:71, execute/SKILL.md:25). It is
+// that operation (e.g. plan/SKILL.md:73, execute/SKILL.md:25). It is
 // deliberately narrow -- same line, verb within 40 chars after the negation
 // -- because broadening it to also swallow every phrasing that
 // worktreeSkillsProhibitionMisses documents individually below would risk
@@ -362,7 +362,7 @@ var worktreeSkillsProhibitionSurvivors = []struct {
 	rel  string
 	line int
 }{
-	{"skills/plan/SKILL.md", 71},
+	{"skills/plan/SKILL.md", 73},
 	{"skills/execute/SKILL.md", 25},
 }
 
