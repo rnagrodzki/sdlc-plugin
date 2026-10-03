@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/commstyle"
 	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/openspec"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
@@ -2205,6 +2206,130 @@ func TestShipConfigPhase(t *testing.T) {
 	assertLines(t, shipConfigPhase(), []string{
 		`Ship config: steps ["review","commit"], preset full, skip ["docs"], bump minor, threshold 80`,
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Communication style phase
+// ---------------------------------------------------------------------------
+
+func TestCommunicationStylePhase_Defaults(t *testing.T) {
+	branch := "feat/commstyle-defaults"
+	gitFixture(t, branch)
+
+	want := commstyle.FromSections(nil, nil)
+	assertLines(t, communicationStylePhase(), []string{
+		"sdlc communication style: audience=functional  standard=plain-language  tone=direct  language=English  terms=none",
+		commstyle.ChatGuide(want),
+	})
+}
+
+// TestCommunicationStylePhase_SettingsAndLegacyWarning exercises the
+// settings line, a legacy [planStyle] fallback warning, and a configured
+// technicalTerms list together — the exact scenario in this task's
+// Contract example.
+func TestCommunicationStylePhase_SettingsAndLegacyWarning(t *testing.T) {
+	branch := "feat/commstyle-settings"
+	root := gitFixture(t, branch)
+
+	localPath := filepath.Join(root, paths.DataDir, "local.toml")
+	mustMkdirAll(t, filepath.Dir(localPath))
+	mustWriteFile(t, localPath, "[style]\n"+
+		"writingStandard = \"ste\"\n"+
+		"tone = \"direct\"\n"+
+		"technicalTerms = [\"logging\", \"routing\"]\n"+
+		"\n[planStyle]\n"+
+		"audience = \"functional\"\n")
+
+	want := commstyle.FromSections(
+		map[string]any{"writingStandard": "ste", "tone": "direct", "technicalTerms": []any{"logging", "routing"}},
+		map[string]any{"audience": "functional"},
+	)
+
+	assertLines(t, communicationStylePhase(), []string{
+		"sdlc communication style: audience=functional  standard=ste  tone=direct  language=English  terms=logging, routing",
+		"  warning: planStyle.audience moved to [style]; move it there (the value still works)",
+		commstyle.ChatGuide(want),
+	})
+}
+
+// TestCommunicationStylePhase_BrokenConfigDegradesToDefaults exercises a
+// [style]/[planStyle] read failure: a local.toml that fails to parse as
+// TOML. planStyleForHook must discard the error and fall back to
+// commstyle's defaults, not fail the hook.
+func TestCommunicationStylePhase_BrokenConfigDegradesToDefaults(t *testing.T) {
+	branch := "feat/commstyle-broken-config"
+	root := gitFixture(t, branch)
+
+	localPath := filepath.Join(root, paths.DataDir, "local.toml")
+	mustMkdirAll(t, filepath.Dir(localPath))
+	mustWriteFile(t, localPath, "not valid toml {{{")
+
+	want := commstyle.FromSections(nil, nil)
+	assertLines(t, communicationStylePhase(), []string{
+		"sdlc communication style: audience=functional  standard=plain-language  tone=direct  language=English  terms=none",
+		commstyle.ChatGuide(want),
+	})
+}
+
+func TestCommunicationStylePhase_MainRootUnresolvedIsSilent(t *testing.T) {
+	chdir(t, realPath(t, t.TempDir()))
+	if got := communicationStylePhase(); got != nil {
+		t.Errorf("communicationStylePhase() = %q, want no lines when the main root cannot be resolved", got)
+	}
+}
+
+// TestSessionStart_CommunicationStyleLineFollowsPlanRouting pins the append
+// point: the Contract places the communication-style block directly below
+// the "Plan mode routing:" header line.
+func TestSessionStart_CommunicationStyleLineFollowsPlanRouting(t *testing.T) {
+	branch := "feat/commstyle-ordering"
+	gitFixture(t, branch)
+	t.Setenv("HOME", realPath(t, t.TempDir()))
+
+	out, err := sessionStart(HookCtx{}, Event{Source: "startup"})
+	if err != nil {
+		t.Fatalf("sessionStart returned error: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(out.PlainText, "\n"), "\n")
+
+	const planRoutingLine = "Plan mode routing: always invoke plan via the Skill tool when plan mode is active."
+	idx := -1
+	for i, l := range lines {
+		if l == planRoutingLine {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		t.Fatalf("%q not found in header:\n%q", planRoutingLine, lines)
+	}
+	if idx+1 >= len(lines) || !strings.HasPrefix(lines[idx+1], "sdlc communication style: ") {
+		t.Fatalf("line after %q = %q, want the communication-style settings line", planRoutingLine, lines[idx+1])
+	}
+}
+
+// TestSessionStart_CommunicationStyleOnEveryHookSource pins the Acceptance
+// Criteria: the block appears on every SessionStart source, not only
+// startup.
+func TestSessionStart_CommunicationStyleOnEveryHookSource(t *testing.T) {
+	branch := "feat/commstyle-sources"
+	gitFixture(t, branch)
+	t.Setenv("HOME", realPath(t, t.TempDir()))
+
+	for _, source := range []string{"startup", "clear", "compact"} {
+		t.Run(source, func(t *testing.T) {
+			out, err := sessionStart(HookCtx{}, Event{Source: source})
+			if err != nil {
+				t.Fatalf("sessionStart(%s) returned error: %v", source, err)
+			}
+			if !strings.Contains(out.PlainText, "sdlc communication style: ") {
+				t.Errorf("sessionStart(%s) missing the communication-style settings line:\n%s", source, out.PlainText)
+			}
+			if !strings.Contains(out.PlainText, "<sdlc_communication_style>") {
+				t.Errorf("sessionStart(%s) missing the <sdlc_communication_style> block:\n%s", source, out.PlainText)
+			}
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------

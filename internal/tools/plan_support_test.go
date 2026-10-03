@@ -73,7 +73,7 @@ func suggestionOf(err error) string {
 // ---------------------------------------------------------------------------
 
 // gateRange returns ["G<from>", ..., "G<to>"] inclusive, used to build
-// coverage-check fixtures spanning the G1..G21 gate space.
+// coverage-check fixtures spanning the G1..G22 gate space.
 func gateRange(from, to int) []string {
 	var gates []string
 	for i := from; i <= to; i++ {
@@ -82,27 +82,28 @@ func gateRange(from, to int) []string {
 	return gates
 }
 
-// allGates returns G1..G21, the full expected coverage set (SKILL.md Step 3
+// allGates returns G1..G22, the full expected coverage set (SKILL.md Step 3
 // coverageCheck: "the union of all gateIds[] arrays returned by lanes MUST
-// equal {G1..G21} exactly").
+// equal {G1..G22} exactly"). G22 (style compliance) joined the set in the
+// same change that added the guardrail-compliance lane's second gate.
 func allGates() []string {
-	return gateRange(1, 21)
+	return gateRange(1, 22)
 }
 
 // fiveLanesCoveringAllGates returns 5 passing LaneResult fixtures whose
-// GateIDs partition G1..G21 exactly (5+5+6+2+3 = 21 gates).
+// GateIDs partition G1..G22 exactly (5+5+6+2+4 = 22 gates).
 func fiveLanesCoveringAllGates() []LaneResult {
 	return []LaneResult{
 		{Name: "lane-1", Status: "pass", GateIDs: gateRange(1, 5)},
 		{Name: "lane-2", Status: "pass", GateIDs: gateRange(6, 10)},
 		{Name: "lane-3", Status: "pass", GateIDs: gateRange(11, 16)},
 		{Name: "lane-4", Status: "pass", GateIDs: gateRange(17, 18)},
-		{Name: "lane-5", Status: "pass", GateIDs: gateRange(19, 21)},
+		{Name: "lane-5", Status: "pass", GateIDs: gateRange(19, 22)},
 	}
 }
 
 // TestPlanMergeResults_CoveragePass verifies that when 5 lanes' GateIDs union
-// covers G1..G21 exactly, the coverage check finds no gaps.
+// covers G1..G22 exactly, the coverage check finds no gaps.
 func TestPlanMergeResults_CoveragePass(t *testing.T) {
 	out, err := mergeResults(PlanSupportIn{
 		LaneResults:   fiveLanesCoveringAllGates(),

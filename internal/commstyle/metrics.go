@@ -106,8 +106,9 @@ var (
 )
 
 // Measure checks the named "## " sections of content against l and scans
-// the whole plan for banned phrases. A section named in sections but not
-// found in content is reported with Words 0 and Status "skipped".
+// the whole plan for banned phrases and, when l.STE is set, for strict STE
+// rule breaks (steCheck). A section named in sections but not found in
+// content is reported with Words 0 and Status "skipped".
 func Measure(content string, sections []string, l Limits) Report {
 	lines := classifyLines(content)
 	prose := collectProseLines(lines)
@@ -116,6 +117,9 @@ func Measure(content string, sections []string, l Limits) Report {
 		Sections:   make([]SectionMetrics, 0, len(sections)),
 		BannedHits: bannedHits(lines, l.BannedPhrases),
 		SteHits:    []SteHit{},
+	}
+	if l.STE {
+		rep.SteHits = steCheck(collectSteLines(lines), l)
 	}
 	for _, name := range sections {
 		rep.Sections = append(rep.Sections, measureSection(name, lines, prose, l))
@@ -212,22 +216,43 @@ func classifyText(pl *planLine, line string) {
 	pl.words = countWords(pl.text)
 }
 
-// collectProseLines returns the prose lines of the whole plan. A paragraph
-// is a run of consecutive prose lines; a list item always starts a new
-// paragraph, so a list of long items is not read as one long paragraph.
+// collectProseLines returns the prose lines of the whole plan, used for the
+// density and readability metrics. A paragraph is a run of consecutive
+// prose lines; a list item always starts a new paragraph, so a list of
+// long items is not read as one long paragraph.
 func collectProseLines(lines []planLine) []proseLine {
+	return collectLines(lines, func(pl planLine) bool { return pl.class == classProse })
+}
+
+// collectSteLines returns the lines the strict STE check scans: every
+// prose line, plus every list item whatever its word count. The strict
+// STE check must see a short checklist item (an acceptance criterion, a
+// numbered step) to apply the instruction rules to it; collectProseLines
+// excludes such an item as classVisual so it does not count against a
+// section's prose share or paragraph length. Fence bodies and table rows
+// stay excluded either way.
+func collectSteLines(lines []planLine) []proseLine {
+	return collectLines(lines, func(pl planLine) bool {
+		return pl.class == classProse || (pl.class == classVisual && pl.listItem)
+	})
+}
+
+// collectLines groups the lines of the whole plan that keep accepts into
+// proseLines, paragraph by paragraph: a paragraph is a run of consecutive
+// accepted lines, except a list item always starts a new paragraph.
+func collectLines(lines []planLine, keep func(planLine) bool) []proseLine {
 	out := []proseLine{}
 	para := -1
-	prevProse := false
+	prevKept := false
 	for _, pl := range lines {
-		if pl.class != classProse {
-			prevProse = false
+		if !keep(pl) {
+			prevKept = false
 			continue
 		}
-		if !prevProse || pl.listItem {
+		if !prevKept || pl.listItem {
 			para++
 		}
-		prevProse = true
+		prevKept = true
 		out = append(out, proseLine{
 			Line:      pl.number,
 			Text:      pl.text,

@@ -62,7 +62,7 @@ func TestPlanPrepare_KeySetAndDefaults(t *testing.T) {
 
 	expectedTopKeys := []string{
 		"openspec", "fromOpenspec", "openspecContext", "guardrails",
-		"style", "tasks",
+		"style", "tasks", "styleGuideFile",
 		"explorePack", "planTemplate", "githubHosting", "g17Dispatch",
 		"intakeAuditDispatch", "lanes", "lensReviewers", "errors",
 	}
@@ -106,6 +106,10 @@ func TestPlanPrepare_KeySetAndDefaults(t *testing.T) {
 		if out.Lanes[i].Name != name {
 			t.Errorf("Lanes[%d].Name = %q, want %q", i, out.Lanes[i].Name, name)
 		}
+	}
+	wantGuardrailGates := []string{"G14", "G22"}
+	if !reflect.DeepEqual(out.Lanes[3].GateIDs, wantGuardrailGates) {
+		t.Errorf("Lanes[3] (guardrail-compliance) GateIDs = %v, want %v", out.Lanes[3].GateIDs, wantGuardrailGates)
 	}
 	last := out.Lanes[len(out.Lanes)-1]
 	if last.SubagentType != out.G17Dispatch.SubagentType || last.Model != out.G17Dispatch.Model {
@@ -253,9 +257,10 @@ func TestPlanPrepare_Guardrails(t *testing.T) {
 }
 
 // TestPlanPrepare_StyleAndTasksDefaults verifies loadPlanStyle and
-// loadPlanTasks's zero-config defaults surface through PlanPrepareOut:
-// standard verbosity, technical audience, no narrative rules, no required
-// fields, and the "full" contract shape.
+// loadPlanTasks's zero-config defaults surface through PlanPrepareOut: the
+// commstyle defaults (functional audience, plain-language writing standard,
+// direct tone, balanced visual density, English, no technical terms), no
+// narrative rules, no required fields, and the "full" contract shape.
 func TestPlanPrepare_StyleAndTasksDefaults(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
@@ -265,11 +270,23 @@ func TestPlanPrepare_StyleAndTasksDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
 	}
-	if out.Style.Verbosity != "standard" {
-		t.Errorf("Style.Verbosity = %q, want standard", out.Style.Verbosity)
+	if out.Style.Audience != "functional" {
+		t.Errorf("Style.Audience = %q, want functional", out.Style.Audience)
 	}
-	if out.Style.Audience != "technical" {
-		t.Errorf("Style.Audience = %q, want technical", out.Style.Audience)
+	if out.Style.WritingStandard != "plain-language" {
+		t.Errorf("Style.WritingStandard = %q, want plain-language", out.Style.WritingStandard)
+	}
+	if out.Style.Tone != "direct" {
+		t.Errorf("Style.Tone = %q, want direct", out.Style.Tone)
+	}
+	if out.Style.VisualDensity != "balanced" {
+		t.Errorf("Style.VisualDensity = %q, want balanced", out.Style.VisualDensity)
+	}
+	if out.Style.Language != "English" {
+		t.Errorf("Style.Language = %q, want English", out.Style.Language)
+	}
+	if len(out.Style.TechnicalTerms) != 0 {
+		t.Errorf("Style.TechnicalTerms = %v, want empty", out.Style.TechnicalTerms)
 	}
 	if len(out.Style.NarrativeRules) != 0 {
 		t.Errorf("Style.NarrativeRules = %v, want empty", out.Style.NarrativeRules)
@@ -283,11 +300,25 @@ func TestPlanPrepare_StyleAndTasksDefaults(t *testing.T) {
 	if out.Tasks.ContractShape != "full" {
 		t.Errorf("Tasks.ContractShape = %q, want full", out.Tasks.ContractShape)
 	}
+
+	data, err := json.Marshal(out.Style)
+	if err != nil {
+		t.Fatalf("marshal Style: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("unmarshal Style: %v", err)
+	}
+	if _, ok := m["verbosity"]; ok {
+		t.Error(`Style has a "verbosity" key, want it gone`)
+	}
 }
 
 // TestPlanPrepare_StyleAndTasksPopulated verifies planStyle (from
 // .sdlc-v2/local.toml) and plan.tasks (from .sdlc-v2/config.toml) values
-// round-trip into PlanPrepareOut.Style and PlanPrepareOut.Tasks unchanged.
+// round-trip into PlanPrepareOut.Style and PlanPrepareOut.Tasks, and that an
+// invalid enum value (audience "business") falls back to its commstyle
+// default with one warning instead of round-tripping verbatim.
 func TestPlanPrepare_StyleAndTasksPopulated(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
@@ -309,11 +340,20 @@ func TestPlanPrepare_StyleAndTasksPopulated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
 	}
-	if out.Style.Verbosity != "detailed" {
-		t.Errorf("Style.Verbosity = %q, want detailed", out.Style.Verbosity)
+	// "business" is not a valid commstyle audience: it falls back to the
+	// default ("functional") with one warning, rather than round-tripping
+	// verbatim the way the old free-text PlanStyle.Audience did.
+	if out.Style.Audience != "functional" {
+		t.Errorf("Style.Audience = %q, want functional (business is not a valid audience)", out.Style.Audience)
 	}
-	if out.Style.Audience != "business" {
-		t.Errorf("Style.Audience = %q, want business", out.Style.Audience)
+	audienceWarnings := 0
+	for _, w := range out.Style.Warnings {
+		if strings.Contains(w, `audience "business" is not valid`) && strings.Contains(w, `using "functional"`) {
+			audienceWarnings++
+		}
+	}
+	if audienceWarnings != 1 {
+		t.Errorf("Style.Warnings = %v, want exactly one audience-fallback warning", out.Style.Warnings)
 	}
 	wantRules := []string{"Lead with impact", "Avoid jargon"}
 	if !reflect.DeepEqual(out.Style.NarrativeRules, wantRules) {
@@ -371,9 +411,12 @@ func TestPlanStyle_MalformedConfigSurfacesError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
 	}
+	// The malformed file fails to parse for both the "style" and
+	// "planStyle" section reads, so the combined error string carries both
+	// messages (not necessarily "planStyle" first) — match by substring.
 	found := false
 	for _, e := range out.Errors {
-		if strings.HasPrefix(e, "Failed to read planStyle config: ") {
+		if strings.Contains(e, "Failed to read planStyle config: ") {
 			found = true
 		}
 	}
@@ -385,7 +428,7 @@ func TestPlanStyle_MalformedConfigSurfacesError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planMark(checkpoint): %v", err)
 	}
-	if !strings.Contains(mk.Next, "Warning: Failed to read planStyle config: ") {
+	if !strings.Contains(mk.Next, "Warning: ") || !strings.Contains(mk.Next, "Failed to read planStyle config: ") {
 		t.Errorf("Next = %q, want a planStyle read warning", mk.Next)
 	}
 }
@@ -1714,6 +1757,32 @@ func TestPlanPrepare_ResolveTemplateWithoutRunCreatesRun(t *testing.T) {
 	}
 }
 
+// TestPlanPrepare_StyleGuideFile verifies plan_prepare writes
+// <runId>.evidence/style-guide.md with the same text as style.writingGuide,
+// and StyleGuideFile holds its path.
+func TestPlanPrepare_StyleGuideFile(t *testing.T) {
+	dir := planTestGitRepo(t, "main")
+
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("planPrepareCore: %v", err)
+	}
+	want := filepath.Join(planTestRunsDir(dir), out.RunID+".evidence", "style-guide.md")
+	if out.StyleGuideFile != want {
+		t.Errorf("StyleGuideFile = %q, want %q", out.StyleGuideFile, want)
+	}
+	got, err := os.ReadFile(out.StyleGuideFile)
+	if err != nil {
+		t.Fatalf("style-guide.md missing: %v", err)
+	}
+	if out.Style.WritingGuide == "" {
+		t.Fatal("Style.WritingGuide empty")
+	}
+	if string(got) != out.Style.WritingGuide {
+		t.Errorf("style-guide.md content = %q, want %q (style.writingGuide)", got, out.Style.WritingGuide)
+	}
+}
+
 // TestPlanPrepare_ExactSlugRunSelection verifies that on branch feat an
 // active plan-feat-x-* run is reused by neither resolveTemplate nor resume.
 func TestPlanPrepare_ExactSlugRunSelection(t *testing.T) {
@@ -2049,6 +2118,14 @@ func TestPlanPrepare_ErrorSites(t *testing.T) {
 		_, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
 		infra(t, err, "guardrails file write failed: ")
 	})
+	t.Run("EISDIR style-guide.md", func(t *testing.T) {
+		dir := planTestGitRepo(t, "main")
+		const run = "plan-main-20200101T000000Z"
+		planTestSeedRun(t, dir, run, planTestActiveData())
+		writeFile(t, filepath.Join(planTestRunsDir(dir), run+".evidence", "style-guide.md", "x"), "x")
+		_, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
+		infra(t, err, "style guide file write failed: ")
+	})
 	t.Run("corrupt JSON", func(t *testing.T) {
 		dir := planTestGitRepo(t, "main")
 		p := filepath.Join(planTestRunsDir(dir), "plan-main-20200101T000000Z.json")
@@ -2059,15 +2136,16 @@ func TestPlanPrepare_ErrorSites(t *testing.T) {
 }
 
 // TestPlanPrepare_OutsideGitNoRun verifies that outside git no run is
-// tracked: runId and guardrailsFile are empty (rendered "(none)").
+// tracked: runId, guardrailsFile and styleGuideFile are empty (rendered
+// "(none)").
 func TestPlanPrepare_OutsideGitNoRun(t *testing.T) {
 	dir := t.TempDir()
 	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
 	}
-	if out.RunID != "" || out.GuardrailsFile != "" {
-		t.Errorf("RunID = %q, GuardrailsFile = %q, want both empty", out.RunID, out.GuardrailsFile)
+	if out.RunID != "" || out.GuardrailsFile != "" || out.StyleGuideFile != "" {
+		t.Errorf("RunID = %q, GuardrailsFile = %q, StyleGuideFile = %q, want all empty", out.RunID, out.GuardrailsFile, out.StyleGuideFile)
 	}
 	if _, err := os.Stat(planTestRunsDir(dir)); !os.IsNotExist(err) {
 		t.Errorf("runs dir created outside git (stat err = %v)", err)

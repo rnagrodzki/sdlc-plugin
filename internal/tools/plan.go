@@ -19,6 +19,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/commstyle"
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/configmigrate"
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
@@ -200,12 +201,14 @@ type ComplexityRouting struct {
 // plan.js's main() output object field-for-field (see line ~630).
 //
 // Next is hoisted to the rendered "**Next:**" line. RunID is the plan state
-// file stem and GuardrailsFile is <runId>.evidence/guardrails.md; both are
-// empty (rendered "(none)") outside git, where no plan run is tracked.
+// file stem, GuardrailsFile is <runId>.evidence/guardrails.md, and
+// StyleGuideFile is <runId>.evidence/style-guide.md; all three are empty
+// (rendered "(none)") outside git, where no plan run is tracked.
 type PlanPrepareOut struct {
 	Next                string              `json:"next,omitempty"`
 	RunID               string              `json:"runId"`
 	GuardrailsFile      string              `json:"guardrailsFile"`
+	StyleGuideFile      string              `json:"styleGuideFile"`
 	Openspec            OpenspecInfo        `json:"openspec"`
 	FromOpenspec        *FromOpenspecResult `json:"fromOpenspec"`
 	OpenspecContext     OpenspecContext     `json:"openspecContext"`
@@ -609,17 +612,15 @@ func loadGuardrails(mainRoot string) ([]map[string]any, string) {
 // PlanStyle / PlanTasks loading (sections "planStyle" and "plan" -> "tasks")
 // ---------------------------------------------------------------------------
 
-// PlanStyle configures personal plan narrative preferences: verbosity,
-// audience, custom narrative rules, and custom process instructions. Loaded
-// from the "planStyle" config section, which is not a config.ProjectSections
-// member and therefore routes to .sdlc-v2/local.toml (per-developer,
-// gitignored).
-type PlanStyle struct {
-	Verbosity      string   `json:"verbosity"`
-	Audience       string   `json:"audience"`
-	NarrativeRules []string `json:"narrativeRules"`
-	Instructions   []string `json:"instructions"`
-}
+// PlanStyle is the resolved communication style plan_prepare returns:
+// commstyle.Style, the [style] and [planStyle] config sections merged,
+// validated, and defaulted by commstyle.FromSections, plus the derived
+// numeric Limits and the rendered WritingGuide. [style] holds the keys
+// every sdlc skill shares (audience, writingStandard, tone, language,
+// technicalTerms); [planStyle] holds the plan-only keys (visualDensity,
+// narrativeRules, instructions). Neither is a config.ProjectSections
+// member, so both route to .sdlc-v2/local.toml (per-developer, gitignored).
+type PlanStyle = commstyle.Style
 
 // PlanTasks is the team contract for plan task deliverables: which fields
 // are required on every task, and the overall contract shape. Loaded from
@@ -631,51 +632,46 @@ type PlanTasks struct {
 	ContractShape  string   `json:"contractShape"`
 }
 
-// loadPlanStyle reads the "planStyle" config section, mirroring
-// loadGuardrails: a missing file or section (config.ErrNotFound) is benign
-// and returns the defaults with no error string. Any other ReadSection error
-// (malformed TOML, unreadable file) also returns the defaults, plus an error
-// string the caller must surface — otherwise a broken local.toml would
-// silently drop the custom plan instructions. Defaults are "standard"
-// verbosity, "technical" audience, a nil NarrativeRules, and a nil
-// Instructions.
-func loadPlanStyle(mainRoot string) (PlanStyle, string) {
-	style := PlanStyle{Verbosity: "standard", Audience: "technical"}
-
-	section, err := config.ReadSection(mainRoot, "planStyle")
+// readStyleSection reads one style config section ("style" or "planStyle"),
+// mirroring loadGuardrails: a missing file or section (config.ErrNotFound)
+// is benign and returns nil, "". Any other ReadSection error (malformed
+// TOML, unreadable file) also returns nil, plus an error string the caller
+// must surface — otherwise a broken local.toml would silently drop the
+// custom plan instructions.
+func readStyleSection(mainRoot, name string) (map[string]any, string) {
+	section, err := config.ReadSection(mainRoot, name)
 	if err != nil {
 		if errors.Is(err, config.ErrNotFound) {
-			return style, ""
+			return nil, ""
 		}
-		return style, fmt.Sprintf("Failed to read planStyle config: %s", err.Error())
+		return nil, fmt.Sprintf("Failed to read %s config: %s", name, err.Error())
 	}
+	return section, ""
+}
 
-	if v, ok := section["verbosity"].(string); ok && v != "" {
-		style.Verbosity = v
-	}
-	if v, ok := section["audience"].(string); ok && v != "" {
-		style.Audience = v
-	}
-	if raw, ok := section["narrativeRules"].([]any); ok {
-		rules := make([]string, 0, len(raw))
-		for _, el := range raw {
-			if s, ok := el.(string); ok {
-				rules = append(rules, s)
-			}
-		}
-		style.NarrativeRules = rules
-	}
-	if raw, ok := section["instructions"].([]any); ok {
-		list := make([]string, 0, len(raw))
-		for _, el := range raw {
-			if s, ok := el.(string); ok && strings.TrimSpace(s) != "" {
-				list = append(list, strings.TrimSpace(s))
-			}
-		}
-		style.Instructions = list
-	}
+// withGuide fills in the derived fields of a commstyle.Style built by
+// FromSections: the numeric Limits and the rendered plan writing guide.
+func withGuide(s commstyle.Style) commstyle.Style {
+	s.Limits = commstyle.LimitsFor(s)
+	s.WritingGuide = commstyle.Guide(s)
+	return s
+}
 
-	return style, ""
+// loadPlanStyle reads the "style" and "planStyle" config sections and
+// merges them with commstyle.FromSections, then fills in the derived
+// Limits and WritingGuide with withGuide. A read error on either section
+// is reported in the returned string (both are surfaced, space-joined,
+// when both fail); the Style itself always falls back to commstyle's
+// defaults on a read error, mirroring loadGuardrails' benign-absence
+// handling.
+func loadPlanStyle(mainRoot string) (PlanStyle, string) {
+	shared, sErr := readStyleSection(mainRoot, "style")
+	plan, pErr := readStyleSection(mainRoot, "planStyle")
+	s := withGuide(commstyle.FromSections(shared, plan))
+	if sErr != "" || pErr != "" {
+		return s, strings.TrimSpace(sErr + " " + pErr)
+	}
+	return s, ""
 }
 
 // loadPlanTasks reads the "plan" config section's "tasks" sub-key,
@@ -955,7 +951,7 @@ func buildLanes(g17Dispatch Dispatch) []Lane {
 		{"static-structural", "haiku", "lane-static-structural-prompt.md", []string{"G1", "G2", "G3", "G7", "G12"}},
 		{"content-coverage", "sonnet", "lane-content-coverage-prompt.md", []string{"G5", "G6", "G8", "G9", "G11", "G13", "G15", "G16", "G18", "G19", "G20", "G21"}},
 		{"file-existence", "haiku", "lane-file-existence-prompt.md", []string{"G4", "G10"}},
-		{"guardrail-compliance", "sonnet", "lane-guardrail-compliance-prompt.md", []string{"G14"}},
+		{"guardrail-compliance", "sonnet", "lane-guardrail-compliance-prompt.md", []string{"G14", "G22"}},
 	}
 
 	lanes := make([]Lane, 0, len(defs)+1)
@@ -1245,15 +1241,20 @@ func buildTemplateResolution(mainRoot string, in PlanPrepareIn, planTemplatePath
 // Plan run selection — stable run ID, resume mode, guardrails file
 // ---------------------------------------------------------------------------
 
+// styleGuideReminder is appended to every plan_prepare root "next" hint, so
+// the plan author always sees the style reminder, not just at the first
+// call.
+const styleGuideReminder = " Follow style.writingGuide for every narrative section."
+
 // Root "next" hints returned by plan_prepare, one per run-selection row.
 const (
-	planPrepareNextFirst = "Print the context detection summary. Then run the gate check and complexity routing, and call plan_prepare again with resolveTemplate:true and the same userPrompt."
-	planPrepareNextTmpl  = "Write template.headerMarkdown + template.skeletonMarkdown to the plan file, then call plan_mark with marker \"plan-file\" and the plan path."
+	planPrepareNextFirst = "Print the context detection summary. Then run the gate check and complexity routing, and call plan_prepare again with resolveTemplate:true and the same userPrompt." + styleGuideReminder
+	planPrepareNextTmpl  = "Write template.headerMarkdown + template.skeletonMarkdown to the plan file, then call plan_mark with marker \"plan-file\" and the plan path." + styleGuideReminder
 )
 
 // planPrepareResumeNext is the root next (and template.next) of a resume call.
 func planPrepareResumeNext(runID string) string {
-	return fmt.Sprintf("Resume mode: run %s reused. Write template.headerMarkdown + template.skeletonMarkdown to the plan file only if the plan file is empty. Then call plan_support with action \"evidence_digest\" and runId \"%s\".", runID, runID)
+	return fmt.Sprintf("Resume mode: run %s reused. Write template.headerMarkdown + template.skeletonMarkdown to the plan file only if the plan file is empty. Then call plan_support with action \"evidence_digest\" and runId \"%s\".", runID, runID) + styleGuideReminder
 }
 
 // planRun is the plan run selected for this plan_prepare call. st is nil
@@ -1538,6 +1539,27 @@ func writeGuardrailsFile(st *state.State, guardrails []map[string]any) (string, 
 	return path, nil
 }
 
+const evidenceStyleGuide = "style-guide.md"
+
+// writeStyleGuideFile writes <runId>.evidence/style-guide.md for st and
+// returns its path.
+func writeStyleGuideFile(st *state.State, guide string) (string, error) {
+	dir := state.EvidenceDir(st.Root, state.RunID(st))
+	path := filepath.Join(dir, evidenceStyleGuide)
+	werr := os.MkdirAll(dir, 0o755)
+	if werr == nil {
+		werr = fsx.AtomicWriteBytes(path, []byte(guide))
+	}
+	if werr != nil {
+		return "", &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("style guide file write failed: %s", path),
+			Suggestion: fmt.Sprintf("make sure %s.evidence/ is a writable directory and style-guide.md is a file, then call plan_prepare again", state.RunID(st)),
+			Cause:      werr,
+		}
+	}
+	return path, nil
+}
+
 // ---------------------------------------------------------------------------
 // plan_prepare core logic
 // ---------------------------------------------------------------------------
@@ -1659,8 +1681,8 @@ func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepar
 	}
 	planTasks := loadPlanTasks(mainRoot)
 
-	// 3c. guardrails.md in the run's evidence directory.
-	runID, guardrailsFile := "", ""
+	// 3c. guardrails.md and style-guide.md in the run's evidence directory.
+	runID, guardrailsFile, styleGuideFile := "", "", ""
 	if run.st != nil {
 		runID = state.RunID(run.st)
 		p, err := writeGuardrailsFile(run.st, guardrails)
@@ -1668,6 +1690,11 @@ func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepar
 			return PlanPrepareOut{}, err
 		}
 		guardrailsFile = p
+		sp, err := writeStyleGuideFile(run.st, planStyle.WritingGuide)
+		if err != nil {
+			return PlanPrepareOut{}, err
+		}
+		styleGuideFile = sp
 	}
 
 	// 4. plan-explore discovery pack (KD4: in-process call, not subprocess).
@@ -1706,6 +1733,7 @@ func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepar
 		Next:                run.next,
 		RunID:               runID,
 		GuardrailsFile:      guardrailsFile,
+		StyleGuideFile:      styleGuideFile,
 		Openspec:            openspecInfo,
 		FromOpenspec:        fromOpenspecResult,
 		OpenspecContext:     openspecContext,
@@ -2207,7 +2235,7 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 func RegisterPlanTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "plan_prepare",
 		"Prepare OpenSpec detection, guardrails, explore-pack discovery, and G17/lane/lens dispatch metadata for plan. "+
-			"Writes the plan state file and <runId>.evidence/guardrails.md under gitignored .sdlc-v2/runs/. A call without resume or resolveTemplate starts a new run and deletes older runs' evidence for the branch. Optional: resume (post-compact recovery; reuses the active run, implies resolveTemplate, and fails when none exists). Returns runId, guardrailsFile and next. A failed state read, state write or guardrails write returns an infrastructure error; the evidence cleanup is best-effort.",
+			"Writes the plan state file and <runId>.evidence/guardrails.md and style-guide.md under gitignored .sdlc-v2/runs/. A call without resume or resolveTemplate starts a new run and deletes older runs' evidence for the branch. Optional: resume (post-compact recovery; reuses the active run, implies resolveTemplate, and fails when none exists). Returns runId, guardrailsFile, styleGuideFile and next. A failed state read, state write, guardrails write or style guide write returns an infrastructure error; the evidence cleanup is best-effort.",
 		mcpserver.Annotations{
 			Title:      "Prepare plan state and template",
 			ReadOnly:   true,

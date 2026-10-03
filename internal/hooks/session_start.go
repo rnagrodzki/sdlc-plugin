@@ -59,6 +59,7 @@ func sessionStart(_ HookCtx, event Event) (Output, error) {
 	header = append(header, safeStringsPhase("deferred-backlog", deferredBacklogPhase)...)
 
 	header = append(header, "Plan mode routing: always invoke plan via the Skill tool when plan mode is active.")
+	header = append(header, safeStringsPhase("communication-style", communicationStylePhase)...)
 
 	// Judgment call (Task 37, Ruling B leaves this open): the ruling only
 	// says to skip "the skill-count line" when resolvePluginRoot fails.
@@ -1252,4 +1253,50 @@ func shipConfigPhase() []string {
 		return nil
 	}
 	return []string{"Ship config: " + strings.Join(parts, ", ")}
+}
+
+// ---------------------------------------------------------------------------
+// Phase: communication style
+// ---------------------------------------------------------------------------
+
+// communicationStylePhase prints this session's chat communication style —
+// the plugin-wide [style] section (plus legacy [planStyle] keys), resolved
+// into a commstyle.Style the same way planResumeLines resolves one for the
+// post-compact plan banner (planStyleForHook) — so every sdlc skill in this
+// session follows the same audience, tone, writing standard, and language
+// without each one re-reading config itself (R18, D10). It runs on every
+// SessionStart source (startup, clear, compact): a plain resume instead
+// restores the earlier transcript, which already holds this block, so
+// hooks.json stays unchanged.
+//
+// Mirrors shipConfigPhase's read-and-degrade convention: an unresolvable
+// main root produces no lines; a missing or broken [style]/[planStyle]
+// section degrades to commstyle's defaults via planStyleForHook, never
+// failing the hook.
+func communicationStylePhase() []string {
+	root, err := worktree.MainRoot()
+	if err != nil {
+		return nil
+	}
+	return communicationStyleLines(planStyleForHook(root))
+}
+
+// communicationStyleLines renders a resolved Style as the session-start
+// header block: one settings line, one "  warning: <text>" line per
+// s.Warnings entry, then the <sdlc_communication_style> chat guide (not
+// Guide's plan writing guide — chat has no plan limits).
+func communicationStyleLines(s commstyle.Style) []string {
+	terms := "none"
+	if len(s.TechnicalTerms) > 0 {
+		terms = strings.Join(s.TechnicalTerms, ", ")
+	}
+	lines := []string{fmt.Sprintf(
+		"sdlc communication style: audience=%s  standard=%s  tone=%s  language=%s  terms=%s",
+		s.Audience, s.WritingStandard, s.Tone, s.Language, terms,
+	)}
+	for _, w := range s.Warnings {
+		lines = append(lines, "  warning: "+w)
+	}
+	lines = append(lines, commstyle.ChatGuide(s))
+	return lines
 }
