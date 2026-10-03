@@ -29,8 +29,8 @@ template's `## Required Sections`, in template order, and `plan` fills that skel
 moving sections. The list below is the conventional reading order. It places only the sections the
 active template does not list (the document header, `## Guardrail Compliance`, `## Out-of-scope
 OpenSpec tasks`, and any section a project template leaves out). Where it disagrees with the
-template — the shipped default puts `## Final Shape` before the tasks and `## Contract Examples`
-last — follow the template. Sections marked "required" must appear in every plan;
+template — the shipped default puts `## Final Shape` before the tasks and `## How to read a task
+Contract` last — follow the template. Sections marked "required" must appear in every plan;
 "optional"/"conditional" sections appear only when their trigger applies. PF10 (the active
 template's `## Required Sections` list, see `## Plan Template` below) checks presence only, not
 order.
@@ -40,7 +40,7 @@ order.
 3. **Research Findings** — what Step 1 exploration turned up (required, narrative)
 4. **Deviations & assumptions** — divergences from the literal request (required, table)
 5. **Key Decisions** — architecture/design choices (optional, narrative; recommended for 5+ tasks)
-6. **Contract Examples** — one worked `**Contract:**` block per column type used by the plan's tasks (required)
+6. **How to read a task Contract** — the Contract legend table (see `### Contract legend` below), with a `See` cell naming the real task that shows each key best (required)
 7. **Guardrail Compliance** — guardrail evaluation (optional; present when `plan.guardrails` configured)
 8. **Task 1…N** — per-task blocks (required)
 9. **Out-of-scope OpenSpec tasks** — intentional exclusions (optional; `--spec <change-name>` only)
@@ -300,9 +300,31 @@ artifact's column — the one its primary deliverable touches.
 - example: `R7` reads "The system SHALL expose a `tokenState` enum: `pending | active | expired`."
 ````
 
-A plan's own `## Contract Examples` section (R60) reuses these same three worked examples verbatim
-in shape — one entry per column type the plan's tasks actually use — substituting the plan's real
-task values for the placeholders above.
+### Contract legend
+
+A plan's own `## How to read a task Contract` section (R60) does NOT copy the three worked examples
+above into the plan — those stay here as author guidance. Instead it renders the legend table below
+verbatim, substituting each `See` cell with the real task (and a short parenthetical) from the
+plan's own tasks that shows that key best:
+
+```markdown
+## How to read a task Contract
+
+Each task has a **Contract:** block. It pins what the executor builds, so the executor does not guess.
+
+| Key | What it pins | Why the executor needs it | See |
+|---|---|---|---|
+| `shape` | exact code, schema, or doc text to add or change (code block, diff, or table) | builds it without design work | Task <n> (<what>) |
+| `names` | every new identifier | other tasks use the same names | Task <n> |
+| `mirror` | an existing file:line to copy the style from | output matches the codebase | Task <n> |
+| `decisions` | choices already made, with the reason | settled points stay settled | Task <n> |
+| `sync` | other tasks or files that change with this one | nothing drifts | Task <n> |
+| `example` | one concrete input -> output | proves the shape in one line | Task <n>, or "not used" |
+```
+
+A project template that still lists `## Contract Examples` as a required heading keeps working
+(no migration is needed) — PF10 checks the active template's own heading list, and Step 2 writes
+this same legend table under whichever heading the template names.
 
 ---
 
@@ -650,9 +672,9 @@ document.
   section being omitted).
 
 The shipped default declares `## Context`, `## Final Shape`, `## OpenSpec Appendix`,
-`## Contract Examples`, `## Deviations & assumptions`, and `## Verification Scorecard` as required
-headings, satisfying R57–R60, R47, and R40/R44 out of the box for projects that never customize the
-template.
+`## How to read a task Contract`, `## Deviations & assumptions`, and `## Verification Scorecard` as
+required headings, satisfying R57–R60, R47, and R40/R44 out of the box for projects that never
+customize the template.
 
 ## Communication Style
 
