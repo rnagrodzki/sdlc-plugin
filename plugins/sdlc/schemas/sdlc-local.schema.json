@@ -52,6 +52,12 @@
           "deprecated": true,
           "description": "Moved to [style]."
         },
+        "verbosity": {
+          "type": "string",
+          "enum": ["terse", "standard", "detailed"],
+          "deprecated": true,
+          "description": "No longer used; ignored with a warning. Set visualDensity instead."
+        },
         "visualDensity": {
           "type": "string",
           "enum": ["high", "balanced", "low"],

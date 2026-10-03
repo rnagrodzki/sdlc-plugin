@@ -958,11 +958,12 @@ A `done` plan run's state file is not deleted the moment it finishes — it is k
 | Contract shape | Yes | `.sdlc-v2/config.toml` `plan.tasks.contractShape` | Shape key string |
 | Plan template | Yes | `.sdlc-v2/plan-template.md` | Project-local override of default template |
 | Plans directory | Yes | `.claude/settings.json` `plansDirectory` | Claude Code native setting |
-| Audience | Yes | `.sdlc-v2/local.toml` `planStyle.audience` | Per-developer (gitignored) |
+| Audience | Yes | `.sdlc-v2/local.toml` `style.audience` (legacy: `planStyle.audience`) | Per-developer (gitignored) |
 | Writing standard | Yes | `.sdlc-v2/local.toml` `style.writingStandard` (legacy: `planStyle.writingStandard`) | Per-developer (gitignored) |
 | Tone | Yes | `.sdlc-v2/local.toml` `style.tone` (legacy: `planStyle.tone`) | Per-developer (gitignored) |
 | Visual density | Yes | `.sdlc-v2/local.toml` `planStyle.visualDensity` | Per-developer (gitignored) |
 | Language | Yes | `.sdlc-v2/local.toml` `style.language` (legacy: `planStyle.language`) | Per-developer (gitignored) |
+| Technical terms | Yes | `.sdlc-v2/local.toml` `style.technicalTerms` (legacy: `planStyle.technicalTerms`) | Per-developer (gitignored); code and product names exempt from the strict STE word checks |
 | Narrative rules | Yes | `.sdlc-v2/local.toml` `planStyle.narrativeRules` | Per-developer (gitignored) |
 | Custom instructions | Yes | `.sdlc-v2/local.toml` `planStyle.instructions` | Per-developer (gitignored); one instruction per array entry |
 | Style limits | No | `internal/commstyle` `LimitsFor` | Derived from the keys above |

@@ -81,6 +81,12 @@ func TestSteRules(t *testing.T) {
 		{"instruction 21 words fails", "instruction-length", words("Delete", 21), "", true},
 		{"instruction 20 words pass", "instruction-length", words("Delete", 20), "", false},
 		{"condition-first instruction 21 words fails", "instruction-length", "If the run fails, delete " + nWords(16) + ".", "", true},
+		// "use" and "run" are also common nouns: they start an instruction
+		// only when an object starter or CODE follows them.
+		{"noun-like verb before article 21 words fails", "instruction-length", "Use the " + nWords(19) + ".", "", true},
+		{"noun-like verb before CODE 21 words fails", "instruction-length", "Run `go test` " + nWords(19) + ".", "", true},
+		{"noun-like verb before plain word 21 words pass", "instruction-length", words("Use", 21), "", false},
+		{"verb followed by is 21 words pass", "instruction-length", "Delete is " + nWords(19) + ".", "", false},
 
 		{"description 26 words fails", "description-length", words("The", 26), "", true},
 		{"description 25 words pass", "description-length", words("The", 25), "", false},

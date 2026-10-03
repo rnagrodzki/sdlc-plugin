@@ -5,9 +5,10 @@ import (
 )
 
 // ChatStyle is the plugin-wide communication style a skill follows in chat
-// and questions. It is attached to execute_state's and ship_state's "read"
-// output (the mandatory first call of the execute and ship skills) so a
-// resumed run carries the same audience, tone, writing standard, and
+// and questions. It is attached as "style" to the output of commit_prepare,
+// pr_prepare, review_prepare, received_review_prepare, and the "read"
+// action of execute_state and ship_state (the mandatory first call of the
+// execute and ship skills), so each skill, including a resumed run, carries the same audience, tone, writing standard, and
 // language as the session-start block (internal/hooks/session_start.go),
 // without a second config read. It is the chat-relevant subset of
 // commstyle.Style: no plan-only visualDensity/narrativeRules/instructions/
@@ -22,8 +23,8 @@ type ChatStyle struct {
 	Warnings        []string `json:"warnings"` // [] when none
 }
 
-// chatStyleFor resolves the communication style execute_state's and
-// ship_state's "read" action attach to their output: the "style" and
+// chatStyleFor resolves the communication style the tools above attach to
+// their output: the "style" and
 // "planStyle" config sections (readStyleSection, shared with plan_prepare's
 // loadPlanStyle), merged by commstyle.FromSections. Never returns an
 // error: a read failure (malformed local.toml) falls back to commstyle's

@@ -955,7 +955,7 @@ Where `<verdict line>` is the verbatim verdict label from the scorecard: *"All c
 
 **Style report:** Call `validate({ action: "plan_style", file: "<plan path>", template: "<activeTemplatePath>" })` (omit `template` on a lightweight plan). Print `styleReport.sections` as a table (`Section | Words | Prose | Long sent. | Jargon | Status`), then `Banned phrases:` with each hit or `none`, then `STE hits:` with each `styleReport.steHits` entry or `none`, then `Diagram contrast (PF14):` with each `styleReport.diagramContrast` entry or `none`, then each `styleReport.warnings` line.
 
-If `styleReport.instructions` (from the **Style report** call below; read fresh from `local.toml`) is not empty, print the instruction self-check table and fix any "no" row before continuing. Check each instruction against the plan file, not from memory. The "Where" column must hold evidence you checked: the plan file's `path:line` for each place that shows the instruction was followed, or a grep command over the plan file plus a one-line result you read. A section name alone is not evidence; mark such a row "no":
+If `styleReport.instructions` (from the **Style report** call above; read fresh from `local.toml`) is not empty, print the instruction self-check table and fix any "no" row before continuing. Check each instruction against the plan file, not from memory. The "Where" column must hold evidence you checked: the plan file's `path:line` for each place that shows the instruction was followed, or a grep command over the plan file plus a one-line result you read. A section name alone is not evidence; mark such a row "no":
 
 ```markdown
 | # | Instruction | Followed? | Where |

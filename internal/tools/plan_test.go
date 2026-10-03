@@ -2573,8 +2573,9 @@ func TestPlanMark_Checkpoint_NextIncludesStyleInstructions_ReadFresh(t *testing.
 }
 
 // TestPlanMark_Checkpoint_LastReviewRound verifies Next gains the last-round
-// sentence only at step "5" once iteration reaches maxReviewRounds (5), and
-// not at an earlier iteration or a different step.
+// sentence only at step "5" once iteration reaches maxReviewRounds (5), a
+// past-the-limit sentence at an iteration above it, and neither at an
+// earlier iteration or a different step.
 func TestPlanMark_Checkpoint_LastReviewRound(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
@@ -2600,6 +2601,15 @@ func TestPlanMark_Checkpoint_LastReviewRound(t *testing.T) {
 	}
 	if !strings.Contains(last.Next, lastRound) {
 		t.Errorf("Next at step 5 iteration 5 = %q, want to contain %q", last.Next, lastRound)
+	}
+
+	past, err := planMark(dir, dir, PlanMarkIn{Marker: "checkpoint", Data: map[string]any{"step": "5", "iteration": float64(6)}})
+	if err != nil {
+		t.Fatalf("planMark(checkpoint) iteration=6: %v", err)
+	}
+	pastLimit := " Review round 6 is past the limit of 5 rounds. If blocking issues remain, ask the user with AskUserQuestion; do not start another round."
+	if !strings.Contains(past.Next, pastLimit) {
+		t.Errorf("Next at step 5 iteration 6 = %q, want to contain %q", past.Next, pastLimit)
 	}
 
 	otherStep, err := planMark(dir, dir, PlanMarkIn{Marker: "checkpoint", Data: map[string]any{"step": "3", "iteration": float64(5)}})

@@ -679,8 +679,8 @@ customize the template.
 ## Communication Style
 
 Narrative sections follow the writing guide that `plan_prepare` returns as `style.writingGuide`
-(built from `[planStyle]` in `.sdlc-v2/local.toml`). The guide sets the reader level, tone,
-writing standard, and visual density. G22 (Step 3) judges the rules; PF13 (`validate`) measures
+(built from `[style]` and `[planStyle]` in `.sdlc-v2/local.toml`). `[style]` sets the reader
+level, tone, and writing standard; `[planStyle]` sets the visual density. G22 (Step 3) judges the rules; PF13 (`validate`) measures
 prose share, paragraph, list, and sentence length, jargon share, and banned phrases.
 See `docs/skills/plan.md` § Plan writing style for settings and examples.
 

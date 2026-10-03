@@ -55,12 +55,17 @@ var steBeForms = map[string]bool{
 
 // steIngVerbTriggers are the words that make the "-ing" word right after
 // them a verb: prepositions ("before starting") and forms of "be"
-// ("is running").
-var steIngVerbTriggers = map[string]bool{
-	"before": true, "after": true, "by": true, "for": true, "when": true,
-	"while": true, "without": true, "on": true, "in": true, "of": true,
-	"is": true, "are": true, "was": true, "were": true, "be": true, "been": true,
-}
+// (steBeForms, "is running").
+var steIngVerbTriggers = func() map[string]bool {
+	m := map[string]bool{
+		"before": true, "after": true, "by": true, "for": true, "when": true,
+		"while": true, "without": true, "on": true, "in": true, "of": true,
+	}
+	for w := range steBeForms {
+		m[w] = true
+	}
+	return m
+}()
 
 // steIngNonVerbs end in "-ing" but are never "-ing" verb forms.
 var steIngNonVerbs = map[string]bool{
@@ -618,6 +623,8 @@ func maskSteTerms(s string, terms []*regexp.Regexp) string {
 	return s
 }
 
+// steWordBoundary reports whether s[start:end] is a whole word: the runes
+// right before start and at end are not letters, digits, or underscores.
 func steWordBoundary(s string, start, end int) bool {
 	isWord := func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' }
 	if start > 0 {

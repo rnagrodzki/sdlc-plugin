@@ -242,24 +242,24 @@ func TestMeasureProseLines(t *testing.T) {
 	}, "\n")
 	got := collectProseLines(classifyLines(content))
 	type row struct {
-		line, para         int
-		listItem, numbered bool
+		line, para int
+		numbered   bool
 	}
 	want := []row{
-		{1, 0, false, false},
-		{2, 0, false, false},
-		{4, 1, true, true},
-		{5, 2, true, true},
-		{6, 3, true, false},
-		{7, 3, false, false},
-		{9, 4, false, false},
+		{1, 0, false},
+		{2, 0, false},
+		{4, 1, true},
+		{5, 2, true},
+		{6, 3, false},
+		{7, 3, false},
+		{9, 4, false},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("prose lines = %d, want %d: %+v", len(got), len(want), got)
 	}
 	for i, w := range want {
 		g := got[i]
-		if g.Line != w.line || g.Paragraph != w.para || g.ListItem != w.listItem || g.Numbered != w.numbered {
+		if g.Line != w.line || g.Paragraph != w.para || g.Numbered != w.numbered {
 			t.Errorf("prose line %d = %+v, want %+v", i, g, w)
 		}
 	}

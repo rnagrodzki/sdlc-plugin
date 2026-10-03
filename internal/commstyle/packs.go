@@ -143,9 +143,16 @@ func buildDensityPack(maxListItems int) string {
 	return fmt.Sprintf("- Compare 2+ options with 2+ attributes in a table.\n- Show each changed flow as a before/after Mermaid diagram.\n- Keep lists to %d items or fewer.\n- %s", maxListItems, mermaidContrastRule)
 }
 
+// standardExample is one same-content rewrite: the text before and after
+// a writing standard is applied.
+type standardExample struct {
+	Before string
+	After  string
+}
+
 // standardExamples hold one same-content before/after pair per
 // WritingStandards value, shown in the guide's <example> tag.
-var standardExamples = map[string][2]string{
+var standardExamples = map[string]standardExample{
 	"ste": {
 		"The validator, which is responsible for checking audience values, will reject values that are unknown.",
 		"The validator checks each audience value. It rejects a value that is not in the list.",

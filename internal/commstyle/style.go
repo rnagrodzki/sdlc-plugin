@@ -30,14 +30,14 @@ const (
 	DefaultLanguage        = "English"
 )
 
-// SharedKeys are style keys every sdlc skill reads; they live in [style],
-// with a legacy fallback to [planStyle] (warning, value still works).
-var SharedKeys = []string{"audience", "writingStandard", "tone", "language", "technicalTerms"}
-
-// PlanOnlyKeys are style keys only the plan skill reads; they live in
-// [planStyle]. A value found under [style] instead is ignored with a
-// warning.
-var PlanOnlyKeys = []string{"visualDensity", "narrativeRules", "instructions"}
+// Style keys come in two groups, resolved one by one in FromSections:
+//
+//   - Shared keys (audience, writingStandard, tone, language,
+//     technicalTerms) are read by every sdlc skill. They live in [style],
+//     with a legacy fallback to [planStyle] (warning, value still works).
+//   - Plan-only keys (visualDensity, narrativeRules, instructions) are read
+//     only by the plan skill. They live in [planStyle]; a value found under
+//     [style] instead is ignored with a warning.
 
 // directBannedPhrases are the hedging/flattery phrases flagged when
 // tone is "direct". tone "neutral" carries no banned phrases.
@@ -247,7 +247,7 @@ func validateOrWarn(section, key, raw string, allowed []string, def string, warn
 	return def
 }
 
-// resolveEnumShared resolves one SharedKeys enum value: [style] first,
+// resolveEnumShared resolves one shared-key enum value: [style] first,
 // then a legacy [planStyle] fallback (with a "moved" warning), then def.
 func resolveEnumShared(style, plan map[string]any, key string, allowed []string, def string, warnings *[]string) string {
 	if raw, ok := stringValue(style, key); ok {
@@ -260,7 +260,7 @@ func resolveEnumShared(style, plan map[string]any, key string, allowed []string,
 	return def
 }
 
-// resolveTextShared resolves one SharedKeys free-text value (no enum
+// resolveTextShared resolves one shared-key free-text value (no enum
 // check): [style] first, then a legacy [planStyle] fallback (with a
 // "moved" warning), then def.
 func resolveTextShared(style, plan map[string]any, key string, def string, warnings *[]string) string {
@@ -305,7 +305,7 @@ func cleanTerms(raw []any) []string {
 	return out
 }
 
-// resolvePlanOnlyEnum resolves one PlanOnlyKeys enum value from
+// resolvePlanOnlyEnum resolves one plan-only enum value from
 // [planStyle] only. A same-named key under [style] is ignored, with a
 // "belongs in [planStyle]" warning.
 func resolvePlanOnlyEnum(style, plan map[string]any, key string, allowed []string, def string, warnings *[]string) string {
@@ -318,9 +318,8 @@ func resolvePlanOnlyEnum(style, plan map[string]any, key string, allowed []strin
 	return def
 }
 
-// resolvePlanOnlyList resolves one PlanOnlyKeys list value from
-// [planStyle] only, mirroring the narrativeRules/instructions loops at
-// internal/tools/plan.go:659-676. A same-named key under [style] is
+// resolvePlanOnlyList resolves one plan-only list value from
+// [planStyle] only. A same-named key under [style] is
 // ignored, with a "belongs in [planStyle]" warning. Non-strings are
 // always dropped; when trimAndDropBlank is true, values are also
 // trimmed and blanks are dropped (the instructions behavior).

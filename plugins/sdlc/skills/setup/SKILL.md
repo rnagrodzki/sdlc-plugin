@@ -463,7 +463,7 @@ For each id in `selectedIds`, in canonical `internal/setupmeta.Sections()` order
 
    | `delegatedTo` value | Dispatcher |
    |---|---|
-   | (empty) | Generic field-loop (3.G below) — dispatch one AskUserQuestion per `section.fields[]` entry, optionally gated by `section.confirmDetected`. Applies to `version`, `ship`, `jira`, `review`, `received-review`, `github`, `plan-style`, `plan-tasks`, `automation`. |
+   | (empty) | Generic field-loop (3.G below) — dispatch one AskUserQuestion per `section.fields[]` entry, optionally gated by `section.confirmDetected`. Applies to `version`, `ship`, `jira`, `review`, `received-review`, `github`, `communication-style`, `plan-style`, `plan-tasks`, `automation`. |
    | `'inline-commit-builder'` | Inline commit-pattern builder (3.commit below). |
    | `'inline-pr-builder'` | Inline PR-pattern builder (3.pr below). |
    | `'setup-dimensions'` | Run scan phase (3.S below), then read and follow `@setup-dimensions.md`, passing scan results as "Scan Input". Pass through `--add` and `--no-copilot` if present. |
@@ -480,7 +480,7 @@ config files" sub-section at the end of Step 3.
 #### 3.G. Generic field loop (`delegatedTo` empty)
 
 For sections with no `delegatedTo` (`version`, `ship`, `jira`, `review`, `received-review`,
-`github`, `plan-style`, `plan-tasks`, `automation`):
+`github`, `communication-style`, `plan-style`, `plan-tasks`, `automation`):
 
 If `section.confirmDetected === true` (currently only `version`), dispatch a meta-prompt
 FIRST using AskUserQuestion:

@@ -67,7 +67,6 @@ type proseLine struct {
 	Line      int    // 1-based plan line
 	Text      string // inline code spans replaced by "CODE"; list marker removed
 	Paragraph int    // index of the prose paragraph (run of consecutive prose lines; a list item starts a new one)
-	ListItem  bool   // true for a list item of more than 30 words
 	Numbered  bool   // true for a "N. " or "- [ ] " item (instruction candidate)
 }
 
@@ -257,7 +256,6 @@ func collectLines(lines []planLine, keep func(planLine) bool) []proseLine {
 			Line:      pl.number,
 			Text:      pl.text,
 			Paragraph: para,
-			ListItem:  pl.listItem,
 			Numbered:  pl.listItem && pl.numbered,
 		})
 	}
@@ -406,6 +404,7 @@ func splitSentences(text string) []string {
 	return appendSentence(out, string(runes[start:]))
 }
 
+// appendSentence appends s, trimmed, to out unless it holds no words.
 func appendSentence(out []string, s string) []string {
 	s = strings.TrimSpace(s)
 	if countWords(s) == 0 {
@@ -506,6 +505,7 @@ func replaceCodeSpans(s string) string {
 	return b.String()
 }
 
+// runLen returns the number of consecutive backticks in s starting at i.
 func runLen(s string, i int) int {
 	n := 0
 	for i+n < len(s) && s[i+n] == '`' {

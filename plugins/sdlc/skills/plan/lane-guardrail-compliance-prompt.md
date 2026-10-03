@@ -35,7 +35,7 @@ Produce the `## Guardrail Compliance` table with per-guardrail Status (PASS/FAIL
 **G22 — Style compliance:** Read `{STYLE_GUIDE_FILE}`. Then:
 1. Call `validate({action: "plan_style", file: "{PLAN_FILE_PATH}"})`. Report each PF13 line as one issue: gateId G22, severity error, blocking true.
 2. Judge the rules Go cannot measure: BLUF opening per section, prose describes function not mechanism, tone, one term for one meaning, reader depth for the audience.
-3. If the guide says `writingStandard="ste"`, also judge the STE rules Go cannot measure: noun clusters of 3 words or fewer, one meaning per word, articles kept, condition first in instructions, warnings start with the command, one clear referent per pronoun.
+3. If the guide says `writingStandard="ste"`, also judge the STE rules Go cannot measure: noun clusters of 3 words or fewer, one meaning per word, articles kept, condition first in instructions, warnings start with the command, one clear referent per pronoun, only the 5 allowed verb forms, one instruction per sentence, cause and effect as two sentences, a vertical list for 3 or more items.
 4. Judge each item of `<custom_instructions>` in the guide. A missing item is one issue: severity error.
    Clear break -> severity error. Borderline -> severity warning.
 5. Cite the plan line for each issue.

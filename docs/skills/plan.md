@@ -291,9 +291,12 @@ contrast of 4.5:1 or more. No pastel fills.
 
 ### How the check works
 
-- `validate({action:"plan_format", final:true})` runs **PF13** (style
-  limits) and **PF14** (diagram colors) with every other plan-format check,
-  at handoff. A PF13 or PF14 failure blocks the plan.
+- `validate({action:"plan_format"})` runs **PF13** (style limits) and
+  **PF14** (diagram colors, whole file) on every call, with every other
+  plan-format check; `final:true` adds PF9 and PF10. A PF13 or PF14
+  failure blocks the plan at handoff.
+- The PostToolUse hook runs **PF14** on every plan-file edit, on the
+  edited text only. It does not run PF13.
 - `validate({action:"plan_style"})` runs PF13 alone and always returns a
   `styleReport` — pass or fail — with the settings in effect, the numeric
   limits, per-section numbers, every banned-phrase and STE hit, the diagram

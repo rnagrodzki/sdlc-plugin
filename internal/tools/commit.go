@@ -93,7 +93,7 @@ type CommitPrepareOut struct {
 	BranchGuard       CommitBranchGuard   `json:"branchGuard"`
 	Next              string              `json:"next"`
 	ManifestPath      string              `json:"manifestPath" jsonschema_description:"Path to a JSON manifest file holding this entire result, written to disk so the caller (e.g. the commit skill dispatching sdlc:commit-orchestrator) can pass the path to a subagent instead of round-tripping the full JSON through its own context."`
-	Style             *ChatStyle          `json:"style,omitempty" jsonschema_description:"The plugin-wide communication style; follow style.guide in chat and questions. Tool output only — never written to the manifest, since sdlc:commit-orchestrator (a subagent with no conversation context) must draft the commit message itself, not apply chat style to it (D12)."`
+	Style             *ChatStyle          `json:"style,omitempty" jsonschema_description:"The plugin-wide communication style; follow style.guide in chat and questions. Tool output only — never written to the manifest, since sdlc:commit-orchestrator (a subagent with no conversation context) must draft the commit message itself, not apply chat style to it."`
 }
 
 // commitPrepare is the core logic, separated for testability.
@@ -294,7 +294,7 @@ func removeStaleTempDirs(tempRoot, prefix, keep string, now time.Time) {
 // file it is about to write) to JSON and writes it via the fsseam, returning
 // the path.
 func writeCommitManifest(out CommitPrepareOut) (string, error) {
-	out.Style = nil // the commit-orchestrator subagent must not apply chat style to the commit message (D12)
+	out.Style = nil // the commit-orchestrator subagent must not apply chat style to the commit message
 	return writeTempJSON(commitManifestPrefix, "manifest", func(path string) any {
 		out.ManifestPath = path
 		return out

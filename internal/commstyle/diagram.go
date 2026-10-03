@@ -132,6 +132,7 @@ func relativeLuminance(hex string) (float64, bool) {
 	if !ok {
 		return 0, false
 	}
+	// normalizeHex returned six hex digits, so these parses cannot fail.
 	r, _ := strconv.ParseUint(full[0:2], 16, 8)
 	g, _ := strconv.ParseUint(full[2:4], 16, 8)
 	b, _ := strconv.ParseUint(full[4:6], 16, 8)

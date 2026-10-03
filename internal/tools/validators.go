@@ -487,7 +487,7 @@ func checkPF13(style PlanStyle, rep commstyle.Report) pfCheck {
 	if len(issues) == 0 {
 		return pfPass("PF13", "Plan style limits met")
 	}
-	headline := fmt.Sprintf("Plan style limits from [planStyle] not met (visualDensity=%s, audience=%s, writingStandard=%s):",
+	headline := fmt.Sprintf("Plan style limits from [style] and [planStyle] not met (visualDensity=%s, audience=%s, writingStandard=%s):",
 		style.VisualDensity, style.Audience, style.WritingStandard)
 	return pfFail("PF13", pfIssueList(headline, issues), pf13Fix)
 }
@@ -530,12 +530,6 @@ func DiagramContrastFindings(filePath, text string) []discovery.Finding {
 // returned as findings plus a StyleReport on every call, pass or fail.
 // PF14 hits appear in styleReport.diagramContrast, not in findings.
 func validatePlanStyle(root string, in ValidateIn) ([]discovery.Finding, *StyleReport, error) {
-	if in.File == "" {
-		return nil, nil, &mcpserver.DomainError{
-			Msg:        "plan_style: file is required",
-			Suggestion: "Pass the plan file path in file, e.g. file: \"~/.claude/plans/x.md\".",
-		}
-	}
 	filePath, content, err := readPlanFile(root, in.File, "plan_style")
 	if err != nil {
 		return nil, nil, err

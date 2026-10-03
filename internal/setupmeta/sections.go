@@ -336,29 +336,30 @@ var ShipFields = []Field{
 	},
 }
 
-// styleFields holds the 5 keys shared by every sdlc skill
-// (commstyle.SharedKeys), stored under [style] in .sdlc-v2/local.toml.
+// styleFields holds the 5 keys shared by every sdlc skill (audience,
+// writingStandard, tone, language, technicalTerms), stored under [style]
+// in .sdlc-v2/local.toml.
 // Backs the "communication-style" Section below.
 var styleFields = []Field{
 	{
 		Name:        "audience",
-		Label:       "Plan reader level",
+		Label:       "Reader level",
 		Type:        "enum",
 		Options:     commstyle.Audiences,
 		Default:     commstyle.DefaultAudience,
-		Description: "Who reads the plan. technical: mechanism in prose. functional (default): behavior, function, impact; code only in visuals. executive: impact, cost, risk. general: everyday words. beginner: one idea and one example per concept.",
+		Description: "Who reads skill explanations and plan narrative sections. technical: mechanism in prose. functional (default): behavior, function, impact; code only in visuals. executive: impact, cost, risk. general: everyday words. beginner: one idea and one example per concept.",
 	},
 	{
 		Name:        "writingStandard",
-		Label:       "Plan writing standard",
+		Label:       "Writing standard",
 		Type:        "enum",
 		Options:     commstyle.WritingStandards,
 		Default:     commstyle.DefaultWritingStandard,
-		Description: "Sentence rules for narrative sections. ste: ASD-STE100. plain-language: US federal plain language. developer-docs: Google developer style. smart-brevity: lede plus why it matters.",
+		Description: "Sentence rules for narrative and chat text. ste: ASD-STE100. plain-language: US federal plain language. developer-docs: Google developer style. smart-brevity: lede plus why it matters.",
 	},
 	{
 		Name:        "tone",
-		Label:       "Plan tone",
+		Label:       "Tone",
 		Type:        "enum",
 		Options:     commstyle.Tones,
 		Default:     commstyle.DefaultTone,
@@ -366,11 +367,11 @@ var styleFields = []Field{
 	},
 	{
 		Name:        "language",
-		Label:       "Plan language",
+		Label:       "Language",
 		Type:        "string",
 		Options:     nil,
 		Default:     commstyle.DefaultLanguage,
-		Description: "Language of the plan text. Sentence-length limits apply only to English.",
+		Description: "Language of skill explanations and plan text. Sentence-length limits apply only to English.",
 	},
 	{
 		Name:        "technicalTerms",
@@ -382,8 +383,8 @@ var styleFields = []Field{
 	},
 }
 
-// planStyleFields holds the 3 keys only the plan skill reads
-// (commstyle.PlanOnlyKeys), stored under [planStyle] in .sdlc-v2/local.toml.
+// planStyleFields holds the 3 keys only the plan skill reads (visualDensity,
+// narrativeRules, instructions), stored under [planStyle] in .sdlc-v2/local.toml.
 var planStyleFields = []Field{
 	{
 		Name:        "visualDensity",

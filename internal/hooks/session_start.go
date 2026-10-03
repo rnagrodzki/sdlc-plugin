@@ -1264,7 +1264,7 @@ func shipConfigPhase() []string {
 // into a commstyle.Style the same way planResumeLines resolves one for the
 // post-compact plan banner (planStyleForHook) — so every sdlc skill in this
 // session follows the same audience, tone, writing standard, and language
-// without each one re-reading config itself (R18, D10). It runs on every
+// without each one re-reading config itself. It runs on every
 // SessionStart source (startup, clear, compact): a plain resume instead
 // restores the earlier transcript, which already holds this block, so
 // hooks.json stays unchanged.

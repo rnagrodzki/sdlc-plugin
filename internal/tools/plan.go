@@ -662,17 +662,16 @@ func readStyleSection(mainRoot, name string) (map[string]any, string) {
 	return section, ""
 }
 
-// withGuide fills in the derived fields of a commstyle.Style built by
-// FromSections: the numeric Limits and the rendered plan writing guide.
+// withGuide fills in the rendered plan writing guide of a commstyle.Style
+// built by FromSections (which already set the numeric Limits).
 func withGuide(s commstyle.Style) commstyle.Style {
-	s.Limits = commstyle.LimitsFor(s)
 	s.WritingGuide = commstyle.Guide(s)
 	return s
 }
 
 // loadPlanStyle reads the "style" and "planStyle" config sections and
-// merges them with commstyle.FromSections, then fills in the derived
-// Limits and WritingGuide with withGuide. A read error on either section
+// merges them with commstyle.FromSections (which sets Limits), then fills
+// in the WritingGuide with withGuide. A read error on either section
 // is reported in the returned string (both are surfaced, space-joined,
 // when both fail); the Style itself always falls back to commstyle's
 // defaults on a read error, mirroring loadGuardrails' benign-absence
@@ -1950,7 +1949,7 @@ func validateCheckpointData(data map[string]any) (PlanCheckpoint, error) {
 
 // checkpointNext builds the "checkpoint" marker's Next instruction: the
 // step-continuation sentence, a last-round warning at the Step 5 review-loop
-// limit (maxReviewRounds), plus the full custom-instructions text when the
+// limit (maxReviewRounds) or a past-the-limit warning after it, plus the full custom-instructions text when the
 // "planStyle" config section has any. The section is read fresh on every
 // call, never cached, so an edit to local.toml takes effect at the next
 // checkpoint without restarting the MCP server.
@@ -1958,6 +1957,8 @@ func checkpointNext(mainRoot string, cp PlanCheckpoint) string {
 	next := fmt.Sprintf("Checkpoint saved at step %s. Continue step %s.", cp.Step, cp.Step)
 	if cp.Step == "5" && cp.Iteration == maxReviewRounds {
 		next += fmt.Sprintf(" This is review round %d of %d, the last round. If blocking issues remain after it, ask the user with AskUserQuestion; do not start round %d.", maxReviewRounds, maxReviewRounds, maxReviewRounds+1)
+	} else if cp.Step == "5" && cp.Iteration > maxReviewRounds {
+		next += fmt.Sprintf(" Review round %d is past the limit of %d rounds. If blocking issues remain, ask the user with AskUserQuestion; do not start another round.", cp.Iteration, maxReviewRounds)
 	}
 	style, styleErr := loadPlanStyle(mainRoot)
 	if len(style.Instructions) > 0 {

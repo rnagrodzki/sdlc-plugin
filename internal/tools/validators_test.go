@@ -2204,7 +2204,7 @@ func TestValidatePlanFormat_PF13ProseShareFails(t *testing.T) {
 	if f.Severity != "error" {
 		t.Errorf("severity = %q, want error", f.Severity)
 	}
-	if !strings.HasPrefix(f.Message, "Plan style limits from [planStyle] not met (visualDensity=high,") {
+	if !strings.HasPrefix(f.Message, "Plan style limits from [style] and [planStyle] not met (visualDensity=high,") {
 		t.Errorf("headline missing or wrong:\n%s", f.Message)
 	}
 	if !strings.Contains(f.Message, "\n- Context: prose share 1.00 > 0.30") {
@@ -2386,7 +2386,10 @@ func TestValidatePlanStyle_MissingFile(t *testing.T) {
 	if !errors.As(err, &de) {
 		t.Fatalf("err = %v, want *mcpserver.DomainError", err)
 	}
-	if want := "Pass the plan file path in file, e.g. file: \"~/.claude/plans/x.md\"."; de.Suggestion != want {
+	if want := "plan_style: file is required"; de.Msg != want {
+		t.Errorf("msg = %q, want %q", de.Msg, want)
+	}
+	if want := "Pass file: the path to the plan .md file, absolute or relative to the project root."; de.Suggestion != want {
 		t.Errorf("suggestion = %q, want %q", de.Suggestion, want)
 	}
 }
@@ -2495,6 +2498,32 @@ func TestValidatePlanStyle_Instructions(t *testing.T) {
 	got := runValidate(t, root, ValidateIn{Action: "plan_style", File: "plan.md"}).StyleReport.Instructions
 	if len(got) != 1 || got[0] != "A" {
 		t.Errorf("instructions = %#v, want [\"A\"] (read fresh on every call)", got)
+	}
+}
+
+// TestValidatePlanStyle_ConfigReadErrorWarns verifies a malformed
+// local.toml does not fail the call: the style falls back to defaults and
+// the read error reaches styleReport.warnings.
+func TestValidatePlanStyle_ConfigReadErrorWarns(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "plan.md"), goodPlan)
+	writeLocalToml(t, root, "[style\naudience = [\n")
+
+	rep := runValidate(t, root, ValidateIn{Action: "plan_style", File: "plan.md"}).StyleReport
+	if rep == nil {
+		t.Fatal("styleReport = nil, want a report despite the read error")
+	}
+	if got := rep.Settings["audience"]; got != "functional" {
+		t.Errorf("audience = %q, want functional (default)", got)
+	}
+	found := false
+	for _, w := range rep.Warnings {
+		if strings.Contains(w, "Failed to read style config: ") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("warnings = %v, want a \"Failed to read style config: \" entry", rep.Warnings)
 	}
 }
 

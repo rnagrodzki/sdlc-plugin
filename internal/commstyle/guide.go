@@ -128,5 +128,5 @@ func exampleBody(writingStandard string) string {
 	if !ok {
 		pair = standardExamples[DefaultWritingStandard]
 	}
-	return "Before: " + pair[0] + "\nAfter: " + pair[1]
+	return "Before: " + pair.Before + "\nAfter: " + pair.After
 }

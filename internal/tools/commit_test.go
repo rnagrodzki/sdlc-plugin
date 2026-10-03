@@ -220,7 +220,7 @@ func TestCommitPrepare_ManifestPath(t *testing.T) {
 // TestCommitPrepare_ManifestHasNoStyle verifies that while the tool output
 // carries Style, the manifest written to disk does not: sdlc:commit-orchestrator
 // reads that manifest with no conversation context and must draft the commit
-// message itself, never applying chat style to it (D12).
+// message itself, never applying chat style to it.
 func TestCommitPrepare_ManifestHasNoStyle(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
@@ -247,7 +247,7 @@ func TestCommitPrepare_ManifestHasNoStyle(t *testing.T) {
 		t.Fatalf("decode manifest file %q: %v", out.ManifestPath, err)
 	}
 	if _, ok := m["style"]; ok {
-		t.Errorf("manifest has a \"style\" key, want it stripped (D12): %v", m["style"])
+		t.Errorf("manifest has a \"style\" key, want it stripped: %v", m["style"])
 	}
 }
 
