@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.2] - 2026-10-03
+
+- Add internal/commstyle package for ASD-STE100 style checking, writing-guide generation, and style metrics for plan documents
+- Added OpenSpec specs for user-input tracking and report layout, and archived the completed plan-openspec-and-run-improvements change
+- Added a base-branch-aware pipeline with OpenSpec staging and base-sync support
+- Apply 5 automated hardening passes that strengthened guardrails, review dimensions, and Copilot instructions based on this change's own review findings
+- Clarified release-workflow sync wording
+- Fixed worktree-aware tooling for setup_init, setup_write_sections, execute-report duration, and ship-report user-input recording, with new test coverage for setup_init's root splitting
+- Hardened the release pipeline: safer promote-release (env-based inputs, active-worktree-aware reads), more robust release-on-main failure/ref/concurrency handling, and changelog validation against the latest final tag
+- Removed duplicated retag-release logic, now consolidated into a single implementation
+- Update related schemas and templates to support the new style checks
+- Wire style checks into the plan, execute, review, commit, and PR skills and their MCP tooling
+
 ## [0.3.1] - 2026-10-02
 
 ### RC 1
