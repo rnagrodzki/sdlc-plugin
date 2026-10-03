@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/commstyle"
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/frontmatter"
@@ -683,11 +684,43 @@ func planResumeLines(root, branch, source string) []string {
 		planFile = p
 	}
 
-	return []string{
+	style := planStyleForHook(root)
+	lines := []string{
 		fmt.Sprintf("Active plan (post-compact): step %s, branch %s; plan file: %s", step, branch, planFile),
 		"  If the sdlc:plan skill instructions are not in context, invoke the sdlc:plan skill first; its Session recovery rule selects the resume path.",
 		fmt.Sprintf("  Resume with: plan_prepare({resume:true, resolveTemplate:true}) then plan_support({action:\"evidence_digest\", runId:\"%s\"})", state.RunID(st)),
 	}
+	return append(lines, instructionLines(style.Instructions)...)
+}
+
+// planStyleForHook resolves this session's communication style for the
+// post-compact plan banner below. A missing or unreadable [style]/
+// [planStyle] section (no config yet, corrupt local.toml) degrades to
+// commstyle's defaults via FromSections(nil, nil) — the read error is
+// discarded, not propagated — matching every other phase in this file's
+// fail-open convention: a config problem must never fail the hook.
+func planStyleForHook(root string) commstyle.Style {
+	shared, _ := config.ReadSection(root, "style")
+	plan, _ := config.ReadSection(root, "planStyle")
+	return commstyle.FromSections(shared, plan)
+}
+
+// instructionLines renders the post-compact banner's custom-instructions
+// block from a resolved Style's Instructions list, each line carrying the
+// same "  " resume-detail indent as the two lines above it in
+// planResumeLines. An empty list (none configured, or a style read that
+// degraded to defaults) prints one line; a non-empty list prints a header
+// followed by one numbered line per instruction.
+func instructionLines(instructions []string) []string {
+	if len(instructions) == 0 {
+		return []string{"  Custom plan instructions: none configured."}
+	}
+	lines := make([]string, 0, len(instructions)+1)
+	lines = append(lines, "  Custom plan instructions (follow them in every step):")
+	for i, instr := range instructions {
+		lines = append(lines, fmt.Sprintf("  %d. %s", i+1, instr))
+	}
+	return lines
 }
 
 // ---------------------------------------------------------------------------

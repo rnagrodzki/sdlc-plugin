@@ -1508,6 +1508,7 @@ func TestPipelineResumePhase_PlanPostCompact(t *testing.T) {
 		"Active plan (post-compact): step 3, branch " + branch + "; plan file: /abs/path/plans/x.md",
 		"  If the sdlc:plan skill instructions are not in context, invoke the sdlc:plan skill first; its Session recovery rule selects the resume path.",
 		"  Resume with: plan_prepare({resume:true, resolveTemplate:true}) then plan_support({action:\"evidence_digest\", runId:\"" + state.RunID(st) + "\"})",
+		"  Custom plan instructions: none configured.",
 	})
 }
 
@@ -1733,6 +1734,71 @@ func TestPipelineResumePhase_PlanLinesFollowShipAndExecute(t *testing.T) {
 		"Active plan (post-compact): step 1, branch " + branch + "; plan file: /abs/path/plans/x.md",
 		"  If the sdlc:plan skill instructions are not in context, invoke the sdlc:plan skill first; its Session recovery rule selects the resume path.",
 		"  Resume with: plan_prepare({resume:true, resolveTemplate:true}) then plan_support({action:\"evidence_digest\", runId:\"" + state.RunID(planSt) + "\"})",
+		"  Custom plan instructions: none configured.",
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Plan resume banner: custom instructions block (Task 13)
+// ---------------------------------------------------------------------------
+
+func TestPipelineResumePhase_PlanInstructionsConfigured(t *testing.T) {
+	branch := "feat/plan-instructions-configured"
+	root := gitFixture(t, branch)
+
+	localPath := filepath.Join(root, paths.DataDir, "local.toml")
+	mustMkdirAll(t, filepath.Dir(localPath))
+	mustWriteFile(t, localPath, "[planStyle]\n"+
+		"instructions = [\"always add before -> after for the changed flows\", \"Ask before adding a dependency.\"]\n")
+
+	st := activePlanState(t, root, branch, map[string]any{
+		"checkpoint":   map[string]any{"step": "5"},
+		"planFilePath": "/abs/path/plans/x.md",
+	})
+
+	assertLines(t, pipelineResumePhase("compact"), []string{
+		"Active plan (post-compact): step 5, branch " + branch + "; plan file: /abs/path/plans/x.md",
+		"  If the sdlc:plan skill instructions are not in context, invoke the sdlc:plan skill first; its Session recovery rule selects the resume path.",
+		"  Resume with: plan_prepare({resume:true, resolveTemplate:true}) then plan_support({action:\"evidence_digest\", runId:\"" + state.RunID(st) + "\"})",
+		"  Custom plan instructions (follow them in every step):",
+		"  1. always add before -> after for the changed flows",
+		"  2. Ask before adding a dependency.",
+	})
+}
+
+func TestPipelineResumePhase_PlanInstructionsNoneConfigured(t *testing.T) {
+	branch := "feat/plan-instructions-none"
+	root := gitFixture(t, branch)
+	activePlanState(t, root, branch, nil)
+
+	got := pipelineResumePhase("compact")
+	if len(got) == 0 || got[len(got)-1] != "  Custom plan instructions: none configured." {
+		t.Fatalf("pipelineResumePhase(compact) last line = %q, want %q", firstOrEmpty(got), "  Custom plan instructions: none configured.")
+	}
+}
+
+// TestPipelineResumePhase_PlanInstructionsBrokenConfigSilent exercises a
+// [style]/[planStyle] read failure: a local.toml that fails to parse as
+// TOML. planStyleForHook must discard the error and fall back to
+// commstyle's defaults (no instructions), not fail the hook.
+func TestPipelineResumePhase_PlanInstructionsBrokenConfigSilent(t *testing.T) {
+	branch := "feat/plan-instructions-broken-config"
+	root := gitFixture(t, branch)
+
+	localPath := filepath.Join(root, paths.DataDir, "local.toml")
+	mustMkdirAll(t, filepath.Dir(localPath))
+	mustWriteFile(t, localPath, "not valid toml {{{")
+
+	st := activePlanState(t, root, branch, map[string]any{
+		"checkpoint":   map[string]any{"step": "2"},
+		"planFilePath": "/abs/path/plans/y.md",
+	})
+
+	assertLines(t, pipelineResumePhase("compact"), []string{
+		"Active plan (post-compact): step 2, branch " + branch + "; plan file: /abs/path/plans/y.md",
+		"  If the sdlc:plan skill instructions are not in context, invoke the sdlc:plan skill first; its Session recovery rule selects the resume path.",
+		"  Resume with: plan_prepare({resume:true, resolveTemplate:true}) then plan_support({action:\"evidence_digest\", runId:\"" + state.RunID(st) + "\"})",
+		"  Custom plan instructions: none configured.",
 	})
 }
 

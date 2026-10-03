@@ -88,7 +88,7 @@ var standardLimits = map[string]standardLimit{
 	"smart-brevity":  {maxSentenceWords: 20, maxInstructionWords: 0, ste: false},
 }
 
-// audienceJargon is the max share of jargon words tolerated in prose, by
+// audienceJargon is the max share of jargon prose sentences tolerated, by
 // audience. 1.00 means the check is off.
 var audienceJargon = map[string]float64{
 	"technical":  1.00,

@@ -5,9 +5,12 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/rnagrodzki/sdlc-plugin/internal/commstyle"
 )
 
 // TestVersionFields_PreReleasePolicyMatchesSchema keeps the setup wizard's
@@ -232,5 +235,168 @@ func TestPlanStyleFields_InstructionsMatchesSchema(t *testing.T) {
 	}
 	if field.Default != nil {
 		t.Errorf("instructions Default = %v, want nil", field.Default)
+	}
+}
+
+// enumProp holds a JSON schema property's "enum" array, for decoding one
+// property at a time out of sdlc-local.schema.json.
+type enumProp struct {
+	Enum []string `json:"enum"`
+}
+
+// TestPlanStyleEnums_MatchSchema proves the enum lists declared in
+// $defs.styleSection and $defs.planStyleSection of sdlc-local.schema.json
+// hold exactly the commstyle package's allowed values. A schema enum that
+// drifts from commstyle would silently let an editor accept a value the
+// runtime rejects, or reject a value the runtime accepts.
+func TestPlanStyleEnums_MatchSchema(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "plugins", "sdlc", "schemas", "sdlc-local.schema.json"))
+	if err != nil {
+		t.Fatalf("read schema: %v", err)
+	}
+	var schema struct {
+		Defs struct {
+			StyleSection struct {
+				Properties struct {
+					Audience        enumProp `json:"audience"`
+					WritingStandard enumProp `json:"writingStandard"`
+					Tone            enumProp `json:"tone"`
+				} `json:"properties"`
+			} `json:"styleSection"`
+			PlanStyleSection struct {
+				Properties struct {
+					Audience        enumProp `json:"audience"`
+					WritingStandard enumProp `json:"writingStandard"`
+					Tone            enumProp `json:"tone"`
+					VisualDensity   enumProp `json:"visualDensity"`
+				} `json:"properties"`
+			} `json:"planStyleSection"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(data, &schema); err != nil {
+		t.Fatalf("parse schema: %v", err)
+	}
+
+	cases := []struct {
+		label string
+		got   []string
+		want  []string
+	}{
+		{"styleSection.audience", schema.Defs.StyleSection.Properties.Audience.Enum, commstyle.Audiences},
+		{"styleSection.writingStandard", schema.Defs.StyleSection.Properties.WritingStandard.Enum, commstyle.WritingStandards},
+		{"styleSection.tone", schema.Defs.StyleSection.Properties.Tone.Enum, commstyle.Tones},
+		{"planStyleSection.audience (deprecated alias)", schema.Defs.PlanStyleSection.Properties.Audience.Enum, commstyle.Audiences},
+		{"planStyleSection.writingStandard (deprecated alias)", schema.Defs.PlanStyleSection.Properties.WritingStandard.Enum, commstyle.WritingStandards},
+		{"planStyleSection.tone (deprecated alias)", schema.Defs.PlanStyleSection.Properties.Tone.Enum, commstyle.Tones},
+		{"planStyleSection.visualDensity", schema.Defs.PlanStyleSection.Properties.VisualDensity.Enum, commstyle.VisualDensities},
+	}
+	for _, c := range cases {
+		if !reflect.DeepEqual(c.got, c.want) {
+			t.Errorf("%s enum:\n  got:  %v\n  want: %v (commstyle)", c.label, c.got, c.want)
+		}
+	}
+}
+
+// TestLocalTemplate_StyleValuesMatchEnums parses the commented [style] and
+// [planStyle] example lines in plugins/sdlc/templates/local.toml and fails
+// when an example value is not one of the commstyle package's allowed
+// values for that key — catching drift between the template's example
+// comments and the real enum lists (e.g. a leftover "mixed" or "detailed").
+func TestLocalTemplate_StyleValuesMatchEnums(t *testing.T) {
+	path := filepath.Join("..", "..", "plugins", "sdlc", "templates", "local.toml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+
+	enumsByKey := map[string][]string{
+		"audience":        commstyle.Audiences,
+		"writingStandard": commstyle.WritingStandards,
+		"tone":            commstyle.Tones,
+		"visualDensity":   commstyle.VisualDensities,
+	}
+
+	lineRe := regexp.MustCompile(`^#?\s*(\w+)\s*=\s*"([^"]*)"`)
+	found := map[string]bool{}
+	for _, line := range strings.Split(string(raw), "\n") {
+		m := lineRe.FindStringSubmatch(strings.TrimSpace(line))
+		if m == nil {
+			continue
+		}
+		key, value := m[1], m[2]
+		allowed, ok := enumsByKey[key]
+		if !ok {
+			continue
+		}
+		found[key] = true
+		if !slices.Contains(allowed, value) {
+			t.Errorf("%s: example %s = %q is not in commstyle's allowed values %v", path, key, value, allowed)
+		}
+	}
+	for key := range enumsByKey {
+		if !found[key] {
+			t.Errorf("%s: no commented example line found for %q", path, key)
+		}
+	}
+}
+
+// TestStyleFields_NamesAndOptions pins the DRY split of plan Task 4: the 5
+// keys shared by every sdlc skill live in styleFields (backing [style]),
+// and the 3 plan-only keys live in planStyleFields (backing [planStyle]).
+// It also proves each enum field's Options/Default is the matching
+// commstyle value, not a hand-typed copy that can drift from it.
+func TestStyleFields_NamesAndOptions(t *testing.T) {
+	wantStyleNames := []string{"audience", "writingStandard", "tone", "language", "technicalTerms"}
+	gotStyleNames := make([]string, len(styleFields))
+	for i, f := range styleFields {
+		gotStyleNames[i] = f.Name
+	}
+	if !reflect.DeepEqual(gotStyleNames, wantStyleNames) {
+		t.Errorf("styleFields names:\n  got:  %v\n  want: %v", gotStyleNames, wantStyleNames)
+	}
+
+	wantPlanStyleNames := []string{"visualDensity", "narrativeRules", "instructions"}
+	gotPlanStyleNames := make([]string, len(planStyleFields))
+	for i, f := range planStyleFields {
+		gotPlanStyleNames[i] = f.Name
+	}
+	if !reflect.DeepEqual(gotPlanStyleNames, wantPlanStyleNames) {
+		t.Errorf("planStyleFields names:\n  got:  %v\n  want: %v", gotPlanStyleNames, wantPlanStyleNames)
+	}
+	if len(styleFields) < 4 || len(planStyleFields) < 1 {
+		t.Fatal("styleFields or planStyleFields has fewer entries than expected; index-based checks below would be invalid")
+	}
+
+	optionChecks := []struct {
+		label string
+		got   []string
+		want  []string
+	}{
+		{"styleFields[audience].Options", styleFields[0].Options, commstyle.Audiences},
+		{"styleFields[writingStandard].Options", styleFields[1].Options, commstyle.WritingStandards},
+		{"styleFields[tone].Options", styleFields[2].Options, commstyle.Tones},
+		{"planStyleFields[visualDensity].Options", planStyleFields[0].Options, commstyle.VisualDensities},
+	}
+	for _, c := range optionChecks {
+		if !reflect.DeepEqual(c.got, c.want) {
+			t.Errorf("%s:\n  got:  %v\n  want: %v (commstyle)", c.label, c.got, c.want)
+		}
+	}
+
+	defaultChecks := []struct {
+		label string
+		got   any
+		want  any
+	}{
+		{"styleFields[audience].Default", styleFields[0].Default, commstyle.DefaultAudience},
+		{"styleFields[writingStandard].Default", styleFields[1].Default, commstyle.DefaultWritingStandard},
+		{"styleFields[tone].Default", styleFields[2].Default, commstyle.DefaultTone},
+		{"styleFields[language].Default", styleFields[3].Default, commstyle.DefaultLanguage},
+		{"planStyleFields[visualDensity].Default", planStyleFields[0].Default, commstyle.DefaultVisualDensity},
+	}
+	for _, c := range defaultChecks {
+		if c.got != c.want {
+			t.Errorf("%s = %v, want %v (commstyle)", c.label, c.got, c.want)
+		}
 	}
 }

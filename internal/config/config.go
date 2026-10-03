@@ -52,6 +52,7 @@ var ProjectSections = map[string]bool{
 var LocalSections = map[string]bool{
 	"review":         true,
 	"planStyle":      true,
+	"style":          true,
 	"ship":           true,
 	"receivedReview": true,
 	"github":         true,

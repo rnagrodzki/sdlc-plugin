@@ -6,6 +6,8 @@
 // match the source in both content and order.
 package setupmeta
 
+import "github.com/rnagrodzki/sdlc-plugin/internal/commstyle"
+
 // Field describes one configuration field within a setup section.
 // It mirrors the shape { name, label, type, options, default, description }
 // from the Node.js source's field arrays (VERSION_FIELDS, JIRA_FIELDS, etc.).
@@ -334,22 +336,63 @@ var ShipFields = []Field{
 	},
 }
 
-var planStyleFields = []Field{
-	{
-		Name:        "verbosity",
-		Label:       "Plan narrative verbosity",
-		Type:        "enum",
-		Options:     []string{"terse", "standard", "verbose"},
-		Default:     "standard",
-		Description: "Controls how much prose /plan writes in narrative sections (Context, Research Findings, Key Decisions, Final Shape). `terse` favors bullet-dense sections; `verbose` favors fuller prose.",
-	},
+// styleFields holds the 5 keys shared by every sdlc skill
+// (commstyle.SharedKeys), stored under [style] in .sdlc-v2/local.toml. Not
+// yet wired to a Section — the setup "communication-style" section that
+// exposes these fields is added separately.
+var styleFields = []Field{
 	{
 		Name:        "audience",
-		Label:       "Plan narrative audience",
+		Label:       "Plan reader level",
 		Type:        "enum",
-		Options:     []string{"technical", "general"},
-		Default:     "technical",
-		Description: "Assumed reader background for plan narrative sections. `technical` assumes deep codebase context; `general` writes so a reader without prior context can still judge the proposed change.",
+		Options:     commstyle.Audiences,
+		Default:     commstyle.DefaultAudience,
+		Description: "Who reads the plan. technical: mechanism in prose. functional (default): behavior, function, impact; code only in visuals. executive: impact, cost, risk. general: everyday words. beginner: one idea and one example per concept.",
+	},
+	{
+		Name:        "writingStandard",
+		Label:       "Plan writing standard",
+		Type:        "enum",
+		Options:     commstyle.WritingStandards,
+		Default:     commstyle.DefaultWritingStandard,
+		Description: "Sentence rules for narrative sections. ste: ASD-STE100. plain-language: US federal plain language. developer-docs: Google developer style. smart-brevity: lede plus why it matters.",
+	},
+	{
+		Name:        "tone",
+		Label:       "Plan tone",
+		Type:        "enum",
+		Options:     commstyle.Tones,
+		Default:     commstyle.DefaultTone,
+		Description: "direct: honest, no praise, no hedging, banned filler phrases. neutral: no banned-phrase check.",
+	},
+	{
+		Name:        "language",
+		Label:       "Plan language",
+		Type:        "string",
+		Options:     nil,
+		Default:     commstyle.DefaultLanguage,
+		Description: "Language of the plan text. Sentence-length limits apply only to English.",
+	},
+	{
+		Name:        "technicalTerms",
+		Label:       "Technical terms",
+		Type:        "list",
+		Options:     nil,
+		Default:     nil,
+		Description: "Code and product names that the strict STE checks must accept (e.g. logging, routing). One term per line. Words in backticks are always accepted.",
+	},
+}
+
+// planStyleFields holds the 3 keys only the plan skill reads
+// (commstyle.PlanOnlyKeys), stored under [planStyle] in .sdlc-v2/local.toml.
+var planStyleFields = []Field{
+	{
+		Name:        "visualDensity",
+		Label:       "Plan visual density",
+		Type:        "enum",
+		Options:     commstyle.VisualDensities,
+		Default:     commstyle.DefaultVisualDensity,
+		Description: "Share of tables, lists, diagrams, and code versus prose. high: prose share at most 0.30. balanced: 0.50. low: 0.75.",
 	},
 	{
 		Name:        "narrativeRules",
@@ -357,7 +400,7 @@ var planStyleFields = []Field{
 		Type:        "list",
 		Options:     nil,
 		Default:     nil,
-		Description: "Free-form writing rules /plan enforces on narrative sections (e.g., plain-English phrasing for non-native readers, always state assumptions). One rule per line — rules may contain commas, so this field splits on newline, not comma.",
+		Description: "Extra writing rules added to the end of the writing guide (<extra_rules>). One rule per line — rules may contain commas, so this field splits on newline, not comma.",
 	},
 	{
 		Name:        "instructions",
@@ -632,7 +675,7 @@ func Sections() []Section {
 		{
 			ID:              "plan-style",
 			Label:           "plan-style",
-			Purpose:         "Personal narrative preferences for /plan: verbosity, assumed reader audience, and custom writing rules enforced on narrative sections (Context, Research Findings, Key Decisions, Final Shape). Stored in .sdlc-v2/local.toml (gitignored) so each developer can tune plan prose without affecting teammates.",
+			Purpose:         "Personal plan-only preferences for /plan: visual density and custom writing rules enforced on narrative sections (Context, Research Findings, Key Decisions, Final Shape). Reader level, writing standard, tone, language, and technical terms moved to the shared [style] section. Stored in .sdlc-v2/local.toml (gitignored) so each developer can tune plan prose without affecting teammates.",
 			ConfigFile:      ".sdlc-v2/local.toml",
 			ConfigPath:      "planStyle",
 			ConsumedBy:      []string{"plan"},
