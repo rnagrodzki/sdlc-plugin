@@ -12,3 +12,7 @@ severity: high
 - Verification method documented in task/review notes
 - Multi-source claims enumerate specific files with grep results
 - "New findings" distinguished from previously-documented ones
+- Enumerated rule/check IDs in lane prompts or guidance documents verified
+  complete against the external standard they cite (e.g. STE rules in a
+  judgment list cross-checked against the STE spec); any missing id is
+  named and justified, not silently dropped

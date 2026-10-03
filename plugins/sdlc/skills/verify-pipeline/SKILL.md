@@ -12,6 +12,8 @@ Analyze failed CI logs, classify the root cause via the `verify_pipeline_classif
 
 **Announce at start:** "I'm using verify-pipeline (sdlc v{sdlc_version})." — extract the version from the `sdlc:` line in the session-start system-reminder. If no version is in context, omit the parenthetical.
 
+**Communication style:** Follow the `sdlc communication style` block in session context for every explanation, status line, summary, and AskUserQuestion text in this skill. Do not apply it to commit messages, PR bodies, review comments, or Jira text: they follow their own templates and config.
+
 ---
 
 ## Step 1: CONSUME — parse args, load logs (R1, R6)

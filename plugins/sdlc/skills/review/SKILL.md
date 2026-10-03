@@ -16,6 +16,8 @@ orchestrator agent used to run, now inline.
 
 **Announce at start:** "I'm using review (sdlc v{sdlc_version})." — extract the version from the `sdlc:` line in the session-start system-reminder. If no version is in context, omit the parenthetical.
 
+**Communication style:** Follow `style.guide` from `review_prepare` for every explanation, status line, summary, and AskUserQuestion text in this skill. If this skill has no such call, or the call failed, follow the `sdlc communication style` block in session context. Do not apply it to commit messages, PR bodies, review comments, or Jira text: they follow their own templates and config.
+
 ---
 
 ## Step 0 — Run `review_prepare`

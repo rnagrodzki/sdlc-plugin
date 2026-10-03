@@ -61,9 +61,10 @@ planned. Tests introduced by a task must be wired into CI in the same plan. \
 For JS/Node scripts, this means an actual `node --test` (or equivalent) \
 invocation in the CI workflow file -- verify the workflow file runs the new \
 test file, not just that the test file exists. When adding new conditional \
-branches, error paths, or alternative flows to a tool handler, each new branch \
-must have an explicit test case that exercises it. A task that adds a new \
-warning/error branch to a handler without a test case exercising that branch \
+branches, error paths, or alternative flows to any function, including \
+internal helper functions (e.g. in packages like internal/commstyle), each \
+new branch must have an explicit test case that exercises it. A task that \
+adds a new warning/error branch without a test case exercising that branch \
 is incomplete. When a refactor removes or widens a guard (e.g. drops a method \
 check), every newly admitted input combination needs its own test case."""
 
@@ -95,9 +96,11 @@ assert from memory. Covers: contract diffs (reproduce struct/API shapes \
 verbatim, never invent fields), audit/negative-assertion tasks (verify \
 absence with grep, not partial search), prose-describing-code tasks (verify \
 against source, not build/test success alone), Contract blocks with literal \
-code/API/CLI details (verify against current source), claims that a design \
-element "mirrors" an existing pattern (cite exact file:line, not a \
-paraphrase), and MCP tool annotation/reason strings (verify via call-graph \
+code/API/CLI details (verify against current source), doc headlines and \
+config-section references (verify they still exist after restructuring), \
+claims that a design element "mirrors" an existing pattern (cite exact \
+file:line, not a paraphrase), and MCP tool annotation/reason strings \
+(verify via call-graph \
 search, not a plausible-sounding reason)."""
 
 [plan.guardrails.wave-start-output-and-taskobject-verification]
@@ -158,7 +161,9 @@ immediately or the paths must be consolidated — a divergent fix is worse \
 than not fixing at all. For the copy-pasted CI payloads \
 (internal/tools/payloads/*.cjs), grep every sibling that shares the same push \
 helper, workflow input or error classifier before scoping a cross-cutting \
-change, and list each sibling in the task's file scope."""
+change, and list each sibling in the task's file scope. When a function is \
+called repeatedly with the same invariant inputs in one scope, consolidate \
+to a single call and reuse the result."""
 
 [plan.guardrails.kiss]
 severity = "warning"
@@ -537,6 +542,22 @@ checkpoint marker for safe resume must have an inline plan_mark or \
 evidence_record call; a blanket rule stating checkpoints occur at 'steps N \
 through M' is insufficient if the actual step bodies lack the inline calls."""
 
+[plan.guardrails.validator-error-propagation-complete]
+severity = "error"
+description = """
+When a task adds or modifies an MCP tool validator (e.g. validatePlanStyle, \
+validatePlanFormat in internal/tools/validators.go), the task's Verification \
+section must include: (1) a config-read error test case exercising both the \
+ErrNotFound and the parse/permission-error outcome for each config.Read or \
+config.ReadSection call in the validator; (2) confirmation that every \
+config-read error is propagated as a structured error (DomainError or \
+InfraError with Suggestion) to the caller, never silently treated as "not \
+configured"; (3) when the validator's output struct has no warnings field, \
+documented routing showing where the error surfaces instead -- a sibling \
+action that already surfaces it, or an explicit fallback-path note. \
+Config-read errors silently dropped or defaulted are worse than explicit \
+failures -- the user cannot tell if they misconfigured the system."""
+
 # ─── Execute guardrails ──────────────────────────────────────────
 # Constraints enforced during task execution (by the execute skill's
 # self-critique pass). Same format and severity semantics as plan
@@ -805,7 +826,10 @@ each combination named by the function's branch structure is actually \
 exercised and its output asserted. A test in the same diff whose specific \
 assertion was removed or weakened (e.g. a content check replaced by a bare \
 non-empty check) without an intended change to the code under test is a \
-masked regression: restore the assertion or justify the behavior change."""
+masked regression: restore the assertion or justify the behavior change. \
+For each new function with branch logic, including internal helpers, \
+enumerate every if/switch arm and confirm a test exercises it and asserts \
+the output. Equality-gated loops need a boundary test case."""
 
 [execute.guardrails.preflight-covers-actual-operations]
 severity = "error"
@@ -848,8 +872,8 @@ enum."""
 [execute.guardrails.go-doc-comment-compliance]
 severity = "error"
 description = """
-Before marking a task done that introduces or modifies exported Go \
-identifiers (var, const, func, type at package scope), verify each is \
+Before marking a task done that introduces or modifies package-scope Go \
+identifiers (var, const, func, type, exported or not), verify each is \
 immediately preceded by a `//` doc comment (not a `//go:embed` directive \
 or other Go directive alone) following Go's documentation conventions. \
 Verify that the doc comment's claims match the code body: a comment \
@@ -861,7 +885,7 @@ string. Comments must not carry planning-artifact references (step \
 numbers like '// Step 10.', plan section names like 'Final Shape', or \
 task IDs) -- these are authoring leftovers that must be removed before \
 shipping. Use `grep -n \
-'^\\(var\\|const\\|func\\|type\\) [A-Z]' <changed_file>` and confirm each \
+'^\\(var\\|const\\|func\\|type\\) ' <changed_file>` and confirm each \
 match has a `//` comment line immediately above."""
 
 [execute.guardrails."schema-enum-code-sync-verified"]
@@ -974,3 +998,16 @@ change applies to sibling steps (e.g. both verify-openspec and \
 archive-openspec gaining fail-fast-on-missing), both steps must be \
 documented; a doc update covering only the first sibling is a verification \
 gap."""
+
+[execute.guardrails.validator-duplication-check]
+severity = "warning"
+description = """
+Before marking a task done that modifies a validator function in \
+internal/tools/validators.go, audit the function body for duplicate \
+input-validation checks (e.g. two separate "file is required" blocks for \
+the same action). Each distinct validation condition must appear exactly \
+once; consolidate duplicates into a single early-return check or extract \
+a named helper. Grep the modified function's input-check patterns (e.g. \
+`in.File == ""`, `in.Action == ""`) and verify each pattern has only one \
+match within that function. Duplicate checks hide the real validation \
+logic and diverge when one copy is updated but not the other."""

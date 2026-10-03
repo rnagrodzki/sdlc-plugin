@@ -3,7 +3,9 @@
 // Ports six source validators behind one MCP tool ("validate"), following
 // the KD16 action-enum precedent established by Task 35's ship_state:
 //
-//   - plan_format  -- scripts/ci/validate-plan-format.js  (PF1-PF7, PF9, PF10)
+//   - plan_format  -- scripts/ci/validate-plan-format.js  (PF1-PF7, PF9, PF10),
+//     plus PF11-PF12 and the style (PF13) and diagram-contrast (PF14) checks
+//   - plan_style   -- the PF13 style measurement alone, with a styleReport
 //   - discovery    -- internal/discovery.ValidateAll       (PD1-PD16, reused as-is)
 //   - pr_template  -- scripts/ci/validate-pr-template.js   (V1-V5)
 //   - cost_tiers   -- scripts/ci/validate-cost-tiers.js    (DRIFT/MISSING_DOC/STALE_DOC/INHERITED, NO_COST_DOC)
@@ -57,6 +59,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/commstyle"
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/dimensions"
 	"github.com/rnagrodzki/sdlc-plugin/internal/discovery"
@@ -73,18 +76,20 @@ import (
 
 // ValidateIn is the input for the "validate" tool.
 type ValidateIn struct {
-	// Action selects the validator: plan_format | discovery | pr_template |
-	// cost_tiers | guardrails | dimensions | pr_body | ci_script_drift |
-	// worktree_anchoring.
-	Action string `json:"action" jsonschema:"enum=plan_format,enum=discovery,enum=pr_template,enum=cost_tiers,enum=guardrails,enum=dimensions,enum=pr_body,enum=ci_script_drift,enum=worktree_anchoring" jsonschema_description:"Which validator to run: plan_format, discovery, pr_template, cost_tiers, guardrails, dimensions, pr_body, ci_script_drift, or worktree_anchoring."`
-	// File is the target file for plan_format and links... (plan_format only
-	// here; links_validate lives in links.go).
-	File string `json:"file,omitempty" jsonschema_description:"Target file to validate. Used by the plan_format action."`
+	// Action selects the validator: plan_format | plan_style | discovery |
+	// pr_template | cost_tiers | guardrails | dimensions | pr_body |
+	// ci_script_drift | worktree_anchoring.
+	Action string `json:"action" jsonschema:"enum=plan_format,enum=plan_style,enum=discovery,enum=pr_template,enum=cost_tiers,enum=guardrails,enum=dimensions,enum=pr_body,enum=ci_script_drift,enum=worktree_anchoring" jsonschema_description:"Which validator to run: plan_format, plan_style, discovery, pr_template, cost_tiers, guardrails, dimensions, pr_body, ci_script_drift, or worktree_anchoring. Example: plan_style"`
+	// File is the plan file for plan_format and plan_style (links_validate
+	// lives in links.go).
+	File string `json:"file,omitempty" jsonschema_description:"Plan file to validate. Used by the plan_format and plan_style actions. Example: ~/.claude/plans/x.md"`
 	// Final requests the stricter plan_format checks (PF9/PF10), matching
 	// the JS --final flag.
 	Final bool `json:"final,omitempty" jsonschema_description:"Requests the stricter plan_format checks (PF9/PF10). Used by the plan_format action."`
-	// Template is the plan template path for plan_format's PF10 check.
-	Template string `json:"template,omitempty" jsonschema_description:"Plan template path for plan_format's PF10 check."`
+	// Template is the plan template path: plan_format reads it for PF10's
+	// required sections and PF13's measured (narrative) sections; plan_style
+	// reads it for the measured sections.
+	Template string `json:"template,omitempty" jsonschema_description:"Plan template path. plan_format: PF10 sections and PF13 measured sections. plan_style: measured sections. Example: .sdlc-v2/plan-template.md"`
 	// Strict controls whether cost_tiers' INHERITED kind is severity
 	// "error" (true) or "warning" (false), matching the JS --strict flag.
 	Strict bool `json:"strict,omitempty" jsonschema_description:"Controls whether the cost_tiers action's INHERITED finding kind is reported as severity \"error\" (true) or \"warning\" (false)."`
@@ -109,6 +114,23 @@ type ValidateOut struct {
 	// which worktree (main or active) the .sdlc-v2/ state directory is
 	// currently anchored to (Task 4/R1 — see WorktreeAnchoringCheck).
 	WorktreeAnchoring *WorktreeAnchoringCheck `json:"worktreeAnchoring,omitempty"`
+	// StyleReport is populated only by the plan_style action, on every call,
+	// pass or fail.
+	StyleReport *StyleReport `json:"styleReport,omitempty"`
+}
+
+// StyleReport is the plan_style measurement: the style settings and numeric
+// limits in effect, the per-section numbers, and every hit the PF13 and PF14
+// checks read. Every list field is non-nil, so JSON carries [] and never null.
+type StyleReport struct {
+	Settings        map[string]string          `json:"settings"`
+	Limits          commstyle.Limits           `json:"limits"`
+	Sections        []commstyle.SectionMetrics `json:"sections"`
+	BannedHits      []commstyle.BannedHit      `json:"bannedPhraseHits"`
+	SteHits         []commstyle.SteHit         `json:"steHits"`
+	DiagramContrast []commstyle.ContrastHit    `json:"diagramContrast"` // same hits as PF14
+	Instructions    []string                   `json:"instructions"`    // custom plan instructions, for the handoff self-check
+	Warnings        []string                   `json:"warnings"`
 }
 
 // RegisterValidateTools registers the "validate" MCP tool.
@@ -116,9 +138,12 @@ func RegisterValidateTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "validate",
 		`Run a deterministic validator against the project.
 
-Pass "action" to select the validator. Each action uses a subset of the input fields (unlisted fields are ignored). Returns structured findings (id, severity, message, path, fix) for FAILED checks only — an empty findings list means every check passed. "fix" carries the accepted shape inline and is set on every plan_format failure (PF1-PF12); the other actions leave it empty.
+Pass "action" to select the validator. Each action uses a subset of the input fields (unlisted fields are ignored). Returns structured findings (id, severity, message, path, fix) for FAILED checks only — an empty findings list means every check passed. "fix" carries the accepted shape inline and is set on every plan_format and plan_style failure (PF1-PF14); the other actions leave it empty.
 
-- plan_format: Check a plan .md against PF1-PF7, PF11 and PF12, plus PF9 and PF10 when final is true. Requires file. Optional: final (adds the scorecard check PF9 and, with template, the section check PF10), template (plan template path for PF10; omit it to skip PF10).
+validate only reports; the calling skill step decides the next action from findings and styleReport.
+
+- plan_format: Check a plan .md against PF1-PF7, PF11, PF12, PF13 (style limits from [style] and [planStyle]) and PF14 (Mermaid diagram color contrast, whole file), plus PF9 and PF10 when final is true. Requires file. Optional: final (adds the scorecard check PF9 and, with template, the section check PF10), template (plan template path: its required sections for PF10 and its narrative sections for PF13; omit it to skip PF10 and measure Context, Research Findings, Key Decisions and Final Shape).
+- plan_style: Measure a plan against the [planStyle] limits (and the strict STE rules when writingStandard is ste). Requires file. Optional: template (narrative sections to measure). Returns findings (PF13 failures) and styleReport on every call, pass or fail; styleReport.instructions lists the custom plan instructions for the handoff self-check.
 - discovery: Check the project's discovery artifacts (PD1-PD16). No inputs.
 - pr_template: Check the PR template file itself (V1-V5) at its canonical or legacy path. No inputs.
 - cost_tiers: Compare skill/agent model tiers against the cost-tier doc tables in docs/cost-tiers.md. Optional: strict (true reports the INHERITED finding kind as severity "error" instead of "warning"). When docs/cost-tiers.md does not exist, the check is skipped and one NO_COST_DOC warning is returned.
@@ -183,11 +208,14 @@ func validate(root string, in ValidateIn) (ValidateOut, error) {
 	var (
 		findings []discovery.Finding
 		anchor   *WorktreeAnchoringCheck
+		style    *StyleReport
 		err      error
 	)
 	switch in.Action {
 	case "plan_format":
 		findings, err = validatePlanFormat(root, in)
+	case "plan_style":
+		findings, style, err = validatePlanStyle(root, in)
 	case "discovery":
 		findings = discovery.ValidateAll(root)
 	case "pr_template":
@@ -206,7 +234,7 @@ func validate(root string, in ValidateIn) (ValidateOut, error) {
 		anchor, findings, err = validateWorktreeAnchoring(root)
 	default:
 		return ValidateOut{}, unknownActionError("validate action", in.Action, "",
-			"pass one of the valid actions: plan_format, discovery, pr_template, cost_tiers, guardrails, dimensions, pr_body, ci_script_drift, worktree_anchoring")
+			"pass one of the valid actions: plan_format, plan_style, discovery, pr_template, cost_tiers, guardrails, dimensions, pr_body, ci_script_drift, worktree_anchoring")
 	}
 	if err != nil {
 		return ValidateOut{}, err
@@ -216,7 +244,7 @@ func validate(root string, in ValidateIn) (ValidateOut, error) {
 	if findings == nil {
 		findings = []discovery.Finding{}
 	}
-	return ValidateOut{Findings: findings, WorktreeAnchoring: anchor}, nil
+	return ValidateOut{Findings: findings, WorktreeAnchoring: anchor, StyleReport: style}, nil
 }
 
 // resolvePath resolves p against root unless it is already absolute.
@@ -291,44 +319,45 @@ type planTask struct {
 // path exists but cannot be read (permission denied, a directory, an I/O
 // error). Reporting the last two as one "file not found" sends the caller to
 // re-check a path that is already correct.
-func readPlanFile(root, file string) (filePath, content string, err error) {
+func readPlanFile(root, file, action string) (filePath, content string, err error) {
 	if file == "" {
 		return "", "", &mcpserver.DomainError{
-			Msg:        "plan_format: file is required",
+			Msg:        action + ": file is required",
 			Suggestion: "Pass file: the path to the plan .md file, absolute or relative to the project root.",
 		}
 	}
 	filePath = resolvePath(root, file)
 	data, rerr := os.ReadFile(filePath)
 	if rerr != nil {
-		return "", "", planReadError("file", filePath, rerr)
+		return "", "", planReadError(action, "file", filePath, rerr)
 	}
 	return filePath, string(data), nil
 }
 
-// planReadError turns an os.ReadFile failure into the DomainError the
-// plan_format action returns. what names the thing being read ("file" for the
-// plan, "template" for the PF10 template) so one helper serves both sites.
-// Only fs.ErrNotExist is reported as not-found; anything else names the read
-// failure so the caller looks at permissions and the file type instead of the
-// path.
-func planReadError(what, path string, rerr error) *mcpserver.DomainError {
+// planReadError turns an os.ReadFile failure into the DomainError the calling
+// action returns. action names the caller ("plan_format" or "plan_style", so
+// the message matches the action that actually failed); what names the thing
+// being read ("file" for the plan, "template" for the PF10 template) so one
+// helper serves every read site. Only fs.ErrNotExist is reported as
+// not-found; anything else names the read failure so the caller looks at
+// permissions and the file type instead of the path.
+func planReadError(action, what, path string, rerr error) *mcpserver.DomainError {
 	if errors.Is(rerr, fs.ErrNotExist) {
 		if what == "template" {
 			return &mcpserver.DomainError{
-				Msg:        fmt.Sprintf("plan_format: template not found: %s", path),
-				Suggestion: "Pass template: the path to the plan template .md, or omit it to skip the PF10 section check.",
+				Msg:        fmt.Sprintf("%s: template not found: %s", action, path),
+				Suggestion: "Pass template: the path to the plan template .md, or omit it to skip the PF10 section check and measure the default PF13 sections (Context, Research Findings, Key Decisions, Final Shape).",
 				Cause:      rerr,
 			}
 		}
 		return &mcpserver.DomainError{
-			Msg:        fmt.Sprintf("plan_format: file not found: %s", path),
+			Msg:        fmt.Sprintf("%s: file not found: %s", action, path),
 			Suggestion: "Check the path. A relative path resolves against the project root.",
 			Cause:      rerr,
 		}
 	}
 	return &mcpserver.DomainError{
-		Msg:        fmt.Sprintf("plan_format: cannot read %s: %s: %s", what, path, rerr.Error()),
+		Msg:        fmt.Sprintf("%s: cannot read %s: %s: %s", action, what, path, rerr.Error()),
 		Suggestion: fmt.Sprintf("The path exists but could not be read. Check that %s is a regular file (not a directory) and that this process has read permission on it.", path),
 		Cause:      rerr,
 	}
@@ -365,26 +394,183 @@ func pfFindings(checks []pfCheck, filePath string) []discovery.Finding {
 }
 
 func validatePlanFormat(root string, in ValidateIn) ([]discovery.Finding, error) {
-	filePath, content, err := readPlanFile(root, in.File)
+	filePath, content, err := readPlanFile(root, in.File, "plan_format")
 	if err != nil {
 		return nil, err
 	}
 
+	// The template is read once, up front: PF13 measures its narrative
+	// sections on every call, and PF10 (final only) checks all of them.
+	var (
+		templatePath string
+		templateSecs []TemplateSection
+	)
+	if in.Template != "" {
+		templatePath = resolvePath(root, in.Template)
+		templateSecs, err = parseTemplateRequiredSectionsFull(templatePath)
+		if err != nil {
+			return nil, planReadError("plan_format", "template", templatePath, err)
+		}
+	}
+
+	style, _, rep := measurePlanStyle(root, content, in.Template != "", templateSecs)
+
+	// PF13 and PF14 run here, not in planBlockingChecks: the PostToolUse hook
+	// must not run PF13, and runs PF14 on the edited text only.
 	checks := planBlockingChecks(root, content)
+	checks = append(checks, checkPF13(style, rep), checkPF14(content))
 
 	if in.Final {
 		checks = append(checks, checkPF9(content))
 		if in.Template != "" {
-			templatePath := resolvePath(root, in.Template)
-			sections, terr := parseTemplateRequiredSections(templatePath)
-			if terr != nil {
-				return nil, planReadError("template", templatePath, terr)
+			names := make([]string, 0, len(templateSecs))
+			for _, s := range templateSecs {
+				names = append(names, s.Name)
 			}
-			checks = append(checks, checkPF10(content, sections, templatePath))
+			checks = append(checks, checkPF10(content, names, templatePath))
 		}
 	}
 
 	return pfFindings(checks, filePath), nil
+}
+
+// ---------------------------------------------------------------------------
+// plan_style (PF13) and diagram contrast (PF14)
+// ---------------------------------------------------------------------------
+
+// defaultMeasuredSections are the sections PF13 measures when no template is
+// passed. They match the narrative sections of the shipped default template.
+var defaultMeasuredSections = []string{"Context", "Research Findings", "Key Decisions", "Final Shape"}
+
+// measuredSections returns the section names PF13 measures: the template's
+// narrative sections when a template was passed (none when it marks none),
+// otherwise defaultMeasuredSections.
+func measuredSections(haveTemplate bool, templateSecs []TemplateSection) []string {
+	if !haveTemplate {
+		return defaultMeasuredSections
+	}
+	names := []string{}
+	for _, s := range templateSecs {
+		if s.Narrative {
+			names = append(names, s.Name)
+		}
+	}
+	return names
+}
+
+// measurePlanStyle loads the style from the main worktree config (fresh on
+// every call) and measures content against its limits. styleErr is the
+// config read error, if any; the style then falls back to the defaults.
+func measurePlanStyle(root, content string, haveTemplate bool, templateSecs []TemplateSection) (style PlanStyle, styleErr string, rep commstyle.Report) {
+	style, styleErr = loadPlanStyle(root)
+	rep = commstyle.Measure(content, measuredSections(haveTemplate, templateSecs), style.Limits)
+	return style, styleErr, rep
+}
+
+const pf13Fix = `Move mechanism (names, paths, code) into a table or code block. Split paragraphs. Remove the banned phrase. Rewrite each STE hit per the writing guide, or add a code name to technicalTerms / wrap it in backticks. Run validate({action:"plan_style"}) to see per-section numbers.`
+
+// checkPF13 turns a style measurement into one check: one "- " line per
+// failed section limit, banned-phrase hit, and STE hit.
+func checkPF13(style PlanStyle, rep commstyle.Report) pfCheck {
+	var issues []string
+	for _, s := range rep.Sections {
+		for _, f := range s.Failures {
+			issues = append(issues, fmt.Sprintf("%s: %s", s.Name, f))
+		}
+	}
+	for _, h := range rep.BannedHits {
+		issues = append(issues, fmt.Sprintf("line %d: banned phrase %q", h.Line, h.Phrase))
+	}
+	for _, h := range rep.SteHits {
+		issues = append(issues, fmt.Sprintf("line %d: STE %s: %q", h.Line, h.Rule, h.Text))
+	}
+	if len(issues) == 0 {
+		return pfPass("PF13", "Plan style limits met")
+	}
+	headline := fmt.Sprintf("Plan style limits from [style] and [planStyle] not met (visualDensity=%s, audience=%s, writingStandard=%s):",
+		style.VisualDensity, style.Audience, style.WritingStandard)
+	return pfFail("PF13", pfIssueList(headline, issues), pf13Fix)
+}
+
+const pf14Fix = `Use classDef new fill:#1f7a3a,stroke:#0b3d1c,color:#ffffff,stroke-width:2px and classDef changed fill:#8a6d00,stroke:#4a3a00,color:#ffffff,stroke-width:2px. Any other fill needs color: with contrast 4.5:1 or more.`
+
+// checkPF14 checks every classDef/style line inside the plan's mermaid
+// fences for a readable text color.
+func checkPF14(content string) pfCheck {
+	return pf14FromHits(commstyle.MermaidContrast(content))
+}
+
+// pf14FromHits renders contrast hits as the PF14 check, one
+// "- line <N>: <reason>: <text>" line per hit. checkPF14 (whole file) and
+// DiagramContrastFindings (edited text) share it so both report one shape.
+func pf14FromHits(hits []commstyle.ContrastHit) pfCheck {
+	if len(hits) == 0 {
+		return pfPass("PF14", "Mermaid diagram colors are readable")
+	}
+	issues := make([]string, 0, len(hits))
+	for _, h := range hits {
+		issues = append(issues, fmt.Sprintf("line %d: %s: %s", h.Line, h.Reason, h.Text))
+	}
+	return pfFail("PF14", pfIssueList("Mermaid diagram colors are hard to read:", issues), pf14Fix)
+}
+
+// DiagramContrastFindings checks text line by line (no mermaid fence needed)
+// and returns the PF14 finding, or [] when every classDef/style line is
+// readable. The PostToolUse plan hook calls it on the edited text only, so an
+// edit that does not touch a classDef never blocks an older plan.
+func DiagramContrastFindings(filePath, text string) []discovery.Finding {
+	findings := pfFindings([]pfCheck{pf14FromHits(commstyle.ContrastHitsInLines(text))}, filePath)
+	if findings == nil {
+		return []discovery.Finding{}
+	}
+	return findings
+}
+
+// validatePlanStyle runs the plan_style action: the PF13 measurement alone,
+// returned as findings plus a StyleReport on every call, pass or fail.
+// PF14 hits appear in styleReport.diagramContrast, not in findings.
+func validatePlanStyle(root string, in ValidateIn) ([]discovery.Finding, *StyleReport, error) {
+	filePath, content, err := readPlanFile(root, in.File, "plan_style")
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var templateSecs []TemplateSection
+	if in.Template != "" {
+		templatePath := resolvePath(root, in.Template)
+		templateSecs, err = parseTemplateRequiredSectionsFull(templatePath)
+		if err != nil {
+			return nil, nil, planReadError("plan_style", "template", templatePath, err)
+		}
+	}
+
+	style, styleErr, rep := measurePlanStyle(root, content, in.Template != "", templateSecs)
+
+	warnings := append([]string{}, style.Warnings...)
+	if styleErr != "" {
+		warnings = append(warnings, styleErr)
+	}
+	instructions := style.Instructions
+	if instructions == nil {
+		instructions = []string{}
+	}
+	report := &StyleReport{
+		Settings: map[string]string{
+			"audience":        style.Audience,
+			"writingStandard": style.WritingStandard,
+			"tone":            style.Tone,
+			"visualDensity":   style.VisualDensity,
+			"language":        style.Language,
+		},
+		Limits:          style.Limits,
+		Sections:        rep.Sections,
+		BannedHits:      rep.BannedHits,
+		SteHits:         rep.SteHits,
+		DiagramContrast: commstyle.MermaidContrast(content),
+		Instructions:    instructions,
+		Warnings:        warnings,
+	}
+	return pfFindings([]pfCheck{checkPF13(style, rep)}, filePath), report, nil
 }
 
 // ValidatePlanFormatForHook is the PostToolUse hook's entry point. It reads
@@ -405,7 +591,7 @@ func validatePlanFormat(root string, in ValidateIn) ([]discovery.Finding, error)
 // project asked for that template, so previewing PF10 against the shipped
 // default would check the plan against sections the project never required.
 func ValidatePlanFormatForHook(root, file string) (blocking, willFailAtFinal []discovery.Finding, err error) {
-	filePath, content, err := readPlanFile(root, file)
+	filePath, content, err := readPlanFile(root, file, "plan_format")
 	if err != nil {
 		return nil, nil, err
 	}

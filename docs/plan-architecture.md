@@ -21,7 +21,7 @@ Seven MCP tools are called directly by the plan skill pipeline.
 | `plan_mark` | `internal/tools/plan.go` `RegisterPlanTools` | Write planIntegrity markers (`skillInvoked`, `plan-file`, `guardrailsEvaluated`, `critiqueRan`, `done`), append `guardrailResults`/`criticalDecisions`, or replace the `checkpoint` progress marker. Every call also refreshes `data.planTiming` (run start to the plan file's last edit); `done` additionally appends a `history.RunRecord` to `.sdlc-v2/history/runs.jsonl` |
 | `plan_explore_prepare` | `internal/tools/plan_explore.go` `RegisterPlanExploreTools` | Build standalone explore pack (git scope, OpenSpec paths, keyword grep, web-research signal, skill registry sample, recent plans) |
 | `plan_support` | `internal/tools/plan_support.go` `RegisterPlanSupportTools` | Seven actions: `merge_results`, `material_snapshot`, `material_compare`, `openspec_appendix`, `evidence_record`, `evidence_digest`, `evidence_get` |
-| `validate` | `internal/tools/validators.go` `RegisterValidateTools` | Seven actions; plan pipeline uses `plan_format` (PF1-PF12) |
+| `validate` | `internal/tools/validators.go` `RegisterValidateTools` | Ten actions (9 today + `plan_style`); plan pipeline uses `plan_format` (PF1-PF14) and `plan_style` |
 | `links_validate` | `internal/tools/links.go` `RegisterLinksTools` | URL extraction + HTTP validation with line tracking |
 | `execute_state` | `internal/tools/execute_state.go` `RegisterExecuteStateTools` | Ledger operations (review skill; plan uses the evidence store instead — see [Evidence store and compaction recovery](#evidence-store-and-compaction-recovery)) |
 
@@ -43,7 +43,7 @@ Fourteen files in `plugins/sdlc/skills/plan/`:
 | `lane-static-structural-prompt.md` | Lane 0 prompt: G1, G2, G3, G7, G12 |
 | `lane-content-coverage-prompt.md` | Lane 1 prompt: G5, G6, G8, G9, G11, G13, G15, G16, G18-G21 |
 | `lane-file-existence-prompt.md` | Lane 2 prompt: G4, G10 |
-| `lane-guardrail-compliance-prompt.md` | Lane 3 prompt: G14 |
+| `lane-guardrail-compliance-prompt.md` | Lane 3 prompt: G14, G22 |
 | `g17-dimension-coverage-prompt.md` | Lane 4 prompt: G17 |
 | `lens-architecture-prompt.md` | Step 5 architecture lens prompt |
 | `lens-requirements-prompt.md` | Step 5 requirements lens prompt |
@@ -60,9 +60,13 @@ Fourteen files in `plugins/sdlc/skills/plan/`:
 | Plan template override | `.sdlc-v2/plan-template.md` | Detected by `plan_prepare` when `resolveTemplate: true` |
 | Plans directory | `.claude/settings.json` `plansDirectory` | Claude Code native setting |
 
-`PlanStyle` fields: `verbosity` (default `"standard"`), `audience` (default
-`"technical"`), `narrativeRules` (default `nil`), `instructions` (default
-`nil`). Loaded by `loadPlanStyle` in `plan.go` with benign-absence fallback.
+`PlanStyle` (alias of `commstyle.Style`) fields: `audience` (default
+`"functional"`), `writingStandard` (default `"plain-language"`), `tone`
+(default `"direct"`), `visualDensity` (default `"balanced"`), `language`
+(default `"English"`), `technicalTerms`, `narrativeRules` and `instructions`
+(default `[]`), plus the derived `limits`, `warnings`, and `writingGuide`.
+Loaded by `loadPlanStyle` in `plan.go`, which calls `commstyle.FromSections`
+on the `[style]` and `[planStyle]` config sections.
 
 `PlanTasks` fields: `requiredFields` (default `[]`), `contractShape` (default
 `"full"`). Loaded from `plan` config section's `tasks` sub-key.
@@ -293,14 +297,14 @@ appendix mapping OpenSpec requirements to plan tasks.
 | **Tools called** | `plan_support({action: "merge_results"})` |
 | **Subagents** | 3 lens reviewers dispatched in a single message (see [Fan-Out Architecture](#step-5-three-lens-review)) |
 | **Plan sections written** | `## Verification Scorecard` (regenerated after each lens merge iteration) |
-| **Failure modes** | All lenses approve: proceed to Step 6.5. Reviewer timeout: degraded findings, may miss issues. Max 3 iterations: surfaces unresolved issues to user via AskUserQuestion. |
+| **Failure modes** | All lenses approve: proceed to Step 6.5. Reviewer timeout: degraded findings, may miss issues. Max `reviewLoop.maxRounds` (5) iterations: surfaces unresolved issues to user via AskUserQuestion. |
 
 Skipped in `lightweight` mode. Three lens reviewers (architecture,
 requirements, risk) evaluate the plan independently. Results merge through
 `plan_support.merge_results`. After each merge, the `## Verification
 Scorecard` section is assembled and written (or regenerated) in the plan file.
-If issues remain after 3 iterations, the loop exits and surfaces issues to the
-user.
+If issues remain after `reviewLoop.maxRounds` (5) iterations, the loop exits
+and surfaces issues to the user.
 
 ### Step 6: Apply Review Fixes
 
@@ -506,7 +510,7 @@ sequenceDiagram
     participant K as Lens risk
     participant PS as plan_support
 
-    loop Max 3 iterations
+    loop Max 5 iterations (reviewLoop.maxRounds)
         O->>A: dispatch (sonnet)
         O->>R: dispatch (sonnet)
         O->>K: dispatch (sonnet)
@@ -692,11 +696,12 @@ Every field of `PlanPrepareOut` and its consuming step:
 | `next` | `string` | Step 0 (the literal next instruction — see [MCP Output Contract](mcp-output-contract.md)) |
 | `runId` | `string` | Steps 0-7 (the run ID passed to every `plan_support` evidence call and every subagent's `{RUN_ID}` template var) |
 | `guardrailsFile` | `string` | Step 3 lanes 0, 1, 3, Step 5 lenses and reviewer (`{GUARDRAILS_FILE}` template var) |
+| `styleGuideFile` | `string` | Step 3 lane 3 (`{STYLE_GUIDE_FILE}`) |
 | `openspec` | `OpenspecInfo` | Step 0 (banner), Step 1 (explore context) |
 | `fromOpenspec` | `*FromOpenspecResult` | Step 0 (validation gate) |
 | `openspecContext` | `OpenspecContext` | Steps 2, 4 (task mapping, appendix generation) |
 | `guardrails` | `[]map[string]any` | Step 0 (`activeGuardrails` banner print), Step 4 (gates whether `## Guardrail Compliance` is written); the same data is persisted to `guardrails.md` (path in `guardrailsFile`) for lane/lens/reviewer subagents |
-| `style` | `PlanStyle` | Steps 0-7 (verbosity, audience, narrative rules, custom instructions) |
+| `style` | `PlanStyle` | Steps 0-7 (reader level, writing guide, limits, custom instructions) |
 | `tasks` | `PlanTasks` | Step 6.6 (PF11 requiredFields, PF12 contractShape) |
 | `explorePack` | `ExplorePack` | Step 1 (git scope, OpenSpec paths, keywords) |
 | `planTemplate` | `PlanTemplate` | Step 0 (template path detection) |
@@ -705,6 +710,7 @@ Every field of `PlanPrepareOut` and its consuming step:
 | `intakeAuditDispatch` | `Dispatch` | Step 1 (intake audit subagent config) |
 | `lanes` | `[]Lane` | Step 3 (5 lane configs: name, model, prompt, gateIds) |
 | `lensReviewers` | `[]LensReviewer` | Step 5 (3 lens configs: lens, model, prompt, focusCategories) |
+| `reviewLoop` | `ReviewLoop` | Step 5 (loop limit, `reviewLoop.maxRounds`) |
 | `template` | `*TemplateResolution` | Step 0 (skeleton, routing, sections, questions) |
 | `errors` | `[]string` | Step 0 (pipeline abort on non-empty) |
 
@@ -772,7 +778,7 @@ produce findings or validation results that feed into subsequent writing steps.
 
 ## Quality Gate Reference
 
-### G1-G21 Partition Table
+### G1-G22 Partition Table
 
 | Gate | Name | Lane | Model | Severity | Blocking |
 |------|------|------|-------|----------|----------|
@@ -797,6 +803,7 @@ produce findings or validation results that feed into subsequent writing steps.
 | G19 | Render-don't-narrate | 1 content-coverage | sonnet | error | **Yes** |
 | G20 | Notes rationale-only | 1 content-coverage | sonnet | error | **Yes** |
 | G21 | Self-contained code references | 1 content-coverage | sonnet | error | **Yes** |
+| G22 | Style compliance | 3 guardrail-compliance | sonnet | error | **Yes** |
 
 **\* Escalation rule:** G1, G2, G7 escalate from `warning` to `error`
 (blocking) when the plan has 3 or more uncovered requirements or orphan tasks.
@@ -812,7 +819,7 @@ classified as warning here based on the pattern (correctable, non-blocking).
 **G17 note:** Dimension coverage is always advisory and non-blocking. Findings
 are spliced as a `## Suggested Review Dimensions` advisory block in Step 4.
 
-### PF1-PF12 Format Checks
+### PF1-PF14 Format Checks
 
 All checks implemented in `internal/tools/validators.go` under the
 `plan_format` action.
@@ -831,6 +838,8 @@ All checks implemented in `internal/tools/validators.go` under the
 | PF10 | Template-required sections present | `checkPF10` | **Yes** |
 | PF11 | Custom required fields (from `plan.tasks.requiredFields`) | `checkPF11` | No |
 | PF12 | Contract shape keys (from `plan.tasks.contractShape`) | `checkPF12` | No |
+| PF13 | Plan style limits from [planStyle] (prose share, paragraph/list length, sentence length, jargon share, banned phrases, STE rules) | `checkPF13` | No |
+| PF14 | Mermaid classDef/style colors text color + contrast >=4.5:1 (whole file in `plan_format`; edited text only in the PostToolUse hook) | `checkPF14` | No |
 
 PF9 and PF10 are gated behind `final: true` because the Verification
 Scorecard and template sections are written in Step 7, after all revisions.
@@ -911,7 +920,7 @@ A `done` plan run's state file is not deleted the moment it finishes — it is k
 | Lens reviewer timeout | 5 | Degraded findings; loop may exit early | No (degraded) |
 | Material change after Step 6 fixes | 6 | Re-dispatch from Step 3 (full pipeline re-evaluation) | No (loop) |
 | Non-material change after Step 6 fixes | 6 | Re-dispatch from Step 5 only | No (loop) |
-| Max review iterations (3) exceeded | 5-6 | Loop exits, proceeds to Step 6.5 | No |
+| Max review iterations (`reviewLoop.maxRounds`, 5) exceeded | 5-6 | Loop exits, proceeds to Step 6.5 | No |
 | `links_validate` finds broken URLs | 6.5 | Pipeline blocks, surfaces broken URLs to user | **Yes** |
 | `validate({action: "plan_format"})` finds PF failures | 6.6 | Pipeline blocks, surfaces PF findings to user | **Yes** |
 | Session interrupted (Ctrl+C, timeout) | Any | `stop-plan-integrity` hook fires, warns on missing markers | No (advisory) |
@@ -949,35 +958,44 @@ A `done` plan run's state file is not deleted the moment it finishes — it is k
 | Contract shape | Yes | `.sdlc-v2/config.toml` `plan.tasks.contractShape` | Shape key string |
 | Plan template | Yes | `.sdlc-v2/plan-template.md` | Project-local override of default template |
 | Plans directory | Yes | `.claude/settings.json` `plansDirectory` | Claude Code native setting |
-| Verbosity | Yes | `.sdlc-v2/local.toml` `planStyle.verbosity` | Per-developer (gitignored) |
-| Audience | Yes | `.sdlc-v2/local.toml` `planStyle.audience` | Per-developer (gitignored) |
+| Audience | Yes | `.sdlc-v2/local.toml` `style.audience` (legacy: `planStyle.audience`) | Per-developer (gitignored) |
+| Writing standard | Yes | `.sdlc-v2/local.toml` `style.writingStandard` (legacy: `planStyle.writingStandard`) | Per-developer (gitignored) |
+| Tone | Yes | `.sdlc-v2/local.toml` `style.tone` (legacy: `planStyle.tone`) | Per-developer (gitignored) |
+| Visual density | Yes | `.sdlc-v2/local.toml` `planStyle.visualDensity` | Per-developer (gitignored) |
+| Language | Yes | `.sdlc-v2/local.toml` `style.language` (legacy: `planStyle.language`) | Per-developer (gitignored) |
+| Technical terms | Yes | `.sdlc-v2/local.toml` `style.technicalTerms` (legacy: `planStyle.technicalTerms`) | Per-developer (gitignored); code and product names exempt from the strict STE word checks |
 | Narrative rules | Yes | `.sdlc-v2/local.toml` `planStyle.narrativeRules` | Per-developer (gitignored) |
 | Custom instructions | Yes | `.sdlc-v2/local.toml` `planStyle.instructions` | Per-developer (gitignored); one instruction per array entry |
+| Style limits | No | `internal/commstyle` `LimitsFor` | Derived from the keys above |
 | Lane count (5) | No | `plan.go` `buildLanes()` | Hard-coded |
 | Lane-to-gate assignment | No | `plan.go` `buildLanes()` | Hard-coded |
 | Lane models (haiku/sonnet) | No | `plan.go` `buildLanes()` | Hard-coded |
 | Lens count (3) | No | `plan.go` `buildLensReviewers()` | Hard-coded |
 | Lens focus categories | No | `plan.go` `buildLensReviewers()` | Hard-coded |
 | Complexity thresholds (1/2-3/4+) | No | `plan.go` `ComplexityRouting` | Hard-coded |
-| Max review iterations (3) | No | `SKILL.md` Step 5 | Hard-coded |
-| PF checks (PF1-PF12) | No | `validators.go` | Hard-coded (PF11/PF12 are parameterized) |
-| G1-G21 gate definitions | No | Lane prompt `.md` files | Hard-coded |
+| Max review iterations (`reviewLoop.maxRounds`, 5) | No | `plan.go` `maxReviewRounds` | Hard-coded |
+| PF checks (PF1-PF14) | No | `validators.go` | Hard-coded (PF11/PF12/PF13 are parameterized) |
+| G1-G22 gate definitions | No | Lane prompt `.md` files | Hard-coded |
 | planIntegrity markers (4) | No | `stop_hooks.go` `requiredPlanMarkers` | Hard-coded |
 | Snapshot dimensions (7) | No | `plan_support.go` `PlanSnapshot` | Hard-coded |
 | Transcript scan window (64KB) | No | `stop_hooks.go` | Hard-coded |
 
 ### Config Knob Connectivity Chains
 
-Full source-to-enforcement chain for the 6 `planStyle`/`plan.tasks` config fields: schema definition, Go struct field, the loader function that reads it, where the SKILL.md workflow consumes it, and what enforces it.
+Full source-to-enforcement chain for the 10 `planStyle`/`plan.tasks` config fields: Go struct field, the loader function that reads it, where the SKILL.md workflow consumes it, and what enforces it.
 
-| Config Field | File | Schema Location | Go Struct | Loaded By | SKILL.md Step | Enforced By |
-|---|---|---|---|---|---|---|
-| `planStyle.verbosity` | `.sdlc-v2/local.toml` (personal) | `planStyleSection.verbosity` | `PlanStyle.Verbosity` | `loadPlanStyle` | Step 2 | LLM judgment |
-| `planStyle.audience` | `.sdlc-v2/local.toml` (personal) | `planStyleSection.audience` | `PlanStyle.Audience` | `loadPlanStyle` | Step 2 | LLM judgment |
-| `planStyle.narrativeRules` | `.sdlc-v2/local.toml` (personal) | `planStyleSection.narrativeRules` | `PlanStyle.NarrativeRules` | `loadPlanStyle` | Step 5 | Lens prompts (`{NARRATIVE_RULES}`) |
-| `planStyle.instructions` | `.sdlc-v2/local.toml` (personal) | `planStyleSection.instructions` | `PlanStyle.Instructions` | `loadPlanStyle` | Printed at Step 0; passed as `{PLAN_INSTRUCTIONS}` to every lane/lens; re-printed after compaction; self-checked at Step 7 | Step 7 self-check table (LLM judgment) |
-| `plan.tasks.requiredFields` | `.sdlc-v2/config.toml` (team) | `planSection.tasks.requiredFields` | `PlanTasks.RequiredFields` | `loadPlanTasks` | Step 2 (authored), Step 4 (revised) | PF11 (`checkPF11`) |
-| `plan.tasks.contractShape` | `.sdlc-v2/config.toml` (team) | `planSection.tasks.contractShape` | `PlanTasks.ContractShape` | `loadPlanTasks` | Step 2 (authored), Step 4 (revised) | PF12 (`checkPF12`) |
+| Config Field | Go Struct | Loaded By | SKILL.md Step | Enforced By |
+|---|---|---|---|---|
+| `style.audience` (legacy: `planStyle.audience`) | `Style.Audience` | `commstyle.FromSections` | guide `<reader>`; Step 0/1/5 question framing | G22 (LLM); PF13 jargon share |
+| `style.writingStandard` (legacy: `planStyle.writingStandard`) | `Style.WritingStandard` | `commstyle.FromSections` | guide `<writing_standard>` | G22; PF13 sentence length; PF13 STE rules (ste only) |
+| `style.technicalTerms` (legacy: `planStyle.technicalTerms`) | `Style.TechnicalTerms` | `commstyle.FromSections` | `Limits.TechnicalTerms` | PF13 STE exemptions |
+| `style.tone` (legacy: `planStyle.tone`) | `Style.Tone` | `commstyle.FromSections` | guide `<tone>` | G22; PF13 banned phrases |
+| `planStyle.visualDensity` | `Style.VisualDensity` | `commstyle.FromSections` | guide `<visual_rules>`, `<limits>` | PF13 prose share, paragraph, list |
+| `style.language` (legacy: `planStyle.language`) | `Style.Language` | `commstyle.FromSections` | guide header | PF13 (sentence length off if not English) |
+| `planStyle.narrativeRules` | `Style.NarrativeRules` | `commstyle.FromSections` | guide `<extra_rules>` | G22 |
+| `planStyle.instructions` | `Style.Instructions` | `commstyle.FromSections` | Step 0 print; `{PLAN_INSTRUCTIONS}`; guide `<custom_instructions>`; checkpoint next; post-compact hook; `styleReport.instructions` | G22 (LLM); Step 7 table (LLM) |
+| `plan.tasks.requiredFields` | unchanged | unchanged | unchanged | PF11 |
+| `plan.tasks.contractShape` | unchanged | unchanged | unchanged | PF12 |
 
 ---
 

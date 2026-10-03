@@ -3,12 +3,15 @@ package tools
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/commstyle"
 	"github.com/rnagrodzki/sdlc-plugin/internal/discovery"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
@@ -1900,6 +1903,12 @@ func TestPlanFormatFixesAreSelfContained(t *testing.T) {
 		{"PF11 missing custom field", checkPF11([]planTask{{Number: 1, Body: "x\n"}}, []string{"Owner"}), false},
 		{"PF12 no contract block", checkPF12(contractless, "full"), false},
 		{"PF12 shallow contract", checkPF12(shallowContract, "full"), false},
+		{"PF13 style limits", checkPF13(commstyle.FromSections(nil, nil), commstyle.Report{
+			Sections:   []commstyle.SectionMetrics{{Name: "Context", Failures: []string{"prose share 0.65 > 0.30"}}},
+			BannedHits: []commstyle.BannedHit{{Phrase: "great question", Line: 88}},
+			SteHits:    []commstyle.SteHit{{Rule: "ing-form", Text: "starting", Line: 92}},
+		}), true},
+		{"PF14 diagram contrast", checkPF14("```mermaid\nclassDef new fill:#d4f7d4\n```\n"), true},
 	}
 
 	seen := map[string]bool{}
@@ -1932,7 +1941,7 @@ func TestPlanFormatFixesAreSelfContained(t *testing.T) {
 	}
 
 	// Every check that can fail is covered. PF8 does not exist in this format.
-	for _, id := range []string{"PF1", "PF2", "PF3", "PF4", "PF5", "PF6", "PF7", "PF9", "PF10", "PF11", "PF12"} {
+	for _, id := range []string{"PF1", "PF2", "PF3", "PF4", "PF5", "PF6", "PF7", "PF9", "PF10", "PF11", "PF12", "PF13", "PF14"} {
 		if !seen[id] {
 			t.Errorf("no failure case for %s in TestPlanFormatFixesAreSelfContained", id)
 		}
@@ -2132,5 +2141,404 @@ func TestHookPlanTemplateCandidates(t *testing.T) {
 	}
 	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
 		t.Errorf("candidates = %q, want %q (project override first)", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// plan_format PF13/PF14 and the plan_style action
+// ---------------------------------------------------------------------------
+
+// proseContext is a Context section of 44 prose words and no visual lines,
+// so its prose share is 1.00.
+const proseContext = `## Context
+
+The plan changes how the tool reads the style. It keeps the old values for now.
+
+The team asked for this change last week. We want the output to be short and clear for every reader. Each section uses a table where it can.
+`
+
+// writeLocalToml writes the developer-local config the style is read from.
+func writeLocalToml(t *testing.T, root, content string) {
+	t.Helper()
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), content)
+}
+
+// lineOf returns the 1-based line of the first line of content that
+// contains substr, or 0.
+func lineOf(content, substr string) int {
+	for i, l := range strings.Split(content, "\n") {
+		if strings.Contains(l, substr) {
+			return i + 1
+		}
+	}
+	return 0
+}
+
+// runValidate calls validate and fails the test on an error.
+func runValidate(t *testing.T, root string, in ValidateIn) ValidateOut {
+	t.Helper()
+	out, err := validate(root, in)
+	if err != nil {
+		t.Fatalf("validate(%s): %v", in.Action, err)
+	}
+	return out
+}
+
+// onlyFinding returns the single finding with id, failing the test when
+// there is not exactly one.
+func onlyFinding(t *testing.T, findings []discovery.Finding, id string) discovery.Finding {
+	t.Helper()
+	got := findingsByID(findings, id)
+	if len(got) != 1 {
+		t.Fatalf("want exactly one %s finding, got %d: %+v", id, len(got), findings)
+	}
+	return got[0]
+}
+
+func TestValidatePlanFormat_PF13ProseShareFails(t *testing.T) {
+	root := t.TempDir()
+	writeLocalToml(t, root, "[planStyle]\nvisualDensity = \"high\"\n")
+	writeFile(t, filepath.Join(root, "plan.md"), goodPlan+"\n"+proseContext)
+
+	f := onlyFinding(t, runValidate(t, root, ValidateIn{Action: "plan_format", File: "plan.md"}).Findings, "PF13")
+	if f.Severity != "error" {
+		t.Errorf("severity = %q, want error", f.Severity)
+	}
+	if !strings.HasPrefix(f.Message, "Plan style limits from [style] and [planStyle] not met (visualDensity=high,") {
+		t.Errorf("headline missing or wrong:\n%s", f.Message)
+	}
+	if !strings.Contains(f.Message, "\n- Context: prose share 1.00 > 0.30") {
+		t.Errorf("message lacks the Context prose-share line:\n%s", f.Message)
+	}
+	if f.Fix == "" {
+		t.Error("PF13 fix is empty")
+	}
+}
+
+func TestValidatePlanFormat_PF13BannedPhrase(t *testing.T) {
+	root := t.TempDir()
+	plan := goodPlan + "\n## Notes\n\nGreat question about the layout.\n"
+	writeFile(t, filepath.Join(root, "plan.md"), plan)
+
+	f := onlyFinding(t, runValidate(t, root, ValidateIn{Action: "plan_format", File: "plan.md"}).Findings, "PF13")
+	want := fmt.Sprintf("- line %d: banned phrase \"great question\"", lineOf(plan, "Great question"))
+	if !strings.Contains(f.Message, want) {
+		t.Errorf("message lacks %q:\n%s", want, f.Message)
+	}
+}
+
+func TestValidatePlanFormat_PF13SteHit(t *testing.T) {
+	root := t.TempDir()
+	writeLocalToml(t, root, "[style]\nwritingStandard = \"ste\"\n")
+	plan := goodPlan + "\n## Notes\n\nBefore starting the tool, read the guide.\n"
+	writeFile(t, filepath.Join(root, "plan.md"), plan)
+
+	f := onlyFinding(t, runValidate(t, root, ValidateIn{Action: "plan_format", File: "plan.md"}).Findings, "PF13")
+	want := fmt.Sprintf("- line %d: STE ing-form: \"starting\"", lineOf(plan, "Before starting"))
+	if !strings.Contains(f.Message, want) {
+		t.Errorf("message lacks %q:\n%s", want, f.Message)
+	}
+	if !strings.Contains(f.Message, "writingStandard=ste") {
+		t.Errorf("headline does not name writingStandard=ste:\n%s", f.Message)
+	}
+}
+
+func TestValidatePlanFormat_PF13ShortSectionSkipped(t *testing.T) {
+	root := t.TempDir()
+	writeLocalToml(t, root, "[planStyle]\nvisualDensity = \"high\"\n")
+	// 25 words of prose: under the 40-word floor, so it is skipped.
+	short := "## Final Shape\n\nThe tool reads one config file and writes one report. Each run is short. The team reviews the report and the plan before each merge.\n"
+	writeFile(t, filepath.Join(root, "plan.md"), goodPlan+"\n"+short)
+
+	out := runValidate(t, root, ValidateIn{Action: "plan_format", File: "plan.md"})
+	for _, f := range findingsByID(out.Findings, "PF13") {
+		if strings.Contains(f.Message, "Final Shape") {
+			t.Errorf("PF13 names the skipped Final Shape section:\n%s", f.Message)
+		}
+	}
+
+	style := runValidate(t, root, ValidateIn{Action: "plan_style", File: "plan.md"}).StyleReport
+	for _, s := range style.Sections {
+		if s.Name == "Final Shape" && s.Status != "skipped" {
+			t.Errorf("Final Shape status = %q (words=%d), want skipped", s.Status, s.Words)
+		}
+	}
+}
+
+// TestValidatePlanFormat_PF13TemplateSections pins that a template limits
+// PF13 to its narrative sections: Tasks (not narrative) is not measured even
+// though it breaks the prose limit.
+func TestValidatePlanFormat_PF13TemplateSections(t *testing.T) {
+	root := t.TempDir()
+	writeLocalToml(t, root, "[planStyle]\nvisualDensity = \"high\"\n")
+	writeFile(t, filepath.Join(root, "template.md"), "# T\n\n## Required Sections\n\n- Tasks\n- Context <!-- narrative: true -->\n")
+	tasks := strings.Replace(proseContext, "## Context", "## Tasks", 1)
+	writeFile(t, filepath.Join(root, "plan.md"), goodPlan+"\n"+proseContext+"\n"+tasks)
+
+	f := onlyFinding(t, runValidate(t, root, ValidateIn{Action: "plan_format", File: "plan.md", Template: "template.md"}).Findings, "PF13")
+	if !strings.Contains(f.Message, "- Context: prose share") {
+		t.Errorf("PF13 does not measure Context:\n%s", f.Message)
+	}
+	if strings.Contains(f.Message, "- Tasks:") {
+		t.Errorf("PF13 measures the non-narrative Tasks section:\n%s", f.Message)
+	}
+
+	rep := runValidate(t, root, ValidateIn{Action: "plan_style", File: "plan.md", Template: "template.md"}).StyleReport
+	if len(rep.Sections) != 1 || rep.Sections[0].Name != "Context" {
+		t.Errorf("styleReport.sections = %+v, want exactly one row named Context", rep.Sections)
+	}
+}
+
+func TestValidatePlanFormat_PF13UnreadableTemplateErrors(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "plan.md"), goodPlan)
+
+	_, err := validate(root, ValidateIn{Action: "plan_format", File: "plan.md", Template: "missing.md"})
+	var de *mcpserver.DomainError
+	if !errors.As(err, &de) || !strings.Contains(de.Msg, "template not found") {
+		t.Fatalf("err = %v, want DomainError template not found (template is read for PF13 on every call)", err)
+	}
+}
+
+// TestValidatePlanFormat_HookSkipsPF13 uses a plan that breaks the prose
+// limit and also fails PF6, so the hook does compute blocking findings; PF13
+// must still be absent from both slices.
+func TestValidatePlanFormat_HookSkipsPF13(t *testing.T) {
+	root := t.TempDir()
+	writeLocalToml(t, root, "[planStyle]\nvisualDensity = \"high\"\n")
+	writeFile(t, filepath.Join(root, "plan.md"), planBlockedByPF6()+"\n"+proseContext)
+
+	if len(findingsByID(runValidate(t, root, ValidateIn{Action: "plan_format", File: "plan.md"}).Findings, "PF13")) != 1 {
+		t.Fatal("fixture must fail PF13 under plan_format, or the hook check proves nothing")
+	}
+	blocking, final, err := ValidatePlanFormatForHook(root, "plan.md")
+	if err != nil {
+		t.Fatalf("hook: %v", err)
+	}
+	if len(findingsByID(blocking, "PF6")) != 1 {
+		t.Fatalf("fixture must block on PF6, got %+v", blocking)
+	}
+	if len(findingsByID(blocking, "PF13")) != 0 || len(findingsByID(final, "PF13")) != 0 {
+		t.Errorf("hook reported PF13: blocking=%+v final=%+v", blocking, final)
+	}
+}
+
+const shippedClassDefs = "classDef new fill:#1f7a3a,stroke:#0b3d1c,color:#ffffff,stroke-width:2px\n" +
+	"    classDef changed fill:#8a6d00,stroke:#4a3a00,color:#ffffff,stroke-width:2px\n"
+
+func mermaidPlan(body string) string {
+	return goodPlan + "\n## Final Shape\n\n```mermaid\nflowchart LR\n    A --> B\n    " + body + "```\n"
+}
+
+func TestValidatePlanFormat_PF14PastelClassDefFails(t *testing.T) {
+	root := t.TempDir()
+	plan := mermaidPlan("classDef new fill:#d4f7d4,stroke:#2a7a2a\n")
+	writeFile(t, filepath.Join(root, "plan.md"), plan)
+
+	f := onlyFinding(t, runValidate(t, root, ValidateIn{Action: "plan_format", File: "plan.md"}).Findings, "PF14")
+	want := fmt.Sprintf("\n- line %d: no text color: classDef new fill:#d4f7d4,stroke:#2a7a2a", lineOf(plan, "#d4f7d4"))
+	if !strings.Contains(f.Message, want) {
+		t.Errorf("message lacks %q:\n%s", want, f.Message)
+	}
+	if !strings.Contains(f.Fix, "classDef new fill:#1f7a3a,stroke:#0b3d1c,color:#ffffff,stroke-width:2px") ||
+		!strings.Contains(f.Fix, "classDef changed fill:#8a6d00,stroke:#4a3a00,color:#ffffff,stroke-width:2px") {
+		t.Errorf("fix does not quote the two exact classDefs:\n%s", f.Fix)
+	}
+}
+
+func TestValidatePlanFormat_PF14ShippedClassDefsPass(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "plan.md"), mermaidPlan(shippedClassDefs))
+
+	if got := findingsByID(runValidate(t, root, ValidateIn{Action: "plan_format", File: "plan.md"}).Findings, "PF14"); len(got) != 0 {
+		t.Errorf("shipped classDefs reported PF14: %+v", got)
+	}
+}
+
+func TestValidatePlanFormat_PF14LowContrastStyleFails(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "plan.md"), mermaidPlan("style A fill:#fff3c4,color:#ffffff\n"))
+
+	f := onlyFinding(t, runValidate(t, root, ValidateIn{Action: "plan_format", File: "plan.md"}).Findings, "PF14")
+	if !regexp.MustCompile(`- line \d+: contrast \d+\.\d:1 < 4\.5:1: style A fill:#fff3c4,color:#ffffff`).MatchString(f.Message) {
+		t.Errorf("message lacks the contrast line:\n%s", f.Message)
+	}
+}
+
+func TestDiagramContrastFindings(t *testing.T) {
+	got := DiagramContrastFindings("plan.md", "classDef new fill:#d4f7d4,stroke:#2a7a2a")
+	if len(got) != 1 || got[0].ID != "PF14" || got[0].Path != "plan.md" {
+		t.Fatalf("pastel classDef without a fence: got %+v, want one PF14 finding", got)
+	}
+	if !strings.Contains(got[0].Message, "\n- line 1: no text color: classDef new fill:#d4f7d4,stroke:#2a7a2a") {
+		t.Errorf("message = %q", got[0].Message)
+	}
+
+	clean := DiagramContrastFindings("plan.md", "fix a typo in the intro\n"+shippedClassDefs)
+	if clean == nil || len(clean) != 0 {
+		t.Errorf("clean text: got %#v, want a non-nil empty slice", clean)
+	}
+}
+
+func TestValidatePlanStyle_MissingFile(t *testing.T) {
+	_, err := validate(t.TempDir(), ValidateIn{Action: "plan_style"})
+	var de *mcpserver.DomainError
+	if !errors.As(err, &de) {
+		t.Fatalf("err = %v, want *mcpserver.DomainError", err)
+	}
+	if want := "plan_style: file is required"; de.Msg != want {
+		t.Errorf("msg = %q, want %q", de.Msg, want)
+	}
+	if want := "Pass file: the path to the plan .md file, absolute or relative to the project root."; de.Suggestion != want {
+		t.Errorf("suggestion = %q, want %q", de.Suggestion, want)
+	}
+}
+
+// TestValidatePlanStyle_FileNotFound verifies the error names plan_style,
+// not plan_format: readPlanFile/planReadError serve both actions, so the
+// action name must be threaded through rather than hardcoded.
+func TestValidatePlanStyle_FileNotFound(t *testing.T) {
+	_, err := validate(t.TempDir(), ValidateIn{Action: "plan_style", File: "missing-plan.md"})
+	var de *mcpserver.DomainError
+	if !errors.As(err, &de) {
+		t.Fatalf("err = %v, want *mcpserver.DomainError", err)
+	}
+	if !strings.HasPrefix(de.Msg, "plan_style: file not found:") {
+		t.Errorf("Msg = %q, want prefix %q", de.Msg, "plan_style: file not found:")
+	}
+}
+
+// TestValidatePlanStyle_PassReturnsReport pins that a passing plan still
+// gets a full report with every list field [] (never null).
+func TestValidatePlanStyle_PassReturnsReport(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "template.md"), "# T\n\n## Required Sections\n\n- Context <!-- narrative: true -->\n")
+	visual := "## Context\n\n| Field | Before | After |\n|---|---|---|\n" +
+		"| audience | free text in the plan config | one of five checked values with a default |\n" +
+		"| tone | free text in the plan config | direct or neutral, checked on every read |\n" +
+		"| density | not present in the config | high, balanced or low, with numeric limits |\n"
+	writeFile(t, filepath.Join(root, "plan.md"), goodPlan+"\n"+visual)
+
+	out := runValidate(t, root, ValidateIn{Action: "plan_style", File: "plan.md", Template: "template.md"})
+	if len(out.Findings) != 0 {
+		t.Errorf("findings = %+v, want none", out.Findings)
+	}
+	rep := out.StyleReport
+	if rep == nil {
+		t.Fatal("styleReport is nil on a passing plan")
+	}
+	if len(rep.Sections) != 1 || rep.Sections[0].Status != "pass" {
+		t.Errorf("sections = %+v, want one Context row with status pass", rep.Sections)
+	}
+	for _, k := range []string{"audience", "writingStandard", "tone", "visualDensity", "language"} {
+		if rep.Settings[k] == "" {
+			t.Errorf("settings[%q] is empty", k)
+		}
+	}
+	if len(rep.Settings) != 5 {
+		t.Errorf("settings = %v, want exactly 5 keys", rep.Settings)
+	}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "null") {
+		t.Errorf("plan_style output carries null: %s", raw)
+	}
+}
+
+func TestValidatePlanStyle_FailReturnsReport(t *testing.T) {
+	root := t.TempDir()
+	writeLocalToml(t, root, "[style]\nwritingStandard = \"ste\"\n[planStyle]\nvisualDensity = \"high\"\n")
+	plan := mermaidPlan("classDef new fill:#d4f7d4,stroke:#2a7a2a\n") + "\n" + proseContext + "\nBefore starting the tool, read the guide.\n"
+	writeFile(t, filepath.Join(root, "plan.md"), plan)
+
+	out := runValidate(t, root, ValidateIn{Action: "plan_style", File: "plan.md"})
+	if len(findingsByID(out.Findings, "PF13")) != 1 || len(out.Findings) != 1 {
+		t.Errorf("findings = %+v, want exactly one PF13 (PF14 goes in styleReport only)", out.Findings)
+	}
+	rep := out.StyleReport
+	if rep == nil {
+		t.Fatal("styleReport is nil on a failing plan")
+	}
+	if rep.Settings["writingStandard"] != "ste" || !rep.Limits.STE {
+		t.Errorf("settings/limits do not reflect ste: %v %+v", rep.Settings, rep.Limits)
+	}
+	wantLine := lineOf(plan, "Before starting")
+	found := false
+	for _, h := range rep.SteHits {
+		if h.Rule == "ing-form" && h.Text == "starting" && h.Line == wantLine {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("steHits = %+v, want ing-form \"starting\" at line %d", rep.SteHits, wantLine)
+	}
+
+	// diagramContrast lists the same hits plan_format reports as PF14.
+	pf14 := onlyFinding(t, runValidate(t, root, ValidateIn{Action: "plan_format", File: "plan.md"}).Findings, "PF14")
+	if len(rep.DiagramContrast) != 1 {
+		t.Fatalf("diagramContrast = %+v, want one hit", rep.DiagramContrast)
+	}
+	h := rep.DiagramContrast[0]
+	if want := fmt.Sprintf("- line %d: %s: %s", h.Line, h.Reason, h.Text); !strings.Contains(pf14.Message, want) {
+		t.Errorf("PF14 message lacks the styleReport hit %q:\n%s", want, pf14.Message)
+	}
+}
+
+func TestValidatePlanStyle_Instructions(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "plan.md"), goodPlan)
+
+	if got := runValidate(t, root, ValidateIn{Action: "plan_style", File: "plan.md"}).StyleReport.Instructions; got == nil || len(got) != 0 {
+		t.Errorf("instructions with no config = %#v, want []", got)
+	}
+
+	writeLocalToml(t, root, "[planStyle]\ninstructions = [\"A\"]\n")
+	got := runValidate(t, root, ValidateIn{Action: "plan_style", File: "plan.md"}).StyleReport.Instructions
+	if len(got) != 1 || got[0] != "A" {
+		t.Errorf("instructions = %#v, want [\"A\"] (read fresh on every call)", got)
+	}
+}
+
+// TestValidatePlanStyle_ConfigReadErrorWarns verifies a malformed
+// local.toml does not fail the call: the style falls back to defaults and
+// the read error reaches styleReport.warnings.
+func TestValidatePlanStyle_ConfigReadErrorWarns(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "plan.md"), goodPlan)
+	writeLocalToml(t, root, "[style\naudience = [\n")
+
+	rep := runValidate(t, root, ValidateIn{Action: "plan_style", File: "plan.md"}).StyleReport
+	if rep == nil {
+		t.Fatal("styleReport = nil, want a report despite the read error")
+	}
+	if got := rep.Settings["audience"]; got != "functional" {
+		t.Errorf("audience = %q, want functional (default)", got)
+	}
+	found := false
+	for _, w := range rep.Warnings {
+		if strings.Contains(w, "Failed to read style config: ") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("warnings = %v, want a \"Failed to read style config: \" entry", rep.Warnings)
+	}
+}
+
+// TestValidateIn_PlanStyleDescriptions pins that the file and template
+// field descriptions, and the action enum, name plan_style.
+func TestValidateIn_PlanStyleDescriptions(t *testing.T) {
+	typ := reflect.TypeOf(ValidateIn{})
+	for _, name := range []string{"File", "Template"} {
+		f, _ := typ.FieldByName(name)
+		if !strings.Contains(f.Tag.Get("jsonschema_description"), "plan_style") {
+			t.Errorf("ValidateIn.%s description does not name plan_style: %q", name, f.Tag.Get("jsonschema_description"))
+		}
+	}
+	f, _ := typ.FieldByName("Action")
+	if !strings.Contains(f.Tag.Get("jsonschema"), "enum=plan_style") {
+		t.Errorf("Action enum lacks plan_style: %q", f.Tag.Get("jsonschema"))
 	}
 }

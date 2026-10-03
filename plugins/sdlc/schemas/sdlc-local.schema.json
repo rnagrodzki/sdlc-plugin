@@ -19,24 +19,57 @@
     },
     "planStyleSection": {
       "type": "object",
-      "description": "User-local narrative preferences for the plan skill.",
+      "description": "User-local plan-only narrative preferences for the plan skill. audience, writingStandard, tone, language, and technicalTerms moved to [style] — they are still accepted here (deprecated) so old files keep validating.",
       "properties": {
+        "audience": {
+          "type": "string",
+          "enum": ["technical", "functional", "executive", "general", "beginner"],
+          "deprecated": true,
+          "description": "Moved to [style]."
+        },
+        "writingStandard": {
+          "type": "string",
+          "enum": ["ste", "plain-language", "developer-docs", "smart-brevity"],
+          "deprecated": true,
+          "description": "Moved to [style]."
+        },
+        "tone": {
+          "type": "string",
+          "enum": ["direct", "neutral"],
+          "deprecated": true,
+          "description": "Moved to [style]."
+        },
+        "language": {
+          "type": "string",
+          "deprecated": true,
+          "description": "Moved to [style]."
+        },
+        "technicalTerms": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "deprecated": true,
+          "description": "Moved to [style]."
+        },
         "verbosity": {
           "type": "string",
           "enum": ["terse", "standard", "detailed"],
-          "description": "How much prose /plan writes in narrative sections."
+          "deprecated": true,
+          "description": "No longer used; ignored with a warning. Set visualDensity instead."
         },
-        "audience": {
+        "visualDensity": {
           "type": "string",
-          "enum": ["technical", "mixed", "executive"],
-          "description": "Assumed reader background for plan narrative sections."
+          "enum": ["high", "balanced", "low"],
+          "default": "balanced",
+          "description": "Share of tables, lists, diagrams, and code versus prose in plan narrative sections."
         },
         "narrativeRules": {
           "type": "array",
           "items": {
             "type": "string"
           },
-          "description": "Free-form writing rules /plan enforces on narrative sections."
+          "description": "Extra writing rules added to the end of the writing guide."
         },
         "instructions": {
           "type": "array",
@@ -45,6 +78,44 @@
           },
           "default": [],
           "description": "Custom process instructions /plan shows at start and forwards to every step and subagent, including after context compaction. Default: none."
+        }
+      },
+      "additionalProperties": false
+    },
+    "styleSection": {
+      "type": "object",
+      "description": "User-local communication style shared by every sdlc skill: reader level, writing standard, tone, language, and technical-term allowlist.",
+      "properties": {
+        "audience": {
+          "type": "string",
+          "enum": ["technical", "functional", "executive", "general", "beginner"],
+          "default": "functional",
+          "description": "Who reads skill explanations and plan narrative sections."
+        },
+        "writingStandard": {
+          "type": "string",
+          "enum": ["ste", "plain-language", "developer-docs", "smart-brevity"],
+          "default": "plain-language",
+          "description": "Sentence rules applied to narrative and chat text."
+        },
+        "tone": {
+          "type": "string",
+          "enum": ["direct", "neutral"],
+          "default": "direct",
+          "description": "direct enforces banned filler/hedging phrases; neutral does not."
+        },
+        "language": {
+          "type": "string",
+          "default": "English",
+          "description": "Language of skill explanations and plan text. Sentence-length limits apply only to English."
+        },
+        "technicalTerms": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Code and product names exempt from the strict STE word checks."
         }
       },
       "additionalProperties": false
@@ -342,6 +413,9 @@
     },
     "planStyle": {
       "$ref": "#/$defs/planStyleSection"
+    },
+    "style": {
+      "$ref": "#/$defs/styleSection"
     },
     "ship": {
       "$ref": "#/$defs/shipSection"

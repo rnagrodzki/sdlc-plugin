@@ -82,6 +82,12 @@ func postToolValidate(ctx HookCtx, event Event) (Output, error) {
 		// only when something already blocks, so they can be shown as a
 		// preview of what the next step will also reject.
 		findings, finalOnly, verr = tools.ValidatePlanFormatForHook(root, filePath)
+		// PF14 (diagram contrast) runs on the edited text only, not the whole
+		// file: a whole-file check would block any edit of an older plan that
+		// still has a pastel classDef, even an unrelated typo fix.
+		if verr == nil {
+			findings = append(findings, tools.DiagramContrastFindings(filePath, editedText(toolInput))...)
+		}
 	default:
 		return silent, nil
 	}
@@ -101,6 +107,35 @@ func postToolValidate(ctx HookCtx, event Event) (Output, error) {
 		"decision": "block",
 		"reason":   reason,
 	}, ExitCode: 0}, nil
+}
+
+// editedText returns the new text an Edit, MultiEdit, or Write call puts in
+// the file, read from the same tool_input map postToolValidate already
+// decoded. It is used to scope PF14 (diagram contrast) to what the edit
+// actually changed, instead of the whole file. Any other tool shape (no
+// edits/content/new_string key) returns "", which DiagramContrastFindings
+// then reports no findings for.
+func editedText(toolInput map[string]any) string {
+	if content, ok := toolInput["content"].(string); ok {
+		return content
+	}
+	if rawEdits, ok := toolInput["edits"].([]any); ok {
+		parts := make([]string, 0, len(rawEdits))
+		for _, e := range rawEdits {
+			edit, ok := e.(map[string]any)
+			if !ok {
+				continue
+			}
+			if newString, ok := edit["new_string"].(string); ok {
+				parts = append(parts, newString)
+			}
+		}
+		return strings.Join(parts, "\n")
+	}
+	if newString, ok := toolInput["new_string"].(string); ok {
+		return newString
+	}
+	return ""
 }
 
 // finalOnlyHeading introduces the findings of checks that run only at --final.

@@ -49,22 +49,21 @@ awaitRemoteReviewers = ["copilot"]
 awaitRemoteReviewInterval = 60
 awaitRemoteReviewTimeout = 600
 
-# ─── Plan narrative style ────────────────────────────────────────
+# ─── Communication style (every sdlc skill) ─────────────────────
+
+[style]
+# audience = "functional"      # technical | functional | executive | general | beginner
+# writingStandard = "plain-language"  # ste | plain-language | developer-docs | smart-brevity
+# tone = "direct"              # direct | neutral
+# language = "English"
+# technicalTerms = []          # words the strict STE checks accept
+
+# ─── Plan-only style ─────────────────────────────────────────────
 
 [planStyle]
-# Valid: "technical" | "executive" | "mixed"
-audience = "technical"
-# Valid: "terse" | "standard" | "detailed"
-verbosity = "terse"
-# Free-form rules for plan narrative generation.
-narrativeRules = [
-  "Give enough background so someone without prior context can judge the change.",
-  "Use plain, simple English suited for non-native speakers.",
-]
-# Custom process instructions /plan follows in every step and subagent.
-# instructions = [
-#   "Cite file:line for every claim about existing code.",
-# ]
+# visualDensity = "balanced"   # high | balanced | low
+# narrativeRules = []
+# instructions = []
 
 # ─── Automation (optional — delete if not using) ──────────────────
 

@@ -35,6 +35,7 @@ type ReceivedReviewOut struct {
 	View          string           `json:"view"`
 	Checks        string           `json:"checks"`
 	PluginVersion string           `json:"plugin_version"`
+	Style         ChatStyle        `json:"style"`
 	// Warnings reports a `gh pr checks` failure that left Checks empty. The
 	// call still succeeds: checks are best effort, the view is not.
 	Warnings []string `json:"warnings,omitempty"`
@@ -110,6 +111,7 @@ func receivedReviewPrepare(projectRoot, activeRoot string, in ReceivedReviewIn) 
 		View:          view,
 		Checks:        checks,
 		PluginVersion: pluginVersion,
+		Style:         chatStyleFor(projectRoot),
 		Warnings:      warnings,
 	}, nil
 }
@@ -376,7 +378,7 @@ func writeReplyBodies(root string, in ReceivedReviewVerifyIn) (ReceivedReviewVer
 // RegisterReceivedReviewTools registers received_review_prepare and received_review_verify on the server.
 func RegisterReceivedReviewTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "received_review_prepare",
-		"INTERNAL — called by sdlc skills only. Fetch PR view and checks for the received-review skill. Returns an inline payload with PR metadata.",
+		"INTERNAL — called by sdlc skills only. Fetch PR view and checks for the received-review skill. Returns an inline payload with PR metadata. Also returns style: the plugin-wide communication style; follow style.guide in chat and questions.",
 		mcpserver.Annotations{
 			Title:      "Fetch PR review feedback",
 			ReadOnly:   true,

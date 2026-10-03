@@ -451,16 +451,16 @@ func TestPlanSkillsNoOrchestratorReferences(t *testing.T) {
 var planSkillsReferenceFileHashes = map[string]string{
 	"skills/plan/g17-dimension-coverage-prompt.md":    "d70ec0452c98aa899231c7dace16c1cc643e6bf534df7b89b34b8c85e202e88c",
 	"skills/plan/intake-verify-prompt.md":             "eeae004f3a04a9382988fbf160b9e15d038300c50abb9c60ff2d168b6906b724",
-	"skills/plan/lane-content-coverage-prompt.md":     "fd6501e86f22cd58ad307682320c9c0c0c95e586fb02ebaf71e1804b4762d6fb",
-	"skills/plan/lane-file-existence-prompt.md":       "ee76f039f92f757a3fc8a85122e3e217f73a4a63c41f2164ca688acf4ba68f35",
-	"skills/plan/lane-guardrail-compliance-prompt.md": "247fe8da5a7c8d3c2df295d98a2f617350b7f3b759f3bca3865afab45c40ea9c",
-	"skills/plan/lane-static-structural-prompt.md":    "1465b7c432da770e7f8271afe8cc63372b9da68a161afc63688362fffe306f53",
+	"skills/plan/lane-content-coverage-prompt.md":     "3cdb91f357683fd5519e6c5f937a2bbacc6d357639f19239d0e31ad472cb5ae8",
+	"skills/plan/lane-file-existence-prompt.md":       "b3b761ebd1c9a1b20c1228a317fb074d769dccaa0ef0ed6034ceb3eb77a56c9d",
+	"skills/plan/lane-guardrail-compliance-prompt.md": "f153f56c0d5afaea5d79fa11f460f420abef0f23e310ddb210d997210ba6e007",
+	"skills/plan/lane-static-structural-prompt.md":    "abfb3e2b81f32214e91bdcddc0919ed438f9d6d0024503c0f03caed0d3a3e363",
 	"skills/plan/lens-architecture-prompt.md":         "fe2315f0cc6b1a1f06224f37f2b8c0c7348364d67db0e0b490c6c9fd13e825a0",
 	"skills/plan/lens-requirements-prompt.md":         "82b555e796446c9236bc8abc99c9dd524edb8c79b55f6fe6d4333dfbae50560b",
 	"skills/plan/lens-risk-prompt.md":                 "eb14f4b2797e7cf09dbda52f08f20eee30cd25537ae13e87320b35ab4d3ef9a6",
-	"skills/plan/plan-reviewer-prompt.md":             "36a6bc2ed156848243f7aa028f3690949f2dbbee5e50c0c8d5bd1be78938c577",
-	"skills/plan/plan-format-reference.md":            "05ca411037fbf0e7509cb0388a79bf1ebb2a8f5947c819639efb1a01574299a3",
-	"skills/plan/plan-template-default.md":            "455ac3bb5683ae8f4f9acf90754f267aa6a9464d87b3d5a200267357c414ae6b",
+	"skills/plan/plan-reviewer-prompt.md":             "1d797e8c561f75e198cc73604dec65b4a3533c0b607ed325ce54522d78d4ae14",
+	"skills/plan/plan-format-reference.md":            "a5a8c6aa54c71dadc13c84b96030029246a3d91b905f558968741fddd7aa75d0",
+	"skills/plan/plan-template-default.md":            "45af486fb7e93c36ba47ccd9a5ef832e96b294ff804b36144dad0d6f892a3e7a",
 	"skills/execute/spec-compliance-reviewer.md":      "b163b798f92a9247eda48763c08c8f4ec43872fae31201427f204ebb4c99af1e",
 }
 

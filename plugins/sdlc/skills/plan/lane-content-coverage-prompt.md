@@ -132,6 +132,6 @@ Return a single JSON object as your final output (no prose after the JSON block)
 - G11, G16, G18, G19, G20, G21: `"error"` (blocking) — OpenSpec coverage gaps, unsettled contracts, render violations, Notes restatements, and unanchored change references prevent safe execution
 - `blocking: true` maps to error severity; `blocking: false` maps to warning
 
-**Do not evaluate G1–G4, G7, G10, G12, G14, G17 — those belong to other lanes.**
+**Do not evaluate G1–G4, G7, G10, G12, G14, G17, G22 — those belong to other lanes.**
 
 Output the JSON object as the last content in your response.

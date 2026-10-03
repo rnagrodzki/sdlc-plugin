@@ -1535,6 +1535,23 @@ func TestShipState_Read(t *testing.T) {
 	if _, ok := data["resumeBriefing"]; ok {
 		t.Error("resumeBriefing should be absent on a freshly init'd pipeline — nothing has run yet")
 	}
+	style, ok := data["style"].(ChatStyle)
+	if !ok {
+		t.Fatalf("style = %#v, want ChatStyle", data["style"])
+	}
+	if style.Audience != "functional" {
+		t.Errorf("style.audience = %q, want functional", style.Audience)
+	}
+
+	// read is a shallow copy: the state file on disk must not gain a
+	// "style" key.
+	st, findErr := state.Find(dir, "ship", "feat/read")
+	if findErr != nil || st == nil {
+		t.Fatalf("state.Find: %v", findErr)
+	}
+	if _, ok := st.Data["style"]; ok {
+		t.Error(`state file on disk has a "style" key, want it absent (read must not mutate state)`)
+	}
 }
 
 func TestShipState_Read_InFlight_FailedStepNeverReportsFailure(t *testing.T) {

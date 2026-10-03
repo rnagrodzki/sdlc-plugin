@@ -18,10 +18,12 @@ Write an implementation plan from requirements, a spec, or a user description. P
 2. **Why it matters:** one sentence on what this choice affects downstream
 3. **Options:** each option carries a concrete consequence, not just a label
 
-Scale framing to `style.audience` (extracted from the `plan_prepare` output — see Step 0's "Template resolution" call; one of `"technical"`, `"executive"`, `"mixed"`):
+Scale framing to `style.audience` (extracted from the `plan_prepare` output — see Step 0's "Template resolution" call; one of `"technical"`, `"functional"`, `"executive"`, `"general"`, `"beginner"`):
 - `"technical"` — reference files, functions, config fields
+- `"functional"` — say what each option does and its effect; code names only in a table
 - `"executive"` — reference features, user impact, timeline
-- `"mixed"` — lead with impact, follow with implementation detail
+- `"general"` — everyday words; say what the user sees; no code names
+- `"beginner"` — one idea per sentence; one concrete example per option
 
 Step 0's OpenSpec gate check asks about the project's spec process, not about code or features — do not scale it to `style.audience`; use plain, audience-neutral language there instead.
 
@@ -73,7 +75,7 @@ This is plan's mandatory state/config load. Call `plan_prepare({ skipConfigCheck
 Pass `fromOpenspec` only when flag parsing resolved a change name (`--spec <change-name>`, its deprecated alias, or a spec file path into `openspec/changes/<name>/`). The tool call returns the prepare payload directly — there is no output file to read and no cleanup trap to install for this step (that differs from the `explorePack` tempdir, handled separately in Step 1). The tool has already written the `skillInvoked` planIntegrity marker as a side effect; do not call `plan_mark({marker:"skillInvoked"})` — that would be a redundant fourth explicit call, since the marker enum's fourth value is written for free inside `plan_prepare`.
 
 **Post-compact resume:** Use this path only when Session recovery selected it and the hook line says step 1 or later (step 0: see the resume table). The hook's second line brings this skill back after compaction when its instructions are no longer in context. At step 1, keep the explorers that show `done` and force-progress past the others after one poll cycle (resume table).
-1. Call `plan_prepare({ resume: true, resolveTemplate: true, skipConfigCheck: true })`. It reuses the active run and reloads the user prompt and routing flags. Write `template.headerMarkdown` + `template.skeletonMarkdown` only if the plan file is empty. Store `runId`, `guardrailsFile`, `lanes`, `lensReviewers`, `style` and `template.activeTemplatePath` as in a fresh run. On `no active plan run`, print "No active plan run to resume — starting a new plan." and run Step 0 normally.
+1. Call `plan_prepare({ resume: true, resolveTemplate: true, skipConfigCheck: true })`. It reuses the active run and reloads the user prompt and routing flags. Write `template.headerMarkdown` + `template.skeletonMarkdown` only if the plan file is empty. Store `runId`, `guardrailsFile`, `styleGuideFile`, `lanes`, `lensReviewers`, `style` and `template.activeTemplatePath` as in a fresh run. Print the **Plan style** block. On `no active plan run`, print "No active plan run to resume — starting a new plan." and run Step 0 normally.
 2. Call `plan_support({ action: "evidence_digest", runId: "<runId>" })`. Print its custom instructions. Store `digest.briefPath` as `briefPath` for `{BRIEF_FILE}` (`(none)` maps to `"none — orchestrator skipped"`). On error, print it, stop, and tell the user to re-invoke `/sdlc:plan`.
 3. Read the plan file. Re-create TodoWrite items (full pipeline) and mark the steps before `checkpoint.step` as done. New decision items continue the `D<n>` numbering after the highest `D` id in the digest index.
 4. If the plan file has a `**OpenSpec-Staging:**` header line, follow **Create flow on resume** (in **OpenSpec gate check** below) before you continue.
@@ -112,6 +114,13 @@ Custom plan instructions (local.toml [planStyle] instructions — follow them in
   2. Ask before adding a dependency.
 ```
 Empty case: `Custom plan instructions: none configured.`
+
+**Plan style** (printed in Step 0 and on resume, from `style`):
+```text
+Plan style: audience=<audience>  standard=<writingStandard>  tone=<tone>  density=<visualDensity>  language=<language>  terms=<technicalTerms joined by ", " or none>
+  warning: <each style.warnings entry, one per line>
+```
+Store `styleGuideFile` and `reviewLoop.maxRounds`. Follow `style.writingGuide` for every narrative section.
 
 **Run-context footer** (appended verbatim to every subagent prompt — explorers, lanes, lenses, reviewer, Gate A; explorers take only the first part, the instructions, because their Coordination block already records evidence):
 ```text
@@ -482,7 +491,7 @@ Identify constraints: language, framework, existing conventions, testing approac
 
 **Write to plan file:** After exploration, update the plan file:
 - Fill in Goal, Architecture, Verification header fields
-- Write the `## Context` section — answers to the Discovery Questions in plain language (R62)
+- Write the `## Context` section — answers to the Discovery Questions, per `style.writingGuide`
 - Write the `## Research Findings` section — captures exploration output: file patterns, existing modules, naming conventions, testing patterns, and build/lint/test commands discovered during codebase exploration. This section persists in the final plan (template-required, narrative).
 - Append a `## Requirements` section with numbered checklist (one bullet per requirement) — this is temporary scaffolding, removed in Step 2 post-write cleanup
 - Record the requirements: `plan_support({ action: "evidence_record", runId: "<runId>", writerId: "main", items: [{ id: "R1", summary: "<one line>", body: "<full requirement>" }, …] })`. Also record `F-main-<n>` items for findings from inline exploration (lightweight or fallback path), in a separate call: `items: [{ id: "F-main-1", summary: "<one line>", ref: "<path:line or URL>", body: "<full finding>" }, …]`. `ref` is required for every `F-main-<n>` item, the same as for explorer findings.
@@ -645,20 +654,15 @@ full syntax and when to use it.
 - `## Research Findings` — already written in Step 1 (exploration output); update if needed
 - `## Deviations & assumptions` — populate the table (Item | asked | does | why): one row per place the plan diverges from or assumes beyond the literal request. **`asked` column semantics:** `asked=yes` when AskUserQuestion was actually used to resolve the item; `asked=no` when the decision was made autonomously (no ambiguity worth surfacing) or when AskUserQuestion was suppressed by `--auto`. When the plan matches the request exactly, replace the placeholder row with a single "none" row (implements R47; presence enforced by PF6/PF10 via the active template). **De-dup rationale convention (implements R52):** Each decision gets one rationale entry.
 - `## Key Decisions` — note every decision where you chose between valid approaches. Focus on choices where a reasonable implementer might differ without the rationale. Skip obvious decisions.
-- `## Contract Examples` — one worked `**Contract:**` block per column type (code / docs / openspec) actually used by the plan's tasks, per R60. Reuse the three worked examples from `./plan-format-reference.md` verbatim.
+- `## How to read a task Contract` (or `## Contract Examples` when the active template still lists it) — the legend table from `./plan-format-reference.md` § Contract legend: one row per Contract key, with a `See` cell that names the real task of this plan that shows the key best. Never copy the reference worked examples into the plan.
 - `## Final Shape` — describe the end-state once all tasks are complete (what the deliverable looks like when done, not how it gets there)
 - `## OpenSpec Appendix` — see "OpenSpec Appendix generation" in Step 4/5 below. During Step 2, leave the skeleton placeholder (either `[TBD]` or `Not applicable — no OpenSpec change` per the condition evaluated in Step 0).
 - Task blocks — all `### Task N:` blocks with per-task metadata
 - Any project-custom sections from the template that are not in the list above — write them with the body format appropriate to their name, or `[TBD]` if the format is unknown
 
-**R62 plain-language style (applies to all narrative sections):** Sections marked `<!-- narrative: true -->` in the template (e.g. Context, Research Findings, Key Decisions, Final Shape) MUST follow these writing rules:
-- Short sentences — one idea per sentence
-- Every technical term explained inline on first use (e.g., "webhook — an HTTP callback the payment provider calls on our server")
-- Goal structured as a multi-line bullet list, not a dense text blob
-- Key Decisions readable by non-experts: state the choice, the alternative, and why one wins — prefer plain wording over jargon
-- Visual breathing room — blank lines between ideas
+**Writing guide (applies to all narrative sections and the Goal):** Write every section marked `<!-- narrative: true -->` in the template, and the `**Goal:**` header, per `style.writingGuide` from `plan_prepare`. Do not add other style rules. G22 (Step 3) and PF13 (Step 6.6) check the result.
 
-R62 is a writing-quality convention judged by the Step 5 lens reviewers (R36) alongside their other checks — no new gate is introduced, and it is not enforced deterministically.
+**Diagram colors (plan file and OpenSpec artifacts):** Mark new and changed Mermaid nodes only with the two classDefs in the guide's `<visual_rules>`, copied exactly. PF14 blocks each plan-file edit that adds a classDef or `style` line without a text color or with contrast below 4.5:1 (the hook checks only the edited text). `openspec_stage` returns `valid: false` for the same lines.
 
 **Post-write cleanup:** Remove the `## Requirements` working section from the plan file. Requirements are traceable through task acceptance criteria; the section was temporary scaffolding.
 
@@ -670,7 +674,7 @@ R62 is a writing-quality convention judged by the Step 5 lens reviewers (R36) al
 
 **Fan-out dispatch: Dispatch ALL FIVE Step 3 lanes from `lanes[]` (P16) in a SINGLE message as parallel Agent tool calls. Do not dispatch them sequentially.**
 
-All 21 quality gates (G1–G21) are partitioned across five lanes — each gate belongs to exactly one lane. G20 and G21 are owned by the content-coverage lane (lanes[1]). Lane dispatch parameters (`subagent_type`, `model`, and prompt body read from `promptTemplatePath`) MUST be sourced verbatim from the corresponding `lanes[i]` entry in the prepare output (`agent-dispatch-script-driven` guardrail — do NOT hardcode these values).
+All 22 quality gates (G1–G22) are partitioned across five lanes — each gate belongs to exactly one lane. G20 and G21 are owned by the content-coverage lane (lanes[1]); G22 (style compliance) by the guardrail-compliance lane (lanes[3]), which also receives `{STYLE_GUIDE_FILE}` = `styleGuideFile`. Lane dispatch parameters (`subagent_type`, `model`, and prompt body read from `promptTemplatePath`) MUST be sourced verbatim from the corresponding `lanes[i]` entry in the prepare output (`agent-dispatch-script-driven` guardrail — do NOT hardcode these values).
 
 For each `lanes[i]` entry (i = 0..4):
 
@@ -680,6 +684,7 @@ For each `lanes[i]` entry (i = 0..4):
   - All lanes: `{PLAN_FILE_PATH}` (absolute path to plan file), `{PROJECT_ROOT}` (cwd). Append the run-context footer to every lane prompt, Lane 4 included, with `{WRITER_ID}` = `lane-<lanes[i].name>-r<iteration>`.
   - Lanes 0–3 non-G17: `{REQUIREMENTS_SUMMARY}` (the R-items from `plan_support({ action: "evidence_get", runId: "<runId>", writerIds: ["main"] })`, one `R<n>: <body or summary>` line each), `{GUARDRAILS_FILE}` (`guardrailsFile` from `plan_prepare`), `{OPENSPEC_TASKS}` (from `openspecContext.tasks` P13, null when not OpenSpec-sourced), `{BRIEF_FINDING_IDS}` (fresh run: the `F-…` ids in the brief in context; resume: the ids of the `explore-*` rows of the `evidence_digest` index — when the index ends with the `… more` row, call `plan_support({ action: "evidence_get", runId: "<runId>", writerIds: [<explore writers>] })` and keep only the ids; null when `briefPath` is none)
   - Lane 1 (content-coverage) additionally: `{FORMAT_REFERENCE_PATH}` — absolute path to plan-format-reference.md (sibling of lane-content-coverage-prompt.md in the same skill directory; resolve as `dirname(lanes[1].promptTemplatePath)/plan-format-reference.md`), `{PLAN_TEMPLATE_PATH}` — `activeTemplatePath` resolved in Step 0 (the absolute path to the active plan template — project override or shipped default)
+  - Lane 3 (guardrail-compliance) additionally: `{STYLE_GUIDE_FILE}` — `styleGuideFile` from `plan_prepare` (the rendered writing guide; G22 reads it to judge narrative sections and the Goal)
   - Lane 4 (G17/dimension-coverage): `{DIMENSIONS_DIR}` (`.sdlc-v2/review-dimensions/`), `{COPILOT_DIR}` (`.github/instructions/`), `{GITHUB_HOSTING_DETECTED}` (`githubHosting.detected` from P14), `{LEARNINGS_LOG_PATH}` (`.sdlc-v2/learnings/log.md`), `{PR_COMMIT_WINDOW}` (best-effort "last 14 days" if unknown)
 
 **Null `promptTemplatePath` handling:** When `lanes[i].promptTemplatePath` is null (prepare script reported it could not find the template), skip that lane's dispatch and immediately add this synthetic `laneResults` entry (already in the `merge_results` shape — see "Map lane results" below):
@@ -716,7 +721,7 @@ Lane 4 (dimension-coverage/G17) returns the G17 findings JSON — parse the `fin
 
 The tool accepts only lane `status` `"pass"` or `"fail"` and issue `severity` `"blocking"` or `"advisory"`, compared exactly. Any other value (for example `"ok"`, `"error"`, or a missing value) makes `merge_results` return a DomainError and merge nothing, so map every value first. A failed lane 4 (gateIds `["G17"]` only) becomes an advisory note, never a blocker (R31). Lane 4 must be in `laneResults` even when it failed — otherwise G17 shows up as a blocking coverage gap.
 
-**Merge algorithm:** Collect the mapped entries (including the synthetic entries for null-`promptTemplatePath` lanes) into a `laneResults` array. Call `plan_support({action: "merge_results", laneResults: [...], expectedGates: ["G1".."G21"]})`. Process the returned `allIssues`, `coverageGaps`, and `laneFailures` — the tool handles issue/pass union, gate-coverage checks, lane-failure injection (G17 advisory per R31), and deduplication by (`gateId`, lower-cased trimmed `summary`).
+**Merge algorithm:** Collect the mapped entries (including the synthetic entries for null-`promptTemplatePath` lanes) into a `laneResults` array. Call `plan_support({action: "merge_results", laneResults: [...], expectedGates: ["G1".."G22"]})`. Process the returned `allIssues`, `coverageGaps`, and `laneFailures` — the tool handles issue/pass union, gate-coverage checks, lane-failure injection (G17 advisory per R31), and deduplication by (`gateId`, lower-cased trimmed `summary`).
 
 Note every issue from `allIssues`. Do NOT write to the plan file in this step.
 
@@ -736,7 +741,7 @@ Fix all issues from Step 3. Rewrite the plan file with fixes applied (edit the e
 
 **G16 (OpenSpec tasks.md coverage) failure resolution:** When G16 reports uncovered OpenSpec task entries, resolve each one by EITHER (a) adding a plan task with the missing `openspec-task` block carrying the corresponding `ref`, OR (b) appending the uncovered title under the `## Out-of-scope OpenSpec tasks` section with a one-line rationale. Both paths are valid; choose based on whether the implementation actually covers the work.
 
-If `activeGuardrails` is non-empty, append a `## Guardrail Compliance` section to the plan file listing each guardrail's evaluation result. Error-severity failures must be resolved before presenting to user. When an error-severity failure cannot be resolved by plan revision and blocks the workflow, offer **harden** (run `/harden` to analyze why this failed and propose stronger guardrails / dimensions / instructions that would catch it earlier next time — opt-in, no surface is edited without your approval) alongside the user-revision options. When the user selects **harden** (interactive mode only — suppressed when `--auto` is set), dispatch `Skill(harden)` with `--failure-text "Plan blocked by error-severity guardrail <id>: <description> — <rationale>"`, `--skill plan`, `--step "Step 4 — IMPROVE"`, `--operation "error-severity guardrail block"`. Implements R19. Format:
+If `activeGuardrails` is non-empty, append a `## Guardrail Compliance` section to the plan file listing each guardrail's evaluation result. Error-severity failures must be resolved before presenting to user. G22 (style) issues are ordinary fixes: rewrite the section, never offer harden for them. When an error-severity G14 guardrail failure cannot be resolved by plan revision and blocks the workflow, offer **harden** (run `/harden` to analyze why this failed and propose stronger guardrails / dimensions / instructions that would catch it earlier next time — opt-in, no surface is edited without your approval) alongside the user-revision options. When the user selects **harden** (interactive mode only — suppressed when `--auto` is set), dispatch `Skill(harden)` with `--failure-text "Plan blocked by error-severity guardrail <id>: <description> — <rationale>"`, `--skill plan`, `--step "Step 4 — IMPROVE"`, `--operation "error-severity guardrail block"`. Implements R19. Format:
 
 ```markdown
 ## Guardrail Compliance
@@ -789,13 +794,13 @@ Skip for lightweight plans (2–3 file scope from Step 0 routing).
 
 **Material change detection and merged re-dispatch (implements R64):**
 
-When `materialChangeDetected` is true (set by the Step 6 IMPROVE pass — see below), dispatch Step 3 lanes AND Step 5 lens reviewers in a SINGLE message as parallel Agent tool calls (`run_in_background: false` on each). This merged dispatch counts as **one** iteration of the existing review loop — the iteration counter increments by 1, not 2, and the max-3 cap (R8, R-c1) fires normally.
+When `materialChangeDetected` is true (set by the Step 6 IMPROVE pass — see below), dispatch Step 3 lanes AND Step 5 lens reviewers in a SINGLE message as parallel Agent tool calls (`run_in_background: false` on each). This merged dispatch counts as **one** iteration of the existing review loop — the iteration counter increments by 1, not 2, and the `reviewLoop.maxRounds` cap (R8, R-c1) fires normally.
 
 - **Dispatch contents:** all five `lanes[]` (P16) + all `lensReviewers[]` (P17, or the single reviewer for <5-task plans). Each agent uses the same dispatch parameters, template variables, and model rules defined in Step 3 (lanes) and Step 5 (lenses) respectively.
 - **Await barrier:** do not consolidate or advance until exactly N = (5 lanes + M lenses) results are collected. Never consolidate on partial or zero returns.
 - **Merge:** map lane results as in Step 3 ("Map lane results to the `merge_results` shape") and lens results as in the Step 5 merge section below, then use the combined `plan_support({action: "merge_results", laneResults, lensResults, expectedGates, isRedispatch: true})` call. The tool handles lane/lens merging, gate coverage, and deduplication in one call; `isRedispatch: true` additionally demotes every G17 finding to advisory.
 - **G17 on re-dispatch (advisory only):** lanes[4]/G17 findings from the re-dispatch merge as advisory only. Step 4 has already run, so there is no `## Suggested Review Dimensions` consumer — do not re-splice G17 findings into the plan file. Persist updated `g17Findings` in memory for scorecard reference only.
-- **Guardrail-block gate preservation (R19):** lanes[3] (guardrail-compliance) findings from the re-dispatch are scanned the same way Step 4 scans them. If any error-severity guardrail violation is present in the re-dispatch merge, do NOT route it silently into Step 6's blocking-issue set — surface the same guardrail-block harden offer described in Step 4 (offer **harden** alongside the user-revision options; dispatch `Skill(harden)` with `--failure-text "Plan blocked by error-severity guardrail <id>: <description> — <rationale>"`, `--skill plan`, `--step "Step 5 — merged re-dispatch"`, `--operation "error-severity guardrail block"` only if the user selects harden, suppressed when `--auto` is set) before proceeding with Step 6 fixes. This preserves R19 across the merged re-dispatch path.
+- **Guardrail-block gate preservation (R19):** lanes[3] (guardrail-compliance) G14 findings from the re-dispatch are scanned the same way Step 4 scans them. G22 findings go to Step 6 as ordinary blocking issues. If any error-severity G14 guardrail violation is present in the re-dispatch merge, do NOT route it silently into Step 6's blocking-issue set — surface the same guardrail-block harden offer described in Step 4 (offer **harden** alongside the user-revision options; dispatch `Skill(harden)` with `--failure-text "Plan blocked by error-severity guardrail <id>: <description> — <rationale>"`, `--skill plan`, `--step "Step 5 — merged re-dispatch"`, `--operation "error-severity guardrail block"` only if the user selects harden, suppressed when `--auto` is set) before proceeding with Step 6 fixes. This preserves R19 across the merged re-dispatch path.
 - **`guardrailsEvaluated` / `critiqueRan`:** NOT re-written (once-per-run checkpoints — see Step 3).
 - **Clear flag:** set `materialChangeDetected = false` after the merged issue set is assembled.
 
@@ -820,7 +825,6 @@ For each `lensReviewers[i]` entry (i = 0..2):
   - `{GUARDRAILS_FILE}` — `guardrailsFile` from `plan_prepare`
   - Footer `{WRITER_ID}`: `lens-<lens>-r<iteration>`; reviewer `reviewer-r<n>`; Gate A `gate-a`
   - `{REQUIREMENTS_JSON}` — `JSON.stringify(openspecContext.requirements)` when present, or `"null"` (null-safe; lens prompts render `"null"` as `"none — inventory unavailable, use checklist"`)
-  - `{NARRATIVE_RULES}` — `style.narrativeRules` from the `plan_prepare` output, joined as a newline-separated list, or `"none configured"` when the array is empty. Threads the project's narrative writing rules into lens reviewer evaluation.
 
 When `lensReviewers[i].promptTemplatePath` is null, skip that lens and call `learnings_log({action:"append", entry:"## YYYY-MM-DD — plan: lens \"<name>\" skipped — promptTemplatePath null (template not found at prepare time)"})`. Continue with remaining lenses.
 
@@ -835,7 +839,7 @@ When `lensReviewers[i].promptTemplatePath` is null, skip that lens and call `lea
 | `issues` | one `{ severity: "blocking", summary: "<bullet text>" }` per bullet under `**Issues**` (lenses list only execution blockers); no `gateId` |
 | `recommendations` | one string per bullet under `**Recommendations**` |
 
-Call `plan_support({action: "merge_results", lensResults: [...]})`. Process the returned `mergedStatus` (`Approved` / `Issues Found`), `allIssues`, and `recommendations` — the tool handles status derivation, issue dedup by (`gateId`, lower-cased trimmed `summary`), and recommendation dedup by exact trimmed text. For the merged re-dispatch path (when `materialChangeDetected` is true), combine both in one call: `plan_support({action: "merge_results", laneResults: [...], lensResults: [...], expectedGates: ["G1".."G21"], isRedispatch: true})` — deduplication runs across lanes and lenses as always; `isRedispatch` only makes G17 findings advisory.
+Call `plan_support({action: "merge_results", lensResults: [...]})`. Process the returned `mergedStatus` (`Approved` / `Issues Found`), `allIssues`, and `recommendations` — the tool handles status derivation, issue dedup by (`gateId`, lower-cased trimmed `summary`), and recommendation dedup by exact trimmed text. For the merged re-dispatch path (when `materialChangeDetected` is true), combine both in one call: `plan_support({action: "merge_results", laneResults: [...], lensResults: [...], expectedGates: ["G1".."G22"], isRedispatch: true})` — deduplication runs across lanes and lenses as always; `isRedispatch` only makes G17 findings advisory.
 
 **Iteration counter**: increment by 1 only after the await barrier above is satisfied (exactly N lens results collected, N = lenses dispatched); never increment on partial or zero returns (R-orchestrator-await, R-c1, #487). The counter starts at 0 and counts completed Step 5 rounds. Writer IDs and checkpoints use the round in progress, `<iteration>` = counter + 1: the first Step 3 lanes and the first Step 5 lenses are `r1`; the first merged re-dispatch is `r2`. Checkpoints in Steps 0–2 use `iteration: 0`. On resume, set the counter to `checkpoint.iteration - 1` (never below 0).
 
@@ -843,7 +847,7 @@ Call `plan_support({action: "merge_results", lensResults: [...]})`. Process the 
 
 **Gate B — Verification Scorecard (implements R40, R42, R44 — Fixes #445):**
 
-After the merge step, assemble the `## Verification Scorecard` section in the plan file. This is purely additive — it MUST NOT remove or alter any existing gate evaluation, `buildLanes`, or the `{G1..G21}` union assertion. G1–G18 unchanged; G19 severity promoted (R46 mod); G20 additive (R48); G21 additive (R51). The scorecard is regenerated (replaced, not appended) on each Step 5 iteration (R44).
+After the merge step, assemble the `## Verification Scorecard` section in the plan file. This is purely additive — it MUST NOT remove or alter any existing gate evaluation, `buildLanes`, or the `{G1..G22}` union assertion. G1–G18 unchanged; G19 severity promoted (R46 mod); G20 additive (R48); G21 additive (R51); G22 additive (style compliance). The scorecard is regenerated (replaced, not appended) on each Step 5 iteration (R44).
 
 **Scorecard assembly (in main context after lens merge, per iteration):**
 
@@ -863,7 +867,7 @@ After the merge step, assemble the `## Verification Scorecard` section in the pl
 **Review loop:**
 - Approved → Step 6 fixes are a no-op; run the end of Step 6 (**Create-flow re-stage**), then proceed to Step 6.5
 - Issues found → go to Step 6
-- Max 3 iterations → use AskUserQuestion to surface unresolved issues to user. Context: the review loop ran 3 fix/re-review passes and still has open blocking issues — before asking, summarize what failed (the union of blocking findings across all lenses), scaled to `style.audience`, so the user isn't choosing blind. Offer **harden** (run `/harden` to analyze why this failed and propose stronger guardrails / dimensions / instructions that would catch it earlier next time — opt-in, no surface is edited without your approval; consequence: proposes preventive changes only, nothing is edited without a separate approval) alongside the existing escalation options. When the user selects **harden** (interactive mode only — suppressed when `--auto` is set), dispatch `Skill(harden)` with `--failure-text "Plan reviewer loop did not converge after 3 iterations. Outstanding issues: <union-of-blocking-issues-across-all-lenses>"`, `--skill plan`, `--step "Step 5 — review loop"`, `--operation "reviewer-loop max iterations"`. Implements R19. **`--auto` does not suppress this question** — only the **harden** option is left out. The plan is never handed off with open blocking issues; when AskUserQuestion is unavailable, stop and report the open blocking issues.
+- Round `reviewLoop.maxRounds` (5) ends with blocking issues → use AskUserQuestion to surface unresolved issues to user. Context: the review loop ran `reviewLoop.maxRounds` fix/re-review passes and still has open blocking issues — before asking, summarize what failed (the union of blocking findings across all lenses), scaled to `style.audience`, so the user isn't choosing blind. Offer **harden** (run `/harden` to analyze why this failed and propose stronger guardrails / dimensions / instructions that would catch it earlier next time — opt-in, no surface is edited without your approval; consequence: proposes preventive changes only, nothing is edited without a separate approval) alongside the existing escalation options. When the user selects **harden** (interactive mode only — suppressed when `--auto` is set), dispatch `Skill(harden)` with `--failure-text "Plan reviewer loop did not converge after <reviewLoop.maxRounds> iterations. Outstanding issues: <union-of-blocking-issues-across-all-lenses>"`, `--skill plan`, `--step "Step 5 — review loop"`, `--operation "reviewer-loop max iterations"`. Implements R19. **`--auto` does not suppress this question** — only the **harden** option is left out. The plan is never handed off with open blocking issues; when AskUserQuestion is unavailable, stop and report the open blocking issues.
 
 ## Step 6 (IMPROVE): Apply Review Fixes
 
@@ -873,7 +877,7 @@ Fix each blocking issue identified by the reviewer. Rewrite the plan file with f
 
 **Gate B verdict wiring (implements R41 — Fixes #445):** The Gate B Verification Scorecard verdict is treated as an additional blocking-issue source using the same `Issues Found` path. This avoids divergent gate phrasing (`no-opposite-logical-vectors` guardrail) — the CRITICAL verdict does not have a separate code path; it injects findings into the same blocking-issue set that the `Issues Found` path already processes.
 
-- When the Gate B verdict is CRITICAL: inject the scorecard CRITICAL findings into the blocking-issue list as if they were additional `Issues Found` findings. The plan enters Step 6 IMPROVE with these injected findings. The iteration counter (max 3) continues normally — Gate B CRITICAL does not create a new loop or counter.
+- When the Gate B verdict is CRITICAL: inject the scorecard CRITICAL findings into the blocking-issue list as if they were additional `Issues Found` findings. The plan enters Step 6 IMPROVE with these injected findings. The iteration counter (max `reviewLoop.maxRounds`) continues normally — Gate B CRITICAL does not create a new loop or counter.
 - When the Gate B verdict is WARNING or SUGGESTION: no injection into Step 6. Caveats remain in the plan file. Proceed to Step 6.5 / Step 7 normally.
 - When the Gate B verdict is PASS (clean): proceed normally.
 
@@ -883,9 +887,9 @@ Before rewriting the plan file with fixes, call `plan_support({action: "material
 
 Re-dispatch the reviewer (back to Step 5 loop). When `materialChangeDetected` is true, the Step 5 merged dispatch path activates — see "Material change detection and merged re-dispatch" in Step 5.
 
-If this is the 3rd iteration, use AskUserQuestion to surface remaining issues instead of looping.
+If this was round `reviewLoop.maxRounds`, use AskUserQuestion to surface remaining issues instead of looping. The checkpoint `next` text of that round says so.
 
-**Create-flow re-stage (Create flow only — the plan file has a `**OpenSpec-Staging:**` header line):** Run this once, right before Step 6.5, on every path that reaches Step 6.5: Step 5 Approved, the user resolved the remaining issues after the 3rd iteration, or a lightweight plan that skipped Step 5. The guardrail lane and the review fixes may have split, merged, or dropped plan tasks, so the staged `tasks.md` may be stale.
+**Create-flow re-stage (Create flow only — the plan file has a `**OpenSpec-Staging:**` header line):** Run this once, right before Step 6.5, on every path that reaches Step 6.5: Step 5 Approved, the user resolved the remaining issues after the last round, or a lightweight plan that skipped Step 5. The guardrail lane and the review fixes may have split, merged, or dropped plan tasks, so the staged `tasks.md` may be stale.
 1. Rebuild the `tasks.md` content from the plan's final `### Task N` list: one checkbox entry per plan task, in plan order, in the format of the staged `tasks.md` (the `tasks` artifact template).
 2. Call `plan_support({ action: "openspec_stage", changeName: "<name>", files: [...], planPath: "<plan file path>" })` with **all** artifact files: the rebuilt `tasks.md` plus `proposal.md`, `design.md`, and every `specs/**` file, unchanged. `openspec_stage` replaces the whole staging directory on every call, so a file left out of `files` is deleted from staging. Take the unchanged files from context, or after a resume from `<ACTIVE_ROOT>/.sdlc-v2/openspec-staging/<name>/` (never `stage.json`).
 3. The 5-attempt rule from Step 0's **Create OpenSpec change** step c applies, with its own counter starting at 0: on `valid: false`, show `validateOutput`, fix the artifacts, and stage again with all files — at most 5 calls. If the 5th call still returns `valid: false`, show its `validateOutput` (the OpenSpec CLI output) to the user and stop — no plan handoff.
@@ -949,7 +953,9 @@ If `findings` is empty, the plan passed every applicable PF check — proceed to
 
 Where `<verdict line>` is the verbatim verdict label from the scorecard: *"All checks passed. Ready for archive."*, *"…Ready for archive (with noted improvements)."*, or *"…Fix before archiving."*. When no scorecard is present (non-OpenSpec plan or scorecard was not generated), omit this line entirely.
 
-If `style.instructions` is not empty, print the instruction self-check table and fix any "no" row before continuing. Check each instruction against the plan file, not from memory. The "Where" column must hold evidence you checked: the plan file's `path:line` for each place that shows the instruction was followed, or a grep command over the plan file plus a one-line result you read. A section name alone is not evidence; mark such a row "no":
+**Style report:** Call `validate({ action: "plan_style", file: "<plan path>", template: "<activeTemplatePath>" })` (omit `template` on a lightweight plan). Print `styleReport.sections` as a table (`Section | Words | Prose | Long sent. | Jargon | Status`), then `Banned phrases:` with each hit or `none`, then `STE hits:` with each `styleReport.steHits` entry or `none`, then `Diagram contrast (PF14):` with each `styleReport.diagramContrast` entry or `none`, then each `styleReport.warnings` line.
+
+If `styleReport.instructions` (from the **Style report** call above; read fresh from `local.toml`) is not empty, print the instruction self-check table and fix any "no" row before continuing. Check each instruction against the plan file, not from memory. The "Where" column must hold evidence you checked: the plan file's `path:line` for each place that shows the instruction was followed, or a grep command over the plan file plus a one-line result you read. A section name alone is not evidence; mark such a row "no":
 
 ```markdown
 | # | Instruction | Followed? | Where |
@@ -979,7 +985,7 @@ Do NOT report the plan as "validated" on format-floor PASS alone. Format floor =
 |---|---|
 | Spec/requirements not found | Ask user to provide path or paste content |
 | Codebase exploration fails (too large) | Ask user to point to relevant directories |
-| Plan reviewer loop exceeds 3 iterations | Surface to user for guidance |
+| Plan reviewer loop exceeds `reviewLoop.maxRounds` (5) iterations | Surface to user for guidance |
 | Requirements are contradictory | Flag specific contradictions, ask user to resolve |
 | User approves but output path fails | Retry with a different path; offer to print plan to screen |
 

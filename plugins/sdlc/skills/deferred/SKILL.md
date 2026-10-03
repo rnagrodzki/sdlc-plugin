@@ -12,6 +12,8 @@ Some findings are recorded during a pipeline run but not fixed: review findings 
 
 **Announce at start:** "I'm using deferred (sdlc v{sdlc_version})." - extract the version from the `sdlc:` line in the session-start system-reminder. If no version is in context, omit the parenthetical.
 
+**Communication style:** Follow the `sdlc communication style` block in session context for every explanation, status line, summary, and AskUserQuestion text in this skill. Do not apply it to commit messages, PR bodies, review comments, or Jira text: they follow their own templates and config.
+
 **Render every `display` field verbatim.** A `ship_state` response with a `display` field is pre-formatted markdown. Print it as it is. Never paraphrase or reformat it.
 
 Companion file: [`reference.md`](reference.md) holds the triage flow. Ship Step 10b follows the same file.

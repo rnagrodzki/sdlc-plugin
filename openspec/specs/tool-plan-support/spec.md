@@ -607,7 +607,6 @@ The `evidence_get` action SHALL return the full content of items selected by `id
 - **THEN** `get.evidence` contains `### A — w1` and `### B — w1`
 - **AND** `next` is `Bodies returned for 2 items.`
 
-
 ### Requirement: openspec_instructions
 The `openspec_instructions` action SHALL copy `openspec/config.yaml` into a new temp directory, run
 `openspec new change <changeName>`, `openspec status --change <changeName> --json`, and
@@ -624,9 +623,8 @@ in status order, plus `guardrails` — the same list `plan_prepare` returns. It 
 - **THEN** `artifacts` lists `proposal`, `specs`, `design`, `tasks` with their templates
 - **AND** `git status --porcelain` prints nothing
 
-
 ### Requirement: openspec_stage
-The `openspec_stage` action SHALL replace the staging dir for `changeName` with the given `files`, write `stage.json`, and validate a temp copy, as defined by the `openspec-staging` capability.
+The `openspec_stage` action SHALL replace the staging dir for `changeName` with the given `files`, write `stage.json`, and validate a temp copy, as defined by the `openspec-staging` capability. It SHALL also check every staged `.md` file for hard-to-read Mermaid colors, as defined by "Diagram contrast" in the `plan-writing-style` capability.
 
 | Input | Encoding | Example |
 |---|---|---|
@@ -638,8 +636,8 @@ The `openspec_stage` action SHALL replace the staging dir for `changeName` with 
 |---|---|
 | `stagingDir` | Repo-relative staging dir, e.g. `.sdlc-v2/openspec-staging/add-widget/` |
 | `files` | `[{path, sha256}]` as written to `stage.json` |
-| `valid` | `true` when `openspec validate <changeName> --strict` exits 0 in the temp copy |
-| `validateOutput` | CLI output of that validation |
+| `valid` | `true` when `openspec validate <changeName> --strict` exits 0 in the temp copy and no staged file has a diagram contrast hit |
+| `validateOutput` | CLI output of that validation, then one line `diagram contrast: <path>:<line>: <reason>: <text>` per hit |
 
 - Each call replaces the whole staging dir, so a file dropped from `files` is removed.
 - `next` is `Staged and valid. Add the **OpenSpec-Staging:** header to the plan.` when `valid`, else `Fix the artifacts using validateOutput and call openspec_stage again.`
@@ -662,3 +660,7 @@ The `openspec_stage` action SHALL replace the staging dir for `changeName` with 
 - **WHEN** a second call for `add-widget` omits `design.md`
 - **THEN** `.sdlc-v2/openspec-staging/add-widget/design.md` no longer exists
 
+#### Scenario: Pastel diagram in a staged artifact
+- **WHEN** line 30 of the staged `proposal.md` is `classDef new fill:#d4f7d4,stroke:#2a7a2a` inside a mermaid block and the CLI validation passes
+- **THEN** `valid` is `false`
+- **AND** `validateOutput` contains `diagram contrast: proposal.md:30: no text color: classDef new fill:#d4f7d4,stroke:#2a7a2a`

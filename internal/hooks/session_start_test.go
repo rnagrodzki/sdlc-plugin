@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/commstyle"
 	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/openspec"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
@@ -1508,6 +1509,7 @@ func TestPipelineResumePhase_PlanPostCompact(t *testing.T) {
 		"Active plan (post-compact): step 3, branch " + branch + "; plan file: /abs/path/plans/x.md",
 		"  If the sdlc:plan skill instructions are not in context, invoke the sdlc:plan skill first; its Session recovery rule selects the resume path.",
 		"  Resume with: plan_prepare({resume:true, resolveTemplate:true}) then plan_support({action:\"evidence_digest\", runId:\"" + state.RunID(st) + "\"})",
+		"  Custom plan instructions: none configured.",
 	})
 }
 
@@ -1733,6 +1735,71 @@ func TestPipelineResumePhase_PlanLinesFollowShipAndExecute(t *testing.T) {
 		"Active plan (post-compact): step 1, branch " + branch + "; plan file: /abs/path/plans/x.md",
 		"  If the sdlc:plan skill instructions are not in context, invoke the sdlc:plan skill first; its Session recovery rule selects the resume path.",
 		"  Resume with: plan_prepare({resume:true, resolveTemplate:true}) then plan_support({action:\"evidence_digest\", runId:\"" + state.RunID(planSt) + "\"})",
+		"  Custom plan instructions: none configured.",
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Plan resume banner: custom instructions block (Task 13)
+// ---------------------------------------------------------------------------
+
+func TestPipelineResumePhase_PlanInstructionsConfigured(t *testing.T) {
+	branch := "feat/plan-instructions-configured"
+	root := gitFixture(t, branch)
+
+	localPath := filepath.Join(root, paths.DataDir, "local.toml")
+	mustMkdirAll(t, filepath.Dir(localPath))
+	mustWriteFile(t, localPath, "[planStyle]\n"+
+		"instructions = [\"always add before -> after for the changed flows\", \"Ask before adding a dependency.\"]\n")
+
+	st := activePlanState(t, root, branch, map[string]any{
+		"checkpoint":   map[string]any{"step": "5"},
+		"planFilePath": "/abs/path/plans/x.md",
+	})
+
+	assertLines(t, pipelineResumePhase("compact"), []string{
+		"Active plan (post-compact): step 5, branch " + branch + "; plan file: /abs/path/plans/x.md",
+		"  If the sdlc:plan skill instructions are not in context, invoke the sdlc:plan skill first; its Session recovery rule selects the resume path.",
+		"  Resume with: plan_prepare({resume:true, resolveTemplate:true}) then plan_support({action:\"evidence_digest\", runId:\"" + state.RunID(st) + "\"})",
+		"  Custom plan instructions (follow them in every step):",
+		"  1. always add before -> after for the changed flows",
+		"  2. Ask before adding a dependency.",
+	})
+}
+
+func TestPipelineResumePhase_PlanInstructionsNoneConfigured(t *testing.T) {
+	branch := "feat/plan-instructions-none"
+	root := gitFixture(t, branch)
+	activePlanState(t, root, branch, nil)
+
+	got := pipelineResumePhase("compact")
+	if len(got) == 0 || got[len(got)-1] != "  Custom plan instructions: none configured." {
+		t.Fatalf("pipelineResumePhase(compact) last line = %q, want %q", firstOrEmpty(got), "  Custom plan instructions: none configured.")
+	}
+}
+
+// TestPipelineResumePhase_PlanInstructionsBrokenConfigSilent exercises a
+// [style]/[planStyle] read failure: a local.toml that fails to parse as
+// TOML. planStyleForHook must discard the error and fall back to
+// commstyle's defaults (no instructions), not fail the hook.
+func TestPipelineResumePhase_PlanInstructionsBrokenConfigSilent(t *testing.T) {
+	branch := "feat/plan-instructions-broken-config"
+	root := gitFixture(t, branch)
+
+	localPath := filepath.Join(root, paths.DataDir, "local.toml")
+	mustMkdirAll(t, filepath.Dir(localPath))
+	mustWriteFile(t, localPath, "not valid toml {{{")
+
+	st := activePlanState(t, root, branch, map[string]any{
+		"checkpoint":   map[string]any{"step": "2"},
+		"planFilePath": "/abs/path/plans/y.md",
+	})
+
+	assertLines(t, pipelineResumePhase("compact"), []string{
+		"Active plan (post-compact): step 2, branch " + branch + "; plan file: /abs/path/plans/y.md",
+		"  If the sdlc:plan skill instructions are not in context, invoke the sdlc:plan skill first; its Session recovery rule selects the resume path.",
+		"  Resume with: plan_prepare({resume:true, resolveTemplate:true}) then plan_support({action:\"evidence_digest\", runId:\"" + state.RunID(st) + "\"})",
+		"  Custom plan instructions: none configured.",
 	})
 }
 
@@ -2139,6 +2206,130 @@ func TestShipConfigPhase(t *testing.T) {
 	assertLines(t, shipConfigPhase(), []string{
 		`Ship config: steps ["review","commit"], preset full, skip ["docs"], bump minor, threshold 80`,
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Communication style phase
+// ---------------------------------------------------------------------------
+
+func TestCommunicationStylePhase_Defaults(t *testing.T) {
+	branch := "feat/commstyle-defaults"
+	gitFixture(t, branch)
+
+	want := commstyle.FromSections(nil, nil)
+	assertLines(t, communicationStylePhase(), []string{
+		"sdlc communication style: audience=functional  standard=plain-language  tone=direct  language=English  terms=none",
+		commstyle.ChatGuide(want),
+	})
+}
+
+// TestCommunicationStylePhase_SettingsAndLegacyWarning exercises the
+// settings line, a legacy [planStyle] fallback warning, and a configured
+// technicalTerms list together — the exact scenario in this task's
+// Contract example.
+func TestCommunicationStylePhase_SettingsAndLegacyWarning(t *testing.T) {
+	branch := "feat/commstyle-settings"
+	root := gitFixture(t, branch)
+
+	localPath := filepath.Join(root, paths.DataDir, "local.toml")
+	mustMkdirAll(t, filepath.Dir(localPath))
+	mustWriteFile(t, localPath, "[style]\n"+
+		"writingStandard = \"ste\"\n"+
+		"tone = \"direct\"\n"+
+		"technicalTerms = [\"logging\", \"routing\"]\n"+
+		"\n[planStyle]\n"+
+		"audience = \"functional\"\n")
+
+	want := commstyle.FromSections(
+		map[string]any{"writingStandard": "ste", "tone": "direct", "technicalTerms": []any{"logging", "routing"}},
+		map[string]any{"audience": "functional"},
+	)
+
+	assertLines(t, communicationStylePhase(), []string{
+		"sdlc communication style: audience=functional  standard=ste  tone=direct  language=English  terms=logging, routing",
+		"  warning: planStyle.audience moved to [style]; move it there (the value still works)",
+		commstyle.ChatGuide(want),
+	})
+}
+
+// TestCommunicationStylePhase_BrokenConfigDegradesToDefaults exercises a
+// [style]/[planStyle] read failure: a local.toml that fails to parse as
+// TOML. planStyleForHook must discard the error and fall back to
+// commstyle's defaults, not fail the hook.
+func TestCommunicationStylePhase_BrokenConfigDegradesToDefaults(t *testing.T) {
+	branch := "feat/commstyle-broken-config"
+	root := gitFixture(t, branch)
+
+	localPath := filepath.Join(root, paths.DataDir, "local.toml")
+	mustMkdirAll(t, filepath.Dir(localPath))
+	mustWriteFile(t, localPath, "not valid toml {{{")
+
+	want := commstyle.FromSections(nil, nil)
+	assertLines(t, communicationStylePhase(), []string{
+		"sdlc communication style: audience=functional  standard=plain-language  tone=direct  language=English  terms=none",
+		commstyle.ChatGuide(want),
+	})
+}
+
+func TestCommunicationStylePhase_MainRootUnresolvedIsSilent(t *testing.T) {
+	chdir(t, realPath(t, t.TempDir()))
+	if got := communicationStylePhase(); got != nil {
+		t.Errorf("communicationStylePhase() = %q, want no lines when the main root cannot be resolved", got)
+	}
+}
+
+// TestSessionStart_CommunicationStyleLineFollowsPlanRouting pins the append
+// point: the Contract places the communication-style block directly below
+// the "Plan mode routing:" header line.
+func TestSessionStart_CommunicationStyleLineFollowsPlanRouting(t *testing.T) {
+	branch := "feat/commstyle-ordering"
+	gitFixture(t, branch)
+	t.Setenv("HOME", realPath(t, t.TempDir()))
+
+	out, err := sessionStart(HookCtx{}, Event{Source: "startup"})
+	if err != nil {
+		t.Fatalf("sessionStart returned error: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(out.PlainText, "\n"), "\n")
+
+	const planRoutingLine = "Plan mode routing: always invoke plan via the Skill tool when plan mode is active."
+	idx := -1
+	for i, l := range lines {
+		if l == planRoutingLine {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		t.Fatalf("%q not found in header:\n%q", planRoutingLine, lines)
+	}
+	if idx+1 >= len(lines) || !strings.HasPrefix(lines[idx+1], "sdlc communication style: ") {
+		t.Fatalf("line after %q = %q, want the communication-style settings line", planRoutingLine, lines[idx+1])
+	}
+}
+
+// TestSessionStart_CommunicationStyleOnEveryHookSource pins the Acceptance
+// Criteria: the block appears on every SessionStart source, not only
+// startup.
+func TestSessionStart_CommunicationStyleOnEveryHookSource(t *testing.T) {
+	branch := "feat/commstyle-sources"
+	gitFixture(t, branch)
+	t.Setenv("HOME", realPath(t, t.TempDir()))
+
+	for _, source := range []string{"startup", "clear", "compact"} {
+		t.Run(source, func(t *testing.T) {
+			out, err := sessionStart(HookCtx{}, Event{Source: source})
+			if err != nil {
+				t.Fatalf("sessionStart(%s) returned error: %v", source, err)
+			}
+			if !strings.Contains(out.PlainText, "sdlc communication style: ") {
+				t.Errorf("sessionStart(%s) missing the communication-style settings line:\n%s", source, out.PlainText)
+			}
+			if !strings.Contains(out.PlainText, "<sdlc_communication_style>") {
+				t.Errorf("sessionStart(%s) missing the <sdlc_communication_style> block:\n%s", source, out.PlainText)
+			}
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------

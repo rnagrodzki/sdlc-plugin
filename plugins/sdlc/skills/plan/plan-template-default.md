@@ -14,7 +14,7 @@ reads for section presence, and the source the Step 2 planner follows when writi
 - Tasks
 - Verification Scorecard
 - OpenSpec Appendix <!-- conditional: source matches openspec/changes/ -->
-- Contract Examples
+- How to read a task Contract
 
 ## Discovery Questions
 

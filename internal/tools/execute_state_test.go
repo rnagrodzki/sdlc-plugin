@@ -3098,6 +3098,20 @@ func TestExecState_Read(t *testing.T) {
 	if m["quality"] != "thorough" {
 		t.Errorf("quality = %v, want thorough", m["quality"])
 	}
+	style, ok := m["style"].(ChatStyle)
+	if !ok {
+		t.Fatalf("style = %#v, want ChatStyle", m["style"])
+	}
+	if style.Audience != "functional" {
+		t.Errorf("style.audience = %q, want functional", style.Audience)
+	}
+
+	// read is a shallow copy: the state file on disk must not gain a
+	// "style" key.
+	onDisk := readExecState(t, root, "feat/test")
+	if _, ok := onDisk["style"]; ok {
+		t.Error(`state file on disk has a "style" key, want it absent (read must not mutate state)`)
+	}
 }
 
 func TestExecState_Read_Missing(t *testing.T) {

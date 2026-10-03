@@ -29,8 +29,8 @@ template's `## Required Sections`, in template order, and `plan` fills that skel
 moving sections. The list below is the conventional reading order. It places only the sections the
 active template does not list (the document header, `## Guardrail Compliance`, `## Out-of-scope
 OpenSpec tasks`, and any section a project template leaves out). Where it disagrees with the
-template — the shipped default puts `## Final Shape` before the tasks and `## Contract Examples`
-last — follow the template. Sections marked "required" must appear in every plan;
+template — the shipped default puts `## Final Shape` before the tasks and `## How to read a task
+Contract` last — follow the template. Sections marked "required" must appear in every plan;
 "optional"/"conditional" sections appear only when their trigger applies. PF10 (the active
 template's `## Required Sections` list, see `## Plan Template` below) checks presence only, not
 order.
@@ -40,7 +40,7 @@ order.
 3. **Research Findings** — what Step 1 exploration turned up (required, narrative)
 4. **Deviations & assumptions** — divergences from the literal request (required, table)
 5. **Key Decisions** — architecture/design choices (optional, narrative; recommended for 5+ tasks)
-6. **Contract Examples** — one worked `**Contract:**` block per column type used by the plan's tasks (required)
+6. **How to read a task Contract** — the Contract legend table (see `### Contract legend` below), with a `See` cell naming the real task that shows each key best (required)
 7. **Guardrail Compliance** — guardrail evaluation (optional; present when `plan.guardrails` configured)
 8. **Task 1…N** — per-task blocks (required)
 9. **Out-of-scope OpenSpec tasks** — intentional exclusions (optional; `--spec <change-name>` only)
@@ -51,8 +51,8 @@ order.
 ## Context (required)
 
 Every plan must carry a `## Context` section, placed near the top — directly after the document
-header. It answers three guiding questions in plain language (R62: short sentences, no unexplained
-jargon) so a reader who was not in the planning conversation understands why the plan exists before
+header. It answers three guiding questions per the plan's writing guide (see `## Communication
+Style`) so a reader who was not in the planning conversation understands why the plan exists before
 reaching a single task:
 
 1. **What problem does this change solve?**
@@ -118,7 +118,7 @@ When a plan introduces no divergences or assumptions, render the header with a s
 
 ## Key Decisions (optional)
 
-Capture architecture and design decisions made during planning that executing agents need to understand. Place this section where the active template lists it (the shipped default: after `## Deviations & assumptions`, before `## Final Shape` and the task blocks — see `## Section Order`). Narrative (R62): the bullet-per-decision shape below already satisfies "structured goals as bullet lists" — keep each bullet to short sentences with the rationale inline.
+Capture architecture and design decisions made during planning that executing agents need to understand. Place this section where the active template lists it (the shipped default: after `## Deviations & assumptions`, before `## Final Shape` and the task blocks — see `## Section Order`). Narrative (see `## Communication Style`): the bullet-per-decision shape below already satisfies "structured goals as bullet lists" — keep each bullet to short sentences with the rationale inline.
 
 ```markdown
 ## Key Decisions
@@ -300,9 +300,31 @@ artifact's column — the one its primary deliverable touches.
 - example: `R7` reads "The system SHALL expose a `tokenState` enum: `pending | active | expired`."
 ````
 
-A plan's own `## Contract Examples` section (R60) reuses these same three worked examples verbatim
-in shape — one entry per column type the plan's tasks actually use — substituting the plan's real
-task values for the placeholders above.
+### Contract legend
+
+A plan's own `## How to read a task Contract` section (R60) does NOT copy the three worked examples
+above into the plan — those stay here as author guidance. Instead it renders the legend table below
+verbatim, substituting each `See` cell with the real task (and a short parenthetical) from the
+plan's own tasks that shows that key best:
+
+```markdown
+## How to read a task Contract
+
+Each task has a **Contract:** block. It pins what the executor builds, so the executor does not guess.
+
+| Key | What it pins | Why the executor needs it | See |
+|---|---|---|---|
+| `shape` | exact code, schema, or doc text to add or change (code block, diff, or table) | builds it without design work | Task <n> (<what>) |
+| `names` | every new identifier | other tasks use the same names | Task <n> |
+| `mirror` | an existing file:line to copy the style from | output matches the codebase | Task <n> |
+| `decisions` | choices already made, with the reason | settled points stay settled | Task <n> |
+| `sync` | other tasks or files that change with this one | nothing drifts | Task <n> |
+| `example` | one concrete input -> output | proves the shape in one line | Task <n>, or "not used" |
+```
+
+A project template that still lists `## Contract Examples` as a required heading keeps working
+(no migration is needed) — PF10 checks the active template's own heading list, and Step 2 writes
+this same legend table under whichever heading the template names.
 
 ---
 
@@ -650,30 +672,17 @@ document.
   section being omitted).
 
 The shipped default declares `## Context`, `## Final Shape`, `## OpenSpec Appendix`,
-`## Contract Examples`, `## Deviations & assumptions`, and `## Verification Scorecard` as required
-headings, satisfying R57–R60, R47, and R40/R44 out of the box for projects that never customize the
-template.
+`## How to read a task Contract`, `## Deviations & assumptions`, and `## Verification Scorecard` as
+required headings, satisfying R57–R60, R47, and R40/R44 out of the box for projects that never
+customize the template.
 
 ## Communication Style
 
-Plans are read by people who did not sit in on the planning conversation — a non-expert reviewer, a
-teammate picking up the branch, an executing agent with no memory of prior turns. R62 makes plain
-language a writing-quality convention, judged by the Step 5 lens reviewers (R36) alongside their
-other checks — it is not a deterministic gate. Apply these rules throughout every narrative section
-(`Context`, `Research Findings`, `Key Decisions`, `Final Shape`):
-
-- **Short sentences.** One idea per sentence. Split anything that needs a comma to hold two clauses
-  together.
-- **Explain every technical term inline.** The first time a term appears, define it in the same
-  sentence — e.g. "webhook (an HTTP callback the payment provider calls on our server)" — don't
-  assume the reader already knows it.
-- **Structure goals as bullet lists, not prose blobs.** A paragraph listing three things the plan
-  achieves should be three bullets, not one sentence joined with "and" three times.
-- **Write decisions a non-expert can follow.** State the choice, then the one-line reason. Prefer
-  plain wording ("reuses the code that already handles duplicate requests") over jargon-laden
-  justification ("leverages the existing idempotent upsert pattern").
-- **Use visual spacing.** A blank line between bullets in a long list, a blank line before and after
-  a fenced block — dense unbroken text is harder to scan than the same content spaced out.
+Narrative sections follow the writing guide that `plan_prepare` returns as `style.writingGuide`
+(built from `[style]` and `[planStyle]` in `.sdlc-v2/local.toml`). `[style]` sets the reader
+level, tone, and writing standard; `[planStyle]` sets the visual density. G22 (Step 3) judges the rules; PF13 (`validate`) measures
+prose share, paragraph, list, and sentence length, jargon share, and banned phrases.
+See `docs/skills/plan.md` § Plan writing style for settings and examples.
 
 ---
 

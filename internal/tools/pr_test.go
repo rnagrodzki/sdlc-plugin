@@ -736,6 +736,12 @@ func TestPrPrepare_HappyPath_JiraAndTemplate(t *testing.T) {
 	if out.Next != "Call pr_apply with title, body, and release fields." {
 		t.Errorf("Next: got %q", out.Next)
 	}
+	// Task 20: the output carries the plugin-wide communication style,
+	// defaulting to "functional" with no [style]/[planStyle] config present
+	// (chatStyleFor reads local.toml directly, not via rt; /mock/root has none).
+	if out.Style.Audience != "functional" {
+		t.Errorf("Style.Audience: got %q, want %q", out.Style.Audience, "functional")
+	}
 }
 
 func TestPrPrepare_ProtectedBranch_Rejected(t *testing.T) {

@@ -62,9 +62,9 @@ func TestPlanPrepare_KeySetAndDefaults(t *testing.T) {
 
 	expectedTopKeys := []string{
 		"openspec", "fromOpenspec", "openspecContext", "guardrails",
-		"style", "tasks",
+		"style", "tasks", "styleGuideFile",
 		"explorePack", "planTemplate", "githubHosting", "g17Dispatch",
-		"intakeAuditDispatch", "lanes", "lensReviewers", "errors",
+		"intakeAuditDispatch", "lanes", "lensReviewers", "reviewLoop", "errors",
 	}
 	for _, k := range expectedTopKeys {
 		if _, ok := m[k]; !ok {
@@ -107,6 +107,10 @@ func TestPlanPrepare_KeySetAndDefaults(t *testing.T) {
 			t.Errorf("Lanes[%d].Name = %q, want %q", i, out.Lanes[i].Name, name)
 		}
 	}
+	wantGuardrailGates := []string{"G14", "G22"}
+	if !reflect.DeepEqual(out.Lanes[3].GateIDs, wantGuardrailGates) {
+		t.Errorf("Lanes[3] (guardrail-compliance) GateIDs = %v, want %v", out.Lanes[3].GateIDs, wantGuardrailGates)
+	}
 	last := out.Lanes[len(out.Lanes)-1]
 	if last.SubagentType != out.G17Dispatch.SubagentType || last.Model != out.G17Dispatch.Model {
 		t.Errorf("dimension-coverage lane %+v does not mirror g17Dispatch %+v", last, out.G17Dispatch)
@@ -131,6 +135,10 @@ func TestPlanPrepare_KeySetAndDefaults(t *testing.T) {
 	}
 	if out.IntakeAuditDispatch.SubagentType != "general-purpose" || out.IntakeAuditDispatch.Model != "sonnet" {
 		t.Errorf("IntakeAuditDispatch = %+v, want subagentType=general-purpose model=sonnet", out.IntakeAuditDispatch)
+	}
+
+	if out.ReviewLoop.MaxRounds != 5 {
+		t.Errorf("ReviewLoop.MaxRounds = %d, want 5", out.ReviewLoop.MaxRounds)
 	}
 }
 
@@ -253,9 +261,10 @@ func TestPlanPrepare_Guardrails(t *testing.T) {
 }
 
 // TestPlanPrepare_StyleAndTasksDefaults verifies loadPlanStyle and
-// loadPlanTasks's zero-config defaults surface through PlanPrepareOut:
-// standard verbosity, technical audience, no narrative rules, no required
-// fields, and the "full" contract shape.
+// loadPlanTasks's zero-config defaults surface through PlanPrepareOut: the
+// commstyle defaults (functional audience, plain-language writing standard,
+// direct tone, balanced visual density, English, no technical terms), no
+// narrative rules, no required fields, and the "full" contract shape.
 func TestPlanPrepare_StyleAndTasksDefaults(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
@@ -265,11 +274,23 @@ func TestPlanPrepare_StyleAndTasksDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
 	}
-	if out.Style.Verbosity != "standard" {
-		t.Errorf("Style.Verbosity = %q, want standard", out.Style.Verbosity)
+	if out.Style.Audience != "functional" {
+		t.Errorf("Style.Audience = %q, want functional", out.Style.Audience)
 	}
-	if out.Style.Audience != "technical" {
-		t.Errorf("Style.Audience = %q, want technical", out.Style.Audience)
+	if out.Style.WritingStandard != "plain-language" {
+		t.Errorf("Style.WritingStandard = %q, want plain-language", out.Style.WritingStandard)
+	}
+	if out.Style.Tone != "direct" {
+		t.Errorf("Style.Tone = %q, want direct", out.Style.Tone)
+	}
+	if out.Style.VisualDensity != "balanced" {
+		t.Errorf("Style.VisualDensity = %q, want balanced", out.Style.VisualDensity)
+	}
+	if out.Style.Language != "English" {
+		t.Errorf("Style.Language = %q, want English", out.Style.Language)
+	}
+	if len(out.Style.TechnicalTerms) != 0 {
+		t.Errorf("Style.TechnicalTerms = %v, want empty", out.Style.TechnicalTerms)
 	}
 	if len(out.Style.NarrativeRules) != 0 {
 		t.Errorf("Style.NarrativeRules = %v, want empty", out.Style.NarrativeRules)
@@ -283,11 +304,25 @@ func TestPlanPrepare_StyleAndTasksDefaults(t *testing.T) {
 	if out.Tasks.ContractShape != "full" {
 		t.Errorf("Tasks.ContractShape = %q, want full", out.Tasks.ContractShape)
 	}
+
+	data, err := json.Marshal(out.Style)
+	if err != nil {
+		t.Fatalf("marshal Style: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("unmarshal Style: %v", err)
+	}
+	if _, ok := m["verbosity"]; ok {
+		t.Error(`Style has a "verbosity" key, want it gone`)
+	}
 }
 
 // TestPlanPrepare_StyleAndTasksPopulated verifies planStyle (from
 // .sdlc-v2/local.toml) and plan.tasks (from .sdlc-v2/config.toml) values
-// round-trip into PlanPrepareOut.Style and PlanPrepareOut.Tasks unchanged.
+// round-trip into PlanPrepareOut.Style and PlanPrepareOut.Tasks, and that an
+// invalid enum value (audience "business") falls back to its commstyle
+// default with one warning instead of round-tripping verbatim.
 func TestPlanPrepare_StyleAndTasksPopulated(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
@@ -309,11 +344,20 @@ func TestPlanPrepare_StyleAndTasksPopulated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
 	}
-	if out.Style.Verbosity != "detailed" {
-		t.Errorf("Style.Verbosity = %q, want detailed", out.Style.Verbosity)
+	// "business" is not a valid commstyle audience: it falls back to the
+	// default ("functional") with one warning, rather than round-tripping
+	// verbatim the way the old free-text PlanStyle.Audience did.
+	if out.Style.Audience != "functional" {
+		t.Errorf("Style.Audience = %q, want functional (business is not a valid audience)", out.Style.Audience)
 	}
-	if out.Style.Audience != "business" {
-		t.Errorf("Style.Audience = %q, want business", out.Style.Audience)
+	audienceWarnings := 0
+	for _, w := range out.Style.Warnings {
+		if strings.Contains(w, `audience "business" is not valid`) && strings.Contains(w, `using "functional"`) {
+			audienceWarnings++
+		}
+	}
+	if audienceWarnings != 1 {
+		t.Errorf("Style.Warnings = %v, want exactly one audience-fallback warning", out.Style.Warnings)
 	}
 	wantRules := []string{"Lead with impact", "Avoid jargon"}
 	if !reflect.DeepEqual(out.Style.NarrativeRules, wantRules) {
@@ -371,9 +415,12 @@ func TestPlanStyle_MalformedConfigSurfacesError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
 	}
+	// The malformed file fails to parse for both the "style" and
+	// "planStyle" section reads, so the combined error string carries both
+	// messages (not necessarily "planStyle" first) — match by substring.
 	found := false
 	for _, e := range out.Errors {
-		if strings.HasPrefix(e, "Failed to read planStyle config: ") {
+		if strings.Contains(e, "Failed to read planStyle config: ") {
 			found = true
 		}
 	}
@@ -385,7 +432,7 @@ func TestPlanStyle_MalformedConfigSurfacesError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planMark(checkpoint): %v", err)
 	}
-	if !strings.Contains(mk.Next, "Warning: Failed to read planStyle config: ") {
+	if !strings.Contains(mk.Next, "Warning: ") || !strings.Contains(mk.Next, "Failed to read planStyle config: ") {
 		t.Errorf("Next = %q, want a planStyle read warning", mk.Next)
 	}
 }
@@ -1714,6 +1761,32 @@ func TestPlanPrepare_ResolveTemplateWithoutRunCreatesRun(t *testing.T) {
 	}
 }
 
+// TestPlanPrepare_StyleGuideFile verifies plan_prepare writes
+// <runId>.evidence/style-guide.md with the same text as style.writingGuide,
+// and StyleGuideFile holds its path.
+func TestPlanPrepare_StyleGuideFile(t *testing.T) {
+	dir := planTestGitRepo(t, "main")
+
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("planPrepareCore: %v", err)
+	}
+	want := filepath.Join(planTestRunsDir(dir), out.RunID+".evidence", "style-guide.md")
+	if out.StyleGuideFile != want {
+		t.Errorf("StyleGuideFile = %q, want %q", out.StyleGuideFile, want)
+	}
+	got, err := os.ReadFile(out.StyleGuideFile)
+	if err != nil {
+		t.Fatalf("style-guide.md missing: %v", err)
+	}
+	if out.Style.WritingGuide == "" {
+		t.Fatal("Style.WritingGuide empty")
+	}
+	if string(got) != out.Style.WritingGuide {
+		t.Errorf("style-guide.md content = %q, want %q (style.writingGuide)", got, out.Style.WritingGuide)
+	}
+}
+
 // TestPlanPrepare_ExactSlugRunSelection verifies that on branch feat an
 // active plan-feat-x-* run is reused by neither resolveTemplate nor resume.
 func TestPlanPrepare_ExactSlugRunSelection(t *testing.T) {
@@ -2049,6 +2122,14 @@ func TestPlanPrepare_ErrorSites(t *testing.T) {
 		_, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
 		infra(t, err, "guardrails file write failed: ")
 	})
+	t.Run("EISDIR style-guide.md", func(t *testing.T) {
+		dir := planTestGitRepo(t, "main")
+		const run = "plan-main-20200101T000000Z"
+		planTestSeedRun(t, dir, run, planTestActiveData())
+		writeFile(t, filepath.Join(planTestRunsDir(dir), run+".evidence", "style-guide.md", "x"), "x")
+		_, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
+		infra(t, err, "style guide file write failed: ")
+	})
 	t.Run("corrupt JSON", func(t *testing.T) {
 		dir := planTestGitRepo(t, "main")
 		p := filepath.Join(planTestRunsDir(dir), "plan-main-20200101T000000Z.json")
@@ -2059,15 +2140,16 @@ func TestPlanPrepare_ErrorSites(t *testing.T) {
 }
 
 // TestPlanPrepare_OutsideGitNoRun verifies that outside git no run is
-// tracked: runId and guardrailsFile are empty (rendered "(none)").
+// tracked: runId, guardrailsFile and styleGuideFile are empty (rendered
+// "(none)").
 func TestPlanPrepare_OutsideGitNoRun(t *testing.T) {
 	dir := t.TempDir()
 	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true})
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
 	}
-	if out.RunID != "" || out.GuardrailsFile != "" {
-		t.Errorf("RunID = %q, GuardrailsFile = %q, want both empty", out.RunID, out.GuardrailsFile)
+	if out.RunID != "" || out.GuardrailsFile != "" || out.StyleGuideFile != "" {
+		t.Errorf("RunID = %q, GuardrailsFile = %q, StyleGuideFile = %q, want all empty", out.RunID, out.GuardrailsFile, out.StyleGuideFile)
 	}
 	if _, err := os.Stat(planTestRunsDir(dir)); !os.IsNotExist(err) {
 		t.Errorf("runs dir created outside git (stat err = %v)", err)
@@ -2451,10 +2533,11 @@ func TestPlanMark_Checkpoint_ReplaceNotAppend(t *testing.T) {
 }
 
 // TestPlanMark_Checkpoint_NextIncludesStyleInstructions_ReadFresh verifies
-// Next gains a " Follow the N custom plan instructions (style.instructions)."
-// suffix once [planStyle].instructions is non-empty, and that the style is
-// read fresh on every call: writing local.toml AFTER the first call
-// still changes the very next call's Next.
+// Next gains a "\nCustom plan instructions (follow them in this step):\n"
+// block (the full commstyle.InstructionsText, not just a count) once
+// [planStyle].instructions is non-empty, and that the style is read fresh
+// on every call: writing local.toml AFTER the first call still changes the
+// very next call's Next.
 func TestPlanMark_Checkpoint_NextIncludesStyleInstructions_ReadFresh(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
@@ -2470,8 +2553,8 @@ func TestPlanMark_Checkpoint_NextIncludesStyleInstructions_ReadFresh(t *testing.
 	if err != nil {
 		t.Fatalf("planMark(checkpoint) #1: %v", err)
 	}
-	if strings.Contains(out1.Next, "custom plan instructions") {
-		t.Errorf("Next #1 = %q, want no custom-instructions suffix (no [planStyle] section yet)", out1.Next)
+	if strings.Contains(out1.Next, "custom plan instructions") || strings.Contains(out1.Next, "Custom plan instructions") {
+		t.Errorf("Next #1 = %q, want no custom-instructions block (no [planStyle] section yet)", out1.Next)
 	}
 
 	writeFile(t, filepath.Join(dir, paths.DataDir, "local.toml"), ""+
@@ -2482,8 +2565,59 @@ func TestPlanMark_Checkpoint_NextIncludesStyleInstructions_ReadFresh(t *testing.
 	if err != nil {
 		t.Fatalf("planMark(checkpoint) #2: %v", err)
 	}
-	if want := " Follow the 2 custom plan instructions (style.instructions)."; !strings.HasSuffix(out2.Next, want) {
+	want := "\nCustom plan instructions (follow them in this step):\n" +
+		"1. Cite file:line for every claim.\n2. State the delta, not the plan."
+	if !strings.HasSuffix(out2.Next, want) {
 		t.Errorf("Next #2 = %q, want suffix %q", out2.Next, want)
+	}
+}
+
+// TestPlanMark_Checkpoint_LastReviewRound verifies Next gains the last-round
+// sentence only at step "5" once iteration reaches maxReviewRounds (5), a
+// past-the-limit sentence at an iteration above it, and neither at an
+// earlier iteration or a different step.
+func TestPlanMark_Checkpoint_LastReviewRound(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	if _, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+		t.Fatalf("planPrepareCore (seed): %v", err)
+	}
+
+	lastRound := " This is review round 5 of 5, the last round. If blocking issues remain after it, ask the user with AskUserQuestion; do not start round 6."
+
+	notLast, err := planMark(dir, dir, PlanMarkIn{Marker: "checkpoint", Data: map[string]any{"step": "5", "iteration": float64(4)}})
+	if err != nil {
+		t.Fatalf("planMark(checkpoint) iteration=4: %v", err)
+	}
+	if strings.Contains(notLast.Next, "the last round") {
+		t.Errorf("Next at step 5 iteration 4 = %q, want no last-round sentence", notLast.Next)
+	}
+
+	last, err := planMark(dir, dir, PlanMarkIn{Marker: "checkpoint", Data: map[string]any{"step": "5", "iteration": float64(5)}})
+	if err != nil {
+		t.Fatalf("planMark(checkpoint) iteration=5: %v", err)
+	}
+	if !strings.Contains(last.Next, lastRound) {
+		t.Errorf("Next at step 5 iteration 5 = %q, want to contain %q", last.Next, lastRound)
+	}
+
+	past, err := planMark(dir, dir, PlanMarkIn{Marker: "checkpoint", Data: map[string]any{"step": "5", "iteration": float64(6)}})
+	if err != nil {
+		t.Fatalf("planMark(checkpoint) iteration=6: %v", err)
+	}
+	pastLimit := " Review round 6 is past the limit of 5 rounds. If blocking issues remain, ask the user with AskUserQuestion; do not start another round."
+	if !strings.Contains(past.Next, pastLimit) {
+		t.Errorf("Next at step 5 iteration 6 = %q, want to contain %q", past.Next, pastLimit)
+	}
+
+	otherStep, err := planMark(dir, dir, PlanMarkIn{Marker: "checkpoint", Data: map[string]any{"step": "3", "iteration": float64(5)}})
+	if err != nil {
+		t.Fatalf("planMark(checkpoint) step=3 iteration=5: %v", err)
+	}
+	if strings.Contains(otherStep.Next, "the last round") {
+		t.Errorf("Next at step 3 iteration 5 = %q, want no last-round sentence", otherStep.Next)
 	}
 }
 

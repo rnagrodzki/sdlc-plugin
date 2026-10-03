@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/commstyle"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/openspec"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
@@ -1161,11 +1162,21 @@ func openspecStage(contentRoot string, in PlanSupportIn) (PlanSupportOut, error)
 		return PlanSupportOut{}, mapOpenspecError(action, in, err)
 	}
 	valid := res.Valid
+	validateOutput := res.ValidateOutput
+	for _, f := range in.Files {
+		if !strings.HasSuffix(f.Path, ".md") {
+			continue
+		}
+		for _, h := range commstyle.MermaidContrast(f.Content) {
+			valid = false
+			validateOutput += fmt.Sprintf("\ndiagram contrast: %s:%d: %s: %s", f.Path, h.Line, h.Reason, h.Text)
+		}
+	}
 	out := PlanSupportOut{
 		StagingDir:     res.StagingDir,
 		StagedFiles:    res.Files,
 		Valid:          &valid,
-		ValidateOutput: res.ValidateOutput,
+		ValidateOutput: validateOutput,
 	}
 	if valid {
 		out.Summary = fmt.Sprintf("Staged %d file(s) for OpenSpec change %q in %s; validation passed.", len(res.Files), in.ChangeName, res.StagingDir)

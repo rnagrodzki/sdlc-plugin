@@ -98,7 +98,7 @@ func TestCommitPrepare_KeySet(t *testing.T) {
 		"onDefaultBranch", "flags", "migration", "commitConfig",
 		"staged", "unstaged", "untracked", "recentCommits",
 		"lastCommitMessage", "wipSquash", "branchGuard", "next",
-		"manifestPath",
+		"manifestPath", "style",
 	}
 	for _, k := range expectedTopKeys {
 		if _, ok := m[k]; !ok {
@@ -214,6 +214,40 @@ func TestCommitPrepare_ManifestPath(t *testing.T) {
 	}
 	if manifest.ManifestPath != out.ManifestPath {
 		t.Errorf("manifest ManifestPath = %q, want %q", manifest.ManifestPath, out.ManifestPath)
+	}
+}
+
+// TestCommitPrepare_ManifestHasNoStyle verifies that while the tool output
+// carries Style, the manifest written to disk does not: sdlc:commit-orchestrator
+// reads that manifest with no conversation context and must draft the commit
+// message itself, never applying chat style to it.
+func TestCommitPrepare_ManifestHasNoStyle(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	installFakeFS(t)
+
+	out, err := commitPrepare(dir, dir, CommitPrepareIn{SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("commitPrepare: %v", err)
+	}
+
+	if out.Style == nil {
+		t.Fatal("expected the tool output's Style to be set")
+	}
+
+	raw, err := readFileFunc(out.ManifestPath)
+	if err != nil {
+		t.Fatalf("read manifest file %q: %v", out.ManifestPath, err)
+	}
+
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("decode manifest file %q: %v", out.ManifestPath, err)
+	}
+	if _, ok := m["style"]; ok {
+		t.Errorf("manifest has a \"style\" key, want it stripped: %v", m["style"])
 	}
 }
 

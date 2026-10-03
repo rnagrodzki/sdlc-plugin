@@ -48,7 +48,8 @@ templates, plan templates, guardrails, and more.
 | `review-dimensions` | Review dimensions |
 | `pr-template` | Custom PR description template |
 | `plan-template` | Custom plan template |
-| `plan-style` | Plan style preferences |
+| `communication-style` | How every sdlc skill talks to you: reader level, writing standard, tone, language (local.toml) |
+| `plan-style` | Plan-only style: visual density, extra writing rules, custom plan instructions (local.toml) |
 | `plan-tasks` | Plan task defaults |
 | `plan-guardrails` | Plan guardrail rules |
 | `execution-guardrails` | Execution guardrail rules |
