@@ -40,6 +40,12 @@ severity: high
   Fields table omitted the `done` marker while its prose referred to "five
   planIntegrity keys"; `requiredPlanMarkers` checks exactly four keys, and
   `done` gates whether the check runs.
+- Document references to config section names must stay in sync with config
+  schema changes. When a config section is renamed, moved, or restructured
+  (e.g. `[planStyle]` splitting into `[style]` + `[planStyle]`), audit every
+  prose reference to that section in reference docs (headlines, connectivity
+  tables, examples). A reference must name the actual section the code reads
+  at that point, not the section's pre-restructure name.
 
 ## What NOT to flag
 

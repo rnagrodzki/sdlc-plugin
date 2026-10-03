@@ -93,3 +93,10 @@ new changes to that same bar:
   assertion, not only exercised by a generic map-based walker, so a reviewer
   can see its coverage without reverse-engineering the test's iteration
   logic.
+- Config-read error paths must be tested. When an MCP tool handler calls
+  `config.Read`, `config.ReadSection`, or a similar config-loading function,
+  the error path (parse failure, permission error, the `ErrNotFound`
+  distinction) must have an explicit test case exercising it, not only the
+  happy path where config is present. Tests must verify the error reaches
+  the caller as a structured error (DomainError/InfraError with Suggestion)
+  rather than being silently treated as "not configured".

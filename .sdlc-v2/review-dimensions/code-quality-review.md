@@ -105,3 +105,22 @@ Review Go source changes for baseline code quality in this module
   convention and stay lowercase (`errors.New("file not found")`). Exported
   string constants representing user-visible text must start with a capital
   letter.
+- Validator functions must not duplicate input checks. When a handler
+  validates the same input condition in more than one place (e.g. two
+  separate "file is required" checks for the same action), consolidate into
+  a single validation point and call it from both paths. Duplicate checks
+  diverge when one is updated and the other is not, and they hide the real
+  validation logic under repeated boilerplate.
+- Convergence checks and loop-termination conditions must avoid fragile
+  exact-equality comparisons. For example, `round == maxRounds` fails when
+  round is incremented past maxRounds; use `>=` instead. A convergence check
+  like `score == prevScore` fails when score can skip the equality point;
+  prefer monotone predicates or tolerance bands. Equality-based termination
+  in critical control flow is brittle and should be replaced with robust
+  comparison patterns.
+- Redundant recomputation of values that are already available must be
+  consolidated. When a function is called multiple times with the same
+  inputs in the same scope (e.g. `LimitsFor` called in a loop with an
+  invariant argument, or a cached value computed twice in different
+  branches), consolidate to a single call and reuse the result. Redundant
+  calls mask expensive operations and are worse than not optimizing at all.

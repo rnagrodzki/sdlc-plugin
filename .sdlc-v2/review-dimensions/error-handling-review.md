@@ -90,6 +90,7 @@ When handler code reads configuration via `config.Read`, `config.ReadSection`, o
 
 - Use `errors.Is(err, config.ErrNotFound)` to distinguish "section does not exist" (benign) from "actual read/parse/permission error" (requires propagation or explicit handling).
 - A handler that maps a config-not-found result to a benign zero-value (e.g., "not configured") must check `errors.Is(err, config.ErrNotFound)` first and distinguish it from parse errors (`TOML syntax error`), permission errors (`access denied`), or other real failures. Never collapse these conditions — a malformed `.sdlc-v2/local.toml` or `.sdlc-v2/config.toml` must surface to the caller as an error, not silently treated as "not configured". Code that silently downgrades config parse/permission errors to "value not set" masks misconfiguration that the user should fix.
+- When the calling tool's output struct has no field to carry a non-fatal warning (e.g. a `ValidateOut` with no `warnings` array), a discarded config-read error must still be routed somewhere the user can see it — either surfaced as a finding on that same call, or documented inline naming the sibling call/action that already surfaces the identical warning. A silent discard with no routing note is a finding even when a sibling action happens to cover it.
 
 ## Type assertion error handling in critical paths
 
