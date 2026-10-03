@@ -6,6 +6,8 @@ user-invocable: true
 
 # Error-to-GitHub Issue Proposal
 
+**Communication style:** Follow the `sdlc communication style` block in session context for every explanation, status line, summary, and AskUserQuestion text in this skill. Do not apply it to commit messages, PR bodies, review comments, or Jira text: they follow their own templates and config.
+
 <!-- Do NOT set disable-model-invocation: true here — the harness enforces it as a
      blanket block on ANY model-driven Skill-tool call, not just auto-triggering on
      conversation-content match. That blocked this skill's only intended dispatch

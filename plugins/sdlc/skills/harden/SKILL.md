@@ -15,6 +15,8 @@ next time. Strengthen-only: never relaxes or removes an existing rule.
 
 **Announce at start:** "I'm using harden (sdlc v{sdlc_version})." — extract the version from the `sdlc:` line in the session-start system-reminder. If no version is in context, omit the parenthetical.
 
+**Communication style:** Follow the `sdlc communication style` block in session context for every explanation, status line, summary, and AskUserQuestion text in this skill. Do not apply it to commit messages, PR bodies, review comments, or Jira text: they follow their own templates and config.
+
 ## Port Notes (read before using this skill)
 
 This is a Go/MCP port of the original script-driven skill. Where its tool surface

@@ -70,6 +70,6 @@ Return a single JSON object as your final output (no prose after the JSON block)
 - G4 (file conflict): `"error"` (blocking) — two agents modifying the same file without ordering causes conflicts
 - G10 (file existence): `"error"` (blocking) — an agent cannot modify a file that doesn't exist
 
-**Do not evaluate G1–G3, G5–G9, G11–G21 — those belong to other lanes.**
+**Do not evaluate G1–G3, G5–G9, G11–G22 — those belong to other lanes.**
 
 Output the JSON object as the last content in your response.

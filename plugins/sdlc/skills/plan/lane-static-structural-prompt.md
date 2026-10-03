@@ -68,6 +68,6 @@ Return a single JSON object as your final output (no prose after the JSON block)
 - G1, G2, G7: `"warning"` (advisory) when isolated; `"error"` when plan has ≥3 uncovered requirements or ≥3 orphan tasks
 - G3, G12: always `"error"` (blocking) — circular or missing dependencies cannot be resolved autonomously
 
-**Do not evaluate G4, G5, G6, G8–G11, G13–G21 — those belong to other lanes.**
+**Do not evaluate G4, G5, G6, G8–G11, G13–G22 — those belong to other lanes.**
 
 Output the JSON object as the last content in your response.

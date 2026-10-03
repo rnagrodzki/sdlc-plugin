@@ -14,6 +14,8 @@ approval, then call `pr_apply` to create or update the PR.
 
 **Announce at start:** "I'm using pr (sdlc v{sdlc_version})." — extract the version from the `sdlc:` line in the session-start system-reminder. If no version is in context, omit the parenthetical.
 
+**Communication style:** Follow `style.guide` from `pr_prepare` for every explanation, status line, summary, and AskUserQuestion text in this skill. If this skill has no such call, or the call failed, follow the `sdlc communication style` block in session context. Do not apply it to commit messages, PR bodies, review comments, or Jira text: they follow their own templates and config.
+
 ## Port Notes (read before using this skill)
 
 This is a Go/MCP port. The frontmatter's argument-hint describes a richer feature set than

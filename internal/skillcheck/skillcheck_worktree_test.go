@@ -76,7 +76,7 @@ var worktreeSkillsVerbRe = regexp.MustCompile(`(?i)\b(Write|Read|Glob|Bash|cp|ca
 // worktreeSkillsProhibitionRe recognizes the "do not <verb> a bare path"
 // prohibition idiom, which legitimately pairs a filesystem verb with a
 // ".sdlc-v2/" path on the same line without instructing the LLM to perform
-// that operation (e.g. plan/SKILL.md:73, execute/SKILL.md:25). It is
+// that operation (e.g. plan/SKILL.md:73, execute/SKILL.md:27). It is
 // deliberately narrow -- same line, verb within 40 chars after the negation
 // -- because broadening it to also swallow every phrasing that
 // worktreeSkillsProhibitionMisses documents individually below would risk
@@ -142,7 +142,7 @@ type worktreeSkillsException struct {
 // individually against this repo's current file content (not assumed from
 // a prior report) before being added here. Keyed by "relative/path:line".
 var worktreeSkillsDescriptiveNoAction = map[string]worktreeSkillsException{
-	"skills/execute/SKILL.md:187": {
+	"skills/execute/SKILL.md:189": {
 		contains: "pipeline-continue",
 		reason:   `narrates the automatic "pipeline-continue" PostToolUse hook writing CLI evidence -- no LLM Read/Write/Glob call on this line`,
 	},
@@ -158,7 +158,7 @@ var worktreeSkillsDescriptiveNoAction = map[string]worktreeSkillsException{
 		contains: "write this template as-is",
 		reason:   `AskUserQuestion menu option label shown to the human; the actual write happens via setup_init two lines below (Step 6), not here`,
 	},
-	"skills/ship/SKILL.md:26": {
+	"skills/ship/SKILL.md:28": {
 		contains: "hook records",
 		reason:   `narrates the automatic "pipeline-continue" PostToolUse hook recording CLI evidence -- no LLM Read/Write/Glob call on this line`,
 	},
@@ -179,7 +179,7 @@ var worktreeSkillsDescriptiveNoAction = map[string]worktreeSkillsException{
 // instruction elsewhere. Each entry was verified individually against this
 // repo's current file content. Keyed by "relative/path:line".
 var worktreeSkillsProhibitionMisses = map[string]worktreeSkillsException{
-	"skills/execute/SKILL.md:338": {
+	"skills/execute/SKILL.md:340": {
 		contains: "never append to",
 		reason:   `"never append to .sdlc-v2/learnings/log.md directly" -- prohibited verb is "append" (not in the read|write|glob alternation), and "write" appears earlier in the same line (in "a later write would land outside it"), before "never"`,
 	},
@@ -363,7 +363,7 @@ var worktreeSkillsProhibitionSurvivors = []struct {
 	line int
 }{
 	{"skills/plan/SKILL.md", 73},
-	{"skills/execute/SKILL.md", 25},
+	{"skills/execute/SKILL.md", 27},
 }
 
 // TestSkillsProhibitionProseSurvivesDetection guards the two prohibition
