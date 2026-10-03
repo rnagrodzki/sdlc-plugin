@@ -1922,6 +1922,69 @@ func TestPlanSupportOpenspecStage(t *testing.T) {
 		})
 	}
 
+	t.Run("diagram contrast", func(t *testing.T) {
+		stubOpenspecForStage(t, 0) // CLI validation passes; the contrast hit alone must flip valid to false
+		root := newOpenspecStageFixture(t, "")
+
+		ins, err := planSupportCore(root, root, PlanSupportIn{Action: "openspec_instructions", ChangeName: "add-widget"})
+		if err != nil {
+			t.Fatalf("openspec_instructions: %v", err)
+		}
+		files := filesFor(ins.Artifacts)
+		pastel := "classDef new fill:#d4f7d4,stroke:#2a7a2a"
+		// Line 1 "# doc", 2 blank, 3 fence open, 4 flowchart, 5 the pastel classDef, 6 fence close.
+		files[0].Content = "# doc\n\n```mermaid\nflowchart TD\n" + pastel + "\n```\n"
+
+		out, err := planSupportCore(root, root, PlanSupportIn{
+			Action:     "openspec_stage",
+			ChangeName: "add-widget",
+			Files:      files,
+			PlanPath:   "/tmp/plans/add-widget.md",
+		})
+		if err != nil {
+			t.Fatalf("openspec_stage: %v", err)
+		}
+		if out.Valid == nil || *out.Valid {
+			t.Errorf("Valid = %v, want false (CLI passed, but the staged file has a pastel classDef)", out.Valid)
+		}
+		wantLine := fmt.Sprintf("diagram contrast: %s:5: no text color: %s", files[0].Path, pastel)
+		if !strings.Contains(out.ValidateOutput, wantLine) {
+			t.Errorf("ValidateOutput = %q, want it to contain %q", out.ValidateOutput, wantLine)
+		}
+		if !strings.Contains(out.ValidateOutput, "is valid") {
+			t.Errorf("ValidateOutput = %q, want it to still contain the CLI's own passing output", out.ValidateOutput)
+		}
+		if out.Next != "Fix the artifacts using validateOutput and call openspec_stage again." {
+			t.Errorf("Next = %q", out.Next)
+		}
+	})
+
+	t.Run("no diagram contrast hit leaves valid/validateOutput unchanged", func(t *testing.T) {
+		stubOpenspecForStage(t, 0)
+		root := newOpenspecStageFixture(t, "")
+
+		ins, err := planSupportCore(root, root, PlanSupportIn{Action: "openspec_instructions", ChangeName: "add-widget"})
+		if err != nil {
+			t.Fatalf("openspec_instructions: %v", err)
+		}
+		files := filesFor(ins.Artifacts)
+		out, err := planSupportCore(root, root, PlanSupportIn{
+			Action:     "openspec_stage",
+			ChangeName: "add-widget",
+			Files:      files,
+			PlanPath:   "/tmp/plans/add-widget.md",
+		})
+		if err != nil {
+			t.Fatalf("openspec_stage: %v", err)
+		}
+		if out.Valid == nil || !*out.Valid {
+			t.Errorf("Valid = %v, want true", out.Valid)
+		}
+		if out.ValidateOutput != "Change 'add-widget' is valid" {
+			t.Errorf("ValidateOutput = %q, want the CLI output unchanged", out.ValidateOutput)
+		}
+	})
+
 	t.Run("errors", func(t *testing.T) {
 		proposal := []openspec.StageFile{{Path: "proposal.md", Content: "# P\n"}}
 		for _, tc := range []struct {

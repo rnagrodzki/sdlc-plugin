@@ -64,7 +64,7 @@ func TestPlanPrepare_KeySetAndDefaults(t *testing.T) {
 		"openspec", "fromOpenspec", "openspecContext", "guardrails",
 		"style", "tasks", "styleGuideFile",
 		"explorePack", "planTemplate", "githubHosting", "g17Dispatch",
-		"intakeAuditDispatch", "lanes", "lensReviewers", "errors",
+		"intakeAuditDispatch", "lanes", "lensReviewers", "reviewLoop", "errors",
 	}
 	for _, k := range expectedTopKeys {
 		if _, ok := m[k]; !ok {
@@ -135,6 +135,10 @@ func TestPlanPrepare_KeySetAndDefaults(t *testing.T) {
 	}
 	if out.IntakeAuditDispatch.SubagentType != "general-purpose" || out.IntakeAuditDispatch.Model != "sonnet" {
 		t.Errorf("IntakeAuditDispatch = %+v, want subagentType=general-purpose model=sonnet", out.IntakeAuditDispatch)
+	}
+
+	if out.ReviewLoop.MaxRounds != 5 {
+		t.Errorf("ReviewLoop.MaxRounds = %d, want 5", out.ReviewLoop.MaxRounds)
 	}
 }
 
@@ -2529,10 +2533,11 @@ func TestPlanMark_Checkpoint_ReplaceNotAppend(t *testing.T) {
 }
 
 // TestPlanMark_Checkpoint_NextIncludesStyleInstructions_ReadFresh verifies
-// Next gains a " Follow the N custom plan instructions (style.instructions)."
-// suffix once [planStyle].instructions is non-empty, and that the style is
-// read fresh on every call: writing local.toml AFTER the first call
-// still changes the very next call's Next.
+// Next gains a "\nCustom plan instructions (follow them in this step):\n"
+// block (the full commstyle.InstructionsText, not just a count) once
+// [planStyle].instructions is non-empty, and that the style is read fresh
+// on every call: writing local.toml AFTER the first call still changes the
+// very next call's Next.
 func TestPlanMark_Checkpoint_NextIncludesStyleInstructions_ReadFresh(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
@@ -2548,8 +2553,8 @@ func TestPlanMark_Checkpoint_NextIncludesStyleInstructions_ReadFresh(t *testing.
 	if err != nil {
 		t.Fatalf("planMark(checkpoint) #1: %v", err)
 	}
-	if strings.Contains(out1.Next, "custom plan instructions") {
-		t.Errorf("Next #1 = %q, want no custom-instructions suffix (no [planStyle] section yet)", out1.Next)
+	if strings.Contains(out1.Next, "custom plan instructions") || strings.Contains(out1.Next, "Custom plan instructions") {
+		t.Errorf("Next #1 = %q, want no custom-instructions block (no [planStyle] section yet)", out1.Next)
 	}
 
 	writeFile(t, filepath.Join(dir, paths.DataDir, "local.toml"), ""+
@@ -2560,8 +2565,49 @@ func TestPlanMark_Checkpoint_NextIncludesStyleInstructions_ReadFresh(t *testing.
 	if err != nil {
 		t.Fatalf("planMark(checkpoint) #2: %v", err)
 	}
-	if want := " Follow the 2 custom plan instructions (style.instructions)."; !strings.HasSuffix(out2.Next, want) {
+	want := "\nCustom plan instructions (follow them in this step):\n" +
+		"1. Cite file:line for every claim.\n2. State the delta, not the plan."
+	if !strings.HasSuffix(out2.Next, want) {
 		t.Errorf("Next #2 = %q, want suffix %q", out2.Next, want)
+	}
+}
+
+// TestPlanMark_Checkpoint_LastReviewRound verifies Next gains the last-round
+// sentence only at step "5" once iteration reaches maxReviewRounds (5), and
+// not at an earlier iteration or a different step.
+func TestPlanMark_Checkpoint_LastReviewRound(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	if _, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+		t.Fatalf("planPrepareCore (seed): %v", err)
+	}
+
+	lastRound := " This is review round 5 of 5, the last round. If blocking issues remain after it, ask the user with AskUserQuestion; do not start round 6."
+
+	notLast, err := planMark(dir, dir, PlanMarkIn{Marker: "checkpoint", Data: map[string]any{"step": "5", "iteration": float64(4)}})
+	if err != nil {
+		t.Fatalf("planMark(checkpoint) iteration=4: %v", err)
+	}
+	if strings.Contains(notLast.Next, "the last round") {
+		t.Errorf("Next at step 5 iteration 4 = %q, want no last-round sentence", notLast.Next)
+	}
+
+	last, err := planMark(dir, dir, PlanMarkIn{Marker: "checkpoint", Data: map[string]any{"step": "5", "iteration": float64(5)}})
+	if err != nil {
+		t.Fatalf("planMark(checkpoint) iteration=5: %v", err)
+	}
+	if !strings.Contains(last.Next, lastRound) {
+		t.Errorf("Next at step 5 iteration 5 = %q, want to contain %q", last.Next, lastRound)
+	}
+
+	otherStep, err := planMark(dir, dir, PlanMarkIn{Marker: "checkpoint", Data: map[string]any{"step": "3", "iteration": float64(5)}})
+	if err != nil {
+		t.Fatalf("planMark(checkpoint) step=3 iteration=5: %v", err)
+	}
+	if strings.Contains(otherStep.Next, "the last round") {
+		t.Errorf("Next at step 3 iteration 5 = %q, want no last-round sentence", otherStep.Next)
 	}
 }
 

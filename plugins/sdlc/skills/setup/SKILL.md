@@ -14,6 +14,8 @@ delegates content creation to specialized skills.
 
 **Announce at start:** "I'm using setup (sdlc v{sdlc_version})." — extract the version from the `sdlc:` line in the session-start system-reminder. If no version is in context, omit the parenthetical.
 
+**Communication style:** Follow the `sdlc communication style` block in session context for every explanation, status line, summary, and AskUserQuestion text in this skill. Do not apply it to commit messages, PR bodies, review comments, or Jira text: they follow their own templates and config.
+
 ---
 
 ## Port Notes (Task 44 — read before using this skill)
@@ -31,7 +33,7 @@ field that does not exist. Deviations, one line each:
 
 - **Q1 (binding ruling):** the `workspace` and `hooks` menu sections (source's 3.workspace
   / 3.hooks, issues #351/#370/#372) are dropped entirely. Go's `internal/setupmeta.Sections()`
-  is a frozen 18-id manifest with no `workspace`/`hooks` id — there is nothing to dispatch to.
+  is a frozen 19-id manifest with no `workspace`/`hooks` id — there is nothing to dispatch to.
   `--only` no longer accepts those ids.
 - **State/summary/locked (Gap A):** Step 0/1 below compute `state` and `summary` per row by
   reading `.sdlc-v2/config.toml` / `.sdlc-v2/local.toml` directly and Globbing the content
@@ -83,13 +85,15 @@ field that does not exist. Deviations, one line each:
   files" below still re-reads the current `pr` object immediately before writing `pr` and
   preserves any `labels` key already present.
 - **`--only` id list corrected.** Source's own SKILL.md listed 13 ids for `--only`
-  (missing `received-review`). The table below lists the true 18 canonical ids from
+  (missing `received-review`). The table below lists the true 19 canonical ids from
   `internal/setupmeta.Sections()` (includes `plan-style` and `plan-tasks`, added after the
   original port to expose `/plan`'s narrative-style and task-contract config, and
   `automation`, added to expose per-step pipeline automation mode, the execution report
-  toggle, plan-drift halting thresholds, and feature-branch push auto-approval, and `github`,
+  toggle, plan-drift halting thresholds, and feature-branch push auto-approval, `github`,
   added to hold the personal `expectedAccount` for `/pr`'s active-account check in
-  `.sdlc-v2/local.toml`).
+  `.sdlc-v2/local.toml`, and `communication-style`, added to expose the shared `[style]`
+  block — reader level, writing standard, tone, language, technical terms — used by every
+  sdlc skill).
 - **Delete-legacy-files prompt dropped.** `migrate({ action: "config" })` only checks the
   config schema version: it never converts or ingests legacy files, and its `result` is
   always `"up-to-date"` (a stale JSON-era config makes the call fail instead). There is no
@@ -109,8 +113,8 @@ field that does not exist. Deviations, one line each:
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--migrate` | Force migration of legacy config files even if no legacy files are auto-detected | off |
-| `--force` | Reconfigure every section, including sections already `set`: skip the menu and select all 18 ids. Ignored when `--only` or a direct-entry flag is also passed | off |
-| `--only <ids>` | Comma-separated section ids to configure (skips the menu). Valid values: any of the 18 canonical ids — `version`, `ship`, `jira`, `review`, `received-review`, `commit`, `pr`, `github`, `pr-labels`, `review-dimensions`, `pr-template`, `plan-template`, `plan-style`, `plan-tasks`, `plan-guardrails`, `execution-guardrails`, `openspec-block`, `automation` | none |
+| `--force` | Reconfigure every section, including sections already `set`: skip the menu and select all 19 ids. Ignored when `--only` or a direct-entry flag is also passed | off |
+| `--only <ids>` | Comma-separated section ids to configure (skips the menu). Valid values: any of the 19 canonical ids — `version`, `ship`, `jira`, `review`, `received-review`, `commit`, `pr`, `github`, `pr-labels`, `review-dimensions`, `pr-template`, `plan-template`, `communication-style`, `plan-style`, `plan-tasks`, `plan-guardrails`, `execution-guardrails`, `openspec-block`, `automation` | none |
 | `--dimensions` | Jump directly to review dimensions sub-flow (alias for `--only review-dimensions`) | off |
 | `--pr-template` | Jump directly to PR template sub-flow (skip config builder) | off |
 | `--guardrails` | Jump directly to plan guardrails sub-flow (skip config builder) | off |
@@ -142,12 +146,13 @@ If the system context contains "Plan mode is active":
    setup_prepare({ skipConfigCheck: false }) → { ok, needsMigration, sections[], defaultBranch, remoteOwner, ciScriptDrift[] }
    ```
 
-   `sections[]` is the static 18-row descriptor list, always in canonical
+   `sections[]` is the static 19-row descriptor list, always in canonical
    `internal/setupmeta.Sections()` order: `version`, `ship`, `jira`, `review`,
    `received-review`, `commit`, `pr`, `github`, `pr-labels`, `review-dimensions`, `pr-template`,
-   `plan-template`, `plan-style`, `plan-tasks`, `plan-guardrails`, `execution-guardrails`,
-   `openspec-block`, `automation`. Each row carries `{ id, label, purpose, configFile, configPath,
-   consumedBy, filesModified, optional, delegatedTo, confirmDetected, fields[] }`.
+   `plan-template`, `communication-style`, `plan-style`, `plan-tasks`, `plan-guardrails`,
+   `execution-guardrails`, `openspec-block`, `automation`. Each row carries `{ id, label, purpose,
+   configFile, configPath, consumedBy, filesModified, optional, delegatedTo, confirmDetected,
+   fields[] }`.
 
 2. Call `setup_init({})` once, unconditionally, to scaffold `.sdlc-v2/` (see Port Notes — it
    takes no input and always writes the complete TOML templates):
@@ -209,7 +214,7 @@ If the system context contains "Plan mode is active":
    `--remove-openspec` to the relevant sub-flow when invoked.
 
    `--force` (only when neither `--only` nor a direct-entry flag is passed): skip Step 1's
-   menu and proceed to Step 2 → Step 3 with `selectedIds` = all 18 canonical ids, including
+   menu and proceed to Step 2 → Step 3 with `selectedIds` = all 19 canonical ids, including
    sections already `set`. When `--only` or a direct-entry flag is also passed, ignore
    `--force`; the `--only` id set wins.
 
@@ -225,7 +230,7 @@ If the system context contains "Plan mode is active":
 **Direct-entry flag bypass (preserved):** When `--only`, `--force`, `--dimensions`,
 `--pr-template`, `--guardrails`, `--execution-guardrails`, `--openspec-enrich`, or
 `--plan-template` was passed, `selectedIds` are resolved before Step 1 by the flag-alias
-routing in Step 0 (`--force` alone resolves to all 18 ids). Skip the entire menu (no
+routing in Step 0 (`--force` alone resolves to all 19 ids). Skip the entire menu (no
 numbered list, no chat prompt) and jump to Step 2/3 with the resolved id set.
 
 **Compute `state` per row** (evaluate in this order; ported verbatim from
@@ -241,9 +246,10 @@ branches — see Port Notes):
    entry (an array element, or a key of the table — e.g. one named guardrail table under
    `plan.guardrails`); any other non-null resolved value is `set`. Unresolved (any segment
    missing) → `not-set`.
-3. **`.sdlc-v2/local.toml` sections** (`ship`, `review`, `received-review`, `plan-style`, `github`, `automation`): `set`
-   when `localConfig[section.configPath]` (e.g. `localConfig.receivedReview`,
-   `localConfig.planStyle`) is non-null, else `not-set`.
+3. **`.sdlc-v2/local.toml` sections** (`ship`, `review`, `received-review`, `communication-style`,
+   `plan-style`, `github`, `automation`): `set` when `localConfig[section.configPath]` (e.g.
+   `localConfig.receivedReview`, `localConfig.style`, `localConfig.planStyle`) is non-null,
+   else `not-set`.
 
 If `needsMigration` is `true`, print one banner line above the status block (no per-row
 `[legacy]` badge — Go's `needsMigration` carries no per-section attribution):
@@ -271,7 +277,8 @@ otherwise):
 | `review-dimensions` | `<count> installed` or empty. |
 | `pr-template` | `installed` or empty. |
 | `plan-template` | `installed` or empty. |
-| `plan-style` | Join non-empty (two spaces) of `verbosity: <verbosity>`, `audience: <audience>`, `rules: <narrativeRules.length>` (only when > 0), `instructions: <instructions.length>` (only when > 0). |
+| `communication-style` | Join non-empty (two spaces) of `audience: <audience>`, `standard: <writingStandard>`, `tone: <tone>`, `language: <language>`, `terms: <technicalTerms.length>` (only when > 0). |
+| `plan-style` | Join non-empty (two spaces) of `density: <visualDensity>`, `rules: <narrativeRules.length>` (only when > 0), `instructions: <instructions.length>` (only when > 0). |
 | `plan-tasks` | Join non-empty (two spaces) of `contract: <contractShape>` and `required: <requiredFields.length>` (only when > 0). |
 | `plan-guardrails` | `<N> configured` (N = number of named guardrail tables under `plan.guardrails`, e.g. `[plan.guardrails.no-ci-bypass]`) or empty. |
 | `execution-guardrails` | `<N> configured` (N = number of named guardrail tables under `execute.guardrails`) or empty. |
@@ -298,7 +305,7 @@ Detected configuration:
 ```
 
 **Phase 2 — Print the numbered menu directly to chat.** One line per row in the canonical
-18-id order, format:
+19-id order, format:
 
 ```
 <N>. [<state>] <section.label> — <first sentence of section.purpose>
@@ -336,7 +343,7 @@ default is always `all`.)
 
 **Phase 4 — Parse the reply**:
 - Empty reply → `all`.
-- `all` → every id from the 18-id canonical list.
+- `all` → every id from the 19-id canonical list.
 - `not-set` → ids whose computed `state === 'not-set'`.
 - `none` or `cancel` → empty list → print `No sections selected — no changes made.` and jump
   to Step 4.
@@ -746,8 +753,9 @@ After collecting all answers AND confirming the diff preview above:
 1. **Assemble the write map.** For each section actually configured in Step 3 (not skipped),
    compute its `setup_write_sections` key as `section.configPath` itself (see Port Notes),
    used as a dotted leaf: `version`→`version`, `ship`→`ship`, `jira`→`jira`, `review`→`review`,
-   `received-review`→`receivedReview`, `commit`→`commit`, `github`→`github`, `plan-style`→`planStyle`,
-   `plan-tasks`→`plan.tasks`, `automation`→`automation`. `pr` is the one exception — its
+   `received-review`→`receivedReview`, `commit`→`commit`, `github`→`github`,
+   `communication-style`→`style`, `plan-style`→`planStyle`, `plan-tasks`→`plan.tasks`,
+   `automation`→`automation`. `pr` is the one exception — its
    `configPath` is `pr` but its value has scalar fields, so it is written as the `pr`
    top-level key wholesale (see "pr merge-preserve" below), never as a dotted leaf.
 
@@ -796,7 +804,7 @@ After collecting all answers AND confirming the diff preview above:
    setup_write_sections({
      sectionsJson: JSON.stringify({
        version: { ... }, ship: { ... }, jira: { ... }, review: { ... },
-       receivedReview: { ... }, commit: { ... }, planStyle: { ... }
+       receivedReview: { ... }, commit: { ... }, style: { ... }, planStyle: { ... }
      })
    }) → { ok, written, errors }
    ```

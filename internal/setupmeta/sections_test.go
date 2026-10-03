@@ -115,11 +115,11 @@ func TestShipFields_StepsOptionsMatchCanonicalSteps(t *testing.T) {
 	}
 }
 
-// TestSections_Count pins the total number of setup sections (18, after the
-// "github" section was added).
+// TestSections_Count pins the total number of setup sections (19, after the
+// "communication-style" section was added).
 func TestSections_Count(t *testing.T) {
-	if got := len(Sections()); got != 18 {
-		t.Errorf("Sections() returned %d sections, want 18", got)
+	if got := len(Sections()); got != 19 {
+		t.Errorf("Sections() returned %d sections, want 19", got)
 	}
 }
 
@@ -336,6 +336,41 @@ func TestLocalTemplate_StyleValuesMatchEnums(t *testing.T) {
 	for key := range enumsByKey {
 		if !found[key] {
 			t.Errorf("%s: no commented example line found for %q", path, key)
+		}
+	}
+}
+
+// TestCommunicationStyleSection verifies the "communication-style" section
+// descriptor: storage location, consuming skills, and that its Fields slice
+// is exactly styleFields (the 5 keys shared by every sdlc skill).
+func TestCommunicationStyleSection(t *testing.T) {
+	var commStyle *Section
+	sections := Sections()
+	for i := range sections {
+		if sections[i].ID == "communication-style" {
+			commStyle = &sections[i]
+			break
+		}
+	}
+	if commStyle == nil {
+		t.Fatal(`Sections() has no "communication-style" section`)
+	}
+
+	if commStyle.ConfigFile != ".sdlc-v2/local.toml" {
+		t.Errorf("communication-style.ConfigFile = %q, want %q", commStyle.ConfigFile, ".sdlc-v2/local.toml")
+	}
+	if commStyle.ConfigPath != "style" {
+		t.Errorf("communication-style.ConfigPath = %q, want %q", commStyle.ConfigPath, "style")
+	}
+	if !commStyle.Optional {
+		t.Error("communication-style.Optional = false, want true")
+	}
+	if len(commStyle.Fields) != len(styleFields) {
+		t.Fatalf("communication-style.Fields has %d entries, want %d (styleFields)", len(commStyle.Fields), len(styleFields))
+	}
+	for i := range styleFields {
+		if commStyle.Fields[i].Name != styleFields[i].Name {
+			t.Errorf("communication-style.Fields[%d].Name = %q, want %q", i, commStyle.Fields[i].Name, styleFields[i].Name)
 		}
 	}
 }

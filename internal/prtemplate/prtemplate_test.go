@@ -31,6 +31,7 @@ func TestSectionsSnapshot(t *testing.T) {
 		"review-dimensions",
 		"pr-template",
 		"plan-template",
+		"communication-style",
 		"plan-style",
 		"plan-tasks",
 		"plan-guardrails",
@@ -126,10 +127,10 @@ func TestPrAndGithubSectionFields(t *testing.T) {
 	}
 }
 
-// TestSectionCount verifies the total number of sections (18).
+// TestSectionCount verifies the total number of sections (19).
 func TestSectionCount(t *testing.T) {
-	if got := len(setupmeta.Sections()); got != 18 {
-		t.Errorf("Sections() returned %d sections, want 18", got)
+	if got := len(setupmeta.Sections()); got != 19 {
+		t.Errorf("Sections() returned %d sections, want 19", got)
 	}
 }
 

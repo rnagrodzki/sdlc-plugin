@@ -337,9 +337,8 @@ var ShipFields = []Field{
 }
 
 // styleFields holds the 5 keys shared by every sdlc skill
-// (commstyle.SharedKeys), stored under [style] in .sdlc-v2/local.toml. Not
-// yet wired to a Section — the setup "communication-style" section that
-// exposes these fields is added separately.
+// (commstyle.SharedKeys), stored under [style] in .sdlc-v2/local.toml.
+// Backs the "communication-style" Section below.
 var styleFields = []Field{
 	{
 		Name:        "audience",
@@ -671,6 +670,19 @@ func Sections() []Section {
 			DelegatedTo:     "setup-plan-template",
 			ConfirmDetected: false,
 			Fields:          nil,
+		},
+		{
+			ID:              "communication-style",
+			Label:           "communication-style",
+			Purpose:         "Personal communication style for every sdlc skill: reader level, writing standard, tone, language, technical terms. Applies to explanations, status lines, summaries, and questions. Plans also use it for narrative sections. Stored in .sdlc-v2/local.toml (gitignored).",
+			ConfigFile:      ".sdlc-v2/local.toml",
+			ConfigPath:      "style",
+			ConsumedBy:      []string{"plan", "execute", "ship", "review", "pr", "commit", "received-review", "harden", "error-report", "jira", "setup", "deferred", "verify-pipeline"},
+			FilesModified:   []string{".sdlc-v2/local.toml"},
+			Optional:        true,
+			DelegatedTo:     "",
+			ConfirmDetected: false,
+			Fields:          styleFields,
 		},
 		{
 			ID:              "plan-style",

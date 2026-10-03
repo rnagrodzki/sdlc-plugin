@@ -14,6 +14,8 @@ Eliminate all redundant discovery calls after initialization.
 
 **Announce at start:** "I'm using jira (sdlc v{sdlc_version})." — extract the version from the `sdlc:` line in the session-start system-reminder. If no version is in context, omit the parenthetical.
 
+**Communication style:** Follow the `sdlc communication style` block in session context for every explanation, status line, summary, and AskUserQuestion text in this skill. Do not apply it to commit messages, PR bodies, review comments, or Jira text: they follow their own templates and config.
+
 ## When to Use This Skill (implements R16)
 
 - Creating, editing, or viewing Jira issues

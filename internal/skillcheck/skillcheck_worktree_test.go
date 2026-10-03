@@ -146,7 +146,7 @@ var worktreeSkillsDescriptiveNoAction = map[string]worktreeSkillsException{
 		contains: "pipeline-continue",
 		reason:   `narrates the automatic "pipeline-continue" PostToolUse hook writing CLI evidence -- no LLM Read/Write/Glob call on this line`,
 	},
-	"skills/setup/SKILL.md:160": {
+	"skills/setup/SKILL.md:165": {
 		contains: "all exist before any read below",
 		reason:   `describes what step 2's setup_init({}) call already ensured -- the actual (disclosed-gap) Reads are on the next lines, not this one`,
 	},
@@ -213,23 +213,23 @@ var worktreeSkillsProhibitionMisses = map[string]worktreeSkillsException{
 // exception (a real, intentional bare Read, not a missed prohibition).
 // Keyed by "relative/path:line".
 var worktreeSkillsDisclosedGapExceptions = map[string]worktreeSkillsException{
-	"skills/setup/SKILL.md:166": {
+	"skills/setup/SKILL.md:171": {
 		contains: "projectConfig",
 		reason:   `Read of config.toml; lines 169-175 immediately below carry an explicit "Disclosed gap: ... no other MCP tool returns full .sdlc-v2/config.toml / local.toml contents ... has no tool-backed alternative" comment`,
 	},
-	"skills/setup/SKILL.md:167": {
+	"skills/setup/SKILL.md:172": {
 		contains: "localConfig",
 		reason:   `Read of local.toml; same disclosed-gap comment (lines 169-175) as line 166`,
 	},
-	"skills/setup/SKILL.md:421": {
+	"skills/setup/SKILL.md:428": {
 		contains: "re-call `setup_prepare` and re-Read",
 		reason:   `re-Read of config.toml/local.toml; the continuation line immediately below reads "same disclosed gap as Step 0, no tool-backed alternative"`,
 	},
-	"skills/setup/SKILL.md:764": {
+	"skills/setup/SKILL.md:772": {
 		contains: "Read the current",
 		reason:   `Read of config.toml; the line immediately below reads "No MCP tool returns this value, so this Read is a deliberate, disclosed exception"`,
 	},
-	"skills/setup/SKILL.md:811": {
+	"skills/setup/SKILL.md:819": {
 		contains: "Re-run Step 0's snapshot",
 		reason:   `re-Read of config.toml/local.toml; the continuation line immediately below reads "same disclosed gap as Step 0, no tool-backed alternative"`,
 	},

@@ -154,6 +154,18 @@ type Dispatch struct {
 	PromptTemplatePath *string `json:"promptTemplatePath"`
 }
 
+// maxReviewRounds is the Step 5 review-loop limit. After round
+// maxReviewRounds with open blocking issues, the skill asks the user
+// (AskUserQuestion) instead of starting another round.
+const maxReviewRounds = 5
+
+// ReviewLoop carries the Step 5 review-loop limit to the caller so the
+// limit lives in one place (this constant) instead of only in SKILL.md
+// prose.
+type ReviewLoop struct {
+	MaxRounds int `json:"maxRounds"`
+}
+
 // Lane mirrors plan.js's buildLanes() entry shape.
 type Lane struct {
 	Name               string   `json:"name"`
@@ -222,6 +234,7 @@ type PlanPrepareOut struct {
 	IntakeAuditDispatch Dispatch            `json:"intakeAuditDispatch"`
 	Lanes               []Lane              `json:"lanes"`
 	LensReviewers       []LensReviewer      `json:"lensReviewers"`
+	ReviewLoop          ReviewLoop          `json:"reviewLoop"`
 	Template            *TemplateResolution `json:"template,omitempty"`
 	Errors              []string            `json:"errors"`
 }
@@ -1747,6 +1760,7 @@ func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepar
 		IntakeAuditDispatch: intakeAuditDispatch,
 		Lanes:               lanes,
 		LensReviewers:       lensReviewers,
+		ReviewLoop:          ReviewLoop{MaxRounds: maxReviewRounds},
 		Template:            templateResolution,
 		Errors:              errs,
 	}, nil
@@ -1935,16 +1949,19 @@ func validateCheckpointData(data map[string]any) (PlanCheckpoint, error) {
 }
 
 // checkpointNext builds the "checkpoint" marker's Next instruction: the
-// step-continuation sentence, plus a custom-instructions reminder when the
+// step-continuation sentence, a last-round warning at the Step 5 review-loop
+// limit (maxReviewRounds), plus the full custom-instructions text when the
 // "planStyle" config section has any. The section is read fresh on every
 // call, never cached, so an edit to local.toml takes effect at the next
-// checkpoint without restarting the MCP server. Mirrors the phrasing loadPlanStyle's doc comment describes
-// for style.instructions.
+// checkpoint without restarting the MCP server.
 func checkpointNext(mainRoot string, cp PlanCheckpoint) string {
 	next := fmt.Sprintf("Checkpoint saved at step %s. Continue step %s.", cp.Step, cp.Step)
+	if cp.Step == "5" && cp.Iteration == maxReviewRounds {
+		next += fmt.Sprintf(" This is review round %d of %d, the last round. If blocking issues remain after it, ask the user with AskUserQuestion; do not start round %d.", maxReviewRounds, maxReviewRounds, maxReviewRounds+1)
+	}
 	style, styleErr := loadPlanStyle(mainRoot)
-	if n := len(style.Instructions); n > 0 {
-		next += fmt.Sprintf(" Follow the %d custom plan instructions (style.instructions).", n)
+	if len(style.Instructions) > 0 {
+		next += "\nCustom plan instructions (follow them in this step):\n" + commstyle.InstructionsText(style.Instructions)
 	}
 	if styleErr != "" {
 		next += fmt.Sprintf(" Warning: %s — custom plan instructions could not be loaded; fix local.toml.", styleErr)
@@ -2265,7 +2282,7 @@ func RegisterPlanTools(s *mcpserver.Server) {
 
 	mcpserver.Register(s, "plan_mark",
 		"INTERNAL — called by sdlc skills only. Write a plan-integrity checkpoint marker (plan-file, skillInvoked, guardrailsEvaluated, critiqueRan, done) into the current branch's plan state file, append structured data (guardrailResults, criticalDecisions) to it, or replace the progress checkpoint (checkpoint). "+
-			"checkpoint: replace the progress checkpoint. Requires data.step (one of \"0\", \"1\", \"2\", \"3\", \"4\", \"5\", \"6\", \"6.5\", \"6.6\", \"7\"). Optional: data.iteration, data.expectedWriters. Returns next. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError. "+
+			"checkpoint: replace the progress checkpoint. Requires data.step (one of \"0\", \"1\", \"2\", \"3\", \"4\", \"5\", \"6\", \"6.5\", \"6.6\", \"7\"). Optional: data.iteration, data.expectedWriters. Returns next: the step-continuation sentence, plus the full custom plan instructions text (from [planStyle].instructions) when any are configured, plus a last-round sentence when step is \"5\" and iteration reaches the review-loop limit (plan_prepare's reviewLoop.maxRounds). Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError. "+
 			"Markers other than checkpoint return no next: the call only records state; continue the current SKILL.md step. "+
 			"The done marker also appends the plan's timing (start to last plan-file edit) to .sdlc-v2/history/runs.jsonl; a failed append returns ok with warnings set. Repeating done appends another history record.",
 		mcpserver.Annotations{

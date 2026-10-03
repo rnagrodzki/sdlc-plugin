@@ -571,7 +571,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - task-redispatch: Reopen a failed task for another attempt. Requires taskId. Optional: branch, runId, wave (searches every wave for the task's closed row when omitted). Re-opens the task's wave-manifest row to "in_progress", then deletes and re-seeds the task's server state with a fresh dispatchedAt and attempt+1 — contextFetchedAt, reclaimRequestedAt, and batchId all come back empty, since a redispatch is always solo even if the failed attempt was batched. Refuses with a DomainError (Suggestion names user escalation) at the 2-retry ceiling (attempt already at 3) instead of seeding a 4th attempt.
 - task-context: Return everything a dispatched per-task worker needs in one call — fact-sheet content (embeds the plan-task's Contract/Acceptance Criteria/Files), a live prior-wave summary, verify guidance, and report-back instructions. Requires taskId. Optional: branch, wave (defaults to the highest in_progress wave, else the highest wave), runId (falls back the same way wave-start does, via startedAt/wave). The serialized payload is capped at 1 MiB; oversize content (fact sheet first, then prior-wave summary if still over cap) is truncated with truncated:true rather than erroring. Unknown taskId fails with an actionable error listing the valid IDs for that run. Stamps the task's server-state contextFetchedAt the first time it's called for that task; never overwrites it on later calls.
 - context: Read/write shared context keys. Requires data (JSON object with allowed keys: planSummary, completedTaskIds, filesAdded, filesModified, interfacesCreated, decisionsFromPriorWaves). Optional: branch.
-- read: Return the full execution state blob. Optional: branch. When the run is in flight (some recorded wave isn't "completed", or plannedTaskIds has IDs not yet in context.completedTaskIds), the blob also carries a "resumeBriefing" (resumable, wavesDone, wavesRemaining, gitCrossCheck, gitMismatches, willRedo, willSkip, summary, display, next) — a dry-run preview of what resume-reset would do. A committedSha that no longer checks out as a git ancestor is reported via gitCrossCheck/gitMismatches, never as a read failure.
+- read: Return the full execution state blob. Optional: branch. Also returns style: the plugin-wide communication style; follow style.guide in chat and questions. When the run is in flight (some recorded wave isn't "completed", or plannedTaskIds has IDs not yet in context.completedTaskIds), the blob also carries a "resumeBriefing" (resumable, wavesDone, wavesRemaining, gitCrossCheck, gitMismatches, willRedo, willSkip, summary, display, next) — a dry-run preview of what resume-reset would do. A committedSha that no longer checks out as a git ancestor is reported via gitCrossCheck/gitMismatches, never as a read failure.
 - cleanup: Stamp a branch's execution state terminal (runStatus:"completed", runCompletedAt) instead of deleting it — the state file (and its issues[]) survives for later reads (e.g. /harden) until GC's TTL prunes it. Also removes the per-run working directory and ledger directory (working artifacts only, safe to delete) when the state carries a startedAt to derive the runID from; if startedAt is absent, directories are left untouched. Optional: branch.
 - gc: Garbage-collect stale state files. Optional: ttlDays, dryRun. Always sweeps every branch; there is no branch filter.
 - summarize-prior-wave-context: Summarize context from prior waves. Optional: branch, maxFiles, maxDecisions, maxInterfaces, maxTaskIds.
@@ -4687,18 +4687,16 @@ func execActionRead(root, workDir string, in ExecuteStateIn) (any, error) {
 		}
 	}
 
-	if !execRunInFlight(st.Data) {
-		return st.Data, nil
-	}
-
-	// In-flight run: attach a resume bearings briefing on a shallow copy so
-	// the original st.Data map is untouched (read never mutates state).
-	_, redoTaskIDs := execResumeResetCandidates(st.Data)
-	out := make(map[string]any, len(st.Data)+1)
+	// Shallow copy so the original st.Data map is untouched (read never mutates state).
+	out := make(map[string]any, len(st.Data)+2)
 	for k, v := range st.Data {
 		out[k] = v
 	}
-	out["resumeBriefing"] = execBuildResumeBriefing(workDir, st.Data, redoTaskIDs, true)
+	out["style"] = chatStyleFor(root)
+	if execRunInFlight(st.Data) {
+		_, redoTaskIDs := execResumeResetCandidates(st.Data)
+		out["resumeBriefing"] = execBuildResumeBriefing(workDir, st.Data, redoTaskIDs, true)
+	}
 	return out, nil
 }
 
