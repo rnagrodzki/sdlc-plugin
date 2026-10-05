@@ -1,0 +1,290 @@
+package tools
+
+import (
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+	"testing"
+
+	"github.com/pelletier/go-toml/v2"
+	"github.com/santhosh-tekuri/jsonschema/v6"
+)
+
+// tipExceptions lists schema leaves deliberately exempt from
+// TestTemplate_EveryLeafOptionHasTip, each with the reason it has no
+// template tip and the review note recorded when the exception was added.
+// Starts empty: every schema leaf currently has a live or commented tip in
+// its template. Add an entry only with a reviewed reason — do not use this
+// map to silence a tip that should simply be written.
+var tipExceptions = map[string]struct {
+	reason     string
+	reviewNote string
+}{}
+
+// schemaLeaf is one scalar/array config option reachable from a schema's
+// top-level properties, after resolving "$ref" and recursing through fixed
+// object properties and additionalProperties-shaped maps.
+type schemaLeaf struct {
+	// path is a dotted diagnostic path, e.g. "commit.subjectPattern" or
+	// "plan.guardrails.*.severity" (a "*" segment marks a dynamic
+	// TOML-table-name map, such as a guardrail ID).
+	path string
+	// name is the bare property name used to build the template line
+	// regex — the same name reappears verbatim as a TOML key regardless
+	// of how deep its container is nested.
+	name   string
+	schema *jsonschema.Schema
+}
+
+// derefSchema follows a compiled schema's Ref chain to the schema it
+// actually points at. A property declared as {"$ref": "#/$defs/x"}
+// compiles to a wrapper schema whose own Properties/AdditionalProperties
+// are empty; the real shape lives on .Ref.
+func derefSchema(s *jsonschema.Schema) *jsonschema.Schema {
+	for s != nil && s.Ref != nil {
+		s = s.Ref
+	}
+	return s
+}
+
+// collectSchemaLeaves walks sch (after $ref resolution) and returns every
+// leaf option under it, in a deterministic (sorted) order.
+//
+// An object property with its own fixed properties is a sub-table — it
+// gets a template header ("[section.sub]"), never its own "name =" line —
+// so it is recursed into rather than collected.
+//
+// A property whose additionalProperties resolves to an object with its own
+// properties is a dynamic map of named sub-tables (e.g.
+// "plan.guardrails.<id>"); it is recursed into too, with a "*" wildcard
+// path segment standing in for the user-chosen table name, because the
+// fixed property names live one level down (on the map's value schema).
+//
+// Everything else — including a map whose values are scalars, such as
+// workspace.branch.typeMap — is a leaf: the property needs its own
+// "name = value" line (live or commented) somewhere in the template, and
+// that one line is the whole example (the map's entries are not walked).
+func collectSchemaLeaves(sch *jsonschema.Schema, path string) []schemaLeaf {
+	sch = derefSchema(sch)
+	if sch == nil {
+		return nil
+	}
+	names := make([]string, 0, len(sch.Properties))
+	for n := range sch.Properties {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	var out []schemaLeaf
+	for _, name := range names {
+		p := derefSchema(sch.Properties[name])
+		if p == nil {
+			continue
+		}
+		childPath := path + "." + name
+		if len(p.Properties) > 0 {
+			out = append(out, collectSchemaLeaves(p, childPath)...)
+			continue
+		}
+		if ap, ok := p.AdditionalProperties.(*jsonschema.Schema); ok {
+			if apRes := derefSchema(ap); apRes != nil && len(apRes.Properties) > 0 {
+				out = append(out, collectSchemaLeaves(ap, childPath+".*")...)
+				continue
+			}
+		}
+		out = append(out, schemaLeaf{path: childPath, name: name, schema: p})
+	}
+	return out
+}
+
+// resolveSchemaSection walks a dotted TOML header path (e.g.
+// ["plan", "guardrails", "test-coverage-required"], from a header line like
+// "[plan.guardrails.test-coverage-required]") down root's compiled schema
+// and returns the schema that governs plain "key = value" lines written
+// directly under that header.
+//
+// A path segment that is not a fixed property of the current schema, but
+// the current schema is a dynamic map (its additionalProperties resolves
+// to a schema), is treated as the map's key — e.g. the guardrail's
+// TOML-table ID — and the map's value schema (e.g. guardrailItem) becomes
+// current for the rest of the walk.
+func resolveSchemaSection(root *jsonschema.Schema, path []string) *jsonschema.Schema {
+	cur := root
+	for _, seg := range path {
+		cur = derefSchema(cur)
+		if cur == nil {
+			return nil
+		}
+		if next, ok := cur.Properties[seg]; ok {
+			cur = next
+			continue
+		}
+		if ap, ok := cur.AdditionalProperties.(*jsonschema.Schema); ok {
+			cur = ap
+			continue
+		}
+		return nil
+	}
+	return derefSchema(cur)
+}
+
+// compileTemplateSchema compiles the named schema file (relative to the
+// repo root) for use by both tests in this file.
+func compileTemplateSchema(t *testing.T, relPath string) *jsonschema.Schema {
+	t.Helper()
+	abs, err := filepath.Abs(filepath.Join("..", "..", relPath))
+	if err != nil {
+		t.Fatalf("abs path for %s: %v", relPath, err)
+	}
+	sch, err := jsonschema.NewCompiler().Compile(abs)
+	if err != nil {
+		t.Fatalf("compile %s: %v", relPath, err)
+	}
+	return sch
+}
+
+// templateTipCases pairs each schema with the template it governs. Shared
+// by both tests in this file.
+func templateTipCases() []struct {
+	name     string
+	schema   string
+	template string
+} {
+	return []struct {
+		name     string
+		schema   string
+		template string
+	}{
+		{"config", "plugins/sdlc/schemas/sdlc-config.schema.json", configTemplate},
+		{"local", "plugins/sdlc/schemas/sdlc-local.schema.json", localTemplate},
+	}
+}
+
+// TestTemplate_EveryLeafOptionHasTip walks each schema (it follows local
+// "#/$defs/..." refs), collects the leaf property names of each section,
+// and checks the matching template with regexp `(?m)^\s*#?\s*<name>\s*=`.
+// A leaf with no such line anywhere in its template — not even as a
+// commented example — fails, unless it is listed in tipExceptions with a
+// reason and a review note. A new schema option without a tip fails this
+// test, which is the point: it forces the option to be documented (even if
+// only as a commented-out example) before it ships.
+func TestTemplate_EveryLeafOptionHasTip(t *testing.T) {
+	for _, tc := range templateTipCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			sch := compileTemplateSchema(t, tc.schema)
+			topNames := make([]string, 0, len(sch.Properties))
+			for n := range sch.Properties {
+				topNames = append(topNames, n)
+			}
+			sort.Strings(topNames)
+
+			checkedAny := false
+			for _, top := range topNames {
+				for _, lf := range collectSchemaLeaves(sch.Properties[top], top) {
+					checkedAny = true
+					if exc, exempt := tipExceptions[lf.path]; exempt {
+						if exc.reason == "" || exc.reviewNote == "" {
+							t.Errorf("tipExceptions[%q] needs both a reason and a reviewNote", lf.path)
+						}
+						continue
+					}
+					re := regexp.MustCompile(`(?m)^\s*#?\s*` + regexp.QuoteMeta(lf.name) + `\s*=`)
+					if !re.MatchString(tc.template) {
+						t.Errorf("%s: no live or commented %q line anywhere in the template for schema leaf %s", tc.name, lf.name+" = ...", lf.path)
+					}
+				}
+			}
+			if !checkedAny {
+				t.Fatalf("%s: walked zero schema leaves; the schema file or the walk is broken", tc.name)
+			}
+		})
+	}
+}
+
+// templateHeaderRe matches a live or commented TOML table header line,
+// e.g. "[plan.guardrails.my-rule]" or "# [automation]".
+var templateHeaderRe = regexp.MustCompile(`^\s*#?\s*\[([A-Za-z0-9_.-]+)\]\s*$`)
+
+// templateKVRe matches a live or commented "name = value..." line. It does
+// not require the value to be well-formed TOML — that is checked
+// separately by attempting to decode the line.
+var templateKVRe = regexp.MustCompile(`^\s*#?\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*.+$`)
+
+// TestTemplate_TipExamplesMatchSchema reads each live "<name> = <value>"
+// line and each commented "# <name> = <value>" line of each template,
+// decodes the line with toml.Unmarshal, and validates the value against
+// the schema property of <name> in its enclosing section — tracked by the
+// nearest preceding live or commented "[section]" header line above it.
+//
+// A line that does not decode as a self-contained TOML key/value (prose, a
+// multi-line triple-quoted string's opening or continuation line) is not
+// an example and is skipped. A line whose key is not a fixed property of
+// its enclosing section is also skipped: it is either prose that happens
+// to look like "Word = text", or a dynamic map entry (such as
+// "[automation.steps]"'s per-step overrides) validated by the map's own
+// value schema instead. An empty-string value is always skipped: both
+// templates use "" as the shipped convention for "not configured yet",
+// which does not need to satisfy a configured value's enum or pattern.
+func TestTemplate_TipExamplesMatchSchema(t *testing.T) {
+	for _, tc := range templateTipCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			root := compileTemplateSchema(t, tc.schema)
+
+			var section *jsonschema.Schema
+			var sectionPath string
+			checked := 0
+			for _, line := range strings.Split(tc.template, "\n") {
+				line = strings.TrimRight(line, "\r")
+
+				if m := templateHeaderRe.FindStringSubmatch(line); m != nil {
+					sectionPath = m[1]
+					section = resolveSchemaSection(root, strings.Split(sectionPath, "."))
+					continue
+				}
+
+				m := templateKVRe.FindStringSubmatch(line)
+				if m == nil || section == nil {
+					continue
+				}
+				key := m[1]
+
+				propSchema := derefSchema(section.Properties[key])
+				if propSchema == nil {
+					// Not a fixed property of this section: either prose,
+					// or a dynamic map entry validated against the map's
+					// own value schema instead (e.g. automation.steps'
+					// per-step "execute = \"confirm\"" overrides).
+					if ap, ok := section.AdditionalProperties.(*jsonschema.Schema); ok {
+						propSchema = derefSchema(ap)
+					}
+				}
+				if propSchema == nil {
+					continue
+				}
+
+				trimmed := strings.TrimSpace(line)
+				trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "#"))
+				var holder map[string]any
+				if err := toml.Unmarshal([]byte(trimmed), &holder); err != nil {
+					continue // prose, or a multi-line string's opening/continuation line
+				}
+				val, ok := holder[key]
+				if !ok {
+					continue
+				}
+				if s, isStr := val.(string); isStr && s == "" {
+					continue // the shipped "not configured yet" placeholder
+				}
+
+				checked++
+				if err := propSchema.Validate(val); err != nil {
+					t.Errorf("%s: [%s] %s = %v does not validate against its schema property: %v", tc.name, sectionPath, key, val, err)
+				}
+			}
+			if checked == 0 {
+				t.Fatalf("%s: validated zero example lines; the header/key regexes or the schema walk are broken", tc.name)
+			}
+		})
+	}
+}

@@ -208,6 +208,239 @@ func TestSetupPrepare_JSONSerializationCamelCase(t *testing.T) {
 	if strings.Contains(s, `"NeedsMigration"`) {
 		t.Error("JSON should use camelCase 'needsMigration', found PascalCase")
 	}
+	if !strings.Contains(s, `"examples"`) {
+		t.Error("JSON should contain camelCase 'examples' on fields that carry sample values")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// setup_prepare explain-mode tests
+// ---------------------------------------------------------------------------
+
+// TestSetupPrepare_Explain_Success pins the happy path: explain returns only
+// the named field's explanation (not the full section list), carrying every
+// field named in the contract plus a next step telling the skill what to do
+// with it.
+func TestSetupPrepare_Explain_Success(t *testing.T) {
+	out, err := setupPrepare(t.TempDir(), SetupPrepareIn{Explain: "ship.rebase"})
+	if err != nil {
+		t.Fatalf("setupPrepare: %v", err)
+	}
+	if !out.OK {
+		t.Error("expected OK=true")
+	}
+	if out.Explanation == nil {
+		t.Fatal("expected Explanation to be set")
+	}
+	exp := out.Explanation
+	if exp.Option != "ship.rebase" {
+		t.Errorf("Option = %q, want %q", exp.Option, "ship.rebase")
+	}
+	if exp.Label == "" {
+		t.Error("expected non-empty Label")
+	}
+	if exp.Type == "" {
+		t.Error("expected non-empty Type")
+	}
+	if exp.Description == "" {
+		t.Error("expected non-empty Description")
+	}
+	if exp.Details == "" {
+		t.Error("expected non-empty Details")
+	}
+	if len(exp.Examples) == 0 {
+		t.Error("expected non-empty Examples")
+	}
+	if exp.ConfigFile == "" {
+		t.Error("expected non-empty ConfigFile")
+	}
+	if exp.ConfigPath == "" {
+		t.Error("expected non-empty ConfigPath")
+	}
+	if out.Next == "" {
+		t.Error("expected Next to tell the skill to show the explanation and ask again")
+	}
+
+	// The reply holds only the explanation: the full section list and the
+	// other setup_prepare fields stay unset, so the reply stays small.
+	if len(out.Sections) != 0 {
+		t.Errorf("expected no Sections in explain mode, got %d", len(out.Sections))
+	}
+	if out.DefaultBranch != "" || out.RemoteOwner != "" {
+		t.Error("expected no runtime defaults in explain mode")
+	}
+	if len(out.CIScriptDrift) != 0 {
+		t.Error("expected no CIScriptDrift in explain mode")
+	}
+}
+
+// TestSetupPrepare_ExplainWireShape pins the actual shape the registered
+// setup_prepare handler hands to mcpserver's Markdown renderer (renderOK):
+// explain mode must carry only ok/explanation/next. renderOK walks the
+// returned value's fields by reflection and selects them the same way
+// encoding/json does (mcpserver/render.go's structEntries, pinned by that
+// package's TestRenderOKOmitemptyMatchesJSON), so marshaling the value
+// setupPrepareResult hands it is a faithful proxy for what the caller
+// actually sees, without spinning up the full MCP server. A custom
+// MarshalJSON on SetupPrepareOut would not do this: renderOK never calls
+// it (see setupPrepareExplainOut's doc comment).
+func TestSetupPrepare_ExplainWireShape(t *testing.T) {
+	out, err := setupPrepare(t.TempDir(), SetupPrepareIn{Explain: "ship.rebase"})
+	if err != nil {
+		t.Fatalf("setupPrepare: %v", err)
+	}
+
+	b, err := json.Marshal(setupPrepareResult(out))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	want := []string{"ok", "explanation", "next"}
+	if len(got) != len(want) {
+		t.Fatalf("explain-mode keys = %v, want exactly %v", got, want)
+	}
+	for _, k := range want {
+		if _, ok := got[k]; !ok {
+			t.Errorf("missing expected key %q in %v", k, got)
+		}
+	}
+}
+
+// TestSetupPrepare_NormalWireShapeKeepsAlwaysPresentFields is the
+// regression guard against "fixing" TestSetupPrepare_ExplainWireShape by
+// blanket-adding omitempty to needsMigration/sections/ciScriptDrift on
+// SetupPrepareOut: those three must stay in normal mode's reply even when
+// needsMigration is false and ciScriptDrift is empty (spec.md "Output
+// fields": "ciScriptDrift ... Always present; may be empty", and
+// needsMigration:false is itself meaningful -- "no migration needed", not
+// "field absent").
+func TestSetupPrepare_NormalWireShapeKeepsAlwaysPresentFields(t *testing.T) {
+	out, err := setupPrepare(t.TempDir(), SetupPrepareIn{})
+	if err != nil {
+		t.Fatalf("setupPrepare: %v", err)
+	}
+	if out.NeedsMigration {
+		t.Fatalf("expected needsMigration=false in a fresh temp dir, got true")
+	}
+
+	b, err := json.Marshal(setupPrepareResult(out))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if _, ok := got["needsMigration"]; !ok {
+		t.Error(`expected "needsMigration" key present even though its value is false`)
+	}
+	if _, ok := got["ciScriptDrift"]; !ok {
+		t.Error(`expected "ciScriptDrift" key present even though its value is empty`)
+	}
+}
+
+// TestSetupPrepare_Explain_DottedFieldNameAndEmptyOptions pins two contract
+// requirements with one call: explain splits only at the first dot (so a
+// field name that itself contains a dot, like "tag.prefix", still parses to
+// the right section/field), and a field with no Options keeps the "options"
+// JSON key present with an empty/nil value rather than dropping it — the
+// walker's "(none)" marker (render rule 8) only fires when the key survives
+// to the render layer, which an omitempty tag would have skipped.
+func TestSetupPrepare_Explain_DottedFieldNameAndEmptyOptions(t *testing.T) {
+	out, err := setupPrepare(t.TempDir(), SetupPrepareIn{Explain: "version.tag.prefix"})
+	if err != nil {
+		t.Fatalf("setupPrepare: %v", err)
+	}
+	if out.Explanation == nil {
+		t.Fatal("expected Explanation to be set")
+	}
+	if out.Explanation.Option != "version.tag.prefix" {
+		t.Errorf("Option = %q, want %q", out.Explanation.Option, "version.tag.prefix")
+	}
+	if len(out.Explanation.Options) != 0 {
+		t.Errorf("expected tag.prefix to have no Options, got %v", out.Explanation.Options)
+	}
+
+	b, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(b), `"options"`) {
+		t.Error(`expected JSON to carry the "options" key even when empty, so render rule 8 can render "(none)" instead of dropping the field`)
+	}
+}
+
+// TestSetupPrepare_Explain_Errors drives every explain-mode error row from
+// the contract table through the real handler and pins each DomainError's
+// message and Suggestion.
+func TestSetupPrepare_Explain_Errors(t *testing.T) {
+	tests := []struct {
+		name           string
+		explain        string
+		wantMsg        string
+		wantSuggestion string
+	}{
+		{
+			name:           "no dot",
+			explain:        "ship",
+			wantMsg:        `setup_prepare: explain "ship" is not <sectionId>.<fieldName>`,
+			wantSuggestion: `Pass a value such as "ship.rebase".`,
+		},
+		{
+			name:           "empty field part",
+			explain:        "ship.",
+			wantMsg:        `setup_prepare: explain "ship." is not <sectionId>.<fieldName>`,
+			wantSuggestion: `Pass a value such as "ship.rebase".`,
+		},
+		{
+			name:           "empty section part",
+			explain:        ".rebase",
+			wantMsg:        `setup_prepare: explain ".rebase" is not <sectionId>.<fieldName>`,
+			wantSuggestion: `Pass a value such as "ship.rebase".`,
+		},
+		{
+			name:           "unknown section",
+			explain:        "nope.rebase",
+			wantMsg:        `setup_prepare: unknown section "nope"; valid:`,
+			wantSuggestion: "Use a section id from sections[].id.",
+		},
+		{
+			name:           "section has no fields",
+			explain:        "commit.anything",
+			wantMsg:        `setup_prepare: section "commit" has no fields; it runs the inline-commit-builder sub-flow`,
+			wantSuggestion: "Explain from that sub-flow file instead.",
+		},
+		{
+			name:           "unknown field",
+			explain:        "ship.bogus",
+			wantMsg:        `setup_prepare: section "ship" has no field "bogus"; valid:`,
+			wantSuggestion: "Use a name from sections[].fields[].name.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := setupPrepare(t.TempDir(), SetupPrepareIn{Explain: tt.explain})
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			var de *mcpserver.DomainError
+			if !errors.As(err, &de) {
+				t.Fatalf("expected *mcpserver.DomainError, got %T: %v", err, err)
+			}
+			if !strings.HasPrefix(de.Msg, tt.wantMsg) {
+				t.Errorf("Msg = %q, want prefix %q", de.Msg, tt.wantMsg)
+			}
+			if de.Suggestion != tt.wantSuggestion {
+				t.Errorf("Suggestion = %q, want %q", de.Suggestion, tt.wantSuggestion)
+			}
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------

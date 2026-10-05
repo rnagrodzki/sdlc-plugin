@@ -60,7 +60,8 @@ func TestWriteSection_SpliceCases(t *testing.T) {
 			content: "# head\n[commit]\n# keep me\nallowedTypes = [\"feat\"]\n\n\n",
 			section: "jira",
 			value:   map[string]any{"defaultProject": "PROJ"},
-			want:    "# head\n[commit]\n# keep me\nallowedTypes = [\"feat\"]\n\n[jira]\ndefaultProject = 'PROJ'\n",
+			want: "# head\n[commit]\n# keep me\nallowedTypes = [\"feat\"]\n\n[jira]\n" +
+				"# Default Jira project key (2–10 uppercase letters, e.g. \"PROJ\").\ndefaultProject = 'PROJ'\n",
 		},
 		{
 			name:    "absent section appended to a file without a final newline",
@@ -68,7 +69,8 @@ func TestWriteSection_SpliceCases(t *testing.T) {
 			content: "[commit]\nallowedTypes = [\"feat\"]",
 			section: "jira",
 			value:   map[string]any{"defaultProject": "PROJ"},
-			want:    "[commit]\nallowedTypes = [\"feat\"]\n\n[jira]\ndefaultProject = 'PROJ'\n",
+			want: "[commit]\nallowedTypes = [\"feat\"]\n\n[jira]\n" +
+				"# Default Jira project key (2–10 uppercase letters, e.g. \"PROJ\").\ndefaultProject = 'PROJ'\n",
 		},
 		{
 			name: "table replaced in place, comments above and after it kept",
@@ -147,12 +149,20 @@ func TestWriteSection_SpliceCases(t *testing.T) {
 			want:    "# jira doc\n[jira]\n# tip\n  defaultProject = 'NEW'\n\n[commit]\nallowedTypes = []\n",
 		},
 		{
-			name:    "no value change leaves the file byte-identical",
+			name:    "no value change keeps key text byte-identical, missing tips still restored",
 			file:    "local.toml",
 			content: "[ship]\n  steps = [ \"execute\",\n    \"commit\" ]   # c\nbump = \"patch\"\n\n# tail\n",
 			section: "ship",
 			value:   map[string]any{"steps": []any{"execute", "commit"}, "bump": "patch"},
-			want:    "[ship]\n  steps = [ \"execute\",\n    \"commit\" ]   # c\nbump = \"patch\"\n\n# tail\n",
+			want: "[ship]\n" +
+				"# Pipeline steps to execute during /ship (in order).\n" +
+				"# Valid steps: \"execute\" | \"commit\" | \"review\" | \"harden\" | \"verify-openspec\" |\n" +
+				"#   \"archive-openspec\" | \"pr\" | \"verify-pipeline\" |\n" +
+				"#   \"await-remote-review\" | \"learnings-commit\"\n" +
+				"  steps = [ \"execute\",\n    \"commit\" ]   # c\n" +
+				"# Default version bump.\n" +
+				"# Valid: \"major\" | \"minor\" | \"patch\", or a pre-release label such as \"rc\", \"beta\", \"alpha\"\n" +
+				"bump = \"patch\"\n\n# tail\n",
 		},
 		{
 			name:    "removed key loses its line, the comment above it stays",
@@ -160,7 +170,9 @@ func TestWriteSection_SpliceCases(t *testing.T) {
 			content: "[jira]\ndefaultProject = \"P\"\n# site tip\nsite = \"s\"\n\n[commit]\nallowedTypes = []\n",
 			section: "jira",
 			value:   map[string]any{"defaultProject": "P"},
-			want:    "[jira]\ndefaultProject = \"P\"\n# site tip\n\n[commit]\nallowedTypes = []\n",
+			want: "[jira]\n" +
+				"# Default Jira project key (2–10 uppercase letters, e.g. \"PROJ\").\ndefaultProject = \"P\"\n" +
+				"# site tip\n\n[commit]\nallowedTypes = []\n",
 		},
 		{
 			name: "removed sub-table loses header, multi-line value and one blank line",
@@ -185,7 +197,10 @@ func TestWriteSection_SpliceCases(t *testing.T) {
 			content: "[ship]\nzeta = 'z'\nalpha   =   \"a\"\nbump = \"patch\"\n",
 			section: "ship",
 			value:   map[string]any{"zeta": "z", "alpha": "a", "bump": "minor"},
-			want:    "[ship]\nzeta = 'z'\nalpha   =   \"a\"\nbump = 'minor'\n",
+			want: "[ship]\nzeta = 'z'\nalpha   =   \"a\"\n" +
+				"# Default version bump.\n" +
+				"# Valid: \"major\" | \"minor\" | \"patch\", or a pre-release label such as \"rc\", \"beta\", \"alpha\"\n" +
+				"bump = 'minor'\n",
 		},
 		{
 			name:    "new key goes after the last key of its table",
@@ -193,7 +208,9 @@ func TestWriteSection_SpliceCases(t *testing.T) {
 			content: "[jira]\ndefaultProject = \"P\"\n# trailing comment\n\n[commit]\nallowedTypes = []\n",
 			section: "jira",
 			value:   map[string]any{"defaultProject": "P", "site": "x"},
-			want:    "[jira]\ndefaultProject = \"P\"\nsite = 'x'\n# trailing comment\n\n[commit]\nallowedTypes = []\n",
+			want: "[jira]\n" +
+				"# Default Jira project key (2–10 uppercase letters, e.g. \"PROJ\").\ndefaultProject = \"P\"\n" +
+				"site = 'x'\n# trailing comment\n\n[commit]\nallowedTypes = []\n",
 		},
 		{
 			name:    "new sub-table goes after the last line of its section",
@@ -209,7 +226,8 @@ func TestWriteSection_SpliceCases(t *testing.T) {
 			content: "[commit]\nallowedTypes = []\n\n# Jira doc\n#  [ jira ]\n# defaultProject = \"X\"\n\n# tail\n",
 			section: "jira",
 			value:   map[string]any{"defaultProject": "P"},
-			want:    "[commit]\nallowedTypes = []\n\n# Jira doc\n#  [ jira ]\n# defaultProject = \"X\"\n[jira]\ndefaultProject = 'P'\n\n# tail\n",
+			want: "[commit]\nallowedTypes = []\n\n# Jira doc\n#  [ jira ]\n# defaultProject = \"X\"\n[jira]\n" +
+				"# Default Jira project key (2–10 uppercase letters, e.g. \"PROJ\").\ndefaultProject = 'P'\n\n# tail\n",
 		},
 		{
 			name:    "changed single-line value keeps its trailing comment",
@@ -217,7 +235,8 @@ func TestWriteSection_SpliceCases(t *testing.T) {
 			content: "[jira]\ndefaultProject = \"OLD\"   # the key\n",
 			section: "jira",
 			value:   map[string]any{"defaultProject": "NEW"},
-			want:    "[jira]\ndefaultProject = 'NEW'   # the key\n",
+			want: "[jira]\n" +
+				"# Default Jira project key (2–10 uppercase letters, e.g. \"PROJ\").\ndefaultProject = 'NEW'   # the key\n",
 		},
 		{
 			name:    "changed multi-line value becomes one line, trailing comment kept",
@@ -225,7 +244,11 @@ func TestWriteSection_SpliceCases(t *testing.T) {
 			content: "[commit]\nallowedTypes = [\n  \"feat\",\n  \"fix\",\n] # types\nallowedScopes = []\n",
 			section: "commit",
 			value:   map[string]any{"allowedTypes": []any{"docs"}, "allowedScopes": []any{}},
-			want:    "[commit]\nallowedTypes = ['docs'] # types\nallowedScopes = []\n",
+			want: "[commit]\n" +
+				"# Allowed commit types (conventional-commit prefix before the colon).\n" +
+				"allowedTypes = ['docs'] # types\n" +
+				"# Allowed scopes (empty = any scope accepted).\n" +
+				"allowedScopes = []\n",
 		},
 		{
 			name:    "dotted keys inside the table are edited in place",
@@ -233,7 +256,8 @@ func TestWriteSection_SpliceCases(t *testing.T) {
 			content: "[version]\n# tag doc\ntag.enabled = true\n",
 			section: "version",
 			value:   map[string]any{"tag": map[string]any{"enabled": false, "prefix": "v"}},
-			want:    "[version]\n# tag doc\ntag.enabled = false\ntag.prefix = 'v'\n",
+			want: "[version]\n# tag doc\ntag.enabled = false\n" +
+				"# Tag prefix (e.g. \"v\" → \"v1.2.3\", \"\" → \"1.2.3\")\ntag.prefix = 'v'\n",
 		},
 		{
 			name:    "missing file is created",
@@ -241,7 +265,7 @@ func TestWriteSection_SpliceCases(t *testing.T) {
 			content: "",
 			section: "ship",
 			value:   map[string]any{"draft": true},
-			want:    "[ship]\ndraft = true\n",
+			want:    "[ship]\n# Create PR as draft.\ndraft = true\n",
 		},
 	}
 	for _, tc := range cases {

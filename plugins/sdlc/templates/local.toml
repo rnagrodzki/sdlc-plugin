@@ -64,6 +64,27 @@ awaitRemoteReviewTimeout = 600
 # visualDensity = "balanced"   # high | balanced | low
 # narrativeRules = []
 # instructions = []
+# Deprecated — moved to [style]; still accepted here so old files validate.
+# audience = "functional"      # technical | functional | executive | general | beginner
+# writingStandard = "plain-language"  # ste | plain-language | developer-docs | smart-brevity
+# tone = "direct"              # direct | neutral
+# language = "English"
+# technicalTerms = []          # words the strict STE checks accept
+# Deprecated — no longer used; ignored with a warning. Set visualDensity above instead.
+# verbosity = "standard"       # terse | standard | detailed
+
+# ─── Review defaults (optional — delete if not using) ─────────────
+# [review]
+# Which changes to include in the review.
+# Valid: "all" | "committed" | "staged" | "working" | "worktree"
+# scope = "working"
+
+# ─── Received-review defaults (optional — delete if not using) ────
+# [receivedReview]
+# Severities whose 'will fix' findings bypass the per-finding consent gate.
+# Local-only — must NEVER be set in .sdlc-v2/config.toml.
+# Valid items: "low" | "medium" | "high" | "critical"
+# alwaysFixSeverities = []
 
 # ─── Automation (optional — delete if not using) ──────────────────
 
@@ -77,6 +98,21 @@ awaitRemoteReviewTimeout = 600
 # [automation.steps]
 # execute = "confirm"
 # review = "auto"
+#
+# # Rate-based thresholds for halting an unattended run on plan drift.
+# [automation.drift]
+# maxErrorRate = 0.15
+# maxWarningRate = 0.4
+# minErrorFloor = 2
+#
+# # Execution report emitted at the end of a run.
+# [automation.report]
+# enabled = true
+# format = "md"
+#
+# # Feature-branch push during ship skips the manual confirmation pause.
+# [automation.push]
+# featureBranchAutoApprove = false
 
 # ─── GitHub account ─────────────────────────────────────────────
 # [github]
@@ -103,3 +139,13 @@ awaitRemoteReviewTimeout = 600
 # Auto-approve waves containing a High-risk task, because the plan was
 # already approved at plan time.
 # highRiskAutoApprove = false
+
+# ─── Workspace (optional — delete if not using) ────────────────────
+# Branch-name derivation knobs consumed by lib/branch-name.js.
+# [workspace.branch]
+# Branch name template. Placeholders: {type}, {slug}, {issue}, {date}.
+# template = "{type}/{slug}"
+# Maximum length of the slug segment before substitution into the template.
+# slugMaxLength = 50
+# Maps logical plan type to branch prefix.
+# typeMap = { feature = "feat", bugfix = "fix", chore = "chore", docs = "docs", refactor = "refactor" }

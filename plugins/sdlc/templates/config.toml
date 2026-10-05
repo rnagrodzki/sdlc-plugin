@@ -72,14 +72,33 @@ defaultProject = ""
 allowedTypes = ["feat", "fix", "chore", "docs", "refactor", "test", "ci", "perf"]
 # Allowed scopes (empty = any scope accepted).
 allowedScopes = []
+# Regex pattern the commit subject line must match.
+# subjectPattern = "^(feat|fix)(\\(.+\\))?: .+"
+# Human-readable error message when subject pattern fails.
+# subjectPatternError = "Use <type>(<scope>): <subject>"
+# Commit types that require a body message.
+# requireBodyFor = ["feat"]
+# Required trailer keys in commit message.
+# requiredTrailers = ["Refs"]
 
 # ─── Pull request defaults ───────────────────────────────────────
 
 [pr]
+# Regex pattern the PR title must match.
+# titlePattern = "^(feat|fix|chore|docs|refactor|test|ci|perf)(\\(.+\\))?: .+"
+# Human-readable error message when title pattern fails.
+# titlePatternError = "Use <type>(<scope>): <subject>"
+# Allowed PR title type prefixes.
+# allowedTypes = ["feat", "fix", "chore", "docs", "refactor", "test", "ci", "perf"]
+# Allowed PR title scopes.
+# allowedScopes = []
+
 # Label assignment mode for PRs created by /ship.
 # Valid: "off" (default, no automatic labels) | "rules" | "llm"
 # [pr.labels]
 # mode = "off"
+# Label rules evaluated when mode = "rules". Each rule names one label and one signal.
+# rules = [{ label = "breaking", when = { commitType = ["feat!"] } }]
 
 # ─── Git ──────────────────────────────────────────────────────────
 
@@ -110,6 +129,13 @@ must include corresponding test cases."""
 severity = "error"
 description = "Plans must not include steps that skip or disable CI checks."
 
+# Team contract for plan tasks and deliverables (optional).
+# [plan.tasks]
+# Required fields for each task in a plan.
+# requiredFields = ["Owner", "Rollback"]
+# Shape of the task contract: full (complete), minimal (essential), or none (flexible).
+# contractShape = "full"
+
 # ─── Execute behavior ───────────────────────────────────────────
 # Runtime behavior for /execute.
 # Personal preferences (auto, quality, highRiskAutoApprove) live in
@@ -118,6 +144,10 @@ description = "Plans must not include steps that skip or disable CI checks."
 [execute]
 # Merge origin/<base> into the branch between execute waves.
 baseSync = true
+# Whether execute_state's wave-commit action stages and commits each
+# completed wave's changes itself (git add -A + git commit). When false,
+# commit the wave manually and record the sha via wave-committed.
+# commitWaves = true
 
 # ─── Execute guardrails ──────────────────────────────────────────
 # Constraints enforced during task execution.

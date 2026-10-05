@@ -460,7 +460,7 @@ func TestSetupWriteSections_KeepsCRLFLineEndings(t *testing.T) {
 	want := "# project settings\r\n" +
 		"[commit]\r\n# old comment\r\nallowedTypes = ['fix']\r\nsubjectPatternError = \"line one\\nline two\"\r\n" +
 		"\r\n# tail comment\r\n" +
-		"\r\n[jira]\r\ndefaultProject = 'PROJ'\r\n"
+		"\r\n[jira]\r\n# Default Jira project key (2–10 uppercase letters, e.g. \"PROJ\").\r\ndefaultProject = 'PROJ'\r\n"
 	if string(got) != want {
 		t.Errorf("unexpected file.\n--- got ---\n%q\n--- want ---\n%q", got, want)
 	}
