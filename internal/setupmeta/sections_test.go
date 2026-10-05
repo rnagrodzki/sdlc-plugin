@@ -123,6 +123,26 @@ func TestSections_Count(t *testing.T) {
 	}
 }
 
+// TestSections_CanonicalOrder pins the exact section order the
+// tool-setup-prepare spec's "Section manifest" requirement documents, so a
+// reordering or an added/removed section is caught here instead of only by
+// a stale spec count.
+func TestSections_CanonicalOrder(t *testing.T) {
+	want := []string{
+		"version", "ship", "jira", "review", "received-review", "commit",
+		"pr", "github", "pr-labels", "review-dimensions", "pr-template",
+		"plan-template", "communication-style", "plan-style", "plan-tasks",
+		"plan-guardrails", "execution-guardrails", "openspec-block", "automation",
+	}
+	var got []string
+	for _, s := range Sections() {
+		got = append(got, s.ID)
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("Sections() order = %v, want %v", got, want)
+	}
+}
+
 // TestAutomationSection verifies the "automation" section descriptor: its
 // storage location, consuming skills, and the presence/shape of all 7
 // automationFields entries (mode, report.enabled, report.format,

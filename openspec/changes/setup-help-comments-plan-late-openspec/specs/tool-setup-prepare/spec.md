@@ -35,7 +35,7 @@ The tool SHALL return the fields below and SHALL always return `ok: true` when i
 |---|---|
 | `ok` | Always `true` on a returned result. |
 | `needsMigration` | `true` when the config-migration check fails. See "Config-migration flag". |
-| `sections` | 18 section descriptors in canonical order. See "Section manifest". |
+| `sections` | 19 section descriptors in canonical order. See "Section manifest". |
 | `defaultBranch` | Detected default branch. Omitted when not detected. |
 | `remoteOwner` | Owner parsed from the `origin` remote URL. Omitted when not detected. |
 | `ciScriptDrift` | One entry per CI script managed by `scaffold_ci`. Always present; may be empty. |
@@ -60,7 +60,7 @@ The tool SHALL return the fields below and SHALL always return `ok: true` when i
 - **AND** `sections` is omitted
 
 ### Requirement: Section manifest
-The tool SHALL return exactly 18 section descriptors, in this order: `version`, `ship`, `jira`, `review`, `received-review`, `commit`, `pr`, `github`, `pr-labels`, `review-dimensions`, `pr-template`, `plan-template`, `plan-style`, `plan-tasks`, `plan-guardrails`, `execution-guardrails`, `openspec-block`, `automation`.
+The tool SHALL return exactly 19 section descriptors, in this order: `version`, `ship`, `jira`, `review`, `received-review`, `commit`, `pr`, `github`, `pr-labels`, `review-dimensions`, `pr-template`, `plan-template`, `communication-style`, `plan-style`, `plan-tasks`, `plan-guardrails`, `execution-guardrails`, `openspec-block`, `automation`.
 
 Each `sections[]` row:
 
@@ -96,7 +96,7 @@ Each `fields[]` entry:
 
 | `delegatedTo` | Section ids |
 |---|---|
-| (omitted) | `version`, `ship`, `jira`, `review`, `received-review`, `github`, `plan-style`, `plan-tasks`, `automation` |
+| (omitted) | `version`, `ship`, `jira`, `review`, `received-review`, `github`, `communication-style`, `plan-style`, `plan-tasks`, `automation` |
 | `inline-commit-builder` | `commit` |
 | `inline-pr-builder` | `pr` |
 | `setup-pr-labels` | `pr-labels` |
