@@ -16,7 +16,7 @@ bump = "patch"
 draft = false
 
 # Rebase onto default branch before shipping.
-# Valid: true | false | "prompt"
+# Valid: true | false | "auto" | "skip" | "prompt"  (true = "auto", false = "skip")
 rebase = true
 
 # Minimum severity that triggers the review fix loop (lower findings are deferred, not dropped).

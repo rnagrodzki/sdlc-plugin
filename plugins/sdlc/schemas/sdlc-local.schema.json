@@ -212,14 +212,14 @@
           "description": "Minimum severity level that triggers the review fix loop. Findings below it are deferred, not dropped -- see /sdlc:deferred."
         },
         "rebase": {
-          "description": "Whether to rebase before shipping, or prompt the user.",
+          "description": "Rebase before ship. true or \"auto\" rebases without a question, false or \"skip\" never rebases, \"prompt\" asks each time.",
           "oneOf": [
             {
               "type": "boolean"
             },
             {
               "type": "string",
-              "const": "prompt"
+              "enum": ["auto", "skip", "prompt"]
             }
           ]
         },

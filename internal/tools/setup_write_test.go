@@ -4,6 +4,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 )
 
@@ -80,7 +82,7 @@ func TestSetupWriteSections_FallbackWarns(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("expected success, got tool error:\n%s", text)
 	}
-	if !strings.Contains(text, "section plan.tasks: could not edit .sdlc-v2/config.toml in place") {
+	if !strings.Contains(text, "section plan.tasks: could not edit .sdlc-v2/config.toml in place; the file had no comments, so it was rewritten and template tips were added") {
 		t.Errorf("missing full-rewrite warning:\n%s", text)
 	}
 	got, err := os.ReadFile(path)
@@ -109,7 +111,7 @@ func TestSetupWriteSections_FallbackKeepsIntegers(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("expected success, got tool error:\n%s", text)
 	}
-	if !strings.Contains(text, "section workspace.tasks: could not edit .sdlc-v2/local.toml in place") {
+	if !strings.Contains(text, "section workspace.tasks: could not edit .sdlc-v2/local.toml in place; the file had no comments, so it was rewritten and template tips were added") {
 		t.Errorf("missing full-rewrite warning:\n%s", text)
 	}
 	got, err := os.ReadFile(path)
@@ -185,7 +187,7 @@ func TestSetupWriteSections_KeepsTemplateComments(t *testing.T) {
 			if res.IsError {
 				t.Fatalf("expected success, got tool error:\n%s", text)
 			}
-			if strings.Contains(text, "comments were removed") {
+			if strings.Contains(text, "could not edit") {
 				t.Errorf("tool fell back to a full rewrite:\n%s", text)
 			}
 			got, err := os.ReadFile(path)
@@ -412,7 +414,7 @@ func TestSetupWriteSections_WholeNumbersWrittenAsIntegers(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("expected success, got tool error:\n%s", text)
 	}
-	if strings.Contains(text, "comments were removed") {
+	if strings.Contains(text, "could not edit") {
 		t.Fatalf("tool fell back to a full rewrite:\n%s", text)
 	}
 	got, err := os.ReadFile(path)
@@ -450,7 +452,7 @@ func TestSetupWriteSections_KeepsCRLFLineEndings(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("expected success, got tool error:\n%s", text)
 	}
-	if strings.Contains(text, "comments were removed") {
+	if strings.Contains(text, "could not edit") {
 		t.Fatalf("tool fell back to a full rewrite:\n%s", text)
 	}
 	got, err := os.ReadFile(path)
@@ -495,5 +497,264 @@ func TestSetupWriteSections_NullClearsLeaf(t *testing.T) {
 		"[jira]\ndefaultProject = \"P\"\n"
 	if string(got) != want {
 		t.Errorf("plan.tasks not cleared to an empty table.\n--- got ---\n%s\n--- want ---\n%s", got, want)
+	}
+}
+
+// shipSectionLines returns the lines of localTemplate's top-level "ship"
+// section (the lines strictly between the "[ship]" header and the next
+// top-level header), split on "\n".
+func shipSectionLines(t *testing.T) []string {
+	t.Helper()
+	lines := strings.Split(localTemplate, "\n")
+	start := -1
+	for i, l := range lines {
+		if l == "[ship]" {
+			start = i + 1
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatal("localTemplate has no [ship] header")
+	}
+	end := len(lines)
+	for i := start; i < len(lines); i++ {
+		if strings.HasPrefix(lines[i], "[") {
+			end = i
+			break
+		}
+	}
+	return lines[start:end]
+}
+
+// shipTips independently recomputes, straight from localTemplate's text (not
+// a hardcoded literal), the comment block directly above each "key = value"
+// line of the "ship" section, keyed by that exact key/value line. A key with
+// no comment directly above it (no blank line between) is left out. This
+// mirrors config.RestoreTips' own notion of a tip, so a future wording change
+// to a ship tip (e.g. Task 6's rebase tip) needs no change here.
+func shipTips(t *testing.T) map[string]string {
+	t.Helper()
+	lines := shipSectionLines(t)
+	isComment := func(l string) bool { return strings.HasPrefix(strings.TrimSpace(l), "#") }
+	tips := make(map[string]string)
+	for i, l := range lines {
+		if l == "" || isComment(l) || !strings.Contains(l, "=") {
+			continue
+		}
+		if i == 0 || !isComment(lines[i-1]) {
+			continue
+		}
+		start := i - 1
+		for start > 0 && isComment(lines[start-1]) {
+			start--
+		}
+		tips[l] = strings.Join(lines[start:i], "\n") + "\n"
+	}
+	if len(tips) == 0 {
+		t.Fatal("test fixture assumption broke: localTemplate's [ship] section has no key with a tip above it")
+	}
+	return tips
+}
+
+// shipSectionValues decodes the "ship" table out of localTemplate, as the
+// field-value object setup_write_sections expects for sectionsJson. Values
+// come straight from the template so the test exercises real field values,
+// not an invented fixture.
+func shipSectionValues(t *testing.T) map[string]any {
+	t.Helper()
+	var full map[string]any
+	if err := fsx.DecodeTOML([]byte(localTemplate), &full); err != nil {
+		t.Fatalf("decode localTemplate: %v", err)
+	}
+	ship, ok := full["ship"].(map[string]any)
+	if !ok {
+		t.Fatal("test fixture assumption broke: localTemplate has no [ship] table")
+	}
+	return ship
+}
+
+// stripTemplateComments removes every comment line from tmpl, leaving every
+// other line (including blank ones) untouched, so a write into the result
+// must restore any tip from the template rather than finding it already
+// there.
+func stripTemplateComments(tmpl string) string {
+	var out []string
+	for _, l := range strings.Split(tmpl, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(l), "#") {
+			continue
+		}
+		out = append(out, l)
+	}
+	return strings.Join(out, "\n")
+}
+
+// TestSetupWriteSections_ShipSectionNoopKeepsEveryTip verifies that writing
+// the "ship" section back into the shipped local.toml template with its own
+// unchanged values keeps the file byte-for-byte identical — so every ship
+// tip (and everything else) survives.
+func TestSetupWriteSections_ShipSectionNoopKeepsEveryTip(t *testing.T) {
+	tips := shipTips(t) // fixture guard: fails fast if [ship] loses its tips
+	if len(tips) == 0 {
+		t.Fatal("no ship tips found")
+	}
+
+	dir := t.TempDir()
+	path := writeSDLCFile(t, dir, "local.toml", localTemplate)
+
+	shipJSON, err := json.Marshal(shipSectionValues(t))
+	if err != nil {
+		t.Fatalf("marshal ship values: %v", err)
+	}
+	res, text := callRegisteredSetupWriteSectionsIn(t, dir, `{"ship":`+string(shipJSON)+`}`)
+	if res.IsError {
+		t.Fatalf("expected success, got tool error:\n%s", text)
+	}
+	if strings.Contains(text, "could not edit") {
+		t.Fatalf("tool fell back to a full rewrite:\n%s", text)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != localTemplate {
+		t.Errorf("no-op ship write changed the file.\n--- got ---\n%s\n--- want (unchanged) ---\n%s", got, localTemplate)
+	}
+}
+
+// TestSetupWriteSections_ShipSectionRestoresStrippedTips verifies that
+// writing the "ship" section into a local.toml whose comments were all
+// stripped out restores every one of the ship section's tips, derived live
+// from localTemplate rather than a hardcoded literal.
+func TestSetupWriteSections_ShipSectionRestoresStrippedTips(t *testing.T) {
+	tips := shipTips(t)
+
+	dir := t.TempDir()
+	stripped := stripTemplateComments(localTemplate)
+	path := writeSDLCFile(t, dir, "local.toml", stripped)
+
+	shipJSON, err := json.Marshal(shipSectionValues(t))
+	if err != nil {
+		t.Fatalf("marshal ship values: %v", err)
+	}
+	res, text := callRegisteredSetupWriteSectionsIn(t, dir, `{"ship":`+string(shipJSON)+`}`)
+	if res.IsError {
+		t.Fatalf("expected success, got tool error:\n%s", text)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for keyLine, tip := range tips {
+		if !strings.Contains(string(got), tip+keyLine+"\n") {
+			t.Errorf("tip not restored directly above %q:\n--- got ---\n%s", keyLine, got)
+		}
+	}
+
+	// Spec "Lost tips restored": "no section other than ship changes" — the
+	// text strictly before "[ship]" and strictly from the next top-level
+	// header onward must stay exactly as stripTemplateComments left it (no
+	// tip restored into an unwritten, equally-stripped section).
+	wantBefore, wantAfter := splitAtShipSection(t, stripped)
+	gotBefore, gotAfter := splitAtShipSection(t, string(got))
+	if gotBefore != wantBefore {
+		t.Errorf("text before [ship] changed:\n--- got ---\n%s\n--- want ---\n%s", gotBefore, wantBefore)
+	}
+	if gotAfter != wantAfter {
+		t.Errorf("text from the section after [ship] onward changed (a tip was restored outside ship):\n--- got ---\n%s\n--- want ---\n%s", gotAfter, wantAfter)
+	}
+}
+
+// splitAtShipSection splits text at its "[ship]" header: before is every
+// line strictly above "[ship]", after is every line from the next
+// top-level header (the first following line starting with "[") onward.
+// Used to assert that writing the ship section leaves every other section
+// of the file untouched, independent of ship's own content.
+func splitAtShipSection(t *testing.T, text string) (before, after string) {
+	t.Helper()
+	lines := strings.Split(text, "\n")
+	start := -1
+	for i, l := range lines {
+		if l == "[ship]" {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatal("text has no [ship] header")
+	}
+	end := len(lines)
+	for i := start + 1; i < len(lines); i++ {
+		if strings.HasPrefix(lines[i], "[") {
+			end = i
+			break
+		}
+	}
+	return strings.Join(lines[:start], "\n"), strings.Join(lines[end:], "\n")
+}
+
+// TestSetupWriteSections_ErrWouldDropCommentsSetsNext verifies that a
+// section write refused because splicing would drop comments
+// (config.ErrWouldDropComments) is reported as a per-section error with next
+// carrying the hand-edit recovery step, and that the batch still writes
+// every other section.
+func TestSetupWriteSections_ErrWouldDropCommentsSetsNext(t *testing.T) {
+	dir := t.TempDir()
+	content := "# kept\nplan = { tasks = { note = \"old\" } }\n"
+	path := writeSDLCFile(t, dir, "config.toml", content)
+
+	res, text := callRegisteredSetupWriteSectionsIn(t, dir,
+		`{"plan.tasks":{"note":"new"},"commit":{"style":"conventional"}}`)
+	if res.IsError {
+		t.Fatalf("expected a tool success carrying per-section errors, got tool error:\n%s", text)
+	}
+	for _, want := range []string{
+		"- ok: false",
+		"section plan.tasks:",
+		"Edit section plan.tasks in .sdlc-v2/config.toml by hand, then run setup again for that section. Other sections were written.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q:\n%s", want, text)
+		}
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "# kept\nplan = { tasks = { note = \"old\" } }\n") {
+		t.Errorf("refused section's original text did not survive:\n%s", got)
+	}
+	if !strings.Contains(string(got), "style = 'conventional'") {
+		t.Errorf("the other section (commit) was not written:\n%s", got)
+	}
+}
+
+// TestSetupWriteSections_ErrWouldDropCommentsFileUnchanged verifies the
+// spec's "Layout that cannot be spliced, file with comments" scenario in
+// isolation: when the only section selected is the one that gets refused,
+// the file is byte-identical, not merely "the refused text survived
+// somewhere in a larger file" (TestSetupWriteSections_ErrWouldDropCommentsSetsNext
+// above also writes a second, unrelated section that succeeds).
+func TestSetupWriteSections_ErrWouldDropCommentsFileUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	content := "# kept\nplan = { tasks = { note = \"old\" } }\n"
+	path := writeSDLCFile(t, dir, "config.toml", content)
+
+	res, text := callRegisteredSetupWriteSectionsIn(t, dir, `{"plan.tasks":{"note":"new"}}`)
+	if res.IsError {
+		t.Fatalf("expected a tool success carrying a per-section error, got tool error:\n%s", text)
+	}
+	if !strings.Contains(text, "Edit section plan.tasks in .sdlc-v2/config.toml by hand, then run setup again for that section. Other sections were written.") {
+		t.Errorf("missing next recovery text:\n%s", text)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != content {
+		t.Errorf("file changed despite the refusal:\n--- got ---\n%s\n--- want (unchanged) ---\n%s", got, content)
 	}
 }

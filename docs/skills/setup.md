@@ -80,6 +80,14 @@ Shows a menu of all sections with their status. Pick which to configure.
 
     /setup --force
 
+## Asking what an option means
+
+Each section's `Options:` block lists every field with its type, default, description, and
+one or more `Examples:` lines. If a prompt is still unclear, tell `/setup` you want an
+explanation instead of answering — it calls `setup_prepare({ explain: "<section>.<field>" })`,
+shows the returned details and examples, then asks the same question again. There is no retry
+limit: keep asking for an explanation until you are ready to answer.
+
 ## CI script drift detection
 
 Running `/setup` (or any skill that calls `setup_prepare`) also compares

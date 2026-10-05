@@ -1,6 +1,8 @@
 package tools
 
 import (
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +10,7 @@ import (
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
+	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
@@ -537,5 +540,102 @@ func TestMigrateImportKeepsUserChangedKey(t *testing.T) {
 	}
 	if got := readDataFile(t, root, "config.toml"); got != edited {
 		t.Errorf("config.toml changed:\n%s", got)
+	}
+}
+
+// commentLines returns the trimmed comment lines of s, in order, filtered
+// with the same rule config.ErrWouldDropComments' caller uses: a line whose
+// first non-blank character is "#".
+func commentLines(s string) []string {
+	var out []string
+	for _, l := range strings.Split(s, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(l), "#") {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// TestMigrateImportKeepsEveryCommentLine verifies that importing a legacy
+// value into a section of a commented local.toml keeps every comment line,
+// in order — not just the text immediately around the changed keys —
+// because the write splices only the changed key's value text in place.
+func TestMigrateImportKeepsEveryCommentLine(t *testing.T) {
+	root := t.TempDir()
+	if _, err := setupInit(root, SetupInitIn{}); err != nil {
+		t.Fatalf("setupInit: %v", err)
+	}
+
+	ship := shipSectionValues(t)
+	ship["bump"] = "minor"
+	legacyJSON, err := json.Marshal(map[string]any{"ship": ship})
+	if err != nil {
+		t.Fatalf("marshal legacy ship value: %v", err)
+	}
+	writeLegacyFile(t, root, "local.json", string(legacyJSON))
+
+	out, err := migrate(root, MigrateIn{Action: "import"})
+	if err != nil {
+		t.Fatalf("migrate import: %v", err)
+	}
+	if len(out.Changed) != 1 || out.Changed[0] != paths.DataDir+"/local.toml" {
+		t.Fatalf("Changed = %v, want [%s/local.toml]", out.Changed, paths.DataDir)
+	}
+
+	got := readDataFile(t, root, "local.toml")
+	if !strings.Contains(got, "bump = 'minor'") {
+		t.Errorf("legacy bump value not written:\n%s", got)
+	}
+	wantComments := commentLines(localTemplate)
+	gotComments := commentLines(got)
+	if len(wantComments) == 0 {
+		t.Fatal("test fixture assumption broke: localTemplate has no comment lines")
+	}
+	if strings.Join(gotComments, "\n") != strings.Join(wantComments, "\n") {
+		t.Errorf("comment lines changed.\n--- got ---\n%s\n--- want ---\n%s",
+			strings.Join(gotComments, "\n"), strings.Join(wantComments, "\n"))
+	}
+}
+
+// TestMigrateImportRefusesToDropComments verifies that when a destination
+// section's layout cannot be spliced and the destination file has a comment
+// line, import writes nothing and returns a *mcpserver.DomainError whose
+// Suggestion names the section to edit by hand — rather than silently
+// falling back to a whole-file rewrite that would delete every comment.
+//
+// defaults is tailored for this test rather than read from the shipped
+// template: the shipped [ship] section is flat (no dotted sub-keys), so a
+// destination laid out with one would never equal the real defaults, and
+// importConfigFileMerge's "(already set)" filter would skip the write
+// before it ever reached config.WriteFileSection. Passing a defaults value
+// that matches this destination's actual (dotted) layout exercises the
+// real write/refusal path that a hand-edited destination can reach once a
+// future template gains a nested-table field.
+func TestMigrateImportRefusesToDropComments(t *testing.T) {
+	root := t.TempDir()
+	content := "# kept\n[ship]\nretry.enabled = true\n"
+	writeSDLCFile(t, root, "local.toml", content)
+	writeLegacyFile(t, root, "local.json", `{"ship":{"retry":{"nested":{}}}}`)
+
+	defaults := map[string]any{"ship": map[string]any{"retry": map[string]any{"enabled": true}}}
+	rel, changed, skipped, err := importConfigFileMerge(root, "local.json", "local.toml", nil, defaults, false)
+	if rel != "" || changed || skipped != nil {
+		t.Errorf("rel=%q changed=%v skipped=%v, want all empty/false", rel, changed, skipped)
+	}
+	if !errors.Is(err, config.ErrWouldDropComments) {
+		t.Fatalf("err = %v, want config.ErrWouldDropComments", err)
+	}
+	var de *mcpserver.DomainError
+	if !errors.As(err, &de) {
+		t.Fatalf("err = %T, want *mcpserver.DomainError", err)
+	}
+	wantSuggestion := `Edit section ship in .sdlc-v2/local.toml by hand, then retry migrate with action "import".`
+	if de.Suggestion != wantSuggestion {
+		t.Errorf("Suggestion = %q, want %q", de.Suggestion, wantSuggestion)
+	}
+
+	got := readDataFile(t, root, "local.toml")
+	if got != content {
+		t.Errorf("destination changed despite the refusal:\n%s", got)
 	}
 }

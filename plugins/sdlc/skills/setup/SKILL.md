@@ -456,6 +456,7 @@ For each id in `selectedIds`, in canonical `internal/setupmeta.Sections()` order
    Options:
      <field.name>  ({field.type}, default: <field.default>)
                    <field.description>
+                   Examples: <field.examples joined with "; ">
      ...
    ```
 
@@ -507,6 +508,19 @@ For each entry `field` in `section.fields` (when iterating), dispatch one AskUse
 - **Skip gate:** if `field.whenStepInActiveSteps` is set, skip this field entirely (do not
   ask, do not write a value) unless that step name is present in the `ship.steps` value the
   user already chose earlier in this same field loop.
+
+**Explain flow** (the user may ask what a field means instead of answering the AskUserQuestion
+above; this loop has no retry limit — keep re-explaining until the user answers or skips):
+
+| State | Input | Next |
+|---|---|---|
+| ask | user answer | record the value, go to the next field |
+| ask | user asks what the option means | call `setup_prepare({ explain: "<section.id>.<field.name>" })`, show the result, ask again |
+| explain | tool error | show the error message, ask again without an explanation |
+| ask | user skips | existing skip rule |
+
+On a successful `explain` call, show `explanation.details` and `explanation.examples` (joined
+with "; ") to the user, then re-ask the exact same question — the field is still unanswered.
 
 Skip a field when an upstream answer makes it irrelevant: for `version`, skip `versionFile`
 and `fileType` if `mode === 'tag'`; skip `changelogFile` if `changelog === false`; omit
