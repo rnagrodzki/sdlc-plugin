@@ -850,19 +850,21 @@ func ReadSection(mainRoot, name string) (map[string]any, error) {
 // For project sections, validates the merged result against the v5 schema
 // before writing. Writes are atomic (fsx.AtomicWriteBytes) for crash safety.
 //
-// The write edits the file text in place (see splice.go): only the text of
-// the named section changes, so comments and every other section stay
-// byte-for-byte. When the file's layout cannot be spliced, or the spliced
-// text would not decode to the intended data, WriteSection falls back to
-// rewriting the whole file from parsed data, which drops its comments.
+// The write edits the file text in place (see splice.go): only the lines of
+// changed keys in the named section change, so comments and every other
+// section stay byte-for-byte. When the file's layout cannot be spliced, or
+// the spliced text would not decode to the intended data, WriteSection
+// returns ErrWouldDropComments when the file has a comment line and writes
+// nothing. A missing file, or a file with no comment line, is rewritten
+// whole from parsed data instead.
 func WriteSection(mainRoot, name string, v map[string]any) error {
 	_, err := WriteSectionReport(mainRoot, name, v)
 	return err
 }
 
 // WriteSectionReport is WriteSection that also reports rewrote=true when it
-// had to fall back to rewriting the whole file from parsed data (all comments
-// in that file are then gone).
+// had to fall back to rewriting the whole file from parsed data. That
+// happens only when the file is missing or has no comment line.
 func WriteSectionReport(mainRoot, name string, v map[string]any) (rewrote bool, err error) {
 	if err := validateSectionName(name); err != nil {
 		return false, err
@@ -884,8 +886,9 @@ func WriteSectionReport(mainRoot, name string, v map[string]any) (rewrote bool, 
 // created with its directory if needed. It works like WriteSectionReport but
 // does not route by section name and does not validate top-level keys, so a
 // caller can write into a file it chose itself (e.g. a local.toml key that
-// shares its name with a project section). The same in-place splice and
-// full-rewrite fallback apply; rewrote reports the fallback.
+// shares its name with a project section). The same in-place splice,
+// ErrWouldDropComments refusal and full-rewrite fallback apply; rewrote
+// reports the fallback.
 func WriteFileSection(path, name string, v map[string]any) (rewrote bool, err error) {
 	if err := validateSectionName(name); err != nil {
 		return false, err
@@ -916,6 +919,13 @@ func writeSectionFile(path, name string, v map[string]any, validate func(map[str
 	traceRead(path, "write")
 	if out, ok := spliceFile(path, name, v, existing); ok {
 		return false, fsx.AtomicWriteBytes(path, out)
+	}
+	orig, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	if hasCommentLine(orig) {
+		return false, fmt.Errorf("%w: section %q in %s (array of tables, inline table, or a dotted key defines it). Edit that section by hand, then run setup again", ErrWouldDropComments, name, path)
 	}
 	// fsx.ReadTOML decodes every number as float64, so a plain rewrite would
 	// turn every integer in the other sections into a float ("60" -> "60.0").

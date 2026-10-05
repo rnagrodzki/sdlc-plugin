@@ -1,6 +1,8 @@
 package config
 
 import (
+	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -75,7 +77,7 @@ func TestWriteSection_SpliceCases(t *testing.T) {
 				"# kept: after the last key\n\n# commit doc\n[commit]\nallowedTypes = []\n",
 			section: "jira",
 			value:   map[string]any{"defaultProject": "NEW"},
-			want: "# jira doc\n[jira]\ndefaultProject = 'NEW'\n" +
+			want: "# jira doc\n[jira]\n# lost: inside the block\ndefaultProject = 'NEW' # lost: same line\n" +
 				"# kept: after the last key\n\n# commit doc\n[commit]\nallowedTypes = []\n",
 		},
 		{
@@ -126,7 +128,7 @@ func TestWriteSection_SpliceCases(t *testing.T) {
 			want: "[plan]\nnote = \"\"\"\n[plan.tasks]\nnot a header\n\"\"\"\n" +
 				"lit = '''\n[plan.tasks]\n'''\n" +
 				"matrix = [\n  [\"a\"],\n  [\"b\"]\n]\n" +
-				"# [plan.tasks]\n\n[plan.tasks]\nnote = 'real'\n",
+				"# [plan.tasks]\n[plan.tasks]\nnote = 'real'\n",
 		},
 		{
 			name:    "empty value writes an empty table",
@@ -135,6 +137,103 @@ func TestWriteSection_SpliceCases(t *testing.T) {
 			section: "plan.tasks",
 			value:   map[string]any{},
 			want:    "[plan.tasks]\n\n[jira]\ndefaultProject = \"P\"\n",
+		},
+		{
+			name:    "one changed key: only its value text changes",
+			file:    "config.toml",
+			content: "# jira doc\n[jira]\n# tip\n  defaultProject = \"OLD\"\n\n[commit]\nallowedTypes = []\n",
+			section: "jira",
+			value:   map[string]any{"defaultProject": "NEW"},
+			want:    "# jira doc\n[jira]\n# tip\n  defaultProject = 'NEW'\n\n[commit]\nallowedTypes = []\n",
+		},
+		{
+			name:    "no value change leaves the file byte-identical",
+			file:    "local.toml",
+			content: "[ship]\n  steps = [ \"execute\",\n    \"commit\" ]   # c\nbump = \"patch\"\n\n# tail\n",
+			section: "ship",
+			value:   map[string]any{"steps": []any{"execute", "commit"}, "bump": "patch"},
+			want:    "[ship]\n  steps = [ \"execute\",\n    \"commit\" ]   # c\nbump = \"patch\"\n\n# tail\n",
+		},
+		{
+			name:    "removed key loses its line, the comment above it stays",
+			file:    "config.toml",
+			content: "[jira]\ndefaultProject = \"P\"\n# site tip\nsite = \"s\"\n\n[commit]\nallowedTypes = []\n",
+			section: "jira",
+			value:   map[string]any{"defaultProject": "P"},
+			want:    "[jira]\ndefaultProject = \"P\"\n# site tip\n\n[commit]\nallowedTypes = []\n",
+		},
+		{
+			name: "removed sub-table loses header, multi-line value and one blank line",
+			file: "config.toml",
+			content: "[plan.guardrails.a]\nseverity = \"error\"\n\n# b doc\n[plan.guardrails.b]\n# inside b\n" +
+				"description = \"\"\"\nmulti\nline\"\"\"\n\n[jira]\ndefaultProject = \"P\"\n",
+			section: "plan.guardrails",
+			value:   map[string]any{"a": map[string]any{"severity": "error"}},
+			want:    "[plan.guardrails.a]\nseverity = \"error\"\n\n# b doc\n# inside b\n[jira]\ndefaultProject = \"P\"\n",
+		},
+		{
+			name:    "table changed to array of tables at its first old block, below its comments",
+			file:    "config.toml",
+			content: "# rules doc\n[plan.guardrails.a]\nseverity = \"error\"\n\n[commit]\nallowedTypes = []\n",
+			section: "plan",
+			value:   map[string]any{"guardrails": []any{map[string]any{"id": "x"}}},
+			want:    "# rules doc\n[[plan.guardrails]]\nid = 'x'\n\n[commit]\nallowedTypes = []\n",
+		},
+		{
+			name:    "untouched keys keep their order, quote style and bytes",
+			file:    "local.toml",
+			content: "[ship]\nzeta = 'z'\nalpha   =   \"a\"\nbump = \"patch\"\n",
+			section: "ship",
+			value:   map[string]any{"zeta": "z", "alpha": "a", "bump": "minor"},
+			want:    "[ship]\nzeta = 'z'\nalpha   =   \"a\"\nbump = 'minor'\n",
+		},
+		{
+			name:    "new key goes after the last key of its table",
+			file:    "config.toml",
+			content: "[jira]\ndefaultProject = \"P\"\n# trailing comment\n\n[commit]\nallowedTypes = []\n",
+			section: "jira",
+			value:   map[string]any{"defaultProject": "P", "site": "x"},
+			want:    "[jira]\ndefaultProject = \"P\"\nsite = 'x'\n# trailing comment\n\n[commit]\nallowedTypes = []\n",
+		},
+		{
+			name:    "new sub-table goes after the last line of its section",
+			file:    "config.toml",
+			content: "[plan.tasks]\nnote = \"x\"\n\n[jira]\ndefaultProject = \"P\"\n",
+			section: "plan.tasks",
+			value:   map[string]any{"note": "x", "sub": map[string]any{"a": "b"}},
+			want:    "[plan.tasks]\nnote = \"x\"\n\n[plan.tasks.sub]\na = 'b'\n\n[jira]\ndefaultProject = \"P\"\n",
+		},
+		{
+			name:    "absent table goes after its commented header block",
+			file:    "config.toml",
+			content: "[commit]\nallowedTypes = []\n\n# Jira doc\n#  [ jira ]\n# defaultProject = \"X\"\n\n# tail\n",
+			section: "jira",
+			value:   map[string]any{"defaultProject": "P"},
+			want:    "[commit]\nallowedTypes = []\n\n# Jira doc\n#  [ jira ]\n# defaultProject = \"X\"\n[jira]\ndefaultProject = 'P'\n\n# tail\n",
+		},
+		{
+			name:    "changed single-line value keeps its trailing comment",
+			file:    "config.toml",
+			content: "[jira]\ndefaultProject = \"OLD\"   # the key\n",
+			section: "jira",
+			value:   map[string]any{"defaultProject": "NEW"},
+			want:    "[jira]\ndefaultProject = 'NEW'   # the key\n",
+		},
+		{
+			name:    "changed multi-line value becomes one line, trailing comment kept",
+			file:    "config.toml",
+			content: "[commit]\nallowedTypes = [\n  \"feat\",\n  \"fix\",\n] # types\nallowedScopes = []\n",
+			section: "commit",
+			value:   map[string]any{"allowedTypes": []any{"docs"}, "allowedScopes": []any{}},
+			want:    "[commit]\nallowedTypes = ['docs'] # types\nallowedScopes = []\n",
+		},
+		{
+			name:    "dotted keys inside the table are edited in place",
+			file:    "config.toml",
+			content: "[version]\n# tag doc\ntag.enabled = true\n",
+			section: "version",
+			value:   map[string]any{"tag": map[string]any{"enabled": false, "prefix": "v"}},
+			want:    "[version]\n# tag doc\ntag.enabled = false\ntag.prefix = 'v'\n",
 		},
 		{
 			name:    "missing file is created",
@@ -214,17 +313,65 @@ func TestWriteSection_SpliceTemplateLocal(t *testing.T) {
 	}
 }
 
+// TestWriteSection_SpliceRefusesToDropComments pins the refusal: when the
+// section lives inside an inline table and the file has a comment line, the
+// write returns ErrWouldDropComments and the file is not changed.
+func TestWriteSection_SpliceRefusesToDropComments(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	t.Cleanup(func() { Quiet = false })
+	root := t.TempDir()
+	path := filepath.Join(root, paths.DataDir, "config.toml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "# kept\nplan = { tasks = { note = \"old\" } }\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rewrote, err := WriteSectionReport(root, "plan.tasks", map[string]any{"note": "new"})
+	if !errors.Is(err, ErrWouldDropComments) {
+		t.Fatalf("err = %v, want ErrWouldDropComments", err)
+	}
+	if rewrote {
+		t.Errorf("rewrote = true, want false")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != content {
+		t.Errorf("file changed:\n%s", got)
+	}
+}
+
 // TestWriteSection_SpliceFallsBack pins the fallback: when the section lives
-// inside an inline table, the file is rewritten from parsed data and the
-// data is still correct.
+// inside an inline table and the file has no comment line, the file is
+// rewritten from parsed data and the data is still correct.
 func TestWriteSection_SpliceFallsBack(t *testing.T) {
-	content := "# lost\nplan = { tasks = { note = \"old\" } }\n"
+	content := "plan = { tasks = { note = \"old\" } }\n"
 	got, rewrote := writeSpliceFixture(t, "config.toml", content, "plan.tasks", map[string]any{"note": "new"})
 	if !rewrote {
 		t.Errorf("rewrote = false, want true for an inline-table layout")
 	}
-	if strings.Contains(got, "# lost") {
-		t.Errorf("full rewrite unexpectedly kept comments:\n%s", got)
+	if !strings.Contains(got, "note = 'new'") {
+		t.Errorf("full rewrite did not write the value:\n%s", got)
+	}
+}
+
+// TestCommentedHeaderEnd pins the commented-header lookup: any spacing
+// inside the comment matches, the end is the line after the comment block,
+// and a header for another path or an uncommented header does not match.
+func TestCommentedHeaderEnd(t *testing.T) {
+	lines := bytes.SplitAfter([]byte("[a]\nk = 1\n\n# doc\n#[ x . y ]\n# k = 2\n\n# [x]\n"), []byte("\n"))
+	if got := commentedHeaderEnd(lines, []string{"x", "y"}); got != 6 {
+		t.Errorf("x.y: got %d, want 6", got)
+	}
+	if got := commentedHeaderEnd(lines, []string{"x"}); got != 8 {
+		t.Errorf("x: got %d, want 8", got)
+	}
+	if got := commentedHeaderEnd(lines, []string{"a"}); got != -1 {
+		t.Errorf("a: got %d, want -1", got)
 	}
 }
 

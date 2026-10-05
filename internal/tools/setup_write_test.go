@@ -64,15 +64,16 @@ func callRegisteredSetupWriteSectionsIn(t *testing.T, dir, sectionsJSON string) 
 }
 
 // TestSetupWriteSections_FallbackWarns verifies that a layout the splicer
-// cannot edit in place (the section inside an inline table) is still written
-// correctly, and that the tool warns that the file's comments were removed.
+// cannot edit in place (the section inside an inline table) in a file with
+// no comment line is still written correctly by a full rewrite, and that the
+// tool warns about it.
 func TestSetupWriteSections_FallbackWarns(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".sdlc-v2", "config.toml")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("# doc\nplan = { tasks = { note = \"old\" } }\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("plan = { tasks = { note = \"old\" } }\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	res, text := callRegisteredSetupWriteSectionsIn(t, dir, `{"plan.tasks":{"note":"new"}}`)
@@ -143,7 +144,11 @@ func TestSetupWriteSections_KeepsTemplateComments(t *testing.T) {
 				"allowedTypes = [\"feat\", \"fix\", \"chore\", \"docs\", \"refactor\", \"test\", \"ci\", \"perf\"]\n" +
 				"# Allowed scopes (empty = any scope accepted).\n" +
 				"allowedScopes = []\n",
-			newBlock: "[commit]\nallowedScopes = ['api']\nallowedTypes = ['feat', 'fix']\n",
+			newBlock: "[commit]\n" +
+				"# Allowed commit types (conventional-commit prefix before the colon).\n" +
+				"allowedTypes = ['feat', 'fix']\n" +
+				"# Allowed scopes (empty = any scope accepted).\n" +
+				"allowedScopes = ['api']\n",
 		},
 		{
 			name:     "config.toml dotted plan.guardrails",
@@ -453,7 +458,7 @@ func TestSetupWriteSections_KeepsCRLFLineEndings(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := "# project settings\r\n" +
-		"[commit]\r\nallowedTypes = ['fix']\r\nsubjectPatternError = \"line one\\nline two\"\r\n" +
+		"[commit]\r\n# old comment\r\nallowedTypes = ['fix']\r\nsubjectPatternError = \"line one\\nline two\"\r\n" +
 		"\r\n# tail comment\r\n" +
 		"\r\n[jira]\r\ndefaultProject = 'PROJ'\r\n"
 	if string(got) != want {

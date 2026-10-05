@@ -30,7 +30,7 @@ Step 0's OpenSpec gate check asks about the project's spec process, not about co
 Example — OpenSpec gate check:
 > This project uses OpenSpec for tracking requirements as structured specs.
 > Your change looks like a new feature. How should we handle requirements?
-> 1. **Create OpenSpec change** — writes a proposal, delta specs, design, and tasks for this work first, then plans from them. Best for new features.
+> 1. **Create OpenSpec change** — plans this work first, then writes a proposal, delta specs, design, and tasks from the reviewed plan. Best for new features.
 > 2. **Use existing change** — a change already exists for this work; the plan loads it.
 > 3. **Skip OpenSpec** — plan without specs. Fastest; ship skips its OpenSpec steps.
 
@@ -78,7 +78,7 @@ Pass `fromOpenspec` only when flag parsing resolved a change name (`--spec <chan
 1. Call `plan_prepare({ resume: true, resolveTemplate: true, skipConfigCheck: true })`. It reuses the active run and reloads the user prompt and routing flags. Write `template.headerMarkdown` + `template.skeletonMarkdown` only if the plan file is empty. Store `runId`, `guardrailsFile`, `styleGuideFile`, `lanes`, `lensReviewers`, `style` and `template.activeTemplatePath` as in a fresh run. Print the **Plan style** block. On `no active plan run`, print "No active plan run to resume — starting a new plan." and run Step 0 normally.
 2. Call `plan_support({ action: "evidence_digest", runId: "<runId>" })`. Print its custom instructions. Store `digest.briefPath` as `briefPath` for `{BRIEF_FILE}` (`(none)` maps to `"none — orchestrator skipped"`). On error, print it, stop, and tell the user to re-invoke `/sdlc:plan`.
 3. Read the plan file. Re-create TodoWrite items (full pipeline) and mark the steps before `checkpoint.step` as done. New decision items continue the `D<n>` numbering after the highest `D` id in the digest index.
-4. If the plan file has a `**OpenSpec-Staging:**` header line, follow **Create flow on resume** (in **OpenSpec gate check** below) before you continue.
+4. If the plan file has an `**OpenSpec-Create:**` or `**OpenSpec-Staging:**` header line, follow **Create flow on resume** (in **OpenSpec gate check** below) before you continue.
 5. Continue at `checkpoint.step` and `checkpoint.iteration`. Background agents started before compaction still deliver their results. If `writers.missingWriters` or `writers.stalledWriters` is not empty, wait one poll cycle (`evidence_digest` with `statusOnly: true`). Then re-dispatch or force-progress past each writer that is still listed (the POLL rule). Fetch bodies with `evidence_get` only when the current step needs them.
 6. If a resume call fails in a way this block does not name, start a new run: follow Step 0 without `resume` and ignore the `Active plan (post-compact):` line for the rest of the session.
 
@@ -88,8 +88,8 @@ Resume table (the **Session recovery** rule selects one row):
 |---|---|
 | no `Active plan (post-compact):` line | normal Step 0 (Session recovery overwrite rule) |
 | line present, plan file path ≠ designated plan file | normal Step 0 |
-| match, `step 0`, plan file has a `**OpenSpec-Staging:**` line | skip the first `plan_prepare` call. Do NOT ask the OpenSpec gate check again: Create was chosen and its artifacts are staged. Call `plan_prepare({ resume: true, resolveTemplate: true, skipConfigCheck: true })` to reload the run, follow **Create flow on resume** (in **OpenSpec gate check** below), then continue Step 0 at the `plan-file` marker |
-| match, `step 0`, no `**OpenSpec-Staging:**` line | skip the first `plan_prepare` call; call `plan_prepare({ resume: true, resolveTemplate: true, skipConfigCheck: true })` to reload the run and its `openspec` fields; redo the OpenSpec gate check from that output (Create, if chosen, starts fresh from `openspec_instructions`) and complexity routing; make the template-resolution call with the resulting flags (no `resume` — it reuses the active run); write the template only if the plan file is empty; when Skip or Use existing change was chosen, apply **Header cleanup** (in **OpenSpec gate check** below); continue Step 0 at the `plan-file` marker |
+| match, `step 0`, plan file has an `**OpenSpec-Create:**` or `**OpenSpec-Staging:**` line | skip the first `plan_prepare` call. Do NOT ask the OpenSpec gate check again: Create was chosen. Call `plan_prepare({ resume: true, resolveTemplate: true, skipConfigCheck: true })` to reload the run, follow **Create flow on resume** (in **OpenSpec gate check** below), then continue Step 0 at the `plan-file` marker |
+| match, `step 0`, no `**OpenSpec-Create:**` and no `**OpenSpec-Staging:**` line | skip the first `plan_prepare` call; call `plan_prepare({ resume: true, resolveTemplate: true, skipConfigCheck: true })` to reload the run and its `openspec` fields; redo the OpenSpec gate check from that output (Create, if chosen, starts fresh at its step a) and complexity routing; make the template-resolution call with the resulting flags (no `resume` — it reuses the active run); write the template only if the plan file is empty; when Skip or Use existing change was chosen, apply **Header cleanup** (in **OpenSpec gate check** below); continue Step 0 at the `plan-file` marker |
 | match, `step 1` | **Post-compact resume** block above. Keep every explorer that shows `done` in the writers table and use its recorded items. For a listed missing or stalled explorer, wait one poll cycle, then force-progress past it: the SCOPE dimension list is not stored, so it is not re-dispatched. Then continue CRITIQUE and CONSOLIDATE |
 | match, step ≥ 2 | **Post-compact resume** block above |
 | resume `plan_prepare` returns `no active plan run` | print `No active plan run to resume — starting a new plan.`; normal Step 0 |
@@ -165,7 +165,7 @@ Then continue the flow. If the contradictory phrase is absent, emit nothing.
    > This project uses OpenSpec — spec-driven development where a change gets a written proposal, delta specs (the requirements), a design, and a task list before implementation starts. Your request looks like a new feature, and no `--spec` flag or existing change path was given.
    >
    > Options:
-   > 1. **Create OpenSpec change** (recommended default) — writes the proposal, delta specs, design, and task list for this work now, validates them, and plans from them. Ship or execute moves them into `openspec/changes/` later. Costs one authoring pass before planning starts.
+   > 1. **Create OpenSpec change** (recommended default) — plans this work first, with your answers and the review fixes. Then it writes the proposal, delta specs, design, and task list from the final plan and validates them. Ship or execute moves them into `openspec/changes/` later. If you reject the plan with feedback, it writes them again.
    > 2. **Use existing change** — pick one of the active changes; the plan loads its proposal, specs, and tasks (the same as re-invoking with `/sdlc:plan --spec <change-name>`). Choose this when a change already covers this work.
    > 3. **Skip OpenSpec** — plan without OpenSpec. Fastest, but this work gets no written specs, and ship skips its OpenSpec steps with a reason.
    >
@@ -194,30 +194,28 @@ Then go to **Existing change** with the chosen name.
 
 **Skip OpenSpec:** Plan without OpenSpec. `openspecContext` stays empty, and `fromOpenspecDirect` and `openspecStage` stay false, so OpenSpec enrichment, Gate A, and `openspec-task` annotations do not run. Ship later skips its OpenSpec steps with a reason. Apply **Header cleanup** below, then go to **Template resolution**.
 
-**Header cleanup** (Skip OpenSpec, and every Existing change path including Use existing change — fresh run or resume): Before Step 1 starts, remove the `**OpenSpec-Staging:**` line from the plan file header if it is there. Skip OpenSpec also replaces a `**Source:** openspec/changes/<name>/` line that no loaded change backs (left by an earlier Create attempt) with the request's real source, for example `**Source:** conversation context` or the spec file path. A staging directory left on disk after this cleanup is harmless: materialize (at ship or execute start) acts only on the plan file's `**OpenSpec-Staging:**` header line, never on a staging directory that no plan header names.
+**Header cleanup** (Skip OpenSpec, and every Existing change path including Use existing change — fresh run or resume): Before Step 1 starts, remove the `**OpenSpec-Create:**` and `**OpenSpec-Staging:**` lines from the plan file header if they are there. Skip OpenSpec also replaces a `**Source:** openspec/changes/<name>/` line that no loaded change backs (left by an earlier Create attempt) with the request's real source, for example `**Source:** conversation context` or the spec file path. A staging directory left on disk after this cleanup is harmless: materialize (at ship or execute start) acts only on the plan file's `**OpenSpec-Staging:**` header line, never on a staging directory that no plan header names.
 
-**Create OpenSpec change:** Author the change artifacts and stage them; plan mode and normal mode work the same. The skill never writes under `openspec/` and never runs `openspec new change` itself — the `plan_support` actions below do all CLI work. Before step a:
-- Pick `<name>`: a new kebab-case change name derived from the request — lowercase letters, digits, and single hyphens only — that is not the `name` of any `openspec.activeChanges[]` entry.
-- Resolve the plan file path (plan mode: the designated plan file; normal mode: **Normal mode path resolution** below). Step c passes it as `planPath`.
-- Set the `openspec_stage` attempt counter to 0.
-
-a. Call `plan_support({ action: "openspec_instructions", changeName: "<name>" })`. It returns `schemaName`, `artifacts[]` (each `{id, outputPath, requires, template, instruction, context, rules}`, in status order), and `guardrails` (the same list `plan_prepare` returns). On error, print it and stop.
-b. Author each artifact in the order of `artifacts[]`, from the user's request. Start from the artifact's `template` and follow its `instruction`. Treat `context` and `rules` as constraints on the content — do not copy them into the file. Each file's path is its `outputPath`, relative to the change dir; for a glob such as `specs/**/*.md`, author one `specs/<capability>/spec.md` per capability. **For `design` and `tasks`, apply the `guardrails` returned by `openspec_instructions` as authoring constraints:** no design decision or task may break an `error`-severity guardrail, and a design decision or task that departs from a `warning`-severity guardrail must say why.
-c. Call `plan_support({ action: "openspec_stage", changeName: "<name>", files: [{ path, content }, …], planPath: "<plan file path>" })` with every authored file. It replaces the whole staging directory and validates a temp copy. If it returns `valid: false`, show `validateOutput`, fix the artifacts, and call `openspec_stage` again with all files. Make at most 5 `openspec_stage` calls in total (the first try plus 4 fixes). If the 5th call still returns `valid: false`, show its `validateOutput` (the OpenSpec CLI output) to the user and stop — no plan handoff.
-d. When `openspec_stage` returns `valid: true`, add these two header lines to the plan file. They take the place of the template's `**Source:** [TBD]` line; if the plan file is still empty, they are its only content until step e:
+**Create OpenSpec change:** Record the choice now. **Create-flow authoring** (end of Step 6) writes and stages the change files from the reviewed plan. Plan mode and normal mode work the same. The skill never writes under `openspec/` and never runs `openspec new change` itself — the `plan_support` actions do all CLI work.
+a. Pick `<name>`: a new kebab-case change name derived from the request — lowercase letters, digits, and single hyphens only — that is not the `name` of any `openspec.activeChanges[]` entry.
+b. Add these two header lines to the plan file. They take the place of the template's `**Source:** [TBD]` line. If the plan file is still empty, they are its only content until step c:
    ```
    **Source:** openspec/changes/<name>/
-   **OpenSpec-Staging:** .sdlc-v2/openspec-staging/<name>/
+   **OpenSpec-Create:** <name>
    ```
-e. Store the authored artifacts as `openspecContext` (proposal, delta specs, design, tasks), so Step 1's OpenSpec enrichment and Step 2's OpenSpec-aware decomposition use them. `fromOpenspecDirect` stays false. `plan_prepare` returns no `openspecContext.tasks` or `openspecContext.requirements` for a staged change, so Gate A and the `openspec-task` annotations do not run. Set `openspecStage = true` and continue to the template-resolution call: `plan_prepare({ ..., resolveTemplate: true, openspecStage: true, ... })`. When you write `template.headerMarkdown` + `template.skeletonMarkdown`, keep the two step-d lines in place of the header's `**Source:** [TBD]` line.
+c. Set `openspecStage = true`. `openspecContext` stays empty and `fromOpenspecDirect` stays false, so Step 1 runs its structured discovery, and Gate A and the `openspec-task` annotations do not run. Continue to the template-resolution call: `plan_prepare({ ..., resolveTemplate: true, openspecStage: true, ... })`. When you write `template.headerMarkdown` + `template.skeletonMarkdown`, keep the two step-b lines in place of the header's `**Source:** [TBD]` line.
 
-**Create flow on resume:** Applies when the plan file already has a `**OpenSpec-Staging:**` header line — Create was chosen and staged in an earlier session, before a compaction or interrupt. Do not ask the gate question again, and do not author the artifacts again.
-1. Take `<name>` from that header line. Read every staged artifact file from `<ACTIVE_ROOT>/.sdlc-v2/openspec-staging/<name>/` (`<ACTIVE_ROOT>` is the active worktree root; skip `stage.json`, the tool's manifest). Store them as `openspecContext` and set `openspecStage = true`, as in step e above.
-2. Continue at the checkpoint the plan's saved state names (`checkpoint.step`). At step 0, redo complexity routing, then continue at step e above: make the template-resolution call with `openspecStage: true` and the routing flags, and write the template only if the plan file is empty or holds only the two step-d header lines (keep them in place of `**Source:** [TBD]`).
-3. When `checkpoint.step` is `6.5` or later, repeat the **Create-flow re-stage** (end of Step 6) once before you continue. This is always safe: `openspec_stage` replaces the whole staging directory on every call.
-4. The `openspec_stage` attempt counter restarts at 0 on every resume — a count from the session before the resume never carries over.
+**Create flow on resume:** Use this rule when the plan file has an `**OpenSpec-Create:**` or `**OpenSpec-Staging:**` header line. Create was chosen before a compaction or interrupt. Do not ask the gate question again.
+1. Take `<name>` from that header line. Set `openspecStage = true`.
+2. Continue at the checkpoint the plan's saved state names (`checkpoint.step`). At step 0, redo complexity routing, then continue at step c above: make the template-resolution call with `openspecStage: true` and the routing flags, and write the template only if the plan file is empty or holds only the two step-b header lines (keep them in place of `**Source:** [TBD]`).
+3. If `checkpoint.step` is before `6.5`, author nothing now. **Create-flow authoring** runs at the end of Step 6.
+4. If `checkpoint.step` is `6.5` or later and the header has `**OpenSpec-Staging:**`, stage the files on disk again. Do not author them again.
+   - Read every file in `<ACTIVE_ROOT>/.sdlc-v2/openspec-staging/<name>/`. `<ACTIVE_ROOT>` is the active worktree root. Skip `stage.json`, the tool's manifest.
+   - Call `plan_support({ action: "openspec_stage", changeName: "<name>", files: [...], planPath: "<plan file path>" })` once with all these files. This is safe: `openspec_stage` replaces the whole staging directory on every call.
+5. If `checkpoint.step` is `6.5` or later and the header has `**OpenSpec-Create:**`, the authoring did not finish. Run **Create-flow authoring** once before you continue.
+6. The `openspec_stage` attempt counter restarts at 0 on every resume — a count from the session before the resume never carries over.
 
-Without the header line, nothing is staged: if Create is chosen, it starts fresh at step a (`openspec_instructions`).
+Without either header line, Create was not chosen: if Create is chosen now, it starts fresh at step a.
 
 **Template resolution and plan initialization (implements R61):** After the context-detection `plan_prepare` call, the OpenSpec gate check (which determines `fromOpenspec`, `fromOpenspecDirect`, and `openspecStage`), and complexity routing (which determines `lightweight` and `fileCount`), call `plan_prepare({..., resolveTemplate: true, fromOpenspec, fromOpenspecDirect, openspecStage, lightweight, fileCount})` — pass the same `skipConfigCheck` / `userPrompt` fields as the context-detection call, and `fromOpenspec` as the change name the gate check resolved (omit it when there is none). The tool resolves the active template (project override or shipped default), parses sections/conditions, builds the skeleton with conditional and lightweight-adjusted placeholders, and computes complexity routing — all server-side. On error the tool falls back to the shipped default or returns an error; handle errors the same way as the context-detection call.
 
@@ -484,7 +482,7 @@ Identify constraints: language, framework, existing conventions, testing approac
 
 **OpenSpec enrichment (when `openspecContext` is available):**
 - Use `proposal.md` for goal and scope understanding (what's in, what's out)
-- Use the delta spec files in `openspecContext` (for an **Existing change**, the `fromOpenspec.deltaSpecPaths` files already read in Step 0; for the **Create OpenSpec change** path, the staged `specs/**` files authored in Step 0 step b) with their ADDED/MODIFIED/REMOVED sections as the authoritative requirements — each delta entry is a requirement
+- Use the delta spec files in `openspecContext` (for an **Existing change**, the `fromOpenspec.deltaSpecPaths` files already read in Step 0) with their ADDED/MODIFIED/REMOVED sections as the authoritative requirements — each delta entry is a requirement. The **Create OpenSpec change** path has no `openspecContext` in Step 1, so this enrichment does not run for it.
 - Use `design.md` for architecture constraints and technical approach decisions
 - Use `tasks.md` as a coarse reference for decomposition — OpenSpec tasks are higher-level than plan tasks, so decompose further rather than copying verbatim
 - When the OpenSpec artifacts provide sufficient scope, integration, and success criteria, skip the "Structured discovery" AskUserQuestion — the proposal and delta specs already answer those questions
@@ -770,7 +768,8 @@ plan_support({ action: "openspec_appendix", changeName: <name>, proposalPath, de
 
 Write the returned `appendixMarkdown` into the `## OpenSpec Appendix` section. The tool builds the requirement inventory table and delta-spec fragments (with nested-fence safety) server-side.
 
-**(b)** When `openspecStage` is true (the Create OpenSpec change path — option 1 of Step 0's OpenSpec gate check, implements R63), populate the `## OpenSpec Appendix` section with a staging-path reference and a traceability table ONLY — never authored artifact content, drafts, or per-file target annotations of any kind. The artifacts already exist as staged files under `.sdlc-v2/openspec-staging/<name>/` (authored in **Create OpenSpec change** step b and kept current by **Create-flow re-stage**), so the appendix links to them instead of re-authoring them:
+**(b)** When `openspecStage` is true (the Create OpenSpec change path — option 1 of Step 0's OpenSpec gate check, implements R63), write `[TBD — authored at the end of Step 6]` in the `## OpenSpec Appendix` section now. **Create-flow authoring** (end of Step 6) replaces it with a staging-path reference and a traceability table ONLY — never authored artifact content, drafts, or per-file target annotations of any kind.
+The artifacts exist as staged files under `.sdlc-v2/openspec-staging/<name>/`, so the appendix links to them instead of re-authoring them:
 
 ```markdown
 ## OpenSpec Appendix
@@ -780,7 +779,7 @@ Write the returned `appendixMarkdown` into the `## OpenSpec Appendix` section. T
 | Base branch configuration | specs/base-branch/spec.md | Task 2, Task 3 |
 ```
 
-Build one table row per requirement found in the staged delta specs (`openspecContext`'s `specs/**` content, one row per ADDED/MODIFIED/REMOVED requirement heading): the requirement name, the staged spec file's path relative to the change dir, and the plan `### Task N` block(s) that implement it.
+Build one table row per requirement found in the delta specs that **Create-flow authoring** staged (one row per ADDED/MODIFIED/REMOVED requirement heading): the requirement name, the staged spec file's path relative to the change dir, and the plan `### Task N` block(s) that implement it.
 
 **(c)** When `fromOpenspecDirect` is false AND `openspecStage` is false, the skeleton placeholder from Step 0 already reads `Not applicable — no OpenSpec change` — leave it as-is.
 
@@ -865,7 +864,7 @@ After the merge step, assemble the `## Verification Scorecard` section in the pl
 4. **Write the scorecard section** to the plan file. Placement: immediately after the last Task block, or after `## Suggested Review Dimensions` when that section exists, or after `## Guardrail Compliance` if no Suggested Review Dimensions. REGENERATE (replace) on each iteration — do not append a second copy.
 
 **Review loop:**
-- Approved → Step 6 fixes are a no-op; run the end of Step 6 (**Create-flow re-stage**), then proceed to Step 6.5
+- Approved → Step 6 fixes are a no-op; run the end of Step 6 (**Create-flow authoring**), then proceed to Step 6.5
 - Issues found → go to Step 6
 - Round `reviewLoop.maxRounds` (5) ends with blocking issues → use AskUserQuestion to surface unresolved issues to user. Context: the review loop ran `reviewLoop.maxRounds` fix/re-review passes and still has open blocking issues — before asking, summarize what failed (the union of blocking findings across all lenses), scaled to `style.audience`, so the user isn't choosing blind. Offer **harden** (run `/harden` to analyze why this failed and propose stronger guardrails / dimensions / instructions that would catch it earlier next time — opt-in, no surface is edited without your approval; consequence: proposes preventive changes only, nothing is edited without a separate approval) alongside the existing escalation options. When the user selects **harden** (interactive mode only — suppressed when `--auto` is set), dispatch `Skill(harden)` with `--failure-text "Plan reviewer loop did not converge after <reviewLoop.maxRounds> iterations. Outstanding issues: <union-of-blocking-issues-across-all-lenses>"`, `--skill plan`, `--step "Step 5 — review loop"`, `--operation "reviewer-loop max iterations"`. Implements R19. **`--auto` does not suppress this question** — only the **harden** option is left out. The plan is never handed off with open blocking issues; when AskUserQuestion is unavailable, stop and report the open blocking issues.
 
@@ -889,10 +888,13 @@ Re-dispatch the reviewer (back to Step 5 loop). When `materialChangeDetected` is
 
 If this was round `reviewLoop.maxRounds`, use AskUserQuestion to surface remaining issues instead of looping. The checkpoint `next` text of that round says so.
 
-**Create-flow re-stage (Create flow only — the plan file has a `**OpenSpec-Staging:**` header line):** Run this once, right before Step 6.5, on every path that reaches Step 6.5: Step 5 Approved, the user resolved the remaining issues after the last round, or a lightweight plan that skipped Step 5. The guardrail lane and the review fixes may have split, merged, or dropped plan tasks, so the staged `tasks.md` may be stale.
-1. Rebuild the `tasks.md` content from the plan's final `### Task N` list: one checkbox entry per plan task, in plan order, in the format of the staged `tasks.md` (the `tasks` artifact template).
-2. Call `plan_support({ action: "openspec_stage", changeName: "<name>", files: [...], planPath: "<plan file path>" })` with **all** artifact files: the rebuilt `tasks.md` plus `proposal.md`, `design.md`, and every `specs/**` file, unchanged. `openspec_stage` replaces the whole staging directory on every call, so a file left out of `files` is deleted from staging. Take the unchanged files from context, or after a resume from `<ACTIVE_ROOT>/.sdlc-v2/openspec-staging/<name>/` (never `stage.json`).
-3. The 5-attempt rule from Step 0's **Create OpenSpec change** step c applies, with its own counter starting at 0: on `valid: false`, show `validateOutput`, fix the artifacts, and stage again with all files — at most 5 calls. If the 5th call still returns `valid: false`, show its `validateOutput` (the OpenSpec CLI output) to the user and stop — no plan handoff.
+**Create-flow authoring (Create flow only — the plan file has an `**OpenSpec-Create:**` or `**OpenSpec-Staging:**` header line):** Run this once, right before Step 6.5, on every path that reaches Step 6.5: Step 5 Approved, the user resolved the remaining issues after the last round, or a lightweight plan that skipped Step 5. The plan is final here, so the OpenSpec files include every answer and review fix. Take `<name>` from the header line. Set the `openspec_stage` attempt counter to 0.
+1. Call `plan_support({ action: "openspec_instructions", changeName: "<name>" })`. It returns `schemaName`, `artifacts[]` (each `{id, outputPath, requires, template, instruction, context, rules}`, in status order), and `guardrails`. On error, print it and stop — no plan handoff.
+2. Author each artifact in the order of `artifacts[]`, from the plan file only: Goal, Context, Deviations & assumptions, Key Decisions, Final Shape, Tasks, and the `D<n>` decision records. Start from the artifact's `template` and follow its `instruction`. Treat `context` and `rules` as constraints on the content — do not copy them into the file. Each file's path is its `outputPath`, relative to the change dir. For a glob such as `specs/**/*.md`, author one `specs/<capability>/spec.md` per capability. Before you write a MODIFIED delta, read the full requirement block in `openspec/specs/<capability>/spec.md`. Write `tasks.md` with one checkbox entry per plan `### Task N`, in plan order. **For `design` and `tasks`, apply the returned `guardrails` as authoring constraints:** no design decision or task may break an `error`-severity guardrail, and a design decision or task that departs from a `warning`-severity guardrail must say why.
+3. Call `plan_support({ action: "openspec_stage", changeName: "<name>", files: [{ path, content }, …], planPath: "<plan file path>" })` with every authored file. It replaces the whole staging directory and validates a temp copy. If it returns `valid: false`, show `validateOutput`, fix the artifacts, and call `openspec_stage` again with all files. Make at most 5 `openspec_stage` calls in total (the first try plus 4 fixes). If the 5th call still returns `valid: false`, show its `validateOutput` (the OpenSpec CLI output) to the user and stop — no plan handoff.
+4. When `openspec_stage` returns `valid: true`, update the plan file. This step is the same on the first run and on each new run.
+   - If the header has an `**OpenSpec-Create:** <name>` line, replace it with `**OpenSpec-Staging:** .sdlc-v2/openspec-staging/<name>/`. If the header already has the `**OpenSpec-Staging:**` line, keep it. Keep the `**Source:**` line.
+   - Replace the full body of `## OpenSpec Appendix` with a new appendix (b) table (Step 4), built from the files of this run. Do this also when the body already holds a table.
 
 ## Step 6.5 (LINK VERIFICATION): Validate URLs in plan content (R18) — HARD GATE
 
@@ -974,6 +976,14 @@ Call `plan_mark({ marker: "done" })` before either branch below — writes the t
 >   execute — execute the plan only (/execute)
 
 Then call ExitPlanMode. Do NOT invoke execute or ship in this turn — they run after the user accepts in the next turn.
+
+**Rejected handoff with feedback (Create flow only — the plan file has an `**OpenSpec-Staging:**` header line):** If the user rejects ExitPlanMode with feedback, work from the plan file only. Do not read or write the run state: the Stop hook deletes it after `done`.
+1. Change the plan file for the feedback.
+2. Run **Create-flow authoring** steps 1–4 again from the changed plan file. Pass all artifact files to `openspec_stage`. The attempt counter starts at 0.
+3. Call `links_validate` and `validate({ action: "plan_format", file: "<plan file path>", final: true, template: "<template.activeTemplatePath>" })`. Fix each finding as Step 6.5 and Step 6.6 say. Make no `plan_mark` call and no `evidence_record` call.
+4. Announce the plan path again, then call ExitPlanMode.
+
+If this rule stops before step 4, the user can give the feedback again. Steps 2 to 4 are safe to repeat: `openspec_stage` replaces the whole staging directory, and **Create-flow authoring** step 4 replaces the appendix. For a plan without an `**OpenSpec-Staging:**` header line, this rule does not apply.
 
 **Normal mode:** Announce the plan path, then present the Workflow Continuation menu (see below). Prepend any advisory output from the wrapper above the menu's `ship` / `execute` / `done` lines.
 

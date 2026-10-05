@@ -432,7 +432,7 @@ func TestMigrateImportReplacesUntouchedTemplateDefaults(t *testing.T) {
 	}
 
 	cfg := readDataFile(t, root, "config.toml")
-	if !strings.Contains(cfg, "[jira]\ndefaultProject = 'OLD'\n") {
+	if !strings.Contains(cfg, "[jira]\n# Default Jira project key (2–10 uppercase letters, e.g. \"PROJ\").\ndefaultProject = 'OLD'\n") {
 		t.Errorf("jira.defaultProject not replaced in place:\n%s", cfg)
 	}
 	if !strings.Contains(cfg, "id = 'legacy-rule'") || strings.Contains(cfg, "test-coverage-required") {

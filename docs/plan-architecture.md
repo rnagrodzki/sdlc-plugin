@@ -363,8 +363,9 @@ during Step 5's lens-merge iterations.
 ### OpenSpec staging
 
 Plan mode must not write to tracked files (see **OpenSpec tasks.md Ref
-Stamping** above), but Step 0's **Create OpenSpec change** path still needs
-to author a whole change's artifacts — proposal, delta specs, tasks, design.
+Stamping** above). The **Create OpenSpec change** path records the choice in
+Step 0 and authors the whole change (proposal, delta specs, tasks, design)
+from the reviewed plan at the end of Step 6, and again after handoff feedback.
 `internal/openspec/stage.go` and `internal/openspec/materialize.go` split
 that into an authoring phase (plan mode, gitignored) and a materialize phase
 (the first tracked-file write, deferred to the next run's start).
@@ -425,7 +426,7 @@ part of `stage.json` and is never overwritten by materialize.
 
 | Path | Before | After |
 |---|---|---|
-| Guardrails vs new OpenSpec change (Create) | guardrails unseen while authoring; Step 3 lane rewrites tasks; staged `tasks.md` stays stale | `openspec_instructions` returns `guardrails`; authoring follows them; `tasks.md` re-staged from final plan tasks before Step 6.5 |
+| Guardrails vs new OpenSpec change (Create) | guardrails unseen while authoring; Step 3 lane rewrites tasks; staged `tasks.md` stays stale | authoring runs at the end of Step 6 from the reviewed plan; `openspec_instructions` returns `guardrails`; authoring follows them; all files are staged again after handoff feedback |
 | Guardrails vs existing change (`--spec`) | Gate A audits proposal/specs/tasks/design without guardrails | Gate A gets `{GUARDRAILS}`; conflicts become `## Intake Audit Caveats` before decomposition |
 
 ---

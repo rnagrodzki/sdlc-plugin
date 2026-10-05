@@ -87,8 +87,9 @@ Loads the proposal, delta specs, and task list from
   `## Intake Audit Caveats` section of the plan. `--auto` does not bypass a
   `CRITICAL` verdict. `WARNING` or `SUGGESTION` findings are added to that
   same section and planning continues. Gate A does not run for a plan
-  without OpenSpec, or for a change the skill just created and staged
-  (Create OpenSpec change).
+  without OpenSpec, or for a change the skill creates (Create OpenSpec
+  change). That change is authored from the reviewed plan at the end of
+  Step 6, and authored again when you reject the plan with feedback.
 - **Plan mode vs. normal mode.** In plan mode, the skill writes to the
   designated plan file path. In normal mode, it creates a file and tells you
   where it is.
