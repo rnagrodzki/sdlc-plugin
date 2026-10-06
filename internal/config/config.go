@@ -909,12 +909,17 @@ func WriteFileSection(path, name string, v map[string]any) (rewrote bool, err er
 //
 // After the splice or the full write produces the bytes to save, a restore
 // step (see tips.go) re-adds each shipped-template comment block that is
-// missing from directly above its key or table header, scoped to the
-// written section. The restore is skipped outright for a file other than
-// config.toml/local.toml (sectionTemplate returns nil), and its result is
-// discarded — keeping the pre-restore bytes — whenever restoreTips errors
-// or its output does not decode to the same data as the pre-restore bytes.
-// Either way, the write itself never fails because of the restore.
+// missing from directly above its key or table header. Both the splice path
+// and the full-rewrite fallback scope the restore to the whole file (an
+// empty section; see RestoreTips, D5): a write to one section also repairs
+// any other section whose tips version 0.3.2 stripped, and a section
+// untouched by this call does not permanently lose its tips the moment any
+// other section hits the fallback. The restore is skipped outright for a
+// file other than config.toml/local.toml (sectionTemplate returns nil), and
+// its result is discarded — keeping the pre-restore bytes — whenever
+// restoreTips errors or its output does not decode to the same data as the
+// pre-restore bytes. Either way, the write itself never fails because of the
+// restore.
 func writeSectionFile(path, name string, v map[string]any, validate func(map[string]any) error) (bool, error) {
 	// Read the file once: the splice, the comment check and the decode all
 	// use these bytes, so they cannot disagree about the file's contents.
@@ -935,7 +940,7 @@ func writeSectionFile(path, name string, v map[string]any, validate func(map[str
 		}
 	}
 	traceRead(path, "write")
-	section := strings.Split(name, ".")
+	section := []string{} // D5: restore tips in the whole file
 	tmpl := sectionTemplate(path)
 	out, spliceErr := spliceFile(orig, name, v, existing)
 	if spliceErr == nil {
@@ -950,7 +955,9 @@ func writeSectionFile(path, name string, v map[string]any, validate func(map[str
 	if err != nil {
 		return false, fmt.Errorf("config: marshal %s: %w", path, err)
 	}
-	return true, fsx.AtomicWriteBytes(path, restoreSectionTips(full, tmpl, section))
+	// nil, not section: the rewrite just dropped every comment in the whole
+	// file, not only in the section being written.
+	return true, fsx.AtomicWriteBytes(path, restoreSectionTips(full, tmpl, nil))
 }
 
 // sectionTemplate returns the shipped setup template that matches path's
@@ -969,8 +976,10 @@ func sectionTemplate(path string) []byte {
 
 // restoreSectionTips calls restoreTips(out, tmpl, section) and returns its
 // result only when it decodes to the same data as out. tmpl == nil skips
-// the call. An error from restoreTips, or a decode mismatch, returns out
-// unchanged — see writeSectionFile's doc comment for the full outcome table.
+// the call. section scopes the restore; a nil section (see writeSectionFile)
+// restores tips anywhere in the file, not just under one section. An error
+// from restoreTips, or a decode mismatch, returns out unchanged — see
+// writeSectionFile's doc comment for the full outcome table.
 func restoreSectionTips(out, tmpl []byte, section []string) []byte {
 	if tmpl == nil {
 		return out

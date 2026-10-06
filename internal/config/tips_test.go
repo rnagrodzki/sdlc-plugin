@@ -166,6 +166,67 @@ func TestRestoreTips_EmptySectionMatchesWholeFile(t *testing.T) {
 	}
 }
 
+// TestRestoreTips_CommentedHeaderTip pins that a commented table header in
+// template (never live there, see parseCommentedHeader) still donates its
+// comment block to the same header once it is live in file. The commented
+// example key directly below the header in template gets no tip of its
+// own: the line directly above it is the header's own commented line, not
+// plain explanatory text (see commentedItemBlockAbove).
+func TestRestoreTips_CommentedHeaderTip(t *testing.T) {
+	tmpl := []byte("# tip\n# [x.y]\n# k = 1\n")
+	file := []byte("[x.y]\nk = 2\n")
+	got, added, err := RestoreTips(file, tmpl, nil)
+	if err != nil {
+		t.Fatalf("RestoreTips: %v", err)
+	}
+	if added != 1 {
+		t.Errorf("added = %d, want 1", added)
+	}
+	want := "# tip\n[x.y]\nk = 2\n"
+	if string(got) != want {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// TestRestoreTips_CommentedExampleKeyTip pins that a commented example key
+// under a live header in template (never live itself, see
+// parseCommentedExample) donates its comment block to the same key once it
+// is live in file.
+func TestRestoreTips_CommentedExampleKeyTip(t *testing.T) {
+	tmpl := []byte("[jira]\n# allowed\n# projects = []\n")
+	file := []byte("[jira]\nprojects = [\"A\"]\n")
+	got, added, err := RestoreTips(file, tmpl, nil)
+	if err != nil {
+		t.Fatalf("RestoreTips: %v", err)
+	}
+	if added != 1 {
+		t.Errorf("added = %d, want 1", added)
+	}
+	want := "[jira]\n# allowed\nprojects = [\"A\"]\n"
+	if string(got) != want {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// TestRestoreTips_LiveTipWinsOverCommentedExample pins precedence: when a
+// path is both a live item (with its own comment block) and, elsewhere, a
+// commented example for the same path, the live block is used.
+func TestRestoreTips_LiveTipWinsOverCommentedExample(t *testing.T) {
+	tmpl := []byte("[x]\n# live tip\nk = 1\n\n# commented tip\n# k = 2\n")
+	file := []byte("[x]\nk = 9\n")
+	got, added, err := RestoreTips(file, tmpl, nil)
+	if err != nil {
+		t.Fatalf("RestoreTips: %v", err)
+	}
+	if added != 1 {
+		t.Errorf("added = %d, want 1", added)
+	}
+	want := "[x]\n# live tip\nk = 9\n"
+	if string(got) != want {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
 // TestRestoreTips_EmbeddedTemplate strips every comment line out of the
 // shipped config.toml template and restores against the original template.
 // This does not depend on the template's exact wording (another task edits
@@ -262,6 +323,44 @@ func splitLines(data []byte) [][]byte {
 	return bytes.SplitAfter(data, []byte("\n"))
 }
 
+// TestWriteSectionFile_FullRewriteRestoresWholeFile pins the whole-file
+// scope of the full-rewrite fallback: when the write falls back to a plain
+// re-marshal (here, because plan.tasks lives inside an inline table —
+// errNoSplice — and the file has no comment line, so the refusal rule does
+// not apply), that rewrite drops every comment in the whole file, not only
+// in the section being written. The restore step must therefore cover the
+// whole file too: jira.defaultProject, a section this write never touches,
+// still gets its shipped-template tip back. Scoping the restore to the
+// written section (plan.tasks) alone would miss it.
+func TestWriteSectionFile_FullRewriteRestoresWholeFile(t *testing.T) {
+	content := "plan = { tasks = { note = \"old\" } }\n\n[jira]\ndefaultProject = \"X\"\n"
+	got, rewrote := writeSpliceFixture(t, "config.toml", content, "plan.tasks", map[string]any{"note": "new"})
+	if !rewrote {
+		t.Fatalf("rewrote = false, want true for an inline-table layout")
+	}
+
+	tmplItems, err := scanTOML([]byte(version.ConfigTemplate))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmplLines := splitLines([]byte(version.ConfigTemplate))
+	var wantTip string
+	for _, it := range tmplItems {
+		if pathKey(it.path) == pathKey([]string{"jira", "defaultProject"}) {
+			wantTip = commentBlockAbove(tmplLines, it.first)
+		}
+	}
+	if wantTip == "" {
+		t.Fatal("test fixture assumption broke: jira.defaultProject has no template tip")
+	}
+	if !strings.Contains(got, wantTip+"defaultProject = 'X'\n") {
+		t.Errorf("tip not restored above defaultProject in an untouched section:\n%s", got)
+	}
+	if !strings.Contains(got, "note = 'new'") {
+		t.Errorf("full rewrite did not write the new value:\n%s", got)
+	}
+}
+
 // TestWriteSectionFile_RestoresMissingTip is the integration case: writing a
 // brand new section into a fresh config.toml via WriteSectionReport restores
 // the shipped template's tip above the new key, because spliceFile's
@@ -305,6 +404,33 @@ func TestWriteSectionFile_RestoresMissingTip(t *testing.T) {
 	}
 	if !strings.Contains(string(got), wantTip+"defaultProject = 'PROJ'\n") {
 		t.Errorf("tip not restored directly above defaultProject:\n%s", got)
+	}
+}
+
+// TestWriteSectionFile_SpliceSuccessRestoresOtherSection pins Task 9's D5
+// contract on the common path: spliceFile succeeds here (no fallback), and
+// the restore still reaches a key in a section the call never touched.
+// Mirrors the OpenSpec scenario "Tips restored in another section"
+// (tool-setup-write-sections spec.md): a write to [ship] also restores the
+// missing tip above [style]'s live audience key.
+func TestWriteSectionFile_SpliceSuccessRestoresOtherSection(t *testing.T) {
+	content := "[ship]\nbump = \"patch\"\n\n[style]\naudience = \"technical\"\n"
+	got, rewrote := writeSpliceFixture(t, "local.toml", content, "ship", map[string]any{"bump": "patch"})
+	if rewrote {
+		t.Fatalf("rewrote = true, want a splice success for this layout")
+	}
+
+	tmplItems, err := scanTOML([]byte(version.LocalTemplate))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tips := templateTips([]byte(version.LocalTemplate), tmplItems, nil)
+	wantTip, ok := tips[pathKey([]string{"style", "audience"})]
+	if !ok || wantTip == "" {
+		t.Fatal("test fixture assumption broke: style.audience has no template tip")
+	}
+	if !strings.Contains(got, wantTip+"audience = \"technical\"\n") {
+		t.Errorf("writing ship did not restore style's tip on the splice-success path:\n%s", got)
 	}
 }
 

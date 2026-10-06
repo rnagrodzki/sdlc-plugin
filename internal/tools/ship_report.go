@@ -52,7 +52,8 @@ type ShipRunReportOut struct {
 	Execution        *ExecutionReportOut `json:"execution,omitempty"`
 	GuardrailHits    []string            `json:"guardrailHits"`
 	CLIEvidence      []CLIEvidenceEntry  `json:"cliEvidence"`
-	UserInputs       []UserInputEntry    `json:"userInputs" jsonschema_description:"Prompts the user typed while this run was active, oldest first, redacted, latest 100. Empty array when none."`
+	UserInputs       []UserInputEntry    `json:"userInputs" jsonschema_description:"Prompts the user typed and questions the user answered while this run was active, oldest first, redacted, latest 100, injected turns filtered out. Empty array when none."`
+	userInputsCapped bool                // true when the window read hit maxUserInputInWindow, before the injected-turn filter ran
 	Decisions        []string            `json:"decisions"`
 	LinkedLearnings  int                 `json:"linkedLearnings"`
 	Display          string              `json:"display" render:"raw"` // pre-rendered report; emitted verbatim, never fenced
@@ -308,7 +309,8 @@ func buildShipRunReport(root, branch string, shipSt *state.State, format string,
 			"summary":  "User input read failed: " + err.Error(),
 		})
 	} else if inputs != nil {
-		out.UserInputs = inputs
+		out.userInputsCapped = len(inputs) >= maxUserInputInWindow
+		out.UserInputs = shipReportFilterUserInput(inputs)
 	}
 
 	linked, err := countLinkedLearnings(root, runID)
@@ -536,7 +538,7 @@ func renderShipReportMarkdown(out ShipRunReportOut) string {
 	renderShipReportSummary(w, out)
 	renderShipReportPlan(w, out)
 	renderShipReportSteps(w, out)
-	renderShipReportUserInput(w, out.UserInputs)
+	renderShipReportUserInput(w, out.UserInputs, out.userInputsCapped)
 	renderShipReportTimeline(w, out.Timeline)
 	renderShipReportReviewLedger(w, out)
 	renderShipReportHealing(w, out)
@@ -550,9 +552,10 @@ func renderShipReportMarkdown(out ShipRunReportOut) string {
 }
 
 const (
-	shipReportTextMax    = 200 // decisions, timeline events
-	shipReportCommandMax = 120 // commands, harden triggers
-	shipReportFailedCap  = 20
+	shipReportTextMax     = 200 // decisions, timeline events
+	shipReportCommandMax  = 120 // commands, harden triggers
+	shipReportFailedCap   = 20
+	shipReportUserTextMax = 500 // user input cells
 )
 
 const shipReportCommandRows = 15 // Command table rows before the "other" row
@@ -604,6 +607,18 @@ func shipReportShort(s string, max int) string {
 		return first + " …"
 	}
 	return first
+}
+
+// shipReportFlat collapses all whitespace runs (newlines included) to one
+// space and cuts the result to max runes, appending a trailing "…" when it
+// cut. Unlike shipReportShort, no line of s is dropped — every line
+// contributes to the flattened cell. Empty in → "".
+func shipReportFlat(s string, max int) string {
+	flat := strings.Join(strings.Fields(s), " ")
+	if r := []rune(flat); max > 0 && len(r) > max {
+		return strings.TrimRight(string(r[:max]), " ") + "…"
+	}
+	return flat
 }
 
 // shipReportCode renders s as one safe inline code span: shipReportShort(s,
@@ -886,6 +901,52 @@ func shipReportPlanDuration(p *ShipPlanTiming) string {
 	return pipeline.Humanize(time.Duration(p.DurationMs) * time.Millisecond)
 }
 
+// shipReportFilterUserInput re-checks each prompt-kind entry (or one with no
+// kind — read as a prompt) with CleanUserPrompt, the same injected-turn
+// rules the record-user-input hook applies: an injected turn (for example
+// text starting with "<task-notification>") is dropped, and an editor or
+// system-reminder envelope is stripped out of the text. An answer-kind entry
+// passes through unchanged. Runs after the window read, so it also cleans
+// entries recorded before the hook filtered them. Returns a non-nil slice.
+func shipReportFilterUserInput(entries []UserInputEntry) []UserInputEntry {
+	kept := make([]UserInputEntry, 0, len(entries))
+	for _, e := range entries {
+		if e.Kind == UserInputKindAnswer {
+			kept = append(kept, e)
+			continue
+		}
+		cleaned, ok := CleanUserPrompt(e.Text)
+		if !ok {
+			continue
+		}
+		e.Text = cleaned
+		kept = append(kept, e)
+	}
+	return kept
+}
+
+// shipReportUserInputKind returns e.Kind's display value: a line with no
+// kind (written before Kind existed) reads as UserInputKindPrompt.
+func shipReportUserInputKind(e UserInputEntry) string {
+	if e.Kind == UserInputKindAnswer {
+		return UserInputKindAnswer
+	}
+	return UserInputKindPrompt
+}
+
+// shipReportCountUserInput counts kept entries by kind, a line with no kind
+// counted as a prompt.
+func shipReportCountUserInput(inputs []UserInputEntry) (prompts, answers int) {
+	for _, e := range inputs {
+		if e.Kind == UserInputKindAnswer {
+			answers++
+		} else {
+			prompts++
+		}
+	}
+	return prompts, answers
+}
+
 // ---------------------------------------------------------------------------
 // Section renderers
 // ---------------------------------------------------------------------------
@@ -942,10 +1003,11 @@ func renderShipReportSummary(w *shipReportWriter, out ShipRunReportOut) {
 	}
 	row("Steps", steps)
 
-	if n := len(out.UserInputs); n == 0 {
+	if len(out.UserInputs) == 0 {
 		row("User input", "none")
 	} else {
-		row("User input", fmt.Sprintf("prompts %d", n))
+		prompts, answers := shipReportCountUserInput(out.UserInputs)
+		row("User input", fmt.Sprintf("prompts %d · answers %d", prompts, answers))
 	}
 
 	if e := out.Execution; e == nil {
@@ -1131,26 +1193,30 @@ func shipReportUserInputStep(e UserInputEntry) string {
 	return "—"
 }
 
-// renderShipReportUserInput renders the prompts the user typed while the run
-// was active: a count line (plus the read-cap note when the window was
-// full), then a table At | Step | Text, oldest first. Zero entries render
-// "_No user input during the run._" in place of the table.
-func renderShipReportUserInput(w *shipReportWriter, inputs []UserInputEntry) {
+// renderShipReportUserInput renders the prompts the user typed and the
+// questions the user answered while the run was active: a count line (plus
+// the read-cap note when the window was full), then a table
+// At | Step | Kind | Text, oldest first. Zero kept entries render
+// "_No user input during the run._" in place of the table — this also
+// covers a window that held only injected-turn noise, since inputs is
+// already filtered by the time it reaches this function.
+func renderShipReportUserInput(w *shipReportWriter, inputs []UserInputEntry, capped bool) {
 	w.heading("User input")
 	if len(inputs) == 0 {
 		w.line("_No user input during the run._")
 		return
 	}
-	count := fmt.Sprintf("%d prompts typed during the run.", len(inputs))
-	if len(inputs) >= maxUserInputInWindow {
+	prompts, answers := shipReportCountUserInput(inputs)
+	count := fmt.Sprintf("%d prompts typed and %d answers given during the run.", prompts, answers)
+	if capped {
 		count += " Shows the latest 100 prompts only."
 	}
 	w.line("%s", count)
 	w.line("")
-	w.line("| At | Step | Text |")
-	w.line("|---|---|---|")
+	w.line("| At | Step | Kind | Text |")
+	w.line("|---|---|---|---|")
 	for _, e := range inputs {
-		w.line("| %s | %s | %s |", shipReportCell(e.Timestamp), shipReportCell(shipReportUserInputStep(e)), shipReportCell(shipReportShort(e.Text, shipReportTextMax)))
+		w.line("| %s | %s | %s | %s |", shipReportCell(e.Timestamp), shipReportCell(shipReportUserInputStep(e)), shipReportUserInputKind(e), shipReportCell(shipReportFlat(e.Text, shipReportUserTextMax)))
 	}
 }
 

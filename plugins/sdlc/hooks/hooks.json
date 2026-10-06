@@ -61,6 +61,17 @@
         ]
       },
       {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/sdlc-launcher.sh",
+            "args": ["hook", "record-user-answer"],
+            "timeout": 3000
+          }
+        ]
+      },
+      {
         "matcher": "mcp__plugin_sdlc_sdlc__.*",
         "hooks": [
           {

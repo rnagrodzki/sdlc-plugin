@@ -206,9 +206,11 @@ file was modified, not at the moment the plan was accepted, so it reflects
 time actually spent on the plan). The Markdown report opens with a Summary
 table that holds every run metric in one place; the sections below it show
 counts instead of one line per command, and list only the findings and
-failures a person must act on. It also lists every prompt you typed while
-the run was active, so a correction made mid-run is visible after the run
-ends. It is gated by the project's
+failures a person must act on. It also lists every prompt you typed and every question you answered while
+the run was active, so a correction or a choice made mid-run is visible
+after the run ends. An old or injected turn (for example an editor
+notification) is filtered out of that list and never counted. It is gated by
+the project's
 `automation.report` config (`enabled`, and `format`: `"json"` or `"md"`,
 default `"md"`). When enabled, the tool
 persists it under `.sdlc-v2/reports/ship-<runId>-report.{json,md}` in the

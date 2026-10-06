@@ -84,6 +84,9 @@ func TestRecordUserInput(t *testing.T) {
 		if e.Timestamp == "" {
 			t.Error("Timestamp is empty, want a value")
 		}
+		if e.Kind != tools.UserInputKindPrompt {
+			t.Errorf("Kind = %q, want %q", e.Kind, tools.UserInputKindPrompt)
+		}
 	})
 
 	t.Run("older envelope (prompt field instead of prompt_text): still recorded", func(t *testing.T) {
@@ -274,6 +277,50 @@ func TestRecordUserInput(t *testing.T) {
 		}
 		if !strings.Contains(entries[0].Text, "Bearer [REDACTED]") {
 			t.Errorf("Text = %q, want it to contain Bearer [REDACTED]", entries[0].Text)
+		}
+	})
+
+	t.Run("injected task-notification turn: dropped, no file created", func(t *testing.T) {
+		root := gitFixture(t, "feat/ui-injected-turn")
+		branch := "feat/ui-injected-turn"
+		newShipState(t, root, branch, "s1", []any{
+			map[string]any{"name": "review", "status": "in_progress"},
+		}, nil)
+
+		out, err := recordUserInput(HookCtx{SessionID: "s1"}, Event{Raw: map[string]any{
+			"prompt_text": "<task-notification>background task finished</task-notification>",
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertSilent(t, out)
+		assertNoUserInputFile(t, root)
+	})
+
+	t.Run("genuine prompt with a stitched-in system-reminder: envelope stripped, rest recorded", func(t *testing.T) {
+		root := gitFixture(t, "feat/ui-stitched-reminder")
+		branch := "feat/ui-stitched-reminder"
+		newShipState(t, root, branch, "s1", []any{
+			map[string]any{"name": "review", "status": "in_progress"},
+		}, nil)
+
+		out, err := recordUserInput(HookCtx{SessionID: "s1"}, Event{Raw: map[string]any{
+			"prompt_text": "please continue <system-reminder>internal note</system-reminder>with the plan",
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertSilent(t, out)
+
+		entries := readUserInputLines(t, root)
+		if len(entries) != 1 {
+			t.Fatalf("got %d entries, want 1", len(entries))
+		}
+		if strings.Contains(entries[0].Text, "system-reminder") {
+			t.Errorf("Text = %q, want the system-reminder envelope stripped", entries[0].Text)
+		}
+		if !strings.Contains(entries[0].Text, "please continue") || !strings.Contains(entries[0].Text, "with the plan") {
+			t.Errorf("Text = %q, want the surrounding user text preserved", entries[0].Text)
 		}
 	})
 }

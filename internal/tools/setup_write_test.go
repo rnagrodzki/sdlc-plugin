@@ -459,8 +459,13 @@ func TestSetupWriteSections_KeepsCRLFLineEndings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// subjectPatternError has no comment of its own in orig, so it picks up
+	// the shipped config.toml template's commented-example tip, same as any
+	// other key restored from the whole file (internal/config/tips.go).
 	want := "# project settings\r\n" +
-		"[commit]\r\n# old comment\r\nallowedTypes = ['fix']\r\nsubjectPatternError = \"line one\\nline two\"\r\n" +
+		"[commit]\r\n# old comment\r\nallowedTypes = ['fix']\r\n" +
+		"# Human-readable error message when subject pattern fails.\r\n" +
+		"subjectPatternError = \"line one\\nline two\"\r\n" +
 		"\r\n# tail comment\r\n" +
 		"\r\n[jira]\r\n# Default Jira project key (2–10 uppercase letters, e.g. \"PROJ\").\r\ndefaultProject = 'PROJ'\r\n"
 	if string(got) != want {
@@ -476,10 +481,13 @@ func TestSetupWriteSections_KeepsCRLFLineEndings(t *testing.T) {
 // fields, while sibling tables and the comments around them stay.
 func TestSetupWriteSections_NullClearsLeaf(t *testing.T) {
 	dir := t.TempDir()
+	// jira keeps its own comment directly above defaultProject so the
+	// whole-file tip restore (tips.go) never touches it: this test pins
+	// plan.tasks clearing, not tip restore in an unrelated section.
 	path := writeSDLCFile(t, dir, "config.toml",
 		"# top\n[plan.guardrails.a]\nseverity = \"error\"\n\n"+
 			"# tasks doc\n[plan.tasks]\ncontractShape = \"strict\"\nrequiredFields = [\"x\"]\n\n"+
-			"[jira]\ndefaultProject = \"P\"\n")
+			"[jira]\n# own comment\ndefaultProject = \"P\"\n")
 
 	res, text := callRegisteredSetupWriteSectionsIn(t, dir, `{"plan.tasks":null}`)
 	if res.IsError {
@@ -494,7 +502,7 @@ func TestSetupWriteSections_NullClearsLeaf(t *testing.T) {
 	}
 	want := "# top\n[plan.guardrails.a]\nseverity = \"error\"\n\n" +
 		"# tasks doc\n[plan.tasks]\n\n" +
-		"[jira]\ndefaultProject = \"P\"\n"
+		"[jira]\n# own comment\ndefaultProject = \"P\"\n"
 	if string(got) != want {
 		t.Errorf("plan.tasks not cleared to an empty table.\n--- got ---\n%s\n--- want ---\n%s", got, want)
 	}

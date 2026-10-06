@@ -9,11 +9,15 @@ import (
 )
 
 // recordUserInput is the "record-user-input" hook handler
-// (UserPromptSubmit). It appends the typed prompt to user-inputs.jsonl when
-// a ship or execute run is active on this branch. It always returns
-// Output{}: stdout on UserPromptSubmit would be added to Claude's context,
-// so unlike pipeline-continue's advisory nudges, this hook has nothing to
-// say back to the session.
+// (UserPromptSubmit). It runs the raw prompt through tools.CleanUserPrompt
+// first — dropping a turn injected by the editor or the agent runtime (e.g.
+// a <task-notification>) outright, and stripping envelope tags out of an
+// otherwise-genuine prompt — before doing any state lookup, then appends the
+// cleaned text to user-inputs.jsonl (kind "prompt") when a ship or execute
+// run is active on this branch. It always returns Output{}: stdout on
+// UserPromptSubmit would be added to Claude's context, so unlike
+// pipeline-continue's advisory nudges, this hook has nothing to say back to
+// the session.
 func recordUserInput(ctx HookCtx, event Event) (Output, error) {
 	silent := Output{}
 
@@ -22,6 +26,11 @@ func recordUserInput(ctx HookCtx, event Event) (Output, error) {
 		text, _ = event.Raw["prompt"].(string)
 	}
 	if strings.TrimSpace(text) == "" {
+		return silent, nil
+	}
+
+	cleaned, keep := tools.CleanUserPrompt(text)
+	if !keep {
 		return silent, nil
 	}
 
@@ -41,7 +50,8 @@ func recordUserInput(ctx HookCtx, event Event) (Output, error) {
 		Step:      step,
 		Wave:      wave,
 		Branch:    branch,
-		Text:      text,
+		Text:      cleaned,
+		Kind:      tools.UserInputKindPrompt,
 	})
 
 	return silent, nil
