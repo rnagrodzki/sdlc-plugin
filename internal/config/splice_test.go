@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -366,6 +367,76 @@ func TestWriteSection_SpliceRefusesToDropComments(t *testing.T) {
 	}
 	if string(got) != content {
 		t.Errorf("file changed:\n%s", got)
+	}
+}
+
+// TestRefuseCommentDrop_NamesRealCause pins the refusal message for each
+// cause of a failed in-place edit: a layout the splicer does not handle
+// (errNoSplice) gets the layout diagnosis; any other cause (a failed safety
+// check, or another splice error) is named as a plugin bug, with no layout
+// diagnosis.
+func TestRefuseCommentDrop_NamesRealCause(t *testing.T) {
+	const layout = "array of tables, inline table, or a dotted key defines it"
+	tests := []struct {
+		name       string
+		cause      error
+		wantLayout bool
+		wantText   string
+	}{
+		{"no splice", errNoSplice, true, layout},
+		{"wrapped no splice", fmt.Errorf("edit: %w", errNoSplice), true, layout},
+		{"safety check", errSpliceMismatch, false, errSpliceMismatch.Error()},
+		{"other splice error", errors.New("boom"), false, "boom"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := refuseCommentDrop("plan.tasks", "/x/config.toml", tt.cause)
+			if !errors.Is(err, ErrWouldDropComments) {
+				t.Fatalf("err = %v, want ErrWouldDropComments", err)
+			}
+			msg := err.Error()
+			if got := strings.Contains(msg, layout); got != tt.wantLayout {
+				t.Errorf("layout diagnosis present = %v, want %v: %s", got, tt.wantLayout, msg)
+			}
+			if !strings.Contains(msg, tt.wantText) {
+				t.Errorf("message does not name the cause %q: %s", tt.wantText, msg)
+			}
+			if !tt.wantLayout && !strings.Contains(msg, "bug in the sdlc plugin") {
+				t.Errorf("message does not call a non-layout cause a plugin bug: %s", msg)
+			}
+			if !strings.Contains(msg, "Edit that section by hand, then run setup again") {
+				t.Errorf("message lost the recovery step: %s", msg)
+			}
+		})
+	}
+}
+
+// TestWriteFileSection_ReadErrorReturned pins the read guard: when the
+// target path exists but cannot be read as a file (here it is a directory),
+// the write returns that read error and writes nothing.
+func TestWriteFileSection_ReadErrorReturned(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	t.Cleanup(func() { Quiet = false })
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rewrote, err := WriteFileSection(path, "plan", map[string]any{"note": "new"})
+	if err == nil {
+		t.Fatal("err = nil, want the read error")
+	}
+	if rewrote {
+		t.Errorf("rewrote = true, want false")
+	}
+	if !strings.Contains(err.Error(), "config: read "+path) {
+		t.Errorf("err = %v, want it to name the read of %s", err, path)
+	}
+	if errors.Is(err, ErrWouldDropComments) {
+		t.Errorf("err = %v, a read error must not be reported as ErrWouldDropComments", err)
+	}
+	if fi, statErr := os.Stat(path); statErr != nil || !fi.IsDir() {
+		t.Errorf("target changed: stat = %v, %v", fi, statErr)
 	}
 }
 

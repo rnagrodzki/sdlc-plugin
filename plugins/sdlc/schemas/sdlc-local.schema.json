@@ -371,11 +371,11 @@
     },
     "workspaceSection": {
       "type": "object",
-      "description": "User-local workspace preferences. Workspace itself is auto-detected (branch/continue) — this section only carries branch-name derivation knobs consumed by lib/branch-name.js. The former worktree-placement and mode keys are removed (workspace is no longer user-selectable; fixes #378, #379).",
+      "description": "User-local workspace preferences. Workspace itself is auto-detected (branch/continue) — this section only carries branch-name derivation knobs read by the execute skill (plugins/sdlc/skills/execute/SKILL.md, Step 0 workspace auto-detection, \"branch\" case). The former worktree-placement and mode keys are removed (workspace is no longer user-selectable; fixes #378, #379).",
       "properties": {
         "branch": {
           "type": "object",
-          "description": "Branch-name derivation knobs consumed by lib/branch-name.js. Mirrors workspace.worktree shape. Drives config-driven branch naming in both ship pre-execute block and execute-plan standalone Step 1 (fixes #378, #379).",
+          "description": "Branch-name derivation knobs read by the execute skill (plugins/sdlc/skills/execute/SKILL.md, Step 0 workspace auto-detection, \"branch\" case), which builds the branch name from them in its own instructions; no Go or JS code reads them. Mirrors workspace.worktree shape. Drives config-driven branch naming in both ship pre-execute block and execute-plan standalone Step 1 (fixes #378, #379).",
           "additionalProperties": false,
           "properties": {
             "template": {

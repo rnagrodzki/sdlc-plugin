@@ -32,8 +32,8 @@ The tool SHALL change only the lines of changed keys in the written section and 
 - Headers are found with the go-toml parser, so `[` inside a multi-line string, a multi-line array or a comment is never taken for a header.
 - Line endings: when the file's first line ends in `\r\n`, the new text and the blank-line separator before an appended section use `\r\n`; otherwise they use `\n`.
 - Safety check: the edited text must decode to exactly the data a full rewrite of the merged file would decode to. The edit cannot run when the key lives inside an inline table, a dotted key that defines a parent, or an array of tables that is a strict ancestor of the key.
-- When the edit cannot run or fails the safety check and the file has a comment line, the section is not written. `errors` gets `section <key>: <cause>`, and `next` gets `Edit section <key> in <file> by hand, then run setup again for that section. Other sections were written.`
-- When the edit cannot run or fails the safety check and the file is missing or has no comment line, the tool rewrites the whole file from parsed data and adds a `warnings` entry `section <key>: could not edit <file> in place; the file had no comments, so it was rewritten and template tips were added`.
+- When the edit cannot run or fails the safety check and the file has a comment line, the section is not written. `errors` gets `section <key>: <cause>`, and `next` gets `Edit section <key> in <file> by hand, then run setup again for that section. Other sections were written.` When more than one section is refused in one call, `next` names each of them, in sorted order: `Edit section <key1> in <file1> by hand; Edit section <key2> in <file2> by hand, then run setup again for those sections. Other sections were written.`
+- When the edit cannot run or fails the safety check and the file is missing or has no comment line, the tool rewrites the whole file from parsed data and adds a `warnings` entry `Section <key>: could not edit <file> in place; the file had no comments, so it was rewritten and template tips were added`.
 - Tip restore: after each write of `config.toml` or `local.toml`, each comment block of the shipped template for a key or header at or below the written key is inserted above that key or header when the file has no comment line directly above it. Other keys, other sections and other files get no tip.
 - The tip restore adds only comment lines. When the restore fails, or its output decodes to other data, the tool writes the text without the restore and reports no error.
 - `config.toml` and `local.toml` use the same writer.
@@ -79,7 +79,7 @@ The tool SHALL change only the lines of changed keys in the written section and 
 - **WHEN** `config.toml` defines `plan = { tasks = { note = "old" } }`
 - **AND** the call writes `{"plan.tasks":{"note":"new"}}`
 - **THEN** `plan.tasks.note` is `new`
-- **AND** `warnings` has an entry starting `section plan.tasks: could not edit .sdlc-v2/config.toml in place`
+- **AND** `warnings` has an entry starting `Section plan.tasks: could not edit .sdlc-v2/config.toml in place`
 
 #### Scenario: Layout that cannot be spliced, file with comments
 - **WHEN** `config.toml` has a comment line and defines `plan = { tasks = { note = "old" } }`
@@ -93,10 +93,34 @@ The tool SHALL change only the lines of changed keys in the written section and 
 - **WHEN** `config.toml` has no comment line and defines `plan = { tasks = { note = "old" } }`
 - **AND** the call writes `{"plan.tasks":{"note":"new"}}`
 - **THEN** `plan.tasks.note` is `new`
-- **AND** `warnings` has an entry starting `section plan.tasks: could not edit .sdlc-v2/config.toml in place; the file had no comments`
+- **AND** `warnings` has an entry starting `Section plan.tasks: could not edit .sdlc-v2/config.toml in place; the file had no comments`
 
 #### Scenario: Lost tips restored
 - **WHEN** `local.toml` has a `[ship]` table with no comment lines
 - **AND** the call writes `ship`
 - **THEN** each `[ship]` key that the template documents has its template tip directly above it
 - **AND** no section other than `ship` changes
+
+### Requirement: Whole numbers written as integers
+The tool SHALL write every JSON number that has no fraction as a TOML integer, at any depth in the section value, including inside arrays. A number with a fraction SHALL stay a TOML float.
+
+| JSON value | Written TOML |
+|---|---|
+| `60` | `60` |
+| `60.0` | `60` |
+| `0.5` | `0.5` |
+| `[1, 2.5]` | `[1, 2.5]` |
+
+- On the full-rewrite fallback, the same rule applies to every section of the file, not only the one being written. The parsed file holds every number as a float, so each whole number is converted back to an integer before the file is written.
+
+#### Scenario: Nested integer fields
+- **WHEN** `sectionsJson` is `{"automation":{"reviewFixIterations":3,"drift":{"maxErrorRate":0.5,"minErrorFloor":2}}}`
+- **THEN** `local.toml` holds `reviewFixIterations = 3`
+- **AND** `local.toml` holds `minErrorFloor = 2`
+- **AND** `local.toml` holds `maxErrorRate = 0.5`
+
+#### Scenario: Full-rewrite fallback keeps other integers
+- **WHEN** `local.toml` defines `workspace = { tasks = { note = "old" } }` and a `[ship]` table with `executeWaveInterval = 60`
+- **AND** the call writes `{"workspace.tasks":{"note":"new"}}`
+- **THEN** the whole file is rewritten and `warnings` has an entry starting `Section workspace.tasks: could not edit .sdlc-v2/local.toml in place`
+- **AND** `local.toml` holds `executeWaveInterval = 60`, not `60.0`

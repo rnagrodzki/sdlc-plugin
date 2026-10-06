@@ -67,8 +67,8 @@ type fieldRow struct {
 
 // optionExplanation is explain mode's result: the full explanation of one
 // setupmeta field, named "<sectionId>.<fieldName>". Deliberately omits a
-// "current value" — setup_prepare has no config-reading role (Deviations,
-// "Current value in explain").
+// "current value": setup_prepare does not read the project's config files,
+// so it explains an option without showing what it is set to.
 type optionExplanation struct {
 	Option      string   `json:"option"`
 	Label       string   `json:"label"`

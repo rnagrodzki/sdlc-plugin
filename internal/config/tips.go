@@ -7,6 +7,7 @@
 // even when the shipped template documents that key right above it.
 // RestoreTips copies that documentation back in, one comment block per key
 // or table header the file is missing it for.
+
 package config
 
 import (

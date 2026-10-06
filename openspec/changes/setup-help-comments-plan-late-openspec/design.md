@@ -172,7 +172,7 @@ Plan header lines:
 | Rebase drift | Widen the schema to five values | Change setup to write booleans | Ship accepts all five values |
 | Authoring slot | End of Step 6 ("Create-flow authoring") | New step 6.4 | The `plan_mark` step list stays |
 | Create pending marker | New header line `**OpenSpec-Create:**` | Suffix on the staging line | The staging regex in materialize stays strict |
-| Rewrite after feedback | From the plan file only | Load run state again | The Stop hook deletes run state after `done` |
+| Rewrite after feedback | From the plan file only | Load run state again | The run is closed after `done`: `plan_prepare` resume finds no active run, and new markers would change a finished run's record |
 
 ## Risks / Trade-offs
 

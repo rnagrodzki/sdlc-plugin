@@ -967,7 +967,7 @@ If `styleReport.instructions` (from the **Style report** call above; read fresh 
 
 **Critical decisions capture:** Before calling `plan_mark({ marker: "done" })`, call `plan_mark({ marker: "criticalDecisions", data: { decisions: [...] } })` exactly once. Build one entry per `## Key Decisions` bullet (`--auto`-suppressed choices are already recorded there per Steps 0/1's suppression rules, so they need no separate entry): `{ key: "<short decision identifier>", choice: "<what was chosen>", rejected: [{ option: "<alternative considered>", why: "<why it lost>" }], reason: "<why the chosen option won>" }`. When the section lists no decisions, call it once with `data: { decisions: [] }` — the call itself is unconditional, never skipped.
 
-Call `plan_mark({ marker: "done" })` before either branch below — writes the terminal `planIntegrity` marker the `stop-plan-integrity` Stop hook gates on: without it, the hook keeps the plan state file indefinitely instead of evaluating and deleting it.
+Call `plan_mark({ marker: "done" })` before either branch below — writes the terminal `planIntegrity` marker the `stop-plan-integrity` Stop hook gates on: without it, the hook treats the run as still in progress and never checks its markers. The hook never deletes the plan state file: ship's cleanup step or the GC TTL sweep removes it.
 
 **Plan mode:** Announce the plan path and propose execution. Prepend any advisory output from the wrapper above the `ship` / `execute` lines:
 
@@ -977,7 +977,7 @@ Call `plan_mark({ marker: "done" })` before either branch below — writes the t
 
 Then call ExitPlanMode. Do NOT invoke execute or ship in this turn — they run after the user accepts in the next turn.
 
-**Rejected handoff with feedback (Create flow only — the plan file has an `**OpenSpec-Staging:**` header line):** If the user rejects ExitPlanMode with feedback, work from the plan file only. Do not read or write the run state: the Stop hook deletes it after `done`.
+**Rejected handoff with feedback (Create flow only — the plan file has an `**OpenSpec-Staging:**` header line):** If the user rejects ExitPlanMode with feedback, work from the plan file only. Do not read or write the run state. The run is closed after `done`: `plan_prepare({ resume: true })` finds no active run and fails, and a new `plan_mark` or `evidence_record` call changes the record of a finished run. The state file stays on disk until ship's cleanup step or the GC TTL sweep removes it.
 1. Change the plan file for the feedback.
 2. Run **Create-flow authoring** steps 1–4 again from the changed plan file. Pass all artifact files to `openspec_stage`. The attempt counter starts at 0.
 3. Call `links_validate` and `validate({ action: "plan_format", file: "<plan file path>", final: true, template: "<template.activeTemplatePath>" })`. Fix each finding as Step 6.5 and Step 6.6 say. Make no `plan_mark` call and no `evidence_record` call.

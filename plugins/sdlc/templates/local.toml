@@ -141,7 +141,8 @@ awaitRemoteReviewTimeout = 600
 # highRiskAutoApprove = false
 
 # ─── Workspace (optional — delete if not using) ────────────────────
-# Branch-name derivation knobs consumed by lib/branch-name.js.
+# Branch-name derivation knobs read by the execute skill's workspace
+# auto-detection (Step 0, "branch" case), which builds the branch name.
 # [workspace.branch]
 # Branch name template. Placeholders: {type}, {slug}, {issue}, {date}.
 # template = "{type}/{slug}"

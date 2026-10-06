@@ -639,3 +639,52 @@ func TestMigrateImportRefusesToDropComments(t *testing.T) {
 		t.Errorf("destination changed despite the refusal:\n%s", got)
 	}
 }
+
+// TestMigrateImportWriteFailureIsInfraError verifies writeErr's other branch:
+// a config.WriteFileSection failure that is not ErrWouldDropComments (here
+// the .sdlc-v2 directory is read-only, so the atomic write cannot create its
+// temp file) surfaces as a *mcpserver.InfraError with the disk/permission
+// recovery step, not as a DomainError.
+func TestMigrateImportWriteFailureIsInfraError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory write permission")
+	}
+	root := t.TempDir()
+	content := "[ship]\nbump = 'patch'\n"
+	writeSDLCFile(t, root, "local.toml", content)
+	writeLegacyFile(t, root, "local.json", `{"ship":{"bump":"minor"}}`)
+
+	dataDir := filepath.Join(root, paths.DataDir)
+	if err := os.Chmod(dataDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	// Registered after t.TempDir, so it runs first: RemoveAll needs write
+	// permission on the directory.
+	t.Cleanup(func() { _ = os.Chmod(dataDir, 0o755) })
+
+	defaults := map[string]any{"ship": map[string]any{"bump": "patch"}}
+	rel, changed, skipped, err := importConfigFileMerge(root, "local.json", "local.toml", nil, defaults, false)
+	if rel != "" || changed || skipped != nil {
+		t.Errorf("rel=%q changed=%v skipped=%v, want all empty/false", rel, changed, skipped)
+	}
+	if err == nil {
+		t.Fatal("err = nil, want the write failure")
+	}
+	if errors.Is(err, config.ErrWouldDropComments) {
+		t.Fatalf("err = %v, must not be ErrWouldDropComments", err)
+	}
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) {
+		t.Fatalf("err = %T (%v), want *mcpserver.InfraError", err, err)
+	}
+	if !strings.HasPrefix(ie.Msg, "merge local.toml: ") {
+		t.Errorf("Msg = %q, want prefix %q", ie.Msg, "merge local.toml: ")
+	}
+	wantSuggestion := "Check write permission and free disk space on " + paths.DataDir + `, then retry migrate with action "import".`
+	if ie.Suggestion != wantSuggestion {
+		t.Errorf("Suggestion = %q, want %q", ie.Suggestion, wantSuggestion)
+	}
+	if got := readDataFile(t, root, "local.toml"); got != content {
+		t.Errorf("destination changed despite the failed write:\n%s", got)
+	}
+}

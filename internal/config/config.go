@@ -916,12 +916,17 @@ func WriteFileSection(path, name string, v map[string]any) (rewrote bool, err er
 // or its output does not decode to the same data as the pre-restore bytes.
 // Either way, the write itself never fails because of the restore.
 func writeSectionFile(path, name string, v map[string]any, validate func(map[string]any) error) (bool, error) {
-	var existing map[string]any
-	if err := fsx.ReadTOML(path, &existing); err != nil {
-		if !errors.Is(err, fsx.ErrNotFound) {
-			return false, fmt.Errorf("config: %w", err)
+	// Read the file once: the splice, the comment check and the decode all
+	// use these bytes, so they cannot disagree about the file's contents.
+	orig, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("config: read %s: %w", path, err)
+	}
+	existing := make(map[string]any)
+	if err == nil {
+		if err := fsx.DecodeTOML(orig, &existing); err != nil {
+			return false, fmt.Errorf("config: %s: %w", path, err)
 		}
-		existing = make(map[string]any)
 	}
 	setSectionPath(existing, name, v)
 	if validate != nil {
@@ -932,17 +937,14 @@ func writeSectionFile(path, name string, v map[string]any, validate func(map[str
 	traceRead(path, "write")
 	section := strings.Split(name, ".")
 	tmpl := sectionTemplate(path)
-	if out, ok := spliceFile(path, name, v, existing); ok {
+	out, spliceErr := spliceFile(orig, name, v, existing)
+	if spliceErr == nil {
 		return false, fsx.AtomicWriteBytes(path, restoreSectionTips(out, tmpl, section))
 	}
-	orig, err := os.ReadFile(path)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return false, err
-	}
 	if hasCommentLine(orig) {
-		return false, fmt.Errorf("%w: section %q in %s (array of tables, inline table, or a dotted key defines it). Edit that section by hand, then run setup again", ErrWouldDropComments, name, path)
+		return false, refuseCommentDrop(name, path, spliceErr)
 	}
-	// fsx.ReadTOML decodes every number as float64, so a plain rewrite would
+	// fsx.DecodeTOML decodes every number as float64, so a plain rewrite would
 	// turn every integer in the other sections into a float ("60" -> "60.0").
 	full, err := toml.Marshal(WholeNumbersToInt(existing))
 	if err != nil {

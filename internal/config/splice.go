@@ -13,7 +13,7 @@ package config
 import (
 	"bytes"
 	"errors"
-	"os"
+	"fmt"
 	"reflect"
 	"sort"
 	"strings"
@@ -196,32 +196,50 @@ func usesCRLF(data []byte) bool {
 	return i > 0 && data[i-1] == '\r'
 }
 
-// spliceFile returns the new contents of the TOML file at path with section
-// name set to v, built by a key-level edit of the file's text (spliceKeys).
-// merged is the whole file's data after the write, as a full rewrite would
-// store it. The edit is accepted only when the result decodes to exactly the
-// data a full rewrite of merged would decode to; otherwise ok is false.
-func spliceFile(path, name string, v, merged map[string]any) (out []byte, ok bool) {
-	orig, err := os.ReadFile(path)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, false
-	}
-	out, err = spliceKeys(orig, strings.Split(name, "."), v)
+// errSpliceMismatch reports that the spliced text did not decode to the
+// data a full rewrite would store. It points at a bug in the splicer, not at
+// the file's layout.
+var errSpliceMismatch = errors.New("config: spliced text does not decode to the intended data")
+
+// spliceFile returns orig, the current text of a TOML file (nil when the
+// file does not exist), with section name set to v, built by a key-level
+// edit of the text (spliceKeys). merged is the whole file's data after the
+// write, as a full rewrite would store it. The edit is accepted only when
+// the result decodes to exactly the data a full rewrite of merged would
+// decode to. Otherwise the error says why: errNoSplice for a layout the
+// splicer does not handle, errSpliceMismatch for a failed safety check, or
+// another error from spliceKeys or the TOML encoder.
+func spliceFile(orig []byte, name string, v, merged map[string]any) ([]byte, error) {
+	out, err := spliceKeys(orig, strings.Split(name, "."), v)
 	if err != nil {
-		return nil, false
+		return nil, err
 	}
 	full, err := toml.Marshal(merged)
 	if err != nil {
-		return nil, false
+		return nil, err
 	}
 	var want, got map[string]any
-	if fsx.DecodeTOML(full, &want) != nil || fsx.DecodeTOML(out, &got) != nil {
-		return nil, false
+	if err := fsx.DecodeTOML(full, &want); err != nil {
+		return nil, err
+	}
+	if err := fsx.DecodeTOML(out, &got); err != nil {
+		return nil, err
 	}
 	if !reflect.DeepEqual(want, got) {
-		return nil, false
+		return nil, errSpliceMismatch
 	}
-	return out, true
+	return out, nil
+}
+
+// refuseCommentDrop returns the ErrWouldDropComments error for section name
+// in the file at path, after the in-place edit failed with cause. The
+// message names the real cause: a layout the splicer does not handle
+// (errNoSplice), or an internal splice failure.
+func refuseCommentDrop(name, path string, cause error) error {
+	if errors.Is(cause, errNoSplice) {
+		return fmt.Errorf("%w: section %q in %s (array of tables, inline table, or a dotted key defines it). Edit that section by hand, then run setup again", ErrWouldDropComments, name, path)
+	}
+	return fmt.Errorf("%w: section %q in %s: the in-place edit failed (%v). This is a bug in the sdlc plugin: report it with this message. Edit that section by hand, then run setup again", ErrWouldDropComments, name, path, cause)
 }
 
 // hasCommentLine reports whether data has a line whose first non-blank

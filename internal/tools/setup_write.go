@@ -207,7 +207,7 @@ func setupWriteSections(contentRoot, stateRoot string, in SetupWriteSectionsIn) 
 	var written []string
 	var errs []string
 	var rewroteWarnings []string
-	var next string
+	var refused []string // one "Edit section <id> in <file> by hand" per ErrWouldDropComments section
 	for _, id := range ids {
 		value := sections[id]
 		if value == nil {
@@ -217,19 +217,26 @@ func setupWriteSections(contentRoot, stateRoot string, in SetupWriteSectionsIn) 
 		rewrote, err := config.WriteSectionReport(sectionRoot(contentRoot, stateRoot, id), id, value)
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("section %s: %s", id, err.Error()))
-			if next == "" && errors.Is(err, config.ErrWouldDropComments) {
-				next = fmt.Sprintf(
-					"Edit section %s in %s by hand, then run setup again for that section. Other sections were written.",
-					id, sectionFile(id))
+			if errors.Is(err, config.ErrWouldDropComments) {
+				refused = append(refused, fmt.Sprintf("Edit section %s in %s by hand", id, sectionFile(id)))
 			}
 			continue
 		}
 		if rewrote {
 			rewroteWarnings = append(rewroteWarnings, fmt.Sprintf(
-				"section %s: could not edit %s in place; the file had no comments, so it was rewritten and template tips were added",
+				"Section %s: could not edit %s in place; the file had no comments, so it was rewritten and template tips were added",
 				id, sectionFile(id)))
 		}
 		written = append(written, id)
+	}
+
+	var next string
+	switch len(refused) {
+	case 0:
+	case 1:
+		next = refused[0] + ", then run setup again for that section. Other sections were written."
+	default:
+		next = strings.Join(refused, "; ") + ", then run setup again for those sections. Other sections were written."
 	}
 
 	out := SetupWriteSectionsOut{OK: len(errs) == 0, Written: written, Root: contentRoot, Warnings: rewroteWarnings, Next: next}

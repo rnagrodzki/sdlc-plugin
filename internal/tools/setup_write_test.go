@@ -82,7 +82,7 @@ func TestSetupWriteSections_FallbackWarns(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("expected success, got tool error:\n%s", text)
 	}
-	if !strings.Contains(text, "section plan.tasks: could not edit .sdlc-v2/config.toml in place; the file had no comments, so it was rewritten and template tips were added") {
+	if !strings.Contains(text, "Section plan.tasks: could not edit .sdlc-v2/config.toml in place; the file had no comments, so it was rewritten and template tips were added") {
 		t.Errorf("missing full-rewrite warning:\n%s", text)
 	}
 	got, err := os.ReadFile(path)
@@ -111,7 +111,7 @@ func TestSetupWriteSections_FallbackKeepsIntegers(t *testing.T) {
 	if res.IsError {
 		t.Fatalf("expected success, got tool error:\n%s", text)
 	}
-	if !strings.Contains(text, "section workspace.tasks: could not edit .sdlc-v2/local.toml in place; the file had no comments, so it was rewritten and template tips were added") {
+	if !strings.Contains(text, "Section workspace.tasks: could not edit .sdlc-v2/local.toml in place; the file had no comments, so it was rewritten and template tips were added") {
 		t.Errorf("missing full-rewrite warning:\n%s", text)
 	}
 	got, err := os.ReadFile(path)
@@ -756,5 +756,39 @@ func TestSetupWriteSections_ErrWouldDropCommentsFileUnchanged(t *testing.T) {
 	}
 	if string(got) != content {
 		t.Errorf("file changed despite the refusal:\n--- got ---\n%s\n--- want (unchanged) ---\n%s", got, content)
+	}
+}
+
+// TestSetupWriteSections_TwoRefusedSectionsBothInNext verifies that when two
+// sections in one call are both refused with config.ErrWouldDropComments,
+// each one gets its own errors entry and next names both, in sorted order,
+// so neither recovery step is lost.
+func TestSetupWriteSections_TwoRefusedSectionsBothInNext(t *testing.T) {
+	dir := t.TempDir()
+	content := "# kept\nexecute = { waves = { note = \"old\" } }\nplan = { tasks = { note = \"old\" } }\n"
+	path := writeSDLCFile(t, dir, "config.toml", content)
+
+	res, text := callRegisteredSetupWriteSectionsIn(t, dir,
+		`{"plan.tasks":{"note":"new"},"execute.waves":{"note":"new"}}`)
+	if res.IsError {
+		t.Fatalf("expected a tool success carrying per-section errors, got tool error:\n%s", text)
+	}
+	for _, want := range []string{
+		"- ok: false",
+		"section execute.waves:",
+		"section plan.tasks:",
+		"Edit section execute.waves in .sdlc-v2/config.toml by hand; Edit section plan.tasks in .sdlc-v2/config.toml by hand, then run setup again for those sections. Other sections were written.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q:\n%s", want, text)
+		}
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != content {
+		t.Errorf("file changed despite both refusals:\n--- got ---\n%s\n--- want (unchanged) ---\n%s", got, content)
 	}
 }
