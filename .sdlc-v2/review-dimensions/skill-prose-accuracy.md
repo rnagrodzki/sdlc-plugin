@@ -9,6 +9,13 @@ triggers:
 ## Rules
 - When a SKILL.md describes a mechanism, verify accuracy by direct grep/read against actual source code.
 - Prose drift between documentation and implementation is not caught by build/test success; explicit verification required.
+- When a SKILL.md section enumerates an MCP tool's manifest or output
+  fields (e.g. listing the fields of a review manifest or report-data
+  structure), compare the enumeration field-by-field against the
+  corresponding tool's `*Out` struct in both directions: every field in the
+  prose must exist in the struct, and every required or documented field in
+  the struct must be represented in the prose. A mismatch means the section
+  is out of sync and must be corrected before the task is marked done.
 - Field names cited in skill prose (e.g. task object fields for wave-start)
   must match the tool's input schema exactly — grep the struct, do not
   assume from a similar-sounding prior name (e.g. "title" vs "name").

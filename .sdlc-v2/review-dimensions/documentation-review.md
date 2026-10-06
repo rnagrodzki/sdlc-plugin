@@ -23,6 +23,11 @@ This project keeps contributor documentation in `docs/`
 - New root-level scripts, directories, or config files (`.sdlc-v2/`,
   `lefthook.yml`) that a new contributor would need to know about are
   mentioned in `README.md` or `docs/getting-started.md`.
+- When a task adds a config-controlled limit, threshold, or cap (e.g.
+  `maxDimensions`), the corresponding docs section must state the
+  configuration key, the default value, the valid range or constraint, and
+  the procedure to change it. A schema description alone does not satisfy
+  this — users need user-facing guidance, not only structured metadata.
 - Per this session's own memory note, architecture/contributor docs belong
   under `docs/`, not under `skills/` (which is runtime-only) — flag any doc
   content added to `plugins/sdlc/skills/` that reads as contributor-facing

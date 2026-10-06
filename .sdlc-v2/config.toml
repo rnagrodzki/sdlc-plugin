@@ -376,17 +376,21 @@ snapshot, not a summary or excerpt -- partial snapshots produce spurious \
 drift reports and mask the actual changes being validated."""
 
 [plan.guardrails.sub-skill-approval-orchestration]
-severity = "warning"
+severity = "error"
 description = """
-When a plan modifies a SKILL.md that dispatches another skill via the Agent \
-tool, the plan must explicitly document how approval gates in the dispatched \
-skill will be satisfied. Agent-tool sub-agents cannot call AskUserQuestion \
-directly -- the orchestrator must plan to receive the sub-agent's request, \
-call AskUserQuestion at orchestrator level, and relay the answer back via \
-SendMessage. The plan must also document how stall/authorization errors \
-raised by a nested dispatch (e.g. TaskStop returning a hard authorization \
-error when invoked from within a nested skill, such as /ship nesting \
-execute) are surfaced to and handled by the top-level orchestrator."""
+When a plan modifies a SKILL.md that dispatches another skill or spawns \
+background workers via the Agent tool, the plan must explicitly document \
+how approval gates in the dispatched skill will be satisfied and how \
+abandoned workers will be terminated. Agent-tool sub-agents cannot call \
+AskUserQuestion directly -- the orchestrator must plan to receive the \
+sub-agent's request, call AskUserQuestion at orchestrator level, and relay \
+the answer back via SendMessage. The plan must also document how \
+stall/authorization errors raised by a nested dispatch (e.g. TaskStop \
+returning a hard authorization error when invoked from within a nested \
+skill, such as /ship nesting execute or review) are surfaced to and \
+handled by the top-level orchestrator. When workers are abandoned (e.g. on \
+stall or error exit), the plan must verify explicit cleanup via TaskStop or \
+equivalent termination in all cleanup paths."""
 
 [plan.guardrails.acceptance-criteria-all-options-viable]
 severity = "warning"
@@ -443,12 +447,15 @@ writers, migrators, codegen, test fixtures, AND template files \
 (plugins/sdlc/templates/*.toml) that consume the schema -- do not assume the \
 declared-files list captures the scope. Also identify CI workflow files \
 (.github/workflows/*.yml) and documentation (docs/, README) that reference \
-schema fields or examples. Template examples and comments must validate \
-against the schema; the Verification section must explicitly check \
-template-schema conformance (e.g. by reading templates and confirming all \
-enums/constraints match the schema) before marking the task done. Use grep, \
-package-import analysis, and full-module testing before marking the plan \
-done."""
+schema fields or examples. When the schema change introduces a new numeric \
+limit, threshold, or cap field, verify that user-facing documentation \
+(docs/, skill prose, README) explains the key, default value, valid range, \
+and adjustment procedure; schema descriptions do not count as user \
+documentation. Template examples and comments must validate against the \
+schema; the Verification section must explicitly check template-schema \
+conformance (e.g. by reading templates and confirming all enums/constraints \
+match the schema) before marking the task done. Use grep, package-import \
+analysis, and full-module testing before marking the plan done."""
 
 [plan.guardrails.schema-code-sync-required]
 severity = "error"
@@ -524,8 +531,12 @@ stall) has an explicit next instruction, gating conditions do not \
 contradict each other across steps, every flag in the Arguments table is \
 referenced in Workflow and vice versa, and step-number cross-references \
 (within the file and in companion sub-flows) are updated after any \
-reordering. A flow that reads correctly line-by-line but contains an \
-unreachable branch or a dead end is still a plan defect."""
+reordering. If the skill dispatches background workers or sub-agents, \
+every worker must have explicit cleanup (TaskStop, agent termination, or \
+documented self-termination) in the stall handler and all error-recovery \
+paths. A flow that reads correctly line-by-line but contains an \
+unreachable branch, a dead end, or abandoned workers is still a plan \
+defect."""
 
 [plan.guardrails.skill-resume-safety]
 severity = "error"
@@ -853,12 +864,15 @@ annotation is correct."""
 [execute.guardrails.nested-stall-handler-gating]
 severity = "error"
 description = """
-When execute runs as a nested dispatch inside another skill (e.g. /ship \
-invoking execute), TaskStop may return a hard authorization error instead \
-of the normal stall-handling flow. Before marking a task done or wave \
-complete in a nested run, verify the stall-handling path was actually \
-exercised and did not silently fail due to nested-authorization \
-rejection."""
+When any skill runs as a nested dispatch inside another skill (e.g. /ship \
+invoking execute or review), TaskStop may return a hard authorization \
+error instead of the normal stall-handling flow. Before marking a task \
+done or wave complete in a nested run, verify the stall-handling path was \
+actually exercised and did not silently fail due to nested-authorization \
+rejection. Additionally, if the nested skill dispatches background \
+workers or sub-agents, verify that worker cleanup via TaskStop or \
+termination is implemented in the stall handler (Step 3 or equivalent) \
+and all error-recovery paths. No worker should be abandoned."""
 
 [execute.guardrails.enum-field-consistency-verified]
 severity = "warning"

@@ -129,3 +129,10 @@ new changes to that same bar:
   specific-condition checks fail), test the default arm directly: use an
   injectable seam to reach it if the failure is unproducible via the real
   filesystem, and assert the error class, Msg, and Suggestion.
+- When a config key, schema field, or handler default carries a specific
+  value (e.g. a cap, limit, or threshold), a test must assert the default
+  value at the tool output boundary (manifest, `*Out` struct) for every
+  consumer mode or downstream phase that reads it. A unit test of the
+  resolver or factory function alone does not prove the default reaches a
+  specific phase like `plan_critique`; the boundary test must verify
+  end-to-end propagation from default value to the consumer.
