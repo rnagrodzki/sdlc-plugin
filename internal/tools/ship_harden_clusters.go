@@ -89,7 +89,7 @@ func shipStateHardenClusters(root, workDir string, in ShipStateIn) (any, error) 
 		return nil, err
 	}
 	for i := range clusters {
-		clusters[i].AlreadyHardened = triggers[hardenCapRunes(clusters[i].FailureText, hardenTriggerPrefixLen)]
+		clusters[i].AlreadyHardened = triggers[hardenTriggerKey(clusters[i].FailureText)]
 	}
 
 	dirty, err := hardenDirtySurfaces(activeWorktreeRootSafe())
@@ -308,9 +308,19 @@ func hardenCapRunes(s string, n int) string {
 	return string(r[:n])
 }
 
-// hardenLiveTriggers returns the set of healing.hardened[].trigger values
-// recorded in the live ship run for branchIn, across both phases (started
-// and done) — either one means harden already targeted that exact failure.
+// hardenTriggerKey normalizes a FailureText or a recorded trigger for the
+// AlreadyHardened comparison: surrounding white space is trimmed before and
+// after the hardenTriggerPrefixLen cap. FailureText ends with a newline, and
+// rendered tool output drops it, so a trigger copied from that output would
+// not match an exact comparison.
+func hardenTriggerKey(s string) string {
+	return strings.TrimSpace(hardenCapRunes(strings.TrimSpace(s), hardenTriggerPrefixLen))
+}
+
+// hardenLiveTriggers returns the set of healing.hardened[].trigger values,
+// normalized by hardenTriggerKey, recorded in the live ship run for
+// branchIn, across both phases (started and done) — either one means
+// harden already targeted that exact failure.
 // No ship state for the branch is not an error: it returns an empty set, so
 // AlreadyHardened comes back false for every cluster.
 func hardenLiveTriggers(root, workDir, branchIn string) (map[string]bool, error) {
@@ -330,7 +340,7 @@ func hardenLiveTriggers(root, workDir, branchIn string) (map[string]bool, error)
 			continue
 		}
 		if t, _ := m["trigger"].(string); t != "" {
-			triggers[t] = true
+			triggers[hardenTriggerKey(t)] = true
 		}
 	}
 	return triggers, nil

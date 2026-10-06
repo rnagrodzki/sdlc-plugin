@@ -291,13 +291,16 @@ func importFromOld(root string, dryRun bool) (MigrateOut, error) {
 //     in skipped as "<dest path>: <key> (already set)".
 //
 // skipped is sorted. Each value is written with config.WriteFileSection,
-// which splices only that table's text, so the template comments survive
-// (a layout it cannot splice falls back to a whole-file rewrite; MigrateOut
-// has no warnings field, so that fallback is not reported). Whole numbers
-// are written as TOML integers. Returns
-// the changed relative path and whether anything changed (or would change,
-// on a dry run). A missing source, or a source with nothing to import, is a
-// no-op.
+// which splices only that table's text, so the template comments survive. A
+// layout it cannot splice falls back to a whole-file rewrite only when the
+// destination has no comment line (MigrateOut has no warnings field, so that
+// fallback is not reported); when the destination does have a comment line,
+// the write is refused instead (config.ErrWouldDropComments), writeErr wraps
+// it as a *mcpserver.DomainError naming the section to edit by hand, and
+// nothing in that destination file changes. Whole numbers are written as
+// TOML integers. Returns the changed relative path and whether anything
+// changed (or would change, on a dry run). A missing source, or a source
+// with nothing to import, is a no-op.
 func importConfigFileMerge(root, srcName, destName string, allowed map[string]bool, defaults map[string]any, dryRun bool) (rel string, changed bool, skipped []string, err error) {
 	src := filepath.Join(root, paths.LegacyDataDir, srcName)
 	if !migrateFileExists(src) {
@@ -360,7 +363,14 @@ func importConfigFileMerge(root, srcName, destName string, allowed map[string]bo
 		return rel, true, skipped, nil
 	}
 
-	writeErr := func(err error) error {
+	writeErr := func(k string, err error) error {
+		if errors.Is(err, config.ErrWouldDropComments) {
+			return &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("merge %s: %s", destName, err.Error()),
+				Suggestion: fmt.Sprintf("Edit section %s in %s by hand, then retry migrate with action \"import\".", k, rel),
+				Cause:      err,
+			}
+		}
 		return &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("merge %s: %s", destName, err.Error()),
 			Suggestion: "Check write permission and free disk space on " + paths.DataDir + ", then retry migrate with action \"import\".",
@@ -370,7 +380,7 @@ func importConfigFileMerge(root, srcName, destName string, allowed map[string]bo
 	for _, k := range tables {
 		v := config.WholeNumbersToInt(srcMap[k]).(map[string]any)
 		if _, err := config.WriteFileSection(dst, k, v); err != nil {
-			return "", false, nil, writeErr(err)
+			return "", false, nil, writeErr(k, err)
 		}
 	}
 	return rel, true, skipped, nil
@@ -691,7 +701,7 @@ func copyFile(src, dst string) error {
 // RegisterMigrateTools registers the migrate tool on the server.
 func RegisterMigrateTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "migrate",
-		"Runs a legacy migration. Actions: config (schema migration via configmigrate engine), import (non-destructively imports config, templates, jira-templates, learnings, and review-dimensions from the old plugin's "+paths.LegacyDataDir+"/ directory into "+paths.DataDir+"/ — config.toml and local.toml merge per top-level key, accepting either a TOML or legacy JSON source file: a legacy key is written when the destination lacks it or still holds the shipped template default, a key the user changed is kept and listed in skippedKeys, and comments are kept; everything else is skipped whole-file when the destination already exists), layout (moves this plugin's own old state layout, "+paths.DataDir+"/execution/, into the current "+paths.DataDir+"/"+paths.RunsSubdir+"/ layout — state files, per-run directories, and ledger/ entries are each moved independently; a name conflict at the destination is skipped and reported rather than overwritten).",
+		"Runs a legacy migration. Actions: config (schema migration via configmigrate engine), import (non-destructively imports config, templates, jira-templates, learnings, and review-dimensions from the old plugin's "+paths.LegacyDataDir+"/ directory into "+paths.DataDir+"/ — config.toml and local.toml merge per top-level key, accepting either a TOML or legacy JSON source file: a legacy key is written when the destination lacks it or still holds the shipped template default, a key the user changed is kept and listed in skippedKeys, and comments are kept; everything else is skipped whole-file when the destination already exists. If import cannot edit a destination section in place and the file has comments, import writes nothing to that file and returns a DomainError whose Suggestion names the section to edit by hand.), layout (moves this plugin's own old state layout, "+paths.DataDir+"/execution/, into the current "+paths.DataDir+"/"+paths.RunsSubdir+"/ layout — state files, per-run directories, and ledger/ entries are each moved independently; a name conflict at the destination is skipped and reported rather than overwritten).",
 		mcpserver.Annotations{
 			Title:       "Migrate SDLC config",
 			ReadOnly:    false,

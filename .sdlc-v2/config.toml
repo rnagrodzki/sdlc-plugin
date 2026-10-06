@@ -991,9 +991,13 @@ not assume single-write tests cover multi-step partial-failure behavior."""
 severity = "error"
 description = """
 Before marking a task done that modifies a SKILL.md step's behavior \
-(fail-fast condition, skip condition, blocking gate), grep the corresponding \
-`docs/skills/<skill>.md` file for every step whose behavior is changed and \
-confirm that behavior is documented for each step. When the same behavior \
+(fail-fast condition, skip condition, blocking gate), step order, or phase \
+placement, grep the corresponding `docs/skills/<skill>.md` file for every \
+step whose behavior is changed and confirm that behavior is documented for \
+each step. For a step reorder or phase relocation, also check every table \
+and walkthrough in `docs/*-architecture.md` that lists that skill's steps, \
+and confirm the moved step appears at its new position with its current \
+tool calls. When the same behavior \
 change applies to sibling steps (e.g. both verify-openspec and \
 archive-openspec gaining fail-fast-on-missing), both steps must be \
 documented; a doc update covering only the first sibling is a verification \

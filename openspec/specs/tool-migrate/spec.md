@@ -105,7 +105,8 @@ Per legacy top-level key, in this order:
 - Source preference per logical file: `.toml` first; `.json` only when no `.toml` source exists.
 - The destination is always the `.toml` file, even for a `.json` source.
 - `changed` gets `.sdlc-v2/config.toml` or `.sdlc-v2/local.toml` only when at least one key was written (or would be, on dry run).
-- Each value is written by splicing only that table's text, so comments outside the replaced table stay byte-for-byte (same rule as `setup_write_sections`). Only a destination layout that cannot be spliced falls back to a whole-file rewrite; that fallback is not reported.
+- Each value is written with the same key-level writer as `setup_write_sections`: only the lines of changed keys change, every comment line stays, and missing template tips of the written key are restored.
+- When a destination section cannot be edited in place and the file has a comment line, import does not change that file and returns a `DomainError` (see "Import dry run and errors"). A destination file with no comment line falls back to a whole-file rewrite; that fallback is not reported.
 - A whole number is written as a TOML integer (`90`, not `90.0`).
 - The source files are never changed or deleted.
 - `.sdlc-v2/config.toml` receives only its allowed top-level keys: `version`, `jira`, `commit`, `pr`, `plan`, `execute`. Any other legacy key (e.g. `schemaVersion`, `ship`) is not merged and is listed in `skippedKeys`.
@@ -143,7 +144,7 @@ Per legacy top-level key, in this order:
 - **AND** `skippedKeys` is omitted
 - **AND** `.sdlc-v2/config.toml` holds the legacy `jira` and `plan` tables
 - **AND** `.sdlc-v2/local.toml` holds `executeWaveInterval = 90`
-- **AND** every comment and table outside `[jira]`, `[plan.*]`, and `[ship]` is unchanged
+- **AND** every comment line of both templates is still in the files, including the `defaultProject` tip between `[jira]` and `defaultProject = 'OLD'`
 
 #### Scenario: Non-section legacy key skipped
 - **WHEN** `setup_init` wrote the `local.toml` template unchanged
@@ -197,12 +198,20 @@ With `dryRun: true` the import action SHALL report the same `changed` list it wo
 | Legacy config source cannot be parsed | `InfraError` | `read legacy <name>: <cause>` / fix or delete the legacy file, then retry |
 | Destination `.toml` cannot be parsed | `InfraError` | `read <name>: <cause>` / fix the TOML, or delete it and re-run `setup_init` |
 | Directory create, copy, or merge write fails | `InfraError` | `create .sdlc-v2 directory: …`, `copy <name>: …`, or `merge <name>: …` / check permissions, then retry |
+| A destination section cannot be edited in place and the file has a comment line | `DomainError` | `merge <name>: <cause>` / `Edit section <key> in <name> by hand, then retry migrate with action "import".` |
 
 #### Scenario: Dry run writes nothing
 - **WHEN** `.sdlc/local.json` has keys missing from `.sdlc-v2/local.toml`
 - **AND** `dryRun` is `true`
 - **THEN** `changed` is `[".sdlc-v2/local.toml"]`
 - **AND** `.sdlc-v2/local.toml` is not written
+
+#### Scenario: Import refused to keep comments
+- **WHEN** import must write key `jira` into `.sdlc-v2/config.toml`
+- **AND** that file has a comment line
+- **AND** the `jira` section cannot be edited in place
+- **THEN** the tool returns a `DomainError` whose Suggestion is `Edit section jira in .sdlc-v2/config.toml by hand, then retry migrate with action "import".`
+- **AND** `.sdlc-v2/config.toml` is unchanged
 
 ### Requirement: Layout action moves entries one by one
 For `action: "layout"` the tool SHALL move each entry of `.sdlc-v2/execution/` to the same name under `.sdlc-v2/runs/`, one entry at a time. It SHALL merge `.sdlc-v2/execution/ledger/` into `.sdlc-v2/runs/ledger/` child by child.

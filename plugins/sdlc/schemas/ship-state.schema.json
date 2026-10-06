@@ -224,7 +224,7 @@
     },
     "sideEffects": {
       "type": "object",
-      "description": "Idempotency journal keyed by step name, recording each step's verified git/PR side effect so a resumed pipeline can skip re-doing work that already landed. Written by ship_verify_side_effect; consulted by begin-step's alreadyDone flag.",
+      "description": "Idempotency journal keyed by step name (\"<step>#<n>\" for the n-th entry of a name that occurs more than once in steps[], e.g. \"commit#2\"), recording each step's verified git/PR side effect so a resumed pipeline can skip re-doing work that already landed. Written by ship_verify_side_effect; consulted by begin-step's alreadyDone flag.",
       "additionalProperties": {
         "type": "object",
         "properties": {

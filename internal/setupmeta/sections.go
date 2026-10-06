@@ -23,6 +23,16 @@ type Field struct {
 	Default     any      // default value (string, bool, int, []string, or nil)
 	Description string   // one-or-two-sentence description naming the consuming skill
 
+	// Details is the longer explanation setup_prepare returns when asked
+	// (the "explain" input) and the setup skill shows on request. Unlike
+	// Description, it is never truncated for use as inline helper text.
+	Details string
+
+	// Examples holds 1 to 3 sample values, each shaped
+	// "<TOML value> — <meaning>". For enum and multi-enum fields, every
+	// quoted value named in an example must be one of Options.
+	Examples []string
+
 	// Min and Max constrain numeric fields. nil means unconstrained on that end.
 	// Mirrors min/max from the Node.js source field descriptors.
 	Min *int
@@ -65,6 +75,8 @@ var versionFields = []Field{
 		Options:     []string{"yes", "no"},
 		Default:     true,
 		Description: "Enables the tag release path: creates a git tag (and GitHub Release) on every version bump. Independently toggleable from versionFile and changelog — tag creation is never blocked by file-write failures on the other two paths.",
+		Details:     "The tag path runs independently of versionFile and changelog. Turn it off when the project does not release with git tags.",
+		Examples:    []string{"true — creates a git tag (and GitHub Release) on every version bump", "false — skips tag creation; versionFile or changelog can still run"},
 	},
 	{
 		Name:        "tag.prefix",
@@ -73,6 +85,8 @@ var versionFields = []Field{
 		Options:     nil,
 		Default:     "v",
 		Description: "Prefix prepended to the version when the tag path creates a release tag (e.g., prefix `v` produces `v1.2.3`). Empty string is allowed for projects that tag with bare semver. Detected from existing tags when possible. Ignored when tag.enabled is false.",
+		Details:     "setup detects this value from existing tags when possible. An empty prefix matches a project that tags with bare semver.",
+		Examples:    []string{"\"v\" — produces tags like v1.2.3", "\"\" — produces tags like 1.2.3"},
 	},
 	{
 		Name:        "versionFile.enabled",
@@ -81,6 +95,8 @@ var versionFields = []Field{
 		Options:     []string{"yes", "no"},
 		Default:     true,
 		Description: "Enables the version-file release path: writes the bumped version into a tracked file on every bump. Independently toggleable from tag and changelog.",
+		Details:     "The version-file path writes the bumped version into a tracked file on every bump. Turn it off when the project version lives only in git tags.",
+		Examples:    []string{"true — writes the bumped version to versionFile.path on every bump", "false — skips the version-file write; tag or changelog can still run"},
 	},
 	{
 		Name:        "versionFile.path",
@@ -89,6 +105,8 @@ var versionFields = []Field{
 		Options:     nil,
 		Default:     "package.json",
 		Description: "Path to the file that holds the canonical version string, relative to the main worktree root. setup auto-detects common paths (package.json, Cargo.toml, pyproject.toml, plugin.json) but you can override here. Ignored when versionFile.enabled is false.",
+		Details:     "setup auto-detects common paths for this field. Enter a different path when the project keeps its version string somewhere else.",
+		Examples:    []string{"\"package.json\" — the Node.js default", "\"Cargo.toml\" — the Rust default"},
 	},
 	{
 		Name:        "versionFile.fileType",
@@ -97,6 +115,8 @@ var versionFields = []Field{
 		Options:     []string{"package.json", "cargo.toml", "pyproject.toml", "pubspec.yaml", "plugin.json", "version-file"},
 		Default:     "package.json",
 		Description: "Format used to parse and rewrite the version file. The default `package.json` reads the top-level `version` key; `version-file` is a plain-text file containing only the version string. Ignored when versionFile.enabled is false.",
+		Details:     "This value tells the release scripts which parser to use for versionFile.path. Pick version-file when the file holds nothing but the version string.",
+		Examples:    []string{"\"package.json\" — reads the top-level version key", "\"version-file\" — reads a plain-text file holding only the version string"},
 	},
 	{
 		Name:        "changelog.enabled",
@@ -105,6 +125,8 @@ var versionFields = []Field{
 		Options:     []string{"yes", "no"},
 		Default:     false,
 		Description: "Enables the changelog release path: prepends a release entry to a changelog file on every bump. Independently toggleable from tag and versionFile.",
+		Details:     "The changelog path prepends a release entry to changelog.file on every bump. Turn it on only when the project keeps a CHANGELOG.",
+		Examples:    []string{"true — prepends a release entry on every bump", "false — skips the changelog write; tag or versionFile can still run"},
 	},
 	{
 		Name:        "changelog.file",
@@ -113,6 +135,8 @@ var versionFields = []Field{
 		Options:     nil,
 		Default:     "CHANGELOG.md",
 		Description: "Path to the changelog file appended when changelog.enabled is true. Default `CHANGELOG.md` matches the conventional location at repo root. Ignored when changelog.enabled is false.",
+		Details:     "This path is ignored when changelog.enabled is false. Enter a different path when the changelog does not live at the repo root.",
+		Examples:    []string{"\"CHANGELOG.md\" — the conventional location at repo root", "\"docs/CHANGELOG.md\" — a changelog kept under docs/"},
 	},
 	{
 		Name:        "method",
@@ -121,6 +145,8 @@ var versionFields = []Field{
 		Options:     []string{"push", "pr", "push-with-secret"},
 		Default:     "push",
 		Description: "Controls how the versionFile and changelog paths deliver their writes when either is enabled. `push` (default) commits and pushes directly to main (simple, but blocked by branch protection/rulesets unless the token chain resolves to a bypass-listed identity). `pr` opens a single release PR carrying both file writes instead of pushing directly (works with branch protection without a bypass identity, though a protected release tag still needs one). `push-with-secret` is a deprecated alias for `push` — release-on-main.cjs and promote-release.cjs normalize it before running. Does not affect the tag path, which always pushes tags/releases directly. See docs/versioning.md#protected-branches-and-rulesets.",
+		Details:     "This value controls how the versionFile and changelog paths deliver their writes. The tag path always pushes directly and ignores this setting.",
+		Examples:    []string{"\"push\" — commits and pushes directly to main", "\"pr\" — opens a release PR instead of pushing directly"},
 	},
 	{
 		Name:        "pushAuth.secretName",
@@ -129,6 +155,8 @@ var versionFields = []Field{
 		Options:     nil,
 		Default:     "",
 		Description: "Name of the repo secret holding the App or PAT token used in place of the default RELEASE_TOKEN fallback for release pushes. When set to a value other than RELEASE_TOKEN, scaffold_ci rewrites the secrets.RELEASE_TOKEN reference in release-on-main.yml and promote-release.yml to this name, for any method value, not only push-with-secret. See docs/versioning.md#protected-branches-and-rulesets.",
+		Details:     "scaffold_ci rewrites the secrets.RELEASE_TOKEN reference in the release workflows to this name. Leave it empty to keep the default RELEASE_TOKEN secret.",
+		Examples:    []string{"\"\" — keeps the default RELEASE_TOKEN secret", "\"GH_APP_TOKEN\" — uses a GitHub App token instead"},
 	},
 	{
 		Name:        "preRelease",
@@ -137,6 +165,8 @@ var versionFields = []Field{
 		Options:     nil,
 		Default:     "",
 		Description: "When set (e.g., `rc`, `beta`, `alpha`), /pr and /ship default to a pre-release bump (e.g., `1.2.4-rc.1`) on every default invocation until an explicit `major|minor|patch` graduates the release. Must match `^[a-z][a-z0-9]*$`; empty string omits the field and preserves stable-release behavior.",
+		Details:     "When set, /pr and /ship default to a pre-release bump until an explicit major, minor, or patch bump graduates the release. The value must match ^[a-z][a-z0-9]*$.",
+		Examples:    []string{"\"\" — every default bump is a stable release", "\"rc\" — every default bump produces versions like 1.2.4-rc.1"},
 	},
 	{
 		Name:        "preReleasePolicy",
@@ -145,6 +175,8 @@ var versionFields = []Field{
 		Options:     []string{"always-rc", "default-rc", "continue-rc", "never"},
 		Default:     "continue-rc",
 		Description: "Controls whether /pr suggests a release-candidate build instead of a final release. `always-rc` always suggests one; `default-rc` suggests one by default, but an explicit CLI `--bump` overrides it to a final release; `continue-rc` (default) suggests one only when the bump target already has existing RC tags, continuing the RC train; `never` never suggests one.",
+		Details:     "This value controls whether /pr suggests a release-candidate build instead of a final release. continue-rc only continues an RC train that already has tags.",
+		Examples:    []string{"\"continue-rc\" — suggests an RC only when the bump target already has RC tags", "\"never\" — never suggests a release-candidate build"},
 	},
 }
 
@@ -156,6 +188,8 @@ var jiraFields = []Field{
 		Options:     nil,
 		Default:     "",
 		Description: "Project key (2–10 uppercase letters, e.g., `PROJ`) used by /jira when no explicit project is supplied. /commit and /pr also use it when extracting ticket IDs from branch names. Empty string disables Jira integration for the project.",
+		Details:     "/jira uses this project key when no explicit project is supplied. /commit and /pr use it only to extract ticket IDs from branch names.",
+		Examples:    []string{"\"\" — disables Jira integration for the project", "\"PROJ\" — /jira defaults to the PROJ project"},
 	},
 }
 
@@ -167,6 +201,8 @@ var reviewFields = []Field{
 		Options:     []string{"all", "committed", "staged", "working", "worktree"},
 		Default:     "all",
 		Description: "Which changes /review reviews; /review has no scope flag, so this key is the only way to set it. `all` (default when the key is missing) and `committed` both review the commits on the current branch vs the base branch; `staged` reviews staged changes only; `working` reviews staged + unstaged changes vs HEAD; `worktree` reviews the working tree (commits plus uncommitted changes to tracked files) vs the base branch. No scope includes untracked files.",
+		Details:     "/review has no scope flag, so this key is the only way to set the default. all and committed both review the commits on the branch against the base branch.",
+		Examples:    []string{"\"all\" — reviews every commit on the branch against the base branch", "\"working\" — reviews staged and unstaged changes against HEAD"},
 	},
 }
 
@@ -178,6 +214,8 @@ var receivedReviewFields = []Field{
 		Options:     []string{"low", "medium", "high", "critical"},
 		Default:     []string{},
 		Description: "Severities whose \"agree, will fix\" findings bypass the per-finding consent gate in /received-review (Step 10 / Step 12). Stored in .sdlc-v2/local.toml under receivedReview.alwaysFixSeverities — per-developer, never project-wide. Default `[]` preserves the original consent-on-every-finding behavior; e.g. `[\"critical\",\"high\"]` auto-applies high-impact fixes without prompting.",
+		Details:     "A finding at a listed severity skips the per-finding consent gate in /received-review and applies automatically. This value is per-developer, stored in local.toml, never project-wide.",
+		Examples:    []string{"[] — every finding asks for consent before it applies", "[\"critical\", \"high\"] — only low and medium findings still ask for consent"},
 	},
 }
 
@@ -204,6 +242,8 @@ var ShipFields = []Field{
 		Options:     append([]string{}, CanonicalSteps...),
 		Default:     append([]string{}, CanonicalSteps...),
 		Description: "Pipeline steps to run by default. received-review and commit-fixes run conditionally based on review verdict and are not configurable here. harden (right after review) clusters review findings and commits guardrail/dimension hardening before the PR. verify-pipeline and await-remote-review are opt-in entries — add them explicitly to enable post-PR CI verification and remote-reviewer awaiting. verify-openspec is an OpenSpec-gated opt-in — add it explicitly to run `openspec validate --strict <change>` between version and archive-openspec.",
+		Details:     "This list sets which pipeline steps /ship runs by default. received-review and commit-fixes run conditionally and are not configurable here.",
+		Examples:    []string{"[\"execute\", \"commit\", \"review\", \"pr\"] — the minimal pipeline, no CI verification", "[\"execute\", \"commit\", \"review\", \"harden\", \"pr\", \"verify-pipeline\"] — adds post-PR CI verification"},
 	},
 	{
 		Name:        "quick",
@@ -212,6 +252,8 @@ var ShipFields = []Field{
 		Options:     append([]string{}, CanonicalSteps...),
 		Default:     nil,
 		Description: "Optional shortened step list used when ship is invoked with --quick. Same enum as steps. Leave unset to disable the --quick flag for this project.",
+		Details:     "This list sets the shortened step list /ship runs when invoked with --quick. Leave it unset to disable the --quick flag for the project.",
+		Examples:    []string{"[] — leaves --quick disabled", "[\"execute\", \"commit\", \"pr\"] — --quick skips review and verification"},
 	},
 	{
 		Name:        "bump",
@@ -220,6 +262,8 @@ var ShipFields = []Field{
 		Options:     []string{"patch", "minor", "major"},
 		Default:     "patch",
 		Description: "Applied by /pr when no explicit bump argument is passed. The runtime value space is wider than this questionnaire presents: ship.bump in .sdlc-v2/local.toml may also be a pre-release label matching `^[a-z][a-z0-9]*$` (e.g., `rc`, `beta`); enter such values via `ship-init.js --bump <label>` or by editing the config file. Schema (schemas/sdlc-local.schema.json) validates the union pattern.",
+		Details:     "/pr applies this bump level when no explicit bump argument is passed. A pre-release label such as rc or beta is also valid but not offered here; set it with ship-init.js --bump <label> or by editing local.toml directly.",
+		Examples:    []string{"\"patch\" — /pr bumps the patch version by default", "\"minor\" — /pr bumps the minor version by default"},
 	},
 	{
 		Name:        "draft",
@@ -228,6 +272,8 @@ var ShipFields = []Field{
 		Options:     []string{"yes", "no"},
 		Default:     false,
 		Description: "Default value for the --draft flag on /pr",
+		Details:     "This value is the default for the --draft flag on /pr. Pass --draft explicitly on the command line to override it for one run.",
+		Examples:    []string{"true — /pr opens every PR as a draft by default", "false — /pr opens every PR ready for review by default"},
 	},
 	{
 		Name:        "auto",
@@ -236,6 +282,8 @@ var ShipFields = []Field{
 		Options:     []string{"yes", "no"},
 		Default:     false,
 		Description: "Skip interactive approval prompts throughout the ship pipeline",
+		Details:     "This value skips interactive approval prompts throughout the ship pipeline. Turn it on only when the project trusts the pipeline to run unattended.",
+		Examples:    []string{"true — /ship runs every step without asking for approval", "false — /ship asks for approval before each gated step"},
 	},
 	{
 		Name:        "rebase",
@@ -244,6 +292,8 @@ var ShipFields = []Field{
 		Options:     []string{"auto", "skip", "prompt"},
 		Default:     "auto",
 		Description: "auto (rebase automatically), skip (never rebase), prompt (ask each time). Runtime values ship.js expects; do NOT write yes/no.",
+		Details:     "Ship rebases the branch onto the base branch before it opens the PR. \"prompt\" asks each time.",
+		Examples:    []string{"\"auto\" — rebase without a question", "\"prompt\" — ask before each ship"},
 	},
 	{
 		Name:        "reviewThreshold",
@@ -252,6 +302,8 @@ var ShipFields = []Field{
 		Options:     []string{"critical", "high", "medium", "low", "info"},
 		Default:     "info",
 		Description: "Review findings at or above this severity are fixed before the pipeline continues. Findings below it are not dropped — they are deferred to the backlog and listed by /sdlc:deferred. At the default \"info\" every finding, Info included, is fixed in-line; \"low\" defers Info findings.",
+		Details:     "Findings at or above this severity are fixed before the pipeline continues. Findings below it are deferred to the backlog and listed by /sdlc:deferred.",
+		Examples:    []string{"\"info\" — fixes every finding, Info included, before continuing", "\"high\" — defers Low and Info findings to the backlog"},
 	},
 	{
 		Name:                  "verifyPipelineTimeout",
@@ -260,6 +312,8 @@ var ShipFields = []Field{
 		Options:               nil,
 		Default:               1200,
 		Description:           "Maximum seconds verify-pipeline polls before giving up. (R57)",
+		Details:               "verify-pipeline polls the CI run for at most this many seconds before it gives up. Raise it for a CI pipeline slower than 20 minutes.",
+		Examples:              []string{"1200 — gives up after 20 minutes", "2400 — gives up after 40 minutes"},
 		Min:                   intPtr(30),
 		WhenStepInActiveSteps: "verify-pipeline",
 	},
@@ -270,6 +324,8 @@ var ShipFields = []Field{
 		Options:               nil,
 		Default:               60,
 		Description:           "Seconds between verify-pipeline poll attempts. (R57)",
+		Details:               "verify-pipeline waits this many seconds between poll attempts. A lower value finds a result sooner but calls the CI API more often.",
+		Examples:              []string{"60 — polls once a minute", "30 — polls every 30 seconds"},
 		Min:                   intPtr(10),
 		WhenStepInActiveSteps: "verify-pipeline",
 	},
@@ -280,6 +336,8 @@ var ShipFields = []Field{
 		Options:               nil,
 		Default:               3,
 		Description:           "Maximum analyze-fix-recheck iterations. (R47, R57)",
+		Details:               "verify-pipeline retries its analyze-fix-recheck loop at most this many times before it stops and reports the failure. A higher value gives hard failures more attempts to resolve.",
+		Examples:              []string{"3 — stops after 3 analyze-fix-recheck attempts", "5 — allows 2 more attempts for flaky failures"},
 		Min:                   intPtr(1),
 		Max:                   intPtr(10),
 		WhenStepInActiveSteps: "verify-pipeline",
@@ -291,6 +349,8 @@ var ShipFields = []Field{
 		Options:               nil,
 		Default:               600,
 		Description:           "Maximum seconds await-remote-review polls. (R57)",
+		Details:               "await-remote-review polls for a qualifying review for at most this many seconds. Raise it for a team whose reviewers respond slowly.",
+		Examples:              []string{"600 — gives up after 10 minutes", "1800 — gives up after 30 minutes"},
 		Min:                   intPtr(30),
 		WhenStepInActiveSteps: "await-remote-review",
 	},
@@ -301,6 +361,8 @@ var ShipFields = []Field{
 		Options:               nil,
 		Default:               60,
 		Description:           "Seconds between await-remote-review poll attempts. (R57)",
+		Details:               "await-remote-review waits this many seconds between poll attempts. A lower value finds a qualifying review sooner but calls the GitHub API more often.",
+		Examples:              []string{"60 — polls once a minute", "30 — polls every 30 seconds"},
 		Min:                   intPtr(10),
 		WhenStepInActiveSteps: "await-remote-review",
 	},
@@ -311,6 +373,8 @@ var ShipFields = []Field{
 		Options:               nil,
 		Default:               []string{"copilot"},
 		Description:           "Logins (case-insensitive) whose reviews satisfy the gate. (R56, R57)",
+		Details:               "A review from one of these logins satisfies the await-remote-review gate. The match ignores letter case.",
+		Examples:              []string{"[\"copilot\"] — only a Copilot review satisfies the gate", "[\"copilot\", \"github-actions\"] — either reviewer satisfies the gate"},
 		WhenStepInActiveSteps: "await-remote-review",
 	},
 	{
@@ -320,6 +384,8 @@ var ShipFields = []Field{
 		Options:               nil,
 		Default:               1800,
 		Description:           "Maximum seconds a single wave may run before stalled tasks are terminated. (R57, R-WAVE-DEADLINE)",
+		Details:               "A wave that runs longer than this many seconds has its stalled tasks terminated. Raise it for waves whose tasks normally run long.",
+		Examples:              []string{"1800 — terminates a stalled wave after 30 minutes", "3600 — terminates a stalled wave after 60 minutes, the maximum"},
 		Min:                   intPtr(60),
 		Max:                   intPtr(3600), // shipmeta.MaxWaveTimeoutSeconds; kept in sync by test.
 		WhenStepInActiveSteps: "execute",
@@ -331,6 +397,8 @@ var ShipFields = []Field{
 		Options:               nil,
 		Default:               60,
 		Description:           "Seconds between wave liveness poll attempts. (R57, R-WAVE-LIVENESS)",
+		Details:               "execute polls each running task for a liveness heartbeat every this many seconds. A lower value detects a stalled task sooner but checks more often.",
+		Examples:              []string{"60 — polls once a minute", "30 — polls every 30 seconds"},
 		Min:                   intPtr(10),
 		WhenStepInActiveSteps: "execute",
 	},
@@ -348,6 +416,8 @@ var styleFields = []Field{
 		Options:     commstyle.Audiences,
 		Default:     commstyle.DefaultAudience,
 		Description: "Who reads skill explanations and plan narrative sections. technical: mechanism in prose. functional (default): behavior, function, impact; code only in visuals. executive: impact, cost, risk. general: everyday words. beginner: one idea and one example per concept.",
+		Details:     "This value controls how skill explanations and plan narrative sections describe the work. functional, the default, states behavior and impact in prose and keeps code in visuals only.",
+		Examples:    []string{"\"functional\" — states behavior and impact; code stays in visuals", "\"technical\" — explains the mechanism in prose, code included"},
 	},
 	{
 		Name:        "writingStandard",
@@ -356,6 +426,8 @@ var styleFields = []Field{
 		Options:     commstyle.WritingStandards,
 		Default:     commstyle.DefaultWritingStandard,
 		Description: "Sentence rules for narrative and chat text. ste: ASD-STE100. plain-language: US federal plain language. developer-docs: Google developer style. smart-brevity: lede plus why it matters.",
+		Details:     "This value picks the sentence rules applied to narrative and chat text. ste enforces ASD-STE100: short sentences, one idea per sentence.",
+		Examples:    []string{"\"plain-language\" — follows the US federal plain language guidelines", "\"ste\" — enforces ASD-STE100 short-sentence rules"},
 	},
 	{
 		Name:        "tone",
@@ -364,6 +436,8 @@ var styleFields = []Field{
 		Options:     commstyle.Tones,
 		Default:     commstyle.DefaultTone,
 		Description: "direct: honest, no praise, no hedging, banned filler phrases. neutral: no banned-phrase check.",
+		Details:     "direct drops praise and hedging and checks text against a list of banned filler phrases. neutral skips that banned-phrase check.",
+		Examples:    []string{"\"direct\" — no praise, no hedging, filler phrases flagged", "\"neutral\" — no banned-phrase check"},
 	},
 	{
 		Name:        "language",
@@ -372,6 +446,8 @@ var styleFields = []Field{
 		Options:     nil,
 		Default:     commstyle.DefaultLanguage,
 		Description: "Language of skill explanations and plan text. Sentence-length limits apply only to English.",
+		Details:     "This value sets the language of skill explanations and plan text. Sentence-length limits from writingStandard apply only when the language is English.",
+		Examples:    []string{"\"English\" — sentence-length limits apply", "\"Polish\" — sentence-length limits do not apply"},
 	},
 	{
 		Name:        "technicalTerms",
@@ -380,6 +456,8 @@ var styleFields = []Field{
 		Options:     nil,
 		Default:     nil,
 		Description: "Code and product names that the strict STE checks must accept (e.g. logging, routing). One term per line. Words in backticks are always accepted.",
+		Details:     "The strict STE checks normally reject words outside a short common-word list. Each line added here is accepted too; a word in backticks is always accepted regardless of this list.",
+		Examples:    []string{"[] — only the built-in common-word list is accepted", "[\"routing\", \"logging\"] — both words pass the strict STE check"},
 	},
 }
 
@@ -393,6 +471,8 @@ var planStyleFields = []Field{
 		Options:     commstyle.VisualDensities,
 		Default:     commstyle.DefaultVisualDensity,
 		Description: "Share of tables, lists, diagrams, and code versus prose. high: prose share at most 0.30. balanced: 0.50. low: 0.75.",
+		Details:     "This value sets the minimum share of tables, lists, diagrams, and code in a plan, versus prose. high keeps prose to at most 30% of the plan.",
+		Examples:    []string{"\"balanced\" — prose stays at or below 50% of the plan", "\"high\" — prose stays at or below 30% of the plan"},
 	},
 	{
 		Name:        "narrativeRules",
@@ -401,6 +481,8 @@ var planStyleFields = []Field{
 		Options:     nil,
 		Default:     nil,
 		Description: "Extra writing rules added to the end of the writing guide (<extra_rules>). One rule per line — rules may contain commas, so this field splits on newline, not comma.",
+		Details:     "Each line here is added to the end of the writing guide /plan sends to itself and to every subagent. A rule may contain commas; only a newline starts a new rule.",
+		Examples:    []string{"[] — no extra narrative rules", "[\"Cite file:line for every claim about existing code\"] — adds one extra rule"},
 	},
 	{
 		Name:        "instructions",
@@ -409,6 +491,8 @@ var planStyleFields = []Field{
 		Options:     nil,
 		Default:     nil,
 		Description: "Process instructions /plan shows at start and forwards to every step and subagent (e.g., cite file:line for every claim about existing code). One instruction per line — instructions may contain commas, so this field splits on newline, not comma.",
+		Details:     "Each line here is a process instruction /plan shows at the start of a run and forwards to every step and subagent. An instruction may contain commas; only a newline starts a new instruction.",
+		Examples:    []string{"[] — no extra process instructions", "[\"Cite file:line for every claim about existing code\"] — adds one extra instruction"},
 	},
 }
 
@@ -420,6 +504,8 @@ var planTasksFields = []Field{
 		Options:     []string{"full", "minimal", "none"},
 		Default:     "full",
 		Description: "Shape of the required task contract /plan enforces on every task: `full` (Complexity, Risk, Files, Verify, Depends on), `minimal` (essential fields only), `none` (flexible, no fixed shape).",
+		Details:     "This value sets the task contract /plan enforces on every task. full requires Complexity, Risk, Files, Verify, and Depends on; none allows any shape.",
+		Examples:    []string{"\"full\" — requires Complexity, Risk, Files, Verify, and Depends on", "\"minimal\" — requires only the essential fields"},
 	},
 	{
 		Name:        "requiredFields",
@@ -428,6 +514,8 @@ var planTasksFields = []Field{
 		Options:     nil,
 		Default:     nil,
 		Description: "Extra fields required on every plan task, beyond the five core fields /plan always guarantees (Complexity, Risk, Files, Verify, Depends on). Comma-separated; duplicates of the five core fields are dropped automatically.",
+		Details:     "Each entry here adds one more required field to every plan task, beyond the five fields /plan always guarantees. A duplicate of one of the five core fields is dropped automatically.",
+		Examples:    []string{"[] — only the five core fields are required", "[\"Rollback\"] — every task must also state a rollback plan"},
 	},
 }
 
@@ -443,6 +531,8 @@ var githubFields = []Field{
 		Options:     nil,
 		Default:     "",
 		Description: "GitHub login expected to be active when /pr creates a PR. /pr halts hard if the active gh account differs from this value, preventing wrong-account PRs in multi-account setups. Default is the origin remote owner; leave blank to skip the active-account check (fall through to email-mapping or origin-owner cascade).",
+		Details:     "/pr halts hard when the active gh account differs from this value, which stops a PR from opening under the wrong account. Leave it blank to skip that check.",
+		Examples:    []string{"\"\" — skips the active-account check", "\"octocat\" — /pr halts unless gh is logged in as octocat"},
 	},
 }
 
@@ -461,6 +551,8 @@ var automationFields = []Field{
 		Options:     []string{"supervised", "unattended"},
 		Default:     "supervised",
 		Description: "Default automation mode for pipeline steps not listed in automation.steps{}. \"supervised\" requires confirmation before each step; \"unattended\" runs automatically.",
+		Details:     "This value is the default automation mode for pipeline steps not listed in automation.steps{}. unattended runs those steps without asking for confirmation.",
+		Examples:    []string{"\"supervised\" — asks for confirmation before each step", "\"unattended\" — runs every step without asking"},
 	},
 	{
 		Name:        "report.enabled",
@@ -469,6 +561,8 @@ var automationFields = []Field{
 		Options:     []string{"yes", "no"},
 		Default:     true,
 		Description: "Whether to emit an execution report at the end of an /execute or /ship run (KD-11).",
+		Details:     "This value turns the end-of-run execution report on or off for /execute and /ship. Turn it off for a project that does not read the report.",
+		Examples:    []string{"true — writes an execution report at the end of the run", "false — skips the execution report"},
 	},
 	{
 		Name:        "report.format",
@@ -477,6 +571,8 @@ var automationFields = []Field{
 		Options:     []string{"md", "json"},
 		Default:     "md",
 		Description: "Output format for the execution report when report.enabled is true.",
+		Details:     "This value sets the output format of the execution report, only when report.enabled is true. json suits a report a script parses; md suits one a person reads.",
+		Examples:    []string{"\"md\" — writes the report as Markdown", "\"json\" — writes the report as JSON"},
 	},
 	{
 		Name:        "drift.maxErrorRate",
@@ -484,6 +580,8 @@ var automationFields = []Field{
 		Type:        "string",
 		Default:     "0.15",
 		Description: "Fraction (0-1) of total tasks that may error before an unattended run halts on plan drift. Effective threshold is max(drift.minErrorFloor, ceil(rate * totalTasks)).",
+		Details:     "This value is the fraction, from 0 to 1, of total tasks that may error before an unattended run halts on plan drift. The effective threshold is the larger of this rate and drift.minErrorFloor.",
+		Examples:    []string{"\"0.15\" — halts once more than 15% of tasks error", "\"0.30\" — halts once more than 30% of tasks error"},
 	},
 	{
 		Name:        "drift.maxWarningRate",
@@ -491,6 +589,8 @@ var automationFields = []Field{
 		Type:        "string",
 		Default:     "0.40",
 		Description: "Fraction (0-1) of total tasks that may warn before an unattended run halts on plan drift. Effective threshold is max(drift.minErrorFloor, ceil(rate * totalTasks)).",
+		Details:     "This value is the fraction, from 0 to 1, of total tasks that may warn before an unattended run halts on plan drift. The effective threshold is the larger of this rate and drift.minErrorFloor.",
+		Examples:    []string{"\"0.40\" — halts once more than 40% of tasks warn", "\"0.60\" — halts once more than 60% of tasks warn"},
 	},
 	{
 		Name:        "drift.minErrorFloor",
@@ -500,6 +600,8 @@ var automationFields = []Field{
 		Min:         intPtr(1),
 		Max:         intPtr(100),
 		Description: "Minimum absolute error count tolerated regardless of drift.maxErrorRate, so small plans aren't held to an unreachable fractional threshold.",
+		Details:     "This value is the minimum absolute error count tolerated regardless of drift.maxErrorRate. It stops a small plan from being held to an unreachable fractional threshold.",
+		Examples:    []string{"2 — halts after 2 errors even on a tiny plan", "5 — tolerates up to 5 errors on a tiny plan"},
 	},
 	{
 		Name:        "push.featureBranchAutoApprove",
@@ -508,6 +610,8 @@ var automationFields = []Field{
 		Options:     []string{"yes", "no"},
 		Default:     true,
 		Description: "Auto-approve pushes to feature branches during /ship without a confirmation prompt. Forced true at runtime when automation.mode is \"unattended\"; default-branch pushes are always hard-gated regardless of this setting.",
+		Details:     "This value auto-approves pushes to feature branches during /ship without a confirmation prompt. automation.mode \"unattended\" forces this to true at runtime; a default-branch push is always gated regardless of this setting.",
+		Examples:    []string{"true — pushes to feature branches without asking", "false — asks for confirmation before every feature-branch push"},
 	},
 }
 

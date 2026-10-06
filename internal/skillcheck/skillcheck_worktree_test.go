@@ -225,11 +225,11 @@ var worktreeSkillsDisclosedGapExceptions = map[string]worktreeSkillsException{
 		contains: "re-call `setup_prepare` and re-Read",
 		reason:   `re-Read of config.toml/local.toml; the continuation line immediately below reads "same disclosed gap as Step 0, no tool-backed alternative"`,
 	},
-	"skills/setup/SKILL.md:772": {
+	"skills/setup/SKILL.md:786": {
 		contains: "Read the current",
 		reason:   `Read of config.toml; the line immediately below reads "No MCP tool returns this value, so this Read is a deliberate, disclosed exception"`,
 	},
-	"skills/setup/SKILL.md:819": {
+	"skills/setup/SKILL.md:833": {
 		contains: "Re-run Step 0's snapshot",
 		reason:   `re-Read of config.toml/local.toml; the continuation line immediately below reads "same disclosed gap as Step 0, no tool-backed alternative"`,
 	},

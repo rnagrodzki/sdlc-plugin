@@ -1975,6 +1975,66 @@ func TestShipVerifySideEffect_CommitSha_ResumeConfirmsJournal(t *testing.T) {
 	}
 }
 
+// TestShipVerifySideEffect_CommitSha_SecondCommitGetsOwnKey verifies that,
+// with commit twice in steps[], verifying while the second commit is in
+// progress writes sideEffects["commit#2"] and leaves the first commit's
+// sideEffects["commit"] entry unchanged.
+func TestShipVerifySideEffect_CommitSha_SecondCommitGetsOwnKey(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	branch := "feat/sha-second-commit"
+	checkoutBranch(t, dir, branch)
+	statePath := shipStateInitFixture(t, dir, branch)
+	setSteps(t, statePath, "commit", "harden", "commit")
+
+	firstSHA, err := shipHeadSHA(dir)
+	if err != nil {
+		t.Fatalf("shipHeadSHA: %v", err)
+	}
+	for _, c := range []struct{ action, step string }{
+		{"begin-step", "commit"}, {"complete-step", "commit"},
+		{"begin-step", "harden"}, {"complete-step", "harden"},
+	} {
+		if c.action == "complete-step" && c.step == "commit" {
+			if _, err := shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "commit", Expected: firstSHA}, fixedNow(time.Now())); err != nil {
+				t.Fatalf("verify first commit: %v", err)
+			}
+		}
+		if _, err := shipState(dir, dir, ShipStateIn{Action: c.action, Step: c.step, Detail: map[string]any{"branch": branch}}, fixedNow(time.Now())); err != nil {
+			t.Fatalf("%s %s: %v", c.action, c.step, err)
+		}
+	}
+
+	gitCommit(t, dir, "harden edits")
+	secondSHA, err := shipHeadSHA(dir)
+	if err != nil {
+		t.Fatalf("shipHeadSHA: %v", err)
+	}
+	if _, err := shipState(dir, dir, ShipStateIn{Action: "begin-step", Step: "commit", Detail: map[string]any{"branch": branch}}, fixedNow(time.Now())); err != nil {
+		t.Fatalf("begin-step second commit: %v", err)
+	}
+	out, err := shipVerifySideEffect(dir, dir, ShipVerifySideEffectIn{Step: "commit", Expected: secondSHA}, fixedNow(time.Now()))
+	if err != nil {
+		t.Fatalf("verify second commit: %v", err)
+	}
+	if !out.Landed {
+		t.Fatal("Landed = false, want true")
+	}
+
+	journal := readStateData(t, statePath)["sideEffects"].(map[string]any)
+	if ref := journal["commit"].(map[string]any)["ref"]; ref != firstSHA {
+		t.Errorf(`sideEffects["commit"].ref = %v, want first commit %v`, ref, firstSHA)
+	}
+	second, ok := journal["commit#2"].(map[string]any)
+	if !ok {
+		t.Fatalf(`sideEffects["commit#2"] missing: %#v`, journal)
+	}
+	if second["ref"] != secondSHA {
+		t.Errorf(`sideEffects["commit#2"].ref = %v, want %v`, second["ref"], secondSHA)
+	}
+}
+
 // TestShipStateSchema_SideEffectsKindEnum proves AC4's schema-level
 // enforcement: ship-state.schema.json must accept a sideEffects entry with a
 // valid kind ("pr"/"sha") and reject one with an unrecognized kind, via the

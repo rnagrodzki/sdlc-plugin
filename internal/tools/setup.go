@@ -25,6 +25,11 @@ import (
 // SetupPrepareIn is the input for the setup_prepare tool.
 type SetupPrepareIn struct {
 	SkipConfigCheck bool `json:"skipConfigCheck,omitempty" jsonschema_description:"Skips the config-version auto-migration gate normally run before preflight checks. Set only when the caller has already verified or migrated the config."`
+	// Explain selects explain mode: when set, setupPrepareWithDrift
+	// returns only the explanation of the named option (see
+	// optionExplanation) instead of the full section list. Checked before
+	// any other work so the reply stays small during setup.
+	Explain string `json:"explain,omitempty" jsonschema_description:"Plain text. The option to explain, as <sectionId>.<fieldName> from sections[].id and sections[].fields[].name. When set, the result holds only the explanation. Example: ship.rebase"`
 }
 
 // sectionRow is a JSON-friendly projection of setupmeta.Section with
@@ -55,6 +60,27 @@ type fieldRow struct {
 	Min                   *int     `json:"min,omitempty"`
 	Max                   *int     `json:"max,omitempty"`
 	WhenStepInActiveSteps string   `json:"whenStepInActiveSteps,omitempty"`
+	// Examples holds 1 to 3 sample values for this field, mirroring
+	// setupmeta.Field.Examples (see explain mode on setup_prepare).
+	Examples []string `json:"examples,omitempty"`
+}
+
+// optionExplanation is explain mode's result: the full explanation of one
+// setupmeta field, named "<sectionId>.<fieldName>". Deliberately omits a
+// "current value": setup_prepare does not read the project's config files,
+// so it explains an option without showing what it is set to.
+type optionExplanation struct {
+	Option      string   `json:"option"`
+	Label       string   `json:"label"`
+	Type        string   `json:"type"`
+	Options     []string `json:"options"`
+	Default     any      `json:"default"`
+	Description string   `json:"description"`
+	Details     string   `json:"details"`
+	Examples    []string `json:"examples"`
+	ConfigFile  string   `json:"configFile"`
+	ConfigPath  string   `json:"configPath"`
+	ConsumedBy  []string `json:"consumedBy"`
 }
 
 // SetupPrepareOut is the output for the setup_prepare tool.
@@ -69,6 +95,47 @@ type SetupPrepareOut struct {
 	// Best-effort: degrades to an empty list rather than failing
 	// setup_prepare if the comparison errors.
 	CIScriptDrift []CIScriptDriftEntry `json:"ciScriptDrift"`
+	// Explanation is explain mode's result (see SetupPrepareIn.Explain).
+	// Set only in explain mode, where it is the only populated field
+	// besides OK and Next.
+	Explanation *optionExplanation `json:"explanation,omitempty"`
+	// Next is explain mode's instruction to the calling skill: show the
+	// explanation, then ask the open question again. Empty outside
+	// explain mode.
+	Next string `json:"next,omitempty"`
+}
+
+// setupPrepareExplainOut is the wire shape for explain mode: only ok,
+// explanation and next (spec.md "Output fields": "With explain, the result
+// holds only ok, explanation and next"). SetupPrepareOut itself cannot drop
+// NeedsMigration/Sections/CIScriptDrift via a json:",omitempty" tag change,
+// because those three fields must stay present (and not disappear on a
+// false/empty/zero value) in normal mode -- see the same fields' table rows.
+// A custom MarshalJSON on SetupPrepareOut would not help either: the actual
+// MCP wire format is not JSON. mcpserver.Register renders tool output as
+// Markdown via renderOK, which walks the returned value's fields by
+// reflection and reads the "json" struct tag directly for names/omitempty
+// (mcpserver/render.go's structEntries) -- it never calls MarshalJSON. So the
+// only way to drop fields from what the caller actually sees is to hand
+// renderOK a value whose type does not have them, which is what
+// setupPrepareResult does for the registered handler.
+type setupPrepareExplainOut struct {
+	OK          bool               `json:"ok"`
+	Explanation *optionExplanation `json:"explanation"`
+	Next        string             `json:"next"`
+}
+
+// setupPrepareResult projects a SetupPrepareOut down to setupPrepareExplainOut
+// when it is explain mode's result (Explanation set -- see
+// SetupPrepareOut.Explanation's comment), so the registered setup_prepare
+// handler hands renderOK a value that carries only ok/explanation/next.
+// Normal-mode results pass through unchanged, including the "always present"
+// needsMigration/sections/ciScriptDrift fields their table rows require.
+func setupPrepareResult(out SetupPrepareOut) any {
+	if out.Explanation != nil {
+		return setupPrepareExplainOut{OK: out.OK, Explanation: out.Explanation, Next: out.Next}
+	}
+	return out
 }
 
 // setupPrepare is the core logic, separated from the handler for
@@ -86,6 +153,13 @@ func setupPrepare(root string, in SetupPrepareIn) (SetupPrepareOut, error) {
 // handler can point driftRoot at the active worktree without disturbing the
 // main-worktree anchoring every other part of setup_prepare relies on.
 func setupPrepareWithDrift(root, driftRoot string, in SetupPrepareIn) (SetupPrepareOut, error) {
+	// Explain mode is checked before any other work, so the reply stays
+	// small during setup and never pays for migration/CI-drift checks it
+	// does not need.
+	if in.Explain != "" {
+		return setupExplainOption(in.Explain)
+	}
+
 	// Check migration state (best-effort, never a tool error).
 	needsMigration := false
 	if !in.SkipConfigCheck {
@@ -110,6 +184,7 @@ func setupPrepareWithDrift(root, driftRoot string, in SetupPrepareIn) (SetupPrep
 				Min:                   f.Min,
 				Max:                   f.Max,
 				WhenStepInActiveSteps: f.WhenStepInActiveSteps,
+				Examples:              f.Examples,
 			}
 		}
 		rows[i] = sectionRow{
@@ -155,6 +230,82 @@ func setupPrepareWithDrift(root, driftRoot string, in SetupPrepareIn) (SetupPrep
 		DefaultBranch:  defaultBranch,
 		RemoteOwner:    remoteOwner,
 		CIScriptDrift:  ciDrift,
+	}, nil
+}
+
+// setupExplainOption implements setup_prepare's explain mode: it parses
+// explain as "<sectionId>.<fieldName>" (split at the first "."), looks up
+// that field in setupmeta.Sections(), and returns only its explanation. See
+// SetupPrepareIn.Explain and optionExplanation.
+func setupExplainOption(explain string) (SetupPrepareOut, error) {
+	sectionID, fieldName, ok := strings.Cut(explain, ".")
+	if !ok || sectionID == "" || fieldName == "" {
+		return SetupPrepareOut{}, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf(`setup_prepare: explain %q is not <sectionId>.<fieldName>`, explain),
+			Suggestion: `Pass a value such as "ship.rebase".`,
+		}
+	}
+
+	meta := setupmeta.Sections()
+	var section *setupmeta.Section
+	for i := range meta {
+		if meta[i].ID == sectionID {
+			section = &meta[i]
+			break
+		}
+	}
+	if section == nil {
+		ids := make([]string, len(meta))
+		for i, s := range meta {
+			ids[i] = s.ID
+		}
+		return SetupPrepareOut{}, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("setup_prepare: unknown section %q; valid: %v", sectionID, ids),
+			Suggestion: "Use a section id from sections[].id.",
+		}
+	}
+
+	if len(section.Fields) == 0 {
+		return SetupPrepareOut{}, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("setup_prepare: section %q has no fields; it runs the %s sub-flow", sectionID, section.DelegatedTo),
+			Suggestion: "Explain from that sub-flow file instead.",
+		}
+	}
+
+	var field *setupmeta.Field
+	for i := range section.Fields {
+		if section.Fields[i].Name == fieldName {
+			field = &section.Fields[i]
+			break
+		}
+	}
+	if field == nil {
+		names := make([]string, len(section.Fields))
+		for i, f := range section.Fields {
+			names[i] = f.Name
+		}
+		return SetupPrepareOut{}, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("setup_prepare: section %q has no field %q; valid: %v", sectionID, fieldName, names),
+			Suggestion: "Use a name from sections[].fields[].name.",
+		}
+	}
+
+	return SetupPrepareOut{
+		OK: true,
+		Explanation: &optionExplanation{
+			Option:      sectionID + "." + fieldName,
+			Label:       field.Label,
+			Type:        field.Type,
+			Options:     field.Options,
+			Default:     field.Default,
+			Description: field.Description,
+			Details:     field.Details,
+			Examples:    field.Examples,
+			ConfigFile:  section.ConfigFile,
+			ConfigPath:  section.ConfigPath,
+			ConsumedBy:  section.ConsumedBy,
+		},
+		Next: "Show the explanation to the user, then ask the open question again.",
 	}, nil
 }
 
@@ -791,20 +942,20 @@ func setupReadPlanTemplate(root string) (SetupInitOut, error) {
 // RegisterSetupTools registers setup_prepare and setup_init on the server.
 func RegisterSetupTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "setup_prepare",
-		"Returns the canonical section descriptors for setup, with per-section field metadata and runtime-detected defaults (defaultBranch, remoteOwner). Optionally checks config migration state. Also reports ciScriptDrift: per-script version comparison against the embedded scaffold_ci payloads, flagging outdated or not-yet-installed CI scripts (remediate with scaffold_ci({force:true})).",
+		"Returns the canonical section descriptors for setup, with per-section field metadata and runtime-detected defaults (defaultBranch, remoteOwner). Optionally checks config migration state. Also reports ciScriptDrift: per-script version comparison against the embedded scaffold_ci payloads, flagging outdated or not-yet-installed CI scripts (remediate with scaffold_ci({force:true})). Optional: explain (\"<sectionId>.<fieldName>\", for example \"ship.rebase\") returns only the explanation of that option (details, examples, type, options, default, config file and path) with a next step: next tells the skill to show the explanation and ask the open question again. A value without a dot, an unknown section, a section with no fields, or an unknown field returns a DomainError with a Suggestion.",
 		mcpserver.Annotations{
 			Title:      "Prepare SDLC setup context",
 			ReadOnly:   true,
 			Idempotent: true,
 			OpenWorld:  false,
 		},
-		func(ctx mcpserver.Ctx, in SetupPrepareIn) (SetupPrepareOut, error) {
+		func(ctx mcpserver.Ctx, in SetupPrepareIn) (any, error) {
 			root, err := worktree.MainRoot()
 			if err != nil {
 				// Fallback to cwd — setup must work before any context exists.
 				root, err = os.Getwd()
 				if err != nil {
-					return SetupPrepareOut{}, &mcpserver.InfraError{
+					return nil, &mcpserver.InfraError{
 						Msg:        fmt.Sprintf("resolve project root: %s", err.Error()),
 						Suggestion: "Restart the sdlc MCP server from a directory that still exists, then retry setup_prepare.",
 						Cause:      err,
@@ -815,7 +966,14 @@ func RegisterSetupTools(s *mcpserver.Server) {
 			if active, err := worktree.ActiveRoot(); err == nil {
 				driftRoot = active
 			}
-			return setupPrepareWithDrift(root, driftRoot, in)
+			out, err := setupPrepareWithDrift(root, driftRoot, in)
+			if err != nil {
+				return nil, err
+			}
+			// setupPrepareResult drops NeedsMigration/Sections/CIScriptDrift
+			// for explain mode's reply -- see its doc comment and
+			// setupPrepareExplainOut's.
+			return setupPrepareResult(out), nil
 		},
 	)
 

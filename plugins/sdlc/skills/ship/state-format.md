@@ -51,7 +51,7 @@ Managed by the shared `internal/state` package (the same one `execute_state`, `p
 | `deferredFindings` | array | Appended by `ship_state{action:"defer"}`. |
 | `issues` | array | Structured issue accumulator, appended by `ship_state{action:"fail"}`. See "Issues and `lastFailedStep`" below. |
 | `lastFailedStep` | string \| null | Name of the most recent step passed to `fail`. |
-| `sideEffects` | object | Idempotency journal keyed by step name. Written by `ship_verify_side_effect`; consulted by `begin-step`'s `alreadyDone` flag. See below. |
+| `sideEffects` | object | Idempotency journal keyed by step name (`<step>#<n>` for a repeated name). Written by `ship_verify_side_effect`; consulted by `begin-step`'s `alreadyDone` flag. See below. |
 | `healing` | object | Absent until the first `ship_state{action:"healing_record"}` call. Self-healing ledger (`reviewTotal`, `fixed[]`, `hardened[]`). See "`data.healing`" below. |
 | `pipelineStatus` | string | Absent until the pipeline is stamped terminal. Set to `"completed"` by `cleanup`/`cleanup-pipeline` — see "Lifecycle: Cleanup." |
 | `pipelineCompletedAt` | string | Paired timestamp, set alongside `pipelineStatus`. |
@@ -88,7 +88,7 @@ Every entry carries a `kind`: `"tracked"` for the four step names with a purpose
 
 ### The two names with no entry at all
 
-`received-review` and `commit-fixes` are **never** members of `ship.steps[]` / `flags.steps` — they are conditional sub-steps triggered by review findings at or above `flags.reviewThreshold` (per finding, not by the review's overall Verdict line), not pipeline-composition choices (see `shipmeta.CanonicalSteps`, which excludes both). Because `InitialShipStepsFromConfig` only creates an entry for names present in `stepsList`, these two **never get a `steps[]` entry, under any real `ship_prepare`-driven run.** `begin-step`, `complete-step`, `start`, `complete`, `skip`, and `fail` all look a step up by name (`shipFindStepEntry`, a plain linear scan) and return a `DataError` ("step %q not found in state") for either name. Track their outcome with `ship_state{action:"decide", step:"received-review"|"commit-fixes", detail:{text:"..."}}` instead — `decide` never validates against `steps[]`, so it always succeeds.
+`received-review` and `commit-fixes` are **never** members of `ship.steps[]` / `flags.steps` — they are conditional sub-steps triggered by review findings at or above `flags.reviewThreshold` (per finding, not by the review's overall Verdict line), not pipeline-composition choices (see `shipmeta.CanonicalSteps`, which excludes both). Because `InitialShipStepsFromConfig` only creates an entry for names present in `stepsList`, these two **never get a `steps[]` entry, under any real `ship_prepare`-driven run.** `begin-step`, `complete-step`, `start`, `complete`, `skip`, and `fail` all look a step up by name (`shipFindStepEntry` — see "Repeated step names" below) and return a `DataError` ("step %q not found in state") for either name. Track their outcome with `ship_state{action:"decide", step:"received-review"|"commit-fixes", detail:{text:"..."}}` instead — `decide` never validates against `steps[]`, so it always succeeds.
 
 ### A legacy raw scaffold still exists, but this skill never uses it
 
@@ -132,6 +132,17 @@ This scaffold's entries carry no `kind` field at all (omitted) and — uniquely 
 | `failed` | Terminated with an error; always blocks progress (and never trips the cleanup contract check — see below). |
 
 **R-b1 proceed-gate** (`shipStepBlocksProceed`): a `pending` step blocks unless it has a `condition` key present. Under a real `ship_prepare`-driven run this exemption is **effectively dead code** — no entry ever carries `condition`, since `InitialShipStepsFromConfig` never sets it. Every entry must be driven to `completed`/`skipped`/`failed` before `next`/`begin-step`'s prior-step check will move past it. (The exemption only matters for the legacy fixed scaffold's `received-review`/`commit-fixes` entries, which this skill never produces.)
+
+### Repeated step names
+
+A step name can occur more than once in `steps[]` — the default `[ship] steps` list has `commit` twice. `begin-step`, `complete-step`, `start`, `complete`, `skip` and `fail` take only a name, so the lookup (`shipFindStepIndex`) selects one entry:
+
+| Entries with the name | Selected entry |
+|---|---|
+| at least one is not `completed` or `skipped` | the first such entry |
+| all are `completed` or `skipped` | the first entry with the name |
+
+The proceed-gate keeps an earlier entry from being passed while it is `pending`, `in_progress` or `failed`, so the selected entry is the one the pipeline is at. The step position in each summary (`(3 of 9)`) is the position of the selected entry.
 
 ---
 
@@ -199,7 +210,7 @@ Ship's review routing defers each finding below `flags.reviewThreshold` this way
 
 ## `sideEffects` Object
 
-Idempotency journal keyed by step name, recording each step's verified git/PR side effect so a resumed pipeline can skip re-doing work that already landed:
+Idempotency journal keyed by step name, recording each step's verified git/PR side effect so a resumed pipeline can skip re-doing work that already landed. A name that occurs more than once in `steps[]` gets one key per entry: `commit` for the first `commit` entry, `commit#2` for the second, and so on:
 
 ```json
 {
@@ -207,7 +218,7 @@ Idempotency journal keyed by step name, recording each step's verified git/PR si
 }
 ```
 
-`kind` is one of `"pr"` or `"sha"` — there is no `"release-intent"` kind. Written by `ship_verify_side_effect`; consulted by `begin-step`'s `alreadyDone` flag (surfaced in `ShipStepNarrationOut.AlreadyDone`) so a resumed pipeline doesn't, say, re-dispatch the pr step once its PR (`ref` = `"#<number>"`) is already journaled. Release-intent correctness (bump level, pre-release label, notes) has no journal entry of its own — it is enforced synchronously by `pr_apply` itself at call time, not tracked as a separate side effect here.
+`kind` is one of `"pr"` or `"sha"` — there is no `"release-intent"` kind. `ship_verify_side_effect({step:"commit"})` writes the key of the `commit` entry that the step lookup selects (see "Repeated step names"), which is the one in progress when the call follows `begin-step`. Written by `ship_verify_side_effect`; consulted by `begin-step`'s `alreadyDone` flag (surfaced in `ShipStepNarrationOut.AlreadyDone`) so a resumed pipeline doesn't, say, re-dispatch the pr step once its PR (`ref` = `"#<number>"`) is already journaled. Release-intent correctness (bump level, pre-release label, notes) has no journal entry of its own — it is enforced synchronously by `pr_apply` itself at call time, not tracked as a separate side effect here.
 
 ---
 

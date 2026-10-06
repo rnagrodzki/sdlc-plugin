@@ -97,8 +97,14 @@ For kind `sha`, the tool SHALL compare `HEAD` against `expected` when given, els
 The tool SHALL write `sideEffects.<step>` in the current branch's ship state file under `.sdlc-v2/runs/` only when `landed` is `true` and a ship state file exists for the branch.
 
 - The entry shape is `{kind, ref, verifiedAt}`; `kind` is `pr` or `sha`.
+- The entry key is the journal key of the `steps[]` entry that `ship_state` selects for the step name (see the tool-ship-state requirement "Repeated step names"): `commit` for the first `commit` entry, `commit#2` for the second. With no state file, nothing is written.
 - No ship state file for the branch, or an unresolvable branch, is not an error: the check still runs and nothing is written.
 - `ship_state` `begin-step` reads this entry to set `alreadyDone`.
+
+#### Scenario: Second commit gets its own entry
+- **WHEN** `steps[]` has `commit` twice, the first is `completed` with `sideEffects.commit` journaled, the second is `in_progress`, and the call passes `step:"commit"` with `expected` equal to `HEAD`
+- **THEN** `sideEffects.commit#2.ref` is the `HEAD` sha
+- **AND** `sideEffects.commit` is unchanged
 
 #### Scenario: No ship state for the branch
 - **WHEN** the call passes `step:"pr"`, the PR exists, and the branch has no ship state file

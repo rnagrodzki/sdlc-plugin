@@ -123,6 +123,26 @@ func TestSections_Count(t *testing.T) {
 	}
 }
 
+// TestSections_CanonicalOrder pins the exact section order the
+// tool-setup-prepare spec's "Section manifest" requirement documents, so a
+// reordering or an added/removed section is caught here instead of only by
+// a stale spec count.
+func TestSections_CanonicalOrder(t *testing.T) {
+	want := []string{
+		"version", "ship", "jira", "review", "received-review", "commit",
+		"pr", "github", "pr-labels", "review-dimensions", "pr-template",
+		"plan-template", "communication-style", "plan-style", "plan-tasks",
+		"plan-guardrails", "execution-guardrails", "openspec-block", "automation",
+	}
+	var got []string
+	for _, s := range Sections() {
+		got = append(got, s.ID)
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("Sections() order = %v, want %v", got, want)
+	}
+}
+
 // TestAutomationSection verifies the "automation" section descriptor: its
 // storage location, consuming skills, and the presence/shape of all 7
 // automationFields entries (mode, report.enabled, report.format,
@@ -235,6 +255,47 @@ func TestPlanStyleFields_InstructionsMatchesSchema(t *testing.T) {
 	}
 	if field.Default != nil {
 		t.Errorf("instructions Default = %v, want nil", field.Default)
+	}
+}
+
+// TestFields_HaveDetailsAndExamples proves every field exposed by Sections()
+// carries runtime help text for setup_prepare's "explain" input: a non-empty
+// Details sentence and 1 to 3 Examples, each shaped "<TOML value> — <meaning>".
+// For enum and multi-enum fields, every quoted value named in an example must
+// be one of the field's Options, so the help text never recommends a value
+// the field itself would reject.
+func TestFields_HaveDetailsAndExamples(t *testing.T) {
+	quoted := regexp.MustCompile(`"([^"]*)"`)
+
+	for _, section := range Sections() {
+		for _, f := range section.Fields {
+			label := section.ID + "." + f.Name
+
+			if strings.TrimSpace(f.Details) == "" {
+				t.Errorf("%s: Details is empty", label)
+			}
+
+			if len(f.Examples) < 1 || len(f.Examples) > 3 {
+				t.Errorf("%s: Examples has %d entries, want 1-3", label, len(f.Examples))
+			}
+
+			for _, ex := range f.Examples {
+				parts := strings.SplitN(ex, " — ", 2)
+				if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+					t.Errorf(`%s: example %q is not "<TOML value> — <meaning>"`, label, ex)
+					continue
+				}
+
+				if f.Type != "enum" && f.Type != "multi-enum" {
+					continue
+				}
+				for _, m := range quoted.FindAllStringSubmatch(parts[0], -1) {
+					if !slices.Contains(f.Options, m[1]) {
+						t.Errorf("%s: example %q names %q, not one of Options %v", label, ex, m[1], f.Options)
+					}
+				}
+			}
+		}
 	}
 }
 

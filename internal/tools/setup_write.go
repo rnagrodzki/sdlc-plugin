@@ -17,6 +17,7 @@ package tools
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -49,12 +50,13 @@ type SetupWriteSectionsOut struct {
 	Errors   []string             `json:"errors,omitempty"`
 	Scaffold []ScaffoldFileReport `json:"scaffold,omitempty"`
 	Warnings []string             `json:"warnings,omitempty"`
+	Next     string               `json:"next,omitempty" jsonschema_description:"Plain text. Recovery step when a section could not be written without deleting comments. Example: Edit section ship in .sdlc-v2/local.toml by hand, then run setup again for that section."`
 }
 
 // RegisterSetupWriteTools registers setup_write_sections on the server.
 func RegisterSetupWriteTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "setup_write_sections",
-		"INTERNAL — called by sdlc skills only. Writes real field-value data into one or more sdlc-v2 config sections (config.toml for project sections, local.toml for local sections), routing and validating via the same config.WriteSection primitive setup_init uses. Unlike setup_init (which writes the full config.toml/local.toml templates verbatim for the user to hand-edit), this accepts the actual assembled values collected during setup's per-section field loop. Git-tracked files (config.toml and the CI files scaffolded after a version write) go under the active git worktree, returned as root; local.toml goes under the main worktree, shared by all worktrees.",
+		"INTERNAL — called by sdlc skills only. Writes real field-value data into one or more sdlc-v2 config sections (config.toml for project sections, local.toml for local sections), routing and validating via the same config.WriteSection primitive setup_init uses. Unlike setup_init (which writes the full config.toml/local.toml templates verbatim for the user to hand-edit), this accepts the actual assembled values collected during setup's per-section field loop. Git-tracked files (config.toml and the CI files scaffolded after a version write) go under the active git worktree, returned as root; local.toml goes under the main worktree, shared by all worktrees. Each write changes only the lines of changed keys and keeps every comment line. Missing template tips are added back above their keys. If a section cannot be edited in place and the file has comments, that section is not written: errors gets \"section <id>: <reason>\" and next gets the hand-edit step. Other sections are still written.",
 		mcpserver.Annotations{
 			Title:       "Write SDLC config sections",
 			ReadOnly:    false,
@@ -205,6 +207,7 @@ func setupWriteSections(contentRoot, stateRoot string, in SetupWriteSectionsIn) 
 	var written []string
 	var errs []string
 	var rewroteWarnings []string
+	var refused []string // one "Edit section <id> in <file> by hand" per ErrWouldDropComments section
 	for _, id := range ids {
 		value := sections[id]
 		if value == nil {
@@ -214,17 +217,29 @@ func setupWriteSections(contentRoot, stateRoot string, in SetupWriteSectionsIn) 
 		rewrote, err := config.WriteSectionReport(sectionRoot(contentRoot, stateRoot, id), id, value)
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("section %s: %s", id, err.Error()))
+			if errors.Is(err, config.ErrWouldDropComments) {
+				refused = append(refused, fmt.Sprintf("Edit section %s in %s by hand", id, sectionFile(id)))
+			}
 			continue
 		}
 		if rewrote {
 			rewroteWarnings = append(rewroteWarnings, fmt.Sprintf(
-				"section %s: could not edit %s in place, so the whole file was rewritten and its comments were removed",
+				"Section %s: could not edit %s in place; the file had no comments, so it was rewritten and template tips were added",
 				id, sectionFile(id)))
 		}
 		written = append(written, id)
 	}
 
-	out := SetupWriteSectionsOut{OK: len(errs) == 0, Written: written, Root: contentRoot, Warnings: rewroteWarnings}
+	var next string
+	switch len(refused) {
+	case 0:
+	case 1:
+		next = refused[0] + ", then run setup again for that section. Other sections were written."
+	default:
+		next = strings.Join(refused, "; ") + ", then run setup again for those sections. Other sections were written."
+	}
+
+	out := SetupWriteSectionsOut{OK: len(errs) == 0, Written: written, Root: contentRoot, Warnings: rewroteWarnings, Next: next}
 	if len(errs) > 0 {
 		out.Errors = errs
 	}

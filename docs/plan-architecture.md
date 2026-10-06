@@ -310,9 +310,9 @@ and surfaces issues to the user.
 
 | Aspect | Detail |
 |--------|--------|
-| **Tools called** | `plan_support({action: "material_snapshot"})`, `plan_support({action: "material_compare"})` |
+| **Tools called** | `plan_support({action: "material_snapshot"})`, `plan_support({action: "material_compare"})`; Create flow only, at the end of the step: `plan_support({action: "openspec_instructions"})`, `plan_support({action: "openspec_stage"})` (see [OpenSpec staging](#openspec-staging)) |
 | **Subagents** | None |
-| **Plan sections written** | Fixes applied to task sections |
+| **Plan sections written** | Fixes applied to task sections; Create flow only: `**OpenSpec-Create:**` header line replaced by `**OpenSpec-Staging:**`, `## OpenSpec Appendix` body replaced by the staged-file traceability table |
 | **Failure modes** | Material change detected: re-dispatch from Step 3 (full) or Step 5 (non-material). |
 
 Before applying fixes, a `material_snapshot` captures 7 structural dimensions
@@ -363,14 +363,29 @@ during Step 5's lens-merge iterations.
 ### OpenSpec staging
 
 Plan mode must not write to tracked files (see **OpenSpec tasks.md Ref
-Stamping** above), but Step 0's **Create OpenSpec change** path still needs
-to author a whole change's artifacts — proposal, delta specs, tasks, design.
+Stamping** above). The **Create OpenSpec change** path records the choice in
+Step 0 and authors the whole change (proposal, delta specs, tasks, design)
+from the reviewed plan at the end of Step 6, and again after handoff feedback.
 `internal/openspec/stage.go` and `internal/openspec/materialize.go` split
 that into an authoring phase (plan mode, gitignored) and a materialize phase
 (the first tracked-file write, deferred to the next run's start).
 
+**Header lifecycle — two plan-file header lines, in two phases:**
+
+| Phase | When | Header line in the plan file | `## OpenSpec Appendix` body |
+|-------|------|------------------------------|-----------------------------|
+| Create chosen | Step 0 (OpenSpec gate check) | `**OpenSpec-Create:** <changeName>` (with `**Source:** openspec/changes/<changeName>/`) | `[TBD — authored at the end of Step 6]` (written in Step 4) |
+| Staged | End of Step 6 (**Create-flow authoring**), after `openspec_stage` returns `valid: true` | `**OpenSpec-Staging:** .sdlc-v2/openspec-staging/<changeName>/` replaces `**OpenSpec-Create:**` | Staged-file traceability table |
+| Re-staged | Step 7, when the user rejects `ExitPlanMode` with feedback | `**OpenSpec-Staging:**` kept | Table rebuilt from the new files |
+
+`**OpenSpec-Create:**` marks a run where authoring has not finished yet. A
+resume that finds it at checkpoint `6.5` or later runs **Create-flow
+authoring** once before it continues. Only `**OpenSpec-Staging:**` is read
+by materialize.
+
 **Authoring — `plan_support`'s `openspec_instructions`/`openspec_stage`
-actions, both plan-mode safe:**
+actions, both plan-mode safe, run by Create-flow authoring at the end of
+Step 6 (and again on a Step 7 reject with feedback):**
 
 1. `plan_support({action: "openspec_instructions", changeName})`
    (`openspec.PrepareInstructions`) resolves the artifact list and
@@ -394,10 +409,13 @@ actions, both plan-mode safe:**
    validation is not an error — the result carries `valid: false` and the
    CLI output, `stage.json` keeps no `validatedAt`, and the skill can fix
    the artifacts and re-stage.
-4. The plan's `**OpenSpec-Staging:** .sdlc-v2/openspec-staging/<changeName>/`
-   header records the staging dir so a later run can find it
-   (`openspec.StagedChangeFromPlan` regex-matches that exact header to
-   recover the change name).
+4. When `openspec_stage` returns `valid: true`, the skill replaces the
+   plan's `**OpenSpec-Create:** <changeName>` header line with
+   `**OpenSpec-Staging:** .sdlc-v2/openspec-staging/<changeName>/` (or keeps
+   that line when it is already there) and rewrites the `## OpenSpec
+   Appendix` body. The `**OpenSpec-Staging:**` header records the staging
+   dir so a later run can find it (`openspec.StagedChangeFromPlan`
+   regex-matches that exact header to recover the change name).
 
 **Materialize — `openspec.Materialize`, called by `execute_state`'s `init`
 action and by `ship_prepare`, before any other state is written:**
@@ -425,7 +443,7 @@ part of `stage.json` and is never overwritten by materialize.
 
 | Path | Before | After |
 |---|---|---|
-| Guardrails vs new OpenSpec change (Create) | guardrails unseen while authoring; Step 3 lane rewrites tasks; staged `tasks.md` stays stale | `openspec_instructions` returns `guardrails`; authoring follows them; `tasks.md` re-staged from final plan tasks before Step 6.5 |
+| Guardrails vs new OpenSpec change (Create) | guardrails unseen while authoring; Step 3 lane rewrites tasks; staged `tasks.md` stays stale | authoring runs at the end of Step 6 from the reviewed plan; `openspec_instructions` returns `guardrails`; authoring follows them; all files are staged again after handoff feedback |
 | Guardrails vs existing change (`--spec`) | Gate A audits proposal/specs/tasks/design without guardrails | Gate A gets `{GUARDRAILS}`; conflicts become `## Intake Audit Caveats` before decomposition |
 
 ---
@@ -765,11 +783,12 @@ Step 3 and Step 5.
 
 | Step | Sections Created/Modified |
 |------|--------------------------|
-| Step 0 | Header fields (Goal, Architecture, Source, Verification), template skeleton via `skeletonMarkdown` |
+| Step 0 | Header fields (Goal, Architecture, Source, Verification), template skeleton via `skeletonMarkdown`; Create flow only: `**Source:** openspec/changes/<name>/` and `**OpenSpec-Create:** <name>` header lines |
 | Step 2 | `## Task N` sections with full metadata (Complexity, Risk, Depends on, Verify, Files, Contract, Acceptance Criteria, Notes) |
-| Step 4 | Fixes applied to existing `## Task N` sections; `## Guardrail Compliance` (when `activeGuardrails` non-empty); `## Suggested Review Dimensions` (when `g17Findings` non-empty); `## OpenSpec Appendix` (conditional on `openspecContext`) |
+| Step 4 | Fixes applied to existing `## Task N` sections; `## Guardrail Compliance` (when `activeGuardrails` non-empty); `## Suggested Review Dimensions` (when `g17Findings` non-empty); `## OpenSpec Appendix` (`fromOpenspecDirect`: `openspec_appendix` table; `openspecStage`: `[TBD — authored at the end of Step 6]` placeholder; neither: skeleton's `Not applicable — no OpenSpec change` kept) |
 | Step 5 | `## Verification Scorecard` written after each lens merge (regenerated per iteration, not appended) |
-| Step 6 | Review fixes applied to `## Task N` sections |
+| Step 6 | Review fixes applied to `## Task N` sections; Create flow only, at the end of the step (**Create-flow authoring**): `**OpenSpec-Create:**` replaced by `**OpenSpec-Staging:**`, `## OpenSpec Appendix` body replaced by the staged-file traceability table |
+| Step 7 | Create flow only, when the user rejects `ExitPlanMode` with feedback: plan changed for the feedback, **Create-flow authoring** run again (`## OpenSpec Appendix` rebuilt) |
 
 Steps 1, 3, 5, 6.5, and 6.6 do not write to the plan file directly. They
 produce findings or validation results that feed into subsequent writing steps.

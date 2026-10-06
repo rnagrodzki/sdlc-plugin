@@ -1127,7 +1127,8 @@ func shipSideEffectRef(data map[string]any, step string) (string, bool) {
 }
 
 // shipRecordSideEffect writes a {kind, ref, verifiedAt} entry into
-// data["sideEffects"][step], creating the journal map on first use. Callers
+// data["sideEffects"][step], creating the journal map on first use. step is
+// the journal key from shipSideEffectKey ("commit", "commit#2"). Callers
 // must only call this when the side effect is confirmed landed: an entry's
 // mere presence is the "verified" signal shipStateBeginStep's alreadyDone
 // check (ship_state.go) relies on — recording an unverified observation
@@ -1212,6 +1213,12 @@ func shipVerifySideEffect(root, activeRoot string, in ShipVerifySideEffectIn, no
 	}
 
 	st := shipSoftFindState(root, activeRoot)
+	// The journal key names the steps[] entry being verified, so the two
+	// commit steps of the default pipeline get separate entries.
+	key := in.Step
+	if st != nil {
+		key = shipSideEffectKey(st.Data, in.Step)
+	}
 
 	var landed bool
 	var ref string
@@ -1240,7 +1247,7 @@ func shipVerifySideEffect(root, activeRoot string, in ShipVerifySideEffectIn, no
 		case in.Expected != "":
 			landed = headSHA == in.Expected
 		case st != nil:
-			if prevRef, ok := shipSideEffectRef(st.Data, in.Step); ok {
+			if prevRef, ok := shipSideEffectRef(st.Data, key); ok {
 				landed = headSHA == prevRef
 			}
 		}
@@ -1250,7 +1257,7 @@ func shipVerifySideEffect(root, activeRoot string, in ShipVerifySideEffectIn, no
 	}
 
 	if landed && st != nil {
-		shipRecordSideEffect(st.Data, in.Step, kind, ref, now())
+		shipRecordSideEffect(st.Data, key, kind, ref, now())
 		if err := state.Write(st); err != nil {
 			return ShipVerifySideEffectOut{}, &mcpserver.InfraError{
 				Msg:        fmt.Sprintf("write ship state: %s", err.Error()),

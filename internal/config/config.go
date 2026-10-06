@@ -20,9 +20,13 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 
+	"github.com/pelletier/go-toml/v2"
+
+	version "github.com/rnagrodzki/sdlc-plugin"
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
@@ -850,19 +854,21 @@ func ReadSection(mainRoot, name string) (map[string]any, error) {
 // For project sections, validates the merged result against the v5 schema
 // before writing. Writes are atomic (fsx.AtomicWriteBytes) for crash safety.
 //
-// The write edits the file text in place (see splice.go): only the text of
-// the named section changes, so comments and every other section stay
-// byte-for-byte. When the file's layout cannot be spliced, or the spliced
-// text would not decode to the intended data, WriteSection falls back to
-// rewriting the whole file from parsed data, which drops its comments.
+// The write edits the file text in place (see splice.go): only the lines of
+// changed keys in the named section change, so comments and every other
+// section stay byte-for-byte. When the file's layout cannot be spliced, or
+// the spliced text would not decode to the intended data, WriteSection
+// returns ErrWouldDropComments when the file has a comment line and writes
+// nothing. A missing file, or a file with no comment line, is rewritten
+// whole from parsed data instead.
 func WriteSection(mainRoot, name string, v map[string]any) error {
 	_, err := WriteSectionReport(mainRoot, name, v)
 	return err
 }
 
 // WriteSectionReport is WriteSection that also reports rewrote=true when it
-// had to fall back to rewriting the whole file from parsed data (all comments
-// in that file are then gone).
+// had to fall back to rewriting the whole file from parsed data. That
+// happens only when the file is missing or has no comment line.
 func WriteSectionReport(mainRoot, name string, v map[string]any) (rewrote bool, err error) {
 	if err := validateSectionName(name); err != nil {
 		return false, err
@@ -884,8 +890,9 @@ func WriteSectionReport(mainRoot, name string, v map[string]any) (rewrote bool, 
 // created with its directory if needed. It works like WriteSectionReport but
 // does not route by section name and does not validate top-level keys, so a
 // caller can write into a file it chose itself (e.g. a local.toml key that
-// shares its name with a project section). The same in-place splice and
-// full-rewrite fallback apply; rewrote reports the fallback.
+// shares its name with a project section). The same in-place splice,
+// ErrWouldDropComments refusal and full-rewrite fallback apply; rewrote
+// reports the fallback.
 func WriteFileSection(path, name string, v map[string]any) (rewrote bool, err error) {
 	if err := validateSectionName(name); err != nil {
 		return false, err
@@ -899,13 +906,27 @@ func WriteFileSection(path, name string, v map[string]any) (rewrote bool, err er
 // writeSectionFile is the shared read-merge-write for config.toml and
 // local.toml. validate (optional) checks the merged document before any
 // write.
+//
+// After the splice or the full write produces the bytes to save, a restore
+// step (see tips.go) re-adds each shipped-template comment block that is
+// missing from directly above its key or table header, scoped to the
+// written section. The restore is skipped outright for a file other than
+// config.toml/local.toml (sectionTemplate returns nil), and its result is
+// discarded — keeping the pre-restore bytes — whenever restoreTips errors
+// or its output does not decode to the same data as the pre-restore bytes.
+// Either way, the write itself never fails because of the restore.
 func writeSectionFile(path, name string, v map[string]any, validate func(map[string]any) error) (bool, error) {
-	var existing map[string]any
-	if err := fsx.ReadTOML(path, &existing); err != nil {
-		if !errors.Is(err, fsx.ErrNotFound) {
-			return false, fmt.Errorf("config: %w", err)
+	// Read the file once: the splice, the comment check and the decode all
+	// use these bytes, so they cannot disagree about the file's contents.
+	orig, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("config: read %s: %w", path, err)
+	}
+	existing := make(map[string]any)
+	if err == nil {
+		if err := fsx.DecodeTOML(orig, &existing); err != nil {
+			return false, fmt.Errorf("config: %s: %w", path, err)
 		}
-		existing = make(map[string]any)
 	}
 	setSectionPath(existing, name, v)
 	if validate != nil {
@@ -914,12 +935,58 @@ func writeSectionFile(path, name string, v map[string]any, validate func(map[str
 		}
 	}
 	traceRead(path, "write")
-	if out, ok := spliceFile(path, name, v, existing); ok {
-		return false, fsx.AtomicWriteBytes(path, out)
+	section := strings.Split(name, ".")
+	tmpl := sectionTemplate(path)
+	out, spliceErr := spliceFile(orig, name, v, existing)
+	if spliceErr == nil {
+		return false, fsx.AtomicWriteBytes(path, restoreSectionTips(out, tmpl, section))
 	}
-	// fsx.ReadTOML decodes every number as float64, so a plain rewrite would
+	if hasCommentLine(orig) {
+		return false, refuseCommentDrop(name, path, spliceErr)
+	}
+	// fsx.DecodeTOML decodes every number as float64, so a plain rewrite would
 	// turn every integer in the other sections into a float ("60" -> "60.0").
-	return true, fsx.AtomicWriteTOML(path, WholeNumbersToInt(existing))
+	full, err := toml.Marshal(WholeNumbersToInt(existing))
+	if err != nil {
+		return false, fmt.Errorf("config: marshal %s: %w", path, err)
+	}
+	return true, fsx.AtomicWriteBytes(path, restoreSectionTips(full, tmpl, section))
+}
+
+// sectionTemplate returns the shipped setup template that matches path's
+// file name, or nil when path is neither config.toml nor local.toml (e.g. a
+// WriteFileSection caller writing into a file of its own choosing).
+func sectionTemplate(path string) []byte {
+	switch filepath.Base(path) {
+	case paths.ConfigFile:
+		return []byte(version.ConfigTemplate)
+	case paths.LocalConfigFile:
+		return []byte(version.LocalTemplate)
+	default:
+		return nil
+	}
+}
+
+// restoreSectionTips calls restoreTips(out, tmpl, section) and returns its
+// result only when it decodes to the same data as out. tmpl == nil skips
+// the call. An error from restoreTips, or a decode mismatch, returns out
+// unchanged — see writeSectionFile's doc comment for the full outcome table.
+func restoreSectionTips(out, tmpl []byte, section []string) []byte {
+	if tmpl == nil {
+		return out
+	}
+	restored, _, err := restoreTips(out, tmpl, section)
+	if err != nil {
+		return out
+	}
+	var want, got map[string]any
+	if fsx.DecodeTOML(out, &want) != nil || fsx.DecodeTOML(restored, &got) != nil {
+		return out
+	}
+	if !reflect.DeepEqual(want, got) {
+		return out
+	}
+	return restored
 }
 
 // WholeNumbersToInt returns v with every float64 that holds a whole number
