@@ -61,6 +61,13 @@ Review Go source changes for baseline code quality in this module
   by a blank line before the `package` declaration, or they will be
   misattached as the package doc string rather than remaining as
   file-level comments.
+- File-header to package doc separation: Any comment block appearing before
+  the `package` declaration (file-header comments) must be separated from
+  the declaration by exactly one blank line. Without this separation, the
+  header comment is misattached as the package doc string rather than
+  remaining a file-level comment. To detect: run
+  `grep -B1 '^package ' <file>` and verify the line immediately before
+  `package` is blank, not a comment line.
 - Testable design: functions that are tested and access live filesystem,
   git state, or external services should expose injectable parameters or
   dependencies (e.g. directory overrides, mocked implementations) so tests

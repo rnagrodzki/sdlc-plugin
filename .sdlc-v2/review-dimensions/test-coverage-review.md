@@ -69,6 +69,14 @@ new changes to that same bar:
   have each failure point tested: first write succeeds/second fails, first
   write fails, and both succeed. Assert the on-disk state after each
   failure to verify partial writes do not corrupt state.
+- Fallback branches that contain inner error guards (e.g., a file-write
+  fallback that itself checks for read errors) must have test cases
+  exercising both the primary failure (triggering the fallback) and the
+  inner error condition. When the inner error cannot be produced via a real
+  temp-dir filesystem (e.g., a permission error in the middle of reading),
+  the code must expose an injectable seam; the test task must introduce
+  that seam before the test task that exercises it (per
+  no-real-fs-git-in-tests guardrail).
 - When a refactor removes or widens a guard (e.g. drops a `method ==`
   check so more inputs reach a rewrite or splice), every newly admitted
   input combination needs its own test case. Removing a guard is the same
@@ -100,3 +108,24 @@ new changes to that same bar:
   happy path where config is present. Tests must verify the error reaches
   the caller as a structured error (DomainError/InfraError with Suggestion)
   rather than being silently treated as "not configured".
+- When a code path produces a warning or error message (warning fields in
+  *Out structs, Msg, Suggestion, next fields in structured errors, or
+  rendered log text), the test must assert the message text itself, not
+  only that the error condition occurred. A test exercising an
+  error-producing branch that does not verify the message text is
+  incomplete coverage — the text may change and silent drift would occur.
+  Exclude errors.New/fmt.Errorf return values (which follow Go convention
+  and stay lowercase); focus on text that reaches the user or LLM renderer.
+- When a guard or refusal condition evaluates a collection (sections,
+  files, keys, rows in a table), test coverage must exercise both
+  single-element and multi-element cases. A single-element test that passes
+  does not prove the multi-element path works — guards that check
+  boundaries or relationships between elements may fail only when two or
+  more elements exist. Example: a batch write that refuses several
+  sections must be tested with two refused sections, to confirm the
+  recovery message names each one and not only the first.
+- When a function instantiates a structured error (InfraError,
+  DomainError, DataError) in a default or catch-all arm (e.g., after
+  specific-condition checks fail), test the default arm directly: use an
+  injectable seam to reach it if the failure is unproducible via the real
+  filesystem, and assert the error class, Msg, and Suggestion.

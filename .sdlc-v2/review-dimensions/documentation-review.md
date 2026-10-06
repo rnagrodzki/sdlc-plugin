@@ -32,3 +32,8 @@ This project keeps contributor documentation in `docs/`
   `README.md`, `plugins/sdlc/skills/**`, and `plugins/sdlc/schemas/**` to
   catch all references and update them in the same task. Incomplete sweeps
   leave contributors following stale instructions.
+- On any SKILL.md step reorder or phase relocation, enumerate every table,
+  walkthrough, and lifecycle section in `docs/*-architecture.md` that lists
+  that skill's steps by name or order; grep the skill name and check each
+  table for the moved phase name and its tool calls at the relocated
+  position. Incomplete updates leave contributors following stale order.

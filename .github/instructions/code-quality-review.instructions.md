@@ -11,7 +11,7 @@ Default severity: medium
 
 - Idiomatic Go: no unnecessary interfaces, no premature abstraction, no stuttering names
 - Error handling: errors wrapped with context (`fmt.Errorf("...: %w", err)`), never silently discarded
-- Doc comments: all exported identifiers have explicit `//` doc comments (not just `//go:embed` directives); file-header comment blocks separated from `package` by a blank line
+- Doc comments: all exported identifiers have explicit `//` doc comments (not just `//go:embed` directives); file-header comment blocks separated from `package` by a blank line — verify with `grep -B1 '^package '` and confirm the line before `package` is blank, not a comment
 - Internal packages: even though `internal/**` is unexported at module boundary, packages should have doc comments
 - No dead code, no commented-out blocks, no debug `fmt.Println`/`log.Printf` outside intentional CLI output
 - Function length and complexity reasonable; large handler files keep MCP tool logic separable

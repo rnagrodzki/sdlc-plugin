@@ -7,6 +7,7 @@ triggers:
   - "internal/jirakeys/**"
   - "internal/ghx/**"
   - "internal/gitx/**"
+  - "internal/config/**"
   - "plugins/sdlc/skills/**"
 severity: high
 ---
@@ -112,3 +113,7 @@ When wrapping a shell command failure into an `InfraError`, the `Msg` field must
 ## Uniform error enrichment across gh call sites
 
 When a tool's description promises uniform enrichment for a class of `gh` failures (e.g., "account-switch guidance for any gh permission error"), verify that every `gh` invocation site in the handler that can produce that failure calls the same enrichment helper. Grep the handler for each `gh` call and trace its error path — if one site calls `prEnrichPermissionError` and another does not, a code branch is not delivering the promised behavior. When adding a new `gh` call site, trace the failure to the enrichment helper used elsewhere and use the same one consistently.
+
+## Error-message accuracy across failure paths
+
+When a callee can fail for multiple distinct causes (e.g., splice failures distinguish layout-mismatch from parse error from read error), the caller must either: (1) receive the cause via sentinel/typed error and select a cause-specific recovery message, or (2) emit a cause-neutral message that applies across all failure paths. A cause-specific error message on a code branch that does not check the actual cause is a finding — the message may not reflect what actually failed. Example: reporting "could not rewrite table keys" when the actual failure was a file-read permission error violates this contract. Error message text must be derived from the actual condition detected on that code path, never hardcoded to assume one failure type when multiple are possible.
