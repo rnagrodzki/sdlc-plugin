@@ -90,6 +90,28 @@ The tool SHALL resolve the ship state file for `detail.branch`, or for the curre
 - **THEN** the tool returns a `DataError` naming `bogus`
 - **AND** the state file bytes are unchanged
 
+### Requirement: Repeated step names
+When a step name occurs more than once in `steps[]`, `begin-step`, `complete-step`, `start`, `complete`, `skip` and `fail` SHALL act on one entry with that name, selected as the table says.
+
+| Entries with the name | Selected entry |
+|---|---|
+| At least one is not `completed` or `skipped` | The first such entry |
+| All are `completed` or `skipped` | The first entry with the name |
+
+- The `<pos>` in the narration `summary` is the position of the selected entry, taken before the action changes its status.
+- The journal key of the selected entry is `<step>` for the first entry with the name and `<step>#<n>` for the n-th entry (n ≥ 2).
+
+#### Scenario: Skip the second commit
+- **WHEN** `steps[]` is `commit`, `harden`, `commit`, `pr`, the first `commit` and `harden` are `completed`, and the call passes `action:"skip"` with `step:"commit"`
+- **THEN** the third entry is `skipped`
+- **AND** the first entry is still `completed` with its old `result` and `completedAt`
+- **AND** `summary` is `Step 'commit' skipped (3 of 4).`
+
+#### Scenario: Retry of a failed first commit
+- **WHEN** `steps[]` is `commit`, `harden`, `commit`, the first `commit` is `failed`, and the call passes `action:"begin-step"` with `step:"commit"`
+- **THEN** the first entry is `in_progress`
+- **AND** the third entry is still `pending`
+
 ### Requirement: Behavior with no ship state
 The tool SHALL handle a branch with no ship state file per action as follows.
 
@@ -178,7 +200,7 @@ The lifecycle actions and `decide`/`defer` SHALL return a narration whose fields
 | `timing` | `{stepSeconds, pipelineSeconds, idleSeconds, human}`; `complete-step`/`complete` only, when computable. |
 | `next` | `{id, instruction, etaSeconds, etaBasis}`; `begin-step`, `complete-step`, `start`, `complete` only. `instruction` is `Dispatch the <step> sub-skill.` |
 | `todos` | `begin-step`/`complete-step` only: task list (see `todos`). |
-| `alreadyDone` | `begin-step` only: `true` when `sideEffects.<step>` exists in the state. |
+| `alreadyDone` | `begin-step` only: `true` when the journal entry of the selected step entry exists in the state (`sideEffects.<step>`, or `sideEffects.<step>#<n>` for a repeated name). |
 | `issueCount`, `issueHighlights` | `complete-step` only, when `issues[]` is non-empty: total count and the last 5 issues as `[severity] summary` lines. |
 
 - `begin-step`'s `next.id` is the step it began.
@@ -188,6 +210,10 @@ The lifecycle actions and `decide`/`defer` SHALL return a narration whose fields
 #### Scenario: alreadyDone from journal
 - **WHEN** the state holds `sideEffects.pr` and the call begins `pr`
 - **THEN** `alreadyDone` is `true`
+
+#### Scenario: Second commit not done by the first commit's journal entry
+- **WHEN** `steps[]` has `commit` twice, the first is `completed`, the state holds only `sideEffects.commit`, and the call begins `commit`
+- **THEN** `alreadyDone` is `false`
 
 #### Scenario: No next at pipeline end
 - **WHEN** `complete-step` finishes the last blocking step
@@ -350,7 +376,7 @@ The `harden_clusters` action SHALL group `detail.findings` into at most 5 cluste
 - A file whose only finding is a disagree (`verdict:"disagree"` or `reason:"disagree"`) goes to `loneDisagree`.
 - Clusters sort by finding count (most first), then file path; files past the fifth go to `suppressed`, sorted.
 - `failureText` is `[<severity>] <title> — <verdict>\n<body>` per finding, joined by a blank line; every `"` becomes `'` and every `\` becomes `/`; capped at 4096 characters.
-- `alreadyHardened` is `true` when the first 200 characters of `failureText` equal a `healing.hardened[].trigger` of either phase in the branch's state.
+- `alreadyHardened` is `true` when `failureText` equals a `healing.hardened[].trigger` of either phase in the branch's state after each is trimmed of surrounding white space, capped at 200 characters, and trimmed again.
 - `dirtySurfaces` lists which of `.sdlc-v2/config.toml`, `.sdlc-v2/review-dimensions`, `.github/instructions` have uncommitted changes in the active worktree (`git status --porcelain`).
 
 | Output field | Meaning |
@@ -365,6 +391,11 @@ The `harden_clusters` action SHALL group `detail.findings` into at most 5 cluste
 | `findings` missing or not an array | `DomainError` | `harden_clusters: detail.findings is required` / `must be an array` |
 | Bad finding field | `DomainError` | `harden_clusters: detail.findings[<i>].<field> ...` |
 | `git status` fails | `DomainError` | `harden_clusters: git status failed: ...` |
+
+#### Scenario: Trigger without the trailing newline
+- **WHEN** a finding has an empty `body`, so its `failureText` ends with a newline
+- **AND** the state holds a `healing.hardened[].trigger` equal to that text without the newline
+- **THEN** the cluster has `alreadyHardened:true`
 
 #### Scenario: Quote-safe failure text
 - **WHEN** a finding title contains `"` and `\`

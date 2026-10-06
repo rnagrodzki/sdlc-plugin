@@ -366,6 +366,37 @@ func TestShipStateHardenClusters_AlreadyHardenedMatchesEitherPhase(t *testing.T)
 	}
 }
 
+// TestShipStateHardenClusters_AlreadyHardenedIgnoresTrailingNewline checks
+// that a trigger recorded without the trailing newline still matches. A
+// finding with an empty body gives a FailureText that ends in a newline,
+// and rendered tool output drops it, so harden records the trigger without
+// it.
+func TestShipStateHardenClusters_AlreadyHardenedIgnoresTrailingNewline(t *testing.T) {
+	stubCleanSurfaceStatus(t)
+	branch := "feat/hc-hardened-newline"
+	dir, _ := hardenClustersFixture(t, branch)
+
+	healingCall(t, dir, branch, healingHardenedDetail(map[string]any{
+		"phase": "done", "trigger": "[high] t — agree-will-fix", "applied": []any{}, "skipped": float64(0),
+	}))
+
+	hc, err := hardenClustersCall(t, dir, branch, []any{
+		hcFinding("a.go", "high", "t", "", "agree-will-fix"),
+	})
+	if err != nil {
+		t.Fatalf("harden_clusters: %v", err)
+	}
+	if len(hc.Clusters) != 1 {
+		t.Fatalf("clusters = %+v, want 1", hc.Clusters)
+	}
+	if !strings.HasSuffix(hc.Clusters[0].FailureText, "\n") {
+		t.Fatalf("FailureText = %q, want a trailing newline (the case under test)", hc.Clusters[0].FailureText)
+	}
+	if !hc.Clusters[0].AlreadyHardened {
+		t.Errorf("alreadyHardened = false, want true — the trigger differs only by the trailing newline")
+	}
+}
+
 func TestShipStateHardenClusters_AlreadyHardenedNoMatch(t *testing.T) {
 	stubCleanSurfaceStatus(t)
 	branch := "feat/hc-hardened-nomatch"

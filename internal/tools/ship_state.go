@@ -207,25 +207,68 @@ func shipStepsSlice(data map[string]any) []any {
 	return steps
 }
 
-func shipFindStepEntry(data map[string]any, name string) map[string]any {
-	for _, s := range shipStepsSlice(data) {
+// shipFindStepIndex returns the steps[] index that an action on name
+// targets, or -1 when no entry has that name. A name can occur more than
+// once (the default [ship] steps list has commit twice), so the target is
+// the first entry with that name whose status is not completed or skipped.
+// When every entry with that name is completed or skipped, the target is
+// the first entry with that name.
+func shipFindStepIndex(data map[string]any, name string) int {
+	first := -1
+	for i, s := range shipStepsSlice(data) {
 		sm, ok := s.(map[string]any)
-		if !ok {
+		if !ok || sm["name"] != name {
 			continue
 		}
-		if sm["name"] == name {
-			return sm
+		if first < 0 {
+			first = i
+		}
+		if status, _ := sm["status"].(string); status != "completed" && status != "skipped" {
+			return i
 		}
 	}
-	return nil
+	return first
+}
+
+// shipFindStepEntry returns the steps[] entry that an action on name
+// targets (see shipFindStepIndex), or nil when no entry has that name.
+func shipFindStepEntry(data map[string]any, name string) map[string]any {
+	i := shipFindStepIndex(data, name)
+	if i < 0 {
+		return nil
+	}
+	sm, _ := shipStepsSlice(data)[i].(map[string]any)
+	return sm
+}
+
+// shipSideEffectKey returns the sideEffects journal key for the steps[]
+// entry that an action on step targets: step for the first entry with
+// that name, "<step>#<n>" for the n-th (n >= 2). With no steps[] entry for
+// the name, it returns step.
+func shipSideEffectKey(data map[string]any, step string) string {
+	idx := shipFindStepIndex(data, step)
+	if idx < 0 {
+		return step
+	}
+	n := 0
+	for _, s := range shipStepsSlice(data)[:idx+1] {
+		if sm, ok := s.(map[string]any); ok && sm["name"] == step {
+			n++
+		}
+	}
+	if n <= 1 {
+		return step
+	}
+	return fmt.Sprintf("%s#%d", step, n)
 }
 
 // shipStepAlreadyDone reports whether data["sideEffects"] already holds a
-// verified journal entry for step (written by ship.go's
-// shipVerifySideEffect/shipRecordSideEffect). Used by begin-step to signal a
-// resumed pipeline that this step's side effect already landed.
+// verified journal entry for the steps[] entry that step targets (written
+// by ship.go's shipVerifySideEffect/shipRecordSideEffect). Used by
+// begin-step to signal a resumed pipeline that this step's side effect
+// already landed.
 func shipStepAlreadyDone(data map[string]any, step string) bool {
-	_, ok := shipSideEffectEntry(data, step)
+	_, ok := shipSideEffectEntry(data, shipSideEffectKey(data, step))
 	return ok
 }
 
@@ -274,17 +317,10 @@ func shipBuildStepRows(data map[string]any) []pipeline.StepRow {
 }
 
 // shipStepPosition returns the 1-based index and total count of steps for
-// the named step. Returns (0, total) if the step is not found.
+// the steps[] entry that an action on stepName targets (see
+// shipFindStepIndex). Returns (0, total) if the step is not found.
 func shipStepPosition(data map[string]any, stepName string) (pos, total int) {
-	steps := shipStepsSlice(data)
-	total = len(steps)
-	for i, s := range steps {
-		sm, ok := s.(map[string]any)
-		if ok && sm["name"] == stepName {
-			return i + 1, total
-		}
-	}
-	return 0, total
+	return shipFindStepIndex(data, stepName) + 1, len(shipStepsSlice(data))
 }
 
 // shipFirstBlockingStep returns the name of the first step in the pipeline
@@ -305,22 +341,23 @@ func shipFirstBlockingStep(data map[string]any) string {
 }
 
 // shipPrevCompletedAt returns the completedAt timestamp of the last step
-// before the named step that has one, or "" if none.
-func shipPrevCompletedAt(data map[string]any, stepName string) string {
+// before steps[idx] that has one, or "" if none or idx is out of range.
+func shipPrevCompletedAt(data map[string]any, idx int) string {
+	steps := shipStepsSlice(data)
+	if idx < 0 || idx > len(steps) {
+		return ""
+	}
 	var prev string
-	for _, s := range shipStepsSlice(data) {
+	for _, s := range steps[:idx] {
 		sm, ok := s.(map[string]any)
 		if !ok {
 			continue
-		}
-		if name, _ := sm["name"].(string); name == stepName {
-			return prev
 		}
 		if ca, _ := sm["completedAt"].(string); ca != "" {
 			prev = ca
 		}
 	}
-	return ""
+	return prev
 }
 
 // shipDetailLevel returns the detail level from the input's Detail map.
@@ -337,10 +374,11 @@ func shipStepInstruction(step string) string {
 	return fmt.Sprintf("Dispatch the %s sub-skill.", step)
 }
 
-// shipCompletionTiming computes timing info for a completed step, records
-// the step duration to TimingsStore (except for HumanWaitSteps), and
-// returns both the timing and the store for reuse in ETA lookups.
-func shipCompletionTiming(root string, data map[string]any, stepName, startedAt, completedAt string, now time.Time) (*pipeline.TimingInfo, *pipeline.TimingsStore) {
+// shipCompletionTiming computes timing info for the completed step at
+// steps[idx], records the step duration to TimingsStore (except for
+// HumanWaitSteps), and returns both the timing and the store for reuse in
+// ETA lookups.
+func shipCompletionTiming(root string, data map[string]any, idx int, stepName, startedAt, completedAt string, now time.Time) (*pipeline.TimingInfo, *pipeline.TimingsStore) {
 	ts := pipeline.NewTimingsStore(root)
 	stepDur, ok := pipeline.Duration(startedAt, completedAt)
 	if !ok {
@@ -357,7 +395,7 @@ func shipCompletionTiming(root string, data map[string]any, stepName, startedAt,
 			timing.PipelineSeconds = int(now.Sub(pStart).Round(time.Second).Seconds())
 		}
 	}
-	prevCA := shipPrevCompletedAt(data, stepName)
+	prevCA := shipPrevCompletedAt(data, idx)
 	if idle, idleOK := pipeline.IdleGap(prevCA, startedAt); idleOK {
 		timing.IdleSeconds = int(idle.Round(time.Second).Seconds())
 	}
@@ -762,6 +800,9 @@ func shipStateComplete(root, workDir string, in ShipStateIn, now func() time.Tim
 		return nil, err
 	}
 
+	// Resolve the target entry before the mutation: once it is completed,
+	// a lookup by name moves on to a later entry with the same name.
+	stepIdx := shipFindStepIndex(st.Data, in.Step)
 	stepEntry := shipFindStepEntry(st.Data, in.Step)
 	var startedAtBefore string
 	if stepEntry != nil {
@@ -784,9 +825,9 @@ func shipStateComplete(root, workDir string, in ShipStateIn, now func() time.Tim
 	if stepEntry != nil {
 		completedAtAfter, _ = stepEntry["completedAt"].(string)
 	}
-	timing, ts := shipCompletionTiming(root, st.Data, in.Step, startedAtBefore, completedAtAfter, now())
+	timing, ts := shipCompletionTiming(root, st.Data, stepIdx, in.Step, startedAtBefore, completedAtAfter, now())
 	rows := shipBuildStepRows(st.Data)
-	pos, total := shipStepPosition(st.Data, in.Step)
+	pos, total := stepIdx+1, len(shipStepsSlice(st.Data))
 
 	summary := fmt.Sprintf("Step '%s' completed (%d of %d).", in.Step, pos, total)
 	if timing != nil {
@@ -923,7 +964,10 @@ func shipStateCompleteStep(root, workDir string, in ShipStateIn, now func() time
 		return nil, err
 	}
 
-	// Capture startedAt before mutation for timing calculations.
+	// Capture startedAt and the target index before mutation: once the
+	// entry is completed, a lookup by name moves on to a later entry with
+	// the same name.
+	stepIdx := shipFindStepIndex(st.Data, in.Step)
 	stepEntry := shipFindStepEntry(st.Data, in.Step)
 	var startedAtBefore string
 	if stepEntry != nil {
@@ -946,9 +990,9 @@ func shipStateCompleteStep(root, workDir string, in ShipStateIn, now func() time
 	if stepEntry != nil {
 		completedAtAfter, _ = stepEntry["completedAt"].(string)
 	}
-	timing, ts := shipCompletionTiming(root, st.Data, in.Step, startedAtBefore, completedAtAfter, now())
+	timing, ts := shipCompletionTiming(root, st.Data, stepIdx, in.Step, startedAtBefore, completedAtAfter, now())
 	rows := shipBuildStepRows(st.Data)
-	pos, total := shipStepPosition(st.Data, in.Step)
+	pos, total := stepIdx+1, len(shipStepsSlice(st.Data))
 
 	verb := "completed"
 	if outcome == "failure" {
@@ -993,6 +1037,9 @@ func shipStateSkip(root, workDir string, in ShipStateIn, now func() time.Time) (
 	if err != nil {
 		return nil, err
 	}
+	// Resolve the index before the mutation: once the entry is skipped, a
+	// lookup by name moves on to a later entry with the same name.
+	stepIdx := shipFindStepIndex(st.Data, in.Step)
 	step := shipFindStepEntry(st.Data, in.Step)
 	if step == nil {
 		return nil, &mcpserver.DataError{
@@ -1013,7 +1060,7 @@ func shipStateSkip(root, workDir string, in ShipStateIn, now func() time.Time) (
 		}
 	}
 
-	pos, total := shipStepPosition(st.Data, in.Step)
+	pos, total := stepIdx+1, len(shipStepsSlice(st.Data))
 	out := ShipStepNarrationOut{
 		Narration: pipeline.Narration{
 			Summary: fmt.Sprintf("Step '%s' skipped (%d of %d).", in.Step, pos, total),

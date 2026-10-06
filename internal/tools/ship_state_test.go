@@ -4255,3 +4255,153 @@ func TestShipStateHealingRecord_ReadReportsLedger(t *testing.T) {
 		t.Errorf("Healing.fixed = %v, want both records verbatim", rd.Healing["fixed"])
 	}
 }
+
+// ---------------------------------------------------------------------------
+// duplicate step names (the default [ship] steps list has commit twice)
+// ---------------------------------------------------------------------------
+
+// setSteps replaces data["steps"] in the state file with one pending entry
+// per name, in order.
+func setSteps(t *testing.T, path string, names ...string) {
+	t.Helper()
+	data := readStateData(t, path)
+	steps := make([]any, 0, len(names))
+	for _, n := range names {
+		steps = append(steps, map[string]any{"name": n, "kind": "tracked", "status": "pending"})
+	}
+	data["steps"] = steps
+	raw, err := json.Marshal(data)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// stepStatuses returns "name:status" for each steps[] entry, in order.
+func stepStatuses(t *testing.T, path string) []string {
+	t.Helper()
+	var out []string
+	for _, s := range readStateData(t, path)["steps"].([]any) {
+		sm := s.(map[string]any)
+		out = append(out, fmt.Sprintf("%v:%v", sm["name"], sm["status"]))
+	}
+	return out
+}
+
+// TestShipState_DuplicateStepName_ActionsTargetFirstUnfinishedEntry drives
+// a pipeline with commit twice through begin-step, complete-step, skip and
+// fail, and checks that each action changes only the first commit entry that
+// is not completed or skipped, and that the summary names its position.
+func TestShipState_DuplicateStepName_ActionsTargetFirstUnfinishedEntry(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	branch := "feat/dup-step"
+	checkoutBranch(t, dir, branch)
+	path := shipStateInitFixture(t, dir, branch)
+	setSteps(t, path, "commit", "harden", "commit", "pr")
+
+	call := func(action, step string, detail map[string]any) ShipStepNarrationOut {
+		t.Helper()
+		d := map[string]any{"branch": branch, "detail": "concise"}
+		for k, v := range detail {
+			d[k] = v
+		}
+		out, err := shipState(dir, dir, ShipStateIn{Action: action, Step: step, Detail: d}, fixedNow(time.Now()))
+		if err != nil {
+			t.Fatalf("%s %s: %v", action, step, err)
+		}
+		return out.(ShipStepNarrationOut)
+	}
+
+	call("begin-step", "commit", nil)
+	if out := call("complete-step", "commit", map[string]any{"result": "first"}); !strings.Contains(out.Summary, "(1 of 4)") {
+		t.Errorf("complete-step summary = %q, want position (1 of 4)", out.Summary)
+	}
+	call("begin-step", "harden", nil)
+	call("complete-step", "harden", nil)
+
+	out := call("skip", "commit", map[string]any{"reason": "nothing to commit"})
+	if !strings.Contains(out.Summary, "(3 of 4)") {
+		t.Errorf("skip summary = %q, want position (3 of 4)", out.Summary)
+	}
+	want := []string{"commit:completed", "harden:completed", "commit:skipped", "pr:pending"}
+	if got := stepStatuses(t, path); !reflect.DeepEqual(got, want) {
+		t.Fatalf("steps after skip = %v, want %v", got, want)
+	}
+	first := findStepMap(t, readStateData(t, path), "commit")
+	if first["result"] != "first" {
+		t.Errorf("first commit result = %v, want %q (skip must not touch it)", first["result"], "first")
+	}
+	if _, has := first["reason"]; has {
+		t.Errorf("first commit has a skip reason: %v", first)
+	}
+}
+
+// TestShipState_DuplicateStepName_FailThenRetryTargetsSameEntry checks that
+// fail and the following begin-step act on the first commit while it is
+// failed, not on the later pending commit.
+func TestShipState_DuplicateStepName_FailThenRetryTargetsSameEntry(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	branch := "feat/dup-step-fail"
+	checkoutBranch(t, dir, branch)
+	path := shipStateInitFixture(t, dir, branch)
+	setSteps(t, path, "commit", "harden", "commit")
+
+	for _, action := range []string{"begin-step", "fail", "begin-step"} {
+		if _, err := shipState(dir, dir, ShipStateIn{
+			Action: action, Step: "commit",
+			Detail: map[string]any{"branch": branch, "error": "boom", "detail": "concise"},
+		}, fixedNow(time.Now())); err != nil {
+			t.Fatalf("%s: %v", action, err)
+		}
+	}
+	want := []string{"commit:in_progress", "harden:pending", "commit:pending"}
+	if got := stepStatuses(t, path); !reflect.DeepEqual(got, want) {
+		t.Fatalf("steps = %v, want %v", got, want)
+	}
+}
+
+// TestShipState_DuplicateStepName_AlreadyDonePerOccurrence checks that a
+// journal entry for the first commit does not mark the second commit as
+// already done, and that a "commit#2" entry does.
+func TestShipState_DuplicateStepName_AlreadyDonePerOccurrence(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	branch := "feat/dup-step-journal"
+	checkoutBranch(t, dir, branch)
+	path := shipStateInitFixture(t, dir, branch)
+	setSteps(t, path, "commit", "commit")
+	setStepStatus(t, path, "commit", "completed", map[string]any{"completedAt": "2026-01-01T00:00:00Z"})
+	// setStepStatus changes every entry with the name; reset the second one.
+	data := readStateData(t, path)
+	data["steps"].([]any)[1].(map[string]any)["status"] = "pending"
+	raw, _ := json.Marshal(data)
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	setSideEffectEntry(t, path, "commit", "sha", "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef")
+
+	begin := func() bool {
+		t.Helper()
+		out, err := shipState(dir, dir, ShipStateIn{
+			Action: "begin-step", Step: "commit", Detail: map[string]any{"branch": branch},
+		}, fixedNow(time.Now()))
+		if err != nil {
+			t.Fatalf("begin-step: %v", err)
+		}
+		return out.(ShipStepNarrationOut).AlreadyDone
+	}
+	if begin() {
+		t.Error(`AlreadyDone = true for the second commit, want false (only sideEffects["commit"] exists)`)
+	}
+	setSideEffectEntry(t, path, "commit#2", "sha", "feedfacefeedfacefeedfacefeedfacefeedface")
+	if !begin() {
+		t.Error(`AlreadyDone = false for the second commit, want true (sideEffects["commit#2"] exists)`)
+	}
+}
