@@ -217,3 +217,50 @@ func TestFieldOptions_AcceptedBySchema(t *testing.T) {
 		}
 	}
 }
+
+// TestReviewMaxDimensionsSchemaMatchesField pins that the review.maxDimensions
+// setup field and its JSON schema property stay in sync on type, minimum,
+// and default. TestFieldOptions_AcceptedBySchema above only compares
+// enum/multi-enum fields against the schema, so a "number" field like this
+// one needs its own guard against drift.
+func TestReviewMaxDimensionsSchemaMatchesField(t *testing.T) {
+	var field *Field
+	for _, section := range Sections() {
+		if section.ID != "review" {
+			continue
+		}
+		for i := range section.Fields {
+			if section.Fields[i].Name == "maxDimensions" {
+				field = &section.Fields[i]
+			}
+		}
+	}
+	if field == nil {
+		t.Fatal("review section has no maxDimensions field")
+	}
+	if field.Type != "number" {
+		t.Errorf("field.Type = %q, want %q", field.Type, "number")
+	}
+	if field.Default != 8 {
+		t.Errorf("field.Default = %v, want 8", field.Default)
+	}
+	if field.Min == nil || *field.Min != 1 {
+		t.Errorf("field.Min = %v, want 1", field.Min)
+	}
+
+	doc := loadRawSchema(t, "sdlc-local.schema.json")
+	root := map[string]interface{}{"properties": doc["properties"]}
+	node := schemaNodeFromNode(doc, root, "review.maxDimensions")
+	if node == nil {
+		t.Fatal("schema has no property at review.maxDimensions")
+	}
+	if node["type"] != "integer" {
+		t.Errorf("schema type = %v, want %q", node["type"], "integer")
+	}
+	if minimum, ok := node["minimum"].(float64); !ok || minimum != 1 {
+		t.Errorf("schema minimum = %v, want 1", node["minimum"])
+	}
+	if def, ok := node["default"].(float64); !ok || def != 8 {
+		t.Errorf("schema default = %v, want 8", node["default"])
+	}
+}

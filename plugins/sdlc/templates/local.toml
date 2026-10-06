@@ -78,6 +78,8 @@ awaitRemoteReviewTimeout = 600
 # Which changes to include in the review.
 # Valid: "all" | "committed" | "staged" | "working" | "worktree"
 # scope = "working"
+# Maximum dimensions reviewed in one run (most severe kept). Whole number >= 1.
+# maxDimensions = 8
 
 # ─── Received-review defaults (optional — delete if not using) ────
 # [receivedReview]

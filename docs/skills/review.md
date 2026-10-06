@@ -33,6 +33,10 @@ covers all uncommitted changes to tracked files, staged and unstaged
 For `staged`, `working`, and `worktree` the review is never offered for posting
 to a PR. Change the scope with `/setup`.
 
+The `maxDimensions` key of the same `[review]` section sets how many dimensions
+one run reviews (default 8, minimum 1). The most severe dimensions are kept.
+The rest are queued, and `/review` lists them.
+
 ## Examples
 
 **Review all current changes:**
