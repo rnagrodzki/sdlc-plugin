@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
+	"github.com/rnagrodzki/sdlc-plugin/internal/setupmeta"
 )
 
 // ---------------------------------------------------------------------------
@@ -182,7 +184,7 @@ func TestRefinePlanUnderCap(t *testing.T) {
 		dims[i].severity = "medium"
 	}
 
-	queued := refinePlan(dims)
+	queued := refinePlan(dims, defaultMaxDimensions)
 	if len(queued) != 0 {
 		t.Errorf("expected no queued dims, got %v", queued)
 	}
@@ -193,6 +195,27 @@ func TestRefinePlanUnderCap(t *testing.T) {
 	}
 }
 
+// TestRefinePlanExactlyAtCap pins the len(active) <= maxDims boundary: when
+// the active count equals the cap exactly, nothing is queued (spec
+// scenario "Configured cap above dimension count", 10-at-cap-10).
+func TestRefinePlanExactlyAtCap(t *testing.T) {
+	dims := make([]reviewDimWork, 10)
+	for i := range dims {
+		dims[i].name = "dim-" + string(rune('a'+i))
+		dims[i].status = "ACTIVE"
+		dims[i].severity = "medium"
+	}
+
+	queued := refinePlan(dims, 10)
+	if len(queued) != 0 {
+		t.Errorf("expected no queued dims at the exact cap boundary, got %v", queued)
+	}
+}
+
+// TestRefinePlanOverCap pins the fixed comparator: the lowest-severity
+// dimensions are queued, not the highest. With a 1-critical, 2-info spread
+// among 10 dimensions and the default cap of 8, the two info dimensions
+// (dim-e and dim-j) must be the ones queued.
 func TestRefinePlanOverCap(t *testing.T) {
 	dims := make([]reviewDimWork, 10)
 	severities := []string{"critical", "high", "medium", "low", "info", "medium", "medium", "medium", "low", "info"}
@@ -203,10 +226,11 @@ func TestRefinePlanOverCap(t *testing.T) {
 		dims[i].matchedFiles = make([]string, i) // ascending file count
 	}
 
-	queued := refinePlan(dims)
+	queued := refinePlan(dims, defaultMaxDimensions)
 
-	if len(queued) != 2 {
-		t.Errorf("expected 2 queued dims, got %d: %v", len(queued), queued)
+	wantQueued := []string{"dim-e", "dim-j"}
+	if len(queued) != len(wantQueued) || queued[0] != wantQueued[0] || queued[1] != wantQueued[1] {
+		t.Errorf("queued = %v, want %v", queued, wantQueued)
 	}
 
 	activeCount := 0
@@ -214,9 +238,99 @@ func TestRefinePlanOverCap(t *testing.T) {
 		if d.status == "ACTIVE" || d.status == "TRUNCATED" {
 			activeCount++
 		}
+		if d.name == "dim-a" && d.status != "ACTIVE" {
+			t.Error("dim-a (critical) must stay ACTIVE")
+		}
 	}
 	if activeCount != 8 {
 		t.Errorf("expected 8 active dims after refinement, got %d", activeCount)
+	}
+}
+
+// TestRefinePlanTiebreakFewerFilesFirst pins the tiebreak rule: among equal
+// severities, the dimension with the most matched files is queued.
+func TestRefinePlanTiebreakFewerFilesFirst(t *testing.T) {
+	dims := []reviewDimWork{
+		{name: "dim-3files", status: "ACTIVE", severity: "medium", matchedFiles: make([]string, 3)},
+		{name: "dim-1file", status: "ACTIVE", severity: "medium", matchedFiles: make([]string, 1)},
+		{name: "dim-2files", status: "ACTIVE", severity: "medium", matchedFiles: make([]string, 2)},
+	}
+
+	queued := refinePlan(dims, 2)
+
+	if len(queued) != 1 || queued[0] != "dim-3files" {
+		t.Errorf("queued = %v, want [dim-3files]", queued)
+	}
+}
+
+// TestRefinePlanCustomCap confirms refinePlan uses the caller-supplied cap,
+// not a hardcoded constant.
+func TestRefinePlanCustomCap(t *testing.T) {
+	dims := make([]reviewDimWork, 5)
+	for i := range dims {
+		dims[i].name = "dim-" + string(rune('a'+i))
+		dims[i].status = "ACTIVE"
+		dims[i].severity = "medium"
+		dims[i].matchedFiles = make([]string, i)
+	}
+
+	queued := refinePlan(dims, 3)
+	if len(queued) != 2 {
+		t.Errorf("expected 2 queued dims with cap 3, got %d: %v", len(queued), queued)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// resolveDimensionCap tests
+// ---------------------------------------------------------------------------
+
+func TestResolveDimensionCap(t *testing.T) {
+	tests := []struct {
+		name      string
+		reviewCfg map[string]any
+		want      int
+		wantErr   bool
+	}{
+		{name: "nil config", reviewCfg: nil, want: 8},
+		{name: "no maxDimensions key", reviewCfg: map[string]any{"scope": "all"}, want: 8},
+		{name: "configured cap", reviewCfg: map[string]any{"maxDimensions": float64(22)}, want: 22},
+		{name: "minimum boundary", reviewCfg: map[string]any{"maxDimensions": float64(1)}, want: 1},
+		{name: "zero", reviewCfg: map[string]any{"maxDimensions": float64(0)}, wantErr: true},
+		{name: "negative", reviewCfg: map[string]any{"maxDimensions": float64(-1)}, wantErr: true},
+		{name: "fractional", reviewCfg: map[string]any{"maxDimensions": float64(2.5)}, wantErr: true},
+		{name: "string", reviewCfg: map[string]any{"maxDimensions": "8"}, wantErr: true},
+		{name: "positive infinity", reviewCfg: map[string]any{"maxDimensions": math.Inf(1)}, wantErr: true},
+		{name: "negative infinity", reviewCfg: map[string]any{"maxDimensions": math.Inf(-1)}, wantErr: true},
+		{name: "nan", reviewCfg: map[string]any{"maxDimensions": math.NaN()}, wantErr: true},
+		{name: "huge whole number is clamped", reviewCfg: map[string]any{"maxDimensions": float64(1e300)}, want: math.MaxInt32},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveDimensionCap(tc.reviewCfg)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error, got cap %d", got)
+				}
+				var de *mcpserver.DomainError
+				if !errors.As(err, &de) {
+					t.Fatalf("expected a *mcpserver.DomainError, got %T: %v", err, err)
+				}
+				if de.Suggestion == "" {
+					t.Error("expected a non-empty Suggestion")
+				}
+				if !strings.Contains(de.Msg, fmt.Sprintf("%v", tc.reviewCfg["maxDimensions"])) {
+					t.Errorf("message %q does not render the received value %v", de.Msg, tc.reviewCfg["maxDimensions"])
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("resolveDimensionCap() = %d, want %d", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -672,6 +786,238 @@ Review.
 	}
 	if len(m.PlanCritique.QueuedDimensions) != 2 {
 		t.Errorf("plan_critique.queued_dimensions = %v, want 2 names", m.PlanCritique.QueuedDimensions)
+	}
+}
+
+// TestReviewPrepareKeepsCriticalUnderCap pins that the fixed comparator
+// never queues a critical dimension ahead of lower-severity ones: with 1
+// critical and 8 info dimensions (9 ACTIVE total) and the default cap of 8,
+// the critical dimension must stay ACTIVE and exactly one info dimension
+// must become QUEUED.
+func TestReviewPrepareKeepsCriticalUnderCap(t *testing.T) {
+	files := map[string]string{"src/critical.ext": "package main\n"}
+	dims := map[string]string{
+		"critical.md": `---
+name: critical-dim
+description: Critical dimension
+triggers:
+  - "**/*.ext"
+severity: critical
+---
+Review.
+`,
+	}
+	for i := 0; i < 8; i++ {
+		files[fmt.Sprintf("src/info%d.ext%d", i, i)] = "package main\n"
+		dims[fmt.Sprintf("info%d.md", i)] = fmt.Sprintf(`---
+name: info-dim-%d
+description: Info dimension %d
+triggers:
+  - "**/*.ext%d"
+severity: info
+---
+Review.
+`, i, i, i)
+	}
+	root := newReviewFixture(t, files, dims)
+
+	_, m := readReviewManifest(t, root)
+
+	var criticalStatus string
+	queuedCount := 0
+	for _, d := range m.Dimensions {
+		if d.Name == "critical-dim" {
+			criticalStatus = d.Status
+		}
+		if d.Status == "QUEUED" {
+			queuedCount++
+			if d.Name == "critical-dim" {
+				t.Error("critical-dim must not be QUEUED")
+			}
+		}
+	}
+	if criticalStatus != "ACTIVE" {
+		t.Errorf("critical-dim status = %q, want ACTIVE", criticalStatus)
+	}
+	if queuedCount != 1 {
+		t.Errorf("queued dimensions = %d, want 1", queuedCount)
+	}
+}
+
+// TestReviewPrepareMaxDimensionsFromLocalToml pins that [review]
+// maxDimensions in .sdlc-v2/local.toml is read and echoed verbatim into
+// plan_critique.dimension_cap.
+func TestReviewPrepareMaxDimensionsFromLocalToml(t *testing.T) {
+	root := newReviewFixture(t, map[string]string{"src/a.go": "package main\n"}, map[string]string{
+		"dim.md": `---
+name: dim-a
+description: Dimension
+triggers:
+  - "**/*.go"
+severity: medium
+---
+Review.
+`,
+	})
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "[review]\nmaxDimensions = 22\n")
+
+	_, m := readReviewManifest(t, root)
+
+	if m.PlanCritique.DimensionCap != 22 {
+		t.Errorf("plan_critique.dimension_cap = %d, want 22", m.PlanCritique.DimensionCap)
+	}
+	if len(m.PlanCritique.QueuedDimensions) != 0 {
+		t.Errorf("plan_critique.queued_dimensions = %v, want none", m.PlanCritique.QueuedDimensions)
+	}
+}
+
+// TestReviewPrepareDefaultDimensionCap pins that the default cap reaches
+// plan_critique.dimension_cap when local.toml has no [review] section, or a
+// [review] section with no maxDimensions key.
+func TestReviewPrepareDefaultDimensionCap(t *testing.T) {
+	tests := []struct {
+		name      string
+		localToml string
+	}{
+		{name: "no review section", localToml: "[jira]\nproject = \"ABC\"\n"},
+		{name: "no maxDimensions key", localToml: "[review]\nscope = \"all\"\n"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := newReviewFixture(t, map[string]string{"src/a.go": "package main\n"}, map[string]string{
+				"dim.md": `---
+name: dim-a
+description: Dimension
+triggers:
+  - "**/*.go"
+severity: medium
+---
+Review.
+`,
+			})
+			writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), tc.localToml)
+
+			_, m := readReviewManifest(t, root)
+
+			if m.PlanCritique.DimensionCap != defaultMaxDimensions {
+				t.Errorf("plan_critique.dimension_cap = %d, want %d", m.PlanCritique.DimensionCap, defaultMaxDimensions)
+			}
+		})
+	}
+}
+
+// TestReviewPrepareInfiniteMaxDimensions pins that maxDimensions = inf in
+// local.toml returns a DomainError instead of reaching refinePlan as an
+// out-of-range slice bound.
+func TestReviewPrepareInfiniteMaxDimensions(t *testing.T) {
+	root := newReviewFixture(t, map[string]string{"src/a.go": "package main\n"}, map[string]string{
+		"dim.md": `---
+name: dim-a
+description: Dimension
+triggers:
+  - "**/*.go"
+severity: medium
+---
+Review.
+`,
+	})
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "[review]\nmaxDimensions = inf\n")
+
+	_, err := reviewPrepare(root, root, ReviewPrepareIn{SkipConfigCheck: true, Target: "main"})
+	if err == nil {
+		t.Fatal("expected an error for maxDimensions = inf")
+	}
+	var de *mcpserver.DomainError
+	if !errors.As(err, &de) {
+		t.Fatalf("expected a *mcpserver.DomainError, got %T: %v", err, err)
+	}
+}
+
+// TestDefaultMaxDimensionsMatchesSetupField pins defaultMaxDimensions to the
+// review.maxDimensions setup field default. setupmeta's
+// TestReviewMaxDimensionsSchemaMatchesField pins that field to the JSON
+// schema default, so the three values cannot drift apart.
+func TestDefaultMaxDimensionsMatchesSetupField(t *testing.T) {
+	var found bool
+	for _, section := range setupmeta.Sections() {
+		if section.ID != "review" {
+			continue
+		}
+		for _, f := range section.Fields {
+			if f.Name != "maxDimensions" {
+				continue
+			}
+			found = true
+			if f.Default != any(defaultMaxDimensions) {
+				t.Errorf("setupmeta review.maxDimensions default = %v, want defaultMaxDimensions %d", f.Default, defaultMaxDimensions)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("setupmeta review section has no maxDimensions field")
+	}
+}
+
+// TestReviewPrepareInvalidMaxDimensions pins that an invalid [review]
+// maxDimensions value in .sdlc-v2/local.toml stops review_prepare with a
+// DomainError, before any git work or file write.
+func TestReviewPrepareInvalidMaxDimensions(t *testing.T) {
+	root := newReviewFixture(t, map[string]string{"src/a.go": "package main\n"}, map[string]string{
+		"dim.md": `---
+name: dim-a
+description: Dimension
+triggers:
+  - "**/*.go"
+severity: medium
+---
+Review.
+`,
+	})
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "[review]\nmaxDimensions = \"8\"\n")
+
+	_, err := reviewPrepare(root, root, ReviewPrepareIn{SkipConfigCheck: true, Target: "main"})
+	if err == nil {
+		t.Fatal("expected an error for an invalid maxDimensions value")
+	}
+	var de *mcpserver.DomainError
+	if !errors.As(err, &de) {
+		t.Fatalf("expected a *mcpserver.DomainError, got %T: %v", err, err)
+	}
+	if de.Suggestion == "" {
+		t.Error("expected a non-empty Suggestion")
+	}
+	if !strings.Contains(de.Msg, "maxDimensions") {
+		t.Errorf("message %q should name maxDimensions", de.Msg)
+	}
+}
+
+// TestReviewPrepareMalformedLocalToml pins that an unparsable local.toml
+// stops review_prepare with an InfraError rather than silently falling back
+// to the default scope and cap.
+func TestReviewPrepareMalformedLocalToml(t *testing.T) {
+	root := newReviewFixture(t, map[string]string{"src/a.go": "package main\n"}, map[string]string{
+		"dim.md": `---
+name: dim-a
+description: Dimension
+triggers:
+  - "**/*.go"
+severity: medium
+---
+Review.
+`,
+	})
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "[review\nmaxDimensions = 8\n")
+
+	_, err := reviewPrepare(root, root, ReviewPrepareIn{SkipConfigCheck: true, Target: "main"})
+	if err == nil {
+		t.Fatal("expected an error for a malformed local.toml")
+	}
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) {
+		t.Fatalf("expected a *mcpserver.InfraError, got %T: %v", err, err)
+	}
+	if ie.Suggestion == "" {
+		t.Error("expected a non-empty Suggestion")
 	}
 }
 

@@ -35,6 +35,8 @@ flag. This port does not expose `--committed` / `--staged` / `--working` / `--wo
 `.sdlc-v2/local.toml` instead. For `staged` and `working`, `review_prepare` ignores `target`
 (`manifest.base_branch` is `null`). For `staged`, `working`, and `worktree`, which all review
 uncommitted changes, `review_prepare` does not look up a PR (`manifest.pr.exists` is `false`).
+The same `[review]` section's `maxDimensions` key (default `8`, minimum `1`) caps how many
+dimensions one run dispatches; the rest are QUEUED.
 
 ```
 review_prepare({ target: "<branch from --base, or empty>", skipConfigCheck: false })
@@ -78,7 +80,7 @@ Review Plan (dry run — no agents dispatched)
 
   Base branch:    {manifest.base_branch}
   Changed files:  {manifest.git.changed_files_count}
-  Dimensions:     {manifest.summary.active_dimensions} active, {manifest.summary.skipped_dimensions} skipped
+  Dimensions:     {manifest.summary.active_dimensions} active, {manifest.summary.skipped_dimensions} skipped, {manifest.summary.queued_dimensions} queued (cap {manifest.plan_critique.dimension_cap})
 
 | Dimension | Files | Severity | Status |
 |-----------|-------|----------|--------|
@@ -88,6 +90,7 @@ Plan critique:
   - Uncovered files:       {manifest.plan_critique.uncovered_files.join(', ') or "none"}
   - Over-broad:            {manifest.plan_critique.over_broad_dimensions.join(', ') or "none"}
   - Suggested dimensions:  {manifest.plan_critique.uncovered_suggestions.map(s => s.dimension).join(', ') or "none"}
+  - Queued (not reviewed): {manifest.plan_critique.queued_dimensions.join(', ') or "none"}
 
 To execute the full review, run /review (without --dry-run).
 ```
@@ -275,6 +278,8 @@ Format the comment using this template:
 ## Code Review — {N} dimension(s), {M} finding(s)
 
 > Automated review by `review` v{plugin_version} · {date}
+{if manifest.plan_critique.queued_dimensions is not empty:}
+> Queued (not reviewed, dimension cap {manifest.plan_critique.dimension_cap}): {manifest.plan_critique.queued_dimensions.join(', ')}. Raise `maxDimensions` in the `[review]` section of `.sdlc-v2/local.toml` to review them.
 
 ### Summary
 
@@ -315,6 +320,8 @@ worker stalled twice; no findings collected" in place of its finding list.
 - `{N}` ← number of active dimensions actually consolidated (excluding any skipped-as-stalled
   per Step 3)
 - `{M}` ← total finding count
+- The queued note line ← present only when `manifest.plan_critique.queued_dimensions` is not
+  empty; names every queued dimension and `manifest.plan_critique.dimension_cap`
 - All other `{...}` placeholders ← computed from the findings gathered in Step 4
 - If any dimension was skipped as stalled (Step 3), add an explicit note naming it and
   stating its findings are absent from this review
@@ -324,6 +331,13 @@ worker stalled twice; no findings collected" in place of its finding list.
 - `CHANGES REQUESTED` — any `critical` finding, OR ≥ 3 `high` findings
 - `APPROVED WITH NOTES` — any `high` finding, OR ≥ 5 `medium` findings
 - `APPROVED` — all other cases
+
+**Coverage caveat:** when `manifest.plan_critique.queued_dimensions` is not empty, append
+` — partial coverage: {K} dimension(s) queued, not reviewed` to the verdict heading, where
+`{K}` is the number of queued dimensions (for example `### Verdict: APPROVED — partial
+coverage: 3 dimension(s) queued, not reviewed`). Queued dimensions were skipped, not audited,
+so the verdict covers only the dimensions that ran. The caveat does not change the verdict
+word: Step 8 still reads `CHANGES REQUESTED` / `APPROVED WITH NOTES` / `APPROVED` alone.
 
 **Persist** the comment body to `{manifest.diff_dir}/review-comment.md` using the `Write`
 tool (content verbatim, no surrounding fences, no shell escaping).

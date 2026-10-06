@@ -104,6 +104,12 @@ those same guardrails:
   GitHub Actions secret name against `^[A-Za-z_][A-Za-z0-9_]*$` with no
   `GITHUB_` prefix). A bad value must fail loud with a `DomainError` that
   names the value and the rule it breaks; it must never reach disk.
+- Numeric values parsed from config files (TOML via `config.Read`) or `*In`
+  struct fields must be validated for edge cases and platform limits: NaN
+  and ±Inf for floats, overflow and underflow for integers, and
+  below-minimum semantics (e.g. `maxDimensions` must be >= 1). Each
+  validation must reject the invalid value with a `DomainError` that names
+  the value, the rule it breaks, and the acceptable range or constraint.
 
 ## Cross-references
 

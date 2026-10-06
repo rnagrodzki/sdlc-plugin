@@ -2,7 +2,9 @@ package tools
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -43,8 +45,8 @@ var severityRank = map[string]int{
 	"info":     1,
 }
 
-// maxActiveDimensions is the cap on simultaneously dispatched dimensions.
-const maxActiveDimensions = 8
+// defaultMaxDimensions is the dimension cap when [review] maxDimensions is absent.
+const defaultMaxDimensions = 8
 
 // pluginVersion is the plugin version embedded in manifests, read from
 // plugins/sdlc/.claude-plugin/plugin.json at compile time.
@@ -174,6 +176,7 @@ type reviewPlanCritique struct {
 	OverlappingPairs     [][]string            `json:"overlapping_pairs"`
 	DimensionCapApplied  bool                  `json:"dimension_cap_applied"`
 	QueuedDimensions     []string              `json:"queued_dimensions"`
+	DimensionCap         int                   `json:"dimension_cap"`
 }
 
 type uncoveredSuggestion struct {
@@ -520,17 +523,17 @@ func isDispatched(status string) bool {
 	return status == "ACTIVE" || status == "TRUNCATED"
 }
 
-// refinePlan applies the dimension cap: at most maxActiveDimensions
+// refinePlan applies the dimension cap: at most maxDims
 // dispatched (ACTIVE or TRUNCATED) dimensions are kept; the rest become
 // QUEUED. It returns the queued names.
-func refinePlan(dims []reviewDimWork) []string {
+func refinePlan(dims []reviewDimWork, maxDims int) []string {
 	var active []*reviewDimWork
 	for i := range dims {
 		if isDispatched(dims[i].status) {
 			active = append(active, &dims[i])
 		}
 	}
-	if len(active) <= maxActiveDimensions {
+	if len(active) <= maxDims {
 		return nil
 	}
 
@@ -543,15 +546,14 @@ func refinePlan(dims []reviewDimWork) []string {
 		if rj == 0 {
 			rj = 3
 		}
-		diff := rj - ri
-		if diff != 0 {
-			return diff > 0
+		if ri != rj {
+			return ri > rj
 		}
 		return len(active[i].matchedFiles) < len(active[j].matchedFiles)
 	})
 
 	keep := map[string]bool{}
-	for _, d := range active[:maxActiveDimensions] {
+	for _, d := range active[:maxDims] {
 		keep[d.name] = true
 	}
 
@@ -563,6 +565,32 @@ func refinePlan(dims []reviewDimWork) []string {
 		}
 	}
 	return queued
+}
+
+// resolveDimensionCap returns [review] maxDimensions, or defaultMaxDimensions
+// when the section or key is absent. A value that is not a finite whole number
+// >= 1 (a string, 0, 2.5, inf, nan) returns a *mcpserver.DomainError. A whole
+// number above math.MaxInt32 is clamped to math.MaxInt32: there is no upper
+// limit, and the clamp keeps the float-to-int conversion defined.
+func resolveDimensionCap(reviewCfg map[string]any) (int, error) {
+	if reviewCfg == nil {
+		return defaultMaxDimensions, nil
+	}
+	raw, present := reviewCfg["maxDimensions"]
+	if !present {
+		return defaultMaxDimensions, nil
+	}
+	v, ok := raw.(float64)
+	if !ok || math.IsInf(v, 0) || v < 1 || v != math.Trunc(v) {
+		return 0, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("[review] maxDimensions in .sdlc-v2/local.toml must be a whole number >= 1, got %v", raw),
+			Suggestion: fmt.Sprintf("Set maxDimensions to a whole number of 1 or more (for example maxDimensions = 12), or delete the key to use the default of %d, then retry review_prepare.", defaultMaxDimensions),
+		}
+	}
+	if v > math.MaxInt32 {
+		return math.MaxInt32, nil
+	}
+	return int(v), nil
 }
 
 // ---------------------------------------------------------------------------
@@ -750,7 +778,18 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 
 	// Resolve scope from config. Target overrides base branch.
 	scope := "all"
-	reviewCfg, _ := config.ReadSection(projectRoot, "review")
+	reviewCfg, err := config.ReadSection(projectRoot, "review")
+	if err != nil && !errors.Is(err, config.ErrNotFound) {
+		return ReviewPrepareOut{}, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("read [review] section of .sdlc-v2/local.toml: %s", err.Error()),
+			Suggestion: "Fix the TOML syntax in .sdlc-v2/local.toml (or delete the file to use defaults), then retry review_prepare.",
+			Cause:      err,
+		}
+	}
+	maxDims, err := resolveDimensionCap(reviewCfg)
+	if err != nil {
+		return ReviewPrepareOut{}, err
+	}
 	if reviewCfg != nil {
 		if s, ok := reviewCfg["scope"].(string); ok && isValidScope(s) {
 			scope = s
@@ -872,7 +911,7 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 
 	// Apply the dimension cap before writing files, so QUEUED dimensions
 	// (never dispatched) get no .diff or .slice.json file.
-	queued := refinePlan(dims)
+	queued := refinePlan(dims, maxDims)
 
 	// Write .diff and .slice.json files for dispatched dimensions only.
 	for i := range dims {
@@ -964,6 +1003,7 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 	critique := critiquePlan(dims, changedFiles)
 	critique.QueuedDimensions = emptyIfNil(queued)
 	critique.DimensionCapApplied = len(queued) > 0
+	critique.DimensionCap = maxDims
 
 	// Commit count (branch-based scopes).
 	commitCount := 0
@@ -1261,7 +1301,7 @@ func saveReviewComment(projectRoot, activeRoot string, in ReviewPrepareIn) (Revi
 // RegisterReviewTools registers review_prepare on the server.
 func RegisterReviewTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "review_prepare",
-		"Pre-compute review manifest: git state, dimension matching, diff slicing, commit context, open-PR lookup via gh. Writes manifest + per-dimension .diff and .slice.json files to a temp directory. With saveReview:true, persists content verbatim to .sdlc-v2/reviews/<branch>-<date>.md instead. Also returns style: the plugin-wide communication style; follow style.guide in chat and questions.",
+		fmt.Sprintf("Pre-compute review manifest: git state, dimension matching, diff slicing, commit context, open-PR lookup via gh. Writes manifest + per-dimension .diff and .slice.json files to a temp directory. With saveReview:true, persists content verbatim to .sdlc-v2/reviews/<branch>-<date>.md instead. Also returns style: the plugin-wide communication style; follow style.guide in chat and questions. Reads scope and maxDimensions (dispatched dimension cap, default %d, minimum 1) from the [review] section of .sdlc-v2/local.toml. An invalid maxDimensions or an unreadable local.toml returns an error.", defaultMaxDimensions),
 		mcpserver.Annotations{
 			Title:      "Prepare code review payload",
 			ReadOnly:   true,

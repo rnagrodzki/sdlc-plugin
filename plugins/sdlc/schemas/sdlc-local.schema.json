@@ -13,6 +13,12 @@
           "type": "string",
           "enum": ["all", "committed", "staged", "working", "worktree"],
           "description": "Which changes to include in the review."
+        },
+        "maxDimensions": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 8,
+          "description": "Maximum review dimensions dispatched in one /review run. The most severe are kept. The rest are QUEUED."
         }
       },
       "additionalProperties": false

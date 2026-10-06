@@ -1,6 +1,6 @@
 ---
 name: nested-execution-authorization
-description: When execute runs as a nested dispatch inside another skill, TaskStop/stall-handling authorization must be explicitly verified, not assumed to work identically to top-level execution.
+description: When any skill (including review) runs as a nested dispatch inside another skill, TaskStop/stall-handling authorization must be explicitly verified, and abandoned background workers must be explicitly cleaned up via TaskStop or equivalent termination.
 triggers:
   - "plugins/sdlc/skills/**/SKILL.md"
   - "internal/tools/execute_state.go"
@@ -8,10 +8,15 @@ severity: high
 ---
 
 ## Scope
-- Nested execute dispatches (e.g. /ship invoking execute) may receive a
-  hard TaskStop authorization error instead of the normal stall-handling
+- Nested skill dispatches (e.g. /ship invoking execute or review) may receive
+  a hard TaskStop authorization error instead of the normal stall-handling
   flow.
 - Verify the stall-handling path was actually exercised in a nested run,
   not silently bypassed.
 - Skill documentation describing nested dispatch must state this
   authorization difference explicitly.
+- When a skill dispatches background workers or sub-agents that can be
+  abandoned (e.g. when a stall occurs or an error forces early exit),
+  verify TaskStop or equivalent cleanup is called in Step 3 stall handler,
+  Step 9 cleanup, and all error-recovery paths. No worker should be left
+  running unattended after dispatch failure or abandonment.

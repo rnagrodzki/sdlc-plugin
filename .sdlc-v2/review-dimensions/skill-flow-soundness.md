@@ -41,6 +41,16 @@ severity: high
   mutually exclusive, phrased without a leading/loaded framing, and (per
   this project's own tool convention) carry a real, statable default —
   not a set where only one option is actually workable.
+- **Resource cleanup.** When a skill's flow dispatches background workers,
+  sub-agents, or async tasks (e.g. Agent tool calls), verify that every
+  possible exit path (success, stall, error, timeout) includes an explicit
+  cleanup step: a TaskStop call, an agent termination, or a documented
+  reason why cleanup is not needed (e.g. workers terminate themselves).
+  No worker should be left running after the skill completes or is
+  interrupted. Specifically, for stall handlers (Step 3) and cleanup
+  phases (Step 9), grep for TaskStop calls or equivalent termination logic
+  on each dispatched Agent task. Abandoned workers are a resource leak and
+  token waste.
 
 ## What NOT to flag
 

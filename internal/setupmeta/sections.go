@@ -204,6 +204,17 @@ var reviewFields = []Field{
 		Details:     "/review has no scope flag, so this key is the only way to set the default. all and committed both review the commits on the branch against the base branch.",
 		Examples:    []string{"\"all\" — reviews every commit on the branch against the base branch", "\"working\" — reviews staged and unstaged changes against HEAD"},
 	},
+	{
+		Name:        "maxDimensions",
+		Label:       "Max review dimensions per run",
+		Type:        "number",
+		Options:     nil,
+		Default:     8,
+		Description: "Maximum number of review dimensions that /review dispatches in one run. The most severe dimensions are kept. The rest are QUEUED and get no review. Stored in .sdlc-v2/local.toml under review.maxDimensions.",
+		Details:     "/review keeps the most severe dimensions up to this number. A higher value reviews more dimensions and starts more agents at the same time.",
+		Examples:    []string{"8 — the default, at most 8 reviewer agents", "22 — reviews up to 22 dimensions in one run"},
+		Min:         intPtr(1),
+	},
 }
 
 var receivedReviewFields = []Field{
@@ -662,7 +673,7 @@ func Sections() []Section {
 		{
 			ID:              "review",
 			Label:           "review",
-			Purpose:         "Default scope for /review (all/committed/staged/working/worktree). Each developer typically prefers a different default — committed for PR-style review, working for in-progress feedback. Stored in .sdlc-v2/local.toml.",
+			Purpose:         "Default scope for /review (all/committed/staged/working/worktree) and the max dimensions reviewed in one run. Each developer typically prefers a different default — committed for PR-style review, working for in-progress feedback. Stored in .sdlc-v2/local.toml.",
 			ConfigFile:      ".sdlc-v2/local.toml",
 			ConfigPath:      "review",
 			ConsumedBy:      []string{"review"},
