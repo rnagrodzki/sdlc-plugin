@@ -332,6 +332,13 @@ worker stalled twice; no findings collected" in place of its finding list.
 - `APPROVED WITH NOTES` — any `high` finding, OR ≥ 5 `medium` findings
 - `APPROVED` — all other cases
 
+**Coverage caveat:** when `manifest.plan_critique.queued_dimensions` is not empty, append
+` — partial coverage: {K} dimension(s) queued, not reviewed` to the verdict heading, where
+`{K}` is the number of queued dimensions (for example `### Verdict: APPROVED — partial
+coverage: 3 dimension(s) queued, not reviewed`). Queued dimensions were skipped, not audited,
+so the verdict covers only the dimensions that ran. The caveat does not change the verdict
+word: Step 8 still reads `CHANGES REQUESTED` / `APPROVED WITH NOTES` / `APPROVED` alone.
+
 **Persist** the comment body to `{manifest.diff_dir}/review-comment.md` using the `Write`
 tool (content verbatim, no surrounding fences, no shell escaping).
 

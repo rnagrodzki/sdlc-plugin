@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
+	"github.com/rnagrodzki/sdlc-plugin/internal/setupmeta"
 )
 
 // ---------------------------------------------------------------------------
@@ -297,6 +299,10 @@ func TestResolveDimensionCap(t *testing.T) {
 		{name: "negative", reviewCfg: map[string]any{"maxDimensions": float64(-1)}, wantErr: true},
 		{name: "fractional", reviewCfg: map[string]any{"maxDimensions": float64(2.5)}, wantErr: true},
 		{name: "string", reviewCfg: map[string]any{"maxDimensions": "8"}, wantErr: true},
+		{name: "positive infinity", reviewCfg: map[string]any{"maxDimensions": math.Inf(1)}, wantErr: true},
+		{name: "negative infinity", reviewCfg: map[string]any{"maxDimensions": math.Inf(-1)}, wantErr: true},
+		{name: "nan", reviewCfg: map[string]any{"maxDimensions": math.NaN()}, wantErr: true},
+		{name: "huge whole number is clamped", reviewCfg: map[string]any{"maxDimensions": float64(1e300)}, want: math.MaxInt32},
 	}
 
 	for _, tc := range tests {
@@ -862,6 +868,93 @@ Review.
 	}
 	if len(m.PlanCritique.QueuedDimensions) != 0 {
 		t.Errorf("plan_critique.queued_dimensions = %v, want none", m.PlanCritique.QueuedDimensions)
+	}
+}
+
+// TestReviewPrepareDefaultDimensionCap pins that the default cap reaches
+// plan_critique.dimension_cap when local.toml has no [review] section, or a
+// [review] section with no maxDimensions key.
+func TestReviewPrepareDefaultDimensionCap(t *testing.T) {
+	tests := []struct {
+		name      string
+		localToml string
+	}{
+		{name: "no review section", localToml: "[jira]\nproject = \"ABC\"\n"},
+		{name: "no maxDimensions key", localToml: "[review]\nscope = \"all\"\n"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := newReviewFixture(t, map[string]string{"src/a.go": "package main\n"}, map[string]string{
+				"dim.md": `---
+name: dim-a
+description: Dimension
+triggers:
+  - "**/*.go"
+severity: medium
+---
+Review.
+`,
+			})
+			writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), tc.localToml)
+
+			_, m := readReviewManifest(t, root)
+
+			if m.PlanCritique.DimensionCap != defaultMaxDimensions {
+				t.Errorf("plan_critique.dimension_cap = %d, want %d", m.PlanCritique.DimensionCap, defaultMaxDimensions)
+			}
+		})
+	}
+}
+
+// TestReviewPrepareInfiniteMaxDimensions pins that maxDimensions = inf in
+// local.toml returns a DomainError instead of reaching refinePlan as an
+// out-of-range slice bound.
+func TestReviewPrepareInfiniteMaxDimensions(t *testing.T) {
+	root := newReviewFixture(t, map[string]string{"src/a.go": "package main\n"}, map[string]string{
+		"dim.md": `---
+name: dim-a
+description: Dimension
+triggers:
+  - "**/*.go"
+severity: medium
+---
+Review.
+`,
+	})
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "[review]\nmaxDimensions = inf\n")
+
+	_, err := reviewPrepare(root, root, ReviewPrepareIn{SkipConfigCheck: true, Target: "main"})
+	if err == nil {
+		t.Fatal("expected an error for maxDimensions = inf")
+	}
+	var de *mcpserver.DomainError
+	if !errors.As(err, &de) {
+		t.Fatalf("expected a *mcpserver.DomainError, got %T: %v", err, err)
+	}
+}
+
+// TestDefaultMaxDimensionsMatchesSetupField pins defaultMaxDimensions to the
+// review.maxDimensions setup field default. setupmeta's
+// TestReviewMaxDimensionsSchemaMatchesField pins that field to the JSON
+// schema default, so the three values cannot drift apart.
+func TestDefaultMaxDimensionsMatchesSetupField(t *testing.T) {
+	var found bool
+	for _, section := range setupmeta.Sections() {
+		if section.ID != "review" {
+			continue
+		}
+		for _, f := range section.Fields {
+			if f.Name != "maxDimensions" {
+				continue
+			}
+			found = true
+			if f.Default != any(defaultMaxDimensions) {
+				t.Errorf("setupmeta review.maxDimensions default = %v, want defaultMaxDimensions %d", f.Default, defaultMaxDimensions)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("setupmeta review section has no maxDimensions field")
 	}
 }
 

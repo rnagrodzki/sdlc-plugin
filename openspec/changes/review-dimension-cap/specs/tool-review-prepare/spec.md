@@ -5,7 +5,7 @@
 ### Requirement: Dimension cap configuration
 The tool SHALL read the dimension cap from the `maxDimensions` key of the `[review]` section in `.sdlc-v2/local.toml`, use `8` when the key, section, or file is absent, and stop with an error when the value is invalid or the file cannot be read.
 
-- A valid value is a whole number of `1` or more. There is no upper limit.
+- A valid value is a finite whole number of `1` or more. There is no upper limit; a value above `2147483647` is clamped to `2147483647`.
 - An invalid value returns a `DomainError` whose message names `[review] maxDimensions` and the received value, with a `Suggestion` to set a whole number of 1 or more or to delete the key.
 - A `local.toml` that exists but cannot be parsed or read returns an `InfraError` with a `Suggestion` to fix or delete the file.
 - The error is returned before any git work or file write.
@@ -36,6 +36,14 @@ The tool SHALL read the dimension cap from the `maxDimensions` key of the `[revi
 #### Scenario: String value
 - **WHEN** `[review]` has `maxDimensions = "8"`
 - **THEN** the tool returns a `DomainError`
+
+#### Scenario: Infinite value
+- **WHEN** `[review]` has `maxDimensions = inf`
+- **THEN** the tool returns a `DomainError`
+
+#### Scenario: Very large value
+- **WHEN** `[review]` has `maxDimensions = 1e300`
+- **THEN** the cap is `2147483647` and no error is returned
 
 #### Scenario: Malformed local.toml
 - **WHEN** `.sdlc-v2/local.toml` contains invalid TOML

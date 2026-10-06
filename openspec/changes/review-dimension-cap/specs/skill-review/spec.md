@@ -49,7 +49,7 @@ The skill SHALL write the consolidated comment with the Write tool to `{manifest
 - Second block: `> Automated review by \`review\` v{plugin_version} · {date}`, with `{plugin_version}` from `manifest.plugin_version` and `{date}` as `YYYY-MM-DD`.
 - When `plan_critique.queued_dimensions` is not empty, the next line is `> Queued (not reviewed, dimension cap {plan_critique.dimension_cap}): {names joined by ", "}. Raise \`maxDimensions\` in the \`[review]\` section of \`.sdlc-v2/local.toml\` to review them.` When it is empty, this line is absent.
 - A `### Summary` table with columns `Dimension | Findings | Critical | High | Medium | Low | Info` and a **Total** row.
-- A `### Verdict: {verdict}` heading and a one-sentence assessment.
+- A `### Verdict: {verdict}` heading and a one-sentence assessment. When `plan_critique.queued_dimensions` is not empty, the heading ends with ` — partial coverage: {K} dimension(s) queued, not reviewed`, where `{K}` is the number of queued dimensions. The verdict word itself does not change.
 - One `### {dimension.name} — {N} finding(s)` block per dimension, with findings in a `<details>` element.
 - Each finding: `#### [{SEVERITY}] {title}`, `**File:** \`{file}:{line}\``, description, `**Suggestion:**`.
 - The body never includes an AI-tool attribution line.
@@ -66,3 +66,12 @@ The skill SHALL write the consolidated comment with the Write tool to `{manifest
 #### Scenario: Queued note absent
 - **WHEN** `plan_critique.queued_dimensions` is empty
 - **THEN** the comment contains no `Queued (not reviewed` line
+
+#### Scenario: Verdict carries a coverage caveat
+- **WHEN** `plan_critique.queued_dimensions` is `["info-a", "info-b"]` and the findings give the verdict `APPROVED`
+- **THEN** the verdict heading is `### Verdict: APPROVED — partial coverage: 2 dimension(s) queued, not reviewed`
+- **AND** Step 8 treats the verdict as `APPROVED`
+
+#### Scenario: Verdict without queued dimensions
+- **WHEN** `plan_critique.queued_dimensions` is empty
+- **THEN** the verdict heading has no `partial coverage` caveat
