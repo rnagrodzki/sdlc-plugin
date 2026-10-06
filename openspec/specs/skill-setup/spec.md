@@ -216,7 +216,7 @@ The skill SHALL run the migration step only when `needsMigration` is `true` or `
 For each selected id, in canonical order, the skill SHALL print a section header and then run the dispatcher named by the section's `delegatedTo`.
 
 - Header lines: `--- Configuring: <label> ----…`, `Purpose:`, `Files modified:`, `Consumed by:`, `Config file: <configFile> (path: <configPath or —>)`, `Current value: <summary or <none>>`.
-- When the section has fields, an `Options:` block lists each field's name, type, default, and description.
+- When the section has fields, an `Options:` block lists each field's name, type, default, and description, and a line `Examples: <field.examples joined with "; ">` under the description.
 
 | `delegatedTo` | Dispatcher |
 |---|---|
@@ -231,10 +231,17 @@ For each selected id, in canonical order, the skill SHALL print a section header
 - **WHEN** the user selects rows for `automation` and `version`
 - **THEN** the skill configures `version` first
 
+#### Scenario: Examples shown
+- **WHEN** the skill prints the `Options:` block for the `ship` section
+- **THEN** each field has an `Examples:` line under its description
+
 ### Requirement: Generic field loop
 For sections with empty `delegatedTo`, the skill SHALL ask exactly one AskUserQuestion per field that survives gating, in manifest order, and SHALL NOT batch or reorder fields.
 
 - Prompt `field.label`, helper text `field.description`, choices `field.options` (free text when empty), default `field.default`.
+- When the user asks what the field means, the skill calls `setup_prepare({explain: "<section.id>.<field.name>"})`, shows the details and examples, and asks the same question again.
+- When that `explain` call returns an error, the skill shows the error message and asks the same question again.
+- The skill holds no option text of its own. Each option string comes from `setup_prepare`.
 - `github.expectedAccount` defaults to `remoteOwner` from `setup_prepare`.
 - A field with `whenStepInActiveSteps` is skipped unless that step is in the `ship.steps` answer.
 - `version`: skip `versionFile` and `fileType` when `mode` is `tag`; skip `changelogFile` when `changelog` is `false`; omit an empty `preRelease`.
@@ -263,6 +270,13 @@ For sections with empty `delegatedTo`, the skill SHALL ask exactly one AskUserQu
 - **AND** the user answers `yes` to the detected-settings prompt
 - **THEN** the `version` value has `mode: 'file'`
 - **AND** has no `preRelease`
+
+#### Scenario: User asks what an option means
+- **WHEN** the skill asks the `rebase` field of the `ship` section
+- **AND** the user asks what the option means
+- **THEN** the skill calls `setup_prepare({explain: "ship.rebase"})`
+- **AND** shows the details and examples
+- **AND** asks the `rebase` question again
 
 ### Requirement: Pre-release compatibility check
 After the `version` fields are collected with `mode` not `tag` and a non-empty `preRelease`, the skill SHALL look up the chosen `fileType` and act on its level. The check runs at most once per run.
