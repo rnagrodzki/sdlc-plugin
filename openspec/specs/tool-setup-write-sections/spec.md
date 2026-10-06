@@ -128,7 +128,13 @@ The tool SHALL change only the lines of changed keys in the written section and 
 
 #### Scenario: No value change
 - **WHEN** the call writes the values that the file already holds
+- **AND** each written key already has its template tip directly above it
 - **THEN** the file is byte-identical to its old content
+
+#### Scenario: No value change, tip missing
+- **WHEN** the call writes `{"ship":{"steps":["execute","commit"],"bump":"patch"}}` to a `local.toml` that already holds those values with no comment line above `steps` or `bump`
+- **THEN** the key and value lines of `steps` and `bump` are byte-identical to their old text
+- **AND** the template tips for `steps` and `bump` are inserted directly above those keys
 
 #### Scenario: Absent section appended
 - **WHEN** `config.toml` has no `jira` table and no `# [jira]` comment line
