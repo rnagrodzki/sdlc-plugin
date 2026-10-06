@@ -49,6 +49,7 @@
 package tools
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -102,6 +103,13 @@ type ValidateIn struct {
 	// wrote. When the active root cannot be resolved the call fails instead
 	// of falling back to the main root. Ignored by every other action.
 	ActiveWorktree bool `json:"activeWorktree,omitempty" jsonschema_description:"guardrails action only: true reads the section from the ACTIVE worktree's .sdlc-v2/config.toml instead of the main worktree's. Used by harden, which writes guardrails to the active worktree. Ignored by other actions."`
+	// CandidatesJSON is a JSON-encoded array of proposed guardrail entries,
+	// for the guardrails action only. Each candidate is checked together with
+	// the section on disk, in memory: a candidate whose id matches a disk
+	// entry's id replaces that entry for the check; a candidate with a new id
+	// is added and all entries are checked. Nothing is ever written. Without
+	// it, only the disk entries are checked.
+	CandidatesJSON string `json:"candidatesJson,omitempty" jsonschema_description:"guardrails action only: JSON array of proposed guardrail entries, e.g. [{\"id\":\"no-ci-bypass\",\"description\":\"Plans must not skip CI.\",\"severity\":\"error\"}]. Checked together with the section on disk, in memory — a candidate's id matching a disk entry replaces it for the check, a new id is added. Nothing is written."`
 	// Body is the PR body text to validate for the pr_body action, matching
 	// the former standalone pr_validate_body tool's input.
 	Body string `json:"body,omitempty" jsonschema_description:"PR body text to validate. Used by the pr_body action."`
@@ -138,7 +146,7 @@ func RegisterValidateTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "validate",
 		`Run a deterministic validator against the project.
 
-Pass "action" to select the validator. Each action uses a subset of the input fields (unlisted fields are ignored). Returns structured findings (id, severity, message, path, fix) for FAILED checks only — an empty findings list means every check passed. "fix" carries the accepted shape inline and is set on every plan_format and plan_style failure (PF1-PF14); the other actions leave it empty.
+Pass "action" to select the validator. Each action uses a subset of the input fields (unlisted fields are ignored). Returns structured findings (id, severity, message, path, fix) for FAILED checks only — an empty findings list means every check passed. "fix" carries the accepted shape inline and is set on every plan_format and plan_style failure (PF1-PF14) and on every guardrails failure (the repair step); the other actions leave it empty.
 
 validate only reports; the calling skill step decides the next action from findings and styleReport.
 
@@ -147,7 +155,7 @@ validate only reports; the calling skill step decides the next action from findi
 - discovery: Check the project's discovery artifacts (PD1-PD16). No inputs.
 - pr_template: Check the PR template file itself (V1-V5) at its canonical or legacy path. No inputs.
 - cost_tiers: Compare skill/agent model tiers against the cost-tier doc tables in docs/cost-tiers.md. Optional: strict (true reports the INHERITED finding kind as severity "error" instead of "warning"). When docs/cost-tiers.md does not exist, the check is skipped and one NO_COST_DOC warning is returned.
-- guardrails: Check the guardrails list in a config section for per-guardrail id/description/severity. Optional: section (defaults to "plan"), activeWorktree (true reads the active worktree instead of the main worktree; an unresolvable active worktree is an infrastructure error, never a silent fallback). A section that does not exist returns no findings.
+- guardrails: Check the guardrails list in a config section for per-guardrail id/description/severity; every finding carries a fix (the repair step). Optional: section (defaults to "plan"), activeWorktree (true reads the active worktree instead of the main worktree; an unresolvable active worktree is an infrastructure error, never a silent fallback), candidatesJson (JSON array of proposed guardrail entries checked together with the section on disk, in memory, replacing same-id disk entries; nothing is written). A section that does not exist returns no findings; candidatesJson entries are still checked.
 - dimensions: Check the review-dimension files, including a cross-file duplicate-name check (D10). Reads the ACTIVE worktree, unlike most other actions (ci_script_drift also reads the active worktree). No inputs.
 - pr_body: Check a PR body against the PR template's required sections. Requires body — an empty body is not rejected, it simply reports every required section as missing.
 - ci_script_drift: Check the generated CI scripts against their current sources. Reads the ACTIVE worktree (falls back to main when it cannot be resolved), since scaffold_ci now writes there too. No inputs.
@@ -1941,9 +1949,32 @@ func quotedList(items []string) string {
 	return strings.Join(q, ", ")
 }
 
+// Guardrail finding fix hints. The id-format, duplicate-id, severity and
+// length texts are pinned by the "guardrails finding fix hints" spec
+// scenarios; the rest (missing/non-string id, description missing/wrong
+// type/empty) are not pinned to exact wording but must be non-empty, per
+// the "every finding has a fix" requirement.
+const (
+	guardrailIDMissingFix   = `Add a kebab-case id, e.g. no-ci-bypass, as the guardrail's key or "id" field.`
+	guardrailIDFormatFix    = `Rename the id to lowercase words joined by single hyphens, e.g. no-ci-bypass.`
+	guardrailIDDupFix       = `Use action consolidate on the current id, or pick a new unique id.`
+	guardrailDescMissingFix = `Add a one-line description stating what the guardrail enforces.`
+	guardrailDescTypeFix    = `Set description to a plain string.`
+	guardrailDescEmptyFix   = `Add a non-empty description stating what the guardrail enforces.`
+	guardrailSeverityFix    = `Set severity to error or warning.`
+)
+
+// guardrailDescLengthFix is the PF-style fix for an over-length description:
+// it names the id-based split the author is expected to make, e.g. for id
+// "x": "ids x-1, x-2".
+func guardrailDescLengthFix(id string) string {
+	return fmt.Sprintf("Shorten the description to 1024 bytes or less, or split it into independent guardrails with ids %s-1, %s-2, each a complete rule.", id, id)
+}
+
 // validateOneGuardrail ports validateGuardrail. All findings from this
 // validator are errors -- the JS source's warnings array is never
-// populated in practice (severity failures are pushed to errors too).
+// populated in practice (severity failures are pushed to errors too). Every
+// finding carries a non-empty Fix (the repair step).
 func validateOneGuardrail(g map[string]any, seenIDs map[string]bool) []discovery.Finding {
 	var findings []discovery.Finding
 
@@ -1953,20 +1984,20 @@ func validateOneGuardrail(g map[string]any, seenIDs map[string]bool) []discovery
 	if idIsString && idStr != "" {
 		displayID = idStr
 	}
-	add := func(msg string) {
-		findings = append(findings, discovery.Finding{ID: displayID, Severity: "error", Message: fmt.Sprintf("%s: %s", displayID, msg), Path: ""})
+	add := func(msg, fix string) {
+		findings = append(findings, discovery.Finding{ID: displayID, Severity: "error", Message: fmt.Sprintf("%s: %s", displayID, msg), Path: "", Fix: fix})
 	}
 
 	if jsFalsyLocal(rawID) {
-		add("id is missing")
+		add("id is missing", guardrailIDMissingFix)
 	} else if !idIsString {
-		add("id must be a string")
+		add("id must be a string", guardrailIDMissingFix)
 	} else {
 		if !guardrailKebabRe.MatchString(idStr) {
-			add("id must match kebab-case pattern: /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/")
+			add("id must match kebab-case pattern: /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/", guardrailIDFormatFix)
 		}
 		if seenIDs[idStr] {
-			add("id is duplicated across guardrails")
+			add("id is duplicated across guardrails", guardrailIDDupFix)
 		} else {
 			seenIDs[idStr] = true
 		}
@@ -1975,14 +2006,15 @@ func validateOneGuardrail(g map[string]any, seenIDs map[string]bool) []discovery
 	descVal := g["description"]
 	descStr, descIsString := descVal.(string)
 	if jsFalsyLocal(descVal) {
-		add("description is missing")
+		add("description is missing", guardrailDescMissingFix)
 	} else if !descIsString {
-		add("description must be a string")
+		add("description must be a string", guardrailDescTypeFix)
 	} else if strings.TrimSpace(descStr) == "" {
-		add("description cannot be empty")
+		add("description cannot be empty", guardrailDescEmptyFix)
 	}
 	if !jsFalsyLocal(descVal) && descIsString && len(descStr) > 1024 {
-		add(fmt.Sprintf("description exceeds 1024 characters (%d chars)", len(descStr)))
+		over := len(descStr) - 1024
+		add(fmt.Sprintf("description exceeds 1024 bytes (%d bytes, %d over)", len(descStr), over), guardrailDescLengthFix(displayID))
 	}
 
 	if sevVal, present := g["severity"]; present && sevVal != nil {
@@ -1992,7 +2024,7 @@ func validateOneGuardrail(g map[string]any, seenIDs map[string]bool) []discovery
 			if !isStr {
 				got = fmt.Sprint(sevVal)
 			}
-			add(fmt.Sprintf("severity must be %s, or undefined (got %q)", quotedList(dimensions.GuardrailSeverities), got))
+			add(fmt.Sprintf("severity must be %s, or undefined (got %q)", quotedList(dimensions.GuardrailSeverities), got), guardrailSeverityFix)
 		}
 	}
 
@@ -2001,17 +2033,16 @@ func validateOneGuardrail(g map[string]any, seenIDs map[string]bool) []discovery
 
 // validateGuardrailsAction ports validateGuardrailsConfig. A missing or
 // absent guardrails section is treated as zero guardrails configured (a
-// pass), matching the JS "!sectionData || !Array.isArray(...)" branch.
+// pass), matching the JS "!sectionData || !Array.isArray(...)" branch. A
+// missing section (config.ErrNotFound) still lets in.CandidatesJSON's
+// entries be checked, against zero disk entries.
 func validateGuardrailsAction(root string, in ValidateIn) ([]discovery.Finding, error) {
 	section := in.Section
 	if section == "" {
 		section = "plan"
 	}
 	data, err := config.ReadSection(root, section)
-	if err != nil {
-		if errors.Is(err, config.ErrNotFound) {
-			return nil, nil
-		}
+	if err != nil && !errors.Is(err, config.ErrNotFound) {
 		return nil, &mcpserver.InfraError{Msg: fmt.Sprintf("read %s guardrails section: %s", section, err.Error()), Suggestion: fmt.Sprintf("Check that config.toml's [%s] section is valid TOML and readable, then retry.", section), Cause: err}
 	}
 
@@ -2025,21 +2056,83 @@ func validateGuardrailsAction(root string, in ValidateIn) ([]discovery.Finding, 
 	// as written, so entries can lack an id or repeat one; a quoted empty
 	// table key ([plan.guardrails.""]) injects id "". validateOneGuardrail's
 	// missing-id and duplicate-id checks catch those cases.
-	raw, ok := data["guardrails"].([]any)
-	if !ok {
+	var raw []any
+	if data != nil {
+		raw, _ = data["guardrails"].([]any)
+	}
+
+	entries, err := mergeGuardrailCandidates(raw, in.CandidatesJSON)
+	if err != nil {
+		return nil, err
+	}
+	if len(entries) == 0 {
 		return nil, nil
 	}
 
 	seen := map[string]bool{}
 	var findings []discovery.Finding
-	for _, item := range raw {
-		g, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
+	for _, g := range entries {
 		findings = append(findings, validateOneGuardrail(g, seen)...)
 	}
 	return findings, nil
+}
+
+// mergeGuardrailCandidates merges candidatesJSON's proposed entries over the
+// disk guardrails (raw, the section's "guardrails" array, possibly nil),
+// entirely in memory -- nothing is written back. A candidate whose "id"
+// equals a disk entry's "id" replaces that entry in place; a candidate with
+// a new id (or no disk entries at all) is appended. Without candidatesJSON
+// the disk entries are returned unchanged. candidatesJSON that does not
+// decode into a JSON array of objects is a DomainError; no entry is checked.
+func mergeGuardrailCandidates(raw []any, candidatesJSON string) ([]map[string]any, error) {
+	disk := make([]map[string]any, 0, len(raw))
+	for _, item := range raw {
+		if g, ok := item.(map[string]any); ok {
+			disk = append(disk, g)
+		}
+	}
+	if candidatesJSON == "" {
+		return disk, nil
+	}
+
+	var candidates []map[string]any
+	if err := json.Unmarshal([]byte(candidatesJSON), &candidates); err != nil {
+		return nil, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("guardrails: candidatesJson is not a JSON array of objects: %s", err.Error()),
+			Suggestion: `Pass candidatesJson as a JSON array of guardrail objects, e.g. [{"id":"no-ci-bypass","description":"Plans must not skip CI.","severity":"error"}].`,
+			Cause:      err,
+		}
+	}
+
+	used := make([]bool, len(candidates))
+	merged := make([]map[string]any, 0, len(disk)+len(candidates))
+	for _, entry := range disk {
+		id, _ := entry["id"].(string)
+		replacement := -1
+		if id != "" {
+			for i, c := range candidates {
+				if used[i] {
+					continue
+				}
+				if cid, ok := c["id"].(string); ok && cid == id {
+					replacement = i
+					break
+				}
+			}
+		}
+		if replacement >= 0 {
+			merged = append(merged, candidates[replacement])
+			used[replacement] = true
+		} else {
+			merged = append(merged, entry)
+		}
+	}
+	for i, c := range candidates {
+		if !used[i] {
+			merged = append(merged, c)
+		}
+	}
+	return merged, nil
 }
 
 // ---------------------------------------------------------------------------

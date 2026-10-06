@@ -1,7 +1,6 @@
 package config
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -120,7 +119,7 @@ func TestWriteSection_SpliceCases(t *testing.T) {
 			want:    "[plan]\nother = 1\n\n[plan.tasks]\nnote = 'new'\n",
 		},
 		{
-			name: "header-like text in strings, arrays and comments is not a header",
+			name: "header-like text in strings and arrays is not a header, the commented one becomes live",
 			file: "config.toml",
 			content: "[plan]\nnote = \"\"\"\n[plan.tasks]\nnot a header\n\"\"\"\n" +
 				"lit = '''\n[plan.tasks]\n'''\n" +
@@ -128,10 +127,11 @@ func TestWriteSection_SpliceCases(t *testing.T) {
 				"# [plan.tasks]\n",
 			section: "plan.tasks",
 			value:   map[string]any{"note": "real"},
+			// Only the commented header is taken for plan.tasks: it becomes live.
 			want: "[plan]\nnote = \"\"\"\n[plan.tasks]\nnot a header\n\"\"\"\n" +
 				"lit = '''\n[plan.tasks]\n'''\n" +
 				"matrix = [\n  [\"a\"],\n  [\"b\"]\n]\n" +
-				"# [plan.tasks]\n[plan.tasks]\nnote = 'real'\n",
+				"[plan.tasks]\nnote = 'real'\n",
 		},
 		{
 			name:    "empty value writes an empty table",
@@ -222,12 +222,12 @@ func TestWriteSection_SpliceCases(t *testing.T) {
 			want:    "[plan.tasks]\nnote = \"x\"\n\n[plan.tasks.sub]\na = 'b'\n\n[jira]\ndefaultProject = \"P\"\n",
 		},
 		{
-			name:    "absent table goes after its commented header block",
+			name:    "absent table takes over its commented header and example lines",
 			file:    "config.toml",
 			content: "[commit]\nallowedTypes = []\n\n# Jira doc\n#  [ jira ]\n# defaultProject = \"X\"\n\n# tail\n",
 			section: "jira",
 			value:   map[string]any{"defaultProject": "P"},
-			want: "[commit]\nallowedTypes = []\n\n# Jira doc\n#  [ jira ]\n# defaultProject = \"X\"\n[jira]\n" +
+			want: "[commit]\nallowedTypes = []\n\n# Jira doc\n[ jira ]\n" +
 				"# Default Jira project key (2–10 uppercase letters, e.g. \"PROJ\").\ndefaultProject = 'P'\n\n# tail\n",
 		},
 		{
@@ -267,6 +267,117 @@ func TestWriteSection_SpliceCases(t *testing.T) {
 			section: "ship",
 			value:   map[string]any{"draft": true},
 			want:    "[ship]\n# Create PR as draft.\ndraft = true\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, rewrote := writeSpliceFixture(t, tc.file, tc.content, tc.section, tc.value)
+			if rewrote {
+				t.Errorf("fell back to a full rewrite")
+			}
+			if got != tc.want {
+				t.Errorf("file text mismatch\n--- got ---\n%s\n--- want ---\n%s", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSplice_CommentedExamples pins how a new key takes over its commented
+// example line, and a new section its commented header line. Each fixture
+// keeps a comment line directly above every new key, so no template tip is
+// inserted and the expected text shows only the splice.
+func TestSplice_CommentedExamples(t *testing.T) {
+	cases := []struct {
+		name    string
+		file    string
+		content string
+		section string
+		value   map[string]any
+		want    string
+	}{
+		{
+			name: "new key replaces its commented example, trailing tip kept",
+			file: "local.toml",
+			content: "[style]\n# note\n# audience = \"functional\"      # technical | functional | executive | general | beginner\n" +
+				"# tone = \"direct\"              # direct | neutral\n",
+			section: "style",
+			value:   map[string]any{"audience": "technical"},
+			want: "[style]\n# note\naudience = 'technical'      # technical | functional | executive | general | beginner\n" +
+				"# tone = \"direct\"              # direct | neutral\n",
+		},
+		{
+			name:    "two examples for one key: the first one is used",
+			file:    "local.toml",
+			content: "[style]\n# note\n# tone = \"direct\"   # first\n# tone = \"neutral\"  # second\n",
+			section: "style",
+			value:   map[string]any{"tone": "neutral"},
+			want:    "[style]\n# note\ntone = 'neutral'   # first\n# tone = \"neutral\"  # second\n",
+		},
+		{
+			name:    "indented example keeps its indentation",
+			file:    "local.toml",
+			content: "[style]\n  # note\n  #   tone = \"direct\"\n",
+			section: "style",
+			value:   map[string]any{"tone": "neutral"},
+			want:    "[style]\n  # note\n  tone = 'neutral'\n",
+		},
+		{
+			name:    "comment inside a multi-line value is not an example",
+			file:    "local.toml",
+			content: "[ship]\n# steps doc\nsteps = [\n  \"execute\",\n# foo = false\n]\n# foo doc\n",
+			section: "ship",
+			value:   map[string]any{"steps": []any{"execute"}, "foo": true},
+			want:    "[ship]\n# steps doc\nsteps = [\n  \"execute\",\n# foo = false\n]\nfoo = true\n# foo doc\n",
+		},
+		{
+			name: "commented header and its example are uncommented, other examples stay",
+			file: "local.toml",
+			content: "[ship]\n# bump doc\nbump = \"patch\"\n\n# ─── Review\n# [review]\n# Which changes to include.\n" +
+				"# scope = \"working\"\n# Max dimensions.\n# maxDimensions = 8\n\n# [receivedReview]\n# scope = \"x\"\n",
+			section: "review",
+			value:   map[string]any{"scope": "diff"},
+			want: "[ship]\n# bump doc\nbump = \"patch\"\n\n# ─── Review\n[review]\n# Which changes to include.\n" +
+				"scope = 'diff'\n# Max dimensions.\n# maxDimensions = 8\n\n# [receivedReview]\n# scope = \"x\"\n",
+		},
+		{
+			name:    "example below the next commented header is not used",
+			file:    "local.toml",
+			content: "[review]\n# a\n# [other]\n# foo = \"x\"\n",
+			section: "review",
+			value:   map[string]any{"foo": "y"},
+			want:    "[review]\nfoo = 'y'\n# a\n# [other]\n# foo = \"x\"\n",
+		},
+		{
+			name:    "new sub-table goes below the uncommented example line",
+			file:    "local.toml",
+			content: "# doc\n# [automation]\n# note\n# zz = \"b\"\n# tail\n",
+			section: "automation",
+			value:   map[string]any{"zz": "a", "sub": map[string]any{"k": true}},
+			want:    "# doc\n[automation]\n# note\nzz = 'a'\n\n[automation.sub]\nk = true\n# tail\n",
+		},
+		{
+			name:    "commented header with a live key/value below it: section appended",
+			file:    "local.toml",
+			content: "# [review]\n# foo = \"x\"\nstray = true\n",
+			section: "review",
+			value:   map[string]any{"foo": "y"},
+			want:    "# [review]\n# foo = \"x\"\nstray = true\n\n[review]\nfoo = 'y'\n",
+		},
+		{
+			name:    "CRLF file: uncommented lines keep CRLF",
+			file:    "local.toml",
+			content: "# doc\r\n# [review]\r\n# c\r\n# foo = \"working\"   # tip\r\n",
+			section: "review",
+			value:   map[string]any{"foo": "diff"},
+			want:    "# doc\r\n[review]\r\n# c\r\nfoo = 'diff'   # tip\r\n",
+		},
+		{
+			name:    "new dotted key replaces its commented example",
+			file:    "config.toml",
+			content: "[version]\n# doc\ntag.enabled = true\n# prefix doc\n# tag.prefix = \"v\"   # p\n",
+			section: "version",
+			value:   map[string]any{"tag": map[string]any{"enabled": true, "prefix": "x"}},
+			want:    "[version]\n# doc\ntag.enabled = true\n# prefix doc\ntag.prefix = 'x'   # p\n",
 		},
 	}
 	for _, tc := range cases {
@@ -324,7 +435,9 @@ func TestWriteSection_SpliceTemplateVersion(t *testing.T) {
 }
 
 // TestWriteSection_SpliceTemplateLocal writes planStyle into the shipped
-// local.toml template: [ship] and all its comments stay byte-for-byte.
+// local.toml template: [ship] and all its comments stay byte-for-byte, and
+// the new audience key takes over the first commented audience example
+// under [planStyle] (the deprecated one), keeping its trailing tip.
 func TestWriteSection_SpliceTemplateLocal(t *testing.T) {
 	tmpl := version.LocalTemplate
 	value := map[string]any{"audience": "executive"}
@@ -332,9 +445,10 @@ func TestWriteSection_SpliceTemplateLocal(t *testing.T) {
 	if rewrote {
 		t.Fatalf("fell back to a full rewrite")
 	}
-	head := tmpl[:strings.Index(tmpl, "[planStyle]\n")]
-	if !strings.HasPrefix(got, head+"[planStyle]\naudience = 'executive'\n") {
-		t.Errorf("local.toml: [ship] text changed or planStyle not spliced in place:\n%s", got)
+	at := strings.Index(tmpl, "[planStyle]\n")
+	want := tmpl[:at] + strings.Replace(tmpl[at:], "# audience = \"functional\"", "audience = 'executive'", 1)
+	if got != want {
+		t.Errorf("local.toml: text outside the planStyle audience line changed:\n%s", got)
 	}
 }
 
@@ -454,19 +568,60 @@ func TestWriteSection_SpliceFallsBack(t *testing.T) {
 	}
 }
 
-// TestCommentedHeaderEnd pins the commented-header lookup: any spacing
-// inside the comment matches, the end is the line after the comment block,
-// and a header for another path or an uncommented header does not match.
-func TestCommentedHeaderEnd(t *testing.T) {
-	lines := bytes.SplitAfter([]byte("[a]\nk = 1\n\n# doc\n#[ x . y ]\n# k = 2\n\n# [x]\n"), []byte("\n"))
-	if got := commentedHeaderEnd(lines, []string{"x", "y"}); got != 6 {
-		t.Errorf("x.y: got %d, want 6", got)
+// TestSplice_ParseCommentedHeader pins the commented-header parser: any
+// spacing inside the comment matches, and prose, a live header, an
+// array-of-tables header and a key/value do not.
+func TestSplice_ParseCommentedHeader(t *testing.T) {
+	tests := []struct {
+		line   string
+		want   []string
+		wantOK bool
+	}{
+		{"# [review]\n", []string{"review"}, true},
+		{"#[ x . y ]\r\n", []string{"x", "y"}, true},
+		{"  #   [workspace.branch]   # tip\n", []string{"workspace", "branch"}, true},
+		{"[review]\n", nil, false},
+		{"# [[plan.guardrails]]\n", nil, false},
+		{"# scope = \"working\"\n", nil, false},
+		{"# Deprecated — moved to [style]; still accepted here.\n", nil, false},
+		{"# [review] [ship]\n", nil, false},
+		{"#\n", nil, false},
 	}
-	if got := commentedHeaderEnd(lines, []string{"x"}); got != 8 {
-		t.Errorf("x: got %d, want 8", got)
+	for _, tt := range tests {
+		got, ok := parseCommentedHeader([]byte(tt.line))
+		if ok != tt.wantOK || !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("parseCommentedHeader(%q) = %v, %v; want %v, %v", tt.line, got, ok, tt.want, tt.wantOK)
+		}
 	}
-	if got := commentedHeaderEnd(lines, []string{"a"}); got != -1 {
-		t.Errorf("a: got %d, want -1", got)
+}
+
+// TestSplice_ParseCommentedExample pins the commented-example parser: the
+// key with dotted parts joined, the trailing tip with the blanks before it,
+// and no match for prose, headers, live lines or multi-line values.
+func TestSplice_ParseCommentedExample(t *testing.T) {
+	tests := []struct {
+		line   string
+		key    string
+		tip    string
+		wantOK bool
+	}{
+		{"# audience = \"functional\"      # technical | functional\n", "audience", "      # technical | functional", true},
+		{"# language = \"English\"\n", "language", "", true},
+		{"  #tag.enabled=true   \r\n", "tag.enabled", "", true},
+		{"# note = \"a # b\"  # real tip", "note", "  # real tip", true},
+		{"# technicalTerms = []          # words\n", "technicalTerms", "          # words", true},
+		{"audience = \"x\"\n", "", "", false},
+		{"# Valid: \"major\" | \"minor\"\n", "", "", false},
+		{"# [review]\n", "", "", false},
+		{"# steps = [\n", "", "", false},
+		{"# a = 1 b = 2\n", "", "", false},
+		{"# Default version bump.\n", "", "", false},
+	}
+	for _, tt := range tests {
+		key, tip, ok := parseCommentedExample([]byte(tt.line))
+		if ok != tt.wantOK || key != tt.key || tip != tt.tip {
+			t.Errorf("parseCommentedExample(%q) = %q, %q, %v; want %q, %q, %v", tt.line, key, tip, ok, tt.key, tt.tip, tt.wantOK)
+		}
 	}
 }
 

@@ -925,6 +925,231 @@ func TestValidateGuardrailsCustomSection(t *testing.T) {
 	}
 }
 
+func TestValidateGuardrailsMalformedConfig_InfraErrorWithAndWithoutCandidates(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "[[[not toml\n")
+
+	for _, candidatesJSON := range []string{"", `[{"id":"x","description":"d","severity":"error"}]`} {
+		_, err := validate(root, ValidateIn{Action: "guardrails", CandidatesJSON: candidatesJSON})
+		var infra *mcpserver.InfraError
+		if !errors.As(err, &infra) {
+			t.Fatalf("candidatesJson=%q: want *mcpserver.InfraError, got %T: %v", candidatesJSON, err, err)
+		}
+		if !strings.HasPrefix(infra.Msg, "read plan guardrails section:") {
+			t.Errorf("candidatesJson=%q: InfraError.Msg = %q, want prefix %q", candidatesJSON, infra.Msg, "read plan guardrails section:")
+		}
+		if infra.Suggestion == "" {
+			t.Errorf("candidatesJson=%q: InfraError must carry a Suggestion", candidatesJSON)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// guardrails: description byte-count wording (description exceeds 1024
+// bytes, not "characters") and the finding fix hints.
+// ---------------------------------------------------------------------------
+
+func TestValidateGuardrailsDescriptionByteCountMessage(t *testing.T) {
+	over := strings.Repeat("a", 1310)
+	atLimit := strings.Repeat("a", 1024)
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), ""+
+		"[plan.guardrails.dry]\n"+
+		"description = \""+over+"\"\n"+
+		"\n"+
+		"[plan.guardrails.at-limit]\n"+
+		"description = \""+atLimit+"\"\n")
+
+	findingsOut, err := validate(root, ValidateIn{Action: "guardrails"})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	dry := findingsByID(findingsOut.Findings, "dry")
+	if len(dry) != 1 {
+		t.Fatalf("expected exactly 1 finding for dry, got %+v", dry)
+	}
+	wantMsg := "dry: description exceeds 1024 bytes (1310 bytes, 286 over)"
+	if dry[0].Message != wantMsg {
+		t.Errorf("message = %q, want %q", dry[0].Message, wantMsg)
+	}
+	wantFix := "Shorten the description to 1024 bytes or less, or split it into independent guardrails with ids dry-1, dry-2, each a complete rule."
+	if dry[0].Fix != wantFix {
+		t.Errorf("fix = %q, want %q", dry[0].Fix, wantFix)
+	}
+	if at := findingsByID(findingsOut.Findings, "at-limit"); len(at) != 0 {
+		t.Errorf("description at exactly 1024 bytes must not trigger a length finding, got %+v", at)
+	}
+}
+
+func TestValidateGuardrailsFindingFixHints(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), ""+
+		"[plan.guardrails.Bad_ID]\n"+
+		"description = \"desc\"\n"+
+		"\n"+
+		"[plan.guardrails.sev-bad]\n"+
+		"description = \"d3\"\n"+
+		"severity = \"critical\"\n"+
+		"\n"+
+		"[plan.guardrails.no-desc]\n")
+
+	findingsOut, err := validate(root, ValidateIn{Action: "guardrails"})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	for _, f := range findingsOut.Findings {
+		if f.Fix == "" {
+			t.Errorf("finding %+v must carry a non-empty fix", f)
+		}
+	}
+
+	idFinding := findingsByID(findingsOut.Findings, "Bad_ID")
+	if len(idFinding) != 1 {
+		t.Fatalf("expected 1 finding for Bad_ID, got %+v", idFinding)
+	}
+	if want := "Rename the id to lowercase words joined by single hyphens, e.g. no-ci-bypass."; idFinding[0].Fix != want {
+		t.Errorf("Bad_ID fix = %q, want %q", idFinding[0].Fix, want)
+	}
+
+	sevFinding := findingsByID(findingsOut.Findings, "sev-bad")
+	if len(sevFinding) != 1 {
+		t.Fatalf("expected 1 finding for sev-bad, got %+v", sevFinding)
+	}
+	if want := "Set severity to error or warning."; sevFinding[0].Fix != want {
+		t.Errorf("sev-bad fix = %q, want %q", sevFinding[0].Fix, want)
+	}
+}
+
+func TestValidateGuardrailsDuplicateIDFixHint(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), ""+
+		"[[plan.guardrails]]\n"+
+		"id = \"dup-id\"\n"+
+		"description = \"first\"\n"+
+		"\n"+
+		"[[plan.guardrails]]\n"+
+		"id = \"dup-id\"\n"+
+		"description = \"second\"\n")
+
+	findingsOut, err := validate(root, ValidateIn{Action: "guardrails"})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if len(findingsOut.Findings) != 1 {
+		t.Fatalf("expected 1 finding (duplicate id), got %+v", findingsOut.Findings)
+	}
+	want := "Use action consolidate on the current id, or pick a new unique id."
+	if findingsOut.Findings[0].Fix != want {
+		t.Errorf("fix = %q, want %q", findingsOut.Findings[0].Fix, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// guardrails: candidatesJson in-memory check (no write to disk)
+// ---------------------------------------------------------------------------
+
+func TestValidateGuardrailsCandidates_ReplacesDiskEntry(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, paths.DataDir, "config.toml")
+	over := strings.Repeat("a", 1310)
+	original := "[plan.guardrails.dry]\ndescription = \"" + over + "\"\n"
+	writeFile(t, configPath, original)
+
+	candidatesJSON := `[{"id":"dry","description":"Reuse existing helpers.","severity":"error"}]`
+	findingsOut, err := validate(root, ValidateIn{Action: "guardrails", CandidatesJSON: candidatesJSON})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if len(findingsOut.Findings) != 0 {
+		t.Fatalf("expected no findings (candidate replaces over-length disk entry), got %+v", findingsOut.Findings)
+	}
+
+	onDisk, rerr := os.ReadFile(configPath)
+	if rerr != nil {
+		t.Fatalf("read config.toml: %v", rerr)
+	}
+	if string(onDisk) != original {
+		t.Fatalf("config.toml was modified: got %q, want unchanged %q", string(onDisk), original)
+	}
+}
+
+func TestValidateGuardrailsCandidates_NewCandidateAdded(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), ""+
+		"[plan.guardrails.good-guardrail]\n"+
+		"description = \"A valid guardrail description.\"\n")
+
+	candidatesJSON := `[{"id":"Bad_ID","description":"x","severity":"error"}]`
+	findingsOut, err := validate(root, ValidateIn{Action: "guardrails", CandidatesJSON: candidatesJSON})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if len(findingsOut.Findings) != 1 {
+		t.Fatalf("expected 1 finding, got %+v", findingsOut.Findings)
+	}
+	if findingsOut.Findings[0].ID != "Bad_ID" {
+		t.Errorf("finding ID = %q, want Bad_ID", findingsOut.Findings[0].ID)
+	}
+}
+
+func TestValidateGuardrailsCandidates_NoConfigFile(t *testing.T) {
+	root := t.TempDir() // no .sdlc-v2/config.toml at all
+
+	candidatesJSON := `[{"id":"needs-review","description":"A valid description.","severity":"critical"}]`
+	findingsOut, err := validate(root, ValidateIn{Action: "guardrails", CandidatesJSON: candidatesJSON})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if len(findingsOut.Findings) != 1 {
+		t.Fatalf("expected 1 finding (invalid severity), got %+v", findingsOut.Findings)
+	}
+	if findingsOut.Findings[0].ID != "needs-review" {
+		t.Errorf("finding ID = %q, want needs-review", findingsOut.Findings[0].ID)
+	}
+}
+
+func TestValidateGuardrailsCandidates_MalformedJSON(t *testing.T) {
+	root := t.TempDir()
+	_, err := validate(root, ValidateIn{Action: "guardrails", CandidatesJSON: `[{"id":`})
+	var domErr *mcpserver.DomainError
+	if !errors.As(err, &domErr) {
+		t.Fatalf("want *mcpserver.DomainError, got %T: %v", err, err)
+	}
+	if domErr.Suggestion == "" {
+		t.Error("DomainError must carry a Suggestion")
+	}
+}
+
+func TestValidateGuardrailsCandidates_NotArrayOfObjects(t *testing.T) {
+	root := t.TempDir()
+	for _, bad := range []string{`"just a string"`, `[1,2,3]`, `{"id":"x"}`} {
+		_, err := validate(root, ValidateIn{Action: "guardrails", CandidatesJSON: bad})
+		var domErr *mcpserver.DomainError
+		if !errors.As(err, &domErr) {
+			t.Fatalf("candidatesJson=%q: want *mcpserver.DomainError, got %T: %v", bad, err, err)
+		}
+	}
+}
+
+func TestValidateGuardrailsCandidates_WithoutCandidatesJSON_UnaffectedByFlag(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), ""+
+		"[plan.guardrails.good-guardrail]\n"+
+		"description = \"A valid guardrail description.\"\n")
+
+	withEmpty, err := validate(root, ValidateIn{Action: "guardrails", CandidatesJSON: ""})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	without, err := validate(root, ValidateIn{Action: "guardrails"})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if len(withEmpty.Findings) != 0 || len(without.Findings) != 0 {
+		t.Fatalf("expected no findings in either case, got with=%+v without=%+v", withEmpty.Findings, without.Findings)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // dimensions
 // ---------------------------------------------------------------------------
