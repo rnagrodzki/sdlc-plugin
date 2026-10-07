@@ -243,6 +243,119 @@ func TestExecState_Init_UnreadablePlanPathWarns(t *testing.T) {
 	assertWarning(t, initResultWarnings(t, result), "openspec ref stamp skipped: plan unreadable")
 }
 
+// TestExecState_Init_StoresPlannedTasks covers the plannedTasks stamp: init
+// reads the plan file and stores one {id, name} per "### Task N:" heading in
+// plan order. A heading inside a code fence is not a task. plannedTaskIds
+// stays as the caller passed it, because the completeness gate reads it.
+func TestExecState_Init_StoresPlannedTasks(t *testing.T) {
+	root := t.TempDir()
+	seedInitConfig(t, root)
+	planPath := filepath.Join(root, "plan.md")
+	writeFile(t, planPath, "# Plan\n\n"+
+		"### Task 1: Explorer summary builder\n\n**Complexity:** Standard\n\n"+
+		"```markdown\n### Task 9: Heading inside a fence\n```\n\n"+
+		"### Task 2:   Snapshot contract   \n\nBody.\n\n"+
+		"### Task 10: Dashboard page\n")
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action:         "init",
+		Branch:         "feat/test",
+		Quality:        "standard",
+		PlanPath:       planPath,
+		PlannedTaskIds: []string{"1", "2", "10"},
+	}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	data := readExecState(t, root, "feat/test")
+	want := []any{
+		map[string]any{"id": "1", "name": "Explorer summary builder"},
+		map[string]any{"id": "2", "name": "Snapshot contract"},
+		map[string]any{"id": "10", "name": "Dashboard page"},
+	}
+	if !reflect.DeepEqual(data["plannedTasks"], want) {
+		t.Errorf("plannedTasks = %#v, want %#v", data["plannedTasks"], want)
+	}
+	wantIDs := []any{"1", "2", "10"}
+	if !reflect.DeepEqual(data["plannedTaskIds"], wantIDs) {
+		t.Errorf("plannedTaskIds = %#v, want %#v (the completeness gate input must not change)", data["plannedTaskIds"], wantIDs)
+	}
+
+	assertStateMatchesSchema(t, result.(map[string]any)["filePath"].(string))
+}
+
+// TestExecState_Init_NoPlannedTasksWithoutReadablePlan covers the absent-key
+// cases: no planPath, and a planPath that cannot be read. Both leave the key
+// out. The unreadable-plan warning stays the only signal.
+func TestExecState_Init_NoPlannedTasksWithoutReadablePlan(t *testing.T) {
+	cases := []struct {
+		name     string
+		planPath func(root string) string
+		warning  string
+	}{
+		{"no planPath", func(string) string { return "" }, ""},
+		{"unreadable planPath", func(root string) string { return filepath.Join(root, "missing.md") }, "plan unreadable"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			seedInitConfig(t, root)
+
+			result, err := executeState(root, root, ExecuteStateIn{
+				Action:         "init",
+				Branch:         "feat/test",
+				Quality:        "standard",
+				PlanPath:       tc.planPath(root),
+				PlannedTaskIds: []string{"1"},
+			}, fixedClock(testNow))
+			if err != nil {
+				t.Fatalf("init: %v", err)
+			}
+
+			data := readExecState(t, root, "feat/test")
+			if v, present := data["plannedTasks"]; present {
+				t.Errorf("plannedTasks = %#v, want the key absent", v)
+			}
+			if tc.warning != "" {
+				assertWarning(t, initResultWarnings(t, result), tc.warning)
+			}
+			assertStateMatchesSchema(t, result.(map[string]any)["filePath"].(string))
+		})
+	}
+}
+
+// TestExecState_Init_PlannedTasksEmptyForPlanWithoutTaskHeadings covers a
+// readable plan that has no "### Task N:" heading: the key is present and
+// empty, so a reader can tell it from a run that never read a plan.
+func TestExecState_Init_PlannedTasksEmptyForPlanWithoutTaskHeadings(t *testing.T) {
+	root := t.TempDir()
+	seedInitConfig(t, root)
+	planPath := filepath.Join(root, "plan.md")
+	writeFile(t, planPath, "# Plan\n\nNo task headings here.\n")
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action:   "init",
+		Branch:   "feat/test",
+		Quality:  "standard",
+		PlanPath: planPath,
+	}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	data := readExecState(t, root, "feat/test")
+	got, present := data["plannedTasks"]
+	if !present {
+		t.Fatal("plannedTasks key absent, want an empty array")
+	}
+	list, ok := got.([]any)
+	if !ok || len(list) != 0 {
+		t.Errorf("plannedTasks = %#v, want []", got)
+	}
+	assertStateMatchesSchema(t, result.(map[string]any)["filePath"].(string))
+}
+
 // TestExecState_Init_MissingOpenspecTasksWarns covers the stampTaskRefs
 // failure path: the plan names an openspec change, but that change has no
 // tasks.md on disk.

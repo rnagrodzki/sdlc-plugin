@@ -197,6 +197,66 @@ func mergeCall(t *testing.T, in PlanSupportIn) PlanSupportOut {
 	return out
 }
 
+// TestPlanMergeResults_BlockingCount verifies merge_results always returns
+// blockingCount (0 too), that it equals the blocking count in the summary
+// string, and that the field is absent from the JSON of other actions.
+func TestPlanMergeResults_BlockingCount(t *testing.T) {
+	cases := []struct {
+		name string
+		in   PlanSupportIn
+		want int
+	}{
+		{
+			name: "no issues",
+			in:   PlanSupportIn{LensResults: []LensResult{{Name: "risk", Status: planStatusApproved}}},
+			want: 0,
+		},
+		{
+			name: "blocking and advisory issues",
+			in: PlanSupportIn{
+				LaneResults: []LaneResult{{Name: "lane-a", Status: "pass", GateIDs: []string{"G1"}, Issues: []Issue{
+					{GateID: "G1", Severity: "blocking", Summary: "missing test"},
+					{GateID: "G1", Severity: "advisory", Summary: "naming"},
+				}}},
+				LensResults: []LensResult{{Name: "risk", Status: planStatusIssuesFound, Issues: []Issue{
+					{Severity: "blocking", Summary: "no rollback"},
+					{Severity: "blocking", Summary: "no owner"},
+				}}},
+			},
+			want: 3,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := mergeCall(t, tc.in)
+			if out.BlockingCount == nil {
+				t.Fatal("BlockingCount = nil, want a value on merge_results")
+			}
+			if *out.BlockingCount != tc.want {
+				t.Errorf("BlockingCount = %d, want %d", *out.BlockingCount, tc.want)
+			}
+			if want := fmt.Sprintf("%d blocking issue(s)", *out.BlockingCount); !strings.Contains(out.Summary, want) {
+				t.Errorf("Summary = %q, want substring %q (same count as blockingCount)", out.Summary, want)
+			}
+			b, err := json.Marshal(out)
+			if err != nil {
+				t.Fatalf("json.Marshal: %v", err)
+			}
+			if want := fmt.Sprintf(`"blockingCount":%d`, tc.want); !strings.Contains(string(b), want) {
+				t.Errorf("merge_results JSON = %s, want %s", b, want)
+			}
+		})
+	}
+
+	b, err := json.Marshal(PlanSupportOut{Summary: "snapshot written"})
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	if strings.Contains(string(b), "blockingCount") {
+		t.Errorf("non-merge output JSON = %s, want no blockingCount", b)
+	}
+}
+
 // TestPlanMergeResults_FailedLaneNoGates verifies a failed lane with empty
 // gateIds is a lane failure. "Every gate is G17" is vacuously true for an
 // empty list, so such a lane must not be treated as G17-only.

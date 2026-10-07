@@ -75,6 +75,19 @@
         }
       ]
     },
+    "plannedTasks": {
+      "type": "array",
+      "description": "One {id, name} for each \"### Task N:\" heading in the plan, in plan order, written by init when planPath is readable. Display data only; verify-completeness reads plannedTaskIds. Absent when init got no planPath or the plan was unreadable.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" }
+        },
+        "required": ["id", "name"],
+        "additionalProperties": false
+      }
+    },
     "totalTasks": {
       "type": "integer",
       "minimum": 0,

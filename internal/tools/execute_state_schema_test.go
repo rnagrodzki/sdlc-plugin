@@ -154,3 +154,37 @@ func TestExecuteStateSchema_AcceptsWrittenState(t *testing.T) {
 		}
 	}
 }
+
+// TestExecuteStateSchema_AcceptsPlannedTasks covers the optional plannedTasks
+// key. TestExecuteStateSchema_AcceptsWrittenState runs init with no plan, so
+// it proves the schema accepts state without the key. This test runs init
+// with a plan file and proves the schema accepts the key init then writes.
+func TestExecuteStateSchema_AcceptsPlannedTasks(t *testing.T) {
+	root := t.TempDir()
+	seedInitConfig(t, root)
+	planPath := filepath.Join(root, "plan.md")
+	writeFile(t, planPath, "# Plan\n\n### Task 1: First task\n\nBody.\n\n### Task 2: Second task\n")
+
+	out, err := executeState(root, root, ExecuteStateIn{
+		Action:         "init",
+		Branch:         "feat/schema-plan",
+		Quality:        "balanced",
+		PlanPath:       planPath,
+		PlanHash:       "abc123",
+		PlannedTaskIds: []string{"1", "2"},
+	}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	filePath := out.(map[string]any)["filePath"].(string)
+
+	raw, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("read state file: %v", err)
+	}
+	// Guard that init really wrote the key this test exists for.
+	if !strings.Contains(string(raw), `"plannedTasks"`) {
+		t.Fatalf("state file has no plannedTasks key; the run did not exercise it\nstate: %s", raw)
+	}
+	assertStateMatchesSchema(t, filePath)
+}
