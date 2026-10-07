@@ -218,7 +218,7 @@ type DashboardLens struct {
 type DashboardRun struct {
 	Kind       string `json:"kind"`
 	Branch     string `json:"branch"`
-	Outcome    string `json:"outcome"` // success | failure | partial (history_record values)
+	Outcome    string `json:"outcome"` // success | failure | partial (history_record values) | done (plan_mark done)
 	StartedAt  string `json:"startedAt"`
 	EndedAt    string `json:"endedAt"`
 	DurationMs int64  `json:"durationMs"`

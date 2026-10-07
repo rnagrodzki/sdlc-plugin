@@ -19,7 +19,10 @@ var ui = {
   tab: view.loadTab(storage()),
   scope: view.loadRepoFilter(storage()),
   collapsed: Object.create(null), // pipelineKey -> bool
-  closed: Object.create(null), // sectionKey -> true when the user closed that tile
+  // sectionKey -> true when the user closed that tile, false when the user
+  // opened it. A tile with no entry follows its default: step and issues
+  // tiles open, the session tile closed.
+  closed: Object.create(null),
   selected: Object.create(null), // pipelineKey -> station index
   focusKey: null,
   scrollTop: 0,
@@ -141,7 +144,16 @@ function selectedIndex(key, pipeline) {
   return typeof index === 'number' && index < steps.length ? index : view.defaultStationIndex(steps);
 }
 
-function renderFeed(snapshot, repos, scope) {
+// The IANA time zone of the browser; undefined lets Intl use the local zone.
+function timeZone() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone;
+  } catch (e) {
+    return undefined;
+  }
+}
+
+function renderFeed(snapshot, repos, scope, now, tz) {
   var nodes = [];
   var pipelines = [];
   var owner = new Map();
@@ -162,6 +174,9 @@ function renderFeed(snapshot, repos, scope) {
     var node = draw.pipelineBlock(document, view, repo, p, {
       collapsed: isCollapsed(key, p),
       selected: selectedIndex(key, p),
+      closed: ui.closed,
+      now: now,
+      tz: tz,
     });
     blocks.push({ key: key, pipeline: p, node: node });
     nodes.push(node);
@@ -190,8 +205,11 @@ function render(snapshot) {
     tabs[name].count.textContent = String(counts[name]);
   });
 
-  renderFeed(ui.lastSnapshot, repos, scope);
+  var now = Date.now();
+  var tz = timeZone();
+  renderFeed(ui.lastSnapshot, repos, scope, now, tz);
   replaceChildren(tabs.activity.panel, [draw.activityPanel(document, view, repos, scope)]);
+  replaceChildren(tabs.history.panel, [draw.historyTable(document, view, repos, scope, now, tz)]);
   syncToggleAll();
 
   restoreFocus();
@@ -398,12 +416,10 @@ function init() {
       if (!tile || tile.tagName !== 'DETAILS' || !tile.hasAttribute('data-section')) return;
       var block = tile.closest('[data-key]');
       if (!block) return;
+      // Kept as true or false, so a tile closed by default (session)
+      // stays open after the next snapshot once the user opened it.
       var key = view.sectionKey(block.getAttribute('data-key'), tile.getAttribute('data-section'));
-      if (tile.open) {
-        delete ui.closed[key];
-      } else {
-        ui.closed[key] = true;
-      }
+      ui.closed[key] = !tile.open;
     },
     true
   );

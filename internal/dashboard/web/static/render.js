@@ -174,31 +174,493 @@
     return track;
   }
 
+  // --- Tiles ------------------------------------------------------------------
+
+  // Lamp classes of app.css by colour token of view.js.
+  var LAMP_BY_TONE = {
+    'signal-green': 'completed',
+    'signal-amber': 'running',
+    'signal-red': 'failed',
+    rail: 'stalled',
+  };
+
+  // Explorer statuses, which are not step statuses.
+  var LAMP_BY_STATUS = { done: 'completed', running: 'running', unreadable: 'failed' };
+
   /**
-   * One pipeline block: head, then the track panel with the track and an
-   * empty div.step-detail for the tiles.
+   * @param {object} view
+   * @param {string} status a step, task, dimension, or explorer status
+   * @returns {string} completed | running | failed | stalled
+   */
+  function lampClass(view, status) {
+    if (Object.prototype.hasOwnProperty.call(LAMP_BY_STATUS, status)) return LAMP_BY_STATUS[status];
+    return LAMP_BY_TONE[view.stepGlyph(status).token] || 'stalled';
+  }
+
+  function lamp(doc, cls) {
+    var node = el(doc, 'span', 'lamp ' + cls);
+    node.setAttribute('aria-hidden', 'true');
+    return node;
+  }
+
+  /**
+   * A tile is open when the user's choice says so, else by its default.
+   * @param {Object<string, boolean>} closed sectionKey -> true (user closed) or false (user opened)
+   * @param {string} key a sectionKey value
+   * @param {boolean} openByDefault
+   * @returns {boolean}
+   */
+  function tileOpen(closed, key, openByDefault) {
+    if (closed && Object.prototype.hasOwnProperty.call(closed, key)) return !closed[key];
+    return openByDefault;
+  }
+
+  /**
+   * One tile: details[data-section] with a summary of chevron, lamp, name,
+   * and meta text.
+   * @param {Document} doc
+   * @param {string} cls class names of the details element
+   * @param {string} section the data-section value
+   * @param {string} lampCls
+   * @param {string} meta
+   * @param {boolean} open
+   * @returns {Element} details
+   */
+  function tile(doc, cls, section, lampCls, meta, open) {
+    var details = el(doc, 'details', cls);
+    details.setAttribute('data-section', section);
+    details.open = !!open;
+    var chev = el(doc, 'span', 'chev', '▸');
+    chev.setAttribute('aria-hidden', 'true');
+    var summary = append(el(doc, 'summary', 'sec-head'), [
+      chev,
+      lamp(doc, lampCls),
+      el(doc, 'span', 'sec-name', section),
+      el(doc, 'span', 'sec-meta', meta),
+    ]);
+    details.appendChild(summary);
+    return details;
+  }
+
+  function taskRow(doc, view, task) {
+    var row = append(el(doc, 'div', 'task-row'), [lamp(doc, lampClass(view, task.status)), el(doc, 'span', 'task-id', task.id)]);
+    if (task.name) {
+      var name = el(doc, 'span', 'task-name', task.name);
+      name.setAttribute('title', task.name);
+      row.appendChild(name);
+    }
+    return row;
+  }
+
+  function commitBadge(doc, view, wave, commitWaves) {
+    var state = view.waveCommitState(wave, commitWaves);
+    if (state === 'off') return el(doc, 'span', 'commit-badge', 'commits off');
+    if (state === 'committed') {
+      var sha = String(wave.committedSha);
+      var badge = el(doc, 'span', 'commit-badge committed', 'committed ' + sha.slice(0, 7));
+      badge.setAttribute('title', 'Wave commit ' + sha);
+      return badge;
+    }
+    return el(doc, 'span', state === 'due' ? 'commit-badge pending-commit' : 'commit-badge', 'not committed');
+  }
+
+  /**
+   * Waves: one block for each wave (`wave N`, `done/total`, commit state,
+   * task rows), then the queued tasks.
+   * @param {Document} doc
+   * @param {object} view
+   * @param {{waves?: Array, queued?: Array}} detail
+   * @param {{commitWaves?: boolean}} pipeline
+   * @returns {Element} div.waves
+   */
+  function wavesBody(doc, view, detail, pipeline) {
+    var out = el(doc, 'div', 'waves');
+    (detail.waves || []).forEach(function (wave) {
+      var tasks = wave.tasks || [];
+      var counts = view.taskCounts(tasks);
+      var head = append(el(doc, 'div', 'wave-head', 'wave ' + wave.number), [
+        el(doc, 'span', 'wave-count', counts.done + '/' + counts.total),
+        commitBadge(doc, view, wave, pipeline && pipeline.commitWaves),
+      ]);
+      var block = append(el(doc, 'div', 'wave-block'), [head]);
+      tasks.forEach(function (task) {
+        block.appendChild(taskRow(doc, view, task));
+      });
+      out.appendChild(block);
+    });
+    var queued = detail.queued || [];
+    if (queued.length > 0) {
+      var queuedBlock = append(el(doc, 'div', 'wave-block'), [
+        append(el(doc, 'div', 'wave-head', 'queued'), [el(doc, 'span', 'wave-count', queued.length)]),
+      ]);
+      queued.forEach(function (task) {
+        queuedBlock.appendChild(taskRow(doc, view, task));
+      });
+      out.appendChild(queuedBlock);
+    }
+    return out;
+  }
+
+  function dimensionMeta(dim) {
+    if (dim.status === 'in_progress') return 'running';
+    if (dim.status === 'pending') return 'queued';
+    return plural(dim.findings || 0, 'finding', 'findings');
+  }
+
+  /**
+   * Dimensions: the review totals line, then one row for each dimension.
+   * A count above 0 is amber; the lamp keeps the run state.
+   * @param {Document} doc
+   * @param {object} view
+   * @param {{dimensions?: Array, reviewTotals?: object}} detail
+   * @returns {Element} div
+   */
+  function dimensionsBody(doc, view, detail) {
+    var out = el(doc, 'div', '');
+    if (detail.reviewTotals) out.appendChild(el(doc, 'div', 'round-sum', view.reviewTotalsText(detail.reviewTotals)));
+    (detail.dimensions || []).forEach(function (dim) {
+      var meta = el(doc, 'span', (dim.findings || 0) > 0 ? 'dim-meta has-findings' : 'dim-meta', dimensionMeta(dim));
+      out.appendChild(
+        append(el(doc, 'div', 'dim-row dim-cols'), [lamp(doc, lampClass(view, dim.status)), el(doc, 'span', 'dim-name', dim.name), meta])
+      );
+    });
+    return out;
+  }
+
+  // Findings listed under each explorer; the rest is the `N more` line.
+  var EXPLORER_SAMPLES = 2;
+
+  /**
+   * Explorers: name, `N findings`, the first findings, and `N more`. A ref
+   * is text, never a link, even when it is a URL.
+   * @param {Document} doc
+   * @param {object} view
+   * @param {{explorers?: Array}} detail
+   * @returns {Element} div.waves
+   */
+  function explorersBody(doc, view, detail) {
+    var out = el(doc, 'div', 'waves');
+    (detail.explorers || []).forEach(function (explorer) {
+      var head = append(el(doc, 'div', 'wave-head'), [
+        lamp(doc, lampClass(view, explorer.status)),
+        el(doc, 'span', '', explorer.name),
+        el(doc, 'span', 'count-badge', plural(explorer.total || 0, 'finding', 'findings')),
+      ]);
+      var block = append(el(doc, 'div', 'wave-block'), [head]);
+      var shown = (explorer.findings || []).slice(0, EXPLORER_SAMPLES);
+      shown.forEach(function (finding) {
+        var text = el(doc, 'span', 'find-text', finding.summary);
+        text.setAttribute('title', finding.summary || '');
+        var row = append(el(doc, 'div', 'find-row'), [text]);
+        if (finding.ref) row.appendChild(el(doc, 'span', 'find-ref', finding.ref));
+        block.appendChild(row);
+      });
+      var more = view.explorerMore(explorer, shown.length);
+      if (more > 0) block.appendChild(el(doc, 'div', 'find-more', more + ' more'));
+      out.appendChild(block);
+    });
+    return out;
+  }
+
+  function strongLine(doc, cls, parts) {
+    var line = el(doc, 'div', cls);
+    parts.forEach(function (part) {
+      line.appendChild(part.strong ? el(doc, 'strong', '', part.text) : el(doc, 'span', '', part.text));
+    });
+    return line;
+  }
+
+  /**
+   * Rounds: `N of M rounds · X issues found · Y fixed`, a head row, then one
+   * row for each round with one chip for each lens verdict.
+   * @param {Document} doc
+   * @param {object} view
+   * @param {{rounds?: Array, maxRounds?: number}} detail
+   * @returns {Element} div
+   */
+  function roundsBody(doc, view, detail) {
+    var rounds = detail.rounds || [];
+    var found = 0;
+    var fixed = 0;
+    rounds.forEach(function (r) {
+      found += r.found || 0;
+      fixed += r.fixed || 0;
+    });
+    var out = el(doc, 'div', '');
+    out.appendChild(
+      strongLine(doc, 'round-sum', [
+        { strong: true, text: rounds.length },
+        { text: ' of ' + (detail.maxRounds || 0) + ' rounds · ' },
+        { strong: true, text: found },
+        { text: ' issues found · ' },
+        { strong: true, text: fixed },
+        { text: ' fixed' },
+      ])
+    );
+    out.appendChild(
+      append(el(doc, 'div', 'round-row head'), [
+        el(doc, 'span', '', 'round'),
+        el(doc, 'span', '', 'issues found'),
+        el(doc, 'span', '', 'fixed'),
+        el(doc, 'span', '', 'lens verdicts'),
+      ])
+    );
+    rounds.forEach(function (r) {
+      var chips = el(doc, 'span', 'lens-chips');
+      (r.lenses || []).forEach(function (lens) {
+        var ok = lens.verdict === 'Approved';
+        chips.appendChild(el(doc, 'span', ok ? 'lens-chip ok' : 'lens-chip issues', lens.name + ' · ' + (ok ? 'approved' : 'issues')));
+      });
+      out.appendChild(
+        append(el(doc, 'div', 'round-row'), [
+          el(doc, 'span', 'round-n', 'round ' + r.n),
+          el(doc, 'span', '', r.found ? r.found : 'none'),
+          el(doc, 'span', '', r.found ? r.fixed || 0 : '–'),
+          chips,
+        ])
+      );
+    });
+    return out;
+  }
+
+  /**
+   * Findings of one review dimension: lamp by severity, text, severity.
+   * @param {Document} doc
+   * @param {object} view
+   * @param {{findings?: Array}} detail
+   * @returns {Element} div, or p.generic-line `No findings.`
+   */
+  function findingsBody(doc, view, detail) {
+    var findings = detail.findings || [];
+    if (findings.length === 0) return el(doc, 'p', 'generic-line', 'No findings.');
+    var out = el(doc, 'div', '');
+    findings.forEach(function (finding) {
+      var text = el(doc, 'span', 'dim-name', finding.text);
+      var location = view.issueLocation(finding);
+      if (location) text.setAttribute('title', location);
+      out.appendChild(
+        append(el(doc, 'div', 'dim-row'), [
+          lamp(doc, LAMP_BY_TONE[view.severityTone(finding.severity)] || 'stalled'),
+          text,
+          el(doc, 'span', 'dim-meta', finding.severity),
+        ])
+      );
+    });
+    return out;
+  }
+
+  // Body builder by detail kind: (doc, view, detail, pipeline) -> Element.
+  var TILE_BODIES = {
+    waves: wavesBody,
+    dimensions: dimensionsBody,
+    explorers: explorersBody,
+    rounds: roundsBody,
+    findings: findingsBody,
+  };
+
+  /**
+   * The tile of one step with a section.
+   * @param {Document} doc
+   * @param {object} view
+   * @param {{commitWaves?: boolean}} pipeline
+   * @param {{name: string, status: string, detail: object}} step
+   * @param {number} index the station index of the step
+   * @param {boolean} open
+   * @param {boolean} selected true for the step of the marked station
+   * @returns {Element} details.step-sec with data-section set to the step name
+   */
+  function stepTile(doc, view, pipeline, step, index, open, selected) {
+    var detail = step.detail || {};
+    var cls = 'step-sec' + (view.isWideSection(detail) ? ' wide' : '') + (selected ? ' selected' : '');
+    var details = tile(doc, cls, step.name, lampClass(view, step.status), view.sectionMeta(step), open);
+    var body = TILE_BODIES[detail.kind];
+    if (body) details.appendChild(body(doc, view, detail, pipeline));
+    return details;
+  }
+
+  /**
+   * One tile for each step with a section, in track order. A step with no
+   * section gives no tile. Step tiles are open unless the user closed them.
+   * @param {Document} doc
+   * @param {object} view
+   * @param {{steps?: Array}} pipeline
+   * @param {{key: string, closed?: Object<string, boolean>, selected?: number}} state
+   *   key is the pipelineKey of the block
+   * @returns {Array<Element>}
+   */
+  function stepTiles(doc, view, pipeline, state) {
+    var steps = (pipeline && pipeline.steps) || [];
+    var out = [];
+    for (var i = 0; i < steps.length; i++) {
+      if (!view.hasSection(steps[i])) continue;
+      var open = tileOpen(state && state.closed, view.sectionKey(state && state.key, steps[i].name), true);
+      out.push(stepTile(doc, view, pipeline, steps[i], i, open, !!state && state.selected === i));
+    }
+    return out;
+  }
+
+  /**
+   * The issues tile: `N open`, then one row for each issue: severity chip,
+   * rationale, and location. The stalled issue shows the age of the last
+   * update in place of a location.
+   * @param {Document} doc
+   * @param {object} view
+   * @param {{issues?: Array, updatedAt?: string}} pipeline
+   * @param {boolean} open
+   * @param {Date|number} now
+   * @param {string} [tz] IANA time zone; the local zone when absent
+   * @returns {Element|null} null when the pipeline has no issues
+   */
+  function issuesTile(doc, view, pipeline, open, now, tz) {
+    var issues = (pipeline && pipeline.issues) || [];
+    if (issues.length === 0) return null;
+    var hot = issues.some(function (issue) {
+      return issue.severity === 'critical' || issue.severity === 'high';
+    });
+    var details = tile(doc, 'step-sec span2', 'issues', hot ? 'failed' : 'running', issues.length + ' open', open);
+    issues.forEach(function (issue) {
+      var main = append(el(doc, 'div', 'issue-main'), [el(doc, 'div', 'issue-text', issue.text)]);
+      var location = view.issueLocation(issue);
+      if (issue.source === 'pipeline') {
+        var age = view.relativeWhen(pipeline.updatedAt, now, tz);
+        location = age ? 'last update ' + age : '';
+      }
+      if (location) main.appendChild(el(doc, 'div', 'issue-path', location));
+      details.appendChild(append(el(doc, 'div', 'issue-row'), [el(doc, 'span', 'sev sev-' + issue.severity, issue.severity), main]));
+    });
+    return details;
+  }
+
+  /**
+   * The session tile: closed unless the user opened it. Counts in the
+   * summary; open, the short id, then one row for each timeline event.
+   * @param {Document} doc
+   * @param {object} view
+   * @param {{id: string, active?: boolean, counts?: object, timeline?: Array}|null} session
+   * @param {boolean} open
+   * @param {string} [tz] IANA time zone; the local zone when absent
+   * @returns {Element|null} null when there is no session
+   */
+  function sessionTile(doc, view, session, open, tz) {
+    if (!session) return null;
+    var counts = session.counts || {};
+    var meta = [
+      plural(counts.prompts || 0, 'prompt', 'prompts'),
+      plural(counts.commands || 0, 'command', 'commands'),
+      plural(counts.mcpCalls || 0, 'mcp call', 'mcp calls'),
+    ].join(' · ');
+    var details = tile(doc, 'step-sec span2', 'session', session.active ? 'running' : 'stalled', meta, open);
+    var id = el(doc, 'div', 'sec-id', 'id ' + view.shortId(session.id));
+    id.setAttribute('title', session.id || '');
+    details.appendChild(id);
+    (session.timeline || []).forEach(function (event) {
+      details.appendChild(
+        append(el(doc, 'div', 'timeline-row'), [
+          el(doc, 'span', 't-time', view.clockLabel(event.at, tz)),
+          el(doc, 'span', 't-kind', event.kind),
+          el(doc, 'span', 't-text', event.text),
+        ])
+      );
+    });
+    return details;
+  }
+
+  /**
+   * One pipeline block: head, then the track panel with the track and
+   * div.step-detail: the step tiles, the issues tile, and the session tile.
    * @param {Document} doc
    * @param {object} view
    * @param {{root: string, name: string, sessions?: Array}} repo
    * @param {object} pipeline
-   * @param {{collapsed: boolean, selected: number}} state
+   * @param {{collapsed: boolean, selected: number, closed?: Object<string, boolean>, now?: (Date|number), tz?: string}} state
+   *   closed holds the user's tile choices by sectionKey: true closed, false opened
    * @returns {Element} article.pipe-block with data-key and data-id
    */
   function pipelineBlock(doc, view, repo, pipeline, state) {
     var collapsed = !!(state && state.collapsed);
     var selected = state && typeof state.selected === 'number' ? state.selected : view.defaultStationIndex(pipeline.steps);
+    var closed = (state && state.closed) || {};
+    var now = state && state.now != null ? state.now : Date.now();
+    var tz = state && state.tz;
     var session = view.pickSession(pipeline, repo.sessions);
+    var key = view.pipelineKey(repo, pipeline);
 
     var block = el(doc, 'article', collapsed ? 'pipe-block collapsed' : 'pipe-block');
-    block.setAttribute('data-key', view.pipelineKey(repo, pipeline));
+    block.setAttribute('data-key', key);
     block.setAttribute('data-id', pipeline.id);
 
+    var detail = append(el(doc, 'div', 'step-detail'), stepTiles(doc, view, pipeline, { key: key, closed: closed, selected: selected }));
+    append(detail, [
+      issuesTile(doc, view, pipeline, tileOpen(closed, view.sectionKey(key, 'issues'), true), now, tz),
+      sessionTile(doc, view, session, tileOpen(closed, view.sectionKey(key, 'session'), false), tz),
+    ]);
+
     var panel = el(doc, 'div', 'track-panel');
-    var wrap = el(doc, 'div', 'detail-wrap');
-    wrap.appendChild(el(doc, 'div', 'step-detail'));
+    var wrap = append(el(doc, 'div', 'detail-wrap'), [detail]);
     append(panel, [stationTrack(doc, view, pipeline, selected), wrap]);
 
     return append(block, [blockHead(doc, view, repo, pipeline, collapsed, view.tileCount(pipeline, session)), panel]);
+  }
+
+  /**
+   * The History tab: `Finished runs (n)` and one table of the runs of the
+   * repos in scope, newest first. Rows do not open.
+   * @param {Document} doc
+   * @param {object} view
+   * @param {Array} repos
+   * @param {Set<string>} scope
+   * @param {Date|number} now
+   * @param {string} [tz] IANA time zone; the local zone when absent
+   * @returns {Element} section.list-panel.hist-panel
+   */
+  function historyTable(doc, view, repos, scope, now, tz) {
+    var runs = [];
+    (repos || []).forEach(function (repo) {
+      if (!view.inScope(scope, repo.root)) return;
+      (repo.history || []).forEach(function (run) {
+        runs.push({ repo: repo, run: run });
+      });
+    });
+    // ISO timestamps sort in time order. Array.prototype.sort is stable.
+    runs.sort(function (a, b) {
+      var x = a.run.endedAt || '';
+      var y = b.run.endedAt || '';
+      return x < y ? 1 : x > y ? -1 : 0;
+    });
+
+    var panel = el(doc, 'section', 'list-panel hist-panel');
+    var heading = el(doc, 'h2', 'list-title', 'Finished runs ');
+    heading.appendChild(el(doc, 'span', 'n', '(' + runs.length + ')'));
+    panel.appendChild(heading);
+    if (runs.length === 0) return append(panel, [emptyState(doc, 'no-history')]);
+
+    var headRow = el(doc, 'tr', '');
+    ['outcome', 'kind', 'branch', 'repo', 'finished', 'duration'].forEach(function (name) {
+      headRow.appendChild(el(doc, 'th', '', name));
+    });
+    var body = el(doc, 'tbody', '');
+    runs.forEach(function (item) {
+      var run = item.run;
+      var glyph = el(doc, 'span', '', view.outcomeGlyph(run.outcome));
+      glyph.setAttribute('aria-hidden', 'true');
+      var outcome = append(el(doc, 'span', 'out ' + run.outcome), [glyph, el(doc, 'span', '', run.outcome)]);
+      var repoCell = el(doc, 'td', 'h-repo', item.repo.name);
+      repoCell.setAttribute('title', item.repo.root);
+      var when = el(doc, 'td', 'h-when', view.relativeWhen(run.endedAt, now, tz));
+      when.setAttribute('title', run.endedAt || '');
+      body.appendChild(
+        append(el(doc, 'tr', ''), [
+          append(el(doc, 'td', ''), [outcome]),
+          el(doc, 'td', 'h-kind', run.kind),
+          el(doc, 'td', 'h-branch', run.branch),
+          repoCell,
+          when,
+          el(doc, 'td', 'h-dur', view.formatDuration(run.durationMs)),
+        ])
+      );
+    });
+    var table = append(el(doc, 'table', 'hist'), [append(el(doc, 'thead', ''), [headRow]), body]);
+    return append(panel, [table]);
   }
 
   /**
@@ -321,6 +783,17 @@
     headerTotals: headerTotals,
     activityPanel: activityPanel,
     emptyState: emptyState,
+    TILE_BODIES: TILE_BODIES,
+    stepTile: stepTile,
+    stepTiles: stepTiles,
+    wavesBody: wavesBody,
+    dimensionsBody: dimensionsBody,
+    explorersBody: explorersBody,
+    roundsBody: roundsBody,
+    findingsBody: findingsBody,
+    issuesTile: issuesTile,
+    sessionTile: sessionTile,
+    historyTable: historyTable,
   };
 
   if (typeof module === 'object' && module.exports) {

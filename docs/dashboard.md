@@ -2,8 +2,9 @@
 
 > This document describes the local sdlc dashboard: one web page on the
 > developer's own computer that shows the pipelines of every registered repo.
-> Every file path, setting, and security rule below was verified against
-> source. For the user-facing command, run `/sdlc:dashboard`.
+> The page is titled "sdlc signal room". Every file path, setting, and
+> security rule below was verified against source. For the user-facing
+> command, run `/sdlc:dashboard`.
 
 ## What it shows
 
@@ -15,25 +16,43 @@ stays listed for up to 7 days without a new session, or until its
 `.sdlc-v2` directory disappears (`internal/dashboard/registry.go`'s `Roots`
 self-cleans both cases).
 
+The header has three tabs: Pipelines, Activity, and History. A repo filter
+under the header applies to all three tabs. With no repo chip on, the page
+shows all repos.
+
 For each registered repo, the page shows:
 
 - **Pipelines** — one entry per `ship`, `execute`, or `plan` state file, plus
-  one per `runs/ledger/review-*/` folder. Each carries a status
-  (`running`, `stalled`, `completed`, or `failed`), a done/total progress
-  count with a current-step label, its step list, and any issues. A
-  `running` pipeline whose state has not changed in 30 minutes shows as
-  `stalled`; a `completed` or `failed` pipeline drops off the page 24 hours
-  after its last update. Ship and execute pipelines also carry the worktree
-  path they ran in.
-- **Sessions** — Claude Code sessions seen in the repo's evidence files,
-  grouped by session ID, each with prompt/command/MCP-call counts and a
-  timeline of its newest 50 events. A session's timeline text is redacted
-  and truncated to 120 characters before it reaches the page. A session
-  shows as "active" when its newest evidence line is less than 30 minutes
-  old.
-- **Learnings** — entries from the repo's learnings log dated within the
-  last 24 hours.
-- **Deferred items** — the repo's open deferred issues, high priority first.
+  one per `runs/ledger/review-*/` folder, as one block in one feed for all
+  repos. Pipelines that are not `completed` come first and start open.
+  `completed` pipelines come after and start collapsed. An execute run or
+  review run of a ship run shows inside the ship block, not as its own
+  block. Each carries a status (`running`, `stalled`, `completed`, or
+  `failed`), a done/total progress count, a track of its steps, and any
+  issues. Each step with detail is a tile: waves and tasks, review
+  dimensions, review findings, plan explorers, or plan review rounds. Each
+  issue has a severity, a location (the file and line of a review finding,
+  else the step, wave, or task it came from), and a reason. A `running`
+  pipeline whose state has not changed in 30 minutes shows as `stalled`; a
+  `completed` or `failed` pipeline drops off the page 24 hours after its
+  last update. Ship and execute pipelines also carry the worktree path they
+  ran in.
+- **Session** — a tile with the Claude Code session of the pipeline, else the
+  newest session on the same branch. The collector builds each session from
+  the repo's evidence files, grouped by session ID, with
+  prompt/command/MCP-call counts and a timeline of its newest 50 events. A
+  session's timeline text is redacted and truncated to 120 characters before
+  it reaches the page. A session shows as "active" when its newest evidence
+  line is less than 30 minutes old.
+- **Activity tab** — the repo's open deferred issues, high priority first,
+  and the entries of its learnings log dated within the last 24 hours.
+- **History tab** — the 50 newest runs of `runs.jsonl`, newest first, failed
+  ship runs too. Each row shows the outcome, kind, branch, repo, finish time,
+  and duration.
+
+A link `#<pipeline id>` scrolls to that block. `#<pipeline id>/<n>` also
+opens the block and selects step n of its track, counted from 0. `#activity`
+and `#history` open that tab.
 
 The page updates itself: it opens a server-sent-events stream
 (`GET /api/events`) that re-collects the snapshot every 2 seconds and pushes
@@ -234,3 +253,86 @@ flowchart LR
   class W2 changed
   classDef changed fill:#8a6d00,stroke:#4a3a00,color:#ffffff,stroke-width:2px
 ```
+
+## Snapshot contract
+
+This section is for plugin contributors. The page reads one JSON snapshot.
+`GET /api/snapshot` returns it, and `GET /api/events` pushes a new one when
+its content changes. `CollectDashboardSnapshot` in
+`internal/tools/dashboard_snapshot.go` builds it on each call from the state
+files, ledger folders, evidence files, and history files of each repo. The
+collector stores nothing of its own: it reads what other tools wrote. The Go
+types in that file are the full list of fields. The table below lists the
+fields that carry data from other tools, with the JSON key, where the
+collector reads the data, and the tool action that writes it.
+
+| Field | Source | Written by |
+|---|---|---|
+| `steps[].detail.kind` | One of `waves`, `dimensions`, `explorers`, `rounds`, or `findings`. It tells which list of `detail` is filled. | Collector, not stored |
+| `steps[].detail.waves` | `waves[]` of the execute state, with `number`, `status`, `committedSha`, and `tasks[]`. A task name is the name of its task row, else the name in the wave's `planned[]`, else the `plannedTasks` name. | The execute_state wave and task actions: `wave-start`, `wave-done`, `wave-fail`, `task-done`, `task-fail`, `wave-commit`, `wave-committed`, and the others that edit `waves[]` |
+| `steps[].detail.queued` | `plannedTasks` of the execute state that are in no wave yet. `plannedTasks` is one `{id, name}` for each `### Task N:` heading of the plan. | execute_state `init`, only when `planPath` is readable |
+| `steps[].detail.dimensions` | One dimension file for each worker in a `runs/ledger/review-*/` folder. The file holds `checkinAt`, `checkoutAt`, and `findings`. The collector derives `name` (the file name), `status` (completed when `checkoutAt` is set), and the `findings` count and `worst` severity of the dimension. The `run.meta` of the folder ties the review to its ship run. | execute_state `ledger_checkin`, `ledger_checkout` |
+| `steps[].detail.reviewTotals` (`found`, `fixed`, `deferred`, `unaccounted`) | Ship state: `healing.reviewTotal`, `healing.fixed[]` with origin `local-review`, and `deferredFindings[]`. `unaccounted` is `found` minus `fixed` minus `deferred`. | ship_state `healing_record` (kinds `review-total` and `fixed`), ship_state `defer` |
+| `steps[].detail.findings` | The `findings` text of one completed dimension file, for a review run that has its own block. | execute_state `ledger_checkout` |
+| `steps[].detail.explorers` | In a plan block: the `explore-*` writers of the plan run's evidence store. In a ship block: the `planExploreSummary` of the ship state. | plan_support `evidence_record`; ship_state `cleanup-pipeline` for `planExploreSummary` |
+| `steps[].detail.rounds`, `.maxRounds` | `reviewRounds` of the plan state. `maxRounds` is the review-loop limit of the plan skill, not a stored value. | plan_mark `review-round` |
+| `issues[].source`, `.severity`, `.text`, `.file`, `.line`, `.ref` | Failed ship steps, failed or partial waves, failed tasks that have an error, `issues[]` of the state file, review findings, and the stalled notice. `source` is `step`, `wave`, `review`, `state`, `task`, or `pipeline`. `.file` and `.line` are set for `review` issues only. `ref` is the step, wave, dimension, or task. | Collector, derived. Inputs come from ship_state `fail`, the execute_state wave and task actions, and `ledger_checkout` |
+| `sessionId` | `sessionId` of the ship or execute state; `""` when unknown. A plan state is created with no session ID. A review block has none. | ship_prepare or ship_state `init`; execute_state `init` |
+| `commitWaves` | `commitWaves` of the execute state; an absent key counts as `true`. A ship block gets it from its joined execute run. It is absent on a plan block, a review block, and a ship block with no joined execute run. | execute_state `init` |
+| `repos[].history` | The 50 newest rows of `.sdlc-v2/history/runs.jsonl`, newest first. A row gives `kind` (the row's `skill`), `branch`, `outcome`, `startedAt`, `endedAt`, and `durationMs`. `startedAt` is `started_at`, else `ts` minus `duration_ms`. A line that does not parse is skipped. | ship_state `history_record` (outcome `success`, `failure`, or `partial`); ship_state `fail` (the first `fail` of a run appends a `failure` row); plan_mark `done` (a `plan` row with outcome `done`) |
+
+### Which step carries which detail
+
+- **Execute block** — each `wave N` step has `waves` with that one wave. A
+  last step named `queued` has `queued`.
+- **Plan block** — five steps: `setup`, `explore`, `draft`, `review`, and
+  `finalize`. `explore` has `explorers`. `review` has `rounds`. The others
+  have no detail.
+- **Review block** — one step for each dimension. A completed dimension has
+  `findings`.
+- **Ship block** — the `execute` step gets all waves and `queued` from the
+  joined execute run. The `review` step gets `reviewTotals` from the ship
+  state and `dimensions` from the joined review run. When the ship state
+  holds `planExploreSummary`, the collector adds a first step `plan` with
+  `explorers`.
+
+### How runs join a ship block
+
+- An execute run joins the ship run of the same branch whose run window
+  holds the start of the execute run.
+- A review run joins the ship run named by the `shipRunId` of its `run.meta`.
+  With no `shipRunId`, it joins the ship run of the same branch whose
+  `review` step window holds the start of the review run.
+- When two ship runs match, the newest wins. A review folder with no
+  `run.meta` joins no ship run and stays its own block.
+- The first `ledger_checkin` of a review run writes `run.meta` once, in the
+  ledger folder: `branch`, `startedAt`, and `shipRunId`. `shipRunId` is set
+  only when the branch has a ship run whose `review` step is in progress. The
+  file name has no `.json` suffix, so the collector does not read it as a
+  dimension file.
+- The issues of a joined execute run go to the ship block with `execute:`
+  before each `ref`. The issues of a joined review run go with their `ref`
+  unchanged.
+
+A state file written before a field existed does not fail the snapshot. The
+page shows less. An execute state without `plannedTasks` shows task ids
+without names, unless a wave stores the name. A ship state without
+`planExploreSummary` has no `plan` step.
+
+### Lifetime of the source data
+
+- **Review ledgers stay after the review.** The review skill does not remove
+  its ledger folder, because the dashboard reads it to show the review
+  dimensions. The folder stays until the first execute_state `gc` or
+  ship_state `cleanup-pipeline` sweep after 7 days. That sweep removes it.
+  7 days is the default of `state.gc.ttlDays`. A completed review leaves the
+  page 24 hours after its last update, but its folder stays on disk until the
+  sweep.
+- **Ship stores the explorer summary at cleanup.** The explorer findings of a
+  plan run live in its `.evidence` directory, and `cleanup-pipeline` deletes
+  that directory with the plan state file. Before it deletes them,
+  `cleanup-pipeline` copies the explorer summary into the ship state key
+  `planExploreSummary`: one `{name, status, total, top[]}` entry for each
+  explorer, with at most 5 findings in `top`. It does this only after the ship
+  report exists. If the copy fails, it deletes nothing, and `planRun.reason`
+  starts with `explorer summary not saved: `.

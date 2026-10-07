@@ -1048,7 +1048,7 @@ describe('render stationTrack', () => {
 });
 
 describe('render pipelineBlock', () => {
-  test('an article with data-key, the head, the track, and an empty step-detail', () => {
+  test('an article with data-key, the head, the track, and one tile for each step with a section', () => {
     const p = pipeline();
     const block = render.pipelineBlock(fakeDoc(), view, REPO, p, { collapsed: false, selected: 0 });
     assert.equal(block.tagName, 'article');
@@ -1057,7 +1057,8 @@ describe('render pipelineBlock', () => {
     assert.equal(block.attrs['data-id'], 'ship-1');
     oneByClass(block, 'pipe-head');
     oneByClass(block, 'track');
-    assert.equal(oneByClass(block, 'step-detail').children.length, 0);
+    const tiles = oneByClass(block, 'step-detail').children;
+    assert.deepEqual(tiles.map((t) => t.attrs['data-section']), ['execute', 'review']);
     assert.ok(classesOf(byClass(block, 'station')[0]).includes('selected'));
   });
 
@@ -1178,6 +1179,505 @@ describe('render emptyState', () => {
   });
 });
 
+// --- render.js: tiles and the History table --------------------------------------
+
+const FIXTURE = JSON.parse(fs.readFileSync(path.join(__dirname, 'snapshot.fixture.json'), 'utf8'));
+const FIXTURE_NOW = Date.parse(FIXTURE.generatedAt);
+
+function fixtureRepo(name) {
+  const repo = FIXTURE.repos.find((r) => r.name === name);
+  assert.ok(repo, `fixture has no repo ${name}`);
+  return repo;
+}
+
+function fixturePipeline(repoName, match) {
+  const p = fixtureRepo(repoName).pipelines.find(match);
+  assert.ok(p, `fixture repo ${repoName} has no matching pipeline`);
+  return p;
+}
+
+function fixtureBlock(repoName, match, state) {
+  const repo = fixtureRepo(repoName);
+  const p = fixturePipeline(repoName, match);
+  const s = Object.assign({ collapsed: false, closed: {}, now: FIXTURE_NOW, tz: 'UTC' }, state);
+  return render.pipelineBlock(fakeDoc(), view, repo, p, s);
+}
+
+function tilesOf(block) {
+  return oneByClass(block, 'step-detail').children;
+}
+
+function tileByName(block, name) {
+  return tilesOf(block).find((t) => t.attrs['data-section'] === name);
+}
+
+function stepOf(p, name) {
+  return p.steps.find((s) => s.name === name);
+}
+
+const SHIP = (p) => p.kind === 'ship';
+const PLAN = (p) => p.kind === 'plan';
+const EXECUTE = (p) => p.kind === 'execute';
+const REVIEW = (p) => p.kind === 'review';
+
+describe('render tiles from the shared fixture', () => {
+  // One check for each item of the fixture content table: each gives at least one node.
+  const items = [
+    ['repos: a failed run in one repo', () =>
+      FIXTURE.repos.map((r) => r.pipelines.filter((p) => p.status === 'failed')).flat().map((p) =>
+        oneByClass(render.blockHead(fakeDoc(), view, fixtureRepo('identity-service'), p, false, 0), 'pipe-status'))
+        .filter((n) => n.textContent === 'failed')],
+    ['ship: nested execute waves', () => byClass(tileByName(fixtureBlock('sdlc-plugin', SHIP), 'execute'), 'wave-block')],
+    ['ship: review totals with unaccounted', () =>
+      byClass(tileByName(fixtureBlock('sdlc-plugin', SHIP), 'review'), 'round-sum').filter((n) => /1 unaccounted/.test(n.textContent))],
+    ['ship: plan station', () => byClass(tileByName(fixtureBlock('sdlc-plugin', SHIP), 'plan'), 'wave-block')],
+    ['plan: explorers', () => byClass(tileByName(fixtureBlock('sdlc-plugin', PLAN), 'explore'), 'wave-block')],
+    ['plan: rounds', () => byClass(tileByName(fixtureBlock('sdlc-plugin', PLAN), 'review'), 'round-n')],
+    ['standalone execute: waves', () =>
+      tilesOf(fixtureBlock('payments-service', EXECUTE)).filter((t) => byClass(t, 'wave-block').length > 0)],
+    ['standalone execute: queued tasks', () => byClass(tileByName(fixtureBlock('payments-service', EXECUTE), 'queued'), 'task-row')],
+    ['standalone review: findings tile with a finding', () =>
+      byClass(tileByName(fixtureBlock('payments-service', REVIEW), 'correctness'), 'dim-row')],
+    ['standalone review: findings tile with none', () =>
+      byClass(tileByName(fixtureBlock('payments-service', REVIEW), 'security'), 'generic-line')],
+    ['stalled run: stalled issue', () =>
+      byClass(tileByName(fixtureBlock('payments-service', EXECUTE), 'issues'), 'issue-path').filter((n) => /^last update /.test(n.textContent))],
+    ['issues: one chip for each severity', () =>
+      byClass(tileByName(fixtureBlock('sdlc-plugin', SHIP), 'issues'), 'sev')],
+    ['harden step: track station only', () =>
+      byClass(fixtureBlock('sdlc-plugin', SHIP), 'station').filter((n) => n.attrs.title === 'harden, in progress')],
+    ['activity: session by sessionId', () => [tileByName(fixtureBlock('sdlc-plugin', SHIP), 'session')].filter(Boolean)],
+    ['activity: session by branch fallback', () => [tileByName(fixtureBlock('payments-service', EXECUTE), 'session')].filter(Boolean)],
+    ['history: rows in two repos', () =>
+      findAll(render.historyTable(fakeDoc(), view, FIXTURE.repos, new Set(), FIXTURE_NOW, 'UTC'), (n) => n.tagName === 'tr')],
+  ];
+  for (const [name, nodes] of items) {
+    test(`fixture item gives a node: ${name}`, () => {
+      assert.ok(nodes().length >= 1);
+    });
+  }
+
+  test('every pipeline: the details count is the number of tiles, each a details element with data-section', () => {
+    for (const repo of FIXTURE.repos) {
+      for (const p of repo.pipelines) {
+        const block = render.pipelineBlock(fakeDoc(), view, repo, p, { collapsed: false, closed: {}, now: FIXTURE_NOW, tz: 'UTC' });
+        const tiles = tilesOf(block);
+        assert.equal(oneByClass(block, 'fold-count').textContent, String(tiles.length), p.id);
+        for (const t of tiles) {
+          assert.equal(t.tagName, 'details');
+          assert.ok(t.attrs['data-section']);
+          // data-section sits on the tile only, never on a child.
+          assert.equal(findAll(t, (n) => n !== t && 'data-section' in n.attrs).length, 0);
+        }
+      }
+    }
+  });
+
+  test('every node: no link, no href, no style, no inline handler', () => {
+    const all = [];
+    for (const repo of FIXTURE.repos) {
+      for (const p of repo.pipelines) {
+        all.push(...findAll(render.pipelineBlock(fakeDoc(), view, repo, p, { now: FIXTURE_NOW, tz: 'UTC' }), () => true));
+      }
+    }
+    all.push(...findAll(render.historyTable(fakeDoc(), view, FIXTURE.repos, new Set(), FIXTURE_NOW, 'UTC'), () => true));
+    assert.equal(all.filter((n) => n.tagName === 'a').length, 0);
+    for (const n of all) {
+      for (const k of Object.keys(n.attrs)) {
+        assert.ok(k !== 'href' && k !== 'style' && !/^on/.test(k), `attribute ${k} on ${n.tagName}`);
+      }
+    }
+  });
+
+  test('tiles follow track order, then issues, then session; skipped and harden steps give no tile', () => {
+    const block = fixtureBlock('sdlc-plugin', SHIP);
+    assert.deepEqual(tilesOf(block).map((t) => t.attrs['data-section']), ['plan', 'execute', 'review', 'issues', 'session']);
+  });
+
+  test('a ship execute tile: three waves, committed with the short sha, a task with no name shows its id only', () => {
+    const p = fixturePipeline('sdlc-plugin', SHIP);
+    const t = tileByName(fixtureBlock('sdlc-plugin', SHIP), 'execute');
+    const waves = byClass(t, 'wave-block');
+    assert.equal(waves.length, 3);
+    assert.ok(classesOf(t).includes('wide'));
+    const first = stepOf(p, 'execute').detail.waves[0];
+    const badge = oneByClass(waves[0], 'commit-badge');
+    assert.equal(badge.className, 'commit-badge committed');
+    assert.equal(badge.textContent, 'committed ' + first.committedSha.slice(0, 7));
+    assert.equal(badge.attrs.title, 'Wave commit ' + first.committedSha);
+    assert.equal(waves[0].children[0].textContent, 'wave 1');
+    assert.equal(oneByClass(waves[0], 'wave-count').textContent, '3/3');
+    const noName = byClass(waves[2], 'task-row').find((r) => oneByClass(r, 'task-id').textContent === 'T8');
+    assert.equal(byClass(noName, 'task-name').length, 0);
+    assert.equal(textOf(noName), 'T8');
+    assert.equal(oneByClass(noName, 'lamp').className, 'lamp completed');
+  });
+
+  test('a review dimensions tile: totals line above the rows, an amber count above 0', () => {
+    const p = fixturePipeline('sdlc-plugin', SHIP);
+    const t = tileByName(fixtureBlock('sdlc-plugin', SHIP), 'review');
+    const body = t.children[1];
+    assert.equal(body.children[0].className, 'round-sum');
+    assert.equal(body.children[0].textContent, view.reviewTotalsText(stepOf(p, 'review').detail.reviewTotals));
+    const rows = byClass(t, 'dim-row');
+    assert.equal(rows.length, 5);
+    assert.equal(oneByClass(rows[0], 'dim-name').textContent, 'security');
+    assert.equal(oneByClass(rows[0], 'dim-meta').className, 'dim-meta has-findings');
+    assert.equal(oneByClass(rows[0], 'dim-meta').textContent, '2 findings');
+    assert.equal(oneByClass(rows[2], 'dim-meta').className, 'dim-meta');
+    assert.equal(oneByClass(rows[2], 'lamp').className, 'lamp completed');
+  });
+
+  test('a running dimension reads running, a pending one queued', () => {
+    const body = render.dimensionsBody(fakeDoc(), view, { kind: 'dimensions', dimensions: [
+      { name: 'a', status: 'in_progress', findings: 0 },
+      { name: 'b', status: 'pending', findings: 0 },
+      { name: 'c', status: 'failed', findings: 0 },
+    ] });
+    assert.deepEqual(byClass(body, 'dim-meta').map((n) => n.textContent), ['running', 'queued', '0 findings']);
+    assert.deepEqual(byClass(body, 'lamp').map((n) => n.className), ['lamp running', 'lamp stalled', 'lamp failed']);
+    assert.equal(byClass(body, 'round-sum').length, 0);
+  });
+
+  test('a plan explorers tile: name, N findings, 2 findings and N more; an unreadable explorer has no rows', () => {
+    const t = tileByName(fixtureBlock('sdlc-plugin', PLAN), 'explore');
+    assert.ok(classesOf(t).includes('wide'));
+    const blocks = byClass(t, 'wave-block');
+    const big = blocks.find((b) => textOf(b.children[0]).startsWith('pipeline-state-progress-model'));
+    assert.equal(oneByClass(big, 'count-badge').textContent, '23 findings');
+    assert.equal(byClass(big, 'find-row').length, 2);
+    assert.equal(oneByClass(big, 'find-more').textContent, '21 more');
+    const unreadable = blocks.find((b) => textOf(b.children[0]).startsWith('telemetry'));
+    assert.equal(oneByClass(unreadable, 'lamp').className, 'lamp failed');
+    assert.equal(byClass(unreadable, 'find-row').length, 0);
+    assert.equal(byClass(unreadable, 'find-more').length, 0);
+  });
+
+  test('a plan rounds tile: summary line, none and – when a round found 0, one chip for each lens', () => {
+    const t = tileByName(fixtureBlock('sdlc-plugin', PLAN), 'review');
+    assert.ok(classesOf(t).includes('wide'));
+    assert.equal(textOf(oneByClass(t, 'round-sum')), '5 of 5 rounds · 19 issues found · 19 fixed');
+    const rows = byClass(t, 'round-row').filter((r) => !classesOf(r).includes('head'));
+    assert.equal(rows.length, 5);
+    assert.deepEqual(rows[0].children.slice(0, 3).map((c) => c.textContent), ['round 1', '8', '8']);
+    assert.deepEqual(rows[4].children.slice(0, 3).map((c) => c.textContent), ['round 5', 'none', '–']);
+    const chips = byClass(rows[1], 'lens-chip');
+    assert.deepEqual(chips.map((c) => c.className), ['lens-chip issues', 'lens-chip ok', 'lens-chip issues']);
+    assert.equal(chips[1].textContent, 'requirements · approved');
+    assert.equal(chips[0].textContent, 'architecture · issues');
+  });
+
+  test('a standalone execute: commits off on every wave, queued shows its tasks', () => {
+    const block = fixtureBlock('payments-service', EXECUTE);
+    const badges = byClass(oneByClass(block, 'step-detail'), 'commit-badge');
+    assert.equal(badges.length, 3);
+    for (const b of badges) assert.equal(b.textContent, 'commits off');
+    const queued = tileByName(block, 'queued');
+    assert.equal(textOf(oneByClass(queued, 'wave-head')), 'queued2');
+    assert.deepEqual(byClass(queued, 'task-id').map((n) => n.textContent), ['T7', 'T8']);
+    assert.ok(!classesOf(queued).includes('wide'));
+  });
+
+  test('the stalled issue shows the age of the pipeline updatedAt through relativeWhen', () => {
+    const p = fixturePipeline('payments-service', EXECUTE);
+    const issues = tileByName(fixtureBlock('payments-service', EXECUTE), 'issues');
+    const row = byClass(issues, 'issue-row').find((r) => oneByClass(r, 'issue-text').textContent === 'no update for 30+ min');
+    const want = 'last update ' + view.relativeWhen(p.updatedAt, FIXTURE_NOW, 'UTC');
+    assert.equal(oneByClass(row, 'issue-path').textContent, want);
+    assert.equal(want, 'last update 1h ago');
+  });
+
+  test('a standalone review: No findings. on an empty tile, a row for a finding, no tile for a running step', () => {
+    const block = fixtureBlock('payments-service', REVIEW);
+    assert.deepEqual(tilesOf(block).map((t) => t.attrs['data-section']), ['security', 'correctness', 'issues']);
+    assert.equal(oneByClass(tileByName(block, 'security'), 'generic-line').textContent, 'No findings.');
+    const row = oneByClass(tileByName(block, 'correctness'), 'dim-row');
+    assert.equal(oneByClass(row, 'lamp').className, 'lamp running');
+    assert.equal(oneByClass(row, 'dim-meta').textContent, 'medium');
+    assert.equal(oneByClass(row, 'dim-name').attrs.title, 'internal/payout/batch.go:88');
+  });
+
+  test('the session tile: closed, counts in the summary, short id and timeline rows', () => {
+    const repo = fixtureRepo('sdlc-plugin');
+    const session = repo.sessions[0];
+    const t = tileByName(fixtureBlock('sdlc-plugin', SHIP), 'session');
+    assert.equal(t.open, false);
+    assert.ok(classesOf(t).includes('span2'));
+    assert.equal(oneByClass(t, 'sec-meta').textContent, '3 prompts · 3 commands · 2 mcp calls');
+    assert.equal(oneByClass(t, 'sec-id').textContent, 'id ' + view.shortId(session.id));
+    const rows = byClass(t, 'timeline-row');
+    assert.equal(rows.length, session.timeline.length);
+    assert.deepEqual(rows[0].children.map((c) => c.textContent), [
+      view.clockLabel(session.timeline[0].at, 'UTC'),
+      session.timeline[0].kind,
+      session.timeline[0].text,
+    ]);
+  });
+
+  test('no issues tile and no session tile when there is nothing to show', () => {
+    const plan = fixtureBlock('sdlc-plugin', PLAN);
+    assert.equal(tileByName(plan, 'issues'), undefined);
+    const review = fixtureBlock('payments-service', REVIEW);
+    assert.equal(tileByName(review, 'session'), undefined);
+    assert.equal(render.issuesTile(fakeDoc(), view, pipeline({ issues: [] }), true, FIXTURE_NOW, 'UTC'), null);
+    assert.equal(render.issuesTile(fakeDoc(), view, pipeline({ issues: undefined }), true, FIXTURE_NOW, 'UTC'), null);
+    assert.equal(render.sessionTile(fakeDoc(), view, null, false, 'UTC'), null);
+  });
+});
+
+describe('render stepTile and stepTiles', () => {
+  const step = { name: 'review', status: 'in_progress', detail: { kind: 'dimensions', dimensions: [{ name: 'a', status: 'completed', findings: 0 }] } };
+
+  test('summary holds chevron, lamp, step name, and sectionMeta in that order', () => {
+    const t = render.stepTile(fakeDoc(), view, pipeline(), step, 2, true, false);
+    assert.equal(t.tagName, 'details');
+    assert.equal(t.attrs['data-section'], 'review');
+    assert.equal(t.open, true);
+    const summary = t.children[0];
+    assert.equal(summary.tagName, 'summary');
+    assert.deepEqual(summary.children.map((c) => c.className), ['chev', 'lamp running', 'sec-name', 'sec-meta']);
+    assert.equal(summary.children[0].attrs['aria-hidden'], 'true');
+    assert.equal(summary.children[1].attrs['aria-hidden'], 'true');
+    assert.equal(summary.children[2].textContent, 'review');
+    assert.equal(summary.children[3].textContent, view.sectionMeta(step));
+  });
+
+  test('a wide section gets the wide class; one wave stays a column; the selected step is marked', () => {
+    const one = { name: 'execute', status: 'completed', detail: { kind: 'waves', waves: [{ number: 1, tasks: [] }] } };
+    const two = { name: 'execute', status: 'completed', detail: { kind: 'waves', waves: [{ number: 1, tasks: [] }, { number: 2, tasks: [] }] } };
+    assert.equal(render.stepTile(fakeDoc(), view, pipeline(), one, 0, true, false).className, 'step-sec');
+    assert.equal(render.stepTile(fakeDoc(), view, pipeline(), two, 0, true, true).className, 'step-sec wide selected');
+    const rounds = { name: 'review', status: 'completed', detail: { kind: 'rounds', rounds: [], maxRounds: 5 } };
+    assert.equal(render.stepTile(fakeDoc(), view, pipeline(), rounds, 0, true, false).className, 'step-sec wide');
+  });
+
+  test('every detail kind has a body builder', () => {
+    assert.deepEqual(Object.keys(render.TILE_BODIES).sort(), ['dimensions', 'explorers', 'findings', 'rounds', 'waves']);
+  });
+
+  test('a tile the user closed stays closed; the others stay open', () => {
+    const p = pipeline();
+    const key = view.pipelineKey(REPO, p);
+    const closed = {};
+    closed[view.sectionKey(key, 'review')] = true;
+    closed[view.sectionKey(key, 'execute')] = false;
+    const tiles = render.stepTiles(fakeDoc(), view, p, { key: key, closed: closed, selected: 2 });
+    assert.deepEqual(tiles.map((t) => [t.attrs['data-section'], t.open]), [['execute', true], ['review', false]]);
+    assert.ok(classesOf(tiles[1]).includes('selected'));
+    assert.ok(!classesOf(tiles[0]).includes('selected'));
+  });
+
+  test('pipelineBlock: issues open and session closed by default; the user choice wins over both', () => {
+    const repo = Object.assign({}, REPO, { sessions: [{ id: 's1', branch: 'feat/x', lastSeen: '2026-01-01T00:00:00Z', counts: {}, timeline: [] }] });
+    const p = pipeline({ issues: [{ source: 'step', severity: 'high', text: 'x', file: '', line: '', ref: 'pr' }] });
+    const key = view.pipelineKey(repo, p);
+    const plain = render.pipelineBlock(fakeDoc(), view, repo, p, { closed: {} });
+    assert.equal(tileByName(plain, 'issues').open, true);
+    assert.equal(tileByName(plain, 'session').open, false);
+    const closed = {};
+    closed[view.sectionKey(key, 'issues')] = true;
+    closed[view.sectionKey(key, 'session')] = false;
+    const chosen = render.pipelineBlock(fakeDoc(), view, repo, p, { closed: closed });
+    assert.equal(tileByName(chosen, 'issues').open, false);
+    assert.equal(tileByName(chosen, 'session').open, true);
+  });
+
+  test('markup in snapshot text stays text in a tile', () => {
+    const t = render.stepTile(fakeDoc(), view, pipeline(), {
+      name: '<i>s</i>', status: 'completed', detail: { kind: 'findings', findings: [{ text: '<img src=x>', severity: 'low', file: '', line: '' }] },
+    }, 0, true, false);
+    assert.equal(oneByClass(t, 'sec-name').textContent, '<i>s</i>');
+    const text = oneByClass(t, 'dim-name');
+    assert.equal(text.textContent, '<img src=x>');
+    assert.equal(text.children.length, 0);
+  });
+});
+
+describe('render tile bodies', () => {
+  test('waves: commits off, committed, not committed, and a due wave in amber', () => {
+    const detail = { kind: 'waves', waves: [
+      { number: 1, committedSha: 'abcdef0123456789abcdef0123456789abcdef01', tasks: [{ id: 'T1', name: 'a', status: 'completed' }] },
+      { number: 2, committedSha: '', tasks: [{ id: 'T2', name: 'b', status: 'completed' }] },
+      { number: 3, committedSha: '', tasks: [{ id: 'T3', name: 'c', status: 'in_progress' }] },
+    ] };
+    const on = byClass(render.wavesBody(fakeDoc(), view, detail, { commitWaves: true }), 'commit-badge');
+    assert.deepEqual(on.map((b) => [b.className, b.textContent]), [
+      ['commit-badge committed', 'committed abcdef0'],
+      ['commit-badge pending-commit', 'not committed'],
+      ['commit-badge', 'not committed'],
+    ]);
+    const off = byClass(render.wavesBody(fakeDoc(), view, detail, { commitWaves: false }), 'commit-badge');
+    assert.deepEqual(off.map((b) => b.textContent), ['commits off', 'commits off', 'commits off']);
+  });
+
+  test('waves: a task row has a lamp, the id, and the name', () => {
+    const body = render.wavesBody(fakeDoc(), view, { kind: 'waves', waves: [{ number: 1, tasks: [{ id: 'T1', name: 'Add x', status: 'failed' }] }] }, {});
+    const row = oneByClass(body, 'task-row');
+    assert.deepEqual(row.children.map((c) => c.className), ['lamp failed', 'task-id', 'task-name']);
+    assert.equal(textOf(row), 'T1Add x');
+    assert.equal(oneByClass(row, 'task-name').attrs.title, 'Add x');
+  });
+
+  test('explorers: 2 of N findings, N more, and a running explorer lamp', () => {
+    const explorer = { name: 'area', status: 'running', total: 7, findings: [
+      { summary: 'one', ref: 'a.go:1' }, { summary: 'two', ref: 'b.go:2' }, { summary: 'three', ref: 'c.go:3' },
+    ] };
+    const body = render.explorersBody(fakeDoc(), view, { kind: 'explorers', explorers: [explorer] });
+    assert.deepEqual(byClass(body, 'find-text').map((n) => n.textContent), ['one', 'two']);
+    assert.equal(oneByClass(body, 'find-more').textContent, view.explorerMore(explorer, 2) + ' more');
+    assert.equal(oneByClass(body, 'find-more').textContent, '5 more');
+    assert.equal(oneByClass(body, 'count-badge').textContent, '7 findings');
+    assert.equal(oneByClass(body, 'lamp').className, 'lamp running');
+  });
+
+  test('explorers: no N more line when every finding shows', () => {
+    const body = render.explorersBody(fakeDoc(), view, { kind: 'explorers', explorers: [
+      { name: 'area', status: 'done', total: 1, findings: [{ summary: 'one', ref: '' }] },
+    ] });
+    assert.equal(byClass(body, 'find-more').length, 0);
+    assert.equal(byClass(body, 'find-ref').length, 0);
+  });
+
+  test('explorers: a URL ref is text, with no a element and no href', () => {
+    const url = 'https://pkg.go.dev/net/http#ResponseController';
+    const body = render.explorersBody(fakeDoc(), view, { kind: 'explorers', explorers: [
+      { name: 'web', status: 'done', total: 1, findings: [{ summary: 'flush', ref: url }] },
+    ] });
+    const ref = oneByClass(body, 'find-ref');
+    assert.equal(ref.tagName, 'span');
+    assert.equal(ref.textContent, url);
+    assert.equal(findAll(body, (n) => n.tagName === 'a').length, 0);
+    assert.equal(findAll(body, (n) => 'href' in n.attrs).length, 0);
+  });
+
+  test('findings: No findings. on an empty tile', () => {
+    const body = render.findingsBody(fakeDoc(), view, { kind: 'findings' });
+    assert.equal(body.tagName, 'p');
+    assert.equal(body.className, 'generic-line');
+    assert.equal(body.textContent, 'No findings.');
+  });
+
+  test('findings: one row for each finding, lamp by severity', () => {
+    const body = render.findingsBody(fakeDoc(), view, { kind: 'findings', findings: [
+      { text: 'a', severity: 'critical', file: 'x.go', line: '3' },
+      { text: 'b', severity: 'medium', file: '', line: '' },
+      { text: 'c', severity: 'info', file: '', line: '' },
+    ] });
+    const rows = byClass(body, 'dim-row');
+    assert.equal(rows.length, 3);
+    assert.deepEqual(rows.map((r) => oneByClass(r, 'lamp').className), ['lamp failed', 'lamp running', 'lamp stalled']);
+    assert.deepEqual(rows.map((r) => textOf(r)), ['acritical', 'bmedium', 'cinfo']);
+  });
+
+  test('rounds: a summary with no rounds', () => {
+    const body = render.roundsBody(fakeDoc(), view, { kind: 'rounds', maxRounds: 3 });
+    assert.equal(textOf(oneByClass(body, 'round-sum')), '0 of 3 rounds · 0 issues found · 0 fixed');
+  });
+});
+
+describe('render issuesTile', () => {
+  const issues = [
+    { source: 'review', severity: 'critical', text: 'a', file: 'x.go', line: '1', ref: 'security' },
+    { source: 'review', severity: 'high', text: 'b', file: 'x.go', line: '', ref: 'security' },
+    { source: 'review', severity: 'medium', text: 'c', file: '', line: '', ref: 'docs' },
+    { source: 'review', severity: 'low', text: 'd', file: '', line: '', ref: '' },
+    { source: 'state', severity: 'info', text: 'e', file: '', line: '', ref: '' },
+  ];
+
+  test('a span2 tile, open, with N open and a red lamp when a critical or high issue exists', () => {
+    const t = render.issuesTile(fakeDoc(), view, pipeline({ issues: issues }), true, FIXTURE_NOW, 'UTC');
+    assert.equal(t.className, 'step-sec span2');
+    assert.equal(t.attrs['data-section'], 'issues');
+    assert.equal(t.open, true);
+    assert.equal(oneByClass(t, 'sec-meta').textContent, '5 open');
+    assert.equal(oneByClass(t, 'lamp').className, 'lamp failed');
+  });
+
+  test('an amber lamp when no issue is critical or high', () => {
+    const t = render.issuesTile(fakeDoc(), view, pipeline({ issues: issues.slice(2) }), true, FIXTURE_NOW, 'UTC');
+    assert.equal(oneByClass(t, 'lamp').className, 'lamp running');
+  });
+
+  test('severity chips first, rationale, then the location under it', () => {
+    const t = render.issuesTile(fakeDoc(), view, pipeline({ issues: issues }), true, FIXTURE_NOW, 'UTC');
+    const rows = byClass(t, 'issue-row');
+    assert.deepEqual(rows.map((r) => r.children[0].className), [
+      'sev sev-critical', 'sev sev-high', 'sev sev-medium', 'sev sev-low', 'sev sev-info',
+    ]);
+    assert.deepEqual(rows.map((r) => r.children[0].textContent), ['critical', 'high', 'medium', 'low', 'info']);
+    assert.deepEqual(rows.map((r) => byClass(r, 'issue-path').map((n) => n.textContent)), [
+      ['x.go:1'], ['x.go'], ['docs'], [], [],
+    ]);
+    assert.equal(oneByClass(rows[0], 'issue-text').textContent, 'a');
+  });
+});
+
+describe('render historyTable', () => {
+  const repos = [
+    { root: '/a', name: 'a', history: [
+      { kind: 'ship', branch: 'feat/a', outcome: 'success', startedAt: '', endedAt: '2026-10-08T14:00:00Z', durationMs: 2460000 },
+      { kind: 'plan', branch: 'main', outcome: 'failure', startedAt: '', endedAt: '2026-10-08T10:00:00Z', durationMs: 26000 },
+    ] },
+    { root: '/b', name: 'b', history: [
+      { kind: 'execute', branch: 'fix/b', outcome: 'partial', startedAt: '', endedAt: '2026-10-08T12:00:00Z', durationMs: 3720000 },
+    ] },
+  ];
+  const now = Date.parse('2026-10-08T14:30:00Z');
+
+  test('Finished runs (n), the column heads, and one row of each outcome, newest first', () => {
+    const panel = render.historyTable(fakeDoc(), view, repos, new Set(), now, 'UTC');
+    assert.equal(panel.className, 'list-panel hist-panel');
+    assert.equal(textOf(oneByClass(panel, 'list-title')), 'Finished runs (3)');
+    const table = oneByClass(panel, 'hist');
+    assert.equal(table.tagName, 'table');
+    assert.deepEqual(findAll(table, (n) => n.tagName === 'th').map((n) => n.textContent),
+      ['outcome', 'kind', 'branch', 'repo', 'finished', 'duration']);
+    const body = findAll(table, (n) => n.tagName === 'tbody')[0];
+    const rows = body.children;
+    assert.deepEqual(rows.map((r) => oneByClass(r, 'out').className), ['out success', 'out partial', 'out failure']);
+    assert.deepEqual(rows.map((r) => textOf(oneByClass(r, 'out'))), ['✓success', '◐partial', '✕failure']);
+    assert.equal(oneByClass(rows[0], 'out').children[0].attrs['aria-hidden'], 'true');
+    assert.deepEqual(rows[1].children.slice(1).map((c) => c.textContent), [
+      'execute', 'fix/b', 'b', view.relativeWhen('2026-10-08T12:00:00Z', now, 'UTC'), view.formatDuration(3720000),
+    ]);
+    assert.deepEqual(rows[1].children.slice(4).map((c) => c.textContent), ['2h ago', '1h 02m']);
+    assert.deepEqual(rows[0].children.map((c) => c.className), ['', 'h-kind', 'h-branch', 'h-repo', 'h-when', 'h-dur']);
+  });
+
+  test('the scope keeps rows of the repos in scope only', () => {
+    const panel = render.historyTable(fakeDoc(), view, repos, new Set(['/b']), now, 'UTC');
+    assert.equal(textOf(oneByClass(panel, 'list-title')), 'Finished runs (1)');
+    assert.deepEqual(byClass(panel, 'h-repo').map((n) => n.textContent), ['b']);
+  });
+
+  test('no rows shows the no-history empty state and no table', () => {
+    const panel = render.historyTable(fakeDoc(), view, repos, new Set(['/c']), now, 'UTC');
+    assert.equal(textOf(oneByClass(panel, 'list-title')), 'Finished runs (0)');
+    assert.equal(byClass(panel, 'hist').length, 0);
+    const line = oneByClass(panel, 'generic-line');
+    assert.equal(line.attrs['data-empty'], 'no-history');
+    assert.equal(line.textContent, 'No finished runs for the selected repos.');
+  });
+
+  test('the fixture history: one row of each outcome over two repos', () => {
+    const panel = render.historyTable(fakeDoc(), view, FIXTURE.repos, new Set(), FIXTURE_NOW, 'UTC');
+    const outcomes = new Set(byClass(panel, 'out').map((n) => n.className.split(' ')[1]));
+    assert.deepEqual([...outcomes].sort(), ['failure', 'partial', 'success']);
+    assert.ok(new Set(byClass(panel, 'h-repo').map((n) => n.textContent)).size >= 2);
+  });
+});
+
+describe('page scripts ship no preview code', () => {
+  for (const name of ['render.js', 'app.js']) {
+    test(`${name} has no fixture data and no note box`, () => {
+      const source = fs.readFileSync(path.join(__dirname, '../static', name), 'utf8');
+      for (const word of ['identity-service', 'payments-service', 'scenarios', 'snapshot.fixture', 'note']) {
+        assert.ok(!source.includes(word), `${name} contains ${word}`);
+      }
+    });
+  }
+});
+
 describe('render.js browser global fallback', () => {
   test('render.js assigns root.sdlcRender when module.exports is unavailable', () => {
     const source = fs.readFileSync(path.join(__dirname, '../static/render.js'), 'utf8');
@@ -1186,14 +1686,25 @@ describe('render.js browser global fallback', () => {
     const run = new Function('module', source);
     run.call(fakeRoot);
     assert.deepEqual(Object.keys(fakeRoot.sdlcRender).sort(), [
+      'TILE_BODIES',
       'activityPanel',
       'blockHead',
+      'dimensionsBody',
       'el',
       'emptyState',
+      'explorersBody',
       'filterChips',
+      'findingsBody',
       'headerTotals',
+      'historyTable',
+      'issuesTile',
       'pipelineBlock',
+      'roundsBody',
+      'sessionTile',
       'stationTrack',
+      'stepTile',
+      'stepTiles',
+      'wavesBody',
     ]);
   });
 });
