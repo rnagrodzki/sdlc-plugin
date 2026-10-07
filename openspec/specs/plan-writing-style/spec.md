@@ -6,7 +6,9 @@ Turns a developer's structured plan style settings into one writing guide that t
 ## Requirements
 
 ### Requirement: Style settings
-The system SHALL read the keys below from the main worktree's `.sdlc-v2/local.toml`: shared keys from `[style]`, plan-only keys from `[planStyle]`. It SHALL use the default when a key or the whole section is absent.
+The system SHALL read the keys below from the user file (`$SDLC_USER_CONFIG`, else `~/.sdlc/local.toml`) merged under the main worktree's `.sdlc-v2/local.toml`: shared keys from `[style]`, plan-only keys from `[planStyle]`. It SHALL use the default when a key or the whole section is absent from both files.
+
+- Merge: tables merge key by key, and the project file wins. A list or a scalar in the project file replaces the user value whole (capability `local-config-layering`).
 
 | Key | Section | Values | Default | Controls |
 |---|---|---|---|---|
@@ -28,13 +30,24 @@ The system SHALL read the keys below from the main worktree's `.sdlc-v2/local.to
 | `beginner` | one idea and one concrete example per concept |
 
 #### Scenario: No style sections
-- **WHEN** `.sdlc-v2/local.toml` has no `[style]` and no `[planStyle]` section
+- **WHEN** neither `~/.sdlc/local.toml` nor `.sdlc-v2/local.toml` has a `[style]` or a `[planStyle]` section
 - **THEN** the settings are `audience: functional`, `writingStandard: plain-language`, `tone: direct`, `visualDensity: balanced`, `language: English`, `technicalTerms: []`
 - **AND** there are no style warnings
 
 #### Scenario: Technical terms are cleaned
 - **WHEN** `[style] technicalTerms` is `[" Logging ", 3, ""]`
 - **THEN** `technicalTerms` is `["logging"]`
+
+#### Scenario: Style from the user file
+- **WHEN** `~/.sdlc/local.toml` has `[style] audience = "functional"` and `tone = "neutral"`
+- **AND** `.sdlc-v2/local.toml` has `[style] audience = "technical"`
+- **THEN** the audience is `technical`
+- **AND** the tone is `neutral`
+
+#### Scenario: Project list replaces the user list
+- **WHEN** `~/.sdlc/local.toml` has `[planStyle] instructions = ["A", "B"]`
+- **AND** `.sdlc-v2/local.toml` has `[planStyle] instructions = ["C"]`
+- **THEN** `instructions` is `["C"]`
 
 ### Requirement: Invalid and legacy values
 The system SHALL replace an enum value that is not in its list with the key's default, and SHALL add one warning for each replaced key. A `verbosity` key SHALL be ignored with one warning. A shared key found only in `[planStyle]` SHALL be used, with one warning. A plan-only key in `[style]` SHALL be ignored, with one warning. When `[style]` and `[planStyle]` both set a shared key, the `[style]` value SHALL win with no warning.

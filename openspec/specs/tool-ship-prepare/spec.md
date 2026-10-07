@@ -148,7 +148,7 @@ The tool SHALL collect validation problems into `errors` and `warnings`, and SHA
 | Unknown step name, `sources.steps` is `cli` | error | `Unrecognized step "<s>" in --steps. Valid values: execute, commit, review, harden, verify-openspec, archive-openspec, pr, verify-pipeline, await-remote-review, learnings-commit` |
 | Unknown step name from any other tier | warning | same text, with `steps[]` in place of `--steps` |
 | `quality` not `full`/`balanced`/`minimal` | error | `Invalid --quality "<q>". Valid values: full, balanced, minimal` |
-| `reviewThreshold` not exactly `critical`/`high`/`medium`/`low`/`info` | error | `invalid reviewThreshold "<t>": use one of critical, high, medium, low, info in [ship] of .sdlc-v2/local.toml` |
+| `reviewThreshold` not exactly `critical`/`high`/`medium`/`low`/`info` | error | `invalid reviewThreshold "<t>": use one of critical, high, medium, low, info in [ship] of .sdlc-v2/local.toml (or ~/.sdlc/local.toml)` |
 | Resolved step list is empty | error | `All steps are skipped. At least one step must run.` |
 | `hasPlan:true`, `execute` in steps, `planFile` empty | error | `ship cannot run the "execute" step without a plan document. Fix: re-run with --plan <path-to-plan.md>. ...` |
 | `bump` from input and `pr` not in steps | error | `--bump "<b>" specified but pr step is skipped — resolve by removing --bump or adding "pr" to ship.steps[].` |
@@ -341,7 +341,6 @@ The tool SHALL return an `InfraError` when it cannot resolve the project root or
 - **WHEN** the tool is called outside any git repository
 - **THEN** it returns an `InfraError` whose message starts with `resolve project root:`
 
-
 ### Requirement: OpenSpec materialize at ship start
 After validation passes and before the state file is written, the tool SHALL materialize a staged OpenSpec change when `planFile` has an `**OpenSpec-Staging:**` header, as defined by the `openspec-staging` capability, and SHALL return the outcome in `openspec: {change, materialized}`.
 
@@ -358,7 +357,6 @@ After validation passes and before the state file is written, the tool SHALL mat
 - **THEN** `errors` contains the CLI output
 - **AND** no ship state file is created
 
-
 ### Requirement: OpenSpec change from the plan header
 When the `openspecChange` input is empty and `planFile` has `**Source:** openspec/changes/<name>/`, the tool SHALL set `flags.openspecChange` to `<name>` and `sources.openspecChange` to `"plan"`.
 
@@ -369,4 +367,3 @@ When the `openspecChange` input is empty and `planFile` has `**Source:** openspe
 - **WHEN** the call has no `openspecChange` and the plan's `**Source:**` is `openspec/changes/add-widget/`
 - **THEN** `flags.openspecChange` is `"add-widget"`
 - **AND** `sources.openspecChange` is `"plan"`
-

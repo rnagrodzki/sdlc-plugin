@@ -31,9 +31,9 @@ sequenceDiagram
     participant W as setup_write_sections
     participant FS
     Skill->>P: skipConfigCheck false
-    P-->>Skill: needsMigration, sections, defaultBranch, remoteOwner
+    P-->>Skill: needsMigration, sections, defaultBranch, remoteOwner, localValues, userConfigPath
     Skill->>I: scaffold mode, no input
-    Skill->>FS: Read .sdlc-v2/config.toml and .sdlc-v2/local.toml
+    Skill->>FS: Read .sdlc-v2/config.toml
     Skill->>D: listDimensions true
     Skill->>I: checkPRTemplate true, then checkPlanTemplate true
     Skill->>FS: Read openspec/config.yaml if present
@@ -43,11 +43,14 @@ sequenceDiagram
         Skill->>User: AskUserQuestion migrate?
         Skill->>M: import, then config, then layout
     end
+    opt a local section is selected
+        Skill->>User: AskUserQuestion save target
+    end
     loop each selected section in canonical order
         Skill->>User: section header, then questions or sub-flow
     end
-    Skill->>User: diff preview, AskUserQuestion confirm
-    Skill->>W: sectionsJson
+    Skill->>User: diff preview with save target file, AskUserQuestion confirm
+    Skill->>W: sectionsJson and target
     Skill->>P: re-snapshot and check written sections
     Skill->>User: summary
 ```
@@ -57,7 +60,7 @@ Snapshot contents:
 | Item | Source |
 |---|---|
 | `projectConfig` | Read `.sdlc-v2/config.toml` (absent = `{}`) |
-| `localConfig` | Read `.sdlc-v2/local.toml` (absent = `{}`) |
+| `localValues`, `userConfigPath` | `setup_prepare` output; the skill does not read `.sdlc-v2/local.toml` or the user file itself |
 | Installed dimension count and names | `dimensions_render_instructions({ listDimensions: true })` |
 | PR template exists | `setup_init({ checkPRTemplate: true })` |
 | Plan template exists | `setup_init({ checkPlanTemplate: true })` |
@@ -78,6 +81,11 @@ Version detection for the `version` section:
 - **AND** the repo has no tags
 - **THEN** no `versionFile` is detected
 - **AND** `tagPrefix` is `v`
+
+#### Scenario: Local values from setup_prepare
+- **WHEN** the skill takes the snapshot
+- **THEN** it gets the local values from `localValues` of `setup_prepare`
+- **AND** it does not read `.sdlc-v2/local.toml`
 
 ### Requirement: Flags
 The skill SHALL accept the flags below. A direct-entry flag SHALL be translated to `--only <id>` unless `--only` is also passed, and `--only` SHALL skip the menu. `--force` alone SHALL skip the menu and select all 18 ids; with `--only` or a direct-entry flag it SHALL be ignored.
@@ -144,7 +152,7 @@ The skill SHALL compute each row's state itself from the snapshot; no tool retur
 | `pr-template`, `plan-template` | The template file exists |
 | `openspec-block` | A managed-block line was found |
 | `configFile` is `.sdlc-v2/config.toml` | `configPath` resolves in `projectConfig`; an array or a table must have at least one entry |
-| `configFile` is `.sdlc-v2/local.toml` (`ship`, `review`, `received-review`, `plan-style`, `github`, `automation`) | `localConfig[configPath]` is non-null |
+| `configFile` is `.sdlc-v2/local.toml` (`ship`, `review`, `received-review`, `plan-style`, `github`, `automation`) | `localValues[<section id>].values` is not empty |
 
 - Every other case is `not-set`.
 
@@ -162,6 +170,10 @@ The skill SHALL compute each row's state itself from the snapshot; no tool retur
 - **AND** the file holds the line `# BEGIN MANAGED BY sdlc-v2 (v2)`
 - **THEN** the `openspec-block` row is `set`
 - **AND** the snapshot's managed-block version is `2`
+
+#### Scenario: Local section set only in the user file
+- **WHEN** `localValues.review.values` is `{scope: "diff"}` and `localValues.review.sources` is `{scope: "user"}`
+- **THEN** the `review` row is `set`
 
 ### Requirement: Menu reply parsing
 The skill SHALL resolve the reply to a set of section ids as below, and SHALL allow at most 3 retries on invalid input.
@@ -196,7 +208,7 @@ The skill SHALL run the migration step only when `needsMigration` is `true` or `
 - When the `import` result has `skippedKeys`, the skill shows each entry on its own line under `Legacy keys not imported:`.
 - The `config` action only checks the schema version; its `result` is `up-to-date`. If it fails, the skill shows the error and stops.
 - On `no`: skip migration; legacy files are left untouched.
-- After migration, the skill re-calls `setup_prepare` and re-reads both TOML files.
+- After migration, the skill re-calls `setup_prepare` (for `localValues`) and re-reads `.sdlc-v2/config.toml` only.
 
 #### Scenario: Current config
 - **WHEN** `needsMigration` is `false`
@@ -415,12 +427,18 @@ The skill SHALL write config only through `setup_write_sections`, using each sec
 - **THEN** the skill writes key `plan.tasks`, not `plan`
 
 ### Requirement: Post-write check
-After writing, the skill SHALL re-call `setup_prepare`, re-read both TOML files, and confirm every written section now has state `set`. It SHALL NOT show the summary while a written section reads `not-set`.
+After writing, the skill SHALL re-call `setup_prepare`, re-read `.sdlc-v2/config.toml`, and confirm every written section now has state `set`. It SHALL NOT show the summary while a written section reads `not-set`.
+
+- Local sections are checked against `localValues` of the new `setup_prepare` result; the skill does not read `.sdlc-v2/local.toml` or the user file.
 
 #### Scenario: Write did not land
 - **WHEN** a written section still reads `not-set`
 - **THEN** the skill warns the user
 - **AND** offers to retry that section's write
+
+#### Scenario: User-file write checked
+- **WHEN** the skill wrote `review` with `target: "user"`
+- **THEN** the re-called `setup_prepare` shows `localValues.review.sources` with `user` for each written key
 
 ### Requirement: Summary and learning capture
 The skill SHALL end with a `Setup complete` summary that lists only the config files, content, and migrations that were created, updated, or migrated, and SHALL log a learning with `learnings_log({ action: "append", entry })`.
@@ -441,3 +459,52 @@ The skill SHALL end with a `Setup complete` summary that lists only the config f
 #### Scenario: All CI scripts current
 - **WHEN** every `ciScriptDrift` entry has `action: "current"`
 - **THEN** the summary has no `CI scripts needing an update:` block
+
+### Requirement: Save target for personal settings
+When at least one selected section has a `defaultTarget`, the skill SHALL ask `Where should setup save your personal settings?` once per run with AskUserQuestion, before the first local section.
+
+| Option | `target` per local section |
+|---|---|
+| `Defaults per section (Recommended)` | the section's `defaultTarget` |
+| `All to this project` | `project` |
+| `All to user profile` | `user` |
+
+- No local section selected: no question.
+- The answer is not stored; a rerun asks again.
+
+#### Scenario: One question for two local sections
+- **WHEN** the user selects `review` and `communication-style`
+- **THEN** the skill asks `Where should setup save your personal settings?` once
+
+#### Scenario: No local section
+- **WHEN** the user selects only `jira` and `commit`
+- **THEN** the skill asks no save-target question
+
+### Requirement: Local section writes pass the save target
+The skill SHALL pass the chosen `target` on each `setup_write_sections` call that writes a local section, and SHALL pass no `target` for a project section.
+
+- The diff preview prints the save target file above the rows of each local section.
+
+#### Scenario: Defaults per section
+- **WHEN** the user picks `Defaults per section (Recommended)` and configures `review` and `ship`
+- **THEN** the skill writes `review` with `target: "user"`
+- **AND** writes `ship` with `target: "project"`
+
+#### Scenario: Project section has no target
+- **WHEN** the user picks `All to user profile` and configures `jira`
+- **THEN** the `setup_write_sections` call for `jira` has no `target`
+
+#### Scenario: Diff preview names the file
+- **WHEN** `review` is saved to the user file at `userConfigPath` `/home/a/.sdlc/local.toml`
+- **THEN** the diff preview prints `/home/a/.sdlc/local.toml` above the `review` rows
+
+### Requirement: Source badge for local sections
+The status block SHALL show, on each `set` local section row, the source of its values from `localValues[<section id>].sources`: `(user)`, `(project)`, or `(user+project)`.
+
+#### Scenario: Values from both files
+- **WHEN** `localValues.review.sources` is `{scope: "user", maxDimensions: "project"}`
+- **THEN** the `review` status row shows `(user+project)`
+
+#### Scenario: Values from the user file only
+- **WHEN** every key in `localValues["communication-style"].sources` is `user`
+- **THEN** the `communication-style` status row shows `(user)`
