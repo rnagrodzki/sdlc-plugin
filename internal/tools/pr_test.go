@@ -427,7 +427,7 @@ func TestPrPrepare_NoExpectedAccount_NoRemote_Warns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := "Could not resolve expected gh account (no [github] expectedAccount in .sdlc-v2/local.toml, no origin remote). Skipping active-account check."
+	want := "Could not resolve expected gh account (no [github] expectedAccount in " + config.LocalFilesLabel + ", no origin remote). Skipping active-account check."
 	if !slices.Contains(out.Warnings, want) {
 		t.Errorf("expected warning %q, got %v", want, out.Warnings)
 	}
@@ -545,7 +545,7 @@ func TestPrPrepare_GithubSectionUnreadable_Warns(t *testing.T) {
 	}
 	found := false
 	for _, w := range out.Warnings {
-		if strings.Contains(w, "local.toml [github] section unreadable") && strings.Contains(w, "expected newline") {
+		if strings.Contains(w, config.LocalFilesLabel+" [github] section unreadable") && strings.Contains(w, "expected newline") {
 			found = true
 		}
 	}

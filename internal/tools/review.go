@@ -583,7 +583,7 @@ func resolveDimensionCap(reviewCfg map[string]any) (int, error) {
 	v, ok := raw.(float64)
 	if !ok || math.IsInf(v, 0) || v < 1 || v != math.Trunc(v) {
 		return 0, &mcpserver.DomainError{
-			Msg:        fmt.Sprintf("[review] maxDimensions in .sdlc-v2/local.toml must be a whole number >= 1, got %v", raw),
+			Msg:        fmt.Sprintf("[review] maxDimensions in %s must be a whole number >= 1, got %v", config.LocalFilesLabel, raw),
 			Suggestion: fmt.Sprintf("Set maxDimensions to a whole number of 1 or more (for example maxDimensions = 12), or delete the key to use the default of %d, then retry review_prepare.", defaultMaxDimensions),
 		}
 	}
@@ -781,8 +781,8 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 	reviewCfg, err := config.ReadSection(projectRoot, "review")
 	if err != nil && !errors.Is(err, config.ErrNotFound) {
 		return ReviewPrepareOut{}, &mcpserver.InfraError{
-			Msg:        fmt.Sprintf("read [review] section of .sdlc-v2/local.toml: %s", err.Error()),
-			Suggestion: "Fix the TOML syntax in .sdlc-v2/local.toml (or delete the file to use defaults), then retry review_prepare.",
+			Msg:        fmt.Sprintf("read [review] section of %s: %s", config.LocalFilesLabel, err.Error()),
+			Suggestion: "Fix the TOML syntax in the file the error names (or delete it to use defaults), then retry review_prepare.",
 			Cause:      err,
 		}
 	}
@@ -1301,7 +1301,7 @@ func saveReviewComment(projectRoot, activeRoot string, in ReviewPrepareIn) (Revi
 // RegisterReviewTools registers review_prepare on the server.
 func RegisterReviewTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "review_prepare",
-		fmt.Sprintf("Pre-compute review manifest: git state, dimension matching, diff slicing, commit context, open-PR lookup via gh. Writes manifest + per-dimension .diff and .slice.json files to a temp directory. With saveReview:true, persists content verbatim to .sdlc-v2/reviews/<branch>-<date>.md instead. Also returns style: the plugin-wide communication style; follow style.guide in chat and questions. Reads scope and maxDimensions (dispatched dimension cap, default %d, minimum 1) from the [review] section of .sdlc-v2/local.toml. An invalid maxDimensions or an unreadable local.toml returns an error.", defaultMaxDimensions),
+		fmt.Sprintf("Pre-compute review manifest: git state, dimension matching, diff slicing, commit context, open-PR lookup via gh. Writes manifest + per-dimension .diff and .slice.json files to a temp directory. With saveReview:true, persists content verbatim to .sdlc-v2/reviews/<branch>-<date>.md instead. Also returns style: the plugin-wide communication style; follow style.guide in chat and questions. Reads scope and maxDimensions (dispatched dimension cap, default %d, minimum 1) from the [review] section of .sdlc-v2/local.toml, merged over ~/.sdlc/local.toml. An invalid maxDimensions or an unreadable local.toml returns an error.", defaultMaxDimensions),
 		mcpserver.Annotations{
 			Title:      "Prepare code review payload",
 			ReadOnly:   true,

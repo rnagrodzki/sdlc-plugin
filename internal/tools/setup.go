@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/configmigrate"
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
@@ -46,6 +47,11 @@ type sectionRow struct {
 	DelegatedTo     string     `json:"delegatedTo,omitempty"`
 	ConfirmDetected bool       `json:"confirmDetected"`
 	Fields          []fieldRow `json:"fields"`
+	// DefaultTarget is the save-target setup_write_sections defaults to for
+	// this row when the user has not chosen one explicitly: "user" or
+	// "project" for a local.toml row, empty for a config.toml row or a
+	// delegated row (see setupmeta.Section.DefaultTarget).
+	DefaultTarget string `json:"defaultTarget,omitempty"`
 }
 
 // fieldRow is a JSON-friendly projection of setupmeta.Field with camelCase
@@ -83,6 +89,20 @@ type optionExplanation struct {
 	ConsumedBy  []string `json:"consumedBy"`
 }
 
+// LocalSectionValues is one entry of SetupPrepareOut.LocalValues: the merged
+// values of a single local.toml setup section (user-level file and project
+// local.toml combined, project winning on any key both set) plus which file
+// each leaf key came from.
+type LocalSectionValues struct {
+	// Values holds the merged values for the section; {} when neither file
+	// sets any key in it.
+	Values map[string]any `json:"values"`
+	// Sources maps each leaf key's dotted path (relative to the section) to
+	// "user" or "project" -- which file that key's value comes from; {}
+	// when neither file sets any key in it.
+	Sources map[string]string `json:"sources"`
+}
+
 // SetupPrepareOut is the output for the setup_prepare tool.
 type SetupPrepareOut struct {
 	OK             bool         `json:"ok"`
@@ -95,6 +115,16 @@ type SetupPrepareOut struct {
 	// Best-effort: degrades to an empty list rather than failing
 	// setup_prepare if the comparison errors.
 	CIScriptDrift []CIScriptDriftEntry `json:"ciScriptDrift"`
+	// UserConfigPath is the absolute path of the user-level local config
+	// (~/.sdlc/local.toml or $SDLC_USER_CONFIG). Empty when no home
+	// directory is available (see config.UserConfigPath).
+	UserConfigPath string `json:"userConfigPath" jsonschema_description:"Absolute path of the user-level local config (~/.sdlc/local.toml or $SDLC_USER_CONFIG). Empty when no home directory is available."`
+	// LocalValues is keyed by setup section id (for example
+	// communication-style) for every section stored in local.toml: the
+	// merged values of the user file and the project local.toml, and the
+	// file each key comes from. Use it in place of a direct read of
+	// local.toml.
+	LocalValues map[string]LocalSectionValues `json:"localValues" jsonschema_description:"Keyed by setup section id (for example communication-style). For each section stored in local.toml: the merged values of the user file and the project local.toml, and the file each key comes from. Use it in place of a direct read of local.toml."`
 	// Explanation is explain mode's result (see SetupPrepareIn.Explain).
 	// Set only in explain mode, where it is the only populated field
 	// besides OK and Next.
@@ -199,7 +229,38 @@ func setupPrepareWithDrift(root, driftRoot string, in SetupPrepareIn) (SetupPrep
 			DelegatedTo:     s.DelegatedTo,
 			ConfirmDetected: s.ConfirmDetected,
 			Fields:          fields,
+			DefaultTarget:   s.DefaultTarget,
 		}
+	}
+
+	// Personal settings: merge the user-level local config with the
+	// project's .sdlc-v2/local.toml for every section stored there, so
+	// callers can see where each personal setting currently lives (D14) and
+	// where a new one should default to (sectionRow.DefaultTarget above).
+	// A read error in either file (bad TOML, or the user path naming a
+	// directory) fails setup_prepare outright -- unlike ciScriptDrift, this
+	// is not best-effort data.
+	userRaw, projectRaw, err := config.ReadLocalLayers(root)
+	if err != nil {
+		return SetupPrepareOut{}, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("read personal settings: %s", err.Error()),
+			Suggestion: "Fix the TOML syntax in the file the error names, then retry setup_prepare. If the path comes from SDLC_USER_CONFIG, point it to a valid file or unset it.",
+			Cause:      err,
+		}
+	}
+	localValues := make(map[string]LocalSectionValues)
+	for _, s := range meta {
+		if s.ConfigFile != ".sdlc-v2/local.toml" {
+			continue
+		}
+		userSection := extractLocalPath(userRaw, s.ConfigPath)
+		projectSection := extractLocalPath(projectRaw, s.ConfigPath)
+		values, sources := mergeLocalSectionValues(userSection, projectSection)
+		localValues[s.ID] = LocalSectionValues{Values: values, Sources: sources}
+	}
+	userConfigPath := ""
+	if p, ok := config.UserConfigPath(); ok {
+		userConfigPath = p
 	}
 
 	// Best-effort runtime defaults: defaultBranch and remoteOwner.
@@ -230,7 +291,111 @@ func setupPrepareWithDrift(root, driftRoot string, in SetupPrepareIn) (SetupPrep
 		DefaultBranch:  defaultBranch,
 		RemoteOwner:    remoteOwner,
 		CIScriptDrift:  ciDrift,
+		UserConfigPath: userConfigPath,
+		LocalValues:    localValues,
 	}, nil
+}
+
+// extractLocalPath walks a dotted path (e.g. "plan.guardrails") through raw
+// and returns the map at the leaf, or an empty, non-nil map when any segment
+// is absent or is not a table. Every setup section row currently stored in
+// local.toml uses a single-segment ConfigPath ("ship", "style", ...), but
+// this walks the general case the same way config.extractSectionPath does.
+func extractLocalPath(raw map[string]any, path string) map[string]any {
+	cur := raw
+	for _, part := range strings.Split(path, ".") {
+		if cur == nil {
+			break
+		}
+		next, ok := cur[part].(map[string]any)
+		if !ok {
+			cur = nil
+			break
+		}
+		cur = next
+	}
+	if cur == nil {
+		return map[string]any{}
+	}
+	return cur
+}
+
+// mergeLocalSectionValues deep-merges a user-level and project-level section
+// map the same way config.mergeLocal/ReadLocalLayers do (project wins on any
+// key both set), and additionally reports, for every leaf key's dotted path,
+// which of the two inputs it came from. values and sources are always
+// non-nil, {} when both inputs are empty.
+func mergeLocalSectionValues(user, project map[string]any) (values map[string]any, sources map[string]string) {
+	values = mergeLocalPriorityProject(user, project)
+	sources = map[string]string{}
+	collectLocalSources(user, project, "", sources)
+	return values, sources
+}
+
+// mergeLocalPriorityProject deep-merges base and over, leaving both
+// unmodified, with over's value replacing base's whole on any key both set
+// (recursing only when both sides hold a table) -- the same semantics as
+// config's unexported mergeLocal, duplicated here because that package
+// exports no merge helper for a caller outside it to reuse.
+func mergeLocalPriorityProject(base, over map[string]any) map[string]any {
+	out := make(map[string]any, len(base)+len(over))
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, overVal := range over {
+		if baseVal, exists := out[k]; exists {
+			if baseTable, ok := baseVal.(map[string]any); ok {
+				if overTable, ok := overVal.(map[string]any); ok {
+					out[k] = mergeLocalPriorityProject(baseTable, overTable)
+					continue
+				}
+			}
+		}
+		out[k] = overVal
+	}
+	return out
+}
+
+// collectLocalSources records, for every leaf key reachable under user and
+// project (dotted path, prefixed by prefix), whether its merged value comes
+// from "user" or "project" -- mirroring mergeLocalPriorityProject's own
+// precedence so the two never disagree. A key present in both only recurses
+// when both sides hold a table; otherwise project's value replaced the whole
+// key, so the key is attributed to "project" and not to user's old subtree.
+func collectLocalSources(user, project map[string]any, prefix string, out map[string]string) {
+	keys := make(map[string]bool, len(user)+len(project))
+	for k := range user {
+		keys[k] = true
+	}
+	for k := range project {
+		keys[k] = true
+	}
+	for k := range keys {
+		path := k
+		if prefix != "" {
+			path = prefix + "." + k
+		}
+		uv, uok := user[k]
+		pv, pok := project[k]
+		ut, uIsTable := uv.(map[string]any)
+		pt, pIsTable := pv.(map[string]any)
+		switch {
+		case uok && pok && uIsTable && pIsTable:
+			collectLocalSources(ut, pt, path, out)
+		case pok:
+			if pIsTable {
+				collectLocalSources(map[string]any{}, pt, path, out)
+			} else {
+				out[path] = "project"
+			}
+		case uok:
+			if uIsTable {
+				collectLocalSources(ut, map[string]any{}, path, out)
+			} else {
+				out[path] = "user"
+			}
+		}
+	}
 }
 
 // setupExplainOption implements setup_prepare's explain mode: it parses

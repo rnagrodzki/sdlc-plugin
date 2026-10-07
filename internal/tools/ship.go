@@ -410,7 +410,7 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 	// vocabulary itself (dimensions.ValidSeverities), not a restated list.
 	if t, _ := merged["reviewThreshold"].(string); !slices.Contains(dimensions.ValidSeverities, t) {
 		errors = append(errors, fmt.Sprintf(
-			"invalid reviewThreshold %q: use one of %s in [ship] of .sdlc-v2/local.toml",
+			"invalid reviewThreshold %q: use one of %s in [ship] of "+config.LocalFilesLabel,
 			t, strings.Join(dimensions.ValidSeverities, ", ")))
 	}
 
