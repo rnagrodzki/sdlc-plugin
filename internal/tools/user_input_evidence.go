@@ -19,6 +19,7 @@ type UserInputEntry struct {
 	Branch    string `json:"branch"`
 	Text      string `json:"text"`           // redacted, max userInputTextMax runes
 	Kind      string `json:"kind,omitempty"` // "prompt" or "answer"; a line with no kind is read as "prompt"
+	SessionID string `json:"sessionId"`      // Claude Code session id; "" when unknown, but always present
 }
 
 const (

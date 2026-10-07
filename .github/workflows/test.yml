@@ -35,4 +35,4 @@ jobs:
           node-version: 20
 
       - name: Test release scripts
-        run: node --test .github/scripts/__tests__/*.test.cjs
+        run: node --test .github/scripts/__tests__/*.test.cjs internal/dashboard/web/testdata/view.test.cjs

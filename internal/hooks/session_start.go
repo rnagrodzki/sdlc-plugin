@@ -1080,19 +1080,12 @@ func countNonEmptyLines(s string) int {
 // Phase: Jira cache freshness
 // ---------------------------------------------------------------------------
 
-// jiraCachePhase walks ~/.sdlc-cache/jira/<site>/<PROJECT_KEY>.json directly.
-// This is a third independent copy of that walk (internal/tools/jira.go and
-// internal/links/links.go each already have their own) — consistent with an
-// existing repo convention rather than a new smell (no shared helper exists
-// yet to extract it into). Unlike links.go's discoverJiraSiteFromCache, the
-// site label here is the RAW sanitized directory name, not de-sanitized back
-// to dots — matching session-start.js's own `site: siteEntry.name` exactly.
+// jiraCachePhase walks <paths.CacheDir()>/jira/<site>/<PROJECT_KEY>.json
+// directly. Unlike links.go's discoverJiraSiteFromCache, the site label here
+// is the RAW sanitized directory name, not de-sanitized back to dots —
+// matching session-start.js's own `site: siteEntry.name` exactly.
 func jiraCachePhase() []string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil
-	}
-	root := filepath.Join(home, ".sdlc-cache", "jira")
+	root := filepath.Join(paths.CacheDir(), "jira")
 	siteDirs, err := os.ReadDir(root)
 	if err != nil {
 		return nil

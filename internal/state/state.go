@@ -336,6 +336,87 @@ func findAnyInDir(dir, root, prefix string) (*State, error) {
 }
 
 // ---------------------------------------------------------------------------
+// List
+// ---------------------------------------------------------------------------
+
+// ListResult is the result of listing every state file under a repo's
+// <root>/.sdlc-v2/runs/ directory.
+type ListResult struct {
+	// States holds every state file that matches filenameRe, newest first
+	// by filename timestamp. Never nil, even when runs/ is absent or empty.
+	States []*State
+
+	// Skipped counts entries whose name matches filenameRe but whose
+	// contents fail to read or parse as JSON.
+	Skipped int
+}
+
+// List returns every parsable state file under <root>/.sdlc-v2/runs/,
+// newest first by filename timestamp.
+//
+// An entry whose name does not match filenameRe — a temp file left behind
+// by fsx.AtomicWriteBytes (<name>.tmp-<rand>), a .evidence directory, any
+// other directory or stray file — is skipped silently and does not count
+// toward Skipped. An entry whose name does match filenameRe but whose
+// contents fail to read or parse as JSON is omitted from States and counted
+// in Skipped instead.
+//
+// Returns an empty, non-nil States slice and no error when runs/ does not
+// exist. Returns a non-nil error only for another ReadDir failure of runs/
+// (e.g. it exists as a regular file).
+func List(root string) (ListResult, error) {
+	dir := stateDir(root)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ListResult{States: []*State{}}, nil
+		}
+		return ListResult{}, fmt.Errorf("state: readdir %s: %w", dir, err)
+	}
+
+	type candidate struct {
+		name   string
+		parsed *parsedFilename
+	}
+	var candidates []candidate
+
+	for _, e := range entries {
+		if e.IsDir() {
+			continue // .evidence dirs and any other directories
+		}
+		parsed := parseStateFilename(e.Name())
+		if parsed == nil {
+			continue // temp file or other non-matching entry: skip silently
+		}
+		candidates = append(candidates, candidate{name: e.Name(), parsed: parsed})
+	}
+
+	// Sort newest first by filename timestamp (not mtime).
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].parsed.Timestamp > candidates[j].parsed.Timestamp
+	})
+
+	result := ListResult{States: []*State{}}
+	for _, c := range candidates {
+		path := filepath.Join(dir, c.name)
+		var data map[string]any
+		if err := fsx.ReadJSON(path, &data); err != nil {
+			result.Skipped++
+			continue
+		}
+		result.States = append(result.States, &State{
+			Path:       path,
+			Root:       root,
+			Prefix:     c.parsed.Prefix,
+			BranchSlug: c.parsed.Slug,
+			Data:       data,
+		})
+	}
+
+	return result, nil
+}
+
+// ---------------------------------------------------------------------------
 // Write (prune-on-write)
 // ---------------------------------------------------------------------------
 

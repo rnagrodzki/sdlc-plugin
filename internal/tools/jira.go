@@ -184,11 +184,7 @@ type jiraSkipped struct {
 // ---------------------------------------------------------------------------
 
 func jiraHomeCacheRoot() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return filepath.Join(".", ".sdlc-cache", "jira")
-	}
-	return filepath.Join(home, ".sdlc-cache", "jira")
+	return filepath.Join(paths.CacheDir(), "jira")
 }
 
 var jiraSchemeRe = regexp.MustCompile(`(?i)^https?://`)

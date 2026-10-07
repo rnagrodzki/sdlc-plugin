@@ -406,6 +406,25 @@
         }
       },
       "additionalProperties": false
+    },
+    "dashboardSection": {
+      "type": "object",
+      "description": "Controls the local sdlc dashboard: one web page on this computer that shows the pipelines of every repo.",
+      "properties": {
+        "autoStart": {
+          "type": "boolean",
+          "default": false,
+          "description": "When true, each Claude session start starts the dashboard server if it is not active, and prints its address."
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 65535,
+          "default": 7385,
+          "description": "Loopback port of the dashboard server. Change it when another program uses 7385."
+        }
+      },
+      "additionalProperties": false
     }
   },
   "properties": {
@@ -440,6 +459,9 @@
     },
     "automation": {
       "$ref": "#/$defs/automationSection"
+    },
+    "dashboard": {
+      "$ref": "#/$defs/dashboardSection"
     }
   },
   "additionalProperties": false

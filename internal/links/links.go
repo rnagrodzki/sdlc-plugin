@@ -25,6 +25,7 @@ import (
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -224,11 +225,7 @@ type jiraSiteDiscovery struct {
 // single cached site host. Mirrors links.js discoverJiraSiteFromCache.
 func discoverJiraSiteFromCache(cacheDir string) jiraSiteDiscovery {
 	if cacheDir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return jiraSiteDiscovery{}
-		}
-		cacheDir = filepath.Join(home, ".sdlc-cache", "jira")
+		cacheDir = filepath.Join(paths.CacheDir(), "jira")
 	}
 	entries, err := os.ReadDir(cacheDir)
 	if err != nil {

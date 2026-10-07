@@ -52,6 +52,7 @@ func recordUserInput(ctx HookCtx, event Event) (Output, error) {
 		Branch:    branch,
 		Text:      cleaned,
 		Kind:      tools.UserInputKindPrompt,
+		SessionID: ctx.SessionID,
 	})
 
 	return silent, nil

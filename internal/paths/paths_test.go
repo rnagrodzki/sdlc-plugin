@@ -24,6 +24,38 @@ func TestHistoryDir(t *testing.T) {
 	}
 }
 
+// TestCacheDir pins the shared user cache root: $SDLC_CACHE_DIR when set,
+// else <home>/.sdlc-cache, else ./.sdlc-cache. internal/tools, internal/links,
+// and internal/hooks each join "jira" onto this root and must agree with
+// sdlc-launcher.sh's own CACHE_DIR resolution.
+func TestCacheDir(t *testing.T) {
+	t.Run("SDLC_CACHE_DIR set wins", func(t *testing.T) {
+		t.Setenv("SDLC_CACHE_DIR", "/x")
+		if got, want := CacheDir(), "/x"; got != want {
+			t.Errorf("CacheDir() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("no env, falls back to home", func(t *testing.T) {
+		t.Setenv("SDLC_CACHE_DIR", "")
+		home := filepath.Join(t.TempDir(), "home")
+		t.Setenv("HOME", home)
+		want := filepath.Join(home, ".sdlc-cache")
+		if got := CacheDir(); got != want {
+			t.Errorf("CacheDir() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("no env, no home, falls back to cwd", func(t *testing.T) {
+		t.Setenv("SDLC_CACHE_DIR", "")
+		t.Setenv("HOME", "")
+		want := filepath.Join(".", ".sdlc-cache")
+		if got := CacheDir(); got != want {
+			t.Errorf("CacheDir() = %q, want %q", got, want)
+		}
+	})
+}
+
 // stateEntrySpecNames is the full 21-name spec set: every DataDir entry the
 // MCP server or hooks write to, from the worktree-state-links spec's
 // Link / Never-link table. BakSuffix is deliberately excluded: it is a
