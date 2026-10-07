@@ -3,7 +3,10 @@
 // ".sdlc-v2" literals across the tree.
 package paths
 
-import "path/filepath"
+import (
+	"os"
+	"path/filepath"
+)
 
 // DataDir is the project-level directory name that holds SDLC configuration,
 // state, and execution artifacts.  All runtime path construction must use this
@@ -82,4 +85,18 @@ func ProjectDir(root string) string {
 // package and are reached through FileWriter.RunsPath / FileWriter.DeferredPath.
 func HistoryDir(root string) string {
 	return filepath.Join(root, DataDir, HistorySubdir)
+}
+
+// CacheDir returns the user cache root shared with sdlc-launcher.sh:
+// $SDLC_CACHE_DIR when set, else <home>/.sdlc-cache, else ./.sdlc-cache.
+// Callers join a subdirectory (e.g. "jira") onto the result themselves;
+// this function only resolves the shared root.
+func CacheDir() string {
+	if dir := os.Getenv("SDLC_CACHE_DIR"); dir != "" {
+		return dir
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".sdlc-cache")
+	}
+	return filepath.Join(".", ".sdlc-cache")
 }

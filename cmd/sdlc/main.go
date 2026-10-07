@@ -5,10 +5,15 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"net"
 	"os"
+	"time"
 
 	version "github.com/rnagrodzki/sdlc-plugin"
+	"github.com/rnagrodzki/sdlc-plugin/internal/dashboard"
+	"github.com/rnagrodzki/sdlc-plugin/internal/dashboard/web"
 	"github.com/rnagrodzki/sdlc-plugin/internal/hooks"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
@@ -32,6 +37,8 @@ func main() {
 		runHook()
 	case "version":
 		runVersion()
+	case "dashboard":
+		os.Exit(runDashboard(os.Args[2:]))
 	default:
 		usage()
 		os.Exit(2)
@@ -39,7 +46,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: sdlc <mcp|hook|version>")
+	fmt.Fprintln(os.Stderr, "usage: sdlc <mcp|hook|version|dashboard>")
 }
 
 func runVersion() {
@@ -75,6 +82,7 @@ func runMCP() {
 	tools.RegisterShipTools(s)
 	tools.RegisterPlanSupportTools(s)
 	tools.RegisterLearningsTools(s)
+	tools.RegisterDashboardTools(s)
 
 	if err := s.ServeStdio(); err != nil {
 		fmt.Fprintf(os.Stderr, "sdlc mcp: %v\n", err)
@@ -95,4 +103,35 @@ func runHook() {
 	hooks.BuildCommit = info.Commit
 	hooks.BuildTime = info.Time
 	os.Exit(hooks.Run(os.Args[2], os.Stdin, os.Stdout))
+}
+
+// runDashboard runs "sdlc dashboard serve [--port N]": the local dashboard
+// web server, in the foreground until POST /api/stop, SIGTERM, or SIGINT.
+// It returns the process exit code (see web.Serve).
+func runDashboard(args []string) int {
+	if len(args) == 0 || args[0] != "serve" {
+		fmt.Fprintln(os.Stderr, web.UsageError)
+		return 2
+	}
+	port, err := web.ParseServeArgs(args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	v := pluginVersion
+	return web.Serve(ctx, web.Options{
+		Port:    port,
+		Version: v,
+		Token:   web.NewToken(),
+		Stop:    cancel,
+		Roots:   dashboard.Roots,
+		Collect: func(roots []string, now time.Time) tools.DashboardSnapshot {
+			return tools.CollectDashboardSnapshot(roots, now, v)
+		},
+		Listen: net.Listen,
+		Health: dashboard.DefaultDeps().Health,
+	})
 }

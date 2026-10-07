@@ -26,7 +26,7 @@ func pipelineContinue(ctx HookCtx, event Event) (Output, error) {
 	// advancing-ship-state gate below: recording is passive and must happen
 	// regardless of whether a ship pipeline is actively advancing or this
 	// session owns it (TodoWrite calls are filtered out inside the helper).
-	recordBashExecution(event)
+	recordBashExecution(ctx, event)
 
 	data, adv, ok := gatedAdvancingShipState("pipeline-continue", ctx.SessionID)
 	if !ok {
@@ -139,7 +139,7 @@ const cliDedupWindow = 2 * time.Second
 // or execute state for this branch, a detected duplicate, a write error) is
 // silently swallowed — this must never affect pipelineContinue's own return
 // value or block the session.
-func recordBashExecution(event Event) {
+func recordBashExecution(ctx HookCtx, event Event) {
 	if event.ToolName != "Bash" {
 		return
 	}
@@ -172,6 +172,7 @@ func recordBashExecution(event Event) {
 		Command:    command,
 		ExitCode:   extractBashExitCode(event.ToolResponse),
 		OutputHead: extractOutputHead(event.ToolResponse),
+		SessionID:  ctx.SessionID,
 	}
 
 	if isDuplicateCLIEvidence(root, entry) {

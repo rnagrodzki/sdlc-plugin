@@ -20,6 +20,7 @@ type CLIEvidenceEntry struct {
 	Command    string `json:"command"`
 	ExitCode   int    `json:"exitCode"`
 	OutputHead string `json:"outputHead"` // first ~500 chars of output
+	SessionID  string `json:"sessionId"`  // Claude Code session id; "" when unknown, but always present
 }
 
 // cliEvidencePath returns the path to the CLI evidence JSONL file.

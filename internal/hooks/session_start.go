@@ -12,6 +12,7 @@ import (
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/commstyle"
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
+	"github.com/rnagrodzki/sdlc-plugin/internal/dashboard"
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/frontmatter"
 	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
@@ -57,6 +58,7 @@ func sessionStart(_ HookCtx, event Event) (Output, error) {
 	// rootOK, and a failure in one never blanks another.
 	header = append(header, safeStringsPhase("binary-skew", binarySkewPhase)...)
 	header = append(header, safeStringsPhase("deferred-backlog", deferredBacklogPhase)...)
+	header = append(header, safeStringsPhase("dashboard", dashboardPhase)...)
 
 	header = append(header, "Plan mode routing: always invoke plan via the Skill tool when plan mode is active.")
 	header = append(header, safeStringsPhase("communication-style", communicationStylePhase)...)
@@ -442,6 +444,61 @@ func deferredBacklogPhase() []string {
 		return nil
 	}
 	return []string{fmt.Sprintf("sdlc: %d deferred item%s open — run /sdlc:deferred to triage", n, pluralS(n))}
+}
+
+// ---------------------------------------------------------------------------
+// Phase: dashboard registration + auto-start
+// ---------------------------------------------------------------------------
+
+// dashboardDepsFunc resolves the Deps dashboardPhase passes to
+// dashboard.Ensure. Defaults to dashboard.DefaultDeps; tests substitute a
+// fake so the phase's health probes and process spawn never touch the real
+// network or OS, keeping the phase fast and deterministic.
+var dashboardDepsFunc = dashboard.DefaultDeps
+
+// dashboardPhase registers the main worktree root with the local dashboard
+// on every session start (startup, clear, and compact alike — Roots() is
+// what drives the dashboard page's repo list, so a repo must stay registered
+// independent of whether this particular session auto-starts the server),
+// and — only when the user's [dashboard] autoStart is true — starts the
+// shared dashboard server and prints its address.
+//
+// RegisterRoot anchors to the MAIN worktree, same as deferredBacklogPhase
+// above: a session started inside a linked worktree must still register the
+// one repo root the dashboard page shows, not the linked path. A
+// RegisterRoot failure (unwritable cache dir, ...) is silent, matching this
+// file's fail-open convention — it has no banner of its own to report on.
+//
+// Ensure is called with Wait:false: a session start must never block on the
+// dashboard server coming up, only on it being asked to start. Ensure's own
+// health probe makes a second call (another session, a clear, a compaction)
+// a no-op rather than a second spawn, as long as a matching server already
+// answers on the configured port.
+func dashboardPhase() []string {
+	root, err := mainRootFunc()
+	if err != nil || root == "" {
+		return nil
+	}
+	_ = dashboard.RegisterRoot(root, time.Now())
+
+	settings, err := dashboard.ReadSettings(root)
+	if err != nil {
+		return []string{fmt.Sprintf("sdlc dashboard: not started — %v", err)}
+	}
+	if !settings.AutoStart {
+		return nil
+	}
+
+	res, err := dashboard.Ensure(dashboardDepsFunc(), dashboard.EnsureOpts{
+		Root:    root,
+		Port:    settings.Port,
+		Version: PluginVersion,
+		Wait:    false,
+	})
+	if err != nil {
+		return []string{fmt.Sprintf("sdlc dashboard: not started — %v", err)}
+	}
+	return []string{fmt.Sprintf("sdlc dashboard: %s", res.URL)}
 }
 
 // ---------------------------------------------------------------------------
@@ -1080,19 +1137,12 @@ func countNonEmptyLines(s string) int {
 // Phase: Jira cache freshness
 // ---------------------------------------------------------------------------
 
-// jiraCachePhase walks ~/.sdlc-cache/jira/<site>/<PROJECT_KEY>.json directly.
-// This is a third independent copy of that walk (internal/tools/jira.go and
-// internal/links/links.go each already have their own) — consistent with an
-// existing repo convention rather than a new smell (no shared helper exists
-// yet to extract it into). Unlike links.go's discoverJiraSiteFromCache, the
-// site label here is the RAW sanitized directory name, not de-sanitized back
-// to dots — matching session-start.js's own `site: siteEntry.name` exactly.
+// jiraCachePhase walks <paths.CacheDir()>/jira/<site>/<PROJECT_KEY>.json
+// directly. Unlike links.go's discoverJiraSiteFromCache, the site label here
+// is the RAW sanitized directory name, not de-sanitized back to dots —
+// matching session-start.js's own `site: siteEntry.name` exactly.
 func jiraCachePhase() []string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil
-	}
-	root := filepath.Join(home, ".sdlc-cache", "jira")
+	root := filepath.Join(paths.CacheDir(), "jira")
 	siteDirs, err := os.ReadDir(root)
 	if err != nil {
 		return nil

@@ -66,6 +66,7 @@ var LocalSections = map[string]bool{
 	"executePrefs":   true,
 	"workspace":      true,
 	"automation":     true,
+	"dashboard":      true,
 }
 
 // Quiet suppresses config-read tracing to stderr when set to true.

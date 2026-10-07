@@ -28,7 +28,7 @@ import (
 // registers. Kept in sync by hand with that function's Register*Tools
 // calls — a mismatch here means either this test or runMCP() drifted.
 var expectedMCPTools = []string{
-	"commit_apply", "commit_prepare", "dimensions_render_instructions",
+	"commit_apply", "commit_prepare", "dashboard", "dimensions_render_instructions",
 	"execute_state", "jira", "learnings_log", "links_validate",
 	"mcp_failure_record", "migrate", "openspec_enrich",
 	"plan_explore_prepare", "plan_mark", "plan_prepare", "plan_support",

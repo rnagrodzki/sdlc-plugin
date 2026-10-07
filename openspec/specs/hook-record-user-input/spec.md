@@ -9,7 +9,8 @@ The `record-user-input` hook records prompts the user types while a ship or exec
 The `record-user-input` hook (`UserPromptSubmit`) SHALL append each prompt the user types to `.sdlc-v2/evidence/user-inputs.jsonl` under the main worktree root when a ship or execute run is active on the current branch, and SHALL write nothing otherwise. A turn that the editor or the agent runtime injects is not a typed prompt and SHALL NOT be recorded.
 
 - The prompt text is read from `prompt_text`, else `prompt`. A blank prompt is not recorded.
-- Each line is `{ts, pipeline, step?, wave?, branch, text, kind}`; `ts` is RFC3339 UTC; `kind` is `prompt`. A line with no `kind` (written before this field existed) is read as `prompt`.
+- Each line is `{ts, pipeline, step?, wave?, branch, text, kind, sessionId}`; `ts` is RFC3339 UTC; `kind` is `prompt`. A line with no `kind` (written before this field existed) is read as `prompt`.
+- `sessionId` is the hook `session_id`. The key is always present: an empty id writes `"sessionId":""`. A line with no `sessionId` (written before this field existed) still parses.
 - `text` is redacted (bearer tokens, JWTs, cookies, cloud IDs, emails) and cut to 2000 characters with `…` appended when cut.
 - The file uses the same size-bounded append as `cli-executions.jsonl`.
 - Injected-turn filter, applied before the active-run lookup:
@@ -33,6 +34,16 @@ The `record-user-input` hook (`UserPromptSubmit`) SHALL append each prompt the u
 #### Scenario: Prompt during a ship step
 - **WHEN** the ship step `review` is `in_progress` and the user types `skip the low findings`
 - **THEN** one line is appended with `pipeline:"ship"`, `step:"review"`, `text:"skip the low findings"` and `kind:"prompt"`
+
+#### Scenario: Session id on the line
+- **WHEN** the ship step `review` is `in_progress`
+- **AND** the hook payload has `session_id:"3f2c"`
+- **THEN** the appended line has `"sessionId":"3f2c"`
+
+#### Scenario: Empty session id
+- **WHEN** a ship run is active
+- **AND** the hook payload has no `session_id`
+- **THEN** the appended line has `"sessionId":""`
 
 #### Scenario: Prompt after a failed step
 - **WHEN** the ship step `pr` is `failed` and the user types a correction

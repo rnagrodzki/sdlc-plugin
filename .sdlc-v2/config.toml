@@ -201,12 +201,7 @@ not silently re-expand scope."""
 
 [plan.guardrails.ambiguity-stops-and-asks]
 severity = "error"
-description = """
-When two or more codebase patterns are viable for the same requirement with \
-materially different downstream implications, the plan must EITHER record \
-the choice in Key Decisions with rationale, OR the skill must \
-AskUserQuestion before committing. Silent selection between viable patterns \
-is a critique failure."""
+description = 'When two or more codebase patterns are viable for the same requirement with materially different downstream implications, the plan must EITHER record the choice in Key Decisions with rationale, OR the skill must AskUserQuestion before committing. Silent selection between viable patterns is a critique failure. Example: when adding a new config section (e.g. [dashboard]), the plan must decide whether to register it in setupmeta.Sections() for /setup discoverability or document it as hand-edited only (like executePrefs and workspace). This choice has downstream implications and must not be silent.'
 
 [plan.guardrails.mcp-tool-description-precise]
 severity = "error"
@@ -1033,4 +1028,8 @@ logic and diverge when one copy is updated but not the other."""
 
 [execute.guardrails.skill-prose-source-verification-2]
 description = "Before marking a task done that modifies a SKILL.md, verify all prose claims about tool behavior, dispatch scaffolds, and schema validation by direct source-reading. When prose enumerates a struct's fields (return shapes, output fields, state structure), confirm every exported field in the Go struct appears in the prose. When prose claims absence (field not included, Port Notes not recorded), grep to verify the claim. When prose states a count or tier number for any set of values (an enum tag, a const block, a config-source or precedence chain), count the actual values in the Go source and confirm the stated number matches. Do not rely on build/test success as evidence."
+severity = 'error'
+
+[execute.guardrails.config-section-setup-discoverability-verified]
+description = "Before marking a task done that adds a new section ID to LocalSections (internal/config/config.go), grep internal/setupmeta/sections.go for that section ID. If it is absent, confirm that the section's user-facing documentation (docs/, a SKILL.md, or the config template comment) states that the section is hand-edited only and excluded from /setup. If the section is neither registered in setupmeta.Sections() nor documented as excluded, the task is incomplete. Some sections (e.g. executePrefs, workspace) are deliberately absent from setupmeta.Sections(), so absence alone is not a defect; an undocumented omission is."
 severity = 'error'
