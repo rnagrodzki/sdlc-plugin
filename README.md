@@ -115,7 +115,10 @@ called by name directly.
 ### Migrating a Node-era (pre-v5) project
 
 Config is read from `.sdlc-v2/config.toml` (project) and `.sdlc-v2/local.toml`
-(user-local, gitignored). If any legacy pre-v5 marker file is found —
+(user-local, gitignored). Personal settings for every project go in
+`~/.sdlc/local.toml` (or the path in `SDLC_USER_CONFIG`), and
+`.sdlc-v2/local.toml` overrides it key by key. If any legacy pre-v5 marker
+file is found —
 `.claude/sdlc.json`, `.claude/version.json`, `.sdlc/jira-config.json`,
 `.sdlc/ship-config.json`, `.sdlc/review.json`, `.claude/review.json`,
 `.sdlc-v2/config.json` (a v0/JSON-era config left in the current data dir) —

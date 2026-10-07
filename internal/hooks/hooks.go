@@ -73,6 +73,7 @@ var registry = map[string]Handler{
 	"record-mcp-invocation":      recordMCPInvocation,
 	"wave-liveness":              waveLiveness,
 	"record-user-input":          recordUserInput,
+	"record-user-answer":         recordUserAnswer,
 }
 
 // Run reads the hook's stdin envelope, dispatches to the handler registered

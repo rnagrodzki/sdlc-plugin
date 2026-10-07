@@ -655,7 +655,7 @@ The `report` action SHALL compose the end-of-run report for the branch's ship ru
 | `deferredFindings` | The state's `deferredFindings[]` entries. |
 | `hardenCommit` | The `harden` step's `result` when that step is `completed`. |
 | `execution`, `guardrailHits`, `cliEvidence`, `linkedLearnings` | Cross-read data. |
-| `userInputs` | Prompts the user typed while the run was active: `{ts, pipeline, step?, wave?, branch, text}`. |
+| `userInputs` | Prompts the user typed and question answers the user gave while the run was active: `{ts, pipeline, step?, wave?, branch, text, kind?}`. `kind` is `prompt` or `answer`; an entry with no `kind` is a prompt. |
 | `display` | `md`: the Markdown report described in "report Markdown layout", emitted raw. `json`: one line `Ship run <runId> on <branch>: <c>/<n> steps completed, <f> findings fixed, <d> deferred, <g> guardrail hits.` |
 | `path`, `written` | Report file path and `true` after a write. |
 | `skipped` | `true` only when reports are disabled. |
@@ -764,7 +764,7 @@ The `report` action SHALL render `md` `display` with the sections below, in this
 | `## Summary` | Table `Area \| Result` with rows Run, Plan, Steps, User input, Execution, Review, Fixed by severity, Hardened, Deferred, Guardrail hits, CLI commands, Decisions, Learnings (see below) |
 | `## Plan` | Plan file and planning time (or the existing "not available" line), then the critical-decision table `Decision \| Chosen \| Rejected \| Reason` with short-form cells (120 characters), or the existing "no planning data" / "no critical decisions" line. No milestone lines; milestones appear in `## Timeline` |
 | `## Steps` | As before |
-| `## User input` | `<n> prompts typed during the run.` (plus `Shows the latest 100 prompts only.` when 100 were read), then table `At \| Step \| Text`, oldest first; Step is the ship step, `wave <n>` for an execute entry, or `—`; Text uses the short form |
+| `## User input` | `<n> prompts typed and <m> answers given during the run.` (plus `Shows the latest 100 prompts only.` when 100 were read), then table `At \| Step \| Kind \| Text`, oldest first; Step is the ship step, `wave <n>` for an execute entry, or `—`; Kind is `prompt` or `answer` (`prompt` for an entry with no kind); Text uses the flat form (below). Injected-turn entries are not rendered and not counted (see "User input filter") |
 | `## Timeline` | Table `At \| Phase \| Event`; event text uses the short form (below) |
 | `## Review ledger` | Total, fixed, deferred by reason, unaccounted; a negative unaccounted adds `— ledger mismatch: fixes plus deferrals exceed the review total` |
 | `## Self-healing` / `### Fixed` | `<n> findings fixed.`, table `Severity \| <one column per origin> \| Total` (severities critical, high, medium, low, info, unknown; rows with 0 omitted), then `Critical, high and medium:` list `- [<sev>] <file>:<line> — <title> (<origin>)` in that severity order |
@@ -777,10 +777,12 @@ The `report` action SHALL render `md` `display` with the sections below, in this
 | `## Decisions` | `- <step>: <short decision>`; entries whose decision text is blank are dropped |
 | `## Learnings` | As before |
 
-- Summary rows use the form `label value` joined by ` · ` (for example `total 12 · fixed 11 · deferred 1 · unaccounted 0`). A row whose source is missing shows `—`; the Execution row shows `not run` when `execution` is absent.
+- Summary rows use the form `label value` joined by ` · ` (for example `total 12 · fixed 11 · deferred 1 · unaccounted 0`). A row whose source is missing shows `—`; the Execution row shows `not run` when `execution` is absent. The User input row is `prompts <n> · answers <m>`, or `none` when no entry is kept.
 - Every Summary number equals the matching number in the section below it.
 - Sanitizing: no stored string reaches `display` raw. A command is rendered as one inline code span of its short form, fenced with one backtick more than the longest backtick run inside it. Free text in a list line goes through the short form; a table cell goes through the short form and has `|` escaped.
 - Short form: first non-blank line, runs of whitespace collapsed to one space, cut to 200 characters (120 for a command, trigger or plan decision cell) with `…` appended when cut or when later lines were dropped.
+- Flat form (User input Text cell only): the whole text, every run of whitespace (new lines included) collapsed to one space, cut to 500 runes with `…` appended when cut, `|` escaped. No line of the text is dropped.
+- User input filter: an entry of kind `prompt` (or with no kind) is checked again with the same injected-turn rules as the `record-user-input` hook. An injected turn (for example text that starts with `<task-notification>`) is dropped; an editor or `system-reminder` envelope is removed and only the user text is shown. The filter runs after the 100-entry read, so it also cleans entries recorded before the hook filtered them.
 - Every empty section still renders one explicit `_No ..._` line: `_No CLI evidence recorded._`, `_No failed commands._`, `_No findings fixed._`, `_No harden runs recorded._`, `_No waves recorded._`, `_No decisions recorded._`, `_No user input during the run._`.
 - A finding with an empty severity counts under `unknown`.
 
@@ -834,15 +836,40 @@ The `report` action SHALL render `md` `display` with the sections below, in this
 
 #### Scenario: User prompts listed
 - **WHEN** the evidence file holds, for this branch and after the run's `startedAt`, a prompt at step `review` and a 3-line prompt holding `|` at step `pr`
-- **THEN** `## User input` says `2 prompts typed during the run.` and has 2 table rows in time order
-- **AND** the `pr` row shows only the first line of the prompt followed by `…`, with `|` escaped
-- **AND** the Summary row is `User input | prompts 2`
+- **THEN** `## User input` says `2 prompts typed and 0 answers given during the run.` and has 2 table rows in time order
+- **AND** the `pr` row shows all 3 lines of the prompt in one cell, joined by one space, with `|` escaped
+- **AND** both rows have Kind `prompt`
+- **AND** the Summary row is `User input | prompts 2 · answers 0`
+
+#### Scenario: Prompts and answers listed
+- **WHEN** the evidence file holds, for this run, 1 entry with `kind:"prompt"` and 6 entries with `kind:"answer"`
+- **THEN** `## User input` says `1 prompts typed and 6 answers given during the run.`
+- **AND** the table has 1 row with Kind `prompt` and 6 rows with Kind `answer`
+- **AND** the Summary row is `User input | prompts 1 · answers 6`
+
+#### Scenario: Long user text cut
+- **WHEN** a prompt entry holds 800 runes of text
+- **THEN** its Text cell holds the first 500 runes followed by `…`
+
+#### Scenario: Old injected entries filtered
+- **WHEN** the evidence file holds, for this run, 92 entries whose text starts with `<task-notification>` and 2 typed prompts, all with no `kind`
+- **THEN** `## User input` has 2 table rows
+- **AND** the Summary row is `User input | prompts 2 · answers 0`
+
+#### Scenario: Old editor envelope entry
+- **WHEN** a prompt entry has the text `<ide_opened_file>The user opened x</ide_opened_file>` then a new line, then `why is it slow?`
+- **THEN** its Text cell is `why is it slow?`
 
 #### Scenario: No user input
 - **WHEN** no prompt was recorded during the run
 - **THEN** `## User input` shows `_No user input during the run._`
 - **AND** the Summary row is `User input | none`
 - **AND** `userInputs` is an empty list
+
+#### Scenario: Only injected entries
+- **WHEN** every entry for this run is an injected turn, for example text that starts with `<task-notification>`
+- **THEN** `## User input` shows `_No user input during the run._`
+- **AND** the Summary row is `User input | none`
 
 ### Requirement: Communication style field
 The `read` action output SHALL include a top-level `style` object (capability `communication-style`), read fresh from `.sdlc-v2/local.toml` on each call. Reading the style SHALL NOT fail the call: a read error gives the defaults plus one warning `Failed to read style config: <cause>`. The `style` key SHALL NOT be written to the state file.

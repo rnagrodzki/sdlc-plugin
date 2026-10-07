@@ -1,6 +1,9 @@
 // Package config reads and writes the sdlc plugin's two configuration files
 // — .sdlc-v2/config.toml (project-level, committed) and .sdlc-v2/local.toml
-// (user-local, gitignored) — anchored at the main worktree root.
+// (user-local, gitignored) — anchored at the main worktree root. Local
+// sections are additionally merged with an optional user-level file (see
+// UserConfigPath) shared across every project on the machine — the project
+// file wins on any key both files set.
 //
 // This is a clean v5-only implementation: pre-v5 config layouts (individual
 // per-section files, schemaVersion-stamped configs) are refused with an
@@ -669,6 +672,121 @@ func readLocalRaw(mainRoot string) (map[string]any, error) {
 	return raw, nil
 }
 
+// UserConfigPathEnv overrides the user-level local config path (see
+// UserConfigPath) when set to a non-empty value.
+const UserConfigPathEnv = "SDLC_USER_CONFIG"
+
+// LocalFilesLabel names the two files a local-section setting may live in,
+// for use in messages shown to a user choosing where to save one.
+const LocalFilesLabel = ".sdlc-v2/local.toml (or ~/.sdlc/local.toml)"
+
+// UserConfigPath returns the path to the user-level local config file: the
+// value of $SDLC_USER_CONFIG when set and non-empty, otherwise
+// ~/.sdlc/local.toml. ok is false only when neither is available — no
+// SDLC_USER_CONFIG override and no resolvable home directory — in which
+// case callers use no user layer at all rather than failing.
+func UserConfigPath() (path string, ok bool) {
+	if p := os.Getenv(UserConfigPathEnv); p != "" {
+		return p, true
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "", false
+	}
+	return filepath.Join(home, ".sdlc", paths.LocalConfigFile), true
+}
+
+// readUserRaw reads the user-level local config file at userPath and
+// returns its contents as a raw map. A missing file returns an empty map
+// and no error. A path that names a directory, or a file with invalid
+// TOML, returns an error carrying a suggestion naming userPath and
+// UserConfigPathEnv (see this package's Task 10 failure table).
+func readUserRaw(userPath string) (map[string]any, error) {
+	info, statErr := os.Stat(userPath)
+	if statErr != nil {
+		if errors.Is(statErr, os.ErrNotExist) {
+			traceRead(userPath, "read-miss")
+			return map[string]any{}, nil
+		}
+		return nil, fmt.Errorf("config: %s: %w", userPath, statErr)
+	}
+	if info.IsDir() {
+		return nil, fmt.Errorf(
+			"config: %s: is a directory. Point %s to a file.",
+			userPath, UserConfigPathEnv,
+		)
+	}
+
+	data, err := os.ReadFile(userPath)
+	if err != nil {
+		return nil, fmt.Errorf("config: %s: %w", userPath, err)
+	}
+	var raw map[string]any
+	if err := fsx.DecodeTOML(data, &raw); err != nil {
+		return nil, fmt.Errorf(
+			"config: %s: %w. Fix the TOML syntax in %s, or unset %s.",
+			userPath, err, userPath, UserConfigPathEnv,
+		)
+	}
+	if raw == nil {
+		raw = map[string]any{}
+	}
+	traceRead(userPath, "read")
+	return raw, nil
+}
+
+// ReadLocalLayers reads the user-level local config file (see
+// UserConfigPath) and the project's .sdlc-v2/local.toml, returning each as
+// a raw map. A missing file produces an empty map for that layer, never
+// nil, so callers can merge both unconditionally with mergeLocal. A parse
+// error in either file is returned immediately; the user file's error text
+// includes a fix-it suggestion, the project file's does not (unchanged from
+// before this function existed).
+func ReadLocalLayers(mainRoot string) (user, project map[string]any, err error) {
+	user = map[string]any{}
+	if userPath, ok := UserConfigPath(); ok {
+		user, err = readUserRaw(userPath)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
+	project, err = readLocalRaw(mainRoot)
+	if err != nil {
+		return nil, nil, err
+	}
+	if project == nil {
+		project = map[string]any{}
+	}
+	return user, project, nil
+}
+
+// mergeLocal deep-merges two parsed local-config maps and returns a new map;
+// base and over are left unmodified. For a key present in both where both
+// values are tables (map[string]any), the tables merge recursively. For
+// every other key, over's value replaces base's whole — this includes a
+// list, a scalar, or a table on one side paired with a non-table on the
+// other. A key present only in base or only in over passes through
+// unchanged. over wins on every conflict.
+func mergeLocal(base, over map[string]any) map[string]any {
+	out := make(map[string]any, len(base)+len(over))
+	for k, v := range base {
+		out[k] = v
+	}
+	for k, overVal := range over {
+		if baseVal, exists := out[k]; exists {
+			if baseTable, ok := baseVal.(map[string]any); ok {
+				if overTable, ok := overVal.(map[string]any); ok {
+					out[k] = mergeLocal(baseTable, overTable)
+					continue
+				}
+			}
+		}
+		out[k] = overVal
+	}
+	return out
+}
+
 // normalizeGuardrailTables converts TOML named tables under
 // plan.guardrails and execute.guardrails from map[string]any (the TOML
 // named-table form [plan.guardrails.<id>]) into []any with each element's
@@ -712,6 +830,9 @@ func guardrailsTableToSlice(m map[string]any) []any {
 
 // Read loads the full merged configuration from .sdlc-v2/config.toml (project
 // sections) and .sdlc-v2/local.toml (local sections) anchored at mainRoot.
+// Local sections are themselves a merge of the user-level config file (see
+// ReadLocalLayers, UserConfigPath) and .sdlc-v2/local.toml, with the project
+// file winning on any key both set.
 //
 // The mainRoot parameter should be the main worktree root, typically
 // obtained via worktree.MainRoot(). This ensures that config reads anchor
@@ -731,10 +852,11 @@ func Read(mainRoot string) (*Config, error) {
 		return nil, err
 	}
 
-	localRaw, err := readLocalRaw(mainRoot)
+	userRaw, projectLocalRaw, err := ReadLocalLayers(mainRoot)
 	if err != nil {
 		return nil, err
 	}
+	localRaw := mergeLocal(userRaw, projectLocalRaw)
 
 	versionSection, err := parseVersionSection(extractSection(projectRaw, "version"))
 	if err != nil {
@@ -787,7 +909,9 @@ func GitBaseBranch(mainRoot string) string {
 // appropriate file based on ProjectSections membership.
 //
 // For project sections (version, jira, commit, pr, plan, execute), reads
-// .sdlc-v2/config.toml. For all other sections, reads .sdlc-v2/local.toml.
+// .sdlc-v2/config.toml. For all other sections, reads the same merged view
+// of the user-level config file and .sdlc-v2/local.toml that Read uses (see
+// ReadLocalLayers) — the project file wins on any key both set.
 //
 // name accepts either a top-level section name ("plan") or a dotted path to
 // a nested table ("pr.labels"), in which case the table at the leaf is
@@ -822,16 +946,13 @@ func ReadSection(mainRoot, name string) (map[string]any, error) {
 		return section, nil
 	}
 
-	// Local section.
-	localPath := filepath.Join(mainRoot, paths.DataDir, paths.LocalConfigFile)
-	var localRaw map[string]any
-	if err := fsx.ReadTOML(localPath, &localRaw); err != nil {
-		if errors.Is(err, fsx.ErrNotFound) {
-			return nil, fmt.Errorf("config: %s: %w", localPath, ErrNotFound)
-		}
-		return nil, fmt.Errorf("config: %w", err)
+	// Local section: merge the user-level file with the project file, then
+	// read the section from the merged result — same merged view as Read.
+	userRaw, projectLocalRaw, err := ReadLocalLayers(mainRoot)
+	if err != nil {
+		return nil, err
 	}
-	traceRead(localPath, "read")
+	localRaw := mergeLocal(userRaw, projectLocalRaw)
 
 	section := extractSectionPath(localRaw, name)
 	if section == nil {
@@ -909,12 +1030,17 @@ func WriteFileSection(path, name string, v map[string]any) (rewrote bool, err er
 //
 // After the splice or the full write produces the bytes to save, a restore
 // step (see tips.go) re-adds each shipped-template comment block that is
-// missing from directly above its key or table header, scoped to the
-// written section. The restore is skipped outright for a file other than
-// config.toml/local.toml (sectionTemplate returns nil), and its result is
-// discarded — keeping the pre-restore bytes — whenever restoreTips errors
-// or its output does not decode to the same data as the pre-restore bytes.
-// Either way, the write itself never fails because of the restore.
+// missing from directly above its key or table header. Both the splice path
+// and the full-rewrite fallback scope the restore to the whole file (an
+// empty section; see RestoreTips, D5): a write to one section also repairs
+// any other section whose tips version 0.3.2 stripped, and a section
+// untouched by this call does not permanently lose its tips the moment any
+// other section hits the fallback. The restore is skipped outright for a
+// file other than config.toml/local.toml (sectionTemplate returns nil), and
+// its result is discarded — keeping the pre-restore bytes — whenever
+// restoreTips errors or its output does not decode to the same data as the
+// pre-restore bytes. Either way, the write itself never fails because of the
+// restore.
 func writeSectionFile(path, name string, v map[string]any, validate func(map[string]any) error) (bool, error) {
 	// Read the file once: the splice, the comment check and the decode all
 	// use these bytes, so they cannot disagree about the file's contents.
@@ -935,7 +1061,7 @@ func writeSectionFile(path, name string, v map[string]any, validate func(map[str
 		}
 	}
 	traceRead(path, "write")
-	section := strings.Split(name, ".")
+	section := []string{} // D5: restore tips in the whole file
 	tmpl := sectionTemplate(path)
 	out, spliceErr := spliceFile(orig, name, v, existing)
 	if spliceErr == nil {
@@ -950,7 +1076,9 @@ func writeSectionFile(path, name string, v map[string]any, validate func(map[str
 	if err != nil {
 		return false, fmt.Errorf("config: marshal %s: %w", path, err)
 	}
-	return true, fsx.AtomicWriteBytes(path, restoreSectionTips(full, tmpl, section))
+	// nil, not section: the rewrite just dropped every comment in the whole
+	// file, not only in the section being written.
+	return true, fsx.AtomicWriteBytes(path, restoreSectionTips(full, tmpl, nil))
 }
 
 // sectionTemplate returns the shipped setup template that matches path's
@@ -969,8 +1097,10 @@ func sectionTemplate(path string) []byte {
 
 // restoreSectionTips calls restoreTips(out, tmpl, section) and returns its
 // result only when it decodes to the same data as out. tmpl == nil skips
-// the call. An error from restoreTips, or a decode mismatch, returns out
-// unchanged — see writeSectionFile's doc comment for the full outcome table.
+// the call. section scopes the restore; a nil section (see writeSectionFile)
+// restores tips anywhere in the file, not just under one section. An error
+// from restoreTips, or a decode mismatch, returns out unchanged — see
+// writeSectionFile's doc comment for the full outcome table.
 func restoreSectionTips(out, tmpl []byte, section []string) []byte {
 	if tmpl == nil {
 		return out

@@ -214,6 +214,224 @@ func TestSetupPrepare_JSONSerializationCamelCase(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// setup_prepare personal-settings tests (userConfigPath, localValues,
+// sectionRow.DefaultTarget)
+// ---------------------------------------------------------------------------
+
+// TestSetupPrepare_LocalValues_SevenEntriesEmptyByDefault pins the shape of
+// localValues when neither the user-level config nor the project's
+// local.toml exists: exactly the 7 local setup rows, each with an empty
+// (non-nil) Values and Sources map.
+func TestSetupPrepare_LocalValues_SevenEntriesEmptyByDefault(t *testing.T) {
+	root := t.TempDir()
+
+	out, err := setupPrepare(root, SetupPrepareIn{})
+	if err != nil {
+		t.Fatalf("setupPrepare: %v", err)
+	}
+
+	wantIDs := []string{"ship", "review", "received-review", "github", "communication-style", "plan-style", "automation"}
+	if len(out.LocalValues) != len(wantIDs) {
+		t.Fatalf("localValues has %d entries, want %d: %v", len(out.LocalValues), len(wantIDs), out.LocalValues)
+	}
+	for _, id := range wantIDs {
+		entry, ok := out.LocalValues[id]
+		if !ok {
+			t.Errorf("localValues missing entry for %q", id)
+			continue
+		}
+		if entry.Values == nil || len(entry.Values) != 0 {
+			t.Errorf("localValues[%q].Values = %v, want empty non-nil map", id, entry.Values)
+		}
+		if entry.Sources == nil || len(entry.Sources) != 0 {
+			t.Errorf("localValues[%q].Sources = %v, want empty non-nil map", id, entry.Sources)
+		}
+	}
+}
+
+// TestSetupPrepare_LocalValues_MergesUserAndProjectWithSources writes both
+// the user-level config and the project's local.toml with overlapping and
+// distinct keys, and checks the merged values (project wins on a shared key)
+// and the per-key source attribution.
+func TestSetupPrepare_LocalValues_MergesUserAndProjectWithSources(t *testing.T) {
+	root := t.TempDir()
+
+	userPath := filepath.Join(t.TempDir(), "user-local.toml")
+	if err := os.WriteFile(userPath, []byte(`
+[style]
+audience = "technical"
+tone = "direct"
+
+[ship]
+auto = true
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile user config: %v", err)
+	}
+	t.Setenv(config.UserConfigPathEnv, userPath)
+
+	projectLocalPath := filepath.Join(root, paths.DataDir, paths.LocalConfigFile)
+	if err := os.MkdirAll(filepath.Dir(projectLocalPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(projectLocalPath, []byte(`
+[style]
+audience = "functional"
+
+[review]
+scope = "working"
+`), 0o644); err != nil {
+		t.Fatalf("WriteFile project local: %v", err)
+	}
+
+	out, err := setupPrepare(root, SetupPrepareIn{})
+	if err != nil {
+		t.Fatalf("setupPrepare: %v", err)
+	}
+
+	style, ok := out.LocalValues["communication-style"]
+	if !ok {
+		t.Fatal("missing communication-style entry")
+	}
+	if got := style.Values["audience"]; got != "functional" {
+		t.Errorf("style.Values[audience] = %v, want functional (project wins)", got)
+	}
+	if got := style.Values["tone"]; got != "direct" {
+		t.Errorf("style.Values[tone] = %v, want direct (user-only key)", got)
+	}
+	if style.Sources["audience"] != "project" {
+		t.Errorf("style.Sources[audience] = %q, want project", style.Sources["audience"])
+	}
+	if style.Sources["tone"] != "user" {
+		t.Errorf("style.Sources[tone] = %q, want user", style.Sources["tone"])
+	}
+
+	ship, ok := out.LocalValues["ship"]
+	if !ok {
+		t.Fatal("missing ship entry")
+	}
+	if got := ship.Values["auto"]; got != true {
+		t.Errorf("ship.Values[auto] = %v, want true", got)
+	}
+	if ship.Sources["auto"] != "user" {
+		t.Errorf("ship.Sources[auto] = %q, want user", ship.Sources["auto"])
+	}
+
+	review, ok := out.LocalValues["review"]
+	if !ok {
+		t.Fatal("missing review entry")
+	}
+	if got := review.Values["scope"]; got != "working" {
+		t.Errorf("review.Values[scope] = %v, want working", got)
+	}
+	if review.Sources["scope"] != "project" {
+		t.Errorf("review.Sources[scope] = %q, want project", review.Sources["scope"])
+	}
+
+	// sources uses only "user" or "project".
+	for id, entry := range out.LocalValues {
+		for k, src := range entry.Sources {
+			if src != "user" && src != "project" {
+				t.Errorf("localValues[%q].Sources[%q] = %q, want user or project", id, k, src)
+			}
+		}
+	}
+}
+
+// TestSetupPrepare_SectionsHaveDefaultTarget pins the per-row defaultTarget
+// from the contract's table: the 6 local rows besides ship default to
+// "user", ship defaults to "project", and every config.toml/delegated row
+// has no save-target choice (empty).
+func TestSetupPrepare_SectionsHaveDefaultTarget(t *testing.T) {
+	out, err := setupPrepare(t.TempDir(), SetupPrepareIn{})
+	if err != nil {
+		t.Fatalf("setupPrepare: %v", err)
+	}
+
+	want := map[string]string{
+		"ship":                "project",
+		"review":              "user",
+		"received-review":     "user",
+		"github":              "user",
+		"communication-style": "user",
+		"plan-style":          "user",
+		"automation":          "user",
+	}
+
+	for _, sec := range out.Sections {
+		if expected, isLocal := want[sec.ID]; isLocal {
+			if sec.DefaultTarget != expected {
+				t.Errorf("section %q defaultTarget = %q, want %q", sec.ID, sec.DefaultTarget, expected)
+			}
+			continue
+		}
+		if sec.DefaultTarget != "" {
+			t.Errorf("section %q defaultTarget = %q, want empty (not a local.toml row)", sec.ID, sec.DefaultTarget)
+		}
+	}
+}
+
+// TestSetupPrepare_UserConfigPath_FromEnv pins userConfigPath to whatever
+// SDLC_USER_CONFIG resolves to.
+func TestSetupPrepare_UserConfigPath_FromEnv(t *testing.T) {
+	custom := filepath.Join(t.TempDir(), "custom-local.toml")
+	t.Setenv(config.UserConfigPathEnv, custom)
+
+	out, err := setupPrepare(t.TempDir(), SetupPrepareIn{})
+	if err != nil {
+		t.Fatalf("setupPrepare: %v", err)
+	}
+	if out.UserConfigPath != custom {
+		t.Errorf("userConfigPath = %q, want %q", out.UserConfigPath, custom)
+	}
+}
+
+// TestSetupPrepare_PersonalSettingsReadError_ReturnsInfraError pins the
+// contract's failure table: a read error in either personal-settings file
+// (malformed TOML, or the user path naming a directory) fails setup_prepare
+// outright with an *mcpserver.InfraError naming "read personal settings" and
+// the offending file, carrying a non-empty Suggestion.
+func TestSetupPrepare_PersonalSettingsReadError_ReturnsInfraError(t *testing.T) {
+	t.Run("malformed user file", func(t *testing.T) {
+		userPath := filepath.Join(t.TempDir(), "user-local.toml")
+		if err := os.WriteFile(userPath, []byte("not = [valid toml"), 0o644); err != nil {
+			t.Fatalf("WriteFile: %v", err)
+		}
+		t.Setenv(config.UserConfigPathEnv, userPath)
+
+		_, err := setupPrepare(t.TempDir(), SetupPrepareIn{})
+
+		var ie *mcpserver.InfraError
+		if !errors.As(err, &ie) {
+			t.Fatalf("error should be a *mcpserver.InfraError, got %#v", err)
+		}
+		if !strings.Contains(ie.Msg, "read personal settings") || !strings.Contains(ie.Msg, userPath) {
+			t.Errorf("Msg = %q, want it to name 'read personal settings' and the file path", ie.Msg)
+		}
+		if strings.TrimSpace(ie.Suggestion) == "" {
+			t.Error("InfraError must carry a Suggestion")
+		}
+	})
+
+	t.Run("user path is a directory", func(t *testing.T) {
+		userDir := t.TempDir()
+		t.Setenv(config.UserConfigPathEnv, userDir)
+
+		_, err := setupPrepare(t.TempDir(), SetupPrepareIn{})
+
+		var ie *mcpserver.InfraError
+		if !errors.As(err, &ie) {
+			t.Fatalf("error should be a *mcpserver.InfraError, got %#v", err)
+		}
+		if !strings.Contains(ie.Msg, "read personal settings") {
+			t.Errorf("Msg = %q, want it to name 'read personal settings'", ie.Msg)
+		}
+		if strings.TrimSpace(ie.Suggestion) == "" {
+			t.Error("InfraError must carry a Suggestion")
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
 // setup_prepare explain-mode tests
 // ---------------------------------------------------------------------------
 

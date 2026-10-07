@@ -8,6 +8,9 @@
 //
 // Comment rule: comment lines are never removed. This includes comment lines
 // inside a table, and a trailing "# comment" on a changed single-line value.
+// The one exception: a new key takes over its commented example line
+// ("# key = value   # tip" becomes "key = <new value>   # tip"), and a new
+// section takes over its commented header line ("# [x]" becomes "[x]").
 package config
 
 import (
@@ -258,27 +261,85 @@ func isCommentLine(line []byte) bool {
 	return bytes.HasPrefix(bytes.TrimSpace(line), []byte("#"))
 }
 
-// commentedHeaderEnd returns the index of the line after the comment block
-// that holds a commented header for path ("# [ship]", any spacing), or -1.
-// A comment block is a run of consecutive comment lines.
-func commentedHeaderEnd(lines [][]byte, path []string) int {
-	want := "[" + strings.Join(path, ".") + "]"
-	for i, l := range lines {
-		t := bytes.TrimSpace(l)
-		if !bytes.HasPrefix(t, []byte("#")) {
-			continue
-		}
-		body := strings.Join(strings.Fields(string(t[1:])), "")
-		if body != want {
-			continue
-		}
-		j := i + 1
-		for j < len(lines) && isCommentLine(lines[j]) {
-			j++
-		}
-		return j
+// uncommentBody splits a comment line into its indentation and its body: the
+// text after the first "#" with the blanks after "#" and the line ending
+// removed. ok is false when line is not a comment line.
+func uncommentBody(line []byte) (indent, body []byte, ok bool) {
+	t := bytes.TrimRight(line, "\r\n")
+	rest := bytes.TrimLeft(t, " \t")
+	if !bytes.HasPrefix(rest, []byte("#")) {
+		return nil, nil, false
 	}
-	return -1
+	return t[:len(t)-len(rest)], bytes.TrimLeft(rest[1:], " \t"), true
+}
+
+// lineEnding returns the line ending of line: "\r\n", "\n", or "" for a last
+// line with no line ending.
+func lineEnding(line []byte) string {
+	switch {
+	case bytes.HasSuffix(line, []byte("\r\n")):
+		return "\r\n"
+	case bytes.HasSuffix(line, []byte("\n")):
+		return "\n"
+	}
+	return ""
+}
+
+// parseOne parses body with the go-toml parser. ok is true only when body
+// holds exactly one expression (a trailing comment is allowed). It returns
+// that expression's kind, its key parts, and, for a key/value, the byte
+// offset just after its value.
+func parseOne(body []byte) (kind unstable.Kind, parts []string, end int, ok bool) {
+	var p unstable.Parser
+	p.Reset(body)
+	if !p.NextExpression() {
+		return kind, nil, 0, false
+	}
+	e := p.Expression()
+	kind = e.Kind
+	parts, _ = keyParts(e)
+	end = int(e.Raw.Offset + e.Raw.Length)
+	if p.NextExpression() || p.Error() != nil {
+		return kind, nil, 0, false
+	}
+	return kind, parts, end, true
+}
+
+// parseCommentedExample parses one commented example line
+// ("# <key> = <value>   # <tip>", any spacing). ok=false for any other line,
+// e.g. prose, a commented header, or a value that does not fit on one line.
+// key is the key parts joined with ".". tip is the trailing "# …" comment
+// with the blanks before it, or "" when the line has no trailing comment.
+// The tip restore (tips.go) is meant to share this parser.
+func parseCommentedExample(line []byte) (key, tip string, ok bool) {
+	_, body, isComment := uncommentBody(line)
+	if !isComment {
+		return "", "", false
+	}
+	kind, parts, end, parsed := parseOne(body)
+	if !parsed || kind != unstable.KeyValue {
+		return "", "", false
+	}
+	if rest := body[end:]; len(bytes.TrimSpace(rest)) > 0 {
+		tip = string(bytes.TrimRight(rest, " \t"))
+	}
+	return strings.Join(parts, "."), tip, true
+}
+
+// parseCommentedHeader parses one commented table header ("# [review]",
+// "# [workspace.branch]", any spacing). ok=false for any other line,
+// including a commented array-of-tables header ("# [[x]]").
+// The tip restore (tips.go) is meant to share this parser.
+func parseCommentedHeader(line []byte) (path []string, ok bool) {
+	_, body, isComment := uncommentBody(line)
+	if !isComment {
+		return nil, false
+	}
+	kind, parts, _, parsed := parseOne(body)
+	if !parsed || kind != unstable.Table {
+		return nil, false
+	}
+	return parts, true
 }
 
 // pathKey joins a key path into a map key. "\x00" cannot occur in a TOML
@@ -322,9 +383,12 @@ type keySplicer struct {
 // to v. Unchanged keys keep their bytes. A changed key keeps its key text
 // and indentation. Only the value text changes. A removed key loses its
 // key/value lines. Comment lines are never removed. New keys go after the
-// table's last key. A sub-tree that is an array of tables, or that changes
-// between table and array of tables, is encoded again with sectionFragment
-// at the position of its first old block, below the old comment lines.
+// table's last key, unless the table has a commented example line for the
+// key (see commentedKeyLine): then the new key replaces that line, and the
+// line keeps its indentation, key text and trailing "# tip". A sub-tree
+// that is an array of tables, or that changes between table and array of
+// tables, is encoded again with sectionFragment at the position of its
+// first old block, below the old comment lines.
 // Returns errNoSplice for inline tables, dotted keys that define a parent,
 // and an array of tables that is a strict ancestor of path.
 //
@@ -337,9 +401,11 @@ type keySplicer struct {
 //   - A key/value outside the owned tables whose full path is at or below
 //     path (e.g. "y.z = 1" under [x] when path is x.y) is removed, and its
 //     data is written again as new text.
-//   - With no owned table, the new section goes directly after the comment
-//     block that holds "# [path]" when the file has one. Otherwise it is
-//     appended at the end of the file after exactly one blank line.
+//   - With no owned table, the commented header line "# [path]" becomes the
+//     live header "[path]" when the file has one (see commentedHeaderLine),
+//     and the section is edited as a table with no keys. Otherwise the new
+//     section is appended at the end of the file after exactly one blank
+//     line.
 //   - When data uses CRLF line endings (see usesCRLF), new text uses CRLF.
 func spliceKeys(data []byte, path []string, v map[string]any) ([]byte, error) {
 	items, err := scanTOML(data)
@@ -415,18 +481,18 @@ func spliceKeys(data []byte, path []string, v map[string]any) ([]byte, error) {
 	return s.render(), nil
 }
 
-// appendSection writes the whole section as new text when the file has no
-// owned table for path.
+// appendSection writes the section when the file has no owned table for
+// path: at its commented header line when the file has one, otherwise as
+// new text at the end of the file.
 func (s *keySplicer) appendSection(path []string, v map[string]any) ([]byte, error) {
+	if at := s.commentedHeaderLine(path); at >= 0 {
+		return s.uncommentSection(at, path, v)
+	}
 	frag, err := sectionFragment(path, v)
 	if err != nil {
 		return nil, err
 	}
 	text := s.crlf(string(frag))
-	if at := commentedHeaderEnd(s.lines, path); at >= 0 && !s.insideValue(at-1) {
-		s.tableAt[at] = append(s.tableAt[at], text)
-		return s.render(), nil
-	}
 	body := bytes.TrimRight(s.render(), "\r\n")
 	res := append([]byte{}, body...)
 	if len(body) > 0 {
@@ -444,6 +510,108 @@ func (s *keySplicer) insideValue(i int) bool {
 		}
 	}
 	return false
+}
+
+// commentedHeaderLine returns the index of the first commented header line
+// for path ("# [ship]", any spacing; see parseCommentedHeader) that is not
+// inside a multi-line value, or -1. It also returns -1 when a live
+// key/value follows that line before the next live header: uncommenting
+// the header would move that key/value into the table at path.
+func (s *keySplicer) commentedHeaderLine(path []string) int {
+	for i, l := range s.lines {
+		p, ok := parseCommentedHeader(l)
+		if !ok || pathKey(p) != pathKey(path) || s.insideValue(i) {
+			continue
+		}
+		for _, it := range s.items {
+			if it.first <= i {
+				continue
+			}
+			if it.header {
+				break
+			}
+			return -1
+		}
+		return i
+	}
+	return -1
+}
+
+// uncommentSection makes the commented header at line at the live header of
+// the table at path, then edits that table, which has no keys yet, so that
+// it decodes to v. New keys take over their commented example lines below
+// the header (see replaceExample).
+func (s *keySplicer) uncommentSection(at int, path []string, v map[string]any) ([]byte, error) {
+	indent, body, _ := uncommentBody(s.lines[at])
+	s.replaceLine(at, string(indent)+string(body)+lineEnding(s.lines[at]))
+	blk := &tomlBlock{hdr: tomlItem{header: true, path: path, first: at, last: at}, end: at}
+	s.blocks = append(s.blocks, blk)
+	s.tables[pathKey(path)] = blk
+	if err := s.editTable(path, v); err != nil {
+		return nil, err
+	}
+	s.placeNewTables()
+	s.removeUnkept()
+	return s.render(), nil
+}
+
+// commentedKeyLine returns the index of the first commented example line
+// for key (see parseCommentedExample) between the block header and the next
+// header, or -1. The next header is a live header or a commented header
+// line, so an example of another commented section is never used. A line
+// inside a multi-line value, and a line that another key already took
+// over, is skipped.
+func (s *keySplicer) commentedKeyLine(blk *tomlBlock, key string) int {
+	stop := len(s.lines)
+	for _, it := range s.items {
+		if it.header && it.first > blk.hdr.last {
+			stop = it.first
+			break
+		}
+	}
+	for i := blk.hdr.last + 1; i < stop; i++ {
+		if s.remove[i] || s.insideValue(i) {
+			continue
+		}
+		if _, ok := parseCommentedHeader(s.lines[i]); ok {
+			return -1
+		}
+		if k, _, ok := parseCommentedExample(s.lines[i]); ok && k == key {
+			return i
+		}
+	}
+	return -1
+}
+
+// replaceExample puts the new key parts of blk, with value val, on its
+// commented example line (see commentedKeyLine). The line keeps its
+// indentation, key text, trailing "# tip" and line ending. It reports false
+// when blk has no example line for the key.
+func (s *keySplicer) replaceExample(blk *tomlBlock, parts []string, val any) (bool, error) {
+	i := s.commentedKeyLine(blk, strings.Join(parts, "."))
+	if i < 0 {
+		return false, nil
+	}
+	text, ok := inlineValue(val)
+	if !ok {
+		return false, errNoSplice
+	}
+	_, tip, _ := parseCommentedExample(s.lines[i])
+	indent, body, _ := uncommentBody(s.lines[i])
+	key := body[:valueStart(body, 0)]
+	s.replaceLine(i, string(indent)+string(key)+text+tip+lineEnding(s.lines[i]))
+	// New sub-tables go after the section's last line. Keep this line above
+	// them, or it would decode into the sub-table.
+	if i > blk.end {
+		blk.end = i
+	}
+	return true, nil
+}
+
+// replaceLine replaces line i with text, which includes its line ending.
+func (s *keySplicer) replaceLine(i int, text string) {
+	s.remove[i] = true
+	s.keyAt[i] = append(s.keyAt[i], text)
 }
 
 // editTable edits the text of the table at p so that it decodes to d.
@@ -523,6 +691,13 @@ func (s *keySplicer) editTable(p []string, d map[string]any) error {
 				pending[k] = val
 				continue
 			}
+			done, err := s.replaceExample(blk, []string{k}, val)
+			if err != nil {
+				return err
+			}
+			if done {
+				continue
+			}
 			line, err := s.keyLine([]string{k}, val)
 			if err != nil {
 				return err
@@ -580,6 +755,13 @@ func (s *keySplicer) editDotted(blk *tomlBlock, p, cp []string, d map[string]any
 			if err := s.keepOrChange(i, lp, val); err != nil {
 				return err
 			}
+			continue
+		}
+		done, err := s.replaceExample(blk, lp[len(p):], val)
+		if err != nil {
+			return err
+		}
+		if done {
 			continue
 		}
 		line, err := s.keyLine(lp[len(p):], val)

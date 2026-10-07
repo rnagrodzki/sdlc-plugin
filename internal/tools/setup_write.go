@@ -40,6 +40,13 @@ type SetupWriteSectionsIn struct {
 	// Either way, callers must pass the complete object for the id they
 	// name, not a partial patch of it.
 	SectionsJSON string `json:"sectionsJson" jsonschema_description:"JSON-encoded object mapping section id (e.g. \"version\", \"commit\") to the full field-value object for that section, e.g. {\"version\":{\"mode\":\"file\",\"versionFile\":\"package.json\"}}. A plain top-level id REPLACES that section wholesale. A dotted id (e.g. \"plan.guardrails\") merges at that nested leaf instead, preserving sibling keys under the same top-level section — the leaf itself is still replaced wholesale, not patched. Pass the complete object for the id you name."`
+
+	// Target selects which file a local section is written to: the
+	// project's own .sdlc-v2/local.toml (default) or the user-level file
+	// shared across every project (see config.UserConfigPath). It has no
+	// effect on project sections, which always go to config.toml — and is
+	// rejected outright when a project section is named alongside it.
+	Target string `json:"target,omitempty" jsonschema:"enum=project,enum=user" jsonschema_description:"Plain text. Where local sections go: project (.sdlc-v2/local.toml, default) or user (~/.sdlc/local.toml or $SDLC_USER_CONFIG, shared by all projects). Project sections always go to config.toml, and user is rejected for them. Example: user"`
 }
 
 // SetupWriteSectionsOut is the output for the setup_write_sections tool.
@@ -56,7 +63,7 @@ type SetupWriteSectionsOut struct {
 // RegisterSetupWriteTools registers setup_write_sections on the server.
 func RegisterSetupWriteTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "setup_write_sections",
-		"INTERNAL — called by sdlc skills only. Writes real field-value data into one or more sdlc-v2 config sections (config.toml for project sections, local.toml for local sections), routing and validating via the same config.WriteSection primitive setup_init uses. Unlike setup_init (which writes the full config.toml/local.toml templates verbatim for the user to hand-edit), this accepts the actual assembled values collected during setup's per-section field loop. Git-tracked files (config.toml and the CI files scaffolded after a version write) go under the active git worktree, returned as root; local.toml goes under the main worktree, shared by all worktrees. Each write changes only the lines of changed keys and keeps every comment line. Missing template tips are added back above their keys. If a section cannot be edited in place and the file has comments, that section is not written: errors gets \"section <id>: <reason>\" and next gets the hand-edit step. Other sections are still written.",
+		"INTERNAL — called by sdlc skills only. Writes real field-value data into one or more sdlc-v2 config sections (config.toml for project sections, local.toml for local sections), routing and validating via the same config.WriteSection primitive setup_init uses. Unlike setup_init (which writes the full config.toml/local.toml templates verbatim for the user to hand-edit), this accepts the actual assembled values collected during setup's per-section field loop. Git-tracked files (config.toml and the CI files scaffolded after a version write) go under the active git worktree, returned as root; local.toml goes under the main worktree, shared by all worktrees. With target \"user\", local sections go to the user-level file (~/.sdlc/local.toml or $SDLC_USER_CONFIG), outside every repository; a project section with target \"user\" is rejected and nothing is written. Each write changes only the lines of changed keys and keeps every comment line. Missing template tips are added back above their keys. If a section cannot be edited in place and the file has comments, that section is not written: errors gets \"section <id>: <reason>\" and next gets the hand-edit step. Other sections are still written.",
 		mcpserver.Annotations{
 			Title:       "Write SDLC config sections",
 			ReadOnly:    false,
@@ -123,11 +130,22 @@ func expandDottedKeys(flat map[string]any) map[string]any {
 	return out
 }
 
-// sectionFile names the config file a section id is written to.
-func sectionFile(id string) string {
+// sectionFile names, for use in messages, the config file a section id is
+// written to. target and userPath mirror the tool input and the resolved
+// config.UserConfigPath (empty when target != "user"): a project section
+// always reports the project-relative config.toml path regardless of
+// target (project sections never route to the user file), while a local
+// section reports userPath verbatim when target is "user" — userPath can be
+// anywhere on disk (SDLC_USER_CONFIG, or ~/.sdlc/local.toml), so unlike the
+// project-relative literals below it is not safe to shorten to a fixed
+// string.
+func sectionFile(id, target, userPath string) string {
 	top, _, _ := strings.Cut(id, ".")
 	if config.ProjectSections[top] {
 		return ".sdlc-v2/config.toml"
+	}
+	if target == "user" {
+		return userPath
 	}
 	return ".sdlc-v2/local.toml"
 }
@@ -204,6 +222,44 @@ func setupWriteSections(contentRoot, stateRoot string, in SetupWriteSectionsIn) 
 		}
 	}
 
+	if in.Target != "" && in.Target != "project" && in.Target != "user" {
+		return SetupWriteSectionsOut{}, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("setup_write_sections: invalid target %q", in.Target),
+			Suggestion: "Set target to project or user, or leave it empty.",
+		}
+	}
+
+	// A user-level write only ever applies to local sections: config.toml
+	// (project sections) is git-tracked and per-project by design, so
+	// routing it to the user file would silently defeat that. Reject the
+	// whole call — rather than writing the local sections and dropping the
+	// project ones — so a caller never gets a partial, surprising write.
+	var userPath string
+	if in.Target == "user" {
+		var projectIDs []string
+		for _, id := range ids {
+			top, _, _ := strings.Cut(id, ".")
+			if config.ProjectSections[top] {
+				projectIDs = append(projectIDs, id)
+			}
+		}
+		if len(projectIDs) > 0 {
+			return SetupWriteSectionsOut{}, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("setup_write_sections: project sections %v cannot use target \"user\"", projectIDs),
+				Suggestion: "Remove the project section(s) from sectionsJson, or drop target (or set it to \"project\") and retry. Nothing was written.",
+			}
+		}
+
+		var ok bool
+		userPath, ok = config.UserConfigPath()
+		if !ok {
+			return SetupWriteSectionsOut{}, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("setup_write_sections: no user config path available (%s unset, no home directory found)", config.UserConfigPathEnv),
+				Suggestion: fmt.Sprintf("Set %s to a file path, or use target project.", config.UserConfigPathEnv),
+			}
+		}
+	}
+
 	var written []string
 	var errs []string
 	var rewroteWarnings []string
@@ -214,18 +270,28 @@ func setupWriteSections(contentRoot, stateRoot string, in SetupWriteSectionsIn) 
 			value = map[string]any{}
 		}
 		value = config.WholeNumbersToInt(expandDottedKeys(value)).(map[string]any)
-		rewrote, err := config.WriteSectionReport(sectionRoot(contentRoot, stateRoot, id), id, value)
+
+		var rewrote bool
+		var err error
+		if in.Target == "user" {
+			// Already confirmed above that every id here is a local
+			// section (project sections were rejected before this loop),
+			// so this always writes userPath, never config.toml.
+			rewrote, err = config.WriteFileSection(userPath, id, value)
+		} else {
+			rewrote, err = config.WriteSectionReport(sectionRoot(contentRoot, stateRoot, id), id, value)
+		}
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("section %s: %s", id, err.Error()))
 			if errors.Is(err, config.ErrWouldDropComments) {
-				refused = append(refused, fmt.Sprintf("Edit section %s in %s by hand", id, sectionFile(id)))
+				refused = append(refused, fmt.Sprintf("Edit section %s in %s by hand", id, sectionFile(id, in.Target, userPath)))
 			}
 			continue
 		}
 		if rewrote {
 			rewroteWarnings = append(rewroteWarnings, fmt.Sprintf(
 				"Section %s: could not edit %s in place; the file had no comments, so it was rewritten and template tips were added",
-				id, sectionFile(id)))
+				id, sectionFile(id, in.Target, userPath)))
 		}
 		written = append(written, id)
 	}

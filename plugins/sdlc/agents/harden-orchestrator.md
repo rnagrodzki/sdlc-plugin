@@ -119,6 +119,7 @@ Each proposal:
   "action": "add | strengthen | consolidate",
   "targetFile": "absolute path to the file that would be edited — for plan-guardrails/execute-guardrails use `<repository.contentRoot>/.sdlc-v2/config.toml` (active worktree); for review-dimensions/copilot-instructions use that surface's `path` field verbatim (active worktree, = repository.contentRoot-rooted)",
   "patch": "preview block — for config.toml, the new/modified guardrail entry as TOML; for review-dimensions, the new frontmatter or new rule line; for copilot-instructions, the new checklist line",
+  "guardrails": "plan-guardrails / execute-guardrails ONLY — array of {id, description, severity}; omit this field entirely for review-dimensions / copilot-instructions",
   "rationale": "one to two sentences linking back to the failure signal"
 }
 ```
@@ -126,7 +127,19 @@ Each proposal:
 The `patch` is a **preview**, not a diff to be auto-applied. The skill's main
 context performs the actual write after user approval.
 
-**`consolidate` (R15):** Use when the proposed change targets an existing `plan-guardrails` or `execute-guardrails` entry by id OR strongly overlaps an existing description — compare the proposal's id and description against `surfaces.planGuardrails[]` / `surfaces.executeGuardrails[]` in the manifest. A `consolidate` proposal MUST cite the existing guardrail by id in `patch` and MUST be strengthen-direction only (tighter description, raised severity, narrower glob) per R8 / C9 — `consolidate` MAY NOT remove fields or lower severity. When duplication is detected, prefer `consolidate` over `strengthen` or `add` to avoid creating duplicate guardrail ids.
+**Structured guardrail entries:** Every `plan-guardrails` and
+`execute-guardrails` proposal MUST carry `guardrails: [{id, description,
+severity}]` — one entry per guardrail id the proposal writes, `severity`
+using that surface's vocabulary (`error` or `warning`). Each `description`
+MUST be 1024 bytes or less. When one rule needs more text than that, split it
+into independent guardrails with kebab-case ids `<base-id>-<n>` (e.g.
+`dry-1`, `dry-2`); each part MUST be a complete, standalone rule that reads
+on its own — never a fragment that depends on a sibling part. `patch` stays
+in the proposal for display only; the skill writes the `guardrails[]`
+entries, not `patch`. `review-dimensions` and `copilot-instructions`
+proposals never carry `guardrails`.
+
+**`consolidate` (R15):** Use when the proposed change targets an existing `plan-guardrails` or `execute-guardrails` entry by id OR strongly overlaps an existing description — compare the proposal's id and description against `surfaces.planGuardrails[]` / `surfaces.executeGuardrails[]` in the manifest. A `consolidate` proposal MUST cite the existing guardrail by id in `patch` and MUST be strengthen-direction only (tighter description, raised severity, narrower glob) per R8 / C9 — `consolidate` MAY NOT remove fields or lower severity. When duplication is detected, prefer `consolidate` over `strengthen` or `add` to avoid creating duplicate guardrail ids. Its `guardrails[]` entry replaces the fields of the guardrail cited by id — same 1024-byte and split rules apply.
 
 ## Step 4 — Self-Critique (first pass)
 
@@ -142,6 +155,8 @@ Before emitting JSON, verify:
 - Review-dimensions ordering: `review-dimensions` proposals appear first in `proposals[]` (R14)
 - Minimum coverage: envelope contains ≥1 review-dimensions proposal OR `skipped.reviewDimensions.rationale` is set (R14)
 - Duplication: every `plan-guardrails` / `execute-guardrails` proposal that overlaps an existing guardrail (by id or description) uses `action: "consolidate"`, not `"strengthen"` or `"add"` (R15)
+- Structured entries: every `plan-guardrails` / `execute-guardrails` proposal carries `guardrails[]` with one `{id, description, severity}` entry per id it writes; `review-dimensions` / `copilot-instructions` proposals omit `guardrails`
+- Length and split: every `guardrails[].description` is 1024 bytes or less; a rule that needed more text is split into complete, standalone entries with kebab-case ids `<base-id>-<n>`, never a dependent fragment
 
 Note every failing check.
 
@@ -152,6 +167,8 @@ For each failing check noted in Step 4:
 - Rewrite generic rationale with direct reference to the failure signal
 - Remove or invert any proposal that relaxes an existing rule
 - Correct severity vocabulary mismatches
+- Add the missing `guardrails[]` array to any `plan-guardrails` / `execute-guardrails` proposal that omitted it
+- Split any `guardrails[].description` over 1024 bytes into `<base-id>-<n>` parts, each a complete rule, and re-check
 
 Re-run all Step 4 checks after improvements. Continue until all checks pass (max 2 iterations).
 
@@ -181,6 +198,9 @@ Output a single JSON object and nothing else. When the envelope contains proposa
       "action": "consolidate",
       "targetFile": "/abs/path/.sdlc-v2/config.toml",
       "patch": "...",
+      "guardrails": [
+        { "id": "dry", "description": "...", "severity": "error" }
+      ],
       "rationale": "..."
     }
   ]

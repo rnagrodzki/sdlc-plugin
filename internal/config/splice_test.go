@@ -1,7 +1,6 @@
 package config
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -67,87 +66,103 @@ func TestWriteSection_SpliceCases(t *testing.T) {
 		{
 			name:    "absent section appended to a file without a final newline",
 			file:    "config.toml",
-			content: "[commit]\nallowedTypes = [\"feat\"]",
+			content: "[commit]\n# own comment\nallowedTypes = [\"feat\"]",
 			section: "jira",
 			value:   map[string]any{"defaultProject": "PROJ"},
-			want: "[commit]\nallowedTypes = [\"feat\"]\n\n[jira]\n" +
+			want: "[commit]\n# own comment\nallowedTypes = [\"feat\"]\n\n[jira]\n" +
 				"# Default Jira project key (2–10 uppercase letters, e.g. \"PROJ\").\ndefaultProject = 'PROJ'\n",
 		},
 		{
 			name: "table replaced in place, comments above and after it kept",
 			file: "config.toml",
 			content: "# jira doc\n[jira]\n# lost: inside the block\ndefaultProject = \"OLD\" # lost: same line\n" +
-				"# kept: after the last key\n\n# commit doc\n[commit]\nallowedTypes = []\n",
+				"# kept: after the last key\n\n# commit doc\n[commit]\n# own comment\nallowedTypes = []\n",
 			section: "jira",
 			value:   map[string]any{"defaultProject": "NEW"},
 			want: "# jira doc\n[jira]\n# lost: inside the block\ndefaultProject = 'NEW' # lost: same line\n" +
-				"# kept: after the last key\n\n# commit doc\n[commit]\nallowedTypes = []\n",
+				"# kept: after the last key\n\n# commit doc\n[commit]\n# own comment\nallowedTypes = []\n",
 		},
 		{
+			// plan.tasks keeps its own leading comment here: the shipped
+			// config.toml template has a commented [plan.tasks] example, so a
+			// live plan.tasks header with no comment of its own would get
+			// that template tip restored above it (tips.go's whole-file
+			// restore) — unrelated to what this case pins (a dotted leaf
+			// under [plan]).
 			name: "dotted leaf keeps the parent table and its siblings",
 			file: "config.toml",
-			content: "[plan]\n# plan doc\n\n[plan.tasks]\nnote = \"old\"\n\n" +
+			content: "[plan]\n# plan doc\n\n# tasks doc\n[plan.tasks]\nnote = \"old\"\n\n" +
 				"[plan.guardrails.g1]\nseverity = \"error\"\n",
 			section: "plan.tasks",
 			value:   map[string]any{"note": "new"},
-			want: "[plan]\n# plan doc\n\n[plan.tasks]\nnote = 'new'\n\n" +
+			want: "[plan]\n# plan doc\n\n# tasks doc\n[plan.tasks]\nnote = 'new'\n\n" +
 				"[plan.guardrails.g1]\nseverity = \"error\"\n",
 		},
 		{
 			name: "all sub-tables replaced as one unit, even when not adjacent",
 			file: "config.toml",
-			content: "[plan.guardrails.a]\nseverity = \"error\"\n\n# jira doc\n[jira]\ndefaultProject = \"P\"\n\n" +
+			content: "[plan.guardrails.a]\nseverity = \"error\"\n\n# jira doc\n[jira]\n# own comment\ndefaultProject = \"P\"\n\n" +
 				"[plan.guardrails.b]\nseverity = \"warning\"\n\n# tail\n",
 			section: "plan.guardrails",
 			value:   map[string]any{"c": map[string]any{"severity": "error"}},
-			want:    "[plan.guardrails.c]\nseverity = 'error'\n\n# jira doc\n[jira]\ndefaultProject = \"P\"\n\n# tail\n",
+			want:    "[plan.guardrails.c]\nseverity = 'error'\n\n# jira doc\n[jira]\n# own comment\ndefaultProject = \"P\"\n\n# tail\n",
 		},
 		{
 			name: "array of tables replaced",
 			file: "config.toml",
 			content: "[[plan.guardrails]]\nid = \"a\"\n\n[[plan.guardrails]]\nid = \"b\"\n\n" +
-				"[commit]\nallowedTypes = []\n",
+				"[commit]\n# own comment\nallowedTypes = []\n",
 			section: "plan.guardrails",
 			value:   map[string]any{"a": map[string]any{"severity": "error"}},
-			want:    "[plan.guardrails.a]\nseverity = 'error'\n\n[commit]\nallowedTypes = []\n",
+			want:    "[plan.guardrails.a]\nseverity = 'error'\n\n[commit]\n# own comment\nallowedTypes = []\n",
 		},
 		{
+			// The new [plan.tasks] header springs into existence here (the
+			// old data was a dotted key), so there is no file position to
+			// attach a test-owned comment to; the shipped config.toml
+			// template's commented [plan.tasks] tip is restored above it,
+			// same as "absent section appended" above.
 			name:    "dotted key under the parent table is removed",
 			file:    "config.toml",
 			content: "[plan]\ntasks.note = \"old\"\nother = 1\n",
 			section: "plan.tasks",
 			value:   map[string]any{"note": "new"},
-			want:    "[plan]\nother = 1\n\n[plan.tasks]\nnote = 'new'\n",
+			want: "[plan]\nother = 1\n\n" +
+				"# Team contract for plan tasks and deliverables (optional).\n[plan.tasks]\nnote = 'new'\n",
 		},
 		{
-			name: "header-like text in strings, arrays and comments is not a header",
+			name: "header-like text in strings and arrays is not a header, the commented one becomes live",
 			file: "config.toml",
 			content: "[plan]\nnote = \"\"\"\n[plan.tasks]\nnot a header\n\"\"\"\n" +
 				"lit = '''\n[plan.tasks]\n'''\n" +
 				"matrix = [\n  [\"a\"],\n  [\"b\"]\n]\n" +
-				"# [plan.tasks]\n",
+				// Own comment directly above the commented header, so once
+				// it is uncommented it already has a comment above it and
+				// the shipped template's plan.tasks tip is not restored.
+				"# own tip\n# [plan.tasks]\n",
 			section: "plan.tasks",
 			value:   map[string]any{"note": "real"},
+			// Only the commented header is taken for plan.tasks: it becomes live.
 			want: "[plan]\nnote = \"\"\"\n[plan.tasks]\nnot a header\n\"\"\"\n" +
 				"lit = '''\n[plan.tasks]\n'''\n" +
 				"matrix = [\n  [\"a\"],\n  [\"b\"]\n]\n" +
-				"# [plan.tasks]\n[plan.tasks]\nnote = 'real'\n",
+				"# own tip\n[plan.tasks]\nnote = 'real'\n",
 		},
 		{
 			name:    "empty value writes an empty table",
 			file:    "config.toml",
-			content: "[plan.tasks]\nnote = \"x\"\n\n[jira]\ndefaultProject = \"P\"\n",
+			content: "# tasks doc\n[plan.tasks]\nnote = \"x\"\n\n[jira]\n# own comment\ndefaultProject = \"P\"\n",
 			section: "plan.tasks",
 			value:   map[string]any{},
-			want:    "[plan.tasks]\n\n[jira]\ndefaultProject = \"P\"\n",
+			want:    "# tasks doc\n[plan.tasks]\n\n[jira]\n# own comment\ndefaultProject = \"P\"\n",
 		},
 		{
 			name:    "one changed key: only its value text changes",
 			file:    "config.toml",
-			content: "# jira doc\n[jira]\n# tip\n  defaultProject = \"OLD\"\n\n[commit]\nallowedTypes = []\n",
+			content: "# jira doc\n[jira]\n# tip\n  defaultProject = \"OLD\"\n\n[commit]\n# own comment\nallowedTypes = []\n",
 			section: "jira",
 			value:   map[string]any{"defaultProject": "NEW"},
-			want:    "# jira doc\n[jira]\n# tip\n  defaultProject = 'NEW'\n\n[commit]\nallowedTypes = []\n",
+			want:    "# jira doc\n[jira]\n# tip\n  defaultProject = 'NEW'\n\n[commit]\n# own comment\nallowedTypes = []\n",
 		},
 		{
 			name:    "no value change keeps key text byte-identical, missing tips still restored",
@@ -168,29 +183,29 @@ func TestWriteSection_SpliceCases(t *testing.T) {
 		{
 			name:    "removed key loses its line, the comment above it stays",
 			file:    "config.toml",
-			content: "[jira]\ndefaultProject = \"P\"\n# site tip\nsite = \"s\"\n\n[commit]\nallowedTypes = []\n",
+			content: "[jira]\ndefaultProject = \"P\"\n# site tip\nsite = \"s\"\n\n[commit]\n# own comment\nallowedTypes = []\n",
 			section: "jira",
 			value:   map[string]any{"defaultProject": "P"},
 			want: "[jira]\n" +
 				"# Default Jira project key (2–10 uppercase letters, e.g. \"PROJ\").\ndefaultProject = \"P\"\n" +
-				"# site tip\n\n[commit]\nallowedTypes = []\n",
+				"# site tip\n\n[commit]\n# own comment\nallowedTypes = []\n",
 		},
 		{
 			name: "removed sub-table loses header, multi-line value and one blank line",
 			file: "config.toml",
 			content: "[plan.guardrails.a]\nseverity = \"error\"\n\n# b doc\n[plan.guardrails.b]\n# inside b\n" +
-				"description = \"\"\"\nmulti\nline\"\"\"\n\n[jira]\ndefaultProject = \"P\"\n",
+				"description = \"\"\"\nmulti\nline\"\"\"\n\n[jira]\n# own comment\ndefaultProject = \"P\"\n",
 			section: "plan.guardrails",
 			value:   map[string]any{"a": map[string]any{"severity": "error"}},
-			want:    "[plan.guardrails.a]\nseverity = \"error\"\n\n# b doc\n# inside b\n[jira]\ndefaultProject = \"P\"\n",
+			want:    "[plan.guardrails.a]\nseverity = \"error\"\n\n# b doc\n# inside b\n[jira]\n# own comment\ndefaultProject = \"P\"\n",
 		},
 		{
 			name:    "table changed to array of tables at its first old block, below its comments",
 			file:    "config.toml",
-			content: "# rules doc\n[plan.guardrails.a]\nseverity = \"error\"\n\n[commit]\nallowedTypes = []\n",
+			content: "# rules doc\n[plan.guardrails.a]\nseverity = \"error\"\n\n[commit]\n# own comment\nallowedTypes = []\n",
 			section: "plan",
 			value:   map[string]any{"guardrails": []any{map[string]any{"id": "x"}}},
-			want:    "# rules doc\n[[plan.guardrails]]\nid = 'x'\n\n[commit]\nallowedTypes = []\n",
+			want:    "# rules doc\n[[plan.guardrails]]\nid = 'x'\n\n[commit]\n# own comment\nallowedTypes = []\n",
 		},
 		{
 			name:    "untouched keys keep their order, quote style and bytes",
@@ -206,28 +221,28 @@ func TestWriteSection_SpliceCases(t *testing.T) {
 		{
 			name:    "new key goes after the last key of its table",
 			file:    "config.toml",
-			content: "[jira]\ndefaultProject = \"P\"\n# trailing comment\n\n[commit]\nallowedTypes = []\n",
+			content: "[jira]\ndefaultProject = \"P\"\n# trailing comment\n\n[commit]\n# own comment\nallowedTypes = []\n",
 			section: "jira",
 			value:   map[string]any{"defaultProject": "P", "site": "x"},
 			want: "[jira]\n" +
 				"# Default Jira project key (2–10 uppercase letters, e.g. \"PROJ\").\ndefaultProject = \"P\"\n" +
-				"site = 'x'\n# trailing comment\n\n[commit]\nallowedTypes = []\n",
+				"site = 'x'\n# trailing comment\n\n[commit]\n# own comment\nallowedTypes = []\n",
 		},
 		{
 			name:    "new sub-table goes after the last line of its section",
 			file:    "config.toml",
-			content: "[plan.tasks]\nnote = \"x\"\n\n[jira]\ndefaultProject = \"P\"\n",
+			content: "# tasks doc\n[plan.tasks]\nnote = \"x\"\n\n[jira]\n# own comment\ndefaultProject = \"P\"\n",
 			section: "plan.tasks",
 			value:   map[string]any{"note": "x", "sub": map[string]any{"a": "b"}},
-			want:    "[plan.tasks]\nnote = \"x\"\n\n[plan.tasks.sub]\na = 'b'\n\n[jira]\ndefaultProject = \"P\"\n",
+			want:    "# tasks doc\n[plan.tasks]\nnote = \"x\"\n\n[plan.tasks.sub]\na = 'b'\n\n[jira]\n# own comment\ndefaultProject = \"P\"\n",
 		},
 		{
-			name:    "absent table goes after its commented header block",
+			name:    "absent table takes over its commented header and example lines",
 			file:    "config.toml",
-			content: "[commit]\nallowedTypes = []\n\n# Jira doc\n#  [ jira ]\n# defaultProject = \"X\"\n\n# tail\n",
+			content: "[commit]\n# own comment\nallowedTypes = []\n\n# Jira doc\n#  [ jira ]\n# defaultProject = \"X\"\n\n# tail\n",
 			section: "jira",
 			value:   map[string]any{"defaultProject": "P"},
-			want: "[commit]\nallowedTypes = []\n\n# Jira doc\n#  [ jira ]\n# defaultProject = \"X\"\n[jira]\n" +
+			want: "[commit]\n# own comment\nallowedTypes = []\n\n# Jira doc\n[ jira ]\n" +
 				"# Default Jira project key (2–10 uppercase letters, e.g. \"PROJ\").\ndefaultProject = 'P'\n\n# tail\n",
 		},
 		{
@@ -267,6 +282,128 @@ func TestWriteSection_SpliceCases(t *testing.T) {
 			section: "ship",
 			value:   map[string]any{"draft": true},
 			want:    "[ship]\n# Create PR as draft.\ndraft = true\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, rewrote := writeSpliceFixture(t, tc.file, tc.content, tc.section, tc.value)
+			if rewrote {
+				t.Errorf("fell back to a full rewrite")
+			}
+			if got != tc.want {
+				t.Errorf("file text mismatch\n--- got ---\n%s\n--- want ---\n%s", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSplice_CommentedExamples pins how a new key takes over its commented
+// example line, and a new section its commented header line. Each fixture
+// keeps a comment line directly above every new key, so no template tip is
+// inserted and the expected text shows only the splice.
+func TestSplice_CommentedExamples(t *testing.T) {
+	cases := []struct {
+		name    string
+		file    string
+		content string
+		section string
+		value   map[string]any
+		want    string
+	}{
+		{
+			name: "new key replaces its commented example, trailing tip kept",
+			file: "local.toml",
+			content: "[style]\n# note\n# audience = \"functional\"      # technical | functional | executive | general | beginner\n" +
+				"# tone = \"direct\"              # direct | neutral\n",
+			section: "style",
+			value:   map[string]any{"audience": "technical"},
+			want: "[style]\n# note\naudience = 'technical'      # technical | functional | executive | general | beginner\n" +
+				"# tone = \"direct\"              # direct | neutral\n",
+		},
+		{
+			name:    "two examples for one key: the first one is used",
+			file:    "local.toml",
+			content: "[style]\n# note\n# tone = \"direct\"   # first\n# tone = \"neutral\"  # second\n",
+			section: "style",
+			value:   map[string]any{"tone": "neutral"},
+			want:    "[style]\n# note\ntone = 'neutral'   # first\n# tone = \"neutral\"  # second\n",
+		},
+		{
+			name:    "indented example keeps its indentation",
+			file:    "local.toml",
+			content: "[style]\n  # note\n  #   tone = \"direct\"\n",
+			section: "style",
+			value:   map[string]any{"tone": "neutral"},
+			want:    "[style]\n  # note\n  tone = 'neutral'\n",
+		},
+		{
+			name:    "comment inside a multi-line value is not an example",
+			file:    "local.toml",
+			content: "[ship]\n# steps doc\nsteps = [\n  \"execute\",\n# foo = false\n]\n# foo doc\n",
+			section: "ship",
+			value:   map[string]any{"steps": []any{"execute"}, "foo": true},
+			want:    "[ship]\n# steps doc\nsteps = [\n  \"execute\",\n# foo = false\n]\nfoo = true\n# foo doc\n",
+		},
+		{
+			name: "commented header and its example are uncommented, other examples stay",
+			file: "local.toml",
+			content: "[ship]\n# bump doc\nbump = \"patch\"\n\n# ─── Review\n# [review]\n# Which changes to include.\n" +
+				"# scope = \"working\"\n# Max dimensions.\n# maxDimensions = 8\n\n# [receivedReview]\n# scope = \"x\"\n",
+			section: "review",
+			value:   map[string]any{"scope": "diff"},
+			want: "[ship]\n# bump doc\nbump = \"patch\"\n\n# ─── Review\n[review]\n# Which changes to include.\n" +
+				"scope = 'diff'\n# Max dimensions.\n# maxDimensions = 8\n\n# [receivedReview]\n# scope = \"x\"\n",
+		},
+		{
+			// Own comment above [review] here: the shipped local.toml
+			// template has a commented [review] example with its own
+			// header tip, so a live review header with nothing above it
+			// would get that tip restored — unrelated to what this case
+			// pins (an example below the next commented header is unused).
+			name:    "example below the next commented header is not used",
+			file:    "local.toml",
+			content: "# own review doc\n[review]\n# a\n# [other]\n# foo = \"x\"\n",
+			section: "review",
+			value:   map[string]any{"foo": "y"},
+			want:    "# own review doc\n[review]\nfoo = 'y'\n# a\n# [other]\n# foo = \"x\"\n",
+		},
+		{
+			name:    "new sub-table goes below the uncommented example line",
+			file:    "local.toml",
+			content: "# doc\n# [automation]\n# note\n# zz = \"b\"\n# tail\n",
+			section: "automation",
+			value:   map[string]any{"zz": "a", "sub": map[string]any{"k": true}},
+			want:    "# doc\n[automation]\n# note\nzz = 'a'\n\n[automation.sub]\nk = true\n# tail\n",
+		},
+		{
+			// The commented [review] header here is not eligible to be
+			// taken over (a live key follows it before the next header), so
+			// [review] is appended fresh — same as "absent section
+			// appended" in TestWriteSection_SpliceCases, which also gets
+			// the shipped template's tip above the newly appended header.
+			name:    "commented header with a live key/value below it: section appended",
+			file:    "local.toml",
+			content: "# [review]\n# foo = \"x\"\nstray = true\n",
+			section: "review",
+			value:   map[string]any{"foo": "y"},
+			want: "# [review]\n# foo = \"x\"\nstray = true\n\n" +
+				"# ─── Review defaults (optional — delete if not using) ─────────────\n[review]\nfoo = 'y'\n",
+		},
+		{
+			name:    "CRLF file: uncommented lines keep CRLF",
+			file:    "local.toml",
+			content: "# doc\r\n# [review]\r\n# c\r\n# foo = \"working\"   # tip\r\n",
+			section: "review",
+			value:   map[string]any{"foo": "diff"},
+			want:    "# doc\r\n[review]\r\n# c\r\nfoo = 'diff'   # tip\r\n",
+		},
+		{
+			name:    "new dotted key replaces its commented example",
+			file:    "config.toml",
+			content: "[version]\n# doc\ntag.enabled = true\n# prefix doc\n# tag.prefix = \"v\"   # p\n",
+			section: "version",
+			value:   map[string]any{"tag": map[string]any{"enabled": true, "prefix": "x"}},
+			want:    "[version]\n# doc\ntag.enabled = true\n# prefix doc\ntag.prefix = 'x'   # p\n",
 		},
 	}
 	for _, tc := range cases {
@@ -324,7 +461,9 @@ func TestWriteSection_SpliceTemplateVersion(t *testing.T) {
 }
 
 // TestWriteSection_SpliceTemplateLocal writes planStyle into the shipped
-// local.toml template: [ship] and all its comments stay byte-for-byte.
+// local.toml template: [ship] and all its comments stay byte-for-byte, and
+// the new audience key takes over the first commented audience example
+// under [planStyle] (the deprecated one), keeping its trailing tip.
 func TestWriteSection_SpliceTemplateLocal(t *testing.T) {
 	tmpl := version.LocalTemplate
 	value := map[string]any{"audience": "executive"}
@@ -332,9 +471,10 @@ func TestWriteSection_SpliceTemplateLocal(t *testing.T) {
 	if rewrote {
 		t.Fatalf("fell back to a full rewrite")
 	}
-	head := tmpl[:strings.Index(tmpl, "[planStyle]\n")]
-	if !strings.HasPrefix(got, head+"[planStyle]\naudience = 'executive'\n") {
-		t.Errorf("local.toml: [ship] text changed or planStyle not spliced in place:\n%s", got)
+	at := strings.Index(tmpl, "[planStyle]\n")
+	want := tmpl[:at] + strings.Replace(tmpl[at:], "# audience = \"functional\"", "audience = 'executive'", 1)
+	if got != want {
+		t.Errorf("local.toml: text outside the planStyle audience line changed:\n%s", got)
 	}
 }
 
@@ -454,19 +594,60 @@ func TestWriteSection_SpliceFallsBack(t *testing.T) {
 	}
 }
 
-// TestCommentedHeaderEnd pins the commented-header lookup: any spacing
-// inside the comment matches, the end is the line after the comment block,
-// and a header for another path or an uncommented header does not match.
-func TestCommentedHeaderEnd(t *testing.T) {
-	lines := bytes.SplitAfter([]byte("[a]\nk = 1\n\n# doc\n#[ x . y ]\n# k = 2\n\n# [x]\n"), []byte("\n"))
-	if got := commentedHeaderEnd(lines, []string{"x", "y"}); got != 6 {
-		t.Errorf("x.y: got %d, want 6", got)
+// TestSplice_ParseCommentedHeader pins the commented-header parser: any
+// spacing inside the comment matches, and prose, a live header, an
+// array-of-tables header and a key/value do not.
+func TestSplice_ParseCommentedHeader(t *testing.T) {
+	tests := []struct {
+		line   string
+		want   []string
+		wantOK bool
+	}{
+		{"# [review]\n", []string{"review"}, true},
+		{"#[ x . y ]\r\n", []string{"x", "y"}, true},
+		{"  #   [workspace.branch]   # tip\n", []string{"workspace", "branch"}, true},
+		{"[review]\n", nil, false},
+		{"# [[plan.guardrails]]\n", nil, false},
+		{"# scope = \"working\"\n", nil, false},
+		{"# Deprecated — moved to [style]; still accepted here.\n", nil, false},
+		{"# [review] [ship]\n", nil, false},
+		{"#\n", nil, false},
 	}
-	if got := commentedHeaderEnd(lines, []string{"x"}); got != 8 {
-		t.Errorf("x: got %d, want 8", got)
+	for _, tt := range tests {
+		got, ok := parseCommentedHeader([]byte(tt.line))
+		if ok != tt.wantOK || !reflect.DeepEqual(got, tt.want) {
+			t.Errorf("parseCommentedHeader(%q) = %v, %v; want %v, %v", tt.line, got, ok, tt.want, tt.wantOK)
+		}
 	}
-	if got := commentedHeaderEnd(lines, []string{"a"}); got != -1 {
-		t.Errorf("a: got %d, want -1", got)
+}
+
+// TestSplice_ParseCommentedExample pins the commented-example parser: the
+// key with dotted parts joined, the trailing tip with the blanks before it,
+// and no match for prose, headers, live lines or multi-line values.
+func TestSplice_ParseCommentedExample(t *testing.T) {
+	tests := []struct {
+		line   string
+		key    string
+		tip    string
+		wantOK bool
+	}{
+		{"# audience = \"functional\"      # technical | functional\n", "audience", "      # technical | functional", true},
+		{"# language = \"English\"\n", "language", "", true},
+		{"  #tag.enabled=true   \r\n", "tag.enabled", "", true},
+		{"# note = \"a # b\"  # real tip", "note", "  # real tip", true},
+		{"# technicalTerms = []          # words\n", "technicalTerms", "          # words", true},
+		{"audience = \"x\"\n", "", "", false},
+		{"# Valid: \"major\" | \"minor\"\n", "", "", false},
+		{"# [review]\n", "", "", false},
+		{"# steps = [\n", "", "", false},
+		{"# a = 1 b = 2\n", "", "", false},
+		{"# Default version bump.\n", "", "", false},
+	}
+	for _, tt := range tests {
+		key, tip, ok := parseCommentedExample([]byte(tt.line))
+		if ok != tt.wantOK || key != tt.key || tip != tt.tip {
+			t.Errorf("parseCommentedExample(%q) = %q, %q, %v; want %q, %q, %v", tt.line, key, tip, ok, tt.key, tt.tip, tt.wantOK)
+		}
 	}
 }
 

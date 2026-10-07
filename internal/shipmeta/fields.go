@@ -45,10 +45,11 @@ var ValidSteps = CanonicalSteps
 // plugins/sdlc/skills/ship/config-format.md (the Field Reference table, its
 // Full Example JSON block and the surrounding prose) and
 // plugins/sdlc/templates/local.toml (what /setup copies into a new project).
-// internal/config's TestShippedReviewThresholdDefaultsAgree pins the
-// reviewThreshold value across this table, the template, the setup wizard
-// and the docs; the remaining fields are unguarded, so change them together
-// by hand.
+// internal/tools' TestLocalTemplate_ShipCommentedDefaultsMatchBuiltIns pins
+// every field of this table against its commented example in the template.
+// internal/config's TestShippedReviewThresholdDefaultsAgree also pins the
+// reviewThreshold value across the setup wizard and the docs. No test pins
+// the other fields in config-format.md, so change those docs by hand.
 type shipBuiltInDefaultsT struct {
 	Steps                       []string
 	Bump                        string

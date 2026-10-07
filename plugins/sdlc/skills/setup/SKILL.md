@@ -21,11 +21,15 @@ delegates content creation to specialized skills.
 ## Port Notes (Task 44 — read before using this skill)
 
 This is a Go/MCP port of the original script-driven skill. `internal/tools/setup.go`'s
-`setup_prepare` tool returns only static per-section descriptors (`id`, `label`, `purpose`,
+`setup_prepare` tool returns static per-section descriptors (`id`, `label`, `purpose`,
 `configFile`, `configPath`, `consumedBy`, `filesModified`, `optional`, `delegatedTo`,
-`confirmDetected`, `fields[]`) plus `needsMigration` (a single project-wide boolean),
-`defaultBranch`, and `remoteOwner`. It has no equivalent of source's `state`/`summary`/
-`locked` per row, nor of `projectConfig`/`localConfig`/`legacy`/`openspecConfig`/`content`/
+`confirmDetected`, `fields[]`, `defaultTarget`) plus `needsMigration` (a single
+project-wide boolean), `defaultBranch`, `remoteOwner`, `userConfigPath` (absolute path of
+the user-level local config, `~/.sdlc/local.toml` or `$SDLC_USER_CONFIG`), and
+`localValues` (keyed by local-toml section id: the merged user-file + project-file values
+and a `"user"`/`"project"` source per leaf key). It has no equivalent of source's
+`state`/`summary`/`locked` per row, nor of
+`projectConfig`/`legacy`/`openspecConfig`/`content`/
 `detected.versionFile-fileType-tagPrefix`/`preReleaseCompat`/`menuInputContract`/
 `scriptVersions`. Where the source procedure depended on one of those, this port computes
 it LLM-natively (Read/Glob/Grep, inline static tables) rather than depending on a tool
@@ -35,13 +39,14 @@ field that does not exist. Deviations, one line each:
   / 3.hooks, issues #351/#370/#372) are dropped entirely. Go's `internal/setupmeta.Sections()`
   is a frozen 19-id manifest with no `workspace`/`hooks` id — there is nothing to dispatch to.
   `--only` no longer accepts those ids.
-- **State/summary/locked (Gap A):** Step 0/1 below compute `state` and `summary` per row by
-  reading `.sdlc-v2/config.toml` / `.sdlc-v2/local.toml` directly and Globbing the content
-  markers, reproducing `scripts/lib/setup-sections.js`'s `computeState`/`summarize*`
-  functions verbatim (see Step 1). The `[legacy]` per-row badge and the "locked,
-  always-included" menu rule are dropped — Go's `needsMigration` has no per-section
-  attribution to key a per-row legacy state off of. Step 1 prints one migration banner
-  instead, and Step 2 still runs before the menu answers are acted on.
+- **State/summary/locked (Gap A):** Step 0/1 below compute `state` and `summary` per row
+  from `.sdlc-v2/config.toml` (project sections) and from `setup_prepare`'s `localValues`
+  (local sections), and Globbing the content markers, reproducing
+  `scripts/lib/setup-sections.js`'s `computeState`/`summarize*` functions verbatim (see
+  Step 1). The `[legacy]` per-row badge and the "locked, always-included" menu rule are
+  dropped — Go's `needsMigration` has no per-section attribution to key a per-row legacy
+  state off of. Step 1 prints one migration banner instead, and Step 2 still runs before
+  the menu answers are acted on.
 - **Misplaced-section detection:** source additionally flagged a section `legacy` when a key
   was nested at the wrong config-file top level (e.g. `ship` under `.sdlc-v2/config.toml`). No
   Go equivalent exists; dropped. No client-side scan of the seven legacy marker files exists
@@ -54,8 +59,9 @@ field that does not exist. Deviations, one line each:
 - **Diff preview (Gap C):** source's `computeConfigDiff` pure-JS diff has no Go/tool
   equivalent. Replaced with an LLM-native before/after table built from the Step 0 snapshot
   vs. the values assembled during Step 3 (see "Diff preview" below).
-- **R-SCRIPT-VERSIONS warning dropped.** No Go tool surfaces installed-vs-current CI script
-  versions; there is nothing to compare. Step 0 has no equivalent warning.
+- **R-SCRIPT-VERSIONS warning moved to Step 4.** `setup_prepare` returns `ciScriptDrift[]`
+  (installed vs current version of each `scaffold_ci`-managed script). Step 0 prints no
+  warning for it; Step 4's `CI scripts needing an update` block reports it instead.
 - **`setup_init` vs `setup_write_sections`:** `setup_init` (existing Go tool) takes no input
   and always writes the *complete* `config.toml`/`local.toml` templates — every field, heavily
   commented — directly to disk in one shot; it cannot accept assembled field values the way
@@ -143,7 +149,7 @@ If the system context contains "Plan mode is active":
 1. Call the `setup_prepare` MCP tool:
 
    ```
-   setup_prepare({ skipConfigCheck: false }) → { ok, needsMigration, sections[], defaultBranch, remoteOwner, ciScriptDrift[] }
+   setup_prepare({ skipConfigCheck: false }) → { ok, needsMigration, sections[], defaultBranch, remoteOwner, ciScriptDrift[], userConfigPath, localValues }
    ```
 
    `sections[]` is the static 19-row descriptor list, always in canonical
@@ -152,7 +158,8 @@ If the system context contains "Plan mode is active":
    `plan-template`, `communication-style`, `plan-style`, `plan-tasks`, `plan-guardrails`,
    `execution-guardrails`, `openspec-block`, `automation`. Each row carries `{ id, label, purpose,
    configFile, configPath, consumedBy, filesModified, optional, delegatedTo, confirmDetected,
-   fields[] }`.
+   fields[], defaultTarget }`. `defaultTarget` (`"user"` or `"project"`) is set only on
+   local.toml rows; it is omitted on config.toml rows and delegated rows.
 
 2. Call `setup_init({})` once, unconditionally, to scaffold `.sdlc-v2/` (see Port Notes — it
    takes no input and always writes the complete TOML templates):
@@ -169,15 +176,20 @@ If the system context contains "Plan mode is active":
 3. **Snapshot current config** (cache for the rest of this run — do not re-read mid-run
    unless Step 2 migration or a write changes the files):
    - Read `.sdlc-v2/config.toml` → `projectConfig` (absent file = `{}`, not an error).
-   - Read `.sdlc-v2/local.toml` → `localConfig` (absent file = `{}`).
+   - Use `setup_prepare`'s `localValues` and `userConfigPath` (from the Step 0 item 1 call
+     above — no second call needed) in place of a direct read of local.toml.
+     `localValues[sectionID].values` holds the merged user-file + project-file values for
+     that local-toml section; `localValues[sectionID].sources` maps each leaf key's dotted
+     path to `"user"` or `"project"` (consumed by Step 1's `state`/source-suffix
+     computation below).
 
-   Disclosed gap: `setup_prepare` returns section metadata (ids, labels,
-   fields), never the config files' own contents, and no other MCP tool
-   returns full `.sdlc-v2/config.toml` / `local.toml` contents. This bare
-   Read is setup's own bootstrap of its cache and has no tool-backed
-   alternative — same underlying limitation as `setup-guardrails.md`'s
-   Step 0 note. Every later reference to `projectConfig`/`localConfig`
-   below reuses this cache, not a fresh read.
+   Disclosed gap: `setup_prepare` returns the merged local values
+   (`localValues`), but not the contents of the project config file.
+   The bare Read of `config.toml` above is setup's own bootstrap of its cache.
+
+   Every later reference to `projectConfig` below reuses this cache, not a fresh read;
+   every later reference to local section values reuses this same `setup_prepare` call's
+   `localValues`/`userConfigPath`, not a fresh call.
    - Call `dimensions_render_instructions({ listDimensions: true })` →
      `{ ok, dimensions[], count, next }` for the installed review-dimension count and names
      (fixes a pre-existing `.yaml`→`.md` extension bug in the old bare Glob here — dimension
@@ -210,16 +222,16 @@ If the system context contains "Plan mode is active":
 
    If any of those flags is passed (and `--only` is not), translate it into `--only <id>`. If
    `--only <ids>` is passed (directly or via translation), skip Step 1's menu and proceed to
-   Step 2 → Step 3 with `selectedIds = <ids>`. Pass through `--add`, `--no-copilot`, and
-   `--remove-openspec` to the relevant sub-flow when invoked.
+   Step 2 → Step 2b → Step 3 with `selectedIds = <ids>`. Pass through `--add`, `--no-copilot`,
+   and `--remove-openspec` to the relevant sub-flow when invoked.
 
    `--force` (only when neither `--only` nor a direct-entry flag is passed): skip Step 1's
-   menu and proceed to Step 2 → Step 3 with `selectedIds` = all 19 canonical ids, including
-   sections already `set`. When `--only` or a direct-entry flag is also passed, ignore
-   `--force`; the `--only` id set wins.
+   menu and proceed to Step 2 → Step 2b → Step 3 with `selectedIds` = all 19 canonical ids,
+   including sections already `set`. When `--only` or a direct-entry flag is also passed,
+   ignore `--force`; the `--only` id set wins.
 
    If none of the direct-entry flags, `--only`, or `--force` were passed: continue with the
-   full interactive flow (Steps 1 → 2 → 3 → 4).
+   full interactive flow (Steps 1 → 2 → 2b → 3 → 4).
 
 ---
 
@@ -231,7 +243,8 @@ If the system context contains "Plan mode is active":
 `--pr-template`, `--guardrails`, `--execution-guardrails`, `--openspec-enrich`, or
 `--plan-template` was passed, `selectedIds` are resolved before Step 1 by the flag-alias
 routing in Step 0 (`--force` alone resolves to all 19 ids). Skip the entire menu (no
-numbered list, no chat prompt) and jump to Step 2/3 with the resolved id set.
+numbered list, no chat prompt) and proceed to Step 2 → Step 2b → Step 3 with the resolved id
+set.
 
 **Compute `state` per row** (evaluate in this order; ported verbatim from
 `scripts/lib/setup-sections.js`'s `computeState`, minus the dropped `legacy`/misplaced-section
@@ -247,9 +260,8 @@ branches — see Port Notes):
    `plan.guardrails`); any other non-null resolved value is `set`. Unresolved (any segment
    missing) → `not-set`.
 3. **`.sdlc-v2/local.toml` sections** (`ship`, `review`, `received-review`, `communication-style`,
-   `plan-style`, `github`, `automation`): `set` when `localConfig[section.configPath]` (e.g.
-   `localConfig.receivedReview`, `localConfig.style`, `localConfig.planStyle`) is non-null,
-   else `not-set`.
+   `plan-style`, `github`, `automation`): `set` when `localValues[section.id].values` is
+   non-empty (has at least one key), else `not-set`.
 
 If `needsMigration` is `true`, print one banner line above the status block (no per-row
 `[legacy]` badge — Go's `needsMigration` carries no per-section attribution):
@@ -261,7 +273,9 @@ If `needsMigration` is `true`, print one banner line above the status block (no 
 **Compute `summary` per row** (ported verbatim from `scripts/lib/setup-sections.js`'s
 `summarize*` functions; "join non-empty" means: build each listed piece only when its
 source value is present/non-empty, then join the resulting pieces with `, ` unless noted
-otherwise):
+otherwise). A local-toml section (`ship`, `review`, `received-review`,
+`communication-style`, `plan-style`, `github`, `automation`) reads its field values from
+`localValues[section.id].values`; a config.toml section reads from `projectConfig`:
 
 | id | Summary rule |
 |---|---|
@@ -292,6 +306,15 @@ computed `summary` verbatim:
 - `[set]` — section is already configured.
 - `[not set]` — section has no config.
 
+**Source suffix for `[set]` local-toml rows** (`ship`, `review`, `received-review`,
+`communication-style`, `plan-style`, `github`, `automation` only — config.toml and
+delegated/content rows never show this suffix). Derive from
+`localValues[section.id].sources` (the per-key `"user"`/`"project"` map `setup_prepare`
+returns):
+- Every value in `sources` is `"user"` → append ` (user)`.
+- Every value in `sources` is `"project"` → append ` (project)`.
+- At least one of each appears → append ` (user+project)`.
+
 **Layout:**
 
 ```
@@ -299,8 +322,11 @@ SDLC Setup
 ---------------------------------------------------
 Detected configuration:
 
-  [set]      <id>            <summary>
-  [not set]  <id>            <summary or "—">
+  [set] (user)          <id>            <summary>
+  [set] (project)        <id>            <summary>
+  [set] (user+project)   <id>            <summary>
+  [set]                  <id>            <summary>   (config.toml section — no suffix)
+  [not set]               <id>            <summary or "—">
   ...
 ```
 
@@ -355,7 +381,7 @@ default is always `all`.)
   that, exit with `No valid input after 3 attempts — no changes made.`
 
 Store the resolved section ids as `selectedIds`. Defer migration and field collection to
-Step 2 / Step 3.
+Step 2 / Step 2b / Step 3.
 
 ---
 
@@ -421,14 +447,48 @@ Report all three results to the user verbatim. When the import returned `skipped
 show each entry on its own line under the heading `Legacy keys not imported:` (an entry
 ending in `(already set)` is a key the user changed, so the import kept the current value).
 
-On **no** (top-level choice: configure from scratch): proceed directly to Step 3 without
-migrating.
+On **no** (top-level choice: configure from scratch): proceed directly to Step 2b, then
+Step 3, without migrating.
 
-After migration, re-run Step 0's snapshot
-(re-call `setup_prepare` and re-Read `.sdlc-v2/config.toml` / `.sdlc-v2/local.toml` — same
-disclosed gap as Step 0, no tool-backed alternative) so Step 3's
-"Current value" lines and Step 1's already-computed `state`/`summary` reflect the migrated
-config.
+After migration, re-run Step 0's snapshot (re-call `setup_prepare` — same disclosed gap as
+Step 0, no tool-backed alternative — and re-Read `.sdlc-v2/config.toml` only; take
+`localValues`/`userConfigPath` from the same re-call) so Step 3's "Current value" lines and
+Step 1's already-computed `state`/`summary` reflect the migrated config. Then proceed to
+Step 2b, then Step 3.
+
+---
+
+### Step 2b — Save-Target Question
+
+<!-- Implements the setup save-target choice (Task 16). -->
+
+**Skip this step if** no id in `selectedIds` names a section whose `configFile` is
+`.sdlc-v2/local.toml` (`ship`, `review`, `received-review`, `communication-style`,
+`plan-style`, `github`, `automation` — see Step 1's state rule 3). Ask this once per run,
+after Step 2 and before Step 3's dispatch loop begins.
+
+Use AskUserQuestion:
+
+> Where should setup save your personal settings?
+
+Options:
+1. **Defaults per section (Recommended)** — communication style, plan style, review,
+   received review, automation, github → `~/.sdlc/local.toml` (all projects). ship → this
+   project.
+2. **All to this project** — `.sdlc-v2/local.toml` only. Other projects do not see them.
+3. **All to user profile** — `~/.sdlc/local.toml`. This project overrides only keys set in
+   `.sdlc-v2/local.toml`.
+
+Store the answer as `saveTarget` (`per-section` | `project` | `user`) for the rest of this
+run only — it is not written to disk anywhere, so a later `/setup` rerun asks again (see
+Idempotency).
+
+**Resolving a write target per local section** (used in "Writing config files" below):
+- `saveTarget === 'project'` → every local section writes with `target: "project"`.
+- `saveTarget === 'user'` → every local section writes with `target: "user"`.
+- `saveTarget === 'per-section'` → each local section writes with
+  `target: section.defaultTarget` (from `setup_prepare`'s `sections[]` — `"user"` or
+  `"project"`; see `internal/setupmeta.Section.DefaultTarget`).
 
 ---
 
@@ -739,20 +799,33 @@ for them in this port.)
 #### Diff preview (Gap C)
 
 Before writing, render an end-of-run diff preview comparing the Step 0 snapshot
-(`projectConfig`/`localConfig`) against the values assembled in Step 3. There is no Go
+(`projectConfig`/`localValues`) against the values assembled in Step 3. There is no Go
 equivalent of `computeConfigDiff` — build the table directly:
 
 For each config key touched during Step 3 (i.e. each key that will be passed to
 `setup_write_sections` in "Writing config files" below), compare the pre-Step-3 snapshot
-value at that path to the newly assembled value and list only the paths whose value
-actually changed:
+value at that path (`projectConfig` for a config.toml key, `localValues[id].values` for a
+local.toml key) to the newly assembled value and list only the paths whose value actually
+changed. For each local section, print its resolved save-target file (from Step 2b) on
+its own line directly above that section's row(s):
 
 ```text
+Save target: .sdlc-v2/local.toml
+| path                      | before        | after         |
+|---------------------------|---------------|---------------|
+| ship.bump                 | patch         | minor         |
+
+Save target: /Users/you/.sdlc/local.toml
 | path                      | before        | after         |
 |---------------------------|---------------|---------------|
 | github.expectedAccount    | (unset)       | rnagrodzki    |
+
+| path                      | before        | after         |
+|---------------------------|---------------|---------------|
 | version.tagPrefix         | v             | release/      |
 ```
+
+(The last, unlabeled table holds config.toml paths, which have no save-target choice.)
 
 When no path changed, skip the preview and print `No changes — nothing to write.`; bypass
 the write step and proceed directly to Step 3b (a no-op confirmation in that case).
@@ -811,28 +884,52 @@ After collecting all answers AND confirming the diff preview above:
    }) → { ok, written, errors }
    ```
 
-4. **Everything else** writes directly, one key per assembled section, in a single batched
-   call where possible:
+4. **Everything else writes directly, split into at most two calls by resolved save
+   target.** For each remaining assembled section (not `pr` or `plan.tasks`, handled
+   above):
+   - A config.toml section (`version`, `jira`, `commit`) has no save-target choice; it
+     always writes with no `target` (equivalently `target: "project"` — both mean the
+     same thing for a config.toml key).
+   - A local.toml section (`ship`, `review`, `receivedReview`, `github`, `style`,
+     `planStyle`, `automation`) writes with the target Step 2b resolved for it (see
+     "Resolving a write target per local section").
+
+   Group every section whose resolved target is `"user"` into one call with
+   `target: "user"`. Group every other assembled section (every config.toml section, plus
+   any local section resolved to `"project"`) into a second call with no `target` (or
+   `target: "project"`) — `setup_write_sections` rejects `target: "user"` outright when a
+   config.toml section is present, so the two groups must never share a call (the whole call
+   fails with `project sections [...] cannot use target "user"` and nothing is written — see
+   `setupWriteSections` in `internal/tools/setup_write.go`). Omit either
+   call entirely when its group is empty.
 
    ```
    setup_write_sections({
      sectionsJson: JSON.stringify({
-       version: { ... }, ship: { ... }, jira: { ... }, review: { ... },
-       receivedReview: { ... }, commit: { ... }, style: { ... }, planStyle: { ... }
+       version: { ... }, jira: { ... }, commit: { ... }, ship: { ... }
+     })
+   }) → { ok, written, errors }
+
+   setup_write_sections({
+     target: "user",
+     sectionsJson: JSON.stringify({
+       style: { ... }, planStyle: { ... }, receivedReview: { ... }, review: { ... },
+       github: { ... }, automation: { ... }
      })
    }) → { ok, written, errors }
    ```
 
    Omit any key whose section was skipped or not selected. Display `written[]` and any
-   `errors[]` from the response.
+   `errors[]` from both responses.
 
 ---
 
 ### Step 3b — Validate Written Config
 
-Re-run Step 0's snapshot (re-call `setup_prepare`, re-Read `.sdlc-v2/config.toml` and
-`.sdlc-v2/local.toml` — same disclosed gap as Step 0, no tool-backed alternative) and
-recompute `state` for every id that was just written.
+Re-run Step 0's snapshot (re-call `setup_prepare` — same disclosed gap as Step 0, no
+tool-backed alternative — and re-Read `.sdlc-v2/config.toml` only; take the refreshed
+`localValues`/`userConfigPath` from the same re-call) and recompute `state` for every id
+that was just written.
 
 Confirm every id written in "Writing config files" now shows `state === 'set'`. If any
 written id still shows `not-set` (write silently no-opped or the value resolved as empty),
@@ -889,6 +986,11 @@ automatically, no read-merge needed. `pr`'s own scalar fields are the one except
 must still be written as its top-level key wholesale, so "Writing config files" explicitly
 re-reads and merges in any existing `pr.labels` before that write.
 
+Step 2b's `saveTarget` answer is never persisted — it lives only for the current run. A
+rerun of `/setup` that selects a local section asks the save-target question again. Each
+write is still a full-section write (same as any other section), so a rerun that answers
+the same way produces the same files.
+
 ---
 
 ## DO NOT
@@ -911,6 +1013,10 @@ re-reads and merges in any existing `pr.labels` before that write.
 - Write `plan.guardrails`, `plan.tasks`, `execute.guardrails`, or `pr.labels` as anything
   other than a dotted leaf — writing the `plan`/`execute`/`pr` top-level key instead would
   clobber whichever sibling value wasn't just configured.
+- Skip Step 2b's save-target question when any id in `selectedIds` is a local.toml
+  section — ask it once, even under `--force` or `--only`.
+- Mix a config.toml section into the same `setup_write_sections` call as `target: "user"`
+  — the call rejects it outright and nothing in that call is written.
 
 ---
 
@@ -924,8 +1030,10 @@ detection may return unexpected results.
 detected in Step 0, default to `mode: "file"`. When none was found, default to
 `mode: "tag"`. Always include `mode` in the written config.
 
-**Ship config is developer-local.** Ship preferences live in `.sdlc-v2/local.toml` (gitignored),
-not in `.sdlc-v2/config.toml`. Each developer has their own ship preferences.
+**Ship config is developer-local.** Ship preferences live in `.sdlc-v2/local.toml`
+(gitignored) or in the user file (`~/.sdlc/local.toml` or `$SDLC_USER_CONFIG`) — never in
+`.sdlc-v2/config.toml`. Each developer has their own ship preferences; see Step 2b for
+which file a given run saves to.
 
 **`setup_write_sections` is wholesale-per-leaf, not merge, at whatever key you name.** Each
 call replaces exactly the keys it names — but a key can be a dotted path (`plan.guardrails`,

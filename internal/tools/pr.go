@@ -632,7 +632,7 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 	// is not mistaken for "not configured".
 	githubSection, ghErr := rt.configReadSection(mainRoot, "github")
 	if ghErr != nil && !errors.Is(ghErr, config.ErrNotFound) {
-		warnings = append(warnings, fmt.Sprintf("local.toml [github] section unreadable: %s; skipping expected-account check", ghErr.Error()))
+		warnings = append(warnings, fmt.Sprintf("%s [github] section unreadable: %s; skipping expected-account check", config.LocalFilesLabel, ghErr.Error()))
 	}
 	expectedAccount := ""
 	if v, ok := githubSection["expectedAccount"].(string); ok {
@@ -699,7 +699,7 @@ func prPrepareCoreWith(mainRoot, workDir string, in PRPrepareIn, rt prRuntime) (
 			warnings = append(warnings, fmt.Sprintf("Repo access probe failed (%s) — proceeding without access verification.", msg))
 		}
 	case expectedAccount == "" && !hasRemote:
-		warnings = append(warnings, "Could not resolve expected gh account (no [github] expectedAccount in .sdlc-v2/local.toml, no origin remote). Skipping active-account check.")
+		warnings = append(warnings, "Could not resolve expected gh account (no [github] expectedAccount in "+config.LocalFilesLabel+", no origin remote). Skipping active-account check.")
 	}
 
 	// Git state: current branch + uncommitted-changes, mirroring

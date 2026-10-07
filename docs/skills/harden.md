@@ -112,6 +112,16 @@ consumption gap is closed.
 - **Strengthen-only.** `/harden` never proposes relaxing or removing an
   existing rule — every proposal adds or tightens a guardrail, dimension, or
   instruction.
+- **Guardrail proposals are checked before they are written.** A
+  `plan`/`execute` guardrail proposal is validated in memory against the
+  current config first; if the check finds a problem (e.g. a description over
+  1024 bytes), `/harden` repairs it automatically — shortening the text, or
+  splitting it into independent guardrails like `<id>-1`, `<id>-2` — and
+  checks again, up to 2 repair rounds. Only a clean check is written to
+  `config.toml`, and the write is validated once more on disk as a final
+  safety net. Review dimensions and Copilot instructions still use the
+  original write-first-then-revert-on-failure flow, since they have no
+  equivalent in-memory check.
 - **Nothing is written without approval.** Each proposal is presented
   individually with a patch preview; you choose apply, skip, or cancel per
   proposal. Cancelling stops the whole run without applying later proposals.

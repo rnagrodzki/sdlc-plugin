@@ -206,6 +206,154 @@ func TestReadUserInputInWindow_MissingFile(t *testing.T) {
 	}
 }
 
+// TestCleanUserPrompt_DropsInjectedTurns confirms a turn whose first
+// non-blank text starts with an injected-notification tag is dropped
+// outright: nothing is recorded.
+func TestCleanUserPrompt_DropsInjectedTurns(t *testing.T) {
+	cases := []string{
+		"<task-notification>run 1 finished</task-notification>",
+		"<local-command-stdout>ok</local-command-stdout>",
+		"<local-command-stderr>fail</local-command-stderr>",
+		"<local-command-caveat>heads up</local-command-caveat>",
+		"  \n<task-notification>leading whitespace</task-notification>",
+	}
+	for _, text := range cases {
+		got, keep := CleanUserPrompt(text)
+		if keep {
+			t.Errorf("CleanUserPrompt(%q) keep = true, want false", text)
+		}
+		if got != "" {
+			t.Errorf("CleanUserPrompt(%q) text = %q, want empty", text, got)
+		}
+	}
+}
+
+// TestCleanUserPrompt_StripsEditorEnvelope mirrors the "Editor envelope
+// removed" scenario: an <ide_opened_file> envelope precedes real typed text
+// on its own line, and only the typed text is kept.
+func TestCleanUserPrompt_StripsEditorEnvelope(t *testing.T) {
+	text := "<ide_opened_file>The user opened x</ide_opened_file>\nwhy is it slow?"
+	got, keep := CleanUserPrompt(text)
+	if !keep {
+		t.Fatalf("CleanUserPrompt(%q) keep = false, want true", text)
+	}
+	if got != "why is it slow?" {
+		t.Errorf("CleanUserPrompt(%q) = %q, want %q", text, got, "why is it slow?")
+	}
+}
+
+// TestCleanUserPrompt_StripsEnvelopeAnywhere confirms an ide_selection or
+// system-reminder envelope is removed wherever it appears in the text, not
+// only as a prefix.
+func TestCleanUserPrompt_StripsEnvelopeAnywhere(t *testing.T) {
+	text := "before <ide_selection>func foo() {}</ide_selection> after <system-reminder>context\nspans lines</system-reminder> end"
+	got, keep := CleanUserPrompt(text)
+	if !keep {
+		t.Fatalf("CleanUserPrompt(%q) keep = false, want true", text)
+	}
+	want := "before  after  end"
+	if got != want {
+		t.Errorf("CleanUserPrompt(%q) = %q, want %q", text, got, want)
+	}
+}
+
+// TestCleanUserPrompt_EnvelopeOnlyIsDropped mirrors the "Envelope only"
+// scenario: when stripping the envelope leaves nothing behind, the turn is
+// dropped rather than recorded as an empty prompt.
+func TestCleanUserPrompt_EnvelopeOnlyIsDropped(t *testing.T) {
+	text := "<system-reminder>background context the user never typed</system-reminder>"
+	got, keep := CleanUserPrompt(text)
+	if keep {
+		t.Errorf("CleanUserPrompt(%q) keep = true, want false", text)
+	}
+	if got != "" {
+		t.Errorf("CleanUserPrompt(%q) text = %q, want empty", text, got)
+	}
+}
+
+// TestCleanUserPrompt_ExtractsSlashCommand mirrors the "Slash command"
+// scenario: a <command-name>/<command-args> envelope collapses to
+// "/<name> <args>".
+func TestCleanUserPrompt_ExtractsSlashCommand(t *testing.T) {
+	text := "<command-name>/sdlc:ship</command-name><command-args>--auto</command-args>"
+	got, keep := CleanUserPrompt(text)
+	if !keep {
+		t.Fatalf("CleanUserPrompt(%q) keep = false, want true", text)
+	}
+	if got != "/sdlc:ship --auto" {
+		t.Errorf("CleanUserPrompt(%q) = %q, want %q", text, got, "/sdlc:ship --auto")
+	}
+}
+
+// TestCleanUserPrompt_SlashCommandWithNoArgs confirms an empty
+// <command-args> body collapses to just the command name, with no trailing
+// space.
+func TestCleanUserPrompt_SlashCommandWithNoArgs(t *testing.T) {
+	text := "<command-name>/sdlc:commit</command-name><command-args></command-args>"
+	got, keep := CleanUserPrompt(text)
+	if !keep {
+		t.Fatalf("CleanUserPrompt(%q) keep = false, want true", text)
+	}
+	if got != "/sdlc:commit" {
+		t.Errorf("CleanUserPrompt(%q) = %q, want %q", text, got, "/sdlc:commit")
+	}
+}
+
+// TestCleanUserPrompt_UnknownTagUnchanged confirms text matching none of the
+// drop, strip or slash-command patterns — including an unrecognized tag — is
+// recorded unchanged.
+func TestCleanUserPrompt_UnknownTagUnchanged(t *testing.T) {
+	text := "<unknown-tag>something</unknown-tag> plain text"
+	got, keep := CleanUserPrompt(text)
+	if !keep {
+		t.Fatalf("CleanUserPrompt(%q) keep = false, want true", text)
+	}
+	if got != text {
+		t.Errorf("CleanUserPrompt(%q) = %q, want unchanged", text, got)
+	}
+}
+
+// TestCleanUserPrompt_PlainTextUnchanged confirms an ordinary typed prompt
+// passes through untouched.
+func TestCleanUserPrompt_PlainTextUnchanged(t *testing.T) {
+	text := "skip the low findings"
+	got, keep := CleanUserPrompt(text)
+	if !keep {
+		t.Fatalf("CleanUserPrompt(%q) keep = false, want true", text)
+	}
+	if got != text {
+		t.Errorf("CleanUserPrompt(%q) = %q, want unchanged", text, got)
+	}
+}
+
+// TestCleanUserPrompt_BlankIsDropped confirms a blank (or whitespace-only)
+// prompt is dropped, matching "A blank prompt is not recorded".
+func TestCleanUserPrompt_BlankIsDropped(t *testing.T) {
+	got, keep := CleanUserPrompt("   \n\t  ")
+	if keep {
+		t.Errorf("CleanUserPrompt(blank) keep = true, want false")
+	}
+	if got != "" {
+		t.Errorf("CleanUserPrompt(blank) text = %q, want empty", got)
+	}
+}
+
+// TestUserInputEntry_OldEntryDecodesWithEmptyKind confirms a JSON line
+// written before the Kind field existed (no "kind" key at all) decodes with
+// Kind == "", not UserInputKindPrompt — callers read an empty Kind as
+// "prompt" themselves (see the UserInputEntry.Kind doc comment).
+func TestUserInputEntry_OldEntryDecodesWithEmptyKind(t *testing.T) {
+	line := `{"ts":"2026-10-02T00:00:00Z","pipeline":"ship","branch":"feat/x","text":"do the thing"}`
+
+	var entry UserInputEntry
+	if err := json.Unmarshal([]byte(line), &entry); err != nil {
+		t.Fatalf("json.Unmarshal failed: %v", err)
+	}
+	if entry.Kind != "" {
+		t.Errorf("Kind = %q, want empty for an old entry with no kind field", entry.Kind)
+	}
+}
+
 // TestAppendUserInput_ViaExportedWrapper confirms AppendUserInput
 // (internal/hooks' entry point) delegates to appendUserInput, including its
 // redact-and-cap behavior.

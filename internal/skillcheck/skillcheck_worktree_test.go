@@ -146,9 +146,9 @@ var worktreeSkillsDescriptiveNoAction = map[string]worktreeSkillsException{
 		contains: "pipeline-continue",
 		reason:   `narrates the automatic "pipeline-continue" PostToolUse hook writing CLI evidence -- no LLM Read/Write/Glob call on this line`,
 	},
-	"skills/setup/SKILL.md:165": {
+	"skills/setup/SKILL.md:172": {
 		contains: "all exist before any read below",
-		reason:   `describes what step 2's setup_init({}) call already ensured -- the actual (disclosed-gap) Reads are on the next lines, not this one`,
+		reason:   `describes what step 2's setup_init({}) call already ensured -- the actual (disclosed-gap) Read is on a later line, not this one`,
 	},
 	"skills/setup/setup-pr-template.md:14": {
 		contains: "stale leftover",
@@ -162,7 +162,7 @@ var worktreeSkillsDescriptiveNoAction = map[string]worktreeSkillsException{
 		contains: "hook records",
 		reason:   `narrates the automatic "pipeline-continue" PostToolUse hook recording CLI evidence -- no LLM Read/Write/Glob call on this line`,
 	},
-	"skills/ship/config-format.md:124": {
+	"skills/ship/config-format.md:128": {
 		contains: "a per-step automation policy read independently",
 		reason:   `schema doc describing what ship_state{action:"next"} reads internally -- not an LLM instruction`,
 	},
@@ -213,25 +213,17 @@ var worktreeSkillsProhibitionMisses = map[string]worktreeSkillsException{
 // exception (a real, intentional bare Read, not a missed prohibition).
 // Keyed by "relative/path:line".
 var worktreeSkillsDisclosedGapExceptions = map[string]worktreeSkillsException{
-	"skills/setup/SKILL.md:171": {
+	"skills/setup/SKILL.md:178": {
 		contains: "projectConfig",
-		reason:   `Read of config.toml; lines 169-175 immediately below carry an explicit "Disclosed gap: ... no other MCP tool returns full .sdlc-v2/config.toml / local.toml contents ... has no tool-backed alternative" comment`,
+		reason:   `Read of config.toml; lines below carry an explicit "Disclosed gap: setup_prepare returns the merged local values (localValues), but not the contents of the project config file" comment -- local.toml itself is no longer bare-Read here, it comes from setup_prepare's localValues instead (Task 16)`,
 	},
-	"skills/setup/SKILL.md:172": {
-		contains: "localConfig",
-		reason:   `Read of local.toml; same disclosed-gap comment (lines 169-175) as line 166`,
-	},
-	"skills/setup/SKILL.md:428": {
-		contains: "re-call `setup_prepare` and re-Read",
-		reason:   `re-Read of config.toml/local.toml; the continuation line immediately below reads "same disclosed gap as Step 0, no tool-backed alternative"`,
-	},
-	"skills/setup/SKILL.md:786": {
+	"skills/setup/SKILL.md:859": {
 		contains: "Read the current",
 		reason:   `Read of config.toml; the line immediately below reads "No MCP tool returns this value, so this Read is a deliberate, disclosed exception"`,
 	},
-	"skills/setup/SKILL.md:833": {
-		contains: "Re-run Step 0's snapshot",
-		reason:   `re-Read of config.toml/local.toml; the continuation line immediately below reads "same disclosed gap as Step 0, no tool-backed alternative"`,
+	"skills/setup/SKILL.md:930": {
+		contains: "re-Read `.sdlc-v2/config.toml` only",
+		reason:   `re-Read of config.toml only (local.toml values come from setup_prepare's localValues, Task 16); the line itself reads "same disclosed gap as Step 0, no tool-backed alternative"`,
 	},
 	"skills/setup/setup-pr-labels.md:22": {
 		contains: "disclosed gap",

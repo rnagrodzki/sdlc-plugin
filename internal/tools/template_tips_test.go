@@ -2,6 +2,7 @@ package tools
 
 import (
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -9,6 +10,8 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 	"github.com/santhosh-tekuri/jsonschema/v6"
+
+	"github.com/rnagrodzki/sdlc-plugin/internal/shipmeta"
 )
 
 // tipExceptions lists schema leaves deliberately exempt from
@@ -284,6 +287,177 @@ func TestTemplate_TipExamplesMatchSchema(t *testing.T) {
 			}
 			if checked == 0 {
 				t.Fatalf("%s: validated zero example lines; the header/key regexes or the schema walk are broken", tc.name)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Task 11: ship.* ships as commented examples
+// ---------------------------------------------------------------------------
+
+// shipKeyLine returns the index and text, within lines (as returned by
+// shipSectionLines), of the live or commented "key = value" line for key. It
+// fails the test if no such line exists.
+func shipKeyLine(t *testing.T, lines []string, key string) (int, string) {
+	t.Helper()
+	for i, l := range lines {
+		if m := templateKVRe.FindStringSubmatch(l); m != nil && m[1] == key {
+			return i, l
+		}
+	}
+	t.Fatalf("no %q line found in the [ship] section", key)
+	return -1, ""
+}
+
+// shipKeyHasTip reports whether lines[idx] (a ship key's example line) has a
+// prose comment somewhere in the contiguous comment block directly above
+// it — walking past any other key's own "key = value" example line on the
+// way up (e.g. executeWaveInterval's line sits directly above
+// executeWaveTimeout's, but is not itself a tip for executeWaveTimeout).
+func shipKeyHasTip(lines []string, idx int) bool {
+	isComment := func(l string) bool { return strings.HasPrefix(strings.TrimSpace(l), "#") }
+	for i := idx - 1; i >= 0 && isComment(lines[i]); i-- {
+		if templateKVRe.FindStringSubmatch(lines[i]) == nil {
+			return true // a comment line that is not itself a key=value example
+		}
+	}
+	return false
+}
+
+// decodeShipLineValue decodes a live or commented "key = value" line's value
+// via toml.Unmarshal, the same trick TestTemplate_TipExamplesMatchSchema
+// uses, so array/int/bool/string examples all compare by decoded shape
+// rather than by source text.
+func decodeShipLineValue(t *testing.T, line, key string) any {
+	t.Helper()
+	trimmed := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "#"))
+	var holder map[string]any
+	if err := toml.Unmarshal([]byte(trimmed), &holder); err != nil {
+		t.Fatalf("decode %q: %v", line, err)
+	}
+	return holder[key]
+}
+
+// asDecodedTOML round-trips v through toml.Marshal/Unmarshal under key, so
+// it decodes to the same shape (int64, []any, ...) decodeShipLineValue
+// produces — letting reflect.DeepEqual compare a Go struct field against a
+// template line's decoded value without hand-converting types on either
+// side.
+func asDecodedTOML(t *testing.T, key string, v any) any {
+	t.Helper()
+	b, err := toml.Marshal(map[string]any{key: v})
+	if err != nil {
+		t.Fatalf("marshal %s built-in default: %v", key, err)
+	}
+	var holder map[string]any
+	if err := toml.Unmarshal(b, &holder); err != nil {
+		t.Fatalf("round-trip decode %s built-in default: %v", key, err)
+	}
+	return holder[key]
+}
+
+// shipBuiltInDefaultsByKey pairs every ship.toml key except "quick" (which
+// has no built-in default — see TestLocalTemplate_ShipQuickHasNoBuiltInDefault)
+// with its shipmeta.ShipBuiltInDefaults field.
+func shipBuiltInDefaultsByKey() map[string]any {
+	d := shipmeta.ShipBuiltInDefaults
+	return map[string]any{
+		"auto":                        d.Auto,
+		"bump":                        d.Bump,
+		"draft":                       d.Draft,
+		"rebase":                      d.Rebase,
+		"reviewThreshold":             d.ReviewThreshold,
+		"steps":                       d.Steps,
+		"executeWaveInterval":         d.ExecuteWaveInterval,
+		"executeWaveTimeout":          d.ExecuteWaveTimeout,
+		"verifyPipelineInterval":      d.VerifyPipelineInterval,
+		"verifyPipelineMaxIterations": d.VerifyPipelineMaxIterations,
+		"verifyPipelineTimeout":       d.VerifyPipelineTimeout,
+		"awaitRemoteReviewers":        d.AwaitRemoteReviewers,
+		"awaitRemoteReviewInterval":   d.AwaitRemoteReviewInterval,
+		"awaitRemoteReviewTimeout":    d.AwaitRemoteReviewTimeout,
+	}
+}
+
+// TestLocalTemplate_ShipSectionHasNoLiveKey verifies Task 11's core change:
+// plugins/sdlc/templates/local.toml ships [ship] with its header live but
+// not one live key under it, so shipmeta.ShipBuiltInDefaults applies to
+// every new project rather than the template's old opinionated values.
+func TestLocalTemplate_ShipSectionHasNoLiveKey(t *testing.T) {
+	if !strings.Contains(localTemplate, "\n[ship]\n") {
+		t.Fatal("localTemplate's [ship] header is missing or not live")
+	}
+	var decoded map[string]any
+	if err := toml.Unmarshal([]byte(localTemplate), &decoded); err != nil {
+		t.Fatalf("decode localTemplate: %v", err)
+	}
+	ship, ok := decoded["ship"].(map[string]any)
+	if !ok {
+		t.Fatal("localTemplate decodes with no [ship] table")
+	}
+	if len(ship) != 0 {
+		t.Errorf("[ship] has %d live key(s): %v, want 0", len(ship), ship)
+	}
+}
+
+// TestLocalTemplate_ShipCommentedDefaultsMatchBuiltIns verifies that every
+// commented [ship] example — except "quick" — carries the exact value
+// shipmeta.ShipBuiltInDefaults falls back to at runtime, so the template's
+// example and the real behavior of an unconfigured project never diverge.
+func TestLocalTemplate_ShipCommentedDefaultsMatchBuiltIns(t *testing.T) {
+	lines := shipSectionLines(t)
+	for key, want := range shipBuiltInDefaultsByKey() {
+		t.Run(key, func(t *testing.T) {
+			_, line := shipKeyLine(t, lines, key)
+			if !strings.HasPrefix(strings.TrimSpace(line), "#") {
+				t.Fatalf("%q is a live key, want a commented example: %q", key, line)
+			}
+			got := decodeShipLineValue(t, line, key)
+			wantDecoded := asDecodedTOML(t, key, want)
+			if !reflect.DeepEqual(got, wantDecoded) {
+				t.Errorf("%s = %#v, want shipmeta.ShipBuiltInDefaults value %#v", key, got, wantDecoded)
+			}
+		})
+	}
+}
+
+// TestLocalTemplate_ShipQuickHasNoBuiltInDefault verifies that "quick" stays
+// a commented example (shipmeta.ShipBuiltInDefaults has no Quick field: an
+// unset ship.quick leaves /ship --quick with no steps to run) and that its
+// tip says so.
+func TestLocalTemplate_ShipQuickHasNoBuiltInDefault(t *testing.T) {
+	lines := shipSectionLines(t)
+	idx, line := shipKeyLine(t, lines, "quick")
+	if !strings.HasPrefix(strings.TrimSpace(line), "#") {
+		t.Fatalf(`"quick" is a live key, want a commented example: %q`, line)
+	}
+	if idx == 0 || !strings.Contains(lines[idx-1], "No built-in default") {
+		above := ""
+		if idx > 0 {
+			above = lines[idx-1]
+		}
+		t.Errorf("quick's tip does not say it has no built-in default; line directly above: %q", above)
+	}
+}
+
+// TestLocalTemplate_ShipEveryKeyKeepsTip verifies that every one of the 15
+// [ship] keys (14 with a built-in default plus "quick") still has a prose
+// tip somewhere in the contiguous comment block above its example line —
+// commenting out the value must not have swallowed its explanation.
+func TestLocalTemplate_ShipEveryKeyKeepsTip(t *testing.T) {
+	lines := shipSectionLines(t)
+	keys := make([]string, 0, 15)
+	for key := range shipBuiltInDefaultsByKey() {
+		keys = append(keys, key)
+	}
+	keys = append(keys, "quick")
+	sort.Strings(keys)
+	for _, key := range keys {
+		t.Run(key, func(t *testing.T) {
+			idx, _ := shipKeyLine(t, lines, key)
+			if !shipKeyHasTip(lines, idx) {
+				t.Errorf("%q has no prose tip in the comment block above it", key)
 			}
 		})
 	}

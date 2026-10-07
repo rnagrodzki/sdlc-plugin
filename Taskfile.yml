@@ -1,6 +1,10 @@
 version: '3'
 
 vars:
+  CYAN: '\033[0;36m'
+  GREEN: '\033[0;32m'
+  YELLOW: '\033[0;33m'
+  NC: '\033[0m'
   VERSION:
     sh: grep -m1 '"version"' plugins/sdlc/.claude-plugin/plugin.json | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/'
   COMMIT:
@@ -80,6 +84,139 @@ tasks:
       - git fetch --prune
       - |
         git branch -vv | grep ': gone]' | grep -v '^\*' | awk '{print $1}' | xargs -r git branch -D
+
+  git:wt:
+    desc: "Create a git worktree as a flat repo sibling — usage: task git:wt -- <branch> (editor: WT_EDITOR=code|none; terminal: WT_TERMINAL=ghostty|none)"
+    silent: true
+    preconditions:
+      - sh: test -n "{{.CLI_ARGS}}"
+        msg: "usage: task git:wt -- <branch>"
+    vars:
+      COLON: ":"
+      WT_EDITOR: '{{.WT_EDITOR | default "codium"}}'
+      WT_TERMINAL: '{{.WT_TERMINAL | default "ghostty"}}'
+      ROOT:
+        sh: git rev-parse --show-toplevel
+      PARENT:
+        sh: dirname "$(git rev-parse --show-toplevel)"
+      REPO:
+        sh: basename "$(git rev-parse --show-toplevel)"
+      BRANCH:
+        sh: echo "{{.CLI_ARGS}}" | awk '{print $1}'
+      SLUG:
+        sh: echo "{{.CLI_ARGS}}" | awk '{print $1}' | tr '/' '-'
+      DIR: '{{.PARENT}}/{{.REPO}}-{{.SLUG}}'
+      # Files copied from the original repo into the new worktree (one per line).
+      # Each entry is a repo-root-relative path; parent directories are created as needed.
+      # .sdlc-v2/local.toml holds personal sdlc preferences (gitignored, not shared) —
+      # worktrees don't inherit it, so seed it from the source repo if present.
+      WT_SEED_FILES: |
+        .sdlc-v2/local.toml
+    cmds:
+      # stage 1 — create the worktree (new vs existing branch decision)
+      - cmd: |
+          set -e
+          if git show-ref --verify --quiet "refs/heads/{{.BRANCH}}"; then
+            printf "{{.CYAN}}Checking out existing branch {{.BRANCH}}...{{.NC}}\n"
+            git worktree add "{{.DIR}}" "{{.BRANCH}}"
+          elif git ls-remote --exit-code --heads origin "{{.BRANCH}}" >/dev/null 2>&1; then
+            printf "{{.CYAN}}Checking out origin/{{.BRANCH}}...{{.NC}}\n"
+            git fetch origin "{{.BRANCH}}" --quiet
+            git worktree add --track -b "{{.BRANCH}}" "{{.DIR}}" "origin/{{.BRANCH}}"
+          else
+            printf "{{.CYAN}}Creating new branch {{.BRANCH}} from origin/main...{{.NC}}\n"
+            git fetch origin main --quiet
+            git worktree add -b "{{.BRANCH}}" "{{.DIR}}" origin/main
+          fi
+      # stage 1b — create tmp/ (git cannot track empty dirs; tooling that writes
+      # to tmp/ fails without it)
+      - mkdir -p "{{.DIR}}/tmp"
+      # stage 2 — seed untracked files (worktrees don't inherit them)
+      - cmd: |
+          echo "{{.WT_SEED_FILES}}" | while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            src="{{.ROOT}}/$f"
+            dst="{{.DIR}}/$f"
+            if [ -f "$src" ]; then
+              mkdir -p "$(dirname "$dst")"
+              cp "$src" "$dst"
+              printf "{{.GREEN}}Copied $f{{.NC}}\n"
+            fi
+          done
+      # stage 3 — report path
+      - printf "{{.GREEN}}Worktree ready{{.COLON}} {{.DIR}}{{.NC}}\n"
+      # stage 4 — open in selectable editor (WT_EDITOR=none skips)
+      - '{{if ne .WT_EDITOR "none"}}command -v {{.WT_EDITOR}} >/dev/null 2>&1 && {{.WT_EDITOR}} "{{.DIR}}" || printf "{{.YELLOW}}Editor {{.WT_EDITOR}} not found on PATH — skipping open{{.NC}}\n"{{end}}'
+      # stage 5 — open a terminal in the worktree (WT_TERMINAL=none skips).
+      # macOS + Ghostty: when Ghostty is already running, open -na ignores
+      # --working-directory (single-instance limitation). Use the Ghostty 1.3
+      # AppleScript API (new surface configuration + new window) for the warm
+      # case; fall back to open -na on cold launch. Linux/other: bare
+      # --working-directory flag works directly.
+      - cmd: |
+          {{if ne .WT_TERMINAL "none"}}
+          opened=0
+          if [ "{{.WT_TERMINAL}}" = "ghostty" ] && [ "$(uname)" = "Darwin" ]; then
+            if osascript -e 'application "Ghostty" is running' 2>/dev/null | grep -qi true; then
+              if osascript \
+                -e 'on run argv' \
+                -e 'tell application "Ghostty"' \
+                -e 'activate' \
+                -e 'set cfg to new surface configuration' \
+                -e 'set initial working directory of cfg to (item 1 of argv)' \
+                -e 'new window with configuration cfg' \
+                -e 'end tell' \
+                -e 'end run' \
+                "{{.DIR}}" >/dev/null 2>&1; then
+                printf "{{.GREEN}}Opened ghostty window in {{.DIR}}{{.NC}}\n"
+                opened=1
+              fi
+            elif open -na Ghostty --args --working-directory="{{.DIR}}" 2>/dev/null; then
+              printf "{{.GREEN}}Opened ghostty in {{.DIR}}{{.NC}}\n"
+              opened=1
+            fi
+          fi
+          if [ "$opened" = "0" ]; then
+            if command -v {{.WT_TERMINAL}} >/dev/null 2>&1; then
+              {{.WT_TERMINAL}} --working-directory="{{.DIR}}" >/dev/null 2>&1 &
+              printf "{{.GREEN}}Opened {{.WT_TERMINAL}} in {{.DIR}}{{.NC}}\n"
+            else
+              printf "{{.YELLOW}}Terminal {{.WT_TERMINAL}} not found — skipping open{{.NC}}\n"
+            fi
+          fi
+          {{end}}
+
+  git:wt-rm:
+    desc: "Remove a sibling worktree — usage: task git:wt-rm -- <branch> (WT_FORCE=1 dirty, WT_DELETE_BRANCH=1 also drop branch)"
+    silent: true
+    preconditions:
+      - sh: test -n "{{.CLI_ARGS}}"
+        msg: "usage: task git:wt-rm -- <branch>"
+    vars:
+      COLON: ":"
+      PARENT:
+        sh: dirname "$(git rev-parse --show-toplevel)"
+      REPO:
+        sh: basename "$(git rev-parse --show-toplevel)"
+      BRANCH:
+        sh: echo "{{.CLI_ARGS}}" | awk '{print $1}'
+      SLUG:
+        sh: echo "{{.CLI_ARGS}}" | awk '{print $1}' | tr '/' '-'
+      DIR: '{{.PARENT}}/{{.REPO}}-{{.SLUG}}'
+      WT_FORCE: '{{if eq .WT_FORCE "1"}}--force{{end}}'
+    cmds:
+      # stage 1 — remove worktree, or prune stale metadata if dir already gone
+      - cmd: |
+          set -e
+          if [ ! -d "{{.DIR}}" ]; then
+            printf "{{.YELLOW}}No worktree at {{.DIR}} — pruning stale entries{{.NC}}\n"
+            git worktree prune
+            exit 0
+          fi
+          git worktree remove {{.WT_FORCE}} "{{.DIR}}"
+          printf "{{.GREEN}}Removed worktree{{.COLON}} {{.DIR}}{{.NC}}\n"
+      # stage 2 — optionally drop the local branch
+      - '{{if eq .WT_DELETE_BRANCH "1"}}git branch -D "{{.BRANCH}}" && printf "{{.GREEN}}Deleted branch {{.BRANCH}}{{.NC}}\n"{{end}}'
 
   version:
     desc: Print resolved version/os/arch and the launcher cache path used by deploy

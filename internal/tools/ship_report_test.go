@@ -958,6 +958,18 @@ func shipReportUserInputEntry(t *testing.T, root, ts, step, pipelineName, text s
 	}
 }
 
+// shipReportUserInputEntryKind appends one user-input evidence entry with an
+// explicit kind, inside the report window.
+func shipReportUserInputEntryKind(t *testing.T, root, ts, step, pipelineName, text, kind string) {
+	t.Helper()
+	if err := appendUserInput(root, UserInputEntry{
+		Timestamp: ts, Pipeline: pipelineName, Step: step,
+		Branch: shipReportBranch, Text: text, Kind: kind,
+	}); err != nil {
+		t.Fatalf("append user input: %v", err)
+	}
+}
+
 // shipReportEvidence appends one CLI evidence entry inside the report window.
 func shipReportEvidence(t *testing.T, root, step, pipelineName, command string, exit int) {
 	t.Helper()
@@ -1360,15 +1372,15 @@ func TestShipReportUserInput(t *testing.T) {
 		if len(out.UserInputs) != 3 {
 			t.Fatalf("expected 3 user inputs, got %d: %+v", len(out.UserInputs), out.UserInputs)
 		}
-		want := "## User input\n\n3 prompts typed during the run.\n\n" +
-			"| At | Step | Text |\n|---|---|---|\n" +
-			"| 2025-06-15T10:05:00Z | review | fix the thing |\n" +
-			`| 2025-06-15T10:06:00Z | wave 1 | go ahead \| proceed … |` + "\n" +
-			"| 2025-06-15T10:07:00Z | — | no step no wave |\n"
+		want := "## User input\n\n3 prompts typed and 0 answers given during the run.\n\n" +
+			"| At | Step | Kind | Text |\n|---|---|---|---|\n" +
+			"| 2025-06-15T10:05:00Z | review | prompt | fix the thing |\n" +
+			`| 2025-06-15T10:06:00Z | wave 1 | prompt | go ahead \| proceed second line third line |` + "\n" +
+			"| 2025-06-15T10:07:00Z | — | prompt | no step no wave |\n"
 		if !strings.Contains(out.Display, want) {
 			t.Errorf("display missing the User input section:\nwant:\n%s\ngot:\n%s", want, out.Display)
 		}
-		if !strings.Contains(out.Display, "| User input | prompts 3 |") {
+		if !strings.Contains(out.Display, "| User input | prompts 3 · answers 0 |") {
 			t.Errorf("summary missing the prompts row:\n%s", out.Display)
 		}
 	})
@@ -1385,8 +1397,106 @@ func TestShipReportUserInput(t *testing.T) {
 		if len(out.UserInputs) != maxUserInputInWindow {
 			t.Fatalf("expected %d user inputs, got %d", maxUserInputInWindow, len(out.UserInputs))
 		}
-		if !strings.Contains(out.Display, "100 prompts typed during the run. Shows the latest 100 prompts only.\n") {
+		if !strings.Contains(out.Display, "100 prompts typed and 0 answers given during the run. Shows the latest 100 prompts only.\n") {
 			t.Errorf("display missing the read-window cap note:\n%s", out.Display)
+		}
+	})
+
+	t.Run("answers counted and rendered with Kind", func(t *testing.T) {
+		root := shipReportRoot(t)
+		shipReportUserInputEntryKind(t, root, "2025-06-15T10:05:00Z", "review", "ship", "why this is still hanging?", UserInputKindPrompt)
+		for i := 0; i < 6; i++ {
+			ts := fmt.Sprintf("2025-06-15T10:%02d:00Z", 6+i)
+			shipReportUserInputEntryKind(t, root, ts, "review", "ship", fmt.Sprintf("option %d", i), UserInputKindAnswer)
+		}
+		createShipReportState(t, root, nil)
+
+		out := runShipReport(t, root, nil)
+		if len(out.UserInputs) != 7 {
+			t.Fatalf("expected 7 user inputs, got %d: %+v", len(out.UserInputs), out.UserInputs)
+		}
+		if !strings.Contains(out.Display, "## User input\n\n1 prompts typed and 6 answers given during the run.\n") {
+			t.Errorf("display missing the mixed count line:\n%s", out.Display)
+		}
+		if !strings.Contains(out.Display, "| 2025-06-15T10:05:00Z | review | prompt | why this is still hanging? |\n") {
+			t.Errorf("display missing the prompt row with Kind prompt:\n%s", out.Display)
+		}
+		if !strings.Contains(out.Display, "| 2025-06-15T10:06:00Z | review | answer | option 0 |\n") {
+			t.Errorf("display missing an answer row with Kind answer:\n%s", out.Display)
+		}
+		if !strings.Contains(out.Display, "| User input | prompts 1 · answers 6 |") {
+			t.Errorf("summary missing the mixed prompts/answers row:\n%s", out.Display)
+		}
+	})
+
+	t.Run("old task-notification entries filtered out and not counted", func(t *testing.T) {
+		root := shipReportRoot(t)
+		for i := 0; i < 5; i++ {
+			ts := fmt.Sprintf("2025-06-15T10:%02d:00Z", i)
+			shipReportUserInputEntry(t, root, ts, "execute", "execute", "<task-notification>Task 1 completed</task-notification>", nil)
+		}
+		shipReportUserInputEntry(t, root, "2025-06-15T10:10:00Z", "review", "ship", "real prompt one", nil)
+		shipReportUserInputEntry(t, root, "2025-06-15T10:11:00Z", "pr", "ship", "real prompt two", nil)
+		createShipReportState(t, root, nil)
+
+		out := runShipReport(t, root, nil)
+		if len(out.UserInputs) != 2 {
+			t.Fatalf("expected 2 user inputs after filtering, got %d: %+v", len(out.UserInputs), out.UserInputs)
+		}
+		if strings.Contains(out.Display, "task-notification") {
+			t.Errorf("display must not contain the filtered task-notification text:\n%s", out.Display)
+		}
+		if !strings.Contains(out.Display, "## User input\n\n2 prompts typed and 0 answers given during the run.\n") {
+			t.Errorf("display missing the post-filter count line:\n%s", out.Display)
+		}
+		if !strings.Contains(out.Display, "| User input | prompts 2 · answers 0 |") {
+			t.Errorf("summary missing the post-filter prompts row:\n%s", out.Display)
+		}
+	})
+
+	t.Run("old editor envelope entry stripped to the user text", func(t *testing.T) {
+		root := shipReportRoot(t)
+		shipReportUserInputEntry(t, root, "2025-06-15T10:05:00Z", "review", "ship",
+			"<ide_opened_file>The user opened x</ide_opened_file>\nwhy is it slow?", nil)
+		createShipReportState(t, root, nil)
+
+		out := runShipReport(t, root, nil)
+		if len(out.UserInputs) != 1 {
+			t.Fatalf("expected 1 user input, got %d: %+v", len(out.UserInputs), out.UserInputs)
+		}
+		if !strings.Contains(out.Display, "| 2025-06-15T10:05:00Z | review | prompt | why is it slow? |\n") {
+			t.Errorf("display must show only the stripped user text:\n%s", out.Display)
+		}
+	})
+
+	t.Run("only injected entries renders no user input", func(t *testing.T) {
+		root := shipReportRoot(t)
+		shipReportUserInputEntry(t, root, "2025-06-15T10:05:00Z", "execute", "execute", "<task-notification>noise</task-notification>", nil)
+		shipReportUserInputEntry(t, root, "2025-06-15T10:06:00Z", "execute", "execute", "<local-command-stdout>noise</local-command-stdout>", nil)
+		createShipReportState(t, root, nil)
+
+		out := runShipReport(t, root, nil)
+		if len(out.UserInputs) != 0 {
+			t.Fatalf("expected 0 user inputs after filtering, got %d: %+v", len(out.UserInputs), out.UserInputs)
+		}
+		if !strings.Contains(out.Display, "## User input\n\n_No user input during the run._\n") {
+			t.Errorf("display must show the empty user-input line when only injected turns were recorded:\n%s", out.Display)
+		}
+		if !strings.Contains(out.Display, "| User input | none |") {
+			t.Errorf("summary must show none when only injected turns were recorded:\n%s", out.Display)
+		}
+	})
+
+	t.Run("flat form cuts at 500 runes", func(t *testing.T) {
+		root := shipReportRoot(t)
+		long := strings.Repeat("a", 800)
+		shipReportUserInputEntry(t, root, "2025-06-15T10:05:00Z", "review", "ship", long, nil)
+		createShipReportState(t, root, nil)
+
+		out := runShipReport(t, root, nil)
+		want := "| 2025-06-15T10:05:00Z | review | prompt | " + strings.Repeat("a", 500) + "… |\n"
+		if !strings.Contains(out.Display, want) {
+			t.Errorf("display must cut the Text cell at 500 runes with a trailing ellipsis:\n%s", out.Display)
 		}
 	})
 

@@ -68,6 +68,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
 )
@@ -91,6 +92,16 @@ func runTests(m *testing.M) int {
 		panic("mkdtemp: " + err.Error())
 	}
 	defer os.RemoveAll(tmpDir)
+
+	// Isolate every test in this package from whatever user-level config
+	// file (~/.sdlc/local.toml) happens to exist on the machine running the
+	// tests — see internal/config/main_test.go for the full rationale.
+	userConfigDir, err := os.MkdirTemp("", "sdlc-user-config-")
+	if err != nil {
+		panic("mkdtemp: " + err.Error())
+	}
+	defer os.RemoveAll(userConfigDir)
+	os.Setenv(config.UserConfigPathEnv, filepath.Join(userConfigDir, "local.toml"))
 
 	wd, err := os.Getwd()
 	if err != nil {

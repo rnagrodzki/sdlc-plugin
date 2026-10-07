@@ -12,6 +12,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 )
@@ -30,6 +31,14 @@ func callRegisteredSetupWriteSections(t *testing.T, sectionsJSON string) (*mcp.C
 // callRegisteredSetupWriteSectionsIn is callRegisteredSetupWriteSections run
 // from a caller-made (and possibly pre-seeded) non-git directory.
 func callRegisteredSetupWriteSectionsIn(t *testing.T, dir, sectionsJSON string) (*mcp.CallToolResult, string) {
+	t.Helper()
+	return callRegisteredSetupWriteSectionsInArgs(t, dir, map[string]any{"sectionsJson": sectionsJSON})
+}
+
+// callRegisteredSetupWriteSectionsInArgs is callRegisteredSetupWriteSectionsIn
+// generalized over the full call arguments, so a test can also pass "target"
+// (or any other future field) alongside "sectionsJson".
+func callRegisteredSetupWriteSectionsInArgs(t *testing.T, dir string, args map[string]any) (*mcp.CallToolResult, string) {
 	t.Helper()
 	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(dir))
 	t.Chdir(dir)
@@ -50,7 +59,7 @@ func callRegisteredSetupWriteSectionsIn(t *testing.T, dir, sectionsJSON string) 
 
 	res, err := c.CallTool(ctx, &mcp.CallToolParams{
 		Name:      "setup_write_sections",
-		Arguments: map[string]any{"sectionsJson": sectionsJSON},
+		Arguments: args,
 	})
 	if err != nil {
 		t.Fatalf("CallTool: %v", err)
@@ -459,8 +468,13 @@ func TestSetupWriteSections_KeepsCRLFLineEndings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// subjectPatternError has no comment of its own in orig, so it picks up
+	// the shipped config.toml template's commented-example tip, same as any
+	// other key restored from the whole file (internal/config/tips.go).
 	want := "# project settings\r\n" +
-		"[commit]\r\n# old comment\r\nallowedTypes = ['fix']\r\nsubjectPatternError = \"line one\\nline two\"\r\n" +
+		"[commit]\r\n# old comment\r\nallowedTypes = ['fix']\r\n" +
+		"# Human-readable error message when subject pattern fails.\r\n" +
+		"subjectPatternError = \"line one\\nline two\"\r\n" +
 		"\r\n# tail comment\r\n" +
 		"\r\n[jira]\r\n# Default Jira project key (2–10 uppercase letters, e.g. \"PROJ\").\r\ndefaultProject = 'PROJ'\r\n"
 	if string(got) != want {
@@ -476,10 +490,13 @@ func TestSetupWriteSections_KeepsCRLFLineEndings(t *testing.T) {
 // fields, while sibling tables and the comments around them stay.
 func TestSetupWriteSections_NullClearsLeaf(t *testing.T) {
 	dir := t.TempDir()
+	// jira keeps its own comment directly above defaultProject so the
+	// whole-file tip restore (tips.go) never touches it: this test pins
+	// plan.tasks clearing, not tip restore in an unrelated section.
 	path := writeSDLCFile(t, dir, "config.toml",
 		"# top\n[plan.guardrails.a]\nseverity = \"error\"\n\n"+
 			"# tasks doc\n[plan.tasks]\ncontractShape = \"strict\"\nrequiredFields = [\"x\"]\n\n"+
-			"[jira]\ndefaultProject = \"P\"\n")
+			"[jira]\n# own comment\ndefaultProject = \"P\"\n")
 
 	res, text := callRegisteredSetupWriteSectionsIn(t, dir, `{"plan.tasks":null}`)
 	if res.IsError {
@@ -494,18 +511,19 @@ func TestSetupWriteSections_NullClearsLeaf(t *testing.T) {
 	}
 	want := "# top\n[plan.guardrails.a]\nseverity = \"error\"\n\n" +
 		"# tasks doc\n[plan.tasks]\n\n" +
-		"[jira]\ndefaultProject = \"P\"\n"
+		"[jira]\n# own comment\ndefaultProject = \"P\"\n"
 	if string(got) != want {
 		t.Errorf("plan.tasks not cleared to an empty table.\n--- got ---\n%s\n--- want ---\n%s", got, want)
 	}
 }
 
-// shipSectionLines returns the lines of localTemplate's top-level "ship"
-// section (the lines strictly between the "[ship]" header and the next
-// top-level header), split on "\n".
-func shipSectionLines(t *testing.T) []string {
+// shipSectionLinesOf returns the lines of tmpl's top-level "ship" section
+// (the lines strictly between the "[ship]" header and the next top-level
+// header), split on "\n". Generalized over shipSectionLines so a test can
+// run it against a modified copy of localTemplate.
+func shipSectionLinesOf(t *testing.T, tmpl string) []string {
 	t.Helper()
-	lines := strings.Split(localTemplate, "\n")
+	lines := strings.Split(tmpl, "\n")
 	start := -1
 	for i, l := range lines {
 		if l == "[ship]" {
@@ -514,7 +532,7 @@ func shipSectionLines(t *testing.T) []string {
 		}
 	}
 	if start < 0 {
-		t.Fatal("localTemplate has no [ship] header")
+		t.Fatal("template has no [ship] header")
 	}
 	end := len(lines)
 	for i := start; i < len(lines); i++ {
@@ -526,15 +544,68 @@ func shipSectionLines(t *testing.T) []string {
 	return lines[start:end]
 }
 
-// shipTips independently recomputes, straight from localTemplate's text (not
-// a hardcoded literal), the comment block directly above each "key = value"
-// line of the "ship" section, keyed by that exact key/value line. A key with
+// shipSectionLines returns shipSectionLinesOf(t, localTemplate): the shipped
+// template's own "ship" section lines.
+func shipSectionLines(t *testing.T) []string {
+	t.Helper()
+	return shipSectionLinesOf(t, localTemplate)
+}
+
+// shipSectionUncommentedTemplate returns localTemplate with every commented
+// "# key = value" example line inside the top-level "ship" section turned
+// live (its "#" prefix removed) — every other line, including each example's
+// own tip comment, is untouched. Task 11 ships every [ship] key as a
+// commented example (ShipBuiltInDefaults applies at runtime instead), so
+// [ship] itself has no live key for TestSetupWriteSections_ShipSection* to
+// exercise the splice/tip-restore write path with; this reconstructs a
+// fixture that does, straight from the shipped text rather than a
+// hand-written literal, so a future ship tip or key changes with it.
+func shipSectionUncommentedTemplate(t *testing.T) string {
+	t.Helper()
+	lines := strings.Split(localTemplate, "\n")
+	start, end := -1, -1
+	for i, l := range lines {
+		if l == "[ship]" {
+			start = i + 1
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatal("localTemplate has no [ship] header")
+	}
+	end = len(lines)
+	for i := start; i < len(lines); i++ {
+		if strings.HasPrefix(lines[i], "[") {
+			end = i
+			break
+		}
+	}
+	uncommented := 0
+	for i := start; i < end; i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		if !strings.HasPrefix(trimmed, "#") || !templateKVRe.MatchString(lines[i]) {
+			continue
+		}
+		lines[i] = strings.TrimSpace(strings.TrimPrefix(trimmed, "#"))
+		uncommented++
+	}
+	if uncommented == 0 {
+		t.Fatal("test fixture assumption broke: localTemplate's [ship] section has no commented key=value example to uncomment")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// shipTipsOf independently recomputes, straight from tmpl's text (not a
+// hardcoded literal), the comment block directly above each "key = value"
+// line of its "ship" section, keyed by that exact key/value line. A key with
 // no comment directly above it (no blank line between) is left out. This
 // mirrors config.RestoreTips' own notion of a tip, so a future wording change
-// to a ship tip (e.g. Task 6's rebase tip) needs no change here.
-func shipTips(t *testing.T) map[string]string {
+// to a ship tip (e.g. Task 6's rebase tip) needs no change here. Generalized
+// over shipTips so a test can run it against a modified copy of
+// localTemplate (see shipSectionUncommentedTemplate).
+func shipTipsOf(t *testing.T, tmpl string) map[string]string {
 	t.Helper()
-	lines := shipSectionLines(t)
+	lines := shipSectionLinesOf(t, tmpl)
 	isComment := func(l string) bool { return strings.HasPrefix(strings.TrimSpace(l), "#") }
 	tips := make(map[string]string)
 	for i, l := range lines {
@@ -551,26 +622,45 @@ func shipTips(t *testing.T) map[string]string {
 		tips[l] = strings.Join(lines[start:i], "\n") + "\n"
 	}
 	if len(tips) == 0 {
-		t.Fatal("test fixture assumption broke: localTemplate's [ship] section has no key with a tip above it")
+		t.Fatal("test fixture assumption broke: the template's [ship] section has no key with a tip above it")
 	}
 	return tips
+}
+
+// shipTips returns shipTipsOf(t, localTemplate): the shipped template's own
+// "ship" section tips.
+func shipTips(t *testing.T) map[string]string {
+	t.Helper()
+	return shipTipsOf(t, localTemplate)
+}
+
+// shipSectionValuesOf decodes the "ship" table out of tmpl, as the
+// field-value object setup_write_sections expects for sectionsJson.
+// Generalized over shipSectionValues so a test can run it against a
+// modified copy of localTemplate (see shipSectionUncommentedTemplate).
+func shipSectionValuesOf(t *testing.T, tmpl string) map[string]any {
+	t.Helper()
+	var full map[string]any
+	if err := fsx.DecodeTOML([]byte(tmpl), &full); err != nil {
+		t.Fatalf("decode template: %v", err)
+	}
+	ship, ok := full["ship"].(map[string]any)
+	if !ok {
+		t.Fatal("test fixture assumption broke: template has no [ship] table")
+	}
+	return ship
 }
 
 // shipSectionValues decodes the "ship" table out of localTemplate, as the
 // field-value object setup_write_sections expects for sectionsJson. Values
 // come straight from the template so the test exercises real field values,
-// not an invented fixture.
+// not an invented fixture. Since Task 11, the shipped [ship] table has no
+// live key, so this decodes to an empty map — callers that need a populated
+// ship fixture use shipSectionValuesOf with shipSectionUncommentedTemplate
+// instead.
 func shipSectionValues(t *testing.T) map[string]any {
 	t.Helper()
-	var full map[string]any
-	if err := fsx.DecodeTOML([]byte(localTemplate), &full); err != nil {
-		t.Fatalf("decode localTemplate: %v", err)
-	}
-	ship, ok := full["ship"].(map[string]any)
-	if !ok {
-		t.Fatal("test fixture assumption broke: localTemplate has no [ship] table")
-	}
-	return ship
+	return shipSectionValuesOf(t, localTemplate)
 }
 
 // stripTemplateComments removes every comment line from tmpl, leaving every
@@ -593,15 +683,19 @@ func stripTemplateComments(tmpl string) string {
 // unchanged values keeps the file byte-for-byte identical — so every ship
 // tip (and everything else) survives.
 func TestSetupWriteSections_ShipSectionNoopKeepsEveryTip(t *testing.T) {
-	tips := shipTips(t) // fixture guard: fails fast if [ship] loses its tips
+	// Task 11: the shipped [ship] section has no live key of its own
+	// (ShipBuiltInDefaults applies at runtime instead), so this exercises
+	// the write path against a reconstructed fixture that does.
+	tmpl := shipSectionUncommentedTemplate(t)
+	tips := shipTipsOf(t, tmpl) // fixture guard: fails fast if [ship] loses its tips
 	if len(tips) == 0 {
 		t.Fatal("no ship tips found")
 	}
 
 	dir := t.TempDir()
-	path := writeSDLCFile(t, dir, "local.toml", localTemplate)
+	path := writeSDLCFile(t, dir, "local.toml", tmpl)
 
-	shipJSON, err := json.Marshal(shipSectionValues(t))
+	shipJSON, err := json.Marshal(shipSectionValuesOf(t, tmpl))
 	if err != nil {
 		t.Fatalf("marshal ship values: %v", err)
 	}
@@ -617,8 +711,8 @@ func TestSetupWriteSections_ShipSectionNoopKeepsEveryTip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != localTemplate {
-		t.Errorf("no-op ship write changed the file.\n--- got ---\n%s\n--- want (unchanged) ---\n%s", got, localTemplate)
+	if string(got) != tmpl {
+		t.Errorf("no-op ship write changed the file.\n--- got ---\n%s\n--- want (unchanged) ---\n%s", got, tmpl)
 	}
 }
 
@@ -627,13 +721,14 @@ func TestSetupWriteSections_ShipSectionNoopKeepsEveryTip(t *testing.T) {
 // stripped out restores every one of the ship section's tips, derived live
 // from localTemplate rather than a hardcoded literal.
 func TestSetupWriteSections_ShipSectionRestoresStrippedTips(t *testing.T) {
-	tips := shipTips(t)
+	tmpl := shipSectionUncommentedTemplate(t) // see TestSetupWriteSections_ShipSectionNoopKeepsEveryTip
+	tips := shipTipsOf(t, tmpl)
 
 	dir := t.TempDir()
-	stripped := stripTemplateComments(localTemplate)
+	stripped := stripTemplateComments(tmpl)
 	path := writeSDLCFile(t, dir, "local.toml", stripped)
 
-	shipJSON, err := json.Marshal(shipSectionValues(t))
+	shipJSON, err := json.Marshal(shipSectionValuesOf(t, tmpl))
 	if err != nil {
 		t.Fatalf("marshal ship values: %v", err)
 	}
@@ -790,5 +885,344 @@ func TestSetupWriteSections_TwoRefusedSectionsBothInNext(t *testing.T) {
 	}
 	if string(got) != content {
 		t.Errorf("file changed despite both refusals:\n--- got ---\n%s\n--- want (unchanged) ---\n%s", got, content)
+	}
+}
+
+// TestSetupWriteSections_InvalidTargetRejected verifies that a target value
+// outside the "project"/"user" enum is rejected with the exact Suggestion
+// from the task contract's routing table, and that nothing is written.
+func TestSetupWriteSections_InvalidTargetRejected(t *testing.T) {
+	dir := t.TempDir()
+	res, text := callRegisteredSetupWriteSectionsInArgs(t, dir, map[string]any{
+		"sectionsJson": `{"style":{"foo":"bar"}}`,
+		"target":       "bogus",
+	})
+	if !res.IsError {
+		t.Fatalf("expected a tool error, got success:\n%s", text)
+	}
+	for _, want := range []string{
+		`setup_write_sections: invalid target "bogus"`,
+		"Set target to project or user, or leave it empty.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q:\n%s", want, text)
+		}
+	}
+	for _, f := range []string{"config.toml", "local.toml"} {
+		if _, err := os.Stat(filepath.Join(dir, ".sdlc-v2", f)); !os.IsNotExist(err) {
+			t.Errorf(".sdlc-v2/%s was written (stat err: %v); want no write", f, err)
+		}
+	}
+}
+
+// TestSetupWriteSections_TargetUserRejectsProjectSection verifies that a
+// project section (e.g. "commit") named alongside target "user" is rejected
+// with a DomainError, and that nothing is written — not the project
+// section, and not the local sections in the same call.
+func TestSetupWriteSections_TargetUserRejectsProjectSection(t *testing.T) {
+	dir := t.TempDir()
+	userPath := filepath.Join(t.TempDir(), "user-local.toml")
+	t.Setenv(config.UserConfigPathEnv, userPath)
+
+	res, text := callRegisteredSetupWriteSectionsInArgs(t, dir, map[string]any{
+		"sectionsJson": `{"commit":{"style":"conventional"},"style":{"foo":"bar"}}`,
+		"target":       "user",
+	})
+	if !res.IsError {
+		t.Fatalf("expected a tool error, got success:\n%s", text)
+	}
+	for _, want := range []string{
+		`cannot use target "user"`,
+		"commit",
+		"Remove the project section(s) from sectionsJson",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q:\n%s", want, text)
+		}
+	}
+	for _, f := range []string{"config.toml", "local.toml"} {
+		if _, err := os.Stat(filepath.Join(dir, ".sdlc-v2", f)); !os.IsNotExist(err) {
+			t.Errorf(".sdlc-v2/%s was written (stat err: %v); want no write", f, err)
+		}
+	}
+	if _, err := os.Stat(userPath); !os.IsNotExist(err) {
+		t.Errorf("user config file was written (stat err: %v); want no write", err)
+	}
+}
+
+// TestSetupWriteSections_TargetUserNoHomeDir verifies the routing table's
+// last row: target "user", no SDLC_USER_CONFIG override, and no resolvable
+// home directory returns the DomainError naming the fix, and writes
+// nothing.
+func TestSetupWriteSections_TargetUserNoHomeDir(t *testing.T) {
+	t.Setenv(config.UserConfigPathEnv, "")
+	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", "") // os.UserHomeDir's Windows equivalent of $HOME
+
+	dir := t.TempDir()
+	res, text := callRegisteredSetupWriteSectionsInArgs(t, dir, map[string]any{
+		"sectionsJson": `{"style":{"foo":"bar"}}`,
+		"target":       "user",
+	})
+	if !res.IsError {
+		t.Fatalf("expected a tool error, got success:\n%s", text)
+	}
+	for _, want := range []string{
+		"setup_write_sections: no user config path available",
+		"Set SDLC_USER_CONFIG to a file path, or use target project.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q:\n%s", want, text)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".sdlc-v2", "local.toml")); !os.IsNotExist(err) {
+		t.Errorf("local.toml was written (stat err: %v); want no write", err)
+	}
+}
+
+// TestSetupWriteSections_TargetUserWritesUserConfigPath verifies the
+// routing table's "local, user" row: a local section with target "user"
+// lands in the resolved user-level file, not the project's own
+// .sdlc-v2/local.toml.
+func TestSetupWriteSections_TargetUserWritesUserConfigPath(t *testing.T) {
+	dir := t.TempDir()
+	userPath := filepath.Join(t.TempDir(), "user-local.toml")
+	t.Setenv(config.UserConfigPathEnv, userPath)
+
+	res, text := callRegisteredSetupWriteSectionsInArgs(t, dir, map[string]any{
+		"sectionsJson": `{"style":{"foo":"bar"}}`,
+		"target":       "user",
+	})
+	if res.IsError {
+		t.Fatalf("expected success, got tool error:\n%s", text)
+	}
+	if !strings.Contains(text, "- ok: true") {
+		t.Errorf("expected ok: true:\n%s", text)
+	}
+
+	got, err := os.ReadFile(userPath)
+	if err != nil {
+		t.Fatalf("read user config file: %v", err)
+	}
+	if !strings.Contains(string(got), "[style]") || !strings.Contains(string(got), "foo = 'bar'") {
+		t.Errorf("user config file missing written section:\n%s", got)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, ".sdlc-v2", "local.toml")); !os.IsNotExist(err) {
+		t.Errorf("project local.toml was written (stat err: %v); want only the user file", err)
+	}
+}
+
+// TestSetupWriteSections_TargetProjectExplicitMatchesDefault verifies that
+// passing target "project" explicitly behaves exactly like omitting target:
+// a local section still lands in the project's own .sdlc-v2/local.toml.
+func TestSetupWriteSections_TargetProjectExplicitMatchesDefault(t *testing.T) {
+	dir := t.TempDir()
+	res, text := callRegisteredSetupWriteSectionsInArgs(t, dir, map[string]any{
+		"sectionsJson": `{"planStyle":{"style":"compact"}}`,
+		"target":       "project",
+	})
+	if res.IsError {
+		t.Fatalf("expected success, got tool error:\n%s", text)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, ".sdlc-v2", "local.toml"))
+	if err != nil {
+		t.Fatalf("read local.toml: %v", err)
+	}
+	if !strings.Contains(string(data), "planStyle") {
+		t.Errorf("local.toml has no planStyle table:\n%s", data)
+	}
+}
+
+// TestSetupWriteSections_TargetUserTwoCallsBothSectionsPersist verifies the
+// acceptance criterion's two-call scenario: writing "style" to the user
+// file, then "review" to the user file in a second call, leaves both
+// sections present afterward — the second write must not clobber the
+// first.
+func TestSetupWriteSections_TargetUserTwoCallsBothSectionsPersist(t *testing.T) {
+	dir := t.TempDir()
+	userPath := filepath.Join(t.TempDir(), "user-local.toml")
+	t.Setenv(config.UserConfigPathEnv, userPath)
+
+	if res, text := callRegisteredSetupWriteSectionsInArgs(t, dir, map[string]any{
+		"sectionsJson": `{"style":{"foo":"bar"}}`,
+		"target":       "user",
+	}); res.IsError {
+		t.Fatalf("first call: expected success, got tool error:\n%s", text)
+	}
+	if res, text := callRegisteredSetupWriteSectionsInArgs(t, dir, map[string]any{
+		"sectionsJson": `{"review":{"scope":"all"}}`,
+		"target":       "user",
+	}); res.IsError {
+		t.Fatalf("second call: expected success, got tool error:\n%s", text)
+	}
+
+	got, err := os.ReadFile(userPath)
+	if err != nil {
+		t.Fatalf("read user config file: %v", err)
+	}
+	if !strings.Contains(string(got), "[style]") || !strings.Contains(string(got), "foo = 'bar'") {
+		t.Errorf("user config file lost the first call's style section:\n%s", got)
+	}
+	if !strings.Contains(string(got), "[review]") || !strings.Contains(string(got), "scope = 'all'") {
+		t.Errorf("user config file missing the second call's review section:\n%s", got)
+	}
+}
+
+// TestSetupWriteSections_TargetUserRefusalNamesRealPath verifies that when a
+// section write to the user file is refused (config.ErrWouldDropComments),
+// the errors and next fields name the real resolved user config path, not
+// the project-relative ".sdlc-v2/local.toml" literal used for project-local
+// writes.
+func TestSetupWriteSections_TargetUserRefusalNamesRealPath(t *testing.T) {
+	dir := t.TempDir()
+	userDir := t.TempDir()
+	userPath := filepath.Join(userDir, "user-local.toml")
+	if err := os.WriteFile(userPath, []byte("# kept\nstyle = { foo = { bar = \"old\" } }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(config.UserConfigPathEnv, userPath)
+
+	res, text := callRegisteredSetupWriteSectionsInArgs(t, dir, map[string]any{
+		"sectionsJson": `{"style.foo":{"bar":"new"}}`,
+		"target":       "user",
+	})
+	if res.IsError {
+		t.Fatalf("expected a tool success carrying a per-section error, got tool error:\n%s", text)
+	}
+	for _, want := range []string{
+		"- ok: false",
+		"section style.foo:",
+		"Edit section style.foo in " + userPath + " by hand, then run setup again for that section. Other sections were written.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q:\n%s", want, text)
+		}
+	}
+	got, err := os.ReadFile(userPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "# kept\nstyle = { foo = { bar = \"old\" } }\n" {
+		t.Errorf("user config file changed despite the refusal:\n%s", got)
+	}
+}
+
+// TestSetupWriteSections_TargetUserFallbackWarningNamesRealPath verifies
+// that the full-rewrite fallback warning (a file with no comment line) also
+// names the real resolved user config path.
+func TestSetupWriteSections_TargetUserFallbackWarningNamesRealPath(t *testing.T) {
+	dir := t.TempDir()
+	userDir := t.TempDir()
+	userPath := filepath.Join(userDir, "user-local.toml")
+	// A nested inline table (mirrors TestSetupWriteSections_FallbackWarns /
+	// _FallbackKeepsIntegers) the splicer cannot edit in place; with no
+	// comment line in the file, that forces the full-rewrite fallback this
+	// test exercises.
+	if err := os.WriteFile(userPath, []byte("style = { tasks = { note = \"old\" } }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(config.UserConfigPathEnv, userPath)
+
+	res, text := callRegisteredSetupWriteSectionsInArgs(t, dir, map[string]any{
+		"sectionsJson": `{"style.tasks":{"note":"new"}}`,
+		"target":       "user",
+	})
+	if res.IsError {
+		t.Fatalf("expected success, got tool error:\n%s", text)
+	}
+	if !strings.Contains(text, "Section style.tasks: could not edit "+userPath+" in place; the file had no comments, so it was rewritten and template tips were added") {
+		t.Errorf("missing full-rewrite warning naming the real user path:\n%s", text)
+	}
+}
+
+// TestSetupWriteSections_TargetUserNoopKeepsEveryTip verifies that writing
+// the "ship" section's own unchanged values into the shipped template
+// through target "user" keeps the user file byte-for-byte identical, the
+// same comment-preserving splice guarantee the project-local.toml path
+// already has (TestSetupWriteSections_ShipSectionNoopKeepsEveryTip).
+func TestSetupWriteSections_TargetUserNoopKeepsEveryTip(t *testing.T) {
+	tmpl := shipSectionUncommentedTemplate(t)
+	tips := shipTipsOf(t, tmpl)
+	if len(tips) == 0 {
+		t.Fatal("no ship tips found")
+	}
+
+	dir := t.TempDir()
+	userDir := t.TempDir()
+	// Named "local.toml", matching UserConfigPath's own default basename
+	// (~/.sdlc/local.toml): config.sectionTemplate (and so the tip
+	// restore) matches templates by file basename, not by directory, so
+	// the fixture must use the real basename to exercise that path.
+	userPath := filepath.Join(userDir, "local.toml")
+	if err := os.WriteFile(userPath, []byte(tmpl), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(config.UserConfigPathEnv, userPath)
+
+	shipJSON, err := json.Marshal(shipSectionValuesOf(t, tmpl))
+	if err != nil {
+		t.Fatalf("marshal ship values: %v", err)
+	}
+	res, text := callRegisteredSetupWriteSectionsInArgs(t, dir, map[string]any{
+		"sectionsJson": `{"ship":` + string(shipJSON) + `}`,
+		"target":       "user",
+	})
+	if res.IsError {
+		t.Fatalf("expected success, got tool error:\n%s", text)
+	}
+	if strings.Contains(text, "could not edit") {
+		t.Fatalf("tool fell back to a full rewrite:\n%s", text)
+	}
+
+	got, err := os.ReadFile(userPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != tmpl {
+		t.Errorf("no-op ship write changed the user file.\n--- got ---\n%s\n--- want (unchanged) ---\n%s", got, tmpl)
+	}
+}
+
+// TestSetupWriteSections_TargetUserRestoresStrippedTips verifies that
+// writing the "ship" section through target "user" into a user config file
+// whose comments were all stripped out restores every one of the ship
+// section's tips — the same tip-restore guarantee the project-local.toml
+// path already has (TestSetupWriteSections_ShipSectionRestoresStrippedTips).
+func TestSetupWriteSections_TargetUserRestoresStrippedTips(t *testing.T) {
+	tmpl := shipSectionUncommentedTemplate(t)
+	tips := shipTipsOf(t, tmpl)
+
+	dir := t.TempDir()
+	userDir := t.TempDir()
+	// Named "local.toml" for the same reason as
+	// TestSetupWriteSections_TargetUserNoopKeepsEveryTip above.
+	userPath := filepath.Join(userDir, "local.toml")
+	stripped := stripTemplateComments(tmpl)
+	if err := os.WriteFile(userPath, []byte(stripped), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(config.UserConfigPathEnv, userPath)
+
+	shipJSON, err := json.Marshal(shipSectionValuesOf(t, tmpl))
+	if err != nil {
+		t.Fatalf("marshal ship values: %v", err)
+	}
+	res, text := callRegisteredSetupWriteSectionsInArgs(t, dir, map[string]any{
+		"sectionsJson": `{"ship":` + string(shipJSON) + `}`,
+		"target":       "user",
+	})
+	if res.IsError {
+		t.Fatalf("expected success, got tool error:\n%s", text)
+	}
+
+	got, err := os.ReadFile(userPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for keyLine, tip := range tips {
+		if !strings.Contains(string(got), tip+keyLine+"\n") {
+			t.Errorf("tip not restored directly above %q:\n--- got ---\n%s", keyLine, got)
+		}
 	}
 }

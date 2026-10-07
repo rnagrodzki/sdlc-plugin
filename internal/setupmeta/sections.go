@@ -59,6 +59,14 @@ type Section struct {
 	DelegatedTo     string   // sub-skill id (for content/conditional sections) or ""
 	ConfirmDetected bool     // true → ask "use detected? / customize / skip"
 	Fields          []Field  // configuration fields; empty for delegated sections
+
+	// DefaultTarget is the save-target setup_write_sections defaults to for
+	// a local.toml row when the user has not yet chosen one explicitly:
+	// "user" (~/.sdlc/local.toml, shared across every project on the
+	// machine) or "project" (.sdlc-v2/local.toml, this project only). Empty
+	// for every config.toml row and every delegated row, which have no
+	// save-target choice.
+	DefaultTarget string // "user" | "project" | "" (non-local rows)
 }
 
 // --- Field arrays ---
@@ -656,6 +664,7 @@ func Sections() []Section {
 			DelegatedTo:     "",
 			ConfirmDetected: false,
 			Fields:          ShipFields,
+			DefaultTarget:   "project",
 		},
 		{
 			ID:              "jira",
@@ -682,6 +691,7 @@ func Sections() []Section {
 			DelegatedTo:     "",
 			ConfirmDetected: false,
 			Fields:          reviewFields,
+			DefaultTarget:   "user",
 		},
 		{
 			ID:              "received-review",
@@ -695,6 +705,7 @@ func Sections() []Section {
 			DelegatedTo:     "",
 			ConfirmDetected: false,
 			Fields:          receivedReviewFields,
+			DefaultTarget:   "user",
 		},
 		{
 			ID:              "commit",
@@ -734,6 +745,7 @@ func Sections() []Section {
 			DelegatedTo:     "",
 			ConfirmDetected: false,
 			Fields:          githubFields,
+			DefaultTarget:   "user",
 		},
 		{
 			ID:              "pr-labels",
@@ -799,6 +811,7 @@ func Sections() []Section {
 			DelegatedTo:     "",
 			ConfirmDetected: false,
 			Fields:          styleFields,
+			DefaultTarget:   "user",
 		},
 		{
 			ID:              "plan-style",
@@ -812,6 +825,7 @@ func Sections() []Section {
 			DelegatedTo:     "",
 			ConfirmDetected: false,
 			Fields:          planStyleFields,
+			DefaultTarget:   "user",
 		},
 		{
 			ID:              "plan-tasks",
@@ -877,6 +891,7 @@ func Sections() []Section {
 			DelegatedTo:     "",
 			ConfirmDetected: false,
 			Fields:          automationFields,
+			DefaultTarget:   "user",
 		},
 	}
 }

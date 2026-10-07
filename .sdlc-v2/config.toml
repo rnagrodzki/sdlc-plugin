@@ -926,7 +926,8 @@ method values, permission claims) and confirm each is read from config at \
 runtime or matches what scaffold_ci writes; confirm the .github/scripts/ \
 mirrors stay byte-identical. Confirm schema description prose (permission \
 scope, defaults) matches what the code needs, and each prose default is a \
-structured default keyword."""
+structured default keyword. A doc comment stating a template default, \
+anywhere in repo, must match the real value; a passing test is not proof."""
 
 [execute.guardrails.mcp-error-suggestion-coverage]
 severity = "error"
@@ -1029,3 +1030,7 @@ a named helper. Grep the modified function's input-check patterns (e.g. \
 `in.File == ""`, `in.Action == ""`) and verify each pattern has only one \
 match within that function. Duplicate checks hide the real validation \
 logic and diverge when one copy is updated but not the other."""
+
+[execute.guardrails.skill-prose-source-verification-2]
+description = "Before marking a task done that modifies a SKILL.md, verify all prose claims about tool behavior, dispatch scaffolds, and schema validation by direct source-reading. When prose enumerates a struct's fields (return shapes, output fields, state structure), confirm every exported field in the Go struct appears in the prose. When prose claims absence (field not included, Port Notes not recorded), grep to verify the claim. When prose states a count or tier number for any set of values (an enum tag, a const block, a config-source or precedence chain), count the actual values in the Go source and confirm the stated number matches. Do not rely on build/test success as evidence."
+severity = 'error'

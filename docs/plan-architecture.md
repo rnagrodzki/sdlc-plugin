@@ -999,6 +999,8 @@ A `done` plan run's state file is not deleted the moment it finishes — it is k
 | Snapshot dimensions (7) | No | `plan_support.go` `PlanSnapshot` | Hard-coded |
 | Transcript scan window (64KB) | No | `stop_hooks.go` | Hard-coded |
 
+Every `.sdlc-v2/local.toml` row above also reads `~/.sdlc/local.toml` (or the path in `SDLC_USER_CONFIG`). Order: built-in default < `~/.sdlc/local.toml` < `.sdlc-v2/local.toml`. Tables merge key by key, and a list in the project file replaces the user list.
+
 ### Config Knob Connectivity Chains
 
 Full source-to-enforcement chain for the 10 `planStyle`/`plan.tasks` config fields: Go struct field, the loader function that reads it, where the SKILL.md workflow consumes it, and what enforces it.
