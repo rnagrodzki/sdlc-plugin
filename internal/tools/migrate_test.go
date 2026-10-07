@@ -560,6 +560,10 @@ func commentLines(s string) []string {
 // value into a section of a commented local.toml keeps every comment line,
 // in order — not just the text immediately around the changed keys —
 // because the write splices only the changed key's value text in place.
+// Exception: the written key's own commented example line. [ship]'s keys are
+// all shipped as commented examples (Task 11); writing one of them
+// uncomments that one line in place (its value, not its tip, changes), so it
+// is excluded from both sides of the comparison.
 func TestMigrateImportKeepsEveryCommentLine(t *testing.T) {
 	root := t.TempDir()
 	if _, err := setupInit(root, SetupInitIn{}); err != nil {
@@ -586,7 +590,13 @@ func TestMigrateImportKeepsEveryCommentLine(t *testing.T) {
 	if !strings.Contains(got, "bump = 'minor'") {
 		t.Errorf("legacy bump value not written:\n%s", got)
 	}
-	wantComments := commentLines(localTemplate)
+	var wantComments []string
+	for _, l := range commentLines(localTemplate) {
+		if strings.Contains(l, `bump = "patch"`) {
+			continue // uncommented in place by this import; see the doc comment above
+		}
+		wantComments = append(wantComments, l)
+	}
 	gotComments := commentLines(got)
 	if len(wantComments) == 0 {
 		t.Fatal("test fixture assumption broke: localTemplate has no comment lines")

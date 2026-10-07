@@ -23,14 +23,23 @@ This is a Go/MCP port of the original script-driven skill. Where its tool surfac
 differs from the source procedure, this port adapts as follows — flagged here
 rather than left implicit:
 
-- **Validate-before-write becomes write-then-validate-and-revert.** The
-  `validate` MCP tool (`action: "guardrails"` / `"dimensions"`) checks whatever
-  is currently on disk — it has no "validate this in-memory prospective JSON"
-  mode. Step 1's pre-flight (inside `prepare_orchestrator`, mode `"harden"`) already guarantees the
-  on-disk guardrails/dimensions are valid *before* this skill starts, so any
-  `validate` finding observed immediately after a proposal's write is
-  attributable to that write. Step 5a/5b apply the edit first, validate second,
-  and revert (re-write the prior content) on failure — see Step 5a for detail.
+- **Guardrails: check-then-write. Dimensions/Copilot: write-then-revert.**
+  The `validate` MCP tool's `guardrails` action takes a `candidatesJson` input
+  — a proposed entry is checked together with the section already on disk, in
+  memory, and nothing is written. Step 5a uses this for `plan-guardrails` and
+  `execute-guardrails` proposals: check the candidate, repair any flagged entry
+  per its `fix` text (up to 2 rounds), then write via `setup_write_sections`
+  only once a check comes back clean, then validate once more on disk as a
+  final safety net (a write a second process raced in between is the only way
+  this second check can still fail) and revert only if that still finds a
+  problem. The `dimensions` action has no such in-memory mode — it checks
+  whatever is currently on disk — so `review-dimensions` and
+  `copilot-instructions` proposals keep the original flow: apply the edit
+  first, validate second, and revert (re-write the prior content) on failure.
+  Step 1's pre-flight (inside `prepare_orchestrator`, mode `"harden"`) already
+  guarantees the on-disk guardrails/dimensions are valid *before* this skill
+  starts, so any post-write `validate` finding on the dimensions/Copilot path
+  is attributable to that write. See Step 5a for detail on both paths.
 - **No `manifest.errorReportSkillPath` dependency.** This port dispatches
   `error-report` the same way every other ported skill does — "invoke
   error-report, provide: Skill/Step/Operation/Error/Suggested
@@ -81,7 +90,8 @@ proposed.
   prompt, the 5c upstream-report offer, and the Step 6 dispatch prompt.
 - It never relaxes or removes a rule. Proposals stay strengthen-only, the
   orchestrator's severity vocabulary stays fixed, and 5a's
-  write-then-validate-then-revert still runs on every auto-accepted proposal.
+  check-repair-write-revalidate flow (guardrails) or write-then-validate-then-revert
+  flow (dimensions/Copilot) still runs on every auto-accepted proposal.
 - It is not valid with `--from-learnings`: bulk triage deletes learnings entries
   and needs a human. Stop immediately with a clear error message. Do not call
   `prepare_orchestrator`.
@@ -96,7 +106,7 @@ Pass `fromIssue: "<num>"` to the Step 1 tool call.
 
 ## Step 1 — CONSUME (mandatory Load State): Call `prepare_orchestrator` (mode: `"harden"`) (R4, R13)
 
-This is harden's mandatory state/config load — it runs immediately after Step 0's unavoidable argument parsing (harden cannot know what to load before knowing which of `--failure-text` / `--from-issue` / `--from-learnings`, plus `--skill`, was given) and before any other tool call in this skill. Use the manifest's structured fields (via `manifestPath`) for all downstream classification and analysis; do NOT read `.sdlc-v2/config.toml`, guardrail files, or dimension files directly to decide classification or what to load — `prepare_orchestrator`'s own pre-flight already validates them server-side (see Port Notes above). This is about the initial load only: Step 5a's apply/validate/revert cycle necessarily reads and rewrites `.sdlc-v2/config.toml` directly as part of applying and testing a proposed edit — that's a later write-path operation, not initial state, and is unaffected by this mandate.
+This is harden's mandatory state/config load — it runs immediately after Step 0's unavoidable argument parsing (harden cannot know what to load before knowing which of `--failure-text` / `--from-issue` / `--from-learnings`, plus `--skill`, was given) and before any other tool call in this skill. Use the manifest's structured fields (via `manifestPath`) for all downstream classification and analysis; do NOT read `.sdlc-v2/config.toml`, guardrail files, or dimension files directly to decide classification or what to load — `prepare_orchestrator`'s own pre-flight already validates them server-side (see Port Notes above). This is about the initial load only: Step 5a's check/write/validate/revert cycle necessarily reads and rewrites `.sdlc-v2/config.toml` directly as part of applying and testing a proposed edit — that's a later write-path operation, not initial state, and is unaffected by this mandate.
 
 ```
 prepare_orchestrator({
@@ -422,8 +432,9 @@ summary (when `--auto` is set) and the 5e record (when its gate holds), then
 **Approval gate.** When `--auto` is set, skip the per-proposal `AskUserQuestion`:
 treat every proposal as answered **apply**, go straight to 5a, and record each
 accepted proposal for the 5d summary. The per-iteration contract above and 5a's
-write-then-validate-then-revert apply unchanged. Otherwise (default), ask per
-proposal as follows.
+guardrail check-repair-write-revalidate flow, or dimensions/Copilot
+write-then-validate-then-revert flow, apply unchanged. Otherwise (default), ask
+per proposal as follows.
 
 For each proposal in `RESULT.proposals`, present the full patch preview to the
 user. Then use `AskUserQuestion`:
@@ -480,7 +491,7 @@ hardening start in ship state (<error>) — continuing.` — and proceed into th
 proposal loop unchanged. This is diagnostic bookkeeping for `ship`'s health
 report; it is never a stop condition for the hardening run itself.
 
-### 5a. Write, Then Validate, Then Revert on Failure (R12, R-iteration-write)
+### 5a. Check Guardrails, or Write-Then-Revert the Rest (R12, R-iteration-write)
 
 **Re-read `targetFile` from disk now** (R-iteration-write rule 1) — do not use
 any in-memory state from a prior iteration. Keep the pre-write content in
@@ -508,27 +519,82 @@ When the user selects **apply** (or `--auto` treats the proposal as applied):
    summary — as `skill-recommendation surface` for that surface (see step 2),
    otherwise as `targetFile outside surface: <path>` — and continue to the next
    proposal.
+
+`surface == "skill-recommendation"` is advisory-only manifest data (see
+Step 1), not an edit-proposal surface — the orchestrator's Step 2 only
+iterates the four user-side surfaces above and never reads
+`surfaces.skillRecommendations`, so this case is not expected to occur. If a
+proposal with this `surface` value ever arrives anyway, skip it without
+applying (do not Edit/Write, do not validate, do not check) and continue to
+the next proposal: there is no `targetFile` to safely resolve for it.
+
+**For `surface == "plan-guardrails"` or `"execute-guardrails"`** — `validate`'s
+`guardrails` action accepts `candidatesJson`, so these two surfaces are checked
+*before* anything is written:
+
+1. **Check.** Build `candidatesJson` as a JSON array holding the full
+   `{id, description, severity}` object for every guardrail entry this
+   proposal adds, strengthens, or consolidates. Call:
+   ```
+   validate({ action: "guardrails", section: "plan" | "execute",
+     activeWorktree: true, candidatesJson: "<the array above>" })
+   ```
+   (`section` matches which surface this proposal targets; `activeWorktree:
+   true` reads the on-disk section from the active worktree's config.toml,
+   matching where this proposal will write.) This checks the candidates
+   together with the section already on disk, in memory — nothing is written
+   yet, so a finding here costs nothing to recover from.
+2. **Repair on findings, capped at 2 rounds.** If `findings` is non-empty,
+   repair every flagged entry per its own `fix` text — e.g. add a missing or
+   malformed id, fill in a missing/empty description, set a valid severity, or
+   for an over-length description, shorten it to 1024 bytes or less or split
+   it into independent guardrails `<id>-1`, `<id>-2`, ... (each a complete,
+   standalone rule — never a fragment). Re-run the step 1 check against the
+   repaired candidates. Repeat at most twice (2 repair rounds total, counting
+   from the first check) — this cap holds under `--auto` too, there is no
+   unbounded retry loop. If findings remain after 2 repair rounds: write
+   nothing. Surface the findings and use `AskUserQuestion` to offer **retry**
+   (let the user adjust the proposal, then repeat from step 1) or **cancel**.
+   With `--auto`: do not call `AskUserQuestion`; take the **cancel** branch for
+   this proposal only — record it under `Reverted` in the 5d summary with the
+   final findings (nothing was ever written, but the outcome for this proposal
+   is the same as a revert: no change lands) — and continue to the next
+   proposal.
+3. **Write.** Once a check reports no findings (on the first pass or after
+   repair), persist every entry in one call, one dotted leaf per id:
+   ```
+   setup_write_sections({ sectionsJson: {
+     "<section>.guardrails.<id>": { "description": "...", "severity": "..." },
+     ...
+   } })
+   ```
+   A dotted id merges at that nested leaf, preserving sibling guardrails under
+   the same section (see the tool's own description) — pass the complete
+   `{description, severity}` object for every id touched by this proposal, not
+   a partial patch. If any entry was repaired in step 2, remember its `{id,
+   method}` (e.g. `split into dry-1, dry-2` or `shortened description`) for
+   the 5d summary's `Repaired:` list.
+4. **Validate on disk, revert only if that still fails.** Call
+   `validate({ action: "guardrails", section: "plan" | "execute",
+   activeWorktree: true })` — no `candidatesJson` this time, so this reads what
+   was actually written. If `findings` is non-empty (the write landed
+   differently than the clean check implied, e.g. a concurrent edit): revert
+   `targetFile` to the content re-read at the top of this step, surface the
+   findings, and use `AskUserQuestion` to offer **retry** (repeat from step 1)
+   or **cancel**. With `--auto`: revert the same way, skip the prompt, take
+   **cancel**, and record the proposal under `Reverted` with the findings. If
+   `findings` is empty, continue to 5b.
+
+**For `surface == "review-dimensions"` or `"copilot-instructions"`** —
+`validate` has no in-memory mode for these surfaces, so the original
+apply-then-validate flow still applies:
+
 1. Apply the change to `targetFile` with Edit (preferred) or Write.
 2. Validate immediately:
-   - For `surface == "plan-guardrails"` or `"execute-guardrails"`: `targetFile`
-     is `<CONTENT_ROOT>/.sdlc-v2/config.toml` (already an absolute path rooted
-     at `repository.contentRoot` in the proposal — guardrail config lives in
-     the active worktree, same root as every other surface this skill edits).
-     Call `validate({ action: "guardrails", section: "plan" | "execute",
-     activeWorktree: true })` (section matches which surface this proposal
-     targets; `activeWorktree: true` reads the section back from the active
-     worktree's config.toml, matching where this proposal just wrote).
    - For `surface == "review-dimensions"`: call
      `validate({ action: "dimensions" })`.
    - For `surface == "copilot-instructions"`: no schema — skip validation,
      continue to 5b.
-   - `surface == "skill-recommendation"` is advisory-only manifest data (see
-     Step 1), not an edit-proposal surface — the orchestrator's Step 2 only
-     iterates the four user-side surfaces above and never reads
-     `surfaces.skillRecommendations`, so this case is not expected to occur.
-     If a proposal with this `surface` value ever arrives anyway, skip it
-     without applying (do not Edit/Write, do not validate) and continue to
-     the next proposal: there is no `targetFile` to safely resolve for it.
 3. **If `findings` is non-empty:** the just-applied write introduced a problem
    (Step 1's pre-flight already guaranteed the pre-existing on-disk state was
    clean, so any finding now is caused by this proposal). Revert `targetFile`
@@ -606,16 +672,22 @@ the other.
 **When `proposal.action === "consolidate"` (R15):** the proposal targets an
 existing guardrail by id. Use the `targetFile` content already re-read at
 the top of 5a (R-iteration-write rule 1) — `targetFile` is
-`<CONTENT_ROOT>/.sdlc-v2/config.toml`, same as the guardrail case in 5a step 2 —
-locate the guardrail table entry in `<section>.guardrails` by its key matching the id specified in the
-proposal's `patch`, and replace its fields with the proposal's merged values
-(description, severity). Do NOT remove fields; do NOT lower severity
-(strengthen-only invariant — R8/C9). If no guardrail with the target id exists
-in the current file, treat the proposal as malformed and surface to the user.
-With `--auto`: do not call `AskUserQuestion` — skip the proposal without writing
-and list it under `Skipped` in the 5d summary as `malformed consolidate`, then
-continue to the next proposal.
-`consolidate` goes through the same write-then-validate-then-revert flow as 5a.
+`<CONTENT_ROOT>/.sdlc-v2/config.toml`, same root 5a's guardrail path checks and
+writes — to confirm the id specified in the proposal's `patch` already exists
+in `<section>.guardrails` and to read its current fields. Build the merged
+candidate (description, severity) from the proposal's values over the
+existing ones: do NOT remove fields; do NOT lower severity (strengthen-only
+invariant — R8/C9). If no guardrail with the target id exists in the current
+file, treat the proposal as malformed and surface to the user. With `--auto`:
+do not call `AskUserQuestion` — skip the proposal without writing and list it
+under `Skipped` in the 5d summary as `malformed consolidate`, then continue to
+the next proposal.
+`consolidate` goes through the same guardrail check-repair-write-revalidate
+flow as 5a (steps 1-4 of the `plan-guardrails`/`execute-guardrails` path) —
+the merged candidate is checked via `candidatesJson` (a candidate's id matches
+the disk entry, so it replaces it for the check), repaired on findings up to
+2 rounds, written via `setup_write_sections` at `<section>.guardrails.<id>`
+once clean, then validated on disk with revert-on-failure.
 
 ### 5c. Ambiguous upstream-report offer (R-ambig-offer)
 
@@ -658,6 +730,8 @@ print the header line; omit a section whose list is empty.
 harden --auto: {A} auto-accepted, {R} reverted, {S} skipped, {U} not processed
 Auto-accepted:
   [{i}] {action} on {surface} → {targetFile} — {rationale, first 120 chars}
+Repaired:
+  [{i}] {guardrail-id} → {method, e.g. split into dry-1, dry-2 (description 1310 bytes) | shortened description}
 Reverted (validation failed, file restored):
   [{i}] {action} on {surface} → {targetFile} — {first validation finding}
 Skipped:
@@ -672,6 +746,15 @@ Not filed (needs a human — invoke error-report manually):
 proposal that was reverted appears under `Reverted` and never under
 `Auto-accepted`. When 5b's Copilot mirror failed for a listed proposal, append
 `; Copilot mirror failed: {error}` to its line.
+
+`Repaired` lists every guardrail entry that needed at least one repair round
+(5a step 2 on the `plan-guardrails`/`execute-guardrails` path, including
+`consolidate`) before a clean check was reached — whether the proposal it
+belongs to ended up under `Auto-accepted` (repair succeeded within 2 rounds)
+or `Reverted` (it did not). `{method}` names what changed: `split into <id>-1,
+<id>-2 (description <N> bytes)` for an over-length description, or a short
+phrase for any other repair (e.g. `added missing id`, `set severity to
+error`). Omit this section when no entry needed repair.
 
 ### 5e. Record Completion in Ship State (ship-harden dispatch only)
 
@@ -805,7 +888,8 @@ cleanup path).
   (Step 5, 5a, 5c, Step 6) has a non-interactive branch.
 - Treat `--auto` as permission to change what is proposed or applied — it changes
   who approves, nothing else. Strengthen-only, the orchestrator's severity
-  vocabulary, and write-then-validate-then-revert apply unchanged.
+  vocabulary, the guardrail check-repair-write-revalidate flow, and the
+  dimensions/Copilot write-then-validate-then-revert flow apply unchanged.
 - Invoke `error-report` under `--auto` — filing a GitHub issue needs a
   human-approved draft; list the payload under `Not filed` instead.
 - Infer `--auto` from pipeline context, conversation history, or the caller being
@@ -831,6 +915,12 @@ cleanup path).
   surface has its own canonical vocabulary; never substitute one for the other.
 - Leave a schema-invalid edit in place after a failed post-write `validate`
   call — revert per 5a.
+- Write a `plan-guardrails`/`execute-guardrails` proposal via
+  `setup_write_sections` before its `candidatesJson` check comes back clean —
+  check first, write second (5a).
+- Repair a guardrail finding for more than 2 rounds, with or without
+  `--auto` — stop and offer retry/cancel (or record `Reverted` under
+  `--auto`) after 2 rounds (5a).
 - Issue sequential single-index `learnings_log` remove calls in
   `--from-learnings` mode — each remove rewrites the file and shifts entry
   positions. Always collect all addressed indices and issue one batch remove

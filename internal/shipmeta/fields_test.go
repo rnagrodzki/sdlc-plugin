@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 )
 
@@ -257,19 +256,13 @@ func TestLocalSchemaStepEnums_MatchCanonicalSteps(t *testing.T) {
 	}
 }
 
-// TestLocalTemplate_DefaultStepsIncludeHarden pins the steps line new
-// projects receive from plugins/sdlc/templates/local.toml.
-func TestLocalTemplate_DefaultStepsIncludeHarden(t *testing.T) {
-	path := filepath.Join("..", "..", "plugins", "sdlc", "templates", "local.toml")
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("reading %s: %v", path, err)
-	}
-	const want = `steps = ["execute", "commit", "review", "harden", "pr", "verify-pipeline"]`
-	if !strings.Contains(string(raw), "\n"+want+"\n") {
-		t.Errorf("%s: missing default steps line %s", path, want)
-	}
-}
+// TestLocalTemplate_DefaultStepsIncludeHarden pinned a *live* steps line in
+// plugins/sdlc/templates/local.toml. Task 11 ships every [ship] key
+// (including steps) as a commented example matching ShipBuiltInDefaults
+// (no "harden"), so that premise no longer holds; removed. The commented
+// steps example is now pinned against ShipBuiltInDefaults.Steps directly by
+// internal/tools/template_tips_test.go instead, which is strictly stronger
+// than this literal-string pin.
 
 // readSchema parses plugins/sdlc/schemas/<name> into a generic map.
 func readSchema(t *testing.T, name string) map[string]any {

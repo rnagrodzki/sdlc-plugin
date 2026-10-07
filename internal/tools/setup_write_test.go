@@ -508,12 +508,13 @@ func TestSetupWriteSections_NullClearsLeaf(t *testing.T) {
 	}
 }
 
-// shipSectionLines returns the lines of localTemplate's top-level "ship"
-// section (the lines strictly between the "[ship]" header and the next
-// top-level header), split on "\n".
-func shipSectionLines(t *testing.T) []string {
+// shipSectionLinesOf returns the lines of tmpl's top-level "ship" section
+// (the lines strictly between the "[ship]" header and the next top-level
+// header), split on "\n". Generalized over shipSectionLines so a test can
+// run it against a modified copy of localTemplate.
+func shipSectionLinesOf(t *testing.T, tmpl string) []string {
 	t.Helper()
-	lines := strings.Split(localTemplate, "\n")
+	lines := strings.Split(tmpl, "\n")
 	start := -1
 	for i, l := range lines {
 		if l == "[ship]" {
@@ -522,7 +523,7 @@ func shipSectionLines(t *testing.T) []string {
 		}
 	}
 	if start < 0 {
-		t.Fatal("localTemplate has no [ship] header")
+		t.Fatal("template has no [ship] header")
 	}
 	end := len(lines)
 	for i := start; i < len(lines); i++ {
@@ -534,15 +535,68 @@ func shipSectionLines(t *testing.T) []string {
 	return lines[start:end]
 }
 
-// shipTips independently recomputes, straight from localTemplate's text (not
-// a hardcoded literal), the comment block directly above each "key = value"
-// line of the "ship" section, keyed by that exact key/value line. A key with
+// shipSectionLines returns shipSectionLinesOf(t, localTemplate): the shipped
+// template's own "ship" section lines.
+func shipSectionLines(t *testing.T) []string {
+	t.Helper()
+	return shipSectionLinesOf(t, localTemplate)
+}
+
+// shipSectionUncommentedTemplate returns localTemplate with every commented
+// "# key = value" example line inside the top-level "ship" section turned
+// live (its "#" prefix removed) — every other line, including each example's
+// own tip comment, is untouched. Task 11 ships every [ship] key as a
+// commented example (ShipBuiltInDefaults applies at runtime instead), so
+// [ship] itself has no live key for TestSetupWriteSections_ShipSection* to
+// exercise the splice/tip-restore write path with; this reconstructs a
+// fixture that does, straight from the shipped text rather than a
+// hand-written literal, so a future ship tip or key changes with it.
+func shipSectionUncommentedTemplate(t *testing.T) string {
+	t.Helper()
+	lines := strings.Split(localTemplate, "\n")
+	start, end := -1, -1
+	for i, l := range lines {
+		if l == "[ship]" {
+			start = i + 1
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatal("localTemplate has no [ship] header")
+	}
+	end = len(lines)
+	for i := start; i < len(lines); i++ {
+		if strings.HasPrefix(lines[i], "[") {
+			end = i
+			break
+		}
+	}
+	uncommented := 0
+	for i := start; i < end; i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		if !strings.HasPrefix(trimmed, "#") || !templateKVRe.MatchString(lines[i]) {
+			continue
+		}
+		lines[i] = strings.TrimSpace(strings.TrimPrefix(trimmed, "#"))
+		uncommented++
+	}
+	if uncommented == 0 {
+		t.Fatal("test fixture assumption broke: localTemplate's [ship] section has no commented key=value example to uncomment")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// shipTipsOf independently recomputes, straight from tmpl's text (not a
+// hardcoded literal), the comment block directly above each "key = value"
+// line of its "ship" section, keyed by that exact key/value line. A key with
 // no comment directly above it (no blank line between) is left out. This
 // mirrors config.RestoreTips' own notion of a tip, so a future wording change
-// to a ship tip (e.g. Task 6's rebase tip) needs no change here.
-func shipTips(t *testing.T) map[string]string {
+// to a ship tip (e.g. Task 6's rebase tip) needs no change here. Generalized
+// over shipTips so a test can run it against a modified copy of
+// localTemplate (see shipSectionUncommentedTemplate).
+func shipTipsOf(t *testing.T, tmpl string) map[string]string {
 	t.Helper()
-	lines := shipSectionLines(t)
+	lines := shipSectionLinesOf(t, tmpl)
 	isComment := func(l string) bool { return strings.HasPrefix(strings.TrimSpace(l), "#") }
 	tips := make(map[string]string)
 	for i, l := range lines {
@@ -559,26 +613,45 @@ func shipTips(t *testing.T) map[string]string {
 		tips[l] = strings.Join(lines[start:i], "\n") + "\n"
 	}
 	if len(tips) == 0 {
-		t.Fatal("test fixture assumption broke: localTemplate's [ship] section has no key with a tip above it")
+		t.Fatal("test fixture assumption broke: the template's [ship] section has no key with a tip above it")
 	}
 	return tips
+}
+
+// shipTips returns shipTipsOf(t, localTemplate): the shipped template's own
+// "ship" section tips.
+func shipTips(t *testing.T) map[string]string {
+	t.Helper()
+	return shipTipsOf(t, localTemplate)
+}
+
+// shipSectionValuesOf decodes the "ship" table out of tmpl, as the
+// field-value object setup_write_sections expects for sectionsJson.
+// Generalized over shipSectionValues so a test can run it against a
+// modified copy of localTemplate (see shipSectionUncommentedTemplate).
+func shipSectionValuesOf(t *testing.T, tmpl string) map[string]any {
+	t.Helper()
+	var full map[string]any
+	if err := fsx.DecodeTOML([]byte(tmpl), &full); err != nil {
+		t.Fatalf("decode template: %v", err)
+	}
+	ship, ok := full["ship"].(map[string]any)
+	if !ok {
+		t.Fatal("test fixture assumption broke: template has no [ship] table")
+	}
+	return ship
 }
 
 // shipSectionValues decodes the "ship" table out of localTemplate, as the
 // field-value object setup_write_sections expects for sectionsJson. Values
 // come straight from the template so the test exercises real field values,
-// not an invented fixture.
+// not an invented fixture. Since Task 11, the shipped [ship] table has no
+// live key, so this decodes to an empty map — callers that need a populated
+// ship fixture use shipSectionValuesOf with shipSectionUncommentedTemplate
+// instead.
 func shipSectionValues(t *testing.T) map[string]any {
 	t.Helper()
-	var full map[string]any
-	if err := fsx.DecodeTOML([]byte(localTemplate), &full); err != nil {
-		t.Fatalf("decode localTemplate: %v", err)
-	}
-	ship, ok := full["ship"].(map[string]any)
-	if !ok {
-		t.Fatal("test fixture assumption broke: localTemplate has no [ship] table")
-	}
-	return ship
+	return shipSectionValuesOf(t, localTemplate)
 }
 
 // stripTemplateComments removes every comment line from tmpl, leaving every
@@ -601,15 +674,19 @@ func stripTemplateComments(tmpl string) string {
 // unchanged values keeps the file byte-for-byte identical — so every ship
 // tip (and everything else) survives.
 func TestSetupWriteSections_ShipSectionNoopKeepsEveryTip(t *testing.T) {
-	tips := shipTips(t) // fixture guard: fails fast if [ship] loses its tips
+	// Task 11: the shipped [ship] section has no live key of its own
+	// (ShipBuiltInDefaults applies at runtime instead), so this exercises
+	// the write path against a reconstructed fixture that does.
+	tmpl := shipSectionUncommentedTemplate(t)
+	tips := shipTipsOf(t, tmpl) // fixture guard: fails fast if [ship] loses its tips
 	if len(tips) == 0 {
 		t.Fatal("no ship tips found")
 	}
 
 	dir := t.TempDir()
-	path := writeSDLCFile(t, dir, "local.toml", localTemplate)
+	path := writeSDLCFile(t, dir, "local.toml", tmpl)
 
-	shipJSON, err := json.Marshal(shipSectionValues(t))
+	shipJSON, err := json.Marshal(shipSectionValuesOf(t, tmpl))
 	if err != nil {
 		t.Fatalf("marshal ship values: %v", err)
 	}
@@ -625,8 +702,8 @@ func TestSetupWriteSections_ShipSectionNoopKeepsEveryTip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != localTemplate {
-		t.Errorf("no-op ship write changed the file.\n--- got ---\n%s\n--- want (unchanged) ---\n%s", got, localTemplate)
+	if string(got) != tmpl {
+		t.Errorf("no-op ship write changed the file.\n--- got ---\n%s\n--- want (unchanged) ---\n%s", got, tmpl)
 	}
 }
 
@@ -635,13 +712,14 @@ func TestSetupWriteSections_ShipSectionNoopKeepsEveryTip(t *testing.T) {
 // stripped out restores every one of the ship section's tips, derived live
 // from localTemplate rather than a hardcoded literal.
 func TestSetupWriteSections_ShipSectionRestoresStrippedTips(t *testing.T) {
-	tips := shipTips(t)
+	tmpl := shipSectionUncommentedTemplate(t) // see TestSetupWriteSections_ShipSectionNoopKeepsEveryTip
+	tips := shipTipsOf(t, tmpl)
 
 	dir := t.TempDir()
-	stripped := stripTemplateComments(localTemplate)
+	stripped := stripTemplateComments(tmpl)
 	path := writeSDLCFile(t, dir, "local.toml", stripped)
 
-	shipJSON, err := json.Marshal(shipSectionValues(t))
+	shipJSON, err := json.Marshal(shipSectionValuesOf(t, tmpl))
 	if err != nil {
 		t.Fatalf("marshal ship values: %v", err)
 	}

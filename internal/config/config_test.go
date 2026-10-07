@@ -1758,6 +1758,329 @@ func TestRead_MergesProjectAndLocal(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// User-level local config (Task 10)
+// ---------------------------------------------------------------------------
+
+func TestUserConfigPath_EnvOverride(t *testing.T) {
+	t.Setenv(UserConfigPathEnv, "/custom/user-config.toml")
+
+	path, ok := UserConfigPath()
+	if !ok {
+		t.Fatal("UserConfigPath: ok = false, want true")
+	}
+	if path != "/custom/user-config.toml" {
+		t.Errorf("UserConfigPath = %q, want /custom/user-config.toml", path)
+	}
+}
+
+func TestUserConfigPath_DefaultsToHomeDotSdlc(t *testing.T) {
+	t.Setenv(UserConfigPathEnv, "")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	path, ok := UserConfigPath()
+	if !ok {
+		t.Fatal("UserConfigPath: ok = false, want true")
+	}
+	want := filepath.Join(home, ".sdlc", "local.toml")
+	if path != want {
+		t.Errorf("UserConfigPath = %q, want %q", path, want)
+	}
+}
+
+func TestUserConfigPath_NoHomeDir(t *testing.T) {
+	t.Setenv(UserConfigPathEnv, "")
+	t.Setenv("HOME", "")
+
+	path, ok := UserConfigPath()
+	if ok {
+		t.Errorf("UserConfigPath: ok = true (path %q), want false", path)
+	}
+	if path != "" {
+		t.Errorf("UserConfigPath = %q, want empty when ok=false", path)
+	}
+}
+
+func TestReadLocalLayers_NoHomeDir_NoErrorEmptyUserLayer(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+	setupLocalConfig(t, root, map[string]any{"ship": map[string]any{"draft": true}})
+
+	t.Setenv(UserConfigPathEnv, "")
+	t.Setenv("HOME", "")
+
+	user, project, err := ReadLocalLayers(root)
+	if err != nil {
+		t.Fatalf("ReadLocalLayers: %v", err)
+	}
+	if len(user) != 0 {
+		t.Errorf("user = %v, want empty map (no home dir -> no user layer)", user)
+	}
+	if project["ship"] == nil {
+		t.Errorf("project = %v, want ship section present", project)
+	}
+}
+
+func TestReadLocalLayers_UserFileUsed(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+
+	userPath := filepath.Join(t.TempDir(), "user-local.toml")
+	writeTOML(t, userPath, map[string]any{"ship": map[string]any{"draft": true}})
+	t.Setenv(UserConfigPathEnv, userPath)
+
+	user, project, err := ReadLocalLayers(root)
+	if err != nil {
+		t.Fatalf("ReadLocalLayers: %v", err)
+	}
+	if digTable(user, "ship")["draft"] != true {
+		t.Errorf("user = %v, want ship.draft=true", user)
+	}
+	if len(project) != 0 {
+		t.Errorf("project = %v, want empty map (no project local.toml)", project)
+	}
+}
+
+func TestReadLocalLayers_MissingUserFile_EmptyMapNoError(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+
+	t.Setenv(UserConfigPathEnv, filepath.Join(t.TempDir(), "does-not-exist.toml"))
+
+	user, _, err := ReadLocalLayers(root)
+	if err != nil {
+		t.Fatalf("ReadLocalLayers: %v", err)
+	}
+	if user == nil || len(user) != 0 {
+		t.Errorf("user = %v, want empty non-nil map", user)
+	}
+}
+
+func TestReadLocalLayers_MalformedUserFile(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+
+	userPath := filepath.Join(t.TempDir(), "user-local.toml")
+	if err := os.WriteFile(userPath, []byte("not = [valid toml"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	t.Setenv(UserConfigPathEnv, userPath)
+
+	_, _, err := ReadLocalLayers(root)
+	if err == nil {
+		t.Fatal("ReadLocalLayers: expected error for malformed user file, got nil")
+	}
+	if !strings.Contains(err.Error(), userPath) {
+		t.Errorf("error %q does not mention the user path %q", err.Error(), userPath)
+	}
+	if !strings.Contains(err.Error(), "Fix the TOML syntax") || !strings.Contains(err.Error(), UserConfigPathEnv) {
+		t.Errorf("error %q missing the fix-it suggestion", err.Error())
+	}
+}
+
+func TestReadLocalLayers_UserPathIsDirectory(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+
+	userDir := t.TempDir()
+	t.Setenv(UserConfigPathEnv, userDir)
+
+	_, _, err := ReadLocalLayers(root)
+	if err == nil {
+		t.Fatal("ReadLocalLayers: expected error for directory user path, got nil")
+	}
+	if !strings.Contains(err.Error(), "is a directory") {
+		t.Errorf("error %q does not say 'is a directory'", err.Error())
+	}
+	if !strings.Contains(err.Error(), UserConfigPathEnv) {
+		t.Errorf("error %q missing a pointer to %s", err.Error(), UserConfigPathEnv)
+	}
+}
+
+func TestReadLocalLayers_MalformedProjectFile_UnchangedBehavior(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+
+	projectLocalPath := filepath.Join(root, paths.DataDir, "local.toml")
+	if err := os.MkdirAll(filepath.Dir(projectLocalPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(projectLocalPath, []byte("not = [valid toml"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	_, _, err := ReadLocalLayers(root)
+	if err == nil {
+		t.Fatal("ReadLocalLayers: expected error for malformed project file, got nil")
+	}
+	if !strings.Contains(err.Error(), projectLocalPath) {
+		t.Errorf("error %q does not mention the project path %q", err.Error(), projectLocalPath)
+	}
+}
+
+func TestMergeLocal(t *testing.T) {
+	tests := []struct {
+		name string
+		base map[string]any
+		over map[string]any
+		want map[string]any
+	}{
+		{
+			name: "user only (base empty)",
+			base: map[string]any{},
+			over: map[string]any{"ship": map[string]any{"draft": true}},
+			want: map[string]any{"ship": map[string]any{"draft": true}},
+		},
+		{
+			name: "project only (over empty)",
+			base: map[string]any{"ship": map[string]any{"draft": true}},
+			over: map[string]any{},
+			want: map[string]any{"ship": map[string]any{"draft": true}},
+		},
+		{
+			name: "key in both: over wins",
+			base: map[string]any{"ship": map[string]any{"draft": true}},
+			over: map[string]any{"ship": map[string]any{"draft": false}},
+			want: map[string]any{"ship": map[string]any{"draft": false}},
+		},
+		{
+			name: "nested table merges key by key",
+			base: map[string]any{
+				"review": map[string]any{
+					"thresholds": map[string]any{"blocking": "high", "warn": "medium"},
+				},
+			},
+			over: map[string]any{
+				"review": map[string]any{
+					"thresholds": map[string]any{"blocking": "critical"},
+				},
+			},
+			want: map[string]any{
+				"review": map[string]any{
+					"thresholds": map[string]any{"blocking": "critical", "warn": "medium"},
+				},
+			},
+		},
+		{
+			name: "list in over replaces base whole, not element-wise",
+			base: map[string]any{"ship": map[string]any{"tags": []any{"a", "b", "c"}}},
+			over: map[string]any{"ship": map[string]any{"tags": []any{"x"}}},
+			want: map[string]any{"ship": map[string]any{"tags": []any{"x"}}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mergeLocal(tt.base, tt.over)
+			gotJSON, _ := json.Marshal(got)
+			wantJSON, _ := json.Marshal(tt.want)
+			if string(gotJSON) != string(wantJSON) {
+				t.Errorf("mergeLocal() = %s, want %s", gotJSON, wantJSON)
+			}
+		})
+	}
+}
+
+func TestRead_UserAndProjectLocalMerge(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+
+	setupProjectConfig(t, root, map[string]any{})
+	setupLocalConfig(t, root, map[string]any{
+		"ship": map[string]any{"draft": false, "reviewThreshold": "info"},
+	})
+
+	userPath := filepath.Join(t.TempDir(), "user-local.toml")
+	writeTOML(t, userPath, map[string]any{
+		"ship":      map[string]any{"draft": true},
+		"workspace": map[string]any{"root": "/elsewhere"},
+	})
+	t.Setenv(UserConfigPathEnv, userPath)
+
+	cfg, err := Read(root)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	// Project's local.toml wins over the user file on the shared key...
+	if cfg.Ship["draft"] != false {
+		t.Errorf("Ship.draft = %v, want false (project file wins over user file)", cfg.Ship["draft"])
+	}
+	// ...but a key the project file never set still comes from the project
+	// file's sibling key...
+	if cfg.Ship["reviewThreshold"] != "info" {
+		t.Errorf("Ship.reviewThreshold = %v, want info", cfg.Ship["reviewThreshold"])
+	}
+	// ...and a section the project file never sets at all comes from the
+	// user file.
+	if cfg.Workspace["root"] != "/elsewhere" {
+		t.Errorf("Workspace.root = %v, want /elsewhere (from user file)", cfg.Workspace["root"])
+	}
+}
+
+func TestReadSection_Local_ErrNotFoundOnlyWhenNeitherFileHasIt(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+
+	userPath := filepath.Join(t.TempDir(), "user-local.toml")
+	writeTOML(t, userPath, map[string]any{"ship": map[string]any{"draft": true}})
+	t.Setenv(UserConfigPathEnv, userPath)
+
+	// Project file has no [ship] at all; the user file does -> found.
+	setupLocalConfig(t, root, map[string]any{"review": map[string]any{"scope": "all"}})
+
+	section, err := ReadSection(root, "ship")
+	if err != nil {
+		t.Fatalf("ReadSection(ship): %v, want section from the user file", err)
+	}
+	if section["draft"] != true {
+		t.Errorf("ship.draft = %v, want true", section["draft"])
+	}
+
+	// Neither file has [automation] -> ErrNotFound.
+	_, err = ReadSection(root, "automation")
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("ReadSection(automation): expected ErrNotFound, got: %v", err)
+	}
+}
+
+func TestReadSection_ProjectSections_UnaffectedByUserFile(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+
+	setupProjectConfig(t, root, map[string]any{"jira": map[string]any{"defaultProject": "PROJ"}})
+
+	userPath := filepath.Join(t.TempDir(), "user-local.toml")
+	writeTOML(t, userPath, map[string]any{"jira": map[string]any{"defaultProject": "SHOULD-NOT-WIN"}})
+	t.Setenv(UserConfigPathEnv, userPath)
+
+	section, err := ReadSection(root, "jira")
+	if err != nil {
+		t.Fatalf("ReadSection(jira): %v", err)
+	}
+	if section["defaultProject"] != "PROJ" {
+		t.Errorf("jira.defaultProject = %v, want PROJ (project sections never read the user file)", section["defaultProject"])
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Tracing
 // ---------------------------------------------------------------------------
 
@@ -1831,15 +2154,19 @@ func TestShippedReviewThresholdDefaultsAgree(t *testing.T) {
 	repo := filepath.Join("..", "..")
 
 	// Template: [ship].reviewThreshold in plugins/sdlc/templates/local.toml.
-	var tmpl struct {
-		Ship struct {
-			ReviewThreshold string `toml:"reviewThreshold"`
-		} `toml:"ship"`
-	}
+	// The key ships as a commented example (the built-in default, not a live
+	// key: see "Template ships [ship] keys as commented examples"), so its
+	// value is read as text, not decoded as live TOML.
 	tmplPath := filepath.Join(repo, "plugins", "sdlc", "templates", "local.toml")
-	if err := fsx.ReadTOML(tmplPath, &tmpl); err != nil {
+	tmplRaw, err := os.ReadFile(tmplPath)
+	if err != nil {
 		t.Fatalf("read template: %v", err)
 	}
+	tmplMatch := regexp.MustCompile(`(?m)^# reviewThreshold = "(\w+)"`).FindSubmatch(tmplRaw)
+	if tmplMatch == nil {
+		t.Fatal(`plugins/sdlc/templates/local.toml has no commented "# reviewThreshold = \"X\"" example line`)
+	}
+	tmplReviewThreshold := string(tmplMatch[1])
 
 	// Setup wizard: the default of the ship section's reviewThreshold field.
 	wizard, found := "", false
@@ -1956,7 +2283,7 @@ func TestShippedReviewThresholdDefaultsAgree(t *testing.T) {
 	}
 
 	got := map[string]string{
-		"plugins/sdlc/templates/local.toml [ship].reviewThreshold":                 tmpl.Ship.ReviewThreshold,
+		"plugins/sdlc/templates/local.toml [ship].reviewThreshold":                 tmplReviewThreshold,
 		"setupmeta.ShipFields reviewThreshold Default":                             wizard,
 		"shipmeta.ShipBuiltInDefaults.ReviewThreshold":                             shipmeta.ShipBuiltInDefaults.ReviewThreshold,
 		"plugins/sdlc/skills/ship/config-format.md reviewThreshold default":        docDefault,
