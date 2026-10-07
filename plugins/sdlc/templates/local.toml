@@ -155,7 +155,7 @@
 # typeMap = { feature = "feat", bugfix = "fix", chore = "chore", docs = "docs", refactor = "refactor" }
 
 # ─── Local dashboard (optional — delete if not using) ──────────────
-# One web page on this computer that shows the pipelines of every repo.
+# One web page on this computer that shows the pipelines of every registered repo.
 # [dashboard]
 # autoStart = false   # start the local dashboard when a Claude session starts
 # port = 7385         # 1024-65535, loopback only

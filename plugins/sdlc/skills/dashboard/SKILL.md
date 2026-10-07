@@ -1,6 +1,6 @@
 ---
 name: dashboard
-description: "Use this skill to open the local sdlc dashboard: one web page that shows the pipelines of every repo, their progress, session activity, and issues. --status reports the server. --stop ends it. --no-open starts it without a browser. Arguments: [--status | --stop | --no-open]. Triggers on: dashboard, open dashboard, pipeline dashboard, show pipelines, stop dashboard."
+description: "Use this skill to open the local sdlc dashboard: one web page that shows the pipelines of every registered repo, their progress, session activity, and issues. --status reports the server. --stop ends it. --no-open starts it without a browser. Arguments: [--status | --stop | --no-open]. Triggers on: dashboard, open dashboard, pipeline dashboard, show pipelines, stop dashboard."
 user-invocable: true
 argument-hint: "[--status | --stop | --no-open]"
 model: sonnet

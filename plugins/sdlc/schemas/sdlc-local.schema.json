@@ -409,7 +409,7 @@
     },
     "dashboardSection": {
       "type": "object",
-      "description": "Controls the local sdlc dashboard: one web page on this computer that shows the pipelines of every repo.",
+      "description": "Controls the local sdlc dashboard: one web page on this computer that shows the pipelines of every registered repo.",
       "properties": {
         "autoStart": {
           "type": "boolean",
