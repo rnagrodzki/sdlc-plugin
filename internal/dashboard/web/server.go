@@ -1,0 +1,406 @@
+// Package web serves the local sdlc dashboard page and its JSON/SSE API on
+// 127.0.0.1. It is started by "sdlc dashboard serve" (see cmd/sdlc) and is
+// stopped by POST /api/stop, SIGTERM, or SIGINT — it has no idle timer.
+package web
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"io/fs"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+
+	"github.com/rnagrodzki/sdlc-plugin/internal/dashboard"
+	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
+)
+
+const (
+	// DefaultPort is the --port value when the flag is not given.
+	DefaultPort = 7385
+	minPort     = 1024
+	maxPort     = 65535
+
+	// PortError is the exact stderr line for a bad --port value.
+	PortError = "sdlc dashboard: --port must be 1024-65535"
+	// UsageError is the stderr line for a bad "sdlc dashboard" command line.
+	UsageError = "usage: sdlc dashboard serve [--port N]"
+
+	// tokenPlaceholder is the text in static/index.html that GET / replaces
+	// with this server start's token.
+	tokenPlaceholder = "{{SDLC_TOKEN}}"
+	// tokenHeader carries the token on POST /api/stop.
+	tokenHeader = "X-Sdlc-Token"
+	// sseRetryMillis is the reconnect delay the page's EventSource uses.
+	sseRetryMillis = 3000
+)
+
+// Timings are package variables so tests can shorten them.
+var (
+	// snapshotPollInterval is how often /api/events collects a snapshot and
+	// compares its hash with the last one sent.
+	snapshotPollInterval = 2 * time.Second
+	// pingInterval is how often /api/events sends an SSE comment line, so
+	// proxies and the browser keep the stream open.
+	pingInterval = 15 * time.Second
+	// shutdownTimeout bounds the graceful shutdown; after it the server
+	// closes every connection.
+	shutdownTimeout = 1 * time.Second
+	// healthProbeTimeout bounds the health call on a busy port.
+	healthProbeTimeout = 1 * time.Second
+	// now is the clock of the server (startedAt, snapshot time).
+	now = time.Now
+	// stderr receives the server's error lines.
+	stderr io.Writer = os.Stderr
+)
+
+// Options configures Serve. Every function field is required except Stop.
+type Options struct {
+	Port    int
+	Version string
+	// Token is 64 hex chars (see NewToken); tests pass a fixed value. An empty
+	// Token makes Serve create one, so a stop request can never match "".
+	Token string
+	// Stop is called after POST /api/stop is accepted (production: cancels
+	// the Serve context). Serve stops itself either way; tests record the call.
+	Stop func()
+	// Roots lists the registered repo roots (production: dashboard.Roots).
+	Roots func(now time.Time) ([]dashboard.Root, error)
+	// Collect builds the snapshot of roots (production: a closure over
+	// tools.CollectDashboardSnapshot with the binary's version).
+	Collect func(roots []string, now time.Time) tools.DashboardSnapshot
+	// Listen opens the listener (production: net.Listen).
+	Listen func(network, addr string) (net.Listener, error)
+	// Health calls GET /api/health on 127.0.0.1:port (production:
+	// dashboard.DefaultDeps().Health).
+	Health func(port int, timeout time.Duration) (dashboard.Health, error)
+}
+
+// NewToken returns a new stop token: 32 bytes from crypto/rand, hex encoded.
+func NewToken() string {
+	b := make([]byte, 32)
+	// crypto/rand.Read never returns an error since Go 1.24.
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// ParseServeArgs parses the flags of "sdlc dashboard serve" and returns the
+// port. A bad --port value (not a number, or outside 1024-65535) returns an
+// error whose text is PortError; any other bad flag returns UsageError.
+func ParseServeArgs(args []string) (int, error) {
+	fset := flag.NewFlagSet("serve", flag.ContinueOnError)
+	fset.SetOutput(io.Discard)
+	raw := fset.String("port", strconv.Itoa(DefaultPort), "")
+	if err := fset.Parse(args); err != nil || fset.NArg() > 0 {
+		return 0, errors.New(UsageError)
+	}
+	port, err := strconv.Atoi(*raw)
+	if err != nil || !validPort(port) {
+		return 0, errors.New(PortError)
+	}
+	return port, nil
+}
+
+func validPort(port int) bool {
+	return port >= minPort && port <= maxPort
+}
+
+// Serve runs the dashboard server on 127.0.0.1:o.Port until ctx is
+// cancelled, POST /api/stop is accepted, or the process gets SIGTERM or
+// SIGINT. It writes the server record after the listener binds and removes
+// it (only when it still names this process) at every stop.
+//
+// Exit codes: 0 stopped normally, or the port already answers sdlc health
+// (another sdlc server runs there); 1 the HTTP server failed; 2 bad port;
+// 3 the port is held by another program.
+func Serve(ctx context.Context, o Options) int {
+	if !validPort(o.Port) {
+		fmt.Fprintln(stderr, PortError)
+		return 2
+	}
+	token := o.Token
+	if token == "" {
+		token = NewToken()
+	}
+
+	ctx, stopSignals := signal.NotifyContext(ctx, syscall.SIGTERM, os.Interrupt)
+	defer stopSignals()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(o.Port))
+	ln, err := o.Listen("tcp", addr)
+	if err != nil {
+		// The usual cause is a busy port. When an sdlc server answers there,
+		// the job is done: that server serves the dashboard.
+		if _, herr := o.Health(o.Port, healthProbeTimeout); herr == nil {
+			return 0
+		}
+		fmt.Fprintf(stderr, "sdlc dashboard: port %d is in use by another program: %v\n", o.Port, err)
+		return 3
+	}
+
+	pid := os.Getpid()
+	startedAt := now().UTC()
+	rec := dashboard.ServerRecord{
+		PID:       pid,
+		Port:      o.Port,
+		Version:   o.Version,
+		StartedAt: startedAt,
+		URL:       "http://" + addr,
+	}
+	if err := dashboard.WriteServerRecord(rec); err != nil {
+		// The server still works; callers fall back to probing the port.
+		fmt.Fprintf(stderr, "sdlc dashboard: %v\n", err)
+	}
+	defer func() { _ = dashboard.RemoveServerRecord(pid) }()
+
+	stop := func() {
+		if o.Stop != nil {
+			o.Stop()
+		}
+		cancel()
+	}
+	srv := &http.Server{
+		Handler:           newHandler(ctx, o, token, pid, startedAt, stop),
+		ReadHeaderTimeout: 10 * time.Second,
+		// Request contexts derive from ctx, so open event streams end at stop.
+		BaseContext: func(net.Listener) context.Context { return ctx },
+	}
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.Serve(ln) }()
+
+	code := 0
+	select {
+	case <-ctx.Done():
+	case err := <-serveErr:
+		fmt.Fprintf(stderr, "sdlc dashboard: %v\n", err)
+		code = 1
+	}
+
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancelShutdown()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		_ = srv.Close()
+	}
+	return code
+}
+
+// handler serves every dashboard request. ServeHTTP checks the Host header
+// first, then hands the request to mux.
+type handler struct {
+	ctx       context.Context
+	o         Options
+	token     string
+	pid       int
+	startedAt time.Time
+	stop      func()
+	index     string
+	hosts     [2]string
+	origins   [2]string
+	mux       *http.ServeMux
+}
+
+func newHandler(ctx context.Context, o Options, token string, pid int, startedAt time.Time, stop func()) *handler {
+	index, err := staticFS.ReadFile("static/index.html")
+	if err != nil {
+		// static/index.html is embedded at build time; a miss is a build defect.
+		panic(fmt.Sprintf("dashboard web: embedded index.html: %v", err))
+	}
+	port := strconv.Itoa(o.Port)
+	h := &handler{
+		ctx:       ctx,
+		o:         o,
+		token:     token,
+		pid:       pid,
+		startedAt: startedAt,
+		stop:      stop,
+		index:     string(index),
+		hosts:     [2]string{"127.0.0.1:" + port, "localhost:" + port},
+		origins:   [2]string{"http://127.0.0.1:" + port, "http://localhost:" + port},
+		mux:       http.NewServeMux(),
+	}
+	static, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		panic(fmt.Sprintf("dashboard web: embedded static dir: %v", err))
+	}
+	files := http.StripPrefix("/static", http.FileServerFS(static))
+
+	h.mux.HandleFunc("GET /{$}", h.serveIndex)
+	h.mux.HandleFunc("GET /static/", func(w http.ResponseWriter, r *http.Request) {
+		// No directory listings.
+		if strings.HasSuffix(r.URL.Path, "/") {
+			http.NotFound(w, r)
+			return
+		}
+		files.ServeHTTP(w, r)
+	})
+	h.mux.HandleFunc("GET /api/snapshot", h.serveSnapshot)
+	h.mux.HandleFunc("GET /api/events", h.serveEvents)
+	h.mux.HandleFunc("GET /api/health", h.serveHealth)
+	h.mux.HandleFunc("POST /api/stop", h.serveStop)
+	return h
+}
+
+func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// A page on another site can reach 127.0.0.1 through DNS rebinding; its
+	// requests carry that site's host name, so only loopback names pass.
+	if r.Host != h.hosts[0] && r.Host != h.hosts[1] {
+		http.Error(w, "forbidden host", http.StatusForbidden)
+		return
+	}
+	h.mux.ServeHTTP(w, r)
+}
+
+func (h *handler) serveIndex(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = io.WriteString(w, strings.Replace(h.index, tokenPlaceholder, h.token, 1))
+}
+
+func (h *handler) serveHealth(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, dashboard.Health{PID: h.pid, Version: h.o.Version, StartedAt: h.startedAt})
+}
+
+func (h *handler) serveSnapshot(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, h.snapshot())
+}
+
+// snapshot collects the current snapshot of every registered root. A
+// failure to list roots gives a snapshot with no repos.
+func (h *handler) snapshot() tools.DashboardSnapshot {
+	t := now()
+	roots, err := h.o.Roots(t)
+	if err != nil {
+		fmt.Fprintf(stderr, "sdlc dashboard: %v\n", err)
+	}
+	paths := make([]string, 0, len(roots))
+	for _, r := range roots {
+		paths = append(paths, r.Root)
+	}
+	return h.o.Collect(paths, t)
+}
+
+// serveEvents streams snapshots as server-sent events: a retry line and the
+// current snapshot at connect, a new snapshot only when its hash changes,
+// and a ping comment every pingInterval.
+func (h *handler) serveEvents(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	if r.Method == http.MethodHead {
+		return
+	}
+	if _, err := fmt.Fprintf(w, "retry: %d\n\n", sseRetryMillis); err != nil {
+		return
+	}
+
+	lastHash := ""
+	send := func() error {
+		data, hash, err := encodeSnapshot(h.snapshot())
+		if err != nil {
+			fmt.Fprintf(stderr, "sdlc dashboard: %v\n", err)
+			return nil
+		}
+		if hash == lastHash {
+			return nil
+		}
+		if _, err := fmt.Fprintf(w, "event: snapshot\ndata: %s\n\n", data); err != nil {
+			return err
+		}
+		lastHash = hash
+		flusher.Flush()
+		return nil
+	}
+	if send() != nil {
+		return
+	}
+
+	poll := time.NewTicker(snapshotPollInterval)
+	defer poll.Stop()
+	ping := time.NewTicker(pingInterval)
+	defer ping.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-h.ctx.Done():
+			return
+		case <-poll.C:
+			if send() != nil {
+				return
+			}
+		case <-ping.C:
+			if _, err := io.WriteString(w, ": ping\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
+}
+
+// encodeSnapshot returns the JSON of s and a hash of s without its
+// GeneratedAt time, which changes at every collect.
+func encodeSnapshot(s tools.DashboardSnapshot) (data []byte, hash string, err error) {
+	data, err = json.Marshal(s)
+	if err != nil {
+		return nil, "", err
+	}
+	s.GeneratedAt = ""
+	stable, err := json.Marshal(s)
+	if err != nil {
+		return nil, "", err
+	}
+	sum := sha256.Sum256(stable)
+	return data, hex.EncodeToString(sum[:]), nil
+}
+
+// serveStop accepts a stop request only from this server's own page: the
+// Origin must be the server's loopback origin and X-Sdlc-Token must equal
+// this start's token.
+func (h *handler) serveStop(w http.ResponseWriter, r *http.Request) {
+	origin := r.Header.Get("Origin")
+	if origin != h.origins[0] && origin != h.origins[1] {
+		http.Error(w, "forbidden origin", http.StatusForbidden)
+		return
+	}
+	if subtle.ConstantTimeCompare([]byte(r.Header.Get(tokenHeader)), []byte(h.token)) != 1 {
+		http.Error(w, "forbidden token", http.StatusForbidden)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]bool{"stopping": true})
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+	h.stop()
+}
+
+func writeJSON(w http.ResponseWriter, status int, v any) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	_, _ = w.Write(append(data, '\n'))
+}
