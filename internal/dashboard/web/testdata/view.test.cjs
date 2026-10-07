@@ -5,7 +5,8 @@
  * Uses Node's built-in test runner (node --test) — no npm install required,
  * consistent with the project's other .cjs test files. view.js has no DOM
  * access, so it is required directly here exactly as app.js uses it in the
- * browser.
+ * browser. The DOM builders of render.js run here on a hand-written fake
+ * document (fakeDoc below).
  */
 
 const { test, describe } = require('node:test');
@@ -844,5 +845,355 @@ describe('browser global fallback', () => {
     run.call(fakeRoot);
     assert.equal(typeof fakeRoot.sdlcView, 'object');
     assert.equal(typeof fakeRoot.sdlcView.stepGlyph, 'function');
+  });
+});
+
+// --- render.js: DOM builders on a fake document ---------------------------------
+
+const render = require('../static/render.js');
+
+// The fake document: the DOM calls render.js may use, and no more. A new DOM
+// call in render.js needs a matching method here.
+function fakeDoc() {
+  function node(tag) { return { tagName: tag, className: '', attrs: {}, children: [], textContent: '', open: false, hidden: false,
+    setAttribute(k, v) { this.attrs[k] = String(v); }, appendChild(c) { this.children.push(c); return c; } }; }
+  return { createElement: node };
+}
+
+// Visible text of a node: its own textContent, then the text of its children in order.
+function textOf(node) {
+  return node.textContent + node.children.map(textOf).join('');
+}
+
+function findAll(node, match) {
+  const out = match(node) ? [node] : [];
+  for (const child of node.children) out.push(...findAll(child, match));
+  return out;
+}
+
+function classesOf(node) {
+  return node.className.split(' ').filter(Boolean);
+}
+
+function byClass(node, cls) {
+  return findAll(node, (n) => classesOf(n).includes(cls));
+}
+
+function oneByClass(node, cls) {
+  const found = byClass(node, cls);
+  assert.equal(found.length, 1, `want one .${cls}, got ${found.length}`);
+  return found[0];
+}
+
+const REPO = { root: '/src/app', name: 'app', sessions: [] };
+
+function pipeline(extra) {
+  return Object.assign(
+    {
+      id: 'ship-1',
+      kind: 'ship',
+      branch: 'feat/x',
+      worktree: '/src/app',
+      status: 'running',
+      steps: [
+        { name: 'execute', status: 'completed', detail: { kind: 'waves', waves: [] } },
+        { name: 'commit', status: 'completed' },
+        { name: 'review', status: 'in_progress', detail: { kind: 'dimensions', dimensions: [] } },
+        { name: 'pr', status: 'pending' },
+      ],
+      issues: [],
+      sessionId: '',
+    },
+    extra
+  );
+}
+
+describe('render el', () => {
+  test('sets the class and puts text through textContent', () => {
+    const node = render.el(fakeDoc(), 'span', 'pipe-kind', 'ship');
+    assert.equal(node.tagName, 'span');
+    assert.equal(node.className, 'pipe-kind');
+    assert.equal(node.textContent, 'ship');
+  });
+
+  test('turns a number into text and leaves null text empty', () => {
+    assert.equal(render.el(fakeDoc(), 'span', '', 3).textContent, '3');
+    assert.equal(render.el(fakeDoc(), 'span', '', null).textContent, '');
+  });
+});
+
+describe('render filterChips', () => {
+  const chips = [
+    { root: '/a', name: 'a', count: 2, hasFail: false },
+    { root: '/b', name: 'b', count: 1, hasFail: true },
+  ];
+
+  test('All first, then one button for each repo, with data-root and type button', () => {
+    const out = render.filterChips(fakeDoc(), view, chips, new Set());
+    assert.deepEqual(out.map((b) => b.attrs['data-root']), ['', '/a', '/b']);
+    for (const b of out) {
+      assert.equal(b.tagName, 'button');
+      assert.equal(b.attrs.type, 'button');
+      assert.equal(b.className, 'chip');
+    }
+    assert.equal(textOf(out[0]), 'All3');
+    assert.equal(textOf(out[1]), 'a2');
+  });
+
+  test('an empty scope presses only All', () => {
+    const out = render.filterChips(fakeDoc(), view, chips, new Set());
+    assert.deepEqual(out.map((b) => b.attrs['aria-pressed']), ['true', 'false', 'false']);
+  });
+
+  test('a scope presses its repos and releases All', () => {
+    const out = render.filterChips(fakeDoc(), view, chips, new Set(['/b']));
+    assert.deepEqual(out.map((b) => b.attrs['aria-pressed']), ['false', 'false', 'true']);
+  });
+
+  test('a repo with a failed run has a red count', () => {
+    const out = render.filterChips(fakeDoc(), view, chips, new Set());
+    assert.equal(oneByClass(out[1], 'chip-n').className, 'chip-n');
+    assert.equal(oneByClass(out[2], 'chip-n').className, 'chip-n has-fail');
+    assert.equal(oneByClass(out[0], 'chip-n').className, 'chip-n');
+    assert.match(out[2].attrs['aria-label'], /has a failed run/);
+  });
+});
+
+describe('render blockHead', () => {
+  test('lamp, kind label, branch, repo, status word and the details toggle', () => {
+    const head = render.blockHead(fakeDoc(), view, REPO, pipeline({ kind: 'execute' }), false, 3);
+    assert.equal(head.tagName, 'header');
+    assert.equal(oneByClass(head, 'lamp').className, 'lamp running');
+    assert.equal(oneByClass(head, 'lamp').attrs['aria-hidden'], 'true');
+    assert.equal(oneByClass(head, 'pipe-kind').textContent, 'exec');
+    assert.equal(oneByClass(head, 'pipe-branch').textContent, 'feat/x');
+    assert.equal(oneByClass(head, 'pipe-repo').textContent, 'app');
+    const status = oneByClass(head, 'pipe-status');
+    assert.equal(status.className, 'pipe-status running');
+    assert.equal(status.textContent, 'running');
+    assert.match(textOf(head), /running/);
+    const fold = oneByClass(head, 'fold-btn');
+    assert.equal(fold.tagName, 'button');
+    assert.equal(fold.attrs['aria-expanded'], 'true');
+    assert.equal(textOf(fold), '▸details3');
+  });
+
+  test('a collapsed block has aria-expanded false', () => {
+    const head = render.blockHead(fakeDoc(), view, REPO, pipeline(), true, 0);
+    assert.equal(oneByClass(head, 'fold-btn').attrs['aria-expanded'], 'false');
+  });
+
+  test('no issue chip without issues', () => {
+    const head = render.blockHead(fakeDoc(), view, REPO, pipeline(), false, 0);
+    assert.equal(byClass(head, 'issue-chip').length, 0);
+  });
+
+  test('an issue chip with issues', () => {
+    const one = render.blockHead(fakeDoc(), view, REPO, pipeline({ issues: [{ text: 'a' }] }), false, 1);
+    assert.equal(oneByClass(one, 'issue-chip').textContent, '1 issue');
+    const two = render.blockHead(fakeDoc(), view, REPO, pipeline({ issues: [{ text: 'a' }, { text: 'b' }] }), false, 1);
+    assert.equal(oneByClass(two, 'issue-chip').textContent, '2 issues');
+  });
+
+  test('the branch title names a linked worktree', () => {
+    const main = render.blockHead(fakeDoc(), view, REPO, pipeline(), false, 0);
+    assert.equal(oneByClass(main, 'pipe-branch').attrs.title, 'feat/x');
+    const linked = render.blockHead(fakeDoc(), view, REPO, pipeline({ worktree: '/wt/app-feat-x' }), false, 0);
+    assert.equal(oneByClass(linked, 'pipe-branch').attrs.title, 'feat/x · worktree app-feat-x');
+  });
+
+  test('markup in a branch name stays text: <b>x</b>', () => {
+    const head = render.blockHead(fakeDoc(), view, REPO, pipeline({ branch: '<b>x</b>' }), false, 0);
+    const branch = oneByClass(head, 'pipe-branch');
+    assert.equal(branch.textContent, '<b>x</b>');
+    assert.equal(branch.children.length, 0);
+    assert.equal(branch.attrs.title, '<b>x</b>');
+  });
+});
+
+describe('render stationTrack', () => {
+  test('a station with a section is a button with aria-label "name, status"', () => {
+    const track = render.stationTrack(fakeDoc(), view, pipeline(), 2);
+    const stations = byClass(track, 'station');
+    assert.equal(stations.length, 4);
+    const exec = stations[0];
+    assert.equal(exec.tagName, 'button');
+    assert.equal(exec.attrs.type, 'button');
+    assert.equal(exec.attrs['aria-label'], 'execute, completed');
+    assert.equal(exec.attrs['data-station'], '0');
+    assert.equal(exec.attrs['data-section'], 'execute');
+    assert.equal(stations[2].attrs['aria-label'], 'review, in progress');
+  });
+
+  test('a station with no section is not a button and has no click target', () => {
+    const track = render.stationTrack(fakeDoc(), view, pipeline(), 0);
+    const commit = byClass(track, 'station')[1];
+    assert.equal(commit.tagName, 'div');
+    assert.equal(commit.attrs['data-station'], undefined);
+    assert.equal(commit.attrs.type, undefined);
+    assert.ok(!classesOf(commit).includes('has-section'));
+    assert.equal(oneByClass(commit, 'sr-only').textContent, ', completed');
+  });
+
+  test('marks the selected station, lit wires, glyphs, and the current label', () => {
+    const track = render.stationTrack(fakeDoc(), view, pipeline(), 2);
+    const stations = byClass(track, 'station');
+    assert.deepEqual(stations.map((s) => classesOf(s).includes('selected')), [false, false, true, false]);
+    assert.deepEqual(stations.map((s) => oneByClass(s, 'wire').className), ['wire', 'wire lit', 'wire lit', 'wire']);
+    assert.equal(oneByClass(stations[2], 'glyph').className, 'glyph in_progress');
+    assert.equal(oneByClass(stations[2], 'glyph').textContent, view.stepGlyph('in_progress').glyph);
+    assert.equal(oneByClass(stations[2], 'label').className, 'label current');
+    assert.equal(oneByClass(stations[0], 'label').textContent, view.stationLabel('execute'));
+  });
+});
+
+describe('render pipelineBlock', () => {
+  test('an article with data-key, the head, the track, and an empty step-detail', () => {
+    const p = pipeline();
+    const block = render.pipelineBlock(fakeDoc(), view, REPO, p, { collapsed: false, selected: 0 });
+    assert.equal(block.tagName, 'article');
+    assert.equal(block.className, 'pipe-block');
+    assert.equal(block.attrs['data-key'], view.pipelineKey(REPO, p));
+    assert.equal(block.attrs['data-id'], 'ship-1');
+    oneByClass(block, 'pipe-head');
+    oneByClass(block, 'track');
+    assert.equal(oneByClass(block, 'step-detail').children.length, 0);
+    assert.ok(classesOf(byClass(block, 'station')[0]).includes('selected'));
+  });
+
+  test('a collapsed block has the collapsed class', () => {
+    const block = render.pipelineBlock(fakeDoc(), view, REPO, pipeline(), { collapsed: true, selected: 0 });
+    assert.equal(block.className, 'pipe-block collapsed');
+    assert.equal(oneByClass(block, 'fold-btn').attrs['aria-expanded'], 'false');
+  });
+
+  test('the details count is the tile count, session included', () => {
+    const repo = Object.assign({}, REPO, { sessions: [{ id: 's1', branch: 'feat/x', lastSeen: '2026-01-01T00:00:00Z' }] });
+    const p = pipeline({ issues: [{ text: 'a' }] });
+    const block = render.pipelineBlock(fakeDoc(), view, repo, p, { collapsed: false, selected: 0 });
+    assert.equal(oneByClass(block, 'fold-count').textContent, String(view.tileCount(p, repo.sessions[0])));
+    assert.equal(oneByClass(block, 'fold-count').textContent, '4');
+  });
+
+  test('with no selected index the default station is marked', () => {
+    const p = pipeline();
+    const block = render.pipelineBlock(fakeDoc(), view, REPO, p, { collapsed: false });
+    const marked = byClass(block, 'station').map((s) => classesOf(s).includes('selected'));
+    assert.equal(marked.indexOf(true), view.defaultStationIndex(p.steps));
+  });
+});
+
+describe('render headerTotals', () => {
+  test('running, stalled and failed over every repo', () => {
+    const repos = [
+      { root: '/a', pipelines: [{ status: 'running' }, { status: 'failed' }] },
+      { root: '/b', pipelines: [{ status: 'running' }, { status: 'completed' }] },
+    ];
+    const out = render.headerTotals(fakeDoc(), view, repos);
+    assert.deepEqual(out.map((n) => n.className), ['c-run', 'c-stall', 'c-fail']);
+    assert.deepEqual(out.map(textOf), ['running · 2', 'stalled · 0', 'failed · 1']);
+    assert.equal(out[0].children[0].tagName, 'strong');
+  });
+});
+
+describe('render activityPanel', () => {
+  const repos = [
+    {
+      root: '/a',
+      name: 'a',
+      deferred: [
+        { id: 'd-1', priority: 'high', description: 'fix the cursor' },
+        { id: 'd-2', priority: 'low', description: 'rename a helper' },
+      ],
+      learnings: [{ heading: 'plan: keep maps small', branch: 'main' }],
+    },
+    { root: '/b', name: 'b', deferred: [{ id: 'd-9', priority: 'medium', description: 'other repo' }], learnings: [] },
+  ];
+
+  test('deferred panel first, then learnings, with counts', () => {
+    const grid = render.activityPanel(fakeDoc(), view, repos, new Set());
+    assert.equal(grid.className, 'act-grid');
+    const titles = byClass(grid, 'list-title').map(textOf);
+    assert.deepEqual(titles, ['Open deferred (3)', 'Learnings today (1)']);
+  });
+
+  test('a deferred row: severity chip, text, then repo · id, and the hint', () => {
+    const grid = render.activityPanel(fakeDoc(), view, repos, new Set());
+    const deferredPanel = grid.children[0];
+    const row = byClass(deferredPanel, 'act-row')[0];
+    assert.equal(row.children[0].className, 'sev sev-high');
+    assert.equal(row.children[0].textContent, 'high');
+    assert.equal(oneByClass(row, 'act-text').textContent, 'fix the cursor');
+    assert.equal(oneByClass(row, 'act-meta').textContent, 'a · d-1');
+    assert.equal(textOf(oneByClass(deferredPanel, 'hint')), 'Triage these with /sdlc:deferred');
+  });
+
+  test('a learning row: chip learning, heading, then repo · branch', () => {
+    const grid = render.activityPanel(fakeDoc(), view, repos, new Set());
+    const row = oneByClass(grid.children[1], 'act-row');
+    assert.equal(row.children[0].className, 'sev');
+    assert.equal(row.children[0].textContent, 'learning');
+    assert.equal(oneByClass(row, 'act-text').textContent, 'plan: keep maps small');
+    assert.equal(oneByClass(row, 'act-meta').textContent, 'a · main');
+  });
+
+  test('the scope hides rows of other repos', () => {
+    const grid = render.activityPanel(fakeDoc(), view, repos, new Set(['/b']));
+    const titles = byClass(grid, 'list-title').map(textOf);
+    assert.deepEqual(titles, ['Open deferred (1)', 'Learnings today (0)']);
+    assert.equal(oneByClass(grid.children[0], 'act-meta').textContent, 'b · d-9');
+    assert.equal(textOf(oneByClass(grid.children[1], 'generic-line')), 'No learnings today.');
+  });
+
+  test('empty lists show their empty states and no hint', () => {
+    const grid = render.activityPanel(fakeDoc(), view, [{ root: '/c', name: 'c' }], new Set());
+    assert.equal(oneByClass(grid.children[0], 'generic-line').textContent, 'No open deferred items.');
+    assert.equal(byClass(grid.children[0], 'hint').length, 0);
+    assert.equal(oneByClass(grid.children[1], 'generic-line').textContent, 'No learnings today.');
+  });
+});
+
+describe('render emptyState', () => {
+  const cases = [
+    ['none-in-scope', undefined, 'No pipelines for the selected repos.'],
+    ['no-deferred', undefined, 'No open deferred items.'],
+    ['no-learnings', undefined, 'No learnings today.'],
+    ['no-history', undefined, 'No finished runs for the selected repos.'],
+    ['no-pipelines', view.emptyText({ repos: [] }), view.emptyText({ repos: [] })],
+    ['repo-error', { name: 'app', error: 'open state: permission denied' }, 'Cannot read app: open state: permission denied'],
+  ];
+  for (const [kind, detail, want] of cases) {
+    test(`${kind} has its own text`, () => {
+      const line = render.emptyState(fakeDoc(), kind, detail);
+      assert.equal(line.tagName, 'p');
+      assert.equal(line.className, 'generic-line');
+      assert.equal(line.attrs['data-empty'], kind);
+      assert.equal(line.textContent, want);
+      assert.equal(line.children.length, 0);
+    });
+  }
+
+  test('no-pipelines takes its text from view.emptyText', () => {
+    assert.match(render.emptyState(fakeDoc(), 'no-pipelines', view.emptyText({ repos: [] })).textContent, /Nothing is running/);
+  });
+});
+
+describe('render.js browser global fallback', () => {
+  test('render.js assigns root.sdlcRender when module.exports is unavailable', () => {
+    const source = fs.readFileSync(path.join(__dirname, '../static/render.js'), 'utf8');
+    const fakeRoot = {};
+    // eslint-disable-next-line no-new-func
+    const run = new Function('module', source);
+    run.call(fakeRoot);
+    assert.deepEqual(Object.keys(fakeRoot.sdlcRender).sort(), [
+      'activityPanel',
+      'blockHead',
+      'el',
+      'emptyState',
+      'filterChips',
+      'headerTotals',
+      'pipelineBlock',
+      'stationTrack',
+    ]);
   });
 });

@@ -96,7 +96,7 @@ To execute the full review, run /review (without --dry-run).
 ```
 
 Run the Step 9 file cleanup (`rm -f "<manifestPath>"` and `rm -rf "{manifest.diff_dir}"`).
-No `runId` exists yet, so there is no ledger to clean up. Stop here.
+No `runId` exists yet, so the run has no ledger. Stop here.
 
 ---
 
@@ -363,8 +363,8 @@ details)" placeholders.
 - Do NOT synthesize a severity/count table in place of the persisted body
 - Do NOT skip the Read step
 
-Do NOT delete `manifestPath` or the ledger directory here — cleanup happens in Step 9 on
-every terminal branch.
+Do NOT delete `manifestPath` here — cleanup happens in Step 9 on every terminal branch.
+The ledger directory stays after the run (Step 9).
 
 ---
 
@@ -485,7 +485,7 @@ If verdict is **APPROVED**: skip — nothing to fix.
 
 ## Step 9 — Cleanup
 
-Remove everything this run created, on every terminal path (dry-run stop, error stop, and
+Remove the temp files of this run on every terminal path (dry-run stop, error stop, and
 normal completion). Always remove the manifest and its temp directory (skip a path the run
 never received, e.g. when `review_prepare` itself failed):
 
@@ -494,12 +494,9 @@ rm -f "<manifestPath>"
 rm -rf "{manifest.diff_dir}"
 ```
 
-Only when Step 2 minted a `runId` (so never on the Step 1 dry-run stop, or on an error stop
-before Step 2), also remove the run's ledger:
-
-```
-execute_state({ action: "ledger_cleanup", runId: "<runId>" })
-```
+Do not remove the run's ledger. The dashboard reads it to show the review dimensions of a
+finished run. The first execute `gc` or ship `cleanup-pipeline` sweep after 7 days (the
+default `state.gc.ttlDays`) removes it.
 
 ---
 

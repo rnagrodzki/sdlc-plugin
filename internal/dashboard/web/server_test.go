@@ -1450,3 +1450,129 @@ func TestStaticJS_NoHTMLStringSinks(t *testing.T) {
 		}
 	}
 }
+
+var (
+	// jsPageGlobalRe matches the page globals document and window as whole words.
+	jsPageGlobalRe = regexp.MustCompile(`\b(document|window)\b`)
+	// jsByIDCallRe matches any call of byId.
+	jsByIDCallRe = regexp.MustCompile(`\bbyId\s*\(`)
+	// jsByIDDefRe matches the definition of byId.
+	jsByIDDefRe = regexp.MustCompile(`\bfunction\s+byId\s*\(`)
+	// jsByIDLiteralRe matches a byId call with one quoted id: group 1 or 2 holds the id.
+	jsByIDLiteralRe = regexp.MustCompile(`\bbyId\(\s*(?:'([^']*)'|"([^"]*)")\s*\)`)
+)
+
+// findPageGlobals returns each use of document or window in the code of src. Comments do not count.
+func findPageGlobals(src string) ([]string, error) {
+	code, err := stripJSComments(src)
+	if err != nil {
+		return nil, err
+	}
+	return jsPageGlobalRe.FindAllString(code, -1), nil
+}
+
+// byIDCalls returns the ids of the byId calls in the code of src, and the number of calls whose
+// argument is not one quoted string. Comments and the definition of byId do not count.
+func byIDCalls(src string) (ids []string, dynamic int, err error) {
+	code, err := stripJSComments(src)
+	if err != nil {
+		return nil, 0, err
+	}
+	for _, m := range jsByIDLiteralRe.FindAllStringSubmatch(code, -1) {
+		ids = append(ids, m[1]+m[2])
+	}
+	calls := len(jsByIDCallRe.FindAllString(code, -1)) - len(jsByIDDefRe.FindAllString(code, -1))
+	return ids, calls - len(ids), nil
+}
+
+// TestFindPageGlobals pins how the render.js global check reads comments, strings, and names.
+func TestFindPageGlobals(t *testing.T) {
+	cases := []struct {
+		name, src string
+		want      string
+	}{
+		{"document", "var a = document.title;", "document"},
+		{"window", "window.x = 1;", "window"},
+		{"both", "document.body; window.x;", "document,window"},
+		{"line comment", "// document and window\nvar a = doc;", ""},
+		{"block comment", "/* window */ doc.createElement('p');", ""},
+		{"longer name", "doc.documentElement; windowSize;", ""},
+		{"in a string", "var s = 'window';", "window"},
+	}
+	for _, tc := range cases {
+		got, err := findPageGlobals(tc.src)
+		if err != nil {
+			t.Errorf("%s: error = %v", tc.name, err)
+			continue
+		}
+		if strings.Join(got, ",") != tc.want {
+			t.Errorf("%s: globals = %v; want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestStaticRenderJS_NoPageGlobals pins that render.js reaches the page only through the doc
+// argument of each builder, so the Node tests can pass a fake document.
+func TestStaticRenderJS_NoPageGlobals(t *testing.T) {
+	src := staticFile(t, "render.js")
+	if !strings.Contains(src, "function el(doc,") {
+		t.Fatal("render.js has no el(doc, ...) builder; the check reads the wrong file")
+	}
+	found, err := findPageGlobals(src)
+	if err != nil {
+		t.Fatalf("render.js: %v", err)
+	}
+	if len(found) > 0 {
+		t.Errorf("render.js uses the page globals %v outside comments; take the document as the doc argument", found)
+	}
+}
+
+// TestByIDCalls pins how the id check reads byId calls.
+func TestByIDCalls(t *testing.T) {
+	cases := []struct {
+		name, src   string
+		wantIDs     string
+		wantDynamic int
+	}{
+		{"definition only", "function byId(id) { return document.getElementById(id); }", "", 0},
+		{"literal", "byId('feed'); byId(\"conn\");", "feed,conn", 0},
+		{"dynamic", "byId('tab-' + name);", "", 1},
+		{"comment", "// byId('gone')\nbyId('feed');", "feed", 0},
+	}
+	for _, tc := range cases {
+		ids, dynamic, err := byIDCalls(tc.src)
+		if err != nil {
+			t.Errorf("%s: error = %v", tc.name, err)
+			continue
+		}
+		if strings.Join(ids, ",") != tc.wantIDs || dynamic != tc.wantDynamic {
+			t.Errorf("%s: ids = %v, dynamic = %d; want %q, %d", tc.name, ids, dynamic, tc.wantIDs, tc.wantDynamic)
+		}
+	}
+}
+
+// TestStaticAppJS_ByIDsExistInIndex pins that every byId call in app.js names an id of index.html.
+// Each call takes one quoted id, so the check sees every id the script reads.
+func TestStaticAppJS_ByIDsExistInIndex(t *testing.T) {
+	page := htmlCommentRe.ReplaceAllString(staticFile(t, "index.html"), "")
+	pageIDs := map[string]bool{}
+	for _, m := range htmlIDRe.FindAllStringSubmatch(page, -1) {
+		pageIDs[m[1]] = true
+	}
+
+	ids, dynamic, err := byIDCalls(staticFile(t, "app.js"))
+	if err != nil {
+		t.Fatalf("app.js: %v", err)
+	}
+	if len(ids) == 0 {
+		t.Fatal("app.js has no byId('<id>') call; the check reads the wrong file")
+	}
+	if dynamic > 0 {
+		t.Errorf("app.js has %d byId call(s) without one quoted id; write each id as a literal", dynamic)
+	}
+	for _, id := range ids {
+		if !pageIDs[id] {
+			t.Errorf("app.js calls byId(%q), but index.html has no element with that id", id)
+		}
+	}
+}
