@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.3.3] - 2026-10-07
+
+### RC 1
+
+- setup_prepare gains an explain mode, and every setup option now carries help text with details and examples.
+- Config writes keep user comments: key-level splice, a refusal (ErrWouldDropComments) instead of silently dropping comments, and restored template tips.
+- The [ship] rebase schema accepts 5 values; migrate and setup_write_sections report a recovery path when a write is refused.
+- The plan skill now authors OpenSpec artifacts at the end of Step 6 (late authoring), with an OpenSpec-Create header until staging.
+- Fixed /ship acting on the wrong step when the pipeline lists a step twice (the two commit steps), and harden re-running clusters it already handled.
+
+### RC 2
+
+- Fix: review_prepare's dimension cap no longer inverts severity order — it now keeps the most severe dimensions active instead of the least severe.
+- Add: configurable `[review] maxDimensions` key in `.sdlc-v2/local.toml` (default 8, minimum 1) to raise the review dimension cap per project.
+- Add: dry-run and posted review output now names every queued dimension and the active cap, and flags partial coverage in the verdict heading.
+
+### RC 3
+
+- Fix ship run report misrepresenting user-input prompts and answers.
+- Harden learned guardrails by repairing them on any validation finding, instead of reverting them.
+- Fix setup losing tip comments when it writes config.
+- Add a user-level (cross-project) config layer for personal settings.
+
 ## [0.3.2] - 2026-10-03
 
 - Add internal/commstyle package for ASD-STE100 style checking, writing-guide generation, and style metrics for plan documents
