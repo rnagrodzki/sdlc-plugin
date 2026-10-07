@@ -195,8 +195,8 @@ deferred findings. Two parts of that summary are worth knowing about:
 Near the end of a run, `/ship` calls the tool for a run report — one call
 composes it from ship state, self-healing records, this run's execute
 state, CLI evidence, user input, and learnings, then renders and writes it. This write
-happens before the terminal cleanup step runs, because cleanup deletes the
-linked plan run that the report still needs to read. It covers
+happens before the terminal cleanup step runs, because cleanup first copies the plan explorer
+summary into ship state, then deletes the linked plan run that the report still needs to read. It covers
 per-wave task outcomes, step timings, CLI evidence, drift/error/warning
 counts, guardrail hits, any deferred findings or pending issue drafts, the
 review ledger, self-healing changes (fixes and hardening this run recorded,

@@ -374,7 +374,7 @@ func collectDashboardRepo(root string, now time.Time) DashboardRepo {
 	}
 	repo.Pipelines = dashboardJoinRuns(repo.Pipelines)
 
-	sessions, learnings, deferred := dashboardActivity(root, now)
+	sessions, learnings, deferred, history := dashboardActivity(root, now)
 	if sessions != nil {
 		repo.Sessions = sessions
 	}
@@ -383,6 +383,9 @@ func collectDashboardRepo(root string, now time.Time) DashboardRepo {
 	}
 	if deferred != nil {
 		repo.Deferred = deferred
+	}
+	if history != nil {
+		repo.History = history
 	}
 	return repo
 }

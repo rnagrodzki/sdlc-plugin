@@ -94,8 +94,8 @@ func TestDashboardContract_NewListsNeverNull(t *testing.T) {
 func TestDashboardContract_HistoryIsEmptyList(t *testing.T) {
 	orig := dashboardActivity
 	t.Cleanup(func() { dashboardActivity = orig })
-	dashboardActivity = func(string, time.Time) ([]DashboardSession, []DashboardLearning, []DashboardDeferred) {
-		return nil, nil, nil
+	dashboardActivity = func(string, time.Time) ([]DashboardSession, []DashboardLearning, []DashboardDeferred, []DashboardRun) {
+		return nil, nil, nil, nil
 	}
 
 	for name, root := range map[string]string{

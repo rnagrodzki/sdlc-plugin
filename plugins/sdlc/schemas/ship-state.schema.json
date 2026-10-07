@@ -191,6 +191,39 @@
       "type": "boolean",
       "description": "Set by ship_state fail when it appends the failure row to runs.jsonl. Stops a second row for the same run."
     },
+    "planExploreSummary": {
+      "type": "array",
+      "description": "Plan explorer summary copied by cleanup-pipeline before it deletes the linked plan run. One entry for each explorer; top holds at most 5 findings. An empty list means the plan run had no explorer files.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "total": {
+            "type": "integer"
+          },
+          "top": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "summary": {
+                  "type": "string"
+                },
+                "ref": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "required": ["name", "status", "total", "top"]
+      }
+    },
     "issues": {
       "type": "array",
       "description": "Structured issue accumulator appended by fail (R-TASK-17). Mirrors deferredFindings above and execute-state.schema.json's issues[].",

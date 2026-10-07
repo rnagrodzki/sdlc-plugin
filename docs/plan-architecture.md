@@ -96,7 +96,8 @@ rules:
   is what eventually claims a `done` plan run too, once the branch moves on
   (see [Plan run lifetime](#plan-run-lifetime)). `ship_state({action:
   "cleanup-pipeline"})` additionally removes a `done` plan run as soon as
-  the ship report has read it, independently of GC's TTL/newest rule.
+  the ship report has read it, independently of GC's TTL/newest rule. It first
+  copies the explorer summary into ship state `planExploreSummary`.
 
 ### Hooks
 
@@ -920,7 +921,7 @@ A `done` plan run's state file is not deleted the moment it finishes — it is k
 |---|---|
 | `plan_mark done` | kept |
 | ship `report` (write) | read for `## Planning` / `## Timeline` |
-| ship `cleanup-pipeline` | deleted when the report file exists |
+| ship `cleanup-pipeline` | deleted when the report file exists, after the explorer summary is copied to ship state |
 | GC (TTL, default 7 days) | deleted |
 
 `state.Write`'s prune-on-write (and `state.PruneEvidenceDirs`) both special-case a `done` plan run: a sibling state file for the same branch is pruned on every write *unless* it is itself a finished (`done`) plan run, in which case it is left alone. That is what lets the file survive from Step 7's `done` marker through the Stop hook (which only reads it) to the point ship's `report` step reads `planIntegrity`/`planTiming` from it. Actual removal then comes from whichever happens first: `ship_state({action: "cleanup-pipeline"})` removing it once the ship report has been written (the table's third row), or the standalone TTL/branch-liveness sweep (`ship --gc` / `execute --gc`, `state.GC`) once it is both past the TTL and no longer the newest file for its branch — a gone branch's files are removed regardless of age.

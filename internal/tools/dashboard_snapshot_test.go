@@ -608,8 +608,8 @@ func TestDashboardSnapshot_LinkedWorktreeShowsOnce(t *testing.T) {
 func TestDashboardSnapshot_ListsAreNeverNull(t *testing.T) {
 	orig := dashboardActivity
 	t.Cleanup(func() { dashboardActivity = orig })
-	dashboardActivity = func(string, time.Time) ([]DashboardSession, []DashboardLearning, []DashboardDeferred) {
-		return nil, nil, nil
+	dashboardActivity = func(string, time.Time) ([]DashboardSession, []DashboardLearning, []DashboardDeferred, []DashboardRun) {
+		return nil, nil, nil, nil
 	}
 
 	empty := dashRoot(t)
@@ -638,7 +638,7 @@ func TestDashboardSnapshot_AbsentRepo(t *testing.T) {
 	calls := 0
 	orig := dashboardActivity
 	t.Cleanup(func() { dashboardActivity = orig })
-	dashboardActivity = func(root string, now time.Time) ([]DashboardSession, []DashboardLearning, []DashboardDeferred) {
+	dashboardActivity = func(root string, now time.Time) ([]DashboardSession, []DashboardLearning, []DashboardDeferred, []DashboardRun) {
 		calls++
 		return orig(root, now)
 	}
@@ -666,14 +666,15 @@ func TestDashboardSnapshot_CallsActivityOncePerRepo(t *testing.T) {
 	calls := map[string]int{}
 	orig := dashboardActivity
 	t.Cleanup(func() { dashboardActivity = orig })
-	dashboardActivity = func(root string, now time.Time) ([]DashboardSession, []DashboardLearning, []DashboardDeferred) {
+	dashboardActivity = func(root string, now time.Time) ([]DashboardSession, []DashboardLearning, []DashboardDeferred, []DashboardRun) {
 		calls[root]++
 		if !now.Equal(dashNow) {
 			t.Errorf("now = %v, want %v", now, dashNow)
 		}
 		return []DashboardSession{{ID: "s-" + filepath.Base(root), Timeline: []DashboardEvent{}}},
 			[]DashboardLearning{{Heading: "l-" + filepath.Base(root)}},
-			[]DashboardDeferred{{ID: "d-" + filepath.Base(root)}}
+			[]DashboardDeferred{{ID: "d-" + filepath.Base(root)}},
+			[]DashboardRun{{Kind: "r-" + filepath.Base(root)}}
 	}
 
 	a, b := dashRoot(t), dashRoot(t)
@@ -688,8 +689,9 @@ func TestDashboardSnapshot_CallsActivityOncePerRepo(t *testing.T) {
 		base := filepath.Base(repo.Root)
 		if len(repo.Sessions) != 1 || repo.Sessions[0].ID != "s-"+base ||
 			len(repo.Learnings) != 1 || repo.Learnings[0].Heading != "l-"+base ||
-			len(repo.Deferred) != 1 || repo.Deferred[0].ID != "d-"+base {
-			t.Errorf("repo %s activity = %+v %+v %+v", repo.Root, repo.Sessions, repo.Learnings, repo.Deferred)
+			len(repo.Deferred) != 1 || repo.Deferred[0].ID != "d-"+base ||
+			len(repo.History) != 1 || repo.History[0].Kind != "r-"+base {
+			t.Errorf("repo %s activity = %+v %+v %+v %+v", repo.Root, repo.Sessions, repo.Learnings, repo.Deferred, repo.History)
 		}
 	}
 }

@@ -208,7 +208,7 @@ Tracking: `action:"begin-step"` → `action:"complete-step"`. Inline `poll_await
 Tracking: `action:"begin-step"` → `action:"complete-step"`. Inline `learnings_log` call, no Agent dispatch. No pause — never touches git. An `action:"decide"` entry may record what was logged.
 
 ### Terminal cleanup
-Not a `steps[]` entry — tracked directly via `action:"cleanup-pipeline"`, not a per-step action (Step loop item 9b). The `report` write (item 9a) precedes it, so the linked plan run still exists when the report reads it; cleanup then deletes that plan run. Pauses YES on contract violation (`DataError`).
+Not a `steps[]` entry — tracked directly via `action:"cleanup-pipeline"`, not a per-step action (Step loop item 9b). The `report` write (item 9a) precedes it, so the linked plan run still exists when the report reads it; cleanup then copies the plan explorer summary into ship state and deletes that plan run. Pauses YES on contract violation (`DataError`).
 
 **After RC ships.** To promote an RC to a final release without creating another PR or rebuilding:
 

@@ -2682,6 +2682,358 @@ func TestCleanupPipelineDeletesReportedPlanRun(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// cleanup-pipeline: explorer summary copy before the plan-run delete
+// ---------------------------------------------------------------------------
+
+// useShipExploreSummary replaces shipExploreSummaryFunc for one test and
+// restores it afterwards.
+func useShipExploreSummary(t *testing.T, fn func(root, runID string) ([]ExploreSummaryEntry, error)) {
+	t.Helper()
+	prev := shipExploreSummaryFunc
+	shipExploreSummaryFunc = fn
+	t.Cleanup(func() { shipExploreSummaryFunc = prev })
+}
+
+// useShipRemoveEvidence replaces shipRemoveEvidenceFunc for one test and
+// restores it afterwards.
+func useShipRemoveEvidence(t *testing.T, fn func(path string) error) {
+	t.Helper()
+	prev := shipRemoveEvidenceFunc
+	shipRemoveEvidenceFunc = fn
+	t.Cleanup(func() { shipRemoveEvidenceFunc = prev })
+}
+
+// writeExplorer writes one explorer evidence file with n findings into the
+// fixture's evidence folder.
+func (f planRunCleanupFixture) writeExplorer(t *testing.T, name, status string, n int) {
+	t.Helper()
+	id := exploreWriterPrefix + name
+	evidenceWriteRaw(t, f.dir, f.runID, id, evidenceWriterFile{
+		WriterID: id, Status: status, Items: exploreSummaryItems(n),
+	})
+}
+
+// shipStateOnDisk reads the ship state file of the fixture's branch.
+func (f planRunCleanupFixture) shipStateOnDisk(t *testing.T) map[string]any {
+	t.Helper()
+	st, err := state.Find(f.dir, "ship", f.branch)
+	if err != nil || st == nil {
+		t.Fatalf("find ship state: st=%v err=%v", st, err)
+	}
+	return st.Data
+}
+
+// wantExploreEntry is one planExploreSummary entry as the state file stores
+// it after a JSON round trip: numbers are float64 and lists are []any. The
+// finding texts come from exploreSummaryItems.
+func wantExploreEntry(name, status string, total, top int) map[string]any {
+	items := make([]any, top)
+	for i := range items {
+		items[i] = map[string]any{
+			"summary": fmt.Sprintf("finding %d", i+1),
+			"ref":     fmt.Sprintf("pkg/file.go:%d", i+1),
+		}
+	}
+	return map[string]any{"name": name, "status": status, "total": float64(total), "top": items}
+}
+
+// shipStateSchemaValidator compiles ship-state.schema.json and returns a
+// function that validates one state document against it.
+func shipStateSchemaValidator(t *testing.T) func(doc map[string]any) error {
+	t.Helper()
+	schemaPath, err := filepath.Abs(filepath.Join("..", "..", "plugins", "sdlc", "schemas", "ship-state.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sch, err := jsonschema.NewCompiler().Compile(schemaPath)
+	if err != nil {
+		t.Fatalf("compile schema: %v", err)
+	}
+	return func(doc map[string]any) error {
+		raw, err := json.Marshal(doc)
+		if err != nil {
+			t.Fatalf("marshal doc: %v", err)
+		}
+		inst, err := jsonschema.UnmarshalJSON(strings.NewReader(string(raw)))
+		if err != nil {
+			t.Fatalf("unmarshal doc for schema validation: %v", err)
+		}
+		return sch.Validate(inst)
+	}
+}
+
+// TestShipState_CleanupPipeline_ExploreSummary_StoredBeforeDelete covers the
+// copy: after cleanup deletes the plan run, the ship state file holds the
+// summary in the ExploreSummaryEntry shape, and the file validates against
+// the schema.
+func TestShipState_CleanupPipeline_ExploreSummary_StoredBeforeDelete(t *testing.T) {
+	f := newPlanRunCleanupFixture(t, "feat/planrun-summary-stored", true, linkedPlanFile)
+	f.writeExplorer(t, "zeta", "running", 1)
+	f.writeExplorer(t, "auth-flow", "done", 7)
+	f.writeShipReport(t, "md")
+
+	pr, err := f.cleanupPipeline(t, nil)
+	if err != nil {
+		t.Fatalf("cleanup-pipeline: %v", err)
+	}
+	if want := (ShipPlanRunCleanup{Deleted: true, RunID: f.runID}); pr != want {
+		t.Errorf("planRun = %#v, want %#v", pr, want)
+	}
+	f.assertDeleted(t)
+
+	data := f.shipStateOnDisk(t)
+	want := []any{
+		wantExploreEntry("auth-flow", "done", 7, 5),
+		wantExploreEntry("zeta", "running", 1, 1),
+	}
+	if got := data[shipPlanExploreSummaryKey]; !reflect.DeepEqual(got, any(want)) {
+		t.Errorf("stored planExploreSummary = %#v, want %#v", got, want)
+	}
+	if data["pipelineStatus"] != "completed" {
+		t.Errorf("pipelineStatus = %v, want completed", data["pipelineStatus"])
+	}
+	if err := shipStateSchemaValidator(t)(data); err != nil {
+		t.Errorf("ship state written by cleanup-pipeline: schema rejected it: %v", err)
+	}
+}
+
+// TestShipState_CleanupPipeline_ExploreSummary_WriteComesBeforeDelete pins
+// the order: when the ship state write runs, the evidence folder and the
+// plan state file still exist, and the summary is already in the state.
+func TestShipState_CleanupPipeline_ExploreSummary_WriteComesBeforeDelete(t *testing.T) {
+	f := newPlanRunCleanupFixture(t, "feat/planrun-summary-order", true, linkedPlanFile)
+	f.writeExplorer(t, "auth-flow", "done", 2)
+	f.writeShipReport(t, "md")
+
+	var calls int
+	var evidenceExisted, planRunExisted, summarySet bool
+	useShipStateWrite(t, func(st *state.State) error {
+		calls++
+		_, evErr := os.Stat(f.evidenceDir)
+		_, prErr := os.Stat(f.planRunPath)
+		evidenceExisted, planRunExisted = evErr == nil, prErr == nil
+		_, summarySet = st.Data[shipPlanExploreSummaryKey]
+		return state.Write(st)
+	})
+
+	pr, err := f.cleanupPipeline(t, nil)
+	if err != nil {
+		t.Fatalf("cleanup-pipeline: %v", err)
+	}
+	if !pr.Deleted {
+		t.Fatalf("planRun = %#v, want Deleted", pr)
+	}
+	if calls != 1 {
+		t.Fatalf("shipStateWriteFunc calls = %d, want 1", calls)
+	}
+	if !evidenceExisted || !planRunExisted {
+		t.Errorf("at the ship state write: evidence dir exists = %v, plan run file exists = %v, want both true", evidenceExisted, planRunExisted)
+	}
+	if !summarySet {
+		t.Error("the ship state must hold planExploreSummary when it is written")
+	}
+}
+
+// TestShipState_CleanupPipeline_ExploreSummary_NoExplorersStoresEmptyList
+// covers a plan run with no explorer files: the key is stored as [], never
+// null and never absent.
+func TestShipState_CleanupPipeline_ExploreSummary_NoExplorersStoresEmptyList(t *testing.T) {
+	f := newPlanRunCleanupFixture(t, "feat/planrun-summary-empty", true, linkedPlanFile)
+	f.writeShipReport(t, "md")
+
+	pr, err := f.cleanupPipeline(t, nil)
+	if err != nil {
+		t.Fatalf("cleanup-pipeline: %v", err)
+	}
+	if !pr.Deleted {
+		t.Fatalf("planRun = %#v, want Deleted", pr)
+	}
+	data := f.shipStateOnDisk(t)
+	got, present := data[shipPlanExploreSummaryKey]
+	list, isList := got.([]any)
+	if !present || !isList || len(list) != 0 {
+		t.Errorf("stored planExploreSummary = %#v (present=%v), want an empty []", got, present)
+	}
+	if err := shipStateSchemaValidator(t)(data); err != nil {
+		t.Errorf("ship state with an empty summary: schema rejected it: %v", err)
+	}
+}
+
+// TestShipState_CleanupPipeline_ExploreSummary_ReadFailsKeepsPlanRun covers
+// the first failure point: the summary read fails. Nothing is deleted, the
+// ship state holds no summary, and the stamp from before stays.
+func TestShipState_CleanupPipeline_ExploreSummary_ReadFailsKeepsPlanRun(t *testing.T) {
+	f := newPlanRunCleanupFixture(t, "feat/planrun-summary-readfail", true, linkedPlanFile)
+	f.writeShipReport(t, "md")
+
+	useShipExploreSummary(t, func(string, string) ([]ExploreSummaryEntry, error) {
+		return nil, errors.New("evidence unreadable")
+	})
+	writes := 0
+	useShipStateWrite(t, func(st *state.State) error {
+		writes++
+		return state.Write(st)
+	})
+
+	pr, err := f.cleanupPipeline(t, nil)
+	if err != nil {
+		t.Fatalf("cleanup-pipeline: %v", err)
+	}
+	want := ShipPlanRunCleanup{Reason: "explorer summary not saved: evidence unreadable. Fix the cause and call cleanup-pipeline again."}
+	if pr != want {
+		t.Errorf("planRun = %#v, want %#v", pr, want)
+	}
+	f.assertKept(t)
+	if writes != 0 {
+		t.Errorf("shipStateWriteFunc calls = %d, want 0 after a failed summary read", writes)
+	}
+	data := f.shipStateOnDisk(t)
+	if _, present := data[shipPlanExploreSummaryKey]; present {
+		t.Errorf("planExploreSummary must be absent after a failed read, got %#v", data[shipPlanExploreSummaryKey])
+	}
+	if data["pipelineStatus"] != "completed" {
+		t.Errorf("pipelineStatus = %v, want completed (the stamp is written before the copy)", data["pipelineStatus"])
+	}
+}
+
+// TestShipState_CleanupPipeline_ExploreSummary_WriteFailsKeepsPlanRun covers
+// the second failure point: the ship state write fails. Nothing is deleted
+// and the file on disk holds no summary.
+func TestShipState_CleanupPipeline_ExploreSummary_WriteFailsKeepsPlanRun(t *testing.T) {
+	f := newPlanRunCleanupFixture(t, "feat/planrun-summary-writefail", true, linkedPlanFile)
+	f.writeExplorer(t, "auth-flow", "done", 2)
+	f.writeShipReport(t, "md")
+
+	useShipStateWrite(t, func(*state.State) error { return errors.New("disk full") })
+
+	pr, err := f.cleanupPipeline(t, nil)
+	if err != nil {
+		t.Fatalf("cleanup-pipeline: %v", err)
+	}
+	want := ShipPlanRunCleanup{Reason: "explorer summary not saved: disk full. Fix the cause and call cleanup-pipeline again."}
+	if pr != want {
+		t.Errorf("planRun = %#v, want %#v", pr, want)
+	}
+	f.assertKept(t)
+	data := f.shipStateOnDisk(t)
+	if _, present := data[shipPlanExploreSummaryKey]; present {
+		t.Errorf("planExploreSummary must be absent after a failed write, got %#v", data[shipPlanExploreSummaryKey])
+	}
+	if data["pipelineStatus"] != "completed" {
+		t.Errorf("pipelineStatus = %v, want completed (the stamp is written before the copy)", data["pipelineStatus"])
+	}
+}
+
+// TestShipState_CleanupPipeline_ExploreSummary_DeleteFailsKeepsSummary covers
+// the third failure point: the evidence delete fails after the copy. The
+// summary stays in the ship state, the plan run stays, and the reason is the
+// remove reason, not the summary reason.
+func TestShipState_CleanupPipeline_ExploreSummary_DeleteFailsKeepsSummary(t *testing.T) {
+	f := newPlanRunCleanupFixture(t, "feat/planrun-summary-deletefail", true, linkedPlanFile)
+	f.writeExplorer(t, "auth-flow", "done", 2)
+	f.writeShipReport(t, "md")
+
+	useShipRemoveEvidence(t, func(string) error { return errors.New("evidence busy") })
+
+	pr, err := f.cleanupPipeline(t, nil)
+	if err != nil {
+		t.Fatalf("cleanup-pipeline: %v", err)
+	}
+	if want := (ShipPlanRunCleanup{Reason: "remove failed: evidence busy"}); pr != want {
+		t.Errorf("planRun = %#v, want %#v", pr, want)
+	}
+	f.assertKept(t)
+	data := f.shipStateOnDisk(t)
+	want := []any{wantExploreEntry("auth-flow", "done", 2, 2)}
+	if got := data[shipPlanExploreSummaryKey]; !reflect.DeepEqual(got, any(want)) {
+		t.Errorf("stored planExploreSummary = %#v, want %#v", got, want)
+	}
+}
+
+// TestShipState_CleanupPipeline_ExploreSummary_RetryKeepsStoredList seeds the
+// state a failed earlier delete leaves: a stored non-empty list, no evidence
+// folder, and the plan state file. A new cleanup-pipeline call reads [] from
+// the missing folder, and it must not replace the stored list with it.
+func TestShipState_CleanupPipeline_ExploreSummary_RetryKeepsStoredList(t *testing.T) {
+	f := newPlanRunCleanupFixture(t, "feat/planrun-summary-retry", true, linkedPlanFile)
+	stored := []any{wantExploreEntry("auth-flow", "done", 2, 2)}
+	st, err := state.Find(f.dir, "ship", f.branch)
+	if err != nil || st == nil {
+		t.Fatalf("find ship state: st=%v err=%v", st, err)
+	}
+	st.Data[shipPlanExploreSummaryKey] = stored
+	if err := state.Write(st); err != nil {
+		t.Fatalf("seed ship state: %v", err)
+	}
+	if err := os.RemoveAll(f.evidenceDir); err != nil {
+		t.Fatalf("remove evidence dir: %v", err)
+	}
+	f.writeShipReport(t, "md")
+
+	pr, err := f.cleanupPipeline(t, nil)
+	if err != nil {
+		t.Fatalf("cleanup-pipeline: %v", err)
+	}
+	if want := (ShipPlanRunCleanup{Deleted: true, RunID: f.runID}); pr != want {
+		t.Errorf("planRun = %#v, want %#v", pr, want)
+	}
+	f.assertDeleted(t)
+	if got := f.shipStateOnDisk(t)[shipPlanExploreSummaryKey]; !reflect.DeepEqual(got, any(stored)) {
+		t.Errorf("stored planExploreSummary = %#v, want the seeded list %#v", got, stored)
+	}
+}
+
+// TestShipStateSchema_PlanExploreSummary covers the optional planExploreSummary
+// key: absent, empty and filled lists validate; a wrong shape does not.
+func TestShipStateSchema_PlanExploreSummary(t *testing.T) {
+	validate := shipStateSchemaValidator(t)
+	base := func(extra map[string]any) map[string]any {
+		doc := map[string]any{
+			"version":   float64(1),
+			"startedAt": "2026-03-01T12:00:00Z",
+			"branch":    "feat/schema-test",
+			"flags":     map[string]any{},
+			"steps":     []any{map[string]any{"name": "review", "status": "completed"}},
+		}
+		for k, v := range extra {
+			doc[k] = v
+		}
+		return doc
+	}
+
+	accepted := map[string]any{
+		"absent":      nil,
+		"empty list":  []any{},
+		"full entry":  []any{wantExploreEntry("auth-flow", "done", 7, 5)},
+		"empty top":   []any{map[string]any{"name": "zeta", "status": "unreadable", "total": float64(0), "top": []any{}}},
+		"two entries": []any{wantExploreEntry("a", "done", 1, 1), wantExploreEntry("b", "running", 0, 0)},
+	}
+	for name, v := range accepted {
+		extra := map[string]any{}
+		if v != nil {
+			extra[shipPlanExploreSummaryKey] = v
+		}
+		if err := validate(base(extra)); err != nil {
+			t.Errorf("%s: want accepted, got %v", name, err)
+		}
+	}
+
+	rejected := map[string]any{
+		"not a list":    map[string]any{"name": "a"},
+		"null":          nil,
+		"missing total": []any{map[string]any{"name": "a", "status": "done", "top": []any{}}},
+		"missing top":   []any{map[string]any{"name": "a", "status": "done", "total": float64(1)}},
+		"string total":  []any{map[string]any{"name": "a", "status": "done", "total": "1", "top": []any{}}},
+		"entry is text": []any{"auth-flow"},
+	}
+	for name, v := range rejected {
+		if err := validate(base(map[string]any{shipPlanExploreSummaryKey: v})); err == nil {
+			t.Errorf("%s: want schema rejection, got nil", name)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // gc: dry-run and real sweep
 // ---------------------------------------------------------------------------
 

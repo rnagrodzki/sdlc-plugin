@@ -2133,13 +2133,30 @@ type ShipPlanRunCleanup struct {
 	Reason  string `json:"reason,omitempty"`
 }
 
-// planRun.reason values. A failed remove reports "remove failed: <error>".
+// shipExploreSummaryFunc reads the plan explorer summary of one plan run.
+// Tests replace it to force a read failure: planExploreSummary fails only on
+// an OS read error that file permissions would cause.
+var shipExploreSummaryFunc = planExploreSummary
+
+// shipRemoveEvidenceFunc deletes the evidence directory of a plan run. Tests
+// replace it to force a delete failure without touching file permissions.
+var shipRemoveEvidenceFunc = os.RemoveAll
+
+// planRun.reason values. A failed remove reports "remove failed: <error>". A
+// failed summary copy reports shipPlanRunReasonSummaryFailed, then "<error>",
+// then shipPlanRunSummaryRetryHint.
 const (
-	shipPlanRunReasonNotStamped   = "run not stamped"
-	shipPlanRunReasonNoLinked     = "no linked plan run"
-	shipPlanRunReasonNoReport     = "report not written"
-	shipPlanRunReasonRemoveFailed = "remove failed: "
+	shipPlanRunReasonNotStamped    = "run not stamped"
+	shipPlanRunReasonNoLinked      = "no linked plan run"
+	shipPlanRunReasonNoReport      = "report not written"
+	shipPlanRunReasonRemoveFailed  = "remove failed: "
+	shipPlanRunReasonSummaryFailed = "explorer summary not saved: "
+	shipPlanRunSummaryRetryHint    = ". Fix the cause and call cleanup-pipeline again."
 )
+
+// shipPlanExploreSummaryKey is the ship state data key that holds the plan
+// explorer summary copied at cleanup.
+const shipPlanExploreSummaryKey = "planExploreSummary"
 
 // shipDeleteReportedPlanRun deletes the plan run linked to this ship run —
 // its plan-<slug>-<ts>.json state file and its .evidence directory — once
@@ -2150,12 +2167,20 @@ const (
 // runId is derived from the ship state's startedAt exactly as the report
 // action derives it.
 //
+// Before the delete, it copies the plan explorer summary into ship.Data
+// under "planExploreSummary" and writes the ship state. The write comes
+// before the evidence delete, because the delete loses the explorer data. If
+// the summary read or the ship state write fails, nothing is deleted and the
+// reason starts with shipPlanRunReasonSummaryFailed, so a retry finds the
+// plan run again. A retry after a failed delete reads an empty summary. It
+// then keeps a stored non-empty list.
+//
 // It fails safe: any lookup error, a missing startedAt, or a stat error
 // other than not-exist deletes nothing. It never returns an error, so the
 // gc sweep after it still runs on a run that is already stamped. The
 // evidence directory is removed before the state file; if that remove
 // fails, the state file stays so a retry can find the run again.
-func shipDeleteReportedPlanRun(root, branch string, shipData map[string]any) ShipPlanRunCleanup {
+func shipDeleteReportedPlanRun(root, branch string, ship *state.State) ShipPlanRunCleanup {
 	execSt, err := state.Find(root, "execute", branch)
 	if err != nil || execSt == nil {
 		return ShipPlanRunCleanup{Reason: shipPlanRunReasonNoLinked}
@@ -2165,12 +2190,23 @@ func shipDeleteReportedPlanRun(root, branch string, shipData map[string]any) Shi
 		return ShipPlanRunCleanup{Reason: shipPlanRunReasonNoLinked}
 	}
 
-	if !shipReportWritten(root, shipData) {
+	if !shipReportWritten(root, ship.Data) {
 		return ShipPlanRunCleanup{Reason: shipPlanRunReasonNoReport}
 	}
 
 	runID := state.RunID(planRun)
-	if err := os.RemoveAll(state.EvidenceDir(root, runID)); err != nil {
+	summary, err := shipExploreSummaryFunc(root, runID)
+	if err != nil {
+		return ShipPlanRunCleanup{Reason: shipPlanRunReasonSummaryFailed + err.Error() + shipPlanRunSummaryRetryHint}
+	}
+	// A retry after the evidence delete reads []. Keep a stored non-empty list.
+	if prev, _ := ship.Data[shipPlanExploreSummaryKey].([]any); len(summary) > 0 || len(prev) == 0 {
+		ship.Data[shipPlanExploreSummaryKey] = summary
+	}
+	if err := shipStateWriteFunc(ship); err != nil {
+		return ShipPlanRunCleanup{Reason: shipPlanRunReasonSummaryFailed + err.Error() + shipPlanRunSummaryRetryHint}
+	}
+	if err := shipRemoveEvidenceFunc(state.EvidenceDir(root, runID)); err != nil {
 		return ShipPlanRunCleanup{Reason: shipPlanRunReasonRemoveFailed + err.Error()}
 	}
 	if err := os.Remove(planRun.Path); err != nil && !os.IsNotExist(err) {
@@ -2274,7 +2310,7 @@ func shipStateCleanupPipeline(root, workDir string, in ShipStateIn, now func() t
 	// write has already returned above.
 	planRun := ShipPlanRunCleanup{Reason: shipPlanRunReasonNotStamped}
 	if runStamped {
-		planRun = shipDeleteReportedPlanRun(root, branch, st.Data)
+		planRun = shipDeleteReportedPlanRun(root, branch, st)
 	}
 
 	stateDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
@@ -2933,7 +2969,7 @@ Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide
 - read: Return the full ship state. Optional: detail.branch. The response also carries "reportData": report-ready aggregates, including healing (data.healing verbatim, {} when absent) and reviewLedger {total, fixed (local-review only), deferredByReason, unaccounted = total - fixed - deferred, never clamped} — reviewLedger is null, with reviewLedgerNote, when no review total was recorded. Also returns style: the plugin-wide communication style; follow style.guide in chat and questions. When the pipeline is in flight (not stamped pipelineStatus:"completed", some step still blocks proceed, and at least one step has been started), the state also carries a "resumeBriefing" (resumable, lastStep, lastStepStatus, sideEffects, summary, display, timing{stepSeconds,pipelineSeconds,idleSeconds,human}, next). A step left "failed" is still reported resumable:true, never as an error.
 - report: Compose the end-of-run report from ship state, this run's execute state (only when the execute step completed), CLI evidence and learnings, and render it. Optional: detail.write (true persists it under <main worktree>/.sdlc-v2/reports/), detail.format ("md"|"json", default from automation.report.format), detail.branch. Returns {skipped:true} when automation.report.enabled is false.
 - cleanup: Stamp a branch's ship state terminal (pipelineStatus:"completed", pipelineCompletedAt) instead of deleting it, after validating every step is in a terminal state — the state survives for later reads until GC's TTL prunes it. Optional: detail.branch.
-- cleanup-pipeline: Same stamp-instead-of-delete for the current branch's ship state (force/no-state-file skip the contract check). Only after a successful stamp, it deletes the plan run linked through this branch's execute state (its plan-<slug>-<ts>.json and .evidence directory) when the ship report ship-<runId>-report.<md|json> exists; force and no-state-file never delete it. The result's planRun is {deleted, runId?, reason?} with reason "run not stamped" | "no linked plan run" | "report not written" | "remove failed: <error>". Then an unconditional GC + per-run-directory sweep. Optional: detail.branch, detail.force, detail.ttlDays.
+- cleanup-pipeline: Same stamp-instead-of-delete for the current branch's ship state (force/no-state-file skip the contract check). Only after a successful stamp, it deletes the plan run linked through this branch's execute state (its plan-<slug>-<ts>.json and .evidence directory) when the ship report ship-<runId>-report.<md|json> exists; force and no-state-file never delete it. Before it deletes the plan run, it copies the explorer summary into ship state planExploreSummary. If the copy fails, the plan run stays and planRun.reason starts with "explorer summary not saved: ". Fix the cause and call cleanup-pipeline again. The result's planRun is {deleted, runId?, reason?} with reason "run not stamped" | "no linked plan run" | "report not written" | "explorer summary not saved: <error>. Fix the cause and call cleanup-pipeline again." | "remove failed: <error>". Then an unconditional GC + per-run-directory sweep. Optional: detail.branch, detail.force, detail.ttlDays.
 - gc: Garbage-collect stale state files. Optional: detail.ttlDays, detail.dryRun.
 - migrate: Migrate state between branches. Requires detail.from, detail.to.
 - next: Return the next pending step. Optional: detail.branch, detail.stateFile.

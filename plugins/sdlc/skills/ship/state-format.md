@@ -34,6 +34,7 @@ Managed by the shared `internal/state` package (the same one `execute_state`, `p
   "historyFailureRecorded": true,
   "sideEffects": { ... },
   "healing": { ... },
+  "planExploreSummary": [ ... ],
   "pipelineStatus": "completed",
   "pipelineCompletedAt": "2026-03-27T15:10:00Z"
 }
@@ -55,6 +56,7 @@ Managed by the shared `internal/state` package (the same one `execute_state`, `p
 | `historyFailureRecorded` | boolean | Absent until the first `fail` of the run. `ship_state{action:"fail"}` sets it to `true` when it appends the failure row to `runs.jsonl`. It stops a second row for the same run. See "Issues and `lastFailedStep`" below. |
 | `sideEffects` | object | Idempotency journal keyed by step name (`<step>#<n>` for a repeated name). Written by `ship_verify_side_effect`; consulted by `begin-step`'s `alreadyDone` flag. See below. |
 | `healing` | object | Absent until the first `ship_state{action:"healing_record"}` call. Self-healing ledger (`reviewTotal`, `fixed[]`, `hardened[]`). See "`data.healing`" below. |
+| `planExploreSummary` | array | Absent until `cleanup-pipeline` deletes the linked plan run. One `{name, status, total, top[]}` entry for each plan explorer; `top` holds at most 5 `{summary, ref}` findings. `[]` when the plan run had no explorer files. See "Lifecycle: Cleanup." |
 | `pipelineStatus` | string | Absent until the pipeline is stamped terminal. Set to `"completed"` by `cleanup`/`cleanup-pipeline` — see "Lifecycle: Cleanup." |
 | `pipelineCompletedAt` | string | Paired timestamp, set alongside `pipelineStatus`. |
 
@@ -306,6 +308,11 @@ Two actions, both terminal, neither a `steps[]` entry. **Neither deletes the sta
   }
   ```
   `directories` reaps stale per-run execute directories and their ledger subdirectory (keyed off `execute-*.json` state files' `startedAt`) — this is the run-dir/ledger cleanup that happens alongside, not instead of, the state-file stamp.
+
+  `planRun` reports the deletion of the linked plan run. Before the delete, the action copies the plan
+  explorer summary into ship state `planExploreSummary` (one `{name, status, total, top[]}` entry for each
+  explorer, `top` capped at 5). If the copy fails, the plan run stays and `planRun.reason` starts with
+  `explorer summary not saved: `. A later `cleanup-pipeline` call tries again.
 
 Because contract validation only inspects `steps[]` entries, `received-review`/`commit-fixes` (which never get an entry) can never trip this check either way — their outcome is invisible to `cleanup`/`cleanup-pipeline`, tracked only in `decisions[]`.
 
