@@ -79,6 +79,10 @@ Review Go source changes for baseline code quality in this module
   cases when only two execute, is a finding. Exported identifiers with zero
   module-wide callers are dead code, regardless of presence of a doc
   comment.
+- Doc comments that state a template or schema default value must be
+  verified against the actual template/schema file, not only against the
+  code body or an existing passing test. A stale comment describing an
+  outdated default is a finding even when a test covers the real behavior.
 - Error types must use the `error` interface, never a concrete pointer type
   (`*MovedKeysErr`). Callers use `errors.As` to extract values. The
   nil-pointer-in-interface footgun occurs when a concrete type `nil` is

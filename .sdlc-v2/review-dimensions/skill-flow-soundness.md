@@ -26,6 +26,13 @@ severity: high
 - **Numbered-step drift.** After steps are renumbered or reordered, every
   cross-reference to a step number — in the same file, or in a companion
   sub-flow it dispatches — must be updated to match.
+- **Step insertion impact on branch routing.** When a new step (e.g. Step
+  2b) is inserted into an existing flow, verify that every conditional
+  branch and routing that previously connected step N to step N+1 is still
+  accurate — the inserted step may now lie in the middle. Also verify that
+  bypass notes and direct-entry options that list skippable steps remain
+  accurate: is the newly inserted step bypassable, or has it changed the
+  mandatory-vs-optional structure of any path?
 - **Approval-gate reachability.** An `AskUserQuestion` step must be
   reachable on every path that needs it. Verify no earlier branch can
   silently skip past a mandatory approval gate.
