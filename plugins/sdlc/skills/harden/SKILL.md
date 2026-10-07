@@ -408,6 +408,13 @@ If `RESULT.classification == "plugin-defect"` AND `RESULT.routeToErrorReport ==
 true`: jump to **Step 6 — PLUGIN-DEFECT ROUTE**. Skip Step 5 (PRESENT and APPLY)
 entirely — no surface edits are appropriate for plugin defects.
 
+If `RESULT.classification == "plugin-defect"` but `RESULT.routeToErrorReport` is not
+`true`, `RESULT` breaks the orchestrator's contract (`agents/harden-orchestrator.md`:
+`plugin-defect` always carries `routeToErrorReport: true`, a non-empty
+`errorReportPayload`, and empty `proposals`). Treat it like Step 3's JSON-parse failure:
+surface the raw response to the user, `rm -f "<manifestPath>"`, and stop. Do not continue
+to Step 5.
+
 Otherwise (`user-code` or `ambiguous`), display the classification and rationale
 to the user, then continue to Step 5 (PRESENT and APPLY).
 
@@ -651,8 +658,10 @@ When it holds:
    halt is the same (no prompt is involved): stop the loop. Its file write is on
    disk and validated, so list this proposal under `Auto-accepted` with the mirror
    error appended, and every remaining proposal under `Not processed` in the 5d
-   summary. In either mode, emit the 5e record (when its gate holds) before
-   stopping — this halt ends the run.
+   summary. In either mode, emit the 5e record (when its gate holds), then
+   `rm -f "<manifestPath>"` (in `--from-learnings` mode, every `manifestPath` in
+   the side table) before stopping — this halt ends the run, so Step 7's
+   defensive cleanup never runs.
 
 3. **On success**, display: `Mirrored review dimension → {path}`.
 

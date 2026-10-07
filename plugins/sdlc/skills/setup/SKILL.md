@@ -59,8 +59,9 @@ field that does not exist. Deviations, one line each:
 - **Diff preview (Gap C):** source's `computeConfigDiff` pure-JS diff has no Go/tool
   equivalent. Replaced with an LLM-native before/after table built from the Step 0 snapshot
   vs. the values assembled during Step 3 (see "Diff preview" below).
-- **R-SCRIPT-VERSIONS warning dropped.** No Go tool surfaces installed-vs-current CI script
-  versions; there is nothing to compare. Step 0 has no equivalent warning.
+- **R-SCRIPT-VERSIONS warning moved to Step 4.** `setup_prepare` returns `ciScriptDrift[]`
+  (installed vs current version of each `scaffold_ci`-managed script). Step 0 prints no
+  warning for it; Step 4's `CI scripts needing an update` block reports it instead.
 - **`setup_init` vs `setup_write_sections`:** `setup_init` (existing Go tool) takes no input
   and always writes the *complete* `config.toml`/`local.toml` templates — every field, heavily
   commented — directly to disk in one shot; it cannot accept assembled field values the way
@@ -148,7 +149,7 @@ If the system context contains "Plan mode is active":
 1. Call the `setup_prepare` MCP tool:
 
    ```
-   setup_prepare({ skipConfigCheck: false }) → { ok, needsMigration, sections[], defaultBranch, remoteOwner, ciScriptDrift[] }
+   setup_prepare({ skipConfigCheck: false }) → { ok, needsMigration, sections[], defaultBranch, remoteOwner, ciScriptDrift[], userConfigPath, localValues }
    ```
 
    `sections[]` is the static 19-row descriptor list, always in canonical
@@ -157,7 +158,8 @@ If the system context contains "Plan mode is active":
    `plan-template`, `communication-style`, `plan-style`, `plan-tasks`, `plan-guardrails`,
    `execution-guardrails`, `openspec-block`, `automation`. Each row carries `{ id, label, purpose,
    configFile, configPath, consumedBy, filesModified, optional, delegatedTo, confirmDetected,
-   fields[] }`.
+   fields[], defaultTarget }`. `defaultTarget` (`"user"` or `"project"`) is set only on
+   local.toml rows; it is omitted on config.toml rows and delegated rows.
 
 2. Call `setup_init({})` once, unconditionally, to scaffold `.sdlc-v2/` (see Port Notes — it
    takes no input and always writes the complete TOML templates):
@@ -241,7 +243,8 @@ If the system context contains "Plan mode is active":
 `--pr-template`, `--guardrails`, `--execution-guardrails`, `--openspec-enrich`, or
 `--plan-template` was passed, `selectedIds` are resolved before Step 1 by the flag-alias
 routing in Step 0 (`--force` alone resolves to all 19 ids). Skip the entire menu (no
-numbered list, no chat prompt) and jump to Step 2/3 with the resolved id set.
+numbered list, no chat prompt) and proceed to Step 2 → Step 2b → Step 3 with the resolved id
+set.
 
 **Compute `state` per row** (evaluate in this order; ported verbatim from
 `scripts/lib/setup-sections.js`'s `computeState`, minus the dropped `legacy`/misplaced-section
@@ -450,7 +453,8 @@ Step 3, without migrating.
 After migration, re-run Step 0's snapshot (re-call `setup_prepare` — same disclosed gap as
 Step 0, no tool-backed alternative — and re-Read `.sdlc-v2/config.toml` only; take
 `localValues`/`userConfigPath` from the same re-call) so Step 3's "Current value" lines and
-Step 1's already-computed `state`/`summary` reflect the migrated config.
+Step 1's already-computed `state`/`summary` reflect the migrated config. Then proceed to
+Step 2b, then Step 3.
 
 ---
 
@@ -894,7 +898,9 @@ After collecting all answers AND confirming the diff preview above:
    `target: "user"`. Group every other assembled section (every config.toml section, plus
    any local section resolved to `"project"`) into a second call with no `target` (or
    `target: "project"`) — `setup_write_sections` rejects `target: "user"` outright when a
-   config.toml section is present, so the two groups must never share a call. Omit either
+   config.toml section is present, so the two groups must never share a call (the whole call
+   fails with `project sections [...] cannot use target "user"` and nothing is written — see
+   `setupWriteSections` in `internal/tools/setup_write.go`). Omit either
    call entirely when its group is empty.
 
    ```
