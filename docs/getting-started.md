@@ -68,6 +68,13 @@ files shipped with the plugin at `plugins/sdlc/templates/config.toml` and
 `plugins/sdlc/templates/local.toml` — read them directly to preview the
 whole config shape before running `/setup`.
 
+### User-level personal settings
+Put values that you want in every project in `~/.sdlc/local.toml` (or the path in `SDLC_USER_CONFIG`).
+The file uses the same sections as `.sdlc-v2/local.toml`.
+Order: built-in default < `~/.sdlc/local.toml` < `.sdlc-v2/local.toml` < command flags.
+Tables merge key by key. A list in the project file replaces the user list.
+The template writes every `[ship]` key as a commented example, so a new project uses the built-in defaults or your user file.
+
 If the repo already has SDLC config from the old Node-based plugin
 (markers like `.claude/sdlc.json`, `.sdlc/jira-config.json`,
 `.sdlc/review.json`), any skill that needs config will tell you to migrate

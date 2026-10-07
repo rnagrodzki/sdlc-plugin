@@ -127,6 +127,29 @@ branch](../getting-started.md#integration-branch).
 The `[execute]` section's `baseSync` key (default `true`) controls whether
 `execute` merges `origin/<base>` into the branch between waves.
 
+## Where personal settings are saved
+
+Seven sections are personal settings, not project settings: `ship`, `review`,
+`received-review`, `communication-style`, `plan-style`, `github`, and
+`automation`. The first time a run of `/setup` configures any of them, it
+asks where to save your answers:
+
+1. **Defaults per section (recommended)** — `communication-style`,
+   `plan-style`, `review`, `received-review`, `automation`, and `github` go
+   to `~/.sdlc/local.toml` (shared across every project on your machine);
+   `ship` goes to this project's `.sdlc-v2/local.toml`.
+2. **All to this project** — every personal section goes to
+   `.sdlc-v2/local.toml`. Other projects on your machine do not see them.
+3. **All to your user profile** — every personal section goes to
+   `~/.sdlc/local.toml` (or `$SDLC_USER_CONFIG` if you set it). A key already
+   set in this project's `.sdlc-v2/local.toml` still overrides the
+   user-profile value, for this project only.
+
+The menu's status block marks each personal section `[set] (user)`,
+`[set] (project)`, or `[set] (user+project)`, depending on which file its
+current values come from. This question is not saved: a later `/setup` run
+that configures a personal section asks again.
+
 ## Related skills
 
 - Every skill depends on `/setup` for its config. "Missing config" errors point
@@ -143,6 +166,8 @@ The `[execute]` section's `baseSync` key (default `true`) controls whether
 - **Section shortcuts save time.** Use `--dimensions`, `--guardrails`, or
   `--only <id>` to jump to what you need.
 - **Config location.** Project config: `.sdlc-v2/config.toml` (committed).
-  Local preferences: `.sdlc-v2/local.toml` (gitignored).
+  Personal preferences: `.sdlc-v2/local.toml` (gitignored, this project only)
+  or `~/.sdlc/local.toml` (shared across every project) — see "Where personal
+  settings are saved" above.
 - **Migration is usually automatic.** If legacy config is detected, skills tell
   you to run `--migrate`. You do not need to guess in advance.

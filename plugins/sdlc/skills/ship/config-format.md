@@ -10,6 +10,8 @@ This document describes the `ship` section of `.sdlc-v2/local.toml`, the persist
 <repo-root>/.sdlc-v2/local.toml
 ```
 
+Values in `~/.sdlc/local.toml` (or the path in `SDLC_USER_CONFIG`) apply when the project file does not set the key. Tables merge key by key, and a list in the project file replaces the user list.
+
 Create it manually or run `/setup` to walk through an interactive setup. There is no `--init-config` walkthrough in this port (see "No init-config walkthrough" below).
 
 ---
@@ -109,7 +111,7 @@ The source skill's `--preset full|balanced|minimal` and `--skip <step,…>` flag
 `ship_prepare` resolves `steps` in this order, recorded per-field in its `sources` output:
 
 ```
-explicit steps input  >  quick (resolves ship.quick)  >  .sdlc-v2/local.toml (ship.steps)  >  built-in defaults
+explicit steps input  >  quick (resolves ship.quick)  >  .sdlc-v2/local.toml (ship.steps)  >  ~/.sdlc/local.toml (ship.steps)  >  built-in defaults
 ```
 
 `quick` and an explicit non-empty `steps` list are mutually exclusive in practice — when both are supplied, the explicit `steps` list wins (see `sources.steps` to confirm which tier actually applied). `auto`, `draft`, `bump`, `reviewThreshold`, `rebase`, and the numeric timing knobs each follow their own cli-input > config > default chain — see the Field Reference table above and `ship.go`'s `mergeShipFlags` for the authoritative per-field precedence.
