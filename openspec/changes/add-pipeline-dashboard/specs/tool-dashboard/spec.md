@@ -74,23 +74,33 @@ sequenceDiagram
 - **WHEN** the call passes `action:"ensure"` and `open:true`
 - **THEN** the tool opens the URL with `open` on macOS or `xdg-open` on Linux
 
-### Requirement: Ensure errors
-The `ensure` action SHALL return a `DomainError` or `InfraError` with the suggestion of this table when the server cannot start.
+### Requirement: Port conflict error
+The `ensure` action SHALL return a `DomainError` with the suggestion of this table when the port answers, but not with an sdlc health body.
 
 | Condition | Suggestion text |
 |---|---|
 | The port answers, but not with an sdlc health body | Port P is in use by another program. Set `port` in `[dashboard]` of `~/.sdlc/local.toml`, then run `/sdlc:dashboard` again. |
-| The process start fails | Read `~/.sdlc-cache/dashboard/server.log`, then try again. |
-| No health answer after 3 s | Read `server.log` for the port error, then try again. |
-| The OS is not macOS or Linux | The dashboard runs only on macOS and Linux. |
 
 #### Scenario: Port held by another program
 - **WHEN** port 7385 answers with a body that is not an sdlc health body
 - **THEN** the error suggestion names `port` in `[dashboard]` of `~/.sdlc/local.toml`
 
+### Requirement: Start failure errors
+The `ensure` action SHALL return a `DomainError` or `InfraError` with the suggestion of this table when the server cannot start.
+
+| Condition | Suggestion text |
+|---|---|
+| The process start fails | Read `~/.sdlc-cache/dashboard/server.log`, then try again. |
+| No health answer after 3 s | Read `server.log` for the port error, then try again. |
+| The OS is not macOS or Linux | The dashboard runs only on macOS and Linux. |
+
 #### Scenario: Start timeout
 - **WHEN** the new server gives no health answer within 3 s
 - **THEN** the error suggestion names `server.log`
+
+#### Scenario: Unsupported OS
+- **WHEN** the OS is not macOS or Linux
+- **THEN** the error suggestion is `The dashboard runs only on macOS and Linux.`
 
 ### Requirement: Status and stop
 The `status` action SHALL report `running:false` when no server record or no health answer exists. The `stop` action SHALL send SIGTERM only to the pid that `/api/health` reports.

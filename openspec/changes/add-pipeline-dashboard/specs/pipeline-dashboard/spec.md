@@ -196,15 +196,6 @@ stateDiagram-v2
   failed --> [*]: 24 h after last update
 ```
 
-| Kind | `completed` when | `failed` when |
-|---|---|---|
-| ship | `pipelineStatus` is `completed` | a step is `failed` and the run is not in flight |
-| execute | `runStatus` is `completed` | a wave is `failed` and no wave is `in_progress` |
-| plan | `planIntegrity.done` is set | never |
-| review | each dimension file has `checkoutAt` | never |
-
-The last update is the newest of the state file time, the task progress file times, and the evidence line times of the branch.
-
 #### Scenario: Stalled run
 - **WHEN** a ship run is in flight
 - **AND** its last update is 31 min old
@@ -215,12 +206,37 @@ The last update is the newest of the state file time, the task progress file tim
 - **AND** its last update is 25 h old
 - **THEN** the run is not in the snapshot
 
+### Requirement: Terminal status rules
+The snapshot SHALL set the status `completed` or `failed` of a run by this table.
+
+| Kind | `completed` when | `failed` when |
+|---|---|---|
+| ship | `pipelineStatus` is `completed` | a step is `failed` and the run is not in flight |
+| execute | `runStatus` is `completed` | a wave is `failed` and no wave is `in_progress` |
+| plan | `planIntegrity.done` is set | never |
+| review | each dimension file has `checkoutAt` | never |
+
 #### Scenario: Failed ship step
 - **WHEN** the ship step `pr` is `failed` and the run is not in flight
 - **THEN** the status is `failed`
 
+### Requirement: Last update time
+The last update of a run SHALL be the newest of the state file time, the task progress file times, and the evidence line times of the branch.
+
+#### Scenario: Evidence newer than state
+- **WHEN** the state file of a run is 40 min old
+- **AND** an evidence line of the branch is 5 min old
+- **THEN** the last update of the run is 5 min old
+
 ### Requirement: Step status
 The snapshot SHALL give each step of a run one status from the `steps[].status` set of `ship-state.schema.json`: `pending`, `in_progress`, `completed`, `skipped`, or `failed`.
+
+#### Scenario: Stored ship step status
+- **WHEN** a ship step has the stored status `skipped`
+- **THEN** the step status is `skipped`
+
+### Requirement: Step status by run kind
+The snapshot SHALL take the status of one step from the run kind by this table.
 
 | Kind | One step is | Status rule |
 |---|---|---|
