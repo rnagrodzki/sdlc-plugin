@@ -78,6 +78,11 @@ type ShipStepNarrationOut struct {
 	// verification) should not clutter every begin-step response with
 	// alreadyDone:false.
 	AlreadyDone bool `json:"alreadyDone,omitempty"`
+	// Warnings names a best-effort write that failed without failing the
+	// action: fail sets it when the failure row could not be appended to
+	// runs.jsonl. Response-only — never persisted. omitempty: most calls have
+	// nothing to warn about.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // ShipNextOut is the output of the Go-native next action: the first step
@@ -1073,6 +1078,33 @@ func shipStateSkip(root, workDir string, in ShipStateIn, now func() time.Time) (
 	return out, nil
 }
 
+// shipHistoryAppendFunc appends one run record to runs.jsonl. Tests replace it
+// to force an append failure without touching file permissions.
+var shipHistoryAppendFunc = func(root string, rec history.RunRecord) error {
+	return history.NewFileWriter(historyDir(root)).AppendRun(rec)
+}
+
+// shipStateWriteFunc writes a ship state file. Tests replace it to force a
+// write failure without touching file permissions.
+var shipStateWriteFunc = state.Write
+
+// shipFailDurationMs returns the milliseconds between startedAt and now. It
+// returns 0 when startedAt does not parse as an RFC3339 timestamp.
+func shipFailDurationMs(startedAt string, now time.Time) int64 {
+	d, ok := pipeline.Duration(startedAt, now.UTC().Format(time.RFC3339))
+	if !ok {
+		return 0
+	}
+	return d.Milliseconds()
+}
+
+// shipStateFail marks a step failed and records the issue. The first fail of a
+// run also appends one failure row to runs.jsonl, so the dashboard can show a
+// run that never reached cleanup. It sets historyFailureRecorded before the
+// state write, so a later fail in the same run appends no second row. If the
+// state write fails, the flag is not persisted and no row exists, so a retry is
+// safe. If the append fails, the action still succeeds and the response
+// carries a warning that names the runs path.
 func shipStateFail(root, workDir string, in ShipStateIn, now func() time.Time) (any, error) {
 	if in.Step == "" {
 		return nil, &mcpserver.DomainError{
@@ -1102,6 +1134,7 @@ func shipStateFail(root, workDir string, in ShipStateIn, now func() time.Time) (
 		}
 	}
 
+	failedAt := now()
 	st.Data["lastFailedStep"] = in.Step
 	execAppendIssue(st.Data, StateIssue{
 		Step:      in.Step,
@@ -1109,14 +1142,39 @@ func shipStateFail(root, workDir string, in ShipStateIn, now func() time.Time) (
 		Category:  "ship-fail",
 		Summary:   fmt.Sprintf("Step %s failed", in.Step),
 		Detail:    detail,
-		Timestamp: now().UTC().Format(time.RFC3339),
+		Timestamp: failedAt.UTC().Format(time.RFC3339),
 	})
 
-	if err := state.Write(st); err != nil {
+	recorded, _ := st.Data["historyFailureRecorded"].(bool)
+	firstFail := !recorded
+	if firstFail {
+		st.Data["historyFailureRecorded"] = true
+	}
+
+	if err := shipStateWriteFunc(st); err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("write ship state to %s: %s", st.Path, err.Error()),
 			Suggestion: "Check write permission on the ship state file path above and free disk space on the project root, then retry ship_state fail.",
 			Cause:      err,
+		}
+	}
+
+	// The flag is persisted before the append. A crash between the two loses
+	// the row but never writes a second one.
+	var warnings []string
+	if firstFail {
+		startedAt := dashboardStr(st.Data["startedAt"])
+		rec := history.RunRecord{
+			Timestamp:  failedAt.UTC().Format(time.RFC3339),
+			Skill:      "ship",
+			Branch:     dashboardStr(st.Data["branch"]),
+			Outcome:    "failure",
+			DurationMs: shipFailDurationMs(startedAt, failedAt),
+			StartedAt:  startedAt,
+		}
+		if err := shipHistoryAppendFunc(root, rec); err != nil {
+			warnings = append(warnings, "failure history row not written to "+paths.DataDir+"/history/runs.jsonl: "+err.Error()+
+				`. To add it, call ship_state history_record with detail.skill "ship" and detail.outcome "failure".`)
 		}
 	}
 
@@ -1125,6 +1183,7 @@ func shipStateFail(root, workDir string, in ShipStateIn, now func() time.Time) (
 		Narration: pipeline.Narration{
 			Summary: fmt.Sprintf("Step '%s' failed (%d of %d).", in.Step, pos, total),
 		},
+		Warnings: warnings,
 	}
 	if shipDetailLevel(in) == "full" {
 		ts := pipeline.NewTimingsStore(root)
@@ -2866,7 +2925,7 @@ Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide
 - start: (Legacy) Begin a step. Requires step. Returns narration. Optional: detail.branch, detail.detail.
 - complete: (Legacy) Complete a step. Requires step. Returns narration with timing. Optional: detail.branch, detail.result, detail.detail.
 - skip: Skip a step. Requires step. Returns narration. Optional: detail.branch, detail.reason, detail.detail.
-- fail: Fail a step. Requires step. Returns narration. Optional: detail.branch, detail.error (recorded as issue), detail.detail.
+- fail: Fail a step. Requires step. Returns narration. The first fail of a run also appends one failure row to .sdlc-v2/history/runs.jsonl (state key historyFailureRecorded stops a second row); a failed append does not fail the call but is named in warnings, with the history_record call that adds the row. Optional: detail.branch, detail.error (recorded as issue), detail.detail.
 - decide: Record a decision. Requires step. Returns narration. Optional: detail.branch, detail.text, detail.detail.
 - defer: Record a deferred finding. Writes it both to the run-scoped ship state file and durably to .sdlc-v2/history/deferred.json (with source detail.source, default "`+history.SourceReviewBelowThreshold+`"), so it survives state-file GC — no follow-up deferred_add is needed. Returns narration naming the generated deferred id (review-deferred-<timestamp>-<N>) and the file it was written to; a failed deferred.json write does not fail the call but is named in the summary, with the deferred_add call that recovers it. Requires detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`, case-insensitive; the lowercase form is recorded), detail.file, detail.title. Optional: detail.branch, detail.line (integer), detail.detail, detail.description (the deferring agent's own reasoning; defaults to detail.title), detail.reason (one of `+strings.Join(history.DeferredReasons(), " | ")+`; an omitted reason records `+history.ReasonBelowThreshold+`), detail.source (the tool recording the deferral, e.g. "received-review"; defaults to "`+history.SourceReviewBelowThreshold+`").
 - healing_record: Record one self-healing change in the live ship run's data.healing. Requires detail.kind: "review-total" (Requires detail.total, detail.dimensions — non-negative integers; replaces the previous value) | "fixed" (Requires detail.origin "local-review"|"pr-comment", detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`), detail.file, detail.title; Optional detail.line) | "hardened" (Requires detail.phase "started"|"done", detail.trigger, detail.classification, detail.applied [{surface (one of `+strings.Join(healingSurfaceIDs(), " | ")+`), action, targetFile}], detail.skipped (non-negative integer); a "done" record replaces a "started" record with the same trigger). Optional: detail.branch. Duplicates are ignored (narration "already recorded — no change"). With no live ship run (no state, or pipelineCompletedAt set) it returns ok and records nothing. Returns summary, kind, written (true only when this call changed the state file) and record (the validated record as persisted, recordedAt included).

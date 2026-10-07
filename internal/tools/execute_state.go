@@ -580,7 +580,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - wave-progress: Read/write per-task progress. Requires runId. For reads: readProgress=true. For writes: taskId, phase. Optional on writes: lastCompletedTask (recorded in the heartbeat entry), acceptanceDone, filesTouched (each replaces the recorded list), blocker.
 - wave-await: Bounded, non-blocking poll of a wave's still-open tasks, classifying each against its server-owned dispatch state (never-started/stalled/timeout/none) and returning explicit next-instructions (including the exact task-fail/task-redispatch call shape) for whatever it finds. Requires runId, wave. Optional: branch, stateFile (also used to persist wave-await's own resume-state, i.e. the iteration counter, across bounded-poll calls).
 - resume-reset: Reset in-progress waves for session resume. Optional: branch, runId (the run whose server dispatch state is reseeded; falls back to the value derived from startedAt/wave). Returns {resetWaves, clearedTaskIds} as before; when the run is still in flight after the reset, the response also carries a "resumeBriefing" (same shape as read's) reflecting the sets it just cleared — resume-reset's willRedo always matches the task IDs in clearedTaskIds. Reseeds fresh server-owned dispatch state (attempt reset to 1) for every cleared task ID; seeding failure is non-fatal and appends to a "warnings" field.
-- ledger_checkin: Register a worker as active. Requires runId, workerId. Optional: stepId.
+- ledger_checkin: Register a worker as active. Requires runId, workerId. Optional: stepId, branch. Side effect: the first check-in for a runId also writes runs/ledger/<runId>/run.meta once (branch, startedAt, and shipRunId when this branch has a ship state with its review step in_progress); later check-ins leave it unchanged. The branch is the branch input when set, else the current branch of the work directory. A run.meta write failure does not fail the check-in: the result carries a "warnings" entry that names the path.
 - ledger_checkout: Mark a worker as done. Requires runId, workerId. Optional: findings (free-text payload — e.g. a JSON array or markdown block — persisted alongside this worker's checkout record and returned later by ledger_status).
 - ledger_status: List worker statuses for a run. Requires runId. Optional: timeoutSeconds, expectedWorkers (worker IDs expected to have checked in; any missing from the ledger are returned as missingWorkers). Each entry in the returned workers[] carries a "findings" field when that worker's ledger_checkout call set one; omitted when absent.
 - ledger_cleanup: Remove a run's entire ledger directory (all per-worker checkin/checkout/findings files). Requires runId. Returns {ok, runId, removed, workers} where removed is false when the directory didn't exist and workers lists the sorted worker ids that had ledger files (ids only, never findings).
@@ -674,7 +674,7 @@ func executeState(root, workDir string, in ExecuteStateIn, now func() time.Time)
 	case "resume-reset":
 		return execActionResumeReset(root, workDir, in, now)
 	case "ledger_checkin":
-		return execActionLedgerCheckin(root, in, now)
+		return execActionLedgerCheckin(root, workDir, in, now)
 	case "ledger_checkout":
 		return execActionLedgerCheckout(root, in, now)
 	case "ledger_status":
@@ -6013,7 +6013,98 @@ func execActionResumeReset(root, workDir string, in ExecuteStateIn, now func() t
 // Action: ledger_checkin
 // ---------------------------------------------------------------------------
 
-func execActionLedgerCheckin(root string, in ExecuteStateIn, now func() time.Time) (any, error) {
+// ledgerRunMetaFile is the file name of the review run meta inside a ledger
+// run folder. It does not end in ".json", so the dashboard collector and
+// ledger_status do not read it as a dimension file. Worker ids cannot hold a
+// dot, so it cannot clash with a worker file.
+const ledgerRunMetaFile = "run.meta"
+
+// reviewRunMeta is runs/ledger/<runId>/run.meta. The first ledger_checkin of a
+// run writes it once.
+type reviewRunMeta struct {
+	Branch    string `json:"branch"`
+	StartedAt string `json:"startedAt"`           // RFC3339, check-in time
+	ShipRunID string `json:"shipRunId,omitempty"` // state.RunID of the ship run, e.g. ship-feat-x-20261007T072607Z
+}
+
+// ledgerMetaOpenFunc matches os.OpenFile. Tests replace it to force a write
+// failure of run.meta.
+var ledgerMetaOpenFunc = os.OpenFile
+
+// ledgerRunMetaPath returns the run.meta path of a ledger run folder.
+func ledgerRunMetaPath(root, runID string) string {
+	return filepath.Join(ledgerDir(root, runID), ledgerRunMetaFile)
+}
+
+// ledgerShipRunID returns the run id of the ship state of branch when its
+// review step is in_progress. It returns "" when the ship state is missing,
+// cannot be read, or has a review step in any other status.
+func ledgerShipRunID(root, branch string) string {
+	st, err := state.Find(root, "ship", branch)
+	if err != nil || st == nil {
+		return ""
+	}
+	step := shipFindStepEntry(st.Data, "review")
+	if step == nil {
+		return ""
+	}
+	if status, _ := step["status"].(string); status != StepInProgress {
+		return ""
+	}
+	return state.RunID(st)
+}
+
+// ledgerWriteRunMeta writes runs/ledger/<runID>/run.meta once. It creates the
+// file with O_EXCL: when the file exists, it writes nothing and returns nil.
+// The branch is the branch argument when set, else the current branch of
+// workDir. When no branch can be resolved, the meta holds an empty branch.
+// The meta holds shipRunId only when ledgerShipRunID finds one. The caller
+// creates the ledger run folder first.
+func ledgerWriteRunMeta(root, workDir, branch, runID string, now time.Time) error {
+	path := ledgerRunMetaPath(root, runID)
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	}
+
+	resolved, err := execResolveBranch(branch, workDir)
+	if err != nil {
+		resolved = ""
+	}
+	meta := reviewRunMeta{
+		Branch:    resolved,
+		StartedAt: now.UTC().Format(time.RFC3339),
+	}
+	if resolved != "" {
+		meta.ShipRunID = ledgerShipRunID(root, resolved)
+	}
+	data, err := json.Marshal(meta)
+	if err != nil {
+		return err
+	}
+
+	f, err := ledgerMetaOpenFunc(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return nil // a parallel check-in wrote the file first
+		}
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path) // a partial file would block every later write
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(path)
+		return err
+	}
+	return nil
+}
+
+// execActionLedgerCheckin registers a worker as active. On the first
+// check-in of a run it also writes run.meta; a failure of that write becomes
+// a warning in the result and does not fail the check-in.
+func execActionLedgerCheckin(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	if in.RunID == "" {
 		return nil, &mcpserver.DomainError{Msg: "runId is required", Suggestion: "Pass runId (the execution run identifier) in the request."}
 	}
@@ -6036,10 +6127,18 @@ func execActionLedgerCheckin(root string, in ExecuteStateIn, now func() time.Tim
 		}
 	}
 
+	checkinAt := now()
+	var warnings []string
+	if err := ledgerWriteRunMeta(root, workDir, in.Branch, in.RunID, checkinAt); err != nil {
+		warnings = append(warnings, fmt.Sprintf(
+			"run.meta not written at %s: %s. The dashboard cannot join this review to its ship run. Fix the cause. The next review run writes a new run.meta.",
+			ledgerRunMetaPath(root, in.RunID), err.Error()))
+	}
+
 	fp := ledgerFilePath(root, in.RunID, in.WorkerID)
 	data := map[string]any{
 		"status":    "active",
-		"checkinAt": now().UTC().Format(time.RFC3339),
+		"checkinAt": checkinAt.UTC().Format(time.RFC3339),
 	}
 	if in.StepID != "" {
 		data["stepId"] = in.StepID
@@ -6060,6 +6159,9 @@ func execActionLedgerCheckin(root string, in ExecuteStateIn, now func() time.Tim
 	}
 	if in.StepID != "" {
 		confirmation["stepId"] = in.StepID
+	}
+	if len(warnings) > 0 {
+		confirmation["warnings"] = warnings
 	}
 	return confirmation, nil
 }

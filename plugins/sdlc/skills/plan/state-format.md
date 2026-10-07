@@ -1,6 +1,6 @@
 # Plan-SDLC State File Format
 
-The `plan` skill writes a JSON marker file to `.sdlc-v2/runs/` at the start of each planning invocation. This file records integrity checkpoints so the stop hook can verify that all quality gates were reached before the plan was presented. It also records the run's creation intent (for resuming after a context compaction) and its current step checkpoint. A separate per-run evidence directory (`<runId>.evidence/`) holds discovery/lane/lens findings — see [Evidence Directory](#evidence-directory) below.
+The `plan` skill writes a JSON marker file to `.sdlc-v2/runs/` at the start of each planning invocation. This file records integrity checkpoints so the stop hook can verify that all quality gates were reached before the plan was presented. It also records the run's creation intent (for resuming after a context compaction), its current step checkpoint, and one row for each plan review round. A separate per-run evidence directory (`<runId>.evidence/`) holds discovery/lane/lens findings — see [Evidence Directory](#evidence-directory) below.
 
 ---
 
@@ -72,6 +72,7 @@ State files are always written to the **main working tree's** `.sdlc-v2/runs/`, 
 | `planFilePath`  | string \| null   | Absolute path to the written plan file. Used by the Stop hook to stat the file for non-empty content verification. `null` until the `planFile` marker is written. |
 | `creationIntent`| object           | The prompt and routing decision that started this run, plus flags needed to resume it. Written once by `plan_prepare` when the run is created; never written by `plan_mark`. See [creationIntent](#creationintent) below. |
 | `checkpoint`    | object \| absent | The plan run's current step/iteration/expected-writers, replaced on every `plan_mark({marker: "checkpoint"})` call. Absent until the first checkpoint marker is written. See [checkpoint](#checkpoint) below. |
+| `reviewRounds`  | array \| absent  | One row per Step 5 review round: `round`, `mergedStatus`, `found`, `fixed`, `lenses`. Upserted by `plan_mark({marker: "review-round"})`. Read by the dashboard. See [reviewRounds](#reviewrounds) below. |
 
 ---
 
@@ -120,11 +121,58 @@ Written by `plan_mark({ marker: "checkpoint", data: {...} })`. Unlike the `planI
 | Field             | Type     | Description                                                                 |
 |-------------------|----------|-------------------------------------------------------------------------------|
 | `step`            | string   | The SKILL.md step this checkpoint reflects. One of `0`, `1`, `2`, `3`, `4`, `5`, `6`, `6.5`, `6.6`, `7`. |
-| `iteration`       | integer  | Iteration counter (used by the Step 5/6 review loop, which can repeat up to 3 times). |
+| `iteration`       | integer  | Iteration counter (used by the Step 5/6 review loop, which can repeat up to 5 times). |
 | `expectedWriters` | string[] | Writer IDs the run is currently waiting on (e.g. dispatched lane or lens subagent IDs). Max 32 entries. |
 | `updatedAt`       | string   | ISO 8601 UTC timestamp stamped by `plan_mark` at write time (not caller-supplied). |
 
 The resume flow (`plan_prepare({resume: true})`) reads `checkpoint.step` to tell the orchestrator where to pick back up, and `checkpoint.expectedWriters` together with `plan_support({action: "evidence_digest"})` to tell it which writers it is still waiting on.
+
+---
+
+## reviewRounds
+
+Written by `plan_mark({ marker: "review-round", data: {...} })`, once for each Step 5 review round, at every exit of the round (Step 5 Approved, Step 6 after the fixes, and the last round that goes to the user). `reviewRounds` lives in its own top-level state key and never participates in the Stop hook's four-marker check. Unlike `criticalDecisions`, it is **not appended to**: each call **upserts** one row by `round`. A call replaces the row with the same `round`, or inserts a new row. A resumed run can send the same round twice, so a replay is safe. The list stays sorted by `round`. The key is absent until the first `review-round` call. The dashboard reads the rows. They are display data only.
+
+Caps: a state file holds at most **20 rounds**. Each round holds at most **32 lenses**. A call over a cap returns an error and leaves the state file unchanged.
+
+Each row of `reviewRounds` (all five keys are required, and no other key is allowed):
+
+| Field          | Type     | Description                                                                 |
+|----------------|----------|-------------------------------------------------------------------------------|
+| `round`        | integer  | The Step 5 iteration counter after its increment: the number of completed rounds, including this one (>= 1). Not the in-progress `<iteration>` of the checkpoint. |
+| `mergedStatus` | string   | The `mergedStatus` of the round's `merge_results` call. Exactly `Approved` or `Issues Found`. |
+| `found`        | integer  | Blocking issues found in the round (>= 0): the `blockingCount` of the `merge_results` call. |
+| `fixed`        | integer  | Blocking issues the round fixed (>= 0). `0` for an Approved round and for a last round that exits at Step 5 to the user. |
+| `lenses`       | object[] | One `{ name, verdict }` for each lens (max 32). `name`: letters, digits, `.`, `_`, `-` (max 64). `verdict`: exactly `Approved` or `Issues Found`. A single reviewer (<5 tasks) gives `[{ "name": "all", "verdict": "<mergedStatus>" }]`. Lanes are not listed. |
+
+```json
+{
+  "reviewRounds": [
+    {
+      "round": 1,
+      "mergedStatus": "Issues Found",
+      "found": 4,
+      "fixed": 4,
+      "lenses": [
+        { "name": "architecture", "verdict": "Approved" },
+        { "name": "requirements", "verdict": "Issues Found" },
+        { "name": "risk", "verdict": "Issues Found" }
+      ]
+    },
+    {
+      "round": 2,
+      "mergedStatus": "Approved",
+      "found": 0,
+      "fixed": 0,
+      "lenses": [
+        { "name": "architecture", "verdict": "Approved" },
+        { "name": "requirements", "verdict": "Approved" },
+        { "name": "risk", "verdict": "Approved" }
+      ]
+    }
+  ]
+}
+```
 
 ---
 

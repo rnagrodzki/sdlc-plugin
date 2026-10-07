@@ -274,7 +274,7 @@ func TestDashboardSnapshot_Progress(t *testing.T) {
 			"checkpoint":    map[string]any{"step": "6.5"},
 		}, fresh)
 		got := dashOne(t, root).Progress
-		want := DashboardProgress{Done: 7, Total: 10, Current: "step 6.5", Label: "step 8 of 10"}
+		want := DashboardProgress{Done: 4, Total: 5, Current: "finalize", Label: "finalize (5 of 5)"}
 		if got != want {
 			t.Errorf("progress = %+v, want %+v", got, want)
 		}
@@ -351,8 +351,7 @@ func TestDashboardSnapshot_StepStatus(t *testing.T) {
 			"checkpoint":    map[string]any{"step": "2"},
 		}, fresh)
 		got := dashStepStatuses(dashOne(t, root))
-		want := []string{StepCompleted, StepCompleted, StepInProgress, StepPending, StepPending,
-			StepPending, StepPending, StepPending, StepPending, StepPending}
+		want := []string{StepCompleted, StepCompleted, StepInProgress, StepPending, StepPending}
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("steps = %v, want %v", got, want)
 		}

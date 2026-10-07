@@ -726,6 +726,334 @@ func TestShipState_Fail_BackwardCompatNoIssuesArray(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// fail history row — shipHistoryAppendFunc and shipStateWriteFunc seams
+// ---------------------------------------------------------------------------
+
+// useShipHistoryAppend replaces shipHistoryAppendFunc for one test and
+// restores it afterwards. tools tests never call t.Parallel(), so swapping a
+// package var is safe here.
+func useShipHistoryAppend(t *testing.T, fn func(root string, rec history.RunRecord) error) {
+	t.Helper()
+	prev := shipHistoryAppendFunc
+	shipHistoryAppendFunc = fn
+	t.Cleanup(func() { shipHistoryAppendFunc = prev })
+}
+
+// useShipStateWrite replaces shipStateWriteFunc for one test and restores it
+// afterwards.
+func useShipStateWrite(t *testing.T, fn func(st *state.State) error) {
+	t.Helper()
+	prev := shipStateWriteFunc
+	shipStateWriteFunc = fn
+	t.Cleanup(func() { shipStateWriteFunc = prev })
+}
+
+// recordShipHistoryAppends points shipHistoryAppendFunc at a recorder that
+// returns appendErr (nil for success) and returns the records it saw.
+func recordShipHistoryAppends(t *testing.T, appendErr error) *[]history.RunRecord {
+	t.Helper()
+	var rows []history.RunRecord
+	useShipHistoryAppend(t, func(_ string, rec history.RunRecord) error {
+		rows = append(rows, rec)
+		return appendErr
+	})
+	return &rows
+}
+
+// shipFail runs the fail action for step on branch at the given instant.
+func shipFail(dir, branch, step string, at time.Time) (any, error) {
+	return shipState(dir, dir, ShipStateIn{
+		Action: "fail",
+		Step:   step,
+		Detail: map[string]any{"branch": branch, "error": "boom"},
+	}, fixedNow(at))
+}
+
+// TestShipState_Fail_HistoryRow_FirstFailAppendsOne pins the failure row's
+// content and that the flag reaches disk. init stamps startedAt
+// 2026-01-01T00:00:00Z, so a fail 30 minutes later gives 1800000 ms.
+func TestShipState_Fail_HistoryRow_FirstFailAppendsOne(t *testing.T) {
+	dir, path := deferFixture(t, "feat/fail-row")
+	rows := recordShipHistoryAppends(t, nil)
+	at := time.Date(2026, 1, 1, 0, 30, 0, 0, time.UTC)
+
+	out, err := shipFail(dir, "feat/fail-row", "execute", at)
+	if err != nil {
+		t.Fatalf("fail: %v", err)
+	}
+	n, ok := out.(ShipStepNarrationOut)
+	if !ok {
+		t.Fatalf("output = %#v, want ShipStepNarrationOut", out)
+	}
+	if len(n.Warnings) != 0 {
+		t.Errorf("warnings = %v, want none", n.Warnings)
+	}
+
+	want := history.RunRecord{
+		Timestamp:  "2026-01-01T00:30:00Z",
+		Skill:      "ship",
+		Branch:     "feat/fail-row",
+		Outcome:    "failure",
+		DurationMs: 1800000,
+		StartedAt:  "2026-01-01T00:00:00Z",
+	}
+	if len(*rows) != 1 || !reflect.DeepEqual((*rows)[0], want) {
+		t.Fatalf("appended rows = %+v, want exactly [%+v]", *rows, want)
+	}
+
+	data := readStateData(t, path)
+	if data["historyFailureRecorded"] != true {
+		t.Errorf("historyFailureRecorded = %v, want true", data["historyFailureRecorded"])
+	}
+	if step := findStepMap(t, data, "execute"); step["status"] != "failed" {
+		t.Errorf("step status = %v, want failed", step["status"])
+	}
+}
+
+// TestShipState_Fail_HistoryRow_WritesRunsJSONL runs fail through the real
+// FileWriter (the production seam value) to prove the row lands in runs.jsonl.
+func TestShipState_Fail_HistoryRow_WritesRunsJSONL(t *testing.T) {
+	dir, _ := deferFixture(t, "feat/fail-runs-file")
+
+	if _, err := shipFail(dir, "feat/fail-runs-file", "execute", time.Date(2026, 1, 1, 0, 30, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("fail: %v", err)
+	}
+
+	raw, err := os.ReadFile(history.NewFileWriter(historyDir(dir)).RunsPath())
+	if err != nil {
+		t.Fatalf("read runs.jsonl: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("runs.jsonl lines = %d, want 1: %q", len(lines), raw)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &got); err != nil {
+		t.Fatalf("unmarshal row: %v", err)
+	}
+	if got["skill"] != "ship" || got["outcome"] != "failure" || got["branch"] != "feat/fail-runs-file" ||
+		got["ts"] != "2026-01-01T00:30:00Z" || got["started_at"] != "2026-01-01T00:00:00Z" || got["duration_ms"] != float64(1800000) {
+		t.Errorf("row = %v, want the failure row for feat/fail-runs-file", got)
+	}
+}
+
+// TestShipState_Fail_HistoryRow_SecondFailAppendsNothing proves the flag stops
+// a second row when the same run fails again, on the same step or another.
+func TestShipState_Fail_HistoryRow_SecondFailAppendsNothing(t *testing.T) {
+	dir, path := deferFixture(t, "feat/fail-twice")
+	rows := recordShipHistoryAppends(t, nil)
+	at := time.Date(2026, 1, 1, 0, 30, 0, 0, time.UTC)
+
+	for _, step := range []string{"execute", "execute", "review"} {
+		if _, err := shipFail(dir, "feat/fail-twice", step, at); err != nil {
+			t.Fatalf("fail %s: %v", step, err)
+		}
+	}
+
+	if len(*rows) != 1 {
+		t.Errorf("appended rows = %d, want 1 for three fail calls in one run", len(*rows))
+	}
+	if readStateData(t, path)["historyFailureRecorded"] != true {
+		t.Error("historyFailureRecorded not true after the fails")
+	}
+}
+
+// TestShipState_Fail_HistoryRow_StateWriteFailure covers the first failure
+// point: the state write fails, so the flag is not persisted and no row
+// exists. A retry once the write works appends the one row.
+func TestShipState_Fail_HistoryRow_StateWriteFailure(t *testing.T) {
+	dir, path := deferFixture(t, "feat/fail-write")
+	rows := recordShipHistoryAppends(t, nil)
+	prevWrite := shipStateWriteFunc
+	useShipStateWrite(t, func(*state.State) error { return errors.New("no space left on device") })
+	at := time.Date(2026, 1, 1, 0, 30, 0, 0, time.UTC)
+
+	_, err := shipFail(dir, "feat/fail-write", "execute", at)
+	var infra *mcpserver.InfraError
+	if !errors.As(err, &infra) {
+		t.Fatalf("err = %v, want *mcpserver.InfraError", err)
+	}
+	if infra.Suggestion == "" {
+		t.Error("InfraError.Suggestion is empty, want a recovery hint")
+	}
+	if !strings.Contains(infra.Msg, "no space left on device") {
+		t.Errorf("InfraError.Msg = %q, want it to carry the write error", infra.Msg)
+	}
+
+	if len(*rows) != 0 {
+		t.Errorf("appended rows = %d after a state write failure, want 0", len(*rows))
+	}
+	data := readStateData(t, path)
+	if _, set := data["historyFailureRecorded"]; set {
+		t.Errorf("historyFailureRecorded = %v on disk, want absent after a failed write", data["historyFailureRecorded"])
+	}
+	if step := findStepMap(t, data, "execute"); step["status"] == "failed" {
+		t.Error("step status is failed on disk after a failed write, want unchanged")
+	}
+
+	// A retry with a working write appends the row: the failed attempt left no flag.
+	useShipStateWrite(t, prevWrite)
+	if _, err := shipFail(dir, "feat/fail-write", "execute", at); err != nil {
+		t.Fatalf("retry fail: %v", err)
+	}
+	if len(*rows) != 1 {
+		t.Errorf("appended rows after retry = %d, want 1", len(*rows))
+	}
+}
+
+// TestShipState_Fail_HistoryRow_AppendFailure covers the second failure
+// point: the append fails after the state write. The action still succeeds,
+// the step stays failed, the warning names the runs path, and a retry adds no
+// second row.
+func TestShipState_Fail_HistoryRow_AppendFailure(t *testing.T) {
+	dir, path := deferFixture(t, "feat/fail-append")
+	rows := recordShipHistoryAppends(t, errors.New("disk quota exceeded"))
+	at := time.Date(2026, 1, 1, 0, 30, 0, 0, time.UTC)
+
+	out, err := shipFail(dir, "feat/fail-append", "execute", at)
+	if err != nil {
+		t.Fatalf("fail must not return an error when the history append fails: %v", err)
+	}
+	n, ok := out.(ShipStepNarrationOut)
+	if !ok {
+		t.Fatalf("output = %#v, want ShipStepNarrationOut", out)
+	}
+	if len(n.Warnings) != 1 {
+		t.Fatalf("warnings = %v, want exactly 1", n.Warnings)
+	}
+	for _, want := range []string{paths.DataDir + "/history/runs.jsonl", "disk quota exceeded", "history_record", `"failure"`} {
+		if !strings.Contains(n.Warnings[0], want) {
+			t.Errorf("warning = %q, want it to contain %q", n.Warnings[0], want)
+		}
+	}
+
+	data := readStateData(t, path)
+	if step := findStepMap(t, data, "execute"); step["status"] != "failed" {
+		t.Errorf("step status = %v, want failed", step["status"])
+	}
+	if data["historyFailureRecorded"] != true {
+		t.Errorf("historyFailureRecorded = %v, want true so a retry adds no second row", data["historyFailureRecorded"])
+	}
+
+	out, err = shipFail(dir, "feat/fail-append", "execute", at)
+	if err != nil {
+		t.Fatalf("retry fail: %v", err)
+	}
+	if retry := out.(ShipStepNarrationOut); len(retry.Warnings) != 0 {
+		t.Errorf("retry warnings = %v, want none", retry.Warnings)
+	}
+	if len(*rows) != 1 {
+		t.Errorf("append attempts = %d, want 1 (the retry must not append)", len(*rows))
+	}
+}
+
+// TestShipFailDurationMs covers both branches of the duration helper.
+func TestShipFailDurationMs(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 30, 0, 0, time.UTC)
+	cases := []struct {
+		name      string
+		startedAt string
+		want      int64
+	}{
+		{"parses", "2026-01-01T00:00:00Z", 1800000},
+		{"empty", "", 0},
+		{"not a timestamp", "yesterday", 0},
+	}
+	for _, c := range cases {
+		if got := shipFailDurationMs(c.startedAt, now); got != c.want {
+			t.Errorf("%s: shipFailDurationMs(%q) = %d, want %d", c.name, c.startedAt, got, c.want)
+		}
+	}
+}
+
+// TestShipState_Fail_HistoryRow_UnparseableStartedAtGivesZeroDuration proves
+// the handler passes the state's startedAt through the helper: a state whose
+// startedAt does not parse still yields a row, with duration_ms 0.
+func TestShipState_Fail_HistoryRow_UnparseableStartedAtGivesZeroDuration(t *testing.T) {
+	dir, path := deferFixture(t, "feat/fail-bad-start")
+	rows := recordShipHistoryAppends(t, nil)
+
+	data := readStateData(t, path)
+	data["startedAt"] = "not-a-timestamp"
+	raw, err := json.Marshal(data)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+
+	if _, err := shipFail(dir, "feat/fail-bad-start", "execute", time.Date(2026, 1, 1, 0, 30, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("fail: %v", err)
+	}
+	if len(*rows) != 1 || (*rows)[0].DurationMs != 0 || (*rows)[0].StartedAt != "not-a-timestamp" {
+		t.Errorf("rows = %+v, want one row with duration_ms 0", *rows)
+	}
+}
+
+// TestShipStateSchema_HistoryFailureRecorded proves the published schema
+// accepts a state with and without the flag, rejects a non-boolean flag, and
+// accepts the state file the fail action actually writes.
+func TestShipStateSchema_HistoryFailureRecorded(t *testing.T) {
+	schemaPath, err := filepath.Abs(filepath.Join("..", "..", "plugins", "sdlc", "schemas", "ship-state.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sch, err := jsonschema.NewCompiler().Compile(schemaPath)
+	if err != nil {
+		t.Fatalf("compile schema: %v", err)
+	}
+
+	validate := func(t *testing.T, doc map[string]any) error {
+		t.Helper()
+		raw, err := json.Marshal(doc)
+		if err != nil {
+			t.Fatalf("marshal doc: %v", err)
+		}
+		inst, err := jsonschema.UnmarshalJSON(strings.NewReader(string(raw)))
+		if err != nil {
+			t.Fatalf("unmarshal doc for schema validation: %v", err)
+		}
+		return sch.Validate(inst)
+	}
+	base := func(extra map[string]any) map[string]any {
+		doc := map[string]any{
+			"version":   float64(1),
+			"startedAt": "2026-03-01T12:00:00Z",
+			"branch":    "feat/schema-test",
+			"flags":     map[string]any{},
+			"steps":     []any{map[string]any{"name": "review", "status": "failed"}},
+		}
+		for k, v := range extra {
+			doc[k] = v
+		}
+		return doc
+	}
+
+	if err := validate(t, base(nil)); err != nil {
+		t.Errorf("state without the flag: want accepted, got %v", err)
+	}
+	for _, v := range []bool{true, false} {
+		if err := validate(t, base(map[string]any{"historyFailureRecorded": v})); err != nil {
+			t.Errorf("historyFailureRecorded=%v: want accepted, got %v", v, err)
+		}
+	}
+	if err := validate(t, base(map[string]any{"historyFailureRecorded": "yes"})); err == nil {
+		t.Error(`historyFailureRecorded="yes": want schema rejection, got nil`)
+	}
+
+	// The state file fail writes must validate, flag included.
+	dir, path := deferFixture(t, "feat/schema-fail")
+	recordShipHistoryAppends(t, nil)
+	if _, err := shipFail(dir, "feat/schema-fail", "execute", time.Date(2026, 1, 1, 0, 30, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("fail: %v", err)
+	}
+	if err := validate(t, readStateData(t, path)); err != nil {
+		t.Errorf("state file written by fail: schema rejected it: %v", err)
+	}
+}
+
 func TestShipState_Decide(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)

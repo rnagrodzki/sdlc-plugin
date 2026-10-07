@@ -31,6 +31,7 @@ Managed by the shared `internal/state` package (the same one `execute_state`, `p
   "deferredFindings": [ ... ],
   "issues": [ ... ],
   "lastFailedStep": null,
+  "historyFailureRecorded": true,
   "sideEffects": { ... },
   "healing": { ... },
   "pipelineStatus": "completed",
@@ -51,6 +52,7 @@ Managed by the shared `internal/state` package (the same one `execute_state`, `p
 | `deferredFindings` | array | Appended by `ship_state{action:"defer"}`. |
 | `issues` | array | Structured issue accumulator, appended by `ship_state{action:"fail"}`. See "Issues and `lastFailedStep`" below. |
 | `lastFailedStep` | string \| null | Name of the most recent step passed to `fail`. |
+| `historyFailureRecorded` | boolean | Absent until the first `fail` of the run. `ship_state{action:"fail"}` sets it to `true` when it appends the failure row to `runs.jsonl`. It stops a second row for the same run. See "Issues and `lastFailedStep`" below. |
 | `sideEffects` | object | Idempotency journal keyed by step name (`<step>#<n>` for a repeated name). Written by `ship_verify_side_effect`; consulted by `begin-step`'s `alreadyDone` flag. See below. |
 | `healing` | object | Absent until the first `ship_state{action:"healing_record"}` call. Self-healing ledger (`reviewTotal`, `fixed[]`, `hardened[]`). See "`data.healing`" below. |
 | `pipelineStatus` | string | Absent until the pipeline is stamped terminal. Set to `"completed"` by `cleanup`/`cleanup-pipeline` — see "Lifecycle: Cleanup." |
@@ -203,6 +205,19 @@ Ship's review routing defers each finding below `flags.reviewThreshold` this way
 ```
 
 `fail` always writes `severity:"error"`, `category:"ship-fail"`, and `summary:"Step <name> failed"`; `detail` is `detail.error` as text, empty when it was not passed. In the shared issue shape, `wave`, `step`, `taskId`, and `detail` are optional; `severity`, `category`, `summary`, and `timestamp` are always present. This mirrors `execute-state.schema.json`'s own `issues[]` shape.
+
+The first `fail` of a run also appends one row to `.sdlc-v2/history/runs.jsonl`, so a run that stops before cleanup still has a history row. The row has `skill:"ship"`, `outcome:"failure"`, the run's `branch`, `ts` (the time of the `fail` call), `started_at` (the state's `startedAt`), and `duration_ms` (`started_at` to `ts`; `0` when `startedAt` does not parse):
+
+```json
+{"ts":"2026-10-07T12:00:00Z","skill":"ship","branch":"feat/x","outcome":"failure","duration_ms":1800000,"started_at":"2026-10-07T11:30:00Z"}
+```
+
+`fail` sets `historyFailureRecorded:true` and writes the state file before it appends the row. A later `fail` in the same run sees the flag and appends nothing. Two failure points follow from this order:
+
+| Failure | Effect |
+|---|---|
+| The state write fails | `fail` returns an `InfraError`. The flag is not saved and no row exists, so a retry is safe. |
+| The row append fails | The flag is saved. `fail` still succeeds and the step stays `failed`. The response carries `warnings` that name `.sdlc-v2/history/runs.jsonl`. A retry adds no row. To add the row, call `ship_state{action:"history_record", detail:{skill:"ship", outcome:"failure"}}`. |
 
 `complete-step`'s response also carries `issueCount` (total issues recorded so far) and `issueHighlights` (up to a handful of the most recent `"[severity] summary"` strings) — read those off the tool's response directly rather than re-deriving them from `issues[]` yourself.
 

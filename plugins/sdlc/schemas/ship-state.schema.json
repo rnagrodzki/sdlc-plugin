@@ -187,6 +187,10 @@
       ],
       "description": "Name of the most recent failed step. Set by fail (R-TASK-17)."
     },
+    "historyFailureRecorded": {
+      "type": "boolean",
+      "description": "Set by ship_state fail when it appends the failure row to runs.jsonl. Stops a second row for the same run."
+    },
     "issues": {
       "type": "array",
       "description": "Structured issue accumulator appended by fail (R-TASK-17). Mirrors deferredFindings above and execute-state.schema.json's issues[].",

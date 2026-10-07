@@ -311,6 +311,8 @@ contrast of 4.5:1 or more. No pastel fills.
 - The Step 5 review loop runs up to **5 rounds** (`plan_prepare`'s
   `reviewLoop.maxRounds`). After round 5, if blocking issues remain, the
   skill asks you with `AskUserQuestion` instead of starting a 6th round.
+  Each review round is recorded with `plan_mark` `review-round` for the
+  dashboard. A failed record call does not stop the skill.
 
 Sample `styleReport` (abbreviated; writingStandard=ste, visualDensity=high):
 
