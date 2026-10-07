@@ -110,8 +110,8 @@ type DashboardStep struct {
 	Detail *DashboardStepDetail `json:"detail,omitempty"`
 }
 
-// DashboardIssue is one problem of a pipeline. Source is "step", "wave", or
-// "review".
+// DashboardIssue is one problem of a pipeline. Source is "step", "wave",
+// "review", "state", "task", or "pipeline".
 type DashboardIssue struct {
 	Source   string `json:"source"`
 	Severity string `json:"severity"`
@@ -772,22 +772,6 @@ func dashboardParseFindings(raw json.RawMessage) []dashboardFinding {
 		return nil
 	}
 	return out
-}
-
-// dashboardFindingText formats a finding as "<file>:<line> <rationale>".
-func dashboardFindingText(f dashboardFinding) string {
-	loc := f.File
-	switch line := f.Line.(type) {
-	case float64:
-		if line > 0 {
-			loc = fmt.Sprintf("%s:%d", f.File, int(line))
-		}
-	case string:
-		if line != "" {
-			loc = f.File + ":" + line
-		}
-	}
-	return strings.TrimSpace(loc + " " + f.Rationale)
 }
 
 // dashboardStepLabel returns "step <n> of <total>" while a current step is
