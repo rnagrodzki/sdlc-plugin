@@ -312,7 +312,10 @@ contrast of 4.5:1 or more. No pastel fills.
   `reviewLoop.maxRounds`). After round 5, if blocking issues remain, the
   skill asks you with `AskUserQuestion` instead of starting a 6th round.
   Each review round is recorded with `plan_mark` `review-round` for the
-  dashboard. A failed record call does not stop the skill.
+  dashboard. A failed record call does not stop the skill. A plan with fewer
+  than 5 tasks uses one reviewer. The skill still sends the output of that
+  reviewer through `merge_results` as one lens named `all`, so the record has
+  the merged status and the blocking count.
 
 Sample `styleReport` (abbreviated; writingStandard=ste, visualDensity=high):
 

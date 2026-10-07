@@ -842,7 +842,7 @@ Call `plan_support({action: "merge_results", lensResults: [...]})`. Process the 
 
 **Iteration counter**: increment by 1 only after the await barrier above is satisfied (exactly N lens results collected, N = lenses dispatched); never increment on partial or zero returns (R-orchestrator-await, R-c1, #487). The counter starts at 0 and counts completed Step 5 rounds. Writer IDs and checkpoints use the round in progress, `<iteration>` = counter + 1: the first Step 3 lanes and the first Step 5 lenses are `r1`; the first merged re-dispatch is `r2`. Checkpoints in Steps 0–2 use `iteration: 0`. On resume, set the counter to `checkpoint.iteration - 1` (never below 0).
 
-**For plans with <5 tasks — Single reviewer (status quo):** Dispatch one reviewer with `{LENS}=all` using `./plan-reviewer-prompt.md` directly (same model acceptable). Status quo behavior preserved. Append the run-context footer with `{WRITER_ID}` = `reviewer-r<n>` (`<n>` = the Step 5 iteration).
+**For plans with <5 tasks — Single reviewer (status quo):** Dispatch one reviewer with `{LENS}=all` using `./plan-reviewer-prompt.md` directly (same model acceptable). Status quo behavior preserved. Append the run-context footer with `{WRITER_ID}` = `reviewer-r<n>` (`<n>` = the Step 5 iteration). Build one `lensResults[]` entry from its output with the table above (`name` = `all`) and call `plan_support({action: "merge_results", lensResults: [<that entry>]})`. The Round record in Step 6 reads `mergedStatus` and `blockingCount` from this call.
 
 **Gate B — Verification Scorecard (implements R40, R42, R44 — Fixes #445):**
 
