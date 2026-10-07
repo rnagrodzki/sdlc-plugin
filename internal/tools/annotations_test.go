@@ -145,7 +145,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		reason:     "no writes at all: configmigrate.Verify, setupmeta.Sections, gitx.DefaultBranch, git remote get-url, ciScriptDrift are read-only; the managed-section os.WriteFile belongs to setup_write_sections/setup_init, not setupPrepare",
 	},
 
-	// WRITER (15 rows)
+	// WRITER (16 rows)
 	"commit_apply": {
 		title:       "Create a git commit",
 		readOnly:    false,
@@ -266,6 +266,14 @@ var toolAnnotations = map[string]annotationPolicy{
 		openWorld:   false,
 		reason:      "config.WriteSection replaces a section wholesale; auto-triggers scaffoldCI on version",
 	},
+	"dashboard": {
+		title:       "Start, check, or stop the local dashboard",
+		readOnly:    false,
+		destructive: false,
+		idempotent:  true,
+		openWorld:   false,
+		reason:      "spawns a detached dashboard server process (dashboard.Ensure) and writes only the shared user cache dir (dashboard.Dir(): roots/*.json, server.json, server.log); never touches a git-tracked file. Not destructive: stop ends a process this plugin itself started, and ensure/status/stop all converge on the same recorded state when repeated",
+	},
 }
 
 // TestEveryToolMatchesItsAnnotationDecision verifies that every registered tool
@@ -299,6 +307,7 @@ func TestEveryToolMatchesItsAnnotationDecision(t *testing.T) {
 	RegisterShipTools(s)
 	RegisterPlanSupportTools(s)
 	RegisterLearningsTools(s)
+	RegisterDashboardTools(s)
 
 	ctx := context.Background()
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
