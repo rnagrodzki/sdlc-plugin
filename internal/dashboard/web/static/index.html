@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- The server fills in the token placeholder below at each GET /. Keep it the only placeholder in this file. -->
+  <meta name="sdlc-token" content="{{SDLC_TOKEN}}">
+  <title>sdlc signal box</title>
+  <link rel="stylesheet" href="static/app.css">
+  <script src="static/view.js" defer></script>
+  <script src="static/app.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <h1 class="brand">sdlc signal box</h1>
+    <p class="conn" id="conn" data-state="connecting" role="status" aria-live="polite">
+      <span class="conn-lamp" aria-hidden="true"></span>
+      <span class="conn-live">live</span>
+      <span id="conn-text"></span>
+    </p>
+    <p class="totals" id="totals"></p>
+    <button type="button" class="stop-btn" id="stop-btn">Stop server</button>
+  </header>
+
+  <main class="layout">
+    <aside class="rail" aria-label="Repos and pipelines">
+      <nav id="groups" aria-label="Pipelines by repo"></nav>
+      <details class="extra" id="learnings">
+        <summary><span class="sign">Learnings today</span> <span class="count sign" id="learnings-count">(0)</span></summary>
+        <ul class="extra-list" id="learnings-list"></ul>
+      </details>
+      <details class="extra" id="deferred">
+        <summary><span class="sign">Open deferred</span> <span class="count sign" id="deferred-count">(0)</span></summary>
+        <ul class="extra-list" id="deferred-list"></ul>
+      </details>
+    </aside>
+
+    <section class="detail" id="detail" aria-live="polite">
+      <p class="empty" id="empty" hidden></p>
+      <p class="hint" id="detail-hint" hidden>Pick a pipeline in the list to see its steps, issues, and sessions.</p>
+      <div id="detail-body"></div>
+    </section>
+  </main>
+
+  <dialog class="stop-dialog" id="stop-dialog" aria-labelledby="stop-dialog-text">
+    <p id="stop-dialog-text">Stop the dashboard server? Every open dashboard page loses its connection. Run /sdlc:dashboard to start it again.</p>
+    <div class="dialog-actions">
+      <button type="button" class="stop-confirm" id="stop-confirm">Stop server</button>
+      <button type="button" id="stop-cancel" autofocus>Cancel</button>
+    </div>
+  </dialog>
+</body>
+</html>
