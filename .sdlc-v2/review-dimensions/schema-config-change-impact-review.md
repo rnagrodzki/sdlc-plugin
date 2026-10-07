@@ -22,6 +22,15 @@ triggers:
 - CI workflow files (`.github/workflows/*.yml`) and doc files (`docs/**`,
   `README.md`) that reference schema/config field names or paths are also
   secondary readers — check they stay in sync with a schema/config change.
+- Config section registration: when a new section ID is added to
+  `LocalSections` (`internal/config/config.go`) or any other config section
+  list, verify one of two outcomes. Either the section is registered in
+  `setupmeta.Sections()` (`internal/setupmeta/sections.go`) so `/setup` can
+  discover it, or its user documentation (`docs/`, a SKILL.md, or the template
+  comment) states that it is hand-edited only and excluded from `/setup`.
+  Some sections (e.g. `executePrefs`, `workspace`) are deliberately absent from
+  `setupmeta.Sections()`, so absence alone is not a defect; an undocumented
+  omission is.
 - When any Go struct serialized to JSON (especially `*In`/`*Out` structs
   for MCP tools) gains new exported fields, the corresponding JSON schema
   under `plugins/sdlc/schemas/` MUST be updated in the same change to
