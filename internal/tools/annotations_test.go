@@ -131,11 +131,12 @@ var toolAnnotations = map[string]annotationPolicy{
 		reason:     "only writes are state.Write and guardrails.md under gitignored .sdlc-v2/runs/; a call without resume starts a new run and prunes the old one, so it is not idempotent",
 	},
 	"review_prepare": {
-		title:      "Prepare code review payload",
-		readOnly:   true,
-		idempotent: true,
-		openWorld:  true,
-		reason:     "every write lands in os.MkdirTemp(\"\", \"sdlc-review-\") — per-dimension .diff/.slice.json and manifest.json; no input field redirects that path; diffs come from local git diff; saveReview mode writes only to gitignored .sdlc-v2/reviews/; open-PR lookup calls ghx.PRForBranch (GitHub API)",
+		title:       "Prepare code review payload",
+		readOnly:    false,
+		destructive: false,
+		idempotent:  false,
+		openWorld:   true,
+		reason:      "writes gitignored .sdlc-v2/runs/ledger/<run_id>/run.meta (the review run plan) when the manifest has at least one wave and dryRun is false; each call mints a new run_id, so it is not idempotent; it deletes nothing; manifest and per-dimension .diff/.slice.json land in os.MkdirTemp(\"\", \"sdlc-review-\"); saveReview mode writes only to gitignored .sdlc-v2/reviews/; open-PR lookup calls ghx.PRForBranch (GitHub API)",
 	},
 	"setup_prepare": {
 		title:      "Prepare SDLC setup context",
@@ -508,14 +509,6 @@ func TestReadOnlyToolsWriteNothingTracked(t *testing.T) {
 				_, _ = runPlanPrepare(t, root, root, PlanPrepareIn{SkipConfigCheck: true})
 			case "setup_prepare":
 				_, _ = setupPrepare(root, SetupPrepareIn{})
-			case "review_prepare":
-				// Writes only into os.MkdirTemp("", "sdlc-review-"), never
-				// into root — so the fixture tree must stay clean even when
-				// the call succeeds and produces a full manifest.
-				_, _ = reviewPrepare(root, root, ReviewPrepareIn{SkipConfigCheck: true})
-				// saveReview mode writes to gitignored .sdlc-v2/reviews/ —
-				// must also leave the tracked tree clean.
-				_, _ = reviewPrepare(root, root, ReviewPrepareIn{SaveReview: true, Content: "test review comment"})
 			case "received_review_verify":
 				// writeReplyBodies mode writes to gitignored
 				// .sdlc-v2/state/artifacts/ — no GitHub API call involved.

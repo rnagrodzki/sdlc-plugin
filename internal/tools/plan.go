@@ -1496,6 +1496,35 @@ func planStateReadPath(runsDir, branch string) string {
 	return filepath.Join(runsDir, best)
 }
 
+// planCountsWrite writes the plan state file after planPrepareCore adds
+// guardrailCounts. It is a seam over state.Write, used only at that call
+// site, so a test can fail this second write while the first write (run
+// creation in newPlanRun or selectPlanRun) succeeds. Production code never
+// reassigns it.
+var planCountsWrite = state.Write
+
+// countGuardrails builds the plan state "guardrailCounts" value: the number
+// of guardrails and how many have severity "error" and "warning". A
+// guardrail without a string severity counts as "error", the same default
+// the harden surface loader applies. A string severity other than "error"
+// or "warning" counts in "total" only.
+func countGuardrails(guardrails []map[string]any) map[string]any {
+	errCount, warnCount := 0, 0
+	for _, g := range guardrails {
+		switch stringOrDefault(g["severity"], "error") {
+		case "error":
+			errCount++
+		case "warning":
+			warnCount++
+		}
+	}
+	return map[string]any{
+		"total":   len(guardrails),
+		"error":   errCount,
+		"warning": warnCount,
+	}
+}
+
 // renderGuardrailsMarkdown renders guardrails as the guardrails.md body.
 // Newlines in id and severity become spaces; every description line is
 // prefixed with "> ".
@@ -1684,6 +1713,19 @@ func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepar
 	guardrails, guardErr := loadGuardrails(mainRoot)
 	if guardErr != "" {
 		errs = append(errs, guardErr)
+	}
+
+	// 3a. Guardrail counts for the dashboard plan setup tile. Nothing is
+	// written on a resume call (the state file stays byte-identical), when
+	// the run has no named branch (run.st is nil), or when loadGuardrails
+	// returned an error (the call adds no key and leaves a key from an
+	// earlier call as it is). loadGuardrails returns an empty list with no
+	// error when plan.guardrails is not an array, so that case stores zeros.
+	if run.st != nil && !in.Resume && guardErr == "" {
+		run.st.Data["guardrailCounts"] = countGuardrails(guardrails)
+		if err := planCountsWrite(run.st); err != nil {
+			return PlanPrepareOut{}, planStateWriteError(run.st.Path, filepath.Join(mainRoot, paths.DataDir, paths.RunsSubdir), err)
+		}
 	}
 
 	// 3b. Plan style (personal preference) and plan tasks (team contract).

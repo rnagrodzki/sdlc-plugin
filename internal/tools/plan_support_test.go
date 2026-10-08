@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -355,6 +356,87 @@ func TestPlanMergeResults_IssueDedup(t *testing.T) {
 	}
 	if out.AllIssues[0].Source != "lane-a" {
 		t.Errorf("AllIssues[0].Source = %q, want %q (first occurrence wins)", out.AllIssues[0].Source, "lane-a")
+	}
+}
+
+// TestPlanMergeResults_StableFindingIDs verifies that every issue in
+// AllIssues carries "f-" plus the first 8 hex chars of
+// sha256(gateId|lower(trim(summary))), that the ID is stable across calls and
+// across letter case and outer spaces, and that an ID sent in the input is
+// ignored. The two literals were computed with `shasum -a 256` on the key
+// strings "G5|missing acceptance criteria for g5" and "G7|other finding".
+func TestPlanMergeResults_StableFindingIDs(t *testing.T) {
+	idPattern := regexp.MustCompile(`^f-[0-9a-f]{8}$`)
+
+	first, err := mergeResults(PlanSupportIn{
+		LaneResults: []LaneResult{
+			{Name: "lane-a", Status: "pass", GateIDs: []string{"G5"}, Issues: []Issue{
+				{GateID: "G5", Severity: "blocking", Summary: "Missing acceptance criteria for G5"},
+			}},
+		},
+		LensResults: []LensResult{
+			{Name: "lens-a", Status: "approved", Issues: []Issue{
+				{GateID: "G7", Severity: "advisory", Summary: "Other finding"},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("mergeResults: %v", err)
+	}
+	if len(first.AllIssues) != 2 {
+		t.Fatalf("AllIssues = %+v, want 2 issues", first.AllIssues)
+	}
+	for _, iss := range first.AllIssues {
+		if !idPattern.MatchString(iss.ID) {
+			t.Errorf("issue %q: ID = %q, want match %s", iss.Summary, iss.ID, idPattern)
+		}
+	}
+	if got, want := first.AllIssues[0].ID, "f-19d6a497"; got != want {
+		t.Errorf("AllIssues[0].ID = %q, want %q", got, want)
+	}
+	if got, want := first.AllIssues[1].ID, "f-e5fb5e6a"; got != want {
+		t.Errorf("AllIssues[1].ID = %q, want %q", got, want)
+	}
+
+	// Second call: same gate, different case and outer spaces, and a wrong
+	// ID in the input. The computed ID must win and match the first call.
+	second, err := mergeResults(PlanSupportIn{
+		LaneResults: []LaneResult{
+			{Name: "lane-b", Status: "pass", GateIDs: []string{"G5"}, Issues: []Issue{
+				{ID: "f-deadbeef", GateID: "G5", Severity: "blocking", Summary: "  MISSING ACCEPTANCE CRITERIA FOR g5  "},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("mergeResults: %v", err)
+	}
+	if len(second.AllIssues) != 1 {
+		t.Fatalf("AllIssues = %+v, want 1 issue", second.AllIssues)
+	}
+	if got, want := second.AllIssues[0].ID, first.AllIssues[0].ID; got != want {
+		t.Errorf("ID with different case/spaces = %q, want %q (same as first call; input ID must be ignored)", got, want)
+	}
+}
+
+// TestPlanMergeResults_FindingIDsOnSynthesizedIssues verifies that issues the
+// merge creates itself (G17-only lane failure, coverage gap) also get an ID.
+func TestPlanMergeResults_FindingIDsOnSynthesizedIssues(t *testing.T) {
+	out, err := mergeResults(PlanSupportIn{
+		LaneResults: []LaneResult{
+			{Name: "lane-g17", Status: "fail", GateIDs: []string{"G17"}},
+		},
+		ExpectedGates: []string{"G17", "G9"},
+	})
+	if err != nil {
+		t.Fatalf("mergeResults: %v", err)
+	}
+	if len(out.AllIssues) != 2 {
+		t.Fatalf("AllIssues = %+v, want 2 synthesized issues", out.AllIssues)
+	}
+	for _, iss := range out.AllIssues {
+		if want := findingID(iss); iss.ID == "" || iss.ID != want {
+			t.Errorf("issue %q: ID = %q, want %q", iss.Summary, iss.ID, want)
+		}
 	}
 }
 

@@ -20,6 +20,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/openspec"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
+	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 )
 
 // ---------------------------------------------------------------------------
@@ -2077,6 +2078,235 @@ func TestPlanPrepare_GuardrailsFileFormat(t *testing.T) {
 			t.Errorf("render = %q, want %q", got, want)
 		}
 	})
+}
+
+// TestPlanPrepare_GuardrailCounts verifies plan_prepare stores the
+// guardrailCounts key in the plan state file: counts by severity (a missing
+// severity counts as error), zeros for no guardrails, no key when the config
+// read fails, and no write at all on a resume call.
+func TestPlanPrepare_GuardrailCounts(t *testing.T) {
+	counts := func(t *testing.T, root string) (map[string]any, bool) {
+		t.Helper()
+		doc := readSoleStateDoc(t, root)
+		v, ok := doc["guardrailCounts"]
+		if !ok {
+			return nil, false
+		}
+		m, ok := v.(map[string]any)
+		if !ok {
+			t.Fatalf("guardrailCounts = %T %v, want object", v, v)
+		}
+		return m, true
+	}
+	want := func(total, errCount, warn int) map[string]any {
+		return map[string]any{"total": float64(total), "error": float64(errCount), "warning": float64(warn)}
+	}
+
+	t.Run("counts by severity, missing severity is error", func(t *testing.T) {
+		dir := planTestGitRepo(t, "main")
+		writeFile(t, filepath.Join(dir, paths.DataDir, "config.toml"), ""+
+			"[[plan.guardrails]]\n"+
+			"id = \"no-new-deps\"\n"+
+			"severity = \"error\"\n"+
+			"description = \"Ask before adding a dependency.\"\n"+
+			"\n"+
+			"[[plan.guardrails]]\n"+
+			"id = \"prefer-helpers\"\n"+
+			"severity = \"warning\"\n"+
+			"description = \"Reuse helpers.\"\n"+
+			"\n"+
+			"[[plan.guardrails]]\n"+
+			"id = \"no-severity\"\n"+
+			"description = \"Has no severity.\"\n")
+
+		if _, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+			t.Fatal(err)
+		}
+		got, ok := counts(t, dir)
+		if !ok {
+			t.Fatal("guardrailCounts missing after the first call")
+		}
+		if !reflect.DeepEqual(got, want(3, 2, 1)) {
+			t.Errorf("guardrailCounts = %v, want %v", got, want(3, 2, 1))
+		}
+	})
+
+	t.Run("zero guardrails store zero counts", func(t *testing.T) {
+		dir := planTestGitRepo(t, "main")
+		if _, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+			t.Fatal(err)
+		}
+		got, ok := counts(t, dir)
+		if !ok {
+			t.Fatal("guardrailCounts missing for zero guardrails")
+		}
+		if !reflect.DeepEqual(got, want(0, 0, 0)) {
+			t.Errorf("guardrailCounts = %v, want %v", got, want(0, 0, 0))
+		}
+	})
+
+	t.Run("resolveTemplate call recounts", func(t *testing.T) {
+		dir := planTestGitRepo(t, "main")
+		cfg := filepath.Join(dir, paths.DataDir, "config.toml")
+		writeFile(t, cfg, "[[plan.guardrails]]\nid = \"a\"\nseverity = \"warning\"\ndescription = \"d\"\n")
+		if _, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, cfg, ""+
+			"[[plan.guardrails]]\nid = \"a\"\nseverity = \"warning\"\ndescription = \"d\"\n\n"+
+			"[[plan.guardrails]]\nid = \"b\"\ndescription = \"d\"\n")
+		if _, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true}); err != nil {
+			t.Fatal(err)
+		}
+		got, ok := counts(t, dir)
+		if !ok || !reflect.DeepEqual(got, want(2, 1, 1)) {
+			t.Errorf("guardrailCounts = %v (present=%v), want %v", got, ok, want(2, 1, 1))
+		}
+	})
+
+	t.Run("guardrails value that is not an array stores zeros", func(t *testing.T) {
+		dir := planTestGitRepo(t, "main")
+		writeFile(t, filepath.Join(dir, paths.DataDir, "config.toml"), "[plan]\nguardrails = \"not-an-array\"\n")
+
+		out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(out.Errors) != 0 {
+			t.Fatalf("Errors = %v, want none (loadGuardrails reports no error for a non-array)", out.Errors)
+		}
+		got, ok := counts(t, dir)
+		if !ok || !reflect.DeepEqual(got, want(0, 0, 0)) {
+			t.Errorf("guardrailCounts = %v (present=%v), want %v", got, ok, want(0, 0, 0))
+		}
+	})
+
+	t.Run("config read error stores no key", func(t *testing.T) {
+		dir := planTestGitRepo(t, "main")
+		writeFile(t, filepath.Join(dir, paths.DataDir, "config.toml"), "[plan\nguardrails = [\n")
+
+		out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, e := range out.Errors {
+			if strings.Contains(e, "Failed to read plan config: ") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("Errors = %v, want a \"Failed to read plan config: \" entry", out.Errors)
+		}
+		if got, ok := counts(t, dir); ok {
+			t.Errorf("guardrailCounts = %v, want no key after a config read error", got)
+		}
+	})
+
+	t.Run("resume writes nothing", func(t *testing.T) {
+		dir := planTestTemplateRepo(t)
+		cfg := filepath.Join(dir, paths.DataDir, "config.toml")
+		writeFile(t, cfg, "[[plan.guardrails]]\nid = \"a\"\nseverity = \"error\"\ndescription = \"d\"\n")
+		prev, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true, UserPrompt: "p"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		statePath := filepath.Join(planTestRunsDir(dir), prev.RunID+".json")
+		before, err := os.ReadFile(statePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// The config changes after the run started. A resume must not recount.
+		writeFile(t, cfg, ""+
+			"[[plan.guardrails]]\nid = \"a\"\nseverity = \"error\"\ndescription = \"d\"\n\n"+
+			"[[plan.guardrails]]\nid = \"b\"\nseverity = \"warning\"\ndescription = \"d\"\n")
+		if _, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, Resume: true}); err != nil {
+			t.Fatal(err)
+		}
+		after, err := os.ReadFile(statePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(before) != string(after) {
+			t.Errorf("state file changed on resume:\nbefore=%s\nafter=%s", before, after)
+		}
+		if got, ok := counts(t, dir); !ok || !reflect.DeepEqual(got, want(1, 1, 0)) {
+			t.Errorf("guardrailCounts = %v (present=%v), want %v", got, ok, want(1, 1, 0))
+		}
+	})
+
+	t.Run("resume on a run without counts adds none", func(t *testing.T) {
+		dir := planTestTemplateRepo(t)
+		planTestSeedRun(t, dir, "plan-main-20200101T000000Z", planTestActiveData())
+		if _, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, Resume: true}); err != nil {
+			t.Fatal(err)
+		}
+		if got, ok := counts(t, dir); ok {
+			t.Errorf("guardrailCounts = %v, want no key after a resume", got)
+		}
+	})
+}
+
+// TestCountGuardrails_SeverityArms verifies the three arms of
+// countGuardrails: "error", "warning", and every other severity, which counts
+// in total only. A missing or non-string severity defaults to "error".
+func TestCountGuardrails_SeverityArms(t *testing.T) {
+	got := countGuardrails([]map[string]any{
+		{"id": "e", "severity": "error"},
+		{"id": "w", "severity": "warning"},
+		{"id": "missing"},
+		{"id": "number", "severity": float64(3)},
+		{"id": "info", "severity": "info"},
+		{"id": "empty", "severity": ""},
+	})
+	// "missing" and "number" default to error. "info" and "empty" are in
+	// neither count.
+	want := map[string]any{"total": 6, "error": 3, "warning": 1}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("countGuardrails = %v, want %v", got, want)
+	}
+
+	other := countGuardrails([]map[string]any{{"severity": "info"}, {"severity": ""}})
+	wantOther := map[string]any{"total": 2, "error": 0, "warning": 0}
+	if !reflect.DeepEqual(other, wantOther) {
+		t.Errorf("countGuardrails(other severities) = %v, want %v", other, wantOther)
+	}
+}
+
+// TestPlanPrepare_GuardrailCountsWriteFails verifies a failed second state
+// write (the one that stores guardrailCounts) returns the plan state write
+// InfraError, and that the first write stays on disk without the key.
+func TestPlanPrepare_GuardrailCountsWriteFails(t *testing.T) {
+	dir := planTestGitRepo(t, "main")
+	writeErr := errors.New("disk full")
+	orig := planCountsWrite
+	planCountsWrite = func(*state.State) error { return writeErr }
+	t.Cleanup(func() { planCountsWrite = orig })
+
+	_, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) {
+		t.Fatalf("err = %T %v, want *mcpserver.InfraError", err, err)
+	}
+	if !strings.HasPrefix(ie.Msg, "plan state write failed: ") {
+		t.Errorf("Msg = %q, want prefix %q", ie.Msg, "plan state write failed: ")
+	}
+	if ie.Suggestion == "" {
+		t.Error("Suggestion empty")
+	}
+	if !errors.Is(err, writeErr) {
+		t.Errorf("Cause = %v, want the injected write error", ie.Cause)
+	}
+
+	doc := readSoleStateDoc(t, dir)
+	if _, ok := doc["planIntegrity"]; !ok {
+		t.Errorf("first write missing from state file: %v", doc)
+	}
+	if v, ok := doc["guardrailCounts"]; ok {
+		t.Errorf("guardrailCounts = %v, want no key after the failed second write", v)
+	}
 }
 
 // TestPlanPrepare_ErrorSites verifies the InfraError paths of run selection

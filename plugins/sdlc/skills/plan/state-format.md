@@ -57,6 +57,7 @@ State files are always written to the **main working tree's** `.sdlc-v2/runs/`, 
       "fileCount": 6
     }
   },
+  "guardrailCounts": { "total": 3, "error": 2, "warning": 1 },
   "checkpoint": {
     "step": "3",
     "iteration": 1,
@@ -71,6 +72,7 @@ State files are always written to the **main working tree's** `.sdlc-v2/runs/`, 
 | `planIntegrity` | object           | Checkpoint markers; each key's presence means that checkpoint was reached.  |
 | `planFilePath`  | string \| null   | Absolute path to the written plan file. Used by the Stop hook to stat the file for non-empty content verification. `null` until the `planFile` marker is written. |
 | `creationIntent`| object           | The prompt and routing decision that started this run, plus flags needed to resume it. Written once by `plan_prepare` when the run is created; never written by `plan_mark`. See [creationIntent](#creationintent) below. |
+| `guardrailCounts` | object \| absent | Counts of the plan guardrails that `plan_prepare` loaded: `total`, `error`, `warning`. Written for the dashboard plan setup tile. Absent when the first call's guardrail config read failed (a later successful call without `resume` writes it). Never written for a run with no named branch. See [guardrailCounts](#guardrailcounts) below. |
 | `checkpoint`    | object \| absent | The plan run's current step/iteration/expected-writers, replaced on every `plan_mark({marker: "checkpoint"})` call. Absent until the first checkpoint marker is written. See [checkpoint](#checkpoint) below. |
 | `reviewRounds`  | array \| absent  | One row per Step 5 review round: `round`, `mergedStatus`, `found`, `fixed`, `lenses`. Upserted by `plan_mark({marker: "review-round"})`. Read by the dashboard. See [reviewRounds](#reviewrounds) below. |
 
@@ -111,6 +113,29 @@ Written once, by `plan_prepare` (function `fullCreationIntent`), the first time 
 | `openspecStage`          | boolean | Whether the plan authors a new OpenSpec change and stages it (the Create-flow staging path: `plan_support`'s `openspec_instructions`/`openspec_stage` actions write into `<ACTIVE_ROOT>/.sdlc-v2/openspec-staging/<name>/`, materialized into `openspec/changes/<name>/` at the next run's start). |
 | `lightweight`            | boolean | Whether the caller requested the lightweight pipeline override.      |
 | `fileCount`              | integer | File count used for complexity routing.                              |
+
+---
+
+## guardrailCounts
+
+Written by `plan_prepare` (function `countGuardrails`) after it loads the `plan` guardrails. The key is written for the dashboard plan setup tile. It is display data only.
+
+When `plan_prepare` writes the key:
+
+- A call with `resume` not `true` writes the key. The first call and a later `resolveTemplate` call both write it, so the last successful call wins.
+- A `resume` call writes nothing, so the state file stays byte-identical.
+- A run with no named branch has no state file, so `plan_prepare` writes nothing.
+- A call whose guardrail config read fails does not write the key. It does not remove or change a key from an earlier call.
+
+| Field     | Type    | Description                                                                 |
+|-----------|---------|-------------------------------------------------------------------------------|
+| `total`   | integer | Number of guardrails loaded. `0` when none are configured.                   |
+| `error`   | integer | Guardrails with severity `error`. A guardrail with no severity, or a severity that is not a string, counts as `error`. |
+| `warning` | integer | Guardrails with severity `warning`.                                          |
+
+A string severity other than `error` or `warning` (for example `info` or an empty string) counts in `total` only. For this reason `error + warning` can be less than `total`. A `plan.guardrails` value that is not an array stores `{ "total": 0, "error": 0, "warning": 0 }`, because the guardrail loader reports no error for it.
+
+The key is absent when the first call's guardrail config read failed and no later call without `resume` read it successfully (the failure is in the `errors` of the `plan_prepare` result). An absent key means no count was recorded. It does not mean zero guardrails.
 
 ---
 

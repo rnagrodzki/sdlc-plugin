@@ -190,7 +190,13 @@
             }
           ],
           "sessionId": "5b0e8c1a-2f4d-4c7e-9a31-6d8f0b7e4a12",
-          "commitWaves": true
+          "commitWaves": true,
+          "attention": {
+            "kind": "question",
+            "askedAt": "2026-10-08T14:27:58Z",
+            "header": "Harden",
+            "text": "Apply the 2 proposed guardrail edits to the review dimensions?"
+          }
         },
         {
           "id": "plan-main-20261008T070500Z",
@@ -208,7 +214,11 @@
             "label": "5 of 5 steps"
           },
           "steps": [
-            { "name": "setup", "status": "completed" },
+            {
+              "name": "setup",
+              "status": "completed",
+              "detail": { "kind": "guardrails", "guardrails": { "total": 3, "error": 2, "warning": 1 } }
+            },
             {
               "name": "explore",
               "status": "completed",
@@ -471,7 +481,14 @@
           },
           "steps": [
             { "name": "execute", "status": "completed" },
-            { "name": "commit", "status": "completed" },
+            {
+              "name": "commit",
+              "status": "completed",
+              "detail": {
+                "kind": "result",
+                "result": "nothing to commit: execute committed 2 wave commit(s)"
+              }
+            },
             {
               "name": "review",
               "status": "completed",
@@ -568,11 +585,19 @@
               "detail": {
                 "kind": "dimensions",
                 "dimensions": [
-                  { "name": "security", "status": "completed", "findings": 0, "worst": "" },
-                  { "name": "correctness", "status": "in_progress", "findings": 0, "worst": "" },
-                  { "name": "performance", "status": "completed", "findings": 1, "worst": "medium" },
-                  { "name": "tests", "status": "completed", "findings": 0, "worst": "" }
-                ]
+                  { "name": "security", "status": "completed", "findings": 0, "worst": "", "wave": 1 },
+                  { "name": "correctness", "status": "in_progress", "findings": 0, "worst": "", "wave": 1 },
+                  { "name": "performance", "status": "completed", "findings": 1, "worst": "medium", "wave": 1 },
+                  { "name": "tests", "status": "completed", "findings": 0, "worst": "", "wave": 1 },
+                  { "name": "docs", "status": "skipped", "findings": 0, "worst": "", "wave": 2, "reason": "missing" }
+                ],
+                "reviewPlan": {
+                  "wavesPlanned": 2,
+                  "wavesRun": 1,
+                  "dimensionsPlanned": 5,
+                  "dimensionsRun": 4,
+                  "neverStarted": 1
+                }
               }
             },
             { "name": "harden", "status": "pending" },
@@ -752,6 +777,105 @@
               "ref": "correctness"
             }
           ],
+          "sessionId": ""
+        },
+        {
+          "id": "plan-main-20261008T112000Z",
+          "kind": "plan",
+          "branch": "main",
+          "worktree": "",
+          "status": "completed",
+          "startedAt": "2026-10-08T11:20:00Z",
+          "updatedAt": "2026-10-08T12:05:30Z",
+          "completedAt": "2026-10-08T12:05:30Z",
+          "progress": {
+            "done": 5,
+            "total": 5,
+            "current": "",
+            "label": "5 of 5 steps"
+          },
+          "steps": [
+            { "name": "setup", "status": "completed" },
+            { "name": "explore", "status": "completed" },
+            { "name": "draft", "status": "completed" },
+            {
+              "name": "review",
+              "status": "completed",
+              "detail": {
+                "kind": "rounds",
+                "maxRounds": 5,
+                "rounds": [
+                  {
+                    "n": 1,
+                    "status": "Issues Found",
+                    "found": 3,
+                    "fixed": 3,
+                    "lenses": [
+                      { "name": "architecture", "verdict": "Issues Found" },
+                      { "name": "requirements", "verdict": "Issues Found" },
+                      { "name": "risk", "verdict": "Approved" }
+                    ]
+                  },
+                  {
+                    "n": 2,
+                    "status": "Issues Found",
+                    "found": 2,
+                    "fixed": 2,
+                    "lenses": [
+                      { "name": "architecture", "verdict": "Approved" },
+                      { "name": "requirements", "verdict": "Issues Found" },
+                      { "name": "risk", "verdict": "Issues Found" }
+                    ]
+                  },
+                  {
+                    "n": 3,
+                    "status": "Issues Found",
+                    "found": 1,
+                    "fixed": 1,
+                    "lenses": [
+                      { "name": "architecture", "verdict": "Approved" },
+                      { "name": "requirements", "verdict": "Approved" },
+                      { "name": "risk", "verdict": "Issues Found" }
+                    ]
+                  },
+                  {
+                    "n": 4,
+                    "status": "Issues Found",
+                    "found": 1,
+                    "fixed": 0,
+                    "lenses": [
+                      { "name": "architecture", "verdict": "Approved" },
+                      { "name": "requirements", "verdict": "Approved" },
+                      { "name": "risk", "verdict": "Issues Found" }
+                    ]
+                  },
+                  {
+                    "n": 5,
+                    "status": "Issues Found",
+                    "found": 1,
+                    "fixed": 0,
+                    "lenses": [
+                      { "name": "architecture", "verdict": "Approved" },
+                      { "name": "requirements", "verdict": "Approved" },
+                      { "name": "risk", "verdict": "Issues Found" }
+                    ]
+                  }
+                ],
+                "roundTotals": { "iterations": 5, "violations": 7, "fixes": 6, "distinct": true },
+                "repairLimit": true,
+                "outcomes": [
+                  {
+                    "id": "f-9d01aa42",
+                    "text": "The retry cap has no upper bound when the tenant sets the window to zero",
+                    "choice": "accepted",
+                    "reason": "The cap default is safe and the zero window is rejected at load time"
+                  }
+                ]
+              }
+            },
+            { "name": "finalize", "status": "completed" }
+          ],
+          "issues": [],
           "sessionId": ""
         }
       ],

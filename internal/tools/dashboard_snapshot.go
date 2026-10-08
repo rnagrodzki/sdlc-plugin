@@ -78,20 +78,30 @@ type DashboardRepo struct {
 
 // DashboardPipeline is one ship, execute, plan, or review run.
 type DashboardPipeline struct {
-	ID          string            `json:"id"`
-	Kind        string            `json:"kind"`
-	Branch      string            `json:"branch"`
-	Worktree    string            `json:"worktree"`
-	Status      string            `json:"status"`
-	StartedAt   string            `json:"startedAt"`
-	UpdatedAt   string            `json:"updatedAt"`
-	CompletedAt *string           `json:"completedAt"`
-	Progress    DashboardProgress `json:"progress"`
-	Steps       []DashboardStep   `json:"steps"`
-	Issues      []DashboardIssue  `json:"issues"`
-	SessionID   string            `json:"sessionId"`             // "" when unknown
-	CommitWaves *bool             `json:"commitWaves,omitempty"` // execute and ship only; absent elsewhere
-	join        dashboardJoinInfo // not serialized; read by dashboardJoinRuns
+	ID          string              `json:"id"`
+	Kind        string              `json:"kind"`
+	Branch      string              `json:"branch"`
+	Worktree    string              `json:"worktree"`
+	Status      string              `json:"status"`
+	StartedAt   string              `json:"startedAt"`
+	UpdatedAt   string              `json:"updatedAt"`
+	CompletedAt *string             `json:"completedAt"`
+	Progress    DashboardProgress   `json:"progress"`
+	Steps       []DashboardStep     `json:"steps"`
+	Issues      []DashboardIssue    `json:"issues"`
+	SessionID   string              `json:"sessionId"`             // "" when unknown
+	CommitWaves *bool               `json:"commitWaves,omitempty"` // execute and ship only; absent elsewhere
+	Attention   *DashboardAttention `json:"attention,omitempty"`   // absent when no wait is open
+	join        dashboardJoinInfo   // not serialized; read by dashboardJoinRuns
+}
+
+// DashboardAttention is the open wait of a running pipeline: the run waits
+// for a person to answer a question or grant a permission.
+type DashboardAttention struct {
+	Kind    string `json:"kind"`    // "question" | "permission"
+	AskedAt string `json:"askedAt"` // RFC3339 UTC
+	Header  string `json:"header"`  // question header, or "Permission"
+	Text    string `json:"text"`    // max 120 runes, redacted
 }
 
 // DashboardProgress is the progress summary of a pipeline.
@@ -129,21 +139,63 @@ const (
 	dashboardKindExplorers  = "explorers"
 	dashboardKindRounds     = "rounds"
 	dashboardKindFindings   = "findings"
+	dashboardKindGuardrails = "guardrails" // plan setup station
+	dashboardKindResult     = "result"     // one result line of a ship step
 )
 
 // DashboardStepDetail is what a pipeline did inside one step. Kind tells
 // which list is filled. Every slice field is [] when empty, never nil; the
 // omitempty fields are absent, not null.
 type DashboardStepDetail struct {
-	Kind         string                   `json:"kind"` // a dashboardKind* value; never ""
-	Waves        []DashboardWave          `json:"waves,omitempty"`
-	Queued       []DashboardTask          `json:"queued,omitempty"` // planned, wave not started
-	Dimensions   []DashboardDimension     `json:"dimensions,omitempty"`
-	ReviewTotals *DashboardReviewTotals   `json:"reviewTotals,omitempty"`
-	Explorers    []DashboardExplorer      `json:"explorers,omitempty"`
-	Rounds       []DashboardRound         `json:"rounds,omitempty"`
-	MaxRounds    int                      `json:"maxRounds,omitempty"`
-	Findings     []DashboardReviewFinding `json:"findings,omitempty"` // kind findings: one dimension of a standalone review
+	Kind         string                    `json:"kind"` // a dashboardKind* value; never ""
+	Waves        []DashboardWave           `json:"waves,omitempty"`
+	Queued       []DashboardTask           `json:"queued,omitempty"` // planned, wave not started
+	Dimensions   []DashboardDimension      `json:"dimensions,omitempty"`
+	ReviewTotals *DashboardReviewTotals    `json:"reviewTotals,omitempty"`
+	Explorers    []DashboardExplorer       `json:"explorers,omitempty"`
+	Rounds       []DashboardRound          `json:"rounds,omitempty"`
+	MaxRounds    int                       `json:"maxRounds,omitempty"`
+	Findings     []DashboardReviewFinding  `json:"findings,omitempty"`    // kind findings: one dimension of a standalone review
+	Guardrails   *DashboardGuardrailCounts `json:"guardrails,omitempty"`  // kind guardrails
+	Result       string                    `json:"result,omitempty"`      // kind result
+	RoundTotals  *DashboardRoundTotals     `json:"roundTotals,omitempty"` // kind rounds
+	RepairLimit  bool                      `json:"repairLimit,omitempty"` // kind rounds
+	Outcomes     []DashboardFindingOutcome `json:"outcomes,omitempty"`    // kind rounds
+	ReviewPlan   *DashboardReviewPlan      `json:"reviewPlan,omitempty"`  // kind dimensions
+}
+
+// DashboardGuardrailCounts is the guardrail count of a plan setup station.
+type DashboardGuardrailCounts struct {
+	Total   int `json:"total"`
+	Error   int `json:"error"`
+	Warning int `json:"warning"`
+}
+
+// DashboardRoundTotals is the total of the plan review rounds.
+type DashboardRoundTotals struct {
+	Iterations int  `json:"iterations"` // rounds recorded
+	Violations int  `json:"violations"`
+	Fixes      int  `json:"fixes"`
+	Distinct   bool `json:"distinct"` // true: counted by finding ID; false: sum of per-round counts
+}
+
+// DashboardFindingOutcome is the choice of a person on one plan review
+// finding.
+type DashboardFindingOutcome struct {
+	ID     string `json:"id"`
+	Text   string `json:"text"`
+	Choice string `json:"choice"` // "accepted" | "rejected" | "stop"
+	Reason string `json:"reason"`
+}
+
+// DashboardReviewPlan is the run plan of a ship review step: what the plan
+// listed and how much of it ran.
+type DashboardReviewPlan struct {
+	WavesPlanned      int `json:"wavesPlanned"`
+	WavesRun          int `json:"wavesRun"`
+	DimensionsPlanned int `json:"dimensionsPlanned"`
+	DimensionsRun     int `json:"dimensionsRun"`
+	NeverStarted      int `json:"neverStarted"`
 }
 
 // DashboardReviewFinding is one finding of a review dimension.
@@ -174,7 +226,9 @@ type DashboardDimension struct {
 	Name     string `json:"name"`
 	Status   string `json:"status"`
 	Findings int    `json:"findings"`
-	Worst    string `json:"worst"` // highest severity, "" when none
+	Worst    string `json:"worst"`            // highest severity, "" when none
+	Wave     int    `json:"wave,omitempty"`   // 1-based wave of the review plan; absent = no plan
+	Reason   string `json:"reason,omitempty"` // "stalled" | "missing" | "unstopped" when Status is skipped
 }
 
 // DashboardReviewTotals is the finding ledger of a ship review step.

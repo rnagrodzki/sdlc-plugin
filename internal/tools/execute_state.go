@@ -580,7 +580,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - wave-progress: Read/write per-task progress. Requires runId. For reads: readProgress=true. For writes: taskId, phase. Optional on writes: lastCompletedTask (recorded in the heartbeat entry), acceptanceDone, filesTouched (each replaces the recorded list), blocker.
 - wave-await: Bounded, non-blocking poll of a wave's still-open tasks, classifying each against its server-owned dispatch state (never-started/stalled/timeout/none) and returning explicit next-instructions (including the exact task-fail/task-redispatch call shape) for whatever it finds. Requires runId, wave. Optional: branch, stateFile (also used to persist wave-await's own resume-state, i.e. the iteration counter, across bounded-poll calls).
 - resume-reset: Reset in-progress waves for session resume. Optional: branch, runId (the run whose server dispatch state is reseeded; falls back to the value derived from startedAt/wave). Returns {resetWaves, clearedTaskIds} as before; when the run is still in flight after the reset, the response also carries a "resumeBriefing" (same shape as read's) reflecting the sets it just cleared — resume-reset's willRedo always matches the task IDs in clearedTaskIds. Reseeds fresh server-owned dispatch state (attempt reset to 1) for every cleared task ID; seeding failure is non-fatal and appends to a "warnings" field.
-- ledger_checkin: Register a worker as active. Requires runId, workerId. Optional: stepId, branch. Side effect: the first check-in for a runId also writes runs/ledger/<runId>/run.meta once (branch, startedAt, and shipRunId when this branch has a ship state with its review step in_progress); later check-ins leave it unchanged. The branch is the branch input when set, else the current branch of the work directory. A run.meta write failure does not fail the check-in: the result carries a "warnings" entry that names the path.
+- ledger_checkin: Register a worker as active. Requires runId, workerId. Optional: stepId, branch. review_prepare writes runs/ledger/<runId>/run.meta with the run plan. Side effect: a check-in writes run.meta only when it is absent (branch, startedAt, and shipRunId when this branch has a ship state with its review step in_progress); a check-in never changes an existing run.meta. The branch is the branch input when set, else the current branch of the work directory. A run.meta write failure does not fail the check-in: the result carries a "warnings" entry that names the path.
 - ledger_checkout: Mark a worker as done. Requires runId, workerId. Optional: findings (free-text payload — e.g. a JSON array or markdown block — persisted alongside this worker's checkout record and returned later by ledger_status).
 - ledger_status: List worker statuses for a run. Requires runId. Optional: timeoutSeconds, expectedWorkers (worker IDs expected to have checked in; any missing from the ledger are returned as missingWorkers). Each entry in the returned workers[] carries a "findings" field when that worker's ledger_checkout call set one; omitted when absent.
 - ledger_cleanup: Remove a run's entire ledger directory (all per-worker checkin/checkout/findings files). Requires runId. Returns {ok, runId, removed, workers} where removed is false when the directory didn't exist and workers lists the sorted worker ids that had ledger files (ids only, never findings).
@@ -6019,13 +6019,33 @@ func execActionResumeReset(root, workDir string, in ExecuteStateIn, now func() t
 // dot, so it cannot clash with a worker file.
 const ledgerRunMetaFile = "run.meta"
 
-// reviewRunMeta is runs/ledger/<runId>/run.meta. The first ledger_checkin of a
-// run writes it once.
+// reviewRunMeta is runs/ledger/<runId>/run.meta. review_prepare writes it
+// with the run plan (waves and dimensions). The first ledger_checkin of a run
+// writes it only when it is absent: a fallback for a review run that started
+// before review_prepare wrote it. That fallback has no waves or dimensions.
 type reviewRunMeta struct {
-	Branch    string `json:"branch"`
-	StartedAt string `json:"startedAt"`           // RFC3339, check-in time
-	ShipRunID string `json:"shipRunId,omitempty"` // state.RunID of the ship run, e.g. ship-feat-x-20261007T072607Z
+	Branch     string                   `json:"branch"`
+	StartedAt  string                   `json:"startedAt"`            // RFC3339: review_prepare time, or check-in time for the fallback
+	ShipRunID  string                   `json:"shipRunId,omitempty"`  // state.RunID of the ship run, e.g. ship-feat-x-20261007T072607Z
+	Waves      [][]string               `json:"waves,omitempty"`      // worker IDs by wave
+	Dimensions []reviewRunMetaDimension `json:"dimensions,omitempty"` // every planned dimension
 }
+
+// reviewRunMetaDimension is one planned dimension of a review run in
+// run.meta.
+type reviewRunMetaDimension struct {
+	Name       string `json:"name"`
+	WorkerID   string `json:"workerId"`
+	Wave       int    `json:"wave"`                 // 1-based
+	StopReason string `json:"stopReason,omitempty"` // one of the reviewStop* constants when a stopped worker is recorded; empty until then
+}
+
+// Stop reasons of a review dimension in run.meta.
+const (
+	reviewStopStalled   = "stalled"   // stopped by TaskStop after a stall
+	reviewStopMissing   = "missing"   // never checked in
+	reviewStopUnstopped = "unstopped" // stalled, TaskStop failed, may still run
+)
 
 // ledgerMetaOpenFunc matches os.OpenFile. Tests replace it to force a write
 // failure of run.meta.
@@ -6054,8 +6074,9 @@ func ledgerShipRunID(root, branch string) string {
 	return state.RunID(st)
 }
 
-// ledgerWriteRunMeta writes runs/ledger/<runID>/run.meta once. It creates the
-// file with O_EXCL: when the file exists, it writes nothing and returns nil.
+// ledgerWriteRunMeta writes runs/ledger/<runID>/run.meta once, as a fallback
+// when review_prepare did not write it. It creates the file with O_EXCL: when
+// the file exists, it writes nothing and returns nil.
 // The branch is the branch argument when set, else the current branch of
 // workDir. When no branch can be resolved, the meta holds an empty branch.
 // The meta holds shipRunId only when ledgerShipRunID finds one. The caller

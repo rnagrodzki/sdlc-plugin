@@ -70,6 +70,9 @@ type ReviewPrepareIn struct {
 	// Content is the review comment body to persist verbatim for save mode.
 	// Required when SaveReview is true.
 	Content string `json:"content,omitempty" jsonschema_description:"Review comment body to persist verbatim for save mode. Required when saveReview is true."`
+	// DryRun marks a review --dry-run: the manifest is built, but no
+	// run.meta is written and run_id is empty.
+	DryRun bool `json:"dryRun,omitempty" jsonschema_description:"Plain JSON bool. True for review --dry-run: no run.meta is written and run_id is empty. Ignored when saveReview is true. Example: true"`
 }
 
 // ReviewPrepareSummary mirrors the summary block of the JS manifest.
@@ -110,6 +113,9 @@ type ReviewPrepareOut struct {
 	// Saved is set in save mode: true once Content has been persisted.
 	// Omitted (zero value) in normal manifest mode.
 	Saved bool `json:"saved,omitempty"`
+	// Warnings repeats the manifest warnings (e.g. a failed PR lookup or a
+	// failed branch read). Omitted when empty and in save mode.
+	Warnings []string `json:"warnings,omitempty" jsonschema_description:"Manifest mode: non-fatal problems met while preparing the manifest, the same list as the manifest warnings field. Example: the current branch could not be read, so run.meta has an empty branch and the review will not join its ship run. Omitted when empty."`
 	// Next carries actionable next-step guidance. Manifest mode: how to
 	// start the waves (see reviewWaveNext). Save mode: where the review was
 	// saved. Never omitted, since callers must be able to tell "no next
@@ -122,6 +128,8 @@ type ReviewPrepareOut struct {
 // Internal manifest types (written to JSON file, not returned inline)
 // ---------------------------------------------------------------------------
 
+// reviewManifest is the JSON document that review_prepare writes to disk for
+// the review skill: scope, git state, dimensions, waves, and the run ID.
 type reviewManifest struct {
 	Version            int                   `json:"version"`
 	Timestamp          string                `json:"timestamp"`
@@ -141,6 +149,9 @@ type reviewManifest struct {
 	// Warnings lists non-fatal problems met while preparing the manifest
 	// (e.g. a failed PR lookup). Always an array, never null.
 	Warnings []string `json:"warnings"`
+	// RunID is the ledger run id of this review run: "review-" plus the
+	// sanitized Timestamp. "" for a dry run or zero waves (no ledger).
+	RunID string `json:"run_id"`
 }
 
 type reviewManifestGit struct {
@@ -158,6 +169,8 @@ type reviewManifestPR struct {
 	Repo   *string `json:"repo,omitempty"`
 }
 
+// reviewDimIndexEntry is one dimension row of the manifest: its metadata, its
+// match status, and the worker ID that names its ledger entry.
 type reviewDimIndexEntry struct {
 	Name             string  `json:"name"`
 	Description      string  `json:"description"`
@@ -169,6 +182,7 @@ type reviewDimIndexEntry struct {
 	MatchedCount     int     `json:"matched_count"`
 	DiffFile         *string `json:"diff_file"`
 	SliceFile        *string `json:"slice_file"`
+	WorkerID         string  `json:"worker_id"` // ledger worker id, from reviewWorkerID(Name)
 }
 
 type reviewPlanCritique struct {
@@ -572,10 +586,14 @@ func planWaves(dims []reviewDimWork, maxParallel int) [][]string {
 }
 
 // reviewWaveNext returns the manifest-mode ReviewPrepareOut.Next text: how
-// to start the waves, or, with zero waves, that no agent starts.
-func reviewWaveNext(manifestPath string, waveCount int) string {
+// to start the waves, or, with zero waves or a dry run, that no ledger
+// exists. Zero waves wins over a dry run.
+func reviewWaveNext(manifestPath string, waveCount int, dryRun bool) string {
 	if waveCount == 0 {
-		return "No dimension matched the changes: waves is empty. Do not start agents or poll. Go to the consolidation step with zero findings."
+		return "No dimension matches the diff. Report zero findings. No ledger exists."
+	}
+	if dryRun {
+		return "Dry run: print the plan from the manifest and stop. No ledger exists."
 	}
 	return fmt.Sprintf("Read the manifest at %s. Start the agents of waves[0] in one message, poll until the wave ends, then start the next wave. Waves: %d.", manifestPath, waveCount)
 }
@@ -783,6 +801,81 @@ func loadAndMatchDimensions(projectRoot string, changedFiles []string) ([]review
 // .sdlc-v2/reviews/ filename.
 var reviewBranchUnsafeRe = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
 
+// reviewWorkerRunRe matches each run of characters not allowed in a review
+// worker id, after the dimension name is lowercased.
+var reviewWorkerRunRe = regexp.MustCompile(`[^a-z0-9_-]+`)
+
+// reviewWorkerID returns the ledger worker id of a review dimension: the
+// lowercased name with each run of other characters replaced by one "-".
+func reviewWorkerID(name string) string {
+	return reviewWorkerRunRe.ReplaceAllString(strings.ToLower(name), "-")
+}
+
+// reviewWriteJSON writes the manifest and run.meta. Tests replace it to force
+// a write failure.
+var reviewWriteJSON = fsx.AtomicWriteJSON
+
+// reviewCurrentBranch reads the branch under review. Tests replace it to
+// force a git failure.
+var reviewCurrentBranch = gitx.CurrentBranch
+
+// reviewGitStatus reads the working tree status. Tests replace it to force a
+// git failure.
+var reviewGitStatus = gitx.Status
+
+// writeReviewRunMeta writes runs/ledger/<runID>/run.meta with the run plan:
+// branch, startedAt, shipRunId (when the ship review step of branch is
+// in_progress), the worker ids by wave, and every planned dimension. It
+// creates the ledger run folder and replaces an existing run.meta.
+//
+// An empty branch (the branch could not be read) gives a run.meta with an
+// empty branch and no shipRunId, so the dashboard cannot join the review to
+// its ship run.
+//
+// When the run.meta write fails and this call created the ledger run folder,
+// it removes that folder, so no run folder without a run.meta stays behind.
+func writeReviewRunMeta(root, branch, runID string, startedAt time.Time, waves [][]string) error {
+	meta := reviewRunMeta{
+		Branch:     branch,
+		StartedAt:  startedAt.UTC().Format(time.RFC3339),
+		Waves:      make([][]string, 0, len(waves)),
+		Dimensions: []reviewRunMetaDimension{},
+	}
+	if branch != "" {
+		meta.ShipRunID = ledgerShipRunID(root, branch)
+	}
+	for wi, wave := range waves {
+		ids := make([]string, 0, len(wave))
+		for _, name := range wave {
+			id := reviewWorkerID(name)
+			ids = append(ids, id)
+			meta.Dimensions = append(meta.Dimensions, reviewRunMetaDimension{
+				Name:     name,
+				WorkerID: id,
+				Wave:     wi + 1,
+			})
+		}
+		meta.Waves = append(meta.Waves, ids)
+	}
+	dir := ledgerDir(root, runID)
+	_, statErr := os.Stat(dir)
+	created := errors.Is(statErr, os.ErrNotExist)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	if err := reviewWriteJSON(ledgerRunMetaPath(root, runID), meta); err != nil {
+		if created {
+			_ = os.RemoveAll(dir)
+		}
+		return err
+	}
+	return nil
+}
+
+// reviewPrepare builds the review manifest for the changed files, writes it
+// to a temp directory, and (unless this is a dry run or no wave matches)
+// writes the run.meta file for the review run. In save mode it saves a
+// review report and returns before any of that.
 func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPrepareOut, error) {
 	if in.SaveReview {
 		return saveReviewComment(projectRoot, activeRoot, in)
@@ -852,8 +945,20 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 	}
 
 	// Git state.
-	currentBranch, _ := gitx.CurrentBranch(activeRoot)
-	statusOut, _ := gitx.Status(activeRoot)
+	// A failed branch read does not stop the review, but run.meta then has
+	// an empty branch and no shipRunId: say so in the warnings.
+	var branchWarnings []string
+	currentBranch, branchErr := reviewCurrentBranch(activeRoot)
+	if branchErr != nil {
+		currentBranch = ""
+		branchWarnings = append(branchWarnings, fmt.Sprintf("the current branch could not be read (%s): current_branch and run.meta branch are empty, so the review will not join its ship run", branchErr.Error()))
+	}
+	// A failed status read does not stop the review: uncommitted_changes is
+	// reported as false and the warning says so.
+	statusOut, statusErr := reviewGitStatus(activeRoot)
+	if statusErr != nil {
+		branchWarnings = append(branchWarnings, fmt.Sprintf("git status could not be read (%s): uncommitted_changes is reported as false", statusErr.Error()))
+	}
 	uncommittedChanges := statusOut != ""
 
 	// Changed files. A failing git command (e.g. a target ref git cannot
@@ -1044,6 +1149,7 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 	if !reviewsUncommitted {
 		pr, warnings = lookupReviewPR(activeRoot)
 	}
+	warnings = append(branchWarnings, warnings...)
 
 	// Build index entries.
 	var indexEntries []reviewDimIndexEntry
@@ -1064,6 +1170,7 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 			MatchedCount:     d.matchedCount,
 			DiffFile:         d.diffFile,
 			SliceFile:        sliceFile,
+			WorkerID:         reviewWorkerID(d.name),
 		})
 	}
 
@@ -1103,9 +1210,19 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 		baseBranch = &base
 	}
 
+	// One instant for the manifest timestamp, the run id, and run.meta's
+	// startedAt. A dry run or zero waves has no ledger, so no run id.
+	now := time.Now().UTC()
+	timestamp := now.Format(time.RFC3339)
+	writeRunMeta := len(waves) > 0 && !in.DryRun
+	runID := ""
+	if writeRunMeta {
+		runID = "review-" + reviewBranchUnsafeRe.ReplaceAllString(timestamp, "-")
+	}
+
 	manifest := reviewManifest{
 		Version:            1,
-		Timestamp:          time.Now().UTC().Format(time.RFC3339),
+		Timestamp:          timestamp,
 		SubagentModel:      "sonnet",
 		PluginVersion:      pluginVersion,
 		Scope:              scope,
@@ -1123,10 +1240,11 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 		Summary:      summary,
 		DiffDir:      tmpDir,
 		Warnings:     emptyIfNil(warnings),
+		RunID:        runID,
 	}
 
 	manifestPath := filepath.Join(tmpDir, "manifest.json")
-	if err := fsx.AtomicWriteJSON(manifestPath, manifest); err != nil {
+	if err := reviewWriteJSON(manifestPath, manifest); err != nil {
 		return ReviewPrepareOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("write manifest: %s", err.Error()),
 			Suggestion: "Check write permission and free disk space in the temp review directory " + tmpDir + ", then retry review_prepare.",
@@ -1134,11 +1252,24 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 		}
 	}
 
+	// run.meta goes after the manifest: a failed manifest write then leaves
+	// no ledger folder for the dashboard to show.
+	if writeRunMeta {
+		if err := writeReviewRunMeta(projectRoot, currentBranch, runID, now, waves); err != nil {
+			return ReviewPrepareOut{}, &mcpserver.InfraError{
+				Msg:        fmt.Sprintf("write %s: %s", ledgerRunMetaPath(projectRoot, runID), err.Error()),
+				Suggestion: "Check write access to " + paths.DataDir + "/" + paths.RunsSubdir + "/ledger/ and call review_prepare again.",
+				Cause:      err,
+			}
+		}
+	}
+
 	return ReviewPrepareOut{
 		ManifestPath: manifestPath,
 		Summary:      summary,
 		Style:        chatStyleFor(projectRoot),
-		Next:         reviewWaveNext(manifestPath, len(waves)),
+		Warnings:     manifest.Warnings,
+		Next:         reviewWaveNext(manifestPath, len(waves), in.DryRun),
 	}, nil
 }
 
@@ -1323,12 +1454,13 @@ func saveReviewComment(projectRoot, activeRoot string, in ReviewPrepareIn) (Revi
 // RegisterReviewTools registers review_prepare on the server.
 func RegisterReviewTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "review_prepare",
-		fmt.Sprintf("Pre-compute review manifest: git state, dimension matching, diff slicing, commit context, open-PR lookup via gh. Writes manifest + per-dimension .diff and .slice.json files to a temp directory. With saveReview:true, persists content verbatim to .sdlc-v2/reviews/<branch>-<date>.md instead. Also returns style: the plugin-wide communication style; follow style.guide in chat and questions. Reads scope and maxParallelDimensions (review agents that run at the same time, default %d, minimum 1) from the [review] section of .sdlc-v2/local.toml, merged over ~/.sdlc/local.toml. The manifest field waves lists every started dimension name, most severe first, in groups of maxParallelDimensions. Start waves[0] first, wait for it, then start the next wave. An old maxDimensions key returns an error that names the new key. An invalid maxParallelDimensions or an unreadable local.toml returns an error.", defaultMaxParallelDimensions),
+		fmt.Sprintf("Pre-compute review manifest: git state, dimension matching, diff slicing, commit context, open-PR lookup via gh. Writes manifest + per-dimension .diff and .slice.json files to a temp directory. With saveReview:true, persists content verbatim to .sdlc-v2/reviews/<branch>-<date>.md instead. Also returns style: the plugin-wide communication style; follow style.guide in chat and questions. Reads scope and maxParallelDimensions (review agents that run at the same time, default %d, minimum 1) from the [review] section of .sdlc-v2/local.toml, merged over ~/.sdlc/local.toml. The manifest field waves lists every started dimension name, most severe first, in groups of maxParallelDimensions. Start waves[0] first, wait for it, then start the next wave. An old maxDimensions key returns an error that names the new key. An invalid maxParallelDimensions or an unreadable local.toml returns an error. Each call mints a new manifest run_id (\"review-\" plus the sanitized timestamp) and gives each dimension a worker_id (the lowercased name, each run of other characters replaced by one \"-\"). With at least one wave, it writes .sdlc-v2/runs/ledger/<run_id>/run.meta: branch, startedAt, shipRunId (when the branch's ship review step is in_progress), waves of worker ids, and dimensions [{name, workerId, wave}]. When the current branch cannot be read, run.meta has an empty branch and no shipRunId, so the review will not join its ship run; the result warnings say so. With dryRun:true or zero waves, it writes no run.meta and run_id is \"\". A failed run.meta write returns an error with no manifest path and leaves no ledger run folder.", defaultMaxParallelDimensions),
 		mcpserver.Annotations{
-			Title:      "Prepare code review payload",
-			ReadOnly:   true,
-			Idempotent: true,
-			OpenWorld:  true,
+			Title:       "Prepare code review payload",
+			ReadOnly:    false,
+			Destructive: false,
+			Idempotent:  false,
+			OpenWorld:   true,
 		},
 		func(ctx mcpserver.Ctx, in ReviewPrepareIn) (ReviewPrepareOut, error) {
 			root, err := worktree.MainRoot()
