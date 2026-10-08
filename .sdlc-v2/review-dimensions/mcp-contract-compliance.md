@@ -72,6 +72,13 @@ and `mcp-output-drives-behavior` guardrails.
 - When a handler returns a `DomainError`, `InfraError`, or `DataError` with
   a recoverable condition (the caller can do something to fix it), the
   `Suggestion` field MUST be populated with a specific recovery instruction.
+- A no-op or empty outcome (for example 'nothing to promote', 'already up
+  to date', 'no changes') is recoverable by definition. Its handler MUST
+  return a typed error with a specific `Suggestion`, or a success `*Out`
+  with a specific `Next`, that states what makes the operation applicable
+  or how to confirm the work is done. An untyped `errors.New` or
+  `fmt.Errorf` return for this outcome, or reliance on the
+  `defaultRecovery` fallback, is a finding.
 
 Every error result MUST render a non-empty `## Do this` section. When a typed
 error carries no `Suggestion`, `defaultRecovery(code)` supplies one; a rendered

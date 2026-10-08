@@ -79,6 +79,16 @@ severity: high
   characters but omits that the first character is limited to a subset of
   them (for example `writerIDRe`: the first character is a letter or a
   digit) is a finding.
+- Precedence or conflict claims between two keys or flags (for example
+  `steps` wins over `quick`) must match the validator branch that handles
+  the pair (for example the reject path in `ship_prepare`). A pair the code
+  rejects together must be documented as rejected, not as a winner.
+- Every example block (config snippet, step list, flag line) must follow
+  the rules the same doc states and list exactly the canonical set in the
+  Go source. An example that contradicts its own prose, or omits or invents
+  a canonical item, is a finding.
+- Named git refs in prose (default branch, base branch, target branch) must
+  match the ref the code reads for that step. A mismatch is a finding.
 
 ## What NOT to flag
 

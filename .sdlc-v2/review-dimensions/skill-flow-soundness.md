@@ -50,7 +50,8 @@ severity: high
   not a set where only one option is actually workable.
 - **Resource cleanup.** When a skill's flow dispatches background workers,
   sub-agents, or async tasks (e.g. Agent tool calls), verify that every
-  possible exit path (success, stall, error, timeout) includes an explicit
+  possible exit path (success, stall, error, timeout, interrupt, cancel)
+  includes an explicit
   cleanup step: a TaskStop call, an agent termination, or a documented
   reason why cleanup is not needed (e.g. workers terminate themselves).
   No worker should be left running after the skill completes or is
@@ -73,6 +74,33 @@ severity: high
   data to that field makes the record disagree with itself, and is a
   finding. The same applies to one call described in two places with
   different arguments.
+- **Stopped-worker output.** Output from a stopped, abandoned, or
+  never-reported worker must not feed a consolidation or merge step
+  unless that step labels it partial.
+- **Stop-failure fallback.** When TaskStop or an equivalent call fails,
+  the flow must name a fallback and list the worker as not stopped. A
+  worker that cannot be stopped still counts toward any wave or
+  concurrency cap.
+- **Dispatch without task ID.** An Agent dispatch that returns no task ID
+  is a worker that cleanup cannot end. The flow must list it as missing
+  or unterminated.
+- **Single return target.** Each loop or sub-flow names exactly one
+  return step. Two return targets for one loop is a finding.
+- **Output slots.** Each disclosed worker state (missing, unterminated,
+  still running after a failed stop) has a literal slot in the output
+  template.
+- **Opt-in step routing.** When a config key or flag enables a step, every
+  route into it from an earlier step (a go to, a next, or a skip) must
+  reach it while the enabling condition holds. A route that jumps past an
+  enabled step is a finding. A route that skips the step only when the
+  enabling condition is off is a designed shortcut, not a finding.
+- **Overview order and content.** The Steps overview and any numbered step
+  list, including a header flow summary, must present steps in run order.
+  Each entry must match the body step it names: same step number, same
+  name, same action and tool call. An entry that describes a step the body
+  no longer does, or keeps a number the body renumbered, is a finding. An
+  overview that lists steps out of run order misstates the flow, so it is
+  a finding.
 
 ## What NOT to flag
 

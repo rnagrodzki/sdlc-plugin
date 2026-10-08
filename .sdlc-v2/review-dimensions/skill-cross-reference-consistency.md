@@ -35,6 +35,13 @@ severity: high
   verify that tool is actually registered (`internal/skillcheck`
   registries) and its action/behavior matches the claim — do not accept
   a plausible-sounding tool name without checking it exists.
+- **Callee output consumed by the caller.** When a skill dispatches a
+  sub-skill, a background worker, or an MCP tool whose returned fields
+  carry a signal the caller must act on (an unstopped-worker report, a
+  stop-failure list, a blocking verdict), the caller must name the step
+  that reads each such field and state its action: stop, retry, or
+  disclose to the user. A returned signal with no consuming step in the
+  caller is a finding.
 
 ## What NOT to flag
 

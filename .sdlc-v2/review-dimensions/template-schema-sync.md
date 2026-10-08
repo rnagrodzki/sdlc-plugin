@@ -11,6 +11,7 @@ When a schema enum, property set, minItems, or other constraint changes, audit a
 
 - Every default value in templates must be a valid enum member (or valid type) per the schema.
 - Every comment that lists valid options must enumerate exactly what the schema permits, not a stale subset.
+- Every key whose schema sets an enum, minItems, a minimum or maximum bound, or a rejected empty value must have a comment that states that constraint. A key with no such comment, or a comment that gives only the default, is a finding even when the default is valid.
 - Examples in comments (e.g. `rebase = auto`) must validate against the schema.
 - If a schema property is renamed or removed, the corresponding template entry must be updated or removed.
 
