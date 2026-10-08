@@ -78,6 +78,11 @@ type ShipStepNarrationOut struct {
 	// verification) should not clutter every begin-step response with
 	// alreadyDone:false.
 	AlreadyDone bool `json:"alreadyDone,omitempty"`
+	// Warnings names a best-effort write that failed without failing the
+	// action: fail sets it when the failure row could not be appended to
+	// runs.jsonl. Response-only — never persisted. omitempty: most calls have
+	// nothing to warn about.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // ShipNextOut is the output of the Go-native next action: the first step
@@ -1073,6 +1078,33 @@ func shipStateSkip(root, workDir string, in ShipStateIn, now func() time.Time) (
 	return out, nil
 }
 
+// shipHistoryAppendFunc appends one run record to runs.jsonl. Tests replace it
+// to force an append failure without touching file permissions.
+var shipHistoryAppendFunc = func(root string, rec history.RunRecord) error {
+	return history.NewFileWriter(historyDir(root)).AppendRun(rec)
+}
+
+// shipStateWriteFunc writes a ship state file. Tests replace it to force a
+// write failure without touching file permissions.
+var shipStateWriteFunc = state.Write
+
+// shipFailDurationMs returns the milliseconds between startedAt and now. It
+// returns 0 when startedAt does not parse as an RFC3339 timestamp.
+func shipFailDurationMs(startedAt string, now time.Time) int64 {
+	d, ok := pipeline.Duration(startedAt, now.UTC().Format(time.RFC3339))
+	if !ok {
+		return 0
+	}
+	return d.Milliseconds()
+}
+
+// shipStateFail marks a step failed and records the issue. The first fail of a
+// run also appends one failure row to runs.jsonl, so the dashboard can show a
+// run that never reached cleanup. It sets historyFailureRecorded before the
+// state write, so a later fail in the same run appends no second row. If the
+// state write fails, the flag is not persisted and no row exists, so a retry is
+// safe. If the append fails, the action still succeeds and the response
+// carries a warning that names the runs path.
 func shipStateFail(root, workDir string, in ShipStateIn, now func() time.Time) (any, error) {
 	if in.Step == "" {
 		return nil, &mcpserver.DomainError{
@@ -1102,6 +1134,7 @@ func shipStateFail(root, workDir string, in ShipStateIn, now func() time.Time) (
 		}
 	}
 
+	failedAt := now()
 	st.Data["lastFailedStep"] = in.Step
 	execAppendIssue(st.Data, StateIssue{
 		Step:      in.Step,
@@ -1109,14 +1142,39 @@ func shipStateFail(root, workDir string, in ShipStateIn, now func() time.Time) (
 		Category:  "ship-fail",
 		Summary:   fmt.Sprintf("Step %s failed", in.Step),
 		Detail:    detail,
-		Timestamp: now().UTC().Format(time.RFC3339),
+		Timestamp: failedAt.UTC().Format(time.RFC3339),
 	})
 
-	if err := state.Write(st); err != nil {
+	recorded, _ := st.Data["historyFailureRecorded"].(bool)
+	firstFail := !recorded
+	if firstFail {
+		st.Data["historyFailureRecorded"] = true
+	}
+
+	if err := shipStateWriteFunc(st); err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("write ship state to %s: %s", st.Path, err.Error()),
 			Suggestion: "Check write permission on the ship state file path above and free disk space on the project root, then retry ship_state fail.",
 			Cause:      err,
+		}
+	}
+
+	// The flag is persisted before the append. A crash between the two loses
+	// the row but never writes a second one.
+	var warnings []string
+	if firstFail {
+		startedAt := dashboardStr(st.Data["startedAt"])
+		rec := history.RunRecord{
+			Timestamp:  failedAt.UTC().Format(time.RFC3339),
+			Skill:      "ship",
+			Branch:     dashboardStr(st.Data["branch"]),
+			Outcome:    "failure",
+			DurationMs: shipFailDurationMs(startedAt, failedAt),
+			StartedAt:  startedAt,
+		}
+		if err := shipHistoryAppendFunc(root, rec); err != nil {
+			warnings = append(warnings, "failure history row not written to "+paths.DataDir+"/history/runs.jsonl: "+err.Error()+
+				`. To add it, call ship_state history_record with detail.skill "ship" and detail.outcome "failure".`)
 		}
 	}
 
@@ -1125,6 +1183,7 @@ func shipStateFail(root, workDir string, in ShipStateIn, now func() time.Time) (
 		Narration: pipeline.Narration{
 			Summary: fmt.Sprintf("Step '%s' failed (%d of %d).", in.Step, pos, total),
 		},
+		Warnings: warnings,
 	}
 	if shipDetailLevel(in) == "full" {
 		ts := pipeline.NewTimingsStore(root)
@@ -2074,13 +2133,30 @@ type ShipPlanRunCleanup struct {
 	Reason  string `json:"reason,omitempty"`
 }
 
-// planRun.reason values. A failed remove reports "remove failed: <error>".
+// shipExploreSummaryFunc reads the plan explorer summary of one plan run.
+// Tests replace it to force a read failure: planExploreSummary fails only on
+// an OS read error that file permissions would cause.
+var shipExploreSummaryFunc = planExploreSummary
+
+// shipRemoveEvidenceFunc deletes the evidence directory of a plan run. Tests
+// replace it to force a delete failure without touching file permissions.
+var shipRemoveEvidenceFunc = os.RemoveAll
+
+// planRun.reason values. A failed remove reports "remove failed: <error>". A
+// failed summary copy reports shipPlanRunReasonSummaryFailed, then "<error>",
+// then shipPlanRunSummaryRetryHint.
 const (
-	shipPlanRunReasonNotStamped   = "run not stamped"
-	shipPlanRunReasonNoLinked     = "no linked plan run"
-	shipPlanRunReasonNoReport     = "report not written"
-	shipPlanRunReasonRemoveFailed = "remove failed: "
+	shipPlanRunReasonNotStamped    = "run not stamped"
+	shipPlanRunReasonNoLinked      = "no linked plan run"
+	shipPlanRunReasonNoReport      = "report not written"
+	shipPlanRunReasonRemoveFailed  = "remove failed: "
+	shipPlanRunReasonSummaryFailed = "explorer summary not saved: "
+	shipPlanRunSummaryRetryHint    = ". Fix the cause and call cleanup-pipeline again."
 )
+
+// shipPlanExploreSummaryKey is the ship state data key that holds the plan
+// explorer summary copied at cleanup.
+const shipPlanExploreSummaryKey = "planExploreSummary"
 
 // shipDeleteReportedPlanRun deletes the plan run linked to this ship run —
 // its plan-<slug>-<ts>.json state file and its .evidence directory — once
@@ -2091,12 +2167,20 @@ const (
 // runId is derived from the ship state's startedAt exactly as the report
 // action derives it.
 //
+// Before the delete, it copies the plan explorer summary into ship.Data
+// under "planExploreSummary" and writes the ship state. The write comes
+// before the evidence delete, because the delete loses the explorer data. If
+// the summary read or the ship state write fails, nothing is deleted and the
+// reason starts with shipPlanRunReasonSummaryFailed, so a retry finds the
+// plan run again. A retry after a failed delete reads an empty summary. It
+// then keeps a stored non-empty list.
+//
 // It fails safe: any lookup error, a missing startedAt, or a stat error
 // other than not-exist deletes nothing. It never returns an error, so the
 // gc sweep after it still runs on a run that is already stamped. The
 // evidence directory is removed before the state file; if that remove
 // fails, the state file stays so a retry can find the run again.
-func shipDeleteReportedPlanRun(root, branch string, shipData map[string]any) ShipPlanRunCleanup {
+func shipDeleteReportedPlanRun(root, branch string, ship *state.State) ShipPlanRunCleanup {
 	execSt, err := state.Find(root, "execute", branch)
 	if err != nil || execSt == nil {
 		return ShipPlanRunCleanup{Reason: shipPlanRunReasonNoLinked}
@@ -2106,12 +2190,23 @@ func shipDeleteReportedPlanRun(root, branch string, shipData map[string]any) Shi
 		return ShipPlanRunCleanup{Reason: shipPlanRunReasonNoLinked}
 	}
 
-	if !shipReportWritten(root, shipData) {
+	if !shipReportWritten(root, ship.Data) {
 		return ShipPlanRunCleanup{Reason: shipPlanRunReasonNoReport}
 	}
 
 	runID := state.RunID(planRun)
-	if err := os.RemoveAll(state.EvidenceDir(root, runID)); err != nil {
+	summary, err := shipExploreSummaryFunc(root, runID)
+	if err != nil {
+		return ShipPlanRunCleanup{Reason: shipPlanRunReasonSummaryFailed + err.Error() + shipPlanRunSummaryRetryHint}
+	}
+	// A retry after the evidence delete reads []. Keep a stored non-empty list.
+	if prev, _ := ship.Data[shipPlanExploreSummaryKey].([]any); len(summary) > 0 || len(prev) == 0 {
+		ship.Data[shipPlanExploreSummaryKey] = summary
+	}
+	if err := shipStateWriteFunc(ship); err != nil {
+		return ShipPlanRunCleanup{Reason: shipPlanRunReasonSummaryFailed + err.Error() + shipPlanRunSummaryRetryHint}
+	}
+	if err := shipRemoveEvidenceFunc(state.EvidenceDir(root, runID)); err != nil {
 		return ShipPlanRunCleanup{Reason: shipPlanRunReasonRemoveFailed + err.Error()}
 	}
 	if err := os.Remove(planRun.Path); err != nil && !os.IsNotExist(err) {
@@ -2215,7 +2310,7 @@ func shipStateCleanupPipeline(root, workDir string, in ShipStateIn, now func() t
 	// write has already returned above.
 	planRun := ShipPlanRunCleanup{Reason: shipPlanRunReasonNotStamped}
 	if runStamped {
-		planRun = shipDeleteReportedPlanRun(root, branch, st.Data)
+		planRun = shipDeleteReportedPlanRun(root, branch, st)
 	}
 
 	stateDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
@@ -2866,7 +2961,7 @@ Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide
 - start: (Legacy) Begin a step. Requires step. Returns narration. Optional: detail.branch, detail.detail.
 - complete: (Legacy) Complete a step. Requires step. Returns narration with timing. Optional: detail.branch, detail.result, detail.detail.
 - skip: Skip a step. Requires step. Returns narration. Optional: detail.branch, detail.reason, detail.detail.
-- fail: Fail a step. Requires step. Returns narration. Optional: detail.branch, detail.error (recorded as issue), detail.detail.
+- fail: Fail a step. Requires step. Returns narration. The first fail of a run also appends one failure row to .sdlc-v2/history/runs.jsonl (state key historyFailureRecorded stops a second row); a failed append does not fail the call but is named in warnings, with the history_record call that adds the row. Optional: detail.branch, detail.error (recorded as issue), detail.detail.
 - decide: Record a decision. Requires step. Returns narration. Optional: detail.branch, detail.text, detail.detail.
 - defer: Record a deferred finding. Writes it both to the run-scoped ship state file and durably to .sdlc-v2/history/deferred.json (with source detail.source, default "`+history.SourceReviewBelowThreshold+`"), so it survives state-file GC — no follow-up deferred_add is needed. Returns narration naming the generated deferred id (review-deferred-<timestamp>-<N>) and the file it was written to; a failed deferred.json write does not fail the call but is named in the summary, with the deferred_add call that recovers it. Requires detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`, case-insensitive; the lowercase form is recorded), detail.file, detail.title. Optional: detail.branch, detail.line (integer), detail.detail, detail.description (the deferring agent's own reasoning; defaults to detail.title), detail.reason (one of `+strings.Join(history.DeferredReasons(), " | ")+`; an omitted reason records `+history.ReasonBelowThreshold+`), detail.source (the tool recording the deferral, e.g. "received-review"; defaults to "`+history.SourceReviewBelowThreshold+`").
 - healing_record: Record one self-healing change in the live ship run's data.healing. Requires detail.kind: "review-total" (Requires detail.total, detail.dimensions — non-negative integers; replaces the previous value) | "fixed" (Requires detail.origin "local-review"|"pr-comment", detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`), detail.file, detail.title; Optional detail.line) | "hardened" (Requires detail.phase "started"|"done", detail.trigger, detail.classification, detail.applied [{surface (one of `+strings.Join(healingSurfaceIDs(), " | ")+`), action, targetFile}], detail.skipped (non-negative integer); a "done" record replaces a "started" record with the same trigger). Optional: detail.branch. Duplicates are ignored (narration "already recorded — no change"). With no live ship run (no state, or pipelineCompletedAt set) it returns ok and records nothing. Returns summary, kind, written (true only when this call changed the state file) and record (the validated record as persisted, recordedAt included).
@@ -2874,7 +2969,7 @@ Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide
 - read: Return the full ship state. Optional: detail.branch. The response also carries "reportData": report-ready aggregates, including healing (data.healing verbatim, {} when absent) and reviewLedger {total, fixed (local-review only), deferredByReason, unaccounted = total - fixed - deferred, never clamped} — reviewLedger is null, with reviewLedgerNote, when no review total was recorded. Also returns style: the plugin-wide communication style; follow style.guide in chat and questions. When the pipeline is in flight (not stamped pipelineStatus:"completed", some step still blocks proceed, and at least one step has been started), the state also carries a "resumeBriefing" (resumable, lastStep, lastStepStatus, sideEffects, summary, display, timing{stepSeconds,pipelineSeconds,idleSeconds,human}, next). A step left "failed" is still reported resumable:true, never as an error.
 - report: Compose the end-of-run report from ship state, this run's execute state (only when the execute step completed), CLI evidence and learnings, and render it. Optional: detail.write (true persists it under <main worktree>/.sdlc-v2/reports/), detail.format ("md"|"json", default from automation.report.format), detail.branch. Returns {skipped:true} when automation.report.enabled is false.
 - cleanup: Stamp a branch's ship state terminal (pipelineStatus:"completed", pipelineCompletedAt) instead of deleting it, after validating every step is in a terminal state — the state survives for later reads until GC's TTL prunes it. Optional: detail.branch.
-- cleanup-pipeline: Same stamp-instead-of-delete for the current branch's ship state (force/no-state-file skip the contract check). Only after a successful stamp, it deletes the plan run linked through this branch's execute state (its plan-<slug>-<ts>.json and .evidence directory) when the ship report ship-<runId>-report.<md|json> exists; force and no-state-file never delete it. The result's planRun is {deleted, runId?, reason?} with reason "run not stamped" | "no linked plan run" | "report not written" | "remove failed: <error>". Then an unconditional GC + per-run-directory sweep. Optional: detail.branch, detail.force, detail.ttlDays.
+- cleanup-pipeline: Same stamp-instead-of-delete for the current branch's ship state (force/no-state-file skip the contract check). Only after a successful stamp, it deletes the plan run linked through this branch's execute state (its plan-<slug>-<ts>.json and .evidence directory) when the ship report ship-<runId>-report.<md|json> exists; force and no-state-file never delete it. Before it deletes the plan run, it copies the explorer summary into ship state planExploreSummary. If the copy fails, the plan run stays and planRun.reason starts with "explorer summary not saved: ". Fix the cause and call cleanup-pipeline again. The result's planRun is {deleted, runId?, reason?} with reason "run not stamped" | "no linked plan run" | "report not written" | "explorer summary not saved: <error>. Fix the cause and call cleanup-pipeline again." | "remove failed: <error>". Then an unconditional GC + per-run-directory sweep. Optional: detail.branch, detail.force, detail.ttlDays.
 - gc: Garbage-collect stale state files. Optional: detail.ttlDays, detail.dryRun.
 - migrate: Migrate state between branches. Requires detail.from, detail.to.
 - next: Return the next pending step. Optional: detail.branch, detail.stateFile.

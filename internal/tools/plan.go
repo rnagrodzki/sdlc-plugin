@@ -1790,6 +1790,13 @@ func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepar
 // REPLACES that key's value on every call rather than appending to it — see
 // PlanCheckpoint. It is deliberately absent from structuredDataMarkers below
 // (that map is append-only) and is handled by its own branch in planMark.
+//
+// "review-round" is a ninth kind: it owns the top-level st.Data key
+// "reviewRounds", a list of PlanReviewRound sorted by round. Each call
+// replaces the entry with the same round, or inserts a new one, because the
+// plan skill can send the same round twice after a resume. Like
+// "checkpoint", it is absent from structuredDataMarkers and has its own
+// branch in planMark, but it returns no Next.
 var validMarkers = map[string]bool{
 	"plan-file":           true,
 	"skillInvoked":        true,
@@ -1799,6 +1806,7 @@ var validMarkers = map[string]bool{
 	"guardrailResults":    true,
 	"criticalDecisions":   true,
 	"checkpoint":          true,
+	"review-round":        true,
 }
 
 // structuredDataMarkers maps a plan_mark structured-data marker name to the
@@ -1947,6 +1955,184 @@ func validateCheckpointData(data map[string]any) (PlanCheckpoint, error) {
 	return PlanCheckpoint{Step: step, Iteration: iteration, ExpectedWriters: expectedWriters}, nil
 }
 
+// maxReviewRoundsStored caps the number of entries in st.Data["reviewRounds"].
+const maxReviewRoundsStored = 20
+
+// maxReviewRoundLenses caps PlanReviewRound.Lenses, the same cap as
+// PlanCheckpoint.ExpectedWriters.
+const maxReviewRoundLenses = 32
+
+// PlanReviewRound is one entry of data.reviewRounds: the result of one plan
+// review round of the plan skill. Found is the blocking-issue count of the
+// round's merge_results call (its blockingCount); Fixed is how many of them
+// the round fixed.
+type PlanReviewRound struct {
+	Round        int             `json:"round"`
+	MergedStatus string          `json:"mergedStatus"` // planStatusApproved | planStatusIssuesFound
+	Found        int             `json:"found"`
+	Fixed        int             `json:"fixed"`
+	Lenses       []PlanRoundLens `json:"lenses"`
+}
+
+// PlanRoundLens is the verdict of one review lens in a PlanReviewRound.
+type PlanRoundLens struct {
+	Name    string `json:"name"`    // matches writerIDRe
+	Verdict string `json:"verdict"` // planStatusApproved | planStatusIssuesFound
+}
+
+// reviewRoundStatusSuggestion is the Suggestion for an out-of-enum
+// mergedStatus or lens verdict.
+var reviewRoundStatusSuggestion = fmt.Sprintf("pass exactly %q or %q", planStatusApproved, planStatusIssuesFound)
+
+// reviewRoundInt reads a required whole-number field of the "review-round"
+// payload. JSON numbers decode to float64; a missing key, another type, a
+// fraction, or a value below lowest is rejected.
+func reviewRoundInt(data map[string]any, key string, lowest int) (int, error) {
+	f, ok := data[key].(float64)
+	if !ok || f < float64(lowest) || f != math.Trunc(f) {
+		return 0, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("review-round %s must be a whole number >= %d", key, lowest),
+			Suggestion: fmt.Sprintf("pass %s as a whole number >= %d, e.g. data {round:2, mergedStatus:%q, found:4, fixed:4, lenses:[]}", key, lowest, planStatusIssuesFound),
+		}
+	}
+	return int(f), nil
+}
+
+// validateReviewRoundData validates and parses the "review-round" marker's
+// data payload into a PlanReviewRound. All five keys are required. Every
+// failure is a DomainError with a non-empty Suggestion; nothing is written
+// to state by this function. The cap on stored rounds needs the state file,
+// so planMark checks it.
+func validateReviewRoundData(data map[string]any) (PlanReviewRound, error) {
+	const allowedKeys = "round, mergedStatus, found, fixed, lenses"
+	if len(data) == 0 {
+		return PlanReviewRound{}, &mcpserver.DomainError{
+			Msg:        "review-round needs data {" + allowedKeys + "}",
+			Suggestion: fmt.Sprintf("call plan_mark with data {round:1, mergedStatus:%q, found:0, fixed:0, lenses:[]}; keys: %s", planStatusApproved, allowedKeys),
+		}
+	}
+
+	for k := range data {
+		switch k {
+		case "round", "mergedStatus", "found", "fixed", "lenses":
+		default:
+			return PlanReviewRound{}, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("review-round data has unknown key %q", k),
+				Suggestion: fmt.Sprintf("remove %q; allowed keys: %s", k, allowedKeys),
+			}
+		}
+	}
+
+	round, err := reviewRoundInt(data, "round", 1)
+	if err != nil {
+		return PlanReviewRound{}, err
+	}
+	found, err := reviewRoundInt(data, "found", 0)
+	if err != nil {
+		return PlanReviewRound{}, err
+	}
+	fixed, err := reviewRoundInt(data, "fixed", 0)
+	if err != nil {
+		return PlanReviewRound{}, err
+	}
+
+	mergedStatus, _ := data["mergedStatus"].(string)
+	if mergedStatus != planStatusApproved && mergedStatus != planStatusIssuesFound {
+		return PlanReviewRound{}, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("review-round mergedStatus %q is not valid", mergedStatus),
+			Suggestion: reviewRoundStatusSuggestion + " as mergedStatus (the mergedStatus of merge_results)",
+		}
+	}
+
+	arr, ok := data["lenses"].([]any)
+	if !ok {
+		return PlanReviewRound{}, &mcpserver.DomainError{
+			Msg:        "review-round lenses must be a JSON array of {name, verdict}",
+			Suggestion: fmt.Sprintf("pass lenses as an array, e.g. lenses:[{name:\"risk\", verdict:%q}]; pass [] when no lens ran", planStatusApproved),
+		}
+	}
+	if len(arr) > maxReviewRoundLenses {
+		return PlanReviewRound{}, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("review-round lenses has %d entries, max %d", len(arr), maxReviewRoundLenses),
+			Suggestion: "pass only the lenses of this round",
+		}
+	}
+	lenses := make([]PlanRoundLens, 0, len(arr))
+	for i, el := range arr {
+		obj, ok := el.(map[string]any)
+		if !ok {
+			return PlanReviewRound{}, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("review-round lenses[%d] must be an object {name, verdict}", i),
+				Suggestion: fmt.Sprintf("pass each lens as {name:\"risk\", verdict:%q}", planStatusApproved),
+			}
+		}
+		for k := range obj {
+			if k != "name" && k != "verdict" {
+				return PlanReviewRound{}, &mcpserver.DomainError{
+					Msg:        fmt.Sprintf("review-round lenses[%d] has unknown key %q", i, k),
+					Suggestion: fmt.Sprintf("remove %q; allowed lens keys: name, verdict", k),
+				}
+			}
+		}
+		name, _ := obj["name"].(string)
+		if !writerIDRe.MatchString(name) {
+			return PlanReviewRound{}, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("review-round lenses[%d].name %q is not a valid lens name", i, name),
+				Suggestion: "use letters, digits, '.', '_' or '-' (max 64), e.g. architecture",
+			}
+		}
+		verdict, _ := obj["verdict"].(string)
+		if verdict != planStatusApproved && verdict != planStatusIssuesFound {
+			return PlanReviewRound{}, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("review-round lenses[%d].verdict %q is not valid", i, verdict),
+				Suggestion: reviewRoundStatusSuggestion + " as verdict",
+			}
+		}
+		lenses = append(lenses, PlanRoundLens{Name: name, Verdict: verdict})
+	}
+
+	return PlanReviewRound{Round: round, MergedStatus: mergedStatus, Found: found, Fixed: fixed, Lenses: lenses}, nil
+}
+
+// upsertReviewRound returns the stored reviewRounds list with rr in place
+// of the entry with the same round (or added), sorted by round. raw is
+// st.Data["reviewRounds"]: absent, a []PlanReviewRound, or the []any a state
+// file decodes to. A list with more than maxReviewRoundsStored entries after
+// the upsert is a DomainError; a stored value that is not a list of rounds
+// is a DataError. Neither error changes st.
+func upsertReviewRound(raw any, rr PlanReviewRound) ([]PlanReviewRound, error) {
+	var rounds []PlanReviewRound
+	if raw != nil {
+		b, err := json.Marshal(raw)
+		if err == nil {
+			err = json.Unmarshal(b, &rounds)
+		}
+		if err != nil {
+			return nil, &mcpserver.DataError{
+				Msg:        fmt.Sprintf("plan state reviewRounds is not a list of review rounds: %s", err.Error()),
+				Suggestion: "Remove the reviewRounds key from the plan state file, then send each review-round again.",
+				Cause:      err,
+			}
+		}
+	}
+
+	out := make([]PlanReviewRound, 0, len(rounds)+1)
+	for _, r := range rounds {
+		if r.Round != rr.Round {
+			out = append(out, r)
+		}
+	}
+	out = append(out, rr)
+	if len(out) > maxReviewRoundsStored {
+		return nil, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("review-round %d would store %d rounds, max %d", rr.Round, len(out), maxReviewRoundsStored),
+			Suggestion: "Resend an existing round number to replace its entry; the plan review loop stops long before this limit.",
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Round < out[j].Round })
+	return out, nil
+}
+
 // checkpointNext builds the "checkpoint" marker's Next instruction: the
 // step-continuation sentence, a last-round warning at the Step 5 review-loop
 // limit (maxReviewRounds) or a past-the-limit warning after it, plus the full custom-instructions text when the
@@ -2091,9 +2277,9 @@ func appendPlanRunRecord(mainRoot, branch string, st *state.State) error {
 
 // PlanMarkIn is the input for the plan_mark tool.
 type PlanMarkIn struct {
-	Marker string         `json:"marker" jsonschema:"enum=plan-file,enum=skillInvoked,enum=guardrailsEvaluated,enum=critiqueRan,enum=done,enum=guardrailResults,enum=criticalDecisions,enum=checkpoint" jsonschema_description:"Checkpoint marker: \"plan-file\", \"skillInvoked\", \"guardrailsEvaluated\", \"critiqueRan\", or the terminal \"done\" marker stamp the current timestamp into planIntegrity; \"guardrailResults\" and \"criticalDecisions\" instead append data's array payload to their own state key. \"checkpoint\" replaces the progress checkpoint (requires data)."`
+	Marker string         `json:"marker" jsonschema:"enum=plan-file,enum=skillInvoked,enum=guardrailsEvaluated,enum=critiqueRan,enum=done,enum=guardrailResults,enum=criticalDecisions,enum=checkpoint,enum=review-round" jsonschema_description:"Checkpoint marker: \"plan-file\", \"skillInvoked\", \"guardrailsEvaluated\", \"critiqueRan\", or the terminal \"done\" marker stamp the current timestamp into planIntegrity; \"guardrailResults\" and \"criticalDecisions\" instead append data's array payload to their own state key. \"checkpoint\" replaces the progress checkpoint (requires data). \"review-round\" records one plan review round in reviewRounds and replaces the entry with the same round (requires data {round, mergedStatus, found, fixed, lenses})."`
 	Path   string         `json:"path" jsonschema_description:"Plan file path to record. Only used (and required) when marker is \"plan-file\"."`
-	Data   map[string]any `json:"data,omitempty" jsonschema_description:"Structured payload for the \"guardrailResults\" marker ({results:[{id,status,detail}]}) or the \"criticalDecisions\" marker ({decisions:[{key,choice,rejected,reason}]}; rejected is [{option,why}], defaults to [] when omitted; the tool always sets at to the call time, overwriting any caller-supplied value). For \"checkpoint\": JSON object {step: string, one of \"0\", \"1\", \"2\", \"3\", \"4\", \"5\", \"6\", \"6.5\", \"6.6\", \"7\"; iteration: integer >= 0; expectedWriters: JSON array of writer IDs (max 32)}. Example: {\"step\":\"3\",\"iteration\":1,\"expectedWriters\":[\"lane-static-structural-r1\"]}. Replaced, not appended. Ignored for every other marker."`
+	Data   map[string]any `json:"data,omitempty" jsonschema_description:"Structured payload for the \"guardrailResults\" marker ({results:[{id,status,detail}]}) or the \"criticalDecisions\" marker ({decisions:[{key,choice,rejected,reason}]}; rejected is [{option,why}], defaults to [] when omitted; the tool always sets at to the call time, overwriting any caller-supplied value). For \"checkpoint\": JSON object {step: string, one of \"0\", \"1\", \"2\", \"3\", \"4\", \"5\", \"6\", \"6.5\", \"6.6\", \"7\"; iteration: integer >= 0; expectedWriters: JSON array of writer IDs (max 32)}. Example: {\"step\":\"3\",\"iteration\":1,\"expectedWriters\":[\"lane-static-structural-r1\"]}. Replaced, not appended. For \"review-round\": JSON object, all keys required: {round: integer >= 1; mergedStatus: \"Approved\" or \"Issues Found\" (exact text); found: integer >= 0, blocking issues found in the round; fixed: integer >= 0, blocking issues fixed; lenses: JSON array (max 32) of {name: lens name, letters, digits, '.', '_', '-'; verdict: \"Approved\" or \"Issues Found\"}}. Example: {\"round\":2,\"mergedStatus\":\"Issues Found\",\"found\":4,\"fixed\":4,\"lenses\":[{\"name\":\"architecture\",\"verdict\":\"Approved\"},{\"name\":\"risk\",\"verdict\":\"Issues Found\"}]}. Replaces the entry with the same round; max 20 rounds stored. Ignored for every other marker."`
 }
 
 // PlanMarkOut is the output for the plan_mark tool.
@@ -2140,6 +2326,15 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 		}
 		checkpoint = cp
 	}
+	// "review-round" data is validated up front too, for the same reason.
+	var reviewRound PlanReviewRound
+	if in.Marker == "review-round" {
+		rr, verr := validateReviewRoundData(in.Data)
+		if verr != nil {
+			return PlanMarkOut{}, verr
+		}
+		reviewRound = rr
+	}
 
 	branch, err := gitx.CurrentBranch(contentRoot)
 	if err != nil || branch == "" {
@@ -2183,6 +2378,26 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 			}
 		}
 		return PlanMarkOut{OK: true, Marker: in.Marker, Path: st.Path, Next: checkpointNext(mainRoot, checkpoint)}, nil
+	}
+
+	// "review-round" upserts its entry into reviewRounds by round. It
+	// returns no Next.
+	if in.Marker == "review-round" {
+		rounds, uerr := upsertReviewRound(st.Data["reviewRounds"], reviewRound)
+		if uerr != nil {
+			return PlanMarkOut{}, uerr
+		}
+		st.Data["reviewRounds"] = rounds
+
+		refreshPlanTiming(st, contentRoot)
+		if err := state.Write(st); err != nil {
+			return PlanMarkOut{}, &mcpserver.InfraError{
+				Msg:        fmt.Sprintf("write plan state file: %s", err.Error()),
+				Suggestion: "Check write permission on the plan state file path above and free disk space on the project root, then retry plan_mark with the same marker and data.",
+				Cause:      err,
+			}
+		}
+		return PlanMarkOut{OK: true, Marker: in.Marker, Path: st.Path}, nil
 	}
 
 	// Structured-data markers append to their own top-level state key and
@@ -2282,8 +2497,9 @@ func RegisterPlanTools(s *mcpserver.Server) {
 	)
 
 	mcpserver.Register(s, "plan_mark",
-		"INTERNAL — called by sdlc skills only. Write a plan-integrity checkpoint marker (plan-file, skillInvoked, guardrailsEvaluated, critiqueRan, done) into the current branch's plan state file, append structured data (guardrailResults, criticalDecisions) to it, or replace the progress checkpoint (checkpoint). "+
+		"INTERNAL — called by sdlc skills only. Write a plan-integrity checkpoint marker (plan-file, skillInvoked, guardrailsEvaluated, critiqueRan, done) into the current branch's plan state file, append structured data (guardrailResults, criticalDecisions) to it, replace the progress checkpoint (checkpoint), or record a review round (review-round). "+
 			"checkpoint: replace the progress checkpoint. Requires data.step (one of \"0\", \"1\", \"2\", \"3\", \"4\", \"5\", \"6\", \"6.5\", \"6.6\", \"7\"). Optional: data.iteration, data.expectedWriters. Returns next: the step-continuation sentence, plus the full custom plan instructions text (from [planStyle].instructions) when any are configured, plus a last-round sentence when step is \"5\" and iteration reaches the review-loop limit (plan_prepare's reviewLoop.maxRounds). Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError. "+
+			"review-round — Requires: data.round, data.mergedStatus, data.found, data.fixed, data.lenses. Replaces the row with the same round. Returns no next. "+
 			"Markers other than checkpoint return no next: the call only records state; continue the current SKILL.md step. "+
 			"The done marker also appends the plan's timing (start to last plan-file edit) to .sdlc-v2/history/runs.jsonl; a failed append returns ok with warnings set. Repeating done appends another history record.",
 		mcpserver.Annotations{

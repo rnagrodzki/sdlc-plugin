@@ -20,3 +20,13 @@ severity: high
   verify TaskStop or equivalent cleanup is called in Step 3 stall handler,
   Step 9 cleanup, and all error-recovery paths. No worker should be left
   running unattended after dispatch failure or abandonment.
+- Tell a missing worker (dispatched, but never reported in) from an
+  abandoned worker (started, then left running after a stall or error).
+  Verify the results step names each missing worker, so the user sees that
+  an expected worker did not arrive. Verify the stall handler and the
+  normal-completion cleanup step both end each abandoned worker, via
+  TaskStop or equivalent.
+- Verify every entry that dispatches the same workers carries the
+  nested-dispatch note (for example the ship entry for review as well as
+  the ship entry for execute). A note present in one entry and absent from
+  its sibling is a finding.

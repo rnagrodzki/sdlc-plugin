@@ -46,6 +46,39 @@ severity: high
   prose reference to that section in reference docs (headlines, connectivity
   tables, examples). A reference must name the actual section the code reads
   at that point, not the section's pre-restructure name.
+- When a reference document describes struct return shapes (e.g., the return
+  value table for a tool action or the state structure of a component), verify
+  that every exported field of the Go *Out struct is mentioned in the prose,
+  either explicitly by name in tables/examples or in a documented catch-all
+  note. A documented return shape that omits fields is a finding; use grep or
+  struct inspection to enumerate the actual Go struct and confirm field-by-field
+  parity with the prose. Example: if plan/state-format.md documents
+  cleanup-pipeline's return shape, confirm it names every field in the Go
+  cleanup pipeline output struct.
+- When a reference document describes a persisted row or record (e.g., a
+  history row written by plan_mark, a state snapshot row, a ledger entry
+  written by recovery paths), verify that every field each writer produces is
+  documented. Writers that produce a reduced set of fields (omitting fields
+  present in other writers' rows) must be explicitly noted with the fields that
+  writer emits and the reason for the reduction. Use grep to find all call
+  sites that write the row/record and cross-check the prose against each
+  writer's field set. A documented row with fields omitted by some writers but
+  not others, without explicit per-writer field enumeration, is a finding.
+- When a reference document has a lifecycle rule that says when a state file
+  is created, updated, or deleted, the rule must name every action and every
+  marker that writes the file. Grep the callers of the write function and
+  list each variant the source accepts. Example: the plan `state-format.md`
+  Lifecycle Rules for `plan_mark` must name the `planIntegrity` markers, the
+  `checkpoint` marker, and the `review-round` marker, because each writes a
+  different part of the state file. A lifecycle rule that names fewer writes
+  than the source has is a finding.
+- When a reference document states a name or id rule, it must restate the
+  whole pattern from the source regex: the anchored first-character class,
+  the allowed set for the other characters, and the length bound. Compare the
+  prose to the Go regex part by part. A rule that lists the allowed
+  characters but omits that the first character is limited to a subset of
+  them (for example `writerIDRe`: the first character is a letter or a
+  digit) is a finding.
 
 ## What NOT to flag
 

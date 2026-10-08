@@ -73,6 +73,7 @@ type DashboardRepo struct {
 	Sessions  []DashboardSession  `json:"sessions"`
 	Learnings []DashboardLearning `json:"learnings"`
 	Deferred  []DashboardDeferred `json:"deferred"`
+	History   []DashboardRun      `json:"history"` // [] until filled, never null
 }
 
 // DashboardPipeline is one ship, execute, plan, or review run.
@@ -88,6 +89,9 @@ type DashboardPipeline struct {
 	Progress    DashboardProgress `json:"progress"`
 	Steps       []DashboardStep   `json:"steps"`
 	Issues      []DashboardIssue  `json:"issues"`
+	SessionID   string            `json:"sessionId"`             // "" when unknown
+	CommitWaves *bool             `json:"commitWaves,omitempty"` // execute and ship only; absent elsewhere
+	join        dashboardJoinInfo // not serialized; read by dashboardJoinRuns
 }
 
 // DashboardProgress is the progress summary of a pipeline.
@@ -101,16 +105,131 @@ type DashboardProgress struct {
 // DashboardStep is one step of a pipeline. Status is one of the Step*
 // constants.
 type DashboardStep struct {
-	Name   string `json:"name"`
-	Status string `json:"status"`
+	Name   string               `json:"name"`
+	Status string               `json:"status"`
+	Detail *DashboardStepDetail `json:"detail,omitempty"`
 }
 
-// DashboardIssue is one problem of a pipeline. Source is "step", "wave", or
-// "review".
+// DashboardIssue is one problem of a pipeline. Source is "step", "wave",
+// "review", "state", "task", or "pipeline".
 type DashboardIssue struct {
 	Source   string `json:"source"`
 	Severity string `json:"severity"`
 	Text     string `json:"text"`
+	File     string `json:"file"`
+	Line     string `json:"line"` // "" | "42" | "12-14"
+	Ref      string `json:"ref"`  // step, wave, dimension, or task of the issue
+}
+
+// Kind values of a DashboardStepDetail: a closed set. Every detail literal
+// sets Kind from one of these constants, never from a new literal.
+const (
+	dashboardKindWaves      = "waves"
+	dashboardKindDimensions = "dimensions"
+	dashboardKindExplorers  = "explorers"
+	dashboardKindRounds     = "rounds"
+	dashboardKindFindings   = "findings"
+)
+
+// DashboardStepDetail is what a pipeline did inside one step. Kind tells
+// which list is filled. Every slice field is [] when empty, never nil; the
+// omitempty fields are absent, not null.
+type DashboardStepDetail struct {
+	Kind         string                   `json:"kind"` // a dashboardKind* value; never ""
+	Waves        []DashboardWave          `json:"waves,omitempty"`
+	Queued       []DashboardTask          `json:"queued,omitempty"` // planned, wave not started
+	Dimensions   []DashboardDimension     `json:"dimensions,omitempty"`
+	ReviewTotals *DashboardReviewTotals   `json:"reviewTotals,omitempty"`
+	Explorers    []DashboardExplorer      `json:"explorers,omitempty"`
+	Rounds       []DashboardRound         `json:"rounds,omitempty"`
+	MaxRounds    int                      `json:"maxRounds,omitempty"`
+	Findings     []DashboardReviewFinding `json:"findings,omitempty"` // kind findings: one dimension of a standalone review
+}
+
+// DashboardReviewFinding is one finding of a review dimension.
+type DashboardReviewFinding struct {
+	Text     string `json:"text"`     // rationale
+	Severity string `json:"severity"` // dashboardSeverity value
+	File     string `json:"file"`
+	Line     string `json:"line"`
+}
+
+// DashboardWave is one execute wave with its tasks.
+type DashboardWave struct {
+	Number       int             `json:"number"`
+	Status       string          `json:"status"`
+	CommittedSHA string          `json:"committedSha"` // "" = not committed
+	Tasks        []DashboardTask `json:"tasks"`
+}
+
+// DashboardTask is one execute task.
+type DashboardTask struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`   // "" -> page shows the id only
+	Status string `json:"status"` // pending | in_progress | completed | failed
+}
+
+// DashboardDimension is one review dimension of a ship review step.
+type DashboardDimension struct {
+	Name     string `json:"name"`
+	Status   string `json:"status"`
+	Findings int    `json:"findings"`
+	Worst    string `json:"worst"` // highest severity, "" when none
+}
+
+// DashboardReviewTotals is the finding ledger of a ship review step.
+type DashboardReviewTotals struct {
+	Found       int `json:"found"`       // ShipReviewLedger.Total
+	Fixed       int `json:"fixed"`       // ShipReviewLedger.Fixed
+	Deferred    int `json:"deferred"`    // sum of ShipReviewLedger.DeferredByReason
+	Unaccounted int `json:"unaccounted"` // ShipReviewLedger.Unaccounted
+}
+
+// DashboardExplorer is one plan explorer with its first findings.
+type DashboardExplorer struct {
+	Name     string             `json:"name"`
+	Status   string             `json:"status"`
+	Total    int                `json:"total"`
+	Findings []DashboardFinding `json:"findings"` // first 5
+}
+
+// DashboardFinding is one plan explorer finding.
+type DashboardFinding struct {
+	Summary string `json:"summary"`
+	Ref     string `json:"ref"`
+}
+
+// DashboardRound is one plan review round.
+type DashboardRound struct {
+	N      int             `json:"n"`
+	Status string          `json:"status"` // planStatusApproved | planStatusIssuesFound
+	Found  int             `json:"found"`
+	Fixed  int             `json:"fixed"`
+	Lenses []DashboardLens `json:"lenses"`
+}
+
+// DashboardLens is the verdict of one review lens in a plan review round.
+type DashboardLens struct {
+	Name    string `json:"name"`
+	Verdict string `json:"verdict"`
+}
+
+// DashboardRun is one finished run of a repo's history.
+type DashboardRun struct {
+	Kind       string `json:"kind"`
+	Branch     string `json:"branch"`
+	Outcome    string `json:"outcome"` // success | failure | partial (history_record values) | done (plan_mark done)
+	StartedAt  string `json:"startedAt"`
+	EndedAt    string `json:"endedAt"`
+	DurationMs int64  `json:"durationMs"`
+}
+
+// dashboardJoinInfo carries join keys between collectors. Never serialized.
+type dashboardJoinInfo struct {
+	execDetail  *DashboardStepDetail    // full execute detail for the ship execute step
+	shipRunID   string                  // review run.meta shipRunId
+	startedAt   time.Time               // run start, for the join window
+	stepWindows map[string][2]time.Time // ship step name -> [startedAt, completedAt]
 }
 
 // DashboardSession is one Claude Code session seen in the evidence files of
@@ -225,6 +344,7 @@ func collectDashboardRepo(root string, now time.Time) DashboardRepo {
 		Sessions:  []DashboardSession{},
 		Learnings: []DashboardLearning{},
 		Deferred:  []DashboardDeferred{},
+		History:   []DashboardRun{},
 	}
 	info, err := os.Stat(root)
 	if err != nil {
@@ -252,8 +372,9 @@ func collectDashboardRepo(root string, now time.Time) DashboardRepo {
 			repo.Pipelines = append(repo.Pipelines, r.pipeline)
 		}
 	}
+	repo.Pipelines = dashboardJoinRuns(repo.Pipelines)
 
-	sessions, learnings, deferred := dashboardActivity(root, now)
+	sessions, learnings, deferred, history := dashboardActivity(root, now)
 	if sessions != nil {
 		repo.Sessions = sessions
 	}
@@ -262,6 +383,9 @@ func collectDashboardRepo(root string, now time.Time) DashboardRepo {
 	}
 	if deferred != nil {
 		repo.Deferred = deferred
+	}
+	if history != nil {
+		repo.History = history
 	}
 	return repo
 }
@@ -273,6 +397,7 @@ func dashboardFinish(p *DashboardPipeline, updated, now time.Time) bool {
 	p.UpdatedAt = dashboardFormatTime(updated)
 	if p.Status == PipelineRunning && !updated.IsZero() && now.Sub(updated) > dashboardStallAfter {
 		p.Status = PipelineStalled
+		dashboardAddStalledIssue(p)
 	}
 	if p.Status == PipelineCompleted || p.Status == PipelineFailed {
 		return !updated.IsZero() && now.Sub(updated) <= dashboardHistoryWindow
@@ -339,11 +464,15 @@ func dashboardStatePipeline(st *state.State, evidence map[string]time.Time) (Das
 	case "ship":
 		p.Worktree = dashboardStr(data["worktree"])
 		dashboardShip(&p, data)
+		dashboardShipDetail(&p, st)
+		dashboardStateIssues(&p, data)
 	case "execute":
 		p.Worktree = dashboardStr(data["worktree"])
 		updated = dashboardLatest(updated, dashboardExecute(&p, st))
+		dashboardExecuteSteps(&p, st)
+		dashboardStateIssues(&p, data)
 	case "plan":
-		dashboardPlan(&p, data)
+		dashboardPlan(&p, st)
 	default:
 		return DashboardPipeline{}, time.Time{}, false
 	}
@@ -383,7 +512,7 @@ func dashboardShip(p *DashboardPipeline, data map[string]any) {
 			if text == "" {
 				text = "failed"
 			}
-			p.Issues = append(p.Issues, DashboardIssue{Source: "step", Severity: "high", Text: name + ": " + text})
+			p.Issues = append(p.Issues, dashboardStepIssue(name, text))
 		}
 	}
 	p.Progress.Total = len(p.Steps)
@@ -428,10 +557,10 @@ func dashboardExecute(p *DashboardPipeline, st *state.State) time.Time {
 		switch status {
 		case "partial":
 			stepStatus = StepFailed
-			p.Issues = append(p.Issues, DashboardIssue{Source: "wave", Severity: "high", Text: name + ": " + status})
+			p.Issues = append(p.Issues, dashboardWaveIssue(name, status))
 		case StepFailed:
 			anyFailed = true
-			p.Issues = append(p.Issues, DashboardIssue{Source: "wave", Severity: "high", Text: name + ": " + status})
+			p.Issues = append(p.Issues, dashboardWaveIssue(name, status))
 		case StepInProgress:
 			anyInProgress = true
 			p.Progress.Current = name
@@ -506,53 +635,6 @@ func dashboardProgressTime(root, runID string) time.Time {
 		}
 	}
 	return newest
-}
-
-// dashboardPlan fills a plan pipeline: one step for each checkpoint step in
-// validCheckpointSteps. A plan whose planIntegrity.done is set is completed
-// and shows every step completed.
-func dashboardPlan(p *DashboardPipeline, data map[string]any) {
-	integrity, _ := data["planIntegrity"].(map[string]any)
-	p.StartedAt = dashboardStr(integrity["skillInvoked"])
-	if p.StartedAt == "" {
-		intent, _ := data["creationIntent"].(map[string]any)
-		p.StartedAt = dashboardStr(intent["timestamp"])
-	}
-	doneValue, isDone := integrity["done"]
-
-	checkpoint, _ := data["checkpoint"].(map[string]any)
-	stepID := dashboardStr(checkpoint["step"])
-	cur := -1
-	for i, s := range validCheckpointSteps {
-		if s == stepID {
-			cur = i
-		}
-	}
-
-	for i, s := range validCheckpointSteps {
-		status := StepPending
-		switch {
-		case isDone || i < cur:
-			status = StepCompleted
-		case i == cur:
-			status = StepInProgress
-		}
-		p.Steps = append(p.Steps, DashboardStep{Name: "step " + s, Status: status})
-	}
-
-	p.Progress.Total = len(validCheckpointSteps)
-	if isDone {
-		p.Status = PipelineCompleted
-		p.CompletedAt = dashboardStrPtr(dashboardStr(doneValue))
-		p.Progress.Done = p.Progress.Total
-	} else {
-		p.Status = PipelineRunning
-		if cur >= 0 {
-			p.Progress.Done = cur
-			p.Progress.Current = "step " + stepID
-		}
-	}
-	p.Progress.Label = dashboardStepLabel(p.Progress)
 }
 
 // dashboardReviewRow is a review pipeline with its updatedAt.
@@ -649,7 +731,7 @@ func dashboardReviewPipeline(dir, name string) (dashboardReviewRow, bool) {
 		}
 		p.Steps = append(p.Steps, DashboardStep{Name: dimName, Status: status})
 		for _, fd := range dashboardParseFindings(dim.Findings) {
-			p.Issues = append(p.Issues, DashboardIssue{Source: "review", Severity: fd.Severity, Text: dashboardFindingText(fd)})
+			p.Issues = append(p.Issues, dashboardReviewIssue(dimName, fd))
 		}
 	}
 	if len(p.Steps) == 0 {
@@ -670,6 +752,8 @@ func dashboardReviewPipeline(dir, name string) (dashboardReviewRow, bool) {
 			p.StartedAt = dashboardFormatTime(t)
 		}
 	}
+	dashboardReviewFindings(&p)
+	dashboardReviewMeta(dir, &p)
 	return dashboardReviewRow{pipeline: p, updated: updated}, true
 }
 
@@ -691,22 +775,6 @@ func dashboardParseFindings(raw json.RawMessage) []dashboardFinding {
 		return nil
 	}
 	return out
-}
-
-// dashboardFindingText formats a finding as "<file>:<line> <rationale>".
-func dashboardFindingText(f dashboardFinding) string {
-	loc := f.File
-	switch line := f.Line.(type) {
-	case float64:
-		if line > 0 {
-			loc = fmt.Sprintf("%s:%d", f.File, int(line))
-		}
-	case string:
-		if line != "" {
-			loc = f.File + ":" + line
-		}
-	}
-	return strings.TrimSpace(loc + " " + f.Rationale)
 }
 
 // dashboardStepLabel returns "step <n> of <total>" while a current step is

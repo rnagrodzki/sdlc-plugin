@@ -243,6 +243,119 @@ func TestExecState_Init_UnreadablePlanPathWarns(t *testing.T) {
 	assertWarning(t, initResultWarnings(t, result), "openspec ref stamp skipped: plan unreadable")
 }
 
+// TestExecState_Init_StoresPlannedTasks covers the plannedTasks stamp: init
+// reads the plan file and stores one {id, name} per "### Task N:" heading in
+// plan order. A heading inside a code fence is not a task. plannedTaskIds
+// stays as the caller passed it, because the completeness gate reads it.
+func TestExecState_Init_StoresPlannedTasks(t *testing.T) {
+	root := t.TempDir()
+	seedInitConfig(t, root)
+	planPath := filepath.Join(root, "plan.md")
+	writeFile(t, planPath, "# Plan\n\n"+
+		"### Task 1: Explorer summary builder\n\n**Complexity:** Standard\n\n"+
+		"```markdown\n### Task 9: Heading inside a fence\n```\n\n"+
+		"### Task 2:   Snapshot contract   \n\nBody.\n\n"+
+		"### Task 10: Dashboard page\n")
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action:         "init",
+		Branch:         "feat/test",
+		Quality:        "standard",
+		PlanPath:       planPath,
+		PlannedTaskIds: []string{"1", "2", "10"},
+	}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	data := readExecState(t, root, "feat/test")
+	want := []any{
+		map[string]any{"id": "1", "name": "Explorer summary builder"},
+		map[string]any{"id": "2", "name": "Snapshot contract"},
+		map[string]any{"id": "10", "name": "Dashboard page"},
+	}
+	if !reflect.DeepEqual(data["plannedTasks"], want) {
+		t.Errorf("plannedTasks = %#v, want %#v", data["plannedTasks"], want)
+	}
+	wantIDs := []any{"1", "2", "10"}
+	if !reflect.DeepEqual(data["plannedTaskIds"], wantIDs) {
+		t.Errorf("plannedTaskIds = %#v, want %#v (the completeness gate input must not change)", data["plannedTaskIds"], wantIDs)
+	}
+
+	assertStateMatchesSchema(t, result.(map[string]any)["filePath"].(string))
+}
+
+// TestExecState_Init_NoPlannedTasksWithoutReadablePlan covers the absent-key
+// cases: no planPath, and a planPath that cannot be read. Both leave the key
+// out. The unreadable-plan warning stays the only signal.
+func TestExecState_Init_NoPlannedTasksWithoutReadablePlan(t *testing.T) {
+	cases := []struct {
+		name     string
+		planPath func(root string) string
+		warning  string
+	}{
+		{"no planPath", func(string) string { return "" }, ""},
+		{"unreadable planPath", func(root string) string { return filepath.Join(root, "missing.md") }, "plan unreadable"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			seedInitConfig(t, root)
+
+			result, err := executeState(root, root, ExecuteStateIn{
+				Action:         "init",
+				Branch:         "feat/test",
+				Quality:        "standard",
+				PlanPath:       tc.planPath(root),
+				PlannedTaskIds: []string{"1"},
+			}, fixedClock(testNow))
+			if err != nil {
+				t.Fatalf("init: %v", err)
+			}
+
+			data := readExecState(t, root, "feat/test")
+			if v, present := data["plannedTasks"]; present {
+				t.Errorf("plannedTasks = %#v, want the key absent", v)
+			}
+			if tc.warning != "" {
+				assertWarning(t, initResultWarnings(t, result), tc.warning)
+			}
+			assertStateMatchesSchema(t, result.(map[string]any)["filePath"].(string))
+		})
+	}
+}
+
+// TestExecState_Init_PlannedTasksEmptyForPlanWithoutTaskHeadings covers a
+// readable plan that has no "### Task N:" heading: the key is present and
+// empty, so a reader can tell it from a run that never read a plan.
+func TestExecState_Init_PlannedTasksEmptyForPlanWithoutTaskHeadings(t *testing.T) {
+	root := t.TempDir()
+	seedInitConfig(t, root)
+	planPath := filepath.Join(root, "plan.md")
+	writeFile(t, planPath, "# Plan\n\nNo task headings here.\n")
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action:   "init",
+		Branch:   "feat/test",
+		Quality:  "standard",
+		PlanPath: planPath,
+	}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	data := readExecState(t, root, "feat/test")
+	got, present := data["plannedTasks"]
+	if !present {
+		t.Fatal("plannedTasks key absent, want an empty array")
+	}
+	list, ok := got.([]any)
+	if !ok || len(list) != 0 {
+		t.Errorf("plannedTasks = %#v, want []", got)
+	}
+	assertStateMatchesSchema(t, result.(map[string]any)["filePath"].(string))
+}
+
 // TestExecState_Init_MissingOpenspecTasksWarns covers the stampTaskRefs
 // failure path: the plan names an openspec change, but that change has no
 // tasks.md on disk.
@@ -5170,6 +5283,362 @@ func TestExecState_Ledger_MissingWorkers_MissingDir(t *testing.T) {
 	}
 	if len(missing) != 1 || missing[0] != "worker-A" {
 		t.Errorf("missingWorkers = %v, want [worker-A]", missing)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Ledger: run.meta written by the first ledger_checkin
+// ---------------------------------------------------------------------------
+
+// useLedgerMetaOpen replaces ledgerMetaOpenFunc for one test and restores it
+// when the test ends.
+func useLedgerMetaOpen(t *testing.T, fn func(name string, flag int, perm os.FileMode) (*os.File, error)) {
+	t.Helper()
+	prev := ledgerMetaOpenFunc
+	ledgerMetaOpenFunc = fn
+	t.Cleanup(func() { ledgerMetaOpenFunc = prev })
+}
+
+// ledgerCheckin runs one ledger_checkin and returns the result map.
+func ledgerCheckin(t *testing.T, root, workDir string, in ExecuteStateIn, now time.Time) map[string]any {
+	t.Helper()
+	in.Action = "ledger_checkin"
+	result, err := executeState(root, workDir, in, fixedClock(now))
+	if err != nil {
+		t.Fatalf("ledger_checkin: %v", err)
+	}
+	m, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("ledger_checkin result is %T, want map", result)
+	}
+	return m
+}
+
+// readLedgerRunMeta reads and parses the run.meta of a ledger run. It also
+// returns the raw bytes.
+func readLedgerRunMeta(t *testing.T, root, runID string) (reviewRunMeta, []byte) {
+	t.Helper()
+	raw, err := os.ReadFile(ledgerRunMetaPath(root, runID))
+	if err != nil {
+		t.Fatalf("read run.meta: %v", err)
+	}
+	var meta reviewRunMeta
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		t.Fatalf("parse run.meta %q: %v", raw, err)
+	}
+	return meta, raw
+}
+
+// seedShipReviewStep creates a ship state for branch whose steps hold one
+// review step with the given status, and returns the run id of that state.
+func seedShipReviewStep(t *testing.T, root, branch, status string) string {
+	t.Helper()
+	createShipState(t, root, branch, map[string]any{
+		"steps": []any{
+			map[string]any{"name": "execute", "status": "completed"},
+			map[string]any{"name": "review", "status": status},
+		},
+	})
+	st, err := state.Find(root, "ship", branch)
+	if err != nil || st == nil {
+		t.Fatalf("find seeded ship state: st=%v err=%v", st, err)
+	}
+	return state.RunID(st)
+}
+
+func TestExecState_Ledger_RunMeta_FirstCheckinWritesOnce(t *testing.T) {
+	root := t.TempDir()
+	const runID = "review-run-1"
+
+	first := ledgerCheckin(t, root, root, ExecuteStateIn{RunID: runID, WorkerID: "worker-A", Branch: "feat/x"}, testNow)
+	if _, has := first["warnings"]; has {
+		t.Errorf("first check-in has warnings %v, want none", first["warnings"])
+	}
+
+	meta, raw := readLedgerRunMeta(t, root, runID)
+	if meta.Branch != "feat/x" {
+		t.Errorf("meta.Branch = %q, want feat/x", meta.Branch)
+	}
+	if want := testNow.UTC().Format(time.RFC3339); meta.StartedAt != want {
+		t.Errorf("meta.StartedAt = %q, want %q", meta.StartedAt, want)
+	}
+	if meta.ShipRunID != "" {
+		t.Errorf("meta.ShipRunID = %q, want empty with no ship state", meta.ShipRunID)
+	}
+	if strings.Contains(string(raw), "shipRunId") {
+		t.Errorf("run.meta %s holds shipRunId, want the key omitted", raw)
+	}
+
+	// A later check-in, with a later clock and another branch, changes nothing.
+	second := ledgerCheckin(t, root, root, ExecuteStateIn{RunID: runID, WorkerID: "worker-B", Branch: "feat/y"}, testNow.Add(time.Hour))
+	if _, has := second["warnings"]; has {
+		t.Errorf("second check-in has warnings %v, want none", second["warnings"])
+	}
+	_, rawAfter := readLedgerRunMeta(t, root, runID)
+	if string(rawAfter) != string(raw) {
+		t.Errorf("run.meta changed on the second check-in:\nbefore %s\nafter  %s", raw, rawAfter)
+	}
+
+	// run.meta is not a dimension: ledger_status lists the two workers only.
+	status, err := executeState(root, root, ExecuteStateIn{Action: "ledger_status", RunID: runID}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("ledger_status: %v", err)
+	}
+	if workers := status.(map[string]any)["workers"].([]any); len(workers) != 2 {
+		t.Errorf("ledger_status workers = %d, want 2", len(workers))
+	}
+}
+
+func TestExecState_Ledger_RunMeta_ShipRunID(t *testing.T) {
+	tests := []struct {
+		name       string
+		seed       bool
+		status     string
+		wantShipID bool
+	}{
+		{name: "review in_progress", seed: true, status: StepInProgress, wantShipID: true},
+		{name: "review completed", seed: true, status: StepCompleted},
+		{name: "review pending", seed: true, status: StepPending},
+		{name: "no ship state", seed: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			const branch = "feat/ship-join"
+			seededID := ""
+			if tt.seed {
+				seededID = seedShipReviewStep(t, root, branch, tt.status)
+			}
+			wantID := ""
+			if tt.wantShipID {
+				wantID = seededID
+			}
+
+			ledgerCheckin(t, root, root, ExecuteStateIn{RunID: "review-run-2", WorkerID: "worker-A", Branch: branch}, testNow)
+
+			meta, raw := readLedgerRunMeta(t, root, "review-run-2")
+			if meta.ShipRunID != wantID {
+				t.Errorf("meta.ShipRunID = %q, want %q", meta.ShipRunID, wantID)
+			}
+			if !tt.wantShipID && strings.Contains(string(raw), "shipRunId") {
+				t.Errorf("run.meta %s holds shipRunId, want the key omitted", raw)
+			}
+		})
+	}
+}
+
+func TestExecState_Ledger_RunMeta_ShipRunIDPicksBranchState(t *testing.T) {
+	root := t.TempDir()
+	otherID := seedShipReviewStep(t, root, "feat/other", StepInProgress)
+	wantID := seedShipReviewStep(t, root, "feat/mine", StepInProgress)
+	if otherID == wantID {
+		t.Fatalf("seeded ship runs share id %q", wantID)
+	}
+
+	ledgerCheckin(t, root, root, ExecuteStateIn{RunID: "review-run-3", WorkerID: "worker-A", Branch: "feat/mine"}, testNow)
+
+	meta, _ := readLedgerRunMeta(t, root, "review-run-3")
+	if meta.ShipRunID != wantID {
+		t.Errorf("meta.ShipRunID = %q, want %q", meta.ShipRunID, wantID)
+	}
+}
+
+func TestExecState_Ledger_RunMeta_BranchLookupFails(t *testing.T) {
+	root := t.TempDir()
+	// Keep git from finding a repository above the temp dir.
+	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(root))
+
+	result := ledgerCheckin(t, root, root, ExecuteStateIn{RunID: "review-run-4", WorkerID: "worker-A"}, testNow)
+	if _, has := result["warnings"]; has {
+		t.Errorf("check-in has warnings %v, want none when only the branch lookup fails", result["warnings"])
+	}
+
+	meta, raw := readLedgerRunMeta(t, root, "review-run-4")
+	if meta.Branch != "" {
+		t.Errorf("meta.Branch = %q, want empty", meta.Branch)
+	}
+	if !strings.Contains(string(raw), `"branch":""`) {
+		t.Errorf("run.meta %s lacks the branch key, want branch to be written as empty", raw)
+	}
+	if want := testNow.UTC().Format(time.RFC3339); meta.StartedAt != want {
+		t.Errorf("meta.StartedAt = %q, want %q", meta.StartedAt, want)
+	}
+	if meta.ShipRunID != "" {
+		t.Errorf("meta.ShipRunID = %q, want empty", meta.ShipRunID)
+	}
+}
+
+func TestExecState_Ledger_RunMeta_WriteFailureWarns(t *testing.T) {
+	root := t.TempDir()
+	const runID = "review-run-5"
+	var opened []string
+	useLedgerMetaOpen(t, func(name string, flag int, perm os.FileMode) (*os.File, error) {
+		opened = append(opened, name)
+		return nil, errors.New("disk full")
+	})
+
+	result := ledgerCheckin(t, root, root, ExecuteStateIn{RunID: runID, WorkerID: "worker-A", Branch: "feat/x", StepID: "review"}, testNow)
+
+	metaPath := ledgerRunMetaPath(root, runID)
+	warnings, ok := result["warnings"].([]string)
+	if !ok || len(warnings) != 1 {
+		t.Fatalf("warnings = %#v, want one string entry", result["warnings"])
+	}
+	for _, want := range []string{
+		"run.meta not written at " + metaPath,
+		"disk full",
+		"The dashboard cannot join this review to its ship run.",
+		"The next review run writes a new run.meta.",
+	} {
+		if !strings.Contains(warnings[0], want) {
+			t.Errorf("warning %q lacks %q", warnings[0], want)
+		}
+	}
+	if len(opened) != 1 || opened[0] != metaPath {
+		t.Errorf("seam opened %v, want exactly [%s]", opened, metaPath)
+	}
+
+	// The check-in succeeded: the confirmation and the dimension file exist.
+	if result["status"] != "active" || result["workerId"] != "worker-A" || result["stepId"] != "review" {
+		t.Errorf("confirmation = %v, want an active worker-A check-in for step review", result)
+	}
+	if _, err := os.Stat(ledgerFilePath(root, runID, "worker-A")); err != nil {
+		t.Errorf("dimension file missing after a run.meta failure: %v", err)
+	}
+	if _, err := os.Stat(metaPath); !os.IsNotExist(err) {
+		t.Errorf("run.meta exists after a failed write (stat err = %v), want none", err)
+	}
+}
+
+func TestExecState_Ledger_RunMeta_NextCheckinRetriesAfterFailure(t *testing.T) {
+	root := t.TempDir()
+	const runID = "review-run-6"
+	prev := ledgerMetaOpenFunc
+	useLedgerMetaOpen(t, func(name string, flag int, perm os.FileMode) (*os.File, error) {
+		return nil, errors.New("disk full")
+	})
+	failed := ledgerCheckin(t, root, root, ExecuteStateIn{RunID: runID, WorkerID: "worker-A", Branch: "feat/x"}, testNow)
+	if _, has := failed["warnings"]; !has {
+		t.Fatal("failed check-in has no warnings, want one")
+	}
+
+	// The disk recovers: the next check-in of the same run writes the file.
+	ledgerMetaOpenFunc = prev
+	ok := ledgerCheckin(t, root, root, ExecuteStateIn{RunID: runID, WorkerID: "worker-B", Branch: "feat/x"}, testNow.Add(time.Minute))
+	if _, has := ok["warnings"]; has {
+		t.Errorf("retry check-in has warnings %v, want none", ok["warnings"])
+	}
+	meta, _ := readLedgerRunMeta(t, root, runID)
+	if want := testNow.Add(time.Minute).UTC().Format(time.RFC3339); meta.StartedAt != want {
+		t.Errorf("meta.StartedAt = %q, want %q (time of the first successful write)", meta.StartedAt, want)
+	}
+}
+
+func TestExecState_Ledger_RunMeta_ExistRaceIsSilent(t *testing.T) {
+	root := t.TempDir()
+	const runID = "review-run-7"
+	// The seam reports that another check-in created the file between the
+	// existence check and the create call.
+	useLedgerMetaOpen(t, func(name string, flag int, perm os.FileMode) (*os.File, error) {
+		return nil, &os.PathError{Op: "open", Path: name, Err: os.ErrExist}
+	})
+
+	result := ledgerCheckin(t, root, root, ExecuteStateIn{RunID: runID, WorkerID: "worker-A", Branch: "feat/x"}, testNow)
+
+	if _, has := result["warnings"]; has {
+		t.Errorf("warnings = %v, want none when the create call loses the race", result["warnings"])
+	}
+	if _, err := os.Stat(ledgerFilePath(root, runID, "worker-A")); err != nil {
+		t.Errorf("dimension file missing after the race: %v", err)
+	}
+}
+
+// TestExecState_Ledger_RunMeta_DimensionWriteFailsAfterMeta pins the state
+// after the second of the two sequential writes fails. fsx has no write seam,
+// so a directory occupies the dimension file path and the atomic rename fails.
+func TestExecState_Ledger_RunMeta_DimensionWriteFailsAfterMeta(t *testing.T) {
+	root := t.TempDir()
+	const runID = "review-run-8"
+	blocked := ledgerFilePath(root, runID, "worker-A")
+	if err := os.MkdirAll(blocked, 0o755); err != nil {
+		t.Fatalf("occupy dimension path: %v", err)
+	}
+
+	_, err := executeState(root, root, ExecuteStateIn{
+		Action: "ledger_checkin", RunID: runID, WorkerID: "worker-A", Branch: "feat/x",
+	}, fixedClock(testNow))
+	var infra *mcpserver.InfraError
+	if !errors.As(err, &infra) {
+		t.Fatalf("err = %v (%T), want *mcpserver.InfraError", err, err)
+	}
+	if infra.Suggestion == "" {
+		t.Error("InfraError.Suggestion is empty, want a non-empty suggestion")
+	}
+
+	// What persisted: run.meta is complete, the dimension path is still the directory.
+	meta, _ := readLedgerRunMeta(t, root, runID)
+	if meta.Branch != "feat/x" {
+		t.Errorf("meta.Branch = %q, want feat/x", meta.Branch)
+	}
+	if fi, statErr := os.Stat(blocked); statErr != nil || !fi.IsDir() {
+		t.Errorf("dimension path is not the blocking directory (stat err = %v)", statErr)
+	}
+
+	// Another worker of the same run checks in and leaves run.meta unchanged.
+	_, rawBefore := readLedgerRunMeta(t, root, runID)
+	ledgerCheckin(t, root, root, ExecuteStateIn{RunID: runID, WorkerID: "worker-B", Branch: "feat/y"}, testNow.Add(time.Hour))
+	_, rawAfter := readLedgerRunMeta(t, root, runID)
+	if string(rawAfter) != string(rawBefore) {
+		t.Errorf("run.meta changed after the failed check-in:\nbefore %s\nafter  %s", rawBefore, rawAfter)
+	}
+}
+
+func TestExecState_Ledger_RunMeta_ParallelCheckins(t *testing.T) {
+	root := t.TempDir()
+	const runID = "review-run-9"
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	results := make([]any, 2)
+	errs := make([]error, 2)
+
+	for i, worker := range []string{"worker-A", "worker-B"} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			results[i], errs[i] = executeState(root, root, ExecuteStateIn{
+				Action: "ledger_checkin", RunID: runID, WorkerID: worker, Branch: "feat/x",
+			}, fixedClock(testNow))
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	for i := range results {
+		if errs[i] != nil {
+			t.Fatalf("check-in %d: %v", i, errs[i])
+		}
+		if _, has := results[i].(map[string]any)["warnings"]; has {
+			t.Errorf("check-in %d has warnings %v, want none", i, results[i].(map[string]any)["warnings"])
+		}
+	}
+
+	entries, err := os.ReadDir(ledgerDir(root, runID))
+	if err != nil {
+		t.Fatalf("read ledger dir: %v", err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	sort.Strings(names)
+	want := []string{"run.meta", "worker-A.json", "worker-B.json"}
+	if strings.Join(names, ",") != strings.Join(want, ",") {
+		t.Errorf("ledger dir holds %v, want %v", names, want)
+	}
+	meta, _ := readLedgerRunMeta(t, root, runID)
+	if meta.Branch != "feat/x" {
+		t.Errorf("meta.Branch = %q, want feat/x", meta.Branch)
 	}
 }
 

@@ -58,6 +58,21 @@ severity: high
   phases (Step 9), grep for TaskStop calls or equivalent termination logic
   on each dispatched Agent task. Abandoned workers are a resource leak and
   token waste.
+- **Routing-bullet exclusivity.** When one step lists several routing
+  bullets keyed on the same input (a round number, a verdict, a gate
+  result), exactly one bullet must match any given input state. Walk the
+  boundary states, such as the last round, a CRITICAL gate result, or a
+  single-item batch, against every bullet. A state that matches two
+  bullets with different outcomes is a finding, even when each bullet
+  reads correctly on its own.
+- **Shared-record field parity.** When two or more routes write the same
+  persisted record (a round record, a history row, a state snapshot),
+  every route must derive each field from the same named source, or the
+  prose must state which route wins on conflict. A route that hard-codes
+  a field (for example zero counts) while another route can still add
+  data to that field makes the record disagree with itself, and is a
+  finding. The same applies to one call described in two places with
+  different arguments.
 
 ## What NOT to flag
 

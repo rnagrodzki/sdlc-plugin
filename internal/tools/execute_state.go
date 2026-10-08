@@ -558,7 +558,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 
 - wave-compute: Stateless — parses the plan file at planPath and computes the wave schedule (no state file read/write). Requires planPath. Optional: extraDepsJson (JSON array of {task, dependsOn, reason} merged with each task's explicit "Depends on" field). Returns {route, preWave, waves[{number, tasks[], expectedFiles[], verificationHint}]}.
 - resolve-config: resolves this run's effective auto mode, quality tier, commit-waves setting and high-risk auto-approval from CLI flags, this branch's ship state, local.toml [executePrefs] (auto, quality, highRiskAutoApprove) and config.toml [execute] (commitWaves). Reads and writes no run state file, but is not side-effect-free: it first moves auto, quality or highRiskAutoApprove from config.toml [execute] to local.toml [executePrefs] (reported in warnings); fails with a data error (message plus suggestion) when that move is not safe. Optional: branch (enables the ship-state auto cross-read), quality (--quality), auto (--auto), commitWaves (--commit-waves, "true"|"false"). An out-of-enum quality warns and falls through to config, then the auto default, rather than failing. Returns {auto, quality (always present; empty means "ask the user for a tier"), commitWaves (bool; CLI > config execute.commitWaves > default true), highRiskAutoApprove, sources, warnings?}.
-- init: Create execution state. Runs the same config auto-migration gate as ship_prepare first (migrates and backs up an outdated config, or fails with a /setup pointer if none exists); result may include a "migration" report. When the plan has an **OpenSpec-Staging:** header, first creates and git-adds openspec/changes/<name>/ (see openspec.Materialize) before the state file is written at all — a materialize failure aborts init with no state file created. Returns {filePath, pipelineAuto (true when this branch's ship state has flags.auto=true — reported for diagnostics only; the execute SKILL.md high-risk gate no longer reads it, because resolve-config performs the same ship-state cross-read at Step 0 and folds the result into its effective auto value), openspec? ({change, materialized: "created"|"already"}; present only when the plan staged a change), warnings? (e.g. this branch's ship state exists but is unreadable), migration?}. Requires branch, quality. Optional: totalTasks, plannedTaskIds, planPath, planHash, commitWaves ("true"|"false"; any other value is stored as "true"), sessionId (Claude Code session ID stamped on the state), waveTimeoutSeconds and waveIntervalSeconds (this run's wave deadline and heartbeat cadence; when omitted or 0 they fall back to this branch's ship state flags.executeWaveTimeout/executeWaveInterval, then 1800s/60s).
+- init: Create execution state. Runs the same config auto-migration gate as ship_prepare first (migrates and backs up an outdated config, or fails with a /setup pointer if none exists); result may include a "migration" report. When the plan has an **OpenSpec-Staging:** header, first creates and git-adds openspec/changes/<name>/ (see openspec.Materialize) before the state file is written at all — a materialize failure aborts init with no state file created. Returns {filePath, pipelineAuto (true when this branch's ship state has flags.auto=true — reported for diagnostics only; the execute SKILL.md high-risk gate no longer reads it, because resolve-config performs the same ship-state cross-read at Step 0 and folds the result into its effective auto value), openspec? ({change, materialized: "created"|"already"}; present only when the plan staged a change), warnings? (e.g. this branch's ship state exists but is unreadable), migration?}. Requires branch, quality. Optional: totalTasks, plannedTaskIds, planPath, planHash, commitWaves ("true"|"false"; any other value is stored as "true"), sessionId (Claude Code session ID stamped on the state), waveTimeoutSeconds and waveIntervalSeconds (this run's wave deadline and heartbeat cadence; when omitted or 0 they fall back to this branch's ship state flags.executeWaveTimeout/executeWaveInterval, then 1800s/60s). When planPath is readable, init also stores plannedTasks in the state: one {id, name} for each "### Task N:" heading, in plan order (display data only; verify-completeness still reads plannedTaskIds). The key is absent when planPath is empty or the plan is unreadable.
 - wave-start: Begin a wave. Returns narration (summary, display with task list + ETA, next). Requires wave. Optional: branch, tasksJson, runId (for fact sheets), detail ("concise"|"full"). If the run recorded a planHash at init, the plan file's current sha256 is compared against it first; a mismatch returns {halt:true, reason:"plan hash mismatch"} instead of narration and does not start the wave. An unreadable/missing plan file does not halt — it proceeds with a warning in the response's "warnings" field. Seeds server-owned dispatch state (dispatchedAt, workerName, batchId/batchIndex, attempt:1) for every valid tasksJson entry that doesn't already have one — a task that already has server state (wave-start called again on resume) is left untouched. Seeding failure is non-fatal and appends to "warnings".
 - wave-done: Complete a wave. Returns narration (summary, display with outcomes, timing, next wave preview + ETA). Records wave duration to TimingsStore. Requires wave. Optional: branch, decisions, status ("completed" default, or "partial"), timedOut (stamps timedOut:true on the wave), detail ("concise"|"full").
 - wave-fail: Fail a wave. Returns narration (summary, display with failure cause). Requires wave. Optional: branch, timedOut, error (failure cause, recorded as an issue and in failedWave), detail ("concise"|"full").
@@ -580,7 +580,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - wave-progress: Read/write per-task progress. Requires runId. For reads: readProgress=true. For writes: taskId, phase. Optional on writes: lastCompletedTask (recorded in the heartbeat entry), acceptanceDone, filesTouched (each replaces the recorded list), blocker.
 - wave-await: Bounded, non-blocking poll of a wave's still-open tasks, classifying each against its server-owned dispatch state (never-started/stalled/timeout/none) and returning explicit next-instructions (including the exact task-fail/task-redispatch call shape) for whatever it finds. Requires runId, wave. Optional: branch, stateFile (also used to persist wave-await's own resume-state, i.e. the iteration counter, across bounded-poll calls).
 - resume-reset: Reset in-progress waves for session resume. Optional: branch, runId (the run whose server dispatch state is reseeded; falls back to the value derived from startedAt/wave). Returns {resetWaves, clearedTaskIds} as before; when the run is still in flight after the reset, the response also carries a "resumeBriefing" (same shape as read's) reflecting the sets it just cleared — resume-reset's willRedo always matches the task IDs in clearedTaskIds. Reseeds fresh server-owned dispatch state (attempt reset to 1) for every cleared task ID; seeding failure is non-fatal and appends to a "warnings" field.
-- ledger_checkin: Register a worker as active. Requires runId, workerId. Optional: stepId.
+- ledger_checkin: Register a worker as active. Requires runId, workerId. Optional: stepId, branch. Side effect: the first check-in for a runId also writes runs/ledger/<runId>/run.meta once (branch, startedAt, and shipRunId when this branch has a ship state with its review step in_progress); later check-ins leave it unchanged. The branch is the branch input when set, else the current branch of the work directory. A run.meta write failure does not fail the check-in: the result carries a "warnings" entry that names the path.
 - ledger_checkout: Mark a worker as done. Requires runId, workerId. Optional: findings (free-text payload — e.g. a JSON array or markdown block — persisted alongside this worker's checkout record and returned later by ledger_status).
 - ledger_status: List worker statuses for a run. Requires runId. Optional: timeoutSeconds, expectedWorkers (worker IDs expected to have checked in; any missing from the ledger are returned as missingWorkers). Each entry in the returned workers[] carries a "findings" field when that worker's ledger_checkout call set one; omitted when absent.
 - ledger_cleanup: Remove a run's entire ledger directory (all per-worker checkin/checkout/findings files). Requires runId. Returns {ok, runId, removed, workers} where removed is false when the directory didn't exist and workers lists the sorted worker ids that had ledger files (ids only, never findings).
@@ -674,7 +674,7 @@ func executeState(root, workDir string, in ExecuteStateIn, now func() time.Time)
 	case "resume-reset":
 		return execActionResumeReset(root, workDir, in, now)
 	case "ledger_checkin":
-		return execActionLedgerCheckin(root, in, now)
+		return execActionLedgerCheckin(root, workDir, in, now)
 	case "ledger_checkout":
 		return execActionLedgerCheckout(root, in, now)
 	case "ledger_status":
@@ -2343,6 +2343,16 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 		st.Data["plannedTaskIds"] = in.PlannedTaskIds
 	} else {
 		st.Data["plannedTaskIds"] = nil
+	}
+	// plannedTasks is display data only (the dashboard shows task names). The
+	// completeness gate keeps reading plannedTaskIds. Written only when the
+	// plan was read: no planPath or an unreadable plan leaves the key absent.
+	if planContent != "" {
+		planned := []any{}
+		for _, t := range extractTasks(planContent) {
+			planned = append(planned, map[string]any{"id": strconv.Itoa(t.Number), "name": t.Title})
+		}
+		st.Data["plannedTasks"] = planned
 	}
 	st.Data["waves"] = []any{}
 	st.Data["context"] = map[string]any{}
@@ -6003,7 +6013,98 @@ func execActionResumeReset(root, workDir string, in ExecuteStateIn, now func() t
 // Action: ledger_checkin
 // ---------------------------------------------------------------------------
 
-func execActionLedgerCheckin(root string, in ExecuteStateIn, now func() time.Time) (any, error) {
+// ledgerRunMetaFile is the file name of the review run meta inside a ledger
+// run folder. It does not end in ".json", so the dashboard collector and
+// ledger_status do not read it as a dimension file. Worker ids cannot hold a
+// dot, so it cannot clash with a worker file.
+const ledgerRunMetaFile = "run.meta"
+
+// reviewRunMeta is runs/ledger/<runId>/run.meta. The first ledger_checkin of a
+// run writes it once.
+type reviewRunMeta struct {
+	Branch    string `json:"branch"`
+	StartedAt string `json:"startedAt"`           // RFC3339, check-in time
+	ShipRunID string `json:"shipRunId,omitempty"` // state.RunID of the ship run, e.g. ship-feat-x-20261007T072607Z
+}
+
+// ledgerMetaOpenFunc matches os.OpenFile. Tests replace it to force a write
+// failure of run.meta.
+var ledgerMetaOpenFunc = os.OpenFile
+
+// ledgerRunMetaPath returns the run.meta path of a ledger run folder.
+func ledgerRunMetaPath(root, runID string) string {
+	return filepath.Join(ledgerDir(root, runID), ledgerRunMetaFile)
+}
+
+// ledgerShipRunID returns the run id of the ship state of branch when its
+// review step is in_progress. It returns "" when the ship state is missing,
+// cannot be read, or has a review step in any other status.
+func ledgerShipRunID(root, branch string) string {
+	st, err := state.Find(root, "ship", branch)
+	if err != nil || st == nil {
+		return ""
+	}
+	step := shipFindStepEntry(st.Data, "review")
+	if step == nil {
+		return ""
+	}
+	if status, _ := step["status"].(string); status != StepInProgress {
+		return ""
+	}
+	return state.RunID(st)
+}
+
+// ledgerWriteRunMeta writes runs/ledger/<runID>/run.meta once. It creates the
+// file with O_EXCL: when the file exists, it writes nothing and returns nil.
+// The branch is the branch argument when set, else the current branch of
+// workDir. When no branch can be resolved, the meta holds an empty branch.
+// The meta holds shipRunId only when ledgerShipRunID finds one. The caller
+// creates the ledger run folder first.
+func ledgerWriteRunMeta(root, workDir, branch, runID string, now time.Time) error {
+	path := ledgerRunMetaPath(root, runID)
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	}
+
+	resolved, err := execResolveBranch(branch, workDir)
+	if err != nil {
+		resolved = ""
+	}
+	meta := reviewRunMeta{
+		Branch:    resolved,
+		StartedAt: now.UTC().Format(time.RFC3339),
+	}
+	if resolved != "" {
+		meta.ShipRunID = ledgerShipRunID(root, resolved)
+	}
+	data, err := json.Marshal(meta)
+	if err != nil {
+		return err
+	}
+
+	f, err := ledgerMetaOpenFunc(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return nil // a parallel check-in wrote the file first
+		}
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path) // a partial file would block every later write
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(path)
+		return err
+	}
+	return nil
+}
+
+// execActionLedgerCheckin registers a worker as active. On the first
+// check-in of a run it also writes run.meta; a failure of that write becomes
+// a warning in the result and does not fail the check-in.
+func execActionLedgerCheckin(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	if in.RunID == "" {
 		return nil, &mcpserver.DomainError{Msg: "runId is required", Suggestion: "Pass runId (the execution run identifier) in the request."}
 	}
@@ -6026,10 +6127,18 @@ func execActionLedgerCheckin(root string, in ExecuteStateIn, now func() time.Tim
 		}
 	}
 
+	checkinAt := now()
+	var warnings []string
+	if err := ledgerWriteRunMeta(root, workDir, in.Branch, in.RunID, checkinAt); err != nil {
+		warnings = append(warnings, fmt.Sprintf(
+			"run.meta not written at %s: %s. The dashboard cannot join this review to its ship run. Fix the cause. The next review run writes a new run.meta.",
+			ledgerRunMetaPath(root, in.RunID), err.Error()))
+	}
+
 	fp := ledgerFilePath(root, in.RunID, in.WorkerID)
 	data := map[string]any{
 		"status":    "active",
-		"checkinAt": now().UTC().Format(time.RFC3339),
+		"checkinAt": checkinAt.UTC().Format(time.RFC3339),
 	}
 	if in.StepID != "" {
 		data["stepId"] = in.StepID
@@ -6050,6 +6159,9 @@ func execActionLedgerCheckin(root string, in ExecuteStateIn, now func() time.Tim
 	}
 	if in.StepID != "" {
 		confirmation["stepId"] = in.StepID
+	}
+	if len(warnings) > 0 {
+		confirmation["warnings"] = warnings
 	}
 	return confirmation, nil
 }

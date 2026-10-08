@@ -2773,9 +2773,9 @@ func TestPlanMark_Checkpoint_UsesLatestPlanRunExactSlug(t *testing.T) {
 }
 
 // TestPlanMark_InputSchema_ListsCheckpointEnum verifies the plan_mark input
-// schema's "marker" field declares all of validMarkers (8 entries,
-// including the new "checkpoint") as a jsonschema enum, keeping the MCP
-// tool schema in sync with the marker set planMark actually accepts.
+// schema's "marker" field declares all of validMarkers (9 entries,
+// including "checkpoint" and "review-round") as a jsonschema enum, keeping
+// the MCP tool schema in sync with the marker set planMark actually accepts.
 func TestPlanMark_InputSchema_ListsCheckpointEnum(t *testing.T) {
 	f, ok := reflect.TypeOf(PlanMarkIn{}).FieldByName("Marker")
 	if !ok {
@@ -2787,8 +2787,290 @@ func TestPlanMark_InputSchema_ListsCheckpointEnum(t *testing.T) {
 			t.Errorf("PlanMarkIn.Marker jsonschema tag missing enum=%s: %q", marker, tag)
 		}
 	}
-	if want := 8; len(validMarkers) != want {
+	if want := 9; len(validMarkers) != want {
 		t.Fatalf("len(validMarkers) = %d, want %d (update this test if the marker set intentionally grows)", len(validMarkers), want)
+	}
+}
+
+// reviewRoundData builds a valid "review-round" payload as the MCP layer
+// decodes it (JSON numbers as float64, arrays as []any).
+func reviewRoundData(round, found, fixed int, mergedStatus string) map[string]any {
+	return map[string]any{
+		"round":        float64(round),
+		"mergedStatus": mergedStatus,
+		"found":        float64(found),
+		"fixed":        float64(fixed),
+		"lenses": []any{
+			map[string]any{"name": "architecture", "verdict": planStatusApproved},
+			map[string]any{"name": "risk", "verdict": mergedStatus},
+		},
+	}
+}
+
+// storedReviewRounds returns st.Data["reviewRounds"] of the sole plan state
+// file as a list of objects.
+func storedReviewRounds(t *testing.T, dir string) []map[string]any {
+	t.Helper()
+	doc := readSoleStateDoc(t, dir)
+	raw, ok := doc["reviewRounds"].([]any)
+	if !ok {
+		t.Fatalf("reviewRounds missing or wrong type: %v", doc["reviewRounds"])
+	}
+	out := make([]map[string]any, 0, len(raw))
+	for i, e := range raw {
+		m, ok := e.(map[string]any)
+		if !ok {
+			t.Fatalf("reviewRounds[%d] = %v, want an object", i, e)
+		}
+		out = append(out, m)
+	}
+	return out
+}
+
+// TestPlanMark_ReviewRound_UpsertSorted verifies "review-round" stores its
+// entries in reviewRounds sorted by round, and that a second call with the
+// same round replaces the entry instead of adding a row.
+func TestPlanMark_ReviewRound_UpsertSorted(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	if _, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+		t.Fatalf("planPrepareCore (seed): %v", err)
+	}
+
+	for _, data := range []map[string]any{
+		reviewRoundData(2, 2, 0, planStatusIssuesFound),
+		reviewRoundData(1, 5, 5, planStatusIssuesFound),
+	} {
+		out, err := planMark(dir, dir, PlanMarkIn{Marker: "review-round", Data: data})
+		if err != nil {
+			t.Fatalf("planMark(review-round): %v", err)
+		}
+		if !out.OK {
+			t.Error("planMark(review-round).OK = false, want true")
+		}
+	}
+
+	rounds := storedReviewRounds(t, dir)
+	if len(rounds) != 2 {
+		t.Fatalf("len(reviewRounds) = %d, want 2: %v", len(rounds), rounds)
+	}
+	if rounds[0]["round"] != float64(1) || rounds[1]["round"] != float64(2) {
+		t.Errorf("reviewRounds rounds = [%v %v], want [1 2] (sorted by round)", rounds[0]["round"], rounds[1]["round"])
+	}
+
+	// Round 2 arrives again (resume): the entry is replaced.
+	if _, err := planMark(dir, dir, PlanMarkIn{Marker: "review-round", Data: reviewRoundData(2, 2, 2, planStatusApproved)}); err != nil {
+		t.Fatalf("planMark(review-round) repeat: %v", err)
+	}
+	rounds = storedReviewRounds(t, dir)
+	if len(rounds) != 2 {
+		t.Fatalf("len(reviewRounds) after repeat = %d, want 2 (replace, not append): %v", len(rounds), rounds)
+	}
+	want := map[string]any{
+		"round": float64(2), "mergedStatus": planStatusApproved, "found": float64(2), "fixed": float64(2),
+		"lenses": []any{
+			map[string]any{"name": "architecture", "verdict": planStatusApproved},
+			map[string]any{"name": "risk", "verdict": planStatusApproved},
+		},
+	}
+	if !reflect.DeepEqual(rounds[1], want) {
+		t.Errorf("reviewRounds[1] = %v, want %v", rounds[1], want)
+	}
+	if rounds[0]["fixed"] != float64(5) {
+		t.Errorf("reviewRounds[0].fixed = %v, want 5 (round 1 untouched)", rounds[0]["fixed"])
+	}
+}
+
+// TestPlanMark_ReviewRound_NoNext verifies "review-round" is terminal: its
+// output has an empty Next, and an empty lenses array is valid.
+func TestPlanMark_ReviewRound_NoNext(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	if _, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+		t.Fatalf("planPrepareCore (seed): %v", err)
+	}
+
+	data := reviewRoundData(1, 0, 0, planStatusApproved)
+	data["lenses"] = []any{}
+	out, err := planMark(dir, dir, PlanMarkIn{Marker: "review-round", Data: data})
+	if err != nil {
+		t.Fatalf("planMark(review-round): %v", err)
+	}
+	if out.Next != "" {
+		t.Errorf("Next = %q, want empty (only checkpoint returns next)", out.Next)
+	}
+	rounds := storedReviewRounds(t, dir)
+	if lenses, ok := rounds[0]["lenses"].([]any); !ok || len(lenses) != 0 {
+		t.Errorf("reviewRounds[0].lenses = %v, want []", rounds[0]["lenses"])
+	}
+}
+
+// TestPlanMark_ReviewRound_RefreshesTiming verifies the "review-round"
+// branch refreshes planTiming before it writes the state file.
+func TestPlanMark_ReviewRound_RefreshesTiming(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	startedAt := seedPlanTimingRun(t, dir)
+
+	relPath := filepath.Join("docs", "plan.md")
+	absPath := filepath.Join(dir, relPath)
+	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(absPath, []byte("# plan\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	firstModTime := startedAt.Add(4 * time.Minute)
+	if err := os.Chtimes(absPath, firstModTime, firstModTime); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := planMark(dir, dir, PlanMarkIn{Marker: "plan-file", Path: relPath}); err != nil {
+		t.Fatalf("planMark(plan-file): %v", err)
+	}
+
+	laterModTime := startedAt.Add(7 * time.Minute)
+	if err := os.Chtimes(absPath, laterModTime, laterModTime); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := planMark(dir, dir, PlanMarkIn{Marker: "review-round", Data: reviewRoundData(1, 1, 1, planStatusIssuesFound)}); err != nil {
+		t.Fatalf("planMark(review-round): %v", err)
+	}
+
+	doc := readSoleStateDoc(t, dir)
+	timing, ok := doc["planTiming"].(map[string]any)
+	if !ok {
+		t.Fatalf("planTiming missing or wrong type after review-round: %v", doc["planTiming"])
+	}
+	if want := laterModTime.UTC().Format(time.RFC3339); timing["lastModifiedAt"] != want {
+		t.Errorf("planTiming.lastModifiedAt = %v, want %q", timing["lastModifiedAt"], want)
+	}
+}
+
+// TestPlanMark_ReviewRound_DataErrors table-drives every row of the
+// "review-round" error table: each case returns a *mcpserver.DomainError
+// with a non-empty Suggestion and the matching Msg substring, and leaves the
+// plan state file bytes unchanged.
+func TestPlanMark_ReviewRound_DataErrors(t *testing.T) {
+	manyLenses := make([]any, 33)
+	for i := range manyLenses {
+		manyLenses[i] = map[string]any{"name": fmt.Sprintf("lens-%d", i), "verdict": planStatusApproved}
+	}
+	with := func(key string, v any) map[string]any {
+		d := reviewRoundData(1, 2, 1, planStatusIssuesFound)
+		d[key] = v
+		return d
+	}
+	without := func(key string) map[string]any {
+		d := reviewRoundData(1, 2, 1, planStatusIssuesFound)
+		delete(d, key)
+		return d
+	}
+	statusSuggestion := `"Approved" or "Issues Found"`
+
+	tests := []struct {
+		name           string
+		data           map[string]any
+		wantMsg        string
+		wantSuggestion string
+	}{
+		{name: "data missing", data: nil, wantMsg: "review-round needs data {round, mergedStatus, found, fixed, lenses}", wantSuggestion: "round, mergedStatus, found, fixed, lenses"},
+		{name: "unknown key", data: with("at", "2026-10-07T00:00:00Z"), wantMsg: `review-round data has unknown key "at"`, wantSuggestion: "allowed keys: round, mergedStatus, found, fixed, lenses"},
+		{name: "round missing", data: without("round"), wantMsg: "review-round round must be a whole number >= 1"},
+		{name: "round zero", data: with("round", float64(0)), wantMsg: "review-round round must be a whole number >= 1"},
+		{name: "round not whole", data: with("round", float64(1.5)), wantMsg: "review-round round must be a whole number >= 1"},
+		{name: "round a string", data: with("round", "1"), wantMsg: "review-round round must be a whole number >= 1"},
+		{name: "found negative", data: with("found", float64(-1)), wantMsg: "review-round found must be a whole number >= 0"},
+		{name: "found missing", data: without("found"), wantMsg: "review-round found must be a whole number >= 0"},
+		{name: "fixed not whole", data: with("fixed", float64(0.5)), wantMsg: "review-round fixed must be a whole number >= 0"},
+		{name: "mergedStatus lower case", data: with("mergedStatus", "approved"), wantMsg: `review-round mergedStatus "approved" is not valid`, wantSuggestion: statusSuggestion},
+		{name: "mergedStatus missing", data: without("mergedStatus"), wantMsg: `review-round mergedStatus "" is not valid`, wantSuggestion: statusSuggestion},
+		{name: "lenses missing", data: without("lenses"), wantMsg: "review-round lenses must be a JSON array of {name, verdict}"},
+		{name: "lenses not an array", data: with("lenses", "risk"), wantMsg: "review-round lenses must be a JSON array of {name, verdict}"},
+		{name: "lenses over max", data: with("lenses", manyLenses), wantMsg: "review-round lenses has 33 entries, max 32"},
+		{name: "lens not an object", data: with("lenses", []any{"risk"}), wantMsg: "review-round lenses[0] must be an object {name, verdict}"},
+		{name: "lens bad name", data: with("lenses", []any{map[string]any{"name": "bad name!", "verdict": planStatusApproved}}), wantMsg: `review-round lenses[0].name "bad name!" is not a valid lens name`},
+		{name: "lens unknown key", data: with("lenses", []any{map[string]any{"name": "risk", "verdict": planStatusApproved, "notes": "x"}}), wantMsg: `review-round lenses[0] has unknown key "notes"`},
+		{name: "lens bad verdict", data: with("lenses", []any{map[string]any{"name": "risk", "verdict": "Rejected"}}), wantMsg: `review-round lenses[0].verdict "Rejected" is not valid`, wantSuggestion: statusSuggestion},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			initGitFixture(t, dir)
+			gitCommit(t, dir, "initial")
+
+			if _, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+				t.Fatalf("planPrepareCore (seed): %v", err)
+			}
+			before := readSoleStateFileBytes(t, dir)
+
+			_, err := planMark(dir, dir, PlanMarkIn{Marker: "review-round", Data: tt.data})
+			assertReviewRoundDomainError(t, err, tt.wantMsg, tt.wantSuggestion)
+
+			if after := readSoleStateFileBytes(t, dir); string(before) != string(after) {
+				t.Errorf("state file changed after a rejected review-round call:\nbefore: %s\nafter:  %s", before, after)
+			}
+		})
+	}
+}
+
+// TestPlanMark_ReviewRound_MaxRoundsStored verifies a 21st distinct round is
+// a DomainError that leaves the state file unchanged, while a repeat of a
+// stored round still succeeds at the cap.
+func TestPlanMark_ReviewRound_MaxRoundsStored(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	if _, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+		t.Fatalf("planPrepareCore (seed): %v", err)
+	}
+	for r := 1; r <= maxReviewRoundsStored; r++ {
+		if _, err := planMark(dir, dir, PlanMarkIn{Marker: "review-round", Data: reviewRoundData(r, 1, 1, planStatusIssuesFound)}); err != nil {
+			t.Fatalf("planMark(review-round %d): %v", r, err)
+		}
+	}
+	before := readSoleStateFileBytes(t, dir)
+
+	_, err := planMark(dir, dir, PlanMarkIn{Marker: "review-round", Data: reviewRoundData(maxReviewRoundsStored+1, 0, 0, planStatusApproved)})
+	assertReviewRoundDomainError(t, err, "review-round 21 would store 21 rounds, max 20", "")
+	if after := readSoleStateFileBytes(t, dir); string(before) != string(after) {
+		t.Errorf("state file changed after a rejected 21st round:\nbefore: %s\nafter:  %s", before, after)
+	}
+
+	if _, err := planMark(dir, dir, PlanMarkIn{Marker: "review-round", Data: reviewRoundData(maxReviewRoundsStored, 1, 0, planStatusIssuesFound)}); err != nil {
+		t.Fatalf("planMark(review-round) repeat at the cap: %v", err)
+	}
+	if rounds := storedReviewRounds(t, dir); len(rounds) != maxReviewRoundsStored {
+		t.Errorf("len(reviewRounds) = %d, want %d", len(rounds), maxReviewRoundsStored)
+	}
+}
+
+// assertReviewRoundDomainError fails unless err is a *mcpserver.DomainError
+// whose Msg contains wantMsg and whose Suggestion is non-empty and contains
+// wantSuggestion.
+func assertReviewRoundDomainError(t *testing.T, err error, wantMsg, wantSuggestion string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("planMark(review-round) = nil error, want an error")
+	}
+	var domainErr *mcpserver.DomainError
+	if !errors.As(err, &domainErr) {
+		t.Fatalf("error type = %T, want *mcpserver.DomainError: %v", err, err)
+	}
+	if !strings.Contains(domainErr.Msg, wantMsg) {
+		t.Errorf("Msg = %q, want substring %q", domainErr.Msg, wantMsg)
+	}
+	if domainErr.Suggestion == "" {
+		t.Error("Suggestion is empty, want non-empty")
+	}
+	if !strings.Contains(domainErr.Suggestion, wantSuggestion) {
+		t.Errorf("Suggestion = %q, want substring %q", domainErr.Suggestion, wantSuggestion)
 	}
 }
 

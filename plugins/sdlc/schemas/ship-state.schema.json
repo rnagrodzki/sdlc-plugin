@@ -187,6 +187,43 @@
       ],
       "description": "Name of the most recent failed step. Set by fail (R-TASK-17)."
     },
+    "historyFailureRecorded": {
+      "type": "boolean",
+      "description": "Set to true by the first ship_state fail of a run, before it appends the failure row to runs.jsonl. true does not prove the row exists: a failed append leaves the flag set. Stops a second fail row for the same run; the final history_record row of the run is separate."
+    },
+    "planExploreSummary": {
+      "type": "array",
+      "description": "Plan explorer summary copied by cleanup-pipeline before it deletes the linked plan run. One entry for each explorer; top holds at most 5 findings. An empty list means the plan run had no explorer files.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "total": {
+            "type": "integer"
+          },
+          "top": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "summary": {
+                  "type": "string"
+                },
+                "ref": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "required": ["name", "status", "total", "top"]
+      }
+    },
     "issues": {
       "type": "array",
       "description": "Structured issue accumulator appended by fail (R-TASK-17). Mirrors deferredFindings above and execute-state.schema.json's issues[].",

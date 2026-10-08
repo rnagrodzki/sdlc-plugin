@@ -274,7 +274,7 @@ func TestDashboardSnapshot_Progress(t *testing.T) {
 			"checkpoint":    map[string]any{"step": "6.5"},
 		}, fresh)
 		got := dashOne(t, root).Progress
-		want := DashboardProgress{Done: 7, Total: 10, Current: "step 6.5", Label: "step 8 of 10"}
+		want := DashboardProgress{Done: 4, Total: 5, Current: "finalize", Label: "finalize (5 of 5)"}
 		if got != want {
 			t.Errorf("progress = %+v, want %+v", got, want)
 		}
@@ -351,8 +351,7 @@ func TestDashboardSnapshot_StepStatus(t *testing.T) {
 			"checkpoint":    map[string]any{"step": "2"},
 		}, fresh)
 		got := dashStepStatuses(dashOne(t, root))
-		want := []string{StepCompleted, StepCompleted, StepInProgress, StepPending, StepPending,
-			StepPending, StepPending, StepPending, StepPending, StepPending}
+		want := []string{StepCompleted, StepCompleted, StepInProgress, StepPending, StepPending}
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("steps = %v, want %v", got, want)
 		}
@@ -363,10 +362,17 @@ func TestDashboardSnapshot_StepStatus(t *testing.T) {
 		run := "review-2026-10-07T09-00-00Z"
 		dashWriteReviewDim(t, root, run, "a", map[string]any{"checkinAt": "2026-10-07T09:00:00Z", "checkoutAt": "2026-10-07T09:05:00Z"}, fresh)
 		dashWriteReviewDim(t, root, run, "b", map[string]any{"checkinAt": "2026-10-07T09:00:00Z"}, fresh)
-		got := dashStepStatuses(dashOne(t, root))
+		p := dashOne(t, root)
+		got := dashStepStatuses(p)
 		want := []string{StepCompleted, StepInProgress}
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("steps = %v, want %v", got, want)
+		}
+		wantDetail := []*DashboardStepDetail{{Kind: dashboardKindFindings}, nil}
+		for i, s := range p.Steps {
+			if !reflect.DeepEqual(s.Detail, wantDetail[i]) {
+				t.Errorf("step %q detail = %+v, want %+v", s.Name, s.Detail, wantDetail[i])
+			}
 		}
 	})
 }
@@ -385,8 +391,8 @@ func TestDashboardSnapshot_IssueSources(t *testing.T) {
 		}, fresh)
 		got := dashOne(t, root).Issues
 		want := []DashboardIssue{
-			{Source: "step", Severity: "high", Text: "pr: gh auth failed"},
-			{Source: "step", Severity: "high", Text: "verify-pipeline: ci red"},
+			{Source: "step", Severity: "high", Text: "gh auth failed", Ref: "pr"},
+			{Source: "step", Severity: "high", Text: "ci red", Ref: "verify-pipeline"},
 		}
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("issues = %+v, want %+v", got, want)
@@ -405,8 +411,8 @@ func TestDashboardSnapshot_IssueSources(t *testing.T) {
 		}, fresh)
 		got := dashOne(t, root).Issues
 		want := []DashboardIssue{
-			{Source: "wave", Severity: "high", Text: "wave 2: partial"},
-			{Source: "wave", Severity: "high", Text: "wave 3: failed"},
+			{Source: "wave", Severity: "high", Text: "partial", Ref: "wave 2"},
+			{Source: "wave", Severity: "high", Text: "failed", Ref: "wave 3"},
 		}
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("issues = %+v, want %+v", got, want)
@@ -426,13 +432,26 @@ func TestDashboardSnapshot_IssueSources(t *testing.T) {
 		dashWriteReviewDim(t, root, run, "docs", map[string]any{
 			"checkinAt": "2026-10-07T09:00:00Z", "checkoutAt": "2026-10-07T09:05:00Z", "findings": "## markdown, not JSON",
 		}, fresh)
-		got := dashOne(t, root).Issues
+		p := dashOne(t, root)
 		want := []DashboardIssue{
-			{Source: "review", Severity: "medium", Text: "a.go:12 nil map write"},
-			{Source: "review", Severity: "low", Text: "b.go:3 typo"},
+			{Source: "review", Severity: "medium", Text: "nil map write", File: "a.go", Line: "12", Ref: "code"},
+			{Source: "review", Severity: "low", Text: "typo", File: "b.go", Line: "3", Ref: "code"},
 		}
-		if !reflect.DeepEqual(got, want) {
-			t.Errorf("issues = %+v, want %+v", got, want)
+		if !reflect.DeepEqual(p.Issues, want) {
+			t.Errorf("issues = %+v, want %+v", p.Issues, want)
+		}
+		wantSteps := []DashboardStep{
+			{Name: "code", Status: StepCompleted, Detail: &DashboardStepDetail{
+				Kind: dashboardKindFindings,
+				Findings: []DashboardReviewFinding{
+					{Text: "nil map write", Severity: "medium", File: "a.go", Line: "12"},
+					{Text: "typo", Severity: "low", File: "b.go", Line: "3"},
+				},
+			}},
+			{Name: "docs", Status: StepCompleted, Detail: &DashboardStepDetail{Kind: dashboardKindFindings}},
+		}
+		if !reflect.DeepEqual(p.Steps, wantSteps) {
+			t.Errorf("steps = %+v, want %+v", p.Steps, wantSteps)
 		}
 	})
 }
@@ -522,8 +541,8 @@ func TestDashboardSnapshot_Worktree(t *testing.T) {
 	dashWriteState(t, root, "ship-feat-x-20261007T090000Z.json", map[string]any{
 		"branch": "feat/x", "worktree": "/wt/ship", "steps": dashSteps(StepInProgress),
 	}, fresh)
-	dashWriteState(t, root, "execute-feat-x-20261007T090100Z.json", map[string]any{
-		"branch": "feat/x", "worktree": "/wt/exec", "waves": []any{},
+	dashWriteState(t, root, "execute-feat-y-20261007T090100Z.json", map[string]any{
+		"branch": "feat/y", "worktree": "/wt/exec", "waves": []any{},
 	}, fresh)
 	dashWriteState(t, root, "plan-feat-x-20261007T090200Z.json", map[string]any{
 		"worktree": "/wt/ignored", "checkpoint": map[string]any{"step": "1"},
@@ -589,8 +608,8 @@ func TestDashboardSnapshot_LinkedWorktreeShowsOnce(t *testing.T) {
 func TestDashboardSnapshot_ListsAreNeverNull(t *testing.T) {
 	orig := dashboardActivity
 	t.Cleanup(func() { dashboardActivity = orig })
-	dashboardActivity = func(string, time.Time) ([]DashboardSession, []DashboardLearning, []DashboardDeferred) {
-		return nil, nil, nil
+	dashboardActivity = func(string, time.Time) ([]DashboardSession, []DashboardLearning, []DashboardDeferred, []DashboardRun) {
+		return nil, nil, nil, nil
 	}
 
 	empty := dashRoot(t)
@@ -619,7 +638,7 @@ func TestDashboardSnapshot_AbsentRepo(t *testing.T) {
 	calls := 0
 	orig := dashboardActivity
 	t.Cleanup(func() { dashboardActivity = orig })
-	dashboardActivity = func(root string, now time.Time) ([]DashboardSession, []DashboardLearning, []DashboardDeferred) {
+	dashboardActivity = func(root string, now time.Time) ([]DashboardSession, []DashboardLearning, []DashboardDeferred, []DashboardRun) {
 		calls++
 		return orig(root, now)
 	}
@@ -647,14 +666,15 @@ func TestDashboardSnapshot_CallsActivityOncePerRepo(t *testing.T) {
 	calls := map[string]int{}
 	orig := dashboardActivity
 	t.Cleanup(func() { dashboardActivity = orig })
-	dashboardActivity = func(root string, now time.Time) ([]DashboardSession, []DashboardLearning, []DashboardDeferred) {
+	dashboardActivity = func(root string, now time.Time) ([]DashboardSession, []DashboardLearning, []DashboardDeferred, []DashboardRun) {
 		calls[root]++
 		if !now.Equal(dashNow) {
 			t.Errorf("now = %v, want %v", now, dashNow)
 		}
 		return []DashboardSession{{ID: "s-" + filepath.Base(root), Timeline: []DashboardEvent{}}},
 			[]DashboardLearning{{Heading: "l-" + filepath.Base(root)}},
-			[]DashboardDeferred{{ID: "d-" + filepath.Base(root)}}
+			[]DashboardDeferred{{ID: "d-" + filepath.Base(root)}},
+			[]DashboardRun{{Kind: "r-" + filepath.Base(root)}}
 	}
 
 	a, b := dashRoot(t), dashRoot(t)
@@ -669,8 +689,9 @@ func TestDashboardSnapshot_CallsActivityOncePerRepo(t *testing.T) {
 		base := filepath.Base(repo.Root)
 		if len(repo.Sessions) != 1 || repo.Sessions[0].ID != "s-"+base ||
 			len(repo.Learnings) != 1 || repo.Learnings[0].Heading != "l-"+base ||
-			len(repo.Deferred) != 1 || repo.Deferred[0].ID != "d-"+base {
-			t.Errorf("repo %s activity = %+v %+v %+v", repo.Root, repo.Sessions, repo.Learnings, repo.Deferred)
+			len(repo.Deferred) != 1 || repo.Deferred[0].ID != "d-"+base ||
+			len(repo.History) != 1 || repo.History[0].Kind != "r-"+base {
+			t.Errorf("repo %s activity = %+v %+v %+v %+v", repo.Root, repo.Sessions, repo.Learnings, repo.Deferred, repo.History)
 		}
 	}
 }

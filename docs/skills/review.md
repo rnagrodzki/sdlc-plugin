@@ -107,3 +107,13 @@ implementation drift caught automatically in your own project's reviews.
 - **Severity levels drive pipelines.** In `/ship`, findings at or above the
   configured threshold trigger an automatic fix loop. Lower-severity findings do
   not block. They are saved for [/deferred](deferred.md), not dropped.
+- **The run ledger stays after the review.** Each run records its dimension
+  workers in a ledger under `.sdlc-v2/runs/ledger/`. When the review ends, it
+  stops each dimension worker that did not finish (`TaskStop`), then removes
+  its manifest and its temp diff directory, but it keeps the ledger. Under
+  `/ship`, the stop can fail; the review then names those workers as possibly
+  still running. The
+  [dashboard](dashboard.md) reads the ledger to show the review dimensions of a
+  finished run. The first `execute_state` `gc` sweep or `/ship`
+  `cleanup-pipeline` sweep after 7 days (the default `state.gc.ttlDays`)
+  removes the ledger.

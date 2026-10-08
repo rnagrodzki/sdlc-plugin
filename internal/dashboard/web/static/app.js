@@ -1,22 +1,49 @@
 /**
  * DOM glue for the sdlc dashboard page. Every decision (status text,
- * sorting, glyphs, stop request, open groups) is a call into
+ * sorting, glyphs, stop request, tab and filter state) is a call into
  * window.sdlcView (view.js). Snapshot text goes into the page through
  * textContent only, never innerHTML.
  */
 'use strict';
 
+// Event wiring and page state only. The DOM builders are in render.js
+// (window.sdlcRender); each takes the document as its first argument.
 var view = window.sdlcView;
-var source = null;
-var lastSnapshot = { repos: [] };
-var selectedKey = '';
-var pipelinesByKey = new Map();
-var focusTargets = new Map();
-var openGroups = view.loadOpenGroups(storage());
+var draw = window.sdlcRender;
+
+var TAB_KEYS = ['ArrowLeft', 'ArrowRight', 'Home', 'End'];
+
+// State kept across render(). collapsed and selected hold the user's
+// choice only; a pipeline with no entry follows the view.js default.
+var ui = {
+  tab: view.loadTab(storage()),
+  scope: view.loadRepoFilter(storage()),
+  collapsed: Object.create(null), // pipelineKey -> bool
+  // sectionKey -> true when the user closed that tile, false when the user
+  // opened it. A tile with no entry follows its default: step and issues
+  // tiles open, the session tile closed.
+  closed: Object.create(null),
+  selected: Object.create(null), // pipelineKey -> station index
+  focusKey: null,
+  scrollTop: 0,
+  lastSnapshot: null,
+  source: null,
+  hash: null, // a pipeline hash that waits for the first snapshot
+};
+
+// Blocks of the last render: { key, pipeline, node }, in feed order.
+var blocks = [];
+
+var stage = document.querySelector('.stage');
+var tabs = {
+  pipelines: { tab: byId('tab-pipelines'), panel: byId('panel-pipelines'), count: byId('n-pipelines') },
+  activity: { tab: byId('tab-activity'), panel: byId('panel-activity'), count: byId('n-activity') },
+  history: { tab: byId('tab-history'), panel: byId('panel-history'), count: byId('n-history') },
+};
 
 function storage() {
   // window.localStorage can throw (file://, blocked storage). view.js
-  // treats a null storage as empty.
+  // treats a storage that throws as empty.
   try {
     return window.localStorage;
   } catch (e) {
@@ -28,20 +55,12 @@ function byId(id) {
   return document.getElementById(id);
 }
 
-function el(tag, className, text) {
-  var node = document.createElement(tag);
-  node.className = className || '';
-  node.textContent = text == null ? '' : String(text);
-  return node;
+function replaceChildren(parent, nodes) {
+  parent.replaceChildren.apply(parent, nodes);
 }
 
-function tone(token) {
-  return 'var(--' + token + ')';
-}
-
-function clock(at) {
-  var date = new Date(at);
-  return isNaN(date.getTime()) ? '' : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+function reducedMotion() {
+  return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
 }
 
 function setConnection(state) {
@@ -50,277 +69,283 @@ function setConnection(state) {
 }
 
 function connect() {
-  source = new EventSource('/api/events');
-  source.addEventListener('open', function () {
+  ui.source = new EventSource('/api/events');
+  ui.source.addEventListener('open', function () {
     setConnection('open');
   });
-  source.addEventListener('error', function () {
+  ui.source.addEventListener('error', function () {
     setConnection('error');
   });
-  source.addEventListener('snapshot', function (event) {
+  ui.source.addEventListener('snapshot', function (event) {
     setConnection('snapshot');
     render(JSON.parse(event.data));
   });
 }
 
-function render(snapshot) {
-  lastSnapshot = snapshot || { repos: [] };
-  var repos = lastSnapshot.repos || [];
+// --- Scroll and focus kept across a rebuild ----------------------------------
+
+function saveScroll() {
+  ui.scrollTop = stage.scrollTop;
+}
+
+function restoreScroll() {
+  stage.scrollTop = ui.scrollTop;
+}
+
+// A key that names the same control in the next rebuild, or null.
+function focusKeyOf(node) {
+  if (!node || !node.closest) return null;
+  var block = node.closest('[data-key]');
+  var prefix = block ? block.getAttribute('data-key') + '\n' : '';
+  if (node.hasAttribute('data-root')) return 'chip\n' + node.getAttribute('data-root');
+  if (node.hasAttribute('data-station')) return prefix + 'station\n' + node.getAttribute('data-station');
+  if (node.classList.contains('fold-btn')) return prefix + 'fold';
+  var tile = node.closest('[data-section]');
+  if (tile && block) return prefix + 'tile\n' + tile.getAttribute('data-section');
+  return null;
+}
+
+function saveFocus() {
+  ui.focusKey = focusKeyOf(document.activeElement);
+}
+
+function restoreFocus() {
+  if (!ui.focusKey) return;
   var active = document.activeElement;
-  var focusKey = active ? active.getAttribute('data-key') : null;
-
-  pipelinesByKey = new Map();
-  focusTargets = new Map();
-
-  var groups = byId('groups');
-  groups.replaceChildren();
-  repos.forEach(function (repo) {
-    groups.appendChild(renderRepo(repo));
-  });
-
-  var emptyText = view.emptyText(lastSnapshot);
-  var empty = byId('empty');
-  empty.textContent = emptyText;
-  empty.hidden = !emptyText;
-
-  renderTotals(repos);
-  renderLearnings(repos);
-  renderDeferred(repos);
-  renderDetail(Boolean(emptyText));
-
-  var target = focusTargets.get(focusKey);
-  if (target) target.focus();
+  if (active && active !== document.body && document.contains(active)) return;
+  var candidates = document.querySelectorAll('[data-root], [data-station], .fold-btn, [data-section] > summary');
+  for (var i = 0; i < candidates.length; i++) {
+    if (focusKeyOf(candidates[i]) === ui.focusKey) {
+      candidates[i].focus({ preventScroll: true });
+      return;
+    }
+  }
 }
 
-function renderTotals(repos) {
-  var counts = { running: 0, stalled: 0, failed: 0 };
+// --- Render -------------------------------------------------------------------
+
+// The saved scope without roots the snapshot no longer has, so a stale root
+// cannot hide every repo while no chip shows as pressed.
+function activeScope(repos) {
+  var scope = new Set();
   repos.forEach(function (repo) {
+    if (ui.scope.has(repo.root)) scope.add(repo.root);
+  });
+  return scope;
+}
+
+function isCollapsed(key, pipeline) {
+  return key in ui.collapsed ? ui.collapsed[key] : view.defaultCollapsed(pipeline);
+}
+
+function selectedIndex(key, pipeline) {
+  var steps = pipeline.steps || [];
+  var index = ui.selected[key];
+  return typeof index === 'number' && index < steps.length ? index : view.defaultStationIndex(steps);
+}
+
+// The IANA time zone of the browser; undefined lets Intl use the local zone.
+function timeZone() {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone;
+  } catch (e) {
+    return undefined;
+  }
+}
+
+function renderFeed(snapshot, repos, scope, now, tz) {
+  var nodes = [];
+  var pipelines = [];
+  var owner = new Map();
+  blocks = [];
+
+  repos.forEach(function (repo) {
+    if (!view.inScope(scope, repo.root)) return;
+    if (repo.error) nodes.push(draw.emptyState(document, 'repo-error', repo));
     (repo.pipelines || []).forEach(function (p) {
-      counts[p.status] = (counts[p.status] || 0) + 1;
+      pipelines.push(p);
+      owner.set(p, repo);
     });
   });
-  byId('totals').textContent =
-    counts.running + ' running · ' + counts.stalled + ' stalled · ' + counts.failed + ' failed';
-}
 
-function renderRepo(repo) {
-  var pipelines = view.sortPipelines(repo.pipelines);
-  var group = el('details', 'group');
-  group.open = openGroups.has(repo.root);
-  group.addEventListener('toggle', function () {
-    group.open ? openGroups.add(repo.root) : openGroups.delete(repo.root);
-    view.saveOpenGroups(storage(), openGroups);
-  });
-
-  var summary = el('summary');
-  var groupKey = 'repo\n' + repo.root;
-  summary.setAttribute('data-key', groupKey);
-  summary.title = repo.root;
-  focusTargets.set(groupKey, summary);
-  var lamp = el('span', 'lamp');
-  lamp.setAttribute('aria-hidden', 'true');
-  lamp.style.color = tone(view.pipelineTone((pipelines[0] || {}).status));
-  lamp.hidden = pipelines.length === 0;
-  summary.append(el('span', 'group-name sign', repo.name), el('span', 'count sign', pipelines.length), lamp);
-  group.appendChild(summary);
-
-  var error = el('p', 'group-error', repo.error);
-  error.hidden = !repo.error;
-  group.appendChild(error);
-
-  var list = el('ul', 'pipes');
-  pipelines.forEach(function (p) {
-    var key = repo.root + '\n' + p.id;
-    pipelinesByKey.set(key, { repo: repo, pipeline: p });
-
-    var button = el('button', 'pipe');
-    button.type = 'button';
-    button.setAttribute('data-key', key);
-    button.setAttribute('aria-current', key === selectedKey ? 'true' : 'false');
-    button.title = p.kind + ' ' + p.branch + ' (' + p.status + ')';
-    focusTargets.set(key, button);
-
-    var pipeLamp = el('span', 'lamp');
-    pipeLamp.setAttribute('aria-hidden', 'true');
-    pipeLamp.style.color = tone(view.pipelineTone(p.status));
-    button.append(
-      el('span', 'pipe-kind sign', p.kind),
-      el('span', 'pipe-branch', view.cutText(p.branch, 48)),
-      worktreeTag(repo, p),
-      pipeLamp
-    );
-    button.addEventListener('click', function () {
-      selectedKey = key;
-      render(lastSnapshot);
+  view.feedOrder(pipelines).forEach(function (p) {
+    var repo = owner.get(p);
+    var key = view.pipelineKey(repo, p);
+    var node = draw.pipelineBlock(document, view, repo, p, {
+      collapsed: isCollapsed(key, p),
+      selected: selectedIndex(key, p),
+      closed: ui.closed,
+      now: now,
+      tz: tz,
     });
-
-    var item = el('li');
-    item.appendChild(button);
-    list.appendChild(item);
+    blocks.push({ key: key, pipeline: p, node: node });
+    nodes.push(node);
   });
-  group.appendChild(list);
-  return group;
+
+  if (blocks.length === 0) {
+    var empty = view.emptyText(snapshot);
+    nodes.push(empty ? draw.emptyState(document, 'no-pipelines', empty) : draw.emptyState(document, 'none-in-scope'));
+  }
+  replaceChildren(byId('feed'), nodes);
 }
 
-function worktreeTag(repo, p) {
-  var label = view.worktreeLabel(repo.root, p.worktree);
-  var tag = el('span', 'wt', label);
-  tag.title = p.worktree || '';
-  tag.hidden = !label;
-  return tag;
+function render(snapshot) {
+  ui.lastSnapshot = snapshot || { repos: [] };
+  var repos = ui.lastSnapshot.repos || [];
+  var scope = activeScope(repos);
+
+  saveScroll();
+  saveFocus();
+
+  replaceChildren(byId('totals'), draw.headerTotals(document, view, repos));
+  replaceChildren(byId('filter-chips'), draw.filterChips(document, view, view.repoChips(repos), scope));
+
+  var counts = view.scopedCounts(repos, scope);
+  view.TAB_NAMES.forEach(function (name) {
+    tabs[name].count.textContent = String(counts[name]);
+  });
+
+  var now = Date.now();
+  var tz = timeZone();
+  renderFeed(ui.lastSnapshot, repos, scope, now, tz);
+  replaceChildren(tabs.activity.panel, [draw.activityPanel(document, view, repos, scope)]);
+  replaceChildren(tabs.history.panel, [draw.historyTable(document, view, repos, scope, now, tz)]);
+  syncToggleAll();
+
+  restoreFocus();
+  restoreScroll();
+
+  if (ui.hash !== null) {
+    var hash = ui.hash;
+    ui.hash = null;
+    applyHash(hash);
+  }
 }
 
-function renderDetail(pageEmpty) {
-  var picked = pipelinesByKey.get(selectedKey);
-  var body = byId('detail-body');
-  body.replaceChildren();
-  byId('detail-hint').hidden = Boolean(picked) || pageEmpty;
-  if (picked) body.appendChild(renderPipeline(picked.pipeline, picked.repo));
+// --- Tabs, filter, blocks, stations -------------------------------------------
+
+function selectTab(name, focus) {
+  if (!tabs[name]) return;
+  var changed = name !== ui.tab;
+  view.TAB_NAMES.forEach(function (t) {
+    var on = t === name;
+    tabs[t].tab.setAttribute('aria-selected', String(on));
+    tabs[t].tab.setAttribute('tabindex', on ? '0' : '-1');
+    tabs[t].panel.hidden = !on;
+  });
+  ui.tab = name;
+  view.saveTab(storage(), name);
+  syncToggleAll();
+  if (changed) stage.scrollTop = 0;
+  if (focus) tabs[name].tab.focus();
 }
 
-function renderPipeline(p, repo) {
-  var box = el('article', 'pipeline');
-
-  var head = el('header', 'pipeline-head');
-  var status = el('span', 'pipeline-status sign', p.status);
-  status.setAttribute('data-status', p.status);
-  status.style.color = tone(view.pipelineTone(p.status));
-  head.append(
-    el('span', 'pipeline-kind sign', p.kind),
-    el('span', 'pipeline-branch sign', p.branch),
-    worktreeTag(repo, p),
-    status
-  );
-  box.appendChild(head);
-
-  var progress = p.progress || {};
-  box.appendChild(
-    el('p', 'progress', [progress.done + '/' + progress.total, progress.label].filter(Boolean).join(' · '))
-  );
-
-  var stations = el('ol', 'stations');
-  stations.setAttribute('aria-label', 'Steps');
-  (p.steps || []).forEach(function (step) {
-    var glyph = view.stepGlyph(step.status);
-    var station = el('li', 'station');
-    station.setAttribute('data-status', step.status);
-    station.title = step.name + ': ' + step.status;
-    var mark = el('span', 'station-glyph', glyph.glyph);
-    mark.style.color = tone(glyph.token);
-    mark.setAttribute('aria-hidden', 'true');
-    var name = el('span', 'station-name sign', step.name);
-    name.setAttribute('aria-label', step.name + ', ' + step.status);
-    station.append(mark, name);
-    stations.appendChild(station);
-  });
-  box.appendChild(stations);
-
-  var panels = el('div', 'panels');
-
-  var issuesBox = el('section', 'issues-box');
-  var issues = p.issues || [];
-  issuesBox.appendChild(el('h2', 'sign', 'Issues (' + issues.length + ')'));
-  var issueList = el('ul', 'issues');
-  issues.forEach(function (issue) {
-    var item = el('li', 'issue');
-    item.title = issue.text;
-    var glyph = el('span', 'issue-glyph', view.stepGlyph('failed').glyph);
-    glyph.setAttribute('aria-hidden', 'true');
-    var text = el('span', 'issue-text', issue.source + ': ' + view.cutText(issue.text, 200));
-    text.appendChild(el('span', 'issue-severity', issue.severity));
-    item.append(glyph, text);
-    issueList.appendChild(item);
-  });
-  issuesBox.appendChild(issueList);
-  panels.appendChild(issuesBox);
-
-  var sessionsBox = el('section', 'sessions-box');
-  var sessions = (repo.sessions || []).filter(function (s) {
-    return s.branch === p.branch;
-  });
-  sessionsBox.appendChild(el('h2', 'sign', 'Sessions (' + sessions.length + ')'));
-  sessions.forEach(function (s) {
-    sessionsBox.appendChild(renderSession(s));
-  });
-  panels.appendChild(sessionsBox);
-
-  box.appendChild(panels);
-  return box;
+// root '' is the All chip: it clears the scope. Any other root toggles.
+function applyScope(root) {
+  if (!root) {
+    ui.scope.clear();
+  } else if (ui.scope.has(root)) {
+    ui.scope.delete(root);
+  } else {
+    ui.scope.add(root);
+  }
+  view.saveRepoFilter(storage(), ui.scope);
+  render(ui.lastSnapshot);
 }
 
-function renderSession(s) {
-  var box = el('div', 'session');
-  box.setAttribute('data-active', String(Boolean(s.active)));
-
-  var counts = s.counts || {};
-  var head = el('div', 'session-head');
-  var lamp = el('span', 'session-lamp', '●');
-  lamp.setAttribute('aria-hidden', 'true');
-  var id = el('span', 'session-id', view.cutText(s.id, 8));
-  id.title = s.id;
-  head.append(
-    lamp,
-    id,
-    el(
-      'span',
-      'session-counts sign',
-      counts.prompts + ' prompts · ' + counts.commands + ' commands · ' + counts.mcpCalls + ' MCP calls'
-    )
-  );
-  box.appendChild(head);
-
-  var timeline = el('ol', 'timeline');
-  (s.timeline || []).forEach(function (event) {
-    var item = el('li', 'event');
-    item.setAttribute('data-kind', event.kind);
-    item.title = event.text;
-    item.append(
-      el('span', 'event-at', clock(event.at)),
-      el('span', 'event-kind', event.kind),
-      el('span', 'event-text', view.cutText(event.text, 160))
-    );
-    timeline.appendChild(item);
-  });
-  box.appendChild(timeline);
-  return box;
+function blockOf(key) {
+  for (var i = 0; i < blocks.length; i++) {
+    if (blocks[i].key === key) return blocks[i];
+  }
+  return null;
 }
 
-function renderLearnings(repos) {
-  var list = byId('learnings-list');
-  list.replaceChildren();
-  var total = 0;
-  repos.forEach(function (repo) {
-    (repo.learnings || []).forEach(function (entry) {
-      total += 1;
-      var item = el('li', '', view.cutText(entry.heading, 120));
-      item.title = entry.heading;
-      item.appendChild(
-        el('span', 'extra-meta', [repo.name, entry.date, entry.branch, entry.runId].filter(Boolean).join(' · '))
-      );
-      list.appendChild(item);
-    });
+function anyOpen() {
+  return blocks.some(function (b) {
+    return !b.node.classList.contains('collapsed');
   });
-  byId('learnings-count').textContent = '(' + total + ')';
 }
 
-function renderDeferred(repos) {
-  var list = byId('deferred-list');
-  list.replaceChildren();
-  var total = 0;
-  repos.forEach(function (repo) {
-    (repo.deferred || []).forEach(function (entry) {
-      total += 1;
-      var item = el('li');
-      item.title = entry.description;
-      var priority = el('span', 'priority sign', entry.priority);
-      priority.setAttribute('data-priority', entry.priority);
-      item.append(priority, document.createTextNode(view.cutText(entry.description, 140)));
-      item.appendChild(el('span', 'extra-meta', [repo.name, entry.id].filter(Boolean).join(' · ')));
-      list.appendChild(item);
-    });
-  });
-  byId('deferred-count').textContent = '(' + total + ')';
+function syncToggleAll() {
+  var button = byId('toggle-all');
+  button.textContent = view.toggleAllLabel(anyOpen());
+  button.hidden = ui.tab !== 'pipelines' || blocks.length === 0;
 }
+
+function setCollapsed(key, collapsed) {
+  var block = blockOf(key);
+  if (!block) return;
+  ui.collapsed[key] = collapsed;
+  block.node.classList.toggle('collapsed', collapsed);
+  block.node.querySelector('.fold-btn').setAttribute('aria-expanded', String(!collapsed));
+  syncToggleAll();
+}
+
+// The tile of a step: a node with data-section set to the step name inside
+// the block's .step-detail.
+function tileOf(node, name) {
+  var tiles = node.querySelectorAll('.step-detail [data-section]');
+  for (var i = 0; i < tiles.length; i++) {
+    if (tiles[i].getAttribute('data-section') === name) return tiles[i];
+  }
+  return null;
+}
+
+// Marks station index and its tile. With reveal, it also expands the
+// block, opens the tile, and scrolls the tile into view.
+function selectStation(key, index, reveal) {
+  var block = blockOf(key);
+  if (!block) return;
+  var steps = block.pipeline.steps || [];
+  if (index < 0 || index >= steps.length) return;
+  ui.selected[key] = index;
+
+  var stations = block.node.querySelectorAll('.station');
+  for (var i = 0; i < stations.length; i++) {
+    stations[i].classList.toggle('selected', i === index);
+  }
+  var name = steps[index].name;
+  var tiles = block.node.querySelectorAll('.step-detail [data-section]');
+  for (var j = 0; j < tiles.length; j++) {
+    tiles[j].classList.toggle('selected', tiles[j].getAttribute('data-section') === name);
+  }
+
+  if (!reveal) return;
+  setCollapsed(key, false);
+  var tile = tileOf(block.node, name);
+  if (!tile) return;
+  if (tile.tagName === 'DETAILS') tile.open = true;
+  delete ui.closed[view.sectionKey(key, name)];
+  tile.scrollIntoView({ block: 'nearest', behavior: reducedMotion() ? 'auto' : 'smooth' });
+}
+
+// '#activity' and '#history' pick a tab. '#<pipeline id>[/<n>]' scrolls to
+// the first block with that id and selects station n.
+function applyHash(hash) {
+  var target = view.parseHash(hash, view.TAB_NAMES);
+  if (!target) return;
+  if (target.tab) {
+    selectTab(target.tab);
+    return;
+  }
+  if (!ui.lastSnapshot) {
+    ui.hash = hash;
+    return;
+  }
+  var block = null;
+  for (var i = 0; i < blocks.length; i++) {
+    if (blocks[i].pipeline.id === target.pipelineId) {
+      block = blocks[i];
+      break;
+    }
+  }
+  if (!block) return;
+  selectTab('pipelines');
+  block.node.scrollIntoView({ block: 'start', behavior: 'auto' });
+  if (target.station !== null) selectStation(block.key, target.station, true);
+}
+
+// --- Stop flow ------------------------------------------------------------------
 
 function stopServer() {
   var meta = document.querySelector('meta[name="sdlc-token"]');
@@ -337,14 +362,72 @@ function stopServer() {
     .then(function (code) {
       var result = view.stopResult(code);
       if (result === 'stopped') {
-        if (source) source.close();
+        if (ui.source) ui.source.close();
         byId('stop-btn').disabled = true;
       }
       setConnection(result);
     });
 }
 
+// --- Wiring ---------------------------------------------------------------------
+
 function init() {
+  view.TAB_NAMES.forEach(function (name, index) {
+    var tab = tabs[name].tab;
+    tab.addEventListener('click', function () {
+      selectTab(name);
+    });
+    tab.addEventListener('keydown', function (event) {
+      if (TAB_KEYS.indexOf(event.key) === -1) return;
+      event.preventDefault();
+      selectTab(view.TAB_NAMES[view.nextTabIndex(index, event.key, view.TAB_NAMES.length)], true);
+    });
+  });
+
+  byId('filter-chips').addEventListener('click', function (event) {
+    var chip = event.target.closest('[data-root]');
+    if (chip) applyScope(chip.getAttribute('data-root'));
+  });
+
+  byId('toggle-all').addEventListener('click', function () {
+    var collapse = anyOpen();
+    blocks.forEach(function (b) {
+      setCollapsed(b.key, collapse);
+    });
+  });
+
+  var feed = byId('feed');
+  feed.addEventListener('click', function (event) {
+    var block = event.target.closest('[data-key]');
+    if (!block) return;
+    var key = block.getAttribute('data-key');
+    var station = event.target.closest('[data-station]');
+    if (station) {
+      selectStation(key, Number(station.getAttribute('data-station')), true);
+    } else if (event.target.closest('.fold-btn')) {
+      setCollapsed(key, !block.classList.contains('collapsed'));
+    }
+  });
+  // toggle does not bubble, so the feed listens in the capture phase.
+  feed.addEventListener(
+    'toggle',
+    function (event) {
+      var tile = event.target;
+      if (!tile || tile.tagName !== 'DETAILS' || !tile.hasAttribute('data-section')) return;
+      var block = tile.closest('[data-key]');
+      if (!block) return;
+      // Kept as true or false, so a tile closed by default (session)
+      // stays open after the next snapshot once the user opened it.
+      var key = view.sectionKey(block.getAttribute('data-key'), tile.getAttribute('data-section'));
+      ui.closed[key] = !tile.open;
+    },
+    true
+  );
+
+  window.addEventListener('hashchange', function () {
+    applyHash(location.hash);
+  });
+
   var dialog = byId('stop-dialog');
   byId('stop-btn').addEventListener('click', function () {
     dialog.showModal();
@@ -356,6 +439,9 @@ function init() {
     dialog.close();
     stopServer();
   });
+
+  selectTab(ui.tab);
+  applyHash(location.hash);
   connect();
 }
 

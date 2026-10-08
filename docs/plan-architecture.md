@@ -18,7 +18,7 @@ Seven MCP tools are called directly by the plan skill pipeline.
 | Tool | Registration | Purpose |
 |------|-------------|---------|
 | `plan_prepare` | `internal/tools/plan.go` `RegisterPlanTools` | Context detection, template resolution, OpenSpec validation, guardrail loading, lane/lens construction, complexity routing. Computes pending OpenSpec tasks.md ref stamps but never writes them — see [OpenSpec tasks.md Ref Stamping](#openspec-tasksmd-ref-stamping) |
-| `plan_mark` | `internal/tools/plan.go` `RegisterPlanTools` | Write planIntegrity markers (`skillInvoked`, `plan-file`, `guardrailsEvaluated`, `critiqueRan`, `done`), append `guardrailResults`/`criticalDecisions`, or replace the `checkpoint` progress marker. Every call also refreshes `data.planTiming` (run start to the plan file's last edit); `done` additionally appends a `history.RunRecord` to `.sdlc-v2/history/runs.jsonl` |
+| `plan_mark` | `internal/tools/plan.go` `RegisterPlanTools` | Write planIntegrity markers (`skillInvoked`, `plan-file`, `guardrailsEvaluated`, `critiqueRan`, `done`), append `guardrailResults`/`criticalDecisions`, upsert a `review-round` row, or replace the `checkpoint` progress marker. Every call also refreshes `data.planTiming` (run start to the plan file's last edit); `done` additionally appends a `history.RunRecord` to `.sdlc-v2/history/runs.jsonl` |
 | `plan_explore_prepare` | `internal/tools/plan_explore.go` `RegisterPlanExploreTools` | Build standalone explore pack (git scope, OpenSpec paths, keyword grep, web-research signal, skill registry sample, recent plans) |
 | `plan_support` | `internal/tools/plan_support.go` `RegisterPlanSupportTools` | Seven actions: `merge_results`, `material_snapshot`, `material_compare`, `openspec_appendix`, `evidence_record`, `evidence_digest`, `evidence_get` |
 | `validate` | `internal/tools/validators.go` `RegisterValidateTools` | Ten actions (9 today + `plan_style`); plan pipeline uses `plan_format` (PF1-PF14) and `plan_style` |
@@ -96,7 +96,8 @@ rules:
   is what eventually claims a `done` plan run too, once the branch moves on
   (see [Plan run lifetime](#plan-run-lifetime)). `ship_state({action:
   "cleanup-pipeline"})` additionally removes a `done` plan run as soon as
-  the ship report has read it, independently of GC's TTL/newest rule.
+  the ship report has read it, independently of GC's TTL/newest rule. It first
+  copies the explorer summary into ship state `planExploreSummary`.
 
 ### Hooks
 
@@ -636,6 +637,7 @@ never in parallel with another `main` write, since two parallel upserts of
 | `plan_support({action: "evidence_digest", runId, expectedWriters?, timeoutSeconds?, statusOnly?})` | Returns the `writers` status table always, plus a `digest` (run summary including `briefPath`) unless `statusOnly`; never returns item bodies. `expectedWriters` defaults to the checkpoint's `expectedWriters` when omitted. |
 | `plan_support({action: "evidence_get", runId, writerIds})` | Fetches recorded item bodies for CRITIQUE, or for template fills like `{REQUIREMENTS_SUMMARY}` / `{BRIEF_FINDING_IDS}`. |
 | `plan_mark({marker: "checkpoint", data: {step, iteration, expectedWriters?}})` | Replaces (not appends) `st.Data["checkpoint"]`. Called at the start of every step (`1, 2, 3, 4, 5, 6, 6.5, 6.6, 7`); `expectedWriters` is passed only at a fan-out step (Step 1 explorers, Step 3 lanes, Step 5 lenses or reviewer). |
+| `plan_mark({marker: "review-round", data: {round, mergedStatus, found, fixed, lenses}})` | Upserts one row of `st.Data["reviewRounds"]` by `round`. Called once per review round, in Step 5 (Approved) or Step 6 (after the fixes). The dashboard reads the rows. |
 | `plan_prepare({resume: true, resolveTemplate: true, skipConfigCheck: true})` | Reuses the active run without resetting it. Restores `runId`, `guardrailsFile`, `lanes`, `lensReviewers`, `style`, and `template.activeTemplatePath` as a fresh run would set them. Returns a `no active plan run` domain error when there is none. |
 
 ### Resume flow
@@ -919,7 +921,7 @@ A `done` plan run's state file is not deleted the moment it finishes — it is k
 |---|---|
 | `plan_mark done` | kept |
 | ship `report` (write) | read for `## Planning` / `## Timeline` |
-| ship `cleanup-pipeline` | deleted when the report file exists |
+| ship `cleanup-pipeline` | deleted when the report file exists, after the explorer summary is copied to ship state |
 | GC (TTL, default 7 days) | deleted |
 
 `state.Write`'s prune-on-write (and `state.PruneEvidenceDirs`) both special-case a `done` plan run: a sibling state file for the same branch is pruned on every write *unless* it is itself a finished (`done`) plan run, in which case it is left alone. That is what lets the file survive from Step 7's `done` marker through the Stop hook (which only reads it) to the point ship's `report` step reads `planIntegrity`/`planTiming` from it. Actual removal then comes from whichever happens first: `ship_state({action: "cleanup-pipeline"})` removing it once the ship report has been written (the table's third row), or the standalone TTL/branch-liveness sweep (`ship --gc` / `execute --gc`, `state.GC`) once it is both past the TTL and no longer the newest file for its branch — a gone branch's files are removed regardless of age.

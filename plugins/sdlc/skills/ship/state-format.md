@@ -31,8 +31,10 @@ Managed by the shared `internal/state` package (the same one `execute_state`, `p
   "deferredFindings": [ ... ],
   "issues": [ ... ],
   "lastFailedStep": null,
+  "historyFailureRecorded": true,
   "sideEffects": { ... },
   "healing": { ... },
+  "planExploreSummary": [ ... ],
   "pipelineStatus": "completed",
   "pipelineCompletedAt": "2026-03-27T15:10:00Z"
 }
@@ -51,8 +53,10 @@ Managed by the shared `internal/state` package (the same one `execute_state`, `p
 | `deferredFindings` | array | Appended by `ship_state{action:"defer"}`. |
 | `issues` | array | Structured issue accumulator, appended by `ship_state{action:"fail"}`. See "Issues and `lastFailedStep`" below. |
 | `lastFailedStep` | string \| null | Name of the most recent step passed to `fail`. |
+| `historyFailureRecorded` | boolean | Absent until the first `fail` of the run. The first `ship_state{action:"fail"}` of a run sets it to `true` before it appends the failure row to `runs.jsonl`. `true` does not prove the row exists: a failed append leaves the flag set. It stops a second `fail` row for the same run. It does not stop Step 10c's `history_record` row, so a run that fails, resumes, and completes has two rows: the `failure` row and the final row. See "Issues and `lastFailedStep`" below. |
 | `sideEffects` | object | Idempotency journal keyed by step name (`<step>#<n>` for a repeated name). Written by `ship_verify_side_effect`; consulted by `begin-step`'s `alreadyDone` flag. See below. |
 | `healing` | object | Absent until the first `ship_state{action:"healing_record"}` call. Self-healing ledger (`reviewTotal`, `fixed[]`, `hardened[]`). See "`data.healing`" below. |
+| `planExploreSummary` | array | Absent until `cleanup-pipeline` saves the summary copy, which it does before it deletes the linked plan run. If the delete then fails (`planRun.reason` `remove failed: ...`), the key stays set and the plan run stays on disk. One `{name, status, total, top[]}` entry for each plan explorer; `status` is `running`, `done`, or `unreadable`; `top` holds at most 5 `{summary, ref}` findings. `[]` when the plan run had no explorer files. See "Lifecycle: Cleanup." |
 | `pipelineStatus` | string | Absent until the pipeline is stamped terminal. Set to `"completed"` by `cleanup`/`cleanup-pipeline` — see "Lifecycle: Cleanup." |
 | `pipelineCompletedAt` | string | Paired timestamp, set alongside `pipelineStatus`. |
 
@@ -204,6 +208,19 @@ Ship's review routing defers each finding below `flags.reviewThreshold` this way
 
 `fail` always writes `severity:"error"`, `category:"ship-fail"`, and `summary:"Step <name> failed"`; `detail` is `detail.error` as text, empty when it was not passed. In the shared issue shape, `wave`, `step`, `taskId`, and `detail` are optional; `severity`, `category`, `summary`, and `timestamp` are always present. This mirrors `execute-state.schema.json`'s own `issues[]` shape.
 
+The first `fail` of a run also appends one row to `.sdlc-v2/history/runs.jsonl`, so a run that stops before cleanup still has a history row. The row has `skill:"ship"`, `outcome:"failure"`, the run's `branch`, `ts` (the time of the `fail` call), `started_at` (the state's `startedAt`), and `duration_ms` (`started_at` to `ts`; `0` when `startedAt` does not parse):
+
+```json
+{"ts":"2026-10-07T12:00:00Z","skill":"ship","branch":"feat/x","outcome":"failure","duration_ms":1800000,"started_at":"2026-10-07T11:30:00Z"}
+```
+
+`fail` sets `historyFailureRecorded:true` and writes the state file before it appends the row. A later `fail` in the same run sees the flag and appends nothing. Two failure points follow from this order:
+
+| Failure | Effect |
+|---|---|
+| The state write fails | `fail` returns an `InfraError`. The flag is not saved and no row exists, so a retry is safe. |
+| The row append fails | The flag is saved. `fail` still succeeds and the step stays `failed`. The response carries `warnings` that name `.sdlc-v2/history/runs.jsonl`. A retry adds no row. To add the row, call `ship_state{action:"history_record", detail:{skill:"ship", outcome:"failure", branch:"<branch>"}}`. This recovery row is reduced: `history_record` takes no `started_at`, `ts` is the time of the call unless you pass `detail.ts`, and `duration_ms` is `0` unless you pass `detail.duration_ms`. |
+
 `complete-step`'s response also carries `issueCount` (total issues recorded so far) and `issueHighlights` (up to a handful of the most recent `"[severity] summary"` strings) — read those off the tool's response directly rather than re-deriving them from `issues[]` yourself.
 
 ---
@@ -287,10 +304,27 @@ Two actions, both terminal, neither a `steps[]` entry. **Neither deletes the sta
     "gc": { "ship": {...}, "execute": {...}, "plan": {...}, "commit": {...} },
     "directories": { "deleted": [...], "kept": [...], "ledger": { "deleted": [...], "kept": [...] } },
     "force": false,
-    "ttlDays": 7
+    "ttlDays": 7,
+    "planRun": { "deleted": true, "runId": "..." },
+    "issueSummary": { "...present only when the stamp landed and issues[] is non-empty..." }
   }
   ```
   `directories` reaps stale per-run execute directories and their ledger subdirectory (keyed off `execute-*.json` state files' `startedAt`) — this is the run-dir/ledger cleanup that happens alongside, not instead of, the state-file stamp.
+
+  `planRun` reports the deletion of the linked plan run (the plan run that this branch's execute state
+  `planPath` points to). Its shape is `{deleted, runId?, reason?}`. The delete has two gates: the stamp
+  above must have landed, and the ship report `.sdlc-v2/reports/ship-<runId>-report.<md|json>` must
+  exist. Before the delete, the action copies the plan explorer summary into ship state
+  `planExploreSummary` (one `{name, status, total, top[]}` entry for each explorer, `top` capped at 5)
+  and writes the ship state. `reason` is one of:
+
+  | `planRun.reason` | Meaning |
+  |---|---|
+  | `run not stamped` | `force:true`, no state file, or no stamp. Nothing is deleted. |
+  | `no linked plan run` | No execute state, or no plan run for its `planPath` (also after an earlier delete). |
+  | `report not written` | The ship report file does not exist yet. |
+  | `explorer summary not saved: <err>. Fix the cause and call cleanup-pipeline again.` | The summary read or the ship state write failed. Nothing is deleted. |
+  | `remove failed: <err>` | The summary is saved, but the evidence directory or the plan state file was not removed. |
 
 Because contract validation only inspects `steps[]` entries, `received-review`/`commit-fixes` (which never get an entry) can never trip this check either way — their outcome is invisible to `cleanup`/`cleanup-pipeline`, tracked only in `decisions[]`.
 

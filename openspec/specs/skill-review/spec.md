@@ -153,7 +153,7 @@ sequenceDiagram
     LV-->>Skill: all ok
     Skill->>gh: gh api issues comments with body file
     Skill->>FS: remove manifest and diff_dir
-    Skill->>ES: ledger_cleanup
+    Note over Skill,FS: the run ledger stays for the dashboard
 ```
 
 #### Scenario: Per-dimension model override
@@ -350,15 +350,22 @@ When the verdict is `CHANGES REQUESTED` or `APPROVED WITH NOTES` the skill SHALL
 - **AND** does not list `harden`
 
 ### Requirement: Cleanup on every terminal path
-The skill SHALL remove everything the run created on dry-run stop, error stop, and normal completion.
+The skill SHALL remove the temp files of the run on dry-run stop, error stop, and normal completion, and SHALL keep the run ledger.
 
 - `rm -f "<manifestPath>"`
 - `rm -rf "{manifest.diff_dir}"`
-- `execute_state({action: "ledger_cleanup", runId})`, only when the reviewer dispatch step minted a `runId`. The dry-run stop and an error stop before dispatch have no `runId` and no ledger.
+- The skill does not call `execute_state({action: "ledger_cleanup", runId})`. The dashboard reads the ledger to show the review dimensions of a finished run.
+- The first execute `gc` or ship `cleanup-pipeline` sweep after the GC TTL (7 days by default) removes the ledger folder.
 
 #### Scenario: Normal completion
 - **WHEN** the posting and self-fix steps finish
-- **THEN** the manifest, the diff directory, and the run's ledger are removed
+- **THEN** the manifest and the diff directory are removed
+- **AND** the folder `.sdlc-v2/runs/ledger/<runId>/` stays
+
+#### Scenario: Dry-run stop
+- **WHEN** the user runs `/review --dry-run`
+- **THEN** the manifest and the diff directory are removed
+- **AND** no ledger folder exists for the run
 
 ### Requirement: Error reporting scope
 The skill SHALL NOT invoke `error-report` for user errors and SHALL use it only for tool-call crashes.

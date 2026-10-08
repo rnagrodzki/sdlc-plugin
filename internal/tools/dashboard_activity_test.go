@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -267,8 +268,169 @@ func TestDashboardActivity_Deferred(t *testing.T) {
 
 func TestDashboardActivity_NoEvidenceNoLearningsNoDeferred(t *testing.T) {
 	root := dashRoot(t)
-	sessions, learnings, deferred := collectActivity(root, dashNow)
-	if len(sessions) != 0 || len(learnings) != 0 || len(deferred) != 0 {
-		t.Errorf("collectActivity on an empty repo = %+v %+v %+v, want all empty", sessions, learnings, deferred)
+	sessions, learnings, deferred, history := collectActivity(root, dashNow)
+	if len(sessions) != 0 || len(learnings) != 0 || len(deferred) != 0 || len(history) != 0 {
+		t.Errorf("collectActivity on an empty repo = %+v %+v %+v %+v, want all empty", sessions, learnings, deferred, history)
+	}
+}
+
+// dashWriteRuns writes lines (each a raw JSON object or corrupt text, no
+// trailing newline) to root's runs.jsonl, oldest first.
+func dashWriteRuns(t *testing.T, root string, lines ...string) {
+	t.Helper()
+	dashWriteJSONL(t, history.NewFileWriter(paths.HistoryDir(root)).RunsPath(), lines...)
+}
+
+// TestDashboardActivity_History_MapsFields checks how a runs.jsonl row maps to
+// a DashboardRun, including the start time fallbacks.
+func TestDashboardActivity_History_MapsFields(t *testing.T) {
+	root := dashRoot(t)
+	dashWriteRuns(t, root,
+		// started_at present: it wins over ts - duration_ms.
+		`{"ts":"2026-10-07T09:30:00Z","skill":"ship","branch":"feat/a","outcome":"success","duration_ms":60000,"started_at":"2026-10-07T09:00:00Z"}`,
+		// no started_at: ts - duration_ms.
+		`{"ts":"2026-10-07T10:00:00Z","skill":"execute","branch":"feat/b","outcome":"failure","duration_ms":90000}`,
+		// no started_at and no duration: startedAt is empty.
+		`{"ts":"2026-10-07T11:00:00Z","skill":"plan","branch":"feat/c","outcome":"partial","duration_ms":0}`,
+		// no started_at, duration set, ts unparsable: startedAt is empty and ts passes through.
+		`{"ts":"not-a-time","skill":"review","branch":"feat/d","outcome":"success","duration_ms":5000}`,
+	)
+
+	got := dashboardRecentRuns(root)
+	want := []DashboardRun{
+		{Kind: "review", Branch: "feat/d", Outcome: "success", StartedAt: "", EndedAt: "not-a-time", DurationMs: 5000},
+		{Kind: "plan", Branch: "feat/c", Outcome: "partial", StartedAt: "", EndedAt: "2026-10-07T11:00:00Z", DurationMs: 0},
+		{Kind: "execute", Branch: "feat/b", Outcome: "failure", StartedAt: "2026-10-07T09:58:30Z", EndedAt: "2026-10-07T10:00:00Z", DurationMs: 90000},
+		{Kind: "ship", Branch: "feat/a", Outcome: "success", StartedAt: "2026-10-07T09:00:00Z", EndedAt: "2026-10-07T09:30:00Z", DurationMs: 60000},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("history rows = %d, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("history[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+// TestDashboardActivity_History_CapsAtLimitNewestFirst checks that the list
+// keeps only dashboardHistoryLimit rows and puts the newest row first.
+func TestDashboardActivity_History_CapsAtLimitNewestFirst(t *testing.T) {
+	root := dashRoot(t)
+	total := dashboardHistoryLimit + 7
+	lines := make([]string, 0, total)
+	for i := 0; i < total; i++ {
+		lines = append(lines, fmt.Sprintf(`{"ts":"2026-10-07T09:%02d:00Z","skill":"ship","branch":"run-%03d","outcome":"success","duration_ms":1000}`, i%60, i))
+	}
+	dashWriteRuns(t, root, lines...)
+
+	got := dashboardRecentRuns(root)
+	if len(got) != dashboardHistoryLimit {
+		t.Fatalf("history rows = %d, want %d", len(got), dashboardHistoryLimit)
+	}
+	// Newest first: the last line written is first; the oldest kept row is
+	// line index total-limit (the 7 oldest lines are dropped).
+	if got[0].Branch != fmt.Sprintf("run-%03d", total-1) {
+		t.Errorf("first row branch = %s, want run-%03d", got[0].Branch, total-1)
+	}
+	if last := got[len(got)-1]; last.Branch != fmt.Sprintf("run-%03d", total-dashboardHistoryLimit) {
+		t.Errorf("last row branch = %s, want run-%03d", last.Branch, total-dashboardHistoryLimit)
+	}
+	for i := 1; i < len(got); i++ {
+		if got[i-1].Branch <= got[i].Branch {
+			t.Fatalf("rows %d and %d are not newest first: %s then %s", i-1, i, got[i-1].Branch, got[i].Branch)
+		}
+	}
+}
+
+// TestDashboardActivity_History_FailureAndLaterSuccessBothShow checks that a
+// failed run stays in the list after a later run of the same branch succeeds.
+func TestDashboardActivity_History_FailureAndLaterSuccessBothShow(t *testing.T) {
+	root := dashRoot(t)
+	dashWriteRuns(t, root,
+		`{"ts":"2026-10-07T09:00:00Z","skill":"ship","branch":"feat/x","outcome":"failure","duration_ms":1000}`,
+		`{"ts":"2026-10-07T10:00:00Z","skill":"ship","branch":"feat/x","outcome":"success","duration_ms":2000}`,
+	)
+
+	got := dashboardRecentRuns(root)
+	if len(got) != 2 || got[0].Outcome != "success" || got[1].Outcome != "failure" {
+		t.Errorf("history = %+v, want the later success first and the earlier failure second", got)
+	}
+}
+
+// TestDashboardActivity_History_SkipsCorruptLine checks that a corrupt line is
+// skipped and does not count toward dashboardHistoryLimit.
+func TestDashboardActivity_History_SkipsCorruptLine(t *testing.T) {
+	root := dashRoot(t)
+	// The file holds exactly dashboardHistoryLimit valid rows plus one corrupt
+	// line among the newest ones. The limit counts valid rows only, so every
+	// valid row shows, including the oldest.
+	lines := []string{`{"ts":"2026-10-07T08:00:00Z","skill":"ship","branch":"old","outcome":"success","duration_ms":1}`}
+	for i := 0; i < dashboardHistoryLimit-2; i++ {
+		lines = append(lines, fmt.Sprintf(`{"ts":"2026-10-07T09:00:00Z","skill":"ship","branch":"mid-%02d","outcome":"success","duration_ms":1}`, i))
+	}
+	lines = append(lines, `{"ts":"2026-10-07T09:30:00Z","skill":`, `{"ts":"2026-10-07T10:00:00Z","skill":"ship","branch":"newest","outcome":"success","duration_ms":1}`)
+	dashWriteRuns(t, root, lines...)
+
+	got := dashboardRecentRuns(root)
+	if len(got) != dashboardHistoryLimit {
+		t.Fatalf("history rows = %d, want %d (corrupt line skipped, not counted)", len(got), dashboardHistoryLimit)
+	}
+	if got[0].Branch != "newest" {
+		t.Errorf("first row branch = %s, want newest", got[0].Branch)
+	}
+	if last := got[len(got)-1]; last.Branch != "old" {
+		t.Errorf("last row branch = %s, want old (the oldest valid row inside the limit)", last.Branch)
+	}
+}
+
+// TestDashboardActivity_History_MissingOrEmptyFile checks that a missing or
+// empty runs.jsonl gives an empty list that encodes as [] in the snapshot.
+func TestDashboardActivity_History_MissingOrEmptyFile(t *testing.T) {
+	t.Run("missing runs.jsonl", func(t *testing.T) {
+		root := dashRoot(t)
+		if got := dashboardRecentRuns(root); len(got) != 0 {
+			t.Errorf("history = %+v, want none", got)
+		}
+		repo := dashCollect(t, root)
+		if repo.History == nil || len(repo.History) != 0 {
+			t.Errorf("repo.History = %#v, want an empty non-nil list", repo.History)
+		}
+	})
+
+	t.Run("empty runs.jsonl", func(t *testing.T) {
+		root := dashRoot(t)
+		path := history.NewFileWriter(paths.HistoryDir(root)).RunsPath()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := dashboardRecentRuns(root); len(got) != 0 {
+			t.Errorf("history = %+v, want none", got)
+		}
+		b, err := json.Marshal(dashCollect(t, root))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(b), `"history":[]`) {
+			t.Errorf("repo JSON = %s, want history []", b)
+		}
+	})
+}
+
+// TestDashboardActivity_History_ReachesSnapshot checks that the collected repo
+// carries the history rows, newest first.
+func TestDashboardActivity_History_ReachesSnapshot(t *testing.T) {
+	root := dashRoot(t)
+	dashWriteRuns(t, root,
+		`{"ts":"2026-10-07T09:00:00Z","skill":"ship","branch":"feat/x","outcome":"failure","duration_ms":1000}`,
+		`{"ts":"2026-10-07T10:00:00Z","skill":"execute","branch":"feat/y","outcome":"success","duration_ms":2000}`,
+	)
+
+	repo := dashCollect(t, root)
+	if len(repo.History) != 2 || repo.History[0].Kind != "execute" || repo.History[1].Kind != "ship" {
+		t.Errorf("repo.History = %+v, want execute then ship", repo.History)
 	}
 }

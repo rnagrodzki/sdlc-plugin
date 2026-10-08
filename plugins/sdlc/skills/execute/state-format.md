@@ -63,6 +63,7 @@ If there is only one worktree entry (no linked worktrees), the main working tree
   "quality": "balanced",
   "totalTasks": 8,
   "plannedTaskIds": ["1", "2", "3", "4", "5", "6", "7", "8"],
+  "plannedTasks": [{ "id": "1", "name": "Add the config loader" }, ... ],
   "waves": [ ... ],
   "context": { ... },
   "issues": [ ... ]
@@ -82,6 +83,7 @@ If there is only one worktree entry (no linked worktrees), the main working tree
 | `sessionId`  | string \| null | Claude Code session ID passed to `init`. `null` when `init` got none. |
 | `commitWaves` | string       | `"true"` or `"false"`: whether `wave-commit` commits each wave. Stamped by `init`; any other input is stored as `"true"`. |
 | `plannedTaskIds` | string[] \| absent | Every task ID the plan declares, passed as an optional `plannedTaskIds` array on `init`. Absent on state files from a run that didn't supply it (including all pre-this-field state files). Two consumers depend on it: `execRunInFlight` (an ID here with no matching entry in `context.completedTaskIds` means the run is still in flight, triggering `resumeBriefing` on `read`) and `verify-completeness` (cross-checks this list against what actually got recorded; without it, `verify-completeness` fails outright with `"verify-completeness cannot find plannedTaskIds in state — invariant check cannot run"` rather than silently skipping the check). |
+| `plannedTasks` | object[] \| absent | One `{id, name}` for each `### Task N:` heading in the plan, in plan order. `id` is the task number as a string, the same form `wave-compute` returns. `init` reads the plan file at `planPath` and writes this key; headings inside code fences are ignored. Absent when `init` got no `planPath`, the plan file could not be read (`init` then returns the `plan unreadable` warning), or the plan content is empty (no warning). `[]` when the plan has no task headings. Display data only (the dashboard shows task names from it): `verify-completeness` and `execRunInFlight` keep reading `plannedTaskIds`. Absent on state files from before this field. |
 | `waves`      | array         | Ordered list of wave records (see below).                                            |
 | `worktree`   | string \| absent | Absolute realpath of the active worktree at init. Optional, absent on pre-#501 state files. Display/diagnostic metadata only—does not affect state file location keying or resume behavior. Used to scope the session-start banner to the active worktree. |
 | `context`    | object        | Accumulated cross-wave context enabling fresh-session resume (see below).            |

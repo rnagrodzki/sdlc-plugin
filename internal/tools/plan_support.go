@@ -21,6 +21,14 @@ import (
 // Input / Output types
 // ---------------------------------------------------------------------------
 
+// Merged review statuses. merge_results returns one of them as
+// mergedStatus, and the plan_mark "review-round" marker accepts only these
+// two values for mergedStatus and for each lens verdict.
+const (
+	planStatusApproved    = "Approved"
+	planStatusIssuesFound = "Issues Found"
+)
+
 // PlanSupportIn carries the merged input for the plan_support tool's 9
 // actions. Each field is consumed by one or more actions (noted in comments).
 type PlanSupportIn struct {
@@ -119,6 +127,7 @@ type PlanSupportOut struct {
 	CoverageGaps    []string `json:"coverageGaps,omitempty"`
 	LaneFailures    []string `json:"laneFailures,omitempty"`
 	MergedStatus    string   `json:"mergedStatus,omitempty"`
+	BlockingCount   *int     `json:"blockingCount,omitempty" jsonschema_description:"Integer, merge_results only: always set there, 0 too. Absent on other actions. Count of blocking issues after the merge. Example: 3"` // pointer so 0 still renders
 	Recommendations []string `json:"recommendations,omitempty"`
 
 	// material_snapshot
@@ -484,24 +493,24 @@ func mergeResults(in PlanSupportIn) (PlanSupportOut, error) {
 	}
 
 	// Compute merged status.
-	mergedStatus := "Approved"
+	mergedStatus := planStatusApproved
 
 	// Any blocking issue means the merge is not clean.
 	for _, iss := range allIssues {
 		if iss.Severity == "blocking" {
-			mergedStatus = "Issues Found"
+			mergedStatus = planStatusIssuesFound
 			break
 		}
 	}
 
-	// Approved iff all lens statuses are "approved", whether or not
-	// laneResults are sent in the same call. The lens prompts write
-	// "**Status:** Approved" or "Issues Found", so letter case and outer
-	// spaces are ignored.
+	// Approved iff all lens statuses equal planStatusApproved, whether or
+	// not laneResults are sent in the same call. The lens prompts write
+	// planStatusApproved or planStatusIssuesFound after "**Status:**".
+	// Letter case and outer spaces are ignored.
 	if len(in.LensResults) > 0 {
 		for _, lens := range in.LensResults {
-			if !strings.EqualFold(strings.TrimSpace(lens.Status), "approved") {
-				mergedStatus = "Issues Found"
+			if !strings.EqualFold(strings.TrimSpace(lens.Status), planStatusApproved) {
+				mergedStatus = planStatusIssuesFound
 				break
 			}
 		}
@@ -512,7 +521,7 @@ func mergeResults(in PlanSupportIn) (PlanSupportOut, error) {
 	// G17-only lanes, and blocking issues are covered by allIssues above
 	// (after any isRedispatch downgrade), so lane.Issues is not read here.
 	if len(laneFailures) > 0 {
-		mergedStatus = "Issues Found"
+		mergedStatus = planStatusIssuesFound
 	}
 
 	// Build summary and next hint.
@@ -532,7 +541,7 @@ func mergeResults(in PlanSupportIn) (PlanSupportOut, error) {
 	next := "Proceed to the next step."
 	if len(coverageGaps) > 0 {
 		next = fmt.Sprintf("Re-dispatch lanes for missing gates: %s.", strings.Join(coverageGaps, ", "))
-	} else if mergedStatus == "Issues Found" {
+	} else if mergedStatus == planStatusIssuesFound {
 		next = "Address blocking issues and re-run the review."
 	} else if advisoryCount > 0 {
 		next = "Review advisory findings before proceeding."
@@ -545,6 +554,7 @@ func mergeResults(in PlanSupportIn) (PlanSupportOut, error) {
 		CoverageGaps:    coverageGaps,
 		LaneFailures:    laneFailures,
 		MergedStatus:    mergedStatus,
+		BlockingCount:   &blockingCount,
 		Recommendations: recommendations,
 	}, nil
 }

@@ -40,11 +40,14 @@ var dashboardLearningHeadingRe = regexp.MustCompile(`(?m)^##\s+\S+\s+—\s*(.+)$
 // (learnings.go), which captures only the branch.
 var dashboardLearningRunTagRe = regexp.MustCompile(`(?m)^<!--[ \t]*sdlc:run=(\S+)[ \t]+branch=(\S*)[ \t]*-->`)
 
-// collectActivity returns the sessions, learnings, and deferred items of the
-// repo at root for the dashboard snapshot (see dashboard_snapshot.go for the
-// full contract; Task 6 fixed this signature and owns the result types).
-func collectActivity(root string, now time.Time) (sessions []DashboardSession, learnings []DashboardLearning, deferred []DashboardDeferred) {
-	return dashboardSessionsFromEvidence(root, now), dashboardRecentLearnings(root, now), dashboardOpenDeferred(root)
+// dashboardHistoryLimit is the number of runs.jsonl rows the History tab shows.
+const dashboardHistoryLimit = 50
+
+// collectActivity returns the sessions, learnings, deferred items, and run
+// history of the repo at root for the dashboard snapshot (see
+// dashboard_snapshot.go for the full contract and the result types).
+func collectActivity(root string, now time.Time) (sessions []DashboardSession, learnings []DashboardLearning, deferred []DashboardDeferred, history []DashboardRun) {
+	return dashboardSessionsFromEvidence(root, now), dashboardRecentLearnings(root, now), dashboardOpenDeferred(root), dashboardRecentRuns(root)
 }
 
 // dashboardEvent is one evidence line reduced to what a session timeline
@@ -296,4 +299,43 @@ func dashboardOpenDeferred(root string) []DashboardDeferred {
 		}
 	}
 	return out
+}
+
+// dashboardRecentRuns returns the newest dashboardHistoryLimit rows of root's
+// runs.jsonl as DashboardRun rows, newest first. runs.jsonl is appended
+// oldest-last, so the rows are read in file order and reversed. A corrupt
+// line is skipped and does not count toward the limit. A missing or empty
+// file gives nil.
+func dashboardRecentRuns(root string) []DashboardRun {
+	path := history.NewFileWriter(paths.HistoryDir(root)).RunsPath()
+	records, _ := readJSONLEntries[history.RunRecord](path, "dashboard run history")
+	if len(records) > dashboardHistoryLimit {
+		records = records[len(records)-dashboardHistoryLimit:]
+	}
+
+	var out []DashboardRun
+	for i := len(records) - 1; i >= 0; i-- {
+		out = append(out, dashboardRunFromRecord(records[i]))
+	}
+	return out
+}
+
+// dashboardRunFromRecord maps one runs.jsonl row to a DashboardRun. EndedAt
+// is the row's ts. StartedAt is the row's started_at when present, else ts
+// minus duration_ms when ts parses and duration_ms is positive, else "".
+func dashboardRunFromRecord(r history.RunRecord) DashboardRun {
+	started := r.StartedAt
+	if started == "" && r.DurationMs > 0 {
+		if end, ok := dashboardParseTime(r.Timestamp); ok {
+			started = dashboardFormatTime(end.Add(-time.Duration(r.DurationMs) * time.Millisecond))
+		}
+	}
+	return DashboardRun{
+		Kind:       r.Skill,
+		Branch:     r.Branch,
+		Outcome:    r.Outcome,
+		StartedAt:  started,
+		EndedAt:    r.Timestamp,
+		DurationMs: r.DurationMs,
+	}
 }

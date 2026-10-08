@@ -5,42 +5,49 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <!-- The server fills in the token placeholder below at each GET /. Keep it the only placeholder in this file. -->
   <meta name="sdlc-token" content="{{SDLC_TOKEN}}">
-  <title>sdlc signal box</title>
+  <title>sdlc signal room</title>
   <link rel="stylesheet" href="static/app.css">
   <script src="static/view.js" defer></script>
+  <script src="static/render.js" defer></script>
   <script src="static/app.js" defer></script>
 </head>
 <body>
-  <header class="top">
-    <h1 class="brand">sdlc signal box</h1>
-    <p class="conn" id="conn" data-state="connecting" role="status" aria-live="polite">
-      <span class="conn-lamp" aria-hidden="true"></span>
-      <span class="conn-live">live</span>
-      <span id="conn-text"></span>
-    </p>
-    <p class="totals" id="totals"></p>
-    <button type="button" class="stop-btn" id="stop-btn">Stop server</button>
-  </header>
+  <div class="shell">
+    <header class="topbar">
+      <h1 class="brand">sdlc <b>signal room</b></h1>
+      <nav class="tabs" role="tablist" aria-label="Views">
+        <button class="tab" role="tab" id="tab-pipelines" aria-controls="panel-pipelines" aria-selected="true" type="button">Pipelines <span class="tab-n" id="n-pipelines"></span></button>
+        <button class="tab" role="tab" id="tab-activity" aria-controls="panel-activity" aria-selected="false" tabindex="-1" type="button">Activity <span class="tab-n" id="n-activity"></span></button>
+        <button class="tab" role="tab" id="tab-history" aria-controls="panel-history" aria-selected="false" tabindex="-1" type="button">History <span class="tab-n" id="n-history"></span></button>
+      </nav>
+      <div class="spacer"></div>
+      <p class="conn" id="conn" data-state="connecting" role="status" aria-live="polite">
+        <span class="conn-lamp" aria-hidden="true"></span>
+        <span class="conn-live">live</span>
+        <span id="conn-text"></span>
+      </p>
+      <p class="counts" id="totals"></p>
+      <a class="gh-link" href="https://github.com/rnagrodzki/sdlc-plugin" rel="noopener noreferrer" target="_blank" title="View sdlc-plugin on GitHub">
+        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8a8 8 0 0 0 5.47 7.59c.4.074.546-.174.546-.386 0-.19-.007-.693-.01-1.36-2.226.484-2.696-1.073-2.696-1.073-.364-.924-.89-1.17-.89-1.17-.726-.497.056-.487.056-.487.803.057 1.225.825 1.225.825.714 1.223 1.873.87 2.33.665.072-.517.28-.87.508-1.07-1.777-.202-3.644-.888-3.644-3.953 0-.873.312-1.587.823-2.147-.083-.202-.357-1.015.078-2.117 0 0 .672-.215 2.2.82a7.66 7.66 0 0 1 2-.27c.68.003 1.364.092 2 .27 1.527-1.035 2.198-.82 2.198-.82.436 1.102.162 1.915.08 2.117.512.56.822 1.274.822 2.147 0 3.073-1.87 3.749-3.653 3.947.287.247.543.735.543 1.48 0 1.07-.01 1.933-.01 2.195 0 .214.144.464.55.385A8 8 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+        <span class="sr-only">GitHub</span>
+      </a>
+      <button type="button" class="stop-btn" id="stop-btn">Stop server</button>
+    </header>
 
-  <main class="layout">
-    <aside class="rail" aria-label="Repos and pipelines">
-      <nav id="groups" aria-label="Pipelines by repo"></nav>
-      <details class="extra" id="learnings">
-        <summary><span class="sign">Learnings today</span> <span class="count sign" id="learnings-count">(0)</span></summary>
-        <ul class="extra-list" id="learnings-list"></ul>
-      </details>
-      <details class="extra" id="deferred">
-        <summary><span class="sign">Open deferred</span> <span class="count sign" id="deferred-count">(0)</span></summary>
-        <ul class="extra-list" id="deferred-list"></ul>
-      </details>
-    </aside>
+    <main class="stage">
+      <div class="filter-bar" role="group" aria-label="Filter by repo">
+        <span class="filter-label" aria-hidden="true">REPOS</span>
+        <span class="chips" id="filter-chips"></span>
+        <button class="bar-btn" id="toggle-all" type="button"></button>
+      </div>
 
-    <section class="detail" id="detail" aria-live="polite">
-      <p class="empty" id="empty" hidden></p>
-      <p class="hint" id="detail-hint" hidden>Pick a pipeline in the list to see its steps, issues, and sessions.</p>
-      <div id="detail-body"></div>
-    </section>
-  </main>
+      <section id="panel-pipelines" role="tabpanel" aria-labelledby="tab-pipelines">
+        <div id="feed" aria-live="polite"></div>
+      </section>
+      <section id="panel-activity" role="tabpanel" aria-labelledby="tab-activity" hidden></section>
+      <section id="panel-history" role="tabpanel" aria-labelledby="tab-history" hidden></section>
+    </main>
+  </div>
 
   <dialog class="stop-dialog" id="stop-dialog" aria-labelledby="stop-dialog-text">
     <p id="stop-dialog-text">Stop the dashboard server? Every open dashboard page loses its connection. Run /sdlc:dashboard to start it again.</p>
