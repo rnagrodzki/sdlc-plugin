@@ -54,7 +54,7 @@ Managed by the shared `internal/state` package (the same one `execute_state`, `p
 | `issues` | array | Structured issue accumulator, appended by `ship_state{action:"fail"}`. See "Issues and `lastFailedStep`" below. |
 | `lastFailedStep` | string \| null | Name of the most recent step passed to `fail`. |
 | `historyFailureRecorded` | boolean | Absent until the first `fail` of the run. The first `ship_state{action:"fail"}` of a run sets it to `true` before it appends the failure row to `runs.jsonl`. `true` does not prove the row exists: a failed append leaves the flag set. It stops a second `fail` row for the same run. It does not stop Step 10c's `history_record` row, so a run that fails, resumes, and completes has two rows: the `failure` row and the final row. See "Issues and `lastFailedStep`" below. |
-| `sideEffects` | object | Idempotency journal keyed by step name (`<step>#<n>` for a repeated name). Written by `ship_verify_side_effect`; consulted by `begin-step`'s `alreadyDone` flag. See below. |
+| `sideEffects` | object | Idempotency journal keyed by step name (`<step>#<n>` for a repeated name, which `ship_prepare` never writes — see "Repeated step names"). Written by `ship_verify_side_effect`; consulted by `begin-step`'s `alreadyDone` flag. See below. |
 | `healing` | object | Absent until the first `ship_state{action:"healing_record"}` call. Self-healing ledger (`reviewTotal`, `fixed[]`, `hardened[]`). See "`data.healing`" below. |
 | `planExploreSummary` | array | Absent until `cleanup-pipeline` saves the summary copy, which it does before it deletes the linked plan run. If the delete then fails (`planRun.reason` `remove failed: ...`), the key stays set and the plan run stays on disk. One `{name, status, total, top[]}` entry for each plan explorer; `status` is `running`, `done`, or `unreadable`; `top` holds at most 5 `{summary, ref}` findings. `[]` when the plan run had no explorer files. See "Lifecycle: Cleanup." |
 | `pipelineStatus` | string | Absent until the pipeline is stamped terminal. Set to `"completed"` by `cleanup`/`cleanup-pipeline` — see "Lifecycle: Cleanup." |
@@ -139,7 +139,7 @@ This scaffold's entries carry no `kind` field at all (omitted) and — uniquely 
 
 ### Repeated step names
 
-A step name can occur more than once in `steps[]` — the default `[ship] steps` list has `commit` twice. `begin-step`, `complete-step`, `start`, `complete`, `skip` and `fail` take only a name, so the lookup (`shipFindStepIndex`) selects one entry:
+The step lookup supports a name that occurs more than once in `steps[]`. `ship_prepare` never writes such a state: `[ship.steps]` table keys are unique, and a duplicate `--steps` name is an error. Only a hand-built state file can repeat a name. `begin-step`, `complete-step`, `start`, `complete`, `skip` and `fail` take only a name, so the lookup (`shipFindStepIndex`) selects one entry:
 
 | Entries with the name | Selected entry |
 |---|---|
@@ -227,7 +227,7 @@ The first `fail` of a run also appends one row to `.sdlc-v2/history/runs.jsonl`,
 
 ## `sideEffects` Object
 
-Idempotency journal keyed by step name, recording each step's verified git/PR side effect so a resumed pipeline can skip re-doing work that already landed. A name that occurs more than once in `steps[]` gets one key per entry: `commit` for the first `commit` entry, `commit#2` for the second, and so on:
+Idempotency journal keyed by step name, recording each step's verified git/PR side effect so a resumed pipeline can skip re-doing work that already landed. A name that occurs more than once in `steps[]` (only in a hand-built state; `ship_prepare` never writes one) gets one key per entry: `commit` for the first `commit` entry, `commit#2` for the second, and so on:
 
 ```json
 {

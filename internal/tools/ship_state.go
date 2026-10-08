@@ -214,7 +214,8 @@ func shipStepsSlice(data map[string]any) []any {
 
 // shipFindStepIndex returns the steps[] index that an action on name
 // targets, or -1 when no entry has that name. A name can occur more than
-// once (the default [ship] steps list has commit twice), so the target is
+// once in a hand-built state (ship_prepare never writes one: table keys
+// are unique and a duplicate --steps name is an error), so the target is
 // the first entry with that name whose status is not completed or skipped.
 // When every entry with that name is completed or skipped, the target is
 // the first entry with that name.

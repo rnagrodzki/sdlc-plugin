@@ -4937,7 +4937,7 @@ func TestShipStateHealingRecord_ReadReportsLedger(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// duplicate step names (the default [ship] steps list has commit twice)
+// duplicate step names (hand-built states only: ship_prepare never repeats a name)
 // ---------------------------------------------------------------------------
 
 // setSteps replaces data["steps"] in the state file with one pending entry

@@ -38,9 +38,11 @@ uncommitted changes, `review_prepare` does not look up a PR (`manifest.pr.exists
 The same `[review]` section's `maxParallelDimensions` key (default `8`, minimum `1`) sets how many
 review agents run at the same time. Every matching dimension runs, in the order of `manifest.waves`.
 
+Only the fields that this skill reads (the tool returns more):
+
 ```
 review_prepare({ target: "<branch from --base, or empty>", skipConfigCheck: false })
-→ { manifestPath, summary: {
+→ { manifestPath, style, summary: {
       total_dimensions, active_dimensions, skipped_dimensions, wave_count,
       total_changed_files, uncovered_file_count, suggested_dimensions
     } }
@@ -217,13 +219,16 @@ order (`waves[0]` first), do these steps:
    `model: dimension.model || manifest.subagent_model` per dimension (per-dimension override
    wins; forward the string verbatim, no whitelist). Keep the task ID that each background
    dispatch returns, keyed by its `workerId`: Step 3 and Step 9 need it for `TaskStop`.
+   When a dispatch returns an error or no task ID, keep its `workerId` in `expectedWorkers`.
+   Step 3 then handles it as a missing worker. Add it to the run's **unstoppable** list (see
+   Step 3): `TaskStop` has no ID for it.
 
 6. **Run Step 3 for `W`.** When wave `W` ends and a next wave exists, go back to step 1 of
-   this list for the next wave. When `W` is the last wave, go to Step 4.
+   this list for the next wave. Do not reset `expectedWorkers`. When `W` is the last wave,
+   go to Step 4.
 
-**Workflow variant:** Prefer the Workflow tool's native fan-out when available. Run one
-fan-out per wave, with at most `manifest.plan_critique.max_parallel_dimensions` agents.
-Otherwise use the wave dispatch and ledger path described above.
+Use only the background Agent dispatch above. Do not use a Workflow-tool fan-out: Step 3
+and Step 9 need a task ID for each worker to stop it with `TaskStop`.
 
 ---
 
@@ -243,14 +248,23 @@ every worker of `W` is done, skipped, or stopped:
 - **done** — its `workerId` shows `status: "done"` in `workers[]`.
 - **skipped or stopped** — it was stalled or missing on two polls in a row, and the skill
   called `TaskStop` once for it, per the rules below. It counts as stopped also when
-  `TaskStop` failed. The Step 5 comment names its dimension as skipped.
+  `TaskStop` failed or had no task ID. The Step 5 comment names its dimension as skipped.
+
+Keep one **stopped** list for the run: every worker that this step stopped or skipped, in
+any wave. A worker stays on it also when a later poll shows it `done`. Step 4 ignores the
+findings of every worker on this list. Keep one **unstoppable** list too: every worker
+whose `TaskStop` failed or had no task ID (Step 2 item 5). An unstoppable worker can still
+run while the next wave starts, so the run can have more than
+`manifest.plan_critique.max_parallel_dimensions` agents at the same time. Say so in the
+final output when the unstoppable list is not empty.
 
 Workers of earlier waves are already done, skipped, or stopped. Do not count them for `W`,
 and do not stop them again. The stall and missing rules below apply only to the workers of
 `W`.
 
-When `W` ends and a next wave exists, go back to Step 2 for the next wave. When `W` is the
-last wave, go to Step 4. Step 4 reads the findings from the last poll.
+When `W` ends and a next wave exists, go to step 1 of the Step 2 wave list for the next
+wave. Do not reset `expectedWorkers`. When `W` is the last wave, go to Step 4. Step 4 reads
+the findings from the last poll.
 
 **Stall handling (fail-partial-open, disclosed):**
 
@@ -267,7 +281,8 @@ last wave, go to Step 4. Step 4 reads the findings from the last poll.
 - If a `workerId` of `W` appears in `missingWorkers` (dispatched but never checked in), do
   not treat it as failed yet — wait one more poll cycle.
 - If it is **still** present in `missingWorkers` on the next poll, stop waiting on that
-  worker: call `TaskStop` once with its task ID (see below), and log a warning. The worker
+  worker: call `TaskStop` once with its task ID (see below; skip the call when Step 2 got no
+  task ID for it), and log a warning. The worker
   now counts as stopped. Note the skipped dimension by name for the final
   `review-comment.md` (Step 5) — this is a disclosed degraded mode, not a silent drop. Keep
   the poll for the other workers of `W`.
@@ -279,8 +294,9 @@ poll still lists it in `stalledWorkers` or `missingWorkers`.
 later, and the dashboard reads the ledger. Stop it with `TaskStop`. Under a nested dispatch
 (for example, review dispatched by `/ship`), `TaskStop` can fail with an
 ownership/authorization error. That is an expected fallback, not a blocker: do not retry.
-Name each worker that could not be stopped in the Step 5 comment and in the final output as
-"possibly still running; a later ledger entry for it was not consolidated".
+Add the worker to the unstoppable list. Name each worker that could not be stopped in the
+Step 5 comment and in the final output as "possibly still running; a later ledger entry for
+it was not consolidated".
 
 ---
 
@@ -290,8 +306,9 @@ Once the last wave has ended (every dispatched worker is `done`, or was stopped 
 or a missing check-in per Step 3), read each worker's `findings` field from the `workers[]`
 array of the last `ledger_status` response of the Step 3 poll (parse each worker's
 `findings` string as the JSON array it was written as). That response holds the workers of
-every wave. When `manifest.waves` is empty, there is no poll and no worker: consolidate zero
-findings. This is the same dedupe/contradiction/severity-recalibration pass
+every wave. Ignore the findings of every worker on Step 3's stopped list, also when that
+response shows it `done`: a stopped worker's dimension is reported as skipped. When
+`manifest.waves` is empty, there is no poll and no worker: consolidate zero findings. This is the same dedupe/contradiction/severity-recalibration pass
 previously run by a separate orchestration step, now inline in this session:
 
 **Critique:**
@@ -353,7 +370,10 @@ Format the comment using this template:
 Repeat the `### {dimension.name}` block once per consolidated dimension. If a dimension was
 skipped in Step 3, add one more such block naming it in place of its finding list, with the
 note "Skipped — worker stalled twice; no findings collected" (stalled) or "Skipped — worker
-never checked in; no findings collected" (missing).
+never checked in; no findings collected" (missing). When that worker is on Step 3's
+unstoppable list, add to the note: "possibly still running; a later ledger entry for it was
+not consolidated". A `TaskStop` failure in Step 9 happens after this comment exists: name
+that worker only in the final output.
 
 **Template variable substitution:**
 
@@ -521,25 +541,35 @@ If verdict is **APPROVED**: skip — nothing to fix.
 
 ## Step 9 — Cleanup
 
-Remove the temp files of this run on every terminal path (dry-run stop, error stop, and
-normal completion).
+Remove the temp files of this run on every terminal path (dry-run stop, error stop,
+interruption, and normal completion).
 
 First, stop every worker that Step 2 dispatched and that has no `done` entry in the last
-`ledger_status` response: call `TaskStop` with its task ID. On an error stop before any
-`ledger_status` call, stop every dispatched worker. Follow Step 3's **Stopping a skipped
-worker** rule: on a `TaskStop` failure (for example, the ownership/authorization error under
-a `/ship` dispatch), do not retry, and name the worker in the output as possibly still
-running. Skip this when Step 2 dispatched nothing (for example, `manifest.waves` is empty).
-A wave that never started has no worker and needs no `TaskStop`. Do not call `TaskStop`
-again for a worker that Step 3 already stopped.
+`ledger_status` response: call `TaskStop` with its task ID. On an error stop or an
+interruption before any `ledger_status` call, stop every dispatched worker. Follow Step 3's
+**Stopping a skipped worker** rule: on a `TaskStop` failure (for example, the
+ownership/authorization error under a `/ship` dispatch), do not retry, add the worker to the
+unstoppable list, and name the worker in the output as possibly still running. Skip this
+when Step 2 dispatched nothing (for example, `manifest.waves` is empty). A wave that never
+started has no worker and needs no `TaskStop`. Do not call `TaskStop` again for a worker
+that Step 3 already stopped.
 
-Then remove the manifest and its temp directory (skip a path the run never received, e.g.
-when `review_prepare` itself failed):
+Then remove the manifest (skip a path the run never received, e.g. when `review_prepare`
+itself failed):
 
 ```bash
 rm -f "<manifestPath>"
+```
+
+Remove the temp directory only when the unstoppable list is empty:
+
+```bash
 rm -rf "{manifest.diff_dir}"
 ```
+
+When the unstoppable list is not empty, keep `{manifest.diff_dir}`. A worker that is still
+running reads its slice and diff files from it. Name the kept path in the final output. The
+directory is under the system temp directory, so the operating system removes it later.
 
 Do not remove the run's ledger. The dashboard reads it to show the review dimensions of a
 finished run. The first execute `gc` or ship `cleanup-pipeline` sweep after 7 days (the
@@ -547,6 +577,12 @@ default `state.gc.ttlDays`) removes it.
 
 **Interruption.** An interrupted `/review` does not resume. Run it again. It starts at Step 0
 with a new manifest and a new `runId`. It does not read the ledger files of the old run.
+
+The new run holds no task IDs of the old run's workers. Before you start it, run this Step 9
+for the interrupted run when this session still has its task IDs. When the task IDs are
+lost (for example, after a compaction or in a new session), tell the user that up to
+`maxParallelDimensions` old workers can still run. Each one ends after its own review and
+writes only to the old run's ledger, which the new run does not read.
 
 ---
 
@@ -565,7 +601,9 @@ with a new manifest and a new `runId`. It does not read the ledger files of the 
 - Do NOT leave a skipped worker unnamed: every dimension skipped in Step 3 (stalled or
   missing) is named in the Step 5 comment, and every worker that `TaskStop` could not stop is
   named in the output
-- Do NOT delete the manifest or `diff_dir` in Step 9 before the `TaskStop` pass
+- Do NOT delete the manifest or `diff_dir` in Step 9 before the `TaskStop` pass, and do NOT
+  delete `diff_dir` while a worker is on the unstoppable list
+- Do NOT consolidate the findings of a worker that Step 3 stopped or skipped
 
 ## See Also
 

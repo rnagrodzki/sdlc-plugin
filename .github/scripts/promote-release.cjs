@@ -30,7 +30,7 @@
  *      reading of the step list.
  *   6. Bump the version file to the target version (format-preserving) and
  *      prepend CHANGELOG.md with notes aggregated from ALL RC GitHub Releases
- *      for the target version (deduplicated, labeled per-RC).
+ *      for the active RC series (deduplicated, labeled per-RC).
  *      This bump is committed to the CURRENT branch HEAD (which may have
  *      advanced past the RC) — it is bookkeeping, not part of the tagged
  *      release commit. The tagged commit's version file therefore still
@@ -450,7 +450,7 @@ function resolvePromotionTarget(stableVersion, seriesVersion, level, tagPrefix) 
   const targetBase = bump(level);
   const p = tagPrefix || '';
   if (!semverGreater(series, `${sv.major}.${sv.minor}.${sv.patch}`)) {
-    return { error: `Nothing to promote: the highest RC series is ${seriesVersion}, which is not above the latest stable ${p}${stableVersion}.` };
+    return { error: `Nothing to promote: the highest RC series is ${p}${seriesVersion}, which is not above the latest stable ${p}${stableVersion}. Merge a PR with a release:<level>-rc label to cut a new RC series, then promote it.` };
   }
   if (targetBase === series) return { targetBase };
   if (semverGreater(targetBase, series)) {

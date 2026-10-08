@@ -75,7 +75,7 @@ On either failure `ship_prepare` creates no state; the skill prints the error ve
 | `draft` | `boolean` | `false` | When `true`, PRs are created as drafts. |
 | `auto` | `boolean` | `false` | Legacy pipeline-wide auto flag: when `true`, `ship_prepare` resolves `auto: true` and this pipeline suppresses its own confirmation prompts. Distinct from the `automation` section below — see "Two automation mechanisms." |
 | `reviewThreshold` | `"critical"` \| `"high"` \| `"medium"` \| `"low"` \| `"info"` | `"info"` | Minimum review-finding severity that triggers the received-review fix loop. The default `"info"` sends every finding, Info included, into the fix loop. `"low"` keeps the old behavior: Info findings are deferred (reason `below-threshold`). Any other value makes `ship_prepare` return an error. See table below. |
-| `rebase` | `boolean` \| `"auto"` \| `"skip"` \| any string | `"auto"` | A JSON `true`/`false` is coerced to `"auto"`/`"skip"`; any other string is passed through as-is. `"auto"` rebases onto the default branch after the feature and review-fix commits, before the next configured main-loop step (the `harden` commit, when configured, lands after it); `"skip"` never rebases. There is no `"prompt"` mode in this port — treat any unrecognized string as informational only, not as a request to ask the user. |
+| `rebase` | `boolean` \| `"auto"` \| `"skip"` \| any string | `"auto"` | A JSON `true`/`false` is coerced to `"auto"`/`"skip"`; any other string is passed through as-is. `"auto"` rebases onto the base branch (`[git] baseBranch`, else the repository default branch) after the feature and review-fix commits, before the next configured main-loop step (the `harden` commit, when configured, lands after it); `"skip"` never rebases. There is no `"prompt"` mode in this port — treat any unrecognized string as informational only, not as a request to ask the user. |
 | `verifyPipelineTimeout` | `integer` (≥30) | `1200` | Maximum seconds `verify-pipeline` polls CI checks before giving up. |
 | `verifyPipelineInterval` | `integer` (≥10) | `60` | Seconds between `verify-pipeline` poll probes. |
 | `verifyPipelineMaxIterations` | `integer` (1–10) | `3` | Maximum analyze-fix-recheck iterations before `verify-pipeline` gives up. |
@@ -111,8 +111,10 @@ The source skill's `--preset full|balanced|minimal` and `--skip <step,…>` flag
 `ship_prepare` resolves `steps` in this order:
 
 ```
-explicit --steps (a set)  >  --quick ([ship.quick] table)  >  [ship.steps] table  >  built-in defaults
+explicit --steps (a set)  or  --quick ([ship.quick] table)  >  [ship.steps] table  >  built-in defaults
 ```
+
+`--steps` and `--quick` never apply together. Supplying both is an error (`--quick + --steps not allowed: use --quick or --steps, not both`), and `ship_prepare` creates no state.
 
 `[ship.steps]` and `[ship.quick]` merge per key: `~/.sdlc/local.toml` first, then `.sdlc-v2/local.toml` wins for each key it sets.
 
@@ -120,7 +122,7 @@ The plugin fixes the order: `execute`, `commit`, `review`, `verify-openspec`, `a
 
 `sources.steps` records the tier that applied as one of four values: `cli`, `quick`, `config`, or `default`. `config` covers both local.toml files: `config.ReadSection` merges `~/.sdlc/local.toml` and `.sdlc-v2/local.toml` (project wins per key) before `mergeShipFlags` sees the value, so `sources` cannot tell which of the two files supplied it.
 
-`quick` and an explicit non-empty `steps` list are mutually exclusive in practice — when both are supplied, the explicit `steps` list wins (see `sources.steps` to confirm which tier actually applied). `auto`, `draft`, `bump`, `reviewThreshold`, `rebase`, and the numeric timing knobs each follow their own cli-input > config > default chain — see the Field Reference table above and `ship.go`'s `mergeShipFlags` for the authoritative per-field precedence.
+`quick` and an explicit non-empty `steps` list are mutually exclusive: when both are supplied, `ship_prepare` returns the error above and no tier applies. `auto`, `draft`, `bump`, `reviewThreshold`, `rebase`, and the numeric timing knobs each follow their own cli-input > config > default chain — see the Field Reference table above and `ship.go`'s `mergeShipFlags` for the authoritative per-field precedence.
 
 ---
 
@@ -178,7 +180,7 @@ Minimal step set, fully automated. There is no separate version step to skip in 
 
 ### Team with guardrails
 
-All canonical steps run; review threshold catches high-severity findings; PRs default to draft.
+The default steps run, with `learnings-commit` off; review threshold catches high-severity findings; PRs default to draft.
 
 ```json
 {

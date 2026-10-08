@@ -65,7 +65,8 @@ The skill SHALL dispatch one background Agent per dimension name in `manifest.wa
 - The skill finds the `manifest.dimensions[]` entry of each name in the wave to build the agent prompt.
 - When `manifest.waves` is empty, the skill starts no agent and does not poll. It goes to findings consolidation with zero findings.
 - Each agent's `model` is `dimension.model` when set, otherwise `manifest.subagent_model`, forwarded verbatim.
-- The skill prefers the Workflow tool's native fan-out when it is available. It runs one fan-out per wave, with at most `manifest.plan_critique.max_parallel_dimensions` agents.
+- The skill uses only background Agent dispatch, not a Workflow-tool fan-out: the stall, missing-worker and cleanup rules need a task ID for each worker to call `TaskStop`.
+- When a dispatch returns no task ID, the worker stays in `expectedWorkers`, is handled as missing, and is named as possibly still running.
 - `SKIPPED` dimensions get no agent.
 
 Each reviewer agent prompt requires this order:
@@ -161,6 +162,8 @@ The skill SHALL wait one more poll when a `workerId` of the current wave first a
 
 - The skill then calls `TaskStop` once for that worker, and the worker counts as stopped.
 - When `TaskStop` returns an ownership error, the skill does not retry it and names the worker `possibly still running` in the comment.
+- The skill ignores the findings of a stopped worker, also when a later poll shows it `done`.
+- While a worker could not be stopped, the skill keeps `{manifest.diff_dir}` at cleanup and says in the output that the run can exceed `max_parallel_dimensions` agents.
 - The skill keeps the poll for the other workers of the current wave. When the wave ends, the next wave starts, or consolidation starts after the last wave.
 - The final `review-comment.md` names every skipped dimension.
 - A stalled-twice dimension gets its own block with the note `Skipped — worker stalled twice; no findings collected`.
@@ -218,6 +221,8 @@ The skill SHALL write the consolidated comment with the Write tool to `{manifest
 
 ### Requirement: Interrupted review restarts
 The skill SHALL NOT resume an interrupted `/review` run. A new `/review` run SHALL start at Step 0 with a new manifest and a new `runId`, and SHALL NOT read the ledger files of the old run.
+
+- Before the new run, the skill runs the cleanup step for the interrupted run when the session still has its task IDs. Otherwise it tells the user that old workers can still run and write to the old ledger.
 
 #### Scenario: Run interrupted between waves
 - **WHEN** a `/review` run stops after `waves[0]` ends and before `waves[1]` starts

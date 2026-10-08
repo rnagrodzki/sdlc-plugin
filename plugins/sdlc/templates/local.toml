@@ -38,15 +38,21 @@
 # ─── Polling intervals (seconds) ─────────────────────────────────
 
 # Execute wave polling.
+# Bounds: executeWaveInterval >= 10, executeWaveTimeout 60-3600.
 # executeWaveInterval = 60
 # executeWaveTimeout = 1800
 
 # CI/CD pipeline verification polling.
+# Bounds: verifyPipelineInterval >= 10, verifyPipelineMaxIterations 1-10,
+#   verifyPipelineTimeout >= 30.
 # verifyPipelineInterval = 60
 # verifyPipelineMaxIterations = 3
 # verifyPipelineTimeout = 1200
 
 # Remote review (e.g. GitHub Copilot) polling.
+# awaitRemoteReviewers needs at least one entry. To turn the gate off,
+#   set await-remote-review = false in steps instead of emptying the list.
+# Bounds: awaitRemoteReviewInterval >= 10, awaitRemoteReviewTimeout >= 30.
 # awaitRemoteReviewers = ["copilot"]
 # awaitRemoteReviewInterval = 60
 # awaitRemoteReviewTimeout = 600
@@ -96,7 +102,9 @@
 # [automation]
 # # Valid: "supervised" | "unattended"
 # mode = "supervised"
+# # Whole number >= 1.
 # reviewFixIterations = 3
+# # Valid: "critical" | "high" | "medium" | "low"  (no "info", unlike ship.reviewThreshold)
 # reviewFixSeverityThreshold = "high"
 #
 # # Per-step overrides. Valid values: "auto" | "confirm"

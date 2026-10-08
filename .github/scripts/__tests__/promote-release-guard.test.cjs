@@ -147,7 +147,7 @@ describe('resolvePromotionTarget', () => {
     }
   });
 
-  test('lower-than-series level is an error that names the matching level', () => {
+  test('lower-than-series level is an error that names the first level that reaches the series', () => {
     const r = resolvePromotionTarget('1.4.9', '2.0.0', 'patch', 'v');
     assert.match(r.error, /Chosen level "patch" produces v1\.4\.10, but the active RC series is 2\.0\.0\. use level "major"/);
   });

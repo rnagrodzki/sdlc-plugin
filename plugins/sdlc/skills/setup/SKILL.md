@@ -616,7 +616,7 @@ After all `version` section fields are collected and BEFORE storing the section 
 
 **Answer mapping when assembling the section object:**
 - `enum` fields → write the selected option string verbatim
-- `multi-select` and `flag-set` fields → ask a multi-select question, then write the array of selected options (`setup_write_sections` stores a `flag-set` answer as a true/false table)
+- `multi-select`, `multi-enum` and `flag-set` fields → ask a multi-select question, then write the array of selected options (`setup_write_sections` stores a `flag-set` answer as a true/false table; a `multi-enum` answer with no selection is the empty array `[]`)
 - `boolean` fields → map `yes` → `true`, `no` → `false` (exception: `rebase` writes
   `auto`/`skip`/`prompt` verbatim — do NOT translate to yes/no)
 - `string` fields → write the entered string; omit when empty (and the field is optional)
