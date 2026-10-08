@@ -99,7 +99,9 @@ func schemaFileForConfigFile(configFile string) string {
 
 // collectSchemaEnum returns every string value a schema node accepts via
 // "enum" or a single-value "const", unioned across "oneOf"/"anyOf"
-// alternatives, or (for an array-typed node) read from its "items" schema.
+// alternatives, or (for an array-typed node) read from its "items" schema,
+// or (for an object-typed node, such as a flag table) read from its
+// "propertyNames" schema.
 // Returns nil when the node declares no enum at all — e.g. ship.bump
 // validates by "pattern" instead, by design (see ShipFields' bump
 // Description) — such a field is out of this test's scope.
@@ -136,16 +138,44 @@ func collectSchemaEnum(doc rawSchema, node map[string]interface{}) []string {
 	if items := asObject(node["items"]); items != nil {
 		return collectSchemaEnum(doc, items)
 	}
+	if names := asObject(node["propertyNames"]); names != nil {
+		return collectSchemaEnum(doc, names)
+	}
 	return nil
+}
+
+// optionsMissingFromSchema returns the Options of f that the schema node
+// of f does not accept. A flag-set field whose node has no enum returns
+// every option, so the caller reports it. Any other field type whose node
+// has no enum returns nil: the schema validates it some other way (e.g. by
+// "pattern") and there is nothing to compare against.
+func optionsMissingFromSchema(doc rawSchema, sectionNode map[string]interface{}, f Field) []string {
+	enumValues := collectSchemaEnum(doc, schemaNodeFromNode(doc, sectionNode, f.Name))
+	if len(enumValues) == 0 {
+		if f.Type == "flag-set" {
+			return slices.Clone(f.Options)
+		}
+		return nil
+	}
+	var missing []string
+	for _, opt := range f.Options {
+		if !slices.Contains(enumValues, opt) {
+			missing = append(missing, opt)
+		}
+	}
+	return missing
 }
 
 // TestFieldOptions_AcceptedBySchema finds the schema of each section through
 // Section.ConfigFile and Section.ConfigPath, then checks that every value in
-// each "enum" or "multi-enum" Field's Options is accepted by the matching
-// schema property (found through Field.Name, which may be dotted, e.g.
-// "versionFile.fileType"). A field whose schema node declares no enum at all
-// (e.g. one validated by "pattern") is out of scope and skipped. A genuine
-// mismatch fails the test unless listed in optionExceptions with a reason.
+// each "enum", "multi-enum" or "flag-set" Field's Options is accepted by the
+// matching schema property (found through Field.Name, which may be dotted,
+// e.g. "versionFile.fileType"). A flag-set field is read through the
+// "propertyNames" enum of its schema table. An "enum" or "multi-enum" field
+// whose schema node declares no enum at all (e.g. one validated by "pattern")
+// is out of scope and skipped. A "flag-set" field with no schema enum is an
+// error, not a skip. A genuine mismatch fails the test unless listed in
+// optionExceptions with a reason.
 func TestFieldOptions_AcceptedBySchema(t *testing.T) {
 	schemas := map[string]rawSchema{}
 
@@ -175,7 +205,7 @@ func TestFieldOptions_AcceptedBySchema(t *testing.T) {
 		}
 
 		for _, f := range section.Fields {
-			if f.Type != "enum" && f.Type != "multi-enum" {
+			if f.Type != "enum" && f.Type != "multi-enum" && f.Type != "flag-set" {
 				continue
 			}
 			if len(f.Options) == 0 {
@@ -194,18 +224,7 @@ func TestFieldOptions_AcceptedBySchema(t *testing.T) {
 			}
 
 			enumValues := collectSchemaEnum(doc, fieldNode)
-			if len(enumValues) == 0 {
-				// The schema validates this field by some other means
-				// (e.g. "pattern"); nothing to compare against Options.
-				continue
-			}
-
-			var missing []string
-			for _, opt := range f.Options {
-				if !slices.Contains(enumValues, opt) {
-					missing = append(missing, opt)
-				}
-			}
+			missing := optionsMissingFromSchema(doc, sectionNode, f)
 			if len(missing) == 0 {
 				continue
 			}
@@ -215,6 +234,45 @@ func TestFieldOptions_AcceptedBySchema(t *testing.T) {
 			}
 			t.Errorf("%s: schema enum %v does not accept Options %v (ConfigFile=%s ConfigPath=%s)", label, enumValues, missing, section.ConfigFile, section.ConfigPath)
 		}
+	}
+}
+
+// shipSectionNode returns the real "ship" section node of
+// sdlc-local.schema.json, for the negative tests below.
+func shipSectionNode(t *testing.T) (rawSchema, map[string]interface{}) {
+	t.Helper()
+	doc := loadRawSchema(t, "sdlc-local.schema.json")
+	root := map[string]interface{}{"properties": doc["properties"]}
+	node := schemaNodeFromNode(doc, root, "ship")
+	if node == nil {
+		t.Fatal("schema has no property at ship")
+	}
+	return doc, node
+}
+
+// TestOptionsMissingFromSchema_FlagSetUnknownOption proves that a flag-set
+// option the schema propertyNames enum does not list is found. The fake
+// "steps" field below has one real step and one name the schema rejects.
+func TestOptionsMissingFromSchema_FlagSetUnknownOption(t *testing.T) {
+	doc, shipNode := shipSectionNode(t)
+	f := Field{Name: "steps", Type: "flag-set", Options: []string{"execute", "bogus"}}
+
+	got := optionsMissingFromSchema(doc, shipNode, f)
+	if want := []string{"bogus"}; !slices.Equal(got, want) {
+		t.Errorf("optionsMissingFromSchema = %v, want %v", got, want)
+	}
+}
+
+// TestOptionsMissingFromSchema_FlagSetWithoutEnum proves that a flag-set
+// field whose schema node has no enum reports every option instead of being
+// skipped. ship.auto is a boolean, so it has no propertyNames enum.
+func TestOptionsMissingFromSchema_FlagSetWithoutEnum(t *testing.T) {
+	doc, shipNode := shipSectionNode(t)
+	f := Field{Name: "auto", Type: "flag-set", Options: []string{"execute", "commit"}}
+
+	got := optionsMissingFromSchema(doc, shipNode, f)
+	if !slices.Equal(got, f.Options) {
+		t.Errorf("optionsMissingFromSchema = %v, want every option %v", got, f.Options)
 	}
 }
 

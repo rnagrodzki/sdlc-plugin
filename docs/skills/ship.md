@@ -23,8 +23,8 @@ default. Optionally verify CI and wait for automated reviewer feedback.
 |------|-------------|---------|
 | `--plan <path>` | Plan file to execute. Omit to skip the execute step and start from commit. | none |
 | `--auto` | Suppress all confirmation prompts for the whole run. Two exceptions still ask: whether to resume or replace a run that is still in flight on this branch — see [State and Resolution Trace](#state-and-resolution-trace) — and filing a GitHub issue for an execute-step draft — see [End-of-run summary](#end-of-run-summary). | off |
-| `--steps <csv>` | Comma-separated list of steps to run, overriding the project's configured step list. | from config |
-| `--quick` | Use the project's configured shortcut step list. Does nothing if no shortcut list is configured. | off |
+| `--steps <csv>` | Comma-separated set of steps to run, overriding the project's step table. The plugin sorts them into the fixed order. | from config |
+| `--quick` | Run the steps set to true in the project's `[ship.quick]` table. Does nothing if no quick table is configured. | off |
 | `--quality <level>` | Quality tier forwarded to the execute step: `full`, `balanced`, or `minimal`. | unset (execute decides) |
 | `--bump <level>` | Release bump forwarded to the PR step: `patch`, `minor`, `major`, or a pre-release label. | `patch` |
 | `--draft` | Create the PR as a draft. Has no effect when the branch already has an open PR: that PR is updated, not converted. | off (or from config) |
@@ -50,24 +50,25 @@ disk (in both `openspec/changes/<name>/` and the archive) — the same check as
 A rebase onto the base branch (`[git] baseBranch`, else the repository default
 branch) happens automatically between review and the
 next step (skip it with the `rebase` setting in `/setup`). The rebase runs
-after any review-fix commits and before `harden` (when configured), so the
-harden commit lands on the rebased branch. A final cleanup always runs after the last configured step.
+after any review-fix commits and before the next configured step, so every
+later commit lands on the rebased branch. A final cleanup always runs after the last configured step.
 
-Opt-in steps — add them to your project's step list with `/setup` (or pass
+Opt-in steps — set them to true in your project's step table with `/setup` (or pass
 them via `--steps`):
 
+- `verify-openspec` — Validates the current implementation against an active
+  OpenSpec change before archiving. Skipped automatically if there is no
+  active change, even when configured. Fails and stops the pipeline when the
+  plan names a change that is missing on disk.
 - `harden` — Groups the review findings into clusters and runs `/harden` on
   each one. It commits the guardrail, review-dimension, and Copilot-instruction
-  edits as a separate commit before the PR. Outside `--auto`, it asks before
+  edits as a separate commit before the PR. It runs after `archive-openspec`.
+  Outside `--auto`, it asks before
   each cluster. It skips when there are no review findings, when no cluster
   qualifies, or when the harden files already have uncommitted edits before
   the step starts. On `--resume`, a cluster already hardened is not run
   again. When `harden` is configured,
   `received-review` gets `--no-harden`, so hardening runs only once.
-- `verify-openspec` — Validates the current implementation against an active
-  OpenSpec change before archiving. Skipped automatically if there is no
-  active change, even when configured. Fails and stops the pipeline when the
-  plan names a change that is missing on disk.
 - `verify-pipeline` — Polls CI after the PR is created and analyzes or fixes
   failures.
 - `await-remote-review` — Waits for an automated reviewer (e.g. Copilot) to
@@ -237,10 +238,10 @@ step silently — nothing is written.
 
 ## Tips and gotchas
 
-- **Configure before first use.** Run `/setup` to set the step list, review
+- **Configure before first use.** Run `/setup` to set the step table, review
   threshold, release bump, and more.
-- **`--quick` needs configuration.** It uses a shortened step list from your
-  project config. Nothing happens if no shortcut list is set up.
+- **`--quick` needs configuration.** It uses the `[ship.quick]` table from your
+  project config. Nothing happens if no quick table is set up.
 - **Review threshold.** Default: `info` — every finding, including Info,
   triggers the fix loop. Change it via `/setup`. Findings below a higher
   threshold are saved for [/deferred](deferred.md), not dropped.

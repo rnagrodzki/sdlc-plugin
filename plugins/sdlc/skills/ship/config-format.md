@@ -35,8 +35,8 @@ On either failure `ship_prepare` creates no state; the skill prints the error ve
 ```json
 {
   "ship": {
-    "steps": ["execute", "commit", "review", "harden", "verify-openspec", "archive-openspec", "pr", "verify-pipeline", "await-remote-review", "learnings-commit"],
-    "quick": ["execute", "commit", "pr"],
+    "steps": { "execute": true, "commit": true, "review": true, "verify-openspec": true, "archive-openspec": true, "harden": true, "pr": true, "verify-pipeline": true, "await-remote-review": true, "learnings-commit": true },
+    "quick": { "execute": true, "commit": true, "pr": true },
     "bump": "patch",
     "draft": false,
     "auto": false,
@@ -61,7 +61,7 @@ On either failure `ship_prepare` creates no state; the skill prints the error ve
 }
 ```
 
-`verify-pipeline` and `await-remote-review` are opt-in members of `ship.steps[]`. Add them only when you want post-PR CI verification or to await an automated reviewer's verdict. `verify-openspec` is an OpenSpec-gated opt-in — add it between `review` and `archive-openspec` when you want the pipeline to validate implementation completeness against the spec before archiving. `harden` is an opt-in too — add it right after `review` when you want review findings turned into guardrail/dimension edits committed before the PR; with it configured, `received-review` gets `--no-harden` so hardening runs once.
+`verify-pipeline` and `await-remote-review` are opt-in: set them to `true` in `[ship.steps]`. Set them only when you want post-PR CI verification or to await an automated reviewer's verdict. `verify-openspec` is an OpenSpec-gated opt-in — set it to `true` when you want the pipeline to validate implementation completeness against the spec before archiving. `harden` is an opt-in too — set it to `true` when you want review findings turned into guardrail/dimension edits committed before the PR. The plugin runs `harden` after `archive-openspec`. With it configured, `received-review` gets `--no-harden` so hardening runs once.
 
 ---
 
@@ -69,8 +69,8 @@ On either failure `ship_prepare` creates no state; the skill prints the error ve
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `steps` | `string[]` | `["execute","commit","review","archive-openspec","pr","learnings-commit"]` | Pipeline steps to run. Allowed values: `execute`, `commit`, `review`, `harden` (opt-in — clusters review findings after rebase, invokes `/harden` on each, and commits its edits as a separate commit before `pr`. `/harden` has six surfaces: `plan-guardrails`, `execute-guardrails`, `review-dimensions`, `copilot-instructions`, `error-report-skill`, `skill-recommendation`. Only the first four are edited, so the commit covers the project's `config.toml`, its `review-dimensions/` directory and `.github/instructions/` (the three harden paths the main skill's `harden` step lists); `error-report-skill` and `skill-recommendation` are read-only context for the orchestrator), `verify-openspec` (opt-in), `archive-openspec`, `pr`, `verify-pipeline` (opt-in), `await-remote-review` (opt-in), `learnings-commit`. `received-review` and `commit-fixes` are conditional sub-steps, not `steps[]` members — listing either one makes `ship_prepare` return an error; see the main skill. There is no standalone `version` step in this port — see `reference.md`'s Gotchas. |
-| `quick` | `string[]` | unset | Shortened step list used when `ship_prepare` is called with `quick: true`. Unset means quick mode resolves to an empty step list — do not offer `--quick` on a project without a configured `quick` array. |
+| `steps` | table of step → boolean | on: `execute`, `commit`, `review`, `archive-openspec`, `pr`, `learnings-commit` | On/off flag per pipeline step. The plugin fixes the order. Allowed keys: `execute`, `commit`, `review`, `verify-openspec` (opt-in), `archive-openspec`, `harden` (opt-in — clusters review findings after rebase, invokes `/harden` on each, and commits its edits as a separate commit before `pr`. `/harden` has six surfaces: `plan-guardrails`, `execute-guardrails`, `review-dimensions`, `copilot-instructions`, `error-report-skill`, `skill-recommendation`. Only the first four are edited, so the commit covers the project's `config.toml`, its `review-dimensions/` directory and `.github/instructions/` (the three harden paths the main skill's `harden` step lists); `error-report-skill` and `skill-recommendation` are read-only context for the orchestrator), `pr`, `verify-pipeline` (opt-in), `await-remote-review` (opt-in), `learnings-commit`. A step not listed keeps its default. `received-review` and `commit-fixes` are conditional sub-steps, not `steps` keys — setting either one to `true` makes `ship_prepare` return an error; see the main skill. There is no standalone `version` step in this port — see `reference.md`'s Gotchas. |
+| `quick` | table of step → boolean | unset | Steps for `quick: true`. A step not listed is off. Without the table, quick mode has no steps — do not offer `--quick` on a project without a configured `quick` table. |
 | `bump` | `"patch"` \| `"minor"` \| `"major"` \| pre-release label | `"patch"` | Default release bump, read at the main skill's step 6b and forwarded (as `releaseLevel`/`releasePreRelease`) to the `pr` step's `pr_apply` call — not applied by any standalone step. Overridden by an explicit `bump` on `ship_prepare`'s input. A configured `version.preRelease` label (a separate, top-level config section) overrides this default too, but never overrides an explicit CLI/tool-input bump. |
 | `draft` | `boolean` | `false` | When `true`, PRs are created as drafts. |
 | `auto` | `boolean` | `false` | Legacy pipeline-wide auto flag: when `true`, `ship_prepare` resolves `auto: true` and this pipeline suppresses its own confirmation prompts. Distinct from the `automation` section below — see "Two automation mechanisms." |
@@ -111,8 +111,12 @@ The source skill's `--preset full|balanced|minimal` and `--skip <step,…>` flag
 `ship_prepare` resolves `steps` in this order:
 
 ```
-explicit steps input  >  quick (resolves ship.quick)  >  .sdlc-v2/local.toml (ship.steps)  >  ~/.sdlc/local.toml (ship.steps)  >  built-in defaults
+explicit --steps (a set)  >  --quick ([ship.quick] table)  >  [ship.steps] table  >  built-in defaults
 ```
+
+`[ship.steps]` and `[ship.quick]` merge per key: `~/.sdlc/local.toml` first, then `.sdlc-v2/local.toml` wins for each key it sets.
+
+The plugin fixes the order: `execute`, `commit`, `review`, `verify-openspec`, `archive-openspec`, `harden`, `pr`, `verify-pipeline`, `await-remote-review`, `learnings-commit`.
 
 `sources.steps` records the tier that applied as one of four values: `cli`, `quick`, `config`, or `default`. `config` covers both local.toml files: `config.ReadSection` merges `~/.sdlc/local.toml` and `.sdlc-v2/local.toml` (project wins per key) before `mergeShipFlags` sees the value, so `sources` cannot tell which of the two files supplied it.
 
@@ -163,7 +167,7 @@ Minimal step set, fully automated. There is no separate version step to skip in 
 ```json
 {
   "ship": {
-    "steps": ["execute", "commit", "review", "archive-openspec", "pr"],
+    "steps": { "execute": true, "commit": true, "review": true, "archive-openspec": true, "pr": true, "learnings-commit": false },
     "bump": "patch",
     "draft": false,
     "auto": true,
@@ -179,7 +183,7 @@ All canonical steps run; review threshold catches high-severity findings; PRs de
 ```json
 {
   "ship": {
-    "steps": ["execute", "commit", "review", "archive-openspec", "pr"],
+    "steps": { "execute": true, "commit": true, "review": true, "archive-openspec": true, "pr": true, "learnings-commit": false },
     "bump": "minor",
     "draft": true,
     "auto": false,
@@ -198,7 +202,7 @@ Smallest step set with widest review threshold, plus post-PR CI verification. Su
 ```json
 {
   "ship": {
-    "steps": ["execute", "commit", "review", "pr", "verify-pipeline"],
+    "steps": { "execute": true, "commit": true, "review": true, "archive-openspec": false, "pr": true, "verify-pipeline": true, "learnings-commit": false },
     "bump": "patch",
     "draft": false,
     "auto": false,

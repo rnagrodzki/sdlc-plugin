@@ -35,13 +35,13 @@ flag. This port does not expose `--committed` / `--staged` / `--working` / `--wo
 `.sdlc-v2/local.toml` instead. For `staged` and `working`, `review_prepare` ignores `target`
 (`manifest.base_branch` is `null`). For `staged`, `working`, and `worktree`, which all review
 uncommitted changes, `review_prepare` does not look up a PR (`manifest.pr.exists` is `false`).
-The same `[review]` section's `maxDimensions` key (default `8`, minimum `1`) caps how many
-dimensions one run dispatches; the rest are QUEUED.
+The same `[review]` section's `maxParallelDimensions` key (default `8`, minimum `1`) sets how many
+review agents run at the same time. Every matching dimension runs, in the order of `manifest.waves`.
 
 ```
 review_prepare({ target: "<branch from --base, or empty>", skipConfigCheck: false })
 → { manifestPath, summary: {
-      total_dimensions, active_dimensions, skipped_dimensions, queued_dimensions,
+      total_dimensions, active_dimensions, skipped_dimensions, wave_count,
       total_changed_files, uncovered_file_count, suggested_dimensions
     } }
 ```
@@ -54,7 +54,10 @@ there is no separate agent to shield this session from the manifest — the mani
 **thin index** (R-manifest-index-slices, #447): each `dimensions[]` entry carries only
 `name, description, severity, model, status, requires_full_diff, truncated, matched_count,
 diff_file, slice_file` (exactly `reviewDimIndexEntry`'s JSON tags), plus root-level
-`subagent_model`. **Do NOT read the contents of any `slice_file` or `diff_file` referenced
+`subagent_model` and `waves`. `waves` is an array of waves; each wave is an array of
+dimension names, most severe first, with at most `manifest.plan_critique.max_parallel_dimensions`
+names. Every started dimension is in exactly one wave; a `SKIPPED` dimension is in none.
+**Do NOT read the contents of any `slice_file` or `diff_file` referenced
 inside it** — those paths are forwarded to each dispatched worker in Step 2, and the worker
 reads them itself. This session's context must scale with dimension count, not diff content.
 
@@ -80,7 +83,7 @@ Review Plan (dry run — no agents dispatched)
 
   Base branch:    {manifest.base_branch}
   Changed files:  {manifest.git.changed_files_count}
-  Dimensions:     {manifest.summary.active_dimensions} active, {manifest.summary.skipped_dimensions} skipped, {manifest.summary.queued_dimensions} queued (cap {manifest.plan_critique.dimension_cap})
+  Dimensions:     {manifest.summary.active_dimensions} active in {manifest.summary.wave_count} wave(s) of up to {manifest.plan_critique.max_parallel_dimensions}, {manifest.summary.skipped_dimensions} skipped
 
 | Dimension | Files | Severity | Status |
 |-----------|-------|----------|--------|
@@ -90,7 +93,6 @@ Plan critique:
   - Uncovered files:       {manifest.plan_critique.uncovered_files.join(', ') or "none"}
   - Over-broad:            {manifest.plan_critique.over_broad_dimensions.join(', ') or "none"}
   - Suggested dimensions:  {manifest.plan_critique.uncovered_suggestions.map(s => s.dimension).join(', ') or "none"}
-  - Queued (not reviewed): {manifest.plan_critique.queued_dimensions.join(', ') or "none"}
 
 To execute the full review, run /review (without --dry-run).
 ```
@@ -100,30 +102,40 @@ No `runId` exists yet, so the run has no ledger. Stop here.
 
 ---
 
-## Step 2 — Flat Dispatch
+## Step 2 — Wave Dispatch
 
-For each dimension entry with `status: "ACTIVE"` or `status: "TRUNCATED"`:
+**Zero waves:** if `manifest.waves` is empty, there is no agent to start. Do not run
+Step 2 and Step 3: start no agent and make no `ledger_status` call. Go to Step 4 with zero
+findings. Step 9 then has no worker to stop.
 
-1. **Mint a `runId` for this review run** — this run's ledger namespace:
+Otherwise, **mint a `runId` for this review run** once, before the first wave — this run's
+ledger namespace:
 
-   ```
-   runId := "review-" + sanitize(manifest.timestamp)
-   ```
+```
+runId := "review-" + sanitize(manifest.timestamp)
+```
 
-   `sanitize` replaces every character outside `[A-Za-z0-9_-]` with `-` (the manifest
-   timestamp is RFC3339 and contains `:` characters, which are unsafe for a ledger path
-   segment).
+`sanitize` replaces every character outside `[A-Za-z0-9_-]` with `-` (the manifest
+timestamp is RFC3339 and contains `:` characters, which are unsafe for a ledger path
+segment).
 
-2. **Derive this dimension's `workerId`:**
+Start with an empty `expectedWorkers` list. Then, for each wave `W` in `manifest.waves`, in
+order (`waves[0]` first), do these steps:
+
+1. **Find each dimension of `W`.** For each name in `W`, find the `manifest.dimensions[]`
+   entry with that `name`. Use the fields of that entry to build the agent prompt below.
+
+2. **Derive the `workerId` of each dimension of `W`:**
 
    ```
    workerId := slugify(dimension.name)
    ```
 
    `slugify` lowercases the name, then collapses every run of one-or-more characters
-   outside `[A-Za-z0-9_-]` to a single `-`. **Append this `workerId` to an `expectedWorkers`
-   list accumulated across every dimension processed in this step** — Step 3 passes the full
-   list to `ledger_status`.
+   outside `[A-Za-z0-9_-]` to a single `-`. **Append each `workerId` of `W` to
+   `expectedWorkers`** — Step 3 passes the list to `ledger_status`. Add a `workerId` only for
+   an agent that this step starts now. `expectedWorkers` never holds a worker of a later
+   wave: `ledger_status` reports an expected worker with no ledger file as missing at once.
 
 3. **Do NOT read `dimension.slice_file` or `dimension.diff_file`.** The dispatched agent
    reads them itself (R-manifest-index-slices, #447) — reading them here would relocate the
@@ -200,49 +212,68 @@ For each dimension entry with `status: "ACTIVE"` or `status: "TRUNCATED"`:
    fired: `# --- Truncated ---` (byte cap) and/or `# --- Truncated (max-files) ---`
    (file-count cap), each listing the dropped files.
 
-5. Dispatch one Agent per ACTIVE/TRUNCATED dimension, **all in a single message**, with
-   **`run_in_background: true`** — the inversion of the previous mandatory `false`. Use
+5. Dispatch one Agent per dimension of `W`, **all agents of `W` in a single message**, with
+   **`run_in_background: true`**. Do not start an agent of a later wave in this message. Use
    `model: dimension.model || manifest.subagent_model` per dimension (per-dimension override
    wins; forward the string verbatim, no whitelist). Keep the task ID that each background
    dispatch returns, keyed by its `workerId`: Step 3 and Step 9 need it for `TaskStop`.
 
-**Workflow variant:** Prefer the Workflow tool's native fan-out when available; otherwise
-use the flat background-dispatch + ledger path described above.
+6. **Run Step 3 for `W`.** When wave `W` ends and a next wave exists, go back to step 1 of
+   this list for the next wave. When `W` is the last wave, go to Step 4.
+
+**Workflow variant:** Prefer the Workflow tool's native fan-out when available. Run one
+fan-out per wave, with at most `manifest.plan_critique.max_parallel_dimensions` agents.
+Otherwise use the wave dispatch and ledger path described above.
 
 ---
 
-## Step 3 — Poll Ledger Status
+## Step 3 — Poll Ledger Status (per wave)
 
-Loop calling:
+Step 3 runs once for each wave `W` that Step 2 started. Loop calling:
 
 ```
 execute_state({ action: "ledger_status", runId, expectedWorkers: [ids], timeoutSeconds: 1800 })
 → { runId, workers: [{ workerId, status, checkinAt, checkoutAt, stalled, stepId?, findings? }], stalledWorkers: [...], missingWorkers: [...] }
 ```
 
-passing the `expectedWorkers` list accumulated in Step 2, roughly every 60 seconds (a pacing
-suggestion for this session's own polling cadence, not a tool parameter) until every
-`workerId` dispatched in Step 2 shows `status: "done"` in `workers[]`.
+passing the `expectedWorkers` list from Step 2, roughly every 60 seconds (a pacing
+suggestion for this session's own polling cadence, not a tool parameter). Wave `W` ends when
+every worker of `W` is done, skipped, or stopped:
+
+- **done** — its `workerId` shows `status: "done"` in `workers[]`.
+- **skipped or stopped** — it was stalled or missing on two polls in a row, and the skill
+  called `TaskStop` once for it, per the rules below. It counts as stopped also when
+  `TaskStop` failed. The Step 5 comment names its dimension as skipped.
+
+Workers of earlier waves are already done, skipped, or stopped. Do not count them for `W`,
+and do not stop them again. The stall and missing rules below apply only to the workers of
+`W`.
+
+When `W` ends and a next wave exists, go back to Step 2 for the next wave. When `W` is the
+last wave, go to Step 4. Step 4 reads the findings from the last poll.
 
 **Stall handling (fail-partial-open, disclosed):**
 
-- If a `workerId` appears in `stalledWorkers`, do not treat it as failed yet — wait one more
-  poll cycle.
+- If a `workerId` of `W` appears in `stalledWorkers`, do not treat it as failed yet — wait
+  one more poll cycle.
 - If it is **still** present in `stalledWorkers` on the next poll, stop waiting on that
-  worker: call `TaskStop` with its task ID (see **Stopping a skipped worker** below), then
-  proceed to Step 4 with the results collected so far, and explicitly note the
-  skipped dimension(s) by name in the final `review-comment.md` (Step 5) — this is a
-  disclosed degraded mode, not a silent drop.
+  worker: call `TaskStop` once with its task ID (see **Stopping a skipped worker** below).
+  The worker now counts as stopped. Note the skipped dimension by name for the final
+  `review-comment.md` (Step 5) — this is a disclosed degraded mode, not a silent drop. Keep
+  the poll for the other workers of `W`.
 
 **Missing-worker handling (same escalation pattern as stalls):**
 
-- If a `workerId` appears in `missingWorkers` (dispatched but never checked in), do not treat
-  it as failed yet — wait one more poll cycle.
+- If a `workerId` of `W` appears in `missingWorkers` (dispatched but never checked in), do
+  not treat it as failed yet — wait one more poll cycle.
 - If it is **still** present in `missingWorkers` on the next poll, stop waiting on that
-  worker: call `TaskStop` with its task ID (see below), force-progress to Step 4 with the
-  results collected so far, log a warning, and explicitly note the skipped dimension(s) by
-  name in the final `review-comment.md` (Step 5) — this is a disclosed degraded mode, not a
-  silent drop.
+  worker: call `TaskStop` once with its task ID (see below), and log a warning. The worker
+  now counts as stopped. Note the skipped dimension by name for the final
+  `review-comment.md` (Step 5) — this is a disclosed degraded mode, not a silent drop. Keep
+  the poll for the other workers of `W`.
+
+Do not call `TaskStop` again for a worker that this run already stopped, also when a later
+poll still lists it in `stalledWorkers` or `missingWorkers`.
 
 **Stopping a skipped worker:** a skipped worker can still run and call `ledger_checkout`
 later, and the dashboard reads the ledger. Stop it with `TaskStop`. Under a nested dispatch
@@ -255,10 +286,12 @@ Name each worker that could not be stopped in the Step 5 comment and in the fina
 
 ## Step 4 — Consolidate Findings (relocated critique/dedupe pass)
 
-Once every dispatched worker is `done` (or was force-progressed past a stall per Step 3),
-read each worker's `findings` field from the `workers[]` array of the `ledger_status`
-response collected during the Step 3 poll (parse each worker's `findings` string as the JSON
-array it was written as). This is the same dedupe/contradiction/severity-recalibration pass
+Once the last wave has ended (every dispatched worker is `done`, or was stopped after a stall
+or a missing check-in per Step 3), read each worker's `findings` field from the `workers[]`
+array of the last `ledger_status` response of the Step 3 poll (parse each worker's
+`findings` string as the JSON array it was written as). That response holds the workers of
+every wave. When `manifest.waves` is empty, there is no poll and no worker: consolidate zero
+findings. This is the same dedupe/contradiction/severity-recalibration pass
 previously run by a separate orchestration step, now inline in this session:
 
 **Critique:**
@@ -288,8 +321,6 @@ Format the comment using this template:
 ## Code Review — {N} dimension(s), {M} finding(s)
 
 > Automated review by `review` v{plugin_version} · {date}
-{if manifest.plan_critique.queued_dimensions is not empty:}
-> Queued (not reviewed, dimension cap {manifest.plan_critique.dimension_cap}): {manifest.plan_critique.queued_dimensions.join(', ')}. Raise `maxDimensions` in the `[review]` section of `.sdlc-v2/local.toml` to review them.
 
 ### Summary
 
@@ -331,8 +362,6 @@ never checked in; no findings collected" (missing).
 - `{N}` ← number of active dimensions actually consolidated (excluding any dimension skipped
   in Step 3, stalled or missing)
 - `{M}` ← total finding count
-- The queued note line ← present only when `manifest.plan_critique.queued_dimensions` is not
-  empty; names every queued dimension and `manifest.plan_critique.dimension_cap`
 - All other `{...}` placeholders ← computed from the findings gathered in Step 4
 - If any dimension was skipped in Step 3 (stalled or missing), add an explicit note naming
   it and stating its findings are absent from this review
@@ -343,12 +372,8 @@ never checked in; no findings collected" (missing).
 - `APPROVED WITH NOTES` — any `high` finding, OR ≥ 5 `medium` findings
 - `APPROVED` — all other cases
 
-**Coverage caveat:** when `manifest.plan_critique.queued_dimensions` is not empty, append
-` — partial coverage: {K} dimension(s) queued, not reviewed` to the verdict heading, where
-`{K}` is the number of queued dimensions (for example `### Verdict: APPROVED — partial
-coverage: 3 dimension(s) queued, not reviewed`). Queued dimensions were skipped, not audited,
-so the verdict covers only the dimensions that ran. The caveat does not change the verdict
-word: Step 8 still reads `CHANGES REQUESTED` / `APPROVED WITH NOTES` / `APPROVED` alone.
+Every matching dimension runs in some wave, so the verdict heading carries only the verdict
+word, also when the review ran in more than one wave.
 
 **Persist** the comment body to `{manifest.diff_dir}/review-comment.md` using the `Write`
 tool (content verbatim, no surrounding fences, no shell escaping).
@@ -504,7 +529,9 @@ First, stop every worker that Step 2 dispatched and that has no `done` entry in 
 `ledger_status` call, stop every dispatched worker. Follow Step 3's **Stopping a skipped
 worker** rule: on a `TaskStop` failure (for example, the ownership/authorization error under
 a `/ship` dispatch), do not retry, and name the worker in the output as possibly still
-running. Skip this when Step 2 dispatched nothing.
+running. Skip this when Step 2 dispatched nothing (for example, `manifest.waves` is empty).
+A wave that never started has no worker and needs no `TaskStop`. Do not call `TaskStop`
+again for a worker that Step 3 already stopped.
 
 Then remove the manifest and its temp directory (skip a path the run never received, e.g.
 when `review_prepare` itself failed):
@@ -518,6 +545,9 @@ Do not remove the run's ledger. The dashboard reads it to show the review dimens
 finished run. The first execute `gc` or ship `cleanup-pipeline` sweep after 7 days (the
 default `state.gc.ttlDays`) removes it.
 
+**Interruption.** An interrupted `/review` does not resume. Run it again. It starts at Step 0
+with a new manifest and a new `runId`. It does not read the ledger files of the old run.
+
 ---
 
 ## DO NOT
@@ -528,8 +558,10 @@ default `state.gc.ttlDays`) removes it.
   `ledger_checkout`'s `findings` field (Step 2) and read them back from `ledger_status`'s
   response (Step 4)
 - Do NOT invoke error-report for user errors — only for tool-call crashes
-- Do NOT skip the Step 3 poll and consolidate on partial or zero results without a worker
-  actually confirmed stalled or missing twice in a row
+- Do NOT end the Step 3 poll of wave W while a worker of W is still running. A worker of W
+  ends as done, skipped, or stopped after it is confirmed stalled or missing twice in a row
+- Do NOT start the agents of a wave before the previous wave has ended, and do NOT add a
+  worker of a wave that has not started to `expectedWorkers`
 - Do NOT leave a skipped worker unnamed: every dimension skipped in Step 3 (stalled or
   missing) is named in the Step 5 comment, and every worker that `TaskStop` could not stop is
   named in the output
