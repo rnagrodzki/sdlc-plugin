@@ -160,7 +160,9 @@ The skill SHALL confirm the step plan and the release level with `AskUserQuestio
 - **THEN** no release-level prompt is shown
 
 ### Requirement: Step loop
-The skill SHALL run each name in `flags.steps` in the order `execute, commit, review, harden, verify-openspec, archive-openspec, pr, verify-pipeline, await-remote-review, learnings-commit`, strictly one at a time, with a `ship_state` lifecycle call pair per step.
+The skill SHALL run each name in `flags.steps` in the order `execute, commit, review, verify-openspec, archive-openspec, harden, pr, verify-pipeline, await-remote-review, learnings-commit`, strictly one at a time, with a `ship_state` lifecycle call pair per step.
+
+- `ship_prepare` always returns `flags.steps` in this fixed order, so the skill loop and the `next` step of `ship_state` agree.
 
 Main pipeline flow between the user, the skill, the MCP tools, and sub-skills:
 
@@ -180,7 +182,7 @@ sequenceDiagram
     ship_prepare-->>Skill: flags, sources, stateFile
     Skill->>gh: gh auth status
     Skill->>User: confirm steps and release level unless auto
-    loop each step in flags.steps
+    loop each step in flags.steps, in the fixed order
         Skill->>ship_state: begin-step
         ship_state-->>Skill: todos, display, alreadyDone
         alt Agent-dispatched step
@@ -229,6 +231,11 @@ sequenceDiagram
 - **WHEN** the `review` dispatch fails
 - **THEN** the skill calls `ship_state({action:"fail", step:"review", ...})`
 - **AND** prints `To resume: /ship --resume` and stops
+
+#### Scenario: harden runs after the OpenSpec steps
+- **WHEN** `flags.steps` holds `verify-openspec`, `archive-openspec` and `harden`
+- **THEN** the skill runs `verify-openspec`, then `archive-openspec`, then `harden`
+- **AND** `begin-step` accepts each of the three steps
 
 ### Requirement: Sub-skill dispatch contract
 The skill SHALL dispatch each sub-skill as the table says, always with a fixed `model`, never with an `isolation` value, and with a prompt whose first line is `/sdlc:<skill> <args>` followed only by the named payload.
@@ -299,7 +306,7 @@ After `review` completes, the skill SHALL route each `#### [<SEVERITY>] <title>`
 The skill SHALL dispatch `received-review` only when at least one finding was collected, SHALL dispatch `commit-fixes` only when `received-review` made changes, and SHALL record both with `decide` only.
 
 - `received-review` and `commit-fixes` have no `steps[]` entry; the skill never calls `begin-step`, `complete-step`, `start`, `complete`, `skip`, or `fail` for them.
-- They are not configurable: `ship_prepare` rejects either name in `ship.steps[]`, `ship.quick[]`, or `--steps` with an error, so neither is ever seeded into the state `steps[]`.
+- They are not configurable: `ship_prepare` rejects either name set to `true` in the `[ship.steps]` table, in the `[ship.quick]` table, or in `--steps` with an error, so neither is ever seeded into the state `steps[]`.
 - The `received-review` payload is `Review findings to address (from /review, <K> of <M>):` followed by each collected finding's heading, `**File:**` line, and body verbatim.
 - `received-review` pauses for the user unless `flags.auto`.
 - `commit-fixes` is a separate commit, never squashed into the feature commit.
@@ -314,11 +321,12 @@ The skill SHALL dispatch `received-review` only when at least one finding was co
 - **THEN** the `received-review` prompt has no `--pr` and carries every collected finding
 
 ### Requirement: Rebase
-After `commit-fixes` and before the next configured step among `harden`, `verify-openspec`, `archive-openspec`, `pr`, the skill SHALL run `git fetch origin <base>` and skip the rebase when `git merge-base --is-ancestor origin/<base> HEAD` succeeds, where `<base>` is the resolved base branch.
+After `commit-fixes` and before the next configured step among `verify-openspec`, `archive-openspec`, `harden`, `pr`, the skill SHALL run `git fetch origin <base>` and skip the rebase when `git merge-base --is-ancestor origin/<base> HEAD` succeeds, where `<base>` is the resolved base branch.
 
 - Otherwise `flags.rebase` `"auto"` rebases and `"skip"` never rebases; any other value is informational.
 - A conflict stops the pipeline; the user resolves it and runs `--resume`.
 - The outcome is always recorded with `ship_state({action:"decide", step:"rebase", detail:{text}})`.
+- Every later commit, including the archive commit and the `harden` commit, lands on the rebased branch. No second rebase runs.
 
 #### Scenario: Already up to date
 - **WHEN** `origin/<base>` is already an ancestor of `HEAD`
@@ -331,6 +339,10 @@ After `commit-fixes` and before the next configured step among `harden`, `verify
 #### Scenario: Base branch configured
 - **WHEN** `[git] baseBranch = "develop"`
 - **THEN** the skill runs `git fetch origin develop` and rebases onto `origin/develop` when behind
+
+#### Scenario: Rebase before verify-openspec
+- **WHEN** `flags.steps` holds `verify-openspec` and `harden`
+- **THEN** the rebase runs before `verify-openspec`
 
 ### Requirement: harden step
 When `harden` is in `flags.steps`, the skill SHALL turn review findings into clusters with `ship_state({action:"harden_clusters"})`, invoke the `harden` skill once per approved cluster with the `Skill` tool, and commit the edited surfaces as a separate commit.

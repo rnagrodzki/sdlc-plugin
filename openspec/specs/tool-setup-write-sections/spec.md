@@ -140,9 +140,9 @@ The tool SHALL change only the lines of changed keys in the written section and 
 - **THEN** the file is byte-identical to its old content
 
 #### Scenario: No value change, tip missing
-- **WHEN** the call writes `{"ship":{"steps":["execute","commit"],"bump":"patch"}}` to a `local.toml` that already holds those values with no comment line above `steps` or `bump`
-- **THEN** the key and value lines of `steps` and `bump` are byte-identical to their old text
-- **AND** the template tips for `steps` and `bump` are inserted directly above those keys
+- **WHEN** the call writes `{"ship":{"bump":"patch","draft":false}}` to a `local.toml` that already holds those values with no comment line above `bump` or `draft`
+- **THEN** the key and value lines of `bump` and `draft` are byte-identical to their old text
+- **AND** the template tips for `bump` and `draft` are inserted directly above those keys
 
 #### Scenario: Absent section appended
 - **WHEN** `config.toml` has no `jira` table and no `# [jira]` comment line
@@ -159,11 +159,11 @@ The tool SHALL change only the lines of changed keys in the written section and 
 - **AND** every other comment line of that block stays
 
 #### Scenario: Commented header and example uncommented
-- **WHEN** `local.toml` has no `review` table and holds the template lines `# [review]`, `# scope = "working"` and `# maxDimensions = 8`
+- **WHEN** `local.toml` has no `review` table and holds the template lines `# [review]`, `# scope = "working"` and `# maxParallelDimensions = 8`
 - **AND** the call writes `{"review":{"scope":"diff"}}`
 - **THEN** `# [review]` becomes `[review]`
 - **AND** `# scope = "working"` becomes a live `scope` line with the value `diff`
-- **AND** `# maxDimensions = 8` stays a comment line
+- **AND** `# maxParallelDimensions = 8` stays a comment line
 
 #### Scenario: Commented example replaced, trailing tip kept
 - **WHEN** the `[style]` table of `local.toml` holds `# audience = "functional"      # technical | functional | executive | general | beginner` and no live `audience`
@@ -367,3 +367,77 @@ With `target: "user"`, the tool SHALL return a `DomainError` with a `Suggestion`
 - **AND** the call passes `target: "user"` with a local section
 - **THEN** the tool returns a `DomainError` with Suggestion `Set SDLC_USER_CONFIG to a file path, or use target project.`
 - **AND** nothing is written
+
+### Requirement: Flag-set answers stored as tables
+Before it writes any section, the tool SHALL convert each `flag-set` field answer (`ship.steps`, `ship.quick`) from an array of selected step names to a table of every step name → `true` or `false`, and SHALL write nothing when an answer is not valid.
+
+- A table answer passes through with no added keys. A JSON `null` answer clears the key, as today.
+- An error is a `DomainError` with a `Suggestion`. The scenarios below give each error text.
+
+#### Scenario: Array answer becomes a table
+- **WHEN** `local.toml` has `[ship]` with `steps = ["execute", "review", "harden"]` and `bump = "patch"`
+- **AND** the call writes `{"ship":{"steps":["execute","review","harden"],"bump":"patch"}}`
+- **THEN** the file has a `[ship.steps]` table with all ten step names
+- **AND** `execute`, `review` and `harden` are `true` and the other seven are `false`
+- **AND** `ship.bump` is still `patch` and the old `steps = [` line is gone
+
+#### Scenario: Quick answer becomes a table
+- **WHEN** `local.toml` has `quick = ["execute"]` under `[ship]`
+- **AND** the call writes the `ship` section with `"quick": ["execute","pr"]`
+- **THEN** the file has a `[ship.quick]` table with ten keys
+- **AND** only `execute` and `pr` are `true`
+
+#### Scenario: Empty answer
+- **WHEN** the call writes `{"ship":{"steps":[]}}`
+- **THEN** the `[ship.steps]` table has ten keys and every value is `false`
+
+#### Scenario: Table answer passes through
+- **WHEN** the call writes `{"ship":{"steps":{"execute":true,"harden":true}}}`
+- **THEN** the step table holds only the keys `execute` and `harden`
+
+#### Scenario: Old multi-line list replaced
+- **WHEN** `local.toml` has `steps = [` followed by `"execute",` and `]` on separate lines under `[ship]`
+- **AND** the call writes a `steps` array answer
+- **THEN** the old list is gone and the step table is written
+
+#### Scenario: Old inline table replaced
+- **WHEN** `local.toml` has `steps = { execute = true }` under `[ship]`
+- **AND** the call writes a `steps` array answer
+- **THEN** the old inline table is gone and the step table is written
+
+#### Scenario: Existing header table replaced
+- **WHEN** `local.toml` already has a `[ship.steps]` header table
+- **AND** the call writes a `steps` array answer
+- **THEN** the file has exactly one `[ship.steps]` table, with the new values
+
+#### Scenario: Unknown step name
+- **WHEN** the call writes `{"ship":{"steps":["hardn"]}}`
+- **THEN** the tool returns a `DomainError` with the message `ship.steps answer has an unknown step "hardn".`
+- **AND** the `Suggestion` is `Use only these names: execute, commit, review, verify-openspec, archive-openspec, harden, pr, verify-pipeline, await-remote-review, learnings-commit.`
+- **AND** no section of the call is written
+
+#### Scenario: Unknown key in a table answer
+- **WHEN** the call writes `{"ship":{"steps":{"hardn":true}}}`
+- **THEN** the tool returns a `DomainError` that names `hardn`
+- **AND** the file is unchanged
+
+#### Scenario: Non-bool table value
+- **WHEN** the call writes `{"ship":{"steps":{"harden":"yes"}}}`
+- **THEN** the tool returns a `DomainError` with the message `ship.steps.harden must be true or false, got "yes".`
+- **AND** the `Suggestion` is `Send true or false for each step, or send an array of step names.`
+- **AND** the file is unchanged
+
+#### Scenario: Scalar answer
+- **WHEN** the call writes `{"ship":{"steps":"harden"}}`
+- **THEN** the tool returns a `DomainError` with the message `ship.steps answer must be an array of step names or a table of step → true/false, got string.`
+- **AND** the `Suggestion` is `Send an array of step names, for example ["execute","review"].`
+- **AND** the file is unchanged
+
+#### Scenario: Same answer twice
+- **WHEN** the call writes the same `steps` array answer two times
+- **THEN** the file bytes after the second write equal the file bytes after the first write
+
+#### Scenario: Old list replaced by a table
+- **WHEN** `local.toml` has `steps = ["execute"]` under `[ship]`
+- **AND** the call writes a `steps` array answer
+- **THEN** no `steps = [` line remains in the file
