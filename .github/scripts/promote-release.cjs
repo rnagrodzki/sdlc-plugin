@@ -17,9 +17,11 @@
  * Flow:
  *   1. Resolve the target version by discovering the active RC series
  *      (highest base version with "-rcN" tags) and bumping the latest
- *      stable tag by the requested level (major | minor | patch).
+ *      stable tag by the requested level (major | minor | patch). The series
+ *      must be above the latest stable tag, and the target must not be below
+ *      the series. A target above the series prints a NOTICE line.
  *   2. git fetch --tags --force.
- *   3. Find the latest RC tag matching <target>-rc* (highest RC number).
+ *   3. Find the latest RC tag matching <series>-rc* (highest RC number).
  *   4. Error if no RC exists, or if the final tag already exists.
  *   5. Resolve the RC tag's commit SHA — this exact commit becomes the
  *      final release. The final tag is created AT THE RC's SHA, not at
@@ -72,8 +74,8 @@
 
 'use strict';
 
-/** @version 9 — promote-release script version. Bump when behavior changes. */
-const PROMOTE_RELEASE_SCRIPT_VERSION = 9;
+/** @version 10 — promote-release script version. Bump when behavior changes. */
+const PROMOTE_RELEASE_SCRIPT_VERSION = 10;
 
 /**
  * Allowlist for a branch name taken from the environment (RELEASE_BRANCH).
@@ -420,11 +422,14 @@ function semverGreater(a, b) {
 }
 
 /**
- * Resolve the promotion target: bump stableVersion by level and require the
- * result to equal the active RC series version. Promoting means shipping the
- * tested RC, so a level that lands on any other version (lower OR higher) is
- * an error. Pure — no side effects, never exits.
- * @returns {{targetBase:string}|{error:string}}
+ * Resolve the promotion target: bump stableVersion by level and compare the
+ * result to the active RC series version. The series must be above the latest
+ * stable version, otherwise there is nothing to promote. A target equal to the
+ * series is returned as is. A target above the series is also returned, with a
+ * notice: the tested RC commit ships under the higher version. A target below
+ * the series is an error that names the first level that reaches the series.
+ * Pure — no side effects, never exits.
+ * @returns {{targetBase:string, notice?:string}|{error:string}}
  */
 function resolvePromotionTarget(stableVersion, seriesVersion, level, tagPrefix) {
   const levels = ['major', 'minor', 'patch'];
@@ -443,13 +448,20 @@ function resolvePromotionTarget(stableVersion, seriesVersion, level, tagPrefix) 
   };
   const series = `${rc.major}.${rc.minor}.${rc.patch}`;
   const targetBase = bump(level);
+  const p = tagPrefix || '';
+  if (!semverGreater(series, `${sv.major}.${sv.minor}.${sv.patch}`)) {
+    return { error: `Nothing to promote: the highest RC series is ${seriesVersion}, which is not above the latest stable ${p}${stableVersion}.` };
+  }
   if (targetBase === series) return { targetBase };
+  if (semverGreater(targetBase, series)) {
+    return { targetBase, notice: `Level "${level}" produces ${p}${targetBase}, above the active RC series ${seriesVersion}. The latest ${p}${seriesVersion}-rcN commit ships as ${p}${targetBase}.` };
+  }
 
-  const matchingLevel = levels.find((l) => bump(l) === series);
+  const reaching = ['patch', 'minor', 'major'].find((l) => !semverGreater(series, bump(l)));
   return {
     error:
-      `Chosen level "${level}" produces ${tagPrefix || ''}${targetBase}, but the active RC series is ${seriesVersion}. ` +
-      (matchingLevel ? `use level "${matchingLevel}"` : `no level produces ${seriesVersion} from ${stableVersion}`),
+      `Chosen level "${level}" produces ${p}${targetBase}, but the active RC series is ${seriesVersion}. ` +
+      (reaching ? `use level "${reaching}"` : `no level reaches ${seriesVersion} from ${stableVersion}`),
   };
 }
 
@@ -708,11 +720,13 @@ function main() {
     ? (tagPrefix ? stableTag.slice(tagPrefix.length) : stableTag)
     : '0.0.0';
 
-  // The target must equal the active RC series: promotion ships the tested
-  // RC commit, so a level that yields any other version (lower or higher)
-  // would tag the RC's SHA with a version it was never built as.
+  // The target must not be below the active RC series: promotion ships the
+  // tested RC commit, so a level that yields a lower version would tag the
+  // RC's SHA with a version that is already behind the series. A higher
+  // target is allowed and reported with a NOTICE line.
   const resolved = resolvePromotionTarget(stableVersion, series.baseVersion, level, tagPrefix);
   if (resolved.error) fail(resolved.error);
+  if (resolved.notice) console.log(`NOTICE: ${resolved.notice}`);
   const targetBase = resolved.targetBase;
   const targetTag = `${tagPrefix}${targetBase}`;
 
@@ -722,9 +736,9 @@ function main() {
 
   const rcTag = findLatestRCTag(repoRoot, tagPrefix, series.baseVersion);
   if (!rcTag) {
-    fail(`No RC tags found for ${targetTag}`);
+    fail(`No RC tags found for ${tagPrefix}${series.baseVersion}`);
   }
-  console.log(`Latest RC for ${targetTag}: ${rcTag}`);
+  console.log(`Latest RC for ${tagPrefix}${series.baseVersion}: ${rcTag}`);
 
   // Step 5: Error if the final tag already exists.
   const existing = exec(`git rev-parse "${targetTag}^{commit}" 2>/dev/null`, { cwd: repoRoot, shell: true });
