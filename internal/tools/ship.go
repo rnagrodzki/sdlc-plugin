@@ -71,8 +71,8 @@ type ShipPrepareIn struct {
 
 	HasPlan            bool     `json:"hasPlan" jsonschema_description:"Whether a plan already exists for this pipeline run. When true and planFile is empty while the execute step will run, this is a validation error — a plan file must be supplied."`
 	Auto               bool     `json:"auto" sdlcconfig:"ship.auto" jsonschema_description:"Run the pipeline unattended (no human available to confirm anything right now). Optional. Defaults to config ship.auto. Pass only to override."`
-	Steps              []string `json:"steps" sdlcconfig:"ship.steps" jsonschema_description:"Explicit ordered list of pipeline step names to run, overriding the quick-derived step list. Takes precedence over quick when non-empty. Optional. Defaults to config ship.steps. Pass only to override."`
-	Quick              bool     `json:"quick" jsonschema_description:"Use the abbreviated \"quick\" step list instead of the full pipeline, when steps is not explicitly supplied."`
+	Steps              []string `json:"steps" sdlcconfig:"ship.steps" jsonschema_description:"Plain JSON array of pipeline step names to run, for example [\"execute\",\"review\",\"pr\"]. The order does not matter: ship_prepare sorts the names into the fixed pipeline order. A duplicate name is an error. Takes precedence over quick when non-empty. Optional. Defaults to config ship.steps. Pass only to override."`
+	Quick              bool     `json:"quick" jsonschema_description:"Run the steps set to true in the [ship.quick] table instead of the full pipeline, when steps is not supplied. A step not in the table is off."`
 	Quality            string   `json:"quality" jsonschema:"enum=full,enum=balanced,enum=minimal" jsonschema_description:"Quality gate level to merge into the resolved pipeline config."`
 	Bump               string   `json:"bump" sdlcconfig:"ship.bump" jsonschema_description:"Version bump level (e.g. \"patch\"/\"minor\"/\"major\") to merge into the resolved pipeline config. Optional. Defaults to config ship.bump. Pass only to override."`
 	Draft              bool     `json:"draft" sdlcconfig:"ship.draft" jsonschema_description:"Create the PR as a draft. Optional. Defaults to config ship.draft. Pass only to override."`
@@ -335,10 +335,16 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 		versionCfg = map[string]any{}
 	}
 
-	merged, sources := mergeShipFlags(in, shipCfg, versionCfg)
+	merged, sources, stepProblems := mergeShipFlags(in, shipCfg, versionCfg)
 
 	errors := []string{}
 	warnings := []string{}
+
+	// Step-table problems (non-bool values, unknown keys), then old list
+	// shapes, scalar step values and duplicate --steps names. The step-name
+	// checks below run on the resolved flags.steps.
+	errors = append(errors, stepProblems...)
+	errors = append(errors, shipStepConfigErrors(shipCfg, in.Steps)...)
 
 	// Read the plan once: its **Source:** header can supply openspecChange,
 	// and its **OpenSpec-Staging:** header drives Materialize below. An
@@ -378,7 +384,7 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 	for _, st := range stepsList {
 		if sliceContainsStr(shipmeta.ReservedSteps, st) {
 			errors = append(errors, fmt.Sprintf(
-				"%q is a reserved terminal step appended automatically by the pipeline. Remove it from --steps and ship.steps[].", st))
+				"%q is a reserved terminal step appended automatically by the pipeline. Remove it from --steps and ship.steps.", st))
 			continue
 		}
 		if shipmeta.IsConditionalShipStep(st) {
@@ -439,7 +445,7 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 	// --bump without a pr step (version diagnostics now run inside pr_prepare).
 	if bumpVal, _ := merged["bump"].(string); bumpVal != "" && sources["bump"] == "cli" && !sliceContainsStr(stepsList, "pr") {
 		errors = append(errors, fmt.Sprintf(
-			"--bump %q specified but pr step is skipped — resolve by removing --bump or adding \"pr\" to ship.steps[].", bumpVal))
+			"--bump %q specified but pr step is skipped — resolve by removing --bump or adding \"pr\" to ship.steps.", bumpVal))
 	}
 
 	// --quick + --steps conflict.
@@ -483,7 +489,7 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 	if (isDefaultBranch(currentBranch) || (base != "" && currentBranch == base)) && sliceContainsStr(stepsList, "pr") {
 		return ShipPrepareOut{}, &mcpserver.DomainError{
 			Msg:        fmt.Sprintf("ship cannot run the \"pr\" step on default branch %q — pushing to main/master is never auto-approved", currentBranch),
-			Suggestion: "Switch to a feature branch, or remove \"pr\" from --steps/ship.steps[] if you don't intend to push.",
+			Suggestion: "Switch to a feature branch, or remove \"pr\" from --steps/ship.steps if you don't intend to push.",
 		}
 	}
 
@@ -618,13 +624,70 @@ func isDefaultBranch(branch string) bool {
 }
 
 // stepsFieldLabel renders the source-appropriate name of the steps field for
-// error/warning messages ("--steps" for CLI-sourced values, "steps[]" for
-// config-sourced ones).
+// error/warning messages ("--steps" for CLI-sourced values, "ship.quick" for
+// the quick table, "ship.steps" otherwise).
 func stepsFieldLabel(source string) string {
-	if source == "cli" {
+	switch source {
+	case "cli":
 		return "--steps"
+	case "quick":
+		return "ship.quick"
+	default:
+		return "ship.steps"
 	}
-	return "steps[]"
+}
+
+// shipStepConfigErrors reports old list shapes, scalar step values
+// and duplicate --steps names.
+func shipStepConfigErrors(shipCfg map[string]any, cliSteps []string) []string {
+	var errs []string
+	for _, key := range []string{"steps", "quick"} {
+		v, present := shipCfg[key]
+		if !present {
+			continue
+		}
+		switch v.(type) {
+		case map[string]any:
+			// The table shape: ResolveStepTable reports its problems.
+		case []any:
+			errs = append(errs, fmt.Sprintf(
+				"ship.%[1]s in .sdlc-v2/local.toml (or ~/.sdlc/local.toml) uses the old list shape (%[1]s = [...]). "+
+					"The plugin now fixes the step order, so each step is an on/off flag. "+
+					"Replace the list with a [ship.%[1]s] table, for example: [ship.%[1]s] harden = true. "+
+					"Run /setup --only ship to rewrite it.", key))
+		default:
+			errs = append(errs, fmt.Sprintf(
+				"ship.%[1]s must be a [ship.%[1]s] table of true/false values, got %[2]s. "+
+					"Run /setup --only ship to rewrite it.", key, tomlTypeName(v)))
+		}
+	}
+
+	seen := map[string]int{}
+	for _, name := range cliSteps {
+		seen[name]++
+		if seen[name] == 2 {
+			errs = append(errs, fmt.Sprintf(
+				"--steps lists %q more than once. List each step once. The order does not matter.", name))
+		}
+	}
+	return errs
+}
+
+// tomlTypeName names the TOML type of a decoded config value for error
+// messages.
+func tomlTypeName(v any) string {
+	switch v.(type) {
+	case string:
+		return "string"
+	case bool:
+		return "boolean"
+	case int, int64:
+		return "integer"
+	case float64:
+		return "float"
+	default:
+		return fmt.Sprintf("%T", v)
+	}
 }
 
 // resolveShipOpenspecChange sets merged["openspecChange"] and
@@ -662,28 +725,41 @@ func resolveShipOpenspecChange(merged map[string]any, sources map[string]string,
 // bump regardless of source (including CLI), and preReleasePolicy:
 // "default-rc", which enforces an RC bump only when no explicit CLI
 // --bump was supplied (an explicit CLI --bump always wins).
-// Returns the merged flag map plus, per key, which precedence tier
-// supplied the value.
-func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]any) (map[string]any, map[string]string) {
+// Returns the merged flag map, per key which precedence tier supplied the
+// value, and the problems found in the ship.steps / ship.quick tables (the
+// caller adds them to its errors list).
+func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]any) (map[string]any, map[string]string, []string) {
 	merged := map[string]any{}
 	sources := map[string]string{}
 
-	// steps: cli (non-empty) > quick profile > config (any array, even
-	// empty) > default.
+	// Resolve each step table once. stepProblems goes to the errors list.
+	var stepProblems []string
+	stepsTbl, hasStepsTbl := cfg["steps"].(map[string]any)
+	var cfgSteps []string
+	if hasStepsTbl {
+		var p []string
+		cfgSteps, p = shipmeta.ResolveStepTable(stepsTbl, shipmeta.ShipBuiltInDefaults.Steps, "ship.steps")
+		stepProblems = append(stepProblems, p...)
+	}
+	quickSteps := []string{}
+	if quickTbl, ok := cfg["quick"].(map[string]any); ok {
+		var p []string
+		quickSteps, p = shipmeta.ResolveStepTable(quickTbl, nil, "ship.quick")
+		stepProblems = append(stepProblems, p...)
+	}
+
+	// steps: cli (non-empty) > quick table > ship.steps table > default.
+	// Every source is sorted into the fixed pipeline order.
 	switch {
 	case len(in.Steps) > 0:
-		merged["steps"] = append([]string{}, in.Steps...)
+		merged["steps"] = shipmeta.OrderSteps(in.Steps)
 		sources["steps"] = "cli"
 	case in.Quick:
-		if quickArr, ok := cfg["quick"].([]any); ok {
-			merged["steps"] = anyToStringSlice(quickArr)
-		} else {
-			merged["steps"] = []string{}
-		}
+		merged["steps"] = quickSteps
 		sources["steps"] = "quick"
 	default:
-		if cfgArr, ok := cfg["steps"].([]any); ok {
-			merged["steps"] = anyToStringSlice(cfgArr)
+		if hasStepsTbl {
+			merged["steps"] = cfgSteps
 			sources["steps"] = "config"
 		} else {
 			merged["steps"] = append([]string{}, shipmeta.ShipBuiltInDefaults.Steps...)
@@ -851,7 +927,7 @@ func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]
 	}
 	merged["executeDispatchArgs"] = strings.Join(argParts, " ")
 
-	return merged, sources
+	return merged, sources, stepProblems
 }
 
 // mergeShipBool merges a boolean flag using cli(true) > config > default
@@ -1490,7 +1566,7 @@ func shipBuildReportData(data map[string]any, now time.Time) ShipReportData {
 // tools.
 func RegisterShipTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "ship_prepare",
-		"Merge ship CLI flags with ship config, validate the resolved pipeline (pure checks only — no gh-auth or openspec-aware step computation), and initialize ship execution state.",
+		"Merge ship CLI flags with ship config, validate the resolved pipeline (pure checks only — no gh-auth or openspec-aware step computation), and initialize ship execution state. ship.steps and ship.quick are tables of true/false per step; the plugin fixes the step order. An old list shape, a non-boolean value or a duplicate --steps name is reported in errors with the fix.",
 		mcpserver.Annotations{
 			Title:       "Prepare ship pipeline run",
 			ReadOnly:    false,

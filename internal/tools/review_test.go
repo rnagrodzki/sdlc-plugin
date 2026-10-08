@@ -944,7 +944,7 @@ func TestDefaultMaxDimensionsMatchesSetupField(t *testing.T) {
 			continue
 		}
 		for _, f := range section.Fields {
-			if f.Name != "maxDimensions" {
+			if f.Name != "maxParallelDimensions" {
 				continue
 			}
 			found = true
@@ -954,7 +954,7 @@ func TestDefaultMaxDimensionsMatchesSetupField(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatal("setupmeta review section has no maxDimensions field")
+		t.Fatal("setupmeta review section has no maxParallelDimensions field")
 	}
 }
 

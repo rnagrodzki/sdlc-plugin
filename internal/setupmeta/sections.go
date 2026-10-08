@@ -213,14 +213,14 @@ var reviewFields = []Field{
 		Examples:    []string{"\"all\" — reviews every commit on the branch against the base branch", "\"working\" — reviews staged and unstaged changes against HEAD"},
 	},
 	{
-		Name:        "maxDimensions",
-		Label:       "Max review dimensions per run",
+		Name:        "maxParallelDimensions",
+		Label:       "Max review agents at the same time",
 		Type:        "number",
 		Options:     nil,
 		Default:     8,
-		Description: "Maximum number of review dimensions that /review dispatches in one run. The most severe dimensions are kept. The rest are QUEUED and get no review. Stored in .sdlc-v2/local.toml under review.maxDimensions.",
-		Details:     "/review keeps the most severe dimensions up to this number. A higher value reviews more dimensions and starts more agents at the same time.",
-		Examples:    []string{"8 — the default, at most 8 reviewer agents", "22 — reviews up to 22 dimensions in one run"},
+		Description: "Maximum number of review agents that /review runs at the same time. Every matching dimension runs, most severe first, in waves of this size. Stored in .sdlc-v2/local.toml under review.maxParallelDimensions.",
+		Details:     "A higher value ends a large review sooner and starts more agents at the same time.",
+		Examples:    []string{"8 — the default, 8 agents at a time", "4 — fewer agents, more waves"},
 		Min:         intPtr(1),
 	},
 }
@@ -682,7 +682,7 @@ func Sections() []Section {
 		{
 			ID:              "review",
 			Label:           "review",
-			Purpose:         "Default scope for /review (all/committed/staged/working/worktree) and the max dimensions reviewed in one run. Each developer typically prefers a different default — committed for PR-style review, working for in-progress feedback. Stored in .sdlc-v2/local.toml.",
+			Purpose:         "Default scope for /review (all/committed/staged/working/worktree) and the number of review agents that run at the same time. Each developer typically prefers a different default — committed for PR-style review, working for in-progress feedback. Stored in .sdlc-v2/local.toml.",
 			ConfigFile:      ".sdlc-v2/local.toml",
 			ConfigPath:      "review",
 			ConsumedBy:      []string{"review"},

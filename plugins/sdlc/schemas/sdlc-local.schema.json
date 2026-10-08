@@ -14,11 +14,11 @@
           "enum": ["all", "committed", "staged", "working", "worktree"],
           "description": "Which changes to include in the review."
         },
-        "maxDimensions": {
+        "maxParallelDimensions": {
           "type": "integer",
           "minimum": 1,
           "default": 8,
-          "description": "Maximum review dimensions dispatched in one /review run. The most severe are kept. The rest are QUEUED."
+          "description": "Maximum review agents that run at the same time in one /review run. Every matching dimension runs, most severe first, in waves of this size."
         }
       },
       "additionalProperties": false

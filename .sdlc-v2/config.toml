@@ -1053,3 +1053,15 @@ severity = 'error'
 [execute.guardrails.nested-stall-handler-gating-2]
 description = 'When a nested skill dispatches background workers or sub-agents, verify before marking a task done that the normal-completion cleanup step (Step 9 or equivalent) re-checks every worker and ends any worker still running, not only the stall handler and the error-recovery paths. Verify the results step names each worker that never reported in and each worker that cleanup could not end, so no worker is silently missing from the output. Verify every entry that dispatches the same workers carries the nested-dispatch TaskStop note, not only the first entry.'
 severity = 'error'
+
+[plan.guardrails.skill-behavior-claims-cite-skill-md]
+description = "A plan claim about what another skill's step does (for example, which execute step runs the test suite, or which step writes state) must cite that skill's SKILL.md step text. A skill reference doc is not enough, because a reference doc can be stale."
+severity = 'error'
+
+[plan.guardrails.dependency-order]
+description = 'Every dependsOn entry must name a task listed earlier in the plan. If a task needs a later task, reorder the tasks so the dependency is listed first before the plan is finalized.'
+severity = 'error'
+
+[plan.guardrails.acceptance-criteria-count-limit]
+description = 'Each task lists at most 7 acceptance criteria. When a task needs more, split it into smaller tasks, each with one deliverable and at most 7 criteria.'
+severity = 'error'

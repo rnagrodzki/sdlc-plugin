@@ -486,14 +486,21 @@ RC numbers are auto-detected from existing tags.
 When testing is complete, promote the latest RC to a final release without rebuilding:
 
 1. Go to **Actions** → **SDLC Promote Release** workflow
-2. Enter the target version (e.g., `v1.3.0`)
+2. Choose the bump level: `patch`, `minor`, or `major`. The workflow bumps the latest stable tag by this level to get the final version.
 3. The workflow (`promote-release.cjs`) will:
    - Run `git fetch --tags --force` to ensure all remote tags are present
-   - Find the latest RC tag for that version (e.g., `v1.3.0-rc3` — the highest RC number)
+   - Find the latest RC tag of the active RC series (e.g., `v1.3.0-rc3` — the highest RC number)
    - Verify the final tag does not already exist (prevents duplicate promotions)
-   - Create the final tag `v1.3.0` at the **exact commit** where the RC tag points (no rebuild, no new commit at HEAD)
+   - Create the final version tag at the **exact commit** where that RC tag points (no rebuild, no new commit at HEAD)
    - Bump the version file (when `versionFile.enabled`) and prepend the changelog entry (when `changelog.enabled`) to the current branch HEAD as bookkeeping
    - Create a non-pre-release GitHub Release with notes aggregated from all RC releases, deduplicated and labeled per-RC
+
+| Final version compared to the RC series | Result |
+|---|---|
+| Equal | Tags the final version at the latest RC commit. |
+| Higher (RC `1.3.1-rcN`, stable `1.3.0`, level `minor` gives `v1.4.0`) | Prints a `NOTICE:` line, then tags the higher version at the latest RC commit. Release notes come from the RC series. |
+| Lower | Fails before any git write and names the level to use. |
+| RC series not above the latest stable tag | Fails with `Nothing to promote`. |
 
 The final release tags the exact commit that was tested as the RC — what you tested is what ships, no rebuild.
 

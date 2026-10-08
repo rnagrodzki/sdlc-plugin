@@ -1,6 +1,6 @@
 ---
 name: skill-doc-drift
-description: Detect drift between docs/skills/*.md and SKILL.md source of truth
+description: Detect drift between docs/skills/*.md, skill reference docs, and SKILL.md source of truth
 triggers:
   - "docs/skills/**"
   - "plugins/sdlc/skills/**/*.md"
@@ -18,6 +18,7 @@ severity: medium
 - When a config-key migration or namespace rename affects multiple sections of a `docs/skills/*.md` file (e.g. Configuration section, Tips bullets, Flags table), verify **all** sections via grep for old key names and flag references, not just the obviously-related primary section. A partial sync creates contradictions within the file's own sections.
 - When a SKILL.md introduces or modifies a blocking gate (e.g. a verdict classification that halts execution, prevents decomposition, or requires manual override), the corresponding `docs/skills/<skill>.md` must document: (1) what the gate blocks, (2) what conditions trigger it, (3) whether a bypass flag or option exists (`--auto`, `--force`) and what it does, or explicitly state that no bypass exists. The absence of a bypass is a fact to document, not an omission.
 - When a SKILL.md change applies the same behavior (fail-fast condition, skip condition, blocking gate) to two or more steps, enumerate every step it touches by grepping SKILL.md, and confirm `docs/skills/<skill>.md` documents that behavior for each step. A documentation update covering only one sibling (e.g. documenting `verify-openspec` fail-fast-on-missing-disk but not `archive-openspec`) is a finding.
+- A claim in a skill reference doc (`plugins/sdlc/skills/**/*reference.md`, `state-format.md`, `config-format.md`) about what another step or skill does (for example, which step runs the test suite, or which step writes state) matches that skill's SKILL.md step text. Cite the reference doc line and the SKILL.md step. A stale claim is a finding.
 
 ## What NOT to flag
 

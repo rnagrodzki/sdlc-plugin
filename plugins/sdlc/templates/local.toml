@@ -79,8 +79,9 @@
 # Which changes to include in the review.
 # Valid: "all" | "committed" | "staged" | "working" | "worktree"
 # scope = "working"
-# Maximum dimensions reviewed in one run (most severe kept). Whole number >= 1.
-# maxDimensions = 8
+# Review agents that run at the same time (default 8). Every matching dimension
+# runs, most severe first, in waves of this size. Whole number >= 1.
+# maxParallelDimensions = 8
 
 # ─── Received-review defaults (optional — delete if not using) ────
 # [receivedReview]

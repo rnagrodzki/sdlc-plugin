@@ -136,7 +136,7 @@ func TestShipPrepare_StateInit(t *testing.T) {
 // classified tracked/inline, and renders a matching PipelineDisplay table —
 // exercising all 10 shipmeta.CanonicalSteps names at once (4 tracked, 6
 // inline, harden included; "received-review"/"commit-fixes" are conditional-only and never
-// appear in ship.steps[]/CanonicalSteps, so they cannot be exercised via
+// appear in ship.steps/CanonicalSteps, so they cannot be exercised via
 // config here).
 func TestShipPrepare_StepScaffold_AllCanonicalSteps(t *testing.T) {
 	dir := t.TempDir()
@@ -144,12 +144,12 @@ func TestShipPrepare_StepScaffold_AllCanonicalSteps(t *testing.T) {
 	gitCommit(t, dir, "initial")
 	checkoutBranch(t, dir, "feat/all-canonical-steps")
 
-	stepsJSON, err := json.Marshal(shipmeta.CanonicalSteps)
-	if err != nil {
-		t.Fatalf("marshal CanonicalSteps: %v", err)
+	var tbl strings.Builder
+	tbl.WriteString("[ship.steps]\n")
+	for _, name := range shipmeta.CanonicalSteps {
+		fmt.Fprintf(&tbl, "%s = true\n", name)
 	}
-	writeFile(t, filepath.Join(dir, ".sdlc-v2", "local.toml"),
-		fmt.Sprintf("[ship]\nsteps = %s\n", stepsJSON))
+	writeFile(t, filepath.Join(dir, ".sdlc-v2", "local.toml"), tbl.String())
 
 	out, err := shipPrepare(dir, dir, ShipPrepareIn{
 		SkipConfigCheck: true,
@@ -246,17 +246,23 @@ func TestShipPrepare_NoSessionID(t *testing.T) {
 	}
 }
 
-// TestShipPrepare_StepsFromConfig verifies that ship.steps[] configured in
-// .sdlc-v2/local.toml is picked up with Sources["steps"] == "config" (ship is
-// not a project section, so its config lives in local.toml, not config.toml).
+// TestShipPrepare_StepsFromConfig verifies that a [ship.steps] table
+// configured in .sdlc-v2/local.toml is picked up with Sources["steps"] ==
+// "config" (ship is not a project section, so its config lives in
+// local.toml, not config.toml).
 func TestShipPrepare_StepsFromConfig(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 	checkoutBranch(t, dir, "feat/config-steps")
 
-	writeFile(t, filepath.Join(dir, paths.DataDir, "local.toml"), `[ship]
-steps = ["commit", "review"]
+	writeFile(t, filepath.Join(dir, paths.DataDir, "local.toml"), `[ship.steps]
+commit = true
+review = true
+execute = false
+archive-openspec = false
+pr = false
+learnings-commit = false
 `)
 
 	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true})
@@ -441,7 +447,7 @@ func TestShipPushGateBaseBranch(t *testing.T) {
 		if domainErr.Msg != wantMsg {
 			t.Errorf("Msg = %q, want %q", domainErr.Msg, wantMsg)
 		}
-		wantSuggestion := "Switch to a feature branch, or remove \"pr\" from --steps/ship.steps[] if you don't intend to push."
+		wantSuggestion := "Switch to a feature branch, or remove \"pr\" from --steps/ship.steps if you don't intend to push."
 		if domainErr.Suggestion != wantSuggestion {
 			t.Errorf("Suggestion = %q, want %q", domainErr.Suggestion, wantSuggestion)
 		}
@@ -675,7 +681,7 @@ func TestShipPrepare_InvalidReviewThreshold(t *testing.T) {
 			gitCommit(t, dir, "initial")
 			checkoutBranch(t, dir, "feat/threshold-"+tc.name)
 			writeFile(t, filepath.Join(dir, ".sdlc-v2", "local.toml"),
-				"[ship]\nsteps = [\"commit\", \"pr\"]\n"+tc.config+"\n")
+				"[ship]\nsteps = { commit = true, pr = true, execute = false, review = false, archive-openspec = false, learnings-commit = false }\n"+tc.config+"\n")
 
 			out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true})
 			if err != nil {
@@ -742,7 +748,7 @@ func TestShipPrepare_InvalidStep(t *testing.T) {
 
 // TestShipPrepare_ConditionalStepRejected verifies that the conditional
 // steps "received-review" and "commit-fixes" are a hard error from every
-// source — config ship.steps[], config ship.quick[] and --steps — and never
+// source — config ship.steps, config ship.quick and --steps — and never
 // a warning. Before the fix a config-sourced conditional step only warned,
 // and ship_prepare seeded it as a "tracked" state entry that nothing ever
 // dispatches.
@@ -758,24 +764,24 @@ func TestShipPrepare_ConditionalStepRejected(t *testing.T) {
 		{
 			name:    "config steps received-review",
 			step:    "received-review",
-			config:  "[ship]\nsteps = [\"commit\", \"received-review\"]\n",
+			config:  "[ship.steps]\nreceived-review = true\n",
 			wantSrc: "config",
-			label:   "steps[]",
+			label:   "ship.steps",
 		},
 		{
 			name:    "config steps commit-fixes",
 			step:    "commit-fixes",
-			config:  "[ship]\nsteps = [\"commit\", \"commit-fixes\"]\n",
+			config:  "[ship.steps]\ncommit-fixes = true\n",
 			wantSrc: "config",
-			label:   "steps[]",
+			label:   "ship.steps",
 		},
 		{
 			name:    "config quick received-review",
 			step:    "received-review",
-			config:  "[ship]\nquick = [\"commit\", \"received-review\"]\n",
+			config:  "[ship.quick]\ncommit = true\nreceived-review = true\n",
 			in:      ShipPrepareIn{Quick: true},
 			wantSrc: "quick",
-			label:   "steps[]",
+			label:   "ship.quick",
 		},
 		{
 			name:    "cli commit-fixes",
@@ -834,6 +840,231 @@ func TestShipPrepare_ConditionalStepRejected(t *testing.T) {
 			}
 		})
 	}
+}
+
+// shipPrepareWithLocal runs shipPrepare in a fresh git fixture on a feature
+// branch, with localToml (when non-empty) written to .sdlc-v2/local.toml.
+func shipPrepareWithLocal(t *testing.T, branch, localToml string, in ShipPrepareIn) ShipPrepareOut {
+	t.Helper()
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, branch)
+	if localToml != "" {
+		writeFile(t, filepath.Join(dir, paths.DataDir, "local.toml"), localToml)
+	}
+	in.SkipConfigCheck = true
+	out, err := shipPrepare(dir, dir, in)
+	if err != nil {
+		t.Fatalf("shipPrepare: %v", err)
+	}
+	return out
+}
+
+// errorsContaining returns the entries of errs that contain substr.
+func errorsContaining(errs []string, substr string) []string {
+	var hits []string
+	for _, e := range errs {
+		if strings.Contains(e, substr) {
+			hits = append(hits, e)
+		}
+	}
+	return hits
+}
+
+// TestShipPrepare_StepTableDefaults verifies that a [ship.steps] table only
+// turns steps on or off relative to the built-in defaults: harden = true
+// gives the default steps plus harden, in the fixed pipeline order (harden
+// after archive-openspec). flags.steps in the state file stays a JSON array of
+// strings.
+func TestShipPrepare_StepTableDefaults(t *testing.T) {
+	out := shipPrepareWithLocal(t, "feat/step-table-defaults", "[ship.steps]\nharden = true\n", ShipPrepareIn{})
+	if len(out.Errors) != 0 {
+		t.Fatalf("Errors = %v, want empty", out.Errors)
+	}
+	want := []string{"execute", "commit", "review", "archive-openspec", "harden", "pr", "learnings-commit"}
+	got, _ := out.Flags["steps"].([]string)
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("Flags[steps] = %v, want %v", out.Flags["steps"], want)
+	}
+	if src := out.Sources["steps"]; src != "config" {
+		t.Errorf("Sources[steps] = %q, want %q", src, "config")
+	}
+
+	raw, err := os.ReadFile(out.StateFile)
+	if err != nil {
+		t.Fatalf("read state file: %v", err)
+	}
+	var data struct {
+		Flags struct {
+			Steps []string `json:"steps"`
+		} `json:"flags"`
+	}
+	if err := json.Unmarshal(raw, &data); err != nil {
+		t.Fatalf("state flags.steps is not a JSON array of strings: %v", err)
+	}
+	if strings.Join(data.Flags.Steps, ",") != strings.Join(want, ",") {
+		t.Errorf("state flags.steps = %v, want %v", data.Flags.Steps, want)
+	}
+}
+
+// TestShipPrepare_StepsCLIOrderIgnored verifies that --steps is sorted into
+// the fixed pipeline order, whatever order the caller wrote.
+func TestShipPrepare_StepsCLIOrderIgnored(t *testing.T) {
+	out := shipPrepareWithLocal(t, "feat/steps-cli-order", "", ShipPrepareIn{Steps: []string{"pr", "review", "commit"}})
+	if len(out.Errors) != 0 {
+		t.Fatalf("Errors = %v, want empty", out.Errors)
+	}
+	got, _ := out.Flags["steps"].([]string)
+	if strings.Join(got, ",") != "commit,review,pr" {
+		t.Errorf("Flags[steps] = %v, want [commit review pr]", out.Flags["steps"])
+	}
+	if src := out.Sources["steps"]; src != "cli" {
+		t.Errorf("Sources[steps] = %q, want %q", src, "cli")
+	}
+}
+
+// TestShipPrepare_OldStepListRejected verifies that the old list shape of
+// ship.steps and ship.quick is an error that names the table to use instead.
+func TestShipPrepare_OldStepListRejected(t *testing.T) {
+	cases := []struct {
+		name, config, want string
+	}{
+		{
+			name:   "steps",
+			config: "[ship]\nsteps = [\"commit\", \"review\"]\n",
+			want: "ship.steps in .sdlc-v2/local.toml (or ~/.sdlc/local.toml) uses the old list shape (steps = [...]). " +
+				"The plugin now fixes the step order, so each step is an on/off flag. " +
+				"Replace the list with a [ship.steps] table, for example: [ship.steps] harden = true. " +
+				"Run /setup --only ship to rewrite it.",
+		},
+		{
+			name:   "quick",
+			config: "[ship]\nquick = [\"commit\", \"review\"]\n",
+			want: "ship.quick in .sdlc-v2/local.toml (or ~/.sdlc/local.toml) uses the old list shape (quick = [...]). " +
+				"The plugin now fixes the step order, so each step is an on/off flag. " +
+				"Replace the list with a [ship.quick] table, for example: [ship.quick] harden = true. " +
+				"Run /setup --only ship to rewrite it.",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := shipPrepareWithLocal(t, "feat/old-list-"+tc.name, tc.config, ShipPrepareIn{})
+			if !sliceContainsStr(out.Errors, tc.want) {
+				t.Errorf("Errors = %v, want it to contain %q", out.Errors, tc.want)
+			}
+			if out.StateFile != "" {
+				t.Errorf("StateFile = %q, want empty (validation errors block state init)", out.StateFile)
+			}
+		})
+	}
+}
+
+// TestShipPrepare_StepTableNonBool verifies that a non-bool step value is an
+// error that names the key and the value.
+func TestShipPrepare_StepTableNonBool(t *testing.T) {
+	out := shipPrepareWithLocal(t, "feat/step-table-non-bool", "[ship.steps]\nharden = \"yes\"\n", ShipPrepareIn{})
+	want := `ship.steps.harden must be true or false, got "yes". Set it to true or false in [ship.steps].`
+	if !sliceContainsStr(out.Errors, want) {
+		t.Errorf("Errors = %v, want it to contain %q", out.Errors, want)
+	}
+}
+
+// TestShipPrepare_StepsScalarRejected verifies that a scalar ship.steps value
+// is an error that names its type.
+func TestShipPrepare_StepsScalarRejected(t *testing.T) {
+	out := shipPrepareWithLocal(t, "feat/steps-scalar", "[ship]\nsteps = \"harden\"\n", ShipPrepareIn{})
+	want := "ship.steps must be a [ship.steps] table of true/false values, got string. Run /setup --only ship to rewrite it."
+	if !sliceContainsStr(out.Errors, want) {
+		t.Errorf("Errors = %v, want it to contain %q", out.Errors, want)
+	}
+}
+
+// TestShipStepConfigErrors_ScalarTypeNames verifies that every kind of scalar
+// value of ship.steps or ship.quick names its TOML type in the error, that a
+// table value gives no error, and that a missing key gives no error.
+func TestShipStepConfigErrors_ScalarTypeNames(t *testing.T) {
+	cases := []struct {
+		name     string
+		value    any
+		wantType string
+	}{
+		{name: "string", value: "harden", wantType: "string"},
+		{name: "boolean", value: true, wantType: "boolean"},
+		{name: "int", value: 3, wantType: "integer"},
+		{name: "int64", value: int64(3), wantType: "integer"},
+		{name: "float64", value: 1.5, wantType: "float"},
+		{name: "other type", value: map[string]string{}, wantType: "map[string]string"},
+	}
+	for _, key := range []string{"steps", "quick"} {
+		for _, tc := range cases {
+			t.Run(key+"/"+tc.name, func(t *testing.T) {
+				want := fmt.Sprintf("ship.%[1]s must be a [ship.%[1]s] table of true/false values, got %[2]s. Run /setup --only ship to rewrite it.", key, tc.wantType)
+				got := shipStepConfigErrors(map[string]any{key: tc.value}, nil)
+				if len(got) != 1 || got[0] != want {
+					t.Errorf("shipStepConfigErrors = %q, want [%q]", got, want)
+				}
+			})
+		}
+	}
+	if got := shipStepConfigErrors(map[string]any{"steps": map[string]any{"harden": true}, "quick": map[string]any{}}, nil); len(got) != 0 {
+		t.Errorf("table values: shipStepConfigErrors = %q, want none", got)
+	}
+	if got := shipStepConfigErrors(map[string]any{}, nil); len(got) != 0 {
+		t.Errorf("no keys: shipStepConfigErrors = %q, want none", got)
+	}
+}
+
+// TestShipPrepare_StepsCLIDuplicate verifies that a --steps name listed
+// twice is reported once as an error.
+func TestShipPrepare_StepsCLIDuplicate(t *testing.T) {
+	out := shipPrepareWithLocal(t, "feat/steps-cli-duplicate", "", ShipPrepareIn{Steps: []string{"review", "review"}})
+	want := `--steps lists "review" more than once. List each step once. The order does not matter.`
+	if got := errorsContaining(out.Errors, "more than once"); len(got) != 1 || got[0] != want {
+		t.Errorf("Errors = %v, want exactly one %q", out.Errors, want)
+	}
+}
+
+// TestShipPrepare_StepTableUnknownKey verifies that a key below [ship.steps]
+// that is not a step name is an error. A [ship] key written after the
+// [ship.steps] header lands in that table, so the message says to move it.
+func TestShipPrepare_StepTableUnknownKey(t *testing.T) {
+	out := shipPrepareWithLocal(t, "feat/step-table-unknown", "[ship.steps]\ndraft = false\n", ShipPrepareIn{})
+	want := `ship.steps has an unknown key "draft". Every key below the [ship.steps] header belongs to that table. Move other [ship] keys above the header.`
+	if !sliceContainsStr(out.Errors, want) {
+		t.Errorf("Errors = %v, want it to contain %q", out.Errors, want)
+	}
+}
+
+// TestShipPrepare_QuickTable verifies that --quick runs the steps set to true
+// in [ship.quick], that a missing quick table gives the "No quick profile
+// defined" error, and that a non-bool quick value names ship.quick.<step>.
+func TestShipPrepare_QuickTable(t *testing.T) {
+	t.Run("two steps", func(t *testing.T) {
+		out := shipPrepareWithLocal(t, "feat/quick-two", "[ship.quick]\nexecute = true\nreview = true\n", ShipPrepareIn{Quick: true})
+		if len(out.Errors) != 0 {
+			t.Fatalf("Errors = %v, want empty", out.Errors)
+		}
+		got, _ := out.Flags["steps"].([]string)
+		if strings.Join(got, ",") != "execute,review" {
+			t.Errorf("Flags[steps] = %v, want [execute review]", out.Flags["steps"])
+		}
+		if src := out.Sources["steps"]; src != "quick" {
+			t.Errorf("Sources[steps] = %q, want %q", src, "quick")
+		}
+	})
+	t.Run("no quick table", func(t *testing.T) {
+		out := shipPrepareWithLocal(t, "feat/quick-none", "", ShipPrepareIn{Quick: true})
+		if len(errorsContaining(out.Errors, "No quick profile defined")) != 1 {
+			t.Errorf("Errors = %v, want a %q error", out.Errors, "No quick profile defined")
+		}
+	})
+	t.Run("non-bool value", func(t *testing.T) {
+		out := shipPrepareWithLocal(t, "feat/quick-non-bool", "[ship.quick]\nexecute = \"yes\"\n", ShipPrepareIn{Quick: true})
+		if len(errorsContaining(out.Errors, "ship.quick.execute")) != 1 {
+			t.Errorf("Errors = %v, want one error naming %q", out.Errors, "ship.quick.execute")
+		}
+	})
 }
 
 // TestShipPrepare_BumpWithoutPRStep verifies that a CLI-supplied --bump is
@@ -1377,7 +1608,7 @@ func TestShipGC_StaleConfigRequiresSetup(t *testing.T) {
 // the source as "config (version.preReleasePolicy)".
 func TestMergeShipFlags_PreReleasePolicyAlwaysRC(t *testing.T) {
 	versionCfg := map[string]any{"preReleasePolicy": "always-rc"}
-	merged, sources := mergeShipFlags(ShipPrepareIn{}, map[string]any{}, versionCfg)
+	merged, sources, _ := mergeShipFlags(ShipPrepareIn{}, map[string]any{}, versionCfg)
 
 	if b, ok := merged["bump"].(string); !ok || b != "rc" {
 		t.Errorf("Flags[bump] = %v, want %q (overridden by preReleasePolicy)", merged["bump"], "rc")
@@ -1392,7 +1623,7 @@ func TestMergeShipFlags_PreReleasePolicyAlwaysRC(t *testing.T) {
 // (continue-rc enforcement is deferred to pr_prepare diagnostics only).
 func TestMergeShipFlags_PreReleasePolicyContinueRC_NoOverride(t *testing.T) {
 	versionCfg := map[string]any{"preReleasePolicy": "continue-rc"}
-	merged, sources := mergeShipFlags(ShipPrepareIn{}, map[string]any{}, versionCfg)
+	merged, sources, _ := mergeShipFlags(ShipPrepareIn{}, map[string]any{}, versionCfg)
 
 	// Should resolve to the default bump (patch), not rc.
 	if b, ok := merged["bump"].(string); !ok || b != "patch" {
@@ -1411,7 +1642,7 @@ func TestMergeShipFlags_ExplicitPreReleaseTakesPrecedenceOverPolicy(t *testing.T
 		"preRelease":       "rc",
 		"preReleasePolicy": "always-rc",
 	}
-	merged, sources := mergeShipFlags(ShipPrepareIn{}, map[string]any{}, versionCfg)
+	merged, sources, _ := mergeShipFlags(ShipPrepareIn{}, map[string]any{}, versionCfg)
 
 	if b, ok := merged["bump"].(string); !ok || b != "rc" {
 		t.Errorf("Flags[bump] = %v, want %q", merged["bump"], "rc")
@@ -1428,7 +1659,7 @@ func TestMergeShipFlags_ExplicitPreReleaseTakesPrecedenceOverPolicy(t *testing.T
 // to "rc" and records the source as enforced-over-cli.
 func TestMergeShipFlags_PreReleasePolicyAlwaysRC_OverridesCLI(t *testing.T) {
 	versionCfg := map[string]any{"preReleasePolicy": "always-rc"}
-	merged, sources := mergeShipFlags(ShipPrepareIn{Bump: "patch"}, map[string]any{}, versionCfg)
+	merged, sources, _ := mergeShipFlags(ShipPrepareIn{Bump: "patch"}, map[string]any{}, versionCfg)
 
 	if b, ok := merged["bump"].(string); !ok || b != "rc" {
 		t.Errorf("Flags[bump] = %v, want %q (overridden by preReleasePolicy over cli)", merged["bump"], "rc")
@@ -1443,7 +1674,7 @@ func TestMergeShipFlags_PreReleasePolicyAlwaysRC_OverridesCLI(t *testing.T) {
 // explicit CLI --bump was supplied, same as "always-rc" would.
 func TestMergeShipFlags_PreReleasePolicyDefaultRC_NoCLI(t *testing.T) {
 	versionCfg := map[string]any{"preReleasePolicy": "default-rc"}
-	merged, sources := mergeShipFlags(ShipPrepareIn{}, map[string]any{}, versionCfg)
+	merged, sources, _ := mergeShipFlags(ShipPrepareIn{}, map[string]any{}, versionCfg)
 
 	if b, ok := merged["bump"].(string); !ok || b != "rc" {
 		t.Errorf("Flags[bump] = %v, want %q (overridden by default-rc)", merged["bump"], "rc")
@@ -1458,7 +1689,7 @@ func TestMergeShipFlags_PreReleasePolicyDefaultRC_NoCLI(t *testing.T) {
 // (CLI wins under default-rc, unlike always-rc).
 func TestMergeShipFlags_PreReleasePolicyDefaultRC_CLIOverrides(t *testing.T) {
 	versionCfg := map[string]any{"preReleasePolicy": "default-rc"}
-	merged, sources := mergeShipFlags(ShipPrepareIn{Bump: "patch"}, map[string]any{}, versionCfg)
+	merged, sources, _ := mergeShipFlags(ShipPrepareIn{Bump: "patch"}, map[string]any{}, versionCfg)
 
 	if b, ok := merged["bump"].(string); !ok || b != "patch" {
 		t.Errorf("Flags[bump] = %v, want %q (default-rc must not override an explicit cli bump)", merged["bump"], "patch")
@@ -1472,7 +1703,7 @@ func TestMergeShipFlags_PreReleasePolicyDefaultRC_CLIOverrides(t *testing.T) {
 // preReleasePolicy: "default-rc" leaves an explicit CLI --bump minor alone.
 func TestMergeShipFlags_PreReleasePolicyDefaultRC_CLIMinor(t *testing.T) {
 	versionCfg := map[string]any{"preReleasePolicy": "default-rc"}
-	merged, sources := mergeShipFlags(ShipPrepareIn{Bump: "minor"}, map[string]any{}, versionCfg)
+	merged, sources, _ := mergeShipFlags(ShipPrepareIn{Bump: "minor"}, map[string]any{}, versionCfg)
 
 	if b, ok := merged["bump"].(string); !ok || b != "minor" {
 		t.Errorf("Flags[bump] = %v, want %q (default-rc must not override an explicit cli bump)", merged["bump"], "minor")
@@ -1488,7 +1719,7 @@ func TestMergeShipFlags_PreReleasePolicyDefaultRC_CLIMinor(t *testing.T) {
 // --wave-timeout/--wave-interval computed from the merged flags.
 func TestMergeShipFlags_ExecuteDispatchArgs_QualityAbsent(t *testing.T) {
 	cfg := map[string]any{"executeWaveTimeout": 900, "executeWaveInterval": 30}
-	merged, _ := mergeShipFlags(ShipPrepareIn{}, cfg, map[string]any{})
+	merged, _, _ := mergeShipFlags(ShipPrepareIn{}, cfg, map[string]any{})
 
 	want := "--wave-timeout 900 --wave-interval 30"
 	if got, _ := merged["executeDispatchArgs"].(string); got != want {
@@ -1501,7 +1732,7 @@ func TestMergeShipFlags_ExecuteDispatchArgs_QualityAbsent(t *testing.T) {
 // "--quality <value>" ahead of the wave-timeout/wave-interval flags.
 func TestMergeShipFlags_ExecuteDispatchArgs_QualityPresent(t *testing.T) {
 	cfg := map[string]any{"executeWaveTimeout": 900, "executeWaveInterval": 30}
-	merged, _ := mergeShipFlags(ShipPrepareIn{Quality: "full"}, cfg, map[string]any{})
+	merged, _, _ := mergeShipFlags(ShipPrepareIn{Quality: "full"}, cfg, map[string]any{})
 
 	want := "--quality full --wave-timeout 900 --wave-interval 30"
 	if got, _ := merged["executeDispatchArgs"].(string); got != want {
@@ -1514,7 +1745,7 @@ func TestMergeShipFlags_ExecuteDispatchArgs_QualityPresent(t *testing.T) {
 // ship.execute.commitWaves forwards no --commit-waves flag at all —
 // execute's own top-level execute.commitWaves config must decide instead.
 func TestMergeShipFlags_CommitWaves_DefaultTrueNotForwarded(t *testing.T) {
-	merged, sources := mergeShipFlags(ShipPrepareIn{}, map[string]any{}, map[string]any{})
+	merged, sources, _ := mergeShipFlags(ShipPrepareIn{}, map[string]any{}, map[string]any{})
 
 	if v, _ := merged["executeCommitWaves"].(bool); !v {
 		t.Errorf("Flags[executeCommitWaves] = %v, want true", merged["executeCommitWaves"])
@@ -1532,7 +1763,7 @@ func TestMergeShipFlags_CommitWaves_DefaultTrueNotForwarded(t *testing.T) {
 // and forwarded as --commit-waves in executeDispatchArgs.
 func TestMergeShipFlags_CommitWaves_ConfigForwarded(t *testing.T) {
 	cfg := map[string]any{"execute": map[string]any{"commitWaves": false}}
-	merged, sources := mergeShipFlags(ShipPrepareIn{}, cfg, map[string]any{})
+	merged, sources, _ := mergeShipFlags(ShipPrepareIn{}, cfg, map[string]any{})
 
 	if v, _ := merged["executeCommitWaves"].(bool); v {
 		t.Errorf("Flags[executeCommitWaves] = %v, want false", merged["executeCommitWaves"])
@@ -1552,7 +1783,7 @@ func TestMergeShipFlags_CommitWaves_ConfigForwarded(t *testing.T) {
 // forwarded to execute.
 func TestMergeShipFlags_CommitWaves_InvalidType(t *testing.T) {
 	cfg := map[string]any{"execute": map[string]any{"commitWaves": "nope"}}
-	merged, sources := mergeShipFlags(ShipPrepareIn{}, cfg, map[string]any{})
+	merged, sources, _ := mergeShipFlags(ShipPrepareIn{}, cfg, map[string]any{})
 
 	if v, _ := merged["executeCommitWaves"].(bool); !v {
 		t.Errorf("Flags[executeCommitWaves] = %v, want true", merged["executeCommitWaves"])
@@ -1616,7 +1847,7 @@ func TestMergeShipFlags_ReviewThreshold_ConfigOverDefault(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			merged, sources := mergeShipFlags(ShipPrepareIn{}, tc.cfg, map[string]any{})
+			merged, sources, _ := mergeShipFlags(ShipPrepareIn{}, tc.cfg, map[string]any{})
 			if got, _ := merged["reviewThreshold"].(string); got != tc.wantValue {
 				t.Errorf("Flags[reviewThreshold] = %q, want %q", got, tc.wantValue)
 			}

@@ -218,25 +218,25 @@ func TestFieldOptions_AcceptedBySchema(t *testing.T) {
 	}
 }
 
-// TestReviewMaxDimensionsSchemaMatchesField pins that the review.maxDimensions
-// setup field and its JSON schema property stay in sync on type, minimum,
-// and default. TestFieldOptions_AcceptedBySchema above only compares
-// enum/multi-enum fields against the schema, so a "number" field like this
-// one needs its own guard against drift.
-func TestReviewMaxDimensionsSchemaMatchesField(t *testing.T) {
+// TestReviewMaxParallelDimensionsSchemaMatchesField pins that the
+// review.maxParallelDimensions setup field and its JSON schema property stay
+// in sync on type, minimum, and default. TestFieldOptions_AcceptedBySchema
+// above only compares enum/multi-enum fields against the schema, so a "number"
+// field like this one needs its own guard against drift.
+func TestReviewMaxParallelDimensionsSchemaMatchesField(t *testing.T) {
 	var field *Field
 	for _, section := range Sections() {
 		if section.ID != "review" {
 			continue
 		}
 		for i := range section.Fields {
-			if section.Fields[i].Name == "maxDimensions" {
+			if section.Fields[i].Name == "maxParallelDimensions" {
 				field = &section.Fields[i]
 			}
 		}
 	}
 	if field == nil {
-		t.Fatal("review section has no maxDimensions field")
+		t.Fatal("review section has no maxParallelDimensions field")
 	}
 	if field.Type != "number" {
 		t.Errorf("field.Type = %q, want %q", field.Type, "number")
@@ -250,9 +250,9 @@ func TestReviewMaxDimensionsSchemaMatchesField(t *testing.T) {
 
 	doc := loadRawSchema(t, "sdlc-local.schema.json")
 	root := map[string]interface{}{"properties": doc["properties"]}
-	node := schemaNodeFromNode(doc, root, "review.maxDimensions")
+	node := schemaNodeFromNode(doc, root, "review.maxParallelDimensions")
 	if node == nil {
-		t.Fatal("schema has no property at review.maxDimensions")
+		t.Fatal("schema has no property at review.maxParallelDimensions")
 	}
 	if node["type"] != "integer" {
 		t.Errorf("schema type = %v, want %q", node["type"], "integer")

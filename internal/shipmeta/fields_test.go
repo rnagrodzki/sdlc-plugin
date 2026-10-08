@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"testing"
 )
 
@@ -27,6 +28,121 @@ func TestInitialShipStepsFromConfig_OrderAndKind(t *testing.T) {
 	got := InitialShipStepsFromConfig(in)
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("InitialShipStepsFromConfig(%v) = %#v, want %#v", in, got, want)
+	}
+}
+
+// orderB is the fixed pipeline order: harden runs after archive-openspec.
+var orderB = []string{
+	"execute", "commit", "review", "verify-openspec", "archive-openspec",
+	"harden", "pr", "verify-pipeline", "await-remote-review",
+	"learnings-commit",
+}
+
+// TestOrderSteps verifies that OrderSteps sorts names into CanonicalSteps
+// order (harden after archive-openspec), puts unknown names last in input order, and returns an
+// empty, non-nil slice for nil input.
+func TestOrderSteps(t *testing.T) {
+	if !reflect.DeepEqual(CanonicalSteps, orderB) {
+		t.Fatalf("CanonicalSteps = %v, want order B %v", CanonicalSteps, orderB)
+	}
+
+	reversed := slices.Clone(orderB)
+	slices.Reverse(reversed)
+	cases := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{name: "order B", in: reversed, want: orderB},
+		{name: "subset", in: []string{"pr", "harden", "archive-openspec", "commit"}, want: []string{"commit", "archive-openspec", "harden", "pr"}},
+		{name: "unknown names last", in: []string{"zeta", "pr", "alpha", "execute"}, want: []string{"execute", "pr", "zeta", "alpha"}},
+		{name: "nil gives empty", in: nil, want: []string{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := OrderSteps(tc.in)
+			if got == nil {
+				t.Fatal("OrderSteps returned nil, want a non-nil slice")
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("OrderSteps(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestResolveStepTable verifies how a [ship.steps]-style table resolves
+// against the defaults, and which keys and values give problems.
+func TestResolveStepTable(t *testing.T) {
+	defaults := []string{"execute", "commit", "review", "pr"}
+	cases := []struct {
+		name         string
+		table        map[string]any
+		defaults     []string
+		label        string
+		wantSteps    []string
+		wantProblems []string
+	}{
+		{
+			name:      "defaults fill",
+			table:     map[string]any{"harden": true},
+			defaults:  defaults,
+			label:     "ship.steps",
+			wantSteps: []string{"execute", "commit", "review", "harden", "pr"},
+		},
+		{
+			name:      "false removes a default",
+			table:     map[string]any{"review": false},
+			defaults:  defaults,
+			label:     "ship.steps",
+			wantSteps: []string{"execute", "commit", "pr"},
+		},
+		{
+			name:      "sorted keys, fixed order",
+			table:     map[string]any{"pr": true, "learnings-commit": true, "execute": true, "harden": true},
+			label:     "ship.quick",
+			wantSteps: []string{"execute", "harden", "pr", "learnings-commit"},
+		},
+		{
+			name:         "non-bool",
+			table:        map[string]any{"harden": "yes", "review": int64(1)},
+			defaults:     defaults,
+			label:        "ship.steps",
+			wantSteps:    defaults,
+			wantProblems: []string{`ship.steps.harden must be true or false, got "yes". Set it to true or false in [ship.steps].`, `ship.steps.review must be true or false, got 1. Set it to true or false in [ship.steps].`},
+		},
+		{
+			name:         "unknown key",
+			table:        map[string]any{"draft": false, "commit": true},
+			label:        "ship.quick",
+			wantSteps:    []string{"commit"},
+			wantProblems: []string{`ship.quick has an unknown key "draft". Every key below the [ship.quick] header belongs to that table. Move other [ship] keys above the header.`},
+		},
+		{
+			name:      "conditional key true kept",
+			table:     map[string]any{"received-review": true},
+			defaults:  defaults,
+			label:     "ship.steps",
+			wantSteps: []string{"execute", "commit", "review", "pr", "received-review"},
+		},
+		{
+			name:      "conditional key false ignored",
+			table:     map[string]any{"commit-fixes": false},
+			defaults:  defaults,
+			label:     "ship.steps",
+			wantSteps: defaults,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			steps, problems := ResolveStepTable(tc.table, tc.defaults, tc.label)
+			if !reflect.DeepEqual(steps, tc.wantSteps) {
+				t.Errorf("steps = %v, want %v", steps, tc.wantSteps)
+			}
+			if len(problems) != len(tc.wantProblems) || (len(problems) > 0 && !reflect.DeepEqual(problems, tc.wantProblems)) {
+				t.Errorf("problems = %q, want %q", problems, tc.wantProblems)
+			}
+		})
 	}
 }
 
@@ -171,7 +287,7 @@ func TestTrackedShipSteps_MatchesInitialShipSteps(t *testing.T) {
 // TestShipStepNameEnum_CoversCanonicalSteps proves
 // plugins/sdlc/schemas/ship-state.schema.json's steps[].items.properties.name
 // enum is a superset of CanonicalSteps — every step InitialShipStepsFromConfig
-// can be asked to seed from a valid ship.steps[] config must validate.
+// can be asked to seed from a valid ship.steps config must validate.
 // Enforced here, by test, not by generation (mirrors
 // TestMaxWaveTimeoutSecondsMatchesSchema's convention above).
 func TestShipStepNameEnum_CoversCanonicalSteps(t *testing.T) {
