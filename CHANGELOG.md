@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.5] - 2026-10-08
+
+### RC 1
+
+- Promote workflow: a bump level above the RC series now prints a NOTICE and ships the RC commit under the higher version. A level below the series fails and names the level to use. "Nothing to promote" now says how to continue.
+- Review runs its dimensions in waves of review.maxParallelDimensions instead of capping the number of dimensions. Review and ship now name every worker that could not be stopped.
+- Ship steps and quick profile are on/off tables with a fixed step order. Harden runs after archive-openspec.
+- BREAKING: ship.steps and ship.quick change from lists to tables. An old list fails ship_prepare with an error that points to /setup --only ship.
+- BREAKING: review.maxDimensions is renamed to review.maxParallelDimensions. The old key fails review_prepare with an error that names the new key.
+- New guardrails, review dimensions and Copilot instructions cover no-op outcomes, worker cleanup, jump routes, config key combinations and template comments.
+
 ## [0.3.4] - 2026-10-08
 
 ### RC 1
