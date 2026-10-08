@@ -1027,9 +1027,29 @@ match within that function. Duplicate checks hide the real validation \
 logic and diverge when one copy is updated but not the other."""
 
 [execute.guardrails.skill-prose-source-verification-2]
-description = "Before marking a task done that modifies a SKILL.md, verify all prose claims about tool behavior, dispatch scaffolds, and schema validation by direct source-reading. When prose enumerates a struct's fields (return shapes, output fields, state structure), confirm every exported field in the Go struct appears in the prose. When prose claims absence (field not included, Port Notes not recorded), grep to verify the claim. When prose states a count or tier number for any set of values (an enum tag, a const block, a config-source or precedence chain), count the actual values in the Go source and confirm the stated number matches. Do not rely on build/test success as evidence."
+description = "Before marking a task done that modifies a SKILL.md, state-format.md, config-format.md, or docs/skills/*.md, verify all prose claims about tool behavior, dispatch scaffolds, and schema validation by direct source-reading. When prose enumerates a struct's fields (return shapes, output fields, state structure), confirm every exported field in the Go struct appears in the prose. When prose claims absence (field not included, Port Notes not recorded), grep to verify the claim. When prose states a count or tier number for any set of values (an enum tag, a const block, a config-source or precedence chain), count the actual values in the Go source and confirm the stated number matches. When prose makes an exclusivity claim (only, sole) or an unconditional-sequence claim (always, every exit, every path), verify it by reading the full field-access set or all code paths. A claim that 'X is the only Y' needs every exported field in scope checked. Do not rely on build/test success as evidence."
 severity = 'error'
 
 [execute.guardrails.config-section-setup-discoverability-verified]
 description = "Before marking a task done that adds a new section ID to LocalSections (internal/config/config.go), grep internal/setupmeta/sections.go for that section ID. If it is absent, confirm that the section's user-facing documentation (docs/, a SKILL.md, or the config template comment) states that the section is hand-edited only and excluded from /setup. If the section is neither registered in setupmeta.Sections() nor documented as excluded, the task is incomplete. Some sections (e.g. executePrefs, workspace) are deliberately absent from setupmeta.Sections(), so absence alone is not a defect; an undocumented omission is."
+severity = 'error'
+
+[execute.guardrails.skill-prose-source-verification-3]
+description = 'When a reference document or SKILL.md describes a persisted row, record, or state snapshot written by multiple code paths, verify field-level parity across all writers. Identify all writers (primary and recovery/fallback paths) via grep. A documented row whose field set varies by writer must explicitly state per-writer differences in prose, or omission is a finding. All writers and their field sets must be enumerated in documentation.'
+severity = 'error'
+
+[plan.guardrails.skill-flow-soundness-2]
+description = 'When a plan task modifies a SKILL.md, the plan must check the routing inside each step. Routing bullets keyed on the same input must be mutually exclusive: walk the boundary states (last round, CRITICAL gate result, single-item batch) against every bullet, and exactly one bullet must match. When two or more routes write the same persisted record, every route must derive each field from the same named source, or the prose must name the route that wins on conflict. One call described in two places must carry the same arguments in both. A flow with overlapping routing bullets or a self-contradicting record is still a plan defect.'
+severity = 'error'
+
+[execute.guardrails.skill-flow-soundness-2]
+description = "Before marking done a task that modifies a SKILL.md, re-read each step's routing bullets from the current file and verify that exactly one bullet matches any input state: walk the boundary states (last round, CRITICAL gate result, single-item batch) against every bullet. Verify that each route writing the same persisted record derives every field from the same named source, or that the prose names the route that wins on conflict. Verify that one call described in two places carries the same arguments in both. Do not rely on the plan's narration as evidence."
+severity = 'error'
+
+[plan.guardrails.skill-flow-soundness-3]
+description = 'When a skill dispatches background workers or sub-agents, the results or final output step must explicitly disclose any worker that was missing (dispatch request sent, worker never reported in) or unterminated (stall or error occurred, worker cleanup was incomplete). List each such worker by its assigned name or task ID so the user sees which workers failed to arrive or complete. Do not omit or silently drop missing-worker rows from the output.'
+severity = 'error'
+
+[execute.guardrails.nested-stall-handler-gating-2]
+description = 'When a nested skill dispatches background workers or sub-agents, verify before marking a task done that the normal-completion cleanup step (Step 9 or equivalent) re-checks every worker and ends any worker still running, not only the stall handler and the error-recovery paths. Verify the results step names each worker that never reported in and each worker that cleanup could not end, so no worker is silently missing from the output. Verify every entry that dispatches the same workers carries the nested-dispatch TaskStop note, not only the first entry.'
 severity = 'error'
