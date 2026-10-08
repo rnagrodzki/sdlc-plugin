@@ -20,11 +20,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/setupmeta"
+	"github.com/rnagrodzki/sdlc-plugin/internal/shipmeta"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
 
@@ -63,7 +66,7 @@ type SetupWriteSectionsOut struct {
 // RegisterSetupWriteTools registers setup_write_sections on the server.
 func RegisterSetupWriteTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "setup_write_sections",
-		"INTERNAL — called by sdlc skills only. Writes real field-value data into one or more sdlc-v2 config sections (config.toml for project sections, local.toml for local sections), routing and validating via the same config.WriteSection primitive setup_init uses. Unlike setup_init (which writes the full config.toml/local.toml templates verbatim for the user to hand-edit), this accepts the actual assembled values collected during setup's per-section field loop. Git-tracked files (config.toml and the CI files scaffolded after a version write) go under the active git worktree, returned as root; local.toml goes under the main worktree, shared by all worktrees. With target \"user\", local sections go to the user-level file (~/.sdlc/local.toml or $SDLC_USER_CONFIG), outside every repository; a project section with target \"user\" is rejected and nothing is written. Each write changes only the lines of changed keys and keeps every comment line. Missing template tips are added back above their keys. If a section cannot be edited in place and the file has comments, that section is not written: errors gets \"section <id>: <reason>\" and next gets the hand-edit step. Other sections are still written.",
+		"INTERNAL — called by sdlc skills only. Writes real field-value data into one or more sdlc-v2 config sections (config.toml for project sections, local.toml for local sections), routing and validating via the same config.WriteSection primitive setup_init uses. Unlike setup_init (which writes the full config.toml/local.toml templates verbatim for the user to hand-edit), this accepts the actual assembled values collected during setup's per-section field loop. Git-tracked files (config.toml and the CI files scaffolded after a version write) go under the active git worktree, returned as root; local.toml goes under the main worktree, shared by all worktrees. With target \"user\", local sections go to the user-level file (~/.sdlc/local.toml or $SDLC_USER_CONFIG), outside every repository; a project section with target \"user\" is rejected and nothing is written. Each write changes only the lines of changed keys and keeps every comment line. Missing template tips are added back above their keys. A flag-set field (ship.steps, ship.quick) sent as an array of step names is stored as a table of every step set to true or false, and an old list line for that key is replaced. An unknown step name or a non-boolean value returns an error and nothing is written. If a section cannot be edited in place and the file has comments, that section is not written: errors gets \"section <id>: <reason>\" and next gets the hand-edit step. Other sections are still written.",
 		mcpserver.Annotations{
 			Title:       "Write SDLC config sections",
 			ReadOnly:    false,
@@ -128,6 +131,110 @@ func expandDottedKeys(flat map[string]any) map[string]any {
 		cur[parts[len(parts)-1]] = val
 	}
 	return out
+}
+
+// normalizeFlagSetFields converts each flag-set field answer in a section
+// from an array of selected names to a table of every option → bool.
+// A table answer passes through unchanged (no keys are added), after a
+// check that every value is a bool and every key is a known step.
+// An unknown name, a non-bool table value or a scalar answer returns a
+// DomainError. A JSON null answer stays in place: the write loop clears
+// the key. The section is found by matching sectionID to the ConfigPath
+// of a setupmeta section; an id with no match is left as it is. values is
+// changed in place.
+func normalizeFlagSetFields(sectionID string, values map[string]any) error {
+	if values == nil {
+		return nil
+	}
+	for _, sec := range setupmeta.Sections() {
+		if sec.ConfigPath != sectionID {
+			continue
+		}
+		for _, field := range sec.Fields {
+			if field.Type != "flag-set" {
+				continue
+			}
+			answer, present := values[field.Name]
+			if !present || answer == nil {
+				continue
+			}
+			path := sectionID + "." + field.Name
+			switch v := answer.(type) {
+			case []any:
+				selected := make(map[string]bool, len(v))
+				for _, item := range v {
+					name, isString := item.(string)
+					if !isString || !slices.Contains(field.Options, name) {
+						return unknownFlagSetNameError(path, flagSetValueText(item))
+					}
+					selected[name] = true
+				}
+				table := make(map[string]any, len(field.Options))
+				for _, option := range field.Options {
+					table[option] = selected[option]
+				}
+				values[field.Name] = table
+			case map[string]any:
+				keys := make([]string, 0, len(v))
+				for key := range v {
+					keys = append(keys, key)
+				}
+				sort.Strings(keys)
+				for _, key := range keys {
+					if !slices.Contains(field.Options, key) {
+						return unknownFlagSetNameError(path, fmt.Sprintf("%q", key))
+					}
+					if _, isBool := v[key].(bool); !isBool {
+						return &mcpserver.DomainError{
+							Msg:        fmt.Sprintf("%s.%s must be true or false, got %s.", path, key, flagSetValueText(v[key])),
+							Suggestion: "Send true or false for each step, or send an array of step names.",
+						}
+					}
+				}
+			default:
+				return &mcpserver.DomainError{
+					Msg:        fmt.Sprintf("%s answer must be an array of step names or a table of step → true/false, got %s.", path, flagSetTypeName(answer)),
+					Suggestion: "Send an array of step names, for example [\"execute\",\"review\"].",
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// unknownFlagSetNameError returns the DomainError for a flag-set answer that
+// names a step outside the canonical step list. quotedName is the offending
+// name, already quoted for the message.
+func unknownFlagSetNameError(path, quotedName string) error {
+	return &mcpserver.DomainError{
+		Msg:        fmt.Sprintf("%s answer has an unknown step %s.", path, quotedName),
+		Suggestion: fmt.Sprintf("Use only these names: %s.", strings.Join(shipmeta.CanonicalSteps, ", ")),
+	}
+}
+
+// flagSetValueText renders one JSON value of a flag-set answer for an error
+// message: a string is quoted, any other value is printed as is.
+func flagSetValueText(v any) string {
+	if s, ok := v.(string); ok {
+		return fmt.Sprintf("%q", s)
+	}
+	return fmt.Sprintf("%v", v)
+}
+
+// flagSetTypeName names the type of a decoded flag-set answer for an error
+// message. A string, bool or number gets its JSON type name. JSON decoding
+// gives no other scalar type, so any other value gets its Go type name.
+func flagSetTypeName(v any) string {
+	switch v.(type) {
+	case string:
+		return "string"
+	case bool:
+		return "bool"
+	case float64:
+		return "number"
+	default:
+		return fmt.Sprintf("%T", v)
+	}
 }
 
 // sectionFile names, for use in messages, the config file a section id is
@@ -257,6 +364,13 @@ func setupWriteSections(contentRoot, stateRoot string, in SetupWriteSectionsIn) 
 				Msg:        fmt.Sprintf("setup_write_sections: no user config path available (%s unset, no home directory found)", config.UserConfigPathEnv),
 				Suggestion: fmt.Sprintf("Set %s to a file path, or use target project.", config.UserConfigPathEnv),
 			}
+		}
+	}
+
+	// Convert flag-set answers before any write. A bad answer writes nothing.
+	for _, id := range ids {
+		if err := normalizeFlagSetFields(id, sections[id]); err != nil {
+			return SetupWriteSectionsOut{}, err
 		}
 	}
 

@@ -2190,6 +2190,8 @@ func TestJiraCachePhase(t *testing.T) {
 // Ship config phase
 // ---------------------------------------------------------------------------
 
+// TestShipConfigPhase pins the summary of a [ship] section that holds a steps
+// table, a preset, a skip list, a bump level and thresholds.
 func TestShipConfigPhase(t *testing.T) {
 	branch := "feat/ship-config"
 	root := gitFixture(t, branch)
@@ -2197,7 +2199,7 @@ func TestShipConfigPhase(t *testing.T) {
 	localPath := filepath.Join(root, paths.DataDir, "local.toml")
 	mustMkdirAll(t, filepath.Dir(localPath))
 	raw := "[ship]\n" +
-		"steps = [\"review\", \"commit\"]\n" +
+		"steps = { review = true, commit = true, execute = false, archive-openspec = false, pr = false, learnings-commit = false }\n" +
 		"preset = \"A\"\n" +
 		"skip = [\"docs\"]\n" +
 		"bump = \"minor\"\n" +
@@ -2205,7 +2207,37 @@ func TestShipConfigPhase(t *testing.T) {
 	mustWriteFile(t, localPath, raw)
 
 	assertLines(t, shipConfigPhase(), []string{
-		`Ship config: steps ["review","commit"], preset full, skip ["docs"], bump minor, threshold 80`,
+		`Ship config: steps ["commit","review"], preset full, skip ["docs"], bump minor, threshold 80`,
+	})
+}
+
+// TestShipConfigPhase_OldStepList pins that a ship.steps list (the old
+// shape) renders a pointer to /setup instead of the list.
+func TestShipConfigPhase_OldStepList(t *testing.T) {
+	branch := "feat/ship-config-old-list"
+	root := gitFixture(t, branch)
+
+	localPath := filepath.Join(root, paths.DataDir, "local.toml")
+	mustMkdirAll(t, filepath.Dir(localPath))
+	mustWriteFile(t, localPath, "[ship]\nsteps = [\"review\", \"commit\"]\n")
+
+	assertLines(t, shipConfigPhase(), []string{
+		`Ship config: steps (old list shape — run /setup --only ship)`,
+	})
+}
+
+// TestShipConfigPhase_StepTableDefaults pins that a step table starts from
+// the built-in step set and applies only the listed flags on top.
+func TestShipConfigPhase_StepTableDefaults(t *testing.T) {
+	branch := "feat/ship-config-step-table"
+	root := gitFixture(t, branch)
+
+	localPath := filepath.Join(root, paths.DataDir, "local.toml")
+	mustMkdirAll(t, filepath.Dir(localPath))
+	mustWriteFile(t, localPath, "[ship]\nsteps = { harden = true }\n")
+
+	assertLines(t, shipConfigPhase(), []string{
+		`Ship config: steps ["execute","commit","review","archive-openspec","harden","pr","learnings-commit"]`,
 	})
 }
 
