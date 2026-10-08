@@ -357,6 +357,16 @@ func asDecodedTOML(t *testing.T, key string, v any) any {
 	return holder[key]
 }
 
+// stepTable turns a list of step names into the on/off table form of
+// ship.steps: every listed name maps to true.
+func stepTable(names []string) map[string]any {
+	table := make(map[string]any, len(names))
+	for _, name := range names {
+		table[name] = true
+	}
+	return table
+}
+
 // shipBuiltInDefaultsByKey pairs every ship.toml key except "quick" (which
 // has no built-in default — see TestLocalTemplate_ShipQuickHasNoBuiltInDefault)
 // with its shipmeta.ShipBuiltInDefaults field.
@@ -368,7 +378,7 @@ func shipBuiltInDefaultsByKey() map[string]any {
 		"draft":                       d.Draft,
 		"rebase":                      d.Rebase,
 		"reviewThreshold":             d.ReviewThreshold,
-		"steps":                       d.Steps,
+		"steps":                       stepTable(d.Steps),
 		"executeWaveInterval":         d.ExecuteWaveInterval,
 		"executeWaveTimeout":          d.ExecuteWaveTimeout,
 		"verifyPipelineInterval":      d.VerifyPipelineInterval,

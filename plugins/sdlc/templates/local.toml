@@ -24,15 +24,16 @@
 # Default "info" sends every finding into the fix loop; "low" defers Info findings.
 # reviewThreshold = "info"
 
-# Pipeline steps to execute during /ship (in order).
-# Valid steps: "execute" | "commit" | "review" | "harden" | "verify-openspec" |
-#   "archive-openspec" | "pr" | "verify-pipeline" |
+# Pipeline steps for /ship: true runs the step, false skips it.
+# The plugin fixes the order: "execute" | "commit" | "review" | "verify-openspec" |
+#   "archive-openspec" | "harden" | "pr" | "verify-pipeline" |
 #   "await-remote-review" | "learnings-commit"
-# steps = ["execute", "commit", "review", "archive-openspec", "pr", "learnings-commit"]
+# A step you do not list uses its default.
+# steps = { execute = true, commit = true, review = true, archive-openspec = true, pr = true, learnings-commit = true }
 
-# Quick mode steps (subset of steps, for /ship --quick).
+# Quick mode steps for /ship --quick: true runs the step. A step you do not list is off.
 # No built-in default: when unset, --quick has no steps to run.
-# quick = ["execute", "commit", "review"]
+# quick = { execute = true, commit = true, review = true }
 
 # ─── Polling intervals (seconds) ─────────────────────────────────
 

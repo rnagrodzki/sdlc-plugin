@@ -173,118 +173,185 @@ func TestAnalyzeUncoveredFilesEmpty(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// refinePlan tests
+// planWaves tests
 // ---------------------------------------------------------------------------
 
-func TestRefinePlanUnderCap(t *testing.T) {
-	dims := make([]reviewDimWork, 5)
-	for i := range dims {
-		dims[i].name = "dim-" + string(rune('a'+i))
-		dims[i].status = "ACTIVE"
-		dims[i].severity = "medium"
+// waveSizes returns the length of each wave.
+func waveSizes(waves [][]string) []int {
+	sizes := make([]int, 0, len(waves))
+	for _, w := range waves {
+		sizes = append(sizes, len(w))
+	}
+	return sizes
+}
+
+// flattenWaves returns the wave names in start order.
+func flattenWaves(waves [][]string) []string {
+	var names []string
+	for _, w := range waves {
+		names = append(names, w...)
+	}
+	return names
+}
+
+// TestPlanWaves_SeverityOrder pins the order: severity high to low, an
+// unknown severity sorts as medium, and SKIPPED dimensions are left out.
+// planWaves never changes a status.
+func TestPlanWaves_SeverityOrder(t *testing.T) {
+	dims := []reviewDimWork{
+		{name: "info-dim", status: "ACTIVE", severity: "info"},
+		{name: "skipped-dim", status: "SKIPPED", severity: "critical"},
+		{name: "low-dim", status: "TRUNCATED", severity: "low"},
+		{name: "unknown-dim", status: "ACTIVE", severity: "bogus", matchedFiles: make([]string, 1)},
+		{name: "critical-dim", status: "ACTIVE", severity: "critical"},
+		{name: "medium-dim", status: "ACTIVE", severity: "medium", matchedFiles: make([]string, 2)},
+		{name: "high-dim", status: "TRUNCATED", severity: "high"},
 	}
 
-	queued := refinePlan(dims, defaultMaxDimensions)
-	if len(queued) != 0 {
-		t.Errorf("expected no queued dims, got %v", queued)
+	waves := planWaves(dims, 3)
+
+	got := flattenWaves(waves)
+	want := []string{"critical-dim", "high-dim", "unknown-dim", "medium-dim", "low-dim", "info-dim"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("wave order = %v, want %v", got, want)
 	}
-	for _, d := range dims {
-		if d.status != "ACTIVE" {
-			t.Errorf("dim %s should remain ACTIVE", d.name)
+	if fmt.Sprint(waveSizes(waves)) != "[3 3]" {
+		t.Errorf("wave sizes = %v, want [3 3]", waveSizes(waves))
+	}
+	wantStatus := []string{"ACTIVE", "SKIPPED", "TRUNCATED", "ACTIVE", "ACTIVE", "ACTIVE", "TRUNCATED"}
+	for i, d := range dims {
+		if d.status != wantStatus[i] {
+			t.Errorf("%s status = %q, want %q (planWaves must not change a status)", d.name, d.status, wantStatus[i])
 		}
 	}
 }
 
-// TestRefinePlanExactlyAtCap pins the len(active) <= maxDims boundary: when
-// the active count equals the cap exactly, nothing is queued (spec
-// scenario "Configured cap above dimension count", 10-at-cap-10).
-func TestRefinePlanExactlyAtCap(t *testing.T) {
-	dims := make([]reviewDimWork, 10)
-	for i := range dims {
-		dims[i].name = "dim-" + string(rune('a'+i))
-		dims[i].status = "ACTIVE"
-		dims[i].severity = "medium"
-	}
-
-	queued := refinePlan(dims, 10)
-	if len(queued) != 0 {
-		t.Errorf("expected no queued dims at the exact cap boundary, got %v", queued)
-	}
-}
-
-// TestRefinePlanOverCap pins the fixed comparator: the lowest-severity
-// dimensions are queued, not the highest. With a 1-critical, 2-info spread
-// among 10 dimensions and the default cap of 8, the two info dimensions
-// (dim-e and dim-j) must be the ones queued.
-func TestRefinePlanOverCap(t *testing.T) {
-	dims := make([]reviewDimWork, 10)
-	severities := []string{"critical", "high", "medium", "low", "info", "medium", "medium", "medium", "low", "info"}
-	for i := range dims {
-		dims[i].name = "dim-" + string(rune('a'+i))
-		dims[i].status = "ACTIVE"
-		dims[i].severity = severities[i]
-		dims[i].matchedFiles = make([]string, i) // ascending file count
-	}
-
-	queued := refinePlan(dims, defaultMaxDimensions)
-
-	wantQueued := []string{"dim-e", "dim-j"}
-	if len(queued) != len(wantQueued) || queued[0] != wantQueued[0] || queued[1] != wantQueued[1] {
-		t.Errorf("queued = %v, want %v", queued, wantQueued)
-	}
-
-	activeCount := 0
-	for _, d := range dims {
-		if d.status == "ACTIVE" || d.status == "TRUNCATED" {
-			activeCount++
-		}
-		if d.name == "dim-a" && d.status != "ACTIVE" {
-			t.Error("dim-a (critical) must stay ACTIVE")
-		}
-	}
-	if activeCount != 8 {
-		t.Errorf("expected 8 active dims after refinement, got %d", activeCount)
-	}
-}
-
-// TestRefinePlanTiebreakFewerFilesFirst pins the tiebreak rule: among equal
-// severities, the dimension with the most matched files is queued.
-func TestRefinePlanTiebreakFewerFilesFirst(t *testing.T) {
+// TestPlanWaves_TieFewerFiles pins the tiebreak rule: among equal
+// severities, the dimension with fewer matched files starts first.
+func TestPlanWaves_TieFewerFiles(t *testing.T) {
 	dims := []reviewDimWork{
 		{name: "dim-3files", status: "ACTIVE", severity: "medium", matchedFiles: make([]string, 3)},
 		{name: "dim-1file", status: "ACTIVE", severity: "medium", matchedFiles: make([]string, 1)},
 		{name: "dim-2files", status: "ACTIVE", severity: "medium", matchedFiles: make([]string, 2)},
 	}
 
-	queued := refinePlan(dims, 2)
+	waves := planWaves(dims, 2)
 
-	if len(queued) != 1 || queued[0] != "dim-3files" {
-		t.Errorf("queued = %v, want [dim-3files]", queued)
+	want := "[[dim-1file dim-2files] [dim-3files]]"
+	if fmt.Sprint(waves) != want {
+		t.Errorf("waves = %v, want %s", waves, want)
 	}
 }
 
-// TestRefinePlanCustomCap confirms refinePlan uses the caller-supplied cap,
-// not a hardcoded constant.
-func TestRefinePlanCustomCap(t *testing.T) {
-	dims := make([]reviewDimWork, 5)
+// TestPlanWaves_Sizes8_8_5 pins the split: 21 started dimensions with a
+// limit of 8 give waves of sizes 8, 8 and 5, in severity order.
+func TestPlanWaves_Sizes8_8_5(t *testing.T) {
+	severities := []string{"info", "low", "medium", "high", "critical"}
+	dims := make([]reviewDimWork, 21)
 	for i := range dims {
-		dims[i].name = "dim-" + string(rune('a'+i))
+		dims[i].name = fmt.Sprintf("dim-%02d", i)
 		dims[i].status = "ACTIVE"
-		dims[i].severity = "medium"
-		dims[i].matchedFiles = make([]string, i)
+		dims[i].severity = severities[i%len(severities)]
 	}
 
-	queued := refinePlan(dims, 3)
-	if len(queued) != 2 {
-		t.Errorf("expected 2 queued dims with cap 3, got %d: %v", len(queued), queued)
+	waves := planWaves(dims, defaultMaxParallelDimensions)
+
+	if fmt.Sprint(waveSizes(waves)) != "[8 8 5]" {
+		t.Fatalf("wave sizes = %v, want [8 8 5]", waveSizes(waves))
+	}
+	byName := map[string]reviewDimWork{}
+	for _, d := range dims {
+		byName[d.name] = d
+	}
+	names := flattenWaves(waves)
+	if len(names) != 21 {
+		t.Fatalf("waves hold %d names, want 21", len(names))
+	}
+	for i := 1; i < len(names); i++ {
+		prev := severityRank[byName[names[i-1]].severity]
+		cur := severityRank[byName[names[i]].severity]
+		if cur > prev {
+			t.Errorf("%s (%s) starts after %s (%s): waves are not in severity order",
+				names[i], byName[names[i]].severity, names[i-1], byName[names[i-1]].severity)
+		}
+	}
+}
+
+// TestPlanWaves_NonPositiveLimit pins the guard for a limit below 1: the
+// split uses a limit of 1, so each wave holds one name and the loop ends.
+func TestPlanWaves_NonPositiveLimit(t *testing.T) {
+	for _, limit := range []int{0, -3} {
+		dims := []reviewDimWork{
+			{name: "a", status: "ACTIVE", severity: "high"},
+			{name: "b", status: "ACTIVE", severity: "low"},
+		}
+
+		waves := planWaves(dims, limit)
+
+		if fmt.Sprint(waves) != "[[a] [b]]" {
+			t.Errorf("planWaves(limit %d) = %v, want [[a] [b]]", limit, waves)
+		}
+	}
+}
+
+// TestPlanWaves_EmptyNotNil pins that zero started dimensions give an
+// empty, non-nil slice, so the manifest renders "waves": [].
+func TestPlanWaves_EmptyNotNil(t *testing.T) {
+	for _, dims := range [][]reviewDimWork{
+		nil,
+		{{name: "skipped", status: "SKIPPED", severity: "high"}},
+	} {
+		waves := planWaves(dims, defaultMaxParallelDimensions)
+		if waves == nil {
+			t.Fatal("planWaves returned nil, want an empty slice")
+		}
+		if len(waves) != 0 {
+			t.Errorf("waves = %v, want []", waves)
+		}
+		raw, err := json.Marshal(waves)
+		if err != nil {
+			t.Fatalf("marshal waves: %v", err)
+		}
+		if string(raw) != "[]" {
+			t.Errorf("waves JSON = %s, want []", raw)
+		}
+	}
+}
+
+// TestReviewWaveNext pins both manifest-mode next texts.
+func TestReviewWaveNext(t *testing.T) {
+	tests := []struct {
+		name      string
+		waveCount int
+		want      string
+	}{
+		{
+			name:      "waves",
+			waveCount: 3,
+			want:      "Read the manifest at /tmp/sdlc-review-x/manifest.json. Start the agents of waves[0] in one message, poll until the wave ends, then start the next wave. Waves: 3.",
+		},
+		{
+			name:      "zero waves",
+			waveCount: 0,
+			want:      "No dimension matched the changes: waves is empty. Do not start agents or poll. Go to the consolidation step with zero findings.",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := reviewWaveNext("/tmp/sdlc-review-x/manifest.json", tc.waveCount); got != tc.want {
+				t.Errorf("reviewWaveNext() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
 // ---------------------------------------------------------------------------
-// resolveDimensionCap tests
+// resolveMaxParallelDimensions tests
 // ---------------------------------------------------------------------------
 
-func TestResolveDimensionCap(t *testing.T) {
+// TestResolveMaxParallelDimensions pins the default, the valid range, the
+// clamp and the error for each invalid type of maxParallelDimensions.
+func TestResolveMaxParallelDimensions(t *testing.T) {
 	tests := []struct {
 		name      string
 		reviewCfg map[string]any
@@ -292,25 +359,25 @@ func TestResolveDimensionCap(t *testing.T) {
 		wantErr   bool
 	}{
 		{name: "nil config", reviewCfg: nil, want: 8},
-		{name: "no maxDimensions key", reviewCfg: map[string]any{"scope": "all"}, want: 8},
-		{name: "configured cap", reviewCfg: map[string]any{"maxDimensions": float64(22)}, want: 22},
-		{name: "minimum boundary", reviewCfg: map[string]any{"maxDimensions": float64(1)}, want: 1},
-		{name: "zero", reviewCfg: map[string]any{"maxDimensions": float64(0)}, wantErr: true},
-		{name: "negative", reviewCfg: map[string]any{"maxDimensions": float64(-1)}, wantErr: true},
-		{name: "fractional", reviewCfg: map[string]any{"maxDimensions": float64(2.5)}, wantErr: true},
-		{name: "string", reviewCfg: map[string]any{"maxDimensions": "8"}, wantErr: true},
-		{name: "positive infinity", reviewCfg: map[string]any{"maxDimensions": math.Inf(1)}, wantErr: true},
-		{name: "negative infinity", reviewCfg: map[string]any{"maxDimensions": math.Inf(-1)}, wantErr: true},
-		{name: "nan", reviewCfg: map[string]any{"maxDimensions": math.NaN()}, wantErr: true},
-		{name: "huge whole number is clamped", reviewCfg: map[string]any{"maxDimensions": float64(1e300)}, want: math.MaxInt32},
+		{name: "no maxParallelDimensions key", reviewCfg: map[string]any{"scope": "all"}, want: 8},
+		{name: "configured limit", reviewCfg: map[string]any{"maxParallelDimensions": float64(22)}, want: 22},
+		{name: "minimum boundary", reviewCfg: map[string]any{"maxParallelDimensions": float64(1)}, want: 1},
+		{name: "zero", reviewCfg: map[string]any{"maxParallelDimensions": float64(0)}, wantErr: true},
+		{name: "negative", reviewCfg: map[string]any{"maxParallelDimensions": float64(-1)}, wantErr: true},
+		{name: "fractional", reviewCfg: map[string]any{"maxParallelDimensions": float64(1.5)}, wantErr: true},
+		{name: "string", reviewCfg: map[string]any{"maxParallelDimensions": "8"}, wantErr: true},
+		{name: "positive infinity", reviewCfg: map[string]any{"maxParallelDimensions": math.Inf(1)}, wantErr: true},
+		{name: "negative infinity", reviewCfg: map[string]any{"maxParallelDimensions": math.Inf(-1)}, wantErr: true},
+		{name: "nan", reviewCfg: map[string]any{"maxParallelDimensions": math.NaN()}, wantErr: true},
+		{name: "huge whole number is clamped", reviewCfg: map[string]any{"maxParallelDimensions": float64(1e300)}, want: math.MaxInt32},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := resolveDimensionCap(tc.reviewCfg)
+			got, err := resolveMaxParallelDimensions(tc.reviewCfg)
 			if tc.wantErr {
 				if err == nil {
-					t.Fatalf("expected an error, got cap %d", got)
+					t.Fatalf("expected an error, got limit %d", got)
 				}
 				var de *mcpserver.DomainError
 				if !errors.As(err, &de) {
@@ -319,8 +386,11 @@ func TestResolveDimensionCap(t *testing.T) {
 				if de.Suggestion == "" {
 					t.Error("expected a non-empty Suggestion")
 				}
-				if !strings.Contains(de.Msg, fmt.Sprintf("%v", tc.reviewCfg["maxDimensions"])) {
-					t.Errorf("message %q does not render the received value %v", de.Msg, tc.reviewCfg["maxDimensions"])
+				if !strings.Contains(de.Msg, "maxParallelDimensions") {
+					t.Errorf("message %q should name maxParallelDimensions", de.Msg)
+				}
+				if !strings.Contains(de.Msg, fmt.Sprintf("%v", tc.reviewCfg["maxParallelDimensions"])) {
+					t.Errorf("message %q does not render the received value %v", de.Msg, tc.reviewCfg["maxParallelDimensions"])
 				}
 				return
 			}
@@ -328,9 +398,30 @@ func TestResolveDimensionCap(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			if got != tc.want {
-				t.Errorf("resolveDimensionCap() = %d, want %d", got, tc.want)
+				t.Errorf("resolveMaxParallelDimensions() = %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestResolveMaxParallelDimensions_OldKey pins that the old maxDimensions
+// key returns the rename DomainError, also when maxParallelDimensions is set.
+func TestResolveMaxParallelDimensions_OldKey(t *testing.T) {
+	for _, cfg := range []map[string]any{
+		{"maxDimensions": float64(8)},
+		{"maxDimensions": float64(8), "maxParallelDimensions": float64(8)},
+	} {
+		_, err := resolveMaxParallelDimensions(cfg)
+		var de *mcpserver.DomainError
+		if !errors.As(err, &de) {
+			t.Fatalf("cfg %v: expected a *mcpserver.DomainError, got %T: %v", cfg, err, err)
+		}
+		if !strings.Contains(de.Msg, "maxDimensions") || !strings.Contains(de.Msg, "renamed to maxParallelDimensions") {
+			t.Errorf("cfg %v: message %q should name the old and the new key", cfg, de.Msg)
+		}
+		if !strings.Contains(de.Suggestion, "maxParallelDimensions") {
+			t.Errorf("cfg %v: suggestion %q should name maxParallelDimensions", cfg, de.Suggestion)
+		}
 	}
 }
 
@@ -388,7 +479,6 @@ func TestIndexEntrySliceFileGating(t *testing.T) {
 		{"ACTIVE", true},
 		{"TRUNCATED", true},
 		{"SKIPPED", false},
-		{"QUEUED", false},
 	}
 
 	for _, tc := range tests {
@@ -739,10 +829,11 @@ func readReviewManifest(t *testing.T, root string) (ReviewPrepareOut, reviewMani
 	return out, m
 }
 
-// TestReviewPrepareCapCountsTruncated pins that the 8-dimension cap counts
-// every dispatched dimension, TRUNCATED included. Ten dimensions that are
-// all TRUNCATED by max-files must still leave only 8 to dispatch.
-func TestReviewPrepareCapCountsTruncated(t *testing.T) {
+// TestReviewPrepareWavesIncludeTruncated pins that TRUNCATED dimensions are
+// started: ten dimensions that are all TRUNCATED by max-files are all in
+// waves (sizes 8 and 2 with the default limit), and each has a .diff and a
+// .slice.json file.
+func TestReviewPrepareWavesIncludeTruncated(t *testing.T) {
 	dims := map[string]string{}
 	for i := 0; i < 10; i++ {
 		dims[fmt.Sprintf("dim-%02d.md", i)] = fmt.Sprintf(`---
@@ -763,38 +854,44 @@ Review.
 
 	out, m := readReviewManifest(t, root)
 
-	dispatched, queued := 0, 0
+	inWaves := map[string]bool{}
+	for _, name := range flattenWaves(m.Waves) {
+		inWaves[name] = true
+	}
+	if fmt.Sprint(waveSizes(m.Waves)) != "[8 2]" {
+		t.Errorf("wave sizes = %v, want [8 2]", waveSizes(m.Waves))
+	}
 	for _, d := range m.Dimensions {
-		switch d.Status {
-		case "ACTIVE", "TRUNCATED":
-			dispatched++
-		case "QUEUED":
-			queued++
+		if d.Status != "TRUNCATED" {
+			t.Errorf("%s status = %q, want TRUNCATED", d.Name, d.Status)
+		}
+		if !inWaves[d.Name] {
+			t.Errorf("%s is not in waves", d.Name)
+		}
+		if d.DiffFile == nil || d.SliceFile == nil {
+			t.Errorf("%s: diff_file/slice_file = %v/%v, want both set", d.Name, d.DiffFile, d.SliceFile)
+		}
+		for _, ext := range []string{".diff", ".slice.json"} {
+			if _, err := os.Stat(filepath.Join(m.DiffDir, d.Name+ext)); err != nil {
+				t.Errorf("%s: %s file missing: %v", d.Name, ext, err)
+			}
 		}
 	}
-	if dispatched != 8 {
-		t.Errorf("dispatched dimensions = %d, want 8", dispatched)
+	if out.Summary.ActiveDimensions != 10 || out.Summary.WaveCount != 2 {
+		t.Errorf("summary active/wave_count = %d/%d, want 10/2", out.Summary.ActiveDimensions, out.Summary.WaveCount)
 	}
-	if queued != 2 {
-		t.Errorf("queued dimensions = %d, want 2", queued)
+	if m.PlanCritique.MaxParallelDimensions != defaultMaxParallelDimensions {
+		t.Errorf("plan_critique.max_parallel_dimensions = %d, want %d", m.PlanCritique.MaxParallelDimensions, defaultMaxParallelDimensions)
 	}
-	if out.Summary.ActiveDimensions != 8 || out.Summary.QueuedDimensions != 2 {
-		t.Errorf("summary active/queued = %d/%d, want 8/2", out.Summary.ActiveDimensions, out.Summary.QueuedDimensions)
-	}
-	if !m.PlanCritique.DimensionCapApplied {
-		t.Error("plan_critique.dimension_cap_applied = false, want true")
-	}
-	if len(m.PlanCritique.QueuedDimensions) != 2 {
-		t.Errorf("plan_critique.queued_dimensions = %v, want 2 names", m.PlanCritique.QueuedDimensions)
+	if want := reviewWaveNext(out.ManifestPath, 2); out.Next != want {
+		t.Errorf("next = %q, want %q", out.Next, want)
 	}
 }
 
-// TestReviewPrepareKeepsCriticalUnderCap pins that the fixed comparator
-// never queues a critical dimension ahead of lower-severity ones: with 1
-// critical and 8 info dimensions (9 ACTIVE total) and the default cap of 8,
-// the critical dimension must stay ACTIVE and exactly one info dimension
-// must become QUEUED.
-func TestReviewPrepareKeepsCriticalUnderCap(t *testing.T) {
+// TestReviewPrepareWavesSeverityFirst pins the start order across waves:
+// with 1 critical and 8 info dimensions and a limit of 1, the critical
+// dimension is waves[0][0] and every other dimension is in a later wave.
+func TestReviewPrepareWavesSeverityFirst(t *testing.T) {
 	files := map[string]string{"src/critical.ext": "package main\n"}
 	dims := map[string]string{
 		"critical.md": `---
@@ -820,67 +917,78 @@ Review.
 `, i, i, i)
 	}
 	root := newReviewFixture(t, files, dims)
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "[review]\nmaxParallelDimensions = 1\n")
 
-	_, m := readReviewManifest(t, root)
+	out, m := readReviewManifest(t, root)
 
-	var criticalStatus string
-	queuedCount := 0
-	for _, d := range m.Dimensions {
-		if d.Name == "critical-dim" {
-			criticalStatus = d.Status
+	if len(m.Waves) != 9 {
+		t.Fatalf("waves = %v, want 9 waves of 1", m.Waves)
+	}
+	if m.Waves[0][0] != "critical-dim" {
+		t.Errorf("waves[0][0] = %q, want critical-dim", m.Waves[0][0])
+	}
+	for i, w := range m.Waves[1:] {
+		if len(w) != 1 {
+			t.Errorf("waves[%d] = %v, want 1 name", i+1, w)
 		}
-		if d.Status == "QUEUED" {
-			queuedCount++
-			if d.Name == "critical-dim" {
-				t.Error("critical-dim must not be QUEUED")
+		for _, name := range w {
+			if name == "critical-dim" {
+				t.Errorf("critical-dim is also in waves[%d]", i+1)
 			}
 		}
 	}
-	if criticalStatus != "ACTIVE" {
-		t.Errorf("critical-dim status = %q, want ACTIVE", criticalStatus)
+	for _, d := range m.Dimensions {
+		if d.Status != "ACTIVE" {
+			t.Errorf("%s status = %q, want ACTIVE", d.Name, d.Status)
+		}
 	}
-	if queuedCount != 1 {
-		t.Errorf("queued dimensions = %d, want 1", queuedCount)
+	if out.Summary.WaveCount != 9 {
+		t.Errorf("summary.wave_count = %d, want 9", out.Summary.WaveCount)
 	}
 }
 
-// TestReviewPrepareMaxDimensionsFromLocalToml pins that [review]
-// maxDimensions in .sdlc-v2/local.toml is read and echoed verbatim into
-// plan_critique.dimension_cap.
-func TestReviewPrepareMaxDimensionsFromLocalToml(t *testing.T) {
-	root := newReviewFixture(t, map[string]string{"src/a.go": "package main\n"}, map[string]string{
-		"dim.md": `---
-name: dim-a
-description: Dimension
+// TestReviewPrepareMaxParallelDimensionsFromLocalToml pins that [review]
+// maxParallelDimensions in .sdlc-v2/local.toml is read, echoed verbatim into
+// plan_critique.max_parallel_dimensions, and sets the wave size.
+func TestReviewPrepareMaxParallelDimensionsFromLocalToml(t *testing.T) {
+	dims := map[string]string{}
+	for i := 0; i < 5; i++ {
+		dims[fmt.Sprintf("dim-%02d.md", i)] = fmt.Sprintf(`---
+name: dim-%02d
+description: Dimension %d
 triggers:
   - "**/*.go"
 severity: medium
 ---
 Review.
-`,
-	})
-	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "[review]\nmaxDimensions = 22\n")
-
-	_, m := readReviewManifest(t, root)
-
-	if m.PlanCritique.DimensionCap != 22 {
-		t.Errorf("plan_critique.dimension_cap = %d, want 22", m.PlanCritique.DimensionCap)
+`, i, i)
 	}
-	if len(m.PlanCritique.QueuedDimensions) != 0 {
-		t.Errorf("plan_critique.queued_dimensions = %v, want none", m.PlanCritique.QueuedDimensions)
+	root := newReviewFixture(t, map[string]string{"src/a.go": "package main\n"}, dims)
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "[review]\nmaxParallelDimensions = 2\n")
+
+	out, m := readReviewManifest(t, root)
+
+	if m.PlanCritique.MaxParallelDimensions != 2 {
+		t.Errorf("plan_critique.max_parallel_dimensions = %d, want 2", m.PlanCritique.MaxParallelDimensions)
+	}
+	if fmt.Sprint(waveSizes(m.Waves)) != "[2 2 1]" {
+		t.Errorf("wave sizes = %v, want [2 2 1]", waveSizes(m.Waves))
+	}
+	if out.Summary.WaveCount != 3 || m.Summary.WaveCount != 3 {
+		t.Errorf("wave_count out/manifest = %d/%d, want 3/3", out.Summary.WaveCount, m.Summary.WaveCount)
 	}
 }
 
-// TestReviewPrepareDefaultDimensionCap pins that the default cap reaches
-// plan_critique.dimension_cap when local.toml has no [review] section, or a
-// [review] section with no maxDimensions key.
-func TestReviewPrepareDefaultDimensionCap(t *testing.T) {
+// TestReviewPrepareDefaultMaxParallelDimensions pins that the default limit
+// reaches plan_critique.max_parallel_dimensions when local.toml has no
+// [review] section, or a [review] section with no maxParallelDimensions key.
+func TestReviewPrepareDefaultMaxParallelDimensions(t *testing.T) {
 	tests := []struct {
 		name      string
 		localToml string
 	}{
 		{name: "no review section", localToml: "[jira]\nproject = \"ABC\"\n"},
-		{name: "no maxDimensions key", localToml: "[review]\nscope = \"all\"\n"},
+		{name: "no maxParallelDimensions key", localToml: "[review]\nscope = \"all\"\n"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -899,17 +1007,17 @@ Review.
 
 			_, m := readReviewManifest(t, root)
 
-			if m.PlanCritique.DimensionCap != defaultMaxDimensions {
-				t.Errorf("plan_critique.dimension_cap = %d, want %d", m.PlanCritique.DimensionCap, defaultMaxDimensions)
+			if m.PlanCritique.MaxParallelDimensions != defaultMaxParallelDimensions {
+				t.Errorf("plan_critique.max_parallel_dimensions = %d, want %d", m.PlanCritique.MaxParallelDimensions, defaultMaxParallelDimensions)
 			}
 		})
 	}
 }
 
-// TestReviewPrepareInfiniteMaxDimensions pins that maxDimensions = inf in
-// local.toml returns a DomainError instead of reaching refinePlan as an
-// out-of-range slice bound.
-func TestReviewPrepareInfiniteMaxDimensions(t *testing.T) {
+// TestReviewPrepareInfiniteMaxParallelDimensions pins that
+// maxParallelDimensions = inf in local.toml returns a DomainError instead of
+// reaching planWaves as an undefined float-to-int conversion.
+func TestReviewPrepareInfiniteMaxParallelDimensions(t *testing.T) {
 	root := newReviewFixture(t, map[string]string{"src/a.go": "package main\n"}, map[string]string{
 		"dim.md": `---
 name: dim-a
@@ -921,23 +1029,27 @@ severity: medium
 Review.
 `,
 	})
-	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "[review]\nmaxDimensions = inf\n")
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "[review]\nmaxParallelDimensions = inf\n")
 
 	_, err := reviewPrepare(root, root, ReviewPrepareIn{SkipConfigCheck: true, Target: "main"})
 	if err == nil {
-		t.Fatal("expected an error for maxDimensions = inf")
+		t.Fatal("expected an error for maxParallelDimensions = inf")
 	}
 	var de *mcpserver.DomainError
 	if !errors.As(err, &de) {
 		t.Fatalf("expected a *mcpserver.DomainError, got %T: %v", err, err)
 	}
+	if !strings.Contains(de.Msg, "maxParallelDimensions") {
+		t.Errorf("message %q should name maxParallelDimensions", de.Msg)
+	}
 }
 
-// TestDefaultMaxDimensionsMatchesSetupField pins defaultMaxDimensions to the
-// review.maxDimensions setup field default. setupmeta's
-// TestReviewMaxDimensionsSchemaMatchesField pins that field to the JSON
-// schema default, so the three values cannot drift apart.
-func TestDefaultMaxDimensionsMatchesSetupField(t *testing.T) {
+// TestDefaultMaxParallelDimensionsMatchesSetupField pins
+// defaultMaxParallelDimensions to the review.maxParallelDimensions setup
+// field default. setupmeta's TestReviewMaxParallelDimensionsSchemaMatchesField
+// pins that field to the JSON schema default, so the three values cannot
+// drift apart.
+func TestDefaultMaxParallelDimensionsMatchesSetupField(t *testing.T) {
 	var found bool
 	for _, section := range setupmeta.Sections() {
 		if section.ID != "review" {
@@ -948,8 +1060,8 @@ func TestDefaultMaxDimensionsMatchesSetupField(t *testing.T) {
 				continue
 			}
 			found = true
-			if f.Default != any(defaultMaxDimensions) {
-				t.Errorf("setupmeta review.maxDimensions default = %v, want defaultMaxDimensions %d", f.Default, defaultMaxDimensions)
+			if f.Default != any(defaultMaxParallelDimensions) {
+				t.Errorf("setupmeta review.maxParallelDimensions default = %v, want defaultMaxParallelDimensions %d", f.Default, defaultMaxParallelDimensions)
 			}
 		}
 	}
@@ -958,10 +1070,10 @@ func TestDefaultMaxDimensionsMatchesSetupField(t *testing.T) {
 	}
 }
 
-// TestReviewPrepareInvalidMaxDimensions pins that an invalid [review]
-// maxDimensions value in .sdlc-v2/local.toml stops review_prepare with a
-// DomainError, before any git work or file write.
-func TestReviewPrepareInvalidMaxDimensions(t *testing.T) {
+// TestReviewPrepareInvalidMaxParallelDimensions pins that an invalid
+// [review] maxParallelDimensions value in .sdlc-v2/local.toml stops
+// review_prepare with a DomainError, before any git work or file write.
+func TestReviewPrepareInvalidMaxParallelDimensions(t *testing.T) {
 	root := newReviewFixture(t, map[string]string{"src/a.go": "package main\n"}, map[string]string{
 		"dim.md": `---
 name: dim-a
@@ -973,21 +1085,104 @@ severity: medium
 Review.
 `,
 	})
-	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "[review]\nmaxDimensions = \"8\"\n")
+	for _, value := range []string{"0", "1.5", "\"8\"", "inf"} {
+		t.Run(value, func(t *testing.T) {
+			writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "[review]\nmaxParallelDimensions = "+value+"\n")
 
-	_, err := reviewPrepare(root, root, ReviewPrepareIn{SkipConfigCheck: true, Target: "main"})
-	if err == nil {
-		t.Fatal("expected an error for an invalid maxDimensions value")
+			_, err := reviewPrepare(root, root, ReviewPrepareIn{SkipConfigCheck: true, Target: "main"})
+			if err == nil {
+				t.Fatal("expected an error for an invalid maxParallelDimensions value")
+			}
+			var de *mcpserver.DomainError
+			if !errors.As(err, &de) {
+				t.Fatalf("expected a *mcpserver.DomainError, got %T: %v", err, err)
+			}
+			if de.Suggestion == "" {
+				t.Error("expected a non-empty Suggestion")
+			}
+			if !strings.Contains(de.Msg, "maxParallelDimensions") || !strings.Contains(de.Msg, "must be a whole number >= 1") {
+				t.Errorf("message %q should name maxParallelDimensions and the whole-number rule", de.Msg)
+			}
+		})
 	}
-	var de *mcpserver.DomainError
-	if !errors.As(err, &de) {
-		t.Fatalf("expected a *mcpserver.DomainError, got %T: %v", err, err)
+}
+
+// TestReviewPrepareZeroStartedDimensions pins that a run where no dimension
+// matches writes "waves": [] (never null), wave_count 0, and the zero-wave
+// next text.
+func TestReviewPrepareZeroStartedDimensions(t *testing.T) {
+	root := newReviewFixture(t, map[string]string{"src/a.go": "package main\n"}, map[string]string{
+		"dim.md": `---
+name: py-only
+description: Dimension
+triggers:
+  - "**/*.py"
+severity: high
+---
+Review.
+`,
+	})
+
+	out, m := readReviewManifest(t, root)
+
+	raw, err := os.ReadFile(out.ManifestPath)
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
 	}
-	if de.Suggestion == "" {
-		t.Error("expected a non-empty Suggestion")
+	var generic map[string]any
+	if err := json.Unmarshal(raw, &generic); err != nil {
+		t.Fatalf("unmarshal manifest: %v", err)
 	}
-	if !strings.Contains(de.Msg, "maxDimensions") {
-		t.Errorf("message %q should name maxDimensions", de.Msg)
+	waves, ok := generic["waves"].([]any)
+	if !ok || len(waves) != 0 {
+		t.Errorf("manifest waves = %#v, want []", generic["waves"])
+	}
+	if out.Summary.WaveCount != 0 || m.Summary.WaveCount != 0 {
+		t.Errorf("wave_count out/manifest = %d/%d, want 0/0", out.Summary.WaveCount, m.Summary.WaveCount)
+	}
+	if want := reviewWaveNext(out.ManifestPath, 0); out.Next != want {
+		t.Errorf("next = %q, want %q", out.Next, want)
+	}
+}
+
+// TestReviewPrepareOldMaxDimensionsKey pins that the old [review]
+// maxDimensions key stops review_prepare with the rename DomainError, also
+// when maxParallelDimensions is set too.
+func TestReviewPrepareOldMaxDimensionsKey(t *testing.T) {
+	root := newReviewFixture(t, map[string]string{"src/a.go": "package main\n"}, map[string]string{
+		"dim.md": `---
+name: dim-a
+description: Dimension
+triggers:
+  - "**/*.go"
+severity: medium
+---
+Review.
+`,
+	})
+	tests := []struct {
+		name      string
+		localToml string
+	}{
+		{name: "old key only", localToml: "[review]\nmaxDimensions = 8\n"},
+		{name: "both keys", localToml: "[review]\nmaxDimensions = 8\nmaxParallelDimensions = 8\n"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), tc.localToml)
+
+			_, err := reviewPrepare(root, root, ReviewPrepareIn{SkipConfigCheck: true, Target: "main"})
+			var de *mcpserver.DomainError
+			if !errors.As(err, &de) {
+				t.Fatalf("expected a *mcpserver.DomainError, got %T: %v", err, err)
+			}
+			if !strings.HasPrefix(de.Msg, "[review] maxDimensions in ") || !strings.Contains(de.Msg, "was renamed to maxParallelDimensions. It now sets how many review agents run at the same time. Every dimension runs.") {
+				t.Errorf("message = %q, want the rename message", de.Msg)
+			}
+			if de.Suggestion != "Rename the key to maxParallelDimensions (keep the value), then retry review_prepare." {
+				t.Errorf("suggestion = %q, want the rename suggestion", de.Suggestion)
+			}
+		})
 	}
 }
 
@@ -1006,7 +1201,7 @@ severity: medium
 Review.
 `,
 	})
-	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "[review\nmaxDimensions = 8\n")
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "[review\nmaxParallelDimensions = 8\n")
 
 	_, err := reviewPrepare(root, root, ReviewPrepareIn{SkipConfigCheck: true, Target: "main"})
 	if err == nil {
@@ -1021,11 +1216,12 @@ Review.
 	}
 }
 
-// TestReviewPrepareQueuedGetsNoFiles pins that a QUEUED dimension is never
-// dispatched, so it gets no .diff or .slice.json file and a null diff_file.
-func TestReviewPrepareQueuedGetsNoFiles(t *testing.T) {
+// TestReviewPrepareEveryStartedDimensionGetsFiles pins that the parallel
+// limit never withholds files: with a limit of 1 and three started
+// dimensions, every dimension gets a .diff and a .slice.json file.
+func TestReviewPrepareEveryStartedDimensionGetsFiles(t *testing.T) {
 	dims := map[string]string{}
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 3; i++ {
 		dims[fmt.Sprintf("dim-%02d.md", i)] = fmt.Sprintf(`---
 name: dim-%02d
 description: Dimension %d
@@ -1037,30 +1233,32 @@ Review.
 `, i, i)
 	}
 	root := newReviewFixture(t, map[string]string{"src/a.go": "package main\n"}, dims)
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "[review]\nmaxParallelDimensions = 1\n")
 
 	_, m := readReviewManifest(t, root)
 
-	queued := 0
+	if len(m.Dimensions) != 3 {
+		t.Fatalf("dimensions = %d, want 3", len(m.Dimensions))
+	}
+	if fmt.Sprint(waveSizes(m.Waves)) != "[1 1 1]" {
+		t.Errorf("wave sizes = %v, want [1 1 1]", waveSizes(m.Waves))
+	}
 	for _, d := range m.Dimensions {
-		if d.Status != "QUEUED" {
-			continue
+		if d.Status != "ACTIVE" {
+			t.Errorf("%s status = %q, want ACTIVE", d.Name, d.Status)
 		}
-		queued++
-		if d.DiffFile != nil {
-			t.Errorf("%s: diff_file = %q, want null", d.Name, *d.DiffFile)
+		if d.DiffFile == nil {
+			t.Errorf("%s: diff_file = null, want a path", d.Name)
 		}
-		if d.SliceFile != nil {
-			t.Errorf("%s: slice_file = %q, want null", d.Name, *d.SliceFile)
+		if d.SliceFile == nil {
+			t.Errorf("%s: slice_file = null, want a path", d.Name)
 		}
 		for _, ext := range []string{".diff", ".slice.json"} {
 			p := filepath.Join(m.DiffDir, d.Name+ext)
-			if _, err := os.Stat(p); err == nil {
-				t.Errorf("%s: %s written for a QUEUED dimension", d.Name, p)
+			if _, err := os.Stat(p); err != nil {
+				t.Errorf("%s: %s not written: %v", d.Name, p, err)
 			}
 		}
-	}
-	if queued != 2 {
-		t.Fatalf("queued dimensions = %d, want 2", queued)
 	}
 }
 

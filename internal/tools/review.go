@@ -36,7 +36,7 @@ var validScopes = []string{"all", "committed", "staged", "working", "worktree"}
 // maxCommitsPerFile caps per-file commit history entries.
 const maxCommitsPerFile = 5
 
-// severityRank maps severity levels to priority values for refinePlan sorting.
+// severityRank maps severity levels to priority values for planWaves sorting.
 var severityRank = map[string]int{
 	"critical": 5,
 	"high":     4,
@@ -45,8 +45,9 @@ var severityRank = map[string]int{
 	"info":     1,
 }
 
-// defaultMaxDimensions is the dimension cap when [review] maxDimensions is absent.
-const defaultMaxDimensions = 8
+// defaultMaxParallelDimensions is the parallel limit when [review]
+// maxParallelDimensions is absent.
+const defaultMaxParallelDimensions = 8
 
 // pluginVersion is the plugin version embedded in manifests, read from
 // plugins/sdlc/.claude-plugin/plugin.json at compile time.
@@ -76,7 +77,7 @@ type ReviewPrepareSummary struct {
 	TotalDimensions     int `json:"total_dimensions"`
 	ActiveDimensions    int `json:"active_dimensions"`
 	SkippedDimensions   int `json:"skipped_dimensions"`
-	QueuedDimensions    int `json:"queued_dimensions"`
+	WaveCount           int `json:"wave_count"`
 	TotalChangedFiles   int `json:"total_changed_files"`
 	UncoveredFileCount  int `json:"uncovered_file_count"`
 	SuggestedDimensions int `json:"suggested_dimensions"`
@@ -109,11 +110,12 @@ type ReviewPrepareOut struct {
 	// Saved is set in save mode: true once Content has been persisted.
 	// Omitted (zero value) in normal manifest mode.
 	Saved bool `json:"saved,omitempty"`
-	// Next carries actionable next-step guidance after a save-mode call.
-	// Empty string in normal manifest mode — not omitted, since callers must
-	// be able to tell "no next step" apart from "field absent" (repo-wide
-	// Next-field contract; see execute_wave_await.go's guardrail comment).
-	Next string `json:"next" jsonschema_description:"Actionable next-step guidance after a save-mode call. Empty string when there is none."`
+	// Next carries actionable next-step guidance. Manifest mode: how to
+	// start the waves (see reviewWaveNext). Save mode: where the review was
+	// saved. Never omitted, since callers must be able to tell "no next
+	// step" apart from "field absent" (repo-wide Next-field contract; see
+	// execute_wave_await.go's guardrail comment).
+	Next string `json:"next" jsonschema_description:"Actionable next-step guidance. Manifest mode: how to start the waves. Save mode: where the review was saved."`
 }
 
 // ---------------------------------------------------------------------------
@@ -133,6 +135,7 @@ type reviewManifest struct {
 	PR                 reviewManifestPR      `json:"pr"`
 	Dimensions         []reviewDimIndexEntry `json:"dimensions"`
 	PlanCritique       reviewPlanCritique    `json:"plan_critique"`
+	Waves              [][]string            `json:"waves"` // started dimension names by start order, from planWaves; never null
 	Summary            ReviewPrepareSummary  `json:"summary"`
 	DiffDir            string                `json:"diff_dir"`
 	// Warnings lists non-fatal problems met while preparing the manifest
@@ -169,14 +172,12 @@ type reviewDimIndexEntry struct {
 }
 
 type reviewPlanCritique struct {
-	UncoveredFiles       []string              `json:"uncovered_files"`
-	UncoveredSuggestions []uncoveredSuggestion `json:"uncovered_suggestions"`
-	StillUncovered       []string              `json:"still_uncovered"`
-	OverBroadDimensions  []string              `json:"over_broad_dimensions"`
-	OverlappingPairs     [][]string            `json:"overlapping_pairs"`
-	DimensionCapApplied  bool                  `json:"dimension_cap_applied"`
-	QueuedDimensions     []string              `json:"queued_dimensions"`
-	DimensionCap         int                   `json:"dimension_cap"`
+	UncoveredFiles        []string              `json:"uncovered_files"`
+	UncoveredSuggestions  []uncoveredSuggestion `json:"uncovered_suggestions"`
+	StillUncovered        []string              `json:"still_uncovered"`
+	OverBroadDimensions   []string              `json:"over_broad_dimensions"`
+	OverlappingPairs      [][]string            `json:"overlapping_pairs"`
+	MaxParallelDimensions int                   `json:"max_parallel_dimensions"`
 }
 
 type uncoveredSuggestion struct {
@@ -511,8 +512,7 @@ func critiquePlan(dims []reviewDimWork, changedFiles []string) reviewPlanCritiqu
 		StillUncovered:       emptyIfNil(still),
 		OverBroadDimensions:  emptyIfNil(overBroad),
 		OverlappingPairs:     emptyPairsIfNil(overlappingPairs),
-		// DimensionCapApplied and QueuedDimensions are set by the caller
-		// from refinePlan's result.
+		// MaxParallelDimensions is set by the caller from the resolved config.
 	}
 }
 
@@ -523,18 +523,22 @@ func isDispatched(status string) bool {
 	return status == "ACTIVE" || status == "TRUNCATED"
 }
 
-// refinePlan applies the dimension cap: at most maxDims
-// dispatched (ACTIVE or TRUNCATED) dimensions are kept; the rest become
-// QUEUED. It returns the queued names.
-func refinePlan(dims []reviewDimWork, maxDims int) []string {
+// planWaves orders the started dimensions (severity high to low,
+// unknown = medium, ties by fewer matched files) and splits the names
+// into waves of at most maxParallel. It never changes a status.
+// No started dimension returns an empty, non-nil slice.
+func planWaves(dims []reviewDimWork, maxParallel int) [][]string {
+	// resolveMaxParallelDimensions never returns a value below 1. The guard
+	// keeps the split loop finite if a caller passes one anyway.
+	if maxParallel < 1 {
+		maxParallel = 1
+	}
+
 	var active []*reviewDimWork
 	for i := range dims {
 		if isDispatched(dims[i].status) {
 			active = append(active, &dims[i])
 		}
-	}
-	if len(active) <= maxDims {
-		return nil
 	}
 
 	sort.SliceStable(active, func(i, j int) bool {
@@ -552,39 +556,58 @@ func refinePlan(dims []reviewDimWork, maxDims int) []string {
 		return len(active[i].matchedFiles) < len(active[j].matchedFiles)
 	})
 
-	keep := map[string]bool{}
-	for _, d := range active[:maxDims] {
-		keep[d.name] = true
-	}
-
-	var queued []string
-	for i := range dims {
-		if isDispatched(dims[i].status) && !keep[dims[i].name] {
-			dims[i].status = "QUEUED"
-			queued = append(queued, dims[i].name)
+	waves := [][]string{}
+	for start := 0; start < len(active); start += maxParallel {
+		end := start + maxParallel
+		if end > len(active) {
+			end = len(active)
 		}
+		wave := make([]string, 0, end-start)
+		for _, d := range active[start:end] {
+			wave = append(wave, d.name)
+		}
+		waves = append(waves, wave)
 	}
-	return queued
+	return waves
 }
 
-// resolveDimensionCap returns [review] maxDimensions, or defaultMaxDimensions
-// when the section or key is absent. A value that is not a finite whole number
-// >= 1 (a string, 0, 2.5, inf, nan) returns a *mcpserver.DomainError. A whole
-// number above math.MaxInt32 is clamped to math.MaxInt32: there is no upper
-// limit, and the clamp keeps the float-to-int conversion defined.
-func resolveDimensionCap(reviewCfg map[string]any) (int, error) {
-	if reviewCfg == nil {
-		return defaultMaxDimensions, nil
+// reviewWaveNext returns the manifest-mode ReviewPrepareOut.Next text: how
+// to start the waves, or, with zero waves, that no agent starts.
+func reviewWaveNext(manifestPath string, waveCount int) string {
+	if waveCount == 0 {
+		return "No dimension matched the changes: waves is empty. Do not start agents or poll. Go to the consolidation step with zero findings."
 	}
-	raw, present := reviewCfg["maxDimensions"]
+	return fmt.Sprintf("Read the manifest at %s. Start the agents of waves[0] in one message, poll until the wave ends, then start the next wave. Waves: %d.", manifestPath, waveCount)
+}
+
+// resolveMaxParallelDimensions reads [review] maxParallelDimensions.
+// It checks for the old maxDimensions key first. That key returns a
+// DomainError, also when maxParallelDimensions is set.
+//
+// It returns defaultMaxParallelDimensions when the section or key is absent.
+// A value that is not a finite whole number >= 1 (a string, 0, 2.5, inf, nan)
+// returns a *mcpserver.DomainError. A whole number above math.MaxInt32 is
+// clamped to math.MaxInt32: there is no upper limit, and the clamp keeps the
+// float-to-int conversion defined.
+func resolveMaxParallelDimensions(reviewCfg map[string]any) (int, error) {
+	if reviewCfg == nil {
+		return defaultMaxParallelDimensions, nil
+	}
+	if _, old := reviewCfg["maxDimensions"]; old {
+		return 0, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("[review] maxDimensions in %s was renamed to maxParallelDimensions. It now sets how many review agents run at the same time. Every dimension runs.", config.LocalFilesLabel),
+			Suggestion: "Rename the key to maxParallelDimensions (keep the value), then retry review_prepare.",
+		}
+	}
+	raw, present := reviewCfg["maxParallelDimensions"]
 	if !present {
-		return defaultMaxDimensions, nil
+		return defaultMaxParallelDimensions, nil
 	}
 	v, ok := raw.(float64)
 	if !ok || math.IsInf(v, 0) || v < 1 || v != math.Trunc(v) {
 		return 0, &mcpserver.DomainError{
-			Msg:        fmt.Sprintf("[review] maxDimensions in %s must be a whole number >= 1, got %v", config.LocalFilesLabel, raw),
-			Suggestion: fmt.Sprintf("Set maxDimensions to a whole number of 1 or more (for example maxDimensions = 12), or delete the key to use the default of %d, then retry review_prepare.", defaultMaxDimensions),
+			Msg:        fmt.Sprintf("[review] maxParallelDimensions in %s must be a whole number >= 1, got %v", config.LocalFilesLabel, raw),
+			Suggestion: fmt.Sprintf("Set maxParallelDimensions to a whole number of 1 or more (for example maxParallelDimensions = 12), or delete the key to use the default of %d, then retry review_prepare.", defaultMaxParallelDimensions),
 		}
 	}
 	if v > math.MaxInt32 {
@@ -786,7 +809,7 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 			Cause:      err,
 		}
 	}
-	maxDims, err := resolveDimensionCap(reviewCfg)
+	maxParallel, err := resolveMaxParallelDimensions(reviewCfg)
 	if err != nil {
 		return ReviewPrepareOut{}, err
 	}
@@ -909,11 +932,10 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 		}
 	}
 
-	// Apply the dimension cap before writing files, so QUEUED dimensions
-	// (never dispatched) get no .diff or .slice.json file.
-	queued := refinePlan(dims, maxDims)
+	// Every started dimension gets files. planWaves sets only the start order.
+	waves := planWaves(dims, maxParallel)
 
-	// Write .diff and .slice.json files for dispatched dimensions only.
+	// Write .diff and .slice.json files for every started dimension.
 	for i := range dims {
 		d := &dims[i]
 		if !isDispatched(d.status) {
@@ -999,11 +1021,9 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 		d.sliceFile = &sp
 	}
 
-	// Plan critique (the cap was applied above, before writing files).
+	// Plan critique.
 	critique := critiquePlan(dims, changedFiles)
-	critique.QueuedDimensions = emptyIfNil(queued)
-	critique.DimensionCapApplied = len(queued) > 0
-	critique.DimensionCap = maxDims
+	critique.MaxParallelDimensions = maxParallel
 
 	// Commit count (branch-based scopes).
 	commitCount := 0
@@ -1063,7 +1083,7 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 		TotalDimensions:     len(dims),
 		ActiveDimensions:    activeDimCount,
 		SkippedDimensions:   skippedDimCount,
-		QueuedDimensions:    len(queued),
+		WaveCount:           len(waves),
 		TotalChangedFiles:   len(changedFiles),
 		UncoveredFileCount:  len(critique.UncoveredFiles),
 		SuggestedDimensions: len(critique.UncoveredSuggestions),
@@ -1099,6 +1119,7 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 		PR:           pr,
 		Dimensions:   indexEntries,
 		PlanCritique: critique,
+		Waves:        waves,
 		Summary:      summary,
 		DiffDir:      tmpDir,
 		Warnings:     emptyIfNil(warnings),
@@ -1117,6 +1138,7 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 		ManifestPath: manifestPath,
 		Summary:      summary,
 		Style:        chatStyleFor(projectRoot),
+		Next:         reviewWaveNext(manifestPath, len(waves)),
 	}, nil
 }
 
@@ -1301,7 +1323,7 @@ func saveReviewComment(projectRoot, activeRoot string, in ReviewPrepareIn) (Revi
 // RegisterReviewTools registers review_prepare on the server.
 func RegisterReviewTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "review_prepare",
-		fmt.Sprintf("Pre-compute review manifest: git state, dimension matching, diff slicing, commit context, open-PR lookup via gh. Writes manifest + per-dimension .diff and .slice.json files to a temp directory. With saveReview:true, persists content verbatim to .sdlc-v2/reviews/<branch>-<date>.md instead. Also returns style: the plugin-wide communication style; follow style.guide in chat and questions. Reads scope and maxDimensions (dispatched dimension cap, default %d, minimum 1) from the [review] section of .sdlc-v2/local.toml, merged over ~/.sdlc/local.toml. An invalid maxDimensions or an unreadable local.toml returns an error.", defaultMaxDimensions),
+		fmt.Sprintf("Pre-compute review manifest: git state, dimension matching, diff slicing, commit context, open-PR lookup via gh. Writes manifest + per-dimension .diff and .slice.json files to a temp directory. With saveReview:true, persists content verbatim to .sdlc-v2/reviews/<branch>-<date>.md instead. Also returns style: the plugin-wide communication style; follow style.guide in chat and questions. Reads scope and maxParallelDimensions (review agents that run at the same time, default %d, minimum 1) from the [review] section of .sdlc-v2/local.toml, merged over ~/.sdlc/local.toml. The manifest field waves lists every started dimension name, most severe first, in groups of maxParallelDimensions. Start waves[0] first, wait for it, then start the next wave. An old maxDimensions key returns an error that names the new key. An invalid maxParallelDimensions or an unreadable local.toml returns an error.", defaultMaxParallelDimensions),
 		mcpserver.Annotations{
 			Title:      "Prepare code review payload",
 			ReadOnly:   true,

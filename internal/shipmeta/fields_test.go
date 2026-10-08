@@ -352,7 +352,7 @@ func TestShipStateFlags_MatchPersistedKeys(t *testing.T) {
 }
 
 // TestLocalSchemaStepEnums_MatchCanonicalSteps proves the ship.steps and
-// ship.quick item enums in sdlc-local.schema.json hold exactly the
+// ship.quick propertyNames enums in sdlc-local.schema.json hold exactly the
 // CanonicalSteps names — a step missing from either side fails here.
 func TestLocalSchemaStepEnums_MatchCanonicalSteps(t *testing.T) {
 	doc := readSchema(t, "sdlc-local.schema.json")
@@ -365,10 +365,39 @@ func TestLocalSchemaStepEnums_MatchCanonicalSteps(t *testing.T) {
 		want[s] = true
 	}
 	for _, field := range []string{"steps", "quick"} {
-		got := itemsEnum(t, shipProps[field], "ship."+field)
+		got := propertyNamesEnum(t, shipProps[field], "ship."+field)
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("sdlc-local.schema.json ship.%s enum = %v, want CanonicalSteps %v", field, got, CanonicalSteps)
 		}
+	}
+}
+
+// TestLocalSchemaStepsDefault_MatchesBuiltIns proves the ship.steps default
+// table in sdlc-local.schema.json names exactly the steps in
+// ShipBuiltInDefaults.Steps, each switched on.
+func TestLocalSchemaStepsDefault_MatchesBuiltIns(t *testing.T) {
+	doc := readSchema(t, "sdlc-local.schema.json")
+	defs, _ := doc["$defs"].(map[string]any)
+	ship, _ := defs["shipSection"].(map[string]any)
+	shipProps, _ := ship["properties"].(map[string]any)
+	stepsProp, _ := shipProps["steps"].(map[string]any)
+	def, ok := stepsProp["default"].(map[string]any)
+	if !ok {
+		t.Fatalf("ship.steps default = %#v, want an object", stepsProp["default"])
+	}
+
+	got := make([]string, 0, len(def))
+	for name, v := range def {
+		if on, isBool := v.(bool); !isBool || !on {
+			t.Errorf("ship.steps default %q = %#v, want true", name, v)
+		}
+		got = append(got, name)
+	}
+	want := slices.Clone(ShipBuiltInDefaults.Steps)
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Errorf("ship.steps default keys = %v, want ShipBuiltInDefaults.Steps %v", got, want)
 	}
 }
 
@@ -395,15 +424,15 @@ func readSchema(t *testing.T, name string) map[string]any {
 	return doc
 }
 
-// itemsEnum returns the set of string values in prop.items.enum, failing the
-// test when the enum cannot be located.
-func itemsEnum(t *testing.T, prop any, label string) map[string]bool {
+// propertyNamesEnum returns the set of string values in
+// prop.propertyNames.enum, failing the test when the enum cannot be located.
+func propertyNamesEnum(t *testing.T, prop any, label string) map[string]bool {
 	t.Helper()
 	p, _ := prop.(map[string]any)
-	items, _ := p["items"].(map[string]any)
-	enumRaw, _ := items["enum"].([]any)
+	names, _ := p["propertyNames"].(map[string]any)
+	enumRaw, _ := names["enum"].([]any)
 	if len(enumRaw) == 0 {
-		t.Fatalf("could not locate %s items.enum", label)
+		t.Fatalf("could not locate %s propertyNames.enum", label)
 	}
 	out := make(map[string]bool, len(enumRaw))
 	for _, v := range enumRaw {
