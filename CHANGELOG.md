@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.3.4] - 2026-10-08
+
+### RC 1
+
+- Release candidate: add a local pipeline dashboard. One page on the loopback address shows the pipelines, sessions, learnings, and deferred items of every registered repo, with live updates.
+- Add the /sdlc:dashboard skill (--status, --stop, --no-open), the dashboard MCP tool, and the sdlc dashboard serve command.
+- Add the [dashboard] local config section (autoStart, port). Session start registers the repo and can auto-start the server.
+- Fix the MCP integration test so its expected tool list includes the dashboard tool.
+- Add dashboard specifications and documentation, and tighten the review documentation and config-verification standards.
+
+### RC 2
+
+- Redesign the local pipeline dashboard as the "sdlc signal room": header tabs (Pipelines, Activity, History), one repository filter, one block per pipeline with a station track and detail tiles, and hash links.
+- Show execute waves with tasks, task status, and commit state; review dimensions with finding counts and totals; plan explorers and review rounds.
+- Join ship, execute, and review runs into one ship block with a plan station built from the stored explorer summary.
+- Split issue location into file, line, and reference, and add state issues, task errors, and stalled runs as issue sources.
+- Add run history with the 50 newest rows, and write one failure row when a ship run fails.
+- Keep the review ledger after a run (the 7-day sweep removes it), store planned task names at execute init, and write run metadata at the first ledger check-in.
+- Record each plan review round with the new review-round marker, and return blockingCount from merge_results.
+- Clarify the plan single-reviewer merge flow, add TaskStop handling for stalled writers, and add review quality gates for prose, routing, and worker verification.
+- Document the snapshot contract and page specs in the dashboard docs.
+
 ## [0.3.3] - 2026-10-07
 
 ### RC 1
