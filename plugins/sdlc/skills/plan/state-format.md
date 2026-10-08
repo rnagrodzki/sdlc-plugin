@@ -131,7 +131,7 @@ The resume flow (`plan_prepare({resume: true})`) reads `checkpoint.step` to tell
 
 ## reviewRounds
 
-Written by `plan_mark({ marker: "review-round", data: {...} })`, once for each Step 5 review round, at every exit of the round (Step 5 Approved, Step 6 after the fixes, and the last round that goes to the user). `reviewRounds` lives in its own top-level state key and never participates in the Stop hook's four-marker check. Unlike `criticalDecisions`, it is **not appended to**: each call **upserts** one row by `round`. A call replaces the row with the same `round`, or inserts a new row. A resumed run can send the same round twice, so a replay is safe. The list stays sorted by `round`. The key is absent until the first `review-round` call. The dashboard reads the rows. They are display data only.
+Written by `plan_mark({ marker: "review-round", data: {...} })`, once for each Step 5 review round, at every exit of the round (Step 5 Approved, or Step 6 after the fixes; the last round also records in Step 6, before it goes to the user). `reviewRounds` lives in its own top-level state key and never participates in the Stop hook's four-marker check. Unlike `criticalDecisions`, it is **not appended to**: each call **upserts** one row by `round`. A call replaces the row with the same `round`, or inserts a new row. A resumed run can send the same round twice, so a replay is safe. The list stays sorted by `round`. The key is absent until the first `review-round` call. The dashboard reads the rows. They are display data only.
 
 Caps: a state file holds at most **20 rounds**. Each round holds at most **32 lenses**. A call over a cap returns an error and leaves the state file unchanged.
 
@@ -142,8 +142,8 @@ Each row of `reviewRounds` (all five keys are required, and no other key is allo
 | `round`        | integer  | The Step 5 iteration counter after its increment: the number of completed rounds, including this one (>= 1). Not the in-progress `<iteration>` of the checkpoint. |
 | `mergedStatus` | string   | The `mergedStatus` of the round's `merge_results` call. Exactly `Approved` or `Issues Found`. |
 | `found`        | integer  | Blocking issues found in the round (>= 0): the `blockingCount` of the `merge_results` call. |
-| `fixed`        | integer  | Blocking issues the round fixed (>= 0). `0` for an Approved round and for a last round that exits at Step 5 to the user. |
-| `lenses`       | object[] | One `{ name, verdict }` for each lens (max 32). `name`: letters, digits, `.`, `_`, `-` (max 64). `verdict`: exactly `Approved` or `Issues Found`. A single reviewer (<5 tasks) gives `[{ "name": "all", "verdict": "<mergedStatus>" }]`. Lanes are not listed. |
+| `fixed`        | integer  | Blocking issues the round fixed (>= 0). `0` for an Approved round. The last round (`reviewLoop.maxRounds`) also gets the Step 6 fix pass, so its `fixed` is the real count. |
+| `lenses`       | object[] | One `{ name, verdict }` for each lens (max 32). `name`: letters, digits, `.`, `_`, `-` (max 64); the first character must be a letter or a digit (`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, the same rule as `writerId`). `verdict`: exactly `Approved` or `Issues Found`. A single reviewer (<5 tasks) gives `[{ "name": "all", "verdict": "<mergedStatus>" }]`. Lanes are not listed. |
 
 ```json
 {
@@ -262,7 +262,7 @@ Writer files are capped at 32 per run (`evidenceMaxWriters`). `evidence_digest` 
 1. On a genuinely new run (no active run for the branch, and not a `resume: true` call), `plan_prepare(...)` writes the new marker atomically with `planIntegrity: { skillInvoked: <ISO-ts> }` and `creationIntent: { userPrompt, timestamp }` through `state.Write`, which prunes prior `plan-<branchSlug>-*.json` files for the same branch — **except** a sibling run whose `planIntegrity.done` marker is already set, which is kept (see [Evaluate, Don't Delete](#evaluate-dont-delete) below). It then best-effort prunes stale `<runId>.evidence/` directories left by earlier runs the same way (`state.PruneEvidenceDirs`, same done-run exception).
 2. The first `resolveTemplate: true` call for that run overwrites `creationIntent` with the full shape (`fullCreationIntent`: userPrompt, scope, routing, timestamp, flags).
 3. A `resume: true` call does not create or prune anything; it reads the branch's active run back (`state.ActivePlanRun`) and restores `creationIntent` into the caller's input (`applySavedIntent`) instead of overwriting it.
-4. Subsequent `plan_mark({ marker, path })` calls update the `planIntegrity` keys and `planFilePath` in-place, atomically; `plan_mark({ marker: "checkpoint", data })` replaces `checkpoint` in-place, atomically. Every `plan_mark` write goes through `state.Write`, with the same done-run exception as step 1 — so a finished (`done`) run can survive alongside a newer in-progress run for the same branch until it is removed (see below).
+4. Subsequent `plan_mark({ marker, path })` calls update the `planIntegrity` keys and `planFilePath` in-place, atomically; `plan_mark({ marker: "checkpoint", data })` replaces `checkpoint` in-place, atomically; `plan_mark({ marker: "review-round", data })` upserts one `reviewRounds` row by `round`, atomically. Every `plan_mark` write goes through `state.Write`, with the same done-run exception as step 1 — so a finished (`done`) run can survive alongside a newer in-progress run for the same branch until it is removed (see below).
 
 ### Evaluate, Don't Delete
 

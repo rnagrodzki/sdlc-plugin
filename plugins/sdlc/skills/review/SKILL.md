@@ -203,7 +203,8 @@ For each dimension entry with `status: "ACTIVE"` or `status: "TRUNCATED"`:
 5. Dispatch one Agent per ACTIVE/TRUNCATED dimension, **all in a single message**, with
    **`run_in_background: true`** — the inversion of the previous mandatory `false`. Use
    `model: dimension.model || manifest.subagent_model` per dimension (per-dimension override
-   wins; forward the string verbatim, no whitelist).
+   wins; forward the string verbatim, no whitelist). Keep the task ID that each background
+   dispatch returns, keyed by its `workerId`: Step 3 and Step 9 need it for `TaskStop`.
 
 **Workflow variant:** Prefer the Workflow tool's native fan-out when available; otherwise
 use the flat background-dispatch + ledger path described above.
@@ -228,7 +229,8 @@ suggestion for this session's own polling cadence, not a tool parameter) until e
 - If a `workerId` appears in `stalledWorkers`, do not treat it as failed yet — wait one more
   poll cycle.
 - If it is **still** present in `stalledWorkers` on the next poll, stop waiting on that
-  worker: proceed to Step 4 with the results collected so far, and explicitly note the
+  worker: call `TaskStop` with its task ID (see **Stopping a skipped worker** below), then
+  proceed to Step 4 with the results collected so far, and explicitly note the
   skipped dimension(s) by name in the final `review-comment.md` (Step 5) — this is a
   disclosed degraded mode, not a silent drop.
 
@@ -237,9 +239,17 @@ suggestion for this session's own polling cadence, not a tool parameter) until e
 - If a `workerId` appears in `missingWorkers` (dispatched but never checked in), do not treat
   it as failed yet — wait one more poll cycle.
 - If it is **still** present in `missingWorkers` on the next poll, stop waiting on that
-  worker: force-progress to Step 4 with the results collected so far, log a warning, and
-  explicitly note the skipped dimension(s) by name in the final `review-comment.md` (Step 5)
-  — this is a disclosed degraded mode, not a silent drop.
+  worker: call `TaskStop` with its task ID (see below), force-progress to Step 4 with the
+  results collected so far, log a warning, and explicitly note the skipped dimension(s) by
+  name in the final `review-comment.md` (Step 5) — this is a disclosed degraded mode, not a
+  silent drop.
+
+**Stopping a skipped worker:** a skipped worker can still run and call `ledger_checkout`
+later, and the dashboard reads the ledger. Stop it with `TaskStop`. Under a nested dispatch
+(for example, review dispatched by `/ship`), `TaskStop` can fail with an
+ownership/authorization error. That is an expected fallback, not a blocker: do not retry.
+Name each worker that could not be stopped in the Step 5 comment and in the final output as
+"possibly still running; a later ledger entry for it was not consolidated".
 
 ---
 
@@ -310,21 +320,22 @@ Format the comment using this template:
 ```
 
 Repeat the `### {dimension.name}` block once per consolidated dimension. If a dimension was
-skipped as stalled (Step 3), add one more such block naming it with the note "Skipped —
-worker stalled twice; no findings collected" in place of its finding list.
+skipped in Step 3, add one more such block naming it in place of its finding list, with the
+note "Skipped — worker stalled twice; no findings collected" (stalled) or "Skipped — worker
+never checked in; no findings collected" (missing).
 
 **Template variable substitution:**
 
 - `{date}` ← today's date in `YYYY-MM-DD` format
 - `{plugin_version}` ← `manifest.plugin_version` (verbatim, no extra `v` prefix)
-- `{N}` ← number of active dimensions actually consolidated (excluding any skipped-as-stalled
-  per Step 3)
+- `{N}` ← number of active dimensions actually consolidated (excluding any dimension skipped
+  in Step 3, stalled or missing)
 - `{M}` ← total finding count
 - The queued note line ← present only when `manifest.plan_critique.queued_dimensions` is not
   empty; names every queued dimension and `manifest.plan_critique.dimension_cap`
 - All other `{...}` placeholders ← computed from the findings gathered in Step 4
-- If any dimension was skipped as stalled (Step 3), add an explicit note naming it and
-  stating its findings are absent from this review
+- If any dimension was skipped in Step 3 (stalled or missing), add an explicit note naming
+  it and stating its findings are absent from this review
 
 **Compute verdict:**
 
@@ -486,8 +497,17 @@ If verdict is **APPROVED**: skip — nothing to fix.
 ## Step 9 — Cleanup
 
 Remove the temp files of this run on every terminal path (dry-run stop, error stop, and
-normal completion). Always remove the manifest and its temp directory (skip a path the run
-never received, e.g. when `review_prepare` itself failed):
+normal completion).
+
+First, stop every worker that Step 2 dispatched and that has no `done` entry in the last
+`ledger_status` response: call `TaskStop` with its task ID. On an error stop before any
+`ledger_status` call, stop every dispatched worker. Follow Step 3's **Stopping a skipped
+worker** rule: on a `TaskStop` failure (for example, the ownership/authorization error under
+a `/ship` dispatch), do not retry, and name the worker in the output as possibly still
+running. Skip this when Step 2 dispatched nothing.
+
+Then remove the manifest and its temp directory (skip a path the run never received, e.g.
+when `review_prepare` itself failed):
 
 ```bash
 rm -f "<manifestPath>"
@@ -509,7 +529,11 @@ default `state.gc.ttlDays`) removes it.
   response (Step 4)
 - Do NOT invoke error-report for user errors — only for tool-call crashes
 - Do NOT skip the Step 3 poll and consolidate on partial or zero results without a worker
-  actually confirmed stalled twice in a row
+  actually confirmed stalled or missing twice in a row
+- Do NOT leave a skipped worker unnamed: every dimension skipped in Step 3 (stalled or
+  missing) is named in the Step 5 comment, and every worker that `TaskStop` could not stop is
+  named in the output
+- Do NOT delete the manifest or `diff_dir` in Step 9 before the `TaskStop` pass
 
 ## See Also
 

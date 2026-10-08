@@ -77,7 +77,7 @@
     },
     "plannedTasks": {
       "type": "array",
-      "description": "One {id, name} for each \"### Task N:\" heading in the plan, in plan order, written by init when planPath is readable. Display data only; verify-completeness reads plannedTaskIds. Absent when init got no planPath or the plan was unreadable.",
+      "description": "One {id, name} for each \"### Task N:\" heading in the plan, in plan order, written by init. Headings inside code fences are ignored; [] when the plan has no task headings. Display data only; verify-completeness reads plannedTaskIds. Absent when init got no planPath, the plan was unreadable, or the plan content was empty.",
       "items": {
         "type": "object",
         "properties": {

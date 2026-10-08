@@ -189,7 +189,7 @@
     },
     "historyFailureRecorded": {
       "type": "boolean",
-      "description": "Set by ship_state fail when it appends the failure row to runs.jsonl. Stops a second row for the same run."
+      "description": "Set to true by the first ship_state fail of a run, before it appends the failure row to runs.jsonl. true does not prove the row exists: a failed append leaves the flag set. Stops a second fail row for the same run; the final history_record row of the run is separate."
     },
     "planExploreSummary": {
       "type": "array",
