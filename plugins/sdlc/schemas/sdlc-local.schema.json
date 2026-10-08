@@ -14,11 +14,11 @@
           "enum": ["all", "committed", "staged", "working", "worktree"],
           "description": "Which changes to include in the review."
         },
-        "maxDimensions": {
+        "maxParallelDimensions": {
           "type": "integer",
           "minimum": 1,
           "default": 8,
-          "description": "Maximum review dimensions dispatched in one /review run. The most severe are kept. The rest are QUEUED."
+          "description": "Maximum review agents that run at the same time in one /review run. Every matching dimension runs, most severe first, in waves of this size."
         }
       },
       "additionalProperties": false
@@ -181,22 +181,21 @@
       "description": "Controls the ship skill behaviour.",
       "properties": {
         "steps": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "enum": ["execute", "commit", "review", "harden", "verify-openspec", "archive-openspec", "pr", "verify-pipeline", "await-remote-review", "learnings-commit"]
+          "type": "object",
+          "propertyNames": {
+            "enum": ["execute", "commit", "review", "verify-openspec", "archive-openspec", "harden", "pr", "verify-pipeline", "await-remote-review", "learnings-commit"]
           },
-          "uniqueItems": true,
-          "description": "Pipeline steps to run. Replaces legacy preset/skip fields."
+          "additionalProperties": { "type": "boolean" },
+          "default": { "execute": true, "commit": true, "review": true, "archive-openspec": true, "pr": true, "learnings-commit": true },
+          "description": "On/off flag per pipeline step. The plugin fixes the step order. A step not listed uses its default."
         },
         "quick": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "enum": ["execute", "commit", "review", "harden", "verify-openspec", "archive-openspec", "pr", "verify-pipeline", "await-remote-review", "learnings-commit"]
+          "type": "object",
+          "propertyNames": {
+            "enum": ["execute", "commit", "review", "verify-openspec", "archive-openspec", "harden", "pr", "verify-pipeline", "await-remote-review", "learnings-commit"]
           },
-          "uniqueItems": true,
-          "description": "Optional shortened step list activated by --quick. When set, /ship --quick uses this list instead of steps[]. Unset means --quick is not available for this project. See R-quick-1."
+          "additionalProperties": { "type": "boolean" },
+          "description": "On/off flag per step for /ship --quick. A step not listed is off. Without this table, --quick has no steps."
         },
         "bump": {
           "type": "string",

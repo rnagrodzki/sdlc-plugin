@@ -33,11 +33,11 @@ covers all uncommitted changes to tracked files, staged and unstaged
 For `staged`, `working`, and `worktree` the review is never offered for posting
 to a PR. Change the scope with `/setup`.
 
-The `maxDimensions` key of the same `[review]` section sets how many dimensions
-one run reviews (default 8, minimum 1). The most severe dimensions are kept.
-The rest are queued, and `/review` lists them. To review more dimensions in
-one run, raise `maxDimensions` with `/setup`, or edit the `[review]` section
-of `.sdlc-v2/local.toml` directly.
+The `maxParallelDimensions` key of the same `[review]` section sets how many
+review agents run at the same time (default 8, minimum 1, whole number).
+Every matching dimension runs, most severe first, in waves of this size.
+To change it, run `/setup`, or edit the `[review]` section of
+`.sdlc-v2/local.toml` directly. The old key `maxDimensions` is an error.
 
 ## Examples
 
@@ -46,7 +46,7 @@ of `.sdlc-v2/local.toml` directly.
     /review
 
 Detects changed files, determines which dimensions apply, and runs one
-reviewer per dimension in parallel.
+reviewer per dimension, in waves of up to `maxParallelDimensions` agents.
 
 **Preview the review plan:**
 
@@ -65,12 +65,12 @@ Compares the current branch against `develop` instead of the default.
 
 `/review`'s preparation step (`review_prepare`) returns `manifestPath` and a
 `summary` with already-computed counts: `total_dimensions`,
-`active_dimensions`, `skipped_dimensions`, `queued_dimensions`,
+`active_dimensions`, `skipped_dimensions`, `wave_count`,
 `total_changed_files`, `uncovered_file_count`, and `suggested_dimensions`.
 The manifest file at `manifestPath` repeats `summary` and adds `scope`,
 `git` (`commit_count`, `changed_files_count`), `pr` (`exists`, and the PR
 number and URL when one exists), and `plan_critique` (uncovered files,
-over-broad dimensions, `queued_dimensions`, `dimension_cap`). These describe
+over-broad dimensions, `max_parallel_dimensions`), and `waves`. These describe
 the review's *input* (what's being reviewed and with which dimensions) —
 finding counts and severity breakdowns are **not** precomputed, since
 findings don't exist until each dimension's reviewer lane actually runs;

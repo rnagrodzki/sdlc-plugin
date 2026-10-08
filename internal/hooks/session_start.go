@@ -19,6 +19,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/openspec"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
+	"github.com/rnagrodzki/sdlc-plugin/internal/shipmeta"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
@@ -1265,6 +1266,11 @@ func jsStringify(v any) string {
 	return fmt.Sprintf("%v", v)
 }
 
+// shipConfigPhase renders the one-line summary of the [ship] section of the
+// project local config. A steps table is resolved over the built-in default
+// steps. A steps list (the old shape) renders a pointer to /setup --only
+// ship. The preset, skip, bump and threshold values render as they are. It
+// returns nil when there is nothing to show.
 func shipConfigPhase() []string {
 	root, err := worktree.MainRoot()
 	if err != nil {
@@ -1278,10 +1284,16 @@ func shipConfigPhase() []string {
 	var parts []string
 
 	if raw, ok := section["steps"]; ok {
-		if arr, ok2 := raw.([]any); ok2 {
-			if b, err := json.Marshal(arr); err == nil {
+		switch v := raw.(type) {
+		case map[string]any:
+			// The problem list is dropped on purpose: ship_prepare reports
+			// a bad table, and this summary must never fail the hook.
+			steps, _ := shipmeta.ResolveStepTable(v, shipmeta.ShipBuiltInDefaults.Steps, "ship.steps")
+			if b, err := json.Marshal(steps); err == nil {
 				parts = append(parts, "steps "+string(b))
 			}
+		case []any:
+			parts = append(parts, "steps (old list shape — run /setup --only ship)")
 		}
 	}
 	if raw, ok := section["preset"]; ok {

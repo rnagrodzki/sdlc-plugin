@@ -2,7 +2,7 @@
 
 /**
  * Tests for promote-release.cjs safety guards:
- *   - resolvePromotionTarget: the target must equal the active RC series.
+ *   - resolvePromotionTarget: the target must not be below the active RC series.
  *   - RELEASE_BRANCH / GITHUB_REF_NAME branch check and SAFE_REF allowlist.
  *   - Release workflow dispatch only when .github/workflows/release.yml exists.
  *   - LEVEL env as the level source, with the argv fallback.
@@ -118,22 +118,53 @@ describe('resolvePromotionTarget', () => {
     assert.deepEqual(resolvePromotionTarget('1.4.9', '2.0.0', 'major', ''), { targetBase: '2.0.0' });
   });
 
-  test('higher-than-series level is an error that names the matching level', () => {
+  test('higher-than-series level returns the target and a notice', () => {
     const r = resolvePromotionTarget('1.4.9', '1.4.10', 'minor', 'v');
-    assert.equal(r.targetBase, undefined);
-    assert.equal(r.error,
-      'Chosen level "minor" produces v1.5.0, but the active RC series is 1.4.10. use level "patch"');
+    assert.equal(r.targetBase, '1.5.0');
+    assert.equal(r.error, undefined);
+    assert.match(r.notice, /v1\.5\.0, above the active RC series 1\.4\.10/);
   });
 
-  test('lower-than-series level is an error that names the matching level', () => {
+  test('major above series returns a notice', () => {
+    const r = resolvePromotionTarget('0.3.3', '0.3.4', 'major', 'v');
+    assert.equal(r.targetBase, '1.0.0');
+    assert.equal(r.error, undefined);
+    assert.match(r.notice, /v1\.0\.0, above the active RC series 0\.3\.4/);
+  });
+
+  test('minor above series names the target tag and the series in the notice', () => {
+    const r = resolvePromotionTarget('0.3.3', '0.3.4', 'minor', 'v');
+    assert.equal(r.targetBase, '0.4.0');
+    assert.match(r.notice, /v0\.4\.0/);
+    assert.match(r.notice, /0\.3\.4/);
+  });
+
+  test('series not above stable: nothing to promote', () => {
+    for (const series of ['0.3.1', '0.3.2']) {
+      const r = resolvePromotionTarget('0.3.2', series, 'patch', 'v');
+      assert.equal(r.targetBase, undefined);
+      assert.ok(r.error.startsWith('Nothing to promote:'), r.error);
+    }
+  });
+
+  test('lower-than-series level is an error that names the first level that reaches the series', () => {
     const r = resolvePromotionTarget('1.4.9', '2.0.0', 'patch', 'v');
     assert.match(r.error, /Chosen level "patch" produces v1\.4\.10, but the active RC series is 2\.0\.0\. use level "major"/);
   });
 
+  test('lower-than-series level names the minor level when minor reaches the series', () => {
+    // A series equal to the minor target, and a series between the patch and
+    // the minor target: minor is the first level that reaches both.
+    for (const series of ['1.5.0', '1.4.12']) {
+      const r = resolvePromotionTarget('1.4.9', series, 'patch', 'v');
+      assert.match(r.error, /use level "minor"$/, r.error);
+    }
+  });
+
   test('no level reaches the series: error says so', () => {
-    const r = resolvePromotionTarget('1.4.9', '1.4.12', 'patch', 'v');
+    const r = resolvePromotionTarget('1.4.9', '3.0.0', 'patch', 'v');
     assert.equal(r.error,
-      'Chosen level "patch" produces v1.4.10, but the active RC series is 1.4.12. no level produces 1.4.12 from 1.4.9');
+      'Chosen level "patch" produces v1.4.10, but the active RC series is 3.0.0. no level reaches 3.0.0 from 1.4.9');
   });
 
   test('no stable tag (0.0.0) promotes the first series', () => {
@@ -149,16 +180,15 @@ describe('SAFE_REF', () => {
 });
 
 describe('promote-release — target guard (end to end)', () => {
-  test('stable v1.4.9, series 1.4.10, level minor exits 1 and pushes no tag', () => {
+  test('stable v1.4.9, series 1.4.10, level minor tags v1.5.0 at the RC commit', () => {
     const ctx = setup();
-    const mainBefore = remoteRef(ctx.bareDir, 'refs/heads/main');
     const r = runPromote(ctx, ['minor']);
-    assert.equal(r.status, 1, r.stdout);
-    assert.ok(r.stderr.includes('Chosen level "minor" produces v1.5.0'), r.stderr);
-    assert.ok(r.stderr.includes('use level "patch"'), r.stderr);
-    assert.equal(remoteRef(ctx.bareDir, 'refs/tags/v1.5.0'), null);
+    assert.equal(r.status, 0, r.stderr);
+    assert.ok(r.stdout.includes('NOTICE:'), r.stdout);
+    assert.equal(remoteRef(ctx.bareDir, 'refs/tags/v1.5.0'), ctx.rcSha);
     assert.equal(remoteRef(ctx.bareDir, 'refs/tags/v1.4.10'), null);
-    assert.equal(remoteRef(ctx.bareDir, 'refs/heads/main'), mainBefore);
+    const remotePackageJson = git('show main:package.json', ctx.bareDir);
+    assert.match(remotePackageJson, /"version":\s*"1\.5\.0"/, remotePackageJson);
   });
 
   test('level patch tags v1.4.10 at the RC commit', () => {
@@ -166,6 +196,18 @@ describe('promote-release — target guard (end to end)', () => {
     const r = runPromote(ctx, ['patch']);
     assert.equal(r.status, 0, r.stderr);
     assert.equal(remoteRef(ctx.bareDir, 'refs/tags/v1.4.10'), ctx.rcSha);
+  });
+
+  test('second promotion of the same series exits 1 and pushes no tag', () => {
+    const ctx = setup();
+    const first = runPromote(ctx, ['patch']);
+    assert.equal(first.status, 0, first.stderr);
+    const mainAfterFirst = remoteRef(ctx.bareDir, 'refs/heads/main');
+    const second = runPromote(ctx, ['patch']);
+    assert.equal(second.status, 1, second.stdout);
+    assert.ok(second.stderr.includes('Nothing to promote'), second.stderr);
+    assert.equal(remoteRef(ctx.bareDir, 'refs/tags/v1.4.11'), null);
+    assert.equal(remoteRef(ctx.bareDir, 'refs/heads/main'), mainAfterFirst);
   });
 });
 

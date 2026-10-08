@@ -280,7 +280,7 @@ otherwise). A local-toml section (`ship`, `review`, `received-review`,
 | id | Summary rule |
 |---|---|
 | `version` | No config: `detected: <versionFile> (<fileType>), tag: <tagPrefix>` if detected, else empty. With config: join non-empty of `file: <versionFile>` (when `mode=file`), `mode: tag` (when `mode=tag`), `tag: <tagPrefix>`, `pre: <preRelease>`. |
-| `ship` | Join non-empty (joined with two spaces) of `steps: <a,b,c>`, `bump: <bump>`, and any present R57 tunable rendered as `<field>: <value>` (`verifyPipelineTimeout`, `verifyPipelineInterval`, `verifyPipelineMaxIterations`, `awaitRemoteReviewTimeout`, `awaitRemoteReviewInterval`, `awaitRemoteReviewers` joined `a,b`). |
+| `ship` | Join non-empty (joined with two spaces) of `steps: <a,b,c>` (the steps set to true, in pipeline order), `bump: <bump>`, and any present R57 tunable rendered as `<field>: <value>` (`verifyPipelineTimeout`, `verifyPipelineInterval`, `verifyPipelineMaxIterations`, `awaitRemoteReviewTimeout`, `awaitRemoteReviewInterval`, `awaitRemoteReviewers` joined `a,b`). |
 | `jira` | `project: <defaultProject>` or empty. |
 | `review` | `scope: <scope>` or empty. |
 | `received-review` | `auto-apply: <a,b>` (joined `alwaysFixSeverities`) or empty. |
@@ -616,7 +616,7 @@ After all `version` section fields are collected and BEFORE storing the section 
 
 **Answer mapping when assembling the section object:**
 - `enum` fields → write the selected option string verbatim
-- `multi-select` fields → write the array of selected options
+- `multi-select`, `multi-enum` and `flag-set` fields → ask a multi-select question, then write the array of selected options (`setup_write_sections` stores a `flag-set` answer as a true/false table; a `multi-enum` answer with no selection is the empty array `[]`)
 - `boolean` fields → map `yes` → `true`, `no` → `false` (exception: `rebase` writes
   `auto`/`skip`/`prompt` verbatim — do NOT translate to yes/no)
 - `string` fields → write the entered string; omit when empty (and the field is optional)

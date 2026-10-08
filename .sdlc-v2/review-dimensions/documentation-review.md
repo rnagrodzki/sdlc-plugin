@@ -24,7 +24,7 @@ This project keeps contributor documentation in `docs/`
   `lefthook.yml`) that a new contributor would need to know about are
   mentioned in `README.md` or `docs/getting-started.md`.
 - When a task adds a config-controlled limit, threshold, or cap (e.g.
-  `maxDimensions`), the corresponding docs section must state the
+  `maxParallelDimensions`), the corresponding docs section must state the
   configuration key, the default value, the valid range or constraint, and
   the procedure to change it. A schema description alone does not satisfy
   this — users need user-facing guidance, not only structured metadata.

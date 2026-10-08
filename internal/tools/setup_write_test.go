@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/shipmeta"
 )
 
 // callRegisteredSetupWriteSections runs the registered setup_write_sections
@@ -1225,4 +1227,379 @@ func TestSetupWriteSections_TargetUserRestoresStrippedTips(t *testing.T) {
 			t.Errorf("tip not restored directly above %q:\n--- got ---\n%s", keyLine, got)
 		}
 	}
+}
+
+// readShipTable decodes the local.toml at path and returns its "ship" table.
+func readShipTable(t *testing.T, path string) map[string]any {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]any
+	if err := fsx.DecodeTOML(raw, &decoded); err != nil {
+		t.Fatalf("local.toml is not valid TOML: %v\n%s", err, raw)
+	}
+	ship, ok := decoded["ship"].(map[string]any)
+	if !ok {
+		t.Fatalf("local.toml has no [ship] table:\n%s", raw)
+	}
+	return ship
+}
+
+// assertFlagTable fails unless ship[key] is a table with one bool entry for
+// every canonical step, true for exactly the steps named in on.
+func assertFlagTable(t *testing.T, ship map[string]any, key string, on ...string) {
+	t.Helper()
+	table, ok := ship[key].(map[string]any)
+	if !ok {
+		t.Fatalf("ship.%s is %T, want a table: %v", key, ship[key], ship[key])
+	}
+	if len(table) != len(shipmeta.CanonicalSteps) {
+		t.Errorf("ship.%s has %d keys, want %d: %v", key, len(table), len(shipmeta.CanonicalSteps), table)
+	}
+	for _, step := range shipmeta.CanonicalSteps {
+		want := slices.Contains(on, step)
+		got, isBool := table[step].(bool)
+		if !isBool || got != want {
+			t.Errorf("ship.%s.%s = %v, want %v", key, step, table[step], want)
+		}
+	}
+}
+
+// TestSetupWriteSections_FlagSetArray verifies that a steps array answer
+// replaces an old one-line list with a table of every step, and that the other
+// [ship] keys and the comments around them stay.
+func TestSetupWriteSections_FlagSetArray(t *testing.T) {
+	dir := t.TempDir()
+	path := writeSDLCFile(t, dir, "local.toml",
+		"[ship]\n# Pipeline steps for /ship.\nsteps = [\"execute\", \"review\", \"harden\"]\n# own note\nbump = \"patch\"\n")
+
+	res, text := callRegisteredSetupWriteSectionsIn(t, dir,
+		`{"ship":{"steps":["execute","review","harden"],"bump":"patch"}}`)
+	if res.IsError {
+		t.Fatalf("expected success, got tool error:\n%s", text)
+	}
+	if strings.Contains(text, "could not edit") {
+		t.Fatalf("tool fell back to a full rewrite:\n%s", text)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), "steps = [") {
+		t.Errorf("old steps list line is still in the file:\n%s", got)
+	}
+	if !strings.Contains(string(got), "# own note\nbump = \"patch\"\n") {
+		t.Errorf("bump or its comment changed:\n%s", got)
+	}
+	ship := readShipTable(t, path)
+	assertFlagTable(t, ship, "steps", "execute", "review", "harden")
+	if ship["bump"] != "patch" {
+		t.Errorf("ship.bump = %v, want patch", ship["bump"])
+	}
+}
+
+// TestSetupWriteSections_FlagSetQuick verifies that a quick answer is stored
+// as a [ship.quick] table, in the same way as a steps answer.
+func TestSetupWriteSections_FlagSetQuick(t *testing.T) {
+	dir := t.TempDir()
+	path := writeSDLCFile(t, dir, "local.toml", "[ship]\nquick = [\"execute\"]\nbump = \"minor\"\n")
+
+	res, text := callRegisteredSetupWriteSectionsIn(t, dir,
+		`{"ship":{"quick":["execute","pr"],"bump":"minor"}}`)
+	if res.IsError {
+		t.Fatalf("expected success, got tool error:\n%s", text)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), "quick = [") {
+		t.Errorf("old quick list line is still in the file:\n%s", got)
+	}
+	ship := readShipTable(t, path)
+	assertFlagTable(t, ship, "quick", "execute", "pr")
+	if ship["bump"] != "minor" {
+		t.Errorf("ship.bump = %v, want minor", ship["bump"])
+	}
+}
+
+// TestSetupWriteSections_FlagSetTablePassThrough verifies that a table answer
+// is written with only the keys it names. No other step key is added.
+func TestSetupWriteSections_FlagSetTablePassThrough(t *testing.T) {
+	dir := t.TempDir()
+	path := writeSDLCFile(t, dir, "local.toml", "[ship]\nbump = \"patch\"\n")
+
+	res, text := callRegisteredSetupWriteSectionsIn(t, dir,
+		`{"ship":{"steps":{"execute":true,"harden":true},"bump":"patch"}}`)
+	if res.IsError {
+		t.Fatalf("expected success, got tool error:\n%s", text)
+	}
+
+	table, ok := readShipTable(t, path)["steps"].(map[string]any)
+	if !ok {
+		t.Fatalf("ship.steps is not a table")
+	}
+	want := map[string]any{"execute": true, "harden": true}
+	if len(table) != len(want) || table["execute"] != true || table["harden"] != true {
+		t.Errorf("ship.steps = %v, want only %v", table, want)
+	}
+}
+
+// TestSetupWriteSections_FlagSetMultiLineList verifies that an old multi-line
+// steps list is gone after the write.
+func TestSetupWriteSections_FlagSetMultiLineList(t *testing.T) {
+	dir := t.TempDir()
+	path := writeSDLCFile(t, dir, "local.toml",
+		"[ship]\nsteps = [\n  \"execute\",\n  \"pr\",\n]\nbump = \"patch\"\n")
+
+	res, text := callRegisteredSetupWriteSectionsIn(t, dir,
+		`{"ship":{"steps":["execute","commit"],"bump":"patch"}}`)
+	if res.IsError {
+		t.Fatalf("expected success, got tool error:\n%s", text)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), "steps = [") || strings.Contains(string(got), "\"pr\",") {
+		t.Errorf("old multi-line list is still in the file:\n%s", got)
+	}
+	assertFlagTable(t, readShipTable(t, path), "steps", "execute", "commit")
+}
+
+// TestSetupWriteSections_FlagSetInlineTable verifies that an old inline table
+// for steps is gone after the write.
+func TestSetupWriteSections_FlagSetInlineTable(t *testing.T) {
+	dir := t.TempDir()
+	path := writeSDLCFile(t, dir, "local.toml",
+		"[ship]\nsteps = { execute = true }\nbump = \"patch\"\n")
+
+	res, text := callRegisteredSetupWriteSectionsIn(t, dir,
+		`{"ship":{"steps":["review"],"bump":"patch"}}`)
+	if res.IsError {
+		t.Fatalf("expected success, got tool error:\n%s", text)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), "steps = {") {
+		t.Errorf("old inline table is still in the file:\n%s", got)
+	}
+	assertFlagTable(t, readShipTable(t, path), "steps", "review")
+}
+
+// TestSetupWriteSections_FlagSetHeaderTable verifies that a file that already
+// has a [ship.steps] header table ends with exactly one such table, holding
+// the new values.
+func TestSetupWriteSections_FlagSetHeaderTable(t *testing.T) {
+	dir := t.TempDir()
+	path := writeSDLCFile(t, dir, "local.toml",
+		"[ship]\nbump = \"patch\"\n\n[ship.steps]\nexecute = true\npr = true\n")
+
+	res, text := callRegisteredSetupWriteSectionsIn(t, dir,
+		`{"ship":{"steps":["execute","review"],"bump":"patch"}}`)
+	if res.IsError {
+		t.Fatalf("expected success, got tool error:\n%s", text)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(got), "[ship.steps]"); n != 1 {
+		t.Errorf("file has %d [ship.steps] headers, want 1:\n%s", n, got)
+	}
+	assertFlagTable(t, readShipTable(t, path), "steps", "execute", "review")
+}
+
+// TestSetupWriteSections_FlagSetEmpty verifies that an empty array writes
+// every step key as false.
+func TestSetupWriteSections_FlagSetEmpty(t *testing.T) {
+	dir := t.TempDir()
+	path := writeSDLCFile(t, dir, "local.toml", "[ship]\nquick = [\"execute\"]\n")
+
+	res, text := callRegisteredSetupWriteSectionsIn(t, dir, `{"ship":{"quick":[]}}`)
+	if res.IsError {
+		t.Fatalf("expected success, got tool error:\n%s", text)
+	}
+	assertFlagTable(t, readShipTable(t, path), "quick")
+}
+
+// assertFlagSetRejected runs the write for answerJSON (the value of ship.steps)
+// next to a second section, and fails unless the tool returns an error that
+// holds every string in want, with no section written and the file unchanged.
+func assertFlagSetRejected(t *testing.T, answerJSON string, want ...string) {
+	t.Helper()
+	dir := t.TempDir()
+	content := "[ship]\nbump = \"patch\"\n"
+	local := writeSDLCFile(t, dir, "local.toml", content)
+
+	res, text := callRegisteredSetupWriteSectionsIn(t, dir,
+		`{"review":{"scope":"all"},"ship":{"steps":`+answerJSON+`}}`)
+	if !res.IsError {
+		t.Fatalf("expected a tool error, got success:\n%s", text)
+	}
+	for _, w := range want {
+		if !strings.Contains(text, w) {
+			t.Errorf("missing %q:\n%s", w, text)
+		}
+	}
+	got, err := os.ReadFile(local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != content {
+		t.Errorf("file changed despite the error (the review section was written):\n%s", got)
+	}
+}
+
+// TestSetupWriteSections_FlagSetUnknownName verifies that an unknown step name
+// in an array answer returns a DomainError with the list of valid names.
+func TestSetupWriteSections_FlagSetUnknownName(t *testing.T) {
+	assertFlagSetRejected(t, `["hardn"]`,
+		`ship.steps answer has an unknown step "hardn".`,
+		"Use only these names: execute, commit, review, verify-openspec, archive-openspec, harden, pr, verify-pipeline, await-remote-review, learnings-commit.")
+}
+
+// TestSetupWriteSections_FlagSetNonBool verifies that a table value that is
+// not true or false returns a DomainError.
+func TestSetupWriteSections_FlagSetNonBool(t *testing.T) {
+	assertFlagSetRejected(t, `{"harden":"yes"}`,
+		`ship.steps.harden must be true or false, got "yes".`,
+		"Send true or false for each step, or send an array of step names.")
+}
+
+// TestSetupWriteSections_FlagSetTableUnknownKey verifies that an unknown key
+// in a table answer returns a DomainError that names the key.
+func TestSetupWriteSections_FlagSetTableUnknownKey(t *testing.T) {
+	assertFlagSetRejected(t, `{"hardn":true}`,
+		`ship.steps answer has an unknown step "hardn".`)
+}
+
+// TestSetupWriteSections_FlagSetScalar verifies that a scalar answer returns a
+// DomainError.
+func TestSetupWriteSections_FlagSetScalar(t *testing.T) {
+	assertFlagSetRejected(t, `"harden"`,
+		"ship.steps answer must be an array of step names or a table of step → true/false, got string.",
+		`Send an array of step names, for example ["execute","review"].`)
+}
+
+// TestSetupWriteSections_FlagSetRejectedValueTypes verifies that each JSON
+// value type that is not a valid flag-set answer is named in the error: a
+// bool and a number as the whole answer, a non-string item in an array and a
+// number as a table value.
+func TestSetupWriteSections_FlagSetRejectedValueTypes(t *testing.T) {
+	tests := []struct {
+		name   string
+		answer string
+		want   string
+	}{
+		{name: "bool answer", answer: `true`, want: "got bool."},
+		{name: "number answer", answer: `5`, want: "got number."},
+		{name: "number array item", answer: `[1]`, want: "ship.steps answer has an unknown step 1."},
+		{name: "number table value", answer: `{"harden":5}`, want: "ship.steps.harden must be true or false, got 5."},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assertFlagSetRejected(t, tc.answer, tc.want)
+		})
+	}
+}
+
+// TestFlagSetTypeName pins the name of each answer type, including the
+// fallback to the Go type name for a type that JSON decoding does not produce.
+func TestFlagSetTypeName(t *testing.T) {
+	tests := []struct {
+		value any
+		want  string
+	}{
+		{value: "harden", want: "string"},
+		{value: true, want: "bool"},
+		{value: float64(5), want: "number"},
+		{value: 5, want: "int"},
+	}
+	for _, tc := range tests {
+		if got := flagSetTypeName(tc.value); got != tc.want {
+			t.Errorf("flagSetTypeName(%#v) = %q, want %q", tc.value, got, tc.want)
+		}
+	}
+}
+
+// TestSetupWriteSections_FlagSetIdempotent verifies that the same steps answer
+// written twice gives the same file bytes.
+func TestSetupWriteSections_FlagSetIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	path := writeSDLCFile(t, dir, "local.toml",
+		"[ship]\n# Pipeline steps for /ship.\nsteps = [\"execute\"]\nbump = \"patch\"\n")
+	answer := `{"ship":{"steps":["execute","review","harden"],"bump":"patch"}}`
+
+	var afterWrite [2][]byte
+	for i := range afterWrite {
+		if res, text := callRegisteredSetupWriteSectionsIn(t, dir, answer); res.IsError {
+			t.Fatalf("write %d: expected success, got tool error:\n%s", i+1, text)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		afterWrite[i] = got
+	}
+	if string(afterWrite[0]) != string(afterWrite[1]) {
+		t.Errorf("second write changed the file.\n--- first ---\n%s\n--- second ---\n%s", afterWrite[0], afterWrite[1])
+	}
+}
+
+// TestNormalizeFlagSetFields pins the cases of normalizeFlagSetFields that the
+// tool tests above do not reach: a nil map, a null answer, an id that is not
+// a section, and a section with no flag-set field.
+func TestNormalizeFlagSetFields(t *testing.T) {
+	t.Run("nil values", func(t *testing.T) {
+		if err := normalizeFlagSetFields("ship", nil); err != nil {
+			t.Errorf("nil values: unexpected error %v", err)
+		}
+	})
+	t.Run("null answer stays", func(t *testing.T) {
+		values := map[string]any{"steps": nil}
+		if err := normalizeFlagSetFields("ship", values); err != nil {
+			t.Fatalf("unexpected error %v", err)
+		}
+		if v, present := values["steps"]; !present || v != nil {
+			t.Errorf("values[steps] = %v (present %v), want a nil value left in place", v, present)
+		}
+	})
+	t.Run("unknown section id", func(t *testing.T) {
+		values := map[string]any{"steps": "anything"}
+		if err := normalizeFlagSetFields("nosuchsection", values); err != nil {
+			t.Fatalf("unexpected error %v", err)
+		}
+		if values["steps"] != "anything" {
+			t.Errorf("values changed for an id that is not a section: %v", values)
+		}
+	})
+	t.Run("section without flag-set field", func(t *testing.T) {
+		values := map[string]any{"scope": []any{"not", "touched"}}
+		if err := normalizeFlagSetFields("review", values); err != nil {
+			t.Fatalf("unexpected error %v", err)
+		}
+		if _, isList := values["scope"].([]any); !isList {
+			t.Errorf("values changed for a section with no flag-set field: %v", values)
+		}
+	})
+	t.Run("array becomes map of bool", func(t *testing.T) {
+		values := map[string]any{"steps": []any{"pr"}}
+		if err := normalizeFlagSetFields("ship", values); err != nil {
+			t.Fatalf("unexpected error %v", err)
+		}
+		table, ok := values["steps"].(map[string]any)
+		if !ok || len(table) != len(shipmeta.CanonicalSteps) || table["pr"] != true || table["execute"] != false {
+			t.Errorf("values[steps] = %v, want a bool for every step with only pr true", values["steps"])
+		}
+	})
 }

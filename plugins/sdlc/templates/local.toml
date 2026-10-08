@@ -24,28 +24,35 @@
 # Default "info" sends every finding into the fix loop; "low" defers Info findings.
 # reviewThreshold = "info"
 
-# Pipeline steps to execute during /ship (in order).
-# Valid steps: "execute" | "commit" | "review" | "harden" | "verify-openspec" |
-#   "archive-openspec" | "pr" | "verify-pipeline" |
+# Pipeline steps for /ship: true runs the step, false skips it.
+# The plugin fixes the order: "execute" | "commit" | "review" | "verify-openspec" |
+#   "archive-openspec" | "harden" | "pr" | "verify-pipeline" |
 #   "await-remote-review" | "learnings-commit"
-# steps = ["execute", "commit", "review", "archive-openspec", "pr", "learnings-commit"]
+# A step you do not list uses its default.
+# steps = { execute = true, commit = true, review = true, archive-openspec = true, pr = true, learnings-commit = true }
 
-# Quick mode steps (subset of steps, for /ship --quick).
+# Quick mode steps for /ship --quick: true runs the step. A step you do not list is off.
 # No built-in default: when unset, --quick has no steps to run.
-# quick = ["execute", "commit", "review"]
+# quick = { execute = true, commit = true, review = true }
 
 # ─── Polling intervals (seconds) ─────────────────────────────────
 
 # Execute wave polling.
+# Bounds: executeWaveInterval >= 10, executeWaveTimeout 60-3600.
 # executeWaveInterval = 60
 # executeWaveTimeout = 1800
 
 # CI/CD pipeline verification polling.
+# Bounds: verifyPipelineInterval >= 10, verifyPipelineMaxIterations 1-10,
+#   verifyPipelineTimeout >= 30.
 # verifyPipelineInterval = 60
 # verifyPipelineMaxIterations = 3
 # verifyPipelineTimeout = 1200
 
 # Remote review (e.g. GitHub Copilot) polling.
+# awaitRemoteReviewers needs at least one entry. To turn the gate off,
+#   set await-remote-review = false in steps instead of emptying the list.
+# Bounds: awaitRemoteReviewInterval >= 10, awaitRemoteReviewTimeout >= 30.
 # awaitRemoteReviewers = ["copilot"]
 # awaitRemoteReviewInterval = 60
 # awaitRemoteReviewTimeout = 600
@@ -79,8 +86,9 @@
 # Which changes to include in the review.
 # Valid: "all" | "committed" | "staged" | "working" | "worktree"
 # scope = "working"
-# Maximum dimensions reviewed in one run (most severe kept). Whole number >= 1.
-# maxDimensions = 8
+# Review agents that run at the same time (default 8). Every matching dimension
+# runs, most severe first, in waves of this size. Whole number >= 1.
+# maxParallelDimensions = 8
 
 # ─── Received-review defaults (optional — delete if not using) ────
 # [receivedReview]
@@ -94,7 +102,9 @@
 # [automation]
 # # Valid: "supervised" | "unattended"
 # mode = "supervised"
+# # Whole number >= 1.
 # reviewFixIterations = 3
+# # Valid: "critical" | "high" | "medium" | "low"  (no "info", unlike ship.reviewThreshold)
 # reviewFixSeverityThreshold = "high"
 #
 # # Per-step overrides. Valid values: "auto" | "confirm"

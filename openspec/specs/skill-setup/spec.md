@@ -255,16 +255,18 @@ For sections with empty `delegatedTo`, the skill SHALL ask exactly one AskUserQu
 - When that `explain` call returns an error, the skill shows the error message and asks the same question again.
 - The skill holds no option text of its own. Each option string comes from `setup_prepare`.
 - `github.expectedAccount` defaults to `remoteOwner` from `setup_prepare`.
-- A field with `whenStepInActiveSteps` is skipped unless that step is in the `ship.steps` answer.
+- A field with `whenStepInActiveSteps` is skipped unless that step is one of the selected names of the `ship.steps` answer.
 - `version`: skip `versionFile` and `fileType` when `mode` is `tag`; skip `changelogFile` when `changelog` is `false`; omit an empty `preRelease`.
 - When `confirmDetected` is `true` (only `version`), a first AskUserQuestion `Use detected settings, customize each field, or skip this section?` offers `yes`, `customize`, `skip`.
 - `yes` writes the detected values without `preRelease`: `{ mode: 'file', versionFile, fileType, tagPrefix }`, or `{ mode: 'tag', tagPrefix }` when no file was detected.
 - `skip` writes nothing for the section.
+- The skill does not convert a `flag-set` answer to a table. `setup_write_sections` does the conversion.
 
 | Field type | Stored value |
 |---|---|
 | `enum` | Selected option |
 | `multi-select` | Array of selected options |
+| `flag-set` | Asked as a multi-select question; the skill sends the array of selected options, and `setup_write_sections` stores it as a table of every option → `true` or `false` |
 | `boolean` | `yes` → `true`, `no` → `false`; `rebase` keeps `auto`/`skip`/`prompt` |
 | `string` | Entered text; omitted when empty and optional |
 | `number` | Integer; re-asked when outside `min`/`max` |
@@ -273,7 +275,7 @@ For sections with empty `delegatedTo`, the skill SHALL ask exactly one AskUserQu
 
 #### Scenario: Ship-step gated field
 - **WHEN** a field has `whenStepInActiveSteps: "verify-pipeline"`
-- **AND** the user's `ship.steps` answer does not include `verify-pipeline`
+- **AND** the user's `ship.steps` answer does not include `verify-pipeline` among the selected names
 - **THEN** the skill does not ask that field
 - **AND** does not write a value for it
 
@@ -289,6 +291,11 @@ For sections with empty `delegatedTo`, the skill SHALL ask exactly one AskUserQu
 - **THEN** the skill calls `setup_prepare({explain: "ship.rebase"})`
 - **AND** shows the details and examples
 - **AND** asks the `rebase` question again
+
+#### Scenario: Flag-set answer sent as an array
+- **WHEN** the user selects `execute`, `review` and `harden` for the `steps` field of the `ship` section
+- **THEN** the skill sends `"steps": ["execute","review","harden"]` to `setup_write_sections`
+- **AND** the `ship` summary line shows the selected steps in pipeline order
 
 ### Requirement: Pre-release compatibility check
 After the `version` fields are collected with `mode` not `tag` and a non-empty `preRelease`, the skill SHALL look up the chosen `fileType` and act on its level. The check runs at most once per run.
@@ -502,7 +509,7 @@ The skill SHALL pass the chosen `target` on each `setup_write_sections` call tha
 The status block SHALL show, on each `set` local section row, the source of its values from `localValues[<section id>].sources`: `(user)`, `(project)`, or `(user+project)`.
 
 #### Scenario: Values from both files
-- **WHEN** `localValues.review.sources` is `{scope: "user", maxDimensions: "project"}`
+- **WHEN** `localValues.review.sources` is `{scope: "user", maxParallelDimensions: "project"}`
 - **THEN** the `review` status row shows `(user+project)`
 
 #### Scenario: Values from the user file only

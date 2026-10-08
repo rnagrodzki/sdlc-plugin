@@ -167,18 +167,27 @@ func TestWriteSection_SpliceCases(t *testing.T) {
 		{
 			name:    "no value change keeps key text byte-identical, missing tips still restored",
 			file:    "local.toml",
-			content: "[ship]\n  steps = [ \"execute\",\n    \"commit\" ]   # c\nbump = \"patch\"\n\n# tail\n",
+			content: "[ship]\n  steps = { execute = true, commit = true }   # c\nbump = \"patch\"\n\n# tail\n",
 			section: "ship",
-			value:   map[string]any{"steps": []any{"execute", "commit"}, "bump": "patch"},
+			value:   map[string]any{"steps": map[string]any{"execute": true, "commit": true}, "bump": "patch"},
 			want: "[ship]\n" +
-				"# Pipeline steps to execute during /ship (in order).\n" +
-				"# Valid steps: \"execute\" | \"commit\" | \"review\" | \"harden\" | \"verify-openspec\" |\n" +
-				"#   \"archive-openspec\" | \"pr\" | \"verify-pipeline\" |\n" +
+				"# Pipeline steps for /ship: true runs the step, false skips it.\n" +
+				"# The plugin fixes the order: \"execute\" | \"commit\" | \"review\" | \"verify-openspec\" |\n" +
+				"#   \"archive-openspec\" | \"harden\" | \"pr\" | \"verify-pipeline\" |\n" +
 				"#   \"await-remote-review\" | \"learnings-commit\"\n" +
-				"  steps = [ \"execute\",\n    \"commit\" ]   # c\n" +
+				"# A step you do not list uses its default.\n" +
+				"  steps = { execute = true, commit = true }   # c\n" +
 				"# Default version bump.\n" +
 				"# Valid: \"major\" | \"minor\" | \"patch\", or a pre-release label such as \"rc\", \"beta\", \"alpha\"\n" +
 				"bump = \"patch\"\n\n# tail\n",
+		},
+		{
+			name:    "no value change keeps a multi-line array byte-identical",
+			file:    "local.toml",
+			content: "[ship]\n# own tip\nawaitRemoteReviewers = [\n  \"copilot\",\n  \"bot\" ]   # c\n",
+			section: "ship",
+			value:   map[string]any{"awaitRemoteReviewers": []any{"copilot", "bot"}},
+			want:    "[ship]\n# own tip\nawaitRemoteReviewers = [\n  \"copilot\",\n  \"bot\" ]   # c\n",
 		},
 		{
 			name:    "removed key loses its line, the comment above it stays",

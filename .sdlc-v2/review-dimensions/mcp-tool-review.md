@@ -107,7 +107,7 @@ those same guardrails:
 - Numeric values parsed from config files (TOML via `config.Read`) or `*In`
   struct fields must be validated for edge cases and platform limits: NaN
   and ±Inf for floats, overflow and underflow for integers, and
-  below-minimum semantics (e.g. `maxDimensions` must be >= 1). Each
+  below-minimum semantics (e.g. `maxParallelDimensions` must be >= 1). Each
   validation must reject the invalid value with a `DomainError` that names
   the value, the rule it breaks, and the acceptable range or constraint.
 

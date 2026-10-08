@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/commstyle"
+	"github.com/rnagrodzki/sdlc-plugin/internal/shipmeta"
 )
 
 // TestVersionFields_PreReleasePolicyMatchesSchema keeps the setup wizard's
@@ -66,20 +67,24 @@ func TestVersionFields_PreReleasePolicyMatchesSchema(t *testing.T) {
 	}
 }
 
-// TestCanonicalSteps_Contents pins CanonicalSteps' exact contents and order.
-// This slice seeds the ship.steps setup-wizard field's Options and Default
-// (ShipFields, below), so a regression here silently changes what step
-// values new projects are offered/defaulted to during /setup. In
+// TestCanonicalSteps_Contents pins CanonicalSteps' exact contents and order
+// (the fixed pipeline order: harden runs after archive-openspec). This slice is the ship
+// package's step list. It seeds the ship.steps setup-wizard field's Options
+// and Default (ShipFields, below), so a regression here silently changes what
+// step values new projects are offered/defaulted to during /setup. In
 // particular, "version" must stay absent — it was deliberately removed
 // (folded into other steps) and must not resurface as a selectable step.
 func TestCanonicalSteps_Contents(t *testing.T) {
 	want := []string{
-		"execute", "commit", "review", "harden", "verify-openspec",
-		"archive-openspec", "pr", "verify-pipeline", "await-remote-review",
+		"execute", "commit", "review", "verify-openspec", "archive-openspec",
+		"harden", "pr", "verify-pipeline", "await-remote-review",
 		"learnings-commit",
 	}
 	if !reflect.DeepEqual(CanonicalSteps, want) {
 		t.Errorf("CanonicalSteps:\n  got:  %v\n  want: %v", CanonicalSteps, want)
+	}
+	if !reflect.DeepEqual(CanonicalSteps, shipmeta.CanonicalSteps) {
+		t.Errorf("CanonicalSteps differs from shipmeta.CanonicalSteps:\n  got:  %v\n  want: %v", CanonicalSteps, shipmeta.CanonicalSteps)
 	}
 }
 
@@ -93,25 +98,42 @@ func TestCanonicalSteps_VersionAbsent(t *testing.T) {
 	}
 }
 
-// TestShipFields_StepsOptionsMatchCanonicalSteps confirms the "steps" field
-// in ShipFields uses CanonicalSteps for both Options and Default, per the
-// package's documented identity invariant with scripts/lib/ship-fields.js.
+// TestShipFields_StepsOptionsMatchCanonicalSteps confirms the "steps" and
+// "quick" fields in ShipFields are flag-set fields whose Options are
+// CanonicalSteps (the fixed pipeline order), that "steps" also defaults to
+// CanonicalSteps, and that their descriptions spell out that order and do not
+// say "right after review".
 func TestShipFields_StepsOptionsMatchCanonicalSteps(t *testing.T) {
-	var steps *Field
+	byName := map[string]*Field{}
 	for i := range ShipFields {
-		if ShipFields[i].Name == "steps" {
-			steps = &ShipFields[i]
-			break
+		byName[ShipFields[i].Name] = &ShipFields[i]
+	}
+	wantOrder := []string{
+		"execute", "commit", "review", "verify-openspec", "archive-openspec",
+		"harden", "pr", "verify-pipeline", "await-remote-review",
+		"learnings-commit",
+	}
+	for _, name := range []string{"steps", "quick"} {
+		f := byName[name]
+		if f == nil {
+			t.Fatalf("ShipFields has no %q field", name)
+		}
+		if f.Type != "flag-set" {
+			t.Errorf("ShipFields[%s].Type = %q, want %q", name, f.Type, "flag-set")
+		}
+		if !reflect.DeepEqual(f.Options, wantOrder) {
+			t.Errorf("ShipFields[%s].Options:\n  got:  %v\n  want: %v", name, f.Options, wantOrder)
+		}
+		if strings.Contains(f.Description, "right after review") {
+			t.Errorf("ShipFields[%s].Description still says %q: %s", name, "right after review", f.Description)
 		}
 	}
-	if steps == nil {
-		t.Fatal(`ShipFields has no "steps" field`)
-	}
-	if !reflect.DeepEqual(steps.Options, CanonicalSteps) {
-		t.Errorf("ShipFields[steps].Options:\n  got:  %v\n  want: %v", steps.Options, CanonicalSteps)
-	}
+	steps := byName["steps"]
 	if !reflect.DeepEqual(steps.Default, CanonicalSteps) {
 		t.Errorf("ShipFields[steps].Default:\n  got:  %v\n  want: %v", steps.Default, CanonicalSteps)
+	}
+	if want := strings.Join(wantOrder, ", "); !strings.Contains(steps.Description, want) {
+		t.Errorf("ShipFields[steps].Description does not spell out the step order %q: %s", want, steps.Description)
 	}
 }
 

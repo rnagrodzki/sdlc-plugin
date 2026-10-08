@@ -6,7 +6,12 @@
 // match the source in both content and order.
 package setupmeta
 
-import "github.com/rnagrodzki/sdlc-plugin/internal/commstyle"
+import (
+	"strings"
+
+	"github.com/rnagrodzki/sdlc-plugin/internal/commstyle"
+	"github.com/rnagrodzki/sdlc-plugin/internal/shipmeta"
+)
 
 // Field describes one configuration field within a setup section.
 // It mirrors the shape { name, label, type, options, default, description }
@@ -18,8 +23,8 @@ import "github.com/rnagrodzki/sdlc-plugin/internal/commstyle"
 type Field struct {
 	Name        string   // config key name
 	Label       string   // short human-readable label
-	Type        string   // "string" | "enum" | "boolean" | "number" | "multi-select" | "multi-enum" | "list"
-	Options     []string // valid values for enum/multi-select/multi-enum/boolean; nil when unconstrained
+	Type        string   // "string" | "enum" | "boolean" | "number" | "multi-select" | "multi-enum" | "flag-set" | "list"
+	Options     []string // valid values for enum/multi-select/multi-enum/flag-set/boolean; nil when unconstrained
 	Default     any      // default value (string, bool, int, []string, or nil)
 	Description string   // one-or-two-sentence description naming the consuming skill
 
@@ -213,14 +218,14 @@ var reviewFields = []Field{
 		Examples:    []string{"\"all\" — reviews every commit on the branch against the base branch", "\"working\" — reviews staged and unstaged changes against HEAD"},
 	},
 	{
-		Name:        "maxDimensions",
-		Label:       "Max review dimensions per run",
+		Name:        "maxParallelDimensions",
+		Label:       "Max review agents at the same time",
 		Type:        "number",
 		Options:     nil,
 		Default:     8,
-		Description: "Maximum number of review dimensions that /review dispatches in one run. The most severe dimensions are kept. The rest are QUEUED and get no review. Stored in .sdlc-v2/local.toml under review.maxDimensions.",
-		Details:     "/review keeps the most severe dimensions up to this number. A higher value reviews more dimensions and starts more agents at the same time.",
-		Examples:    []string{"8 — the default, at most 8 reviewer agents", "22 — reviews up to 22 dimensions in one run"},
+		Description: "Maximum number of review agents that /review runs at the same time. Every matching dimension runs, most severe first, in waves of this size. Stored in .sdlc-v2/local.toml under review.maxParallelDimensions.",
+		Details:     "A higher value ends a large review sooner and starts more agents at the same time.",
+		Examples:    []string{"8 — the default, 8 agents at a time", "4 — fewer agents, more waves"},
 		Min:         intPtr(1),
 	},
 }
@@ -241,14 +246,8 @@ var receivedReviewFields = []Field{
 // intPtr returns a pointer to v. Used for Field.Min / Field.Max.
 func intPtr(v int) *int { return &v }
 
-// CanonicalSteps lists the pipeline steps that may appear in ship.steps[].
-// Order matters — it is the default ordering and iteration order.
-// Mirrors CANONICAL_STEPS from scripts/lib/ship-fields.js.
-var CanonicalSteps = []string{
-	"execute", "commit", "review", "harden", "verify-openspec",
-	"archive-openspec", "pr", "verify-pipeline", "await-remote-review",
-	"learnings-commit",
-}
+// CanonicalSteps is the ship step list in the fixed pipeline order.
+var CanonicalSteps = shipmeta.CanonicalSteps
 
 // ShipFields mirrors SHIP_FIELDS from scripts/lib/ship-fields.js.
 // The ship section references this slice directly (Go equivalent of the JS
@@ -257,22 +256,22 @@ var ShipFields = []Field{
 	{
 		Name:        "steps",
 		Label:       "Pipeline steps to run",
-		Type:        "multi-select",
+		Type:        "flag-set",
 		Options:     append([]string{}, CanonicalSteps...),
 		Default:     append([]string{}, CanonicalSteps...),
-		Description: "Pipeline steps to run by default. received-review and commit-fixes run conditionally based on review verdict and are not configurable here. harden (right after review) clusters review findings and commits guardrail/dimension hardening before the PR. verify-pipeline and await-remote-review are opt-in entries — add them explicitly to enable post-PR CI verification and remote-reviewer awaiting. verify-openspec is an OpenSpec-gated opt-in — add it explicitly to run `openspec validate --strict <change>` between version and archive-openspec.",
-		Details:     "This list sets which pipeline steps /ship runs by default. received-review and commit-fixes run conditionally and are not configurable here.",
-		Examples:    []string{"[\"execute\", \"commit\", \"review\", \"pr\"] — the minimal pipeline, no CI verification", "[\"execute\", \"commit\", \"review\", \"harden\", \"pr\", \"verify-pipeline\"] — adds post-PR CI verification"},
+		Description: "Steps that /ship runs. The plugin fixes the order: " + strings.Join(CanonicalSteps, ", ") + ". received-review and commit-fixes run when review findings need fixes and are not set here. harden changes review findings into guardrail and dimension edits after archive-openspec. verify-openspec, verify-pipeline and await-remote-review are opt-in.",
+		Details:     "Select the steps that /ship runs. The plugin stores the choice as a [ship.steps] table of true/false and fixes the order. received-review and commit-fixes run conditionally and are not set here.",
+		Examples:    []string{"execute, commit, review, pr — the minimal pipeline", "add harden and verify-pipeline — hardening and CI checks"},
 	},
 	{
 		Name:        "quick",
 		Label:       "Optional --quick profile steps",
-		Type:        "multi-select",
+		Type:        "flag-set",
 		Options:     append([]string{}, CanonicalSteps...),
 		Default:     nil,
-		Description: "Optional shortened step list used when ship is invoked with --quick. Same enum as steps. Leave unset to disable the --quick flag for this project.",
-		Details:     "This list sets the shortened step list /ship runs when invoked with --quick. Leave it unset to disable the --quick flag for the project.",
-		Examples:    []string{"[] — leaves --quick disabled", "[\"execute\", \"commit\", \"pr\"] — --quick skips review and verification"},
+		Description: "Steps that /ship --quick runs. Same names and order as steps. A step not selected is off. If you leave it unset, --quick has no steps for this project.",
+		Details:     "Select the steps that /ship --quick runs. The plugin stores the choice as a [ship.quick] table of true/false. A step not selected is off.",
+		Examples:    []string{"no step selected — --quick has no steps", "execute, commit, pr — --quick skips review and verification"},
 	},
 	{
 		Name:        "bump",
@@ -682,7 +681,7 @@ func Sections() []Section {
 		{
 			ID:              "review",
 			Label:           "review",
-			Purpose:         "Default scope for /review (all/committed/staged/working/worktree) and the max dimensions reviewed in one run. Each developer typically prefers a different default — committed for PR-style review, working for in-progress feedback. Stored in .sdlc-v2/local.toml.",
+			Purpose:         "Default scope for /review (all/committed/staged/working/worktree) and the number of review agents that run at the same time. Each developer typically prefers a different default — committed for PR-style review, working for in-progress feedback. Stored in .sdlc-v2/local.toml.",
 			ConfigFile:      ".sdlc-v2/local.toml",
 			ConfigPath:      "review",
 			ConsumedBy:      []string{"review"},

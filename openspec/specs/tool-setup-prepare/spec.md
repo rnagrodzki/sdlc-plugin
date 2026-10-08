@@ -96,13 +96,18 @@ Each `fields[]` entry:
 |---|---|
 | `name` | Field name; may be dotted, e.g. `tag.enabled`. |
 | `label` | Question prompt. |
-| `type` | One of `boolean`, `enum`, `multi-enum`, `multi-select`, `string`, `number`, `list`. |
+| `type` | One of `boolean`, `enum`, `multi-enum`, `multi-select`, `flag-set`, `string`, `number`, `list`. |
 | `options` | Allowed choices; omitted when empty. |
 | `default` | Default value; omitted when unset. |
 | `description` | Helper text. |
 | `examples` | 1 to 3 entries, each `<TOML value> — <meaning>`. For `enum` and `multi-enum` fields, each value is one of `options`. |
 | `min` / `max` | Numeric bounds; omitted when unset. |
-| `whenStepInActiveSteps` | Ask the field only when this step is in `ship.steps`; omitted when unset. |
+| `whenStepInActiveSteps` | Ask the field only when this step is one of the selected names of the `ship.steps` answer; omitted when unset. |
+
+- The `ship` fields `steps` and `quick` have type `flag-set`. Their `options` are the ship step list in the fixed pipeline order: `execute`, `commit`, `review`, `verify-openspec`, `archive-openspec`, `harden`, `pr`, `verify-pipeline`, `await-remote-review`, `learnings-commit`.
+- Every other `multi-select` field stays `multi-select`.
+- The `steps` field `description` names the steps in the same fixed order.
+- The `review` section has the field `maxParallelDimensions` and no field `maxDimensions`.
 
 `delegatedTo` per section:
 
@@ -157,6 +162,16 @@ Each `fields[]` entry:
 - **THEN** the `communication-style` row has `defaultTarget: "user"`
 - **AND** the `ship` row has `defaultTarget: "project"`
 - **AND** the `jira` row has no `defaultTarget`
+
+#### Scenario: Ship step fields are flag sets
+- **WHEN** the caller reads the `steps` and `quick` fields of the `ship` row
+- **THEN** each field has `type: "flag-set"`
+- **AND** each `options` list is `["execute","commit","review","verify-openspec","archive-openspec","harden","pr","verify-pipeline","await-remote-review","learnings-commit"]`
+
+#### Scenario: Review parallel limit field
+- **WHEN** the caller reads the `review` row
+- **THEN** it has a field `maxParallelDimensions` with `type: "number"`, `min` `1` and `default` `8`
+- **AND** it has no field `maxDimensions`
 
 ### Requirement: Config-migration flag
 The tool SHALL set `needsMigration: true` when `skipConfigCheck` is `false` and a JSON-era `.sdlc-v2/config.json` exists in the project root without `.sdlc-v2/config.toml`. In every other case it SHALL set `needsMigration: false`.

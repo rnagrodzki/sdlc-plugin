@@ -131,7 +131,7 @@ consumption gap is closed.
 - **`--failure-text` and `--from-issue` are mutually exclusive.** Provide
   exactly one, not both.
 - **`/ship` calls `/harden` in two ways.** When `harden` is in
-  `ship.steps`, `/ship`'s own `harden` step (after rebase, before `pr`)
+  `ship.steps`, `/ship`'s own `harden` step (after `archive-openspec`, before `pr`)
   clusters the review findings, invokes `/harden` once per cluster (capped at
   5), and commits the edits as a separate commit. It passes `--auto` when
   `/ship` runs with `--auto`; otherwise it asks once per cluster, and
